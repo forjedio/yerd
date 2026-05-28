@@ -4,7 +4,7 @@ A cross-platform local PHP development environment for **macOS, Linux, and Windo
 
 Think Laravel Herd — but cross-platform, open-source, rootless in normal operation, and built on a single statically-typed Rust core that drives both a CLI and a native-feeling GUI.
 
-> **Status:** Early development. The foundation crate (`yerd-core`) is in place. Most of the system is not built yet — see [What's next](#whats-next).
+> **Status:** Early development. The two foundation crates (`yerd-core`, `yerd-ipc`) are in place. Most of the system is not built yet — see [What's next](#whats-next).
 
 > **Lineage note.** This is a ground-up Rust replacement for the author's prior Go project of the same name (`LumoSolutions/yerd`, v1). v1 is reference-only — there is no command-surface compatibility, no config-format compatibility, and no carried-over assumptions (v1 builds PHP from source and elevates with `sudo` for most operations; v2 ships prebuilt PHP and runs unprivileged).
 
@@ -69,7 +69,7 @@ yerd/
 ├── rust-toolchain.toml         # pinned stable toolchain (1.77 + rustfmt, clippy, llvm-tools-preview)
 ├── crates/                     # libraries — pure where possible
 │   ├── yerd-core/              # ✅ domain model + host→site routing
-│   ├── yerd-ipc/               # 🚧 UI/CLI ⇄ daemon protocol + framing
+│   ├── yerd-ipc/               # ✅ UI/CLI ⇄ daemon protocol + framing
 │   ├── yerd-config/            # 🚧 persisted config (TOML)
 │   ├── yerd-tls/               # 🚧 local CA + per-site leaf certs
 │   ├── yerd-dns/               # 🚧 *.test resolver
@@ -107,9 +107,21 @@ The `resolve` algorithm honours: port stripping, FQDN trailing-dot, case-insensi
 
 **Test coverage: 96.70% lines** across 79 tests (73 unit + 6 integration), measured with `cargo-llvm-cov`.
 
-#### `yerd-ipc` — protocol & framing  · **STATUS: planned**
+#### `yerd-ipc` — protocol & framing  · **STATUS: shipped**
 
-The wire protocol between clients (CLI, GUI) and the daemon. Defines `Request`, `Response`, `ErrorCode`, the length-prefixed frame codec, and the (optional, feature-gated) async transport helper. Tag-stability tests pin every wire shape.
+The wire contract between clients (CLI, GUI) and the daemon. Defines:
+
+- `Request` / `Response` / `ErrorCode` — internally tagged JSON (`#[serde(tag = "type", rename_all = "snake_case")]`), every public enum `#[non_exhaustive]` for additive evolution.
+- `encode_frame` / `FrameDecoder` / `DEFAULT_MAX_FRAME` (16 MiB) — pure length-prefixed frame codec (4-byte BE `u32` length prefix). Decoder handles partial reads, pipelined frames, and poisoning on oversized declared lengths.
+- `encode_message` / `decode_message` — thin `serde_json` wrappers.
+- `FrameError` (pure, `Clone + Eq`) + `IpcError` + `IpcErrorKind` (`Clone + Eq` shadow for Tauri/GUI consumers that can't clone `serde_json::Error`).
+- `PROTOCOL_VERSION` — exposed for future use; a `Hello`/`Welcome` handshake will land before the first breaking change.
+- `types` module re-exporting `yerd_core::{Site, PhpVersion, SiteKind}` so downstream consumers can depend on `yerd-ipc` alone.
+- Optional `transport` feature (gated on `tokio`): `write_message`, `read_frame`, `read_message` generic over `AsyncRead`/`AsyncWrite`. Socket and named-pipe binding stays in the binaries.
+
+Default build is pure (no `tokio`, no async, no I/O, no `tracing`). Tag-stability tests pin every wire shape; inline `variant_name_pinning` modules catch Rust-side variant renames at compile time. A grep gate forbids per-field `#[serde(rename = "...")]` so the rename trap is symmetrical (Rust name == JSON tag, enforced).
+
+**Test coverage: 57 tests** (21 inline unit + 16 frame-codec + 7 round-trip + 13 wire-stability) with `--features transport`. Six dependencies: `yerd-core`, `serde`, `serde_json`, `thiserror`, and (optional) `tokio`.
 
 #### `yerd-config` — persisted configuration  · **STATUS: planned**
 
@@ -143,20 +155,22 @@ Per-OS, often-privileged operations behind traits: `Paths`, `TrustStore`, `Resol
 
 ## What's been built
 
-- **Workspace scaffolding.** `Cargo.toml`, `rust-toolchain.toml` pinned to stable 1.77 with `rustfmt`, `clippy`, `llvm-tools-preview`.
-- **`yerd-core` v0.1.0.** Complete — 7 modules, 9 public types, 79 tests, 96.70% line coverage, zero `unwrap`/`expect`/`panic`/indexing in non-test code. Lints include the `pedantic` group with a small justified allowlist.
-- **Wire-stability gate.** `tests/wire_stability.rs` pins the JSON byte shape of every IPC-bound type. A rename anywhere fails CI before `yerd-ipc` ships a divergent format.
+- **Workspace scaffolding.** `Cargo.toml`, `rust-toolchain.toml` pinned to stable 1.77 with `rustfmt`, `clippy`, `llvm-tools-preview`. Lint table lifted to `[workspace.lints]` so every crate inherits the same `unsafe_code = "forbid"` + clippy `unwrap`/`expect`/`panic`/`indexing_slicing`/`pedantic` posture.
+- **`yerd-core` v0.1.0.** Complete — 7 modules, 9 public types, 79 tests, 96.70% line coverage, zero `unwrap`/`expect`/`panic`/indexing in non-test code.
+- **`yerd-ipc` v0.1.0.** Complete — 7 modules, 57 tests with `--features transport`, length-prefixed JSON framing with poisoning on oversized frames, internally-tagged enums with byte-exact wire pins, async transport helpers gated behind an opt-in feature. Default build is pure (no `tokio`, no I/O). See the [crate-level README](crates/yerd-ipc/README.md) for the wire-stability policy and the no-rename rule.
+- **Cross-crate wire-stability gates.** `crates/yerd-core/tests/wire_stability.rs` pins the JSON byte shape of every `yerd-core` type that travels over IPC; `crates/yerd-ipc/tests/wire_stability.rs` pins every `Request`, `Response`, and `ErrorCode` variant. A rename anywhere fails CI before any client sees a divergent format.
 
 ### Local gate (run from the repo root)
 
 ```sh
 cargo fmt --all -- --check
-cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+cargo test --workspace --all-features
 cargo llvm-cov --package yerd-core --fail-under-lines 80
+! grep -REn '#\[serde\([^)]*[^_[:alnum:]]?rename[[:space:]]*=' crates/yerd-ipc/src/
 ```
 
-All four are currently green on Linux. `cargo-llvm-cov` is an out-of-band tool (`cargo install cargo-llvm-cov --version 0.6.15 --locked`); the rest is part of the standard toolchain.
+All gates are currently green on Linux. `--all-features` exercises the `yerd-ipc` `transport` feature and its async smoke tests. `cargo-llvm-cov` is an out-of-band tool (`cargo install cargo-llvm-cov --version 0.6.15 --locked`); the rest is part of the standard toolchain.
 
 ---
 
@@ -166,7 +180,7 @@ Order matters — each crate is built against the contracts of the one beneath i
 
 **Phase 0 — foundations.**
 1. `yerd-core` ✅
-2. `yerd-ipc` — protocol shapes + length-prefixed frame codec, then the optional async transport feature.
+2. `yerd-ipc` ✅
 
 **Phase 1 — MVP (macOS + Linux first).**
 3. `yerd-config` — TOML schema, parse/validate/atomic save.

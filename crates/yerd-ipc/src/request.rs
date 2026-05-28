@@ -1,0 +1,100 @@
+//! Client → daemon request envelope.
+//!
+//! Internally tagged on `type`, `snake_case`. Treat this enum as a
+//! published contract — add variants and fields additively, never
+//! rename, and let `tests/wire_stability.rs` pin the byte-exact wire
+//! shape.
+
+use std::path::PathBuf;
+
+use serde::{Deserialize, Serialize};
+use yerd_core::PhpVersion;
+
+// IMPORTANT: per-field serde renames are forbidden in this crate. Add
+// new variants/fields additively; let rename_all handle casing. See
+// README and the verification script's grep gate.
+/// A request sent from a client (CLI or GUI) to the daemon.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum Request {
+    /// Liveness check.
+    Ping,
+    /// Enumerate every parked or linked site.
+    ListSites,
+    /// Register a parked directory. `path` is opaque to `yerd-ipc`;
+    /// the daemon canonicalises before storing. Windows paths arrive
+    /// with backslashes — that is fine.
+    Park {
+        /// The directory to park.
+        path: PathBuf,
+    },
+    /// Link a site by name to a directory.
+    Link {
+        /// The site name (a single DNS label).
+        name: String,
+        /// The directory to link.
+        path: PathBuf,
+    },
+    /// Remove a linked or parked site by name.
+    Unlink {
+        /// The site name to remove.
+        name: String,
+    },
+    /// Change a site's PHP version.
+    SetPhp {
+        /// The site name.
+        name: String,
+        /// The new PHP version.
+        version: PhpVersion,
+    },
+}
+
+#[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing,
+    // The rename-trap match arms are deliberately all `{}`; merging
+    // them would collapse the per-variant check that catches Rust
+    // variant renames.
+    clippy::match_same_arms
+)]
+mod variant_name_pinning {
+    use super::*;
+    use std::path::PathBuf;
+
+    // Inline (not in tests/) so the #[non_exhaustive] enum matches
+    // exhaustively. A renamed Rust variant fails this match at compile
+    // time.
+    #[allow(dead_code)]
+    fn pin(r: Request) {
+        match r {
+            Request::Ping => {}
+            Request::ListSites => {}
+            Request::Park { .. } => {}
+            Request::Link { .. } => {}
+            Request::Unlink { .. } => {}
+            Request::SetPhp { .. } => {}
+        }
+    }
+
+    #[test]
+    fn touch_every_variant() {
+        pin(Request::Ping);
+        pin(Request::ListSites);
+        pin(Request::Park {
+            path: PathBuf::from("/x"),
+        });
+        pin(Request::Link {
+            name: "x".into(),
+            path: PathBuf::from("/x"),
+        });
+        pin(Request::Unlink { name: "x".into() });
+        pin(Request::SetPhp {
+            name: "x".into(),
+            version: PhpVersion::new(8, 3),
+        });
+    }
+}

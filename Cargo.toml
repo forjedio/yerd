@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members  = ["crates/yerd-core"]
+members  = ["crates/yerd-core", "crates/yerd-ipc"]
 
 [workspace.package]
 edition      = "2021"
@@ -14,6 +14,26 @@ thiserror  = "1"
 serde_json = "1"
 serde_test = "1"
 toml       = "0.8"
+tokio      = { version = "1", default-features = false, features = ["io-util"] }
+
+[workspace.lints.rust]
+unsafe_code  = "forbid"
+missing_docs = "warn"
+
+[workspace.lints.clippy]
+unwrap_used      = "deny"
+expect_used      = "deny"
+panic            = "deny"
+todo             = "deny"
+dbg_macro        = "deny"
+indexing_slicing = "deny"
+pedantic                 = { level = "warn", priority = -1 }
+module_name_repetitions  = "allow"
+missing_errors_doc       = "allow"
+missing_panics_doc       = "allow"
+must_use_candidate       = "allow"
+cast_possible_truncation = "allow"
+needless_pass_by_value   = "allow"
 
 # Note: a transitive dep (indexmap 2.14+) requires edition2024 which Cargo 1.77
 # doesn't support. Cargo.lock pins indexmap to 2.13 via `cargo update -p indexmap
