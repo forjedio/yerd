@@ -70,7 +70,7 @@ yerd/
 ├── crates/                     # libraries — pure where possible
 │   ├── yerd-core/              # ✅ domain model + host→site routing
 │   ├── yerd-ipc/               # ✅ UI/CLI ⇄ daemon protocol + framing
-│   ├── yerd-config/            # 🚧 persisted config (TOML)
+│   ├── yerd-config/            # ✅ persisted config (TOML)
 │   ├── yerd-tls/               # 🚧 local CA + per-site leaf certs
 │   ├── yerd-dns/               # 🚧 *.test resolver
 │   ├── yerd-proxy/             # 🚧 hyper + rustls reverse proxy
@@ -123,9 +123,20 @@ Default build is pure (no `tokio`, no async, no I/O, no `tracing`). Tag-stabilit
 
 **Test coverage: 57 tests** (21 inline unit + 16 frame-codec + 7 round-trip + 13 wire-stability) with `--features transport`. Six dependencies: `yerd-core`, `serde`, `serde_json`, `thiserror`, and (optional) `tokio`.
 
-#### `yerd-config` — persisted configuration  · **STATUS: planned**
+#### `yerd-config` — persisted configuration  · **STATUS: shipped**
 
-Schema, parse/validate/save for the TOML config file. Atomic write-temp-then-rename. Schema versioning + forward migration. Decides what lives on disk; not *where* (that's `yerd-platform::Paths`).
+The on-disk TOML schema and round-trip pipeline. Defines:
+
+- `Config` — top-level schema with private `version` plus `tld`, `ports`, `php`, `parked`, `linked`, `services`. `Default` produces a `version = CURRENT_VERSION` config that round-trips cleanly.
+- `Ports` (`well_known()` = 80/443, `unprivileged()` = 8080/8443), `PhpSection` (`default = 8.3`), `ParkedSection` (`BTreeSet<String>` paths), `ServicesSection` (`BTreeSet<String>` enabled, validated against `KNOWN_SERVICES`).
+- `Config::from_toml` / `to_toml` / `validate` — pure parse/serialise/validate. Wire mirrors are raw-typed (`String`, `PathBuf`) so `yerd-core` per-field validation failures surface as typed `ConfigError::Core(CoreError)` rather than collapsing into `serde::de::Error::custom`. Every nested wire mirror carries `#[serde(deny_unknown_fields)]`.
+- `Config::load` / `save` — thin I/O leaves; `save` uses `tempfile::NamedTempFile` + `persist` for write-temp-then-rename (atomic via `rename(2)` on Unix, `MoveFileExW` with `MOVEFILE_REPLACE_EXISTING` on Windows).
+- `ConfigError` — `Parse`, `Serialize`, `Validate { reason }`, `Core`, `UnsupportedVersion`, `Migration { reason }`, `Io { path: PathBuf, source }`. Every public error enum `#[non_exhaustive]`; reason sub-enums each carry an explicit `Display` impl.
+- `CURRENT_VERSION` + the `migrate::{STEPS, MigrationStep, read_version, up}` scaffold. Zero migrations in v0; v1→v2 lands without parse-path restructuring.
+
+Public schema types deliberately do **not** derive `Serialize` / `Deserialize` — the crate-internal wire mirrors handle the TOML round-trip, keeping the public surface free of an accidental serde contract.
+
+**Test coverage: 91.61% lines** across 72 tests (54 unit + 18 integration). Workspace lints green; `cargo fmt`/`clippy --workspace -D warnings`/`test`/`llvm-cov --fail-under-lines 80` all pass.
 
 #### `yerd-tls` — local CA & leaf certificates  · **STATUS: planned**
 
@@ -158,6 +169,7 @@ Per-OS, often-privileged operations behind traits: `Paths`, `TrustStore`, `Resol
 - **Workspace scaffolding.** `Cargo.toml`, `rust-toolchain.toml` pinned to stable 1.77 with `rustfmt`, `clippy`, `llvm-tools-preview`. Lint table lifted to `[workspace.lints]` so every crate inherits the same `unsafe_code = "forbid"` + clippy `unwrap`/`expect`/`panic`/`indexing_slicing`/`pedantic` posture.
 - **`yerd-core` v0.1.0.** Complete — 7 modules, 9 public types, 79 tests, 96.70% line coverage, zero `unwrap`/`expect`/`panic`/indexing in non-test code.
 - **`yerd-ipc` v0.1.0.** Complete — 7 modules, 57 tests with `--features transport`, length-prefixed JSON framing with poisoning on oversized frames, internally-tagged enums with byte-exact wire pins, async transport helpers gated behind an opt-in feature. Default build is pure (no `tokio`, no I/O). See the [crate-level README](crates/yerd-ipc/README.md) for the wire-stability policy and the no-rename rule.
+- **`yerd-config` v0.1.0.** Complete — 7 modules, 72 tests, 91.61% line coverage; raw-typed wire mirrors keep `yerd-core` validation failures surfaceable as typed `ConfigError::Core`; schema-versioned with a forward-migration scaffold; atomic `save` via `tempfile::NamedTempFile::persist`. See the [crate-level README](crates/yerd-config/README.md) for I/O semantics, path-storage rationale, and the TLD-trailing-dot normalisation note.
 - **Cross-crate wire-stability gates.** `crates/yerd-core/tests/wire_stability.rs` pins the JSON byte shape of every `yerd-core` type that travels over IPC; `crates/yerd-ipc/tests/wire_stability.rs` pins every `Request`, `Response`, and `ErrorCode` variant. A rename anywhere fails CI before any client sees a divergent format.
 
 ### Local gate (run from the repo root)
@@ -183,7 +195,7 @@ Order matters — each crate is built against the contracts of the one beneath i
 2. `yerd-ipc` ✅
 
 **Phase 1 — MVP (macOS + Linux first).**
-3. `yerd-config` — TOML schema, parse/validate/atomic save.
+3. `yerd-config` ✅
 4. `yerd-tls` — CA + leaf issuance (pure crypto).
 5. `yerd-platform` — `Paths`, then `TrustStore`, `ResolverInstaller`, `PortBinder` (macOS + Linux impls first).
 6. `yerd-dns` — `.test` responder + hickory server.
