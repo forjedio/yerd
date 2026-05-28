@@ -32,7 +32,7 @@ pub mod trust_store;
 mod os;
 
 pub use error::{BindPairErrorReason, PlatformError, ResolverErrorReason, TrustStoreErrorReason};
-pub use helper::HelperInvocation;
+pub use helper::{ArgvParseError, HelperInvocation};
 pub use paths::{Paths, PlatformDirs};
 pub use port_binder::{BoundPort, PortBinder, PortPair};
 pub use resolver::ResolverInstaller;

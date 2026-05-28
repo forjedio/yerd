@@ -1,0 +1,29 @@
+[package]
+name                   = "yerd-helper"
+version                = "0.1.0"
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+publish.workspace      = true
+description            = "Privileged one-shot for Yerd: CA install, resolver install, setcap."
+readme                 = "README.md"
+
+[[bin]]
+name = "yerd-helper"
+path = "src/main.rs"
+
+[dependencies]
+yerd-core     = { path = "../../crates/yerd-core" }
+yerd-platform = { path = "../../crates/yerd-platform" }
+clap          = { workspace = true }
+thiserror     = { workspace = true }
+anyhow        = { workspace = true }
+hex           = { workspace = true }
+pem           = { workspace = true }
+
+[dev-dependencies]
+tempfile   = { workspace = true }
+serde_json = { workspace = true }
+
+[lints]
+workspace = true
