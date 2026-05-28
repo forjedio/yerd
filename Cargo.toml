@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members  = ["crates/yerd-core", "crates/yerd-ipc", "crates/yerd-config", "crates/yerd-tls"]
+members  = ["crates/yerd-core", "crates/yerd-ipc", "crates/yerd-config", "crates/yerd-tls", "crates/yerd-platform"]
 
 [workspace.package]
 edition      = "2021"
@@ -22,6 +22,9 @@ time             = { version = "=0.3.36", default-features = false, features = [
 x509-parser      = { version = "0.16", default-features = false }
 pem              = "3"
 rustls-pki-types = "1"
+directories        = "5"
+hex                = { version = "0.4", default-features = false, features = ["alloc"] }
+security-framework = "2"
 
 [workspace.lints.rust]
 unsafe_code  = "forbid"
