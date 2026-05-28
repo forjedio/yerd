@@ -1,0 +1,377 @@
+//! PHP version type.
+//!
+//! `PhpVersion` is a `(major, minor)` pair with strict acceptance and a
+//! human-friendly string form (`"8.3"`, optionally with a case-insensitive
+//! `"php"` prefix on parse).
+
+use std::fmt;
+use std::str::FromStr;
+
+use crate::error::{CoreError, PhpVersionErrorReason};
+
+/// A PHP major.minor version.
+///
+/// Display: `"8.3"`. Parse accepts `"8.3"` and `"php8.3"` (case-insensitive on
+/// the prefix). Numeric ranges: `major ∈ 5..=9`, `minor ∈ 0..=99`. Larger
+/// values that still fit `u16` produce `MajorOutOfRange` / `MinorOutOfRange`;
+/// values that overflow `u16` (≥ 65536) produce `NonNumeric`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct PhpVersion {
+    /// Major PHP version (e.g. `8`).
+    pub major: u8,
+    /// Minor PHP version (e.g. `3`).
+    pub minor: u8,
+}
+
+impl PhpVersion {
+    /// Constructs without validation. Use [`PhpVersion::from_str`] for input
+    /// from users or config files.
+    #[must_use]
+    pub const fn new(major: u8, minor: u8) -> Self {
+        Self { major, minor }
+    }
+}
+
+impl fmt::Display for PhpVersion {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}.{}", self.major, self.minor)
+    }
+}
+
+impl FromStr for PhpVersion {
+    type Err = CoreError;
+
+    fn from_str(input: &str) -> Result<Self, Self::Err> {
+        if input.is_empty() {
+            return Err(err(input, PhpVersionErrorReason::Empty));
+        }
+
+        // STEP 1 — leading-byte classification.
+        let rest: &str = match input.as_bytes().first() {
+            // (a) non-ASCII first byte → UnsupportedPrefix (uniform: letters, emoji, ZWSP, CJK).
+            Some(b) if !b.is_ascii() => {
+                return Err(err(input, PhpVersionErrorReason::UnsupportedPrefix));
+            }
+            // (b)/(c) ASCII letter — only "php" (case-insensitive) accepted.
+            Some(b) if b.is_ascii_alphabetic() => match input.as_bytes().get(..3) {
+                Some(b3) if b3.eq_ignore_ascii_case(b"php") => {
+                    // Safe: bytes 0..3 are ASCII (each matches case-insensitively
+                    // against an ASCII letter), so split_at(3) is char-boundary-safe.
+                    let after = input.split_at(3).1;
+                    if after
+                        .as_bytes()
+                        .first()
+                        .is_some_and(u8::is_ascii_alphabetic)
+                    {
+                        return Err(err(input, PhpVersionErrorReason::UnsupportedPrefix));
+                    }
+                    after
+                }
+                _ => return Err(err(input, PhpVersionErrorReason::UnsupportedPrefix)),
+            },
+            // (d)/(e) anything else (ASCII digit, punctuation, whitespace).
+            _ => input,
+        };
+
+        // STEP 2 — `rest` must match `DIGIT+ "." DIGIT+`.
+        let (major_str, minor_str) = rest
+            .split_once('.')
+            .ok_or_else(|| err(input, PhpVersionErrorReason::MissingMinor))?;
+
+        if major_str.is_empty()
+            || minor_str.is_empty()
+            || !major_str.bytes().all(|b| b.is_ascii_digit())
+            || !minor_str.bytes().all(|b| b.is_ascii_digit())
+        {
+            return Err(err(input, PhpVersionErrorReason::NonNumeric));
+        }
+
+        // STEP 3 — u16 parse for uniform overflow classification.
+        let major: u16 = major_str
+            .parse()
+            .map_err(|_| err(input, PhpVersionErrorReason::NonNumeric))?;
+        let minor: u16 = minor_str
+            .parse()
+            .map_err(|_| err(input, PhpVersionErrorReason::NonNumeric))?;
+
+        if !(5..=9).contains(&major) {
+            return Err(err(input, PhpVersionErrorReason::MajorOutOfRange));
+        }
+        if minor > 99 {
+            return Err(err(input, PhpVersionErrorReason::MinorOutOfRange));
+        }
+
+        // Narrowing is safe: both checked to be in u8 range above.
+        Ok(Self::new(major as u8, minor as u8))
+    }
+}
+
+fn err(input: &str, reason: PhpVersionErrorReason) -> CoreError {
+    CoreError::InvalidPhpVersion {
+        input: input.to_owned(),
+        reason,
+    }
+}
+
+impl serde::Serialize for PhpVersion {
+    fn serialize<S: serde::Serializer>(&self, ser: S) -> Result<S::Ok, S::Error> {
+        ser.collect_str(self)
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for PhpVersion {
+    fn deserialize<D: serde::Deserializer<'de>>(de: D) -> Result<Self, D::Error> {
+        struct V;
+        impl serde::de::Visitor<'_> for V {
+            type Value = PhpVersion;
+            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str(r#"a PHP version string like "8.3" or "php8.3""#)
+            }
+            fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<PhpVersion, E> {
+                v.parse::<PhpVersion>().map_err(serde::de::Error::custom)
+            }
+        }
+        de.deserialize_str(V)
+    }
+}
+
+#[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing
+)]
+mod tests {
+    use super::*;
+    use serde_test::{assert_de_tokens_error, assert_tokens, Token};
+
+    #[test]
+    fn parse_accepts_canonical() {
+        for (s, m, n) in [
+            ("8.3", 8, 3),
+            ("7.4", 7, 4),
+            ("5.6", 5, 6),
+            ("5.0", 5, 0),
+            ("9.0", 9, 0),
+            ("8.10", 8, 10),
+            ("8.99", 8, 99),
+        ] {
+            let v: PhpVersion = s.parse().unwrap();
+            assert_eq!(v, PhpVersion::new(m, n), "input {s}");
+        }
+    }
+
+    #[test]
+    fn parse_accepts_php_prefix_case_insensitive() {
+        for s in ["php8.3", "PHP8.3", "Php8.3", "pHp8.3", "PHp8.3"] {
+            let v: PhpVersion = s.parse().unwrap();
+            assert_eq!(v, PhpVersion::new(8, 3), "input {s}");
+        }
+    }
+
+    #[test]
+    fn parse_classifies_each_reason_pinned() {
+        use PhpVersionErrorReason::*;
+        // (input, expected reason)
+        let cases: &[(&str, PhpVersionErrorReason)] = &[
+            ("", Empty),
+            ("8", MissingMinor),
+            ("php", MissingMinor),
+            ("php8", MissingMinor),
+            ("php.", NonNumeric),
+            ("8.", NonNumeric),
+            (".3", NonNumeric),
+            ("8.3 ", NonNumeric),
+            ("  8.3", NonNumeric),
+            ("+8.3", NonNumeric),
+            ("-8.3", NonNumeric),
+            ("v8.3", UnsupportedPrefix),
+            ("py8.3", UnsupportedPrefix),
+            ("phpa8.3", UnsupportedPrefix),
+            ("phpython8.3", UnsupportedPrefix),
+            ("phpz", UnsupportedPrefix),
+            ("83.0", MajorOutOfRange),
+            ("999.0", MajorOutOfRange),
+            ("65535.0", MajorOutOfRange),
+            ("8.100", MinorOutOfRange),
+            ("8.300", MinorOutOfRange),
+            ("8.65535", MinorOutOfRange),
+            ("8.65536", NonNumeric),
+            ("8.99999", NonNumeric),
+            ("65536.0", NonNumeric),
+            ("99999.0", NonNumeric),
+        ];
+        for (input, expected) in cases {
+            let res = input.parse::<PhpVersion>();
+            match res {
+                Err(CoreError::InvalidPhpVersion { reason, .. }) => {
+                    assert_eq!(reason, *expected, "input {input:?}");
+                }
+                Err(other) => panic!("unexpected error for {input:?}: {other:?}"),
+                Ok(v) => panic!("expected error for {input:?}, got {v}"),
+            }
+        }
+    }
+
+    #[test]
+    fn parse_rejects_non_ascii_leading_byte() {
+        for s in ["é8.3", "中8.3", "🦀8.3", "\u{200B}8.3", "é", "中"] {
+            let res = s.parse::<PhpVersion>();
+            match res {
+                Err(CoreError::InvalidPhpVersion { reason, .. }) => {
+                    assert_eq!(
+                        reason,
+                        PhpVersionErrorReason::UnsupportedPrefix,
+                        "input {s:?}"
+                    );
+                }
+                other => panic!("expected UnsupportedPrefix for {s:?}, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn parse_classifies_combining_accent_as_unsupported_prefix() {
+        // Byte 0 = 'a' (ASCII alpha); bytes [0x61, 0xCC, 0x81] fail
+        // eq_ignore_ascii_case(b"php") → inner `_` arm of STEP 1 case (c) fires.
+        let res = "a\u{0301}8.3".parse::<PhpVersion>();
+        match res {
+            Err(CoreError::InvalidPhpVersion { reason, .. }) => {
+                assert_eq!(reason, PhpVersionErrorReason::UnsupportedPrefix);
+            }
+            other => panic!("expected UnsupportedPrefix, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_rejects_php_with_extra_letters() {
+        for s in ["phpa8.3", "phpython8.3", "phpz"] {
+            assert!(
+                matches!(
+                    s.parse::<PhpVersion>(),
+                    Err(CoreError::InvalidPhpVersion {
+                        reason: PhpVersionErrorReason::UnsupportedPrefix,
+                        ..
+                    })
+                ),
+                "input {s}"
+            );
+        }
+    }
+
+    #[test]
+    fn parse_classifies_overflow_uniform() {
+        use PhpVersionErrorReason::*;
+        // Ok boundary
+        assert_eq!(
+            "8.99".parse::<PhpVersion>().unwrap(),
+            PhpVersion::new(8, 99)
+        );
+        // Cases above the accepted range but inside u16
+        for (s, r) in [
+            ("8.100", MinorOutOfRange),
+            ("8.300", MinorOutOfRange),
+            ("8.65535", MinorOutOfRange),
+            ("83.0", MajorOutOfRange),
+            ("999.0", MajorOutOfRange),
+            ("65535.0", MajorOutOfRange),
+        ] {
+            assert!(
+                matches!(s.parse::<PhpVersion>(), Err(CoreError::InvalidPhpVersion { reason, .. }) if reason == r),
+                "input {s} expected {r:?}"
+            );
+        }
+        // Cases that overflow u16 → NonNumeric
+        for s in ["8.65536", "8.99999", "65536.0", "99999.0"] {
+            assert!(
+                matches!(
+                    s.parse::<PhpVersion>(),
+                    Err(CoreError::InvalidPhpVersion {
+                        reason: PhpVersionErrorReason::NonNumeric,
+                        ..
+                    })
+                ),
+                "input {s}"
+            );
+        }
+    }
+
+    #[test]
+    fn parse_does_not_panic_on_multibyte() {
+        for s in [
+            "é8.3",
+            "中8.3",
+            "🦀8.3",
+            "\u{200B}",
+            "a\u{0301}8.3",
+            "é",
+            "中",
+        ] {
+            // Just must not panic.
+            let _ = s.parse::<PhpVersion>();
+        }
+    }
+
+    #[test]
+    fn display_emits_dotted() {
+        assert_eq!(PhpVersion::new(8, 3).to_string(), "8.3");
+        assert_eq!(PhpVersion::new(8, 10).to_string(), "8.10");
+        assert_eq!(PhpVersion::new(5, 0).to_string(), "5.0");
+    }
+
+    #[test]
+    fn ordering_pinned() {
+        let php74 = PhpVersion::new(7, 4);
+        let php80 = PhpVersion::new(8, 0);
+        let php89 = PhpVersion::new(8, 9);
+        let php8_dot_10 = PhpVersion::new(8, 10);
+        let php899 = PhpVersion::new(8, 99);
+        assert!(php74 < php80);
+        assert!(php80 < php89);
+        assert!(
+            php89 < php8_dot_10,
+            "(8,9) < (8,10) — guards numeric (not lex) ordering"
+        );
+        assert!(php8_dot_10 < php899);
+    }
+
+    #[test]
+    fn round_trip_canonicalises() {
+        let v: PhpVersion = "8.00".parse().unwrap();
+        assert_eq!(v, PhpVersion::new(8, 0));
+        assert_eq!(
+            v.to_string(),
+            "8.0",
+            "redundant zeros are lost on round-trip"
+        );
+    }
+
+    #[test]
+    fn serde_wire_shape_string() {
+        // Frozen tag-stability: `PhpVersion` is on the wire as the string "8.3".
+        assert_tokens(&PhpVersion::new(8, 3), &[Token::Str("8.3")]);
+    }
+
+    #[test]
+    fn serde_rejects_json_number() {
+        let res: Result<PhpVersion, _> = serde_json::from_str("8.3");
+        assert!(res.is_err());
+    }
+
+    #[test]
+    fn serde_rejects_json_int() {
+        let res: Result<PhpVersion, _> = serde_json::from_str("8");
+        assert!(res.is_err());
+    }
+
+    #[test]
+    fn serde_visitor_expecting_hit() {
+        // Tokens that don't match `visit_str` cause serde to emit the visitor's
+        // `expecting()` phrase verbatim in the error message.
+        assert_de_tokens_error::<PhpVersion>(
+            &[Token::Unit],
+            "invalid type: unit value, expected a PHP version string like \"8.3\" or \"php8.3\"",
+        );
+    }
+}

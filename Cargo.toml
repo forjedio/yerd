@@ -1,0 +1,20 @@
+[workspace]
+resolver = "2"
+members  = ["crates/yerd-core"]
+
+[workspace.package]
+edition      = "2021"
+rust-version = "1.77"
+license      = "MIT OR Apache-2.0"
+publish      = false
+
+[workspace.dependencies]
+serde      = { version = "1", features = ["derive"] }
+thiserror  = "1"
+serde_json = "1"
+serde_test = "1"
+toml       = "0.8"
+
+# Note: a transitive dep (indexmap 2.14+) requires edition2024 which Cargo 1.77
+# doesn't support. Cargo.lock pins indexmap to 2.13 via `cargo update -p indexmap
+# --precise 2.13.0` — keep that pin until MSRV bumps past 1.85.

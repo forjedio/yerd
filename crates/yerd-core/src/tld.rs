@@ -1,0 +1,249 @@
+//! Top-level domain newtype.
+//!
+//! `Tld` is a validated, lowercased, ASCII-only DNS suffix used by the
+//! [`SiteRouter`](crate::SiteRouter) for TLD enforcement.
+
+use std::fmt;
+use std::str::FromStr;
+
+use crate::error::{CoreError, TldErrorReason};
+
+/// A validated DNS suffix (e.g. `"test"`, `"dev.local"`).
+///
+/// Always stored lowercased, ASCII-only, with no leading or trailing dot.
+/// Construct via [`Tld::new`] or [`Tld::default`] (which yields the canonical
+/// `.test` TLD).
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct Tld(String);
+
+impl Tld {
+    /// Validates and constructs from a `&str`.
+    pub fn new(s: &str) -> Result<Self, CoreError> {
+        validate(s).map(Self)
+    }
+
+    /// Returns the validated TLD as a string slice.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl Default for Tld {
+    /// The `.test` TLD (Yerd's default).
+    fn default() -> Self {
+        // INVARIANT: "test" is a hard-coded literal that passes every step of
+        // `Tld::new`. The only hard-coded TLD construction in the crate.
+        // Verified by `default_is_test_and_matches_new` below.
+        Self(String::from("test"))
+    }
+}
+
+impl fmt::Display for Tld {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl FromStr for Tld {
+    type Err = CoreError;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::new(s)
+    }
+}
+
+impl serde::Serialize for Tld {
+    fn serialize<S: serde::Serializer>(&self, ser: S) -> Result<S::Ok, S::Error> {
+        ser.collect_str(self)
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for Tld {
+    fn deserialize<D: serde::Deserializer<'de>>(de: D) -> Result<Self, D::Error> {
+        struct V;
+        impl serde::de::Visitor<'_> for V {
+            type Value = Tld;
+            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str("a DNS TLD string like \"test\" or \"dev.local\"")
+            }
+            fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<Tld, E> {
+                Tld::new(v).map_err(serde::de::Error::custom)
+            }
+        }
+        de.deserialize_str(V)
+    }
+}
+
+fn err(input: &str, reason: TldErrorReason) -> CoreError {
+    CoreError::InvalidTld {
+        input: input.to_owned(),
+        reason,
+    }
+}
+
+/// Pinned ordered algorithm — see plan §2.3.
+fn validate(raw: &str) -> Result<String, CoreError> {
+    // 1.
+    if raw.is_empty() {
+        return Err(err(raw, TldErrorReason::Empty));
+    }
+
+    // 2. strip one trailing '.' if present
+    let stripped: &str = raw.strip_suffix('.').unwrap_or(raw);
+    if stripped.is_empty() {
+        return Err(err(raw, TldErrorReason::LeadingOrTrailingDot));
+    }
+    if stripped.ends_with('.') {
+        return Err(err(raw, TldErrorReason::LeadingOrTrailingDot));
+    }
+    if stripped.starts_with('.') {
+        return Err(err(raw, TldErrorReason::LeadingOrTrailingDot));
+    }
+
+    // 3. total length cap (RFC 1035: 253 octets)
+    if stripped.len() > 253 {
+        return Err(err(raw, TldErrorReason::TooLong));
+    }
+
+    // 4. non-ASCII / whitespace
+    for &b in stripped.as_bytes() {
+        if !b.is_ascii() {
+            return Err(err(raw, TldErrorReason::NonAscii));
+        }
+        if b.is_ascii_whitespace() {
+            return Err(err(raw, TldErrorReason::ContainsWhitespace));
+        }
+    }
+
+    // 5. lowercase
+    let lowered = stripped.to_ascii_lowercase();
+
+    // 6. per-label checks
+    for label in lowered.split('.') {
+        if label.is_empty() {
+            return Err(err(raw, TldErrorReason::ConsecutiveDots));
+        }
+        if label.len() > 63 {
+            return Err(err(raw, TldErrorReason::LabelTooLong));
+        }
+        for &b in label.as_bytes() {
+            // [a-z0-9-] only (uppercase already lowercased)
+            let ok = b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-';
+            if !ok {
+                return Err(err(raw, TldErrorReason::InvalidCharacter));
+            }
+        }
+        if label.starts_with('-') || label.ends_with('-') {
+            return Err(err(raw, TldErrorReason::LeadingOrTrailingHyphen));
+        }
+    }
+
+    Ok(lowered)
+}
+
+#[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing
+)]
+mod tests {
+    use super::*;
+    use serde_test::{assert_tokens, Token};
+
+    #[test]
+    fn new_accepts_valid() {
+        for (input, expected) in [
+            ("test", "test"),
+            ("localhost", "localhost"),
+            ("dev.local", "dev.local"),
+            ("TEST", "test"),
+        ] {
+            let t = Tld::new(input).unwrap();
+            assert_eq!(t.as_str(), expected, "input {input:?}");
+        }
+    }
+
+    #[test]
+    fn new_strips_one_trailing_dot() {
+        assert_eq!(Tld::new("test.").unwrap().as_str(), "test");
+    }
+
+    #[test]
+    fn new_rejects_each_reason() {
+        use TldErrorReason::*;
+        let cases: &[(&str, TldErrorReason)] = &[
+            ("", Empty),
+            (".", LeadingOrTrailingDot),
+            (".test", LeadingOrTrailingDot),
+            ("test..", LeadingOrTrailingDot),
+            ("a..b", ConsecutiveDots),
+            ("foo...bar", ConsecutiveDots),
+            ("te st", ContainsWhitespace),
+            ("te\tst", ContainsWhitespace),
+            ("tëst", NonAscii),
+            ("测试", NonAscii),
+            ("te_st", InvalidCharacter),
+            ("te$st", InvalidCharacter),
+            ("-foo", LeadingOrTrailingHyphen),
+            ("foo-", LeadingOrTrailingHyphen),
+            ("foo.bar-", LeadingOrTrailingHyphen),
+        ];
+        for (input, expected) in cases {
+            match Tld::new(input) {
+                Err(CoreError::InvalidTld { reason, .. }) => {
+                    assert_eq!(reason, *expected, "input {input:?}");
+                }
+                other => panic!("input {input:?}: expected {expected:?}, got {other:?}"),
+            }
+        }
+
+        // Length-based cases via owned strings.
+        let long_label = "a".repeat(64);
+        match Tld::new(&long_label) {
+            Err(CoreError::InvalidTld {
+                reason: LabelTooLong,
+                ..
+            }) => {}
+            other => panic!("LabelTooLong expected, got {other:?}"),
+        }
+        let too_long = "a".repeat(254);
+        match Tld::new(&too_long) {
+            Err(CoreError::InvalidTld {
+                reason: TooLong, ..
+            }) => {}
+            other => panic!("TooLong expected, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn serde_wire_shape_string() {
+        let t = Tld::new("test").unwrap();
+        assert_tokens(&t, &[Token::Str("test")]);
+    }
+
+    #[test]
+    fn serde_rejects_invalid_on_deserialize() {
+        let res: Result<Tld, _> = serde_json::from_str("\"\"");
+        assert!(res.is_err());
+    }
+
+    #[test]
+    fn default_is_test_and_matches_new() {
+        let d = Tld::default();
+        let n = Tld::new("test").unwrap();
+        assert_eq!(d.as_str(), "test");
+        assert_eq!(d, n);
+        // Also walk every algorithm step against "test" so a future tightening
+        // of `validate` that breaks "test" trips this test (covers [LOW-2]).
+        assert_eq!(validate("test").unwrap(), "test");
+    }
+
+    #[test]
+    fn display_round_trip() {
+        let t = Tld::new("dev.local").unwrap();
+        assert_eq!(t.to_string(), "dev.local");
+        assert_eq!(Tld::new(&t.to_string()).unwrap(), t);
+    }
+}

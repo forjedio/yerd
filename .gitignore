@@ -28,3 +28,4 @@ rustc-ice-*.txt
 @docs
 .agents
 .openai
+CLAUDE.md

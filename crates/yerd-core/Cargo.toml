@@ -1,0 +1,36 @@
+[package]
+name                   = "yerd-core"
+version                = "0.1.0"
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+publish.workspace      = true
+description            = "Pure domain model and host→site routing for Yerd."
+
+[dependencies]
+serde     = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
+serde_test = { workspace = true }
+toml       = { workspace = true }
+
+[lints.rust]
+unsafe_code  = "forbid"
+missing_docs = "warn"
+
+[lints.clippy]
+unwrap_used      = "deny"
+expect_used      = "deny"
+panic            = "deny"
+todo             = "deny"
+dbg_macro        = "deny"
+indexing_slicing = "deny"
+pedantic                 = { level = "warn", priority = -1 }
+module_name_repetitions  = "allow"
+missing_errors_doc       = "allow"
+missing_panics_doc       = "allow"
+must_use_candidate       = "allow"
+cast_possible_truncation = "allow"
+needless_pass_by_value   = "allow"
