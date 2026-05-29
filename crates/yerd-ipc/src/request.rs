@@ -58,6 +58,18 @@ pub enum Request {
     /// Fetch read-only daemon runtime facts (DNS address, TLD, CA path +
     /// fingerprint). Used by `yerd elevate` to drive the privileged helper.
     DaemonInfo,
+    /// Download + install a prebuilt PHP version into yerd's data dir.
+    InstallPhp {
+        /// The major.minor version to install (resolved to a pinned patch).
+        version: PhpVersion,
+    },
+    /// Set the global default PHP version (terminal `php` shim + site fallback).
+    SetDefaultPhp {
+        /// The version to make the default; must already be installed.
+        version: PhpVersion,
+    },
+    /// List installed PHP versions and the current default.
+    ListPhp,
 }
 
 #[cfg(test)]
@@ -89,6 +101,9 @@ mod variant_name_pinning {
             Request::SetPhp { .. } => {}
             Request::SetSecure { .. } => {}
             Request::DaemonInfo => {}
+            Request::InstallPhp { .. } => {}
+            Request::SetDefaultPhp { .. } => {}
+            Request::ListPhp => {}
         }
     }
 
@@ -113,5 +128,12 @@ mod variant_name_pinning {
             secure: true,
         });
         pin(Request::DaemonInfo);
+        pin(Request::InstallPhp {
+            version: PhpVersion::new(8, 5),
+        });
+        pin(Request::SetDefaultPhp {
+            version: PhpVersion::new(8, 5),
+        });
+        pin(Request::ListPhp);
     }
 }

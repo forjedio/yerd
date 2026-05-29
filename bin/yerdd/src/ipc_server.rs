@@ -86,10 +86,79 @@ async fn dispatch(req: Request, state: &DaemonState) -> Response {
         | Request::Unlink { .. }
         | Request::SetPhp { .. }
         | Request::SetSecure { .. } => handle_mutation(req, state).await,
+        Request::ListPhp => list_php(state).await,
+        Request::InstallPhp { version } => install_php(version, state).await,
+        Request::SetDefaultPhp { version } => set_default_php(version, state).await,
+        // `Request` is `#[non_exhaustive]` (external crate): a wildcard is
+        // required even though every known variant is handled above.
         _ => Response::Error {
             code: ErrorCode::Internal,
             message: "unsupported request".into(),
         },
+    }
+}
+
+/// `list php` — merge bundled + mise discovery into installed versions, plus the
+/// live global default. Read-only; no network.
+async fn list_php(state: &DaemonState) -> Response {
+    let mut installed: Vec<yerd_core::PhpVersion> = Vec::new();
+    if let Ok(bundled) = yerd_php::discover_bundled(&state.dirs) {
+        installed.extend(bundled.into_iter().map(|(v, _)| v));
+    }
+    installed.extend(yerd_php::discover_mise().await.into_iter().map(|(v, _)| v));
+    installed.sort_unstable();
+    installed.dedup();
+    Response::PhpVersions {
+        installed,
+        default: state.config.lock().await.php.default,
+    }
+}
+
+/// `install php <ver>` — download + verify + unpack a prebuilt build. Runs the
+/// (slow) download with no config lock held; the per-connection task model means
+/// other clients are unaffected.
+async fn install_php(version: yerd_core::PhpVersion, state: &DaemonState) -> Response {
+    let dl = crate::php_install::ReqwestDownloader::new();
+    match crate::php_install::install(version, &state.dirs, &dl).await {
+        Ok(()) => Response::Ok,
+        Err(e) => Response::Error {
+            code: php_error_code(&e),
+            message: e.to_string(),
+        },
+    }
+}
+
+/// `use <ver>` (global) — require the version installed, set the live default +
+/// site fallback (`config.php.default`), persist, and repoint the `php` shim.
+async fn set_default_php(version: yerd_core::PhpVersion, state: &DaemonState) -> Response {
+    if !crate::php_install::cli_binary_path(&state.dirs, version).exists() {
+        return Response::Error {
+            code: ErrorCode::NotFound,
+            message: format!("PHP {version} is not installed — run `yerd install php {version}`"),
+        };
+    }
+    let mut cfg_guard = state.config.lock().await;
+    let mut new = cfg_guard.clone();
+    new.php.default = version;
+    if let Err(e) = new.save(&state.config_path) {
+        return internal(format!("config save failed: {e}"));
+    }
+    if let Err(e) = crate::php_install::set_default_shim(&state.dirs, version) {
+        return internal(format!("update php shim failed: {e}"));
+    }
+    *cfg_guard = new;
+    tracing::info!(version = %version, "set default PHP");
+    Response::Ok
+}
+
+/// Map a [`yerd_php::PhpError`] to a wire [`ErrorCode`].
+fn php_error_code(e: &yerd_php::PhpError) -> ErrorCode {
+    use yerd_php::PhpError;
+    match e {
+        PhpError::UnsupportedPlatform { .. } | PhpError::VersionUnavailable { .. } => {
+            ErrorCode::InvalidPath
+        }
+        _ => ErrorCode::Internal,
     }
 }
 
@@ -114,12 +183,16 @@ async fn handle_mutation(req: Request, state: &DaemonState) -> Response {
     //    recover a parked site's document_root. The read guard is an inline
     //    temporary dropped at the `;` — it must NOT be hoisted to a `let` and
     //    held across the step-7 write (that self-deadlocks the RwLock).
+    // Source the linked-site default from the *live* config (not the startup
+    // snapshot) so `SetDefaultPhp` (`yerd use <ver>`) changes the fallback that
+    // newly-linked/promoted sites inherit.
+    let live_default = new.php.default;
     let applied = match mutate::apply(
         &mut new,
         &*state.router.read().await,
         &req,
         canonical,
-        state.default_php,
+        live_default,
     ) {
         Ok(a) => a,
         Err(e) => {
@@ -221,7 +294,6 @@ mod tests {
             router: Arc::new(RwLock::new(router)),
             config_path: dirs.config.join("yerd.toml"),
             dirs,
-            default_php: PhpVersion::new(8, 3),
             dns_addr: "127.0.0.1:1053".parse().unwrap(),
             ca_path,
             ca_fingerprint: yerd_platform::CaFingerprint::new([0u8; 32]),
@@ -437,6 +509,118 @@ mod tests {
                 assert_eq!(ca_fingerprint.len(), 64);
             }
             other => panic!("expected Info, got {other:?}"),
+        }
+    }
+
+    /// Lay down a fake installed version: `data/php/php-<v>/{sbin/php-fpm,bin/php}`.
+    fn fake_install(dirs: &PlatformDirs, v: PhpVersion) {
+        let base = dirs
+            .data
+            .join("php")
+            .join(format!("php-{}.{}", v.major, v.minor));
+        std::fs::create_dir_all(base.join("sbin")).unwrap();
+        std::fs::create_dir_all(base.join("bin")).unwrap();
+        std::fs::write(base.join("sbin").join("php-fpm"), b"x").unwrap();
+        std::fs::write(base.join("bin").join("php"), b"x").unwrap();
+    }
+
+    #[tokio::test]
+    async fn dispatch_list_php_reports_installed_and_default() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_in(tmp.path());
+        fake_install(&state.dirs, PhpVersion::new(8, 4));
+        match dispatch(Request::ListPhp, &state).await {
+            Response::PhpVersions { installed, default } => {
+                assert!(
+                    installed.contains(&PhpVersion::new(8, 4)),
+                    "got {installed:?}"
+                );
+                assert_eq!(default, PhpVersion::new(8, 3)); // Config::default()
+            }
+            other => panic!("expected PhpVersions, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn dispatch_set_default_php_requires_installed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_in(tmp.path());
+        match dispatch(
+            Request::SetDefaultPhp {
+                version: PhpVersion::new(8, 5),
+            },
+            &state,
+        )
+        .await
+        {
+            Response::Error { code, .. } => assert_eq!(code, ErrorCode::NotFound),
+            other => panic!("expected NotFound, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn dispatch_set_default_php_sets_config_and_shim() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_in(tmp.path());
+        fake_install(&state.dirs, PhpVersion::new(8, 4));
+        let resp = dispatch(
+            Request::SetDefaultPhp {
+                version: PhpVersion::new(8, 4),
+            },
+            &state,
+        )
+        .await;
+        assert!(matches!(resp, Response::Ok), "got {resp:?}");
+        assert_eq!(state.config.lock().await.php.default, PhpVersion::new(8, 4));
+        // The shim symlink now exists and points at the 8.4 CLI binary.
+        let shim = state.dirs.data.join("bin").join("php");
+        assert_eq!(
+            std::fs::canonicalize(shim).unwrap(),
+            std::fs::canonicalize(crate::php_install::cli_binary_path(
+                &state.dirs,
+                PhpVersion::new(8, 4)
+            ))
+            .unwrap()
+        );
+    }
+
+    /// Guards the live-default fix: after `SetDefaultPhp`, a newly-linked site
+    /// inherits the *new* default (not the startup snapshot).
+    #[tokio::test]
+    async fn set_default_php_changes_fallback_for_new_sites() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_in(tmp.path());
+        fake_install(&state.dirs, PhpVersion::new(8, 4));
+        let app_dir = tmp.path().join("app");
+        std::fs::create_dir_all(&app_dir).unwrap();
+
+        assert!(matches!(
+            dispatch(
+                Request::SetDefaultPhp {
+                    version: PhpVersion::new(8, 4)
+                },
+                &state
+            )
+            .await,
+            Response::Ok
+        ));
+        assert!(matches!(
+            dispatch(
+                Request::Link {
+                    name: "app".into(),
+                    path: app_dir,
+                },
+                &state
+            )
+            .await,
+            Response::Ok
+        ));
+        match dispatch(Request::ListSites, &state).await {
+            Response::Sites { sites } => {
+                let app = sites.iter().find(|s| s.name() == "app").unwrap();
+                assert_eq!(app.php(), PhpVersion::new(8, 4));
+            }
+            other => panic!("expected Sites, got {other:?}"),
         }
     }
 }

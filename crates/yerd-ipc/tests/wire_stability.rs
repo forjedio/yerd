@@ -102,6 +102,36 @@ fn request_daemon_info_byte_shape() {
     assert_eq!(back, Request::DaemonInfo);
 }
 
+#[test]
+fn request_install_php_byte_shape() {
+    let r = Request::InstallPhp {
+        version: PhpVersion::new(8, 5),
+    };
+    let s = serde_json::to_string(&r).unwrap();
+    assert_eq!(s, r#"{"type":"install_php","version":"8.5"}"#);
+    assert_eq!(serde_json::from_str::<Request>(&s).unwrap(), r);
+}
+
+#[test]
+fn request_set_default_php_byte_shape() {
+    let r = Request::SetDefaultPhp {
+        version: PhpVersion::new(8, 4),
+    };
+    let s = serde_json::to_string(&r).unwrap();
+    assert_eq!(s, r#"{"type":"set_default_php","version":"8.4"}"#);
+    assert_eq!(serde_json::from_str::<Request>(&s).unwrap(), r);
+}
+
+#[test]
+fn request_list_php_byte_shape() {
+    let s = serde_json::to_string(&Request::ListPhp).unwrap();
+    assert_eq!(s, r#"{"type":"list_php"}"#);
+    assert_eq!(
+        serde_json::from_str::<Request>(&s).unwrap(),
+        Request::ListPhp
+    );
+}
+
 // ---------- Response ----------
 
 #[test]
@@ -173,6 +203,20 @@ fn response_info_byte_shape() {
     assert_eq!(s, expected);
     let back: Response = serde_json::from_str(&s).unwrap();
     assert_eq!(back, r);
+}
+
+#[test]
+fn response_php_versions_byte_shape() {
+    let r = Response::PhpVersions {
+        installed: vec![PhpVersion::new(8, 3), PhpVersion::new(8, 5)],
+        default: PhpVersion::new(8, 5),
+    };
+    let s = serde_json::to_string(&r).unwrap();
+    assert_eq!(
+        s,
+        r#"{"type":"php_versions","installed":["8.3","8.5"],"default":"8.5"}"#
+    );
+    assert_eq!(serde_json::from_str::<Response>(&s).unwrap(), r);
 }
 
 #[test]

@@ -29,13 +29,31 @@ pub fn to_request(cmd: &Command) -> Result<Request, ClientError> {
             validate_name(name)?;
             Request::Unlink { name: name.clone() }
         }
-        Command::Use { name, version } => {
-            validate_name(name)?;
+        // One arg = global default PHP; two args = a site's version.
+        Command::Use {
+            first,
+            version: None,
+        } => Request::SetDefaultPhp {
+            version: parse_php(first)?,
+        },
+        Command::Use {
+            first,
+            version: Some(version),
+        } => {
+            validate_name(first)?;
             Request::SetPhp {
-                name: name.clone(),
+                name: first.clone(),
                 version: parse_php(version)?,
             }
         }
+        Command::Install {
+            target: crate::cli::InstallTarget::Php { version },
+        } => Request::InstallPhp {
+            version: parse_php(version)?,
+        },
+        Command::List {
+            target: crate::cli::ListTarget::Php,
+        } => Request::ListPhp,
         Command::Secure { name } => {
             validate_name(name)?;
             Request::SetSecure {
@@ -122,6 +140,9 @@ pub fn render(resp: &Response, json: bool) -> Rendered {
         Response::Pong => Rendered::ok("pong".to_owned()),
         Response::Ok => Rendered::ok("ok".to_owned()),
         Response::Sites { sites } => Rendered::ok(format_sites(sites)),
+        Response::PhpVersions { installed, default } => {
+            Rendered::ok(format_php_versions(installed, *default))
+        }
         Response::Error { code, message } => Rendered::err(format!("error ({code:?}): {message}")),
         // `Response` is `#[non_exhaustive]`; a future variant from a newer
         // daemon is surfaced benignly rather than panicking.
@@ -149,6 +170,25 @@ fn format_sites(sites: &[Site]) -> String {
         ));
     }
     out
+}
+
+fn format_php_versions(installed: &[PhpVersion], default: PhpVersion) -> String {
+    if installed.is_empty() {
+        return format!(
+            "no PHP versions installed (default: {default}) — `yerd install php {default}`"
+        );
+    }
+    installed
+        .iter()
+        .map(|v| {
+            if *v == default {
+                format!("{v} (default)")
+            } else {
+                v.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 #[cfg(test)]
@@ -191,17 +231,47 @@ mod tests {
             to_request(&Command::Unlink { name: "foo".into() }).unwrap(),
             Request::Unlink { name: "foo".into() }
         );
-        // `use` maps to SetPhp.
+        // `use <site> <ver>` (two args) maps to SetPhp.
         assert_eq!(
             to_request(&Command::Use {
-                name: "foo".into(),
-                version: "8.4".into()
+                first: "foo".into(),
+                version: Some("8.4".into())
             })
             .unwrap(),
             Request::SetPhp {
                 name: "foo".into(),
                 version: PhpVersion::new(8, 4)
             }
+        );
+        // `use <ver>` (one arg) maps to the global SetDefaultPhp.
+        assert_eq!(
+            to_request(&Command::Use {
+                first: "8.5".into(),
+                version: None
+            })
+            .unwrap(),
+            Request::SetDefaultPhp {
+                version: PhpVersion::new(8, 5)
+            }
+        );
+        // `install php <ver>` and `list php`.
+        assert_eq!(
+            to_request(&Command::Install {
+                target: crate::cli::InstallTarget::Php {
+                    version: "8.5".into()
+                }
+            })
+            .unwrap(),
+            Request::InstallPhp {
+                version: PhpVersion::new(8, 5)
+            }
+        );
+        assert_eq!(
+            to_request(&Command::List {
+                target: crate::cli::ListTarget::Php
+            })
+            .unwrap(),
+            Request::ListPhp
         );
         // `secure`/`unsecure` map to SetSecure with the matching flag.
         assert_eq!(
@@ -223,8 +293,16 @@ mod tests {
     #[test]
     fn rejects_bad_version_and_name_before_connect() {
         match to_request(&Command::Use {
-            name: "foo".into(),
-            version: "not-a-version".into(),
+            first: "foo".into(),
+            version: Some("not-a-version".into()),
+        }) {
+            Err(ClientError::Usage(_)) => {}
+            other => panic!("expected Usage error, got {other:?}"),
+        }
+        // One-arg `use <not-a-version>` (global) must also be a usage error.
+        match to_request(&Command::Use {
+            first: "not-a-version".into(),
+            version: None,
         }) {
             Err(ClientError::Usage(_)) => {}
             other => panic!("expected Usage error, got {other:?}"),
@@ -277,6 +355,30 @@ mod tests {
         assert!(err.stdout.is_empty());
         assert!(err.stderr.contains("nope"));
         assert_eq!(err.code, 1);
+    }
+
+    #[test]
+    fn renders_php_versions_marking_default() {
+        let r = render(
+            &Response::PhpVersions {
+                installed: vec![PhpVersion::new(8, 3), PhpVersion::new(8, 5)],
+                default: PhpVersion::new(8, 5),
+            },
+            false,
+        );
+        assert_eq!(r.code, 0);
+        assert!(r.stdout.contains("8.3"));
+        assert!(r.stdout.contains("8.5 (default)"));
+        assert!(!r.stdout.contains("8.3 (default)"));
+
+        let empty = render(
+            &Response::PhpVersions {
+                installed: vec![],
+                default: PhpVersion::new(8, 3),
+            },
+            false,
+        );
+        assert!(empty.stdout.contains("no PHP versions installed"));
     }
 
     #[test]

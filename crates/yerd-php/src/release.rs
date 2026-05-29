@@ -1,0 +1,300 @@
+//! Pure resolution of prebuilt static-PHP download artifacts.
+//!
+//! Versions are discovered **dynamically** from the static-php-cli distribution
+//! (`dl.static-php.dev`) so yerd needs no release to support a new PHP patch:
+//! the daemon fetches the directory listing and `resolve_from_listing` (pure)
+//! picks the latest patch of the requested minor and builds the download URLs.
+//! Integrity rests on HTTPS to the distribution host (it publishes no checksum
+//! sidecars); there is no sha256 pinning — a deliberate trade-off so the
+//! supported set isn't frozen into the binary.
+
+use yerd_core::PhpVersion;
+
+use crate::error::PhpError;
+
+/// Base URL of the static-php-cli "common" prebuilt distribution.
+const BASE_URL: &str = "https://dl.static-php.dev/static-php-cli/common";
+
+/// Target operating system for a prebuilt artifact.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Os {
+    /// Linux (fully static / musl — runs on any libc).
+    Linux,
+    /// macOS.
+    Macos,
+}
+
+impl Os {
+    /// The token used in artifact filenames.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Os::Linux => "linux",
+            Os::Macos => "macos",
+        }
+    }
+}
+
+/// Target CPU architecture for a prebuilt artifact.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Arch {
+    /// 64-bit x86.
+    X86_64,
+    /// 64-bit ARM.
+    Aarch64,
+}
+
+impl Arch {
+    /// The token used in artifact filenames.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Arch::X86_64 => "x86_64",
+            Arch::Aarch64 => "aarch64",
+        }
+    }
+}
+
+/// Which binary within a PHP build.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BinaryKind {
+    /// The CLI interpreter (`php`).
+    Cli,
+    /// The FastCGI process manager (`php-fpm`).
+    Fpm,
+}
+
+impl BinaryKind {
+    /// The token used in artifact filenames.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            BinaryKind::Cli => "cli",
+            BinaryKind::Fpm => "fpm",
+        }
+    }
+
+    /// Relative path segments where this binary is installed inside a
+    /// per-version dir (CLI → `bin/php`, FPM → `sbin/php-fpm`; the FPM path
+    /// matches `version::discover_bundled`).
+    #[must_use]
+    pub const fn install_segments(self) -> &'static [&'static str] {
+        match self {
+            BinaryKind::Cli => &["bin", "php"],
+            BinaryKind::Fpm => &["sbin", "php-fpm"],
+        }
+    }
+
+    /// The single file name inside the downloaded tarball.
+    #[must_use]
+    pub const fn archive_member(self) -> &'static str {
+        match self {
+            BinaryKind::Cli => "php",
+            BinaryKind::Fpm => "php-fpm",
+        }
+    }
+}
+
+/// A resolved download plan for one PHP version + platform.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Artifact {
+    /// The requested major.minor version.
+    pub version: PhpVersion,
+    /// The resolved full patch version (e.g. `"8.5.6"`).
+    pub full_version: String,
+    /// Per-version install directory name (e.g. `"php-8.5"`).
+    pub install_dir_name: String,
+    /// URL of the CLI tarball.
+    pub cli_url: String,
+    /// URL of the FPM tarball.
+    pub fpm_url: String,
+}
+
+/// Build the canonical artifact URL for a `(full_version, kind, os, arch)`.
+#[must_use]
+pub fn artifact_url(full_version: &str, kind: BinaryKind, os: Os, arch: Arch) -> String {
+    format!(
+        "{BASE_URL}/php-{full_version}-{}-{}-{}.tar.gz",
+        kind.as_str(),
+        os.as_str(),
+        arch.as_str()
+    )
+}
+
+/// URL of the distribution's directory listing (the daemon fetches this, then
+/// hands the body to [`resolve_from_listing`]).
+#[must_use]
+pub fn listing_url() -> String {
+    format!("{BASE_URL}/")
+}
+
+/// Resolve a requested major.minor version + platform to an [`Artifact`] by
+/// scanning the distribution's directory `listing` for the **latest patch**.
+///
+/// Looks for filenames `php-<maj>.<min>.<patch>-cli-<os>-<arch>.tar.gz` (the
+/// `php-<maj>.<min>.` prefix carries a trailing dot, so `8.5` never matches
+/// `8.50`; the `-cli-<os>-<arch>` suffix anchors the arch), takes the highest
+/// patch, and builds both the CLI and FPM URLs. Errors with
+/// [`PhpError::VersionUnavailable`] when no matching build is published.
+pub fn resolve_from_listing(
+    listing: &str,
+    version: PhpVersion,
+    os: Os,
+    arch: Arch,
+) -> Result<Artifact, PhpError> {
+    let prefix = format!("php-{}.{}.", version.major, version.minor);
+    let suffix = format!(
+        "-{}-{}-{}.tar.gz",
+        BinaryKind::Cli.as_str(),
+        os.as_str(),
+        arch.as_str()
+    );
+
+    // Split on the prefix; each chunk after the first begins right after
+    // `php-<maj>.<min>.`. Take its leading digits as the patch, then require the
+    // exact CLI suffix. Uses `split`/`strip_prefix`/`starts_with` only — no
+    // indexing (the prefix's trailing dot already rules out `8.5` vs `8.50`).
+    let mut best: Option<u32> = None;
+    let mut chunks = listing.split(prefix.as_str());
+    let _ = chunks.next(); // text before the first occurrence
+    for chunk in chunks {
+        let digits: String = chunk.chars().take_while(char::is_ascii_digit).collect();
+        if digits.is_empty() {
+            continue;
+        }
+        let Some(remainder) = chunk.strip_prefix(&digits) else {
+            continue;
+        };
+        if remainder.starts_with(&suffix) {
+            if let Ok(patch) = digits.parse::<u32>() {
+                best = Some(best.map_or(patch, |b| b.max(patch)));
+            }
+        }
+    }
+
+    let patch = best.ok_or(PhpError::VersionUnavailable { version })?;
+    let full_version = format!("{}.{}.{}", version.major, version.minor, patch);
+    Ok(Artifact {
+        install_dir_name: format!("php-{}.{}", version.major, version.minor),
+        cli_url: artifact_url(&full_version, BinaryKind::Cli, os, arch),
+        fpm_url: artifact_url(&full_version, BinaryKind::Fpm, os, arch),
+        full_version,
+        version,
+    })
+}
+
+/// Detect the running platform, erroring on anything yerd can't install for
+/// (e.g. Windows, 32-bit). Call this **before** any download.
+pub fn current_os_arch() -> Result<(Os, Arch), PhpError> {
+    let os = match std::env::consts::OS {
+        "linux" => Os::Linux,
+        "macos" => Os::Macos,
+        other => {
+            return Err(PhpError::UnsupportedPlatform {
+                detail: format!("no prebuilt PHP for OS {other:?}"),
+            })
+        }
+    };
+    let arch = match std::env::consts::ARCH {
+        "x86_64" => Arch::X86_64,
+        "aarch64" => Arch::Aarch64,
+        other => {
+            return Err(PhpError::UnsupportedPlatform {
+                detail: format!("no prebuilt PHP for architecture {other:?}"),
+            })
+        }
+    };
+    Ok((os, arch))
+}
+
+/// Zip-slip guard: a tar member name is safe to trust only if it is relative
+/// and contains no `..`, root, or prefix components.
+#[must_use]
+pub fn is_safe_member(name: &str) -> bool {
+    use std::path::Component;
+    !name.is_empty()
+        && std::path::Path::new(name)
+            .components()
+            .all(|c| matches!(c, Component::Normal(_) | Component::CurDir))
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::panic, clippy::indexing_slicing)]
+mod tests {
+    use super::*;
+
+    /// A listing snippet shaped like the real autoindex (href + duplicate text
+    /// node), spanning several patches, minors, kinds, and arches.
+    const LISTING: &str = r#"
+        <a href="/static-php-cli/common/php-8.5.2-cli-linux-x86_64.tar.gz">php-8.5.2-cli-linux-x86_64.tar.gz</a>
+        <a href="/static-php-cli/common/php-8.5.6-cli-linux-x86_64.tar.gz">php-8.5.6-cli-linux-x86_64.tar.gz</a>
+        <a href="/static-php-cli/common/php-8.5.6-fpm-linux-x86_64.tar.gz">php-8.5.6-fpm-linux-x86_64.tar.gz</a>
+        <a href="/static-php-cli/common/php-8.5.4-cli-linux-aarch64.tar.gz">php-8.5.4-cli-linux-aarch64.tar.gz</a>
+        <a href="/static-php-cli/common/php-8.50.1-cli-linux-x86_64.tar.gz">php-8.50.1-cli-linux-x86_64.tar.gz</a>
+        <a href="/static-php-cli/common/php-8.4.21-cli-linux-x86_64.tar.gz">php-8.4.21-cli-linux-x86_64.tar.gz</a>
+    "#;
+
+    #[test]
+    fn resolve_from_listing_picks_max_patch_and_builds_urls() {
+        let a =
+            resolve_from_listing(LISTING, PhpVersion::new(8, 5), Os::Linux, Arch::X86_64).unwrap();
+        assert_eq!(a.full_version, "8.5.6"); // 8.5.6 > 8.5.2, ignores 8.50.1
+        assert_eq!(a.install_dir_name, "php-8.5");
+        assert_eq!(
+            a.cli_url,
+            "https://dl.static-php.dev/static-php-cli/common/php-8.5.6-cli-linux-x86_64.tar.gz"
+        );
+        assert_eq!(
+            a.fpm_url,
+            "https://dl.static-php.dev/static-php-cli/common/php-8.5.6-fpm-linux-x86_64.tar.gz"
+        );
+    }
+
+    #[test]
+    fn resolve_from_listing_does_not_confuse_8_5_with_8_50() {
+        // Only 8.50.1 is present for x86_64; asking for 8.5 must NOT match it.
+        let only_850 = "php-8.50.1-cli-linux-x86_64.tar.gz";
+        assert!(matches!(
+            resolve_from_listing(only_850, PhpVersion::new(8, 5), Os::Linux, Arch::X86_64),
+            Err(PhpError::VersionUnavailable { .. })
+        ));
+    }
+
+    #[test]
+    fn resolve_from_listing_anchors_arch() {
+        // 8.5 only has an aarch64 build in LISTING beyond x86_64; asking x86_64
+        // must not pick the aarch64 patch (8.5.4).
+        let a =
+            resolve_from_listing(LISTING, PhpVersion::new(8, 5), Os::Linux, Arch::Aarch64).unwrap();
+        assert_eq!(a.full_version, "8.5.4");
+        assert!(a.cli_url.contains("linux-aarch64"));
+    }
+
+    #[test]
+    fn resolve_from_listing_unknown_minor_errors() {
+        match resolve_from_listing(LISTING, PhpVersion::new(7, 4), Os::Linux, Arch::X86_64) {
+            Err(PhpError::VersionUnavailable { version }) => {
+                assert_eq!(version, PhpVersion::new(7, 4));
+            }
+            other => panic!("expected VersionUnavailable, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn install_segments_match_layout() {
+        assert_eq!(BinaryKind::Cli.install_segments(), &["bin", "php"]);
+        assert_eq!(BinaryKind::Fpm.install_segments(), &["sbin", "php-fpm"]);
+        assert_eq!(BinaryKind::Cli.archive_member(), "php");
+        assert_eq!(BinaryKind::Fpm.archive_member(), "php-fpm");
+    }
+
+    #[test]
+    fn is_safe_member_rejects_traversal_and_absolute() {
+        assert!(is_safe_member("php"));
+        assert!(is_safe_member("./php"));
+        assert!(!is_safe_member("../php"));
+        assert!(!is_safe_member("/etc/php"));
+        assert!(!is_safe_member("a/../../b"));
+        assert!(!is_safe_member(""));
+    }
+}

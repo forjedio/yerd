@@ -13,7 +13,6 @@ use std::path::PathBuf;
 
 use tokio::sync::Mutex;
 
-use yerd_core::PhpVersion;
 use yerd_platform::{CaFingerprint, PlatformDirs};
 use yerd_proxy::SharedRouter;
 
@@ -30,8 +29,6 @@ pub struct DaemonState {
     pub dirs: PlatformDirs,
     /// Path the config is loaded from and saved to.
     pub config_path: PathBuf,
-    /// Default PHP version for newly linked sites.
-    pub default_php: PhpVersion,
     /// Address the embedded DNS responder is bound on (reported by `DaemonInfo`
     /// so `yerd elevate resolver` can route `.test` here).
     pub dns_addr: SocketAddr,

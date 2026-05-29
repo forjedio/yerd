@@ -51,6 +51,12 @@ pub async fn run(cli: Cli) -> ExitCode {
             if !r.stderr.is_empty() {
                 eprintln!("{}", r.stderr);
             }
+            // After a successful global `yerd use <ver>`, nudge the user about
+            // the terminal `php` shim PATH (human output only).
+            if !cli.json && r.code == 0 && matches!(cli.command, Command::Use { version: None, .. })
+            {
+                print_php_path_hint();
+            }
             ExitCode::from(r.code)
         }
         Err(e @ ClientError::DaemonUnreachable(_)) => {
@@ -62,4 +68,37 @@ pub async fn run(cli: Cli) -> ExitCode {
             ExitCode::from(74)
         }
     }
+}
+
+/// Print where the managed `php` shim lives and warn if another `php` already
+/// shadows it on `PATH`. Best-effort: silently does nothing if dirs can't be
+/// resolved.
+fn print_php_path_hint() {
+    use yerd_platform::{ActivePaths, Paths};
+    let Ok(dirs) = ActivePaths::new().resolve() else {
+        return;
+    };
+    let bin = dirs.data.join("bin");
+    println!(
+        "→ ensure {} is on your PATH for the `php` command",
+        bin.display()
+    );
+    // Warn if a different `php` is found earlier on PATH (would shadow the shim).
+    if let Some(existing) = first_php_on_path() {
+        if existing != bin.join("php") {
+            println!(
+                "  note: `php` currently resolves to {} — put {} earlier on PATH to override",
+                existing.display(),
+                bin.display()
+            );
+        }
+    }
+}
+
+/// First `php` executable found on `PATH`, if any.
+fn first_php_on_path() -> Option<std::path::PathBuf> {
+    let path = std::env::var_os("PATH")?;
+    std::env::split_paths(&path)
+        .map(|dir| dir.join("php"))
+        .find(|candidate| candidate.is_file())
 }

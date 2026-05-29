@@ -20,18 +20,10 @@ tokio          = { workspace = true, features = ["process", "net", "rt", "time",
 [target.'cfg(unix)'.dependencies]
 nix            = { workspace = true }
 
-[dependencies.reqwest]
-workspace = true
-optional  = true
-
 [dev-dependencies]
 tokio          = { workspace = true, features = ["macros", "rt-multi-thread", "net", "sync", "time"] }
 tempfile       = { workspace = true }
 serde_json     = { workspace = true }
-
-[features]
-default  = []
-download = ["dep:reqwest"]
 
 [lints]
 workspace = true

@@ -18,6 +18,7 @@ pub mod cert_store;
 pub mod error;
 pub mod ipc_server;
 pub mod mutate;
+pub mod php_install;
 pub mod secure_fs;
 pub mod signals;
 pub mod single_instance;

@@ -7,7 +7,7 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
-use yerd_core::Site;
+use yerd_core::{PhpVersion, Site};
 
 // Same rule: no per-field serde renames.
 /// A response sent from the daemon to a client.
@@ -46,6 +46,13 @@ pub enum Response {
         ca_path: PathBuf,
         /// SHA-256 fingerprint of the CA cert, 64 lowercase hex chars.
         ca_fingerprint: String,
+    },
+    /// Reply to [`crate::Request::ListPhp`].
+    PhpVersions {
+        /// Installed versions, ascending.
+        installed: Vec<PhpVersion>,
+        /// The current global default.
+        default: PhpVersion,
     },
 }
 
@@ -93,6 +100,7 @@ mod variant_name_pinning {
             Response::Ok => {}
             Response::Error { .. } => {}
             Response::Info { .. } => {}
+            Response::PhpVersions { .. } => {}
         }
     }
 
@@ -120,6 +128,10 @@ mod variant_name_pinning {
             tld: "test".into(),
             ca_path: PathBuf::from("/x/ca.cert.pem"),
             ca_fingerprint: "ab".repeat(32),
+        });
+        pin_response(Response::PhpVersions {
+            installed: vec![PhpVersion::new(8, 5)],
+            default: PhpVersion::new(8, 5),
         });
         for c in [
             ErrorCode::NotFound,

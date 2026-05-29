@@ -117,7 +117,6 @@ pub async fn bring_up_with_dirs(
 
     // Build the router from parked + linked sites.
     let dns_tld = config.tld.clone();
-    let default_php = config.php.default;
     let router = build_router(&config, &dirs)?;
     if router.is_empty() {
         tracing::info!("no sites configured — every request will 404 until a site is added");
@@ -181,7 +180,6 @@ pub async fn bring_up_with_dirs(
         router,
         dirs: dirs.clone(),
         config_path: config_path.clone(),
-        default_php,
         dns_addr,
         ca_path,
         ca_fingerprint,

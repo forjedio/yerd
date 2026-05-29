@@ -11,21 +11,21 @@ pub mod manager;
 pub mod pool;
 pub mod pure;
 pub mod real;
+pub mod release;
 pub mod traits;
 pub mod version;
 
-pub use error::{ExitReason, PhpError, SpawnFailureReason};
+pub use error::{DownloadError, ExitReason, PhpError, SpawnFailureReason};
 pub use listen::{AllocatedListen, Listen};
 pub use manager::PhpManager;
 pub use pool::{PoolConfig, ProcessManagerMode};
 pub use real::{SystemClock, TokioChild, TokioProcessSpawner};
-pub use traits::{ChildHandle, Clock, HealthProbe, ProcessSpawner};
+pub use release::{
+    artifact_url, current_os_arch, is_safe_member, listing_url, resolve_from_listing, Arch,
+    Artifact, BinaryKind, Os,
+};
+pub use traits::{ChildHandle, Clock, Downloader, HealthProbe, ProcessSpawner};
 pub use version::{discover_bundled, discover_mise};
-
-#[cfg(feature = "download")]
-pub use error::DownloadError;
-#[cfg(feature = "download")]
-pub use traits::Downloader;
 
 // Compile-time `Send + 'static` guard for the production instantiation.
 const _: () = {

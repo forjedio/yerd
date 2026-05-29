@@ -50,6 +50,13 @@ fn encode_then_decode_request_roundtrip() {
         secure: true,
     });
     assert_request_roundtrips(Request::DaemonInfo);
+    assert_request_roundtrips(Request::InstallPhp {
+        version: PhpVersion::new(8, 5),
+    });
+    assert_request_roundtrips(Request::SetDefaultPhp {
+        version: PhpVersion::new(8, 4),
+    });
+    assert_request_roundtrips(Request::ListPhp);
 }
 
 #[test]
@@ -61,6 +68,10 @@ fn encode_then_decode_response_roundtrip() {
         tld: "test".into(),
         ca_path: PathBuf::from("/x/ca.cert.pem"),
         ca_fingerprint: "ab".repeat(32),
+    });
+    assert_response_roundtrips(Response::PhpVersions {
+        installed: vec![PhpVersion::new(8, 3), PhpVersion::new(8, 5)],
+        default: PhpVersion::new(8, 5),
     });
     assert_response_roundtrips(Response::Sites { sites: vec![] });
     let site = Site::parked("foo", "/srv/foo", PhpVersion::new(8, 3)).unwrap();

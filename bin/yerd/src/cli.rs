@@ -38,12 +38,26 @@ pub enum Command {
         /// Site name to remove.
         name: String,
     },
-    /// Set a site's PHP version (promotes a parked site to a linked entry).
+    /// Set the PHP version. One argument (`yerd use 8.5`) sets the **global**
+    /// default — the terminal `php` shim and the site fallback. Two arguments
+    /// (`yerd use <site> 8.5`) set a single site's version.
     Use {
-        /// Site name.
-        name: String,
-        /// PHP version, e.g. `8.3`.
-        version: String,
+        /// A PHP version (global) or a site name (when `version` is given).
+        first: String,
+        /// PHP version for the named site; omit to set the global default.
+        version: Option<String>,
+    },
+    /// Install a component (currently: a PHP version).
+    Install {
+        /// What to install.
+        #[command(subcommand)]
+        target: InstallTarget,
+    },
+    /// List installed components (currently: PHP versions).
+    List {
+        /// What to list.
+        #[command(subcommand)]
+        target: ListTarget,
     },
     /// Serve a site over HTTPS (promotes a parked site to a linked entry).
     Secure {
@@ -67,6 +81,23 @@ pub enum Command {
         #[command(subcommand)]
         target: Option<ElevateTarget>,
     },
+}
+
+/// Target of `yerd install`.
+#[derive(clap::Subcommand, Debug, Clone)]
+pub enum InstallTarget {
+    /// Install a PHP version (downloads a prebuilt static build).
+    Php {
+        /// PHP version, e.g. `8.5`.
+        version: String,
+    },
+}
+
+/// Target of `yerd list`.
+#[derive(clap::Subcommand, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ListTarget {
+    /// List installed PHP versions and the global default.
+    Php,
 }
 
 /// A single privilege managed by `yerd elevate` / `yerd unelevate`.

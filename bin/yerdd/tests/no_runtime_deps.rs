@@ -1,6 +1,10 @@
 //! Dep-graph invariant: `yerdd`'s default-features runtime graph must
 //! not pull `anyhow`, OpenSSL / native-tls family, `hyper-tls`,
-//! `tokio-native-tls`, `webpki-roots`, or `fs2` (deprecated).
+//! `tokio-native-tls`, or `fs2` (deprecated).
+//!
+//! `webpki-roots` IS allowed: the daemon fetches prebuilt PHP over HTTPS
+//! (`reqwest` + rustls) for `yerd install php`, and bundled Mozilla roots are
+//! the right trust anchor for a client hitting a public host (no OpenSSL).
 
 #![allow(
     clippy::unwrap_used,
@@ -22,7 +26,6 @@ const FORBIDDEN: &[&str] = &[
     "native-tls",
     "hyper-tls",
     "tokio-native-tls",
-    "webpki-roots",
     "fs2",
 ];
 

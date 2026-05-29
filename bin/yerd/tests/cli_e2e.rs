@@ -171,8 +171,8 @@ mod tests {
             send(
                 &sock,
                 &Command::Use {
-                    name: "blog".into(),
-                    version: "8.4".into()
+                    first: "blog".into(),
+                    version: Some("8.4".into())
                 }
             )
             .await,

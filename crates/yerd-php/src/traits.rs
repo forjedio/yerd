@@ -70,14 +70,14 @@ pub trait HealthProbe: Send + Sync + 'static {
     async fn probe(&self, listen: &Listen) -> Result<(), io::Error>;
 }
 
-/// Optional bytes downloader (feature `download`).
+/// Bytes downloader for PHP install artifacts.
 ///
-/// Behind a feature so the default build doesn't pull `reqwest`. The
-/// daemon flips it on if the PHP-install path lands.
-#[cfg(feature = "download")]
+/// The trait is transport-agnostic (only `async-trait`, no `reqwest`) so
+/// `yerd-php` stays dependency-light; the real `reqwest`-backed impl lives in
+/// the daemon (`bin/yerdd`), and tests inject a fake. SHA-256 verification of
+/// the fetched bytes is the caller's job, not the downloader's.
 #[async_trait]
 pub trait Downloader: Send + Sync + 'static {
-    /// Fetch the body bytes at `url`. SHA-256 verification is the
-    /// caller's job.
+    /// Fetch the body bytes at `url`.
     async fn download(&self, url: &str) -> Result<Vec<u8>, crate::error::DownloadError>;
 }

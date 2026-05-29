@@ -96,16 +96,42 @@ pub enum PhpError {
         #[source]
         source: io::Error,
     },
+
+    /// The running OS/architecture has no prebuilt PHP build.
+    #[error("unsupported platform: {detail}")]
+    UnsupportedPlatform {
+        /// Which dimension is unsupported.
+        detail: String,
+    },
+
+    /// No prebuilt build of the requested version is published for this
+    /// platform (discovered from the distribution's listing).
+    #[error("no prebuilt PHP {version} found for this platform at the distribution")]
+    VersionUnavailable {
+        /// The version that was requested.
+        version: PhpVersion,
+    },
+
+    /// Downloading an artifact failed.
+    #[error(transparent)]
+    Download(#[from] DownloadError),
+
+    /// Unpacking a downloaded archive failed (bad/empty/unsafe tar, or write).
+    #[error("extract {what}: {detail}")]
+    Extract {
+        /// What we were extracting (e.g. the artifact URL).
+        what: String,
+        /// Human-readable failure detail.
+        detail: String,
+    },
 }
 
-/// Error returned by [`crate::traits::Downloader::download`] (feature
-/// `download`).
+/// Error returned by [`crate::traits::Downloader::download`].
 ///
 /// Carries a flattened message rather than wrapping a transport type so that
 /// test fakes can construct it without pulling in `reqwest`, and so the public
 /// surface stays transport-agnostic. SHA-256 verification of the fetched bytes
 /// is the caller's responsibility, not the downloader's.
-#[cfg(feature = "download")]
 #[derive(Debug, Error)]
 #[non_exhaustive]
 pub enum DownloadError {
