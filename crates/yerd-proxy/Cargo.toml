@@ -1,0 +1,40 @@
+[package]
+name                   = "yerd-proxy"
+version                = "0.1.0"
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+publish.workspace      = true
+description            = "HTTP/HTTPS reverse proxy for Yerd's *.test traffic."
+
+[dependencies]
+yerd-core      = { path = "../yerd-core" }
+thiserror      = { workspace = true }
+async-trait    = { workspace = true }
+tracing        = { workspace = true }
+tokio          = { workspace = true, features = ["net", "rt", "time", "io-util", "macros", "sync"] }
+hyper          = { workspace = true }
+hyper-util     = { workspace = true }
+http           = { workspace = true }
+http-body      = { workspace = true }
+http-body-util = { workspace = true }
+bytes          = { workspace = true }
+tokio-rustls   = { workspace = true, features = ["ring"] }
+rustls         = { workspace = true, features = ["ring"] }
+
+[dev-dependencies]
+yerd-tls       = { path = "../yerd-tls" }
+tokio          = { workspace = true, features = ["macros", "rt-multi-thread", "net", "sync", "time", "io-util"] }
+hyper          = { workspace = true }
+http           = { workspace = true }
+http-body-util = { workspace = true }
+bytes          = { workspace = true }
+serde_json     = { workspace = true }
+tempfile       = { workspace = true }
+rustls         = { workspace = true, features = ["ring"] }
+tokio-rustls   = { workspace = true, features = ["ring"] }
+rustls-pki-types = { workspace = true, features = ["alloc", "std"] }
+time           = { workspace = true }
+
+[lints]
+workspace = true

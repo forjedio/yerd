@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members  = ["crates/yerd-core", "crates/yerd-ipc", "crates/yerd-config", "crates/yerd-tls", "crates/yerd-platform", "bin/yerd-helper"]
+members  = ["crates/yerd-core", "crates/yerd-ipc", "crates/yerd-config", "crates/yerd-tls", "crates/yerd-platform", "crates/yerd-dns", "crates/yerd-php", "crates/yerd-proxy", "bin/yerd-helper"]
 
 [workspace.package]
 edition      = "2021"
@@ -27,6 +27,21 @@ hex                = { version = "0.4", default-features = false, features = ["a
 security-framework = "2"
 clap               = { version = "=4.5.20", default-features = false, features = ["std", "derive", "help", "usage", "error-context"] }
 anyhow             = "1"
+hickory-proto      = "=0.24.4"
+hickory-server     = { version = "=0.24.4", default-features = false }
+hickory-client     = "=0.24.4"
+async-trait        = "0.1"
+nix                = { version = "0.29", default-features = false, features = ["process", "signal"] }
+reqwest            = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+hyper              = { version = "1", default-features = false, features = ["http1", "server", "client"] }
+hyper-util         = { version = "0.1", default-features = false, features = ["http1", "server", "client", "tokio"] }
+http-body          = "1"
+http-body-util     = "0.1"
+bytes              = "1"
+tokio-rustls       = "0.26"
+rustls             = "0.23"
+tracing            = { version = "0.1", default-features = false, features = ["std"] }
+http               = "1"
 
 [workspace.lints.rust]
 unsafe_code  = "forbid"
@@ -49,11 +64,18 @@ needless_pass_by_value   = "allow"
 
 # Consolidated MSRV-driven pins (all relax when MSRV moves past 1.85 / edition2024):
 #
-#   * indexmap 2.14+ requires edition2024; Cargo.lock pins indexmap to 2.13 via
-#     `cargo update -p indexmap --precise 2.13.0`.
+#   * indexmap 2.14+ requires edition2024; Cargo.lock pins indexmap via
+#     `cargo update -p indexmap --precise 2.13.0` (lockfile is the source of
+#     truth; the resolver may currently sit at an older 2.x).
 #   * time 0.3.37+ pulls time-core 0.1.8 which requires edition2024; pinned to
 #     =0.3.36 above so the resolved time-core is 0.1.2.
+#   * idna_adapter 1.2+ requires edition2024 (rust-version 1.86); Cargo.lock
+#     pins it to 1.0.0 via `cargo update -p idna_adapter --precise 1.0.0`.
+#     Pulled transitively by hickory-proto via idna; without this pin, fresh
+#     checkouts fail to parse the manifest under cargo 1.77.
 #   * rcgen is patch-pinned to =0.13.2 not for MSRV but to convert silent
 #     additions to `rcgen::Error` (it is `#[non_exhaustive]` upstream) into a
 #     deliberate version bump that flips the `rcgen_error_detail_table_is_current`
 #     tripwire in yerd-tls. See plan §D7.
+#   * hickory-proto/server/client are patch-pinned to =0.24.4 for the same
+#     reason (`ProtoErrorKind`, `RData` are #[non_exhaustive] upstream).

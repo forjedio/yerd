@@ -1,0 +1,37 @@
+[package]
+name                   = "yerd-php"
+version                = "0.1.0"
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+publish.workspace      = true
+description            = "PHP-FPM pool supervision and version management for Yerd."
+
+[dependencies]
+yerd-core      = { path = "../yerd-core" }
+yerd-platform  = { path = "../yerd-platform" }
+thiserror      = { workspace = true }
+async-trait    = { workspace = true }
+serde          = { workspace = true }
+serde_json     = { workspace = true }
+tempfile       = { workspace = true }
+tokio          = { workspace = true, features = ["process", "net", "rt", "time", "io-util", "macros", "sync"] }
+
+[target.'cfg(unix)'.dependencies]
+nix            = { workspace = true }
+
+[dependencies.reqwest]
+workspace = true
+optional  = true
+
+[dev-dependencies]
+tokio          = { workspace = true, features = ["macros", "rt-multi-thread", "net", "sync", "time"] }
+tempfile       = { workspace = true }
+serde_json     = { workspace = true }
+
+[features]
+default  = []
+download = ["dep:reqwest"]
+
+[lints]
+workspace = true
