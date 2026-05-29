@@ -47,13 +47,28 @@ pub enum Response {
         /// SHA-256 fingerprint of the CA cert, 64 lowercase hex chars.
         ca_fingerprint: String,
     },
-    /// Reply to [`crate::Request::ListPhp`].
+    /// Reply to [`crate::Request::ListPhp`] / `CheckPhpUpdates` / `UpdatePhp`.
     PhpVersions {
         /// Installed versions, ascending.
         installed: Vec<PhpVersion>,
         /// The current global default.
         default: PhpVersion,
+        /// Installed minors with a newer patch available (from the daemon's
+        /// update cache). Empty when none / cache cold.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        updates: Vec<PhpUpdate>,
     },
+}
+
+/// An available newer patch for an installed PHP minor.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PhpUpdate {
+    /// The installed minor (e.g. `8.5`).
+    pub version: PhpVersion,
+    /// The installed patch (e.g. `"8.5.6"`).
+    pub installed: String,
+    /// The newest published patch (e.g. `"8.5.7"`).
+    pub latest: String,
 }
 
 /// Machine-readable error category for [`Response::Error`].
@@ -132,6 +147,7 @@ mod variant_name_pinning {
         pin_response(Response::PhpVersions {
             installed: vec![PhpVersion::new(8, 5)],
             default: PhpVersion::new(8, 5),
+            updates: vec![],
         });
         for c in [
             ErrorCode::NotFound,

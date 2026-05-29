@@ -19,6 +19,7 @@ pub mod error;
 pub mod ipc_server;
 pub mod mutate;
 pub mod php_install;
+pub mod php_updates;
 pub mod secure_fs;
 pub mod signals;
 pub mod single_instance;
@@ -104,11 +105,29 @@ async fn run_until_shutdown(
         shutdown_rx.clone(),
     ));
 
+    // Periodic PHP update checker: poll once at startup, then every 12h, until
+    // shutdown. Notify-only (logs available updates; never auto-installs).
+    let update_check_handle = {
+        let state = daemon.state.clone();
+        let mut rx = shutdown_rx.clone();
+        tokio::spawn(async move {
+            let dl = crate::php_install::ReqwestDownloader::new();
+            let mut tick = tokio::time::interval(Duration::from_secs(12 * 60 * 60));
+            loop {
+                tokio::select! {
+                    _ = tick.tick() => crate::php_updates::poll_and_refresh(&state, &dl).await,
+                    _ = rx.changed() => break,
+                }
+            }
+        })
+    };
+
     // Wait for any task to wind down — they all watch the same shutdown
     // channel, so they finish together once the signal fires.
     let _ = tokio::time::timeout(Duration::from_secs(10), dns_handle).await;
     let _ = tokio::time::timeout(Duration::from_secs(10), proxy_handle).await;
     let _ = tokio::time::timeout(Duration::from_secs(5), ipc_handle).await;
+    let _ = tokio::time::timeout(Duration::from_secs(5), update_check_handle).await;
 
     {
         let mut mgr = daemon.php_manager.lock().await;

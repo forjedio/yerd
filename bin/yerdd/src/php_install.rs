@@ -102,10 +102,36 @@ pub async fn install(
     fs_ctx(std::fs::rename(&staging, &final_dir), &final_dir)
 }
 
+/// Filename of the installed-patch marker inside a per-version dir.
+const VERSION_MARKER: &str = ".yerd-version";
+
 async fn stage(artifact: &Artifact, dl: &dyn Downloader, staging: &Path) -> Result<(), PhpError> {
     fetch_and_extract(dl, &artifact.cli_url, BinaryKind::Cli, staging).await?;
     fetch_and_extract(dl, &artifact.fpm_url, BinaryKind::Fpm, staging).await?;
+    // Record the exact patch *in the staging dir* so it lands atomically with
+    // the binaries on rename (update-checks read it back).
+    fs_ctx(std::fs::create_dir_all(staging), staging)?;
+    let marker = staging.join(VERSION_MARKER);
+    fs_ctx(std::fs::write(&marker, &artifact.full_version), &marker)?;
     Ok(())
+}
+
+/// The installed full patch version of `minor` (reads the `.yerd-version`
+/// marker), or `None` if not installed / unmarked.
+#[must_use]
+pub fn installed_patch(dirs: &PlatformDirs, minor: PhpVersion) -> Option<String> {
+    let marker = dirs
+        .data
+        .join("php")
+        .join(format!("php-{}.{}", minor.major, minor.minor))
+        .join(VERSION_MARKER);
+    let v = std::fs::read_to_string(marker).ok()?;
+    let v = v.trim().to_owned();
+    if v.is_empty() {
+        None
+    } else {
+        Some(v)
+    }
 }
 
 async fn fetch_and_extract(
@@ -372,6 +398,11 @@ mod tests {
         assert_eq!(
             std::fs::read(base.join("sbin").join("php-fpm")).unwrap(),
             b"FPM-BYTES"
+        );
+        // The version marker records the resolved patch (latest in the listing).
+        assert_eq!(
+            installed_patch(&dirs, PhpVersion::new(8, 5)).as_deref(),
+            Some("8.5.6")
         );
         #[cfg(unix)]
         {

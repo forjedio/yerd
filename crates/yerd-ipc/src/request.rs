@@ -70,6 +70,15 @@ pub enum Request {
     },
     /// List installed PHP versions and the current default.
     ListPhp,
+    /// Upgrade installed PHP to the latest published patch. `Some` = one minor,
+    /// `None` = every installed version.
+    UpdatePhp {
+        /// The minor to update, or `None` for all installed.
+        version: Option<PhpVersion>,
+    },
+    /// Force a poll of the distribution + refresh the update cache, then return
+    /// the (enriched) version list.
+    CheckPhpUpdates,
 }
 
 #[cfg(test)]
@@ -104,6 +113,8 @@ mod variant_name_pinning {
             Request::InstallPhp { .. } => {}
             Request::SetDefaultPhp { .. } => {}
             Request::ListPhp => {}
+            Request::UpdatePhp { .. } => {}
+            Request::CheckPhpUpdates => {}
         }
     }
 
@@ -135,5 +146,9 @@ mod variant_name_pinning {
             version: PhpVersion::new(8, 5),
         });
         pin(Request::ListPhp);
+        pin(Request::UpdatePhp {
+            version: Some(PhpVersion::new(8, 5)),
+        });
+        pin(Request::CheckPhpUpdates);
     }
 }

@@ -37,7 +37,7 @@ pub use error::{FrameError, IpcError, IpcErrorKind};
 pub use frame::{encode_frame, FrameDecoder, DEFAULT_MAX_FRAME};
 pub use message::{decode_message, encode_message};
 pub use request::Request;
-pub use response::{ErrorCode, Response};
+pub use response::{ErrorCode, PhpUpdate, Response};
 
 /// Re-exports of the shared types that travel on the wire. Consumers
 /// that need only the IPC surface should `use yerd_ipc::types::*;`

@@ -218,6 +218,22 @@ pub fn is_safe_member(name: &str) -> bool {
             .all(|c| matches!(c, Component::Normal(_) | Component::CurDir))
 }
 
+/// The patch component of a `"<maj>.<min>.<patch>"` version string.
+#[must_use]
+pub fn patch_of(full_version: &str) -> Option<u32> {
+    full_version.split('.').nth(2)?.parse().ok()
+}
+
+/// Whether `candidate` is a newer patch than `installed` (same major.minor
+/// assumed; malformed inputs → `false`).
+#[must_use]
+pub fn is_newer(installed_full: &str, candidate_full: &str) -> bool {
+    match (patch_of(installed_full), patch_of(candidate_full)) {
+        (Some(installed), Some(candidate)) => candidate > installed,
+        _ => false,
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::panic, clippy::indexing_slicing)]
 mod tests {
@@ -278,6 +294,17 @@ mod tests {
             }
             other => panic!("expected VersionUnavailable, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn is_newer_compares_patch() {
+        assert!(is_newer("8.5.6", "8.5.7"));
+        assert!(!is_newer("8.5.6", "8.5.6"));
+        assert!(!is_newer("8.5.7", "8.5.6"));
+        assert!(!is_newer("8.5", "8.5.7")); // malformed installed
+        assert!(!is_newer("8.5.6", "nope"));
+        assert_eq!(patch_of("8.5.6"), Some(6));
+        assert_eq!(patch_of("8.5"), None);
     }
 
     #[test]

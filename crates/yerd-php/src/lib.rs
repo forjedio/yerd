@@ -21,8 +21,8 @@ pub use manager::PhpManager;
 pub use pool::{PoolConfig, ProcessManagerMode};
 pub use real::{SystemClock, TokioChild, TokioProcessSpawner};
 pub use release::{
-    artifact_url, current_os_arch, is_safe_member, listing_url, resolve_from_listing, Arch,
-    Artifact, BinaryKind, Os,
+    artifact_url, current_os_arch, is_newer, is_safe_member, listing_url, patch_of,
+    resolve_from_listing, Arch, Artifact, BinaryKind, Os,
 };
 pub use traits::{ChildHandle, Clock, Downloader, HealthProbe, ProcessSpawner};
 pub use version::{discover_bundled, discover_mise};

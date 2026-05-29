@@ -8,11 +8,13 @@
 //! proxy and `ListSites` take a router *read* guard and never touch the config
 //! mutex, so there is no cross-lock cycle.
 
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, RwLock};
 
+use yerd_core::PhpVersion;
 use yerd_platform::{CaFingerprint, PlatformDirs};
 use yerd_proxy::SharedRouter;
 
@@ -36,4 +38,8 @@ pub struct DaemonState {
     pub ca_path: PathBuf,
     /// SHA-256 fingerprint of the CA cert (reported by `DaemonInfo`).
     pub ca_fingerprint: CaFingerprint,
+    /// Update cache: installed minor → newest full patch known from the last
+    /// distribution poll. Populated by the periodic checker / `CheckPhpUpdates`
+    /// and served (no network) on `ListPhp`.
+    pub php_updates: RwLock<HashMap<PhpVersion, String>>,
 }

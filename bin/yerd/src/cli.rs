@@ -59,6 +59,12 @@ pub enum Command {
         #[command(subcommand)]
         target: ListTarget,
     },
+    /// Upgrade an installed component to the latest release.
+    Update {
+        /// What to update.
+        #[command(subcommand)]
+        target: UpdateTarget,
+    },
     /// Serve a site over HTTPS (promotes a parked site to a linked entry).
     Secure {
         /// Site name.
@@ -97,7 +103,22 @@ pub enum InstallTarget {
 #[derive(clap::Subcommand, Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ListTarget {
     /// List installed PHP versions and the global default.
-    Php,
+    Php {
+        /// Poll the distribution now to refresh "update available" status
+        /// (otherwise served from the daemon's cache, no network).
+        #[arg(long)]
+        check: bool,
+    },
+}
+
+/// Target of `yerd update`.
+#[derive(clap::Subcommand, Debug, Clone)]
+pub enum UpdateTarget {
+    /// Update a PHP version (omit the version to update all installed).
+    Php {
+        /// PHP version, e.g. `8.5`; omit to update every installed version.
+        version: Option<String>,
+    },
 }
 
 /// A single privilege managed by `yerd elevate` / `yerd unelevate`.

@@ -132,6 +132,31 @@ fn request_list_php_byte_shape() {
     );
 }
 
+#[test]
+fn request_update_php_byte_shape() {
+    let some = Request::UpdatePhp {
+        version: Some(PhpVersion::new(8, 5)),
+    };
+    let s = serde_json::to_string(&some).unwrap();
+    assert_eq!(s, r#"{"type":"update_php","version":"8.5"}"#);
+    assert_eq!(serde_json::from_str::<Request>(&s).unwrap(), some);
+
+    let all = Request::UpdatePhp { version: None };
+    let s = serde_json::to_string(&all).unwrap();
+    assert_eq!(s, r#"{"type":"update_php","version":null}"#);
+    assert_eq!(serde_json::from_str::<Request>(&s).unwrap(), all);
+}
+
+#[test]
+fn request_check_php_updates_byte_shape() {
+    let s = serde_json::to_string(&Request::CheckPhpUpdates).unwrap();
+    assert_eq!(s, r#"{"type":"check_php_updates"}"#);
+    assert_eq!(
+        serde_json::from_str::<Request>(&s).unwrap(),
+        Request::CheckPhpUpdates
+    );
+}
+
 // ---------- Response ----------
 
 #[test]
@@ -207,14 +232,36 @@ fn response_info_byte_shape() {
 
 #[test]
 fn response_php_versions_byte_shape() {
+    // Empty `updates` is skipped on the wire → same bytes as before the field
+    // was added (the round-trip restores it to an empty Vec via `default`).
     let r = Response::PhpVersions {
         installed: vec![PhpVersion::new(8, 3), PhpVersion::new(8, 5)],
         default: PhpVersion::new(8, 5),
+        updates: vec![],
     };
     let s = serde_json::to_string(&r).unwrap();
     assert_eq!(
         s,
         r#"{"type":"php_versions","installed":["8.3","8.5"],"default":"8.5"}"#
+    );
+    assert_eq!(serde_json::from_str::<Response>(&s).unwrap(), r);
+}
+
+#[test]
+fn response_php_versions_with_updates_byte_shape() {
+    let r = Response::PhpVersions {
+        installed: vec![PhpVersion::new(8, 5)],
+        default: PhpVersion::new(8, 5),
+        updates: vec![yerd_ipc::PhpUpdate {
+            version: PhpVersion::new(8, 5),
+            installed: "8.5.6".into(),
+            latest: "8.5.7".into(),
+        }],
+    };
+    let s = serde_json::to_string(&r).unwrap();
+    assert_eq!(
+        s,
+        r#"{"type":"php_versions","installed":["8.5"],"default":"8.5","updates":[{"version":"8.5","installed":"8.5.6","latest":"8.5.7"}]}"#
     );
     assert_eq!(serde_json::from_str::<Response>(&s).unwrap(), r);
 }

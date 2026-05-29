@@ -183,6 +183,7 @@ pub async fn bring_up_with_dirs(
         dns_addr,
         ca_path,
         ca_fingerprint,
+        php_updates: tokio::sync::RwLock::new(std::collections::HashMap::new()),
     });
 
     Ok(Daemon {

@@ -52,8 +52,19 @@ pub fn to_request(cmd: &Command) -> Result<Request, ClientError> {
             version: parse_php(version)?,
         },
         Command::List {
-            target: crate::cli::ListTarget::Php,
-        } => Request::ListPhp,
+            target: crate::cli::ListTarget::Php { check },
+        } => {
+            if *check {
+                Request::CheckPhpUpdates
+            } else {
+                Request::ListPhp
+            }
+        }
+        Command::Update {
+            target: crate::cli::UpdateTarget::Php { version },
+        } => Request::UpdatePhp {
+            version: version.as_deref().map(parse_php).transpose()?,
+        },
         Command::Secure { name } => {
             validate_name(name)?;
             Request::SetSecure {
@@ -140,9 +151,11 @@ pub fn render(resp: &Response, json: bool) -> Rendered {
         Response::Pong => Rendered::ok("pong".to_owned()),
         Response::Ok => Rendered::ok("ok".to_owned()),
         Response::Sites { sites } => Rendered::ok(format_sites(sites)),
-        Response::PhpVersions { installed, default } => {
-            Rendered::ok(format_php_versions(installed, *default))
-        }
+        Response::PhpVersions {
+            installed,
+            default,
+            updates,
+        } => Rendered::ok(format_php_versions(installed, *default, updates)),
         Response::Error { code, message } => Rendered::err(format!("error ({code:?}): {message}")),
         // `Response` is `#[non_exhaustive]`; a future variant from a newer
         // daemon is surfaced benignly rather than panicking.
@@ -172,7 +185,11 @@ fn format_sites(sites: &[Site]) -> String {
     out
 }
 
-fn format_php_versions(installed: &[PhpVersion], default: PhpVersion) -> String {
+fn format_php_versions(
+    installed: &[PhpVersion],
+    default: PhpVersion,
+    updates: &[yerd_ipc::PhpUpdate],
+) -> String {
     if installed.is_empty() {
         return format!(
             "no PHP versions installed (default: {default}) — `yerd install php {default}`"
@@ -181,11 +198,18 @@ fn format_php_versions(installed: &[PhpVersion], default: PhpVersion) -> String 
     installed
         .iter()
         .map(|v| {
-            if *v == default {
+            let mut line = if *v == default {
                 format!("{v} (default)")
             } else {
                 v.to_string()
+            };
+            if let Some(u) = updates.iter().find(|u| u.version == *v) {
+                line.push_str(&format!(
+                    " — update available: {} → {}",
+                    u.installed, u.latest
+                ));
             }
+            line
         })
         .collect::<Vec<_>>()
         .join("\n")
@@ -204,6 +228,7 @@ mod tests {
     use yerd_ipc::ErrorCode;
 
     #[test]
+    #[allow(clippy::too_many_lines)] // one assertion per command — naturally long
     fn maps_each_command_to_its_request() {
         assert_eq!(to_request(&Command::Ping).unwrap(), Request::Ping);
         assert_eq!(to_request(&Command::Sites).unwrap(), Request::ListSites);
@@ -268,10 +293,36 @@ mod tests {
         );
         assert_eq!(
             to_request(&Command::List {
-                target: crate::cli::ListTarget::Php
+                target: crate::cli::ListTarget::Php { check: false }
             })
             .unwrap(),
             Request::ListPhp
+        );
+        assert_eq!(
+            to_request(&Command::List {
+                target: crate::cli::ListTarget::Php { check: true }
+            })
+            .unwrap(),
+            Request::CheckPhpUpdates
+        );
+        // `update php` / `update php <ver>`.
+        assert_eq!(
+            to_request(&Command::Update {
+                target: crate::cli::UpdateTarget::Php { version: None }
+            })
+            .unwrap(),
+            Request::UpdatePhp { version: None }
+        );
+        assert_eq!(
+            to_request(&Command::Update {
+                target: crate::cli::UpdateTarget::Php {
+                    version: Some("8.5".into())
+                }
+            })
+            .unwrap(),
+            Request::UpdatePhp {
+                version: Some(PhpVersion::new(8, 5))
+            }
         );
         // `secure`/`unsecure` map to SetSecure with the matching flag.
         assert_eq!(
@@ -363,18 +414,26 @@ mod tests {
             &Response::PhpVersions {
                 installed: vec![PhpVersion::new(8, 3), PhpVersion::new(8, 5)],
                 default: PhpVersion::new(8, 5),
+                updates: vec![yerd_ipc::PhpUpdate {
+                    version: PhpVersion::new(8, 3),
+                    installed: "8.3.6".into(),
+                    latest: "8.3.31".into(),
+                }],
             },
             false,
         );
         assert_eq!(r.code, 0);
-        assert!(r.stdout.contains("8.3"));
         assert!(r.stdout.contains("8.5 (default)"));
         assert!(!r.stdout.contains("8.3 (default)"));
+        // The 8.3 line carries the update annotation; 8.5 does not.
+        assert!(r.stdout.contains("8.3 — update available: 8.3.6 → 8.3.31"));
+        assert!(!r.stdout.contains("8.5 — update available"));
 
         let empty = render(
             &Response::PhpVersions {
                 installed: vec![],
                 default: PhpVersion::new(8, 3),
+                updates: vec![],
             },
             false,
         );
