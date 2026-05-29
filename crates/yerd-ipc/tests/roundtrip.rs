@@ -49,12 +49,19 @@ fn encode_then_decode_request_roundtrip() {
         name: "foo".into(),
         secure: true,
     });
+    assert_request_roundtrips(Request::DaemonInfo);
 }
 
 #[test]
 fn encode_then_decode_response_roundtrip() {
     assert_response_roundtrips(Response::Pong);
     assert_response_roundtrips(Response::Ok);
+    assert_response_roundtrips(Response::Info {
+        dns_addr: "127.0.0.1:1053".parse().unwrap(),
+        tld: "test".into(),
+        ca_path: PathBuf::from("/x/ca.cert.pem"),
+        ca_fingerprint: "ab".repeat(32),
+    });
     assert_response_roundtrips(Response::Sites { sites: vec![] });
     let site = Site::parked("foo", "/srv/foo", PhpVersion::new(8, 3)).unwrap();
     assert_response_roundtrips(Response::Sites {

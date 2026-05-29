@@ -20,6 +20,11 @@ pub struct Config {
     pub(crate) version: u32,
     /// TLD served by Yerd's resolver. Default: `"test"`.
     pub tld: Tld,
+    /// Loopback UDP/TCP port for the embedded `.test` DNS responder. Default:
+    /// [`DEFAULT_DNS_PORT`]. A fixed port (rather than ephemeral) keeps the
+    /// resolver config installed by `yerd elevate resolver` valid across daemon
+    /// restarts. `0` means "ephemeral" (dev/tests only — not durable).
+    pub dns_port: u16,
     /// HTTP / HTTPS listen ports.
     pub ports: Ports,
     /// PHP defaults.
@@ -37,6 +42,7 @@ impl Default for Config {
         Self {
             version: crate::CURRENT_VERSION,
             tld: Tld::default(),
+            dns_port: DEFAULT_DNS_PORT,
             ports: Ports::default(),
             php: PhpSection::default(),
             parked: ParkedSection::default(),
@@ -88,6 +94,9 @@ impl Config {
         crate::io::save(self, path)
     }
 }
+
+/// Default loopback port for the embedded DNS responder (see [`Config::dns_port`]).
+pub const DEFAULT_DNS_PORT: u16 = 1053;
 
 /// HTTP and HTTPS ports.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

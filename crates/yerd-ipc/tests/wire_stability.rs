@@ -94,6 +94,14 @@ fn request_set_secure_byte_shape() {
     assert_eq!(back, r);
 }
 
+#[test]
+fn request_daemon_info_byte_shape() {
+    let s = serde_json::to_string(&Request::DaemonInfo).unwrap();
+    assert_eq!(s, r#"{"type":"daemon_info"}"#);
+    let back: Request = serde_json::from_str(&s).unwrap();
+    assert_eq!(back, Request::DaemonInfo);
+}
+
 // ---------- Response ----------
 
 #[test]
@@ -144,6 +152,24 @@ fn response_sites_two_byte_shape() {
     };
     let s = serde_json::to_string(&r).unwrap();
     let expected = r#"{"type":"sites","sites":[{"name":"alpha","document_root":"/srv/alpha","php":"8.3","secure":false,"kind":"parked"},{"name":"beta","document_root":"/srv/beta","php":"7.4","secure":true,"kind":"linked"}]}"#;
+    assert_eq!(s, expected);
+    let back: Response = serde_json::from_str(&s).unwrap();
+    assert_eq!(back, r);
+}
+
+#[test]
+fn response_info_byte_shape() {
+    let r = Response::Info {
+        dns_addr: "127.0.0.1:1053".parse().unwrap(),
+        tld: "test".into(),
+        ca_path: std::path::PathBuf::from("/home/u/.local/share/yerd/ca.cert.pem"),
+        ca_fingerprint: "ab".repeat(32),
+    };
+    let s = serde_json::to_string(&r).unwrap();
+    let expected = format!(
+        r#"{{"type":"info","dns_addr":"127.0.0.1:1053","tld":"test","ca_path":"/home/u/.local/share/yerd/ca.cert.pem","ca_fingerprint":"{}"}}"#,
+        "ab".repeat(32)
+    );
     assert_eq!(s, expected);
     let back: Response = serde_json::from_str(&s).unwrap();
     assert_eq!(back, r);

@@ -35,7 +35,29 @@ impl CaFingerprint {
     pub fn to_hex(&self) -> String {
         hex::encode(self.0)
     }
+
+    /// Parse exactly 64 **lowercase** hex characters into a fingerprint — the
+    /// inverse of [`Self::to_hex`]. Uppercase, wrong length, or non-hex input
+    /// is rejected; this is the canonical wire form, so the strict lowercase
+    /// rule keeps it byte-stable.
+    pub fn from_hex(s: &str) -> Result<Self, FingerprintParseError> {
+        if s.len() != 64
+            || s.chars()
+                .any(|c| !c.is_ascii_hexdigit() || c.is_ascii_uppercase())
+        {
+            return Err(FingerprintParseError);
+        }
+        let bytes = hex::decode(s).map_err(|_| FingerprintParseError)?;
+        let arr: [u8; 32] = bytes.try_into().map_err(|_| FingerprintParseError)?;
+        Ok(Self(arr))
+    }
 }
+
+/// A string was not 64 lowercase hex characters (the canonical [`CaFingerprint`]
+/// wire form).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("invalid CA fingerprint: expected 64 lowercase hex characters")]
+pub struct FingerprintParseError;
 
 /// Outcome of [`TrustStore::install_firefox_nss`].
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -128,6 +150,23 @@ mod tests {
         let bytes = [7u8; 32];
         let fp = CaFingerprint::new(bytes);
         assert_eq!(fp.as_bytes(), &bytes);
+    }
+
+    #[test]
+    fn fingerprint_from_hex_round_trips_to_hex() {
+        let fp = CaFingerprint::new([0xAB; 32]);
+        assert_eq!(CaFingerprint::from_hex(&fp.to_hex()).unwrap(), fp);
+    }
+
+    #[test]
+    fn fingerprint_from_hex_rejects_malformed() {
+        // wrong length
+        assert!(CaFingerprint::from_hex("ab").is_err());
+        assert!(CaFingerprint::from_hex(&"ab".repeat(33)).is_err());
+        // uppercase (canonical form is lowercase)
+        assert!(CaFingerprint::from_hex(&"AB".repeat(32)).is_err());
+        // non-hex
+        assert!(CaFingerprint::from_hex(&"zz".repeat(32)).is_err());
     }
 
     #[test]

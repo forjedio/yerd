@@ -17,4 +17,7 @@ pub enum ClientError {
     /// Resolving the runtime/socket directory failed.
     #[error("platform: {0}")]
     Platform(#[from] yerd_platform::PlatformError),
+    /// The daemon reported a malformed CA fingerprint (used by `elevate`).
+    #[error("{0}")]
+    Fingerprint(#[from] yerd_platform::FingerprintParseError),
 }

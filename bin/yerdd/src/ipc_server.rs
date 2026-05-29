@@ -75,6 +75,12 @@ async fn dispatch(req: Request, state: &DaemonState) -> Response {
         Request::ListSites => Response::Sites {
             sites: state.router.read().await.iter().cloned().collect(),
         },
+        Request::DaemonInfo => Response::Info {
+            dns_addr: state.dns_addr,
+            tld: state.config.lock().await.tld.as_str().to_owned(),
+            ca_path: state.ca_path.clone(),
+            ca_fingerprint: state.ca_fingerprint.to_hex(),
+        },
         Request::Park { .. }
         | Request::Link { .. }
         | Request::Unlink { .. }
@@ -209,12 +215,16 @@ mod tests {
     fn state_in(tmp: &Path) -> DaemonState {
         let dirs = dirs_in(tmp);
         let router = SiteRouter::new(RouterConfig::with_tld(Tld::new("test").unwrap()));
+        let ca_path = dirs.data.join("ca.cert.pem");
         DaemonState {
             config: Mutex::new(yerd_config::Config::default()),
             router: Arc::new(RwLock::new(router)),
             config_path: dirs.config.join("yerd.toml"),
             dirs,
             default_php: PhpVersion::new(8, 3),
+            dns_addr: "127.0.0.1:1053".parse().unwrap(),
+            ca_path,
+            ca_fingerprint: yerd_platform::CaFingerprint::new([0u8; 32]),
         }
     }
 
@@ -405,6 +415,28 @@ mod tests {
                 assert!(!blog.secure());
             }
             other => panic!("expected Sites, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn dispatch_daemon_info_reports_runtime_facts() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_in(tmp.path());
+        match dispatch(Request::DaemonInfo, &state).await {
+            Response::Info {
+                dns_addr,
+                tld,
+                ca_path,
+                ca_fingerprint,
+            } => {
+                assert_eq!(dns_addr, state.dns_addr);
+                assert_eq!(tld, "test");
+                assert_eq!(ca_path, state.ca_path);
+                // 64 lowercase hex chars; matches the stored fingerprint.
+                assert_eq!(ca_fingerprint, state.ca_fingerprint.to_hex());
+                assert_eq!(ca_fingerprint.len(), 64);
+            }
+            other => panic!("expected Info, got {other:?}"),
         }
     }
 }

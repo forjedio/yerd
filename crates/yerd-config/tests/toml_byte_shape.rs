@@ -40,6 +40,31 @@ fn default_config_starts_with_version_line() {
 }
 
 #[test]
+fn default_config_emits_dns_port_scalar_before_tables() {
+    let s = Config::default().to_toml().unwrap();
+    // Default is the fixed loopback DNS port, emitted as a top-level scalar
+    // (before any `[section]` table).
+    assert!(
+        s.contains("dns_port = 1053\n"),
+        "expected `dns_port = 1053` scalar; got: {s}"
+    );
+    let dns_at = s.find("dns_port = ").expect("dns_port present");
+    let first_table = s.find("\n[").expect("at least one table");
+    assert!(dns_at < first_table, "dns_port must precede tables in: {s}");
+    // And it round-trips.
+    let back = Config::from_toml(&s).unwrap();
+    assert_eq!(back.dns_port, 1053);
+}
+
+#[test]
+fn dns_port_zero_round_trips() {
+    let mut c = Config::default();
+    c.dns_port = 0;
+    let back = Config::from_toml(&c.to_toml().unwrap()).unwrap();
+    assert_eq!(back.dns_port, 0);
+}
+
+#[test]
 fn default_config_contains_each_section_header() {
     let s = Config::default().to_toml().unwrap();
     for header in ["\n[ports]\n", "\n[php]\n", "\n[parked]\n", "\n[services]\n"] {

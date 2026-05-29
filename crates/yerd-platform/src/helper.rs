@@ -196,17 +196,7 @@ fn require_utf8(value: &OsStr, flag: &'static str) -> Result<String, ArgvParseEr
 
 fn parse_fingerprint(value: &OsStr) -> Result<CaFingerprint, ArgvParseError> {
     let s = value.to_str().ok_or(ArgvParseError::BadFingerprint)?;
-    if s.len() != 64
-        || s.chars()
-            .any(|c| !c.is_ascii_hexdigit() || c.is_ascii_uppercase())
-    {
-        return Err(ArgvParseError::BadFingerprint);
-    }
-    let bytes = hex::decode(s).map_err(|_| ArgvParseError::BadFingerprint)?;
-    let arr: [u8; 32] = bytes
-        .try_into()
-        .map_err(|_| ArgvParseError::BadFingerprint)?;
-    Ok(CaFingerprint::new(arr))
+    CaFingerprint::from_hex(s).map_err(|_| ArgvParseError::BadFingerprint)
 }
 
 fn parse_install_ca(rest: &[OsString]) -> Result<HelperInvocation, ArgvParseError> {

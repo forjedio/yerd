@@ -11,8 +11,9 @@
 //! `yerd-platform` is unprivileged library code. Operations that need root
 //! return [`PlatformError::NeedsHelper`]. The typed [`HelperInvocation`]
 //! enum carries the request to the `yerd-helper` binary (a separate crate)
-//! for execution. The OS impls never spawn the helper themselves — the
-//! daemon owns the `Command::new(...)` call.
+//! for execution. The OS impls never spawn the helper themselves — a
+//! privileged caller owns the `Command::new(...)` call: the daemon for its
+//! own setup, or the `yerd elevate` CLI when run under `sudo`.
 //!
 //! ## Purity
 //!
@@ -36,6 +37,6 @@ pub use helper::{ArgvParseError, HelperInvocation};
 pub use paths::{Paths, PlatformDirs};
 pub use port_binder::{BoundPort, PortBinder, PortPair};
 pub use resolver::ResolverInstaller;
-pub use trust_store::{CaFingerprint, NssFailure, NssOutcome, TrustStore};
+pub use trust_store::{CaFingerprint, FingerprintParseError, NssFailure, NssOutcome, TrustStore};
 
 pub use os::active::{ActivePaths, ActivePortBinder, ActiveResolverInstaller, ActiveTrustStore};

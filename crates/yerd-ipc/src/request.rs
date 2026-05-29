@@ -55,6 +55,9 @@ pub enum Request {
         /// The desired HTTPS state.
         secure: bool,
     },
+    /// Fetch read-only daemon runtime facts (DNS address, TLD, CA path +
+    /// fingerprint). Used by `yerd elevate` to drive the privileged helper.
+    DaemonInfo,
 }
 
 #[cfg(test)]
@@ -85,6 +88,7 @@ mod variant_name_pinning {
             Request::Unlink { .. } => {}
             Request::SetPhp { .. } => {}
             Request::SetSecure { .. } => {}
+            Request::DaemonInfo => {}
         }
     }
 
@@ -108,5 +112,6 @@ mod variant_name_pinning {
             name: "x".into(),
             secure: true,
         });
+        pin(Request::DaemonInfo);
     }
 }

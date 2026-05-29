@@ -205,7 +205,9 @@ Order matters — each crate is built against the contracts of the one beneath i
 10. `bin/yerdd` — wire 1–9 together; IPC server transport.
 11. `bin/yerd` ✅ — `ping` / `sites` / `park` / `link` / `unlink` / `use` / `secure` / `unsecure` against the daemon, with `--json`. Maps each command to one `yerd-ipc` request; the daemon's IPC dispatch handles the mutations (config + live router) end-to-end. `secure`/`unsecure` flip a site's HTTPS flag via the `SetSecure` request; certs are minted lazily by the proxy's cert store on the TLS handshake, so no mutation-time TLS wiring is needed.
 
-Phase-1 follow-ups (deferred): CLI daemon auto-start; a deterministic Windows pipe name (`yerd-<user>`) so the Windows IPC client can land.
+12. `bin/yerd elevate` ✅ — one-shot privileged setup, run via `sudo`: `elevate trust` (trust the local CA in the OS system store), `elevate resolver` (route `*.test` to the daemon's DNS responder), `elevate ports` (`setcap cap_net_bind_service` so the daemon can bind 80/443), and bare `elevate` for all three; `unelevate` reverts. Runs the CLI as root only to orchestrate — it fetches read-only facts from the running daemon (`DaemonInfo` over the user's socket) and spawns the audited `yerd-helper` per op. The DNS responder now binds a **fixed** `dns_port` (default 1053) so an installed resolver config survives daemon restarts.
+
+Phase-1 follow-ups (deferred): Firefox/NSS CA trust (system store only for now); CLI daemon auto-start; a deterministic Windows pipe name (`yerd-<user>`) so the Windows IPC client can land.
 
 **Phase 2 — v1.**
 12. `apps/yerd-gui` — tray-first Tauri UI over IPC.

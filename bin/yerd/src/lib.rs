@@ -9,6 +9,7 @@
 #![forbid(unsafe_code)]
 
 pub mod cli;
+pub mod elevate;
 pub mod error;
 pub mod map;
 pub mod transport;
@@ -17,13 +18,21 @@ use std::process::ExitCode;
 
 pub use error::ClientError;
 
-use cli::Cli;
+use cli::{Cli, Command};
 
 /// Map the parsed command to a request, exchange it with the daemon, and
 /// render the response. Returns the process exit code:
 /// `0` success, `1` daemon error response, `2` usage error, `69` daemon
 /// unreachable, `74` other transport/IO failure.
 pub async fn run(cli: Cli) -> ExitCode {
+    // `elevate`/`unelevate` do local privileged orchestration (spawn the
+    // helper), not a single IPC round-trip — branch before the IPC path.
+    match &cli.command {
+        Command::Elevate { target } => return elevate::run_elevate(*target, false).await,
+        Command::Unelevate { target } => return elevate::run_elevate(*target, true).await,
+        _ => {}
+    }
+
     let req = match map::to_request(&cli.command) {
         Ok(r) => r,
         Err(e) => {

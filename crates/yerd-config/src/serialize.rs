@@ -17,6 +17,8 @@ struct WireSer<'a> {
     // Pinned by tests/toml_byte_shape.rs::default_config_starts_with_version_line.
     version: u32,
     tld: &'a yerd_core::Tld,
+    // Scalar — must stay above the sub-tables (TOML emits scalars before tables).
+    dns_port: u16,
     ports: PortsSer<'a>,
     php: PhpSectionSer<'a>,
     parked: ParkedSectionSer<'a>,
@@ -49,6 +51,7 @@ pub(crate) fn to_toml(c: &Config) -> Result<String, ConfigError> {
     let w = WireSer {
         version: CURRENT_VERSION,
         tld: &c.tld,
+        dns_port: c.dns_port,
         ports: PortsSer {
             http: &c.ports.http,
             https: &c.ports.https,

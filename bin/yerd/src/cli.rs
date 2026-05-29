@@ -55,4 +55,27 @@ pub enum Command {
         /// Site name.
         name: String,
     },
+    /// Grant yerd OS-level privileges (run via `sudo`). No subcommand = all.
+    Elevate {
+        /// Which privilege to grant; omit to grant all.
+        #[command(subcommand)]
+        target: Option<ElevateTarget>,
+    },
+    /// Revert what `elevate` configured (run via `sudo`). No subcommand = all.
+    Unelevate {
+        /// Which privilege to revert; omit to revert all.
+        #[command(subcommand)]
+        target: Option<ElevateTarget>,
+    },
+}
+
+/// A single privilege managed by `yerd elevate` / `yerd unelevate`.
+#[derive(clap::Subcommand, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ElevateTarget {
+    /// Trust the local CA in the OS system store.
+    Trust,
+    /// Route `*.<tld>` queries to yerd's DNS responder.
+    Resolver,
+    /// Allow the daemon to bind privileged ports 80/443 (setcap).
+    Ports,
 }

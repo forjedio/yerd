@@ -22,7 +22,7 @@ mod schema;
 mod serialize;
 
 pub use error::{ConfigError, MigrationErrorReason, ValidateErrorReason};
-pub use schema::{Config, ParkedSection, PhpSection, Ports, ServicesSection};
+pub use schema::{Config, ParkedSection, PhpSection, Ports, ServicesSection, DEFAULT_DNS_PORT};
 
 /// The on-disk schema version this crate writes. Bumped together with a new
 /// entry in `migrate::STEPS`.

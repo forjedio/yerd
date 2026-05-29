@@ -50,6 +50,15 @@ pub fn to_request(cmd: &Command) -> Result<Request, ClientError> {
                 secure: false,
             }
         }
+        // `elevate`/`unelevate` are handled locally in `crate::elevate` (they
+        // spawn the privileged helper), never mapped to a single IPC request.
+        // `run` branches before calling `to_request`; these arms keep the match
+        // total.
+        Command::Elevate { .. } | Command::Unelevate { .. } => {
+            return Err(ClientError::Usage(
+                "elevate/unelevate are handled locally, not over IPC".to_owned(),
+            ));
+        }
     })
 }
 

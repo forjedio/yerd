@@ -23,6 +23,8 @@ struct Wire {
     version: u32,
     #[serde(default = "default_tld_str")]
     tld: String,
+    #[serde(default = "default_dns_port")]
+    dns_port: u16,
     #[serde(default)]
     ports: PortsWire,
     #[serde(default)]
@@ -94,6 +96,10 @@ fn default_tld_str() -> String {
     yerd_core::Tld::default().as_str().to_owned()
 }
 
+fn default_dns_port() -> u16 {
+    crate::schema::DEFAULT_DNS_PORT
+}
+
 pub(crate) fn parse_toml(s: &str) -> Result<Config, ConfigError> {
     let mut value: toml::Value = toml::from_str(s)?;
     let found = crate::migrate::read_version(&value)?;
@@ -155,6 +161,7 @@ impl TryFrom<Wire> for Config {
         Ok(Config {
             version: crate::CURRENT_VERSION,
             tld,
+            dns_port: w.dns_port,
             ports,
             php,
             parked,

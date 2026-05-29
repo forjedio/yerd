@@ -45,6 +45,7 @@ mod tests {
         let mut cfg = yerd_config::Config::default();
         cfg.ports.http = pa;
         cfg.ports.https = pb;
+        cfg.dns_port = 0; // ephemeral DNS — avoid colliding on the fixed default across tests
         cfg
     }
 

@@ -8,12 +8,13 @@
 //! proxy and `ListSites` take a router *read* guard and never touch the config
 //! mutex, so there is no cross-lock cycle.
 
+use std::net::SocketAddr;
 use std::path::PathBuf;
 
 use tokio::sync::Mutex;
 
 use yerd_core::PhpVersion;
-use yerd_platform::PlatformDirs;
+use yerd_platform::{CaFingerprint, PlatformDirs};
 use yerd_proxy::SharedRouter;
 
 /// Everything the IPC dispatch and proxy share at runtime.
@@ -31,4 +32,11 @@ pub struct DaemonState {
     pub config_path: PathBuf,
     /// Default PHP version for newly linked sites.
     pub default_php: PhpVersion,
+    /// Address the embedded DNS responder is bound on (reported by `DaemonInfo`
+    /// so `yerd elevate resolver` can route `.test` here).
+    pub dns_addr: SocketAddr,
+    /// Absolute path to the local CA certificate PEM (reported by `DaemonInfo`).
+    pub ca_path: PathBuf,
+    /// SHA-256 fingerprint of the CA cert (reported by `DaemonInfo`).
+    pub ca_fingerprint: CaFingerprint,
 }

@@ -3,6 +3,9 @@
 //! Internally tagged on `type`, `snake_case`. Wire-stability assertions
 //! live in `tests/wire_stability.rs`.
 
+use std::net::SocketAddr;
+use std::path::PathBuf;
+
 use serde::{Deserialize, Serialize};
 use yerd_core::Site;
 
@@ -32,6 +35,17 @@ pub enum Response {
         code: ErrorCode,
         /// Human-readable error message.
         message: String,
+    },
+    /// Reply to [`crate::Request::DaemonInfo`] — read-only runtime facts.
+    Info {
+        /// Address the embedded DNS responder is bound on (`127.0.0.1:<port>`).
+        dns_addr: SocketAddr,
+        /// The TLD served (e.g. `"test"`).
+        tld: String,
+        /// Absolute path to the local CA certificate PEM.
+        ca_path: PathBuf,
+        /// SHA-256 fingerprint of the CA cert, 64 lowercase hex chars.
+        ca_fingerprint: String,
     },
 }
 
@@ -78,6 +92,7 @@ mod variant_name_pinning {
             Response::Sites { .. } => {}
             Response::Ok => {}
             Response::Error { .. } => {}
+            Response::Info { .. } => {}
         }
     }
 
@@ -99,6 +114,12 @@ mod variant_name_pinning {
         pin_response(Response::Error {
             code: ErrorCode::Internal,
             message: "x".into(),
+        });
+        pin_response(Response::Info {
+            dns_addr: "127.0.0.1:1053".parse().unwrap(),
+            tld: "test".into(),
+            ca_path: PathBuf::from("/x/ca.cert.pem"),
+            ca_fingerprint: "ab".repeat(32),
         });
         for c in [
             ErrorCode::NotFound,

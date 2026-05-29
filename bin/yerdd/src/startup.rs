@@ -23,17 +23,16 @@ use crate::error::DaemonError;
 use crate::single_instance::InstanceLock;
 use crate::state::DaemonState;
 
-/// Requested bind address for the embedded DNS server.
+/// Loopback IP the embedded DNS responder binds on. The port comes from
+/// [`yerd_config::Config::dns_port`] (default [`yerd_config::DEFAULT_DNS_PORT`],
+/// not the mDNS-contended `5353`).
 ///
-/// Port `0` = ephemeral. We deliberately do **not** ask for the canonical
-/// `5353`: that port is held by mDNS (Avahi on Linux, mDNSResponder/Bonjour
-/// on macOS) on virtually every desktop, so a fixed bind crashes the daemon
-/// on first launch. The kernel-assigned port is read back via
-/// [`yerd_dns::Bound::local_addr`] and stored on [`Daemon::dns_addr`]; the
-/// (post-MVP) resolver installer will point `.test` queries at that port.
-/// Nothing routes DNS to us yet, so the only thing a fixed port would buy
-/// today is the crash.
-pub const DNS_ADDR: SocketAddr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0);
+/// A **fixed** port (rather than ephemeral) is required so the resolver config
+/// written by `yerd elevate resolver` — which hard-codes `DNS=127.0.0.1:<port>` —
+/// stays valid across daemon restarts. `dns_port = 0` still means ephemeral
+/// (dev/tests only); the kernel-assigned port is read back via
+/// [`yerd_dns::Bound::local_addr`] and stored on [`Daemon::dns_addr`].
+pub const DNS_IP: IpAddr = IpAddr::V4(Ipv4Addr::LOCALHOST);
 
 /// Everything `run()` needs to start the daemon's tasks.
 pub struct Daemon {
@@ -108,8 +107,11 @@ pub async fn bring_up_with_dirs(
         tracing::warn!("no PHP versions discovered — bundled scan empty and mise unavailable");
     }
 
-    // Load or generate the CA.
+    // Load or generate the CA. Capture its path + fingerprint *before* `ca`
+    // is moved into the cert store — `yerd elevate trust` needs both.
     let ca = load_or_generate_ca(&dirs)?;
+    let ca_path = dirs.data.join("ca.cert.pem");
+    let ca_fingerprint = yerd_platform::CaFingerprint::new(ca.fingerprint_sha256());
 
     let cert_store = Arc::new(DaemonCertStore::new(ca, dirs.data.join("leaves")));
 
@@ -161,14 +163,18 @@ pub async fn bring_up_with_dirs(
     let ipc_listener = build_ipc_listener(&dirs)?;
 
     // Bind DNS up front (like the HTTP/HTTPS listeners) so the daemon owns the
-    // sockets and we can report the real, kernel-assigned port. See `DNS_ADDR`
-    // for why this is ephemeral rather than 5353.
-    let dns_bound = yerd_dns::Bound::bind(DNS_ADDR).await?;
+    // sockets. Uses the fixed configured port (see `DNS_IP`) so an installed
+    // resolver config keeps pointing at us across restarts.
+    let dns_want = SocketAddr::new(DNS_IP, config.dns_port);
+    let dns_bound = yerd_dns::Bound::bind(dns_want).await.map_err(|e| {
+        tracing::error!(
+            dns = %dns_want,
+            "failed to bind DNS responder; another process may hold dns_port — change `dns_port` in yerd.toml or free the port"
+        );
+        e
+    })?;
     let dns_addr = dns_bound.local_addr();
-    tracing::info!(
-        dns = %dns_addr,
-        "DNS responder bound on an ephemeral port; .test resolution is inert until a resolver installer routes queries here (post-MVP)"
-    );
+    tracing::info!(dns = %dns_addr, "DNS responder bound");
 
     let state = Arc::new(DaemonState {
         config: Mutex::new(config),
@@ -176,6 +182,9 @@ pub async fn bring_up_with_dirs(
         dirs: dirs.clone(),
         config_path: config_path.clone(),
         default_php,
+        dns_addr,
+        ca_path,
+        ca_fingerprint,
     });
 
     Ok(Daemon {
