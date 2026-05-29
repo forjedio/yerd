@@ -180,7 +180,7 @@ async fn proxy_forwards_to_fcgi_backend() {
     let mut router = SiteRouter::new(cfg);
     let site = Site::linked("app", PathBuf::from("/srv/www/app"), PhpVersion::new(8, 3)).unwrap();
     router.insert(site).unwrap();
-    let router = Arc::new(router);
+    let router = Arc::new(tokio::sync::RwLock::new(router));
 
     // 4. Resolver.
     let resolver = Arc::new(StaticResolver {
@@ -246,7 +246,7 @@ async fn unknown_host_returns_404() {
 
     let tld = Tld::new("test").unwrap();
     let cfg = RouterConfig::with_tld(tld);
-    let router = Arc::new(SiteRouter::new(cfg));
+    let router = Arc::new(tokio::sync::RwLock::new(SiteRouter::new(cfg)));
     let resolver = Arc::new(StaticResolver {
         backend: Backend::PhpFpmTcp {
             addr: "127.0.0.1:1".parse().unwrap(),
@@ -280,7 +280,7 @@ async fn missing_host_header_returns_400() {
     let proxy_addr = proxy_listener.local_addr().unwrap();
     let tld = Tld::new("test").unwrap();
     let cfg = RouterConfig::with_tld(tld);
-    let router = Arc::new(SiteRouter::new(cfg));
+    let router = Arc::new(tokio::sync::RwLock::new(SiteRouter::new(cfg)));
     let resolver = Arc::new(StaticResolver {
         backend: Backend::PhpFpmTcp {
             addr: "127.0.0.1:1".parse().unwrap(),

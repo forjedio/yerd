@@ -2002,6 +2002,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "yerd"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "interprocess",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "yerd-config",
+ "yerd-core",
+ "yerd-ipc",
+ "yerd-platform",
+ "yerdd",
+]
+
+[[package]]
 name = "yerd-config"
 version = "0.1.0"
 dependencies = [

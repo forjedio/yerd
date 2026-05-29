@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members  = ["crates/yerd-core", "crates/yerd-ipc", "crates/yerd-config", "crates/yerd-tls", "crates/yerd-platform", "crates/yerd-dns", "crates/yerd-php", "crates/yerd-proxy", "bin/yerd-helper", "bin/yerdd"]
+members  = ["crates/yerd-core", "crates/yerd-ipc", "crates/yerd-config", "crates/yerd-tls", "crates/yerd-platform", "crates/yerd-dns", "crates/yerd-php", "crates/yerd-proxy", "bin/yerd-helper", "bin/yerdd", "bin/yerd"]
 
 [workspace.package]
 edition      = "2021"

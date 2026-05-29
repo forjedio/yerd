@@ -17,10 +17,12 @@ pub mod backend_resolver;
 pub mod cert_store;
 pub mod error;
 pub mod ipc_server;
+pub mod mutate;
 pub mod secure_fs;
 pub mod signals;
 pub mod single_instance;
 pub mod startup;
+pub mod state;
 pub mod tracing_init;
 
 use std::sync::Arc;
@@ -60,7 +62,7 @@ async fn run_until_shutdown(
     // owns it here — we just consume it into the serve loop.
     let dns_handle = {
         let bound = daemon.dns_bound;
-        let responder = yerd_dns::Responder::new(daemon.config.tld.clone());
+        let responder = yerd_dns::Responder::new(daemon.dns_tld.clone());
         let mut rx = shutdown_rx.clone();
         tokio::spawn(async move {
             bound
@@ -73,7 +75,7 @@ async fn run_until_shutdown(
 
     // Proxy task.
     let proxy_handle = {
-        let router = daemon.router.clone();
+        let router = daemon.state.router.clone();
         let resolver = Arc::new(DaemonBackendResolver {
             php_manager: daemon.php_manager.clone(),
         });
@@ -97,7 +99,7 @@ async fn run_until_shutdown(
     // IPC task.
     let ipc_handle = tokio::spawn(ipc_server::run(
         daemon.ipc_listener,
-        daemon.router.clone(),
+        daemon.state.clone(),
         shutdown_rx.clone(),
     ));
 

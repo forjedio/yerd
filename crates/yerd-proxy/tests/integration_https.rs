@@ -166,7 +166,7 @@ async fn https_handshake_routes_to_backend() {
     let mut router = SiteRouter::new(cfg);
     let site = Site::linked("app", PathBuf::from("/srv/www/app"), PhpVersion::new(8, 3)).unwrap();
     router.insert(site).unwrap();
-    let router = Arc::new(router);
+    let router = Arc::new(tokio::sync::RwLock::new(router));
 
     let resolver = Arc::new(StaticResolver {
         backend: Backend::PhpFpmTcp { addr: fcgi_addr },

@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use interprocess::local_socket::tokio::Listener as IpcListener;
 use interprocess::local_socket::ListenerOptions;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, RwLock};
 
 use yerd_core::{PhpVersion, RouterConfig, Site, SiteRouter};
 use yerd_php::{
@@ -21,6 +21,7 @@ use crate::backend_resolver::DaemonPhpManager;
 use crate::cert_store::DaemonCertStore;
 use crate::error::DaemonError;
 use crate::single_instance::InstanceLock;
+use crate::state::DaemonState;
 
 /// Requested bind address for the embedded DNS server.
 ///
@@ -36,8 +37,13 @@ pub const DNS_ADDR: SocketAddr = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST)
 
 /// Everything `run()` needs to start the daemon's tasks.
 pub struct Daemon {
-    /// Loaded (or default) configuration.
-    pub config: Arc<yerd_config::Config>,
+    /// Shared runtime state: authoritative config + live router (the proxy and
+    /// IPC mutation path both work through this).
+    pub state: Arc<DaemonState>,
+    /// Immutable TLD snapshot for the DNS responder. Taken at startup because
+    /// the TLD never changes via an IPC mutation (no `SetTld`), so the DNS task
+    /// must not reach into the config mutex.
+    pub dns_tld: yerd_core::Tld,
     /// Where the config file was loaded from.
     pub config_path: PathBuf,
     /// Resolved per-user directories.
@@ -46,8 +52,6 @@ pub struct Daemon {
     pub lock: InstanceLock,
     /// PHP-FPM pool supervisor.
     pub php_manager: Arc<Mutex<DaemonPhpManager>>,
-    /// Routing table.
-    pub router: Arc<SiteRouter>,
     /// TLS cert store for SNI lookups.
     pub cert_store: Arc<DaemonCertStore>,
     /// Bound HTTP listener.
@@ -110,14 +114,13 @@ pub async fn bring_up_with_dirs(
     let cert_store = Arc::new(DaemonCertStore::new(ca, dirs.data.join("leaves")));
 
     // Build the router from parked + linked sites.
-    let sites = scan_sites(&config, config.php.default, &dirs)?;
-    let router = Arc::new(SiteRouter::from_sites(
-        RouterConfig::with_tld(config.tld.clone()),
-        sites,
-    )?);
+    let dns_tld = config.tld.clone();
+    let default_php = config.php.default;
+    let router = build_router(&config, &dirs)?;
     if router.is_empty() {
         tracing::info!("no sites configured — every request will 404 until a site is added");
     }
+    let router = Arc::new(RwLock::new(router));
 
     // Bind HTTP/HTTPS — fallback to 8080/8443 if 80/443 require elevation.
     let binder = ActivePortBinder::new();
@@ -167,13 +170,21 @@ pub async fn bring_up_with_dirs(
         "DNS responder bound on an ephemeral port; .test resolution is inert until a resolver installer routes queries here (post-MVP)"
     );
 
+    let state = Arc::new(DaemonState {
+        config: Mutex::new(config),
+        router,
+        dirs: dirs.clone(),
+        config_path: config_path.clone(),
+        default_php,
+    });
+
     Ok(Daemon {
-        config: Arc::new(config),
+        state,
+        dns_tld,
         config_path,
         dirs,
         lock,
         php_manager,
-        router,
         cert_store,
         http_listener,
         https_listener: tls_listener,
@@ -182,6 +193,21 @@ pub async fn bring_up_with_dirs(
         dns_bound,
         dns_addr,
     })
+}
+
+/// Build a fresh routing table from the config: scan every parked root for
+/// child-directory sites, then add the explicitly linked sites (linked wins on
+/// name collision). Shared by startup and the IPC mutation path so both
+/// produce identical routing.
+pub(crate) fn build_router(
+    cfg: &yerd_config::Config,
+    dirs: &PlatformDirs,
+) -> Result<SiteRouter, DaemonError> {
+    let sites = scan_sites(cfg, cfg.php.default, dirs)?;
+    Ok(SiteRouter::from_sites(
+        RouterConfig::with_tld(cfg.tld.clone()),
+        sites,
+    )?)
 }
 
 // ──────────────────────────────────────────────────────────────────────
@@ -251,7 +277,7 @@ fn ca_validity() -> Result<Validity, DaemonError> {
     )?)
 }
 
-fn scan_sites(
+pub(crate) fn scan_sites(
     cfg: &yerd_config::Config,
     default_php: PhpVersion,
     _dirs: &PlatformDirs,

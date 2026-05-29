@@ -21,6 +21,13 @@ use crate::pure::redirect::build_redirect_uri;
 use crate::tls::build_server_config;
 use crate::traits::{BackendResolver, CertStore};
 
+/// Router shared between the proxy's request path (read) and the daemon's
+/// mutation path (write-replace). Reads are brief and uncontended — each
+/// request takes a read guard only long enough to resolve + clone its
+/// [`yerd_core::Site`]; the daemon swaps the whole router under a write guard
+/// when a site is parked/linked/unlinked or its PHP version changes.
+pub type SharedRouter = Arc<tokio::sync::RwLock<yerd_core::SiteRouter>>;
+
 /// Discriminator threaded into each per-request service so the redirect
 /// rule knows whether the connection arrived on the HTTP or HTTPS
 /// listener.
@@ -55,7 +62,7 @@ impl ProxyServer {
     pub async fn serve<R, C, S>(
         http_listener: TcpListener,
         https: Option<HttpsBinding<C>>,
-        router: Arc<yerd_core::SiteRouter>,
+        router: SharedRouter,
         backend_resolver: Arc<R>,
         shutdown: S,
     ) -> Result<(), ProxyError>
@@ -166,7 +173,7 @@ impl ProxyServer {
 async fn serve_http_connection<R: BackendResolver>(
     stream: tokio::net::TcpStream,
     peer: SocketAddr,
-    router: Arc<yerd_core::SiteRouter>,
+    router: SharedRouter,
     resolver: Arc<R>,
     redirect_port: Option<u16>,
 ) {
@@ -194,7 +201,7 @@ async fn serve_http_connection<R: BackendResolver>(
 async fn serve_https_connection<R: BackendResolver>(
     stream: tokio::net::TcpStream,
     peer: SocketAddr,
-    router: Arc<yerd_core::SiteRouter>,
+    router: SharedRouter,
     resolver: Arc<R>,
     acceptor: TlsAcceptor,
 ) {
@@ -237,7 +244,7 @@ async fn handle_request<R: BackendResolver>(
     peer_addr: SocketAddr,
     server_addr: SocketAddr,
     listener: Listener,
-    router: Arc<yerd_core::SiteRouter>,
+    router: SharedRouter,
     resolver: Arc<R>,
     redirect_port: Option<u16>,
 ) -> Result<Response<BoxBody>, std::convert::Infallible> {
@@ -270,7 +277,7 @@ async fn dispatch<R: BackendResolver>(
     peer_addr: SocketAddr,
     server_addr: SocketAddr,
     listener: Listener,
-    router: Arc<yerd_core::SiteRouter>,
+    router: SharedRouter,
     resolver: Arc<R>,
     redirect_port: Option<u16>,
 ) -> Result<Response<BoxBody>, ProxyError> {
@@ -283,12 +290,15 @@ async fn dispatch<R: BackendResolver>(
         return Ok(bad_request_response());
     };
 
-    // Clone the Site so we can drop the router borrow before any await.
-    // (Site: Clone is cheap — small strings and PathBufs.)
-    let site = match router.resolve(&host) {
+    // Take a read guard only long enough to resolve + clone the Site, then
+    // drop it before any await. (Site: Clone is cheap — small strings and
+    // PathBufs.) The daemon's mutation path is the only writer.
+    let guard = router.read().await;
+    let site = match guard.resolve(&host) {
         Some(s) => s.clone(),
         None => return Ok(not_found_response()),
     };
+    drop(guard);
     let document_root = site.document_root().to_path_buf();
 
     // HTTP → HTTPS redirect.
