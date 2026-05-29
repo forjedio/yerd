@@ -26,21 +26,14 @@ pub fn build_redirect_uri(host: &str, path_and_query: &str, https_port: u16) -> 
 /// Strip the trailing `:port` from `host`, handling IPv6 literals `[...]`.
 fn strip_port(host: &str) -> &str {
     if let Some(rest) = host.strip_prefix('[') {
-        // Bracketed IPv6. The closing `]` ends the host portion.
-        if let Some(end) = rest.find(']') {
-            // Keep the `[...]` bracketed form.
-            return host
-                .get(..end + 2)
-                .unwrap_or(host)
-                .trim_end_matches(':')
-                .trim_end_matches('[')
-                .get(..)
-                .map_or(host, |_| {
-                    // Simpler: return up to and including `]`.
-                    host.get(..end + 2).unwrap_or(host)
-                });
-        }
-        return host;
+        // Bracketed IPv6 literal: the host portion is everything up to and
+        // including the closing `]`; any `:port` follows it. `]` sits at
+        // index `end` within `rest`, i.e. `end + 1` within `host`, so the
+        // bracketed host is `host[..=end + 1]` == `host[..end + 2]`.
+        return match rest.find(']') {
+            Some(end) => host.get(..end + 2).unwrap_or(host),
+            None => host,
+        };
     }
     // Plain host:port — split at the last `:` only if there's exactly one.
     let colons = host.bytes().filter(|&b| b == b':').count();

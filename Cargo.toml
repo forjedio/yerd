@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members  = ["crates/yerd-core", "crates/yerd-ipc", "crates/yerd-config", "crates/yerd-tls", "crates/yerd-platform", "crates/yerd-dns", "crates/yerd-php", "crates/yerd-proxy", "bin/yerd-helper"]
+members  = ["crates/yerd-core", "crates/yerd-ipc", "crates/yerd-config", "crates/yerd-tls", "crates/yerd-platform", "crates/yerd-dns", "crates/yerd-php", "crates/yerd-proxy", "bin/yerd-helper", "bin/yerdd"]
 
 [workspace.package]
 edition      = "2021"
@@ -41,7 +41,10 @@ bytes              = "1"
 tokio-rustls       = "0.26"
 rustls             = "0.23"
 tracing            = { version = "0.1", default-features = false, features = ["std"] }
+tracing-subscriber = { version = "0.3", default-features = false, features = ["std", "fmt", "registry"] }
 http               = "1"
+interprocess       = { version = "2", features = ["tokio"] }
+fs4                = { version = "0.13", default-features = false, features = ["sync"] }
 
 [workspace.lints.rust]
 unsafe_code  = "forbid"
@@ -73,6 +76,12 @@ needless_pass_by_value   = "allow"
 #     pins it to 1.0.0 via `cargo update -p idna_adapter --precise 1.0.0`.
 #     Pulled transitively by hickory-proto via idna; without this pin, fresh
 #     checkouts fail to parse the manifest under cargo 1.77.
+#   * jobserver 0.1.34+ pulls a newer getrandom 0.3 → wasi 0.14 → wasip2 →
+#     wit-bindgen 0.57 chain whose manifest requires edition2024. Cargo.lock
+#     pins jobserver to 0.1.32 via
+#     `cargo update -p jobserver --precise 0.1.32`. The full chain comes in
+#     via `cc -> ring -> rustls/rcgen`, so any crate using rustls or rcgen
+#     transitively triggers the trap without this pin.
 #   * rcgen is patch-pinned to =0.13.2 not for MSRV but to convert silent
 #     additions to `rcgen::Error` (it is `#[non_exhaustive]` upstream) into a
 #     deliberate version bump that flips the `rcgen_error_detail_table_is_current`

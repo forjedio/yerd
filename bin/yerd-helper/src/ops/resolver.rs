@@ -93,7 +93,8 @@ pub fn uninstall_resolver(tld: &str) -> Result<(), HelperError> {
     let tld_obj = validate::require_valid_tld(tld)?;
     let path = resolver_file_path(tld_obj.as_str());
     match std::fs::remove_file(&path) {
-        Ok(()) | Err(_) if !path.exists() => Ok(()),
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()), // idempotent
         Err(source) => Err(HelperError::Io { path, source }),
     }
 }

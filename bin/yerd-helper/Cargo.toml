@@ -17,7 +17,6 @@ yerd-core     = { path = "../../crates/yerd-core" }
 yerd-platform = { path = "../../crates/yerd-platform" }
 clap          = { workspace = true }
 thiserror     = { workspace = true }
-anyhow        = { workspace = true }
 hex           = { workspace = true }
 pem           = { workspace = true }
 

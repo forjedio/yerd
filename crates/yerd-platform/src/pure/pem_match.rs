@@ -6,7 +6,7 @@
 //! `PathBuf` and which block within it matched, by computing the SHA-256
 //! over each block's DER body.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use sha2::{Digest, Sha256};
 
@@ -79,10 +79,6 @@ pub fn fingerprint_of_first_cert_in_pem(pem_text: &str) -> Option<[u8; 32]> {
     let cert = parsed.into_iter().find(|b| b.tag() == "CERTIFICATE")?;
     Some(sha256(cert.contents()))
 }
-
-/// Allow `&Path` arguments without forcing an allocation at every call
-/// site.
-fn _path_is_used(_: &Path) {}
 
 #[cfg(test)]
 #[allow(
