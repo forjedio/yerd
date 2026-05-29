@@ -48,6 +48,13 @@ pub enum Request {
         /// The new PHP version.
         version: PhpVersion,
     },
+    /// Toggle whether a site is served over HTTPS.
+    SetSecure {
+        /// The site name.
+        name: String,
+        /// The desired HTTPS state.
+        secure: bool,
+    },
 }
 
 #[cfg(test)]
@@ -77,6 +84,7 @@ mod variant_name_pinning {
             Request::Link { .. } => {}
             Request::Unlink { .. } => {}
             Request::SetPhp { .. } => {}
+            Request::SetSecure { .. } => {}
         }
     }
 
@@ -95,6 +103,10 @@ mod variant_name_pinning {
         pin(Request::SetPhp {
             name: "x".into(),
             version: PhpVersion::new(8, 3),
+        });
+        pin(Request::SetSecure {
+            name: "x".into(),
+            secure: true,
         });
     }
 }

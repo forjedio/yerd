@@ -82,6 +82,18 @@ fn request_set_php_byte_shape() {
     assert_eq!(back, r);
 }
 
+#[test]
+fn request_set_secure_byte_shape() {
+    let r = Request::SetSecure {
+        name: "foo".into(),
+        secure: true,
+    };
+    let s = serde_json::to_string(&r).unwrap();
+    assert_eq!(s, r#"{"type":"set_secure","name":"foo","secure":true}"#);
+    let back: Request = serde_json::from_str(&s).unwrap();
+    assert_eq!(back, r);
+}
+
 // ---------- Response ----------
 
 #[test]

@@ -88,3 +88,9 @@ needless_pass_by_value   = "allow"
 #     tripwire in yerd-tls. See plan §D7.
 #   * hickory-proto/server/client are patch-pinned to =0.24.4 for the same
 #     reason (`ProtoErrorKind`, `RData` are #[non_exhaustive] upstream).
+#   * hyper-rustls 0.27.6+ requires rustc 1.85 (edition2024 in a transitive
+#     dep); Cargo.lock pins it to 0.27.5 via
+#     `cargo update -p hyper-rustls --precise 0.27.5`. Pulled by `reqwest`,
+#     which is only activated by yerd-php's optional `download` feature — so
+#     this trap is invisible to the default build and only bites
+#     `--all-features`.

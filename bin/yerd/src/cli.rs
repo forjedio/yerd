@@ -45,4 +45,14 @@ pub enum Command {
         /// PHP version, e.g. `8.3`.
         version: String,
     },
+    /// Serve a site over HTTPS (promotes a parked site to a linked entry).
+    Secure {
+        /// Site name.
+        name: String,
+    },
+    /// Stop serving a site over HTTPS.
+    Unsecure {
+        /// Site name.
+        name: String,
+    },
 }

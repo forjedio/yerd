@@ -129,6 +129,30 @@ pub fn apply(
                 Err(MutateError::NotFound(format!("no site named {name_lc}")))
             }
         }
+        Request::SetSecure { name, secure } => {
+            let name_lc = name.to_ascii_lowercase();
+            if let Some(site) = cfg.linked.iter_mut().find(|s| s.name() == name_lc) {
+                site.set_secure(*secure);
+                Ok(Applied {
+                    summary: format!("{name_lc} secure={secure}"),
+                })
+            } else if let Some(parked) = router.get(&name_lc) {
+                // Promote the parked site to a linked entry capturing its
+                // discovered document_root and current PHP version, so the
+                // secure override persists and wins over the parked directory
+                // on the next scan — same promotion `SetPhp` performs.
+                let mut site =
+                    Site::linked(&name_lc, parked.document_root().to_path_buf(), parked.php())
+                        .map_err(|e| MutateError::Invalid(format!("invalid site name: {e}")))?;
+                site.set_secure(*secure);
+                cfg.linked.push(site);
+                Ok(Applied {
+                    summary: format!("{name_lc} secure={secure} (linked)"),
+                })
+            } else {
+                Err(MutateError::NotFound(format!("no site named {name_lc}")))
+            }
+        }
         _ => Err(MutateError::Invalid("unsupported request".into())),
     }
 }
@@ -342,6 +366,87 @@ mod tests {
             &Request::SetPhp {
                 name: "ghost".into(),
                 version: v(8, 4),
+            },
+            None,
+            v(8, 3),
+        ) {
+            Err(MutateError::NotFound(_)) => {}
+            other => panic!("expected NotFound, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn setsecure_updates_linked_in_place() {
+        let mut cfg = Config::default();
+        let r = empty_router();
+        cfg.linked
+            .push(Site::linked("foo", "/srv/foo", v(8, 3)).unwrap());
+        apply(
+            &mut cfg,
+            &r,
+            &Request::SetSecure {
+                name: "foo".into(),
+                secure: true,
+            },
+            None,
+            v(8, 3),
+        )
+        .unwrap();
+        assert_eq!(cfg.linked.len(), 1);
+        assert!(cfg.linked[0].secure());
+
+        // Flipping it back off mutates in place, no new entry.
+        apply(
+            &mut cfg,
+            &r,
+            &Request::SetSecure {
+                name: "foo".into(),
+                secure: false,
+            },
+            None,
+            v(8, 3),
+        )
+        .unwrap();
+        assert_eq!(cfg.linked.len(), 1);
+        assert!(!cfg.linked[0].secure());
+    }
+
+    #[test]
+    fn setsecure_promotes_parked_to_linked_preserving_php() {
+        let mut cfg = Config::default();
+        // `router_with_parked` stores the parked site at PHP 8.3.
+        let r = router_with_parked("blog", "/srv/blog");
+        let a = apply(
+            &mut cfg,
+            &r,
+            &Request::SetSecure {
+                name: "blog".into(),
+                secure: true,
+            },
+            None,
+            // A different default must NOT leak in — the parked PHP wins.
+            v(8, 4),
+        )
+        .unwrap();
+        assert!(a.summary.contains("linked"));
+        assert_eq!(cfg.linked.len(), 1);
+        assert_eq!(cfg.linked[0].name(), "blog");
+        assert!(cfg.linked[0].secure());
+        assert_eq!(cfg.linked[0].php(), v(8, 3));
+        assert_eq!(cfg.linked[0].document_root(), Path::new("/srv/blog"));
+        assert_eq!(cfg.linked[0].kind(), SiteKind::Linked);
+    }
+
+    #[test]
+    fn setsecure_unknown_is_not_found() {
+        let mut cfg = Config::default();
+        let r = empty_router();
+        match apply(
+            &mut cfg,
+            &r,
+            &Request::SetSecure {
+                name: "ghost".into(),
+                secure: true,
             },
             None,
             v(8, 3),

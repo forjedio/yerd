@@ -23,6 +23,8 @@ pub use traits::{ChildHandle, Clock, HealthProbe, ProcessSpawner};
 pub use version::{discover_bundled, discover_mise};
 
 #[cfg(feature = "download")]
+pub use error::DownloadError;
+#[cfg(feature = "download")]
 pub use traits::Downloader;
 
 // Compile-time `Send + 'static` guard for the production instantiation.

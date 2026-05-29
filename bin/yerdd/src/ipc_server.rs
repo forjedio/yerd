@@ -78,7 +78,8 @@ async fn dispatch(req: Request, state: &DaemonState) -> Response {
         Request::Park { .. }
         | Request::Link { .. }
         | Request::Unlink { .. }
-        | Request::SetPhp { .. } => handle_mutation(req, state).await,
+        | Request::SetPhp { .. }
+        | Request::SetSecure { .. } => handle_mutation(req, state).await,
         _ => Response::Error {
             code: ErrorCode::Internal,
             message: "unsupported request".into(),
@@ -355,6 +356,53 @@ mod tests {
                 let blog = sites.iter().find(|s| s.name() == "blog").unwrap();
                 assert_eq!(blog.php(), PhpVersion::new(8, 4));
                 assert_eq!(blog.kind(), yerd_core::SiteKind::Linked);
+            }
+            other => panic!("expected Sites, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn set_secure_promotes_parked_and_flips_flag() {
+        let tmp = tempfile::tempdir().unwrap();
+        let sites_root = tmp.path().join("sites");
+        std::fs::create_dir_all(sites_root.join("blog")).unwrap();
+        let state = state_in(tmp.path());
+        dispatch(Request::Park { path: sites_root }, &state).await;
+
+        // Securing a parked site (mixed-case) promotes it and sets the flag.
+        let resp = dispatch(
+            Request::SetSecure {
+                name: "Blog".into(),
+                secure: true,
+            },
+            &state,
+        )
+        .await;
+        assert!(matches!(resp, Response::Ok), "got {resp:?}");
+
+        match dispatch(Request::ListSites, &state).await {
+            Response::Sites { sites } => {
+                let blog = sites.iter().find(|s| s.name() == "blog").unwrap();
+                assert!(blog.secure());
+                assert_eq!(blog.kind(), yerd_core::SiteKind::Linked);
+            }
+            other => panic!("expected Sites, got {other:?}"),
+        }
+
+        // Unsecuring flips it back.
+        let resp = dispatch(
+            Request::SetSecure {
+                name: "blog".into(),
+                secure: false,
+            },
+            &state,
+        )
+        .await;
+        assert!(matches!(resp, Response::Ok), "got {resp:?}");
+        match dispatch(Request::ListSites, &state).await {
+            Response::Sites { sites } => {
+                let blog = sites.iter().find(|s| s.name() == "blog").unwrap();
+                assert!(!blog.secure());
             }
             other => panic!("expected Sites, got {other:?}"),
         }

@@ -45,6 +45,10 @@ fn encode_then_decode_request_roundtrip() {
         name: "foo".into(),
         version: PhpVersion::new(8, 3),
     });
+    assert_request_roundtrips(Request::SetSecure {
+        name: "foo".into(),
+        secure: true,
+    });
 }
 
 #[test]

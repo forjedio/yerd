@@ -36,6 +36,20 @@ pub fn to_request(cmd: &Command) -> Result<Request, ClientError> {
                 version: parse_php(version)?,
             }
         }
+        Command::Secure { name } => {
+            validate_name(name)?;
+            Request::SetSecure {
+                name: name.clone(),
+                secure: true,
+            }
+        }
+        Command::Unsecure { name } => {
+            validate_name(name)?;
+            Request::SetSecure {
+                name: name.clone(),
+                secure: false,
+            }
+        }
     })
 }
 
@@ -180,6 +194,21 @@ mod tests {
                 version: PhpVersion::new(8, 4)
             }
         );
+        // `secure`/`unsecure` map to SetSecure with the matching flag.
+        assert_eq!(
+            to_request(&Command::Secure { name: "foo".into() }).unwrap(),
+            Request::SetSecure {
+                name: "foo".into(),
+                secure: true
+            }
+        );
+        assert_eq!(
+            to_request(&Command::Unsecure { name: "foo".into() }).unwrap(),
+            Request::SetSecure {
+                name: "foo".into(),
+                secure: false
+            }
+        );
     }
 
     #[test]
@@ -200,6 +229,12 @@ mod tests {
         }
         match to_request(&Command::Unlink {
             name: "bad/name".into(),
+        }) {
+            Err(ClientError::Usage(_)) => {}
+            other => panic!("expected Usage error, got {other:?}"),
+        }
+        match to_request(&Command::Secure {
+            name: "bad name".into(),
         }) {
             Err(ClientError::Usage(_)) => {}
             other => panic!("expected Usage error, got {other:?}"),

@@ -60,6 +60,44 @@ mod tests {
         }
     }
 
+    async fn blog_is_secure(sock: &std::path::Path) -> bool {
+        match send(sock, &Command::Sites).await {
+            Response::Sites { sites } => sites
+                .iter()
+                .find(|s| s.name() == "blog")
+                .expect("blog present")
+                .secure(),
+            other => panic!("expected Sites, got {other:?}"),
+        }
+    }
+
+    /// `secure` then `unsecure` the already-promoted `blog` site, asserting the
+    /// flag flips on and back off.
+    async fn exercise_secure_toggle(sock: &std::path::Path) {
+        assert!(matches!(
+            send(
+                sock,
+                &Command::Secure {
+                    name: "blog".into()
+                }
+            )
+            .await,
+            Response::Ok
+        ));
+        assert!(blog_is_secure(sock).await);
+        assert!(matches!(
+            send(
+                sock,
+                &Command::Unsecure {
+                    name: "blog".into()
+                }
+            )
+            .await,
+            Response::Ok
+        ));
+        assert!(!blog_is_secure(sock).await);
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn cli_commands_round_trip_against_daemon() {
         let tmp = tempfile::tempdir().unwrap();
@@ -147,6 +185,9 @@ mod tests {
             }
             other => panic!("expected Sites, got {other:?}"),
         }
+
+        // secure → marks `blog` for HTTPS; unsecure flips it back
+        exercise_secure_toggle(&sock).await;
 
         // unlink the linked app
         assert!(matches!(

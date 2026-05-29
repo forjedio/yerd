@@ -203,9 +203,9 @@ Order matters — each crate is built against the contracts of the one beneath i
 8. `yerd-php` — FPM config render + supervision (one bundled version to start).
 9. `yerd-proxy` — HTTP first, then HTTPS via `yerd-tls` cert store.
 10. `bin/yerdd` — wire 1–9 together; IPC server transport.
-11. `bin/yerd` ✅ — `ping` / `sites` / `park` / `link` / `unlink` / `use` against the daemon, with `--json`. Maps each command to one `yerd-ipc` request; the daemon's IPC dispatch handles the mutations (config + live router) end-to-end.
+11. `bin/yerd` ✅ — `ping` / `sites` / `park` / `link` / `unlink` / `use` / `secure` / `unsecure` against the daemon, with `--json`. Maps each command to one `yerd-ipc` request; the daemon's IPC dispatch handles the mutations (config + live router) end-to-end. `secure`/`unsecure` flip a site's HTTPS flag via the `SetSecure` request; certs are minted lazily by the proxy's cert store on the TLS handshake, so no mutation-time TLS wiring is needed.
 
-Phase-1 follow-ups (deferred): `secure` / `unsecure` (need a new `Request` variant + an `InvalidName` error code + TLS cert-store wiring); CLI daemon auto-start; a deterministic Windows pipe name (`yerd-<user>`) so the Windows IPC client can land.
+Phase-1 follow-ups (deferred): CLI daemon auto-start; a deterministic Windows pipe name (`yerd-<user>`) so the Windows IPC client can land.
 
 **Phase 2 — v1.**
 12. `apps/yerd-gui` — tray-first Tauri UI over IPC.

@@ -98,6 +98,28 @@ pub enum PhpError {
     },
 }
 
+/// Error returned by [`crate::traits::Downloader::download`] (feature
+/// `download`).
+///
+/// Carries a flattened message rather than wrapping a transport type so that
+/// test fakes can construct it without pulling in `reqwest`, and so the public
+/// surface stays transport-agnostic. SHA-256 verification of the fetched bytes
+/// is the caller's responsibility, not the downloader's.
+#[cfg(feature = "download")]
+#[derive(Debug, Error)]
+#[non_exhaustive]
+pub enum DownloadError {
+    /// The transfer failed — connection, TLS, timeout, or a non-success HTTP
+    /// status.
+    #[error("download failed for {url}: {reason}")]
+    Transport {
+        /// The URL that failed to download.
+        url: String,
+        /// Flattened underlying error.
+        reason: String,
+    },
+}
+
 /// Classification of an `io::Error` returned by `ProcessSpawner::spawn` or
 /// by `ChildHandle::wait` during supervision.
 ///

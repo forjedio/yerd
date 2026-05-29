@@ -120,6 +120,71 @@ mod tests {
         let _ = tokio::time::timeout(Duration::from_secs(10), daemon_task).await;
     }
 
+    /// `SetSecure` over the real socket promotes the parked site, sets the flag,
+    /// and persists `secure = true` to disk.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn set_secure_round_trip_persists() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dirs = make_dirs(tmp.path());
+        let cfg = valid_config();
+        let cfg_path = dirs.config.join("yerd.toml");
+
+        let sites_root = tmp.path().join("Sites");
+        std::fs::create_dir_all(sites_root.join("blog")).unwrap();
+
+        let daemon = yerdd::startup::bring_up_with_dirs(dirs.clone(), cfg, cfg_path.clone())
+            .await
+            .expect("bring_up_with_dirs");
+
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let daemon_task = tokio::spawn(async move { drive_subsystems(daemon, shutdown_rx).await });
+
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let ipc_sock = dirs.runtime.join("yerd.sock");
+
+        // Park, then secure the discovered `blog` site.
+        let resp = round_trip(
+            &ipc_sock,
+            &Request::Park {
+                path: sites_root.clone(),
+            },
+        )
+        .await;
+        assert!(matches!(resp, Response::Ok), "park got {resp:?}");
+
+        let resp = round_trip(
+            &ipc_sock,
+            &Request::SetSecure {
+                name: "blog".into(),
+                secure: true,
+            },
+        )
+        .await;
+        assert!(matches!(resp, Response::Ok), "set_secure got {resp:?}");
+
+        // ListSites reflects the secured site.
+        match round_trip(&ipc_sock, &Request::ListSites).await {
+            Response::Sites { sites } => {
+                let blog = sites
+                    .iter()
+                    .find(|s| s.name() == "blog")
+                    .expect("blog present");
+                assert!(blog.secure(), "blog should be secure");
+            }
+            other => panic!("expected Sites, got {other:?}"),
+        }
+
+        // Persisted to disk as `secure = true`.
+        let on_disk = std::fs::read_to_string(&cfg_path).expect("config file written");
+        assert!(
+            on_disk.contains("secure = true"),
+            "expected `secure = true` in {on_disk}"
+        );
+
+        shutdown_tx.send_replace(true);
+        let _ = tokio::time::timeout(Duration::from_secs(10), daemon_task).await;
+    }
+
     /// Open a fresh connection, send one request, read one response.
     async fn round_trip(sock: &std::path::Path, req: &Request) -> Response {
         let name = sock.to_fs_name::<GenericFilePath>().unwrap();

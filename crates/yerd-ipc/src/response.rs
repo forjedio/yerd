@@ -22,7 +22,8 @@ pub enum Response {
     },
     /// Generic success for mutating requests
     /// ([`crate::Request::Park`], [`crate::Request::Link`],
-    /// [`crate::Request::Unlink`], [`crate::Request::SetPhp`]).
+    /// [`crate::Request::Unlink`], [`crate::Request::SetPhp`],
+    /// [`crate::Request::SetSecure`]).
     Ok,
     /// A request failed. `code` is machine-readable; `message` is for
     /// human display.
