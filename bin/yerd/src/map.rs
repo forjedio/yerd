@@ -6,7 +6,9 @@
 //! an exit code.
 
 use yerd_core::{PhpVersion, Site, SiteKind};
-use yerd_ipc::{Request, Response};
+use yerd_ipc::{
+    Diagnosis, FixReport, PoolRunState, PortStatus, Request, Response, Severity, StatusReport,
+};
 
 use crate::cli::Command;
 use crate::error::ClientError;
@@ -65,6 +67,11 @@ pub fn to_request(cmd: &Command) -> Result<Request, ClientError> {
         } => Request::UpdatePhp {
             version: version.as_deref().map(parse_php).transpose()?,
         },
+        Command::Status => Request::Status,
+        Command::Doctor { action: None } => Request::Diagnose,
+        Command::Doctor {
+            action: Some(crate::cli::DoctorAction::Fix),
+        } => Request::DoctorFix,
         Command::Secure { name } => {
             validate_name(name)?;
             Request::SetSecure {
@@ -137,10 +144,12 @@ impl Rendered {
 /// `json`, prints the response as pretty JSON instead of a human table.
 #[must_use]
 pub fn render(resp: &Response, json: bool) -> Rendered {
+    // Exit code is doctor-aware and computed once, so the `--json` and human
+    // paths agree: `1` for an error response or any `Fail` finding, else `0`.
+    let code = doctor_exit_code(resp);
     if json {
         let body = serde_json::to_string_pretty(resp)
             .unwrap_or_else(|e| format!("{{\"error\":\"serialize failed: {e}\"}}"));
-        let code = u8::from(matches!(resp, Response::Error { .. }));
         return Rendered {
             stdout: body,
             stderr: String::new(),
@@ -156,10 +165,41 @@ pub fn render(resp: &Response, json: bool) -> Rendered {
             default,
             updates,
         } => Rendered::ok(format_php_versions(installed, *default, updates)),
-        Response::Error { code, message } => Rendered::err(format!("error ({code:?}): {message}")),
+        Response::Error { code: c, message } => Rendered::err(format!("error ({c:?}): {message}")),
+        Response::Status { report } => Rendered {
+            stdout: format_status(report),
+            stderr: String::new(),
+            code,
+        },
+        Response::Diagnoses { items } => Rendered {
+            stdout: format_doctor(items),
+            stderr: String::new(),
+            code,
+        },
+        Response::DoctorFix { report } => Rendered {
+            stdout: format_fix(report),
+            stderr: String::new(),
+            code,
+        },
         // `Response` is `#[non_exhaustive]`; a future variant from a newer
         // daemon is surfaced benignly rather than panicking.
         _ => Rendered::err("unexpected response from daemon".to_owned()),
+    }
+}
+
+/// Process exit code for a response: `1` for an error or any `Fail`-severity
+/// doctor finding, otherwise `0`. Pure; used by both the JSON and human paths.
+#[must_use]
+pub fn doctor_exit_code(resp: &Response) -> u8 {
+    match resp {
+        Response::Error { .. } => 1,
+        Response::Diagnoses { items } => {
+            u8::from(items.iter().any(|d| d.severity == Severity::Fail))
+        }
+        Response::DoctorFix { report } => {
+            u8::from(report.manual.iter().any(|d| d.severity == Severity::Fail))
+        }
+        _ => 0,
     }
 }
 
@@ -213,6 +253,184 @@ fn format_php_versions(
         })
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+/// Render a [`StatusReport`] as a human-readable block.
+fn format_status(r: &StatusReport) -> String {
+    use std::fmt::Write;
+    let mut s = String::new();
+    let _ = writeln!(
+        s,
+        "daemon    running (pid {}, up {})",
+        r.daemon_pid,
+        fmt_duration(r.uptime_secs)
+    );
+    let _ = writeln!(s, "tld       .{}", r.tld);
+    let _ = writeln!(s, "http      {}", fmt_port(r.http));
+    let _ = writeln!(s, "https     {}", fmt_port(r.https));
+    let _ = writeln!(s, "dns       {}", r.dns_addr);
+    let _ = writeln!(
+        s,
+        "ca        trusted: {}  ({})",
+        fmt_tristate(r.ca.trusted_system),
+        r.ca.path.display()
+    );
+    let _ = writeln!(
+        s,
+        "resolver  installed: {}",
+        fmt_tristate(r.resolver_installed)
+    );
+    if let Some([one, five, fifteen]) = r.load_avg {
+        let _ = writeln!(
+            s,
+            "load      {} {} {}",
+            fmt_centi(one),
+            fmt_centi(five),
+            fmt_centi(fifteen)
+        );
+    }
+    let _ = writeln!(
+        s,
+        "sites     {} parked, {} linked, {} secured",
+        r.sites.parked, r.sites.linked, r.sites.secured
+    );
+
+    if r.php.is_empty() {
+        let _ = write!(s, "\nphp       none installed");
+        return s;
+    }
+    let _ = write!(s, "\nphp");
+    for p in &r.php {
+        let default = if p.version == r.default_php {
+            " (default)"
+        } else {
+            ""
+        };
+        let state = match p.state {
+            PoolRunState::Running => "running",
+            PoolRunState::Stopped => "stopped",
+            PoolRunState::Failed => "failed",
+            _ => "?",
+        };
+        let mut line = format!("\n  {}{default}  {state}", p.version);
+        if let Some(pid) = p.pid {
+            let _ = write!(line, "  pid {pid}");
+        }
+        if let Some(listen) = &p.listen {
+            let _ = write!(line, "  {listen}");
+        }
+        if let Some(rss) = p.rss_bytes {
+            let _ = write!(line, "  rss {}", fmt_bytes(rss));
+        }
+        if let Some(update) = &p.update_available {
+            let _ = write!(line, "  update→{update}");
+        }
+        let _ = write!(s, "{line}");
+    }
+    s
+}
+
+/// Render the doctor findings as ✓/⚠/✗ lines with remedies.
+fn format_doctor(items: &[Diagnosis]) -> String {
+    use std::fmt::Write;
+    if items.is_empty() {
+        return "no findings".to_owned();
+    }
+    let mut s = String::new();
+    for (i, d) in items.iter().enumerate() {
+        if i > 0 {
+            s.push('\n');
+        }
+        let _ = write!(s, "{} {}", severity_mark(d.severity), d.title);
+        if !d.detail.is_empty() {
+            let _ = write!(s, "\n    {}", d.detail);
+        }
+        if let Some(remedy) = &d.remedy {
+            let _ = write!(s, "\n    → {remedy}");
+        }
+    }
+    s
+}
+
+/// Render a [`FixReport`]: what was fixed, then what still needs attention.
+fn format_fix(report: &FixReport) -> String {
+    use std::fmt::Write;
+    let mut s = String::new();
+    if report.performed.is_empty() {
+        s.push_str("no automatic fixes were applicable");
+    } else {
+        s.push_str("applied fixes:");
+        for f in &report.performed {
+            let mark = if f.ok { "✓" } else { "✗" };
+            let _ = write!(s, "\n  {mark} {}", f.message);
+        }
+    }
+    if !report.manual.is_empty() {
+        s.push_str("\n\nstill needs attention:");
+        for d in &report.manual {
+            let _ = write!(s, "\n  {} {}", severity_mark(d.severity), d.title);
+            if let Some(remedy) = &d.remedy {
+                let _ = write!(s, "\n      → {remedy}");
+            }
+        }
+    }
+    s
+}
+
+fn severity_mark(sev: Severity) -> &'static str {
+    match sev {
+        Severity::Ok => "✓",
+        Severity::Warn => "⚠",
+        Severity::Fail => "✗",
+        _ => "•",
+    }
+}
+
+fn fmt_port(p: PortStatus) -> String {
+    if p.fell_back {
+        format!("{} → {} (fallback)", p.requested, p.bound)
+    } else {
+        p.bound.to_string()
+    }
+}
+
+fn fmt_tristate(b: Option<bool>) -> &'static str {
+    match b {
+        Some(true) => "yes",
+        Some(false) => "no",
+        None => "unknown",
+    }
+}
+
+/// Render integer hundredths (e.g. `152`) as a decimal (`1.52`).
+fn fmt_centi(c: u32) -> String {
+    format!("{}.{:02}", c / 100, c % 100)
+}
+
+/// Human-readable uptime, coarse-grained.
+fn fmt_duration(secs: u64) -> String {
+    let (h, m, s) = (secs / 3600, (secs % 3600) / 60, secs % 60);
+    if h > 0 {
+        format!("{h}h{m}m")
+    } else if m > 0 {
+        format!("{m}m{s}s")
+    } else {
+        format!("{s}s")
+    }
+}
+
+/// Human-readable byte size (integer math; no float-cast lints).
+fn fmt_bytes(b: u64) -> String {
+    if b < 1024 {
+        return format!("{b} B");
+    }
+    let kib = b / 1024;
+    if kib < 1024 {
+        return format!("{kib} KiB");
+    }
+    let mib_whole = kib / 1024;
+    let mib_tenths = (kib % 1024) * 10 / 1024;
+    format!("{mib_whole}.{mib_tenths} MiB")
 }
 
 #[cfg(test)]
@@ -438,6 +656,143 @@ mod tests {
             false,
         );
         assert!(empty.stdout.contains("no PHP versions installed"));
+    }
+
+    #[test]
+    fn maps_status_and_doctor_commands() {
+        assert_eq!(to_request(&Command::Status).unwrap(), Request::Status);
+        assert_eq!(
+            to_request(&Command::Doctor { action: None }).unwrap(),
+            Request::Diagnose
+        );
+        assert_eq!(
+            to_request(&Command::Doctor {
+                action: Some(crate::cli::DoctorAction::Fix)
+            })
+            .unwrap(),
+            Request::DoctorFix
+        );
+    }
+
+    fn sample_report() -> yerd_ipc::StatusReport {
+        yerd_ipc::StatusReport {
+            daemon_pid: 4242,
+            uptime_secs: 65,
+            tld: "test".into(),
+            http: PortStatus {
+                requested: 80,
+                bound: 8080,
+                fell_back: true,
+            },
+            https: PortStatus {
+                requested: 443,
+                bound: 443,
+                fell_back: false,
+            },
+            dns_addr: "127.0.0.1:1053".parse().unwrap(),
+            ca: yerd_ipc::CaStatus {
+                path: "/x/ca.cert.pem".into(),
+                fingerprint: "ab".repeat(32),
+                trusted_system: Some(false),
+            },
+            resolver_installed: None,
+            default_php: PhpVersion::new(8, 5),
+            php: vec![yerd_ipc::PhpPoolStatus {
+                version: PhpVersion::new(8, 5),
+                installed_patch: Some("8.5.6".into()),
+                state: PoolRunState::Running,
+                pid: Some(99),
+                listen: Some("/run/fpm.sock".into()),
+                rss_bytes: Some(3_200_000),
+                update_available: None,
+            }],
+            sites: yerd_ipc::SiteCounts {
+                parked: 2,
+                linked: 1,
+                secured: 1,
+            },
+            load_avg: Some([152, 48, 5]),
+        }
+    }
+
+    #[test]
+    fn renders_status_human_block() {
+        let out = render(
+            &Response::Status {
+                report: Box::new(sample_report()),
+            },
+            false,
+        );
+        assert_eq!(out.code, 0);
+        assert!(out.stdout.contains("pid 4242"));
+        assert!(out.stdout.contains("80 → 8080 (fallback)"));
+        assert!(out.stdout.contains("trusted: no"));
+        assert!(out.stdout.contains("installed: unknown")); // resolver None
+        assert!(out.stdout.contains("1.52 0.48 0.05")); // load hundredths → x.xx
+        assert!(out.stdout.contains("8.5 (default)  running"));
+        assert!(out.stdout.contains("pid 99"));
+    }
+
+    #[test]
+    fn renders_doctor_and_sets_exit_code_on_fail() {
+        let warn_only = Response::Diagnoses {
+            items: vec![Diagnosis {
+                code: yerd_ipc::DiagnosisCode::CaNotTrusted,
+                severity: Severity::Warn,
+                title: "Local CA not trusted".into(),
+                detail: "d".into(),
+                remedy: Some("sudo yerd elevate trust".into()),
+            }],
+        };
+        let r = render(&warn_only, false);
+        assert_eq!(r.code, 0, "warn-only must not fail the exit code");
+        assert!(r.stdout.contains("⚠ Local CA not trusted"));
+        assert!(r.stdout.contains("→ sudo yerd elevate trust"));
+
+        let with_fail = Response::Diagnoses {
+            items: vec![Diagnosis {
+                code: yerd_ipc::DiagnosisCode::NoPhpInstalled,
+                severity: Severity::Fail,
+                title: "No PHP".into(),
+                detail: "d".into(),
+                remedy: None,
+            }],
+        };
+        assert_eq!(render(&with_fail, false).code, 1);
+        // The JSON path must agree on the exit code.
+        assert_eq!(render(&with_fail, true).code, 1);
+    }
+
+    #[test]
+    fn renders_doctor_fix_report() {
+        let resp = Response::DoctorFix {
+            report: FixReport {
+                performed: vec![yerd_ipc::FixResult {
+                    code: yerd_ipc::DiagnosisCode::FpmPoolFailed,
+                    ok: true,
+                    message: "restarted PHP 8.5 FPM pool".into(),
+                }],
+                manual: vec![Diagnosis {
+                    code: yerd_ipc::DiagnosisCode::ResolverNotInstalled,
+                    severity: Severity::Warn,
+                    title: "Resolver not installed".into(),
+                    detail: "d".into(),
+                    remedy: Some("sudo yerd elevate resolver".into()),
+                }],
+            },
+        };
+        let r = render(&resp, false);
+        assert_eq!(r.code, 0); // only a Warn remains
+        assert!(r.stdout.contains("✓ restarted PHP 8.5 FPM pool"));
+        assert!(r.stdout.contains("still needs attention"));
+        assert!(r.stdout.contains("sudo yerd elevate resolver"));
+    }
+
+    #[test]
+    fn fmt_bytes_is_human_readable() {
+        assert_eq!(fmt_bytes(512), "512 B");
+        assert_eq!(fmt_bytes(2048), "2 KiB");
+        assert_eq!(fmt_bytes(3_200_000), "3.0 MiB");
     }
 
     #[test]

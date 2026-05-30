@@ -20,6 +20,7 @@ use std::path::{Path, PathBuf};
 use directories::ProjectDirs;
 
 use crate::error::ops;
+use crate::metrics::SystemMetrics;
 use crate::paths::{Paths, PlatformDirs};
 use crate::port_binder::{BoundPort, PortBinder, PortPair};
 use crate::pure::{pem_match, port_plan, resolver_file};
@@ -308,6 +309,32 @@ fn bind_pair_impl(desired: (u16, u16), fallback: (u16, u16)) -> Result<PortPair,
                 }),
             }
         }
+    }
+}
+
+/// macOS `SystemMetrics` implementation.
+///
+/// Phase 1 has no cheap, `unsafe`-free RSS/load source on macOS, so both
+/// methods return `None` (best-effort: callers show nothing). A `sysctl`/
+/// `proc_pid_rusage`-based impl can land post-MVP.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct MacosSystemMetrics;
+
+impl MacosSystemMetrics {
+    /// Construct.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self
+    }
+}
+
+impl SystemMetrics for MacosSystemMetrics {
+    fn rss_bytes(&self, _: u32) -> Option<u64> {
+        None
+    }
+
+    fn load_average(&self) -> Option<[f64; 3]> {
+        None
     }
 }
 

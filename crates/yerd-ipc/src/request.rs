@@ -79,6 +79,13 @@ pub enum Request {
     /// Force a poll of the distribution + refresh the update cache, then return
     /// the (enriched) version list.
     CheckPhpUpdates,
+    /// Fetch a read-only [`crate::StatusReport`] of daemon/proxy/DNS/PHP health.
+    Status,
+    /// Run the doctor checks and return the resulting diagnoses.
+    Diagnose,
+    /// Run the doctor checks, attempt the safe auto-fixes, and report what
+    /// happened plus what still needs manual action.
+    DoctorFix,
 }
 
 #[cfg(test)]
@@ -115,6 +122,9 @@ mod variant_name_pinning {
             Request::ListPhp => {}
             Request::UpdatePhp { .. } => {}
             Request::CheckPhpUpdates => {}
+            Request::Status => {}
+            Request::Diagnose => {}
+            Request::DoctorFix => {}
         }
     }
 
@@ -150,5 +160,8 @@ mod variant_name_pinning {
             version: Some(PhpVersion::new(8, 5)),
         });
         pin(Request::CheckPhpUpdates);
+        pin(Request::Status);
+        pin(Request::Diagnose);
+        pin(Request::DoctorFix);
     }
 }

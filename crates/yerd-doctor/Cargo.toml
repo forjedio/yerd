@@ -1,0 +1,15 @@
+[package]
+name                   = "yerd-doctor"
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+publish.workspace      = true
+description            = "Pure diagnosis + fix-planning logic for `yerd doctor`."
+
+[dependencies]
+yerd-core = { path = "../yerd-core" }
+yerd-ipc  = { path = "../yerd-ipc" }
+
+[lints]
+workspace = true

@@ -1,6 +1,4 @@
 //! The `Backend` enum — where a routed request gets forwarded to.
-//!
-//! Struct variants match `@docs/ARCHITECTURE.md` §6.6 verbatim.
 
 use std::fmt;
 use std::net::SocketAddr;

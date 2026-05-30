@@ -65,6 +65,14 @@ pub enum Command {
         #[command(subcommand)]
         target: UpdateTarget,
     },
+    /// Show a snapshot of daemon, proxy, DNS, ports, CA, and PHP health.
+    Status,
+    /// Diagnose common problems; `yerd doctor fix` attempts safe repairs.
+    Doctor {
+        /// Optional action; omit to only report, `fix` to attempt repairs.
+        #[command(subcommand)]
+        action: Option<DoctorAction>,
+    },
     /// Serve a site over HTTPS (promotes a parked site to a linked entry).
     Secure {
         /// Site name.
@@ -87,6 +95,13 @@ pub enum Command {
         #[command(subcommand)]
         target: Option<ElevateTarget>,
     },
+}
+
+/// Action of `yerd doctor`.
+#[derive(clap::Subcommand, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DoctorAction {
+    /// Attempt safe, unprivileged repairs (e.g. restart a crashed FPM pool).
+    Fix,
 }
 
 /// Target of `yerd install`.

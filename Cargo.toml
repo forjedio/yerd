@@ -1,8 +1,9 @@
 [workspace]
 resolver = "2"
-members  = ["crates/yerd-core", "crates/yerd-ipc", "crates/yerd-config", "crates/yerd-tls", "crates/yerd-platform", "crates/yerd-dns", "crates/yerd-php", "crates/yerd-proxy", "bin/yerd-helper", "bin/yerdd", "bin/yerd"]
+members  = ["crates/yerd-core", "crates/yerd-ipc", "crates/yerd-config", "crates/yerd-tls", "crates/yerd-platform", "crates/yerd-dns", "crates/yerd-php", "crates/yerd-proxy", "crates/yerd-doctor", "bin/yerd-helper", "bin/yerdd", "bin/yerd", "xtask"]
 
 [workspace.package]
+version      = "2.0.1"
 edition      = "2021"
 rust-version = "1.77"
 license      = "MIT OR Apache-2.0"
@@ -67,6 +68,12 @@ must_use_candidate       = "allow"
 cast_possible_truncation = "allow"
 needless_pass_by_value   = "allow"
 
+# Strip symbols from release binaries so the packaged .deb stays small (debug
+# yerdd is ~139 MB). Trade-off: shipped panic backtraces lose symbol names —
+# acceptable given the no-panic/unwrap rule. Use "debuginfo" if names are wanted.
+[profile.release]
+strip = "symbols"
+
 # Consolidated MSRV-driven pins (all relax when MSRV moves past 1.85 / edition2024):
 #
 #   * indexmap 2.14+ requires edition2024; Cargo.lock pins indexmap via
@@ -87,7 +94,7 @@ needless_pass_by_value   = "allow"
 #   * rcgen is patch-pinned to =0.13.2 not for MSRV but to convert silent
 #     additions to `rcgen::Error` (it is `#[non_exhaustive]` upstream) into a
 #     deliberate version bump that flips the `rcgen_error_detail_table_is_current`
-#     tripwire in yerd-tls. See plan §D7.
+#     tripwire in yerd-tls.
 #   * hickory-proto/server/client are patch-pinned to =0.24.4 for the same
 #     reason (`ProtoErrorKind`, `RData` are #[non_exhaustive] upstream).
 #   * hyper-rustls 0.27.6+ requires rustc 1.85 (edition2024 in a transitive

@@ -7,6 +7,7 @@
 pub mod firefox;
 pub mod pem_match;
 pub mod port_plan;
+pub mod proc_metrics;
 pub mod resolv_conf;
 pub mod resolved_drop_in;
 pub mod resolver_file;

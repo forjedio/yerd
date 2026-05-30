@@ -9,6 +9,8 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 use yerd_core::{PhpVersion, Site};
 
+use crate::status::{Diagnosis, FixReport, StatusReport};
+
 // Same rule: no per-field serde renames.
 /// A response sent from the daemon to a client.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -57,6 +59,24 @@ pub enum Response {
         /// update cache). Empty when none / cache cold.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         updates: Vec<PhpUpdate>,
+    },
+    /// Reply to [`crate::Request::Status`] — a runtime health snapshot.
+    ///
+    /// Boxed so the (large) report does not bloat every `Response` value;
+    /// `Box<T>` serializes transparently, so the wire bytes are unchanged.
+    Status {
+        /// The assembled health report.
+        report: Box<StatusReport>,
+    },
+    /// Reply to [`crate::Request::Diagnose`] — the doctor findings.
+    Diagnoses {
+        /// One entry per check that produced a finding.
+        items: Vec<Diagnosis>,
+    },
+    /// Reply to [`crate::Request::DoctorFix`] — what was fixed + what remains.
+    DoctorFix {
+        /// The fix outcome.
+        report: FixReport,
     },
 }
 
@@ -116,6 +136,9 @@ mod variant_name_pinning {
             Response::Error { .. } => {}
             Response::Info { .. } => {}
             Response::PhpVersions { .. } => {}
+            Response::Status { .. } => {}
+            Response::Diagnoses { .. } => {}
+            Response::DoctorFix { .. } => {}
         }
     }
 
@@ -148,6 +171,49 @@ mod variant_name_pinning {
             installed: vec![PhpVersion::new(8, 5)],
             default: PhpVersion::new(8, 5),
             updates: vec![],
+        });
+        pin_response(Response::Status {
+            report: Box::new(crate::status::StatusReport {
+                daemon_pid: 1,
+                uptime_secs: 0,
+                tld: "test".into(),
+                http: crate::status::PortStatus {
+                    requested: 80,
+                    bound: 8080,
+                    fell_back: true,
+                },
+                https: crate::status::PortStatus {
+                    requested: 443,
+                    bound: 8443,
+                    fell_back: true,
+                },
+                dns_addr: "127.0.0.1:1053".parse().unwrap(),
+                ca: crate::status::CaStatus {
+                    path: PathBuf::from("/x/ca.cert.pem"),
+                    fingerprint: "ab".repeat(32),
+                    trusted_system: Some(false),
+                },
+                resolver_installed: None,
+                default_php: PhpVersion::new(8, 5),
+                php: vec![],
+                sites: crate::status::SiteCounts::default(),
+                load_avg: Some([100, 50, 25]),
+            }),
+        });
+        pin_response(Response::Diagnoses {
+            items: vec![crate::status::Diagnosis {
+                code: crate::status::DiagnosisCode::AllGood,
+                severity: crate::status::Severity::Ok,
+                title: "x".into(),
+                detail: "x".into(),
+                remedy: None,
+            }],
+        });
+        pin_response(Response::DoctorFix {
+            report: crate::status::FixReport {
+                performed: vec![],
+                manual: vec![],
+            },
         });
         for c in [
             ErrorCode::NotFound,

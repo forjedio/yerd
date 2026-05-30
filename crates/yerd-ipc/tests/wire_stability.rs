@@ -17,7 +17,8 @@ use std::path::PathBuf;
 
 use yerd_ipc::{
     types::{PhpVersion, Site},
-    ErrorCode, Request, Response,
+    CaStatus, Diagnosis, DiagnosisCode, ErrorCode, FixReport, FixResult, PhpPoolStatus,
+    PoolRunState, PortStatus, Request, Response, Severity, SiteCounts, StatusReport,
 };
 
 // ---------- Request ----------
@@ -157,6 +158,36 @@ fn request_check_php_updates_byte_shape() {
     );
 }
 
+#[test]
+fn request_status_byte_shape() {
+    let s = serde_json::to_string(&Request::Status).unwrap();
+    assert_eq!(s, r#"{"type":"status"}"#);
+    assert_eq!(
+        serde_json::from_str::<Request>(&s).unwrap(),
+        Request::Status
+    );
+}
+
+#[test]
+fn request_diagnose_byte_shape() {
+    let s = serde_json::to_string(&Request::Diagnose).unwrap();
+    assert_eq!(s, r#"{"type":"diagnose"}"#);
+    assert_eq!(
+        serde_json::from_str::<Request>(&s).unwrap(),
+        Request::Diagnose
+    );
+}
+
+#[test]
+fn request_doctor_fix_byte_shape() {
+    let s = serde_json::to_string(&Request::DoctorFix).unwrap();
+    assert_eq!(s, r#"{"type":"doctor_fix"}"#);
+    assert_eq!(
+        serde_json::from_str::<Request>(&s).unwrap(),
+        Request::DoctorFix
+    );
+}
+
 // ---------- Response ----------
 
 #[test]
@@ -283,6 +314,155 @@ fn response_error_each_code_byte_shape() {
         assert_eq!(s, expected, "code = {code:?}");
         let back: Response = serde_json::from_str(&s).unwrap();
         assert_eq!(back, r, "code = {code:?}");
+    }
+}
+
+#[test]
+fn response_status_byte_shape() {
+    let r = Response::Status {
+        report: Box::new(StatusReport {
+            daemon_pid: 4242,
+            uptime_secs: 7,
+            tld: "test".into(),
+            http: PortStatus {
+                requested: 80,
+                bound: 8080,
+                fell_back: true,
+            },
+            https: PortStatus {
+                requested: 443,
+                bound: 8443,
+                fell_back: true,
+            },
+            dns_addr: "127.0.0.1:1053".parse().unwrap(),
+            ca: CaStatus {
+                path: PathBuf::from("/x/ca.cert.pem"),
+                fingerprint: "ab".repeat(32),
+                trusted_system: Some(false),
+            },
+            resolver_installed: Some(true),
+            default_php: PhpVersion::new(8, 5),
+            php: vec![PhpPoolStatus {
+                version: PhpVersion::new(8, 5),
+                installed_patch: Some("8.5.6".into()),
+                state: PoolRunState::Running,
+                pid: Some(99),
+                listen: Some("/run/fpm.sock".into()),
+                rss_bytes: Some(1024),
+                update_available: None,
+            }],
+            sites: SiteCounts {
+                parked: 1,
+                linked: 2,
+                secured: 1,
+            },
+            load_avg: Some([100, 50, 25]),
+        }),
+    };
+    let s = serde_json::to_string(&r).unwrap();
+    let expected = format!(
+        r#"{{"type":"status","report":{{"daemon_pid":4242,"uptime_secs":7,"tld":"test","http":{{"requested":80,"bound":8080,"fell_back":true}},"https":{{"requested":443,"bound":8443,"fell_back":true}},"dns_addr":"127.0.0.1:1053","ca":{{"path":"/x/ca.cert.pem","fingerprint":"{}","trusted_system":false}},"resolver_installed":true,"default_php":"8.5","php":[{{"version":"8.5","installed_patch":"8.5.6","state":"running","pid":99,"listen":"/run/fpm.sock","rss_bytes":1024,"update_available":null}}],"sites":{{"parked":1,"linked":2,"secured":1}},"load_avg":[100,50,25]}}}}"#,
+        "ab".repeat(32)
+    );
+    assert_eq!(s, expected);
+    let back: Response = serde_json::from_str(&s).unwrap();
+    assert_eq!(back, r);
+}
+
+#[test]
+fn response_diagnoses_byte_shape() {
+    let r = Response::Diagnoses {
+        items: vec![Diagnosis {
+            code: DiagnosisCode::PortFallback,
+            severity: Severity::Warn,
+            title: "t".into(),
+            detail: "d".into(),
+            remedy: Some("sudo yerd elevate ports".into()),
+        }],
+    };
+    let s = serde_json::to_string(&r).unwrap();
+    assert_eq!(
+        s,
+        r#"{"type":"diagnoses","items":[{"code":"port_fallback","severity":"warn","title":"t","detail":"d","remedy":"sudo yerd elevate ports"}]}"#
+    );
+    let back: Response = serde_json::from_str(&s).unwrap();
+    assert_eq!(back, r);
+}
+
+#[test]
+fn response_doctor_fix_byte_shape() {
+    let r = Response::DoctorFix {
+        report: FixReport {
+            performed: vec![FixResult {
+                code: DiagnosisCode::FpmPoolFailed,
+                ok: true,
+                message: "restarted 8.5".into(),
+            }],
+            manual: vec![Diagnosis {
+                code: DiagnosisCode::CaNotTrusted,
+                severity: Severity::Warn,
+                title: "t".into(),
+                detail: "d".into(),
+                remedy: Some("sudo yerd elevate trust".into()),
+            }],
+        },
+    };
+    let s = serde_json::to_string(&r).unwrap();
+    assert_eq!(
+        s,
+        r#"{"type":"doctor_fix","report":{"performed":[{"code":"fpm_pool_failed","ok":true,"message":"restarted 8.5"}],"manual":[{"code":"ca_not_trusted","severity":"warn","title":"t","detail":"d","remedy":"sudo yerd elevate trust"}]}}"#
+    );
+    let back: Response = serde_json::from_str(&s).unwrap();
+    assert_eq!(back, r);
+}
+
+#[test]
+fn pool_run_state_each_variant_byte_shape() {
+    for (st, expected) in [
+        (PoolRunState::Running, r#""running""#),
+        (PoolRunState::Stopped, r#""stopped""#),
+        (PoolRunState::Failed, r#""failed""#),
+    ] {
+        assert_eq!(serde_json::to_string(&st).unwrap(), expected);
+    }
+}
+
+#[test]
+fn severity_each_variant_byte_shape() {
+    for (sv, expected) in [
+        (Severity::Ok, r#""ok""#),
+        (Severity::Warn, r#""warn""#),
+        (Severity::Fail, r#""fail""#),
+    ] {
+        assert_eq!(serde_json::to_string(&sv).unwrap(), expected);
+    }
+}
+
+#[test]
+fn diagnosis_code_each_variant_byte_shape() {
+    let cases: &[(DiagnosisCode, &str)] = &[
+        (DiagnosisCode::DaemonDown, r#""daemon_down""#),
+        (DiagnosisCode::PortFallback, r#""port_fallback""#),
+        (DiagnosisCode::CaNotTrusted, r#""ca_not_trusted""#),
+        (
+            DiagnosisCode::ResolverNotInstalled,
+            r#""resolver_not_installed""#,
+        ),
+        (DiagnosisCode::NoPhpInstalled, r#""no_php_installed""#),
+        (
+            DiagnosisCode::DefaultPhpNotInstalled,
+            r#""default_php_not_installed""#,
+        ),
+        (DiagnosisCode::FpmPoolFailed, r#""fpm_pool_failed""#),
+        (
+            DiagnosisCode::PhpUpdateAvailable,
+            r#""php_update_available""#,
+        ),
+        (DiagnosisCode::NoSites, r#""no_sites""#),
+        (DiagnosisCode::AllGood, r#""all_good""#),
+    ];
+    for (code, expected) in cases {
+        assert_eq!(&serde_json::to_string(code).unwrap(), expected, "{code:?}");
     }
 }
 

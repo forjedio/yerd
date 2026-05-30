@@ -81,7 +81,7 @@ fn err(input: &str, reason: TldErrorReason) -> CoreError {
     }
 }
 
-/// Pinned ordered algorithm — see plan §2.3.
+/// Pinned, ordered validation algorithm (steps numbered inline below).
 fn validate(raw: &str) -> Result<String, CoreError> {
     // 1.
     if raw.is_empty() {

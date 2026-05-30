@@ -100,6 +100,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[allow(clippy::too_many_lines)] // one end-to-end script exercising every command
     async fn cli_commands_round_trip_against_daemon() {
         let tmp = tempfile::tempdir().unwrap();
         let dirs = make_dirs(tmp.path());
@@ -189,6 +190,57 @@ mod tests {
 
         // secure → marks `blog` for HTTPS; unsecure flips it back
         exercise_secure_toggle(&sock).await;
+
+        // status → a live snapshot reflecting the configured ports + sites.
+        match send(&sock, &Command::Status).await {
+            Response::Status { report } => {
+                assert_eq!(report.tld, "test");
+                assert_eq!(report.daemon_pid, std::process::id());
+                // `blog` was promoted to linked; `app` still present at this point.
+                assert!(report.sites.linked >= 1);
+                // No PHP installed under the tempdir → reported empty.
+                assert!(report.php.is_empty());
+            }
+            other => panic!("expected Status, got {other:?}"),
+        }
+
+        // doctor → with no PHP installed, a NoPhpInstalled FAIL is reported, and
+        // `render` returns a non-zero exit code for it.
+        let diag = send(&sock, &Command::Doctor { action: None }).await;
+        match &diag {
+            Response::Diagnoses { items } => {
+                assert!(items
+                    .iter()
+                    .any(|d| d.code == yerd_ipc::DiagnosisCode::NoPhpInstalled));
+            }
+            other => panic!("expected Diagnoses, got {other:?}"),
+        }
+        assert_eq!(map::render(&diag, false).code, 1, "FAIL → exit 1");
+        assert_eq!(
+            map::render(&diag, true).code,
+            1,
+            "JSON path agrees on exit 1"
+        );
+
+        // doctor fix → no running pools to repair, so nothing performed, but the
+        // unresolved problems surface as manual steps.
+        match send(
+            &sock,
+            &Command::Doctor {
+                action: Some(yerd::cli::DoctorAction::Fix),
+            },
+        )
+        .await
+        {
+            Response::DoctorFix { report } => {
+                assert!(report.performed.is_empty());
+                assert!(report
+                    .manual
+                    .iter()
+                    .any(|d| d.severity == yerd_ipc::Severity::Fail));
+            }
+            other => panic!("expected DoctorFix, got {other:?}"),
+        }
 
         // unlink the linked app
         assert!(matches!(

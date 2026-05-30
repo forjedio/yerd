@@ -1,6 +1,8 @@
 //! HTTP/HTTPS reverse proxy for Yerd's `*.test` traffic.
 //!
-//! See `@docs/ARCHITECTURE.md` §6.6 for the high-level design.
+//! Hand-rolled on hyper + tokio-rustls: it terminates TLS using the local CA's
+//! cert store and forwards each routed request to its site backend (PHP-FPM
+//! over FastCGI).
 
 #![forbid(unsafe_code)]
 // Domain shorthand like `FastCGI`, `FrankenPHP`, `BEGIN_REQUEST`, etc. is

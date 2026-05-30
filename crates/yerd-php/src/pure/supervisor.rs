@@ -10,8 +10,8 @@
 //! computing `Elapsed` against its own `Instant` baseline before calling
 //! `transition`.
 //!
-//! See plan §1 "Supervisor state machine" for the full transition table
-//! and the policy decisions baked into it.
+//! The full transition table (and the policy decisions baked into it) lives
+//! in [`transition`] below.
 
 use std::time::Duration;
 
@@ -168,8 +168,7 @@ pub fn backoff_for(attempts: u32) -> Duration {
 /// Pure transition function.
 ///
 /// Given the current state and an event, returns the next state plus a
-/// single action for the driver. See the table in the module docs and
-/// plan §1.
+/// single action for the driver. See the table in the module docs.
 #[must_use]
 #[allow(clippy::too_many_lines, clippy::match_same_arms)]
 pub fn transition(state: PoolState, event: Event) -> (PoolState, Action) {

@@ -2,8 +2,8 @@
 //!
 //! [`PhpError`] is **not** `Clone + Eq` because it wraps `std::io::Error` and
 //! `yerd_platform::PlatformError`. This mirrors `yerd-config::ConfigError`'s
-//! shape — see plan §6. The daemon is the only consumer; if a GUI surface
-//! ever needs a `Clone + Eq` shadow, add one then.
+//! shape. The daemon is the only consumer; if a GUI surface ever needs a
+//! `Clone + Eq` shadow, add one then.
 
 use std::fmt;
 use std::io;

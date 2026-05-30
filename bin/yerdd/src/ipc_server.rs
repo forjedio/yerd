@@ -96,6 +96,13 @@ async fn dispatch(req: Request, state: &DaemonState) -> Response {
             php_versions_response(state).await
         }
         Request::UpdatePhp { version } => update_php(version, state).await,
+        Request::Status => Response::Status {
+            report: Box::new(build_status_report(state).await),
+        },
+        Request::Diagnose => Response::Diagnoses {
+            items: yerd_doctor::diagnose(&build_status_report(state).await),
+        },
+        Request::DoctorFix => run_doctor_fix(state).await,
         // `Request` is `#[non_exhaustive]` (external crate): a wildcard is
         // required even though every known variant is handled above.
         _ => Response::Error {
@@ -119,6 +126,196 @@ async fn php_versions_response(state: &DaemonState) -> Response {
         installed,
         default: state.config.lock().await.php.default,
         updates: crate::php_updates::cached_updates(state).await,
+    }
+}
+
+/// Assemble a read-only [`yerd_ipc::StatusReport`].
+///
+/// Lock discipline: each guard is acquired, drained into owned data, and dropped
+/// before the next acquisition — never two at once, never a guard held across an
+/// `.await` that touches another lock. Mirrors the hazard documented in
+/// `handle_mutation`.
+#[allow(clippy::too_many_lines)] // straight-line assembly: one block per fact
+async fn build_status_report(state: &DaemonState) -> yerd_ipc::StatusReport {
+    use yerd_platform::SystemMetrics;
+
+    // 1. Router read → site counts (guard dropped at block end).
+    let sites = {
+        let router = state.router.read().await;
+        let mut counts = yerd_ipc::SiteCounts::default();
+        for s in router.iter() {
+            match s.kind() {
+                yerd_core::SiteKind::Parked => counts.parked += 1,
+                yerd_core::SiteKind::Linked => counts.linked += 1,
+            }
+            if s.secure() {
+                counts.secured += 1;
+            }
+        }
+        counts
+    };
+
+    // 2. Config lock → tld + default PHP (dropped).
+    let (tld, default_php) = {
+        let cfg = state.config.lock().await;
+        (cfg.tld.as_str().to_owned(), cfg.php.default)
+    };
+
+    // 3. PHP manager lock → live pool snapshots (dropped).
+    let snapshots = {
+        let mut mgr = state.php_manager.lock().await;
+        mgr.snapshots()
+    };
+
+    // 4. Installed versions (bundled + mise) + cached updates, off any guard.
+    let mut installed: Vec<yerd_core::PhpVersion> = Vec::new();
+    if let Ok(bundled) = yerd_php::discover_bundled(&state.dirs) {
+        installed.extend(bundled.into_iter().map(|(v, _)| v));
+    }
+    installed.extend(yerd_php::discover_mise().await.into_iter().map(|(v, _)| v));
+    installed.sort_unstable();
+    installed.dedup();
+    let updates = crate::php_updates::cached_updates(state).await;
+
+    let metrics = yerd_platform::ActiveSystemMetrics::new();
+    let php: Vec<yerd_ipc::PhpPoolStatus> = installed
+        .iter()
+        .map(|v| {
+            let snap = snapshots.iter().find(|s| s.version == *v);
+            let (run_state, pid, listen) = match snap {
+                Some(s) => (
+                    map_pool_state(s.state),
+                    s.pid,
+                    s.listen.as_ref().map(ToString::to_string),
+                ),
+                None => (yerd_ipc::PoolRunState::Stopped, None, None),
+            };
+            yerd_ipc::PhpPoolStatus {
+                version: *v,
+                installed_patch: crate::php_install::installed_patch(&state.dirs, *v),
+                state: run_state,
+                pid,
+                listen,
+                rss_bytes: pid.and_then(|p| metrics.rss_bytes(p)),
+                update_available: updates
+                    .iter()
+                    .find(|u| u.version == *v)
+                    .map(|u| u.latest.clone()),
+            }
+        })
+        .collect();
+
+    // 5. Unprivileged probes off any guard, on a blocking thread, errors → None.
+    let fp = state.ca_fingerprint;
+    let trusted_system = tokio::task::spawn_blocking(move || {
+        use yerd_platform::TrustStore;
+        yerd_platform::ActiveTrustStore::new()
+            .is_present_system(&fp)
+            .ok()
+    })
+    .await
+    .ok()
+    .flatten();
+
+    let tld_probe = tld.clone();
+    let resolver_installed = tokio::task::spawn_blocking(move || {
+        use yerd_platform::ResolverInstaller;
+        yerd_platform::ActiveResolverInstaller::new()
+            .is_installed(&tld_probe)
+            .ok()
+    })
+    .await
+    .ok()
+    .flatten();
+
+    let load_avg = metrics
+        .load_average()
+        .map(|[a, b, c]| [load_to_centi(a), load_to_centi(b), load_to_centi(c)]);
+
+    yerd_ipc::StatusReport {
+        daemon_pid: std::process::id(),
+        uptime_secs: state.started_at.elapsed().as_secs(),
+        tld,
+        http: state.http,
+        https: state.https,
+        dns_addr: state.dns_addr,
+        ca: yerd_ipc::CaStatus {
+            path: state.ca_path.clone(),
+            fingerprint: state.ca_fingerprint.to_hex(),
+            trusted_system,
+        },
+        resolver_installed,
+        default_php,
+        php,
+        sites,
+        load_avg,
+    }
+}
+
+/// Map a `yerd-php` pool state to the wire enum.
+fn map_pool_state(s: yerd_php::PoolRunState) -> yerd_ipc::PoolRunState {
+    match s {
+        yerd_php::PoolRunState::Running => yerd_ipc::PoolRunState::Running,
+        yerd_php::PoolRunState::Failed => yerd_ipc::PoolRunState::Failed,
+    }
+}
+
+/// Convert a (non-negative) load-average figure to integer hundredths, clamped
+/// into `u32`. The `as` cast is sign- and range-safe given the explicit clamp.
+#[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
+fn load_to_centi(x: f64) -> u32 {
+    let v = (x * 100.0).round();
+    if v <= 0.0 {
+        0
+    } else if v >= f64::from(u32::MAX) {
+        u32::MAX
+    } else {
+        v as u32
+    }
+}
+
+/// `doctor fix` — run the safe auto-fixes, then re-diagnose for the remainder.
+async fn run_doctor_fix(state: &DaemonState) -> Response {
+    let report = build_status_report(state).await;
+    let mut performed: Vec<yerd_ipc::FixResult> = Vec::new();
+
+    for action in yerd_doctor::plan_auto_fixes(&report) {
+        // `FixAction` is `#[non_exhaustive]`; `if let` handles the one known
+        // variant and ignores any future ones safely.
+        if let yerd_doctor::FixAction::RestartFpm(v) = action {
+            let outcome = {
+                let mut mgr = state.php_manager.lock().await;
+                mgr.restart(v).await
+            };
+            performed.push(match outcome {
+                Ok(_) => yerd_ipc::FixResult {
+                    code: yerd_ipc::DiagnosisCode::FpmPoolFailed,
+                    ok: true,
+                    message: format!("restarted PHP {v} FPM pool"),
+                },
+                Err(e) => yerd_ipc::FixResult {
+                    code: yerd_ipc::DiagnosisCode::FpmPoolFailed,
+                    ok: false,
+                    message: format!("failed to restart PHP {v}: {e}"),
+                },
+            });
+        }
+    }
+
+    // Re-diagnose against a fresh report; surface the remaining problems.
+    let after = build_status_report(state).await;
+    let manual = yerd_doctor::diagnose(&after)
+        .into_iter()
+        .filter(|d| {
+            matches!(
+                d.severity,
+                yerd_ipc::Severity::Warn | yerd_ipc::Severity::Fail
+            )
+        })
+        .collect();
+
+    Response::DoctorFix {
+        report: yerd_ipc::FixReport { performed, manual },
     }
 }
 
@@ -178,12 +375,35 @@ async fn update_php(version: Option<yerd_core::PhpVersion>, state: &DaemonState)
 async fn install_php(version: yerd_core::PhpVersion, state: &DaemonState) -> Response {
     let dl = crate::php_install::ReqwestDownloader::new();
     match crate::php_install::install(version, &state.dirs, &dl).await {
-        Ok(()) => Response::Ok,
+        Ok(()) => {
+            // The PhpManager's binary map is a startup snapshot; teach it about
+            // the just-installed version so the proxy can spawn its FPM pool
+            // without a daemon restart.
+            refresh_php_binaries(state).await;
+            Response::Ok
+        }
         Err(e) => Response::Error {
             code: php_error_code(&e),
             message: e.to_string(),
         },
     }
+}
+
+/// Re-discover installed PHP binaries (bundled + mise) and hand the refreshed
+/// map to the live `PhpManager`. Mirrors the discovery done at startup.
+async fn refresh_php_binaries(state: &DaemonState) {
+    let mut binaries: std::collections::BTreeMap<yerd_core::PhpVersion, std::path::PathBuf> =
+        match yerd_php::discover_bundled(&state.dirs) {
+            Ok(b) => b.into_iter().collect(),
+            Err(e) => {
+                tracing::warn!(error = %e, "bundled PHP re-discovery failed after install");
+                return;
+            }
+        };
+    for (v, p) in yerd_php::discover_mise().await {
+        binaries.insert(v, p);
+    }
+    state.php_manager.lock().await.set_binaries(binaries);
 }
 
 /// `use <ver>` (global) — require the version installed, set the live default +
@@ -347,6 +567,15 @@ mod tests {
         let dirs = dirs_in(tmp);
         let router = SiteRouter::new(RouterConfig::with_tld(Tld::new("test").unwrap()));
         let ca_path = dirs.data.join("ca.cert.pem");
+        let php_manager = std::sync::Arc::new(Mutex::new(yerd_php::PhpManager::new(
+            yerd_php::TokioProcessSpawner,
+            yerd_php::SystemClock,
+            yerd_php::io::FastCgiProbe,
+            dirs.clone(),
+            yerd_platform::ActivePortBinder::new(),
+            std::process::id(),
+            std::collections::BTreeMap::new(),
+        )));
         DaemonState {
             config: Mutex::new(yerd_config::Config::default()),
             router: Arc::new(RwLock::new(router)),
@@ -356,6 +585,18 @@ mod tests {
             ca_path,
             ca_fingerprint: yerd_platform::CaFingerprint::new([0u8; 32]),
             php_updates: tokio::sync::RwLock::new(std::collections::HashMap::new()),
+            php_manager,
+            http: yerd_ipc::PortStatus {
+                requested: 80,
+                bound: 8080,
+                fell_back: true,
+            },
+            https: yerd_ipc::PortStatus {
+                requested: 443,
+                bound: 8443,
+                fell_back: true,
+            },
+            started_at: std::time::Instant::now(),
         }
     }
 
@@ -568,6 +809,58 @@ mod tests {
                 assert_eq!(ca_fingerprint.len(), 64);
             }
             other => panic!("expected Info, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn dispatch_status_reports_runtime_facts() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_in(tmp.path());
+        match dispatch(Request::Status, &state).await {
+            Response::Status { report } => {
+                assert_eq!(report.tld, "test");
+                assert_eq!(report.default_php, PhpVersion::new(8, 3));
+                assert_eq!(report.daemon_pid, std::process::id());
+                // state_in seeds the rootless fallback ports.
+                assert!(report.http.fell_back);
+                assert_eq!(report.http.requested, 80);
+                assert_eq!(report.http.bound, 8080);
+                // No PHP installed under the tempdir.
+                assert!(report.php.is_empty());
+            }
+            other => panic!("expected Status, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn dispatch_diagnose_flags_missing_php() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_in(tmp.path());
+        match dispatch(Request::Diagnose, &state).await {
+            Response::Diagnoses { items } => {
+                assert!(items
+                    .iter()
+                    .any(|d| d.code == yerd_ipc::DiagnosisCode::NoPhpInstalled));
+            }
+            other => panic!("expected Diagnoses, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn dispatch_doctor_fix_with_no_pools_is_noop_but_reports_manual() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_in(tmp.path());
+        match dispatch(Request::DoctorFix, &state).await {
+            Response::DoctorFix { report } => {
+                // No running pools means nothing to auto-fix.
+                assert!(report.performed.is_empty());
+                // The unresolved problems (no PHP installed) surface as manual.
+                assert!(report
+                    .manual
+                    .iter()
+                    .any(|d| d.severity == yerd_ipc::Severity::Fail));
+            }
+            other => panic!("expected DoctorFix, got {other:?}"),
         }
     }
 

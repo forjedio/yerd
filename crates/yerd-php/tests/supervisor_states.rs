@@ -25,7 +25,8 @@ use tokio::sync::Mutex;
 use yerd_core::PhpVersion;
 use yerd_php::pure::supervisor::{KillSignal, MAX_RESTART_ATTEMPTS};
 use yerd_php::{
-    ChildHandle, Clock, ExitReason, HealthProbe, Listen, PhpError, PhpManager, ProcessSpawner,
+    ChildHandle, Clock, ExitReason, HealthProbe, Listen, PhpError, PhpManager, PoolRunState,
+    ProcessSpawner,
 };
 use yerd_platform::{ActivePortBinder, PlatformDirs};
 
@@ -249,6 +250,108 @@ async fn ensure_happy_path_returns_listen() {
     // Idempotent: second ensure returns immediately without re-spawning.
     let _ = mgr.ensure(v).await.unwrap();
     // Drop the manager so its child handles get dropped cleanly.
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn set_binaries_makes_a_runtime_install_visible() {
+    // Regression: a PHP version installed after the manager was built must
+    // become usable once `set_binaries` is called (the daemon does this after
+    // `yerd install php`). Before: ensure → VersionNotInstalled.
+    let v = PhpVersion::new(8, 3);
+    let spawner = FakeSpawner::new(vec![SpawnPlan {
+        pid: 101,
+        behavior: ChildBehavior::Lives,
+    }]);
+    // Build with an EMPTY binary map.
+    let dirs = make_dirs();
+    std::fs::create_dir_all(&dirs.config).unwrap();
+    std::fs::create_dir_all(&dirs.state).unwrap();
+    std::fs::create_dir_all(&dirs.runtime).unwrap();
+    let mut mgr = PhpManager::new(
+        spawner,
+        FakeClock,
+        FakeProbe::always_ok(),
+        dirs,
+        ActivePortBinder::new(),
+        4242,
+        BTreeMap::new(),
+    );
+
+    assert!(matches!(
+        mgr.ensure(v).await,
+        Err(PhpError::VersionNotInstalled { .. })
+    ));
+
+    let mut binaries = BTreeMap::new();
+    binaries.insert(v, PathBuf::from("/usr/bin/true"));
+    mgr.set_binaries(binaries);
+
+    // Now the version resolves and the (faked) spawn + health-check succeed.
+    assert!(mgr.ensure(v).await.is_ok());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn ensure_creates_missing_state_dir_for_logs() {
+    // Regression: FPM cannot open its error_log if the per-user state dir is
+    // absent. `ensure` must create the parent dirs before spawning.
+    let v = PhpVersion::new(8, 3);
+    let tmp = tempfile::tempdir().unwrap();
+    let dirs = yerd_platform::PlatformDirs {
+        config: tmp.path().join("config"),
+        data: tmp.path().join("data"),
+        state: tmp.path().join("state"), // deliberately NOT created
+        cache: tmp.path().join("cache"),
+        runtime: tmp.path().join("run"),
+    };
+    std::fs::create_dir_all(&dirs.runtime).unwrap(); // socket dir only
+    let spawner = FakeSpawner::new(vec![SpawnPlan {
+        pid: 101,
+        behavior: ChildBehavior::Lives,
+    }]);
+    let mut binaries = BTreeMap::new();
+    binaries.insert(v, PathBuf::from("/usr/bin/true"));
+    let mut mgr = PhpManager::new(
+        spawner,
+        FakeClock,
+        FakeProbe::always_ok(),
+        dirs.clone(),
+        ActivePortBinder::new(),
+        4242,
+        binaries,
+    );
+
+    assert!(mgr.ensure(v).await.is_ok());
+    // The state dir (parent of the error_log / pid file) now exists.
+    assert!(
+        dirs.state.is_dir(),
+        "ensure() should have created the state dir"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn snapshots_empty_when_nothing_started() {
+    let v = PhpVersion::new(8, 3);
+    let spawner = FakeSpawner::new(vec![]);
+    let mut mgr = make_manager(spawner, FakeProbe::always_ok(), v);
+    assert!(mgr.snapshots().is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn snapshots_report_running_pool_with_pid() {
+    let v = PhpVersion::new(8, 3);
+    let spawner = FakeSpawner::new(vec![SpawnPlan {
+        pid: 101,
+        behavior: ChildBehavior::Lives,
+    }]);
+    let mut mgr = make_manager(spawner, FakeProbe::always_ok(), v);
+    mgr.ensure(v).await.unwrap();
+
+    let snaps = mgr.snapshots();
+    assert_eq!(snaps.len(), 1);
+    assert_eq!(snaps[0].version, v);
+    assert_eq!(snaps[0].state, PoolRunState::Running);
+    assert_eq!(snaps[0].pid, Some(101));
+    assert!(snaps[0].listen.is_some());
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]

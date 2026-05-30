@@ -7,6 +7,7 @@
 use std::net::SocketAddr;
 
 use crate::error::ops;
+use crate::metrics::SystemMetrics;
 use crate::paths::{Paths, PlatformDirs};
 use crate::port_binder::{BoundPort, PortBinder, PortPair};
 use crate::resolver::ResolverInstaller;
@@ -28,6 +29,14 @@ impl Paths for UnsupportedPaths {
 /// Stub `TrustStore` for unsupported OSes.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct UnsupportedTrustStore;
+
+impl UnsupportedTrustStore {
+    /// Construct.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self
+    }
+}
 
 impl TrustStore for UnsupportedTrustStore {
     fn install_system(&self, _: &str, _: &CaFingerprint) -> Result<(), PlatformError> {
@@ -58,6 +67,14 @@ impl TrustStore for UnsupportedTrustStore {
 /// Stub `ResolverInstaller` for unsupported OSes.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct UnsupportedResolverInstaller;
+
+impl UnsupportedResolverInstaller {
+    /// Construct.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self
+    }
+}
 
 impl ResolverInstaller for UnsupportedResolverInstaller {
     fn install(&self, _: &str, _: SocketAddr) -> Result<(), PlatformError> {
@@ -94,5 +111,28 @@ impl PortBinder for UnsupportedPortBinder {
         Err(PlatformError::Unsupported {
             operation: ops::BIND_PAIR,
         })
+    }
+}
+
+/// Stub `SystemMetrics` for unsupported OSes — metrics are best-effort, so this
+/// returns `None` (no metrics) rather than an error.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct UnsupportedSystemMetrics;
+
+impl UnsupportedSystemMetrics {
+    /// Construct.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self
+    }
+}
+
+impl SystemMetrics for UnsupportedSystemMetrics {
+    fn rss_bytes(&self, _: u32) -> Option<u64> {
+        None
+    }
+
+    fn load_average(&self) -> Option<[f64; 3]> {
+        None
     }
 }

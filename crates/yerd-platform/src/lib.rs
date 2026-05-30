@@ -24,6 +24,7 @@
 
 pub mod error;
 pub mod helper;
+pub mod metrics;
 pub mod paths;
 pub mod port_binder;
 pub mod pure;
@@ -34,9 +35,12 @@ mod os;
 
 pub use error::{BindPairErrorReason, PlatformError, ResolverErrorReason, TrustStoreErrorReason};
 pub use helper::{ArgvParseError, HelperInvocation};
+pub use metrics::SystemMetrics;
 pub use paths::{Paths, PlatformDirs};
 pub use port_binder::{BoundPort, PortBinder, PortPair};
 pub use resolver::ResolverInstaller;
 pub use trust_store::{CaFingerprint, FingerprintParseError, NssFailure, NssOutcome, TrustStore};
 
-pub use os::active::{ActivePaths, ActivePortBinder, ActiveResolverInstaller, ActiveTrustStore};
+pub use os::active::{
+    ActivePaths, ActivePortBinder, ActiveResolverInstaller, ActiveSystemMetrics, ActiveTrustStore,
+};

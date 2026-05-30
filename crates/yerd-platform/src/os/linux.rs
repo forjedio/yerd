@@ -16,9 +16,10 @@ use std::path::{Path, PathBuf};
 use directories::ProjectDirs;
 
 use crate::error::ops;
+use crate::metrics::SystemMetrics;
 use crate::paths::{Paths, PlatformDirs};
 use crate::port_binder::{BoundPort, PortBinder, PortPair};
-use crate::pure::{pem_match, port_plan, resolv_conf, resolved_drop_in};
+use crate::pure::{pem_match, port_plan, proc_metrics, resolv_conf, resolved_drop_in};
 use crate::resolver::ResolverInstaller;
 use crate::trust_store::{CaFingerprint, NssOutcome, TrustStore};
 use crate::{BindPairErrorReason, PlatformError, ResolverErrorReason, TrustStoreErrorReason};
@@ -369,6 +370,34 @@ pub(crate) fn bind_pair_impl(
                 }),
             }
         }
+    }
+}
+
+/// Linux `SystemMetrics` implementation.
+///
+/// Reads `/proc/<pid>/status` (`VmRSS`) and `/proc/loadavg`, delegating the
+/// parsing to [`crate::pure::proc_metrics`]. Every read failure collapses to
+/// `None` — metrics are best-effort.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct LinuxSystemMetrics;
+
+impl LinuxSystemMetrics {
+    /// Construct.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self
+    }
+}
+
+impl SystemMetrics for LinuxSystemMetrics {
+    fn rss_bytes(&self, pid: u32) -> Option<u64> {
+        let contents = fs::read_to_string(format!("/proc/{pid}/status")).ok()?;
+        proc_metrics::parse_vmrss_bytes(&contents)
+    }
+
+    fn load_average(&self) -> Option<[f64; 3]> {
+        let contents = fs::read_to_string("/proc/loadavg").ok()?;
+        proc_metrics::parse_loadavg(&contents)
     }
 }
 

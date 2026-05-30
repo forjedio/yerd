@@ -1,238 +1,322 @@
+<div align="center">
+
 # Yerd
 
-A cross-platform local PHP development environment for **macOS, Linux, and Windows**. Yerd serves projects on `.test` domains over HTTP and HTTPS, manages multiple PHP versions per site, and optionally runs MySQL / MariaDB / PostgreSQL / Redis as supervised native processes.
+**A fast, rootless, open-source local PHP development environment.**
 
-Think Laravel Herd — but cross-platform, open-source, rootless in normal operation, and built on a single statically-typed Rust core that drives both a CLI and a native-feeling GUI.
+Serve your projects on `.test` domains over HTTP **and** HTTPS, run a different
+PHP version per site, and manage it all from one tiny daemon — no Docker, no
+`sudo` for everyday work, no subscription.
 
-> **Status:** Early development. The two foundation crates (`yerd-core`, `yerd-ipc`) are in place. Most of the system is not built yet — see [What's next](#whats-next).
+[![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
+[![Platforms: macOS · Linux](https://img.shields.io/badge/platforms-macOS%20%C2%B7%20Linux-success.svg)](#installation)
+[![Built with Rust](https://img.shields.io/badge/built%20with-Rust-orange.svg)](https://www.rust-lang.org)
 
-> **Lineage note.** This is a ground-up Rust replacement for the author's prior Go project of the same name (`LumoSolutions/yerd`, v1). v1 is reference-only — there is no command-surface compatibility, no config-format compatibility, and no carried-over assumptions (v1 builds PHP from source and elevates with `sudo` for most operations; v2 ships prebuilt PHP and runs unprivileged).
-
----
-
-## Goals
-
-- **Cross-platform.** macOS, Linux, Windows — one codebase, native installers per OS.
-- **Rootless.** Setup may elevate once (install a local CA, configure DNS, grant port-bind capability). Day-to-day operation runs as the user.
-- **Per-site PHP version.** Ship prebuilt PHP binaries; let the user pick the version per site.
-- **HTTPS by default.** Local CA + per-site leaf certificates, no `mkcert` dance.
-- **One source of truth.** A single daemon owns runtime state. The CLI and GUI are both *clients* of the daemon — neither reimplements its logic.
-- **Native-feeling UI.** Tauri v2 (system webview) for the desktop app, not Electron — typical installer ~8–15 MB rather than ~100 MB.
-- **Optional service supervision.** MySQL, MariaDB, PostgreSQL, Redis — run as Yerd-supervised child processes, no Docker.
+</div>
 
 ---
 
-## Architecture
+## Why Yerd?
 
-The single organising rule:
+If you've used [Laravel Herd](https://herd.laravel.com), you know the appeal:
+type a URL like `https://my-app.test` and your site just works, with the right
+PHP version and a trusted certificate. Yerd brings that same frictionless
+experience — but **cross-platform, fully open-source, and rootless by design.**
 
-> **Pure logic lives in library crates. I/O and OS calls are pushed to the edges behind traits.**
+- 🚀 **Zero-config sites.** Drop a project in a parked directory and it's instantly
+  live at `<name>.test`.
+- 🔒 **HTTPS that just works.** A local certificate authority issues per-site
+  certificates automatically — no `mkcert` dance, no browser warnings once trusted.
+- 🐘 **Any PHP, per site.** Install multiple PHP versions and pin each site to the
+  one it needs.
+- 🪶 **Lightweight & native.** A single ~8 MB static daemon. No containers, no VM,
+  no Electron.
+- 🛡️ **Rootless.** Setup elevates **once**; everything after runs as your user.
+- 🔍 **Self-diagnosing.** `yerd status` and `yerd doctor` tell you exactly what's
+  running and how to fix what isn't.
 
-Concretely:
+---
 
-1. **Pure crates do no I/O** — no filesystem, no network, no process spawning, no clock reads, no environment reads. They are unit-testable with in-memory fixtures and zero setup.
-2. **Side effects go behind traits** (`ProcessSpawner`, `TrustStore`, `ResolverInstaller`, `PortBinder`, `Downloader`, `Clock`, …). Business logic depends on the trait; tests inject a fake; one real impl per OS lives in `yerd-platform` or a crate's `os` module behind `#[cfg(...)]`.
-3. **Binaries are thin.** The daemon, CLI, and privileged helper binaries wire crates together. Behaviour belongs in crates with tests.
-4. **The IPC protocol is a stable contract.** Wire shapes are versioned. Additions are backward-compatible; renames break CI via tag-stability tests.
-5. **One source of truth.** The daemon owns state. CLI and GUI are clients.
+## Yerd vs. Herd vs. Lerd
 
-### Process model
+|  | Laravel Herd | Lerd | **Yerd** |
+|---|:---:|:---:|:---:|
+| Free | ✅ (Pro is paid) | ✅ | ✅ |
+| Open source | ❌ | ✅ | ✅ |
+| Linux support | ❌ | ✅ | ✅ |
+| macOS support | ✅ | ✅ | ✅ |
+| Windows support | ✅ | ✅ | ✅ * |
+| Automatic `.test` domains | ✅ | ✅ | ✅ |
+| HTTPS with a trusted local CA | ✅ | ✅ | ✅ |
+| Multiple PHP versions | ✅ | ✅ | ✅ |
+| PHP version **per site** | ✅ | ✅ | ✅ |
+| First-class CLI | ✅ | ✅ | ✅ |
+| Menu-bar / tray GUI | ✅ | ❌ | ✅ * |
+| Database & cache services (MySQL · MariaDB · PostgreSQL · Redis) | ✅ (Pro) | ✅ | ✅ * |
+| Runs rootless day-to-day | ✅ | ✅ † | ✅ |
+| **No** Docker / Podman / containers required | ✅ | ❌ | ✅ |
+| Lightweight (no VM, no container images) | ✅ | ❌ | ✅ |
+| Built-in health checks (`doctor`) | ❌ | ❌ | ✅ |
+| Under the hood | Native app (nginx + dnsmasq) | Containers (Podman/Docker) | Native Rust (`rustls` proxy + embedded DNS) |
 
-Two long-lived processes plus a one-shot privileged helper:
+<sub>✅\* = on the Yerd [roadmap](#roadmap). Everything without an asterisk works today on macOS and Linux.</sub>
+<br><sub>**Lerd** runs your stack in containers via **Podman/Docker** — so it's
+cross-platform and trivially adds database/cache services, but it pulls and runs
+container images rather than native processes. † Rootless when run on rootless
+Podman.</sub>
+<br><sub>**On Laravel Valet:** Valet is the original macOS-only Laravel dev tool
+(nginx + dnsmasq, installed via Homebrew/Composer). None of the three require it —
+Herd is the native standalone successor that bundles its own nginx (and reuses
+Valet's framework "drivers"), Lerd runs everything in containers, and Yerd uses
+its own Rust proxy + DNS. No Valet, no Homebrew.</sub>
 
-- **`yerdd`** — the daemon. Runs as the user, owns runtime state, exposes an IPC socket.
-- **`yerd-gui`** — the Tauri desktop app. **Never** runs as root.
-- **`yerd`** — the CLI. IPC client.
-- **`yerd-helper`** — a strict, auditable one-shot binary that performs the few operations that need elevation (install the CA into system trust stores, set `cap_net_bind_service`, install the DNS resolver). Validates every argument, never shells out, never accepts network input, does exactly one thing, exits.
+---
 
-### Stack (locked decisions)
+## Installation
+
+> **The Yerd daemon runs entirely as your user — never as root.** `sudo` shows up
+> in exactly two places, neither of them ongoing: installing the system package
+> (standard for *any* `apt`/`.deb` package), and a single **one-time** setup step.
+> Day-to-day use needs no elevation. Prefer no `sudo` at all? See
+> [No system package](#from-source--no-system-package).
+
+### Debian / Ubuntu (`.deb`)
+
+```bash
+# 1. Install the package (standard system install — writes to /usr/bin):
+sudo dpkg -i yerd_2.0.1_amd64.deb
+
+# 2. Start the per-user daemon (runs as you, not root):
+systemctl --user enable --now yerd
+loginctl enable-linger "$USER"          # optional: keep it running after logout
+```
+
+The package's post-install step grants `yerdd` the `cap_net_bind_service`
+capability so the **unprivileged** daemon can bind ports 80/443 — re-applied
+automatically on every upgrade. If that's unavailable, Yerd falls back to
+`8080`/`8443` (and `yerd doctor` tells you).
+
+### One-time setup
+
+Run this **once** for the full experience. It's the only command that uses root,
+and each part is independent:
+
+```bash
+sudo yerd elevate            # trust the local CA · route *.test · allow 80/443
+# …or pick pieces:  sudo yerd elevate trust | resolver | ports
+```
+
+This mirrors the one-time admin step Herd and Valet also need — reconfiguring the
+system DNS resolver and trusting a local certificate can't be done rootlessly.
+After it, `yerd` never touches root again.
+
+### From source / no system package
+
+Don't want a system package (or any `sudo` to install)? Build and drop the
+binaries on your `PATH` — no root required:
+
+```bash
+git clone https://github.com/forjedio/yerd
+cd yerd
+cargo build --release
+install -Dm755 target/release/{yerd,yerdd,yerd-helper} -t ~/.local/bin
+yerdd serve &                # rootless; runs on 8080/8443 out of the box
+```
+
+`cargo xtask deb` produces a `.deb` instead if you'd rather package it. (Browser
+`*.test` resolution and trusted HTTPS still need the one-time `sudo yerd elevate`
+above, or you can drive sites directly on `127.0.0.1:8080`.)
+
+> PHP itself is **not** bundled — Yerd downloads prebuilt, static PHP builds on
+> demand when you run `yerd install php`. Installing Yerd is tiny and fast.
+
+---
+
+## Quick start
+
+```bash
+# 1. Install a PHP version and make it the default
+yerd install php 8.5
+yerd use 8.5
+
+# 2a. Park a directory — every sub-folder becomes <folder>.test
+yerd park ~/Sites
+#     ~/Sites/blog  ->  http://blog.test
+
+# 2b. …or link a single project under a name you choose
+yerd link my-app ~/code/my-app
+#     ->  http://my-app.test
+
+# 3. Turn on HTTPS for a site
+yerd secure my-app
+#     ->  https://my-app.test  (trusted, thanks to the local CA)
+
+# 4. Pin one site to a different PHP version
+yerd use my-app 8.3
+
+# 5. See what's going on / fix problems
+yerd status
+yerd doctor
+yerd doctor fix
+```
+
+Open `https://my-app.test` in your browser — that's it.
+
+---
+
+## Command reference
+
+| Command | What it does |
+|---|---|
+| `yerd park <dir>` | Park a directory; each child folder is served at `<name>.test`. |
+| `yerd link <name> <dir>` | Serve a single directory as a named site. |
+| `yerd unlink <name>` | Remove a linked/parked site. |
+| `yerd sites` | List every known site (kind, PHP version, HTTPS, doc-root). |
+| `yerd use <version>` | Set the **global** default PHP version. |
+| `yerd use <site> <version>` | Set one site's PHP version. |
+| `yerd secure <site>` / `unsecure <site>` | Turn HTTPS on / off for a site. |
+| `yerd install php <version>` | Download + install a PHP version. |
+| `yerd list php [--check]` | List installed PHP versions (and available updates). |
+| `yerd update php [<version>]` | Update one (or all) installed PHP versions. |
+| `yerd status` | Snapshot: daemon, ports, DNS, CA trust, PHP pools (PID/RAM), load. |
+| `yerd doctor` / `yerd doctor fix` | Diagnose common problems; auto-repair the safe ones. |
+| `yerd elevate [trust\|resolver\|ports]` | One-time privileged setup (run with `sudo`). |
+| `yerd unelevate [...]` | Reverse what `elevate` configured. |
+
+Add `--json` to any command for machine-readable output.
+
+---
+
+## Principles
+
+Yerd is built around a few deliberate decisions that make it safe, fast, and
+maintainable.
+
+### 🛡️ Rootless, with a tight privilege boundary
+
+Yerd runs as **three** pieces, and the GUI/daemon **never** run as root:
+
+- **`yerdd`** — the unprivileged per-user daemon. It owns all runtime state and
+  serves the proxy, DNS, and PHP-FPM pools.
+- **`yerd`** — the CLI, a thin client that just talks to the daemon over a
+  per-user socket.
+- **`yerd-helper`** — a strict, auditable one-shot binary for the handful of
+  operations that genuinely need root (trust the CA, configure the DNS resolver,
+  grant the port capability). It takes typed arguments, never shells out, never
+  touches the network, does exactly one thing, and exits.
+
+Setup may elevate **once**; daily use never does.
+
+### 🔒 HTTPS without the hassle
+
+Yerd generates a local certificate authority and issues a leaf certificate per
+site on demand, terminated by a hand-rolled `rustls` reverse proxy.
+`sudo yerd elevate trust` adds the CA to your system trust store — after that,
+every `.test` site is green-padlock valid. **No OpenSSL anywhere.**
+
+### 🧠 One source of truth
+
+The daemon owns state. The CLI (and the future GUI) are *clients* — they never
+reimplement daemon logic, so the CLI and GUI can never disagree.
+
+### 🧩 A clean, testable core
+
+> **Pure logic lives in library crates. I/O and OS calls are pushed to the edges
+> behind traits.**
+
+Business logic is unit-tested with in-memory fakes; real filesystem, network,
+process, and OS calls live behind traits (`ProcessSpawner`, `TrustStore`,
+`ResolverInstaller`, `PortBinder`, `Clock`, …) with one implementation per OS.
+The result: a large, fast test suite and behaviour that's identical across
+platforms.
+
+### 🔕 Local and quiet
+
+Yerd makes no network calls except the ones you explicitly ask for (downloading
+the PHP builds you install). PHP updates are **notify-only** — Yerd tells you when
+a newer patch exists, but never installs anything behind your back.
+
+---
+
+## How it works
+
+```
+            ┌──────────────┐         .test domain
+ browser ──▶│  yerdd        │◀── embedded DNS resolver (*.test → 127.0.0.1)
+            │  reverse      │
+            │  proxy        │── HTTPS termination via local CA (rustls + rcgen)
+            └──────┬────────┘
+                   │ FastCGI
+            ┌──────▼────────┐
+            │  PHP-FPM      │  one supervised pool per PHP version
+            │  pools        │  (downloaded static builds)
+            └───────────────┘
+
+  yerd (CLI) ──IPC socket──▶ yerdd          sudo yerd elevate ──▶ yerd-helper
+```
 
 | Concern | Choice |
 |---|---|
 | Core language | Rust (edition 2021, MSRV 1.77) |
-| GUI | Tauri v2 + Vue 3 (`<script setup>`) + TypeScript + Tailwind |
-| TLS | `rustls` (never OpenSSL); `rcgen` for the local CA |
-| Reverse proxy | `hyper` + `hyper-util` + `tokio-rustls`, hand-rolled (~600 LOC) |
-| DNS | `hickory-dns` embedded resolver answering `*.test` |
-| PHP binaries | `static-php-cli` builds per platform/arch/version |
-| PHP execution | PHP-FPM per version for MVP; FrankenPHP worker mode later |
-| Async runtime | `tokio`, only in I/O layers — never in pure crates |
-| IPC transport | Unix domain socket (macOS/Linux) + named pipe (Windows), via `interprocess` |
+| TLS / local CA | `rustls` + `rcgen` (never OpenSSL) |
+| Reverse proxy | hand-rolled `hyper` + `hyper-util` + `tokio-rustls` |
+| DNS | `hickory-dns` embedded resolver for `*.test` |
+| PHP runtime | `static-php-cli` builds, PHP-FPM per version |
+| IPC | Unix socket / Windows named pipe via `interprocess` |
+| GUI (roadmap) | Tauri v2 + Vue 3 + TypeScript + Tailwind |
 
 ---
 
-## Repository layout
+## Roadmap
 
-```
-yerd/
-├── Cargo.toml                  # workspace manifest
-├── rust-toolchain.toml         # pinned stable toolchain (1.77 + rustfmt, clippy, llvm-tools-preview)
-├── crates/                     # libraries — pure where possible
-│   ├── yerd-core/              # ✅ domain model + host→site routing
-│   ├── yerd-ipc/               # ✅ UI/CLI ⇄ daemon protocol + framing
-│   ├── yerd-config/            # ✅ persisted config (TOML)
-│   ├── yerd-tls/               # 🚧 local CA + per-site leaf certs
-│   ├── yerd-dns/               # 🚧 *.test resolver
-│   ├── yerd-proxy/             # 🚧 hyper + rustls reverse proxy
-│   ├── yerd-php/               # 🚧 PHP-FPM pool supervision + version mgmt
-│   ├── yerd-services/          # 🚧 MySQL / MariaDB / Postgres / Redis lifecycle
-│   └── yerd-platform/          # 🚧 OS adapters behind traits (trust store, resolver, port binding, autostart, paths, elevation)
-├── bin/                        # 🚧 binary targets
-│   ├── yerdd/                  # the daemon (orchestration + IPC server)
-│   ├── yerd/                   # the CLI (IPC client)
-│   └── yerd-helper/            # privileged one-shot
-├── apps/                       # 🚧 GUI
-│   └── yerd-gui/               # Tauri v2 app: src-tauri (Rust) + Vue frontend
-└── xtask/                      # 🚧 build automation
-```
+Shipping today (macOS + Linux): multi-version PHP, parked/linked `.test` sites,
+HTTP + HTTPS with a local CA, the embedded DNS resolver, `status`/`doctor`, and
+the Debian package.
 
-Legend: ✅ shipped · 🚧 planned
+On the way:
 
-### Crates
-
-#### `yerd-core` — domain model & routing  · **STATUS: shipped**
-
-The pure heart of Yerd. Defines:
-
-- `PhpVersion` — strict major.minor with a custom serde impl that round-trips as the canonical string `"8.3"`.
-- `Tld` — validated DNS suffix newtype (ASCII, lowercased, DNS-label rules).
-- `Site` / `SiteKind` — a routable target with a private `name` invariant; renaming is a router-level operation, not a setter.
-- `RouterConfig` — typed TLD plus a precomputed `.{tld}` suffix for the resolver hot path.
-- `SiteRouter` — `BTreeMap`-backed registry with `new` / `from_sites` / `insert` / `remove` / `get` / `get_mut` / `iter` / `len` / `is_empty` / `config` and the host→site `resolve` algorithm.
-- `CoreError` — single error type, every public error enum `#[non_exhaustive]`.
-
-The `resolve` algorithm honours: port stripping, FQDN trailing-dot, case-insensitivity, TLD enforcement, exact-match beats wildcard, and wildcard-subdomain → parent (Valet behaviour). IPv6 literals and non-ASCII hosts are positively rejected.
-
-100% pure: no I/O, no async, no internal `yerd-*` deps. Only `serde` + `thiserror` in `[dependencies]`.
-
-**Test coverage: 96.70% lines** across 79 tests (73 unit + 6 integration), measured with `cargo-llvm-cov`.
-
-#### `yerd-ipc` — protocol & framing  · **STATUS: shipped**
-
-The wire contract between clients (CLI, GUI) and the daemon. Defines:
-
-- `Request` / `Response` / `ErrorCode` — internally tagged JSON (`#[serde(tag = "type", rename_all = "snake_case")]`), every public enum `#[non_exhaustive]` for additive evolution.
-- `encode_frame` / `FrameDecoder` / `DEFAULT_MAX_FRAME` (16 MiB) — pure length-prefixed frame codec (4-byte BE `u32` length prefix). Decoder handles partial reads, pipelined frames, and poisoning on oversized declared lengths.
-- `encode_message` / `decode_message` — thin `serde_json` wrappers.
-- `FrameError` (pure, `Clone + Eq`) + `IpcError` + `IpcErrorKind` (`Clone + Eq` shadow for Tauri/GUI consumers that can't clone `serde_json::Error`).
-- `PROTOCOL_VERSION` — exposed for future use; a `Hello`/`Welcome` handshake will land before the first breaking change.
-- `types` module re-exporting `yerd_core::{Site, PhpVersion, SiteKind}` so downstream consumers can depend on `yerd-ipc` alone.
-- Optional `transport` feature (gated on `tokio`): `write_message`, `read_frame`, `read_message` generic over `AsyncRead`/`AsyncWrite`. Socket and named-pipe binding stays in the binaries.
-
-Default build is pure (no `tokio`, no async, no I/O, no `tracing`). Tag-stability tests pin every wire shape; inline `variant_name_pinning` modules catch Rust-side variant renames at compile time. A grep gate forbids per-field `#[serde(rename = "...")]` so the rename trap is symmetrical (Rust name == JSON tag, enforced).
-
-**Test coverage: 57 tests** (21 inline unit + 16 frame-codec + 7 round-trip + 13 wire-stability) with `--features transport`. Six dependencies: `yerd-core`, `serde`, `serde_json`, `thiserror`, and (optional) `tokio`.
-
-#### `yerd-config` — persisted configuration  · **STATUS: shipped**
-
-The on-disk TOML schema and round-trip pipeline. Defines:
-
-- `Config` — top-level schema with private `version` plus `tld`, `ports`, `php`, `parked`, `linked`, `services`. `Default` produces a `version = CURRENT_VERSION` config that round-trips cleanly.
-- `Ports` (`well_known()` = 80/443, `unprivileged()` = 8080/8443), `PhpSection` (`default = 8.3`), `ParkedSection` (`BTreeSet<String>` paths), `ServicesSection` (`BTreeSet<String>` enabled, validated against `KNOWN_SERVICES`).
-- `Config::from_toml` / `to_toml` / `validate` — pure parse/serialise/validate. Wire mirrors are raw-typed (`String`, `PathBuf`) so `yerd-core` per-field validation failures surface as typed `ConfigError::Core(CoreError)` rather than collapsing into `serde::de::Error::custom`. Every nested wire mirror carries `#[serde(deny_unknown_fields)]`.
-- `Config::load` / `save` — thin I/O leaves; `save` uses `tempfile::NamedTempFile` + `persist` for write-temp-then-rename (atomic via `rename(2)` on Unix, `MoveFileExW` with `MOVEFILE_REPLACE_EXISTING` on Windows).
-- `ConfigError` — `Parse`, `Serialize`, `Validate { reason }`, `Core`, `UnsupportedVersion`, `Migration { reason }`, `Io { path: PathBuf, source }`. Every public error enum `#[non_exhaustive]`; reason sub-enums each carry an explicit `Display` impl.
-- `CURRENT_VERSION` + the `migrate::{STEPS, MigrationStep, read_version, up}` scaffold. Zero migrations in v0; v1→v2 lands without parse-path restructuring.
-
-Public schema types deliberately do **not** derive `Serialize` / `Deserialize` — the crate-internal wire mirrors handle the TOML round-trip, keeping the public surface free of an accidental serde contract.
-
-**Test coverage: 91.61% lines** across 72 tests (54 unit + 18 integration). Workspace lints green; `cargo fmt`/`clippy --workspace -D warnings`/`test`/`llvm-cov --fail-under-lines 80` all pass.
-
-#### `yerd-tls` — local CA & leaf certificates  · **STATUS: planned**
-
-mkcert-equivalent CA + per-site leaf issuance via `rcgen`. Pure crypto: callers pass PEM strings; no disk, no trust-store install, no TLS server.
-
-#### `yerd-dns` — `.test` resolver  · **STATUS: planned**
-
-Pure responder ("given a query name + TLD, return the answer") + a `hickory-dns` server that calls it. Does **not** configure the OS resolver — that's `yerd-platform::ResolverInstaller`.
-
-#### `yerd-proxy` — reverse proxy  · **STATUS: planned**
-
-Hand-rolled `hyper` + `rustls` reverse proxy. Listens on 80/443 (or 8080/8443 rootless), selects the leaf cert per SNI, and forwards to PHP-FPM (FastCGI on Unix sockets / TCP on Windows) or a FrankenPHP worker. WebSocket and HTTP/2 pass-through.
-
-#### `yerd-php` — PHP-FPM supervision  · **STATUS: planned**
-
-Per-version FPM pool config, spawn/health-check/restart state machine, version discovery (Yerd's bundled `static-php-cli` builds plus optional `mise` integration). Process spawning behind a `ProcessSpawner` trait; downloads behind a `Downloader` trait.
-
-#### `yerd-services` — databases & caches  · **STATUS: planned**
-
-DBngin-style lifecycle for MySQL, MariaDB, PostgreSQL, Redis as native child processes (no Docker). Generic supervisor driven by `ServiceDefinition` descriptors. Downloads SHA-256-verified.
-
-#### `yerd-platform` — OS abstraction layer  · **STATUS: planned**
-
-Per-OS, often-privileged operations behind traits: `Paths`, `TrustStore`, `ResolverInstaller`, `PortBinder`, `Autostart`, `Elevation`. One thin implementation per OS selected by `#[cfg(...)]`.
+- 🖥️ **Desktop GUI** — a Tauri v2 menu-bar/tray app over the same daemon.
+- 🗄️ **Service supervision** — MySQL, MariaDB, PostgreSQL, and Redis as
+  Yerd-managed native processes (no Docker).
+- 🪟 **Windows support** — NRPT-based resolver, named-pipe IPC, system cert store,
+  TCP-loopback PHP-FPM.
+- 📦 **More installers** — `.dmg`, `.AppImage`, and signed/notarised builds.
 
 ---
 
-## What's been built
+## Development
 
-- **Workspace scaffolding.** `Cargo.toml`, `rust-toolchain.toml` pinned to stable 1.77 with `rustfmt`, `clippy`, `llvm-tools-preview`. Lint table lifted to `[workspace.lints]` so every crate inherits the same `unsafe_code = "forbid"` + clippy `unwrap`/`expect`/`panic`/`indexing_slicing`/`pedantic` posture.
-- **`yerd-core` v0.1.0.** Complete — 7 modules, 9 public types, 79 tests, 96.70% line coverage, zero `unwrap`/`expect`/`panic`/indexing in non-test code.
-- **`yerd-ipc` v0.1.0.** Complete — 7 modules, 57 tests with `--features transport`, length-prefixed JSON framing with poisoning on oversized frames, internally-tagged enums with byte-exact wire pins, async transport helpers gated behind an opt-in feature. Default build is pure (no `tokio`, no I/O). See the [crate-level README](crates/yerd-ipc/README.md) for the wire-stability policy and the no-rename rule.
-- **`yerd-config` v0.1.0.** Complete — 7 modules, 72 tests, 91.61% line coverage; raw-typed wire mirrors keep `yerd-core` validation failures surfaceable as typed `ConfigError::Core`; schema-versioned with a forward-migration scaffold; atomic `save` via `tempfile::NamedTempFile::persist`. See the [crate-level README](crates/yerd-config/README.md) for I/O semantics, path-storage rationale, and the TLD-trailing-dot normalisation note.
-- **Cross-crate wire-stability gates.** `crates/yerd-core/tests/wire_stability.rs` pins the JSON byte shape of every `yerd-core` type that travels over IPC; `crates/yerd-ipc/tests/wire_stability.rs` pins every `Request`, `Response`, and `ErrorCode` variant. A rename anywhere fails CI before any client sees a divergent format.
+```bash
+# The full CI gate (all must pass):
+cargo fmt --all --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
 
-### Local gate (run from the repo root)
-
-```sh
-cargo fmt --all -- --check
-cargo clippy --workspace --all-targets --all-features -- -D warnings
-cargo test --workspace --all-features
-cargo llvm-cov --package yerd-core --fail-under-lines 80
-! grep -REn '#\[serde\([^)]*[^_[:alnum:]]?rename[[:space:]]*=' crates/yerd-ipc/src/
+# Build a .deb locally:
+cargo xtask deb
 ```
 
-All gates are currently green on Linux. `--all-features` exercises the `yerd-ipc` `transport` feature and its async smoke tests. `cargo-llvm-cov` is an out-of-band tool (`cargo install cargo-llvm-cov --version 0.6.15 --locked`); the rest is part of the standard toolchain.
+Conventions: `thiserror` in libraries / `anyhow` only at binary top level; no
+`unwrap`/`expect`/`panic` outside tests (clippy-enforced); pure crates stay pure;
+the IPC wire format is a versioned, byte-pinned contract.
 
 ---
 
-## What's next
+## Lineage
 
-Order matters — each crate is built against the contracts of the one beneath it. The "must-not" rules from each crate (no internal deps upwards, no I/O in pure crates) prevent cycles by construction.
-
-**Phase 0 — foundations.**
-1. `yerd-core` ✅
-2. `yerd-ipc` ✅
-
-**Phase 1 — MVP (macOS + Linux first).**
-3. `yerd-config` ✅
-4. `yerd-tls` — CA + leaf issuance (pure crypto).
-5. `yerd-platform` — `Paths`, then `TrustStore`, `ResolverInstaller`, `PortBinder` (macOS + Linux impls first).
-6. `yerd-dns` — `.test` responder + hickory server.
-7. `bin/yerd-helper` — `install-ca`, `install-resolver`, `setcap`.
-8. `yerd-php` — FPM config render + supervision (one bundled version to start).
-9. `yerd-proxy` — HTTP first, then HTTPS via `yerd-tls` cert store.
-10. `bin/yerdd` — wire 1–9 together; IPC server transport.
-11. `bin/yerd` ✅ — `ping` / `sites` / `park` / `link` / `unlink` / `use` / `secure` / `unsecure` against the daemon, with `--json`. Maps each command to one `yerd-ipc` request; the daemon's IPC dispatch handles the mutations (config + live router) end-to-end. `secure`/`unsecure` flip a site's HTTPS flag via the `SetSecure` request; certs are minted lazily by the proxy's cert store on the TLS handshake, so no mutation-time TLS wiring is needed.
-
-12. `bin/yerd elevate` ✅ — one-shot privileged setup, run via `sudo`: `elevate trust` (trust the local CA in the OS system store), `elevate resolver` (route `*.test` to the daemon's DNS responder), `elevate ports` (`setcap cap_net_bind_service` so the daemon can bind 80/443), and bare `elevate` for all three; `unelevate` reverts. Runs the CLI as root only to orchestrate — it fetches read-only facts from the running daemon (`DaemonInfo` over the user's socket) and spawns the audited `yerd-helper` per op. The DNS responder now binds a **fixed** `dns_port` (default 1053) so an installed resolver config survives daemon restarts.
-
-13. `bin/yerd` PHP version management ✅ — `install php <ver>` installs **any version the static-php-cli distribution publishes**: the daemon fetches the distribution's live listing, resolves the latest patch of the requested minor, downloads the prebuilt static CLI + FPM (reqwest + rustls, no OpenSSL), and unpacks them into `~/.local/share/yerd/php/php-<ver>/`. Integrity is **TLS to the distribution host** (no sha pinning — so new PHP releases work without updating yerd). `use <ver>` sets the **global** default — repoints the terminal `php` shim (`~/.local/share/yerd/bin/php`, add it to your PATH) **and** the site fallback (`config.php.default`); `use <site> <ver>` still sets one site; `list php` shows installed versions and the default. `update php <ver>` (or bare `update php` for all installed) upgrades to the latest published patch; `list php` annotates versions with an available newer patch from a **daemon-held cache**, and `list php --check` forces a fresh poll. A background checker in `yerdd` polls at startup + every 12h and logs (notify-only — never auto-installs) any available update. The CLI stays a thin IPC client. Newly-installed versions are picked up by FPM supervision on the next daemon restart.
-
-Phase-1 follow-ups (deferred): Firefox/NSS CA trust (system store only for now); CLI daemon auto-start; a deterministic Windows pipe name (`yerd-<user>`) so the Windows IPC client can land.
-
-**Phase 2 — v1.**
-12. `apps/yerd-gui` — tray-first Tauri UI over IPC.
-13. `yerd-services` — MySQL/MariaDB/Postgres/Redis.
-14. `yerd-platform` Windows impls + `yerd-php` TCP-loopback backend for Windows.
-15. `xtask` — `static-php-cli` build matrix, bundling, signing, auto-updater wiring.
-
-**Later.** FrankenPHP worker mode, deeper `mise` integration, mail catcher, dump debugger, Xdebug auto-toggle, tunnelling.
-
----
-
-## Conventions
-
-- Edition 2021, MSRV stable 1.77.
-- `thiserror` in libraries; `anyhow` only at binary top level.
-- No `unwrap` / `expect` / `panic!` outside `#[cfg(test)]` (clippy-enforced).
-- `unsafe_code = "forbid"` on every crate.
-- `tracing` for logs in everything that does I/O; pure crates emit nothing.
-- Pure crates are synchronous and runtime-free. Only I/O layers touch `tokio`.
-- Routing rules and other behavioural contracts are pinned by table-driven tests — new behaviour stays table-driven.
+Yerd v2 is a ground-up rewrite of **our own v1 package**
+([`LumoSolutions/yerd`](https://github.com/LumoSolutions/yerd)) — the Go tool we
+first built to scratch this itch. Shipping v1 taught us a lot, and we rebuilt Yerd
+from scratch in Rust to make it cross-platform, rootless, and far easier to
+maintain. v1 is reference-only: there's no command-surface or config-format
+compatibility. Where v1 built PHP from source and leaned on `sudo` for most
+operations, v2 ships prebuilt PHP and runs unprivileged.
 
 ---
 
 ## License
 
-MIT OR Apache-2.0 (per workspace package metadata).
+Licensed under either of MIT or the Apache License, Version 2.0, at your option.
+
+Maintained by **Forjed** · <support@forjed.io> ·
+[github.com/forjedio/yerd](https://github.com/forjedio/yerd)

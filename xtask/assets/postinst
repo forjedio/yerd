@@ -1,0 +1,15 @@
+#!/bin/sh
+set -e
+case "$1" in
+  configure)
+    # Let the unprivileged daemon bind 80/443. Reapplied on every upgrade because
+    # dpkg replaces the binary, which wipes its file capabilities.
+    if command -v setcap >/dev/null 2>&1; then
+      setcap 'cap_net_bind_service=+ep' /usr/bin/yerdd \
+        || echo "yerd: setcap failed; yerdd will fall back to ports 8080/8443" >&2
+    fi
+    echo "yerd: enable the daemon with:  systemctl --user enable --now yerd"
+    echo "      to keep it running after logout:  loginctl enable-linger \"\$USER\""
+    ;;
+esac
+exit 0

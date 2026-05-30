@@ -132,7 +132,7 @@ impl Site {
     }
 }
 
-/// Pinned ordered algorithm — see plan §2.4.
+/// Pinned, ordered validation algorithm (steps numbered inline below).
 fn validate_and_lowercase_name(raw: &str) -> Result<String, CoreError> {
     // 1.
     if raw.is_empty() {

@@ -65,6 +65,34 @@ struct Pool<Ch: ChildHandle> {
     child: Option<Ch>,
 }
 
+/// Live run state of a supervised pool, as reported by
+/// [`PhpManager::snapshots`].
+///
+/// The manager only ever *stores* pools that were healthy at insert time, so a
+/// snapshot is either `Running` (the master process is still alive) or `Failed`
+/// (the master has since exited). "No pool at all" — installed but never started
+/// — is not represented here; the daemon fills that in as `Stopped`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PoolRunState {
+    /// The FPM master process is alive.
+    Running,
+    /// The FPM master process has exited unexpectedly.
+    Failed,
+}
+
+/// A point-in-time view of one supervised pool, for status reporting.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PoolSnapshot {
+    /// The PHP version this pool serves.
+    pub version: PhpVersion,
+    /// Whether the master is alive or has died.
+    pub state: PoolRunState,
+    /// The FPM master PID, when running.
+    pub pid: Option<u32>,
+    /// The address FPM is configured to listen on.
+    pub listen: Option<Listen>,
+}
+
 /// What [`PhpManager::drive`] returns on success.
 struct DriveResult<Ch: ChildHandle> {
     outcome: Outcome<Ch>,
@@ -130,12 +158,24 @@ where
         }
     }
 
+    /// Replace the set of known PHP binaries.
+    ///
+    /// The map is otherwise a startup snapshot, so a PHP version installed at
+    /// runtime (`yerd install php`) is invisible to a long-running manager until
+    /// this is called. The daemon refreshes it after a successful install so the
+    /// next `ensure` can find the new binary. Existing running pools are
+    /// untouched; only future lookups change.
+    pub fn set_binaries(&mut self, binaries: BTreeMap<PhpVersion, PathBuf>) {
+        self.binaries = binaries;
+    }
+
     /// Ensure FPM is running for `v` and return its listen address.
     ///
     /// Idempotent: if the pool is already `Running` and the child is
     /// still alive, returns the cached listen address immediately. Else
     /// plans an address, renders the config, spawns FPM, and waits for
     /// a healthy probe before returning.
+    #[allow(clippy::too_many_lines)] // linear: plan → prepare dirs → render → drive
     pub async fn ensure(&mut self, v: PhpVersion) -> Result<Listen, PhpError> {
         let binary = self
             .binaries
@@ -192,6 +232,19 @@ where
 
         // Build config + render + write.
         let cfg = PoolConfig::dev_defaults(v, listen, &self.dirs, self.instance_id);
+
+        // FPM does not create parent directories for its config, pid file, or
+        // error_log — and the per-user state dir may not exist yet on first run.
+        // Create them up front so FPM initialisation does not fail with ENOENT.
+        for path in [&cfg.config_path, &cfg.pid_file, &cfg.error_log] {
+            if let Some(parent) = path.parent() {
+                fs::create_dir_all(parent).map_err(|source| PhpError::ConfigWrite {
+                    path: parent.to_path_buf(),
+                    source,
+                })?;
+            }
+        }
+
         let rendered = fpm_conf::render_fpm_conf(&cfg);
         atomic_write::write(&cfg.config_path, rendered.as_bytes()).map_err(|source| {
             PhpError::ConfigWrite {
@@ -294,6 +347,37 @@ where
             Some(e) => Err(e),
             None => Ok(()),
         }
+    }
+
+    /// Report a live snapshot of every supervised pool.
+    ///
+    /// Read-only intent, but takes `&mut self` because liveness uses
+    /// [`ChildHandle::try_wait`] (which needs `&mut` on the handle). A pool whose
+    /// child has exited — or whose stored state is somehow non-`Running` — is
+    /// reported as [`PoolRunState::Failed`]; an alive child is `Running` with its
+    /// PID. This does **not** reconcile the pool set (no insert/remove); the next
+    /// `ensure`/`restart` does that.
+    pub fn snapshots(&mut self) -> Vec<PoolSnapshot> {
+        let mut out = Vec::with_capacity(self.pools.len());
+        for (version, pool) in &mut self.pools {
+            let listen = Some(pool.cfg.listen.clone());
+            let (state, pid) = match (&pool.state, pool.child.as_mut()) {
+                (PoolState::Running { pid }, Some(child)) => match child.try_wait() {
+                    Ok(None) => (PoolRunState::Running, Some(*pid)),
+                    // Exited (Ok(Some)) or unreadable (Err) ⇒ the master is gone.
+                    _ => (PoolRunState::Failed, None),
+                },
+                // Stored as non-Running, or Running with no child handle: failed.
+                _ => (PoolRunState::Failed, None),
+            };
+            out.push(PoolSnapshot {
+                version: *version,
+                state,
+                pid,
+                listen,
+            });
+        }
+        out
     }
 
     /// Pump the pure state machine to a terminal state, doing the I/O

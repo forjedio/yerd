@@ -60,6 +60,18 @@ pub async fn run(cli: Cli) -> ExitCode {
             ExitCode::from(r.code)
         }
         Err(e @ ClientError::DaemonUnreachable(_)) => {
+            // For `doctor`, a down daemon is itself a FAIL finding: render it as
+            // a one-item diagnosis through the normal path so `--json` and the
+            // exit code behave like any other doctor run (exits 1). Other
+            // commands keep the generic "daemon unreachable" (69) handling.
+            if matches!(cli.command, Command::Doctor { .. }) {
+                let resp = daemon_down_response();
+                let r = map::render(&resp, cli.json);
+                if !r.stdout.is_empty() {
+                    println!("{}", r.stdout);
+                }
+                return ExitCode::from(r.code);
+            }
             eprintln!("yerd: {e}");
             ExitCode::from(69)
         }
@@ -67,6 +79,20 @@ pub async fn run(cli: Cli) -> ExitCode {
             eprintln!("yerd: {e}");
             ExitCode::from(74)
         }
+    }
+}
+
+/// A synthetic `daemon_down` FAIL diagnosis, used when `yerd doctor` can't reach
+/// the daemon. Routed through `map::render` so it honours `--json` and exits 1.
+fn daemon_down_response() -> yerd_ipc::Response {
+    yerd_ipc::Response::Diagnoses {
+        items: vec![yerd_ipc::Diagnosis {
+            code: yerd_ipc::DiagnosisCode::DaemonDown,
+            severity: yerd_ipc::Severity::Fail,
+            title: "Daemon not running".to_owned(),
+            detail: "Could not reach the yerd daemon over its IPC socket.".to_owned(),
+            remedy: Some("start the daemon: yerdd".to_owned()),
+        }],
     }
 }
 

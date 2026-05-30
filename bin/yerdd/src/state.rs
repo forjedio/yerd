@@ -11,12 +11,17 @@
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::time::Instant;
 
 use tokio::sync::{Mutex, RwLock};
 
 use yerd_core::PhpVersion;
+use yerd_ipc::PortStatus;
 use yerd_platform::{CaFingerprint, PlatformDirs};
 use yerd_proxy::SharedRouter;
+
+use crate::backend_resolver::DaemonPhpManager;
 
 /// Everything the IPC dispatch and proxy share at runtime.
 pub struct DaemonState {
@@ -42,4 +47,13 @@ pub struct DaemonState {
     /// distribution poll. Populated by the periodic checker / `CheckPhpUpdates`
     /// and served (no network) on `ListPhp`.
     pub php_updates: RwLock<HashMap<PhpVersion, String>>,
+    /// The FPM pool supervisor, shared with the proxy backend resolver and the
+    /// update task. `yerd status` / `yerd doctor` read live pool state from it.
+    pub php_manager: Arc<Mutex<DaemonPhpManager>>,
+    /// HTTP listener: requested vs actually-bound port (reported by `Status`).
+    pub http: PortStatus,
+    /// HTTPS listener: requested vs actually-bound port (reported by `Status`).
+    pub https: PortStatus,
+    /// When the daemon finished bringing up (for `Status` uptime).
+    pub started_at: Instant,
 }

@@ -1,6 +1,7 @@
 //! PHP-FPM pool supervision and version management for Yerd.
 //!
-//! See `@docs/ARCHITECTURE.md` §6.7 for the high-level design.
+//! Supervises one PHP-FPM pool per installed PHP version and discovers the
+//! versions available to use (bundled installs plus any `mise`-managed ones).
 
 #![forbid(unsafe_code)]
 
@@ -17,7 +18,7 @@ pub mod version;
 
 pub use error::{DownloadError, ExitReason, PhpError, SpawnFailureReason};
 pub use listen::{AllocatedListen, Listen};
-pub use manager::PhpManager;
+pub use manager::{PhpManager, PoolRunState, PoolSnapshot};
 pub use pool::{PoolConfig, ProcessManagerMode};
 pub use real::{SystemClock, TokioChild, TokioProcessSpawner};
 pub use release::{

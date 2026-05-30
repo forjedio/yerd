@@ -16,19 +16,21 @@ pub(crate) mod active {
     #[cfg(target_os = "linux")]
     pub use super::linux::{
         LinuxPaths as ActivePaths, LinuxPortBinder as ActivePortBinder,
-        LinuxResolverInstaller as ActiveResolverInstaller, LinuxTrustStore as ActiveTrustStore,
+        LinuxResolverInstaller as ActiveResolverInstaller,
+        LinuxSystemMetrics as ActiveSystemMetrics, LinuxTrustStore as ActiveTrustStore,
     };
 
     #[cfg(target_os = "macos")]
     pub use super::macos::{
         MacosPaths as ActivePaths, MacosPortBinder as ActivePortBinder,
-        MacosResolverInstaller as ActiveResolverInstaller, MacosTrustStore as ActiveTrustStore,
+        MacosResolverInstaller as ActiveResolverInstaller,
+        MacosSystemMetrics as ActiveSystemMetrics, MacosTrustStore as ActiveTrustStore,
     };
 
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     pub use super::unsupported::{
         UnsupportedPaths as ActivePaths, UnsupportedPortBinder as ActivePortBinder,
         UnsupportedResolverInstaller as ActiveResolverInstaller,
-        UnsupportedTrustStore as ActiveTrustStore,
+        UnsupportedSystemMetrics as ActiveSystemMetrics, UnsupportedTrustStore as ActiveTrustStore,
     };
 }

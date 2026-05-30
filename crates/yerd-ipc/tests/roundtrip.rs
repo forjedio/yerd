@@ -14,7 +14,8 @@ use std::path::PathBuf;
 use yerd_ipc::{
     decode_message, encode_message,
     types::{PhpVersion, Site},
-    ErrorCode, IpcError, Request, Response,
+    CaStatus, Diagnosis, DiagnosisCode, ErrorCode, FixReport, FixResult, IpcError, PhpPoolStatus,
+    PoolRunState, PortStatus, Request, Response, Severity, SiteCounts, StatusReport,
 };
 
 fn assert_request_roundtrips(r: Request) {
@@ -62,9 +63,13 @@ fn encode_then_decode_request_roundtrip() {
     });
     assert_request_roundtrips(Request::UpdatePhp { version: None });
     assert_request_roundtrips(Request::CheckPhpUpdates);
+    assert_request_roundtrips(Request::Status);
+    assert_request_roundtrips(Request::Diagnose);
+    assert_request_roundtrips(Request::DoctorFix);
 }
 
 #[test]
+#[allow(clippy::too_many_lines)] // one roundtrip assertion per variant — naturally long
 fn encode_then_decode_response_roundtrip() {
     assert_response_roundtrips(Response::Pong);
     assert_response_roundtrips(Response::Ok);
@@ -104,6 +109,71 @@ fn encode_then_decode_response_roundtrip() {
             message: "x".into(),
         });
     }
+    assert_response_roundtrips(Response::Status {
+        report: Box::new(StatusReport {
+            daemon_pid: 4242,
+            uptime_secs: 7,
+            tld: "test".into(),
+            http: PortStatus {
+                requested: 80,
+                bound: 80,
+                fell_back: false,
+            },
+            https: PortStatus {
+                requested: 443,
+                bound: 8443,
+                fell_back: true,
+            },
+            dns_addr: "127.0.0.1:1053".parse().unwrap(),
+            ca: CaStatus {
+                path: PathBuf::from("/x/ca.cert.pem"),
+                fingerprint: "ab".repeat(32),
+                trusted_system: None,
+            },
+            resolver_installed: Some(false),
+            default_php: PhpVersion::new(8, 5),
+            php: vec![PhpPoolStatus {
+                version: PhpVersion::new(8, 5),
+                installed_patch: Some("8.5.6".into()),
+                state: PoolRunState::Stopped,
+                pid: None,
+                listen: None,
+                rss_bytes: None,
+                update_available: Some("8.5.7".into()),
+            }],
+            sites: SiteCounts {
+                parked: 1,
+                linked: 0,
+                secured: 0,
+            },
+            load_avg: None,
+        }),
+    });
+    assert_response_roundtrips(Response::Diagnoses {
+        items: vec![Diagnosis {
+            code: DiagnosisCode::AllGood,
+            severity: Severity::Ok,
+            title: "all good".into(),
+            detail: String::new(),
+            remedy: None,
+        }],
+    });
+    assert_response_roundtrips(Response::DoctorFix {
+        report: FixReport {
+            performed: vec![FixResult {
+                code: DiagnosisCode::FpmPoolFailed,
+                ok: true,
+                message: "restarted".into(),
+            }],
+            manual: vec![Diagnosis {
+                code: DiagnosisCode::ResolverNotInstalled,
+                severity: Severity::Warn,
+                title: "resolver".into(),
+                detail: String::new(),
+                remedy: Some("sudo yerd elevate resolver".into()),
+            }],
+        },
+    });
 }
 
 #[test]

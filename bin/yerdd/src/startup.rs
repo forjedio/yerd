@@ -88,6 +88,7 @@ pub async fn bring_up(args: &ServeArgs) -> Result<Daemon, DaemonError> {
 /// `tempfile`-rooted `PlatformDirs`. The body is identical to `bring_up`
 /// from step 2 onwards.
 #[doc(hidden)]
+#[allow(clippy::too_many_lines)] // linear startup wiring; splitting hurts readability
 pub async fn bring_up_with_dirs(
     dirs: PlatformDirs,
     config: yerd_config::Config,
@@ -124,8 +125,11 @@ pub async fn bring_up_with_dirs(
     let router = Arc::new(RwLock::new(router));
 
     // Bind HTTP/HTTPS — fallback to 8080/8443 if 80/443 require elevation.
+    // Capture the *requested* ports before `config` is moved into `DaemonState`.
+    let cfg_http = config.ports.http;
+    let cfg_https = config.ports.https;
     let binder = ActivePortBinder::new();
-    let pair = binder.bind_pair((config.ports.http, config.ports.https), (8080, 8443))?;
+    let pair = binder.bind_pair((cfg_http, cfg_https), (8080, 8443))?;
     let bound_http = pair.http.port().map_err(|source| DaemonError::Io {
         path: PathBuf::from("<http listener>"),
         source,
@@ -184,6 +188,18 @@ pub async fn bring_up_with_dirs(
         ca_path,
         ca_fingerprint,
         php_updates: tokio::sync::RwLock::new(std::collections::HashMap::new()),
+        php_manager: php_manager.clone(),
+        http: yerd_ipc::PortStatus {
+            requested: cfg_http,
+            bound: bound_http,
+            fell_back: bound_http != cfg_http,
+        },
+        https: yerd_ipc::PortStatus {
+            requested: cfg_https,
+            bound: bound_https,
+            fell_back: bound_https != cfg_https,
+        },
+        started_at: std::time::Instant::now(),
     });
 
     Ok(Daemon {

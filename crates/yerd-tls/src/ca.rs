@@ -168,7 +168,7 @@ impl CertAuthority {
         // Reconstruct a synthetic issuer Certificate from the cached DER +
         // live KeyPair. The synthetic cert has a fresh random serial and
         // signature but the same SPKI/DN/key, which is all rcgen's leaf-
-        // signing path reads. See plan §D2.
+        // signing path reads.
         let cert_der_typed = CertificateDer::from(self.cert_der.as_slice());
         let issuer_params =
             CertificateParams::from_ca_cert_der(&cert_der_typed).map_err(|e| TlsError::Parse {
