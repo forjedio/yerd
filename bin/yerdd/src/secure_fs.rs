@@ -104,7 +104,10 @@ mod tests {
         std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o664)).unwrap();
         restrict_writes_to_owner(&file).unwrap();
         let mode = std::fs::metadata(&file).unwrap().permissions().mode() & 0o777;
-        assert_eq!(mode, 0o644, "cert must be world-readable but owner-write only");
+        assert_eq!(
+            mode, 0o644,
+            "cert must be world-readable but owner-write only"
+        );
         // The property the trust helper checks: no group/world write bits.
         assert_eq!(mode & 0o022, 0);
     }

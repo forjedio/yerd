@@ -74,58 +74,95 @@ its own Rust proxy + DNS. No Valet, no Homebrew.</sub>
 
 ## Installation
 
-> **The Yerd daemon runs entirely as your user — never as root.** `sudo` shows up
-> in exactly two places, neither of them ongoing: installing the system package
-> (standard for *any* `apt`/`.deb` package), and a single **one-time** setup step.
-> Day-to-day use needs no elevation. Prefer no `sudo` at all? See
-> [No system package](#from-source--no-system-package).
+> **Yerd runs entirely as your user — never as root.** `sudo` appears in exactly
+> two non-ongoing places: installing the system `.deb` (standard for *any*
+> package), and a single **one-time** setup step. Day-to-day use needs no
+> elevation. Prefer no `sudo` at all? Use the tarball or [build from source](#from-source).
 
-### Debian / Ubuntu (`.deb`)
+Pre-built artifacts for **macOS and Linux** (x86-64 and arm64) are attached to
+each [GitHub Release](https://github.com/forjedio/yerd/releases), each verified
+by a `SHA256SUMS` manifest.
+
+### Quick install (CLI + daemon)
 
 ```bash
-# 1. Install the package (standard system install — writes to /usr/bin):
-sudo dpkg -i yerd_2.0.1_amd64.deb
-
-# 2. Start the per-user daemon (runs as you, not root):
-systemctl --user enable --now yerd
-loginctl enable-linger "$USER"          # optional: keep it running after logout
+curl -fsSL https://raw.githubusercontent.com/forjedio/yerd/main/scripts/install.sh | sh
 ```
 
-The package's post-install step grants `yerdd` the `cap_net_bind_service`
-capability so the **unprivileged** daemon can bind ports 80/443 — re-applied
-automatically on every upgrade. If that's unavailable, Yerd falls back to
-`8080`/`8443` (and `yerd doctor` tells you).
+This fetches the latest release, **verifies it against `SHA256SUMS`**, and
+installs `yerd` + `yerdd` + `yerd-helper` — the `.deb` on Debian/Ubuntu
+(system-wide), or a tarball to `~/.local/bin` everywhere else (no sudo). On
+non-Debian systemd distros (**Arch/Omarchy, Fedora, openSUSE, …**) it also drops
+in a `yerd` **user service** so the daemon works the same way. Pin a version with
+`YERD_VERSION=2.0.2`.
+
+### Manual download
+
+| Platform | CLI artifact |
+|---|---|
+| Debian / Ubuntu (amd64 · arm64) | `yerd_<ver>_amd64.deb` · `yerd_<ver>_arm64.deb` → `sudo dpkg -i …` |
+| Arch · Fedora · other Linux (rootless) | `yerd-<ver>-{x86_64,aarch64}-unknown-linux-gnu.tar.gz` |
+| macOS (Intel · Apple Silicon) | `yerd-<ver>-{x86_64,aarch64}-apple-darwin.tar.gz` |
+
+Verify against the release's `SHA256SUMS`, then start the per-user daemon:
+
+```bash
+sha256sum -c SHA256SUMS --ignore-missing       # macOS: shasum -a 256 -c SHA256SUMS --ignore-missing
+systemctl --user enable --now yerd             # .deb install (runs as you, not root)
+# …or from the tarball:  yerdd serve &          # rootless; 8080/8443 out of the box
+```
+
+The `.deb`'s post-install grants `yerdd` `cap_net_bind_service` (so the
+**unprivileged** daemon binds 80/443) and re-applies it on every upgrade; if
+unavailable, Yerd falls back to `8080`/`8443` (and `yerd doctor` tells you).
+
+### Desktop GUI (optional)
+
+The tray app ships as separate bundles on the same release:
+
+| Platform | GUI artifact | Install |
+|---|---|---|
+| macOS | `Yerd_<ver>_{x64,aarch64}.dmg` | open, drag to Applications |
+| Linux | `Yerd_<ver>_amd64.AppImage` | `chmod +x` and run |
+| Linux | `Yerd_<ver>_amd64.deb` | `sudo dpkg -i …` |
+
+> The GUI is a **client of the daemon** — install the CLI (above) too, so `yerdd`
+> is present and the app's privileged "Fix" actions can find `yerd` (on Linux
+> both `.deb`s install to `/usr/bin`, which is what the GUI expects).
+
+> **Unsigned for now:** macOS warns on first launch — right-click → **Open**, or
+> `xattr -dr com.apple.quarantine /Applications/Yerd.app`.
 
 ### One-time setup
 
-Run this **once** for the full experience. It's the only command that uses root,
-and each part is independent:
+Run this **once** for the full experience — the only command that uses root, and
+each part is independent:
 
 ```bash
 sudo yerd elevate            # trust the local CA · route *.test · allow 80/443
 # …or pick pieces:  sudo yerd elevate trust | resolver | ports
 ```
 
-This mirrors the one-time admin step Herd and Valet also need — reconfiguring the
-system DNS resolver and trusting a local certificate can't be done rootlessly.
+This mirrors the one-time admin step Herd and Valet also need (reconfiguring the
+system resolver and trusting a local certificate can't be done rootlessly).
 After it, `yerd` never touches root again.
 
-### From source / no system package
+### From source
 
-Don't want a system package (or any `sudo` to install)? Build and drop the
-binaries on your `PATH` — no root required:
+No system package (or any `sudo` to install)? Build and drop the binaries on
+your `PATH` — no root required:
 
 ```bash
 git clone https://github.com/forjedio/yerd
 cd yerd
-cargo build --release
+cargo build --release -p yerd -p yerdd -p yerd-helper
 install -Dm755 target/release/{yerd,yerdd,yerd-helper} -t ~/.local/bin
 yerdd serve &                # rootless; runs on 8080/8443 out of the box
 ```
 
-`cargo xtask deb` produces a `.deb` instead if you'd rather package it. (Browser
-`*.test` resolution and trusted HTTPS still need the one-time `sudo yerd elevate`
-above, or you can drive sites directly on `127.0.0.1:8080`.)
+`cargo xtask deb` packages a `.deb` instead. (Browser `*.test` resolution and
+trusted HTTPS still need the one-time `sudo yerd elevate`, or drive sites
+directly on `127.0.0.1:8080`.)
 
 > PHP itself is **not** bundled — Yerd downloads prebuilt, static PHP builds on
 > demand when you run `yerd install php`. Installing Yerd is tiny and fast.
@@ -276,12 +313,15 @@ the Debian package.
 On the way:
 
 - 🖥️ **Desktop GUI** — implemented in `apps/yerd-gui` (Tauri v2 tray app over the
-  same daemon, a thin IPC client like the CLI); installers/packaging still to come.
+  same daemon, a thin IPC client like the CLI); bundled as `.dmg`/`.AppImage`/`.deb`
+  by the release pipeline. Code-signing/notarisation still to come.
 - 🗄️ **Service supervision** — MySQL, MariaDB, PostgreSQL, and Redis as
   Yerd-managed native processes (no Docker).
 - 🪟 **Windows support** — NRPT-based resolver, named-pipe IPC, system cert store,
   TCP-loopback PHP-FPM.
-- 📦 **More installers** — `.dmg`, `.AppImage`, and signed/notarised builds.
+- 📦 **More packaging** — code-signing/notarisation, an Arch AUR package, and
+  Fedora/openSUSE `.rpm`s. (`.dmg`/`.AppImage`/`.deb` + checksummed CLI artifacts
+  are already built per release.)
 
 ---
 
@@ -303,6 +343,21 @@ current Tauri v2 needs edition2024 (rustc ≥ 1.85) — and needs Node plus the
 GTK/WebKit `-dev` system libraries. Setup, the `apt` one-liner, and
 `npm run tauri dev` are documented in
 [`apps/yerd-gui/README.md`](apps/yerd-gui/README.md).
+
+**CI & releasing.** `.github/workflows/ci.yml` runs the gate above (plus the GUI
+frontend tests) on every PR. To cut a release, bump the version everywhere and
+push a tag — the pipeline builds and publishes **all** artifacts atomically (the
+release stays a hidden draft until every file + `SHA256SUMS` is attached, then
+flips public):
+
+```bash
+cargo xtask bump 2.0.2      # sets Cargo.toml + tauri.conf.json + package.json
+git commit -am "release: v2.0.2" && git tag v2.0.2 && git push --follow-tags
+```
+
+`release.yml` then builds the CLI (`.deb` + tarballs) and GUI
+(`.dmg`/`.AppImage`/`.deb`) for macOS + Linux (amd64 + arm64). A mismatched
+tag fails fast via `cargo xtask version-check`.
 
 Conventions: `thiserror` in libraries / `anyhow` only at binary top level; no
 `unwrap`/`expect`/`panic` outside tests (clippy-enforced); pure crates stay pure;

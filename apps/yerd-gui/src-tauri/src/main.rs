@@ -59,9 +59,10 @@ fn main() {
         .setup(|app| {
             // Explicitly set the window icon so the Linux taskbar shows the Yerd
             // mark in dev (no installed .desktop to source it from).
-            if let (Some(win), Some(icon)) =
-                (app.get_webview_window("main"), app.default_window_icon().cloned())
-            {
+            if let (Some(win), Some(icon)) = (
+                app.get_webview_window("main"),
+                app.default_window_icon().cloned(),
+            ) {
                 let _ = win.set_icon(icon);
             }
             // Disable webview zoom on Linux. WebKitGTK handles both gestures
