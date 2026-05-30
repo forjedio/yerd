@@ -29,7 +29,7 @@ experience — but **cross-platform, fully open-source, and rootless by design.*
   certificates automatically — no `mkcert` dance, no browser warnings once trusted.
 - 🐘 **Any PHP, per site.** Install multiple PHP versions and pin each site to the
   one it needs.
-- 🪶 **Lightweight & native.** A single ~8 MB static daemon. No containers, no VM,
+- 🪶 **Lightweight & native.** A single ~8 MB daemon binary. No containers, no VM,
   no Electron.
 - 🛡️ **Rootless.** Setup elevates **once**; everything after runs as your user.
 - 🔍 **Self-diagnosing.** `yerd status` and `yerd doctor` tell you exactly what's
@@ -51,7 +51,7 @@ experience — but **cross-platform, fully open-source, and rootless by design.*
 | Multiple PHP versions | ✅ | ✅ | ✅ |
 | PHP version **per site** | ✅ | ✅ | ✅ |
 | First-class CLI | ✅ | ✅ | ✅ |
-| Menu-bar / tray GUI | ✅ | ❌ | ✅ * |
+| Menu-bar / tray GUI | ✅ | ❌ | ✅ |
 | Database & cache services (MySQL · MariaDB · PostgreSQL · Redis) | ✅ (Pro) | ✅ | ✅ * |
 | Runs rootless day-to-day | ✅ | ✅ † | ✅ |
 | **No** Docker / Podman / containers required | ✅ | ❌ | ✅ |
