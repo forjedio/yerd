@@ -146,7 +146,7 @@ pub enum ValidityErrorReason {
     NotBeforeAfterNotAfter,
     /// `not_before.year() > 9998` or `not_after.year() > 9998`. Reserves a
     /// one-year gap below `time`'s representable ceiling so callers can't
-    /// emit `99991231235959Z` GeneralizedTime that trust stores mis-parse.
+    /// emit `99991231235959Z` `GeneralizedTime` that trust stores mis-parse.
     YearAbove9998,
 }
 

@@ -195,7 +195,7 @@ pub(crate) fn validate(c: &Config) -> Result<(), ConfigError> {
         }
     }
     for s in &c.services.enabled {
-        if !KNOWN_SERVICES.iter().any(|k| *k == s.as_str()) {
+        if !KNOWN_SERVICES.contains(&s.as_str()) {
             return Err(ve(ValidateErrorReason::UnknownService));
         }
     }

@@ -98,7 +98,7 @@ mod tests {
     use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
     fn loopback(port: u16) -> SocketAddr {
-        SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), port)
+        SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port)
     }
 
     #[test]
@@ -118,7 +118,7 @@ mod tests {
     fn parse_tolerates_extra_whitespace_and_comments() {
         let text = "# yerd-managed\n\n   nameserver    127.0.0.1   \nport\t53\n";
         let r = parse(text).unwrap();
-        assert_eq!(r.nameserver, IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)));
+        assert_eq!(r.nameserver, IpAddr::V4(Ipv4Addr::LOCALHOST));
         assert_eq!(r.port, 53);
     }
 

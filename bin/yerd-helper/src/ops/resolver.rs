@@ -32,8 +32,7 @@ pub fn install_resolver(tld: &str, addr: SocketAddr) -> Result<(), HelperError> 
     let tld_obj = validate::require_valid_tld(tld)?;
     let resolv = std::fs::read_to_string("/etc/resolv.conf").unwrap_or_default();
     let runtime_dir_exists = std::fs::metadata("/run/systemd/resolve")
-        .map(|m| m.is_dir())
-        .unwrap_or(false);
+        .is_ok_and(|m| m.is_dir());
     if !resolv_conf::detect_systemd_resolved(&resolv, runtime_dir_exists) {
         // No safe automatic edit path on Phase 1. /etc/resolv.conf is
         // rewritten by NetworkManager / resolvconf / cloud-init on

@@ -70,7 +70,7 @@ pub enum Event {
         /// PID of the new child.
         pid: u32,
     },
-    /// A FastCGI probe got a valid reply.
+    /// A `FastCGI` probe got a valid reply.
     HealthCheckOk,
     /// A probe attempt either timed out or got a connection error;
     /// driver hasn't seen a successful probe yet.
@@ -105,7 +105,7 @@ pub enum Action {
     None,
     /// Call the spawner to start FPM.
     Spawn,
-    /// Run one FastCGI probe attempt.
+    /// Run one `FastCGI` probe attempt.
     HealthCheck,
     /// Sleep this long, then feed `BackoffElapsed`.
     Backoff {

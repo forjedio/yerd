@@ -32,6 +32,16 @@ pub fn restrict_to_owner(path: &Path) -> io::Result<()> {
     set_mode(path, 0o600)
 }
 
+/// On Unix, set `path`'s mode to `0o644` (owner read/write, others read-only).
+/// No-op elsewhere. Used for the **public** CA certificate: world-readable is
+/// fine for a cert, but it must not be group/world-*writable* or the trust
+/// helper refuses to install it (a tamper guard). Newly-created files inherit
+/// the umask, which on common setups (`umask 002`) leaves `0o664` —
+/// group-writable — so we force the mode explicitly.
+pub fn restrict_writes_to_owner(path: &Path) -> io::Result<()> {
+    set_mode(path, 0o644)
+}
+
 #[cfg(unix)]
 fn set_mode(path: &Path, mode: u32) -> io::Result<()> {
     use std::os::unix::fs::PermissionsExt;
@@ -83,5 +93,19 @@ mod tests {
         restrict_to_owner(&file).unwrap();
         let mode = std::fs::metadata(&file).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o600);
+    }
+
+    #[test]
+    fn restrict_writes_to_owner_strips_group_world_write() {
+        let tmp = tempfile::tempdir().unwrap();
+        let file = tmp.path().join("ca.cert.pem");
+        std::fs::write(&file, b"public cert").unwrap();
+        // Simulate a umask-002 write: group/world-writable.
+        std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o664)).unwrap();
+        restrict_writes_to_owner(&file).unwrap();
+        let mode = std::fs::metadata(&file).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o644, "cert must be world-readable but owner-write only");
+        // The property the trust helper checks: no group/world write bits.
+        assert_eq!(mode & 0o022, 0);
     }
 }

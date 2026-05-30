@@ -139,7 +139,7 @@ pub enum CommandReason {
     /// Process was killed by a signal.
     #[error("killed by signal")]
     Signal,
-    /// Lookup against the pinned `PATH` returned NotFound.
+    /// Lookup against the pinned `PATH` returned `NotFound`.
     #[error("not on PATH")]
     NotFound,
 }

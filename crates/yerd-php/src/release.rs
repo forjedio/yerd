@@ -60,7 +60,7 @@ impl Arch {
 pub enum BinaryKind {
     /// The CLI interpreter (`php`).
     Cli,
-    /// The FastCGI process manager (`php-fpm`).
+    /// The `FastCGI` process manager (`php-fpm`).
     Fpm,
 }
 

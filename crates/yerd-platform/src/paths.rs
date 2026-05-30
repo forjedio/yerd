@@ -19,7 +19,7 @@ pub struct PlatformDirs {
     /// User-owned persistent data directory (CA + leaf certs).
     pub data: PathBuf,
     /// User-owned long-lived state. Distinct from `data` on Linux
-    /// (XDG_STATE_HOME); on macOS it coincides with `data`.
+    /// (`XDG_STATE_HOME`); on macOS it coincides with `data`.
     pub state: PathBuf,
     /// User-owned cache directory (logs, downloads).
     pub cache: PathBuf,

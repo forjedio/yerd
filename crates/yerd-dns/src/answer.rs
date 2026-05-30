@@ -9,7 +9,7 @@
 pub enum Answer {
     /// Matched, qtype = A → 127.0.0.1 with TTL [`crate::ANSWER_TTL_SECS`].
     Loopback4,
-    /// Matched, qtype = AAAA → ::1 with TTL [`crate::ANSWER_TTL_SECS`].
+    /// Matched, qtype = AAAA → `::1` with TTL [`crate::ANSWER_TTL_SECS`].
     Loopback6,
     /// Name belongs to the configured TLD but the qtype is not A/AAAA.
     /// Wire: NOERROR with empty answer + no SOA in authority.

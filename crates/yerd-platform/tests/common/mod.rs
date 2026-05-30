@@ -128,14 +128,14 @@ impl PortBinder for MockPortBinder {
 /// Helper to silence "unused" warnings when only a subset of the
 /// mocks is consumed by a given integration test file.
 pub fn _all_mocks_compile() {
-    fn _t<T: Paths>() {}
-    fn _u<T: TrustStore>() {}
-    fn _v<T: ResolverInstaller>() {}
-    fn _w<T: PortBinder>() {}
-    _t::<MockPaths>();
-    _u::<MockTrustStore>();
-    _v::<MockResolverInstaller>();
-    _w::<MockPortBinder>();
+    fn assert_paths<T: Paths>() {}
+    fn assert_trust<T: TrustStore>() {}
+    fn assert_resolver<T: ResolverInstaller>() {}
+    fn assert_binder<T: PortBinder>() {}
+    assert_paths::<MockPaths>();
+    assert_trust::<MockTrustStore>();
+    assert_resolver::<MockResolverInstaller>();
+    assert_binder::<MockPortBinder>();
 }
 
 /// Random fingerprint helper for tests.

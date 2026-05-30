@@ -225,8 +225,7 @@ fn ensure_tool(tool: &str, hint: &str) -> Result<()> {
     let ok = Command::new(tool)
         .arg("--version")
         .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false);
+        .is_ok_and(|o| o.status.success());
     if ok {
         Ok(())
     } else {

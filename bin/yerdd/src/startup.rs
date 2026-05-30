@@ -169,12 +169,11 @@ pub async fn bring_up_with_dirs(
     // sockets. Uses the fixed configured port (see `DNS_IP`) so an installed
     // resolver config keeps pointing at us across restarts.
     let dns_want = SocketAddr::new(DNS_IP, config.dns_port);
-    let dns_bound = yerd_dns::Bound::bind(dns_want).await.map_err(|e| {
+    let dns_bound = yerd_dns::Bound::bind(dns_want).await.inspect_err(|_e| {
         tracing::error!(
             dns = %dns_want,
             "failed to bind DNS responder; another process may hold dns_port — change `dns_port` in yerd.toml or free the port"
         );
-        e
     })?;
     let dns_addr = dns_bound.local_addr();
     tracing::info!(dns = %dns_addr, "DNS responder bound");
@@ -256,6 +255,19 @@ fn load_or_generate_ca(dirs: &PlatformDirs) -> Result<CertAuthority, DaemonError
     let ca_pem_path = dirs.data.join("ca.cert.pem");
     let ca_key_path = dirs.data.join("ca.key.pem");
     if ca_pem_path.exists() && ca_key_path.exists() {
+        // Re-assert secure modes on every start: an earlier run (or a loose
+        // umask) may have left the cert group/world-writable, which makes the
+        // trust helper refuse it. Cert is public (0o644); key is owner-only.
+        crate::secure_fs::restrict_writes_to_owner(&ca_pem_path).map_err(|source| {
+            DaemonError::Io {
+                path: ca_pem_path.clone(),
+                source,
+            }
+        })?;
+        crate::secure_fs::restrict_to_owner(&ca_key_path).map_err(|source| DaemonError::Io {
+            path: ca_key_path.clone(),
+            source,
+        })?;
         let cert_pem = std::fs::read_to_string(&ca_pem_path).map_err(|source| DaemonError::Io {
             path: ca_pem_path.clone(),
             source,
@@ -284,6 +296,14 @@ fn load_or_generate_ca(dirs: &PlatformDirs) -> Result<CertAuthority, DaemonError
         crate::secure_fs::restrict_to_owner(&ca_key_path).map_err(|source| DaemonError::Io {
             path: ca_key_path.clone(),
             source,
+        })?;
+        // The public cert must not be group/world-writable (the trust helper
+        // refuses a tamperable cert); force 0o644 since the write inherits umask.
+        crate::secure_fs::restrict_writes_to_owner(&ca_pem_path).map_err(|source| {
+            DaemonError::Io {
+                path: ca_pem_path.clone(),
+                source,
+            }
         })?;
         tracing::warn!(
             ca_pem = %ca_pem_path.display(),

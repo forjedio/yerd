@@ -14,7 +14,7 @@ use std::fs;
 /// True iff the helper's effective UID is 0.
 #[must_use]
 pub fn is_privileged() -> bool {
-    effective_uid().map_or(false, |u| u == 0)
+    effective_uid() == Some(0)
 }
 
 #[cfg(target_os = "linux")]

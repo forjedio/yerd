@@ -5,6 +5,8 @@
 //! any connect), and `render` turns a [`Response`] into stdout/stderr text and
 //! an exit code.
 
+use std::fmt::Write as _;
+
 use yerd_core::{PhpVersion, Site, SiteKind};
 use yerd_ipc::{
     Diagnosis, FixReport, PoolRunState, PortStatus, Request, Response, Severity, StatusReport,
@@ -213,14 +215,15 @@ fn format_sites(sites: &[Site]) -> String {
             SiteKind::Parked => "parked",
             SiteKind::Linked => "linked",
         };
-        out.push_str(&format!(
+        let _ = write!(
+            out,
             "\n{}\t{}\t{}\t{}\t{}",
             s.name(),
             kind,
             s.php(),
             s.secure(),
             s.document_root().display()
-        ));
+        );
     }
     out
 }
@@ -244,10 +247,7 @@ fn format_php_versions(
                 v.to_string()
             };
             if let Some(u) = updates.iter().find(|u| u.version == *v) {
-                line.push_str(&format!(
-                    " — update available: {} → {}",
-                    u.installed, u.latest
-                ));
+                let _ = write!(line, " — update available: {} → {}", u.installed, u.latest);
             }
             line
         })

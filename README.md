@@ -216,7 +216,7 @@ every `.test` site is green-padlock valid. **No OpenSSL anywhere.**
 
 ### 🧠 One source of truth
 
-The daemon owns state. The CLI (and the future GUI) are *clients* — they never
+The daemon owns state. The CLI and the GUI are both *clients* — they never
 reimplement daemon logic, so the CLI and GUI can never disagree.
 
 ### 🧩 A clean, testable core
@@ -257,13 +257,13 @@ a newer patch exists, but never installs anything behind your back.
 
 | Concern | Choice |
 |---|---|
-| Core language | Rust (edition 2021, MSRV 1.77) |
+| Core language | Rust (edition 2021; core MSRV 1.77, GUI needs 1.85+) |
 | TLS / local CA | `rustls` + `rcgen` (never OpenSSL) |
 | Reverse proxy | hand-rolled `hyper` + `hyper-util` + `tokio-rustls` |
 | DNS | `hickory-dns` embedded resolver for `*.test` |
 | PHP runtime | `static-php-cli` builds, PHP-FPM per version |
 | IPC | Unix socket / Windows named pipe via `interprocess` |
-| GUI (roadmap) | Tauri v2 + Vue 3 + TypeScript + Tailwind |
+| GUI | Tauri v2 + Vue 3 + TypeScript + Tailwind (`apps/yerd-gui`) |
 
 ---
 
@@ -275,7 +275,8 @@ the Debian package.
 
 On the way:
 
-- 🖥️ **Desktop GUI** — a Tauri v2 menu-bar/tray app over the same daemon.
+- 🖥️ **Desktop GUI** — implemented in `apps/yerd-gui` (Tauri v2 tray app over the
+  same daemon, a thin IPC client like the CLI); installers/packaging still to come.
 - 🗄️ **Service supervision** — MySQL, MariaDB, PostgreSQL, and Redis as
   Yerd-managed native processes (no Docker).
 - 🪟 **Windows support** — NRPT-based resolver, named-pipe IPC, system cert store,
@@ -295,6 +296,13 @@ cargo test --workspace
 # Build a .deb locally:
 cargo xtask deb
 ```
+
+The desktop GUI lives in `apps/yerd-gui` (Tauri v2 + Vue 3). It builds with a
+newer toolchain than the core MSRV — `rust-toolchain.toml` pins **1.96** because
+current Tauri v2 needs edition2024 (rustc ≥ 1.85) — and needs Node plus the
+GTK/WebKit `-dev` system libraries. Setup, the `apt` one-liner, and
+`npm run tauri dev` are documented in
+[`apps/yerd-gui/README.md`](apps/yerd-gui/README.md).
 
 Conventions: `thiserror` in libraries / `anyhow` only at binary top level; no
 `unwrap`/`expect`/`panic` outside tests (clippy-enforced); pure crates stay pure;

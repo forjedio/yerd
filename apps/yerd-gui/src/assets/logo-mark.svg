@@ -1,0 +1,8 @@
+<svg width="256" height="256" viewBox="0 0 256 256" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Yerd">
+  <title>Yerd</title>
+  <!-- The bare Y mark in `currentColor`, transparent background — for inline /
+       monochrome use (sidebar, buttons, template tray icons). Inherits the
+       surrounding text colour so it adapts to light/dark themes. -->
+  <path d="M82 76 L128 140 L174 76 M128 140 L128 188"
+        stroke="currentColor" stroke-width="30" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

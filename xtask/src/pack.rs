@@ -3,6 +3,8 @@
 //! Everything here is deterministic and unit-tested; the actual staging and
 //! `dpkg-deb` invocation lives in [`crate::deb`].
 
+use std::fmt::Write as _;
+
 /// Metadata for a binary `.deb`'s `control` file.
 pub struct DebMeta {
     /// `Package:` — the package name (e.g. `yerd`).
@@ -33,20 +35,20 @@ pub fn render_control(meta: &DebMeta) -> String {
     let mut desc_lines = meta.description.lines();
     let synopsis = desc_lines.next().unwrap_or("");
     let mut out = String::new();
-    out.push_str(&format!("Package: {}\n", meta.package));
-    out.push_str(&format!("Version: {}\n", meta.version));
-    out.push_str(&format!("Section: {}\n", meta.section));
-    out.push_str(&format!("Priority: {}\n", meta.priority));
-    out.push_str(&format!("Architecture: {}\n", meta.arch));
-    out.push_str(&format!("Depends: {}\n", meta.depends));
-    out.push_str(&format!("Maintainer: {}\n", meta.maintainer));
-    out.push_str(&format!("Description: {synopsis}\n"));
+    let _ = writeln!(out, "Package: {}", meta.package);
+    let _ = writeln!(out, "Version: {}", meta.version);
+    let _ = writeln!(out, "Section: {}", meta.section);
+    let _ = writeln!(out, "Priority: {}", meta.priority);
+    let _ = writeln!(out, "Architecture: {}", meta.arch);
+    let _ = writeln!(out, "Depends: {}", meta.depends);
+    let _ = writeln!(out, "Maintainer: {}", meta.maintainer);
+    let _ = writeln!(out, "Description: {synopsis}");
     for line in desc_lines {
         // A blank extended-description line is written as " ." per policy.
         if line.trim().is_empty() {
             out.push_str(" .\n");
         } else {
-            out.push_str(&format!(" {line}\n"));
+            let _ = writeln!(out, " {line}");
         }
     }
     out

@@ -62,9 +62,7 @@ impl Responder {
             let suffix_idx = bytes.len() - tld_bytes.len();
             let dot_ok = bytes.get(dot_idx) == Some(&b'.');
             let suffix_ok = bytes
-                .get(suffix_idx..)
-                .map(|s| s.eq_ignore_ascii_case(tld_bytes))
-                == Some(true);
+                .get(suffix_idx..).is_some_and(|s| s.eq_ignore_ascii_case(tld_bytes));
             if dot_ok && suffix_ok {
                 return match qtype {
                     QClass::A => Answer::Loopback4,

@@ -58,7 +58,7 @@ pub trait Clock: Send + Sync + 'static {
     fn now(&self) -> std::time::Instant;
 }
 
-/// FastCGI health-check probe.
+/// `FastCGI` health-check probe.
 ///
 /// The production impl in [`crate::io::fastcgi_probe::FastCgiProbe`] opens a
 /// TCP/Unix stream, sends a `FCGI_GET_VALUES` record, and reads back any
