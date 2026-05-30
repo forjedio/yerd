@@ -96,6 +96,7 @@ async fn dispatch(req: Request, state: &DaemonState) -> Response {
             php_versions_response(state).await
         }
         Request::UpdatePhp { version } => update_php(version, state).await,
+        Request::AvailablePhp => available_php_response(state).await,
         Request::Status => Response::Status {
             report: Box::new(build_status_report(state).await),
         },
@@ -112,20 +113,57 @@ async fn dispatch(req: Request, state: &DaemonState) -> Response {
     }
 }
 
-/// Build the `PhpVersions` reply: installed (bundled + mise), the live global
-/// default, and cached update annotations. Read-only; no network.
-async fn php_versions_response(state: &DaemonState) -> Response {
+/// Installed PHP versions — the bundled installs in yerd's data dir — ascending
+/// and deduped. The single source of "what's installed" for the `PhpVersions`
+/// and `AvailablePhp` replies.
+fn installed_versions(state: &DaemonState) -> Vec<yerd_core::PhpVersion> {
     let mut installed: Vec<yerd_core::PhpVersion> = Vec::new();
     if let Ok(bundled) = yerd_php::discover_bundled(&state.dirs) {
         installed.extend(bundled.into_iter().map(|(v, _)| v));
     }
-    installed.extend(yerd_php::discover_mise().await.into_iter().map(|(v, _)| v));
     installed.sort_unstable();
     installed.dedup();
+    installed
+}
+
+/// Build the `PhpVersions` reply: installed versions, the live global default,
+/// and cached update annotations. Read-only; no network.
+async fn php_versions_response(state: &DaemonState) -> Response {
     Response::PhpVersions {
-        installed,
+        installed: installed_versions(state),
         default: state.config.lock().await.php.default,
         updates: crate::php_updates::cached_updates(state).await,
+    }
+}
+
+/// `available php` — list the major.minor versions installable from the
+/// distribution, plus what's already installed (so clients hide or tag them).
+/// Fetches the listing on demand; only a fetch/transport failure is an error
+/// (an empty parse result is a valid empty list).
+async fn available_php_response(state: &DaemonState) -> Response {
+    let dl = crate::php_install::ReqwestDownloader::new();
+    available_php_with(state, &dl).await
+}
+
+/// Injectable core of [`available_php_response`] (the downloader is a parameter
+/// so tests can feed a fixture listing without touching the network).
+async fn available_php_with(state: &DaemonState, dl: &dyn yerd_php::Downloader) -> Response {
+    let (os, arch) = match yerd_php::current_os_arch() {
+        Ok(p) => p,
+        Err(e) => {
+            return Response::Error {
+                code: php_error_code(&e),
+                message: e.to_string(),
+            }
+        }
+    };
+    let listing = match dl.download(&yerd_php::listing_url()).await {
+        Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
+        Err(e) => return internal(format!("couldn't reach the PHP distribution: {e}")),
+    };
+    Response::AvailablePhp {
+        available: yerd_php::available_minors(&listing, os, arch),
+        installed: installed_versions(state),
     }
 }
 
@@ -167,14 +205,8 @@ async fn build_status_report(state: &DaemonState) -> yerd_ipc::StatusReport {
         mgr.snapshots()
     };
 
-    // 4. Installed versions (bundled + mise) + cached updates, off any guard.
-    let mut installed: Vec<yerd_core::PhpVersion> = Vec::new();
-    if let Ok(bundled) = yerd_php::discover_bundled(&state.dirs) {
-        installed.extend(bundled.into_iter().map(|(v, _)| v));
-    }
-    installed.extend(yerd_php::discover_mise().await.into_iter().map(|(v, _)| v));
-    installed.sort_unstable();
-    installed.dedup();
+    // 4. Installed versions + cached updates, off any guard.
+    let installed = installed_versions(state);
     let updates = crate::php_updates::cached_updates(state).await;
 
     let metrics = yerd_platform::ActiveSystemMetrics::new();
@@ -389,10 +421,10 @@ async fn install_php(version: yerd_core::PhpVersion, state: &DaemonState) -> Res
     }
 }
 
-/// Re-discover installed PHP binaries (bundled + mise) and hand the refreshed
-/// map to the live `PhpManager`. Mirrors the discovery done at startup.
+/// Re-discover installed PHP binaries (bundled) and hand the refreshed map to
+/// the live `PhpManager`. Mirrors the discovery done at startup.
 async fn refresh_php_binaries(state: &DaemonState) {
-    let mut binaries: std::collections::BTreeMap<yerd_core::PhpVersion, std::path::PathBuf> =
+    let binaries: std::collections::BTreeMap<yerd_core::PhpVersion, std::path::PathBuf> =
         match yerd_php::discover_bundled(&state.dirs) {
             Ok(b) => b.into_iter().collect(),
             Err(e) => {
@@ -400,9 +432,6 @@ async fn refresh_php_binaries(state: &DaemonState) {
                 return;
             }
         };
-    for (v, p) in yerd_php::discover_mise().await {
-        binaries.insert(v, p);
-    }
     state.php_manager.lock().await.set_binaries(binaries);
 }
 
@@ -1116,5 +1145,43 @@ mod tests {
                 .map(String::as_str),
             Some("8.5.6")
         );
+    }
+
+    #[tokio::test]
+    async fn available_php_lists_distribution_minors_and_installed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_in(tmp.path());
+        fake_install_patch(&state.dirs, PhpVersion::new(8, 5), "8.5.6");
+        let (os, arch) = yerd_php::current_os_arch().unwrap();
+        let listing = format!(
+            "php-8.3.20-cli-{os}-{arch}.tar.gz php-8.5.9-cli-{os}-{arch}.tar.gz",
+            os = os.as_str(),
+            arch = arch.as_str()
+        );
+
+        match available_php_with(&state, &ListingDl(listing)).await {
+            Response::AvailablePhp {
+                available,
+                installed,
+            } => {
+                assert_eq!(
+                    available,
+                    vec![PhpVersion::new(8, 3), PhpVersion::new(8, 5)]
+                );
+                assert_eq!(installed, vec![PhpVersion::new(8, 5)]);
+            }
+            other => panic!("expected AvailablePhp, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn available_php_errors_on_fetch_failure() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_in(tmp.path());
+
+        match available_php_with(&state, &FailingDl).await {
+            Response::Error { code, .. } => assert_eq!(code, ErrorCode::Internal),
+            other => panic!("expected Error, got {other:?}"),
+        }
     }
 }

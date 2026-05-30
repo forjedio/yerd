@@ -45,6 +45,7 @@ fn main() {
             commands::set_secure,
             commands::list_php,
             commands::check_php_updates,
+            commands::available_php,
             commands::install_php,
             commands::set_default_php,
             commands::update_php,

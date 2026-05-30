@@ -10,9 +10,7 @@ use interprocess::local_socket::ListenerOptions;
 use tokio::sync::{Mutex, RwLock};
 
 use yerd_core::{PhpVersion, RouterConfig, Site, SiteRouter};
-use yerd_php::{
-    discover_bundled, discover_mise, io::FastCgiProbe, PhpManager, SystemClock, TokioProcessSpawner,
-};
+use yerd_php::{discover_bundled, io::FastCgiProbe, PhpManager, SystemClock, TokioProcessSpawner};
 use yerd_platform::{ActivePaths, ActivePortBinder, Paths, PlatformDirs, PortBinder};
 use yerd_tls::{CertAuthority, Validity};
 
@@ -96,16 +94,11 @@ pub async fn bring_up_with_dirs(
 ) -> Result<Daemon, DaemonError> {
     let lock = InstanceLock::acquire(&dirs)?;
 
-    // PHP discovery — bundled first, then merge in mise (which wins on
-    // collision because user-pinned versions reflect intent).
+    // PHP discovery — bundled installs in yerd's data dir.
     let bundled = discover_bundled(&dirs).map_err(DaemonError::from)?;
-    let mise = discover_mise().await;
-    let mut binaries: BTreeMap<PhpVersion, PathBuf> = bundled.into_iter().collect();
-    for (v, p) in mise {
-        binaries.insert(v, p);
-    }
+    let binaries: BTreeMap<PhpVersion, PathBuf> = bundled.into_iter().collect();
     if binaries.is_empty() {
-        tracing::warn!("no PHP versions discovered — bundled scan empty and mise unavailable");
+        tracing::warn!("no PHP versions discovered — bundled scan empty");
     }
 
     // Load or generate the CA. Capture its path + fingerprint *before* `ca`

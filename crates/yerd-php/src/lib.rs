@@ -1,7 +1,7 @@
 //! PHP-FPM pool supervision and version management for Yerd.
 //!
 //! Supervises one PHP-FPM pool per installed PHP version and discovers the
-//! versions available to use (bundled installs plus any `mise`-managed ones).
+//! bundled installs available to use.
 
 #![forbid(unsafe_code)]
 
@@ -22,11 +22,11 @@ pub use manager::{PhpManager, PoolRunState, PoolSnapshot};
 pub use pool::{PoolConfig, ProcessManagerMode};
 pub use real::{SystemClock, TokioChild, TokioProcessSpawner};
 pub use release::{
-    artifact_url, current_os_arch, is_newer, is_safe_member, listing_url, patch_of,
-    resolve_from_listing, Arch, Artifact, BinaryKind, Os,
+    artifact_url, available_minors, current_os_arch, is_newer, is_safe_member, listing_url,
+    patch_of, resolve_from_listing, Arch, Artifact, BinaryKind, Os,
 };
 pub use traits::{ChildHandle, Clock, Downloader, HealthProbe, ProcessSpawner};
-pub use version::{discover_bundled, discover_mise};
+pub use version::discover_bundled;
 
 // Compile-time `Send + 'static` guard for the production instantiation.
 const _: () = {

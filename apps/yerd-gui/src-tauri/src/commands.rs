@@ -93,6 +93,11 @@ pub async fn check_php_updates() -> Result<Response, GuiError> {
 }
 
 #[tauri::command]
+pub async fn available_php() -> Result<Response, GuiError> {
+    finish(exchange(&Request::AvailablePhp).await?)
+}
+
+#[tauri::command]
 pub async fn install_php(version: PhpVersion) -> Result<Response, GuiError> {
     finish(exchange(&Request::InstallPhp { version }).await?)
 }

@@ -159,6 +159,16 @@ fn request_check_php_updates_byte_shape() {
 }
 
 #[test]
+fn request_available_php_byte_shape() {
+    let s = serde_json::to_string(&Request::AvailablePhp).unwrap();
+    assert_eq!(s, r#"{"type":"available_php"}"#);
+    assert_eq!(
+        serde_json::from_str::<Request>(&s).unwrap(),
+        Request::AvailablePhp
+    );
+}
+
+#[test]
 fn request_status_byte_shape() {
     let s = serde_json::to_string(&Request::Status).unwrap();
     assert_eq!(s, r#"{"type":"status"}"#);
@@ -293,6 +303,20 @@ fn response_php_versions_with_updates_byte_shape() {
     assert_eq!(
         s,
         r#"{"type":"php_versions","installed":["8.5"],"default":"8.5","updates":[{"version":"8.5","installed":"8.5.6","latest":"8.5.7"}]}"#
+    );
+    assert_eq!(serde_json::from_str::<Response>(&s).unwrap(), r);
+}
+
+#[test]
+fn response_available_php_byte_shape() {
+    let r = Response::AvailablePhp {
+        available: vec![PhpVersion::new(8, 4), PhpVersion::new(8, 5)],
+        installed: vec![PhpVersion::new(8, 5)],
+    };
+    let s = serde_json::to_string(&r).unwrap();
+    assert_eq!(
+        s,
+        r#"{"type":"available_php","available":["8.4","8.5"],"installed":["8.5"]}"#
     );
     assert_eq!(serde_json::from_str::<Response>(&s).unwrap(), r);
 }

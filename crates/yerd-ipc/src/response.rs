@@ -60,6 +60,14 @@ pub enum Response {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         updates: Vec<PhpUpdate>,
     },
+    /// Reply to [`crate::Request::AvailablePhp`].
+    AvailablePhp {
+        /// Installable major.minor versions from the distribution, ascending.
+        available: Vec<PhpVersion>,
+        /// Currently installed versions, ascending, so clients can hide (GUI
+        /// dropdown) or tag (CLI) them.
+        installed: Vec<PhpVersion>,
+    },
     /// Reply to [`crate::Request::Status`] — a runtime health snapshot.
     ///
     /// Boxed so the (large) report does not bloat every `Response` value;
@@ -136,6 +144,7 @@ mod variant_name_pinning {
             Response::Error { .. } => {}
             Response::Info { .. } => {}
             Response::PhpVersions { .. } => {}
+            Response::AvailablePhp { .. } => {}
             Response::Status { .. } => {}
             Response::Diagnoses { .. } => {}
             Response::DoctorFix { .. } => {}
@@ -171,6 +180,10 @@ mod variant_name_pinning {
             installed: vec![PhpVersion::new(8, 5)],
             default: PhpVersion::new(8, 5),
             updates: vec![],
+        });
+        pin_response(Response::AvailablePhp {
+            available: vec![PhpVersion::new(8, 4), PhpVersion::new(8, 5)],
+            installed: vec![PhpVersion::new(8, 5)],
         });
         pin_response(Response::Status {
             report: Box::new(crate::status::StatusReport {

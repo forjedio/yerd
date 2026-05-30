@@ -132,9 +132,8 @@ where
 {
     /// Construct a new manager.
     ///
-    /// `binaries` is the merged map of bundled + `mise` PHP installs,
-    /// built by the daemon during async startup (since `discover_mise`
-    /// is async). `instance_id` is the daemon's `std::process::id()`;
+    /// `binaries` is the map of bundled PHP installs, built by the daemon
+    /// during startup. `instance_id` is the daemon's `std::process::id()`;
     /// it disambiguates Unix socket paths across concurrent Yerd
     /// instances on the same host.
     pub fn new(

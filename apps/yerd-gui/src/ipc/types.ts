@@ -151,6 +151,11 @@ export type Response =
       default: PhpVersion;
       updates?: PhpUpdate[];
     }
+  | {
+      type: "available_php";
+      available: PhpVersion[];
+      installed: PhpVersion[];
+    }
   | { type: "status"; report: StatusReport }
   | { type: "diagnoses"; items: Diagnosis[] }
   | { type: "doctor_fix"; report: FixReport };
@@ -159,6 +164,7 @@ export type Response =
 export type InfoResponse = Extract<Response, { type: "info" }>;
 export type SitesResponse = Extract<Response, { type: "sites" }>;
 export type PhpVersionsResponse = Extract<Response, { type: "php_versions" }>;
+export type AvailablePhpResponse = Extract<Response, { type: "available_php" }>;
 export type StatusResponse = Extract<Response, { type: "status" }>;
 export type DiagnosesResponse = Extract<Response, { type: "diagnoses" }>;
 export type DoctorFixResponse = Extract<Response, { type: "doctor_fix" }>;

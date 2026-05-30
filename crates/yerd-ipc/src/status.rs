@@ -43,7 +43,7 @@ pub struct StatusReport {
     pub resolver_installed: Option<bool>,
     /// The global default PHP version.
     pub default_php: PhpVersion,
-    /// One entry per installed PHP version (bundled + mise), with live FPM state.
+    /// One entry per installed PHP version, with live FPM state.
     pub php: Vec<PhpPoolStatus>,
     /// Site counts by kind.
     pub sites: SiteCounts,

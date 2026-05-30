@@ -9,6 +9,7 @@
 import { invoke as tauriInvoke } from "@tauri-apps/api/core";
 
 import type {
+  AvailablePhpResponse,
   Diagnosis,
   DoctorFixResponse,
   ElevateTarget,
@@ -109,6 +110,11 @@ export async function listPhp(): Promise<PhpVersionsResponse> {
 
 export async function checkPhpUpdates(): Promise<PhpVersionsResponse> {
   return ensureOk(await call<Response>("check_php_updates")) as PhpVersionsResponse;
+}
+
+/** Query the distribution for installable versions (+ what's already installed). */
+export async function availablePhp(): Promise<AvailablePhpResponse> {
+  return ensureOk(await call<Response>("available_php")) as AvailablePhpResponse;
 }
 
 export async function installPhp(version: PhpVersion): Promise<void> {

@@ -56,9 +56,11 @@ pub fn to_request(cmd: &Command) -> Result<Request, ClientError> {
             version: parse_php(version)?,
         },
         Command::List {
-            target: crate::cli::ListTarget::Php { check },
+            target: crate::cli::ListTarget::Php { check, available },
         } => {
-            if *check {
+            if *available {
+                Request::AvailablePhp
+            } else if *check {
                 Request::CheckPhpUpdates
             } else {
                 Request::ListPhp
@@ -167,6 +169,10 @@ pub fn render(resp: &Response, json: bool) -> Rendered {
             default,
             updates,
         } => Rendered::ok(format_php_versions(installed, *default, updates)),
+        Response::AvailablePhp {
+            available,
+            installed,
+        } => Rendered::ok(format_available_php(available, installed)),
         Response::Error { code: c, message } => Rendered::err(format!("error ({c:?}): {message}")),
         Response::Status { report } => Rendered {
             stdout: format_status(report),
@@ -250,6 +256,24 @@ fn format_php_versions(
                 let _ = write!(line, " — update available: {} → {}", u.installed, u.latest);
             }
             line
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Render the installable versions, tagging the ones already installed.
+fn format_available_php(available: &[PhpVersion], installed: &[PhpVersion]) -> String {
+    if available.is_empty() {
+        return "no installable PHP versions found for this platform".to_owned();
+    }
+    available
+        .iter()
+        .map(|v| {
+            if installed.contains(v) {
+                format!("{v} (installed)")
+            } else {
+                v.to_string()
+            }
         })
         .collect::<Vec<_>>()
         .join("\n")
@@ -511,17 +535,44 @@ mod tests {
         );
         assert_eq!(
             to_request(&Command::List {
-                target: crate::cli::ListTarget::Php { check: false }
+                target: crate::cli::ListTarget::Php {
+                    check: false,
+                    available: false
+                }
             })
             .unwrap(),
             Request::ListPhp
         );
         assert_eq!(
             to_request(&Command::List {
-                target: crate::cli::ListTarget::Php { check: true }
+                target: crate::cli::ListTarget::Php {
+                    check: true,
+                    available: false
+                }
             })
             .unwrap(),
             Request::CheckPhpUpdates
+        );
+        assert_eq!(
+            to_request(&Command::List {
+                target: crate::cli::ListTarget::Php {
+                    check: false,
+                    available: true
+                }
+            })
+            .unwrap(),
+            Request::AvailablePhp
+        );
+        // `--available` wins over `--check`.
+        assert_eq!(
+            to_request(&Command::List {
+                target: crate::cli::ListTarget::Php {
+                    check: true,
+                    available: true
+                }
+            })
+            .unwrap(),
+            Request::AvailablePhp
         );
         // `update php` / `update php <ver>`.
         assert_eq!(
@@ -656,6 +707,36 @@ mod tests {
             false,
         );
         assert!(empty.stdout.contains("no PHP versions installed"));
+    }
+
+    #[test]
+    fn renders_available_php_tagging_installed() {
+        let r = render(
+            &Response::AvailablePhp {
+                available: vec![
+                    PhpVersion::new(8, 3),
+                    PhpVersion::new(8, 4),
+                    PhpVersion::new(8, 5),
+                ],
+                installed: vec![PhpVersion::new(8, 4)],
+            },
+            false,
+        );
+        assert_eq!(r.code, 0);
+        assert!(r.stdout.contains("8.4 (installed)"));
+        // Not-installed versions appear bare (no tag).
+        assert!(r.stdout.contains("\n8.3") || r.stdout.starts_with("8.3"));
+        assert!(!r.stdout.contains("8.3 (installed)"));
+        assert!(!r.stdout.contains("8.5 (installed)"));
+
+        let empty = render(
+            &Response::AvailablePhp {
+                available: vec![],
+                installed: vec![],
+            },
+            false,
+        );
+        assert!(empty.stdout.contains("no installable PHP versions"));
     }
 
     #[test]

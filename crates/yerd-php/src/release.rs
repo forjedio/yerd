@@ -183,6 +183,71 @@ pub fn resolve_from_listing(
     })
 }
 
+/// Every distinct major.minor in `listing` that has a CLI build for
+/// `(os, arch)`, ascending. Pure; the daemon fetches the listing and hands the
+/// body here to populate the "installable versions" list (the GUI dropdown /
+/// `yerd list php --available`).
+///
+/// Scans for filenames `php-<maj>.<min>.<patch>-cli-<os>-<arch>.tar.gz`,
+/// parsing `<maj>` and `<min>` as **integers** (not substrings) so `8.5` and
+/// `8.50` stay distinct. Entries whose major/minor overflow `u8`, or that lack
+/// the exact CLI/arch suffix, are skipped. The result is sorted and deduped.
+#[must_use]
+pub fn available_minors(listing: &str, os: Os, arch: Arch) -> Vec<PhpVersion> {
+    let suffix = format!(
+        "-{}-{}-{}.tar.gz",
+        BinaryKind::Cli.as_str(),
+        os.as_str(),
+        arch.as_str()
+    );
+
+    // Each chunk after the first begins right after a literal `php-`. Parse
+    // `<digits>.<digits>.<digits>` then require the exact CLI suffix; only the
+    // major.minor is kept. Uses `split`/`strip_prefix`/`split_once` — no
+    // indexing.
+    let mut out: Vec<PhpVersion> = Vec::new();
+    let mut chunks = listing.split("php-");
+    let _ = chunks.next(); // text before the first occurrence
+    for chunk in chunks {
+        let Some((major, rest)) = take_u8(chunk) else {
+            continue;
+        };
+        let Some(rest) = rest.strip_prefix('.') else {
+            continue;
+        };
+        let Some((minor, rest)) = take_u8(rest) else {
+            continue;
+        };
+        let Some(rest) = rest.strip_prefix('.') else {
+            continue;
+        };
+        // Patch digits then the exact `-cli-<os>-<arch>.tar.gz` suffix.
+        let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
+        if digits.is_empty() {
+            continue;
+        }
+        let Some(after_patch) = rest.strip_prefix(&digits) else {
+            continue;
+        };
+        if after_patch.starts_with(&suffix) {
+            out.push(PhpVersion::new(major, minor));
+        }
+    }
+
+    out.sort_unstable();
+    out.dedup();
+    out
+}
+
+/// Take a leading run of ASCII digits as a `u8`, returning it with the rest of
+/// the string. `None` if there are no leading digits or they overflow `u8`.
+fn take_u8(s: &str) -> Option<(u8, &str)> {
+    let digits: String = s.chars().take_while(char::is_ascii_digit).collect();
+    let value: u8 = digits.parse().ok()?;
+    let rest = s.strip_prefix(&digits)?;
+    Some((value, rest))
+}
+
 /// Detect the running platform, erroring on anything yerd can't install for
 /// (e.g. Windows, 32-bit). Call this **before** any download.
 pub fn current_os_arch() -> Result<(Os, Arch), PhpError> {
@@ -294,6 +359,44 @@ mod tests {
             }
             other => panic!("expected VersionUnavailable, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn available_minors_lists_distinct_cli_builds_for_platform() {
+        // x86_64 linux: 8.4.21, 8.5.2, 8.5.6, 8.50.1 have CLI builds; the
+        // aarch64-only 8.5.4 must not leak in.
+        let got = available_minors(LISTING, Os::Linux, Arch::X86_64);
+        assert_eq!(
+            got,
+            vec![
+                PhpVersion::new(8, 4),
+                PhpVersion::new(8, 5),
+                PhpVersion::new(8, 50),
+            ]
+        );
+    }
+
+    #[test]
+    fn available_minors_anchors_arch() {
+        // aarch64 linux only has the 8.5.4 CLI build in LISTING.
+        let got = available_minors(LISTING, Os::Linux, Arch::Aarch64);
+        assert_eq!(got, vec![PhpVersion::new(8, 5)]);
+    }
+
+    #[test]
+    fn available_minors_keeps_8_5_and_8_50_distinct() {
+        let got = available_minors(LISTING, Os::Linux, Arch::X86_64);
+        assert!(got.contains(&PhpVersion::new(8, 5)));
+        assert!(got.contains(&PhpVersion::new(8, 50)));
+        assert_ne!(PhpVersion::new(8, 5), PhpVersion::new(8, 50));
+    }
+
+    #[test]
+    fn available_minors_empty_listing_is_empty() {
+        assert!(available_minors("", Os::Linux, Arch::X86_64).is_empty());
+        // fpm-only build (no CLI) contributes no minor.
+        let fpm_only = "php-8.5.6-fpm-linux-x86_64.tar.gz";
+        assert!(available_minors(fpm_only, Os::Linux, Arch::X86_64).is_empty());
     }
 
     #[test]

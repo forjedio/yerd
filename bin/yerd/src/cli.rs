@@ -123,6 +123,10 @@ pub enum ListTarget {
         /// (otherwise served from the daemon's cache, no network).
         #[arg(long)]
         check: bool,
+        /// List the versions installable from the distribution instead, tagging
+        /// ones already installed. Takes precedence over `--check`.
+        #[arg(long)]
+        available: bool,
     },
 }
 

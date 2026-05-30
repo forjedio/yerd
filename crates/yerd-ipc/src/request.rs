@@ -79,6 +79,9 @@ pub enum Request {
     /// Force a poll of the distribution + refresh the update cache, then return
     /// the (enriched) version list.
     CheckPhpUpdates,
+    /// List the major.minor versions installable from the distribution (the GUI
+    /// install dropdown / `yerd list php --available`). Fetched on demand.
+    AvailablePhp,
     /// Fetch a read-only [`crate::StatusReport`] of daemon/proxy/DNS/PHP health.
     Status,
     /// Run the doctor checks and return the resulting diagnoses.
@@ -122,6 +125,7 @@ mod variant_name_pinning {
             Request::ListPhp => {}
             Request::UpdatePhp { .. } => {}
             Request::CheckPhpUpdates => {}
+            Request::AvailablePhp => {}
             Request::Status => {}
             Request::Diagnose => {}
             Request::DoctorFix => {}
@@ -160,6 +164,7 @@ mod variant_name_pinning {
             version: Some(PhpVersion::new(8, 5)),
         });
         pin(Request::CheckPhpUpdates);
+        pin(Request::AvailablePhp);
         pin(Request::Status);
         pin(Request::Diagnose);
         pin(Request::DoctorFix);

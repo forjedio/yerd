@@ -13,8 +13,8 @@ export interface PollHandle<T> {
 /**
  * Poll `fn` every `intervalMs` while the component is mounted.
  *
- * Discipline that matters for the daemon (each `status` call spawns `mise` and
- * reads the trust store — see the plan's "poll cost" note):
+ * Discipline that matters for the daemon (each `status` call reads the trust
+ * store and live FPM state — see the plan's "poll cost" note):
  *   - never overlaps in-flight calls,
  *   - pauses entirely while the document is hidden (background tab / tray),
  *   - stops on unmount (no leaked timers).

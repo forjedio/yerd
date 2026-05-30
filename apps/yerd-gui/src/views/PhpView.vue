@@ -7,12 +7,13 @@ import PageHeader from "@/components/PageHeader.vue";
 import StatusPill from "@/components/StatusPill.vue";
 import Badge from "@/components/ui/Badge.vue";
 import Button from "@/components/ui/Button.vue";
-import Input from "@/components/ui/Input.vue";
 import Modal from "@/components/ui/Modal.vue";
+import Select from "@/components/ui/Select.vue";
 import Spinner from "@/components/ui/Spinner.vue";
 import { useDaemon } from "@/composables/useDaemon";
 import { useToast } from "@/composables/useToast";
 import {
+  availablePhp,
   checkPhpUpdates,
   installPhp,
   IpcError,
@@ -107,17 +108,40 @@ async function doUpdate(v: PhpVersion | null): Promise<void> {
 
 // ── install modal ──
 const installOpen = ref(false);
-const installInput = ref("");
-const installValid = computed(() => /^\d+\.\d+$/.test(installInput.value.trim()));
+const installLoading = ref(false);
+const installOptions = ref<{ value: PhpVersion; label: string }[]>([]);
+const selectedVersion = ref<PhpVersion>("");
+
+// Open the modal and fetch the distribution's installable versions, hiding any
+// already installed. Pre-selects the first so the Select (no placeholder) is
+// always valid.
+async function openInstall(): Promise<void> {
+  installOpen.value = true;
+  installLoading.value = true;
+  installOptions.value = [];
+  selectedVersion.value = "";
+  try {
+    const r = await availablePhp();
+    const installedSet = new Set(r.installed);
+    installOptions.value = r.available
+      .filter((v) => !installedSet.has(v))
+      .map((v) => ({ value: v, label: `PHP ${v}` }));
+    selectedVersion.value = installOptions.value[0]?.value ?? "";
+  } catch (e) {
+    toast.error("Couldn't load installable versions", (e as IpcError).message);
+  } finally {
+    installLoading.value = false;
+  }
+}
 
 async function confirmInstall(close: () => void): Promise<void> {
-  const v = installInput.value.trim();
+  const v = selectedVersion.value;
+  if (!v) return;
   busy.value = "install";
   close();
   try {
     await installPhp(v);
     toast.success(`Installed PHP ${v}`);
-    installInput.value = "";
     await load();
   } catch (e) {
     toast.error(`Install of PHP ${v} failed`, (e as IpcError).message);
@@ -152,7 +176,7 @@ onMounted(load);
           <Spinner v-if="busy === 'update:all'" class="size-4" />
           Update all
         </Button>
-        <Button size="sm" :disabled="busy === 'install'" @click="installOpen = true">
+        <Button size="sm" :disabled="busy === 'install'" @click="openInstall">
           <Spinner v-if="busy === 'install'" class="size-4" />
           <Download v-else class="size-4" />
           Install version
@@ -245,20 +269,35 @@ onMounted(load);
     </div>
 
     <Modal v-model:open="installOpen" title="Install a PHP version">
-      <label class="text-sm font-medium" for="phpver">Version (major.minor)</label>
-      <Input
-        id="phpver"
-        v-model="installInput"
-        placeholder="e.g. 8.5"
-        class="mt-2"
-      />
-      <p class="mt-2 text-xs text-muted-foreground">
-        Downloads a prebuilt static build; this can take a few minutes with no
-        progress bar (the daemon reports only on completion).
+      <div v-if="installLoading" class="flex justify-center py-6">
+        <Spinner class="size-5" />
+      </div>
+      <template v-else-if="installOptions.length">
+        <span class="text-sm font-medium">Version</span>
+        <div class="mt-2">
+          <Select
+            class="w-full"
+            :model-value="selectedVersion"
+            :options="installOptions"
+            aria-label="PHP version to install"
+            @update:model-value="(v: PhpVersion) => (selectedVersion = v)"
+          />
+        </div>
+        <p class="mt-2 text-xs text-muted-foreground">
+          Downloads a prebuilt static build; this can take a few minutes with no
+          progress bar (the daemon reports only on completion).
+        </p>
+      </template>
+      <p v-else class="py-2 text-sm text-muted-foreground">
+        No installable versions to add — every version offered by the
+        distribution is already installed, or it couldn't be reached.
       </p>
       <template #footer="{ close }">
         <Button variant="ghost" @click="close">Cancel</Button>
-        <Button :disabled="!installValid" @click="confirmInstall(close)">
+        <Button
+          :disabled="!installOptions.length || !selectedVersion"
+          @click="confirmInstall(close)"
+        >
           Install
         </Button>
       </template>

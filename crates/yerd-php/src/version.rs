@@ -1,12 +1,10 @@
-//! Bundled-PHP and `mise` discovery.
+//! Bundled-PHP discovery.
 //!
-//! Both functions return `(PhpVersion, PathBuf)` tuples sorted by version.
-//! Callers (typically `bin/yerdd` at startup) merge the two into the
-//! manager's `binaries` map.
+//! Returns `(PhpVersion, PathBuf)` tuples sorted by version. Callers (typically
+//! `bin/yerdd` at startup) feed these into the manager's `binaries` map.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::str::FromStr;
-use std::time::Duration;
 
 use yerd_core::PhpVersion;
 use yerd_platform::PlatformDirs;
@@ -29,8 +27,7 @@ const FPM_BINARY_PATH: &[&str] = &["php-fpm.exe"];
 /// ```
 ///
 /// Error policy:
-/// - `read_dir` returning `ErrorKind::NotFound` → `Ok(vec![])` (empty
-///   install — the daemon may still pick up `mise` versions).
+/// - `read_dir` returning `ErrorKind::NotFound` → `Ok(vec![])` (empty install).
 /// - any other error → `Err(PhpError::DiscoveryIo)`.
 ///
 /// Result is sorted by `PhpVersion`'s derived `Ord`.
@@ -71,70 +68,6 @@ fn parse_php_dirname(name: &str) -> Option<PhpVersion> {
     PhpVersion::from_str(rest).ok()
 }
 
-/// Best-effort live check via `mise ls --json --global php`.
-///
-/// Any failure (mise absent → `ENOENT`; non-zero exit; JSON parse failure;
-/// timeout) returns `vec![]`. **Never errors.** Silent skip mirrors the
-/// rest of the workspace's no-logging convention; the daemon may wrap
-/// this call with its own logging.
-///
-/// Output sorted by `PhpVersion`.
-pub async fn discover_mise() -> Vec<(PhpVersion, PathBuf)> {
-    let output_fut = tokio::process::Command::new("mise")
-        .args(["ls", "--json", "--global", "php"])
-        .stderr(std::process::Stdio::null())
-        .output();
-    let output = match tokio::time::timeout(Duration::from_secs(1), output_fut).await {
-        Ok(Ok(o)) if o.status.success() => o,
-        _ => return Vec::new(),
-    };
-
-    let Ok(parsed) = serde_json::from_slice::<Vec<MiseEntry>>(&output.stdout) else {
-        return Vec::new();
-    };
-
-    let mut versions: Vec<(PhpVersion, PathBuf)> = parsed
-        .into_iter()
-        .filter_map(|e| {
-            let v = parse_mise_version(&e.version)?;
-            let binary = compose_mise_binary(&e.install_path);
-            if binary.exists() {
-                Some((v, binary))
-            } else {
-                None
-            }
-        })
-        .collect();
-    versions.sort_by_key(|(v, _)| *v);
-    versions
-}
-
-#[derive(serde::Deserialize)]
-struct MiseEntry {
-    version: String,
-    install_path: String,
-}
-
-/// `"8.3.10"` → `PhpVersion(8, 3)`. Returns `None` for `"system"` etc.
-fn parse_mise_version(s: &str) -> Option<PhpVersion> {
-    let mut parts = s.split('.');
-    let major: u8 = parts.next()?.parse().ok()?;
-    let minor: u8 = parts.next()?.parse().ok()?;
-    Some(PhpVersion::new(major, minor))
-}
-
-fn compose_mise_binary(install_path: &str) -> PathBuf {
-    let p = Path::new(install_path);
-    #[cfg(unix)]
-    {
-        p.join("bin").join("php-fpm")
-    }
-    #[cfg(not(unix))]
-    {
-        p.join("php-fpm.exe")
-    }
-}
-
 #[cfg(test)]
 #[allow(
     clippy::unwrap_used,
@@ -144,6 +77,7 @@ fn compose_mise_binary(install_path: &str) -> PathBuf {
 )]
 mod tests {
     use super::*;
+    use std::path::Path;
 
     #[test]
     fn parse_php_dirname_accepts_canonical_lowercase() {
@@ -160,17 +94,6 @@ mod tests {
         assert_eq!(parse_php_dirname("php8.3"), None);
         assert_eq!(parse_php_dirname("notphp"), None);
         assert_eq!(parse_php_dirname("php-system"), None);
-    }
-
-    #[test]
-    fn parse_mise_version_accepts_three_part() {
-        assert_eq!(parse_mise_version("8.3.10"), Some(PhpVersion::new(8, 3)));
-        assert_eq!(parse_mise_version("8.3"), Some(PhpVersion::new(8, 3)));
-    }
-
-    #[test]
-    fn parse_mise_version_rejects_system() {
-        assert_eq!(parse_mise_version("system"), None);
     }
 
     fn make_dirs(tmp: &Path) -> PlatformDirs {
