@@ -1,15 +1,43 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from "vue";
-import { Download, RefreshCw, Star } from "lucide-vue-next";
+import { computed, nextTick, onMounted, ref } from "vue";
+import {
+  Boxes,
+  Download,
+  Info,
+  MoreHorizontal,
+  RefreshCw,
+  RotateCw,
+  SlidersHorizontal,
+  Star,
+  Trash2,
+} from "lucide-vue-next";
 
-import ComingSoon from "@/components/ComingSoon.vue";
 import PageHeader from "@/components/PageHeader.vue";
 import StatusPill from "@/components/StatusPill.vue";
 import Badge from "@/components/ui/Badge.vue";
 import Button from "@/components/ui/Button.vue";
+import Card from "@/components/ui/Card.vue";
+import CardContent from "@/components/ui/CardContent.vue";
+import CardDescription from "@/components/ui/CardDescription.vue";
+import CardHeader from "@/components/ui/CardHeader.vue";
+import CardTitle from "@/components/ui/CardTitle.vue";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import Input from "@/components/ui/Input.vue";
 import Modal from "@/components/ui/Modal.vue";
 import Select from "@/components/ui/Select.vue";
 import Spinner from "@/components/ui/Spinner.vue";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { useDaemon } from "@/composables/useDaemon";
 import { useToast } from "@/composables/useToast";
 import {
@@ -18,14 +46,18 @@ import {
   installPhp,
   IpcError,
   listPhp,
+  restartAllPhp,
+  restartPhp,
   setDefaultPhp,
+  setPhpSettings,
+  uninstallPhp,
   updatePhp,
 } from "@/ipc/client";
 import type { PhpPoolStatus, PhpUpdate, PhpVersion } from "@/ipc/types";
 import { humaniseBytes, poolStateLabel, poolStateTone } from "@/lib/utils";
 
 const toast = useToast();
-const { report } = useDaemon();
+const { report, refresh } = useDaemon();
 
 const installed = ref<PhpVersion[]>([]);
 const defaultVersion = ref<PhpVersion | null>(null);
@@ -48,6 +80,72 @@ const updateByVersion = computed<Record<string, PhpUpdate>>(() => {
 
 const hasUpdates = computed(() => updates.value.length > 0);
 
+// ── global PHP ini settings ──
+// Text fields plus an On/Off select for display_errors. A blank field means
+// "use PHP's default" (the daemon removes the key).
+const TEXT_SETTINGS = [
+  {
+    key: "memory_limit",
+    label: "Memory limit",
+    placeholder: "512M",
+    hint: "Most memory one script may use. Size like 256M, 512M or 2G (use G, not GB). -1 means unlimited.",
+  },
+  {
+    key: "max_execution_time",
+    label: "Max execution time (s)",
+    placeholder: "60",
+    hint: "How long a script may run before it's stopped. Whole seconds, e.g. 60. 0 means no limit.",
+  },
+  {
+    key: "max_input_time",
+    label: "Max input time (s)",
+    placeholder: "60",
+    hint: "How long a script may spend reading request data (POST and uploads). Whole seconds, e.g. 60.",
+  },
+  {
+    key: "max_file_uploads",
+    label: "Max file uploads",
+    placeholder: "20",
+    hint: "How many files may be uploaded in one request. Whole number, e.g. 20.",
+  },
+  {
+    key: "upload_max_filesize",
+    label: "Upload max filesize",
+    placeholder: "100M",
+    hint: "Largest single uploaded file. Size like 8M, 100M or 1G (use G, not GB).",
+  },
+  {
+    key: "post_max_size",
+    label: "Post max size",
+    placeholder: "100M",
+    hint: "Largest POST body; set this at or above the upload size. Size like 8M, 100M or 1G (use G, not GB).",
+  },
+  {
+    key: "error_reporting",
+    label: "Error reporting",
+    placeholder: "E_ALL",
+    hint: "Which error levels PHP reports. An integer or a constant expression, e.g. E_ALL or E_ALL & ~E_DEPRECATED.",
+  },
+] as const;
+
+const DISPLAY_ERRORS_HINT =
+  "Whether PHP shows errors in the page output. On is handy in development; Off is safer in production.";
+
+const DISPLAY_ERRORS_OPTIONS = [
+  { value: "", label: "— default —" },
+  { value: "On", label: "On" },
+  { value: "Off", label: "Off" },
+] as const;
+
+const settingsForm = ref<Record<string, string>>({});
+
+function applySettings(settings: Record<string, string> | undefined): void {
+  const next: Record<string, string> = {};
+  for (const s of TEXT_SETTINGS) next[s.key] = settings?.[s.key] ?? "";
+  next.display_errors = settings?.display_errors ?? "";
+  settingsForm.value = next;
+}
+
 async function load(): Promise<void> {
   loading.value = true;
   try {
@@ -55,10 +153,27 @@ async function load(): Promise<void> {
     installed.value = r.installed;
     defaultVersion.value = r.default;
     updates.value = r.updates ?? [];
+    applySettings(r.settings);
   } catch (e) {
     toast.error("Couldn't load PHP versions", (e as IpcError).message);
   } finally {
     loading.value = false;
+  }
+}
+
+async function saveSettings(): Promise<void> {
+  busy.value = "settings";
+  try {
+    // Send every field; blank values reset (remove) that setting.
+    const payload: Record<string, string> = { ...settingsForm.value };
+    const r = await setPhpSettings(payload);
+    applySettings(r.settings);
+    toast.success("PHP settings updated", "Pools restart to apply the changes.");
+    await load();
+  } catch (e) {
+    toast.error("Couldn't update PHP settings", (e as IpcError).message);
+  } finally {
+    busy.value = null;
   }
 }
 
@@ -98,11 +213,84 @@ async function doUpdate(v: PhpVersion | null): Promise<void> {
   try {
     await updatePhp(v);
     toast.success(v ? `Updated PHP ${v}` : "Updated all PHP versions");
-    await load();
+    // Refresh the status poll too so the new patch shows without the 4s lag.
+    await Promise.all([load(), refresh()]);
   } catch (e) {
     toast.error("Update failed", (e as IpcError).message);
   } finally {
     busy.value = null;
+  }
+}
+
+// ── process actions ──
+// Restart applies to a pool that is up or crashed; an idle/stopped pool has
+// nothing to restart (it spawns fresh on the next request).
+function canRestart(v: PhpVersion): boolean {
+  const s = poolByVersion.value[v]?.state;
+  return s === "running" || s === "failed";
+}
+
+const anyRunning = computed(() =>
+  (report.value?.php ?? []).some((p) => p.state === "running" || p.state === "failed"),
+);
+
+async function doRestart(v: PhpVersion): Promise<void> {
+  busy.value = `restart:${v}`;
+  try {
+    await restartPhp(v);
+    toast.success(`Restarted PHP ${v}`);
+    await refresh();
+  } catch (e) {
+    toast.error(`Couldn't restart PHP ${v}`, (e as IpcError).message);
+  } finally {
+    busy.value = null;
+  }
+}
+
+async function doRestartAll(): Promise<void> {
+  if (!anyRunning.value) {
+    toast.info("No running pools to restart");
+    return;
+  }
+  busy.value = "restart:all";
+  try {
+    await restartAllPhp();
+    toast.success("Restarted all running pools");
+    await refresh();
+  } catch (e) {
+    toast.error("Couldn't restart pools", (e as IpcError).message);
+  } finally {
+    busy.value = null;
+  }
+}
+
+// ── uninstall confirm ──
+const uninstallOpen = ref(false);
+const uninstallTarget = ref<PhpVersion | null>(null);
+
+// Defer opening past the dropdown's close so reka-ui's focus-restore doesn't
+// steal focus from the modal.
+function openUninstall(v: PhpVersion): void {
+  uninstallTarget.value = v;
+  void nextTick(() => {
+    uninstallOpen.value = true;
+  });
+}
+
+async function confirmUninstall(close: () => void): Promise<void> {
+  const v = uninstallTarget.value;
+  if (!v) return;
+  busy.value = `uninstall:${v}`;
+  close();
+  try {
+    await uninstallPhp(v);
+    toast.success(`Uninstalled PHP ${v}`);
+    await load();
+  } catch (e) {
+    toast.error(`Couldn't uninstall PHP ${v}`, (e as IpcError).message);
+  } finally {
+    busy.value = null;
+    uninstallTarget.value = null;
   }
 }
 
@@ -142,7 +330,9 @@ async function confirmInstall(close: () => void): Promise<void> {
   try {
     await installPhp(v);
     toast.success(`Installed PHP ${v}`);
-    await load();
+    // Refresh the version list *and* the status poll so the new row shows its
+    // patch + "idle" state immediately instead of on the next 4s tick.
+    await Promise.all([load(), refresh()]);
   } catch (e) {
     toast.error(`Install of PHP ${v} failed`, (e as IpcError).message);
   } finally {
@@ -155,46 +345,55 @@ onMounted(load);
 
 <template>
   <div class="flex h-full flex-col">
-    <PageHeader title="PHP" subtitle="Installed versions, updates, and the global default">
-      <template #actions>
-        <Button
-          variant="outline"
-          size="sm"
-          :disabled="busy === 'refresh'"
-          @click="refreshUpdates"
-        >
-          <Spinner v-if="busy === 'refresh'" class="size-4" />
-          <RefreshCw v-else class="size-4" />
-          Refresh updates
-        </Button>
-        <Button
-          variant="outline"
-          size="sm"
-          :disabled="!hasUpdates || busy === 'update:all'"
-          @click="doUpdate(null)"
-        >
-          <Spinner v-if="busy === 'update:all'" class="size-4" />
-          Update all
-        </Button>
-        <Button size="sm" :disabled="busy === 'install'" @click="openInstall">
-          <Spinner v-if="busy === 'install'" class="size-4" />
-          <Download v-else class="size-4" />
-          Install version
-        </Button>
-      </template>
-    </PageHeader>
+    <PageHeader title="PHP" subtitle="Installed versions, updates, and the global default" />
 
     <div class="flex-1 overflow-y-auto p-6">
-      <div v-if="loading" class="flex justify-center py-16"><Spinner class="size-6" /></div>
+      <!-- Installed versions -->
+      <Card>
+        <CardHeader class="flex-row items-center justify-between space-y-0">
+          <div class="space-y-1.5">
+            <CardTitle class="flex items-center gap-2"><Boxes class="size-4" /> Installed versions</CardTitle>
+            <CardDescription>Versions, updates, and the global default.</CardDescription>
+          </div>
+          <div class="flex items-center gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              :disabled="busy === 'refresh'"
+              @click="refreshUpdates"
+            >
+              <Spinner v-if="busy === 'refresh'" class="size-4" />
+              <RefreshCw v-else class="size-4" />
+              Refresh
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              :disabled="!hasUpdates || busy === 'update:all'"
+              @click="doUpdate(null)"
+            >
+              <Spinner v-if="busy === 'update:all'" class="size-4" />
+              Update all
+            </Button>
+            <Button size="sm" :disabled="busy === 'install'" @click="openInstall">
+              <Spinner v-if="busy === 'install'" class="size-4" />
+              <Download v-else class="size-4" />
+              Install
+            </Button>
+          </div>
+        </CardHeader>
 
-      <div
-        v-else-if="installed.length === 0"
-        class="rounded-lg border border-dashed p-10 text-center text-sm text-muted-foreground"
-      >
-        No PHP versions installed yet. Use <strong>Install version</strong> to add one.
-      </div>
+        <CardContent>
+          <div v-if="loading" class="flex justify-center py-12"><Spinner class="size-6" /></div>
 
-      <table v-else class="w-full text-sm">
+          <div
+            v-else-if="installed.length === 0"
+            class="rounded-lg border border-dashed p-10 text-center text-sm text-muted-foreground"
+          >
+            No PHP versions installed yet. Use <strong>Install</strong> to add one.
+          </div>
+
+          <table v-else class="w-full text-sm">
         <thead>
           <tr class="border-b text-left text-xs uppercase text-muted-foreground">
             <th class="py-2 pr-4 font-medium">Version</th>
@@ -234,38 +433,122 @@ onMounted(load);
               <span v-else class="text-xs text-muted-foreground">up to date</span>
             </td>
             <td class="py-3 pl-4">
-              <div class="flex items-center justify-end gap-2">
-                <Button
-                  v-if="updateByVersion[v]"
-                  variant="outline"
-                  size="sm"
-                  :disabled="busy === `update:${v}`"
-                  @click="doUpdate(v)"
-                >
-                  <Spinner v-if="busy === `update:${v}`" class="size-4" />
-                  Update
-                </Button>
-                <Button
-                  v-if="v !== defaultVersion"
-                  variant="ghost"
-                  size="sm"
-                  :disabled="busy === `default:${v}`"
-                  @click="makeDefault(v)"
-                >
-                  Set default
-                </Button>
+              <div class="flex items-center justify-end">
+                <Spinner v-if="busy?.endsWith(`:${v}`)" class="size-4" />
+                <DropdownMenu>
+                  <DropdownMenuTrigger as-child>
+                    <Button variant="ghost" size="icon" :aria-label="`Actions for PHP ${v}`">
+                      <MoreHorizontal class="size-4" />
+                    </Button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="end">
+                    <DropdownMenuItem :disabled="!canRestart(v)" @select="doRestart(v)">
+                      <RotateCw class="size-4" /> Restart
+                    </DropdownMenuItem>
+                    <DropdownMenuItem :disabled="!updateByVersion[v]" @select="doUpdate(v)">
+                      <Download class="size-4" /> Update
+                    </DropdownMenuItem>
+                    <DropdownMenuItem :disabled="v === defaultVersion" @select="makeDefault(v)">
+                      <Star class="size-4" /> Set default
+                    </DropdownMenuItem>
+                    <DropdownMenuSeparator />
+                    <DropdownMenuItem
+                      class="text-destructive focus:bg-destructive/10 focus:text-destructive"
+                      @select="openUninstall(v)"
+                    >
+                      <Trash2 class="size-4" /> Uninstall
+                    </DropdownMenuItem>
+                  </DropdownMenuContent>
+                </DropdownMenu>
               </div>
             </td>
           </tr>
-        </tbody>
-      </table>
+            </tbody>
+          </table>
 
-      <div class="mt-6 flex items-center gap-2 text-xs text-muted-foreground">
-        <ComingSoon reason="Per-pool start/stop needs a daemon IPC — coming soon." pill>
-          Start / stop pool
-        </ComingSoon>
-        <span>Updates are notify-only; nothing installs without your action.</span>
-      </div>
+          <div class="mt-4 flex items-center justify-between gap-2">
+          <span class="text-xs text-muted-foreground">
+            Updates are notify-only; nothing installs without your action.
+          </span>
+          <Button
+            variant="outline"
+            size="sm"
+            :disabled="!anyRunning || busy === 'restart:all'"
+            @click="doRestartAll"
+          >
+            <Spinner v-if="busy === 'restart:all'" class="size-4" />
+            <RotateCw v-else class="size-4" />
+            Restart all
+          </Button>
+          </div>
+        </CardContent>
+      </Card>
+
+      <!-- Global PHP ini defaults, applied to every installed version. -->
+      <Card v-if="!loading" class="mt-8">
+        <CardHeader>
+          <CardTitle class="flex items-center gap-2"><SlidersHorizontal class="size-4" /> Default settings</CardTitle>
+          <CardDescription>
+            Applied to every installed PHP version. Leave a field blank to use
+            PHP's built-in default. Saving restarts the running pools.
+          </CardDescription>
+        </CardHeader>
+
+        <CardContent>
+          <TooltipProvider :delay-duration="0">
+          <div class="grid grid-cols-1 gap-4 sm:grid-cols-2">
+            <div v-for="s in TEXT_SETTINGS" :key="s.key">
+              <div class="flex items-center gap-1">
+                <label class="text-xs font-medium" :for="`set-${s.key}`">{{ s.label }}</label>
+                <Tooltip>
+                  <TooltipTrigger as-child>
+                    <span class="inline-flex cursor-help text-muted-foreground">
+                      <Info class="size-3.5" />
+                    </span>
+                  </TooltipTrigger>
+                  <TooltipContent side="top" class="w-72">{{ s.hint }}</TooltipContent>
+                </Tooltip>
+              </div>
+              <Input
+                :id="`set-${s.key}`"
+                v-model="settingsForm[s.key]"
+                :placeholder="s.placeholder"
+                class="mt-1"
+              />
+            </div>
+            <div>
+              <div class="flex items-center gap-1">
+                <span class="text-xs font-medium">Display errors</span>
+                <Tooltip>
+                  <TooltipTrigger as-child>
+                    <span class="inline-flex cursor-help text-muted-foreground">
+                      <Info class="size-3.5" />
+                    </span>
+                  </TooltipTrigger>
+                  <TooltipContent side="top" class="w-72">{{ DISPLAY_ERRORS_HINT }}</TooltipContent>
+                </Tooltip>
+              </div>
+              <div class="mt-1">
+                <Select
+                  class="w-full"
+                  :model-value="settingsForm.display_errors ?? ''"
+                  :options="DISPLAY_ERRORS_OPTIONS"
+                  aria-label="display_errors"
+                  @update:model-value="(v: string) => (settingsForm.display_errors = v)"
+                />
+              </div>
+            </div>
+          </div>
+          </TooltipProvider>
+
+          <div class="mt-5 flex justify-end">
+            <Button size="sm" :disabled="busy === 'settings'" @click="saveSettings">
+              <Spinner v-if="busy === 'settings'" class="size-4" />
+              {{ busy === "settings" ? "Applying…" : "Save" }}
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
     </div>
 
     <Modal v-model:open="installOpen" title="Install a PHP version">
@@ -300,6 +583,18 @@ onMounted(load);
         >
           Install
         </Button>
+      </template>
+    </Modal>
+
+    <Modal v-model:open="uninstallOpen" title="Uninstall PHP version">
+      <p class="text-sm text-muted-foreground">
+        Remove <strong class="font-mono text-foreground">PHP {{ uninstallTarget }}</strong>
+        and its files? This stops its pool. Sites using it, or removing your last
+        version, will be blocked.
+      </p>
+      <template #footer="{ close }">
+        <Button variant="ghost" @click="close">Cancel</Button>
+        <Button variant="destructive" @click="confirmUninstall(close)">Uninstall</Button>
       </template>
     </Modal>
   </div>

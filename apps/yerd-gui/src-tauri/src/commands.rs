@@ -71,6 +71,19 @@ pub async fn unlink(name: String) -> Result<Response, GuiError> {
 }
 
 #[tauri::command]
+pub async fn list_parked() -> Result<Response, GuiError> {
+    finish(exchange(&Request::ListParked).await?)
+}
+
+#[tauri::command]
+pub async fn unpark(path: String) -> Result<Response, GuiError> {
+    // Unlike `park`, the path is sent verbatim as a `String` (no `PathBuf::from`
+    // wrap): the daemon matches it exactly against the stored parked root and
+    // does not canonicalise, so a deleted-from-disk folder is still removable.
+    finish(exchange(&Request::Unpark { path }).await?)
+}
+
+#[tauri::command]
 pub async fn set_php(name: String, version: PhpVersion) -> Result<Response, GuiError> {
     finish(exchange(&Request::SetPhp { name, version }).await?)
 }
@@ -110,6 +123,33 @@ pub async fn set_default_php(version: PhpVersion) -> Result<Response, GuiError> 
 #[tauri::command]
 pub async fn update_php(version: Option<PhpVersion>) -> Result<Response, GuiError> {
     finish(exchange(&Request::UpdatePhp { version }).await?)
+}
+
+#[tauri::command]
+pub async fn set_php_settings(
+    settings: std::collections::BTreeMap<String, String>,
+) -> Result<Response, GuiError> {
+    finish(exchange(&Request::SetPhpSettings { settings }).await?)
+}
+
+#[tauri::command]
+pub async fn restart_php(version: PhpVersion) -> Result<Response, GuiError> {
+    finish(exchange(&Request::RestartPhp { version }).await?)
+}
+
+#[tauri::command]
+pub async fn restart_all_php() -> Result<Response, GuiError> {
+    finish(exchange(&Request::RestartAllPhp).await?)
+}
+
+#[tauri::command]
+pub async fn uninstall_php(version: PhpVersion) -> Result<Response, GuiError> {
+    finish(exchange(&Request::UninstallPhp { version }).await?)
+}
+
+#[tauri::command]
+pub async fn restart_daemon() -> Result<Response, GuiError> {
+    finish(exchange(&Request::RestartDaemon).await?)
 }
 
 // ── status / doctor / info ─────────────────────────────────────────────────

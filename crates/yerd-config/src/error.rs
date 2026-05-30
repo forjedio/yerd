@@ -100,6 +100,10 @@ pub enum ValidateErrorReason {
     UnknownService,
     /// `parked.paths` contained an empty string.
     ParkedPathEmpty,
+    /// `overrides` contained an empty-string key.
+    OverridePathEmpty,
+    /// `php.settings` contained an unsupported key or an invalid value.
+    InvalidPhpSetting,
 }
 
 impl fmt::Display for ValidateErrorReason {
@@ -111,6 +115,8 @@ impl fmt::Display for ValidateErrorReason {
             Self::HttpsPortZero => "ports.https must be non-zero",
             Self::UnknownService => "services.enabled contains an unrecognised entry",
             Self::ParkedPathEmpty => "parked.paths contains an empty string",
+            Self::OverridePathEmpty => "overrides contains an empty path key",
+            Self::InvalidPhpSetting => "php.settings contains an unsupported key or invalid value",
         };
         f.write_str(msg)
     }
@@ -168,6 +174,8 @@ mod tests {
             ValidateErrorReason::HttpsPortZero,
             ValidateErrorReason::UnknownService,
             ValidateErrorReason::ParkedPathEmpty,
+            ValidateErrorReason::OverridePathEmpty,
+            ValidateErrorReason::InvalidPhpSetting,
         ] {
             assert!(!r.to_string().is_empty());
             let _ = format!("{r:?}");

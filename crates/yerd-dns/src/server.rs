@@ -177,7 +177,9 @@ impl RequestHandler for LoopbackHandler {
         // the request and sets QR=1. We only override AA and RCODE.
         let builder = MessageResponseBuilder::from_message_request(request);
         let mut header = Header::response_from_request(request.header());
-        header.set_authoritative(true);
+        // Authoritative only for names in our zone; a REFUSED (out-of-zone)
+        // reply must clear AA so resolvers don't trust it.
+        header.set_authoritative(!matches!(decision, Answer::Refused));
 
         let owner: hickory_proto::rr::Name = q.name().into();
 
@@ -192,11 +194,12 @@ impl RequestHandler for LoopbackHandler {
                 crate::ANSWER_TTL_SECS,
                 RData::AAAA(rdata::AAAA(std::net::Ipv6Addr::LOCALHOST)),
             )],
-            Answer::NoData | Answer::NxDomain => vec![],
+            Answer::NoData | Answer::NxDomain | Answer::Refused => vec![],
         };
         let rcode = match decision {
             Answer::Loopback4 | Answer::Loopback6 | Answer::NoData => ResponseCode::NoError,
             Answer::NxDomain => ResponseCode::NXDomain,
+            Answer::Refused => ResponseCode::Refused,
         };
         header.set_response_code(rcode);
 

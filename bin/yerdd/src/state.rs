@@ -11,10 +11,11 @@
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::PathBuf;
+use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use std::time::Instant;
 
-use tokio::sync::{Mutex, RwLock};
+use tokio::sync::{watch, Mutex, RwLock};
 
 use yerd_core::PhpVersion;
 use yerd_ipc::PortStatus;
@@ -56,4 +57,11 @@ pub struct DaemonState {
     pub https: PortStatus,
     /// When the daemon finished bringing up (for `Status` uptime).
     pub started_at: Instant,
+    /// Broadcast shutdown trigger. Owned by state so the `RestartDaemon` IPC
+    /// handler can request a graceful teardown (every task watches a clone of
+    /// this channel exactly like it does for SIGTERM).
+    pub shutdown_tx: watch::Sender<bool>,
+    /// Set by `RestartDaemon` before tripping `shutdown_tx`, so the top level
+    /// re-execs in place instead of exiting.
+    pub restart_requested: AtomicBool,
 }

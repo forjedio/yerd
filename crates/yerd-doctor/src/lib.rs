@@ -218,6 +218,7 @@ mod tests {
         StatusReport {
             daemon_pid: 1,
             uptime_secs: 10,
+            daemon_rss_bytes: Some(2048),
             tld: "test".into(),
             http: PortStatus {
                 requested: 80,
@@ -252,6 +253,7 @@ mod tests {
                 secured: 0,
             },
             load_avg: Some([10, 5, 1]),
+            daemon_version: "2.0.1".into(),
         }
     }
 

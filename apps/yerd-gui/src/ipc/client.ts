@@ -86,6 +86,21 @@ export async function park(path: string): Promise<void> {
   ensureOk(await call<Response>("park", { path }));
 }
 
+/** The registered parked roots, including empty ones (no derived sites). */
+export async function listParked(): Promise<string[]> {
+  const r = ensureOk(await call<Response>("list_parked"));
+  return r.type === "parked" ? r.paths : [];
+}
+
+/**
+ * Un-park a directory root: removes it from the parked set and re-scans. Pass a
+ * path verbatim from {@link listParked} — the daemon matches it exactly (no
+ * canonicalisation), so a folder deleted from disk is still removable.
+ */
+export async function unpark(path: string): Promise<void> {
+  ensureOk(await call<Response>("unpark", { path }));
+}
+
 export async function link(name: string, path: string): Promise<void> {
   ensureOk(await call<Response>("link", { name, path }));
 }
@@ -128,6 +143,48 @@ export async function setDefaultPhp(version: PhpVersion): Promise<void> {
 /** `version === null` updates every installed version. */
 export async function updatePhp(version: PhpVersion | null): Promise<void> {
   ensureOk(await call<Response>("update_php", { version }));
+}
+
+/** Restart one version's FPM pool (stop + start). */
+export async function restartPhp(version: PhpVersion): Promise<void> {
+  ensureOk(await call<Response>("restart_php", { version }));
+}
+
+/** Restart every started (running or failed) FPM pool. */
+export async function restartAllPhp(): Promise<void> {
+  ensureOk(await call<Response>("restart_all_php"));
+}
+
+/**
+ * Restart the daemon process in place. The daemon replies and then re-execs, so
+ * the connection drops momentarily; the status poll reconnects on its own.
+ */
+export async function restartDaemon(): Promise<void> {
+  ensureOk(await call<Response>("restart_daemon"));
+}
+
+/**
+ * Uninstall a PHP version. Rejects (toast-worthy) when the version is in use by
+ * a site, is the last version with sites remaining, or is the current default.
+ * Returns the refreshed version list.
+ */
+export async function uninstallPhp(version: PhpVersion): Promise<PhpVersionsResponse> {
+  return ensureOk(
+    await call<Response>("uninstall_php", { version }),
+  ) as PhpVersionsResponse;
+}
+
+/**
+ * Merge global PHP ini settings and apply them to every installed version's FPM
+ * pool. An empty-string value resets a setting to PHP's default. Returns the
+ * refreshed version list (which carries the applied settings).
+ */
+export async function setPhpSettings(
+  settings: Record<string, string>,
+): Promise<PhpVersionsResponse> {
+  return ensureOk(
+    await call<Response>("set_php_settings", { settings }),
+  ) as PhpVersionsResponse;
 }
 
 // ── status / doctor ────────────────────────────────────────────────────────

@@ -10,12 +10,14 @@
 mod error;
 mod host;
 mod php;
+pub mod php_settings;
 mod router;
 mod site;
 mod tld;
 
 pub use error::{CoreError, PhpVersionErrorReason, SiteNameErrorReason, TldErrorReason};
 pub use php::PhpVersion;
+pub use php_settings::{PhpSettingError, ValueErrorReason};
 pub use router::{RouterConfig, SiteRouter};
 pub use site::{Site, SiteKind};
 pub use tld::Tld;

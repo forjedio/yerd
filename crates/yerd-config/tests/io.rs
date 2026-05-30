@@ -21,6 +21,7 @@ fn save_then_load_round_trip() {
     let mut original = Config::default();
     original.php = PhpSection {
         default: PhpVersion::new(8, 2),
+        settings: std::collections::BTreeMap::new(),
     };
     original.parked.paths.insert("/srv/sites".to_string());
     original.services.enabled.insert("mysql".to_string());

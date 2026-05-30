@@ -1,10 +1,13 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from "vue";
+import { computed, nextTick, onMounted, ref } from "vue";
 import {
   Copy,
+  FileText,
+  Info,
+  MoreHorizontal,
   Network,
-  Power,
   RefreshCw,
+  RotateCw,
   Server,
   ShieldCheck,
   Wrench,
@@ -17,9 +20,23 @@ import Badge from "@/components/ui/Badge.vue";
 import Button from "@/components/ui/Button.vue";
 import Card from "@/components/ui/Card.vue";
 import CardContent from "@/components/ui/CardContent.vue";
+import CardDescription from "@/components/ui/CardDescription.vue";
 import CardHeader from "@/components/ui/CardHeader.vue";
 import CardTitle from "@/components/ui/CardTitle.vue";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import Modal from "@/components/ui/Modal.vue";
 import Spinner from "@/components/ui/Spinner.vue";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { useDaemon } from "@/composables/useDaemon";
 import { useToast } from "@/composables/useToast";
 import {
@@ -28,10 +45,13 @@ import {
   elevate,
   hostPlatform,
   IpcError,
+  restartDaemon,
+  restartPhp,
 } from "@/ipc/client";
 import type {
   Diagnosis,
   ElevateTarget,
+  PhpVersion,
   Severity,
   StatusReport,
 } from "@/ipc/types";
@@ -58,8 +78,13 @@ interface Row {
   name: string;
   tone: Tone;
   state: string;
-  detail: string;
-  failedFpm?: string; // version when an FPM pool has failed
+  memory: string; // 3rd column (RAM); "—" for in-process subsystems
+  info: string; // details shown in the (i) tooltip
+  child?: boolean; // indented under the daemon (runs inside its process)
+  // Which actions the row's ⋯ menu offers. DNS/proxy have none (no menu).
+  menu?: "daemon" | "fpm";
+  version?: PhpVersion; // for fpm restart
+  canRestart?: boolean; // fpm: only when running or failed (not idle)
 }
 
 const rows = computed<Row[]>(() => {
@@ -71,14 +96,18 @@ const rows = computed<Row[]>(() => {
       name: "Daemon (yerdd)",
       tone: "ok",
       state: "running",
-      detail: `pid ${r.daemon_pid} · up ${humaniseUptime(r.uptime_secs)}`,
+      memory: humaniseBytes(r.daemon_rss_bytes),
+      info: `pid ${r.daemon_pid} · up ${humaniseUptime(r.uptime_secs)}`,
+      menu: "daemon",
     },
     {
       key: "dns",
       name: "DNS resolver",
       tone: "ok",
       state: "listening",
-      detail: r.dns_addr,
+      memory: "—",
+      info: `bound on ${r.dns_addr} · runs inside the daemon process`,
+      child: true,
     },
     portRow("proxy-http", "Proxy (HTTP)", r, "http"),
     portRow("proxy-https", "Proxy (HTTPS)", r, "https"),
@@ -89,10 +118,12 @@ const rows = computed<Row[]>(() => {
       name: `PHP-FPM ${p.version}`,
       tone: poolStateTone(p.state),
       state: poolStateLabel(p.state),
-      detail: [p.pid ? `pid ${p.pid}` : null, p.listen, humaniseBytes(p.rss_bytes)]
-        .filter(Boolean)
-        .join(" · "),
-      failedFpm: p.state === "failed" ? p.version : undefined,
+      memory: humaniseBytes(p.rss_bytes),
+      // Empty when idle (no pid/listen) → the (i) icon is then omitted.
+      info: [p.pid ? `pid ${p.pid}` : null, p.listen].filter(Boolean).join(" · "),
+      menu: "fpm",
+      version: p.version,
+      canRestart: p.state === "running" || p.state === "failed",
     });
   }
   return list;
@@ -105,12 +136,15 @@ function portRow(
   which: "http" | "https",
 ): Row {
   const ps = r[which];
+  const port = ps.fell_back ? `rootless fallback from :${ps.requested}` : "privileged port";
   return {
     key,
     name,
     tone: ps.fell_back ? "warn" : "ok",
     state: `:${ps.bound}`,
-    detail: ps.fell_back ? `rootless fallback from :${ps.requested}` : "privileged port",
+    memory: "—",
+    info: `${port} · runs inside the daemon process`,
+    child: true,
   };
 }
 
@@ -166,11 +200,18 @@ const envItems = computed<EnvItem[]>(() => {
   ];
 });
 
+// Whether there's anything worth fixing — "Run safe fixes" is only enabled
+// when at least one diagnosis is a warning or failure.
+const hasActionable = computed(() =>
+  diagnoses.value.some((d) => d.severity === "warn" || d.severity === "fail"),
+);
+
 // ── actions ──
-async function loadDiagnoses(): Promise<void> {
+async function loadDiagnoses(notify = false): Promise<void> {
   diagLoading.value = true;
   try {
     diagnoses.value = await diagnose();
+    if (notify) toast.success("Health re-checked");
   } catch (e) {
     toast.error("Couldn't run diagnostics", (e as IpcError).message);
   } finally {
@@ -195,9 +236,43 @@ async function runFixes(): Promise<void> {
   }
 }
 
-async function restartFailedFpm(): Promise<void> {
-  // doctor fix is the only restart path that exists; it restarts failed pools.
-  await runFixes();
+async function doRestartFpm(v: PhpVersion): Promise<void> {
+  busy.value = `restart:${v}`;
+  try {
+    await restartPhp(v);
+    toast.success(`Restarted PHP-FPM ${v}`);
+    await refreshStatus();
+  } catch (e) {
+    toast.error(`Couldn't restart PHP-FPM ${v}`, (e as IpcError).message);
+  } finally {
+    busy.value = null;
+  }
+}
+
+// ── daemon restart (confirm modal) ──
+const restartDaemonOpen = ref(false);
+
+// Defer opening past the dropdown's close so reka-ui's focus-restore doesn't
+// steal focus from the modal.
+function openRestartDaemon(): void {
+  void nextTick(() => {
+    restartDaemonOpen.value = true;
+  });
+}
+
+async function confirmRestartDaemon(close: () => void): Promise<void> {
+  busy.value = "restart:daemon";
+  close();
+  try {
+    await restartDaemon();
+    toast.info("Restarting daemon…", "It returns in a few seconds.");
+  } catch (e) {
+    // The daemon flushes Ok before re-execing, so the happy path resolves; a
+    // dropped connection here just means it tore down — treat softly.
+    toast.info("Restarting daemon…", (e as IpcError).message);
+  } finally {
+    busy.value = null;
+  }
 }
 
 async function onElevate(target: ElevateTarget): Promise<void> {
@@ -237,65 +312,108 @@ onMounted(() => {
 
 <template>
   <div class="flex h-full flex-col">
-    <PageHeader title="Services" subtitle="Yerd's own subsystems, health, and environment">
-      <template #actions>
-        <ComingSoon reason="Restarting the daemon needs a daemon Restart/Shutdown IPC — coming soon.">
-          <Power class="size-4" /> Restart daemon
-        </ComingSoon>
-      </template>
-    </PageHeader>
+    <PageHeader title="Services" subtitle="Yerd's own subsystems, health, and environment" />
 
     <div class="flex-1 space-y-6 overflow-y-auto p-6">
       <!-- Subsystems -->
       <Card>
         <CardHeader>
           <CardTitle class="flex items-center gap-2"><Server class="size-4" /> Subsystems</CardTitle>
+          <CardDescription>
+            The daemon and the proxy, DNS, and PHP-FPM processes it runs.
+          </CardDescription>
         </CardHeader>
         <CardContent>
           <div v-if="!report" class="flex justify-center py-8"><Spinner class="size-5" /></div>
-          <table v-else class="w-full text-sm">
+          <TooltipProvider v-else :delay-duration="0">
+            <table class="w-full text-sm">
+            <thead>
+              <tr class="border-b text-left text-xs uppercase text-muted-foreground">
+                <th class="py-2 pr-4 font-medium">Subsystem</th>
+                <th class="py-2 pr-4 font-medium">Status</th>
+                <th class="py-2 pr-4 font-medium">Memory</th>
+                <th class="py-2 pl-4 text-right font-medium">Actions</th>
+              </tr>
+            </thead>
             <tbody>
               <tr v-for="row in rows" :key="row.key" class="border-b last:border-0">
-                <td class="py-3 pr-4 font-medium">{{ row.name }}</td>
+                <td class="py-3 pr-4 font-medium">
+                  <div
+                    class="flex items-center gap-1.5"
+                    :class="row.child ? 'pl-5' : ''"
+                  >
+                    <span v-if="row.child" class="text-muted-foreground">↳</span>
+                    <span>{{ row.name }}</span>
+                    <Tooltip v-if="row.info">
+                      <TooltipTrigger as-child>
+                        <span class="inline-flex cursor-help text-muted-foreground">
+                          <Info class="size-3.5" />
+                        </span>
+                      </TooltipTrigger>
+                      <TooltipContent side="top" class="w-72">{{ row.info }}</TooltipContent>
+                    </Tooltip>
+                  </div>
+                </td>
                 <td class="py-3 pr-4">
                   <StatusPill :tone="row.tone" :label="row.state" />
                 </td>
-                <td class="py-3 pr-4 text-xs text-muted-foreground">{{ row.detail }}</td>
-                <td class="py-3 pl-4 text-right">
-                  <div class="flex items-center justify-end gap-2">
-                    <Button
-                      v-if="row.failedFpm"
-                      variant="outline"
-                      size="sm"
-                      :disabled="busy === 'fix'"
-                      @click="restartFailedFpm"
-                    >
-                      <Spinner v-if="busy === 'fix'" class="size-4" />
-                      <Wrench v-else class="size-4" /> Run fix
-                    </Button>
-                    <ComingSoon reason="Per-service restart needs a daemon IPC — coming soon." pill>
-                      Restart
-                    </ComingSoon>
-                    <ComingSoon reason="Log viewing needs a daemon Logs IPC + file logging — coming soon." pill>
-                      Logs
-                    </ComingSoon>
+                <td class="py-3 pr-4 text-xs text-muted-foreground">{{ row.memory }}</td>
+                <td class="py-3 pl-4">
+                  <div class="flex items-center justify-end">
+                    <Spinner v-if="busy?.endsWith(`:${row.version ?? 'daemon'}`)" class="size-4" />
+                    <DropdownMenu v-if="row.menu">
+                      <DropdownMenuTrigger as-child>
+                        <Button variant="ghost" size="icon" :aria-label="`Actions for ${row.name}`">
+                          <MoreHorizontal class="size-4" />
+                        </Button>
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent align="end">
+                        <DropdownMenuItem
+                          v-if="row.menu === 'daemon'"
+                          @select="openRestartDaemon"
+                        >
+                          <RotateCw class="size-4" /> Restart
+                        </DropdownMenuItem>
+                        <DropdownMenuItem
+                          v-else
+                          :disabled="!row.canRestart"
+                          @select="row.version && doRestartFpm(row.version)"
+                        >
+                          <RotateCw class="size-4" /> Restart
+                        </DropdownMenuItem>
+                        <DropdownMenuItem disabled>
+                          <FileText class="size-4" /> Logs (soon)
+                        </DropdownMenuItem>
+                      </DropdownMenuContent>
+                    </DropdownMenu>
                   </div>
                 </td>
               </tr>
             </tbody>
-          </table>
+            </table>
+          </TooltipProvider>
         </CardContent>
       </Card>
 
       <!-- Health -->
       <Card>
         <CardHeader class="flex-row items-center justify-between space-y-0">
-          <CardTitle class="flex items-center gap-2"><ShieldCheck class="size-4" /> Health</CardTitle>
-          <div class="flex gap-2">
-            <Button variant="ghost" size="sm" :disabled="diagLoading" @click="loadDiagnoses">
-              <RefreshCw class="size-4" /> Re-check
+          <div class="space-y-1.5">
+            <CardTitle class="flex items-center gap-2"><ShieldCheck class="size-4" /> Health</CardTitle>
+            <CardDescription>Common problems and safe one-click fixes.</CardDescription>
+          </div>
+          <div class="flex items-center gap-2">
+            <Button
+              variant="ghost"
+              size="icon"
+              :disabled="diagLoading"
+              aria-label="Re-check health"
+              @click="loadDiagnoses(true)"
+            >
+              <Spinner v-if="diagLoading" class="size-4" />
+              <RefreshCw v-else class="size-4" />
             </Button>
-            <Button size="sm" :disabled="busy === 'fix'" @click="runFixes">
+            <Button size="sm" :disabled="!hasActionable || busy === 'fix'" @click="runFixes">
               <Spinner v-if="busy === 'fix'" class="size-4" />
               <Wrench v-else class="size-4" /> Run safe fixes
             </Button>
@@ -332,6 +450,9 @@ onMounted(() => {
       <Card>
         <CardHeader>
           <CardTitle class="flex items-center gap-2"><Network class="size-4" /> Environment</CardTitle>
+          <CardDescription>
+            OS-level trust, resolver, and privileged-port configuration.
+          </CardDescription>
         </CardHeader>
         <CardContent>
           <div v-if="!report" class="flex justify-center py-8"><Spinner class="size-5" /></div>
@@ -376,5 +497,17 @@ onMounted(() => {
         </CardContent>
       </Card>
     </div>
+
+    <Modal v-model:open="restartDaemonOpen" title="Restart daemon">
+      <p class="text-sm text-muted-foreground">
+        This briefly stops all <strong class="text-foreground">.test</strong> sites,
+        DNS, and this connection while the daemon restarts. It returns in a few
+        seconds.
+      </p>
+      <template #footer="{ close }">
+        <Button variant="ghost" @click="close">Cancel</Button>
+        <Button @click="confirmRestartDaemon(close)">Restart</Button>
+      </template>
+    </Modal>
   </div>
 </template>

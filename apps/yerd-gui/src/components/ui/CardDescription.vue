@@ -7,5 +7,5 @@ const props = defineProps<{ class?: HTMLAttributes["class"] }>();
 </script>
 
 <template>
-  <div :class="cn('pt-4', props.class)"><slot /></div>
+  <p :class="cn('text-xs text-muted-foreground', props.class)"><slot /></p>
 </template>

@@ -67,6 +67,19 @@ async fn handle_client(stream: IpcStream, state: Arc<DaemonState>) {
             tracing::debug!(error = %e, "ipc write error");
             return;
         }
+        // A `RestartDaemon` request armed the flag in `dispatch`. Now that the
+        // `Ok` is written, flush it and *then* trip the shutdown broadcast, so
+        // the response is on the wire before any task observes teardown (no
+        // timing race / sleep). `main` re-execs after the graceful shutdown.
+        if state
+            .restart_requested
+            .load(std::sync::atomic::Ordering::Acquire)
+        {
+            use tokio::io::AsyncWriteExt as _;
+            let _ = writer.flush().await;
+            let _ = state.shutdown_tx.send_replace(true);
+            return;
+        }
     }
 }
 
@@ -75,6 +88,20 @@ async fn dispatch(req: Request, state: &DaemonState) -> Response {
         Request::Ping => Response::Pong,
         Request::ListSites => Response::Sites {
             sites: state.router.read().await.iter().cloned().collect(),
+        },
+        // Registered parked roots, incl. empty ones (which produce no sites and
+        // so never appear in `ListSites`). `parked.paths` is a `BTreeSet`, so the
+        // collected order is already lexicographic — no explicit sort.
+        Request::ListParked => Response::Parked {
+            paths: state
+                .config
+                .lock()
+                .await
+                .parked
+                .paths
+                .iter()
+                .cloned()
+                .collect(),
         },
         Request::DaemonInfo => Response::Info {
             dns_addr: state.dns_addr,
@@ -85,6 +112,7 @@ async fn dispatch(req: Request, state: &DaemonState) -> Response {
         Request::Park { .. }
         | Request::Link { .. }
         | Request::Unlink { .. }
+        | Request::Unpark { .. }
         | Request::SetPhp { .. }
         | Request::SetSecure { .. } => handle_mutation(req, state).await,
         Request::ListPhp => php_versions_response(state).await,
@@ -97,6 +125,10 @@ async fn dispatch(req: Request, state: &DaemonState) -> Response {
         }
         Request::UpdatePhp { version } => update_php(version, state).await,
         Request::AvailablePhp => available_php_response(state).await,
+        Request::SetPhpSettings { settings } => set_php_settings(settings, state).await,
+        Request::RestartPhp { version } => restart_php(version, state).await,
+        Request::RestartAllPhp => restart_all_php(state).await,
+        Request::UninstallPhp { version } => uninstall_php(version, state).await,
         Request::Status => Response::Status {
             report: Box::new(build_status_report(state).await),
         },
@@ -104,6 +136,20 @@ async fn dispatch(req: Request, state: &DaemonState) -> Response {
             items: yerd_doctor::diagnose(&build_status_report(state).await),
         },
         Request::DoctorFix => run_doctor_fix(state).await,
+        // Arm the restart flag; `handle_client` trips the shutdown broadcast
+        // *after* writing this `Ok`, and `main` re-execs once teardown completes.
+        #[cfg(unix)]
+        Request::RestartDaemon => {
+            state
+                .restart_requested
+                .store(true, std::sync::atomic::Ordering::Release);
+            Response::Ok
+        }
+        #[cfg(not(unix))]
+        Request::RestartDaemon => Response::Error {
+            code: ErrorCode::Internal,
+            message: "daemon restart is not supported on this platform".into(),
+        },
         // `Request` is `#[non_exhaustive]` (external crate): a wildcard is
         // required even though every known variant is handled above.
         _ => Response::Error {
@@ -127,12 +173,17 @@ fn installed_versions(state: &DaemonState) -> Vec<yerd_core::PhpVersion> {
 }
 
 /// Build the `PhpVersions` reply: installed versions, the live global default,
-/// and cached update annotations. Read-only; no network.
+/// cached update annotations, and the global ini settings. Read-only; no network.
 async fn php_versions_response(state: &DaemonState) -> Response {
+    let (default, settings) = {
+        let cfg = state.config.lock().await;
+        (cfg.php.default, cfg.php.settings.clone())
+    };
     Response::PhpVersions {
         installed: installed_versions(state),
-        default: state.config.lock().await.php.default,
+        default,
         updates: crate::php_updates::cached_updates(state).await,
+        settings,
     }
 }
 
@@ -267,6 +318,7 @@ async fn build_status_report(state: &DaemonState) -> yerd_ipc::StatusReport {
     yerd_ipc::StatusReport {
         daemon_pid: std::process::id(),
         uptime_secs: state.started_at.elapsed().as_secs(),
+        daemon_rss_bytes: metrics.rss_bytes(std::process::id()),
         tld,
         http: state.http,
         https: state.https,
@@ -281,6 +333,7 @@ async fn build_status_report(state: &DaemonState) -> yerd_ipc::StatusReport {
         php,
         sites,
         load_avg,
+        daemon_version: env!("CARGO_PKG_VERSION").to_string(),
     }
 }
 
@@ -435,6 +488,105 @@ async fn refresh_php_binaries(state: &DaemonState) {
     state.php_manager.lock().await.set_binaries(binaries);
 }
 
+/// `restart php <ver>` — stop + ensure the version's FPM pool. Starts a stopped
+/// pool too (the GUI greys "Restart" when idle; the CLI may use it to start one).
+async fn restart_php(version: yerd_core::PhpVersion, state: &DaemonState) -> Response {
+    let outcome = {
+        let mut mgr = state.php_manager.lock().await;
+        mgr.restart(version).await
+    };
+    match outcome {
+        Ok(_) => Response::Ok,
+        Err(yerd_php::PhpError::VersionNotInstalled { version }) => Response::Error {
+            code: ErrorCode::NotFound,
+            message: format!("PHP {version} is not installed"),
+        },
+        Err(e) => internal(format!("restart of PHP {version} failed: {e}")),
+    }
+}
+
+/// `restart php` (no version) — restart every started pool (running or failed).
+/// Best-effort: a per-pool failure is logged, not fatal. Idle/never-started
+/// ondemand pools are left alone (they spawn fresh on the next request).
+async fn restart_all_php(state: &DaemonState) -> Response {
+    let mut mgr = state.php_manager.lock().await;
+    for snap in mgr.snapshots() {
+        if let Err(e) = mgr.restart(snap.version).await {
+            tracing::warn!(version = %snap.version, error = %e, "failed to restart FPM pool");
+        }
+    }
+    Response::Ok
+}
+
+/// `uninstall php <ver>` — remove an installed version after safety checks.
+///
+/// Blocked (→ `InvalidPath` with a human message) when the version is in use by
+/// a site, is the last installed version while sites remain, or is the current
+/// default while other versions are installed. The config/router guards are
+/// dropped before the filesystem remove + manager ops (lock discipline); a
+/// concurrent `SetPhp` to this version is a benign microsecond TOCTOU, accepted
+/// the same way `set_default_php` accepts its read-then-act window.
+async fn uninstall_php(version: yerd_core::PhpVersion, state: &DaemonState) -> Response {
+    let installed = installed_versions(state);
+    if !installed.contains(&version) {
+        return Response::Error {
+            code: ErrorCode::NotFound,
+            message: format!("PHP {version} is not installed"),
+        };
+    }
+
+    let default = state.config.lock().await.php.default;
+    let (sites_using, total_sites) = {
+        let router = state.router.read().await;
+        let using: Vec<String> = router
+            .iter()
+            .filter(|s| s.php() == version)
+            .map(|s| s.name().to_owned())
+            .collect();
+        (using, router.iter().count())
+    };
+
+    if !sites_using.is_empty() {
+        return Response::Error {
+            code: ErrorCode::InvalidPath,
+            message: format!(
+                "PHP {version} is assigned to site(s): {} — reassign them first",
+                sites_using.join(", ")
+            ),
+        };
+    }
+    if installed.len() <= 1 && total_sites > 0 {
+        return Response::Error {
+            code: ErrorCode::InvalidPath,
+            message: format!(
+                "can't uninstall PHP {version}: it's the last installed version and sites still exist"
+            ),
+        };
+    }
+    if version == default && installed.len() > 1 {
+        return Response::Error {
+            code: ErrorCode::InvalidPath,
+            message: format!("PHP {version} is the default — set another version as default first"),
+        };
+    }
+
+    // Stop the pool before removing its files (clean socket teardown). On
+    // Windows `remove_dir_all` would fail while php-fpm.exe runs — revisit with
+    // the Windows port.
+    let _ = state.php_manager.lock().await.stop(version).await;
+    let version_dir = state
+        .dirs
+        .data
+        .join("php")
+        .join(format!("php-{}.{}", version.major, version.minor));
+    if let Err(e) = std::fs::remove_dir_all(&version_dir) {
+        return internal(format!("failed to remove PHP {version}: {e}"));
+    }
+    refresh_php_binaries(state).await;
+    tracing::info!(version = %version, "uninstalled PHP");
+    php_versions_response(state).await
+}
+
 /// `use <ver>` (global) — require the version installed, set the live default +
 /// site fallback (`config.php.default`), persist, and repoint the `php` shim.
 async fn set_default_php(version: yerd_core::PhpVersion, state: &DaemonState) -> Response {
@@ -456,6 +608,75 @@ async fn set_default_php(version: yerd_core::PhpVersion, state: &DaemonState) ->
     *cfg_guard = new;
     tracing::info!(version = %version, "set default PHP");
     Response::Ok
+}
+
+/// `set/unset php` — merge global PHP ini settings into the config and apply
+/// them to every live FPM pool. An empty-string value removes a key (reset to
+/// PHP's default).
+///
+/// Order (build → validate → save → commit → drop config guard → restart
+/// pools): the config write is fail-closed; the per-pool restart is best-effort
+/// and runs *after* the config guard is released, under a single `php_manager`
+/// lock so no request can `ensure` a stale-config pool mid-update.
+async fn set_php_settings(
+    settings: std::collections::BTreeMap<String, String>,
+    state: &DaemonState,
+) -> Response {
+    // Build the merged settings on a config clone, validating each entry.
+    let mut cfg_guard = state.config.lock().await;
+    let mut new = cfg_guard.clone();
+    for (key, value) in settings {
+        if value.is_empty() {
+            new.php.settings.remove(&key);
+            continue;
+        }
+        if let Err(e) = yerd_core::php_settings::validate_value(&key, &value) {
+            return Response::Error {
+                code: ErrorCode::InvalidPath,
+                message: e.to_string(),
+            };
+        }
+        let canonical = yerd_core::php_settings::canonical_value(&key, &value);
+        new.php.settings.insert(key, canonical);
+    }
+
+    // No-op: nothing changed → skip the disk write and the pool restarts.
+    if new.php.settings == cfg_guard.php.settings {
+        drop(cfg_guard);
+        return php_versions_response(state).await;
+    }
+
+    if let Err(e) = new.validate() {
+        return internal(format!("config validation failed: {e}"));
+    }
+    if let Err(e) = new.save(&state.config_path) {
+        return internal(format!("config save failed: {e}"));
+    }
+    let applied = settings_to_vec(&new.php.settings);
+    *cfg_guard = new;
+    drop(cfg_guard);
+
+    // Apply to the live pools: update the manager's settings and restart every
+    // started pool so the new directives take effect. Single lock span.
+    {
+        let mut mgr = state.php_manager.lock().await;
+        mgr.set_ini_settings(applied);
+        for snap in mgr.snapshots() {
+            if let Err(e) = mgr.restart(snap.version).await {
+                tracing::warn!(version = %snap.version, error = %e, "failed to restart FPM pool after settings change");
+            }
+        }
+    }
+    tracing::info!("applied global PHP settings");
+    php_versions_response(state).await
+}
+
+/// A config settings map as sorted `(name, value)` pairs for the pool manager.
+fn settings_to_vec(settings: &std::collections::BTreeMap<String, String>) -> Vec<(String, String)> {
+    settings
+        .iter()
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect()
 }
 
 /// Map a [`yerd_php::PhpError`] to a wire [`ErrorCode`].
@@ -626,6 +847,8 @@ mod tests {
                 fell_back: true,
             },
             started_at: std::time::Instant::now(),
+            shutdown_tx: tokio::sync::watch::channel(false).0,
+            restart_requested: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
@@ -744,7 +967,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn use_promotes_parked_site_mixed_case() {
+    async fn use_overrides_parked_site_keeping_kind_mixed_case() {
         let tmp = tempfile::tempdir().unwrap();
         let sites_root = tmp.path().join("sites");
         std::fs::create_dir_all(sites_root.join("blog")).unwrap();
@@ -766,21 +989,90 @@ mod tests {
             Response::Sites { sites } => {
                 let blog = sites.iter().find(|s| s.name() == "blog").unwrap();
                 assert_eq!(blog.php(), PhpVersion::new(8, 4));
-                assert_eq!(blog.kind(), yerd_core::SiteKind::Linked);
+                // Override applied, but the site stays parked (no promotion).
+                assert_eq!(blog.kind(), yerd_core::SiteKind::Parked);
             }
             other => panic!("expected Sites, got {other:?}"),
         }
     }
 
     #[tokio::test]
-    async fn set_secure_promotes_parked_and_flips_flag() {
+    async fn list_parked_and_unpark_roundtrip() {
+        let tmp = tempfile::tempdir().unwrap();
+        // One populated root (yields a site) and one empty root (yields none).
+        let populated = tmp.path().join("populated");
+        std::fs::create_dir_all(populated.join("blog")).unwrap();
+        let empty = tmp.path().join("empty");
+        std::fs::create_dir_all(&empty).unwrap();
+        let state = state_in(tmp.path());
+        dispatch(Request::Park { path: populated }, &state).await;
+        dispatch(Request::Park { path: empty }, &state).await;
+
+        // Both roots are registered — the empty one included.
+        let parked = match dispatch(Request::ListParked, &state).await {
+            Response::Parked { paths } => paths,
+            other => panic!("expected Parked, got {other:?}"),
+        };
+        assert_eq!(parked.len(), 2, "both roots registered: {parked:?}");
+        // BTreeSet → already lexicographically sorted.
+        let mut sorted = parked.clone();
+        sorted.sort();
+        assert_eq!(parked, sorted, "ListParked must be sorted");
+        let populated_root = parked
+            .iter()
+            .find(|p| p.ends_with("populated"))
+            .unwrap()
+            .clone();
+
+        // Un-park the populated root (echo the exact string back).
+        let resp = dispatch(
+            Request::Unpark {
+                path: populated_root.clone(),
+            },
+            &state,
+        )
+        .await;
+        assert!(matches!(resp, Response::Ok), "got {resp:?}");
+
+        // ListParked now shows only the empty root.
+        match dispatch(Request::ListParked, &state).await {
+            Response::Parked { paths } => {
+                assert_eq!(paths.len(), 1);
+                assert!(paths[0].ends_with("empty"));
+            }
+            other => panic!("expected Parked, got {other:?}"),
+        }
+        // And its parked site is gone from the listing.
+        match dispatch(Request::ListSites, &state).await {
+            Response::Sites { sites } => {
+                assert!(
+                    sites.iter().all(|s| s.name() != "blog"),
+                    "blog should be gone after un-park: {sites:?}"
+                );
+            }
+            other => panic!("expected Sites, got {other:?}"),
+        }
+
+        // Un-parking an absent path is an idempotent success.
+        let resp = dispatch(
+            Request::Unpark {
+                path: populated_root,
+            },
+            &state,
+        )
+        .await;
+        assert!(matches!(resp, Response::Ok), "absent un-park: got {resp:?}");
+    }
+
+    #[tokio::test]
+    async fn set_secure_overrides_parked_keeping_kind_and_flips_flag() {
         let tmp = tempfile::tempdir().unwrap();
         let sites_root = tmp.path().join("sites");
         std::fs::create_dir_all(sites_root.join("blog")).unwrap();
         let state = state_in(tmp.path());
         dispatch(Request::Park { path: sites_root }, &state).await;
 
-        // Securing a parked site (mixed-case) promotes it and sets the flag.
+        // Securing a parked site (mixed-case) records the override + sets flag.
         let resp = dispatch(
             Request::SetSecure {
                 name: "Blog".into(),
@@ -795,7 +1087,8 @@ mod tests {
             Response::Sites { sites } => {
                 let blog = sites.iter().find(|s| s.name() == "blog").unwrap();
                 assert!(blog.secure());
-                assert_eq!(blog.kind(), yerd_core::SiteKind::Linked);
+                // Override applied, but the site stays parked (no promotion).
+                assert_eq!(blog.kind(), yerd_core::SiteKind::Parked);
             }
             other => panic!("expected Sites, got {other:?}"),
         }
@@ -930,6 +1223,22 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn dispatch_restart_daemon_arms_flag_and_oks() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_in(tmp.path());
+        assert!(!state
+            .restart_requested
+            .load(std::sync::atomic::Ordering::Acquire));
+        let resp = dispatch(Request::RestartDaemon, &state).await;
+        assert!(matches!(resp, Response::Ok), "got {resp:?}");
+        // The flag is armed; `handle_client` trips shutdown after writing Ok.
+        assert!(state
+            .restart_requested
+            .load(std::sync::atomic::Ordering::Acquire));
+    }
+
     #[tokio::test]
     async fn dispatch_set_default_php_requires_installed() {
         let tmp = tempfile::tempdir().unwrap();
@@ -973,6 +1282,144 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn restart_php_not_installed_is_not_found() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_in(tmp.path());
+        match dispatch(
+            Request::RestartPhp {
+                version: PhpVersion::new(8, 5),
+            },
+            &state,
+        )
+        .await
+        {
+            Response::Error { code, .. } => assert_eq!(code, ErrorCode::NotFound),
+            other => panic!("expected NotFound, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn uninstall_php_not_installed_is_not_found() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_in(tmp.path());
+        match dispatch(
+            Request::UninstallPhp {
+                version: PhpVersion::new(8, 5),
+            },
+            &state,
+        )
+        .await
+        {
+            Response::Error { code, .. } => assert_eq!(code, ErrorCode::NotFound),
+            other => panic!("expected NotFound, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn uninstall_php_blocked_when_in_use_by_site() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_in(tmp.path());
+        fake_install(&state.dirs, PhpVersion::new(8, 4));
+        fake_install(&state.dirs, PhpVersion::new(8, 5));
+        let app_dir = tmp.path().join("app");
+        std::fs::create_dir_all(&app_dir).unwrap();
+        dispatch(
+            Request::Link {
+                name: "app".into(),
+                path: app_dir,
+            },
+            &state,
+        )
+        .await;
+        dispatch(
+            Request::SetPhp {
+                name: "app".into(),
+                version: PhpVersion::new(8, 5),
+            },
+            &state,
+        )
+        .await;
+
+        match dispatch(
+            Request::UninstallPhp {
+                version: PhpVersion::new(8, 5),
+            },
+            &state,
+        )
+        .await
+        {
+            Response::Error { code, message } => {
+                assert_eq!(code, ErrorCode::InvalidPath);
+                assert!(message.contains("app"), "{message}");
+            }
+            other => panic!("expected InvalidPath (in use), got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn uninstall_php_blocked_when_default_with_others() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_in(tmp.path());
+        fake_install(&state.dirs, PhpVersion::new(8, 4));
+        fake_install(&state.dirs, PhpVersion::new(8, 5));
+        // Make 8.4 the default; 8.5 also installed; no sites.
+        dispatch(
+            Request::SetDefaultPhp {
+                version: PhpVersion::new(8, 4),
+            },
+            &state,
+        )
+        .await;
+        match dispatch(
+            Request::UninstallPhp {
+                version: PhpVersion::new(8, 4),
+            },
+            &state,
+        )
+        .await
+        {
+            Response::Error { code, message } => {
+                assert_eq!(code, ErrorCode::InvalidPath);
+                assert!(message.contains("default"), "{message}");
+            }
+            other => panic!("expected InvalidPath (is default), got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn uninstall_php_succeeds_and_removes_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_in(tmp.path());
+        fake_install(&state.dirs, PhpVersion::new(8, 4));
+        fake_install(&state.dirs, PhpVersion::new(8, 5));
+        dispatch(
+            Request::SetDefaultPhp {
+                version: PhpVersion::new(8, 4),
+            },
+            &state,
+        )
+        .await;
+
+        let dir = state.dirs.data.join("php").join("php-8.5");
+        assert!(dir.exists());
+        match dispatch(
+            Request::UninstallPhp {
+                version: PhpVersion::new(8, 5),
+            },
+            &state,
+        )
+        .await
+        {
+            Response::PhpVersions { installed, .. } => {
+                assert!(!installed.contains(&PhpVersion::new(8, 5)), "{installed:?}");
+                assert!(installed.contains(&PhpVersion::new(8, 4)));
+            }
+            other => panic!("expected PhpVersions, got {other:?}"),
+        }
+        assert!(!dir.exists(), "version dir should be removed");
+    }
+
     /// Guards the live-default fix: after `SetDefaultPhp`, a newly-linked site
     /// inherits the *new* default (not the startup snapshot).
     #[tokio::test]
@@ -1010,6 +1457,95 @@ mod tests {
                 assert_eq!(app.php(), PhpVersion::new(8, 4));
             }
             other => panic!("expected Sites, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn set_php_settings_persists_validates_and_resets() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_in(tmp.path());
+
+        // Set two settings (no pools running → restart loop is a no-op).
+        let resp = dispatch(
+            Request::SetPhpSettings {
+                settings: std::collections::BTreeMap::from([
+                    ("memory_limit".to_string(), "512M".to_string()),
+                    ("display_errors".to_string(), "on".to_string()),
+                ]),
+            },
+            &state,
+        )
+        .await;
+        match resp {
+            Response::PhpVersions { settings, .. } => {
+                assert_eq!(
+                    settings.get("memory_limit").map(String::as_str),
+                    Some("512M")
+                );
+                // Flag canonicalised to On.
+                assert_eq!(
+                    settings.get("display_errors").map(String::as_str),
+                    Some("On")
+                );
+            }
+            other => panic!("expected PhpVersions, got {other:?}"),
+        }
+        // Persisted to the live config.
+        assert_eq!(
+            state
+                .config
+                .lock()
+                .await
+                .php
+                .settings
+                .get("memory_limit")
+                .map(String::as_str),
+            Some("512M")
+        );
+
+        // Invalid value is rejected without mutating config.
+        assert!(matches!(
+            dispatch(
+                Request::SetPhpSettings {
+                    settings: std::collections::BTreeMap::from([(
+                        "memory_limit".to_string(),
+                        "bogus".to_string()
+                    )]),
+                },
+                &state,
+            )
+            .await,
+            Response::Error { .. }
+        ));
+        assert_eq!(
+            state
+                .config
+                .lock()
+                .await
+                .php
+                .settings
+                .get("memory_limit")
+                .map(String::as_str),
+            Some("512M")
+        );
+
+        // Empty value removes (resets) the key.
+        let resp = dispatch(
+            Request::SetPhpSettings {
+                settings: std::collections::BTreeMap::from([(
+                    "memory_limit".to_string(),
+                    String::new(),
+                )]),
+            },
+            &state,
+        )
+        .await;
+        match resp {
+            Response::PhpVersions { settings, .. } => {
+                assert!(!settings.contains_key("memory_limit"));
+                assert!(settings.contains_key("display_errors"));
+            }
+            other => panic!("expected PhpVersions, got {other:?}"),
         }
     }
 

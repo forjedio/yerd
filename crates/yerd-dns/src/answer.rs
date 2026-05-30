@@ -14,8 +14,14 @@ pub enum Answer {
     /// Name belongs to the configured TLD but the qtype is not A/AAAA.
     /// Wire: NOERROR with empty answer + no SOA in authority.
     NoData,
-    /// Name is outside the configured TLD. Wire: NXDOMAIN + no SOA.
+    /// Name is *within* the configured TLD but does not exist (e.g. an empty or
+    /// malformed label). Wire: authoritative NXDOMAIN + no SOA.
     NxDomain,
+    /// Name is *outside* the configured TLD — we are not authoritative for it.
+    /// Wire: REFUSED with the AA bit cleared, so a resolver that (mis)routes a
+    /// non-`.test` query here treats it as "ask someone else" rather than
+    /// trusting an authoritative answer for a domain we don't own.
+    Refused,
 }
 
 /// Crate-internal classification of a query type.
@@ -39,7 +45,11 @@ mod tests {
     fn answer_match_is_exhaustive() {
         // Adding a variant without updating responder.rs's table breaks compile.
         match Answer::Loopback4 {
-            Answer::Loopback4 | Answer::Loopback6 | Answer::NoData | Answer::NxDomain => {}
+            Answer::Loopback4
+            | Answer::Loopback6
+            | Answer::NoData
+            | Answer::NxDomain
+            | Answer::Refused => {}
         }
     }
 }

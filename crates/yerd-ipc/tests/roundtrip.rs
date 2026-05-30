@@ -9,6 +9,7 @@
     clippy::indexing_slicing
 )]
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use yerd_ipc::{
@@ -42,6 +43,10 @@ fn encode_then_decode_request_roundtrip() {
         path: PathBuf::from("/srv/foo"),
     });
     assert_request_roundtrips(Request::Unlink { name: "foo".into() });
+    assert_request_roundtrips(Request::ListParked);
+    assert_request_roundtrips(Request::Unpark {
+        path: "/srv/sites".into(),
+    });
     assert_request_roundtrips(Request::SetPhp {
         name: "foo".into(),
         version: PhpVersion::new(8, 3),
@@ -83,6 +88,7 @@ fn encode_then_decode_response_roundtrip() {
         installed: vec![PhpVersion::new(8, 3), PhpVersion::new(8, 5)],
         default: PhpVersion::new(8, 5),
         updates: vec![],
+        settings: BTreeMap::new(),
     });
     assert_response_roundtrips(Response::PhpVersions {
         installed: vec![PhpVersion::new(8, 5)],
@@ -92,6 +98,11 @@ fn encode_then_decode_response_roundtrip() {
             installed: "8.5.6".into(),
             latest: "8.5.7".into(),
         }],
+        settings: BTreeMap::from([("memory_limit".to_string(), "512M".to_string())]),
+    });
+    assert_response_roundtrips(Response::Parked { paths: vec![] });
+    assert_response_roundtrips(Response::Parked {
+        paths: vec!["/a".into(), "/b".into()],
     });
     assert_response_roundtrips(Response::Sites { sites: vec![] });
     let site = Site::parked("foo", "/srv/foo", PhpVersion::new(8, 3)).unwrap();
@@ -113,6 +124,7 @@ fn encode_then_decode_response_roundtrip() {
         report: Box::new(StatusReport {
             daemon_pid: 4242,
             uptime_secs: 7,
+            daemon_rss_bytes: Some(2048),
             tld: "test".into(),
             http: PortStatus {
                 requested: 80,
@@ -147,6 +159,7 @@ fn encode_then_decode_response_roundtrip() {
                 secured: 0,
             },
             load_avg: None,
+            daemon_version: "2.0.1".into(),
         }),
     });
     assert_response_roundtrips(Response::Diagnoses {

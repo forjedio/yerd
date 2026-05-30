@@ -5,7 +5,7 @@
 //! surface as typed [`ConfigError::Core`] rather than being folded into
 //! [`ConfigError::Parse`] via `serde::de::Error::custom`.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::str::FromStr;
 
@@ -33,6 +33,11 @@ struct Wire {
     parked: ParkedSectionWire,
     #[serde(default)]
     linked: Vec<SiteWire>,
+    // `default` is mandatory: `Wire` is `deny_unknown_fields`, so a v1 config
+    // written before overrides existed has no `[[overrides]]` table and must
+    // still parse. Empty here ↔ omitted on the wire (serializer skips empty).
+    #[serde(default)]
+    overrides: Vec<OverrideWire>,
     #[serde(default)]
     services: ServicesSectionWire,
 }
@@ -58,12 +63,15 @@ impl Default for PortsWire {
 #[serde(deny_unknown_fields)]
 struct PhpSectionWire {
     default: String,
+    #[serde(default)]
+    settings: BTreeMap<String, String>,
 }
 
 impl Default for PhpSectionWire {
     fn default() -> Self {
         Self {
             default: PhpSection::default().default.to_string(),
+            settings: BTreeMap::new(),
         }
     }
 }
@@ -90,6 +98,20 @@ struct SiteWire {
     php: String,
     secure: bool,
     kind: yerd_core::SiteKind,
+}
+
+/// One `[[overrides]]` table: a parked site's document-root `path` plus the
+/// optional values to pin. `php` is kept raw (`Option<String>`) so a bad
+/// version surfaces as [`ConfigError::Core`] via `PhpVersion::from_str` in
+/// `TryFrom`, not a serde custom error.
+#[derive(Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+struct OverrideWire {
+    path: String,
+    #[serde(default)]
+    php: Option<String>,
+    #[serde(default)]
+    secure: Option<bool>,
 }
 
 fn default_tld_str() -> String {
@@ -133,6 +155,7 @@ impl TryFrom<Wire> for Config {
         let tld = yerd_core::Tld::new(&w.tld)?;
         let php = PhpSection {
             default: yerd_core::PhpVersion::from_str(&w.php.default)?,
+            settings: w.php.settings,
         };
         let ports = Ports {
             http: w.ports.http,
@@ -141,6 +164,24 @@ impl TryFrom<Wire> for Config {
         let parked = ParkedSection {
             paths: w.parked.paths,
         };
+        // Fold the `[[overrides]]` array into a path-keyed map. A duplicate `path`
+        // (only reachable by hand-editing the file) is last-wins via
+        // `BTreeMap::insert`. `php` is parsed here so an invalid version
+        // propagates as `ConfigError::Core` (like `php.default` above).
+        let mut overrides = BTreeMap::new();
+        for o in w.overrides {
+            let php = o
+                .php
+                .map(|s| yerd_core::PhpVersion::from_str(&s))
+                .transpose()?;
+            overrides.insert(
+                o.path,
+                crate::schema::SiteOverride {
+                    php,
+                    secure: o.secure,
+                },
+            );
+        }
         let services = ServicesSection {
             enabled: w.services.enabled,
         };
@@ -166,6 +207,7 @@ impl TryFrom<Wire> for Config {
             php,
             parked,
             linked,
+            overrides,
             services,
         })
     }
@@ -194,9 +236,23 @@ pub(crate) fn validate(c: &Config) -> Result<(), ConfigError> {
             return Err(ve(ValidateErrorReason::ParkedPathEmpty));
         }
     }
+    // Sibling of the parked-path check: an override key is a document-root path
+    // and must not be empty.
+    for key in c.overrides.keys() {
+        if key.is_empty() {
+            return Err(ve(ValidateErrorReason::OverridePathEmpty));
+        }
+    }
     for s in &c.services.enabled {
         if !KNOWN_SERVICES.contains(&s.as_str()) {
             return Err(ve(ValidateErrorReason::UnknownService));
+        }
+    }
+    // Checked last (newest invariant): every php.settings entry must be a
+    // supported directive with a value passing the security/shape validation.
+    for (k, v) in &c.php.settings {
+        if yerd_core::php_settings::validate_value(k, v).is_err() {
+            return Err(ve(ValidateErrorReason::InvalidPhpSetting));
         }
     }
     Ok(())
@@ -410,6 +466,75 @@ kind = "linked"
         assert!(c.services.enabled.is_empty());
     }
 
+    #[test]
+    fn parse_treats_absent_overrides_block_as_empty() {
+        let c = Config::from_toml("version = 1\n").unwrap();
+        assert!(c.overrides.is_empty());
+    }
+
+    #[test]
+    fn parse_rejects_unknown_key_under_override() {
+        let s = r#"
+version = 1
+[[overrides]]
+path = "/srv/blog"
+php = "8.4"
+bogus = 0
+"#;
+        assert!(matches!(Config::from_toml(s), Err(ConfigError::Parse(_))));
+    }
+
+    #[test]
+    fn parse_overrides_round_trip() {
+        let s = r#"
+version = 1
+[[overrides]]
+path = "/srv/blog"
+php = "8.4"
+secure = true
+
+[[overrides]]
+path = "/srv/wiki"
+secure = false
+"#;
+        let c = Config::from_toml(s).unwrap();
+        let blog = c.overrides.get("/srv/blog").unwrap();
+        assert_eq!(blog.php, Some(yerd_core::PhpVersion::new(8, 4)));
+        assert_eq!(blog.secure, Some(true));
+        // A partial override: only `secure` pinned, `php` inherits.
+        let wiki = c.overrides.get("/srv/wiki").unwrap();
+        assert_eq!(wiki.php, None);
+        assert_eq!(wiki.secure, Some(false));
+        // Re-serialise and re-parse → identical.
+        let back = Config::from_toml(&c.to_toml().unwrap()).unwrap();
+        assert_eq!(back, c);
+    }
+
+    #[test]
+    fn parse_propagates_invalid_override_php_version() {
+        let s = r#"
+version = 1
+[[overrides]]
+path = "/srv/blog"
+php = "not-a-version"
+"#;
+        // A bad version surfaces as Core (not Parse), like php.default.
+        assert!(matches!(Config::from_toml(s), Err(ConfigError::Core(_))));
+    }
+
+    #[test]
+    fn validate_rejects_empty_override_path() {
+        let mut c = Config::default();
+        c.overrides
+            .insert(String::new(), crate::SiteOverride::default());
+        match c.validate() {
+            Err(ConfigError::Validate {
+                reason: ValidateErrorReason::OverridePathEmpty,
+            }) => {}
+            other => panic!("expected OverridePathEmpty, got {other:?}"),
+        }
+    }
+
     // ------------------ validate tests ------------------
 
     #[test]
@@ -547,15 +672,80 @@ kind = "linked"
             other => panic!("(c) expected DuplicateLinkedSite, got {other:?}"),
         }
 
-        // (d) empty-parked + unknown-service → ParkedPathEmpty
+        // (d) empty-parked + empty-override → ParkedPathEmpty (parked first)
         let mut c = Config::default();
         c.parked.paths.insert(String::new());
-        c.services.enabled.insert("sqlserver".to_string());
+        c.overrides
+            .insert(String::new(), crate::SiteOverride::default());
         match c.validate() {
             Err(ConfigError::Validate {
                 reason: ValidateErrorReason::ParkedPathEmpty,
             }) => {}
             other => panic!("(d) expected ParkedPathEmpty, got {other:?}"),
         }
+
+        // (f) empty-override + unknown-service → OverridePathEmpty (overrides
+        // are checked after parked, before services)
+        let mut c = Config::default();
+        c.overrides
+            .insert(String::new(), crate::SiteOverride::default());
+        c.services.enabled.insert("sqlserver".to_string());
+        match c.validate() {
+            Err(ConfigError::Validate {
+                reason: ValidateErrorReason::OverridePathEmpty,
+            }) => {}
+            other => panic!("(f) expected OverridePathEmpty, got {other:?}"),
+        }
+
+        // (e) unknown-service + bad-setting → UnknownService (settings checked last)
+        let mut c = Config::default();
+        c.services.enabled.insert("sqlserver".to_string());
+        c.php
+            .settings
+            .insert("memory_limit".to_string(), "bogus".to_string());
+        match c.validate() {
+            Err(ConfigError::Validate {
+                reason: ValidateErrorReason::UnknownService,
+            }) => {}
+            other => panic!("(e) expected UnknownService, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn validate_rejects_unsupported_and_bad_php_setting() {
+        let mut c = Config::default();
+        c.php
+            .settings
+            .insert("allow_url_fopen".to_string(), "1".to_string());
+        assert!(matches!(
+            c.validate(),
+            Err(ConfigError::Validate {
+                reason: ValidateErrorReason::InvalidPhpSetting,
+            })
+        ));
+
+        let mut c = Config::default();
+        c.php
+            .settings
+            .insert("memory_limit".to_string(), "256M; evil".to_string());
+        assert!(matches!(
+            c.validate(),
+            Err(ConfigError::Validate {
+                reason: ValidateErrorReason::InvalidPhpSetting,
+            })
+        ));
+    }
+
+    #[test]
+    fn php_settings_round_trip_through_toml() {
+        let mut c = Config::default();
+        c.php
+            .settings
+            .insert("memory_limit".to_string(), "512M".to_string());
+        c.php
+            .settings
+            .insert("max_execution_time".to_string(), "300".to_string());
+        let back = Config::from_toml(&c.to_toml().unwrap()).unwrap();
+        assert_eq!(back, c);
     }
 }

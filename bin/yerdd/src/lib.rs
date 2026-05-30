@@ -27,6 +27,7 @@ pub mod startup;
 pub mod state;
 pub mod tracing_init;
 
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -37,21 +38,39 @@ use crate::backend_resolver::DaemonBackendResolver;
 use crate::error::DaemonError;
 use crate::startup::Daemon;
 
-/// Run the daemon to completion (i.e. until a shutdown signal fires).
+/// What the run loop wants `main` to do after a graceful teardown: exit the
+/// process, or re-exec it in place (a `RestartDaemon` request).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Outcome {
+    /// Normal shutdown — the process should exit.
+    Exit,
+    /// A restart was requested — `main` should re-exec the binary.
+    Restart,
+}
+
+/// Run the daemon to completion (until a shutdown signal or restart request).
 ///
 /// `main` calls this inside a tokio runtime; integration tests call
 /// `run_with_daemon` after seeding a `Daemon` via `bring_up_with_dirs`.
-pub async fn run(args: ServeArgs) -> Result<(), DaemonError> {
+pub async fn run(args: ServeArgs) -> Result<Outcome, DaemonError> {
     let daemon = startup::bring_up(&args).await?;
     run_with_daemon(daemon).await
 }
 
 /// Drive an already-bootstrapped `Daemon` to completion.
 #[doc(hidden)]
-pub async fn run_with_daemon(daemon: Daemon) -> Result<(), DaemonError> {
-    let (shutdown_tx, shutdown_rx) = watch::channel(false);
-    let signal_task = tokio::spawn(signals::wait_for_shutdown(shutdown_tx.clone()));
+pub async fn run_with_daemon(daemon: Daemon) -> Result<Outcome, DaemonError> {
+    // The shutdown channel lives in `DaemonState` so the IPC `RestartDaemon`
+    // handler can trip it; the signal task and every subsystem share it.
+    let shutdown_tx = daemon.state.shutdown_tx.clone();
+    let shutdown_rx = shutdown_tx.subscribe();
+    let signal_task = tokio::spawn(signals::wait_for_shutdown(shutdown_tx));
     let result = run_until_shutdown(daemon, shutdown_rx).await;
+    // The signal task only finishes when it actually receives SIGTERM/Ctrl-C.
+    // When shutdown was triggered another way (a `RestartDaemon` IPC trips the
+    // channel directly, no signal), the task is still parked — abort it rather
+    // than awaiting it forever, which would otherwise hang the restart.
+    signal_task.abort();
     let _ = signal_task.await;
     result
 }
@@ -59,7 +78,7 @@ pub async fn run_with_daemon(daemon: Daemon) -> Result<(), DaemonError> {
 async fn run_until_shutdown(
     daemon: Daemon,
     shutdown_rx: watch::Receiver<bool>,
-) -> Result<(), DaemonError> {
+) -> Result<Outcome, DaemonError> {
     // DNS task. The socket pair was bound during `bring_up`, so the daemon
     // owns it here — we just consume it into the serve loop.
     let dns_handle = {
@@ -122,8 +141,15 @@ async fn run_until_shutdown(
         })
     };
 
-    // Wait for any task to wind down — they all watch the same shutdown
-    // channel, so they finish together once the signal fires.
+    // Serve until a shutdown is requested — a SIGTERM/Ctrl-C, or a
+    // `RestartDaemon` IPC tripping the same channel. Without this wait the
+    // daemon would fall straight through to the graceful-join timeouts below
+    // and exit on its own ~30s after startup.
+    let mut wait_rx = shutdown_rx;
+    let _ = wait_rx.changed().await;
+
+    // Now the subsystems are winding down (they watch the same channel); cap
+    // each join so a stuck task can't hang the exit/restart.
     let _ = tokio::time::timeout(Duration::from_secs(10), dns_handle).await;
     let _ = tokio::time::timeout(Duration::from_secs(10), proxy_handle).await;
     let _ = tokio::time::timeout(Duration::from_secs(5), ipc_handle).await;
@@ -134,6 +160,13 @@ async fn run_until_shutdown(
         let _ = mgr.shutdown().await;
     }
 
+    // Read the restart decision before releasing the lock; `main` re-execs on
+    // `Restart` (never here — this path is also reached by the lifecycle test).
+    let outcome = if daemon.state.restart_requested.load(Ordering::Acquire) {
+        Outcome::Restart
+    } else {
+        Outcome::Exit
+    };
     drop(daemon.lock);
-    Ok(())
+    Ok(outcome)
 }

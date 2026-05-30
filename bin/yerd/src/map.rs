@@ -17,6 +17,7 @@ use crate::error::ClientError;
 
 /// Map a parsed [`Command`] to the wire [`Request`], validating site names and
 /// PHP versions client-side. `Use` maps to [`Request::SetPhp`].
+#[allow(clippy::too_many_lines)] // one arm per command — naturally long
 pub fn to_request(cmd: &Command) -> Result<Request, ClientError> {
     Ok(match cmd {
         Command::Ping => Request::Ping,
@@ -33,6 +34,13 @@ pub fn to_request(cmd: &Command) -> Result<Request, ClientError> {
             validate_name(name)?;
             Request::Unlink { name: name.clone() }
         }
+        // Pure: the path is passed through as a string (like `Park`, which the
+        // daemon canonicalises). For `unpark` the daemon matches the stored
+        // canonical string *exactly* (no canonicalisation), so `run` best-effort
+        // canonicalises this path at the I/O boundary before sending.
+        Command::Unpark { path } => Request::Unpark {
+            path: path.to_string_lossy().into_owned(),
+        },
         // One arg = global default PHP; two args = a site's version.
         Command::Use {
             first,
@@ -50,9 +58,42 @@ pub fn to_request(cmd: &Command) -> Result<Request, ClientError> {
                 version: parse_php(version)?,
             }
         }
+        Command::Set {
+            target: crate::cli::SetTarget::Php { setting, value },
+        } => {
+            validate_php_setting(setting, Some(value))?;
+            Request::SetPhpSettings {
+                settings: std::collections::BTreeMap::from([(setting.clone(), value.clone())]),
+            }
+        }
+        Command::Unset {
+            target: crate::cli::UnsetTarget::Php { setting },
+        } => {
+            validate_php_setting(setting, None)?;
+            // Empty value is the wire convention for "remove / reset".
+            Request::SetPhpSettings {
+                settings: std::collections::BTreeMap::from([(setting.clone(), String::new())]),
+            }
+        }
         Command::Install {
             target: crate::cli::InstallTarget::Php { version },
         } => Request::InstallPhp {
+            version: parse_php(version)?,
+        },
+        Command::Restart {
+            target: crate::cli::RestartTarget::Php { version },
+        } => match version {
+            Some(v) => Request::RestartPhp {
+                version: parse_php(v)?,
+            },
+            None => Request::RestartAllPhp,
+        },
+        Command::Restart {
+            target: crate::cli::RestartTarget::Daemon,
+        } => Request::RestartDaemon,
+        Command::Uninstall {
+            target: crate::cli::UninstallTarget::Php { version },
+        } => Request::UninstallPhp {
             version: parse_php(version)?,
         },
         Command::List {
@@ -66,6 +107,9 @@ pub fn to_request(cmd: &Command) -> Result<Request, ClientError> {
                 Request::ListPhp
             }
         }
+        Command::List {
+            target: crate::cli::ListTarget::Parked,
+        } => Request::ListParked,
         Command::Update {
             target: crate::cli::UpdateTarget::Php { version },
         } => Request::UpdatePhp {
@@ -105,6 +149,22 @@ pub fn to_request(cmd: &Command) -> Result<Request, ClientError> {
 fn parse_php(s: &str) -> Result<PhpVersion, ClientError> {
     s.parse::<PhpVersion>()
         .map_err(|e| ClientError::Usage(format!("invalid PHP version {s:?}: {e}")))
+}
+
+/// Validate a PHP setting name (always) and value (when setting, not unsetting)
+/// client-side, so a typo is a clean usage error before connecting.
+fn validate_php_setting(setting: &str, value: Option<&str>) -> Result<(), ClientError> {
+    if !yerd_core::php_settings::is_supported(setting) {
+        return Err(ClientError::Usage(format!(
+            "unknown PHP setting {setting:?}; supported: {}",
+            yerd_core::php_settings::supported_names().join(", ")
+        )));
+    }
+    if let Some(v) = value {
+        yerd_core::php_settings::validate_value(setting, v)
+            .map_err(|e| ClientError::Usage(e.to_string()))?;
+    }
+    Ok(())
 }
 
 /// Validate a site name client-side by constructing a throwaway `Site` (the
@@ -164,11 +224,13 @@ pub fn render(resp: &Response, json: bool) -> Rendered {
         Response::Pong => Rendered::ok("pong".to_owned()),
         Response::Ok => Rendered::ok("ok".to_owned()),
         Response::Sites { sites } => Rendered::ok(format_sites(sites)),
+        Response::Parked { paths } => Rendered::ok(format_parked(paths)),
         Response::PhpVersions {
             installed,
             default,
             updates,
-        } => Rendered::ok(format_php_versions(installed, *default, updates)),
+            settings,
+        } => Rendered::ok(format_php_versions(installed, *default, updates, settings)),
         Response::AvailablePhp {
             available,
             installed,
@@ -234,31 +296,47 @@ fn format_sites(sites: &[Site]) -> String {
     out
 }
 
+fn format_parked(paths: &[String]) -> String {
+    if paths.is_empty() {
+        return "no parked folders".to_owned();
+    }
+    paths.join("\n")
+}
+
 fn format_php_versions(
     installed: &[PhpVersion],
     default: PhpVersion,
     updates: &[yerd_ipc::PhpUpdate],
+    settings: &std::collections::BTreeMap<String, String>,
 ) -> String {
-    if installed.is_empty() {
-        return format!(
-            "no PHP versions installed (default: {default}) — `yerd install php {default}`"
-        );
+    let versions = if installed.is_empty() {
+        format!("no PHP versions installed (default: {default}) — `yerd install php {default}`")
+    } else {
+        installed
+            .iter()
+            .map(|v| {
+                let mut line = if *v == default {
+                    format!("{v} (default)")
+                } else {
+                    v.to_string()
+                };
+                if let Some(u) = updates.iter().find(|u| u.version == *v) {
+                    let _ = write!(line, " — update available: {} → {}", u.installed, u.latest);
+                }
+                line
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    if settings.is_empty() {
+        return versions;
     }
-    installed
-        .iter()
-        .map(|v| {
-            let mut line = if *v == default {
-                format!("{v} (default)")
-            } else {
-                v.to_string()
-            };
-            if let Some(u) = updates.iter().find(|u| u.version == *v) {
-                let _ = write!(line, " — update available: {} → {}", u.installed, u.latest);
-            }
-            line
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
+    let mut out = versions;
+    out.push_str("\n\nsettings:");
+    for (k, v) in settings {
+        let _ = write!(out, "\n  {k} = {v}");
+    }
+    out
 }
 
 /// Render the installable versions, tagging the ones already installed.
@@ -283,12 +361,26 @@ fn format_available_php(available: &[PhpVersion], installed: &[PhpVersion]) -> S
 fn format_status(r: &StatusReport) -> String {
     use std::fmt::Write;
     let mut s = String::new();
+    // The proxy + DNS run inside the daemon process, so its RSS covers them.
+    let rss = r
+        .daemon_rss_bytes
+        .map(|b| format!(", rss {}", fmt_bytes(b)))
+        .unwrap_or_default();
     let _ = writeln!(
         s,
-        "daemon    running (pid {}, up {})",
+        "daemon    running (pid {}, up {}{})",
         r.daemon_pid,
-        fmt_duration(r.uptime_secs)
+        fmt_duration(r.uptime_secs),
+        rss
     );
+    // Empty when talking to a daemon predating version reporting (the field is
+    // `#[serde(default)]`); show "unknown" rather than a blank value.
+    let version = if r.daemon_version.is_empty() {
+        "unknown"
+    } else {
+        &r.daemon_version
+    };
+    let _ = writeln!(s, "version   {version}");
     let _ = writeln!(s, "tld       .{}", r.tld);
     let _ = writeln!(s, "http      {}", fmt_port(r.http));
     let _ = writeln!(s, "https     {}", fmt_port(r.https));
@@ -498,6 +590,25 @@ mod tests {
             to_request(&Command::Unlink { name: "foo".into() }).unwrap(),
             Request::Unlink { name: "foo".into() }
         );
+        // `unpark <path>` maps to Unpark with the path as a string (pure; the
+        // I/O-boundary canonicalisation in `run` is tested separately).
+        assert_eq!(
+            to_request(&Command::Unpark {
+                path: PathBuf::from("/srv/sites")
+            })
+            .unwrap(),
+            Request::Unpark {
+                path: "/srv/sites".into()
+            }
+        );
+        // `list parked` maps to ListParked.
+        assert_eq!(
+            to_request(&Command::List {
+                target: crate::cli::ListTarget::Parked
+            })
+            .unwrap(),
+            Request::ListParked
+        );
         // `use <site> <ver>` (two args) maps to SetPhp.
         assert_eq!(
             to_request(&Command::Use {
@@ -521,6 +632,36 @@ mod tests {
                 version: PhpVersion::new(8, 5)
             }
         );
+        // `set php <k> <v>` and `unset php <k>`.
+        assert_eq!(
+            to_request(&Command::Set {
+                target: crate::cli::SetTarget::Php {
+                    setting: "memory_limit".into(),
+                    value: "512M".into()
+                }
+            })
+            .unwrap(),
+            Request::SetPhpSettings {
+                settings: std::collections::BTreeMap::from([(
+                    "memory_limit".to_string(),
+                    "512M".to_string()
+                )])
+            }
+        );
+        assert_eq!(
+            to_request(&Command::Unset {
+                target: crate::cli::UnsetTarget::Php {
+                    setting: "memory_limit".into()
+                }
+            })
+            .unwrap(),
+            Request::SetPhpSettings {
+                settings: std::collections::BTreeMap::from([(
+                    "memory_limit".to_string(),
+                    String::new()
+                )])
+            }
+        );
         // `install php <ver>` and `list php`.
         assert_eq!(
             to_request(&Command::Install {
@@ -530,6 +671,43 @@ mod tests {
             })
             .unwrap(),
             Request::InstallPhp {
+                version: PhpVersion::new(8, 5)
+            }
+        );
+        // `restart php <ver>` / `restart php` (all) and `uninstall php <ver>`.
+        assert_eq!(
+            to_request(&Command::Restart {
+                target: crate::cli::RestartTarget::Php {
+                    version: Some("8.5".into())
+                }
+            })
+            .unwrap(),
+            Request::RestartPhp {
+                version: PhpVersion::new(8, 5)
+            }
+        );
+        assert_eq!(
+            to_request(&Command::Restart {
+                target: crate::cli::RestartTarget::Php { version: None }
+            })
+            .unwrap(),
+            Request::RestartAllPhp
+        );
+        assert_eq!(
+            to_request(&Command::Restart {
+                target: crate::cli::RestartTarget::Daemon
+            })
+            .unwrap(),
+            Request::RestartDaemon
+        );
+        assert_eq!(
+            to_request(&Command::Uninstall {
+                target: crate::cli::UninstallTarget::Php {
+                    version: "8.5".into()
+                }
+            })
+            .unwrap(),
+            Request::UninstallPhp {
                 version: PhpVersion::new(8, 5)
             }
         );
@@ -646,6 +824,25 @@ mod tests {
             Err(ClientError::Usage(_)) => {}
             other => panic!("expected Usage error, got {other:?}"),
         }
+        // Unknown setting name and bad value are rejected client-side.
+        match to_request(&Command::Set {
+            target: crate::cli::SetTarget::Php {
+                setting: "not_a_setting".into(),
+                value: "1".into(),
+            },
+        }) {
+            Err(ClientError::Usage(_)) => {}
+            other => panic!("expected Usage error, got {other:?}"),
+        }
+        match to_request(&Command::Set {
+            target: crate::cli::SetTarget::Php {
+                setting: "memory_limit".into(),
+                value: "bogus".into(),
+            },
+        }) {
+            Err(ClientError::Usage(_)) => {}
+            other => panic!("expected Usage error, got {other:?}"),
+        }
     }
 
     #[test]
@@ -678,6 +875,23 @@ mod tests {
     }
 
     #[test]
+    fn renders_parked_folders() {
+        let empty = render(&Response::Parked { paths: vec![] }, false);
+        assert_eq!(empty.stdout, "no parked folders");
+        assert_eq!(empty.code, 0);
+
+        let listed = render(
+            &Response::Parked {
+                paths: vec!["/srv/a".into(), "/srv/b".into()],
+            },
+            false,
+        );
+        assert!(listed.stdout.contains("/srv/a"));
+        assert!(listed.stdout.contains("/srv/b"));
+        assert_eq!(listed.code, 0);
+    }
+
+    #[test]
     fn renders_php_versions_marking_default() {
         let r = render(
             &Response::PhpVersions {
@@ -688,6 +902,7 @@ mod tests {
                     installed: "8.3.6".into(),
                     latest: "8.3.31".into(),
                 }],
+                settings: std::collections::BTreeMap::new(),
             },
             false,
         );
@@ -697,16 +912,39 @@ mod tests {
         // The 8.3 line carries the update annotation; 8.5 does not.
         assert!(r.stdout.contains("8.3 — update available: 8.3.6 → 8.3.31"));
         assert!(!r.stdout.contains("8.5 — update available"));
+        // No settings → no settings block.
+        assert!(!r.stdout.contains("settings:"));
 
         let empty = render(
             &Response::PhpVersions {
                 installed: vec![],
                 default: PhpVersion::new(8, 3),
                 updates: vec![],
+                settings: std::collections::BTreeMap::new(),
             },
             false,
         );
         assert!(empty.stdout.contains("no PHP versions installed"));
+    }
+
+    #[test]
+    fn renders_php_settings_block() {
+        let r = render(
+            &Response::PhpVersions {
+                installed: vec![PhpVersion::new(8, 5)],
+                default: PhpVersion::new(8, 5),
+                updates: vec![],
+                settings: std::collections::BTreeMap::from([
+                    ("memory_limit".to_string(), "512M".to_string()),
+                    ("display_errors".to_string(), "On".to_string()),
+                ]),
+            },
+            false,
+        );
+        assert_eq!(r.code, 0);
+        assert!(r.stdout.contains("settings:"));
+        assert!(r.stdout.contains("memory_limit = 512M"));
+        assert!(r.stdout.contains("display_errors = On"));
     }
 
     #[test]
@@ -759,6 +997,7 @@ mod tests {
         yerd_ipc::StatusReport {
             daemon_pid: 4242,
             uptime_secs: 65,
+            daemon_rss_bytes: Some(12_000_000),
             tld: "test".into(),
             http: PortStatus {
                 requested: 80,
@@ -793,6 +1032,7 @@ mod tests {
                 secured: 1,
             },
             load_avg: Some([152, 48, 5]),
+            daemon_version: "2.0.1".into(),
         }
     }
 
@@ -806,12 +1046,31 @@ mod tests {
         );
         assert_eq!(out.code, 0);
         assert!(out.stdout.contains("pid 4242"));
+        assert!(out.stdout.contains("version   2.0.1"));
         assert!(out.stdout.contains("80 → 8080 (fallback)"));
         assert!(out.stdout.contains("trusted: no"));
         assert!(out.stdout.contains("installed: unknown")); // resolver None
         assert!(out.stdout.contains("1.52 0.48 0.05")); // load hundredths → x.xx
         assert!(out.stdout.contains("8.5 (default)  running"));
         assert!(out.stdout.contains("pid 99"));
+    }
+
+    #[test]
+    fn status_shows_unknown_for_empty_daemon_version() {
+        // An older daemon predating version reporting sends `""` (serde default).
+        let mut report = sample_report();
+        report.daemon_version = String::new();
+        let out = render(
+            &Response::Status {
+                report: Box::new(report),
+            },
+            false,
+        );
+        assert!(
+            out.stdout.contains("version   unknown"),
+            "got: {}",
+            out.stdout
+        );
     }
 
     #[test]

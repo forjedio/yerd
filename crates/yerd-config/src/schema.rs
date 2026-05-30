@@ -5,7 +5,7 @@
 //! and [`crate::serialize`]. This keeps the public surface free of an
 //! accidental serde contract that downstream consumers might rely on.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use yerd_core::{PhpVersion, Site, Tld};
 
@@ -33,6 +33,20 @@ pub struct Config {
     pub parked: ParkedSection,
     /// Explicitly linked sites. Order is preserved on round-trip.
     pub linked: Vec<Site>,
+    /// Per-site overrides for **parked** sites, keyed by document-root path.
+    ///
+    /// A parked site is otherwise derived purely from its directory listing, so
+    /// it has no persistent record to hold a customised PHP version or HTTPS
+    /// flag. Rather than promoting it to a [`Self::linked`] entry (which would
+    /// flip its kind), the daemon records the override here and re-applies it
+    /// during the directory scan, leaving the site parked. The value struct is
+    /// extensible (all-`Option` fields) so future per-site settings slot in
+    /// additively.
+    ///
+    /// The key is the parked site's `document_root` **string, byte-exact and
+    /// non-canonical** — see [`SiteOverride`]. `BTreeMap` for stable
+    /// serialisation order.
+    pub overrides: BTreeMap<String, SiteOverride>,
     /// Optional services.
     pub services: ServicesSection,
 }
@@ -47,6 +61,7 @@ impl Default for Config {
             php: PhpSection::default(),
             parked: ParkedSection::default(),
             linked: Vec::new(),
+            overrides: BTreeMap::new(),
             services: ServicesSection::default(),
         }
     }
@@ -135,16 +150,22 @@ impl Default for Ports {
 }
 
 /// PHP defaults.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PhpSection {
     /// Default PHP version applied to new sites.
     pub default: PhpVersion,
+    /// Global PHP ini settings applied to every installed version's FPM pool
+    /// (keyed by directive name, e.g. `"memory_limit" -> "512M"`). Validated
+    /// against [`yerd_core::php_settings`]; an empty map means "PHP defaults".
+    /// `BTreeMap` for stable serialisation order.
+    pub settings: BTreeMap<String, String>,
 }
 
 impl Default for PhpSection {
     fn default() -> Self {
         Self {
             default: PhpVersion::new(8, 3),
+            settings: BTreeMap::new(),
         }
     }
 }
@@ -166,6 +187,30 @@ pub struct ParkedSection {
     /// `BTreeSet` so the serialiser yields stable lexicographic order and
     /// duplicates are structurally impossible.
     pub paths: BTreeSet<String>,
+}
+
+/// A per-site override applied to a **parked** site (see [`Config::overrides`]).
+///
+/// Every field is `Option`: `None` means "inherit" (global default PHP, or
+/// HTTPS off), `Some(v)` pins that value. This keeps the type extensible —
+/// future per-site settings (e.g. a `FrankenPHP` toggle) are added as more
+/// `Option` fields without a wire break.
+///
+/// ## Keying
+///
+/// In [`Config::overrides`] the key is the parked site's `document_root`
+/// **string, stored byte-exact and never canonicalised** — exactly the form
+/// produced by `Site::document_root().to_string_lossy()`, which is in turn the
+/// `std::fs::DirEntry::path()` the daemon's scan yields. Because both the writer
+/// (the IPC mutation handler) and the reader (the directory scan) derive the key
+/// from that same `DirEntry::path()` lineage, the strings match without any
+/// normalisation. Do **not** canonicalise one side independently.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SiteOverride {
+    /// Pinned PHP version, or `None` to inherit the global default.
+    pub php: Option<PhpVersion>,
+    /// Pinned HTTPS flag, or `None` to inherit (off).
+    pub secure: Option<bool>,
 }
 
 /// Enabled services.
@@ -221,5 +266,18 @@ mod tests {
     fn default_parked_and_services_empty() {
         assert!(ParkedSection::default().paths.is_empty());
         assert!(ServicesSection::default().enabled.is_empty());
+    }
+
+    #[test]
+    fn default_overrides_empty() {
+        assert!(Config::default().overrides.is_empty());
+        // A defaulted override inherits everything.
+        assert_eq!(
+            SiteOverride::default(),
+            SiteOverride {
+                php: None,
+                secure: None
+            }
+        );
     }
 }

@@ -1,11 +1,17 @@
 //! Idempotent tracing-subscriber installation.
 
-use tracing_subscriber::filter::LevelFilter;
+use tracing_subscriber::filter::Targets;
 use tracing_subscriber::fmt;
 use tracing_subscriber::prelude::*;
 use tracing_subscriber::registry;
 
 /// Install a compact stderr subscriber at the level implied by `verbose`.
+///
+/// At the default level the embedded DNS server (`hickory_server`) is capped at
+/// `WARN`: it logs **every** inbound query at `INFO` (including the routine
+/// `NXDomain` for non-`.test` names the OS resolver forwards here), which floods
+/// the daemon log. Raising `verbose` lifts that cap so DNS traffic is visible
+/// when debugging.
 ///
 /// Idempotent: the `try_init` error is intentionally swallowed because
 /// it fires only when a global subscriber has already been installed
@@ -16,10 +22,18 @@ pub fn init(verbose: u8) {
         1 => tracing::Level::DEBUG,
         _ => tracing::Level::TRACE,
     };
+    // hickory's per-request logging stays quiet at the default level; `-v`
+    // (and above) lets it through with everything else.
+    let hickory_level = if verbose == 0 {
+        tracing::Level::WARN
+    } else {
+        level
+    };
+    let filter = Targets::new()
+        .with_default(level)
+        .with_target("hickory_server", hickory_level);
     let layer = fmt::layer().with_writer(std::io::stderr).compact();
-    let _ = registry()
-        .with(layer.with_filter(LevelFilter::from_level(level)))
-        .try_init();
+    let _ = registry().with(layer.with_filter(filter)).try_init();
 }
 
 #[cfg(test)]

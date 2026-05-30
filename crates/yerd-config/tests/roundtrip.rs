@@ -7,7 +7,7 @@
     clippy::indexing_slicing
 )]
 
-use yerd_config::{Config, PhpSection, Ports};
+use yerd_config::{Config, PhpSection, Ports, SiteOverride};
 use yerd_core::{PhpVersion, Site, Tld};
 
 const POPULATED: &str = r#"
@@ -31,6 +31,11 @@ php = "8.3"
 secure = true
 kind = "linked"
 
+[[overrides]]
+path = "docroot-a/blog"
+php = "8.4"
+secure = true
+
 [services]
 enabled = ["mysql", "redis"]
 "#;
@@ -44,12 +49,20 @@ fn populated_expected() -> Config {
     };
     c.php = PhpSection {
         default: PhpVersion::new(8, 2),
+        settings: std::collections::BTreeMap::new(),
     };
     c.parked.paths.insert("docroot-a".to_string());
     c.parked.paths.insert("docroot-b".to_string());
     let mut site = Site::linked("api", "docroot", PhpVersion::new(8, 3)).unwrap();
     site.set_secure(true);
     c.linked.push(site);
+    c.overrides.insert(
+        "docroot-a/blog".to_string(),
+        SiteOverride {
+            php: Some(PhpVersion::new(8, 4)),
+            secure: Some(true),
+        },
+    );
     c.services.enabled.insert("mysql".to_string());
     c.services.enabled.insert("redis".to_string());
     c

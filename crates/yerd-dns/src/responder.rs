@@ -35,12 +35,32 @@ impl Responder {
             _ => bytes,
         };
 
-        // 2. Empty after strip ⇒ NxDomain.
-        if bytes.is_empty() {
-            return Answer::NxDomain;
+        let tld_bytes = self.tld.as_str().as_bytes();
+
+        // 2. Decide whether the name falls inside our zone *before* judging its
+        //    validity: a name is in-zone when it is the bare TLD (apex) or ends
+        //    in `.<tld>`. Anything else we are NOT authoritative for.
+        let is_apex = bytes.len() == tld_bytes.len() && bytes.eq_ignore_ascii_case(tld_bytes);
+        let ends_in_dot_tld = bytes.len() > tld_bytes.len()
+            && bytes.get(bytes.len() - tld_bytes.len() - 1) == Some(&b'.')
+            && bytes
+                .get(bytes.len() - tld_bytes.len()..)
+                .is_some_and(|s| s.eq_ignore_ascii_case(tld_bytes));
+
+        // 3. Outside our zone ⇒ REFUSED (not authoritative; let the resolver
+        //    ask another server).
+        if !is_apex && !ends_in_dot_tld {
+            return Answer::Refused;
         }
 
-        // 3. Reject malformed labels: leading dot or consecutive dots.
+        // 4. Apex: the bare TLD has no A/AAAA.
+        if is_apex {
+            return Answer::NoData;
+        }
+
+        // 5. In-zone subdomain. Reject a malformed label (empty first label or
+        //    consecutive dots) as authoritative NXDOMAIN — the name is ours but
+        //    does not exist.
         if bytes.first() == Some(&b'.') {
             return Answer::NxDomain;
         }
@@ -48,32 +68,11 @@ impl Responder {
             return Answer::NxDomain;
         }
 
-        let tld_bytes = self.tld.as_str().as_bytes();
-
-        // 5. Apex branch.
-        if bytes.len() == tld_bytes.len() && bytes.eq_ignore_ascii_case(tld_bytes) {
-            return Answer::NoData;
+        match qtype {
+            QClass::A => Answer::Loopback4,
+            QClass::Aaaa => Answer::Loopback6,
+            QClass::Other => Answer::NoData,
         }
-
-        // 6. Subdomain branch — require at least one non-empty label before
-        //    a dot before the TLD.
-        if bytes.len() > tld_bytes.len() + 1 {
-            let dot_idx = bytes.len() - tld_bytes.len() - 1;
-            let suffix_idx = bytes.len() - tld_bytes.len();
-            let dot_ok = bytes.get(dot_idx) == Some(&b'.');
-            let suffix_ok = bytes
-                .get(suffix_idx..)
-                .is_some_and(|s| s.eq_ignore_ascii_case(tld_bytes));
-            if dot_ok && suffix_ok {
-                return match qtype {
-                    QClass::A => Answer::Loopback4,
-                    QClass::Aaaa => Answer::Loopback6,
-                    QClass::Other => Answer::NoData,
-                };
-            }
-        }
-
-        Answer::NxDomain
     }
 }
 
@@ -104,21 +103,23 @@ mod tests {
             ("test", QClass::Aaaa, "test", Answer::NoData),
             ("test", QClass::Other, "test", Answer::NoData),
             ("test.", QClass::A, "test", Answer::NoData),
-            ("app.com", QClass::A, "test", Answer::NxDomain),
-            ("app.testify", QClass::A, "test", Answer::NxDomain),
-            ("testify", QClass::A, "test", Answer::NxDomain),
+            // Outside the TLD ⇒ REFUSED (not our zone).
+            ("app.com", QClass::A, "test", Answer::Refused),
+            ("app.testify", QClass::A, "test", Answer::Refused),
+            ("testify", QClass::A, "test", Answer::Refused),
             ("xapp.test", QClass::A, "test", Answer::Loopback4),
-            ("app.somethingtest", QClass::A, "test", Answer::NxDomain),
-            ("", QClass::A, "test", Answer::NxDomain),
-            (".", QClass::A, "test", Answer::NxDomain),
+            ("app.somethingtest", QClass::A, "test", Answer::Refused),
+            ("", QClass::A, "test", Answer::Refused),
+            (".", QClass::A, "test", Answer::Refused),
+            // Within `.test` but malformed ⇒ authoritative NXDOMAIN.
             (".test", QClass::A, "test", Answer::NxDomain),
             ("x..test", QClass::A, "test", Answer::NxDomain),
             ("app..test", QClass::A, "test", Answer::NxDomain),
             ("app.dev.local", QClass::A, "dev.local", Answer::Loopback4),
             ("dev.local", QClass::A, "dev.local", Answer::NoData),
-            ("local", QClass::A, "dev.local", Answer::NxDomain),
-            (".local", QClass::A, "dev.local", Answer::NxDomain),
-            ("a.dev-local", QClass::A, "dev.local", Answer::NxDomain),
+            ("local", QClass::A, "dev.local", Answer::Refused),
+            (".local", QClass::A, "dev.local", Answer::Refused),
+            ("a.dev-local", QClass::A, "dev.local", Answer::Refused),
         ];
 
         for (idx, (name, qtype, tld, expected)) in cases.iter().enumerate() {

@@ -31,6 +31,10 @@ pub struct PoolConfig {
     pub pm: ProcessManagerMode,
     /// FPM `pm.max_children`.
     pub max_children: u32,
+    /// Global PHP ini directives to apply, as `(name, value)` pairs sorted by
+    /// name. Rendered as `php_value[name] = value` / `php_flag[name] = value`
+    /// (per [`yerd_core::php_settings::directive`]). Empty by default.
+    pub ini: Vec<(String, String)>,
 }
 
 /// FPM process-manager mode.
@@ -70,6 +74,7 @@ impl PoolConfig {
                 .join(format!("php-fpm-{version}-{instance_id}.conf")),
             pm: ProcessManagerMode::OnDemand,
             max_children: 16,
+            ini: Vec::new(),
         }
     }
 }

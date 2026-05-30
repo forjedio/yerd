@@ -41,6 +41,19 @@ pub fn render_fpm_conf(cfg: &PoolConfig) -> String {
     let _ = writeln!(out, "clear_env = no");
     let _ = writeln!(out, "catch_workers_output = yes");
 
+    // Global PHP ini directives. Each value is re-validated defensively (the
+    // daemon already validates on set + config-load), so an unsupported key or
+    // an unsafe value is silently skipped rather than written raw into the FPM
+    // master config — this module is pure, so it cannot log. `directive` picks
+    // `php_value` vs `php_flag`.
+    for (key, value) in &cfg.ini {
+        if let Some(directive) = yerd_core::php_settings::directive(key) {
+            if yerd_core::php_settings::validate_value(key, value).is_ok() {
+                let _ = writeln!(out, "{directive}[{key}] = {value}");
+            }
+        }
+    }
+
     out
 }
 
@@ -80,6 +93,7 @@ mod tests {
             config_path: PathBuf::from("/cfg/php-fpm-8.3-1.conf"),
             pm,
             max_children: 16,
+            ini: Vec::new(),
         }
     }
 
@@ -92,6 +106,7 @@ mod tests {
             config_path: PathBuf::from("/cfg/php-fpm-8.3-1.conf"),
             pm: ProcessManagerMode::OnDemand,
             max_children: 16,
+            ini: Vec::new(),
         }
     }
 
@@ -138,5 +153,33 @@ catch_workers_output = yes
     fn pool_name_includes_version() {
         let s = render_fpm_conf(&cfg_unix(ProcessManagerMode::OnDemand));
         assert!(s.contains("[yerd-8.3]"), "got: {s}");
+    }
+
+    #[test]
+    fn ini_settings_render_as_value_and_flag_directives() {
+        let mut cfg = cfg_unix(ProcessManagerMode::OnDemand);
+        cfg.ini = vec![
+            ("display_errors".to_string(), "On".to_string()),
+            ("memory_limit".to_string(), "512M".to_string()),
+        ];
+        let s = render_fpm_conf(&cfg);
+        assert!(s.contains("php_value[memory_limit] = 512M\n"), "got: {s}");
+        assert!(s.contains("php_flag[display_errors] = On\n"), "got: {s}");
+        // Directives come after the pool's standard keys.
+        assert!(
+            s.find("catch_workers_output").unwrap() < s.find("php_value[memory_limit]").unwrap()
+        );
+    }
+
+    #[test]
+    fn ini_settings_skip_unsupported_and_unsafe_values() {
+        let mut cfg = cfg_unix(ProcessManagerMode::OnDemand);
+        cfg.ini = vec![
+            ("not_a_setting".to_string(), "x".to_string()),
+            ("memory_limit".to_string(), "256M; evil".to_string()),
+        ];
+        let s = render_fpm_conf(&cfg);
+        assert!(!s.contains("not_a_setting"), "unsupported key leaked: {s}");
+        assert!(!s.contains("evil"), "unsafe value leaked: {s}");
     }
 }

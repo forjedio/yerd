@@ -28,6 +28,11 @@ pub struct StatusReport {
     pub daemon_pid: u32,
     /// Seconds since the daemon finished starting up.
     pub uptime_secs: u64,
+    /// Resident memory of the daemon process, in bytes. The reverse proxy and
+    /// the DNS responder run as tasks inside this process, so this single figure
+    /// covers all three. `None` where unavailable (non-Linux, or a transient
+    /// read failure).
+    pub daemon_rss_bytes: Option<u64>,
     /// The TLD served (e.g. `"test"`).
     pub tld: String,
     /// HTTP listener: requested vs bound port.
@@ -50,6 +55,13 @@ pub struct StatusReport {
     /// System load average for 1/5/15 minutes, each `× 100` (hundredths).
     /// `None` where unavailable (non-Linux, or a transient read failure).
     pub load_avg: Option<[u32; 3]>,
+    /// The daemon's own version (its `CARGO_PKG_VERSION`, e.g. `"2.0.1"`).
+    /// `#[serde(default)]` so a newer client decoding an *older* daemon's status
+    /// (which lacks this key) gets `""` and renders "unknown" rather than failing
+    /// the whole decode — the daemon/GUI version skew this field exists to show.
+    /// The daemon always sets a non-empty value, so it is always emitted.
+    #[serde(default)]
+    pub daemon_version: String,
 }
 
 /// A listener's requested vs actually-bound port.

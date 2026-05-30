@@ -121,8 +121,9 @@ mod tests {
         let _ = tokio::time::timeout(Duration::from_secs(10), daemon_task).await;
     }
 
-    /// `SetSecure` over the real socket promotes the parked site, sets the flag,
-    /// and persists `secure = true` to disk.
+    /// `SetSecure` over the real socket records a per-site override for the
+    /// parked site (keeping it parked), sets the flag, and persists it under an
+    /// `[[overrides]]` table on disk.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn set_secure_round_trip_persists() {
         let tmp = tempfile::tempdir().unwrap();
@@ -163,7 +164,7 @@ mod tests {
         .await;
         assert!(matches!(resp, Response::Ok), "set_secure got {resp:?}");
 
-        // ListSites reflects the secured site.
+        // ListSites reflects the secured site — still PARKED (no promotion).
         match round_trip(&ipc_sock, &Request::ListSites).await {
             Response::Sites { sites } => {
                 let blog = sites
@@ -171,15 +172,29 @@ mod tests {
                     .find(|s| s.name() == "blog")
                     .expect("blog present");
                 assert!(blog.secure(), "blog should be secure");
+                assert_eq!(
+                    blog.kind(),
+                    yerd_core::SiteKind::Parked,
+                    "blog must stay parked"
+                );
             }
             other => panic!("expected Sites, got {other:?}"),
         }
 
-        // Persisted to disk as `secure = true`.
+        // Persisted to disk under an `[[overrides]]` table (not promoted to
+        // `[[linked]]`).
         let on_disk = std::fs::read_to_string(&cfg_path).expect("config file written");
+        assert!(
+            on_disk.contains("[[overrides]]"),
+            "expected an `[[overrides]]` table in {on_disk}"
+        );
         assert!(
             on_disk.contains("secure = true"),
             "expected `secure = true` in {on_disk}"
+        );
+        assert!(
+            !on_disk.contains("[[linked]]"),
+            "blog must not be promoted to a linked site: {on_disk}"
         );
 
         shutdown_tx.send_replace(true);

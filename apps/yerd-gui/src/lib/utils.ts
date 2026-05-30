@@ -15,7 +15,9 @@ export type StatusTone = "ok" | "warn" | "bad" | "unknown" | "muted";
  * Human label for an FPM pool's run state. PHP-FPM is started **on demand** when
  * a site first uses a version, so an installed-but-not-serving version is
  * `stopped` on the wire — which reads as alarming. Show it as "idle" instead;
- * reserve "failed" (red) for a pool that actually crashed.
+ * reserve "failed" (red) for a pool that actually crashed. A version not yet in
+ * the status report (e.g. just installed, before the next poll) is also "idle"
+ * rather than a transient "not started".
  */
 export function poolStateLabel(state: PoolRunState | null | undefined): string {
   switch (state) {
@@ -23,10 +25,8 @@ export function poolStateLabel(state: PoolRunState | null | undefined): string {
       return "running";
     case "failed":
       return "failed";
-    case "stopped":
-      return "idle";
     default:
-      return "not started";
+      return "idle"; // stopped / not-yet-reported → idle, ready on demand
   }
 }
 

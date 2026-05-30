@@ -5,6 +5,7 @@
 //! rename, and let `tests/wire_stability.rs` pin the byte-exact wire
 //! shape.
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
@@ -40,6 +41,22 @@ pub enum Request {
     Unlink {
         /// The site name to remove.
         name: String,
+    },
+    /// Enumerate the registered parked directory roots (including empty ones,
+    /// which produce no sites and so never appear in [`Self::ListSites`]).
+    ListParked,
+    /// Un-park a directory root: remove it from the parked set and re-scan.
+    /// Its parked sites disappear; linked sites are untouched.
+    Unpark {
+        /// The parked root to remove. Deliberately a `String`, not a
+        /// `PathBuf`: the daemon stores parked roots as canonical
+        /// `String`s (`config.parked.paths` is a `BTreeSet<String>`), and
+        /// clients echo a value straight from [`super::Response::Parked`].
+        /// Keeping it a `String` makes the removal an exact identity match —
+        /// a `PathBuf` round-trip risks lossy normalisation. The daemon does
+        /// **not** canonicalise it (so a folder deleted from disk is still
+        /// removable).
+        path: String,
     },
     /// Change a site's PHP version.
     SetPhp {
@@ -82,6 +99,27 @@ pub enum Request {
     /// List the major.minor versions installable from the distribution (the GUI
     /// install dropdown / `yerd list php --available`). Fetched on demand.
     AvailablePhp,
+    /// Merge global PHP ini settings into the config and apply them to all
+    /// installed versions' FPM pools. An empty-string value removes a key
+    /// (resets it to PHP's built-in default).
+    SetPhpSettings {
+        /// Setting name → value (e.g. `"memory_limit" -> "512M"`); `""` removes.
+        settings: BTreeMap<String, String>,
+    },
+    /// Restart one installed version's FPM pool (stop + ensure).
+    RestartPhp {
+        /// The version whose pool to restart.
+        version: PhpVersion,
+    },
+    /// Restart every started FPM pool (running or failed).
+    RestartAllPhp,
+    /// Uninstall an installed PHP version. Blocked when the version is in use by
+    /// a site, is the last version while sites remain, or is the current default
+    /// while other versions are installed.
+    UninstallPhp {
+        /// The version to uninstall.
+        version: PhpVersion,
+    },
     /// Fetch a read-only [`crate::StatusReport`] of daemon/proxy/DNS/PHP health.
     Status,
     /// Run the doctor checks and return the resulting diagnoses.
@@ -89,6 +127,10 @@ pub enum Request {
     /// Run the doctor checks, attempt the safe auto-fixes, and report what
     /// happened plus what still needs manual action.
     DoctorFix,
+    /// Restart the daemon's own process in place (re-exec). The daemon replies
+    /// `Ok` *before* tearing down; the connection then closes as it restarts.
+    /// Unix-only.
+    RestartDaemon,
 }
 
 #[cfg(test)]
@@ -117,6 +159,8 @@ mod variant_name_pinning {
             Request::Park { .. } => {}
             Request::Link { .. } => {}
             Request::Unlink { .. } => {}
+            Request::ListParked => {}
+            Request::Unpark { .. } => {}
             Request::SetPhp { .. } => {}
             Request::SetSecure { .. } => {}
             Request::DaemonInfo => {}
@@ -126,9 +170,14 @@ mod variant_name_pinning {
             Request::UpdatePhp { .. } => {}
             Request::CheckPhpUpdates => {}
             Request::AvailablePhp => {}
+            Request::SetPhpSettings { .. } => {}
+            Request::RestartPhp { .. } => {}
+            Request::RestartAllPhp => {}
+            Request::UninstallPhp { .. } => {}
             Request::Status => {}
             Request::Diagnose => {}
             Request::DoctorFix => {}
+            Request::RestartDaemon => {}
         }
     }
 
@@ -144,6 +193,8 @@ mod variant_name_pinning {
             path: PathBuf::from("/x"),
         });
         pin(Request::Unlink { name: "x".into() });
+        pin(Request::ListParked);
+        pin(Request::Unpark { path: "/x".into() });
         pin(Request::SetPhp {
             name: "x".into(),
             version: PhpVersion::new(8, 3),
@@ -165,8 +216,19 @@ mod variant_name_pinning {
         });
         pin(Request::CheckPhpUpdates);
         pin(Request::AvailablePhp);
+        pin(Request::SetPhpSettings {
+            settings: BTreeMap::new(),
+        });
+        pin(Request::RestartPhp {
+            version: PhpVersion::new(8, 5),
+        });
+        pin(Request::RestartAllPhp);
+        pin(Request::UninstallPhp {
+            version: PhpVersion::new(8, 5),
+        });
         pin(Request::Status);
         pin(Request::Diagnose);
         pin(Request::DoctorFix);
+        pin(Request::RestartDaemon);
     }
 }

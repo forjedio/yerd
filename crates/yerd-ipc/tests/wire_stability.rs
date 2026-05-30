@@ -13,6 +13,7 @@
     clippy::disallowed_names
 )]
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use yerd_ipc::{
@@ -67,6 +68,25 @@ fn request_unlink_byte_shape() {
     let r = Request::Unlink { name: "foo".into() };
     let s = serde_json::to_string(&r).unwrap();
     assert_eq!(s, r#"{"type":"unlink","name":"foo"}"#);
+    let back: Request = serde_json::from_str(&s).unwrap();
+    assert_eq!(back, r);
+}
+
+#[test]
+fn request_list_parked_byte_shape() {
+    let s = serde_json::to_string(&Request::ListParked).unwrap();
+    assert_eq!(s, r#"{"type":"list_parked"}"#);
+    let back: Request = serde_json::from_str(&s).unwrap();
+    assert_eq!(back, Request::ListParked);
+}
+
+#[test]
+fn request_unpark_byte_shape() {
+    let r = Request::Unpark {
+        path: "/srv/sites".into(),
+    };
+    let s = serde_json::to_string(&r).unwrap();
+    assert_eq!(s, r#"{"type":"unpark","path":"/srv/sites"}"#);
     let back: Request = serde_json::from_str(&s).unwrap();
     assert_eq!(back, r);
 }
@@ -169,6 +189,36 @@ fn request_available_php_byte_shape() {
 }
 
 #[test]
+fn request_restart_php_byte_shape() {
+    let r = Request::RestartPhp {
+        version: PhpVersion::new(8, 3),
+    };
+    let s = serde_json::to_string(&r).unwrap();
+    assert_eq!(s, r#"{"type":"restart_php","version":"8.3"}"#);
+    assert_eq!(serde_json::from_str::<Request>(&s).unwrap(), r);
+}
+
+#[test]
+fn request_restart_all_php_byte_shape() {
+    let s = serde_json::to_string(&Request::RestartAllPhp).unwrap();
+    assert_eq!(s, r#"{"type":"restart_all_php"}"#);
+    assert_eq!(
+        serde_json::from_str::<Request>(&s).unwrap(),
+        Request::RestartAllPhp
+    );
+}
+
+#[test]
+fn request_uninstall_php_byte_shape() {
+    let r = Request::UninstallPhp {
+        version: PhpVersion::new(8, 3),
+    };
+    let s = serde_json::to_string(&r).unwrap();
+    assert_eq!(s, r#"{"type":"uninstall_php","version":"8.3"}"#);
+    assert_eq!(serde_json::from_str::<Request>(&s).unwrap(), r);
+}
+
+#[test]
 fn request_status_byte_shape() {
     let s = serde_json::to_string(&Request::Status).unwrap();
     assert_eq!(s, r#"{"type":"status"}"#);
@@ -185,6 +235,16 @@ fn request_diagnose_byte_shape() {
     assert_eq!(
         serde_json::from_str::<Request>(&s).unwrap(),
         Request::Diagnose
+    );
+}
+
+#[test]
+fn request_restart_daemon_byte_shape() {
+    let s = serde_json::to_string(&Request::RestartDaemon).unwrap();
+    assert_eq!(s, r#"{"type":"restart_daemon"}"#);
+    assert_eq!(
+        serde_json::from_str::<Request>(&s).unwrap(),
+        Request::RestartDaemon
     );
 }
 
@@ -254,6 +314,26 @@ fn response_sites_two_byte_shape() {
 }
 
 #[test]
+fn response_parked_byte_shape() {
+    let r = Response::Parked {
+        paths: vec!["/a".into(), "/b".into()],
+    };
+    let s = serde_json::to_string(&r).unwrap();
+    assert_eq!(s, r#"{"type":"parked","paths":["/a","/b"]}"#);
+    let back: Response = serde_json::from_str(&s).unwrap();
+    assert_eq!(back, r);
+}
+
+#[test]
+fn response_parked_empty_byte_shape() {
+    let r = Response::Parked { paths: vec![] };
+    let s = serde_json::to_string(&r).unwrap();
+    assert_eq!(s, r#"{"type":"parked","paths":[]}"#);
+    let back: Response = serde_json::from_str(&s).unwrap();
+    assert_eq!(back, r);
+}
+
+#[test]
 fn response_info_byte_shape() {
     let r = Response::Info {
         dns_addr: "127.0.0.1:1053".parse().unwrap(),
@@ -279,6 +359,7 @@ fn response_php_versions_byte_shape() {
         installed: vec![PhpVersion::new(8, 3), PhpVersion::new(8, 5)],
         default: PhpVersion::new(8, 5),
         updates: vec![],
+        settings: BTreeMap::new(),
     };
     let s = serde_json::to_string(&r).unwrap();
     assert_eq!(
@@ -298,6 +379,7 @@ fn response_php_versions_with_updates_byte_shape() {
             installed: "8.5.6".into(),
             latest: "8.5.7".into(),
         }],
+        settings: BTreeMap::new(),
     };
     let s = serde_json::to_string(&r).unwrap();
     assert_eq!(
@@ -305,6 +387,50 @@ fn response_php_versions_with_updates_byte_shape() {
         r#"{"type":"php_versions","installed":["8.5"],"default":"8.5","updates":[{"version":"8.5","installed":"8.5.6","latest":"8.5.7"}]}"#
     );
     assert_eq!(serde_json::from_str::<Response>(&s).unwrap(), r);
+}
+
+#[test]
+fn response_php_versions_with_settings_byte_shape() {
+    // Non-empty `settings` is appended after `updates`; BTreeMap keys are
+    // serialised in sorted order.
+    let r = Response::PhpVersions {
+        installed: vec![PhpVersion::new(8, 5)],
+        default: PhpVersion::new(8, 5),
+        updates: vec![],
+        settings: BTreeMap::from([
+            ("memory_limit".to_string(), "512M".to_string()),
+            ("display_errors".to_string(), "On".to_string()),
+        ]),
+    };
+    let s = serde_json::to_string(&r).unwrap();
+    assert_eq!(
+        s,
+        r#"{"type":"php_versions","installed":["8.5"],"default":"8.5","settings":{"display_errors":"On","memory_limit":"512M"}}"#
+    );
+    assert_eq!(serde_json::from_str::<Response>(&s).unwrap(), r);
+}
+
+#[test]
+fn request_set_php_settings_byte_shape() {
+    let empty = Request::SetPhpSettings {
+        settings: BTreeMap::new(),
+    };
+    let s = serde_json::to_string(&empty).unwrap();
+    assert_eq!(s, r#"{"type":"set_php_settings","settings":{}}"#);
+    assert_eq!(serde_json::from_str::<Request>(&s).unwrap(), empty);
+
+    let populated = Request::SetPhpSettings {
+        settings: BTreeMap::from([
+            ("memory_limit".to_string(), "512M".to_string()),
+            ("max_execution_time".to_string(), "30".to_string()),
+        ]),
+    };
+    let s = serde_json::to_string(&populated).unwrap();
+    assert_eq!(
+        s,
+        r#"{"type":"set_php_settings","settings":{"max_execution_time":"30","memory_limit":"512M"}}"#
+    );
+    assert_eq!(serde_json::from_str::<Request>(&s).unwrap(), populated);
 }
 
 #[test]
@@ -347,6 +473,7 @@ fn response_status_byte_shape() {
         report: Box::new(StatusReport {
             daemon_pid: 4242,
             uptime_secs: 7,
+            daemon_rss_bytes: Some(2048),
             tld: "test".into(),
             http: PortStatus {
                 requested: 80,
@@ -381,11 +508,12 @@ fn response_status_byte_shape() {
                 secured: 1,
             },
             load_avg: Some([100, 50, 25]),
+            daemon_version: "2.0.1".into(),
         }),
     };
     let s = serde_json::to_string(&r).unwrap();
     let expected = format!(
-        r#"{{"type":"status","report":{{"daemon_pid":4242,"uptime_secs":7,"tld":"test","http":{{"requested":80,"bound":8080,"fell_back":true}},"https":{{"requested":443,"bound":8443,"fell_back":true}},"dns_addr":"127.0.0.1:1053","ca":{{"path":"/x/ca.cert.pem","fingerprint":"{}","trusted_system":false}},"resolver_installed":true,"default_php":"8.5","php":[{{"version":"8.5","installed_patch":"8.5.6","state":"running","pid":99,"listen":"/run/fpm.sock","rss_bytes":1024,"update_available":null}}],"sites":{{"parked":1,"linked":2,"secured":1}},"load_avg":[100,50,25]}}}}"#,
+        r#"{{"type":"status","report":{{"daemon_pid":4242,"uptime_secs":7,"daemon_rss_bytes":2048,"tld":"test","http":{{"requested":80,"bound":8080,"fell_back":true}},"https":{{"requested":443,"bound":8443,"fell_back":true}},"dns_addr":"127.0.0.1:1053","ca":{{"path":"/x/ca.cert.pem","fingerprint":"{}","trusted_system":false}},"resolver_installed":true,"default_php":"8.5","php":[{{"version":"8.5","installed_patch":"8.5.6","state":"running","pid":99,"listen":"/run/fpm.sock","rss_bytes":1024,"update_available":null}}],"sites":{{"parked":1,"linked":2,"secured":1}},"load_avg":[100,50,25],"daemon_version":"2.0.1"}}}}"#,
         "ab".repeat(32)
     );
     assert_eq!(s, expected);

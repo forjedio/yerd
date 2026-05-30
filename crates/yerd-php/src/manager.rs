@@ -121,6 +121,7 @@ where
     binder: ActivePortBinder,
     pools: BTreeMap<PhpVersion, Pool<S::Child>>,
     binaries: BTreeMap<PhpVersion, PathBuf>,
+    ini_settings: Vec<(String, String)>,
     instance_id: u32,
 }
 
@@ -153,6 +154,7 @@ where
             binder,
             pools: BTreeMap::new(),
             binaries,
+            ini_settings: Vec::new(),
             instance_id,
         }
     }
@@ -166,6 +168,15 @@ where
     /// untouched; only future lookups change.
     pub fn set_binaries(&mut self, binaries: BTreeMap<PhpVersion, PathBuf>) {
         self.binaries = binaries;
+    }
+
+    /// Replace the global PHP ini settings applied to every pool.
+    ///
+    /// Stored as `(name, value)` pairs and injected into each pool's rendered
+    /// FPM config on the next `ensure` (a running pool keeps its current config
+    /// until restarted — the daemon restarts live pools after calling this).
+    pub fn set_ini_settings(&mut self, settings: Vec<(String, String)>) {
+        self.ini_settings = settings;
     }
 
     /// Ensure FPM is running for `v` and return its listen address.
@@ -229,8 +240,10 @@ where
             let _ = fs::remove_file(path);
         }
 
-        // Build config + render + write.
-        let cfg = PoolConfig::dev_defaults(v, listen, &self.dirs, self.instance_id);
+        // Build config + render + write. Inject the current global ini settings
+        // so a (re)started pool picks up the latest values.
+        let mut cfg = PoolConfig::dev_defaults(v, listen, &self.dirs, self.instance_id);
+        cfg.ini = self.ini_settings.clone();
 
         // FPM does not create parent directories for its config, pid file, or
         // error_log — and the per-user state dir may not exist yet on first run.

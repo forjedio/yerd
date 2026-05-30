@@ -77,10 +77,14 @@ async fn serve_and_query(tld: Tld, site_fqdn: &str, apex_fqdn: &str) {
     assert_eq!(resp.answers().len(), 0);
     assert_eq!(resp.name_servers().len(), 0);
 
-    // 4. unrelated.com A → NXDomain
+    // 4. unrelated.com A → REFUSED, non-authoritative (out of our zone).
     let unrelated = Name::from_str("unrelated.com.").unwrap();
     let resp = timeout(udp_client.query(unrelated, DNSClass::IN, RecordType::A)).await;
-    assert_eq!(resp.response_code(), ResponseCode::NXDomain);
+    assert_eq!(resp.response_code(), ResponseCode::Refused);
+    assert!(
+        !resp.authoritative(),
+        "out-of-zone reply must clear the AA bit"
+    );
 
     // 5. $apex A → NoData (apex carve-out).
     let apex = Name::from_str(apex_fqdn).unwrap();

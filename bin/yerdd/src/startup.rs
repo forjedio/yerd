@@ -145,7 +145,7 @@ pub async fn bring_up_with_dirs(
 
     // PhpManager — instance_id = daemon PID disambiguates concurrent daemons
     // on the same host (different XDG_RUNTIME_DIRs notwithstanding).
-    let php_manager = PhpManager::new(
+    let mut php_manager = PhpManager::new(
         TokioProcessSpawner,
         SystemClock,
         FastCgiProbe,
@@ -153,6 +153,16 @@ pub async fn bring_up_with_dirs(
         ActivePortBinder::new(),
         std::process::id(),
         binaries,
+    );
+    // Seed the global PHP ini settings from config so the first pool start
+    // renders with the user's values (not just after the first `set php`).
+    php_manager.set_ini_settings(
+        config
+            .php
+            .settings
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect(),
     );
     let php_manager = Arc::new(Mutex::new(php_manager));
 
@@ -192,6 +202,10 @@ pub async fn bring_up_with_dirs(
             fell_back: bound_https != cfg_https,
         },
         started_at: std::time::Instant::now(),
+        // The shutdown broadcast lives in state so the IPC `RestartDaemon`
+        // handler can trigger teardown; `run_with_daemon` subscribes from it.
+        shutdown_tx: tokio::sync::watch::channel(false).0,
+        restart_requested: std::sync::atomic::AtomicBool::new(false),
     });
 
     Ok(Daemon {
@@ -363,8 +377,25 @@ pub(crate) fn scan_sites(
                 // Linked wins on name collision.
                 continue;
             }
-            match Site::parked(&name_lower, entry.path(), default_php) {
-                Ok(site) => parked.push(site),
+            // Compute the path once: it's both the site's document_root and the
+            // key into `cfg.overrides` (see `mutate::override_key` — both stringify
+            // this same `DirEntry::path()` with `to_string_lossy`, so they match).
+            let doc_root = entry.path();
+            match Site::parked(&name_lower, &doc_root, default_php) {
+                Ok(mut site) => {
+                    // Re-apply any persisted per-site override, keeping the site
+                    // parked (no promotion to linked). An override for a path with
+                    // no matching child is simply never looked up here (harmless).
+                    if let Some(ov) = cfg.overrides.get(&doc_root.to_string_lossy().into_owned()) {
+                        if let Some(php) = ov.php {
+                            site.set_php(php);
+                        }
+                        if let Some(secure) = ov.secure {
+                            site.set_secure(secure);
+                        }
+                    }
+                    parked.push(site);
+                }
                 Err(e) => {
                     tracing::debug!(
                         name = %name_lower,
@@ -523,5 +554,120 @@ mod tests {
             sites[0].document_root(),
             tmp.path().join("linked-collide").as_path()
         );
+    }
+
+    /// Build a config with `Sites/blog` parked and an override keyed by blog's
+    /// document_root (the same string scan_sites computes).
+    fn cfg_with_parked_blog_override(
+        tmp: &std::path::Path,
+        ov: yerd_config::SiteOverride,
+    ) -> yerd_config::Config {
+        let parked_root = tmp.join("Sites");
+        std::fs::create_dir_all(parked_root.join("blog")).unwrap();
+        let mut cfg = yerd_config::Config::default();
+        cfg.parked
+            .paths
+            .insert(parked_root.to_string_lossy().into_owned());
+        let key = parked_root.join("blog").to_string_lossy().into_owned();
+        cfg.overrides.insert(key, ov);
+        cfg
+    }
+
+    #[test]
+    fn scan_sites_applies_php_override() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg = cfg_with_parked_blog_override(
+            tmp.path(),
+            yerd_config::SiteOverride {
+                php: Some(PhpVersion::new(8, 5)),
+                secure: None,
+            },
+        );
+        let dirs = make_dirs(tmp.path());
+        // Default php is 8.3, but the override pins 8.5.
+        let sites = scan_sites(&cfg, PhpVersion::new(8, 3), &dirs).unwrap();
+        let blog = sites.iter().find(|s| s.name() == "blog").unwrap();
+        assert_eq!(blog.php(), PhpVersion::new(8, 5));
+        assert!(!blog.secure());
+        // Critically: it stays PARKED, not promoted to linked.
+        assert_eq!(blog.kind(), yerd_core::SiteKind::Parked);
+    }
+
+    #[test]
+    fn scan_sites_applies_secure_override() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg = cfg_with_parked_blog_override(
+            tmp.path(),
+            yerd_config::SiteOverride {
+                php: None,
+                secure: Some(true),
+            },
+        );
+        let dirs = make_dirs(tmp.path());
+        let sites = scan_sites(&cfg, PhpVersion::new(8, 3), &dirs).unwrap();
+        let blog = sites.iter().find(|s| s.name() == "blog").unwrap();
+        assert!(blog.secure());
+        // php inherits the default (override didn't pin it).
+        assert_eq!(blog.php(), PhpVersion::new(8, 3));
+        assert_eq!(blog.kind(), yerd_core::SiteKind::Parked);
+    }
+
+    #[test]
+    fn scan_sites_orphan_override_is_ignored() {
+        // An override for a path with no matching discovered child is never
+        // looked up — no panic, no effect. (The "keep on un-park" decision: an
+        // orphaned override sits harmlessly in config.)
+        let tmp = tempfile::tempdir().unwrap();
+        let parked_root = tmp.path().join("Sites");
+        std::fs::create_dir_all(parked_root.join("blog")).unwrap();
+        let mut cfg = yerd_config::Config::default();
+        cfg.parked
+            .paths
+            .insert(parked_root.to_string_lossy().into_owned());
+        // Override keyed by a child that does not exist on disk.
+        cfg.overrides.insert(
+            parked_root.join("ghost").to_string_lossy().into_owned(),
+            yerd_config::SiteOverride {
+                php: Some(PhpVersion::new(8, 5)),
+                secure: Some(true),
+            },
+        );
+        let dirs = make_dirs(tmp.path());
+        let sites = scan_sites(&cfg, PhpVersion::new(8, 3), &dirs).unwrap();
+        let blog = sites.iter().find(|s| s.name() == "blog").unwrap();
+        // blog is untouched by the ghost override.
+        assert_eq!(blog.php(), PhpVersion::new(8, 3));
+        assert!(!blog.secure());
+    }
+
+    #[test]
+    fn scan_sites_linked_collision_leaves_override_dormant() {
+        // If a parked child's name collides with a linked site, the linked site
+        // wins and the parked override (keyed by the parked doc-root) never
+        // applies — the linked site keeps its own settings.
+        let tmp = tempfile::tempdir().unwrap();
+        let parked_root = tmp.path().join("Sites");
+        std::fs::create_dir_all(parked_root.join("blog")).unwrap();
+        let linked =
+            Site::linked("blog", tmp.path().join("real-blog"), PhpVersion::new(7, 4)).unwrap();
+        let mut cfg = yerd_config::Config::default();
+        cfg.linked.push(linked);
+        cfg.parked
+            .paths
+            .insert(parked_root.to_string_lossy().into_owned());
+        cfg.overrides.insert(
+            parked_root.join("blog").to_string_lossy().into_owned(),
+            yerd_config::SiteOverride {
+                php: Some(PhpVersion::new(8, 5)),
+                secure: Some(true),
+            },
+        );
+        let dirs = make_dirs(tmp.path());
+        let sites = scan_sites(&cfg, PhpVersion::new(8, 3), &dirs).unwrap();
+        let blog = sites.iter().find(|s| s.name() == "blog").unwrap();
+        // The linked site wins: php 7.4, not the override's 8.5; and linked.
+        assert_eq!(blog.kind(), yerd_core::SiteKind::Linked);
+        assert_eq!(blog.php(), PhpVersion::new(7, 4));
+        assert!(!blog.secure());
     }
 }

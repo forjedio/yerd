@@ -167,7 +167,7 @@ mod tests {
         ));
         assert!(site_names(&send(&sock, &Command::Sites).await).contains(&"app".to_owned()));
 
-        // use → promotes the parked `blog` to a linked entry at 8.4
+        // use → records a per-site override at 8.4, keeping `blog` parked
         assert!(matches!(
             send(
                 &sock,
@@ -183,7 +183,8 @@ mod tests {
             Response::Sites { sites } => {
                 let blog = sites.iter().find(|s| s.name() == "blog").unwrap();
                 assert_eq!(blog.php(), yerd_core::PhpVersion::new(8, 4));
-                assert_eq!(blog.kind(), yerd_core::SiteKind::Linked);
+                // Override applied, but the site stays parked (no promotion).
+                assert_eq!(blog.kind(), yerd_core::SiteKind::Parked);
             }
             other => panic!("expected Sites, got {other:?}"),
         }
@@ -267,7 +268,55 @@ mod tests {
         // The config was persisted with the parked path.
         let on_disk = std::fs::read_to_string(&cfg_path).expect("config written");
         let canonical = std::fs::canonicalize(&sites_root).unwrap();
-        assert!(on_disk.contains(&canonical.to_string_lossy().into_owned()));
+        let canonical_str = canonical.to_string_lossy().into_owned();
+        assert!(on_disk.contains(&canonical_str));
+
+        // list parked → the registered root is reported (canonical form).
+        match send(
+            &sock,
+            &Command::List {
+                target: yerd::cli::ListTarget::Parked,
+            },
+        )
+        .await
+        {
+            Response::Parked { paths } => {
+                assert!(paths.contains(&canonical_str), "parked roots: {paths:?}");
+            }
+            other => panic!("expected Parked, got {other:?}"),
+        }
+
+        // unpark the root (sent canonical, as the daemon matches exactly).
+        assert!(matches!(
+            send(
+                &sock,
+                &Command::Unpark {
+                    path: canonical.clone()
+                }
+            )
+            .await,
+            Response::Ok
+        ));
+        // list parked → now empty.
+        match send(
+            &sock,
+            &Command::List {
+                target: yerd::cli::ListTarget::Parked,
+            },
+        )
+        .await
+        {
+            Response::Parked { paths } => {
+                assert!(!paths.contains(&canonical_str), "parked roots: {paths:?}");
+            }
+            other => panic!("expected Parked, got {other:?}"),
+        }
+
+        // unpark again (absent) → idempotent Ok.
+        assert!(matches!(
+            send(&sock, &Command::Unpark { path: canonical }).await,
+            Response::Ok
+        ));
 
         shutdown_tx.send_replace(true);
         let _ = tokio::time::timeout(Duration::from_secs(5), ipc_task).await;

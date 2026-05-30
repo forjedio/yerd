@@ -34,7 +34,7 @@ pub async fn run(cli: Cli) -> ExitCode {
     }
 
     let req = match map::to_request(&cli.command) {
-        Ok(r) => r,
+        Ok(r) => canonicalize_unpark(r),
         Err(e) => {
             eprintln!("yerd: {e}");
             // `to_request` only fails with client-side usage errors.
@@ -80,6 +80,24 @@ pub async fn run(cli: Cli) -> ExitCode {
             ExitCode::from(74)
         }
     }
+}
+
+/// Best-effort: rewrite an `Unpark` request's path to its canonical form so a
+/// relative or symlinked path the user typed matches the canonical string the
+/// daemon stored when the directory was parked. The daemon matches `unpark`
+/// *exactly* (it deliberately does not canonicalise — so a directory deleted
+/// from disk is still removable by its exact stored path); doing it here, at the
+/// I/O boundary, keeps `map::to_request` pure. A path that can't be canonicalised
+/// (e.g. already deleted) is left exactly as typed.
+fn canonicalize_unpark(req: yerd_ipc::Request) -> yerd_ipc::Request {
+    if let yerd_ipc::Request::Unpark { path } = &req {
+        if let Ok(canon) = std::fs::canonicalize(path) {
+            return yerd_ipc::Request::Unpark {
+                path: canon.to_string_lossy().into_owned(),
+            };
+        }
+    }
+    req
 }
 
 /// A synthetic `daemon_down` FAIL diagnosis, used when `yerd doctor` can't reach

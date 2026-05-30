@@ -45,6 +45,16 @@ pub struct Applied {
     pub summary: String,
 }
 
+/// The `cfg.overrides` key for a parked site: its `document_root` stringified
+/// with `to_string_lossy`. This MUST match the key `startup::scan_sites`
+/// computes when it re-applies overrides — both derive from the same
+/// `DirEntry::path()` (the router's parked site was built from it, and
+/// `Site::document_root` returns it verbatim, uncanonicalised), so the strings
+/// are byte-identical. Do not canonicalise one side independently.
+fn override_key(site: &Site) -> String {
+    site.document_root().to_string_lossy().into_owned()
+}
+
 /// Apply a mutation [`Request`] to `cfg` in place.
 ///
 /// `router` is the **pre-mutation** live router — read here so a `SetPhp` on a
@@ -93,6 +103,22 @@ pub fn apply(
                 summary: format!("linked {name_lc}"),
             })
         }
+        Request::Unpark { path } => {
+            // Operates on the request `path` verbatim (not `canonical`): parked
+            // roots are stored as the canonical String produced at park time, so
+            // an exact `remove` is an identity match. Deliberately *not*
+            // canonicalised by the I/O wrapper, so a root deleted from disk is
+            // still removable. Idempotent — absent path is a successful no-op,
+            // mirroring `Park`'s insert.
+            let removed = cfg.parked.paths.remove(path);
+            Ok(Applied {
+                summary: if removed {
+                    format!("un-parked {path}")
+                } else {
+                    format!("{path} was not parked")
+                },
+            })
+        }
         Request::Unlink { name } => {
             let name_lc = name.to_ascii_lowercase();
             if cfg.linked.iter().any(|s| s.name() == name_lc) {
@@ -116,14 +142,15 @@ pub fn apply(
                     summary: format!("{name_lc} now uses PHP {version}"),
                 })
             } else if let Some(parked) = router.get(&name_lc) {
-                // Promote the parked site to a linked entry that captures its
-                // discovered document_root, so the override persists and wins
-                // over the parked directory on the next scan.
-                let site = Site::linked(&name_lc, parked.document_root().to_path_buf(), *version)
-                    .map_err(|e| MutateError::Invalid(format!("invalid site name: {e}")))?;
-                cfg.linked.push(site);
+                // Parked site: record the override keyed by its document_root,
+                // leaving it parked. `scan_sites` re-applies the override on the
+                // next build, so it survives without flipping the site to linked.
+                // `.entry().or_default()` (never `.insert()`) preserves a
+                // co-existing `secure` override on the same path.
+                let key = override_key(parked);
+                cfg.overrides.entry(key).or_default().php = Some(*version);
                 Ok(Applied {
-                    summary: format!("{name_lc} now uses PHP {version} (linked)"),
+                    summary: format!("{name_lc} now uses PHP {version}"),
                 })
             } else {
                 Err(MutateError::NotFound(format!("no site named {name_lc}")))
@@ -137,17 +164,12 @@ pub fn apply(
                     summary: format!("{name_lc} secure={secure}"),
                 })
             } else if let Some(parked) = router.get(&name_lc) {
-                // Promote the parked site to a linked entry capturing its
-                // discovered document_root and current PHP version, so the
-                // secure override persists and wins over the parked directory
-                // on the next scan — same promotion `SetPhp` performs.
-                let mut site =
-                    Site::linked(&name_lc, parked.document_root().to_path_buf(), parked.php())
-                        .map_err(|e| MutateError::Invalid(format!("invalid site name: {e}")))?;
-                site.set_secure(*secure);
-                cfg.linked.push(site);
+                // Parked site: record the override keyed by its document_root
+                // (same as `SetPhp`), preserving a co-existing `php` override.
+                let key = override_key(parked);
+                cfg.overrides.entry(key).or_default().secure = Some(*secure);
                 Ok(Applied {
-                    summary: format!("{name_lc} secure={secure} (linked)"),
+                    summary: format!("{name_lc} secure={secure}"),
                 })
             } else {
                 Err(MutateError::NotFound(format!("no site named {name_lc}")))
@@ -179,7 +201,7 @@ pub fn error_code(e: &MutateError) -> ErrorCode {
 mod tests {
     use super::*;
     use std::path::Path;
-    use yerd_core::{RouterConfig, SiteKind, Tld};
+    use yerd_core::{RouterConfig, Tld};
 
     fn v(major: u8, minor: u8) -> PhpVersion {
         PhpVersion::new(major, minor)
@@ -223,6 +245,42 @@ mod tests {
         )
         .unwrap();
         assert!(a2.summary.starts_with("already parked"));
+        assert_eq!(cfg.parked.paths.len(), 1);
+    }
+
+    #[test]
+    fn unpark_removes_path_and_is_idempotent() {
+        let mut cfg = Config::default();
+        let r = empty_router();
+        cfg.parked.paths.insert("/srv/sites".to_string());
+        cfg.parked.paths.insert("/srv/other".to_string());
+
+        let a = apply(
+            &mut cfg,
+            &r,
+            &Request::Unpark {
+                path: "/srv/sites".into(),
+            },
+            None,
+            v(8, 3),
+        )
+        .unwrap();
+        assert!(a.summary.starts_with("un-parked"));
+        assert!(!cfg.parked.paths.contains("/srv/sites"));
+        assert!(cfg.parked.paths.contains("/srv/other"));
+
+        // Removing an absent path is a successful no-op.
+        let a2 = apply(
+            &mut cfg,
+            &r,
+            &Request::Unpark {
+                path: "/srv/sites".into(),
+            },
+            None,
+            v(8, 3),
+        )
+        .unwrap();
+        assert!(a2.summary.contains("was not parked"));
         assert_eq!(cfg.parked.paths.len(), 1);
     }
 
@@ -334,7 +392,7 @@ mod tests {
     }
 
     #[test]
-    fn setphp_promotes_parked_to_linked() {
+    fn setphp_records_override_keeping_parked() {
         let mut cfg = Config::default();
         let r = router_with_parked("blog", "/srv/blog");
         let a = apply(
@@ -348,12 +406,46 @@ mod tests {
             v(8, 3),
         )
         .unwrap();
-        assert!(a.summary.contains("linked"));
-        assert_eq!(cfg.linked.len(), 1);
-        assert_eq!(cfg.linked[0].name(), "blog");
-        assert_eq!(cfg.linked[0].php(), v(8, 4));
-        assert_eq!(cfg.linked[0].document_root(), Path::new("/srv/blog"));
-        assert_eq!(cfg.linked[0].kind(), SiteKind::Linked);
+        // No promotion: the site stays parked, the override is recorded.
+        assert!(!a.summary.contains("linked"));
+        assert!(cfg.linked.is_empty());
+        let ov = cfg.overrides.get("/srv/blog").expect("override stored");
+        assert_eq!(ov.php, Some(v(8, 4)));
+        assert_eq!(ov.secure, None);
+    }
+
+    #[test]
+    fn upsert_merges_php_and_secure() {
+        // Setting php then secure on the same parked site yields ONE override
+        // carrying both — the second mutation must not clobber the first.
+        let mut cfg = Config::default();
+        let r = router_with_parked("blog", "/srv/blog");
+        apply(
+            &mut cfg,
+            &r,
+            &Request::SetPhp {
+                name: "blog".into(),
+                version: v(8, 4),
+            },
+            None,
+            v(8, 3),
+        )
+        .unwrap();
+        apply(
+            &mut cfg,
+            &r,
+            &Request::SetSecure {
+                name: "blog".into(),
+                secure: true,
+            },
+            None,
+            v(8, 3),
+        )
+        .unwrap();
+        assert_eq!(cfg.overrides.len(), 1);
+        let ov = cfg.overrides.get("/srv/blog").unwrap();
+        assert_eq!(ov.php, Some(v(8, 4)));
+        assert_eq!(ov.secure, Some(true));
     }
 
     #[test]
@@ -412,9 +504,8 @@ mod tests {
     }
 
     #[test]
-    fn setsecure_promotes_parked_to_linked_preserving_php() {
+    fn setsecure_records_override_keeping_parked() {
         let mut cfg = Config::default();
-        // `router_with_parked` stores the parked site at PHP 8.3.
         let r = router_with_parked("blog", "/srv/blog");
         let a = apply(
             &mut cfg,
@@ -424,17 +515,34 @@ mod tests {
                 secure: true,
             },
             None,
-            // A different default must NOT leak in — the parked PHP wins.
             v(8, 4),
         )
         .unwrap();
-        assert!(a.summary.contains("linked"));
-        assert_eq!(cfg.linked.len(), 1);
-        assert_eq!(cfg.linked[0].name(), "blog");
-        assert!(cfg.linked[0].secure());
-        assert_eq!(cfg.linked[0].php(), v(8, 3));
-        assert_eq!(cfg.linked[0].document_root(), Path::new("/srv/blog"));
-        assert_eq!(cfg.linked[0].kind(), SiteKind::Linked);
+        // No promotion: stays parked, only `secure` pinned (php inherits).
+        assert!(!a.summary.contains("linked"));
+        assert!(cfg.linked.is_empty());
+        let ov = cfg.overrides.get("/srv/blog").expect("override stored");
+        assert_eq!(ov.secure, Some(true));
+        assert_eq!(ov.php, None);
+    }
+
+    #[test]
+    fn setsecure_false_is_stored_verbatim() {
+        // "Pin explicitly, no pruning": secure=false is stored, not dropped.
+        let mut cfg = Config::default();
+        let r = router_with_parked("blog", "/srv/blog");
+        apply(
+            &mut cfg,
+            &r,
+            &Request::SetSecure {
+                name: "blog".into(),
+                secure: false,
+            },
+            None,
+            v(8, 3),
+        )
+        .unwrap();
+        assert_eq!(cfg.overrides.get("/srv/blog").unwrap().secure, Some(false));
     }
 
     #[test]
@@ -458,7 +566,8 @@ mod tests {
 
     #[test]
     fn mixed_case_name_resolves_lowercased_site() {
-        // `use Blog` must find the stored parked `blog` and promote it.
+        // `use Blog` must find the stored parked `blog` and record its override
+        // (keyed by the parked doc-root), keeping it parked.
         let mut cfg = Config::default();
         let r = router_with_parked("blog", "/srv/blog");
         apply(
@@ -472,7 +581,8 @@ mod tests {
             v(8, 3),
         )
         .unwrap();
-        assert_eq!(cfg.linked[0].name(), "blog");
+        assert!(cfg.linked.is_empty());
+        assert_eq!(cfg.overrides.get("/srv/blog").unwrap().php, Some(v(8, 4)));
 
         // `unlink FOO` must remove the stored linked `foo`.
         cfg.linked

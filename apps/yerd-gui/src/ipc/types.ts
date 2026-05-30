@@ -67,6 +67,8 @@ export interface PhpPoolStatus {
 export interface StatusReport {
   daemon_pid: number;
   uptime_secs: number;
+  /** Daemon process RSS in bytes (covers the in-process proxy + DNS). null = unknown. */
+  daemon_rss_bytes: number | null;
   tld: string;
   http: PortStatus;
   https: PortStatus;
@@ -79,6 +81,10 @@ export interface StatusReport {
   sites: SiteCounts;
   /** Each entry is load × 100 (hundredths); render via formatLoadAvg. */
   load_avg: [number, number, number] | null;
+  /** The daemon's own version (e.g. "2.0.1"). Empty/absent against a daemon
+   *  predating version reporting (the Rust field is `#[serde(default)]`); render
+   *  "unknown" in that case. */
+  daemon_version: string;
 }
 
 export type Severity = "ok" | "warn" | "fail";
@@ -138,6 +144,7 @@ export type Response =
   | { type: "sites"; sites: Site[] }
   | { type: "ok" }
   | { type: "error"; code: ErrorCode; message: string }
+  | { type: "parked"; paths: string[] }
   | {
       type: "info";
       dns_addr: string;
@@ -150,6 +157,7 @@ export type Response =
       installed: PhpVersion[];
       default: PhpVersion;
       updates?: PhpUpdate[];
+      settings?: Record<string, string>;
     }
   | {
       type: "available_php";
@@ -163,6 +171,7 @@ export type Response =
 // Narrowed aliases for the variants the views actually read.
 export type InfoResponse = Extract<Response, { type: "info" }>;
 export type SitesResponse = Extract<Response, { type: "sites" }>;
+export type ParkedResponse = Extract<Response, { type: "parked" }>;
 export type PhpVersionsResponse = Extract<Response, { type: "php_versions" }>;
 export type AvailablePhpResponse = Extract<Response, { type: "available_php" }>;
 export type StatusResponse = Extract<Response, { type: "status" }>;

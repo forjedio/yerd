@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { onMounted, ref } from "vue";
 import { getVersion } from "@tauri-apps/api/app";
-import { Copy, FolderOpen } from "lucide-vue-next";
+import { Copy, FolderOpen, Info, Link, Network } from "lucide-vue-next";
 
 import PageHeader from "@/components/PageHeader.vue";
 import Button from "@/components/ui/Button.vue";
@@ -17,6 +17,7 @@ import {
   openInBrowser,
   openPath,
   protocolVersion,
+  status,
 } from "@/ipc/client";
 import type { InfoResponse } from "@/ipc/types";
 
@@ -25,6 +26,7 @@ const toast = useToast();
 const info = ref<InfoResponse | null>(null);
 const appVersion = ref("");
 const protocol = ref<number | null>(null);
+const daemonVersion = ref("");
 const loading = ref(true);
 
 async function copy(text: string, what: string): Promise<void> {
@@ -43,9 +45,10 @@ onMounted(async () => {
     /* not in a Tauri context (e.g. tests) — leave blank */
   }
   try {
-    const [i, p] = await Promise.all([daemonInfo(), protocolVersion()]);
+    const [i, p, report] = await Promise.all([daemonInfo(), protocolVersion(), status()]);
     info.value = i;
     protocol.value = p;
+    daemonVersion.value = report.daemon_version;
   } catch (e) {
     toast.error("Couldn't load daemon info", (e as IpcError).message);
   } finally {
@@ -60,25 +63,25 @@ onMounted(async () => {
 
     <div class="flex-1 space-y-6 overflow-y-auto p-6">
       <Card>
-        <CardHeader><CardTitle>Yerd</CardTitle></CardHeader>
+        <CardHeader><CardTitle class="flex items-center gap-2"><Info class="size-4" /> Yerd</CardTitle></CardHeader>
         <CardContent class="space-y-2 text-sm">
           <div class="flex justify-between">
             <span class="text-muted-foreground">App version</span>
             <span class="font-mono">{{ appVersion || "—" }}</span>
           </div>
           <div class="flex justify-between">
+            <span class="text-muted-foreground">Daemon version</span>
+            <span class="font-mono">{{ daemonVersion || "unknown" }}</span>
+          </div>
+          <div class="flex justify-between">
             <span class="text-muted-foreground">IPC protocol</span>
             <span class="font-mono">{{ protocol ?? "—" }}</span>
           </div>
-          <p class="pt-2 text-xs text-muted-foreground">
-            The daemon doesn't yet report its own version over IPC — that's a
-            tracked follow-up.
-          </p>
         </CardContent>
       </Card>
 
       <Card>
-        <CardHeader><CardTitle>Local environment</CardTitle></CardHeader>
+        <CardHeader><CardTitle class="flex items-center gap-2"><Network class="size-4" /> Local environment</CardTitle></CardHeader>
         <CardContent>
           <div v-if="loading" class="flex justify-center py-8"><Spinner class="size-5" /></div>
           <div v-else-if="info" class="space-y-3 text-sm">
@@ -121,7 +124,7 @@ onMounted(async () => {
       </Card>
 
       <Card>
-        <CardHeader><CardTitle>Links</CardTitle></CardHeader>
+        <CardHeader><CardTitle class="flex items-center gap-2"><Link class="size-4" /> Links</CardTitle></CardHeader>
         <CardContent class="space-y-2 text-sm">
           <button
             class="block text-primary hover:underline"

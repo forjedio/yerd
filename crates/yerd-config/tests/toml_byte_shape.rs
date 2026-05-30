@@ -11,7 +11,7 @@
 
 use std::collections::BTreeSet;
 
-use yerd_config::Config;
+use yerd_config::{Config, SiteOverride};
 use yerd_core::{PhpVersion, Site, Tld};
 
 fn populated() -> Config {
@@ -25,6 +25,13 @@ fn populated() -> Config {
     let mut site = Site::linked("api", "docroot", PhpVersion::new(8, 3)).unwrap();
     site.set_secure(true);
     c.linked.push(site);
+    c.overrides.insert(
+        "docroot-a/blog".to_string(),
+        SiteOverride {
+            php: Some(PhpVersion::new(8, 4)),
+            secure: Some(true),
+        },
+    );
     c.services.enabled.insert("mysql".to_string());
     c.services.enabled.insert("redis".to_string());
     c
@@ -81,6 +88,48 @@ fn populated_config_uses_double_bracket_linked_form() {
     assert!(
         s.contains("\n[[linked]]\n"),
         "missing `[[linked]]` header in: {s}"
+    );
+}
+
+#[test]
+fn populated_config_uses_double_bracket_override_form() {
+    let s = populated().to_toml().unwrap();
+    assert!(
+        s.contains("\n[[overrides]]\n"),
+        "missing `[[overrides]]` header in: {s}"
+    );
+    // Round-trips back to the same overrides map.
+    let back = Config::from_toml(&s).unwrap();
+    assert_eq!(back.overrides, populated().overrides);
+}
+
+#[test]
+fn empty_overrides_emit_no_table() {
+    // A config with no overrides must not carry any `[[overrides]]` table.
+    let s = Config::default().to_toml().unwrap();
+    assert!(
+        !s.contains("[[overrides]]"),
+        "empty overrides must omit the table; got: {s}"
+    );
+}
+
+#[test]
+fn override_with_only_php_omits_secure_key() {
+    let mut c = Config::default();
+    c.overrides.insert(
+        "/srv/blog".to_string(),
+        SiteOverride {
+            php: Some(PhpVersion::new(8, 4)),
+            secure: None,
+        },
+    );
+    let s = c.to_toml().unwrap();
+    let v: toml::Value = toml::from_str(&s).unwrap();
+    let table = &v.get("overrides").expect("override array")[0];
+    assert!(table.get("php").is_some(), "php should be present: {s}");
+    assert!(
+        table.get("secure").is_none(),
+        "secure should be omitted when None: {s}"
     );
 }
 
@@ -160,6 +209,43 @@ enabled = ["mysql", "redis"]
     let s = parsed.to_toml().unwrap();
     let back = Config::from_toml(&s).unwrap();
     assert_eq!(back, parsed);
+}
+
+#[test]
+fn empty_php_settings_emit_no_subtable() {
+    // A settings-free config must not carry a `[php.settings]` table.
+    let s = Config::default().to_toml().unwrap();
+    assert!(
+        !s.contains("[php.settings]"),
+        "empty settings must omit the table; got: {s}"
+    );
+}
+
+#[test]
+fn populated_php_settings_emit_subtable_after_default_and_round_trip() {
+    let mut c = Config::default();
+    c.php
+        .settings
+        .insert("memory_limit".to_string(), "512M".to_string());
+    c.php
+        .settings
+        .insert("display_errors".to_string(), "On".to_string());
+    let s = c.to_toml().unwrap();
+
+    // The `default` scalar must precede the `[php.settings]` sub-table.
+    let php_at = s.find("\n[php]\n").expect("[php] table present");
+    let settings_at = s.find("[php.settings]").expect("[php.settings] present");
+    assert!(
+        php_at < settings_at,
+        "default scalar must precede [php.settings]; got: {s}"
+    );
+
+    let back = Config::from_toml(&s).unwrap();
+    assert_eq!(back, c);
+    assert_eq!(
+        back.php.settings.get("memory_limit").map(String::as_str),
+        Some("512M")
+    );
 }
 
 #[test]

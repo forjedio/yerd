@@ -3,6 +3,7 @@
 //! Internally tagged on `type`, `snake_case`. Wire-stability assertions
 //! live in `tests/wire_stability.rs`.
 
+use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 
@@ -38,6 +39,12 @@ pub enum Response {
         /// Human-readable error message.
         message: String,
     },
+    /// Reply to [`crate::Request::ListParked`] — the registered parked roots,
+    /// in lexicographic order (the daemon stores them in a `BTreeSet`).
+    Parked {
+        /// Canonical parked root paths.
+        paths: Vec<String>,
+    },
     /// Reply to [`crate::Request::DaemonInfo`] — read-only runtime facts.
     Info {
         /// Address the embedded DNS responder is bound on (`127.0.0.1:<port>`).
@@ -59,6 +66,10 @@ pub enum Response {
         /// update cache). Empty when none / cache cold.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         updates: Vec<PhpUpdate>,
+        /// Global PHP ini settings applied to every version's FPM pool
+        /// (`"memory_limit" -> "512M"`). Empty when none are set.
+        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+        settings: BTreeMap<String, String>,
     },
     /// Reply to [`crate::Request::AvailablePhp`].
     AvailablePhp {
@@ -142,6 +153,7 @@ mod variant_name_pinning {
             Response::Sites { .. } => {}
             Response::Ok => {}
             Response::Error { .. } => {}
+            Response::Parked { .. } => {}
             Response::Info { .. } => {}
             Response::PhpVersions { .. } => {}
             Response::AvailablePhp { .. } => {}
@@ -170,6 +182,9 @@ mod variant_name_pinning {
             code: ErrorCode::Internal,
             message: "x".into(),
         });
+        pin_response(Response::Parked {
+            paths: vec!["/x".into()],
+        });
         pin_response(Response::Info {
             dns_addr: "127.0.0.1:1053".parse().unwrap(),
             tld: "test".into(),
@@ -180,6 +195,7 @@ mod variant_name_pinning {
             installed: vec![PhpVersion::new(8, 5)],
             default: PhpVersion::new(8, 5),
             updates: vec![],
+            settings: BTreeMap::new(),
         });
         pin_response(Response::AvailablePhp {
             available: vec![PhpVersion::new(8, 4), PhpVersion::new(8, 5)],
@@ -189,6 +205,7 @@ mod variant_name_pinning {
             report: Box::new(crate::status::StatusReport {
                 daemon_pid: 1,
                 uptime_secs: 0,
+                daemon_rss_bytes: None,
                 tld: "test".into(),
                 http: crate::status::PortStatus {
                     requested: 80,
@@ -211,6 +228,7 @@ mod variant_name_pinning {
                 php: vec![],
                 sites: crate::status::SiteCounts::default(),
                 load_avg: Some([100, 50, 25]),
+                daemon_version: "9.9.9".into(),
             }),
         });
         pin_response(Response::Diagnoses {
