@@ -19,7 +19,8 @@ use std::path::PathBuf;
 use yerd_ipc::{
     types::{PhpVersion, Site},
     CaStatus, Diagnosis, DiagnosisCode, ErrorCode, FixReport, FixResult, PhpPoolStatus,
-    PoolRunState, PortStatus, Request, Response, Severity, SiteCounts, StatusReport,
+    PoolRunState, PortStatus, Request, Response, ServiceAvailability, ServiceRunState,
+    ServiceStatus, Severity, SiteCounts, StatusReport,
 };
 
 // ---------- Request ----------
@@ -113,6 +114,25 @@ fn request_set_secure_byte_shape() {
     assert_eq!(s, r#"{"type":"set_secure","name":"foo","secure":true}"#);
     let back: Request = serde_json::from_str(&s).unwrap();
     assert_eq!(back, r);
+}
+
+#[test]
+fn request_set_web_root_byte_shape() {
+    let some = Request::SetWebRoot {
+        name: "foo".into(),
+        path: Some("public".into()),
+    };
+    let s = serde_json::to_string(&some).unwrap();
+    assert_eq!(s, r#"{"type":"set_web_root","name":"foo","path":"public"}"#);
+    assert_eq!(serde_json::from_str::<Request>(&s).unwrap(), some);
+
+    let none = Request::SetWebRoot {
+        name: "foo".into(),
+        path: None,
+    };
+    let s = serde_json::to_string(&none).unwrap();
+    assert_eq!(s, r#"{"type":"set_web_root","name":"foo","path":null}"#);
+    assert_eq!(serde_json::from_str::<Request>(&s).unwrap(), none);
 }
 
 #[test]
@@ -308,6 +328,20 @@ fn response_sites_two_byte_shape() {
     };
     let s = serde_json::to_string(&r).unwrap();
     let expected = r#"{"type":"sites","sites":[{"name":"alpha","document_root":"/srv/alpha","php":"8.3","secure":false,"kind":"parked"},{"name":"beta","document_root":"/srv/beta","php":"7.4","secure":true,"kind":"linked"}]}"#;
+    assert_eq!(s, expected);
+    let back: Response = serde_json::from_str(&s).unwrap();
+    assert_eq!(back, r);
+}
+
+#[test]
+fn response_sites_with_web_subpath_byte_shape() {
+    // A site with a non-empty web_subpath emits the key right after
+    // document_root; empty subpaths are omitted (pinned by the tests above).
+    let mut app = Site::linked("app", "/srv/app", PhpVersion::new(8, 3)).unwrap();
+    app.set_web_subpath("public");
+    let r = Response::Sites { sites: vec![app] };
+    let s = serde_json::to_string(&r).unwrap();
+    let expected = r#"{"type":"sites","sites":[{"name":"app","document_root":"/srv/app","web_subpath":"public","php":"8.3","secure":false,"kind":"linked"}]}"#;
     assert_eq!(s, expected);
     let back: Response = serde_json::from_str(&s).unwrap();
     assert_eq!(back, r);
@@ -512,6 +546,8 @@ fn response_status_byte_shape() {
             // `None` + skip_serializing_if → omitted from the wire, so the
             // Linux byte shape is unchanged from before the field existed.
             port_redirect: None,
+            foreign_web_listener: None,
+            resolver_backup: None,
             default_php: PhpVersion::new(8, 5),
             php: vec![PhpPoolStatus {
                 version: PhpVersion::new(8, 5),
@@ -529,6 +565,7 @@ fn response_status_byte_shape() {
             },
             load_avg: Some([100, 50, 25]),
             daemon_version: "2.0.1".into(),
+            services: vec![],
         }),
     };
     let s = serde_json::to_string(&r).unwrap();
@@ -558,6 +595,43 @@ fn status_port_redirect_appears_only_when_some() {
     assert!(!s.contains("port_redirect"), "{s}");
 }
 
+#[test]
+fn status_foreign_web_listener_appears_only_when_some() {
+    // When set, `foreign_web_listener` serializes between `port_redirect` and
+    // `resolver_backup`; when `None` it is omitted entirely (additive wire).
+    let mut report = sample_status_report();
+    report.port_redirect = Some(true);
+    report.foreign_web_listener = Some(true);
+    let s = serde_json::to_string(&report).unwrap();
+    assert!(
+        s.contains(r#""port_redirect":true,"foreign_web_listener":true"#),
+        "{s}"
+    );
+
+    report.foreign_web_listener = None;
+    let s = serde_json::to_string(&report).unwrap();
+    assert!(!s.contains("foreign_web_listener"), "{s}");
+}
+
+#[test]
+fn status_resolver_backup_appears_only_when_some() {
+    // When set (macOS), `resolver_backup` serializes right after
+    // `port_redirect`; when `None` it is omitted entirely.
+    let mut report = sample_status_report();
+    report.port_redirect = Some(true);
+    report.resolver_backup =
+        Some("/Library/Application Support/io.yerd.Yerd/resolver-backups/test-1.conf".to_owned());
+    let s = serde_json::to_string(&report).unwrap();
+    assert!(
+        s.contains(r#""port_redirect":true,"resolver_backup":"/Library"#),
+        "{s}"
+    );
+
+    report.resolver_backup = None;
+    let s = serde_json::to_string(&report).unwrap();
+    assert!(!s.contains("resolver_backup"), "{s}");
+}
+
 /// A minimal healthy report for field-presence assertions.
 fn sample_status_report() -> StatusReport {
     StatusReport {
@@ -583,12 +657,47 @@ fn sample_status_report() -> StatusReport {
         },
         resolver_installed: Some(true),
         port_redirect: None,
+        foreign_web_listener: None,
+        resolver_backup: None,
         default_php: PhpVersion::new(8, 5),
         php: vec![],
         sites: SiteCounts::default(),
         load_avg: None,
         daemon_version: "2.0.1".into(),
+        services: vec![],
     }
+}
+
+#[test]
+fn status_services_appear_only_when_non_empty() {
+    // Empty services → omitted (additive: byte shape unchanged from before the
+    // field existed). Non-empty → appended after `daemon_version`.
+    let mut report = sample_status_report();
+    let s = serde_json::to_string(&report).unwrap();
+    assert!(
+        !s.contains("services"),
+        "empty services must be omitted: {s}"
+    );
+
+    report.services = vec![ServiceStatus {
+        service: "redis".into(),
+        display_name: "Redis (Valkey)".into(),
+        installed_versions: vec!["8".into()],
+        selected_version: Some("8".into()),
+        state: ServiceRunState::Running,
+        pid: Some(42),
+        listen: Some("127.0.0.1:6379".into()),
+        port: 6379,
+        enabled: true,
+        supports_databases: false,
+    }];
+    let s = serde_json::to_string(&report).unwrap();
+    assert!(
+        s.contains(r#""daemon_version":"2.0.1","services":[{"service":"redis""#),
+        "{s}"
+    );
+    let back: StatusReport = serde_json::from_str(&s).unwrap();
+    assert_eq!(back, report);
 }
 
 #[test]
@@ -665,6 +774,10 @@ fn diagnosis_code_each_variant_byte_shape() {
     let cases: &[(DiagnosisCode, &str)] = &[
         (DiagnosisCode::DaemonDown, r#""daemon_down""#),
         (DiagnosisCode::PortFallback, r#""port_fallback""#),
+        (
+            DiagnosisCode::ForeignWebListener,
+            r#""foreign_web_listener""#,
+        ),
         (DiagnosisCode::CaNotTrusted, r#""ca_not_trusted""#),
         (
             DiagnosisCode::ResolverNotInstalled,
@@ -681,6 +794,11 @@ fn diagnosis_code_each_variant_byte_shape() {
             r#""php_update_available""#,
         ),
         (DiagnosisCode::NoSites, r#""no_sites""#),
+        (
+            DiagnosisCode::ResolverBackupSaved,
+            r#""resolver_backup_saved""#,
+        ),
+        (DiagnosisCode::ServiceFailed, r#""service_failed""#),
         (DiagnosisCode::AllGood, r#""all_good""#),
     ];
     for (code, expected) in cases {
@@ -696,6 +814,7 @@ fn error_code_each_variant_byte_shape() {
         (ErrorCode::NotFound, r#""not_found""#),
         (ErrorCode::AlreadyExists, r#""already_exists""#),
         (ErrorCode::InvalidPath, r#""invalid_path""#),
+        (ErrorCode::PortInUse, r#""port_in_use""#),
         (ErrorCode::Internal, r#""internal""#),
     ];
     for (code, expected) in cases {
@@ -703,5 +822,193 @@ fn error_code_each_variant_byte_shape() {
         assert_eq!(&s, expected, "code = {code:?}");
         let back: ErrorCode = serde_json::from_str(&s).unwrap();
         assert_eq!(back, *code);
+    }
+}
+
+// ---------- Services (request + response) ----------
+
+#[test]
+fn request_list_services_byte_shape() {
+    let s = serde_json::to_string(&Request::ListServices).unwrap();
+    assert_eq!(s, r#"{"type":"list_services"}"#);
+    assert_eq!(
+        serde_json::from_str::<Request>(&s).unwrap(),
+        Request::ListServices
+    );
+}
+
+#[test]
+fn request_available_services_byte_shape() {
+    let s = serde_json::to_string(&Request::AvailableServices).unwrap();
+    assert_eq!(s, r#"{"type":"available_services"}"#);
+    assert_eq!(
+        serde_json::from_str::<Request>(&s).unwrap(),
+        Request::AvailableServices
+    );
+}
+
+#[test]
+fn request_install_service_byte_shape() {
+    let r = Request::InstallService {
+        service: "redis".into(),
+        version: "8".into(),
+    };
+    let s = serde_json::to_string(&r).unwrap();
+    assert_eq!(
+        s,
+        r#"{"type":"install_service","service":"redis","version":"8"}"#
+    );
+    assert_eq!(serde_json::from_str::<Request>(&s).unwrap(), r);
+}
+
+#[test]
+fn request_uninstall_service_byte_shape() {
+    let r = Request::UninstallService {
+        service: "redis".into(),
+        version: "8".into(),
+        purge: true,
+    };
+    let s = serde_json::to_string(&r).unwrap();
+    assert_eq!(
+        s,
+        r#"{"type":"uninstall_service","service":"redis","version":"8","purge":true}"#
+    );
+    assert_eq!(serde_json::from_str::<Request>(&s).unwrap(), r);
+}
+
+#[test]
+fn request_start_stop_restart_service_byte_shape() {
+    let start = Request::StartService {
+        service: "redis".into(),
+    };
+    assert_eq!(
+        serde_json::to_string(&start).unwrap(),
+        r#"{"type":"start_service","service":"redis"}"#
+    );
+    let stop = Request::StopService {
+        service: "redis".into(),
+    };
+    assert_eq!(
+        serde_json::to_string(&stop).unwrap(),
+        r#"{"type":"stop_service","service":"redis"}"#
+    );
+    let restart = Request::RestartService {
+        service: "redis".into(),
+    };
+    assert_eq!(
+        serde_json::to_string(&restart).unwrap(),
+        r#"{"type":"restart_service","service":"redis"}"#
+    );
+    for r in [start, stop, restart] {
+        let s = serde_json::to_string(&r).unwrap();
+        assert_eq!(serde_json::from_str::<Request>(&s).unwrap(), r);
+    }
+}
+
+#[test]
+fn request_set_service_port_byte_shape() {
+    let r = Request::SetServicePort {
+        service: "redis".into(),
+        port: 6380,
+    };
+    let s = serde_json::to_string(&r).unwrap();
+    assert_eq!(
+        s,
+        r#"{"type":"set_service_port","service":"redis","port":6380}"#
+    );
+    assert_eq!(serde_json::from_str::<Request>(&s).unwrap(), r);
+}
+
+#[test]
+fn request_service_logs_byte_shape() {
+    let r = Request::ServiceLogs {
+        service: "redis".into(),
+        lines: 100,
+    };
+    let s = serde_json::to_string(&r).unwrap();
+    assert_eq!(
+        s,
+        r#"{"type":"service_logs","service":"redis","lines":100}"#
+    );
+    assert_eq!(serde_json::from_str::<Request>(&s).unwrap(), r);
+}
+
+#[test]
+fn request_create_database_byte_shape() {
+    let r = Request::CreateDatabase {
+        service: "mysql".into(),
+        name: "app".into(),
+    };
+    let s = serde_json::to_string(&r).unwrap();
+    assert_eq!(
+        s,
+        r#"{"type":"create_database","service":"mysql","name":"app"}"#
+    );
+    assert_eq!(serde_json::from_str::<Request>(&s).unwrap(), r);
+}
+
+#[test]
+fn response_services_byte_shape() {
+    let r = Response::Services {
+        services: vec![ServiceStatus {
+            service: "redis".into(),
+            display_name: "Redis (Valkey)".into(),
+            installed_versions: vec!["8".into()],
+            selected_version: Some("8".into()),
+            state: ServiceRunState::Running,
+            pid: Some(42),
+            listen: Some("127.0.0.1:6379".into()),
+            port: 6379,
+            enabled: true,
+            supports_databases: false,
+        }],
+    };
+    let s = serde_json::to_string(&r).unwrap();
+    let expected = r#"{"type":"services","services":[{"service":"redis","display_name":"Redis (Valkey)","installed_versions":["8"],"selected_version":"8","state":"running","pid":42,"listen":"127.0.0.1:6379","port":6379,"enabled":true,"supports_databases":false}]}"#;
+    assert_eq!(s, expected);
+    assert_eq!(serde_json::from_str::<Response>(&s).unwrap(), r);
+}
+
+#[test]
+fn response_services_empty_byte_shape() {
+    let r = Response::Services { services: vec![] };
+    let s = serde_json::to_string(&r).unwrap();
+    assert_eq!(s, r#"{"type":"services","services":[]}"#);
+    assert_eq!(serde_json::from_str::<Response>(&s).unwrap(), r);
+}
+
+#[test]
+fn response_available_services_byte_shape() {
+    let r = Response::AvailableServices {
+        services: vec![ServiceAvailability {
+            service: "redis".into(),
+            available: vec!["7".into(), "8".into()],
+            installed: vec!["8".into()],
+        }],
+    };
+    let s = serde_json::to_string(&r).unwrap();
+    let expected = r#"{"type":"available_services","services":[{"service":"redis","available":["7","8"],"installed":["8"]}]}"#;
+    assert_eq!(s, expected);
+    assert_eq!(serde_json::from_str::<Response>(&s).unwrap(), r);
+}
+
+#[test]
+fn response_service_logs_byte_shape() {
+    let r = Response::ServiceLogs {
+        lines: vec!["starting".into(), "ready".into()],
+    };
+    let s = serde_json::to_string(&r).unwrap();
+    assert_eq!(s, r#"{"type":"service_logs","lines":["starting","ready"]}"#);
+    assert_eq!(serde_json::from_str::<Response>(&s).unwrap(), r);
+}
+
+#[test]
+fn service_run_state_each_variant_byte_shape() {
+    for (st, expected) in [
+        (ServiceRunState::Running, r#""running""#),
+        (ServiceRunState::Stopped, r#""stopped""#),
+        (ServiceRunState::Failed, r#""failed""#),
+    ] {
+        assert_eq!(serde_json::to_string(&st).unwrap(), expected);
     }
 }

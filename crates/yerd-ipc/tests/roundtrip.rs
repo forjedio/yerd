@@ -146,6 +146,8 @@ fn encode_then_decode_response_roundtrip() {
             },
             resolver_installed: Some(false),
             port_redirect: Some(true),
+            foreign_web_listener: Some(true),
+            resolver_backup: None,
             default_php: PhpVersion::new(8, 5),
             php: vec![PhpPoolStatus {
                 version: PhpVersion::new(8, 5),
@@ -163,6 +165,7 @@ fn encode_then_decode_response_roundtrip() {
             },
             load_avg: None,
             daemon_version: "2.0.1".into(),
+            services: vec![],
         }),
     });
     assert_response_roundtrips(Response::Diagnoses {

@@ -42,7 +42,7 @@ use crate::io::atomic_write;
 use crate::listen::{AllocatedListen, Listen};
 use crate::pool::PoolConfig;
 use crate::pure::supervisor::{
-    transition, Action, Elapsed, ErrorTag, Event, KillSignal, PoolState, STOP_GRACE,
+    transition, Action, Elapsed, ErrorTag, Event, KillSignal, PoolState, SupervisorPolicy,
 };
 use crate::pure::{env_scrub, fpm_conf};
 use crate::traits::{ChildHandle, Clock, HealthProbe, ProcessSpawner};
@@ -123,6 +123,9 @@ where
     binaries: BTreeMap<PhpVersion, PathBuf>,
     ini_settings: Vec<(String, String)>,
     instance_id: u32,
+    /// Timing/restart policy fed to the pure state machine. FPM pools use the
+    /// fast-start / cheap-retry profile.
+    policy: SupervisorPolicy,
 }
 
 impl<S, C, P> PhpManager<S, C, P>
@@ -156,6 +159,7 @@ where
             binaries,
             ini_settings: Vec::new(),
             instance_id,
+            policy: SupervisorPolicy::fpm(),
         }
     }
 
@@ -407,7 +411,7 @@ where
     ) -> Result<DriveResult<S::Child>, PhpError> {
         let mut pending = initial;
         loop {
-            let (next, action) = transition(state, pending);
+            let (next, action) = transition(state, pending, &self.policy);
             if next != state {
                 state = next;
                 state_since = self.clock.now();
@@ -529,7 +533,9 @@ where
                             .await
                             .map_err(|source| PhpError::Kill { version: v, source })?;
                     }
-                    pending = wait_after_kill(&mut child, state, signal, v).await?;
+                    pending =
+                        wait_after_kill(&mut child, state, signal, v, self.policy.stop_grace)
+                            .await?;
                 }
 
                 Action::EmitError(ErrorTag::HealthCheckTimedOut) => {
@@ -554,6 +560,7 @@ async fn wait_after_kill<Ch: ChildHandle>(
     state: PoolState,
     signal: KillSignal,
     v: PhpVersion,
+    stop_grace: std::time::Duration,
 ) -> Result<Event, PhpError> {
     match (state, signal) {
         (PoolState::Stopping { sigkilled: false }, KillSignal::Term) => {
@@ -569,12 +576,12 @@ async fn wait_after_kill<Ch: ChildHandle>(
                     })?;
                     Event::StopComplete
                 }
-                () = tokio::time::sleep(STOP_GRACE) => {
+                () = tokio::time::sleep(stop_grace) => {
                     // Child still alive — put it back so the next iteration
                     // can SIGKILL it.
                     *child = Some(owned);
                     return Ok(Event::StopTick {
-                        elapsed_since_stopping: Elapsed(STOP_GRACE),
+                        elapsed_since_stopping: Elapsed(stop_grace),
                     });
                 }
             };

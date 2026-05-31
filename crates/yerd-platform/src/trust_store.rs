@@ -4,7 +4,7 @@
 //! Phase 1; the per-user NSS install is a separately-callable method
 //! whose partial-success story is captured by [`NssOutcome`].
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::PlatformError;
 
@@ -115,6 +115,25 @@ pub trait TrustStore {
     /// `security-framework`. Linux: iterates the anchor directory
     /// configured for the running distro and hashes each PEM's DER body.
     fn is_present_system(&self, fp: &CaFingerprint) -> Result<bool, PlatformError>;
+
+    /// Report whether the CA at `ca_path` is **effectively trusted** for
+    /// SSL — not merely present. Read-only, unprivileged.
+    ///
+    /// macOS: runs `security verify-cert -c <ca_path> -p ssl`, which
+    /// evaluates the user, admin, and system trust domains (presence
+    /// without a trust setting reads as *not* trusted). Linux: presence in
+    /// an anchor directory *is* system trust, so this delegates to
+    /// [`Self::is_present_system`].
+    ///
+    /// This method has a default `Unsupported` body so non-macOS/Linux
+    /// impls (and test fakes) need not override it — the only deliberate
+    /// defaulted method on this trait.
+    fn is_trusted(&self, ca_path: &Path, fp: &CaFingerprint) -> Result<bool, PlatformError> {
+        let _ = (ca_path, fp);
+        Err(PlatformError::Unsupported {
+            operation: crate::error::ops::IS_TRUSTED,
+        })
+    }
 
     /// Install `ca_pem` into every discovered NSS database (Firefox
     /// profiles + `~/.pki/nssdb`).

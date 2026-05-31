@@ -186,6 +186,35 @@ mod tests {
     }
 
     #[test]
+    fn web_root_subdir_drives_script_filename_and_document_root() {
+        // A site with web_subpath = "public" serves from <root>/public: the
+        // daemon passes Site::served_root() here, and DOCUMENT_ROOT /
+        // SCRIPT_FILENAME follow it.
+        let mut site =
+            yerd_core::Site::linked("app", "/srv/www/app", yerd_core::PhpVersion::new(8, 3))
+                .unwrap();
+        site.set_web_subpath("public");
+        let served = site.served_root();
+        let pairs = build_params(
+            "GET",
+            "/login",
+            &make_headers("app.test"),
+            &served,
+            false,
+            "127.0.0.1:1".parse().unwrap(),
+            "127.0.0.1:80".parse().unwrap(),
+        );
+        assert_eq!(
+            lookup(&pairs, b"DOCUMENT_ROOT"),
+            Some("/srv/www/app/public".as_bytes())
+        );
+        assert_eq!(
+            lookup(&pairs, b"SCRIPT_FILENAME"),
+            Some("/srv/www/app/public/index.php".as_bytes())
+        );
+    }
+
+    #[test]
     fn https_param_is_on_when_secure() {
         let pairs = build_params(
             "POST",

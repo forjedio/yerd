@@ -9,12 +9,14 @@ description            = "OS abstraction layer for Yerd (paths, trust store, res
 readme                 = "README.md"
 
 [dependencies]
+yerd-core   = { path = "../yerd-core" }
 yerd-tls    = { path = "../yerd-tls" }
 thiserror   = { workspace = true }
 directories = { workspace = true }
 sha2        = { workspace = true }
 hex         = { workspace = true }
 pem         = { workspace = true }
+serde_json  = { workspace = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 security-framework = { workspace = true }

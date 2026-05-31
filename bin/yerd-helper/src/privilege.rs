@@ -9,6 +9,7 @@
 //! Neither path uses `unsafe` FFI to `geteuid`, which is forbidden by
 //! the workspace `unsafe_code = "forbid"` lint.
 
+#[cfg(target_os = "linux")]
 use std::fs;
 
 /// True iff the helper's effective UID is 0.

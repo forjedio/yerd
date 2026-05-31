@@ -36,7 +36,9 @@ pub fn require_existing_file(path: &Path) -> Result<(), HelperError> {
 
 /// `setcap` is only useful against the `yerdd` binary; refusing other
 /// basenames here bounds the blast radius if the daemon is ever tricked
-/// into asking for setcap on an arbitrary binary.
+/// into asking for setcap on an arbitrary binary. Linux-only: `setcap`, its
+/// sole caller, is unsupported on macOS/Windows.
+#[cfg(target_os = "linux")]
 pub fn require_basename_yerdd(path: &Path) -> Result<(), HelperError> {
     let basename = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
     if basename != "yerdd" {
@@ -152,11 +154,13 @@ mod tests {
         assert!(require_existing_file(&p).is_ok());
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn require_basename_yerdd_accepts() {
         assert!(require_basename_yerdd(Path::new("/usr/bin/yerdd")).is_ok());
     }
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn require_basename_yerdd_rejects_other() {
         let err = require_basename_yerdd(Path::new("/usr/bin/zerdd")).unwrap_err();

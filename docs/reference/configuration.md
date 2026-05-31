@@ -1,0 +1,303 @@
+# Configuration Reference
+
+Yerd stores all of its persistent state in a single TOML file: `yerd.toml`. This page documents where that file lives, every field in the schema, the defaults, how schema versioning and migration work, and how saves stay safe. Everything here is grounded in the [`yerd-config`](../developer/crates/yerd-config) crate.
+
+::: tip You rarely edit this by hand
+The daemon (`yerdd`) owns `yerd.toml`. Day to day you change it through the [CLI](./cli/) or the [desktop app](../guide/desktop-app), and the daemon rewrites the file atomically. Hand-editing works too - Yerd parses and re-validates the file on every load - but the CLI is the safer path.
+:::
+
+## Where the config file lives
+
+The file is always named `yerd.toml` and sits in your per-OS, user-owned config directory:
+
+| OS    | Config directory                          | Full path                                              |
+| ----- | ----------------------------------------- | ------------------------------------------------------ |
+| macOS | `~/Library/Application Support/io.yerd.Yerd` | `~/Library/Application Support/io.yerd.Yerd/yerd.toml` |
+| Linux | `$XDG_CONFIG_HOME/yerd` (default `~/.config/yerd`) | `~/.config/yerd/yerd.toml`                       |
+
+These paths come from [`yerd-platform`](../developer/crates/yerd-platform)'s directory resolver, which uses the `directories` crate with the qualifier `io` / `yerd` / `Yerd`. The directory is created on demand the first time the daemon saves; it is not guaranteed to exist before then.
+
+The daemon resolves the path once at startup and falls back to `<config dir>/yerd.toml` unless an explicit path was passed on the `yerdd serve` command line. If the file is absent, the daemon starts from the built-in defaults and writes the file on the first change.
+
+::: info Config vs. data vs. runtime
+`yerd.toml` is the only file in the *config* directory. Certificates live in the *data* directory, logs in the *cache* directory, and the IPC socket in the *runtime* directory. See [Architecture](../developer/architecture) and [The Daemon](../guide/daemon) for the full layout.
+:::
+
+## Top-level schema
+
+Every field below maps one-to-one to a field in `schema.rs`. The on-disk shape always begins with the `version` line, followed by the scalar keys, then the sub-tables.
+
+| Key         | TOML type            | Meaning                                                            | Default        |
+| ----------- | -------------------- | ----------------------------------------------------------------- | -------------- |
+| `version`   | integer              | On-disk schema version. **Mandatory.**                            | `2`            |
+| `tld`       | string               | TLD served by Yerd's resolver.                                    | `"test"`       |
+| `dns_port`  | integer (u16)        | Loopback port for the embedded `.test` DNS responder.             | `1053`         |
+| `ports`     | table                | HTTP / HTTPS listen ports.                                        | `80` / `443`   |
+| `php`       | table                | PHP defaults and global ini settings.                             | see below      |
+| `parked`    | table                | Parked directory paths.                                           | empty          |
+| `linked`    | array of tables      | Explicitly linked sites.                                          | empty          |
+| `overrides` | array of tables      | Per-site overrides for **parked** sites.                          | empty          |
+| `services`  | table                | Optional services the daemon auto-starts.                         | empty          |
+
+::: warning Unknown keys are rejected
+The parser uses `deny_unknown_fields` at every level. A typo'd or stray key (top-level, or inside `[ports]`, `[php]`, `[parked]`, `[services]`, a `[[linked]]` entry, or an `[[overrides]]` entry) is a hard parse error - the daemon will refuse to load the file rather than silently ignore it.
+:::
+
+### `version`
+
+The schema version. This key is **required** - a missing `version` is a hard error (`MissingVersion`), and a non-integer or negative value is rejected (`NonIntegerVersion`). The current schema version is `2`, and Yerd always writes `version = 2`. Older `version = 1` files are migrated forward automatically on load. See [Schema versioning](#schema-versioning-and-migration) below.
+
+### `tld`
+
+The top-level domain Yerd's resolver answers for, without a leading dot. The default is `test`, giving you `myapp.test`. The value is validated by `yerd-core`: whitespace is rejected, and a trailing dot is silently stripped (`"test."` becomes `"test"`). See [DNS & .test Domains](../guide/dns).
+
+### `dns_port`
+
+The loopback UDP/TCP port the embedded `.test` DNS responder binds to. The default is `1053`. A fixed (non-ephemeral) port keeps the resolver configuration installed by `yerd elevate resolver` valid across daemon restarts. A value of `0` means "ephemeral" and is intended for development and tests only - it is not durable across restarts.
+
+::: tip Port already in use?
+If another process holds `dns_port`, the daemon fails to bind and tells you to change `dns_port` in `yerd.toml` or free the port.
+:::
+
+### `[ports]`
+
+The HTTP and HTTPS listen ports for the proxy.
+
+| Key     | TOML type     | Meaning             | Default |
+| ------- | ------------- | ------------------- | ------- |
+| `http`  | integer (u16) | HTTP listen port.   | `80`    |
+| `https` | integer (u16) | HTTPS listen port.  | `443`   |
+
+The default is the IANA well-known pair `80 / 443`. Binding these privileged ports may require elevation on macOS and Linux - see [Elevation & Privileges](../guide/elevation). If you would rather avoid elevation, switch to the unprivileged fallback pair `8080 / 8443`:
+
+```toml
+[ports]
+http = 8080
+https = 8443
+```
+
+Validation rules (enforced by `Config::validate`): neither port may be `0`, and `http` and `https` must differ. Violations produce `HttpPortZero`, `HttpsPortZero`, or `HttpHttpsPortsEqual`.
+
+### `[php]`
+
+PHP defaults applied across sites.
+
+| Key        | TOML type | Meaning                                                      | Default |
+| ---------- | --------- | ------------------------------------------------------------ | ------- |
+| `default`  | string    | Default PHP version for new sites (e.g. `"8.3"`).            | `"8.3"` |
+| `settings` | table     | Global PHP ini directives applied to every installed version's FPM pool. | empty   |
+
+`default` is a `MAJOR.MINOR` version string validated by `yerd-core`'s `PhpVersion`; an out-of-range minor or a non-numeric value is rejected. See [PHP Versions](../guide/php-versions).
+
+`[php.settings]` is a string-to-string map of PHP ini directives written into **every** installed version's FPM pool. An empty map means "use PHP's defaults" and the table is omitted from the file entirely. Only an allowlisted set of directives is accepted, and every value is validated as a security boundary (no control characters, none of the FPM/ini metacharacters `[ ] = ; #`, length ≤ 256 bytes). The supported directives are:
+
+| Directive             | Value shape                                                   |
+| --------------------- | ------------------------------------------------------------- |
+| `memory_limit`        | byte size (`512M`); also accepts `-1` for unlimited           |
+| `max_execution_time`  | non-negative integer                                          |
+| `max_input_time`      | non-negative integer                                          |
+| `max_file_uploads`    | non-negative integer                                          |
+| `upload_max_filesize` | byte size (`64M`)                                             |
+| `post_max_size`       | byte size (`64M`)                                             |
+| `display_errors`      | boolean flag (`On` / `Off`, rendered as a `php_flag`)         |
+| `error_reporting`     | integer or constant expression (e.g. `E_ALL & ~E_DEPRECATED`) |
+
+```toml
+[php.settings]
+memory_limit = "512M"
+max_execution_time = "300"
+upload_max_filesize = "64M"
+```
+
+::: warning Setting an unsupported directive fails the load
+An unknown directive name or a malformed value makes the whole config invalid (`InvalidPhpSetting`). Stick to the table above.
+:::
+
+### `[parked]`
+
+Directories you have "parked" - every immediate subdirectory becomes a site served under `<dirname>.<tld>`. See [Sites](../guide/sites).
+
+| Key     | TOML type        | Meaning                              | Default |
+| ------- | ---------------- | ------------------------------------ | ------- |
+| `paths` | array of strings | Parked directory paths.              | `[]`    |
+
+Paths are stored **verbatim** as UTF-8 strings and are **not canonicalised** by the config layer - `"/srv/foo"` and `"/srv/foo/"` are distinct entries. They are kept in sorted order with no duplicates. An empty-string path is rejected (`ParkedPathEmpty`).
+
+```toml
+[parked]
+paths = ["/Users/you/Sites", "/Users/you/work"]
+```
+
+### `[[linked]]`
+
+Explicitly registered sites, each as its own array-of-tables entry. Order is preserved on round-trip.
+
+| Key             | TOML type | Meaning                                            |
+| --------------- | --------- | -------------------------------------------------- |
+| `name`          | string    | Site name (the subdomain under your TLD).          |
+| `document_root` | string    | Path to the site's project directory.              |
+| `web_subpath`   | string    | Served web root, relative to `document_root`. Optional. |
+| `php`           | string    | PHP version for this site (e.g. `"8.3"`).          |
+| `secure`        | boolean   | Whether HTTPS is enabled for this site.            |
+| `kind`          | string    | `"linked"` or `"parked"`.                          |
+
+`name`, `document_root`, `php`, `secure`, and `kind` are required per entry. `name`, `php`, and `kind` are validated by `yerd-core`; for example an invalid site name like `"FOO.BAR"` is rejected. Linked site names must be unique - a duplicate produces `DuplicateLinkedSite`.
+
+`web_subpath` is the directory actually served, relative to `document_root` (e.g. `"public"` for Laravel; empty/absent means "serve the document root itself"). It is **optional and omitted from the file when empty**, so a site served from its project root has no `web_subpath` line. It must be a plain relative path - an absolute path or one containing `..` is rejected (`WebRootEscapes`) so a hand-edited value can never escape the project. Yerd normally sets this for you via framework detection; see [Web root](../guide/sites#web-root-the-served-directory).
+
+```toml
+[[linked]]
+name = "api"
+document_root = "/Users/you/projects/api"
+web_subpath = "public"
+php = "8.3"
+secure = true
+kind = "linked"
+```
+
+### `[[overrides]]`
+
+Per-site overrides for **parked** sites, each its own array-of-tables entry. A parked site is otherwise derived purely from a directory listing, so it has nowhere to persist a custom PHP version or HTTPS flag. Rather than promoting it to a linked site (which would change its kind), the daemon records the override here and re-applies it during the directory scan, leaving the site parked.
+
+| Key        | TOML type | Meaning                                                       |
+| ---------- | --------- | ------------------------------------------------------------- |
+| `path`     | string    | The parked site's document-root path. **Required.**          |
+| `php`      | string    | Pinned PHP version. Omit to inherit the global default.       |
+| `secure`   | boolean   | Pinned HTTPS flag. Omit to inherit (off).                     |
+| `web_root` | string    | Pinned web root, relative to `path`. Omit to auto-detect.     |
+
+`php`, `secure`, and `web_root` are all optional - omitting a key means "inherit" (or, for `web_root`, "auto-detect on every scan"). An entry may pin one, several, or (uselessly) none. The serialiser skips omitted keys, so a partial override stays tidy on disk. Like `web_subpath` on a linked site, `web_root` must be a plain relative path inside the project (`WebRootEscapes` otherwise). Setting it is what `yerd root <parked-site> <path>` does.
+
+```toml
+# Pin PHP, HTTPS, and the served web root for one parked site...
+[[overrides]]
+path = "/Users/you/Sites/blog"
+php = "8.4"
+secure = true
+web_root = "public"
+
+# ...and only HTTPS for another (PHP and web root inherit / auto-detect).
+[[overrides]]
+path = "/Users/you/Sites/wiki"
+secure = false
+```
+
+::: warning `path` must match byte-for-byte
+The `path` key is the parked site's document-root string, stored **byte-exact and never canonicalised** - it must match exactly the path the daemon's directory scan produces. Do not canonicalise, trim, or add a trailing slash by hand, or the override won't be applied. An empty `path` is rejected (`OverridePathEmpty`).
+:::
+
+### `[services]`
+
+Optional background services the daemon should auto-start. **This is roadmap surface** - the schema slot exists and is validated, but the services themselves are not yet wired up. See [Services (Roadmap)](../guide/services).
+
+| Key       | TOML type        | Meaning                              | Default |
+| --------- | ---------------- | ------------------------------------ | ------- |
+| `enabled` | array of strings | Service identifiers to auto-start.   | `[]`    |
+
+The recognised identifiers are `mysql`, `mariadb`, `postgres`, and `redis`. An unknown service name fails validation (`UnknownService`).
+
+```toml
+[services]
+enabled = ["mysql", "redis"]
+```
+
+## Schema versioning and migration
+
+Every config file **must** carry a top-level `version = N` key - it is the single trigger for forward migration. The current schema version is `2`.
+
+When the daemon loads a file, it routes on the version it finds:
+
+```
+found  > CURRENT (2)   →  error (UnsupportedVersion) - a newer Yerd wrote this file
+found == CURRENT (2)   →  parse directly
+found  < CURRENT (2)   →  walk forward migration steps, then parse
+```
+
+A file written by a *newer* Yerd than you are running is refused rather than misread. Older files are migrated forward in place, one version at a time, before the normal wire-deserialisation and validation run. The `v1 → v2` step is a bare version bump: v2 only **added** the optional `web_subpath` (`[[linked]]`) and `web_root` (`[[overrides]]`) keys, which default when absent, so a v1 file needs no structural rewrite. The on-disk schema version is deliberately decoupled from the IPC protocol version; the two evolve independently.
+
+::: warning Downgrades are refused, not misread
+Because v2 added keys *inside* the existing `[[linked]]` / `[[overrides]]` tables (which the parser checks strictly), a v1 daemon reading a v2 file that uses them would fail. The version routing turns that into a clean `UnsupportedVersion` error instead - downgrading Yerd against a v2 config is unsupported, but it fails loudly rather than corrupting state.
+:::
+
+::: tip Forward-compatible by design
+The parser tolerates older shapes: a v1 file written before `web_subpath`/`web_root` existed migrates to v2 and parses fine (the new fields default). New optional fields are added additively, so upgrades don't break your existing config.
+:::
+
+## Atomic saves
+
+Saves are atomic. The daemon serialises the config, writes it to a temporary file in the same directory, then `rename`s it over `yerd.toml`. Because the temp file lives on the same filesystem as the destination, the rename is atomic on Unix - a reader never sees a half-written file, and a crash mid-save leaves the previous config intact. On failure the temp file is cleaned up automatically, so no orphan files are left behind.
+
+On Unix the file is created with mode `0600` (owner read/write only): the daemon is the only intended writer. Intermediate parent directories are created as needed.
+
+::: info Durability trade-off
+Yerd does not `fsync` the file or its parent directory after a save. For a developer-only config file the portability cost outweighs the durability gain, so a loss under sudden power loss is accepted by design.
+:::
+
+## A complete annotated example
+
+This is a full, valid `yerd.toml` exercising every field:
+
+```toml
+# Schema version - mandatory, always written as 2 by this release.
+version = 2
+
+# TLD served by the resolver; sites resolve as <name>.test
+tld = "test"
+
+# Loopback port for the embedded .test DNS responder (default 1053).
+dns_port = 1053
+
+# Proxy listen ports. Defaults are 80 / 443 (may need elevation).
+# Swap for the rootless 8080 / 8443 pair to avoid privileged binds.
+[ports]
+http = 80
+https = 443
+
+[php]
+# Default PHP version applied to new sites.
+default = "8.3"
+
+# Global ini directives written into every installed version's FPM pool.
+# Allowlisted directives only; values are validated as a security boundary.
+[php.settings]
+memory_limit = "512M"
+upload_max_filesize = "64M"
+post_max_size = "64M"
+
+# Parked directories: each immediate subdirectory becomes a site.
+# Paths are stored verbatim and are NOT canonicalised.
+[parked]
+paths = ["/Users/you/Sites"]
+
+# Explicitly linked sites (order preserved). web_subpath is optional (the
+# served web root relative to document_root; omitted when the root is served).
+[[linked]]
+name = "api"
+document_root = "/Users/you/projects/api"
+web_subpath = "public"
+php = "8.3"
+secure = true
+kind = "linked"
+
+# Per-site overrides for PARKED sites, keyed by exact document-root path.
+# Omit php / secure / web_root to inherit / auto-detect. `path` must match the
+# scan byte-for-byte.
+[[overrides]]
+path = "/Users/you/Sites/blog"
+php = "8.4"
+secure = true
+web_root = "public"
+
+# Optional services (roadmap). Known: mysql, mariadb, postgres, redis.
+[services]
+enabled = []
+```
+
+## Related pages
+
+- [Sites](../guide/sites) - parking and linking explained
+- [PHP Versions](../guide/php-versions) - managing installed versions and per-site PHP
+- [HTTPS & Certificates](../guide/https) - what `secure` turns on
+- [DNS & .test Domains](../guide/dns) - how `tld` and `dns_port` are used
+- [CLI Reference](./cli/) - the commands that edit this file for you
+- [yerd-config crate](../developer/crates/yerd-config) - the implementation behind this schema

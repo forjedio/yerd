@@ -1,0 +1,62 @@
+name: Docs
+
+# Publish the VitePress documentation site (docs/) to GitHub Pages.
+on:
+  # Auto-publish on a final release tag (matches release.yml's final pattern;
+  # prereleases like v2.0.2-rc.1 do NOT redeploy the live docs).
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+"
+  # Manual refresh from any branch (defaults to main) without cutting a release.
+  workflow_dispatch:
+
+# Least privilege for a Pages deploy via the GitHub Actions source.
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# One live site at a time; never cancel an in-flight deploy.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: build
+    runs-on: ubuntu-22.04
+    defaults:
+      run:
+        working-directory: docs
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: docs/package-lock.json
+
+      - name: Install deps
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - uses: actions/configure-pages@v5
+
+      # path is repo-root relative (defaults.working-directory only affects `run`).
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: docs/.vitepress/dist
+
+  deploy:
+    name: deploy
+    needs: build
+    runs-on: ubuntu-22.04
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

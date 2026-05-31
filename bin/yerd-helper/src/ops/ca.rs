@@ -1,14 +1,21 @@
 //! `install-ca` and `uninstall-ca` for Linux + macOS.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
+#[cfg(target_os = "linux")]
+use std::path::PathBuf;
 
+#[cfg(target_os = "linux")]
 use yerd_platform::pure::pem_match;
 use yerd_platform::CaFingerprint;
 
 #[cfg(target_os = "macos")]
 use crate::error::CommandReason;
-use crate::error::{HelperError, ValidationReason};
-use crate::ops::{atomic_write, run_command};
+use crate::error::HelperError;
+#[cfg(target_os = "linux")]
+use crate::error::ValidationReason;
+#[cfg(target_os = "linux")]
+use crate::ops::atomic_write;
+use crate::ops::run_command;
 use crate::validate;
 
 /// Anchor directories Yerd searches on Linux. Order matches the
@@ -49,6 +56,7 @@ fn pick_anchor_dir() -> Result<PathBuf, HelperError> {
 /// Anchor filename: `yerd-<first-16-hex-of-fp>.crt`. The full
 /// fingerprint is the security boundary; the filename is just a
 /// human-readable, unique-in-practice tag.
+#[cfg(target_os = "linux")]
 fn anchor_filename(fp: &CaFingerprint) -> String {
     let full = hex::encode(fp.as_bytes());
     let short: String = full.chars().take(16).collect();
@@ -77,7 +85,26 @@ pub fn install_ca(pem_path: &Path, fp: &CaFingerprint) -> Result<(), HelperError
 pub fn install_ca(pem_path: &Path, fp: &CaFingerprint) -> Result<(), HelperError> {
     validate::require_existing_file(pem_path)?;
     let _der = validate::require_pem_matches_fingerprint(pem_path, fp)?;
-    // mkcert's approach: -d (admin domain) + -r trustRoot.
+    // `security add-trusted-cert` (mkcert's approach: -d admin domain + -r
+    // trustRoot) writes the certificate *and* its trust setting atomically —
+    // but only when the cert is not already in the keychain. If the cert is
+    // already present it exits non-zero with errSecDuplicateItem and SKIPS the
+    // trust-settings write, leaving the anchor present-but-untrusted (Chrome:
+    // ERR_CERT_AUTHORITY_INVALID) while still appearing installed. So delete any
+    // existing copy first, guaranteeing the add below applies the trust setting.
+    if macos_system_keychain_contains(fp)? {
+        let fp_upper = hex::encode_upper(fp.as_bytes());
+        run_command(
+            "security",
+            "/usr/bin/security",
+            [
+                "delete-certificate",
+                "-Z",
+                &fp_upper,
+                "/Library/Keychains/System.keychain",
+            ],
+        )?;
+    }
     run_command(
         "security",
         "/usr/bin/security",
@@ -141,36 +168,12 @@ pub fn uninstall_ca(fp: &CaFingerprint) -> Result<(), HelperError> {
 
 #[cfg(target_os = "macos")]
 pub fn uninstall_ca(fp: &CaFingerprint) -> Result<(), HelperError> {
-    // Probe first: `security find-certificate -Z -a` lists every cert
-    // in the System keychain with SHA-256 fingerprints. If the
-    // fingerprint is absent there's nothing to do.
-    let probe = run_command(
-        "security",
-        "/usr/bin/security",
-        [
-            "find-certificate",
-            "-Z",
-            "-a",
-            "/Library/Keychains/System.keychain",
-        ],
-    );
-    let fp_upper = hex::encode_upper(fp.as_bytes());
-    let stdout = match probe {
-        Ok(out) => String::from_utf8_lossy(&out.stdout).into_owned(),
-        Err(HelperError::Command {
-            reason: CommandReason::NonZero(_),
-            ..
-        }) => {
-            // `security` returns non-zero when *no* certs match a query;
-            // for "-a" without a filter that's unusual, but treat as
-            // "nothing to remove".
-            return Ok(());
-        }
-        Err(e) => return Err(e),
-    };
-    if !macos_find_certificate_contains(&stdout, &fp_upper) {
+    // Idempotent: if the fingerprint isn't in the System keychain there's
+    // nothing to remove.
+    if !macos_system_keychain_contains(fp)? {
         return Ok(());
     }
+    let fp_upper = hex::encode_upper(fp.as_bytes());
     run_command(
         "security",
         "/usr/bin/security",
@@ -184,6 +187,39 @@ pub fn uninstall_ca(fp: &CaFingerprint) -> Result<(), HelperError> {
     .map(|_| ())
 }
 
+/// Is the CA with fingerprint `fp` present in the System keychain?
+///
+/// Runs `security find-certificate -Z -a` (which lists every cert with its
+/// SHA-256 hash) and matches the fingerprint. `security` exits non-zero when no
+/// certs match the query, which we treat as "absent". This is the shared
+/// presence probe behind both `install_ca`'s benign-duplicate tolerance and
+/// `uninstall_ca`'s idempotency.
+#[cfg(target_os = "macos")]
+fn macos_system_keychain_contains(fp: &CaFingerprint) -> Result<bool, HelperError> {
+    let probe = run_command(
+        "security",
+        "/usr/bin/security",
+        [
+            "find-certificate",
+            "-Z",
+            "-a",
+            "/Library/Keychains/System.keychain",
+        ],
+    );
+    let fp_upper = hex::encode_upper(fp.as_bytes());
+    match probe {
+        Ok(out) => {
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            Ok(macos_find_certificate_contains(&stdout, &fp_upper))
+        }
+        Err(HelperError::Command {
+            reason: CommandReason::NonZero(_),
+            ..
+        }) => Ok(false),
+        Err(e) => Err(e),
+    }
+}
+
 /// Pure: does `find-certificate -Z` stdout contain the uppercase
 /// fingerprint? `security` emits `SHA-256 hash: <64hex>` lines per
 /// certificate.
@@ -193,8 +229,7 @@ pub fn macos_find_certificate_contains(stdout: &str, fp_upper: &str) -> bool {
     stdout.lines().any(|line| {
         line.trim()
             .strip_prefix("SHA-256 hash:")
-            .map(|rest| rest.trim().eq_ignore_ascii_case(fp_upper))
-            .unwrap_or(false)
+            .is_some_and(|rest| rest.trim().eq_ignore_ascii_case(fp_upper))
     })
 }
 
@@ -208,6 +243,7 @@ pub fn macos_find_certificate_contains(stdout: &str, fp_upper: &str) -> bool {
 mod tests {
     use super::*;
 
+    #[cfg(target_os = "linux")]
     #[test]
     fn anchor_filename_uses_first_16_hex() {
         let fp = CaFingerprint::new([0xAB; 32]);

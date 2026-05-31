@@ -5,7 +5,12 @@ import { createRouter, createWebHashHistory } from "vue-router";
 export const router = createRouter({
   history: createWebHashHistory(),
   routes: [
-    { path: "/", redirect: "/php" },
+    { path: "/", redirect: "/general" },
+    {
+      path: "/general",
+      name: "general",
+      component: () => import("@/views/GeneralView.vue"),
+    },
     {
       path: "/php",
       name: "php",
@@ -20,6 +25,11 @@ export const router = createRouter({
       path: "/services",
       name: "services",
       component: () => import("@/views/ServicesView.vue"),
+    },
+    {
+      path: "/doctor",
+      name: "doctor",
+      component: () => import("@/views/DoctorView.vue"),
     },
     {
       path: "/about",

@@ -41,7 +41,8 @@ pub use request::Request;
 pub use response::{ErrorCode, PhpUpdate, Response};
 pub use status::{
     CaStatus, Diagnosis, DiagnosisCode, FixReport, FixResult, PhpPoolStatus, PoolRunState,
-    PortStatus, Severity, SiteCounts, StatusReport,
+    PortStatus, ServiceAvailability, ServiceRunState, ServiceStatus, Severity, SiteCounts,
+    StatusReport,
 };
 
 /// Re-exports of the shared types that travel on the wire. Consumers

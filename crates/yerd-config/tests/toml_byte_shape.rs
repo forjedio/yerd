@@ -11,7 +11,7 @@
 
 use std::collections::BTreeSet;
 
-use yerd_config::{Config, SiteOverride};
+use yerd_config::{Config, ServiceInstance, SiteOverride};
 use yerd_core::{PhpVersion, Site, Tld};
 
 fn populated() -> Config {
@@ -30,10 +30,25 @@ fn populated() -> Config {
         SiteOverride {
             php: Some(PhpVersion::new(8, 4)),
             secure: Some(true),
+            web_root: None,
         },
     );
-    c.services.enabled.insert("mysql".to_string());
-    c.services.enabled.insert("redis".to_string());
+    c.services.instances.insert(
+        "mysql".to_string(),
+        ServiceInstance {
+            version: None,
+            port: None,
+            enabled: true,
+        },
+    );
+    c.services.instances.insert(
+        "redis".to_string(),
+        ServiceInstance {
+            version: Some("8".to_string()),
+            port: Some(6380),
+            enabled: true,
+        },
+    );
     c
 }
 
@@ -41,8 +56,8 @@ fn populated() -> Config {
 fn default_config_starts_with_version_line() {
     let s = Config::default().to_toml().unwrap();
     assert!(
-        s.starts_with("version = 1\n"),
-        "expected first line `version = 1`; got: {s}"
+        s.starts_with("version = 3\n"),
+        "expected first line `version = 3`; got: {s}"
     );
 }
 
@@ -74,12 +89,18 @@ fn dns_port_zero_round_trips() {
 #[test]
 fn default_config_contains_each_section_header() {
     let s = Config::default().to_toml().unwrap();
-    for header in ["\n[ports]\n", "\n[php]\n", "\n[parked]\n", "\n[services]\n"] {
+    // `[services]` is omitted when empty (v3: per-service tables, skipped like
+    // `[[overrides]]` / `[php.settings]`).
+    for header in ["\n[ports]\n", "\n[php]\n", "\n[parked]\n"] {
         assert!(
             s.contains(header),
             "missing section header `{header}` in: {s}"
         );
     }
+    assert!(
+        !s.contains("[services"),
+        "default config must omit the services table; got: {s}"
+    );
 }
 
 #[test]
@@ -121,6 +142,7 @@ fn override_with_only_php_omits_secure_key() {
         SiteOverride {
             php: Some(PhpVersion::new(8, 4)),
             secure: None,
+            web_root: None,
         },
     );
     let s = c.to_toml().unwrap();
@@ -146,35 +168,72 @@ fn parked_paths_emitted_in_lex_order() {
 }
 
 #[test]
-fn services_enabled_emitted_in_lex_order() {
+fn services_tables_emitted_in_lex_order_and_round_trip() {
     let mut c = Config::default();
-    c.services.enabled.insert("redis".to_string());
-    c.services.enabled.insert("mysql".to_string());
+    c.services
+        .instances
+        .insert("redis".to_string(), ServiceInstance::default());
+    c.services
+        .instances
+        .insert("mysql".to_string(), ServiceInstance::default());
     let s = c.to_toml().unwrap();
+    // BTreeMap iteration → `[services.mysql]` is emitted before `[services.redis]`.
+    let mysql_at = s.find("[services.mysql]").expect("mysql table present");
+    let redis_at = s.find("[services.redis]").expect("redis table present");
+    assert!(
+        mysql_at < redis_at,
+        "services tables must be lex-ordered: {s}"
+    );
     let back = Config::from_toml(&s).unwrap();
-    let got: Vec<&String> = back.services.enabled.iter().collect();
-    assert_eq!(got, vec![&"mysql".to_string(), &"redis".to_string()]);
+    assert_eq!(back, c);
 }
 
 #[test]
-fn services_enabled_wire_shape_is_array_of_strings() {
+fn service_instance_wire_shape_is_per_service_table() {
+    // v3: each enabled service is a `[services.<id>]` table carrying `enabled`
+    // (+ optional version/port) — NOT the old `enabled = [...]` array.
     let mut c = Config::default();
-    c.services.enabled.insert("mysql".to_string());
+    c.services.instances.insert(
+        "redis".to_string(),
+        ServiceInstance {
+            version: Some("8".to_string()),
+            port: Some(6380),
+            enabled: true,
+        },
+    );
     let s = c.to_toml().unwrap();
     let v: toml::Value = toml::from_str(&s).unwrap();
-    let enabled = v
+    let redis = v
         .get("services")
-        .and_then(|s| s.get("enabled"))
-        .unwrap_or_else(|| panic!("missing services.enabled in: {s}"));
-    let arr = enabled
-        .as_array()
-        .unwrap_or_else(|| panic!("services.enabled is not an array: {enabled:?}"));
-    for entry in arr {
-        assert!(
-            entry.as_str().is_some(),
-            "expected string entry, got: {entry:?}"
-        );
-    }
+        .and_then(|x| x.get("redis"))
+        .and_then(|x| x.as_table())
+        .unwrap_or_else(|| panic!("missing [services.redis] table in: {s}"));
+    assert_eq!(redis.get("enabled"), Some(&toml::Value::Boolean(true)));
+    assert_eq!(redis.get("version"), Some(&toml::Value::String("8".into())));
+    assert_eq!(redis.get("port"), Some(&toml::Value::Integer(6380)));
+    // An unset value must be omitted (no `version = ""` noise) — inspect the
+    // service's own table, not the whole doc (which carries a top-level
+    // `version = 3` line).
+    let mut c2 = Config::default();
+    c2.services
+        .instances
+        .insert("mysql".to_string(), ServiceInstance::default());
+    let s2 = c2.to_toml().unwrap();
+    let v2: toml::Value = toml::from_str(&s2).unwrap();
+    let mysql = v2
+        .get("services")
+        .and_then(|x| x.get("mysql"))
+        .and_then(|x| x.as_table())
+        .expect("expected [services.mysql] table");
+    assert!(
+        mysql.get("version").is_none(),
+        "unset version must be omitted: {s2}"
+    );
+    assert!(
+        mysql.get("port").is_none(),
+        "unset port must be omitted: {s2}"
+    );
+    assert_eq!(mysql.get("enabled"), Some(&toml::Value::Boolean(true)));
 }
 
 #[test]
@@ -249,25 +308,23 @@ fn populated_php_settings_emit_subtable_after_default_and_round_trip() {
 }
 
 #[test]
-fn empty_btreeset_emits_empty_array() {
+fn empty_parked_emits_empty_array_and_services_omitted() {
     let c = Config::default();
     let s = c.to_toml().unwrap();
-    // Confirm the empty sets serialise as `paths = []` and `enabled = []`
-    // rather than being silently omitted.
     let v: toml::Value = toml::from_str(&s).unwrap();
+    // `parked.paths` still serialises as an explicit empty array.
     let paths = v
         .get("parked")
         .and_then(|x| x.get("paths"))
         .and_then(|x| x.as_array())
         .expect("expected parked.paths array");
     assert!(paths.is_empty());
-    let enabled = v
-        .get("services")
-        .and_then(|x| x.get("enabled"))
-        .and_then(|x| x.as_array())
-        .expect("expected services.enabled array");
-    assert!(enabled.is_empty());
+    // v3: an empty services map is omitted entirely (no `[services]` table).
+    assert!(
+        v.get("services").is_none(),
+        "empty services must be omitted; got: {s}"
+    );
 
-    // Belt and braces: `BTreeSet::new()` here matches the default's storage.
+    // Belt and braces: `BTreeSet::new()` here matches parked's storage.
     let _: BTreeSet<String> = BTreeSet::new();
 }

@@ -93,6 +93,11 @@ pub async fn set_secure(name: String, secure: bool) -> Result<Response, GuiError
     finish(exchange(&Request::SetSecure { name, secure }).await?)
 }
 
+#[tauri::command]
+pub async fn set_web_root(name: String, path: Option<String>) -> Result<Response, GuiError> {
+    finish(exchange(&Request::SetWebRoot { name, path }).await?)
+}
+
 // ── php versions ───────────────────────────────────────────────────────────
 
 #[tauri::command]
@@ -152,6 +157,69 @@ pub async fn restart_daemon() -> Result<Response, GuiError> {
     finish(exchange(&Request::RestartDaemon).await?)
 }
 
+// ── services (databases / caches) ────────────────────────────────────────────
+
+#[tauri::command]
+pub async fn list_services() -> Result<Response, GuiError> {
+    finish(exchange(&Request::ListServices).await?)
+}
+
+#[tauri::command]
+pub async fn available_services() -> Result<Response, GuiError> {
+    finish(exchange(&Request::AvailableServices).await?)
+}
+
+#[tauri::command]
+pub async fn install_service(service: String, version: String) -> Result<Response, GuiError> {
+    finish(exchange(&Request::InstallService { service, version }).await?)
+}
+
+#[tauri::command]
+pub async fn uninstall_service(
+    service: String,
+    version: String,
+    purge: bool,
+) -> Result<Response, GuiError> {
+    finish(
+        exchange(&Request::UninstallService {
+            service,
+            version,
+            purge,
+        })
+        .await?,
+    )
+}
+
+#[tauri::command]
+pub async fn start_service(service: String) -> Result<Response, GuiError> {
+    finish(exchange(&Request::StartService { service }).await?)
+}
+
+#[tauri::command]
+pub async fn stop_service(service: String) -> Result<Response, GuiError> {
+    finish(exchange(&Request::StopService { service }).await?)
+}
+
+#[tauri::command]
+pub async fn restart_service(service: String) -> Result<Response, GuiError> {
+    finish(exchange(&Request::RestartService { service }).await?)
+}
+
+#[tauri::command]
+pub async fn set_service_port(service: String, port: u16) -> Result<Response, GuiError> {
+    finish(exchange(&Request::SetServicePort { service, port }).await?)
+}
+
+#[tauri::command]
+pub async fn service_logs(service: String, lines: u32) -> Result<Response, GuiError> {
+    finish(exchange(&Request::ServiceLogs { service, lines }).await?)
+}
+
+#[tauri::command]
+pub async fn create_database(service: String, name: String) -> Result<Response, GuiError> {
+    finish(exchange(&Request::CreateDatabase { service, name }).await?)
+}
+
 // ── status / doctor / info ─────────────────────────────────────────────────
 
 #[tauri::command]
@@ -193,7 +261,55 @@ pub fn host_platform() -> &'static str {
 /// threads the real uid through (`pkexec` clears `SUDO_UID`).
 #[tauri::command]
 pub async fn elevate(target: String) -> Result<(), GuiError> {
-    crate::elevate::run(&target).await
+    crate::elevate::run("elevate", &target).await
+}
+
+/// Run `yerd elevate` with no subcommand — applies every step (trust, resolver,
+/// ports) in one OS-elevated invocation.
+#[tauri::command]
+pub async fn elevate_all() -> Result<(), GuiError> {
+    crate::elevate::run("elevate", "").await
+}
+
+/// Revert what `elevate` configured: runs `yerd unelevate <target>` under the
+/// same OS elevation. On macOS, `unelevate resolver` restores the pre-Yerd
+/// resolver from its backup (else removes Yerd's file).
+#[tauri::command]
+pub async fn unelevate(target: String) -> Result<(), GuiError> {
+    crate::elevate::run("unelevate", &target).await
+}
+
+/// Trust the local CA for the current user, in-process (macOS only). Unlike
+/// `elevate("trust")` this needs no root and prompts as "Yerd"; see `mac_trust`.
+#[tauri::command]
+pub async fn trust_ca() -> Result<(), GuiError> {
+    #[cfg(target_os = "macos")]
+    {
+        crate::mac_trust::trust_ca().await
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        Err(GuiError::internal(
+            "in-app CA trust is only supported on macOS",
+        ))
+    }
+}
+
+/// Remove the current user's trust of the local CA (macOS only). Returns `true`
+/// if a system-wide trust set via the terminal still remains (the GUI can't
+/// remove that without root).
+#[tauri::command]
+pub async fn untrust_ca() -> Result<bool, GuiError> {
+    #[cfg(target_os = "macos")]
+    {
+        crate::mac_trust::untrust_ca().await
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        Err(GuiError::internal(
+            "in-app CA trust is only supported on macOS",
+        ))
+    }
 }
 
 #[cfg(test)]

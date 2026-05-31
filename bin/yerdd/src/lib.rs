@@ -15,12 +15,16 @@
 pub mod args;
 pub mod backend_resolver;
 pub mod cert_store;
+pub mod detect_cache;
 pub mod error;
+pub mod fs_watch;
 pub mod ipc_server;
 pub mod mutate;
 pub mod php_install;
 pub mod php_updates;
 pub mod secure_fs;
+pub mod service_install;
+pub mod services;
 pub mod signals;
 pub mod single_instance;
 pub mod startup;
@@ -141,6 +145,20 @@ async fn run_until_shutdown(
         })
     };
 
+    // Filesystem watcher: rebuilds the router as parked projects appear/change
+    // (e.g. a project cloned into a parked folder), so detection stays fresh
+    // without a manual refresh. Non-recursive; see `watch.rs`.
+    let watch_handle = {
+        let state = daemon.state.clone();
+        let rx = shutdown_rx.clone();
+        tokio::spawn(crate::fs_watch::run(state, rx))
+    };
+
+    // Auto-start enabled services in the background — deliberately NOT awaited,
+    // so a slow/failing DB cold-boot never delays the listeners above. Each
+    // engine's outcome is logged inside the task.
+    let _autostart = tokio::spawn(crate::services::auto_start_enabled(daemon.state.clone()));
+
     // Serve until a shutdown is requested — a SIGTERM/Ctrl-C, or a
     // `RestartDaemon` IPC tripping the same channel. Without this wait the
     // daemon would fall straight through to the graceful-join timeouts below
@@ -154,9 +172,16 @@ async fn run_until_shutdown(
     let _ = tokio::time::timeout(Duration::from_secs(10), proxy_handle).await;
     let _ = tokio::time::timeout(Duration::from_secs(5), ipc_handle).await;
     let _ = tokio::time::timeout(Duration::from_secs(5), update_check_handle).await;
+    let _ = tokio::time::timeout(Duration::from_secs(5), watch_handle).await;
 
     {
         let mut mgr = daemon.php_manager.lock().await;
+        let _ = mgr.shutdown().await;
+    }
+    // Stop supervised services cleanly (graceful SIGTERM→grace→SIGKILL); any
+    // still-running children would otherwise be reaped by kill-on-drop.
+    {
+        let mut mgr = daemon.state.service_manager.lock().await;
         let _ = mgr.shutdown().await;
     }
 

@@ -31,29 +31,31 @@
   }
 
   .dark {
-    --background: 222.2 84% 4.9%;
-    --foreground: 210 40% 98%;
-    --card: 222.2 84% 4.9%;
-    --card-foreground: 210 40% 98%;
-    --popover: 222.2 84% 4.9%;
-    --popover-foreground: 210 40% 98%;
-    --primary: 210 40% 98%;
-    --primary-foreground: 222.2 47.4% 11.2%;
-    --secondary: 217.2 32.6% 17.5%;
-    --secondary-foreground: 210 40% 98%;
-    --muted: 217.2 32.6% 17.5%;
-    --muted-foreground: 215 20.2% 65.1%;
-    --accent: 217.2 32.6% 17.5%;
-    --accent-foreground: 210 40% 98%;
+    /* Neutral charcoal grays (no blue tint), lifted off pure-black so panels and
+       borders read clearly — closer to a native macOS / Herd dark surface. */
+    --background: 0 0% 11%;
+    --foreground: 0 0% 98%;
+    --card: 0 0% 14.5%;
+    --card-foreground: 0 0% 98%;
+    --popover: 0 0% 14.5%;
+    --popover-foreground: 0 0% 98%;
+    --primary: 0 0% 98%;
+    --primary-foreground: 0 0% 9%;
+    --secondary: 0 0% 20%;
+    --secondary-foreground: 0 0% 98%;
+    --muted: 0 0% 20%;
+    --muted-foreground: 0 0% 66%;
+    --accent: 0 0% 20%;
+    --accent-foreground: 0 0% 98%;
     --destructive: 0 62.8% 30.6%;
-    --destructive-foreground: 210 40% 98%;
+    --destructive-foreground: 0 0% 98%;
     --success: 142 71% 45%;
     --success-foreground: 144 61% 10%;
     --warning: 38 92% 50%;
-    --warning-foreground: 222.2 47.4% 11.2%;
-    --border: 217.2 32.6% 17.5%;
-    --input: 217.2 32.6% 17.5%;
-    --ring: 212.7 26.8% 83.9%;
+    --warning-foreground: 0 0% 9%;
+    --border: 0 0% 20%;
+    --input: 0 0% 20%;
+    --ring: 0 0% 70%;
   }
 }
 
@@ -62,14 +64,28 @@
     @apply border-border;
   }
   body {
-    @apply bg-background text-foreground;
+    /* The window is transparent (decorationless, see tauri.conf.json) so the
+       corners can be rounded by #app; keep the body itself unpainted or it
+       would fill those corners back in. */
+    @apply bg-transparent text-foreground font-sans antialiased;
     font-feature-settings: "rlig" 1, "calt" 1;
+    /* Grayscale antialiasing is the key legibility fix in a macOS WebView:
+       without it WebKit renders text with subpixel/heavier smoothing that looks
+       muddy on the translucent surface. `optimizeLegibility` turns on kerning +
+       ligatures to match native text rendering. */
+    text-rendering: optimizeLegibility;
   }
   /* The app fills the webview; the shell handles internal scrolling. */
   html,
   body,
   #app {
     height: 100%;
+  }
+  /* The opaque, rounded surface — its overflow clip gives every child (the
+     titlebar, sidebar) native macOS-style rounded corners. */
+  #app {
+    @apply overflow-hidden bg-background;
+    border-radius: 10px;
   }
 
   /* Native desktop feel: text isn't selectable by default… */
@@ -90,5 +106,26 @@
   /* No ghost-dragging images (e.g. the logo). */
   img {
     -webkit-user-drag: none;
+  }
+
+  /* Slim, neutral scrollbars that blend with the native dark theme. */
+  ::-webkit-scrollbar {
+    width: 12px;
+    height: 12px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background-color: hsl(0 0% 32%);
+    border: 3px solid transparent;
+    background-clip: padding-box;
+    border-radius: 9999px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background-color: hsl(0 0% 44%);
+  }
+  ::-webkit-scrollbar-corner {
+    background: transparent;
   }
 }

@@ -12,7 +12,7 @@ use std::str::FromStr;
 use serde::Deserialize;
 
 use crate::error::ValidateErrorReason;
-use crate::schema::{Config, ParkedSection, PhpSection, Ports, ServicesSection};
+use crate::schema::{Config, ParkedSection, PhpSection, Ports, ServiceInstance, ServicesSection};
 use crate::ConfigError;
 
 pub(crate) const KNOWN_SERVICES: &[&str] = &["mysql", "mariadb", "postgres", "redis"];
@@ -38,8 +38,11 @@ struct Wire {
     // still parse. Empty here ↔ omitted on the wire (serializer skips empty).
     #[serde(default)]
     overrides: Vec<OverrideWire>,
+    // v3: per-service tables keyed by service id (`[services.redis]`). A v2
+    // `enabled = [...]` array is rewritten into this shape by the v2→v3
+    // migration before deserialisation, so this never sees the old array.
     #[serde(default)]
-    services: ServicesSectionWire,
+    services: BTreeMap<String, ServiceInstanceWire>,
 }
 
 #[derive(Deserialize)]
@@ -83,11 +86,22 @@ struct ParkedSectionWire {
     paths: BTreeSet<String>,
 }
 
-#[derive(Deserialize, Default)]
+/// One `[services.<id>]` table. `enabled` defaults to `true` (a configured
+/// instance is on unless explicitly disabled); `version`/`port` are unset until
+/// pinned.
+#[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct ServicesSectionWire {
+struct ServiceInstanceWire {
     #[serde(default)]
-    enabled: BTreeSet<String>,
+    version: Option<String>,
+    #[serde(default)]
+    port: Option<u16>,
+    #[serde(default = "default_service_enabled")]
+    enabled: bool,
+}
+
+fn default_service_enabled() -> bool {
+    true
 }
 
 #[derive(Deserialize)]
@@ -95,6 +109,9 @@ struct ServicesSectionWire {
 struct SiteWire {
     name: String,
     document_root: PathBuf,
+    // Optional; absent in v1 `[[linked]]` tables → empty (serve document root).
+    #[serde(default)]
+    web_subpath: PathBuf,
     php: String,
     secure: bool,
     kind: yerd_core::SiteKind,
@@ -112,6 +129,8 @@ struct OverrideWire {
     php: Option<String>,
     #[serde(default)]
     secure: Option<bool>,
+    #[serde(default)]
+    web_root: Option<String>,
 }
 
 fn default_tld_str() -> String {
@@ -179,11 +198,25 @@ impl TryFrom<Wire> for Config {
                 crate::schema::SiteOverride {
                     php,
                     secure: o.secure,
+                    web_root: o.web_root,
                 },
             );
         }
         let services = ServicesSection {
-            enabled: w.services.enabled,
+            instances: w
+                .services
+                .into_iter()
+                .map(|(name, inst)| {
+                    (
+                        name,
+                        ServiceInstance {
+                            version: inst.version,
+                            port: inst.port,
+                            enabled: inst.enabled,
+                        },
+                    )
+                })
+                .collect(),
         };
         let mut linked = Vec::with_capacity(w.linked.len());
         for sw in w.linked {
@@ -197,6 +230,7 @@ impl TryFrom<Wire> for Config {
                 }
             };
             s.set_secure(sw.secure);
+            s.set_web_subpath(sw.web_subpath);
             linked.push(s);
         }
         Ok(Config {
@@ -243,8 +277,23 @@ pub(crate) fn validate(c: &Config) -> Result<(), ConfigError> {
             return Err(ve(ValidateErrorReason::OverridePathEmpty));
         }
     }
-    for s in &c.services.enabled {
-        if !KNOWN_SERVICES.contains(&s.as_str()) {
+    // Web roots must be plain relative paths so they can only ever resolve to a
+    // descendant of the document root (defence against hand-edited absolute or
+    // `..`-bearing values; `Site::served_root` is the runtime backstop).
+    for s in &c.linked {
+        if web_root_escapes(s.web_subpath()) {
+            return Err(ve(ValidateErrorReason::WebRootEscapes));
+        }
+    }
+    for ov in c.overrides.values() {
+        if let Some(w) = &ov.web_root {
+            if web_root_escapes(std::path::Path::new(w)) {
+                return Err(ve(ValidateErrorReason::WebRootEscapes));
+            }
+        }
+    }
+    for name in c.services.instances.keys() {
+        if !KNOWN_SERVICES.contains(&name.as_str()) {
             return Err(ve(ValidateErrorReason::UnknownService));
         }
     }
@@ -260,6 +309,15 @@ pub(crate) fn validate(c: &Config) -> Result<(), ConfigError> {
 
 fn ve(reason: ValidateErrorReason) -> ConfigError {
     ConfigError::Validate { reason }
+}
+
+/// True if a web-root subpath could resolve outside its document root: any
+/// component that is not a plain name or `.` (i.e. a root, drive/UNC prefix, or
+/// `..`). An empty path (serve the document root) is fine.
+fn web_root_escapes(p: &std::path::Path) -> bool {
+    use std::path::Component;
+    p.components()
+        .any(|c| !matches!(c, Component::Normal(_) | Component::CurDir))
 }
 
 #[cfg(test)]
@@ -317,7 +375,7 @@ mod tests {
         match Config::from_toml("version = 99\n") {
             Err(ConfigError::UnsupportedVersion {
                 found: 99,
-                current: 1,
+                current: 3,
             }) => {}
             other => panic!("expected UnsupportedVersion, got {other:?}"),
         }
@@ -463,7 +521,7 @@ kind = "linked"
     #[test]
     fn parse_treats_absent_services_block_as_empty() {
         let c = Config::from_toml("version = 1\n").unwrap();
-        assert!(c.services.enabled.is_empty());
+        assert!(c.services.instances.is_empty());
     }
 
     #[test]
@@ -609,7 +667,9 @@ php = "not-a-version"
     #[test]
     fn validate_rejects_unknown_service() {
         let mut c = Config::default();
-        c.services.enabled.insert("sqlserver".to_string());
+        c.services
+            .instances
+            .insert("sqlserver".to_string(), ServiceInstance::default());
         match c.validate() {
             Err(ConfigError::Validate {
                 reason: ValidateErrorReason::UnknownService,
@@ -622,7 +682,9 @@ php = "not-a-version"
     fn validate_accepts_each_known_service() {
         for s in KNOWN_SERVICES {
             let mut c = Config::default();
-            c.services.enabled.insert((*s).to_string());
+            c.services
+                .instances
+                .insert((*s).to_string(), ServiceInstance::default());
             c.validate().unwrap_or_else(|e| panic!("rejected {s}: {e}"));
         }
     }
@@ -689,7 +751,9 @@ php = "not-a-version"
         let mut c = Config::default();
         c.overrides
             .insert(String::new(), crate::SiteOverride::default());
-        c.services.enabled.insert("sqlserver".to_string());
+        c.services
+            .instances
+            .insert("sqlserver".to_string(), ServiceInstance::default());
         match c.validate() {
             Err(ConfigError::Validate {
                 reason: ValidateErrorReason::OverridePathEmpty,
@@ -699,7 +763,9 @@ php = "not-a-version"
 
         // (e) unknown-service + bad-setting → UnknownService (settings checked last)
         let mut c = Config::default();
-        c.services.enabled.insert("sqlserver".to_string());
+        c.services
+            .instances
+            .insert("sqlserver".to_string(), ServiceInstance::default());
         c.php
             .settings
             .insert("memory_limit".to_string(), "bogus".to_string());

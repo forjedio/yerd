@@ -34,12 +34,6 @@ impl BackendResolver for DaemonBackendResolver {
         match listen {
             yerd_php::Listen::UnixSocket(p) => Ok(Backend::PhpFpm { socket: p }),
             yerd_php::Listen::TcpLoopback(a) => Ok(Backend::PhpFpmTcp { addr: a }),
-            _ => Err(ProxyError::BackendResolver {
-                host: site.name().to_owned(),
-                source: Box::<dyn std::error::Error + Send + Sync + 'static>::from(
-                    "unknown Listen variant from yerd-php",
-                ),
-            }),
         }
     }
 }

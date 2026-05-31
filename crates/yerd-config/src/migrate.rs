@@ -1,9 +1,5 @@
 //! Schema-versioning machinery: read the `version` key and walk forward
 //! migration steps.
-//!
-//! In v0 [`STEPS`] is empty and [`crate::CURRENT_VERSION`] is `1`. The
-//! scaffold exists so future migrations slot in without restructuring the
-//! parse path.
 
 use toml::Value;
 
@@ -20,12 +16,62 @@ use crate::ConfigError;
 /// migration step, so the validator is the gate.
 pub(crate) type MigrationStep = fn(&mut Value) -> Result<(), ConfigError>;
 
-/// Forward-migration steps.
+/// Forward-migration steps, indexed so that **`STEPS[N]` walks `vN → v(N+1)`**.
+/// This matches [`up`], which indexes `STEPS[current]` (== the version being
+/// migrated *from*). Example: a v1 file is migrated by `STEPS[1]`. When
+/// `CURRENT_VERSION == 3`, `STEPS = [v0→v1, v1→v2, v2→v3]`, length 3.
 ///
-/// `STEPS[i]` walks `v(i + 1) → v(i + 2)`. Example: when
-/// `CURRENT_VERSION == 3`, `STEPS = [v1→v2, v2→v3]`, length 2. In v0
-/// `CURRENT_VERSION == 1` and `STEPS` is empty.
-pub(crate) const STEPS: &[MigrationStep] = &[];
+/// `STEPS[0]` (v0→v1) is only reachable via a hand-crafted `version = 0` file —
+/// v0 was never written to disk — but it must exist so that `STEPS[1]` does.
+pub(crate) const STEPS: &[MigrationStep] = &[migrate_v0_to_v1, migrate_v1_to_v2, migrate_v2_to_v3];
+
+/// `v0 → v1`: bump the version. v0 predates any shipped config, so there is no
+/// structural change to apply.
+fn migrate_v0_to_v1(value: &mut Value) -> Result<(), ConfigError> {
+    set_version(value, 1)
+}
+
+/// `v1 → v2`: bump the version. v2 added the optional `web_subpath`
+/// (`[[linked]]`) and `web_root` (`[[overrides]]`) keys, both of which default
+/// when absent, so an in-place version bump is the entire migration.
+fn migrate_v1_to_v2(value: &mut Value) -> Result<(), ConfigError> {
+    set_version(value, 2)
+}
+
+/// `v2 → v3`: the first *structural* migration. v2 stored enabled services as
+/// `[services]\nenabled = ["redis", "mysql"]`; v3 stores per-service tables
+/// `[services.redis]\nenabled = true`. Rewrite the `enabled` array (if present)
+/// into those tables, then drop the `enabled` key. Anything else under
+/// `[services]` is left untouched so a genuinely malformed table still fails the
+/// (`deny_unknown_fields`) wire deserialisation that runs after migration.
+fn migrate_v2_to_v3(value: &mut Value) -> Result<(), ConfigError> {
+    if let Some(services) = value
+        .as_table_mut()
+        .and_then(|t| t.get_mut("services"))
+        .and_then(Value::as_table_mut)
+    {
+        if let Some(Value::Array(enabled)) = services.remove("enabled") {
+            for entry in enabled {
+                if let Value::String(name) = entry {
+                    let mut inst = toml::value::Table::new();
+                    inst.insert("enabled".to_string(), Value::Boolean(true));
+                    // Last-wins on a duplicate (only reachable by hand-editing).
+                    services.insert(name, Value::Table(inst));
+                }
+            }
+        }
+    }
+    set_version(value, 3)
+}
+
+/// Set the top-level `version` key, erroring if the root is not a table.
+fn set_version(value: &mut Value, n: i64) -> Result<(), ConfigError> {
+    let table = value.as_table_mut().ok_or(ConfigError::Migration {
+        reason: MigrationErrorReason::MissingVersion,
+    })?;
+    table.insert("version".to_string(), Value::Integer(n));
+    Ok(())
+}
 
 /// Reads the top-level `version` key.
 ///
@@ -81,13 +127,32 @@ mod tests {
     use super::*;
 
     #[test]
-    fn steps_empty_in_v0() {
-        assert!(STEPS.is_empty());
+    fn steps_cover_every_version_below_current() {
+        // One step per version from 0..CURRENT_VERSION, so `up()` can walk any
+        // on-disk version forward without a MissingStep.
+        assert_eq!(STEPS.len(), crate::CURRENT_VERSION as usize);
     }
 
     #[test]
-    fn current_version_pinned_to_one() {
-        assert_eq!(crate::CURRENT_VERSION, 1);
+    fn current_version_pinned_to_three() {
+        assert_eq!(crate::CURRENT_VERSION, 3);
+    }
+
+    #[test]
+    fn v2_to_v3_rewrites_enabled_array_into_service_tables() {
+        let mut v: Value =
+            toml::from_str("version = 2\n[services]\nenabled = [\"redis\", \"mysql\"]\n").unwrap();
+        migrate_v2_to_v3(&mut v).unwrap();
+        assert_eq!(read_version(&v).unwrap(), 3);
+        let services = v.get("services").and_then(Value::as_table).unwrap();
+        assert!(
+            services.get("enabled").is_none(),
+            "enabled array must be removed"
+        );
+        for name in ["redis", "mysql"] {
+            let inst = services.get(name).and_then(Value::as_table).unwrap();
+            assert_eq!(inst.get("enabled"), Some(&Value::Boolean(true)));
+        }
     }
 
     #[test]
@@ -143,43 +208,19 @@ mod tests {
         }
     }
 
-    /// Exercises the migration loop body via a local fake-step slice that
-    /// mirrors `up()`'s body but uses a private `STEPS_FAKE` array. We do
-    /// not modify the real `STEPS` because tests must not perturb runtime
-    /// state.
     #[test]
-    fn up_walks_with_test_only_step() {
-        fn bump_v0_to_v1(value: &mut Value) -> Result<(), ConfigError> {
-            let table = value.as_table_mut().ok_or(ConfigError::Migration {
-                reason: MigrationErrorReason::MissingVersion,
-            })?;
-            table.insert("version".to_string(), Value::Integer(1));
-            Ok(())
-        }
-        let steps_fake: &[MigrationStep] = &[bump_v0_to_v1];
-
-        let mut v: Value = toml::from_str("version = 0").unwrap();
-        let mut current = 0u32;
-        let target = 1u32;
-        while current < target {
-            let idx = usize::try_from(current).unwrap();
-            let step = steps_fake.get(idx).expect("test step present");
-            step(&mut v).unwrap();
-            current = current.checked_add(1).unwrap();
-        }
-        assert_eq!(read_version(&v).unwrap(), 1);
+    fn up_migrates_v1_to_current_via_steps_index_one() {
+        // A real v1 file is migrated by STEPS[1] then STEPS[2] up to current.
+        let mut v: Value = toml::from_str("version = 1").unwrap();
+        up(&mut v, 1).unwrap();
+        assert_eq!(read_version(&v).unwrap(), crate::CURRENT_VERSION);
     }
 
     #[test]
-    fn up_returns_missing_step_when_steps_empty_and_found_below_current() {
-        // `up()` requires `found < CURRENT_VERSION` (== 1). With STEPS
-        // empty, `STEPS.get(0)` returns None → MissingStep.
+    fn up_walks_v0_all_the_way_to_current() {
+        // A hand-crafted v0 file walks STEPS[0], [1], [2] up to current.
         let mut v: Value = toml::from_str("version = 0").unwrap();
-        match up(&mut v, 0) {
-            Err(ConfigError::Migration {
-                reason: MigrationErrorReason::MissingStep { from: 0 },
-            }) => {}
-            other => panic!("expected MissingStep {{ from: 0 }}, got {other:?}"),
-        }
+        up(&mut v, 0).unwrap();
+        assert_eq!(read_version(&v).unwrap(), crate::CURRENT_VERSION);
     }
 }

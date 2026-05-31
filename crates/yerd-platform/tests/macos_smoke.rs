@@ -79,6 +79,17 @@ fn uninstall_system_returns_needs_helper() {
 }
 
 #[test]
+fn is_trusted_errors_for_unreadable_cert() {
+    // `is_trusted` reads the CA PEM to build a `SecCertificate`. A missing file
+    // is an error (not a false "trusted"); the daemon maps that to `None`
+    // (unknown) via `.ok()`, never to a spurious trusted state.
+    let ts = ActiveTrustStore;
+    let fp = random_fingerprint(0xCC);
+    let missing = std::path::Path::new("/tmp/yerd-nonexistent-ca-xyz.cert.pem");
+    assert!(ts.is_trusted(missing, &fp).is_err());
+}
+
+#[test]
 fn resolver_install_returns_needs_helper() {
     let r = ActiveResolverInstaller;
     let err = r.install("test", loopback(53)).unwrap_err();
@@ -91,7 +102,8 @@ fn resolver_install_returns_needs_helper() {
 #[test]
 fn resolver_is_installed_returns_false_for_unknown_tld() {
     let r = ActiveResolverInstaller;
-    assert!(!r.is_installed("yerd-unlikely-tld-xyz").unwrap());
+    let addr = "127.0.0.1:1053".parse().unwrap();
+    assert!(!r.is_installed("yerd-unlikely-tld-xyz", addr).unwrap());
 }
 
 #[test]

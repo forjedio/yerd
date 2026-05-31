@@ -506,7 +506,7 @@ onMounted(load);
                       <Info class="size-3.5" />
                     </span>
                   </TooltipTrigger>
-                  <TooltipContent side="top" class="w-72">{{ s.hint }}</TooltipContent>
+                  <TooltipContent side="top">{{ s.hint }}</TooltipContent>
                 </Tooltip>
               </div>
               <Input
@@ -525,7 +525,7 @@ onMounted(load);
                       <Info class="size-3.5" />
                     </span>
                   </TooltipTrigger>
-                  <TooltipContent side="top" class="w-72">{{ DISPLAY_ERRORS_HINT }}</TooltipContent>
+                  <TooltipContent side="top">{{ DISPLAY_ERRORS_HINT }}</TooltipContent>
                 </Tooltip>
               </div>
               <div class="mt-1">

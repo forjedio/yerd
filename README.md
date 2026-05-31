@@ -11,6 +11,10 @@ PHP version per site, and manage it all from one tiny daemon — no Docker, no
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
 [![Platforms: macOS · Linux](https://img.shields.io/badge/platforms-macOS%20%C2%B7%20Linux-success.svg)](#installation)
 [![Built with Rust](https://img.shields.io/badge/built%20with-Rust-orange.svg)](https://www.rust-lang.org)
+[![Docs](https://img.shields.io/badge/docs-yerd.app-6366f1.svg)](https://yerd.app)
+[![Docs deploy](https://github.com/forjedio/yerd/actions/workflows/docs.yml/badge.svg)](https://github.com/forjedio/yerd/actions/workflows/docs.yml)
+
+📖 **[Read the documentation at yerd.app →](https://yerd.app)**
 
 </div>
 
@@ -102,7 +106,7 @@ in a `yerd` **user service** so the daemon works the same way. Pin a version wit
 |---|---|
 | Debian / Ubuntu (amd64 · arm64) | `yerd_<ver>_amd64.deb` · `yerd_<ver>_arm64.deb` → `sudo dpkg -i …` |
 | Arch · Fedora · other Linux (rootless) | `yerd-<ver>-{x86_64,aarch64}-unknown-linux-gnu.tar.gz` |
-| macOS (Intel · Apple Silicon) | `yerd-<ver>-{x86_64,aarch64}-apple-darwin.tar.gz` |
+| macOS (Apple Silicon) | `yerd-<ver>-aarch64-apple-darwin.tar.gz` |
 
 Verify against the release's `SHA256SUMS`, then start the per-user daemon:
 
@@ -122,7 +126,7 @@ The tray app ships as separate bundles on the same release:
 
 | Platform | GUI artifact | Install |
 |---|---|---|
-| macOS | `Yerd_<ver>_{x64,aarch64}.dmg` | open, drag to Applications |
+| macOS (Apple Silicon) | `Yerd_<ver>_aarch64.dmg` | open, drag to Applications |
 | Linux | `Yerd_<ver>_amd64.AppImage` | `chmod +x` and run |
 | Linux | `Yerd_<ver>_amd64.deb` | `sudo dpkg -i …` |
 
@@ -356,8 +360,8 @@ git commit -am "release: v2.0.2" && git tag v2.0.2 && git push --follow-tags
 ```
 
 `release.yml` then builds the CLI (`.deb` + tarballs) and GUI
-(`.dmg`/`.AppImage`/`.deb`) for macOS + Linux (amd64 + arm64). A mismatched
-tag fails fast via `cargo xtask version-check`.
+(`.dmg`/`.AppImage`/`.deb`) for Linux (amd64 + arm64) and macOS (Apple Silicon).
+A mismatched tag fails fast via `cargo xtask version-check`.
 
 Conventions: `thiserror` in libraries / `anyhow` only at binary top level; no
 `unwrap`/`expect`/`panic` outside tests (clippy-enforced); pure crates stay pure;

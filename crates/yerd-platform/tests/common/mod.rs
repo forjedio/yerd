@@ -93,8 +93,12 @@ impl ResolverInstaller for MockResolverInstaller {
         Ok(())
     }
 
-    fn is_installed(&self, tld: &str) -> Result<bool, PlatformError> {
-        Ok(self.installed.borrow().iter().any(|(t, _)| t == tld))
+    fn is_installed(&self, tld: &str, addr: SocketAddr) -> Result<bool, PlatformError> {
+        Ok(self
+            .installed
+            .borrow()
+            .iter()
+            .any(|(t, a)| t == tld && *a == addr))
     }
 }
 

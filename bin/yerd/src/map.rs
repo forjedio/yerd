@@ -9,10 +9,11 @@ use std::fmt::Write as _;
 
 use yerd_core::{PhpVersion, Site, SiteKind};
 use yerd_ipc::{
-    Diagnosis, FixReport, PoolRunState, PortStatus, Request, Response, Severity, StatusReport,
+    Diagnosis, FixReport, PoolRunState, PortStatus, Request, Response, ServiceAvailability,
+    ServiceRunState, ServiceStatus, Severity, StatusReport,
 };
 
-use crate::cli::Command;
+use crate::cli::{Command, ServiceAction};
 use crate::error::ClientError;
 
 /// Map a parsed [`Command`] to the wire [`Request`], validating site names and
@@ -115,6 +116,8 @@ pub fn to_request(cmd: &Command) -> Result<Request, ClientError> {
         } => Request::UpdatePhp {
             version: version.as_deref().map(parse_php).transpose()?,
         },
+        Command::Services => Request::ListServices,
+        Command::Service { action } => service_request(action),
         Command::Status => Request::Status,
         Command::Doctor { action: None } => Request::Diagnose,
         Command::Doctor {
@@ -134,6 +137,14 @@ pub fn to_request(cmd: &Command) -> Result<Request, ClientError> {
                 secure: false,
             }
         }
+        // `--auto` (or omitting the path) resets to auto-detection (`None`).
+        Command::Root { name, path, auto } => {
+            validate_name(name)?;
+            Request::SetWebRoot {
+                name: name.clone(),
+                path: if *auto { None } else { path.clone() },
+            }
+        }
         // `elevate`/`unelevate` are handled locally in `crate::elevate` (they
         // spawn the privileged helper), never mapped to a single IPC request.
         // `run` branches before calling `to_request`; these arms keep the match
@@ -144,6 +155,44 @@ pub fn to_request(cmd: &Command) -> Result<Request, ClientError> {
             ));
         }
     })
+}
+
+/// Map a `yerd service <action>` to its wire request. Service ids are passed
+/// through verbatim — the daemon returns `NotFound` for an unknown id.
+fn service_request(action: &ServiceAction) -> Request {
+    match action {
+        ServiceAction::Available => Request::AvailableServices,
+        ServiceAction::Install { service, version } => Request::InstallService {
+            service: service.clone(),
+            version: version.clone(),
+        },
+        ServiceAction::Uninstall {
+            service,
+            version,
+            purge,
+        } => Request::UninstallService {
+            service: service.clone(),
+            version: version.clone(),
+            purge: *purge,
+        },
+        ServiceAction::Start { service } => Request::StartService {
+            service: service.clone(),
+        },
+        ServiceAction::Stop { service } => Request::StopService {
+            service: service.clone(),
+        },
+        ServiceAction::Restart { service } => Request::RestartService {
+            service: service.clone(),
+        },
+        ServiceAction::SetPort { service, port } => Request::SetServicePort {
+            service: service.clone(),
+            port: *port,
+        },
+        ServiceAction::Logs { service, lines } => Request::ServiceLogs {
+            service: service.clone(),
+            lines: *lines,
+        },
+    }
 }
 
 fn parse_php(s: &str) -> Result<PhpVersion, ClientError> {
@@ -251,6 +300,15 @@ pub fn render(resp: &Response, json: bool) -> Rendered {
             stderr: String::new(),
             code,
         },
+        Response::Services { services } => Rendered::ok(format_services(services)),
+        Response::AvailableServices { services } => {
+            Rendered::ok(format_available_services(services))
+        }
+        Response::ServiceLogs { lines } => Rendered::ok(if lines.is_empty() {
+            "no log output".to_owned()
+        } else {
+            lines.join("\n")
+        }),
         // `Response` is `#[non_exhaustive]`; a future variant from a newer
         // daemon is surfaced benignly rather than panicking.
         _ => Rendered::err("unexpected response from daemon".to_owned()),
@@ -277,19 +335,27 @@ fn format_sites(sites: &[Site]) -> String {
     if sites.is_empty() {
         return "no sites".to_owned();
     }
-    let mut out = String::from("NAME\tKIND\tPHP\tSECURE\tDOCROOT");
+    let mut out = String::from("NAME\tKIND\tPHP\tSECURE\tSERVED\tDOCROOT");
     for s in sites {
         let kind = match s.kind() {
             SiteKind::Parked => "parked",
             SiteKind::Linked => "linked",
         };
+        // The served subdirectory (web root) relative to the document root;
+        // "/" when the project root itself is served.
+        let served = if s.web_subpath().as_os_str().is_empty() {
+            "/".to_owned()
+        } else {
+            s.web_subpath().display().to_string()
+        };
         let _ = write!(
             out,
-            "\n{}\t{}\t{}\t{}\t{}",
+            "\n{}\t{}\t{}\t{}\t{}\t{}",
             s.name(),
             kind,
             s.php(),
             s.secure(),
+            served,
             s.document_root().display()
         );
     }
@@ -301,6 +367,64 @@ fn format_parked(paths: &[String]) -> String {
         return "no parked folders".to_owned();
     }
     paths.join("\n")
+}
+
+fn format_service_state(s: ServiceRunState) -> &'static str {
+    match s {
+        ServiceRunState::Running => "running",
+        ServiceRunState::Stopped => "stopped",
+        ServiceRunState::Failed => "failed",
+        // `ServiceRunState` is `#[non_exhaustive]`; a newer daemon's state reads
+        // as "unknown" rather than failing the render.
+        _ => "unknown",
+    }
+}
+
+fn format_services(services: &[ServiceStatus]) -> String {
+    if services.is_empty() {
+        return "no services".to_owned();
+    }
+    let mut out = String::from("SERVICE\tSTATE\tPORT\tVERSION\tENABLED\tINSTALLED");
+    for s in services {
+        let version = s.selected_version.as_deref().unwrap_or("-");
+        let installed = if s.installed_versions.is_empty() {
+            "-".to_owned()
+        } else {
+            s.installed_versions.join(",")
+        };
+        let _ = write!(
+            out,
+            "\n{}\t{}\t{}\t{}\t{}\t{}",
+            s.service,
+            format_service_state(s.state),
+            s.port,
+            version,
+            s.enabled,
+            installed
+        );
+    }
+    out
+}
+
+fn format_available_services(services: &[ServiceAvailability]) -> String {
+    if services.is_empty() {
+        return "no services available".to_owned();
+    }
+    let mut out = String::from("SERVICE\tAVAILABLE\tINSTALLED");
+    for s in services {
+        let available = if s.available.is_empty() {
+            "-".to_owned()
+        } else {
+            s.available.join(",")
+        };
+        let installed = if s.installed.is_empty() {
+            "-".to_owned()
+        } else {
+            s.installed.join(",")
+        };
+        let _ = write!(out, "\n{}\t{}\t{}", s.service, available, installed);
+    }
+    out
 }
 
 fn format_php_versions(
@@ -382,8 +506,15 @@ fn format_status(r: &StatusReport) -> String {
     };
     let _ = writeln!(s, "version   {version}");
     let _ = writeln!(s, "tld       .{}", r.tld);
-    let _ = writeln!(s, "http      {}", fmt_port(r.http));
-    let _ = writeln!(s, "https     {}", fmt_port(r.https));
+    let redirected = r.port_redirect == Some(true);
+    let _ = writeln!(s, "http      {}", fmt_port(r.http, redirected));
+    let _ = writeln!(s, "https     {}", fmt_port(r.https, redirected));
+    if r.foreign_web_listener == Some(true) {
+        let _ = writeln!(
+            s,
+            "ports     conflict: another process is using 80/443 (run `yerd doctor`)"
+        );
+    }
     let _ = writeln!(s, "dns       {}", r.dns_addr);
     let _ = writeln!(
         s,
@@ -502,9 +633,13 @@ fn severity_mark(sev: Severity) -> &'static str {
     }
 }
 
-fn fmt_port(p: PortStatus) -> String {
+fn fmt_port(p: PortStatus, redirected: bool) -> String {
     if p.fell_back {
-        format!("{} → {} (fallback)", p.requested, p.bound)
+        // The listener bound a rootless port, but on macOS an active pf redirect
+        // (`redirected`) carries the privileged port to it — so it's reachable on
+        // the requested port, not merely "fallen back".
+        let tag = if redirected { "redirected" } else { "fallback" };
+        format!("{} → {} ({tag})", p.requested, p.bound)
     } else {
         p.bound.to_string()
     }
@@ -786,6 +921,44 @@ mod tests {
                 secure: false
             }
         );
+        // `root <site> <path>` maps to SetWebRoot with the path.
+        assert_eq!(
+            to_request(&Command::Root {
+                name: "foo".into(),
+                path: Some("public".into()),
+                auto: false,
+            })
+            .unwrap(),
+            Request::SetWebRoot {
+                name: "foo".into(),
+                path: Some("public".into()),
+            }
+        );
+        // `root <site> --auto` (and bare `root <site>`) reset to auto-detect.
+        assert_eq!(
+            to_request(&Command::Root {
+                name: "foo".into(),
+                path: Some("public".into()),
+                auto: true,
+            })
+            .unwrap(),
+            Request::SetWebRoot {
+                name: "foo".into(),
+                path: None,
+            }
+        );
+        assert_eq!(
+            to_request(&Command::Root {
+                name: "foo".into(),
+                path: None,
+                auto: false,
+            })
+            .unwrap(),
+            Request::SetWebRoot {
+                name: "foo".into(),
+                path: None,
+            }
+        );
     }
 
     #[test]
@@ -1017,6 +1190,8 @@ mod tests {
             },
             resolver_installed: None,
             port_redirect: None,
+            foreign_web_listener: None,
+            resolver_backup: None,
             default_php: PhpVersion::new(8, 5),
             php: vec![yerd_ipc::PhpPoolStatus {
                 version: PhpVersion::new(8, 5),
@@ -1034,7 +1209,28 @@ mod tests {
             },
             load_avg: Some([152, 48, 5]),
             daemon_version: "2.0.1".into(),
+            services: vec![],
         }
+    }
+
+    #[test]
+    fn fmt_port_distinguishes_fallback_from_redirect() {
+        let fell_back = PortStatus {
+            requested: 80,
+            bound: 8080,
+            fell_back: true,
+        };
+        // No redirect: a plain rootless fallback.
+        assert_eq!(fmt_port(fell_back, false), "80 → 8080 (fallback)");
+        // pf redirect active: reachable on :80, just internally on :8080.
+        assert_eq!(fmt_port(fell_back, true), "80 → 8080 (redirected)");
+        // Bound directly: redirect flag is irrelevant.
+        let bound = PortStatus {
+            requested: 80,
+            bound: 80,
+            fell_back: false,
+        };
+        assert_eq!(fmt_port(bound, true), "80");
     }
 
     #[test]

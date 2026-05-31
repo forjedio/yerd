@@ -16,7 +16,7 @@
 #![forbid(unsafe_code)]
 
 use yerd_core::PhpVersion;
-use yerd_ipc::{Diagnosis, DiagnosisCode, PoolRunState, Severity, StatusReport};
+use yerd_ipc::{Diagnosis, DiagnosisCode, PoolRunState, ServiceRunState, Severity, StatusReport};
 
 /// Ports below this are privileged (need elevation to bind).
 const PRIVILEGED_PORT_CEILING: u16 = 1024;
@@ -39,24 +39,9 @@ pub enum FixAction {
 pub fn diagnose(report: &StatusReport) -> Vec<Diagnosis> {
     let mut out = Vec::new();
 
-    // --- Ports: a *privileged* configured port that fell back is not elevated.
-    // On macOS the daemon still binds the rootless ports even once elevated, so
-    // an active pf redirect (`port_redirect == Some(true)`) means 80/443 are in
-    // fact reachable — suppress the warning in that case.
-    if privileged_fallback(report) && report.port_redirect != Some(true) {
-        out.push(warn(
-            DiagnosisCode::PortFallback,
-            "Privileged ports not bound",
-            format!(
-                "HTTP {}→{}, HTTPS {}→{}: 80/443 need elevation, serving on the rootless ports.",
-                report.http.requested,
-                report.http.bound,
-                report.https.requested,
-                report.https.bound
-            ),
-            "sudo yerd elevate ports",
-        ));
-    }
+    // --- Port findings: a foreign listener squatting 80/443, or a privileged
+    // fallback that needs elevation (see `port_findings`).
+    out.extend(port_findings(report));
 
     // --- CA trust (skip when undeterminable).
     if report.ca.trusted_system == Some(false) {
@@ -116,6 +101,21 @@ pub fn diagnose(report: &StatusReport) -> Vec<Diagnosis> {
         }
     }
 
+    // --- Failed services (one finding per engine).
+    for svc in &report.services {
+        if svc.state == ServiceRunState::Failed {
+            out.push(fail(
+                DiagnosisCode::ServiceFailed,
+                "Service failed",
+                format!("The {} service is not running.", svc.display_name),
+                Some(format!(
+                    "restart with `yerd service restart {}`",
+                    svc.service
+                )),
+            ));
+        }
+    }
+
     // --- Available PHP updates (informational).
     for pool in &report.php {
         if let Some(latest) = &pool.update_available {
@@ -128,6 +128,10 @@ pub fn diagnose(report: &StatusReport) -> Vec<Diagnosis> {
             });
         }
     }
+
+    // --- Replaced resolver file backed up (informational). The daemon only
+    // sets this for a recent backup, so it auto-clears rather than nagging.
+    out.extend(resolver_backup_finding(report));
 
     // --- No sites (informational).
     if report.sites.parked == 0 && report.sites.linked == 0 {
@@ -157,6 +161,26 @@ pub fn diagnose(report: &StatusReport) -> Vec<Diagnosis> {
     out
 }
 
+/// Informational finding when the daemon reports a recent backup of a replaced
+/// `/etc/resolver/<tld>`. `Ok` severity with **no remedy** — the GUI renders
+/// `remedy` as a copy-a-command chip, which would misrepresent this path/guidance
+/// as a runnable command.
+fn resolver_backup_finding(report: &StatusReport) -> Option<Diagnosis> {
+    let path = report.resolver_backup.as_ref()?;
+    Some(Diagnosis {
+        code: DiagnosisCode::ResolverBackupSaved,
+        severity: Severity::Ok,
+        title: "Resolver file replaced".to_owned(),
+        detail: format!(
+            "Installing the .{} resolver replaced an existing /etc/resolver file; \
+             your previous one was saved to {path}. Unelevating the resolver \
+             restores it automatically, or you can delete the backup.",
+            report.tld
+        ),
+        remedy: None,
+    })
+}
+
 /// Return the safe, unprivileged fixes the daemon may apply for `report`.
 ///
 /// Conservative by design: only failed FPM pools (restartable without
@@ -177,6 +201,44 @@ pub fn plan_auto_fixes(report: &StatusReport) -> Vec<FixAction> {
 #[must_use]
 pub fn is_auto_fixable(code: DiagnosisCode) -> bool {
     matches!(code, DiagnosisCode::FpmPoolFailed)
+}
+
+/// Findings about the privileged web ports (80/443), in stable order.
+///
+/// A non-Yerd process holding the port is the *cause* a plain fallback would
+/// misattribute to "needs elevation", so when it's detected we surface that
+/// instead and suppress the fallback advice (elevation can't bind a port
+/// another process owns). On macOS the daemon still binds the rootless ports
+/// even once elevated, so an active pf redirect (`port_redirect == Some(true)`)
+/// means 80/443 are in fact reachable — also suppressing the fallback warning.
+fn port_findings(report: &StatusReport) -> Vec<Diagnosis> {
+    let mut out = Vec::new();
+    let foreign_listener = report.foreign_web_listener == Some(true);
+    if foreign_listener {
+        out.push(warn(
+            DiagnosisCode::ForeignWebListener,
+            "Another process is using port 80/443",
+            "A program other than Yerd is listening on a privileged web port (80/443). \
+             Yerd can't serve your .test sites there until it's stopped."
+                .to_owned(),
+            "Stop the other web server (e.g. Apache, nginx, Valet), then `sudo yerd elevate ports`",
+        ));
+    }
+    if privileged_fallback(report) && report.port_redirect != Some(true) && !foreign_listener {
+        out.push(warn(
+            DiagnosisCode::PortFallback,
+            "Privileged ports not bound",
+            format!(
+                "HTTP {}→{}, HTTPS {}→{}: 80/443 need elevation, serving on the rootless ports.",
+                report.http.requested,
+                report.http.bound,
+                report.https.requested,
+                report.https.bound
+            ),
+            "sudo yerd elevate ports",
+        ));
+    }
+    out
 }
 
 fn privileged_fallback(report: &StatusReport) -> bool {
@@ -241,6 +303,8 @@ mod tests {
             },
             resolver_installed: Some(true),
             port_redirect: None,
+            foreign_web_listener: None,
+            resolver_backup: None,
             default_php: PhpVersion::new(8, 5),
             php: vec![PhpPoolStatus {
                 version: PhpVersion::new(8, 5),
@@ -258,6 +322,7 @@ mod tests {
             },
             load_avg: Some([10, 5, 1]),
             daemon_version: "2.0.1".into(),
+            services: vec![],
         }
     }
 
@@ -270,6 +335,29 @@ mod tests {
         let ds = diagnose(&healthy());
         assert_eq!(codes(&ds), vec![DiagnosisCode::AllGood]);
         assert!(plan_auto_fixes(&healthy()).is_empty());
+    }
+
+    #[test]
+    fn resolver_backup_surfaces_as_ok_finding_with_no_remedy() {
+        let mut r = healthy();
+        assert!(!codes(&diagnose(&r)).contains(&DiagnosisCode::ResolverBackupSaved));
+
+        r.resolver_backup =
+            Some("/Library/Application Support/io.yerd.Yerd/resolver-backups/test-1.conf".into());
+        let ds = diagnose(&r);
+        let finding = ds
+            .iter()
+            .find(|d| d.code == DiagnosisCode::ResolverBackupSaved)
+            .expect("backup finding present");
+        assert_eq!(finding.severity, Severity::Ok);
+        assert!(
+            finding.remedy.is_none(),
+            "info finding must not render a command chip"
+        );
+        assert!(finding.detail.contains("resolver-backups/test-1.conf"));
+        // Informational → does not suppress AllGood and is not auto-fixable.
+        assert!(codes(&ds).contains(&DiagnosisCode::AllGood));
+        assert!(!is_auto_fixable(DiagnosisCode::ResolverBackupSaved));
     }
 
     #[test]
@@ -306,6 +394,45 @@ mod tests {
         // Not applicable (Linux, None) → unchanged warning behaviour.
         r.port_redirect = None;
         assert!(codes(&diagnose(&r)).contains(&DiagnosisCode::PortFallback));
+    }
+
+    #[test]
+    fn foreign_web_listener_warns_and_suppresses_fallback() {
+        // A privileged port fell back AND something foreign holds 80/443: show
+        // the specific "another process" warning, not the (misleading) elevate
+        // advice.
+        let mut r = healthy();
+        r.http.requested = 80;
+        r.http.bound = 8080;
+        r.http.fell_back = true;
+        r.foreign_web_listener = Some(true);
+        let cs = codes(&diagnose(&r));
+        assert!(cs.contains(&DiagnosisCode::ForeignWebListener));
+        assert!(
+            !cs.contains(&DiagnosisCode::PortFallback),
+            "foreign-listener finding supersedes the elevate-ports advice"
+        );
+        assert!(!cs.contains(&DiagnosisCode::AllGood));
+
+        // No foreign listener (false/None) → the plain fallback warning returns.
+        r.foreign_web_listener = Some(false);
+        let cs = codes(&diagnose(&r));
+        assert!(!cs.contains(&DiagnosisCode::ForeignWebListener));
+        assert!(cs.contains(&DiagnosisCode::PortFallback));
+
+        r.foreign_web_listener = None;
+        assert!(codes(&diagnose(&r)).contains(&DiagnosisCode::PortFallback));
+    }
+
+    #[test]
+    fn foreign_web_listener_warns_even_without_fallback() {
+        // Even if the daemon reports ports bound, a foreign listener signal is
+        // surfaced (e.g. the proxy lost the port to another process).
+        let mut r = healthy();
+        r.foreign_web_listener = Some(true);
+        let cs = codes(&diagnose(&r));
+        assert!(cs.contains(&DiagnosisCode::ForeignWebListener));
+        assert!(!cs.contains(&DiagnosisCode::AllGood));
     }
 
     #[test]

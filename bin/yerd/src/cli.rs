@@ -95,6 +95,14 @@ pub enum Command {
         #[command(subcommand)]
         target: UpdateTarget,
     },
+    /// List local database / cache services and their status.
+    Services,
+    /// Manage a local database or cache service (redis, mysql, mariadb, postgres).
+    Service {
+        /// What to do.
+        #[command(subcommand)]
+        action: ServiceAction,
+    },
     /// Show a snapshot of daemon, proxy, DNS, ports, CA, and PHP health.
     Status,
     /// Diagnose common problems; `yerd doctor fix` attempts safe repairs.
@@ -113,6 +121,19 @@ pub enum Command {
         /// Site name.
         name: String,
     },
+    /// Set the directory a site is served from (its web root), e.g.
+    /// `yerd root myapp public` for a Laravel app. With `--auto` (or no path),
+    /// reset the site to automatic framework detection.
+    Root {
+        /// Site name.
+        name: String,
+        /// Served directory, relative to the site's folder (or an absolute path
+        /// inside it). Omit with `--auto` to reset to auto-detection.
+        path: Option<String>,
+        /// Reset the site to automatic web-root detection.
+        #[arg(long)]
+        auto: bool,
+    },
     /// Grant yerd OS-level privileges (run via `sudo`). No subcommand = all.
     Elevate {
         /// Which privilege to grant; omit to grant all.
@@ -124,6 +145,60 @@ pub enum Command {
         /// Which privilege to revert; omit to revert all.
         #[command(subcommand)]
         target: Option<ElevateTarget>,
+    },
+}
+
+/// Action of `yerd service`.
+#[derive(clap::Subcommand, Debug, Clone)]
+pub enum ServiceAction {
+    /// List installable versions per service (queries the distribution).
+    Available,
+    /// Install a service version (downloads a prebuilt build).
+    Install {
+        /// Service id: `redis`, `mysql`, `mariadb`, or `postgres`.
+        service: String,
+        /// Version to install, e.g. `8` (see `yerd service available`).
+        version: String,
+    },
+    /// Uninstall a service version. Keeps the datadir unless `--purge`.
+    Uninstall {
+        /// Service id.
+        service: String,
+        /// Version to remove.
+        version: String,
+        /// Also delete the engine's stored data (destructive).
+        #[arg(long)]
+        purge: bool,
+    },
+    /// Start (and enable auto-start for) a service.
+    Start {
+        /// Service id.
+        service: String,
+    },
+    /// Stop (and disable auto-start for) a service.
+    Stop {
+        /// Service id.
+        service: String,
+    },
+    /// Restart a service.
+    Restart {
+        /// Service id.
+        service: String,
+    },
+    /// Set the port a service listens on (applies on next start/restart).
+    SetPort {
+        /// Service id.
+        service: String,
+        /// Loopback port.
+        port: u16,
+    },
+    /// Show the last lines of a service's log.
+    Logs {
+        /// Service id.
+        service: String,
+        /// Number of trailing lines to show.
+        #[arg(long, default_value_t = 100)]
+        lines: u32,
     },
 }
 

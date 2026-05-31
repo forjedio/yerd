@@ -96,7 +96,7 @@ pub enum ValidateErrorReason {
     HttpPortZero,
     /// `ports.https == 0`.
     HttpsPortZero,
-    /// `services.enabled` contained an entry not in `KNOWN_SERVICES`.
+    /// `[services]` contained an instance whose id is not in `KNOWN_SERVICES`.
     UnknownService,
     /// `parked.paths` contained an empty string.
     ParkedPathEmpty,
@@ -104,6 +104,10 @@ pub enum ValidateErrorReason {
     OverridePathEmpty,
     /// `php.settings` contained an unsupported key or an invalid value.
     InvalidPhpSetting,
+    /// A linked `web_subpath` or override `web_root` was not a plain relative
+    /// path (absolute, or contained a `..`/root/prefix component) and could
+    /// escape the document root.
+    WebRootEscapes,
 }
 
 impl fmt::Display for ValidateErrorReason {
@@ -113,10 +117,13 @@ impl fmt::Display for ValidateErrorReason {
             Self::HttpHttpsPortsEqual => "ports.http and ports.https must differ",
             Self::HttpPortZero => "ports.http must be non-zero",
             Self::HttpsPortZero => "ports.https must be non-zero",
-            Self::UnknownService => "services.enabled contains an unrecognised entry",
+            Self::UnknownService => "services contains an unrecognised service id",
             Self::ParkedPathEmpty => "parked.paths contains an empty string",
             Self::OverridePathEmpty => "overrides contains an empty path key",
             Self::InvalidPhpSetting => "php.settings contains an unsupported key or invalid value",
+            Self::WebRootEscapes => {
+                "a web root must be a plain relative path (no leading '/' or '..')"
+            }
         };
         f.write_str(msg)
     }
@@ -176,6 +183,7 @@ mod tests {
             ValidateErrorReason::ParkedPathEmpty,
             ValidateErrorReason::OverridePathEmpty,
             ValidateErrorReason::InvalidPhpSetting,
+            ValidateErrorReason::WebRootEscapes,
         ] {
             assert!(!r.to_string().is_empty());
             let _ = format!("{r:?}");
@@ -223,11 +231,11 @@ mod tests {
     fn display_config_error_unsupported_version() {
         let e = ConfigError::UnsupportedVersion {
             found: 99,
-            current: 1,
+            current: 3,
         };
         let s = e.to_string();
         assert!(s.contains("99"), "missing found in {s}");
-        assert!(s.contains('1'), "missing current in {s}");
+        assert!(s.contains('3'), "missing current in {s}");
     }
 
     #[test]
@@ -260,8 +268,8 @@ mod tests {
         };
         let _ = ConfigError::Core(yerd_core::Tld::new("").unwrap_err());
         let _ = ConfigError::UnsupportedVersion {
-            found: 2,
-            current: 1,
+            found: 99,
+            current: 3,
         };
         let _ = ConfigError::Migration {
             reason: MigrationErrorReason::MissingVersion,

@@ -116,7 +116,8 @@ async fn dispatch(req: Request, state: &DaemonState) -> Response {
         | Request::Unlink { .. }
         | Request::Unpark { .. }
         | Request::SetPhp { .. }
-        | Request::SetSecure { .. } => handle_mutation(req, state).await,
+        | Request::SetSecure { .. }
+        | Request::SetWebRoot { .. } => handle_mutation(req, state).await,
         Request::ListPhp => php_versions_response(state).await,
         Request::InstallPhp { version } => install_php(version, state).await,
         Request::SetDefaultPhp { version } => set_default_php(version, state).await,
@@ -152,6 +153,34 @@ async fn dispatch(req: Request, state: &DaemonState) -> Response {
             code: ErrorCode::Internal,
             message: "daemon restart is not supported on this platform".into(),
         },
+        Request::ListServices => crate::services::list_services(state).await,
+        Request::AvailableServices => {
+            let dl = crate::php_install::ReqwestDownloader::new();
+            crate::services::available_services(state, &dl).await
+        }
+        Request::InstallService { service, version } => {
+            let dl = crate::php_install::ReqwestDownloader::new();
+            crate::services::install_service(&service, &version, state, &dl).await
+        }
+        Request::UninstallService {
+            service,
+            version,
+            purge,
+        } => crate::services::uninstall_service(&service, &version, purge, state).await,
+        Request::StartService { service } => crate::services::start_service(&service, state).await,
+        Request::StopService { service } => crate::services::stop_service(&service, state).await,
+        Request::RestartService { service } => {
+            crate::services::restart_service(&service, state).await
+        }
+        Request::SetServicePort { service, port } => {
+            crate::services::set_service_port(&service, port, state).await
+        }
+        Request::ServiceLogs { service, lines } => {
+            crate::services::service_logs(&service, lines, state)
+        }
+        Request::CreateDatabase { service, name } => {
+            crate::services::create_database(&service, &name, state)
+        }
         // `Request` is `#[non_exhaustive]` (external crate): a wildcard is
         // required even though every known variant is handled above.
         _ => Response::Error {
@@ -291,11 +320,15 @@ async fn build_status_report(state: &DaemonState) -> yerd_ipc::StatusReport {
         .collect();
 
     // 5. Unprivileged probes off any guard, on a blocking thread, errors → None.
+    // `is_trusted` is an effective-trust check (not mere presence): macOS shells
+    // `security verify-cert`, Linux checks anchor-dir presence. `ca_path` is a
+    // `PathBuf` (not `Copy`), so clone it into the closure alongside `fp`.
     let fp = state.ca_fingerprint;
+    let ca_path = state.ca_path.clone();
     let trusted_system = tokio::task::spawn_blocking(move || {
         use yerd_platform::TrustStore;
         yerd_platform::ActiveTrustStore::new()
-            .is_present_system(&fp)
+            .is_trusted(&ca_path, &fp)
             .ok()
     })
     .await
@@ -303,26 +336,40 @@ async fn build_status_report(state: &DaemonState) -> yerd_ipc::StatusReport {
     .flatten();
 
     let tld_probe = tld.clone();
+    let dns_addr = state.dns_addr;
     let resolver_installed = tokio::task::spawn_blocking(move || {
         use yerd_platform::ResolverInstaller;
         yerd_platform::ActiveResolverInstaller::new()
-            .is_installed(&tld_probe)
+            .is_installed(&tld_probe, dns_addr)
             .ok()
     })
     .await
     .ok()
     .flatten();
 
-    // Active probe: is the privileged-port redirect carrying 80/443? `None` on
-    // Linux (binds directly after setcap). Bounded TCP connects, so it can't
-    // stall status assembly.
-    let port_redirect = tokio::task::spawn_blocking(|| {
+    // Active probes (bounded TCP/HTTP connects, off the executor so they can't
+    // stall status assembly):
+    //  - `port_redirect`: is the privileged-port redirect carrying 80/443 to
+    //    *this* proxy? `None` on Linux (binds directly after setcap).
+    //  - `foreign_web_listener`: is a non-Yerd process squatting 80/443?
+    //    Cross-platform; confirmed via the proxy's `Server:` marker.
+    let (port_redirect, foreign_web_listener) = tokio::task::spawn_blocking(|| {
         use yerd_platform::PortRedirector;
-        yerd_platform::ActivePortRedirector::new().is_active()
+        let r = yerd_platform::ActivePortRedirector::new();
+        (r.is_active(), r.foreign_web_listener())
     })
     .await
-    .ok()
-    .flatten();
+    .unwrap_or((None, None));
+
+    // macOS only: if installing the resolver replaced a pre-existing file, the
+    // path of the most recent backup (within the last week) so `doctor` can
+    // point at it. `None` on Linux / when nothing was replaced. Off the executor
+    // (fs I/O), mirroring the probes above.
+    let backup_tld = tld.clone();
+    let resolver_backup = tokio::task::spawn_blocking(move || latest_resolver_backup(&backup_tld))
+        .await
+        .ok()
+        .flatten();
 
     let load_avg = metrics
         .load_average()
@@ -343,12 +390,46 @@ async fn build_status_report(state: &DaemonState) -> yerd_ipc::StatusReport {
         },
         resolver_installed,
         port_redirect,
+        foreign_web_listener,
+        resolver_backup,
         default_php,
         php,
         sites,
         load_avg,
         daemon_version: env!("CARGO_PKG_VERSION").to_string(),
+        services: crate::services::service_statuses(state).await,
     }
+}
+
+/// The path of the most recent replaced-resolver backup for `tld`, if one was
+/// saved within the last 7 days. macOS-only — the helper writes these when it
+/// overwrites a pre-existing `/etc/resolver/<tld>`. The age bound keeps the
+/// `doctor` finding a transient migration notice rather than permanent noise.
+#[cfg(target_os = "macos")]
+fn latest_resolver_backup(tld: &str) -> Option<String> {
+    use yerd_platform::pure::resolver_file;
+    const MAX_AGE_SECS: u64 = 7 * 24 * 60 * 60;
+
+    let dir = resolver_file::macos_backup_dir();
+    let names: Vec<String> = std::fs::read_dir(&dir)
+        .ok()?
+        .flatten()
+        .filter_map(|e| e.file_name().into_string().ok())
+        .collect();
+    let latest = resolver_file::latest_backup(&names, tld)?;
+    let secs = resolver_file::parse_backup_secs(latest, tld)?;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    // saturating: a future-dated backup (clock moved back) reads as age 0 → shown.
+    (now.saturating_sub(secs) <= MAX_AGE_SECS)
+        .then(|| dir.join(latest).to_string_lossy().into_owned())
+}
+
+#[cfg(not(target_os = "macos"))]
+#[allow(clippy::missing_const_for_fn)]
+fn latest_resolver_backup(_tld: &str) -> Option<String> {
+    None
 }
 
 /// Map a `yerd-php` pool state to the wire enum.
@@ -729,20 +810,38 @@ async fn handle_mutation(req: Request, state: &DaemonState) -> Response {
     // snapshot) so `SetDefaultPhp` (`yerd use <ver>`) changes the fallback that
     // newly-linked/promoted sites inherit.
     let live_default = new.php.default;
-    let applied = match mutate::apply(
-        &mut new,
-        &*state.router.read().await,
-        &req,
-        canonical,
-        live_default,
-    ) {
-        Ok(a) => a,
-        Err(e) => {
-            return Response::Error {
-                code: mutate::error_code(&e),
-                message: e.to_string(),
+    let applied = match &req {
+        // SetWebRoot needs the target site's document_root (from the router /
+        // linked list) and does filesystem I/O (canonicalise + containment, or
+        // re-detect). Resolve it here rather than in the pure `mutate::apply`.
+        // The router read guard is an inline temporary dropped before step 7's
+        // write — same discipline as the `mutate::apply` call below.
+        Request::SetWebRoot { name, path } => {
+            match resolve_web_root_mutation(
+                &mut new,
+                &*state.router.read().await,
+                name,
+                path.as_deref(),
+            ) {
+                Ok(a) => a,
+                Err(resp) => return resp,
             }
         }
+        _ => match mutate::apply(
+            &mut new,
+            &*state.router.read().await,
+            &req,
+            canonical,
+            live_default,
+        ) {
+            Ok(a) => a,
+            Err(e) => {
+                return Response::Error {
+                    code: mutate::error_code(&e),
+                    message: e.to_string(),
+                }
+            }
+        },
     };
 
     // 4. Never persist an invalid config.
@@ -751,7 +850,7 @@ async fn handle_mutation(req: Request, state: &DaemonState) -> Response {
     }
 
     // 5. Build the candidate router (re-scans parked roots).
-    let candidate = match startup::build_router(&new, &state.dirs) {
+    let candidate = match startup::build_router(&new, &state.dirs, &state.detect_cache) {
         Ok(r) => r,
         Err(DaemonError::Core(yerd_core::CoreError::DuplicateSite { name })) => {
             return Response::Error {
@@ -772,8 +871,116 @@ async fn handle_mutation(req: Request, state: &DaemonState) -> Response {
     *state.router.write().await = candidate;
     drop(cfg_guard);
 
+    // Nudge the filesystem watcher to reconcile its watch set against the new
+    // config (e.g. a newly-parked root to start watching, or a now-resolved
+    // site to stop watching).
+    state.watch_dirty.notify_one();
+
     tracing::info!(summary = %applied.summary, "applied mutation");
     Response::Ok
+}
+
+/// Resolve a `SetWebRoot` request against `new`, doing the filesystem I/O
+/// (containment check, or re-detection) the pure `mutate::apply` can't. A
+/// **linked** site stores the chosen subpath on its `Site`; a **parked** site
+/// stores it in `overrides[doc_root].web_root`. `path = None` resets to
+/// auto-detect: re-detect now for linked, clear the override for parked.
+fn resolve_web_root_mutation(
+    new: &mut yerd_config::Config,
+    router: &yerd_core::SiteRouter,
+    name: &str,
+    path: Option<&str>,
+) -> Result<mutate::Applied, Response> {
+    let name_lc = name.to_ascii_lowercase();
+
+    // Linked sites carry the subpath directly on the persisted `Site`.
+    if let Some(site) = new.linked.iter_mut().find(|s| s.name() == name_lc) {
+        let doc_root = site.document_root().to_path_buf();
+        let rel = if let Some(p) = path {
+            resolve_web_root_within(&doc_root, p)?
+        } else {
+            yerd_core::detect(&yerd_platform::gather_project_signals(&doc_root))
+                .subpath
+                .to_string_lossy()
+                .into_owned()
+        };
+        site.set_web_subpath(&rel);
+        return Ok(mutate::Applied {
+            summary: web_root_summary(&name_lc, &rel),
+        });
+    }
+
+    // Parked sites store the pin in `overrides`, keyed by document_root.
+    if let Some(parked) = router.get(&name_lc) {
+        let key = parked.document_root().to_string_lossy().into_owned();
+        if let Some(p) = path {
+            let rel = resolve_web_root_within(parked.document_root(), p)?;
+            new.overrides.entry(key).or_default().web_root = Some(rel.clone());
+            return Ok(mutate::Applied {
+                summary: web_root_summary(&name_lc, &rel),
+            });
+        }
+        // Clear the web_root override; drop the whole entry if it no longer
+        // pins anything, to avoid leaving an empty override.
+        if let Some(ov) = new.overrides.get_mut(&key) {
+            ov.web_root = None;
+            if ov.php.is_none() && ov.secure.is_none() {
+                new.overrides.remove(&key);
+            }
+        }
+        return Ok(mutate::Applied {
+            summary: format!("{name_lc} web root reset to auto-detect"),
+        });
+    }
+
+    Err(Response::Error {
+        code: ErrorCode::NotFound,
+        message: format!("no site named {name_lc}"),
+    })
+}
+
+/// One-line summary for a web-root change.
+fn web_root_summary(name: &str, rel: &str) -> String {
+    if rel.is_empty() {
+        format!("{name} now served from its project root")
+    } else {
+        format!("{name} now served from {rel}")
+    }
+}
+
+/// Resolve a user-supplied served path against `doc_root` and return the
+/// validated **relative** remainder (empty = serve the document root itself).
+///
+/// Rejects anything that escapes `doc_root`. Both sides are canonicalised
+/// before comparison so a `\\?\` verbatim prefix from `fs::canonicalize` on
+/// Windows doesn't spuriously fail the containment check against the
+/// non-verbatim stored `document_root`.
+fn resolve_web_root_within(doc_root: &Path, input: &str) -> Result<String, Response> {
+    let candidate = {
+        let p = Path::new(input);
+        if p.is_absolute() {
+            p.to_path_buf()
+        } else {
+            doc_root.join(p)
+        }
+    };
+    let canon_candidate = std::fs::canonicalize(&candidate)
+        .map_err(|e| invalid_path(format!("cannot resolve {}: {e}", candidate.display())))?;
+    if !canon_candidate.is_dir() {
+        return Err(invalid_path(format!(
+            "served path is not a directory: {}",
+            canon_candidate.display()
+        )));
+    }
+    let canon_root = std::fs::canonicalize(doc_root)
+        .map_err(|e| invalid_path(format!("cannot resolve {}: {e}", doc_root.display())))?;
+    let rel = canon_candidate.strip_prefix(&canon_root).map_err(|_| {
+        invalid_path(format!(
+            "served path must be inside the site directory ({})",
+            canon_root.display()
+        ))
+    })?;
+    Ok(rel.to_string_lossy().into_owned())
 }
 
 /// Canonicalise `path` and require it to be an existing directory, or return a
@@ -850,6 +1057,9 @@ mod tests {
             ca_fingerprint: yerd_platform::CaFingerprint::new([0u8; 32]),
             php_updates: tokio::sync::RwLock::new(std::collections::HashMap::new()),
             php_manager,
+            service_manager: std::sync::Arc::new(Mutex::new(crate::services::new_manager(
+                dirs_in(tmp),
+            ))),
             http: yerd_ipc::PortStatus {
                 requested: 80,
                 bound: 8080,
@@ -863,6 +1073,8 @@ mod tests {
             started_at: std::time::Instant::now(),
             shutdown_tx: tokio::sync::watch::channel(false).0,
             restart_requested: std::sync::atomic::AtomicBool::new(false),
+            detect_cache: std::sync::Arc::new(crate::detect_cache::DetectCache::new()),
+            watch_dirty: tokio::sync::Notify::new(),
         }
     }
 
@@ -943,6 +1155,115 @@ mod tests {
         match dup {
             Response::Error { code, .. } => assert_eq!(code, ErrorCode::AlreadyExists),
             other => panic!("expected AlreadyExists error, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn set_web_root_explicit_then_auto_on_linked_site() {
+        let tmp = tempfile::tempdir().unwrap();
+        let docroot = tmp.path().join("app");
+        std::fs::create_dir_all(docroot.join("public")).unwrap();
+        std::fs::write(docroot.join("artisan"), b"").unwrap();
+        std::fs::write(docroot.join("public/index.php"), b"").unwrap();
+        let state = state_in(tmp.path());
+
+        dispatch(
+            Request::Link {
+                name: "app".into(),
+                path: docroot.clone(),
+            },
+            &state,
+        )
+        .await;
+
+        // Explicit pin to "public".
+        let ok = dispatch(
+            Request::SetWebRoot {
+                name: "app".into(),
+                path: Some("public".into()),
+            },
+            &state,
+        )
+        .await;
+        assert!(matches!(ok, Response::Ok), "got {ok:?}");
+        let subpath = web_subpath_of(&state, "app").await;
+        assert_eq!(subpath, std::path::PathBuf::from("public"));
+
+        // Reset to auto-detect: the Laravel layout re-detects "public".
+        let ok = dispatch(
+            Request::SetWebRoot {
+                name: "app".into(),
+                path: None,
+            },
+            &state,
+        )
+        .await;
+        assert!(matches!(ok, Response::Ok), "got {ok:?}");
+        assert_eq!(
+            web_subpath_of(&state, "app").await,
+            std::path::PathBuf::from("public")
+        );
+    }
+
+    #[tokio::test]
+    async fn set_web_root_outside_document_root_is_invalid_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        let docroot = tmp.path().join("app");
+        std::fs::create_dir_all(&docroot).unwrap();
+        // A sibling directory that exists but is outside the document root.
+        std::fs::create_dir_all(tmp.path().join("outside")).unwrap();
+        let state = state_in(tmp.path());
+        dispatch(
+            Request::Link {
+                name: "app".into(),
+                path: docroot,
+            },
+            &state,
+        )
+        .await;
+
+        let resp = dispatch(
+            Request::SetWebRoot {
+                name: "app".into(),
+                path: Some(tmp.path().join("outside").to_string_lossy().into_owned()),
+            },
+            &state,
+        )
+        .await;
+        match resp {
+            Response::Error { code, .. } => assert_eq!(code, ErrorCode::InvalidPath),
+            other => panic!("expected InvalidPath, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn set_web_root_unknown_site_is_not_found() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_in(tmp.path());
+        let resp = dispatch(
+            Request::SetWebRoot {
+                name: "ghost".into(),
+                path: None,
+            },
+            &state,
+        )
+        .await;
+        match resp {
+            Response::Error { code, .. } => assert_eq!(code, ErrorCode::NotFound),
+            other => panic!("expected NotFound, got {other:?}"),
+        }
+    }
+
+    /// Helper: read a site's web_subpath via `ListSites`.
+    async fn web_subpath_of(state: &DaemonState, name: &str) -> std::path::PathBuf {
+        match dispatch(Request::ListSites, state).await {
+            Response::Sites { sites } => sites
+                .iter()
+                .find(|s| s.name() == name)
+                .unwrap_or_else(|| panic!("site {name} not found"))
+                .web_subpath()
+                .to_path_buf(),
+            other => panic!("expected Sites, got {other:?}"),
         }
     }
 

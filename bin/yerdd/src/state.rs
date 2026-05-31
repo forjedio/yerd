@@ -15,7 +15,7 @@ use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use std::time::Instant;
 
-use tokio::sync::{watch, Mutex, RwLock};
+use tokio::sync::{watch, Mutex, Notify, RwLock};
 
 use yerd_core::PhpVersion;
 use yerd_ipc::PortStatus;
@@ -23,6 +23,7 @@ use yerd_platform::{CaFingerprint, PlatformDirs};
 use yerd_proxy::SharedRouter;
 
 use crate::backend_resolver::DaemonPhpManager;
+use crate::detect_cache::DetectCache;
 
 /// Everything the IPC dispatch and proxy share at runtime.
 pub struct DaemonState {
@@ -51,6 +52,9 @@ pub struct DaemonState {
     /// The FPM pool supervisor, shared with the proxy backend resolver and the
     /// update task. `yerd status` / `yerd doctor` read live pool state from it.
     pub php_manager: Arc<Mutex<DaemonPhpManager>>,
+    /// The database/cache service supervisor (Redis/Valkey in Phase 1). Holds
+    /// one supervised instance per engine; status/doctor read live state from it.
+    pub service_manager: Arc<Mutex<crate::services::DaemonServiceManager>>,
     /// HTTP listener: requested vs actually-bound port (reported by `Status`).
     pub http: PortStatus,
     /// HTTPS listener: requested vs actually-bound port (reported by `Status`).
@@ -64,4 +68,11 @@ pub struct DaemonState {
     /// Set by `RestartDaemon` before tripping `shutdown_tx`, so the top level
     /// re-execs in place instead of exiting.
     pub restart_requested: AtomicBool,
+    /// Web-root detection cache, shared between the mutation path and the
+    /// filesystem watcher so repeated parked-root rescans stay cheap.
+    pub detect_cache: Arc<DetectCache>,
+    /// Pinged after a config mutation commits so the filesystem watcher
+    /// reconciles its watch set (e.g. a newly-parked root) without waiting for
+    /// an unrelated filesystem event.
+    pub watch_dirty: Notify,
 }

@@ -25,7 +25,12 @@ pub trait ResolverInstaller {
     /// Request resolver redirection removal for `tld`. Idempotent.
     fn uninstall(&self, tld: &str) -> Result<(), PlatformError>;
 
-    /// Probe whether the OS resolver is currently redirecting `tld` to
-    /// Yerd. Idempotent.
-    fn is_installed(&self, tld: &str) -> Result<bool, PlatformError>;
+    /// Probe whether the OS resolver is currently redirecting `tld` to Yerd at
+    /// `addr`. Idempotent.
+    ///
+    /// `addr` is the IP+port the resolver should forward to (the daemon's live
+    /// DNS responder). Implementations verify the on-disk config points there —
+    /// a stale file aimed elsewhere (e.g. a Valet/Herd leftover on `:53`) must
+    /// report `false` so the redirect gets (re)installed.
+    fn is_installed(&self, tld: &str, addr: SocketAddr) -> Result<bool, PlatformError>;
 }

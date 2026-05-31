@@ -64,7 +64,8 @@ fn resolver_unsupported() {
         PlatformError::Unsupported { .. }
     ));
     assert!(matches!(
-        r.is_installed("test").unwrap_err(),
+        r.is_installed("test", "127.0.0.1:1053".parse().unwrap())
+            .unwrap_err(),
         PlatformError::Unsupported { .. }
     ));
 }

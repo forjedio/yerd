@@ -181,6 +181,8 @@ pub mod ops {
     pub const INSTALL_FIREFOX_NSS: &str = "install-firefox-nss";
     /// System trust-store presence probe.
     pub const IS_PRESENT_SYSTEM: &str = "is-present-system";
+    /// Effective-trust probe (trusted, not merely present).
+    pub const IS_TRUSTED: &str = "is-trusted";
     /// Resolver install.
     pub const INSTALL_RESOLVER: &str = "install-resolver";
     /// Resolver uninstall.
@@ -392,6 +394,7 @@ mod tests {
             ops::UNINSTALL_CA,
             ops::INSTALL_FIREFOX_NSS,
             ops::IS_PRESENT_SYSTEM,
+            ops::IS_TRUSTED,
             ops::INSTALL_RESOLVER,
             ops::UNINSTALL_RESOLVER,
             ops::IS_INSTALLED_RESOLVER,

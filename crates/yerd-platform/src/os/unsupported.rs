@@ -90,7 +90,7 @@ impl ResolverInstaller for UnsupportedResolverInstaller {
         })
     }
 
-    fn is_installed(&self, _: &str) -> Result<bool, PlatformError> {
+    fn is_installed(&self, _: &str, _: SocketAddr) -> Result<bool, PlatformError> {
         Err(PlatformError::Unsupported {
             operation: ops::IS_INSTALLED_RESOLVER,
         })
@@ -152,6 +152,12 @@ impl UnsupportedPortRedirector {
 
 impl PortRedirector for UnsupportedPortRedirector {
     fn is_active(&self) -> Option<bool> {
+        None
+    }
+
+    /// The proxy doesn't run on unsupported platforms, so the loopback-probe
+    /// default would be meaningless — report "not probed".
+    fn foreign_web_listener(&self) -> Option<bool> {
         None
     }
 }

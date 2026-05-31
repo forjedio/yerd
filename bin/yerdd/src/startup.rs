@@ -17,6 +17,7 @@ use yerd_tls::{CertAuthority, Validity};
 use crate::args::ServeArgs;
 use crate::backend_resolver::DaemonPhpManager;
 use crate::cert_store::DaemonCertStore;
+use crate::detect_cache::DetectCache;
 use crate::error::DaemonError;
 use crate::single_instance::InstanceLock;
 use crate::state::DaemonState;
@@ -109,9 +110,12 @@ pub async fn bring_up_with_dirs(
 
     let cert_store = Arc::new(DaemonCertStore::new(ca, dirs.data.join("leaves")));
 
-    // Build the router from parked + linked sites.
+    // Build the router from parked + linked sites. The detection cache is
+    // created here (before the router) and shared with the daemon state so the
+    // mutation path and the filesystem watcher reuse cached web-root results.
+    let detect_cache = Arc::new(DetectCache::new());
     let dns_tld = config.tld.clone();
-    let router = build_router(&config, &dirs)?;
+    let router = build_router(&config, &dirs, &detect_cache)?;
     if router.is_empty() {
         tracing::info!("no sites configured — every request will 404 until a site is added");
     }
@@ -166,6 +170,11 @@ pub async fn bring_up_with_dirs(
     );
     let php_manager = Arc::new(Mutex::new(php_manager));
 
+    // Service (database/cache) supervisor. Enabled instances are auto-started
+    // later by a background task in `run_until_shutdown` (never on this path, so
+    // a slow DB boot can't block the proxy/DNS listeners coming up).
+    let service_manager = Arc::new(Mutex::new(crate::services::new_manager(dirs.clone())));
+
     let ipc_listener = build_ipc_listener(&dirs)?;
 
     // Bind DNS up front (like the HTTP/HTTPS listeners) so the daemon owns the
@@ -191,6 +200,7 @@ pub async fn bring_up_with_dirs(
         ca_fingerprint,
         php_updates: tokio::sync::RwLock::new(std::collections::HashMap::new()),
         php_manager: php_manager.clone(),
+        service_manager,
         http: yerd_ipc::PortStatus {
             requested: cfg_http,
             bound: bound_http,
@@ -206,6 +216,8 @@ pub async fn bring_up_with_dirs(
         // handler can trigger teardown; `run_with_daemon` subscribes from it.
         shutdown_tx: tokio::sync::watch::channel(false).0,
         restart_requested: std::sync::atomic::AtomicBool::new(false),
+        detect_cache,
+        watch_dirty: tokio::sync::Notify::new(),
     });
 
     Ok(Daemon {
@@ -232,12 +244,23 @@ pub async fn bring_up_with_dirs(
 pub(crate) fn build_router(
     cfg: &yerd_config::Config,
     dirs: &PlatformDirs,
+    detect_cache: &DetectCache,
 ) -> Result<SiteRouter, DaemonError> {
-    let sites = scan_sites(cfg, cfg.php.default, dirs)?;
-    Ok(SiteRouter::from_sites(
-        RouterConfig::with_tld(cfg.tld.clone()),
-        sites,
-    )?)
+    Ok(build_routing(cfg, dirs, detect_cache)?.0)
+}
+
+/// Like [`build_router`], but also returns the project roots the filesystem
+/// watcher should keep watching: parked sites whose web root could **not** be
+/// resolved yet (no framework/web-dir detected, no manual override). Resolved
+/// sites are deliberately *not* watched — "don't watch what we already know".
+pub(crate) fn build_routing(
+    cfg: &yerd_config::Config,
+    dirs: &PlatformDirs,
+    detect_cache: &DetectCache,
+) -> Result<(SiteRouter, Vec<PathBuf>), DaemonError> {
+    let (sites, watch_roots) = scan_sites(cfg, cfg.php.default, dirs, detect_cache)?;
+    let router = SiteRouter::from_sites(RouterConfig::with_tld(cfg.tld.clone()), sites)?;
+    Ok((router, watch_roots))
 }
 
 // ──────────────────────────────────────────────────────────────────────
@@ -332,8 +355,12 @@ pub(crate) fn scan_sites(
     cfg: &yerd_config::Config,
     default_php: PhpVersion,
     _dirs: &PlatformDirs,
-) -> Result<Vec<Site>, DaemonError> {
+    detect_cache: &DetectCache,
+) -> Result<(Vec<Site>, Vec<PathBuf>), DaemonError> {
     let mut parked: Vec<Site> = Vec::new();
+    // Project roots of parked sites whose web root is still unresolved — the
+    // watcher tracks these so a project cloned in later is picked up.
+    let mut watch_roots: Vec<PathBuf> = Vec::new();
     let linked_names: std::collections::HashSet<&str> =
         cfg.linked.iter().map(yerd_core::Site::name).collect();
 
@@ -386,12 +413,26 @@ pub(crate) fn scan_sites(
                     // Re-apply any persisted per-site override, keeping the site
                     // parked (no promotion to linked). An override for a path with
                     // no matching child is simply never looked up here (harmless).
-                    if let Some(ov) = cfg.overrides.get(&doc_root.to_string_lossy().into_owned()) {
+                    let key = doc_root.to_string_lossy().into_owned();
+                    let ov = cfg.overrides.get(&key);
+                    if let Some(ov) = ov {
                         if let Some(php) = ov.php {
                             site.set_php(php);
                         }
                         if let Some(secure) = ov.secure {
                             site.set_secure(secure);
+                        }
+                    }
+                    // Web root: a manual `web_root` override pins it; otherwise
+                    // auto-detect. An unresolved auto-detection (no evidence yet)
+                    // serves the root provisionally and is added to the watch set.
+                    if let Some(rel) = ov.and_then(|o| o.web_root.as_deref()) {
+                        site.set_web_subpath(rel);
+                    } else {
+                        let det = detect_cache.detect(&doc_root);
+                        site.set_web_subpath(det.subpath);
+                        if !det.resolved {
+                            watch_roots.push(doc_root.clone());
                         }
                     }
                     parked.push(site);
@@ -408,7 +449,7 @@ pub(crate) fn scan_sites(
     }
 
     parked.extend(cfg.linked.iter().cloned());
-    Ok(parked)
+    Ok((parked, watch_roots))
 }
 
 fn into_tokio_listener(
@@ -507,10 +548,65 @@ mod tests {
             .insert(parked_root.to_string_lossy().into_owned());
 
         let dirs = make_dirs(tmp.path());
-        let sites = scan_sites(&cfg, PhpVersion::new(8, 3), &dirs).unwrap();
+        let (sites, _) =
+            scan_sites(&cfg, PhpVersion::new(8, 3), &dirs, &DetectCache::new()).unwrap();
         let mut names: Vec<&str> = sites.iter().map(yerd_core::Site::name).collect();
         names.sort_unstable();
         assert_eq!(names, vec!["app1", "app2"]);
+    }
+
+    #[test]
+    fn scan_sites_detects_web_root_and_collects_unresolved() {
+        let tmp = tempfile::tempdir().unwrap();
+        let parked_root = tmp.path().join("Sites");
+        // A Laravel-ish app: artisan + public/index.php → resolves to "public".
+        let laravel = parked_root.join("app");
+        std::fs::create_dir_all(laravel.join("public")).unwrap();
+        std::fs::write(laravel.join("artisan"), b"").unwrap();
+        std::fs::write(laravel.join("public/index.php"), b"").unwrap();
+        // An empty child → unresolved, serves root, ends up in the watch set.
+        std::fs::create_dir_all(parked_root.join("empty")).unwrap();
+
+        let mut cfg = yerd_config::Config::default();
+        cfg.parked
+            .paths
+            .insert(parked_root.to_string_lossy().into_owned());
+        let dirs = make_dirs(tmp.path());
+        let (sites, watch_roots) =
+            scan_sites(&cfg, PhpVersion::new(8, 3), &dirs, &DetectCache::new()).unwrap();
+
+        let app = sites.iter().find(|s| s.name() == "app").unwrap();
+        assert_eq!(app.web_subpath(), std::path::Path::new("public"));
+        let empty = sites.iter().find(|s| s.name() == "empty").unwrap();
+        assert_eq!(empty.web_subpath(), std::path::Path::new(""));
+        // Only the unresolved "empty" child is watched; "app" resolved.
+        assert_eq!(watch_roots, vec![parked_root.join("empty")]);
+    }
+
+    #[test]
+    fn scan_sites_web_root_override_pins_and_skips_watching() {
+        let tmp = tempfile::tempdir().unwrap();
+        let parked_root = tmp.path().join("Sites");
+        std::fs::create_dir_all(parked_root.join("app")).unwrap();
+        let mut cfg = yerd_config::Config::default();
+        cfg.parked
+            .paths
+            .insert(parked_root.to_string_lossy().into_owned());
+        cfg.overrides.insert(
+            parked_root.join("app").to_string_lossy().into_owned(),
+            yerd_config::SiteOverride {
+                php: None,
+                secure: None,
+                web_root: Some("public".to_string()),
+            },
+        );
+        let dirs = make_dirs(tmp.path());
+        let (sites, watch_roots) =
+            scan_sites(&cfg, PhpVersion::new(8, 3), &dirs, &DetectCache::new()).unwrap();
+        let app = sites.iter().find(|s| s.name() == "app").unwrap();
+        assert_eq!(app.web_subpath(), std::path::Path::new("public"));
+        // A pinned override is never watched (we already know its web root).
+        assert!(watch_roots.is_empty());
     }
 
     #[test]
@@ -524,7 +620,8 @@ mod tests {
                 .into_owned(),
         );
         let dirs = make_dirs(tmp.path());
-        let sites = scan_sites(&cfg, PhpVersion::new(8, 3), &dirs).unwrap();
+        let (sites, _) =
+            scan_sites(&cfg, PhpVersion::new(8, 3), &dirs, &DetectCache::new()).unwrap();
         assert!(sites.is_empty());
     }
 
@@ -547,7 +644,8 @@ mod tests {
             .insert(parked_root.to_string_lossy().into_owned());
 
         let dirs = make_dirs(tmp.path());
-        let sites = scan_sites(&cfg, PhpVersion::new(8, 3), &dirs).unwrap();
+        let (sites, _) =
+            scan_sites(&cfg, PhpVersion::new(8, 3), &dirs, &DetectCache::new()).unwrap();
         // Exactly one site, and its document_root is the linked one.
         assert_eq!(sites.len(), 1);
         assert_eq!(
@@ -581,11 +679,13 @@ mod tests {
             yerd_config::SiteOverride {
                 php: Some(PhpVersion::new(8, 5)),
                 secure: None,
+                web_root: None,
             },
         );
         let dirs = make_dirs(tmp.path());
         // Default php is 8.3, but the override pins 8.5.
-        let sites = scan_sites(&cfg, PhpVersion::new(8, 3), &dirs).unwrap();
+        let (sites, _) =
+            scan_sites(&cfg, PhpVersion::new(8, 3), &dirs, &DetectCache::new()).unwrap();
         let blog = sites.iter().find(|s| s.name() == "blog").unwrap();
         assert_eq!(blog.php(), PhpVersion::new(8, 5));
         assert!(!blog.secure());
@@ -601,10 +701,12 @@ mod tests {
             yerd_config::SiteOverride {
                 php: None,
                 secure: Some(true),
+                web_root: None,
             },
         );
         let dirs = make_dirs(tmp.path());
-        let sites = scan_sites(&cfg, PhpVersion::new(8, 3), &dirs).unwrap();
+        let (sites, _) =
+            scan_sites(&cfg, PhpVersion::new(8, 3), &dirs, &DetectCache::new()).unwrap();
         let blog = sites.iter().find(|s| s.name() == "blog").unwrap();
         assert!(blog.secure());
         // php inherits the default (override didn't pin it).
@@ -630,10 +732,12 @@ mod tests {
             yerd_config::SiteOverride {
                 php: Some(PhpVersion::new(8, 5)),
                 secure: Some(true),
+                web_root: None,
             },
         );
         let dirs = make_dirs(tmp.path());
-        let sites = scan_sites(&cfg, PhpVersion::new(8, 3), &dirs).unwrap();
+        let (sites, _) =
+            scan_sites(&cfg, PhpVersion::new(8, 3), &dirs, &DetectCache::new()).unwrap();
         let blog = sites.iter().find(|s| s.name() == "blog").unwrap();
         // blog is untouched by the ghost override.
         assert_eq!(blog.php(), PhpVersion::new(8, 3));
@@ -660,10 +764,12 @@ mod tests {
             yerd_config::SiteOverride {
                 php: Some(PhpVersion::new(8, 5)),
                 secure: Some(true),
+                web_root: None,
             },
         );
         let dirs = make_dirs(tmp.path());
-        let sites = scan_sites(&cfg, PhpVersion::new(8, 3), &dirs).unwrap();
+        let (sites, _) =
+            scan_sites(&cfg, PhpVersion::new(8, 3), &dirs, &DetectCache::new()).unwrap();
         let blog = sites.iter().find(|s| s.name() == "blog").unwrap();
         // The linked site wins: php 7.4, not the override's 8.5; and linked.
         assert_eq!(blog.kind(), yerd_core::SiteKind::Linked);

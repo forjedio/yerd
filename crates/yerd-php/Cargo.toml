@@ -10,6 +10,7 @@ description            = "PHP-FPM pool supervision and version management for Ye
 [dependencies]
 yerd-core      = { path = "../yerd-core" }
 yerd-platform  = { path = "../yerd-platform" }
+yerd-supervise = { path = "../yerd-supervise" }
 thiserror      = { workspace = true }
 async-trait    = { workspace = true }
 serde          = { workspace = true }

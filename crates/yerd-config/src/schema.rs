@@ -82,8 +82,8 @@ impl Config {
     }
 
     /// Validate cross-field invariants, plus per-field invariants that the
-    /// `BTreeSet<String>` storage of `parked.paths` and `services.enabled`
-    /// cannot enforce structurally (empty strings, unknown services).
+    /// storage of `parked.paths` and `services.instances` cannot enforce
+    /// structurally (empty strings, unknown service ids).
     /// Per-field invariants on typed fields (TLD, `PhpVersion`, `Site`
     /// name) are enforced earlier, during `Wire` → `Config` conversion.
     pub fn validate(&self) -> Result<(), crate::ConfigError> {
@@ -211,22 +211,55 @@ pub struct SiteOverride {
     pub php: Option<PhpVersion>,
     /// Pinned HTTPS flag, or `None` to inherit (off).
     pub secure: Option<bool>,
+    /// Pinned web root, **relative to** the site's `document_root`, or `None`
+    /// to auto-detect each scan. Stored as a string for the same byte-stability
+    /// reason as the override key. Must be a plain relative path (no leading
+    /// `/`, no `..`); enforced by [`Config::validate`].
+    pub web_root: Option<String>,
 }
 
-/// Enabled services.
+/// Configured services, keyed by service id.
+///
+/// **v3 shape.** Earlier versions stored only an `enabled = ["redis"]` array of
+/// names; that could not carry a per-service version or port. v3 promotes each
+/// to a [`ServiceInstance`] table (`[services.redis]`); the v2→v3 migration in
+/// `crate::migrate` rewrites the old array into the new tables.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ServicesSection {
-    /// Service identifiers the daemon should auto-start.
+    /// Per-service configuration, keyed by the service id (`"redis"`, `"mysql"`,
+    /// `"mariadb"`, `"postgres"`). Keys are validated against `KNOWN_SERVICES`
+    /// (private const in `parse.rs`). One instance per engine.
     ///
-    /// On-disk wire shape is a TOML array of strings (`enabled = ["mysql"]`),
-    /// pinned in `tests/toml_byte_shape.rs`. Validated against
-    /// `KNOWN_SERVICES` (private const in `parse.rs`).
-    ///
-    /// Stringly-typed in v0 because (a) when `yerd-services` lands the
-    /// canonical typed `Service` enum will live there (downstream of this
-    /// crate), and (b) a string allows forward-compatibility with
-    /// experimental services without a `yerd-config` release.
-    pub enabled: BTreeSet<String>,
+    /// `BTreeMap` so the serialiser yields stable lexicographic table order.
+    /// Strings as keys (rather than a typed enum) keep the canonical typed
+    /// `Service` in `yerd-services` (downstream of this crate) and allow
+    /// forward-compatibility with experimental services without a release.
+    pub instances: BTreeMap<String, ServiceInstance>,
+}
+
+/// Per-service configuration (one supervised instance of an engine).
+///
+/// Every settable field is `Option` (so the table stays forward-extensible and
+/// omits unset keys on the wire) except `enabled`, which always has a value.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServiceInstance {
+    /// The selected installed version (e.g. `"8"` for Valkey). `None` =
+    /// "use whatever is installed" (the daemon resolves a concrete version).
+    pub version: Option<String>,
+    /// Port override. `None` = the engine's default (6379 / 3306 / 5432).
+    pub port: Option<u16>,
+    /// Whether the daemon auto-starts this instance on boot.
+    pub enabled: bool,
+}
+
+impl Default for ServiceInstance {
+    fn default() -> Self {
+        Self {
+            version: None,
+            port: None,
+            enabled: true,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -265,7 +298,15 @@ mod tests {
     #[test]
     fn default_parked_and_services_empty() {
         assert!(ParkedSection::default().paths.is_empty());
-        assert!(ServicesSection::default().enabled.is_empty());
+        assert!(ServicesSection::default().instances.is_empty());
+    }
+
+    #[test]
+    fn default_service_instance_is_enabled_and_unpinned() {
+        let inst = ServiceInstance::default();
+        assert!(inst.enabled);
+        assert_eq!(inst.version, None);
+        assert_eq!(inst.port, None);
     }
 
     #[test]
@@ -276,7 +317,8 @@ mod tests {
             SiteOverride::default(),
             SiteOverride {
                 php: None,
-                secure: None
+                secure: None,
+                web_root: None,
             }
         );
     }

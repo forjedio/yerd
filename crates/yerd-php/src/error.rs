@@ -5,13 +5,15 @@
 //! shape. The daemon is the only consumer; if a GUI surface ever needs a
 //! `Clone + Eq` shadow, add one then.
 
-use std::fmt;
 use std::io;
 use std::path::PathBuf;
-use std::process::ExitStatus;
 
 use thiserror::Error;
 use yerd_core::PhpVersion;
+
+// Process-agnostic outcome/error types moved to `yerd-supervise`; re-exported so
+// `crate::error::*` paths and the `yerd_php` public API are unchanged.
+pub use yerd_supervise::{DownloadError, ExitReason, SpawnFailureReason};
 
 /// Errors produced by `yerd-php`.
 #[derive(Debug, Error)]
@@ -126,102 +128,6 @@ pub enum PhpError {
     },
 }
 
-/// Error returned by [`crate::traits::Downloader::download`].
-///
-/// Carries a flattened message rather than wrapping a transport type so that
-/// test fakes can construct it without pulling in `reqwest`, and so the public
-/// surface stays transport-agnostic. SHA-256 verification of the fetched bytes
-/// is the caller's responsibility, not the downloader's.
-#[derive(Debug, Error)]
-#[non_exhaustive]
-pub enum DownloadError {
-    /// The transfer failed — connection, TLS, timeout, or a non-success HTTP
-    /// status.
-    #[error("download failed for {url}: {reason}")]
-    Transport {
-        /// The URL that failed to download.
-        url: String,
-        /// Flattened underlying error.
-        reason: String,
-    },
-}
-
-/// Classification of an `io::Error` returned by `ProcessSpawner::spawn` or
-/// by `ChildHandle::wait` during supervision.
-///
-/// Surfaces the most common operational mistakes (missing binary, denied
-/// permissions) without forcing callers to re-inspect the underlying
-/// `io::ErrorKind`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[non_exhaustive]
-pub enum SpawnFailureReason {
-    /// `io::ErrorKind::NotFound` — usually a missing FPM binary path.
-    BinaryNotFound,
-    /// `io::ErrorKind::PermissionDenied` — FPM binary present but not
-    /// executable, or denied by a security policy.
-    PermissionDenied,
-    /// The child was alive but `child.wait()` failed mid-supervision.
-    WaitFailed,
-    /// Any other `io::ErrorKind`.
-    Other,
-}
-
-impl SpawnFailureReason {
-    /// Classify an `io::ErrorKind` for surfacing in `PhpError::Spawn`.
-    #[must_use]
-    pub(crate) fn from_kind(kind: io::ErrorKind) -> Self {
-        match kind {
-            io::ErrorKind::NotFound => Self::BinaryNotFound,
-            io::ErrorKind::PermissionDenied => Self::PermissionDenied,
-            _ => Self::Other,
-        }
-    }
-}
-
-/// How a supervised FPM child exited.
-///
-/// Implements `Hash` so callers can aggregate by exit reason for telemetry.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[non_exhaustive]
-pub enum ExitReason {
-    /// Normal exit with this OS-level code.
-    Code(i32),
-    /// Unix-only: killed by signal `n`. On Windows this is never produced
-    /// in production code; tests may construct it directly.
-    Signal(i32),
-    /// The exit status carried no code and no signal (shouldn't normally
-    /// happen but is a defined fallback).
-    Unknown,
-}
-
-impl fmt::Display for ExitReason {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Code(c) => write!(f, "exit {c}"),
-            Self::Signal(s) => write!(f, "signal {s}"),
-            Self::Unknown => f.write_str("unknown"),
-        }
-    }
-}
-
-impl ExitReason {
-    /// Translate a `std::process::ExitStatus` into the crate's vocabulary.
-    pub(crate) fn from_status(status: ExitStatus) -> Self {
-        #[cfg(unix)]
-        {
-            use std::os::unix::process::ExitStatusExt;
-            if let Some(sig) = status.signal() {
-                return Self::Signal(sig);
-            }
-        }
-        if let Some(code) = status.code() {
-            Self::Code(code)
-        } else {
-            Self::Unknown
-        }
-    }
-}
-
 #[cfg(test)]
 #[allow(
     clippy::unwrap_used,
@@ -231,44 +137,9 @@ impl ExitReason {
 )]
 mod tests {
     use super::*;
-    use std::collections::HashSet;
 
     fn io_err() -> io::Error {
         io::Error::from(io::ErrorKind::AddrInUse)
-    }
-
-    #[test]
-    fn exit_reason_display() {
-        assert_eq!(ExitReason::Code(0).to_string(), "exit 0");
-        assert_eq!(ExitReason::Code(137).to_string(), "exit 137");
-        assert_eq!(ExitReason::Signal(9).to_string(), "signal 9");
-        assert_eq!(ExitReason::Unknown.to_string(), "unknown");
-    }
-
-    #[test]
-    fn exit_reason_hashable() {
-        let mut set = HashSet::new();
-        set.insert(ExitReason::Code(0));
-        set.insert(ExitReason::Code(1));
-        set.insert(ExitReason::Signal(9));
-        assert_eq!(set.len(), 3);
-        assert!(set.contains(&ExitReason::Code(0)));
-    }
-
-    #[test]
-    fn spawn_failure_reason_from_kind() {
-        assert_eq!(
-            SpawnFailureReason::from_kind(io::ErrorKind::NotFound),
-            SpawnFailureReason::BinaryNotFound
-        );
-        assert_eq!(
-            SpawnFailureReason::from_kind(io::ErrorKind::PermissionDenied),
-            SpawnFailureReason::PermissionDenied
-        );
-        assert_eq!(
-            SpawnFailureReason::from_kind(io::ErrorKind::AddrInUse),
-            SpawnFailureReason::Other
-        );
     }
 
     #[test]

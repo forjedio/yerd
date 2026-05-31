@@ -82,8 +82,24 @@ pub(crate) fn leaf_params(
     ];
     params.extended_key_usages = vec![ExtendedKeyUsagePurpose::ServerAuth];
     params.use_authority_key_identifier_extension = true;
-    // No CN on leaves (modern best practice; browsers want SAN-only).
-    params.distinguished_name = rcgen::DistinguishedName::new();
+    // Set a CN to the first name. Browsers match the hostname against the SAN,
+    // not the CN, but the subject must not be empty: RFC 5280 §4.1.2.6 requires
+    // an empty subject to carry a *critical* subjectAltName, and rcgen emits the
+    // SAN as non-critical. macOS's Security framework (and thus Chrome/Safari on
+    // macOS) enforces this and rejects an empty-subject leaf with
+    // ERR_CERT_INVALID. A non-empty CN sidesteps the requirement entirely.
+    // The CN AttributeValue is capped at 64 bytes (`ub-common-name`); names
+    // longer than that fall back to an empty subject, which is still served via
+    // the SAN on platforms that accept it.
+    params.distinguished_name = {
+        let mut dn = rcgen::DistinguishedName::new();
+        if let Some(cn) = names.first() {
+            if !cn.is_empty() && cn.len() <= CN_MAX_BYTES {
+                dn.push(DnType::CommonName, cn.as_str());
+            }
+        }
+        dn
+    };
 
     Ok(params)
 }

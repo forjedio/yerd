@@ -72,6 +72,17 @@ pub enum Request {
         /// The desired HTTPS state.
         secure: bool,
     },
+    /// Set or clear a site's served web root (the subdirectory served as the
+    /// document root, e.g. `public` for Laravel).
+    SetWebRoot {
+        /// The site name.
+        name: String,
+        /// The served path. The daemon resolves it against the site's
+        /// `document_root` (relative or absolute), validates containment, and
+        /// stores the relative remainder. `None` resets the site to
+        /// auto-detection.
+        path: Option<String>,
+    },
     /// Fetch read-only daemon runtime facts (DNS address, TLD, CA path +
     /// fingerprint). Used by `yerd elevate` to drive the privileged helper.
     DaemonInfo,
@@ -131,6 +142,66 @@ pub enum Request {
     /// `Ok` *before* tearing down; the connection then closes as it restarts.
     /// Unix-only.
     RestartDaemon,
+    /// List every manageable service with its live status (installed versions,
+    /// run state, port, enabled flag).
+    ListServices,
+    /// List installable vs installed versions per service (the GUI install
+    /// dropdown). Fetched on demand from yerd's services distribution.
+    AvailableServices,
+    /// Download + install a prebuilt service version into yerd's data dir.
+    InstallService {
+        /// Service id (`"redis"`, `"mysql"`, `"mariadb"`, `"postgres"`).
+        service: String,
+        /// The version to install.
+        version: String,
+    },
+    /// Uninstall a service version. `purge` also deletes the datadir; without
+    /// it the data is retained and its path reported.
+    UninstallService {
+        /// Service id.
+        service: String,
+        /// The version to remove.
+        version: String,
+        /// When true, also delete the engine's datadir (destructive).
+        purge: bool,
+    },
+    /// Start (and enable) a service instance.
+    StartService {
+        /// Service id.
+        service: String,
+    },
+    /// Stop (and disable auto-start for) a service instance.
+    StopService {
+        /// Service id.
+        service: String,
+    },
+    /// Restart a service instance (stop + start).
+    RestartService {
+        /// Service id.
+        service: String,
+    },
+    /// Change the port a service listens on. Takes effect on the next start /
+    /// restart (no implicit hot restart of a live socket).
+    SetServicePort {
+        /// Service id.
+        service: String,
+        /// The new loopback port.
+        port: u16,
+    },
+    /// Fetch the last `lines` lines of a service's log file.
+    ServiceLogs {
+        /// Service id.
+        service: String,
+        /// How many trailing lines to return.
+        lines: u32,
+    },
+    /// Create a database in a running SQL service (no-op error for caches).
+    CreateDatabase {
+        /// Service id (must be a SQL engine).
+        service: String,
+        /// The database name to create (validated as a safe identifier).
+        name: String,
+    },
 }
 
 #[cfg(test)]
@@ -163,6 +234,7 @@ mod variant_name_pinning {
             Request::Unpark { .. } => {}
             Request::SetPhp { .. } => {}
             Request::SetSecure { .. } => {}
+            Request::SetWebRoot { .. } => {}
             Request::DaemonInfo => {}
             Request::InstallPhp { .. } => {}
             Request::SetDefaultPhp { .. } => {}
@@ -178,6 +250,16 @@ mod variant_name_pinning {
             Request::Diagnose => {}
             Request::DoctorFix => {}
             Request::RestartDaemon => {}
+            Request::ListServices => {}
+            Request::AvailableServices => {}
+            Request::InstallService { .. } => {}
+            Request::UninstallService { .. } => {}
+            Request::StartService { .. } => {}
+            Request::StopService { .. } => {}
+            Request::RestartService { .. } => {}
+            Request::SetServicePort { .. } => {}
+            Request::ServiceLogs { .. } => {}
+            Request::CreateDatabase { .. } => {}
         }
     }
 
@@ -202,6 +284,10 @@ mod variant_name_pinning {
         pin(Request::SetSecure {
             name: "x".into(),
             secure: true,
+        });
+        pin(Request::SetWebRoot {
+            name: "x".into(),
+            path: Some("public".into()),
         });
         pin(Request::DaemonInfo);
         pin(Request::InstallPhp {
@@ -230,5 +316,37 @@ mod variant_name_pinning {
         pin(Request::Diagnose);
         pin(Request::DoctorFix);
         pin(Request::RestartDaemon);
+        pin(Request::ListServices);
+        pin(Request::AvailableServices);
+        pin(Request::InstallService {
+            service: "redis".into(),
+            version: "8".into(),
+        });
+        pin(Request::UninstallService {
+            service: "redis".into(),
+            version: "8".into(),
+            purge: false,
+        });
+        pin(Request::StartService {
+            service: "redis".into(),
+        });
+        pin(Request::StopService {
+            service: "redis".into(),
+        });
+        pin(Request::RestartService {
+            service: "redis".into(),
+        });
+        pin(Request::SetServicePort {
+            service: "redis".into(),
+            port: 6380,
+        });
+        pin(Request::ServiceLogs {
+            service: "redis".into(),
+            lines: 100,
+        });
+        pin(Request::CreateDatabase {
+            service: "mysql".into(),
+            name: "app".into(),
+        });
     }
 }

@@ -29,7 +29,11 @@ struct WireSer<'a> {
     // byte-shape goldens, which assume no extra tables).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     overrides: Vec<OverrideSer<'a>>,
-    services: ServicesSectionSer<'a>,
+    // v3: per-service tables (`[services.redis]`). Skipped when empty so a
+    // default config emits no `[services]` region (byte-shape goldens assume no
+    // extra tables). `BTreeMap` → deterministic lexicographic table order.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    services: BTreeMap<&'a str, ServiceInstanceSer<'a>>,
 }
 
 #[derive(Serialize)]
@@ -62,8 +66,13 @@ struct ParkedSectionSer<'a> {
 }
 
 #[derive(Serialize)]
-struct ServicesSectionSer<'a> {
-    enabled: &'a BTreeSet<String>,
+struct ServiceInstanceSer<'a> {
+    // Per-field skip so an unpinned instance emits only `enabled`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    version: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    port: Option<u16>,
+    enabled: bool,
 }
 
 #[derive(Serialize)]
@@ -75,6 +84,8 @@ struct OverrideSer<'a> {
     php: Option<&'a yerd_core::PhpVersion>,
     #[serde(skip_serializing_if = "Option::is_none")]
     secure: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    web_root: Option<&'a str>,
 }
 
 pub(crate) fn to_toml(c: &Config) -> Result<String, ConfigError> {
@@ -102,11 +113,24 @@ pub(crate) fn to_toml(c: &Config) -> Result<String, ConfigError> {
                 path,
                 php: ov.php.as_ref(),
                 secure: ov.secure,
+                web_root: ov.web_root.as_deref(),
             })
             .collect(),
-        services: ServicesSectionSer {
-            enabled: &c.services.enabled,
-        },
+        services: c
+            .services
+            .instances
+            .iter()
+            .map(|(name, inst)| {
+                (
+                    name.as_str(),
+                    ServiceInstanceSer {
+                        version: inst.version.as_deref(),
+                        port: inst.port,
+                        enabled: inst.enabled,
+                    },
+                )
+            })
+            .collect(),
     };
     toml::to_string_pretty(&w).map_err(Into::into)
 }
@@ -125,8 +149,8 @@ mod tests {
     fn default_to_toml_starts_with_version_line() {
         let s = to_toml(&Config::default()).unwrap();
         assert!(
-            s.starts_with("version = 1\n"),
-            "expected `version = 1` first line; got: {s}"
+            s.starts_with("version = 3\n"),
+            "expected `version = 3` first line; got: {s}"
         );
     }
 

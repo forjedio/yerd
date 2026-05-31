@@ -1,0 +1,22 @@
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Yerd">
+  <title>Yerd</title>
+  <!-- macOS app-icon (Dock) source. Apple's icon grid insets the rounded
+       "squircle" to ~824/1024 of the canvas (≈80%) with a transparent margin, so
+       the icon sits the same size as system icons. The brand mark (logo.svg) is
+       drawn edge-to-edge, so here it's wrapped in a group scaled to 824px and
+       offset by the 100px margin. Regenerate icon.icns from this with iconutil
+       (see scripts in git history / the icon-macos.svg comment). -->
+  <defs>
+    <!-- objectBoundingBox coords (transform-independent) mirroring logo.svg's
+         32,16 → 224,240 over a 256 box. -->
+    <linearGradient id="yerd-bg" x1="0.125" y1="0.0625" x2="0.875" y2="0.9375">
+      <stop stop-color="#6366F1"/>
+      <stop offset="1" stop-color="#4338CA"/>
+    </linearGradient>
+  </defs>
+  <g transform="translate(100 100) scale(3.21875)">
+    <rect width="256" height="256" rx="60" fill="url(#yerd-bg)"/>
+    <path d="M82 76 L128 140 L174 76 M128 140 L128 188"
+          stroke="#ffffff" stroke-width="30" stroke-linecap="round" stroke-linejoin="round"/>
+  </g>
+</svg>

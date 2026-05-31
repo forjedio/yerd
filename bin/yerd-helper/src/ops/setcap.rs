@@ -3,7 +3,9 @@
 use std::path::Path;
 
 use crate::error::HelperError;
+#[cfg(target_os = "linux")]
 use crate::ops::run_command;
+#[cfg(target_os = "linux")]
 use crate::validate;
 
 #[cfg(target_os = "linux")]

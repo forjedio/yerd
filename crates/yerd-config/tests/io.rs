@@ -10,7 +10,7 @@
 use std::fs;
 
 use tempfile::tempdir;
-use yerd_config::{Config, ConfigError, PhpSection};
+use yerd_config::{Config, ConfigError, PhpSection, ServiceInstance};
 use yerd_core::PhpVersion;
 
 #[test]
@@ -24,7 +24,10 @@ fn save_then_load_round_trip() {
         settings: std::collections::BTreeMap::new(),
     };
     original.parked.paths.insert("/srv/sites".to_string());
-    original.services.enabled.insert("mysql".to_string());
+    original
+        .services
+        .instances
+        .insert("mysql".to_string(), ServiceInstance::default());
     original.save(&path).unwrap();
 
     let loaded = Config::load(&path).unwrap();

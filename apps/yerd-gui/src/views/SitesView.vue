@@ -7,8 +7,13 @@ import {
   FolderPlus,
   FolderTree,
   Globe,
+  Info,
   Link2,
+  Lock,
+  LockOpen,
   MoreHorizontal,
+  Pencil,
+  Search,
   ShieldAlert,
   Trash2,
 } from "lucide-vue-next";
@@ -33,6 +38,12 @@ import Modal from "@/components/ui/Modal.vue";
 import Select from "@/components/ui/Select.vue";
 import Spinner from "@/components/ui/Spinner.vue";
 import Switch from "@/components/ui/Switch.vue";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { useDaemon } from "@/composables/useDaemon";
 import { useToast } from "@/composables/useToast";
 import {
@@ -46,10 +57,11 @@ import {
   pickDirectory,
   setPhp,
   setSecure,
+  setWebRoot,
   unlink,
   unpark,
 } from "@/ipc/client";
-import type { PhpVersion, Site } from "@/ipc/types";
+import type { Site } from "@/ipc/types";
 
 const toast = useToast();
 const { report } = useDaemon();
@@ -58,11 +70,12 @@ const sites = ref<Site[]>([]);
 const parked = ref<string[]>([]);
 const loading = ref(true);
 const rowBusy = ref<string | null>(null);
+const siteFilter = ref("");
 
 const tld = computed(() => report.value?.tld ?? "test");
 const caTrusted = computed(() => report.value?.ca.trusted_system === true);
 
-// PHP options for the per-site picker, from the live status report.
+// PHP options for the edit form, from the live status report.
 const phpOptions = computed(() => {
   const versions = (report.value?.php ?? []).map((p) => p.version);
   const opts = versions.map((v) => ({ value: v, label: `PHP ${v}` }));
@@ -75,9 +88,6 @@ function parentDir(p: string): string {
   return i <= 0 ? p : p.slice(0, i);
 }
 
-// One row per registered parked root, with a count of the parked sites it
-// produces. Strict parent-equality (not prefix) so a nested root isn't double
-// counted; only `kind === "parked"` sites belong to a folder.
 const folderRows = computed(() =>
   parked.value.map((folder) => ({
     folder,
@@ -87,12 +97,27 @@ const folderRows = computed(() =>
   })),
 );
 
+// Live, case-insensitive filter on the full `<name>.<tld>` domain.
+const filteredSites = computed(() => {
+  const q = siteFilter.value.trim().toLowerCase();
+  if (!q) return sites.value;
+  return sites.value.filter((s) =>
+    `${s.name}.${tld.value}`.toLowerCase().includes(q),
+  );
+});
+
 function siteUrl(s: Site): string {
   const scheme = s.secure ? "https" : "http";
   const bound = s.secure ? report.value?.https.bound : report.value?.http.bound;
   const dflt = s.secure ? 443 : 80;
-  const port = bound && bound !== dflt ? `:${bound}` : "";
+  const redirected = report.value?.port_redirect === true;
+  const port = !redirected && bound && bound !== dflt ? `:${bound}` : "";
   return `${scheme}://${s.name}.${tld.value}${port}`;
+}
+
+/** The served sub-directory label for a site ("/" when the project root is served). */
+function servedLabel(s: Site): string {
+  return s.web_subpath && s.web_subpath !== "" ? s.web_subpath : "/";
 }
 
 async function load(): Promise<void> {
@@ -108,29 +133,55 @@ async function load(): Promise<void> {
   }
 }
 
-async function onSetPhp(s: Site, version: PhpVersion): Promise<void> {
-  rowBusy.value = `php:${s.name}`;
-  try {
-    await setPhp(s.name, version);
-    toast.success(`${s.name} now uses PHP ${version}`);
-    await load();
-  } catch (e) {
-    toast.error("Couldn't change PHP version", (e as IpcError).message);
-  } finally {
-    rowBusy.value = null;
-  }
+// ── edit site (PHP + web root + HTTPS) ──
+const editOpen = ref(false);
+const editTarget = ref<Site | null>(null);
+const editPhp = ref<string>("");
+const editWebRoot = ref("");
+const editSecure = ref(false);
+
+function openEdit(s: Site): void {
+  editTarget.value = s;
+  editPhp.value = s.php;
+  editWebRoot.value = s.web_subpath ?? "";
+  editSecure.value = s.secure;
+  // Defer past the dropdown's close so reka-ui's focus-restore doesn't steal
+  // focus from the modal.
+  void nextTick(() => {
+    editOpen.value = true;
+  });
 }
 
-async function onToggleSecure(s: Site, secure: boolean): Promise<void> {
-  rowBusy.value = `secure:${s.name}`;
+async function chooseEditDir(): Promise<void> {
+  // The picker only suggests a start dir; the daemon enforces containment.
+  const dir = await pickDirectory(editTarget.value?.document_root);
+  if (dir) editWebRoot.value = dir;
+}
+
+async function confirmEdit(close: () => void): Promise<void> {
+  const s = editTarget.value;
+  close();
+  if (!s) return;
+  rowBusy.value = `edit:${s.name}`;
   try {
-    await setSecure(s.name, secure);
-    toast.success(secure ? `Enabled HTTPS for ${s.name}` : `Disabled HTTPS for ${s.name}`);
+    // Apply only what changed; each setter restarts/re-renders as needed.
+    if (editPhp.value && editPhp.value !== s.php) {
+      await setPhp(s.name, editPhp.value);
+    }
+    const newRoot = editWebRoot.value.trim();
+    if (newRoot !== (s.web_subpath ?? "")) {
+      await setWebRoot(s.name, newRoot === "" ? null : newRoot);
+    }
+    if (editSecure.value !== s.secure) {
+      await setSecure(s.name, editSecure.value);
+    }
+    toast.success(`Updated ${s.name}`);
     await load();
   } catch (e) {
-    toast.error("Couldn't change HTTPS", (e as IpcError).message);
+    toast.error("Couldn't update site", (e as IpcError).message);
   } finally {
     rowBusy.value = null;
+    editTarget.value = null;
   }
 }
 
@@ -153,8 +204,6 @@ async function onPark(): Promise<void> {
 const unparkOpen = ref(false);
 const unparkTarget = ref<string | null>(null);
 
-// Defer opening past the dropdown's close so reka-ui's focus-restore doesn't
-// steal focus from the modal (same pattern as PhpView's uninstall).
 function openUnpark(folder: string): void {
   unparkTarget.value = folder;
   void nextTick(() => {
@@ -254,7 +303,7 @@ onMounted(load);
         <span>
           The local CA isn't trusted in your system store, so browsers will warn
           on HTTPS sites. Fix it under
-          <RouterLink to="/services" class="font-medium underline">Services → Environment</RouterLink>.
+          <RouterLink to="/general" class="font-medium underline">General → Environment</RouterLink>.
         </span>
       </div>
 
@@ -364,97 +413,169 @@ onMounted(load);
               <strong>Link</strong> a single directory.
             </div>
 
-            <table v-else class="w-full text-sm">
-              <thead>
-                <tr class="border-b text-left text-xs uppercase text-muted-foreground">
-                  <th class="py-2 pr-4 font-medium">Site</th>
-                  <th class="py-2 pr-4 font-medium">Document root</th>
-                  <th class="py-2 pr-4 font-medium">PHP</th>
-                  <th class="py-2 pr-4 font-medium">HTTPS</th>
-                  <th class="py-2 pl-4 text-right font-medium">Actions</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr v-for="s in sites" :key="s.name" class="border-b last:border-0">
-                  <td class="py-3 pr-4">
-                    <div class="flex items-center gap-2">
-                      <button
-                        class="font-medium text-primary hover:underline"
-                        @click="openInBrowser(siteUrl(s))"
-                      >
-                        {{ s.name }}.{{ tld }}
-                      </button>
-                      <Badge variant="outline">{{ s.kind }}</Badge>
-                    </div>
-                  </td>
-                  <td class="py-3 pr-4">
-                    <button
-                      class="flex items-center gap-1.5 truncate text-xs text-muted-foreground hover:text-foreground"
-                      :title="s.document_root"
-                      @click="openPath(s.document_root)"
-                    >
-                      <FolderOpen class="size-3.5 shrink-0" />
-                      <span class="truncate">{{ s.document_root }}</span>
-                    </button>
-                  </td>
-                  <td class="py-3 pr-4">
-                    <Select
-                      v-if="phpOptions"
-                      :model-value="s.php"
-                      :options="phpOptions"
-                      :disabled="rowBusy === `php:${s.name}`"
-                      :aria-label="`PHP version for ${s.name}`"
-                      @update:model-value="(v: string) => onSetPhp(s, v)"
-                    />
-                    <span v-else class="font-mono text-xs">PHP {{ s.php }}</span>
-                  </td>
-                  <td class="py-3 pr-4">
-                    <Switch
-                      :model-value="s.secure"
-                      :disabled="rowBusy === `secure:${s.name}`"
-                      :aria-label="`HTTPS for ${s.name}`"
-                      @update:model-value="(v: boolean) => onToggleSecure(s, v)"
-                    />
-                  </td>
-                  <td class="py-3 pl-4">
-                    <div class="flex items-center justify-end">
-                      <Spinner v-if="rowBusy === `unlink:${s.name}`" class="size-4" />
-                      <DropdownMenu>
-                        <DropdownMenuTrigger as-child>
-                          <Button variant="ghost" size="icon" :aria-label="`Actions for ${s.name}`">
-                            <MoreHorizontal class="size-4" />
-                          </Button>
-                        </DropdownMenuTrigger>
-                        <DropdownMenuContent align="end">
-                          <DropdownMenuItem @select="openInBrowser(siteUrl(s))">
-                            <ExternalLink class="size-4" /> Open in browser
-                          </DropdownMenuItem>
-                          <DropdownMenuItem @select="openPath(s.document_root)">
-                            <FolderOpen class="size-4" /> Reveal folder
-                          </DropdownMenuItem>
-                          <!-- Only linked sites are removable here (by name).
-                               A parked site has no destructive action — it's
-                               removed by un-parking its folder. -->
-                          <template v-if="s.kind === 'linked'">
-                            <DropdownMenuSeparator />
-                            <DropdownMenuItem
-                              class="text-destructive focus:bg-destructive/10 focus:text-destructive"
-                              @select="openUnlink(s)"
-                            >
-                              <Trash2 class="size-4" /> Unlink
+            <template v-else>
+              <div class="relative mb-4 max-w-xs">
+                <Search
+                  class="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground"
+                />
+                <Input
+                  v-model="siteFilter"
+                  placeholder="Filter by domain…"
+                  aria-label="Filter sites by domain"
+                  class="pl-8"
+                />
+              </div>
+
+              <TooltipProvider :delay-duration="0">
+              <table class="w-full text-sm">
+                <thead>
+                  <tr class="border-b text-left text-xs uppercase text-muted-foreground">
+                    <th class="py-2 pr-4 font-medium">Site</th>
+                    <th class="py-2 pr-4 font-medium">PHP</th>
+                    <th class="py-2 pr-4 font-medium">HTTPS</th>
+                    <th class="py-2 pl-4 text-right font-medium">Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-for="s in filteredSites" :key="s.name" class="border-b last:border-0">
+                    <td class="py-4 pr-4">
+                      <div class="flex items-center gap-2">
+                        <button
+                          class="font-medium text-primary hover:underline"
+                          @click="openInBrowser(siteUrl(s))"
+                        >
+                          {{ s.name }}.{{ tld }}
+                        </button>
+                        <Badge variant="outline">{{ s.kind }}</Badge>
+                        <Tooltip>
+                          <TooltipTrigger as-child>
+                            <span class="inline-flex cursor-help text-muted-foreground">
+                              <Info class="size-3.5" />
+                            </span>
+                          </TooltipTrigger>
+                          <TooltipContent side="top">
+                            <div class="space-y-0.5 text-xs">
+                              <div>
+                                <span class="text-muted-foreground">Document root:</span>
+                                {{ s.document_root }}
+                              </div>
+                              <div>
+                                <span class="text-muted-foreground">Served from:</span>
+                                {{ servedLabel(s) }}
+                              </div>
+                            </div>
+                          </TooltipContent>
+                        </Tooltip>
+                      </div>
+                    </td>
+                    <td class="py-4 pr-4">
+                      <span class="font-mono text-xs">PHP {{ s.php }}</span>
+                    </td>
+                    <td class="py-4 pr-4">
+                      <Tooltip>
+                        <TooltipTrigger as-child>
+                          <span class="inline-flex cursor-help">
+                            <Lock v-if="s.secure" class="size-4 text-success" />
+                            <LockOpen v-else class="size-4 text-muted-foreground" />
+                          </span>
+                        </TooltipTrigger>
+                        <TooltipContent side="top">{{ s.secure ? "HTTPS enabled" : "HTTP only" }}</TooltipContent>
+                      </Tooltip>
+                    </td>
+                    <td class="py-4 pl-4">
+                      <div class="flex items-center justify-end">
+                        <Spinner v-if="rowBusy?.endsWith(`:${s.name}`)" class="size-4" />
+                        <DropdownMenu>
+                          <DropdownMenuTrigger as-child>
+                            <Button variant="ghost" size="icon" :aria-label="`Actions for ${s.name}`">
+                              <MoreHorizontal class="size-4" />
+                            </Button>
+                          </DropdownMenuTrigger>
+                          <DropdownMenuContent align="end">
+                            <DropdownMenuItem @select="openEdit(s)">
+                              <Pencil class="size-4" /> Edit…
                             </DropdownMenuItem>
-                          </template>
-                        </DropdownMenuContent>
-                      </DropdownMenu>
-                    </div>
-                  </td>
-                </tr>
-              </tbody>
-            </table>
+                            <DropdownMenuItem @select="openInBrowser(siteUrl(s))">
+                              <ExternalLink class="size-4" /> Open in browser
+                            </DropdownMenuItem>
+                            <DropdownMenuItem @select="openPath(s.document_root)">
+                              <FolderOpen class="size-4" /> Reveal folder
+                            </DropdownMenuItem>
+                            <!-- Only linked sites are removable here (by name).
+                                 A parked site is removed by un-parking its folder. -->
+                            <template v-if="s.kind === 'linked'">
+                              <DropdownMenuSeparator />
+                              <DropdownMenuItem
+                                class="text-destructive focus:bg-destructive/10 focus:text-destructive"
+                                @select="openUnlink(s)"
+                              >
+                                <Trash2 class="size-4" /> Unlink
+                              </DropdownMenuItem>
+                            </template>
+                          </DropdownMenuContent>
+                        </DropdownMenu>
+                      </div>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+              </TooltipProvider>
+
+              <p
+                v-if="filteredSites.length === 0"
+                class="py-8 text-center text-sm text-muted-foreground"
+              >
+                No sites match “{{ siteFilter }}”.
+              </p>
+            </template>
           </CardContent>
         </Card>
       </template>
     </div>
+
+    <!-- edit site modal -->
+    <Modal v-model:open="editOpen" :title="`Edit ${editTarget?.name ?? ''}`">
+      <div class="space-y-4">
+        <div>
+          <label class="text-sm font-medium">PHP version</label>
+          <div class="mt-2">
+            <Select
+              v-if="phpOptions"
+              :model-value="editPhp"
+              :options="phpOptions"
+              class="w-full"
+              aria-label="PHP version"
+              @update:model-value="(v: string) => (editPhp = v)"
+            />
+            <p v-else class="text-xs text-muted-foreground">No PHP versions installed.</p>
+          </div>
+        </div>
+
+        <div>
+          <label class="block text-sm font-medium" for="editwebroot">Web root</label>
+          <div class="mt-2 flex gap-2">
+            <Input id="editwebroot" v-model="editWebRoot" placeholder="public" />
+            <Button variant="outline" @click="chooseEditDir"><FolderOpen class="size-4" /></Button>
+          </div>
+          <p class="mt-1 text-xs text-muted-foreground">
+            Directory served as the document root, relative to the site folder
+            (e.g. <code class="font-mono">public</code>). Leave blank to auto-detect.
+          </p>
+        </div>
+
+        <div class="flex items-center justify-between gap-4">
+          <div>
+            <p class="text-sm font-medium">HTTPS</p>
+            <p class="text-xs text-muted-foreground">Serve this site over TLS.</p>
+          </div>
+          <Switch v-model="editSecure" aria-label="HTTPS" />
+        </div>
+      </div>
+      <template #footer="{ close }">
+        <Button variant="ghost" @click="close">Cancel</Button>
+        <Button @click="confirmEdit(close)">Save</Button>
+      </template>
+    </Modal>
 
     <!-- link modal -->
     <Modal v-model:open="linkOpen" title="Link a site">

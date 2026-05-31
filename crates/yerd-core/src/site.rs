@@ -37,10 +37,20 @@ pub enum SiteKind {
 /// default string representation, which is lossy for paths that cannot be
 /// encoded as UTF-8 (notably Windows paths containing unpaired surrogates from
 /// WTF-16). Callers needing a guaranteed-UTF-8 path should normalise upstream.
+///
+/// `web_subpath` is the directory actually served, **relative to**
+/// `document_root` (empty = serve `document_root` itself). Modern frameworks
+/// serve from a subdirectory (`public/`, `web/`, `webroot/`, `pub/`); the daemon
+/// detects this and the proxy serves [`Self::served_root`]. Like
+/// `document_root`, the value is not validated here — but [`Self::served_root`]
+/// is deliberately defensive so it can never escape `document_root` even if the
+/// stored subpath is absolute or contains `..` (see that method). Containment is
+/// enforced authoritatively at config-load validation in `yerd-config`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Site {
     name: String,
     document_root: PathBuf,
+    web_subpath: PathBuf,
     php: PhpVersion,
     secure: bool,
     kind: SiteKind,
@@ -58,6 +68,7 @@ impl Site {
         Ok(Self {
             name,
             document_root: document_root.into(),
+            web_subpath: PathBuf::new(),
             php,
             secure: false,
             kind: SiteKind::Parked,
@@ -75,6 +86,7 @@ impl Site {
         Ok(Self {
             name,
             document_root: document_root.into(),
+            web_subpath: PathBuf::new(),
             php,
             secure: false,
             kind: SiteKind::Linked,
@@ -91,6 +103,34 @@ impl Site {
     #[must_use]
     pub fn document_root(&self) -> &Path {
         &self.document_root
+    }
+
+    /// The served web root, **relative to** [`Self::document_root`]. Empty means
+    /// "serve the document root itself".
+    #[must_use]
+    pub fn web_subpath(&self) -> &Path {
+        &self.web_subpath
+    }
+
+    /// The absolute directory the proxy serves: [`Self::document_root`] joined
+    /// with [`Self::web_subpath`].
+    ///
+    /// **Defensive by construction — never escapes the document root.** An empty
+    /// subpath returns the document root verbatim (avoiding `join("")`, which
+    /// would append a trailing separator). A subpath that is absolute or
+    /// contains a `..`/root/prefix component is treated as empty: `Path::join`
+    /// with an absolute argument discards the base (`"/a".join("/etc") ==
+    /// "/etc"`) and `..` could climb out, so such values fall back to serving the
+    /// document root. Legitimate subpaths are plain relative directories
+    /// (`public`, `web`, …); config-load validation rejects the rest, this is the
+    /// second line of defence.
+    #[must_use]
+    pub fn served_root(&self) -> PathBuf {
+        if self.web_subpath.as_os_str().is_empty() || !is_safe_relative(&self.web_subpath) {
+            self.document_root.clone()
+        } else {
+            self.document_root.join(&self.web_subpath)
+        }
     }
 
     /// The PHP version this site is served under.
@@ -114,6 +154,12 @@ impl Site {
     /// Replaces the document root. Not validated — see type-level docs.
     pub fn set_document_root(&mut self, p: impl Into<PathBuf>) {
         self.document_root = p.into();
+    }
+
+    /// Replaces the served web subpath (relative to the document root). Not
+    /// validated here — see [`Self::served_root`] for the containment guarantee.
+    pub fn set_web_subpath(&mut self, p: impl Into<PathBuf>) {
+        self.web_subpath = p.into();
     }
 
     /// Replaces the PHP version.
@@ -180,12 +226,34 @@ fn err(name: &str, reason: SiteNameErrorReason) -> CoreError {
     }
 }
 
+/// A web subpath is safe to join onto the document root iff it is a plain
+/// relative path: no root, no drive/UNC prefix, and no `..` component. Such a
+/// path can only ever resolve to a descendant of the document root. Used by
+/// [`Site::served_root`] as a containment backstop; `yerd-config` enforces the
+/// same rule at load time. An empty path is reported safe (the caller handles
+/// the empty case before calling this).
+#[must_use]
+pub(crate) fn is_safe_relative(p: &Path) -> bool {
+    use std::path::Component;
+    p.components()
+        .all(|c| matches!(c, Component::Normal(_) | Component::CurDir))
+}
+
 impl serde::Serialize for Site {
     fn serialize<S: serde::Serializer>(&self, ser: S) -> Result<S::Ok, S::Error> {
         use serde::ser::SerializeStruct;
-        let mut s = ser.serialize_struct("Site", 5)?;
+        // `web_subpath` is skipped when empty so the wire/TOML bytes for
+        // root-served sites are byte-identical to before the field existed
+        // (the byte-shape goldens depend on this). Field count is adjusted to
+        // match what is actually emitted.
+        let emit_subpath = !self.web_subpath.as_os_str().is_empty();
+        let fields = if emit_subpath { 6 } else { 5 };
+        let mut s = ser.serialize_struct("Site", fields)?;
         s.serialize_field("name", &self.name)?;
         s.serialize_field("document_root", &self.document_root)?;
+        if emit_subpath {
+            s.serialize_field("web_subpath", &self.web_subpath)?;
+        }
         s.serialize_field("php", &self.php)?;
         s.serialize_field("secure", &self.secure)?;
         s.serialize_field("kind", &self.kind)?;
@@ -203,6 +271,10 @@ impl<'de> serde::Deserialize<'de> for Site {
         struct Wire {
             name: String,
             document_root: PathBuf,
+            // Absent in pre-`web_subpath` wire/config → defaults to empty
+            // (serve the document root). Other unknown fields are still rejected.
+            #[serde(default)]
+            web_subpath: PathBuf,
             php: PhpVersion,
             secure: bool,
             kind: SiteKind,
@@ -212,6 +284,7 @@ impl<'de> serde::Deserialize<'de> for Site {
         Ok(Self {
             name,
             document_root: w.document_root,
+            web_subpath: w.web_subpath,
             php: w.php,
             secure: w.secure,
             kind: w.kind,
@@ -394,9 +467,71 @@ mod tests {
         assert_eq!(v["php"], "8.3");
         assert_eq!(v["secure"], false);
         assert_eq!(v["kind"], "parked");
+        // Empty web_subpath is omitted entirely.
+        assert!(v.get("web_subpath").is_none());
 
         let back: Site = serde_json::from_value(v).unwrap();
         assert_eq!(back, s);
+    }
+
+    #[test]
+    fn web_subpath_default_is_empty() {
+        let s = Site::parked("foo", "/srv/foo", v83()).unwrap();
+        assert_eq!(s.web_subpath(), Path::new(""));
+    }
+
+    #[test]
+    fn served_root_empty_subpath_is_document_root() {
+        let s = Site::parked("foo", "/srv/foo", v83()).unwrap();
+        // No trailing separator from a stray join("").
+        assert_eq!(s.served_root(), PathBuf::from("/srv/foo"));
+    }
+
+    #[test]
+    fn served_root_joins_relative_subpath() {
+        let mut s = Site::linked("foo", "/srv/foo", v83()).unwrap();
+        s.set_web_subpath("public");
+        assert_eq!(s.served_root(), PathBuf::from("/srv/foo/public"));
+        assert_eq!(s.web_subpath(), Path::new("public"));
+    }
+
+    #[test]
+    fn served_root_is_defensive_against_escapes() {
+        // Absolute subpath would otherwise replace the base via Path::join.
+        let mut s = Site::linked("foo", "/srv/foo", v83()).unwrap();
+        s.set_web_subpath("/etc");
+        assert_eq!(s.served_root(), PathBuf::from("/srv/foo"));
+
+        // `..` traversal is clamped back to the document root.
+        s.set_web_subpath("../../etc");
+        assert_eq!(s.served_root(), PathBuf::from("/srv/foo"));
+
+        // A nested-but-contained relative path is allowed.
+        s.set_web_subpath("app/public");
+        assert_eq!(s.served_root(), PathBuf::from("/srv/foo/app/public"));
+    }
+
+    #[test]
+    fn serde_roundtrip_with_web_subpath() {
+        let mut s = Site::linked("foo", "/srv/foo", v83()).unwrap();
+        s.set_web_subpath("public");
+        let v = serde_json::to_value(&s).unwrap();
+        assert_eq!(v["web_subpath"], "public");
+        let json = serde_json::to_string(&s).unwrap();
+        // Field order: web_subpath sits right after document_root.
+        assert_eq!(
+            json,
+            r#"{"name":"foo","document_root":"/srv/foo","web_subpath":"public","php":"8.3","secure":false,"kind":"linked"}"#
+        );
+        let back: Site = serde_json::from_value(v).unwrap();
+        assert_eq!(back, s);
+    }
+
+    #[test]
+    fn deserialize_absent_web_subpath_defaults_empty() {
+        let json = r#"{"name":"foo","document_root":"/srv/foo","php":"8.3","secure":false,"kind":"parked"}"#;
+        let s: Site = serde_json::from_str(json).unwrap();
+        assert_eq!(s.web_subpath(), Path::new(""));
     }
 
     #[test]

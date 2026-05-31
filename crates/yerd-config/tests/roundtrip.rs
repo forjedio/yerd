@@ -7,7 +7,7 @@
     clippy::indexing_slicing
 )]
 
-use yerd_config::{Config, PhpSection, Ports, SiteOverride};
+use yerd_config::{Config, PhpSection, Ports, ServiceInstance, SiteOverride};
 use yerd_core::{PhpVersion, Site, Tld};
 
 const POPULATED: &str = r#"
@@ -61,10 +61,17 @@ fn populated_expected() -> Config {
         SiteOverride {
             php: Some(PhpVersion::new(8, 4)),
             secure: Some(true),
+            web_root: None,
         },
     );
-    c.services.enabled.insert("mysql".to_string());
-    c.services.enabled.insert("redis".to_string());
+    // POPULATED is a v1 file: its `enabled = ["mysql", "redis"]` array migrates
+    // to per-service instances, each enabled (version/port unset).
+    c.services
+        .instances
+        .insert("mysql".to_string(), ServiceInstance::default());
+    c.services
+        .instances
+        .insert("redis".to_string(), ServiceInstance::default());
     c
 }
 

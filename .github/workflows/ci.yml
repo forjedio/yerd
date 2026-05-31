@@ -17,7 +17,7 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  # The exact local gate (CLAUDE.md §5): fmt + clippy -D warnings + test, over
+  # The exact local gate: fmt + clippy -D warnings + test, over
   # the full workspace (which includes the Tauri GUI crate) on Linux + macOS.
   rust:
     name: rust (${{ matrix.os }})
@@ -25,9 +25,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # macos-14 = Apple Silicon, macos-13 = Intel — both, so an x86_64-only
-        # macOS break is caught in CI before a release tag is pushed.
-        os: [ubuntu-22.04, macos-13, macos-14]
+        # macos-14 = Apple Silicon.
+        os: [ubuntu-22.04, macos-14]
     steps:
       - uses: actions/checkout@v4
 

@@ -10,7 +10,7 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 use yerd_core::{PhpVersion, Site};
 
-use crate::status::{Diagnosis, FixReport, StatusReport};
+use crate::status::{Diagnosis, FixReport, ServiceAvailability, ServiceStatus, StatusReport};
 
 // Same rule: no per-field serde renames.
 /// A response sent from the daemon to a client.
@@ -105,6 +105,21 @@ pub enum Response {
         /// The fix outcome.
         report: FixReport,
     },
+    /// Reply to [`crate::Request::ListServices`].
+    Services {
+        /// One entry per manageable service.
+        services: Vec<ServiceStatus>,
+    },
+    /// Reply to [`crate::Request::AvailableServices`].
+    AvailableServices {
+        /// Installable vs installed versions, per service.
+        services: Vec<ServiceAvailability>,
+    },
+    /// Reply to [`crate::Request::ServiceLogs`] — trailing log lines, oldest first.
+    ServiceLogs {
+        /// The log lines.
+        lines: Vec<String>,
+    },
 }
 
 /// An available newer patch for an installed PHP minor.
@@ -135,6 +150,8 @@ pub enum ErrorCode {
     /// The supplied path was rejected (does not exist, not a
     /// directory, outside an allowed root, etc.).
     InvalidPath,
+    /// A service's configured port is already in use by another listener.
+    PortInUse,
     /// Catch-all for daemon-side failures that don't fit a typed code.
     /// Expand this enum rather than overloading `Internal`.
     Internal,
@@ -168,6 +185,9 @@ mod variant_name_pinning {
             Response::Status { .. } => {}
             Response::Diagnoses { .. } => {}
             Response::DoctorFix { .. } => {}
+            Response::Services { .. } => {}
+            Response::AvailableServices { .. } => {}
+            Response::ServiceLogs { .. } => {}
         }
     }
 
@@ -177,6 +197,7 @@ mod variant_name_pinning {
             ErrorCode::NotFound => {}
             ErrorCode::AlreadyExists => {}
             ErrorCode::InvalidPath => {}
+            ErrorCode::PortInUse => {}
             ErrorCode::Internal => {}
         }
     }
@@ -235,11 +256,14 @@ mod variant_name_pinning {
                 },
                 resolver_installed: None,
                 port_redirect: None,
+                foreign_web_listener: None,
+                resolver_backup: None,
                 default_php: PhpVersion::new(8, 5),
                 php: vec![],
                 sites: crate::status::SiteCounts::default(),
                 load_avg: Some([100, 50, 25]),
                 daemon_version: "9.9.9".into(),
+                services: vec![],
             }),
         });
         pin_response(Response::Diagnoses {
@@ -257,10 +281,14 @@ mod variant_name_pinning {
                 manual: vec![],
             },
         });
+        pin_response(Response::Services { services: vec![] });
+        pin_response(Response::AvailableServices { services: vec![] });
+        pin_response(Response::ServiceLogs { lines: vec![] });
         for c in [
             ErrorCode::NotFound,
             ErrorCode::AlreadyExists,
             ErrorCode::InvalidPath,
+            ErrorCode::PortInUse,
             ErrorCode::Internal,
         ] {
             pin_code(c);

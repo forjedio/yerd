@@ -40,7 +40,7 @@ jobs:
         include:
           - { os: ubuntu-22.04, target: x86_64-unknown-linux-gnu }
           - { os: ubuntu-22.04-arm, target: aarch64-unknown-linux-gnu }
-          - { os: macos-13, target: x86_64-apple-darwin }
+          # macOS: Apple Silicon only. Intel (x86_64-apple-darwin) is not built.
           - { os: macos-14, target: aarch64-apple-darwin }
     steps:
       - uses: actions/checkout@v4
@@ -90,7 +90,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-22.04, macos-13, macos-14]
+        os: [ubuntu-22.04, macos-14]
     steps:
       - uses: actions/checkout@v4
 

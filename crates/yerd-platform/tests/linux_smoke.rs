@@ -108,7 +108,8 @@ fn resolver_uninstall_returns_needs_helper() {
 #[test]
 fn resolver_is_installed_returns_false_for_unknown_tld() {
     let r = ActiveResolverInstaller;
-    assert!(!r.is_installed("yerd-unlikely-tld-xyz").unwrap());
+    let addr = "127.0.0.1:1053".parse().unwrap();
+    assert!(!r.is_installed("yerd-unlikely-tld-xyz", addr).unwrap());
 }
 
 #[test]

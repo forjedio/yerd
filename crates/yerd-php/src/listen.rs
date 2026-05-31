@@ -6,39 +6,18 @@
 //! pool config, then bakes the resolved address into the rendered
 //! template.
 
-use std::fmt;
 #[cfg(windows)]
 use std::net::Ipv4Addr;
+#[cfg(windows)]
 use std::net::SocketAddr;
-use std::path::PathBuf;
 
 use yerd_core::PhpVersion;
 use yerd_platform::{PlatformDirs, PortBinder};
 
 use crate::error::PhpError;
 
-/// The address an FPM pool listens on.
-///
-/// Wire-level: a Unix path written into `listen = /path/to.sock`, or a
-/// `127.0.0.1:<port>` literal written into `listen = 127.0.0.1:9000`.
-#[non_exhaustive]
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Listen {
-    /// Unix domain socket path. Only valid on Unix; the [`AllocatedListen::plan`]
-    /// planner never produces this on Windows.
-    UnixSocket(PathBuf),
-    /// TCP loopback address. Always valid; required on Windows.
-    TcpLoopback(SocketAddr),
-}
-
-impl fmt::Display for Listen {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::UnixSocket(p) => f.write_str(&p.display().to_string()),
-            Self::TcpLoopback(a) => write!(f, "{a}"),
-        }
-    }
-}
+/// The generic listen-address type FPM uses, re-exported from `yerd-supervise`.
+pub use yerd_supervise::Listen;
 
 /// Result of pre-flighting a listen address for one FPM pool.
 ///
@@ -110,18 +89,8 @@ impl AllocatedListen {
 )]
 mod tests {
     use super::*;
-
-    #[test]
-    fn display_unix_socket() {
-        let l = Listen::UnixSocket(PathBuf::from("/tmp/fpm-8.3-1234.sock"));
-        assert_eq!(l.to_string(), "/tmp/fpm-8.3-1234.sock");
-    }
-
-    #[test]
-    fn display_tcp_loopback() {
-        let l = Listen::TcpLoopback("127.0.0.1:9000".parse().unwrap());
-        assert_eq!(l.to_string(), "127.0.0.1:9000");
-    }
+    #[cfg(unix)]
+    use std::path::PathBuf;
 
     #[cfg(unix)]
     #[test]
@@ -156,7 +125,7 @@ mod tests {
             Listen::UnixSocket(p) => {
                 assert_eq!(p, PathBuf::from("/run/fpm-8.3-4242.sock"));
             }
-            other => panic!("expected UnixSocket, got {other:?}"),
+            other @ Listen::TcpLoopback(_) => panic!("expected UnixSocket, got {other:?}"),
         }
     }
 }

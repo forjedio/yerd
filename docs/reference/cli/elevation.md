@@ -1,0 +1,36 @@
+# Elevation
+
+`elevate` and `unelevate` perform one-shot OS-level privilege setup and must be run with `sudo`. Unlike every other command, they do **not** map to a single IPC request: the CLI fetches read-only facts from your running daemon, then spawns the audited `yerd-helper` for each privileged operation. (Attempting to route them over IPC is an explicit usage error.)
+
+| Command | Description |
+| --- | --- |
+| `sudo yerd elevate [TARGET]` | Grant yerd OS-level privileges. No target = grant all. |
+| `sudo yerd unelevate [TARGET]` | Revert what `elevate` configured. No target = revert all. |
+
+## Targets
+
+| Target | Description |
+| --- | --- |
+| `trust` | Trust the local CA in the OS system store. |
+| `resolver` | Route `*.<tld>` queries to yerd's DNS responder. |
+| `ports` | Allow the daemon to bind privileged ports 80/443. |
+
+```sh
+sudo yerd elevate            # grant all three, in order: trust -> resolver -> ports
+sudo yerd elevate trust      # just trust the local CA
+sudo yerd elevate resolver   # just route *.test to the yerd DNS responder
+sudo yerd elevate ports      # just allow binding 80/443
+sudo yerd unelevate          # revert everything
+sudo yerd unelevate trust    # just untrust the CA
+```
+
+With no target, `elevate`/`unelevate` apply all three in the order `trust -> resolver -> ports`.
+
+::: warning Platform differences
+- **Linux:** `ports` is a one-time `setcap cap_net_bind_service` grant on `yerdd`. After granting it, restart the daemon for 80/443 to take effect. There's no clean reverse operation, so `unelevate ports` only prints the manual `setcap -r` command rather than running it. Package upgrades reset `setcap`, so re-run `elevate ports` afterwards.
+- **macOS:** `ports` installs a `pf` redirect mapping 80 to the daemon's rootless HTTP port and 443 to its HTTPS port. It's live immediately (no daemon restart) and `unelevate ports` removes the redirect.
+
+On a host where a target isn't supported (for example `resolver` without `systemd-resolved`), that step is **skipped**, not failed, and guidance is printed.
+:::
+
+The [Elevation & Privileges guide](../../guide/elevation) explains the security model and the `yerd-helper` boundary in detail.

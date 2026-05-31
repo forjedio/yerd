@@ -232,6 +232,14 @@ mod unix_impl {
             (ElevateTarget::Resolver, false) => {
                 format!("resolver: routing *.{} → {}", facts.tld, facts.dns_addr)
             }
+            // macOS restores the pre-Yerd resolver from its backup (if any);
+            // Linux just removes the systemd drop-in — no restore there.
+            #[cfg(target_os = "macos")]
+            (ElevateTarget::Resolver, true) => format!(
+                "resolver: restoring your previous *.{} resolver (or removing yerd's route if none was backed up)",
+                facts.tld
+            ),
+            #[cfg(not(target_os = "macos"))]
             (ElevateTarget::Resolver, true) => {
                 format!("resolver: removing the *.{} route", facts.tld)
             }

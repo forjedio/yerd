@@ -23,6 +23,10 @@ rustc-ice-*.txt
 #  option (not recommended) you can uncomment the following to ignore the entire idea folder.
 .idea/
 
+# VitePress docs site (docs/ — the committed docs, not the ignored @docs)
+docs/.vitepress/dist/
+docs/.vitepress/cache/
+
 # Yerd GUI (apps/yerd-gui — Tauri v2 + Vue frontend)
 node_modules/
 apps/yerd-gui/dist/

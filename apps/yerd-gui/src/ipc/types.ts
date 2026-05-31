@@ -26,6 +26,10 @@ export type SiteKind = "parked" | "linked";
 export interface Site {
   name: string;
   document_root: string;
+  /** Served web root, relative to document_root (e.g. "public" for Laravel).
+   *  Omitted on the wire when empty (= serve the document root itself), so it is
+   *  optional here. */
+  web_subpath?: string;
   php: PhpVersion;
   secure: boolean;
   kind: SiteKind;
@@ -54,6 +58,30 @@ export interface SiteCounts {
 
 export type PoolRunState = "running" | "stopped" | "failed";
 
+/** crates/yerd-ipc/src/status.rs — ServiceRunState. */
+export type ServiceRunState = "running" | "stopped" | "failed";
+
+/** crates/yerd-ipc/src/status.rs — ServiceStatus (integer-only fields). */
+export interface ServiceStatus {
+  service: string;
+  display_name: string;
+  installed_versions: string[];
+  selected_version: string | null;
+  state: ServiceRunState;
+  pid: number | null;
+  listen: string | null;
+  port: number;
+  enabled: boolean;
+  supports_databases: boolean;
+}
+
+/** crates/yerd-ipc/src/status.rs — ServiceAvailability. */
+export interface ServiceAvailability {
+  service: string;
+  available: string[];
+  installed: string[];
+}
+
 export interface PhpPoolStatus {
   version: PhpVersion;
   installed_patch: string | null;
@@ -76,6 +104,19 @@ export interface StatusReport {
   ca: CaStatus;
   /** Tri-state — null means "unknown", never coerce to false. */
   resolver_installed: boolean | null;
+  /** macOS: is the pf redirect carrying 80/443 to the rootless ports? true =
+   *  privileged ports served via the redirect, false = not, null = unknown / not
+   *  applicable (Linux binds directly after setcap). */
+  port_redirect: boolean | null;
+  /** True when a non-Yerd process is listening on a privileged web port (80/443)
+   *  — a foreign squatter. Confirmed via the proxy's Server marker, so it never
+   *  misreads Yerd as foreign. false = no conflict, null/undefined = not probed.
+   *  Cross-platform (unlike port_redirect). */
+  foreign_web_listener?: boolean | null;
+  /** macOS: absolute path of the backup Yerd saved when installing the resolver
+   *  replaced a pre-existing /etc/resolver/<tld>. Omitted (undefined) when nothing
+   *  was replaced or the backup is older than the daemon's reporting window. */
+  resolver_backup?: string | null;
   default_php: PhpVersion;
   php: PhpPoolStatus[];
   sites: SiteCounts;
@@ -85,6 +126,9 @@ export interface StatusReport {
    *  predating version reporting (the Rust field is `#[serde(default)]`); render
    *  "unknown" in that case. */
   daemon_version: string;
+  /** Per-service status. Omitted (undefined) by a daemon with no services
+   *  (the Rust field is `#[serde(default, skip_serializing_if)]`). */
+  services?: ServiceStatus[];
 }
 
 export type Severity = "ok" | "warn" | "fail";
@@ -92,6 +136,7 @@ export type Severity = "ok" | "warn" | "fail";
 export type DiagnosisCode =
   | "daemon_down"
   | "port_fallback"
+  | "foreign_web_listener"
   | "ca_not_trusted"
   | "resolver_not_installed"
   | "no_php_installed"
@@ -99,6 +144,8 @@ export type DiagnosisCode =
   | "fpm_pool_failed"
   | "php_update_available"
   | "no_sites"
+  | "resolver_backup_saved"
+  | "service_failed"
   | "all_good";
 
 export interface Diagnosis {
@@ -132,6 +179,7 @@ export type ErrorCode =
   | "not_found"
   | "already_exists"
   | "invalid_path"
+  | "port_in_use"
   | "internal";
 
 /**
@@ -151,6 +199,10 @@ export type Response =
       tld: string;
       ca_path: string;
       ca_fingerprint: string;
+      /** Rootless bound ports; `#[serde(default)]` on the Rust side → may be
+       *  absent (0) against an older daemon. */
+      http_port?: number;
+      https_port?: number;
     }
   | {
       type: "php_versions";
@@ -166,7 +218,10 @@ export type Response =
     }
   | { type: "status"; report: StatusReport }
   | { type: "diagnoses"; items: Diagnosis[] }
-  | { type: "doctor_fix"; report: FixReport };
+  | { type: "doctor_fix"; report: FixReport }
+  | { type: "services"; services: ServiceStatus[] }
+  | { type: "available_services"; services: ServiceAvailability[] }
+  | { type: "service_logs"; lines: string[] };
 
 // Narrowed aliases for the variants the views actually read.
 export type InfoResponse = Extract<Response, { type: "info" }>;
@@ -177,6 +232,22 @@ export type AvailablePhpResponse = Extract<Response, { type: "available_php" }>;
 export type StatusResponse = Extract<Response, { type: "status" }>;
 export type DiagnosesResponse = Extract<Response, { type: "diagnoses" }>;
 export type DoctorFixResponse = Extract<Response, { type: "doctor_fix" }>;
+export type ServicesResponse = Extract<Response, { type: "services" }>;
+export type AvailableServicesResponse = Extract<Response, { type: "available_services" }>;
+export type ServiceLogsResponse = Extract<Response, { type: "service_logs" }>;
 
 /** Privilege targets for the OS-elevated `yerd elevate` host command. */
 export type ElevateTarget = "trust" | "resolver" | "ports";
+
+/**
+ * Login-autostart state for the General tab (host command `get_autostart`).
+ * `daemonSupported` is false when no per-user service manager exists (e.g. a
+ * Linux box without systemd `--user`), in which case the daemon toggle is
+ * disabled in the UI.
+ */
+export interface AutostartState {
+  daemon: boolean;
+  daemonSupported: boolean;
+  gui: boolean;
+  guiMinimized: boolean;
+}

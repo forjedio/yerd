@@ -7,6 +7,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod detect;
 mod error;
 mod host;
 mod php;
@@ -15,6 +16,18 @@ mod router;
 mod site;
 mod tld;
 
+/// `Server` header value the proxy stamps on its own (synthetic, non-forwarded)
+/// responses. It doubles as the signature the macOS privileged-port redirect
+/// probe looks for: confirming a connection to `127.0.0.1:80` reaches *this*
+/// daemon's proxy — rather than some other process or a stale `pf` rule holding
+/// the port — instead of merely confirming *something* answers.
+///
+/// It is a cross-crate contract: `yerd-proxy` sets it (`server.rs`) and
+/// `yerd-platform`'s redirect probe (`port_redirect.rs`) checks for it.
+/// Changing the value means updating both ends.
+pub const PROXY_SERVER_ID: &str = "yerd";
+
+pub use detect::{detect, Detection, ProjectSignals};
 pub use error::{CoreError, PhpVersionErrorReason, SiteNameErrorReason, TldErrorReason};
 pub use php::PhpVersion;
 pub use php_settings::{PhpSettingError, ValueErrorReason};

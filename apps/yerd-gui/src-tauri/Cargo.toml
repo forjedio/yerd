@@ -21,16 +21,27 @@ yerd-core     = { path = "../../../crates/yerd-core" }
 yerd-ipc      = { path = "../../../crates/yerd-ipc", features = ["transport"] }
 yerd-platform = { path = "../../../crates/yerd-platform" }
 
-tauri                         = { version = "2", features = ["tray-icon"] }
+# `image-png` enables Image::from_bytes for the macOS template tray icon (the
+# bundled app icon is embedded as RGBA by codegen and needs no runtime decoder).
+tauri                         = { version = "2", features = ["macos-private-api", "tray-icon", "image-png"] }
 tauri-plugin-single-instance  = "2"
 tauri-plugin-opener           = "2"
 tauri-plugin-dialog           = "2"
+tauri-plugin-autostart        = "2"
 
 interprocess = { workspace = true }
 tokio        = { workspace = true, features = ["rt", "rt-multi-thread", "io-util", "net", "time"] }
 serde        = { workspace = true }
 serde_json   = { workspace = true }
 libc         = "0.2"
+
+# yerdd auto-install: download the matching release tarball, verify, extract.
+# rustls only (workspace pins) — no OpenSSL, matching the rest of the workspace.
+reqwest = { workspace = true }
+sha2    = { workspace = true }
+hex     = { workspace = true }
+flate2  = { workspace = true }
+tar     = { workspace = true }
 
 # Linux only: pin the GTK program name so the Wayland app_id matches our
 # .desktop entry (yerd-gui.desktop) for the taskbar/dock icon, and reach the
@@ -40,6 +51,24 @@ libc         = "0.2"
 [target.'cfg(target_os = "linux")'.dependencies]
 glib       = "0.18"
 webkit2gtk = "=2.0.2"
+
+# macOS: re-apply the Dock icon after an activation-policy change (dev builds have
+# no .app bundle, so the recreated Dock tile would otherwise show the generic
+# executable icon). Versions track what Tauri already resolves, so no duplicates.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2            = "0.6"
+objc2-app-kit    = { version = "0.3", features = ["NSApplication", "NSImage", "NSResponder", "NSGraphics", "objc2-core-foundation"] }
+objc2-foundation = { version = "0.3", features = ["NSData", "objc2-core-foundation"] }
+# In-process user-domain CA trust (mac_trust.rs). Versions track what
+# yerd-platform already resolves, so no duplicate compiles. `core-foundation`
+# provides the `TCFType` trait (`as_concrete_TypeRef`); `security-framework-sys`
+# + `core-foundation-sys` back the hand-declared `SecTrustSettingsRemoveTrustSettings`
+# FFI (the safe crate has no remover).
+security-framework     = "2"
+security-framework-sys = "2"
+core-foundation        = "0.9"
+core-foundation-sys    = "0.8"
+pem                    = { workspace = true }
 
 [dev-dependencies]
 tokio       = { workspace = true, features = ["rt-multi-thread", "macros", "net", "io-util", "sync", "time"] }

@@ -12,6 +12,30 @@ export default {
       screens: { "2xl": "1400px" },
     },
     extend: {
+      fontFamily: {
+        // Pin a crisp, native UI stack (SF Pro on macOS) rather than relying on
+        // the bare default; "Inter" leads the fallbacks so a self-hosted copy is
+        // picked up automatically if we ever bundle one.
+        sans: [
+          "Inter",
+          "-apple-system",
+          "BlinkMacSystemFont",
+          '"SF Pro Text"',
+          '"Segoe UI"',
+          "Roboto",
+          '"Helvetica Neue"',
+          "Arial",
+          "sans-serif",
+        ],
+        mono: [
+          "ui-monospace",
+          '"SF Mono"',
+          '"JetBrains Mono"',
+          "Menlo",
+          "Consolas",
+          "monospace",
+        ],
+      },
       colors: {
         border: "hsl(var(--border))",
         input: "hsl(var(--input))",

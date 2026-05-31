@@ -23,6 +23,8 @@ yerd-tls       = { path = "../../crates/yerd-tls" }
 yerd-platform  = { path = "../../crates/yerd-platform" }
 yerd-dns       = { path = "../../crates/yerd-dns" }
 yerd-php       = { path = "../../crates/yerd-php" }
+yerd-services  = { path = "../../crates/yerd-services" }
+yerd-supervise = { path = "../../crates/yerd-supervise" }
 yerd-proxy     = { path = "../../crates/yerd-proxy" }
 yerd-doctor    = { path = "../../crates/yerd-doctor" }
 thiserror      = { workspace = true }
@@ -40,6 +42,7 @@ time           = { workspace = true }
 reqwest        = { workspace = true }
 flate2         = { workspace = true }
 tar            = { workspace = true }
+notify-debouncer-mini = "0.4"
 
 [dev-dependencies]
 tempfile       = { workspace = true }

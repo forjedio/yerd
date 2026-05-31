@@ -18,18 +18,28 @@ use std::path::PathBuf;
 use crate::error::GuiError;
 
 const TARGETS: [&str; 3] = ["trust", "resolver", "ports"];
+/// The two CLI verbs we drive. Validated (like `TARGETS`) before reaching
+/// `spawn_elevated`, where `verb` is interpolated into the macOS AppleScript —
+/// both come from fixed allowlists, keeping that string injection-safe.
+const VERBS: [&str; 2] = ["elevate", "unelevate"];
 
-/// Validate the target and run the elevated command, returning when it exits.
-pub async fn run(target: &str) -> Result<(), GuiError> {
-    if !TARGETS.contains(&target) {
+/// Validate the verb + target and run the elevated command, returning when it
+/// exits. `verb` is `"elevate"` or `"unelevate"`; an **empty** `target` means
+/// "all" — the CLI applies every step (`yerd elevate` with no subcommand).
+pub async fn run(verb: &str, target: &str) -> Result<(), GuiError> {
+    if !VERBS.contains(&verb) {
+        return Err(GuiError::internal(format!("unknown verb: {verb}")));
+    }
+    if !target.is_empty() && !TARGETS.contains(&target) {
         return Err(GuiError::internal(format!(
             "unknown elevate target: {target}"
         )));
     }
     let yerd = trusted_yerd()?;
+    let verb = verb.to_owned();
     let target = target.to_owned();
     // Spawn the blocking, prompt-driven process off the async runtime.
-    let result = tokio::task::spawn_blocking(move || spawn_elevated(&yerd, &target))
+    let result = tokio::task::spawn_blocking(move || spawn_elevated(&yerd, &verb, &target))
         .await
         .map_err(|e| GuiError::internal(format!("join error: {e}")))?;
     result
@@ -54,15 +64,19 @@ fn trusted_yerd() -> Result<PathBuf, GuiError> {
 }
 
 #[cfg(target_os = "linux")]
-fn spawn_elevated(yerd: &std::path::Path, target: &str) -> Result<(), GuiError> {
-    // `pkexec /usr/bin/env SUDO_UID=<uid> <yerd> elevate <target>`
+fn spawn_elevated(yerd: &std::path::Path, verb: &str, target: &str) -> Result<(), GuiError> {
+    // `pkexec /usr/bin/env SUDO_UID=<uid> <yerd> <verb> [<target>]`
+    // (an empty target means "all", so the subcommand arg is omitted).
     let uid = current_uid();
-    let status = std::process::Command::new("pkexec")
-        .arg("/usr/bin/env")
+    let mut cmd = std::process::Command::new("pkexec");
+    cmd.arg("/usr/bin/env")
         .arg(format!("SUDO_UID={uid}"))
         .arg(yerd)
-        .arg("elevate")
-        .arg(target)
+        .arg(verb);
+    if !target.is_empty() {
+        cmd.arg(target);
+    }
+    let status = cmd
         .status()
         .map_err(|e| GuiError::internal(format!("failed to launch pkexec: {e}")))?;
 
@@ -74,30 +88,37 @@ fn spawn_elevated(yerd: &std::path::Path, target: &str) -> Result<(), GuiError> 
         Some(126) => Err(GuiError::internal("authorization was dismissed or denied")),
         Some(127) => Err(GuiError::internal("authentication could not be started")),
         Some(c) => Err(GuiError::internal(format!(
-            "yerd elevate exited with status {c}"
+            "yerd {verb} exited with status {c}"
         ))),
-        None => Err(GuiError::internal(
-            "yerd elevate was terminated by a signal",
-        )),
+        None => Err(GuiError::internal(format!(
+            "yerd {verb} was terminated by a signal"
+        ))),
     }
 }
 
 #[cfg(target_os = "macos")]
-fn spawn_elevated(yerd: &std::path::Path, target: &str) -> Result<(), GuiError> {
+fn spawn_elevated(yerd: &std::path::Path, verb: &str, target: &str) -> Result<(), GuiError> {
     use std::io::Write as _;
     use std::process::{Command, Stdio};
 
     // Build the AppleScript on stdin (not a fragile `-e` one-liner). The `yerd`
     // path goes through AppleScript's `quoted form of`, making it shell-safe
-    // regardless of spaces/specials; `target` is from the fixed allowlist
-    // validated in `run`, so it's injection-safe. `SUDO_UID` MUST be embedded —
-    // `osascript … with administrator privileges` runs the command as root with
-    // a clean env and does NOT set `SUDO_UID` (that's a `sudo`-ism), yet
-    // `yerd elevate` relies on it for socket lookup and the CA owner-check.
+    // regardless of spaces/specials; `verb`/`target` are from fixed allowlists
+    // validated in `run` (target may be empty = "all"), so they're injection-safe.
+    // `SUDO_UID` MUST be embedded — `osascript … with administrator privileges`
+    // runs the command as root with a clean env and does NOT set `SUDO_UID` (that's
+    // a `sudo`-ism), yet `yerd elevate` relies on it for socket lookup and the CA
+    // owner-check.
     let uid = current_uid();
     let yerd_str = yerd.to_string_lossy();
+    // Empty target → run the bare verb (the CLI then applies all steps).
+    let tail = if target.is_empty() {
+        format!(" {verb}")
+    } else {
+        format!(" {verb} {target}")
+    };
     let script = format!(
-        "do shell script \"env SUDO_UID={uid} \" & quoted form of \"{path}\" & \" elevate {target}\" with administrator privileges",
+        "do shell script \"env SUDO_UID={uid} \" & quoted form of \"{path}\" & \"{tail}\" with administrator privileges",
         path = applescript_escape(&yerd_str),
     );
 
@@ -129,7 +150,7 @@ fn spawn_elevated(yerd: &std::path::Path, target: &str) -> Result<(), GuiError> 
         return Err(GuiError::internal("authorization was dismissed"));
     }
     Err(GuiError::internal(format!(
-        "yerd elevate failed: {}",
+        "yerd {verb} failed: {}",
         stderr.trim()
     )))
 }
@@ -142,7 +163,7 @@ fn applescript_escape(s: &str) -> String {
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-fn spawn_elevated(_yerd: &std::path::Path, _target: &str) -> Result<(), GuiError> {
+fn spawn_elevated(_yerd: &std::path::Path, _verb: &str, _target: &str) -> Result<(), GuiError> {
     Err(GuiError::internal(
         "in-app elevation is not supported on this platform; run `yerd elevate` in a terminal",
     ))
@@ -150,7 +171,7 @@ fn spawn_elevated(_yerd: &std::path::Path, _target: &str) -> Result<(), GuiError
 
 /// The effective uid of the (unprivileged) GUI process.
 #[cfg(unix)]
-fn current_uid() -> u32 {
+pub(crate) fn current_uid() -> u32 {
     // SAFETY: `geteuid` is an always-succeeding syscall with no preconditions
     // and no memory effects; it cannot fail or invoke UB.
     unsafe { libc::geteuid() }

@@ -23,6 +23,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod detect;
 pub mod error;
 pub mod helper;
 pub mod metrics;
@@ -35,6 +36,7 @@ pub mod trust_store;
 
 mod os;
 
+pub use detect::{gather_project_signals, FsSignalSource, ProjectSignalSource};
 pub use error::{BindPairErrorReason, PlatformError, ResolverErrorReason, TrustStoreErrorReason};
 pub use helper::{ArgvParseError, HelperInvocation};
 pub use metrics::SystemMetrics;

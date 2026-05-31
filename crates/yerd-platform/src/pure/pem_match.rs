@@ -80,6 +80,17 @@ pub fn fingerprint_of_first_cert_in_pem(pem_text: &str) -> Option<[u8; 32]> {
     Some(sha256(cert.contents()))
 }
 
+/// DER body of the first `CERTIFICATE` block in `pem_bytes`, or `None`.
+/// Used by the macOS trust-settings probe to build a `SecCertificate`.
+#[must_use]
+pub fn first_cert_der(pem_bytes: &[u8]) -> Option<Vec<u8>> {
+    pem::parse_many(pem_bytes)
+        .ok()?
+        .into_iter()
+        .find(|b| b.tag() == "CERTIFICATE")
+        .map(pem::Pem::into_contents)
+}
+
 #[cfg(test)]
 #[allow(
     clippy::unwrap_used,

@@ -16,7 +16,8 @@
 
 use std::fs;
 use std::net::{Ipv4Addr, SocketAddr, TcpListener};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::process::Command;
 
 use directories::ProjectDirs;
 
@@ -24,8 +25,10 @@ use crate::error::ops;
 use crate::metrics::SystemMetrics;
 use crate::paths::{Paths, PlatformDirs};
 use crate::port_binder::{BoundPort, PortBinder, PortPair};
-use crate::port_redirect::{loopback_port_reachable, PortRedirector};
-use crate::pure::{pem_match, port_plan, resolver_file};
+use crate::port_redirect::{
+    loopback_port_reachable, loopback_redirect_reaches_proxy, PortRedirector,
+};
+use crate::pure::{pem_match, port_plan, ps_metrics, resolver_file};
 use crate::resolver::ResolverInstaller;
 use crate::trust_store::{CaFingerprint, NssOutcome, TrustStore};
 use crate::{BindPairErrorReason, PlatformError, ResolverErrorReason, TrustStoreErrorReason};
@@ -146,6 +149,55 @@ impl TrustStore for MacosTrustStore {
         Ok(false)
     }
 
+    fn is_trusted(&self, ca_path: &Path, _fp: &CaFingerprint) -> Result<bool, PlatformError> {
+        use security_framework::certificate::SecCertificate;
+        use security_framework::trust_settings::{Domain, TrustSettings, TrustSettingsForCertificate};
+
+        // Read the cert's *stored trust settings* in the user and admin domains
+        // — NOT `security verify-cert`. verify-cert reflects `trustd`'s effective
+        // evaluation, which is cached and can serve a stale "trusted" result
+        // after the trust setting is removed (observed: it survives even
+        // `killall trustd`). Reading the settings store reflects the actual
+        // configuration immediately. The `Ok(None)`-means-trust ambiguity the
+        // crate documents only applies to Apple's built-in *system-store* roots;
+        // a cert we trust via `set_trust_settings_always` / `add-trusted-cert
+        // -r trustRoot` reads back as `Some(TrustRoot)`, so `None`/not-found here
+        // unambiguously means "not trusted in this domain".
+        let pem = fs::read(ca_path).map_err(|source| PlatformError::Io {
+            path: ca_path.to_path_buf(),
+            source,
+        })?;
+        let der = pem_match::first_cert_der(&pem).ok_or_else(|| PlatformError::TrustStore {
+            reason: TrustStoreErrorReason::SystemApi("CA PEM has no certificate".to_owned()),
+        })?;
+        let cert = SecCertificate::from_der(&der).map_err(|e| PlatformError::TrustStore {
+            reason: TrustStoreErrorReason::SystemApi(format!("parse CA der: {e}")),
+        })?;
+
+        let trusted_in = |domain: Domain| -> Result<bool, PlatformError> {
+            match TrustSettings::new(domain).tls_trust_settings_for_certificate(&cert) {
+                // The presence of a (non-Deny) trust record means we trusted this
+                // CA. Crucially, `set_trust_settings_always` / `add-trusted-cert
+                // -r trustRoot` write an *empty* settings array ("always trust as
+                // root"), which this API surfaces as `Ok(None)` (its loop over the
+                // empty array never runs) — so `Ok(None)` here means **trusted**,
+                // not untrusted. The function only ever yields `Some(TrustRoot)`,
+                // `Some(TrustAsRoot)`, `Some(Deny)`, or `None` (it filters
+                // Unspecified/Invalid to `None`), so an explicit SSL `Deny` is the
+                // only "has a record but not trusted" case.
+                Ok(Some(TrustSettingsForCertificate::Deny)) => Ok(false),
+                Ok(_) => Ok(true),
+                // errSecItemNotFound (-25300): no record for this cert in this
+                // domain → not trusted there (treat as `false`, don't propagate).
+                Err(e) if e.code() == -25300 => Ok(false),
+                Err(e) => Err(PlatformError::TrustStore {
+                    reason: TrustStoreErrorReason::SystemApi(format!("trust settings: {e}")),
+                }),
+            }
+        };
+        Ok(trusted_in(Domain::User)? || trusted_in(Domain::Admin)?)
+    }
+
     fn install_firefox_nss(&self, _: &str) -> Result<NssOutcome, PlatformError> {
         // Phase 1: report not-attempted via a degraded outcome with
         // certutil_missing = true (it usually is on macOS without
@@ -195,7 +247,7 @@ impl ResolverInstaller for MacosResolverInstaller {
         })
     }
 
-    fn is_installed(&self, tld: &str) -> Result<bool, PlatformError> {
+    fn is_installed(&self, tld: &str, addr: SocketAddr) -> Result<bool, PlatformError> {
         if tld.is_empty() {
             return Err(PlatformError::Resolver {
                 reason: ResolverErrorReason::TldEmpty,
@@ -205,9 +257,11 @@ impl ResolverInstaller for MacosResolverInstaller {
         let Ok(text) = fs::read_to_string(&path) else {
             return Ok(false);
         };
-        // Parse-only structural check; we accept any well-formed
-        // /etc/resolver/<tld> as evidence the redirect is in place.
-        Ok(resolver_file::parse(&text).is_some())
+        // Require the file to actually point at the daemon's DNS responder
+        // (nameserver AND port). A bare `nameserver 127.0.0.1` left by Valet/Herd
+        // or an older Yerd defaults to port 53 — where nothing listens — so it
+        // must read as NOT installed and get rewritten with the right port.
+        Ok(resolver_file::matches(&text, addr))
     }
 }
 
@@ -335,9 +389,11 @@ fn bind_pair_impl(desired: (u16, u16), fallback: (u16, u16)) -> Result<PortPair,
 
 /// macOS `SystemMetrics` implementation.
 ///
-/// Phase 1 has no cheap, `unsafe`-free RSS/load source on macOS, so both
-/// methods return `None` (best-effort: callers show nothing). A `sysctl`/
-/// `proc_pid_rusage`-based impl can land post-MVP.
+/// RSS is read from `ps -o rss= -p <pid>` (no `unsafe`-free per-process RSS
+/// source exists in `std`), delegating the parse to
+/// [`crate::pure::ps_metrics`]. Every failure collapses to `None` — metrics are
+/// best-effort. `load_average` remains unimplemented (the Services UI shows
+/// only memory; a `getloadavg`/`sysctl`-based impl can land later).
 #[derive(Debug, Default, Clone, Copy)]
 pub struct MacosSystemMetrics;
 
@@ -350,8 +406,19 @@ impl MacosSystemMetrics {
 }
 
 impl SystemMetrics for MacosSystemMetrics {
-    fn rss_bytes(&self, _: u32) -> Option<u64> {
-        None
+    fn rss_bytes(&self, pid: u32) -> Option<u64> {
+        // `-o rss=` prints headerless RSS in KiB; an absolute path keeps this
+        // deterministic under the daemon's minimal PATH. A missing pid exits
+        // non-zero with empty stdout, so both guards below collapse to `None`.
+        let output = Command::new("/bin/ps")
+            .args(["-o", "rss=", "-p", &pid.to_string()])
+            .output()
+            .ok()?;
+        if !output.status.success() {
+            return None;
+        }
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        ps_metrics::parse_ps_rss_bytes(&stdout)
     }
 
     fn load_average(&self) -> Option<[f64; 3]> {
@@ -373,9 +440,15 @@ impl MacosPortRedirector {
 
 impl PortRedirector for MacosPortRedirector {
     fn is_active(&self) -> Option<bool> {
-        // The pf redirect installs 80 and 443 together; require both to be
-        // reachable on loopback before reporting it live.
-        Some(loopback_port_reachable(80) && loopback_port_reachable(443))
+        // The pf redirect installs 80 and 443 together. Require the HTTP half to
+        // actually reach *this* proxy (the `Server: yerd` marker) — not merely
+        // that something answers on :80, which would false-green when a foreign
+        // listener or a stale `pf` rule still holds the port after the user
+        // removed the redirect. The HTTPS half only needs reachability: it's
+        // installed by the same rule, and confirming it would need a TLS
+        // handshake. So a yerd-confirmed :80 plus a reachable :443 means the
+        // redirect is live and ours.
+        Some(loopback_redirect_reaches_proxy(80) && loopback_port_reachable(443))
     }
 }
 

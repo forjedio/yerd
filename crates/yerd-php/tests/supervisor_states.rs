@@ -23,7 +23,7 @@ use async_trait::async_trait;
 use tokio::sync::Mutex;
 
 use yerd_core::PhpVersion;
-use yerd_php::pure::supervisor::{KillSignal, MAX_RESTART_ATTEMPTS};
+use yerd_php::pure::supervisor::{KillSignal, SupervisorPolicy};
 use yerd_php::{
     ChildHandle, Clock, ExitReason, HealthProbe, Listen, PhpError, PhpManager, PoolRunState,
     ProcessSpawner,
@@ -244,7 +244,6 @@ async fn ensure_happy_path_returns_listen() {
     match listen {
         Listen::UnixSocket(p) => assert!(p.to_string_lossy().contains("fpm-8.3-1234.sock")),
         Listen::TcpLoopback(_) => { /* Windows path, fine */ }
-        _ => panic!("unexpected Listen variant"),
     }
 
     // Idempotent: second ensure returns immediately without re-spawning.
@@ -375,11 +374,12 @@ async fn ensure_recovers_after_one_crash() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn ensure_surfaces_permanent_failure() {
     let v = PhpVersion::new(8, 3);
-    // Need MAX_RESTART_ATTEMPTS+1 crashing children: attempts 1..=MAX
+    // Need max_restart_attempts+1 crashing children: attempts 1..=MAX
     // each crash; on the MAX-th BackoffElapsed the supervisor emits
     // PermanentFailure. Provide a few extra plans so a counting bug
-    // doesn't infinite-loop the test.
-    let plans: Vec<SpawnPlan> = (0..=MAX_RESTART_ATTEMPTS + 2)
+    // doesn't infinite-loop the test. PhpManager uses the FPM policy.
+    let max = SupervisorPolicy::fpm().max_restart_attempts;
+    let plans: Vec<SpawnPlan> = (0..=max + 2)
         .map(|i| SpawnPlan {
             pid: 100 + i,
             behavior: ChildBehavior::Crashes(ExitReason::Code(1)),

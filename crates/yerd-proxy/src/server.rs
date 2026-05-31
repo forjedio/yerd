@@ -4,7 +4,7 @@ use std::future::Future;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-use http::header::{CONTENT_TYPE, HOST, LOCATION};
+use http::header::{CONTENT_TYPE, HOST, LOCATION, SERVER};
 use http::{HeaderValue, StatusCode};
 use hyper::body::Incoming;
 use hyper::service::service_fn;
@@ -299,7 +299,9 @@ async fn dispatch<R: BackendResolver>(
         None => return Ok(not_found_response()),
     };
     drop(guard);
-    let document_root = site.document_root().to_path_buf();
+    // Serve from the site's resolved web root (e.g. `<root>/public` for
+    // Laravel), falling back to the document root when no subpath is set.
+    let document_root = site.served_root();
 
     // HTTP → HTTPS redirect.
     if matches!(listener, Listener::Http) {
@@ -354,9 +356,17 @@ async fn dispatch<R: BackendResolver>(
     }
 }
 
+/// `Server: yerd` — stamped on every synthetic (proxy-originated) response so
+/// the macOS port-redirect probe can confirm a connection to 80/443 actually
+/// reaches *this* proxy, not some other listener. See [`yerd_core::PROXY_SERVER_ID`].
+fn server_header() -> HeaderValue {
+    HeaderValue::from_static(yerd_core::PROXY_SERVER_ID)
+}
+
 fn bad_request_response() -> Response<BoxBody> {
     Response::builder()
         .status(StatusCode::BAD_REQUEST)
+        .header(SERVER, server_header())
         .header(CONTENT_TYPE, "text/plain; charset=utf-8")
         .body(bytes_body(b"Missing or invalid Host header.\n"))
         .unwrap_or_else(|_| Response::new(empty_body()))
@@ -365,6 +375,7 @@ fn bad_request_response() -> Response<BoxBody> {
 fn not_found_response() -> Response<BoxBody> {
     Response::builder()
         .status(StatusCode::NOT_FOUND)
+        .header(SERVER, server_header())
         .header(CONTENT_TYPE, "text/plain; charset=utf-8")
         .body(bytes_body(b"No site matches this Host.\n"))
         .unwrap_or_else(|_| Response::new(empty_body()))
@@ -373,6 +384,7 @@ fn not_found_response() -> Response<BoxBody> {
 fn internal_error_response() -> Response<BoxBody> {
     Response::builder()
         .status(StatusCode::INTERNAL_SERVER_ERROR)
+        .header(SERVER, server_header())
         .header(CONTENT_TYPE, "text/plain; charset=utf-8")
         .body(bytes_body(b"Proxy internal error.\n"))
         .unwrap_or_else(|_| Response::new(empty_body()))

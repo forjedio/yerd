@@ -12,7 +12,9 @@ const dot = computed(
     ({
       ok: "bg-success",
       warn: "bg-warning",
-      bad: "bg-destructive",
+      // The dark-mode --destructive token is deliberately dark (for button fills);
+      // a status dot needs a brighter red to read on a dark background.
+      bad: "bg-destructive dark:bg-red-500",
       unknown: "bg-muted-foreground",
       muted: "bg-muted-foreground/50",
     })[props.tone],

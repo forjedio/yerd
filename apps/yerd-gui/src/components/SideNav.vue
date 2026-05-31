@@ -3,20 +3,29 @@ import {
   Info,
   LayoutGrid,
   Server,
+  Settings,
   SquareCode,
+  Stethoscope,
 } from "lucide-vue-next";
 import { RouterLink } from "vue-router";
 
 import StatusPill from "@/components/StatusPill.vue";
 import { useDaemon } from "@/composables/useDaemon";
-import logoUrl from "@/assets/logo.svg";
 
-// Left-hand nav, Herd-style. Ordered to grow: PHP, Sites, Services, About.
+// Left-hand nav, Herd-style. Icon-chip colours are grouped by role and reused:
+// grey for configuration (General, PHP, Sites), red for Services, blue for the
+// info pages (Doctor, About). The chip keeps its colour even when the item is
+// active — only the row background highlights the selection.
+const GREY = "bg-slate-500/15 text-slate-600 dark:text-slate-400";
+const RED = "bg-red-500/15 text-red-600 dark:text-red-400";
+const BLUE = "bg-blue-500/15 text-blue-600 dark:text-blue-400";
 const items = [
-  { to: "/php", label: "PHP", icon: SquareCode },
-  { to: "/sites", label: "Sites", icon: LayoutGrid },
-  { to: "/services", label: "Services", icon: Server },
-  { to: "/about", label: "About", icon: Info },
+  { to: "/general", label: "General", icon: Settings, chip: GREY },
+  { to: "/php", label: "PHP", icon: SquareCode, chip: GREY },
+  { to: "/sites", label: "Sites", icon: LayoutGrid, chip: GREY },
+  { to: "/services", label: "Services", icon: Server, chip: RED },
+  { to: "/doctor", label: "Doctor", icon: Stethoscope, chip: BLUE },
+  { to: "/about", label: "About", icon: Info, chip: BLUE },
 ];
 
 const { connected } = useDaemon();
@@ -26,23 +35,28 @@ const { connected } = useDaemon();
   <nav
     class="flex h-full w-52 shrink-0 flex-col border-r bg-card/40 px-3 py-4"
   >
-    <div class="flex items-center gap-2.5 px-2 pb-5 pt-1">
-      <img :src="logoUrl" alt="Yerd" class="size-8 rounded-lg" />
-      <div class="leading-tight">
-        <h1 class="text-base font-bold tracking-tight">Yerd</h1>
-        <p class="text-[11px] text-muted-foreground">Local PHP dev</p>
-      </div>
-    </div>
-
     <ul class="flex flex-1 flex-col gap-1">
       <li v-for="item in items" :key="item.to">
-        <RouterLink
-          :to="item.to"
-          class="flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
-          active-class="bg-accent text-accent-foreground"
-        >
-          <component :is="item.icon" class="size-4" />
-          {{ item.label }}
+        <RouterLink :to="item.to" custom v-slot="{ isActive, href, navigate }">
+          <a
+            :href="href"
+            :aria-current="isActive ? 'page' : undefined"
+            class="group flex items-center gap-2.5 rounded-lg px-2 py-1.5 text-sm font-medium transition-colors"
+            :class="
+              isActive
+                ? 'bg-blue-500/10 text-blue-700 dark:bg-blue-400/40 dark:text-blue-50'
+                : 'text-muted-foreground hover:bg-accent/70 hover:text-foreground'
+            "
+            @click="navigate"
+          >
+            <span
+              class="flex size-6 shrink-0 items-center justify-center rounded-md transition-colors"
+              :class="item.chip"
+            >
+              <component :is="item.icon" class="size-4" />
+            </span>
+            {{ item.label }}
+          </a>
         </RouterLink>
       </li>
     </ul>

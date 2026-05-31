@@ -105,7 +105,9 @@ pub enum ValidationReason {
     /// Path exists but is not a regular file.
     #[error("path is not a regular file: {}", .0.display())]
     PathNotFile(PathBuf),
-    /// `setcap --binary` basename was not `yerdd`.
+    /// `setcap --binary` basename was not `yerdd`. Linux-only (`setcap` is
+    /// unsupported elsewhere).
+    #[cfg(target_os = "linux")]
     #[error("binary basename must be 'yerdd', got {0:?}")]
     BinaryNameUnexpected(String),
     /// TLD did not validate against `yerd_core::Tld`.
@@ -120,7 +122,8 @@ pub enum ValidationReason {
     /// PEM could not be parsed.
     #[error("PEM could not be parsed")]
     PemParseFailed,
-    /// No recognised Linux CA anchor directory present.
+    /// No recognised Linux CA anchor directory present. Linux-only.
+    #[cfg(target_os = "linux")]
     #[error("no recognised CA anchor directory")]
     NoAnchorDir,
     /// A port-redirect port argument was zero.
@@ -287,8 +290,11 @@ mod tests {
     fn validation_reason_displays_carry_input() {
         let r = ValidationReason::PathNotAbsolute(PathBuf::from("foo"));
         assert!(r.to_string().contains("foo"));
-        let r = ValidationReason::BinaryNameUnexpected("zerdd".into());
-        assert!(r.to_string().contains("zerdd"));
+        #[cfg(target_os = "linux")]
+        {
+            let r = ValidationReason::BinaryNameUnexpected("zerdd".into());
+            assert!(r.to_string().contains("zerdd"));
+        }
         let r = ValidationReason::ExpectedSingleCertPem { count: 2 };
         assert!(r.to_string().contains('2'));
     }

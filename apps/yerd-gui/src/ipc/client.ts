@@ -9,6 +9,7 @@
 import { invoke as tauriInvoke } from "@tauri-apps/api/core";
 
 import type {
+  AutostartState,
   AvailablePhpResponse,
   Diagnosis,
   DoctorFixResponse,
@@ -17,6 +18,8 @@ import type {
   PhpVersion,
   PhpVersionsResponse,
   Response,
+  ServiceAvailability,
+  ServiceStatus,
   Site,
   StatusReport,
 } from "./types";
@@ -117,6 +120,16 @@ export async function setSecure(name: string, secure: boolean): Promise<void> {
   ensureOk(await call<Response>("set_secure", { name, secure }));
 }
 
+/**
+ * Set a site's served web root. `path` may be relative to the site folder
+ * (e.g. "public") or an absolute path inside it; the daemon validates
+ * containment and stores the relative remainder. Pass `null` to reset the site
+ * to automatic framework detection.
+ */
+export async function setWebRoot(name: string, path: string | null): Promise<void> {
+  ensureOk(await call<Response>("set_web_root", { name, path }));
+}
+
 // ── php versions ───────────────────────────────────────────────────────────
 
 export async function listPhp(): Promise<PhpVersionsResponse> {
@@ -187,6 +200,58 @@ export async function setPhpSettings(
   ) as PhpVersionsResponse;
 }
 
+// ── services (databases / caches) ────────────────────────────────────────────
+
+export async function listServices(): Promise<ServiceStatus[]> {
+  const r = ensureOk(await call<Response>("list_services"));
+  return r.type === "services" ? r.services : [];
+}
+
+/** Installable vs installed versions per service. Fetches the listing on demand. */
+export async function availableServices(): Promise<ServiceAvailability[]> {
+  const r = ensureOk(await call<Response>("available_services"));
+  return r.type === "available_services" ? r.services : [];
+}
+
+export async function installService(service: string, version: string): Promise<void> {
+  ensureOk(await call<Response>("install_service", { service, version }));
+}
+
+export async function uninstallService(
+  service: string,
+  version: string,
+  purge: boolean,
+): Promise<void> {
+  ensureOk(await call<Response>("uninstall_service", { service, version, purge }));
+}
+
+export async function startService(service: string): Promise<void> {
+  ensureOk(await call<Response>("start_service", { service }));
+}
+
+export async function stopService(service: string): Promise<void> {
+  ensureOk(await call<Response>("stop_service", { service }));
+}
+
+export async function restartService(service: string): Promise<void> {
+  ensureOk(await call<Response>("restart_service", { service }));
+}
+
+/** Persist a new port; takes effect on the next start/restart. */
+export async function setServicePort(service: string, port: number): Promise<void> {
+  ensureOk(await call<Response>("set_service_port", { service, port }));
+}
+
+/** The last `lines` lines of a service's log file. */
+export async function serviceLogs(service: string, lines: number): Promise<string[]> {
+  const r = ensureOk(await call<Response>("service_logs", { service, lines }));
+  return r.type === "service_logs" ? r.lines : [];
+}
+
+export async function createDatabase(service: string, name: string): Promise<void> {
+  ensureOk(await call<Response>("create_database", { service, name }));
+}
+
 // ── status / doctor ────────────────────────────────────────────────────────
 
 export async function status(): Promise<StatusReport> {
@@ -234,9 +299,9 @@ export async function openPath(path: string): Promise<void> {
 }
 
 /** Returns the chosen directory, or null if the user cancelled. */
-export async function pickDirectory(): Promise<string | null> {
+export async function pickDirectory(defaultPath?: string): Promise<string | null> {
   const { open } = await import("@tauri-apps/plugin-dialog");
-  const picked = await open({ directory: true, multiple: false });
+  const picked = await open({ directory: true, multiple: false, defaultPath });
   return typeof picked === "string" ? picked : null;
 }
 
@@ -246,4 +311,84 @@ export async function pickDirectory(): Promise<string | null> {
  */
 export async function elevate(target: ElevateTarget): Promise<void> {
   await call<void>("elevate", { target });
+}
+
+/**
+ * Run `yerd elevate` with no target under OS elevation — applies every step
+ * (trust, resolver, ports) in one prompt.
+ */
+export async function elevateAll(): Promise<void> {
+  await call<void>("elevate_all");
+}
+
+/**
+ * Revert `elevate` for `target` under the same OS elevation (`yerd unelevate
+ * <target>`). On macOS, unelevating the resolver restores the pre-Yerd resolver
+ * from its backup (or removes Yerd's file if none). `ports` is reversible on
+ * macOS only — callers gate the button accordingly.
+ */
+export async function unelevate(target: ElevateTarget): Promise<void> {
+  await call<void>("unelevate", { target });
+}
+
+/**
+ * Trust the local CA for the current user, in-process (macOS only). Needs no
+ * root and prompts as "Yerd". Rejects with the OS error message on failure
+ * (e.g. cancelled, keychain locked).
+ */
+export async function trustCa(): Promise<void> {
+  await call<void>("trust_ca");
+}
+
+/**
+ * Remove the current user's trust of the local CA (macOS only). Resolves to
+ * `true` if the CA is *still* trusted afterwards — i.e. a system-wide trust set
+ * via the terminal remains, which the GUI can't remove without root.
+ */
+export async function untrustCa(): Promise<boolean> {
+  return call<boolean>("untrust_ca");
+}
+
+// ── daemon lifecycle + autostart (host commands, NOT daemon IPC) ────────────
+
+/** Is the `yerdd` binary installed on disk (independent of whether it's running)? */
+export async function daemonInstalled(): Promise<boolean> {
+  return call<boolean>("daemon_installed");
+}
+
+/** Download + install the matching `yerdd` release. Emits `install-progress` events. */
+export async function installDaemon(): Promise<void> {
+  await call<void>("install_daemon");
+}
+
+export async function startDaemon(): Promise<void> {
+  await call<void>("start_daemon");
+}
+
+export async function stopDaemon(): Promise<void> {
+  await call<void>("stop_daemon");
+}
+
+export async function getAutostart(): Promise<AutostartState> {
+  return call<AutostartState>("get_autostart");
+}
+
+export async function setAutostartDaemon(on: boolean): Promise<void> {
+  await call<void>("set_autostart_daemon", { on });
+}
+
+export async function setAutostartGui(on: boolean): Promise<void> {
+  await call<void>("set_autostart_gui", { on });
+}
+
+export async function setAutostartGuiMinimized(on: boolean): Promise<void> {
+  await call<void>("set_gui_minimized", { on });
+}
+
+/** Subscribe to `yerdd` install-progress messages. Returns an unlisten fn. */
+export async function onInstallProgress(
+  cb: (message: string) => void,
+): Promise<() => void> {
+  const { listen } = await import("@tauri-apps/api/event");
+  return listen<string>("install-progress", (e) => cb(e.payload));
 }

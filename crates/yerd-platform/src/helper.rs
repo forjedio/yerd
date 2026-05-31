@@ -395,6 +395,10 @@ fn parse_port(value: &OsStr, flag: &'static str) -> Result<u16, ArgvParseError> 
         })
 }
 
+// `http_from`/`https_from` and `http_to`/`https_to` mirror the helper's CLI
+// flags and `HelperInvocation` fields, so the near-identical names are
+// intentional and clearer than any disambiguating rename.
+#[allow(clippy::similar_names)]
 fn parse_install_port_redirect(rest: &[OsString]) -> Result<HelperInvocation, ArgvParseError> {
     let mut http_from: Option<u16> = None;
     let mut http_to: Option<u16> = None;

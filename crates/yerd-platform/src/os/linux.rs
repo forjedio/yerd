@@ -165,6 +165,13 @@ impl TrustStore for LinuxTrustStore {
         }
     }
 
+    fn is_trusted(&self, _ca_path: &Path, fp: &CaFingerprint) -> Result<bool, PlatformError> {
+        // On Linux, presence in an anchor directory *is* system trust (unlike
+        // macOS, where presence and trust are distinct), so an effective-trust
+        // probe is the same as the presence probe. `ca_path` is unused here.
+        self.is_present_system(fp)
+    }
+
     fn install_firefox_nss(&self, _: &str) -> Result<NssOutcome, PlatformError> {
         // Phase 1: report not-attempted by surfacing a degraded outcome.
         // Actual certutil invocation is wired in a follow-up when the
@@ -213,7 +220,7 @@ impl ResolverInstaller for LinuxResolverInstaller {
         })
     }
 
-    fn is_installed(&self, tld: &str) -> Result<bool, PlatformError> {
+    fn is_installed(&self, tld: &str, _addr: SocketAddr) -> Result<bool, PlatformError> {
         if tld.is_empty() {
             return Err(PlatformError::Resolver {
                 reason: ResolverErrorReason::TldEmpty,
@@ -227,9 +234,9 @@ impl ResolverInstaller for LinuxResolverInstaller {
         // can be present on systems where resolved is also active.
         let drop_in = drop_in_path(tld);
         if let Ok(text) = fs::read_to_string(drop_in) {
-            // We probe shape only — caller's `addr` is not threaded in;
-            // for is_installed we accept any well-formed drop-in
-            // matching `tld` as evidence the resolver is wired up.
+            // Shape-only probe: a well-formed drop-in for `tld` is evidence the
+            // resolver is wired up. resolved manages forwarding internally, so
+            // (unlike macOS) `_addr` need not be re-verified against the file.
             if let Some(parsed) = resolved_drop_in::parse(&text) {
                 return Ok(parsed.domain == tld);
             }
