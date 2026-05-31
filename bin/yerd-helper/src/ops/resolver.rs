@@ -119,6 +119,7 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[test]
     fn resolver_file_path_shape() {
+        use std::path::Path;
         assert_eq!(resolver_file_path("test"), Path::new("/etc/resolver/test"));
     }
 }

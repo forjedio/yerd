@@ -105,6 +105,36 @@ fn setcap_argv_frozen() {
 }
 
 #[test]
+fn install_port_redirect_argv_frozen() {
+    let inv = HelperInvocation::InstallPortRedirect {
+        http_from: 80,
+        http_to: 8080,
+        https_from: 443,
+        https_to: 8443,
+    };
+    assert_eq!(
+        argv_strs(&inv),
+        vec![
+            "install-port-redirect".to_string(),
+            "--http-from".to_string(),
+            "80".to_string(),
+            "--http-to".to_string(),
+            "8080".to_string(),
+            "--https-from".to_string(),
+            "443".to_string(),
+            "--https-to".to_string(),
+            "8443".to_string(),
+        ]
+    );
+}
+
+#[test]
+fn uninstall_port_redirect_argv_frozen() {
+    let inv = HelperInvocation::UninstallPortRedirect;
+    assert_eq!(argv_strs(&inv), vec!["uninstall-port-redirect".to_string()]);
+}
+
+#[test]
 fn fingerprint_in_argv_is_64_lowercase_hex() {
     let inv = HelperInvocation::UninstallCa {
         fp: CaFingerprint::new([0xFF; 32]),
@@ -148,6 +178,19 @@ fn first_argv_element_is_always_the_op_tag() {
                 daemon_binary: PathBuf::from("/x"),
             },
             "setcap",
+        ),
+        (
+            HelperInvocation::InstallPortRedirect {
+                http_from: 80,
+                http_to: 8080,
+                https_from: 443,
+                https_to: 8443,
+            },
+            "install-port-redirect",
+        ),
+        (
+            HelperInvocation::UninstallPortRedirect,
+            "uninstall-port-redirect",
         ),
     ];
     for (inv, expected) in pairs {

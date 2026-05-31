@@ -10,6 +10,7 @@ use crate::error::ops;
 use crate::metrics::SystemMetrics;
 use crate::paths::{Paths, PlatformDirs};
 use crate::port_binder::{BoundPort, PortBinder, PortPair};
+use crate::port_redirect::PortRedirector;
 use crate::resolver::ResolverInstaller;
 use crate::trust_store::{CaFingerprint, NssOutcome, TrustStore};
 use crate::PlatformError;
@@ -133,6 +134,24 @@ impl SystemMetrics for UnsupportedSystemMetrics {
     }
 
     fn load_average(&self) -> Option<[f64; 3]> {
+        None
+    }
+}
+
+/// Unsupported-OS `PortRedirector`: always `None` (not applicable).
+#[derive(Debug, Default, Clone, Copy)]
+pub struct UnsupportedPortRedirector;
+
+impl UnsupportedPortRedirector {
+    /// Construct.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self
+    }
+}
+
+impl PortRedirector for UnsupportedPortRedirector {
+    fn is_active(&self) -> Option<bool> {
         None
     }
 }

@@ -3,6 +3,7 @@
 //! in a single file.
 
 pub mod ca;
+pub mod port_redirect;
 pub mod resolver;
 pub mod setcap;
 
@@ -134,8 +135,9 @@ mod tests {
 
     #[test]
     fn run_command_propagates_nonzero_exit() {
-        // `/bin/false` exits 1 on every Unix.
-        let err = run_command("false", "/bin/false", Vec::<&str>::new()).unwrap_err();
+        // `/usr/bin/false` exits 1 on every Unix (present on both Linux and
+        // macOS; `/bin/false` is absent on recent macOS).
+        let err = run_command("false", "/usr/bin/false", Vec::<&str>::new()).unwrap_err();
         match err {
             HelperError::Command {
                 reason: CommandReason::NonZero(code),
@@ -147,7 +149,9 @@ mod tests {
 
     #[test]
     fn run_command_succeeds_for_true() {
-        let out = run_command("true", "/bin/true", Vec::<&str>::new()).unwrap();
+        // `/usr/bin/true` is present on both Linux and macOS; `/bin/true` is
+        // absent on recent macOS.
+        let out = run_command("true", "/usr/bin/true", Vec::<&str>::new()).unwrap();
         assert!(out.status.success());
     }
 

@@ -38,6 +38,25 @@ fn paths_resolve_returns_all_five_fields() {
 }
 
 #[test]
+fn runtime_dir_is_deterministic_tmp_path() {
+    // The runtime dir must be a deterministic, uid-derived `/tmp/yerd-$UID`
+    // (not `$TMPDIR`/`/var/folders/…`) so the root-elevated `yerd elevate`
+    // can reconstruct the daemon socket path from `SUDO_UID` alone.
+    let dirs = ActivePaths.resolve().expect("resolve should succeed");
+    let s = dirs.runtime.to_string_lossy();
+    assert!(
+        s.starts_with("/tmp/yerd-"),
+        "macOS runtime dir must be /tmp/yerd-$UID, got {s}"
+    );
+    assert!(
+        s.trim_start_matches("/tmp/yerd-")
+            .chars()
+            .all(|c| c.is_ascii_digit()),
+        "runtime dir must end in a numeric uid, got {s}"
+    );
+}
+
+#[test]
 fn install_system_returns_needs_helper() {
     let ts = ActiveTrustStore;
     let fp = random_fingerprint(0xAA);

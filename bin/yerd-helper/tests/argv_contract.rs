@@ -30,6 +30,8 @@ fn op_tag(inv: &HelperInvocation) -> &'static str {
         HelperInvocation::InstallResolver { .. } => ops::INSTALL_RESOLVER,
         HelperInvocation::UninstallResolver { .. } => ops::UNINSTALL_RESOLVER,
         HelperInvocation::Setcap { .. } => ops::SETCAP,
+        HelperInvocation::InstallPortRedirect { .. } => ops::INSTALL_PORT_REDIRECT,
+        HelperInvocation::UninstallPortRedirect => ops::UNINSTALL_PORT_REDIRECT,
         _ => "unknown",
     }
 }
@@ -52,6 +54,13 @@ fn every_variant_round_trips_via_from_argv() {
         HelperInvocation::Setcap {
             daemon_binary: PathBuf::from("/usr/bin/yerdd"),
         },
+        HelperInvocation::InstallPortRedirect {
+            http_from: 80,
+            http_to: 8080,
+            https_from: 443,
+            https_to: 8443,
+        },
+        HelperInvocation::UninstallPortRedirect,
     ];
     for inv in cases {
         let v = argv_for(inv);

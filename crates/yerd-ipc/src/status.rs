@@ -46,6 +46,14 @@ pub struct StatusReport {
     /// Whether the OS resolver routes `*.<tld>` to Yerd. `None` = the probe
     /// could not determine it (treat as "unknown", **not** as `false`).
     pub resolver_installed: Option<bool>,
+    /// Whether a privileged-port redirect is active so 80/443 reach the
+    /// daemon's rootless ports (macOS pf `rdr`). `Some(true)` lets the doctor
+    /// treat a port *fallback* as satisfied; `None` = not applicable (Linux,
+    /// where elevation binds 80/443 directly) or undeterminable. `#[serde(default,
+    /// skip_serializing_if)]` keeps the Linux wire bytes unchanged and older
+    /// daemons decodable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub port_redirect: Option<bool>,
     /// The global default PHP version.
     pub default_php: PhpVersion,
     /// One entry per installed PHP version, with live FPM state.

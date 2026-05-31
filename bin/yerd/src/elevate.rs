@@ -39,6 +39,13 @@ mod unix_impl {
         tld: String,
         ca_path: PathBuf,
         ca_fingerprint: String,
+        /// Rootless ports the daemon bound; the macOS pf redirect maps
+        /// 80 → `http_port` and 443 → `https_port`. Unused on Linux (setcap
+        /// binds the privileged ports directly).
+        #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+        http_port: u16,
+        #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+        https_port: u16,
     }
 
     /// Expand an optional target into the concrete list (None = all, in
@@ -100,7 +107,10 @@ mod unix_impl {
         yerdd: &Path,
         undo: bool,
     ) -> Result<(), ClientError> {
-        // Best-effort revert of `ports`: setcap has no clean reverse op.
+        // Linux only: `setcap` has no clean reverse op, so `ports`+undo is
+        // guidance rather than a helper call. macOS reverts the pf redirect via
+        // `UninstallPortRedirect`, so it falls through to the normal path.
+        #[cfg(not(target_os = "macos"))]
         if target == ElevateTarget::Ports && undo {
             println!("==> ports: capabilities can't be dropped automatically.");
             println!(
@@ -123,12 +133,19 @@ mod unix_impl {
             Some(0) => {
                 println!("    ok");
                 if target == ElevateTarget::Ports && !undo {
-                    println!(
-                        "    restart the yerd daemon (as your user) for 80/443 to take effect."
-                    );
-                    println!(
-                        "    note: package upgrades reset setcap — re-run `elevate ports` then."
-                    );
+                    #[cfg(not(target_os = "macos"))]
+                    {
+                        println!(
+                            "    restart the yerd daemon (as your user) for 80/443 to take effect."
+                        );
+                        println!(
+                            "    note: package upgrades reset setcap — re-run `elevate ports` then."
+                        );
+                    }
+                    #[cfg(target_os = "macos")]
+                    {
+                        println!("    the pf redirect is live now; no daemon restart needed.");
+                    }
                 }
                 Ok(())
             }
@@ -153,14 +170,18 @@ mod unix_impl {
         }
     }
 
-    /// Pure: map a target to the helper invocation. Never called for
-    /// `ports`+undo (`run_one` short-circuits that as guidance).
+    /// Pure: map a target to the helper invocation. On Linux this is never
+    /// called for `ports`+undo (`run_one` short-circuits that as guidance); on
+    /// macOS `ports`+undo maps to `UninstallPortRedirect`.
     fn plan_invocation(
         target: ElevateTarget,
         facts: &Facts,
         yerdd: &Path,
         undo: bool,
     ) -> Result<HelperInvocation, ClientError> {
+        // `yerdd` is only needed for the Linux `setcap` path.
+        #[cfg(target_os = "macos")]
+        let _ = yerdd;
         let fp =
             || CaFingerprint::from_hex(&facts.ca_fingerprint).map_err(ClientError::Fingerprint);
         Ok(match (target, undo) {
@@ -176,12 +197,27 @@ mod unix_impl {
             (ElevateTarget::Resolver, true) => HelperInvocation::UninstallResolver {
                 tld: facts.tld.clone(),
             },
+            // Linux: a one-time `setcap` grant lets the daemon bind 80/443
+            // directly, and there's no clean reverse op.
+            #[cfg(not(target_os = "macos"))]
             (ElevateTarget::Ports, false) => HelperInvocation::Setcap {
                 daemon_binary: yerdd.to_path_buf(),
             },
+            #[cfg(not(target_os = "macos"))]
             (ElevateTarget::Ports, true) => {
                 return Err(ClientError::Usage("ports cannot be reverted".to_owned()))
             }
+            // macOS: install/remove a pf redirect 80→http_port, 443→https_port
+            // (the daemon keeps binding its rootless ports). Reversible.
+            #[cfg(target_os = "macos")]
+            (ElevateTarget::Ports, false) => HelperInvocation::InstallPortRedirect {
+                http_from: 80,
+                http_to: facts.http_port,
+                https_from: 443,
+                https_to: facts.https_port,
+            },
+            #[cfg(target_os = "macos")]
+            (ElevateTarget::Ports, true) => HelperInvocation::UninstallPortRedirect,
         })
     }
 
@@ -199,8 +235,17 @@ mod unix_impl {
             (ElevateTarget::Resolver, true) => {
                 format!("resolver: removing the *.{} route", facts.tld)
             }
+            #[cfg(not(target_os = "macos"))]
             (ElevateTarget::Ports, false) => "ports: granting cap_net_bind_service to yerdd".into(),
+            #[cfg(not(target_os = "macos"))]
             (ElevateTarget::Ports, true) => "ports: (no-op)".into(),
+            #[cfg(target_os = "macos")]
+            (ElevateTarget::Ports, false) => format!(
+                "ports: installing a pf redirect 80→{}, 443→{}",
+                facts.http_port, facts.https_port
+            ),
+            #[cfg(target_os = "macos")]
+            (ElevateTarget::Ports, true) => "ports: removing the pf redirect".into(),
         }
     }
 
@@ -214,12 +259,16 @@ mod unix_impl {
                     tld,
                     ca_path,
                     ca_fingerprint,
+                    http_port,
+                    https_port,
                 }) => {
                     return Ok(Facts {
                         dns_addr,
                         tld,
                         ca_path,
                         ca_fingerprint,
+                        http_port,
+                        https_port,
                     })
                 }
                 Ok(other) => {
@@ -345,6 +394,8 @@ mod unix_impl {
                 tld: "test".into(),
                 ca_path: PathBuf::from("/home/u/.local/share/yerd/ca.cert.pem"),
                 ca_fingerprint: "ab".repeat(32),
+                http_port: 8080,
+                https_port: 8443,
             }
         }
 
@@ -397,6 +448,7 @@ mod unix_impl {
             assert!(a.contains(&"127.0.0.1:1053".to_string()));
         }
 
+        #[cfg(not(target_os = "macos"))]
         #[test]
         fn ports_maps_to_setcap_on_local_yerdd() {
             let inv = plan_invocation(ElevateTarget::Ports, &facts(), Path::new("/x/yerdd"), false)
@@ -404,6 +456,23 @@ mod unix_impl {
             let a = argv(&inv);
             assert_eq!(a[0], "setcap");
             assert!(a.contains(&"/x/yerdd".to_string()));
+        }
+
+        #[cfg(target_os = "macos")]
+        #[test]
+        fn ports_maps_to_port_redirect_with_bound_ports() {
+            let inv = plan_invocation(ElevateTarget::Ports, &facts(), Path::new("/x/yerdd"), false)
+                .unwrap();
+            let a = argv(&inv);
+            assert_eq!(a[0], "install-port-redirect");
+            assert!(a.contains(&"80".to_string()));
+            assert!(a.contains(&"8080".to_string()));
+            assert!(a.contains(&"443".to_string()));
+            assert!(a.contains(&"8443".to_string()));
+
+            let undo = plan_invocation(ElevateTarget::Ports, &facts(), Path::new("/x/yerdd"), true)
+                .unwrap();
+            assert_eq!(argv(&undo)[0], "uninstall-port-redirect");
         }
 
         #[test]

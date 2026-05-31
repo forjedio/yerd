@@ -55,6 +55,14 @@ pub enum Response {
         ca_path: PathBuf,
         /// SHA-256 fingerprint of the CA cert, 64 lowercase hex chars.
         ca_fingerprint: String,
+        /// The rootless HTTP port the daemon actually bound (e.g. 8080). The
+        /// macOS `yerd elevate ports` flow redirects 80 → this. `#[serde(default)]`
+        /// keeps older daemons (which omit it) decodable; defaults to 0.
+        #[serde(default)]
+        http_port: u16,
+        /// The rootless HTTPS port the daemon actually bound (e.g. 8443).
+        #[serde(default)]
+        https_port: u16,
     },
     /// Reply to [`crate::Request::ListPhp`] / `CheckPhpUpdates` / `UpdatePhp`.
     PhpVersions {
@@ -190,6 +198,8 @@ mod variant_name_pinning {
             tld: "test".into(),
             ca_path: PathBuf::from("/x/ca.cert.pem"),
             ca_fingerprint: "ab".repeat(32),
+            http_port: 8080,
+            https_port: 8443,
         });
         pin_response(Response::PhpVersions {
             installed: vec![PhpVersion::new(8, 5)],
@@ -224,6 +234,7 @@ mod variant_name_pinning {
                     trusted_system: Some(false),
                 },
                 resolver_installed: None,
+                port_redirect: None,
                 default_php: PhpVersion::new(8, 5),
                 php: vec![],
                 sites: crate::status::SiteCounts::default(),

@@ -340,15 +340,32 @@ fn response_info_byte_shape() {
         tld: "test".into(),
         ca_path: std::path::PathBuf::from("/home/u/.local/share/yerd/ca.cert.pem"),
         ca_fingerprint: "ab".repeat(32),
+        http_port: 8080,
+        https_port: 8443,
     };
     let s = serde_json::to_string(&r).unwrap();
     let expected = format!(
-        r#"{{"type":"info","dns_addr":"127.0.0.1:1053","tld":"test","ca_path":"/home/u/.local/share/yerd/ca.cert.pem","ca_fingerprint":"{}"}}"#,
+        r#"{{"type":"info","dns_addr":"127.0.0.1:1053","tld":"test","ca_path":"/home/u/.local/share/yerd/ca.cert.pem","ca_fingerprint":"{}","http_port":8080,"https_port":8443}}"#,
         "ab".repeat(32)
     );
     assert_eq!(s, expected);
     let back: Response = serde_json::from_str(&s).unwrap();
     assert_eq!(back, r);
+
+    // Back-compat: an older daemon omits the port fields; they default to 0.
+    let legacy = format!(
+        r#"{{"type":"info","dns_addr":"127.0.0.1:1053","tld":"test","ca_path":"/x","ca_fingerprint":"{}"}}"#,
+        "ab".repeat(32)
+    );
+    let decoded: Response = serde_json::from_str(&legacy).unwrap();
+    assert!(matches!(
+        decoded,
+        Response::Info {
+            http_port: 0,
+            https_port: 0,
+            ..
+        }
+    ));
 }
 
 #[test]
@@ -492,6 +509,9 @@ fn response_status_byte_shape() {
                 trusted_system: Some(false),
             },
             resolver_installed: Some(true),
+            // `None` + skip_serializing_if → omitted from the wire, so the
+            // Linux byte shape is unchanged from before the field existed.
+            port_redirect: None,
             default_php: PhpVersion::new(8, 5),
             php: vec![PhpPoolStatus {
                 version: PhpVersion::new(8, 5),
@@ -519,6 +539,56 @@ fn response_status_byte_shape() {
     assert_eq!(s, expected);
     let back: Response = serde_json::from_str(&s).unwrap();
     assert_eq!(back, r);
+}
+
+#[test]
+fn status_port_redirect_appears_only_when_some() {
+    // When set (macOS), `port_redirect` serializes right after
+    // `resolver_installed`; when `None` it is omitted entirely.
+    let mut report = sample_status_report();
+    report.port_redirect = Some(true);
+    let s = serde_json::to_string(&report).unwrap();
+    assert!(
+        s.contains(r#""resolver_installed":true,"port_redirect":true"#),
+        "{s}"
+    );
+
+    report.port_redirect = None;
+    let s = serde_json::to_string(&report).unwrap();
+    assert!(!s.contains("port_redirect"), "{s}");
+}
+
+/// A minimal healthy report for field-presence assertions.
+fn sample_status_report() -> StatusReport {
+    StatusReport {
+        daemon_pid: 1,
+        uptime_secs: 0,
+        daemon_rss_bytes: None,
+        tld: "test".into(),
+        http: PortStatus {
+            requested: 80,
+            bound: 8080,
+            fell_back: true,
+        },
+        https: PortStatus {
+            requested: 443,
+            bound: 8443,
+            fell_back: true,
+        },
+        dns_addr: "127.0.0.1:1053".parse().unwrap(),
+        ca: CaStatus {
+            path: PathBuf::from("/x/ca.cert.pem"),
+            fingerprint: "ab".repeat(32),
+            trusted_system: Some(true),
+        },
+        resolver_installed: Some(true),
+        port_redirect: None,
+        default_php: PhpVersion::new(8, 5),
+        php: vec![],
+        sites: SiteCounts::default(),
+        load_avg: None,
+        daemon_version: "2.0.1".into(),
+    }
 }
 
 #[test]

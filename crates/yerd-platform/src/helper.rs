@@ -58,6 +58,14 @@ pub enum ArgvParseError {
     /// Socket address did not parse.
     #[error("invalid socket address: {0:?}")]
     BadAddr(OsString),
+    /// A port value did not parse as a `u16`.
+    #[error("invalid port for flag {flag}: {value:?}")]
+    BadPort {
+        /// The flag whose value was a bad port.
+        flag: &'static str,
+        /// The offending value as observed in argv.
+        value: OsString,
+    },
     /// Trailing argv after the parser had consumed every expected flag.
     #[error("trailing argv after parse: {0:?}")]
     Trailing(OsString),
@@ -106,6 +114,20 @@ pub enum HelperInvocation {
         /// Path to the `yerdd` binary that should receive the capability.
         daemon_binary: PathBuf,
     },
+    /// Install a macOS pf redirect so inbound `http_from`/`https_from`
+    /// (80/443) reach the daemon's rootless `http_to`/`https_to` ports.
+    InstallPortRedirect {
+        /// Privileged HTTP port to redirect from (80).
+        http_from: u16,
+        /// Rootless HTTP port the daemon actually listens on.
+        http_to: u16,
+        /// Privileged HTTPS port to redirect from (443).
+        https_from: u16,
+        /// Rootless HTTPS port the daemon actually listens on.
+        https_to: u16,
+    },
+    /// Remove the macOS pf redirect installed by `InstallPortRedirect`.
+    UninstallPortRedirect,
 }
 
 impl HelperInvocation {
@@ -128,6 +150,8 @@ impl HelperInvocation {
             t if t == ops::INSTALL_RESOLVER => parse_install_resolver(rest),
             t if t == ops::UNINSTALL_RESOLVER => parse_uninstall_resolver(rest),
             t if t == ops::SETCAP => parse_setcap(rest),
+            t if t == ops::INSTALL_PORT_REDIRECT => parse_install_port_redirect(rest),
+            t if t == ops::UNINSTALL_PORT_REDIRECT => parse_uninstall_port_redirect(rest),
             _ => Err(ArgvParseError::UnknownOp(head.clone())),
         }
     }
@@ -172,6 +196,25 @@ impl HelperInvocation {
                 v.push(OsString::from(ops::SETCAP));
                 v.push(OsString::from("--binary"));
                 v.push(daemon_binary.clone().into_os_string());
+            }
+            Self::InstallPortRedirect {
+                http_from,
+                http_to,
+                https_from,
+                https_to,
+            } => {
+                v.push(OsString::from(ops::INSTALL_PORT_REDIRECT));
+                v.push(OsString::from("--http-from"));
+                v.push(OsString::from(http_from.to_string()));
+                v.push(OsString::from("--http-to"));
+                v.push(OsString::from(http_to.to_string()));
+                v.push(OsString::from("--https-from"));
+                v.push(OsString::from(https_from.to_string()));
+                v.push(OsString::from("--https-to"));
+                v.push(OsString::from(https_to.to_string()));
+            }
+            Self::UninstallPortRedirect => {
+                v.push(OsString::from(ops::UNINSTALL_PORT_REDIRECT));
             }
         }
         v
@@ -342,6 +385,58 @@ fn parse_setcap(rest: &[OsString]) -> Result<HelperInvocation, ArgvParseError> {
     })
 }
 
+fn parse_port(value: &OsStr, flag: &'static str) -> Result<u16, ArgvParseError> {
+    value
+        .to_str()
+        .and_then(|s| s.parse().ok())
+        .ok_or_else(|| ArgvParseError::BadPort {
+            flag,
+            value: value.to_owned(),
+        })
+}
+
+fn parse_install_port_redirect(rest: &[OsString]) -> Result<HelperInvocation, ArgvParseError> {
+    let mut http_from: Option<u16> = None;
+    let mut http_to: Option<u16> = None;
+    let mut https_from: Option<u16> = None;
+    let mut https_to: Option<u16> = None;
+    let mut iter = rest.iter();
+    while let Some((flag, value)) = next_pair(&mut iter) {
+        match flag.to_str() {
+            Some("--http-from") => http_from = Some(parse_port(value, "--http-from")?),
+            Some("--http-to") => http_to = Some(parse_port(value, "--http-to")?),
+            Some("--https-from") => https_from = Some(parse_port(value, "--https-from")?),
+            Some("--https-to") => https_to = Some(parse_port(value, "--https-to")?),
+            _ => {
+                return Err(ArgvParseError::UnknownFlag {
+                    op: ops::INSTALL_PORT_REDIRECT,
+                    flag: flag.to_owned(),
+                });
+            }
+        }
+    }
+    if let Some(trailing) = iter.next() {
+        return Err(ArgvParseError::Trailing(trailing.clone()));
+    }
+    let miss = |flag| ArgvParseError::MissingFlag {
+        op: ops::INSTALL_PORT_REDIRECT,
+        flag,
+    };
+    Ok(HelperInvocation::InstallPortRedirect {
+        http_from: http_from.ok_or(miss("--http-from"))?,
+        http_to: http_to.ok_or(miss("--http-to"))?,
+        https_from: https_from.ok_or(miss("--https-from"))?,
+        https_to: https_to.ok_or(miss("--https-to"))?,
+    })
+}
+
+fn parse_uninstall_port_redirect(rest: &[OsString]) -> Result<HelperInvocation, ArgvParseError> {
+    if let Some(trailing) = rest.first() {
+        return Err(ArgvParseError::Trailing(trailing.clone()));
+    }
+    Ok(HelperInvocation::UninstallPortRedirect)
+}
+
 #[cfg(test)]
 #[allow(
     clippy::unwrap_used,
@@ -423,6 +518,63 @@ mod tests {
             argv_strs(&inv),
             vec!["setcap", "--binary", "/usr/bin/yerdd"]
         );
+    }
+
+    #[test]
+    fn install_port_redirect_argv_shape() {
+        let inv = HelperInvocation::InstallPortRedirect {
+            http_from: 80,
+            http_to: 8080,
+            https_from: 443,
+            https_to: 8443,
+        };
+        assert_eq!(
+            argv_strs(&inv),
+            vec![
+                "install-port-redirect",
+                "--http-from",
+                "80",
+                "--http-to",
+                "8080",
+                "--https-from",
+                "443",
+                "--https-to",
+                "8443",
+            ]
+        );
+    }
+
+    #[test]
+    fn uninstall_port_redirect_argv_shape() {
+        let inv = HelperInvocation::UninstallPortRedirect;
+        assert_eq!(argv_strs(&inv), vec!["uninstall-port-redirect"]);
+    }
+
+    #[test]
+    fn install_port_redirect_roundtrips() {
+        let inv = HelperInvocation::InstallPortRedirect {
+            http_from: 80,
+            http_to: 8080,
+            https_from: 443,
+            https_to: 8443,
+        };
+        let parsed = HelperInvocation::from_argv(&inv.to_argv()).unwrap();
+        assert!(matches!(
+            parsed,
+            HelperInvocation::InstallPortRedirect {
+                http_from: 80,
+                http_to: 8080,
+                https_from: 443,
+                https_to: 8443,
+            }
+        ));
+    }
+
+    #[test]
+    fn uninstall_port_redirect_roundtrips() {
+        let inv = HelperInvocation::UninstallPortRedirect;
+        let parsed = HelperInvocation::from_argv(&inv.to_argv()).unwrap();
+        assert!(matches!(parsed, HelperInvocation::UninstallPortRedirect));
     }
 
     #[test]

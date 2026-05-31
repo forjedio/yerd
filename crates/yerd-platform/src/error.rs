@@ -193,6 +193,10 @@ pub mod ops {
     pub const BIND_PAIR: &str = "bind-pair";
     /// Apply `cap_net_bind_service` to the daemon binary.
     pub const SETCAP: &str = "setcap";
+    /// Install the macOS pf redirect (80/443 → rootless ports).
+    pub const INSTALL_PORT_REDIRECT: &str = "install-port-redirect";
+    /// Remove the macOS pf redirect.
+    pub const UNINSTALL_PORT_REDIRECT: &str = "uninstall-port-redirect";
 }
 
 #[cfg(test)]
@@ -394,6 +398,8 @@ mod tests {
             ops::BIND,
             ops::BIND_PAIR,
             ops::SETCAP,
+            ops::INSTALL_PORT_REDIRECT,
+            ops::UNINSTALL_PORT_REDIRECT,
         ] {
             assert!(!op.is_empty());
         }

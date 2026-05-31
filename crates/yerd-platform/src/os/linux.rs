@@ -19,6 +19,7 @@ use crate::error::ops;
 use crate::metrics::SystemMetrics;
 use crate::paths::{Paths, PlatformDirs};
 use crate::port_binder::{BoundPort, PortBinder, PortPair};
+use crate::port_redirect::PortRedirector;
 use crate::pure::{pem_match, port_plan, proc_metrics, resolv_conf, resolved_drop_in};
 use crate::resolver::ResolverInstaller;
 use crate::trust_store::{CaFingerprint, NssOutcome, TrustStore};
@@ -398,6 +399,28 @@ impl SystemMetrics for LinuxSystemMetrics {
     fn load_average(&self) -> Option<[f64; 3]> {
         let contents = fs::read_to_string("/proc/loadavg").ok()?;
         proc_metrics::parse_loadavg(&contents)
+    }
+}
+
+/// Linux `PortRedirector` implementation.
+///
+/// Not applicable on Linux: `yerd elevate ports` grants
+/// `cap_net_bind_service`, so the daemon binds 80/443 directly rather than
+/// going through a redirect. The probe always returns `None` ("N/A").
+#[derive(Debug, Default, Clone, Copy)]
+pub struct LinuxPortRedirector;
+
+impl LinuxPortRedirector {
+    /// Construct.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self
+    }
+}
+
+impl PortRedirector for LinuxPortRedirector {
+    fn is_active(&self) -> Option<bool> {
+        None
     }
 }
 

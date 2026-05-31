@@ -67,9 +67,11 @@ Yerd icon in the taskbar/dock (Wayland/GNOME/Pantheon match the icon via a
   on Linux both `.deb`s install to `/usr/bin` (siblings), which the elevation
   path expects. A self-contained bundle that **embeds** the CLI via Tauri
   `externalBin` is a planned follow-up.
-- **macOS in-app elevation** is gated to "Coming soon" pending a CLI socket-path
-  fix (`yerd elevate`'s `user_socket_candidates` doesn't probe `$TMPDIR`). Linux
-  elevation works via `pkexec /usr/bin/env SUDO_UID=<uid> <yerd> elevate <t>`.
+- **In-app elevation**: Linux uses `pkexec /usr/bin/env SUDO_UID=<uid> <yerd>
+  elevate <t>`; macOS uses `osascript … with administrator privileges` wrapping
+  the same `env SUDO_UID=<uid> <yerd> elevate <t>`. The macOS daemon socket lives
+  at the deterministic `/tmp/yerd-$UID` so the root-elevated CLI can locate it
+  from `SUDO_UID` alone.
 - **Windows** is out of scope: the daemon's pipe name isn't client-derivable yet.
 - Release bundles are currently **unsigned** (macOS Gatekeeper workaround in the
   root README); signing/notarisation is a wired-later follow-up.

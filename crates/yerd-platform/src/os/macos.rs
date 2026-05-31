@@ -2,7 +2,8 @@
 //!
 //! `Paths` uses `directories` for `config`/`data`/`cache`; `state`
 //! coincides with `data` on macOS (no XDG state distinction); `runtime`
-//! is a `yerd-$UID` directory inside `std::env::temp_dir()`.
+//! is a deterministic `/tmp/yerd-$UID` directory (see `resolve` for why
+//! it is not `std::env::temp_dir()`).
 //!
 //! `TrustStore::is_present_system` enumerates the default Keychain
 //! search list (which includes `/Library/Keychains/System.keychain`)
@@ -15,7 +16,7 @@
 
 use std::fs;
 use std::net::{Ipv4Addr, SocketAddr, TcpListener};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use directories::ProjectDirs;
 
@@ -23,6 +24,7 @@ use crate::error::ops;
 use crate::metrics::SystemMetrics;
 use crate::paths::{Paths, PlatformDirs};
 use crate::port_binder::{BoundPort, PortBinder, PortPair};
+use crate::port_redirect::{loopback_port_reachable, PortRedirector};
 use crate::pure::{pem_match, port_plan, resolver_file};
 use crate::resolver::ResolverInstaller;
 use crate::trust_store::{CaFingerprint, NssOutcome, TrustStore};
@@ -49,10 +51,29 @@ impl Paths for MacosPaths {
         // macOS has no XDG state distinction; collapse to data.
         let state = data.clone();
 
-        // No XDG_RUNTIME_DIR on macOS — use a per-user dir inside the
-        // standard temp dir. Caller should still set mode 0o700.
+        // No XDG_RUNTIME_DIR on macOS. Use a deterministic, uid-derived
+        // `/tmp/yerd-$UID` (matching Linux's XDG-less fallback) rather than
+        // `std::env::temp_dir()` (`$TMPDIR` = a per-session `/var/folders/…`
+        // path). Determinism is load-bearing: `yerd elevate`, running as root
+        // under `osascript`/`sudo`, must reconstruct this socket path from
+        // `SUDO_UID` alone (see `bin/yerd/src/elevate.rs::user_socket_candidates`),
+        // and it cannot read another user's `$TMPDIR` without privileged FFI
+        // (forbidden in this workspace). The daemon and GUI both resolve via
+        // this same function, so they always agree on the path.
+        //
+        // Trade-off: `/tmp` is world-traversable + sticky, so a hostile local
+        // uid could pre-create `/tmp/yerd-$UID` to make the daemon's
+        // fail-closed `secure_fs::create_private_dir` (0o700, owner-checked)
+        // refuse to start — the same DoS surface the Linux fallback already
+        // accepts. Caller must still set mode 0o700.
+        //
+        // Sandbox caveat: this works because the GUI `.app` is unsigned and
+        // unsandboxed, so it shares the user's `/tmp` namespace with a
+        // terminal-launched daemon. If the app is ever signed + sandboxed,
+        // `temp_dir()`/`/tmp` access becomes a container path and GUI↔daemon
+        // IPC over this socket would break — revisit then.
         let uid = read_real_uid().unwrap_or(0);
-        let runtime = std::env::temp_dir().join(format!("yerd-{uid}"));
+        let runtime = PathBuf::from(format!("/tmp/yerd-{uid}"));
 
         Ok(PlatformDirs {
             config,
@@ -338,6 +359,26 @@ impl SystemMetrics for MacosSystemMetrics {
     }
 }
 
+/// macOS `PortRedirector` implementation.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct MacosPortRedirector;
+
+impl MacosPortRedirector {
+    /// Construct.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self
+    }
+}
+
+impl PortRedirector for MacosPortRedirector {
+    fn is_active(&self) -> Option<bool> {
+        // The pf redirect installs 80 and 443 together; require both to be
+        // reachable on loopback before reporting it live.
+        Some(loopback_port_reachable(80) && loopback_port_reachable(443))
+    }
+}
+
 #[cfg(test)]
 #[allow(
     clippy::unwrap_used,
@@ -346,6 +387,8 @@ impl SystemMetrics for MacosSystemMetrics {
     clippy::indexing_slicing
 )]
 mod tests {
+    use std::path::Path;
+
     use super::*;
 
     #[test]

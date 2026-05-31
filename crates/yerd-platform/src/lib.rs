@@ -1,8 +1,9 @@
 //! OS abstraction layer for Yerd.
 //!
-//! Four traits live here — [`Paths`], [`TrustStore`], [`ResolverInstaller`],
-//! and [`PortBinder`] — each with a single thin implementation per OS
-//! selected by `#[cfg(target_os = ...)]`. macOS and Linux ship in Phase 1;
+//! The core traits live here — [`Paths`], [`TrustStore`], [`ResolverInstaller`],
+//! [`PortBinder`], and [`PortRedirector`] — each with a single thin
+//! implementation per OS selected by `#[cfg(target_os = ...)]`. macOS and Linux
+//! ship in Phase 1;
 //! Windows compiles against the [`os::unsupported`] stub that returns
 //! [`PlatformError::Unsupported`] for every method.
 //!
@@ -27,6 +28,7 @@ pub mod helper;
 pub mod metrics;
 pub mod paths;
 pub mod port_binder;
+pub mod port_redirect;
 pub mod pure;
 pub mod resolver;
 pub mod trust_store;
@@ -38,9 +40,11 @@ pub use helper::{ArgvParseError, HelperInvocation};
 pub use metrics::SystemMetrics;
 pub use paths::{Paths, PlatformDirs};
 pub use port_binder::{BoundPort, PortBinder, PortPair};
+pub use port_redirect::PortRedirector;
 pub use resolver::ResolverInstaller;
 pub use trust_store::{CaFingerprint, FingerprintParseError, NssFailure, NssOutcome, TrustStore};
 
 pub use os::active::{
-    ActivePaths, ActivePortBinder, ActiveResolverInstaller, ActiveSystemMetrics, ActiveTrustStore,
+    ActivePaths, ActivePortBinder, ActivePortRedirector, ActiveResolverInstaller,
+    ActiveSystemMetrics, ActiveTrustStore,
 };

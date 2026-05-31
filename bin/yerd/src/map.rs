@@ -1016,6 +1016,7 @@ mod tests {
                 trusted_system: Some(false),
             },
             resolver_installed: None,
+            port_redirect: None,
             default_php: PhpVersion::new(8, 5),
             php: vec![yerd_ipc::PhpPoolStatus {
                 version: PhpVersion::new(8, 5),

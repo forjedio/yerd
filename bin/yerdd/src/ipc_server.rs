@@ -108,6 +108,8 @@ async fn dispatch(req: Request, state: &DaemonState) -> Response {
             tld: state.config.lock().await.tld.as_str().to_owned(),
             ca_path: state.ca_path.clone(),
             ca_fingerprint: state.ca_fingerprint.to_hex(),
+            http_port: state.http.bound,
+            https_port: state.https.bound,
         },
         Request::Park { .. }
         | Request::Link { .. }
@@ -311,6 +313,17 @@ async fn build_status_report(state: &DaemonState) -> yerd_ipc::StatusReport {
     .ok()
     .flatten();
 
+    // Active probe: is the privileged-port redirect carrying 80/443? `None` on
+    // Linux (binds directly after setcap). Bounded TCP connects, so it can't
+    // stall status assembly.
+    let port_redirect = tokio::task::spawn_blocking(|| {
+        use yerd_platform::PortRedirector;
+        yerd_platform::ActivePortRedirector::new().is_active()
+    })
+    .await
+    .ok()
+    .flatten();
+
     let load_avg = metrics
         .load_average()
         .map(|[a, b, c]| [load_to_centi(a), load_to_centi(b), load_to_centi(c)]);
@@ -329,6 +342,7 @@ async fn build_status_report(state: &DaemonState) -> yerd_ipc::StatusReport {
             trusted_system,
         },
         resolver_installed,
+        port_redirect,
         default_php,
         php,
         sites,
@@ -1122,6 +1136,8 @@ mod tests {
                 tld,
                 ca_path,
                 ca_fingerprint,
+                http_port,
+                https_port,
             } => {
                 assert_eq!(dns_addr, state.dns_addr);
                 assert_eq!(tld, "test");
@@ -1129,6 +1145,8 @@ mod tests {
                 // 64 lowercase hex chars; matches the stored fingerprint.
                 assert_eq!(ca_fingerprint, state.ca_fingerprint.to_hex());
                 assert_eq!(ca_fingerprint.len(), 64);
+                assert_eq!(http_port, state.http.bound);
+                assert_eq!(https_port, state.https.bound);
             }
             other => panic!("expected Info, got {other:?}"),
         }

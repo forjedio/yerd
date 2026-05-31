@@ -83,6 +83,8 @@ fn encode_then_decode_response_roundtrip() {
         tld: "test".into(),
         ca_path: PathBuf::from("/x/ca.cert.pem"),
         ca_fingerprint: "ab".repeat(32),
+        http_port: 8080,
+        https_port: 8443,
     });
     assert_response_roundtrips(Response::PhpVersions {
         installed: vec![PhpVersion::new(8, 3), PhpVersion::new(8, 5)],
@@ -143,6 +145,7 @@ fn encode_then_decode_response_roundtrip() {
                 trusted_system: None,
             },
             resolver_installed: Some(false),
+            port_redirect: Some(true),
             default_php: PhpVersion::new(8, 5),
             php: vec![PhpPoolStatus {
                 version: PhpVersion::new(8, 5),

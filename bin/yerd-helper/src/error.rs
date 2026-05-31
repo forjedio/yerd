@@ -123,6 +123,9 @@ pub enum ValidationReason {
     /// No recognised Linux CA anchor directory present.
     #[error("no recognised CA anchor directory")]
     NoAnchorDir,
+    /// A port-redirect port argument was zero.
+    #[error("port must be non-zero (flag {0})")]
+    PortInvalid(&'static str),
 }
 
 /// Specific failure modes for [`HelperError::Command`].

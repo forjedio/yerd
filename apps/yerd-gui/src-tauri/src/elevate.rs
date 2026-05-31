@@ -5,13 +5,13 @@
 //!   1. Elevate the CLI, not the GUI — the GUI process never becomes root.
 //!   2. Resolve the trusted `yerd` path as a sibling of our own `current_exe`,
 //!      never from `PATH` or the daemon (anti-forgery, like the CLI does).
-//!   3. Thread the real uid through `env SUDO_UID=<uid>` because `pkexec`
-//!      clears the environment and sets only `PKEXEC_UID`; `yerd elevate`
-//!      locates the user's socket and owner-checks the CA from `SUDO_UID`.
+//!   3. Thread the real uid through `env SUDO_UID=<uid>` because the elevation
+//!      tool clears the environment; `yerd elevate` locates the user's socket
+//!      and owner-checks the CA from `SUDO_UID`.
 //!
-//! Linux is fully wired (`pkexec`). Other platforms return an explanatory error
-//! — the frontend already gates the in-app "Fix" to Linux (macOS needs a CLI
-//! socket-path fix first), so this path is not reached there.
+//! Linux uses `pkexec`; macOS uses `osascript … with administrator privileges`.
+//! Windows returns an explanatory error (the frontend gates the in-app "Fix"
+//! to Linux/macOS, so that path is not reached there).
 
 use std::path::PathBuf;
 
@@ -82,10 +82,69 @@ fn spawn_elevated(yerd: &std::path::Path, target: &str) -> Result<(), GuiError> 
     }
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(target_os = "macos")]
+fn spawn_elevated(yerd: &std::path::Path, target: &str) -> Result<(), GuiError> {
+    use std::io::Write as _;
+    use std::process::{Command, Stdio};
+
+    // Build the AppleScript on stdin (not a fragile `-e` one-liner). The `yerd`
+    // path goes through AppleScript's `quoted form of`, making it shell-safe
+    // regardless of spaces/specials; `target` is from the fixed allowlist
+    // validated in `run`, so it's injection-safe. `SUDO_UID` MUST be embedded —
+    // `osascript … with administrator privileges` runs the command as root with
+    // a clean env and does NOT set `SUDO_UID` (that's a `sudo`-ism), yet
+    // `yerd elevate` relies on it for socket lookup and the CA owner-check.
+    let uid = current_uid();
+    let yerd_str = yerd.to_string_lossy();
+    let script = format!(
+        "do shell script \"env SUDO_UID={uid} \" & quoted form of \"{path}\" & \" elevate {target}\" with administrator privileges",
+        path = applescript_escape(&yerd_str),
+    );
+
+    let mut child = Command::new("/usr/bin/osascript")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| GuiError::internal(format!("failed to launch osascript: {e}")))?;
+    child
+        .stdin
+        .take()
+        .ok_or_else(|| GuiError::internal("osascript stdin unavailable"))?
+        .write_all(script.as_bytes())
+        .map_err(|e| GuiError::internal(format!("failed to write osascript script: {e}")))?;
+    let out = child
+        .wait_with_output()
+        .map_err(|e| GuiError::internal(format!("osascript failed: {e}")))?;
+
+    if out.status.success() {
+        return Ok(());
+    }
+    // osascript surfaces a dismissed auth dialog as error -128 / "User
+    // canceled", but it ALSO re-raises the inner command's non-zero exit as a
+    // numbered error — exit code alone can't tell "dismissed" from "elevate
+    // failed", so branch on the stderr text.
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    if stderr.contains("User canceled") || stderr.contains("-128") {
+        return Err(GuiError::internal("authorization was dismissed"));
+    }
+    Err(GuiError::internal(format!(
+        "yerd elevate failed: {}",
+        stderr.trim()
+    )))
+}
+
+/// Escape a string for embedding inside an AppleScript double-quoted string
+/// literal. `quoted form of` then handles the shell layer.
+#[cfg(target_os = "macos")]
+fn applescript_escape(s: &str) -> String {
+    s.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 fn spawn_elevated(_yerd: &std::path::Path, _target: &str) -> Result<(), GuiError> {
     Err(GuiError::internal(
-        "in-app elevation is currently Linux-only; run `yerd elevate` in a terminal",
+        "in-app elevation is not supported on this platform; run `yerd elevate` in a terminal",
     ))
 }
 

@@ -66,7 +66,9 @@ const toast = useToast();
 const { report, refresh: refreshStatus } = useDaemon();
 
 const platform = ref<string>("");
-const canElevate = computed(() => platform.value === "linux");
+const canElevate = computed(
+  () => platform.value === "linux" || platform.value === "macos",
+);
 
 const diagnoses = ref<Diagnosis[]>([]);
 const diagLoading = ref(true);
@@ -480,7 +482,7 @@ onMounted(() => {
                     </Button>
                     <ComingSoon
                       v-else
-                      reason="macOS in-app elevation is pending a CLI socket-path fix — use `yerd elevate` in a terminal for now."
+                      reason="In-app elevation isn't available on this platform yet — use `yerd elevate` in a terminal for now."
                       pill
                     >
                       Fix

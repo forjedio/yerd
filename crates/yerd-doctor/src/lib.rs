@@ -40,7 +40,10 @@ pub fn diagnose(report: &StatusReport) -> Vec<Diagnosis> {
     let mut out = Vec::new();
 
     // --- Ports: a *privileged* configured port that fell back is not elevated.
-    if privileged_fallback(report) {
+    // On macOS the daemon still binds the rootless ports even once elevated, so
+    // an active pf redirect (`port_redirect == Some(true)`) means 80/443 are in
+    // fact reachable — suppress the warning in that case.
+    if privileged_fallback(report) && report.port_redirect != Some(true) {
         out.push(warn(
             DiagnosisCode::PortFallback,
             "Privileged ports not bound",
@@ -237,6 +240,7 @@ mod tests {
                 trusted_system: Some(true),
             },
             resolver_installed: Some(true),
+            port_redirect: None,
             default_php: PhpVersion::new(8, 5),
             php: vec![PhpPoolStatus {
                 version: PhpVersion::new(8, 5),
@@ -282,6 +286,26 @@ mod tests {
         r2.http.bound = 8081;
         r2.http.fell_back = true;
         assert!(!codes(&diagnose(&r2)).contains(&DiagnosisCode::PortFallback));
+    }
+
+    #[test]
+    fn active_port_redirect_suppresses_fallback_warning() {
+        // Privileged port fell back, but a pf redirect is live (macOS): the
+        // ports are reachable, so no warning.
+        let mut r = healthy();
+        r.http.requested = 80;
+        r.http.bound = 8080;
+        r.http.fell_back = true;
+        r.port_redirect = Some(true);
+        assert!(!codes(&diagnose(&r)).contains(&DiagnosisCode::PortFallback));
+
+        // Redirect present but NOT active → still a warning.
+        r.port_redirect = Some(false);
+        assert!(codes(&diagnose(&r)).contains(&DiagnosisCode::PortFallback));
+
+        // Not applicable (Linux, None) → unchanged warning behaviour.
+        r.port_redirect = None;
+        assert!(codes(&diagnose(&r)).contains(&DiagnosisCode::PortFallback));
     }
 
     #[test]
