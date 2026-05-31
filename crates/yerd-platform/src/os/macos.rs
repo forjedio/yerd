@@ -151,7 +151,9 @@ impl TrustStore for MacosTrustStore {
 
     fn is_trusted(&self, ca_path: &Path, _fp: &CaFingerprint) -> Result<bool, PlatformError> {
         use security_framework::certificate::SecCertificate;
-        use security_framework::trust_settings::{Domain, TrustSettings, TrustSettingsForCertificate};
+        use security_framework::trust_settings::{
+            Domain, TrustSettings, TrustSettingsForCertificate,
+        };
 
         // Read the cert's *stored trust settings* in the user and admin domains
         // — NOT `security verify-cert`. verify-cert reflects `trustd`'s effective

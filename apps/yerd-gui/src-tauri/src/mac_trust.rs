@@ -99,7 +99,8 @@ fn do_trust(ca_path: &Path, fp: &CaFingerprint) -> Result<(), GuiError> {
 
     // Import the verified bytes into the login keychain. A public cert import is
     // silent (no prompt); tolerate the cert already being present.
-    let keychain = SecKeychain::default().map_err(|e| sec_err("open your login keychain", e.code()))?;
+    let keychain =
+        SecKeychain::default().map_err(|e| sec_err("open your login keychain", e.code()))?;
     let mut opts = ImportOptions::new();
     opts.filename("ca.cert.cer").keychain(&keychain);
     if let Err(e) = opts.import(&der) {
@@ -124,8 +125,9 @@ fn do_untrust(ca_path: &Path, fp: &CaFingerprint) -> Result<bool, GuiError> {
     // C function. We pass a valid `SecCertificateRef` borrowed from `cert` (alive
     // for the duration of the call; the callee does not retain it) and the
     // constant user-domain selector. Returns an `OSStatus` by value.
-    let status =
-        unsafe { SecTrustSettingsRemoveTrustSettings(cert.as_concrete_TypeRef(), kSecTrustSettingsDomainUser) };
+    let status = unsafe {
+        SecTrustSettingsRemoveTrustSettings(cert.as_concrete_TypeRef(), kSecTrustSettingsDomainUser)
+    };
     // errSecItemNotFound = nothing to remove (already untrusted) → success.
     if status != 0 && status != ERR_SEC_ITEM_NOT_FOUND {
         return Err(sec_err("remove the CA trust", status));

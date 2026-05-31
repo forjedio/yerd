@@ -533,9 +533,8 @@ where
                             .await
                             .map_err(|source| PhpError::Kill { version: v, source })?;
                     }
-                    pending =
-                        wait_after_kill(&mut child, state, signal, v, self.policy.stop_grace)
-                            .await?;
+                    pending = wait_after_kill(&mut child, state, signal, v, self.policy.stop_grace)
+                        .await?;
                 }
 
                 Action::EmitError(ErrorTag::HealthCheckTimedOut) => {
