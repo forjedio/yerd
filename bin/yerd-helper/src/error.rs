@@ -126,7 +126,10 @@ pub enum ValidationReason {
     #[cfg(target_os = "linux")]
     #[error("no recognised CA anchor directory")]
     NoAnchorDir,
-    /// A port-redirect port argument was zero.
+    /// A port-redirect port argument was zero. macOS-only: the pf-redirect op
+    /// that validates it is `#[cfg(target_os = "macos")]`, so the variant is
+    /// gated to match — otherwise it is dead code on Linux/Windows.
+    #[cfg(target_os = "macos")]
     #[error("port must be non-zero (flag {0})")]
     PortInvalid(&'static str),
 }
