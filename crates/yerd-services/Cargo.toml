@@ -12,6 +12,8 @@ yerd-platform  = { path = "../yerd-platform" }
 yerd-supervise = { path = "../yerd-supervise" }
 thiserror      = { workspace = true }
 async-trait    = { workspace = true }
+serde          = { workspace = true }
+serde_json     = { workspace = true }
 tokio          = { workspace = true, features = ["process", "net", "rt", "time", "io-util", "macros", "sync"] }
 
 [dev-dependencies]

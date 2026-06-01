@@ -217,6 +217,16 @@ pub struct ServiceAvailability {
     pub installed: Vec<String>,
 }
 
+/// One user database in a SQL service, returned in [`crate::Response::Databases`].
+///
+/// A struct (not a bare `String`) so future fields (size, owner, encoding) can be
+/// added additively without a wire break.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DatabaseSummary {
+    /// The database name.
+    pub name: String,
+}
+
 /// A single doctor finding.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Diagnosis {

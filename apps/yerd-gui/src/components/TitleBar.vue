@@ -24,7 +24,7 @@ function toggleMaximize() {
 <template>
   <header
     data-tauri-drag-region
-    class="relative flex h-8 shrink-0 items-center border-b bg-card px-3 text-foreground"
+    class="relative flex h-8 shrink-0 items-center border-b bg-muted px-3 text-foreground dark:bg-card"
     @dblclick="toggleMaximize"
   >
     <!-- Traffic lights: close / minimize / zoom, glyphs revealed on hover. -->

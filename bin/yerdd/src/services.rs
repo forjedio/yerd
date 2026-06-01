@@ -11,17 +11,18 @@ use std::sync::Arc;
 use yerd_config::ServiceInstance;
 use yerd_ipc::{ErrorCode, Response, ServiceAvailability, ServiceRunState, ServiceStatus};
 use yerd_services::{
-    available_versions, current_os_arch, listing_url, version as svc_version, RedisProbe, Service,
-    ServiceError, ServiceManager, ServiceRunState as MgrRunState, ServiceVersion,
+    available_versions, current_os_arch, listing_url, version as svc_version, Service,
+    ServiceError, ServiceManager, ServiceProbes, ServiceRunState as MgrRunState, ServiceVersion,
 };
 use yerd_supervise::{Downloader, SystemClock, TokioProcessSpawner};
 
 use crate::service_install;
 use crate::state::DaemonState;
 
-/// Concrete `ServiceManager` shape the daemon uses (Redis health probe in
-/// Phase 1; generalised per-service in Phase 2).
-pub type DaemonServiceManager = ServiceManager<TokioProcessSpawner, SystemClock, RedisProbe>;
+/// Concrete `ServiceManager` shape the daemon uses. [`ServiceProbes`] dispatches
+/// readiness checks to the right per-engine protocol probe (Redis / MySQL /
+/// MariaDB / Postgres).
+pub type DaemonServiceManager = ServiceManager<TokioProcessSpawner, SystemClock, ServiceProbes>;
 
 /// Build the daemon's service manager.
 #[must_use]
@@ -29,7 +30,7 @@ pub fn new_manager(dirs: yerd_platform::PlatformDirs) -> DaemonServiceManager {
     ServiceManager::new(
         TokioProcessSpawner,
         SystemClock,
-        RedisProbe,
+        ServiceProbes::new(),
         dirs,
         yerd_platform::ActivePortBinder::new(),
     )
@@ -77,7 +78,10 @@ pub async fn available_services(state: &DaemonState, dl: &dyn Downloader) -> Res
     Response::AvailableServices { services }
 }
 
-/// `install service <svc> <version>` — download + unpack (no config lock held).
+/// `install service <svc> <version>` — download + unpack (no config lock held),
+/// then start it and enable auto-start. Installing a service is taken as intent
+/// to run it, so a fresh install comes up immediately and survives daemon
+/// restarts (see [`auto_start_enabled`]).
 pub async fn install_service(
     service_id: &str,
     version: &str,
@@ -91,10 +95,110 @@ pub async fn install_service(
         Ok(v) => v,
         Err(e) => return service_error_response(&e),
     };
-    match service_install::install(service, &version, &state.dirs, dl).await {
-        Ok(()) => Response::Ok,
+    if let Err(e) = service_install::install(service, &version, &state.dirs, dl).await {
+        return service_error_response(&e);
+    }
+
+    // Auto-start the freshly installed version. Pick up any pre-configured port
+    // override (else the engine default), ensure it's running, and persist
+    // enabled=true so it also comes back on the next daemon boot.
+    let port = {
+        let cfg = state.config.lock().await;
+        cfg.services
+            .instances
+            .get(service.id())
+            .and_then(|i| i.port)
+            .unwrap_or(service.default_port())
+    };
+    let outcome = {
+        let mut mgr = state.service_manager.lock().await;
+        mgr.ensure(service, version.clone(), port).await
+    };
+    match outcome {
+        Ok(_) => persist_instance(state, service, |inst| {
+            inst.enabled = true;
+            inst.version = Some(version.to_string());
+            inst.port = Some(port);
+        })
+        .await
+        .unwrap_or_else(|resp| resp),
         Err(e) => service_error_response(&e),
     }
+}
+
+/// `change-version <svc> <new>` — switch the engine's single installed version.
+/// Installs the new version, restarts the instance onto it, then removes the
+/// previously-installed version(s). The datadir is retained (it's shared per
+/// engine / per major), so this is safe for SQL engines in later phases.
+pub async fn change_service_version(
+    service_id: &str,
+    version: &str,
+    state: &DaemonState,
+    dl: &dyn Downloader,
+) -> Response {
+    let Some(service) = Service::from_id(service_id) else {
+        return unknown_service(service_id);
+    };
+    let new_version: ServiceVersion = match version.parse() {
+        Ok(v) => v,
+        Err(e) => return service_error_response(&e),
+    };
+
+    // Versions currently on disk, to be removed once the new one is running.
+    let superseded: Vec<ServiceVersion> = installed_versions(service, &state.dirs)
+        .into_iter()
+        .filter(|v| v != &new_version)
+        .collect();
+
+    // 1. Install the new version first — a failed download leaves the current
+    //    install untouched.
+    if let Err(e) = service_install::install(service, &new_version, &state.dirs, dl).await {
+        return service_error_response(&e);
+    }
+
+    // 2. Restart onto the new version (stop old → start new). `restart`, not
+    //    `ensure`: `ensure` short-circuits when an instance is already running
+    //    and would not switch to the new binary.
+    let port = {
+        let cfg = state.config.lock().await;
+        cfg.services
+            .instances
+            .get(service.id())
+            .and_then(|i| i.port)
+            .unwrap_or(service.default_port())
+    };
+    let outcome = {
+        let mut mgr = state.service_manager.lock().await;
+        mgr.restart(service, new_version.clone(), port).await
+    };
+    if let Err(e) = outcome {
+        // The new version is installed but didn't start; leave the old version
+        // in place (don't strand the user with nothing) and surface the error.
+        return service_error_response(&e);
+    }
+
+    // 3. Persist the new selection, then drop the superseded version(s). Keep
+    //    the datadir (purge = false).
+    if let Err(resp) = persist_instance(state, service, |inst| {
+        inst.enabled = true;
+        inst.version = Some(new_version.to_string());
+        inst.port = Some(port);
+    })
+    .await
+    {
+        return resp;
+    }
+    for old in superseded {
+        if let Err(e) = service_install::uninstall(service, &old, &state.dirs, false) {
+            tracing::warn!(
+                service = %service,
+                version = %old,
+                error = %e,
+                "couldn't remove superseded service version"
+            );
+        }
+    }
+    Response::Ok
 }
 
 /// `uninstall service <svc> <version> [--purge]`.
@@ -248,24 +352,6 @@ pub fn service_logs(service_id: &str, lines: u32, state: &DaemonState) -> Respon
     Response::ServiceLogs { lines: tail }
 }
 
-/// `create database <svc> <name>` — Phase 3. Caches reject; SQL engines are not
-/// wired until their client tooling lands in Phase 2/3.
-pub fn create_database(service_id: &str, _name: &str, _state: &DaemonState) -> Response {
-    let Some(service) = Service::from_id(service_id) else {
-        return unknown_service(service_id);
-    };
-    match service.kind() {
-        yerd_services::ServiceKind::Cache => Response::Error {
-            code: ErrorCode::InvalidPath,
-            message: format!("{} does not host SQL databases", service.display_name()),
-        },
-        yerd_services::ServiceKind::Database => Response::Error {
-            code: ErrorCode::Internal,
-            message: "Create Database is not available yet (lands with the SQL engines)".into(),
-        },
-    }
-}
-
 // ── status + auto-start ───────────────────────────────────────────────────
 
 /// Build the per-service status list for `ListServices` / `StatusReport`.
@@ -372,7 +458,7 @@ fn installed_versions(service: Service, dirs: &yerd_platform::PlatformDirs) -> V
 
 /// Resolve the version to run: the configured one if installed, else the latest
 /// installed; error if nothing is installed.
-fn resolve_version(
+pub(crate) fn resolve_version(
     service: Service,
     configured: Option<&str>,
     dirs: &yerd_platform::PlatformDirs,

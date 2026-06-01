@@ -16,7 +16,9 @@ use tokio_rustls::TlsAcceptor;
 
 use crate::backend::Backend;
 use crate::error::ProxyError;
-use crate::forward::{bytes_body, empty_body, fcgi, http as http_fwd, upgrade, BoxBody};
+use crate::forward::{
+    bytes_body, empty_body, fcgi, http as http_fwd, static_file, upgrade, BoxBody,
+};
 use crate::pure::redirect::build_redirect_uri;
 use crate::tls::build_server_config;
 use crate::traits::{BackendResolver, CertStore};
@@ -349,8 +351,17 @@ async fn dispatch<R: BackendResolver>(
     }
 
     match backend {
+        // FrankenPHP is a full HTTP server and serves its own static files.
         Backend::FrankenPhp { addr } => http_fwd::forward(req, addr).await,
         bk @ (Backend::PhpFpm { .. } | Backend::PhpFpmTcp { .. }) => {
+            // `try_files`: a request that maps to a real file under the served
+            // root is served directly (so favicons/CSS/JS/images load); anything
+            // else falls through to the PHP front controller (`index.php`).
+            if let Some(resp) =
+                static_file::try_serve(req.method(), req.uri().path(), &document_root).await
+            {
+                return Ok(resp);
+            }
             fcgi::forward(req, bk, document_root, server_addr, peer_addr, https).await
         }
     }

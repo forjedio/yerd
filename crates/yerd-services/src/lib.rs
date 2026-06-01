@@ -11,6 +11,7 @@
 #![forbid(unsafe_code)]
 
 pub mod config_render;
+pub mod database;
 pub mod error;
 pub mod health;
 pub mod manager;
@@ -18,12 +19,13 @@ pub mod release;
 pub mod service;
 pub mod version;
 
+pub use database::DbNameError;
 pub use error::ServiceError;
-pub use health::RedisProbe;
+pub use health::{ReadinessProbe, RedisProbe, ServiceProbes};
 pub use manager::{ServiceManager, ServiceRunState, ServiceSnapshot};
 pub use release::{
-    artifact_url, available_versions, current_os_arch, listing_url, resolve_from_listing, Arch,
-    Artifact, Os, SERVICES_BASE_URL,
+    artifact_url, available_versions, current_os_arch, listing_url, platform_token,
+    resolve_from_listing, Arch, Artifact, Os, LISTING_SCHEMA, SERVICES_BASE_URL,
 };
 pub use service::{Service, ServiceKind};
 pub use version::{discover_installed, ServiceVersion};
@@ -35,7 +37,7 @@ const _: () = {
         ServiceManager<
             yerd_supervise::TokioProcessSpawner,
             yerd_supervise::SystemClock,
-            RedisProbe,
+            ServiceProbes,
         >,
     >();
 };

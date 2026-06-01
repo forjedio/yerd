@@ -2,6 +2,7 @@
 
 pub mod fcgi;
 pub mod http;
+pub mod static_file;
 pub mod upgrade;
 
 /// Body type used in proxy responses — boxed so all forward variants

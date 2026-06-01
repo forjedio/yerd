@@ -8,7 +8,7 @@ use std::time::Instant;
 use async_trait::async_trait;
 
 use crate::error::ExitReason;
-use crate::supervisor::KillSignal;
+use crate::supervisor::{KillSignal, StopProtocol};
 use crate::traits::{ChildHandle, Clock, ProcessSpawner};
 
 /// `std::time::Instant::now()` wrapper.
@@ -58,30 +58,37 @@ impl ChildHandle for TokioChild {
         Ok(ExitReason::from_status(self.inner.wait().await?))
     }
 
-    async fn kill(&mut self, signal: KillSignal) -> Result<(), io::Error> {
+    async fn kill(&mut self, signal: KillSignal, protocol: StopProtocol) -> Result<(), io::Error> {
         #[cfg(unix)]
         {
-            use nix::sys::signal::{killpg, Signal};
+            use nix::sys::signal::{kill, killpg, Signal};
             use nix::unistd::Pid;
-            let sig = match signal {
-                KillSignal::Term => Signal::SIGTERM,
-                KillSignal::Kill => Signal::SIGKILL,
-            };
             // `process_group(0)` was set at spawn time by the consumer's command
-            // builder, so the child's PID is also the process-group ID. Signal
-            // the group so child workers are reaped along with the master.
+            // builder, so the child's PID is also the process-group ID.
             //
             // pid fits in i32 for any realistic value; reject pathological PIDs
             // explicitly.
             let pid_i32 =
                 i32::try_from(self.pid).map_err(|_| io::Error::other("pid overflows i32"))?;
-            killpg(Pid::from_raw(pid_i32), sig).map_err(|e| io::Error::other(e.to_string()))
+            let pid = Pid::from_raw(pid_i32);
+            let result = match (signal, protocol) {
+                // Force: always SIGKILL the whole group, reaping any stragglers.
+                (KillSignal::Kill, _) => killpg(pid, Signal::SIGKILL),
+                // Graceful, default: SIGTERM the group so workers go with the
+                // master.
+                (KillSignal::Term, StopProtocol::GroupTerm) => killpg(pid, Signal::SIGTERM),
+                // Graceful, Postgres fast shutdown: SIGINT the postmaster ONLY
+                // (it orchestrates its backends; a group signal would mis-deliver
+                // to them, where SIGINT means cancel-query).
+                (KillSignal::Term, StopProtocol::MasterInterrupt) => kill(pid, Signal::SIGINT),
+            };
+            result.map_err(|e| io::Error::other(e.to_string()))
         }
         #[cfg(windows)]
         {
             // TODO(Phase 2): worker leak on Windows — needs job-object teardown
             // via yerd-helper.
-            let _ = signal;
+            let _ = (signal, protocol);
             self.inner.kill().await
         }
     }

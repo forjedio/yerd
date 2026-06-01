@@ -13,7 +13,7 @@ use yerd_ipc::{
     ServiceRunState, ServiceStatus, Severity, StatusReport,
 };
 
-use crate::cli::{Command, ServiceAction};
+use crate::cli::{Command, DbAction, ServiceAction};
 use crate::error::ClientError;
 
 /// Map a parsed [`Command`] to the wire [`Request`], validating site names and
@@ -118,6 +118,7 @@ pub fn to_request(cmd: &Command) -> Result<Request, ClientError> {
         },
         Command::Services => Request::ListServices,
         Command::Service { action } => service_request(action),
+        Command::Db { action } => db_request(action),
         Command::Status => Request::Status,
         Command::Doctor { action: None } => Request::Diagnose,
         Command::Doctor {
@@ -166,6 +167,10 @@ fn service_request(action: &ServiceAction) -> Request {
             service: service.clone(),
             version: version.clone(),
         },
+        ServiceAction::ChangeVersion { service, version } => Request::ChangeServiceVersion {
+            service: service.clone(),
+            version: version.clone(),
+        },
         ServiceAction::Uninstall {
             service,
             version,
@@ -191,6 +196,42 @@ fn service_request(action: &ServiceAction) -> Request {
         ServiceAction::Logs { service, lines } => Request::ServiceLogs {
             service: service.clone(),
             lines: *lines,
+        },
+    }
+}
+
+fn db_request(action: &DbAction) -> Request {
+    match action {
+        DbAction::List { service } => Request::ListDatabases {
+            service: service.clone(),
+        },
+        DbAction::Create { service, name } => Request::CreateDatabase {
+            service: service.clone(),
+            name: name.clone(),
+        },
+        DbAction::Drop { service, name } => Request::DropDatabase {
+            service: service.clone(),
+            name: name.clone(),
+        },
+        // Paths are passed through untouched here to keep this mapping I/O-free;
+        // `lib::run` absolutises them against the user's cwd at the I/O boundary.
+        DbAction::Backup {
+            service,
+            name,
+            path,
+        } => Request::BackupDatabase {
+            service: service.clone(),
+            name: name.clone(),
+            path: path.clone(),
+        },
+        DbAction::Restore {
+            service,
+            name,
+            path,
+        } => Request::RestoreDatabase {
+            service: service.clone(),
+            name: name.clone(),
+            path: path.clone(),
         },
     }
 }
@@ -309,6 +350,15 @@ pub fn render(resp: &Response, json: bool) -> Rendered {
         } else {
             lines.join("\n")
         }),
+        Response::Databases { databases } => Rendered::ok(if databases.is_empty() {
+            "no databases".to_owned()
+        } else {
+            databases
+                .iter()
+                .map(|d| d.name.as_str())
+                .collect::<Vec<_>>()
+                .join("\n")
+        }),
         // `Response` is `#[non_exhaustive]`; a future variant from a newer
         // daemon is surfaced benignly rather than panicking.
         _ => Rendered::err("unexpected response from daemon".to_owned()),
@@ -386,12 +436,21 @@ fn format_services(services: &[ServiceStatus]) -> String {
     }
     let mut out = String::from("SERVICE\tSTATE\tPORT\tVERSION\tENABLED\tINSTALLED");
     for s in services {
-        let version = s.selected_version.as_deref().unwrap_or("-");
-        let installed = if s.installed_versions.is_empty() {
-            "-".to_owned()
-        } else {
-            s.installed_versions.join(",")
-        };
+        // Not installed: there's no live state, port, or version to report.
+        if s.installed_versions.is_empty() {
+            let _ = write!(
+                out,
+                "\n{}\tnot installed\t-\t-\t{}\t-",
+                s.service, s.enabled
+            );
+            continue;
+        }
+        // The active/selected version, falling back to the latest on disk.
+        let version = s
+            .selected_version
+            .as_deref()
+            .or_else(|| s.installed_versions.last().map(String::as_str))
+            .unwrap_or("-");
         let _ = write!(
             out,
             "\n{}\t{}\t{}\t{}\t{}\t{}",
@@ -400,7 +459,7 @@ fn format_services(services: &[ServiceStatus]) -> String {
             s.port,
             version,
             s.enabled,
-            installed
+            s.installed_versions.join(",")
         );
     }
     out

@@ -83,6 +83,9 @@ async fn handle_client(stream: IpcStream, state: Arc<DaemonState>) {
     }
 }
 
+// One arm per request variant — the match is naturally long and grows with the
+// protocol; splitting it would only scatter the routing.
+#[allow(clippy::too_many_lines)]
 async fn dispatch(req: Request, state: &DaemonState) -> Response {
     match req {
         Request::Ping => Response::Pong,
@@ -179,7 +182,25 @@ async fn dispatch(req: Request, state: &DaemonState) -> Response {
             crate::services::service_logs(&service, lines, state)
         }
         Request::CreateDatabase { service, name } => {
-            crate::services::create_database(&service, &name, state)
+            crate::db_admin::create(&service, &name, state).await
+        }
+        Request::ListDatabases { service } => crate::db_admin::list(&service, state).await,
+        Request::DropDatabase { service, name } => {
+            crate::db_admin::drop(&service, &name, state).await
+        }
+        Request::BackupDatabase {
+            service,
+            name,
+            path,
+        } => crate::db_admin::backup(&service, &name, &path, state).await,
+        Request::RestoreDatabase {
+            service,
+            name,
+            path,
+        } => crate::db_admin::restore(&service, &name, &path, state).await,
+        Request::ChangeServiceVersion { service, version } => {
+            let dl = crate::php_install::ReqwestDownloader::new();
+            crate::services::change_service_version(&service, &version, state, &dl).await
         }
         // `Request` is `#[non_exhaustive]` (external crate): a wildcard is
         // required even though every known variant is handled above.

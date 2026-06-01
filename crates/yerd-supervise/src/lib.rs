@@ -29,7 +29,7 @@ pub use error::{DownloadError, ExitReason, SpawnFailureReason};
 pub use listen::Listen;
 pub use real::{SystemClock, TokioChild, TokioProcessSpawner};
 pub use supervisor::{
-    backoff_for, transition, Action, Elapsed, ErrorTag, Event, KillSignal, PoolState,
+    backoff_for, transition, Action, Elapsed, ErrorTag, Event, KillSignal, PoolState, StopProtocol,
     SupervisorPolicy,
 };
 pub use traits::{ChildHandle, Clock, Downloader, HealthProbe, ProcessSpawner};

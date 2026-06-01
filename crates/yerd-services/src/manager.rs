@@ -9,11 +9,15 @@
 //!   [`ServiceError::PortInUse`] rather than a mystery crash loop.
 //! - **The database [`SupervisorPolicy`]** (generous readiness window, longer
 //!   stop grace) so a slow cold-boot is not killed mid-startup.
-//! - A **one-time datadir init** seam before first start (no-op for Redis;
-//!   `initdb` / `mysqld --initialize` land in Phase 2).
+//! - A **one-time datadir init** seam before first start: no-op for Redis;
+//!   `initdb` (Postgres) / `mysqld --initialize-insecure` (`MySQL`) /
+//!   `mariadb-install-db` (`MariaDB`), run crash-safely into a staging dir.
 //!
-//! Phase 1 supervises **Redis (Valkey)** only; other engines return
-//! [`ServiceError::Unsupported`] until their config/init/probe land in Phase 2.
+//! Supervises **Redis (Valkey)**, **`MySQL`**, **`MariaDB`**, and
+//! **`PostgreSQL`** — per-engine config rendering, datadir init, and protocol
+//! readiness probes are selected from the [`Service`]. (`MariaDB` is not yet
+//! published in the services listing, so it installs only once a build exists,
+//! but its supervision path is identical to `MySQL`.)
 
 use std::collections::BTreeMap;
 use std::net::{Ipv4Addr, SocketAddr};
@@ -22,14 +26,14 @@ use std::time::{Duration, Instant};
 
 use yerd_platform::{ActivePortBinder, PlatformDirs, PlatformError, PortBinder};
 use yerd_supervise::supervisor::{
-    transition, Action, Elapsed, ErrorTag, Event, KillSignal, PoolState, SupervisorPolicy,
+    transition, Action, Elapsed, ErrorTag, Event, KillSignal, PoolState, StopProtocol,
+    SupervisorPolicy,
 };
-use yerd_supervise::{
-    ChildHandle, Clock, ExitReason, HealthProbe, Listen, ProcessSpawner, SpawnFailureReason,
-};
+use yerd_supervise::{ChildHandle, Clock, ExitReason, Listen, ProcessSpawner, SpawnFailureReason};
 
 use crate::config_render;
 use crate::error::ServiceError;
+use crate::health::ReadinessProbe;
 use crate::service::Service;
 use crate::version::{self, ServiceVersion};
 
@@ -91,7 +95,7 @@ pub struct ServiceManager<S, C, P>
 where
     S: ProcessSpawner,
     C: Clock,
-    P: HealthProbe,
+    P: ReadinessProbe,
 {
     spawner: S,
     clock: C,
@@ -106,7 +110,7 @@ impl<S, C, P> ServiceManager<S, C, P>
 where
     S: ProcessSpawner,
     C: Clock,
-    P: HealthProbe,
+    P: ReadinessProbe,
 {
     /// Construct a new manager. The database [`SupervisorPolicy`] is applied to
     /// every supervised instance.
@@ -130,29 +134,22 @@ where
 
     /// Ensure `service` (at `version`, on `port`) is running, returning its
     /// listen address. Idempotent: if already running and alive, returns the
-    /// cached address.
-    ///
-    /// Phase 1 supports Redis only; other engines return
-    /// [`ServiceError::Unsupported`].
+    /// cached address. For an engine that needs it, the datadir is initialised
+    /// on first start.
+    #[allow(clippy::too_many_lines)] // linear setup: init → preflight → render → drive
     pub async fn ensure(
         &mut self,
         service: Service,
         version: ServiceVersion,
         port: u16,
     ) -> Result<Listen, ServiceError> {
-        if service != Service::Redis {
-            return Err(ServiceError::Unsupported {
-                service,
-                detail: "only Redis is supported in this build".to_owned(),
-            });
-        }
-
         let binary = version::server_path(&self.dirs, service, &version);
         if !binary.is_file() {
             return Err(ServiceError::VersionNotInstalled { service, version });
         }
 
-        // Fast path: already Running and the child is still alive.
+        // Fast path: already Running and the child is still alive. Checked
+        // before any datadir work so a running engine is never re-initialised.
         if let Some(inst) = self.instances.get_mut(&service) {
             if matches!(inst.state, PoolState::Running { .. }) {
                 let alive = match inst.child.as_mut() {
@@ -172,19 +169,50 @@ where
             }
         }
 
+        // Resolve the on-disk layout up front; init and config rendering need it.
+        let datadir = version::datadir(&self.dirs, service, &version);
+        let config_path = version::config_path(&self.dirs, service);
+        let log_path = version::log_path(&self.dirs, service);
+
+        // One-time datadir initialisation for the SQL engines. This MUST run
+        // before the `create_dir_all(&datadir)` below: `initdb` /
+        // `mysqld --initialize-insecure` populate the datadir themselves (via a
+        // crash-safe staging + rename) and refuse a pre-existing one.
+        if service.needs_init() {
+            if is_initialized(&datadir, service) {
+                // Defence in depth: never point a new major at an incompatible
+                // on-disk datadir (the per-major path already avoids this for PG).
+                if service == Service::Postgres {
+                    check_pg_major(&datadir, &version)?;
+                }
+            } else {
+                // The init log redirect + staging sibling need the log parent.
+                if let Some(parent) = log_path.parent() {
+                    std::fs::create_dir_all(parent).map_err(|source| {
+                        ServiceError::ConfigWrite {
+                            path: parent.to_path_buf(),
+                            service,
+                            source,
+                        }
+                    })?;
+                }
+                self.init_datadir(service, &version, &datadir, &log_path)
+                    .await?;
+            }
+        }
+
         // Fixed loopback port; pre-flight for conflicts.
         self.preflight_port(service, port)?;
         let listen = Listen::TcpLoopback(SocketAddr::new(Ipv4Addr::LOCALHOST.into(), port));
 
-        // Datadir + config/log parents.
-        let datadir = version::datadir(&self.dirs, service, &version);
+        // Datadir + config/log parents. The datadir create is now idempotent —
+        // init already populated it for SQL engines; this is the real creator
+        // for Redis (no init).
         std::fs::create_dir_all(&datadir).map_err(|source| ServiceError::Init {
             service,
             datadir: datadir.clone(),
             detail: source.to_string(),
         })?;
-        let config_path = version::config_path(&self.dirs, service);
-        let log_path = version::log_path(&self.dirs, service);
         for path in [&config_path, &log_path] {
             if let Some(parent) = path.parent() {
                 std::fs::create_dir_all(parent).map_err(|source| ServiceError::ConfigWrite {
@@ -195,8 +223,27 @@ where
             }
         }
 
-        // Render + write the config (Redis only in Phase 1).
-        let rendered = config_render::render_redis_conf(port, &datadir, &log_path);
+        // The MySQL/MariaDB Unix socket lives under the (short) runtime dir; its
+        // parent must exist before the server creates the socket there.
+        let socket = version::socket_path(&self.dirs, service);
+        if matches!(service, Service::MySql | Service::MariaDb) {
+            if let Some(parent) = socket.parent() {
+                std::fs::create_dir_all(parent).map_err(|source| ServiceError::ConfigWrite {
+                    path: parent.to_path_buf(),
+                    service,
+                    source,
+                })?;
+            }
+        }
+
+        // Render + write the per-engine config.
+        let rendered = match service {
+            Service::Redis => config_render::render_redis_conf(port, &datadir, &log_path),
+            Service::MySql | Service::MariaDb => {
+                config_render::render_my_cnf(port, &datadir, &socket, &log_path)
+            }
+            Service::Postgres => config_render::render_postgresql_conf(port, &datadir),
+        };
         std::fs::write(&config_path, rendered.as_bytes()).map_err(|source| {
             ServiceError::ConfigWrite {
                 path: config_path.clone(),
@@ -205,7 +252,7 @@ where
             }
         })?;
 
-        let cmd_builder = || build_cmd(&binary, &config_path);
+        let cmd_builder = || build_cmd(service, &binary, &config_path, &datadir, &log_path);
 
         let initial_since = self.clock.now();
         let result = self
@@ -337,6 +384,148 @@ where
         }
     }
 
+    /// One-time datadir initialisation for an engine that needs it. Runs the
+    /// engine's init tool into a fresh **staging** dir, then atomically renames
+    /// it onto the final datadir — so an interrupted init never leaves a
+    /// half-populated datadir behind (only an orphan `.init-staging-*` the next
+    /// attempt removes). No-op for an engine with no init binary.
+    async fn init_datadir(
+        &self,
+        service: Service,
+        version: &ServiceVersion,
+        datadir: &std::path::Path,
+        log_path: &std::path::Path,
+    ) -> Result<(), ServiceError> {
+        let Some(init_bin_name) = service.init_binary() else {
+            return Ok(());
+        };
+        let init_bin = version::install_dir(&self.dirs, service, version)
+            .join("bin")
+            .join(init_bin_name);
+        if !init_bin.is_file() {
+            return Err(ServiceError::Init {
+                service,
+                datadir: datadir.to_path_buf(),
+                detail: format!("install is missing bin/{init_bin_name}"),
+            });
+        }
+
+        // Fresh, empty staging sibling of the datadir (same filesystem → atomic
+        // rename). Mirrors the install staging+swap in `service_install.rs`.
+        let staging = version::service_root(&self.dirs, service)
+            .join(format!(".init-staging-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&staging);
+        std::fs::create_dir_all(&staging).map_err(|e| ServiceError::Init {
+            service,
+            datadir: datadir.to_path_buf(),
+            detail: format!("create staging dir: {e}"),
+        })?;
+
+        if let Err(e) = self
+            .run_init(service, &init_bin, &staging, datadir, log_path)
+            .await
+        {
+            let _ = std::fs::remove_dir_all(&staging);
+            return Err(e);
+        }
+
+        // Swap into place: drop any prior datadir, then rename staging on top.
+        if datadir.exists() {
+            if let Err(e) = std::fs::remove_dir_all(datadir) {
+                let _ = std::fs::remove_dir_all(&staging);
+                return Err(ServiceError::Init {
+                    service,
+                    datadir: datadir.to_path_buf(),
+                    detail: format!("remove prior datadir: {e}"),
+                });
+            }
+        }
+        if let Some(parent) = datadir.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| ServiceError::Init {
+                service,
+                datadir: datadir.to_path_buf(),
+                detail: format!("create datadir parent: {e}"),
+            })?;
+        }
+        std::fs::rename(&staging, datadir).map_err(|e| {
+            let _ = std::fs::remove_dir_all(&staging);
+            ServiceError::Init {
+                service,
+                datadir: datadir.to_path_buf(),
+                detail: format!("install datadir: {e}"),
+            }
+        })
+    }
+
+    /// Spawn the engine's init tool one-shot (into `staging`), wait for it, and
+    /// require a clean `exit 0`. Init output goes to the service log so a
+    /// failure is diagnosable via `yerd service logs`. `datadir` is the FINAL
+    /// path, used only for error reporting.
+    async fn run_init(
+        &self,
+        service: Service,
+        init_bin: &std::path::Path,
+        staging: &std::path::Path,
+        datadir: &std::path::Path,
+        log_path: &std::path::Path,
+    ) -> Result<(), ServiceError> {
+        let mut cmd = StdCommand::new(init_bin);
+        match service {
+            Service::MySql => {
+                cmd.arg("--initialize-insecure")
+                    .arg(format!("--datadir={}", staging.display()));
+            }
+            Service::MariaDb => {
+                cmd.arg(format!("--datadir={}", staging.display()))
+                    .arg("--auth-root-authentication-method=normal");
+            }
+            Service::Postgres => {
+                cmd.arg("-D")
+                    .arg(staging)
+                    .arg("--auth=trust")
+                    .arg("-U")
+                    .arg("postgres")
+                    .arg("-E")
+                    .arg("UTF8");
+            }
+            // Engines with no init binary never reach run_init.
+            Service::Redis => return Ok(()),
+        }
+        // Capture init output to the log (best-effort — diagnostics only).
+        if let Ok(f) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(log_path)
+        {
+            if let Ok(f2) = f.try_clone() {
+                cmd.stdout(std::process::Stdio::from(f2));
+            }
+            cmd.stderr(std::process::Stdio::from(f));
+        }
+
+        let mut child = self
+            .spawner
+            .spawn(cmd)
+            .map_err(|source| ServiceError::Init {
+                service,
+                datadir: datadir.to_path_buf(),
+                detail: format!("spawn {}: {source}", init_bin.display()),
+            })?;
+        let reason = child.wait().await.map_err(|source| ServiceError::Init {
+            service,
+            datadir: datadir.to_path_buf(),
+            detail: format!("wait for init: {source}"),
+        })?;
+        match reason {
+            ExitReason::Code(0) => Ok(()),
+            other => Err(ServiceError::Init {
+                service,
+                datadir: datadir.to_path_buf(),
+                detail: format!("init process exited with {other}"),
+            }),
+        }
+    }
+
     /// Pump the pure state machine to a terminal state, doing the I/O each
     /// `Action` requires. Mirrors `yerd_php::PhpManager::drive`.
     #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
@@ -348,7 +537,7 @@ where
         mut child: Option<S::Child>,
         initial: Event,
         listen: &Listen,
-        cmd_builder: Option<&(dyn Fn() -> StdCommand + Sync)>,
+        cmd_builder: Option<&(dyn Fn() -> Result<StdCommand, ServiceError> + Sync)>,
     ) -> Result<DriveResult<S::Child>, ServiceError> {
         let mut pending = initial;
         loop {
@@ -397,7 +586,8 @@ where
                         reason: SpawnFailureReason::Other,
                         source: std::io::Error::other("drive: Spawn without cmd_builder"),
                     })?;
-                    match self.spawner.spawn(builder()) {
+                    let cmd = builder()?;
+                    match self.spawner.spawn(cmd) {
                         Ok(ch) => {
                             let pid = ch.id();
                             child = Some(ch);
@@ -424,8 +614,10 @@ where
                         source: std::io::Error::other("HealthCheck with no child handle"),
                     })?;
 
-                    let probe_fut =
-                        tokio::time::timeout(HEALTH_PROBE_TIMEOUT, self.probe.probe(listen));
+                    let probe_fut = tokio::time::timeout(
+                        HEALTH_PROBE_TIMEOUT,
+                        self.probe.probe(service, listen),
+                    );
                     let probe_outcome;
                     let wait_outcome;
                     tokio::select! {
@@ -461,7 +653,7 @@ where
 
                 Action::Kill { signal } => {
                     if let Some(ch) = child.as_mut() {
-                        ch.kill(signal)
+                        ch.kill(signal, stop_protocol(service))
                             .await
                             .map_err(|source| ServiceError::Kill { service, source })?;
                     }
@@ -548,17 +740,100 @@ async fn wait_after_kill<Ch: ChildHandle>(
     }
 }
 
-/// Build the server command: `<server> <config>`, with its own process group on
-/// Unix so the supervisor's `killpg` reaps any children with it.
-fn build_cmd(binary: &std::path::Path, config_path: &std::path::Path) -> StdCommand {
+/// Build the server command per engine, forcing foreground operation and (on
+/// Unix) its own process group so the supervisor's `killpg` reaps any children
+/// with it. Fallible because the Postgres arm opens the log file for stderr
+/// capture.
+fn build_cmd(
+    service: Service,
+    binary: &std::path::Path,
+    config_path: &std::path::Path,
+    datadir: &std::path::Path,
+    log_path: &std::path::Path,
+) -> Result<StdCommand, ServiceError> {
     let mut cmd = StdCommand::new(binary);
-    cmd.arg(config_path);
+    match service {
+        // valkey-server <config>; it writes its own logfile via the directive.
+        Service::Redis => {
+            cmd.arg(config_path);
+        }
+        // mysqld|mariadbd --defaults-file=<config> (must be the first arg); the
+        // cnf carries datadir / port / socket / log-error.
+        Service::MySql | Service::MariaDb => {
+            cmd.arg(format!("--defaults-file={}", config_path.display()));
+        }
+        // postgres -D <datadir> -c config_file=<config>; PG logs to stderr
+        // (logging_collector=off), which we redirect to the log file.
+        Service::Postgres => {
+            cmd.arg("-D")
+                .arg(datadir)
+                .arg("-c")
+                .arg(format!("config_file={}", config_path.display()));
+            let f = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(log_path)
+                .map_err(|source| ServiceError::ConfigWrite {
+                    path: log_path.to_path_buf(),
+                    service,
+                    source,
+                })?;
+            let f2 = f.try_clone().map_err(|source| ServiceError::ConfigWrite {
+                path: log_path.to_path_buf(),
+                service,
+                source,
+            })?;
+            cmd.stdout(std::process::Stdio::from(f2));
+            cmd.stderr(std::process::Stdio::from(f));
+        }
+    }
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
         cmd.process_group(0);
     }
-    cmd
+    Ok(cmd)
+}
+
+/// Whether `datadir` already holds an initialised instance of `service`.
+fn is_initialized(datadir: &std::path::Path, service: Service) -> bool {
+    match service {
+        Service::Redis => true,
+        Service::Postgres => datadir.join("PG_VERSION").is_file(),
+        Service::MySql | Service::MariaDb => datadir.join("mysql").is_dir(),
+    }
+}
+
+/// Refuse to start Postgres against a datadir initialised by a different major
+/// version (on-disk format is major-incompatible; cross-major migration is out
+/// of scope). A missing/unreadable `PG_VERSION` is treated as "no opinion".
+fn check_pg_major(datadir: &std::path::Path, version: &ServiceVersion) -> Result<(), ServiceError> {
+    if let Ok(content) = std::fs::read_to_string(datadir.join("PG_VERSION")) {
+        let on_disk = content.trim();
+        let want = version.major();
+        if !on_disk.is_empty() && on_disk != want {
+            return Err(ServiceError::Init {
+                service: Service::Postgres,
+                datadir: datadir.to_path_buf(),
+                detail: format!(
+                    "datadir was initialised by PostgreSQL {on_disk}, but {want} was requested; \
+                     cross-major migration is unsupported"
+                ),
+            });
+        }
+    }
+    Ok(())
+}
+
+/// How `service` is gracefully stopped. Postgres needs SIGINT to the postmaster
+/// ("fast shutdown"); SIGTERM to the postmaster is "smart shutdown" and hangs
+/// while a client is connected. Every other engine stops cleanly on a group
+/// SIGTERM.
+fn stop_protocol(service: Service) -> StopProtocol {
+    match service {
+        Service::Postgres => StopProtocol::MasterInterrupt,
+        Service::Redis | Service::MySql | Service::MariaDb => StopProtocol::GroupTerm,
+    }
 }
 
 fn starting_attempts(s: PoolState) -> u32 {

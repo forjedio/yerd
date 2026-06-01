@@ -313,6 +313,57 @@ async fn missing_host_header_returns_400() {
     let _ = tokio::time::timeout(std::time::Duration::from_secs(5), proxy_task).await;
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn static_file_is_served_without_touching_fcgi() {
+    // A real document root holding a favicon. The backend points at a dead
+    // address — static serving must short-circuit before any FCGI connect.
+    let docroot = tempfile::tempdir().unwrap();
+    let favicon = b"\x00\x00\x01\x00 fake-ico-bytes";
+    std::fs::write(docroot.path().join("favicon.ico"), favicon).unwrap();
+
+    let proxy_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let proxy_addr = proxy_listener.local_addr().unwrap();
+
+    let tld = Tld::new("test").unwrap();
+    let cfg = RouterConfig::with_tld(tld);
+    let mut router = SiteRouter::new(cfg);
+    // No web_subpath → served_root == document_root == the temp dir.
+    let site = Site::linked("app", docroot.path().to_path_buf(), PhpVersion::new(8, 3)).unwrap();
+    router.insert(site).unwrap();
+    let router = Arc::new(tokio::sync::RwLock::new(router));
+
+    let resolver = Arc::new(StaticResolver {
+        // Dead address: if static serving fails to short-circuit, the FCGI
+        // connect fails and we'd see a 500 instead of the file.
+        backend: Backend::PhpFpmTcp {
+            addr: "127.0.0.1:1".parse().unwrap(),
+        },
+    });
+
+    let (tx_shutdown, rx_shutdown) = oneshot::channel::<()>();
+    let proxy_task = tokio::spawn(async move {
+        let _ = ProxyServer::serve::<_, StubCertStore, _>(
+            proxy_listener,
+            None,
+            router,
+            resolver,
+            async move {
+                let _ = rx_shutdown.await;
+            },
+        )
+        .await;
+    });
+
+    let (status, content_type, body) =
+        client_get_response(proxy_addr, "app.test", "/favicon.ico").await;
+    assert_eq!(status, 200);
+    assert_eq!(content_type.as_deref(), Some("image/x-icon"));
+    assert_eq!(body, favicon);
+
+    let _ = tx_shutdown.send(());
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(5), proxy_task).await;
+}
+
 // ─── Hyper client helpers ───────────────────────────────────────────
 
 async fn client_get(addr: SocketAddr, host: &str, path: &str) -> Vec<u8> {
@@ -333,6 +384,42 @@ async fn client_get(addr: SocketAddr, host: &str, path: &str) -> Vec<u8> {
     let resp = sender.send_request(req).await.unwrap();
     let body = resp.into_body().collect().await.unwrap().to_bytes();
     body.to_vec()
+}
+
+async fn client_get_response(
+    addr: SocketAddr,
+    host: &str,
+    path: &str,
+) -> (u16, Option<String>, Vec<u8>) {
+    let stream = TcpStream::connect(addr).await.unwrap();
+    let io = TokioIo::new(stream);
+    let (mut sender, conn) = hyper::client::conn::http1::handshake::<_, Empty<Bytes>>(io)
+        .await
+        .unwrap();
+    tokio::spawn(async move {
+        let _ = conn.await;
+    });
+    let req = Request::builder()
+        .method("GET")
+        .uri(path)
+        .header("Host", host)
+        .body(Empty::<Bytes>::new())
+        .unwrap();
+    let resp = sender.send_request(req).await.unwrap();
+    let status = resp.status().as_u16();
+    let content_type = resp
+        .headers()
+        .get(hyper::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_owned);
+    let body = resp
+        .into_body()
+        .collect()
+        .await
+        .unwrap()
+        .to_bytes()
+        .to_vec();
+    (status, content_type, body)
 }
 
 async fn client_get_status(addr: SocketAddr, host: &str, path: &str) -> u16 {

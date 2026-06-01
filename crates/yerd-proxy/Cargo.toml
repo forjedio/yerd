@@ -12,7 +12,7 @@ yerd-core      = { path = "../yerd-core" }
 thiserror      = { workspace = true }
 async-trait    = { workspace = true }
 tracing        = { workspace = true }
-tokio          = { workspace = true, features = ["net", "rt", "time", "io-util", "macros", "sync"] }
+tokio          = { workspace = true, features = ["net", "rt", "time", "io-util", "macros", "sync", "fs"] }
 hyper          = { workspace = true }
 hyper-util     = { workspace = true }
 http           = { workspace = true }

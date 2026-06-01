@@ -40,9 +40,9 @@ pub use message::{decode_message, encode_message};
 pub use request::Request;
 pub use response::{ErrorCode, PhpUpdate, Response};
 pub use status::{
-    CaStatus, Diagnosis, DiagnosisCode, FixReport, FixResult, PhpPoolStatus, PoolRunState,
-    PortStatus, ServiceAvailability, ServiceRunState, ServiceStatus, Severity, SiteCounts,
-    StatusReport,
+    CaStatus, DatabaseSummary, Diagnosis, DiagnosisCode, FixReport, FixResult, PhpPoolStatus,
+    PoolRunState, PortStatus, ServiceAvailability, ServiceRunState, ServiceStatus, Severity,
+    SiteCounts, StatusReport,
 };
 
 /// Re-exports of the shared types that travel on the wire. Consumers

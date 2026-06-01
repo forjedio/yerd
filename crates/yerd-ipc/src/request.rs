@@ -202,6 +202,51 @@ pub enum Request {
         /// The database name to create (validated as a safe identifier).
         name: String,
     },
+    /// List the user databases in a running SQL service (system schemas
+    /// filtered out).
+    ListDatabases {
+        /// Service id (must be a SQL engine).
+        service: String,
+    },
+    /// Drop a database from a running SQL service.
+    DropDatabase {
+        /// Service id (must be a SQL engine).
+        service: String,
+        /// The database name to drop (validated; system databases refused).
+        name: String,
+    },
+    /// Back a database up to a plain-SQL file (streamed from the bundled dump tool).
+    BackupDatabase {
+        /// Service id (must be a SQL engine).
+        service: String,
+        /// The database name to dump (validated as a safe identifier).
+        name: String,
+        /// Absolute destination file the daemon writes the dump to. The client
+        /// absolutises this against the user's cwd before sending (the daemon's cwd
+        /// differs); the path never reaches the dump tool's argv.
+        path: PathBuf,
+    },
+    /// Restore a database from a plain-SQL file (streamed into the bundled client's
+    /// stdin). The target database must already exist.
+    RestoreDatabase {
+        /// Service id (must be a SQL engine).
+        service: String,
+        /// The database name to restore into (validated; system databases refused).
+        name: String,
+        /// Absolute source file the daemon reads the dump from. The client
+        /// canonicalises this before sending; the path never reaches the client's argv.
+        path: PathBuf,
+    },
+    /// Switch a service to a different version: install `version`, restart the
+    /// running instance onto it, then remove the previously-installed version
+    /// (the datadir is retained). A service holds one installed version at a
+    /// time; this upgrades or downgrades it.
+    ChangeServiceVersion {
+        /// Service id.
+        service: String,
+        /// The version to switch to.
+        version: String,
+    },
 }
 
 #[cfg(test)]
@@ -260,10 +305,16 @@ mod variant_name_pinning {
             Request::SetServicePort { .. } => {}
             Request::ServiceLogs { .. } => {}
             Request::CreateDatabase { .. } => {}
+            Request::ListDatabases { .. } => {}
+            Request::DropDatabase { .. } => {}
+            Request::BackupDatabase { .. } => {}
+            Request::RestoreDatabase { .. } => {}
+            Request::ChangeServiceVersion { .. } => {}
         }
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)] // one `pin(...)` per variant; grows with the enum
     fn touch_every_variant() {
         pin(Request::Ping);
         pin(Request::ListSites);
@@ -347,6 +398,27 @@ mod variant_name_pinning {
         pin(Request::CreateDatabase {
             service: "mysql".into(),
             name: "app".into(),
+        });
+        pin(Request::ListDatabases {
+            service: "mysql".into(),
+        });
+        pin(Request::DropDatabase {
+            service: "mysql".into(),
+            name: "app".into(),
+        });
+        pin(Request::BackupDatabase {
+            service: "mysql".into(),
+            name: "app".into(),
+            path: PathBuf::from("/x/app.sql"),
+        });
+        pin(Request::RestoreDatabase {
+            service: "mysql".into(),
+            name: "app".into(),
+            path: PathBuf::from("/x/app.sql"),
+        });
+        pin(Request::ChangeServiceVersion {
+            service: "redis".into(),
+            version: "9.1.0".into(),
         });
     }
 }

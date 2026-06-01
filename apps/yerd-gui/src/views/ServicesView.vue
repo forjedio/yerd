@@ -7,6 +7,7 @@ import {
   MoreHorizontal,
   Pencil,
   Play,
+  Plus,
   RotateCw,
   Square,
   Trash2,
@@ -36,17 +37,25 @@ import { useDaemon } from "@/composables/useDaemon";
 import { useToast } from "@/composables/useToast";
 import {
   availableServices,
+  backupDatabase,
+  changeServiceVersion,
+  createDatabase,
+  dropDatabase,
   installService,
   IpcError,
+  listDatabases,
   listServices,
+  pickOpenFile,
+  pickSaveFile,
   restartService,
+  restoreDatabase,
   serviceLogs,
   setServicePort,
   startService,
   stopService,
   uninstallService,
 } from "@/ipc/client";
-import type { ServiceStatus } from "@/ipc/types";
+import type { DatabaseSummary, ServiceStatus } from "@/ipc/types";
 import { poolStateLabel, poolStateTone } from "@/lib/utils";
 
 const toast = useToast();
@@ -71,6 +80,13 @@ function canStart(s: ServiceStatus): boolean {
 }
 function canStop(s: ServiceStatus): boolean {
   return s.state === "running" || s.state === "failed";
+}
+function isInstalled(s: ServiceStatus): boolean {
+  return s.installed_versions.length > 0;
+}
+/** The version to show: the active/selected one, falling back to what's on disk. */
+function versionLabel(s: ServiceStatus): string {
+  return s.selected_version ?? s.installed_versions[s.installed_versions.length - 1] ?? "—";
 }
 
 async function doStart(s: ServiceStatus): Promise<void> {
@@ -112,14 +128,19 @@ async function doRestart(s: ServiceStatus): Promise<void> {
   }
 }
 
-// ── install modal ──
+// ── version modal (shared by "Install" and "Change version") ──
+// A service holds one installed version; both flows pick from the versions you
+// don't currently have, so the option list is identical — only the action,
+// titles, and empty-state copy differ by mode.
 const installOpen = ref(false);
 const installLoading = ref(false);
+const installMode = ref<"install" | "change">("install");
 const installTarget = ref<ServiceStatus | null>(null);
 const installOptions = ref<{ value: string; label: string }[]>([]);
 const selectedVersion = ref<string>("");
 
-async function openInstall(s: ServiceStatus): Promise<void> {
+async function openVersionModal(s: ServiceStatus, mode: "install" | "change"): Promise<void> {
+  installMode.value = mode;
   installTarget.value = s;
   installOpen.value = true;
   installLoading.value = true;
@@ -134,24 +155,33 @@ async function openInstall(s: ServiceStatus): Promise<void> {
       .map((v) => ({ value: v, label: `v${v}` }));
     selectedVersion.value = installOptions.value[0]?.value ?? "";
   } catch (e) {
-    toast.error("Couldn't load installable versions", (e as IpcError).message);
+    toast.error("Couldn't load versions", (e as IpcError).message);
   } finally {
     installLoading.value = false;
   }
 }
+const openInstall = (s: ServiceStatus) => openVersionModal(s, "install");
+const openChange = (s: ServiceStatus) => openVersionModal(s, "change");
 
 async function confirmInstall(close: () => void): Promise<void> {
   const s = installTarget.value;
   const v = selectedVersion.value;
   if (!s || !v) return;
-  busy.value = `install:${s.service}`;
+  const mode = installMode.value;
+  busy.value = `${mode}:${s.service}`;
   close();
   try {
-    await installService(s.service, v);
-    toast.success(`Installed ${s.display_name} v${v}`);
+    if (mode === "change") {
+      await changeServiceVersion(s.service, v);
+      toast.success(`Switched ${s.display_name} to v${v}`, "Restarted on the new version.");
+    } else {
+      await installService(s.service, v);
+      toast.success(`Installed ${s.display_name} v${v}`, "Started and enabled on boot.");
+    }
     await Promise.all([load(), refresh()]);
   } catch (e) {
-    toast.error(`Install of ${s.display_name} failed`, (e as IpcError).message);
+    const verb = mode === "change" ? "Change" : "Install";
+    toast.error(`${verb} of ${s.display_name} failed`, (e as IpcError).message);
   } finally {
     busy.value = null;
   }
@@ -252,6 +282,122 @@ async function confirmUninstall(close: () => void): Promise<void> {
   }
 }
 
+// ── manage databases modal ──
+const dbOpen = ref(false);
+const dbTarget = ref<ServiceStatus | null>(null);
+const dbList = ref<DatabaseSummary[]>([]);
+const dbLoading = ref(false);
+const dbError = ref<string | null>(null);
+const newDbName = ref("");
+const dbActionBusy = ref(false);
+const confirmDrop = ref<string | null>(null);
+// A restore awaiting confirmation: the chosen file is picked first, then confirmed.
+const confirmRestore = ref<{ name: string; path: string } | null>(null);
+
+/** Mirror of the daemon's `validate_db_name` for instant feedback (the daemon
+ *  re-validates authoritatively). */
+function dbNameValid(name: string): boolean {
+  return /^[A-Za-z_][A-Za-z0-9_]{0,62}$/.test(name);
+}
+
+async function fetchDbs(): Promise<void> {
+  const s = dbTarget.value;
+  if (!s) return;
+  dbLoading.value = true;
+  dbError.value = null;
+  try {
+    dbList.value = await listDatabases(s.service);
+  } catch (e) {
+    dbError.value = (e as IpcError).message;
+    dbList.value = [];
+  } finally {
+    dbLoading.value = false;
+  }
+}
+
+async function openManageDb(s: ServiceStatus): Promise<void> {
+  dbTarget.value = s;
+  dbOpen.value = true;
+  dbList.value = [];
+  newDbName.value = "";
+  confirmDrop.value = null;
+  confirmRestore.value = null;
+  await fetchDbs();
+}
+
+async function doCreateDb(): Promise<void> {
+  const s = dbTarget.value;
+  const name = newDbName.value.trim();
+  if (!s || !dbNameValid(name)) return;
+  dbActionBusy.value = true;
+  try {
+    await createDatabase(s.service, name);
+    toast.success(`Created database ${name}`);
+    newDbName.value = "";
+    await fetchDbs();
+  } catch (e) {
+    toast.error("Couldn't create database", (e as IpcError).message);
+  } finally {
+    dbActionBusy.value = false;
+  }
+}
+
+async function doDropDb(name: string): Promise<void> {
+  const s = dbTarget.value;
+  if (!s) return;
+  dbActionBusy.value = true;
+  confirmDrop.value = null;
+  try {
+    await dropDatabase(s.service, name);
+    toast.success(`Dropped database ${name}`);
+    await fetchDbs();
+  } catch (e) {
+    toast.error("Couldn't drop database", (e as IpcError).message);
+  } finally {
+    dbActionBusy.value = false;
+  }
+}
+
+async function doBackupDb(name: string): Promise<void> {
+  const s = dbTarget.value;
+  if (!s) return;
+  const path = await pickSaveFile(`${name}.sql`);
+  if (!path) return; // user cancelled
+  dbActionBusy.value = true;
+  try {
+    await backupDatabase(s.service, name, path);
+    toast.success(`Backed up ${name}`, path);
+  } catch (e) {
+    toast.error("Couldn't back up database", (e as IpcError).message);
+  } finally {
+    dbActionBusy.value = false;
+  }
+}
+
+/** Pick the file first, then ask for confirmation (restore overwrites data). */
+async function startRestoreDb(name: string): Promise<void> {
+  const path = await pickOpenFile();
+  if (!path) return; // user cancelled
+  confirmRestore.value = { name, path };
+}
+
+async function doRestoreDb(): Promise<void> {
+  const s = dbTarget.value;
+  const pending = confirmRestore.value;
+  if (!s || !pending) return;
+  dbActionBusy.value = true;
+  confirmRestore.value = null;
+  try {
+    await restoreDatabase(s.service, pending.name, pending.path);
+    toast.success(`Restored ${pending.name}`);
+    await fetchDbs();
+  } catch (e) {
+    toast.error("Couldn't restore database", (e as IpcError).message);
+  } finally {
+    dbActionBusy.value = false;
+  }
+}
+
 onMounted(load);
 onUnmounted(stopLogPolling);
 </script>
@@ -282,7 +428,6 @@ onUnmounted(stopLogPolling);
                 <th class="py-2 pr-4 font-medium">State</th>
                 <th class="py-2 pr-4 font-medium">Port</th>
                 <th class="py-2 pr-4 font-medium">Version</th>
-                <th class="py-2 pr-4 font-medium">Installed</th>
                 <th class="py-2 pl-4 text-right font-medium">Actions</th>
               </tr>
             </thead>
@@ -295,15 +440,18 @@ onUnmounted(stopLogPolling);
                   </div>
                 </td>
                 <td class="py-3 pr-4">
-                  <StatusPill :tone="poolStateTone(s.state)" :label="poolStateLabel(s.state)" />
+                  <StatusPill
+                    v-if="isInstalled(s)"
+                    :tone="poolStateTone(s.state)"
+                    :label="poolStateLabel(s.state)"
+                  />
+                  <span v-else class="text-xs italic text-muted-foreground">not installed</span>
                 </td>
-                <td class="py-3 pr-4 font-mono text-xs text-muted-foreground">{{ s.port }}</td>
                 <td class="py-3 pr-4 font-mono text-xs text-muted-foreground">
-                  {{ s.selected_version ?? "—" }}
+                  {{ isInstalled(s) ? s.port : "—" }}
                 </td>
-                <td class="py-3 pr-4 text-xs text-muted-foreground">
-                  <span v-if="s.installed_versions.length">{{ s.installed_versions.join(", ") }}</span>
-                  <span v-else class="italic">not installed</span>
+                <td class="py-3 pr-4 font-mono text-xs text-muted-foreground">
+                  {{ versionLabel(s) }}
                 </td>
                 <td class="py-3 pl-4">
                   <div class="flex items-center justify-end gap-2">
@@ -339,8 +487,15 @@ onUnmounted(stopLogPolling);
                         <DropdownMenuItem @select="openLogs(s)">
                           <FileText class="size-4" /> View logs
                         </DropdownMenuItem>
-                        <DropdownMenuItem @select="openInstall(s)">
-                          <Download class="size-4" /> Install version
+                        <DropdownMenuItem
+                          v-if="s.supports_databases"
+                          :disabled="s.state !== 'running'"
+                          @select="openManageDb(s)"
+                        >
+                          <Database class="size-4" /> Manage databases
+                        </DropdownMenuItem>
+                        <DropdownMenuItem @select="openChange(s)">
+                          <Download class="size-4" /> Change version
                         </DropdownMenuItem>
                         <DropdownMenuSeparator />
                         <DropdownMenuItem
@@ -360,8 +515,15 @@ onUnmounted(stopLogPolling);
       </Card>
     </div>
 
-    <!-- Install -->
-    <Modal v-model:open="installOpen" :title="`Install ${installTarget?.display_name ?? 'service'}`">
+    <!-- Install / Change version -->
+    <Modal
+      v-model:open="installOpen"
+      :title="
+        installMode === 'change'
+          ? `Change ${installTarget?.display_name ?? 'service'} version`
+          : `Install ${installTarget?.display_name ?? 'service'}`
+      "
+    >
       <div v-if="installLoading" class="flex justify-center py-6"><Spinner class="size-5" /></div>
       <template v-else-if="installOptions.length">
         <span class="text-sm font-medium">Version</span>
@@ -370,15 +532,25 @@ onUnmounted(stopLogPolling);
             class="w-full"
             :model-value="selectedVersion"
             :options="installOptions"
-            aria-label="version to install"
+            aria-label="version"
             @update:model-value="(v: string) => (selectedVersion = v)"
           />
         </div>
         <p class="mt-2 text-xs text-muted-foreground">
-          Downloads a prebuilt build; this can take a few minutes with no progress
-          bar (the daemon reports only on completion).
+          <template v-if="installMode === 'change'">
+            Installs the selected version, restarts the service onto it, and removes
+            the current version. Your stored data is kept.
+          </template>
+          <template v-else>
+            Downloads a prebuilt build; this can take a few minutes with no progress
+            bar (the daemon reports only on completion).
+          </template>
         </p>
       </template>
+      <p v-else-if="installMode === 'change'" class="py-2 text-sm text-muted-foreground">
+        No other versions to switch to — the installed version is the only one offered
+        for this platform, or the distribution couldn't be reached.
+      </p>
       <p v-else class="py-2 text-sm text-muted-foreground">
         No installable versions to add — every offered version is already installed,
         or the distribution couldn't be reached.
@@ -386,7 +558,7 @@ onUnmounted(stopLogPolling);
       <template #footer="{ close }">
         <Button variant="ghost" @click="close">Cancel</Button>
         <Button :disabled="!installOptions.length || !selectedVersion" @click="confirmInstall(close)">
-          Install
+          {{ installMode === "change" ? "Switch" : "Install" }}
         </Button>
       </template>
     </Modal>
@@ -407,12 +579,13 @@ onUnmounted(stopLogPolling);
     <!-- Logs -->
     <Modal
       v-model:open="logsOpen"
+      size="full"
       :title="`${logsTarget?.display_name ?? 'Service'} logs`"
       @update:open="(o: boolean) => { if (!o) stopLogPolling(); }"
     >
       <pre
         v-if="logsLines.length"
-        class="max-h-96 overflow-auto rounded-md bg-muted p-3 text-xs leading-relaxed"
+        class="h-full overflow-auto rounded-md bg-muted p-3 text-xs leading-relaxed"
       >{{ logsLines.join("\n") }}</pre>
       <p v-else class="py-2 text-sm text-muted-foreground">No log output yet.</p>
       <template #footer="{ close }">
@@ -434,6 +607,111 @@ onUnmounted(stopLogPolling);
       <template #footer="{ close }">
         <Button variant="ghost" @click="close">Cancel</Button>
         <Button variant="destructive" @click="confirmUninstall(close)">Uninstall</Button>
+      </template>
+    </Modal>
+
+    <!-- Manage databases -->
+    <Modal
+      v-model:open="dbOpen"
+      size="lg"
+      :title="`${dbTarget?.display_name ?? 'Service'} databases`"
+    >
+      <div class="space-y-4">
+        <!-- Create -->
+        <div class="flex items-end gap-2">
+          <div class="flex-1">
+            <span class="text-sm font-medium">New database</span>
+            <Input
+              v-model="newDbName"
+              class="mt-1"
+              placeholder="my_app"
+              @keyup.enter="doCreateDb"
+            />
+          </div>
+          <Button
+            :disabled="!dbNameValid(newDbName.trim()) || dbActionBusy"
+            @click="doCreateDb"
+          >
+            <Plus class="size-4" /> Create
+          </Button>
+        </div>
+        <p
+          v-if="newDbName.trim() && !dbNameValid(newDbName.trim())"
+          class="text-xs text-destructive"
+        >
+          Use letters, digits, and underscores; start with a letter or underscore (max 63).
+        </p>
+
+        <!-- List -->
+        <div v-if="dbLoading" class="flex justify-center py-6"><Spinner class="size-5" /></div>
+        <p v-else-if="dbError" class="py-2 text-sm text-muted-foreground">{{ dbError }}</p>
+        <p v-else-if="!dbList.length" class="py-2 text-sm text-muted-foreground">
+          No databases yet.
+        </p>
+        <ul v-else class="divide-y rounded-md border">
+          <li v-for="d in dbList" :key="d.name" class="flex items-center gap-2 px-3 py-2">
+            <template v-if="confirmDrop === d.name">
+              <span class="flex-1 text-sm">
+                Delete <span class="font-mono">{{ d.name }}</span>? This cannot be undone.
+              </span>
+              <Button
+                size="sm"
+                variant="destructive"
+                :disabled="dbActionBusy"
+                @click="doDropDb(d.name)"
+              >
+                Confirm
+              </Button>
+              <Button size="sm" variant="ghost" @click="confirmDrop = null">Cancel</Button>
+            </template>
+            <template v-else-if="confirmRestore?.name === d.name">
+              <span class="flex-1 text-sm">
+                Restore into <span class="font-mono">{{ d.name }}</span>? Existing data will be
+                overwritten.
+              </span>
+              <Button
+                size="sm"
+                variant="destructive"
+                :disabled="dbActionBusy"
+                @click="doRestoreDb()"
+              >
+                Confirm
+              </Button>
+              <Button size="sm" variant="ghost" @click="confirmRestore = null">Cancel</Button>
+            </template>
+            <template v-else>
+              <span class="flex-1 font-mono text-sm">{{ d.name }}</span>
+              <Button
+                size="sm"
+                variant="ghost"
+                :disabled="dbActionBusy"
+                @click="doBackupDb(d.name)"
+              >
+                Backup
+              </Button>
+              <Button
+                size="sm"
+                variant="ghost"
+                :disabled="dbActionBusy"
+                @click="startRestoreDb(d.name)"
+              >
+                Restore
+              </Button>
+              <Button
+                size="sm"
+                variant="ghost"
+                class="text-destructive focus:text-destructive"
+                :disabled="dbActionBusy"
+                @click="confirmDrop = d.name"
+              >
+                <Trash2 class="size-4" /> Delete
+              </Button>
+            </template>
+          </li>
+        </ul>
+      </div>
+      <template #footer="{ close }">
+        <Button variant="ghost" @click="close">Close</Button>
       </template>
     </Modal>
   </div>

@@ -197,6 +197,27 @@ pub enum KillSignal {
     Kill,
 }
 
+/// How a *graceful* stop ([`KillSignal::Term`]) is delivered to a service's
+/// process tree. A forced stop ([`KillSignal::Kill`]) always SIGKILLs the whole
+/// process group regardless of this — at force time we want to reap stragglers.
+///
+/// This is a per-service delivery choice the driver makes; it is deliberately
+/// NOT part of the FSM (which only ever decides graceful-vs-force) nor of
+/// [`SupervisorPolicy`] (one policy is shared across all of a manager's
+/// instances).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum StopProtocol {
+    /// SIGTERM to the whole process group — reaps workers with the master.
+    /// Correct for PHP-FPM, Redis, and `MySQL`/`MariaDB`.
+    #[default]
+    GroupTerm,
+    /// SIGINT to the master PID only — Postgres "fast shutdown". The postmaster
+    /// then shuts its own backends down. SIGTERM would be "smart shutdown" (it
+    /// waits for clients and can hang), and signalling the whole group would
+    /// mis-deliver to backends, where SIGINT means "cancel query".
+    MasterInterrupt,
+}
+
 /// Backoff sleep for the `attempts`-th retry (1-indexed).
 ///
 /// `min(policy.backoff_initial * 2^(attempts - 1), policy.backoff_max)`,

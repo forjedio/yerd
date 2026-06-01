@@ -42,7 +42,8 @@ use crate::io::atomic_write;
 use crate::listen::{AllocatedListen, Listen};
 use crate::pool::PoolConfig;
 use crate::pure::supervisor::{
-    transition, Action, Elapsed, ErrorTag, Event, KillSignal, PoolState, SupervisorPolicy,
+    transition, Action, Elapsed, ErrorTag, Event, KillSignal, PoolState, StopProtocol,
+    SupervisorPolicy,
 };
 use crate::pure::{env_scrub, fpm_conf};
 use crate::traits::{ChildHandle, Clock, HealthProbe, ProcessSpawner};
@@ -529,7 +530,8 @@ where
 
                 Action::Kill { signal } => {
                     if let Some(ch) = child.as_mut() {
-                        ch.kill(signal)
+                        // FPM pools stop as a process group (SIGTERM → workers).
+                        ch.kill(signal, StopProtocol::GroupTerm)
                             .await
                             .map_err(|source| PhpError::Kill { version: v, source })?;
                     }

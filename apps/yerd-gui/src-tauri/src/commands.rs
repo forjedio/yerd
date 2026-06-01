@@ -175,6 +175,14 @@ pub async fn install_service(service: String, version: String) -> Result<Respons
 }
 
 #[tauri::command]
+pub async fn change_service_version(
+    service: String,
+    version: String,
+) -> Result<Response, GuiError> {
+    finish(exchange(&Request::ChangeServiceVersion { service, version }).await?)
+}
+
+#[tauri::command]
 pub async fn uninstall_service(
     service: String,
     version: String,
@@ -218,6 +226,48 @@ pub async fn service_logs(service: String, lines: u32) -> Result<Response, GuiEr
 #[tauri::command]
 pub async fn create_database(service: String, name: String) -> Result<Response, GuiError> {
     finish(exchange(&Request::CreateDatabase { service, name }).await?)
+}
+
+#[tauri::command]
+pub async fn list_databases(service: String) -> Result<Response, GuiError> {
+    finish(exchange(&Request::ListDatabases { service }).await?)
+}
+
+#[tauri::command]
+pub async fn drop_database(service: String, name: String) -> Result<Response, GuiError> {
+    finish(exchange(&Request::DropDatabase { service, name }).await?)
+}
+
+#[tauri::command]
+pub async fn backup_database(
+    service: String,
+    name: String,
+    path: String,
+) -> Result<Response, GuiError> {
+    finish(
+        exchange(&Request::BackupDatabase {
+            service,
+            name,
+            path: PathBuf::from(path),
+        })
+        .await?,
+    )
+}
+
+#[tauri::command]
+pub async fn restore_database(
+    service: String,
+    name: String,
+    path: String,
+) -> Result<Response, GuiError> {
+    finish(
+        exchange(&Request::RestoreDatabase {
+            service,
+            name,
+            path: PathBuf::from(path),
+        })
+        .await?,
+    )
 }
 
 // ── status / doctor / info ─────────────────────────────────────────────────

@@ -82,3 +82,26 @@ jobs:
 
       - name: Build
         run: npm run build
+
+  # Documentation site (VitePress) production build — runs in parallel with the
+  # rust and frontend jobs (no `needs:`), so a docs break fails the PR on its own.
+  docs:
+    name: docs
+    runs-on: ubuntu-22.04
+    defaults:
+      run:
+        working-directory: docs
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: docs/package-lock.json
+
+      - name: Install deps
+        run: npm ci
+
+      - name: Build
+        run: npm run build

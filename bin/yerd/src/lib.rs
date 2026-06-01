@@ -33,11 +33,14 @@ pub async fn run(cli: Cli) -> ExitCode {
         _ => {}
     }
 
-    let req = match map::to_request(&cli.command) {
-        Ok(r) => canonicalize_unpark(r),
+    let req = match map::to_request(&cli.command)
+        .map(canonicalize_unpark)
+        .and_then(canonicalize_db_paths)
+    {
+        Ok(r) => r,
         Err(e) => {
             eprintln!("yerd: {e}");
-            // `to_request` only fails with client-side usage errors.
+            // `to_request` / path resolution only fail with client-side usage errors.
             return ExitCode::from(2);
         }
     };
@@ -98,6 +101,54 @@ fn canonicalize_unpark(req: yerd_ipc::Request) -> yerd_ipc::Request {
         }
     }
     req
+}
+
+/// Absolutise the file path of a `BackupDatabase`/`RestoreDatabase` request against
+/// the user's current directory before it reaches the daemon — the daemon's own cwd
+/// differs from the user's shell, so a relative path would otherwise resolve in the
+/// wrong place. Done here, at the I/O boundary, to keep `map::to_request` pure.
+///
+/// Restore requires the source file to exist (canonicalise, fail loudly if missing);
+/// backup's destination does not exist yet, so it is merely made absolute.
+fn canonicalize_db_paths(req: yerd_ipc::Request) -> Result<yerd_ipc::Request, ClientError> {
+    use yerd_ipc::Request;
+    match req {
+        Request::RestoreDatabase {
+            service,
+            name,
+            path,
+        } => {
+            let path = std::fs::canonicalize(&path).map_err(|e| {
+                ClientError::Usage(format!("cannot read backup file {}: {e}", path.display()))
+            })?;
+            Ok(Request::RestoreDatabase {
+                service,
+                name,
+                path,
+            })
+        }
+        Request::BackupDatabase {
+            service,
+            name,
+            path,
+        } => Ok(Request::BackupDatabase {
+            service,
+            name,
+            path: absolutise(&path)?,
+        }),
+        other => Ok(other),
+    }
+}
+
+/// Make a (possibly relative) path absolute by joining it onto the current directory.
+/// Does not require the path to exist (used for a backup destination).
+fn absolutise(path: &std::path::Path) -> Result<std::path::PathBuf, ClientError> {
+    if path.is_absolute() {
+        return Ok(path.to_path_buf());
+    }
+    let cwd = std::env::current_dir()
+        .map_err(|e| ClientError::Usage(format!("cannot resolve current directory: {e}")))?;
+    Ok(cwd.join(path))
 }
 
 /// A synthetic `daemon_down` FAIL diagnosis, used when `yerd doctor` can't reach

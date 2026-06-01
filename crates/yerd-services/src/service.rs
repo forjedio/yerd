@@ -95,6 +95,35 @@ impl Service {
         }
     }
 
+    /// The interactive client executable in the install's `bin/` dir used to run
+    /// administrative SQL (create/drop/rename/list databases). `None` for a cache
+    /// (Redis has no SQL client we drive this way). The `PostgreSQL` build must
+    /// include `psql` for database management to work.
+    #[must_use]
+    pub const fn client_binary(self) -> Option<&'static str> {
+        match self {
+            Service::Redis => None,
+            Service::MySql => Some("mysql"),
+            Service::MariaDb => Some("mariadb"),
+            Service::Postgres => Some("psql"),
+        }
+    }
+
+    /// The `bin/` tool that dumps a database to plain SQL on stdout, or `None`
+    /// for a cache (Redis has no SQL dump). Restore reuses [`client_binary`]:
+    /// the dump tool writes SQL we replay through the interactive client.
+    ///
+    /// [`client_binary`]: Service::client_binary
+    #[must_use]
+    pub const fn dump_binary(self) -> Option<&'static str> {
+        match self {
+            Service::Redis => None,
+            Service::MySql => Some("mysqldump"),
+            Service::MariaDb => Some("mariadb-dump"),
+            Service::Postgres => Some("pg_dump"),
+        }
+    }
+
     /// Whether this engine requires a one-time datadir initialisation before its
     /// first start (initdb / `mysqld --initialize` / `mariadb-install-db`).
     /// Redis has none.
@@ -103,6 +132,24 @@ impl Service {
         match self {
             Service::Redis => false,
             Service::MySql | Service::MariaDb | Service::Postgres => true,
+        }
+    }
+
+    /// The `bin/` executable that performs the one-time datadir initialisation,
+    /// or `None` for an engine that needs no init ([`needs_init`] is the
+    /// boolean view of this). Note this is a *different* binary from the server
+    /// for `MySQL` (`mysqld --initialize-insecure` is the server binary itself,
+    /// but Postgres/MariaDB use a dedicated tool).
+    ///
+    /// [`needs_init`]: Service::needs_init
+    #[must_use]
+    pub const fn init_binary(self) -> Option<&'static str> {
+        match self {
+            Service::Redis => None,
+            // `mysqld --initialize-insecure` initialises in-process.
+            Service::MySql => Some("mysqld"),
+            Service::MariaDb => Some("mariadb-install-db"),
+            Service::Postgres => Some("initdb"),
         }
     }
 
@@ -181,6 +228,50 @@ mod tests {
         for svc in [Service::MySql, Service::MariaDb, Service::Postgres] {
             assert_eq!(svc.kind(), ServiceKind::Database);
             assert!(svc.needs_init(), "{svc} should need init");
+        }
+    }
+
+    #[test]
+    fn client_binary_present_for_sql_engines_only() {
+        assert_eq!(Service::Redis.client_binary(), None);
+        assert_eq!(Service::MySql.client_binary(), Some("mysql"));
+        assert_eq!(Service::MariaDb.client_binary(), Some("mariadb"));
+        assert_eq!(Service::Postgres.client_binary(), Some("psql"));
+        // Every database engine has a client; the cache does not.
+        for svc in Service::ALL {
+            assert_eq!(
+                matches!(svc.kind(), ServiceKind::Database),
+                svc.client_binary().is_some(),
+                "{svc}"
+            );
+        }
+    }
+
+    #[test]
+    fn dump_binary_present_for_sql_engines_only() {
+        assert_eq!(Service::Redis.dump_binary(), None);
+        assert_eq!(Service::MySql.dump_binary(), Some("mysqldump"));
+        assert_eq!(Service::MariaDb.dump_binary(), Some("mariadb-dump"));
+        assert_eq!(Service::Postgres.dump_binary(), Some("pg_dump"));
+        // A dump tool exists exactly for the database engines (mirrors the client).
+        for svc in Service::ALL {
+            assert_eq!(
+                matches!(svc.kind(), ServiceKind::Database),
+                svc.dump_binary().is_some(),
+                "{svc}"
+            );
+        }
+    }
+
+    #[test]
+    fn init_binary_matches_needs_init() {
+        assert_eq!(Service::Redis.init_binary(), None);
+        assert_eq!(Service::MySql.init_binary(), Some("mysqld"));
+        assert_eq!(Service::MariaDb.init_binary(), Some("mariadb-install-db"));
+        assert_eq!(Service::Postgres.init_binary(), Some("initdb"));
+        // Every engine that needs init names an init binary, and vice versa.
+        for svc in Service::ALL {
+            assert_eq!(svc.needs_init(), svc.init_binary().is_some(), "{svc}");
         }
     }
 

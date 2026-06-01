@@ -149,6 +149,24 @@ pub enum ServiceError {
         detail: String,
     },
 
+    /// The fetched services listing was not valid JSON in the expected shape.
+    #[error("parse services listing: {detail}")]
+    ListingParse {
+        /// Human-readable parse failure detail.
+        detail: String,
+    },
+
+    /// The listing declared a `schema` version this build does not understand.
+    /// A schema bump signals an incompatible format change — the user should
+    /// update yerd rather than have us misread it.
+    #[error("services listing schema {found} is unsupported (this build understands {supported})")]
+    UnsupportedListingSchema {
+        /// The schema version the listing declared.
+        found: u32,
+        /// The schema version this build supports.
+        supported: u32,
+    },
+
     /// Downloading an artifact failed.
     #[error(transparent)]
     Download(#[from] DownloadError),

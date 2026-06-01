@@ -11,6 +11,7 @@ import { invoke as tauriInvoke } from "@tauri-apps/api/core";
 import type {
   AutostartState,
   AvailablePhpResponse,
+  DatabaseSummary,
   Diagnosis,
   DoctorFixResponse,
   ElevateTarget,
@@ -217,6 +218,10 @@ export async function installService(service: string, version: string): Promise<
   ensureOk(await call<Response>("install_service", { service, version }));
 }
 
+export async function changeServiceVersion(service: string, version: string): Promise<void> {
+  ensureOk(await call<Response>("change_service_version", { service, version }));
+}
+
 export async function uninstallService(
   service: string,
   version: string,
@@ -250,6 +255,34 @@ export async function serviceLogs(service: string, lines: number): Promise<strin
 
 export async function createDatabase(service: string, name: string): Promise<void> {
   ensureOk(await call<Response>("create_database", { service, name }));
+}
+
+/** The user databases in a running SQL service (system schemas filtered out). */
+export async function listDatabases(service: string): Promise<DatabaseSummary[]> {
+  const r = ensureOk(await call<Response>("list_databases", { service }));
+  return r.type === "databases" ? r.databases : [];
+}
+
+export async function dropDatabase(service: string, name: string): Promise<void> {
+  ensureOk(await call<Response>("drop_database", { service, name }));
+}
+
+/** Dump a database to a plain-SQL file (the daemon streams the bundled dump tool). */
+export async function backupDatabase(
+  service: string,
+  name: string,
+  path: string,
+): Promise<void> {
+  ensureOk(await call<Response>("backup_database", { service, name, path }));
+}
+
+/** Restore a database from a plain-SQL file (the database must already exist). */
+export async function restoreDatabase(
+  service: string,
+  name: string,
+  path: string,
+): Promise<void> {
+  ensureOk(await call<Response>("restore_database", { service, name, path }));
 }
 
 // ── status / doctor ────────────────────────────────────────────────────────
@@ -302,6 +335,20 @@ export async function openPath(path: string): Promise<void> {
 export async function pickDirectory(defaultPath?: string): Promise<string | null> {
   const { open } = await import("@tauri-apps/plugin-dialog");
   const picked = await open({ directory: true, multiple: false, defaultPath });
+  return typeof picked === "string" ? picked : null;
+}
+
+/** Save-file dialog (for backups). Returns the chosen path, or null if cancelled. */
+export async function pickSaveFile(defaultPath?: string): Promise<string | null> {
+  const { save } = await import("@tauri-apps/plugin-dialog");
+  const picked = await save({ defaultPath });
+  return typeof picked === "string" ? picked : null;
+}
+
+/** Open-file dialog (for restores). Returns the chosen path, or null if cancelled. */
+export async function pickOpenFile(): Promise<string | null> {
+  const { open } = await import("@tauri-apps/plugin-dialog");
+  const picked = await open({ directory: false, multiple: false });
   return typeof picked === "string" ? picked : null;
 }
 

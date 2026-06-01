@@ -16,7 +16,7 @@ import { useDaemon } from "@/composables/useDaemon";
 // grey for configuration (General, PHP, Sites), red for Services, blue for the
 // info pages (Doctor, About). The chip keeps its colour even when the item is
 // active — only the row background highlights the selection.
-const GREY = "bg-slate-500/15 text-slate-600 dark:text-slate-400";
+const GREY = "bg-zinc-500/15 text-zinc-600 dark:text-zinc-400";
 const RED = "bg-red-500/15 text-red-600 dark:text-red-400";
 const BLUE = "bg-blue-500/15 text-blue-600 dark:text-blue-400";
 const items = [
@@ -33,7 +33,7 @@ const { connected } = useDaemon();
 
 <template>
   <nav
-    class="flex h-full w-52 shrink-0 flex-col border-r bg-card/40 px-3 py-4"
+    class="flex h-full w-52 shrink-0 flex-col border-r bg-muted px-3 py-4 dark:bg-card/40"
   >
     <ul class="flex flex-1 flex-col gap-1">
       <li v-for="item in items" :key="item.to">

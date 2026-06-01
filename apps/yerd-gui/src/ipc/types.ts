@@ -221,7 +221,13 @@ export type Response =
   | { type: "doctor_fix"; report: FixReport }
   | { type: "services"; services: ServiceStatus[] }
   | { type: "available_services"; services: ServiceAvailability[] }
-  | { type: "service_logs"; lines: string[] };
+  | { type: "service_logs"; lines: string[] }
+  | { type: "databases"; databases: DatabaseSummary[] };
+
+/** One user database in a SQL service (mirrors the daemon's `DatabaseSummary`). */
+export interface DatabaseSummary {
+  name: string;
+}
 
 // Narrowed aliases for the variants the views actually read.
 export type InfoResponse = Extract<Response, { type: "info" }>;

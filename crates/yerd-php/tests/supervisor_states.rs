@@ -23,7 +23,7 @@ use async_trait::async_trait;
 use tokio::sync::Mutex;
 
 use yerd_core::PhpVersion;
-use yerd_php::pure::supervisor::{KillSignal, SupervisorPolicy};
+use yerd_php::pure::supervisor::{KillSignal, StopProtocol, SupervisorPolicy};
 use yerd_php::{
     ChildHandle, Clock, ExitReason, HealthProbe, Listen, PhpError, PhpManager, PoolRunState,
     ProcessSpawner,
@@ -82,7 +82,7 @@ impl ChildHandle for FakeChild {
         }
     }
 
-    async fn kill(&mut self, signal: KillSignal) -> Result<(), io::Error> {
+    async fn kill(&mut self, signal: KillSignal, _protocol: StopProtocol) -> Result<(), io::Error> {
         self.kills.lock().await.push(signal);
         let mut b = self.behavior.lock().await;
         if matches!(*b, ChildBehavior::LivesUntilKilled) {

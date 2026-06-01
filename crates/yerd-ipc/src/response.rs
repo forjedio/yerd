@@ -10,7 +10,9 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 use yerd_core::{PhpVersion, Site};
 
-use crate::status::{Diagnosis, FixReport, ServiceAvailability, ServiceStatus, StatusReport};
+use crate::status::{
+    DatabaseSummary, Diagnosis, FixReport, ServiceAvailability, ServiceStatus, StatusReport,
+};
 
 // Same rule: no per-field serde renames.
 /// A response sent from the daemon to a client.
@@ -120,6 +122,12 @@ pub enum Response {
         /// The log lines.
         lines: Vec<String>,
     },
+    /// Reply to [`crate::Request::ListDatabases`] — the user databases in a SQL
+    /// service (system schemas filtered out).
+    Databases {
+        /// One entry per database, sorted by name.
+        databases: Vec<DatabaseSummary>,
+    },
 }
 
 /// An available newer patch for an installed PHP minor.
@@ -188,6 +196,7 @@ mod variant_name_pinning {
             Response::Services { .. } => {}
             Response::AvailableServices { .. } => {}
             Response::ServiceLogs { .. } => {}
+            Response::Databases { .. } => {}
         }
     }
 
@@ -284,6 +293,9 @@ mod variant_name_pinning {
         pin_response(Response::Services { services: vec![] });
         pin_response(Response::AvailableServices { services: vec![] });
         pin_response(Response::ServiceLogs { lines: vec![] });
+        pin_response(Response::Databases {
+            databases: vec![DatabaseSummary { name: "app".into() }],
+        });
         for c in [
             ErrorCode::NotFound,
             ErrorCode::AlreadyExists,

@@ -2,15 +2,73 @@
 //!
 //! The probe is the signal that ends the supervisor's `Starting` window, so it
 //! must confirm the server actually answers its protocol — not merely that the
-//! TCP port is open. Phase 1 ships the Redis probe (`PING` → `+PONG`);
-//! MySQL/Postgres handshake probes land in Phase 2.
+//! TCP port is open. Redis answers `PING` → `+PONG`; `MySQL`/`MariaDB` send an
+//! initial handshake packet; Postgres replies to a startup message.
+//!
+//! [`ReadinessProbe`] is the service-aware dispatch the manager drives:
+//! `HealthProbe` (from `yerd-supervise`, shared with PHP) only sees the listen
+//! address, which cannot tell the protocols apart, so [`ServiceProbes`] selects
+//! the right per-protocol probe from the [`Service`].
 
 use std::io;
+use std::net::SocketAddr;
 
 use async_trait::async_trait;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use yerd_supervise::{HealthProbe, Listen};
+
+use crate::service::Service;
+
+/// A service-aware readiness probe.
+///
+/// The manager calls this with the [`Service`] it is supervising; the
+/// implementation picks the protocol probe to run against `listen`. Kept
+/// separate from `yerd_supervise::HealthProbe` (which is address-only and shared
+/// with the PHP supervisor) so that trait is untouched.
+#[async_trait]
+pub trait ReadinessProbe: Send + Sync + 'static {
+    /// Probe `service` at `listen`, returning `Ok(())` once it answers its
+    /// protocol.
+    async fn probe(&self, service: Service, listen: &Listen) -> Result<(), io::Error>;
+}
+
+/// The production [`ReadinessProbe`]: dispatches by [`Service`] to the matching
+/// protocol probe. A unit struct — the per-protocol probes are themselves unit
+/// structs.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ServiceProbes;
+
+impl ServiceProbes {
+    /// Construct the dispatcher.
+    #[must_use]
+    pub const fn new() -> Self {
+        ServiceProbes
+    }
+}
+
+#[async_trait]
+impl ReadinessProbe for ServiceProbes {
+    async fn probe(&self, service: Service, listen: &Listen) -> Result<(), io::Error> {
+        match service {
+            Service::Redis => RedisProbe.probe(listen).await,
+            // MariaDB speaks the MySQL wire protocol — same handshake probe.
+            Service::MySql | Service::MariaDb => MySqlProbe.probe(listen).await,
+            Service::Postgres => PostgresProbe.probe(listen).await,
+        }
+    }
+}
+
+/// Extract the TCP loopback address from a [`Listen`], erroring for a Unix
+/// socket (services always listen on fixed loopback TCP).
+fn tcp_addr(listen: &Listen) -> Result<SocketAddr, io::Error> {
+    match listen {
+        Listen::TcpLoopback(a) => Ok(*a),
+        Listen::UnixSocket(_) => Err(io::Error::other(
+            "service probe requires a TCP listen address",
+        )),
+    }
+}
 
 /// Redis/Valkey readiness probe: open a TCP connection, send an inline `PING`,
 /// and require a `+PONG` reply.
@@ -40,6 +98,76 @@ impl HealthProbe for RedisProbe {
                 io::ErrorKind::InvalidData,
                 "unexpected reply to PING",
             ))
+        }
+    }
+}
+
+/// `MySQL` / `MariaDB` readiness probe: connect and **read** the server's
+/// initial handshake packet. A bare TCP connect is not enough — during datadir
+/// init / crash recovery the listener may already accept connections without
+/// yet sending the greeting, so we require an actual handshake byte.
+///
+/// `MySQL` packet framing: a 3-byte little-endian length + 1-byte sequence id,
+/// then the payload. For the server greeting the payload's first byte is the
+/// protocol version (`0x0a` = v10). A connection-refusal error packet
+/// (`0xff`) also proves the server is up and speaking, so we accept that too.
+pub struct MySqlProbe;
+
+#[async_trait]
+impl HealthProbe for MySqlProbe {
+    async fn probe(&self, listen: &Listen) -> Result<(), io::Error> {
+        let addr = tcp_addr(listen)?;
+        let mut stream = TcpStream::connect(addr).await?;
+        // Header (4 bytes) + at least the first payload byte.
+        let mut buf = [0u8; 5];
+        stream.read_exact(&mut buf).await?;
+        match buf[4] {
+            // `0x0a`: server greeting (protocol v10) — fully ready.
+            // `0xff`: ERR packet — server is up and talking, just refusing (e.g.
+            // too many connections); that still proves readiness.
+            0x0a | 0xff => Ok(()),
+            other => Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("unexpected MySQL handshake first byte {other:#04x}"),
+            )),
+        }
+    }
+}
+
+/// `PostgreSQL` readiness probe: send a minimal `StartupMessage` and require any
+/// well-formed reply. With `--auth=trust` the server answers `R`
+/// (Authentication → `AuthenticationOk`); a refusal answers `E` (`ErrorResponse`)
+/// — either proves the postmaster is up and processing the protocol. The
+/// reduced (zonky-style) build may ship no `pg_isready`, so a protocol probe is
+/// required rather than a CLI shell-out.
+pub struct PostgresProbe;
+
+#[async_trait]
+impl HealthProbe for PostgresProbe {
+    async fn probe(&self, listen: &Listen) -> Result<(), io::Error> {
+        let addr = tcp_addr(listen)?;
+        let mut stream = TcpStream::connect(addr).await?;
+
+        // StartupMessage: Int32 length, Int32 protocol (196608 = 3.0), then
+        // null-terminated key/value pairs and a final null terminator.
+        let params: &[u8] = b"user\0postgres\0database\0postgres\0\0";
+        let len = u32::try_from(8 + params.len())
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "startup message too large"))?;
+        let mut msg = Vec::with_capacity(len as usize);
+        msg.extend_from_slice(&len.to_be_bytes());
+        msg.extend_from_slice(&196_608u32.to_be_bytes());
+        msg.extend_from_slice(params);
+        stream.write_all(&msg).await?;
+
+        // First reply byte is the message-type tag.
+        let mut tag = [0u8; 1];
+        stream.read_exact(&mut tag).await?;
+        match tag[0] {
+            b'R' | b'E' => Ok(()),
+            other => Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("unexpected Postgres reply tag {:?}", other as char),
+            )),
         }
     }
 }
@@ -92,5 +220,101 @@ mod tests {
         let probe = RedisProbe;
         let dead: SocketAddr = (Ipv4Addr::LOCALHOST, 1).into();
         assert!(probe.probe(&Listen::TcpLoopback(dead)).await.is_err());
+    }
+
+    /// Spin a one-shot fake server that, on accept, writes `reply`.
+    async fn fake_server(reply: &'static [u8]) -> SocketAddr {
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            if let Ok((mut sock, _)) = listener.accept().await {
+                // Drain whatever the client sends first (PG startup msg), ignore.
+                let mut scratch = [0u8; 64];
+                let _ = sock.try_read(&mut scratch);
+                let _ = sock.write_all(reply).await;
+                // Keep the socket open briefly so the client can read.
+                let _ = sock.read(&mut scratch).await;
+            }
+        });
+        addr
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn mysql_probe_accepts_handshake() {
+        // Header (len=0x20, seq=0) then protocol-version byte 0x0a.
+        let addr = fake_server(&[0x20, 0x00, 0x00, 0x00, 0x0a, 0xde, 0xad]).await;
+        assert!(MySqlProbe.probe(&Listen::TcpLoopback(addr)).await.is_ok());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn mysql_probe_accepts_err_packet() {
+        // ERR packet (first payload byte 0xff) — server up but refusing.
+        let addr = fake_server(&[0x10, 0x00, 0x00, 0x00, 0xff, 0x15, 0x04]).await;
+        assert!(MySqlProbe.probe(&Listen::TcpLoopback(addr)).await.is_ok());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn mysql_probe_rejects_garbage() {
+        let addr = fake_server(&[0x00, 0x00, 0x00, 0x00, 0x00]).await;
+        assert!(MySqlProbe.probe(&Listen::TcpLoopback(addr)).await.is_err());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn postgres_probe_accepts_authentication() {
+        // 'R' AuthenticationOk: tag 'R', Int32 len 8, Int32 0.
+        let addr = fake_server(b"R\x00\x00\x00\x08\x00\x00\x00\x00").await;
+        assert!(PostgresProbe
+            .probe(&Listen::TcpLoopback(addr))
+            .await
+            .is_ok());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn postgres_probe_accepts_error_response() {
+        // 'E' ErrorResponse — server up, refused; still proves readiness.
+        let addr = fake_server(b"E\x00\x00\x00\x05X").await;
+        assert!(PostgresProbe
+            .probe(&Listen::TcpLoopback(addr))
+            .await
+            .is_ok());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn postgres_probe_rejects_garbage() {
+        let addr = fake_server(b"Z garbage").await;
+        assert!(PostgresProbe
+            .probe(&Listen::TcpLoopback(addr))
+            .await
+            .is_err());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn service_probes_dispatches_by_service() {
+        // Redis path through the dispatcher.
+        let redis = fake_server(b"+PONG\r\n").await;
+        let probes = ServiceProbes::new();
+        assert!(probes
+            .probe(Service::Redis, &Listen::TcpLoopback(redis))
+            .await
+            .is_ok());
+
+        // MySQL / MariaDB path (shared handshake).
+        let mysql = fake_server(&[0x20, 0x00, 0x00, 0x00, 0x0a]).await;
+        assert!(probes
+            .probe(Service::MySql, &Listen::TcpLoopback(mysql))
+            .await
+            .is_ok());
+        let maria = fake_server(&[0x20, 0x00, 0x00, 0x00, 0x0a]).await;
+        assert!(probes
+            .probe(Service::MariaDb, &Listen::TcpLoopback(maria))
+            .await
+            .is_ok());
+
+        // Postgres path.
+        let pg = fake_server(b"R\x00\x00\x00\x08\x00\x00\x00\x00").await;
+        assert!(probes
+            .probe(Service::Postgres, &Listen::TcpLoopback(pg))
+            .await
+            .is_ok());
     }
 }

@@ -103,6 +103,12 @@ pub enum Command {
         #[command(subcommand)]
         action: ServiceAction,
     },
+    /// Manage databases inside a running SQL service (mysql, mariadb, postgres).
+    Db {
+        /// What to do.
+        #[command(subcommand)]
+        action: DbAction,
+    },
     /// Show a snapshot of daemon, proxy, DNS, ports, CA, and PHP health.
     Status,
     /// Diagnose common problems; `yerd doctor fix` attempts safe repairs.
@@ -160,6 +166,14 @@ pub enum ServiceAction {
         /// Version to install, e.g. `8` (see `yerd service available`).
         version: String,
     },
+    /// Switch a service to a different version (upgrade or downgrade). Installs
+    /// the new version, restarts onto it, and removes the old one.
+    ChangeVersion {
+        /// Service id.
+        service: String,
+        /// Version to switch to, e.g. `9.1.0` (see `yerd service available`).
+        version: String,
+    },
     /// Uninstall a service version. Keeps the datadir unless `--purge`.
     Uninstall {
         /// Service id.
@@ -199,6 +213,49 @@ pub enum ServiceAction {
         /// Number of trailing lines to show.
         #[arg(long, default_value_t = 100)]
         lines: u32,
+    },
+}
+
+/// Action of `yerd db`.
+#[derive(clap::Subcommand, Debug, Clone)]
+pub enum DbAction {
+    /// List the databases in a running SQL service.
+    List {
+        /// Service id: `mysql`, `mariadb`, or `postgres`.
+        service: String,
+    },
+    /// Create a database.
+    Create {
+        /// Service id.
+        service: String,
+        /// Database name (letters, digits, underscores; must start with a
+        /// letter or underscore).
+        name: String,
+    },
+    /// Drop a database (irreversible).
+    Drop {
+        /// Service id.
+        service: String,
+        /// Database name to drop.
+        name: String,
+    },
+    /// Back a database up to a plain-SQL file.
+    Backup {
+        /// Service id.
+        service: String,
+        /// Database name to dump.
+        name: String,
+        /// Destination file (relative paths resolve against your current directory).
+        path: PathBuf,
+    },
+    /// Restore a database from a plain-SQL file (the database must already exist).
+    Restore {
+        /// Service id.
+        service: String,
+        /// Database name to restore into.
+        name: String,
+        /// Source file to replay (relative paths resolve against your current directory).
+        path: PathBuf,
     },
 }
 

@@ -11,7 +11,7 @@ use async_trait::async_trait;
 
 use crate::error::{DownloadError, ExitReason};
 use crate::listen::Listen;
-use crate::supervisor::KillSignal;
+use crate::supervisor::{KillSignal, StopProtocol};
 
 /// Abstraction over `std::process::Command::spawn`.
 ///
@@ -27,13 +27,18 @@ pub trait ProcessSpawner: Send + Sync + 'static {
 
 /// Operations the supervisor performs on a live child.
 ///
-/// On Unix, `kill` signals the **process group** so child workers are reaped
-/// along with the parent. The consumer's command builder sets `process_group(0)`
-/// at spawn time so the child's PID is also the process-group ID;
-/// **never refactor the Unix impl to `kill(pid)` — that would leak workers.**
-/// On Windows, both signals collapse to `tokio::process::Child::kill`; workers
-/// are taken down by tokio's `kill_on_drop(true)`. A Phase 2 ticket adds
-/// job-object semantics via the helper.
+/// On Unix the consumer's command builder sets `process_group(0)` at spawn time
+/// so the child's PID is also the process-group ID. By default `kill` signals
+/// the whole **process group** ([`StopProtocol::GroupTerm`]) so child workers
+/// are reaped with the parent — **do not refactor that path to `kill(pid)`; it
+/// would leak workers.** The one exception is [`StopProtocol::MasterInterrupt`]
+/// (Postgres fast shutdown), which deliberately signals only the master PID,
+/// because the postmaster reaps its own backends and a group signal would
+/// mis-deliver to them. A forced [`KillSignal::Kill`] always SIGKILLs the group
+/// regardless of protocol. On Windows, signals collapse to
+/// `tokio::process::Child::kill`; workers are taken down by tokio's
+/// `kill_on_drop(true)`. A Phase 2 ticket adds job-object semantics via the
+/// helper.
 #[async_trait]
 pub trait ChildHandle: Send + 'static {
     /// PID captured once at spawn time. `tokio::process::Child::id()` returns
@@ -48,8 +53,10 @@ pub trait ChildHandle: Send + 'static {
     /// races this against [`HealthProbe::probe`].
     async fn wait(&mut self) -> Result<ExitReason, io::Error>;
 
-    /// Signal the child (Unix: signals the process group).
-    async fn kill(&mut self, signal: KillSignal) -> Result<(), io::Error>;
+    /// Signal the child. `protocol` selects how a graceful [`KillSignal::Term`]
+    /// is delivered (group SIGTERM vs master-only SIGINT); a forced
+    /// [`KillSignal::Kill`] ignores it and SIGKILLs the process group.
+    async fn kill(&mut self, signal: KillSignal, protocol: StopProtocol) -> Result<(), io::Error>;
 }
 
 /// Source of `std::time::Instant`. Injected so the supervisor's elapsed-time

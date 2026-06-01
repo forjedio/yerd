@@ -30,7 +30,7 @@ yerd-doctor    = { path = "../../crates/yerd-doctor" }
 thiserror      = { workspace = true }
 async-trait    = { workspace = true }
 clap           = { workspace = true }
-tokio          = { workspace = true, features = ["net", "rt-multi-thread", "macros", "signal", "time", "io-util", "sync"] }
+tokio          = { workspace = true, features = ["net", "rt-multi-thread", "macros", "signal", "time", "io-util", "sync", "process"] }
 tracing        = { workspace = true }
 tracing-subscriber = { workspace = true }
 interprocess   = { workspace = true }

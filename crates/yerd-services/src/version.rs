@@ -127,6 +127,17 @@ pub fn log_path(dirs: &PlatformDirs, service: Service) -> PathBuf {
         .join(format!("{}.log", service.id()))
 }
 
+/// The Unix-socket path for the `MySQL`/`MariaDB` server (and the client that
+/// connects to it), under the short `runtime` dir to stay within the platform
+/// `sun_path` length limit. Unused for engines that don't use a Unix socket.
+#[must_use]
+pub fn socket_path(dirs: &PlatformDirs, service: Service) -> PathBuf {
+    dirs.runtime
+        .join("services")
+        .join(service.id())
+        .join(format!("{}.sock", service.id()))
+}
+
 /// Discover every installed `(service, version)` by scanning
 /// `data/services/<id>/` for version dirs that actually contain the server
 /// binary. A missing services root yields an empty map (not an error); other

@@ -18,9 +18,9 @@ use std::path::PathBuf;
 
 use yerd_ipc::{
     types::{PhpVersion, Site},
-    CaStatus, Diagnosis, DiagnosisCode, ErrorCode, FixReport, FixResult, PhpPoolStatus,
-    PoolRunState, PortStatus, Request, Response, ServiceAvailability, ServiceRunState,
-    ServiceStatus, Severity, SiteCounts, StatusReport,
+    CaStatus, DatabaseSummary, Diagnosis, DiagnosisCode, ErrorCode, FixReport, FixResult,
+    PhpPoolStatus, PoolRunState, PortStatus, Request, Response, ServiceAvailability,
+    ServiceRunState, ServiceStatus, Severity, SiteCounts, StatusReport,
 };
 
 // ---------- Request ----------
@@ -945,6 +945,92 @@ fn request_create_database_byte_shape() {
         r#"{"type":"create_database","service":"mysql","name":"app"}"#
     );
     assert_eq!(serde_json::from_str::<Request>(&s).unwrap(), r);
+}
+
+#[test]
+fn request_change_service_version_byte_shape() {
+    let r = Request::ChangeServiceVersion {
+        service: "redis".into(),
+        version: "9.1.0".into(),
+    };
+    let s = serde_json::to_string(&r).unwrap();
+    assert_eq!(
+        s,
+        r#"{"type":"change_service_version","service":"redis","version":"9.1.0"}"#
+    );
+    assert_eq!(serde_json::from_str::<Request>(&s).unwrap(), r);
+}
+
+#[test]
+fn request_list_databases_byte_shape() {
+    let r = Request::ListDatabases {
+        service: "mysql".into(),
+    };
+    let s = serde_json::to_string(&r).unwrap();
+    assert_eq!(s, r#"{"type":"list_databases","service":"mysql"}"#);
+    assert_eq!(serde_json::from_str::<Request>(&s).unwrap(), r);
+}
+
+#[test]
+fn request_drop_database_byte_shape() {
+    let r = Request::DropDatabase {
+        service: "mysql".into(),
+        name: "app".into(),
+    };
+    let s = serde_json::to_string(&r).unwrap();
+    assert_eq!(
+        s,
+        r#"{"type":"drop_database","service":"mysql","name":"app"}"#
+    );
+    assert_eq!(serde_json::from_str::<Request>(&s).unwrap(), r);
+}
+
+#[test]
+fn request_backup_database_byte_shape() {
+    let r = Request::BackupDatabase {
+        service: "mysql".into(),
+        name: "app".into(),
+        path: PathBuf::from("/srv/app.sql"),
+    };
+    let s = serde_json::to_string(&r).unwrap();
+    assert_eq!(
+        s,
+        r#"{"type":"backup_database","service":"mysql","name":"app","path":"/srv/app.sql"}"#
+    );
+    assert_eq!(serde_json::from_str::<Request>(&s).unwrap(), r);
+}
+
+#[test]
+fn request_restore_database_byte_shape() {
+    let r = Request::RestoreDatabase {
+        service: "mysql".into(),
+        name: "app".into(),
+        path: PathBuf::from("/srv/app.sql"),
+    };
+    let s = serde_json::to_string(&r).unwrap();
+    assert_eq!(
+        s,
+        r#"{"type":"restore_database","service":"mysql","name":"app","path":"/srv/app.sql"}"#
+    );
+    assert_eq!(serde_json::from_str::<Request>(&s).unwrap(), r);
+}
+
+#[test]
+fn response_databases_byte_shape() {
+    let r = Response::Databases {
+        databases: vec![
+            DatabaseSummary { name: "app".into() },
+            DatabaseSummary {
+                name: "blog".into(),
+            },
+        ],
+    };
+    let s = serde_json::to_string(&r).unwrap();
+    assert_eq!(
+        s,
+        r#"{"type":"databases","databases":[{"name":"app"},{"name":"blog"}]}"#
+    );
+    assert_eq!(serde_json::from_str::<Response>(&s).unwrap(), r);
 }
 
 #[test]
