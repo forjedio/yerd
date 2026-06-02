@@ -184,7 +184,8 @@ export default withMermaid({
     },
 
     footer: {
-      message: 'Released under the MIT OR Apache-2.0 License.',
+      message:
+        'A <a href="https://forjed.io" target="_blank" rel="noopener">Forjed</a> project. Released under the MIT License.',
       copyright: 'Copyright © 2026 Yerd',
     },
   },

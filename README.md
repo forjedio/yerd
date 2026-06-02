@@ -8,7 +8,7 @@ Serve your projects on `.test` domains over HTTP **and** HTTPS, run a different
 PHP version per site, and manage it all from one tiny daemon — no Docker, no
 `sudo` for everyday work, no subscription.
 
-[![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](#license)
 [![Platforms: macOS · Linux](https://img.shields.io/badge/platforms-macOS%20%C2%B7%20Linux-success.svg)](#installation)
 [![Built with Rust](https://img.shields.io/badge/built%20with-Rust-orange.svg)](https://www.rust-lang.org)
 [![Docs](https://img.shields.io/badge/docs-yerd.app-6366f1.svg)](https://yerd.app)
@@ -404,7 +404,7 @@ operations, v2 ships prebuilt PHP and runs unprivileged.
 
 ## License
 
-Licensed under either of MIT or the Apache License, Version 2.0, at your option.
+Licensed under the [MIT License](LICENSE.md).
 
-Maintained by **Forjed** · <support@forjed.io> ·
+A [Forjed](https://forjed.io) project · <support@forjed.io> ·
 [github.com/forjedio/yerd](https://github.com/forjedio/yerd)

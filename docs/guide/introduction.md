@@ -59,7 +59,7 @@ Pure logic lives in library crates; I/O and OS calls sit at the edges behind tra
 
 ### Fully open-source
 
-Licensed under MIT or Apache-2.0, at your option, and developed in the open at [github.com/forjedio/yerd](https://github.com/forjedio/yerd). No paid tier, no closed core.
+Licensed under the MIT License, and developed in the open at [github.com/forjedio/yerd](https://github.com/forjedio/yerd). No paid tier, no closed core.
 
 ## How it works
 
