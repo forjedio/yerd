@@ -97,9 +97,9 @@ the daemon** - install the CLI/daemon above too, so `yerdd` is present.
 
 | Platform | GUI artifact | Install |
 |---|---|---|
-| macOS (Apple Silicon) | `Yerd_<ver>_aarch64.dmg` | open, drag to Applications |
-| Linux | `Yerd_<ver>_amd64.AppImage` | `chmod +x` and run |
-| Linux | `Yerd_<ver>_amd64.deb` | `sudo dpkg -i …` |
+| macOS (Apple Silicon) | `yerd-gui_<ver>_aarch64.dmg` | open, drag to Applications |
+| Linux | `yerd-gui_<ver>_amd64.AppImage` | `chmod +x` and run |
+| Linux | `yerd-gui_<ver>_amd64.deb` | `sudo dpkg -i …` |
 
 ::: warning Unsigned for now
 macOS warns on first launch - right-click → **Open**, or clear the quarantine

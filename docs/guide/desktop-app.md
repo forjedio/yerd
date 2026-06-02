@@ -10,9 +10,9 @@ The app ships as separate bundles on the same release as the CLI:
 
 | Platform | Artifact | Install |
 |---|---|---|
-| macOS (Apple Silicon) | `Yerd_<ver>_aarch64.dmg` | Open the DMG, drag Yerd to Applications |
-| Linux | `Yerd_<ver>_amd64.AppImage` | `chmod +x Yerd_<ver>_amd64.AppImage` and run it |
-| Linux | `Yerd_<ver>_amd64.deb` | `sudo dpkg -i Yerd_<ver>_amd64.deb` |
+| macOS (Apple Silicon) | `yerd-gui_<ver>_aarch64.dmg` | Open the DMG, drag Yerd to Applications |
+| Linux | `yerd-gui_<ver>_amd64.AppImage` | `chmod +x yerd-gui_<ver>_amd64.AppImage` and run it |
+| Linux | `yerd-gui_<ver>_amd64.deb` | `sudo dpkg -i yerd-gui_<ver>_amd64.deb` |
 
 The macOS DMG targets Apple Silicon (`aarch64`) only; Intel (x86-64) Macs are not supported at this time. There's no Windows bundle yet: the daemon's named-pipe address isn't client-derivable.
 
