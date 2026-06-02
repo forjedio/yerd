@@ -22,10 +22,9 @@ PHP version per site, and manage it all from one tiny daemon — no Docker, no
 
 ## Why Yerd?
 
-If you've used [Laravel Herd](https://herd.laravel.com), you know the appeal:
-type a URL like `https://my-app.test` and your site just works, with the right
-PHP version and a trusted certificate. Yerd brings that same frictionless
-experience — but **cross-platform, fully open-source, and rootless by design.**
+Type a URL like `https://my-app.test` and your site just works, with the right
+PHP version and a trusted certificate. Yerd makes local PHP development
+frictionless — **cross-platform, fully open-source, and rootless by design.**
 
 - 🚀 **Zero-config sites.** Drop a project in a parked directory and it's instantly
   live at `<name>.test`.
@@ -33,6 +32,9 @@ experience — but **cross-platform, fully open-source, and rootless by design.*
   certificates automatically — no `mkcert` dance, no browser warnings once trusted.
 - 🐘 **Any PHP, per site.** Install multiple PHP versions and pin each site to the
   one it needs.
+- 🗄️ **Databases & caches, no Docker.** Install and supervise MySQL, MariaDB,
+  PostgreSQL, and Redis as native, per-user processes — create, drop, back up, and
+  restore databases straight from the CLI.
 - 🪶 **Lightweight & native.** A single ~8 MB daemon binary. No containers, no VM,
   no Electron.
 - 🛡️ **Rootless.** Setup elevates **once**; everything after runs as your user.
@@ -56,7 +58,7 @@ experience — but **cross-platform, fully open-source, and rootless by design.*
 | PHP version **per site** | ✅ | ✅ | ✅ |
 | First-class CLI | ✅ | ✅ | ✅ |
 | Menu-bar / tray GUI | ✅ | ❌ | ✅ |
-| Database & cache services (MySQL · MariaDB · PostgreSQL · Redis) | ✅ (Pro) | ✅ | ✅ * |
+| Database & cache services (MySQL · MariaDB · PostgreSQL · Redis) | ✅ (Pro) | ✅ | ✅ |
 | Runs rootless day-to-day | ✅ | ✅ † | ✅ |
 | **No** Docker / Podman / containers required | ✅ | ❌ | ✅ |
 | Lightweight (no VM, no container images) | ✅ | ❌ | ✅ |
@@ -219,6 +221,13 @@ Open `https://my-app.test` in your browser — that's it.
 | `yerd install php <version>` | Download + install a PHP version. |
 | `yerd list php [--check]` | List installed PHP versions (and available updates). |
 | `yerd update php [<version>]` | Update one (or all) installed PHP versions. |
+| `yerd services` | List local database / cache services and their status. |
+| `yerd service install <svc> <version>` | Install a service (`redis`/`mysql`/`mariadb`/`postgres`) from a prebuilt build. |
+| `yerd service start\|stop\|restart <svc>` | Start, stop, or restart a service (start also enables auto-start). |
+| `yerd service set-port <svc> <port>` / `logs <svc>` | Set a service's loopback port; tail its log. |
+| `yerd service change-version\|uninstall <svc> …` | Switch a service's version, or remove one (`--purge` deletes its data). |
+| `yerd db list\|create\|drop <svc> [<name>]` | List, create, or drop databases in a running SQL service. |
+| `yerd db backup\|restore <svc> <name> <file>` | Dump a database to / restore it from a plain-SQL file. |
 | `yerd status` | Snapshot: daemon, ports, DNS, CA trust, PHP pools (PID/RAM), load. |
 | `yerd doctor` / `yerd doctor fix` | Diagnose common problems; auto-repair the safe ones. |
 | `yerd elevate [trust\|resolver\|ports]` | One-time privileged setup (run with `sudo`). |
@@ -303,6 +312,7 @@ a newer patch exists, but never installs anything behind your back.
 | Reverse proxy | hand-rolled `hyper` + `hyper-util` + `tokio-rustls` |
 | DNS | `hickory-dns` embedded resolver for `*.test` |
 | PHP runtime | `static-php-cli` builds, PHP-FPM per version |
+| Services | native MySQL / MariaDB / PostgreSQL / Redis, supervised per-user (`yerd-services` + `yerd-supervise`) |
 | IPC | Unix socket / Windows named pipe via `interprocess` |
 | GUI | Tauri v2 + Vue 3 + TypeScript + Tailwind (`apps/yerd-gui`) |
 
@@ -311,16 +321,15 @@ a newer patch exists, but never installs anything behind your back.
 ## Roadmap
 
 Shipping today (macOS + Linux): multi-version PHP, parked/linked `.test` sites,
-HTTP + HTTPS with a local CA, the embedded DNS resolver, `status`/`doctor`, and
-the Debian package.
+HTTP + HTTPS with a local CA, the embedded DNS resolver, native database & cache
+services (MySQL · MariaDB · PostgreSQL · Redis), `status`/`doctor`, and the
+Debian package.
 
 On the way:
 
 - 🖥️ **Desktop GUI** — implemented in `apps/yerd-gui` (Tauri v2 tray app over the
   same daemon, a thin IPC client like the CLI); bundled as `.dmg`/`.AppImage`/`.deb`
   by the release pipeline. Code-signing/notarisation still to come.
-- 🗄️ **Service supervision** — MySQL, MariaDB, PostgreSQL, and Redis as
-  Yerd-managed native processes (no Docker).
 - 🪟 **Windows support** — NRPT-based resolver, named-pipe IPC, system cert store,
   TCP-loopback PHP-FPM.
 - 📦 **More packaging** — code-signing/notarisation, an Arch AUR package, and
