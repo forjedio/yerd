@@ -65,7 +65,7 @@ export function useTheme() {
 /** Wire up OS-theme tracking and apply the stored preference. Call once at boot. */
 export function initTheme(): void {
   // 1) Instant best-guess from the webview media query (no flash).
-  const mq = window.matchMedia("(prefers-color-scheme: dark)");
+  const mq = globalThis.matchMedia("(prefers-color-scheme: dark)");
   osDark = mq.matches;
   reapply();
   mq.addEventListener("change", (e) => {

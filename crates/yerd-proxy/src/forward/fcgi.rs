@@ -24,7 +24,6 @@ use crate::pure::fcgi_codec::{
 const REQUEST_ID: u16 = 1;
 
 /// Forward `req` to a FastCGI `backend`. Returns the response, or a `ProxyError`.
-#[allow(clippy::too_many_lines)]
 pub async fn forward(
     req: Request<Incoming>,
     backend: Backend,
@@ -79,7 +78,33 @@ pub async fn forward(
         .map_err(|source| ProxyError::BackendProtocol { source })?;
 
     // 4. STDIN — stream the request body chunked at FCGI_MAX_PAYLOAD.
-    let mut body = body;
+    write_stdin(&mut stream, body, &backend_label).await?;
+
+    // 5. Read STDOUT/STDERR until END_REQUEST.
+    let (stdout, stderr) = read_fcgi_response(&mut stream).await?;
+
+    if !stderr.is_empty() {
+        tracing::warn!(
+            target: "yerd_proxy::fcgi",
+            backend = %backend_label,
+            stderr = %String::from_utf8_lossy(&stderr),
+            "FPM stderr"
+        );
+    }
+
+    // 6. Parse CGI headers from STDOUT and synthesise the response.
+    let (status, headers, body_bytes) = parse_cgi_response(&stdout);
+    synthesise_response(status, headers, body_bytes)
+}
+
+/// Stream the request `body` to the backend as FCGI STDIN records (each chunked
+/// at `FCGI_MAX_PAYLOAD`), then write the zero-length STDIN terminator. HTTP
+/// trailers are dropped — FastCGI cannot represent them.
+async fn write_stdin(
+    stream: &mut BackendStream,
+    mut body: Incoming,
+    backend_label: &str,
+) -> Result<(), ProxyError> {
     loop {
         match body.frame().await {
             None => break,
@@ -113,9 +138,13 @@ pub async fn forward(
     stream
         .write_all(&term)
         .await
-        .map_err(|source| ProxyError::BackendProtocol { source })?;
+        .map_err(|source| ProxyError::BackendProtocol { source })
+}
 
-    // 5. Read STDOUT/STDERR until END_REQUEST.
+/// Drain STDOUT/STDERR records from the backend until END_REQUEST, returning the
+/// concatenated `(stdout, stderr)` byte streams. Unknown record types are
+/// ignored defensively.
+async fn read_fcgi_response(stream: &mut BackendStream) -> Result<(Vec<u8>, Vec<u8>), ProxyError> {
     let mut stdout = Vec::<u8>::new();
     let mut stderr = Vec::<u8>::new();
     loop {
@@ -151,18 +180,16 @@ pub async fn forward(
             }
         }
     }
+    Ok((stdout, stderr))
+}
 
-    if !stderr.is_empty() {
-        tracing::warn!(
-            target: "yerd_proxy::fcgi",
-            backend = %backend_label,
-            stderr = %String::from_utf8_lossy(&stderr),
-            "FPM stderr"
-        );
-    }
-
-    // 6. Parse CGI headers from STDOUT and synthesise the response.
-    let (status, headers, body_bytes) = parse_cgi_response(&stdout);
+/// Build the HTTP response from the parsed CGI status, headers, and body.
+/// Header names/values that aren't valid HTTP are skipped.
+fn synthesise_response(
+    status: http::StatusCode,
+    headers: Vec<(String, String)>,
+    body_bytes: &[u8],
+) -> Result<Response<BoxBody>, ProxyError> {
     let mut resp = Response::builder().status(status);
     if let Some(resp_headers) = resp.headers_mut() {
         for (name, value) in headers {
@@ -318,23 +345,22 @@ fn parse_cgi_response(stdout: &[u8]) -> (http::StatusCode, Vec<(String, String)>
         let name = name.trim();
         let value = value.trim();
         if name.eq_ignore_ascii_case("Status") {
-            // "200 OK" or just "200".
-            if let Some((code, _)) = value.split_once(' ') {
-                if let Ok(n) = code.parse::<u16>() {
-                    if let Ok(sc) = http::StatusCode::from_u16(n) {
-                        status = sc;
-                    }
-                }
-            } else if let Ok(n) = value.parse::<u16>() {
-                if let Ok(sc) = http::StatusCode::from_u16(n) {
-                    status = sc;
-                }
+            if let Some(sc) = parse_cgi_status(value) {
+                status = sc;
             }
         } else {
             headers.push((name.to_owned(), value.to_owned()));
         }
     }
     (status, headers, body)
+}
+
+/// Parse a CGI `Status:` header value — `"200 OK"` or a bare `"200"` — into an
+/// HTTP status code. Returns `None` when it isn't a valid code (caller keeps the
+/// default 200).
+fn parse_cgi_status(value: &str) -> Option<http::StatusCode> {
+    let code = value.split_once(' ').map_or(value, |(code, _)| code);
+    http::StatusCode::from_u16(code.parse::<u16>().ok()?).ok()
 }
 
 /// Return `(offset_of_terminator, terminator_length)`. If no terminator is

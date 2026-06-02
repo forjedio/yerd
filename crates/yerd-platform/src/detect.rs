@@ -43,17 +43,7 @@ pub fn gather_project_signals(project_root: &Path) -> ProjectSignals {
     let mut signals = ProjectSignals::default();
 
     // composer.json `require` + `require-dev` package names (lowercased).
-    if let Ok(bytes) = std::fs::read(project_root.join("composer.json")) {
-        if let Ok(json) = serde_json::from_slice::<serde_json::Value>(&bytes) {
-            for section in ["require", "require-dev"] {
-                if let Some(map) = json.get(section).and_then(serde_json::Value::as_object) {
-                    for key in map.keys() {
-                        signals.composer_requires.insert(key.to_ascii_lowercase());
-                    }
-                }
-            }
-        }
-    }
+    gather_composer_requires(project_root, &mut signals);
 
     // Root markers — presence as a file or directory.
     for marker in ROOT_MARKERS {
@@ -70,6 +60,26 @@ pub fn gather_project_signals(project_root: &Path) -> ProjectSignals {
     }
 
     signals
+}
+
+/// Collect lowercased composer `require` + `require-dev` package names from
+/// `project_root/composer.json` into `signals`. Best-effort: a missing or
+/// malformed file contributes nothing.
+fn gather_composer_requires(project_root: &Path, signals: &mut ProjectSignals) {
+    let Ok(bytes) = std::fs::read(project_root.join("composer.json")) else {
+        return;
+    };
+    let Ok(json) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
+        return;
+    };
+    for section in ["require", "require-dev"] {
+        let Some(map) = json.get(section).and_then(serde_json::Value::as_object) else {
+            continue;
+        };
+        for key in map.keys() {
+            signals.composer_requires.insert(key.to_ascii_lowercase());
+        }
+    }
 }
 
 #[cfg(test)]

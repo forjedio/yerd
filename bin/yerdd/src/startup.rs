@@ -378,78 +378,106 @@ pub(crate) fn scan_sites(
                 });
             }
         };
-        for entry in entries {
-            let Ok(entry) = entry else {
+        for entry in entries.flatten() {
+            let Some(name_lower) = parked_site_name(&entry, &linked_names) else {
                 continue;
             };
-            let file_name = entry.file_name();
-            let Some(name) = file_name.to_str() else {
-                tracing::debug!(
-                    path = %entry.path().display(),
-                    "skipping non-UTF-8 directory name"
-                );
-                continue;
-            };
-            if name.starts_with('.') {
-                continue;
-            }
-            let Ok(metadata) = entry.metadata() else {
-                continue;
-            };
-            if !metadata.is_dir() {
-                continue;
-            }
-            let name_lower = name.to_ascii_lowercase();
-            if linked_names.contains(name_lower.as_str()) {
-                // Linked wins on name collision.
-                continue;
-            }
             // Compute the path once: it's both the site's document_root and the
             // key into `cfg.overrides` (see `mutate::override_key` — both stringify
             // this same `DirEntry::path()` with `to_string_lossy`, so they match).
             let doc_root = entry.path();
-            match Site::parked(&name_lower, &doc_root, default_php) {
-                Ok(mut site) => {
-                    // Re-apply any persisted per-site override, keeping the site
-                    // parked (no promotion to linked). An override for a path with
-                    // no matching child is simply never looked up here (harmless).
-                    let key = doc_root.to_string_lossy().into_owned();
-                    let ov = cfg.overrides.get(&key);
-                    if let Some(ov) = ov {
-                        if let Some(php) = ov.php {
-                            site.set_php(php);
-                        }
-                        if let Some(secure) = ov.secure {
-                            site.set_secure(secure);
-                        }
-                    }
-                    // Web root: a manual `web_root` override pins it; otherwise
-                    // auto-detect. An unresolved auto-detection (no evidence yet)
-                    // serves the root provisionally and is added to the watch set.
-                    if let Some(rel) = ov.and_then(|o| o.web_root.as_deref()) {
-                        site.set_web_subpath(rel);
-                    } else {
-                        let det = detect_cache.detect(&doc_root);
-                        site.set_web_subpath(det.subpath);
-                        if !det.resolved {
-                            watch_roots.push(doc_root.clone());
-                        }
-                    }
-                    parked.push(site);
-                }
-                Err(e) => {
-                    tracing::debug!(
-                        name = %name_lower,
-                        error = %e,
-                        "skipping invalid parked-site name"
-                    );
-                }
+            if let Some(site) = build_parked_site(
+                &name_lower,
+                &doc_root,
+                default_php,
+                cfg,
+                detect_cache,
+                &mut watch_roots,
+            ) {
+                parked.push(site);
             }
         }
     }
 
     parked.extend(cfg.linked.iter().cloned());
     Ok((parked, watch_roots))
+}
+
+/// Filter one parked-directory entry to its lowercased site name, or `None` to
+/// skip it (non-UTF-8, hidden, not a directory, or shadowed by a linked site —
+/// linked wins on a name collision).
+fn parked_site_name(
+    entry: &std::fs::DirEntry,
+    linked_names: &std::collections::HashSet<&str>,
+) -> Option<String> {
+    let file_name = entry.file_name();
+    let Some(name) = file_name.to_str() else {
+        tracing::debug!(
+            path = %entry.path().display(),
+            "skipping non-UTF-8 directory name"
+        );
+        return None;
+    };
+    if name.starts_with('.') {
+        return None;
+    }
+    if !entry.metadata().ok()?.is_dir() {
+        return None;
+    }
+    let name_lower = name.to_ascii_lowercase();
+    if linked_names.contains(name_lower.as_str()) {
+        return None;
+    }
+    Some(name_lower)
+}
+
+/// Build a parked [`Site`] for `doc_root`, re-applying any persisted per-site
+/// override (kept parked — no promotion to linked) and resolving its web root.
+/// A manual `web_root` override pins it; otherwise it auto-detects, and an
+/// unresolved detection serves the root provisionally and pushes `doc_root` onto
+/// `watch_roots`. Returns `None` (logging) for an invalid site name.
+fn build_parked_site(
+    name_lower: &str,
+    doc_root: &std::path::Path,
+    default_php: PhpVersion,
+    cfg: &yerd_config::Config,
+    detect_cache: &DetectCache,
+    watch_roots: &mut Vec<PathBuf>,
+) -> Option<Site> {
+    let mut site = match Site::parked(name_lower, doc_root, default_php) {
+        Ok(site) => site,
+        Err(e) => {
+            tracing::debug!(
+                name = %name_lower,
+                error = %e,
+                "skipping invalid parked-site name"
+            );
+            return None;
+        }
+    };
+
+    let key = doc_root.to_string_lossy().into_owned();
+    let ov = cfg.overrides.get(&key);
+    if let Some(ov) = ov {
+        if let Some(php) = ov.php {
+            site.set_php(php);
+        }
+        if let Some(secure) = ov.secure {
+            site.set_secure(secure);
+        }
+    }
+
+    if let Some(rel) = ov.and_then(|o| o.web_root.as_deref()) {
+        site.set_web_subpath(rel);
+    } else {
+        let det = detect_cache.detect(doc_root);
+        site.set_web_subpath(det.subpath);
+        if !det.resolved {
+            watch_roots.push(doc_root.to_path_buf());
+        }
+    }
+
+    Some(site)
 }
 
 fn into_tokio_listener(

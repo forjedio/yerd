@@ -73,109 +73,132 @@ pub fn apply(
     default_php: PhpVersion,
 ) -> Result<Applied, MutateError> {
     match req {
-        Request::Park { .. } => {
-            let path =
-                canonical.ok_or_else(|| MutateError::Invalid("park requires a path".into()))?;
-            let stored = path.to_string_lossy().into_owned();
-            let added = cfg.parked.paths.insert(stored.clone());
-            Ok(Applied {
-                summary: if added {
-                    format!("parked {stored}")
-                } else {
-                    format!("already parked {stored}")
-                },
-            })
-        }
-        Request::Link { name, .. } => {
-            let path =
-                canonical.ok_or_else(|| MutateError::Invalid("link requires a path".into()))?;
-            // `Site::linked` validates and lowercases the name.
-            let site = Site::linked(name, path, default_php)
-                .map_err(|e| MutateError::Invalid(format!("invalid site name: {e}")))?;
-            let name_lc = site.name().to_owned();
-            if cfg.linked.iter().any(|s| s.name() == name_lc) {
-                return Err(MutateError::AlreadyExists(format!(
-                    "site already linked: {name_lc}"
-                )));
-            }
-            cfg.linked.push(site);
-            Ok(Applied {
-                summary: format!("linked {name_lc}"),
-            })
-        }
-        Request::Unpark { path } => {
-            // Operates on the request `path` verbatim (not `canonical`): parked
-            // roots are stored as the canonical String produced at park time, so
-            // an exact `remove` is an identity match. Deliberately *not*
-            // canonicalised by the I/O wrapper, so a root deleted from disk is
-            // still removable. Idempotent — absent path is a successful no-op,
-            // mirroring `Park`'s insert.
-            let removed = cfg.parked.paths.remove(path);
-            Ok(Applied {
-                summary: if removed {
-                    format!("un-parked {path}")
-                } else {
-                    format!("{path} was not parked")
-                },
-            })
-        }
-        Request::Unlink { name } => {
-            let name_lc = name.to_ascii_lowercase();
-            if cfg.linked.iter().any(|s| s.name() == name_lc) {
-                cfg.linked.retain(|s| s.name() != name_lc);
-                Ok(Applied {
-                    summary: format!("unlinked {name_lc}"),
-                })
-            } else if router.get(&name_lc).is_some() {
-                Err(MutateError::NotFound(format!(
-                    "{name_lc} is a parked site, not linked — unpark its directory instead"
-                )))
-            } else {
-                Err(MutateError::NotFound(format!("no site named {name_lc}")))
-            }
-        }
-        Request::SetPhp { name, version } => {
-            let name_lc = name.to_ascii_lowercase();
-            if let Some(site) = cfg.linked.iter_mut().find(|s| s.name() == name_lc) {
-                site.set_php(*version);
-                Ok(Applied {
-                    summary: format!("{name_lc} now uses PHP {version}"),
-                })
-            } else if let Some(parked) = router.get(&name_lc) {
-                // Parked site: record the override keyed by its document_root,
-                // leaving it parked. `scan_sites` re-applies the override on the
-                // next build, so it survives without flipping the site to linked.
-                // `.entry().or_default()` (never `.insert()`) preserves a
-                // co-existing `secure` override on the same path.
-                let key = override_key(parked);
-                cfg.overrides.entry(key).or_default().php = Some(*version);
-                Ok(Applied {
-                    summary: format!("{name_lc} now uses PHP {version}"),
-                })
-            } else {
-                Err(MutateError::NotFound(format!("no site named {name_lc}")))
-            }
-        }
-        Request::SetSecure { name, secure } => {
-            let name_lc = name.to_ascii_lowercase();
-            if let Some(site) = cfg.linked.iter_mut().find(|s| s.name() == name_lc) {
-                site.set_secure(*secure);
-                Ok(Applied {
-                    summary: format!("{name_lc} secure={secure}"),
-                })
-            } else if let Some(parked) = router.get(&name_lc) {
-                // Parked site: record the override keyed by its document_root
-                // (same as `SetPhp`), preserving a co-existing `php` override.
-                let key = override_key(parked);
-                cfg.overrides.entry(key).or_default().secure = Some(*secure);
-                Ok(Applied {
-                    summary: format!("{name_lc} secure={secure}"),
-                })
-            } else {
-                Err(MutateError::NotFound(format!("no site named {name_lc}")))
-            }
-        }
+        Request::Park { .. } => apply_park(cfg, canonical),
+        Request::Link { name, .. } => apply_link(cfg, name, canonical, default_php),
+        Request::Unpark { path } => Ok(apply_unpark(cfg, path)),
+        Request::Unlink { name } => apply_unlink(cfg, router, name),
+        Request::SetPhp { name, version } => apply_set_php(cfg, router, name, *version),
+        Request::SetSecure { name, secure } => apply_set_secure(cfg, router, name, *secure),
         _ => Err(MutateError::Invalid("unsupported request".into())),
+    }
+}
+
+fn apply_park(cfg: &mut Config, canonical: Option<PathBuf>) -> Result<Applied, MutateError> {
+    let path = canonical.ok_or_else(|| MutateError::Invalid("park requires a path".into()))?;
+    let stored = path.to_string_lossy().into_owned();
+    let added = cfg.parked.paths.insert(stored.clone());
+    Ok(Applied {
+        summary: if added {
+            format!("parked {stored}")
+        } else {
+            format!("already parked {stored}")
+        },
+    })
+}
+
+fn apply_link(
+    cfg: &mut Config,
+    name: &str,
+    canonical: Option<PathBuf>,
+    default_php: PhpVersion,
+) -> Result<Applied, MutateError> {
+    let path = canonical.ok_or_else(|| MutateError::Invalid("link requires a path".into()))?;
+    // `Site::linked` validates and lowercases the name.
+    let site = Site::linked(name, path, default_php)
+        .map_err(|e| MutateError::Invalid(format!("invalid site name: {e}")))?;
+    let name_lc = site.name().to_owned();
+    if cfg.linked.iter().any(|s| s.name() == name_lc) {
+        return Err(MutateError::AlreadyExists(format!(
+            "site already linked: {name_lc}"
+        )));
+    }
+    cfg.linked.push(site);
+    Ok(Applied {
+        summary: format!("linked {name_lc}"),
+    })
+}
+
+/// Operates on the request `path` verbatim (not `canonical`): parked roots are
+/// stored as the canonical String produced at park time, so an exact `remove` is
+/// an identity match. Deliberately *not* canonicalised by the I/O wrapper, so a
+/// root deleted from disk is still removable. Idempotent — an absent path is a
+/// successful no-op, mirroring `Park`'s insert.
+fn apply_unpark(cfg: &mut Config, path: &str) -> Applied {
+    let removed = cfg.parked.paths.remove(path);
+    Applied {
+        summary: if removed {
+            format!("un-parked {path}")
+        } else {
+            format!("{path} was not parked")
+        },
+    }
+}
+
+fn apply_unlink(cfg: &mut Config, router: &SiteRouter, name: &str) -> Result<Applied, MutateError> {
+    let name_lc = name.to_ascii_lowercase();
+    if cfg.linked.iter().any(|s| s.name() == name_lc) {
+        cfg.linked.retain(|s| s.name() != name_lc);
+        Ok(Applied {
+            summary: format!("unlinked {name_lc}"),
+        })
+    } else if router.get(&name_lc).is_some() {
+        Err(MutateError::NotFound(format!(
+            "{name_lc} is a parked site, not linked — unpark its directory instead"
+        )))
+    } else {
+        Err(MutateError::NotFound(format!("no site named {name_lc}")))
+    }
+}
+
+fn apply_set_php(
+    cfg: &mut Config,
+    router: &SiteRouter,
+    name: &str,
+    version: PhpVersion,
+) -> Result<Applied, MutateError> {
+    let name_lc = name.to_ascii_lowercase();
+    if let Some(site) = cfg.linked.iter_mut().find(|s| s.name() == name_lc) {
+        site.set_php(version);
+        Ok(Applied {
+            summary: format!("{name_lc} now uses PHP {version}"),
+        })
+    } else if let Some(parked) = router.get(&name_lc) {
+        // Parked site: record the override keyed by its document_root, leaving it
+        // parked. `scan_sites` re-applies the override on the next build, so it
+        // survives without flipping the site to linked. `.entry().or_default()`
+        // (never `.insert()`) preserves a co-existing `secure` override.
+        let key = override_key(parked);
+        cfg.overrides.entry(key).or_default().php = Some(version);
+        Ok(Applied {
+            summary: format!("{name_lc} now uses PHP {version}"),
+        })
+    } else {
+        Err(MutateError::NotFound(format!("no site named {name_lc}")))
+    }
+}
+
+fn apply_set_secure(
+    cfg: &mut Config,
+    router: &SiteRouter,
+    name: &str,
+    secure: bool,
+) -> Result<Applied, MutateError> {
+    let name_lc = name.to_ascii_lowercase();
+    if let Some(site) = cfg.linked.iter_mut().find(|s| s.name() == name_lc) {
+        site.set_secure(secure);
+        Ok(Applied {
+            summary: format!("{name_lc} secure={secure}"),
+        })
+    } else if let Some(parked) = router.get(&name_lc) {
+        // Parked site: record the override keyed by its document_root (same as
+        // `SetPhp`), preserving a co-existing `php` override.
+        let key = override_key(parked);
+        cfg.overrides.entry(key).or_default().secure = Some(secure);
+        Ok(Applied {
+            summary: format!("{name_lc} secure={secure}"),
+        })
+    } else {
+        Err(MutateError::NotFound(format!("no site named {name_lc}")))
     }
 }
 

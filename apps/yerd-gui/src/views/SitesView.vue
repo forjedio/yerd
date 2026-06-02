@@ -537,10 +537,11 @@ onMounted(load);
     <Modal v-model:open="editOpen" :title="`Edit ${editTarget?.name ?? ''}`">
       <div class="space-y-4">
         <div>
-          <label class="text-sm font-medium">PHP version</label>
+          <label for="edit-php-version" class="text-sm font-medium">PHP version</label>
           <div class="mt-2">
             <Select
               v-if="phpOptions"
+              id="edit-php-version"
               :model-value="editPhp"
               :options="phpOptions"
               class="w-full"

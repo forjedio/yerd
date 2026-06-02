@@ -190,7 +190,6 @@ where
     /// still alive, returns the cached listen address immediately. Else
     /// plans an address, renders the config, spawns FPM, and waits for
     /// a healthy probe before returning.
-    #[allow(clippy::too_many_lines)] // linear: plan → prepare dirs → render → drive
     pub async fn ensure(&mut self, v: PhpVersion) -> Result<Listen, PhpError> {
         let binary = self
             .binaries
@@ -199,46 +198,12 @@ where
             .ok_or(PhpError::VersionNotInstalled { version: v })?;
 
         // Fast path: already Running and child still alive.
-        if let Some(pool) = self.pools.get_mut(&v) {
-            if matches!(pool.state, PoolState::Running { .. }) {
-                let still_alive = match pool.child.as_mut() {
-                    Some(ch) => ch
-                        .try_wait()
-                        .map_err(|source| PhpError::Spawn {
-                            version: v,
-                            reason: SpawnFailureReason::WaitFailed,
-                            source,
-                        })?
-                        .is_none(),
-                    None => false,
-                };
-                if still_alive {
-                    return Ok(pool.cfg.listen.clone());
-                }
-            }
+        if let Some(listen) = self.running_listen(v)? {
+            return Ok(listen);
         }
 
         // Plan listen address with retry (Windows port-pair race).
-        let mut last_err: Option<PhpError> = None;
-        let mut planned: Option<AllocatedListen> = None;
-        for _ in 0..MAX_BIND_ATTEMPTS {
-            match AllocatedListen::plan(v, &self.dirs, self.instance_id, &self.binder) {
-                Ok(p) => {
-                    planned = Some(p);
-                    break;
-                }
-                Err(e) => last_err = Some(e),
-            }
-        }
-        let listen = planned
-            .ok_or_else(|| {
-                last_err.unwrap_or(PhpError::Bind {
-                    source: yerd_platform::PlatformError::Unsupported {
-                        operation: "AllocatedListen::plan",
-                    },
-                })
-            })?
-            .listen;
+        let listen = self.plan_listen(v)?;
 
         // Clean any stale Unix socket file.
         if let Listen::UnixSocket(ref path) = listen {
@@ -312,6 +277,46 @@ where
                 })
             }
         }
+    }
+
+    /// Fast path for [`Self::ensure`]: if pool `v` is `Running` with a still-live
+    /// child, return its cached listen address; otherwise `None`.
+    fn running_listen(&mut self, v: PhpVersion) -> Result<Option<Listen>, PhpError> {
+        let Some(pool) = self.pools.get_mut(&v) else {
+            return Ok(None);
+        };
+        if !matches!(pool.state, PoolState::Running { .. }) {
+            return Ok(None);
+        }
+        let still_alive = match pool.child.as_mut() {
+            Some(ch) => ch
+                .try_wait()
+                .map_err(|source| PhpError::Spawn {
+                    version: v,
+                    reason: SpawnFailureReason::WaitFailed,
+                    source,
+                })?
+                .is_none(),
+            None => false,
+        };
+        Ok(still_alive.then(|| pool.cfg.listen.clone()))
+    }
+
+    /// Plan a listen address, retrying up to `MAX_BIND_ATTEMPTS` to absorb the
+    /// Windows port-pair race.
+    fn plan_listen(&self, v: PhpVersion) -> Result<Listen, PhpError> {
+        let mut last_err: Option<PhpError> = None;
+        for _ in 0..MAX_BIND_ATTEMPTS {
+            match AllocatedListen::plan(v, &self.dirs, self.instance_id, &self.binder) {
+                Ok(p) => return Ok(p.listen),
+                Err(e) => last_err = Some(e),
+            }
+        }
+        Err(last_err.unwrap_or(PhpError::Bind {
+            source: yerd_platform::PlatformError::Unsupported {
+                operation: "AllocatedListen::plan",
+            },
+        }))
     }
 
     /// Restart the pool: stop it cleanly, then `ensure` again.
@@ -399,7 +404,7 @@ where
 
     /// Pump the pure state machine to a terminal state, doing the I/O
     /// each `Action` requires.
-    #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+    #[allow(clippy::too_many_arguments)]
     async fn drive(
         &mut self,
         v: PhpVersion,
@@ -419,108 +424,16 @@ where
             }
 
             match action {
-                Action::None => match state {
-                    PoolState::Running { pid } => {
-                        // `child` is the local from the most recent Spawn.
-                        let ch = child.take().ok_or_else(|| PhpError::Spawn {
-                            version: v,
-                            reason: SpawnFailureReason::Other,
-                            source: io::Error::other("drive: Running with no child handle"),
-                        })?;
-                        return Ok(DriveResult {
-                            outcome: Outcome::Running { child: ch, pid },
-                            state_since,
-                        });
-                    }
-                    PoolState::Stopped => {
-                        return Ok(DriveResult {
-                            outcome: Outcome::Stopped,
-                            state_since,
-                        });
-                    }
-                    other => {
-                        // Driver invariant violation — see module docs.
-                        #[allow(clippy::panic)]
-                        {
-                            panic!(
-                                "supervisor: Action::None in non-terminal state {other:?}; \
-                                 driver invariant violated"
-                            );
-                        }
-                    }
-                },
+                Action::None => {
+                    return Self::finish_terminal(state, &mut child, v, state_since);
+                }
 
                 Action::Spawn => {
-                    let builder = cmd_builder.ok_or_else(|| PhpError::Spawn {
-                        version: v,
-                        reason: SpawnFailureReason::Other,
-                        source: io::Error::other(
-                            "drive: Spawn without cmd_builder (entry point bug)",
-                        ),
-                    })?;
-                    let cmd = builder();
-                    match self.spawner.spawn(cmd) {
-                        Ok(ch) => {
-                            let pid = ch.id();
-                            child = Some(ch);
-                            pending = Event::SpawnSucceeded { pid };
-                        }
-                        Err(source) => {
-                            return Err(PhpError::Spawn {
-                                version: v,
-                                reason: SpawnFailureReason::from_kind(source.kind()),
-                                source,
-                            });
-                        }
-                    }
+                    pending = self.spawn_child(v, cmd_builder, &mut child)?;
                 }
 
                 Action::HealthCheck => {
-                    // Cadence floor: skip the gap on the very first probe
-                    // of a Starting window (when elapsed is essentially 0)
-                    // but sleep on every subsequent retry so connection-refused
-                    // failures don't hot-spin.
-                    let elapsed_now = self.clock.now().saturating_duration_since(state_since);
-                    if elapsed_now > Duration::from_millis(0) {
-                        tokio::time::sleep(HEALTH_PROBE_GAP).await;
-                    }
-
-                    let ch = child.as_mut().ok_or_else(|| PhpError::Spawn {
-                        version: v,
-                        reason: SpawnFailureReason::Other,
-                        source: io::Error::other("HealthCheck with no child handle"),
-                    })?;
-
-                    let probe_fut =
-                        tokio::time::timeout(HEALTH_PROBE_TIMEOUT, self.probe.probe(&cfg.listen));
-                    let probe_outcome;
-                    let wait_outcome;
-                    tokio::select! {
-                        probe = probe_fut => { probe_outcome = Some(probe); wait_outcome = None; }
-                        exit = ch.wait() => { probe_outcome = None; wait_outcome = Some(exit); }
-                    }
-
-                    if let Some(p) = probe_outcome {
-                        if matches!(p, Ok(Ok(()))) {
-                            pending = Event::HealthCheckOk;
-                        } else {
-                            // Compute elapsed AFTER the probe finished, so
-                            // probe duration counts against the window.
-                            let elapsed =
-                                Elapsed(self.clock.now().saturating_duration_since(state_since));
-                            pending = Event::HealthCheckTick {
-                                elapsed_since_starting: elapsed,
-                            };
-                        }
-                    } else if let Some(exit) = wait_outcome {
-                        let reason = exit.map_err(|source| PhpError::Spawn {
-                            version: v,
-                            reason: SpawnFailureReason::WaitFailed,
-                            source,
-                        })?;
-                        child = None;
-                        pending = Event::Crashed { reason };
-                    }
+                    pending = self.health_check(v, cfg, state_since, &mut child).await?;
                 }
 
                 Action::Backoff { wait } => {
@@ -550,6 +463,130 @@ where
                     return Err(PhpError::PermanentFailure { version: v, reason });
                 }
             }
+        }
+    }
+
+    /// Handle `Action::None`: a terminal state yields a [`DriveResult`]; any
+    /// other state is a driver-invariant violation (see module docs) and panics.
+    fn finish_terminal(
+        state: PoolState,
+        child: &mut Option<S::Child>,
+        v: PhpVersion,
+        state_since: Instant,
+    ) -> Result<DriveResult<S::Child>, PhpError> {
+        match state {
+            PoolState::Running { pid } => {
+                // `child` is the local from the most recent Spawn.
+                let ch = child.take().ok_or_else(|| PhpError::Spawn {
+                    version: v,
+                    reason: SpawnFailureReason::Other,
+                    source: io::Error::other("drive: Running with no child handle"),
+                })?;
+                Ok(DriveResult {
+                    outcome: Outcome::Running { child: ch, pid },
+                    state_since,
+                })
+            }
+            PoolState::Stopped => Ok(DriveResult {
+                outcome: Outcome::Stopped,
+                state_since,
+            }),
+            other => {
+                #[allow(clippy::panic)]
+                {
+                    panic!(
+                        "supervisor: Action::None in non-terminal state {other:?}; \
+                         driver invariant violated"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Handle `Action::Spawn`: build + spawn the command, record the child, and
+    /// return the follow-up event.
+    fn spawn_child(
+        &mut self,
+        v: PhpVersion,
+        cmd_builder: Option<&(dyn Fn() -> StdCommand + Sync)>,
+        child: &mut Option<S::Child>,
+    ) -> Result<Event, PhpError> {
+        let builder = cmd_builder.ok_or_else(|| PhpError::Spawn {
+            version: v,
+            reason: SpawnFailureReason::Other,
+            source: io::Error::other("drive: Spawn without cmd_builder (entry point bug)"),
+        })?;
+        let cmd = builder();
+        match self.spawner.spawn(cmd) {
+            Ok(ch) => {
+                let pid = ch.id();
+                *child = Some(ch);
+                Ok(Event::SpawnSucceeded { pid })
+            }
+            Err(source) => Err(PhpError::Spawn {
+                version: v,
+                reason: SpawnFailureReason::from_kind(source.kind()),
+                source,
+            }),
+        }
+    }
+
+    /// Handle `Action::HealthCheck`: probe readiness, racing the child's exit,
+    /// and return the follow-up event. The cadence floor skips the gap on the
+    /// first probe of a `Starting` window but sleeps on every retry so
+    /// connection-refused failures don't hot-spin.
+    async fn health_check(
+        &mut self,
+        v: PhpVersion,
+        cfg: &PoolConfig,
+        state_since: Instant,
+        child: &mut Option<S::Child>,
+    ) -> Result<Event, PhpError> {
+        let elapsed_now = self.clock.now().saturating_duration_since(state_since);
+        if elapsed_now > Duration::from_millis(0) {
+            tokio::time::sleep(HEALTH_PROBE_GAP).await;
+        }
+
+        let ch = child.as_mut().ok_or_else(|| PhpError::Spawn {
+            version: v,
+            reason: SpawnFailureReason::Other,
+            source: io::Error::other("HealthCheck with no child handle"),
+        })?;
+
+        let probe_fut = tokio::time::timeout(HEALTH_PROBE_TIMEOUT, self.probe.probe(&cfg.listen));
+        let probe_outcome;
+        let wait_outcome;
+        tokio::select! {
+            probe = probe_fut => { probe_outcome = Some(probe); wait_outcome = None; }
+            exit = ch.wait() => { probe_outcome = None; wait_outcome = Some(exit); }
+        }
+
+        if let Some(p) = probe_outcome {
+            if matches!(p, Ok(Ok(()))) {
+                Ok(Event::HealthCheckOk)
+            } else {
+                // Compute elapsed AFTER the probe finished, so probe duration
+                // counts against the window.
+                let elapsed = Elapsed(self.clock.now().saturating_duration_since(state_since));
+                Ok(Event::HealthCheckTick {
+                    elapsed_since_starting: elapsed,
+                })
+            }
+        } else if let Some(exit) = wait_outcome {
+            let reason = exit.map_err(|source| PhpError::Spawn {
+                version: v,
+                reason: SpawnFailureReason::WaitFailed,
+                source,
+            })?;
+            *child = None;
+            Ok(Event::Crashed { reason })
+        } else {
+            // Unreachable: `tokio::select!` resolves exactly one branch.
+            Err(PhpError::Spawn {
+                version: v,
+                reason: SpawnFailureReason::Other,
+                source: io::Error::other("HealthCheck: select resolved neither arm"),
+            })
         }
     }
 }

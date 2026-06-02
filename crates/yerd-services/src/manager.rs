@@ -136,7 +136,6 @@ where
     /// listen address. Idempotent: if already running and alive, returns the
     /// cached address. For an engine that needs it, the datadir is initialised
     /// on first start.
-    #[allow(clippy::too_many_lines)] // linear setup: init → preflight → render → drive
     pub async fn ensure(
         &mut self,
         service: Service,
@@ -150,100 +149,29 @@ where
 
         // Fast path: already Running and the child is still alive. Checked
         // before any datadir work so a running engine is never re-initialised.
-        if let Some(inst) = self.instances.get_mut(&service) {
-            if matches!(inst.state, PoolState::Running { .. }) {
-                let alive = match inst.child.as_mut() {
-                    Some(ch) => ch
-                        .try_wait()
-                        .map_err(|source| ServiceError::Spawn {
-                            service,
-                            reason: SpawnFailureReason::WaitFailed,
-                            source,
-                        })?
-                        .is_none(),
-                    None => false,
-                };
-                if alive {
-                    return Ok(inst.listen.clone());
-                }
-            }
+        if let Some(listen) = self.running_listen(service)? {
+            return Ok(listen);
         }
 
         // Resolve the on-disk layout up front; init and config rendering need it.
         let datadir = version::datadir(&self.dirs, service, &version);
         let config_path = version::config_path(&self.dirs, service);
         let log_path = version::log_path(&self.dirs, service);
+        let socket = version::socket_path(&self.dirs, service);
 
-        // One-time datadir initialisation for the SQL engines. This MUST run
-        // before the `create_dir_all(&datadir)` below: `initdb` /
-        // `mysqld --initialize-insecure` populate the datadir themselves (via a
-        // crash-safe staging + rename) and refuse a pre-existing one.
-        if service.needs_init() {
-            if is_initialized(&datadir, service) {
-                // Defence in depth: never point a new major at an incompatible
-                // on-disk datadir (the per-major path already avoids this for PG).
-                if service == Service::Postgres {
-                    check_pg_major(&datadir, &version)?;
-                }
-            } else {
-                // The init log redirect + staging sibling need the log parent.
-                if let Some(parent) = log_path.parent() {
-                    std::fs::create_dir_all(parent).map_err(|source| {
-                        ServiceError::ConfigWrite {
-                            path: parent.to_path_buf(),
-                            service,
-                            source,
-                        }
-                    })?;
-                }
-                self.init_datadir(service, &version, &datadir, &log_path)
-                    .await?;
-            }
-        }
+        // One-time datadir initialisation for the SQL engines (no-op otherwise).
+        self.init_datadir_if_needed(service, &version, &datadir, &log_path)
+            .await?;
 
         // Fixed loopback port; pre-flight for conflicts.
         self.preflight_port(service, port)?;
         let listen = Listen::TcpLoopback(SocketAddr::new(Ipv4Addr::LOCALHOST.into(), port));
 
-        // Datadir + config/log parents. The datadir create is now idempotent —
-        // init already populated it for SQL engines; this is the real creator
-        // for Redis (no init).
-        std::fs::create_dir_all(&datadir).map_err(|source| ServiceError::Init {
-            service,
-            datadir: datadir.clone(),
-            detail: source.to_string(),
-        })?;
-        for path in [&config_path, &log_path] {
-            if let Some(parent) = path.parent() {
-                std::fs::create_dir_all(parent).map_err(|source| ServiceError::ConfigWrite {
-                    path: parent.to_path_buf(),
-                    service,
-                    source,
-                })?;
-            }
-        }
-
-        // The MySQL/MariaDB Unix socket lives under the (short) runtime dir; its
-        // parent must exist before the server creates the socket there.
-        let socket = version::socket_path(&self.dirs, service);
-        if matches!(service, Service::MySql | Service::MariaDb) {
-            if let Some(parent) = socket.parent() {
-                std::fs::create_dir_all(parent).map_err(|source| ServiceError::ConfigWrite {
-                    path: parent.to_path_buf(),
-                    service,
-                    source,
-                })?;
-            }
-        }
+        // Datadir + config/log (+ MySQL/MariaDB socket) parent directories.
+        Self::prepare_dirs(service, &datadir, &config_path, &log_path, &socket)?;
 
         // Render + write the per-engine config.
-        let rendered = match service {
-            Service::Redis => config_render::render_redis_conf(port, &datadir, &log_path),
-            Service::MySql | Service::MariaDb => {
-                config_render::render_my_cnf(port, &datadir, &socket, &log_path)
-            }
-            Service::Postgres => config_render::render_postgresql_conf(port, &datadir),
-        };
+        let rendered = render_service_config(service, port, &datadir, &socket, &log_path);
         std::fs::write(&config_path, rendered.as_bytes()).map_err(|source| {
             ServiceError::ConfigWrite {
                 path: config_path.clone(),
@@ -287,6 +215,96 @@ where
                 source: std::io::Error::other("ensure: drive returned Stopped"),
             }),
         }
+    }
+
+    /// Fast path for [`Self::ensure`]: if `service` is recorded `Running` and its
+    /// child is still alive, return its listen address; otherwise `None`.
+    fn running_listen(&mut self, service: Service) -> Result<Option<Listen>, ServiceError> {
+        let Some(inst) = self.instances.get_mut(&service) else {
+            return Ok(None);
+        };
+        if !matches!(inst.state, PoolState::Running { .. }) {
+            return Ok(None);
+        }
+        let alive = match inst.child.as_mut() {
+            Some(ch) => ch
+                .try_wait()
+                .map_err(|source| ServiceError::Spawn {
+                    service,
+                    reason: SpawnFailureReason::WaitFailed,
+                    source,
+                })?
+                .is_none(),
+            None => false,
+        };
+        Ok(alive.then(|| inst.listen.clone()))
+    }
+
+    /// One-time datadir initialisation for the SQL engines (no-op for Redis and
+    /// for an already-initialised datadir). MUST run before the
+    /// `create_dir_all(datadir)` in [`Self::prepare_dirs`]: `initdb` /
+    /// `mysqld --initialize-insecure` populate the datadir themselves (via a
+    /// crash-safe staging + rename) and refuse a pre-existing one.
+    async fn init_datadir_if_needed(
+        &mut self,
+        service: Service,
+        version: &ServiceVersion,
+        datadir: &std::path::Path,
+        log_path: &std::path::Path,
+    ) -> Result<(), ServiceError> {
+        if !service.needs_init() {
+            return Ok(());
+        }
+        if is_initialized(datadir, service) {
+            // Defence in depth: never point a new major at an incompatible
+            // on-disk datadir (the per-major path already avoids this for PG).
+            if service == Service::Postgres {
+                check_pg_major(datadir, version)?;
+            }
+            return Ok(());
+        }
+        // The init log redirect + staging sibling need the log parent.
+        if let Some(parent) = log_path.parent() {
+            std::fs::create_dir_all(parent).map_err(|source| ServiceError::ConfigWrite {
+                path: parent.to_path_buf(),
+                service,
+                source,
+            })?;
+        }
+        self.init_datadir(service, version, datadir, log_path).await
+    }
+
+    /// Create the datadir plus the config/log (and, for MySQL/MariaDB, the Unix
+    /// socket) parent directories. The datadir create is idempotent — SQL `init`
+    /// already populated it; this is the real creator for Redis (no init).
+    fn prepare_dirs(
+        service: Service,
+        datadir: &std::path::Path,
+        config_path: &std::path::Path,
+        log_path: &std::path::Path,
+        socket: &std::path::Path,
+    ) -> Result<(), ServiceError> {
+        std::fs::create_dir_all(datadir).map_err(|source| ServiceError::Init {
+            service,
+            datadir: datadir.to_path_buf(),
+            detail: source.to_string(),
+        })?;
+        // The MySQL/MariaDB socket lives under the (short) runtime dir; its
+        // parent must exist before the server creates the socket there.
+        let mut parents = vec![config_path, log_path];
+        if matches!(service, Service::MySql | Service::MariaDb) {
+            parents.push(socket);
+        }
+        for path in parents {
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent).map_err(|source| ServiceError::ConfigWrite {
+                    path: parent.to_path_buf(),
+                    service,
+                    source,
+                })?;
+            }
+        }
+        Ok(())
     }
 
     /// Restart the instance: stop it cleanly, then ensure again.
@@ -528,7 +546,7 @@ where
 
     /// Pump the pure state machine to a terminal state, doing the I/O each
     /// `Action` requires. Mirrors `yerd_php::PhpManager::drive`.
-    #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+    #[allow(clippy::too_many_arguments)]
     async fn drive(
         &mut self,
         service: Service,
@@ -548,102 +566,18 @@ where
             }
 
             match action {
-                Action::None => match state {
-                    PoolState::Running { pid } => {
-                        let ch = child.take().ok_or_else(|| ServiceError::Spawn {
-                            service,
-                            reason: SpawnFailureReason::Other,
-                            source: std::io::Error::other("drive: Running with no child handle"),
-                        })?;
-                        return Ok(DriveResult {
-                            outcome: Outcome::Running { child: ch, pid },
-                            state_since,
-                        });
-                    }
-                    PoolState::Stopped => {
-                        return Ok(DriveResult {
-                            outcome: Outcome::Stopped,
-                            state_since,
-                        });
-                    }
-                    other => {
-                        // Driver invariant: the driver never feeds an event that
-                        // produces `Action::None` in a non-terminal state. This
-                        // is the same contract as `PhpManager::drive`.
-                        return Err(ServiceError::Spawn {
-                            service,
-                            reason: SpawnFailureReason::Other,
-                            source: std::io::Error::other(format!(
-                                "drive: Action::None in non-terminal state {other:?}"
-                            )),
-                        });
-                    }
-                },
+                Action::None => {
+                    return Self::finish_terminal(state, &mut child, service, state_since);
+                }
 
                 Action::Spawn => {
-                    let builder = cmd_builder.ok_or_else(|| ServiceError::Spawn {
-                        service,
-                        reason: SpawnFailureReason::Other,
-                        source: std::io::Error::other("drive: Spawn without cmd_builder"),
-                    })?;
-                    let cmd = builder()?;
-                    match self.spawner.spawn(cmd) {
-                        Ok(ch) => {
-                            let pid = ch.id();
-                            child = Some(ch);
-                            pending = Event::SpawnSucceeded { pid };
-                        }
-                        Err(source) => {
-                            return Err(ServiceError::Spawn {
-                                service,
-                                reason: SpawnFailureReason::from_kind(source.kind()),
-                                source,
-                            });
-                        }
-                    }
+                    pending = self.spawn_child(service, cmd_builder, &mut child)?;
                 }
 
                 Action::HealthCheck => {
-                    let elapsed_now = self.clock.now().saturating_duration_since(state_since);
-                    if elapsed_now > Duration::from_millis(0) {
-                        tokio::time::sleep(HEALTH_PROBE_GAP).await;
-                    }
-                    let ch = child.as_mut().ok_or_else(|| ServiceError::Spawn {
-                        service,
-                        reason: SpawnFailureReason::Other,
-                        source: std::io::Error::other("HealthCheck with no child handle"),
-                    })?;
-
-                    let probe_fut = tokio::time::timeout(
-                        HEALTH_PROBE_TIMEOUT,
-                        self.probe.probe(service, listen),
-                    );
-                    let probe_outcome;
-                    let wait_outcome;
-                    tokio::select! {
-                        probe = probe_fut => { probe_outcome = Some(probe); wait_outcome = None; }
-                        exit = ch.wait() => { probe_outcome = None; wait_outcome = Some(exit); }
-                    }
-
-                    if let Some(p) = probe_outcome {
-                        if matches!(p, Ok(Ok(()))) {
-                            pending = Event::HealthCheckOk;
-                        } else {
-                            let elapsed =
-                                Elapsed(self.clock.now().saturating_duration_since(state_since));
-                            pending = Event::HealthCheckTick {
-                                elapsed_since_starting: elapsed,
-                            };
-                        }
-                    } else if let Some(exit) = wait_outcome {
-                        let reason = exit.map_err(|source| ServiceError::Spawn {
-                            service,
-                            reason: SpawnFailureReason::WaitFailed,
-                            source,
-                        })?;
-                        child = None;
-                        pending = Event::Crashed { reason };
-                    }
+                    pending = self
+                        .health_check(service, listen, state_since, &mut child)
+                        .await?;
                 }
 
                 Action::Backoff { wait } => {
@@ -676,6 +610,141 @@ where
                 }
             }
         }
+    }
+
+    /// Handle `Action::None`: a terminal state yields a [`DriveResult`]; any
+    /// other state is a driver-contract violation (the driver never feeds an
+    /// event that produces `Action::None` in a non-terminal state).
+    fn finish_terminal(
+        state: PoolState,
+        child: &mut Option<S::Child>,
+        service: Service,
+        state_since: Instant,
+    ) -> Result<DriveResult<S::Child>, ServiceError> {
+        match state {
+            PoolState::Running { pid } => {
+                let ch = child.take().ok_or_else(|| ServiceError::Spawn {
+                    service,
+                    reason: SpawnFailureReason::Other,
+                    source: std::io::Error::other("drive: Running with no child handle"),
+                })?;
+                Ok(DriveResult {
+                    outcome: Outcome::Running { child: ch, pid },
+                    state_since,
+                })
+            }
+            PoolState::Stopped => Ok(DriveResult {
+                outcome: Outcome::Stopped,
+                state_since,
+            }),
+            other => Err(ServiceError::Spawn {
+                service,
+                reason: SpawnFailureReason::Other,
+                source: std::io::Error::other(format!(
+                    "drive: Action::None in non-terminal state {other:?}"
+                )),
+            }),
+        }
+    }
+
+    /// Handle `Action::Spawn`: build + spawn the command, record the child, and
+    /// return the follow-up event.
+    fn spawn_child(
+        &mut self,
+        service: Service,
+        cmd_builder: Option<&(dyn Fn() -> Result<StdCommand, ServiceError> + Sync)>,
+        child: &mut Option<S::Child>,
+    ) -> Result<Event, ServiceError> {
+        let builder = cmd_builder.ok_or_else(|| ServiceError::Spawn {
+            service,
+            reason: SpawnFailureReason::Other,
+            source: std::io::Error::other("drive: Spawn without cmd_builder"),
+        })?;
+        let cmd = builder()?;
+        match self.spawner.spawn(cmd) {
+            Ok(ch) => {
+                let pid = ch.id();
+                *child = Some(ch);
+                Ok(Event::SpawnSucceeded { pid })
+            }
+            Err(source) => Err(ServiceError::Spawn {
+                service,
+                reason: SpawnFailureReason::from_kind(source.kind()),
+                source,
+            }),
+        }
+    }
+
+    /// Handle `Action::HealthCheck`: probe readiness, racing the child's exit,
+    /// and return the follow-up event.
+    async fn health_check(
+        &mut self,
+        service: Service,
+        listen: &Listen,
+        state_since: Instant,
+        child: &mut Option<S::Child>,
+    ) -> Result<Event, ServiceError> {
+        let elapsed_now = self.clock.now().saturating_duration_since(state_since);
+        if elapsed_now > Duration::from_millis(0) {
+            tokio::time::sleep(HEALTH_PROBE_GAP).await;
+        }
+        let ch = child.as_mut().ok_or_else(|| ServiceError::Spawn {
+            service,
+            reason: SpawnFailureReason::Other,
+            source: std::io::Error::other("HealthCheck with no child handle"),
+        })?;
+
+        let probe_fut =
+            tokio::time::timeout(HEALTH_PROBE_TIMEOUT, self.probe.probe(service, listen));
+        let probe_outcome;
+        let wait_outcome;
+        tokio::select! {
+            probe = probe_fut => { probe_outcome = Some(probe); wait_outcome = None; }
+            exit = ch.wait() => { probe_outcome = None; wait_outcome = Some(exit); }
+        }
+
+        if let Some(p) = probe_outcome {
+            if matches!(p, Ok(Ok(()))) {
+                Ok(Event::HealthCheckOk)
+            } else {
+                let elapsed = Elapsed(self.clock.now().saturating_duration_since(state_since));
+                Ok(Event::HealthCheckTick {
+                    elapsed_since_starting: elapsed,
+                })
+            }
+        } else if let Some(exit) = wait_outcome {
+            let reason = exit.map_err(|source| ServiceError::Spawn {
+                service,
+                reason: SpawnFailureReason::WaitFailed,
+                source,
+            })?;
+            *child = None;
+            Ok(Event::Crashed { reason })
+        } else {
+            // Unreachable: `tokio::select!` resolves exactly one branch.
+            Err(ServiceError::Spawn {
+                service,
+                reason: SpawnFailureReason::Other,
+                source: std::io::Error::other("HealthCheck: select resolved neither arm"),
+            })
+        }
+    }
+}
+
+/// Render the per-engine config text, selected by `service`.
+fn render_service_config(
+    service: Service,
+    port: u16,
+    datadir: &std::path::Path,
+    socket: &std::path::Path,
+    log_path: &std::path::Path,
+) -> String {
+    match service {
+        Service::Redis => config_render::render_redis_conf(port, datadir, log_path),
+        Service::MySql | Service::MariaDb => {
+            config_render::render_my_cnf(port, datadir, socket, log_path)
+        }
+        Service::Postgres => config_render::render_postgresql_conf(port, datadir),
     }
 }
 

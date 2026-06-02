@@ -115,67 +115,7 @@ fn main() {
             autostart::set_autostart_gui,
             autostart::set_gui_minimized,
         ])
-        .setup(|app| {
-            // Explicitly set the window icon so the Linux taskbar shows the Yerd
-            // mark in dev (no installed .desktop to source it from).
-            if let (Some(win), Some(icon)) = (
-                app.get_webview_window("main"),
-                app.default_window_icon().cloned(),
-            ) {
-                let _ = win.set_icon(icon);
-            }
-            // Disable webview zoom on Linux. WebKitGTK handles both gestures
-            // below the DOM, so the frontend JS guards can't catch them:
-            //   - Ctrl+wheel / Ctrl+± change the `zoom-level` property → clamp it.
-            //   - touchpad pinch is a GtkGestureZoom WebKit installs on its view,
-            //     which ignores `zoom-level` entirely → remove its handlers.
-            // (Documented wry workaround, GTK3-only — which is our stack.)
-            #[cfg(target_os = "linux")]
-            if let Some(win) = app.get_webview_window("main") {
-                let _ = win.with_webview(|pw| {
-                    use glib::prelude::ObjectExt;
-                    use webkit2gtk::WebViewExt;
-                    let wv = pw.inner();
-
-                    wv.set_zoom_level(1.0);
-                    wv.connect_zoom_level_notify(|wv| {
-                        if (wv.zoom_level() - 1.0).abs() > f64::EPSILON {
-                            wv.set_zoom_level(1.0);
-                        }
-                    });
-
-                    // SAFETY: `wk-view-zoom-gesture` is WebKitWebViewBase's
-                    // internal GtkGestureZoom, stored via `g_object_set_data`. We
-                    // only destroy its signal handlers so "scale-changed" no
-                    // longer zooms — we do NOT free the data (which segfaults when
-                    // JS later prevents events), leaving the object owned by WebKit.
-                    unsafe {
-                        if let Some(gesture) = wv.data::<glib::Object>("wk-view-zoom-gesture") {
-                            glib::gobject_ffi::g_signal_handlers_destroy(gesture.as_ptr().cast());
-                        }
-                    }
-                });
-            }
-            build_tray(app.handle())?;
-
-            // The window is born hidden (`"visible": false` in tauri.conf, to
-            // avoid an undecorated flash). Show it now — unless this is an
-            // autostart launch (`--autostarted`) AND the user chose "start
-            // minimized", in which case it stays in the tray. A manual open and
-            // a non-minimized autostart both show.
-            if let Some(win) = app.get_webview_window("main") {
-                let autostarted = std::env::args().any(|a| a == AUTOSTART_ARG);
-                if autostarted && autostart::gui_minimized() {
-                    // Launched hidden to the tray — start as a menu-bar-only app
-                    // (no Dock icon) until the user opens the window.
-                    set_dock_visible(app.handle(), false);
-                } else {
-                    let _ = win.show();
-                    let _ = win.set_focus();
-                }
-            }
-            Ok(())
-        })
+        .setup(setup_app)
         // Close-to-tray: hide the window instead of quitting; the tray's Quit
         // item is the real exit.
         .on_window_event(|window, event| {
@@ -192,6 +132,85 @@ fn main() {
             eprintln!("yerd-gui: fatal error while running: {e}");
             std::process::exit(1);
         });
+}
+
+/// One-time app setup, pulled out of `main`'s builder chain: window icon, the
+/// Linux zoom-disable workaround, the tray, and initial window visibility.
+fn setup_app(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
+    set_main_window_icon(app);
+    #[cfg(target_os = "linux")]
+    disable_webview_zoom(app);
+    build_tray(app.handle())?;
+    show_initial_window(app);
+    Ok(())
+}
+
+/// Explicitly set the window icon so the Linux taskbar shows the Yerd mark in
+/// dev (no installed .desktop to source it from).
+fn set_main_window_icon(app: &tauri::App) {
+    if let (Some(win), Some(icon)) = (
+        app.get_webview_window("main"),
+        app.default_window_icon().cloned(),
+    ) {
+        let _ = win.set_icon(icon);
+    }
+}
+
+/// Disable webview zoom on Linux. WebKitGTK handles both gestures below the DOM,
+/// so the frontend JS guards can't catch them:
+///   - Ctrl+wheel / Ctrl+± change the `zoom-level` property → clamp it.
+///   - touchpad pinch is a GtkGestureZoom WebKit installs on its view, which
+///     ignores `zoom-level` entirely → remove its handlers.
+///
+/// (Documented wry workaround, GTK3-only — which is our stack.)
+#[cfg(target_os = "linux")]
+fn disable_webview_zoom(app: &tauri::App) {
+    let Some(win) = app.get_webview_window("main") else {
+        return;
+    };
+    let _ = win.with_webview(|pw| {
+        use glib::prelude::ObjectExt;
+        use webkit2gtk::WebViewExt;
+        let wv = pw.inner();
+
+        wv.set_zoom_level(1.0);
+        wv.connect_zoom_level_notify(|wv| {
+            if (wv.zoom_level() - 1.0).abs() > f64::EPSILON {
+                wv.set_zoom_level(1.0);
+            }
+        });
+
+        // SAFETY: `wk-view-zoom-gesture` is WebKitWebViewBase's internal
+        // GtkGestureZoom, stored via `g_object_set_data`. We only destroy its
+        // signal handlers so "scale-changed" no longer zooms — we do NOT free the
+        // data (which segfaults when JS later prevents events), leaving the object
+        // owned by WebKit.
+        unsafe {
+            if let Some(gesture) = wv.data::<glib::Object>("wk-view-zoom-gesture") {
+                glib::gobject_ffi::g_signal_handlers_destroy(gesture.as_ptr().cast());
+            }
+        }
+    });
+}
+
+/// Show the main window now — unless this is an autostart launch
+/// (`--autostarted`) AND the user chose "start minimized", in which case it stays
+/// in the tray. The window is born hidden (`"visible": false` in tauri.conf, to
+/// avoid an undecorated flash); a manual open and a non-minimized autostart both
+/// show.
+fn show_initial_window(app: &tauri::App) {
+    let Some(win) = app.get_webview_window("main") else {
+        return;
+    };
+    let autostarted = std::env::args().any(|a| a == AUTOSTART_ARG);
+    if autostarted && autostart::gui_minimized() {
+        // Launched hidden to the tray — start as a menu-bar-only app (no Dock
+        // icon) until the user opens the window.
+        set_dock_visible(app.handle(), false);
+    } else {
+        let _ = win.show();
+        let _ = win.set_focus();
+    }
 }
 
 /// The four navigable views, mirroring the sidebar. Each tray item shows the

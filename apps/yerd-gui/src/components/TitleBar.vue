@@ -11,13 +11,13 @@ const win = getCurrentWindow();
 // Close mirrors the native red button: main.rs intercepts CloseRequested and
 // hides to tray rather than quitting, so this is the same close-to-tray gesture.
 function close() {
-  void win.close();
+  win.close();
 }
 function minimize() {
-  void win.minimize();
+  win.minimize();
 }
 function toggleMaximize() {
-  void win.toggleMaximize();
+  win.toggleMaximize();
 }
 </script>
 

@@ -240,12 +240,12 @@ async function openLogs(s: ServiceStatus): Promise<void> {
   logsOpen.value = true;
   await fetchLogs();
   // Poll while the modal is open; cleared on close / unmount.
-  logsTimer.value = window.setInterval(() => void fetchLogs(), 2000);
+  logsTimer.value = globalThis.setInterval(() => void fetchLogs(), 2000);
 }
 
 function stopLogPolling(): void {
   if (logsTimer.value !== null) {
-    window.clearInterval(logsTimer.value);
+    globalThis.clearInterval(logsTimer.value);
     logsTimer.value = null;
   }
 }
@@ -297,7 +297,7 @@ const confirmRestore = ref<{ name: string; path: string } | null>(null);
 /** Mirror of the daemon's `validate_db_name` for instant feedback (the daemon
  *  re-validates authoritatively). */
 function dbNameValid(name: string): boolean {
-  return /^[A-Za-z_][A-Za-z0-9_]{0,62}$/.test(name);
+  return /^[A-Za-z_]\w{0,62}$/.test(name);
 }
 
 async function fetchDbs(): Promise<void> {

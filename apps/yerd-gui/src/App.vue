@@ -61,7 +61,7 @@ async function maybeAutoInstall(): Promise<void> {
   try {
     await installDaemon();
     await startDaemon();
-    void router.push("/general");
+    router.push("/general");
     toast.success("Yerd is ready", "Installed and started the daemon.");
   } catch (e) {
     toast.error("Couldn't install yerdd", (e as IpcError).message);
@@ -77,9 +77,9 @@ onMounted(async () => {
   // The tray's "go to <page>" items emit `navigate` with a route path (e.g.
   // "/sites") after showing the window; jump the router there.
   unlistenNav = await listen<string>("navigate", (event) => {
-    void router.push(event.payload);
+    router.push(event.payload);
   });
-  void maybeAutoInstall();
+  maybeAutoInstall();
 });
 
 onUnmounted(() => {

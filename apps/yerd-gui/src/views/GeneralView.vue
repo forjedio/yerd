@@ -177,10 +177,14 @@ const rows = computed<Row[]>(() => {
 // ── environment (tri-state OS privileges) ──
 type Tri = boolean | null;
 function triTone(v: Tri): Tone {
-  return v === true ? "ok" : v === false ? "bad" : "unknown";
+  if (v === true) return "ok";
+  if (v === false) return "bad";
+  return "unknown";
 }
 function triLabel(v: Tri, yes: string, no: string): string {
-  return v === true ? yes : v === false ? no : "unknown";
+  if (v === true) return yes;
+  if (v === false) return no;
+  return "unknown";
 }
 
 interface EnvItem {
@@ -253,8 +257,8 @@ async function loadAutostart(): Promise<void> {
 }
 
 onMounted(() => {
-  void loadAutostart();
-  void hostPlatform().then((p) => (platform.value = p));
+  loadAutostart();
+  hostPlatform().then((p) => (platform.value = p));
 });
 
 // Once the CA actually reads not-trusted again (e.g. the user removed the
@@ -586,6 +590,13 @@ async function toggleGuiMinimized(on: boolean): Promise<void> {
           </p>
           <div v-else-if="!report" class="flex justify-center py-8"><Spinner class="size-5" /></div>
           <table v-else class="w-full text-sm">
+            <thead class="sr-only">
+              <tr>
+                <th scope="col">Privilege</th>
+                <th scope="col">Status</th>
+                <th scope="col">Action</th>
+              </tr>
+            </thead>
             <tbody>
               <tr v-for="item in envItems" :key="item.key" class="border-b last:border-0">
                 <td class="py-3 pr-4 font-medium">{{ item.label }}</td>

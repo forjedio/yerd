@@ -9,8 +9,8 @@ use std::fmt::Write as _;
 
 use yerd_core::{PhpVersion, Site, SiteKind};
 use yerd_ipc::{
-    Diagnosis, FixReport, PoolRunState, PortStatus, Request, Response, ServiceAvailability,
-    ServiceRunState, ServiceStatus, Severity, StatusReport,
+    Diagnosis, FixReport, PhpPoolStatus, PoolRunState, PortStatus, Request, Response,
+    ServiceAvailability, ServiceRunState, ServiceStatus, Severity, StatusReport,
 };
 
 use crate::cli::{Command, DbAction, ServiceAction};
@@ -607,33 +607,39 @@ fn format_status(r: &StatusReport) -> String {
     }
     let _ = write!(s, "\nphp");
     for p in &r.php {
-        let default = if p.version == r.default_php {
-            " (default)"
-        } else {
-            ""
-        };
-        let state = match p.state {
-            PoolRunState::Running => "running",
-            PoolRunState::Stopped => "stopped",
-            PoolRunState::Failed => "failed",
-            _ => "?",
-        };
-        let mut line = format!("\n  {}{default}  {state}", p.version);
-        if let Some(pid) = p.pid {
-            let _ = write!(line, "  pid {pid}");
-        }
-        if let Some(listen) = &p.listen {
-            let _ = write!(line, "  {listen}");
-        }
-        if let Some(rss) = p.rss_bytes {
-            let _ = write!(line, "  rss {}", fmt_bytes(rss));
-        }
-        if let Some(update) = &p.update_available {
-            let _ = write!(line, "  update→{update}");
-        }
-        let _ = write!(s, "{line}");
+        let _ = write!(s, "{}", format_php_pool_line(p, r.default_php));
     }
     s
+}
+
+/// Render one PHP pool's status line (leading `"\n  "`), used by [`format_status`].
+fn format_php_pool_line(p: &PhpPoolStatus, default_php: PhpVersion) -> String {
+    use std::fmt::Write;
+    let default = if p.version == default_php {
+        " (default)"
+    } else {
+        ""
+    };
+    let state = match p.state {
+        PoolRunState::Running => "running",
+        PoolRunState::Stopped => "stopped",
+        PoolRunState::Failed => "failed",
+        _ => "?",
+    };
+    let mut line = format!("\n  {}{default}  {state}", p.version);
+    if let Some(pid) = p.pid {
+        let _ = write!(line, "  pid {pid}");
+    }
+    if let Some(listen) = &p.listen {
+        let _ = write!(line, "  {listen}");
+    }
+    if let Some(rss) = p.rss_bytes {
+        let _ = write!(line, "  rss {}", fmt_bytes(rss));
+    }
+    if let Some(update) = &p.update_available {
+        let _ = write!(line, "  update→{update}");
+    }
+    line
 }
 
 /// Render the doctor findings as ✓/⚠/✗ lines with remedies.

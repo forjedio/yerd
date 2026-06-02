@@ -81,64 +81,76 @@ fn err(input: &str, reason: TldErrorReason) -> CoreError {
     }
 }
 
-/// Pinned, ordered validation algorithm (steps numbered inline below).
+/// Pinned, ordered validation algorithm (steps numbered inline below). The
+/// per-step logic lives in [`validate_steps`]; this wrapper attaches `raw` to any
+/// failure reason.
 fn validate(raw: &str) -> Result<String, CoreError> {
+    validate_steps(raw).map_err(|reason| err(raw, reason))
+}
+
+fn validate_steps(raw: &str) -> Result<String, TldErrorReason> {
     // 1.
     if raw.is_empty() {
-        return Err(err(raw, TldErrorReason::Empty));
+        return Err(TldErrorReason::Empty);
     }
 
-    // 2. strip one trailing '.' if present
+    // 2. strip one trailing '.' if present, then reject any leading/trailing dot
     let stripped: &str = raw.strip_suffix('.').unwrap_or(raw);
-    if stripped.is_empty() {
-        return Err(err(raw, TldErrorReason::LeadingOrTrailingDot));
-    }
-    if stripped.ends_with('.') {
-        return Err(err(raw, TldErrorReason::LeadingOrTrailingDot));
-    }
-    if stripped.starts_with('.') {
-        return Err(err(raw, TldErrorReason::LeadingOrTrailingDot));
+    if stripped.is_empty() || stripped.ends_with('.') || stripped.starts_with('.') {
+        return Err(TldErrorReason::LeadingOrTrailingDot);
     }
 
     // 3. total length cap (RFC 1035: 253 octets)
     if stripped.len() > 253 {
-        return Err(err(raw, TldErrorReason::TooLong));
+        return Err(TldErrorReason::TooLong);
     }
 
     // 4. non-ASCII / whitespace
-    for &b in stripped.as_bytes() {
-        if !b.is_ascii() {
-            return Err(err(raw, TldErrorReason::NonAscii));
-        }
-        if b.is_ascii_whitespace() {
-            return Err(err(raw, TldErrorReason::ContainsWhitespace));
-        }
-    }
+    validate_charset(stripped)?;
 
     // 5. lowercase
     let lowered = stripped.to_ascii_lowercase();
 
     // 6. per-label checks
     for label in lowered.split('.') {
-        if label.is_empty() {
-            return Err(err(raw, TldErrorReason::ConsecutiveDots));
-        }
-        if label.len() > 63 {
-            return Err(err(raw, TldErrorReason::LabelTooLong));
-        }
-        for &b in label.as_bytes() {
-            // [a-z0-9-] only (uppercase already lowercased)
-            let ok = b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-';
-            if !ok {
-                return Err(err(raw, TldErrorReason::InvalidCharacter));
-            }
-        }
-        if label.starts_with('-') || label.ends_with('-') {
-            return Err(err(raw, TldErrorReason::LeadingOrTrailingHyphen));
-        }
+        validate_label(label)?;
     }
 
     Ok(lowered)
+}
+
+/// Step 4: every byte must be ASCII and non-whitespace.
+fn validate_charset(stripped: &str) -> Result<(), TldErrorReason> {
+    for &b in stripped.as_bytes() {
+        if !b.is_ascii() {
+            return Err(TldErrorReason::NonAscii);
+        }
+        if b.is_ascii_whitespace() {
+            return Err(TldErrorReason::ContainsWhitespace);
+        }
+    }
+    Ok(())
+}
+
+/// Step 6: one DNS label — non-empty, ≤ 63 octets, `[a-z0-9-]` only (input is
+/// already lowercased), and no leading/trailing hyphen.
+fn validate_label(label: &str) -> Result<(), TldErrorReason> {
+    if label.is_empty() {
+        return Err(TldErrorReason::ConsecutiveDots);
+    }
+    if label.len() > 63 {
+        return Err(TldErrorReason::LabelTooLong);
+    }
+    for &b in label.as_bytes() {
+        let ok = b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-';
+        if !ok {
+            return Err(TldErrorReason::InvalidCharacter);
+        }
+    }
+    if label.starts_with('-') || label.ends_with('-') {
+        return Err(TldErrorReason::LeadingOrTrailingHyphen);
+    }
+    Ok(())
 }
 
 #[cfg(test)]

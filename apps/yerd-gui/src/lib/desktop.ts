@@ -11,7 +11,7 @@
 
 function isEditable(el: EventTarget | null): boolean {
   const node = el as HTMLElement | null;
-  if (!node || !node.tagName) return false;
+  if (!node?.tagName) return false;
   const tag = node.tagName.toLowerCase();
   return tag === "input" || tag === "textarea" || node.isContentEditable;
 }
@@ -20,7 +20,7 @@ const ZOOM_KEYS = new Set(["+", "-", "=", "0"]);
 
 export function initDesktopChrome(): void {
   // Ctrl/Cmd + wheel zoom.
-  window.addEventListener(
+  globalThis.addEventListener(
     "wheel",
     (e) => {
       if (e.ctrlKey || e.metaKey) e.preventDefault();
@@ -29,7 +29,7 @@ export function initDesktopChrome(): void {
   );
 
   // Ctrl/Cmd + (+/-/0) zoom shortcuts (main row and numpad).
-  window.addEventListener(
+  globalThis.addEventListener(
     "keydown",
     (e) => {
       if (!(e.ctrlKey || e.metaKey)) return;
@@ -43,12 +43,12 @@ export function initDesktopChrome(): void {
   );
 
   // Native-feeling: no web context menu except in editable fields.
-  window.addEventListener("contextmenu", (e) => {
+  globalThis.addEventListener("contextmenu", (e) => {
     if (!isEditable(e.target)) e.preventDefault();
   });
 
   // No ghost-drag of images/links.
-  window.addEventListener("dragstart", (e) => {
+  globalThis.addEventListener("dragstart", (e) => {
     if (!isEditable(e.target)) e.preventDefault();
   });
 }

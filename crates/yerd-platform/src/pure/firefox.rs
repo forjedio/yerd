@@ -33,38 +33,34 @@ pub fn parse_profiles_ini(text: &str) -> Vec<Profile> {
             continue;
         }
         if let Some(section) = line.strip_prefix('[').and_then(|s| s.strip_suffix(']')) {
-            if let Some(b) = current.take() {
-                if let Some(p) = b.build() {
-                    out.push(p);
-                }
-            }
-            current = if is_profile_section(section) {
-                Some(ProfileBuilder::default())
-            } else {
-                None
-            };
+            open_section(section, &mut current, &mut out);
             continue;
         }
         let Some(b) = current.as_mut() else { continue };
         let Some((key, value)) = line.split_once('=') else {
             continue;
         };
-        let key = key.trim();
-        let value = value.trim();
-        match key {
-            "Name" => b.name = Some(value.to_owned()),
-            "Path" => b.path = Some(value.to_owned()),
-            "IsRelative" => b.is_relative = value == "1",
-            "Default" => b.is_default = value == "1",
-            _ => {}
-        }
+        b.set(key.trim(), value.trim());
     }
-    if let Some(b) = current {
+    push_built(current, &mut out);
+    out
+}
+
+/// On a `[section]` line: flush the in-progress profile (if any), then begin a
+/// fresh builder iff this is a `Profile<N>` section.
+fn open_section(section: &str, current: &mut Option<ProfileBuilder>, out: &mut Vec<Profile>) {
+    push_built(current.take(), out);
+    *current = is_profile_section(section).then(ProfileBuilder::default);
+}
+
+/// Build `builder` (if any) and push the result to `out` when it yields a profile
+/// (i.e. it had a `Path=`).
+fn push_built(builder: Option<ProfileBuilder>, out: &mut Vec<Profile>) {
+    if let Some(b) = builder {
         if let Some(p) = b.build() {
             out.push(p);
         }
     }
-    out
 }
 
 fn is_profile_section(name: &str) -> bool {
@@ -81,6 +77,17 @@ struct ProfileBuilder {
 }
 
 impl ProfileBuilder {
+    /// Apply one `Key=Value` line (unknown keys are ignored).
+    fn set(&mut self, key: &str, value: &str) {
+        match key {
+            "Name" => self.name = Some(value.to_owned()),
+            "Path" => self.path = Some(value.to_owned()),
+            "IsRelative" => self.is_relative = value == "1",
+            "Default" => self.is_default = value == "1",
+            _ => {}
+        }
+    }
+
     fn build(self) -> Option<Profile> {
         let path = self.path?;
         Some(Profile {

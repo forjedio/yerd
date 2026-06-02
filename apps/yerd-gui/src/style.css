@@ -71,6 +71,9 @@
 @layer base {
   * {
     @apply border-border;
+    /* Native desktop feel: text isn't selectable by default… */
+    -webkit-user-select: none;
+    user-select: none;
   }
   body {
     /* The window is transparent (decorationless, see tauri.conf.json) so the
@@ -97,11 +100,6 @@
     border-radius: 10px;
   }
 
-  /* Native desktop feel: text isn't selectable by default… */
-  * {
-    -webkit-user-select: none;
-    user-select: none;
-  }
   /* …but real inputs and value/code text stay selectable & copyable. */
   input,
   textarea,

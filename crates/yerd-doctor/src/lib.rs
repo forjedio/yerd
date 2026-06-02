@@ -43,7 +43,46 @@ pub fn diagnose(report: &StatusReport) -> Vec<Diagnosis> {
     // fallback that needs elevation (see `port_findings`).
     out.extend(port_findings(report));
 
-    // --- CA trust (skip when undeterminable).
+    // --- CA trust + resolver (each skipped when undeterminable).
+    out.extend(trust_findings(report));
+
+    // --- PHP install state (NoPhpInstalled suppresses DefaultPhpNotInstalled),
+    // then failed FPM pools (one per pool; auto-fixable by restart).
+    out.extend(php_state_findings(report));
+
+    // --- Failed services (one finding per engine).
+    out.extend(service_findings(report));
+
+    // --- Available PHP updates (informational).
+    out.extend(php_update_findings(report));
+
+    // --- Replaced resolver file backed up (informational). The daemon only
+    // sets this for a recent backup, so it auto-clears rather than nagging.
+    out.extend(resolver_backup_finding(report));
+
+    // --- No sites (informational).
+    out.extend(no_sites_finding(report));
+
+    // --- All-good summary when nothing is wrong.
+    if !out
+        .iter()
+        .any(|d| matches!(d.severity, Severity::Warn | Severity::Fail))
+    {
+        out.push(Diagnosis {
+            code: DiagnosisCode::AllGood,
+            severity: Severity::Ok,
+            title: "All checks passed".to_owned(),
+            detail: "Daemon, ports, DNS, CA, and PHP look healthy.".to_owned(),
+            remedy: None,
+        });
+    }
+
+    out
+}
+
+/// CA-trust and resolver findings (each skipped when its probe is `None`).
+fn trust_findings(report: &StatusReport) -> Vec<Diagnosis> {
+    let mut out = Vec::new();
     if report.ca.trusted_system == Some(false) {
         out.push(warn(
             DiagnosisCode::CaNotTrusted,
@@ -52,8 +91,6 @@ pub fn diagnose(report: &StatusReport) -> Vec<Diagnosis> {
             "sudo yerd elevate trust",
         ));
     }
-
-    // --- Resolver (skip when undeterminable).
     if report.resolver_installed == Some(false) {
         out.push(warn(
             DiagnosisCode::ResolverNotInstalled,
@@ -65,8 +102,13 @@ pub fn diagnose(report: &StatusReport) -> Vec<Diagnosis> {
             "sudo yerd elevate resolver",
         ));
     }
+    out
+}
 
-    // --- PHP install state (NoPhpInstalled suppresses DefaultPhpNotInstalled).
+/// PHP install-state findings: a missing install (which suppresses the
+/// default-not-installed finding), then one finding per failed FPM pool.
+fn php_state_findings(report: &StatusReport) -> Vec<Diagnosis> {
+    let mut out = Vec::new();
     if report.php.is_empty() {
         out.push(fail(
             DiagnosisCode::NoPhpInstalled,
@@ -85,8 +127,6 @@ pub fn diagnose(report: &StatusReport) -> Vec<Diagnosis> {
             Some(format!("yerd install php {}", report.default_php)),
         ));
     }
-
-    // --- Failed FPM pools (one finding per pool; auto-fixable by restart).
     for pool in &report.php {
         if pool.state == PoolRunState::Failed {
             out.push(fail(
@@ -100,8 +140,12 @@ pub fn diagnose(report: &StatusReport) -> Vec<Diagnosis> {
             ));
         }
     }
+    out
+}
 
-    // --- Failed services (one finding per engine).
+/// One finding per failed database/cache service.
+fn service_findings(report: &StatusReport) -> Vec<Diagnosis> {
+    let mut out = Vec::new();
     for svc in &report.services {
         if svc.state == ServiceRunState::Failed {
             out.push(fail(
@@ -115,8 +159,12 @@ pub fn diagnose(report: &StatusReport) -> Vec<Diagnosis> {
             ));
         }
     }
+    out
+}
 
-    // --- Available PHP updates (informational).
+/// One informational finding per PHP version with a newer patch available.
+fn php_update_findings(report: &StatusReport) -> Vec<Diagnosis> {
+    let mut out = Vec::new();
     for pool in &report.php {
         if let Some(latest) = &pool.update_available {
             out.push(Diagnosis {
@@ -128,37 +176,18 @@ pub fn diagnose(report: &StatusReport) -> Vec<Diagnosis> {
             });
         }
     }
-
-    // --- Replaced resolver file backed up (informational). The daemon only
-    // sets this for a recent backup, so it auto-clears rather than nagging.
-    out.extend(resolver_backup_finding(report));
-
-    // --- No sites (informational).
-    if report.sites.parked == 0 && report.sites.linked == 0 {
-        out.push(Diagnosis {
-            code: DiagnosisCode::NoSites,
-            severity: Severity::Ok,
-            title: "No sites configured".to_owned(),
-            detail: "Nothing is being served yet.".to_owned(),
-            remedy: Some("yerd park <dir>  (or  yerd link <name> <dir>)".to_owned()),
-        });
-    }
-
-    // --- All-good summary when nothing is wrong.
-    if !out
-        .iter()
-        .any(|d| matches!(d.severity, Severity::Warn | Severity::Fail))
-    {
-        out.push(Diagnosis {
-            code: DiagnosisCode::AllGood,
-            severity: Severity::Ok,
-            title: "All checks passed".to_owned(),
-            detail: "Daemon, ports, DNS, CA, and PHP look healthy.".to_owned(),
-            remedy: None,
-        });
-    }
-
     out
+}
+
+/// Informational finding when no sites are configured.
+fn no_sites_finding(report: &StatusReport) -> Option<Diagnosis> {
+    (report.sites.parked == 0 && report.sites.linked == 0).then(|| Diagnosis {
+        code: DiagnosisCode::NoSites,
+        severity: Severity::Ok,
+        title: "No sites configured".to_owned(),
+        detail: "Nothing is being served yet.".to_owned(),
+        remedy: Some("yerd park <dir>  (or  yerd link <name> <dir>)".to_owned()),
+    })
 }
 
 /// Informational finding when the daemon reports a recent backup of a replaced

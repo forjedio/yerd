@@ -249,7 +249,18 @@ impl TryFrom<Wire> for Config {
 
 pub(crate) fn validate(c: &Config) -> Result<(), ConfigError> {
     // Order is fixed for test predictability; pinned by
-    // validate_returns_first_failure_in_documented_order.
+    // validate_returns_first_failure_in_documented_order. Each phase preserves
+    // the documented order internally.
+    validate_ports(c)?;
+    validate_unique_linked(c)?;
+    validate_nonempty_paths(c)?;
+    validate_web_roots(c)?;
+    validate_known_services(c)?;
+    validate_php_settings(c)?;
+    Ok(())
+}
+
+fn validate_ports(c: &Config) -> Result<(), ConfigError> {
     if c.ports.http == 0 {
         return Err(ve(ValidateErrorReason::HttpPortZero));
     }
@@ -259,12 +270,20 @@ pub(crate) fn validate(c: &Config) -> Result<(), ConfigError> {
     if c.ports.http == c.ports.https {
         return Err(ve(ValidateErrorReason::HttpHttpsPortsEqual));
     }
+    Ok(())
+}
+
+fn validate_unique_linked(c: &Config) -> Result<(), ConfigError> {
     let mut seen: BTreeSet<&str> = BTreeSet::new();
     for s in &c.linked {
         if !seen.insert(s.name()) {
             return Err(ve(ValidateErrorReason::DuplicateLinkedSite));
         }
     }
+    Ok(())
+}
+
+fn validate_nonempty_paths(c: &Config) -> Result<(), ConfigError> {
     for p in &c.parked.paths {
         if p.is_empty() {
             return Err(ve(ValidateErrorReason::ParkedPathEmpty));
@@ -277,9 +296,13 @@ pub(crate) fn validate(c: &Config) -> Result<(), ConfigError> {
             return Err(ve(ValidateErrorReason::OverridePathEmpty));
         }
     }
-    // Web roots must be plain relative paths so they can only ever resolve to a
-    // descendant of the document root (defence against hand-edited absolute or
-    // `..`-bearing values; `Site::served_root` is the runtime backstop).
+    Ok(())
+}
+
+/// Web roots must be plain relative paths so they can only ever resolve to a
+/// descendant of the document root (defence against hand-edited absolute or
+/// `..`-bearing values; `Site::served_root` is the runtime backstop).
+fn validate_web_roots(c: &Config) -> Result<(), ConfigError> {
     for s in &c.linked {
         if web_root_escapes(s.web_subpath()) {
             return Err(ve(ValidateErrorReason::WebRootEscapes));
@@ -292,13 +315,21 @@ pub(crate) fn validate(c: &Config) -> Result<(), ConfigError> {
             }
         }
     }
+    Ok(())
+}
+
+fn validate_known_services(c: &Config) -> Result<(), ConfigError> {
     for name in c.services.instances.keys() {
         if !KNOWN_SERVICES.contains(&name.as_str()) {
             return Err(ve(ValidateErrorReason::UnknownService));
         }
     }
-    // Checked last (newest invariant): every php.settings entry must be a
-    // supported directive with a value passing the security/shape validation.
+    Ok(())
+}
+
+/// Checked last (newest invariant): every `php.settings` entry must be a
+/// supported directive with a value passing the security/shape validation.
+fn validate_php_settings(c: &Config) -> Result<(), ConfigError> {
     for (k, v) in &c.php.settings {
         if yerd_core::php_settings::validate_value(k, v).is_err() {
             return Err(ve(ValidateErrorReason::InvalidPhpSetting));
