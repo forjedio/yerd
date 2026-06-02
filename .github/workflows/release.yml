@@ -164,6 +164,15 @@ jobs:
             -exec mv -t . {} +
           # Drop the now-redundant nested dirs so `dist/*` is files-only.
           find . -mindepth 1 -type d -exec rm -rf {} +
+          # Tauri names its bundles after productName ("Yerd_<ver>_<arch>.*"). The
+          # GUI .deb would then differ from the CLI `yerd_<ver>_<arch>.deb` only by
+          # case — and GitHub release asset names are case-insensitive-unique, so
+          # the two collide and one upload fails. Rename the GUI bundles to the
+          # distinct `yerd-gui` package so CLI and GUI never clash.
+          for f in Yerd_*; do
+            [ -e "$f" ] || continue
+            mv "$f" "yerd-gui_${f#Yerd_}"
+          done
           echo "Flattened artifacts:" && ls -1
 
       - name: Generate SHA256SUMS
