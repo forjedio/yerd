@@ -38,7 +38,8 @@ case "$arch" in
   *) die "unsupported architecture '$arch'" ;;
 esac
 if [ "$os_id" = linux ]; then
-  triple="${rust_arch}-unknown-linux-gnu"
+  # Asset label, not the rustc triple: we publish `generic-linux`, not `unknown-linux`.
+  triple="${rust_arch}-generic-linux-gnu"
 else
   triple="${rust_arch}-apple-darwin"
 fi

@@ -66,7 +66,7 @@ prebuilt artifacts plus a `SHA256SUMS` manifest. Pick the right one:
 | Platform | CLI artifact |
 |---|---|
 | Debian / Ubuntu (amd64 · arm64) | `yerd_<ver>_amd64.deb` · `yerd_<ver>_arm64.deb` → `sudo dpkg -i …` |
-| Arch · Fedora · other Linux (rootless) | `yerd-<ver>-{x86_64,aarch64}-unknown-linux-gnu.tar.gz` |
+| Arch · Fedora · other Linux (rootless) | `yerd-<ver>-{x86_64,aarch64}-generic-linux-gnu.tar.gz` |
 | macOS (Apple Silicon) | `yerd-<ver>-aarch64-apple-darwin.tar.gz` |
 
 Always verify the download against the release's `SHA256SUMS` before using it:

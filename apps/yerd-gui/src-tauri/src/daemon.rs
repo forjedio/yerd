@@ -85,7 +85,8 @@ fn target_triple() -> Result<String, GuiError> {
         }
     };
     match std::env::consts::OS {
-        "linux" => Ok(format!("{arch}-unknown-linux-gnu")),
+        // Asset label, not the rustc triple: releases use `generic-linux`.
+        "linux" => Ok(format!("{arch}-generic-linux-gnu")),
         "macos" => {
             if arch != "aarch64" {
                 return Err(GuiError::internal(
