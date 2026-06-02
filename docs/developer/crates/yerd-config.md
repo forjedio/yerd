@@ -69,10 +69,11 @@ All public surface hangs off `Config` plus the re-exported helper types. From
 ```rust
 pub use error::{ConfigError, MigrationErrorReason, ValidateErrorReason};
 pub use schema::{
-    Config, ParkedSection, PhpSection, Ports, ServicesSection, SiteOverride, DEFAULT_DNS_PORT,
+    Config, ParkedSection, PhpSection, Ports, ServiceInstance, ServicesSection, SiteOverride,
+    DEFAULT_DNS_PORT,
 };
 
-pub const CURRENT_VERSION: u32 = 2;
+pub const CURRENT_VERSION: u32 = 3;
 ```
 
 `Config` exposes exactly four pure methods and two I/O methods:
@@ -145,12 +146,15 @@ Notable design decisions, all grounded in the source:
   additively without a wire break. `web_root` is the pinned served subdirectory
   relative to the document root - the parked-site analogue of a linked `Site`'s
   `web_subpath`.
-- **`ServicesSection::enabled`** is a `BTreeSet<String>`, stringly-typed in v0.
-  When `yerd-services` lands the canonical typed `Service` enum will live there
-  (downstream of this crate); a string also allows forward-compatibility with
-  experimental services without a `yerd-config` release. Entries are validated
-  against the private `KNOWN_SERVICES` const in `parse.rs`:
-  `["mysql", "mariadb", "postgres", "redis"]`.
+- **`ServicesSection::instances`** is a `BTreeMap<String, ServiceInstance>` keyed
+  by the service id (since the v2→v3 migration; v0–v2 stored a flat
+  `enabled = [...]` array of ids). Each `ServiceInstance` carries
+  `version: Option<String>`, `port: Option<u16>`, and `enabled: bool`. The keys
+  are stringly-typed here on purpose: the canonical typed `Service` enum lives
+  downstream in [`yerd-services`](./yerd-services), and a string key allows
+  forward-compatibility with experimental services without a `yerd-config`
+  release. Keys are validated against the private `KNOWN_SERVICES` const in
+  `parse.rs`: `["mysql", "mariadb", "postgres", "redis"]`.
 
 `DEFAULT_DNS_PORT` is `1053`. A fixed (non-ephemeral) port keeps the resolver
 configuration installed by `yerd elevate resolver` valid across daemon restarts.
@@ -267,7 +271,7 @@ deterministic:
 | 5 | a `parked.paths` entry is empty | `ParkedPathEmpty` |
 | 6 | an `overrides` key is empty | `OverridePathEmpty` |
 | 7 | a linked `web_subpath` or override `web_root` is absolute or contains `..` | `WebRootEscapes` |
-| 8 | a `services.enabled` entry is not in `KNOWN_SERVICES` | `UnknownService` |
+| 8 | a `services.instances` key is not in `KNOWN_SERVICES` | `UnknownService` |
 | 9 | a `php.settings` entry fails `php_settings::validate_value` | `InvalidPhpSetting` |
 
 The `php.settings` check runs last (it is the newest invariant). It rejects both
@@ -286,7 +290,7 @@ version is the single trigger for forward migrations.
 
 ```rust
 /// The on-disk schema version this crate writes.
-pub const CURRENT_VERSION: u32 = 2;
+pub const CURRENT_VERSION: u32 = 3;
 ```
 
 `CURRENT_VERSION` is **decoupled** from `yerd_ipc::PROTOCOL_VERSION`: the on-disk
@@ -295,19 +299,23 @@ with a new entry in `migrate::STEPS`.
 
 `migrate.rs` holds the steps, indexed so that **`STEPS[N]` walks `vN → v(N+1)`**
 - matching `migrate::up`, which indexes `STEPS[current]` (the version being
-migrated *from*). At v2 there are two:
+migrated *from*). At v3 there are three:
 
 ```rust
 pub(crate) type MigrationStep = fn(&mut Value) -> Result<(), ConfigError>;
 
 /// STEPS[N] walks vN → v(N+1); a v1 file is migrated by STEPS[1].
-pub(crate) const STEPS: &[MigrationStep] = &[migrate_v0_to_v1, migrate_v1_to_v2];
+pub(crate) const STEPS: &[MigrationStep] =
+    &[migrate_v0_to_v1, migrate_v1_to_v2, migrate_v2_to_v3];
 ```
 
 `STEPS[0]` (v0→v1) is reachable only via a hand-crafted `version = 0` file - v0
-was never written to disk - but it must exist so `STEPS[1]` does. Both current
-steps are bare version bumps: v2 only **added** the optional `web_subpath` /
-`web_root` keys, which default when absent, so no structural rewrite is needed.
+was never written to disk - but it must exist so the later indices line up.
+`v0→v1` and `v1→v2` are bare version bumps (v2 only **added** the optional
+`web_subpath` / `web_root` keys, which default when absent). `v2→v3` is the first
+**structural** step: it rewrites the old flat `services.enabled = [...]` array of
+ids into per-service `[services.<id>]` tables (each previously-enabled id becomes
+an `enabled = true` instance).
 
 Each step rewrites the parsed `toml::Value` in place and is responsible for
 leaving the `version` key set to `N + 1`. A step need not produce a *valid*
@@ -335,24 +343,25 @@ The output shape is deliberate and pinned by `tests/toml_byte_shape.rs`:
 
 - **`version` is always written first.** `WireSer.version` is the first struct
   field, and TOML emits scalars before sub-tables. The output always starts with
-  `version = 2\n`.
+  `version = 3\n`.
 - **Scalars precede their sibling tables.** `dns_port` is emitted as a top-level
   scalar before any `[section]`; `php.default` precedes the `[php.settings]`
   sub-table.
 - **Empty optionals are omitted.** Empty `overrides` emits no `[[overrides]]`
   table; empty `php.settings` emits no `[php.settings]` sub-table; per-override
   `php` / `secure` are skipped individually when `None`.
-- **Empty sets still emit `[]`.** `parked.paths` and `services.enabled` serialise
-  as `paths = []` / `enabled = []` rather than being dropped.
+- **Empty sets still emit `[]`.** `parked.paths` serialises as `paths = []` rather
+  than being dropped; an empty `services.instances` emits no `[services.*]` tables.
 - **Deterministic ordering.** `BTreeSet` / `BTreeMap` give lexicographic output,
-  so `parked.paths` and `services.enabled` are sorted and `[[overrides]]` order is
-  stable.
-- **`services.enabled` wire shape** is an array of strings (`enabled = ["mysql"]`).
+  so `parked.paths` is sorted, `[services.<id>]` tables emit in id order, and
+  `[[overrides]]` order is stable.
+- **`services` wire shape** is one `[services.<id>]` table per engine, each with
+  `version` / `port` (omitted when unset) and `enabled`.
 
 A representative populated document round-trips cleanly:
 
 ```toml
-version = 2
+version = 3
 tld = "test"
 dns_port = 1053
 
@@ -378,8 +387,14 @@ path = "docroot-a/blog"
 php = "8.4"
 secure = true
 
-[services]
-enabled = ["mysql", "redis"]
+[services.mysql]
+port = 3306
+enabled = true
+
+[services.redis]
+version = "8"
+port = 6379
+enabled = true
 ```
 
 (`web_subpath` on `[[linked]]` and `web_root` on `[[overrides]]` are omitted when
@@ -461,9 +476,9 @@ the integration tests pin the durable contracts:
 - **`tests/roundtrip.rs`** - `default` and a fully populated config survive
   `to_toml` → `from_toml`, and the populated config passes `validate`.
 - **`tests/toml_byte_shape.rs`** - structural goldens on the emitted TOML: the
-  `version = 2` first line, scalar-before-table ordering, omitted empty optional
+  `version = 3` first line, scalar-before-table ordering, omitted empty optional
   tables, `[]` for empty sets, lexicographic ordering, and the
-  array-of-strings shape of `services.enabled`. These survive
+  per-id `[services.<id>]` table shape. These survive
   `to_string_pretty`'s line-break and table-ordering choices by asserting on
   substrings and re-parsed `toml::Value`s rather than exact bytes.
 - **`tests/io.rs`** - `save` → `load` round-trip, parent-dir creation, overwrite

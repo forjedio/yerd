@@ -15,9 +15,8 @@
 //!
 //! Supervises **Redis (Valkey)**, **`MySQL`**, **`MariaDB`**, and
 //! **`PostgreSQL`** — per-engine config rendering, datadir init, and protocol
-//! readiness probes are selected from the [`Service`]. (`MariaDB` is not yet
-//! published in the services listing, so it installs only once a build exists,
-//! but its supervision path is identical to `MySQL`.)
+//! readiness probes are selected from the [`Service`]. (`MariaDB` shares
+//! `MySQL`'s supervision path; it differs only in its install/init binaries.)
 
 use std::collections::BTreeMap;
 use std::net::{Ipv4Addr, SocketAddr};

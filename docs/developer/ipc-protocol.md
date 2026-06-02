@@ -147,7 +147,7 @@ pub enum Request { /* ... */ }
 
 ### Request (client → daemon)
 
-The variant set is the daemon's whole RPC surface - liveness, site management, PHP version management, status/doctor, and daemon lifecycle. A representative sample with its exact wire shape (the full list of tags lives in `request.rs`):
+The variant set is the daemon's whole RPC surface - liveness, site management, PHP version management, **database/cache service management**, **SQL database administration**, status/doctor, and daemon lifecycle. A representative sample with its exact wire shape (the full list of tags lives in `request.rs`):
 
 | Variant | Wire JSON |
 | --- | --- |
@@ -161,6 +161,17 @@ The variant set is the daemon's whole RPC surface - liveness, site management, P
 | `InstallPhp { version }` | `{"type":"install_php","version":"8.5"}` |
 | `UpdatePhp { version: Option }` | `{"type":"update_php","version":"8.5"}` or `…,"version":null` |
 | `SetPhpSettings { settings }` | `{"type":"set_php_settings","settings":{…}}` |
+| `ListServices` / `AvailableServices` | `{"type":"list_services"}` / `{"type":"available_services"}` |
+| `InstallService { service, version }` | `{"type":"install_service","service":"redis","version":"8"}` |
+| `ChangeServiceVersion { service, version }` | `{"type":"change_service_version","service":"redis","version":"8.1"}` |
+| `UninstallService { service, version, purge }` | `{"type":"uninstall_service","service":"redis","version":"8","purge":false}` |
+| `StartService` / `StopService` / `RestartService` | `{"type":"start_service","service":"redis"}` (and `stop_`/`restart_`) |
+| `SetServicePort { service, port }` | `{"type":"set_service_port","service":"redis","port":6380}` |
+| `ServiceLogs { service, lines }` | `{"type":"service_logs","service":"redis","lines":100}` |
+| `ListDatabases { service }` | `{"type":"list_databases","service":"mysql"}` |
+| `CreateDatabase` / `DropDatabase` | `{"type":"create_database","service":"mysql","name":"app"}` (and `drop_database`) |
+| `BackupDatabase { service, name, path }` | `{"type":"backup_database","service":"mysql","name":"app","path":"/tmp/app.sql"}` |
+| `RestoreDatabase { service, name, path }` | `{"type":"restore_database","service":"mysql","name":"app","path":"/tmp/app.sql"}` |
 | `Status` | `{"type":"status"}` |
 | `Diagnose` / `DoctorFix` | `{"type":"diagnose"}` / `{"type":"doctor_fix"}` |
 | `RestartDaemon` | `{"type":"restart_daemon"}` (Unix-only re-exec) |
@@ -184,6 +195,10 @@ pub enum Response {
     Status { report: Box<StatusReport> },         // boxed: large payload
     Diagnoses { items: Vec<Diagnosis> },
     DoctorFix { report: FixReport },
+    Services { services: Vec<ServiceStatus> },
+    AvailableServices { services: Vec<ServiceAvailability> },
+    ServiceLogs { lines: Vec<String> },
+    Databases { databases: Vec<DatabaseSummary> },
 }
 ```
 
@@ -204,6 +219,7 @@ pub enum ErrorCode {
     NotFound,        // "not_found"
     AlreadyExists,   // "already_exists"
     InvalidPath,     // "invalid_path"
+    PortInUse,       // "port_in_use"
     Internal,        // "internal" - catch-all; expand the enum, don't overload this
 }
 ```
@@ -212,7 +228,7 @@ There is deliberately **no `#[serde(other)]` catch-all**. An unknown code from a
 
 ### Status & doctor payloads
 
-`status.rs` holds the nested payloads carried inside the status/doctor responses: `StatusReport`, `PortStatus`, `CaStatus`, `SiteCounts`, `PhpPoolStatus`, `PoolRunState`, `Diagnosis`, `Severity`, `DiagnosisCode`, `FixReport`, and `FixResult`. Same contract rules apply.
+`status.rs` holds the nested payloads carried inside the status/doctor and service/database responses: `StatusReport`, `PortStatus`, `CaStatus`, `SiteCounts`, `PhpPoolStatus`, `PoolRunState`, `ServiceStatus`, `ServiceRunState`, `ServiceAvailability`, `DatabaseSummary`, `Diagnosis`, `Severity`, `DiagnosisCode`, `FixReport`, and `FixResult`. Same contract rules apply. `StatusReport` also carries an additive `services: Vec<ServiceStatus>` field alongside the PHP pools.
 
 ::: tip No `f64` on the wire
 `Response` derives `Eq`, so nothing reachable from it may hold a float. The system load average therefore crosses as integer hundredths - `StatusReport::load_avg` is `Option<[u32; 3]>`, each value `load × 100` - and the CLI renders it back to `x.xx`.

@@ -80,7 +80,7 @@ Skip elevation and run sites on `127.0.0.1:8080` / `:8443`. Yerd binds those unp
 
 ## The background daemon
 
-`yerdd` is one lightweight (~8 MB) native binary that owns all runtime state and serves the reverse proxy, DNS resolver, and PHP-FPM pools. No VM, no container, no Electron. On a `.deb` install it runs as a `systemd --user` service; from a tarball you run it directly.
+`yerdd` is one lightweight (~8 MB) native binary that owns all runtime state and serves the reverse proxy, DNS resolver, PHP-FPM pools, and database/cache services. No VM, no container, no Electron. On a `.deb` install it runs as a `systemd --user` service; from a tarball you run it directly.
 
 ```sh
 systemctl --user enable --now yerd   # .deb install, runs as you
@@ -140,12 +140,16 @@ yerd list php --json
 
 [Full CLI reference →](../reference/cli/)
 
-## Planned: databases & caches
+## Databases & caches
 
-Service supervision is on the roadmap: MySQL, MariaDB, PostgreSQL, and Redis managed as native Yerd processes, no Docker. Not shipped yet; the page below tracks the design and progress.
+Yerd installs and supervises MySQL, MariaDB, PostgreSQL, and Redis (Valkey) as
+native, per-user processes - no Docker. Start and stop them from the CLI or the
+desktop app, and create, drop, back up, and restore SQL databases without a
+separate client. Engines run on loopback with no elevation.
 
-::: warning Roadmap
-Database and cache services are planned, not available today. Everything else on this page works now on macOS and Linux.
-:::
+```sh
+yerd service install redis 8
+yerd db create mysql my_app
+```
 
-[Services roadmap →](./services)
+[Services & Databases →](./services)

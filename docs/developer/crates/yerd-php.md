@@ -21,22 +21,33 @@ The crate mirrors the `pure` / `io` split used across the Yerd workspace: all *d
 ```text
 src/
 ├── lib.rs            # re-exports + a compile-time Send+'static guard
-├── error.rs          # PhpError, DownloadError, ExitReason, SpawnFailureReason
-├── traits.rs         # ProcessSpawner, ChildHandle, Clock, HealthProbe, Downloader
-├── listen.rs         # Listen enum + AllocatedListen::plan (Unix socket vs TCP)
+├── error.rs          # PhpError (re-exports ExitReason/etc. from yerd-supervise)
+├── traits.rs         # re-export shim → yerd_supervise::traits::*
+├── listen.rs         # AllocatedListen::plan (Listen itself comes from yerd-supervise)
 ├── pool.rs           # PoolConfig, ProcessManagerMode, dev_defaults
 ├── manager.rs        # PhpManager - the driver that runs the state machine
-├── real.rs           # SystemClock, TokioProcessSpawner, TokioChild (prod impls)
+├── real.rs           # re-export shim → yerd_supervise (SystemClock, TokioProcessSpawner…)
 ├── release.rs        # artifact URL resolution from the distribution listing
 ├── version.rs        # discover_bundled - scan the on-disk install root
 ├── pure/
 │   ├── fpm_conf.rs   # render_fpm_conf - PoolConfig → php-fpm.conf text
-│   ├── supervisor.rs # the pure state machine (PoolState/Event/Action)
+│   ├── supervisor.rs # re-export shim → yerd_supervise::supervisor::*
 │   └── env_scrub.rs  # allowlist filter over an env snapshot
 └── io/
     ├── atomic_write.rs   # tempfile + rename
     └── fastcgi_probe.rs  # FastCgiProbe - the production HealthProbe
 ```
+
+::: info The supervision substrate moved to `yerd-supervise`
+The trait seams (`ProcessSpawner`, `ChildHandle`, `Clock`, `HealthProbe`,
+`Downloader`), the production tokio impls (`SystemClock`, `TokioProcessSpawner`,
+`TokioChild`), the `Listen` type, and the **pure state machine** now live in
+[`yerd-supervise`](./yerd-supervise) so [`yerd-services`](./yerd-services) can
+reuse them. `yerd-php`'s `traits.rs` re-exports them, and `manager.rs` drives the
+shared machine under `SupervisorPolicy::fpm()`. `yerd-php` itself now owns only the
+PHP-specific pieces: FPM config rendering, the FastCGI health probe, release
+resolution, and the manager.
+:::
 
 [Browse the source on GitHub.](https://github.com/forjedio/yerd)
 
@@ -96,11 +107,15 @@ for (key, value) in &cfg.ini {
 
 ### `supervisor` - the pool state machine
 
-`pure::supervisor` is the heart of the crate: a pure transition function plus the data types around it. Time enters as `Elapsed(Duration)` rather than `Instant::now()`, so a test can construct any state without a real clock.
+The supervisor state machine is the heart of supervision, but it now lives in [`yerd-supervise`](./yerd-supervise) (`yerd_supervise::supervisor`) so the services crate can reuse it. It is a pure transition function plus the data types around it. Time enters as `Elapsed(Duration)` rather than `Instant::now()`, so a test can construct any state without a real clock. The timing/restart knobs are passed per call via a `SupervisorPolicy`, and `yerd-php` always supplies `SupervisorPolicy::fpm()`.
 
 ```rust
 #[must_use]
-pub fn transition(state: PoolState, event: Event) -> (PoolState, Action)
+pub fn transition(
+    state: PoolState,
+    event: Event,
+    policy: &SupervisorPolicy,
+) -> (PoolState, Action)
 ```
 
 The five pool states:
@@ -117,17 +132,19 @@ pub enum PoolState {
 
 The driver feeds back `Event`s (`EnsureRequested`, `SpawnSucceeded`, `HealthCheckOk`, `HealthCheckTick`, `Crashed`, `StopRequested`, `StopComplete`, `StopTick`, `BackoffElapsed`) and receives one `Action` to execute (`None`, `Spawn`, `HealthCheck`, `Backoff { wait }`, `Kill { signal }`, `EmitError(ErrorTag)`).
 
-The policy constants:
+The `SupervisorPolicy::fpm()` profile `yerd-php` uses:
 
-| Constant | Value | Meaning |
+| Field | Value | Meaning |
 | --- | --- | --- |
-| `HEALTH_CHECK_WINDOW` | 5 s | Max total time `Starting` may persist before health-check timeout. |
-| `BACKOFF_INITIAL` | 100 ms | First retry wait. |
-| `BACKOFF_MAX` | 10 s | Cap; exponential doubling saturates here. |
-| `MAX_RESTART_ATTEMPTS` | 3 | Consecutive failures before `PermanentFailure`. |
-| `STOP_GRACE` | 2 s | Window between SIGTERM and SIGKILL. |
+| `health_check_window` | 5 s | Max total time `Starting` may persist before health-check timeout. |
+| `backoff_initial` | 100 ms | First retry wait. |
+| `backoff_max` | 10 s | Cap; exponential doubling saturates here. |
+| `max_restart_attempts` | 3 | Consecutive failures before `PermanentFailure`. |
+| `stop_grace` | 2 s | Window between SIGTERM and SIGKILL. |
 
-`backoff_for(attempts)` computes `min(BACKOFF_INITIAL * 2^(attempts-1), BACKOFF_MAX)`, saturating. The table test pins it: `1→100ms, 2→200ms, 3→400ms, … 7→6.4s, 8→10s, 100→10s`.
+(The other profile, `SupervisorPolicy::database()`, has a far wider 60 s window and 10 s stop grace - that one is used by [`yerd-services`](./yerd-services).)
+
+`backoff_for(attempts, policy)` computes `min(backoff_initial * 2^(attempts-1), backoff_max)`, saturating. The table test pins the fpm profile: `1→100ms, 2→200ms, 3→400ms, … 7→6.4s, 8→10s, 100→10s`.
 
 A walk through the key transitions:
 
@@ -202,7 +219,7 @@ Validating the version byte is what lets the probe distinguish *"FPM answered"* 
 
 ## The trait seams
 
-Every effect the supervisor needs is injected so the driver can be tested with fakes - no real process spawns, no real sockets, no real clock. Production impls live in `real.rs` and `io::fastcgi_probe`.
+Every effect the supervisor needs is injected so the driver can be tested with fakes - no real process spawns, no real sockets, no real clock. The trait *definitions* live in [`yerd-supervise`](./yerd-supervise) and are re-exported by `yerd-php`'s `traits.rs`; `yerd-php`'s production impls are the `FastCgiProbe` `HealthProbe` and (from `yerd-supervise`) `TokioProcessSpawner` / `SystemClock`.
 
 ```rust
 pub trait ProcessSpawner: Send + Sync + 'static {
@@ -215,7 +232,7 @@ pub trait ChildHandle: Send + 'static {
     fn id(&self) -> u32;
     fn try_wait(&mut self) -> Result<Option<ExitReason>, io::Error>;
     async fn wait(&mut self) -> Result<ExitReason, io::Error>;
-    async fn kill(&mut self, signal: KillSignal) -> Result<(), io::Error>;
+    async fn kill(&mut self, signal: KillSignal, protocol: StopProtocol) -> Result<(), io::Error>;
 }
 
 pub trait Clock: Send + Sync + 'static {
@@ -233,6 +250,8 @@ pub trait Downloader: Send + Sync + 'static {
 }
 ```
 
+`ChildHandle::kill` takes a `StopProtocol` (FPM uses the default `GroupTerm` - SIGTERM to the whole process group). The error/reason types `ExitReason`, `SpawnFailureReason`, and `DownloadError` also live in `yerd-supervise`; `yerd-php`'s `error.rs` keeps only `PhpError`, which wraps them.
+
 `ProcessSpawner::spawn` takes a `std::process::Command` (not a tokio one) so the trait itself stays runtime-free; the production impl converts internally.
 
 ::: warning Process-group signalling (Unix)
@@ -249,17 +268,16 @@ pub trait Downloader: Send + Sync + 'static {
 
 ## The `Listen` enum: Unix socket vs TCP loopback
 
-FPM listens on either a Unix domain socket or a TCP loopback address.
+FPM listens on either a Unix domain socket or a TCP loopback address. `Listen` now lives in [`yerd-supervise`](./yerd-supervise) (re-exported here); `AllocatedListen::plan` - the PHP-specific planning around it - stays in `yerd-php`'s `listen.rs`.
 
 ```rust
-#[non_exhaustive]
 pub enum Listen {
     UnixSocket(PathBuf),   // Unix only
     TcpLoopback(SocketAddr), // always valid; required on Windows
 }
 ```
 
-`AllocatedListen::plan` is the planner-side entry. The daemon calls it before rendering the pool config, then bakes the resolved address into the template. Its behaviour is `cfg`-split:
+`Listen` is deliberately **not** `#[non_exhaustive]` - exhaustive matching on the two cases is intended. `AllocatedListen::plan` is the planner-side entry. The daemon calls it before rendering the pool config, then bakes the resolved address into the template. Its behaviour is `cfg`-split:
 
 - **Unix:** returns `Listen::UnixSocket(dirs.runtime / "fpm-<version>-<instance_id>.sock")`. No socket is created yet - FPM creates it itself on start. The `PortBinder` argument is ignored (a Unix test stub panics if `bind` is ever called).
 - **Windows:** Windows has no FPM Unix sockets, so the planner binds `127.0.0.1:0` via the supplied `PortBinder`, captures the resolved port, **drops** the listener, and returns `Listen::TcpLoopback`.

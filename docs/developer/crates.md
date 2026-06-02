@@ -35,8 +35,10 @@ set (it wraps macro-heavy generated Tauri code) but still bans
 | `yerd-config` | Persisted, schema-versioned TOML configuration. Pure parse/validate/serialise plus a thin atomic load/save. | mostly pure | [yerd-config](./crates/yerd-config) |
 | `yerd-tls` | Pure-Rust local CA and per-site leaf certificate issuance (`rcgen` + `ring`). No I/O, no clock. | pure | [yerd-tls](./crates/yerd-tls) |
 | `yerd-dns` | Authoritative `*.test` DNS responder plus `hickory-server` wiring. | owns I/O | [yerd-dns](./crates/yerd-dns) |
-| `yerd-proxy` | Hand-rolled HTTP/HTTPS reverse proxy on `hyper` + `tokio-rustls`; forwards to PHP-FPM over FastCGI. | owns I/O (pure submodule) | [yerd-proxy](./crates/yerd-proxy) |
+| `yerd-proxy` | Hand-rolled HTTP/HTTPS reverse proxy on `hyper` + `tokio-rustls`; serves static files and forwards to PHP-FPM over FastCGI. | owns I/O (pure submodule) | [yerd-proxy](./crates/yerd-proxy) |
+| `yerd-supervise` | Process-agnostic supervision substrate: trait seams, the pure restart/health state machine, and tokio impls. Shared by `yerd-php` and `yerd-services`. | owns I/O (pure submodule) | [yerd-supervise](./crates/yerd-supervise) |
 | `yerd-php` | PHP-FPM pool supervision and version management; discovery, install, health-probing. | owns I/O (pure submodule) | [yerd-php](./crates/yerd-php) |
+| `yerd-services` | Local database / cache supervision (Redis/Valkey, MySQL, MariaDB, Postgres), version management, and SQL database administration. | owns I/O (pure submodule) | [yerd-services](./crates/yerd-services) |
 | `yerd-doctor` | Pure diagnosis and fix-planning for `yerd doctor`. Turns a `StatusReport` into findings and safe auto-fixes. | pure | [yerd-doctor](./crates/yerd-doctor) |
 | `yerd-platform` | OS abstraction layer: paths, trust store, resolver installer, port binder/redirector, metrics - one impl per OS. | owns I/O (pure submodule) | [yerd-platform](./crates/yerd-platform) |
 
@@ -44,7 +46,7 @@ set (it wraps macro-heavy generated Tauri code) but still bans
 
 | Binary | Purpose | Page |
 |---|---|---|
-| `yerdd` | The unprivileged per-user daemon. Wires every library together; owns all runtime state and serves the proxy, DNS, and PHP pools. | [yerdd (daemon)](./binaries/yerdd) |
+| `yerdd` | The unprivileged per-user daemon. Wires every library together; owns all runtime state and serves the proxy, DNS, PHP pools, and database/cache services. | [yerdd (daemon)](./binaries/yerdd) |
 | `yerd` | The CLI - a thin `yerd-ipc` client that talks to `yerdd` over a per-user socket. | [yerd (CLI)](./binaries/yerd) |
 | `yerd-helper` | The privileged one-shot. Validates a typed `HelperInvocation`, performs exactly one root operation (CA install, resolver install, `setcap`), and exits. | [yerd-helper (privileged)](./binaries/yerd-helper) |
 
@@ -70,7 +72,7 @@ flowchart TD
     gui["yerd-gui (app)"]
     xtask["xtask (no internal deps)"]
     yerd["yerd (CLI)"]
-    yerdd["yerdd (depends on all nine libs)"]
+    yerdd["yerdd (depends on all eleven libs)"]
     helper["yerd-helper"]
 
     ipc["yerd-ipc"]
@@ -78,6 +80,8 @@ flowchart TD
     dns["yerd-dns"]
     proxy["yerd-proxy"]
     php["yerd-php"]
+    services["yerd-services"]
+    supervise["yerd-supervise"]
     doctor["yerd-doctor"]
     tls["yerd-tls"]
     platform["yerd-platform"]
@@ -101,6 +105,8 @@ flowchart TD
     yerdd --> platform
     yerdd --> dns
     yerdd --> php
+    yerdd --> services
+    yerdd --> supervise
     yerdd --> proxy
     yerdd --> doctor
 
@@ -112,6 +118,9 @@ flowchart TD
     doctor --> ipc
     php --> core
     php --> platform
+    php --> supervise
+    services --> platform
+    services --> supervise
     platform --> tls
 ```
 
@@ -126,11 +135,13 @@ crate's `Cargo.toml`):
 - **`yerd-proxy`** → `yerd-core`
 - **`yerd-doctor`** → `yerd-core`, `yerd-ipc`
 - **`yerd-platform`** → `yerd-tls`
-- **`yerd-php`** → `yerd-core`, `yerd-platform`
+- **`yerd-supervise`** → *(none - workspace leaf)*
+- **`yerd-php`** → `yerd-core`, `yerd-platform`, `yerd-supervise`
+- **`yerd-services`** → `yerd-platform`, `yerd-supervise`
 - **`yerd-helper`** (bin) → `yerd-core`, `yerd-platform`
 - **`yerd`** (bin) → `yerd-core`, `yerd-ipc` (`transport`), `yerd-platform`
 - **`yerd-gui`** (app) → `yerd-core`, `yerd-ipc` (`transport`), `yerd-platform`
-- **`yerdd`** (bin) → `yerd-core`, `yerd-config`, `yerd-ipc` (`transport`), `yerd-tls`, `yerd-platform`, `yerd-dns`, `yerd-php`, `yerd-proxy`, `yerd-doctor` - **all nine libraries**
+- **`yerdd`** (bin) → `yerd-core`, `yerd-config`, `yerd-ipc` (`transport`), `yerd-tls`, `yerd-platform`, `yerd-dns`, `yerd-supervise`, `yerd-php`, `yerd-services`, `yerd-proxy`, `yerd-doctor` - **all eleven libraries**
 - **`xtask`** → *(no internal deps; `anyhow` + `clap` + `flate2` only)*
 
 ::: tip The daemon is the assembly point
@@ -170,7 +181,7 @@ in everything (timestamps, reports) explicitly.
 
 - **`yerd-config`** - *"Every function except `Config::load` and `Config::save`
   is pure."* Parse, validate, serialise, and migrate are all pure; load/save are a
-  thin atomic file seam. Schema is versioned (`CURRENT_VERSION = 1`), decoupled
+  thin atomic file seam. Schema is versioned (`CURRENT_VERSION = 3`), decoupled
   from the IPC `PROTOCOL_VERSION`.
 
 ### I/O-owning, with a pure submodule
@@ -186,15 +197,23 @@ in a `pure` module that is unit-tested in-memory.
   to execute - the OS impls never spawn the helper themselves.
 - **`yerd-proxy`** - owns the `hyper` + `tokio-rustls` servers (`pub mod server`,
   `forward`, `tls`, `backend`), with a `pub mod pure` for the routing/decision
-  logic and `pub mod traits` (`BackendResolver`, `CertStore`) at the edges.
-- **`yerd-php`** - supervises PHP-FPM processes. Real adapters
-  (`TokioProcessSpawner`, `SystemClock`, `FastCgiProbe`) sit behind traits
-  (`ProcessSpawner`, `Clock`, `HealthProbe`, `Downloader`), with `pure` holding the
-  pool-state and release-resolution logic.
+  logic (including `try_files` static-file resolution) and `pub mod traits`
+  (`BackendResolver`, `CertStore`) at the edges.
+- **`yerd-supervise`** - the shared supervision substrate. Pure `supervisor`
+  (state machine), `listen`, and `error`; tokio adapters (`TokioProcessSpawner`,
+  `SystemClock`, `TokioChild`) and the trait *definitions* (`ProcessSpawner`,
+  `Clock`, `HealthProbe`, `Downloader`) in `real`/`traits`.
+- **`yerd-php`** - supervises PHP-FPM processes. Drives the `yerd-supervise` state
+  machine under `SupervisorPolicy::fpm()`; provides the `FastCgiProbe` `HealthProbe`
+  impl, with `pure` holding the FPM-config and release-resolution logic.
+- **`yerd-services`** - supervises database / cache engines. Drives the same
+  `yerd-supervise` machine under `SupervisorPolicy::database()`; pure `service`,
+  `database`, `config_render`, and `release` modules, with I/O in `manager` and
+  `health`.
 - **`yerd-dns`** - runs the authoritative responder on `tokio` + `hickory-server`.
 
 ::: details Where the traits are implemented
-The trait *definitions* live in the library crates (e.g. `yerd-php`'s
+The trait *definitions* live in the library crates (e.g. `yerd-supervise`'s
 `ProcessSpawner`, `yerd-platform`'s `TrustStore`). The library also ships the
 production impls (`TokioProcessSpawner`, the per-OS `TrustStore`). Tests substitute
 in-memory fakes. The privileged half of `yerd-platform`'s work is executed out of

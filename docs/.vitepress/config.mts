@@ -80,6 +80,7 @@ export default withMermaid({
           items: [
             { text: 'Sites', link: '/guide/sites' },
             { text: 'PHP Versions', link: '/guide/php-versions' },
+            { text: 'Services & Databases', link: '/guide/services' },
             { text: 'HTTPS & Certificates', link: '/guide/https' },
             { text: 'DNS & .test Domains', link: '/guide/dns' },
             { text: 'Elevation & Privileges', link: '/guide/elevation' },
@@ -87,10 +88,6 @@ export default withMermaid({
             { text: 'Diagnostics', link: '/guide/diagnostics' },
             { text: 'Desktop App', link: '/guide/desktop-app' },
           ],
-        },
-        {
-          text: 'Roadmap',
-          items: [{ text: 'Services', link: '/guide/services' }],
         },
       ],
 
@@ -102,6 +99,8 @@ export default withMermaid({
             { text: 'Sites', link: '/reference/cli/sites' },
             { text: 'HTTPS', link: '/reference/cli/https' },
             { text: 'PHP', link: '/reference/cli/php' },
+            { text: 'Services', link: '/reference/cli/services' },
+            { text: 'Databases', link: '/reference/cli/db' },
             { text: 'Diagnostics', link: '/reference/cli/diagnostics' },
             { text: 'Elevation', link: '/reference/cli/elevation' },
             { text: 'Daemon control', link: '/reference/cli/daemon' },
@@ -142,7 +141,9 @@ export default withMermaid({
             { text: 'yerd-tls', link: '/developer/crates/yerd-tls' },
             { text: 'yerd-dns', link: '/developer/crates/yerd-dns' },
             { text: 'yerd-proxy', link: '/developer/crates/yerd-proxy' },
+            { text: 'yerd-supervise', link: '/developer/crates/yerd-supervise' },
             { text: 'yerd-php', link: '/developer/crates/yerd-php' },
+            { text: 'yerd-services', link: '/developer/crates/yerd-services' },
             { text: 'yerd-doctor', link: '/developer/crates/yerd-doctor' },
             { text: 'yerd-platform', link: '/developer/crates/yerd-platform' },
           ],

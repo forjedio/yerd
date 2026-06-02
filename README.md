@@ -51,24 +51,24 @@ frictionless — **cross-platform, fully open-source, and rootless by design.**
 | Open source | ❌ | ✅ | ✅ |
 | Linux support | ❌ | ✅ | ✅ |
 | macOS support | ✅ | ✅ | ✅ |
-| Windows support | ✅ | ✅ | ✅ * |
+| Windows support | ✅ | ❌ | ✅ * |
 | Automatic `.test` domains | ✅ | ✅ | ✅ |
 | HTTPS with a trusted local CA | ✅ | ✅ | ✅ |
 | Multiple PHP versions | ✅ | ✅ | ✅ |
 | PHP version **per site** | ✅ | ✅ | ✅ |
 | First-class CLI | ✅ | ✅ | ✅ |
-| Menu-bar / tray GUI | ✅ | ❌ | ✅ |
+| Menu-bar / tray GUI | ✅ | ✅ | ✅ |
 | Database & cache services (MySQL · MariaDB · PostgreSQL · Redis) | ✅ (Pro) | ✅ | ✅ |
 | Runs rootless day-to-day | ✅ | ✅ † | ✅ |
 | **No** Docker / Podman / containers required | ✅ | ❌ | ✅ |
 | Lightweight (no VM, no container images) | ✅ | ❌ | ✅ |
 | Built-in health checks (`doctor`) | ❌ | ❌ | ✅ |
-| Under the hood | Native app (nginx + dnsmasq) | Containers (Podman/Docker) | Native Rust (`rustls` proxy + embedded DNS) |
+| Under the hood | Native app (nginx + dnsmasq) | Containers (rootless Podman) | Native Rust (`rustls` proxy + embedded DNS) |
 
 <sub>✅\* = on the Yerd [roadmap](#roadmap). Everything without an asterisk works today on macOS and Linux.</sub>
-<br><sub>**Lerd** runs your stack in containers via **Podman/Docker** — so it's
-cross-platform and trivially adds database/cache services, but it pulls and runs
-container images rather than native processes. † Rootless when run on rootless
+<br><sub>**Lerd** runs your stack in containers via **rootless Podman** (Linux +
+macOS; no Docker) — so it trivially adds database/cache services, but it pulls and
+runs container images rather than native processes. † Rootless by design on
 Podman.</sub>
 <br><sub>**On Laravel Valet:** Valet is the original macOS-only Laravel dev tool
 (nginx + dnsmasq, installed via Homebrew/Composer). None of the three require it —
@@ -212,16 +212,21 @@ Open `https://my-app.test` in your browser — that's it.
 | Command | What it does |
 |---|---|
 | `yerd park <dir>` | Park a directory; each child folder is served at `<name>.test`. |
+| `yerd unpark <dir>` | Stop serving a previously parked directory. |
 | `yerd link <name> <dir>` | Serve a single directory as a named site. |
-| `yerd unlink <name>` | Remove a linked/parked site. |
+| `yerd unlink <name>` | Remove a linked site. |
 | `yerd sites` | List every known site (kind, PHP version, HTTPS, doc-root). |
+| `yerd root <site> [path]` | Set a site's served web root (or `--auto` to re-detect). |
 | `yerd use <version>` | Set the **global** default PHP version. |
 | `yerd use <site> <version>` | Set one site's PHP version. |
 | `yerd secure <site>` / `unsecure <site>` | Turn HTTPS on / off for a site. |
 | `yerd install php <version>` | Download + install a PHP version. |
-| `yerd list php [--check]` | List installed PHP versions (and available updates). |
+| `yerd list php [--check] [--available]` | List installed PHP versions (and updates), or what's installable. |
 | `yerd update php [<version>]` | Update one (or all) installed PHP versions. |
+| `yerd set php <setting> <value>` / `unset php <setting>` | Set / clear a global PHP ini default (all versions). |
+| `yerd restart php [<version>]` / `restart daemon` | Restart a PHP pool (or all), or the daemon. |
 | `yerd services` | List local database / cache services and their status. |
+| `yerd service available` | List installable service versions for your platform. |
 | `yerd service install <svc> <version>` | Install a service (`redis`/`mysql`/`mariadb`/`postgres`) from a prebuilt build. |
 | `yerd service start\|stop\|restart <svc>` | Start, stop, or restart a service (start also enables auto-start). |
 | `yerd service set-port <svc> <port>` / `logs <svc>` | Set a service's loopback port; tail its log. |

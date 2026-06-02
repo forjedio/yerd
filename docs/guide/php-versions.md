@@ -110,6 +110,26 @@ An update is the same atomic install flow: it moves `8.5.4` → `8.5.6` and neve
 Updates are strictly notify-only. The only automatic network call is the lightweight update check, which downloads nothing but a directory listing. Yerd downloads or swaps a PHP version only when you run `yerd update php`.
 :::
 
+## Tuning PHP settings
+
+Yerd keeps a small set of **global PHP ini defaults** that are applied to *every*
+installed version's FPM pool. Set and clear them with `set` / `unset`:
+
+```sh
+yerd set php memory_limit 512M
+yerd set php upload_max_filesize 64M
+yerd unset php memory_limit          # reset to PHP's built-in default
+```
+
+Only an allowlisted set of directives is accepted (e.g. `memory_limit`,
+`max_execution_time`, `upload_max_filesize`, `post_max_size`, `display_errors`,
+`error_reporting`), and the value is validated client-side before it's sent, so a
+typo is a clean error rather than a broken pool. The configured values are echoed
+back by `yerd list php` under a `settings:` block. See the [PHP CLI
+reference](../reference/cli/php#global-php-ini-settings) for the full list and the
+[Configuration Reference](../reference/configuration#php) for how they're stored
+and rendered into FPM config.
+
 ## Command summary
 
 | Command | What it does |
@@ -122,6 +142,8 @@ Updates are strictly notify-only. The only automatic network call is the lightwe
 | `yerd update php [<version>]` | Update one (or all) versions to the latest patch. |
 | `yerd uninstall php <version>` | Remove a version's files (blocked if a site uses it). |
 | `yerd restart php [<version>]` | Restart one (or all) running FPM pools. |
+| `yerd set php <setting> <value>` | Set a global PHP ini default (all versions). |
+| `yerd unset php <setting>` | Reset a global PHP ini default to PHP's built-in value. |
 
 Add `--json` to any command for machine-readable output.
 

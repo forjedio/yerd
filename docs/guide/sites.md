@@ -164,6 +164,10 @@ Detection runs in the daemon when a site is registered and whenever its project 
 
 The served path shows up in `yerd sites` (the `SERVED` column, `/` meaning the project root itself).
 
+::: info Static files are served directly
+A request that resolves to a real file under the served root (a stylesheet, image, `favicon.ico`, compiled JS, …) is returned straight from disk by the proxy, with a guessed `Content-Type` - it never touches PHP. Everything else is handed to the framework's front controller (`index.php`). PHP source files are never served as static bytes, and a symlink that escapes the served root is refused.
+:::
+
 ### Overriding the served path
 
 When detection guesses wrong, or you have an unconventional layout, set the served directory explicitly:

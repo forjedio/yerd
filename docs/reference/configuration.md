@@ -29,7 +29,7 @@ Every field below maps one-to-one to a field in `schema.rs`. The on-disk shape a
 
 | Key         | TOML type            | Meaning                                                            | Default        |
 | ----------- | -------------------- | ----------------------------------------------------------------- | -------------- |
-| `version`   | integer              | On-disk schema version. **Mandatory.**                            | `2`            |
+| `version`   | integer              | On-disk schema version. **Mandatory.**                            | `3`            |
 | `tld`       | string               | TLD served by Yerd's resolver.                                    | `"test"`       |
 | `dns_port`  | integer (u16)        | Loopback port for the embedded `.test` DNS responder.             | `1053`         |
 | `ports`     | table                | HTTP / HTTPS listen ports.                                        | `80` / `443`   |
@@ -37,15 +37,15 @@ Every field below maps one-to-one to a field in `schema.rs`. The on-disk shape a
 | `parked`    | table                | Parked directory paths.                                           | empty          |
 | `linked`    | array of tables      | Explicitly linked sites.                                          | empty          |
 | `overrides` | array of tables      | Per-site overrides for **parked** sites.                          | empty          |
-| `services`  | table                | Optional services the daemon auto-starts.                         | empty          |
+| `services`  | table                | Per-service `[services.<id>]` tables the daemon auto-starts.       | empty          |
 
 ::: warning Unknown keys are rejected
-The parser uses `deny_unknown_fields` at every level. A typo'd or stray key (top-level, or inside `[ports]`, `[php]`, `[parked]`, `[services]`, a `[[linked]]` entry, or an `[[overrides]]` entry) is a hard parse error - the daemon will refuse to load the file rather than silently ignore it.
+The parser uses `deny_unknown_fields` at every level. A typo'd or stray key (top-level, or inside `[ports]`, `[php]`, `[parked]`, a `[services.<id>]` table, a `[[linked]]` entry, or an `[[overrides]]` entry) is a hard parse error - the daemon will refuse to load the file rather than silently ignore it.
 :::
 
 ### `version`
 
-The schema version. This key is **required** - a missing `version` is a hard error (`MissingVersion`), and a non-integer or negative value is rejected (`NonIntegerVersion`). The current schema version is `2`, and Yerd always writes `version = 2`. Older `version = 1` files are migrated forward automatically on load. See [Schema versioning](#schema-versioning-and-migration) below.
+The schema version. This key is **required** - a missing `version` is a hard error (`MissingVersion`), and a non-integer or negative value is rejected (`NonIntegerVersion`). The current schema version is `3`, and Yerd always writes `version = 3`. Older `version = 1` / `version = 2` files are migrated forward automatically on load. See [Schema versioning](#schema-versioning-and-migration) below.
 
 ### `tld`
 
@@ -186,37 +186,55 @@ secure = false
 The `path` key is the parked site's document-root string, stored **byte-exact and never canonicalised** - it must match exactly the path the daemon's directory scan produces. Do not canonicalise, trim, or add a trailing slash by hand, or the override won't be applied. An empty `path` is rejected (`OverridePathEmpty`).
 :::
 
-### `[services]`
+### `[services.<id>]`
 
-Optional background services the daemon should auto-start. **This is roadmap surface** - the schema slot exists and is validated, but the services themselves are not yet wired up. See [Services (Roadmap)](../guide/services).
+Installed database / cache services, one table per engine, keyed by its `id`
+(`mysql`, `mariadb`, `postgres`, or `redis`). An unknown service id fails
+validation (`UnknownService`). See [Services & Databases](../guide/services).
 
-| Key       | TOML type        | Meaning                              | Default |
-| --------- | ---------------- | ------------------------------------ | ------- |
-| `enabled` | array of strings | Service identifiers to auto-start.   | `[]`    |
+| Key       | TOML type      | Meaning                                            | Default |
+| --------- | -------------- | -------------------------------------------------- | ------- |
+| `version` | string         | Installed version this engine is pinned to.        | unset   |
+| `port`    | integer (u16)  | Loopback port the engine listens on.               | unset   |
+| `enabled` | boolean        | Whether the daemon auto-starts it on boot.         | `true`  |
 
-The recognised identifiers are `mysql`, `mariadb`, `postgres`, and `redis`. An unknown service name fails validation (`UnknownService`).
+`version` and `port` are omitted from the wire when unset; `enabled` always carries a value.
 
 ```toml
-[services]
-enabled = ["mysql", "redis"]
+[services.mysql]
+version = "8.4"
+port = 3306
+enabled = true
+
+[services.redis]
+version = "8"
+port = 6379
+enabled = true
 ```
+
+You normally manage these through the [`yerd service`](../reference/cli/services) commands rather than by hand.
 
 ## Schema versioning and migration
 
-Every config file **must** carry a top-level `version = N` key - it is the single trigger for forward migration. The current schema version is `2`.
+Every config file **must** carry a top-level `version = N` key - it is the single trigger for forward migration. The current schema version is `3`.
 
 When the daemon loads a file, it routes on the version it finds:
 
 ```
-found  > CURRENT (2)   →  error (UnsupportedVersion) - a newer Yerd wrote this file
-found == CURRENT (2)   →  parse directly
-found  < CURRENT (2)   →  walk forward migration steps, then parse
+found  > CURRENT (3)   →  error (UnsupportedVersion) - a newer Yerd wrote this file
+found == CURRENT (3)   →  parse directly
+found  < CURRENT (3)   →  walk forward migration steps, then parse
 ```
 
-A file written by a *newer* Yerd than you are running is refused rather than misread. Older files are migrated forward in place, one version at a time, before the normal wire-deserialisation and validation run. The `v1 → v2` step is a bare version bump: v2 only **added** the optional `web_subpath` (`[[linked]]`) and `web_root` (`[[overrides]]`) keys, which default when absent, so a v1 file needs no structural rewrite. The on-disk schema version is deliberately decoupled from the IPC protocol version; the two evolve independently.
+A file written by a *newer* Yerd than you are running is refused rather than misread. Older files are migrated forward in place, one version at a time, before the normal wire-deserialisation and validation run:
+
+- **`v1 → v2`** is a bare version bump: v2 only **added** the optional `web_subpath` (`[[linked]]`) and `web_root` (`[[overrides]]`) keys, which default when absent, so a v1 file needs no structural rewrite.
+- **`v2 → v3`** is the first *structural* migration: it rewrites the old `[services]` shape (a flat `enabled = ["redis", ...]` array of identifiers) into per-service `[services.<id>]` tables, carrying each previously-enabled id forward as an `enabled = true` instance.
+
+The on-disk schema version is deliberately decoupled from the IPC protocol version; the two evolve independently.
 
 ::: warning Downgrades are refused, not misread
-Because v2 added keys *inside* the existing `[[linked]]` / `[[overrides]]` tables (which the parser checks strictly), a v1 daemon reading a v2 file that uses them would fail. The version routing turns that into a clean `UnsupportedVersion` error instead - downgrading Yerd against a v2 config is unsupported, but it fails loudly rather than corrupting state.
+Because later versions changed shapes the parser checks strictly (keys *inside* `[[linked]]` / `[[overrides]]` in v2, and the whole `[services]` shape in v3), an older daemon reading a newer file would fail. The version routing turns that into a clean `UnsupportedVersion` error instead - downgrading Yerd against a newer config is unsupported, but it fails loudly rather than corrupting state.
 :::
 
 ::: tip Forward-compatible by design
@@ -238,8 +256,8 @@ Yerd does not `fsync` the file or its parent directory after a save. For a devel
 This is a full, valid `yerd.toml` exercising every field:
 
 ```toml
-# Schema version - mandatory, always written as 2 by this release.
-version = 2
+# Schema version - mandatory, always written as 3 by this release.
+version = 3
 
 # TLD served by the resolver; sites resolve as <name>.test
 tld = "test"
@@ -288,9 +306,12 @@ php = "8.4"
 secure = true
 web_root = "public"
 
-# Optional services (roadmap). Known: mysql, mariadb, postgres, redis.
-[services]
-enabled = []
+# Installed database / cache services, one table per engine.
+# Known ids: mysql, mariadb, postgres, redis. Usually managed via `yerd service`.
+[services.redis]
+version = "8"
+port = 6379
+enabled = true
 ```
 
 ## Related pages

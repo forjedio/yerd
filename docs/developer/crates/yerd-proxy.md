@@ -26,9 +26,11 @@ crates/yerd-proxy/src/
 │   ├── mod.rs
 │   ├── cgi_params.rs   # build the CGI/1.1 param list for FastCGI
 │   ├── fcgi_codec.rs   # FastCGI record framing (encode/decode)
+│   ├── try_files.rs    # static-file candidate resolution + MIME map
 │   └── redirect.rs     # HTTP → HTTPS redirect URI builder
 └── forward/         # async per-backend forwarding I/O
     ├── mod.rs          # BoxBody + body helpers
+    ├── static_file.rs  # serve a real static file from the served root
     ├── fcgi.rs         # FastCGI forwarder (PHP-FPM)
     ├── http.rs         # plain HTTP/1.1 forwarder (FrankenPHP)
     └── upgrade.rs      # Connection: Upgrade tunnel (WebSocket etc.)
@@ -83,15 +85,15 @@ pub fn build_params(
 ) -> Vec<(Vec<u8>, Vec<u8>)>
 ```
 
-::: warning MVP routing policy: "everything to index.php"
-The current policy is Caddy-style front-controller routing - every request is mapped to the served root's `index.php`, regardless of the requested path:
+::: info Front-controller routing for dynamic requests
+For requests that reach FastCGI, the policy is Caddy-style front-controller routing - the request is mapped to the served root's `index.php`:
 
 - `SCRIPT_FILENAME = document_root / "index.php"`
 - `SCRIPT_NAME     = "/index.php"`
 - `PATH_INFO       = <original path>`
 - `REQUEST_URI     = <original path_and_query>`
 
-It does **not** yet serve static files directly or resolve arbitrary `.php` scripts on disk. That is a known limitation of the MVP forwarder.
+Static files are handled *before* this, by a `try_files`-style short-circuit (see [`try_files`](#try_files-static-file-resolution) and [`static_file`](#static_file-serving-real-files)): a request that resolves to a real, non-PHP file under the served root is returned directly, and only everything else falls through to the front controller. Arbitrary on-disk `.php` scripts are still routed through `index.php` (and PHP source is never served as a static file).
 :::
 
 ::: info `document_root` here is the site's *served web root*
@@ -109,6 +111,14 @@ pub fn build_redirect_uri(host: &str, path_and_query: &str, https_port: u16) -> 
 ```
 
 It strips any inbound port from `host` (handling both `host:80` and bracketed IPv6 `[::1]:80`), lowercases the host, defaults an empty path to `/`, and appends `:port` only when the HTTPS port is not 443. The `strip_port` helper is careful about IPv6: a bracketed literal keeps everything up to and including the `]`, and a plain host is only split when it contains exactly one colon (so an unbracketed IPv6 address is left intact). All of this is exercised by a table test (`build_table`) covering `app.test:80`, `[::1]:80`, `[2001:db8::1]:80`, and the 443-vs-8443 port cases.
+
+### `try_files` - static-file resolution {#try_files-static-file-resolution}
+
+`try_files` decides, purely, whether a request *could* be a static file and what its safe relative path and MIME type would be. It does no I/O - the [`static_file`](#static_file-serving-real-files) forwarder does the actual stat/read.
+
+- **`static_candidate(path)`** maps a URL path to a safe relative `PathBuf`, or `None` when the request must go to the front controller instead. It returns `None` for `/`, for a directory-style request (trailing slash), and for any traversal attempt. It percent-decodes the path and rejects encoded slashes and NUL bytes, so a decoded segment can never escape the served root.
+- **`is_php_source(path)`** flags PHP source extensions (`php`, `phtml`, `php3`–`php7`, `phps`, `pht`) so they are *never* served as static bytes - they fall through to FastCGI.
+- **`content_type_for(path)`** maps a file extension to a `Content-Type` for the response (a small MIME table, defaulting to `application/octet-stream`).
 
 ## The `Backend` enum
 
@@ -233,7 +243,8 @@ The hyper service is **infallible** - internal errors are logged and turned into
 3. **HTTP → HTTPS redirect.** On the HTTP listener, if `site.secure()` is true and a `redirect_port` is set, return `301 Moved Permanently` with `Location` built by `build_redirect_uri`.
 4. **Resolve backend** via `BackendResolver::backend_for(&site)`. Errors already in the connect/protocol/resolver family pass through; any other variant is wrapped in `ProxyError::BackendResolver { host, source }`.
 5. **Upgrade dispatch.** If `upgrade::is_upgrade(headers)`, forward to `upgrade::forward` for `FrankenPhp`, or return `501 Not Implemented` for FastCGI backends (FastCGI cannot model a duplex byte stream).
-6. **Normal dispatch.** `FrankenPhp` → `http::forward`; `PhpFpm`/`PhpFpmTcp` → `fcgi::forward`.
+6. **Static-file short-circuit.** For the FastCGI backends (`PhpFpm`/`PhpFpmTcp`), `static_file::try_serve` is attempted first: a GET/HEAD request that resolves to a real, non-PHP file under the served root is returned directly with a guessed `Content-Type`. (`FrankenPhp` serves its own static files, so this step is skipped for it.)
+7. **Normal dispatch.** Anything not served as a static file goes to the front controller: `FrankenPhp` → `http::forward`; `PhpFpm`/`PhpFpmTcp` → `fcgi::forward`.
 
 The `Listener::{Http, Https}` discriminator is threaded through so the redirect rule and the `HTTPS=on` CGI var both know which listener the connection arrived on.
 
@@ -246,6 +257,17 @@ pub type BoxBody = http_body_util::combinators::BoxBody<bytes::Bytes, std::io::E
 ```
 
 with `empty_body()` (for 301/404/501/101) and `bytes_body(&'static [u8])` helpers.
+
+### `static_file` - serving real files {#static_file-serving-real-files}
+
+`static_file::try_serve` is the static short-circuit for the FastCGI backends. Given the served root and the request, it:
+
+1. asks [`try_files::static_candidate`](#try_files-static-file-resolution) for a safe relative path (returns `None` - fall through to FastCGI - for `/`, directory requests, traversal, or a non-GET/HEAD method);
+2. refuses PHP source (`is_php_source`) so a `.php` file is never returned as bytes;
+3. joins the candidate onto the served root, **canonicalises**, and verifies the result is still inside the root - a symlink that escapes the root is rejected (fall through, not served);
+4. on a hit, reads the file and returns `200 OK` with the `Content-Type` from `content_type_for` and the `Server: <PROXY_SERVER_ID>` header (a `HEAD` returns an empty body).
+
+A `None` result simply means "not a static file" and the request continues to the front controller.
 
 ### `fcgi` - the PHP-FPM forwarder
 

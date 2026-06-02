@@ -43,8 +43,9 @@ pub use message::{decode_message, encode_message};
 pub use request::Request;
 pub use response::{ErrorCode, PhpUpdate, Response};
 pub use status::{
-    CaStatus, Diagnosis, DiagnosisCode, FixReport, FixResult, PhpPoolStatus, PoolRunState,
-    PortStatus, Severity, SiteCounts, StatusReport,
+    CaStatus, DatabaseSummary, Diagnosis, DiagnosisCode, FixReport, FixResult, PhpPoolStatus,
+    PoolRunState, PortStatus, ServiceAvailability, ServiceRunState, ServiceStatus, Severity,
+    SiteCounts, StatusReport,
 };
 
 pub mod types {
@@ -141,6 +142,8 @@ The variants, grouped by area:
 | Liveness / info | `Ping`, `DaemonInfo`, `Status`, `Diagnose`, `DoctorFix`, `RestartDaemon` |
 | Sites | `ListSites`, `Park`, `Link`, `Unlink`, `ListParked`, `Unpark`, `SetPhp`, `SetSecure`, `SetWebRoot` |
 | PHP | `InstallPhp`, `SetDefaultPhp`, `ListPhp`, `UpdatePhp`, `CheckPhpUpdates`, `AvailablePhp`, `SetPhpSettings`, `RestartPhp`, `RestartAllPhp`, `UninstallPhp` |
+| Services | `ListServices`, `AvailableServices`, `InstallService`, `UninstallService`, `StartService`, `StopService`, `RestartService`, `SetServicePort`, `ServiceLogs`, `ChangeServiceVersion` |
+| Databases | `CreateDatabase`, `ListDatabases`, `DropDatabase`, `BackupDatabase`, `RestoreDatabase` |
 
 A few details that the source pins down and are worth knowing as a contributor:
 
@@ -168,6 +171,10 @@ Same shape - internally tagged, `snake_case`, `#[non_exhaustive]`:
 | `Status` | `Status` | `report: Box<StatusReport>` |
 | `Diagnoses` | `Diagnose` | `items: Vec<Diagnosis>` |
 | `DoctorFix` | `DoctorFix` | `report: FixReport` |
+| `Services` | `ListServices` | `services: Vec<ServiceStatus>` |
+| `AvailableServices` | `AvailableServices` | `services: Vec<ServiceAvailability>` |
+| `ServiceLogs` | `ServiceLogs` | `lines: Vec<String>` |
+| `Databases` | `ListDatabases` | `databases: Vec<DatabaseSummary>` |
 
 Notable behaviours:
 
@@ -181,7 +188,7 @@ Notable behaviours:
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
-pub enum ErrorCode { NotFound, AlreadyExists, InvalidPath, Internal }
+pub enum ErrorCode { NotFound, AlreadyExists, InvalidPath, PortInUse, Internal }
 ```
 
 `code` is machine-readable; `message` is for human display. There is **no** `#[serde(other)]` catch-all: an unknown code from a newer daemon fails closed as `IpcError::Decode`, which is the broad "version mismatch" signal until a handshake exists. `Internal` is the catch-all for daemon-side failures that don't fit a typed code - the guidance in the source is to *expand* the enum rather than overload `Internal`.
@@ -196,9 +203,9 @@ One entry per installed minor that has a newer published patch (e.g. version `8.
 
 ## Status & doctor payloads (`status.rs`)
 
-These types ride inside `Response::Status`, `Response::Diagnoses`, and `Response::DoctorFix`. The headline list:
+These types ride inside `Response::Status`, `Response::Diagnoses`, `Response::DoctorFix`, and the service/database responses. The headline list:
 
-`StatusReport`, `PortStatus`, `CaStatus`, `SiteCounts`, `PhpPoolStatus`, `PoolRunState`, `Diagnosis`, `Severity`, `DiagnosisCode`, `FixReport`, `FixResult`.
+`StatusReport`, `PortStatus`, `CaStatus`, `SiteCounts`, `PhpPoolStatus`, `PoolRunState`, `ServiceStatus`, `ServiceRunState`, `ServiceAvailability`, `DatabaseSummary`, `Diagnosis`, `Severity`, `DiagnosisCode`, `FixReport`, `FixResult`.
 
 ::: info No `f64` on the wire
 `Response` derives `Eq`, so nothing reachable from it may contain a float. The system load average therefore crosses as integer hundredths - `StatusReport.load_avg` is `Option<[u32; 3]>` where each value is `load × 100`. The CLI renders it back to `x.xx`. The daemon does the conversion from the platform layer's `f64` reading at assembly time.
@@ -206,7 +213,7 @@ These types ride inside `Response::Status`, `Response::Diagnoses`, and `Response
 
 `StatusReport` follows the same additive-and-back-compatible discipline as the envelopes: optional probe fields (`port_redirect` and the cross-platform `foreign_web_listener`, plus macOS-only `resolver_backup`) are `#[serde(default, skip_serializing_if = "Option::is_none")]` so the wire stays additive and older daemons stay decodable; `daemon_version` is `#[serde(default)]` so a newer client decoding an older daemon's status gets `""` (rendered "unknown") instead of failing the whole decode.
 
-`PoolRunState` is `Running` / `Stopped` / `Failed`; `Severity` is `Ok` / `Warn` / `Fail`; `DiagnosisCode` enumerates the doctor checks (`DaemonDown`, `PortFallback`, `ForeignWebListener`, `CaNotTrusted`, `ResolverNotInstalled`, `NoPhpInstalled`, `DefaultPhpNotInstalled`, `FpmPoolFailed`, `PhpUpdateAvailable`, `NoSites`, `ResolverBackupSaved`, `AllGood`). See [Diagnostics](../../guide/diagnostics) for what these mean to a user.
+`PoolRunState` is `Running` / `Stopped` / `Failed`; `ServiceRunState` is `Running` / `Stopped` / `Failed`; `Severity` is `Ok` / `Warn` / `Fail`; `DiagnosisCode` enumerates the doctor checks (`DaemonDown`, `PortFallback`, `ForeignWebListener`, `CaNotTrusted`, `ResolverNotInstalled`, `NoPhpInstalled`, `DefaultPhpNotInstalled`, `FpmPoolFailed`, `ServiceFailed`, `PhpUpdateAvailable`, `NoSites`, `ResolverBackupSaved`, `AllGood`). See [Diagnostics](../../guide/diagnostics) for what these mean to a user.
 
 ## Errors (`error.rs`)
 

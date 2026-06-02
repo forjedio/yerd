@@ -5,8 +5,11 @@
 //! machine (under the database [`yerd_supervise::supervisor::SupervisorPolicy`]),
 //! and reports their live state. Mirrors `yerd-php` in structure.
 //!
-//! Phase 1 ships **Redis (Valkey)** end-to-end; `MySQL` / `MariaDB` / Postgres land
-//! in Phase 2 (the `Service` model already enumerates them).
+//! All four engines - **Redis (Valkey)**, `MySQL`, `MariaDB`, and Postgres - are
+//! implemented end-to-end (supervision, datadir init, config rendering, health
+//! probing, and SQL database administration for the three SQL engines). Whether a
+//! given engine/version installs depends only on whether a prebuilt build is
+//! published in the hosted listing for the platform.
 
 #![forbid(unsafe_code)]
 
