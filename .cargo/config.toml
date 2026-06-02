@@ -1,0 +1,3 @@
+[alias]
+# Run build-automation tasks: `cargo xtask <cmd>` (e.g. `cargo xtask deb`).
+xtask = "run --package xtask --"

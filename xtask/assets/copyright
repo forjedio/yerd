@@ -1,0 +1,10 @@
+Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+Upstream-Name: yerd
+Source: https://github.com/forjedio/yerd
+
+Files: *
+Copyright: Forjed <support@forjed.io>
+License: MIT or Apache-2.0
+ This package may be used under the terms of either the MIT license or the
+ Apache License, Version 2.0, at your option. On Debian systems the full text
+ of the Apache-2.0 license is in /usr/share/common-licenses/Apache-2.0.

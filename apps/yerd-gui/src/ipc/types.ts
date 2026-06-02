@@ -1,0 +1,259 @@
+/**
+ * TypeScript mirrors of the `yerd-ipc` wire JSON.
+ *
+ * These are a *contract*, pinned by hand to the Rust source. Each type notes
+ * its origin so review catches drift; `tests/wire_stability.rs` and the
+ * `Request`/`Response` enums are the source of truth:
+ *   - crates/yerd-ipc/src/request.rs   (Request — not consumed here; the GUI
+ *     never builds raw Requests, the bridge does — kept for reference)
+ *   - crates/yerd-ipc/src/response.rs  (Response, PhpUpdate, ErrorCode)
+ *   - crates/yerd-ipc/src/status.rs    (StatusReport and friends)
+ *   - crates/yerd-core/src/site.rs     (Site, SiteKind)
+ *
+ * Wire conventions: enums are internally tagged on `type`, `snake_case`;
+ * `PhpVersion` serialises as the string `"8.5"`; `Option<T>` is `T | null`.
+ */
+
+// ── core domain ────────────────────────────────────────────────────────────
+
+/** A PHP minor version on the wire is the bare string, e.g. `"8.5"`. */
+export type PhpVersion = string;
+
+/** crates/yerd-core/src/site.rs — SiteKind. */
+export type SiteKind = "parked" | "linked";
+
+/** crates/yerd-core/src/site.rs — Site (serialised field order is fixed). */
+export interface Site {
+  name: string;
+  document_root: string;
+  /** Served web root, relative to document_root (e.g. "public" for Laravel).
+   *  Omitted on the wire when empty (= serve the document root itself), so it is
+   *  optional here. */
+  web_subpath?: string;
+  php: PhpVersion;
+  secure: boolean;
+  kind: SiteKind;
+}
+
+// ── status payloads (status.rs) ────────────────────────────────────────────
+
+export interface PortStatus {
+  requested: number;
+  bound: number;
+  fell_back: boolean;
+}
+
+export interface CaStatus {
+  path: string;
+  fingerprint: string;
+  /** Tri-state: true / false / null = "probe could not determine" (NOT false). */
+  trusted_system: boolean | null;
+}
+
+export interface SiteCounts {
+  parked: number;
+  linked: number;
+  secured: number;
+}
+
+export type PoolRunState = "running" | "stopped" | "failed";
+
+/** crates/yerd-ipc/src/status.rs — ServiceRunState. */
+export type ServiceRunState = "running" | "stopped" | "failed";
+
+/** crates/yerd-ipc/src/status.rs — ServiceStatus (integer-only fields). */
+export interface ServiceStatus {
+  service: string;
+  display_name: string;
+  installed_versions: string[];
+  selected_version: string | null;
+  state: ServiceRunState;
+  pid: number | null;
+  listen: string | null;
+  port: number;
+  enabled: boolean;
+  supports_databases: boolean;
+}
+
+/** crates/yerd-ipc/src/status.rs — ServiceAvailability. */
+export interface ServiceAvailability {
+  service: string;
+  available: string[];
+  installed: string[];
+}
+
+export interface PhpPoolStatus {
+  version: PhpVersion;
+  installed_patch: string | null;
+  state: PoolRunState;
+  pid: number | null;
+  listen: string | null;
+  rss_bytes: number | null;
+  update_available: string | null;
+}
+
+export interface StatusReport {
+  daemon_pid: number;
+  uptime_secs: number;
+  /** Daemon process RSS in bytes (covers the in-process proxy + DNS). null = unknown. */
+  daemon_rss_bytes: number | null;
+  tld: string;
+  http: PortStatus;
+  https: PortStatus;
+  dns_addr: string;
+  ca: CaStatus;
+  /** Tri-state — null means "unknown", never coerce to false. */
+  resolver_installed: boolean | null;
+  /** macOS: is the pf redirect carrying 80/443 to the rootless ports? true =
+   *  privileged ports served via the redirect, false = not, null = unknown / not
+   *  applicable (Linux binds directly after setcap). */
+  port_redirect: boolean | null;
+  /** True when a non-Yerd process is listening on a privileged web port (80/443)
+   *  — a foreign squatter. Confirmed via the proxy's Server marker, so it never
+   *  misreads Yerd as foreign. false = no conflict, null/undefined = not probed.
+   *  Cross-platform (unlike port_redirect). */
+  foreign_web_listener?: boolean | null;
+  /** macOS: absolute path of the backup Yerd saved when installing the resolver
+   *  replaced a pre-existing /etc/resolver/<tld>. Omitted (undefined) when nothing
+   *  was replaced or the backup is older than the daemon's reporting window. */
+  resolver_backup?: string | null;
+  default_php: PhpVersion;
+  php: PhpPoolStatus[];
+  sites: SiteCounts;
+  /** Each entry is load × 100 (hundredths); render via formatLoadAvg. */
+  load_avg: [number, number, number] | null;
+  /** The daemon's own version (e.g. "2.0.1"). Empty/absent against a daemon
+   *  predating version reporting (the Rust field is `#[serde(default)]`); render
+   *  "unknown" in that case. */
+  daemon_version: string;
+  /** Per-service status. Omitted (undefined) by a daemon with no services
+   *  (the Rust field is `#[serde(default, skip_serializing_if)]`). */
+  services?: ServiceStatus[];
+}
+
+export type Severity = "ok" | "warn" | "fail";
+
+export type DiagnosisCode =
+  | "daemon_down"
+  | "port_fallback"
+  | "foreign_web_listener"
+  | "ca_not_trusted"
+  | "resolver_not_installed"
+  | "no_php_installed"
+  | "default_php_not_installed"
+  | "fpm_pool_failed"
+  | "php_update_available"
+  | "no_sites"
+  | "resolver_backup_saved"
+  | "service_failed"
+  | "all_good";
+
+export interface Diagnosis {
+  code: DiagnosisCode;
+  severity: Severity;
+  title: string;
+  detail: string;
+  remedy: string | null;
+}
+
+export interface FixResult {
+  code: DiagnosisCode;
+  ok: boolean;
+  message: string;
+}
+
+export interface FixReport {
+  performed: FixResult[];
+  manual: Diagnosis[];
+}
+
+// ── response variants (response.rs) ────────────────────────────────────────
+
+export interface PhpUpdate {
+  version: PhpVersion;
+  installed: string;
+  latest: string;
+}
+
+export type ErrorCode =
+  | "not_found"
+  | "already_exists"
+  | "invalid_path"
+  | "port_in_use"
+  | "internal";
+
+/**
+ * Response is internally tagged on `type`. The bridge returns the decoded
+ * Response directly; helpers below narrow it. A `Response::Error` is converted
+ * to a thrown `IpcError` by the client layer, so views never see `type:error`.
+ */
+export type Response =
+  | { type: "pong" }
+  | { type: "sites"; sites: Site[] }
+  | { type: "ok" }
+  | { type: "error"; code: ErrorCode; message: string }
+  | { type: "parked"; paths: string[] }
+  | {
+      type: "info";
+      dns_addr: string;
+      tld: string;
+      ca_path: string;
+      ca_fingerprint: string;
+      /** Rootless bound ports; `#[serde(default)]` on the Rust side → may be
+       *  absent (0) against an older daemon. */
+      http_port?: number;
+      https_port?: number;
+    }
+  | {
+      type: "php_versions";
+      installed: PhpVersion[];
+      default: PhpVersion;
+      updates?: PhpUpdate[];
+      settings?: Record<string, string>;
+    }
+  | {
+      type: "available_php";
+      available: PhpVersion[];
+      installed: PhpVersion[];
+    }
+  | { type: "status"; report: StatusReport }
+  | { type: "diagnoses"; items: Diagnosis[] }
+  | { type: "doctor_fix"; report: FixReport }
+  | { type: "services"; services: ServiceStatus[] }
+  | { type: "available_services"; services: ServiceAvailability[] }
+  | { type: "service_logs"; lines: string[] }
+  | { type: "databases"; databases: DatabaseSummary[] };
+
+/** One user database in a SQL service (mirrors the daemon's `DatabaseSummary`). */
+export interface DatabaseSummary {
+  name: string;
+}
+
+// Narrowed aliases for the variants the views actually read.
+export type InfoResponse = Extract<Response, { type: "info" }>;
+export type SitesResponse = Extract<Response, { type: "sites" }>;
+export type ParkedResponse = Extract<Response, { type: "parked" }>;
+export type PhpVersionsResponse = Extract<Response, { type: "php_versions" }>;
+export type AvailablePhpResponse = Extract<Response, { type: "available_php" }>;
+export type StatusResponse = Extract<Response, { type: "status" }>;
+export type DiagnosesResponse = Extract<Response, { type: "diagnoses" }>;
+export type DoctorFixResponse = Extract<Response, { type: "doctor_fix" }>;
+export type ServicesResponse = Extract<Response, { type: "services" }>;
+export type AvailableServicesResponse = Extract<Response, { type: "available_services" }>;
+export type ServiceLogsResponse = Extract<Response, { type: "service_logs" }>;
+
+/** Privilege targets for the OS-elevated `yerd elevate` host command. */
+export type ElevateTarget = "trust" | "resolver" | "ports";
+
+/**
+ * Login-autostart state for the General tab (host command `get_autostart`).
+ * `daemonSupported` is false when no per-user service manager exists (e.g. a
+ * Linux box without systemd `--user`), in which case the daemon toggle is
+ * disabled in the UI.
+ */
+export interface AutostartState {
+  daemon: boolean;
+  daemonSupported: boolean;
+  gui: boolean;
+  guiMinimized: boolean;
+}

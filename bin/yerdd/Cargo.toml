@@ -1,0 +1,53 @@
+[package]
+name                   = "yerdd"
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+publish.workspace      = true
+description            = "Yerd unprivileged daemon — wires every Phase-1 library together."
+
+[[bin]]
+name = "yerdd"
+path = "src/main.rs"
+
+[lib]
+name = "yerdd"
+path = "src/lib.rs"
+
+[dependencies]
+yerd-core      = { path = "../../crates/yerd-core" }
+yerd-config    = { path = "../../crates/yerd-config" }
+yerd-ipc       = { path = "../../crates/yerd-ipc", features = ["transport"] }
+yerd-tls       = { path = "../../crates/yerd-tls" }
+yerd-platform  = { path = "../../crates/yerd-platform" }
+yerd-dns       = { path = "../../crates/yerd-dns" }
+yerd-php       = { path = "../../crates/yerd-php" }
+yerd-services  = { path = "../../crates/yerd-services" }
+yerd-supervise = { path = "../../crates/yerd-supervise" }
+yerd-proxy     = { path = "../../crates/yerd-proxy" }
+yerd-doctor    = { path = "../../crates/yerd-doctor" }
+thiserror      = { workspace = true }
+async-trait    = { workspace = true }
+clap           = { workspace = true }
+tokio          = { workspace = true, features = ["net", "rt-multi-thread", "macros", "signal", "time", "io-util", "sync", "process"] }
+tracing        = { workspace = true }
+tracing-subscriber = { workspace = true }
+interprocess   = { workspace = true }
+fs4            = { workspace = true }
+rustls         = { workspace = true, features = ["ring"] }
+rustls-pki-types = { workspace = true, features = ["alloc", "std"] }
+time           = { workspace = true }
+# PHP install path: fetch (rustls, no OpenSSL) + unpack prebuilt builds.
+reqwest        = { workspace = true }
+flate2         = { workspace = true }
+tar            = { workspace = true }
+notify-debouncer-mini = "0.4"
+
+[dev-dependencies]
+tempfile       = { workspace = true }
+serde_json     = { workspace = true }
+tokio          = { workspace = true, features = ["macros", "rt-multi-thread", "net", "io-util", "sync", "time"] }
+
+[lints]
+workspace = true

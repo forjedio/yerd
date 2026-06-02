@@ -1,0 +1,145 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    /* Neutral grays (no blue tint), mirroring the charcoal dark theme for a
+       native macOS / Herd feel. The main content area is white (`--background`);
+       the chrome — titlebar + sidebar — is the soft gray (`--muted`), applied in
+       those components, so the content reads as the bright focus framed by gray
+       chrome. */
+    --background: 0 0% 100%;
+    --foreground: 0 0% 9%;
+    --card: 0 0% 100%;
+    --card-foreground: 0 0% 9%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 0 0% 9%;
+    --primary: 0 0% 9%;
+    --primary-foreground: 0 0% 98%;
+    --secondary: 0 0% 93%;
+    --secondary-foreground: 0 0% 9%;
+    --muted: 0 0% 93%;
+    --muted-foreground: 0 0% 40%;
+    --accent: 0 0% 93%;
+    --accent-foreground: 0 0% 9%;
+    --destructive: 0 84.2% 60.2%;
+    --destructive-foreground: 0 0% 98%;
+    --success: 142 71% 40%;
+    --success-foreground: 0 0% 98%;
+    --warning: 38 92% 48%;
+    --warning-foreground: 0 0% 9%;
+    --border: 0 0% 89%;
+    --input: 0 0% 89%;
+    --ring: 0 0% 45%;
+    --radius: 0.5rem;
+  }
+
+  .dark {
+    /* Neutral charcoal grays (no blue tint), lifted off pure-black so panels and
+       borders read clearly — closer to a native macOS / Herd dark surface. */
+    --background: 0 0% 11%;
+    --foreground: 0 0% 98%;
+    --card: 0 0% 14.5%;
+    --card-foreground: 0 0% 98%;
+    --popover: 0 0% 14.5%;
+    --popover-foreground: 0 0% 98%;
+    --primary: 0 0% 98%;
+    --primary-foreground: 0 0% 9%;
+    --secondary: 0 0% 20%;
+    --secondary-foreground: 0 0% 98%;
+    --muted: 0 0% 20%;
+    --muted-foreground: 0 0% 66%;
+    --accent: 0 0% 20%;
+    --accent-foreground: 0 0% 98%;
+    /* Bright red (matches the light theme's lightness) so it reads on charcoal
+       surfaces in every role: as `text-destructive` (Uninstall/Delete menu
+       items, toast errors), as `bg-destructive` status pips, and as a button
+       fill. A darker red was invisible as text/pips on the dark background. */
+    --destructive: 0 84.2% 60.2%;
+    --destructive-foreground: 0 0% 98%;
+    --success: 142 71% 45%;
+    --success-foreground: 144 61% 10%;
+    --warning: 38 92% 50%;
+    --warning-foreground: 0 0% 9%;
+    --border: 0 0% 20%;
+    --input: 0 0% 20%;
+    --ring: 0 0% 70%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+    /* Native desktop feel: text isn't selectable by default… */
+    -webkit-user-select: none;
+    user-select: none;
+  }
+  body {
+    /* The window is transparent (decorationless, see tauri.conf.json) so the
+       corners can be rounded by #app; keep the body itself unpainted or it
+       would fill those corners back in. */
+    @apply bg-transparent text-foreground font-sans antialiased;
+    font-feature-settings: "rlig" 1, "calt" 1;
+    /* Grayscale antialiasing is the key legibility fix in a macOS WebView:
+       without it WebKit renders text with subpixel/heavier smoothing that looks
+       muddy on the translucent surface. `optimizeLegibility` turns on kerning +
+       ligatures to match native text rendering. */
+    text-rendering: optimizeLegibility;
+  }
+  /* The app fills the webview; the shell handles internal scrolling. */
+  html,
+  body,
+  #app {
+    height: 100%;
+  }
+  /* The opaque, rounded surface — its overflow clip gives every child (the
+     titlebar, sidebar) native macOS-style rounded corners. */
+  #app {
+    @apply overflow-hidden bg-background;
+    border-radius: 10px;
+  }
+
+  /* …but real inputs and value/code text stay selectable & copyable. */
+  input,
+  textarea,
+  [contenteditable="true"],
+  code,
+  .font-mono,
+  .selectable {
+    -webkit-user-select: text;
+    user-select: text;
+  }
+  /* No ghost-dragging images (e.g. the logo). */
+  img {
+    -webkit-user-drag: none;
+  }
+
+  /* Slim, neutral scrollbars. Light thumb on the light theme, dark thumb on the
+     dark theme — a single hardcoded gray looked heavy on white. */
+  ::-webkit-scrollbar {
+    width: 12px;
+    height: 12px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background-color: hsl(0 0% 80%);
+    border: 3px solid transparent;
+    background-clip: padding-box;
+    border-radius: 9999px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background-color: hsl(0 0% 68%);
+  }
+  .dark ::-webkit-scrollbar-thumb {
+    background-color: hsl(0 0% 32%);
+  }
+  .dark ::-webkit-scrollbar-thumb:hover {
+    background-color: hsl(0 0% 44%);
+  }
+  ::-webkit-scrollbar-corner {
+    background: transparent;
+  }
+}

@@ -1,0 +1,226 @@
+//! Schema-versioning machinery: read the `version` key and walk forward
+//! migration steps.
+
+use toml::Value;
+
+use crate::error::MigrationErrorReason;
+use crate::ConfigError;
+
+/// A forward migration step: `v_N → v_{N+1}`, applied in place to the
+/// parsed [`toml::Value`]. The step is responsible for leaving the
+/// `version` key set to `N + 1` on success.
+///
+/// Migrations need not produce a *valid* config — the parser unconditionally
+/// runs wire-mirror deserialisation (per-field invariants via `yerd-core`)
+/// and [`crate::Config::validate`] (cross-field invariants) after the final
+/// migration step, so the validator is the gate.
+pub(crate) type MigrationStep = fn(&mut Value) -> Result<(), ConfigError>;
+
+/// Forward-migration steps, indexed so that **`STEPS[N]` walks `vN → v(N+1)`**.
+/// This matches [`up`], which indexes `STEPS[current]` (== the version being
+/// migrated *from*). Example: a v1 file is migrated by `STEPS[1]`. When
+/// `CURRENT_VERSION == 3`, `STEPS = [v0→v1, v1→v2, v2→v3]`, length 3.
+///
+/// `STEPS[0]` (v0→v1) is only reachable via a hand-crafted `version = 0` file —
+/// v0 was never written to disk — but it must exist so that `STEPS[1]` does.
+pub(crate) const STEPS: &[MigrationStep] = &[migrate_v0_to_v1, migrate_v1_to_v2, migrate_v2_to_v3];
+
+/// `v0 → v1`: bump the version. v0 predates any shipped config, so there is no
+/// structural change to apply.
+fn migrate_v0_to_v1(value: &mut Value) -> Result<(), ConfigError> {
+    set_version(value, 1)
+}
+
+/// `v1 → v2`: bump the version. v2 added the optional `web_subpath`
+/// (`[[linked]]`) and `web_root` (`[[overrides]]`) keys, both of which default
+/// when absent, so an in-place version bump is the entire migration.
+fn migrate_v1_to_v2(value: &mut Value) -> Result<(), ConfigError> {
+    set_version(value, 2)
+}
+
+/// `v2 → v3`: the first *structural* migration. v2 stored enabled services as
+/// `[services]\nenabled = ["redis", "mysql"]`; v3 stores per-service tables
+/// `[services.redis]\nenabled = true`. Rewrite the `enabled` array (if present)
+/// into those tables, then drop the `enabled` key. Anything else under
+/// `[services]` is left untouched so a genuinely malformed table still fails the
+/// (`deny_unknown_fields`) wire deserialisation that runs after migration.
+fn migrate_v2_to_v3(value: &mut Value) -> Result<(), ConfigError> {
+    if let Some(services) = value
+        .as_table_mut()
+        .and_then(|t| t.get_mut("services"))
+        .and_then(Value::as_table_mut)
+    {
+        if let Some(Value::Array(enabled)) = services.remove("enabled") {
+            for entry in enabled {
+                if let Value::String(name) = entry {
+                    let mut inst = toml::value::Table::new();
+                    inst.insert("enabled".to_string(), Value::Boolean(true));
+                    // Last-wins on a duplicate (only reachable by hand-editing).
+                    services.insert(name, Value::Table(inst));
+                }
+            }
+        }
+    }
+    set_version(value, 3)
+}
+
+/// Set the top-level `version` key, erroring if the root is not a table.
+fn set_version(value: &mut Value, n: i64) -> Result<(), ConfigError> {
+    let table = value.as_table_mut().ok_or(ConfigError::Migration {
+        reason: MigrationErrorReason::MissingVersion,
+    })?;
+    table.insert("version".to_string(), Value::Integer(n));
+    Ok(())
+}
+
+/// Reads the top-level `version` key.
+///
+/// TOML's grammar guarantees a table root, so the non-table branch is
+/// unreachable through [`toml::from_str`]. It still exists as a defensive
+/// `as_table()` check; tests in `mod tests` construct a non-table
+/// [`Value`] directly to exercise it.
+pub(crate) fn read_version(value: &Value) -> Result<u32, ConfigError> {
+    let table = value.as_table().ok_or(ConfigError::Migration {
+        reason: MigrationErrorReason::MissingVersion,
+    })?;
+    let v = table.get("version").ok_or(ConfigError::Migration {
+        reason: MigrationErrorReason::MissingVersion,
+    })?;
+    let n = v.as_integer().ok_or(ConfigError::Migration {
+        reason: MigrationErrorReason::NonIntegerVersion,
+    })?;
+    u32::try_from(n).map_err(|_| ConfigError::Migration {
+        reason: MigrationErrorReason::NonIntegerVersion,
+    })
+}
+
+/// Walks [`STEPS`] from `found` up to [`crate::CURRENT_VERSION`].
+///
+/// Caller has already verified `found < CURRENT_VERSION`.
+pub(crate) fn up(value: &mut Value, found: u32) -> Result<(), ConfigError> {
+    let mut current = found;
+    while current < crate::CURRENT_VERSION {
+        let idx = usize::try_from(current).map_err(|_| ConfigError::Migration {
+            reason: MigrationErrorReason::MissingStep { from: current },
+        })?;
+        let step = STEPS.get(idx).ok_or(ConfigError::Migration {
+            reason: MigrationErrorReason::MissingStep { from: current },
+        })?;
+        step(value)?;
+        current = current.checked_add(1).ok_or(ConfigError::Migration {
+            reason: MigrationErrorReason::MissingStep { from: current },
+        })?;
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing
+)]
+mod tests {
+    use toml::Value;
+
+    use super::*;
+
+    #[test]
+    fn steps_cover_every_version_below_current() {
+        // One step per version from 0..CURRENT_VERSION, so `up()` can walk any
+        // on-disk version forward without a MissingStep.
+        assert_eq!(STEPS.len(), crate::CURRENT_VERSION as usize);
+    }
+
+    #[test]
+    fn current_version_pinned_to_three() {
+        assert_eq!(crate::CURRENT_VERSION, 3);
+    }
+
+    #[test]
+    fn v2_to_v3_rewrites_enabled_array_into_service_tables() {
+        let mut v: Value =
+            toml::from_str("version = 2\n[services]\nenabled = [\"redis\", \"mysql\"]\n").unwrap();
+        migrate_v2_to_v3(&mut v).unwrap();
+        assert_eq!(read_version(&v).unwrap(), 3);
+        let services = v.get("services").and_then(Value::as_table).unwrap();
+        assert!(
+            services.get("enabled").is_none(),
+            "enabled array must be removed"
+        );
+        for name in ["redis", "mysql"] {
+            let inst = services.get(name).and_then(Value::as_table).unwrap();
+            assert_eq!(inst.get("enabled"), Some(&Value::Boolean(true)));
+        }
+    }
+
+    #[test]
+    fn read_version_accepts_canonical() {
+        let v: Value = toml::from_str("version = 1").unwrap();
+        assert_eq!(read_version(&v).unwrap(), 1);
+    }
+
+    #[test]
+    fn read_version_rejects_missing_key() {
+        let v: Value = toml::from_str("tld = \"test\"").unwrap();
+        match read_version(&v) {
+            Err(ConfigError::Migration {
+                reason: MigrationErrorReason::MissingVersion,
+            }) => {}
+            other => panic!("expected MissingVersion, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn read_version_rejects_non_integer() {
+        let v: Value = toml::from_str("version = \"1\"").unwrap();
+        match read_version(&v) {
+            Err(ConfigError::Migration {
+                reason: MigrationErrorReason::NonIntegerVersion,
+            }) => {}
+            other => panic!("expected NonIntegerVersion, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn read_version_rejects_negative() {
+        let v: Value = toml::from_str("version = -1").unwrap();
+        match read_version(&v) {
+            Err(ConfigError::Migration {
+                reason: MigrationErrorReason::NonIntegerVersion,
+            }) => {}
+            other => panic!("expected NonIntegerVersion for negative, got {other:?}"),
+        }
+    }
+
+    /// Pins the defensive non-table branch via a hand-constructed
+    /// `Value::Integer(42)` — unreachable through `toml::from_str`
+    /// (TOML's grammar guarantees a table root).
+    #[test]
+    fn read_version_rejects_non_table_root_via_constructed_value() {
+        let v = Value::Integer(42);
+        match read_version(&v) {
+            Err(ConfigError::Migration {
+                reason: MigrationErrorReason::MissingVersion,
+            }) => {}
+            other => panic!("expected MissingVersion via non-table branch, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn up_migrates_v1_to_current_via_steps_index_one() {
+        // A real v1 file is migrated by STEPS[1] then STEPS[2] up to current.
+        let mut v: Value = toml::from_str("version = 1").unwrap();
+        up(&mut v, 1).unwrap();
+        assert_eq!(read_version(&v).unwrap(), crate::CURRENT_VERSION);
+    }
+
+    #[test]
+    fn up_walks_v0_all_the_way_to_current() {
+        // A hand-crafted v0 file walks STEPS[0], [1], [2] up to current.
+        let mut v: Value = toml::from_str("version = 0").unwrap();
+        up(&mut v, 0).unwrap();
+        assert_eq!(read_version(&v).unwrap(), crate::CURRENT_VERSION);
+    }
+}

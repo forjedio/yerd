@@ -1,0 +1,29 @@
+[package]
+name                   = "yerd-platform"
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+publish.workspace      = true
+description            = "OS abstraction layer for Yerd (paths, trust store, resolver, port binder)."
+readme                 = "README.md"
+
+[dependencies]
+yerd-core   = { path = "../yerd-core" }
+yerd-tls    = { path = "../yerd-tls" }
+thiserror   = { workspace = true }
+directories = { workspace = true }
+sha2        = { workspace = true }
+hex         = { workspace = true }
+pem         = { workspace = true }
+serde_json  = { workspace = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+security-framework = { workspace = true }
+
+[dev-dependencies]
+tempfile   = { workspace = true }
+serde_json = { workspace = true }
+
+[lints]
+workspace = true

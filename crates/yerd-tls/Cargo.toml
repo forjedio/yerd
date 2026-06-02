@@ -1,0 +1,26 @@
+[package]
+name                   = "yerd-tls"
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+publish.workspace      = true
+description            = "Local CA and per-site leaf certificates for Yerd."
+readme                 = "README.md"
+
+# Internal deps: none. yerd-tls is a leaf in the workspace dep graph.
+
+[dependencies]
+pem              = { workspace = true }
+rcgen            = { workspace = true }
+rustls-pki-types = { workspace = true }
+sha2             = { workspace = true }
+thiserror        = { workspace = true }
+time             = { workspace = true }
+x509-parser      = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
+
+[lints]
+workspace = true

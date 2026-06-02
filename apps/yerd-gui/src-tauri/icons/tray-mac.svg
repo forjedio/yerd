@@ -1,0 +1,11 @@
+<svg width="44" height="44" viewBox="45 49 166 166" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Yerd">
+  <title>Yerd</title>
+  <!-- macOS menu-bar template icon: the bare Y mark in solid black on a
+       transparent ground. macOS template images use only the alpha channel and
+       auto-tint for light/dark, so the colour here is irrelevant - what matters
+       is the shape and its inset. The viewBox tightly frames the glyph (the same
+       path as logo-mark.svg) so it fills ~85% of the canvas, matching the weight
+       of system menu-bar glyphs once tray-icon scales the image to 18pt tall. -->
+  <path d="M82 76 L128 140 L174 76 M128 140 L128 188"
+        stroke="#000000" stroke-width="30" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

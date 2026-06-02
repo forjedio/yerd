@@ -1,0 +1,25 @@
+[package]
+name                   = "yerd-ipc"
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+publish.workspace      = true
+description            = "IPC protocol, framing, and codec between yerdd and its clients."
+
+[dependencies]
+yerd-core  = { path = "../yerd-core" }
+serde      = { workspace = true }
+serde_json = { workspace = true }
+thiserror  = { workspace = true }
+tokio      = { workspace = true, optional = true }
+
+[features]
+default   = []
+transport = ["dep:tokio"]
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt", "io-util"] }
+
+[lints]
+workspace = true

@@ -1,0 +1,10 @@
+[Unit]
+Description=Yerd local PHP development daemon
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/yerdd serve
+Restart=on-failure
+
+[Install]
+WantedBy=default.target

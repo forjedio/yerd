@@ -1,0 +1,309 @@
+//! Status (`yerd status`) and doctor (`yerd doctor`) payload types.
+//!
+//! These travel inside [`crate::Response::Status`],
+//! [`crate::Response::Diagnoses`], and [`crate::Response::DoctorFix`]. As with
+//! the rest of this crate they are a published contract: add fields/variants
+//! additively, never rename, and let `rename_all` (never per-field renames)
+//! handle casing. `tests/wire_stability.rs` pins the byte-exact shape.
+//!
+//! ## No `f64` on the wire
+//!
+//! [`crate::Response`] derives `Eq`, so nothing reachable from it may contain a
+//! float. The system load average therefore crosses as integer hundredths
+//! ([`StatusReport::load_avg`] = `load × 100`); the CLI renders it back to
+//! `x.xx`. The daemon computes the conversion from the platform layer's `f64`
+//! reading at assembly time.
+
+use std::net::SocketAddr;
+use std::path::PathBuf;
+
+use serde::{Deserialize, Serialize};
+use yerd_core::PhpVersion;
+
+/// A read-only snapshot of daemon runtime health, returned for
+/// [`crate::Request::Status`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StatusReport {
+    /// The daemon's process id.
+    pub daemon_pid: u32,
+    /// Seconds since the daemon finished starting up.
+    pub uptime_secs: u64,
+    /// Resident memory of the daemon process, in bytes. The reverse proxy and
+    /// the DNS responder run as tasks inside this process, so this single figure
+    /// covers all three. `None` where unavailable (non-Linux, or a transient
+    /// read failure).
+    pub daemon_rss_bytes: Option<u64>,
+    /// The TLD served (e.g. `"test"`).
+    pub tld: String,
+    /// HTTP listener: requested vs bound port.
+    pub http: PortStatus,
+    /// HTTPS listener: requested vs bound port.
+    pub https: PortStatus,
+    /// Address the embedded DNS responder is bound on.
+    pub dns_addr: SocketAddr,
+    /// Local CA facts, including its system-store trust state.
+    pub ca: CaStatus,
+    /// Whether the OS resolver routes `*.<tld>` to Yerd. `None` = the probe
+    /// could not determine it (treat as "unknown", **not** as `false`).
+    pub resolver_installed: Option<bool>,
+    /// Whether a privileged-port redirect is active so 80/443 reach the
+    /// daemon's rootless ports (macOS pf `rdr`). `Some(true)` lets the doctor
+    /// treat a port *fallback* as satisfied; `None` = not applicable (Linux,
+    /// where elevation binds 80/443 directly) or undeterminable. `#[serde(default,
+    /// skip_serializing_if)]` keeps the Linux wire bytes unchanged and older
+    /// daemons decodable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub port_redirect: Option<bool>,
+    /// `Some(true)` when a privileged web port (80/443) is held by a listener
+    /// that is **not** this daemon's proxy — a foreign process (or stale `pf`
+    /// rule) squatting the port Yerd wants. Confirmed via the proxy's `Server:`
+    /// marker, so it never mistakes Yerd for a foreign listener. `Some(false)` =
+    /// no conflict; `None` = not probed. Cross-platform (unlike `port_redirect`).
+    /// `#[serde(default, skip_serializing_if)]` keeps the wire additive for older
+    /// daemons/clients.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub foreign_web_listener: Option<bool>,
+    /// If installing the OS resolver replaced a pre-existing `/etc/resolver/<tld>`
+    /// (e.g. a Valet/Herd leftover), the absolute path of the timestamped backup
+    /// Yerd saved — surfaced as an informational `doctor` finding. `None` when
+    /// nothing was replaced (or the backup is older than the daemon's reporting
+    /// window). macOS-only; omitted from the wire when `None` (`#[serde(default,
+    /// skip_serializing_if)]`) so Linux/older clients are unaffected.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolver_backup: Option<String>,
+    /// The global default PHP version.
+    pub default_php: PhpVersion,
+    /// One entry per installed PHP version, with live FPM state.
+    pub php: Vec<PhpPoolStatus>,
+    /// Site counts by kind.
+    pub sites: SiteCounts,
+    /// System load average for 1/5/15 minutes, each `× 100` (hundredths).
+    /// `None` where unavailable (non-Linux, or a transient read failure).
+    pub load_avg: Option<[u32; 3]>,
+    /// The daemon's own version (its `CARGO_PKG_VERSION`, e.g. `"2.0.1"`).
+    /// `#[serde(default)]` so a newer client decoding an *older* daemon's status
+    /// (which lacks this key) gets `""` and renders "unknown" rather than failing
+    /// the whole decode — the daemon/GUI version skew this field exists to show.
+    /// The daemon always sets a non-empty value, so it is always emitted.
+    #[serde(default)]
+    pub daemon_version: String,
+    /// Per-service status (databases / caches). `#[serde(default,
+    /// skip_serializing_if)]` keeps the wire additive: an older daemon (no
+    /// services) emits unchanged bytes and an older client decodes a newer
+    /// daemon by ignoring nothing (the field simply defaults to empty).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub services: Vec<ServiceStatus>,
+}
+
+/// A listener's requested vs actually-bound port.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PortStatus {
+    /// The port the config asked for.
+    pub requested: u16,
+    /// The port actually bound (differs from `requested` on rootless fallback).
+    pub bound: u16,
+    /// `true` when `bound != requested` (a rootless fallback fired).
+    pub fell_back: bool,
+}
+
+/// Local CA facts surfaced in [`StatusReport`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CaStatus {
+    /// Absolute path to the CA certificate PEM.
+    pub path: PathBuf,
+    /// SHA-256 fingerprint, 64 lowercase hex chars.
+    pub fingerprint: String,
+    /// Whether the CA is **effectively trusted** for SSL by the OS — not merely
+    /// present in a store. macOS evaluates the user/admin/system trust domains
+    /// (`security verify-cert`); Linux treats anchor-dir presence as trust.
+    /// `None` = the probe could not determine it (**not** `false`).
+    pub trusted_system: Option<bool>,
+}
+
+/// Site counts by kind, for [`StatusReport`].
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SiteCounts {
+    /// Number of parked sites.
+    pub parked: usize,
+    /// Number of linked sites.
+    pub linked: usize,
+    /// Number of sites served over HTTPS.
+    pub secured: usize,
+}
+
+/// Per-version PHP-FPM status.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PhpPoolStatus {
+    /// The installed minor version.
+    pub version: PhpVersion,
+    /// The installed full patch (e.g. `"8.5.6"`), if recorded.
+    pub installed_patch: Option<String>,
+    /// Live FPM run state for this version.
+    pub state: PoolRunState,
+    /// FPM master PID when running.
+    pub pid: Option<u32>,
+    /// FPM listen address (socket path, or `127.0.0.1:<port>`) when running.
+    pub listen: Option<String>,
+    /// Resident memory of the FPM master in bytes, when measurable.
+    pub rss_bytes: Option<u64>,
+    /// Newest published patch when newer than installed (from the update cache).
+    pub update_available: Option<String>,
+}
+
+/// Live FPM run state for a single PHP version.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum PoolRunState {
+    /// FPM is supervised and its master process is alive.
+    Running,
+    /// No FPM pool for this version (installed but never started, or stopped).
+    Stopped,
+    /// A supervised pool's master process has died.
+    Failed,
+}
+
+/// Live run state of a supervised service. Mirrors [`PoolRunState`] but is a
+/// distinct type so services and PHP pools can evolve independently.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum ServiceRunState {
+    /// The server process is supervised and alive.
+    Running,
+    /// Not running (installed but never started, or stopped).
+    Stopped,
+    /// A supervised server process has died.
+    Failed,
+}
+
+/// Per-service status snapshot, returned in [`crate::Response::Services`] and in
+/// [`StatusReport::services`]. Every field is integer-only / string / bool so
+/// the enclosing `Response` keeps its `Eq` derive (no floats on the wire).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ServiceStatus {
+    /// Stable service id (`"redis"`, `"mysql"`, `"mariadb"`, `"postgres"`).
+    pub service: String,
+    /// Human-facing label (`"Redis (Valkey)"`, `"PostgreSQL"`, …).
+    pub display_name: String,
+    /// Versions installed on disk, ascending. Empty when the engine is not
+    /// installed.
+    pub installed_versions: Vec<String>,
+    /// The configured/selected version, if the user has chosen one.
+    pub selected_version: Option<String>,
+    /// Live run state.
+    pub state: ServiceRunState,
+    /// Server PID when running.
+    pub pid: Option<u32>,
+    /// Listen address (`"127.0.0.1:6379"`) when running.
+    pub listen: Option<String>,
+    /// The effective (configured or default) port.
+    pub port: u16,
+    /// Whether the daemon auto-starts this instance on boot.
+    pub enabled: bool,
+    /// Whether the engine hosts SQL databases (gates "Create Database" in the GUI).
+    pub supports_databases: bool,
+}
+
+/// What versions of a service are installed vs installable, returned in
+/// [`crate::Response::AvailableServices`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ServiceAvailability {
+    /// Stable service id.
+    pub service: String,
+    /// Installable versions published for this platform, ascending.
+    pub available: Vec<String>,
+    /// Versions already installed on disk, ascending.
+    pub installed: Vec<String>,
+}
+
+/// One user database in a SQL service, returned in [`crate::Response::Databases`].
+///
+/// A struct (not a bare `String`) so future fields (size, owner, encoding) can be
+/// added additively without a wire break.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DatabaseSummary {
+    /// The database name.
+    pub name: String,
+}
+
+/// A single doctor finding.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Diagnosis {
+    /// Machine-readable check identifier.
+    pub code: DiagnosisCode,
+    /// How serious the finding is.
+    pub severity: Severity,
+    /// Short human-readable headline.
+    pub title: String,
+    /// Longer human-readable explanation.
+    pub detail: String,
+    /// An exact command (or guidance) to resolve it, when applicable.
+    pub remedy: Option<String>,
+}
+
+/// Severity of a [`Diagnosis`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum Severity {
+    /// Informational / healthy.
+    Ok,
+    /// A non-fatal problem the user should address.
+    Warn,
+    /// A problem that breaks expected behaviour.
+    Fail,
+}
+
+/// Machine-readable identifier for a doctor check.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum DiagnosisCode {
+    /// The daemon is not reachable.
+    DaemonDown,
+    /// A privileged port fell back to its rootless equivalent.
+    PortFallback,
+    /// A non-Yerd process is listening on a privileged web port (80/443).
+    ForeignWebListener,
+    /// The local CA is not trusted in the system store.
+    CaNotTrusted,
+    /// The OS resolver does not route `*.<tld>` to Yerd.
+    ResolverNotInstalled,
+    /// No PHP versions are installed.
+    NoPhpInstalled,
+    /// The configured default PHP version is not installed.
+    DefaultPhpNotInstalled,
+    /// A supervised FPM pool has failed.
+    FpmPoolFailed,
+    /// A newer PHP patch is available for an installed version.
+    PhpUpdateAvailable,
+    /// A supervised service (database / cache) has failed.
+    ServiceFailed,
+    /// No sites are configured.
+    NoSites,
+    /// Installing the OS resolver replaced a pre-existing file, which Yerd backed up.
+    ResolverBackupSaved,
+    /// Everything checks out.
+    AllGood,
+}
+
+/// Result of [`crate::Request::DoctorFix`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FixReport {
+    /// Fixes the daemon attempted, in order.
+    pub performed: Vec<FixResult>,
+    /// Remaining findings the user must resolve manually (e.g. privileged ops).
+    pub manual: Vec<Diagnosis>,
+}
+
+/// Outcome of one attempted auto-fix.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FixResult {
+    /// Which check this fix addressed.
+    pub code: DiagnosisCode,
+    /// Whether the fix succeeded.
+    pub ok: bool,
+    /// Human-readable detail about what happened.
+    pub message: String,
+}

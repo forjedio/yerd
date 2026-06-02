@@ -1,0 +1,22 @@
+[package]
+name                   = "yerd-supervise"
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+publish.workspace      = true
+description            = "Process-agnostic supervision substrate (trait seams, pure state machine, tokio impls) shared by yerd-php and yerd-services."
+
+[dependencies]
+thiserror      = { workspace = true }
+async-trait    = { workspace = true }
+tokio          = { workspace = true, features = ["process", "net", "rt", "time", "io-util", "macros", "sync"] }
+
+[target.'cfg(unix)'.dependencies]
+nix            = { workspace = true }
+
+[dev-dependencies]
+tokio          = { workspace = true, features = ["macros", "rt-multi-thread", "net", "sync", "time"] }
+
+[lints]
+workspace = true
