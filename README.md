@@ -132,9 +132,17 @@ The tray app ships as separate bundles on the same release:
 | Linux | `Yerd_<ver>_amd64.AppImage` | `chmod +x` and run |
 | Linux | `Yerd_<ver>_amd64.deb` | `sudo dpkg -i …` |
 
-> The GUI is a **client of the daemon** — install the CLI (above) too, so `yerdd`
-> is present and the app's privileged "Fix" actions can find `yerd` (on Linux
-> both `.deb`s install to `/usr/bin`, which is what the GUI expects).
+> **The GUI installs the backend for you.** It's a client of the daemon, but you
+> don't need to install the CLI first — on launch, if `yerdd` isn't already
+> present the app downloads the matching release, **verifies it against
+> `SHA256SUMS`**, and installs `yerd` + `yerdd` + `yerd-helper` into `~/.local/bin`
+> (ad-hoc-signing them on macOS). **On macOS that means setup is essentially
+> drag-and-drop:** open the `.dmg`, drag Yerd to Applications, launch it, and let
+> it pull down the backend. (Already installed the CLI, or on a Linux `.deb`? The
+> app just finds and uses the existing binaries.)
+>
+> Auto-install covers Linux (x86-64 · arm64) and **Apple Silicon** macOS; on Intel
+> Macs, [install the CLI](#installation) manually first.
 
 > **Unsigned for now:** macOS warns on first launch — right-click → **Open**, or
 > `xattr -dr com.apple.quarantine /Applications/Yerd.app`.
@@ -327,14 +335,13 @@ a newer patch exists, but never installs anything behind your back.
 
 Shipping today (macOS + Linux): multi-version PHP, parked/linked `.test` sites,
 HTTP + HTTPS with a local CA, the embedded DNS resolver, native database & cache
-services (MySQL · MariaDB · PostgreSQL · Redis), `status`/`doctor`, and the
-Debian package.
+services (MySQL · MariaDB · PostgreSQL · Redis), `status`/`doctor`, the **desktop
+GUI** (`apps/yerd-gui` — a Tauri v2 tray app over the same daemon, a thin IPC
+client like the CLI; bundled as `.dmg`/`.AppImage`/`.deb` by the release
+pipeline), and the Debian package.
 
 On the way:
 
-- 🖥️ **Desktop GUI** — implemented in `apps/yerd-gui` (Tauri v2 tray app over the
-  same daemon, a thin IPC client like the CLI); bundled as `.dmg`/`.AppImage`/`.deb`
-  by the release pipeline. Code-signing/notarisation still to come.
 - 🪟 **Windows support** — NRPT-based resolver, named-pipe IPC, system cert store,
   TCP-loopback PHP-FPM.
 - 📦 **More packaging** — code-signing/notarisation, an Arch AUR package, and

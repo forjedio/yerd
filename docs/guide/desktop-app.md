@@ -16,13 +16,10 @@ The app ships as separate bundles on the same release as the CLI:
 
 The macOS DMG targets Apple Silicon (`aarch64`) only; Intel (x86-64) Macs are not supported at this time. There's no Windows bundle yet: the daemon's named-pipe address isn't client-derivable.
 
-::: warning Install the CLI and daemon too
-The GUI is a client, not a self-contained install. You also need:
+::: tip The GUI sets up the backend for you
+The GUI is a client of the [daemon](./daemon), but you don't have to install the CLI first. On first launch, if `yerdd` isn't already present the app downloads the matching release, **verifies it against `SHA256SUMS`**, and installs `yerd` + `yerdd` + `yerd-helper` into `~/.local/bin` (ad-hoc-signing them on macOS), then starts the daemon. On macOS that makes setup essentially **drag-and-drop**: drag Yerd to Applications, launch it, done.
 
-- `yerdd` running. The app talks to it over IPC and shows a "Daemon not running" screen if it can't connect.
-- `yerd` on your `PATH`. The app's privileged "Fix" actions shell out to the audited `yerd elevate` helper.
-
-On Linux, the CLI `.deb` and GUI `.deb` both install to `/usr/bin`, which is where the GUI looks for `yerd`. Install both. See [Getting Started](./getting-started) and [The Daemon](./daemon).
+Auto-install covers Linux (x86-64 · arm64) and Apple Silicon macOS. On Intel Macs, [install the CLI](./getting-started) manually first. If you already have the CLI (or installed the Linux `.deb`, which lands in `/usr/bin`), the app just finds and uses the existing binaries.
 :::
 
 ::: tip First launch on macOS (unsigned)

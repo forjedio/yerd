@@ -1,8 +1,8 @@
 //! Pure rendering of service config files.
 //!
 //! No I/O — each function takes the resolved values and returns the file body as
-//! a string. The manager writes it. Covers Redis/Valkey (`redis.conf`), MySQL and
-//! MariaDB (`my.cnf`), and PostgreSQL (`postgresql.conf`).
+//! a string. The manager writes it. Covers Redis/Valkey (`redis.conf`), `MySQL` and
+//! `MariaDB` (`my.cnf`), and `PostgreSQL` (`postgresql.conf`).
 
 use std::path::Path;
 
