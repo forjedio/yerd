@@ -107,7 +107,7 @@ in a `yerd` **user service** so the daemon works the same way. Pin a version wit
 | Platform | CLI artifact |
 |---|---|
 | Debian / Ubuntu (amd64 · arm64) | `yerd_<ver>_amd64.deb` · `yerd_<ver>_arm64.deb` → `sudo dpkg -i …` |
-| Arch · Fedora · other Linux (rootless) | `yerd-<ver>-{x86_64,aarch64}-unknown-linux-gnu.tar.gz` |
+| Arch · Fedora · other Linux (rootless) | `yerd-<ver>-{x86_64,aarch64}-generic-linux-gnu.tar.gz` |
 | macOS (Apple Silicon) | `yerd-<ver>-aarch64-apple-darwin.tar.gz` |
 
 Verify against the release's `SHA256SUMS`, then start the per-user daemon:
