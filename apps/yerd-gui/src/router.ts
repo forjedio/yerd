@@ -27,6 +27,17 @@ export const router = createRouter({
       component: () => import("@/views/ServicesView.vue"),
     },
     {
+      path: "/laravel/dumps",
+      name: "laravel-dumps",
+      component: () => import("@/views/LaravelDumpsView.vue"),
+    },
+    {
+      // Standalone viewer rendered in the separate "dumps" window (no app shell).
+      path: "/dumps-window",
+      name: "dumps-window",
+      component: () => import("@/views/DumpsWindowView.vue"),
+    },
+    {
       path: "/doctor",
       name: "doctor",
       component: () => import("@/views/DoctorView.vue"),

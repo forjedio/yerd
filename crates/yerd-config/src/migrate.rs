@@ -23,7 +23,12 @@ pub(crate) type MigrationStep = fn(&mut Value) -> Result<(), ConfigError>;
 ///
 /// `STEPS[0]` (v0→v1) is only reachable via a hand-crafted `version = 0` file —
 /// v0 was never written to disk — but it must exist so that `STEPS[1]` does.
-pub(crate) const STEPS: &[MigrationStep] = &[migrate_v0_to_v1, migrate_v1_to_v2, migrate_v2_to_v3];
+pub(crate) const STEPS: &[MigrationStep] = &[
+    migrate_v0_to_v1,
+    migrate_v1_to_v2,
+    migrate_v2_to_v3,
+    migrate_v3_to_v4,
+];
 
 /// `v0 → v1`: bump the version. v0 predates any shipped config, so there is no
 /// structural change to apply.
@@ -62,6 +67,12 @@ fn migrate_v2_to_v3(value: &mut Value) -> Result<(), ConfigError> {
         }
     }
     set_version(value, 3)
+}
+
+/// `v3 → v4`: bump the version. v4 added the optional `[dumps]` table, which
+/// defaults when absent, so an in-place version bump is the entire migration.
+fn migrate_v3_to_v4(value: &mut Value) -> Result<(), ConfigError> {
+    set_version(value, 4)
 }
 
 /// Set the top-level `version` key, erroring if the root is not a table.
@@ -134,8 +145,15 @@ mod tests {
     }
 
     #[test]
-    fn current_version_pinned_to_three() {
-        assert_eq!(crate::CURRENT_VERSION, 3);
+    fn current_version_pinned_to_four() {
+        assert_eq!(crate::CURRENT_VERSION, 4);
+    }
+
+    #[test]
+    fn v3_to_v4_is_a_bare_version_bump() {
+        let mut v: Value = toml::from_str("version = 3\n").unwrap();
+        migrate_v3_to_v4(&mut v).unwrap();
+        assert_eq!(read_version(&v).unwrap(), 4);
     }
 
     #[test]

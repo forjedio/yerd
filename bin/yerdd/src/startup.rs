@@ -218,7 +218,18 @@ pub async fn bring_up_with_dirs(
         restart_requested: std::sync::atomic::AtomicBool::new(false),
         detect_cache,
         watch_dirty: tokio::sync::Notify::new(),
+        dumps: Arc::new(crate::dump_server::DumpStore::new()),
     });
+
+    // Seed the extension's runtime state file from the persisted `[dumps]`
+    // config so a fresh boot reflects the durable settings. Best-effort: a
+    // failure here only means dumps stay off until the next toggle.
+    {
+        let dumps = state.config.lock().await.dumps.clone();
+        if let Err(e) = crate::dump_server::write_state_file(&state.dirs, &dumps) {
+            tracing::warn!(error = %e, "failed to write initial dump state file");
+        }
+    }
 
     Ok(Daemon {
         state,

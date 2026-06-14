@@ -362,6 +362,48 @@ pub async fn untrust_ca() -> Result<bool, GuiError> {
     }
 }
 
+// ── dumps (Laravel telemetry) ────────────────────────────────────────────────
+
+#[tauri::command]
+pub async fn list_dumps(since: u64) -> Result<Response, GuiError> {
+    finish(exchange(&Request::ListDumps { since_id: since }).await?)
+}
+
+#[tauri::command]
+pub async fn clear_dumps() -> Result<Response, GuiError> {
+    finish(exchange(&Request::ClearDumps).await?)
+}
+
+#[tauri::command]
+pub async fn delete_dump(id: u64) -> Result<Response, GuiError> {
+    finish(exchange(&Request::DeleteDump { id }).await?)
+}
+
+#[tauri::command]
+pub async fn pin_dump(id: u64, pinned: bool) -> Result<Response, GuiError> {
+    finish(exchange(&Request::PinDump { id, pinned }).await?)
+}
+
+#[tauri::command]
+pub async fn set_dumps_enabled(enabled: bool) -> Result<Response, GuiError> {
+    finish(exchange(&Request::SetDumpsEnabled { enabled }).await?)
+}
+
+#[tauri::command]
+pub async fn set_dumps_port(port: u16) -> Result<Response, GuiError> {
+    finish(exchange(&Request::SetDumpsPort { port }).await?)
+}
+
+#[tauri::command]
+pub async fn set_dump_feature(feature: String, enabled: bool) -> Result<Response, GuiError> {
+    finish(exchange(&Request::SetDumpFeature { feature, enabled }).await?)
+}
+
+#[tauri::command]
+pub async fn dumps_status() -> Result<Response, GuiError> {
+    finish(exchange(&Request::DumpsStatus).await?)
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::panic)]
 mod tests {

@@ -12,7 +12,9 @@ use std::str::FromStr;
 use serde::Deserialize;
 
 use crate::error::ValidateErrorReason;
-use crate::schema::{Config, ParkedSection, PhpSection, Ports, ServiceInstance, ServicesSection};
+use crate::schema::{
+    Config, DumpsSection, ParkedSection, PhpSection, Ports, ServiceInstance, ServicesSection,
+};
 use crate::ConfigError;
 
 pub(crate) const KNOWN_SERVICES: &[&str] = &["mysql", "mariadb", "postgres", "redis"];
@@ -43,6 +45,37 @@ struct Wire {
     // migration before deserialisation, so this never sees the old array.
     #[serde(default)]
     services: BTreeMap<String, ServiceInstanceWire>,
+    // v4: optional `[dumps]` table; absent in v3 and earlier → default
+    // (disabled, port 2304, no per-feature overrides).
+    #[serde(default)]
+    dumps: DumpsSectionWire,
+}
+
+/// The `[dumps]` table. All fields default, so an absent table parses to
+/// [`DumpsSection::default`].
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DumpsSectionWire {
+    #[serde(default)]
+    enabled: bool,
+    #[serde(default = "default_dump_port")]
+    port: u16,
+    #[serde(default)]
+    features: BTreeMap<String, bool>,
+}
+
+impl Default for DumpsSectionWire {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            port: crate::schema::DEFAULT_DUMP_PORT,
+            features: BTreeMap::new(),
+        }
+    }
+}
+
+fn default_dump_port() -> u16 {
+    crate::schema::DEFAULT_DUMP_PORT
 }
 
 #[derive(Deserialize)]
@@ -233,6 +266,11 @@ impl TryFrom<Wire> for Config {
             s.set_web_subpath(sw.web_subpath);
             linked.push(s);
         }
+        let dumps = DumpsSection {
+            enabled: w.dumps.enabled,
+            port: w.dumps.port,
+            features: w.dumps.features,
+        };
         Ok(Config {
             version: crate::CURRENT_VERSION,
             tld,
@@ -243,6 +281,7 @@ impl TryFrom<Wire> for Config {
             linked,
             overrides,
             services,
+            dumps,
         })
     }
 }
@@ -406,7 +445,7 @@ mod tests {
         match Config::from_toml("version = 99\n") {
             Err(ConfigError::UnsupportedVersion {
                 found: 99,
-                current: 3,
+                current: 4,
             }) => {}
             other => panic!("expected UnsupportedVersion, got {other:?}"),
         }
@@ -831,6 +870,40 @@ php = "not-a-version"
                 reason: ValidateErrorReason::InvalidPhpSetting,
             })
         ));
+    }
+
+    #[test]
+    fn default_config_omits_dumps_table() {
+        let s = Config::default().to_toml().unwrap();
+        assert!(
+            !s.contains("[dumps]"),
+            "default config must omit the dumps table; got: {s}"
+        );
+        // Absent `[dumps]` parses back to the default section.
+        let back = Config::from_toml(&s).unwrap();
+        assert_eq!(back.dumps, crate::DumpsSection::default());
+    }
+
+    #[test]
+    fn dumps_section_round_trips_through_toml() {
+        let mut c = Config::default();
+        c.dumps.enabled = true;
+        c.dumps.port = 2400;
+        c.dumps.features.insert("queries".to_string(), false);
+        let s = c.to_toml().unwrap();
+        assert!(s.contains("[dumps]"), "expected [dumps] table; got: {s}");
+        let back = Config::from_toml(&s).unwrap();
+        assert_eq!(back, c);
+        assert_eq!(back.dumps.port, 2400);
+        assert!(back.dumps.enabled);
+        assert_eq!(back.dumps.features.get("queries"), Some(&false));
+    }
+
+    #[test]
+    fn v3_config_without_dumps_migrates_to_default_dumps() {
+        // A v3 file (no `[dumps]`) migrates to v4 and gets the default section.
+        let c = Config::from_toml("version = 3\n").unwrap();
+        assert_eq!(c.dumps, crate::DumpsSection::default());
     }
 
     #[test]

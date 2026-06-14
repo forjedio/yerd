@@ -75,4 +75,7 @@ pub struct DaemonState {
     /// reconciles its watch set (e.g. a newly-parked root) without waiting for
     /// an unrelated filesystem event.
     pub watch_dirty: Notify,
+    /// Dump-telemetry ring buffer + server control, shared with the dump-server
+    /// task and the IPC dump handlers.
+    pub dumps: Arc<crate::dump_server::DumpStore>,
 }

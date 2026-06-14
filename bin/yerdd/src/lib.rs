@@ -17,6 +17,7 @@ pub mod backend_resolver;
 pub mod cert_store;
 pub mod db_admin;
 pub mod detect_cache;
+pub mod dump_server;
 pub mod error;
 pub mod fs_watch;
 pub mod ipc_server;
@@ -129,6 +130,13 @@ async fn run_until_shutdown(
         shutdown_rx.clone(),
     ));
 
+    // Dump-telemetry server: loopback TCP receiving frames from the PHP
+    // extension. Rebinds on a port change; a bind failure is non-fatal.
+    let dump_handle = {
+        let state = daemon.state.clone();
+        tokio::spawn(crate::dump_server::run(state, shutdown_rx.clone()))
+    };
+
     // Periodic PHP update checker: poll once at startup, then every 12h, until
     // shutdown. Notify-only (logs available updates; never auto-installs).
     let update_check_handle = {
@@ -172,6 +180,7 @@ async fn run_until_shutdown(
     let _ = tokio::time::timeout(Duration::from_secs(10), dns_handle).await;
     let _ = tokio::time::timeout(Duration::from_secs(10), proxy_handle).await;
     let _ = tokio::time::timeout(Duration::from_secs(5), ipc_handle).await;
+    let _ = tokio::time::timeout(Duration::from_secs(5), dump_handle).await;
     let _ = tokio::time::timeout(Duration::from_secs(5), update_check_handle).await;
     let _ = tokio::time::timeout(Duration::from_secs(5), watch_handle).await;
 

@@ -23,8 +23,8 @@ mod serialize;
 
 pub use error::{ConfigError, MigrationErrorReason, ValidateErrorReason};
 pub use schema::{
-    Config, ParkedSection, PhpSection, Ports, ServiceInstance, ServicesSection, SiteOverride,
-    DEFAULT_DNS_PORT,
+    Config, DumpsSection, ParkedSection, PhpSection, Ports, ServiceInstance, ServicesSection,
+    SiteOverride, DEFAULT_DNS_PORT, DEFAULT_DUMP_PORT,
 };
 
 /// The on-disk schema version this crate writes. Bumped together with a new
@@ -44,4 +44,7 @@ pub use schema::{
 /// service `[services.<id>]` tables ([`ServiceInstance`], carrying version /
 /// port / enabled). The v2→v3 migration rewrites the old array — the first
 /// *structural* migration step (v0→v1 and v1→v2 are bare version bumps).
-pub const CURRENT_VERSION: u32 = 3;
+///
+/// v4 added the optional `[dumps]` table ([`DumpsSection`]); it defaults when
+/// absent, so the v3→v4 migration is a bare version bump.
+pub const CURRENT_VERSION: u32 = 4;

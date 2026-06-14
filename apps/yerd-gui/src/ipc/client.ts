@@ -14,6 +14,9 @@ import type {
   DatabaseSummary,
   Diagnosis,
   DoctorFixResponse,
+  DumpCounts,
+  DumpsResponse,
+  DumpsStatusResponse,
   ElevateTarget,
   InfoResponse,
   PhpVersion,
@@ -438,4 +441,61 @@ export async function onInstallProgress(
 ): Promise<() => void> {
   const { listen } = await import("@tauri-apps/api/event");
   return listen<string>("install-progress", (e) => cb(e.payload));
+}
+
+// ── dumps (Laravel telemetry) ────────────────────────────────────────────────
+
+/** Page buffered dump events newer than `since` (0 = all). */
+export async function listDumps(since: number): Promise<DumpsResponse> {
+  const r = ensureOk(await call<Response>("list_dumps", { since }));
+  if (r.type === "dumps") return r;
+  return { type: "dumps", events: [], removed_ids: [], counts: emptyDumpCounts(), latest_id: 0 };
+}
+
+/** Dump-server status (enabled, port, running, extension presence, counts). */
+export async function dumpsStatus(): Promise<DumpsStatusResponse> {
+  const r = ensureOk(await call<Response>("dumps_status"));
+  if (r.type === "dumps_status") return r;
+  return {
+    type: "dumps_status",
+    enabled: false,
+    port: 2304,
+    running: false,
+    extensions: [],
+    counts: emptyDumpCounts(),
+    features: {},
+  };
+}
+
+export async function clearDumps(): Promise<void> {
+  ensureOk(await call<Response>("clear_dumps"));
+}
+
+export async function deleteDump(id: number): Promise<void> {
+  ensureOk(await call<Response>("delete_dump", { id }));
+}
+
+export async function pinDump(id: number, pinned: boolean): Promise<void> {
+  ensureOk(await call<Response>("pin_dump", { id, pinned }));
+}
+
+export async function setDumpsEnabled(enabled: boolean): Promise<void> {
+  ensureOk(await call<Response>("set_dumps_enabled", { enabled }));
+}
+
+export async function setDumpsPort(port: number): Promise<void> {
+  ensureOk(await call<Response>("set_dumps_port", { port }));
+}
+
+export async function setDumpFeature(feature: string, enabled: boolean): Promise<void> {
+  ensureOk(await call<Response>("set_dump_feature", { feature, enabled }));
+}
+
+/** Open the standalone dumps viewer window. */
+export async function showDumpsWindow(): Promise<void> {
+  await call<void>("show_dumps_window");
+}
+
+function emptyDumpCounts(): DumpCounts {
+  return { dumps: 0, queries: 0, jobs: 0, views: 0, requests: 0, logs: 0, cache: 0 };
 }

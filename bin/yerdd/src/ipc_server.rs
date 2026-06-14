@@ -202,6 +202,16 @@ async fn dispatch(req: Request, state: &DaemonState) -> Response {
             let dl = crate::php_install::ReqwestDownloader::new();
             crate::services::change_service_version(&service, &version, state, &dl).await
         }
+        Request::ListDumps { since_id } => crate::dump_server::list(state, since_id).await,
+        Request::ClearDumps => crate::dump_server::clear(state).await,
+        Request::DeleteDump { id } => crate::dump_server::delete(state, id).await,
+        Request::PinDump { id, pinned } => crate::dump_server::pin(state, id, pinned).await,
+        Request::SetDumpsEnabled { enabled } => crate::dump_server::set_enabled(state, enabled).await,
+        Request::SetDumpsPort { port } => crate::dump_server::set_port(state, port).await,
+        Request::SetDumpFeature { feature, enabled } => {
+            crate::dump_server::set_feature(state, feature, enabled).await
+        }
+        Request::DumpsStatus => crate::dump_server::status(state).await,
         // `Request` is `#[non_exhaustive]` (external crate): a wildcard is
         // required even though every known variant is handled above.
         _ => Response::Error {
@@ -1096,6 +1106,7 @@ mod tests {
             restart_requested: std::sync::atomic::AtomicBool::new(false),
             detect_cache: std::sync::Arc::new(crate::detect_cache::DetectCache::new()),
             watch_dirty: tokio::sync::Notify::new(),
+            dumps: std::sync::Arc::new(crate::dump_server::DumpStore::new()),
         }
     }
 

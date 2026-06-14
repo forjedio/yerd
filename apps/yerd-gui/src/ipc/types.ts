@@ -167,6 +167,53 @@ export interface FixReport {
   manual: Diagnosis[];
 }
 
+// ── dumps (dump.rs) ─────────────────────────────────────────────────────────
+
+/** crates/yerd-ipc/src/dump.rs — DumpCategory (the viewer tabs). */
+export type DumpCategory =
+  | "dump"
+  | "query"
+  | "job"
+  | "view"
+  | "request"
+  | "log"
+  | "cache";
+
+/**
+ * crates/yerd-ipc/src/dump.rs — DumpEvent. `payload` is category-specific and
+ * opaque to the daemon; the viewer renders it per `category` (see the
+ * `yerd-php-ext` architecture doc for the per-category shape).
+ */
+export interface DumpEvent {
+  id: number;
+  category: DumpCategory;
+  /** Capture time, Unix epoch milliseconds. */
+  ts_ms: number;
+  /** Originating `.test` site; may be empty. */
+  site: string;
+  /** Stable per-request id, so the viewer groups rows by request. */
+  request_id: string;
+  payload: Record<string, unknown>;
+  pinned: boolean;
+}
+
+/** crates/yerd-ipc/src/dump.rs — DumpCounts (current per-category buffer counts). */
+export interface DumpCounts {
+  dumps: number;
+  queries: number;
+  jobs: number;
+  views: number;
+  requests: number;
+  logs: number;
+  cache: number;
+}
+
+/** crates/yerd-ipc/src/dump.rs — DumpExtStatus (per-version extension presence). */
+export interface DumpExtStatus {
+  version: PhpVersion;
+  present: boolean;
+}
+
 // ── response variants (response.rs) ────────────────────────────────────────
 
 export interface PhpUpdate {
@@ -222,7 +269,24 @@ export type Response =
   | { type: "services"; services: ServiceStatus[] }
   | { type: "available_services"; services: ServiceAvailability[] }
   | { type: "service_logs"; lines: string[] }
-  | { type: "databases"; databases: DatabaseSummary[] };
+  | { type: "databases"; databases: DatabaseSummary[] }
+  | {
+      type: "dumps";
+      events: DumpEvent[];
+      removed_ids: number[];
+      counts: DumpCounts;
+      latest_id: number;
+    }
+  | {
+      type: "dumps_status";
+      enabled: boolean;
+      port: number;
+      running: boolean;
+      extensions: DumpExtStatus[];
+      counts: DumpCounts;
+      /** Resolved per-feature flags (every key present). */
+      features: Record<string, boolean>;
+    };
 
 /** One user database in a SQL service (mirrors the daemon's `DatabaseSummary`). */
 export interface DatabaseSummary {
@@ -241,6 +305,8 @@ export type DoctorFixResponse = Extract<Response, { type: "doctor_fix" }>;
 export type ServicesResponse = Extract<Response, { type: "services" }>;
 export type AvailableServicesResponse = Extract<Response, { type: "available_services" }>;
 export type ServiceLogsResponse = Extract<Response, { type: "service_logs" }>;
+export type DumpsResponse = Extract<Response, { type: "dumps" }>;
+export type DumpsStatusResponse = Extract<Response, { type: "dumps_status" }>;
 
 /** Privilege targets for the OS-elevated `yerd elevate` host command. */
 export type ElevateTarget = "trust" | "resolver" | "ports";

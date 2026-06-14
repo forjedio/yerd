@@ -1,9 +1,11 @@
 <script setup lang="ts">
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { onMounted, onUnmounted, ref } from "vue";
 import { useRouter } from "vue-router";
 
 import AppShell from "@/components/AppShell.vue";
+import DumpsWindowView from "@/views/DumpsWindowView.vue";
 import Spinner from "@/components/ui/Spinner.vue";
 import Toaster from "@/components/ui/Toaster.vue";
 import { useDaemon } from "@/composables/useDaemon";
@@ -17,6 +19,12 @@ import {
   startDaemon,
   status,
 } from "@/ipc/client";
+
+// The auxiliary "dumps" window renders a standalone viewer with no app shell and
+// must NOT run the daemon poller or the first-run auto-install (the main window
+// owns both). Branch on the window label, not the route (which is racy at first
+// paint).
+const isDumpsWindow = getCurrentWindow().label === "dumps";
 
 // Start the single shared daemon poller for the app's lifetime.
 const { start, stop, refresh } = useDaemon();
@@ -73,6 +81,7 @@ async function maybeAutoInstall(): Promise<void> {
 }
 
 onMounted(async () => {
+  if (isDumpsWindow) return;
   start(4000);
   // The tray's "go to <page>" items emit `navigate` with a route path (e.g.
   // "/sites") after showing the window; jump the router there.
@@ -83,22 +92,27 @@ onMounted(async () => {
 });
 
 onUnmounted(() => {
+  if (isDumpsWindow) return;
   stop();
   unlistenNav?.();
 });
 </script>
 
 <template>
-  <AppShell />
-  <Toaster />
+  <!-- The standalone dumps window renders its viewer directly (no SideNav). -->
+  <DumpsWindowView v-if="isDumpsWindow" />
+  <template v-else>
+    <AppShell />
 
-  <!-- First-run yerdd install overlay. -->
-  <div
-    v-if="installing"
-    class="fixed inset-0 z-50 flex flex-col items-center justify-center gap-3 bg-background/95 text-center"
-  >
-    <Spinner class="size-6" />
-    <p class="text-sm font-medium">Installing Yerdd… Please wait</p>
-    <p class="text-xs text-muted-foreground">{{ installMessage }}</p>
-  </div>
+    <!-- First-run yerdd install overlay. -->
+    <div
+      v-if="installing"
+      class="fixed inset-0 z-50 flex flex-col items-center justify-center gap-3 bg-background/95 text-center"
+    >
+      <Spinner class="size-6" />
+      <p class="text-sm font-medium">Installing Yerdd… Please wait</p>
+      <p class="text-xs text-muted-foreground">{{ installMessage }}</p>
+    </div>
+  </template>
+  <Toaster />
 </template>

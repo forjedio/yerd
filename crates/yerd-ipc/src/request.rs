@@ -247,6 +247,48 @@ pub enum Request {
         /// The version to switch to.
         version: String,
     },
+    /// Page the buffered dump-telemetry events newer than `since_id` (0 = all),
+    /// plus the ids removed since then and the current per-category counts.
+    ListDumps {
+        /// Return events with `id > since_id`. Clients track the latest id.
+        since_id: u64,
+    },
+    /// Drop every buffered dump event (pinned ones included).
+    ClearDumps,
+    /// Delete one buffered dump event by id (pinned or not).
+    DeleteDump {
+        /// The event id to delete.
+        id: u64,
+    },
+    /// Pin or unpin a buffered dump event so it survives eviction / clear.
+    PinDump {
+        /// The event id.
+        id: u64,
+        /// Desired pinned state.
+        pinned: bool,
+    },
+    /// Turn dump interception on or off (the "antenna"). Writes the runtime
+    /// state file the extension reads; never restarts FPM.
+    SetDumpsEnabled {
+        /// Desired enabled state.
+        enabled: bool,
+    },
+    /// Set the loopback port the dump server listens on and the extension
+    /// connects to.
+    SetDumpsPort {
+        /// The new loopback port.
+        port: u16,
+    },
+    /// Enable or disable capture of one telemetry feature (e.g. `"queries"`).
+    SetDumpFeature {
+        /// Feature key (`dumps`/`queries`/`jobs`/`views`/`requests`/`logs`/`cache`).
+        feature: String,
+        /// Desired enabled state.
+        enabled: bool,
+    },
+    /// Fetch dump-server status (enabled, port, running, per-version extension
+    /// presence, current counts).
+    DumpsStatus,
 }
 
 #[cfg(test)]
@@ -310,6 +352,14 @@ mod variant_name_pinning {
             Request::BackupDatabase { .. } => {}
             Request::RestoreDatabase { .. } => {}
             Request::ChangeServiceVersion { .. } => {}
+            Request::ListDumps { .. } => {}
+            Request::ClearDumps => {}
+            Request::DeleteDump { .. } => {}
+            Request::PinDump { .. } => {}
+            Request::SetDumpsEnabled { .. } => {}
+            Request::SetDumpsPort { .. } => {}
+            Request::SetDumpFeature { .. } => {}
+            Request::DumpsStatus => {}
         }
     }
 
@@ -420,5 +470,19 @@ mod variant_name_pinning {
             service: "redis".into(),
             version: "9.1.0".into(),
         });
+        pin(Request::ListDumps { since_id: 0 });
+        pin(Request::ClearDumps);
+        pin(Request::DeleteDump { id: 1 });
+        pin(Request::PinDump {
+            id: 1,
+            pinned: true,
+        });
+        pin(Request::SetDumpsEnabled { enabled: true });
+        pin(Request::SetDumpsPort { port: 2304 });
+        pin(Request::SetDumpFeature {
+            feature: "queries".into(),
+            enabled: true,
+        });
+        pin(Request::DumpsStatus);
     }
 }

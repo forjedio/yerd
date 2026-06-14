@@ -18,9 +18,10 @@ use std::path::PathBuf;
 
 use yerd_ipc::{
     types::{PhpVersion, Site},
-    CaStatus, DatabaseSummary, Diagnosis, DiagnosisCode, ErrorCode, FixReport, FixResult,
-    PhpPoolStatus, PoolRunState, PortStatus, Request, Response, ServiceAvailability,
-    ServiceRunState, ServiceStatus, Severity, SiteCounts, StatusReport,
+    CaStatus, DatabaseSummary, Diagnosis, DiagnosisCode, DumpCategory, DumpCounts, DumpEvent,
+    DumpExtStatus, ErrorCode, FixReport, FixResult, PhpPoolStatus, PoolRunState, PortStatus,
+    Request, Response, ServiceAvailability, ServiceRunState, ServiceStatus, Severity, SiteCounts,
+    StatusReport,
 };
 
 // ---------- Request ----------
@@ -1097,4 +1098,171 @@ fn service_run_state_each_variant_byte_shape() {
     ] {
         assert_eq!(serde_json::to_string(&st).unwrap(), expected);
     }
+}
+
+// ---------- Dumps ----------
+
+#[test]
+fn request_list_dumps_byte_shape() {
+    let r = Request::ListDumps { since_id: 0 };
+    let s = serde_json::to_string(&r).unwrap();
+    assert_eq!(s, r#"{"type":"list_dumps","since_id":0}"#);
+    assert_eq!(serde_json::from_str::<Request>(&s).unwrap(), r);
+}
+
+#[test]
+fn request_clear_dumps_byte_shape() {
+    let s = serde_json::to_string(&Request::ClearDumps).unwrap();
+    assert_eq!(s, r#"{"type":"clear_dumps"}"#);
+    assert_eq!(serde_json::from_str::<Request>(&s).unwrap(), Request::ClearDumps);
+}
+
+#[test]
+fn request_delete_dump_byte_shape() {
+    let r = Request::DeleteDump { id: 7 };
+    let s = serde_json::to_string(&r).unwrap();
+    assert_eq!(s, r#"{"type":"delete_dump","id":7}"#);
+    assert_eq!(serde_json::from_str::<Request>(&s).unwrap(), r);
+}
+
+#[test]
+fn request_pin_dump_byte_shape() {
+    let r = Request::PinDump { id: 7, pinned: true };
+    let s = serde_json::to_string(&r).unwrap();
+    assert_eq!(s, r#"{"type":"pin_dump","id":7,"pinned":true}"#);
+    assert_eq!(serde_json::from_str::<Request>(&s).unwrap(), r);
+}
+
+#[test]
+fn request_set_dumps_enabled_byte_shape() {
+    let r = Request::SetDumpsEnabled { enabled: true };
+    let s = serde_json::to_string(&r).unwrap();
+    assert_eq!(s, r#"{"type":"set_dumps_enabled","enabled":true}"#);
+    assert_eq!(serde_json::from_str::<Request>(&s).unwrap(), r);
+}
+
+#[test]
+fn request_set_dumps_port_byte_shape() {
+    let r = Request::SetDumpsPort { port: 2304 };
+    let s = serde_json::to_string(&r).unwrap();
+    assert_eq!(s, r#"{"type":"set_dumps_port","port":2304}"#);
+    assert_eq!(serde_json::from_str::<Request>(&s).unwrap(), r);
+}
+
+#[test]
+fn request_set_dump_feature_byte_shape() {
+    let r = Request::SetDumpFeature {
+        feature: "queries".into(),
+        enabled: false,
+    };
+    let s = serde_json::to_string(&r).unwrap();
+    assert_eq!(s, r#"{"type":"set_dump_feature","feature":"queries","enabled":false}"#);
+    assert_eq!(serde_json::from_str::<Request>(&s).unwrap(), r);
+}
+
+#[test]
+fn request_dumps_status_byte_shape() {
+    let s = serde_json::to_string(&Request::DumpsStatus).unwrap();
+    assert_eq!(s, r#"{"type":"dumps_status"}"#);
+    assert_eq!(serde_json::from_str::<Request>(&s).unwrap(), Request::DumpsStatus);
+}
+
+#[test]
+fn dump_category_each_variant_byte_shape() {
+    for (c, expected) in [
+        (DumpCategory::Dump, r#""dump""#),
+        (DumpCategory::Query, r#""query""#),
+        (DumpCategory::Job, r#""job""#),
+        (DumpCategory::View, r#""view""#),
+        (DumpCategory::Request, r#""request""#),
+        (DumpCategory::Log, r#""log""#),
+        (DumpCategory::Cache, r#""cache""#),
+    ] {
+        assert_eq!(serde_json::to_string(&c).unwrap(), expected);
+    }
+}
+
+#[test]
+fn dump_counts_byte_shape() {
+    let c = DumpCounts::default();
+    let s = serde_json::to_string(&c).unwrap();
+    assert_eq!(
+        s,
+        r#"{"dumps":0,"queries":0,"jobs":0,"views":0,"requests":0,"logs":0,"cache":0}"#
+    );
+    assert_eq!(serde_json::from_str::<DumpCounts>(&s).unwrap(), c);
+}
+
+#[test]
+fn dump_event_byte_shape() {
+    let e = DumpEvent {
+        id: 1,
+        category: DumpCategory::Query,
+        ts_ms: 1_718_360_452_123,
+        site: "blog.test".into(),
+        request_id: "abc".into(),
+        payload: serde_json::json!({ "sql": "select 1" }),
+        pinned: false,
+    };
+    let s = serde_json::to_string(&e).unwrap();
+    let expected = r#"{"id":1,"category":"query","ts_ms":1718360452123,"site":"blog.test","request_id":"abc","payload":{"sql":"select 1"},"pinned":false}"#;
+    assert_eq!(s, expected);
+    assert_eq!(serde_json::from_str::<DumpEvent>(&s).unwrap(), e);
+}
+
+#[test]
+fn dump_ext_status_byte_shape() {
+    let x = DumpExtStatus {
+        version: PhpVersion::new(8, 3),
+        present: true,
+    };
+    let s = serde_json::to_string(&x).unwrap();
+    assert_eq!(s, r#"{"version":"8.3","present":true}"#);
+    assert_eq!(serde_json::from_str::<DumpExtStatus>(&s).unwrap(), x);
+}
+
+#[test]
+fn response_dumps_byte_shape() {
+    let r = Response::Dumps {
+        events: vec![DumpEvent {
+            id: 1,
+            category: DumpCategory::Dump,
+            ts_ms: 1_718_360_452_123,
+            site: "blog.test".into(),
+            request_id: "abc".into(),
+            payload: serde_json::json!({ "value_text": "hi" }),
+            pinned: false,
+        }],
+        removed_ids: vec![3],
+        counts: DumpCounts {
+            dumps: 1,
+            ..DumpCounts::default()
+        },
+        latest_id: 1,
+    };
+    let s = serde_json::to_string(&r).unwrap();
+    let expected = r#"{"type":"dumps","events":[{"id":1,"category":"dump","ts_ms":1718360452123,"site":"blog.test","request_id":"abc","payload":{"value_text":"hi"},"pinned":false}],"removed_ids":[3],"counts":{"dumps":1,"queries":0,"jobs":0,"views":0,"requests":0,"logs":0,"cache":0},"latest_id":1}"#;
+    assert_eq!(s, expected);
+    assert_eq!(serde_json::from_str::<Response>(&s).unwrap(), r);
+}
+
+#[test]
+fn response_dumps_status_byte_shape() {
+    let mut features = BTreeMap::new();
+    features.insert("queries".to_string(), false);
+    let r = Response::DumpsStatus {
+        enabled: true,
+        port: 2304,
+        running: true,
+        extensions: vec![DumpExtStatus {
+            version: PhpVersion::new(8, 3),
+            present: false,
+        }],
+        counts: DumpCounts::default(),
+        features,
+    };
+    let s = serde_json::to_string(&r).unwrap();
+    let expected = r#"{"type":"dumps_status","enabled":true,"port":2304,"running":true,"extensions":[{"version":"8.3","present":false}],"counts":{"dumps":0,"queries":0,"jobs":0,"views":0,"requests":0,"logs":0,"cache":0},"features":{"queries":false}}"#;
+    assert_eq!(s, expected);
+    assert_eq!(serde_json::from_str::<Response>(&s).unwrap(), r);
 }

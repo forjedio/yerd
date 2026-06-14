@@ -34,6 +34,28 @@ struct WireSer<'a> {
     // extra tables). `BTreeMap` → deterministic lexicographic table order.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     services: BTreeMap<&'a str, ServiceInstanceSer<'a>>,
+    // v4: optional `[dumps]` table. `None` (skipped) when the section equals its
+    // default, so a default config emits no `[dumps]` region — keeping the
+    // byte-shape goldens (which assume no extra tables) intact.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    dumps: Option<DumpsSectionSer<'a>>,
+}
+
+#[derive(Serialize)]
+struct DumpsSectionSer<'a> {
+    // Scalars first (TOML emits scalars before sub-tables within `[dumps]`).
+    enabled: bool,
+    port: u16,
+    // Skipped when empty so a feature-override-free `[dumps]` emits no
+    // `[dumps.features]` table.
+    #[serde(skip_serializing_if = "bool_map_is_empty")]
+    features: &'a BTreeMap<String, bool>,
+}
+
+/// `skip_serializing_if` predicate for the borrowed `features` field.
+#[allow(clippy::trivially_copy_pass_by_ref)]
+fn bool_map_is_empty(m: &&BTreeMap<String, bool>) -> bool {
+    m.is_empty()
 }
 
 #[derive(Serialize)]
@@ -131,6 +153,17 @@ pub(crate) fn to_toml(c: &Config) -> Result<String, ConfigError> {
                 )
             })
             .collect(),
+        // Omit `[dumps]` entirely when it is the default — keeps a default
+        // config's byte shape unchanged (no extra tables).
+        dumps: if c.dumps == crate::schema::DumpsSection::default() {
+            None
+        } else {
+            Some(DumpsSectionSer {
+                enabled: c.dumps.enabled,
+                port: c.dumps.port,
+                features: &c.dumps.features,
+            })
+        },
     };
     toml::to_string_pretty(&w).map_err(Into::into)
 }
@@ -149,8 +182,8 @@ mod tests {
     fn default_to_toml_starts_with_version_line() {
         let s = to_toml(&Config::default()).unwrap();
         assert!(
-            s.starts_with("version = 3\n"),
-            "expected `version = 3` first line; got: {s}"
+            s.starts_with("version = 4\n"),
+            "expected `version = 4` first line; got: {s}"
         );
     }
 
