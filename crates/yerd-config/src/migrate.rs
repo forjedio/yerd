@@ -19,7 +19,7 @@ pub(crate) type MigrationStep = fn(&mut Value) -> Result<(), ConfigError>;
 /// Forward-migration steps, indexed so that **`STEPS[N]` walks `vN → v(N+1)`**.
 /// This matches [`up`], which indexes `STEPS[current]` (== the version being
 /// migrated *from*). Example: a v1 file is migrated by `STEPS[1]`. When
-/// `CURRENT_VERSION == 3`, `STEPS = [v0→v1, v1→v2, v2→v3]`, length 3.
+/// `CURRENT_VERSION == 5`, `STEPS = [v0→v1, v1→v2, v2→v3, v3→v4, v4→v5]`, length 5.
 ///
 /// `STEPS[0]` (v0→v1) is only reachable via a hand-crafted `version = 0` file —
 /// v0 was never written to disk — but it must exist so that `STEPS[1]` does.
@@ -70,9 +70,8 @@ fn migrate_v2_to_v3(value: &mut Value) -> Result<(), ConfigError> {
     set_version(value, 3)
 }
 
-/// `v3 → v4`: bump the version. v4 is reserved for the mail-capture feature's
-/// `[mail]` table (sibling branch); it defaults when absent, so an in-place
-/// version bump is the entire migration here.
+/// `v3 → v4`: bump the version. v4 added the optional `[mail]` section, which
+/// defaults when absent, so an in-place version bump is the entire migration.
 fn migrate_v3_to_v4(value: &mut Value) -> Result<(), ConfigError> {
     set_version(value, 4)
 }
@@ -159,6 +158,7 @@ mod tests {
 
     #[test]
     fn v3_to_v4_is_a_bare_version_bump() {
+        // v4 only adds the optional `[mail]` section; the migration is a bump.
         let mut v: Value = toml::from_str("version = 3\n").unwrap();
         migrate_v3_to_v4(&mut v).unwrap();
         assert_eq!(read_version(&v).unwrap(), 4);
@@ -243,7 +243,7 @@ mod tests {
 
     #[test]
     fn up_migrates_v1_to_current_via_steps_index_one() {
-        // A real v1 file is migrated by STEPS[1] then STEPS[2] up to current.
+        // A real v1 file is migrated by STEPS[1], [2], [3]… up to current.
         let mut v: Value = toml::from_str("version = 1").unwrap();
         up(&mut v, 1).unwrap();
         assert_eq!(read_version(&v).unwrap(), crate::CURRENT_VERSION);
@@ -251,7 +251,7 @@ mod tests {
 
     #[test]
     fn up_walks_v0_all_the_way_to_current() {
-        // A hand-crafted v0 file walks STEPS[0], [1], [2] up to current.
+        // A hand-crafted v0 file walks STEPS[0], [1], [2], [3]… up to current.
         let mut v: Value = toml::from_str("version = 0").unwrap();
         up(&mut v, 0).unwrap();
         assert_eq!(read_version(&v).unwrap(), crate::CURRENT_VERSION);

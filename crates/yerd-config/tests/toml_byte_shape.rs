@@ -135,6 +135,16 @@ fn empty_overrides_emit_no_table() {
 }
 
 #[test]
+fn default_config_emits_no_mail_table() {
+    // The default (disabled) mail section must not carry a `[mail]` table.
+    let s = Config::default().to_toml().unwrap();
+    assert!(
+        !s.contains("[mail]"),
+        "default mail section must omit the table; got: {s}"
+    );
+}
+
+#[test]
 fn override_with_only_php_omits_secure_key() {
     let mut c = Config::default();
     c.overrides.insert(
@@ -213,7 +223,7 @@ fn service_instance_wire_shape_is_per_service_table() {
     assert_eq!(redis.get("port"), Some(&toml::Value::Integer(6380)));
     // An unset value must be omitted (no `version = ""` noise) — inspect the
     // service's own table, not the whole doc (which carries a top-level
-    // `version = 3` line).
+    // `version = 4` line).
     let mut c2 = Config::default();
     c2.services
         .instances

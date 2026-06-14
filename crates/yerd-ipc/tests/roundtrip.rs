@@ -166,6 +166,7 @@ fn encode_then_decode_response_roundtrip() {
             load_avg: None,
             daemon_version: "2.0.1".into(),
             services: vec![],
+            mail: None,
         }),
     });
     assert_response_roundtrips(Response::Diagnoses {

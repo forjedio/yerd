@@ -212,6 +212,29 @@ async fn dispatch(req: Request, state: &DaemonState) -> Response {
         }
         Request::SetDumpsPersist { persist } => crate::dump_server::set_persist(state, persist).await,
         Request::DumpsStatus => crate::dump_server::status(state).await,
+        Request::ListMails => Response::Mails {
+            mails: state.mail_store.list().await,
+        },
+        Request::GetMail { id } => match state.mail_store.get(&id).await {
+            Ok(Some(mail)) => Response::Mail {
+                mail: Box::new(mail),
+            },
+            Ok(None) => Response::Error {
+                code: ErrorCode::NotFound,
+                message: format!("no captured mail with id {id}"),
+            },
+            Err(e) => internal(format!("mail read failed: {e}")),
+        },
+        Request::ClearMails => match state.mail_store.clear().await {
+            Ok(()) => Response::Ok,
+            Err(e) => internal(format!("mail clear failed: {e}")),
+        },
+        Request::DeleteMails { ids } => match state.mail_store.delete_many(&ids).await {
+            Ok(()) => Response::Ok,
+            Err(e) => internal(format!("mail delete failed: {e}")),
+        },
+        Request::SetMailPort { port } => set_mail_port(port, state).await,
+        Request::SetMailEnabled { enabled } => set_mail_enabled(enabled, state).await,
         // `Request` is `#[non_exhaustive]` (external crate): a wildcard is
         // required even though every known variant is handled above.
         _ => Response::Error {
@@ -306,10 +329,20 @@ async fn build_status_report(state: &DaemonState) -> yerd_ipc::StatusReport {
         counts
     };
 
-    // 2. Config lock → tld + default PHP (dropped).
-    let (tld, default_php) = {
+    // 2. Config lock → tld + default PHP + the *configured* mail enabled/port
+    // (dropped). Sourcing mail enabled/port from config (not the startup
+    // snapshot) means `SetMailPort`/`SetMailEnabled` are reflected in `Status`
+    // immediately, so the GUI can confirm a save; `listening` below still comes
+    // from the runtime snapshot, so an enabled-but-not-yet-bound state (a change
+    // pending the next restart) reads as `enabled && !listening`.
+    let (tld, default_php, mail_enabled, mail_port) = {
         let cfg = state.config.lock().await;
-        (cfg.tld.as_str().to_owned(), cfg.php.default)
+        (
+            cfg.tld.as_str().to_owned(),
+            cfg.php.default,
+            cfg.mail.enabled,
+            cfg.mail.port,
+        )
     };
 
     // 3. PHP manager lock → live pool snapshots (dropped).
@@ -429,6 +462,12 @@ async fn build_status_report(state: &DaemonState) -> yerd_ipc::StatusReport {
         load_avg,
         daemon_version: env!("CARGO_PKG_VERSION").to_string(),
         services: crate::services::service_statuses(state).await,
+        mail: Some(yerd_ipc::MailStatus {
+            enabled: mail_enabled,
+            port: mail_port,
+            listening: state.mail.listening,
+            count: state.mail_store.count().await,
+        }),
     }
 }
 
@@ -733,6 +772,40 @@ async fn set_default_php(version: yerd_core::PhpVersion, state: &DaemonState) ->
     }
     *cfg_guard = new;
     tracing::info!(version = %version, "set default PHP");
+    Response::Ok
+}
+
+/// Set the mail-capture SMTP port. Persisted to config; takes effect on the next
+/// daemon start/restart (no hot rebind), matching `SetServicePort`. Modelled on
+/// `set_php_settings` (clone → set → validate → save → commit under the config
+/// mutex) so an invalid value (e.g. a zero port) is rejected by the config
+/// validator rather than overloading an unrelated `ErrorCode`.
+async fn set_mail_port(port: u16, state: &DaemonState) -> Response {
+    let mut cfg_guard = state.config.lock().await;
+    let mut new = cfg_guard.clone();
+    new.mail.port = port;
+    if let Err(e) = new.validate() {
+        return internal(format!("config validation failed: {e}"));
+    }
+    if let Err(e) = new.save(&state.config_path) {
+        return internal(format!("config save failed: {e}"));
+    }
+    *cfg_guard = new;
+    tracing::info!(port, "set mail port (effective on next restart)");
+    Response::Ok
+}
+
+/// Enable or disable mail capture. Persisted to config; takes effect on the next
+/// daemon start/restart.
+async fn set_mail_enabled(enabled: bool, state: &DaemonState) -> Response {
+    let mut cfg_guard = state.config.lock().await;
+    let mut new = cfg_guard.clone();
+    new.mail.enabled = enabled;
+    if let Err(e) = new.save(&state.config_path) {
+        return internal(format!("config save failed: {e}"));
+    }
+    *cfg_guard = new;
+    tracing::info!(enabled, "set mail enabled (effective on next restart)");
     Response::Ok
 }
 
@@ -1091,6 +1164,8 @@ mod tests {
             service_manager: std::sync::Arc::new(Mutex::new(crate::services::new_manager(
                 dirs_in(tmp),
             ))),
+            mail_store: std::sync::Arc::new(yerd_mail::Store::open(tmp.join("mail")).unwrap()),
+            mail: crate::state::MailRuntime { listening: false },
             http: yerd_ipc::PortStatus {
                 requested: 80,
                 bound: 8080,
@@ -1118,6 +1193,111 @@ mod tests {
             dispatch(Request::Ping, &state).await,
             Response::Pong
         ));
+    }
+
+    const SAMPLE_EML: &[u8] = b"From: Example <hello@example.com>\r\n\
+To: test@test.com\r\n\
+Subject: Captured\r\n\r\nhi\r\n";
+
+    #[tokio::test]
+    async fn dispatch_list_mails_empty_then_populated_then_cleared() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_in(tmp.path());
+
+        // Empty.
+        match dispatch(Request::ListMails, &state).await {
+            Response::Mails { mails } => assert!(mails.is_empty()),
+            other => panic!("expected Mails, got {other:?}"),
+        }
+
+        // Capture one directly through the store (the SMTP path is covered in
+        // yerd-mail) and list it.
+        state.mail_store.append(SAMPLE_EML).await.unwrap();
+        let id = match dispatch(Request::ListMails, &state).await {
+            Response::Mails { mails } => {
+                assert_eq!(mails.len(), 1);
+                assert_eq!(mails[0].subject, "Captured");
+                mails[0].id.clone()
+            }
+            other => panic!("expected Mails, got {other:?}"),
+        };
+
+        // Fetch the detail by id.
+        match dispatch(Request::GetMail { id: id.clone() }, &state).await {
+            Response::Mail { mail } => assert_eq!(mail.subject, "Captured"),
+            other => panic!("expected Mail, got {other:?}"),
+        }
+
+        // Unknown id → NotFound.
+        match dispatch(
+            Request::GetMail {
+                id: "999999".into(),
+            },
+            &state,
+        )
+        .await
+        {
+            Response::Error { code, .. } => assert!(matches!(code, ErrorCode::NotFound)),
+            other => panic!("expected NotFound, got {other:?}"),
+        }
+
+        // Clear empties the store.
+        assert!(matches!(
+            dispatch(Request::ClearMails, &state).await,
+            Response::Ok
+        ));
+        match dispatch(Request::ListMails, &state).await {
+            Response::Mails { mails } => assert!(mails.is_empty()),
+            other => panic!("expected empty Mails, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn dispatch_status_includes_mail() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_in(tmp.path());
+        match dispatch(Request::Status, &state).await {
+            Response::Status { report } => {
+                let mail = report.mail.expect("status should carry mail");
+                // `enabled`/`port` come from the (default) config; `listening` is
+                // the runtime snapshot (false in this test harness).
+                assert!(mail.enabled);
+                assert_eq!(mail.port, yerd_config::DEFAULT_MAIL_PORT);
+                assert!(!mail.listening);
+                assert_eq!(mail.count, 0);
+            }
+            other => panic!("expected Status, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn dispatch_set_mail_port_persists_and_rejects_zero() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_in(tmp.path());
+
+        // A zero port is rejected by the config validator (mapped to Internal),
+        // not by overloading a path/port code.
+        match dispatch(Request::SetMailPort { port: 0 }, &state).await {
+            Response::Error { code, .. } => assert!(matches!(code, ErrorCode::Internal)),
+            other => panic!("expected Error, got {other:?}"),
+        }
+
+        assert!(matches!(
+            dispatch(Request::SetMailPort { port: 3030 }, &state).await,
+            Response::Ok
+        ));
+        assert_eq!(state.config.lock().await.mail.port, 3030);
+
+        assert!(matches!(
+            dispatch(Request::SetMailEnabled { enabled: true }, &state).await,
+            Response::Ok
+        ));
+        assert!(state.config.lock().await.mail.enabled);
+
+        // Persisted to disk.
+        let reloaded = yerd_config::Config::load(&state.config_path).unwrap();
+        assert_eq!(reloaded.mail.port, 3030);
+        assert!(reloaded.mail.enabled);
     }
 
     #[tokio::test]

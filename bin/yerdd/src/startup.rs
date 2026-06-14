@@ -67,6 +67,10 @@ pub struct Daemon {
     /// Actual DNS bind address, read back from the kernel after the ephemeral
     /// bind. The resolver installer (post-MVP) wires `.test → this port`.
     pub dns_addr: SocketAddr,
+    /// Bound mail-capture SMTP listener, when capture is enabled and the port was
+    /// free. `None` = disabled, or the bind failed (non-fatal). Consumed when the
+    /// mail task is spawned.
+    pub mail_listener: Option<tokio::net::TcpListener>,
 }
 
 /// Top-level startup: resolve platform dirs, then run the shared
@@ -205,6 +209,35 @@ pub async fn bring_up_with_dirs(
     let dns_addr = dns_bound.local_addr();
     tracing::info!(dns = %dns_addr, "DNS responder bound");
 
+    // Mail-capture store + (optional, non-fatal) SMTP listener. The store always
+    // exists so already-captured mail stays listable even when capture is off; a
+    // bind failure (e.g. the port is busy) is logged and degrades to
+    // not-listening rather than aborting the whole daemon.
+    let mail_enabled = config.mail.enabled;
+    let mail_port = config.mail.port;
+    let mail_store =
+        Arc::new(
+            yerd_mail::Store::open(dirs.data.join("mail")).map_err(|e| DaemonError::Io {
+                path: dirs.data.join("mail"),
+                source: std::io::Error::other(e.to_string()),
+            })?,
+        );
+    let mail_listener = if mail_enabled {
+        match yerd_mail::bind(mail_port).await {
+            Ok(listener) => {
+                tracing::info!(port = mail_port, "mail capture SMTP server bound");
+                Some(listener)
+            }
+            Err(e) => {
+                tracing::warn!(port = mail_port, error = %e, "mail capture disabled: could not bind port");
+                None
+            }
+        }
+    } else {
+        None
+    };
+    let mail_listening = mail_listener.is_some();
+
     let state = Arc::new(DaemonState {
         config: Mutex::new(config),
         router,
@@ -216,6 +249,10 @@ pub async fn bring_up_with_dirs(
         php_updates: tokio::sync::RwLock::new(std::collections::HashMap::new()),
         php_manager: php_manager.clone(),
         service_manager,
+        mail_store,
+        mail: crate::state::MailRuntime {
+            listening: mail_listening,
+        },
         http: yerd_ipc::PortStatus {
             requested: cfg_http,
             bound: bound_http,
@@ -261,6 +298,7 @@ pub async fn bring_up_with_dirs(
         ipc_listener,
         dns_bound,
         dns_addr,
+        mail_listener,
     })
 }
 

@@ -147,10 +147,32 @@ function portRow(
   };
 }
 
+function mailRow(r: StatusReport): Row | null {
+  const m = r.mail;
+  if (!m) return null; // daemon predates the mail subsystem
+  let tone: Tone;
+  let state: string;
+  let info: string;
+  if (!m.enabled) {
+    tone = "muted";
+    state = "disabled";
+    info = "enable it on the Mail page · runs inside the daemon process";
+  } else if (m.listening) {
+    tone = "ok";
+    state = "listening";
+    info = `SMTP on 127.0.0.1:${m.port} · ${m.count} captured · runs inside the daemon process`;
+  } else {
+    tone = "warn";
+    state = "not listening";
+    info = `port :${m.port} unavailable · runs inside the daemon process`;
+  }
+  return { key: "mail", name: "Mail capture", tone, state, memory: "—", info, child: true };
+}
+
 const rows = computed<Row[]>(() => {
   const r = report.value;
   if (!r) return [];
-  return [
+  const base: Row[] = [
     {
       key: "daemon",
       name: "Daemon (yerdd)",
@@ -172,6 +194,9 @@ const rows = computed<Row[]>(() => {
     portRow("proxy-http", "Proxy (HTTP)", r, "http"),
     portRow("proxy-https", "Proxy (HTTPS)", r, "https"),
   ];
+  const mail = mailRow(r);
+  if (mail) base.push(mail);
+  return base;
 });
 
 // ── environment (tri-state OS privileges) ──

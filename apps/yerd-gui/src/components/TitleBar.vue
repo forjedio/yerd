@@ -6,6 +6,14 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 // titlebar. It's a `data-tauri-drag-region`, giving native click-drag-to-move
 // and double-click-to-zoom for free; the controls below opt out by being their
 // own (non-drag) elements. Identical on macOS and Linux by design.
+//
+// `title` lets a secondary window (the Mails viewer) reuse this bar with its own
+// caption; the optional `actions` slot draws window-scoped buttons on the right
+// (outside the drag region, so they stay clickable).
+withDefaults(defineProps<{ title?: string }>(), { title: "Yerd" });
+
+// Controls always target the window this titlebar is mounted in, so the one
+// component drives both the main window and the Mails window.
 const win = getCurrentWindow();
 
 // Close mirrors the native red button: main.rs intercepts CloseRequested and
@@ -59,7 +67,12 @@ function toggleMaximize() {
     <span
       class="pointer-events-none absolute left-1/2 -translate-x-1/2 text-xs font-medium text-muted-foreground"
     >
-      Yerd
+      {{ title }}
     </span>
+
+    <!-- Window-scoped actions (e.g. the Mails "clear all" button), right-aligned. -->
+    <div class="ml-auto flex items-center gap-1">
+      <slot name="actions" />
+    </div>
   </header>
 </template>

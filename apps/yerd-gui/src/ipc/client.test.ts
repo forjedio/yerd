@@ -7,9 +7,15 @@ vi.mock("@tauri-apps/api/core", () => ({
 }));
 
 import {
+  clearMails,
+  deleteMails,
+  getMail,
   IpcError,
+  listMails,
   listPhp,
   listSites,
+  setMailEnabled,
+  setMailPort,
   status,
   unlink,
   updatePhp,
@@ -55,6 +61,61 @@ describe("client → command mapping", () => {
     invokeMock.mockResolvedValue({ type: "ok" });
     await updatePhp(null);
     expect(invokeMock).toHaveBeenCalledWith("update_php", { version: null });
+  });
+
+  it("listMails unwraps the mails array", async () => {
+    invokeMock.mockResolvedValue({
+      type: "mails",
+      mails: [
+        {
+          id: "000001",
+          from: "a@b.c",
+          to: ["d@e.f"],
+          subject: "Hi",
+          date_epoch: 1700000000,
+        },
+      ],
+    });
+    const r = await listMails();
+    expect(r).toHaveLength(1);
+    expect(r[0].subject).toBe("Hi");
+    expect(invokeMock).toHaveBeenCalledWith("list_mails", undefined);
+  });
+
+  it("getMail returns the inner detail", async () => {
+    const mail = {
+      id: "000001",
+      from: "a@b.c",
+      to: ["d@e.f"],
+      subject: "Hi",
+      date_epoch: 0,
+      headers: [],
+      html_body: "<p>Hi</p>",
+      text_body: null,
+    };
+    invokeMock.mockResolvedValue({ type: "mail", mail });
+    await expect(getMail("000001")).resolves.toEqual(mail);
+    expect(invokeMock).toHaveBeenCalledWith("get_mail", { id: "000001" });
+  });
+
+  it("setMailPort sends the port; clearMails takes no args", async () => {
+    invokeMock.mockResolvedValue({ type: "ok" });
+    await setMailPort(2525);
+    expect(invokeMock).toHaveBeenCalledWith("set_mail_port", { port: 2525 });
+    invokeMock.mockResolvedValue({ type: "ok" });
+    await clearMails();
+    expect(invokeMock).toHaveBeenCalledWith("clear_mails", undefined);
+  });
+
+  it("deleteMails sends the id list; setMailEnabled sends the flag", async () => {
+    invokeMock.mockResolvedValue({ type: "ok" });
+    await deleteMails(["000001", "000002"]);
+    expect(invokeMock).toHaveBeenCalledWith("delete_mails", {
+      ids: ["000001", "000002"],
+    });
+    invokeMock.mockResolvedValue({ type: "ok" });
+    await setMailEnabled(true);
+    expect(invokeMock).toHaveBeenCalledWith("set_mail_enabled", { enabled: true });
   });
 });
 

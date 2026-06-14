@@ -109,6 +109,12 @@ pub enum Command {
         #[command(subcommand)]
         action: DbAction,
     },
+    /// Inspect emails captured by the built-in mail server.
+    Mail {
+        /// What to do.
+        #[command(subcommand)]
+        action: MailAction,
+    },
     /// Show a snapshot of daemon, proxy, DNS, ports, CA, and PHP health.
     Status,
     /// Diagnose common problems; `yerd doctor fix` attempts safe repairs.
@@ -257,6 +263,20 @@ pub enum DbAction {
         /// Source file to replay (relative paths resolve against your current directory).
         path: PathBuf,
     },
+}
+
+/// Action of `yerd mail`.
+#[derive(clap::Subcommand, Debug, Clone)]
+pub enum MailAction {
+    /// List captured emails (newest first).
+    List,
+    /// Show one captured email's headers and body by id.
+    Show {
+        /// The email id (from `yerd mail list`).
+        id: String,
+    },
+    /// Delete every captured email.
+    Clear,
 }
 
 /// Action of `yerd doctor`.

@@ -3,6 +3,7 @@ import {
   ClipboardList,
   Info,
   LayoutGrid,
+  Mail,
   Server,
   Settings,
   SquareCode,
@@ -28,6 +29,7 @@ const items = [
   { to: "/sites", label: "Sites", icon: LayoutGrid, chip: GREY },
   { to: "/services", label: "Services", icon: Server, chip: RED },
   { to: "/dumps", label: "Dumps", icon: ClipboardList, chip: ORANGE },
+  { to: "/mail", label: "Mail", icon: Mail, chip: RED },
   { to: "/doctor", label: "Doctor", icon: Stethoscope, chip: BLUE },
   { to: "/about", label: "About", icon: Info, chip: BLUE },
 ];

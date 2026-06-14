@@ -39,10 +39,23 @@
         "decorations": false,
         "transparent": true,
         "visible": false
+      },
+      {
+        "label": "mails",
+        "title": "Mails",
+        "url": "index.html#/mails-viewer",
+        "width": 1100,
+        "height": 760,
+        "minWidth": 720,
+        "minHeight": 480,
+        "resizable": true,
+        "decorations": false,
+        "transparent": true,
+        "visible": false
       }
     ],
     "security": {
-      "csp": "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'"
+      "csp": "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; frame-src 'self'"
     }
   },
   "bundle": {

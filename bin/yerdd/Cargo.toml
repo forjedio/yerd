@@ -27,6 +27,7 @@ yerd-services  = { path = "../../crates/yerd-services" }
 yerd-supervise = { path = "../../crates/yerd-supervise" }
 yerd-proxy     = { path = "../../crates/yerd-proxy" }
 yerd-doctor    = { path = "../../crates/yerd-doctor" }
+yerd-mail      = { path = "../../crates/yerd-mail" }
 thiserror      = { workspace = true }
 serde          = { workspace = true }
 serde_json     = { workspace = true }

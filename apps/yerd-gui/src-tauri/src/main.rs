@@ -9,6 +9,7 @@ mod error;
 mod ipc;
 #[cfg(target_os = "macos")]
 mod mac_trust;
+mod mail_window;
 
 use tauri::{
     menu::{Menu, MenuItem, PredefinedMenuItem},
@@ -95,6 +96,13 @@ fn main() {
             commands::drop_database,
             commands::backup_database,
             commands::restore_database,
+            commands::list_mails,
+            commands::get_mail,
+            commands::clear_mails,
+            commands::delete_mails,
+            commands::set_mail_port,
+            commands::set_mail_enabled,
+            mail_window::show_mails_window,
             commands::status,
             commands::diagnose,
             commands::doctor_fix,
@@ -129,10 +137,16 @@ fn main() {
         // item is the real exit.
         .on_window_event(|window, event| {
             if let WindowEvent::CloseRequested { api, .. } = event {
+                // The handler is global (fires for every window). The Mails
+                // viewer just hides on close — but must NOT touch the Dock
+                // activation policy, or closing it would drop the app's Dock
+                // icon while the main window is still open. Only the main window
+                // drives the close-to-tray + Dock-accessory behaviour.
                 let _ = window.hide();
                 // Only the main window drops the Dock icon on close — the dumps
-                // window is auxiliary, so closing it must not yank the main app's
-                // presence (or it would minimise the whole app to the tray).
+                // and Mails viewer windows are auxiliary, so closing one must not
+                // yank the main app's presence (or it would minimise the whole
+                // app to the tray).
                 if window.label() == "main" {
                     set_dock_visible(window.app_handle(), false);
                 }
@@ -231,6 +245,7 @@ const NAV_ITEMS: &[(&str, &str)] = &[
     ("nav:/php", "PHP"),
     ("nav:/sites", "Sites"),
     ("nav:/services", "Services"),
+    ("nav:/mail", "Mail"),
     ("nav:/about", "About"),
 ];
 

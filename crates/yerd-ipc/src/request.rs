@@ -288,6 +288,33 @@ pub enum Request {
     /// Fetch dump-server status (enabled, port, running, per-version extension
     /// presence, current counts).
     DumpsStatus,
+    /// List captured emails (metadata only), newest first.
+    ListMails,
+    /// Fetch one captured email's full decoded content by id.
+    GetMail {
+        /// The email id (from [`super::Response::Mails`]).
+        id: String,
+    },
+    /// Delete every captured email.
+    ClearMails,
+    /// Delete a specific set of captured emails by id (e.g. all the mail shown
+    /// for one application). Unknown ids are ignored.
+    DeleteMails {
+        /// The email ids to delete.
+        ids: Vec<String>,
+    },
+    /// Set the mail-capture SMTP port. Takes effect on the next daemon
+    /// start/restart (no implicit hot rebind), like [`Self::SetServicePort`].
+    SetMailPort {
+        /// The new loopback port (must be non-zero).
+        port: u16,
+    },
+    /// Enable or disable the mail-capture server. Takes effect on the next
+    /// daemon start/restart.
+    SetMailEnabled {
+        /// The desired enabled state.
+        enabled: bool,
+    },
 }
 
 #[cfg(test)]
@@ -359,6 +386,12 @@ mod variant_name_pinning {
             Request::SetDumpFeature { .. } => {}
             Request::SetDumpsPersist { .. } => {}
             Request::DumpsStatus => {}
+            Request::ListMails => {}
+            Request::GetMail { .. } => {}
+            Request::ClearMails => {}
+            Request::DeleteMails { .. } => {}
+            Request::SetMailPort { .. } => {}
+            Request::SetMailEnabled { .. } => {}
         }
     }
 
@@ -480,5 +513,15 @@ mod variant_name_pinning {
         });
         pin(Request::SetDumpsPersist { persist: true });
         pin(Request::DumpsStatus);
+        pin(Request::ListMails);
+        pin(Request::GetMail {
+            id: "000001".into(),
+        });
+        pin(Request::ClearMails);
+        pin(Request::DeleteMails {
+            ids: vec!["000001".into()],
+        });
+        pin(Request::SetMailPort { port: 2525 });
+        pin(Request::SetMailEnabled { enabled: true });
     }
 }

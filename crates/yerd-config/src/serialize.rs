@@ -34,9 +34,16 @@ struct WireSer<'a> {
     // extra tables). `BTreeMap` → deterministic lexicographic table order.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     services: BTreeMap<&'a str, ServiceInstanceSer<'a>>,
-    // v4: optional `[dumps]` table. `None` (skipped) when the section equals its
-    // default, so a default config emits no `[dumps]` region — keeping the
-    // byte-shape goldens (which assume no extra tables) intact.
+    // v4: built-in mail-capture server (`[mail]`). A trailing sub-table region,
+    // so keeping it after `services` leaves the byte order of every existing
+    // table unchanged. `None` (skipped) when the section equals its default, so
+    // a default config emits no `[mail]` table (byte-shape goldens assume no
+    // extra tables).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    mail: Option<MailSectionSer>,
+    // v5: optional `[dumps]` table — another trailing sub-table region. `None`
+    // (skipped) when the section equals its default, so a default config emits
+    // no `[dumps]` region, keeping the byte-shape goldens intact.
     #[serde(skip_serializing_if = "Option::is_none")]
     dumps: Option<DumpsSectionSer<'a>>,
 }
@@ -98,6 +105,14 @@ struct ServiceInstanceSer<'a> {
     enabled: bool,
 }
 
+/// `[mail]` table. Owned (not borrowed) — the fields are `Copy` scalars, so
+/// there's nothing to borrow. Emitted only when the section is non-default.
+#[derive(Serialize)]
+struct MailSectionSer {
+    enabled: bool,
+    port: u16,
+}
+
 #[derive(Serialize)]
 struct OverrideSer<'a> {
     path: &'a str,
@@ -154,6 +169,16 @@ pub(crate) fn to_toml(c: &Config) -> Result<String, ConfigError> {
                 )
             })
             .collect(),
+        // Emit `[mail]` only when it differs from the default, so a default
+        // config stays minimal (and the byte-shape goldens hold).
+        mail: if c.mail == crate::MailSection::default() {
+            None
+        } else {
+            Some(MailSectionSer {
+                enabled: c.mail.enabled,
+                port: c.mail.port,
+            })
+        },
         // Omit `[dumps]` entirely when it is the default — keeps a default
         // config's byte shape unchanged (no extra tables).
         dumps: if c.dumps == crate::schema::DumpsSection::default() {
@@ -187,6 +212,30 @@ mod tests {
             s.starts_with("version = 5\n"),
             "expected `version = 5` first line; got: {s}"
         );
+    }
+
+    #[test]
+    fn default_config_emits_no_mail_table() {
+        // A default (disabled) mail section must not emit a `[mail]` table.
+        let s = to_toml(&Config::default()).unwrap();
+        assert!(
+            !s.contains("[mail]"),
+            "default config must omit the mail table; got: {s}"
+        );
+    }
+
+    #[test]
+    #[allow(clippy::field_reassign_with_default)]
+    fn non_default_mail_section_round_trips() {
+        let mut c = Config::default();
+        c.mail = crate::MailSection {
+            enabled: true,
+            port: 3030,
+        };
+        let s = to_toml(&c).unwrap();
+        assert!(s.contains("[mail]"), "enabled mail must emit a table: {s}");
+        let back = Config::from_toml(&s).unwrap();
+        assert_eq!(back, c);
     }
 
     #[test]

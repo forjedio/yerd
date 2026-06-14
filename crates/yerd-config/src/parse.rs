@@ -13,7 +13,8 @@ use serde::Deserialize;
 
 use crate::error::ValidateErrorReason;
 use crate::schema::{
-    Config, DumpsSection, ParkedSection, PhpSection, Ports, ServiceInstance, ServicesSection,
+    Config, DumpsSection, MailSection, ParkedSection, PhpSection, Ports, ServiceInstance,
+    ServicesSection,
 };
 use crate::ConfigError;
 
@@ -45,7 +46,11 @@ struct Wire {
     // migration before deserialisation, so this never sees the old array.
     #[serde(default)]
     services: BTreeMap<String, ServiceInstanceWire>,
-    // v4: optional `[dumps]` table; absent in v3 and earlier → default
+    // v4: built-in mail-capture server. `default` is mandatory (Wire is
+    // `deny_unknown_fields`) so a v1/v2/v3 file with no `[mail]` still parses.
+    #[serde(default)]
+    mail: MailSectionWire,
+    // v5: optional `[dumps]` table; absent in v4 and earlier → default
     // (disabled, port 2304, no per-feature overrides).
     #[serde(default)]
     dumps: DumpsSectionWire,
@@ -138,6 +143,35 @@ struct ServiceInstanceWire {
 
 fn default_service_enabled() -> bool {
     true
+}
+
+/// The `[mail]` table. Both keys default (off / 2525) so a config written before
+/// v4 — which has no `[mail]` table at all — still deserialises.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct MailSectionWire {
+    #[serde(default = "default_mail_enabled")]
+    enabled: bool,
+    #[serde(default = "default_mail_port")]
+    port: u16,
+}
+
+impl Default for MailSectionWire {
+    fn default() -> Self {
+        let m = MailSection::default();
+        Self {
+            enabled: m.enabled,
+            port: m.port,
+        }
+    }
+}
+
+fn default_mail_enabled() -> bool {
+    MailSection::default().enabled
+}
+
+fn default_mail_port() -> u16 {
+    MailSection::default().port
 }
 
 #[derive(Deserialize)]
@@ -269,6 +303,10 @@ impl TryFrom<Wire> for Config {
             s.set_web_subpath(sw.web_subpath);
             linked.push(s);
         }
+        let mail = MailSection {
+            enabled: w.mail.enabled,
+            port: w.mail.port,
+        };
         let dumps = DumpsSection {
             enabled: w.dumps.enabled,
             port: w.dumps.port,
@@ -285,6 +323,7 @@ impl TryFrom<Wire> for Config {
             linked,
             overrides,
             services,
+            mail,
             dumps,
         })
     }
@@ -312,6 +351,11 @@ fn validate_ports(c: &Config) -> Result<(), ConfigError> {
     }
     if c.ports.http == c.ports.https {
         return Err(ve(ValidateErrorReason::HttpHttpsPortsEqual));
+    }
+    // The mail-capture port is bound on `127.0.0.1` when enabled; a zero port is
+    // meaningless (it would bind an ephemeral port no sender could find).
+    if c.mail.port == 0 {
+        return Err(ve(ValidateErrorReason::MailPortZero));
     }
     Ok(())
 }
@@ -695,6 +739,18 @@ php = "not-a-version"
                 reason: ValidateErrorReason::HttpsPortZero,
             }) => {}
             other => panic!("expected HttpsPortZero, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn validate_rejects_zero_mail_port() {
+        let mut c = Config::default();
+        c.mail.port = 0;
+        match c.validate() {
+            Err(ConfigError::Validate {
+                reason: ValidateErrorReason::MailPortZero,
+            }) => {}
+            other => panic!("expected MailPortZero, got {other:?}"),
         }
     }
 

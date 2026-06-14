@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { onMounted, onUnmounted, ref } from "vue";
-import { useRouter } from "vue-router";
+import { computed, onMounted, onUnmounted, ref } from "vue";
+import { useRoute, useRouter } from "vue-router";
 
 import AppShell from "@/components/AppShell.vue";
 import DumpsWindowView from "@/views/DumpsWindowView.vue";
@@ -29,8 +29,14 @@ const isDumpsWindow = getCurrentWindow().label === "dumps";
 // Start the single shared daemon poller for the app's lifetime.
 const { start, stop, refresh } = useDaemon();
 const router = useRouter();
+const route = useRoute();
 const toast = useToast();
 let unlistenNav: UnlistenFn | undefined;
+
+// The separate Mails viewer window loads a `standalone` route: it must render
+// bare (no sidebar/titlebar) and must NOT spin up a second daemon poller or the
+// first-run install flow (the main window owns those).
+const standalone = computed(() => route.meta.standalone === true);
 
 // First-load auto-install of yerdd. A module-level guard keeps it to one run.
 let autoInstallDone = false;
@@ -81,7 +87,10 @@ async function maybeAutoInstall(): Promise<void> {
 }
 
 onMounted(async () => {
-  if (isDumpsWindow) return;
+  // The dumps window and the standalone Mails viewer share this SPA bundle but
+  // must not duplicate the poller, the tray-nav listener, or the install flow —
+  // those belong to the main window.
+  if (isDumpsWindow || standalone.value) return;
   start(4000);
   // The tray's "go to <page>" items emit `navigate` with a route path (e.g.
   // "/sites") after showing the window; jump the router there.
@@ -92,7 +101,7 @@ onMounted(async () => {
 });
 
 onUnmounted(() => {
-  if (isDumpsWindow) return;
+  if (isDumpsWindow || standalone.value) return;
   stop();
   unlistenNav?.();
 });
@@ -101,6 +110,8 @@ onUnmounted(() => {
 <template>
   <!-- The standalone dumps window renders its viewer directly (no SideNav). -->
   <DumpsWindowView v-if="isDumpsWindow" />
+  <!-- Standalone routes (the Mails viewer window) render bare — no shell. -->
+  <RouterView v-else-if="standalone" />
   <template v-else>
     <AppShell />
 
