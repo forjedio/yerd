@@ -10,7 +10,7 @@
 A native PHP extension (`.so`) that, with zero app changes, emits the telemetry frames
 in `architecture.md` §2 to Yerd's loopback dump server — built and released per
 `(PHP minor × {macOS arm64/x86_64, linux x86_64/aarch64} × NTS, glibc on Linux)`, which
-Yerd downloads and loads via `-d zend_extension`.
+Yerd downloads and loads via `-d extension=`.
 
 ## Phase 0 — Spike: prove the engine path (highest-risk first)
 

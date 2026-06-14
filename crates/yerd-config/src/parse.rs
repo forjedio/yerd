@@ -357,6 +357,11 @@ fn validate_ports(c: &Config) -> Result<(), ConfigError> {
     if c.mail.port == 0 {
         return Err(ve(ValidateErrorReason::MailPortZero));
     }
+    // The dump server is bound on `127.0.0.1` when enabled; the PHP extension
+    // connects to this fixed port, so a zero (ephemeral) port is unreachable.
+    if c.dumps.port == 0 {
+        return Err(ve(ValidateErrorReason::DumpsPortZero));
+    }
     Ok(())
 }
 
@@ -751,6 +756,18 @@ php = "not-a-version"
                 reason: ValidateErrorReason::MailPortZero,
             }) => {}
             other => panic!("expected MailPortZero, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn validate_rejects_zero_dumps_port() {
+        let mut c = Config::default();
+        c.dumps.port = 0;
+        match c.validate() {
+            Err(ConfigError::Validate {
+                reason: ValidateErrorReason::DumpsPortZero,
+            }) => {}
+            other => panic!("expected DumpsPortZero, got {other:?}"),
         }
     }
 

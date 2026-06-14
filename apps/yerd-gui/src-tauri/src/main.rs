@@ -285,7 +285,9 @@ fn build_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
         .show_menu_on_left_click(false)
         .on_menu_event(|app, event| match event.id.as_ref() {
             "open" => show_main(app),
-            "dumps" => show_dumps(app),
+            "dumps" => {
+                let _ = show_dumps(app);
+            }
             "quit" => app.exit(0),
             // Start/Stop run off the event thread so a slow systemctl/launchctl
             // never stalls the menu; the GUI's status poller reflects the result.
@@ -350,13 +352,13 @@ fn show_main(app: &tauri::AppHandle) {
 /// Show (or lazily create) the auxiliary "dumps" window — the live Laravel
 /// telemetry viewer. Reuses the statically-declared window when it already
 /// exists; rebuilds it only if a prior close destroyed it.
-fn show_dumps(app: &tauri::AppHandle) {
+fn show_dumps(app: &tauri::AppHandle) -> tauri::Result<()> {
     if let Some(win) = app.get_webview_window("dumps") {
-        let _ = win.show();
-        let _ = win.set_focus();
-        return;
+        win.show()?;
+        win.set_focus()?;
+        return Ok(());
     }
-    let _ = tauri::WebviewWindowBuilder::new(
+    tauri::WebviewWindowBuilder::new(
         app,
         "dumps",
         tauri::WebviewUrl::App("index.html#/dumps-window".into()),
@@ -366,13 +368,17 @@ fn show_dumps(app: &tauri::AppHandle) {
     .min_inner_size(640.0, 420.0)
     .decorations(false)
     .transparent(true)
-    .build();
+    .build()?;
+    Ok(())
 }
 
-/// Open the dumps window from the frontend ("Show Dumps" button).
+/// Open the dumps window from the frontend ("Show Dumps" button). Returns the
+/// crate's `GuiError` so the frontend sees the same typed `{ code, message }`
+/// failure shape as every other command.
 #[tauri::command]
-fn show_dumps_window(app: tauri::AppHandle) {
-    show_dumps(&app);
+fn show_dumps_window(app: tauri::AppHandle) -> Result<(), crate::error::GuiError> {
+    show_dumps(&app)
+        .map_err(|e| crate::error::GuiError::internal(format!("failed to show dumps window: {e}")))
 }
 
 /// Show or hide the app's Dock presence by flipping the macOS activation policy:

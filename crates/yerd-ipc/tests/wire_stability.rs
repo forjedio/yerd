@@ -1336,8 +1336,17 @@ fn response_mails_byte_shape() {
 
 #[test]
 fn response_dumps_status_byte_shape() {
+    // Pin the full "every key present" features contract (see DumpsStatus doc),
+    // not just one key, so wire drift in the map shape fails this test.
     let mut features = BTreeMap::new();
+    features.insert("dumps".to_string(), true);
     features.insert("queries".to_string(), false);
+    features.insert("jobs".to_string(), true);
+    features.insert("views".to_string(), true);
+    features.insert("requests".to_string(), true);
+    features.insert("logs".to_string(), true);
+    features.insert("cache".to_string(), true);
+    features.insert("http".to_string(), true);
     let r = Response::DumpsStatus {
         enabled: true,
         port: 2304,
@@ -1351,7 +1360,7 @@ fn response_dumps_status_byte_shape() {
         features,
     };
     let s = serde_json::to_string(&r).unwrap();
-    let expected = r#"{"type":"dumps_status","enabled":true,"port":2304,"running":true,"persist":false,"extensions":[{"version":"8.3","present":false}],"counts":{"dumps":0,"queries":0,"jobs":0,"views":0,"requests":0,"logs":0,"cache":0,"http":0},"features":{"queries":false}}"#;
+    let expected = r#"{"type":"dumps_status","enabled":true,"port":2304,"running":true,"persist":false,"extensions":[{"version":"8.3","present":false}],"counts":{"dumps":0,"queries":0,"jobs":0,"views":0,"requests":0,"logs":0,"cache":0,"http":0},"features":{"cache":true,"dumps":true,"http":true,"jobs":true,"logs":true,"queries":false,"requests":true,"views":true}}"#;
     assert_eq!(s, expected);
     assert_eq!(serde_json::from_str::<Response>(&s).unwrap(), r);
 }

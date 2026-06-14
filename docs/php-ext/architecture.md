@@ -47,7 +47,7 @@ Every frame is:
 
 ```jsonc
 {
-  "category": "dump|query|job|view|request|log|cache",
+  "category": "dump|query|job|view|request|log|cache|http",
   "ts": 1718360452123,          // epoch milliseconds (integer)
   "site": "blog.test",          // SERVER_NAME / HTTP_HOST, best-effort ""
   "request_id": "9f2c1a…",      // stable per PHP request; generated at RINIT
@@ -70,11 +70,12 @@ request.
 | `request` | `method`, `uri`, `status` (int), `duration_ms` (float), `ip` |
 | `log`     | `level`, `message`, `context` (object) |
 | `cache`   | `event` (`hit\|missed\|written\|forgotten`), `key`, `store`, `value_preview?`, `ttl?` |
+| `http`    | `method`, `url`, `status` (int), `duration_ms` (float) — an outgoing HTTP client request (curl / Guzzle / PSR-18) |
 
 Keep payloads small; truncate large values (e.g. dump HTML, bindings) to a sane cap
 (say 256 KiB per frame — Yerd drops over-long lines). The Yerd side maps each frame to
 a `DumpEvent` and filters by `category` for the tabs (All/Dumps/Queries/Jobs/Views/
-Requests/Logs/Cache).
+Requests/Logs/Cache/HTTP). Outgoing-`http` capture is opt-in (off by default).
 
 ### 2.3 Configuration & on/off — `state.json` + one INI directive
 The extension is told **where** its state file is via a single INI directive that
@@ -96,7 +97,7 @@ The extension is told **where** its state file is via a single INI directive tha
   "port": 2304,
   "features": {
     "dumps": true, "queries": true, "jobs": true, "views": true,
-    "requests": true, "logs": true, "cache": true
+    "requests": true, "logs": true, "cache": true, "http": false
   }
 }
 ```
@@ -189,7 +190,7 @@ builds each cell and publishes a `.so` to GitHub Releases.
 `yerd-dump-8.4-macos-aarch64.so`. `os ∈ {linux, macos}`, `arch ∈ {x86_64, aarch64}`.
 **Use the `.so` suffix on all targets** (macOS `dlopen`s `.so` fine) so Yerd's matching
 stays uniform. Yerd downloads the cell matching each installed PHP version into
-`{yerd-data}/php-ext/php-<minor>/yerd-dump.so` and wires `-d zend_extension` to it.
+`{yerd-data}/php-ext/php-<minor>/yerd-dump.so` and wires `-d extension=` to it.
 
 ## 6. Out of scope
 - Windows (Yerd's PHP is macOS/Linux today).
