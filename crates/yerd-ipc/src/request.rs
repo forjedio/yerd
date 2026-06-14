@@ -454,7 +454,9 @@ mod variant_name_pinning {
             version: "9.1.0".into(),
         });
         pin(Request::ListMails);
-        pin(Request::GetMail { id: "000001".into() });
+        pin(Request::GetMail {
+            id: "000001".into(),
+        });
         pin(Request::ClearMails);
         pin(Request::DeleteMails {
             ids: vec!["000001".into()],

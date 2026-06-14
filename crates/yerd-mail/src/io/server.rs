@@ -31,7 +31,11 @@ pub async fn bind(port: u16) -> Result<TcpListener, MailError> {
 /// Accept connections and capture mail until `shutdown` resolves.
 ///
 /// `S: Send + 'static` because the daemon `tokio::spawn`s this future.
-pub async fn serve<S>(listener: TcpListener, store: Arc<Store>, shutdown: S) -> Result<(), MailError>
+pub async fn serve<S>(
+    listener: TcpListener,
+    store: Arc<Store>,
+    shutdown: S,
+) -> Result<(), MailError>
 where
     S: Future<Output = ()> + Send + 'static,
 {
@@ -104,6 +108,7 @@ where
 {
     let mut data = Vec::new();
     let mut line = Vec::new();
+    let mut capped = false;
     loop {
         line.clear();
         let n = reader.read_until(b'\n', &mut line).await?;
@@ -111,14 +116,21 @@ where
             break; // EOF mid-DATA — keep what we have
         }
         if line == b".\r\n" || line == b".\n" {
-            break; // end-of-data marker
+            break; // end-of-data marker — always consumed
+        }
+        // Once oversized, stop *appending* but keep *consuming* lines until the
+        // terminating dot, so the leftover body is never re-read as SMTP commands
+        // (which would desync the connection for any subsequent message).
+        if capped {
+            continue;
         }
         if data.len() + line.len() > MAX_MESSAGE_BYTES {
             // For a local capture sink, truncating an oversized message is
-            // acceptable; keep as much of this line as fits, then stop.
+            // acceptable; keep as much of this line as fits, then drain the rest.
             let take = MAX_MESSAGE_BYTES.saturating_sub(data.len());
             data.extend_from_slice(line.get(..take).unwrap_or(&line));
-            break;
+            capped = true;
+            continue;
         }
         data.extend_from_slice(&line);
     }

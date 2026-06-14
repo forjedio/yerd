@@ -437,6 +437,13 @@ fn format_service_state(s: ServiceRunState) -> &'static str {
     }
 }
 
+/// Flatten tab/CR/LF in a value so a folded or multi-line mail header can't
+/// break the tab-separated `yerd mail list` table (the `--json` path needs no
+/// such treatment — serde already escapes control bytes).
+fn flatten_cell(s: &str) -> String {
+    s.replace(['\t', '\r', '\n'], " ")
+}
+
 /// Render `yerd mail list` — a tab-separated table of captured emails.
 fn format_mails(mails: &[yerd_ipc::MailSummary]) -> String {
     if mails.is_empty() {
@@ -445,11 +452,11 @@ fn format_mails(mails: &[yerd_ipc::MailSummary]) -> String {
     let mut out = String::from("ID\tFROM\tSUBJECT");
     for m in mails {
         let subject = if m.subject.is_empty() {
-            "(no subject)"
+            "(no subject)".to_owned()
         } else {
-            &m.subject
+            flatten_cell(&m.subject)
         };
-        let _ = write!(out, "\n{}\t{}\t{}", m.id, m.from, subject);
+        let _ = write!(out, "\n{}\t{}\t{}", m.id, flatten_cell(&m.from), subject);
     }
     out
 }

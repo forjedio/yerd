@@ -206,7 +206,9 @@ async fn dispatch(req: Request, state: &DaemonState) -> Response {
             mails: state.mail_store.list().await,
         },
         Request::GetMail { id } => match state.mail_store.get(&id).await {
-            Ok(Some(mail)) => Response::Mail { mail },
+            Ok(Some(mail)) => Response::Mail {
+                mail: Box::new(mail),
+            },
             Ok(None) => Response::Error {
                 code: ErrorCode::NotFound,
                 message: format!("no captured mail with id {id}"),
@@ -317,10 +319,20 @@ async fn build_status_report(state: &DaemonState) -> yerd_ipc::StatusReport {
         counts
     };
 
-    // 2. Config lock → tld + default PHP (dropped).
-    let (tld, default_php) = {
+    // 2. Config lock → tld + default PHP + the *configured* mail enabled/port
+    // (dropped). Sourcing mail enabled/port from config (not the startup
+    // snapshot) means `SetMailPort`/`SetMailEnabled` are reflected in `Status`
+    // immediately, so the GUI can confirm a save; `listening` below still comes
+    // from the runtime snapshot, so an enabled-but-not-yet-bound state (a change
+    // pending the next restart) reads as `enabled && !listening`.
+    let (tld, default_php, mail_enabled, mail_port) = {
         let cfg = state.config.lock().await;
-        (cfg.tld.as_str().to_owned(), cfg.php.default)
+        (
+            cfg.tld.as_str().to_owned(),
+            cfg.php.default,
+            cfg.mail.enabled,
+            cfg.mail.port,
+        )
     };
 
     // 3. PHP manager lock → live pool snapshots (dropped).
@@ -441,8 +453,8 @@ async fn build_status_report(state: &DaemonState) -> yerd_ipc::StatusReport {
         daemon_version: env!("CARGO_PKG_VERSION").to_string(),
         services: crate::services::service_statuses(state).await,
         mail: Some(yerd_ipc::MailStatus {
-            enabled: state.mail.enabled,
-            port: state.mail.port,
+            enabled: mail_enabled,
+            port: mail_port,
             listening: state.mail.listening,
             count: state.mail_store.count().await,
         }),
@@ -1142,14 +1154,8 @@ mod tests {
             service_manager: std::sync::Arc::new(Mutex::new(crate::services::new_manager(
                 dirs_in(tmp),
             ))),
-            mail_store: std::sync::Arc::new(
-                yerd_mail::Store::open(tmp.join("mail")).unwrap(),
-            ),
-            mail: crate::state::MailRuntime {
-                enabled: false,
-                port: yerd_config::DEFAULT_MAIL_PORT,
-                listening: false,
-            },
+            mail_store: std::sync::Arc::new(yerd_mail::Store::open(tmp.join("mail")).unwrap()),
+            mail: crate::state::MailRuntime { listening: false },
             http: yerd_ipc::PortStatus {
                 requested: 80,
                 bound: 8080,
@@ -1212,7 +1218,14 @@ Subject: Captured\r\n\r\nhi\r\n";
         }
 
         // Unknown id → NotFound.
-        match dispatch(Request::GetMail { id: "999999".into() }, &state).await {
+        match dispatch(
+            Request::GetMail {
+                id: "999999".into(),
+            },
+            &state,
+        )
+        .await
+        {
             Response::Error { code, .. } => assert!(matches!(code, ErrorCode::NotFound)),
             other => panic!("expected NotFound, got {other:?}"),
         }
@@ -1235,8 +1248,11 @@ Subject: Captured\r\n\r\nhi\r\n";
         match dispatch(Request::Status, &state).await {
             Response::Status { report } => {
                 let mail = report.mail.expect("status should carry mail");
-                assert!(!mail.enabled);
+                // `enabled`/`port` come from the (default) config; `listening` is
+                // the runtime snapshot (false in this test harness).
+                assert!(mail.enabled);
                 assert_eq!(mail.port, yerd_config::DEFAULT_MAIL_PORT);
+                assert!(!mail.listening);
                 assert_eq!(mail.count, 0);
             }
             other => panic!("expected Status, got {other:?}"),

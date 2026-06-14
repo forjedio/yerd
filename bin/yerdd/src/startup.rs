@@ -200,12 +200,13 @@ pub async fn bring_up_with_dirs(
     // not-listening rather than aborting the whole daemon.
     let mail_enabled = config.mail.enabled;
     let mail_port = config.mail.port;
-    let mail_store = Arc::new(
-        yerd_mail::Store::open(dirs.data.join("mail")).map_err(|e| DaemonError::Io {
-            path: dirs.data.join("mail"),
-            source: std::io::Error::other(e.to_string()),
-        })?,
-    );
+    let mail_store =
+        Arc::new(
+            yerd_mail::Store::open(dirs.data.join("mail")).map_err(|e| DaemonError::Io {
+                path: dirs.data.join("mail"),
+                source: std::io::Error::other(e.to_string()),
+            })?,
+        );
     let mail_listener = if mail_enabled {
         match yerd_mail::bind(mail_port).await {
             Ok(listener) => {
@@ -235,8 +236,6 @@ pub async fn bring_up_with_dirs(
         service_manager,
         mail_store,
         mail: crate::state::MailRuntime {
-            enabled: mail_enabled,
-            port: mail_port,
             listening: mail_listening,
         },
         http: yerd_ipc::PortStatus {

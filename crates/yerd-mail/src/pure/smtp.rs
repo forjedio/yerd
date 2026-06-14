@@ -67,6 +67,10 @@ impl Session {
         match verb.as_str() {
             "HELO" | "EHLO" => Reply::Line("250 yerd\r\n".to_string()),
             "MAIL" => {
+                // `MAIL FROM` begins a new transaction (RFC 5321 §4.1.1.2): clear
+                // any recipients left over from an abandoned prior envelope so they
+                // can't leak into this message's captured metadata.
+                self.recipients.clear();
                 self.from = Some(extract_address(trimmed));
                 Reply::Line("250 OK\r\n".to_string())
             }
@@ -78,9 +82,7 @@ impl Session {
                 if self.recipients.is_empty() {
                     Reply::Line("503 RCPT first\r\n".to_string())
                 } else {
-                    Reply::StartData(
-                        "354 End data with <CR><LF>.<CR><LF>\r\n".to_string(),
-                    )
+                    Reply::StartData("354 End data with <CR><LF>.<CR><LF>\r\n".to_string())
                 }
             }
             "RSET" => {
@@ -160,7 +162,10 @@ mod tests {
     #[test]
     fn full_session_captures_envelope_and_body() {
         let mut s = Session::new();
-        assert_eq!(s.command("EHLO localhost"), Reply::Line("250 yerd\r\n".into()));
+        assert_eq!(
+            s.command("EHLO localhost"),
+            Reply::Line("250 yerd\r\n".into())
+        );
         assert_eq!(
             s.command("MAIL FROM:<hello@example.com>"),
             Reply::Line("250 OK\r\n".into())
@@ -182,10 +187,7 @@ mod tests {
     #[test]
     fn data_requires_recipient() {
         let mut s = Session::new();
-        assert_eq!(
-            s.command("DATA"),
-            Reply::Line("503 RCPT first\r\n".into())
-        );
+        assert_eq!(s.command("DATA"), Reply::Line("503 RCPT first\r\n".into()));
     }
 
     #[test]
@@ -207,6 +209,19 @@ mod tests {
         let msg = s.finish_data(b"x");
         assert_eq!(msg.envelope_from, "");
         assert_eq!(msg.recipients, vec!["g@h.i".to_string()]);
+    }
+
+    #[test]
+    fn second_mail_from_resets_recipients() {
+        // A new MAIL FROM before DATA must drop the prior envelope's recipients.
+        let mut s = Session::new();
+        s.command("MAIL FROM:<a@b.c>");
+        s.command("RCPT TO:<stale@old.test>");
+        s.command("MAIL FROM:<b@c.d>");
+        s.command("RCPT TO:<fresh@new.test>");
+        let msg = s.finish_data(b"x");
+        assert_eq!(msg.envelope_from, "b@c.d");
+        assert_eq!(msg.recipients, vec!["fresh@new.test".to_string()]);
     }
 
     #[test]

@@ -24,6 +24,9 @@ const { data: mails, refresh } = usePoll<MailSummary[]>(listMails, 4000);
 const selectedId = ref<string | null>(null);
 const detail = ref<MailDetail | null>(null);
 const loadingDetail = ref(false);
+// Monotonic guard so an out-of-order getMail() response from a superseded
+// select() can't overwrite the body of a newer selection.
+let selectSeq = 0;
 const clearOpen = ref(false);
 const clearing = ref(false);
 // Filter the list to a single application (or "" = all). Laravel sends the app
@@ -89,15 +92,19 @@ watch(
 );
 
 async function select(id: string): Promise<void> {
+  const seq = ++selectSeq;
   selectedId.value = id;
   loadingDetail.value = true;
   try {
-    detail.value = await getMail(id);
+    const mail = await getMail(id);
+    if (seq !== selectSeq) return; // a newer select() superseded this one
+    detail.value = mail;
   } catch (e) {
+    if (seq !== selectSeq) return;
     toast.error("Couldn't open the email", (e as IpcError).message);
     detail.value = null;
   } finally {
-    loadingDetail.value = false;
+    if (seq === selectSeq) loadingDetail.value = false;
   }
 }
 

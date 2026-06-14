@@ -57,7 +57,10 @@ impl Store {
         // Scanning the directory too means an `.eml` that was written but never
         // recorded in `index.json` (e.g. a crash between the two writes) can never
         // have its id reused, honouring the "ids never reused" guarantee.
-        let max_index = entries.iter().filter_map(|e| e.id.parse::<u64>().ok()).max();
+        let max_index = entries
+            .iter()
+            .filter_map(|e| e.id.parse::<u64>().ok())
+            .max();
         let max_disk = max_eml_id(&dir);
         let next_id = max_index.max(max_disk).map_or(0, |m| m + 1);
         Ok(Self {
@@ -160,10 +163,21 @@ impl Store {
         self.dir.join(format!("{id}.eml"))
     }
 
+    /// Persist the index atomically: write a sibling temp file, then rename it
+    /// over `index.json`. A crash or partial write can therefore never leave a
+    /// truncated/corrupt index (same write-temp-then-rename discipline as
+    /// `yerd-config`/`yerd-php`). Rename is atomic on the same filesystem.
     async fn write_index(&self, entries: &[MailSummary]) -> Result<(), MailError> {
         let path = self.dir.join("index.json");
+        let tmp = self.dir.join("index.json.tmp");
         let json = serde_json::to_vec_pretty(entries)?;
-        tokio::fs::write(&path, json)
+        tokio::fs::write(&tmp, &json)
+            .await
+            .map_err(|source| MailError::Io {
+                path: tmp.clone(),
+                source,
+            })?;
+        tokio::fs::rename(&tmp, &path)
             .await
             .map_err(|source| MailError::Io { path, source })
     }
@@ -185,10 +199,23 @@ fn max_eml_id(dir: &Path) -> Option<u64> {
 }
 
 /// Load `index.json` if present; an absent file is an empty store.
+///
+/// A **corrupt** index (truncated/garbled JSON, e.g. from a crash mid-write on a
+/// pre-atomic-write store) is treated as recoverable, NOT fatal: the index is
+/// only a cache — the `.eml` files are the source of truth and `max_eml_id`
+/// reseeds the id counter from them — so we log a warning and start from empty
+/// rather than aborting `Store::open` (which would otherwise take down the whole
+/// daemon, since mail capture is meant to be best-effort).
 fn load_index(dir: &Path) -> Result<Vec<MailSummary>, MailError> {
     let path = dir.join("index.json");
     match std::fs::read(&path) {
-        Ok(bytes) => Ok(serde_json::from_slice(&bytes)?),
+        Ok(bytes) => match serde_json::from_slice(&bytes) {
+            Ok(entries) => Ok(entries),
+            Err(e) => {
+                tracing::warn!(path = %path.display(), error = %e, "mail index corrupt; starting empty");
+                Ok(Vec::new())
+            }
+        },
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
         Err(source) => Err(MailError::Io { path, source }),
     }

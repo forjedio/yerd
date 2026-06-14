@@ -78,7 +78,10 @@ fn date_epoch(msg: &Message) -> u64 {
 }
 
 fn render_from(msg: &Message) -> String {
-    render_addresses(msg.from()).into_iter().next().unwrap_or_default()
+    render_addresses(msg.from())
+        .into_iter()
+        .next()
+        .unwrap_or_default()
 }
 
 fn render_to(msg: &Message) -> Vec<String> {
@@ -139,8 +142,7 @@ fn rewrite_cids(msg: &Message, mut html: String) -> String {
 /// Minimal standard-alphabet base64 encoder (no padding-free / URL variants).
 /// Kept local to avoid pulling a base64 dependency for the one inline-image use.
 fn base64_encode(input: &[u8]) -> String {
-    const ALPHABET: &[u8; 64] =
-        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     // Mask to 6 bits then look up; `unwrap_or` keeps it panic-free for clippy.
     let sextet = |v: u32| ALPHABET.get((v & 0x3f) as usize).copied().unwrap_or(b'A') as char;
     let mut out = String::with_capacity(input.len().div_ceil(3) * 4);
@@ -191,7 +193,10 @@ Your OTP is 416063.\r\n";
         assert_eq!(d.subject, "Password Reset");
         assert!(d.text_body.as_deref().unwrap().contains("416063"));
         assert!(d.html_body.is_none());
-        assert!(d.headers.iter().any(|h| h.name.eq_ignore_ascii_case("subject")));
+        assert!(d
+            .headers
+            .iter()
+            .any(|h| h.name.eq_ignore_ascii_case("subject")));
     }
 
     #[test]

@@ -1110,7 +1110,10 @@ fn service_run_state_each_variant_byte_shape() {
 fn request_list_mails_byte_shape() {
     let s = serde_json::to_string(&Request::ListMails).unwrap();
     assert_eq!(s, r#"{"type":"list_mails"}"#);
-    assert_eq!(serde_json::from_str::<Request>(&s).unwrap(), Request::ListMails);
+    assert_eq!(
+        serde_json::from_str::<Request>(&s).unwrap(),
+        Request::ListMails
+    );
 }
 
 #[test]
@@ -1179,7 +1182,7 @@ fn response_mails_byte_shape() {
 #[test]
 fn response_mail_byte_shape() {
     let r = Response::Mail {
-        mail: MailDetail {
+        mail: Box::new(MailDetail {
             id: "000001".into(),
             from: "Example <hello@example.com>".into(),
             to: vec!["test@test.com".into()],
@@ -1191,7 +1194,7 @@ fn response_mail_byte_shape() {
             }],
             html_body: Some("<p>Hi</p>".into()),
             text_body: None,
-        },
+        }),
     };
     let s = serde_json::to_string(&r).unwrap();
     let expected = r#"{"type":"mail","mail":{"id":"000001","from":"Example <hello@example.com>","to":["test@test.com"],"subject":"Hi","date_epoch":1700000000,"headers":[{"name":"Subject","value":"Hi"}],"html_body":"<p>Hi</p>","text_body":null}}"#;

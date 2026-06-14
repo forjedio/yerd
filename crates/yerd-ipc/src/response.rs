@@ -135,9 +135,13 @@ pub enum Response {
         mails: Vec<MailSummary>,
     },
     /// Reply to [`crate::Request::GetMail`] — one captured email's full content.
+    ///
+    /// Boxed so the (large) `MailDetail` does not bloat every `Response` value —
+    /// the same treatment as [`Self::Status`]. `Box<T>` serializes transparently,
+    /// so the wire bytes are unchanged.
     Mail {
         /// The decoded email.
-        mail: MailDetail,
+        mail: Box<MailDetail>,
     },
 }
 
@@ -321,7 +325,7 @@ mod variant_name_pinning {
             }],
         });
         pin_response(Response::Mail {
-            mail: crate::status::MailDetail {
+            mail: Box::new(crate::status::MailDetail {
                 id: "000001".into(),
                 from: "Example <hello@example.com>".into(),
                 to: vec!["test@test.com".into()],
@@ -333,7 +337,7 @@ mod variant_name_pinning {
                 }],
                 html_body: Some("<p>Hi</p>".into()),
                 text_body: Some("Hi".into()),
-            },
+            }),
         });
         for c in [
             ErrorCode::NotFound,

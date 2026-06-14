@@ -25,16 +25,13 @@ use yerd_proxy::SharedRouter;
 use crate::backend_resolver::DaemonPhpManager;
 use crate::detect_cache::DetectCache;
 
-/// Mail-capture runtime facts captured at startup (the config snapshot plus
-/// whether the listener actually bound). Mutated config (`SetMailPort` /
-/// `SetMailEnabled`) only takes effect on the next start, so these values stay
-/// fixed for the daemon's lifetime — matching service-port semantics.
+/// Mail-capture runtime fact captured at startup: whether the SMTP listener
+/// actually bound. `Status` sources `enabled`/`port` from the live config (so a
+/// `SetMailPort`/`SetMailEnabled` save is reflected immediately), but whether the
+/// server is *actually* bound is a startup property — a config change only takes
+/// effect on the next restart — so it lives here.
 #[derive(Debug, Clone, Copy)]
 pub struct MailRuntime {
-    /// Whether capture was enabled in the config at startup.
-    pub enabled: bool,
-    /// The configured SMTP port.
-    pub port: u16,
     /// Whether the SMTP listener actually bound (and is accepting mail).
     pub listening: bool,
 }
