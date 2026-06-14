@@ -270,6 +270,33 @@ pub async fn restore_database(
     )
 }
 
+// ── mail capture ───────────────────────────────────────────────────────────
+
+#[tauri::command]
+pub async fn list_mails() -> Result<Response, GuiError> {
+    finish(exchange(&Request::ListMails).await?)
+}
+
+#[tauri::command]
+pub async fn get_mail(id: String) -> Result<Response, GuiError> {
+    finish(exchange(&Request::GetMail { id }).await?)
+}
+
+#[tauri::command]
+pub async fn clear_mails() -> Result<Response, GuiError> {
+    finish(exchange(&Request::ClearMails).await?)
+}
+
+#[tauri::command]
+pub async fn set_mail_port(port: u16) -> Result<Response, GuiError> {
+    finish(exchange(&Request::SetMailPort { port }).await?)
+}
+
+#[tauri::command]
+pub async fn set_mail_enabled(enabled: bool) -> Result<Response, GuiError> {
+    finish(exchange(&Request::SetMailEnabled { enabled }).await?)
+}
+
 // ── status / doctor / info ─────────────────────────────────────────────────
 
 #[tauri::command]

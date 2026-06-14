@@ -13,7 +13,7 @@ use yerd_ipc::{
     ServiceAvailability, ServiceRunState, ServiceStatus, Severity, StatusReport,
 };
 
-use crate::cli::{Command, DbAction, ServiceAction};
+use crate::cli::{Command, DbAction, MailAction, ServiceAction};
 use crate::error::ClientError;
 
 /// Map a parsed [`Command`] to the wire [`Request`], validating site names and
@@ -119,6 +119,11 @@ pub fn to_request(cmd: &Command) -> Result<Request, ClientError> {
         Command::Services => Request::ListServices,
         Command::Service { action } => service_request(action),
         Command::Db { action } => db_request(action),
+        Command::Mail { action } => match action {
+            MailAction::List => Request::ListMails,
+            MailAction::Show { id } => Request::GetMail { id: id.clone() },
+            MailAction::Clear => Request::ClearMails,
+        },
         Command::Status => Request::Status,
         Command::Doctor { action: None } => Request::Diagnose,
         Command::Doctor {
@@ -359,6 +364,8 @@ pub fn render(resp: &Response, json: bool) -> Rendered {
                 .collect::<Vec<_>>()
                 .join("\n")
         }),
+        Response::Mails { mails } => Rendered::ok(format_mails(mails)),
+        Response::Mail { mail } => Rendered::ok(format_mail(mail)),
         // `Response` is `#[non_exhaustive]`; a future variant from a newer
         // daemon is surfaced benignly rather than panicking.
         _ => Rendered::err("unexpected response from daemon".to_owned()),
@@ -428,6 +435,39 @@ fn format_service_state(s: ServiceRunState) -> &'static str {
         // as "unknown" rather than failing the render.
         _ => "unknown",
     }
+}
+
+/// Render `yerd mail list` — a tab-separated table of captured emails.
+fn format_mails(mails: &[yerd_ipc::MailSummary]) -> String {
+    if mails.is_empty() {
+        return "no captured emails".to_owned();
+    }
+    let mut out = String::from("ID\tFROM\tSUBJECT");
+    for m in mails {
+        let subject = if m.subject.is_empty() {
+            "(no subject)"
+        } else {
+            &m.subject
+        };
+        let _ = write!(out, "\n{}\t{}\t{}", m.id, m.from, subject);
+    }
+    out
+}
+
+/// Render `yerd mail show <id>` — headers followed by the text body (falling
+/// back to a note when only an HTML body is present).
+fn format_mail(mail: &yerd_ipc::MailDetail) -> String {
+    let mut out = String::new();
+    let _ = writeln!(out, "From:    {}", mail.from);
+    let _ = writeln!(out, "To:      {}", mail.to.join(", "));
+    let _ = writeln!(out, "Subject: {}", mail.subject);
+    out.push('\n');
+    match (&mail.text_body, &mail.html_body) {
+        (Some(text), _) => out.push_str(text),
+        (None, Some(_)) => out.push_str("(HTML-only message — open it in the GUI viewer)"),
+        (None, None) => out.push_str("(empty message)"),
+    }
+    out
 }
 
 fn format_services(services: &[ServiceStatus]) -> String {
@@ -1275,6 +1315,7 @@ mod tests {
             load_avg: Some([152, 48, 5]),
             daemon_version: "2.0.1".into(),
             services: vec![],
+            mail: None,
         }
     }
 

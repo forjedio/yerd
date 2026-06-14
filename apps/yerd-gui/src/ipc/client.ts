@@ -16,6 +16,8 @@ import type {
   DoctorFixResponse,
   ElevateTarget,
   InfoResponse,
+  MailDetail,
+  MailSummary,
   PhpVersion,
   PhpVersionsResponse,
   Response,
@@ -283,6 +285,41 @@ export async function restoreDatabase(
   path: string,
 ): Promise<void> {
   ensureOk(await call<Response>("restore_database", { service, name, path }));
+}
+
+// ── mail capture ─────────────────────────────────────────────────────────────
+
+/** Captured email metadata, newest first. */
+export async function listMails(): Promise<MailSummary[]> {
+  const r = ensureOk(await call<Response>("list_mails"));
+  return r.type === "mails" ? r.mails : [];
+}
+
+/** One captured email's full decoded content (headers + bodies). */
+export async function getMail(id: string): Promise<MailDetail> {
+  const r = ensureOk(await call<Response>("get_mail", { id }));
+  if (r.type !== "mail") throw new IpcError("unexpected response", "internal");
+  return r.mail;
+}
+
+/** Delete every captured email. */
+export async function clearMails(): Promise<void> {
+  ensureOk(await call<Response>("clear_mails"));
+}
+
+/** Persist the mail-capture SMTP port; takes effect on the next daemon restart. */
+export async function setMailPort(port: number): Promise<void> {
+  ensureOk(await call<Response>("set_mail_port", { port }));
+}
+
+/** Enable/disable mail capture; takes effect on the next daemon restart. */
+export async function setMailEnabled(enabled: boolean): Promise<void> {
+  ensureOk(await call<Response>("set_mail_enabled", { enabled }));
+}
+
+/** Open (or focus) the separate Mails viewer window. Host command, not daemon IPC. */
+export async function showMailsWindow(): Promise<void> {
+  await call<void>("show_mails_window");
 }
 
 // ── status / doctor ────────────────────────────────────────────────────────

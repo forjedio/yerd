@@ -23,8 +23,8 @@ mod serialize;
 
 pub use error::{ConfigError, MigrationErrorReason, ValidateErrorReason};
 pub use schema::{
-    Config, ParkedSection, PhpSection, Ports, ServiceInstance, ServicesSection, SiteOverride,
-    DEFAULT_DNS_PORT,
+    Config, MailSection, ParkedSection, PhpSection, Ports, ServiceInstance, ServicesSection,
+    SiteOverride, DEFAULT_DNS_PORT, DEFAULT_MAIL_PORT,
 };
 
 /// The on-disk schema version this crate writes. Bumped together with a new
@@ -44,4 +44,10 @@ pub use schema::{
 /// service `[services.<id>]` tables ([`ServiceInstance`], carrying version /
 /// port / enabled). The v2→v3 migration rewrites the old array — the first
 /// *structural* migration step (v0→v1 and v1→v2 are bare version bumps).
-pub const CURRENT_VERSION: u32 = 3;
+///
+/// v4 added the optional `[mail]` section ([`MailSection`]) for the built-in
+/// mail-capture SMTP server. It defaults when absent, so a v3 file migrates
+/// forward by a bare version bump; the bump exists so an *older* (v3) binary
+/// rejects a `[mail]`-bearing file cleanly as
+/// [`ConfigError::UnsupportedVersion`] rather than failing on the unknown key.
+pub const CURRENT_VERSION: u32 = 4;

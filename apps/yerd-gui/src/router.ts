@@ -27,6 +27,19 @@ export const router = createRouter({
       component: () => import("@/views/ServicesView.vue"),
     },
     {
+      path: "/mail",
+      name: "mail",
+      component: () => import("@/views/MailView.vue"),
+    },
+    {
+      // The separate "Mails" window loads this route. `standalone` tells App.vue
+      // to render it bare (no sidebar/titlebar) and skip the daemon poller.
+      path: "/mails-viewer",
+      name: "mails-viewer",
+      meta: { standalone: true },
+      component: () => import("@/views/MailsViewerView.vue"),
+    },
+    {
       path: "/doctor",
       name: "doctor",
       component: () => import("@/views/DoctorView.vue"),

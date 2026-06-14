@@ -155,6 +155,17 @@ async fn run_until_shutdown(
         tokio::spawn(crate::fs_watch::run(state, rx))
     };
 
+    // Mail-capture SMTP task (the 6th subsystem). Present only when capture is
+    // enabled AND the port bound at startup; otherwise nothing is spawned (a
+    // disabled/failed bind is non-fatal — already logged in `bring_up`).
+    let mail_handle = daemon.mail_listener.map(|listener| {
+        let store = daemon.state.mail_store.clone();
+        let mut rx = shutdown_rx.clone();
+        tokio::spawn(yerd_mail::serve(listener, store, async move {
+            let _ = rx.changed().await;
+        }))
+    });
+
     // Auto-start enabled services in the background — deliberately NOT awaited,
     // so a slow/failing DB cold-boot never delays the listeners above. Each
     // engine's outcome is logged inside the task.
@@ -174,6 +185,9 @@ async fn run_until_shutdown(
     let _ = tokio::time::timeout(Duration::from_secs(5), ipc_handle).await;
     let _ = tokio::time::timeout(Duration::from_secs(5), update_check_handle).await;
     let _ = tokio::time::timeout(Duration::from_secs(5), watch_handle).await;
+    if let Some(mail_handle) = mail_handle {
+        let _ = tokio::time::timeout(Duration::from_secs(5), mail_handle).await;
+    }
 
     {
         let mut mgr = daemon.php_manager.lock().await;

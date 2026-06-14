@@ -25,6 +25,20 @@ use yerd_proxy::SharedRouter;
 use crate::backend_resolver::DaemonPhpManager;
 use crate::detect_cache::DetectCache;
 
+/// Mail-capture runtime facts captured at startup (the config snapshot plus
+/// whether the listener actually bound). Mutated config (`SetMailPort` /
+/// `SetMailEnabled`) only takes effect on the next start, so these values stay
+/// fixed for the daemon's lifetime — matching service-port semantics.
+#[derive(Debug, Clone, Copy)]
+pub struct MailRuntime {
+    /// Whether capture was enabled in the config at startup.
+    pub enabled: bool,
+    /// The configured SMTP port.
+    pub port: u16,
+    /// Whether the SMTP listener actually bound (and is accepting mail).
+    pub listening: bool,
+}
+
 /// Everything the IPC dispatch and proxy share at runtime.
 pub struct DaemonState {
     /// Authoritative on-disk config, mirrored in memory. The mutex serializes
@@ -55,6 +69,14 @@ pub struct DaemonState {
     /// The database/cache service supervisor (Redis/Valkey in Phase 1). Holds
     /// one supervised instance per engine; status/doctor read live state from it.
     pub service_manager: Arc<Mutex<crate::services::DaemonServiceManager>>,
+    /// Captured-mail store (the built-in SMTP sink writes here; IPC reads/clears
+    /// it). Always present even when capture is disabled, so stored mail remains
+    /// listable/clearable after the server is turned off.
+    pub mail_store: Arc<yerd_mail::Store>,
+    /// Mail-capture runtime facts, surfaced in `Status`. `listening` reflects
+    /// whether the SMTP port was actually bound (it can be `enabled && !listening`
+    /// when the port was busy at startup — a non-fatal condition).
+    pub mail: MailRuntime,
     /// HTTP listener: requested vs actually-bound port (reported by `Status`).
     pub http: PortStatus,
     /// HTTPS listener: requested vs actually-bound port (reported by `Status`).

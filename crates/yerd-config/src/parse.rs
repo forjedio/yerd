@@ -12,7 +12,9 @@ use std::str::FromStr;
 use serde::Deserialize;
 
 use crate::error::ValidateErrorReason;
-use crate::schema::{Config, ParkedSection, PhpSection, Ports, ServiceInstance, ServicesSection};
+use crate::schema::{
+    Config, MailSection, ParkedSection, PhpSection, Ports, ServiceInstance, ServicesSection,
+};
 use crate::ConfigError;
 
 pub(crate) const KNOWN_SERVICES: &[&str] = &["mysql", "mariadb", "postgres", "redis"];
@@ -43,6 +45,10 @@ struct Wire {
     // migration before deserialisation, so this never sees the old array.
     #[serde(default)]
     services: BTreeMap<String, ServiceInstanceWire>,
+    // v4: built-in mail-capture server. `default` is mandatory (Wire is
+    // `deny_unknown_fields`) so a v1/v2/v3 file with no `[mail]` still parses.
+    #[serde(default)]
+    mail: MailSectionWire,
 }
 
 #[derive(Deserialize)]
@@ -102,6 +108,35 @@ struct ServiceInstanceWire {
 
 fn default_service_enabled() -> bool {
     true
+}
+
+/// The `[mail]` table. Both keys default (off / 2525) so a config written before
+/// v4 — which has no `[mail]` table at all — still deserialises.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct MailSectionWire {
+    #[serde(default = "default_mail_enabled")]
+    enabled: bool,
+    #[serde(default = "default_mail_port")]
+    port: u16,
+}
+
+impl Default for MailSectionWire {
+    fn default() -> Self {
+        let m = MailSection::default();
+        Self {
+            enabled: m.enabled,
+            port: m.port,
+        }
+    }
+}
+
+fn default_mail_enabled() -> bool {
+    MailSection::default().enabled
+}
+
+fn default_mail_port() -> u16 {
+    MailSection::default().port
 }
 
 #[derive(Deserialize)]
@@ -233,6 +268,10 @@ impl TryFrom<Wire> for Config {
             s.set_web_subpath(sw.web_subpath);
             linked.push(s);
         }
+        let mail = MailSection {
+            enabled: w.mail.enabled,
+            port: w.mail.port,
+        };
         Ok(Config {
             version: crate::CURRENT_VERSION,
             tld,
@@ -243,6 +282,7 @@ impl TryFrom<Wire> for Config {
             linked,
             overrides,
             services,
+            mail,
         })
     }
 }
@@ -406,7 +446,7 @@ mod tests {
         match Config::from_toml("version = 99\n") {
             Err(ConfigError::UnsupportedVersion {
                 found: 99,
-                current: 3,
+                current: 4,
             }) => {}
             other => panic!("expected UnsupportedVersion, got {other:?}"),
         }
