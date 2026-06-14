@@ -375,7 +375,11 @@ pub async fn status(state: &DaemonState) -> Response {
             .map(|&f| {
                 (
                     (*f).to_string(),
-                    c.dumps.features.get(f).copied().unwrap_or_else(|| feature_default(f)),
+                    c.dumps
+                        .features
+                        .get(f)
+                        .copied()
+                        .unwrap_or_else(|| feature_default(f)),
                 )
             })
             .collect();
@@ -520,7 +524,16 @@ pub fn write_state_file(dirs: &PlatformDirs, dumps: &DumpsSection) -> std::io::R
     std::fs::create_dir_all(&dir)?;
     let features = FEATURES
         .iter()
-        .map(|&f| (f, dumps.features.get(f).copied().unwrap_or_else(|| feature_default(f))))
+        .map(|&f| {
+            (
+                f,
+                dumps
+                    .features
+                    .get(f)
+                    .copied()
+                    .unwrap_or_else(|| feature_default(f)),
+            )
+        })
         .collect();
     let body = StateFile {
         enabled: dumps.enabled,
@@ -642,7 +655,7 @@ mod tests {
         let mut ring = DumpRing::new();
         ring.push(frame(DumpCategory::Query), 100, false); // id 1
         ring.push(frame(DumpCategory::Query), 100, false); // id 2
-        // Client has seen up to id 2.
+                                                           // Client has seen up to id 2.
         ring.delete(1);
         let page = ring.list(2);
         assert!(page.events.is_empty(), "no events newer than id 2");
@@ -660,7 +673,10 @@ mod tests {
         let page = ring.list(0);
         assert!(page.events.len() <= RING_CAP);
         let newest = RING_CAP as u64 + 10;
-        assert!(page.events.iter().any(|e| e.id == newest), "newest retained");
+        assert!(
+            page.events.iter().any(|e| e.id == newest),
+            "newest retained"
+        );
         assert!(!page.events.iter().any(|e| e.id == 1), "oldest evicted");
         // min_live_id advanced past the evicted head.
         assert!(page.min_live_id > 1);

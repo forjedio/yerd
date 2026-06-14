@@ -85,7 +85,9 @@ pub async fn ensure_for_installed(dirs: &PlatformDirs, dl: &dyn Downloader) {
         }
         match download_and_place(dl, &file.name, &file.sha256, &dest).await {
             Ok(()) => tracing::info!(php = %minor, "installed yerd-dump extension"),
-            Err(e) => tracing::warn!(php = %minor, error = %e, "failed to install yerd-dump extension"),
+            Err(e) => {
+                tracing::warn!(php = %minor, error = %e, "failed to install yerd-dump extension");
+            }
         }
     }
 }

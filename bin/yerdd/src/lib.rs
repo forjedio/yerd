@@ -82,6 +82,7 @@ pub async fn run_with_daemon(daemon: Daemon) -> Result<Outcome, DaemonError> {
     result
 }
 
+#[allow(clippy::too_many_lines)] // linear task wiring: one spawn block per subsystem; splitting hurts readability
 async fn run_until_shutdown(
     daemon: Daemon,
     shutdown_rx: watch::Receiver<bool>,

@@ -271,8 +271,15 @@ where
         let env = env_scrub::allowlist(&std::env::vars().collect::<Vec<_>>());
         let extension = cfg.extension.clone();
         let ini_defines = cfg.ini_defines.clone();
-        let cmd_builder =
-            || build_cmd(&binary, &cfg.config_path, &env, extension.as_deref(), &ini_defines);
+        let cmd_builder = || {
+            build_cmd(
+                &binary,
+                &cfg.config_path,
+                &env,
+                extension.as_deref(),
+                &ini_defines,
+            )
+        };
 
         let initial_state = PoolState::Stopped;
         let initial_since = self.clock.now();

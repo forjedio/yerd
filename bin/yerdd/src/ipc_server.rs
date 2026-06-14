@@ -205,12 +205,16 @@ async fn dispatch(req: Request, state: &DaemonState) -> Response {
         Request::ListDumps { since_id } => crate::dump_server::list(state, since_id).await,
         Request::ClearDumps => crate::dump_server::clear(state).await,
         Request::DeleteDump { id } => crate::dump_server::delete(state, id).await,
-        Request::SetDumpsEnabled { enabled } => crate::dump_server::set_enabled(state, enabled).await,
+        Request::SetDumpsEnabled { enabled } => {
+            crate::dump_server::set_enabled(state, enabled).await
+        }
         Request::SetDumpsPort { port } => crate::dump_server::set_port(state, port).await,
         Request::SetDumpFeature { feature, enabled } => {
             crate::dump_server::set_feature(state, feature, enabled).await
         }
-        Request::SetDumpsPersist { persist } => crate::dump_server::set_persist(state, persist).await,
+        Request::SetDumpsPersist { persist } => {
+            crate::dump_server::set_persist(state, persist).await
+        }
         Request::DumpsStatus => crate::dump_server::status(state).await,
         Request::ListMails => Response::Mails {
             mails: state.mail_store.list().await,

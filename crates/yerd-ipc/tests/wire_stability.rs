@@ -20,9 +20,8 @@ use yerd_ipc::{
     types::{PhpVersion, Site},
     CaStatus, DatabaseSummary, Diagnosis, DiagnosisCode, DumpCategory, DumpCounts, DumpEvent,
     DumpExtStatus, ErrorCode, FixReport, FixResult, MailDetail, MailHeader, MailStatus,
-    MailSummary, PhpPoolStatus, PoolRunState, PortStatus,
-    Request, Response, ServiceAvailability, ServiceRunState, ServiceStatus, Severity, SiteCounts,
-    StatusReport,
+    MailSummary, PhpPoolStatus, PoolRunState, PortStatus, Request, Response, ServiceAvailability,
+    ServiceRunState, ServiceStatus, Severity, SiteCounts, StatusReport,
 };
 
 // ---------- Request ----------
@@ -1119,7 +1118,10 @@ fn request_list_dumps_byte_shape() {
 fn request_clear_dumps_byte_shape() {
     let s = serde_json::to_string(&Request::ClearDumps).unwrap();
     assert_eq!(s, r#"{"type":"clear_dumps"}"#);
-    assert_eq!(serde_json::from_str::<Request>(&s).unwrap(), Request::ClearDumps);
+    assert_eq!(
+        serde_json::from_str::<Request>(&s).unwrap(),
+        Request::ClearDumps
+    );
 }
 
 #[test]
@@ -1153,7 +1155,10 @@ fn request_set_dump_feature_byte_shape() {
         enabled: false,
     };
     let s = serde_json::to_string(&r).unwrap();
-    assert_eq!(s, r#"{"type":"set_dump_feature","feature":"queries","enabled":false}"#);
+    assert_eq!(
+        s,
+        r#"{"type":"set_dump_feature","feature":"queries","enabled":false}"#
+    );
     assert_eq!(serde_json::from_str::<Request>(&s).unwrap(), r);
 }
 
@@ -1169,7 +1174,10 @@ fn request_set_dumps_persist_byte_shape() {
 fn request_dumps_status_byte_shape() {
     let s = serde_json::to_string(&Request::DumpsStatus).unwrap();
     assert_eq!(s, r#"{"type":"dumps_status"}"#);
-    assert_eq!(serde_json::from_str::<Request>(&s).unwrap(), Request::DumpsStatus);
+    assert_eq!(
+        serde_json::from_str::<Request>(&s).unwrap(),
+        Request::DumpsStatus
+    );
 }
 
 #[test]
