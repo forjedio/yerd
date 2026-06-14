@@ -92,6 +92,44 @@ export interface PhpPoolStatus {
   update_available: string | null;
 }
 
+/** crates/yerd-ipc/src/status.rs — MailStatus. */
+export interface MailStatus {
+  enabled: boolean;
+  port: number;
+  /** Whether the SMTP listener actually bound (enabled && !listening = port busy). */
+  listening: boolean;
+  count: number;
+}
+
+/** crates/yerd-ipc/src/status.rs — MailSummary. */
+export interface MailSummary {
+  id: string;
+  from: string;
+  to: string[];
+  subject: string;
+  /** Unix epoch seconds; 0 when the Date header was absent/unparseable. */
+  date_epoch: number;
+}
+
+/** crates/yerd-ipc/src/status.rs — MailHeader. */
+export interface MailHeader {
+  name: string;
+  value: string;
+}
+
+/** crates/yerd-ipc/src/status.rs — MailDetail. */
+export interface MailDetail {
+  id: string;
+  from: string;
+  to: string[];
+  subject: string;
+  date_epoch: number;
+  headers: MailHeader[];
+  /** Decoded text/html body (cid: images already rewritten to data: URLs). */
+  html_body: string | null;
+  text_body: string | null;
+}
+
 export interface StatusReport {
   daemon_pid: number;
   uptime_secs: number;
@@ -129,6 +167,10 @@ export interface StatusReport {
   /** Per-service status. Omitted (undefined) by a daemon with no services
    *  (the Rust field is `#[serde(default, skip_serializing_if)]`). */
   services?: ServiceStatus[];
+  /** Built-in mail-capture status. Omitted (undefined) by a daemon predating
+   *  the feature (the Rust field is `#[serde(default, skip_serializing_if)]`, so
+   *  it is never `null` on the wire — mirrors the `services?` convention). */
+  mail?: MailStatus;
 }
 
 export type Severity = "ok" | "warn" | "fail";
@@ -222,7 +264,9 @@ export type Response =
   | { type: "services"; services: ServiceStatus[] }
   | { type: "available_services"; services: ServiceAvailability[] }
   | { type: "service_logs"; lines: string[] }
-  | { type: "databases"; databases: DatabaseSummary[] };
+  | { type: "databases"; databases: DatabaseSummary[] }
+  | { type: "mails"; mails: MailSummary[] }
+  | { type: "mail"; mail: MailDetail };
 
 /** One user database in a SQL service (mirrors the daemon's `DatabaseSummary`). */
 export interface DatabaseSummary {
@@ -241,6 +285,8 @@ export type DoctorFixResponse = Extract<Response, { type: "doctor_fix" }>;
 export type ServicesResponse = Extract<Response, { type: "services" }>;
 export type AvailableServicesResponse = Extract<Response, { type: "available_services" }>;
 export type ServiceLogsResponse = Extract<Response, { type: "service_logs" }>;
+export type MailsResponse = Extract<Response, { type: "mails" }>;
+export type MailResponse = Extract<Response, { type: "mail" }>;
 
 /** Privilege targets for the OS-elevated `yerd elevate` host command. */
 export type ElevateTarget = "trust" | "resolver" | "ports";

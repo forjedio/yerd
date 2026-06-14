@@ -1064,6 +1064,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4ef6b89e5b37196644d8796de5268852ff179b44e96276cf4290264843743bb7"
 
 [[package]]
+name = "encoding_rs"
+version = "0.8.35"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "75030f3c4f45dafd7586dd6780965a8c7e8e285a5ecb86713e63a79c5b2766f3"
+dependencies = [
+ "cfg-if",
+]
+
+[[package]]
 name = "endi"
 version = "1.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1655,6 +1664,18 @@ name = "hashbrown"
 version = "0.16.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "841d1cc9bed7f9236f321df977030373f4a4163ae1a7dbfe1a51a2c1a51d9100"
+
+[[package]]
+name = "hashify"
+version = "0.2.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dd1246c0e5493286aeb2dde35b1f4eb9c4ce00e628641210a5e553fc001a1f26"
+dependencies = [
+ "indexmap 2.13.0",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.117",
+]
 
 [[package]]
 name = "heck"
@@ -2259,6 +2280,16 @@ name = "log"
 version = "0.4.30"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "616ec5685824bcc94416c6d4a7a446eea774a31efd7062c8480ba6fd06d7a6e5"
+
+[[package]]
+name = "mail-parser"
+version = "0.11.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d8a2420e9ce11c2b0583ca97ddff7ab2398c8a613154e9b72e3bafdbf767f1d7"
+dependencies = [
+ "encoding_rs",
+ "hashify",
+]
 
 [[package]]
 name = "markup5ever"
@@ -5892,7 +5923,7 @@ dependencies = [
 
 [[package]]
 name = "xtask"
-version = "2.0.1-alpha2"
+version = "2.0.1-alpha3"
 dependencies = [
  "anyhow",
  "clap",
@@ -5910,7 +5941,7 @@ dependencies = [
 
 [[package]]
 name = "yerd"
-version = "2.0.1-alpha2"
+version = "2.0.1-alpha3"
 dependencies = [
  "clap",
  "interprocess",
@@ -5927,7 +5958,7 @@ dependencies = [
 
 [[package]]
 name = "yerd-config"
-version = "2.0.1-alpha2"
+version = "2.0.1-alpha3"
 dependencies = [
  "serde",
  "tempfile",
@@ -5938,7 +5969,7 @@ dependencies = [
 
 [[package]]
 name = "yerd-core"
-version = "2.0.1-alpha2"
+version = "2.0.1-alpha3"
 dependencies = [
  "serde",
  "serde_json",
@@ -5949,7 +5980,7 @@ dependencies = [
 
 [[package]]
 name = "yerd-dns"
-version = "2.0.1-alpha2"
+version = "2.0.1-alpha3"
 dependencies = [
  "async-trait",
  "hickory-client",
@@ -5963,7 +5994,7 @@ dependencies = [
 
 [[package]]
 name = "yerd-doctor"
-version = "2.0.1-alpha2"
+version = "2.0.1-alpha3"
 dependencies = [
  "yerd-core",
  "yerd-ipc",
@@ -5971,7 +6002,7 @@ dependencies = [
 
 [[package]]
 name = "yerd-gui"
-version = "2.0.1-alpha2"
+version = "2.0.1-alpha3"
 dependencies = [
  "core-foundation 0.9.4",
  "core-foundation-sys",
@@ -6008,7 +6039,7 @@ dependencies = [
 
 [[package]]
 name = "yerd-helper"
-version = "2.0.1-alpha2"
+version = "2.0.1-alpha3"
 dependencies = [
  "clap",
  "hex",
@@ -6022,7 +6053,7 @@ dependencies = [
 
 [[package]]
 name = "yerd-ipc"
-version = "2.0.1-alpha2"
+version = "2.0.1-alpha3"
 dependencies = [
  "serde",
  "serde_json",
@@ -6032,8 +6063,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "yerd-mail"
+version = "2.0.1-alpha3"
+dependencies = [
+ "mail-parser",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 1.0.69",
+ "tokio",
+ "tracing",
+ "yerd-ipc",
+]
+
+[[package]]
 name = "yerd-php"
-version = "2.0.1-alpha2"
+version = "2.0.1-alpha3"
 dependencies = [
  "async-trait",
  "nix",
@@ -6049,7 +6094,7 @@ dependencies = [
 
 [[package]]
 name = "yerd-platform"
-version = "2.0.1-alpha2"
+version = "2.0.1-alpha3"
 dependencies = [
  "directories",
  "hex",
@@ -6065,7 +6110,7 @@ dependencies = [
 
 [[package]]
 name = "yerd-proxy"
-version = "2.0.1-alpha2"
+version = "2.0.1-alpha3"
 dependencies = [
  "async-trait",
  "bytes",
@@ -6089,7 +6134,7 @@ dependencies = [
 
 [[package]]
 name = "yerd-services"
-version = "2.0.1-alpha2"
+version = "2.0.1-alpha3"
 dependencies = [
  "async-trait",
  "serde",
@@ -6103,7 +6148,7 @@ dependencies = [
 
 [[package]]
 name = "yerd-supervise"
-version = "2.0.1-alpha2"
+version = "2.0.1-alpha3"
 dependencies = [
  "async-trait",
  "nix",
@@ -6113,7 +6158,7 @@ dependencies = [
 
 [[package]]
 name = "yerd-tls"
-version = "2.0.1-alpha2"
+version = "2.0.1-alpha3"
 dependencies = [
  "pem",
  "rcgen",
@@ -6127,7 +6172,7 @@ dependencies = [
 
 [[package]]
 name = "yerdd"
-version = "2.0.1-alpha2"
+version = "2.0.1-alpha3"
 dependencies = [
  "async-trait",
  "clap",
@@ -6151,6 +6196,7 @@ dependencies = [
  "yerd-dns",
  "yerd-doctor",
  "yerd-ipc",
+ "yerd-mail",
  "yerd-php",
  "yerd-platform",
  "yerd-proxy",

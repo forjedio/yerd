@@ -352,6 +352,7 @@ mod tests {
             load_avg: Some([10, 5, 1]),
             daemon_version: "2.0.1".into(),
             services: vec![],
+            mail: None,
         }
     }
 

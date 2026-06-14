@@ -49,6 +49,8 @@ pub struct Config {
     pub overrides: BTreeMap<String, SiteOverride>,
     /// Optional services.
     pub services: ServicesSection,
+    /// Built-in mail-capture SMTP server (Herd-style). Enabled by default.
+    pub mail: MailSection,
 }
 
 impl Default for Config {
@@ -63,6 +65,7 @@ impl Default for Config {
             linked: Vec::new(),
             overrides: BTreeMap::new(),
             services: ServicesSection::default(),
+            mail: MailSection::default(),
         }
     }
 }
@@ -258,6 +261,33 @@ impl Default for ServiceInstance {
             version: None,
             port: None,
             enabled: true,
+        }
+    }
+}
+
+/// Default loopback port for the built-in mail-capture SMTP server.
+pub const DEFAULT_MAIL_PORT: u16 = 2525;
+
+/// Built-in mail-capture SMTP server settings (see [`Config::mail`]).
+///
+/// A Herd-style capture sink: it accepts mail on a loopback port and stores it
+/// for inspection in the GUI. Enabled by default; when enabled the daemon binds
+/// [`Self::port`] on `127.0.0.1` (a busy port is non-fatal — the daemon logs and
+/// runs with capture not listening).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MailSection {
+    /// Whether the daemon starts the capture SMTP server on boot.
+    pub enabled: bool,
+    /// Loopback port the capture server listens on. Default:
+    /// [`DEFAULT_MAIL_PORT`].
+    pub port: u16,
+}
+
+impl Default for MailSection {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            port: DEFAULT_MAIL_PORT,
         }
     }
 }

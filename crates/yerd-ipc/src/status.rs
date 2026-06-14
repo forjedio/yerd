@@ -93,6 +93,79 @@ pub struct StatusReport {
     /// daemon by ignoring nothing (the field simply defaults to empty).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub services: Vec<ServiceStatus>,
+    /// Built-in mail-capture server status. `None` when the daemon predates the
+    /// feature; `#[serde(default, skip_serializing_if)]` keeps the wire additive
+    /// (an older daemon emits unchanged bytes; an older client ignores it).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mail: Option<MailStatus>,
+}
+
+/// Built-in mail-capture SMTP server status, surfaced in [`StatusReport::mail`].
+///
+/// Integer/bool only so the enclosing `Response` keeps its `Eq` derive.
+/// `enabled` and `listening` are distinct: `enabled && !listening` means the
+/// user turned mail on but the port could not be bound (e.g. already in use).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MailStatus {
+    /// Whether mail capture is enabled in the config.
+    pub enabled: bool,
+    /// The configured loopback SMTP port.
+    pub port: u16,
+    /// Whether the capture server actually bound the port and is accepting mail.
+    pub listening: bool,
+    /// Number of captured emails currently stored on disk.
+    pub count: u32,
+}
+
+/// One captured email's metadata, returned in [`crate::Response::Mails`].
+///
+/// String/integer only (no `Cow`/lifetimes, no floats) — fully owned so it
+/// crosses the wire and keeps the enclosing `Response`'s `Eq` derive.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MailSummary {
+    /// Opaque stable id (also the on-disk `<id>.eml` stem).
+    pub id: String,
+    /// The `From:` header, raw display form (e.g. `Example <hello@example.com>`).
+    pub from: String,
+    /// The `To:` recipients, raw display form, one per address.
+    pub to: Vec<String>,
+    /// The `Subject:` header (empty when absent).
+    pub subject: String,
+    /// The message `Date:` as Unix epoch seconds; `0` when unparseable/absent.
+    pub date_epoch: u64,
+}
+
+/// A single decoded header line, for [`MailDetail::headers`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MailHeader {
+    /// Header field name (e.g. `Content-Type`).
+    pub name: String,
+    /// Header field value, decoded to UTF-8.
+    pub value: String,
+}
+
+/// One captured email's full decoded content, returned in
+/// [`crate::Response::Mail`]. The bodies are already MIME-decoded (charset +
+/// transfer-encoding) and the HTML body has had `cid:` images rewritten to
+/// `data:` URLs, so a client can render it directly in a sandboxed frame.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MailDetail {
+    /// Opaque stable id (matches the [`MailSummary::id`]).
+    pub id: String,
+    /// The `From:` header, raw display form.
+    pub from: String,
+    /// The `To:` recipients, raw display form.
+    pub to: Vec<String>,
+    /// The `Subject:` header (empty when absent).
+    pub subject: String,
+    /// The message `Date:` as Unix epoch seconds; `0` when unparseable/absent.
+    pub date_epoch: u64,
+    /// All header lines, in the order they appeared.
+    pub headers: Vec<MailHeader>,
+    /// Decoded `text/html` body, when the message has one.
+    pub html_body: Option<String>,
+    /// Decoded `text/plain` body, when the message has one.
+    pub text_body: Option<String>,
 }
 
 /// A listener's requested vs actually-bound port.

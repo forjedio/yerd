@@ -19,8 +19,9 @@ use std::path::PathBuf;
 use yerd_ipc::{
     types::{PhpVersion, Site},
     CaStatus, DatabaseSummary, Diagnosis, DiagnosisCode, ErrorCode, FixReport, FixResult,
-    PhpPoolStatus, PoolRunState, PortStatus, Request, Response, ServiceAvailability,
-    ServiceRunState, ServiceStatus, Severity, SiteCounts, StatusReport,
+    MailDetail, MailHeader, MailStatus, MailSummary, PhpPoolStatus, PoolRunState, PortStatus,
+    Request, Response, ServiceAvailability, ServiceRunState, ServiceStatus, Severity, SiteCounts,
+    StatusReport,
 };
 
 // ---------- Request ----------
@@ -566,6 +567,9 @@ fn response_status_byte_shape() {
             load_avg: Some([100, 50, 25]),
             daemon_version: "2.0.1".into(),
             services: vec![],
+            // `None` + skip_serializing_if → omitted, so the byte shape is
+            // unchanged from before the mail field existed.
+            mail: None,
         }),
     };
     let s = serde_json::to_string(&r).unwrap();
@@ -665,6 +669,7 @@ fn sample_status_report() -> StatusReport {
         load_avg: None,
         daemon_version: "2.0.1".into(),
         services: vec![],
+        mail: None,
     }
 }
 
@@ -1097,4 +1102,124 @@ fn service_run_state_each_variant_byte_shape() {
     ] {
         assert_eq!(serde_json::to_string(&st).unwrap(), expected);
     }
+}
+
+// ---------- Mail ----------
+
+#[test]
+fn request_list_mails_byte_shape() {
+    let s = serde_json::to_string(&Request::ListMails).unwrap();
+    assert_eq!(s, r#"{"type":"list_mails"}"#);
+    assert_eq!(
+        serde_json::from_str::<Request>(&s).unwrap(),
+        Request::ListMails
+    );
+}
+
+#[test]
+fn request_get_mail_byte_shape() {
+    let r = Request::GetMail {
+        id: "000001".into(),
+    };
+    let s = serde_json::to_string(&r).unwrap();
+    assert_eq!(s, r#"{"type":"get_mail","id":"000001"}"#);
+    assert_eq!(serde_json::from_str::<Request>(&s).unwrap(), r);
+}
+
+#[test]
+fn request_clear_mails_byte_shape() {
+    let s = serde_json::to_string(&Request::ClearMails).unwrap();
+    assert_eq!(s, r#"{"type":"clear_mails"}"#);
+    assert_eq!(
+        serde_json::from_str::<Request>(&s).unwrap(),
+        Request::ClearMails
+    );
+}
+
+#[test]
+fn request_delete_mails_byte_shape() {
+    let r = Request::DeleteMails {
+        ids: vec!["000001".into(), "000002".into()],
+    };
+    let s = serde_json::to_string(&r).unwrap();
+    assert_eq!(s, r#"{"type":"delete_mails","ids":["000001","000002"]}"#);
+    assert_eq!(serde_json::from_str::<Request>(&s).unwrap(), r);
+}
+
+#[test]
+fn request_set_mail_port_byte_shape() {
+    let r = Request::SetMailPort { port: 2525 };
+    let s = serde_json::to_string(&r).unwrap();
+    assert_eq!(s, r#"{"type":"set_mail_port","port":2525}"#);
+    assert_eq!(serde_json::from_str::<Request>(&s).unwrap(), r);
+}
+
+#[test]
+fn request_set_mail_enabled_byte_shape() {
+    let r = Request::SetMailEnabled { enabled: true };
+    let s = serde_json::to_string(&r).unwrap();
+    assert_eq!(s, r#"{"type":"set_mail_enabled","enabled":true}"#);
+    assert_eq!(serde_json::from_str::<Request>(&s).unwrap(), r);
+}
+
+#[test]
+fn response_mails_byte_shape() {
+    let r = Response::Mails {
+        mails: vec![MailSummary {
+            id: "000001".into(),
+            from: "Example <hello@example.com>".into(),
+            to: vec!["test@test.com".into()],
+            subject: "Hi".into(),
+            date_epoch: 1_700_000_000,
+        }],
+    };
+    let s = serde_json::to_string(&r).unwrap();
+    let expected = r#"{"type":"mails","mails":[{"id":"000001","from":"Example <hello@example.com>","to":["test@test.com"],"subject":"Hi","date_epoch":1700000000}]}"#;
+    assert_eq!(s, expected);
+    assert_eq!(serde_json::from_str::<Response>(&s).unwrap(), r);
+}
+
+#[test]
+fn response_mail_byte_shape() {
+    let r = Response::Mail {
+        mail: Box::new(MailDetail {
+            id: "000001".into(),
+            from: "Example <hello@example.com>".into(),
+            to: vec!["test@test.com".into()],
+            subject: "Hi".into(),
+            date_epoch: 1_700_000_000,
+            headers: vec![MailHeader {
+                name: "Subject".into(),
+                value: "Hi".into(),
+            }],
+            html_body: Some("<p>Hi</p>".into()),
+            text_body: None,
+        }),
+    };
+    let s = serde_json::to_string(&r).unwrap();
+    let expected = r#"{"type":"mail","mail":{"id":"000001","from":"Example <hello@example.com>","to":["test@test.com"],"subject":"Hi","date_epoch":1700000000,"headers":[{"name":"Subject","value":"Hi"}],"html_body":"<p>Hi</p>","text_body":null}}"#;
+    assert_eq!(s, expected);
+    assert_eq!(serde_json::from_str::<Response>(&s).unwrap(), r);
+}
+
+#[test]
+fn status_mail_appears_only_when_some() {
+    // `None` → omitted; `Some` → appended after `services`.
+    let mut report = sample_status_report();
+    let s = serde_json::to_string(&report).unwrap();
+    assert!(!s.contains("mail"), "empty mail must be omitted: {s}");
+
+    report.mail = Some(MailStatus {
+        enabled: true,
+        port: 2525,
+        listening: true,
+        count: 3,
+    });
+    let s = serde_json::to_string(&report).unwrap();
+    assert!(
+        s.contains(r#""mail":{"enabled":true,"port":2525,"listening":true,"count":3}"#),
+        "{s}"
+    );
+    let back: StatusReport = serde_json::from_str(&s).unwrap();
+    assert_eq!(back, report);
 }

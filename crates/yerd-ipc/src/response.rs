@@ -11,7 +11,8 @@ use serde::{Deserialize, Serialize};
 use yerd_core::{PhpVersion, Site};
 
 use crate::status::{
-    DatabaseSummary, Diagnosis, FixReport, ServiceAvailability, ServiceStatus, StatusReport,
+    DatabaseSummary, Diagnosis, FixReport, MailDetail, MailSummary, ServiceAvailability,
+    ServiceStatus, StatusReport,
 };
 
 // Same rule: no per-field serde renames.
@@ -128,6 +129,20 @@ pub enum Response {
         /// One entry per database, sorted by name.
         databases: Vec<DatabaseSummary>,
     },
+    /// Reply to [`crate::Request::ListMails`] — captured email metadata, newest first.
+    Mails {
+        /// One entry per captured email.
+        mails: Vec<MailSummary>,
+    },
+    /// Reply to [`crate::Request::GetMail`] — one captured email's full content.
+    ///
+    /// Boxed so the (large) `MailDetail` does not bloat every `Response` value —
+    /// the same treatment as [`Self::Status`]. `Box<T>` serializes transparently,
+    /// so the wire bytes are unchanged.
+    Mail {
+        /// The decoded email.
+        mail: Box<MailDetail>,
+    },
 }
 
 /// An available newer patch for an installed PHP minor.
@@ -197,6 +212,8 @@ mod variant_name_pinning {
             Response::AvailableServices { .. } => {}
             Response::ServiceLogs { .. } => {}
             Response::Databases { .. } => {}
+            Response::Mails { .. } => {}
+            Response::Mail { .. } => {}
         }
     }
 
@@ -212,6 +229,7 @@ mod variant_name_pinning {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)] // one constructor per variant; grows with the enum
     fn touch_every_variant() {
         pin_response(Response::Pong);
         pin_response(Response::Sites { sites: vec![] });
@@ -273,6 +291,7 @@ mod variant_name_pinning {
                 load_avg: Some([100, 50, 25]),
                 daemon_version: "9.9.9".into(),
                 services: vec![],
+                mail: None,
             }),
         });
         pin_response(Response::Diagnoses {
@@ -295,6 +314,30 @@ mod variant_name_pinning {
         pin_response(Response::ServiceLogs { lines: vec![] });
         pin_response(Response::Databases {
             databases: vec![DatabaseSummary { name: "app".into() }],
+        });
+        pin_response(Response::Mails {
+            mails: vec![crate::status::MailSummary {
+                id: "000001".into(),
+                from: "Example <hello@example.com>".into(),
+                to: vec!["test@test.com".into()],
+                subject: "Hi".into(),
+                date_epoch: 1_700_000_000,
+            }],
+        });
+        pin_response(Response::Mail {
+            mail: Box::new(crate::status::MailDetail {
+                id: "000001".into(),
+                from: "Example <hello@example.com>".into(),
+                to: vec!["test@test.com".into()],
+                subject: "Hi".into(),
+                date_epoch: 1_700_000_000,
+                headers: vec![crate::status::MailHeader {
+                    name: "Subject".into(),
+                    value: "Hi".into(),
+                }],
+                html_body: Some("<p>Hi</p>".into()),
+                text_body: Some("Hi".into()),
+            }),
         });
         for c in [
             ErrorCode::NotFound,

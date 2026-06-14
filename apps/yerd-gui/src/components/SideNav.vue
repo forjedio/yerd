@@ -2,6 +2,7 @@
 import {
   Info,
   LayoutGrid,
+  Mail,
   Server,
   Settings,
   SquareCode,
@@ -24,6 +25,7 @@ const items = [
   { to: "/php", label: "PHP", icon: SquareCode, chip: GREY },
   { to: "/sites", label: "Sites", icon: LayoutGrid, chip: GREY },
   { to: "/services", label: "Services", icon: Server, chip: RED },
+  { to: "/mail", label: "Mail", icon: Mail, chip: RED },
   { to: "/doctor", label: "Doctor", icon: Stethoscope, chip: BLUE },
   { to: "/about", label: "About", icon: Info, chip: BLUE },
 ];
