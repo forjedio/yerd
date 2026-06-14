@@ -49,7 +49,7 @@ pub struct Config {
     pub overrides: BTreeMap<String, SiteOverride>,
     /// Optional services.
     pub services: ServicesSection,
-    /// Built-in mail-capture SMTP server (Herd-style). Off by default.
+    /// Built-in mail-capture SMTP server (Herd-style). Enabled by default.
     pub mail: MailSection,
 }
 

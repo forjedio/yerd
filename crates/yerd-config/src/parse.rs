@@ -310,6 +310,11 @@ fn validate_ports(c: &Config) -> Result<(), ConfigError> {
     if c.ports.http == c.ports.https {
         return Err(ve(ValidateErrorReason::HttpHttpsPortsEqual));
     }
+    // The mail-capture port is bound on `127.0.0.1` when enabled; a zero port is
+    // meaningless (it would bind an ephemeral port no sender could find).
+    if c.mail.port == 0 {
+        return Err(ve(ValidateErrorReason::MailPortZero));
+    }
     Ok(())
 }
 
@@ -692,6 +697,18 @@ php = "not-a-version"
                 reason: ValidateErrorReason::HttpsPortZero,
             }) => {}
             other => panic!("expected HttpsPortZero, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn validate_rejects_zero_mail_port() {
+        let mut c = Config::default();
+        c.mail.port = 0;
+        match c.validate() {
+            Err(ConfigError::Validate {
+                reason: ValidateErrorReason::MailPortZero,
+            }) => {}
+            other => panic!("expected MailPortZero, got {other:?}"),
         }
     }
 

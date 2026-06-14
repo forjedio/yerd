@@ -168,8 +168,9 @@ export interface StatusReport {
    *  (the Rust field is `#[serde(default, skip_serializing_if)]`). */
   services?: ServiceStatus[];
   /** Built-in mail-capture status. Omitted (undefined) by a daemon predating
-   *  the feature (the Rust field is `#[serde(default, skip_serializing_if)]`). */
-  mail?: MailStatus | null;
+   *  the feature (the Rust field is `#[serde(default, skip_serializing_if)]`, so
+   *  it is never `null` on the wire — mirrors the `services?` convention). */
+  mail?: MailStatus;
 }
 
 export type Severity = "ok" | "warn" | "fail";

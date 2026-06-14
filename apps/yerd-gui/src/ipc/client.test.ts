@@ -8,11 +8,13 @@ vi.mock("@tauri-apps/api/core", () => ({
 
 import {
   clearMails,
+  deleteMails,
   getMail,
   IpcError,
   listMails,
   listPhp,
   listSites,
+  setMailEnabled,
   setMailPort,
   status,
   unlink,
@@ -103,6 +105,17 @@ describe("client → command mapping", () => {
     invokeMock.mockResolvedValue({ type: "ok" });
     await clearMails();
     expect(invokeMock).toHaveBeenCalledWith("clear_mails", undefined);
+  });
+
+  it("deleteMails sends the id list; setMailEnabled sends the flag", async () => {
+    invokeMock.mockResolvedValue({ type: "ok" });
+    await deleteMails(["000001", "000002"]);
+    expect(invokeMock).toHaveBeenCalledWith("delete_mails", {
+      ids: ["000001", "000002"],
+    });
+    invokeMock.mockResolvedValue({ type: "ok" });
+    await setMailEnabled(true);
+    expect(invokeMock).toHaveBeenCalledWith("set_mail_enabled", { enabled: true });
   });
 });
 

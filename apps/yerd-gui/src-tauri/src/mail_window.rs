@@ -8,14 +8,19 @@
 
 use tauri::Manager;
 
+use crate::error::GuiError;
+
 /// Open (show + focus) the Mails viewer window. Invoked from the Mail settings
-/// page's "Show Mails" button.
+/// page's "Show Mails" button. Returns the crate's single `GuiError` type so the
+/// frontend sees the same typed `{ code, message }` failure shape as every other
+/// command.
 #[tauri::command]
-pub fn show_mails_window(app: tauri::AppHandle) -> Result<(), String> {
+pub fn show_mails_window(app: tauri::AppHandle) -> Result<(), GuiError> {
     let win = app
         .get_webview_window("mails")
-        .ok_or_else(|| "mails window is not configured".to_string())?;
-    win.show().map_err(|e| e.to_string())?;
-    win.set_focus().map_err(|e| e.to_string())?;
+        .ok_or_else(|| GuiError::internal("mails window is not configured"))?;
+    win.show().map_err(|e| GuiError::internal(e.to_string()))?;
+    win.set_focus()
+        .map_err(|e| GuiError::internal(e.to_string()))?;
     Ok(())
 }

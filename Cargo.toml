@@ -48,6 +48,9 @@ tracing-subscriber = { version = "0.3", default-features = false, features = ["s
 http               = "1"
 interprocess       = { version = "2", features = ["tokio"] }
 fs4                = { version = "0.13", default-features = false, features = ["sync"] }
+# Pure-Rust MIME parser for the mail-capture viewer. `full_encoding` pulls
+# `encoding_rs` for non-UTF-8 charsets; the `serde` feature is deliberately off.
+mail-parser        = { version = "0.11", default-features = false, features = ["full_encoding"] }
 
 [workspace.lints.rust]
 unsafe_code  = "forbid"

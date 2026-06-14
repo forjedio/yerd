@@ -755,17 +755,16 @@ async fn set_default_php(version: yerd_core::PhpVersion, state: &DaemonState) ->
 
 /// Set the mail-capture SMTP port. Persisted to config; takes effect on the next
 /// daemon start/restart (no hot rebind), matching `SetServicePort`. Modelled on
-/// `set_default_php` (clone → set → save → commit under the config mutex).
+/// `set_php_settings` (clone → set → validate → save → commit under the config
+/// mutex) so an invalid value (e.g. a zero port) is rejected by the config
+/// validator rather than overloading an unrelated `ErrorCode`.
 async fn set_mail_port(port: u16, state: &DaemonState) -> Response {
-    if port == 0 {
-        return Response::Error {
-            code: ErrorCode::InvalidPath,
-            message: "mail port must be non-zero".into(),
-        };
-    }
     let mut cfg_guard = state.config.lock().await;
     let mut new = cfg_guard.clone();
     new.mail.port = port;
+    if let Err(e) = new.validate() {
+        return internal(format!("config validation failed: {e}"));
+    }
     if let Err(e) = new.save(&state.config_path) {
         return internal(format!("config save failed: {e}"));
     }
@@ -1249,9 +1248,11 @@ Subject: Captured\r\n\r\nhi\r\n";
         let tmp = tempfile::tempdir().unwrap();
         let state = state_in(tmp.path());
 
+        // A zero port is rejected by the config validator (mapped to Internal),
+        // not by overloading a path/port code.
         match dispatch(Request::SetMailPort { port: 0 }, &state).await {
-            Response::Error { code, .. } => assert!(matches!(code, ErrorCode::InvalidPath)),
-            other => panic!("expected InvalidPath, got {other:?}"),
+            Response::Error { code, .. } => assert!(matches!(code, ErrorCode::Internal)),
+            other => panic!("expected Error, got {other:?}"),
         }
 
         assert!(matches!(
