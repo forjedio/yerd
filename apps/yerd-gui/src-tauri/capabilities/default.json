@@ -2,7 +2,7 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
   "description": "Core access plus the opener/dialog plugin commands the host helpers use, and the window-control commands the custom (decorationless) titlebar drives. App commands (our #[tauri::command]s) are permitted by registration.",
-  "windows": ["main", "mails"],
+  "windows": ["main", "dumps", "mails"],
   "permissions": [
     "core:default",
     "core:window:allow-start-dragging",
@@ -12,7 +12,12 @@
     "core:window:allow-toggle-maximize",
     "core:window:allow-is-maximized",
     "core:window:allow-close",
+    "core:window:allow-set-always-on-top",
     "opener:default",
+    {
+      "identifier": "opener:allow-open-path",
+      "allow": [{ "path": "$HOME/**" }]
+    },
     "dialog:default",
     "autostart:allow-enable",
     "autostart:allow-disable",

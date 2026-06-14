@@ -29,6 +29,10 @@ yerd-proxy     = { path = "../../crates/yerd-proxy" }
 yerd-doctor    = { path = "../../crates/yerd-doctor" }
 yerd-mail      = { path = "../../crates/yerd-mail" }
 thiserror      = { workspace = true }
+serde          = { workspace = true }
+serde_json     = { workspace = true }
+sha2           = { workspace = true }
+hex            = { workspace = true }
 async-trait    = { workspace = true }
 clap           = { workspace = true }
 tokio          = { workspace = true, features = ["net", "rt-multi-thread", "macros", "signal", "time", "io-util", "sync", "process"] }

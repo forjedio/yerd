@@ -114,6 +114,15 @@ fn main() {
             commands::unelevate,
             commands::trust_ca,
             commands::untrust_ca,
+            commands::list_dumps,
+            commands::clear_dumps,
+            commands::delete_dump,
+            commands::set_dumps_enabled,
+            commands::set_dumps_persist,
+            commands::set_dumps_port,
+            commands::set_dump_feature,
+            commands::dumps_status,
+            show_dumps_window,
             daemon::daemon_installed,
             daemon::install_daemon,
             daemon::start_daemon,
@@ -134,6 +143,10 @@ fn main() {
                 // icon while the main window is still open. Only the main window
                 // drives the close-to-tray + Dock-accessory behaviour.
                 let _ = window.hide();
+                // Only the main window drops the Dock icon on close — the dumps
+                // and Mails viewer windows are auxiliary, so closing one must not
+                // yank the main app's presence (or it would minimise the whole
+                // app to the tray).
                 if window.label() == "main" {
                     set_dock_visible(window.app_handle(), false);
                 }
@@ -239,6 +252,7 @@ const NAV_ITEMS: &[(&str, &str)] = &[
 /// System tray: open the window, jump to a specific page, or quit.
 fn build_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
     let open = MenuItem::with_id(app, "open", "Open Yerd", true, None::<&str>)?;
+    let dumps = MenuItem::with_id(app, "dumps", "Show Dumps", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "Quit Yerd", true, None::<&str>)?;
     let start = MenuItem::with_id(app, "daemon:start", "Start daemon", true, None::<&str>)?;
     let stop = MenuItem::with_id(app, "daemon:stop", "Stop daemon", true, None::<&str>)?;
@@ -253,7 +267,7 @@ fn build_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
         .iter()
         .map(|(id, label)| MenuItem::with_id(app, *id, *label, true, None::<&str>))
         .collect::<tauri::Result<_>>()?;
-    let mut items: Vec<&dyn tauri::menu::IsMenuItem<_>> = vec![&open, &sep_top];
+    let mut items: Vec<&dyn tauri::menu::IsMenuItem<_>> = vec![&open, &dumps, &sep_top];
     items.extend(nav.iter().map(|m| m as &dyn tauri::menu::IsMenuItem<_>));
     items.push(&sep_daemon);
     items.push(&start);
@@ -271,6 +285,9 @@ fn build_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
         .show_menu_on_left_click(false)
         .on_menu_event(|app, event| match event.id.as_ref() {
             "open" => show_main(app),
+            "dumps" => {
+                let _ = show_dumps(app);
+            }
             "quit" => app.exit(0),
             // Start/Stop run off the event thread so a slow systemctl/launchctl
             // never stalls the menu; the GUI's status poller reflects the result.
@@ -330,6 +347,38 @@ fn show_main(app: &tauri::AppHandle) {
         let _ = win.show();
         let _ = win.set_focus();
     }
+}
+
+/// Show (or lazily create) the auxiliary "dumps" window — the live Laravel
+/// telemetry viewer. Reuses the statically-declared window when it already
+/// exists; rebuilds it only if a prior close destroyed it.
+fn show_dumps(app: &tauri::AppHandle) -> tauri::Result<()> {
+    if let Some(win) = app.get_webview_window("dumps") {
+        win.show()?;
+        win.set_focus()?;
+        return Ok(());
+    }
+    tauri::WebviewWindowBuilder::new(
+        app,
+        "dumps",
+        tauri::WebviewUrl::App("index.html#/dumps-window".into()),
+    )
+    .title("Yerd Dumps")
+    .inner_size(900.0, 640.0)
+    .min_inner_size(640.0, 420.0)
+    .decorations(false)
+    .transparent(true)
+    .build()?;
+    Ok(())
+}
+
+/// Open the dumps window from the frontend ("Show Dumps" button). Returns the
+/// crate's `GuiError` so the frontend sees the same typed `{ code, message }`
+/// failure shape as every other command.
+#[tauri::command]
+fn show_dumps_window(app: tauri::AppHandle) -> Result<(), crate::error::GuiError> {
+    show_dumps(&app)
+        .map_err(|e| crate::error::GuiError::internal(format!("failed to show dumps window: {e}")))
 }
 
 /// Show or hide the app's Dock presence by flipping the macOS activation policy:

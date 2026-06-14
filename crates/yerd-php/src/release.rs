@@ -12,13 +12,26 @@ use yerd_core::PhpVersion;
 
 use crate::error::PhpError;
 
-/// Base URL of the static-php-cli "common" prebuilt distribution.
-const BASE_URL: &str = "https://dl.static-php.dev/static-php-cli/common";
+/// Base URL of the static-php-cli prebuilt distribution for `os`.
+///
+/// Linux uses the **`gnu-bulk`** (glibc) channel rather than the default musl
+/// `common` channel: a fully-static musl PHP **cannot `dlopen` a shared
+/// extension**, which yerd needs for the `yerd-dump` telemetry extension. The
+/// trade-off is a larger (~38 MB) glibc-linked binary that no longer "runs on
+/// any libc" (Alpine/musl-only hosts are unsupported). macOS stays on `common`
+/// (macOS permits `dlopen` regardless).
+const fn channel_base(os: Os) -> &'static str {
+    match os {
+        Os::Linux => "https://dl.static-php.dev/static-php-cli/gnu-bulk",
+        Os::Macos => "https://dl.static-php.dev/static-php-cli/common",
+    }
+}
 
 /// Target operating system for a prebuilt artifact.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Os {
-    /// Linux (fully static / musl — runs on any libc).
+    /// Linux (glibc `gnu-bulk` build — can load shared extensions; **not** the
+    /// musl `common` build, which can't `dlopen`).
     Linux,
     /// macOS.
     Macos,
@@ -114,18 +127,20 @@ pub struct Artifact {
 #[must_use]
 pub fn artifact_url(full_version: &str, kind: BinaryKind, os: Os, arch: Arch) -> String {
     format!(
-        "{BASE_URL}/php-{full_version}-{}-{}-{}.tar.gz",
+        "{}/php-{full_version}-{}-{}-{}.tar.gz",
+        channel_base(os),
         kind.as_str(),
         os.as_str(),
         arch.as_str()
     )
 }
 
-/// URL of the distribution's directory listing (the daemon fetches this, then
-/// hands the body to [`resolve_from_listing`]).
+/// URL of the distribution's directory listing for `os` (the daemon fetches
+/// this, then hands the body to [`resolve_from_listing`]). The channel differs
+/// per OS (see [`channel_base`]), so the listing URL does too.
 #[must_use]
-pub fn listing_url() -> String {
-    format!("{BASE_URL}/")
+pub fn listing_url(os: Os) -> String {
+    format!("{}/", channel_base(os))
 }
 
 /// Resolve a requested major.minor version + platform to an [`Artifact`] by
@@ -307,12 +322,12 @@ mod tests {
     /// A listing snippet shaped like the real autoindex (href + duplicate text
     /// node), spanning several patches, minors, kinds, and arches.
     const LISTING: &str = r#"
-        <a href="/static-php-cli/common/php-8.5.2-cli-linux-x86_64.tar.gz">php-8.5.2-cli-linux-x86_64.tar.gz</a>
-        <a href="/static-php-cli/common/php-8.5.6-cli-linux-x86_64.tar.gz">php-8.5.6-cli-linux-x86_64.tar.gz</a>
-        <a href="/static-php-cli/common/php-8.5.6-fpm-linux-x86_64.tar.gz">php-8.5.6-fpm-linux-x86_64.tar.gz</a>
-        <a href="/static-php-cli/common/php-8.5.4-cli-linux-aarch64.tar.gz">php-8.5.4-cli-linux-aarch64.tar.gz</a>
-        <a href="/static-php-cli/common/php-8.50.1-cli-linux-x86_64.tar.gz">php-8.50.1-cli-linux-x86_64.tar.gz</a>
-        <a href="/static-php-cli/common/php-8.4.21-cli-linux-x86_64.tar.gz">php-8.4.21-cli-linux-x86_64.tar.gz</a>
+        <a href="/static-php-cli/gnu-bulk/php-8.5.2-cli-linux-x86_64.tar.gz">php-8.5.2-cli-linux-x86_64.tar.gz</a>
+        <a href="/static-php-cli/gnu-bulk/php-8.5.6-cli-linux-x86_64.tar.gz">php-8.5.6-cli-linux-x86_64.tar.gz</a>
+        <a href="/static-php-cli/gnu-bulk/php-8.5.6-fpm-linux-x86_64.tar.gz">php-8.5.6-fpm-linux-x86_64.tar.gz</a>
+        <a href="/static-php-cli/gnu-bulk/php-8.5.4-cli-linux-aarch64.tar.gz">php-8.5.4-cli-linux-aarch64.tar.gz</a>
+        <a href="/static-php-cli/gnu-bulk/php-8.50.1-cli-linux-x86_64.tar.gz">php-8.50.1-cli-linux-x86_64.tar.gz</a>
+        <a href="/static-php-cli/gnu-bulk/php-8.4.21-cli-linux-x86_64.tar.gz">php-8.4.21-cli-linux-x86_64.tar.gz</a>
     "#;
 
     #[test]
@@ -323,11 +338,33 @@ mod tests {
         assert_eq!(a.install_dir_name, "php-8.5");
         assert_eq!(
             a.cli_url,
-            "https://dl.static-php.dev/static-php-cli/common/php-8.5.6-cli-linux-x86_64.tar.gz"
+            "https://dl.static-php.dev/static-php-cli/gnu-bulk/php-8.5.6-cli-linux-x86_64.tar.gz"
         );
         assert_eq!(
             a.fpm_url,
-            "https://dl.static-php.dev/static-php-cli/common/php-8.5.6-fpm-linux-x86_64.tar.gz"
+            "https://dl.static-php.dev/static-php-cli/gnu-bulk/php-8.5.6-fpm-linux-x86_64.tar.gz"
+        );
+    }
+
+    #[test]
+    fn channel_differs_by_os() {
+        // Linux → glibc `gnu-bulk` (its PHP can dlopen the dump extension).
+        assert_eq!(
+            artifact_url("8.5.6", BinaryKind::Fpm, Os::Linux, Arch::X86_64),
+            "https://dl.static-php.dev/static-php-cli/gnu-bulk/php-8.5.6-fpm-linux-x86_64.tar.gz"
+        );
+        assert_eq!(
+            listing_url(Os::Linux),
+            "https://dl.static-php.dev/static-php-cli/gnu-bulk/"
+        );
+        // macOS → default `common` channel.
+        assert_eq!(
+            artifact_url("8.5.6", BinaryKind::Cli, Os::Macos, Arch::Aarch64),
+            "https://dl.static-php.dev/static-php-cli/common/php-8.5.6-cli-macos-aarch64.tar.gz"
+        );
+        assert_eq!(
+            listing_url(Os::Macos),
+            "https://dl.static-php.dev/static-php-cli/common/"
         );
     }
 

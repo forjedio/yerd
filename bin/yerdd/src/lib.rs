@@ -17,7 +17,9 @@ pub mod backend_resolver;
 pub mod cert_store;
 pub mod db_admin;
 pub mod detect_cache;
+pub mod dump_server;
 pub mod error;
+pub mod ext_install;
 pub mod fs_watch;
 pub mod ipc_server;
 pub mod mutate;
@@ -80,6 +82,7 @@ pub async fn run_with_daemon(daemon: Daemon) -> Result<Outcome, DaemonError> {
     result
 }
 
+#[allow(clippy::too_many_lines)] // linear task wiring: one spawn block per subsystem; splitting hurts readability
 async fn run_until_shutdown(
     daemon: Daemon,
     shutdown_rx: watch::Receiver<bool>,
@@ -129,6 +132,13 @@ async fn run_until_shutdown(
         shutdown_rx.clone(),
     ));
 
+    // Dump-telemetry server: loopback TCP receiving frames from the PHP
+    // extension. Rebinds on a port change; a bind failure is non-fatal.
+    let dump_handle = {
+        let state = daemon.state.clone();
+        tokio::spawn(crate::dump_server::run(state, shutdown_rx.clone()))
+    };
+
     // Periodic PHP update checker: poll once at startup, then every 12h, until
     // shutdown. Notify-only (logs available updates; never auto-installs).
     let update_check_handle = {
@@ -171,6 +181,18 @@ async fn run_until_shutdown(
     // engine's outcome is logged inside the task.
     let _autostart = tokio::spawn(crate::services::auto_start_enabled(daemon.state.clone()));
 
+    // If dumps are enabled in config, fetch the extension `.so` for installed PHP
+    // versions in the background so on-demand pools pick it up. Best-effort.
+    let _ext_install = {
+        let state = daemon.state.clone();
+        tokio::spawn(async move {
+            if state.config.lock().await.dumps.enabled {
+                let dl = crate::php_install::ReqwestDownloader::new();
+                crate::ext_install::ensure_for_installed(&state.dirs, &dl).await;
+            }
+        })
+    };
+
     // Serve until a shutdown is requested — a SIGTERM/Ctrl-C, or a
     // `RestartDaemon` IPC tripping the same channel. Without this wait the
     // daemon would fall straight through to the graceful-join timeouts below
@@ -183,6 +205,7 @@ async fn run_until_shutdown(
     let _ = tokio::time::timeout(Duration::from_secs(10), dns_handle).await;
     let _ = tokio::time::timeout(Duration::from_secs(10), proxy_handle).await;
     let _ = tokio::time::timeout(Duration::from_secs(5), ipc_handle).await;
+    let _ = tokio::time::timeout(Duration::from_secs(5), dump_handle).await;
     let _ = tokio::time::timeout(Duration::from_secs(5), update_check_handle).await;
     let _ = tokio::time::timeout(Duration::from_secs(5), watch_handle).await;
     if let Some(mail_handle) = mail_handle {

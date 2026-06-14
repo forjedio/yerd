@@ -10,6 +10,7 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 use yerd_core::{PhpVersion, Site};
 
+use crate::dump::{DumpCounts, DumpEvent, DumpExtStatus};
 use crate::status::{
     DatabaseSummary, Diagnosis, FixReport, MailDetail, MailSummary, ServiceAvailability,
     ServiceStatus, StatusReport,
@@ -17,7 +18,11 @@ use crate::status::{
 
 // Same rule: no per-field serde renames.
 /// A response sent from the daemon to a client.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// Not `Eq`: [`Response::Dumps`] carries [`DumpEvent`]s whose opaque
+/// `serde_json::Value` payloads are only `PartialEq`. `PartialEq` is all the
+/// wire-stability round-trips need.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum Response {
@@ -129,6 +134,45 @@ pub enum Response {
         /// One entry per database, sorted by name.
         databases: Vec<DatabaseSummary>,
     },
+    /// Reply to [`crate::Request::ListDumps`] — events newer than the client's
+    /// cursor, the ids removed since then, the per-category counts, and the
+    /// newest id currently buffered.
+    Dumps {
+        /// Events with `id > since_id`, oldest first.
+        events: Vec<DumpEvent>,
+        /// Ids deleted since the client's cursor, so it can drop stale rows it
+        /// still holds. Best-effort (bounded log); `min_live_id` is the
+        /// guaranteed lower bound for evicted/cleared rows.
+        removed_ids: Vec<u64>,
+        /// Current per-category counts of buffered events.
+        counts: DumpCounts,
+        /// The newest buffered event id (0 when the ring is empty); the client
+        /// uses it as the next `since_id`.
+        latest_id: u64,
+        /// Smallest id still buffered. Clients drop any held id `< min_live_id`
+        /// unconditionally — so dropping evicted/cleared rows never depends on
+        /// the bounded `removed_ids` log.
+        min_live_id: u64,
+    },
+    /// Reply to [`crate::Request::DumpsStatus`] — dump-server configuration and
+    /// liveness.
+    DumpsStatus {
+        /// Whether dump interception is enabled (the antenna).
+        enabled: bool,
+        /// The loopback port the dump server listens on.
+        port: u16,
+        /// Whether the dump server is currently bound and accepting.
+        running: bool,
+        /// Whether log persistence is on (off = clear on each new request).
+        persist: bool,
+        /// Per-installed-version extension presence (a yerd-side fact).
+        extensions: Vec<DumpExtStatus>,
+        /// Current per-category counts of buffered events.
+        counts: DumpCounts,
+        /// Resolved per-feature capture flags (every key present; absent in
+        /// config means on). `BTreeMap` for stable order.
+        features: BTreeMap<String, bool>,
+    },
     /// Reply to [`crate::Request::ListMails`] — captured email metadata, newest first.
     Mails {
         /// One entry per captured email.
@@ -212,6 +256,8 @@ mod variant_name_pinning {
             Response::AvailableServices { .. } => {}
             Response::ServiceLogs { .. } => {}
             Response::Databases { .. } => {}
+            Response::Dumps { .. } => {}
+            Response::DumpsStatus { .. } => {}
             Response::Mails { .. } => {}
             Response::Mail { .. } => {}
         }
@@ -229,7 +275,7 @@ mod variant_name_pinning {
     }
 
     #[test]
-    #[allow(clippy::too_many_lines)] // one constructor per variant; grows with the enum
+    #[allow(clippy::too_many_lines)] // one `pin_response(...)` per variant; grows with the enum
     fn touch_every_variant() {
         pin_response(Response::Pong);
         pin_response(Response::Sites { sites: vec![] });
@@ -314,6 +360,22 @@ mod variant_name_pinning {
         pin_response(Response::ServiceLogs { lines: vec![] });
         pin_response(Response::Databases {
             databases: vec![DatabaseSummary { name: "app".into() }],
+        });
+        pin_response(Response::Dumps {
+            events: vec![],
+            removed_ids: vec![],
+            counts: DumpCounts::default(),
+            latest_id: 0,
+            min_live_id: 0,
+        });
+        pin_response(Response::DumpsStatus {
+            enabled: true,
+            port: 2304,
+            running: true,
+            persist: false,
+            extensions: vec![],
+            counts: DumpCounts::default(),
+            features: BTreeMap::new(),
         });
         pin_response(Response::Mails {
             mails: vec![crate::status::MailSummary {

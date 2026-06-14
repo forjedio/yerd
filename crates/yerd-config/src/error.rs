@@ -98,6 +98,8 @@ pub enum ValidateErrorReason {
     HttpsPortZero,
     /// `mail.port == 0` (a bindable loopback port must be non-zero).
     MailPortZero,
+    /// `dumps.port == 0` (a bindable loopback port must be non-zero).
+    DumpsPortZero,
     /// `[services]` contained an instance whose id is not in `KNOWN_SERVICES`.
     UnknownService,
     /// `parked.paths` contained an empty string.
@@ -120,6 +122,7 @@ impl fmt::Display for ValidateErrorReason {
             Self::HttpPortZero => "ports.http must be non-zero",
             Self::HttpsPortZero => "ports.https must be non-zero",
             Self::MailPortZero => "mail.port must be non-zero",
+            Self::DumpsPortZero => "dumps.port must be non-zero",
             Self::UnknownService => "services contains an unrecognised service id",
             Self::ParkedPathEmpty => "parked.paths contains an empty string",
             Self::OverridePathEmpty => "overrides contains an empty path key",
@@ -183,6 +186,7 @@ mod tests {
             ValidateErrorReason::HttpPortZero,
             ValidateErrorReason::HttpsPortZero,
             ValidateErrorReason::MailPortZero,
+            ValidateErrorReason::DumpsPortZero,
             ValidateErrorReason::UnknownService,
             ValidateErrorReason::ParkedPathEmpty,
             ValidateErrorReason::OverridePathEmpty,

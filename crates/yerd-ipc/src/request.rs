@@ -247,6 +247,47 @@ pub enum Request {
         /// The version to switch to.
         version: String,
     },
+    /// Page the buffered dump-telemetry events newer than `since_id` (0 = all),
+    /// plus the ids removed since then and the current per-category counts.
+    ListDumps {
+        /// Return events with `id > since_id`. Clients track the latest id.
+        since_id: u64,
+    },
+    /// Drop every buffered dump event (pinned ones included).
+    ClearDumps,
+    /// Delete one buffered dump event by id.
+    DeleteDump {
+        /// The event id to delete.
+        id: u64,
+    },
+    /// Turn dump interception on or off (the "antenna"). Writes the runtime
+    /// state file the extension reads; never restarts FPM.
+    SetDumpsEnabled {
+        /// Desired enabled state.
+        enabled: bool,
+    },
+    /// Set the loopback port the dump server listens on and the extension
+    /// connects to.
+    SetDumpsPort {
+        /// The new loopback port.
+        port: u16,
+    },
+    /// Enable or disable capture of one telemetry feature (e.g. `"queries"`).
+    SetDumpFeature {
+        /// Feature key (`dumps`/`queries`/`jobs`/`views`/`requests`/`logs`/`cache`).
+        feature: String,
+        /// Desired enabled state.
+        enabled: bool,
+    },
+    /// Toggle log persistence. `false` (default) clears the buffer on each new
+    /// request (latest-request view); `true` accumulates across requests.
+    SetDumpsPersist {
+        /// Desired persist state.
+        persist: bool,
+    },
+    /// Fetch dump-server status (enabled, port, running, per-version extension
+    /// presence, current counts).
+    DumpsStatus,
     /// List captured emails (metadata only), newest first.
     ListMails,
     /// Fetch one captured email's full decoded content by id.
@@ -337,6 +378,14 @@ mod variant_name_pinning {
             Request::BackupDatabase { .. } => {}
             Request::RestoreDatabase { .. } => {}
             Request::ChangeServiceVersion { .. } => {}
+            Request::ListDumps { .. } => {}
+            Request::ClearDumps => {}
+            Request::DeleteDump { .. } => {}
+            Request::SetDumpsEnabled { .. } => {}
+            Request::SetDumpsPort { .. } => {}
+            Request::SetDumpFeature { .. } => {}
+            Request::SetDumpsPersist { .. } => {}
+            Request::DumpsStatus => {}
             Request::ListMails => {}
             Request::GetMail { .. } => {}
             Request::ClearMails => {}
@@ -453,6 +502,17 @@ mod variant_name_pinning {
             service: "redis".into(),
             version: "9.1.0".into(),
         });
+        pin(Request::ListDumps { since_id: 0 });
+        pin(Request::ClearDumps);
+        pin(Request::DeleteDump { id: 1 });
+        pin(Request::SetDumpsEnabled { enabled: true });
+        pin(Request::SetDumpsPort { port: 2304 });
+        pin(Request::SetDumpFeature {
+            feature: "queries".into(),
+            enabled: true,
+        });
+        pin(Request::SetDumpsPersist { persist: true });
+        pin(Request::DumpsStatus);
         pin(Request::ListMails);
         pin(Request::GetMail {
             id: "000001".into(),

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import {
+  ClipboardList,
   Info,
   LayoutGrid,
   Mail,
@@ -14,17 +15,20 @@ import StatusPill from "@/components/StatusPill.vue";
 import { useDaemon } from "@/composables/useDaemon";
 
 // Left-hand nav, Herd-style. Icon-chip colours are grouped by role and reused:
-// grey for configuration (General, PHP, Sites), red for Services, blue for the
-// info pages (Doctor, About). The chip keeps its colour even when the item is
-// active — only the row background highlights the selection.
+// grey for configuration (General, PHP, Sites), red for Services, orange for
+// Dumps, blue for the info pages (Doctor, About). The chip keeps its colour even
+// when the item is active — only the row background highlights the selection.
 const GREY = "bg-zinc-500/15 text-zinc-600 dark:text-zinc-400";
 const RED = "bg-red-500/15 text-red-600 dark:text-red-400";
+const ORANGE = "bg-orange-500/15 text-orange-600 dark:text-orange-400";
 const BLUE = "bg-blue-500/15 text-blue-600 dark:text-blue-400";
+
 const items = [
   { to: "/general", label: "General", icon: Settings, chip: GREY },
   { to: "/php", label: "PHP", icon: SquareCode, chip: GREY },
   { to: "/sites", label: "Sites", icon: LayoutGrid, chip: GREY },
   { to: "/services", label: "Services", icon: Server, chip: RED },
+  { to: "/dumps", label: "Dumps", icon: ClipboardList, chip: ORANGE },
   { to: "/mail", label: "Mail", icon: Mail, chip: RED },
   { to: "/doctor", label: "Doctor", icon: Stethoscope, chip: BLUE },
   { to: "/about", label: "About", icon: Info, chip: BLUE },

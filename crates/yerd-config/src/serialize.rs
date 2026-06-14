@@ -34,13 +34,36 @@ struct WireSer<'a> {
     // extra tables). `BTreeMap` → deterministic lexicographic table order.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     services: BTreeMap<&'a str, ServiceInstanceSer<'a>>,
-    // v4: built-in mail-capture server (`[mail]`). MUST stay last — it is a
-    // sub-table region, so keeping it after `services` leaves the byte order of
-    // every existing table unchanged. `None` (skipped) when the section equals
-    // its default, so a default config emits no `[mail]` table (byte-shape
-    // goldens assume no extra tables).
+    // v4: built-in mail-capture server (`[mail]`). A trailing sub-table region,
+    // so keeping it after `services` leaves the byte order of every existing
+    // table unchanged. `None` (skipped) when the section equals its default, so
+    // a default config emits no `[mail]` table (byte-shape goldens assume no
+    // extra tables).
     #[serde(skip_serializing_if = "Option::is_none")]
     mail: Option<MailSectionSer>,
+    // v5: optional `[dumps]` table — another trailing sub-table region. `None`
+    // (skipped) when the section equals its default, so a default config emits
+    // no `[dumps]` region, keeping the byte-shape goldens intact.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    dumps: Option<DumpsSectionSer<'a>>,
+}
+
+#[derive(Serialize)]
+struct DumpsSectionSer<'a> {
+    // Scalars first (TOML emits scalars before sub-tables within `[dumps]`).
+    enabled: bool,
+    port: u16,
+    persist: bool,
+    // Skipped when empty so a feature-override-free `[dumps]` emits no
+    // `[dumps.features]` table.
+    #[serde(skip_serializing_if = "bool_map_is_empty")]
+    features: &'a BTreeMap<String, bool>,
+}
+
+/// `skip_serializing_if` predicate for the borrowed `features` field.
+#[allow(clippy::trivially_copy_pass_by_ref)]
+fn bool_map_is_empty(m: &&BTreeMap<String, bool>) -> bool {
+    m.is_empty()
 }
 
 #[derive(Serialize)]
@@ -156,6 +179,18 @@ pub(crate) fn to_toml(c: &Config) -> Result<String, ConfigError> {
                 port: c.mail.port,
             })
         },
+        // Omit `[dumps]` entirely when it is the default — keeps a default
+        // config's byte shape unchanged (no extra tables).
+        dumps: if c.dumps == crate::schema::DumpsSection::default() {
+            None
+        } else {
+            Some(DumpsSectionSer {
+                enabled: c.dumps.enabled,
+                port: c.dumps.port,
+                persist: c.dumps.persist,
+                features: &c.dumps.features,
+            })
+        },
     };
     toml::to_string_pretty(&w).map_err(Into::into)
 }
@@ -174,8 +209,8 @@ mod tests {
     fn default_to_toml_starts_with_version_line() {
         let s = to_toml(&Config::default()).unwrap();
         assert!(
-            s.starts_with("version = 4\n"),
-            "expected `version = 4` first line; got: {s}"
+            s.starts_with("version = 5\n"),
+            "expected `version = 5` first line; got: {s}"
         );
     }
 

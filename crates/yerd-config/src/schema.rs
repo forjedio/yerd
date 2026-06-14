@@ -51,6 +51,8 @@ pub struct Config {
     pub services: ServicesSection,
     /// Built-in mail-capture SMTP server (Herd-style). Enabled by default.
     pub mail: MailSection,
+    /// Dump-telemetry settings (the Laravel ▸ Dumps feature).
+    pub dumps: DumpsSection,
 }
 
 impl Default for Config {
@@ -66,6 +68,43 @@ impl Default for Config {
             overrides: BTreeMap::new(),
             services: ServicesSection::default(),
             mail: MailSection::default(),
+            dumps: DumpsSection::default(),
+        }
+    }
+}
+
+/// Default loopback port for the dump server (see [`DumpsSection::port`]).
+pub const DEFAULT_DUMP_PORT: u16 = 2304;
+
+/// Dump-telemetry settings.
+///
+/// The daemon writes a runtime mirror of these to a state file the
+/// `yerd-php-ext` extension reads each request; the config here is the durable
+/// source of truth. Defaults are off, port [`DEFAULT_DUMP_PORT`], and no
+/// per-feature overrides (every feature on when interception is enabled).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DumpsSection {
+    /// Whether dump interception is enabled (the "antenna").
+    pub enabled: bool,
+    /// Loopback port the dump server listens on and the extension connects to.
+    pub port: u16,
+    /// When `false` (default), the dump buffer is cleared each time a new request
+    /// arrives, so the viewer shows only the latest request (pinned events
+    /// survive). When `true`, events accumulate across requests.
+    pub persist: bool,
+    /// Per-feature capture toggles, keyed by feature name
+    /// (`dumps`/`queries`/`jobs`/`views`/`requests`/`logs`/`cache`). An absent
+    /// key means "on". `BTreeMap` for stable serialisation order.
+    pub features: BTreeMap<String, bool>,
+}
+
+impl Default for DumpsSection {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            port: DEFAULT_DUMP_PORT,
+            persist: false,
+            features: BTreeMap::new(),
         }
     }
 }

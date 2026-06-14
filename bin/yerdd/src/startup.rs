@@ -172,6 +172,21 @@ pub async fn bring_up_with_dirs(
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect(),
     );
+    // Wire dump-extension loading: any pool with a matching `yerd-dump.so` under
+    // `{data}/php-ext/php-<ver>/` starts with `-d zend_extension=<so>` plus the
+    // extension's state-file path. The `.so` is downloaded on demand (when dumps
+    // are enabled); the extension self-disables via the state file.
+    php_manager.set_dump_ext(Some(yerd_php::DumpExtSettings {
+        so_dir: dirs.data.join("php-ext"),
+        ini_defines: vec![(
+            "yerd_dump.state_path".to_string(),
+            dirs.state
+                .join("dumps")
+                .join("state.json")
+                .to_string_lossy()
+                .into_owned(),
+        )],
+    }));
     let php_manager = Arc::new(Mutex::new(php_manager));
 
     // Service (database/cache) supervisor. Enabled instances are auto-started
@@ -255,7 +270,19 @@ pub async fn bring_up_with_dirs(
         restart_requested: std::sync::atomic::AtomicBool::new(false),
         detect_cache,
         watch_dirty: tokio::sync::Notify::new(),
+        dumps: Arc::new(crate::dump_server::DumpStore::new()),
     });
+
+    // Seed the extension's runtime state file from the persisted `[dumps]`
+    // config so a fresh boot reflects the durable settings. Best-effort: a
+    // failure here only means dumps stay off until the next toggle.
+    {
+        let dumps = state.config.lock().await.dumps.clone();
+        state.dumps.set_persist(dumps.persist);
+        if let Err(e) = crate::dump_server::write_state_file(&state.dirs, &dumps) {
+            tracing::warn!(error = %e, "failed to write initial dump state file");
+        }
+    }
 
     Ok(Daemon {
         state,
