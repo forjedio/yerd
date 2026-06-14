@@ -139,14 +139,19 @@ pub enum Response {
     Dumps {
         /// Events with `id > since_id`, oldest first.
         events: Vec<DumpEvent>,
-        /// Ids deleted or evicted since the client's cursor, so it can drop
-        /// stale rows it still holds.
+        /// Ids deleted since the client's cursor, so it can drop stale rows it
+        /// still holds. Best-effort (bounded log); `min_live_id` is the
+        /// guaranteed lower bound for evicted/cleared rows.
         removed_ids: Vec<u64>,
         /// Current per-category counts of buffered events.
         counts: DumpCounts,
         /// The newest buffered event id (0 when the ring is empty); the client
         /// uses it as the next `since_id`.
         latest_id: u64,
+        /// Smallest id still buffered. Clients drop any held id `< min_live_id`
+        /// unconditionally — so dropping evicted/cleared rows never depends on
+        /// the bounded `removed_ids` log.
+        min_live_id: u64,
     },
     /// Reply to [`crate::Request::DumpsStatus`] — dump-server configuration and
     /// liveness.
@@ -157,6 +162,8 @@ pub enum Response {
         port: u16,
         /// Whether the dump server is currently bound and accepting.
         running: bool,
+        /// Whether log persistence is on (off = clear on each new request).
+        persist: bool,
         /// Per-installed-version extension presence (a yerd-side fact).
         extensions: Vec<DumpExtStatus>,
         /// Current per-category counts of buffered events.
@@ -341,11 +348,13 @@ mod variant_name_pinning {
             removed_ids: vec![],
             counts: DumpCounts::default(),
             latest_id: 0,
+            min_live_id: 0,
         });
         pin_response(Response::DumpsStatus {
             enabled: true,
             port: 2304,
             running: true,
+            persist: false,
             extensions: vec![],
             counts: DumpCounts::default(),
             features: BTreeMap::new(),

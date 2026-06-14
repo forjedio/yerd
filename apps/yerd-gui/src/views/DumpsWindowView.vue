@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { Antenna, Search, Trash2, Pin, PinOff, X } from "lucide-vue-next";
+import { getCurrentWindow } from "@tauri-apps/api/window";
+import { Antenna, Layers, Pin, PinOff, Search, Trash2 } from "lucide-vue-next";
 import { computed, onMounted, ref } from "vue";
 
 import TitleBar from "@/components/TitleBar.vue";
@@ -8,12 +9,12 @@ import { useToast } from "@/composables/useToast";
 import { usePoll } from "@/composables/usePoll";
 import {
   clearDumps,
-  deleteDump,
   dumpsStatus,
   IpcError,
   listDumps,
-  pinDump,
+  openInEditor,
   setDumpsEnabled,
+  setDumpsPersist,
 } from "@/ipc/client";
 import type { DumpCategory, DumpCounts, DumpEvent } from "@/ipc/types";
 
@@ -28,8 +29,11 @@ const counts = ref<DumpCounts>({
   requests: 0,
   logs: 0,
   cache: 0,
+  http: 0,
 });
 const enabled = ref(false);
+const persist = ref(false);
+const alwaysOnTop = ref(false);
 const activeTab = ref<DumpCategory | "all">("all");
 const search = ref("");
 let cursor = 0;
@@ -43,36 +47,48 @@ const TABS: { key: DumpCategory | "all"; label: string; countKey?: keyof DumpCou
   { key: "request", label: "Requests", countKey: "requests" },
   { key: "log", label: "Logs", countKey: "logs" },
   { key: "cache", label: "Cache", countKey: "cache" },
+  { key: "http", label: "HTTP", countKey: "http" },
 ];
 
 function tabCount(tab: (typeof TABS)[number]): number {
   if (!tab.countKey) {
     const c = counts.value;
-    return c.dumps + c.queries + c.jobs + c.views + c.requests + c.logs + c.cache;
+    return c.dumps + c.queries + c.jobs + c.views + c.requests + c.logs + c.cache + c.http;
   }
   return counts.value[tab.countKey];
 }
 
-// Incremental fetch: append new events, drop removed ids, advance the cursor.
+// Incremental fetch: drop evicted/deleted rows, append new ones, advance cursor.
 async function poll(): Promise<void> {
   const r = await listDumps(cursor);
-  if (r.removed_ids.length) {
-    const removed = new Set(r.removed_ids);
-    events.value = events.value.filter((e) => !removed.has(e.id));
+  // Drop deleted rows AND anything below the server's min_live_id (evicted or
+  // cleared) — so reconciliation never depends on the bounded removed-ids log,
+  // and the client array can't outgrow the server buffer.
+  const removed = new Set(r.removed_ids);
+  events.value = events.value.filter((e) => e.id >= r.min_live_id && !removed.has(e.id));
+  if (r.events.length) {
+    // De-dup defensively so a re-sent page (e.g. after an IPC error) can't
+    // double-render rows we already hold.
+    const have = new Set(events.value.map((e) => e.id));
+    const fresh = r.events.filter((e) => !have.has(e.id));
+    if (fresh.length) events.value.push(...fresh);
   }
-  if (r.events.length) events.value.push(...r.events);
   cursor = r.latest_id;
   counts.value = r.counts;
 }
 
 const { refresh } = usePoll(poll, 750, { pollWhileHidden: true });
 
-const filtered = computed(() => {
+const filtered = computed<DumpEvent[]>(() => {
   const q = search.value.trim().toLowerCase();
+  const tab = activeTab.value;
   return events.value.filter((e) => {
-    if (activeTab.value !== "all" && e.category !== activeTab.value) return false;
-    if (!q) return true;
-    return `${e.site} ${rowBody(e)} ${rowCaller(e)}`.toLowerCase().includes(q);
+    if (tab !== "all" && e.category !== tab) return false;
+    if (q === "") return true;
+    const hay = `${e.category} ${e.site} ${rowBody(e)} ${rowCaller(e)} ${JSON.stringify(
+      e.payload,
+    )}`.toLowerCase();
+    return hay.includes(q);
   });
 });
 
@@ -102,16 +118,85 @@ function str(v: unknown): string {
   return v === undefined || v === null ? "" : String(v);
 }
 
+// Top-level project directories used to find where the app root ends, so an
+// absolute path like /Users/me/Herd/blog/app/Foo.php shows as app/Foo.php.
+const PATH_ANCHORS = new Set([
+  "app",
+  "vendor",
+  "routes",
+  "config",
+  "database",
+  "bootstrap",
+  "public",
+  "resources",
+  "storage",
+  "tests",
+  "src",
+  "lib",
+  "packages",
+  "modules",
+  "Modules",
+  "nova-components",
+]);
+
+/** Strip everything before the first project-root anchor directory. */
+function projectRelative(file: string): string {
+  const parts = file.split("/");
+  const idx = parts.findIndex((p) => PATH_ANCHORS.has(p));
+  return idx >= 0 ? parts.slice(idx).join("/") : file;
+}
+
+function basename(p: string): string {
+  const parts = p.split("/");
+  return parts[parts.length - 1] || p;
+}
+
+/** Just the filename + line, for the badge (e.g. `PluginCache.php:36`). */
 function rowCaller(e: DumpEvent): string {
   const file = str(e.payload.file);
   if (!file) return "";
   const line = str(e.payload.line);
-  return line ? `${file}:${line}` : file;
+  const name = basename(file);
+  return line ? `${name}:${line}` : name;
+}
+
+/** Project-relative path + line, for the hover tooltip (e.g. `app/Foo.php:36`). */
+function rowCallerRel(e: DumpEvent): string {
+  const file = str(e.payload.file);
+  if (!file) return "";
+  const line = str(e.payload.line);
+  const rel = projectRelative(file);
+  return line ? `${rel}:${line}` : rel;
+}
+
+/** Open the caller's file in the OS default editor. */
+async function openCaller(e: DumpEvent): Promise<void> {
+  const file = str(e.payload.file);
+  if (!file.startsWith("/")) return; // skip non-paths (e.g. "Command line code")
+  try {
+    await openInEditor(file);
+  } catch (err) {
+    toast.error("Couldn't open file", String(err));
+  }
+}
+
+/** Format a duration in ms: 2dp ms under a second, else 2dp seconds. */
+function formatDuration(ms: number): string {
+  if (!Number.isFinite(ms)) return "";
+  return ms >= 1000 ? `${(ms / 1000).toFixed(2)} s` : `${ms.toFixed(2)} ms`;
 }
 
 function rowDuration(e: DumpEvent): string {
-  const ms = e.payload.time_ms ?? e.payload.duration_ms;
-  return ms === undefined || ms === null ? "" : `${ms} ms`;
+  const raw = e.payload.time_ms ?? e.payload.duration_ms;
+  return typeof raw === "number" ? formatDuration(raw) : "";
+}
+
+/** Affected/returned row count tag for query rows (null when unavailable). */
+function rowCount(e: DumpEvent): string | null {
+  if (e.category !== "query") return null;
+  const rc = e.payload.row_count;
+  if (typeof rc !== "number") return null;
+  return `${rc} ${rc === 1 ? "row" : "rows"}`;
 }
 
 function rowBody(e: DumpEvent): string {
@@ -127,11 +212,60 @@ function rowBody(e: DumpEvent): string {
     case "view":
       return str(p.name);
     case "request":
-      return `${str(p.method)} ${str(p.uri)} → ${str(p.status)}`.trim();
-    case "cache":
-      return `${str(p.event)} ${str(p.key)}`.trim();
+      // method + status shown as tags; the body is the URI.
+      return str(p.uri);
+    case "http":
+      // method + status shown as tags; the body is the URL.
+      return str(p.url);
+    case "cache": {
+      // The hit/miss/write event is shown as a coloured tag; the body is the key.
+      const key = str(p.key);
+      const preview = str(p.value_preview);
+      return preview ? `${key} = ${preview}` : key;
+    }
     default:
       return JSON.stringify(p);
+  }
+}
+
+/** Blue HTTP-method tag for request/http rows, or null. */
+function methodTag(e: DumpEvent): string | null {
+  if (e.category !== "http" && e.category !== "request") return null;
+  return str(e.payload.method).toUpperCase() || null;
+}
+
+/** Status-code tag coloured by class: 2xx green, 3xx amber, 4xx/5xx red. */
+function statusTag(e: DumpEvent): { text: string; class: string } | null {
+  if (e.category !== "http" && e.category !== "request") return null;
+  const raw = e.payload.status;
+  const code = typeof raw === "number" ? raw : Number.parseInt(str(raw), 10);
+  if (!Number.isFinite(code) || code <= 0) return null;
+  let cls = "bg-muted text-muted-foreground";
+  if (code >= 200 && code < 300) cls = "bg-green-500/15 text-green-600 dark:text-green-400";
+  else if (code >= 300 && code < 400) cls = "bg-amber-500/15 text-amber-600 dark:text-amber-400";
+  else if (code >= 400) cls = "bg-red-500/15 text-red-600 dark:text-red-400";
+  return { text: String(code), class: cls };
+}
+
+/** Coloured tag for a cache event's hit/miss/write/forget, or null. */
+function cacheTag(e: DumpEvent): { text: string; class: string } | null {
+  if (e.category !== "cache") return null;
+  switch (str(e.payload.event).toLowerCase()) {
+    case "hit":
+      return { text: "HIT", class: "bg-green-500/15 text-green-600 dark:text-green-400" };
+    case "missed":
+    case "miss":
+      return { text: "MISS", class: "bg-red-500/15 text-red-600 dark:text-red-400" };
+    case "written":
+    case "write":
+      return { text: "WRITE", class: "bg-blue-500/15 text-blue-600 dark:text-blue-400" };
+    case "forgotten":
+    case "forget":
+      return { text: "FORGET", class: "bg-amber-500/15 text-amber-600 dark:text-amber-400" };
+    default: {
+      const ev = str(e.payload.event);
+      return ev ? { text: ev.toUpperCase(), class: "bg-muted text-muted-foreground" } : null;
+    }
   }
 }
 
@@ -143,6 +277,7 @@ const CATEGORY_LABEL: Record<DumpCategory, string> = {
   request: "REQUEST",
   log: "LOG",
   cache: "CACHE",
+  http: "HTTP",
 };
 
 function formatTime(ms: number): string {
@@ -160,6 +295,26 @@ async function toggleEnabled(): Promise<void> {
   }
 }
 
+async function togglePersist(): Promise<void> {
+  const next = !persist.value;
+  try {
+    await setDumpsPersist(next);
+    persist.value = next;
+  } catch (e) {
+    toast.error("Couldn't toggle persist", (e as IpcError).message);
+  }
+}
+
+async function toggleAlwaysOnTop(): Promise<void> {
+  const next = !alwaysOnTop.value;
+  try {
+    await getCurrentWindow().setAlwaysOnTop(next);
+    alwaysOnTop.value = next;
+  } catch (e) {
+    toast.error("Couldn't pin window", String(e));
+  }
+}
+
 async function doClear(): Promise<void> {
   try {
     await clearDumps();
@@ -169,29 +324,11 @@ async function doClear(): Promise<void> {
   }
 }
 
-async function doDelete(e: DumpEvent): Promise<void> {
-  try {
-    await deleteDump(e.id);
-    events.value = events.value.filter((x) => x.id !== e.id);
-  } catch (err) {
-    toast.error("Couldn't delete", (err as IpcError).message);
-  }
-}
-
-async function togglePin(e: DumpEvent): Promise<void> {
-  const next = !e.pinned;
-  try {
-    await pinDump(e.id, next);
-    e.pinned = next;
-  } catch (err) {
-    toast.error("Couldn't pin", (err as IpcError).message);
-  }
-}
-
 onMounted(async () => {
   try {
     const s = await dumpsStatus();
     enabled.value = s.enabled;
+    persist.value = s.persist;
     counts.value = s.counts;
   } catch {
     // status is best-effort; the poll loop still streams events.
@@ -204,7 +341,7 @@ onMounted(async () => {
   <div class="flex h-full w-full flex-col overflow-hidden bg-background text-foreground">
     <TitleBar />
 
-    <!-- Toolbar: antenna toggle, clear, filter tabs, search. -->
+    <!-- Toolbar: antenna, persist, window-pin, clear, filter tabs, search. -->
     <div class="flex flex-col gap-2 border-b px-3 py-2">
       <div class="flex items-center gap-2">
         <button
@@ -219,6 +356,32 @@ onMounted(async () => {
           @click="toggleEnabled"
         >
           <Antenna class="size-4" :class="enabled ? 'animate-pulse' : ''" />
+        </button>
+        <button
+          type="button"
+          :title="persist ? 'Persist on — keeping logs across requests' : 'Persist off — clears on each new request'"
+          class="flex size-7 items-center justify-center rounded-md transition-colors"
+          :class="
+            persist
+              ? 'bg-blue-500/15 text-blue-600 dark:text-blue-400'
+              : 'text-muted-foreground hover:bg-accent'
+          "
+          @click="togglePersist"
+        >
+          <Layers class="size-4" />
+        </button>
+        <button
+          type="button"
+          :title="alwaysOnTop ? 'Window pinned on top — click to unpin' : 'Keep window on top'"
+          class="flex size-7 items-center justify-center rounded-md transition-colors"
+          :class="
+            alwaysOnTop
+              ? 'bg-amber-500/15 text-amber-600 dark:text-amber-400'
+              : 'text-muted-foreground hover:bg-accent'
+          "
+          @click="toggleAlwaysOnTop"
+        >
+          <component :is="alwaysOnTop ? PinOff : Pin" class="size-4" />
         </button>
         <button
           type="button"
@@ -283,34 +446,50 @@ onMounted(async () => {
                 {{ CATEGORY_LABEL[e.category] }}
               </span>
               <span
+                v-if="cacheTag(e)"
+                class="rounded px-1.5 py-0.5 text-[10px] font-semibold tracking-wide"
+                :class="cacheTag(e)!.class"
+              >
+                {{ cacheTag(e)!.text }}
+              </span>
+              <span
                 v-if="rowDuration(e)"
                 class="rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground"
               >
                 {{ rowDuration(e) }}
               </span>
-              <span class="truncate text-xs text-muted-foreground">{{ rowCaller(e) }}</span>
-
-              <div class="ml-auto flex items-center gap-1 opacity-0 transition-opacity group-hover:opacity-100">
-                <button
-                  type="button"
-                  :title="e.pinned ? 'Unpin' : 'Pin'"
-                  class="flex size-6 items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-foreground"
-                  :class="e.pinned ? 'opacity-100 text-blue-500' : ''"
-                  @click="togglePin(e)"
-                >
-                  <component :is="e.pinned ? PinOff : Pin" class="size-3.5" />
-                </button>
-                <button
-                  type="button"
-                  title="Delete"
-                  class="flex size-6 items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-foreground"
-                  @click="doDelete(e)"
-                >
-                  <X class="size-3.5" />
-                </button>
-              </div>
+              <span
+                v-if="rowCount(e)"
+                class="rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground"
+              >
+                {{ rowCount(e) }}
+              </span>
+              <span
+                v-if="methodTag(e)"
+                class="rounded bg-blue-500/15 px-1.5 py-0.5 text-[10px] font-semibold tracking-wide text-blue-600 dark:text-blue-400"
+              >
+                {{ methodTag(e) }}
+              </span>
+              <span
+                v-if="statusTag(e)"
+                class="rounded px-1.5 py-0.5 text-[10px] font-semibold tracking-wide"
+                :class="statusTag(e)!.class"
+              >
+                {{ statusTag(e)!.text }}
+              </span>
+              <!-- Caller badge: filename:line, project-relative path on hover,
+                   click to open in the default editor. -->
+              <button
+                v-if="rowCaller(e)"
+                type="button"
+                class="ml-auto shrink-0 cursor-pointer rounded bg-muted px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+                :title="`${rowCallerRel(e)} — click to open`"
+                @click="openCaller(e)"
+              >
+                {{ rowCaller(e) }}
+              </button>
             </div>
-            <pre class="mt-1.5 whitespace-pre-wrap break-words font-mono text-xs leading-relaxed text-foreground">{{ rowBody(e) }}</pre>
+            <pre class="mt-3 whitespace-pre-wrap break-words font-mono text-xs leading-relaxed text-foreground">{{ rowBody(e) }}</pre>
           </div>
         </div>
       </div>

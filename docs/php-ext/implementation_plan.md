@@ -27,7 +27,7 @@ Smallest possible extension that proves every risky mechanism end-to-end:
    configured port, write one newline-JSON `dump` frame. Verify with `nc -l 2304` and
    then against Yerd's real dump server.
 5. **Prove `dlopen`** on the targets that matter: load the `.so` into a **glibc-Linux**
-   PHP-FPM (x86_64) and a **macOS** PHP via `-d zend_extension=…`, and serve a request
+   PHP-FPM (x86_64) and a **macOS** PHP via `-d extension=…`, and serve a request
    without crashing. (musl static PHP cannot load shared extensions — that's why Yerd
    switches Linux to glibc; you only ever target glibc/macOS.)
 6. **Panic safety harness**: force a panic inside the observer and confirm it's caught
@@ -93,7 +93,7 @@ all four targets, downloadable by Yerd.
 ## Coordination with Yerd
 
 The contract in `architecture.md` §2 is the seam. When Yerd is ready it will:
-- write `state.json` and pass `-d yerd_dump.state_path=…` + `-d zend_extension=…`,
+- write `state.json` and pass `-d yerd_dump.state_path=…` + `-d extension=…`,
 - run the dump server on the configured loopback port,
 - download `yerd-dump-<minor>-<os>-<arch>.so` from this repo's releases.
 

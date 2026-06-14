@@ -255,17 +255,10 @@ pub enum Request {
     },
     /// Drop every buffered dump event (pinned ones included).
     ClearDumps,
-    /// Delete one buffered dump event by id (pinned or not).
+    /// Delete one buffered dump event by id.
     DeleteDump {
         /// The event id to delete.
         id: u64,
-    },
-    /// Pin or unpin a buffered dump event so it survives eviction / clear.
-    PinDump {
-        /// The event id.
-        id: u64,
-        /// Desired pinned state.
-        pinned: bool,
     },
     /// Turn dump interception on or off (the "antenna"). Writes the runtime
     /// state file the extension reads; never restarts FPM.
@@ -285,6 +278,12 @@ pub enum Request {
         feature: String,
         /// Desired enabled state.
         enabled: bool,
+    },
+    /// Toggle log persistence. `false` (default) clears the buffer on each new
+    /// request (latest-request view); `true` accumulates across requests.
+    SetDumpsPersist {
+        /// Desired persist state.
+        persist: bool,
     },
     /// Fetch dump-server status (enabled, port, running, per-version extension
     /// presence, current counts).
@@ -355,10 +354,10 @@ mod variant_name_pinning {
             Request::ListDumps { .. } => {}
             Request::ClearDumps => {}
             Request::DeleteDump { .. } => {}
-            Request::PinDump { .. } => {}
             Request::SetDumpsEnabled { .. } => {}
             Request::SetDumpsPort { .. } => {}
             Request::SetDumpFeature { .. } => {}
+            Request::SetDumpsPersist { .. } => {}
             Request::DumpsStatus => {}
         }
     }
@@ -473,16 +472,13 @@ mod variant_name_pinning {
         pin(Request::ListDumps { since_id: 0 });
         pin(Request::ClearDumps);
         pin(Request::DeleteDump { id: 1 });
-        pin(Request::PinDump {
-            id: 1,
-            pinned: true,
-        });
         pin(Request::SetDumpsEnabled { enabled: true });
         pin(Request::SetDumpsPort { port: 2304 });
         pin(Request::SetDumpFeature {
             feature: "queries".into(),
             enabled: true,
         });
+        pin(Request::SetDumpsPersist { persist: true });
         pin(Request::DumpsStatus);
     }
 }

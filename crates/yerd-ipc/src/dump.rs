@@ -26,19 +26,20 @@ pub enum DumpCategory {
     Job,
     /// A rendered Blade view.
     View,
-    /// An HTTP request summary.
+    /// An incoming HTTP request summary.
     Request,
     /// A log write.
     Log,
     /// A cache hit / miss / write / forget.
     Cache,
+    /// An outgoing HTTP client request (curl / Guzzle / PSR-18).
+    Http,
 }
 
 /// A single buffered telemetry event.
 ///
-/// `id` and `pinned` are assigned by the daemon; the remaining fields come
-/// from the extension's frame. `payload` is opaque to the daemon — see the
-/// module docs.
+/// `id` is assigned by the daemon; the remaining fields come from the
+/// extension's frame. `payload` is opaque to the daemon — see the module docs.
 ///
 /// Not `Eq` because `payload` is a [`serde_json::Value`] (floats); `PartialEq`
 /// is enough for the wire-stability round-trip assertions.
@@ -56,29 +57,31 @@ pub struct DumpEvent {
     pub request_id: String,
     /// Category-specific payload, opaque to the daemon. See `architecture.md`.
     pub payload: serde_json::Value,
-    /// Whether the user pinned this event (survives eviction / clear).
-    pub pinned: bool,
 }
 
 /// Per-category counts of the events currently buffered in the daemon's ring.
 ///
-/// The GUI sums these for the "All" tab.
+/// The GUI sums these for the "All" tab. `u32` (not `u64`): counts are bounded by
+/// the ring capacity (~2000), and the smaller struct keeps `Response` under
+/// clippy's large-error threshold. Wire-compatible — JSON numbers are identical.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DumpCounts {
     /// Number of buffered `dump` events.
-    pub dumps: u64,
+    pub dumps: u32,
     /// Number of buffered `query` events.
-    pub queries: u64,
+    pub queries: u32,
     /// Number of buffered `job` events.
-    pub jobs: u64,
+    pub jobs: u32,
     /// Number of buffered `view` events.
-    pub views: u64,
+    pub views: u32,
     /// Number of buffered `request` events.
-    pub requests: u64,
+    pub requests: u32,
     /// Number of buffered `log` events.
-    pub logs: u64,
+    pub logs: u32,
     /// Number of buffered `cache` events.
-    pub cache: u64,
+    pub cache: u32,
+    /// Number of buffered outgoing-`http` events.
+    pub http: u32,
 }
 
 impl DumpCounts {
@@ -92,6 +95,7 @@ impl DumpCounts {
             DumpCategory::Request => self.requests += 1,
             DumpCategory::Log => self.logs += 1,
             DumpCategory::Cache => self.cache += 1,
+            DumpCategory::Http => self.http += 1,
         }
     }
 }

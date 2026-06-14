@@ -8,7 +8,7 @@
 
 ## 1. What this is
 
-`yerd-php-ext` is a PHP **`zend_extension`** (written in **Rust** via
+`yerd-php-ext` is a PHP **`extension` (a regular PHP extension, not a zend_extension)** (written in **Rust** via
 [`ext-php-rs`](https://ext-php.rs)) that does what Laravel Herd's proprietary
 extension does: with **zero changes to the user's application**, it intercepts
 `dump()`/`dd()` and observes Eloquent queries, dispatched jobs, Blade views, HTTP
@@ -26,7 +26,7 @@ in non-Laravel apps).
 
 **It is consumed by Yerd, not installed by end users.** Yerd downloads the matching
 `.so` per installed PHP version and loads it into PHP-FPM via
-`php-fpm -d zend_extension=<path>`. Users never run `composer require` or `pecl install`.
+`php-fpm -d extension=<path>`. Users never run `composer require` or `pecl install`.
 
 ## 2. The integration contract (the seam with Yerd — keep in sync)
 
@@ -163,7 +163,7 @@ A panic or segfault in an observer **takes down the FPM worker**. Rules:
 ## 5. Build, ABI, and distribution
 
 ### 5.1 ABI matching (why per-PHP-minor artifacts)
-A `zend_extension`'s `ZEND_EXTENSION_BUILD_ID` encodes the module API version, ZTS,
+A `extension` (a regular PHP extension, not a zend_extension)'s `ZEND_EXTENSION_BUILD_ID` encodes the module API version, ZTS,
 and debug flags. PHP refuses to load a `.so` whose build-id doesn't match the engine.
 `ZEND_MODULE_API_NO` is **stable within a released minor** (all 8.3.x share it), so
 **one artifact per PHP minor** is correct. The other dimensions (NTS, glibc/macOS,

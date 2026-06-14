@@ -1126,14 +1126,6 @@ fn request_delete_dump_byte_shape() {
 }
 
 #[test]
-fn request_pin_dump_byte_shape() {
-    let r = Request::PinDump { id: 7, pinned: true };
-    let s = serde_json::to_string(&r).unwrap();
-    assert_eq!(s, r#"{"type":"pin_dump","id":7,"pinned":true}"#);
-    assert_eq!(serde_json::from_str::<Request>(&s).unwrap(), r);
-}
-
-#[test]
 fn request_set_dumps_enabled_byte_shape() {
     let r = Request::SetDumpsEnabled { enabled: true };
     let s = serde_json::to_string(&r).unwrap();
@@ -1161,6 +1153,14 @@ fn request_set_dump_feature_byte_shape() {
 }
 
 #[test]
+fn request_set_dumps_persist_byte_shape() {
+    let r = Request::SetDumpsPersist { persist: true };
+    let s = serde_json::to_string(&r).unwrap();
+    assert_eq!(s, r#"{"type":"set_dumps_persist","persist":true}"#);
+    assert_eq!(serde_json::from_str::<Request>(&s).unwrap(), r);
+}
+
+#[test]
 fn request_dumps_status_byte_shape() {
     let s = serde_json::to_string(&Request::DumpsStatus).unwrap();
     assert_eq!(s, r#"{"type":"dumps_status"}"#);
@@ -1177,6 +1177,7 @@ fn dump_category_each_variant_byte_shape() {
         (DumpCategory::Request, r#""request""#),
         (DumpCategory::Log, r#""log""#),
         (DumpCategory::Cache, r#""cache""#),
+        (DumpCategory::Http, r#""http""#),
     ] {
         assert_eq!(serde_json::to_string(&c).unwrap(), expected);
     }
@@ -1188,7 +1189,7 @@ fn dump_counts_byte_shape() {
     let s = serde_json::to_string(&c).unwrap();
     assert_eq!(
         s,
-        r#"{"dumps":0,"queries":0,"jobs":0,"views":0,"requests":0,"logs":0,"cache":0}"#
+        r#"{"dumps":0,"queries":0,"jobs":0,"views":0,"requests":0,"logs":0,"cache":0,"http":0}"#
     );
     assert_eq!(serde_json::from_str::<DumpCounts>(&s).unwrap(), c);
 }
@@ -1202,10 +1203,9 @@ fn dump_event_byte_shape() {
         site: "blog.test".into(),
         request_id: "abc".into(),
         payload: serde_json::json!({ "sql": "select 1" }),
-        pinned: false,
     };
     let s = serde_json::to_string(&e).unwrap();
-    let expected = r#"{"id":1,"category":"query","ts_ms":1718360452123,"site":"blog.test","request_id":"abc","payload":{"sql":"select 1"},"pinned":false}"#;
+    let expected = r#"{"id":1,"category":"query","ts_ms":1718360452123,"site":"blog.test","request_id":"abc","payload":{"sql":"select 1"}}"#;
     assert_eq!(s, expected);
     assert_eq!(serde_json::from_str::<DumpEvent>(&s).unwrap(), e);
 }
@@ -1231,7 +1231,6 @@ fn response_dumps_byte_shape() {
             site: "blog.test".into(),
             request_id: "abc".into(),
             payload: serde_json::json!({ "value_text": "hi" }),
-            pinned: false,
         }],
         removed_ids: vec![3],
         counts: DumpCounts {
@@ -1239,9 +1238,10 @@ fn response_dumps_byte_shape() {
             ..DumpCounts::default()
         },
         latest_id: 1,
+        min_live_id: 1,
     };
     let s = serde_json::to_string(&r).unwrap();
-    let expected = r#"{"type":"dumps","events":[{"id":1,"category":"dump","ts_ms":1718360452123,"site":"blog.test","request_id":"abc","payload":{"value_text":"hi"},"pinned":false}],"removed_ids":[3],"counts":{"dumps":1,"queries":0,"jobs":0,"views":0,"requests":0,"logs":0,"cache":0},"latest_id":1}"#;
+    let expected = r#"{"type":"dumps","events":[{"id":1,"category":"dump","ts_ms":1718360452123,"site":"blog.test","request_id":"abc","payload":{"value_text":"hi"}}],"removed_ids":[3],"counts":{"dumps":1,"queries":0,"jobs":0,"views":0,"requests":0,"logs":0,"cache":0,"http":0},"latest_id":1,"min_live_id":1}"#;
     assert_eq!(s, expected);
     assert_eq!(serde_json::from_str::<Response>(&s).unwrap(), r);
 }
@@ -1254,6 +1254,7 @@ fn response_dumps_status_byte_shape() {
         enabled: true,
         port: 2304,
         running: true,
+        persist: false,
         extensions: vec![DumpExtStatus {
             version: PhpVersion::new(8, 3),
             present: false,
@@ -1262,7 +1263,7 @@ fn response_dumps_status_byte_shape() {
         features,
     };
     let s = serde_json::to_string(&r).unwrap();
-    let expected = r#"{"type":"dumps_status","enabled":true,"port":2304,"running":true,"extensions":[{"version":"8.3","present":false}],"counts":{"dumps":0,"queries":0,"jobs":0,"views":0,"requests":0,"logs":0,"cache":0},"features":{"queries":false}}"#;
+    let expected = r#"{"type":"dumps_status","enabled":true,"port":2304,"running":true,"persist":false,"extensions":[{"version":"8.3","present":false}],"counts":{"dumps":0,"queries":0,"jobs":0,"views":0,"requests":0,"logs":0,"cache":0,"http":0},"features":{"queries":false}}"#;
     assert_eq!(s, expected);
     assert_eq!(serde_json::from_str::<Response>(&s).unwrap(), r);
 }

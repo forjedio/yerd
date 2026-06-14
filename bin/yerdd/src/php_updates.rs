@@ -40,7 +40,7 @@ pub async fn poll_and_refresh(state: &DaemonState, dl: &dyn Downloader) {
             return;
         }
     };
-    let listing = match dl.download(&listing_url()).await {
+    let listing = match dl.download(&listing_url(os)).await {
         Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
         Err(e) => {
             tracing::debug!(error = %e, "php update poll skipped: listing fetch failed");

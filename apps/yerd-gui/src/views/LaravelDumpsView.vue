@@ -1,5 +1,4 @@
 <script setup lang="ts">
-import { ExternalLink } from "lucide-vue-next";
 import { computed, ref, watch } from "vue";
 
 import PageHeader from "@/components/PageHeader.vue";
@@ -31,9 +30,10 @@ const FEATURES: { key: string; label: string }[] = [
   { key: "queries", label: "Eloquent queries" },
   { key: "jobs", label: "Dispatched jobs" },
   { key: "views", label: "Blade views" },
-  { key: "requests", label: "HTTP requests" },
+  { key: "requests", label: "Incoming requests" },
   { key: "logs", label: "Log writes" },
   { key: "cache", label: "Cache events" },
+  { key: "http", label: "Outgoing HTTP (curl / Guzzle)" },
 ];
 
 const running = computed(() => status.value?.running ?? false);
@@ -172,15 +172,6 @@ async function openViewer(): Promise<void> {
 
           <div class="flex items-center gap-3 pt-1">
             <Button variant="secondary" @click="openViewer">Show Dumps</Button>
-            <a
-              href="https://herd.laravel.com/docs/macos/debugging/dumps"
-              target="_blank"
-              rel="noopener"
-              class="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
-            >
-              Learn how dump interception works
-              <ExternalLink class="size-3" />
-            </a>
           </div>
         </CardContent>
       </Card>

@@ -177,7 +177,8 @@ export type DumpCategory =
   | "view"
   | "request"
   | "log"
-  | "cache";
+  | "cache"
+  | "http";
 
 /**
  * crates/yerd-ipc/src/dump.rs — DumpEvent. `payload` is category-specific and
@@ -194,7 +195,6 @@ export interface DumpEvent {
   /** Stable per-request id, so the viewer groups rows by request. */
   request_id: string;
   payload: Record<string, unknown>;
-  pinned: boolean;
 }
 
 /** crates/yerd-ipc/src/dump.rs — DumpCounts (current per-category buffer counts). */
@@ -206,6 +206,7 @@ export interface DumpCounts {
   requests: number;
   logs: number;
   cache: number;
+  http: number;
 }
 
 /** crates/yerd-ipc/src/dump.rs — DumpExtStatus (per-version extension presence). */
@@ -276,12 +277,16 @@ export type Response =
       removed_ids: number[];
       counts: DumpCounts;
       latest_id: number;
+      /** Smallest id still buffered; drop any held id below this. */
+      min_live_id: number;
     }
   | {
       type: "dumps_status";
       enabled: boolean;
       port: number;
       running: boolean;
+      /** Whether logs persist across requests (off = clear on each new request). */
+      persist: boolean;
       extensions: DumpExtStatus[];
       counts: DumpCounts;
       /** Resolved per-feature flags (every key present). */

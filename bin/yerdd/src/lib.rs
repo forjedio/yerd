@@ -19,6 +19,7 @@ pub mod db_admin;
 pub mod detect_cache;
 pub mod dump_server;
 pub mod error;
+pub mod ext_install;
 pub mod fs_watch;
 pub mod ipc_server;
 pub mod mutate;
@@ -167,6 +168,18 @@ async fn run_until_shutdown(
     // so a slow/failing DB cold-boot never delays the listeners above. Each
     // engine's outcome is logged inside the task.
     let _autostart = tokio::spawn(crate::services::auto_start_enabled(daemon.state.clone()));
+
+    // If dumps are enabled in config, fetch the extension `.so` for installed PHP
+    // versions in the background so on-demand pools pick it up. Best-effort.
+    let _ext_install = {
+        let state = daemon.state.clone();
+        tokio::spawn(async move {
+            if state.config.lock().await.dumps.enabled {
+                let dl = crate::php_install::ReqwestDownloader::new();
+                crate::ext_install::ensure_for_installed(&state.dirs, &dl).await;
+            }
+        })
+    };
 
     // Serve until a shutdown is requested — a SIGTERM/Ctrl-C, or a
     // `RestartDaemon` IPC tripping the same channel. Without this wait the

@@ -85,6 +85,10 @@ pub struct DumpsSection {
     pub enabled: bool,
     /// Loopback port the dump server listens on and the extension connects to.
     pub port: u16,
+    /// When `false` (default), the dump buffer is cleared each time a new request
+    /// arrives, so the viewer shows only the latest request (pinned events
+    /// survive). When `true`, events accumulate across requests.
+    pub persist: bool,
     /// Per-feature capture toggles, keyed by feature name
     /// (`dumps`/`queries`/`jobs`/`views`/`requests`/`logs`/`cache`). An absent
     /// key means "on". `BTreeMap` for stable serialisation order.
@@ -96,6 +100,7 @@ impl Default for DumpsSection {
         Self {
             enabled: false,
             port: DEFAULT_DUMP_PORT,
+            persist: false,
             features: BTreeMap::new(),
         }
     }

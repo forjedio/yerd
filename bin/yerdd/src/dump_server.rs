@@ -12,8 +12,7 @@
 
 use std::collections::VecDeque;
 use std::net::Ipv4Addr;
-use std::str::FromStr;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -23,30 +22,38 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{watch, Mutex, Notify};
 
 use yerd_config::DumpsSection;
-use yerd_core::PhpVersion;
 use yerd_ipc::{DumpCategory, DumpCounts, DumpEvent, DumpExtStatus, Response};
 use yerd_platform::PlatformDirs;
 
 use crate::state::DaemonState;
 
-/// Maximum number of events retained in the ring before the oldest non-pinned
-/// ones are evicted.
+/// Maximum number of events retained in the ring before the oldest are evicted.
 const RING_CAP: usize = 2000;
-/// Maximum number of pinned events (well below [`RING_CAP`] so eviction always
-/// finds a non-pinned victim).
-const PINNED_CAP: usize = 200;
 /// How many recently-removed ids to remember, so an incrementally-polling client
-/// can reconcile deletes/evictions it still holds.
+/// can reconcile deletes/evictions it still holds. A bounded best-effort log:
+/// the `min_live_id` cursor (see [`DumpRing::list`]) is the real correctness
+/// guarantee for clients dropping evicted rows.
 const REMOVED_LOG_CAP: usize = 4096;
+/// In non-persist mode, how many distinct recent requests to retain. A rolling
+/// window (rather than "only the latest request") so concurrent requests —
+/// whose frames interleave at the ring from separate FPM workers — coexist
+/// instead of clearing each other on every cross-request frame.
+const RETAINED_REQUESTS: usize = 25;
 /// Hard cap on a single newline-delimited frame; longer lines drop the
 /// connection (the extension truncates payloads well below this).
 const MAX_LINE_BYTES: usize = 256 * 1024;
 
-/// The telemetry feature keys mirrored into the extension's state file. An absent
-/// key in the config map means "on".
+/// The telemetry feature keys mirrored into the extension's state file.
 const FEATURES: &[&str] = &[
-    "dumps", "queries", "jobs", "views", "requests", "logs", "cache",
+    "dumps", "queries", "jobs", "views", "requests", "logs", "cache", "http",
 ];
+
+/// Default capture state for a feature when the user hasn't set it. Most default
+/// on; outgoing-`http` capture is opt-in (extra overhead, less commonly needed,
+/// and only emitted by extension v0.1.4+).
+fn feature_default(name: &str) -> bool {
+    name != "http"
+}
 
 /// Shared dump-telemetry state: the ring plus a rebind signal and a bound flag.
 pub struct DumpStore {
@@ -55,6 +62,10 @@ pub struct DumpStore {
     rebind: Notify,
     /// Whether the server is currently bound and accepting.
     bound: AtomicBool,
+    /// Whether logs persist across requests. `false` (default) clears the
+    /// non-pinned buffer on each new request. Mirrors the config; read on every
+    /// incoming frame.
+    persist: AtomicBool,
 }
 
 impl DumpStore {
@@ -65,12 +76,18 @@ impl DumpStore {
             ring: Mutex::new(DumpRing::new()),
             rebind: Notify::new(),
             bound: AtomicBool::new(false),
+            persist: AtomicBool::new(false),
         }
     }
 
     /// Signal the server task to rebind (after a port change).
     pub fn request_rebind(&self) {
         self.rebind.notify_one();
+    }
+
+    /// Update the persist flag (mirrors config).
+    pub fn set_persist(&self, persist: bool) {
+        self.persist.store(persist, Ordering::Release);
     }
 }
 
@@ -80,12 +97,28 @@ impl Default for DumpStore {
     }
 }
 
+/// A page of the ring for one `ListDumps` poll.
+struct DumpPage {
+    events: Vec<DumpEvent>,
+    removed: Vec<u64>,
+    counts: DumpCounts,
+    latest_id: u64,
+    /// Smallest id still buffered (or `next_id + 1` when empty). Clients drop any
+    /// held id below this unconditionally, so dropping evicted/cleared rows never
+    /// depends on the bounded `removed` log.
+    min_live_id: u64,
+}
+
 /// Bounded in-memory buffer of [`DumpEvent`]s.
 struct DumpRing {
     events: VecDeque<DumpEvent>,
     removed: VecDeque<u64>,
     next_id: u64,
-    pinned_count: usize,
+    /// Distinct request_ids retained, oldest first. In non-persist mode the
+    /// window is capped at [`RETAINED_REQUESTS`]; evicting a request drops its
+    /// events. `events` always stays ascending by id (push_back / pop_front /
+    /// order-preserving removals), so `events.front()` is the smallest live id.
+    recent_requests: VecDeque<String>,
 }
 
 impl DumpRing {
@@ -94,11 +127,25 @@ impl DumpRing {
             events: VecDeque::new(),
             removed: VecDeque::new(),
             next_id: 0,
-            pinned_count: 0,
+            recent_requests: VecDeque::new(),
         }
     }
 
-    fn push(&mut self, frame: IncomingFrame, now_ms: u64) {
+    fn push(&mut self, frame: IncomingFrame, now_ms: u64, persist: bool) {
+        // Track the request and, in non-persist mode, evict the oldest request's
+        // events once the rolling window is exceeded. Keying on a *window* (not a
+        // single "current request") means interleaved frames from concurrent
+        // requests no longer clear each other.
+        if !self.recent_requests.iter().any(|r| r == &frame.request_id) {
+            self.recent_requests.push_back(frame.request_id.clone());
+            while self.recent_requests.len() > RETAINED_REQUESTS {
+                if let Some(old) = self.recent_requests.pop_front() {
+                    if !persist {
+                        self.evict_request(&old);
+                    }
+                }
+            }
+        }
         self.next_id = self.next_id.saturating_add(1);
         let ts_ms = if frame.ts != 0 { frame.ts } else { now_ms };
         self.events.push_back(DumpEvent {
@@ -108,15 +155,9 @@ impl DumpRing {
             site: frame.site,
             request_id: frame.request_id,
             payload: frame.payload,
-            pinned: false,
         });
         while self.events.len() > RING_CAP {
-            // Evict the oldest non-pinned event. With PINNED_CAP < RING_CAP there
-            // is always one to find; the `break` is a defensive backstop.
-            let Some(idx) = self.events.iter().position(|e| !e.pinned) else {
-                break;
-            };
-            if let Some(ev) = self.events.remove(idx) {
+            if let Some(ev) = self.events.pop_front() {
                 self.note_removed(ev.id);
             }
         }
@@ -124,40 +165,34 @@ impl DumpRing {
 
     fn note_removed(&mut self, id: u64) {
         self.removed.push_back(id);
+        self.trim_removed();
+    }
+
+    fn trim_removed(&mut self) {
         while self.removed.len() > REMOVED_LOG_CAP {
             self.removed.pop_front();
         }
     }
 
-    fn delete(&mut self, id: u64) {
-        if let Some(idx) = self.events.iter().position(|e| e.id == id) {
-            if let Some(ev) = self.events.remove(idx) {
-                if ev.pinned {
-                    self.pinned_count = self.pinned_count.saturating_sub(1);
-                }
-                self.note_removed(id);
+    /// Drop all events belonging to `req` (order-preserving), noting each id.
+    fn evict_request(&mut self, req: &str) {
+        let mut kept = VecDeque::with_capacity(self.events.len());
+        for ev in self.events.drain(..) {
+            if ev.request_id == req {
+                self.removed.push_back(ev.id);
+            } else {
+                kept.push_back(ev);
             }
         }
+        self.events = kept;
+        self.trim_removed();
     }
 
-    fn set_pinned(&mut self, id: u64, pinned: bool) {
-        let Some(idx) = self.events.iter().position(|e| e.id == id) else {
-            return;
-        };
-        let was = matches!(self.events.get(idx), Some(e) if e.pinned);
-        if was == pinned {
-            return;
-        }
-        if pinned && self.pinned_count >= PINNED_CAP {
-            return;
-        }
-        if let Some(ev) = self.events.get_mut(idx) {
-            ev.pinned = pinned;
-        }
-        if pinned {
-            self.pinned_count = self.pinned_count.saturating_add(1);
-        } else {
-            self.pinned_count = self.pinned_count.saturating_sub(1);
+    fn delete(&mut self, id: u64) {
+        if let Some(idx) = self.events.iter().position(|e| e.id == id) {
+            if self.events.remove(idx).is_some() {
+                self.note_removed(id);
+            }
         }
     }
 
@@ -165,10 +200,8 @@ impl DumpRing {
         for ev in self.events.drain(..) {
             self.removed.push_back(ev.id);
         }
-        while self.removed.len() > REMOVED_LOG_CAP {
-            self.removed.pop_front();
-        }
-        self.pinned_count = 0;
+        self.recent_requests.clear();
+        self.trim_removed();
     }
 
     fn counts(&self) -> DumpCounts {
@@ -179,10 +212,9 @@ impl DumpRing {
         c
     }
 
-    /// Events newer than `since_id`, the removed ids the client may still hold,
-    /// the current counts, and the cursor to send next (the highest id ever
-    /// assigned, so a client always advances past removed-but-unseen ids).
-    fn list(&self, since_id: u64) -> (Vec<DumpEvent>, Vec<u64>, DumpCounts, u64) {
+    /// Page of events newer than `since_id`, plus the removed ids the client may
+    /// hold, the counts, the next cursor (`latest_id`), and `min_live_id`.
+    fn list(&self, since_id: u64) -> DumpPage {
         let events = self
             .events
             .iter()
@@ -195,7 +227,17 @@ impl DumpRing {
             .copied()
             .filter(|&id| id <= since_id)
             .collect();
-        (events, removed, self.counts(), self.next_id)
+        let min_live_id = self
+            .events
+            .front()
+            .map_or(self.next_id.saturating_add(1), |e| e.id);
+        DumpPage {
+            events,
+            removed,
+            counts: self.counts(),
+            latest_id: self.next_id,
+            min_live_id,
+        }
     }
 }
 
@@ -290,8 +332,9 @@ async fn handle_conn(stream: TcpStream, store: Arc<DumpStore>) {
                 continue;
             }
             if let Ok(frame) = serde_json::from_slice::<IncomingFrame>(&line) {
+                let persist = store.persist.load(Ordering::Acquire);
                 let mut ring = store.ring.lock().await;
-                ring.push(frame, now_ms());
+                ring.push(frame, now_ms(), persist);
             }
         }
     }
@@ -301,13 +344,13 @@ async fn handle_conn(stream: TcpStream, store: Arc<DumpStore>) {
 
 /// Page the ring for `ListDumps`.
 pub async fn list(state: &DaemonState, since_id: u64) -> Response {
-    let ring = state.dumps.ring.lock().await;
-    let (events, removed_ids, counts, latest_id) = ring.list(since_id);
+    let page = state.dumps.ring.lock().await.list(since_id);
     Response::Dumps {
-        events,
-        removed_ids,
-        counts,
-        latest_id,
+        events: page.events,
+        removed_ids: page.removed,
+        counts: page.counts,
+        latest_id: page.latest_id,
+        min_live_id: page.min_live_id,
     }
 }
 
@@ -323,21 +366,20 @@ pub async fn delete(state: &DaemonState, id: u64) -> Response {
     Response::Ok
 }
 
-/// Pin or unpin one event.
-pub async fn pin(state: &DaemonState, id: u64, pinned: bool) -> Response {
-    state.dumps.ring.lock().await.set_pinned(id, pinned);
-    Response::Ok
-}
-
 /// Report dump-server status.
 pub async fn status(state: &DaemonState) -> Response {
-    let (enabled, port, features) = {
+    let (enabled, port, persist, features) = {
         let c = state.config.lock().await;
         let features = FEATURES
             .iter()
-            .map(|&f| ((*f).to_string(), c.dumps.features.get(f).copied().unwrap_or(true)))
+            .map(|&f| {
+                (
+                    (*f).to_string(),
+                    c.dumps.features.get(f).copied().unwrap_or_else(|| feature_default(f)),
+                )
+            })
             .collect();
-        (c.dumps.enabled, c.dumps.port, features)
+        (c.dumps.enabled, c.dumps.port, c.dumps.persist, features)
     };
     let counts = state.dumps.ring.lock().await.counts();
     let running = state.dumps.bound.load(Ordering::Acquire);
@@ -346,15 +388,55 @@ pub async fn status(state: &DaemonState) -> Response {
         enabled,
         port,
         running,
+        persist,
         extensions,
         counts,
         features,
     }
 }
 
+/// Toggle log persistence: persist config, mirror to the runtime flag the dump
+/// server reads on each frame.
+pub async fn set_persist(state: &DaemonState, persist: bool) -> Response {
+    let resp = apply_config(state, |d| d.persist = persist).await;
+    if matches!(resp, Response::Ok) {
+        state.dumps.set_persist(persist);
+    }
+    resp
+}
+
 /// Set the antenna (enabled) flag: persist config and rewrite the state file.
+///
+/// On the first enable, also fetch the extension `.so` for each installed PHP
+/// version and restart any started pools so they load `-d zend_extension`
+/// (subsequent toggles only rewrite the state file — no restart). The extension
+/// self-disables when off, so disabling never restarts FPM.
 pub async fn set_enabled(state: &DaemonState, enabled: bool) -> Response {
-    apply_config(state, |d| d.enabled = enabled).await
+    let was = state.config.lock().await.dumps.enabled;
+    let resp = apply_config(state, |d| d.enabled = enabled).await;
+    if matches!(resp, Response::Ok) && enabled && !was {
+        ensure_ext_and_restart(state).await;
+    }
+    resp
+}
+
+/// Download the extension for installed versions (best-effort, time-bounded) and
+/// restart started pools so the new `-d zend_extension` flag takes effect.
+async fn ensure_ext_and_restart(state: &DaemonState) {
+    let dl = crate::php_install::ReqwestDownloader::new();
+    let ensure = crate::ext_install::ensure_for_installed(&state.dirs, &dl);
+    if tokio::time::timeout(std::time::Duration::from_secs(30), ensure)
+        .await
+        .is_err()
+    {
+        tracing::warn!("yerd-dump extension download timed out");
+    }
+    let mut mgr = state.php_manager.lock().await;
+    for snap in mgr.snapshots() {
+        if let Err(e) = mgr.restart(snap.version).await {
+            tracing::warn!(version = %snap.version, error = %e, "failed to restart FPM pool after enabling dumps");
+        }
+    }
 }
 
 /// Set a per-feature capture flag.
@@ -379,6 +461,21 @@ pub async fn set_port(state: &DaemonState, port: u16) -> Response {
             code: yerd_ipc::ErrorCode::Internal,
             message: "dump server port must be non-zero".into(),
         };
+    }
+    // No-op if unchanged — avoids a spurious bind conflict against our own server.
+    if port == state.config.lock().await.dumps.port {
+        return Response::Ok;
+    }
+    // Test-bind the new port up front so the GUI gets immediate "port in use"
+    // feedback instead of a silent `Ok` for a server that then fails to rebind.
+    match TcpListener::bind((Ipv4Addr::LOCALHOST, port)).await {
+        Ok(l) => drop(l),
+        Err(e) => {
+            return Response::Error {
+                code: yerd_ipc::ErrorCode::PortInUse,
+                message: format!("cannot bind dump server port {port}: {e}"),
+            };
+        }
     }
     let resp = apply_config(state, |d| d.port = port).await;
     if matches!(resp, Response::Ok) {
@@ -423,7 +520,7 @@ pub fn write_state_file(dirs: &PlatformDirs, dumps: &DumpsSection) -> std::io::R
     std::fs::create_dir_all(&dir)?;
     let features = FEATURES
         .iter()
-        .map(|&f| (f, dumps.features.get(f).copied().unwrap_or(true)))
+        .map(|&f| (f, dumps.features.get(f).copied().unwrap_or_else(|| feature_default(f))))
         .collect();
     let body = StateFile {
         enabled: dumps.enabled,
@@ -431,41 +528,29 @@ pub fn write_state_file(dirs: &PlatformDirs, dumps: &DumpsSection) -> std::io::R
         features,
     };
     let json = serde_json::to_vec(&body).map_err(std::io::Error::other)?;
-    let tmp = dir.join("state.json.tmp");
+    // Unique temp per call (pid + sequence) so concurrent config toggles each
+    // write a distinct temp and the atomic renames never tear the published file.
+    let seq = TMP_SEQ.fetch_add(1, Ordering::Relaxed);
+    let tmp = dir.join(format!("state.json.{}.{}.tmp", std::process::id(), seq));
     let final_path = dir.join("state.json");
     std::fs::write(&tmp, &json)?;
     std::fs::rename(&tmp, &final_path)?;
     Ok(())
 }
 
-/// Per-installed-version extension presence: scan `{data}/php` for `php-X.Y`
-/// installs and check whether a matching `.so` exists in the sibling
-/// `{data}/php-ext/php-X.Y/yerd-dump.so` tree.
+/// Monotonic counter for unique temp filenames (combined with the pid).
+static TMP_SEQ: AtomicU64 = AtomicU64::new(0);
+
+/// Per-installed-version extension presence: for each installed PHP version,
+/// whether a matching `.so` exists in `{data}/php-ext/php-<ver>/yerd-dump.so`.
 fn extension_presence(dirs: &PlatformDirs) -> Vec<DumpExtStatus> {
-    let mut out = Vec::new();
-    let php_dir = dirs.data.join("php");
-    let Ok(entries) = std::fs::read_dir(&php_dir) else {
-        return out;
-    };
-    for entry in entries.flatten() {
-        let name = entry.file_name();
-        let Some(name) = name.to_str() else { continue };
-        let Some(ver_str) = name.strip_prefix("php-") else {
-            continue;
-        };
-        let Ok(version) = PhpVersion::from_str(ver_str) else {
-            continue;
-        };
-        let so = dirs
-            .data
-            .join("php-ext")
-            .join(name)
-            .join("yerd-dump.so");
-        out.push(DumpExtStatus {
+    let mut out: Vec<DumpExtStatus> = crate::ext_install::installed_versions(dirs)
+        .into_iter()
+        .map(|version| DumpExtStatus {
             version,
-            present: so.is_file(),
-        });
-    }
+            present: crate::ext_install::so_path(dirs, version).is_file(),
+        })
+        .collect();
     out.sort_by_key(|s| (s.version.major, s.version.minor));
     out
 }
@@ -481,70 +566,152 @@ mod tests {
     use super::*;
 
     fn frame(category: DumpCategory) -> IncomingFrame {
+        frame_req(category, "req")
+    }
+
+    fn frame_req(category: DumpCategory, req: &str) -> IncomingFrame {
         IncomingFrame {
             category,
             ts: 0,
             site: "blog.test".into(),
-            request_id: "req".into(),
+            request_id: req.to_string(),
             payload: serde_json::json!({"x": 1}),
         }
     }
 
     #[test]
+    fn concurrent_requests_do_not_clear_each_other() {
+        let mut ring = DumpRing::new();
+        // Interleaved frames from two concurrent requests (separate FPM workers).
+        ring.push(frame_req(DumpCategory::Query, "a"), 100, false); // id 1
+        ring.push(frame_req(DumpCategory::Query, "b"), 100, false); // id 2
+        ring.push(frame_req(DumpCategory::Query, "a"), 100, false); // id 3
+        ring.push(frame_req(DumpCategory::Dump, "b"), 100, false); // id 4
+        let page = ring.list(0);
+        assert_eq!(
+            page.events.len(),
+            4,
+            "interleaved concurrent requests coexist, not annihilate"
+        );
+    }
+
+    #[test]
+    fn non_persist_evicts_oldest_request_beyond_window() {
+        let mut ring = DumpRing::new();
+        // One event per distinct request, exceeding the rolling window by 2.
+        for i in 0..RETAINED_REQUESTS + 2 {
+            ring.push(frame_req(DumpCategory::Query, &format!("r{i}")), 100, false);
+        }
+        let page = ring.list(0);
+        assert_eq!(page.events.len(), RETAINED_REQUESTS, "window-bounded");
+        // The first two requests (ids 1,2) were evicted; min_live_id reflects it.
+        assert!(!page.events.iter().any(|e| e.id == 1 || e.id == 2));
+        assert_eq!(page.min_live_id, 3);
+    }
+
+    #[test]
+    fn persist_keeps_events_across_requests() {
+        let mut ring = DumpRing::new();
+        ring.push(frame_req(DumpCategory::Query, "r1"), 100, true); // id 1
+        ring.push(frame_req(DumpCategory::Query, "r2"), 100, true); // id 2 (new request, persist)
+        assert_eq!(
+            ring.list(0).events.len(),
+            2,
+            "persist accumulates across requests"
+        );
+    }
+
+    #[test]
     fn push_assigns_monotonic_ids_and_counts() {
         let mut ring = DumpRing::new();
-        ring.push(frame(DumpCategory::Query), 100);
-        ring.push(frame(DumpCategory::Query), 100);
-        ring.push(frame(DumpCategory::Dump), 100);
-        let (events, removed, counts, latest) = ring.list(0);
-        assert_eq!(events.len(), 3);
-        assert!(removed.is_empty());
-        assert_eq!(counts.queries, 2);
-        assert_eq!(counts.dumps, 1);
-        assert_eq!(latest, 3);
-        assert_eq!(events.first().map(|e| e.id), Some(1));
+        ring.push(frame(DumpCategory::Query), 100, false);
+        ring.push(frame(DumpCategory::Query), 100, false);
+        ring.push(frame(DumpCategory::Dump), 100, false);
+        let page = ring.list(0);
+        assert_eq!(page.events.len(), 3);
+        assert!(page.removed.is_empty());
+        assert_eq!(page.counts.queries, 2);
+        assert_eq!(page.counts.dumps, 1);
+        assert_eq!(page.latest_id, 3);
+        assert_eq!(page.min_live_id, 1);
+        assert_eq!(page.events.first().map(|e| e.id), Some(1));
     }
 
     #[test]
     fn list_since_filters_and_reports_removed() {
         let mut ring = DumpRing::new();
-        ring.push(frame(DumpCategory::Query), 100); // id 1
-        ring.push(frame(DumpCategory::Query), 100); // id 2
+        ring.push(frame(DumpCategory::Query), 100, false); // id 1
+        ring.push(frame(DumpCategory::Query), 100, false); // id 2
         // Client has seen up to id 2.
         ring.delete(1);
-        let (events, removed, _counts, latest) = ring.list(2);
-        assert!(events.is_empty(), "no events newer than id 2");
-        assert_eq!(removed, vec![1], "id 1 was deleted and is <= since_id");
-        assert_eq!(latest, 2);
+        let page = ring.list(2);
+        assert!(page.events.is_empty(), "no events newer than id 2");
+        assert_eq!(page.removed, vec![1], "id 1 was deleted and is <= since_id");
+        assert_eq!(page.latest_id, 2);
     }
 
     #[test]
-    fn pinned_event_survives_eviction() {
+    fn eviction_drops_oldest_over_cap() {
         let mut ring = DumpRing::new();
-        ring.push(frame(DumpCategory::Dump), 100); // id 1
-        ring.set_pinned(1, true);
+        // All in one request so per-request eviction doesn't fire; fill past cap.
         for _ in 0..RING_CAP + 10 {
-            ring.push(frame(DumpCategory::Query), 100);
+            ring.push(frame(DumpCategory::Query), 100, false);
         }
-        let (events, _removed, _counts, _latest) = ring.list(0);
-        assert!(
-            events.iter().any(|e| e.id == 1 && e.pinned),
-            "pinned id 1 must survive eviction"
-        );
-        assert!(events.len() <= RING_CAP);
+        let page = ring.list(0);
+        assert!(page.events.len() <= RING_CAP);
+        let newest = RING_CAP as u64 + 10;
+        assert!(page.events.iter().any(|e| e.id == newest), "newest retained");
+        assert!(!page.events.iter().any(|e| e.id == 1), "oldest evicted");
+        // min_live_id advanced past the evicted head.
+        assert!(page.min_live_id > 1);
     }
 
     #[test]
-    fn clear_drops_everything_including_pinned() {
+    fn clear_drops_everything() {
         let mut ring = DumpRing::new();
-        ring.push(frame(DumpCategory::Dump), 100); // id 1
-        ring.set_pinned(1, true);
+        ring.push(frame(DumpCategory::Dump), 100, false); // id 1
         ring.clear();
         // A client that had seen up to id 1 learns it was removed.
-        let (events, removed, counts, _latest) = ring.list(1);
-        assert!(events.is_empty());
-        assert_eq!(removed, vec![1]);
-        assert_eq!(counts.dumps, 0);
+        let page = ring.list(1);
+        assert!(page.events.is_empty());
+        assert_eq!(page.removed, vec![1]);
+        assert_eq!(page.counts.dumps, 0);
+        assert_eq!(page.min_live_id, 2, "min_live_id = next_id + 1 when empty");
+    }
+
+    #[test]
+    fn incoming_frame_accepts_canonical_wire_shape() {
+        // The cross-repo contract with yerd-php-ext (architecture.md §2.2).
+        let f: IncomingFrame = serde_json::from_str(
+            r#"{"category":"query","ts":1718360452123,"site":"blog.test","request_id":"abc","payload":{"sql":"select 1"}}"#,
+        )
+        .unwrap();
+        assert_eq!(f.category, DumpCategory::Query);
+        assert_eq!(f.ts, 1_718_360_452_123);
+        assert_eq!(f.site, "blog.test");
+        assert_eq!(f.request_id, "abc");
+        assert_eq!(f.payload, serde_json::json!({"sql": "select 1"}));
+        // ts/site/request_id are optional (extension may omit on early frames).
+        let minimal: IncomingFrame =
+            serde_json::from_str(r#"{"category":"dump","payload":{}}"#).unwrap();
+        assert_eq!(minimal.ts, 0);
+        assert!(minimal.site.is_empty());
+        assert!(minimal.request_id.is_empty());
+    }
+
+    #[test]
+    fn state_file_byte_shape() {
+        // The contract the extension reads each request (architecture.md §2.3).
+        let body = StateFile {
+            enabled: true,
+            port: 2304,
+            features: [("queries", true), ("http", false)].into_iter().collect(),
+        };
+        let s = serde_json::to_string(&body).unwrap();
+        assert_eq!(
+            s,
+            r#"{"enabled":true,"port":2304,"features":{"http":false,"queries":true}}"#
+        );
     }
 
     #[test]

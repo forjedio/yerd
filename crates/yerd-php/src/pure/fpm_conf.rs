@@ -94,6 +94,8 @@ mod tests {
             pm,
             max_children: 16,
             ini: Vec::new(),
+            extension: None,
+            ini_defines: Vec::new(),
         }
     }
 
@@ -107,6 +109,8 @@ mod tests {
             pm: ProcessManagerMode::OnDemand,
             max_children: 16,
             ini: Vec::new(),
+            extension: None,
+            ini_defines: Vec::new(),
         }
     }
 

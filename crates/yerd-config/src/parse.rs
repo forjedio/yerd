@@ -61,6 +61,8 @@ struct DumpsSectionWire {
     #[serde(default = "default_dump_port")]
     port: u16,
     #[serde(default)]
+    persist: bool,
+    #[serde(default)]
     features: BTreeMap<String, bool>,
 }
 
@@ -69,6 +71,7 @@ impl Default for DumpsSectionWire {
         Self {
             enabled: false,
             port: crate::schema::DEFAULT_DUMP_PORT,
+            persist: false,
             features: BTreeMap::new(),
         }
     }
@@ -269,6 +272,7 @@ impl TryFrom<Wire> for Config {
         let dumps = DumpsSection {
             enabled: w.dumps.enabled,
             port: w.dumps.port,
+            persist: w.dumps.persist,
             features: w.dumps.features,
         };
         Ok(Config {
@@ -445,7 +449,7 @@ mod tests {
         match Config::from_toml("version = 99\n") {
             Err(ConfigError::UnsupportedVersion {
                 found: 99,
-                current: 4,
+                current: 5,
             }) => {}
             other => panic!("expected UnsupportedVersion, got {other:?}"),
         }

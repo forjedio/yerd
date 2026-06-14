@@ -27,8 +27,8 @@ export const router = createRouter({
       component: () => import("@/views/ServicesView.vue"),
     },
     {
-      path: "/laravel/dumps",
-      name: "laravel-dumps",
+      path: "/dumps",
+      name: "dumps",
       component: () => import("@/views/LaravelDumpsView.vue"),
     },
     {

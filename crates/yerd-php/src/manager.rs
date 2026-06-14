@@ -105,6 +105,16 @@ enum Outcome<Ch: ChildHandle> {
     Stopped,
 }
 
+/// Daemon-managed dump-extension loading config (see [`PhpManager::set_dump_ext`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DumpExtSettings {
+    /// Base dir holding per-version extensions: `so_dir/php-<ver>/yerd-dump.so`.
+    pub so_dir: PathBuf,
+    /// Extra `-d key=value` defines applied when the extension loads (e.g. the
+    /// extension's `yerd_dump.state_path`).
+    pub ini_defines: Vec<(String, String)>,
+}
+
 /// Top-level PHP-FPM pool manager.
 ///
 /// Holds one supervised pool per PHP version. Spawns FPM, health-checks it,
@@ -123,6 +133,7 @@ where
     pools: BTreeMap<PhpVersion, Pool<S::Child>>,
     binaries: BTreeMap<PhpVersion, PathBuf>,
     ini_settings: Vec<(String, String)>,
+    dump_ext: Option<DumpExtSettings>,
     instance_id: u32,
     /// Timing/restart policy fed to the pure state machine. FPM pools use the
     /// fast-start / cheap-retry profile.
@@ -159,6 +170,7 @@ where
             pools: BTreeMap::new(),
             binaries,
             ini_settings: Vec::new(),
+            dump_ext: None,
             instance_id,
             policy: SupervisorPolicy::fpm(),
         }
@@ -182,6 +194,15 @@ where
     /// until restarted — the daemon restarts live pools after calling this).
     pub fn set_ini_settings(&mut self, settings: Vec<(String, String)>) {
         self.ini_settings = settings;
+    }
+
+    /// Configure daemon-managed dump-extension loading. When set, each pool that
+    /// has a matching `yerd-dump.so` under `so_dir/php-<ver>/` (re)starts with
+    /// `-d zend_extension=<so>` plus the provided `-d key=value` defines (e.g.
+    /// the extension's state-file path). Takes effect on the next `ensure` /
+    /// restart of a pool. `None` disables extension loading.
+    pub fn set_dump_ext(&mut self, settings: Option<DumpExtSettings>) {
+        self.dump_ext = settings;
     }
 
     /// Ensure FPM is running for `v` and return its listen address.
@@ -215,6 +236,17 @@ where
         let mut cfg = PoolConfig::dev_defaults(v, listen, &self.dirs, self.instance_id);
         cfg.ini = self.ini_settings.clone();
 
+        // Load the daemon-managed dump extension if a matching `.so` is present
+        // for this version. The extension self-disables via its state file, so we
+        // load it whenever present regardless of whether dumps are enabled.
+        if let Some(ext) = &self.dump_ext {
+            let so = ext.so_dir.join(format!("php-{v}")).join("yerd-dump.so");
+            if so.is_file() {
+                cfg.extension = Some(so);
+                cfg.ini_defines = ext.ini_defines.clone();
+            }
+        }
+
         // FPM does not create parent directories for its config, pid file, or
         // error_log — and the per-user state dir may not exist yet on first run.
         // Create them up front so FPM initialisation does not fail with ENOENT.
@@ -237,7 +269,10 @@ where
 
         // Snapshot + scrub env once; the builder closure clones into each Command.
         let env = env_scrub::allowlist(&std::env::vars().collect::<Vec<_>>());
-        let cmd_builder = || build_cmd(&binary, &cfg.config_path, &env);
+        let extension = cfg.extension.clone();
+        let ini_defines = cfg.ini_defines.clone();
+        let cmd_builder =
+            || build_cmd(&binary, &cfg.config_path, &env, extension.as_deref(), &ini_defines);
 
         let initial_state = PoolState::Stopped;
         let initial_since = self.clock.now();
@@ -653,8 +688,24 @@ async fn wait_after_kill<Ch: ChildHandle>(
     }
 }
 
-fn build_cmd(binary: &PathBuf, config_path: &PathBuf, env: &[(String, String)]) -> StdCommand {
+fn build_cmd(
+    binary: &PathBuf,
+    config_path: &PathBuf,
+    env: &[(String, String)],
+    extension: Option<&std::path::Path>,
+    ini_defines: &[(String, String)],
+) -> StdCommand {
     let mut cmd = StdCommand::new(binary);
+    // `-d` startup-INI overrides go before `--fpm-config`. They apply at PHP
+    // startup (MINIT), which is required for the extension to register its
+    // observers. The yerd-dump build is a regular extension (`extension=`), not
+    // a `zend_extension`. Only emitted when a `.so` is present (see `ensure`).
+    if let Some(so) = extension {
+        cmd.arg("-d").arg(format!("extension={}", so.display()));
+        for (k, val) in ini_defines {
+            cmd.arg("-d").arg(format!("{k}={val}"));
+        }
+    }
     cmd.arg("--fpm-config").arg(config_path);
     cmd.env_clear();
     for (k, val) in env {

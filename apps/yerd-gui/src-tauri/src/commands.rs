@@ -380,13 +380,13 @@ pub async fn delete_dump(id: u64) -> Result<Response, GuiError> {
 }
 
 #[tauri::command]
-pub async fn pin_dump(id: u64, pinned: bool) -> Result<Response, GuiError> {
-    finish(exchange(&Request::PinDump { id, pinned }).await?)
+pub async fn set_dumps_enabled(enabled: bool) -> Result<Response, GuiError> {
+    finish(exchange(&Request::SetDumpsEnabled { enabled }).await?)
 }
 
 #[tauri::command]
-pub async fn set_dumps_enabled(enabled: bool) -> Result<Response, GuiError> {
-    finish(exchange(&Request::SetDumpsEnabled { enabled }).await?)
+pub async fn set_dumps_persist(persist: bool) -> Result<Response, GuiError> {
+    finish(exchange(&Request::SetDumpsPersist { persist }).await?)
 }
 
 #[tauri::command]

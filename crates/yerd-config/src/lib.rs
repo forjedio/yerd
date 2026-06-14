@@ -45,6 +45,8 @@ pub use schema::{
 /// port / enabled). The v2→v3 migration rewrites the old array — the first
 /// *structural* migration step (v0→v1 and v1→v2 are bare version bumps).
 ///
-/// v4 added the optional `[dumps]` table ([`DumpsSection`]); it defaults when
-/// absent, so the v3→v4 migration is a bare version bump.
-pub const CURRENT_VERSION: u32 = 4;
+/// v4 is reserved for the mail-capture feature's `[mail]` table (developed on a
+/// sibling branch). v5 added the optional `[dumps]` table ([`DumpsSection`]);
+/// both default when absent, so the v3→v4 and v4→v5 migrations are bare version
+/// bumps.
+pub const CURRENT_VERSION: u32 = 5;

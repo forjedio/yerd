@@ -12,7 +12,12 @@
     "core:window:allow-toggle-maximize",
     "core:window:allow-is-maximized",
     "core:window:allow-close",
+    "core:window:allow-set-always-on-top",
     "opener:default",
+    {
+      "identifier": "opener:allow-open-path",
+      "allow": [{ "path": "$HOME/**" }]
+    },
     "dialog:default",
     "autostart:allow-enable",
     "autostart:allow-disable",

@@ -18,7 +18,7 @@ pub mod version;
 
 pub use error::{DownloadError, ExitReason, PhpError, SpawnFailureReason};
 pub use listen::{AllocatedListen, Listen};
-pub use manager::{PhpManager, PoolRunState, PoolSnapshot};
+pub use manager::{DumpExtSettings, PhpManager, PoolRunState, PoolSnapshot};
 pub use pool::{PoolConfig, ProcessManagerMode};
 pub use real::{SystemClock, TokioChild, TokioProcessSpawner};
 pub use release::{

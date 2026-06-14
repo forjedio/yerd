@@ -72,7 +72,7 @@ pub async fn install(
     dl: &dyn Downloader,
 ) -> Result<(), PhpError> {
     let (os, arch) = current_os_arch()?;
-    let listing = dl.download(&yerd_php::listing_url()).await?;
+    let listing = dl.download(&yerd_php::listing_url(os)).await?;
     let listing = String::from_utf8_lossy(&listing);
     let artifact = yerd_php::resolve_from_listing(&listing, version, os, arch)?;
 

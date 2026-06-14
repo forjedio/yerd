@@ -28,6 +28,7 @@ pub(crate) const STEPS: &[MigrationStep] = &[
     migrate_v1_to_v2,
     migrate_v2_to_v3,
     migrate_v3_to_v4,
+    migrate_v4_to_v5,
 ];
 
 /// `v0 → v1`: bump the version. v0 predates any shipped config, so there is no
@@ -69,10 +70,17 @@ fn migrate_v2_to_v3(value: &mut Value) -> Result<(), ConfigError> {
     set_version(value, 3)
 }
 
-/// `v3 → v4`: bump the version. v4 added the optional `[dumps]` table, which
-/// defaults when absent, so an in-place version bump is the entire migration.
+/// `v3 → v4`: bump the version. v4 is reserved for the mail-capture feature's
+/// `[mail]` table (sibling branch); it defaults when absent, so an in-place
+/// version bump is the entire migration here.
 fn migrate_v3_to_v4(value: &mut Value) -> Result<(), ConfigError> {
     set_version(value, 4)
+}
+
+/// `v4 → v5`: bump the version. v5 added the optional `[dumps]` table, which
+/// defaults when absent, so an in-place version bump is the entire migration.
+fn migrate_v4_to_v5(value: &mut Value) -> Result<(), ConfigError> {
+    set_version(value, 5)
 }
 
 /// Set the top-level `version` key, erroring if the root is not a table.
@@ -145,8 +153,8 @@ mod tests {
     }
 
     #[test]
-    fn current_version_pinned_to_four() {
-        assert_eq!(crate::CURRENT_VERSION, 4);
+    fn current_version_pinned_to_five() {
+        assert_eq!(crate::CURRENT_VERSION, 5);
     }
 
     #[test]
@@ -154,6 +162,13 @@ mod tests {
         let mut v: Value = toml::from_str("version = 3\n").unwrap();
         migrate_v3_to_v4(&mut v).unwrap();
         assert_eq!(read_version(&v).unwrap(), 4);
+    }
+
+    #[test]
+    fn v4_to_v5_is_a_bare_version_bump() {
+        let mut v: Value = toml::from_str("version = 4\n").unwrap();
+        migrate_v4_to_v5(&mut v).unwrap();
+        assert_eq!(read_version(&v).unwrap(), 5);
     }
 
     #[test]

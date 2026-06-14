@@ -46,6 +46,7 @@ struct DumpsSectionSer<'a> {
     // Scalars first (TOML emits scalars before sub-tables within `[dumps]`).
     enabled: bool,
     port: u16,
+    persist: bool,
     // Skipped when empty so a feature-override-free `[dumps]` emits no
     // `[dumps.features]` table.
     #[serde(skip_serializing_if = "bool_map_is_empty")]
@@ -161,6 +162,7 @@ pub(crate) fn to_toml(c: &Config) -> Result<String, ConfigError> {
             Some(DumpsSectionSer {
                 enabled: c.dumps.enabled,
                 port: c.dumps.port,
+                persist: c.dumps.persist,
                 features: &c.dumps.features,
             })
         },
@@ -182,8 +184,8 @@ mod tests {
     fn default_to_toml_starts_with_version_line() {
         let s = to_toml(&Config::default()).unwrap();
         assert!(
-            s.starts_with("version = 4\n"),
-            "expected `version = 4` first line; got: {s}"
+            s.starts_with("version = 5\n"),
+            "expected `version = 5` first line; got: {s}"
         );
     }
 
