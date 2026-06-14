@@ -217,6 +217,10 @@ async fn dispatch(req: Request, state: &DaemonState) -> Response {
             Ok(()) => Response::Ok,
             Err(e) => internal(format!("mail clear failed: {e}")),
         },
+        Request::DeleteMails { ids } => match state.mail_store.delete_many(&ids).await {
+            Ok(()) => Response::Ok,
+            Err(e) => internal(format!("mail delete failed: {e}")),
+        },
         Request::SetMailPort { port } => set_mail_port(port, state).await,
         Request::SetMailEnabled { enabled } => set_mail_enabled(enabled, state).await,
         // `Request` is `#[non_exhaustive]` (external crate): a wildcard is

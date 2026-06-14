@@ -2,12 +2,14 @@
 import { Inbox, Trash2 } from "lucide-vue-next";
 import { computed, ref, watch } from "vue";
 
+import TitleBar from "@/components/TitleBar.vue";
 import Button from "@/components/ui/Button.vue";
 import Modal from "@/components/ui/Modal.vue";
+import Select from "@/components/ui/Select.vue";
 import Spinner from "@/components/ui/Spinner.vue";
 import { usePoll } from "@/composables/usePoll";
 import { useToast } from "@/composables/useToast";
-import { clearMails, getMail, IpcError, listMails } from "@/ipc/client";
+import { clearMails, deleteMails, getMail, IpcError, listMails } from "@/ipc/client";
 import type { MailDetail, MailSummary } from "@/ipc/types";
 
 // The rendered HTML email is sandboxed: no scripts, no same-origin, and a strict
@@ -24,12 +26,55 @@ const detail = ref<MailDetail | null>(null);
 const loadingDetail = ref(false);
 const clearOpen = ref(false);
 const clearing = ref(false);
+// Filter the list to a single application (or "" = all). Laravel sends the app
+// name as the From display name (MAIL_FROM_NAME = config('app.name')); we group
+// by that, falling back to the From email when there's no display name.
+const selectedApp = ref<string>("");
 
 const list = computed<MailSummary[]>(() => mails.value ?? []);
 
-// Auto-select the first message; keep the selection valid as the list changes.
+/** The "application" an email belongs to: its From display name, or — when the
+ *  From has no name — the bare email address. */
+function applicationOf(from: string): string {
+  const named = from.match(/^\s*(.*?)\s*<([^>]+)>\s*$/);
+  if (named) {
+    const name = named[1].replace(/^"|"$/g, "").trim();
+    return name || named[2].trim();
+  }
+  return from.trim();
+}
+
+// Distinct applications present, for the filter dropdown.
+const applications = computed<string[]>(() => {
+  const set = new Set<string>();
+  for (const m of list.value) set.add(applicationOf(m.from));
+  return [...set].sort((a, b) => a.localeCompare(b));
+});
+
+const appOptions = computed(() => [
+  { value: "", label: `All applications (${list.value.length})` },
+  ...applications.value.map((a) => ({ value: a, label: a })),
+]);
+
+// The list narrowed to the selected application.
+const filteredList = computed<MailSummary[]>(() =>
+  selectedApp.value
+    ? list.value.filter((m) => applicationOf(m.from) === selectedApp.value)
+    : list.value,
+);
+
+// If the selected application disappears (e.g. its mail was cleared), fall back
+// to showing everything.
+watch(applications, (apps) => {
+  if (selectedApp.value && !apps.includes(selectedApp.value)) {
+    selectedApp.value = "";
+  }
+});
+
+// Auto-select the first visible message; keep the selection valid as the
+// (filtered) list changes.
 watch(
-  list,
+  filteredList,
   (items) => {
     if (items.length === 0) {
       selectedId.value = null;
@@ -56,17 +101,28 @@ async function select(id: string): Promise<void> {
   }
 }
 
-async function confirmClear(close: () => void): Promise<void> {
+// The delete button is scoped to the current filter: with no application
+// selected it clears everything; with one selected it deletes only that
+// application's currently-shown emails.
+const deleteScopeLabel = computed(() =>
+  selectedApp.value ? `all ${filteredList.value.length} email(s) from “${selectedApp.value}”` : "every captured email",
+);
+
+async function confirmDelete(close: () => void): Promise<void> {
   clearing.value = true;
   try {
-    await clearMails();
+    if (selectedApp.value) {
+      await deleteMails(filteredList.value.map((m) => m.id));
+    } else {
+      await clearMails();
+    }
     selectedId.value = null;
     detail.value = null;
     close();
     await refresh();
-    toast.success("Mailbox cleared");
+    toast.success(selectedApp.value ? "Emails deleted" : "Mailbox cleared");
   } catch (e) {
-    toast.error("Couldn't clear the mailbox", (e as IpcError).message);
+    toast.error("Couldn't delete emails", (e as IpcError).message);
   } finally {
     clearing.value = false;
   }
@@ -84,47 +140,59 @@ function formatDate(epoch: number): string {
 
 <template>
   <div class="flex h-screen flex-col bg-background">
-    <!-- Toolbar -->
-    <header
-      class="flex shrink-0 items-center justify-between border-b px-4 py-2.5"
-    >
-      <h1 class="text-sm font-semibold">Mails</h1>
-      <Button
-        variant="ghost"
-        size="icon"
-        :disabled="list.length === 0"
-        aria-label="Clear all mails"
-        @click="clearOpen = true"
-      >
-        <Trash2 class="size-4" />
-      </Button>
-    </header>
+    <!-- Custom dark titlebar (matches the main window; the window is
+         decorationless), with the clear-all action on the right. -->
+    <TitleBar title="Mails">
+      <template #actions>
+        <!-- Filter to one application (From display name) / from-email. -->
+        <Select
+          v-model="selectedApp"
+          :options="appOptions"
+          :disabled="list.length === 0"
+          aria-label="Filter by application"
+          class="!h-6 max-w-44 text-xs"
+        />
+        <!-- Plain button (not the icon-variant Button) so it sits cleanly in the
+             32px titlebar without overflowing it. -->
+        <button
+          type="button"
+          class="inline-flex size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:pointer-events-none disabled:opacity-40"
+          :disabled="filteredList.length === 0"
+          :aria-label="selectedApp ? 'Delete emails for this application' : 'Delete all emails'"
+          @click="clearOpen = true"
+        >
+          <Trash2 class="size-3.5" />
+        </button>
+      </template>
+    </TitleBar>
 
     <div class="flex min-h-0 flex-1">
       <!-- List pane -->
       <aside class="w-72 shrink-0 overflow-y-auto border-r">
         <div
-          v-if="list.length === 0"
+          v-if="filteredList.length === 0"
           class="flex h-full flex-col items-center justify-center gap-2 p-6 text-center text-muted-foreground"
         >
           <Inbox class="size-8" />
-          <p class="text-sm">No captured emails yet</p>
+          <p class="text-sm">
+            {{ list.length === 0 ? "No captured emails yet" : "No emails for this application" }}
+          </p>
         </div>
         <ul v-else class="divide-y">
           <li
-            v-for="m in list"
+            v-for="m in filteredList"
             :key="m.id"
             class="cursor-pointer px-3 py-2.5 transition-colors hover:bg-accent/60"
             :class="m.id === selectedId ? 'bg-accent' : ''"
             @click="select(m.id)"
           >
             <div class="flex items-center justify-between gap-2">
-              <span class="truncate text-xs text-muted-foreground">{{ m.from }}</span>
+              <span class="truncate text-xs font-medium">{{ applicationOf(m.from) }}</span>
               <span class="shrink-0 text-[10px] text-muted-foreground">
                 {{ formatDate(m.date_epoch) }}
               </span>
             </div>
-            <p class="mt-0.5 truncate text-sm font-medium">
+            <p class="mt-0.5 truncate text-sm">
               {{ m.subject || "(no subject)" }}
             </p>
           </li>
@@ -191,18 +259,22 @@ function formatDate(epoch: number): string {
       </aside>
     </div>
 
-    <Modal v-model:open="clearOpen" title="Clear all mails?">
+    <Modal
+      v-model:open="clearOpen"
+      :title="selectedApp ? 'Delete these emails?' : 'Clear all mails?'"
+    >
       <p class="text-sm text-muted-foreground">
-        This permanently deletes every captured email. This cannot be undone.
+        This permanently deletes {{ deleteScopeLabel }}. This cannot be undone.
       </p>
       <template #footer="{ close }">
         <Button variant="ghost" @click="close">Cancel</Button>
         <Button
           variant="destructive"
           :disabled="clearing"
-          @click="confirmClear(close)"
+          @click="confirmDelete(close)"
         >
-          <Spinner v-if="clearing" class="size-4" /> Delete all
+          <Spinner v-if="clearing" class="size-4" />
+          {{ selectedApp ? "Delete" : "Delete all" }}
         </Button>
       </template>
     </Modal>

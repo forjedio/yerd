@@ -1134,6 +1134,16 @@ fn request_clear_mails_byte_shape() {
 }
 
 #[test]
+fn request_delete_mails_byte_shape() {
+    let r = Request::DeleteMails {
+        ids: vec!["000001".into(), "000002".into()],
+    };
+    let s = serde_json::to_string(&r).unwrap();
+    assert_eq!(s, r#"{"type":"delete_mails","ids":["000001","000002"]}"#);
+    assert_eq!(serde_json::from_str::<Request>(&s).unwrap(), r);
+}
+
+#[test]
 fn request_set_mail_port_byte_shape() {
     let r = Request::SetMailPort { port: 2525 };
     let s = serde_json::to_string(&r).unwrap();

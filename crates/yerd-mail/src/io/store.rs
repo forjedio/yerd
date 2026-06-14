@@ -53,11 +53,13 @@ impl Store {
             source,
         })?;
         let entries = load_index(&dir)?;
-        let next_id = entries
-            .iter()
-            .filter_map(|e| e.id.parse::<u64>().ok())
-            .max()
-            .map_or(0, |m| m + 1);
+        // Seed the id counter from the max of the index AND any `.eml` on disk.
+        // Scanning the directory too means an `.eml` that was written but never
+        // recorded in `index.json` (e.g. a crash between the two writes) can never
+        // have its id reused, honouring the "ids never reused" guarantee.
+        let max_index = entries.iter().filter_map(|e| e.id.parse::<u64>().ok()).max();
+        let max_disk = max_eml_id(&dir);
+        let next_id = max_index.max(max_disk).map_or(0, |m| m + 1);
         Ok(Self {
             dir,
             cap,
@@ -121,6 +123,25 @@ impl Store {
         Ok(Some(mime::detail(id, &raw)))
     }
 
+    /// Delete a specific set of captured emails by id (others are kept). Unknown
+    /// ids are ignored. The id counter is not reset.
+    ///
+    /// # Errors
+    /// [`MailError::Io`] / [`MailError::Index`] on a filesystem failure.
+    pub async fn delete_many(&self, ids: &[String]) -> Result<(), MailError> {
+        let mut inner = self.inner.lock().await;
+        let remove: std::collections::HashSet<&str> = ids.iter().map(String::as_str).collect();
+        let (drop, keep): (Vec<MailSummary>, Vec<MailSummary>) = std::mem::take(&mut inner.entries)
+            .into_iter()
+            .partition(|e| remove.contains(e.id.as_str()));
+        inner.entries = keep;
+        for e in drop {
+            let p = self.eml_path(&e.id);
+            let _ = tokio::fs::remove_file(&p).await;
+        }
+        self.write_index(&inner.entries).await
+    }
+
     /// Delete every captured email. The id counter is **not** reset, so a later
     /// capture never reuses an id of a cleared message.
     ///
@@ -146,6 +167,21 @@ impl Store {
             .await
             .map_err(|source| MailError::Io { path, source })
     }
+}
+
+/// The largest numeric id among `<id>.eml` files on disk, or `None` if there are
+/// none. Used (with the index) to seed the monotonic id counter so a previously
+/// written `.eml` can never have its id reused after a restart.
+fn max_eml_id(dir: &Path) -> Option<u64> {
+    std::fs::read_dir(dir)
+        .ok()?
+        .flatten()
+        .filter_map(|e| {
+            let name = e.file_name();
+            let name = name.to_str()?;
+            name.strip_suffix(".eml")?.parse::<u64>().ok()
+        })
+        .max()
 }
 
 /// Load `index.json` if present; an absent file is an empty store.
@@ -204,6 +240,29 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn delete_many_removes_only_the_given_ids() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path().to_path_buf()).unwrap();
+        for s in ["a", "b", "c"] {
+            store.append(&msg(s)).await.unwrap();
+        }
+        // Delete "a" (000000) and "c" (000002); keep "b" (000001).
+        store
+            .delete_many(&["000000".to_string(), "000002".to_string()])
+            .await
+            .unwrap();
+        let list = store.list().await;
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].subject, "b");
+        assert!(!dir.path().join("000000.eml").exists());
+        assert!(dir.path().join("000001.eml").exists());
+        assert!(!dir.path().join("000002.eml").exists());
+        // Unknown ids are ignored.
+        store.delete_many(&["999999".to_string()]).await.unwrap();
+        assert_eq!(store.count().await, 1);
+    }
+
+    #[tokio::test]
     async fn retention_cap_evicts_oldest() {
         let dir = tempfile::tempdir().unwrap();
         let store = Store::open_with_cap(dir.path().to_path_buf(), 2).unwrap();
@@ -232,6 +291,18 @@ mod tests {
         // Next id continues after the loaded max.
         store.append(&msg("Next")).await.unwrap();
         assert_eq!(store.list().await[0].id, "000001");
+    }
+
+    #[tokio::test]
+    async fn next_id_skips_orphaned_eml_not_in_index() {
+        // Simulate a crash between writing an `.eml` and updating index.json: an
+        // orphan `000007.eml` exists with no index entry. A reopened store must
+        // NOT reuse id 7 (or any id ≤ 7).
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("000007.eml"), msg("orphan")).unwrap();
+        let store = Store::open(dir.path().to_path_buf()).unwrap();
+        store.append(&msg("fresh")).await.unwrap();
+        assert_eq!(store.list().await[0].id, "000008");
     }
 
     #[tokio::test]

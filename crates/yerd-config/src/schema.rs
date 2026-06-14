@@ -271,8 +271,9 @@ pub const DEFAULT_MAIL_PORT: u16 = 2525;
 /// Built-in mail-capture SMTP server settings (see [`Config::mail`]).
 ///
 /// A Herd-style capture sink: it accepts mail on a loopback port and stores it
-/// for inspection in the GUI. Off by default (opt-in, like every other
-/// subsystem); when enabled the daemon binds [`Self::port`] on `127.0.0.1`.
+/// for inspection in the GUI. Enabled by default; when enabled the daemon binds
+/// [`Self::port`] on `127.0.0.1` (a busy port is non-fatal — the daemon logs and
+/// runs with capture not listening).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MailSection {
     /// Whether the daemon starts the capture SMTP server on boot.
@@ -285,7 +286,7 @@ pub struct MailSection {
 impl Default for MailSection {
     fn default() -> Self {
         Self {
-            enabled: false,
+            enabled: true,
             port: DEFAULT_MAIL_PORT,
         }
     }

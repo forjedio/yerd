@@ -256,6 +256,12 @@ pub enum Request {
     },
     /// Delete every captured email.
     ClearMails,
+    /// Delete a specific set of captured emails by id (e.g. all the mail shown
+    /// for one application). Unknown ids are ignored.
+    DeleteMails {
+        /// The email ids to delete.
+        ids: Vec<String>,
+    },
     /// Set the mail-capture SMTP port. Takes effect on the next daemon
     /// start/restart (no implicit hot rebind), like [`Self::SetServicePort`].
     SetMailPort {
@@ -334,6 +340,7 @@ mod variant_name_pinning {
             Request::ListMails => {}
             Request::GetMail { .. } => {}
             Request::ClearMails => {}
+            Request::DeleteMails { .. } => {}
             Request::SetMailPort { .. } => {}
             Request::SetMailEnabled { .. } => {}
         }
@@ -449,6 +456,9 @@ mod variant_name_pinning {
         pin(Request::ListMails);
         pin(Request::GetMail { id: "000001".into() });
         pin(Request::ClearMails);
+        pin(Request::DeleteMails {
+            ids: vec!["000001".into()],
+        });
         pin(Request::SetMailPort { port: 2525 });
         pin(Request::SetMailEnabled { enabled: true });
     }

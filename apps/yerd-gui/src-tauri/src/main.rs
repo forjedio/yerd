@@ -99,6 +99,7 @@ fn main() {
             commands::list_mails,
             commands::get_mail,
             commands::clear_mails,
+            commands::delete_mails,
             commands::set_mail_port,
             commands::set_mail_enabled,
             mail_window::show_mails_window,
