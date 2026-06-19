@@ -16,7 +16,7 @@ The crate has three jobs, layered so they can be tested in isolation:
 The top three layers are **pure**: no sockets, no async, no I/O. The `transport` feature pulls in `tokio` async helpers; the actual socket/named-pipe binding never enters the crate at all - it lives in `yerdd`, `yerd`, and the Tauri sidecar.
 
 ::: info Source map
-`crates/yerd-ipc/src/`: `lib.rs` (re-exports + `PROTOCOL_VERSION`), `frame.rs` (framing), `message.rs` (JSON codec), `request.rs` / `response.rs` / `status.rs` (the wire types), `error.rs` (`FrameError` / `IpcError`), `transport.rs` (feature-gated async helpers). Tests: `tests/frame_codec.rs`, `tests/wire_stability.rs`, `tests/roundtrip.rs`. Browse them on [GitHub](https://github.com/forjedio/yerd).
+`crates/yerd-ipc/src/`: `lib.rs` (re-exports + `PROTOCOL_VERSION`), `frame.rs` (framing), `message.rs` (JSON codec), `request.rs` / `response.rs` / `status.rs` (the wire types), `dump.rs` (the Laravel ▸ Dumps data model: `DumpCategory`, `DumpEvent`, `DumpCounts`, `DumpExtStatus`), `error.rs` (`FrameError` / `IpcError`), `transport.rs` (feature-gated async helpers). Tests: `tests/frame_codec.rs`, `tests/wire_stability.rs`, `tests/roundtrip.rs`. Browse them on [GitHub](https://github.com/forjedio/yerd).
 :::
 
 ## Transport
@@ -145,9 +145,11 @@ pub enum Request { /* ... */ }
 
 `#[non_exhaustive]` means consumers in other crates cannot exhaustively match, so new variants are additive without a breaking change.
 
+The two derives differ in one respect: `Request` derives `Eq`, but **`Response` does not** - it is `PartialEq` only. `Response::Dumps` carries `DumpEvent`s whose `payload` is an opaque `serde_json::Value` (which can hold floats, so it is `PartialEq` but not `Eq`). `PartialEq` is all the wire-stability round-trips need on the response side.
+
 ### Request (client → daemon)
 
-The variant set is the daemon's whole RPC surface - liveness, site management, PHP version management, **database/cache service management**, **SQL database administration**, status/doctor, and daemon lifecycle. A representative sample with its exact wire shape (the full list of tags lives in `request.rs`):
+The variant set is the daemon's whole RPC surface - liveness, site management, PHP version management, **database/cache service management**, **SQL database administration**, **mail capture**, **dump telemetry**, status/doctor, and daemon lifecycle. A representative sample with its exact wire shape (the full list of tags lives in `request.rs`):
 
 | Variant | Wire JSON |
 | --- | --- |
@@ -175,6 +177,20 @@ The variant set is the daemon's whole RPC surface - liveness, site management, P
 | `Status` | `{"type":"status"}` |
 | `Diagnose` / `DoctorFix` | `{"type":"diagnose"}` / `{"type":"doctor_fix"}` |
 | `RestartDaemon` | `{"type":"restart_daemon"}` (Unix-only re-exec) |
+| `ListMails` | `{"type":"list_mails"}` |
+| `GetMail { id }` | `{"type":"get_mail","id":"000001"}` |
+| `ClearMails` | `{"type":"clear_mails"}` |
+| `DeleteMails { ids }` | `{"type":"delete_mails","ids":["000001"]}` |
+| `SetMailPort { port }` | `{"type":"set_mail_port","port":2525}` |
+| `SetMailEnabled { enabled }` | `{"type":"set_mail_enabled","enabled":true}` |
+| `ListDumps { since_id }` | `{"type":"list_dumps","since_id":0}` |
+| `ClearDumps` | `{"type":"clear_dumps"}` |
+| `DeleteDump { id }` | `{"type":"delete_dump","id":1}` |
+| `SetDumpsEnabled { enabled }` | `{"type":"set_dumps_enabled","enabled":true}` |
+| `SetDumpsPort { port }` | `{"type":"set_dumps_port","port":2304}` |
+| `SetDumpFeature { feature, enabled }` | `{"type":"set_dump_feature","feature":"queries","enabled":true}` |
+| `SetDumpsPersist { persist }` | `{"type":"set_dumps_persist","persist":true}` |
+| `DumpsStatus` | `{"type":"dumps_status"}` |
 
 Note `Unpark { path: String }` deliberately uses a `String`, not `PathBuf`: clients echo a value straight back from `Response::Parked`, and an exact-identity match avoids lossy path normalisation (the daemon does not canonicalise it).
 
@@ -199,6 +215,24 @@ pub enum Response {
     AvailableServices { services: Vec<ServiceAvailability> },
     ServiceLogs { lines: Vec<String> },
     Databases { databases: Vec<DatabaseSummary> },
+    Mails { mails: Vec<MailSummary> },
+    Mail { mail: Box<MailDetail> },               // boxed: large payload
+    Dumps {
+        events: Vec<DumpEvent>,
+        removed_ids: Vec<u64>,
+        counts: DumpCounts,
+        latest_id: u64,
+        min_live_id: u64,
+    },
+    DumpsStatus {
+        enabled: bool,
+        port: u16,
+        running: bool,
+        persist: bool,
+        extensions: Vec<DumpExtStatus>,
+        counts: DumpCounts,
+        features: BTreeMap<String, bool>,
+    },
 }
 ```
 
@@ -228,10 +262,12 @@ There is deliberately **no `#[serde(other)]` catch-all**. An unknown code from a
 
 ### Status & doctor payloads
 
-`status.rs` holds the nested payloads carried inside the status/doctor and service/database responses: `StatusReport`, `PortStatus`, `CaStatus`, `SiteCounts`, `PhpPoolStatus`, `PoolRunState`, `ServiceStatus`, `ServiceRunState`, `ServiceAvailability`, `DatabaseSummary`, `Diagnosis`, `Severity`, `DiagnosisCode`, `FixReport`, and `FixResult`. Same contract rules apply. `StatusReport` also carries an additive `services: Vec<ServiceStatus>` field alongside the PHP pools.
+`status.rs` holds the nested payloads carried inside the status/doctor, service/database, and mail responses: `StatusReport`, `PortStatus`, `CaStatus`, `SiteCounts`, `PhpPoolStatus`, `PoolRunState`, `ServiceStatus`, `ServiceRunState`, `ServiceAvailability`, `DatabaseSummary`, `Diagnosis`, `Severity`, `DiagnosisCode`, `FixReport`, `FixResult`, and the mail-capture types `MailStatus`, `MailSummary`, `MailHeader`, and `MailDetail`. Same contract rules apply. `StatusReport` also carries an additive `services: Vec<ServiceStatus>` field alongside the PHP pools, plus an additive `mail: Option<MailStatus>`.
 
-::: tip No `f64` on the wire
-`Response` derives `Eq`, so nothing reachable from it may hold a float. The system load average therefore crosses as integer hundredths - `StatusReport::load_avg` is `Option<[u32; 3]>`, each value `load × 100` - and the CLI renders it back to `x.xx`.
+`dump.rs` holds the dump-telemetry payloads carried inside the `Dumps` / `DumpsStatus` responses: `DumpCategory` (the per-tab category enum), `DumpEvent` (one buffered event; its `payload` is an opaque `serde_json::Value`), `DumpCounts` (per-category buffered counts), and `DumpExtStatus` (per-PHP-version extension presence). Same contract rules apply.
+
+::: tip Integer-encoded scalars (the load average)
+`Request` derives `Eq`, but `Response` does **not** - the `Dumps` response carries arbitrary JSON dump payloads (a `serde_json::Value`, which may hold floats), so an `Eq` derive is impossible there. That float escape hatch is confined to opaque dump payloads, though: the daemon never interprets them. The daemon's *own* status scalars are still integer-encoded so they stay exact and comparable. The system load average therefore crosses as integer hundredths - `StatusReport::load_avg` is `Option<[u32; 3]>`, each value `load × 100` - and the CLI renders it back to `x.xx`.
 :::
 
 ## Errors

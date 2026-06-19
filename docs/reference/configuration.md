@@ -29,7 +29,7 @@ Every field below maps one-to-one to a field in `schema.rs`. The on-disk shape a
 
 | Key         | TOML type            | Meaning                                                            | Default        |
 | ----------- | -------------------- | ----------------------------------------------------------------- | -------------- |
-| `version`   | integer              | On-disk schema version. **Mandatory.**                            | `3`            |
+| `version`   | integer              | On-disk schema version. **Mandatory.**                            | `5`            |
 | `tld`       | string               | TLD served by Yerd's resolver.                                    | `"test"`       |
 | `dns_port`  | integer (u16)        | Loopback port for the embedded `.test` DNS responder.             | `1053`         |
 | `ports`     | table                | HTTP / HTTPS listen ports.                                        | `80` / `443`   |
@@ -38,14 +38,16 @@ Every field below maps one-to-one to a field in `schema.rs`. The on-disk shape a
 | `linked`    | array of tables      | Explicitly linked sites.                                          | empty          |
 | `overrides` | array of tables      | Per-site overrides for **parked** sites.                          | empty          |
 | `services`  | table                | Per-service `[services.<id>]` tables the daemon auto-starts.       | empty          |
+| `mail`      | table                | Built-in mail-capture SMTP server.                                | on / `2525`    |
+| `dumps`     | table                | Laravel ▸ Dumps telemetry settings.                               | off / `2304`   |
 
 ::: warning Unknown keys are rejected
-The parser uses `deny_unknown_fields` at every level. A typo'd or stray key (top-level, or inside `[ports]`, `[php]`, `[parked]`, a `[services.<id>]` table, a `[[linked]]` entry, or an `[[overrides]]` entry) is a hard parse error - the daemon will refuse to load the file rather than silently ignore it.
+The parser uses `deny_unknown_fields` at every level. A typo'd or stray key (top-level, or inside `[ports]`, `[php]`, `[parked]`, `[mail]`, `[dumps]`, `[dumps.features]`, a `[services.<id>]` table, a `[[linked]]` entry, or an `[[overrides]]` entry) is a hard parse error - the daemon will refuse to load the file rather than silently ignore it.
 :::
 
 ### `version`
 
-The schema version. This key is **required** - a missing `version` is a hard error (`MissingVersion`), and a non-integer or negative value is rejected (`NonIntegerVersion`). The current schema version is `3`, and Yerd always writes `version = 3`. Older `version = 1` / `version = 2` files are migrated forward automatically on load. See [Schema versioning](#schema-versioning-and-migration) below.
+The schema version. This key is **required** - a missing `version` is a hard error (`MissingVersion`), and a non-integer or negative value is rejected (`NonIntegerVersion`). The current schema version is `5`, and Yerd always writes `version = 5`. Older `version = 1` through `version = 4` files are migrated forward automatically on load. See [Schema versioning](#schema-versioning-and-migration) below.
 
 ### `tld`
 
@@ -214,22 +216,68 @@ enabled = true
 
 You normally manage these through the [`yerd service`](../reference/cli/services) commands rather than by hand.
 
+### `[mail]`
+
+The built-in mail-capture SMTP server - a Herd-style sink that accepts mail on a loopback port and stores it for inspection in the desktop app. **Capture is on by default.**
+
+| Key       | TOML type     | Meaning                                                | Default |
+| --------- | ------------- | ------------------------------------------------------ | ------- |
+| `enabled` | boolean       | Whether the daemon starts the capture server on boot.  | `true`  |
+| `port`    | integer (u16) | Loopback port the capture server binds on `127.0.0.1`. | `2525`  |
+
+When enabled the daemon binds `port` on `127.0.0.1`; a busy port is non-fatal - the daemon logs and runs with capture not listening. Validation rejects `port = 0` (`MailPortZero`).
+
+Because the section's default (enabled, port `2525`) is the common case, the serialiser **omits `[mail]` entirely when it matches the default** - so a default file has no `[mail]` table at all. The table is written only once a value differs from the default.
+
+```toml
+[mail]
+enabled = true
+port = 2525
+```
+
+### `[dumps]`
+
+Telemetry settings for the Laravel ▸ Dumps feature. The dump server buffers per-request telemetry frames from the `yerd-php-ext` extension; this section is the durable source of truth (the daemon writes a runtime mirror the extension reads each request). **Disabled by default.**
+
+| Key       | TOML type     | Meaning                                                              | Default |
+| --------- | ------------- | ------------------------------------------------------------------- | ------- |
+| `enabled` | boolean       | Whether dump interception is on (the "antenna").                    | `false` |
+| `port`    | integer (u16) | Loopback port the dump server listens on / the extension connects to. | `2304`  |
+| `persist` | boolean       | When `false`, the buffer is cleared on each new request (latest-request view); `true` accumulates across requests. | `false` |
+| `features`| table         | Per-feature capture toggles (see below).                            | empty   |
+
+Validation rejects `port = 0` (`DumpsPortZero`).
+
+`[dumps.features]` is a map of feature name → bool. The keys are `dumps`, `queries`, `jobs`, `views`, `requests`, `logs`, and `cache`. **An absent key means "on"**, so the table only needs entries for features you have turned *off*. An empty map (every feature on) is omitted from the file, and so is the whole `[dumps]` table when it matches the default (disabled, port `2304`, no overrides).
+
+```toml
+[dumps]
+enabled = true
+port = 2304
+persist = false
+
+[dumps.features]
+queries = false   # absent keys default to on; only the off ones need listing
+```
+
 ## Schema versioning and migration
 
-Every config file **must** carry a top-level `version = N` key - it is the single trigger for forward migration. The current schema version is `3`.
+Every config file **must** carry a top-level `version = N` key - it is the single trigger for forward migration. The current schema version is `5`.
 
 When the daemon loads a file, it routes on the version it finds:
 
 ```
-found  > CURRENT (3)   →  error (UnsupportedVersion) - a newer Yerd wrote this file
-found == CURRENT (3)   →  parse directly
-found  < CURRENT (3)   →  walk forward migration steps, then parse
+found  > CURRENT (5)   →  error (UnsupportedVersion) - a newer Yerd wrote this file
+found == CURRENT (5)   →  parse directly
+found  < CURRENT (5)   →  walk forward migration steps, then parse
 ```
 
 A file written by a *newer* Yerd than you are running is refused rather than misread. Older files are migrated forward in place, one version at a time, before the normal wire-deserialisation and validation run:
 
 - **`v1 → v2`** is a bare version bump: v2 only **added** the optional `web_subpath` (`[[linked]]`) and `web_root` (`[[overrides]]`) keys, which default when absent, so a v1 file needs no structural rewrite.
 - **`v2 → v3`** is the first *structural* migration: it rewrites the old `[services]` shape (a flat `enabled = ["redis", ...]` array of identifiers) into per-service `[services.<id>]` tables, carrying each previously-enabled id forward as an `enabled = true` instance.
+- **`v3 → v4`** is a bare version bump: v4 only **added** the optional `[mail]` section, which defaults when absent, so a v3 file needs no structural rewrite. The bump exists so an *older* binary rejects a file using `[mail]` cleanly as `UnsupportedVersion` rather than failing on the unknown table.
+- **`v4 → v5`** is likewise a bare version bump: v5 only **added** the optional `[dumps]` table, which defaults when absent. Same rationale - the bump lets an older binary refuse a `[dumps]`-bearing file cleanly instead of tripping `deny_unknown_fields`.
 
 The on-disk schema version is deliberately decoupled from the IPC protocol version; the two evolve independently.
 
@@ -256,8 +304,8 @@ Yerd does not `fsync` the file or its parent directory after a save. For a devel
 This is a full, valid `yerd.toml` exercising every field:
 
 ```toml
-# Schema version - mandatory, always written as 3 by this release.
-version = 3
+# Schema version - mandatory, always written as 5 by this release.
+version = 5
 
 # TLD served by the resolver; sites resolve as <name>.test
 tld = "test"
@@ -312,6 +360,24 @@ web_root = "public"
 version = "8"
 port = 6379
 enabled = true
+
+# Built-in mail-capture SMTP server. ON by default - this table is written only
+# when a value differs from the default (enabled, port 2525); a default config
+# omits [mail] entirely. Shown here for completeness.
+[mail]
+enabled = true
+port = 2525
+
+# Laravel ▸ Dumps telemetry. OFF by default - omitted from a default file. When
+# present, absent [dumps.features] keys default to ON, so only disabled features
+# need listing.
+[dumps]
+enabled = true
+port = 2304
+persist = false
+
+[dumps.features]
+queries = false
 ```
 
 ## Related pages

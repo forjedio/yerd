@@ -29,10 +29,11 @@ apps/yerd-gui/
 ├── tsconfig.json           "@/*" -> src/*
 ├── src-tauri/              Rust BRIDGE
 │   ├── Cargo.toml          crate yerd-gui (bin yerd-gui), edition 2024, rustc ≥ 1.85
-│   ├── tauri.conf.json     window, CSP, bundle targets
+│   ├── tauri.conf.json     windows (main + dumps + mails), CSP, bundle targets
 │   ├── capabilities/default.json   permission allowlist
 │   └── src/
-│       ├── main.rs         Builder, plugins, invoke_handler, tray, window events
+│       ├── main.rs         Builder, plugins, invoke_handler, tray, window events; show_dumps window helper
+│       ├── mail_window.rs  show_mails_window command (show+focus the static `mails` window)
 │       ├── commands.rs     one #[tauri::command] per Request; finish() error mapping
 │       ├── ipc.rs          exchange() - socket transport, mirrors the CLI's
 │       ├── elevate.rs      OS-elevated `yerd <verb> <target>` (pkexec / osascript)
@@ -42,14 +43,14 @@ apps/yerd-gui/
 └── src/                    Vue FRONTEND
     ├── main.ts             createApp + router; initTheme(); initDesktopChrome()
     ├── App.vue             AppShell + Toaster; shared daemon poller; first-run auto-install
-    ├── router.ts           hash router: /general /php /sites /services /about
+    ├── router.ts           hash router: /general /php /sites /services /dumps /mail /doctor /about (+ /dumps-window, /mails-viewer standalone routes)
     ├── ipc/
     │   ├── types.ts        TypeScript mirror of the yerd-ipc wire JSON
     │   ├── client.ts       typed wrappers around invoke() + IpcError
     │   └── client.test.ts  command-mapping + error-categorisation tests
     ├── composables/        useDaemon (singleton poller), usePoll, useToast
     ├── components/         AppShell, SideNav, TitleBar, StatusPill, ComingSoon, ui/
-    ├── views/              GeneralView, PhpView, SitesView, ServicesView, AboutView
+    ├── views/              GeneralView, PhpView, SitesView, ServicesView, LaravelDumpsView, DumpsWindowView, MailView, MailsViewerView, DoctorView, AboutView
     └── lib/                utils (cn, humanisers), theme, desktop chrome
 ```
 
@@ -223,6 +224,31 @@ is why the frontend ships a custom `TitleBar.vue`. The CSP is locked down to
 `default-src 'self'` (plus inline styles and `data:` images). Bundle targets are
 `deb`, `appimage`, and `dmg`.
 
+::: info Three windows, one bundle
+The app is no longer single-window. `tauri.conf.json` declares **three** windows,
+all loading the same SPA bundle at different hash routes and all hidden until
+shown:
+
+- **`main`** - the app shell (`index.html`, default route).
+- **`mails`** - the standalone Mails viewer (`#/mails-viewer`), declared
+  statically.
+- **`dumps`** - the live Laravel Dumps viewer (`#/dumps-window`). It is also
+  declared statically, but `main.rs`'s `show_dumps` helper *lazily (re)creates* it
+  if it has been destroyed, so the "Show Dumps" path is robust either way.
+
+The auxiliary windows are **shown, not spawned**: `mail_window::show_mails_window`
+and `show_dumps_window` just `get_webview_window(label)` then `show()` + focus.
+The `CloseRequested` handler is **global** (fires for every window) and hides
+rather than closes each one, so the windows persist across opens. Crucially it
+gates the close-to-tray + Dock-accessory behaviour on `window.label() == "main"`:
+closing an auxiliary window must not yank the main app's Dock presence or
+minimise the whole app to the tray. On the frontend side, `App.vue` detects the
+auxiliary windows (`getCurrentWindow().label === "dumps"`, or a route with
+`meta.standalone`) and renders the bare viewer with **no SideNav/TitleBar shell
+and no daemon poller**, so an auxiliary window never runs a second `status` loop.
+The tray menu also carries a **"Show Dumps"** item alongside "Open Yerd".
+:::
+
 ### Capabilities
 
 `capabilities/default.json` is the permission allowlist. Our own
@@ -349,8 +375,27 @@ the daemon when the window is hidden to the tray - a real cost, since each
 ### Views, components, and `lib`
 
 The hash router (`createWebHashHistory`, because the webview loads from a
-file/asset origin) maps to four views: **PhpView**, **SitesView**,
-**ServicesView**, **AboutView**, with `/` redirecting to `/php`.
+file/asset origin) maps the in-shell routes - **GeneralView** (`/general`, the
+default), **PhpView**, **SitesView**, **ServicesView**, **LaravelDumpsView**
+(`/dumps`), **MailView** (`/mail`), **DoctorView**, **AboutView** - plus two
+**standalone** routes that the auxiliary windows load:
+
+- **DumpsWindowView** (`/dumps-window`) - the live Laravel Dumps viewer that
+  fills the separate `dumps` window: tabbed by `DumpCategory`, incrementally
+  paging the daemon's ring via `listDumps({ since_id })`, with search, persist
+  and always-on-top toggles, and an "open in editor" jump. `LaravelDumpsView`
+  (the in-shell `/dumps` page) is the *settings* surface - it drives
+  `dumpsStatus` / `setDumpsEnabled` / `setDumpsPort` / `setDumpFeature` and shows
+  per-PHP-version extension presence, with a "Show Dumps" button that opens the
+  standalone window via `showDumpsWindow`.
+- **MailsViewerView** (`/mails-viewer`, `meta.standalone`) - the captured-mail
+  inbox that fills the separate `mails` window: lists `listMails`, loads a
+  selected message with `getMail`, renders the HTML body in a **sandboxed iframe**
+  (strict child CSP, no scripts, no same-origin), groups by sending application,
+  and supports clear/delete. `MailView` (the in-shell `/mail` page) is the
+  settings surface - it reads mail status off the shared `status` poll, drives
+  `setMailEnabled` / `setMailPort`, and opens the viewer window via
+  `showMailsWindow`.
 
 Components are split into app components (`AppShell`, `SideNav`, `TitleBar`,
 `StatusPill`, `PageHeader`, `ComingSoon`) and hand-rolled

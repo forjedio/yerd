@@ -106,6 +106,8 @@ The daemon's modules (`src/lib.rs` re-exports each as `pub mod`):
 | `mutate` | Pure, I/O-free config-mutation logic (`Park`/`Link`/`SetPhp`/…). |
 | `php_install` | Download + unpack prebuilt PHP builds; `reqwest` downloader. |
 | `php_updates` | Update poller + cache (notify-only). |
+| `dump_server` | Loopback TCP server reading newline-delimited JSON dump frames from the native `yerd-dump` extension into a bounded ring buffer; serves the ring to the GUI over IPC (`ListDumps`/`DumpsStatus`/…). |
+| `ext_install` | Downloads + SHA-256-verifies the native `yerd-dump` `.so` per installed PHP version (from the `forjedio/yerd-php-ext` releases) into `{data}/php-ext/php-<ver>/`. |
 | `secure_fs` | Filesystem hardening (`0o700` dirs, `0o600` secrets). |
 | `signals` | Unified shutdown future (SIGTERM + Ctrl-C). |
 | `single_instance` | `InstanceLock` - exclusive `flock` so only one daemon runs. |
@@ -124,7 +126,9 @@ The daemon's modules (`src/lib.rs` re-exports each as `pub mod`):
 6. **PhpManager** - constructed with `TokioProcessSpawner`, `SystemClock`, `FastCgiProbe`, the dirs, a port binder, the **daemon PID** as `instance_id` (disambiguates concurrent daemons), and the discovered binaries. Global ini settings from `config.php.settings` are seeded so the first pool start renders the user's values.
 7. **IPC listener** - `build_ipc_listener` (Unix socket `runtime/yerd.sock` on Unix, named pipe `yerd-<pid>` on Windows).
 8. **DNS bind** - `yerd_dns::Bound::bind(127.0.0.1:<dns_port>)`. A **fixed** port is required so an installed resolver config (`DNS=127.0.0.1:<port>`) survives restarts; `dns_port = 0` requests an ephemeral port (dev/tests only), read back via `Bound::local_addr`.
-9. **DaemonState assembly** - everything the running tasks share (next section).
+9. **Mail-capture store + listener** (the Email Capture feature). A `yerd_mail::Store` is opened over `{data}/mail` **unconditionally** - so already-captured mail stays listable even when capture is off - and is a hard error if it can't open. The SMTP listener is then bound via `yerd_mail::bind(mail_port)` **only when `config.mail.enabled`**; a bind failure (e.g. the port is busy) is logged and degrades to not-listening (`mail_listener = None`) rather than aborting the daemon. The resulting `mail_listening` flag is recorded on `DaemonState` and surfaced by `Status`.
+10. **Dump-extension wiring.** Before the manager is shared, `php_manager.set_dump_ext(..)` is called so any pool with a matching `yerd-dump.so` under `{data}/php-ext/php-<ver>/` starts with `-d extension=<so>` plus the extension's `yerd_dump.state_path` ini define. The `.so` itself is fetched on demand (see [the run loop](#the-run-loop-lib-rs) / `ext_install`); the extension self-disables via its state file when dumps are off.
+11. **DaemonState assembly** - everything the running tasks share (next section), including the `DumpStore` (the ring + rebind signal) and the mail store/runtime flag. After assembly, the extension's runtime `state.json` is seeded from the persisted `[dumps]` config (best-effort) so a fresh boot reflects the durable settings.
 
 ### Site discovery: `scan_sites` / `build_routing`
 
@@ -180,9 +184,18 @@ The mutation path is the only place that holds two locks, and always in the orde
 
 1. Clones `state.shutdown_tx` and subscribes a receiver.
 2. Spawns `signals::wait_for_shutdown` on the sender.
-3. Calls `run_until_shutdown`, which spawns the five subsystem tasks - **DNS** (`yerd_dns::Bound::serve`), **proxy** (`yerd_proxy::ProxyServer::serve` with the `DaemonBackendResolver` and an `HttpsBinding` carrying the cert store), **IPC** (`ipc_server::run`), a **PHP update checker** (poll once, then every 12h; notify-only), and the **filesystem watcher** (`fs_watch::run`, see above) - each watching a clone of the shutdown channel.
-4. Awaits the shutdown channel, then caps each task's join with a `timeout` (10s DNS/proxy, 5s IPC/update/watch) so a stuck task can't hang the exit.
-5. Shuts down the PhpManager, reads `restart_requested`, drops the instance lock, and returns `Outcome`.
+3. Calls `run_until_shutdown`, which spawns the long-lived subsystem tasks - each watching a clone of the shutdown channel:
+   - **DNS** (`yerd_dns::Bound::serve`),
+   - **proxy** (`yerd_proxy::ProxyServer::serve` with the `DaemonBackendResolver` and an `HttpsBinding` carrying the cert store),
+   - **IPC** (`ipc_server::run`),
+   - the **dump-telemetry server** (`dump_server::run`) - a loopback TCP listener receiving newline-delimited JSON frames from the native PHP `yerd-dump` extension into a ring buffer; it rebinds on a port change and a bind failure is non-fatal (logged, retried on the next rebind),
+   - a **PHP update checker** (poll once, then every 12h; notify-only),
+   - the **filesystem watcher** (`fs_watch::run`, see above), and
+   - conditionally, the **mail-capture SMTP task** (`yerd_mail::serve`) - spawned only when `daemon.mail_listener` is `Some` (mail capture enabled *and* the SMTP port bound at startup; a disabled or failed bind is non-fatal and already logged in `bring_up`).
+
+   That is **six always-on tasks plus the conditional mail task**. Two further spawns are fire-and-forget background work, deliberately *not* awaited so a slow boot can't delay the listeners: an **enabled-services auto-start** (`services::auto_start_enabled`) and, when dumps are enabled in config, an **extension-install** pass (`ext_install::ensure_for_installed`) that fetches the `.so` for installed PHP versions so on-demand pools pick it up.
+4. Awaits the shutdown channel, then caps each task's join with a `timeout` (10s DNS/proxy, 5s IPC/dump/update/watch, and 5s for the mail task when present) so a stuck task can't hang the exit.
+5. Shuts down the PhpManager and the service manager, reads `restart_requested`, drops the instance lock, and returns `Outcome`.
 
 After `run_until_shutdown` returns, the signal task is **aborted** rather than awaited - when shutdown came from a `RestartDaemon` IPC (which trips the channel directly with no OS signal), the signal task is still parked and awaiting it would hang the restart forever.
 
@@ -196,7 +209,11 @@ After `run_until_shutdown` returns, the signal task is **aborted** rather than a
 - **Mutations:** `Park`, `Link`, `Unlink`, `Unpark`, `SetPhp`, `SetSecure`, `SetWebRoot` → `handle_mutation`.
 - **PHP lifecycle:** `InstallPhp`, `UpdatePhp`, `CheckPhpUpdates`, `SetDefaultPhp`, `SetPhpSettings`, `RestartPhp`, `RestartAllPhp`, `UninstallPhp`.
 - **Doctor:** `Diagnose` (via `yerd_doctor::diagnose`), `DoctorFix` (runs `plan_auto_fixes`, applies FPM restarts, re-diagnoses).
+- **Dumps (Laravel telemetry):** `ListDumps` (pages the ring), `ClearDumps`, `DeleteDump`, `DumpsStatus`, `SetDumpsEnabled` (first enable fetches the `.so` and restarts started pools), `SetDumpsPort` (test-binds then triggers a hot rebind), `SetDumpsPersist`, `SetDumpFeature` → `dump_server::*`.
+- **Mail capture:** `ListMails`, `GetMail`, `ClearMails`, `DeleteMails`, `SetMailPort`, `SetMailEnabled` (port/enabled persist to config and take effect on the next restart - no hot rebind) → the `mail_store` / `set_mail_*` handlers.
 - **Lifecycle:** `RestartDaemon` (Unix only).
+
+The dispatch also routes the **services / database-admin** families (`ListServices`, `InstallService`, `StartService`/`StopService`/`RestartService`, `CreateDatabase`/`ListDatabases`/`DropDatabase`/`BackupDatabase`/`RestoreDatabase`, …) to `services::*` / `db_admin::*`.
 
 ### The mutation pipeline
 

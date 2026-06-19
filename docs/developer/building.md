@@ -311,6 +311,18 @@ key**. The GUI's first-run auto-installer verifies a downloaded binary's
 signature and only ad-hoc-signs older, unsigned releases, so it never strips the
 Developer ID signature.
 
+::: info Why the CLI binaries aren't stapled
+The GUI `.app` is stapled (Tauri staples the notarisation ticket into the
+bundle, so Gatekeeper assesses it offline). The three CLI binaries deliberately
+are **not**: a loose Mach-O / tarball can't carry a stapled ticket. They pass
+Gatekeeper two other ways - notarytool records each `cdhash`, so Gatekeeper
+approves them via an online notarisation check, and the `curl | sh` /
+auto-installer download path sets no `com.apple.quarantine` xattr, so they exec
+regardless. This is why the CLI verify step doesn't run an `spctl -t exec` gate:
+an unstapled, unquarantined loose binary often assesses as "rejected" even when
+it is correctly notarised.
+:::
+
 This is driven entirely by GitHub Actions **secrets** - there's nothing to
 configure in a normal build. To (re)provision them:
 

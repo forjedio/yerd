@@ -50,7 +50,8 @@ The crate sets `#![forbid(unsafe_code)]`.
 src/
   lib.rs        Re-exports + CURRENT_VERSION; the purity-boundary doc.
   schema.rs     Public types (Config, Ports, PhpSection, ParkedSection,
-                SiteOverride, ServicesSection) + Config's public methods.
+                SiteOverride, ServicesSection, MailSection, DumpsSection)
+                + Config's public methods.
   parse.rs      Wire mirrors, TOML deserialisation, TryFrom<Wire>, validate().
   serialize.rs  Borrowed wire mirrors + to_toml().
   migrate.rs    Schema-version reading and forward-migration step walker.
@@ -69,11 +70,11 @@ All public surface hangs off `Config` plus the re-exported helper types. From
 ```rust
 pub use error::{ConfigError, MigrationErrorReason, ValidateErrorReason};
 pub use schema::{
-    Config, ParkedSection, PhpSection, Ports, ServiceInstance, ServicesSection, SiteOverride,
-    DEFAULT_DNS_PORT,
+    Config, DumpsSection, MailSection, ParkedSection, PhpSection, Ports, ServiceInstance,
+    ServicesSection, SiteOverride, DEFAULT_DNS_PORT, DEFAULT_DUMP_PORT, DEFAULT_MAIL_PORT,
 };
 
-pub const CURRENT_VERSION: u32 = 3;
+pub const CURRENT_VERSION: u32 = 5;
 ```
 
 `Config` exposes exactly four pure methods and two I/O methods:
@@ -112,6 +113,8 @@ pub struct Config {
     pub linked: Vec<Site>,
     pub overrides: BTreeMap<String, SiteOverride>,
     pub services: ServicesSection,
+    pub mail: MailSection,
+    pub dumps: DumpsSection,
 }
 ```
 
@@ -155,9 +158,26 @@ Notable design decisions, all grounded in the source:
   forward-compatibility with experimental services without a `yerd-config`
   release. Keys are validated against the private `KNOWN_SERVICES` const in
   `parse.rs`: `["mysql", "mariadb", "postgres", "redis"]`.
+- **`MailSection`** (the `[mail]` table, added in schema v4) configures the
+  built-in mail-capture SMTP sink. It carries `enabled: bool` (**default
+  `true`**) and `port: u16` (the loopback port, default `DEFAULT_MAIL_PORT` =
+  `2525`). When enabled the daemon binds the port on `127.0.0.1`; a busy port is
+  non-fatal (the daemon logs and runs with capture not listening). The struct is
+  `Copy`.
+- **`DumpsSection`** (the `[dumps]` table, added in schema v5) configures the
+  Laravel ▸ Dumps telemetry feature. Fields: `enabled: bool` (**default
+  `false`** - the "antenna"), `port: u16` (loopback port the dump server listens
+  on and the PHP extension connects to, default `DEFAULT_DUMP_PORT` = `2304`),
+  `persist: bool` (default `false`: the buffer is cleared each new request so the
+  viewer shows only the latest request; `true` accumulates across requests), and
+  `features: BTreeMap<String, bool>` (per-feature capture toggles keyed by
+  feature name - `dumps`/`queries`/`jobs`/`views`/`requests`/`logs`/`cache` - an
+  absent key meaning "on"). `BTreeMap` for stable serialisation order.
 
 `DEFAULT_DNS_PORT` is `1053`. A fixed (non-ephemeral) port keeps the resolver
 configuration installed by `yerd elevate resolver` valid across daemon restarts.
+`DEFAULT_MAIL_PORT` is `2525` and `DEFAULT_DUMP_PORT` is `2304`; both are fixed
+for the same reason (a sender / the PHP extension connects to a known port).
 
 ## The parse pipeline
 
@@ -267,12 +287,19 @@ deterministic:
 | 1 | `ports.http == 0` | `HttpPortZero` |
 | 2 | `ports.https == 0` | `HttpsPortZero` |
 | 3 | `ports.http == ports.https` | `HttpHttpsPortsEqual` |
-| 4 | two linked sites share a `name()` | `DuplicateLinkedSite` |
-| 5 | a `parked.paths` entry is empty | `ParkedPathEmpty` |
-| 6 | an `overrides` key is empty | `OverridePathEmpty` |
-| 7 | a linked `web_subpath` or override `web_root` is absolute or contains `..` | `WebRootEscapes` |
-| 8 | a `services.instances` key is not in `KNOWN_SERVICES` | `UnknownService` |
-| 9 | a `php.settings` entry fails `php_settings::validate_value` | `InvalidPhpSetting` |
+| 4 | `mail.port == 0` | `MailPortZero` |
+| 5 | `dumps.port == 0` | `DumpsPortZero` |
+| 6 | two linked sites share a `name()` | `DuplicateLinkedSite` |
+| 7 | a `parked.paths` entry is empty | `ParkedPathEmpty` |
+| 8 | an `overrides` key is empty | `OverridePathEmpty` |
+| 9 | a linked `web_subpath` or override `web_root` is absolute or contains `..` | `WebRootEscapes` |
+| 10 | a `services.instances` key is not in `KNOWN_SERVICES` | `UnknownService` |
+| 11 | a `php.settings` entry fails `php_settings::validate_value` | `InvalidPhpSetting` |
+
+The `mail.port` / `dumps.port` zero-checks (added with schema v4 / v5) sit
+alongside the HTTP/HTTPS port checks: both ports are bound on `127.0.0.1` when
+their feature is enabled, so a zero (ephemeral) port is meaningless - a sender or
+the PHP extension could never find it.
 
 The `php.settings` check runs last (it is the newest invariant). It rejects both
 unsupported directives (e.g. `allow_url_fopen`) and values that fail the shape /
@@ -290,7 +317,7 @@ version is the single trigger for forward migrations.
 
 ```rust
 /// The on-disk schema version this crate writes.
-pub const CURRENT_VERSION: u32 = 3;
+pub const CURRENT_VERSION: u32 = 5;
 ```
 
 `CURRENT_VERSION` is **decoupled** from `yerd_ipc::PROTOCOL_VERSION`: the on-disk
@@ -299,23 +326,33 @@ with a new entry in `migrate::STEPS`.
 
 `migrate.rs` holds the steps, indexed so that **`STEPS[N]` walks `vN → v(N+1)`**
 - matching `migrate::up`, which indexes `STEPS[current]` (the version being
-migrated *from*). At v3 there are three:
+migrated *from*). At v5 there are five (`STEPS.len() == CURRENT_VERSION`, pinned
+by `steps_cover_every_version_below_current`):
 
 ```rust
 pub(crate) type MigrationStep = fn(&mut Value) -> Result<(), ConfigError>;
 
 /// STEPS[N] walks vN → v(N+1); a v1 file is migrated by STEPS[1].
-pub(crate) const STEPS: &[MigrationStep] =
-    &[migrate_v0_to_v1, migrate_v1_to_v2, migrate_v2_to_v3];
+pub(crate) const STEPS: &[MigrationStep] = &[
+    migrate_v0_to_v1,
+    migrate_v1_to_v2,
+    migrate_v2_to_v3,
+    migrate_v3_to_v4,
+    migrate_v4_to_v5,
+];
 ```
 
 `STEPS[0]` (v0→v1) is reachable only via a hand-crafted `version = 0` file - v0
 was never written to disk - but it must exist so the later indices line up.
 `v0→v1` and `v1→v2` are bare version bumps (v2 only **added** the optional
-`web_subpath` / `web_root` keys, which default when absent). `v2→v3` is the first
+`web_subpath` / `web_root` keys, which default when absent). `v2→v3` is the only
 **structural** step: it rewrites the old flat `services.enabled = [...]` array of
 ids into per-service `[services.<id>]` tables (each previously-enabled id becomes
-an `enabled = true` instance).
+an `enabled = true` instance). `v3→v4` and `v4→v5` are again bare version bumps:
+v4 added the optional `[mail]` section and v5 the optional `[dumps]` table, both
+of which default when absent. Each bump still exists so an *older* binary rejects
+a file that uses the newer table cleanly as `UnsupportedVersion` rather than
+failing on an unknown key under `deny_unknown_fields`.
 
 Each step rewrites the parsed `toml::Value` in place and is responsible for
 leaving the `version` key set to `N + 1`. A step need not produce a *valid*
@@ -343,7 +380,7 @@ The output shape is deliberate and pinned by `tests/toml_byte_shape.rs`:
 
 - **`version` is always written first.** `WireSer.version` is the first struct
   field, and TOML emits scalars before sub-tables. The output always starts with
-  `version = 3\n`.
+  `version = 5\n`.
 - **Scalars precede their sibling tables.** `dns_port` is emitted as a top-level
   scalar before any `[section]`; `php.default` precedes the `[php.settings]`
   sub-table.
@@ -361,7 +398,7 @@ The output shape is deliberate and pinned by `tests/toml_byte_shape.rs`:
 A representative populated document round-trips cleanly:
 
 ```toml
-version = 3
+version = 5
 tld = "test"
 dns_port = 1053
 
@@ -463,7 +500,7 @@ plus a `PathBuf` because diagnostic detail matters for `load`/`save` debugging.
 | `Migration { reason: MigrationErrorReason }` | version reading or forward migration failed |
 | `Io { path, source }` | I/O failed in `load` / `save` |
 
-`ValidateErrorReason` enumerates the nine checks in the
+`ValidateErrorReason` enumerates the eleven checks in the
 [validation table](#validation). `MigrationErrorReason` is `MissingVersion`,
 `NonIntegerVersion`, or `MissingStep { from }`.
 
@@ -476,7 +513,7 @@ the integration tests pin the durable contracts:
 - **`tests/roundtrip.rs`** - `default` and a fully populated config survive
   `to_toml` → `from_toml`, and the populated config passes `validate`.
 - **`tests/toml_byte_shape.rs`** - structural goldens on the emitted TOML: the
-  `version = 3` first line, scalar-before-table ordering, omitted empty optional
+  `version = 5` first line, scalar-before-table ordering, omitted empty optional
   tables, `[]` for empty sets, lexicographic ordering, and the
   per-id `[services.<id>]` table shape. These survive
   `to_string_pretty`'s line-break and table-ordering choices by asserting on

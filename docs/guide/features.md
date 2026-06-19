@@ -153,3 +153,26 @@ yerd db create mysql my_app
 ```
 
 [Services & Databases →](./services)
+
+## Mail capture
+
+Yerd runs a built-in SMTP sink on `127.0.0.1:2525`, enabled by default, that
+catches every message your apps try to send and keeps it locally for inspection
+- it never relays anything to the outside world. Browse captured mail in the
+desktop app or straight from the CLI, so testing transactional email needs no
+third-party service.
+
+```sh
+yerd mail                  # list captured messages
+```
+
+[Mail capture guide →](./mail)
+
+## Laravel Dumps
+
+A native PHP extension streams Laravel dumps, queries, jobs, views, requests,
+logs, and cache events live into a dedicated desktop-app window as they happen -
+a richer, always-on view than `dd()` in the browser. It's off by default; enable
+it when you want the live feed.
+
+[Laravel Dumps guide →](./laravel-dumps)

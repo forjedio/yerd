@@ -1,14 +1,16 @@
 # yerd-php-ext — Architecture
 
-> **Handoff seed.** This document is written to live at the root of the new
-> `yerd-php-ext` repository (copy it there). It is the technical design for a native
-> PHP extension that captures Laravel/PHP telemetry and ships it to Yerd's dump
-> server. The companion `CLAUDE.md` is the agent/operating guide; `implementation_plan.md`
-> is the phased build plan.
+> **Shipped integration.** This document describes how Yerd integrates the native
+> `yerd-dump` PHP extension - the design of the extension and the contract between
+> it and Yerd. The extension lives in its own repository,
+> [`forjedio/yerd-php-ext`](https://github.com/forjedio/yerd-php-ext), and ships its
+> builds via GitHub Releases; Yerd downloads and loads them. The two sides are coupled
+> only through the integration contract in §2 - any change there must land in both
+> repos.
 
 ## 1. What this is
 
-`yerd-php-ext` is a PHP **`extension` (a regular PHP extension, not a zend_extension)** (written in **Rust** via
+`yerd-php-ext` is a regular PHP **`extension`** (not a `zend_extension`; written in **Rust** via
 [`ext-php-rs`](https://ext-php.rs)) that does what Laravel Herd's proprietary
 extension does: with **zero changes to the user's application**, it intercepts
 `dump()`/`dd()` and observes Eloquent queries, dispatched jobs, Blade views, HTTP
@@ -164,7 +166,7 @@ A panic or segfault in an observer **takes down the FPM worker**. Rules:
 ## 5. Build, ABI, and distribution
 
 ### 5.1 ABI matching (why per-PHP-minor artifacts)
-A `extension` (a regular PHP extension, not a zend_extension)'s `ZEND_EXTENSION_BUILD_ID` encodes the module API version, ZTS,
+A PHP extension's `ZEND_EXTENSION_BUILD_ID` encodes the module API version, ZTS,
 and debug flags. PHP refuses to load a `.so` whose build-id doesn't match the engine.
 `ZEND_MODULE_API_NO` is **stable within a released minor** (all 8.3.x share it), so
 **one artifact per PHP minor** is correct. The other dimensions (NTS, glibc/macOS,
@@ -185,12 +187,34 @@ Per **(PHP minor × OS × arch)**, all **NTS**, glibc on Linux:
 Build with `ext-php-rs` (Rust); use the matching `php-config`/headers per target. CI
 builds each cell and publishes a `.so` to GitHub Releases.
 
-### 5.3 Artifact naming (the download contract)
-`yerd-dump-<phpminor>-<os>-<arch>.so` — e.g. `yerd-dump-8.3-linux-x86_64.so`,
-`yerd-dump-8.4-macos-aarch64.so`. `os ∈ {linux, macos}`, `arch ∈ {x86_64, aarch64}`.
-**Use the `.so` suffix on all targets** (macOS `dlopen`s `.so` fine) so Yerd's matching
-stays uniform. Yerd downloads the cell matching each installed PHP version into
-`{yerd-data}/php-ext/php-<minor>/yerd-dump.so` and wires `-d extension=` to it.
+### 5.3 The download contract (`manifest.json` + per-asset SHA-256)
+Yerd does **not** guess asset filenames. Each release publishes a
+**`manifest.json`** describing every built `.so`, and Yerd resolves the right one
+from it. The manifest is an object with a `files` array; each entry is:
+
+```jsonc
+{
+  "name":   "…",       // the release-asset filename to download
+  "php":    "8.3",     // PHP minor (major.minor)
+  "os":     "macos",   // host OS as std::env::consts::OS spells it: macos | linux
+  "arch":   "aarch64", // host arch as std::env::consts::ARCH spells it: aarch64 | x86_64
+  "sha256": "…"        // hex SHA-256 of the asset, lowercase
+}
+```
+
+Yerd fetches `manifest.json` and each asset from the **`latest`** release
+(`https://github.com/forjedio/yerd-php-ext/releases/latest/download/<name>`), so
+new releases are picked up automatically. For each installed PHP minor it finds the
+entry matching `(php, os, arch)`, downloads `name`, **verifies the SHA-256 against
+`sha256`** (mismatch → rejected), and places it atomically at
+`{yerd-data}/php-ext/php-<minor>/yerd-dump.so`, then wires `-d extension=` to it. If
+the on-disk `.so` already hashes to the manifest value, the download is skipped.
+A minor with no matching manifest entry is left without capture.
+
+The asset filenames inside the manifest are the extension repo's own concern -
+Yerd only ever reads `name` from the manifest, so the naming scheme can change
+without a Yerd release. **Use the `.so` suffix on all targets** (macOS `dlopen`s
+`.so` fine) so loading stays uniform.
 
 ## 6. Out of scope
 - Windows (Yerd's PHP is macOS/Linux today).
