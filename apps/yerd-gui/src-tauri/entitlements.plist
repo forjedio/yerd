@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- WKWebView / JavaScriptCore need JIT under the Hardened Runtime. -->
+	<key>com.apple.security.cs.allow-jit</key>
+	<true/>
+	<key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+	<true/>
+	<!--
+	  Intentionally NOT set:
+	  - com.apple.security.get-task-allow  (debug-only; presence causes notarytool rejection)
+	  - com.apple.security.cs.disable-library-validation
+	      (add only if a launch test shows the transparent-window private-API path needs it)
+	-->
+</dict>
+</plist>

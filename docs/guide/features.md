@@ -104,10 +104,10 @@ yerd doctor fix    # auto-repair the safe ones
 
 ## Desktop app
 
-An optional Tauri v2 tray app (Vue 3 + TypeScript) ships as separate bundles: `.dmg` on macOS, `.AppImage` / `.deb` on Linux. It's a client of the daemon and surfaces the same data and actions as the CLI in a native tray UI.
+A Tauri v2 tray app (Vue 3 + TypeScript) ships as separate bundles: `.dmg` on macOS, `.AppImage` / `.deb` on Linux. It's the recommended way to run Yerd, surfacing the same data and actions as the CLI in a native tray UI.
 
-::: warning Install the CLI too
-The desktop app talks to `yerdd` and needs `yerd`/`yerd-helper` present for privileged "Fix" actions. Install the CLI bundle as well.
+::: tip The app sets up the backend for you
+On first launch the desktop app downloads, verifies, and installs `yerd`/`yerdd`/`yerd-helper` for you (Apple Silicon macOS · Linux x86-64 · arm64), then starts the daemon - no separate CLI install needed.
 :::
 
 [Desktop app guide →](./desktop-app)

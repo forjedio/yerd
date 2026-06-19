@@ -133,6 +133,10 @@ yerd doctor fix
 
 Open `https://my-app.test` in your browser — that's it.
 
+> Every step above has a one-click equivalent in the desktop app — the CLI and
+> GUI are both clients of the same daemon, so anything you do in one shows up in
+> the other.
+
 ---
 
 ## Command reference

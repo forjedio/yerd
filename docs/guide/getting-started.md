@@ -22,10 +22,39 @@ Silicon (arm64) only.
 
 ## Install
 
-### Quick install (CLI + daemon)
+### Desktop app (recommended)
 
-The one-liner fetches the latest release, **verifies it against `SHA256SUMS`**,
-and installs the three CLI/daemon binaries (`yerd`, `yerdd`, `yerd-helper`):
+The easiest way to run Yerd is the **desktop app** - it installs and verifies
+the daemon and CLI for you, then walks you through the one-time setup. Grab the
+latest build from the
+[releases page](https://github.com/forjedio/yerd/releases):
+
+| Platform | GUI artifact | Install |
+|---|---|---|
+| macOS (Apple Silicon) | `yerd-gui_<ver>_aarch64.dmg` | open, drag Yerd to Applications |
+| Linux | `yerd-gui_<ver>_amd64.AppImage` | `chmod +x` and run |
+| Linux | `yerd-gui_<ver>_amd64.deb` | `sudo dpkg -i …` |
+
+On first launch, if `yerdd` isn't already present, the app downloads the
+matching release, **verifies it against `SHA256SUMS`**, and installs `yerd` +
+`yerdd` + `yerd-helper` into `~/.local/bin`, then starts the daemon. It then
+walks you through a **one-time** `sudo yerd elevate` to trust the local CA,
+route `*.test`, and bind ports 80/443 - everything after runs as your user,
+never as root. On macOS that makes setup essentially **drag-and-drop**: drag
+Yerd to Applications, launch it, done.
+
+::: tip Auto-install coverage
+Auto-install covers Apple Silicon macOS and Linux (x86-64 · arm64). If you
+already have the CLI (or installed the Linux `.deb`, which lands in `/usr/bin`),
+the app finds and uses the existing binaries instead. See the
+[Desktop App](./desktop-app) guide for the full tour.
+:::
+
+### Advanced: CLI + daemon only
+
+Prefer the terminal? The one-liner fetches the latest release, **verifies it
+against `SHA256SUMS`**, and installs the three CLI/daemon binaries (`yerd`,
+`yerdd`, `yerd-helper`):
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/forjedio/yerd/main/scripts/install.sh | sh
@@ -88,23 +117,6 @@ The `.deb`'s post-install grants `yerdd` the `cap_net_bind_service` capability
 (via `setcap`) so the **unprivileged** daemon can bind ports 80/443, and
 re-applies it on every upgrade. If that capability isn't available, Yerd falls
 back to `8080`/`8443` automatically - and `yerd doctor` tells you.
-:::
-
-### Desktop GUI (optional)
-
-The tray app ships as separate bundles on the same release. It's a **client of
-the daemon** - install the CLI/daemon above too, so `yerdd` is present.
-
-| Platform | GUI artifact | Install |
-|---|---|---|
-| macOS (Apple Silicon) | `yerd-gui_<ver>_aarch64.dmg` | open, drag to Applications |
-| Linux | `yerd-gui_<ver>_amd64.AppImage` | `chmod +x` and run |
-| Linux | `yerd-gui_<ver>_amd64.deb` | `sudo dpkg -i …` |
-
-::: warning Unsigned for now
-macOS warns on first launch - right-click → **Open**, or clear the quarantine
-flag: `xattr -dr com.apple.quarantine /Applications/Yerd.app`. See the
-[Desktop App](./desktop-app) guide for more.
 :::
 
 ### From source
@@ -309,7 +321,9 @@ or editor integrations.
 
 ## Putting it all together
 
-A complete first run, start to finish:
+With the **desktop app**, the install, daemon start, and one-time `elevate`
+all happen for you on first launch - drag Yerd to Applications (macOS), open it,
+and you land ready to add a site. The terminal path, start to finish:
 
 ```sh
 # install + start

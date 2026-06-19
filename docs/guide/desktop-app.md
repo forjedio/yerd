@@ -1,8 +1,8 @@
 # Desktop App
 
-Yerd ships an optional desktop GUI: a small tray-first window over everything the CLI does. Built with Tauri v2, Vue 3, TypeScript, and Tailwind, it's a thin client of the [daemon](./daemon), just like the `yerd` CLI. Every button maps to one IPC request to `yerdd`, so the GUI and CLI can't drift out of sync.
+Yerd ships a desktop GUI: a small tray-first window over everything the CLI does. Built with Tauri v2, Vue 3, TypeScript, and Tailwind, it's a thin client of the [daemon](./daemon), just like the `yerd` CLI. Every button maps to one IPC request to `yerdd`, so the GUI and CLI can't drift out of sync.
 
-The GUI is optional. If you live in the terminal, skip it.
+It's the recommended way to run Yerd: it installs and verifies the daemon and CLI for you, then walks you through the one-time setup. If you live in the terminal, the [CLI](./getting-started) is a first-class alternative.
 
 ## Install the bundles
 
@@ -17,19 +17,9 @@ The app ships as separate bundles on the same release as the CLI:
 The macOS DMG targets Apple Silicon (`aarch64`) only; Intel (x86-64) Macs are not supported at this time. There's no Windows bundle yet: the daemon's named-pipe address isn't client-derivable.
 
 ::: tip The GUI sets up the backend for you
-The GUI is a client of the [daemon](./daemon), but you don't have to install the CLI first. On first launch, if `yerdd` isn't already present the app downloads the matching release, **verifies it against `SHA256SUMS`**, and installs `yerd` + `yerdd` + `yerd-helper` into `~/.local/bin` (ad-hoc-signing them on macOS), then starts the daemon. On macOS that makes setup essentially **drag-and-drop**: drag Yerd to Applications, launch it, done.
+The GUI is a client of the [daemon](./daemon), but you don't have to install the CLI first. On first launch, if `yerdd` isn't already present the app downloads the matching release, **verifies it against `SHA256SUMS`**, and installs `yerd` + `yerdd` + `yerd-helper` into `~/.local/bin` (on macOS it verifies their signature, ad-hoc-signing only older unsigned releases), then starts the daemon. On macOS that makes setup essentially **drag-and-drop**: drag Yerd to Applications, launch it, done.
 
 Auto-install covers Linux (x86-64 · arm64) and Apple Silicon macOS. On Intel Macs, [install the CLI](./getting-started) manually first. If you already have the CLI (or installed the Linux `.deb`, which lands in `/usr/bin`), the app just finds and uses the existing binaries.
-:::
-
-::: tip First launch on macOS (unsigned)
-Release bundles are currently unsigned, so Gatekeeper warns on first open. Either right-click the app in Applications and choose Open (once), or strip the quarantine attribute:
-
-```sh
-xattr -dr com.apple.quarantine /Applications/Yerd.app
-```
-
-Signing and notarisation are planned.
 :::
 
 ## Tray-first by design
@@ -143,7 +133,7 @@ The daemon owns all state; the window is a view onto it; privileged work goes th
 
 ## Related
 
-- [Getting Started](./getting-started) - install the CLI and daemon (do this first)
+- [Getting Started](./getting-started) - install Yerd (the app sets up the daemon and CLI for you) or take the terminal-first path
 - [The Daemon](./daemon) - what `yerdd` is and how it runs
 - [Sites](./sites) · [PHP Versions](./php-versions) · [HTTPS & Certificates](./https) - the features the GUI surfaces
 - [Elevation & Privileges](./elevation) - how "Fix" actions stay root-free
