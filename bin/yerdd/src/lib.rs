@@ -193,6 +193,17 @@ async fn run_until_shutdown(
         })
     };
 
+    // Bundle pcov for installed PHP versions and (re)build the cover/clean
+    // versioned CLI shims (`phpcover`, `php<ver>`, `php<ver>cover`). Ungated and
+    // best-effort; also self-heals cover symlinks if the `yerd` binary moved
+    // between runs. Warm/offline starts skip the network (local presence check).
+    let _pcov_shims = {
+        let state = daemon.state.clone();
+        tokio::spawn(async move {
+            crate::ipc_server::refresh_pcov_and_shims(&state).await;
+        })
+    };
+
     // Serve until a shutdown is requested — a SIGTERM/Ctrl-C, or a
     // `RestartDaemon` IPC tripping the same channel. Without this wait the
     // daemon would fall straight through to the graceful-join timeouts below
