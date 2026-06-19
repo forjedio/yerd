@@ -271,6 +271,7 @@ pub async fn bring_up_with_dirs(
         detect_cache,
         watch_dirty: tokio::sync::Notify::new(),
         dumps: Arc::new(crate::dump_server::DumpStore::new()),
+        shim_reconcile: tokio::sync::Mutex::new(()),
     });
 
     // Seed the extension's runtime state file from the persisted `[dumps]`

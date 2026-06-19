@@ -9,6 +9,8 @@
 #![forbid(unsafe_code)]
 
 pub mod cli;
+#[cfg(unix)]
+pub mod cover_shim;
 pub mod elevate;
 pub mod error;
 pub mod map;
@@ -178,6 +180,7 @@ fn print_php_path_hint() {
         "→ ensure {} is on your PATH for the `php` command",
         bin.display()
     );
+    println!("  (also provides `php<ver>` and `phpcover`/`php<ver>cover` for pcov coverage)");
     // Warn if a different `php` is found earlier on PATH (would shadow the shim).
     if let Some(existing) = first_php_on_path() {
         if existing != bin.join("php") {
