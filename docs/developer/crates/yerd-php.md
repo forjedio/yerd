@@ -376,6 +376,8 @@ The parsing is carefully anchored. The `php-<maj>.<min>.` prefix carries a **tra
 
 `discover_bundled(&PlatformDirs)` walks `dirs.data / "php"` for per-version FPM binaries and returns `(PhpVersion, PathBuf)` tuples sorted by version. The daemon calls it at startup to populate the manager's `binaries` map.
 
+It is now also the single source of truth for **cover-shim reconciliation**: the daemon (`bin/yerdd`) takes one `discover_bundled` snapshot and uses it to build and prune the `{data}/bin` shim set - including the per-version `php<X.Y>cover` (and `phpcover`) symlinks that front pcov-enabled coverage runs. A single snapshot drives both create and prune so the scan can't straddle a concurrent install. The shim-building/pruning logic itself lives in `bin/yerdd` (`php_install::reconcile_shims`), not in this crate; `yerd-php` only provides `discover_bundled` (version enumeration) plus the PHP install/layout primitives it builds on.
+
 ```text
 {dirs.data}/php/php-8.3/sbin/php-fpm     (Unix)
 {dirs.data}\php\php-8.3\php-fpm.exe      (Windows)

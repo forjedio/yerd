@@ -69,7 +69,7 @@ transfer-encoding handled).
 | Message content | What `show` prints |
 | --- | --- |
 | Has a plain-text body | The decoded text body. |
-| HTML only (no text part) | `(HTML-only message — open it in the GUI viewer)` |
+| HTML only (no text part) | `(HTML-only message - open it in the GUI viewer)` |
 | Neither body | `(empty message)` |
 
 ::: tip HTML bodies render in the desktop app

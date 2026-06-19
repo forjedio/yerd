@@ -107,7 +107,7 @@ The daemon's modules (`src/lib.rs` re-exports each as `pub mod`):
 | `php_install` | Download + unpack prebuilt PHP builds; `reqwest` downloader. |
 | `php_updates` | Update poller + cache (notify-only). |
 | `dump_server` | Loopback TCP server reading newline-delimited JSON dump frames from the native `yerd-dump` extension into a bounded ring buffer; serves the ring to the GUI over IPC (`ListDumps`/`DumpsStatus`/…). |
-| `ext_install` | Downloads + SHA-256-verifies the native `yerd-dump` `.so` per installed PHP version (from the `forjedio/yerd-php-ext` releases) into `{data}/php-ext/php-<ver>/`. |
+| `ext_install` | Downloads + SHA-256-verifies native PHP extension `.so`s per installed PHP version (from the `forjedio/yerd-php-ext` releases) into `{data}/php-ext/php-<ver>/`. An `ExtSpec` abstraction drives one fetch loop for **both** `yerd-dump` (`DUMP_SPEC`, gated on dumps) and `pcov` (`PCOV_SPEC`, ungated) - two manifests, one release. |
 | `secure_fs` | Filesystem hardening (`0o700` dirs, `0o600` secrets). |
 | `signals` | Unified shutdown future (SIGTERM + Ctrl-C). |
 | `single_instance` | `InstanceLock` - exclusive `flock` so only one daemon runs. |
@@ -173,6 +173,7 @@ A site is dropped from the watch set once it resolves or is manually overridden 
 | `restart_requested: AtomicBool` | Set before tripping shutdown so `main` re-execs instead of exiting. |
 | `detect_cache: Arc<DetectCache>` | Shared web-root detection cache (mutation path + watcher). |
 | `watch_dirty: Notify` | Pinged after a mutation commits so the watcher reconciles its watch set without waiting for an fs event. |
+| `shim_reconcile: Mutex<()>` | Serializes `php_install::reconcile_shims` runs. IPC dispatch is `tokio::spawn`-per-connection, so two clients could rebuild the `{data}/bin` cover/clean shims at once; this guard keeps the (sync) scan→prune from interleaving. |
 
 ::: warning Lock order
 The mutation path is the only place that holds two locks, and always in the order **config-mutex → router-write**. The proxy and `ListSites` take only a router *read* guard and never touch the config mutex, so there is no cross-lock cycle. The status assembler (`build_status_report`) takes each guard, drains it into owned data, and drops it before the next - never two at once, never a guard held across an `.await` that touches another lock.
@@ -193,7 +194,7 @@ The mutation path is the only place that holds two locks, and always in the orde
    - the **filesystem watcher** (`fs_watch::run`, see above), and
    - conditionally, the **mail-capture SMTP task** (`yerd_mail::serve`) - spawned only when `daemon.mail_listener` is `Some` (mail capture enabled *and* the SMTP port bound at startup; a disabled or failed bind is non-fatal and already logged in `bring_up`).
 
-   That is **six always-on tasks plus the conditional mail task**. Two further spawns are fire-and-forget background work, deliberately *not* awaited so a slow boot can't delay the listeners: an **enabled-services auto-start** (`services::auto_start_enabled`) and, when dumps are enabled in config, an **extension-install** pass (`ext_install::ensure_for_installed`) that fetches the `.so` for installed PHP versions so on-demand pools pick it up.
+   That is **six always-on tasks plus the conditional mail task**. Three further spawns are fire-and-forget background work, deliberately *not* awaited so a slow boot can't delay the listeners: an **enabled-services auto-start** (`services::auto_start_enabled`); when dumps are enabled in config, an **extension-install** pass (`ext_install::ensure_for_installed`) that fetches the dump `.so` for installed PHP versions so on-demand pools pick it up; and an **always-on pcov + cover-shim** pass (`ipc_server::refresh_pcov_and_shims`) that bundles `pcov.so` for installed versions and (re)builds the `{data}/bin` cover/clean shims. This last pass is also where the **cover symlinks self-heal**: it re-points them at the current `yerd` binary, so a moved-binary install still resolves. Warm/offline starts skip the network (a local-presence check on the `.so`s) - see [cover-shim reconciliation](#cover-shim-reconciliation-and-pcov).
 4. Awaits the shutdown channel, then caps each task's join with a `timeout` (10s DNS/proxy, 5s IPC/dump/update/watch, and 5s for the mail task when present) so a stuck task can't hang the exit.
 5. Shuts down the PhpManager and the service manager, reads `restart_requested`, drops the instance lock, and returns `Outcome`.
 
@@ -246,6 +247,34 @@ PHP version operations are I/O at the daemon edge:
 - **`set_php_settings`** validates each ini key/value (`yerd_core::php_settings::validate_value` + `canonical_value`), persists, then under a single `php_manager` lock updates the settings and restarts every started pool so the new directives take effect. An empty-string value removes a key.
 
 The `reqwest`-backed `ReqwestDownloader` (rustls, no OpenSSL, follows redirects) lives in `php_install.rs` so that `yerd-php` stays dependency-light.
+
+Each of these flows also keeps the **cover shims** in step (next section): an install bundles pcov and reconciles, an uninstall drops the orphaned `pcov.so` and prunes the dangling shims, and `set_default_php` repoints `phpcover` / the versioned set at the new default.
+
+### Cover-shim reconciliation and pcov
+
+The pcov code-coverage launcher (the [`yerd` multi-call binary](./yerd#cover-shims-yerd-as-a-multi-call-binary-cover_shim-rs)) needs two things on the daemon side: the `pcov.so` for each installed PHP version, and a set of managed symlinks in `{data}/bin` for the CLI to be invoked under. Both live in `php_install.rs` and `ipc_server.rs`, and the whole feature is **Unix-only** (no-op elsewhere).
+
+**The managed shim set.** `php_install::reconcile_shims(dirs, yerd_bin, default)` builds and prunes the symlinks under `{data}/bin` from a **single** `discover_bundled` snapshot (so a second scan can't straddle a concurrent install's atomic rename and prune a just-created link):
+
+- `php` - the default (its CLI binary); created if installed and missing/stale, but left alone otherwise so it never fights `set_default_shim`.
+- `phpcover` - points at `yerd_bin`; resolves the default version at run time.
+- per installed version `v`: `php<v>` → that version's clean CLI binary, and `php<v>cover` → `yerd_bin`.
+- it then **prunes** managed `php<X.Y>` / `php<X.Y>cover` symlinks whose version is no longer installed. `managed_shim_version` matches *only* canonical names (rejecting `php`, `phpcover`, leading-zero spellings, and foreign files like `phpunit`), so the pruner only ever removes links yerd created.
+
+`versioned_shim_name` emits the canonical dotted form; `set_default_shim` (used by `set_default_php`) atomically repoints just `php`. All link writes go through an atomic temp-then-rename `place_symlink`.
+
+**pcov fetch.** `ext_install::ensure_pcov_for_installed` is **ungated** (pcov is always bundled, unlike the dumps `.so`) and best-effort. It short-circuits the network entirely when no PHP is installed or every installed version already has its `pcov.so` (`pcov_so_path`), so warm/offline starts never touch GitHub. The `.so` sits beside `yerd-dump.so` under `{data}/php-ext/php-<ver>/`, so a PHP patch update (which wipes `{data}/php/php-<ver>`) never deletes it.
+
+**Wiring (`ipc_server.rs`).** `refresh_pcov_and_shims` fetches pcov for installed versions then reconciles; `reconcile_shims_for` / `reconcile_shims_now` run the reconcile serialized behind `state.shim_reconcile` (the per-daemon mutex), having released the config lock first. `yerd_sibling` derives the `yerd` binary as a sibling of the running `yerdd`. The hooks:
+
+- **startup** - the best-effort background spawn (see [the run loop](#the-run-loop-lib-rs)); also self-heals the cover symlinks if the `yerd` binary moved between runs.
+- **PHP install** (`InstallPhp`) - `refresh_pcov_and_shims` after `refresh_php_binaries`.
+- **PHP uninstall** (`UninstallPhp`) - removes the orphaned `pcov.so` (file only; the dir is shared with `yerd-dump.so`), then `reconcile_shims_now` to prune the now-dangling shims.
+- **set-default** (`SetDefaultPhp`) - `reconcile_shims_for(new_default)` so `phpcover` and the versioned set track the new default.
+
+::: info No new wire types
+This is all daemon-internal: **no new IPC `Request`/`Response` variants were added** and `crates/yerd-ipc` was untouched. The shim reconciliation rides on the existing install / uninstall / set-default requests.
+:::
 
 ## Cert store (`cert_store.rs`)
 

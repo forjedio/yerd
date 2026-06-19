@@ -5,7 +5,7 @@
 **A fast, rootless, open-source local PHP development environment.**
 
 Serve your projects on `.test` domains over HTTP **and** HTTPS, run a different
-PHP version per site, and manage it all from one tiny daemon — no Docker, no
+PHP version per site, and manage it all from one tiny daemon - no Docker, no
 `sudo` for everyday work, no subscription.
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](#license)
@@ -22,12 +22,12 @@ PHP version per site, and manage it all from one tiny daemon — no Docker, no
 
 ## Why Yerd?
 
-- 🚀 **Zero-config sites** — drop a project in a parked folder, it's live at `<name>.test`.
-- 🔒 **Trusted HTTPS** per site from a local CA — no `mkcert`, no browser warnings.
+- 🚀 **Zero-config sites** - drop a project in a parked folder, it's live at `<name>.test`.
+- 🔒 **Trusted HTTPS** per site from a local CA - no `mkcert`, no browser warnings.
 - 🐘 **Multiple PHP versions**, pinned per site.
-- 🗄️ **Native MySQL · MariaDB · PostgreSQL · Redis** — no Docker.
-- 🪶 **One ~8 MB daemon** — no containers, no VM, no Electron.
-- 🛡️ **Rootless** — setup elevates once; daily use never does.
+- 🗄️ **Native MySQL · MariaDB · PostgreSQL · Redis** - no Docker.
+- 🪶 **One ~8 MB daemon** - no containers, no VM, no Electron.
+- 🛡️ **Rootless** - setup elevates once; daily use never does.
 - 🔍 **Self-diagnosing** with `yerd status` and `yerd doctor`.
 
 ---
@@ -48,6 +48,8 @@ PHP version per site, and manage it all from one tiny daemon — no Docker, no
 | First-class CLI | ✅ | ✅ | ✅ |
 | Menu-bar / tray GUI | ✅ | ✅ | ✅ |
 | Database & cache services (MySQL · MariaDB · PostgreSQL · Redis) | ✅ (Pro) | ✅ | ✅ |
+| Local mail capture (catch outgoing email) | ✅ (Pro) | ❌ | ✅ |
+| Laravel dump / query inspector | ✅ (Pro) | ❌ | ✅ |
 | Runs rootless day-to-day | ✅ | ✅ † | ✅ |
 | **No** Docker / Podman / containers required | ✅ | ❌ | ✅ |
 | Lightweight (no VM, no container images) | ✅ | ❌ | ✅ |
@@ -56,11 +58,11 @@ PHP version per site, and manage it all from one tiny daemon — no Docker, no
 
 <sub>✅\* = Windows is planned. Everything without an asterisk works today on macOS and Linux.</sub>
 <br><sub>**Lerd** runs your stack in containers via **rootless Podman** (Linux +
-macOS; no Docker) — so it trivially adds database/cache services, but it pulls and
+macOS; no Docker) - so it trivially adds database/cache services, but it pulls and
 runs container images rather than native processes. † Rootless by design on
 Podman.</sub>
 <br><sub>**On Laravel Valet:** Valet is the original macOS-only Laravel dev tool
-(nginx + dnsmasq, installed via Homebrew/Composer). None of the three require it —
+(nginx + dnsmasq, installed via Homebrew/Composer). None of the three require it -
 Herd is the native standalone successor that bundles its own nginx (and reuses
 Valet's framework "drivers"), Lerd runs everything in containers, and Yerd uses
 its own Rust proxy + DNS. No Valet, no Homebrew.</sub>
@@ -69,7 +71,7 @@ its own Rust proxy + DNS. No Valet, no Homebrew.</sub>
 
 ## Installation
 
-The easiest way to run Yerd is the **desktop app** — it installs the daemon and
+The easiest way to run Yerd is the **desktop app** - it installs the daemon and
 CLI for you. Grab the latest build from the
 [releases page](https://github.com/forjedio/yerd/releases):
 
@@ -80,10 +82,10 @@ CLI for you. Grab the latest build from the
 | Linux | `yerd-gui_<ver>_amd64.deb` | `sudo dpkg -i …` |
 
 On first launch the app downloads and installs the `yerd` CLI, the `yerdd`
-daemon, and `yerd-helper` into `~/.local/bin` (verified against `SHA256SUMS`) —
+daemon, and `yerd-helper` into `~/.local/bin` (verified against `SHA256SUMS`) -
 so on macOS, setup is essentially drag-and-drop. It then walks you through a
 **one-time** `sudo yerd elevate` to trust the local CA, route `*.test`, and bind
-ports 80/443. Everything after runs as your user — never as root.
+ports 80/443. Everything after runs as your user - never as root.
 
 ### Advanced: CLI + daemon only
 
@@ -94,7 +96,7 @@ curl -fsSL https://raw.githubusercontent.com/forjedio/yerd/main/scripts/install.
 ```
 
 This fetches the latest release (SHA-verified) and installs `yerd` + `yerdd` +
-`yerd-helper` — a `.deb` on Debian/Ubuntu, or a tarball to `~/.local/bin`
+`yerd-helper` - a `.deb` on Debian/Ubuntu, or a tarball to `~/.local/bin`
 elsewhere. Then run the one-time setup:
 
 ```bash
@@ -110,7 +112,7 @@ sudo yerd elevate    # trust the CA · route *.test · allow 80/443
 yerd install php 8.5
 yerd use 8.5
 
-# 2a. Park a directory — every sub-folder becomes <folder>.test
+# 2a. Park a directory - every sub-folder becomes <folder>.test
 yerd park ~/Sites
 #     ~/Sites/blog  ->  http://blog.test
 
@@ -131,9 +133,9 @@ yerd doctor
 yerd doctor fix
 ```
 
-Open `https://my-app.test` in your browser — that's it.
+Open `https://my-app.test` in your browser - that's it.
 
-> Every step above has a one-click equivalent in the desktop app — the CLI and
+> Every step above has a one-click equivalent in the desktop app - the CLI and
 > GUI are both clients of the same daemon, so anything you do in one shows up in
 > the other.
 
@@ -183,11 +185,11 @@ maintainable.
 
 Yerd runs as **three** pieces, and the GUI/daemon **never** run as root:
 
-- **`yerdd`** — the unprivileged per-user daemon. It owns all runtime state and
+- **`yerdd`** - the unprivileged per-user daemon. It owns all runtime state and
   serves the proxy, DNS, and PHP-FPM pools.
-- **`yerd`** — the CLI, a thin client that just talks to the daemon over a
+- **`yerd`** - the CLI, a thin client that just talks to the daemon over a
   per-user socket.
-- **`yerd-helper`** — a strict, auditable one-shot binary for the handful of
+- **`yerd-helper`** - a strict, auditable one-shot binary for the handful of
   operations that genuinely need root (trust the CA, configure the DNS resolver,
   grant the port capability). It takes typed arguments, never shells out, never
   touches the network, does exactly one thing, and exits.
@@ -198,12 +200,12 @@ Setup may elevate **once**; daily use never does.
 
 Yerd generates a local certificate authority and issues a leaf certificate per
 site on demand, terminated by a hand-rolled `rustls` reverse proxy.
-`sudo yerd elevate trust` adds the CA to your system trust store — after that,
+`sudo yerd elevate trust` adds the CA to your system trust store - after that,
 every `.test` site is green-padlock valid. **No OpenSSL anywhere.**
 
 ### 🧠 One source of truth
 
-The daemon owns state. The CLI and the GUI are both *clients* — they never
+The daemon owns state. The CLI and the GUI are both *clients* - they never
 reimplement daemon logic, so the CLI and GUI can never disagree.
 
 ### 🧩 A clean, testable core
@@ -220,7 +222,7 @@ platforms.
 ### 🔕 Local and quiet
 
 Yerd makes no network calls except the ones you explicitly ask for (downloading
-the PHP builds you install). PHP updates are **notify-only** — Yerd tells you when
+the PHP builds you install). PHP updates are **notify-only** - Yerd tells you when
 a newer patch exists, but never installs anything behind your back.
 
 ---
@@ -228,7 +230,7 @@ a newer patch exists, but never installs anything behind your back.
 ## Lineage
 
 Yerd v2 is a ground-up rewrite of **our own v1 package**
-([`LumoSolutions/yerd`](https://github.com/LumoSolutions/yerd)) — the Go tool we
+([`LumoSolutions/yerd`](https://github.com/LumoSolutions/yerd)) - the Go tool we
 first built to scratch this itch. Shipping v1 taught us a lot, and we rebuilt Yerd
 from scratch in Rust to make it cross-platform, rootless, and far easier to
 maintain. v1 is reference-only: there's no command-surface or config-format

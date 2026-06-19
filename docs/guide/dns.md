@@ -102,7 +102,7 @@ macOS reads it at the next query, so there's nothing to reload.
 
 If a file already exists there (a leftover from Valet, Herd, or older Yerd) and doesn't point at Yerd, the helper backs it up before overwriting. Backups land in `/Library/Application Support/io.yerd.Yerd/resolver-backups/` as `<tld>-<unix-seconds>.conf`, and `yerd doctor` reports the most recent. An already-correct file is left alone.
 
-`sudo yerd unelevate resolver` reverses this: it restores the most recent backup over `/etc/resolver/<tld>`, then deletes the saved backups. The restore is guarded — the helper only writes back a backup that is root-owned, not a symlink, and parses as a valid resolver file — so a tampered or junk backup is skipped in favour of a plain removal.
+`sudo yerd unelevate resolver` reverses this: it restores the most recent backup over `/etc/resolver/<tld>`, then deletes the saved backups. The restore is guarded - the helper only writes back a backup that is root-owned, not a symlink, and parses as a valid resolver file - so a tampered or junk backup is skipped in favour of a plain removal.
 
 ::: tip The `port` line is load-bearing
 A bare `nameserver 127.0.0.1` (what Valet/Herd leave) defaults to port `53`, where nothing of Yerd's listens. The `is_installed` probe requires both nameserver and port to match the live daemon, so a stale file reads as "not installed" and gets rewritten on the next elevate.

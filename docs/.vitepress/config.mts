@@ -80,6 +80,7 @@ export default withMermaid({
           items: [
             { text: 'Sites', link: '/guide/sites' },
             { text: 'PHP Versions', link: '/guide/php-versions' },
+            { text: 'Code Coverage', link: '/guide/code-coverage' },
             { text: 'Services & Databases', link: '/guide/services' },
             { text: 'Mail Capture', link: '/guide/mail' },
             { text: 'Laravel Dumps', link: '/guide/laravel-dumps' },

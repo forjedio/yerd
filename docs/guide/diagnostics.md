@@ -96,7 +96,7 @@ When nothing is wrong:
 |---|---|---|---|
 | `DaemonDown` | `Fail` | The CLI couldn't reach the daemon over IPC. | `yerdd` |
 | `PortFallback` | `Warn` | A privileged port (below 1024) fell back to rootless and isn't reachable on the requested port. | `sudo yerd elevate ports` |
-| `ForeignWebListener` | `Warn` | A process **other than Yerd** is listening on 80/443 (confirmed via the proxy's `Server` marker, so Yerd is never mistaken for the squatter). Cross-platform. Supersedes `PortFallback` — elevation can't bind a port someone else owns. | Stop the other web server, then `sudo yerd elevate ports` |
+| `ForeignWebListener` | `Warn` | A process **other than Yerd** is listening on 80/443 (confirmed via the proxy's `Server` marker, so Yerd is never mistaken for the squatter). Cross-platform. Supersedes `PortFallback` - elevation can't bind a port someone else owns. | Stop the other web server, then `sudo yerd elevate ports` |
 | `CaNotTrusted` | `Warn` | The local CA isn't in the system trust store, so HTTPS shows warnings. | `sudo yerd elevate trust` |
 | `ResolverNotInstalled` | `Warn` | The OS resolver doesn't route `*.<tld>` to Yerd's DNS. | `sudo yerd elevate resolver` |
 | `NoPhpInstalled` | `Fail` | No PHP versions installed. | `yerd install php <default>` |
@@ -108,7 +108,7 @@ When nothing is wrong:
 | `AllGood` | `Ok` | Nothing else is wrong. | _(none)_ |
 
 ::: tip No false alarms
-Several probes are tri-state. CA trust and resolver installation are flagged only when the daemon is certain they're absent; an `unknown` result stays silent. Likewise, `NoPhpInstalled` suppresses `DefaultPhpNotInstalled`, an active macOS port redirect suppresses `PortFallback`, and a `ForeignWebListener` conflict also suppresses `PortFallback` (the foreign-process warning is the accurate, actionable finding — elevating won't help while another process owns the port).
+Several probes are tri-state. CA trust and resolver installation are flagged only when the daemon is certain they're absent; an `unknown` result stays silent. Likewise, `NoPhpInstalled` suppresses `DefaultPhpNotInstalled`, an active macOS port redirect suppresses `PortFallback`, and a `ForeignWebListener` conflict also suppresses `PortFallback` (the foreign-process warning is the accurate, actionable finding - elevating won't help while another process owns the port).
 :::
 
 ## `yerd doctor fix`

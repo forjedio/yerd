@@ -49,7 +49,7 @@ sudo yerd unelevate resolver  # restore the prior resolver (macOS) / remove the 
 ```
 
 ::: tip Unelevate restores your previous resolver
-On macOS, if `elevate resolver` replaced a pre-existing `/etc/resolver/<tld>` (a Valet/Herd leftover), it saved a backup. `unelevate resolver` **restores that backup** — returning DNS to its pre-Yerd state — and then clears the saved backups; with no backup it just removes Yerd's file. On Linux it removes the `systemd-resolved` drop-in (no backup mechanism). `unelevate ports` is reversible on macOS only (see [Ports](#ports)).
+On macOS, if `elevate resolver` replaced a pre-existing `/etc/resolver/<tld>` (a Valet/Herd leftover), it saved a backup. `unelevate resolver` **restores that backup** - returning DNS to its pre-Yerd state - and then clears the saved backups; with no backup it just removes Yerd's file. On Linux it removes the `systemd-resolved` drop-in (no backup mechanism). `unelevate ports` is reversible on macOS only (see [Ports](#ports)).
 :::
 
 ::: warning Start the daemon first
@@ -103,7 +103,7 @@ If you never run `elevate ports` (or it can't apply), the daemon falls back to h
 So without elevation you can reach sites at `http://my-app.test:8080`, or `http://127.0.0.1:8080`. Run [`yerd doctor`](./diagnostics) to see which ports are live and what to do.
 
 ::: info macOS port status
-The macOS daemon always binds its high ports (pf does the 80/443 forwarding), so Yerd probes reachability rather than trusting that a config file exists. The probe also **confirms it reaches Yerd's own proxy** — it speaks HTTP to `127.0.0.1:80` and checks for the proxy's `Server: yerd` marker — so a redirect you've torn down (or a foreign web server squatting the port) is correctly reported as *not* redirected. If something that isn't Yerd holds 80/443, `doctor` raises a [`ForeignWebListener`](./diagnostics) warning.
+The macOS daemon always binds its high ports (pf does the 80/443 forwarding), so Yerd probes reachability rather than trusting that a config file exists. The probe also **confirms it reaches Yerd's own proxy** - it speaks HTTP to `127.0.0.1:80` and checks for the proxy's `Server: yerd` marker - so a redirect you've torn down (or a foreign web server squatting the port) is correctly reported as *not* redirected. If something that isn't Yerd holds 80/443, `doctor` raises a [`ForeignWebListener`](./diagnostics) warning.
 :::
 
 ## The security model

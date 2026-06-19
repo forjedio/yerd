@@ -33,10 +33,10 @@ The window is something you summon, not keep open.
 
 The window is borderless with a custom title bar (macOS-style traffic lights for close / minimize / zoom) and looks identical on both platforms. A status pill in the bottom-left of the sidebar shows whether the daemon is connected, unreachable, or connecting.
 
-If the daemon isn't running, the main area shows a "Daemon not running" panel with **Start** and **Retry** buttons — Start launches `yerdd` for you (through your per-user service) without leaving the app. The **General** tab stays reachable even when the daemon is down, so you can start or configure it from there. You can also start it from a terminal with `yerdd`.
+If the daemon isn't running, the main area shows a "Daemon not running" panel with **Start** and **Retry** buttons - Start launches `yerdd` for you (through your per-user service) without leaving the app. The **General** tab stays reachable even when the daemon is down, so you can start or configure it from there. You can also start it from a terminal with `yerdd`.
 
 ::: tip First-run auto-install
-If `yerdd` isn't installed at all when the app first opens (Linux/macOS), it downloads the matching release, installs the `yerd`/`yerdd`/`yerd-helper` binaries to `~/.local/bin`, starts the daemon, and lands you on the General tab — showing an "Installing Yerdd… Please wait" overlay while it works. It never runs as root to do this.
+If `yerdd` isn't installed at all when the app first opens (Linux/macOS), it downloads the matching release, installs the `yerd`/`yerdd`/`yerd-helper` binaries to `~/.local/bin`, starts the daemon, and lands you on the General tab - showing an "Installing Yerdd… Please wait" overlay while it works. It never runs as root to do this.
 :::
 
 ## The window at a glance
@@ -53,10 +53,10 @@ The sidebar has five sections:
 
 ### General
 
-App- and daemon-level settings — the only tab that stays usable when the daemon is down (it can start or install it):
+App- and daemon-level settings - the only tab that stays usable when the daemon is down (it can start or install it):
 
 - **Daemon.** Whether `yerdd` is running (with pid), plus a Start or Stop button. Start/Stop go through your per-user service manager (systemd `--user` on Linux, a launchd LaunchAgent on macOS), with a detached-process fallback where none exists; the same actions are in the tray menu.
-- **Start at login.** Three toggles — start the daemon at login, start the app at login, and start the app minimized (hidden to the tray). The daemon-at-login toggle is disabled where no per-user service manager is available.
+- **Start at login.** Three toggles - start the daemon at login, start the app at login, and start the app minimized (hidden to the tray). The daemon-at-login toggle is disabled where no per-user service manager is available.
 - **Appearance.** A System / Light / Dark theme selector, applied live and remembered across launches.
 
 ### PHP
@@ -98,7 +98,7 @@ Mirrors [`yerd doctor`](./diagnostics):
 
 - Subsystems. A live table of the daemon (`yerdd`, with pid and uptime), the in-process DNS resolver, the HTTP and HTTPS proxy listeners (with bound ports, including when macOS's `pf` redirect carries `:80`/`:443`), and each PHP-FPM pool. The daemon and FPM rows have a `⋯` menu with Restart.
 - Health. Lists problems by severity (`ok` / `warn` / `fail`) with a copyable remedy command. Run safe fixes applies the safe one-click fixes; Re-check re-runs diagnostics.
-- Environment. OS-level state: Local CA trusted, `.test` resolver installed, and Privileged ports (80/443). A Fix (elevate) button runs the privileged action where a row isn't configured; once a row *is* configured, an **Unelevate** button reverts it — behind an in-app confirm dialog and the OS prompt. Unelevating the `.test` resolver restores your previous resolver on macOS; reverting privileged ports is macOS-only (Linux `setcap` has no clean reverse, so no button is shown there).
+- Environment. OS-level state: Local CA trusted, `.test` resolver installed, and Privileged ports (80/443). A Fix (elevate) button runs the privileged action where a row isn't configured; once a row *is* configured, an **Unelevate** button reverts it - behind an in-app confirm dialog and the OS prompt. Unelevating the `.test` resolver restores your previous resolver on macOS; reverting privileged ports is macOS-only (Linux `setcap` has no clean reverse, so no button is shown there).
 
 ::: info "Fix" actions never run the GUI as root
 The Fix buttons run the audited `yerd elevate` helper under an OS prompt; the GUI never runs elevated. On Linux this uses `pkexec`, on macOS an `osascript … with administrator privileges` prompt. You may be asked for your password. See [Elevation & Privileges](./elevation).

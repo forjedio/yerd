@@ -140,7 +140,7 @@ Three commands are **host-only helpers** with no daemon IPC:
 | `host_platform` | `&'static str` (`std::env::consts::OS`) | `"linux"` / `"macos"` / `"windows"` to gate platform UI |
 | `elevate` / `unelevate` | `()` | run `yerd elevate <target>` / `yerd unelevate <target>` under OS elevation (see below) |
 
-The General tab adds further host-only commands (no daemon IPC) for daemon lifecycle and autostart — `daemon_installed`, `install_daemon`, `start_daemon`, `stop_daemon`, `get_autostart`, `set_autostart_daemon`, `set_autostart_gui`, `set_gui_minimized` — implemented in `daemon.rs` (locate/download/start/stop) and `autostart.rs` (per-user service + the autostart plugin).
+The General tab adds further host-only commands (no daemon IPC) for daemon lifecycle and autostart - `daemon_installed`, `install_daemon`, `start_daemon`, `stop_daemon`, `get_autostart`, `set_autostart_daemon`, `set_autostart_gui`, `set_gui_minimized` - implemented in `daemon.rs` (locate/download/start/stop) and `autostart.rs` (per-user service + the autostart plugin).
 
 ::: tip No `Request` is ever built in the frontend
 The `Request` enum is intentionally **not** mirrored into TypeScript. The

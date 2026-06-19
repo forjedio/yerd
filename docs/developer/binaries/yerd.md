@@ -39,6 +39,7 @@ the `tests/cli_e2e.rs` integration test can drive the same code paths.
 | `src/map.rs` | Pure `to_request` (command → `Request`) and `render` (`Response` → text + exit code). |
 | `src/transport.rs` | Resolve the socket path and perform one framed request/response exchange. |
 | `src/elevate.rs` | `yerd elevate` / `unelevate`: local privileged orchestration of `yerd-helper`. |
+| `src/cover_shim.rs` | Multi-call dispatch: when `argv[0]` is a `phpcover`/`php<ver>cover` alias, exec PHP with pcov enabled (Unix-only). Runs before clap. |
 | `src/error.rs` | `ClientError` - the client's error type. |
 
 ```mermaid
@@ -98,6 +99,50 @@ which keeps room for non-PHP components later (e.g. `install php 8.5`,
 The `ElevateTarget` enum enumerates the three privileges: `Trust` (system CA
 store), `Resolver` (`*.<tld>` DNS routing) and `Ports` (bind 80/443). Omitting
 the target means "all three".
+
+## Cover shims: `yerd` as a multi-call binary (`cover_shim.rs`)
+
+`yerd` doubles as the pcov **code-coverage** launcher. In `{data}/bin` the daemon
+maintains a set of *cover* symlinks - `phpcover` (the default PHP version) and
+`php<major>.<minor>cover` (e.g. `php8.4cover`) - each pointing back at the `yerd`
+binary itself. Running one of those names makes `yerd` behave as a thin PHP
+wrapper that turns coverage on, while the clean `php` / `php<ver>` shims stay
+untouched so ordinary PHP carries **no coverage overhead**.
+
+This is dispatched in `main.rs` **before clap ever parses**:
+
+```rust
+#[cfg(unix)]
+if let Some(code) = yerd::cover_shim::dispatch() {
+    return code;
+}
+```
+
+`dispatch` inspects `argv[0]`'s basename:
+
+- `parse_cover_name` matches `phpcover` (→ default) and `php<major>.<minor>cover`
+  (→ that explicit version) **exactly**. Any other name - `php`, a clean
+  `php8.4`, `phpunit`, malformed forms like `php8.cover` - returns `None`, so the
+  call falls straight through to the normal `Cli::parse()` CLI. `yerd <subcommand>`
+  is never intercepted.
+- On a match it resolves `(php_binary, "major.minor")`. For an explicit version
+  that is `{data}/php/php-<ver>/bin/php` (erroring if the version isn't
+  installed). For the default it reads the `php` shim's link target (falling back
+  to the highest installed minor whose CLI binary exists).
+- It then locates that version's `{data}/php-ext/php-<ver>/pcov.so` (the daemon
+  bundles it; see [yerdd · cover-shim reconciliation](./yerdd#cover-shim-reconciliation-and-pcov)),
+  and `exec`s PHP with `-d extension=<pcov.so> -d pcov.enabled=1` followed by the
+  caller's own args. `exec` replaces the process, so on success it never returns;
+  a missing binary or `pcov.so` prints a `yerd:` diagnostic and returns
+  `ExitCode::FAILURE`.
+
+::: info Unix-only
+The `dispatch()` call is `#[cfg(unix)]` and the cover symlinks are only ever
+created on Unix - on other platforms `yerd` is always just the CLI. PHP itself
+reads `PHP_BINARY` from `/proc/self/exe`, so although the process was launched
+via the cover alias, `argv[0]` (left at the real `php` path) and `PHP_BINARY`
+both report the genuine interpreter, not the shim name.
+:::
 
 ## Pure mapping and rendering (`map.rs`)
 
