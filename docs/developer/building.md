@@ -304,8 +304,10 @@ the CLI/daemon and the GUI never disagree on version. The release pipeline runs
 ### macOS code signing & notarisation
 
 The release workflow Developer ID signs **and** notarises the macOS artifacts:
-the GUI `.dmg`/`.app` (signed, notarised and stapled by Tauri) and the three CLI
-binaries (`yerd`/`yerdd`/`yerd-helper`, signed with Hardened Runtime + a secure
+the GUI `.app` (signed, notarised and stapled by Tauri) and its `.dmg` (signed
+and notarised, but only the `.app` staple is enforced - the `.dmg` staple is
+advisory and non-fatal in CI, since the stapled `.app` inside is the gate) plus
+the three CLI binaries (`yerd`/`yerdd`/`yerd-helper`, signed with Hardened Runtime + a secure
 timestamp and notarised as a zip). Notarisation uses an **App Store Connect API
 key**. The GUI's first-run auto-installer verifies a downloaded binary's
 signature and only ad-hoc-signs older, unsigned releases, so it never strips the
