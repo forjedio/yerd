@@ -137,6 +137,44 @@ applies them and broadcasts the new state. PHP updates are deliberately
 **notify-only** - the daemon's periodic checker and `list` only *report* newer
 patches; an install happens solely on an explicit update request.
 
+## Daemon-hosted developer subsystems
+
+Beyond serving sites, the daemon hosts two self-contained developer-tooling
+subsystems. Both follow the rules above - the daemon owns the state, the GUI is a
+stateless `yerd-ipc` view - and both keep their pure logic in a crate.
+
+- **Mail capture.** A built-in SMTP sink (`crates/yerd-mail`) that the daemon
+  binds on a loopback port when capture is enabled. Anything it receives is
+  stored as a raw `.eml` on disk; there is **no relaying** - captured mail never
+  leaves the box. The store is opened unconditionally (so already-captured mail
+  stays listable even with capture off), and the SMTP listen is the only part
+  gated on the enabled flag. Captured mail is surfaced over IPC (`ListMails` /
+  `GetMail` / …) and rendered in the GUI's Mails viewer. As with the rest of the
+  workspace, the crate splits a pure layer (the SMTP command state machine, MIME
+  decoding, retention) from the I/O edge (the tokio TCP server and the disk
+  store).
+
+- **Laravel Dumps telemetry.** A live feed of per-request telemetry - `dump()`,
+  Eloquent queries, jobs, views, cache, logs, outgoing HTTP - from running PHP
+  apps. The data path is **native PHP extension → loopback TCP → ring buffer →
+  IPC → GUI**: a native Zend extension emits newline-delimited JSON frames to a
+  loopback dump server the daemon runs, which buffers them in a bounded
+  in-memory ring and pages them to the GUI (`ListDumps` / `DumpsStatus`). The
+  shared wire model lives in `crates/yerd-ipc` (`dump.rs`); the daemon treats
+  each frame's `payload` as **opaque** JSON so the extension's per-category
+  schema can evolve without daemon changes.
+
+  The native extension is an **external dependency**: the `.so` is built and
+  published by the separate [`forjedio/yerd-php-ext`](https://github.com/forjedio/yerd-php-ext)
+  repository, and the daemon downloads + SHA-256-verifies the artifact matching
+  each installed PHP version's host triple (against the release `manifest.json`),
+  placing it beside - not inside - the PHP installs so a PHP patch update never
+  removes it. The daemon then wires it into each FPM pool via
+  `-d extension`; the extension self-disables (via a daemon-written state
+  file) when dumps are off. Fetch/verify is best-effort - a failure leaves the
+  site running with no dumps. See the [yerdd](./binaries/yerdd) page for the
+  `dump_server` / `ext_install` modules.
+
 ## Dependency direction (downhill, no cycles)
 
 Internal dependencies flow strictly downhill. `yerd-core` sits at the bottom and

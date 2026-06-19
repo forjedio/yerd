@@ -49,8 +49,79 @@ jobs:
       - uses: actions/checkout@v4
       - uses: Swatinem/rust-cache@v2
 
+      # macOS: import the Developer ID cert into an ephemeral keychain and stage
+      # the App Store Connect API key for notarisation. No-op on the Linux legs.
+      - name: Set up macOS signing
+        if: runner.os == 'macOS'
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+        run: |
+          set -euo pipefail
+          KC="$RUNNER_TEMP/signing.keychain-db"
+          KP="$(openssl rand -base64 24)"            # ephemeral, no secret needed
+          security create-keychain -p "$KP" "$KC"
+          security set-keychain-settings -lut 21600 "$KC"   # lock timeout 6h (> the job)
+          security unlock-keychain -p "$KP" "$KC"
+          echo "$APPLE_CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" -k "$KC" \
+            -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KP" "$KC"
+          # Prepend the ephemeral keychain to the existing user search list,
+          # reading each path space-safely. NB the macos-14 runner ships bash 3.2
+          # (no `mapfile`), so use a while-read loop; guard the empty expansion
+          # for `set -u`.
+          EXISTING=()
+          while IFS= read -r kc; do EXISTING+=("$kc"); done \
+            < <(security list-keychains -d user | sed -e 's/^[[:space:]]*"//' -e 's/"[[:space:]]*$//')
+          security list-keychains -d user -s "$KC" ${EXISTING[@]+"${EXISTING[@]}"}
+          echo "$APPLE_API_KEY_P8" | base64 --decode > "$RUNNER_TEMP/AuthKey.p8"
+          echo "APPLE_API_KEY_PATH=$RUNNER_TEMP/AuthKey.p8" >> "$GITHUB_ENV"
+
       - name: Build CLI binaries
         run: cargo build --release -p yerd -p yerdd -p yerd-helper
+
+      # Sign (Hardened Runtime + secure timestamp) and notarise the three CLI
+      # Mach-Os BEFORE staging, so the tarball + its SHA cover the signed bytes.
+      # Loose binaries / tarballs can't be stapled — notarytool records each
+      # cdhash so Gatekeeper approves via an online check; the curl|sh and GUI
+      # download paths set no quarantine xattr, so they exec regardless.
+      - name: Sign + notarise CLI binaries (macOS)
+        if: runner.os == 'macOS'
+        env:
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}   # Key ID
+        run: |
+          set -euo pipefail
+          for b in yerd yerdd yerd-helper; do
+            codesign --force --options runtime --timestamp \
+              --sign "$APPLE_SIGNING_IDENTITY" "target/release/$b"
+          done
+          rm -rf cli-notarize cli.zip
+          mkdir cli-notarize
+          cp target/release/yerd target/release/yerdd target/release/yerd-helper cli-notarize/
+          ditto -c -k --keepParent cli-notarize cli.zip
+          xcrun notarytool submit cli.zip \
+            --key "$APPLE_API_KEY_PATH" --key-id "$APPLE_API_KEY" --issuer "$APPLE_API_ISSUER" \
+            --wait --timeout 30m
+          # Verify fail-closed. No spctl -t exec gate: an unstapled, unquarantined
+          # loose Mach-O often assesses as "rejected" even when correctly notarised.
+          for b in yerd yerdd yerd-helper; do
+            codesign --verify --strict --verbose=2 "target/release/$b"
+            codesign -dv --verbose=4 "target/release/$b" > "/tmp/cs-$b.txt" 2>&1
+            grep -q "Authority=Developer ID Application" "/tmp/cs-$b.txt"
+            # Smoke-exec the SIGNED binary: a Hardened-Runtime/AMFI kill is signal 9
+            # (exit 137). A normal non-zero exit (bad/extra args) is fine — we only
+            # care that it wasn't killed for a signing/entitlement reason.
+            code=0
+            "target/release/$b" --version >/dev/null 2>&1 || code=$?
+            if [ "$code" -ge 128 ]; then
+              echo "::error::$b was killed (exit $code) — signing/Hardened-Runtime failure"; exit 1
+            fi
+            echo "$b: signed, notarised, execs (exit $code)"
+          done
 
       - name: Stage tarball
         run: |
@@ -117,8 +188,101 @@ jobs:
       - name: Install frontend deps
         run: npm ci
 
-      - name: Build Tauri bundles (unsigned)
+      # macOS: import the Developer ID cert into an ephemeral keychain and stage
+      # the App Store Connect API key. Absolute paths, so working-directory: .
+      # (the job default is apps/yerd-gui). No-op on the Linux leg.
+      - name: Set up macOS signing
+        if: runner.os == 'macOS'
+        working-directory: .
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+        run: |
+          set -euo pipefail
+          KC="$RUNNER_TEMP/signing.keychain-db"
+          KP="$(openssl rand -base64 24)"
+          security create-keychain -p "$KP" "$KC"
+          security set-keychain-settings -lut 21600 "$KC"
+          security unlock-keychain -p "$KP" "$KC"
+          echo "$APPLE_CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" -k "$KC" \
+            -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KP" "$KC"
+          # Prepend the ephemeral keychain to the existing user search list,
+          # reading each path space-safely. NB the macos-14 runner ships bash 3.2
+          # (no `mapfile`), so use a while-read loop; guard the empty expansion
+          # for `set -u`.
+          EXISTING=()
+          while IFS= read -r kc; do EXISTING+=("$kc"); done \
+            < <(security list-keychains -d user | sed -e 's/^[[:space:]]*"//' -e 's/"[[:space:]]*$//')
+          security list-keychains -d user -s "$KC" ${EXISTING[@]+"${EXISTING[@]}"}
+          echo "$APPLE_API_KEY_P8" | base64 --decode > "$RUNNER_TEMP/AuthKey.p8"
+          echo "APPLE_API_KEY_PATH=$RUNNER_TEMP/AuthKey.p8" >> "$GITHUB_ENV"
+
+      # Tauri signs the bundle and notarises + staples the .app when these are set
+      # (macOS); the .dmg is signed but not separately stapled — the stapled .app
+      # inside gates correctly. APPLE_CERTIFICATE is deliberately NOT passed: the
+      # cert is already in the keychain from the step above, and passing it would
+      # make Tauri spin up its own keychain and conflict. Unset/ignored on Linux.
+      - name: Build Tauri bundles (signed + notarised on macOS)
+        env:
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_KEY_PATH: ${{ env.APPLE_API_KEY_PATH }}
         run: npm run tauri build
+
+      # Fail-closed: prove the .app is Developer-ID signed with Hardened Runtime,
+      # stapled, and Gatekeeper-accepted. The launch test catches entitlement
+      # gaps (they crash at runtime, not at notarisation).
+      - name: Verify macOS signing
+        if: runner.os == 'macOS'
+        working-directory: .
+        run: |
+          set -euo pipefail
+          # Search only dirs that exist — `find` over a missing path exits non-zero
+          # and would abort the step under `set -euo pipefail`.
+          ROOTS=()
+          for d in target apps/yerd-gui/src-tauri/target; do [ -d "$d" ] && ROOTS+=("$d"); done
+          [ "${#ROOTS[@]}" -gt 0 ] || { echo "::error::no build output dir found"; exit 1; }
+          # `|| true`: with 2+ matches, head closes the pipe and find takes SIGPIPE,
+          # which pipefail would otherwise turn into a step abort.
+          APP=$(find "${ROOTS[@]}" -name 'Yerd.app' -type d 2>/dev/null | head -n1 || true)
+          DMG=$(find "${ROOTS[@]}" -name '*.dmg' -type f 2>/dev/null | head -n1 || true)
+          test -n "$APP" && test -n "$DMG"
+          echo "Verifying $APP and $DMG"
+          codesign --verify --strict --verbose=2 "$APP"
+          codesign -dv --verbose=4 "$APP" > /tmp/cs.txt 2>&1
+          grep -q "Authority=Developer ID Application" /tmp/cs.txt
+          grep -Eq "flags=.*runtime" /tmp/cs.txt
+          xcrun stapler validate "$APP"                        # primary gate (the .app is stapled)
+          # The .app is stapled, so this assesses offline and reliably.
+          spctl -a -t exec -vvv "$APP"
+          # The .dmg is signed but not stapled; its assessment needs an online
+          # notary lookup that can flake on CI — keep it advisory.
+          xcrun stapler validate "$DMG" || echo "::warning::dmg not stapled (expected; .app is the gate)"
+          spctl -a -t open --context context:primary-signature -vvv "$DMG" \
+            || echo "::warning::dmg spctl assessment non-fatal (online check may flake)"
+          # Launch test: a Hardened-Runtime/AMFI kill is SIGKILL (exit 137) and may
+          # leave nothing in the app's own log, so also check the exit signal and
+          # the system log. A clean early exit (single-instance/no-daemon/headless)
+          # is tolerated; the human prerelease check is definitive.
+          "$APP/Contents/MacOS/Yerd" >/tmp/app.log 2>&1 & PID=$!
+          sleep 8
+          if kill -0 "$PID" 2>/dev/null; then
+            echo "App stayed up — entitlements OK"; kill "$PID" 2>/dev/null || true; wait "$PID" 2>/dev/null || true
+          else
+            # `|| code=$?`: `wait` returns the child's non-zero status, which would
+            # abort under `set -e` before we could classify it.
+            code=0; wait "$PID" || code=$?
+            if [ "$code" -ge 128 ] \
+               || grep -Eiq "code signature|library not loaded|amfi|invalid signature" /tmp/app.log \
+               || log show --last 3m --predicate 'process == "Yerd"' 2>/dev/null | grep -Eiq "AMFI|code signature|killed"; then
+              echo "::error::App was killed/crashed (exit $code) — likely signing/entitlement failure:"; cat /tmp/app.log; exit 1
+            fi
+            echo "::warning::App exited early (exit $code) with no signing error — likely headless/single-instance:"; cat /tmp/app.log
+          fi
 
       # Tauri writes bundles under the workspace target dir; glob both possible
       # locations so a path tweak upstream doesn't silently drop artifacts.

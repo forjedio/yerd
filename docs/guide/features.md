@@ -104,10 +104,10 @@ yerd doctor fix    # auto-repair the safe ones
 
 ## Desktop app
 
-An optional Tauri v2 tray app (Vue 3 + TypeScript) ships as separate bundles: `.dmg` on macOS, `.AppImage` / `.deb` on Linux. It's a client of the daemon and surfaces the same data and actions as the CLI in a native tray UI.
+A Tauri v2 tray app (Vue 3 + TypeScript) ships as separate bundles: `.dmg` on macOS, `.AppImage` / `.deb` on Linux. It's the recommended way to run Yerd, surfacing the same data and actions as the CLI in a native tray UI.
 
-::: warning Install the CLI too
-The desktop app talks to `yerdd` and needs `yerd`/`yerd-helper` present for privileged "Fix" actions. Install the CLI bundle as well.
+::: tip The app sets up the backend for you
+On first launch the desktop app downloads, verifies, and installs `yerd`/`yerdd`/`yerd-helper` for you (Apple Silicon macOS · Linux x86-64 · arm64), then starts the daemon - no separate CLI install needed.
 :::
 
 [Desktop app guide →](./desktop-app)
@@ -153,3 +153,26 @@ yerd db create mysql my_app
 ```
 
 [Services & Databases →](./services)
+
+## Mail capture
+
+Yerd runs a built-in SMTP sink on `127.0.0.1:2525`, enabled by default, that
+catches every message your apps try to send and keeps it locally for inspection
+- it never relays anything to the outside world. Browse captured mail in the
+desktop app or straight from the CLI, so testing transactional email needs no
+third-party service.
+
+```sh
+yerd mail                  # list captured messages
+```
+
+[Mail capture guide →](./mail)
+
+## Laravel Dumps
+
+A native PHP extension streams Laravel dumps, queries, jobs, views, requests,
+logs, and cache events live into a dedicated desktop-app window as they happen -
+a richer, always-on view than `dd()` in the browser. It's off by default; enable
+it when you want the live feed.
+
+[Laravel Dumps guide →](./laravel-dumps)

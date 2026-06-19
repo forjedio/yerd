@@ -73,5 +73,5 @@ Yerd icon in the taskbar/dock (Wayland/GNOME/Pantheon match the icon via a
   at the deterministic `/tmp/yerd-$UID` so the root-elevated CLI can locate it
   from `SUDO_UID` alone.
 - **Windows** is out of scope: the daemon's pipe name isn't client-derivable yet.
-- Release bundles are currently **unsigned** (macOS Gatekeeper workaround in the
-  root README); signing/notarisation is a wired-later follow-up.
+- macOS release bundles are **Developer ID signed and notarised**, so they open
+  without a Gatekeeper prompt (signing/notarisation is wired up on this branch).

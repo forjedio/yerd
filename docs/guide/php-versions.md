@@ -48,6 +48,8 @@ A fresh config defaults to **PHP 8.3**, but you'll usually set your own right af
 Put `{data}/bin` (Yerd prints the exact path) on your `PATH` so a bare `php` matches the version your sites run. The shim is a symlink, atomically re-pointed each time you change the default.
 :::
 
+Alongside the default `php` shim, Yerd maintains a `php<version>` shim for each installed version (`php8.4`, `php8.3`, ...) so you can reach a specific version directly, plus `phpcover` / `php<version>cover` shims that run PHP with the pcov coverage driver enabled. See [Code Coverage](./code-coverage).
+
 ## Per-site versions
 
 Any site can pin its own version. Pass `yerd use` two arguments, a site name and a version:

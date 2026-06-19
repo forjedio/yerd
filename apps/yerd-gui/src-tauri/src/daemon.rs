@@ -252,9 +252,10 @@ fn write_executable(path: &Path, bytes: &[u8]) -> Result<(), GuiError> {
     })
 }
 
-/// macOS: ad-hoc sign a binary so AMFI lets it exec on Apple Silicon. The
-/// release ships unsigned Mach-Os; on arm64 an unsigned binary is SIGKILLed
-/// ("Killed: 9") regardless of quarantine, so this is the real gate.
+/// macOS: ad-hoc sign a binary so AMFI lets it exec on Apple Silicon. Older /
+/// unsigned releases ship unsigned Mach-Os; on arm64 an unsigned binary is
+/// SIGKILLed ("Killed: 9") regardless of quarantine. This is the fallback used
+/// when [`verify_signed`] finds no valid signature.
 #[cfg(target_os = "macos")]
 fn adhoc_sign(path: &Path) -> Result<(), GuiError> {
     let status = std::process::Command::new("/usr/bin/codesign")
@@ -276,12 +277,36 @@ fn adhoc_sign(path: &Path) -> Result<(), GuiError> {
     }
 }
 
-/// Blocking install: extract, then (macOS) ad-hoc sign all three binaries.
+/// macOS: does this binary already carry a *valid* code signature? `codesign
+/// --verify --strict` is a local, offline check (no `--deep`, no `spctl`, no
+/// notarisation lookup), so it works on an air-gapped install. It accepts any
+/// valid signature — a Developer-ID release binary, or one we ad-hoc signed on
+/// a previous install — and we skip re-signing those, which keeps a notarised
+/// Developer-ID signature intact. It returns false only when there is no valid
+/// signature (an unsigned legacy binary), which then needs ad-hoc signing to
+/// exec on arm64. (A bad download is caught upstream by `verify_sha256`.)
+#[cfg(target_os = "macos")]
+fn verify_signed(path: &Path) -> bool {
+    std::process::Command::new("/usr/bin/codesign")
+        .args(["--verify", "--strict"])
+        .arg(path)
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+/// Blocking install: extract, then on macOS make sure each binary has a valid
+/// signature — preserving any existing one (a Developer-ID/notarised release, or
+/// a prior ad-hoc signature) and ad-hoc signing only a binary with no valid
+/// signature, so AMFI lets it exec on arm64.
 fn install_blocking(tar_gz: &[u8], dest: &Path) -> Result<(), GuiError> {
     let installed = extract_binaries(tar_gz, dest)?;
     #[cfg(target_os = "macos")]
     for p in &installed {
-        adhoc_sign(p)?;
+        if !verify_signed(p) {
+            adhoc_sign(p)?;
+        }
     }
     let _ = &installed;
     Ok(())
@@ -403,4 +428,50 @@ pub(crate) fn spawn_detached() -> Result<(), GuiError> {
     cmd.spawn()
         .map(|_| ())
         .map_err(|e| GuiError::internal(format!("could not start {}: {e}", yerdd.display())))
+}
+
+// `verify_signed` is macOS-only (it gates the ad-hoc-sign skip), so the test
+// only compiles/runs on the macOS runner.
+#[cfg(all(test, target_os = "macos"))]
+#[allow(clippy::unwrap_used, clippy::panic)]
+mod tests {
+    use super::*;
+    use std::io::Write as _;
+
+    #[test]
+    fn verify_signed_accepts_signed_rejects_unsigned() {
+        let dir = std::env::temp_dir().join(format!("yerd-verify-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // A system binary carries a valid signature; a byte-verbatim copy keeps
+        // it (exactly what tar extraction does to a Developer-ID release binary),
+        // so verify_signed must accept it → the install skips ad-hoc signing.
+        let signed = dir.join("ls");
+        std::fs::copy("/bin/ls", &signed).unwrap();
+        assert!(verify_signed(&signed), "copied signed binary should verify");
+
+        // A copied real binary, stripped to unsigned, must fail verification →
+        // the install ad-hoc signs it; and after ad-hoc signing it must verify
+        // (the install's skip-on-reinstall invariant).
+        let fresh = dir.join("yerdd");
+        std::fs::copy("/bin/ls", &fresh).unwrap();
+        std::process::Command::new("/usr/bin/codesign")
+            .args(["--remove-signature"])
+            .arg(&fresh)
+            .status()
+            .unwrap();
+        assert!(!verify_signed(&fresh), "unsigned binary should not verify");
+        adhoc_sign(&fresh).unwrap();
+        assert!(verify_signed(&fresh), "ad-hoc signed binary should verify");
+
+        // A plain, non-Mach-O file must also fail verification.
+        let plain = dir.join("plain");
+        std::fs::File::create(&plain)
+            .unwrap()
+            .write_all(b"not a signed binary")
+            .unwrap();
+        assert!(!verify_signed(&plain), "plain file should not verify");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

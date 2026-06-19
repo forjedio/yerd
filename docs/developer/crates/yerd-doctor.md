@@ -42,7 +42,7 @@ Two cross-cutting invariants hold for the output:
 
 - **Always non-empty.** When no `Warn`/`Fail` finding is produced, a single [`DiagnosisCode::AllGood`] `Ok` finding is appended, so a caller always has something to render.
 - **No false alarms from unknowns.** Probes typed as `Option<bool>` that come back `None` ("couldn't determine") emit **no** finding. Only an explicit `Some(false)` raises a warning. This is why the CA and resolver checks compare against `Some(false)` rather than `!= Some(true)`.
-- **Most-specific port finding wins.** `port_findings` raises `ForeignWebListener` when `report.foreign_web_listener == Some(true)` (a non-Yerd process on 80/443) and *suppresses* the generic `PortFallback` in that case — telling the user to free the port, not to elevate (which can't bind a port someone else owns). An active macOS redirect (`port_redirect == Some(true)`) likewise suppresses `PortFallback`.
+- **Most-specific port finding wins.** `port_findings` raises `ForeignWebListener` when `report.foreign_web_listener == Some(true)` (a non-Yerd process on 80/443) and *suppresses* the generic `PortFallback` in that case - telling the user to free the port, not to elevate (which can't bind a port someone else owns). An active macOS redirect (`port_redirect == Some(true)`) likewise suppresses `PortFallback`.
 
 ### `plan_auto_fixes(&StatusReport) -> Vec<FixAction>`
 

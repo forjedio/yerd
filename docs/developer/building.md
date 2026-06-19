@@ -301,6 +301,57 @@ the CLI/daemon and the GUI never disagree on version. The release pipeline runs
 `version-check` to fail fast on a mismatched tag. See
 [Build Automation (xtask)](./xtask) for the full breakdown.
 
+### macOS code signing & notarisation
+
+The release workflow Developer ID signs **and** notarises the macOS artifacts:
+the GUI `.app` (signed, notarised and stapled by Tauri) and its `.dmg` (signed
+and notarised, but only the `.app` staple is enforced - the `.dmg` staple is
+advisory and non-fatal in CI, since the stapled `.app` inside is the gate) plus
+the three CLI binaries (`yerd`/`yerdd`/`yerd-helper`, signed with Hardened Runtime + a secure
+timestamp and notarised as a zip). Notarisation uses an **App Store Connect API
+key**. The GUI's first-run auto-installer verifies a downloaded binary's
+signature and only ad-hoc-signs older, unsigned releases, so it never strips the
+Developer ID signature.
+
+::: info Why the CLI binaries aren't stapled
+The GUI `.app` is stapled (Tauri staples the notarisation ticket into the
+bundle, so Gatekeeper assesses it offline). The three CLI binaries deliberately
+are **not**: a loose Mach-O / tarball can't carry a stapled ticket. They pass
+Gatekeeper two other ways - notarytool records each `cdhash`, so Gatekeeper
+approves them via an online notarisation check, and the `curl | sh` /
+auto-installer download path sets no `com.apple.quarantine` xattr, so they exec
+regardless. This is why the CLI verify step doesn't run an `spctl -t exec` gate:
+an unstapled, unquarantined loose binary often assesses as "rejected" even when
+it is correctly notarised.
+:::
+
+This is driven entirely by GitHub Actions **secrets** - there's nothing to
+configure in a normal build. To (re)provision them:
+
+| Secret | What it is |
+|---|---|
+| `APPLE_CERTIFICATE` | base64 of the exported **Developer ID Application** `.p12` |
+| `APPLE_CERTIFICATE_PASSWORD` | the `.p12` export password |
+| `APPLE_SIGNING_IDENTITY` | `Developer ID Application: <Name> (<TEAMID>)` |
+| `APPLE_API_ISSUER` | App Store Connect API **Issuer ID** |
+| `APPLE_API_KEY` | App Store Connect API **Key ID** (not the file) |
+| `APPLE_API_KEY_P8` | base64 of the `AuthKey_<KEYID>.p8` key file |
+
+**Rotation.** Developer ID certificates last ~5 years - regenerate from a new CSR
+(Keychain Access → Certificate Assistant), export a fresh `.p12`, and update
+`APPLE_CERTIFICATE`/`APPLE_CERTIFICATE_PASSWORD`/`APPLE_SIGNING_IDENTITY`. API
+keys are revocable in App Store Connect → Users and Access → Integrations; create
+a replacement (role **Developer**) and update `APPLE_API_*`/`APPLE_API_KEY_P8`.
+
+The GUI's signing config lives in `apps/yerd-gui/src-tauri/tauri.conf.json`
+(`bundle.macOS`) and `apps/yerd-gui/src-tauri/entitlements.plist` (the
+Hardened-Runtime entitlements - note it must **not** carry `get-task-allow`).
+
+**Verifying a release.** Both CI jobs verify fail-closed before publishing. To
+check by hand on a Mac: `xcrun stapler validate Yerd.app`,
+`spctl -a -t open --context context:primary-signature -vvv Yerd.dmg`, and
+`codesign -dv --verbose=4 yerd` (expect `Authority=Developer ID Application`).
+
 ## See also
 
 - [Architecture](./architecture) - how the pieces fit together.

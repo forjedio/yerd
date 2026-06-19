@@ -29,6 +29,7 @@ src/
 ├── message.rs     encode_message / decode_message (serde_json wrappers)
 ├── request.rs     Request enum (client → daemon)
 ├── response.rs    Response enum + ErrorCode + PhpUpdate (daemon → client)
+├── dump.rs        DumpCategory / DumpEvent / DumpCounts / DumpExtStatus (Laravel ▸ Dumps telemetry)
 ├── status.rs      StatusReport / Diagnosis / FixReport and friends
 ├── error.rs       FrameError, IpcError, IpcErrorKind
 └── transport.rs   #[cfg(feature = "transport")] async read/write helpers
@@ -37,6 +38,7 @@ src/
 The public re-exports, copied from `lib.rs`:
 
 ```rust
+pub use dump::{DumpCategory, DumpCounts, DumpEvent, DumpExtStatus};
 pub use error::{FrameError, IpcError, IpcErrorKind};
 pub use frame::{encode_frame, FrameDecoder, DEFAULT_MAX_FRAME};
 pub use message::{decode_message, encode_message};
@@ -201,14 +203,29 @@ pub struct PhpUpdate { pub version: PhpVersion, pub installed: String, pub lates
 
 One entry per installed minor that has a newer published patch (e.g. version `8.5`, installed `8.5.6`, latest `8.5.7`).
 
+## Dump telemetry (`dump.rs`)
+
+The Laravel ▸ Dumps feature ships per-request telemetry from the `yerd-php-ext` extension to the daemon's loopback dump server; the daemon buffers it and serves it to the GUI over IPC. `dump.rs` holds the shared data model. The daemon treats each event's payload as **opaque** JSON, so the extension's payload schema can evolve without daemon changes; the GUI renders it per category. Wire shapes are pinned in `tests/wire_stability.rs`.
+
+| Type | Shape | Role |
+| --- | --- | --- |
+| `DumpCategory` | `snake_case`, `#[non_exhaustive]` enum: `Dump`, `Query`, `Job`, `View`, `Request`, `Log`, `Cache`, `Http` | One per GUI tab; the category of a captured frame. `Copy + Ord`. |
+| `DumpEvent` | `{ id: u64, category: DumpCategory, ts_ms: u64, site: String, request_id: String, payload: serde_json::Value }` | One buffered event. `id` is assigned by the daemon (clients page with `since_id`); `payload` is the opaque category-specific JSON. |
+| `DumpCounts` | `{ dumps, queries, jobs, views, requests, logs, cache, http: u32 }` | Per-category counts of events currently in the daemon's ring (capacity ~2000, so `u32` not `u64`). `increment(category)` bumps the matching field. `Copy + Eq`. |
+| `DumpExtStatus` | `{ version: PhpVersion, present: bool }` | Whether a matching extension `.so` is present for an installed PHP version (a yerd-side "artifact present and wired" fact, not proof FPM `dlopen`'d it). `Eq`. |
+
+::: warning `DumpEvent` is not `Eq` - and that ripples up to `Response`
+`DumpEvent::payload` is a `serde_json::Value`, which can hold floats, so `DumpEvent` derives `PartialEq` but **not** `Eq`. Because a `DumpEvent` is reachable from `Response`, `Response` itself **no longer derives `Eq`** (only `PartialEq`). `Request`, which reaches no float-bearing type, still derives `PartialEq + Eq`. See the [No `f64` on the wire](#no-f64-on-the-wire-note) note below for what this changes.
+:::
+
 ## Status & doctor payloads (`status.rs`)
 
 These types ride inside `Response::Status`, `Response::Diagnoses`, `Response::DoctorFix`, and the service/database responses. The headline list:
 
 `StatusReport`, `PortStatus`, `CaStatus`, `SiteCounts`, `PhpPoolStatus`, `PoolRunState`, `ServiceStatus`, `ServiceRunState`, `ServiceAvailability`, `DatabaseSummary`, `Diagnosis`, `Severity`, `DiagnosisCode`, `FixReport`, `FixResult`.
 
-::: info No `f64` on the wire
-`Response` derives `Eq`, so nothing reachable from it may contain a float. The system load average therefore crosses as integer hundredths - `StatusReport.load_avg` is `Option<[u32; 3]>` where each value is `load × 100`. The CLI renders it back to `x.xx`. The daemon does the conversion from the platform layer's `f64` reading at assembly time.
+::: info No `f64` on the status payload {#no-f64-on-the-wire-note}
+`StatusReport` and everything it reaches stays float-free even though `Response` no longer derives `Eq` (the `DumpEvent::payload` `serde_json::Value` forced that to `PartialEq`-only - see [Dump telemetry](#dump-telemetry-dump-rs)). The system load average still crosses as integer hundredths - `StatusReport.load_avg` is `Option<[u32; 3]>` where each value is `load × 100`. The CLI renders it back to `x.xx`. The daemon does the conversion from the platform layer's `f64` reading at assembly time. Keeping the *status* payload integer-only preserves its `Eq`-based golden assertions; the only intentional float on `Response` is the opaque, daemon-uninterpreted dump payload.
 :::
 
 `StatusReport` follows the same additive-and-back-compatible discipline as the envelopes: optional probe fields (`port_redirect` and the cross-platform `foreign_web_listener`, plus macOS-only `resolver_backup`) are `#[serde(default, skip_serializing_if = "Option::is_none")]` so the wire stays additive and older daemons stay decodable; `daemon_version` is `#[serde(default)]` so a newer client decoding an older daemon's status gets `""` (rendered "unknown") instead of failing the whole decode.

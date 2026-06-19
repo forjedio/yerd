@@ -319,7 +319,7 @@ cargo xtask bump 2.0.2          # sets Cargo.toml + tauri.conf.json + package.js
 git commit -am "release: v2.0.2" && git tag v2.0.2 && git push --follow-tags
 ```
 
-The release CI then builds the CLI artifacts (`.deb` + tarballs) and GUI bundles for macOS and Linux on both `amd64` and `arm64`, and a mismatched tag fails fast via `cargo xtask version-check`. Because `version-check` strips the leading `v`, it accepts both the tag form (`v2.0.2`) and the bare version (`2.0.2`). See [Building from Source](./building) and [Contributing](./contributing) for the full developer gate.
+The release CI then builds the CLI artifacts (tarballs everywhere, plus a `.deb` on Linux) for Linux on both `amd64` and `arm64` but macOS on `arm64` only (there is no Intel/`amd64` macOS CLI build), plus GUI bundles for macOS (`arm64`) and Linux (`amd64` only - there is no `arm64` Linux GUI runner), and a mismatched tag fails fast via `cargo xtask version-check`. Because `version-check` strips the leading `v`, it accepts both the tag form (`v2.0.2`) and the bare version (`2.0.2`). See [Building from Source](./building) and [Contributing](./contributing) for the full developer gate.
 
 ## Conventions and invariants
 

@@ -1,4 +1,4 @@
-# yerd-php-ext — Implementation Plan
+# yerd-php-ext - Implementation Plan
 
 > **Handoff seed.** Copy to the new `yerd-php-ext` repo. This is the phased build plan
 > for the extension itself. See `architecture.md` (design) and `CLAUDE.md` (operating
@@ -8,19 +8,19 @@
 ## Goal & definition of done
 
 A native PHP extension (`.so`) that, with zero app changes, emits the telemetry frames
-in `architecture.md` §2 to Yerd's loopback dump server — built and released per
+in `architecture.md` §2 to Yerd's loopback dump server - built and released per
 `(PHP minor × {macOS arm64/x86_64, linux x86_64/aarch64} × NTS, glibc on Linux)`, which
 Yerd downloads and loads via `-d extension=`.
 
-## Phase 0 — Spike: prove the engine path (highest-risk first)
+## Phase 0 - Spike: prove the engine path (highest-risk first)
 
 Smallest possible extension that proves every risky mechanism end-to-end:
 
 1. **Scaffold** an `ext-php-rs` `cdylib` with the `observer` feature; build a `.so`.
 2. **Register the INI directive** `yerd_dump.state_path` (`PHP_INI_SYSTEM`) in MINIT and
-   read it back at RINIT (verify a `-d yerd_dump.state_path=…` value is visible — an
+   read it back at RINIT (verify a `-d yerd_dump.state_path=…` value is visible - an
    *unregistered* name is not).
-3. **Observe one symbol** (start with the global `dump`/`dd` or `VarDumper::dump` —
+3. **Observe one symbol** (start with the global `dump`/`dd` or `VarDumper::dump` -
    **pin the exact choice here** and record it in `architecture.md` §3.2). In the
    handler, read `$this`/args from `ExecuteData` and render the dumped value.
 4. **Emit one frame**: read `state.json`, open a non-blocking loopback socket to the
@@ -28,7 +28,7 @@ Smallest possible extension that proves every risky mechanism end-to-end:
    then against Yerd's real dump server.
 5. **Prove `dlopen`** on the targets that matter: load the `.so` into a **glibc-Linux**
    PHP-FPM (x86_64) and a **macOS** PHP via `-d extension=…`, and serve a request
-   without crashing. (musl static PHP cannot load shared extensions — that's why Yerd
+   without crashing. (musl static PHP cannot load shared extensions - that's why Yerd
    switches Linux to glibc; you only ever target glibc/macOS.)
 6. **Panic safety harness**: force a panic inside the observer and confirm it's caught
    and the request still completes.
@@ -36,7 +36,7 @@ Smallest possible extension that proves every risky mechanism end-to-end:
 **Exit criteria:** a frame from a real `dump()` call appears in Yerd's Dumps window on
 both macOS and glibc-Linux, and a deliberate observer panic does not crash the worker.
 
-## Phase A — Dumps + queries (highest value, framework-agnostic)
+## Phase A - Dumps + queries (highest value, framework-agnostic)
 
 1. **Dumps**: finalize the dump symbol + caller `file:line` resolution; render HTML +
    text; preserve normal user-visible output; handle `dd()` (emit before `exit`).
@@ -52,7 +52,7 @@ both macOS and glibc-Linux, and a deliberate observer panic does not crash the w
 **Exit criteria:** dumps + queries stream correctly under load; disabling each feature
 silences it; server-down is invisible to the app.
 
-## Phase B — Laravel signals: jobs, views, requests, logs, cache
+## Phase B - Laravel signals: jobs, views, requests, logs, cache
 
 1. **Request summary** at RINIT/RSHUTDOWN from superglobals (method/uri/status/duration).
 2. **Events**: observe `Illuminate\Events\Dispatcher::dispatch` (+ the logger); filter
@@ -64,7 +64,7 @@ silences it; server-down is invisible to the app.
 
 **Exit criteria:** all categories visible in Yerd's tabs against a real Laravel app.
 
-## Phase C — Build matrix & releases (CI)
+## Phase C - Build matrix & releases (CI)
 
 1. **Per-target builds** against the matching PHP headers (the same static-php.dev
    builds Yerd ships: glibc/NTS on Linux, NTS on macOS) so build-ids match. Cells:
@@ -79,7 +79,7 @@ silences it; server-down is invisible to the app.
 **Exit criteria:** `yerd-dump-*` assets exist for the current supported PHP minors on
 all four targets, downloadable by Yerd.
 
-## Phase D — Testing & hardening
+## Phase D - Testing & hardening
 
 - **Per-minor smoke tests**: load the `.so`, run `dump`/`dd`/`ddd`, a PDO query, a
   Laravel job/view/cache/log, assert the expected frames (capture with a tiny test TCP

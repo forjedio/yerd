@@ -1,8 +1,8 @@
 # Desktop App
 
-Yerd ships an optional desktop GUI: a small tray-first window over everything the CLI does. Built with Tauri v2, Vue 3, TypeScript, and Tailwind, it's a thin client of the [daemon](./daemon), just like the `yerd` CLI. Every button maps to one IPC request to `yerdd`, so the GUI and CLI can't drift out of sync.
+Yerd ships a desktop GUI: a small tray-first window over everything the CLI does. Built with Tauri v2, Vue 3, TypeScript, and Tailwind, it's a thin client of the [daemon](./daemon), just like the `yerd` CLI. Every button maps to one IPC request to `yerdd`, so the GUI and CLI can't drift out of sync.
 
-The GUI is optional. If you live in the terminal, skip it.
+It's the recommended way to run Yerd: it installs and verifies the daemon and CLI for you, then walks you through the one-time setup. If you live in the terminal, the [CLI](./getting-started) is a first-class alternative.
 
 ## Install the bundles
 
@@ -17,19 +17,9 @@ The app ships as separate bundles on the same release as the CLI:
 The macOS DMG targets Apple Silicon (`aarch64`) only; Intel (x86-64) Macs are not supported at this time. There's no Windows bundle yet: the daemon's named-pipe address isn't client-derivable.
 
 ::: tip The GUI sets up the backend for you
-The GUI is a client of the [daemon](./daemon), but you don't have to install the CLI first. On first launch, if `yerdd` isn't already present the app downloads the matching release, **verifies it against `SHA256SUMS`**, and installs `yerd` + `yerdd` + `yerd-helper` into `~/.local/bin` (ad-hoc-signing them on macOS), then starts the daemon. On macOS that makes setup essentially **drag-and-drop**: drag Yerd to Applications, launch it, done.
+The GUI is a client of the [daemon](./daemon), but you don't have to install the CLI first. On first launch, if `yerdd` isn't already present the app downloads the matching release, **verifies it against `SHA256SUMS`**, and installs `yerd` + `yerdd` + `yerd-helper` into `~/.local/bin`. "Matching" means the release tagged with the app's own version if one is published for it; otherwise the app falls back to the latest stable release (so a dev build whose version was never tagged still installs a working daemon) (on macOS it verifies their signature, ad-hoc-signing only older unsigned releases), then starts the daemon. On macOS that makes setup essentially **drag-and-drop**: drag Yerd to Applications, launch it, done.
 
 Auto-install covers Linux (x86-64 · arm64) and Apple Silicon macOS. On Intel Macs, [install the CLI](./getting-started) manually first. If you already have the CLI (or installed the Linux `.deb`, which lands in `/usr/bin`), the app just finds and uses the existing binaries.
-:::
-
-::: tip First launch on macOS (unsigned)
-Release bundles are currently unsigned, so Gatekeeper warns on first open. Either right-click the app in Applications and choose Open (once), or strip the quarantine attribute:
-
-```sh
-xattr -dr com.apple.quarantine /Applications/Yerd.app
-```
-
-Signing and notarisation are planned.
 :::
 
 ## Tray-first by design
@@ -43,10 +33,10 @@ The window is something you summon, not keep open.
 
 The window is borderless with a custom title bar (macOS-style traffic lights for close / minimize / zoom) and looks identical on both platforms. A status pill in the bottom-left of the sidebar shows whether the daemon is connected, unreachable, or connecting.
 
-If the daemon isn't running, the main area shows a "Daemon not running" panel with **Start** and **Retry** buttons — Start launches `yerdd` for you (through your per-user service) without leaving the app. The **General** tab stays reachable even when the daemon is down, so you can start or configure it from there. You can also start it from a terminal with `yerdd`.
+If the daemon isn't running, the main area shows a "Daemon not running" panel with **Start** and **Retry** buttons - Start launches `yerdd` for you (through your per-user service) without leaving the app. The **General** tab stays reachable even when the daemon is down, so you can start or configure it from there. You can also start it from a terminal with `yerdd`.
 
 ::: tip First-run auto-install
-If `yerdd` isn't installed at all when the app first opens (Linux/macOS), it downloads the matching release, installs the `yerd`/`yerdd`/`yerd-helper` binaries to `~/.local/bin`, starts the daemon, and lands you on the General tab — showing an "Installing Yerdd… Please wait" overlay while it works. It never runs as root to do this.
+If `yerdd` isn't installed at all when the app first opens (Linux/macOS), it downloads the matching release, installs the `yerd`/`yerdd`/`yerd-helper` binaries to `~/.local/bin`, starts the daemon, and lands you on the General tab - showing an "Installing Yerdd… Please wait" overlay while it works. It never runs as root to do this.
 :::
 
 ## The window at a glance
@@ -63,10 +53,10 @@ The sidebar has five sections:
 
 ### General
 
-App- and daemon-level settings — the only tab that stays usable when the daemon is down (it can start or install it):
+App- and daemon-level settings - the only tab that stays usable when the daemon is down (it can start or install it):
 
 - **Daemon.** Whether `yerdd` is running (with pid), plus a Start or Stop button. Start/Stop go through your per-user service manager (systemd `--user` on Linux, a launchd LaunchAgent on macOS), with a detached-process fallback where none exists; the same actions are in the tray menu.
-- **Start at login.** Three toggles — start the daemon at login, start the app at login, and start the app minimized (hidden to the tray). The daemon-at-login toggle is disabled where no per-user service manager is available.
+- **Start at login.** Three toggles - start the daemon at login, start the app at login, and start the app minimized (hidden to the tray). The daemon-at-login toggle is disabled where no per-user service manager is available.
 - **Appearance.** A System / Light / Dark theme selector, applied live and remembered across launches.
 
 ### PHP
@@ -108,7 +98,7 @@ Mirrors [`yerd doctor`](./diagnostics):
 
 - Subsystems. A live table of the daemon (`yerdd`, with pid and uptime), the in-process DNS resolver, the HTTP and HTTPS proxy listeners (with bound ports, including when macOS's `pf` redirect carries `:80`/`:443`), and each PHP-FPM pool. The daemon and FPM rows have a `⋯` menu with Restart.
 - Health. Lists problems by severity (`ok` / `warn` / `fail`) with a copyable remedy command. Run safe fixes applies the safe one-click fixes; Re-check re-runs diagnostics.
-- Environment. OS-level state: Local CA trusted, `.test` resolver installed, and Privileged ports (80/443). A Fix (elevate) button runs the privileged action where a row isn't configured; once a row *is* configured, an **Unelevate** button reverts it — behind an in-app confirm dialog and the OS prompt. Unelevating the `.test` resolver restores your previous resolver on macOS; reverting privileged ports is macOS-only (Linux `setcap` has no clean reverse, so no button is shown there).
+- Environment. OS-level state: Local CA trusted, `.test` resolver installed, and Privileged ports (80/443). A Fix (elevate) button runs the privileged action where a row isn't configured; once a row *is* configured, an **Unelevate** button reverts it - behind an in-app confirm dialog and the OS prompt. Unelevating the `.test` resolver restores your previous resolver on macOS; reverting privileged ports is macOS-only (Linux `setcap` has no clean reverse, so no button is shown there).
 
 ::: info "Fix" actions never run the GUI as root
 The Fix buttons run the audited `yerd elevate` helper under an OS prompt; the GUI never runs elevated. On Linux this uses `pkexec`, on macOS an `osascript … with administrator privileges` prompt. You may be asked for your password. See [Elevation & Privileges](./elevation).
@@ -143,7 +133,7 @@ The daemon owns all state; the window is a view onto it; privileged work goes th
 
 ## Related
 
-- [Getting Started](./getting-started) - install the CLI and daemon (do this first)
+- [Getting Started](./getting-started) - install Yerd (the app sets up the daemon and CLI for you) or take the terminal-first path
 - [The Daemon](./daemon) - what `yerdd` is and how it runs
 - [Sites](./sites) · [PHP Versions](./php-versions) · [HTTPS & Certificates](./https) - the features the GUI surfaces
 - [Elevation & Privileges](./elevation) - how "Fix" actions stay root-free

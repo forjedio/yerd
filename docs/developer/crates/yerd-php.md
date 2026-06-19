@@ -290,7 +290,7 @@ The `instance_id` is the daemon's `std::process::id()`. It is embedded into Unix
 
 ## `PoolConfig` and `PhpManager`
 
-`PoolConfig` (`#[non_exhaustive]`) is the input to `render_fpm_conf`. `PoolConfig::dev_defaults(version, listen, dirs, instance_id)` builds a sane local-dev config: `pm = OnDemand`, `max_children = 16` (enough for Laravel + Vite + several tabs), pid/log under `dirs.state`, config under `dirs.config`, all basenames embedding both version and instance id.
+`PoolConfig` (`#[non_exhaustive]`) is the input to `render_fpm_conf`. `PoolConfig::dev_defaults(version, listen, dirs, instance_id)` builds a sane local-dev config: `pm = OnDemand`, `max_children = 16` (enough for Laravel + Vite + several tabs), pid/log under `dirs.state`, config under `dirs.config`, all basenames embedding both version and instance id. Its `extension: Option<PathBuf>` and `ini_defines: Vec<(String, String)>` fields are populated by `ensure` from `DumpExtSettings` (see [Dump-extension loading](#dump-extension-loading)) and become the `-d` arguments on the spawned command.
 
 `PhpManager<S, C, P>` is generic over the `ProcessSpawner`, `Clock`, and `HealthProbe` seams; it holds one `Pool` per `PhpVersion` in a `BTreeMap` (so shutdown order is deterministic). `lib.rs` includes a compile-time assertion that the production instantiation is `Send + 'static`:
 
@@ -314,8 +314,28 @@ const _: () = {
 | `snapshots()` | Read-only-intent status report (`&mut self` because `try_wait` needs `&mut`). Each pool is reported `Running` (with PID) only if its stored state is `Running` *and* the child is still alive; otherwise `Failed`. Does not reconcile the pool set. |
 | `set_binaries(map)` | Replaces the known-binary map. A version installed at runtime (`yerd install php`) is invisible to a long-running manager until the daemon calls this. |
 | `set_ini_settings(v)` | Replaces the global ini settings injected into each pool's config on the next `ensure`. |
+| `set_dump_ext(opt)` | Configures (or, with `None`, disables) daemon-managed dump-extension loading. Takes effect on the next `ensure` / restart of a pool. |
 
-The spawned command is assembled by `build_cmd`: `php-fpm --fpm-config <path>`, with `env_clear()` followed by the scrubbed allowlist, and `process_group(0)` on Unix.
+The spawned command is assembled by `build_cmd`: `php-fpm --fpm-config <path>`, with `env_clear()` followed by the scrubbed allowlist, and `process_group(0)` on Unix. When dump-extension loading is active for the version, `build_cmd` prepends `-d extension=<so>` plus one `-d key=value` per ini define **before** `--fpm-config` (startup-INI overrides must precede it so they apply at PHP `MINIT`, which the extension needs to register its observers).
+
+### Dump-extension loading
+
+`PhpManager::set_dump_ext(Option<DumpExtSettings>)` wires the Laravel ▸ Dumps extension into FPM pools. `DumpExtSettings` is:
+
+```rust
+pub struct DumpExtSettings {
+    pub so_dir: PathBuf,                  // base dir of per-version extensions
+    pub ini_defines: Vec<(String, String)>, // extra -d key=value defines
+}
+```
+
+On each `ensure`, if `dump_ext` is set the manager probes for `so_dir/php-<version>/yerd-dump.so`. When that file exists, the pool spawns with `-d extension=<so>` plus one `-d key=value` per entry in `ini_defines` (e.g. `yerd_dump.state_path=<path>`).
+
+::: warning It is `extension=`, not `zend_extension=`
+The yerd-dump build is a regular PHP extension, so the spawn code emits `-d extension=<so>` - **not** `-d zend_extension=<so>`. A stale code comment on `set_dump_ext` still says `zend_extension`; the authoritative behaviour is the `build_cmd` body, which writes `extension={so}`. Document and rely on `extension=`.
+:::
+
+The probe gates **only on the `.so` being present**, not on the `dumps.enabled` config flag. The extension self-disables via its on-disk state file, so the daemon loads it into every pool whenever a matching artifact exists and lets the extension decide per-request whether to capture. Toggling `dumps.enabled` rewrites the state file rather than restarting FPM.
 
 ::: details Driver invariants (from manager.rs)
 Inside `drive`, the events fed into `transition` never produce `Action::None` in a *non-terminal* state. The `Action::None` arm returns the running child (`Outcome::Running`) or `Stopped`, and **panics** on any other state as an explicit invariant violation. The driver never re-feeds `EnsureRequested` mid-loop, and never feeds `StopTick` after a SIGKILL (the SIGKILL path waits unconditionally and feeds `StopComplete`). `ensure` cleans a stale socket before spawn and `stop` removes it on the way out - the only two serialisation points against stale sockets.
@@ -355,6 +375,8 @@ The parsing is carefully anchored. The `php-<maj>.<min>.` prefix carries a **tra
 ### `version.rs` - bundled discovery
 
 `discover_bundled(&PlatformDirs)` walks `dirs.data / "php"` for per-version FPM binaries and returns `(PhpVersion, PathBuf)` tuples sorted by version. The daemon calls it at startup to populate the manager's `binaries` map.
+
+It is now also the single source of truth for **cover-shim reconciliation**: the daemon (`bin/yerdd`) takes one `discover_bundled` snapshot and uses it to build and prune the `{data}/bin` shim set - including the per-version `php<X.Y>cover` (and `phpcover`) symlinks that front pcov-enabled coverage runs. A single snapshot drives both create and prune so the scan can't straddle a concurrent install. The shim-building/pruning logic itself lives in `bin/yerdd` (`php_install::reconcile_shims`), not in this crate; `yerd-php` only provides `discover_bundled` (version enumeration) plus the PHP install/layout primitives it builds on.
 
 ```text
 {dirs.data}/php/php-8.3/sbin/php-fpm     (Unix)

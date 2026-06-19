@@ -116,7 +116,7 @@ Add `--json` to any command for machine-readable output.
 - **Anyone juggling multiple PHP versions** who needs to pin a specific one per project.
 - **People who avoid Docker for local dev** and prefer native processes with a tiny footprint.
 - **Open-source-minded developers** who want a tool they can read, audit, and contribute to.
-- **CLI and GUI users alike**, since the same daemon backs both the command line and an optional tray app.
+- **CLI and GUI users alike**, since the same daemon backs both the command line and a native tray app.
 
 ## Next steps
 
