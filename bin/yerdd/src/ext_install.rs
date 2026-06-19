@@ -116,7 +116,9 @@ pub async fn ensure_for_installed(dirs: &PlatformDirs, dl: &dyn Downloader) {
 /// forces a full manifest fetch + re-verify.)
 pub async fn ensure_pcov_for_installed(dirs: &PlatformDirs, dl: &dyn Downloader) {
     let versions = installed_versions(dirs);
-    if !versions.is_empty() && versions.iter().all(|v| pcov_so_path(dirs, *v).is_file()) {
+    // Nothing to fetch when no PHP is installed, or when every version already
+    // has its `.so` — skip the manifest GET entirely.
+    if versions.is_empty() || versions.iter().all(|v| pcov_so_path(dirs, *v).is_file()) {
         return;
     }
     ensure_for_installed_spec(dirs, dl, &PCOV_SPEC).await;

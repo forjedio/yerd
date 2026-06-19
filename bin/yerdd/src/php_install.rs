@@ -253,9 +253,12 @@ pub fn shim_dir(dirs: &PlatformDirs) -> PathBuf {
 
 /// Atomically create/replace the symlink `link` → `target` (temp + rename, so a
 /// concurrent reader never sees a half-written link). The temp name embeds the
-/// link's own filename + pid, so reconciling many links at once never collides.
+/// link's filename + pid + a process-global sequence, so two writers racing on
+/// the same link name (e.g. an unsynchronized `set_default_shim` vs a reconcile,
+/// both touching `php`) never share a temp path.
 #[cfg(unix)]
 fn place_symlink(link: &Path, target: &Path) -> Result<(), PhpError> {
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let parent = link
         .parent()
         .ok_or_else(|| fs_err(link, &std::io::Error::other("shim link has no parent")))?;
@@ -263,7 +266,8 @@ fn place_symlink(link: &Path, target: &Path) -> Result<(), PhpError> {
         .file_name()
         .and_then(|s| s.to_str())
         .ok_or_else(|| fs_err(link, &std::io::Error::other("shim link has no file name")))?;
-    let tmp = parent.join(format!(".{name}.tmp-{}", std::process::id()));
+    let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let tmp = parent.join(format!(".{name}.tmp-{}-{seq}", std::process::id()));
     let _ = std::fs::remove_file(&tmp);
     fs_ctx(std::os::unix::fs::symlink(target, &tmp), &tmp)?;
     // rename is atomic and replaces any existing shim.
@@ -310,6 +314,12 @@ fn managed_shim_version(name: &str) -> Option<PhpVersion> {
     }
     let major: u8 = maj.parse().ok()?;
     let minor: u8 = min.parse().ok()?;
+    // Reject non-canonical spellings (leading zeros, signs) so a foreign symlink
+    // like `php08.04` is never mistaken for one yerd created (`versioned_shim_name`
+    // only emits canonical `php8.4`).
+    if maj != major.to_string() || min != minor.to_string() {
+        return None;
+    }
     Some(PhpVersion::new(major, minor))
 }
 
@@ -593,6 +603,9 @@ mod tests {
         assert_eq!(managed_shim_version("php8.4.1"), None);
         assert_eq!(managed_shim_version("phpunit"), None);
         assert_eq!(managed_shim_version("php8.4covers"), None);
+        // Non-canonical (leading-zero) spellings are foreign, not managed.
+        assert_eq!(managed_shim_version("php08.04"), None);
+        assert_eq!(managed_shim_version("php8.04"), None);
     }
 
     #[cfg(unix)]

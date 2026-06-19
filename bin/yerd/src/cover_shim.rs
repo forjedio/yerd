@@ -82,7 +82,7 @@ fn run(spec: &CoverSpec) -> ExitCode {
         .exec();
     if err.kind() == std::io::ErrorKind::NotFound {
         return fail(format!(
-            "cannot exec {} ({err}) — the `yerd` binary may have moved; restart `yerdd`",
+            "PHP binary not found at {} ({err}) — reinstall with `yerd install php {minor}`",
             php_bin.display()
         ));
     }

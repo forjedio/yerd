@@ -816,11 +816,14 @@ async fn set_default_php(version: yerd_core::PhpVersion, state: &DaemonState) ->
         let mut cfg_guard = state.config.lock().await;
         let mut new = cfg_guard.clone();
         new.php.default = version;
-        if let Err(e) = new.save(&state.config_path) {
-            return internal(format!("config save failed: {e}"));
-        }
+        // Repoint the shim before persisting: it's the more failure-prone step,
+        // so doing it first means a shim failure persists nothing (disk + memory
+        // stay consistent), rather than leaving disk ahead of memory.
         if let Err(e) = crate::php_install::set_default_shim(&state.dirs, version) {
             return internal(format!("update php shim failed: {e}"));
+        }
+        if let Err(e) = new.save(&state.config_path) {
+            return internal(format!("config save failed: {e}"));
         }
         *cfg_guard = new;
     } // release the config lock before reconciling (reconcile reads no config lock,
