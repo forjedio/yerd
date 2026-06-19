@@ -251,27 +251,153 @@ pub fn shim_dir(dirs: &PlatformDirs) -> PathBuf {
     dirs.data.join("bin")
 }
 
+/// Atomically create/replace the symlink `link` → `target` (temp + rename, so a
+/// concurrent reader never sees a half-written link). The temp name embeds the
+/// link's own filename + pid, so reconciling many links at once never collides.
+#[cfg(unix)]
+fn place_symlink(link: &Path, target: &Path) -> Result<(), PhpError> {
+    let parent = link
+        .parent()
+        .ok_or_else(|| fs_err(link, &std::io::Error::other("shim link has no parent")))?;
+    let name = link
+        .file_name()
+        .and_then(|s| s.to_str())
+        .ok_or_else(|| fs_err(link, &std::io::Error::other("shim link has no file name")))?;
+    let tmp = parent.join(format!(".{name}.tmp-{}", std::process::id()));
+    let _ = std::fs::remove_file(&tmp);
+    fs_ctx(std::os::unix::fs::symlink(target, &tmp), &tmp)?;
+    // rename is atomic and replaces any existing shim.
+    fs_ctx(std::fs::rename(&tmp, link), link)?;
+    Ok(())
+}
+
 /// Point the managed `php` shim at `version`'s CLI binary (unix symlink),
 /// created/replaced atomically. Returns the shim dir for PATH hints.
 #[cfg(unix)]
 pub fn set_default_shim(dirs: &PlatformDirs, version: PhpVersion) -> Result<PathBuf, PhpError> {
     let bin = shim_dir(dirs);
     fs_ctx(std::fs::create_dir_all(&bin), &bin)?;
-    let link = bin.join("php");
-    let tmp = bin.join(format!(".php.tmp-{}", std::process::id()));
-    let _ = std::fs::remove_file(&tmp);
-    fs_ctx(
-        std::os::unix::fs::symlink(cli_binary_path(dirs, version), &tmp),
-        &tmp,
-    )?;
-    // rename is atomic and replaces any existing shim.
-    fs_ctx(std::fs::rename(&tmp, &link), &link)?;
+    place_symlink(&bin.join("php"), &cli_binary_path(dirs, version))?;
     Ok(bin)
 }
 
 #[cfg(not(unix))]
 pub fn set_default_shim(dirs: &PlatformDirs, _version: PhpVersion) -> Result<PathBuf, PhpError> {
     Ok(shim_dir(dirs))
+}
+
+/// The shim filename for `v`: `php<major>.<minor>` (clean) or `…cover` (pcov).
+/// Dotted form matches the `PhpVersion` parser.
+#[cfg(unix)]
+fn versioned_shim_name(v: PhpVersion, cover: bool) -> String {
+    if cover {
+        format!("php{}.{}cover", v.major, v.minor)
+    } else {
+        format!("php{}.{}", v.major, v.minor)
+    }
+}
+
+/// Parse a yerd-managed shim filename back to its PHP version. Matches **exactly**
+/// `php<MAJOR>.<MINOR>` or `php<MAJOR>.<MINOR>cover`; returns `None` for `php`,
+/// `phpcover`, and any other name — so the pruner never touches foreign files.
+#[cfg(unix)]
+fn managed_shim_version(name: &str) -> Option<PhpVersion> {
+    let rest = name.strip_prefix("php")?;
+    let rest = rest.strip_suffix("cover").unwrap_or(rest);
+    let (maj, min) = rest.split_once('.')?;
+    if maj.is_empty() || min.is_empty() {
+        return None;
+    }
+    let major: u8 = maj.parse().ok()?;
+    let minor: u8 = min.parse().ok()?;
+    Some(PhpVersion::new(major, minor))
+}
+
+/// Reconcile the per-version CLI shims in `{data}/bin` against what's installed:
+///
+/// * for each installed `v`: `php<v>` → its CLI binary, `php<v>cover` → `yerd_bin`;
+/// * `phpcover` → `yerd_bin` (resolves the default at run time);
+/// * `php` → `default`'s CLI binary when `default` is installed and the link is
+///   missing/stale (covers "installed but never `yerd use`d");
+/// * prune managed `php<X.Y>`/`php<X.Y>cover` symlinks whose version is no longer
+///   installed.
+///
+/// A **single** `discover_bundled` snapshot drives both create and prune. Callers
+/// must serialize invocations (the daemon holds a dedicated mutex) so the
+/// scan→prune can't race a concurrent install's create. Unix-only; no-op elsewhere.
+#[cfg(unix)]
+pub fn reconcile_shims(
+    dirs: &PlatformDirs,
+    yerd_bin: &Path,
+    default: PhpVersion,
+) -> Result<(), PhpError> {
+    let bin = shim_dir(dirs);
+    fs_ctx(std::fs::create_dir_all(&bin), &bin)?;
+
+    // One snapshot drives create AND prune (a second scan could straddle a
+    // concurrent install's atomic rename and prune a just-created link).
+    let installed: Vec<PhpVersion> = yerd_php::discover_bundled(dirs)
+        .map_err(|e| {
+            fs_err(
+                &dirs.data.join("php"),
+                &std::io::Error::other(e.to_string()),
+            )
+        })?
+        .into_iter()
+        .map(|(v, _)| v)
+        .collect();
+
+    for &v in &installed {
+        place_symlink(
+            &bin.join(versioned_shim_name(v, false)),
+            &cli_binary_path(dirs, v),
+        )?;
+        place_symlink(&bin.join(versioned_shim_name(v, true)), yerd_bin)?;
+    }
+    place_symlink(&bin.join("phpcover"), yerd_bin)?;
+
+    if installed.contains(&default) {
+        let want = cli_binary_path(dirs, default);
+        let php = bin.join("php");
+        if std::fs::read_link(&php).ok().as_deref() != Some(want.as_path()) {
+            place_symlink(&php, &want)?;
+        }
+    }
+
+    // Prune from the same directory listing; touch only managed symlinks.
+    let entries = match std::fs::read_dir(&bin) {
+        Ok(e) => e,
+        Err(ref e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(fs_err(&bin, &e)),
+    };
+    for entry in entries.flatten() {
+        let fname = entry.file_name();
+        let Some(name) = fname.to_str() else { continue };
+        if name == "php" || name == "phpcover" {
+            continue;
+        }
+        let Some(v) = managed_shim_version(name) else {
+            continue;
+        };
+        if installed.contains(&v) {
+            continue;
+        }
+        let path = entry.path();
+        let is_link = std::fs::symlink_metadata(&path).is_ok_and(|m| m.file_type().is_symlink());
+        if is_link {
+            let _ = std::fs::remove_file(&path);
+        }
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+pub fn reconcile_shims(
+    _dirs: &PlatformDirs,
+    _yerd_bin: &Path,
+    _default: PhpVersion,
+) -> Result<(), PhpError> {
+    Ok(())
 }
 
 #[cfg(test)]
@@ -450,5 +576,94 @@ mod tests {
             cli_binary_path(&dirs, PhpVersion::new(8, 5)),
             PathBuf::from("/d/php/php-8.5/bin/php")
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn managed_shim_version_matches_only_canonical_names() {
+        assert_eq!(managed_shim_version("php8.4"), Some(PhpVersion::new(8, 4)));
+        assert_eq!(
+            managed_shim_version("php8.4cover"),
+            Some(PhpVersion::new(8, 4))
+        );
+        // Never the default/clean names or foreign files.
+        assert_eq!(managed_shim_version("php"), None);
+        assert_eq!(managed_shim_version("phpcover"), None);
+        assert_eq!(managed_shim_version("php8"), None);
+        assert_eq!(managed_shim_version("php8.4.1"), None);
+        assert_eq!(managed_shim_version("phpunit"), None);
+        assert_eq!(managed_shim_version("php8.4covers"), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn versioned_shim_name_is_dotted() {
+        let v = PhpVersion::new(8, 4);
+        assert_eq!(versioned_shim_name(v, false), "php8.4");
+        assert_eq!(versioned_shim_name(v, true), "php8.4cover");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn reconcile_creates_versioned_and_cover_shims_and_prunes_stale() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dirs = dirs_in(tmp.path());
+        let yerd_bin = tmp.path().join("yerd");
+        std::fs::write(&yerd_bin, b"#!fake").unwrap();
+
+        // Lay down an installed 8.4 (discover_bundled keys on the FPM binary).
+        let mk = |v: PhpVersion| {
+            let base = dirs
+                .data
+                .join("php")
+                .join(format!("php-{}.{}", v.major, v.minor));
+            std::fs::create_dir_all(base.join("bin")).unwrap();
+            std::fs::create_dir_all(base.join("sbin")).unwrap();
+            std::fs::write(base.join("bin").join("php"), b"cli").unwrap();
+            std::fs::write(base.join("sbin").join("php-fpm"), b"fpm").unwrap();
+        };
+        mk(PhpVersion::new(8, 4));
+
+        let bin = shim_dir(&dirs);
+        std::fs::create_dir_all(&bin).unwrap();
+        // A stale managed shim for an uninstalled 8.2 + a foreign file that must survive.
+        std::os::unix::fs::symlink(&yerd_bin, bin.join("php8.2cover")).unwrap();
+        std::fs::write(bin.join("keep.txt"), b"user file").unwrap();
+
+        reconcile_shims(&dirs, &yerd_bin, PhpVersion::new(8, 4)).unwrap();
+
+        // Created for 8.4.
+        assert!(bin.join("php8.4").exists());
+        assert!(bin.join("php8.4cover").exists());
+        assert!(bin.join("phpcover").exists());
+        // `php` repointed to the (installed) default.
+        assert_eq!(
+            std::fs::read_link(bin.join("php")).unwrap(),
+            cli_binary_path(&dirs, PhpVersion::new(8, 4))
+        );
+        // Stale 8.2 cover pruned; foreign file untouched.
+        assert!(!bin.join("php8.2cover").exists());
+        assert!(bin.join("keep.txt").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn reconcile_leaves_php_alone_when_default_not_installed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dirs = dirs_in(tmp.path());
+        let yerd_bin = tmp.path().join("yerd");
+        std::fs::write(&yerd_bin, b"#!fake").unwrap();
+        // Install 8.4 only; configured default 8.3 is absent.
+        let base = dirs.data.join("php").join("php-8.4");
+        std::fs::create_dir_all(base.join("bin")).unwrap();
+        std::fs::create_dir_all(base.join("sbin")).unwrap();
+        std::fs::write(base.join("bin").join("php"), b"cli").unwrap();
+        std::fs::write(base.join("sbin").join("php-fpm"), b"fpm").unwrap();
+
+        reconcile_shims(&dirs, &yerd_bin, PhpVersion::new(8, 3)).unwrap();
+
+        // No `php` created for an uninstalled default; versioned shims still made.
+        assert!(!shim_dir(&dirs).join("php").exists());
+        assert!(shim_dir(&dirs).join("php8.4cover").exists());
     }
 }

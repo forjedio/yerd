@@ -634,6 +634,9 @@ async fn install_php(version: yerd_core::PhpVersion, state: &DaemonState) -> Res
             // the just-installed version so the proxy can spawn its FPM pool
             // without a daemon restart.
             refresh_php_binaries(state).await;
+            // Bundle pcov for the new version and (re)build its cover/clean
+            // shims. Best-effort; the install itself already succeeded.
+            refresh_pcov_and_shims(state).await;
             Response::Ok
         }
         Err(e) => Response::Error {
@@ -655,6 +658,44 @@ async fn refresh_php_binaries(state: &DaemonState) {
             }
         };
     state.php_manager.lock().await.set_binaries(binaries);
+}
+
+/// Absolute path to the `yerd` CLI binary, assumed a sibling of the running
+/// `yerdd` (mirrors `yerd`'s own `elevate::sibling_binaries`). This is the target
+/// the cover shims (`phpcover`/`php<ver>cover`) symlink to.
+fn yerd_sibling() -> Option<std::path::PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    Some(exe.parent()?.join("yerd"))
+}
+
+/// Run `reconcile_shims` for an explicit default, serialized behind the shim
+/// mutex. Best-effort: failures are logged. Callers must **not** hold the config
+/// lock (this takes no config lock; it's given the default directly).
+async fn reconcile_shims_for(state: &DaemonState, default: yerd_core::PhpVersion) {
+    let Some(yerd_bin) = yerd_sibling() else {
+        tracing::warn!("cannot locate the `yerd` binary; skipping cover-shim reconcile");
+        return;
+    };
+    let _guard = state.shim_reconcile.lock().await;
+    if let Err(e) = crate::php_install::reconcile_shims(&state.dirs, &yerd_bin, default) {
+        tracing::warn!(error = %e, "cover-shim reconcile failed");
+    }
+}
+
+/// Reconcile shims using the current config default (reads the config lock
+/// briefly, then releases it before reconciling).
+async fn reconcile_shims_now(state: &DaemonState) {
+    let default = state.config.lock().await.php.default;
+    reconcile_shims_for(state, default).await;
+}
+
+/// Best-effort: fetch the `pcov` `.so` for installed PHP versions, then rebuild
+/// the cover/clean versioned CLI shims. Ungated (pcov is always bundled). Used at
+/// startup and after a PHP install.
+pub(crate) async fn refresh_pcov_and_shims(state: &DaemonState) {
+    let dl = crate::php_install::ReqwestDownloader::new();
+    crate::ext_install::ensure_pcov_for_installed(&state.dirs, &dl).await;
+    reconcile_shims_now(state).await;
 }
 
 /// `restart php <ver>` — stop + ensure the version's FPM pool. Starts a stopped
@@ -751,7 +792,13 @@ async fn uninstall_php(version: yerd_core::PhpVersion, state: &DaemonState) -> R
     if let Err(e) = std::fs::remove_dir_all(&version_dir) {
         return internal(format!("failed to remove PHP {version}: {e}"));
     }
+    // Drop the orphaned pcov `.so` for this minor (a true uninstall, unlike a PHP
+    // patch update). Remove the file only — the `php-ext/php-<minor>` dir is shared
+    // with `yerd-dump.so`.
+    let _ = std::fs::remove_file(crate::ext_install::pcov_so_path(&state.dirs, version));
     refresh_php_binaries(state).await;
+    // Prune this version's now-dangling cover/clean shims.
+    reconcile_shims_now(state).await;
     tracing::info!(version = %version, "uninstalled PHP");
     php_versions_response(state).await
 }
@@ -765,16 +812,21 @@ async fn set_default_php(version: yerd_core::PhpVersion, state: &DaemonState) ->
             message: format!("PHP {version} is not installed — run `yerd install php {version}`"),
         };
     }
-    let mut cfg_guard = state.config.lock().await;
-    let mut new = cfg_guard.clone();
-    new.php.default = version;
-    if let Err(e) = new.save(&state.config_path) {
-        return internal(format!("config save failed: {e}"));
-    }
-    if let Err(e) = crate::php_install::set_default_shim(&state.dirs, version) {
-        return internal(format!("update php shim failed: {e}"));
-    }
-    *cfg_guard = new;
+    {
+        let mut cfg_guard = state.config.lock().await;
+        let mut new = cfg_guard.clone();
+        new.php.default = version;
+        if let Err(e) = new.save(&state.config_path) {
+            return internal(format!("config save failed: {e}"));
+        }
+        if let Err(e) = crate::php_install::set_default_shim(&state.dirs, version) {
+            return internal(format!("update php shim failed: {e}"));
+        }
+        *cfg_guard = new;
+    } // release the config lock before reconciling (reconcile reads no config lock,
+      // but we must not hold a non-reentrant guard across the call).
+      // Ensure `phpcover` + the versioned shim set track the new default.
+    reconcile_shims_for(state, version).await;
     tracing::info!(version = %version, "set default PHP");
     Response::Ok
 }
@@ -1186,6 +1238,7 @@ mod tests {
             detect_cache: std::sync::Arc::new(crate::detect_cache::DetectCache::new()),
             watch_dirty: tokio::sync::Notify::new(),
             dumps: std::sync::Arc::new(crate::dump_server::DumpStore::new()),
+            shim_reconcile: tokio::sync::Mutex::new(()),
         }
     }
 

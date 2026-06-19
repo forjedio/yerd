@@ -1,7 +1,8 @@
-//! Downloads the `yerd-dump` PHP extension (`.so`) per installed PHP version.
+//! Downloads PHP extension `.so`s (`yerd-dump`, `pcov`) per installed PHP version.
 //!
-//! Artifacts come from the `yerd-php-ext` GitHub releases, described by a
-//! `manifest.json` listing each file's `php`/`os`/`arch`/`sha256`. yerd resolves
+//! Both come from the same `yerd-php-ext` GitHub release, each described by its
+//! own manifest (`manifest.json` for dump, `pcov-manifest.json` for pcov) listing
+//! each file's `php`/`os`/`arch`/`sha256`. yerd resolves
 //! the file matching the host triple for each installed PHP minor, verifies the
 //! SHA-256, and places it at `{data}/php-ext/php-<ver>/yerd-dump.so` (a sibling
 //! of the PHP installs, so a PHP patch update — which wipes `{data}/php/php-<ver>`
@@ -39,19 +40,56 @@ struct Manifest {
     files: Vec<ManifestFile>,
 }
 
+/// One downloadable extension: which manifest names it in the (shared) release
+/// and what its `.so` is called on disk. Lets the same fetch loop serve both
+/// `yerd-dump` and `pcov` from the one `yerd-php-ext` release.
+struct ExtSpec {
+    /// Manifest filename within the release (e.g. `manifest.json`).
+    manifest_name: &'static str,
+    /// On-disk `.so` filename under `{data}/php-ext/php-<ver>/`.
+    so_name: &'static str,
+    /// Human label for log lines.
+    label: &'static str,
+}
+
+const DUMP_SPEC: ExtSpec = ExtSpec {
+    manifest_name: "manifest.json",
+    so_name: "yerd-dump.so",
+    label: "yerd-dump",
+};
+
+const PCOV_SPEC: ExtSpec = ExtSpec {
+    manifest_name: "pcov-manifest.json",
+    so_name: "pcov.so",
+    label: "pcov",
+};
+
 /// The host OS/arch as the manifest names them (`macos`/`linux`,
 /// `aarch64`/`x86_64`) — `std::env::consts` already uses these spellings.
 fn host_os_arch() -> (&'static str, &'static str) {
     (std::env::consts::OS, std::env::consts::ARCH)
 }
 
-/// Absolute path of the extension `.so` for `v` (present or not).
-#[must_use]
-pub fn so_path(dirs: &PlatformDirs, v: PhpVersion) -> PathBuf {
+/// Absolute path of a named extension `.so` for `v` (present or not).
+fn so_path_named(dirs: &PlatformDirs, v: PhpVersion, so_name: &str) -> PathBuf {
     dirs.data
         .join("php-ext")
         .join(format!("php-{v}"))
-        .join("yerd-dump.so")
+        .join(so_name)
+}
+
+/// Absolute path of the `yerd-dump` `.so` for `v` (present or not).
+#[must_use]
+pub fn so_path(dirs: &PlatformDirs, v: PhpVersion) -> PathBuf {
+    so_path_named(dirs, v, DUMP_SPEC.so_name)
+}
+
+/// Absolute path of the `pcov` `.so` for `v` (present or not). Sibling of the
+/// dump `.so`, so a PHP patch update (which wipes `{data}/php/php-<ver>`) leaves
+/// it intact.
+#[must_use]
+pub fn pcov_so_path(dirs: &PlatformDirs, v: PhpVersion) -> PathBuf {
+    so_path_named(dirs, v, PCOV_SPEC.so_name)
 }
 
 /// Installed PHP minors discovered from `{data}/php`.
@@ -62,10 +100,32 @@ pub fn installed_versions(dirs: &PlatformDirs) -> Vec<PhpVersion> {
         .unwrap_or_default()
 }
 
-/// Ensure the extension is present and current for every installed PHP version
-/// that has a published artifact for the host triple. Best-effort.
+/// Ensure the `yerd-dump` extension is present and current for every installed
+/// PHP version that has a published artifact for the host triple. Best-effort.
 pub async fn ensure_for_installed(dirs: &PlatformDirs, dl: &dyn Downloader) {
-    let Some(manifest) = fetch_manifest(dl).await else {
+    ensure_for_installed_spec(dirs, dl, &DUMP_SPEC).await;
+}
+
+/// Ensure the `pcov` extension is present for every installed PHP version.
+///
+/// Used by the CLI cover shims (`phpcover`/`php<ver>cover`); ungated, unlike the
+/// dump fetch. Warm/offline starts skip the network entirely: if every installed
+/// version already has a `pcov.so`, return without touching GitHub. (The "present"
+/// check is a proxy for "current" — a stale `.so` won't refresh on a pure restart,
+/// which is fine: pcov is ABI-stable per PHP minor and any *missing* `.so` still
+/// forces a full manifest fetch + re-verify.)
+pub async fn ensure_pcov_for_installed(dirs: &PlatformDirs, dl: &dyn Downloader) {
+    let versions = installed_versions(dirs);
+    if !versions.is_empty() && versions.iter().all(|v| pcov_so_path(dirs, *v).is_file()) {
+        return;
+    }
+    ensure_for_installed_spec(dirs, dl, &PCOV_SPEC).await;
+}
+
+/// Shared fetch loop: resolve the host triple in `spec`'s manifest for each
+/// installed PHP minor, sha-verify, and atomically place the `.so`. Best-effort.
+async fn ensure_for_installed_spec(dirs: &PlatformDirs, dl: &dyn Downloader, spec: &ExtSpec) {
+    let Some(manifest) = fetch_manifest(dl, spec.manifest_name, spec.label).await else {
         return;
     };
     let (os, arch) = host_os_arch();
@@ -76,34 +136,34 @@ pub async fn ensure_for_installed(dirs: &PlatformDirs, dl: &dyn Downloader) {
             .iter()
             .find(|f| f.php == minor && f.os == os && f.arch == arch)
         else {
-            tracing::info!(php = %minor, os, arch, "no yerd-dump extension published for this triple");
+            tracing::info!(php = %minor, os, arch, ext = spec.label, "no extension published for this triple");
             continue;
         };
-        let dest = so_path(dirs, v);
+        let dest = so_path_named(dirs, v, spec.so_name);
         if existing_matches(&dest, &file.sha256) {
             continue; // already current
         }
         match download_and_place(dl, &file.name, &file.sha256, &dest).await {
-            Ok(()) => tracing::info!(php = %minor, "installed yerd-dump extension"),
+            Ok(()) => tracing::info!(php = %minor, ext = spec.label, "installed PHP extension"),
             Err(e) => {
-                tracing::warn!(php = %minor, error = %e, "failed to install yerd-dump extension");
+                tracing::warn!(php = %minor, ext = spec.label, error = %e, "failed to install PHP extension");
             }
         }
     }
 }
 
-async fn fetch_manifest(dl: &dyn Downloader) -> Option<Manifest> {
-    let url = format!("{RELEASE_BASE}/manifest.json");
+async fn fetch_manifest(dl: &dyn Downloader, manifest_name: &str, label: &str) -> Option<Manifest> {
+    let url = format!("{RELEASE_BASE}/{manifest_name}");
     match dl.download(&url).await {
         Ok(bytes) => match serde_json::from_slice::<Manifest>(&bytes) {
             Ok(m) => Some(m),
             Err(e) => {
-                tracing::warn!(error = %e, "yerd-dump manifest parse failed");
+                tracing::warn!(error = %e, ext = label, "manifest parse failed");
                 None
             }
         },
         Err(e) => {
-            tracing::warn!(error = %e, "yerd-dump manifest download failed");
+            tracing::warn!(error = %e, ext = label, "manifest download failed");
             None
         }
     }
@@ -183,6 +243,16 @@ mod tests {
         assert!(p.ends_with("php-ext/php-8.5/yerd-dump.so"));
         // Crucially NOT under {data}/php/php-8.5 (which is wiped on PHP update).
         assert!(!p.starts_with(dirs.data.join("php").join("php-8.5")));
+    }
+
+    #[test]
+    fn pcov_so_path_is_sibling_of_dump_so() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dirs = dirs_in(tmp.path());
+        let p = pcov_so_path(&dirs, PhpVersion::new(8, 4));
+        assert!(p.ends_with("php-ext/php-8.4/pcov.so"));
+        // Same dir as yerd-dump.so (shared php-ext/php-<ver>/), distinct file.
+        assert_eq!(p.parent(), so_path(&dirs, PhpVersion::new(8, 4)).parent());
     }
 
     #[test]
