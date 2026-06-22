@@ -79,9 +79,10 @@ pub async fn available_services(state: &DaemonState, dl: &dyn Downloader) -> Res
 }
 
 /// `install service <svc> <version>` — download + unpack (no config lock held),
-/// then start it and enable auto-start. Installing a service is taken as intent
-/// to run it, so a fresh install comes up immediately and survives daemon
-/// restarts (see [`auto_start_enabled`]).
+/// then start it. Installing a service is taken as intent to run it, so a fresh
+/// install comes up immediately and — like every installed engine — survives
+/// daemon restarts (see [`auto_start_installed`]). `enabled` is still set for the
+/// status record, but no longer gates boot auto-start.
 pub async fn install_service(
     service_id: &str,
     version: &str,
@@ -397,19 +398,20 @@ pub async fn service_statuses(state: &DaemonState) -> Vec<ServiceStatus> {
         .collect()
 }
 
-/// Auto-start every enabled+installed service. Runs as a background task at
-/// startup so a slow/failing DB boot never blocks the proxy/DNS listeners.
-pub async fn auto_start_enabled(state: Arc<DaemonState>) {
-    let enabled: Vec<Service> = {
-        let cfg = state.config.lock().await;
-        cfg.services
-            .instances
-            .iter()
-            .filter(|(_, inst)| inst.enabled)
-            .filter_map(|(id, _)| Service::from_id(id))
-            .collect()
-    };
-    for service in enabled {
+/// Auto-start every *installed* service at daemon startup. Runs as a background
+/// task so a slow/failing DB cold-boot never blocks the proxy/DNS listeners.
+///
+/// Policy: any engine with an installed version is brought up on boot,
+/// regardless of the persisted `enabled` flag — installing a service is taken as
+/// intent to run it. A `Stop` still stops the engine for the current session,
+/// but it returns on the next daemon start; to keep one off for good, uninstall
+/// it.
+pub async fn auto_start_installed(state: Arc<DaemonState>) {
+    let installed: Vec<Service> = Service::ALL
+        .into_iter()
+        .filter(|svc| !installed_versions(*svc, &state.dirs).is_empty())
+        .collect();
+    for service in installed {
         match list_services_start_one(service, &state).await {
             Ok(()) => tracing::info!(service = %service, "auto-started service"),
             Err(e) => tracing::warn!(service = %service, error = %e, "service auto-start failed"),
@@ -417,7 +419,7 @@ pub async fn auto_start_enabled(state: Arc<DaemonState>) {
     }
 }
 
-/// Ensure one enabled service is running (used by auto-start). Returns the
+/// Ensure one installed service is running (used by auto-start). Returns the
 /// supervisor error so the caller can log it.
 async fn list_services_start_one(
     service: Service,

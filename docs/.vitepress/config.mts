@@ -1,12 +1,18 @@
 import { withMermaid } from 'vitepress-plugin-mermaid'
 
+// Shared SEO strings (reused for the meta description, social cards, and the
+// per-page tags injected by `transformPageData`).
+const SITE_TITLE = 'Yerd - Local PHP development environment for macOS & Linux'
+const SITE_DESCRIPTION =
+  'A fast, rootless, open-source local PHP development environment for macOS and Linux. Serve .test sites over HTTP and HTTPS, run a different PHP version per site, and manage databases, mail, and tooling from one tiny daemon - a Laravel Herd alternative.'
+const OG_IMAGE = 'https://yerd.app/images/overview-light.png'
+
 // Site config for the Yerd documentation (https://yerd.app).
 // Run with `npm run dev` from the `docs/` directory.
 // Wrapped with withMermaid so ```mermaid code blocks render as responsive SVG.
 export default withMermaid({
   title: 'Yerd',
-  description:
-    'A fast, rootless, open-source local PHP development environment. Serve .test sites over HTTP and HTTPS with a different PHP version per site.',
+  description: SITE_DESCRIPTION,
   lang: 'en-US',
 
   // Canonical host for the generated sitemap and absolute URLs.
@@ -21,18 +27,64 @@ export default withMermaid({
   head: [
     ['link', { rel: 'icon', type: 'image/svg+xml', href: '/favicon.svg' }],
     ['meta', { name: 'theme-color', content: '#6366f1' }],
-    ['meta', { property: 'og:type', content: 'website' }],
-    ['meta', { property: 'og:url', content: 'https://yerd.app/' }],
-    ['meta', { property: 'og:title', content: 'Yerd' }],
+    ['meta', { name: 'author', content: 'Forjed' }],
     [
       'meta',
       {
-        property: 'og:description',
+        name: 'keywords',
         content:
-          'A fast, rootless, open-source local PHP development environment.',
+          'PHP, local development, Laravel, Herd alternative, .test domains, HTTPS, macOS, Linux, rootless, open source, PHP versions',
       },
     ],
+    // Open Graph + Twitter — the per-page title/description/url are injected by
+    // `transformPageData` below; these are the static, page-independent bits.
+    ['meta', { property: 'og:type', content: 'website' }],
+    ['meta', { property: 'og:site_name', content: 'Yerd' }],
+    ['meta', { property: 'og:locale', content: 'en_US' }],
+    ['meta', { property: 'og:image', content: OG_IMAGE }],
+    ['meta', { property: 'og:image:alt', content: 'The Yerd desktop app' }],
+    ['meta', { name: 'twitter:card', content: 'summary_large_image' }],
+    ['meta', { name: 'twitter:image', content: OG_IMAGE }],
+    // Structured data: marks Yerd as a free developer application for rich results.
+    [
+      'script',
+      { type: 'application/ld+json' },
+      JSON.stringify({
+        '@context': 'https://schema.org',
+        '@type': 'SoftwareApplication',
+        name: 'Yerd',
+        applicationCategory: 'DeveloperApplication',
+        operatingSystem: 'macOS, Linux',
+        description: SITE_DESCRIPTION,
+        url: 'https://yerd.app',
+        image: OG_IMAGE,
+        license: 'https://opensource.org/licenses/MIT',
+        isAccessibleForFree: true,
+        offers: { '@type': 'Offer', price: '0', priceCurrency: 'USD' },
+      }),
+    ],
   ],
+
+  // Per-page SEO: a canonical URL plus page-specific og:/twitter: title and
+  // description, so inner pages aren't all tagged with the homepage's metadata.
+  transformPageData(pageData) {
+    const isHome = pageData.relativePath === 'index.md'
+    const path = pageData.relativePath
+      .replace(/(^|\/)index\.md$/, '$1')
+      .replace(/\.md$/, '')
+    const canonical = `https://yerd.app/${path}`
+    const title = isHome ? SITE_TITLE : `${pageData.title} | Yerd`
+    const description = pageData.description || SITE_DESCRIPTION
+    pageData.frontmatter.head ??= []
+    pageData.frontmatter.head.push(
+      ['link', { rel: 'canonical', href: canonical }],
+      ['meta', { property: 'og:title', content: title }],
+      ['meta', { property: 'og:description', content: description }],
+      ['meta', { property: 'og:url', content: canonical }],
+      ['meta', { name: 'twitter:title', content: title }],
+      ['meta', { name: 'twitter:description', content: description }],
+    )
+  },
 
   // Render node labels as HTML so long text wraps instead of being clipped,
   // and scale diagrams to the container width (good on small screens).
@@ -81,6 +133,7 @@ export default withMermaid({
             { text: 'Sites', link: '/guide/sites' },
             { text: 'PHP Versions', link: '/guide/php-versions' },
             { text: 'Code Coverage', link: '/guide/code-coverage' },
+            { text: 'Tooling', link: '/guide/tooling' },
             { text: 'Services & Databases', link: '/guide/services' },
             { text: 'Mail Capture', link: '/guide/mail' },
             { text: 'Laravel Dumps', link: '/guide/laravel-dumps' },
@@ -102,6 +155,7 @@ export default withMermaid({
             { text: 'Sites', link: '/reference/cli/sites' },
             { text: 'HTTPS', link: '/reference/cli/https' },
             { text: 'PHP', link: '/reference/cli/php' },
+            { text: 'Tooling', link: '/reference/cli/tooling' },
             { text: 'Services', link: '/reference/cli/services' },
             { text: 'Databases', link: '/reference/cli/db' },
             { text: 'Mail', link: '/reference/cli/mail' },
@@ -132,6 +186,7 @@ export default withMermaid({
           text: 'Internals',
           items: [
             { text: 'IPC Protocol', link: '/developer/ipc-protocol' },
+            { text: 'Dev-Tool Installers', link: '/developer/dev-tools' },
             { text: 'Cross-Platform Model', link: '/developer/cross-platform' },
           ],
         },

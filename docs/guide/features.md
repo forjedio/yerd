@@ -140,6 +140,20 @@ yerd list php --json
 
 [Full CLI reference →](../reference/cli/)
 
+## Developer tooling
+
+Install the tools a PHP/Laravel project needs - Composer, Node (`node`/`npm`/`npx`),
+and Bun (`bun`/`bunx`) - as self-contained binaries on your `PATH`, with no global
+install or system package manager. Yerd downloads the latest release (LTS for
+Node), verifies it, and drops the commands alongside its `php` shims.
+
+```sh
+yerd install tool node     # latest Node LTS — node, npm, npx
+yerd install tool composer
+```
+
+[Tooling guide →](./tooling)
+
 ## Databases & caches
 
 Yerd installs and supervises MySQL, MariaDB, PostgreSQL, and Redis (Valkey) as

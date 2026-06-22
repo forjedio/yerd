@@ -43,7 +43,7 @@ export function poolStateTone(state: PoolRunState | null | undefined): StatusTon
 
 /** Humanise a duration given in whole seconds (e.g. `90061` -> `1d 1h 1m`). */
 export function humaniseUptime(secs: number): string {
-  if (!Number.isFinite(secs) || secs < 0) return "—";
+  if (!Number.isFinite(secs) || secs < 0) return "-";
   const d = Math.floor(secs / 86_400);
   const h = Math.floor((secs % 86_400) / 3_600);
   const m = Math.floor((secs % 3_600) / 60);
@@ -58,7 +58,7 @@ export function humaniseUptime(secs: number): string {
 
 /** Render bytes as a short human string (e.g. `1536` -> `1.5 MB` base-2). */
 export function humaniseBytes(bytes: number | null | undefined): string {
-  if (bytes == null || !Number.isFinite(bytes)) return "—";
+  if (bytes == null || !Number.isFinite(bytes)) return "-";
   const units = ["B", "KB", "MB", "GB"];
   let v = bytes;
   let u = 0;
@@ -74,6 +74,6 @@ export function humaniseBytes(bytes: number | null | undefined): string {
  * see yerd-ipc status.rs) back to the conventional `x.xx` triple.
  */
 export function formatLoadAvg(load: [number, number, number] | null): string {
-  if (!load) return "—";
+  if (!load) return "-";
   return load.map((h) => (h / 100).toFixed(2)).join("  ");
 }

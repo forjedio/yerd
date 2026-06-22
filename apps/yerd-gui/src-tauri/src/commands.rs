@@ -436,6 +436,23 @@ pub async fn dumps_status() -> Result<Response, GuiError> {
     finish(exchange(&Request::DumpsStatus).await?)
 }
 
+// ── dev tools (composer / node / bun) ────────────────────────────────────────
+
+#[tauri::command]
+pub async fn list_tools() -> Result<Response, GuiError> {
+    finish(exchange(&Request::ListTools).await?)
+}
+
+#[tauri::command]
+pub async fn install_tool(tool: String) -> Result<Response, GuiError> {
+    finish(exchange(&Request::InstallTool { tool }).await?)
+}
+
+#[tauri::command]
+pub async fn uninstall_tool(tool: String) -> Result<Response, GuiError> {
+    finish(exchange(&Request::UninstallTool { tool }).await?)
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::panic)]
 mod tests {

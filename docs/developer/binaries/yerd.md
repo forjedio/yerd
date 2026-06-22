@@ -40,6 +40,9 @@ the `tests/cli_e2e.rs` integration test can drive the same code paths.
 | `src/transport.rs` | Resolve the socket path and perform one framed request/response exchange. |
 | `src/elevate.rs` | `yerd elevate` / `unelevate`: local privileged orchestration of `yerd-helper`. |
 | `src/cover_shim.rs` | Multi-call dispatch: when `argv[0]` is a `phpcover`/`php<ver>cover` alias, exec PHP with pcov enabled (Unix-only). Runs before clap. |
+| `src/composer_shim.rs` | Multi-call dispatch: when `argv[0]` is `composer`, exec the default PHP against `{data}/tools/composer/composer.phar` (Unix-only). Runs before clap. See [Dev-tool installers](../dev-tools). |
+| `src/shim.rs` | Shared PHP-resolution helpers for the cover and composer multi-call shims (default-version resolution, highest-installed fallback). |
+| `src/path_cmd.rs` | `yerd path install`/`uninstall`/`print`: edit the user's shell startup file to add `{data}/bin` to `PATH` (local, no IPC; Unix-only). |
 | `src/error.rs` | `ClientError` - the client's error type. |
 
 ```mermaid
@@ -143,6 +146,12 @@ reads `PHP_BINARY` from `/proc/self/exe`, so although the process was launched
 via the cover alias, `argv[0]` (left at the real `php` path) and `PHP_BINARY`
 both report the genuine interpreter, not the shim name.
 :::
+
+`composer` works the same way (`composer_shim.rs`): when `argv[0]` is `composer`,
+`yerd` resolves the default PHP (sharing the helpers in `shim.rs`) and `exec`s it
+against `{data}/tools/composer/composer.phar`. Its `dispatch()` runs in `main.rs`
+just before the cover dispatch. See [Dev-tool installers](../dev-tools) for how
+the daemon installs the phar and creates the `composer` symlink.
 
 ## Pure mapping and rendering (`map.rs`)
 

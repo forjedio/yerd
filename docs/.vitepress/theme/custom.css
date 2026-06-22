@@ -49,6 +49,155 @@
   }
 }
 
+/* ---- Theme-aware screenshots (<ThemedImage>) ----
+ * Both images render; CSS hides the off-theme one keyed on the `.dark` class
+ * VitePress sets on <html> before paint, so there's no flash.
+ */
+html.dark .themed-img--light {
+  display: none;
+}
+html:not(.dark) .themed-img--dark {
+  display: none;
+}
+.themed-img {
+  display: block;
+  width: 100%;
+  margin: 1.25rem 0;
+  border: 1px solid var(--vp-c-divider);
+  border-radius: 8px;
+}
+
+/* ---- Home page screenshot showcase (<ShowcaseRow>) ---- */
+.home-showcase {
+  max-width: 1152px;
+  margin: 5rem auto 1rem;
+  padding: 0 24px;
+}
+/* Scoped with an element selector so these beat VitePress's `.vp-doc h2`/`p`
+ * rules (which otherwise override the margins and break the centering). */
+.home-showcase h2.home-showcase__heading {
+  text-align: center;
+  border-top: 0;
+  margin: 0 0 0.5rem;
+  padding-top: 0;
+  font-size: clamp(1.8rem, 4vw, 2.4rem);
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+.home-showcase p.home-showcase__sub {
+  text-align: center;
+  color: var(--vp-c-text-2);
+  max-width: 36rem;
+  margin: 0 auto 1rem;
+}
+.showcase {
+  display: grid;
+  grid-template-columns: 1.05fr 0.95fr;
+  gap: 3rem;
+  align-items: center;
+  margin: 3.5rem 0;
+}
+.showcase--reverse .showcase__media {
+  order: 2;
+}
+.showcase__img {
+  display: block;
+  width: 100%;
+  border: 1px solid var(--vp-c-divider);
+  border-radius: 12px;
+  box-shadow: 0 14px 36px rgba(0, 0, 0, 0.1);
+  cursor: zoom-in;
+  transition:
+    transform 0.18s ease,
+    box-shadow 0.18s ease;
+}
+.showcase__img:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 18px 44px rgba(0, 0, 0, 0.16);
+}
+.dark .showcase__img {
+  box-shadow: 0 14px 36px rgba(0, 0, 0, 0.45);
+}
+.showcase__title {
+  font-size: 1.6rem;
+  font-weight: 700;
+  line-height: 1.2;
+  letter-spacing: -0.02em;
+  margin: 0 0 0.75rem;
+  border-top: 0;
+  padding-top: 0;
+}
+.showcase__text {
+  color: var(--vp-c-text-2);
+  font-size: 1.02rem;
+  line-height: 1.7;
+  margin: 0;
+}
+@media (max-width: 768px) {
+  .showcase {
+    grid-template-columns: 1fr;
+    gap: 1.5rem;
+    margin: 2.5rem 0;
+  }
+  .showcase--reverse .showcase__media {
+    order: 0;
+  }
+  .home-showcase {
+    padding: 0 16px;
+    margin-top: 3rem;
+  }
+}
+
+/* ---- Lightbox image viewer (<Lightbox>) ---- */
+.lightbox {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2.5rem;
+  background: rgba(0, 0, 0, 0.82);
+  backdrop-filter: blur(4px);
+  cursor: zoom-out;
+}
+.lightbox__img {
+  max-width: min(1200px, 95vw);
+  max-height: 90vh;
+  width: auto;
+  height: auto;
+  border-radius: 10px;
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.55);
+  cursor: default;
+}
+.lightbox__close {
+  position: fixed;
+  top: 0.75rem;
+  right: 1.25rem;
+  width: 2.5rem;
+  height: 2.5rem;
+  font-size: 2rem;
+  line-height: 1;
+  color: #fff;
+  background: transparent;
+  border: 0;
+  border-radius: 9999px;
+  cursor: pointer;
+  opacity: 0.75;
+  transition: opacity 0.15s ease;
+}
+.lightbox__close:hover {
+  opacity: 1;
+}
+.lightbox-fade-enter-active,
+.lightbox-fade-leave-active {
+  transition: opacity 0.2s ease;
+}
+.lightbox-fade-enter-from,
+.lightbox-fade-leave-to {
+  opacity: 0;
+}
+
 /* ---- Mermaid diagrams ----
  * Let diagrams size to their content and stay responsive, instead of being
  * clipped to a fixed pixel height (which cut off multi-line node labels).

@@ -188,6 +188,7 @@ export type DiagnosisCode =
   | "no_sites"
   | "resolver_backup_saved"
   | "service_failed"
+  | "bin_dir_not_on_path"
   | "all_good";
 
 export interface Diagnosis {
@@ -335,7 +336,17 @@ export type Response =
       features: Record<string, boolean>;
     }
   | { type: "mails"; mails: MailSummary[] }
-  | { type: "mail"; mail: MailDetail };
+  | { type: "mail"; mail: MailDetail }
+  | { type: "tools"; tools: ToolStatus[] };
+
+/** crates/yerd-ipc/src/status.rs — ToolStatus. */
+export interface ToolStatus {
+  id: string;
+  display_name: string;
+  installed: boolean;
+  version: string | null;
+  binaries: string[];
+}
 
 /** One user database in a SQL service (mirrors the daemon's `DatabaseSummary`). */
 export interface DatabaseSummary {

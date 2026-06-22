@@ -22,6 +22,25 @@ Dumps and database queries are framework-agnostic (queries are observed at the
 Laravel app served through Yerd as a `.test` site.
 :::
 
+## In the desktop app
+
+The fastest way to use Dumps is from the [desktop app](./desktop-app). Open the
+**Dumps** page under the **Developer** group in the side navigation.
+
+<ThemedImage light="/images/dumps-light.png" dark="/images/dumps-dark.png" alt="The Dumps page in the Yerd desktop app" />
+
+- **Dump-server status** shows whether the loopback capture server is running.
+- The **Enable interception** toggle turns capture on. The first enable
+  downloads the extension and restarts your pools; after that it is instant.
+- The **per-signal switches** - dumps/dd, queries, jobs, views, requests, logs,
+  cache, and outgoing HTTP - are **disabled until interception is on**. Once it
+  is, flip each signal independently to keep the viewer focused.
+- The **port** (default `2304`) is shown and editable, and the page lists the
+  **per-PHP-version extension presence** so you can see which installed PHP
+  versions have a matching `yerd-dump` build.
+- **Show Dumps** opens the standalone viewer window where captured events
+  stream in, grouped by request.
+
 ## What you get
 
 Captured events are grouped into categories, one per tab in the viewer:

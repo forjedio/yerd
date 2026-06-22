@@ -7,11 +7,29 @@ Two commands cover almost everything:
 
 Both read from the daemon, which owns all runtime state. The CLI is a thin client, so `status`, `doctor`, and the desktop app never disagree about what's running.
 
+## In the desktop app
+
+The **Doctor** page (under the **System** group) mirrors the CLI's diagnostics in two panels. The **Health** list sorts every finding by severity - Healthy, Warning, or Problem - each with a copyable remedy command. **Run safe fixes** applies the safe one-click repairs (restarting a failed PHP-FPM pool), and **Re-check** re-runs diagnostics; on a healthy machine the list collapses to an "all clear" panel.
+
+The same page carries an **Environment** panel for OS-level state, each row with a one-click action behind an OS prompt (the GUI never runs as root):
+
+- **Local CA trusted** - whether HTTPS sites are trusted in the system store.
+- **`.test` resolver installed** - whether the OS routes `*.test` to Yerd's DNS.
+- **Privileged ports (80/443)** - whether the daemon can bind the standard ports.
+
+Where a row isn't configured, **Fix (elevate)** runs the privileged action; once it *is* configured, **Revert** (Unelevate) undoes it, both behind an in-app confirm dialog and the OS prompt. Reverting the resolver restores your previous one on macOS; port revert is macOS-only.
+
+<ThemedImage light="/images/doctor-light.png" dark="/images/doctor-dark.png" alt="The Doctor page in the Yerd desktop app" />
+
+See [Desktop App](./desktop-app#doctor) for the rest of the GUI.
+
+## From the command line
+
 ::: tip
 Add `--json` to either command for machine-readable output. Exit codes matter too: `yerd doctor` exits `1` on any hard failure, else `0`.
 :::
 
-## `yerd status`
+### `yerd status`
 
 A read-only snapshot, rendered as one block. No flags beyond the global `--json`.
 
@@ -58,7 +76,7 @@ php
 Binding 80 and 443 needs elevation. Without it, the daemon falls back to rootless `8080`/`8443`. On macOS, `sudo yerd elevate ports` installs a packet-filter redirect so 80/443 still reach the rootless listener; `status` shows `(redirected)` and `doctor` treats it as satisfied. See [Elevation & Privileges](./elevation) and [HTTPS & Certificates](./https).
 :::
 
-## `yerd doctor`
+### `yerd doctor`
 
 Runs the full set of checks and prints each finding with a severity mark, an explanation, and the fix command where applicable.
 
@@ -82,7 +100,7 @@ When nothing is wrong:
     Daemon, ports, DNS, CA, and PHP look healthy.
 ```
 
-### Severities
+#### Severities
 
 | Mark | Severity | Meaning |
 |---|---|---|
@@ -90,7 +108,7 @@ When nothing is wrong:
 | `⚠` | `Warn` | A non-fatal problem worth addressing (e.g. CA not trusted). |
 | `✗` | `Fail` | Breaks expected behaviour (e.g. no PHP, a dead pool). Any `Fail` exits `1`. |
 
-### What doctor checks
+#### What doctor checks
 
 | Code | Severity | Meaning | Remedy |
 |---|---|---|---|
@@ -111,7 +129,7 @@ When nothing is wrong:
 Several probes are tri-state. CA trust and resolver installation are flagged only when the daemon is certain they're absent; an `unknown` result stays silent. Likewise, `NoPhpInstalled` suppresses `DefaultPhpNotInstalled`, an active macOS port redirect suppresses `PortFallback`, and a `ForeignWebListener` conflict also suppresses `PortFallback` (the foreign-process warning is the accurate, actionable finding - elevating won't help while another process owns the port).
 :::
 
-## `yerd doctor fix`
+### `yerd doctor fix`
 
 Performs the safe, unprivileged repairs, then re-diagnoses and lists whatever still needs you.
 
@@ -134,7 +152,7 @@ If nothing was auto-fixable:
 no automatic fixes were applicable
 ```
 
-### Auto-fixes are safe-only
+#### Auto-fixes are safe-only
 
 The only thing `doctor fix` does on its own is **restart a failed PHP-FPM pool** - fast, idempotent, and unprivileged. Everything privileged or consequential is left for you to run, surfaced under "still needs attention" with the exact command:
 
@@ -147,7 +165,7 @@ The only thing `doctor fix` does on its own is **restart a failed PHP-FPM pool**
 `yerd doctor fix` will not run `sudo` for you. Privileged fixes always require you to run the suggested `sudo yerd elevate …` command yourself. See [Elevation & Privileges](./elevation).
 :::
 
-### How fix works
+#### How fix works
 
 ```text
 1. daemon builds a StatusReport
@@ -159,7 +177,7 @@ The only thing `doctor fix` does on its own is **restart a failed PHP-FPM pool**
 
 Step 4 re-diagnoses against the post-fix world, so a successfully restarted pool won't reappear; a failed restart shows `✗` under "applied fixes" and the finding persists. The exit code follows that remainder: `1` only if a `Fail` still stands.
 
-## Putting it together
+### Putting it together
 
 A typical troubleshooting loop:
 

@@ -35,6 +35,7 @@ yerd [--json] <COMMAND> [ARGS...]
 | [Sites](./sites) | `sites`, `park`, `unpark`, `link`, `unlink`, `root` |
 | [HTTPS](./https) | `secure`, `unsecure` |
 | [PHP](./php) | `use`, `install php`, `uninstall php`, `update php`, `restart php`, `list php`, `list parked`, `set php`, `unset php` |
+| [Tooling](./tooling) | `tools`, `install tool`, `uninstall tool`, `path install`, `path uninstall`, `path print` |
 | [Services](./services) | `services`, `service available`, `service install`, `service change-version`, `service uninstall`, `service start`, `service stop`, `service restart`, `service set-port`, `service logs` |
 | [Databases](./db) | `db list`, `db create`, `db drop`, `db backup`, `db restore` |
 | [Diagnostics](./diagnostics) | `ping`, `status`, `doctor`, `doctor fix` |

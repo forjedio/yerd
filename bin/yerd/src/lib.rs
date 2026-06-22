@@ -10,10 +10,15 @@
 
 pub mod cli;
 #[cfg(unix)]
+pub mod composer_shim;
+#[cfg(unix)]
 pub mod cover_shim;
 pub mod elevate;
 pub mod error;
 pub mod map;
+pub mod path_cmd;
+#[cfg(unix)]
+pub mod shim;
 pub mod transport;
 
 use std::process::ExitCode;
@@ -32,6 +37,8 @@ pub async fn run(cli: Cli) -> ExitCode {
     match &cli.command {
         Command::Elevate { target } => return elevate::run_elevate(*target, false).await,
         Command::Unelevate { target } => return elevate::run_elevate(*target, true).await,
+        // `path` edits the user's shell rc file(s); fully local, no IPC.
+        Command::Path { action } => return path_cmd::run(*action),
         _ => {}
     }
 
@@ -61,6 +68,20 @@ pub async fn run(cli: Cli) -> ExitCode {
             if !cli.json && r.code == 0 && matches!(cli.command, Command::Use { version: None, .. })
             {
                 print_php_path_hint();
+            }
+            // After installing a dev tool, wire Yerd's bin dir onto PATH so the
+            // tool's commands resolve in a new shell (idempotent; quiet if
+            // already configured). The Doctor `BinDirNotOnPath` warning backstops
+            // the GUI / any case this can't run.
+            if r.code == 0
+                && matches!(
+                    cli.command,
+                    Command::Install {
+                        target: crate::cli::InstallTarget::Tool { .. }
+                    }
+                )
+            {
+                path_cmd::ensure_installed_after_tool(cli.json);
             }
             ExitCode::from(r.code)
         }

@@ -21,6 +21,7 @@ rcgen            = { version = "=0.13.2", default-features = false, features = [
 sha2             = { version = "0.10", default-features = false }
 flate2           = { version = "1" }
 tar              = { version = "0.4" }
+zip              = { version = "2", default-features = false }
 time             = { version = "=0.3.36", default-features = false, features = ["std"] }
 x509-parser      = { version = "0.16", default-features = false }
 pem              = "3"
@@ -106,3 +107,11 @@ strip = "symbols"
 #     which is only activated by yerd-php's optional `download` feature — so
 #     this trap is invisible to the default build and only bites
 #     `--all-features`.
+#   * zip (bin/yerdd, for Bun's archive) is held at 2.x: zip 4+ requires
+#     edition2024 / rust-version 1.88. The `version = "2"` req keeps the resolver
+#     on the 2.x line; do not bump to 4 until MSRV moves past edition2024. Built
+#     with `default-features = false, features = ["deflate"]`: pure-Rust deflate
+#     via flate2's `rust_backend` (miniz_oxide). That `deflate` umbrella also
+#     drags in `zopfli` (a compressor we never call) — unavoidable here without
+#     switching to a C zlib backend — but everything stays pure-Rust with no
+#     bzip2/zstd/lzma C deps.

@@ -9,7 +9,25 @@ You register sites two ways:
 
 Both route identically; only the registration differs.
 
-## Parking a directory
+## In the desktop app
+
+The **Sites** page (under **Environment** in the sidebar) is the home base for managing your sites. It lists every `.test` site in a scannable table you can act on inline, with the registration controls in the header. Most day-to-day site work happens here without touching the terminal.
+
+<ThemedImage light="/images/sites-light.png" dark="/images/sites-dark.png" alt="The Sites page in the Yerd desktop app" />
+
+- Each row is a `name.test` site you can click to open in your browser, with a badge marking it `parked` or `linked`.
+- Change a site's PHP version from a per-site picker, and flip HTTPS on or off with a one-click toggle - no commands.
+- The **Served from** column shows the auto-detected web root; click it (or use the row's `⋯` menu) to set or auto-detect it.
+- **Park folder** and **Link site** in the header register new sites: Park folder opens a directory picker, Link site opens a modal to name a single directory.
+- A separate **Parked folders** section lists each parked root with a count of the sites it produces, plus Reveal folder and Un-park.
+
+For the full tour of the app, see [Desktop App](./desktop-app#sites).
+
+## From the command line
+
+Everything the Sites page does maps to a `yerd` command. These are the same operations against the same daemon, so anything you do here shows up in the app immediately.
+
+### Parking a directory
 
 `yerd park <dir>` registers a directory as a **parked root**. Each immediate child directory becomes a site named after the folder:
 
@@ -42,7 +60,7 @@ yerd list parked
 `yerd list parked` shows every parked root, including empty ones. An empty root produces no sites, so it won't appear in `yerd sites`, but it's still parked.
 :::
 
-## Linking a directory
+### Linking a directory
 
 `yerd link <name> <dir>` registers a single directory as a named site. The name becomes `<name>.test`; the directory is its document root:
 
@@ -72,6 +90,45 @@ Valid: `my-app`, `api2`, `wp-site`. Invalid: `my.app`, `my_app`, `-app`, `app-`.
 ::: warning
 Names are unique. Since they're lowercased first, `Foo` and `foo` collide, so the second registration is a duplicate.
 :::
+
+### Listing your sites
+
+`yerd sites` lists every site (parked and linked) with its kind, PHP version, secure flag, served subdirectory, and document root:
+
+```sh
+yerd sites
+```
+
+```
+NAME     KIND     PHP   SECURE   SERVED   DOCROOT
+blog     parked   8.5   false    public   /Users/you/Sites/blog
+my-app   linked   8.3   true     /        /Users/you/code/my-app
+shop     parked   8.5   false    public   /Users/you/Sites/shop
+```
+
+The `SERVED` column is the web root relative to the document root; `/` means the project root itself is served.
+
+Sites print in name order; an empty registry prints `no sites`. Add `--json` for machine-readable output:
+
+```sh
+yerd sites --json
+```
+
+### Command reference
+
+| Command | What it does |
+|---|---|
+| `yerd park <dir>` | Park a directory; each child folder is served at `<name>.test`. |
+| `yerd unpark <dir>` | Un-park a directory. Linked sites are untouched. |
+| `yerd link <name> <dir>` | Serve a single directory as a named site. |
+| `yerd unlink <name>` | Remove a site by name. |
+| `yerd sites` | List every site (name, kind, PHP, secure, served path, doc-root). |
+| `yerd list parked` | List parked roots, including empty ones. |
+| `yerd secure <name>` / `yerd unsecure <name>` | Turn HTTPS on / off for a site. |
+| `yerd root <name> <path>` | Set the served directory (web root) for a site. |
+| `yerd root <name> --auto` | Reset a site to automatic web-root detection. |
+
+For per-site PHP, see [PHP Versions](./php-versions). For the full command surface, see the [CLI Reference](../reference/cli/sites).
 
 ## How routing works
 
@@ -183,45 +240,6 @@ yerd root my-app --auto      # forget the override; go back to auto-detection
 ::: tip In the desktop app
 The [Sites view](./desktop-app#sites) shows the served path per site and offers **Set web root…** and **Auto-detect web root** in each site's `⋯` menu.
 :::
-
-## Listing your sites
-
-`yerd sites` lists every site (parked and linked) with its kind, PHP version, secure flag, served subdirectory, and document root:
-
-```sh
-yerd sites
-```
-
-```
-NAME     KIND     PHP   SECURE   SERVED   DOCROOT
-blog     parked   8.5   false    public   /Users/you/Sites/blog
-my-app   linked   8.3   true     /        /Users/you/code/my-app
-shop     parked   8.5   false    public   /Users/you/Sites/shop
-```
-
-The `SERVED` column is the web root relative to the document root; `/` means the project root itself is served.
-
-Sites print in name order; an empty registry prints `no sites`. Add `--json` for machine-readable output:
-
-```sh
-yerd sites --json
-```
-
-## Command reference
-
-| Command | What it does |
-|---|---|
-| `yerd park <dir>` | Park a directory; each child folder is served at `<name>.test`. |
-| `yerd unpark <dir>` | Un-park a directory. Linked sites are untouched. |
-| `yerd link <name> <dir>` | Serve a single directory as a named site. |
-| `yerd unlink <name>` | Remove a site by name. |
-| `yerd sites` | List every site (name, kind, PHP, secure, served path, doc-root). |
-| `yerd list parked` | List parked roots, including empty ones. |
-| `yerd secure <name>` / `yerd unsecure <name>` | Turn HTTPS on / off for a site. |
-| `yerd root <name> <path>` | Set the served directory (web root) for a site. |
-| `yerd root <name> --auto` | Reset a site to automatic web-root detection. |
-
-For per-site PHP, see [PHP Versions](./php-versions). For the full command surface, see the [CLI Reference](../reference/cli/sites).
 
 ## Related
 

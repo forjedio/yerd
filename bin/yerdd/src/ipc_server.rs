@@ -139,7 +139,10 @@ async fn dispatch(req: Request, state: &DaemonState) -> Response {
             report: Box::new(build_status_report(state).await),
         },
         Request::Diagnose => Response::Diagnoses {
-            items: yerd_doctor::diagnose(&build_status_report(state).await),
+            items: yerd_doctor::diagnose(
+                &build_status_report(state).await,
+                path_needs_setup(state),
+            ),
         },
         Request::DoctorFix => run_doctor_fix(state).await,
         // Arm the restart flag; `handle_client` trips the shutdown broadcast
@@ -239,6 +242,11 @@ async fn dispatch(req: Request, state: &DaemonState) -> Response {
         },
         Request::SetMailPort { port } => set_mail_port(port, state).await,
         Request::SetMailEnabled { enabled } => set_mail_enabled(enabled, state).await,
+        Request::ListTools => Response::Tools {
+            tools: crate::tools::list_status(&state.dirs),
+        },
+        Request::InstallTool { tool } => install_tool(&tool, state).await,
+        Request::UninstallTool { tool } => uninstall_tool(&tool, state).await,
         // `Request` is `#[non_exhaustive]` (external crate): a wildcard is
         // required even though every known variant is handled above.
         _ => Response::Error {
@@ -304,6 +312,50 @@ async fn available_php_with(state: &DaemonState, dl: &dyn yerd_php::Downloader) 
     Response::AvailablePhp {
         available: yerd_php::available_minors(&listing, os, arch),
         installed: installed_versions(state),
+    }
+}
+
+/// Whether a dev tool is installed but Yerd's `{data}/bin` isn't on the user's
+/// PATH yet (no managed block in any known shell rc) — drives the doctor's
+/// [`yerd_ipc::DiagnosisCode::BinDirNotOnPath`] warning. `Some(false)` when no
+/// tool is installed or PATH is already wired; `None` when undeterminable
+/// (non-Unix, or `$HOME` unset). Computed on demand from the `Diagnose` handler,
+/// not on the per-poll status path. The cover/pcov shims alone don't count — the
+/// gate is an actual installed dev tool.
+fn path_needs_setup(state: &DaemonState) -> Option<bool> {
+    #[cfg(not(unix))]
+    {
+        let _ = state;
+        None
+    }
+    #[cfg(unix)]
+    {
+        use yerd_platform::pure::shell_profile::{self, rc_relpaths, HostOs, Shell};
+
+        let any_tool = crate::tools::list_status(&state.dirs)
+            .iter()
+            .any(|t| t.installed);
+        if !any_tool {
+            return Some(false);
+        }
+        let home = std::env::var_os("HOME")
+            .filter(|h| !h.is_empty())
+            .map(std::path::PathBuf::from)?;
+        let os = if cfg!(target_os = "macos") {
+            HostOs::MacOs
+        } else {
+            HostOs::Linux
+        };
+        // Check the union of candidate rc files across shells (the daemon may not
+        // have $SHELL set), so the probe doesn't depend on shell detection.
+        let present = [Shell::Zsh, Shell::Bash, Shell::Fish, Shell::Posix]
+            .into_iter()
+            .flat_map(|s| rc_relpaths(s, os))
+            .any(|rel| {
+                std::fs::read_to_string(home.join(rel))
+                    .is_ok_and(|c| shell_profile::contains_block(&c))
+            });
+        Some(!present)
     }
 }
 
@@ -558,7 +610,7 @@ async fn run_doctor_fix(state: &DaemonState) -> Response {
 
     // Re-diagnose against a fresh report; surface the remaining problems.
     let after = build_status_report(state).await;
-    let manual = yerd_doctor::diagnose(&after)
+    let manual = yerd_doctor::diagnose(&after, path_needs_setup(state))
         .into_iter()
         .filter(|d| {
             matches!(
@@ -687,6 +739,77 @@ async fn reconcile_shims_for(state: &DaemonState, default: yerd_core::PhpVersion
 async fn reconcile_shims_now(state: &DaemonState) {
     let default = state.config.lock().await.php.default;
     reconcile_shims_for(state, default).await;
+}
+
+/// Reconcile the dev-tool shims (`composer`/`node`/`npm`/`npx`/`bun`/`bunx`) under
+/// the **shared** `shim_reconcile` mutex (same dir as the PHP reconcile).
+/// Best-effort: failures are logged. Used at startup and after install/uninstall.
+pub(crate) async fn reconcile_tool_shims_now(state: &DaemonState) {
+    let Some(yerd_bin) = yerd_sibling() else {
+        tracing::warn!("cannot locate the `yerd` binary; skipping tool-shim reconcile");
+        return;
+    };
+    let _guard = state.shim_reconcile.lock().await;
+    if let Err(e) = crate::tools::reconcile_tool_shims(&state.dirs, &yerd_bin) {
+        tracing::warn!(error = %e, "tool-shim reconcile failed");
+    }
+}
+
+/// `install tool <id>` — download + verify the latest release, then (re)build its
+/// `{data}/bin` shims. Runs the slow download with no lock held.
+async fn install_tool(tool: &str, state: &DaemonState) -> Response {
+    let Some(t) = crate::tools::Tool::parse(tool) else {
+        return Response::Error {
+            code: ErrorCode::NotFound,
+            message: format!("unknown tool {tool:?}"),
+        };
+    };
+    let dl = crate::php_install::ReqwestDownloader::new();
+    // Serialize tool mutations: two concurrent IPC clients mutating
+    // `{data}/tools/<id>` (commit) + `{data}/bin` (reconcile) would otherwise
+    // race and could leave files and shims inconsistent.
+    let _mutate = state.tool_mutate.lock().await;
+    match crate::tools::install(t, &state.dirs, &dl).await {
+        Ok(()) => {
+            reconcile_tool_shims_now(state).await;
+            Response::Ok
+        }
+        Err(e) => Response::Error {
+            code: tool_error_code(&e),
+            message: e.to_string(),
+        },
+    }
+}
+
+/// `uninstall tool <id>` — remove the tool's files, then prune its shims.
+async fn uninstall_tool(tool: &str, state: &DaemonState) -> Response {
+    let Some(t) = crate::tools::Tool::parse(tool) else {
+        return Response::Error {
+            code: ErrorCode::NotFound,
+            message: format!("unknown tool {tool:?}"),
+        };
+    };
+    let _mutate = state.tool_mutate.lock().await;
+    match crate::tools::uninstall(&state.dirs, t) {
+        Ok(()) => {
+            reconcile_tool_shims_now(state).await;
+            Response::Ok
+        }
+        Err(e) => Response::Error {
+            code: tool_error_code(&e),
+            message: e.to_string(),
+        },
+    }
+}
+
+/// Map a [`crate::tools::ToolError`] to an IPC error code (mirrors `php_error_code`).
+fn tool_error_code(e: &crate::tools::ToolError) -> ErrorCode {
+    use crate::tools::ToolError;
+    match e {
+        ToolError::Unknown(_) => ErrorCode::NotFound,
+        ToolError::UnsupportedHost(_) => ErrorCode::InvalidPath,
+        _ => ErrorCode::Internal,
+    }
 }
 
 /// Best-effort: fetch the `pcov` `.so` for installed PHP versions, then rebuild
@@ -1242,6 +1365,7 @@ mod tests {
             watch_dirty: tokio::sync::Notify::new(),
             dumps: std::sync::Arc::new(crate::dump_server::DumpStore::new()),
             shim_reconcile: tokio::sync::Mutex::new(()),
+            tool_mutate: tokio::sync::Mutex::new(()),
         }
     }
 

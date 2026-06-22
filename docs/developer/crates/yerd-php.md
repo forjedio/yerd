@@ -352,7 +352,7 @@ During `HealthCheck`, the driver `tokio::select!`s the FastCGI probe (wrapped in
 ## Version & release handling
 
 ::: tip PHP is downloaded, not bundled
-Yerd does not ship PHP. It downloads prebuilt, fully-static PHP builds from the [static-php-cli](https://dl.static-php.dev/static-php-cli/common/) distribution on demand when you run `yerd install php`. See the [PHP Versions guide](../../guide/php-versions).
+Yerd does not ship PHP. It downloads prebuilt, fully-static PHP builds from the [static-php-cli](https://dl.static-php.dev/static-php-cli/) distribution on demand when you run `yerd install php`. It uses the **bulk** extension set (glibc `gnu-bulk` on Linux, `bulk` on macOS) so common Laravel needs like `intl`, `sodium`, and `mysqli` are included. See the [PHP Versions guide](../../guide/php-versions).
 :::
 
 ### `release.rs` - pure artifact resolution

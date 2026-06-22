@@ -300,6 +300,25 @@ pub struct DatabaseSummary {
     pub name: String,
 }
 
+/// One installable dev tool, returned in [`crate::Response::Tools`].
+///
+/// A struct (not a bare id) so the GUI can render status without a second lookup.
+/// Field order is the wire contract (serde emits in declaration order); keep it
+/// stable and additive.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ToolStatus {
+    /// Stable tool id (`composer`, `node`, `bun`).
+    pub id: String,
+    /// Human-readable name for the UI.
+    pub display_name: String,
+    /// Whether the tool is currently installed.
+    pub installed: bool,
+    /// Installed version (e.g. `2.10.1`, `v24.17.0`), or `None` when not installed.
+    pub version: Option<String>,
+    /// The commands this tool provides on `PATH` (e.g. `node`, `npm`, `npx`).
+    pub binaries: Vec<String>,
+}
+
 /// A single doctor finding.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Diagnosis {
@@ -357,6 +376,9 @@ pub enum DiagnosisCode {
     NoSites,
     /// Installing the OS resolver replaced a pre-existing file, which Yerd backed up.
     ResolverBackupSaved,
+    /// A dev tool is installed but Yerd's `{data}/bin` isn't on the user's PATH,
+    /// so the tool's commands won't resolve in the shell (remedy: `yerd path install`).
+    BinDirNotOnPath,
     /// Everything checks out.
     AllGood,
 }

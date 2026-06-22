@@ -32,6 +32,7 @@ pub mod signals;
 pub mod single_instance;
 pub mod startup;
 pub mod state;
+pub mod tools;
 pub mod tracing_init;
 
 use std::sync::atomic::Ordering;
@@ -176,10 +177,10 @@ async fn run_until_shutdown(
         }))
     });
 
-    // Auto-start enabled services in the background — deliberately NOT awaited,
-    // so a slow/failing DB cold-boot never delays the listeners above. Each
-    // engine's outcome is logged inside the task.
-    let _autostart = tokio::spawn(crate::services::auto_start_enabled(daemon.state.clone()));
+    // Auto-start every installed service in the background — deliberately NOT
+    // awaited, so a slow/failing DB cold-boot never delays the listeners above.
+    // Each engine's outcome is logged inside the task.
+    let _autostart = tokio::spawn(crate::services::auto_start_installed(daemon.state.clone()));
 
     // If dumps are enabled in config, fetch the extension `.so` for installed PHP
     // versions in the background so on-demand pools pick it up. Best-effort.
@@ -201,6 +202,16 @@ async fn run_until_shutdown(
         let state = daemon.state.clone();
         tokio::spawn(async move {
             crate::ipc_server::refresh_pcov_and_shims(&state).await;
+        })
+    };
+
+    // Self-heal the installed dev-tool shims (`composer`/`node`/`npm`/`npx`/
+    // `bun`/`bunx`) — re-points the `composer` multi-call link if the `yerd`
+    // binary moved, and prunes shims for tools removed between runs. No network.
+    let _tool_shims = {
+        let state = daemon.state.clone();
+        tokio::spawn(async move {
+            crate::ipc_server::reconcile_tool_shims_now(&state).await;
         })
     };
 

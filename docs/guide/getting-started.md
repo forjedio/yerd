@@ -43,6 +43,8 @@ route `*.test`, and bind ports 80/443 - everything after runs as your user,
 never as root. On macOS that makes setup essentially **drag-and-drop**: drag
 Yerd to Applications, launch it, done.
 
+<ThemedImage light="/images/overview-light.png" dark="/images/overview-dark.png" alt="The Yerd desktop app, landed on the Overview dashboard" />
+
 ::: tip Auto-install coverage
 Auto-install covers Apple Silicon macOS and Linux (x86-64 · arm64). If you
 already have the CLI (or installed the Linux `.deb`, which lands in `/usr/bin`),

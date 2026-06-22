@@ -346,7 +346,7 @@ onMounted(async () => {
       <div class="flex items-center gap-2">
         <button
           type="button"
-          :title="enabled ? 'Interception on — click to pause' : 'Interception off — click to enable'"
+          :title="enabled ? 'Interception on - click to pause' : 'Interception off - click to enable'"
           class="flex size-7 items-center justify-center rounded-md transition-colors"
           :class="
             enabled
@@ -359,7 +359,7 @@ onMounted(async () => {
         </button>
         <button
           type="button"
-          :title="persist ? 'Persist on — keeping logs across requests' : 'Persist off — clears on each new request'"
+          :title="persist ? 'Persist on - keeping logs across requests' : 'Persist off - clears on each new request'"
           class="flex size-7 items-center justify-center rounded-md transition-colors"
           :class="
             persist
@@ -372,7 +372,7 @@ onMounted(async () => {
         </button>
         <button
           type="button"
-          :title="alwaysOnTop ? 'Window pinned on top — click to unpin' : 'Keep window on top'"
+          :title="alwaysOnTop ? 'Window pinned on top - click to unpin' : 'Keep window on top'"
           class="flex size-7 items-center justify-center rounded-md transition-colors"
           :class="
             alwaysOnTop
@@ -483,7 +483,7 @@ onMounted(async () => {
                 v-if="rowCaller(e)"
                 type="button"
                 class="ml-auto shrink-0 cursor-pointer rounded bg-muted px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-                :title="`${rowCallerRel(e)} — click to open`"
+                :title="`${rowCallerRel(e)} - click to open`"
                 @click="openCaller(e)"
               >
                 {{ rowCaller(e) }}

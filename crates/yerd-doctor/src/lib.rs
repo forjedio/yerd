@@ -31,12 +31,17 @@ pub enum FixAction {
 
 /// Run every check against `report` and return the findings.
 ///
+/// `path_needs_setup` is an environment probe the daemon supplies (it can't be
+/// read from the report): `Some(true)` when a dev tool is installed but Yerd's
+/// `{data}/bin` isn't on the user's PATH, `Some(false)` when it's fine, `None`
+/// when undeterminable.
+///
 /// Findings are emitted in a stable order. When no `Warn`/`Fail` finding is
 /// produced, a single [`DiagnosisCode::AllGood`] `Ok` finding is appended so the
 /// caller always has something to show. `Option<bool>` probes that are `None`
 /// ("couldn't determine") emit **no** finding — never a false-alarm warning.
 #[must_use]
-pub fn diagnose(report: &StatusReport) -> Vec<Diagnosis> {
+pub fn diagnose(report: &StatusReport, path_needs_setup: Option<bool>) -> Vec<Diagnosis> {
     let mut out = Vec::new();
 
     // --- Port findings: a foreign listener squatting 80/443, or a privileged
@@ -62,6 +67,18 @@ pub fn diagnose(report: &StatusReport) -> Vec<Diagnosis> {
 
     // --- No sites (informational).
     out.extend(no_sites_finding(report));
+
+    // --- Dev-tool bin dir not on PATH (warn; daemon-supplied env probe).
+    if path_needs_setup == Some(true) {
+        out.push(warn(
+            DiagnosisCode::BinDirNotOnPath,
+            "Yerd's bin directory isn't on your PATH",
+            "A dev tool is installed, but its commands won't resolve in your shell \
+             until Yerd's bin directory is on PATH."
+                .to_owned(),
+            "yerd path install",
+        ));
+    }
 
     // --- All-good summary when nothing is wrong.
     if !out
@@ -362,7 +379,7 @@ mod tests {
 
     #[test]
     fn healthy_report_is_all_good_only() {
-        let ds = diagnose(&healthy());
+        let ds = diagnose(&healthy(), None);
         assert_eq!(codes(&ds), vec![DiagnosisCode::AllGood]);
         assert!(plan_auto_fixes(&healthy()).is_empty());
     }
@@ -370,11 +387,11 @@ mod tests {
     #[test]
     fn resolver_backup_surfaces_as_ok_finding_with_no_remedy() {
         let mut r = healthy();
-        assert!(!codes(&diagnose(&r)).contains(&DiagnosisCode::ResolverBackupSaved));
+        assert!(!codes(&diagnose(&r, None)).contains(&DiagnosisCode::ResolverBackupSaved));
 
         r.resolver_backup =
             Some("/Library/Application Support/io.yerd.Yerd/resolver-backups/test-1.conf".into());
-        let ds = diagnose(&r);
+        let ds = diagnose(&r, None);
         let finding = ds
             .iter()
             .find(|d| d.code == DiagnosisCode::ResolverBackupSaved)
@@ -396,14 +413,14 @@ mod tests {
         r.http.requested = 80;
         r.http.bound = 8080;
         r.http.fell_back = true;
-        assert!(codes(&diagnose(&r)).contains(&DiagnosisCode::PortFallback));
+        assert!(codes(&diagnose(&r, None)).contains(&DiagnosisCode::PortFallback));
 
         // Configured unprivileged port that "fell back" is NOT a warning.
         let mut r2 = healthy();
         r2.http.requested = 8080;
         r2.http.bound = 8081;
         r2.http.fell_back = true;
-        assert!(!codes(&diagnose(&r2)).contains(&DiagnosisCode::PortFallback));
+        assert!(!codes(&diagnose(&r2, None)).contains(&DiagnosisCode::PortFallback));
     }
 
     #[test]
@@ -415,15 +432,15 @@ mod tests {
         r.http.bound = 8080;
         r.http.fell_back = true;
         r.port_redirect = Some(true);
-        assert!(!codes(&diagnose(&r)).contains(&DiagnosisCode::PortFallback));
+        assert!(!codes(&diagnose(&r, None)).contains(&DiagnosisCode::PortFallback));
 
         // Redirect present but NOT active → still a warning.
         r.port_redirect = Some(false);
-        assert!(codes(&diagnose(&r)).contains(&DiagnosisCode::PortFallback));
+        assert!(codes(&diagnose(&r, None)).contains(&DiagnosisCode::PortFallback));
 
         // Not applicable (Linux, None) → unchanged warning behaviour.
         r.port_redirect = None;
-        assert!(codes(&diagnose(&r)).contains(&DiagnosisCode::PortFallback));
+        assert!(codes(&diagnose(&r, None)).contains(&DiagnosisCode::PortFallback));
     }
 
     #[test]
@@ -436,7 +453,7 @@ mod tests {
         r.http.bound = 8080;
         r.http.fell_back = true;
         r.foreign_web_listener = Some(true);
-        let cs = codes(&diagnose(&r));
+        let cs = codes(&diagnose(&r, None));
         assert!(cs.contains(&DiagnosisCode::ForeignWebListener));
         assert!(
             !cs.contains(&DiagnosisCode::PortFallback),
@@ -446,12 +463,12 @@ mod tests {
 
         // No foreign listener (false/None) → the plain fallback warning returns.
         r.foreign_web_listener = Some(false);
-        let cs = codes(&diagnose(&r));
+        let cs = codes(&diagnose(&r, None));
         assert!(!cs.contains(&DiagnosisCode::ForeignWebListener));
         assert!(cs.contains(&DiagnosisCode::PortFallback));
 
         r.foreign_web_listener = None;
-        assert!(codes(&diagnose(&r)).contains(&DiagnosisCode::PortFallback));
+        assert!(codes(&diagnose(&r, None)).contains(&DiagnosisCode::PortFallback));
     }
 
     #[test]
@@ -460,7 +477,7 @@ mod tests {
         // surfaced (e.g. the proxy lost the port to another process).
         let mut r = healthy();
         r.foreign_web_listener = Some(true);
-        let cs = codes(&diagnose(&r));
+        let cs = codes(&diagnose(&r, None));
         assert!(cs.contains(&DiagnosisCode::ForeignWebListener));
         assert!(!cs.contains(&DiagnosisCode::AllGood));
     }
@@ -470,7 +487,7 @@ mod tests {
         let mut r = healthy();
         r.ca.trusted_system = None;
         r.resolver_installed = None;
-        let cs = codes(&diagnose(&r));
+        let cs = codes(&diagnose(&r, None));
         assert!(!cs.contains(&DiagnosisCode::CaNotTrusted));
         assert!(!cs.contains(&DiagnosisCode::ResolverNotInstalled));
     }
@@ -480,7 +497,7 @@ mod tests {
         let mut r = healthy();
         r.ca.trusted_system = Some(false);
         r.resolver_installed = Some(false);
-        let cs = codes(&diagnose(&r));
+        let cs = codes(&diagnose(&r, None));
         assert!(cs.contains(&DiagnosisCode::CaNotTrusted));
         assert!(cs.contains(&DiagnosisCode::ResolverNotInstalled));
     }
@@ -489,7 +506,7 @@ mod tests {
     fn no_php_suppresses_default_not_installed() {
         let mut r = healthy();
         r.php.clear();
-        let cs = codes(&diagnose(&r));
+        let cs = codes(&diagnose(&r, None));
         assert!(cs.contains(&DiagnosisCode::NoPhpInstalled));
         assert!(!cs.contains(&DiagnosisCode::DefaultPhpNotInstalled));
     }
@@ -499,7 +516,7 @@ mod tests {
         let mut r = healthy();
         // Installed 8.4, but default is 8.5.
         r.php[0].version = PhpVersion::new(8, 4);
-        let cs = codes(&diagnose(&r));
+        let cs = codes(&diagnose(&r, None));
         assert!(cs.contains(&DiagnosisCode::DefaultPhpNotInstalled));
         assert!(!cs.contains(&DiagnosisCode::NoPhpInstalled));
     }
@@ -508,7 +525,7 @@ mod tests {
     fn failed_pool_is_fail_and_auto_fixable() {
         let mut r = healthy();
         r.php[0].state = PoolRunState::Failed;
-        let ds = diagnose(&r);
+        let ds = diagnose(&r, None);
         assert!(codes(&ds).contains(&DiagnosisCode::FpmPoolFailed));
         assert!(ds
             .iter()
@@ -525,7 +542,7 @@ mod tests {
     fn update_available_is_informational_and_still_all_good() {
         let mut r = healthy();
         r.php[0].update_available = Some("8.5.7".into());
-        let ds = diagnose(&r);
+        let ds = diagnose(&r, None);
         let cs = codes(&ds);
         assert!(cs.contains(&DiagnosisCode::PhpUpdateAvailable));
         // Ok/info findings don't suppress the all-good summary.
@@ -536,13 +553,25 @@ mod tests {
     fn no_sites_is_informational() {
         let mut r = healthy();
         r.sites = SiteCounts::default();
-        assert!(codes(&diagnose(&r)).contains(&DiagnosisCode::NoSites));
+        assert!(codes(&diagnose(&r, None)).contains(&DiagnosisCode::NoSites));
     }
 
     #[test]
     fn problems_suppress_all_good() {
         let mut r = healthy();
         r.ca.trusted_system = Some(false);
-        assert!(!codes(&diagnose(&r)).contains(&DiagnosisCode::AllGood));
+        assert!(!codes(&diagnose(&r, None)).contains(&DiagnosisCode::AllGood));
+    }
+
+    #[test]
+    fn bin_dir_not_on_path_warns_only_on_some_true() {
+        let r = healthy();
+        // Some(true) → warn, and it suppresses the all-good summary.
+        let on = codes(&diagnose(&r, Some(true)));
+        assert!(on.contains(&DiagnosisCode::BinDirNotOnPath));
+        assert!(!on.contains(&DiagnosisCode::AllGood));
+        // Some(false) / None → no finding (no false alarm).
+        assert!(!codes(&diagnose(&r, Some(false))).contains(&DiagnosisCode::BinDirNotOnPath));
+        assert!(!codes(&diagnose(&r, None)).contains(&DiagnosisCode::BinDirNotOnPath));
     }
 }

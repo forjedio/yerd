@@ -49,8 +49,8 @@ there is no undo.
 
 | Command | Description |
 | --- | --- |
-| `yerd service start <SVC>` | Start the service and enable auto-start on daemon boot. |
-| `yerd service stop <SVC>` | Stop the service and disable auto-start. |
+| `yerd service start <SVC>` | Start the service now. |
+| `yerd service stop <SVC>` | Stop the service for the current session. Installed engines auto-start again on the next daemon start; `uninstall` to keep one off. |
 | `yerd service restart <SVC>` | Restart the running service. |
 
 ```sh

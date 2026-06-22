@@ -25,7 +25,7 @@ const dot = computed(
       <span
         v-if="pulse && tone === 'ok'"
         :class="
-          cn('absolute inline-flex h-full w-full animate-ping rounded-full opacity-75', dot)
+          cn('absolute inline-flex h-full w-full rounded-full opacity-75 motion-safe:animate-ping', dot)
         "
       />
       <span :class="cn('relative inline-flex size-2 rounded-full', dot)" />

@@ -75,7 +75,7 @@ async function maybeAutoInstall(): Promise<void> {
   try {
     await installDaemon();
     await startDaemon();
-    router.push("/general");
+    router.push("/overview");
     toast.success("Yerd is ready", "Installed and started the daemon.");
   } catch (e) {
     toast.error("Couldn't install yerdd", (e as IpcError).message);

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Mail } from "lucide-vue-next";
+import { Copy, Mail } from "lucide-vue-next";
 import { computed, ref, watch } from "vue";
 
 import PageHeader from "@/components/PageHeader.vue";
@@ -12,7 +12,6 @@ import CardDescription from "@/components/ui/CardDescription.vue";
 import CardHeader from "@/components/ui/CardHeader.vue";
 import CardTitle from "@/components/ui/CardTitle.vue";
 import Input from "@/components/ui/Input.vue";
-import Spinner from "@/components/ui/Spinner.vue";
 import Switch from "@/components/ui/Switch.vue";
 import { useDaemon } from "@/composables/useDaemon";
 import { useToast } from "@/composables/useToast";
@@ -49,6 +48,12 @@ watch(
   { immediate: true },
 );
 
+// Save is enabled only once the draft differs from the live port (mirrors the
+// Dumps page).
+const portChanged = computed(
+  () => mail.value != null && portInput.value !== String(mail.value.port),
+);
+
 const statusTone = computed<Tone>(() => {
   const m = mail.value;
   if (!m || !m.enabled) return "muted";
@@ -59,7 +64,7 @@ const statusLabel = computed(() => {
   const m = mail.value;
   if (!m) return "Unknown";
   if (!m.enabled) return "Disabled";
-  return m.listening ? "Running" : "Enabled — port unavailable";
+  return m.listening ? "Running" : "Enabled - port unavailable";
 });
 
 async function onToggleEnabled(next: boolean): Promise<void> {
@@ -105,6 +110,37 @@ async function onShowMails(): Promise<void> {
     toast.error("Couldn't open the mail viewer", (e as IpcError).message);
   }
 }
+
+// ── Laravel .env snippet ──
+// Sensible Laravel defaults; the "From name" follows the Laravel idiom of
+// referencing the app's APP_NAME, and the port tracks the live mail server.
+const fromName = ref("");
+const fromAddress = ref("");
+const mailPort = computed(() => mail.value?.port ?? 2525);
+
+const envSnippet = computed(() => {
+  const name = fromName.value.trim() || "${APP_NAME}";
+  const address = fromAddress.value.trim() || "hello@example.com";
+  return [
+    "MAIL_MAILER=smtp",
+    "MAIL_HOST=127.0.0.1",
+    `MAIL_PORT=${mailPort.value}`,
+    "MAIL_USERNAME=null",
+    "MAIL_PASSWORD=null",
+    "MAIL_ENCRYPTION=null",
+    `MAIL_FROM_ADDRESS="${address}"`,
+    `MAIL_FROM_NAME="${name}"`,
+  ].join("\n");
+});
+
+async function copyEnv(): Promise<void> {
+  try {
+    await navigator.clipboard.writeText(envSnippet.value);
+    toast.success("Copied to clipboard", "Paste these into your Laravel .env file.");
+  } catch {
+    toast.error("Couldn't copy");
+  }
+}
 </script>
 
 <template>
@@ -114,7 +150,7 @@ async function onShowMails(): Promise<void> {
       subtitle="Capture and inspect emails your apps send during development"
     />
 
-    <div class="flex-1 overflow-y-auto p-6">
+    <div class="flex-1 space-y-4 overflow-y-auto p-6">
       <Card>
         <CardHeader>
           <CardTitle class="flex items-center gap-2">
@@ -130,7 +166,7 @@ async function onShowMails(): Promise<void> {
           <!-- Status -->
           <div class="flex items-center justify-between border-b pb-4">
             <div>
-              <p class="text-sm font-medium">Mail Server Status</p>
+              <p class="text-sm font-medium">Mail server status</p>
               <p class="text-xs text-muted-foreground">
                 {{ mail?.count ?? 0 }} captured email(s)
               </p>
@@ -159,22 +195,27 @@ async function onShowMails(): Promise<void> {
           </div>
 
           <!-- Port -->
-          <div>
-            <label class="text-sm font-medium" for="mail-port">Mail Server Port</label>
-            <p class="mb-2 text-xs text-muted-foreground">
-              The port number the mail server will listen on.
-            </p>
+          <div class="flex items-center justify-between gap-4">
+            <div>
+              <p class="text-sm font-medium">Mail server port</p>
+              <p class="text-xs text-muted-foreground">
+                The port the mail server listens on (default 2525).
+              </p>
+            </div>
             <div class="flex items-center gap-2">
               <Input
                 id="mail-port"
                 v-model="portInput"
-                class="max-w-32"
+                type="number"
+                inputmode="numeric"
+                min="1"
+                max="65535"
+                aria-label="Mail server port"
+                class="w-28 font-mono"
                 placeholder="2525"
                 @input="dirtyPort = true"
               />
-              <Button variant="outline" size="sm" :disabled="busy" @click="onSavePort">
-                <Spinner v-if="busy" class="size-4" /> Save
-              </Button>
+              <Button size="sm" :disabled="!portChanged || busy" @click="onSavePort">Save</Button>
             </div>
           </div>
 
@@ -184,6 +225,59 @@ async function onShowMails(): Promise<void> {
               Learn how to use Yerd's mailserver
             </Button>
             <Button @click="onShowMails">Show Mails</Button>
+          </div>
+        </CardContent>
+      </Card>
+
+      <!-- Laravel .env configuration -->
+      <Card>
+        <CardHeader>
+          <CardTitle>Laravel configuration</CardTitle>
+          <CardDescription>
+            Add these to your Laravel app's <code>.env</code> to route its mail
+            through Yerd's capture server.
+          </CardDescription>
+        </CardHeader>
+        <CardContent class="space-y-4">
+          <div class="grid gap-3 sm:grid-cols-2">
+            <div>
+              <label class="text-sm font-medium" for="mail-from-name">From name</label>
+              <Input
+                id="mail-from-name"
+                v-model="fromName"
+                class="mt-1.5"
+                placeholder="${APP_NAME}"
+              />
+              <p class="mt-1 text-xs text-muted-foreground">
+                Defaults to your app's <code>APP_NAME</code>.
+              </p>
+            </div>
+            <div>
+              <label class="text-sm font-medium" for="mail-from-address">From address</label>
+              <Input
+                id="mail-from-address"
+                v-model="fromAddress"
+                class="mt-1.5"
+                placeholder="hello@example.com"
+              />
+              <p class="mt-1 text-xs text-muted-foreground">
+                Capture accepts any address - nothing is actually delivered.
+              </p>
+            </div>
+          </div>
+
+          <div class="relative">
+            <pre class="overflow-x-auto rounded-md border bg-muted/50 p-3 pr-12 font-mono text-xs leading-relaxed text-foreground">{{ envSnippet }}</pre>
+            <Button
+              variant="ghost"
+              size="icon"
+              class="absolute right-1.5 top-1.5"
+              aria-label="Copy .env configuration"
+              title="Copy"
+              @click="copyEnv"
+            >
+              <Copy class="size-4" />
+            </Button>
           </div>
         </CardContent>
       </Card>

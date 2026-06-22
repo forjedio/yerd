@@ -10,7 +10,26 @@ It's the local-dev counterpart to Mailpit / MailHog / Mailtrap, except there's
 nothing to install or run - it's part of the [`yerdd` daemon](./daemon) that
 already runs your sites, PHP, HTTPS, and DNS.
 
-## The short version
+## In the desktop app
+
+<ThemedImage light="/images/mail-light.png" dark="/images/mail-dark.png" alt="The Mail page in the Yerd desktop app" />
+
+The [desktop app](./desktop-app) surfaces mail capture on its own **Mail** page,
+under the **Developer** group in the sidebar. It's the richest way to drive
+capture and read what's been caught.
+
+- The page shows the current **capture status** and the **port** the SMTP
+  listener is bound to.
+- An **enable toggle** turns capture on or off, and a **port** field changes the
+  listening port (both take effect on the next daemon restart).
+- **Show Mails** pops out the separate **Mails** viewer window, which renders
+  HTML bodies (including inline images) in a sandboxed frame so you can keep
+  captured mail next to your editor and browser.
+- A **Laravel configuration** card emits the `.env` mail keys (`MAIL_HOST`,
+  `MAIL_PORT`, …) ready to paste into your app, with an editable From name and
+  address.
+
+## From the command line
 
 ```sh
 # Mail capture is already on (loopback SMTP on 127.0.0.1:2525).
@@ -20,9 +39,6 @@ yerd mail list          # newest-first table of captured emails
 yerd mail show 000003   # one email's headers + body
 yerd mail clear         # delete everything captured so far
 ```
-
-The richest view is the **Mail** view in the [desktop app](./desktop-app), which
-renders HTML bodies (including inline images) in a sandboxed viewer window.
 
 ## On by default
 
@@ -69,20 +85,7 @@ security. It binds loopback only and is not meant to be reachable from a network
 Keep these settings to your local `.env`.
 :::
 
-## Viewing captured mail in the desktop app
-
-The [desktop app](./desktop-app) has a dedicated **Mail** view in the side
-navigation, plus a standalone **Mails** viewer window you can pop out (the
-"Show Mails" button) to keep your captured mail visible next to your editor and
-browser.
-
-The viewer decodes each message for you: headers, the plain-text body, and a
-rendered **HTML** body. HTML is shown in a sandboxed frame with no network
-access - inline images referenced by `cid:` are rewritten to embedded `data:`
-URLs so they render without reaching out to the network. From the GUI you can read,
-delete individual messages, and clear everything.
-
-## Viewing captured mail from the CLI
+## Reading captured mail from the CLI
 
 Three subcommands cover the common loop. See the
 [Mail CLI reference](../reference/cli/mail) for the precise output shapes.
@@ -117,6 +120,15 @@ scripting: `yerd mail list --json` emits the captured-email metadata as JSON, an
 `yerd mail show <id> --json` emits the full decoded message (headers and both
 bodies).
 :::
+
+## The viewer
+
+The standalone **Mails** viewer window - opened from the [desktop app](./desktop-app)
+with **Show Mails** - decodes each message for you: headers, the plain-text body,
+and a rendered **HTML** body. HTML is shown in a sandboxed frame with no network
+access - inline images referenced by `cid:` are rewritten to embedded `data:`
+URLs so they render without reaching out to the network. From the GUI you can
+read, delete individual messages, and clear everything.
 
 ## Configuration
 

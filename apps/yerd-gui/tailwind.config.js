@@ -70,6 +70,11 @@ export default {
           DEFAULT: "hsl(var(--card))",
           foreground: "hsl(var(--card-foreground))",
         },
+        // Brand indigo (from the logo) — the single accent. See style.css.
+        brand: {
+          DEFAULT: "hsl(var(--brand))",
+          foreground: "hsl(var(--brand-foreground))",
+        },
         // Semantic status colours used by StatusPill / badges.
         success: {
           DEFAULT: "hsl(var(--success))",

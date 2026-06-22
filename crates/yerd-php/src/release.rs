@@ -14,16 +14,22 @@ use crate::error::PhpError;
 
 /// Base URL of the static-php-cli prebuilt distribution for `os`.
 ///
-/// Linux uses the **`gnu-bulk`** (glibc) channel rather than the default musl
-/// `common` channel: a fully-static musl PHP **cannot `dlopen` a shared
-/// extension**, which yerd needs for the `yerd-dump` telemetry extension. The
-/// trade-off is a larger (~38 MB) glibc-linked binary that no longer "runs on
-/// any libc" (Alpine/musl-only hosts are unsupported). macOS stays on `common`
-/// (macOS permits `dlopen` regardless).
+/// Both platforms use the **bulk** extension set so a real-world Laravel app
+/// has what it needs out of the box — notably `intl` (ICU), plus `sodium`,
+/// `mysqli`, `xsl`, `readline`, `apcu`, … which the leaner `common` channel
+/// omits. The cost is a larger binary (~38 MB compressed); acceptable for a dev
+/// tool, and it keeps macOS and Linux on the *same* extension set.
+///
+/// Linux specifically needs the **`gnu-bulk`** (glibc) variant rather than the
+/// musl `bulk`: a fully-static musl PHP **cannot `dlopen` a shared extension**,
+/// which yerd needs for the `yerd-dump` / `pcov` extensions. The trade-off is a
+/// glibc-linked binary that no longer "runs on any libc" (Alpine/musl-only hosts
+/// are unsupported). macOS uses plain **`bulk`** (macOS permits `dlopen`
+/// regardless, and there is no separate glibc channel for it).
 const fn channel_base(os: Os) -> &'static str {
     match os {
         Os::Linux => "https://dl.static-php.dev/static-php-cli/gnu-bulk",
-        Os::Macos => "https://dl.static-php.dev/static-php-cli/common",
+        Os::Macos => "https://dl.static-php.dev/static-php-cli/bulk",
     }
 }
 
@@ -31,7 +37,7 @@ const fn channel_base(os: Os) -> &'static str {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Os {
     /// Linux (glibc `gnu-bulk` build — can load shared extensions; **not** the
-    /// musl `common` build, which can't `dlopen`).
+    /// musl `bulk` build, which can't `dlopen`).
     Linux,
     /// macOS.
     Macos,
@@ -357,14 +363,14 @@ mod tests {
             listing_url(Os::Linux),
             "https://dl.static-php.dev/static-php-cli/gnu-bulk/"
         );
-        // macOS → default `common` channel.
+        // macOS → `bulk` channel (same extension set as Linux's gnu-bulk).
         assert_eq!(
             artifact_url("8.5.6", BinaryKind::Cli, Os::Macos, Arch::Aarch64),
-            "https://dl.static-php.dev/static-php-cli/common/php-8.5.6-cli-macos-aarch64.tar.gz"
+            "https://dl.static-php.dev/static-php-cli/bulk/php-8.5.6-cli-macos-aarch64.tar.gz"
         );
         assert_eq!(
             listing_url(Os::Macos),
-            "https://dl.static-php.dev/static-php-cli/common/"
+            "https://dl.static-php.dev/static-php-cli/bulk/"
         );
     }
 

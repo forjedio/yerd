@@ -191,6 +191,9 @@ The variant set is the daemon's whole RPC surface - liveness, site management, P
 | `SetDumpFeature { feature, enabled }` | `{"type":"set_dump_feature","feature":"queries","enabled":true}` |
 | `SetDumpsPersist { persist }` | `{"type":"set_dumps_persist","persist":true}` |
 | `DumpsStatus` | `{"type":"dumps_status"}` |
+| `ListTools` | `{"type":"list_tools"}` |
+| `InstallTool { tool }` | `{"type":"install_tool","tool":"node"}` |
+| `UninstallTool { tool }` | `{"type":"uninstall_tool","tool":"bun"}` |
 
 Note `Unpark { path: String }` deliberately uses a `String`, not `PathBuf`: clients echo a value straight back from `Response::Parked`, and an exact-identity match avoids lossy path normalisation (the daemon does not canonicalise it).
 
@@ -217,6 +220,7 @@ pub enum Response {
     Databases { databases: Vec<DatabaseSummary> },
     Mails { mails: Vec<MailSummary> },
     Mail { mail: Box<MailDetail> },               // boxed: large payload
+    Tools { tools: Vec<ToolStatus> },             // installable dev tools
     Dumps {
         events: Vec<DumpEvent>,
         removed_ids: Vec<u64>,

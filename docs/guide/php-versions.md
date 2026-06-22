@@ -2,7 +2,21 @@
 
 Yerd runs **any number of PHP versions side by side** and lets you pick which one each site uses. PHP isn't bundled, so the install stays small. The first time you ask for a version, Yerd downloads a prebuilt static [`static-php-cli`](https://github.com/crazywhalecc/static-php-cli) build and supervises one PHP-FPM pool per version behind the [reverse proxy](./sites).
 
-## Installing a version
+## In the desktop app
+
+The fastest way to manage PHP is the **PHP** page (under the **Environment** group) in the [desktop app](./desktop-app#php). It's a live view of every installed version and the controls to change them, with no commands to remember.
+
+<ThemedImage light="/images/php-light.png" dark="/images/php-dark.png" alt="The PHP page in the Yerd desktop app" />
+
+- A table of installed versions shows live FPM pool state, patch level, pool memory (RSS), and whether an update is available.
+- **Install** opens a picker of installable versions (already-installed ones are hidden); the download of a prebuilt static build can take a few minutes with no progress bar.
+- **Refresh** re-checks for updates and **Update all** updates every version with one pending - [updates are notify-only](#updates-are-notify-only).
+- Each row's `⋯` menu offers **Restart**, **Set default** (marks it with a star), **Update** (when available), and **Uninstall**; **Restart all** restarts every running pool.
+- A **Default settings** card edits the [global ini defaults](#tuning-php-settings) applied to every version; leave a field blank to use PHP's built-in default, and saving restarts running pools to apply.
+
+## From the command line
+
+### Installing a version
 
 ```sh
 yerd install php 8.5
@@ -20,7 +34,18 @@ A "PHP version" means a `major.minor` pair like `8.5`, never a full patch like `
 The distribution publishes no checksums, so Yerd verifies downloads over HTTPS to the distribution host rather than a pinned SHA-256. That keeps the supported version set from being frozen into the binary. (Yerd's own release artifacts are separately verified against a `SHA256SUMS` manifest; see [Getting Started](./getting-started).)
 :::
 
-## How versions are stored
+### Bundled extensions
+
+Yerd uses static-php-cli's **bulk** extension set, so a real-world Laravel app has
+what it needs out of the box. Beyond the common extensions, this includes
+**`intl`** (ICU — required by Laravel's `Number` helper and many localization
+packages), **`sodium`**, **`mysqli`**, **`xsl`**, **`readline`**, and **`apcu`**,
+alongside `bcmath`, `gd`, `gmp`, `curl`, `mbstring`, `openssl`, `pdo_mysql`,
+`pdo_pgsql`, `pdo_sqlite`, `zip`, `redis`, `opcache`, and more. Run `php -m` (via
+the [`php` shim](#the-global-default)) to see the full list for an installed
+version. Coverage is provided separately by `pcov` — see [Code Coverage](./code-coverage).
+
+### How versions are stored
 
 Each install lands under the per-user data directory:
 
@@ -33,7 +58,7 @@ Each install lands under the per-user data directory:
 
 The dir is named for the **major.minor** (`php-8.5`); `.yerd-version` records the exact patch (`8.5.6`). Update checks read that marker to decide whether a newer patch exists. The daemon discovers installed versions by walking this directory and finding each `sbin/php-fpm` at startup.
 
-## The global default
+### The global default
 
 Yerd has one **global default** version, used for the `php` shim at `{data}/bin/php` and as the fallback for any site that hasn't pinned its own. Set it with one argument:
 
@@ -50,7 +75,7 @@ Put `{data}/bin` (Yerd prints the exact path) on your `PATH` so a bare `php` mat
 
 Alongside the default `php` shim, Yerd maintains a `php<version>` shim for each installed version (`php8.4`, `php8.3`, ...) so you can reach a specific version directly, plus `phpcover` / `php<version>cover` shims that run PHP with the pcov coverage driver enabled. See [Code Coverage](./code-coverage).
 
-## Per-site versions
+### Per-site versions
 
 Any site can pin its own version. Pass `yerd use` two arguments, a site name and a version:
 
@@ -73,7 +98,7 @@ Check what each site resolves to with `yerd sites`, which lists every site with 
 Pinning a site (or the default) to an uninstalled version means there's no FPM binary to start when a request arrives. Install it first (`yerd install php 8.3`), then pin. `yerd doctor` flags a pool that can't start.
 :::
 
-## Listing versions
+### Listing versions
 
 ```sh
 yerd list php
@@ -89,7 +114,7 @@ This shows every installed version, marks the default, and flags any with a newe
 
 `--available` takes precedence over `--check`. Add `--json` (a global flag) for machine-readable output.
 
-## Updates are notify-only
+### Updates are notify-only
 
 Yerd checks for newer **patches** of the minors you have and tells you about them, but never installs on its own. The daemon periodically polls the distribution, compares each installed minor's latest patch against its `.yerd-version` marker, and on a newer patch logs:
 
@@ -112,7 +137,7 @@ An update is the same atomic install flow: it moves `8.5.4` → `8.5.6` and neve
 Updates are strictly notify-only. The only automatic network call is the lightweight update check, which downloads nothing but a directory listing. Yerd downloads or swaps a PHP version only when you run `yerd update php`.
 :::
 
-## Tuning PHP settings
+### Tuning PHP settings
 
 Yerd keeps a small set of **global PHP ini defaults** that are applied to *every*
 installed version's FPM pool. Set and clear them with `set` / `unset`:
@@ -132,7 +157,7 @@ reference](../reference/cli/php#global-php-ini-settings) for the full list and t
 [Configuration Reference](../reference/configuration#php) for how they're stored
 and rendered into FPM config.
 
-## Command summary
+### Command summary
 
 | Command | What it does |
 |---|---|

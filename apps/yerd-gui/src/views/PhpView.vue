@@ -132,7 +132,7 @@ const DISPLAY_ERRORS_HINT =
   "Whether PHP shows errors in the page output. On is handy in development; Off is safer in production.";
 
 const DISPLAY_ERRORS_OPTIONS = [
-  { value: "", label: "— default —" },
+  { value: "", label: "- default -" },
   { value: "On", label: "On" },
   { value: "Off", label: "Off" },
 ] as const;
@@ -421,7 +421,7 @@ onMounted(load);
               />
             </td>
             <td class="py-3 pr-4 font-mono text-xs text-muted-foreground">
-              {{ poolByVersion[v]?.installed_patch ?? "—" }}
+              {{ poolByVersion[v]?.installed_patch ?? "-" }}
             </td>
             <td class="py-3 pr-4 text-xs text-muted-foreground">
               {{ humaniseBytes(poolByVersion[v]?.rss_bytes) }}
@@ -572,7 +572,7 @@ onMounted(load);
         </p>
       </template>
       <p v-else class="py-2 text-sm text-muted-foreground">
-        No installable versions to add — every version offered by the
+        No installable versions to add - every version offered by the
         distribution is already installed, or it couldn't be reached.
       </p>
       <template #footer="{ close }">

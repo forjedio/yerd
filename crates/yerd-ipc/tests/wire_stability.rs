@@ -21,7 +21,7 @@ use yerd_ipc::{
     CaStatus, DatabaseSummary, Diagnosis, DiagnosisCode, DumpCategory, DumpCounts, DumpEvent,
     DumpExtStatus, ErrorCode, FixReport, FixResult, MailDetail, MailHeader, MailStatus,
     MailSummary, PhpPoolStatus, PoolRunState, PortStatus, Request, Response, ServiceAvailability,
-    ServiceRunState, ServiceStatus, Severity, SiteCounts, StatusReport,
+    ServiceRunState, ServiceStatus, Severity, SiteCounts, StatusReport, ToolStatus,
 };
 
 // ---------- Request ----------
@@ -804,6 +804,7 @@ fn diagnosis_code_each_variant_byte_shape() {
             r#""resolver_backup_saved""#,
         ),
         (DiagnosisCode::ServiceFailed, r#""service_failed""#),
+        (DiagnosisCode::BinDirNotOnPath, r#""bin_dir_not_on_path""#),
         (DiagnosisCode::AllGood, r#""all_good""#),
     ];
     for (code, expected) in cases {
@@ -1408,4 +1409,49 @@ fn status_mail_appears_only_when_some() {
     );
     let back: StatusReport = serde_json::from_str(&s).unwrap();
     assert_eq!(back, report);
+}
+
+// ---------- Tools ----------
+
+#[test]
+fn request_list_tools_byte_shape() {
+    let r = Request::ListTools;
+    let s = serde_json::to_string(&r).unwrap();
+    assert_eq!(s, r#"{"type":"list_tools"}"#);
+    assert_eq!(serde_json::from_str::<Request>(&s).unwrap(), r);
+}
+
+#[test]
+fn request_install_tool_byte_shape() {
+    let r = Request::InstallTool {
+        tool: "node".into(),
+    };
+    let s = serde_json::to_string(&r).unwrap();
+    assert_eq!(s, r#"{"type":"install_tool","tool":"node"}"#);
+    assert_eq!(serde_json::from_str::<Request>(&s).unwrap(), r);
+}
+
+#[test]
+fn request_uninstall_tool_byte_shape() {
+    let r = Request::UninstallTool { tool: "bun".into() };
+    let s = serde_json::to_string(&r).unwrap();
+    assert_eq!(s, r#"{"type":"uninstall_tool","tool":"bun"}"#);
+    assert_eq!(serde_json::from_str::<Request>(&s).unwrap(), r);
+}
+
+#[test]
+fn response_tools_byte_shape() {
+    let r = Response::Tools {
+        tools: vec![ToolStatus {
+            id: "node".into(),
+            display_name: "Node.js".into(),
+            installed: true,
+            version: Some("v24.17.0".into()),
+            binaries: vec!["node".into(), "npm".into(), "npx".into()],
+        }],
+    };
+    let s = serde_json::to_string(&r).unwrap();
+    let expected = r#"{"type":"tools","tools":[{"id":"node","display_name":"Node.js","installed":true,"version":"v24.17.0","binaries":["node","npm","npx"]}]}"#;
+    assert_eq!(s, expected);
+    assert_eq!(serde_json::from_str::<Response>(&s).unwrap(), r);
 }
