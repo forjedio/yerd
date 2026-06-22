@@ -28,6 +28,7 @@ import type {
   ServiceStatus,
   Site,
   StatusReport,
+  ToolStatus,
 } from "./types";
 
 /** A normalised IPC/host failure surfaced to the UI (toasts, banners). */
@@ -211,6 +212,22 @@ export async function setPhpSettings(
 export async function listServices(): Promise<ServiceStatus[]> {
   const r = ensureOk(await call<Response>("list_services"));
   return r.type === "services" ? r.services : [];
+}
+
+// ── dev tools (composer / node / bun) ────────────────────────────────────────
+
+export async function listTools(): Promise<ToolStatus[]> {
+  const r = ensureOk(await call<Response>("list_tools"));
+  return r.type === "tools" ? r.tools : [];
+}
+
+/** Install (or update to latest) a dev tool by id. Slow — downloads + verifies. */
+export async function installTool(tool: string): Promise<void> {
+  ensureOk(await call<Response>("install_tool", { tool }));
+}
+
+export async function uninstallTool(tool: string): Promise<void> {
+  ensureOk(await call<Response>("uninstall_tool", { tool }));
 }
 
 /** Installable vs installed versions per service. Fetches the listing on demand. */

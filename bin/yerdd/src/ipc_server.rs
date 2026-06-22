@@ -239,6 +239,11 @@ async fn dispatch(req: Request, state: &DaemonState) -> Response {
         },
         Request::SetMailPort { port } => set_mail_port(port, state).await,
         Request::SetMailEnabled { enabled } => set_mail_enabled(enabled, state).await,
+        Request::ListTools => Response::Tools {
+            tools: crate::tools::list_status(&state.dirs),
+        },
+        Request::InstallTool { tool } => install_tool(&tool, state).await,
+        Request::UninstallTool { tool } => uninstall_tool(&tool, state).await,
         // `Request` is `#[non_exhaustive]` (external crate): a wildcard is
         // required even though every known variant is handled above.
         _ => Response::Error {
@@ -687,6 +692,72 @@ async fn reconcile_shims_for(state: &DaemonState, default: yerd_core::PhpVersion
 async fn reconcile_shims_now(state: &DaemonState) {
     let default = state.config.lock().await.php.default;
     reconcile_shims_for(state, default).await;
+}
+
+/// Reconcile the dev-tool shims (`composer`/`node`/`npm`/`npx`/`bun`/`bunx`) under
+/// the **shared** `shim_reconcile` mutex (same dir as the PHP reconcile).
+/// Best-effort: failures are logged. Used at startup and after install/uninstall.
+pub(crate) async fn reconcile_tool_shims_now(state: &DaemonState) {
+    let Some(yerd_bin) = yerd_sibling() else {
+        tracing::warn!("cannot locate the `yerd` binary; skipping tool-shim reconcile");
+        return;
+    };
+    let _guard = state.shim_reconcile.lock().await;
+    if let Err(e) = crate::tools::reconcile_tool_shims(&state.dirs, &yerd_bin) {
+        tracing::warn!(error = %e, "tool-shim reconcile failed");
+    }
+}
+
+/// `install tool <id>` — download + verify the latest release, then (re)build its
+/// `{data}/bin` shims. Runs the slow download with no lock held.
+async fn install_tool(tool: &str, state: &DaemonState) -> Response {
+    let Some(t) = crate::tools::Tool::parse(tool) else {
+        return Response::Error {
+            code: ErrorCode::NotFound,
+            message: format!("unknown tool {tool:?}"),
+        };
+    };
+    let dl = crate::php_install::ReqwestDownloader::new();
+    match crate::tools::install(t, &state.dirs, &dl).await {
+        Ok(()) => {
+            reconcile_tool_shims_now(state).await;
+            Response::Ok
+        }
+        Err(e) => Response::Error {
+            code: tool_error_code(&e),
+            message: e.to_string(),
+        },
+    }
+}
+
+/// `uninstall tool <id>` — remove the tool's files, then prune its shims.
+async fn uninstall_tool(tool: &str, state: &DaemonState) -> Response {
+    let Some(t) = crate::tools::Tool::parse(tool) else {
+        return Response::Error {
+            code: ErrorCode::NotFound,
+            message: format!("unknown tool {tool:?}"),
+        };
+    };
+    match crate::tools::uninstall(&state.dirs, t) {
+        Ok(()) => {
+            reconcile_tool_shims_now(state).await;
+            Response::Ok
+        }
+        Err(e) => Response::Error {
+            code: tool_error_code(&e),
+            message: e.to_string(),
+        },
+    }
+}
+
+/// Map a [`crate::tools::ToolError`] to an IPC error code (mirrors `php_error_code`).
+fn tool_error_code(e: &crate::tools::ToolError) -> ErrorCode {
+    use crate::tools::ToolError;
+    match e {
+        ToolError::Unknown(_) => ErrorCode::NotFound,
+        ToolError::UnsupportedHost(_) => ErrorCode::InvalidPath,
+        _ => ErrorCode::Internal,
+    }
 }
 
 /// Best-effort: fetch the `pcov` `.so` for installed PHP versions, then rebuild

@@ -24,12 +24,16 @@ pub struct ReqwestDownloader {
 }
 
 impl ReqwestDownloader {
-    /// Construct a fresh client.
+    /// Construct a fresh client. Sets a `User-Agent` (some hosts — notably the
+    /// GitHub API used for Bun releases — reject requests without one); falls
+    /// back to the default client if the builder fails.
     #[must_use]
     pub fn new() -> Self {
-        Self {
-            client: reqwest::Client::new(),
-        }
+        let client = reqwest::Client::builder()
+            .user_agent(concat!("yerd/", env!("CARGO_PKG_VERSION")))
+            .build()
+            .unwrap_or_default();
+        Self { client }
     }
 }
 
@@ -257,7 +261,7 @@ pub fn shim_dir(dirs: &PlatformDirs) -> PathBuf {
 /// the same link name (e.g. an unsynchronized `set_default_shim` vs a reconcile,
 /// both touching `php`) never share a temp path.
 #[cfg(unix)]
-fn place_symlink(link: &Path, target: &Path) -> Result<(), PhpError> {
+pub(crate) fn place_symlink(link: &Path, target: &Path) -> Result<(), PhpError> {
     static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let parent = link
         .parent()

@@ -315,6 +315,19 @@ pub enum Request {
         /// The desired enabled state.
         enabled: bool,
     },
+    /// List the installable dev tools (Composer, Node, Bun) with install status.
+    ListTools,
+    /// Download + install a dev tool's latest release into yerd's data dir and
+    /// expose its commands on `PATH`. Idempotent (reinstalls/updates to latest).
+    InstallTool {
+        /// Tool id (`"composer"`, `"node"`, `"bun"`).
+        tool: String,
+    },
+    /// Remove a dev tool's files and its `PATH` shims.
+    UninstallTool {
+        /// Tool id.
+        tool: String,
+    },
 }
 
 #[cfg(test)]
@@ -392,6 +405,9 @@ mod variant_name_pinning {
             Request::DeleteMails { .. } => {}
             Request::SetMailPort { .. } => {}
             Request::SetMailEnabled { .. } => {}
+            Request::ListTools => {}
+            Request::InstallTool { .. } => {}
+            Request::UninstallTool { .. } => {}
         }
     }
 
@@ -523,5 +539,12 @@ mod variant_name_pinning {
         });
         pin(Request::SetMailPort { port: 2525 });
         pin(Request::SetMailEnabled { enabled: true });
+        pin(Request::ListTools);
+        pin(Request::InstallTool {
+            tool: "node".into(),
+        });
+        pin(Request::UninstallTool {
+            tool: "node".into(),
+        });
     }
 }

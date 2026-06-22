@@ -20,6 +20,17 @@ A "PHP version" means a `major.minor` pair like `8.5`, never a full patch like `
 The distribution publishes no checksums, so Yerd verifies downloads over HTTPS to the distribution host rather than a pinned SHA-256. That keeps the supported version set from being frozen into the binary. (Yerd's own release artifacts are separately verified against a `SHA256SUMS` manifest; see [Getting Started](./getting-started).)
 :::
 
+## Bundled extensions
+
+Yerd uses static-php-cli's **bulk** extension set, so a real-world Laravel app has
+what it needs out of the box. Beyond the common extensions, this includes
+**`intl`** (ICU — required by Laravel's `Number` helper and many localization
+packages), **`sodium`**, **`mysqli`**, **`xsl`**, **`readline`**, and **`apcu`**,
+alongside `bcmath`, `gd`, `gmp`, `curl`, `mbstring`, `openssl`, `pdo_mysql`,
+`pdo_pgsql`, `pdo_sqlite`, `zip`, `redis`, `opcache`, and more. Run `php -m` (via
+the [`php` shim](#the-global-default)) to see the full list for an installed
+version. Coverage is provided separately by `pcov` — see [Code Coverage](./code-coverage).
+
 ## How versions are stored
 
 Each install lands under the per-user data directory:

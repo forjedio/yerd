@@ -22,6 +22,11 @@ export const router = createRouter({
       component: () => import("@/views/SitesView.vue"),
     },
     {
+      path: "/tooling",
+      name: "tooling",
+      component: () => import("@/views/ToolingView.vue"),
+    },
+    {
       path: "/services",
       name: "services",
       component: () => import("@/views/ServicesView.vue"),

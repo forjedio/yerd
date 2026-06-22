@@ -13,7 +13,7 @@ use yerd_core::{PhpVersion, Site};
 use crate::dump::{DumpCounts, DumpEvent, DumpExtStatus};
 use crate::status::{
     DatabaseSummary, Diagnosis, FixReport, MailDetail, MailSummary, ServiceAvailability,
-    ServiceStatus, StatusReport,
+    ServiceStatus, StatusReport, ToolStatus,
 };
 
 // Same rule: no per-field serde renames.
@@ -187,6 +187,11 @@ pub enum Response {
         /// The decoded email.
         mail: Box<MailDetail>,
     },
+    /// Reply to [`crate::Request::ListTools`] — the installable dev tools.
+    Tools {
+        /// One entry per tool, with install status.
+        tools: Vec<ToolStatus>,
+    },
 }
 
 /// An available newer patch for an installed PHP minor.
@@ -260,6 +265,7 @@ mod variant_name_pinning {
             Response::DumpsStatus { .. } => {}
             Response::Mails { .. } => {}
             Response::Mail { .. } => {}
+            Response::Tools { .. } => {}
         }
     }
 
@@ -400,6 +406,15 @@ mod variant_name_pinning {
                 html_body: Some("<p>Hi</p>".into()),
                 text_body: Some("Hi".into()),
             }),
+        });
+        pin_response(Response::Tools {
+            tools: vec![crate::status::ToolStatus {
+                id: "node".into(),
+                display_name: "Node.js".into(),
+                installed: true,
+                version: Some("v24.17.0".into()),
+                binaries: vec!["node".into(), "npm".into(), "npx".into()],
+            }],
         });
         for c in [
             ErrorCode::NotFound,

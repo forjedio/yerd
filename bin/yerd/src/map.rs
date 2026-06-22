@@ -10,7 +10,7 @@ use std::fmt::Write as _;
 use yerd_core::{PhpVersion, Site, SiteKind};
 use yerd_ipc::{
     Diagnosis, FixReport, PhpPoolStatus, PoolRunState, PortStatus, Request, Response,
-    ServiceAvailability, ServiceRunState, ServiceStatus, Severity, StatusReport,
+    ServiceAvailability, ServiceRunState, ServiceStatus, Severity, StatusReport, ToolStatus,
 };
 
 use crate::cli::{Command, DbAction, MailAction, ServiceAction};
@@ -81,6 +81,9 @@ pub fn to_request(cmd: &Command) -> Result<Request, ClientError> {
         } => Request::InstallPhp {
             version: parse_php(version)?,
         },
+        Command::Install {
+            target: crate::cli::InstallTarget::Tool { id },
+        } => Request::InstallTool { tool: id.clone() },
         Command::Restart {
             target: crate::cli::RestartTarget::Php { version },
         } => match version {
@@ -97,6 +100,10 @@ pub fn to_request(cmd: &Command) -> Result<Request, ClientError> {
         } => Request::UninstallPhp {
             version: parse_php(version)?,
         },
+        Command::Uninstall {
+            target: crate::cli::UninstallTarget::Tool { id },
+        } => Request::UninstallTool { tool: id.clone() },
+        Command::Tools => Request::ListTools,
         Command::List {
             target: crate::cli::ListTarget::Php { check, available },
         } => {
@@ -158,6 +165,11 @@ pub fn to_request(cmd: &Command) -> Result<Request, ClientError> {
         Command::Elevate { .. } | Command::Unelevate { .. } => {
             return Err(ClientError::Usage(
                 "elevate/unelevate are handled locally, not over IPC".to_owned(),
+            ));
+        }
+        Command::Path { .. } => {
+            return Err(ClientError::Usage(
+                "path is handled locally, not over IPC".to_owned(),
             ));
         }
     })
@@ -366,6 +378,7 @@ pub fn render(resp: &Response, json: bool) -> Rendered {
         }),
         Response::Mails { mails } => Rendered::ok(format_mails(mails)),
         Response::Mail { mail } => Rendered::ok(format_mail(mail)),
+        Response::Tools { tools } => Rendered::ok(format_tools(tools)),
         // `Response` is `#[non_exhaustive]`; a future variant from a newer
         // daemon is surfaced benignly rather than panicking.
         _ => Rendered::err("unexpected response from daemon".to_owned()),
@@ -508,6 +521,23 @@ fn format_services(services: &[ServiceStatus]) -> String {
             s.enabled,
             s.installed_versions.join(",")
         );
+    }
+    out
+}
+
+/// Render `yerd tools` as a tab-separated table (tool, status, commands).
+fn format_tools(tools: &[ToolStatus]) -> String {
+    if tools.is_empty() {
+        return "no tools".to_owned();
+    }
+    let mut out = String::from("TOOL\tSTATUS\tCOMMANDS");
+    for t in tools {
+        let status = if t.installed {
+            t.version.as_deref().unwrap_or("installed")
+        } else {
+            "not installed"
+        };
+        let _ = write!(out, "\n{}\t{}\t{}", t.id, status, t.binaries.join(","));
     }
     out
 }
@@ -968,6 +998,24 @@ mod tests {
             .unwrap(),
             Request::ListPhp
         );
+        // `tools` / `install tool <id>` / `uninstall tool <id>`.
+        assert_eq!(to_request(&Command::Tools).unwrap(), Request::ListTools);
+        assert_eq!(
+            to_request(&Command::Install {
+                target: crate::cli::InstallTarget::Tool { id: "node".into() }
+            })
+            .unwrap(),
+            Request::InstallTool {
+                tool: "node".into()
+            }
+        );
+        assert_eq!(
+            to_request(&Command::Uninstall {
+                target: crate::cli::UninstallTarget::Tool { id: "bun".into() }
+            })
+            .unwrap(),
+            Request::UninstallTool { tool: "bun".into() }
+        );
         assert_eq!(
             to_request(&Command::List {
                 target: crate::cli::ListTarget::Php {
@@ -1139,6 +1187,24 @@ mod tests {
         let empty = render(&Response::Sites { sites: vec![] }, false);
         assert_eq!(empty.stdout, "no sites");
         assert_eq!(empty.code, 0);
+
+        // `yerd tools` renders a table, not the "unexpected response" fallback.
+        let tools = render(
+            &Response::Tools {
+                tools: vec![ToolStatus {
+                    id: "node".into(),
+                    display_name: "Node.js".into(),
+                    installed: true,
+                    version: Some("v24.17.0".into()),
+                    binaries: vec!["node".into(), "npm".into(), "npx".into()],
+                }],
+            },
+            false,
+        );
+        assert!(tools.stdout.contains("node"));
+        assert!(tools.stdout.contains("v24.17.0"));
+        assert!(tools.stdout.contains("npm"));
+        assert_eq!(tools.code, 0);
 
         let site = Site::linked("foo", "/srv/foo", PhpVersion::new(8, 3)).unwrap();
         let listed = render(&Response::Sites { sites: vec![site] }, false);

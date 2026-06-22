@@ -97,6 +97,8 @@ pub enum Command {
     },
     /// List local database / cache services and their status.
     Services,
+    /// List installable dev tools (Composer, Node, Bun) and their install status.
+    Tools,
     /// Manage a local database or cache service (redis, mysql, mariadb, postgres).
     Service {
         /// What to do.
@@ -158,6 +160,24 @@ pub enum Command {
         #[command(subcommand)]
         target: Option<ElevateTarget>,
     },
+    /// Add or remove yerd's shim directory (`php`, `composer`, …) from your
+    /// shell's PATH. Local — does not talk to the daemon.
+    Path {
+        /// What to do.
+        #[command(subcommand)]
+        action: PathAction,
+    },
+}
+
+/// Action of `yerd path`.
+#[derive(clap::Subcommand, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PathAction {
+    /// Add yerd's bin dir to your shell startup file (idempotent).
+    Install,
+    /// Remove the yerd PATH block from your shell startup file.
+    Uninstall,
+    /// Print the shell snippet without modifying any file (for manual `eval`).
+    Print,
 }
 
 /// Action of `yerd service`.
@@ -328,6 +348,11 @@ pub enum UninstallTarget {
         /// PHP version, e.g. `8.5`.
         version: String,
     },
+    /// Uninstall a dev tool (`composer`, `node`, `bun`).
+    Tool {
+        /// Tool id: `composer`, `node`, or `bun`.
+        id: String,
+    },
 }
 
 /// Target of `yerd install`.
@@ -337,6 +362,11 @@ pub enum InstallTarget {
     Php {
         /// PHP version, e.g. `8.5`.
         version: String,
+    },
+    /// Install a dev tool (`composer`, `node`, `bun`) at its latest release.
+    Tool {
+        /// Tool id: `composer`, `node`, or `bun`.
+        id: String,
     },
 }
 

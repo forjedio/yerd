@@ -32,6 +32,7 @@ pub mod signals;
 pub mod single_instance;
 pub mod startup;
 pub mod state;
+pub mod tools;
 pub mod tracing_init;
 
 use std::sync::atomic::Ordering;
@@ -201,6 +202,16 @@ async fn run_until_shutdown(
         let state = daemon.state.clone();
         tokio::spawn(async move {
             crate::ipc_server::refresh_pcov_and_shims(&state).await;
+        })
+    };
+
+    // Self-heal the installed dev-tool shims (`composer`/`node`/`npm`/`npx`/
+    // `bun`/`bunx`) — re-points the `composer` multi-call link if the `yerd`
+    // binary moved, and prunes shims for tools removed between runs. No network.
+    let _tool_shims = {
+        let state = daemon.state.clone();
+        tokio::spawn(async move {
+            crate::ipc_server::reconcile_tool_shims_now(&state).await;
         })
     };
 

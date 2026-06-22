@@ -8,6 +8,7 @@ import {
   Settings,
   SquareCode,
   Stethoscope,
+  Wrench,
 } from "lucide-vue-next";
 import { RouterLink } from "vue-router";
 
@@ -27,6 +28,7 @@ const items = [
   { to: "/general", label: "General", icon: Settings, chip: GREY },
   { to: "/php", label: "PHP", icon: SquareCode, chip: GREY },
   { to: "/sites", label: "Sites", icon: LayoutGrid, chip: GREY },
+  { to: "/tooling", label: "Tooling", icon: Wrench, chip: GREY },
   { to: "/services", label: "Services", icon: Server, chip: RED },
   { to: "/dumps", label: "Dumps", icon: ClipboardList, chip: ORANGE },
   { to: "/mail", label: "Mail", icon: Mail, chip: RED },

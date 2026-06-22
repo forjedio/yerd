@@ -172,7 +172,7 @@ async fn fetch_manifest(dl: &dyn Downloader, manifest_name: &str, label: &str) -
 }
 
 /// True if `path` already holds bytes whose SHA-256 hex equals `want`.
-fn existing_matches(path: &Path, want: &str) -> bool {
+pub(crate) fn existing_matches(path: &Path, want: &str) -> bool {
     match std::fs::read(path) {
         Ok(bytes) => sha256_hex(&bytes).eq_ignore_ascii_case(want),
         Err(_) => false,
@@ -211,7 +211,7 @@ async fn download_and_place(
 /// Monotonic counter for unique temp filenames (combined with the pid).
 static TMP_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
-fn sha256_hex(bytes: &[u8]) -> String {
+pub(crate) fn sha256_hex(bytes: &[u8]) -> String {
     let mut hasher = Sha256::new();
     hasher.update(bytes);
     hex::encode(hasher.finalize())

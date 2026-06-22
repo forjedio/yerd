@@ -81,6 +81,7 @@ export default withMermaid({
             { text: 'Sites', link: '/guide/sites' },
             { text: 'PHP Versions', link: '/guide/php-versions' },
             { text: 'Code Coverage', link: '/guide/code-coverage' },
+            { text: 'Tooling', link: '/guide/tooling' },
             { text: 'Services & Databases', link: '/guide/services' },
             { text: 'Mail Capture', link: '/guide/mail' },
             { text: 'Laravel Dumps', link: '/guide/laravel-dumps' },
@@ -102,6 +103,7 @@ export default withMermaid({
             { text: 'Sites', link: '/reference/cli/sites' },
             { text: 'HTTPS', link: '/reference/cli/https' },
             { text: 'PHP', link: '/reference/cli/php' },
+            { text: 'Tooling', link: '/reference/cli/tooling' },
             { text: 'Services', link: '/reference/cli/services' },
             { text: 'Databases', link: '/reference/cli/db' },
             { text: 'Mail', link: '/reference/cli/mail' },
@@ -132,6 +134,7 @@ export default withMermaid({
           text: 'Internals',
           items: [
             { text: 'IPC Protocol', link: '/developer/ipc-protocol' },
+            { text: 'Dev-Tool Installers', link: '/developer/dev-tools' },
             { text: 'Cross-Platform Model', link: '/developer/cross-platform' },
           ],
         },

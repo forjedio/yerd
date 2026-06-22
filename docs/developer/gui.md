@@ -43,14 +43,14 @@ apps/yerd-gui/
 └── src/                    Vue FRONTEND
     ├── main.ts             createApp + router; initTheme(); initDesktopChrome()
     ├── App.vue             AppShell + Toaster; shared daemon poller; first-run auto-install
-    ├── router.ts           hash router: /general /php /sites /services /dumps /mail /doctor /about (+ /dumps-window, /mails-viewer standalone routes)
+    ├── router.ts           hash router: /general /php /sites /tooling /services /dumps /mail /doctor /about (+ /dumps-window, /mails-viewer standalone routes)
     ├── ipc/
     │   ├── types.ts        TypeScript mirror of the yerd-ipc wire JSON
     │   ├── client.ts       typed wrappers around invoke() + IpcError
     │   └── client.test.ts  command-mapping + error-categorisation tests
     ├── composables/        useDaemon (singleton poller), usePoll, useToast
     ├── components/         AppShell, SideNav, TitleBar, StatusPill, ComingSoon, ui/
-    ├── views/              GeneralView, PhpView, SitesView, ServicesView, LaravelDumpsView, DumpsWindowView, MailView, MailsViewerView, DoctorView, AboutView
+    ├── views/              GeneralView, PhpView, SitesView, ToolingView, ServicesView, LaravelDumpsView, DumpsWindowView, MailView, MailsViewerView, DoctorView, AboutView
     └── lib/                utils (cn, humanisers), theme, desktop chrome
 ```
 

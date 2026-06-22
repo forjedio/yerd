@@ -13,3 +13,4 @@ pub mod ps_metrics;
 pub mod resolv_conf;
 pub mod resolved_drop_in;
 pub mod resolver_file;
+pub mod shell_profile;
