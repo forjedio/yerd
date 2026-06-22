@@ -85,14 +85,26 @@ pub async fn install(dirs: &PlatformDirs, progress: Option<&ProgressTx>) -> Resu
         .map_err(|e| ToolError::Io(format!("spawn composer: {e}")))?;
 
     // Drain both pipes concurrently with the wait (draining one while the other
-    // fills would deadlock the child).
+    // fills would deadlock the child). A wall-clock cap guards against a Composer
+    // that stalls with no output and no exit (it would otherwise hang the job and
+    // hold the tool mutex). On timeout the join future is dropped, and
+    // `kill_on_drop` reaps the child.
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
-    let ((), (), status) = tokio::join!(
-        drain(stdout, progress.cloned()),
-        drain(stderr, progress.cloned()),
-        child.wait(),
-    );
+    let joined = tokio::time::timeout(std::time::Duration::from_secs(600), async {
+        tokio::join!(
+            drain(stdout, progress.cloned()),
+            drain(stderr, progress.cloned()),
+            child.wait(),
+        )
+    })
+    .await;
+    let Ok(((), (), status)) = joined else {
+        let _ = std::fs::remove_dir_all(&build);
+        return Err(ToolError::Download(format!(
+            "composer create-project {PACKAGE} timed out"
+        )));
+    };
     let status = status.map_err(|e| ToolError::Io(format!("await composer: {e}")))?;
     if !status.success() {
         let _ = std::fs::remove_dir_all(&build);

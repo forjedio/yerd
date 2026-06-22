@@ -803,7 +803,7 @@ pub(crate) async fn install_tool_streamed(tool: String, state: Arc<DaemonState>)
             message: format!("unknown tool {tool:?}"),
         };
     };
-    let (job_id, _cancel) = state.jobs.create().await;
+    let (job_id, mut cancel) = state.jobs.create().await;
     let id = job_id.clone();
     tokio::spawn(async move {
         // Forward streamed lines into the job log via a drain task.
@@ -824,23 +824,34 @@ pub(crate) async fn install_tool_streamed(tool: String, state: Arc<DaemonState>)
             .await;
         let dl = crate::php_install::ReqwestDownloader::new();
         let guard = state.tool_mutate.lock().await;
-        let result = crate::tools::install(t, &state.dirs, &dl, Some(&tx)).await;
+        // Honour `JobCancel`: on cancel, drop the install future — its child has
+        // `kill_on_drop`, so the spawned process is reaped.
+        let result = tokio::select! {
+            r = crate::tools::install(t, &state.dirs, &dl, Some(&tx)) => Some(r),
+            _ = cancel.changed() => None,
+        };
         drop(guard);
         drop(tx); // close the channel so the drain task finishes
         let _ = drain.await;
 
         match result {
-            Ok(()) => {
+            Some(Ok(())) => {
                 reconcile_tool_shims_now(&state).await;
                 state
                     .jobs
                     .finish(&id, yerd_ipc::JobState::Succeeded, None)
                     .await;
             }
-            Err(e) => {
+            Some(Err(e)) => {
                 state
                     .jobs
                     .finish(&id, yerd_ipc::JobState::Failed, Some(e.to_string()))
+                    .await;
+            }
+            None => {
+                state
+                    .jobs
+                    .finish(&id, yerd_ipc::JobState::Cancelled, None)
                     .await;
             }
         }

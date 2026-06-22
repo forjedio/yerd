@@ -91,7 +91,8 @@ async function doInstall(t: ToolStatus): Promise<void> {
     await Promise.all([load(), refresh()]);
     if (final.state === "succeeded") {
       toast.success(`${verb} ${t.display_name}`);
-    } else {
+    } else if (final.state !== "running") {
+      // "running" = the log modal was closed early; the install continues detached.
       toast.error(`Install of ${t.display_name} failed`, final.error ?? "install failed");
     }
   } catch (e) {

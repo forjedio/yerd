@@ -182,6 +182,8 @@ async function installPrereq(id: "composer" | "laravel" | "node" | "bun"): Promi
       () => props.open,
     );
     await refreshTools();
+    // "running" means the poll stopped because the wizard closed, not a failure.
+    if (final.state === "running") return false;
     if (final.state !== "succeeded") {
       toast.error(`Couldn't install ${id}`, final.error ?? "install failed");
       return false;
