@@ -37,7 +37,7 @@ Every field below maps one-to-one to a field in `schema.rs`. The on-disk shape a
 | `parked`    | table                | Parked directory paths.                                           | empty          |
 | `linked`    | array of tables      | Explicitly linked sites.                                          | empty          |
 | `overrides` | array of tables      | Per-site overrides for **parked** sites.                          | empty          |
-| `services`  | table                | Per-service `[services.<id>]` tables the daemon auto-starts.       | empty          |
+| `services`  | table                | Per-service `[services.<id>]` tables; every installed engine auto-starts on boot. | empty          |
 | `mail`      | table                | Built-in mail-capture SMTP server.                                | on / `2525`    |
 | `dumps`     | table                | Laravel ▸ Dumps telemetry settings.                               | off / `2304`   |
 
@@ -198,9 +198,13 @@ validation (`UnknownService`). See [Services & Databases](../guide/services).
 | --------- | -------------- | -------------------------------------------------- | ------- |
 | `version` | string         | Installed version this engine is pinned to.        | unset   |
 | `port`    | integer (u16)  | Loopback port the engine listens on.               | unset   |
-| `enabled` | boolean        | Whether the daemon auto-starts it on boot.         | `true`  |
+| `enabled` | boolean        | Record of the last start/stop intent (status only). | `true`  |
 
 `version` and `port` are omitted from the wire when unset; `enabled` always carries a value.
+
+::: tip
+`enabled` no longer gates boot auto-start - the daemon auto-starts **every installed** engine regardless of this flag. A `stop` lasts only the current session; `uninstall` to keep an engine off. See [Services & Databases](../guide/services#auto-start-on-boot).
+:::
 
 ```toml
 [services.mysql]

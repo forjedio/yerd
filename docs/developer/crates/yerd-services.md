@@ -71,7 +71,7 @@ each `Service` exposes:
 | `kind()` | `Cache` | `Database` | `Database` | `Database` |
 | `datadir_pinned_to_major()` | false | false | false | **true** |
 
-MySQL and MariaDB share port 3306, so only one can be enabled on it at a time
+MySQL and MariaDB share port 3306, so only one can run on it at a time
 (the config layer allows a per-instance override). PostgreSQL pins its data
 directory to its major version (`data-<major>`) and refuses to start against a
 datadir written by a different major.
@@ -192,9 +192,10 @@ crate over IPC:
 
 - **`bin/yerdd/src/services.rs`** handles `ListServices`, `AvailableServices`
   (downloads the listing on demand), `InstallService` (download + unpack, then
-  auto-start and enable), `ChangeServiceVersion` (install → restart → remove old,
+  start), `ChangeServiceVersion` (install → restart → remove old,
   keeping the datadir), `UninstallService` (optional `--purge` deletes data),
-  `StartService` / `StopService` (toggle the `enabled` flag), `RestartService`,
+  `StartService` / `StopService` (toggle the status-only `enabled` flag; boot
+  auto-start keys on installed versions, not this flag), `RestartService`,
   `SetServicePort`, and `ServiceLogs`. The per-service status reports
   `supports_databases` from `ServiceKind`.
 - **`bin/yerdd/src/db_admin.rs`** is the I/O edge for database administration. It

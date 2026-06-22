@@ -29,7 +29,10 @@ onMounted(async () => {
     protocol.value = p;
     daemonVersion.value = report.daemon_version;
   } catch (e) {
-    toast.error("Couldn't load daemon info", (e as IpcError).message);
+    // The page degrades gracefully (daemon fields read "unknown"/"—"), so a
+    // down daemon needs no alarm here — only surface a real, unexpected error.
+    const err = e as IpcError;
+    if (!err.unreachable) toast.error("Couldn't load daemon info", err.message);
   }
 });
 </script>
@@ -50,16 +53,16 @@ onMounted(async () => {
             </p>
           </div>
           <div class="flex flex-wrap items-center justify-center gap-x-4 gap-y-1 text-sm">
-            <button class="text-primary hover:underline" @click="openInBrowser('https://yerd.app')">
+            <button class="text-brand hover:underline" @click="openInBrowser('https://yerd.app')">
               yerd.app
             </button>
             <button
-              class="text-primary hover:underline"
+              class="text-brand hover:underline"
               @click="openInBrowser('https://github.com/forjedio/yerd')"
             >
               GitHub
             </button>
-            <button class="text-primary hover:underline" @click="openInBrowser('https://forjed.io')">
+            <button class="text-brand hover:underline" @click="openInBrowser('https://forjed.io')">
               forjed.io
             </button>
           </div>
@@ -69,11 +72,11 @@ onMounted(async () => {
 
       <!-- Versions -->
       <Card>
-        <CardHeader><CardTitle class="flex items-center gap-2"><Info class="size-4" /> Yerd</CardTitle></CardHeader>
+        <CardHeader><CardTitle class="flex items-center gap-2"><Info class="size-4" /> Versions</CardTitle></CardHeader>
         <CardContent class="space-y-2 text-sm">
           <div class="flex justify-between">
             <span class="text-muted-foreground">App version</span>
-            <span class="font-mono">{{ appVersion || "—" }}</span>
+            <span class="font-mono">{{ appVersion || "-" }}</span>
           </div>
           <div class="flex justify-between">
             <span class="text-muted-foreground">Daemon version</span>
@@ -81,7 +84,7 @@ onMounted(async () => {
           </div>
           <div class="flex justify-between">
             <span class="text-muted-foreground">IPC protocol</span>
-            <span class="font-mono">{{ protocol ?? "—" }}</span>
+            <span class="font-mono">{{ protocol ?? "-" }}</span>
           </div>
         </CardContent>
       </Card>

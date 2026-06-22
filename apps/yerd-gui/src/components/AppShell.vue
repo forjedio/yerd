@@ -16,10 +16,12 @@ const { unreachable, refresh } = useDaemon();
 const toast = useToast();
 const starting = ref(false);
 
-// Some routes don't need a live daemon: General can start/install it, Services
-// is a coming-soon placeholder, and About degrades gracefully. Only the
-// daemon-dependent views (PHP, Sites, Doctor) are blocked by the not-running panel.
-const DAEMON_FREE = new Set(["general", "services", "about"]);
+// Only three views work without a live daemon: Overview (owns its own
+// daemon-down hero + start affordance), Settings/General (can start/install it),
+// and About (pure build info). Every data-backed view — PHP, Sites, Tooling,
+// Services, Dumps, Mail, Doctor — is blocked by the not-running panel so none of
+// them mount, fire a doomed request, and strand the user on a blank table.
+const DAEMON_FREE = new Set(["overview", "general", "about"]);
 const showPanel = computed(
   () => unreachable.value && !DAEMON_FREE.has(String(route.name)),
 );
@@ -47,7 +49,8 @@ async function onStart(): Promise<void> {
 
       <main class="flex-1 overflow-y-auto">
         <!-- Daemon-dependent routes show this when the socket is unreachable.
-             The General tab is exempt — it can start/install the daemon. -->
+             Overview / Settings / About are exempt (see DAEMON_FREE) - they can
+             start/install the daemon or degrade gracefully. -->
         <div
           v-if="showPanel"
           class="flex h-full flex-col items-center justify-center gap-4 p-8 text-center"
@@ -57,7 +60,7 @@ async function onStart(): Promise<void> {
             <h2 class="text-lg font-semibold">Daemon not running</h2>
             <p class="mt-1 max-w-sm text-sm text-muted-foreground">
               Yerd can't reach the <code>yerdd</code> daemon socket. Start it
-              below, or manage it from the <strong>General</strong> tab.
+              below to use this page.
             </p>
           </div>
           <div class="flex gap-2">

@@ -140,7 +140,7 @@ function frameSrcdoc(html: string): string {
 }
 
 function formatDate(epoch: number): string {
-  if (!epoch) return "—";
+  if (!epoch) return "-";
   return new Date(epoch * 1000).toLocaleString();
 }
 </script>

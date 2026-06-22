@@ -177,10 +177,10 @@ async fn run_until_shutdown(
         }))
     });
 
-    // Auto-start enabled services in the background — deliberately NOT awaited,
-    // so a slow/failing DB cold-boot never delays the listeners above. Each
-    // engine's outcome is logged inside the task.
-    let _autostart = tokio::spawn(crate::services::auto_start_enabled(daemon.state.clone()));
+    // Auto-start every installed service in the background — deliberately NOT
+    // awaited, so a slow/failing DB cold-boot never delays the listeners above.
+    // Each engine's outcome is logged inside the task.
+    let _autostart = tokio::spawn(crate::services::auto_start_installed(daemon.state.clone()));
 
     // If dumps are enabled in config, fetch the extension `.so` for installed PHP
     // versions in the background so on-demand pools pick it up. Best-effort.

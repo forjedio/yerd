@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { Copy, RefreshCw, Wrench } from "lucide-vue-next";
+import { CheckCircle2, Copy, RefreshCw, Wrench } from "lucide-vue-next";
 import { computed, onMounted, ref } from "vue";
 
+import EnvironmentCard from "@/components/EnvironmentCard.vue";
 import PageHeader from "@/components/PageHeader.vue";
 import Badge from "@/components/ui/Badge.vue";
 import Button from "@/components/ui/Button.vue";
@@ -33,6 +34,22 @@ const sevVariant: Record<Severity, "success" | "warning" | "destructive"> = {
   warn: "warning",
   fail: "destructive",
 };
+
+// Human labels — the wire uses bare enum tokens (ok/warn/fail) that read as
+// unfinished in the UI.
+const sevLabel: Record<Severity, string> = {
+  ok: "Healthy",
+  warn: "Warning",
+  fail: "Problem",
+};
+
+// Nothing to fix: either no findings, or every finding is informational/ok.
+// Show positive confirmation instead of a bare list (or a blank card).
+const allClear = computed(
+  () =>
+    diagnoses.value.length === 0 ||
+    diagnoses.value.every((d) => d.severity === "ok"),
+);
 
 async function loadDiagnoses(notify = false): Promise<void> {
   diagLoading.value = true;
@@ -105,13 +122,25 @@ onMounted(() => void loadDiagnoses());
         </CardHeader>
         <CardContent>
           <div v-if="diagLoading" class="flex justify-center py-8"><Spinner class="size-5" /></div>
+          <div
+            v-else-if="allClear"
+            class="flex flex-col items-center gap-2 py-10 text-center"
+          >
+            <CheckCircle2 class="size-8 text-success" />
+            <div>
+              <p class="text-sm font-medium">No problems found</p>
+              <p class="text-sm text-muted-foreground">
+                Your Yerd environment looks healthy.
+              </p>
+            </div>
+          </div>
           <ul v-else class="space-y-3">
             <li
               v-for="(d, i) in diagnoses"
               :key="i"
               class="flex items-start gap-3 rounded-md border p-3"
             >
-              <Badge :variant="sevVariant[d.severity]" class="mt-0.5 shrink-0">{{ d.severity }}</Badge>
+              <Badge :variant="sevVariant[d.severity]" class="mt-0.5 shrink-0">{{ sevLabel[d.severity] }}</Badge>
               <div class="min-w-0 flex-1">
                 <p class="text-sm font-medium">{{ d.title }}</p>
                 <p class="text-xs text-muted-foreground">{{ d.detail }}</p>
@@ -129,6 +158,9 @@ onMounted(() => void loadDiagnoses());
           </ul>
         </CardContent>
       </Card>
+
+      <!-- OS-level privileges (CA trust, .test resolver, privileged ports). -->
+      <EnvironmentCard />
     </div>
   </div>
 </template>

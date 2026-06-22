@@ -43,14 +43,14 @@ apps/yerd-gui/
 └── src/                    Vue FRONTEND
     ├── main.ts             createApp + router; initTheme(); initDesktopChrome()
     ├── App.vue             AppShell + Toaster; shared daemon poller; first-run auto-install
-    ├── router.ts           hash router: /general /php /sites /tooling /services /dumps /mail /doctor /about (+ /dumps-window, /mails-viewer standalone routes)
+    ├── router.ts           hash router: /overview (default) /general /php /sites /tooling /services /dumps /mail /doctor /about (+ /dumps-window, /mails-viewer standalone routes)
     ├── ipc/
     │   ├── types.ts        TypeScript mirror of the yerd-ipc wire JSON
     │   ├── client.ts       typed wrappers around invoke() + IpcError
     │   └── client.test.ts  command-mapping + error-categorisation tests
     ├── composables/        useDaemon (singleton poller), usePoll, useToast
-    ├── components/         AppShell, SideNav, TitleBar, StatusPill, ComingSoon, ui/
-    ├── views/              GeneralView, PhpView, SitesView, ToolingView, ServicesView, LaravelDumpsView, DumpsWindowView, MailView, MailsViewerView, DoctorView, AboutView
+    ├── components/         AppShell, SideNav, NavLink, TitleBar, StatusPill, ComingSoon, EnvironmentCard, ui/ (incl. AsyncState, EmptyState)
+    ├── views/              OverviewView, GeneralView, PhpView, SitesView, ToolingView, ServicesView, LaravelDumpsView, DumpsWindowView, MailView, MailsViewerView, DoctorView, AboutView
     └── lib/                utils (cn, humanisers), theme, desktop chrome
 ```
 
@@ -140,7 +140,7 @@ Three commands are **host-only helpers** with no daemon IPC:
 | `host_platform` | `&'static str` (`std::env::consts::OS`) | `"linux"` / `"macos"` / `"windows"` to gate platform UI |
 | `elevate` / `unelevate` | `()` | run `yerd elevate <target>` / `yerd unelevate <target>` under OS elevation (see below) |
 
-The General tab adds further host-only commands (no daemon IPC) for daemon lifecycle and autostart - `daemon_installed`, `install_daemon`, `start_daemon`, `stop_daemon`, `get_autostart`, `set_autostart_daemon`, `set_autostart_gui`, `set_gui_minimized` - implemented in `daemon.rs` (locate/download/start/stop) and `autostart.rs` (per-user service + the autostart plugin).
+The Settings page (route `/general`) adds further host-only commands (no daemon IPC) for daemon lifecycle and autostart - `daemon_installed`, `install_daemon`, `start_daemon`, `stop_daemon`, `get_autostart`, `set_autostart_daemon`, `set_autostart_gui`, `set_gui_minimized` - implemented in `daemon.rs` (locate/download/start/stop) and `autostart.rs` (per-user service + the autostart plugin).
 
 ::: tip No `Request` is ever built in the frontend
 The `Request` enum is intentionally **not** mirrored into TypeScript. The
@@ -375,10 +375,12 @@ the daemon when the window is hidden to the tray - a real cost, since each
 ### Views, components, and `lib`
 
 The hash router (`createWebHashHistory`, because the webview loads from a
-file/asset origin) maps the in-shell routes - **GeneralView** (`/general`, the
-default), **PhpView**, **SitesView**, **ServicesView**, **LaravelDumpsView**
-(`/dumps`), **MailView** (`/mail`), **DoctorView**, **AboutView** - plus two
-**standalone** routes that the auxiliary windows load:
+file/asset origin) maps the in-shell routes - **OverviewView** (`/overview`, the
+default landing dashboard), **GeneralView** (`/general`, the **Settings** page),
+**PhpView**, **SitesView**, **ToolingView** (`/tooling`), **ServicesView**,
+**LaravelDumpsView** (`/dumps`), **MailView** (`/mail`), **DoctorView** (which
+also hosts the OS-privileges **EnvironmentCard** - CA trust / resolver / ports),
+**AboutView** - plus two **standalone** routes that the auxiliary windows load:
 
 - **DumpsWindowView** (`/dumps-window`) - the live Laravel Dumps viewer that
   fills the separate `dumps` window: tabbed by `DumpCategory`, incrementally
@@ -408,16 +410,23 @@ alarming wire value `stopped`, reserving red **"failed"** for an actual crash.
 
 ### "Coming soon" affordances
 
-Features that need a daemon IPC which does not exist yet render as **disabled
-"soon" affordances** rather than being faked client-side. `ComingSoon.vue` is a
-deliberately non-interactive `<span>` (`aria-disabled="true"`, a native `title`
-tooltip, no clickable element) so the gap reads as intentional.
+`ComingSoon.vue` renders a deliberately non-interactive `<span>`
+(`aria-disabled="true"`, a native `title` tooltip, no clickable element) so a
+gated control reads as intentional rather than broken. It has a **single** use
+today: on a platform without in-app elevation - i.e. a future Windows build,
+since the GUI ships only on macOS/Linux - the Doctor page's **Environment**
+*Fix* action falls back to a "soon" pill pointing at `yerd elevate`. On the
+supported platforms every control is fully wired (the earlier Logs / restart
+stubs are gone now that their IPC exists).
 
-::: warning The GUI does not own the daemon lifecycle
+::: warning The GUI is a client of the daemon's state
 When the socket is unreachable, `AppShell.vue` replaces the route view with a
-"Daemon not running" panel telling the user to start `yerdd` and offering a
-**Retry**. The app is a client; starting the daemon is out of scope. The app
-also expects the `yerd` CLI installed **beside** it for the elevation path.
+"Daemon not running" panel offering **Start** (which launches `yerdd` through
+the per-user service via the `start_daemon` host command) and **Retry**; the
+Overview, Settings, and About routes stay reachable while down (`DAEMON_FREE`).
+The app can drive the daemon's *lifecycle* but never reimplements its runtime
+logic - the daemon stays the single source of truth - and it expects the `yerd`
+CLI installed **beside** it for the elevation path.
 :::
 
 ## Testing and the type-check gate

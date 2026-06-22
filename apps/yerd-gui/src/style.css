@@ -9,6 +9,9 @@
        the chrome — titlebar + sidebar — is the soft gray (`--muted`), applied in
        those components, so the content reads as the bright focus framed by gray
        chrome. */
+    /* Tell the UA to render native controls (number-input spin buttons, etc.)
+       for this theme, so their glyphs aren't dark-on-dark in dark mode. */
+    color-scheme: light;
     --background: 0 0% 100%;
     --foreground: 0 0% 9%;
     --card: 0 0% 100%;
@@ -29,15 +32,22 @@
     --success-foreground: 0 0% 98%;
     --warning: 38 92% 48%;
     --warning-foreground: 0 0% 9%;
+    /* Brand indigo, lifted straight from the logo's gradient (#6366F1). The one
+       signal colour: active nav, focus rings, links, and the live "serving"
+       state. Used with restraint — status (success/warning/destructive) still
+       owns green/amber/red. */
+    --brand: 239 84% 67%;
+    --brand-foreground: 0 0% 100%;
     --border: 0 0% 89%;
     --input: 0 0% 89%;
-    --ring: 0 0% 45%;
+    --ring: 239 84% 67%;
     --radius: 0.5rem;
   }
 
   .dark {
     /* Neutral charcoal grays (no blue tint), lifted off pure-black so panels and
        borders read clearly — closer to a native macOS / Herd dark surface. */
+    color-scheme: dark;
     --background: 0 0% 11%;
     --foreground: 0 0% 98%;
     --card: 0 0% 14.5%;
@@ -62,9 +72,12 @@
     --success-foreground: 144 61% 10%;
     --warning: 38 92% 50%;
     --warning-foreground: 0 0% 9%;
+    /* A touch brighter on charcoal so the indigo keeps its pop as text/pip. */
+    --brand: 239 84% 72%;
+    --brand-foreground: 0 0% 100%;
     --border: 0 0% 20%;
     --input: 0 0% 20%;
-    --ring: 0 0% 70%;
+    --ring: 239 84% 72%;
   }
 }
 

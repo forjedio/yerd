@@ -5,8 +5,17 @@ import { createRouter, createWebHashHistory } from "vue-router";
 export const router = createRouter({
   history: createWebHashHistory(),
   routes: [
-    { path: "/", redirect: "/general" },
+    { path: "/", redirect: "/overview" },
     {
+      // The home/dashboard: a glance at the running system. Owns the daemon-down
+      // hero, so it stays reachable when the socket is unreachable.
+      path: "/overview",
+      name: "overview",
+      component: () => import("@/views/OverviewView.vue"),
+    },
+    {
+      // Settings (the page is labelled "Settings"; the route name stays
+      // "general" so the tray/links and the daemon-free set don't churn).
       path: "/general",
       name: "general",
       component: () => import("@/views/GeneralView.vue"),

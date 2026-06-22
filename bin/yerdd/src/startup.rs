@@ -189,9 +189,9 @@ pub async fn bring_up_with_dirs(
     }));
     let php_manager = Arc::new(Mutex::new(php_manager));
 
-    // Service (database/cache) supervisor. Enabled instances are auto-started
-    // later by a background task in `run_until_shutdown` (never on this path, so
-    // a slow DB boot can't block the proxy/DNS listeners coming up).
+    // Service (database/cache) supervisor. Every installed instance is
+    // auto-started later by a background task in `run_until_shutdown` (never on
+    // this path, so a slow DB boot can't block the proxy/DNS listeners coming up).
     let service_manager = Arc::new(Mutex::new(crate::services::new_manager(dirs.clone())));
 
     let ipc_listener = build_ipc_listener(&dirs)?;

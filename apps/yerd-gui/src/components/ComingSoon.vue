@@ -15,7 +15,7 @@ withDefaults(
     pill?: boolean;
   }>(),
   {
-    reason: "Needs a daemon IPC that isn't built yet — coming soon.",
+    reason: "Needs a daemon IPC that isn't built yet - coming soon.",
     pill: false,
   },
 );

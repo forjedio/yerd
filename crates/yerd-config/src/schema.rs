@@ -290,7 +290,10 @@ pub struct ServiceInstance {
     pub version: Option<String>,
     /// Port override. `None` = the engine's default (6379 / 3306 / 5432).
     pub port: Option<u16>,
-    /// Whether the daemon auto-starts this instance on boot.
+    /// Records the last start/stop intent (true after install/start, false after
+    /// stop) and is surfaced as `enabled` in status. It no longer gates boot
+    /// auto-start: the daemon auto-starts *every installed* engine regardless of
+    /// this flag (see `yerdd::services::auto_start_installed`).
     pub enabled: bool,
 }
 

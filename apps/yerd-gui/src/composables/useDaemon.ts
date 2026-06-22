@@ -37,6 +37,10 @@ async function tick(): Promise<void> {
     // Only a genuine unreachable socket flips us to "disconnected"; a typed
     // daemon error still means the daemon is up.
     connected.value = !err.unreachable;
+    // When the socket is truly gone, drop the last report so no view keeps
+    // rendering stale "running" rows (pid/uptime/memory) under a "Stopped"
+    // header after the daemon dies mid-session.
+    if (err.unreachable) report.value = null;
   } finally {
     inFlight = false;
     schedule();

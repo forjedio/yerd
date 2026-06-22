@@ -1,8 +1,10 @@
 <script setup lang="ts">
-import { onMounted, onUnmounted, ref } from "vue";
+import { computed, onMounted, onUnmounted, ref } from "vue";
 import {
+  Copy,
   Database,
   Download,
+  FileCode2,
   FileText,
   MoreHorizontal,
   Pencil,
@@ -86,7 +88,7 @@ function isInstalled(s: ServiceStatus): boolean {
 }
 /** The version to show: the active/selected one, falling back to what's on disk. */
 function versionLabel(s: ServiceStatus): string {
-  return s.selected_version ?? s.installed_versions[s.installed_versions.length - 1] ?? "—";
+  return s.selected_version ?? s.installed_versions[s.installed_versions.length - 1] ?? "-";
 }
 
 async function doStart(s: ServiceStatus): Promise<void> {
@@ -398,6 +400,87 @@ async function doRestoreDb(): Promise<void> {
   }
 }
 
+// ── Laravel configuration modal ──
+// Shows the .env block to connect a Laravel app to this engine. For SQL engines
+// the user can pick a database to pre-populate DB_DATABASE; for Redis it's the
+// cache/session/queue block. Credentials mirror the daemon's: SQL engines bind
+// localhost with no password (root for MySQL/MariaDB, postgres for Postgres).
+const configOpen = ref(false);
+const configTarget = ref<ServiceStatus | null>(null);
+const configDbs = ref<DatabaseSummary[]>([]);
+const configDbName = ref<string>("");
+const configDbLoading = ref(false);
+
+const configDbOptions = computed(() =>
+  configDbs.value.map((d) => ({ value: d.name, label: d.name })),
+);
+
+async function openConfig(s: ServiceStatus): Promise<void> {
+  configTarget.value = s;
+  configDbName.value = "";
+  configDbs.value = [];
+  configOpen.value = true;
+  // Only SQL engines have databases to choose, and only a running one can list them.
+  if (s.supports_databases && s.state === "running") {
+    configDbLoading.value = true;
+    try {
+      configDbs.value = await listDatabases(s.service);
+      configDbName.value = configDbs.value[0]?.name ?? "";
+    } catch {
+      configDbs.value = [];
+    } finally {
+      configDbLoading.value = false;
+    }
+  }
+}
+
+function dbEnv(connection: string, port: number, database: string, user: string): string {
+  return [
+    `DB_CONNECTION=${connection}`,
+    "DB_HOST=127.0.0.1",
+    `DB_PORT=${port}`,
+    `DB_DATABASE=${database}`,
+    `DB_USERNAME=${user}`,
+    "DB_PASSWORD=",
+  ].join("\n");
+}
+
+const configSnippet = computed(() => {
+  const s = configTarget.value;
+  if (!s) return "";
+  const db = configDbName.value.trim() || "your_database";
+  switch (s.service) {
+    case "redis":
+      return [
+        "REDIS_CLIENT=phpredis",
+        "REDIS_HOST=127.0.0.1",
+        "REDIS_PASSWORD=null",
+        `REDIS_PORT=${s.port}`,
+        "",
+        "CACHE_STORE=redis",
+        "SESSION_DRIVER=redis",
+        "QUEUE_CONNECTION=redis",
+      ].join("\n");
+    case "mysql":
+      return dbEnv("mysql", s.port, db, "root");
+    case "mariadb":
+      return dbEnv("mariadb", s.port, db, "root");
+    case "postgres":
+      return dbEnv("pgsql", s.port, db, "postgres");
+    default:
+      return "";
+  }
+});
+
+async function copyConfig(): Promise<void> {
+  try {
+    await navigator.clipboard.writeText(configSnippet.value);
+    toast.success("Copied to clipboard", "Paste these into your Laravel .env file.");
+  } catch {
+    toast.error("Couldn't copy");
+  }
+}
+
 onMounted(load);
 onUnmounted(stopLogPolling);
 </script>
@@ -448,7 +531,7 @@ onUnmounted(stopLogPolling);
                   <span v-else class="text-xs italic text-muted-foreground">not installed</span>
                 </td>
                 <td class="py-3 pr-4 font-mono text-xs text-muted-foreground">
-                  {{ isInstalled(s) ? s.port : "—" }}
+                  {{ isInstalled(s) ? s.port : "-" }}
                 </td>
                 <td class="py-3 pr-4 font-mono text-xs text-muted-foreground">
                   {{ versionLabel(s) }}
@@ -481,6 +564,9 @@ onUnmounted(stopLogPolling);
                           <RotateCw class="size-4" /> Restart
                         </DropdownMenuItem>
                         <DropdownMenuSeparator />
+                        <DropdownMenuItem @select="openConfig(s)">
+                          <FileCode2 class="size-4" /> Configuration
+                        </DropdownMenuItem>
                         <DropdownMenuItem @select="openPort(s)">
                           <Pencil class="size-4" /> Edit port
                         </DropdownMenuItem>
@@ -548,11 +634,11 @@ onUnmounted(stopLogPolling);
         </p>
       </template>
       <p v-else-if="installMode === 'change'" class="py-2 text-sm text-muted-foreground">
-        No other versions to switch to — the installed version is the only one offered
+        No other versions to switch to - the installed version is the only one offered
         for this platform, or the distribution couldn't be reached.
       </p>
       <p v-else class="py-2 text-sm text-muted-foreground">
-        No installable versions to add — every offered version is already installed,
+        No installable versions to add - every offered version is already installed,
         or the distribution couldn't be reached.
       </p>
       <template #footer="{ close }">
@@ -712,6 +798,49 @@ onUnmounted(stopLogPolling);
       </div>
       <template #footer="{ close }">
         <Button variant="ghost" @click="close">Close</Button>
+      </template>
+    </Modal>
+
+    <!-- Laravel configuration -->
+    <Modal
+      v-model:open="configOpen"
+      :title="`${configTarget?.display_name ?? 'Service'} configuration`"
+    >
+      <div class="space-y-4">
+        <p class="text-sm text-muted-foreground">
+          Add these to your Laravel app's <code>.env</code> to connect it to
+          {{ configTarget?.display_name }}.
+        </p>
+
+        <!-- Database picker (SQL engines only) -->
+        <div v-if="configTarget?.supports_databases">
+          <span class="text-sm font-medium">Database</span>
+          <div v-if="configDbLoading" class="mt-2 flex py-1"><Spinner class="size-4" /></div>
+          <Select
+            v-else-if="configDbOptions.length"
+            class="mt-2 w-full"
+            :model-value="configDbName"
+            :options="configDbOptions"
+            aria-label="Database"
+            @update:model-value="(v: string) => (configDbName = v)"
+          />
+          <p v-else class="mt-1 text-xs text-muted-foreground">
+            {{
+              configTarget?.state === "running"
+                ? "No databases yet - create one under \"Manage databases\". Using a placeholder below."
+                : "Start the service to list databases. Using a placeholder below."
+            }}
+          </p>
+        </div>
+
+        <!-- .env snippet -->
+        <div class="relative">
+          <pre class="overflow-x-auto rounded-md border bg-muted/50 p-3 font-mono text-xs leading-relaxed text-foreground">{{ configSnippet }}</pre>
+        </div>
+      </div>
+      <template #footer="{ close }">
+        <Button variant="ghost" @click="close">Close</Button>
+        <Button @click="copyConfig"><Copy class="size-4" /> Copy</Button>
       </template>
     </Modal>
   </div>

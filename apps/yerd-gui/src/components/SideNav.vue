@@ -1,39 +1,60 @@
 <script setup lang="ts">
+import type { Component } from "vue";
 import {
   ClipboardList,
+  Database,
   Info,
+  LayoutDashboard,
   LayoutGrid,
   Mail,
-  Server,
   Settings,
   SquareCode,
   Stethoscope,
   Wrench,
 } from "lucide-vue-next";
-import { RouterLink } from "vue-router";
 
+import NavLink from "@/components/NavLink.vue";
 import StatusPill from "@/components/StatusPill.vue";
 import { useDaemon } from "@/composables/useDaemon";
+import logoUrl from "@/assets/logo.svg";
 
-// Left-hand nav, Herd-style. Icon-chip colours are grouped by role and reused:
-// grey for configuration (General, PHP, Sites), red for Services, orange for
-// Dumps, blue for the info pages (Doctor, About). The chip keeps its colour even
-// when the item is active — only the row background highlights the selection.
-const GREY = "bg-zinc-500/15 text-zinc-600 dark:text-zinc-400";
-const RED = "bg-red-500/15 text-red-600 dark:text-red-400";
-const ORANGE = "bg-orange-500/15 text-orange-600 dark:text-orange-400";
-const BLUE = "bg-blue-500/15 text-blue-600 dark:text-blue-400";
+// Grouped left nav. Sections name the app's three real concerns: the runtime you
+// configure (Environment), what the daemon supervises (Services), and the system
+// itself (System). Overview sits above them as the home/dashboard. Icons are
+// monochrome — see NavLink; status colour is reserved for the pill below.
+type Item = { to: string; label: string; icon: Component };
 
-const items = [
-  { to: "/general", label: "General", icon: Settings, chip: GREY },
-  { to: "/php", label: "PHP", icon: SquareCode, chip: GREY },
-  { to: "/sites", label: "Sites", icon: LayoutGrid, chip: GREY },
-  { to: "/tooling", label: "Tooling", icon: Wrench, chip: GREY },
-  { to: "/services", label: "Services", icon: Server, chip: RED },
-  { to: "/dumps", label: "Dumps", icon: ClipboardList, chip: ORANGE },
-  { to: "/mail", label: "Mail", icon: Mail, chip: RED },
-  { to: "/doctor", label: "Doctor", icon: Stethoscope, chip: BLUE },
-  { to: "/about", label: "About", icon: Info, chip: BLUE },
+const overview: Item = {
+  to: "/overview",
+  label: "Overview",
+  icon: LayoutDashboard,
+};
+
+const sections: { title: string; items: Item[] }[] = [
+  {
+    title: "Environment",
+    items: [
+      { to: "/php", label: "PHP", icon: SquareCode },
+      { to: "/sites", label: "Sites", icon: LayoutGrid },
+    ],
+  },
+  {
+    title: "Developer",
+    items: [
+      { to: "/tooling", label: "Tooling", icon: Wrench },
+      { to: "/services", label: "Services", icon: Database },
+      { to: "/mail", label: "Mail", icon: Mail },
+      { to: "/dumps", label: "Dumps", icon: ClipboardList },
+    ],
+  },
+  {
+    title: "System",
+    items: [
+      { to: "/general", label: "Settings", icon: Settings },
+      { to: "/doctor", label: "Doctor", icon: Stethoscope },
+      { to: "/about", label: "About", icon: Info },
+    ],
+  },
 ];
 
 const { connected } = useDaemon();
@@ -41,35 +62,34 @@ const { connected } = useDaemon();
 
 <template>
   <nav
-    class="flex h-full w-52 shrink-0 flex-col border-r bg-muted px-3 py-4 dark:bg-card/40"
+    class="flex h-full w-56 shrink-0 flex-col border-r bg-muted px-3 py-3 dark:bg-card/40"
   >
-    <ul class="flex flex-1 flex-col gap-1">
-      <li v-for="item in items" :key="item.to">
-        <RouterLink :to="item.to" custom v-slot="{ isActive, href, navigate }">
-          <a
-            :href="href"
-            :aria-current="isActive ? 'page' : undefined"
-            class="group flex items-center gap-2.5 rounded-lg px-2 py-1.5 text-sm font-medium transition-colors"
-            :class="
-              isActive
-                ? 'bg-blue-500/10 text-blue-700 dark:bg-blue-400/40 dark:text-blue-50'
-                : 'text-muted-foreground hover:bg-accent/70 hover:text-foreground'
-            "
-            @click="navigate"
-          >
-            <span
-              class="flex size-6 shrink-0 items-center justify-center rounded-md transition-colors"
-              :class="item.chip"
-            >
-              <component :is="item.icon" class="size-4" />
-            </span>
-            {{ item.label }}
-          </a>
-        </RouterLink>
-      </li>
-    </ul>
+    <!-- Brand lockup — the logo's indigo is the app's one accent. -->
+    <div class="mb-4 flex items-center gap-2 px-2 pt-1">
+      <img :src="logoUrl" alt="" class="size-6 rounded-[7px]" />
+      <span class="text-sm font-semibold tracking-tight">Yerd</span>
+    </div>
 
-    <div class="mt-auto border-t px-2 pt-3">
+    <div class="flex flex-1 flex-col gap-5 overflow-y-auto">
+      <ul>
+        <li><NavLink v-bind="overview" /></li>
+      </ul>
+
+      <div v-for="section in sections" :key="section.title">
+        <p
+          class="mb-1 px-2 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground/70"
+        >
+          {{ section.title }}
+        </p>
+        <ul class="flex flex-col gap-0.5">
+          <li v-for="item in section.items" :key="item.to">
+            <NavLink v-bind="item" />
+          </li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="mt-2 border-t px-2 pt-3">
       <StatusPill
         v-if="connected === true"
         tone="ok"

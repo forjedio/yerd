@@ -7,7 +7,6 @@ import {
   FolderPlus,
   FolderTree,
   Globe,
-  Info,
   Link2,
   Lock,
   LockOpen,
@@ -21,11 +20,8 @@ import {
 import PageHeader from "@/components/PageHeader.vue";
 import Badge from "@/components/ui/Badge.vue";
 import Button from "@/components/ui/Button.vue";
-import Card from "@/components/ui/Card.vue";
-import CardContent from "@/components/ui/CardContent.vue";
-import CardDescription from "@/components/ui/CardDescription.vue";
-import CardHeader from "@/components/ui/CardHeader.vue";
-import CardTitle from "@/components/ui/CardTitle.vue";
+import AsyncState from "@/components/ui/AsyncState.vue";
+import EmptyState from "@/components/ui/EmptyState.vue";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -38,12 +34,6 @@ import Modal from "@/components/ui/Modal.vue";
 import Select from "@/components/ui/Select.vue";
 import Spinner from "@/components/ui/Spinner.vue";
 import Switch from "@/components/ui/Switch.vue";
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipProvider,
-  TooltipTrigger,
-} from "@/components/ui/tooltip";
 import { useDaemon } from "@/composables/useDaemon";
 import { useToast } from "@/composables/useToast";
 import {
@@ -69,6 +59,7 @@ const { report } = useDaemon();
 const sites = ref<Site[]>([]);
 const parked = ref<string[]>([]);
 const loading = ref(true);
+const error = ref<string | null>(null);
 const rowBusy = ref<string | null>(null);
 const siteFilter = ref("");
 
@@ -97,12 +88,15 @@ const folderRows = computed(() =>
   })),
 );
 
-// Live, case-insensitive filter on the full `<name>.<tld>` domain.
+// Live, case-insensitive filter on the full `<name>.<tld>` domain, secured
+// first then alphabetical so the list is stable and scannable.
 const filteredSites = computed(() => {
   const q = siteFilter.value.trim().toLowerCase();
-  if (!q) return sites.value;
-  return sites.value.filter((s) =>
-    `${s.name}.${tld.value}`.toLowerCase().includes(q),
+  const list = q
+    ? sites.value.filter((s) => `${s.name}.${tld.value}`.toLowerCase().includes(q))
+    : [...sites.value];
+  return list.sort(
+    (a, b) => Number(b.secure) - Number(a.secure) || a.name.localeCompare(b.name),
   );
 });
 
@@ -122,12 +116,13 @@ function servedLabel(s: Site): string {
 
 async function load(): Promise<void> {
   loading.value = true;
+  error.value = null;
   try {
     const [s, p] = await Promise.all([listSites(), listParked()]);
     sites.value = s;
     parked.value = p;
   } catch (e) {
-    toast.error("Couldn't load sites", (e as IpcError).message);
+    error.value = (e as IpcError).message;
   } finally {
     loading.value = false;
   }
@@ -292,9 +287,25 @@ onMounted(load);
 
 <template>
   <div class="flex h-full flex-col">
-    <PageHeader title="Sites" subtitle="Parked and linked .test sites" />
+    <PageHeader title="Sites" subtitle="Parked and linked .test sites">
+      <template #actions>
+        <Button
+          variant="outline"
+          size="sm"
+          :disabled="rowBusy === 'park'"
+          @click="onPark"
+        >
+          <Spinner v-if="rowBusy === 'park'" class="size-4" />
+          <FolderPlus v-else class="size-4" /> Park folder
+        </Button>
+        <Button size="sm" @click="linkOpen = true">
+          <Link2 class="size-4" /> Link site
+        </Button>
+      </template>
+    </PageHeader>
 
     <div class="flex-1 overflow-y-auto p-6">
+      <!-- CA-not-trusted warning (sites still serve, browsers just warn). -->
       <div
         v-if="!caTrusted && report"
         class="mb-4 flex items-start gap-2 rounded-md border border-warning/40 bg-warning/10 p-3 text-xs"
@@ -303,234 +314,214 @@ onMounted(load);
         <span>
           The local CA isn't trusted in your system store, so browsers will warn
           on HTTPS sites. Fix it under
-          <RouterLink to="/general" class="font-medium underline">General → Environment</RouterLink>.
+          <RouterLink to="/doctor" class="font-medium underline">Doctor → Environment</RouterLink>.
         </span>
       </div>
 
-      <div v-if="loading" class="flex justify-center py-16"><Spinner class="size-6" /></div>
-
-      <template v-else>
-        <!-- Parked folders -->
-        <Card>
-          <CardHeader class="flex-row items-center justify-between space-y-0">
-            <div class="space-y-1.5">
-              <CardTitle class="flex items-center gap-2"><FolderTree class="size-4" /> Parked folders</CardTitle>
-              <CardDescription>
-                Each child directory of a parked folder is served as a .test site.
-              </CardDescription>
+      <AsyncState
+        :loading="loading"
+        :error="error"
+        :empty="sites.length === 0 && parked.length === 0"
+        pad="py-16"
+        @retry="load"
+      >
+        <template #empty>
+          <EmptyState
+            :icon="Globe"
+            title="No sites yet"
+            description="Park a folder of projects to serve every child directory, or link a single project directory."
+          >
+            <div class="flex gap-2">
+              <Button variant="outline" :disabled="rowBusy === 'park'" @click="onPark">
+                <FolderPlus class="size-4" /> Park folder
+              </Button>
+              <Button @click="linkOpen = true"><Link2 class="size-4" /> Link site</Button>
             </div>
-            <Button variant="outline" size="sm" :disabled="rowBusy === 'park'" @click="onPark">
-              <Spinner v-if="rowBusy === 'park'" class="size-4" />
-              <FolderPlus v-else class="size-4" />
-              Park folder
-            </Button>
-          </CardHeader>
+          </EmptyState>
+        </template>
 
-          <CardContent>
-            <div
-              v-if="folderRows.length === 0"
-              class="rounded-lg border border-dashed p-10 text-center text-sm text-muted-foreground"
-            >
-              No parked folders yet. <strong>Park</strong> a folder of projects to
-              serve each child directory automatically.
-            </div>
+        <!-- Toolbar: filter + count -->
+        <div
+          v-if="sites.length"
+          class="mb-4 flex items-center justify-between gap-3"
+        >
+          <div class="relative max-w-xs flex-1">
+            <Search
+              class="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground"
+            />
+            <Input
+              v-model="siteFilter"
+              placeholder="Filter by domain…"
+              aria-label="Filter sites by domain"
+              class="pl-8"
+            />
+          </div>
+          <span class="shrink-0 text-xs text-muted-foreground">
+            {{ filteredSites.length }} of {{ sites.length }}
+          </span>
+        </div>
 
-            <table v-else class="w-full text-sm">
-              <thead>
-                <tr class="border-b text-left text-xs uppercase text-muted-foreground">
-                  <th class="py-2 pr-4 font-medium">Folder</th>
-                  <th class="py-2 pr-4 font-medium">Sites</th>
-                  <th class="py-2 pl-4 text-right font-medium">Actions</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr v-for="row in folderRows" :key="row.folder" class="border-b last:border-0">
-                  <td class="py-3 pr-4">
-                    <button
-                      class="flex items-center gap-1.5 truncate text-xs text-muted-foreground hover:text-foreground"
-                      :title="row.folder"
-                      @click="openPath(row.folder)"
-                    >
-                      <FolderOpen class="size-3.5 shrink-0" />
-                      <span class="truncate">{{ row.folder }}</span>
-                    </button>
-                  </td>
-                  <td class="py-3 pr-4">
-                    <Badge variant="secondary">{{ row.count }}</Badge>
-                  </td>
-                  <td class="py-3 pl-4">
-                    <div class="flex items-center justify-end">
-                      <Spinner v-if="rowBusy === `unpark:${row.folder}`" class="size-4" />
-                      <DropdownMenu>
-                        <DropdownMenuTrigger as-child>
-                          <Button
-                            variant="ghost"
-                            size="icon"
-                            :aria-label="`Actions for ${row.folder}`"
-                          >
-                            <MoreHorizontal class="size-4" />
-                          </Button>
-                        </DropdownMenuTrigger>
-                        <DropdownMenuContent align="end">
-                          <DropdownMenuItem @select="openPath(row.folder)">
-                            <FolderOpen class="size-4" /> Reveal folder
-                          </DropdownMenuItem>
-                          <DropdownMenuSeparator />
-                          <DropdownMenuItem
-                            class="text-destructive focus:bg-destructive/10 focus:text-destructive"
-                            @select="openUnpark(row.folder)"
-                          >
-                            <FolderMinus class="size-4" /> Un-park
-                          </DropdownMenuItem>
-                        </DropdownMenuContent>
-                      </DropdownMenu>
-                    </div>
-                  </td>
-                </tr>
-              </tbody>
-            </table>
-          </CardContent>
-        </Card>
-
-        <!-- Sites -->
-        <Card class="mt-8">
-          <CardHeader class="flex-row items-center justify-between space-y-0">
-            <div class="space-y-1.5">
-              <CardTitle class="flex items-center gap-2"><Globe class="size-4" /> Sites</CardTitle>
-              <CardDescription>Every parked and linked .test site.</CardDescription>
-            </div>
-            <Button size="sm" @click="linkOpen = true">
-              <Link2 class="size-4" /> Link site
-            </Button>
-          </CardHeader>
-
-          <CardContent>
-            <div
-              v-if="sites.length === 0"
-              class="rounded-lg border border-dashed p-10 text-center text-sm text-muted-foreground"
-            >
-              No sites yet. <strong>Park</strong> a folder of projects or
-              <strong>Link</strong> a single directory.
-            </div>
-
-            <template v-else>
-              <div class="relative mb-4 max-w-xs">
-                <Search
-                  class="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground"
-                />
-                <Input
-                  v-model="siteFilter"
-                  placeholder="Filter by domain…"
-                  aria-label="Filter sites by domain"
-                  class="pl-8"
-                />
+        <!-- Site grid -->
+        <div
+          v-if="filteredSites.length"
+          class="grid gap-3 sm:grid-cols-2 xl:grid-cols-3"
+        >
+          <div
+            v-for="s in filteredSites"
+            :key="s.name"
+            class="group rounded-lg border bg-card p-4 shadow-sm transition-colors hover:border-brand/40"
+          >
+            <div class="flex items-start justify-between gap-2">
+              <div class="min-w-0">
+                <button
+                  class="flex max-w-full items-center gap-1.5 font-mono text-sm font-medium hover:text-brand"
+                  :title="`Open ${siteUrl(s)}`"
+                  @click="openInBrowser(siteUrl(s))"
+                >
+                  <span class="truncate">{{ s.name }}.{{ tld }}</span>
+                </button>
+                <button
+                  class="mt-1 flex max-w-full items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
+                  :title="`Reveal ${s.document_root}`"
+                  @click="openPath(s.document_root)"
+                >
+                  <FolderOpen class="size-3 shrink-0" />
+                  <span class="truncate font-mono">{{ s.document_root }}</span>
+                </button>
               </div>
 
-              <TooltipProvider :delay-duration="0">
-              <table class="w-full text-sm">
-                <thead>
-                  <tr class="border-b text-left text-xs uppercase text-muted-foreground">
-                    <th class="py-2 pr-4 font-medium">Site</th>
-                    <th class="py-2 pr-4 font-medium">PHP</th>
-                    <th class="py-2 pr-4 font-medium">HTTPS</th>
-                    <th class="py-2 pl-4 text-right font-medium">Actions</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  <tr v-for="s in filteredSites" :key="s.name" class="border-b last:border-0">
-                    <td class="py-4 pr-4">
-                      <div class="flex items-center gap-2">
-                        <button
-                          class="font-medium text-primary hover:underline"
-                          @click="openInBrowser(siteUrl(s))"
-                        >
-                          {{ s.name }}.{{ tld }}
-                        </button>
-                        <Badge variant="outline">{{ s.kind }}</Badge>
-                        <Tooltip>
-                          <TooltipTrigger as-child>
-                            <span class="inline-flex cursor-help text-muted-foreground">
-                              <Info class="size-3.5" />
-                            </span>
-                          </TooltipTrigger>
-                          <TooltipContent side="top">
-                            <div class="space-y-0.5 text-xs">
-                              <div>
-                                <span class="text-muted-foreground">Document root:</span>
-                                {{ s.document_root }}
-                              </div>
-                              <div>
-                                <span class="text-muted-foreground">Served from:</span>
-                                {{ servedLabel(s) }}
-                              </div>
-                            </div>
-                          </TooltipContent>
-                        </Tooltip>
-                      </div>
-                    </td>
-                    <td class="py-4 pr-4">
-                      <span class="font-mono text-xs">PHP {{ s.php }}</span>
-                    </td>
-                    <td class="py-4 pr-4">
-                      <Tooltip>
-                        <TooltipTrigger as-child>
-                          <span class="inline-flex cursor-help">
-                            <Lock v-if="s.secure" class="size-4 text-success" />
-                            <LockOpen v-else class="size-4 text-muted-foreground" />
-                          </span>
-                        </TooltipTrigger>
-                        <TooltipContent side="top">{{ s.secure ? "HTTPS enabled" : "HTTP only" }}</TooltipContent>
-                      </Tooltip>
-                    </td>
-                    <td class="py-4 pl-4">
-                      <div class="flex items-center justify-end">
-                        <Spinner v-if="rowBusy?.endsWith(`:${s.name}`)" class="size-4" />
-                        <DropdownMenu>
-                          <DropdownMenuTrigger as-child>
-                            <Button variant="ghost" size="icon" :aria-label="`Actions for ${s.name}`">
-                              <MoreHorizontal class="size-4" />
-                            </Button>
-                          </DropdownMenuTrigger>
-                          <DropdownMenuContent align="end">
-                            <DropdownMenuItem @select="openEdit(s)">
-                              <Pencil class="size-4" /> Edit…
-                            </DropdownMenuItem>
-                            <DropdownMenuItem @select="openInBrowser(siteUrl(s))">
-                              <ExternalLink class="size-4" /> Open in browser
-                            </DropdownMenuItem>
-                            <DropdownMenuItem @select="openPath(s.document_root)">
-                              <FolderOpen class="size-4" /> Reveal folder
-                            </DropdownMenuItem>
-                            <!-- Only linked sites are removable here (by name).
-                                 A parked site is removed by un-parking its folder. -->
-                            <template v-if="s.kind === 'linked'">
-                              <DropdownMenuSeparator />
-                              <DropdownMenuItem
-                                class="text-destructive focus:bg-destructive/10 focus:text-destructive"
-                                @select="openUnlink(s)"
-                              >
-                                <Trash2 class="size-4" /> Unlink
-                              </DropdownMenuItem>
-                            </template>
-                          </DropdownMenuContent>
-                        </DropdownMenu>
-                      </div>
-                    </td>
-                  </tr>
-                </tbody>
-              </table>
-              </TooltipProvider>
+              <div class="flex shrink-0 items-center">
+                <Spinner v-if="rowBusy?.endsWith(`:${s.name}`)" class="size-4" />
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  :aria-label="`Open ${s.name}.${tld}`"
+                  @click="openInBrowser(siteUrl(s))"
+                >
+                  <ExternalLink class="size-4" />
+                </Button>
+                <DropdownMenu>
+                  <DropdownMenuTrigger as-child>
+                    <Button variant="ghost" size="icon" :aria-label="`Actions for ${s.name}`">
+                      <MoreHorizontal class="size-4" />
+                    </Button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="end">
+                    <DropdownMenuItem @select="openEdit(s)">
+                      <Pencil class="size-4" /> Edit…
+                    </DropdownMenuItem>
+                    <DropdownMenuItem @select="openInBrowser(siteUrl(s))">
+                      <ExternalLink class="size-4" /> Open in browser
+                    </DropdownMenuItem>
+                    <DropdownMenuItem @select="openPath(s.document_root)">
+                      <FolderOpen class="size-4" /> Reveal folder
+                    </DropdownMenuItem>
+                    <!-- Only linked sites are removable here (by name). A parked
+                         site is removed by un-parking its folder. -->
+                    <template v-if="s.kind === 'linked'">
+                      <DropdownMenuSeparator />
+                      <DropdownMenuItem
+                        class="text-destructive focus:bg-destructive/10 focus:text-destructive"
+                        @select="openUnlink(s)"
+                      >
+                        <Trash2 class="size-4" /> Unlink
+                      </DropdownMenuItem>
+                    </template>
+                  </DropdownMenuContent>
+                </DropdownMenu>
+              </div>
+            </div>
 
-              <p
-                v-if="filteredSites.length === 0"
-                class="py-8 text-center text-sm text-muted-foreground"
+            <!-- meta chips -->
+            <div class="mt-3 flex flex-wrap items-center gap-1.5">
+              <span
+                class="inline-flex items-center rounded-md bg-muted px-1.5 py-0.5 font-mono text-[11px] font-medium text-muted-foreground"
               >
-                No sites match “{{ siteFilter }}”.
-              </p>
-            </template>
-          </CardContent>
-        </Card>
-      </template>
+                PHP {{ s.php }}
+              </span>
+              <span
+                v-if="s.secure"
+                class="inline-flex items-center gap-1 rounded-md bg-success/10 px-1.5 py-0.5 text-[11px] font-medium text-success"
+              >
+                <Lock class="size-3" /> HTTPS
+              </span>
+              <span
+                v-else
+                class="inline-flex items-center gap-1 rounded-md bg-muted px-1.5 py-0.5 text-[11px] font-medium text-muted-foreground"
+              >
+                <LockOpen class="size-3" /> HTTP
+              </span>
+              <span
+                v-if="s.web_subpath"
+                class="inline-flex items-center rounded-md bg-muted px-1.5 py-0.5 font-mono text-[11px] text-muted-foreground"
+                :title="`Serves ${servedLabel(s)} as the document root`"
+              >
+                /{{ servedLabel(s) }}
+              </span>
+              <span
+                class="ml-auto inline-flex items-center gap-1 text-[11px] text-muted-foreground"
+              >
+                <Link2 v-if="s.kind === 'linked'" class="size-3" />
+                <FolderTree v-else class="size-3" />
+                {{ s.kind }}
+              </span>
+            </div>
+          </div>
+        </div>
+
+        <!-- filtered to nothing -->
+        <p
+          v-else-if="siteFilter"
+          class="py-12 text-center text-sm text-muted-foreground"
+        >
+          No sites match “{{ siteFilter }}”.
+        </p>
+        <p v-else class="py-12 text-center text-sm text-muted-foreground">
+          Your parked folders have no child directories yet.
+        </p>
+
+        <!-- Parked folders (demoted: the management surface, below the sites) -->
+        <section v-if="folderRows.length" class="mt-8">
+          <div class="mb-2">
+            <h3 class="text-sm font-semibold">Parked folders</h3>
+            <p class="text-xs text-muted-foreground">
+              Each child directory of a parked folder is served automatically.
+            </p>
+          </div>
+          <div class="divide-y rounded-lg border">
+            <div
+              v-for="row in folderRows"
+              :key="row.folder"
+              class="flex items-center justify-between gap-3 px-3 py-2.5"
+            >
+              <button
+                class="flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground"
+                :title="`Reveal ${row.folder}`"
+                @click="openPath(row.folder)"
+              >
+                <FolderOpen class="size-3.5 shrink-0" />
+                <span class="truncate font-mono">{{ row.folder }}</span>
+              </button>
+              <div class="flex shrink-0 items-center gap-2">
+                <Badge variant="secondary">
+                  {{ row.count }} {{ row.count === 1 ? "site" : "sites" }}
+                </Badge>
+                <Spinner v-if="rowBusy === `unpark:${row.folder}`" class="size-4" />
+                <Button
+                  v-else
+                  variant="ghost"
+                  size="icon"
+                  :aria-label="`Un-park ${row.folder}`"
+                  title="Un-park"
+                  @click="openUnpark(row.folder)"
+                >
+                  <FolderMinus class="size-4" />
+                </Button>
+              </div>
+            </div>
+          </div>
+        </section>
+      </AsyncState>
     </div>
 
     <!-- edit site modal -->

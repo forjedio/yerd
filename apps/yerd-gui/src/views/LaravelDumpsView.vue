@@ -1,7 +1,10 @@
 <script setup lang="ts">
+import { ExternalLink } from "lucide-vue-next";
 import { computed, ref, watch } from "vue";
 
 import PageHeader from "@/components/PageHeader.vue";
+import StatusPill from "@/components/StatusPill.vue";
+import Badge from "@/components/ui/Badge.vue";
 import Button from "@/components/ui/Button.vue";
 import Card from "@/components/ui/Card.vue";
 import CardContent from "@/components/ui/CardContent.vue";
@@ -114,7 +117,7 @@ async function openViewer(): Promise<void> {
           <CardTitle>Dump interception</CardTitle>
           <CardDescription>
             Yerd can automatically intercept dump calls in your code and display them in a
-            separate window — no codebase changes. Capture runs through a native PHP
+            separate window - no codebase changes. Capture runs through a native PHP
             extension loaded into each site's PHP.
           </CardDescription>
         </CardHeader>
@@ -122,18 +125,16 @@ async function openViewer(): Promise<void> {
           <!-- Server status -->
           <div class="flex items-center justify-between gap-4">
             <div>
-              <p class="text-sm font-medium">Dump Server Status</p>
+              <p class="text-sm font-medium">Dump server status</p>
               <p class="text-xs text-muted-foreground">
                 The loopback server that receives telemetry from PHP.
               </p>
             </div>
-            <span class="flex items-center gap-2 text-sm">
-              <span
-                class="size-2.5 rounded-full"
-                :class="running ? 'bg-green-500' : 'bg-red-500'"
-              />
-              {{ running ? "Running" : "Stopped" }}
-            </span>
+            <StatusPill
+              :tone="running ? 'ok' : 'bad'"
+              :label="running ? 'Running' : 'Stopped'"
+              :pulse="running"
+            />
           </div>
 
           <!-- Antenna toggle -->
@@ -154,7 +155,7 @@ async function openViewer(): Promise<void> {
           <!-- Port -->
           <div class="flex items-center justify-between gap-4">
             <div>
-              <p class="text-sm font-medium">Dump Server Port</p>
+              <p class="text-sm font-medium">Dump server port</p>
               <p class="text-xs text-muted-foreground">
                 The port the dump server listens on (default 2304).
               </p>
@@ -163,15 +164,20 @@ async function openViewer(): Promise<void> {
               <Input
                 :model-value="portDraft"
                 type="number"
-                class="w-28"
+                inputmode="numeric"
+                min="1"
+                max="65535"
+                class="w-28 font-mono"
                 @update:model-value="onPortInput"
               />
               <Button size="sm" :disabled="!portChanged" @click="savePort">Save</Button>
             </div>
           </div>
 
-          <div class="flex items-center gap-3 pt-1">
-            <Button variant="secondary" @click="openViewer">Show Dumps</Button>
+          <div class="flex justify-end border-t pt-4">
+            <Button @click="openViewer">
+              <ExternalLink class="size-4" /> Show Dumps
+            </Button>
           </div>
         </CardContent>
       </Card>
@@ -180,9 +186,16 @@ async function openViewer(): Promise<void> {
       <Card>
         <CardHeader>
           <CardTitle>Captured signals</CardTitle>
-          <CardDescription>Choose which telemetry to record.</CardDescription>
+          <CardDescription>
+            {{ enabled
+              ? "Choose which telemetry to record."
+              : "Enable interception above to record these signals." }}
+          </CardDescription>
         </CardHeader>
-        <CardContent class="space-y-3">
+        <CardContent
+          class="space-y-3 transition-opacity"
+          :class="{ 'opacity-50': !enabled }"
+        >
           <div
             v-for="f in FEATURES"
             :key="f.key"
@@ -191,6 +204,7 @@ async function openViewer(): Promise<void> {
             <p class="text-sm">{{ f.label }}</p>
             <Switch
               :model-value="featureOn(f.key)"
+              :disabled="!enabled"
               :aria-label="f.label"
               @update:model-value="(v: boolean) => toggleFeature(f.key, v)"
             />
@@ -218,18 +232,11 @@ async function openViewer(): Promise<void> {
                 :key="ext.version"
                 class="border-b last:border-0"
               >
-                <td class="py-2">PHP {{ ext.version }}</td>
+                <td class="py-2 font-mono">PHP {{ ext.version }}</td>
                 <td class="py-2 text-right">
-                  <span
-                    class="rounded px-2 py-0.5 text-xs"
-                    :class="
-                      ext.present
-                        ? 'bg-green-500/15 text-green-600 dark:text-green-400'
-                        : 'bg-amber-500/15 text-amber-600 dark:text-amber-400'
-                    "
-                  >
+                  <Badge :variant="ext.present ? 'success' : 'warning'">
                     {{ ext.present ? "Installed" : "Not installed" }}
-                  </span>
+                  </Badge>
                 </td>
               </tr>
             </tbody>

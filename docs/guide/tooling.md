@@ -20,6 +20,33 @@ in its own data directory, isolated from anything else on your system, and
 removes them cleanly on uninstall.
 :::
 
+## In the desktop app
+
+Open the **Tooling** page from the sidebar (under the **Developer** group). It
+lists the developer tools Yerd manages and their install status:
+
+<ThemedImage light="/images/tooling-light.png" dark="/images/tooling-dark.png" alt="The Tooling page in the Yerd desktop app" />
+
+- **Composer**, **Node**, and **Bun**, each showing the commands it provides.
+- Click **Install** to fetch the latest release; once installed you get
+  **Update** (re-fetch the current latest) and **Uninstall**.
+- Each tool is placed on your `PATH` alongside PHP and managed entirely by Yerd,
+  so it won't collide with a system install.
+
+## From the command line
+
+```sh
+yerd tools                      # list the tools and their install status
+yerd install tool node          # download + install the latest Node LTS
+yerd install tool bun
+yerd install tool composer
+yerd uninstall tool bun         # remove a tool and its PATH commands
+```
+
+`yerd install tool <id>` is idempotent — run it again to update to the current
+latest. See the [Tooling CLI reference](../reference/cli/tooling) for the exact
+command surface.
+
 ## How it works
 
 The model mirrors [PHP versions](./php-versions) and [services](./services):
@@ -74,28 +101,6 @@ precedence over other copies on your machine. If you'd rather your existing
 tools win, put their directories earlier in your shell file. Nothing Yerd
 installs ever shadows a tool you didn't ask it to manage.
 :::
-
-## Installing tools
-
-### From the desktop app
-
-Open **Tooling** in the sidebar (between Sites and Services). Each tool shows its
-status and the commands it provides. Click **Install** to fetch the latest
-release; once installed you get **Update** (re-fetch latest) and **Uninstall**.
-
-### From the CLI
-
-```sh
-yerd tools                      # list the tools and their install status
-yerd install tool node          # download + install the latest Node LTS
-yerd install tool bun
-yerd install tool composer
-yerd uninstall tool bun         # remove a tool and its PATH commands
-```
-
-`yerd install tool <id>` is idempotent — run it again to update to the current
-latest. See the [Tooling CLI reference](../reference/cli/tooling) for the exact
-command surface.
 
 ## Composer needs PHP
 

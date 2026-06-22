@@ -44,15 +44,37 @@ Service support follows the same model as [PHP versions](./php-versions):
   connections from your user. This is convenient for local development and is not
   meant to be exposed to a network.
 
-## Managing services
+## In the desktop app
+
+The [desktop app](./desktop-app) surfaces every engine on its **Services** page,
+under the **Developer** group in the sidebar. Install a version, then Start /
+Stop / Restart it inline - no terminal needed. The daemon auto-starts every
+installed engine on boot, so what you install stays running across reboots.
+
+<ThemedImage light="/images/services-light.png" dark="/images/services-dark.png" alt="The Services page in the Yerd desktop app" />
+
+Each installed engine's `⋯` menu offers:
+
+- **Configuration** - copies a ready-made Laravel `.env` for that engine, with a
+  database picker that pre-fills `DB_DATABASE` for the SQL engines.
+- **Edit port** - change the loopback port (applies on next start).
+- **View logs** - tail the service log.
+- **Manage databases** - create, drop, back up, and restore databases (SQL
+  engines only).
+- **Change version** - upgrade in place, keeping your data.
+- **Uninstall** - remove the engine.
+
+## From the command line
+
+### Managing services
 
 ```sh
 yerd service available          # versions installable for your platform
-yerd service install redis 8    # download, install, start, and enable
+yerd service install redis 8    # download, install, and start
 yerd services                   # list everything: version, state, port
 
-yerd service start redis        # start + enable auto-start on boot
-yerd service stop redis         # stop + disable auto-start
+yerd service start redis        # start it now
+yerd service stop redis         # stop for this session (returns on next daemon start)
 yerd service restart redis
 
 yerd service set-port redis 6380   # change the loopback port (next start)
@@ -65,7 +87,7 @@ yerd service uninstall redis 8 --purge  # remove binaries AND data
 
 See the [Services CLI reference](../reference/cli/services) for every flag.
 
-## Managing databases
+### Managing databases
 
 For the SQL engines (`mysql`, `mariadb`, `postgres`), Yerd can create, drop, list,
 back up, and restore databases without you reaching for a separate client. The
@@ -88,9 +110,9 @@ reference](../reference/cli/db) for details.
 
 ## Configuration
 
-Enabled services are recorded in your [config file](../reference/configuration)
+Installed services are recorded in your [config file](../reference/configuration)
 under per-service `[services.<id>]` tables, each carrying the pinned `version`,
-the `port`, and whether it's `enabled` (auto-started on daemon boot):
+the `port`, and an `enabled` flag (a record of the last start/stop intent):
 
 ```toml
 [services.redis]
@@ -102,6 +124,19 @@ enabled = true
 You normally don't hand-edit this - drive it through the CLI (or the
 [desktop app](./desktop-app)), which keeps the config and the running processes in
 sync.
+
+### Auto-start on boot
+
+The daemon auto-starts **every installed engine** when it starts (in the
+background, so a slow database cold-boot never delays the proxy or DNS). The
+`enabled` flag does **not** gate this - a service you `stop` returns on the next
+daemon start. To keep an engine off for good, `uninstall` it.
+
+::: tip MySQL and MariaDB share port 3306
+Only one can listen on `3306` at a time. If both are installed, whichever binds
+first wins and the other logs a non-fatal "port in use" and stays down. Run a
+single SQL engine, or give one a different `port`.
+:::
 
 ## Windows and Redis licensing
 

@@ -33,33 +33,42 @@ The window is something you summon, not keep open.
 
 The window is borderless with a custom title bar (macOS-style traffic lights for close / minimize / zoom) and looks identical on both platforms. A status pill in the bottom-left of the sidebar shows whether the daemon is connected, unreachable, or connecting.
 
-If the daemon isn't running, the main area shows a "Daemon not running" panel with **Start** and **Retry** buttons - Start launches `yerdd` for you (through your per-user service) without leaving the app. The **General** tab stays reachable even when the daemon is down, so you can start or configure it from there. You can also start it from a terminal with `yerdd`.
+If the daemon isn't running, the main area shows a "Daemon not running" panel with **Start** and **Retry** buttons - Start launches `yerdd` for you (through your per-user service) without leaving the app. The **Overview**, **Settings**, and **About** pages stay reachable even when the daemon is down: Overview shows its own **Start Yerd** hero, and Settings can start or install it. You can also start it from a terminal with `yerdd`.
 
 ::: tip First-run auto-install
-If `yerdd` isn't installed at all when the app first opens (Linux/macOS), it downloads the matching release, installs the `yerd`/`yerdd`/`yerd-helper` binaries to `~/.local/bin`, starts the daemon, and lands you on the General tab - showing an "Installing Yerdd… Please wait" overlay while it works. It never runs as root to do this.
+If `yerdd` isn't installed at all when the app first opens (Linux/macOS), it downloads the matching release, installs the `yerd`/`yerdd`/`yerd-helper` binaries to `~/.local/bin`, starts the daemon, and lands you on the Overview dashboard - showing an "Installing Yerdd… Please wait" overlay while it works. It never runs as root to do this.
 :::
 
 ## The window at a glance
 
-The sidebar has five sections:
+The sidebar opens on **Overview** and groups the rest:
 
-| Section | What it shows |
+| Group | Pages |
 | --- | --- |
-| General | Daemon start/stop, start-at-login toggles, appearance (theme) |
-| PHP | Installed versions, updates, the default, global ini settings |
-| Sites | Parked folders + linked sites, per-site PHP & HTTPS |
-| Services | Subsystems, health checks + one-click fixes, environment |
-| About | App/daemon versions, TLD, DNS, CA path + fingerprint |
+| (top) | **Overview** - a live dashboard of what's running |
+| Environment | **PHP** · **Sites** |
+| Developer | **Tooling** · **Services** · **Mail** · **Dumps** |
+| System | **Settings** · **Doctor** · **About** |
 
-### General
+### Overview
 
-App- and daemon-level settings - the only tab that stays usable when the daemon is down (it can start or install it):
+<ThemedImage light="/images/overview-light.png" dark="/images/overview-dark.png" alt="Overview dashboard" />
 
-- **Daemon.** Whether `yerdd` is running (with pid), plus a Start or Stop button. Start/Stop go through your per-user service manager (systemd `--user` on Linux, a launchd LaunchAgent on macOS), with a detached-process fallback where none exists; the same actions are in the tray menu.
+The landing dashboard. With the daemon running it shows a **serving** summary - the number of live `.test` sites (each a clickable chip that opens in your browser), stat tiles for PHP versions, sites, services, and captured mail (each links to its page), and a **system-health** strip (Local CA, `.test` resolver, privileged ports). When the daemon is down, the same surface becomes a **Start Yerd** hero.
+
+### Settings
+
+<ThemedImage light="/images/settings-light.png" dark="/images/settings-dark.png" alt="Settings page" />
+
+App- and daemon-level settings (one of the pages that stays usable when the daemon is down, since it can start or install it):
+
+- **Daemon.** Whether `yerdd` is running (with pid), a Start or Stop button, and a list of the daemon's in-process subsystems - the DNS resolver, the HTTP and HTTPS proxy listeners (with bound ports, including when macOS's `pf` redirect carries `:80`/`:443`), **Mail capture** (by port), and **Dump capture** (by port). The daemon row has a Restart button. Start/Stop/Restart go through your per-user service manager (systemd `--user` on Linux, a launchd LaunchAgent on macOS), with a detached-process fallback where none exists; the same actions are in the tray menu.
 - **Start at login.** Three toggles - start the daemon at login, start the app at login, and start the app minimized (hidden to the tray). The daemon-at-login toggle is disabled where no per-user service manager is available.
 - **Appearance.** A System / Light / Dark theme selector, applied live and remembered across launches.
 
 ### PHP
+
+<ThemedImage light="/images/php-light.png" dark="/images/php-dark.png" alt="PHP versions page" />
 
 Manages your installed [PHP versions](./php-versions):
 
@@ -70,6 +79,8 @@ Manages your installed [PHP versions](./php-versions):
 - A Default settings card edits the global ini defaults applied to every version: `memory_limit`, `max_execution_time`, `max_input_time`, `max_file_uploads`, `upload_max_filesize`, `post_max_size`, `error_reporting`, and `display_errors`. Leave a field blank to use PHP's built-in default. Saving restarts running pools to apply.
 
 ### Sites
+
+<ThemedImage light="/images/sites-light.png" dark="/images/sites-dark.png" alt="Sites page" />
 
 The home base for [managing sites](./sites). Two cards:
 
@@ -89,16 +100,41 @@ Sites. Every parked and linked site:
 Link site opens a modal to link one directory under a name you choose (a single DNS label, validated as `[a-z0-9-]+`). **Set web root…** opens a modal to pin the served subdirectory (or pick it with a folder browser); **Auto-detect web root** clears the override and lets Yerd detect it again. Parked sites have no destructive action here; remove them by un-parking their folder, or they'd reappear.
 
 ::: tip Untrusted CA banner
-If your local CA isn't trusted in the system store, the Sites view shows a banner (browsers will warn on HTTPS sites until fixed). It links to Services → Environment, where one click runs the fix. See [HTTPS & Certificates](./https).
+If your local CA isn't trusted in the system store, the Sites view shows a banner (browsers will warn on HTTPS sites until fixed). It links to the **Doctor** page's Environment panel, where one click runs the fix. See [HTTPS & Certificates](./https).
 :::
+
+### Tooling
+
+<ThemedImage light="/images/tooling-light.png" dark="/images/tooling-dark.png" alt="Tooling page" />
+
+Installs self-contained developer tools - Composer, Node, and Bun - onto your PATH alongside PHP, each managed by Yerd (install / update / uninstall) so they don't collide with system installs. See [Tooling](./tooling).
 
 ### Services
 
+<ThemedImage light="/images/services-light.png" dark="/images/services-dark.png" alt="Services page" />
+
+The database and cache engines Yerd supervises - Redis (Valkey), MySQL, MariaDB, and PostgreSQL. Install a version, then Start / Stop / Restart it. Each installed engine's `⋯` menu also offers **Configuration** (copy the Laravel `.env` for that engine - with a database picker that pre-fills `DB_DATABASE` for SQL engines), Edit port, View logs, **Manage databases** (create / drop / back up / restore, SQL engines only), Change version, and Uninstall. The daemon **auto-starts every installed engine** on boot. See [Services & Databases](./services).
+
+### Mail
+
+<ThemedImage light="/images/mail-light.png" dark="/images/mail-dark.png" alt="Mail capture page" />
+
+The built-in SMTP **mail capture** server - point your app's mailer at `127.0.0.1` on the shown port and every outgoing email is captured for preview instead of being sent. Toggle capture, set the port, and open the separate **Mails** viewer with Show Mails. A **Laravel configuration** card emits the `.env` mail keys (`MAIL_HOST`, `MAIL_PORT`, …) to paste into your app, with editable From name/address. See [Mail Capture](./mail).
+
+### Dumps
+
+<ThemedImage light="/images/dumps-light.png" dark="/images/dumps-dark.png" alt="Dumps page" />
+
+Laravel telemetry interception - `dump()`/`dd()` plus queries, jobs, views, requests, logs, cache, and outgoing HTTP - streamed to a separate viewer window with no code changes, captured by a per-version PHP extension. Enable interception, pick which signals to record, set the port, and open the viewer with Show Dumps. See [Laravel ▸ Dumps](./laravel-dumps).
+
+### Doctor
+
+<ThemedImage light="/images/doctor-light.png" dark="/images/doctor-dark.png" alt="Doctor page" />
+
 Mirrors [`yerd doctor`](./diagnostics):
 
-- Subsystems. A live table of the daemon (`yerdd`, with pid and uptime), the in-process DNS resolver, the HTTP and HTTPS proxy listeners (with bound ports, including when macOS's `pf` redirect carries `:80`/`:443`), and each PHP-FPM pool. The daemon and FPM rows have a `⋯` menu with Restart.
-- Health. Lists problems by severity (`ok` / `warn` / `fail`) with a copyable remedy command. Run safe fixes applies the safe one-click fixes; Re-check re-runs diagnostics.
-- Environment. OS-level state: Local CA trusted, `.test` resolver installed, and Privileged ports (80/443). A Fix (elevate) button runs the privileged action where a row isn't configured; once a row *is* configured, an **Unelevate** button reverts it - behind an in-app confirm dialog and the OS prompt. Unelevating the `.test` resolver restores your previous resolver on macOS; reverting privileged ports is macOS-only (Linux `setcap` has no clean reverse, so no button is shown there).
+- **Health.** Lists problems by severity (Healthy / Warning / Problem) with a copyable remedy command. Run safe fixes applies the safe one-click fixes; Re-check re-runs diagnostics. A clean machine shows an "all clear" panel.
+- **Environment.** OS-level state: Local CA trusted, `.test` resolver installed, and Privileged ports (80/443). A Fix (elevate) button runs the privileged action where a row isn't configured; once a row *is* configured, an **Unelevate** button reverts it - behind an in-app confirm dialog and the OS prompt. Unelevating the `.test` resolver restores your previous resolver on macOS; reverting privileged ports is macOS-only (Linux `setcap` has no clean reverse, so no button is shown there).
 
 ::: info "Fix" actions never run the GUI as root
 The Fix buttons run the audited `yerd elevate` helper under an OS prompt; the GUI never runs elevated. On Linux this uses `pkexec`, on macOS an `osascript … with administrator privileges` prompt. You may be asked for your password. See [Elevation & Privileges](./elevation).
@@ -106,18 +142,9 @@ The Fix buttons run the audited `yerd elevate` helper under an OS prompt; the GU
 
 ### About
 
+<ThemedImage light="/images/about-light.png" dark="/images/about-dark.png" alt="About page" />
+
 Shows the app, daemon, and negotiated IPC protocol versions, plus your local environment: the TLD (`.test`), the DNS responder address, and the local CA certificate path and fingerprint (both copyable, with reveal-in-finder). It also links to the project repository.
-
-## Coming soon (stubs)
-
-A few capabilities need a daemon IPC that doesn't exist yet. Rather than fake them, the app renders them as disabled, greyed-out controls with a "soon" label and a tooltip:
-
-| Stub | Where | Why |
-|---|---|---|
-| Logs | Subsystem `⋯` menus (Services) | Needs a log-streaming IPC |
-| Fix (when in-app elevation isn't available) | Environment (Services) | Falls back to a "soon" pill; run `yerd elevate` in a terminal for now |
-
-A dashed border with the soon badge means the daemon-side IPC isn't wired up yet. Everything else is fully functional.
 
 ## How it fits together
 
