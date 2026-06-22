@@ -150,6 +150,8 @@ onMounted(load);
                         variant="ghost"
                         size="sm"
                         :disabled="busy !== null"
+                        :aria-label="`Uninstall ${t.display_name}`"
+                        title="Uninstall"
                         @click="openUninstall(t)"
                       >
                         <Trash2 class="size-3.5" />

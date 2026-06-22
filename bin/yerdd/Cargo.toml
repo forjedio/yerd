@@ -48,10 +48,12 @@ reqwest        = { workspace = true }
 flate2         = { workspace = true }
 tar            = { workspace = true }
 # Bun ships only a .zip. `deflate` selects flate2's pure-Rust `rust_backend`
-# (miniz_oxide); it also pulls `zopfli` (a compressor we don't use), but that's
-# pure-Rust + MSRV 1.73 — no bzip2/zstd/lzma C deps. Pinned to 2.x — zip >= 4
-# needs edition2024/MSRV 1.88 (see the workspace Cargo.toml MSRV-pin block).
-zip            = { version = "2", default-features = false, features = ["deflate"] }
+# (miniz_oxide) and also pulls `zopfli` (a compressor we don't use); both are
+# pure-Rust so there are no bzip2/zstd/lzma C deps. A decompress-only path that
+# drops zopfli isn't available without switching to a C zlib backend, so we keep
+# `deflate`. Version pinned to 2.x in the workspace (zip >= 4 needs
+# edition2024/MSRV 1.88; see the workspace Cargo.toml pin block).
+zip            = { workspace = true, features = ["deflate"] }
 notify-debouncer-mini = "0.4"
 
 [dev-dependencies]

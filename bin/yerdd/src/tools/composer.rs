@@ -70,9 +70,15 @@ fn choose_version(versions: &Versions, host_id: Option<u32>) -> Option<String> {
 /// Download, verify, and install the latest Composer the installed PHP can run.
 pub async fn install(dirs: &PlatformDirs, dl: &dyn Downloader) -> Result<(), ToolError> {
     let versions = fetch_versions(dl).await?;
-    let host_id = installed_versions(dirs).into_iter().map(version_id).max();
+    // Composer runs through yerd's managed PHP shim, so an install with no PHP
+    // present would produce a non-runnable command — require one up front.
+    let Some(host_id) = installed_versions(dirs).into_iter().map(version_id).max() else {
+        return Err(ToolError::UnsupportedHost(
+            "Composer (requires an installed PHP)",
+        ));
+    };
     let version =
-        choose_version(&versions, host_id).ok_or(ToolError::UnsupportedHost("Composer"))?;
+        choose_version(&versions, Some(host_id)).ok_or(ToolError::UnsupportedHost("Composer"))?;
 
     let phar_url = format!("{DOWNLOAD_BASE}/{version}/composer.phar");
     let sha_url = format!("{phar_url}.sha256sum");

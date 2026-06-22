@@ -718,6 +718,10 @@ async fn install_tool(tool: &str, state: &DaemonState) -> Response {
         };
     };
     let dl = crate::php_install::ReqwestDownloader::new();
+    // Serialize tool mutations: two concurrent IPC clients mutating
+    // `{data}/tools/<id>` (commit) + `{data}/bin` (reconcile) would otherwise
+    // race and could leave files and shims inconsistent.
+    let _mutate = state.tool_mutate.lock().await;
     match crate::tools::install(t, &state.dirs, &dl).await {
         Ok(()) => {
             reconcile_tool_shims_now(state).await;
@@ -738,6 +742,7 @@ async fn uninstall_tool(tool: &str, state: &DaemonState) -> Response {
             message: format!("unknown tool {tool:?}"),
         };
     };
+    let _mutate = state.tool_mutate.lock().await;
     match crate::tools::uninstall(&state.dirs, t) {
         Ok(()) => {
             reconcile_tool_shims_now(state).await;
@@ -1313,6 +1318,7 @@ mod tests {
             watch_dirty: tokio::sync::Notify::new(),
             dumps: std::sync::Arc::new(crate::dump_server::DumpStore::new()),
             shim_reconcile: tokio::sync::Mutex::new(()),
+            tool_mutate: tokio::sync::Mutex::new(()),
         }
     }
 

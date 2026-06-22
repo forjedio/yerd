@@ -282,10 +282,20 @@ pub(crate) fn stage_and_swap(
     version: &str,
     unpack: impl FnOnce(&Path) -> Result<(), ToolError>,
 ) -> Result<(), ToolError> {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    // Monotonic per-call counter so two overlapping installs/updates of the same
+    // tool in this process can't race on the same staging/backup paths.
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+    let seq = SEQ.fetch_add(1, Ordering::Relaxed);
+
     let tools_root = dirs.data.join("tools");
     std::fs::create_dir_all(&tools_root)
         .map_err(|e| ToolError::Io(format!("{}: {e}", tools_root.display())))?;
-    let staging = tools_root.join(format!(".staging-{}-{}", tool.id(), std::process::id()));
+    let staging = tools_root.join(format!(
+        ".staging-{}-{}-{seq}",
+        tool.id(),
+        std::process::id()
+    ));
     let _ = std::fs::remove_dir_all(&staging);
     std::fs::create_dir_all(&staging)
         .map_err(|e| ToolError::Io(format!("{}: {e}", staging.display())))?;
@@ -301,17 +311,32 @@ pub(crate) fn stage_and_swap(
         return Err(e);
     }
 
+    // Move the current install aside (rather than deleting it) so a failure
+    // between the swap-out and swap-in leaves the previous, still-valid payload
+    // recoverable instead of uninstalling the tool.
     let final_dir = tool_dir(dirs, tool);
+    let backup = tools_root.join(format!(
+        ".previous-{}-{}-{seq}",
+        tool.id(),
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&backup);
     if final_dir.exists() {
-        if let Err(e) = std::fs::remove_dir_all(&final_dir) {
+        if let Err(e) = std::fs::rename(&final_dir, &backup) {
             let _ = std::fs::remove_dir_all(&staging);
             return Err(ToolError::Io(format!("{}: {e}", final_dir.display())));
         }
     }
-    std::fs::rename(&staging, &final_dir).map_err(|e| {
+    if let Err(e) = std::fs::rename(&staging, &final_dir) {
+        // Roll the previous install back into place before surfacing the error.
+        if backup.exists() {
+            let _ = std::fs::rename(&backup, &final_dir);
+        }
         let _ = std::fs::remove_dir_all(&staging);
-        ToolError::Io(format!("{}: {e}", final_dir.display()))
-    })
+        return Err(ToolError::Io(format!("{}: {e}", final_dir.display())));
+    }
+    let _ = std::fs::remove_dir_all(&backup);
+    Ok(())
 }
 
 #[cfg(test)]

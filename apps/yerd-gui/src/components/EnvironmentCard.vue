@@ -146,6 +146,7 @@ watch(
 const anyFixable = computed(() => envItems.value.some((i) => i.fixable));
 
 async function onFixAll(): Promise<void> {
+  if (busy.value) return;
   busy.value = "elevate:all";
   try {
     if (platform.value === "macos") {
@@ -195,6 +196,7 @@ async function onTrustCa(): Promise<void> {
 }
 
 async function onElevate(target: ElevateTarget): Promise<void> {
+  if (busy.value) return;
   busy.value = `elevate:${target}`;
   try {
     if (target === "trust") {
@@ -235,6 +237,7 @@ function openUnelevate(target: ElevateTarget): void {
   unelevateOpen.value = true;
 }
 async function confirmUnelevate(close: () => void): Promise<void> {
+  if (busy.value) return;
   const target = pendingUnelevate.value;
   if (!target) return;
   busy.value = `unelevate:${target}`;
@@ -277,7 +280,7 @@ async function confirmUnelevate(close: () => void): Promise<void> {
       <Button
         v-if="canElevate"
         size="sm"
-        :disabled="!anyFixable || busy === 'elevate:all'"
+        :disabled="!anyFixable || busy !== null"
         @click="onFixAll"
       >
         <Spinner v-if="busy === 'elevate:all'" class="size-4" />
@@ -312,7 +315,7 @@ async function confirmUnelevate(close: () => void): Promise<void> {
                   v-if="canElevate"
                   variant="outline"
                   size="sm"
-                  :disabled="busy === `elevate:${item.target}`"
+                  :disabled="busy !== null"
                   @click="onElevate(item.target)"
                 >
                   <Spinner v-if="busy === `elevate:${item.target}`" class="size-4" />
@@ -330,7 +333,7 @@ async function confirmUnelevate(close: () => void): Promise<void> {
                 v-else-if="item.unelevatable && canElevate"
                 variant="ghost"
                 size="sm"
-                :disabled="busy === `unelevate:${item.target}`"
+                :disabled="busy !== null"
                 @click="openUnelevate(item.target)"
               >
                 <Spinner v-if="busy === `unelevate:${item.target}`" class="size-4" />

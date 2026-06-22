@@ -1,5 +1,6 @@
 import DefaultTheme from 'vitepress/theme'
 import type { Theme } from 'vitepress'
+import Layout from './Layout.vue'
 import ThemedImage from './components/ThemedImage.vue'
 import ShowcaseRow from './components/ShowcaseRow.vue'
 import './custom.css'
@@ -9,6 +10,7 @@ import './custom.css'
 // screenshots.
 export default {
   extends: DefaultTheme,
+  Layout,
   enhanceApp({ app }) {
     app.component('ThemedImage', ThemedImage)
     app.component('ShowcaseRow', ShowcaseRow)

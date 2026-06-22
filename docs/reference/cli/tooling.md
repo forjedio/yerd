@@ -23,7 +23,7 @@ directory to your `PATH` once with [`yerd path install`](#path-setup).
 yerd tools
 ```
 
-```
+```text
 TOOL      STATUS          COMMANDS
 composer  2.10.1          composer
 node      v24.17.0        node,npm,npx

@@ -410,12 +410,15 @@ const configTarget = ref<ServiceStatus | null>(null);
 const configDbs = ref<DatabaseSummary[]>([]);
 const configDbName = ref<string>("");
 const configDbLoading = ref(false);
+// Bumped on each open so a slow listDatabases can't overwrite a newer modal.
+const configReqSeq = ref(0);
 
 const configDbOptions = computed(() =>
   configDbs.value.map((d) => ({ value: d.name, label: d.name })),
 );
 
 async function openConfig(s: ServiceStatus): Promise<void> {
+  const reqSeq = ++configReqSeq.value;
   configTarget.value = s;
   configDbName.value = "";
   configDbs.value = [];
@@ -424,12 +427,15 @@ async function openConfig(s: ServiceStatus): Promise<void> {
   if (s.supports_databases && s.state === "running") {
     configDbLoading.value = true;
     try {
-      configDbs.value = await listDatabases(s.service);
-      configDbName.value = configDbs.value[0]?.name ?? "";
+      const dbs = await listDatabases(s.service);
+      if (reqSeq !== configReqSeq.value) return; // a newer open superseded us
+      configDbs.value = dbs;
+      configDbName.value = dbs[0]?.name ?? "";
     } catch {
+      if (reqSeq !== configReqSeq.value) return;
       configDbs.value = [];
     } finally {
-      configDbLoading.value = false;
+      if (reqSeq === configReqSeq.value) configDbLoading.value = false;
     }
   }
 }

@@ -218,7 +218,8 @@ export async function listServices(): Promise<ServiceStatus[]> {
 
 export async function listTools(): Promise<ToolStatus[]> {
   const r = ensureOk(await call<Response>("list_tools"));
-  return r.type === "tools" ? r.tools : [];
+  if (r.type !== "tools") throw new IpcError("unexpected response", "internal");
+  return r.tools;
 }
 
 /** Install (or update to latest) a dev tool by id. Slow — downloads + verifies. */

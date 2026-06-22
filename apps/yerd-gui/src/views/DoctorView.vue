@@ -22,6 +22,7 @@ const { refresh: refreshStatus } = useDaemon();
 
 const diagnoses = ref<Diagnosis[]>([]);
 const diagLoading = ref(true);
+const diagError = ref(false);
 const fixing = ref(false);
 
 // "Run safe fixes" is only enabled when at least one finding is a warning/failure.
@@ -53,10 +54,12 @@ const allClear = computed(
 
 async function loadDiagnoses(notify = false): Promise<void> {
   diagLoading.value = true;
+  diagError.value = false;
   try {
     diagnoses.value = await diagnose();
     if (notify) toast.success("Health re-checked");
   } catch (e) {
+    diagError.value = true;
     toast.error("Couldn't run diagnostics", (e as IpcError).message);
   } finally {
     diagLoading.value = false;
@@ -122,6 +125,15 @@ onMounted(() => void loadDiagnoses());
         </CardHeader>
         <CardContent>
           <div v-if="diagLoading" class="flex justify-center py-8"><Spinner class="size-5" /></div>
+          <div
+            v-else-if="diagError"
+            class="flex flex-col items-center gap-2 py-10 text-center"
+          >
+            <p class="text-sm font-medium">Health check unavailable</p>
+            <p class="text-sm text-muted-foreground">
+              Couldn't fetch diagnostics from the daemon.
+            </p>
+          </div>
           <div
             v-else-if="allClear"
             class="flex flex-col items-center gap-2 py-10 text-center"

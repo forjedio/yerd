@@ -9,8 +9,8 @@ describe("humaniseBytes", () => {
     expect(humaniseBytes(5 * 1024 * 1024)).toBe("5.0 MB");
   });
   it("dashes on null/undefined", () => {
-    expect(humaniseBytes(null)).toBe("—");
-    expect(humaniseBytes(undefined)).toBe("—");
+    expect(humaniseBytes(null)).toBe("-");
+    expect(humaniseBytes(undefined)).toBe("-");
   });
 });
 
@@ -28,6 +28,6 @@ describe("formatLoadAvg", () => {
     expect(formatLoadAvg([100, 50, 25])).toBe("1.00  0.50  0.25");
   });
   it("dashes when unavailable", () => {
-    expect(formatLoadAvg(null)).toBe("—");
+    expect(formatLoadAvg(null)).toBe("-");
   });
 });

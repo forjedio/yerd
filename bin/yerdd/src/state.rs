@@ -101,4 +101,8 @@ pub struct DaemonState {
     /// `tokio::spawn`-per-connection, so two clients can reconcile the `{data}/bin`
     /// shims concurrently; this guard keeps the (sync) scan→prune from interleaving.
     pub shim_reconcile: Mutex<()>,
+    /// Serializes dev-tool (`composer`/`node`/`bun`) install/uninstall mutations.
+    /// IPC dispatch is `tokio::spawn`-per-connection, so two clients could swap
+    /// `{data}/tools/<id>` concurrently; this guard makes commit+reconcile atomic.
+    pub tool_mutate: Mutex<()>,
 }

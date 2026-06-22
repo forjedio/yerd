@@ -89,7 +89,7 @@ mod unix {
             }
         }
 
-        report(&touched, install, &bin_dir);
+        report(&touched, install, &bin_dir, any_err);
         if any_err {
             ExitCode::FAILURE
         } else {
@@ -135,7 +135,13 @@ mod unix {
     /// created). A broken/parent-relative case falls back to `rc` itself.
     fn resolve_symlink(rc: &Path) -> std::io::Result<PathBuf> {
         match std::fs::symlink_metadata(rc) {
-            Ok(m) if m.file_type().is_symlink() => Ok(std::fs::canonicalize(rc)?),
+            // A broken (dangling-target) symlink can't be canonicalized — fall
+            // back to `rc` itself, as documented, instead of aborting.
+            Ok(m) if m.file_type().is_symlink() => match std::fs::canonicalize(rc) {
+                Ok(real) => Ok(real),
+                Err(ref e) if e.kind() == std::io::ErrorKind::NotFound => Ok(rc.to_path_buf()),
+                Err(e) => Err(e),
+            },
             Ok(_) => Ok(rc.to_path_buf()),
             Err(ref e) if e.kind() == std::io::ErrorKind::NotFound => Ok(rc.to_path_buf()),
             Err(e) => Err(e),
@@ -155,27 +161,46 @@ mod unix {
     /// existing file mode, defaulting to 0o644 for a new file.
     fn write_atomic(dest: &Path, prev: &str, contents: &str) -> std::io::Result<()> {
         use std::os::unix::fs::PermissionsExt;
+        use std::sync::atomic::{AtomicU64, Ordering};
+
+        // Monotonic per-call counter so two concurrent edits in the same process
+        // (or a retry loop) can't collide on the same temp path.
+        static SEQ: AtomicU64 = AtomicU64::new(0);
 
         if let Some(parent) = dest.parent() {
             std::fs::create_dir_all(parent)?;
         }
         let mode = std::fs::metadata(dest).map(|m| m.permissions().mode()).ok();
 
+        let seq = SEQ.fetch_add(1, Ordering::Relaxed);
         let mut name = dest.file_name().unwrap_or_default().to_os_string();
-        name.push(format!(".yerd-tmp-{}", std::process::id()));
+        name.push(format!(".yerd-tmp-{}-{seq}", std::process::id()));
         let tmp = dest.with_file_name(name);
         let _ = std::fs::remove_file(&tmp);
 
-        // Best-effort guard against a concurrent edit between read and write.
-        let _ = prev;
+        // Best-effort guard against a concurrent edit between the read we based
+        // `contents` on and this write: if `dest` no longer matches `prev`,
+        // someone else changed it under us — bail rather than clobber.
+        if let Ok(current) = std::fs::read_to_string(dest) {
+            if current != prev {
+                return Err(std::io::Error::other(
+                    "file changed on disk since it was read",
+                ));
+            }
+        }
+
         std::fs::write(&tmp, contents)?;
         let m = mode.unwrap_or(0o644);
         std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(m))?;
         std::fs::rename(&tmp, dest)
     }
 
-    fn report(touched: &[PathBuf], install: bool, bin_dir: &Path) {
+    fn report(touched: &[PathBuf], install: bool, bin_dir: &Path, had_errors: bool) {
         if touched.is_empty() {
+            // All edits failed (already reported above) — don't claim "nothing to do".
+            if had_errors {
+                return;
+            }
             if install {
                 println!("yerd: PATH already configured — nothing to do.");
             } else {

@@ -136,8 +136,13 @@ fn unpack_zip(zip_bytes: &[u8], dest: &Path, label: &str) -> Result<(), ToolErro
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let mode = entry.unix_mode().unwrap_or(0o644);
-            let _ = std::fs::set_permissions(&out, std::fs::Permissions::from_mode(mode));
+            let mode = match entry.unix_mode() {
+                Some(mode) => mode,
+                None if name.ends_with("/bun") || name == "bun" => 0o755,
+                None => 0o644,
+            };
+            std::fs::set_permissions(&out, std::fs::Permissions::from_mode(mode))
+                .map_err(|e| ToolError::Unpack(format!("{}: {e}", out.display())))?;
         }
     }
     Ok(())

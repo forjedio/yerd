@@ -47,10 +47,9 @@ const sitesLoaded = ref(false);
 async function loadSites(): Promise<void> {
   try {
     sites.value = await listSites();
+    sitesLoaded.value = true;
   } catch {
     sites.value = []; // a chip strip is non-critical; the headline still shows
-  } finally {
-    sitesLoaded.value = true;
   }
 }
 
