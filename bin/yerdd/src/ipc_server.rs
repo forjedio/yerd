@@ -139,7 +139,10 @@ async fn dispatch(req: Request, state: &DaemonState) -> Response {
             report: Box::new(build_status_report(state).await),
         },
         Request::Diagnose => Response::Diagnoses {
-            items: yerd_doctor::diagnose(&build_status_report(state).await),
+            items: yerd_doctor::diagnose(
+                &build_status_report(state).await,
+                path_needs_setup(state),
+            ),
         },
         Request::DoctorFix => run_doctor_fix(state).await,
         // Arm the restart flag; `handle_client` trips the shutdown broadcast
@@ -309,6 +312,50 @@ async fn available_php_with(state: &DaemonState, dl: &dyn yerd_php::Downloader) 
     Response::AvailablePhp {
         available: yerd_php::available_minors(&listing, os, arch),
         installed: installed_versions(state),
+    }
+}
+
+/// Whether a dev tool is installed but Yerd's `{data}/bin` isn't on the user's
+/// PATH yet (no managed block in any known shell rc) — drives the doctor's
+/// [`yerd_ipc::DiagnosisCode::BinDirNotOnPath`] warning. `Some(false)` when no
+/// tool is installed or PATH is already wired; `None` when undeterminable
+/// (non-Unix, or `$HOME` unset). Computed on demand from the `Diagnose` handler,
+/// not on the per-poll status path. The cover/pcov shims alone don't count — the
+/// gate is an actual installed dev tool.
+fn path_needs_setup(state: &DaemonState) -> Option<bool> {
+    #[cfg(not(unix))]
+    {
+        let _ = state;
+        None
+    }
+    #[cfg(unix)]
+    {
+        use yerd_platform::pure::shell_profile::{self, rc_relpaths, HostOs, Shell};
+
+        let any_tool = crate::tools::list_status(&state.dirs)
+            .iter()
+            .any(|t| t.installed);
+        if !any_tool {
+            return Some(false);
+        }
+        let home = std::env::var_os("HOME")
+            .filter(|h| !h.is_empty())
+            .map(std::path::PathBuf::from)?;
+        let os = if cfg!(target_os = "macos") {
+            HostOs::MacOs
+        } else {
+            HostOs::Linux
+        };
+        // Check the union of candidate rc files across shells (the daemon may not
+        // have $SHELL set), so the probe doesn't depend on shell detection.
+        let present = [Shell::Zsh, Shell::Bash, Shell::Fish, Shell::Posix]
+            .into_iter()
+            .flat_map(|s| rc_relpaths(s, os))
+            .any(|rel| {
+                std::fs::read_to_string(home.join(rel))
+                    .is_ok_and(|c| shell_profile::contains_block(&c))
+            });
+        Some(!present)
     }
 }
 
@@ -563,7 +610,7 @@ async fn run_doctor_fix(state: &DaemonState) -> Response {
 
     // Re-diagnose against a fresh report; surface the remaining problems.
     let after = build_status_report(state).await;
-    let manual = yerd_doctor::diagnose(&after)
+    let manual = yerd_doctor::diagnose(&after, path_needs_setup(state))
         .into_iter()
         .filter(|d| {
             matches!(

@@ -188,6 +188,7 @@ export type DiagnosisCode =
   | "no_sites"
   | "resolver_backup_saved"
   | "service_failed"
+  | "bin_dir_not_on_path"
   | "all_good";
 
 export interface Diagnosis {

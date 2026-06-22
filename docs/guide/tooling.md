@@ -75,8 +75,10 @@ tool; Yerd's goal here is a good default that's always there.
 
 ## Put Yerd's bin directory on your PATH
 
-The tool commands live in Yerd's `{data}/bin` directory. Add it to your shell
-once:
+The tool commands live in Yerd's `{data}/bin` directory. Installing your first
+tool from the CLI **adds it to your shell automatically** — so usually there's
+nothing to do. If you installed via the desktop app, or want to manage the entry
+yourself, run it once:
 
 ```sh
 yerd path install     # adds {data}/bin to your shell startup file

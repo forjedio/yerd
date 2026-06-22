@@ -31,6 +31,21 @@ pub fn run(_action: PathAction) -> ExitCode {
     ExitCode::FAILURE
 }
 
+/// Idempotently add the PATH block after a successful tool install (best-effort,
+/// quiet). Called from the CLI's install path so `composer`/`node`/`bun` resolve
+/// in the user's shell without a separate `yerd path install`. The
+/// `BinDirNotOnPath` doctor warning is the backstop when this can't run.
+/// `quiet` (set under `--json`) still performs the rc edit but suppresses the
+/// human note, so machine consumers reading stdout get clean JSON.
+#[cfg(unix)]
+pub fn ensure_installed_after_tool(quiet: bool) {
+    unix::ensure_installed_after_tool(quiet);
+}
+
+/// Non-Unix: no-op (PATH management isn't wired here yet; doctor warns instead).
+#[cfg(not(unix))]
+pub fn ensure_installed_after_tool(_quiet: bool) {}
+
 #[cfg(unix)]
 mod unix {
     use std::path::{Path, PathBuf};
@@ -94,6 +109,39 @@ mod unix {
             ExitCode::FAILURE
         } else {
             ExitCode::SUCCESS
+        }
+    }
+
+    /// Add the PATH block after a tool install — idempotent and quiet. Does
+    /// nothing when it's already present, or when the shell / `$HOME` can't be
+    /// determined (the `BinDirNotOnPath` doctor warning is the backstop). Prints
+    /// a one-line note only when it actually adds the block, so repeat installs
+    /// stay silent.
+    pub fn ensure_installed_after_tool(quiet: bool) {
+        let Ok(d) = ActivePaths::new().resolve() else {
+            return;
+        };
+        let bin_dir = d.data.join("bin");
+        let Some(shell) = detect_shell(&shell_basename()) else {
+            return;
+        };
+        let Some(home) = std::env::var_os("HOME")
+            .filter(|h| !h.is_empty())
+            .map(PathBuf::from)
+        else {
+            return;
+        };
+        let mut added = false;
+        for rel in rc_relpaths(shell, host_os()) {
+            if let Ok(true) = edit_one(&home.join(&rel), shell, &bin_dir, true) {
+                added = true;
+            }
+        }
+        if added && !quiet {
+            println!(
+                "\nyerd: added {} to your PATH. Open a new terminal to use installed tools.",
+                bin_dir.display()
+            );
         }
     }
 

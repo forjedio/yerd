@@ -376,6 +376,9 @@ pub enum DiagnosisCode {
     NoSites,
     /// Installing the OS resolver replaced a pre-existing file, which Yerd backed up.
     ResolverBackupSaved,
+    /// A dev tool is installed but Yerd's `{data}/bin` isn't on the user's PATH,
+    /// so the tool's commands won't resolve in the shell (remedy: `yerd path install`).
+    BinDirNotOnPath,
     /// Everything checks out.
     AllGood,
 }

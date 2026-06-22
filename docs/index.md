@@ -1,6 +1,10 @@
 ---
 layout: home
 
+# A descriptive <title> for the homepage (the default would just be "Yerd").
+title: Yerd - Local PHP development environment for macOS & Linux
+titleTemplate: false
+
 hero:
   name: Yerd
   text: Local PHP, without the friction.

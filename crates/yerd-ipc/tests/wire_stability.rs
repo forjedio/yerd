@@ -804,6 +804,7 @@ fn diagnosis_code_each_variant_byte_shape() {
             r#""resolver_backup_saved""#,
         ),
         (DiagnosisCode::ServiceFailed, r#""service_failed""#),
+        (DiagnosisCode::BinDirNotOnPath, r#""bin_dir_not_on_path""#),
         (DiagnosisCode::AllGood, r#""all_good""#),
     ];
     for (code, expected) in cases {

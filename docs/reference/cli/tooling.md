@@ -9,8 +9,10 @@ command reference.
 ::: info Latest only
 Yerd installs the latest stable release of each tool (latest **LTS** for Node).
 There is no per-version selection — installing again updates to the current
-latest. To make a tool's commands resolve in your shell, add Yerd's bin
-directory to your `PATH` once with [`yerd path install`](#path-setup).
+latest. Installing your first tool from the CLI **automatically adds** Yerd's bin
+directory to your `PATH`; you can also manage it yourself with
+[`yerd path install`](#path-setup). If the bin directory isn't on your `PATH`,
+[`yerd doctor`](./diagnostics) flags it with the one-line fix.
 :::
 
 ## Listing

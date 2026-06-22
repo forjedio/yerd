@@ -69,6 +69,20 @@ pub async fn run(cli: Cli) -> ExitCode {
             {
                 print_php_path_hint();
             }
+            // After installing a dev tool, wire Yerd's bin dir onto PATH so the
+            // tool's commands resolve in a new shell (idempotent; quiet if
+            // already configured). The Doctor `BinDirNotOnPath` warning backstops
+            // the GUI / any case this can't run.
+            if r.code == 0
+                && matches!(
+                    cli.command,
+                    Command::Install {
+                        target: crate::cli::InstallTarget::Tool { .. }
+                    }
+                )
+            {
+                path_cmd::ensure_installed_after_tool(cli.json);
+            }
             ExitCode::from(r.code)
         }
         Err(e @ ClientError::DaemonUnreachable(_)) => {
