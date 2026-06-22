@@ -8,7 +8,7 @@
 //! proxy and `ListSites` take a router *read* guard and never touch the config
 //! mutex, so there is no cross-lock cycle.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
@@ -105,4 +105,10 @@ pub struct DaemonState {
     /// IPC dispatch is `tokio::spawn`-per-connection, so two clients could swap
     /// `{data}/tools/<id>` concurrently; this guard makes commit+reconcile atomic.
     pub tool_mutate: Mutex<()>,
+    /// Background-job registry. Long-running operations (site creation) run as
+    /// jobs whose streamed progress the client polls via `JobStatus`.
+    pub jobs: crate::jobs::JobRegistry,
+    /// Site names held by an in-flight `CreateSite` job, so two concurrent
+    /// creates can't both scaffold (then fight over registering) the same name.
+    pub reserved_names: Mutex<HashSet<String>>,
 }

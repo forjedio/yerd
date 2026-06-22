@@ -15,6 +15,7 @@
 pub mod args;
 pub mod backend_resolver;
 pub mod cert_store;
+pub mod create_site;
 pub mod db_admin;
 pub mod detect_cache;
 pub mod dump_server;
@@ -22,6 +23,7 @@ pub mod error;
 pub mod ext_install;
 pub mod fs_watch;
 pub mod ipc_server;
+pub mod jobs;
 pub mod mutate;
 pub mod php_install;
 pub mod php_updates;

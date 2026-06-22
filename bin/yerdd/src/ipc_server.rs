@@ -62,7 +62,19 @@ async fn handle_client(stream: IpcStream, state: Arc<DaemonState>) {
                 return;
             }
         };
-        let resp = dispatch(req, &state).await;
+        // Site creation and job polling are matched here (not in `dispatch`)
+        // because they need the owned `Arc<DaemonState>`: `CreateSite` spawns a
+        // background task that outlives this connection. Everything else routes
+        // through the borrowing `dispatch`.
+        let resp = match req {
+            Request::CreateSite { spec } => crate::create_site::start(spec, state.clone()).await,
+            Request::InstallToolStreamed { tool } => {
+                install_tool_streamed(tool, state.clone()).await
+            }
+            Request::JobStatus { job_id, cursor } => state.jobs.poll(&job_id, cursor).await,
+            Request::JobCancel { job_id } => state.jobs.cancel(&job_id).await,
+            other => dispatch(other, &state).await,
+        };
         if let Err(e) = write_message(&mut writer, &resp, DEFAULT_MAX_FRAME).await {
             tracing::debug!(error = %e, "ipc write error");
             return;
@@ -769,7 +781,7 @@ async fn install_tool(tool: &str, state: &DaemonState) -> Response {
     // `{data}/tools/<id>` (commit) + `{data}/bin` (reconcile) would otherwise
     // race and could leave files and shims inconsistent.
     let _mutate = state.tool_mutate.lock().await;
-    match crate::tools::install(t, &state.dirs, &dl).await {
+    match crate::tools::install(t, &state.dirs, &dl, None).await {
         Ok(()) => {
             reconcile_tool_shims_now(state).await;
             Response::Ok
@@ -779,6 +791,61 @@ async fn install_tool(tool: &str, state: &DaemonState) -> Response {
             message: e.to_string(),
         },
     }
+}
+
+/// `InstallToolStreamed` — install a tool as a background job, streaming its
+/// output (Composer's, for the Laravel installer) into the job log. Returns
+/// `JobStarted` immediately; the client polls `JobStatus`.
+pub(crate) async fn install_tool_streamed(tool: String, state: Arc<DaemonState>) -> Response {
+    let Some(t) = crate::tools::Tool::parse(&tool) else {
+        return Response::Error {
+            code: ErrorCode::NotFound,
+            message: format!("unknown tool {tool:?}"),
+        };
+    };
+    let (job_id, _cancel) = state.jobs.create().await;
+    let id = job_id.clone();
+    tokio::spawn(async move {
+        // Forward streamed lines into the job log via a drain task.
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+        let drain = {
+            let state = state.clone();
+            let id = id.clone();
+            tokio::spawn(async move {
+                while let Some(line) = rx.recv().await {
+                    state.jobs.push_log(&id, line).await;
+                }
+            })
+        };
+
+        state
+            .jobs
+            .set_phase(&id, format!("Installing {}", t.display_name()))
+            .await;
+        let dl = crate::php_install::ReqwestDownloader::new();
+        let guard = state.tool_mutate.lock().await;
+        let result = crate::tools::install(t, &state.dirs, &dl, Some(&tx)).await;
+        drop(guard);
+        drop(tx); // close the channel so the drain task finishes
+        let _ = drain.await;
+
+        match result {
+            Ok(()) => {
+                reconcile_tool_shims_now(&state).await;
+                state
+                    .jobs
+                    .finish(&id, yerd_ipc::JobState::Succeeded, None)
+                    .await;
+            }
+            Err(e) => {
+                state
+                    .jobs
+                    .finish(&id, yerd_ipc::JobState::Failed, Some(e.to_string()))
+                    .await;
+            }
+        }
+    });
+    Response::JobStarted { job_id }
 }
 
 /// `uninstall tool <id>` — remove the tool's files, then prune its shims.
@@ -1074,7 +1141,7 @@ fn php_error_code(e: &yerd_php::PhpError) -> ErrorCode {
 /// Apply a mutation: canonicalise paths, run the pure delta, validate, persist,
 /// and swap the live router — **build-then-validate-then-commit** so a failed
 /// mutation leaves disk and the live router untouched.
-async fn handle_mutation(req: Request, state: &DaemonState) -> Response {
+pub(crate) async fn handle_mutation(req: Request, state: &DaemonState) -> Response {
     // 1. Canonicalise the path (Park/Link) *outside* the lock.
     let canonical = match &req {
         Request::Park { path } | Request::Link { path, .. } => match canonicalize_dir(path) {
@@ -1366,6 +1433,8 @@ mod tests {
             dumps: std::sync::Arc::new(crate::dump_server::DumpStore::new()),
             shim_reconcile: tokio::sync::Mutex::new(()),
             tool_mutate: tokio::sync::Mutex::new(()),
+            jobs: crate::jobs::JobRegistry::default(),
+            reserved_names: tokio::sync::Mutex::new(std::collections::HashSet::new()),
         }
     }
 

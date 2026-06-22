@@ -9,6 +9,7 @@
 
 pub mod bun;
 pub mod composer;
+pub mod laravel;
 pub mod node;
 
 use std::path::{Path, PathBuf};
@@ -28,6 +29,9 @@ pub enum Tool {
     Node,
     /// Bun — `bun`, `bunx`.
     Bun,
+    /// The Laravel installer (`laravel new`) — a Composer package run via the
+    /// managed PHP, exposed as the `laravel` multi-call shim.
+    Laravel,
 }
 
 /// Filename of the installed-version marker inside a tool's dir.
@@ -35,7 +39,7 @@ const VERSION_MARKER: &str = ".version";
 
 impl Tool {
     /// Every tool, for `list_status` / reconcile.
-    pub const ALL: [Tool; 3] = [Tool::Composer, Tool::Node, Tool::Bun];
+    pub const ALL: [Tool; 4] = [Tool::Composer, Tool::Node, Tool::Bun, Tool::Laravel];
 
     /// Stable id used on the wire and as the on-disk dir name.
     #[must_use]
@@ -44,6 +48,7 @@ impl Tool {
             Tool::Composer => "composer",
             Tool::Node => "node",
             Tool::Bun => "bun",
+            Tool::Laravel => "laravel",
         }
     }
 
@@ -54,6 +59,7 @@ impl Tool {
             Tool::Composer => "Composer",
             Tool::Node => "Node.js",
             Tool::Bun => "Bun",
+            Tool::Laravel => "Laravel Installer",
         }
     }
 
@@ -64,6 +70,7 @@ impl Tool {
             Tool::Composer => &["composer"],
             Tool::Node => &["node", "npm", "npx"],
             Tool::Bun => &["bun", "bunx"],
+            Tool::Laravel => &["laravel"],
         }
     }
 
@@ -104,7 +111,7 @@ pub(crate) fn tool_dir(dirs: &PlatformDirs, tool: Tool) -> PathBuf {
 }
 
 /// `{data}/bin`.
-fn bin_dir(dirs: &PlatformDirs) -> PathBuf {
+pub(crate) fn bin_dir(dirs: &PlatformDirs) -> PathBuf {
     dirs.data.join("bin")
 }
 
@@ -142,18 +149,41 @@ pub fn list_status(dirs: &PlatformDirs) -> Vec<ToolStatus> {
     Tool::ALL.iter().map(|&t| status(dirs, t)).collect()
 }
 
+/// A sink for streamed install output (one line per send). The streamed-install
+/// job drains it into the job log; the blocking path passes `None`.
+pub type ProgressTx = tokio::sync::mpsc::UnboundedSender<String>;
+
+/// Emit one progress line if a sink is attached.
+fn note(progress: Option<&ProgressTx>, msg: impl Into<String>) {
+    if let Some(tx) = progress {
+        let _ = tx.send(msg.into());
+    }
+}
+
 /// Download + install `tool`'s latest release. Idempotent (replaces in place via
 /// staging + atomic swap). Best-effort integrity is sha256-verified per asset.
+/// When `progress` is set, coarse status (and, for the Laravel installer, the
+/// live Composer output) is streamed to it.
 pub async fn install(
     tool: Tool,
     dirs: &PlatformDirs,
     dl: &dyn Downloader,
+    progress: Option<&ProgressTx>,
 ) -> Result<(), ToolError> {
-    match tool {
+    note(progress, format!("Installing {}…", tool.display_name()));
+    let result = match tool {
         Tool::Composer => composer::install(dirs, dl).await,
         Tool::Node => node::install(dirs, dl).await,
         Tool::Bun => bun::install(dirs, dl).await,
+        // The installer is a Composer package, not a downloadable artifact, so it
+        // ignores `dl` and drives the managed Composer itself — streaming its output.
+        Tool::Laravel => laravel::install(dirs, progress).await,
+    };
+    match &result {
+        Ok(()) => note(progress, format!("Installed {}", tool.display_name())),
+        Err(e) => note(progress, format!("Error: {e}")),
     }
+    result
 }
 
 /// Remove `tool`'s files. The `{data}/bin` shims are pruned by a subsequent
@@ -176,6 +206,8 @@ fn shim_links(dirs: &PlatformDirs, tool: Tool, yerd_bin: &Path) -> Vec<(String, 
         Tool::Composer => vec![("composer".to_owned(), yerd_bin.to_path_buf())],
         Tool::Node => node::shim_links(dirs),
         Tool::Bun => bun::shim_links(dirs),
+        // The `laravel` command is likewise a multi-call shim into `yerd`.
+        Tool::Laravel => vec![("laravel".to_owned(), yerd_bin.to_path_buf())],
     }
 }
 

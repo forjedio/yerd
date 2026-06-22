@@ -20,6 +20,7 @@
 //! protocol against an older daemon surfaces as [`IpcError::Decode`]
 //! when an unknown `type` tag arrives.
 
+mod create;
 mod dump;
 mod error;
 mod frame;
@@ -35,6 +36,10 @@ mod transport;
 /// add a handshake before doing so.
 pub const PROTOCOL_VERSION: u32 = 1;
 
+pub use create::{
+    AuthProvider, CreateSiteSpec, Database, Framework, JobId, JobState, JsRuntime, LaravelOptions,
+    StarterKit, Testing,
+};
 pub use dump::{DumpCategory, DumpCounts, DumpEvent, DumpExtStatus};
 pub use error::{FrameError, IpcError, IpcErrorKind};
 pub use frame::{encode_frame, FrameDecoder, DEFAULT_MAX_FRAME};

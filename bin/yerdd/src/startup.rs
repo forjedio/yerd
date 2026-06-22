@@ -273,6 +273,8 @@ pub async fn bring_up_with_dirs(
         dumps: Arc::new(crate::dump_server::DumpStore::new()),
         shim_reconcile: tokio::sync::Mutex::new(()),
         tool_mutate: tokio::sync::Mutex::new(()),
+        jobs: crate::jobs::JobRegistry::default(),
+        reserved_names: tokio::sync::Mutex::new(std::collections::HashSet::new()),
     });
 
     // Seed the extension's runtime state file from the persisted `[dumps]`

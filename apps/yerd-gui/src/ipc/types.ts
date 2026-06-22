@@ -258,6 +258,49 @@ export interface DumpExtStatus {
   present: boolean;
 }
 
+// ── site creation (create.rs) ───────────────────────────────────────────────
+// Unlike most requests, the GUI *does* build this payload (the wizard), so the
+// spec types live here and are sent via `createSite`.
+
+/** StarterKit unit variants (externally tagged enum). */
+export type StarterKitTag = "none" | "react" | "vue" | "livewire" | "svelte";
+/** StarterKit: a unit tag, or a community kit `{ community: "<package>" }`. */
+export type StarterKit = StarterKitTag | { community: string };
+
+export type AuthProvider = "laravel" | "work_os";
+export type Testing = "pest" | "php_unit";
+export type Database = "sqlite" | "mysql" | "mariadb" | "pgsql" | "sqlsrv";
+export type JsRuntime = "npm" | "bun" | "skip";
+
+/** crates/yerd-ipc/src/create.rs — LaravelOptions. */
+export interface LaravelOptions {
+  starter_kit: StarterKit;
+  auth: AuthProvider;
+  livewire_class_components: boolean;
+  teams: boolean;
+  testing: Testing;
+  database: Database;
+  js: JsRuntime;
+  git: boolean;
+  boost: boolean;
+}
+
+/** Framework is internally tagged on `framework`. Only Laravel today. */
+export type Framework = { framework: "laravel"; options: LaravelOptions };
+
+/** crates/yerd-ipc/src/create.rs — CreateSiteSpec. */
+export interface CreateSiteSpec {
+  name: string;
+  /** Directory the new project dir is created inside (parked root or any folder). */
+  parent_dir: string;
+  php: PhpVersion;
+  secure: boolean;
+  framework: Framework;
+}
+
+/** crates/yerd-ipc/src/create.rs — JobState. */
+export type JobState = "running" | "succeeded" | "failed" | "cancelled";
+
 // ── response variants (response.rs) ────────────────────────────────────────
 
 export interface PhpUpdate {
@@ -337,7 +380,17 @@ export type Response =
     }
   | { type: "mails"; mails: MailSummary[] }
   | { type: "mail"; mail: MailDetail }
-  | { type: "tools"; tools: ToolStatus[] };
+  | { type: "tools"; tools: ToolStatus[] }
+  | { type: "job_started"; job_id: string }
+  | {
+      type: "job_progress";
+      state: JobState;
+      phase: string;
+      /** Log lines newer than the polled cursor, oldest first. */
+      log: string[];
+      next_cursor: number;
+      error: string | null;
+    };
 
 /** crates/yerd-ipc/src/status.rs — ToolStatus. */
 export interface ToolStatus {
@@ -369,6 +422,8 @@ export type DumpsResponse = Extract<Response, { type: "dumps" }>;
 export type DumpsStatusResponse = Extract<Response, { type: "dumps_status" }>;
 export type MailsResponse = Extract<Response, { type: "mails" }>;
 export type MailResponse = Extract<Response, { type: "mail" }>;
+export type JobStartedResponse = Extract<Response, { type: "job_started" }>;
+export type JobProgressResponse = Extract<Response, { type: "job_progress" }>;
 
 /** Privilege targets for the OS-elevated `yerd elevate` host command. */
 export type ElevateTarget = "trust" | "resolver" | "ports";

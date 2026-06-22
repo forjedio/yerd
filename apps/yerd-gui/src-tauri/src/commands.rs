@@ -453,6 +453,28 @@ pub async fn uninstall_tool(tool: String) -> Result<Response, GuiError> {
     finish(exchange(&Request::UninstallTool { tool }).await?)
 }
 
+#[tauri::command]
+pub async fn install_tool_streamed(tool: String) -> Result<Response, GuiError> {
+    finish(exchange(&Request::InstallToolStreamed { tool }).await?)
+}
+
+// ── site creation ──────────────────────────────────────────────────────────
+
+#[tauri::command]
+pub async fn create_site(spec: yerd_ipc::CreateSiteSpec) -> Result<Response, GuiError> {
+    finish(exchange(&Request::CreateSite { spec }).await?)
+}
+
+#[tauri::command]
+pub async fn job_status(job_id: String, cursor: u64) -> Result<Response, GuiError> {
+    finish(exchange(&Request::JobStatus { job_id, cursor }).await?)
+}
+
+#[tauri::command]
+pub async fn job_cancel(job_id: String) -> Result<Response, GuiError> {
+    finish(exchange(&Request::JobCancel { job_id }).await?)
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::panic)]
 mod tests {

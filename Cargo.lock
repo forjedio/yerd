@@ -6200,6 +6200,7 @@ dependencies = [
  "fs4",
  "hex",
  "interprocess",
+ "nix",
  "notify-debouncer-mini",
  "reqwest 0.12.9",
  "rustls",

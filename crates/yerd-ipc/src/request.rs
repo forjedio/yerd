@@ -328,6 +328,36 @@ pub enum Request {
         /// Tool id.
         tool: String,
     },
+    /// Install a dev tool, streaming its output as a background job. Returns
+    /// [`super::Response::JobStarted`] immediately; progress (and the install's
+    /// stdout/stderr) is polled via [`Self::JobStatus`]. The streaming sibling of
+    /// [`Self::InstallTool`].
+    InstallToolStreamed {
+        /// Tool id (`"composer"`, `"node"`, `"bun"`, `"laravel"`).
+        tool: String,
+    },
+    /// Scaffold and register a brand-new site (e.g. `laravel new`). Long-running:
+    /// the daemon starts a background job and replies [`super::Response::JobStarted`]
+    /// immediately; progress is polled via [`Self::JobStatus`].
+    CreateSite {
+        /// What to create and where.
+        spec: crate::CreateSiteSpec,
+    },
+    /// Poll a running job's progress. `cursor` is the number of log lines the
+    /// client has already seen; the daemon returns only newer lines plus the
+    /// next cursor. Returns [`super::Response::JobProgress`].
+    JobStatus {
+        /// The job to poll.
+        job_id: crate::JobId,
+        /// How many log lines the client already holds.
+        cursor: u64,
+    },
+    /// Request cancellation of a running job (kills its process tree). Returns
+    /// [`super::Response::Ok`].
+    JobCancel {
+        /// The job to cancel.
+        job_id: crate::JobId,
+    },
 }
 
 #[cfg(test)]
@@ -408,6 +438,10 @@ mod variant_name_pinning {
             Request::ListTools => {}
             Request::InstallTool { .. } => {}
             Request::UninstallTool { .. } => {}
+            Request::InstallToolStreamed { .. } => {}
+            Request::CreateSite { .. } => {}
+            Request::JobStatus { .. } => {}
+            Request::JobCancel { .. } => {}
         }
     }
 
@@ -546,5 +580,40 @@ mod variant_name_pinning {
         pin(Request::UninstallTool {
             tool: "node".into(),
         });
+        pin(Request::InstallToolStreamed {
+            tool: "laravel".into(),
+        });
+        pin(Request::CreateSite {
+            spec: crate::CreateSiteSpec {
+                name: "blog".into(),
+                parent_dir: PathBuf::from("/srv"),
+                php: PhpVersion::new(8, 4),
+                secure: true,
+                framework: crate::Framework::Laravel {
+                    options: laravel_options_fixture(),
+                },
+            },
+        });
+        pin(Request::JobStatus {
+            job_id: "j1".into(),
+            cursor: 0,
+        });
+        pin(Request::JobCancel {
+            job_id: "j1".into(),
+        });
+    }
+
+    fn laravel_options_fixture() -> crate::LaravelOptions {
+        crate::LaravelOptions {
+            starter_kit: crate::StarterKit::React,
+            auth: crate::AuthProvider::Laravel,
+            livewire_class_components: false,
+            teams: false,
+            testing: crate::Testing::Pest,
+            database: crate::Database::Sqlite,
+            js: crate::JsRuntime::Npm,
+            git: true,
+            boost: false,
+        }
     }
 }
