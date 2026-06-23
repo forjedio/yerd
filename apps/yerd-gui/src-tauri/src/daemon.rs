@@ -1,18 +1,17 @@
-//! `yerdd` lifecycle from the GUI: locate, install, start, stop.
+//! `yerdd` lifecycle from the GUI: locate, start, stop.
 //!
 //! All host-side — the daemon may be down when these run. Mirrors `elevate.rs`:
 //! resolve trusted binaries relative to our own exe, do blocking work off the
 //! async runtime, and thread every failure through [`GuiError`] (the crate bans
 //! `unwrap`/`expect`/`panic` under clippy). The OS service mechanism
-//! (systemd/launchd) lives in [`crate::autostart`]; this module owns binary
-//! resolution, the release download/install, and the start/stop orchestration.
+//! (systemd/launchd/SMAppService) lives in [`crate::autostart`]; this module owns
+//! binary resolution, the start/stop orchestration, and the optional
+//! "install the bundled CLI on PATH" helper. The daemon binary is **bundled**
+//! inside the app (Tauri `externalBin`) — there is no runtime download.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use crate::error::GuiError;
-
-/// The GitHub repo releases are published under (matches `scripts/install.sh`).
-pub(crate) const REPO: &str = "forjedio/yerd";
 
 // ── binary resolution ───────────────────────────────────────────────────────
 
@@ -23,13 +22,8 @@ pub(crate) fn home_dir() -> Option<PathBuf> {
         .filter(|p| !p.as_os_str().is_empty())
 }
 
-/// Where we install downloaded binaries (sudo-free, on `PATH` for most shells).
-pub(crate) fn install_dir() -> Result<PathBuf, GuiError> {
-    let home = home_dir().ok_or_else(|| GuiError::internal("HOME is not set"))?;
-    Ok(home.join(".local").join("bin"))
-}
-
-/// Directories searched for an installed binary, in priority order.
+/// Directories searched for a binary, in priority order, after the
+/// beside-`current_exe` check.
 fn search_dirs() -> Vec<PathBuf> {
     let mut dirs = Vec::new();
     if let Some(home) = home_dir() {
@@ -40,9 +34,9 @@ fn search_dirs() -> Vec<PathBuf> {
     dirs
 }
 
-/// Resolve an installed binary: first beside our own executable (Linux `.deb`
-/// installs `yerd`/`yerdd`/`yerd-helper` as siblings of `yerd-gui` in
-/// `/usr/bin`), then the usual install dirs. Mirrors
+/// Resolve a bundled binary: first beside our own executable (macOS
+/// `Contents/MacOS/`; Linux `.deb` symlinks `yerd`/`yerdd`/`yerd-helper` into
+/// `/usr/bin` beside `yerd-gui`), then the usual dirs. Mirrors
 /// `bin/yerd/src/elevate.rs::sibling_binaries`.
 pub(crate) fn resolve_binary(name: &str) -> Option<PathBuf> {
     if let Ok(exe) = std::env::current_exe() {
@@ -59,304 +53,147 @@ pub(crate) fn resolve_binary(name: &str) -> Option<PathBuf> {
         .find(|c| c.is_file())
 }
 
-/// The resolved `yerdd` path, if installed.
+/// The resolved `yerdd` path, if present.
 pub(crate) fn resolve_yerdd() -> Option<PathBuf> {
     resolve_binary("yerdd")
 }
 
-/// Is `yerdd` installed (a binary exists on disk)? Note: independent of whether
-/// it's *running* — the auto-install flow gates on reachability too.
+/// Like [`resolve_yerdd`] but **skips the "beside `current_exe`" candidate** —
+/// used on the macOS translocated-fallback path, where the sibling `yerdd` lives
+/// on an ephemeral AppTranslocation mount that vanishes when torn down (launchd
+/// must not be pointed at it). Resolves only from stable install dirs.
+#[cfg(target_os = "macos")]
+pub(crate) fn resolve_yerdd_stable() -> Option<PathBuf> {
+    search_dirs()
+        .into_iter()
+        .map(|d| d.join("yerdd"))
+        .find(|c| c.is_file())
+}
+
+/// Is `yerdd` present on disk? With the daemon bundled this is normally true; it
+/// stays a command so the frontend can surface a clear error if a build/install
+/// is somehow missing the sidecar.
 #[tauri::command]
 pub fn daemon_installed() -> bool {
     resolve_yerdd().is_some()
 }
 
-// ── install (download a matching release) ────────────────────────────────────
+// ── optional: install the bundled `yerd` CLI on PATH (macOS) ─────────────────
+//
+// Linux already exposes `yerd` on PATH (the `.deb` postinst symlinks it into
+// `/usr/bin`), so this is macOS-only. We symlink the bundled `yerd` into
+// `{data}/bin` — the exact dir the `yerd path` rc-block puts on PATH — and shell
+// out to the bundled `yerd path install` to manage the rc block (we do NOT depend
+// on the `bin/yerd` crate; that would violate the dep-flow rule).
 
-/// The Rust target triple of the release asset for this host.
-fn target_triple() -> Result<String, GuiError> {
-    let arch = match std::env::consts::ARCH {
-        "x86_64" => "x86_64",
-        "aarch64" => "aarch64",
-        other => {
-            return Err(GuiError::internal(format!(
-                "unsupported architecture: {other}"
-            )))
+/// `{data}/bin/yerd` — where the CLI symlink lives (matches `yerd path`).
+fn cli_symlink_path() -> Result<PathBuf, GuiError> {
+    use yerd_platform::{ActivePaths, Paths};
+    let dirs = ActivePaths::new()
+        .resolve()
+        .map_err(|e| GuiError::internal(format!("cannot resolve yerd directories: {e}")))?;
+    Ok(dirs.data.join("bin").join("yerd"))
+}
+
+/// Whether the bundled `yerd` CLI is linked onto PATH.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CliPathStatus {
+    /// The `{data}/bin/yerd` symlink exists and resolves to a real file.
+    pub installed: bool,
+    /// The symlink location (for display).
+    pub target: String,
+}
+
+#[tauri::command]
+pub fn cli_path_status() -> Result<CliPathStatus, GuiError> {
+    let link = cli_symlink_path()?;
+    // A dangling symlink (app moved/removed) reports not-installed so the UI can
+    // offer to repair it.
+    let installed = link.symlink_metadata().is_ok() && link.exists();
+    Ok(CliPathStatus {
+        installed,
+        target: link.display().to_string(),
+    })
+}
+
+/// Symlink the bundled `yerd` into `{data}/bin` and ensure that dir is on PATH.
+/// macOS-only behaviour — Linux already exposes `yerd` on PATH via the `.deb`.
+#[tauri::command]
+pub async fn install_cli_to_path() -> Result<(), GuiError> {
+    #[cfg(target_os = "macos")]
+    {
+        // Refuse when translocated: the symlink would point into an ephemeral
+        // `/AppTranslocation/…` mount that disappears.
+        if crate::autostart::is_translocated() {
+            return Err(GuiError::internal(
+                "Move Yerd to your Applications folder first, then install the CLI.",
+            ));
         }
-    };
-    match std::env::consts::OS {
-        // Asset label, not the rustc triple: releases use `generic-linux`.
-        "linux" => Ok(format!("{arch}-generic-linux-gnu")),
-        "macos" => {
-            if arch != "aarch64" {
-                return Err(GuiError::internal(
-                    "Yerd ships Apple Silicon (arm64) builds only; install the CLI manually on Intel Macs (see the docs).",
-                ));
+        let yerd = resolve_binary("yerd")
+            .ok_or_else(|| GuiError::internal("the bundled yerd CLI was not found in the app"))?;
+        let link = cli_symlink_path()?;
+        // The symlink ops and the `yerd path install` subprocess block; run them
+        // off the async runtime so the tray/UI never stalls (mirrors `start`/`stop`).
+        tokio::task::spawn_blocking(move || {
+            if let Some(parent) = link.parent() {
+                std::fs::create_dir_all(parent).map_err(|e| {
+                    GuiError::internal(format!("cannot create {}: {e}", parent.display()))
+                })?;
             }
-            Ok(format!("{arch}-apple-darwin"))
-        }
-        other => Err(GuiError::internal(format!(
-            "auto-install is not supported on this platform ({other}); install the CLI manually"
+            // Replace any existing (possibly dangling) link.
+            let _ = std::fs::remove_file(&link);
+            std::os::unix::fs::symlink(&yerd, &link).map_err(|e| {
+                GuiError::internal(format!("cannot link yerd into {}: {e}", link.display()))
+            })?;
+            // Put `{data}/bin` on PATH via the bundled CLI's own rc-block manager.
+            let out = std::process::Command::new(&yerd)
+                .args(["path", "install"])
+                .output()
+                .map_err(|e| {
+                    GuiError::internal(format!("could not run `yerd path install`: {e}"))
+                })?;
+            if !out.status.success() {
+                return Err(GuiError::internal(format!(
+                    "`yerd path install` failed: {}",
+                    String::from_utf8_lossy(&out.stderr).trim()
+                )));
+            }
+            Ok(())
+        })
+        .await
+        .map_err(|e| GuiError::internal(format!("install task failed: {e}")))?
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        Err(GuiError::internal(
+            "The Yerd CLI is already installed on this platform.",
+        ))
+    }
+}
+
+/// Remove the `{data}/bin/yerd` symlink. (Leaves the `yerd path` rc block alone —
+/// other yerd shims, e.g. `php`/`composer`, also live in `{data}/bin`.)
+#[tauri::command]
+pub fn remove_cli_from_path() -> Result<(), GuiError> {
+    let link = cli_symlink_path()?;
+    match std::fs::remove_file(&link) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(GuiError::internal(format!(
+            "cannot remove {}: {e}",
+            link.display()
         ))),
     }
 }
 
-fn http_client() -> Result<reqwest::Client, GuiError> {
-    reqwest::Client::builder()
-        .user_agent(concat!("yerd-gui/", env!("CARGO_PKG_VERSION")))
-        .build()
-        .map_err(|e| GuiError::internal(format!("could not build HTTP client: {e}")))
-}
-
-/// Resolve the version to install: the GUI's own version if a release is
-/// published for it, else the latest stable release (mirrors install.sh, which
-/// uses `releases/latest` to avoid 404s on dev builds whose version isn't tagged).
-async fn resolve_version(client: &reqwest::Client) -> Result<String, GuiError> {
-    let pkg = env!("CARGO_PKG_VERSION");
-    let sums = format!("https://github.com/{REPO}/releases/download/v{pkg}/SHA256SUMS");
-    if let Ok(resp) = client.head(&sums).send().await {
-        if resp.status().is_success() {
-            return Ok(pkg.to_owned());
-        }
-    }
-    // Fall back to the latest stable release. (Parse bytes ourselves — reqwest's
-    // `.json()` needs the `json` feature, which our minimal build omits.)
-    let api = format!("https://api.github.com/repos/{REPO}/releases/latest");
-    let body = http_bytes(client, &api).await?;
-    let json: serde_json::Value = serde_json::from_slice(&body)
-        .map_err(|e| GuiError::internal(format!("bad release JSON: {e}")))?;
-    let tag = json
-        .get("tag_name")
-        .and_then(serde_json::Value::as_str)
-        .ok_or_else(|| GuiError::internal("latest release has no tag_name"))?;
-    Ok(tag.trim_start_matches('v').to_owned())
-}
-
-async fn http_bytes(client: &reqwest::Client, url: &str) -> Result<Vec<u8>, GuiError> {
-    let resp = client
-        .get(url)
-        .send()
-        .await
-        .map_err(|e| GuiError::internal(format!("download failed ({url}): {e}")))?
-        .error_for_status()
-        .map_err(|e| GuiError::internal(format!("download failed ({url}): {e}")))?;
-    resp.bytes()
-        .await
-        .map(|b| b.to_vec())
-        .map_err(|e| GuiError::internal(format!("read failed ({url}): {e}")))
-}
-
-/// Verify `bytes` against the `<sha256>  <name>` line for `asset` in a
-/// `SHA256SUMS` body (exact filename match, like install.sh).
-fn verify_sha256(sums: &str, asset: &str, bytes: &[u8]) -> Result<(), GuiError> {
-    use sha2::{Digest, Sha256};
-    let expected = sums
-        .lines()
-        .find_map(|line| {
-            let mut parts = line.split_whitespace();
-            let hash = parts.next()?;
-            let name = parts.next()?.trim_start_matches('*'); // sha256sum binary-mode "*"
-            (name == asset).then(|| hash.to_owned())
-        })
-        .ok_or_else(|| GuiError::internal(format!("no checksum listed for {asset}")))?;
-    let actual = hex::encode(Sha256::digest(bytes));
-    if actual.eq_ignore_ascii_case(&expected) {
-        Ok(())
-    } else {
-        Err(GuiError::internal(format!("checksum mismatch for {asset}")))
-    }
-}
-
-/// Extract `yerd`/`yerdd`/`yerd-helper` (top-level entries only) from a
-/// `.tar.gz` into `dest` at mode `0755`, atomically per file. Returns the
-/// installed paths. Blocking (caller runs it on `spawn_blocking`).
-fn extract_binaries(tar_gz: &[u8], dest: &Path) -> Result<Vec<PathBuf>, GuiError> {
-    use flate2::read::GzDecoder;
-    use std::io::Read as _;
-
-    std::fs::create_dir_all(dest)
-        .map_err(|e| GuiError::internal(format!("could not create {}: {e}", dest.display())))?;
-
-    let wanted = ["yerd", "yerdd", "yerd-helper"];
-    let mut archive = tar::Archive::new(GzDecoder::new(tar_gz));
-    let mut installed = Vec::new();
-    let entries = archive
-        .entries()
-        .map_err(|e| GuiError::internal(format!("could not read tarball: {e}")))?;
-    for entry in entries {
-        let mut entry = entry.map_err(|e| GuiError::internal(format!("bad tar entry: {e}")))?;
-        let path = entry
-            .path()
-            .map_err(|e| GuiError::internal(format!("bad tar path: {e}")))?
-            .into_owned();
-        // Top-level binary only (`yerd`, not `nested/yerd`). Ignore any leading
-        // `./` the archiver adds: the release tarball is built with
-        // `tar -C staging … .`, so entries arrive as `./yerd`, which has two
-        // path components (CurDir + Normal). Count only the Normal components so
-        // a real top-level binary (depth 1) is accepted while `nested/yerd`
-        // (depth 2) is still rejected.
-        let depth = path
-            .components()
-            .filter(|c| !matches!(c, std::path::Component::CurDir))
-            .count();
-        let is_binary = depth == 1
-            && path
-                .file_name()
-                .and_then(|s| s.to_str())
-                .is_some_and(|n| wanted.contains(&n));
-        if !is_binary {
-            continue;
-        }
-        let name = path
-            .file_name()
-            .and_then(|s| s.to_str())
-            .ok_or_else(|| GuiError::internal("tar entry has no name"))?;
-        let mut buf = Vec::new();
-        entry
-            .read_to_end(&mut buf)
-            .map_err(|e| GuiError::internal(format!("could not read {name} from tarball: {e}")))?;
-        let out = dest.join(name);
-        write_executable(&out, &buf)?;
-        installed.push(out);
-    }
-    if installed.len() != wanted.len() {
-        return Err(GuiError::internal(format!(
-            "release tarball was missing one of {wanted:?} (found {} of {})",
-            installed.len(),
-            wanted.len()
-        )));
-    }
-    Ok(installed)
-}
-
-/// Write `bytes` to `path` at mode `0755` via a temp file + rename (atomic).
-fn write_executable(path: &Path, bytes: &[u8]) -> Result<(), GuiError> {
-    use std::io::Write as _;
-    let parent = path
-        .parent()
-        .ok_or_else(|| GuiError::internal("install path has no parent"))?;
-    let file_name = path
-        .file_name()
-        .and_then(|s| s.to_str())
-        .ok_or_else(|| GuiError::internal("install path has no file name"))?;
-    let tmp = parent.join(format!(".{file_name}.tmp"));
-    {
-        let mut f = std::fs::File::create(&tmp)
-            .map_err(|e| GuiError::internal(format!("could not create {}: {e}", tmp.display())))?;
-        f.write_all(bytes)
-            .map_err(|e| GuiError::internal(format!("could not write {}: {e}", tmp.display())))?;
-    }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt as _;
-        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o755))
-            .map_err(|e| GuiError::internal(format!("could not chmod {}: {e}", tmp.display())))?;
-    }
-    std::fs::rename(&tmp, path).map_err(|e| {
-        GuiError::internal(format!(
-            "could not move {} -> {}: {e}",
-            tmp.display(),
-            path.display()
-        ))
-    })
-}
-
-/// macOS: ad-hoc sign a binary so AMFI lets it exec on Apple Silicon. Older /
-/// unsigned releases ship unsigned Mach-Os; on arm64 an unsigned binary is
-/// SIGKILLed ("Killed: 9") regardless of quarantine. This is the fallback used
-/// when [`verify_signed`] finds no valid signature.
-#[cfg(target_os = "macos")]
-fn adhoc_sign(path: &Path) -> Result<(), GuiError> {
-    let status = std::process::Command::new("/usr/bin/codesign")
-        .args(["--force", "--sign", "-"])
-        .arg(path)
-        .status()
-        .map_err(|e| {
-            GuiError::internal(format!(
-                "codesign unavailable ({e}); an unsigned binary won't run on Apple Silicon — install the CLI manually"
-            ))
-        })?;
-    if status.success() {
-        Ok(())
-    } else {
-        Err(GuiError::internal(format!(
-            "codesign failed for {}",
-            path.display()
-        )))
-    }
-}
-
-/// macOS: does this binary already carry a *valid* code signature? `codesign
-/// --verify --strict` is a local, offline check (no `--deep`, no `spctl`, no
-/// notarisation lookup), so it works on an air-gapped install. It accepts any
-/// valid signature — a Developer-ID release binary, or one we ad-hoc signed on
-/// a previous install — and we skip re-signing those, which keeps a notarised
-/// Developer-ID signature intact. It returns false only when there is no valid
-/// signature (an unsigned legacy binary), which then needs ad-hoc signing to
-/// exec on arm64. (A bad download is caught upstream by `verify_sha256`.)
-#[cfg(target_os = "macos")]
-fn verify_signed(path: &Path) -> bool {
-    std::process::Command::new("/usr/bin/codesign")
-        .args(["--verify", "--strict"])
-        .arg(path)
-        .stderr(std::process::Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
-}
-
-/// Blocking install: extract, then on macOS make sure each binary has a valid
-/// signature — preserving any existing one (a Developer-ID/notarised release, or
-/// a prior ad-hoc signature) and ad-hoc signing only a binary with no valid
-/// signature, so AMFI lets it exec on arm64.
-fn install_blocking(tar_gz: &[u8], dest: &Path) -> Result<(), GuiError> {
-    let installed = extract_binaries(tar_gz, dest)?;
-    #[cfg(target_os = "macos")]
-    for p in &installed {
-        if !verify_signed(p) {
-            adhoc_sign(p)?;
-        }
-    }
-    let _ = &installed;
-    Ok(())
-}
-
-fn emit_progress(app: &tauri::AppHandle, message: &str) {
-    use tauri::Emitter as _;
-    let _ = app.emit("install-progress", message.to_owned());
-}
-
-/// Download the matching release and install `yerd`/`yerdd`/`yerd-helper` to
-/// `~/.local/bin`. Progress is emitted as `install-progress` events.
+/// Open **System Settings → General → Login Items** (macOS) so the user can
+/// enable the daemon when SMAppService registration is pending approval. No-op
+/// on other platforms.
 #[tauri::command]
-pub async fn install_daemon(app: tauri::AppHandle) -> Result<(), GuiError> {
-    let triple = target_triple()?;
-    let client = http_client()?;
-
-    emit_progress(&app, "Resolving the latest Yerd release…");
-    let version = resolve_version(&client).await?;
-    let base = format!("https://github.com/{REPO}/releases/download/v{version}");
-
-    emit_progress(&app, "Downloading checksums…");
-    let sums_bytes = http_bytes(&client, &format!("{base}/SHA256SUMS")).await?;
-    let sums = String::from_utf8(sums_bytes)
-        .map_err(|e| GuiError::internal(format!("SHA256SUMS is not UTF-8: {e}")))?;
-
-    let asset = format!("yerd-{version}-{triple}.tar.gz");
-    emit_progress(&app, &format!("Downloading {asset}…"));
-    let tarball = http_bytes(&client, &format!("{base}/{asset}")).await?;
-
-    emit_progress(&app, "Verifying download…");
-    verify_sha256(&sums, &asset, &tarball)?;
-
-    emit_progress(&app, "Installing yerdd…");
-    let dest = install_dir()?;
-    tokio::task::spawn_blocking(move || install_blocking(&tarball, &dest))
-        .await
-        .map_err(|e| GuiError::internal(format!("install task failed: {e}")))??;
-
-    emit_progress(&app, "Done");
-    Ok(())
+pub fn open_login_items() {
+    #[cfg(target_os = "macos")]
+    crate::smappservice::open_login_items_settings();
 }
 
 // ── start / stop ─────────────────────────────────────────────────────────────
@@ -437,100 +274,4 @@ pub(crate) fn spawn_detached() -> Result<(), GuiError> {
     cmd.spawn()
         .map(|_| ())
         .map_err(|e| GuiError::internal(format!("could not start {}: {e}", yerdd.display())))
-}
-
-// `verify_signed` is macOS-only (it gates the ad-hoc-sign skip), so the test
-// only compiles/runs on the macOS runner.
-#[cfg(all(test, target_os = "macos"))]
-#[allow(clippy::unwrap_used, clippy::panic)]
-mod tests {
-    use super::*;
-    use std::io::Write as _;
-
-    #[test]
-    fn verify_signed_accepts_signed_rejects_unsigned() {
-        let dir = std::env::temp_dir().join(format!("yerd-verify-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-
-        // A system binary carries a valid signature; a byte-verbatim copy keeps
-        // it (exactly what tar extraction does to a Developer-ID release binary),
-        // so verify_signed must accept it → the install skips ad-hoc signing.
-        let signed = dir.join("ls");
-        std::fs::copy("/bin/ls", &signed).unwrap();
-        assert!(verify_signed(&signed), "copied signed binary should verify");
-
-        // A copied real binary, stripped to unsigned, must fail verification →
-        // the install ad-hoc signs it; and after ad-hoc signing it must verify
-        // (the install's skip-on-reinstall invariant).
-        let fresh = dir.join("yerdd");
-        std::fs::copy("/bin/ls", &fresh).unwrap();
-        std::process::Command::new("/usr/bin/codesign")
-            .args(["--remove-signature"])
-            .arg(&fresh)
-            .status()
-            .unwrap();
-        assert!(!verify_signed(&fresh), "unsigned binary should not verify");
-        adhoc_sign(&fresh).unwrap();
-        assert!(verify_signed(&fresh), "ad-hoc signed binary should verify");
-
-        // A plain, non-Mach-O file must also fail verification.
-        let plain = dir.join("plain");
-        std::fs::File::create(&plain)
-            .unwrap()
-            .write_all(b"not a signed binary")
-            .unwrap();
-        assert!(!verify_signed(&plain), "plain file should not verify");
-
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-}
-
-#[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::panic)]
-mod extract_tests {
-    use super::*;
-
-    fn append<W: std::io::Write>(builder: &mut tar::Builder<W>, name: &str, data: &[u8]) {
-        let mut header = tar::Header::new_gnu();
-        header.set_size(data.len() as u64);
-        header.set_mode(0o755);
-        header.set_cksum();
-        builder.append_data(&mut header, name, data).unwrap();
-    }
-
-    /// Regression for "release tarball was missing one of […] (found 0 of 3)":
-    /// the release tarball is built with `tar -C staging … .`, so every entry is
-    /// stored with a leading `./` (`./yerd`, which has two path components). The
-    /// extractor must still find the three top-level binaries — while ignoring a
-    /// same-named file nested under a subdirectory.
-    #[test]
-    fn extracts_dot_slash_prefixed_binaries() {
-        use flate2::{write::GzEncoder, Compression};
-        use std::io::Write as _;
-
-        let mut tar_buf = Vec::new();
-        {
-            let mut builder = tar::Builder::new(&mut tar_buf);
-            append(&mut builder, "./yerd", b"#!/bin/sh\n");
-            append(&mut builder, "./yerdd", b"#!/bin/sh\n");
-            append(&mut builder, "./yerd-helper", b"#!/bin/sh\n");
-            append(&mut builder, "./README.md", b"readme\n");
-            // A same-named file one level deep must NOT be picked up (depth 2).
-            append(&mut builder, "./extras/yerd", b"decoy\n");
-            builder.finish().unwrap();
-        }
-        let mut gz = GzEncoder::new(Vec::new(), Compression::fast());
-        gz.write_all(&tar_buf).unwrap();
-        let tar_gz = gz.finish().unwrap();
-
-        let dest = std::env::temp_dir().join(format!("yerd-extract-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dest);
-        let installed = extract_binaries(&tar_gz, &dest).unwrap();
-
-        assert_eq!(installed.len(), 3, "all three top-level binaries extracted");
-        for b in ["yerd", "yerdd", "yerd-helper"] {
-            assert!(dest.join(b).is_file(), "{b} written to dest");
-        }
-        let _ = std::fs::remove_dir_all(&dest);
-    }
 }

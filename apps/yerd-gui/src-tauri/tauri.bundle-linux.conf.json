@@ -1,0 +1,13 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "bundle": {
+    "externalBin": ["binaries/yerd", "binaries/yerdd", "binaries/yerd-helper"],
+    "linux": {
+      "deb": {
+        "depends": ["libcap2-bin"],
+        "postInstallScript": "deb/postinst.sh",
+        "postRemoveScript": "deb/postrm.sh"
+      }
+    }
+  }
+}

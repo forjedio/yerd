@@ -10,6 +10,8 @@ mod ipc;
 #[cfg(target_os = "macos")]
 mod mac_trust;
 mod mail_window;
+#[cfg(target_os = "macos")]
+mod smappservice;
 
 use tauri::{
     menu::{Menu, MenuItem, PredefinedMenuItem},
@@ -131,9 +133,12 @@ fn main() {
             commands::job_cancel,
             show_dumps_window,
             daemon::daemon_installed,
-            daemon::install_daemon,
             daemon::start_daemon,
             daemon::stop_daemon,
+            daemon::cli_path_status,
+            daemon::install_cli_to_path,
+            daemon::remove_cli_from_path,
+            daemon::open_login_items,
             autostart::get_autostart,
             autostart::set_autostart_daemon,
             autostart::set_autostart_gui,

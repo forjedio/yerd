@@ -1,14 +1,13 @@
 //! Yerd build automation, invoked as `cargo xtask <command>`.
 //!
-//! Provides `deb` (build a Linux `.deb`), `bump` (set the project version across
-//! the three manifests), and `version-check` (assert a tag matches them). Pure
-//! helpers live in [`pack`] / [`version`]; per-command I/O glue lives here or in
-//! the command's module (e.g. [`deb`]).
+//! Provides `bump` (set the project version across the three manifests) and
+//! `version-check` (assert a tag matches them). Pure helpers live in
+//! [`version`]; per-command I/O glue lives here. (Linux packaging is no longer an
+//! xtask concern — the single GUI bundle is produced by Tauri; see
+//! `apps/yerd-gui/src-tauri/tauri.bundle-linux.conf.json`.)
 
 #![forbid(unsafe_code)]
 
-mod deb;
-mod pack;
 mod version;
 
 use std::fs;
@@ -29,8 +28,6 @@ pub struct Cli {
 /// `xtask` subcommands.
 #[derive(clap::Subcommand, Debug)]
 pub enum Command {
-    /// Build a Linux `.deb` package for the Yerd binaries.
-    Deb(deb::DebArgs),
     /// Set the project version across Cargo.toml, tauri.conf.json, package.json.
     Bump {
         /// The new version, e.g. `2.0.2` or `2.0.2-rc.1` (a leading `v` is fine).
@@ -46,10 +43,6 @@ pub enum Command {
 fn main() -> Result<()> {
     let cli = Cli::parse();
     match &cli.command {
-        Command::Deb(args) => {
-            deb::run(args)?;
-            Ok(())
-        }
         Command::Bump { version } => run_bump(version),
         Command::VersionCheck { version } => run_version_check(version),
     }

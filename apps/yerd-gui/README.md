@@ -16,7 +16,10 @@ soon"** affordances rather than being faked client-side.
 src/              Vue app — ipc/ (typed client + wire-JSON types), composables/,
                   components/ (ui/ primitives), views/ (PhpView, SitesView,
                   ServicesView, AboutView)
-src-tauri/        Rust bridge — ipc.rs, commands.rs, elevate.rs, error.rs, main.rs
+src-tauri/        Rust bridge — main.rs, commands.rs, ipc.rs, error.rs, elevate.rs,
+                  daemon.rs (resolve/start/stop + install-CLI-on-PATH),
+                  autostart.rs (per-user service + run-at-login),
+                  smappservice.rs + mac_trust.rs (macOS), mail_window.rs
 scripts/          install-dev-desktop.sh (dev taskbar/dock icon on Linux)
 ```
 
@@ -60,13 +63,55 @@ On Linux, run `scripts/install-dev-desktop.sh` once so the dev window gets the
 Yerd icon in the taskbar/dock (Wayland/GNOME/Pantheon match the icon via a
 `.desktop` file, which a packaged build ships but `tauri dev` doesn't).
 
+### Release bundle (single self-contained artifact)
+
+The GUI is the **only** shipped artifact: it **embeds all three binaries**
+(`yerd`, `yerdd`, `yerd-helper`) via Tauri `externalBin`, signed/notarized inside
+the one bundle on macOS. There is **no** standalone CLI tarball/`.deb` and **no**
+runtime download. On macOS the daemon registers as a background
+[`SMAppService`](src-tauri/src/smappservice.rs) agent (so *Login Items → Allow in
+the Background* shows **Yerd**, not the signing team).
+
+The embedding lives in **per-platform release overlays** applied only to the
+release build (a plain `tauri dev` / `tauri build` skips them — so dev needs no
+staged sidecars):
+
+```sh
+# 1) Build the three binaries and stage them as Tauri sidecars (git-ignored dir).
+cargo build --release -p yerd -p yerdd -p yerd-helper
+mkdir -p src-tauri/binaries
+# macOS:
+for b in yerd yerdd yerd-helper; do
+  cp ../../target/release/$b src-tauri/binaries/$b-aarch64-apple-darwin
+done
+# Linux: use the -x86_64-unknown-linux-gnu suffix instead.
+
+# 2) Build with the platform overlay (externalBin + macOS plist / Linux postinst).
+#    `--config` is resolved relative to this dir, so the path is src-tauri/-relative.
+npm run tauri build -- --config src-tauri/tauri.bundle-macos.conf.json   # macOS
+# npm run tauri build -- --config src-tauri/tauri.bundle-linux.conf.json # Linux
+```
+
+Without step 1 a release build fails (`externalBin` not found). CI does both
+steps automatically (`.github/workflows/release.yml`, `gui` job). The macOS floor
+is **13** (`SMAppService`). On **Linux** the `.deb` `postinst` symlinks the three
+binaries from `/usr/lib/<product>/` into `/usr/bin` (so `yerd` is on PATH and the
+GUI/CLI resolve their siblings) and `setcap`s `yerdd` for ports 80/443. AppImage
+is **not** built (its ephemeral mount can't persist `setcap`).
+
+**Terminal CLI:** Linux gets `/usr/bin/yerd` from the `.deb`; macOS offers
+*Settings → Terminal CLI → Install yerd on your PATH* (symlinks the bundled `yerd`
+into `{data}/bin` via `yerd path install`).
+
+**Uninstall (macOS):** macOS has no app-uninstall hook, so the background
+registration persists after you delete `Yerd.app`. Turn off *Run the Yerd daemon
+in the background* first (or remove the **Yerd** entry under System Settings →
+Login Items → Allow in the Background).
+
 ## Notes / follow-ups
-- **Install the CLI alongside the GUI.** The app shells out to `yerd` for
-  privileged "Fix" actions and needs `yerdd` running. Releases ship the GUI
-  bundles (`.dmg`/`.AppImage`/`.deb`) *and* the CLI `.deb`/tarballs separately;
-  on Linux both `.deb`s install to `/usr/bin` (siblings), which the elevation
-  path expects. A self-contained bundle that **embeds** the CLI via Tauri
-  `externalBin` is a planned follow-up.
+- **Single artifact.** The app embeds `yerd`/`yerdd`/`yerd-helper`; the GUI shells
+  out to the sibling `yerd` for privileged "Fix" actions and supervises `yerdd`.
+  No separate CLI `.deb`/tarball is published.
 - **In-app elevation**: Linux uses `pkexec /usr/bin/env SUDO_UID=<uid> <yerd>
   elevate <t>`; macOS uses `osascript … with administrator privileges` wrapping
   the same `env SUDO_UID=<uid> <yerd> elevate <t>`. The macOS daemon socket lives

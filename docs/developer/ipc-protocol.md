@@ -237,6 +237,8 @@ pub enum Response {
         counts: DumpCounts,
         features: BTreeMap<String, bool>,
     },
+    JobStarted { job_id: JobId },                 // CreateSite / InstallToolStreamed
+    JobProgress { state: JobState, /* phase label, … */ },  // streamed updates
 }
 ```
 

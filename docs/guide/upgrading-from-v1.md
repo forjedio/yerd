@@ -44,13 +44,12 @@ After removing v1, reboot or flush DNS so the OS forgets v1's resolver before v2
 
 ### 2. Install Yerd v2
 
-See [Getting Started](./getting-started) for platform-specific instructions. The short version:
+See [Getting Started](./getting-started) for platform-specific instructions. The short version: download the Yerd app from the [releases page](https://github.com/forjedio/yerd/releases/latest) -
 
-```sh
-curl -fsSL https://raw.githubusercontent.com/forjedio/yerd/main/scripts/install.sh | sh
-```
+| macOS (Apple Silicon) | `Yerd_MacOS_AppleSilicon_v<ver>.dmg` |
+| Linux (x86-64) | `Yerd_Linux_x86_64_v<ver>.deb` |
 
-This installs three binaries (the `yerd` CLI, the `yerdd` daemon, and the privileged one-shot `yerd-helper`) and starts the per-user daemon. PHP is not bundled; you install versions in a later step.
+The daemon (`yerdd`), the `yerd` CLI, and `yerd-helper` are all bundled inside the app; first launch starts the daemon. PHP is not bundled; you install versions in a later step.
 
 ### 3. Run the one-time privileged setup
 

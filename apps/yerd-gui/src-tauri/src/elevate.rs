@@ -47,6 +47,16 @@ pub async fn run(verb: &str, target: &str) -> Result<(), GuiError> {
 
 /// The `yerd` binary that sits beside this app's executable.
 fn trusted_yerd() -> Result<PathBuf, GuiError> {
+    // Refuse to run a privileged helper from a translocated bundle: `current_exe`
+    // would be an ephemeral `/AppTranslocation/…` path that vanishes on unmount,
+    // and root would be spawned from a non-stable location.
+    #[cfg(target_os = "macos")]
+    if crate::autostart::is_translocated() {
+        return Err(GuiError::internal(
+            "Move Yerd to your Applications folder, then try again \
+             (it's running from a temporary location).",
+        ));
+    }
     let exe = std::env::current_exe()
         .map_err(|e| GuiError::internal(format!("cannot resolve current exe: {e}")))?;
     let dir = exe

@@ -10,6 +10,7 @@ import { invoke as tauriInvoke } from "@tauri-apps/api/core";
 
 import type {
   AutostartState,
+  CliPathStatus,
   AvailablePhpResponse,
   CreateSiteSpec,
   DatabaseSummary,
@@ -521,16 +522,6 @@ export async function untrustCa(): Promise<boolean> {
 
 // ── daemon lifecycle + autostart (host commands, NOT daemon IPC) ────────────
 
-/** Is the `yerdd` binary installed on disk (independent of whether it's running)? */
-export async function daemonInstalled(): Promise<boolean> {
-  return call<boolean>("daemon_installed");
-}
-
-/** Download + install the matching `yerdd` release. Emits `install-progress` events. */
-export async function installDaemon(): Promise<void> {
-  await call<void>("install_daemon");
-}
-
 export async function startDaemon(): Promise<void> {
   await call<void>("start_daemon");
 }
@@ -555,12 +546,26 @@ export async function setAutostartGuiMinimized(on: boolean): Promise<void> {
   await call<void>("set_gui_minimized", { on });
 }
 
-/** Subscribe to `yerdd` install-progress messages. Returns an unlisten fn. */
-export async function onInstallProgress(
-  cb: (message: string) => void,
-): Promise<() => void> {
-  const { listen } = await import("@tauri-apps/api/event");
-  return listen<string>("install-progress", (e) => cb(e.payload));
+// ── optional: install the bundled `yerd` CLI on PATH (macOS) ────────────────
+
+/** Whether the bundled `yerd` CLI is linked onto PATH (`{data}/bin/yerd`). */
+export async function cliPathStatus(): Promise<CliPathStatus> {
+  return call<CliPathStatus>("cli_path_status");
+}
+
+/** Symlink the bundled `yerd` onto PATH and add `{data}/bin` to the shell rc. */
+export async function installCliToPath(): Promise<void> {
+  await call<void>("install_cli_to_path");
+}
+
+/** Remove the `{data}/bin/yerd` symlink. */
+export async function removeCliFromPath(): Promise<void> {
+  await call<void>("remove_cli_from_path");
+}
+
+/** Open System Settings → Login Items (macOS) to approve the background daemon. */
+export async function openLoginItems(): Promise<void> {
+  await call<void>("open_login_items");
 }
 
 // ── dumps (Laravel telemetry) ────────────────────────────────────────────────

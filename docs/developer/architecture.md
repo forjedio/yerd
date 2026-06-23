@@ -60,6 +60,9 @@ yerd/
 │   ├── yerd-dns         embedded *.test resolver (hickory)
 │   ├── yerd-php         PHP-FPM pool supervision + release handling
 │   ├── yerd-proxy       hand-rolled hyper + tokio-rustls reverse proxy
+│   ├── yerd-supervise   generic process-supervision substrate (FPM + services)
+│   ├── yerd-services    DB/cache engines (Redis/Valkey · MySQL · MariaDB · Postgres)
+│   ├── yerd-mail        embedded SMTP sink (catch-all mailbox)
 │   └── yerd-doctor      diagnostics + repair planning
 ├── bin/                 thin binaries - orchestration + transports only
 │   ├── yerdd            the unprivileged per-user daemon (source of truth)
@@ -67,7 +70,7 @@ yerd/
 │   └── yerd-helper      the privileged one-shot (the security boundary)
 ├── apps/
 │   └── yerd-gui         Tauri v2 + Vue 3 desktop app (another yerd-ipc client)
-└── xtask/               build automation (cargo xtask deb / bump / version-check)
+└── xtask/               build automation (cargo xtask bump / version-check)
 ```
 
 Shared dependency versions are pinned once in `[workspace.dependencies]` and

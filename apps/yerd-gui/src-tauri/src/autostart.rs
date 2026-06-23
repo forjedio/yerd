@@ -177,13 +177,130 @@ fn plist_path() -> Result<PathBuf, GuiError> {
         .join("dev.yerd.daemon.plist"))
 }
 
+// ── macOS: SMAppService vs the loose-launchd fallback ────────────────────────
+
+/// Whether to manage the daemon via [`crate::smappservice`] (the bundled,
+/// non-translocated release path — gives the "Yerd" Login Items entry) rather
+/// than the loose `launchctl bootstrap` fallback. False when:
+/// - `YERD_NO_AUTO_DAEMON` is set (the CI launch smoke test → zero SMAppService
+///   calls), or
+/// - we're not running from an `.app` bundle (`cargo run` dev builds), or
+/// - the app is **translocated** (run from a DMG/Downloads — `register()` would
+///   fail on the unstable path), or
+/// - the embedded agent plist is absent (a plain `tauri build` with no bundle
+///   overlay → degrade gracefully instead of erroring with `notFound`).
+#[cfg(target_os = "macos")]
+fn use_smappservice() -> bool {
+    if std::env::var_os("YERD_NO_AUTO_DAEMON").is_some() {
+        return false;
+    }
+    let Ok(exe) = std::env::current_exe() else {
+        return false;
+    };
+    let exe = exe.to_string_lossy();
+    let bundled = exe.contains(".app/Contents/MacOS/");
+    bundled && !is_translocated() && embedded_plist_path().is_some_and(|p| p.is_file())
+}
+
+/// True if our own executable is under an App Translocation mount (Gatekeeper
+/// runs un-quarantined apps from a randomized read-only `/AppTranslocation/…`
+/// path until the user moves them to /Applications).
+#[cfg(target_os = "macos")]
+pub(crate) fn is_translocated() -> bool {
+    std::env::current_exe()
+        .map(|p| p.to_string_lossy().contains("/AppTranslocation/"))
+        .unwrap_or(false)
+}
+
+/// Path to the agent plist embedded in our own bundle
+/// (`Yerd.app/Contents/Library/LaunchAgents/dev.yerd.daemon.plist`), derived
+/// from `current_exe` at `…/Contents/MacOS/yerd-gui`.
+#[cfg(target_os = "macos")]
+fn embedded_plist_path() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    // exe = …/Contents/MacOS/yerd-gui → Contents = parent().parent()
+    let contents = exe.parent()?.parent()?;
+    Some(contents.join("Library/LaunchAgents/dev.yerd.daemon.plist"))
+}
+
+/// Whether the daemon is currently registered (or pending approval) via
+/// SMAppService. Read-only.
+#[cfg(target_os = "macos")]
+fn smapp_registered() -> bool {
+    crate::smappservice::status()
+        .map(crate::smappservice::status_means_registered)
+        .unwrap_or(false)
+}
+
+/// Migrate away from a prior release's **loose** LaunchAgent before registering
+/// via SMAppService. The loose agent and the SMAppService agent share the Label
+/// `dev.yerd.daemon`, so an unconditional teardown could boot out the *live*
+/// registered agent — therefore this acts **only when the loose plist file
+/// actually exists** on disk (the SMAppService agent has no file there). Without
+/// it, an upgrade would leave the old `RunAtLoad` loose agent competing for the
+/// IPC socket/ports. Best-effort throughout.
+#[cfg(target_os = "macos")]
+fn cleanup_legacy() {
+    let Ok(path) = plist_path() else {
+        return;
+    };
+    if !path.exists() {
+        return; // No loose agent → nothing to migrate; don't touch the shared
+                // Label (the registered SMAppService agent owns it).
+    }
+    let target = service_target();
+    let _ = run_ok("launchctl", &["bootout", &target]);
+    let _ = std::fs::remove_file(&path);
+    // Clear any stale *disabled* override an old fallback toggle may have set.
+    let _ = run_ok("launchctl", &["enable", &target]);
+}
+
+/// After a `register()`, if macOS is waiting for the user to approve the item in
+/// Login Items, take them there. Best-effort.
+#[cfg(target_os = "macos")]
+fn nudge_if_requires_approval() {
+    let pending = crate::smappservice::status()
+        .map(|s| s == crate::smappservice::STATUS_REQUIRES_APPROVAL)
+        .unwrap_or(false);
+    if pending {
+        crate::smappservice::open_login_items_settings();
+    }
+}
+
+/// Register the SMAppService agent if not already on (idempotent), migrating any
+/// loose legacy agent first, then nudge for approval if needed.
+#[cfg(target_os = "macos")]
+fn smapp_enable() -> Result<(), GuiError> {
+    if smapp_registered() {
+        return Ok(()); // already on — don't cleanup/re-register a live agent.
+    }
+    cleanup_legacy();
+    crate::smappservice::register()?;
+    nudge_if_requires_approval();
+    Ok(())
+}
+
 /// Write the LaunchAgent plist and bootstrap it (idempotent — an already-loaded
 /// agent is fine). `RunAtLoad` + `KeepAlive{SuccessfulExit:false}`: it relaunches
 /// at login *when enabled* and after a crash, but a clean stop stays stopped.
 #[cfg(target_os = "macos")]
 fn ensure_bootstrapped() -> Result<(), GuiError> {
-    let yerdd = crate::daemon::resolve_yerdd()
-        .ok_or_else(|| GuiError::internal("yerdd is not installed"))?;
+    // On the translocated-fallback path, `current_exe`'s sibling `yerdd` lives on
+    // an ephemeral AppTranslocation mount that vanishes when torn down — launchd
+    // must not point at it. Resolve from a stable location only; if there's none,
+    // refuse and guide the user to /Applications rather than bootstrap a doomed
+    // agent.
+    let yerdd = if is_translocated() {
+        crate::daemon::resolve_yerdd_stable().ok_or_else(|| {
+            GuiError::internal(
+                "Yerd is running from a temporary location. Move Yerd.app to your \
+                 Applications folder (or install the Yerd CLI) to run the daemon.",
+            )
+        })?
+    } else {
+        crate::daemon::resolve_yerdd()
+            .ok_or_else(|| GuiError::internal("yerdd is not installed"))?
+    };
     let path = plist_path()?;
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
@@ -221,8 +338,18 @@ pub(crate) fn daemon_start() -> Result<(), GuiError> {
     }
     #[cfg(target_os = "macos")]
     {
-        ensure_bootstrapped()?;
-        run_ok("launchctl", &["kickstart", "-k", &service_target()])
+        if use_smappservice() {
+            // Unified model: ensure registered (which RunAtLoad-starts it), then
+            // kickstart for a fresh start even if it was already up. kickstart is
+            // best-effort — when status is `requiresApproval` the job isn't loaded
+            // yet, and that's fine (the user was sent to Login Items).
+            smapp_enable()?;
+            let _ = run_ok("launchctl", &["kickstart", "-k", &service_target()]);
+            Ok(())
+        } else {
+            ensure_bootstrapped()?;
+            run_ok("launchctl", &["kickstart", "-k", &service_target()])
+        }
     }
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     {
@@ -264,11 +391,31 @@ fn daemon_set_login(on: bool) -> Result<(), GuiError> {
     }
     #[cfg(target_os = "macos")]
     {
-        ensure_bootstrapped()?;
-        run_ok(
-            "launchctl",
-            &[if on { "enable" } else { "disable" }, &service_target()],
-        )
+        if use_smappservice() {
+            // Unified model: the login toggle *is* registration. On =
+            // register (→ "Yerd" Login Items entry + runs at login + now);
+            // off = unregister (removes the entry + stops it).
+            if on {
+                smapp_enable()
+            } else {
+                // Unregister the SMAppService agent (only when actually
+                // registered — `unregister()` on a never-registered service is a
+                // no-op error path) AND tear down any leftover legacy loose agent
+                // so the toggle doesn't appear stuck "on" for upgrade users who
+                // only ever had the pre-SMAppService loose plist.
+                if smapp_registered() {
+                    crate::smappservice::unregister()?;
+                }
+                cleanup_legacy();
+                Ok(())
+            }
+        } else {
+            ensure_bootstrapped()?;
+            run_ok(
+                "launchctl",
+                &[if on { "enable" } else { "disable" }, &service_target()],
+            )
+        }
     }
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     {
@@ -293,6 +440,37 @@ pub struct AutostartState {
     pub gui: bool,
     /// Start-the-GUI-minimized preference.
     pub gui_minimized: bool,
+    /// macOS only: the daemon is registered but **waiting for the user to enable
+    /// it in System Settings → Login Items** (SMAppService `requiresApproval`).
+    /// Drives a first-run banner; always false elsewhere.
+    pub daemon_pending_approval: bool,
+}
+
+/// Current "run daemon at login" state for the General tab. On the macOS
+/// SMAppService path this is the live registration status (the toggle *is*
+/// registration), plus a **read-only** reconciliation: a leftover loose agent (a
+/// translocated first run, or a pre-SMAppService release) reports as on so the
+/// UI doesn't lie — the next explicit enable/start runs the safe
+/// `cleanup_legacy()`. Linux + the macOS fallback use the stored intent flag.
+fn daemon_enabled(settings: &GuiSettings, supported: bool) -> bool {
+    #[cfg(target_os = "macos")]
+    if use_smappservice() {
+        let legacy = plist_path().map(|p| p.exists()).unwrap_or(false);
+        return smapp_registered() || legacy;
+    }
+    supported && settings.daemon_autostart
+}
+
+/// macOS SMAppService `requiresApproval` — registered but pending the user's
+/// toggle in Login Items. Always false on the fallback path / other OSes.
+fn daemon_pending_approval() -> bool {
+    #[cfg(target_os = "macos")]
+    if use_smappservice() {
+        return crate::smappservice::status()
+            .map(|s| s == crate::smappservice::STATUS_REQUIRES_APPROVAL)
+            .unwrap_or(false);
+    }
+    false
 }
 
 #[tauri::command]
@@ -304,10 +482,11 @@ pub fn get_autostart(app: tauri::AppHandle) -> Result<AutostartState, GuiError> 
         .is_enabled()
         .map_err(|e| GuiError::internal(format!("could not query GUI autostart: {e}")))?;
     Ok(AutostartState {
-        daemon: supported && settings.daemon_autostart,
+        daemon: daemon_enabled(&settings, supported),
         daemon_supported: supported,
         gui,
         gui_minimized: settings.gui_minimized,
+        daemon_pending_approval: daemon_pending_approval(),
     })
 }
 

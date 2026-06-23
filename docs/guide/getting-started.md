@@ -9,10 +9,11 @@ and a single, optional, **one-time** setup step. Day-to-day use never touches
 root.
 
 ::: info Supported platforms
-Yerd ships prebuilt binaries for **Linux** (x86-64 and arm64) and **macOS**
-(Apple Silicon). PHP itself is **not** bundled - Yerd downloads prebuilt static
-PHP builds on demand when you run `yerd install php`, so the install stays tiny
-and fast.
+Yerd ships a single desktop app for **macOS** (Apple Silicon) and **Linux**
+(x86-64, Debian/Ubuntu `.deb`). The daemon, the `yerd` CLI, and the privileged
+helper are all bundled inside it — there is nothing else to install. PHP itself is
+**not** bundled - Yerd downloads prebuilt static PHP builds on demand when you run
+`yerd install php`, so the install stays tiny and fast.
 :::
 
 ::: warning Apple Intel not supported
@@ -22,119 +23,53 @@ Silicon (arm64) only.
 
 ## Install
 
-### Desktop app (recommended)
+Yerd is a **single desktop app** - the daemon, the `yerd` CLI, and the privileged
+helper are all embedded in it (nothing is downloaded at runtime). Grab the latest
+build from the [releases page](https://github.com/forjedio/yerd/releases):
 
-The easiest way to run Yerd is the **desktop app** - it installs and verifies
-the daemon and CLI for you, then walks you through the one-time setup. Grab the
-latest build from the
-[releases page](https://github.com/forjedio/yerd/releases):
-
-| Platform | GUI artifact | Install |
+| Platform | Download | Install |
 |---|---|---|
-| macOS (Apple Silicon) | `yerd-gui_<ver>_aarch64.dmg` | open, drag Yerd to Applications |
-| Linux | `yerd-gui_<ver>_amd64.AppImage` | `chmod +x` and run |
-| Linux | `yerd-gui_<ver>_amd64.deb` | `sudo dpkg -i …` |
+| macOS (Apple Silicon) | `Yerd_MacOS_AppleSilicon_v<ver>.dmg` | open, drag Yerd to Applications |
+| Linux (x86-64) | `Yerd_Linux_x86_64_v<ver>.deb` | `sudo apt install ./Yerd_Linux_x86_64_v<ver>.deb` |
 
-On first launch, if `yerdd` isn't already present, the app downloads the
-matching release, **verifies it against `SHA256SUMS`**, and installs `yerd` +
-`yerdd` + `yerd-helper` into `~/.local/bin`, then starts the daemon. It then
-walks you through a **one-time** `sudo yerd elevate` to trust the local CA,
-route `*.test`, and bind ports 80/443 - everything after runs as your user,
-never as root. On macOS that makes setup essentially **drag-and-drop**: drag
-Yerd to Applications, launch it, done.
+On first launch the app **starts its bundled daemon**, then walks you through a
+**one-time** `sudo yerd elevate` to trust the local CA, route `*.test`, and bind
+ports 80/443 - everything after that runs as your user, never as root. On macOS
+that makes setup essentially **drag-and-drop**: drag Yerd to Applications, launch
+it, done.
 
 <ThemedImage light="/images/overview-light.png" dark="/images/overview-dark.png" alt="The Yerd desktop app, landed on the Overview dashboard" />
 
-::: tip Auto-install coverage
-Auto-install covers Apple Silicon macOS and Linux (x86-64 · arm64). If you
-already have the CLI (or installed the Linux `.deb`, which lands in `/usr/bin`),
-the app finds and uses the existing binaries instead. See the
-[Desktop App](./desktop-app) guide for the full tour.
+::: tip How the daemon binds 80/443
+On Linux the `.deb`'s post-install grants `yerdd` the `cap_net_bind_service`
+capability (via `setcap`) so the **unprivileged** daemon can bind ports 80/443,
+and re-applies it on every upgrade. On macOS the one-time elevate installs a `pf`
+redirect. If neither is in place, Yerd falls back to `8080`/`8443` automatically -
+and `yerd doctor` tells you.
 :::
 
-### Advanced: CLI + daemon only
+### Terminal CLI
 
-Prefer the terminal? The one-liner fetches the latest release, **verifies it
-against `SHA256SUMS`**, and installs the three CLI/daemon binaries (`yerd`,
-`yerdd`, `yerd-helper`):
+The `yerd` command comes with the app:
 
-```sh
-curl -fsSL https://raw.githubusercontent.com/forjedio/yerd/main/scripts/install.sh | sh
-```
-
-What it does, by platform:
-
-- **Debian / Ubuntu** (where `dpkg` and `apt-get` are present): installs the
-  system `.deb` (uses `sudo`).
-- **Everything else** (other Linux, macOS): installs a tarball to
-  `~/.local/bin` - **no sudo**.
-- **Non-Debian systemd distros** (Arch/Omarchy, Fedora, openSUSE, …): also
-  drops in a `yerd` **user service**, so the daemon starts the same way as on
-  the `.deb`.
-
-You can tune the installer with environment variables:
-
-| Variable | Effect | Example |
-|---|---|---|
-| `YERD_VERSION` | Pin an exact version instead of latest | `YERD_VERSION=2.0.2` |
-| `YERD_BIN_DIR` | Install dir for the tarball path | `YERD_BIN_DIR=~/bin` |
-| `YERD_REPO` | Override the GitHub repo | `YERD_REPO=forjedio/yerd` |
-
-```sh
-YERD_VERSION=2.0.2 curl -fsSL https://raw.githubusercontent.com/forjedio/yerd/main/scripts/install.sh | sh
-```
-
-::: tip Add the install dir to your PATH
-On the tarball path the installer prints a reminder if `~/.local/bin` (or your
-`YERD_BIN_DIR`) isn't already on your `PATH`. Add it, then re-open your shell.
-:::
-
-### Manual download
-
-Every [GitHub Release](https://github.com/forjedio/yerd/releases) attaches
-prebuilt artifacts plus a `SHA256SUMS` manifest. Pick the right one:
-
-| Platform | CLI artifact |
-|---|---|
-| Debian / Ubuntu (amd64 · arm64) | `yerd_<ver>_amd64.deb` · `yerd_<ver>_arm64.deb` → `sudo dpkg -i …` |
-| Arch · Fedora · other Linux (rootless) | `yerd-<ver>-{x86_64,aarch64}-generic-linux-gnu.tar.gz` |
-| macOS (Apple Silicon) | `yerd-<ver>-aarch64-apple-darwin.tar.gz` |
-
-Always verify the download against the release's `SHA256SUMS` before using it:
-
-```sh
-sha256sum -c SHA256SUMS --ignore-missing
-# macOS: shasum -a 256 -c SHA256SUMS --ignore-missing
-```
-
-Then for the tarball, unpack and place the three binaries on your `PATH`:
-
-```sh
-tar -xzf yerd-<ver>-<triple>.tar.gz
-install -m 0755 yerd yerdd yerd-helper ~/.local/bin/
-```
-
-::: tip How the `.deb` binds 80/443
-The `.deb`'s post-install grants `yerdd` the `cap_net_bind_service` capability
-(via `setcap`) so the **unprivileged** daemon can bind ports 80/443, and
-re-applies it on every upgrade. If that capability isn't available, Yerd falls
-back to `8080`/`8443` automatically - and `yerd doctor` tells you.
-:::
+- **Linux:** the `.deb` puts `yerd` on your `PATH` automatically.
+- **macOS:** open **Settings → Terminal CLI** and click **Install** - it links the
+  bundled `yerd` onto your `PATH` (via `yerd path`).
 
 ### From source
 
-No system package, and no `sudo` to install - build the binaries and drop them
-on your `PATH`:
+Build and run the app directly:
 
 ```sh
 git clone https://github.com/forjedio/yerd
-cd yerd
-cargo build --release -p yerd -p yerdd -p yerd-helper
-install -Dm755 target/release/{yerd,yerdd,yerd-helper} -t ~/.local/bin
+cd yerd/apps/yerd-gui
+npm install
+npm run tauri dev      # run the app (start `cargo run -p yerdd` first), or
+npm run tauri build    # build the bundle
 ```
 
-`cargo xtask deb` packages a `.deb` instead. See
-[Building from Source](../developer/building) for toolchain requirements.
+See [Building from Source](../developer/building) for toolchain requirements and
+how the release bundle embeds the three binaries.
 
 ## Start the daemon
 
@@ -142,25 +77,21 @@ install -Dm755 target/release/{yerd,yerdd,yerd-helper} -t ~/.local/bin
 the embedded DNS responder, and the PHP-FPM pools. Nothing works until it's
 running, and it always runs as **you**, never root.
 
-**Linux with a user service** (the `.deb`, or the installer's user unit on
-non-Debian distros):
+**With the desktop app** (the normal path): the app starts the daemon for you on
+first launch. On macOS it registers it as a background **SMAppService** login
+item (shown as "Yerd" in System Settings → Login Items); on Linux it writes a
+`systemd --user` unit and starts it. Manage it from **Settings → "Run the Yerd
+daemon in the background"**.
 
-```sh
-systemctl --user enable --now yerd
-```
-
-If the installer wrote the unit by hand, reload first:
-
-```sh
-systemctl --user daemon-reload && systemctl --user enable --now yerd
-```
-
-**macOS, or any rootless setup** - run the daemon directly. With no privileged
-ports configured it binds `8080`/`8443` out of the box:
+**From a terminal** - run the daemon directly. With no privileged ports
+configured it binds `8080`/`8443` out of the box:
 
 ```sh
 yerdd serve &
 ```
+
+On Linux, once the app has written `~/.config/systemd/user/yerd.service`, you can
+also manage it with `systemctl --user enable --now yerd`.
 
 `yerdd serve` takes a couple of optional flags:
 
@@ -328,9 +259,9 @@ all happen for you on first launch - drag Yerd to Applications (macOS), open it,
 and you land ready to add a site. The terminal path, start to finish:
 
 ```sh
-# install + start
-curl -fsSL https://raw.githubusercontent.com/forjedio/yerd/main/scripts/install.sh | sh
-systemctl --user enable --now yerd      # macOS/rootless: yerdd serve &
+# Install the app (.dmg on macOS, .deb on Linux) from the releases page. The app
+# starts the daemon for you; to run it from a terminal instead:
+yerdd serve &                           # start the bundled daemon directly
 sudo yerd elevate                       # one-time: trust CA, resolver, ports
 
 # PHP + a site

@@ -10,7 +10,6 @@ description            = "Build automation for Yerd (cargo xtask <cmd>)."
 [dependencies]
 anyhow = { workspace = true }
 clap   = { workspace = true }
-flate2 = { workspace = true }
 
 [lints]
 workspace = true

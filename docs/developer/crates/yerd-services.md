@@ -141,7 +141,7 @@ checksum sidecar for service builds).
 major.minor shape). The on-disk layout under `PlatformDirs`:
 
 ```text
-{data}/services/<id>/<version>/install/bin/<server_binary>   # the install
+{data}/services/<id>/<version>/bin/<server_binary>   # the install
 {data}/services/<id>/<version>/data        (or data-<major> for Postgres)
 {state}/services/<id>/<id>.conf            # rendered config
 {state}/services/<id>/<id>.log             # captured stdout/stderr

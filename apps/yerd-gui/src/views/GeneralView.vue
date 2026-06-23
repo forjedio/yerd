@@ -30,9 +30,14 @@ import {
 import { useDaemon } from "@/composables/useDaemon";
 import { useToast } from "@/composables/useToast";
 import {
+  cliPathStatus,
   dumpsStatus,
   getAutostart,
+  hostPlatform,
+  installCliToPath,
   IpcError,
+  openLoginItems,
+  removeCliFromPath,
   restartDaemon,
   setAutostartDaemon,
   setAutostartGui,
@@ -42,6 +47,7 @@ import {
 } from "@/ipc/client";
 import type {
   AutostartState,
+  CliPathStatus,
   DumpsStatusResponse,
   StatusReport,
 } from "@/ipc/types";
@@ -54,6 +60,12 @@ const { pref, setTheme } = useTheme();
 
 const busy = ref<string | null>(null);
 const autostart = ref<AutostartState | null>(null);
+// Host platform — drives macOS-specific daemon copy (on macOS the daemon runs
+// as a background login item registered via SMAppService; see below).
+const platform = ref("");
+const isMac = computed(() => platform.value === "macos");
+// macOS-only: whether the bundled `yerd` CLI is symlinked onto PATH.
+const cli = ref<CliPathStatus | null>(null);
 // Dump-capture status (separate IPC from the report) — feeds the subsystem list.
 const dumps = ref<DumpsStatusResponse | null>(null);
 
@@ -209,8 +221,45 @@ async function loadDumps(): Promise<void> {
   }
 }
 
+// ── CLI on PATH (macOS) + Login-Items approval ──
+async function loadCli(): Promise<void> {
+  try {
+    cli.value = await cliPathStatus();
+  } catch {
+    cli.value = null;
+  }
+}
+
+async function toggleCliPath(): Promise<void> {
+  busy.value = "cli:path";
+  try {
+    if (cli.value?.installed) {
+      await removeCliFromPath();
+    } else {
+      await installCliToPath();
+    }
+  } catch (e) {
+    toast.error("Couldn't update the yerd CLI on PATH", (e as IpcError).message);
+  } finally {
+    busy.value = null;
+    await loadCli();
+  }
+}
+
+async function openApproval(): Promise<void> {
+  try {
+    await openLoginItems();
+  } catch (e) {
+    toast.error("Couldn't open Login Items", (e as IpcError).message);
+  }
+}
+
 onMounted(() => {
   loadAutostart();
+  hostPlatform()
+    .then((p) => (platform.value = p))
+    .catch(() => {});
+  loadCli();
   if (running.value) loadDumps();
 });
 
@@ -311,6 +360,23 @@ async function toggleGuiMinimized(on: boolean): Promise<void> {
     <PageHeader title="Settings" subtitle="Daemon, startup, and appearance" />
 
     <div class="flex-1 space-y-4 overflow-y-auto p-6">
+      <!-- macOS: registered via SMAppService but awaiting Login-Items approval. -->
+      <div
+        v-if="autostart?.daemonPendingApproval"
+        class="flex items-start justify-between gap-4 rounded-lg border border-amber-500/40 bg-amber-500/10 p-4"
+      >
+        <div class="space-y-1">
+          <p class="text-sm font-medium">Approve the Yerd background daemon</p>
+          <p class="text-xs text-muted-foreground">
+            Yerd is registered but waiting for you to enable it in System Settings
+            → Login Items before it can serve your .test sites.
+          </p>
+        </div>
+        <Button variant="outline" size="sm" @click="openApproval">
+          Open Login Items
+        </Button>
+      </div>
+
       <!-- Daemon + subsystems -->
       <Card>
         <CardHeader class="flex-row items-center justify-between space-y-0">
@@ -396,17 +462,19 @@ async function toggleGuiMinimized(on: boolean): Promise<void> {
         <CardContent class="space-y-4">
           <div class="flex items-center justify-between gap-4">
             <div>
-              <p class="text-sm font-medium">Start the Yerd daemon at login</p>
+              <p class="text-sm font-medium">Run the Yerd daemon in the background</p>
               <p class="text-xs text-muted-foreground">
                 {{ autostart?.daemonSupported === false
                   ? "Unavailable - no per-user service manager on this system."
-                  : "Keeps your .test sites served after you log in." }}
+                  : isMac
+                    ? "Runs at login and serves your .test sites. Shows as “Yerd” in System Settings › Login Items. Use the tray Stop to stop it for this session; turn this off to keep it stopped."
+                    : "Keeps your .test sites served after you log in." }}
               </p>
             </div>
             <Switch
               :model-value="autostart?.daemon ?? false"
               :disabled="busy === 'login:daemon' || autostart?.daemonSupported === false"
-              aria-label="Start the Yerd daemon at login"
+              aria-label="Run the Yerd daemon in the background"
               @update:model-value="toggleDaemonLogin"
             />
           </div>
@@ -435,6 +503,35 @@ async function toggleGuiMinimized(on: boolean): Promise<void> {
               aria-label="Start the Yerd app minimized"
               @update:model-value="toggleGuiMinimized"
             />
+          </div>
+        </CardContent>
+      </Card>
+
+      <!-- Terminal CLI (macOS) — Linux exposes `yerd` on PATH via the .deb. -->
+      <Card v-if="isMac">
+        <CardHeader>
+          <CardTitle>Terminal CLI</CardTitle>
+          <CardDescription>Use the <code>yerd</code> command in your terminal.</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <div class="flex items-center justify-between gap-4">
+            <div>
+              <p class="text-sm font-medium">Install <code>yerd</code> on your PATH</p>
+              <p class="text-xs text-muted-foreground">
+                {{ cli?.installed
+                  ? "Installed — run `yerd` in a new terminal window."
+                  : "Symlinks the bundled CLI into your shell PATH." }}
+              </p>
+            </div>
+            <Button
+              variant="outline"
+              size="sm"
+              :disabled="busy === 'cli:path'"
+              @click="toggleCliPath"
+            >
+              <Spinner v-if="busy === 'cli:path'" class="size-4" />
+              {{ cli?.installed ? "Remove" : "Install" }}
+            </Button>
           </div>
         </CardContent>
       </Card>

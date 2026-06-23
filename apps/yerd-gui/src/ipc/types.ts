@@ -439,4 +439,16 @@ export interface AutostartState {
   daemonSupported: boolean;
   gui: boolean;
   guiMinimized: boolean;
+  /** macOS only: registered but awaiting approval in System Settings → Login Items. */
+  daemonPendingApproval: boolean;
+}
+
+/**
+ * Whether the bundled `yerd` CLI is symlinked onto PATH (macOS host command
+ * `cli_path_status`). On Linux the `.deb` already puts `yerd` on PATH, so the
+ * control is hidden there.
+ */
+export interface CliPathStatus {
+  installed: boolean;
+  target: string;
 }
