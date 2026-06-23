@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  LaunchAgent for the Yerd daemon, embedded in Yerd.app and registered via
+  SMAppService (ServiceManagement, macOS 13+). Because it is registered through
+  the app bundle, macOS attributes the "Allow in the Background" Login Items
+  entry to Yerd (app name + icon) instead of the signing team's name.
+
+  BundleProgram is bundle-root-relative (no absolute path baked in, so it works
+  from /Applications). ProgramArguments[0] is the argv[0] *name token* "yerdd"
+  (NOT a path) — BundleProgram supplies the exec path; ProgramArguments supplies
+  argv, so `serve` arrives as argv[1].
+
+  KeepAlive{SuccessfulExit:false}: relaunch on a crash but not after a clean
+  stop. `yerdd serve` exits 0 on SIGTERM (graceful), so `launchctl kill SIGTERM`
+  stops it for the session without launchd respawning it.
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>dev.yerd.daemon</string>
+  <key>BundleProgram</key><string>Contents/MacOS/yerdd</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>yerdd</string>
+    <string>serve</string>
+  </array>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key>
+  <dict>
+    <key>SuccessfulExit</key><false/>
+  </dict>
+</dict>
+</plist>

@@ -1,0 +1,11 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "bundle": {
+    "externalBin": ["binaries/yerd", "binaries/yerdd", "binaries/yerd-helper"],
+    "macOS": {
+      "files": {
+        "Library/LaunchAgents/dev.yerd.daemon.plist": "launchagents/dev.yerd.daemon.plist"
+      }
+    }
+  }
+}

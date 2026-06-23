@@ -46,7 +46,7 @@ yerdd serve -v --config ~/my-yerd.toml
 Running `yerdd` with no subcommand equals `yerdd serve` with defaults.
 
 ::: tip You usually don't run yerdd by hand
-On a typical install, let your OS service manager keep it running (below). The bare `yerdd serve &` form is handy for the rootless tarball/source path and for debugging, where it binds `8080`/`8443`.
+On a typical install, let the app (or your OS service manager) keep it running (below). The bare `yerdd serve &` form is handy for a from-source run and for debugging, where it binds `8080`/`8443`.
 :::
 
 ### The CLI does not auto-start it
@@ -65,7 +65,7 @@ How autostart is wired depends on your platform.
 
 ### Linux: systemd user service
 
-Yerd ships a systemd user unit named `yerd`. The Debian package installs it; the install script drops an equivalent unit at `~/.config/systemd/user/yerd.service` on other systemd distros (Arch, Fedora, openSUSE).
+Yerd uses a systemd `--user` unit named `yerd`. The app writes it to `~/.config/systemd/user/yerd.service` when you start the daemon or enable "Run daemon at login" - you don't install it by hand. It looks like:
 
 ```ini
 [Unit]
@@ -103,17 +103,17 @@ On the `.deb` install, the post-install step grants `yerdd` the `cap_net_bind_se
 
 ### macOS
 
-The macOS installer drops the binaries and launches the daemon directly:
+The app **bundles the daemon** and registers it as a background **`SMAppService`** agent, so it shows up as **Yerd** in System Settings → General → Login Items → Allow in the Background (attributed to the app, with its icon - not to the signing team). Manage it from **Settings → "Run the Yerd daemon in the background"** in the app; the tray's Start/Stop control the running process for the current session.
+
+::: tip First-time approval
+The first time the daemon registers, macOS may ask you to enable Yerd in Login Items. The app shows a banner with a button that takes you straight there. A LaunchAgent runs as your user, matching Yerd's rootless model.
+:::
+
+For a from-source / terminal run without the app, start the daemon directly:
 
 ```sh
 yerdd serve &
 ```
-
-For login autostart, create a per-user LaunchAgent that runs `yerdd serve` and load it with `launchctl`. A LaunchAgent runs as your user, matching Yerd's rootless model.
-
-::: warning No bundled macOS daemon agent yet
-Yerd does not ship a ready-made LaunchAgent plist for `yerdd`; the installer just runs `yerdd serve`. Persistent login autostart is something you wire up yourself for now. A packaged agent is on the [roadmap](./services). (The desktop app is a separate launch item and is itself a client of the daemon.)
-:::
 
 ## Lifecycle: start, stop, restart
 

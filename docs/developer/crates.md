@@ -15,7 +15,7 @@ three layers:
 This page is the index. Each entry links to its own detailed reference page.
 
 ::: info Workspace facts
-All members share `version = "2.0.1"`, `edition = "2021"`, and `rust-version = "1.77"`
+All members share a single `version`, `edition = "2021"`, and `rust-version = "1.77"`
 from `[workspace.package]` - except `yerd-gui`, which pins `rust-version = "1.85"`
 because current Tauri v2 needs edition2024 (rustc ≥ 1.85). The workspace forbids
 `unsafe_code` and denies `unwrap`/`expect`/`panic`/`todo`/`dbg!`/`indexing_slicing`
@@ -56,7 +56,7 @@ set (it wraps macro-heavy generated Tauri code) but still bans
 | Member | Purpose | Page |
 |---|---|---|
 | `yerd-gui` (`apps/yerd-gui`) | Tauri v2 + Vue 3 desktop/tray app - another thin `yerd-ipc` client of `yerdd`, like the CLI. | [Desktop App Internals](./gui) |
-| `xtask` | Build automation invoked as `cargo xtask <cmd>`: `deb`, `bump`, `version-check`. | [Build Automation (xtask)](./xtask) |
+| `xtask` | Build automation invoked as `cargo xtask <cmd>`: `bump`, `version-check`. | [Build Automation (xtask)](./xtask) |
 
 ## Internal dependency graph
 
@@ -147,7 +147,7 @@ crate's `Cargo.toml`):
 - **`yerd`** (bin) → `yerd-core`, `yerd-ipc` (`transport`), `yerd-platform`
 - **`yerd-gui`** (app) → `yerd-core`, `yerd-ipc` (`transport`), `yerd-platform`
 - **`yerdd`** (bin) → `yerd-core`, `yerd-config`, `yerd-ipc` (`transport`), `yerd-tls`, `yerd-platform`, `yerd-dns`, `yerd-supervise`, `yerd-php`, `yerd-services`, `yerd-proxy`, `yerd-doctor`, `yerd-mail` - **all twelve libraries**
-- **`xtask`** → *(no internal deps; `anyhow` + `clap` + `flate2` only)*
+- **`xtask`** → *(no internal deps; `anyhow` + `clap` only)*
 
 ::: tip The daemon is the assembly point
 Only `yerdd` depends on every library. It is where the pure logic, the OS

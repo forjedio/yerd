@@ -287,13 +287,17 @@ In practice: no `unsafe`, no `unwrap`/`expect`/`panic` outside tests, no
 ## Packaging and releasing
 
 Build automation lives in the [`xtask`](./xtask) crate, invoked as
-`cargo xtask <command>`. It exposes three subcommands:
+`cargo xtask <command>`. It exposes two subcommands:
 
 ```sh
-cargo xtask deb                  # build a Linux .deb for the Yerd binaries
 cargo xtask bump 2.0.2           # set the version across the three manifests
 cargo xtask version-check v2.0.2 # release gate: assert a tag matches the manifests
 ```
+
+The shipped artifact is the **GUI bundle** (`.dmg` on macOS, `.deb` on Linux),
+built by Tauri with the three binaries (`yerd`/`yerdd`/`yerd-helper`) embedded via
+`externalBin` (per-platform overlays in `apps/yerd-gui/src-tauri/`). There is no
+standalone CLI tarball/`.deb`.
 
 `bump` keeps three files in sync - `Cargo.toml`,
 `apps/yerd-gui/src-tauri/tauri.conf.json`, and `apps/yerd-gui/package.json` - so
@@ -303,27 +307,17 @@ the CLI/daemon and the GUI never disagree on version. The release pipeline runs
 
 ### macOS code signing & notarisation
 
-The release workflow Developer ID signs **and** notarises the macOS artifacts:
+The release workflow Developer ID signs **and** notarises the macOS artifact:
 the GUI `.app` (signed, notarised and stapled by Tauri) and its `.dmg` (signed
 and notarised, but only the `.app` staple is enforced - the `.dmg` staple is
-advisory and non-fatal in CI, since the stapled `.app` inside is the gate) plus
-the three CLI binaries (`yerd`/`yerdd`/`yerd-helper`, signed with Hardened Runtime + a secure
-timestamp and notarised as a zip). Notarisation uses an **App Store Connect API
-key**. The GUI's first-run auto-installer verifies a downloaded binary's
-signature and only ad-hoc-signs older, unsigned releases, so it never strips the
-Developer ID signature.
-
-::: info Why the CLI binaries aren't stapled
-The GUI `.app` is stapled (Tauri staples the notarisation ticket into the
-bundle, so Gatekeeper assesses it offline). The three CLI binaries deliberately
-are **not**: a loose Mach-O / tarball can't carry a stapled ticket. They pass
-Gatekeeper two other ways - notarytool records each `cdhash`, so Gatekeeper
-approves them via an online notarisation check, and the `curl | sh` /
-auto-installer download path sets no `com.apple.quarantine` xattr, so they exec
-regardless. This is why the CLI verify step doesn't run an `spctl -t exec` gate:
-an unstapled, unquarantined loose binary often assesses as "rejected" even when
-it is correctly notarised.
-:::
+advisory and non-fatal in CI, since the stapled `.app` inside is the gate). The
+three embedded binaries (`yerd`/`yerdd`/`yerd-helper`) are signed by Tauri **as
+part of the bundle** (Hardened Runtime + secure timestamp + the app's Developer ID
+team) and covered by the single `.app` notarisation - so there are no loose,
+separately-notarised CLI binaries. Notarisation uses an **App Store Connect API
+key**. The CI verify step asserts each embedded binary is Developer-ID signed,
+Hardened-Runtime, timestamped, team-matched, and free of broad entitlements
+(`allow-jit` / `allow-unsigned-executable-memory` / `get-task-allow`).
 
 This is driven entirely by GitHub Actions **secrets** - there's nothing to
 configure in a normal build. To (re)provision them:
@@ -347,10 +341,11 @@ The GUI's signing config lives in `apps/yerd-gui/src-tauri/tauri.conf.json`
 (`bundle.macOS`) and `apps/yerd-gui/src-tauri/entitlements.plist` (the
 Hardened-Runtime entitlements - note it must **not** carry `get-task-allow`).
 
-**Verifying a release.** Both CI jobs verify fail-closed before publishing. To
+**Verifying a release.** The `gui` job verifies fail-closed before publishing. To
 check by hand on a Mac: `xcrun stapler validate Yerd.app`,
 `spctl -a -t open --context context:primary-signature -vvv Yerd.dmg`, and
-`codesign -dv --verbose=4 yerd` (expect `Authority=Developer ID Application`).
+`codesign -dv --verbose=4 Yerd.app/Contents/MacOS/yerdd` (expect
+`Authority=Developer ID Application`).
 
 ## See also
 

@@ -42,7 +42,7 @@ apps/yerd-gui/
 │       └── error.rs        GuiError { code, message }
 └── src/                    Vue FRONTEND
     ├── main.ts             createApp + router; initTheme(); initDesktopChrome()
-    ├── App.vue             AppShell + Toaster; shared daemon poller; first-run auto-install
+    ├── App.vue             AppShell + Toaster; shared daemon poller; first-run daemon start
     ├── router.ts           hash router: /overview (default) /general /php /sites /tooling /services /dumps /mail /doctor /about (+ /dumps-window, /mails-viewer standalone routes)
     ├── ipc/
     │   ├── types.ts        TypeScript mirror of the yerd-ipc wire JSON
@@ -140,7 +140,7 @@ Three commands are **host-only helpers** with no daemon IPC:
 | `host_platform` | `&'static str` (`std::env::consts::OS`) | `"linux"` / `"macos"` / `"windows"` to gate platform UI |
 | `elevate` / `unelevate` | `()` | run `yerd elevate <target>` / `yerd unelevate <target>` under OS elevation (see below) |
 
-The Settings page (route `/general`) adds further host-only commands (no daemon IPC) for daemon lifecycle and autostart - `daemon_installed`, `install_daemon`, `start_daemon`, `stop_daemon`, `get_autostart`, `set_autostart_daemon`, `set_autostart_gui`, `set_gui_minimized` - implemented in `daemon.rs` (locate/download/start/stop) and `autostart.rs` (per-user service + the autostart plugin).
+The Settings page (route `/general`) adds further host-only commands (no daemon IPC) for daemon lifecycle and autostart - `daemon_installed`, `start_daemon`, `stop_daemon`, `cli_path_status`, `install_cli_to_path`, `remove_cli_from_path`, `open_login_items`, `get_autostart`, `set_autostart_daemon`, `set_autostart_gui`, `set_gui_minimized` - implemented in `daemon.rs` (resolve the bundled binaries, start/stop, install the `yerd` CLI on PATH) and `autostart.rs` (per-user service + run-at-login; macOS uses `smappservice.rs`). The daemon is **bundled** in the app, so there's no download/install command.
 
 ::: tip No `Request` is ever built in the frontend
 The `Request` enum is intentionally **not** mirrored into TypeScript. The
@@ -222,7 +222,8 @@ The window itself (`tauri.conf.json`) is **decorationless and transparent**
 (`"decorations": false`, `"transparent": true`, `macOSPrivateApi: true`), which
 is why the frontend ships a custom `TitleBar.vue`. The CSP is locked down to
 `default-src 'self'` (plus inline styles and `data:` images). Bundle targets are
-`deb`, `appimage`, and `dmg`.
+`deb`, `dmg`, and `app` (no AppImage - its ephemeral mount can't persist the
+daemon's `setcap`).
 
 ::: info Three windows, one bundle
 The app is no longer single-window. `tauri.conf.json` declares **three** windows,

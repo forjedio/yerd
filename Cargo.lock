@@ -5947,7 +5947,6 @@ version = "2.0.2-rc.3"
 dependencies = [
  "anyhow",
  "clap",
- "flate2",
 ]
 
 [[package]]
@@ -6026,22 +6025,18 @@ version = "2.0.2-rc.3"
 dependencies = [
  "core-foundation 0.9.4",
  "core-foundation-sys",
- "flate2",
  "glib",
- "hex",
  "interprocess",
  "libc",
  "objc2",
  "objc2-app-kit",
  "objc2-foundation",
  "pem",
- "reqwest 0.12.9",
  "security-framework",
  "security-framework-sys",
  "serde",
  "serde_json",
  "sha2",
- "tar",
  "tauri",
  "tauri-build",
  "tauri-plugin-autostart",

@@ -83,6 +83,10 @@ pub trait TrustStore {
     fn install_system(&self, ca_pem: &str, fp: &CaFingerprint) -> Result<(), PlatformError>;
     fn uninstall_system(&self, fp: &CaFingerprint) -> Result<(), PlatformError>;
     fn is_present_system(&self, fp: &CaFingerprint) -> Result<bool, PlatformError>;
+    // Effectively *trusted* for SSL, not merely present. Defaulted to
+    // `Unsupported` (the only defaulted method); macOS uses `security
+    // verify-cert`, Linux delegates to `is_present_system`.
+    fn is_trusted(&self, ca_path: &Path, fp: &CaFingerprint) -> Result<bool, PlatformError>;
     fn install_firefox_nss(&self, ca_pem: &str) -> Result<NssOutcome, PlatformError>;
 }
 ```

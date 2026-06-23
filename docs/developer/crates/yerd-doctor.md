@@ -29,13 +29,16 @@ Source: [`crates/yerd-doctor/src/lib.rs`](https://github.com/forjedio/yerd/blob/
 
 ## Public API
 
-### `diagnose(&StatusReport) -> Vec<Diagnosis>`
+### `diagnose(&StatusReport, Option<bool>) -> Vec<Diagnosis>`
 
 Runs every check against the report and returns the findings in a stable order.
+The second argument, `path_needs_setup`, lets the caller surface a
+`BinDirNotOnPath` warning when the yerd bin dir isn't on `PATH` (`None` = unknown,
+skip that check).
 
 ```rust
 #[must_use]
-pub fn diagnose(report: &StatusReport) -> Vec<Diagnosis>;
+pub fn diagnose(report: &StatusReport, path_needs_setup: Option<bool>) -> Vec<Diagnosis>;
 ```
 
 Two cross-cutting invariants hold for the output:

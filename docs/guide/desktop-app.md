@@ -6,20 +6,17 @@ It's the recommended way to run Yerd: it installs and verifies the daemon and CL
 
 ## Install the bundles
 
-The app ships as separate bundles on the same release as the CLI:
+The app is the **only** artifact, with the daemon + CLI + helper embedded:
 
 | Platform | Artifact | Install |
 |---|---|---|
-| macOS (Apple Silicon) | `yerd-gui_<ver>_aarch64.dmg` | Open the DMG, drag Yerd to Applications |
-| Linux | `yerd-gui_<ver>_amd64.AppImage` | `chmod +x yerd-gui_<ver>_amd64.AppImage` and run it |
-| Linux | `yerd-gui_<ver>_amd64.deb` | `sudo dpkg -i yerd-gui_<ver>_amd64.deb` |
+| macOS (Apple Silicon) | `Yerd_MacOS_AppleSilicon_v<ver>.dmg` | Open the DMG, drag Yerd to Applications |
+| Linux (x86-64) | `Yerd_Linux_x86_64_v<ver>.deb` | `sudo apt install ./Yerd_Linux_x86_64_v<ver>.deb` |
 
 The macOS DMG targets Apple Silicon (`aarch64`) only; Intel (x86-64) Macs are not supported at this time. There's no Windows bundle yet: the daemon's named-pipe address isn't client-derivable.
 
 ::: tip The GUI sets up the backend for you
-The GUI is a client of the [daemon](./daemon), but you don't have to install the CLI first. On first launch, if `yerdd` isn't already present the app downloads the matching release, **verifies it against `SHA256SUMS`**, and installs `yerd` + `yerdd` + `yerd-helper` into `~/.local/bin`. "Matching" means the release tagged with the app's own version if one is published for it; otherwise the app falls back to the latest stable release (so a dev build whose version was never tagged still installs a working daemon) (on macOS it verifies their signature, ad-hoc-signing only older unsigned releases), then starts the daemon. On macOS that makes setup essentially **drag-and-drop**: drag Yerd to Applications, launch it, done.
-
-Auto-install covers Linux (x86-64 · arm64) and Apple Silicon macOS. On Intel Macs, [install the CLI](./getting-started) manually first. If you already have the CLI (or installed the Linux `.deb`, which lands in `/usr/bin`), the app just finds and uses the existing binaries.
+The GUI is a client of the [daemon](./daemon), and the daemon (`yerdd`), the `yerd` CLI, and `yerd-helper` are all **bundled inside the app** - nothing is downloaded at runtime. On first launch the app simply **starts its bundled daemon**, then lands you on the Overview dashboard. On macOS that makes setup essentially **drag-and-drop**: drag Yerd to Applications, launch it, done. On macOS the daemon registers as a background **SMAppService** login item (shown as "Yerd" in System Settings → Login Items); on Linux the `.deb` puts `yerd` on your `PATH` and grants the daemon its privileged-port capability.
 :::
 
 ## Tray-first by design
@@ -33,10 +30,10 @@ The window is something you summon, not keep open.
 
 The window is borderless with a custom title bar (macOS-style traffic lights for close / minimize / zoom) and looks identical on both platforms. A status pill in the bottom-left of the sidebar shows whether the daemon is connected, unreachable, or connecting.
 
-If the daemon isn't running, the main area shows a "Daemon not running" panel with **Start** and **Retry** buttons - Start launches `yerdd` for you (through your per-user service) without leaving the app. The **Overview**, **Settings**, and **About** pages stay reachable even when the daemon is down: Overview shows its own **Start Yerd** hero, and Settings can start or install it. You can also start it from a terminal with `yerdd`.
+If the daemon isn't running, the main area shows a "Daemon not running" panel with **Start** and **Retry** buttons - Start launches the bundled `yerdd` for you (through your per-user service) without leaving the app. The **Overview**, **Settings**, and **About** pages stay reachable even when the daemon is down: Overview shows its own **Start Yerd** hero, and Settings can start it. You can also start it from a terminal with `yerdd serve &`.
 
-::: tip First-run auto-install
-If `yerdd` isn't installed at all when the app first opens (Linux/macOS), it downloads the matching release, installs the `yerd`/`yerdd`/`yerd-helper` binaries to `~/.local/bin`, starts the daemon, and lands you on the Overview dashboard - showing an "Installing Yerdd… Please wait" overlay while it works. It never runs as root to do this.
+::: tip First-run start
+When the app first opens and the daemon isn't already running, it **starts the bundled `yerdd`** and lands you on the Overview dashboard. On macOS, registering the background service may prompt you to enable Yerd in System Settings → Login Items - the app shows a banner with a button to take you there. It never runs as root to do this.
 :::
 
 ## The window at a glance

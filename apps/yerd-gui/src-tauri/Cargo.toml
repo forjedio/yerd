@@ -35,13 +35,10 @@ serde        = { workspace = true }
 serde_json   = { workspace = true }
 libc         = "0.2"
 
-# yerdd auto-install: download the matching release tarball, verify, extract.
-# rustls only (workspace pins) — no OpenSSL, matching the rest of the workspace.
-reqwest = { workspace = true }
-sha2    = { workspace = true }
-hex     = { workspace = true }
-flate2  = { workspace = true }
-tar     = { workspace = true }
+# SHA-256 for in-process CA fingerprint verification (mac_trust.rs). The daemon
+# is bundled (Tauri externalBin), so there's no runtime download — the former
+# reqwest/flate2/tar/hex install stack is gone.
+sha2 = { workspace = true }
 
 # Linux only: pin the GTK program name so the Wayland app_id matches our
 # .desktop entry (yerd-gui.desktop) for the taskbar/dock icon, and reach the
@@ -58,7 +55,7 @@ webkit2gtk = "=2.0.2"
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2            = "0.6"
 objc2-app-kit    = { version = "0.3", features = ["NSApplication", "NSImage", "NSResponder", "NSGraphics", "objc2-core-foundation"] }
-objc2-foundation = { version = "0.3", features = ["NSData", "objc2-core-foundation"] }
+objc2-foundation = { version = "0.3", features = ["NSData", "NSString", "NSError", "objc2-core-foundation"] }
 # In-process user-domain CA trust (mac_trust.rs). Versions track what
 # yerd-platform already resolves, so no duplicate compiles. `core-foundation`
 # provides the `TCFType` trait (`as_concrete_TypeRef`); `security-framework-sys`

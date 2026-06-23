@@ -17,6 +17,13 @@ crates.
   a typed `GuiError` so the frontend only ever sees success or a typed failure.
 - The IPC client plumbing (`ipc.rs`) and host-only helpers.
 - `elevate.rs` for triggering elevation flows where required.
+- **Host-side daemon lifecycle** (`daemon.rs`, `autostart.rs`, `smappservice.rs`):
+  resolve the bundled `yerd`/`yerdd`/`yerd-helper` (siblings of the app exe),
+  start/stop the daemon via the per-user service, manage run-at-login (systemd
+  `--user` on Linux; macOS **SMAppService** login-item registration), the
+  optional "install the bundled `yerd` CLI on PATH", and macOS in-process CA
+  trust (`mac_trust.rs`). These are host **orchestration**, not daemon logic —
+  still no business rules here.
 
 ## Must not
 
@@ -32,8 +39,9 @@ crates.
   Anything that looks like a decision belongs in a crate.
 - Required Tauri lessons: use `tauri-plugin-single-instance` (duplicate launches
   otherwise spawn duplicate daemons); the Linux tray needs
-  `libayatana-appindicator`; no Flatpak in v1 (tray bug); use the updater plugin
-  with signed manifests.
+  `libayatana-appindicator`; no Flatpak in v1 (tray bug). Distribution is
+  whole-bundle releases (`.dmg`/`.deb` via the release workflow) — there is **no**
+  in-app updater plugin; do not add one without a product decision.
 
 ## Review checklist
 

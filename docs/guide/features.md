@@ -80,11 +80,11 @@ Skip elevation and run sites on `127.0.0.1:8080` / `:8443`. Yerd binds those unp
 
 ## The background daemon
 
-`yerdd` is one lightweight (~8 MB) native binary that owns all runtime state and serves the reverse proxy, DNS resolver, PHP-FPM pools, and database/cache services. No VM, no container, no Electron. On a `.deb` install it runs as a `systemd --user` service; from a tarball you run it directly.
+`yerdd` is one lightweight (~8 MB) native binary that owns all runtime state and serves the reverse proxy, DNS resolver, PHP-FPM pools, and database/cache services. No VM, no container, no Electron. It's bundled inside the app; on Linux it runs as a `systemd --user` service, and the GUI starts it for you.
 
 ```sh
-systemctl --user enable --now yerd   # .deb install, runs as you
-yerdd serve &                        # tarball / from-source
+systemctl --user enable --now yerd   # Linux, runs as you
+yerdd serve &                        # from source
 yerd restart daemon                  # restart via the CLI
 ```
 
@@ -104,10 +104,10 @@ yerd doctor fix    # auto-repair the safe ones
 
 ## Desktop app
 
-A Tauri v2 tray app (Vue 3 + TypeScript) ships as separate bundles: `.dmg` on macOS, `.AppImage` / `.deb` on Linux. It's the recommended way to run Yerd, surfacing the same data and actions as the CLI in a native tray UI.
+A Tauri v2 tray app (Vue 3 + TypeScript) ships as a single bundle: `.dmg` on macOS, `.deb` on Linux. It's the recommended way to run Yerd, surfacing the same data and actions as the CLI in a native tray UI.
 
 ::: tip The app sets up the backend for you
-On first launch the desktop app downloads, verifies, and installs `yerd`/`yerdd`/`yerd-helper` for you (Apple Silicon macOS · Linux x86-64 · arm64), then starts the daemon - no separate CLI install needed.
+The daemon, the `yerd` CLI, and `yerd-helper` are all **bundled inside the app** (Apple Silicon macOS · Linux x86-64). On first launch it starts the daemon - no separate CLI install needed.
 :::
 
 [Desktop app guide →](./desktop-app)

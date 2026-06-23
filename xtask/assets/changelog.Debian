@@ -1,6 +1,0 @@
-yerd (2.0.1) unstable; urgency=low
-
-  * Yerd v2: yerd CLI, yerdd daemon, yerd-helper, and a systemd user unit.
-    postinst applies cap_net_bind_service to yerdd.
-
- -- Forjed <support@forjed.io>  Fri, 30 May 2026 00:00:00 +0000

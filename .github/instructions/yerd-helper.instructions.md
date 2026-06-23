@@ -37,8 +37,8 @@ A separate binary that does exactly one operation and exits.
 
 ## Must not
 
-- Grow product logic — it consumes `yerd-platform` (privileged impls) and
-  `yerd-tls` (read CA PEM) and does the one effect.
+- Grow product logic — it consumes `yerd-platform` (privileged impls), validates
+  the CA PEM directly (the `pem` crate), and does the one effect.
 - Pull in `anyhow` into anything but its own top-level error reporting, or any
   network/OpenSSL dependency.
 

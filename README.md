@@ -71,33 +71,26 @@ its own Rust proxy + DNS. No Valet, no Homebrew.</sub>
 
 ## Installation
 
-The easiest way to run Yerd is the **desktop app** - it installs the daemon and
-CLI for you. Grab the latest build from the
+Yerd is a **single desktop app** - the daemon (`yerdd`), the `yerd` CLI, and the
+privileged `yerd-helper` are all embedded inside it (nothing is downloaded at
+runtime). Grab the latest build from the
 [releases page](https://github.com/forjedio/yerd/releases):
 
 | Platform | Download | Install |
 |---|---|---|
-| macOS (Apple Silicon) | `yerd-gui_<ver>_aarch64.dmg` | open, drag to Applications |
-| Linux | `yerd-gui_<ver>_amd64.AppImage` | `chmod +x` and run |
-| Linux | `yerd-gui_<ver>_amd64.deb` | `sudo dpkg -i …` |
+| macOS (Apple Silicon) | `Yerd_MacOS_AppleSilicon_v<ver>.dmg` | open, drag to Applications |
+| Linux (x86-64) | `Yerd_Linux_x86_64_v<ver>.deb` | `sudo apt install ./Yerd_Linux_x86_64_v<ver>.deb` |
 
-On first launch the app downloads and installs the `yerd` CLI, the `yerdd`
-daemon, and `yerd-helper` into `~/.local/bin` (verified against `SHA256SUMS`) -
-so on macOS, setup is essentially drag-and-drop. It then walks you through a
-**one-time** `sudo yerd elevate` to trust the local CA, route `*.test`, and bind
-ports 80/443. Everything after runs as your user - never as root.
+On first launch the app **starts its bundled daemon** - so on macOS setup is
+essentially drag-and-drop. It then walks you through a **one-time**
+`sudo yerd elevate` to trust the local CA, route `*.test`, and bind ports 80/443.
+Everything after runs as your user - never as root.
 
-### Advanced: CLI + daemon only
+### Terminal CLI
 
-Prefer the terminal? Install just the daemon and CLI (no GUI):
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/forjedio/yerd/main/scripts/install.sh | sh
-```
-
-This fetches the latest release (SHA-verified) and installs `yerd` + `yerdd` +
-`yerd-helper` - a `.deb` on Debian/Ubuntu, or a tarball to `~/.local/bin`
-elsewhere. Then run the one-time setup:
+The `yerd` command ships with the app: on **Linux** the `.deb` puts it on your
+`PATH`; on **macOS** open *Settings → Terminal CLI → Install*. Then the one-time
+setup is available from the terminal too:
 
 ```bash
 sudo yerd elevate    # trust the CA · route *.test · allow 80/443
