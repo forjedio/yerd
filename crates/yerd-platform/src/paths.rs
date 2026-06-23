@@ -66,9 +66,22 @@ impl PlatformDirs {
                 runtime,
             }
         }
-        #[cfg(not(target_os = "macos"))]
+        #[cfg(target_os = "linux")]
         {
-            // XDG (Linux/other): `directories` lowercases the app name to `yerd`.
+            // XDG: `directories` lowercases the app name to `yerd`.
+            Self {
+                config: home.join(".config").join("yerd"),
+                data: home.join(".local").join("share").join("yerd"),
+                state: home.join(".local").join("state").join("yerd"),
+                cache: home.join(".cache").join("yerd"),
+                runtime,
+            }
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+        {
+            // Unsupported targets: keep the deterministic XDG-style fallback
+            // (matches `os::unsupported`) until a dedicated layout is added. Per
+            // the per-OS convention in `os/mod.rs`, this branch is explicit.
             Self {
                 config: home.join(".config").join("yerd"),
                 data: home.join(".local").join("share").join("yerd"),

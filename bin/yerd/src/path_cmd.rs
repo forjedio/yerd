@@ -53,7 +53,10 @@ pub fn ensure_installed_after_tool(_quiet: bool) {}
 /// edited (the block was present and removed). Best-effort: unreadable files
 /// are skipped.
 #[cfg(unix)]
-pub fn remove_block_for_user(home: &std::path::Path, shell_basename: &str) -> Vec<std::path::PathBuf> {
+pub fn remove_block_for_user(
+    home: &std::path::Path,
+    shell_basename: &str,
+) -> Vec<std::path::PathBuf> {
     unix::remove_block_for_user(home, shell_basename)
 }
 

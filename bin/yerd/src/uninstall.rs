@@ -169,8 +169,8 @@ mod unix_impl {
             .map(PathBuf::from)
             .ok_or_else(|| "cannot resolve your home directory ($HOME is unset)".to_owned())?;
         let name = std::env::var("USER").unwrap_or_default();
-        let shell = std::env::var_os("SHELL")
-            .map_or_else(|| PathBuf::from("/bin/sh"), PathBuf::from);
+        let shell =
+            std::env::var_os("SHELL").map_or_else(|| PathBuf::from("/bin/sh"), PathBuf::from);
         Ok(Actor {
             uid,
             name,
@@ -186,8 +186,9 @@ mod unix_impl {
         let helper = match elevate::sibling_binaries() {
             Ok((helper, _yerdd)) => helper,
             Err(e) => {
-                residue
-                    .push(format!("could not locate yerd-helper to revert system changes: {e}"));
+                residue.push(format!(
+                    "could not locate yerd-helper to revert system changes: {e}"
+                ));
                 return;
             }
         };
@@ -231,12 +232,7 @@ mod unix_impl {
     }
 
     /// Spawn the helper for one operation and classify the outcome.
-    fn run_helper(
-        helper: &Path,
-        inv: &HelperInvocation,
-        what: &str,
-        residue: &mut Vec<String>,
-    ) {
+    fn run_helper(helper: &Path, inv: &HelperInvocation, what: &str, residue: &mut Vec<String>) {
         print!("==> {what} … ");
         let _ = std::io::Write::flush(&mut std::io::stdout());
         match elevate::spawn_helper(helper, inv) {
@@ -340,9 +336,7 @@ mod unix_impl {
     /// Remove the daemon's service unit file (best-effort).
     fn remove_service_unit(actor: &Actor) {
         #[cfg(target_os = "linux")]
-        let unit = actor
-            .home
-            .join(".config/systemd/user/yerd.service");
+        let unit = actor.home.join(".config/systemd/user/yerd.service");
         #[cfg(target_os = "macos")]
         let unit = actor
             .home
@@ -402,9 +396,17 @@ mod unix_impl {
             }
         }
         if packaged {
+            // The only way a yerd binary lands in a dpkg-owned dir is the Debian
+            // `.deb` (installs to /usr/bin); advise the matching removal. On other
+            // OSes this is effectively unreachable, but keep the guidance correct.
+            #[cfg(target_os = "linux")]
             residue.push(
                 "system-installed binaries (a .deb install) — remove with: sudo apt purge yerd"
                     .to_owned(),
+            );
+            #[cfg(not(target_os = "linux"))]
+            residue.push(
+                "binaries in a system path — remove them with your package manager".to_owned(),
             );
         }
     }
@@ -426,12 +428,15 @@ mod unix_impl {
         ])
     }
 
-    /// A package-managed location whose binaries dpkg owns — advise `apt purge`
-    /// rather than `rm`.
+    /// A package-managed location whose binaries dpkg owns — advise removal via
+    /// the package manager rather than `rm`. `/usr/local/bin` is deliberately
+    /// excluded: Debian Policy reserves `/usr/local` for the local admin and no
+    /// package may own files there, so a yerd binary in `/usr/local/bin` is a
+    /// manual install we should unlink like any other.
     fn is_system_install_dir(dir: &Path) -> bool {
         matches!(
             dir.to_str(),
-            Some("/usr/bin" | "/usr/local/bin" | "/usr/sbin" | "/bin" | "/sbin")
+            Some("/usr/bin" | "/usr/sbin" | "/bin" | "/sbin")
         )
     }
 
@@ -445,7 +450,10 @@ mod unix_impl {
 
     fn dedup(paths: Vec<PathBuf>) -> Vec<PathBuf> {
         let mut seen = std::collections::HashSet::new();
-        paths.into_iter().filter(|p| seen.insert(p.clone())).collect()
+        paths
+            .into_iter()
+            .filter(|p| seen.insert(p.clone()))
+            .collect()
     }
 
     fn run_quiet(program: &str, args: &[&str]) -> bool {
@@ -476,7 +484,10 @@ mod unix_impl {
     }
 
     fn print_header(actor: &Actor, dirs: &PlatformDirs, root: bool) {
-        println!("This will uninstall yerd for user '{}'. It removes:", actor.name);
+        println!(
+            "This will uninstall yerd for user '{}'. It removes:",
+            actor.name
+        );
         println!("  • config:  {}", dirs.config.display());
         println!(
             "  • data:    {}  (certs, installed PHP versions, tools, downloads)",
@@ -486,9 +497,7 @@ mod unix_impl {
         println!("  • the yerd PATH entry from your shell startup files");
         println!("  • the yerd daemon service and the yerd / yerdd / yerd-helper binaries");
         if root {
-            println!(
-                "  • system changes from `yerd elevate` (CA trust, DNS resolver, ports)"
-            );
+            println!("  • system changes from `yerd elevate` (CA trust, DNS resolver, ports)");
         }
     }
 
@@ -512,13 +521,18 @@ mod unix_impl {
         eprintln!("WARNING: not running as root (sudo).");
         eprintln!("  The system-level changes from `yerd elevate` need root to revert, and they");
         eprintln!("  CANNOT be reverted after yerd is uninstalled (the binary will be gone).");
-        eprintln!("  They will be left in place. Either abort and re-run as `sudo yerd uninstall`,");
+        eprintln!(
+            "  They will be left in place. Either abort and re-run as `sudo yerd uninstall`,"
+        );
         eprintln!("  or remove them manually afterwards:");
         eprintln!("    • CA trust: {}", manual_ca_removal_hint());
         // The cert is about to be deleted; print its fingerprint now so the CA
         // stays identifiable in the trust store afterwards.
         if let Some(fp) = facts.ca_fp {
-            eprintln!("                (yerd CA SHA-256 fingerprint: {})", fp.to_hex());
+            eprintln!(
+                "                (yerd CA SHA-256 fingerprint: {})",
+                fp.to_hex()
+            );
         }
         #[cfg(target_os = "macos")]
         {
@@ -568,8 +582,10 @@ mod unix_impl {
         #[test]
         fn system_dirs_are_recognised() {
             assert!(is_system_install_dir(Path::new("/usr/bin")));
-            assert!(is_system_install_dir(Path::new("/usr/local/bin")));
             assert!(!is_system_install_dir(Path::new("/home/u/.local/bin")));
+            // `/usr/local/bin` is admin-owned, not dpkg-managed — a binary there
+            // is a manual install we should unlink, not defer to a package mgr.
+            assert!(!is_system_install_dir(Path::new("/usr/local/bin")));
         }
 
         #[test]
