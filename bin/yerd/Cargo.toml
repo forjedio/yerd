@@ -28,8 +28,9 @@ thiserror      = { workspace = true }
 
 [target.'cfg(unix)'.dependencies]
 # `user` resolves the invoking user (home/shell) under sudo for the full
-# uninstall; `signal` lets it SIGTERM/SIGKILL a surviving daemon.
-nix            = { workspace = true, features = ["user", "signal"] }
+# uninstall (the daemon is reaped via `pkill`, so no `signal` feature is needed
+# here — the workspace already enables it for other crates anyway).
+nix            = { workspace = true, features = ["user"] }
 
 [dev-dependencies]
 yerdd          = { path = "../yerdd" }

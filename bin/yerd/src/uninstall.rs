@@ -199,9 +199,14 @@ mod unix_impl {
                 "remove the CA from the system trust store",
                 residue,
             ),
-            None => residue.push(
-                "CA in the system trust store (its cert was not on disk to identify it)".to_owned(),
-            ),
+            // The cert was already gone from disk, so we have no fingerprint to
+            // hand the helper. A yerd CA may still be trusted system-wide; give
+            // the concrete manual removal steps rather than a vague note.
+            None => residue.push(format!(
+                "a yerd CA may remain in the system trust store (its cert was \
+                 not on disk to identify it) — remove it manually: {}",
+                manual_ca_removal_hint()
+            )),
         }
 
         if let Some(tld) = &facts.tld {
@@ -303,16 +308,25 @@ mod unix_impl {
     /// Reap any still-running `yerdd` for this user: SIGTERM (graceful — it
     /// reaps its php-fpm/DB/mail children), wait a bounded grace, then SIGKILL
     /// any holdout. `pgrep`/`pkill -U <uid>` match by *real* uid on both
-    /// Linux and macOS; `-x yerdd` matches the exact process name.
+    /// Linux and macOS; `-x yerdd` matches the exact process name (so it never
+    /// touches the running `yerd` uninstaller or `yerd-helper`).
+    ///
+    /// The grace is deliberately generous (~30s). The daemon's own shutdown
+    /// (`bin/yerdd/src/lib.rs`) walks several task-join timeouts before it
+    /// gracefully stops (then force-kills) its php-fpm/DB/mail children; killing
+    /// the daemon too early would skip that and orphan those children. In
+    /// practice it exits in well under a second — we only wait the full budget
+    /// if one of its tasks is wedged.
     fn reap_daemon(uid: u32) {
         let uid = uid.to_string();
         let _ = run_quiet("pkill", &["-TERM", "-U", &uid, "-x", "yerdd"]);
-        for _ in 0..50 {
+        for _ in 0..300 {
             if !yerdd_running(&uid) {
                 return;
             }
             std::thread::sleep(std::time::Duration::from_millis(100));
         }
+        // Still alive after the graceful budget — force it as a last resort.
         let _ = run_quiet("pkill", &["-KILL", "-U", &uid, "-x", "yerdd"]);
     }
 
@@ -345,10 +359,13 @@ mod unix_impl {
         }
     }
 
-    /// Remove the yerd binaries. Symlinks (e.g. a `~/.local/bin/yerd` pointing
-    /// elsewhere) are unlinked; real files in a package-managed system path are
-    /// left for `apt purge`. `yerd` (this running binary) is removed last —
-    /// unlinking a running executable is safe on Unix.
+    /// Remove the yerd binaries across the candidate dirs (the running exe's
+    /// dir — `current_exe` resolves symlinks, so this is the real install dir —
+    /// plus `~/.local/bin` and the system dirs). A symlink at a candidate path
+    /// is unlinked (its target is cleaned only if that target also lands in a
+    /// candidate dir); a real file in a package-managed system path is left for
+    /// `apt purge`; anything else is deleted. `yerd` (this running binary) is
+    /// removed last — unlinking a running executable is safe on Unix.
     fn remove_binaries(actor: &Actor, residue: &mut Vec<String>) {
         let mut dirs: Vec<PathBuf> = Vec::new();
         if let Ok(exe) = std::env::current_exe() {
@@ -475,6 +492,20 @@ mod unix_impl {
         }
     }
 
+    /// Per-OS one-liner for manually removing yerd's CA from the system trust
+    /// store. Shared by the not-root warning and the root-path residue note.
+    fn manual_ca_removal_hint() -> &'static str {
+        #[cfg(target_os = "macos")]
+        {
+            "open Keychain Access → System and delete the 'Yerd Local CA' certificate"
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            "remove yerd's CA from your trust anchors, then `sudo update-ca-certificates \
+             --fresh` (or `update-ca-trust`)"
+        }
+    }
+
     fn print_unelevate_warning(facts: &CapturedFacts) {
         let tld = facts.tld.as_deref().unwrap_or("<your-tld>");
         eprintln!();
@@ -483,11 +514,14 @@ mod unix_impl {
         eprintln!("  CANNOT be reverted after yerd is uninstalled (the binary will be gone).");
         eprintln!("  They will be left in place. Either abort and re-run as `sudo yerd uninstall`,");
         eprintln!("  or remove them manually afterwards:");
+        eprintln!("    • CA trust: {}", manual_ca_removal_hint());
+        // The cert is about to be deleted; print its fingerprint now so the CA
+        // stays identifiable in the trust store afterwards.
+        if let Some(fp) = facts.ca_fp {
+            eprintln!("                (yerd CA SHA-256 fingerprint: {})", fp.to_hex());
+        }
         #[cfg(target_os = "macos")]
         {
-            eprintln!(
-                "    • CA trust: open Keychain Access → System and delete the 'Yerd Local CA'"
-            );
             eprintln!("    • resolver: sudo rm /etc/resolver/{tld}");
             eprintln!(
                 "    • ports:    sudo launchctl bootout system/dev.yerd.pf 2>/dev/null; \
@@ -496,10 +530,6 @@ mod unix_impl {
         }
         #[cfg(not(target_os = "macos"))]
         {
-            eprintln!(
-                "    • CA trust: remove yerd's CA from your trust anchors, then \
-                 `sudo update-ca-certificates --fresh` (or `update-ca-trust`)"
-            );
             eprintln!(
                 "    • resolver: sudo rm /etc/systemd/resolved.conf.d/yerd-{tld}.conf && \
                  sudo systemctl restart systemd-resolved"
