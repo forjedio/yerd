@@ -33,4 +33,6 @@ With no target, `elevate`/`unelevate` apply all three in the order `trust -> res
 On a host where a target isn't supported (for example `resolver` without `systemd-resolved`), that step is **skipped**, not failed, and guidance is printed.
 :::
 
+`sudo yerd uninstall` reverts all three of these (it runs the same `unelevate`) as part of removing yerd entirely — see [Uninstall](./uninstall). When removing a CA from the trust store, `yerd-helper` first confirms the matched certificate is Yerd's own (Subject CN `Yerd Local CA`) and refuses otherwise, so a mistaken fingerprint can't delete an unrelated trusted root.
+
 The [Elevation & Privileges guide](../../guide/elevation) explains the security model and the `yerd-helper` boundary in detail.
