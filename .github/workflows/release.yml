@@ -175,8 +175,13 @@ jobs:
           AGENT="$APP/Contents/Library/LaunchAgents/dev.yerd.daemon.plist"
           [ -f "$AGENT" ] || { echo "::error::missing embedded LaunchAgent $AGENT"; exit 1; }
           # The plist must be sealed into the bundle's code signature (not a late,
-          # unsigned add). `codesign -dvvv` lists sealed resources.
-          codesign -dvvv "$APP" 2>&1 | grep -q "Library/LaunchAgents/dev.yerd.daemon.plist" \
+          # unsigned add). `codesign -dvvv` only prints a SUMMARY count of sealed
+          # resources, never individual paths, so query the CodeResources plist
+          # directly. Depending on the signing rules the entry lives under
+          # `files2` (modern) or `files` (legacy) — accept either.
+          CR="$APP/Contents/_CodeSignature/CodeResources"
+          /usr/libexec/PlistBuddy -c 'Print :files2:Library/LaunchAgents/dev.yerd.daemon.plist' "$CR" >/dev/null 2>&1 \
+            || /usr/libexec/PlistBuddy -c 'Print :files:Library/LaunchAgents/dev.yerd.daemon.plist' "$CR" >/dev/null 2>&1 \
             || { echo "::error::LaunchAgent plist is not sealed into the app signature"; exit 1; }
           APP_TEAM=$(sed -n 's/^TeamIdentifier=//p' /tmp/cs.txt)
           for b in yerd yerdd yerd-helper; do

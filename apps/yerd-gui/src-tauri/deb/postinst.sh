@@ -37,9 +37,21 @@ if [ -z "$dir" ]; then
   exit 1
 fi
 
-# Co-locate on PATH; -sfn force-recreates every configure (self-healing).
+# Co-locate on PATH; -sfn force-recreates every configure (self-healing). Refuse
+# to clobber a real file or a foreign symlink at /usr/bin/$b — that would steal a
+# path owned by another package and break its uninstall/upgrade flow.
 for b in yerd yerdd yerd-helper; do
-  ln -sfn "$dir/$b" "/usr/bin/$b"
+  src="$dir/$b"
+  dst="/usr/bin/$b"
+  if [ -e "$dst" ] && [ ! -L "$dst" ]; then
+    echo "yerd: $dst exists and is not a symlink; refusing to overwrite" >&2
+    exit 1
+  fi
+  if [ -L "$dst" ] && [ "$(readlink "$dst")" != "$src" ]; then
+    echo "yerd: $dst points elsewhere; refusing to overwrite foreign symlink" >&2
+    exit 1
+  fi
+  ln -sfn "$src" "$dst"
 done
 
 # Privileged-port capability on the REAL binary; best-effort.

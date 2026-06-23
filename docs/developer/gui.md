@@ -222,8 +222,13 @@ The window itself (`tauri.conf.json`) is **decorationless and transparent**
 (`"decorations": false`, `"transparent": true`, `macOSPrivateApi: true`), which
 is why the frontend ships a custom `TitleBar.vue`. The CSP is locked down to
 `default-src 'self'` (plus inline styles and `data:` images). Bundle targets are
-`deb`, `dmg`, and `app` (no AppImage - its ephemeral mount can't persist the
-daemon's `setcap`).
+`deb`, `dmg`, and `app`. For `.deb`, the privileged-port capability is **not**
+baked into the artifact: the `postinst` script grants
+`cap_net_bind_service=+ep` on the installed `yerdd` at configure time (and
+re-applies it on every upgrade, since dpkg wipes file capabilities) — falling
+back to ports 8080/8443 if `setcap` is missing or the filesystem can't hold
+caps. There's no AppImage target because its ephemeral mount can't host a
+`postinst` step, so the daemon's `setcap` can't be persisted that way.
 
 ::: info Three windows, one bundle
 The app is no longer single-window. `tauri.conf.json` declares **three** windows,

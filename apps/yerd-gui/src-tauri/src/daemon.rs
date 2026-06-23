@@ -120,7 +120,7 @@ pub fn cli_path_status() -> Result<CliPathStatus, GuiError> {
 /// Symlink the bundled `yerd` into `{data}/bin` and ensure that dir is on PATH.
 /// macOS-only behaviour — Linux already exposes `yerd` on PATH via the `.deb`.
 #[tauri::command]
-pub fn install_cli_to_path() -> Result<(), GuiError> {
+pub async fn install_cli_to_path() -> Result<(), GuiError> {
     #[cfg(target_os = "macos")]
     {
         // Refuse when translocated: the symlink would point into an ephemeral
@@ -133,28 +133,36 @@ pub fn install_cli_to_path() -> Result<(), GuiError> {
         let yerd = resolve_binary("yerd")
             .ok_or_else(|| GuiError::internal("the bundled yerd CLI was not found in the app"))?;
         let link = cli_symlink_path()?;
-        if let Some(parent) = link.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| {
-                GuiError::internal(format!("cannot create {}: {e}", parent.display()))
+        // The symlink ops and the `yerd path install` subprocess block; run them
+        // off the async runtime so the tray/UI never stalls (mirrors `start`/`stop`).
+        tokio::task::spawn_blocking(move || {
+            if let Some(parent) = link.parent() {
+                std::fs::create_dir_all(parent).map_err(|e| {
+                    GuiError::internal(format!("cannot create {}: {e}", parent.display()))
+                })?;
+            }
+            // Replace any existing (possibly dangling) link.
+            let _ = std::fs::remove_file(&link);
+            std::os::unix::fs::symlink(&yerd, &link).map_err(|e| {
+                GuiError::internal(format!("cannot link yerd into {}: {e}", link.display()))
             })?;
-        }
-        // Replace any existing (possibly dangling) link.
-        let _ = std::fs::remove_file(&link);
-        std::os::unix::fs::symlink(&yerd, &link).map_err(|e| {
-            GuiError::internal(format!("cannot link yerd into {}: {e}", link.display()))
-        })?;
-        // Put `{data}/bin` on PATH via the bundled CLI's own rc-block manager.
-        let out = std::process::Command::new(&yerd)
-            .args(["path", "install"])
-            .output()
-            .map_err(|e| GuiError::internal(format!("could not run `yerd path install`: {e}")))?;
-        if !out.status.success() {
-            return Err(GuiError::internal(format!(
-                "`yerd path install` failed: {}",
-                String::from_utf8_lossy(&out.stderr).trim()
-            )));
-        }
-        Ok(())
+            // Put `{data}/bin` on PATH via the bundled CLI's own rc-block manager.
+            let out = std::process::Command::new(&yerd)
+                .args(["path", "install"])
+                .output()
+                .map_err(|e| {
+                    GuiError::internal(format!("could not run `yerd path install`: {e}"))
+                })?;
+            if !out.status.success() {
+                return Err(GuiError::internal(format!(
+                    "`yerd path install` failed: {}",
+                    String::from_utf8_lossy(&out.stderr).trim()
+                )));
+            }
+            Ok(())
+        })
+        .await
+        .map_err(|e| GuiError::internal(format!("install task failed: {e}")))?
     }
     #[cfg(not(target_os = "macos"))]
     {

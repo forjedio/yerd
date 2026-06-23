@@ -398,7 +398,16 @@ fn daemon_set_login(on: bool) -> Result<(), GuiError> {
             if on {
                 smapp_enable()
             } else {
-                crate::smappservice::unregister()
+                // Unregister the SMAppService agent (only when actually
+                // registered — `unregister()` on a never-registered service is a
+                // no-op error path) AND tear down any leftover legacy loose agent
+                // so the toggle doesn't appear stuck "on" for upgrade users who
+                // only ever had the pre-SMAppService loose plist.
+                if smapp_registered() {
+                    crate::smappservice::unregister()?;
+                }
+                cleanup_legacy();
+                Ok(())
             }
         } else {
             ensure_bootstrapped()?;
