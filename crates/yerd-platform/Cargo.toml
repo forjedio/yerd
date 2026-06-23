@@ -16,6 +16,7 @@ directories = { workspace = true }
 sha2        = { workspace = true }
 hex         = { workspace = true }
 pem         = { workspace = true }
+x509-parser = { workspace = true }
 serde_json  = { workspace = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
@@ -24,6 +25,9 @@ security-framework = { workspace = true }
 [dev-dependencies]
 tempfile   = { workspace = true }
 serde_json = { workspace = true }
+# Minting test CAs (via yerd-tls, already a normal dep) needs a Validity, which
+# is built from `time` timestamps.
+time       = { workspace = true }
 
 [lints]
 workspace = true

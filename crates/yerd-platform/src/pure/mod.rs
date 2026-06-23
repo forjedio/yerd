@@ -4,6 +4,7 @@
 //! clock reads, and environment lookups. Each submodule is unit-tested
 //! table-style.
 
+pub mod cert_identity;
 pub mod firefox;
 pub mod pem_match;
 pub mod pf_anchor;

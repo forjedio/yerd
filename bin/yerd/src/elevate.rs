@@ -168,6 +168,15 @@ mod unix_impl {
                 }
                 Ok(())
             }
+            // EX_DATAERR (65): the helper validated its input and declined.
+            // For `trust`+undo that means it refused to remove a trust-store
+            // cert it couldn't confirm is yerd's — surface it as a refusal, not
+            // a usage error, with a clear explanation.
+            Some(65) => Err(ClientError::Refused(
+                "yerd-helper declined: it refused to remove a certificate it couldn't \
+                 confirm is yerd's (or the input failed validation)"
+                    .to_owned(),
+            )),
             Some(code) => Err(ClientError::Usage(format!(
                 "yerd-helper exited with status {code}"
             ))),
