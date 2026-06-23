@@ -250,7 +250,11 @@ jobs:
           # which pipefail would otherwise turn into a step abort.
           APP=$(find "${ROOTS[@]}" -name 'Yerd.app' -type d 2>/dev/null | head -n1 || true)
           DMG=$(find "${ROOTS[@]}" -name '*.dmg' -type f 2>/dev/null | head -n1 || true)
-          test -n "$APP" && test -n "$DMG"
+          # Explicit fail-fast: under `set -e`, a failure on the LEFT of `&&` does
+          # not abort, so `test -n "$APP" && test -n "$DMG"` would sail past an
+          # empty APP into a cryptic codesign error. Check each separately.
+          [ -n "$APP" ] || { echo "::error::Yerd.app not found under ${ROOTS[*]} (is \"app\" in tauri.conf.json bundle.targets?)"; exit 1; }
+          [ -n "$DMG" ] || { echo "::error::no .dmg found under ${ROOTS[*]}"; exit 1; }
           echo "Verifying $APP and $DMG"
           codesign --verify --strict --verbose=2 "$APP"
           codesign -dv --verbose=4 "$APP" > /tmp/cs.txt 2>&1
