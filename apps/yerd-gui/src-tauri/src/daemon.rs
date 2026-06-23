@@ -189,8 +189,17 @@ fn extract_binaries(tar_gz: &[u8], dest: &Path) -> Result<Vec<PathBuf>, GuiError
             .path()
             .map_err(|e| GuiError::internal(format!("bad tar path: {e}")))?
             .into_owned();
-        // Top-level binary only (`yerd`, not `nested/yerd`).
-        let is_binary = path.components().count() == 1
+        // Top-level binary only (`yerd`, not `nested/yerd`). Ignore any leading
+        // `./` the archiver adds: the release tarball is built with
+        // `tar -C staging … .`, so entries arrive as `./yerd`, which has two
+        // path components (CurDir + Normal). Count only the Normal components so
+        // a real top-level binary (depth 1) is accepted while `nested/yerd`
+        // (depth 2) is still rejected.
+        let depth = path
+            .components()
+            .filter(|c| !matches!(c, std::path::Component::CurDir))
+            .count();
+        let is_binary = depth == 1
             && path
                 .file_name()
                 .and_then(|s| s.to_str())
@@ -473,5 +482,55 @@ mod tests {
         assert!(!verify_signed(&plain), "plain file should not verify");
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::panic)]
+mod extract_tests {
+    use super::*;
+
+    fn append<W: std::io::Write>(builder: &mut tar::Builder<W>, name: &str, data: &[u8]) {
+        let mut header = tar::Header::new_gnu();
+        header.set_size(data.len() as u64);
+        header.set_mode(0o755);
+        header.set_cksum();
+        builder.append_data(&mut header, name, data).unwrap();
+    }
+
+    /// Regression for "release tarball was missing one of […] (found 0 of 3)":
+    /// the release tarball is built with `tar -C staging … .`, so every entry is
+    /// stored with a leading `./` (`./yerd`, which has two path components). The
+    /// extractor must still find the three top-level binaries — while ignoring a
+    /// same-named file nested under a subdirectory.
+    #[test]
+    fn extracts_dot_slash_prefixed_binaries() {
+        use flate2::{write::GzEncoder, Compression};
+        use std::io::Write as _;
+
+        let mut tar_buf = Vec::new();
+        {
+            let mut builder = tar::Builder::new(&mut tar_buf);
+            append(&mut builder, "./yerd", b"#!/bin/sh\n");
+            append(&mut builder, "./yerdd", b"#!/bin/sh\n");
+            append(&mut builder, "./yerd-helper", b"#!/bin/sh\n");
+            append(&mut builder, "./README.md", b"readme\n");
+            // A same-named file one level deep must NOT be picked up (depth 2).
+            append(&mut builder, "./extras/yerd", b"decoy\n");
+            builder.finish().unwrap();
+        }
+        let mut gz = GzEncoder::new(Vec::new(), Compression::fast());
+        gz.write_all(&tar_buf).unwrap();
+        let tar_gz = gz.finish().unwrap();
+
+        let dest = std::env::temp_dir().join(format!("yerd-extract-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dest);
+        let installed = extract_binaries(&tar_gz, &dest).unwrap();
+
+        assert_eq!(installed.len(), 3, "all three top-level binaries extracted");
+        for b in ["yerd", "yerdd", "yerd-helper"] {
+            assert!(dest.join(b).is_file(), "{b} written to dest");
+        }
+        let _ = std::fs::remove_dir_all(&dest);
     }
 }

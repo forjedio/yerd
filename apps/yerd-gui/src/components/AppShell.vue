@@ -47,7 +47,10 @@ async function onStart(): Promise<void> {
     <div class="flex min-h-0 flex-1 overflow-hidden">
       <SideNav />
 
-      <main class="flex-1 overflow-y-auto">
+      <!-- Clip, don't scroll: every routed view is `h-full` and owns its own
+           inner `overflow-y-auto`, so a scroll container here would be a second,
+           redundant scrollbar nested inside the view's own. -->
+      <main class="min-w-0 flex-1 overflow-hidden">
         <!-- Daemon-dependent routes show this when the socket is unreachable.
              Overview / Settings / About are exempt (see DAEMON_FREE) - they can
              start/install the daemon or degrade gracefully. -->
