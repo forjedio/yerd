@@ -52,6 +52,14 @@ sudo yerd unelevate resolver  # restore the prior resolver (macOS) / remove the 
 On macOS, if `elevate resolver` replaced a pre-existing `/etc/resolver/<tld>` (a Valet/Herd leftover), it saved a backup. `unelevate resolver` **restores that backup** - returning DNS to its pre-Yerd state - and then clears the saved backups; with no backup it just removes Yerd's file. On Linux it removes the `systemd-resolved` drop-in (no backup mechanism). `unelevate ports` is reversible on macOS only (see [Ports](#ports)).
 :::
 
+::: tip Removing yerd entirely
+`sudo yerd uninstall` runs this same `unelevate` (all three targets) as part of a full removal, then deletes the daemon, config, data, and binaries. Run it **with `sudo`** so the trust/resolver/port changes are reversed - they can't be undone once the `yerd-helper` binary is gone. See the [Uninstall reference](../reference/cli/uninstall).
+:::
+
+::: info The helper only removes its own CA
+`unelevate trust` (and the full uninstall) ask `yerd-helper` to remove a CA from the system trust store **by fingerprint**. Before deleting, the helper confirms the matched certificate is actually Yerd's (its Subject CN is `Yerd Local CA`) - so a stray or mistaken fingerprint can never make the privileged helper delete an unrelated trusted root. If it can't confirm ownership, it refuses and leaves the cert in place.
+:::
+
 ::: warning Start the daemon first
 `elevate` reads facts from your running daemon over the per-user socket (CA path and fingerprint, TLD, DNS address, rootless ports). If it isn't running you'll see `start the yerd daemon first, then re-run`. Start `yerdd` as your user, then re-run `sudo yerd elevate`.
 :::

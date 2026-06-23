@@ -1,5 +1,7 @@
 <div align="center">
 
+<img src="https://yerd.app/logo.svg" alt="Yerd logo" width="120" />
+
 # Yerd
 
 **A fast, rootless, open-source local PHP development environment.**

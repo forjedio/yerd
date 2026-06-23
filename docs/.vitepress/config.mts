@@ -162,6 +162,7 @@ export default withMermaid({
             { text: 'Diagnostics', link: '/reference/cli/diagnostics' },
             { text: 'Elevation', link: '/reference/cli/elevation' },
             { text: 'Daemon control', link: '/reference/cli/daemon' },
+            { text: 'Uninstall', link: '/reference/cli/uninstall' },
           ],
         },
         {

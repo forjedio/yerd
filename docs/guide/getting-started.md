@@ -276,6 +276,25 @@ yerd status
 
 Open `https://my-app.test` in your browser - that's it.
 
+## Uninstall
+
+To remove yerd completely, run the bare `uninstall` command (no subcommand).
+It prompts for confirmation, then tears down the daemon, the PATH entry, all
+config/data/downloads, and the binaries:
+
+```sh
+sudo yerd uninstall      # recommended - also reverts the one-time elevate changes
+yerd uninstall           # without root - removes everything except the elevate changes
+```
+
+Run it with **`sudo`** so it can also reverse the `elevate` system changes (the
+CA in your trust store, the `*.test` resolver, and the macOS port redirect).
+Those need root to undo, and they **can't** be undone once the binaries are
+gone - so without `sudo`, yerd warns you and prints the exact manual commands to
+clean them up later. Add `--yes` to skip the prompt in scripts. A `.deb` install
+is removed the usual way (`sudo apt purge yerd`); the macOS app is dragged to the
+Trash. Full details in the [Uninstall reference](../reference/cli/uninstall).
+
 ## Where to next
 
 - [Sites](./sites) - parking, linking, and per-site settings in depth.
