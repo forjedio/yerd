@@ -29,6 +29,7 @@ src/
 ├── message.rs     encode_message / decode_message (serde_json wrappers)
 ├── request.rs     Request enum (client → daemon)
 ├── response.rs    Response enum + ErrorCode + PhpUpdate (daemon → client)
+├── create.rs      CreateSiteSpec + Framework/StarterKit/Database/… (the `yerd create` site-scaffold spec) + JobId/JobState
 ├── dump.rs        DumpCategory / DumpEvent / DumpCounts / DumpExtStatus (Laravel ▸ Dumps telemetry)
 ├── status.rs      StatusReport / Diagnosis / FixReport and friends
 ├── error.rs       FrameError, IpcError, IpcErrorKind
@@ -38,6 +39,10 @@ src/
 The public re-exports, copied from `lib.rs`:
 
 ```rust
+pub use create::{
+    AuthProvider, CreateSiteSpec, Database, Framework, JobId, JobState, JsRuntime, LaravelOptions,
+    StarterKit, Testing,
+};
 pub use dump::{DumpCategory, DumpCounts, DumpEvent, DumpExtStatus};
 pub use error::{FrameError, IpcError, IpcErrorKind};
 pub use frame::{encode_frame, FrameDecoder, DEFAULT_MAX_FRAME};
@@ -45,9 +50,10 @@ pub use message::{decode_message, encode_message};
 pub use request::Request;
 pub use response::{ErrorCode, PhpUpdate, Response};
 pub use status::{
-    CaStatus, DatabaseSummary, Diagnosis, DiagnosisCode, FixReport, FixResult, PhpPoolStatus,
-    PoolRunState, PortStatus, ServiceAvailability, ServiceRunState, ServiceStatus, Severity,
-    SiteCounts, StatusReport,
+    CaStatus, DatabaseSummary, Diagnosis, DiagnosisCode, FixReport, FixResult, MailDetail,
+    MailHeader, MailStatus, MailSummary, PhpPoolStatus, PoolRunState, PortStatus,
+    ServiceAvailability, ServiceRunState, ServiceStatus, Severity, SiteCounts, StatusReport,
+    ToolStatus,
 };
 
 pub mod types {
@@ -146,6 +152,10 @@ The variants, grouped by area:
 | PHP | `InstallPhp`, `SetDefaultPhp`, `ListPhp`, `UpdatePhp`, `CheckPhpUpdates`, `AvailablePhp`, `SetPhpSettings`, `RestartPhp`, `RestartAllPhp`, `UninstallPhp` |
 | Services | `ListServices`, `AvailableServices`, `InstallService`, `UninstallService`, `StartService`, `StopService`, `RestartService`, `SetServicePort`, `ServiceLogs`, `ChangeServiceVersion` |
 | Databases | `CreateDatabase`, `ListDatabases`, `DropDatabase`, `BackupDatabase`, `RestoreDatabase` |
+| Dumps (Laravel ▸ telemetry) | `ListDumps`, `ClearDumps`, `DeleteDump`, `SetDumpsEnabled`, `SetDumpsPort`, `SetDumpFeature`, `SetDumpsPersist`, `DumpsStatus` |
+| Mail | `ListMails`, `GetMail`, `ClearMails`, `DeleteMails`, `SetMailPort`, `SetMailEnabled` |
+| Tools | `ListTools`, `InstallTool`, `UninstallTool`, `InstallToolStreamed` |
+| Site creation / jobs | `CreateSite`, `JobStatus`, `JobCancel` |
 
 A few details that the source pins down and are worth knowing as a contributor:
 
@@ -177,6 +187,13 @@ Same shape - internally tagged, `snake_case`, `#[non_exhaustive]`:
 | `AvailableServices` | `AvailableServices` | `services: Vec<ServiceAvailability>` |
 | `ServiceLogs` | `ServiceLogs` | `lines: Vec<String>` |
 | `Databases` | `ListDatabases` | `databases: Vec<DatabaseSummary>` |
+| `Dumps` | `ListDumps` | `events: Vec<DumpEvent>` + deleted ids (cursor paging) |
+| `DumpsStatus` | `DumpsStatus` / dump toggles | `enabled`, `port`, persist/feature flags |
+| `Mails` | `ListMails` | `mails: Vec<MailSummary>` |
+| `Mail` | `GetMail` | `Box<MailDetail>` |
+| `Tools` | `ListTools` | `tools: Vec<ToolStatus>` |
+| `JobStarted` | `CreateSite` / `InstallToolStreamed` | `job_id: JobId` (poll with `JobStatus`) |
+| `JobProgress` | streamed job updates | `state: JobState`, phase label, … |
 
 Notable behaviours:
 

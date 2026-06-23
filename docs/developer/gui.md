@@ -23,7 +23,7 @@ sides agreeing with the Rust IPC contract while never duplicating daemon logic.
 
 ```
 apps/yerd-gui/
-├── package.json            yerd-gui @ 2.0.1 - "a thin IPC client of the yerdd daemon"
+├── package.json            yerd-gui (workspace version) - "a thin IPC client of the yerdd daemon"
 ├── vite.config.ts          Vite + Vitest (one config; vitest/config augments it)
 ├── tailwind.config.js      Tailwind 3 theme
 ├── tsconfig.json           "@/*" -> src/*
@@ -102,7 +102,7 @@ pub async fn link(name: String, path: String) -> Result<Response, GuiError> {
 }
 ```
 
-The full set of commands registered in `main.rs`'s `invoke_handler!`:
+The main command groups registered via `main.rs`'s `tauri::generate_handler!` (the full list - ~50 commands spanning sites, PHP, services, databases, dumps, mail, tools, site-creation jobs, and the host-only daemon/autostart/CLI-on-PATH commands - lives in `main.rs`):
 
 | Command | `Request` | Notes |
 | --- | --- | --- |

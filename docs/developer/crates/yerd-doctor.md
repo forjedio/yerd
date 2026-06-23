@@ -150,10 +150,12 @@ The plain `yerd doctor` path is even simpler - it just renders `diagnose(&build_
 | 4 | `NoPhpInstalled` | `Fail` | `php.is_empty()` | `yerd install php <default>` (suppresses #5) |
 | 5 | `DefaultPhpNotInstalled` | `Fail` | `default_php` not among installed `php` | `yerd install php <default>` |
 | 6 | `FpmPoolFailed` | `Fail` | one per pool with `state == Failed` | auto-fixed by `yerd doctor fix`, or `yerd use <ver>` |
-| 7 | `PhpUpdateAvailable` | `Ok` | a pool has `update_available = Some(latest)` | `yerd update php <ver>` |
-| 8 | `ResolverBackupSaved` | `Ok` | `resolver_backup == Some(path)` | informational, **no** remedy |
-| 9 | `NoSites` | `Ok` | `sites.parked == 0 && sites.linked == 0` | `yerd park <dir>` / `yerd link <name> <dir>` |
-| 10 | `AllGood` | `Ok` | no `Warn`/`Fail` finding was produced | appended last |
+| 7 | `ServiceFailed` | `Fail` | one per DB/cache service with `state == Failed` | `yerd service restart <svc>` |
+| 8 | `PhpUpdateAvailable` | `Ok` | a pool has `update_available = Some(latest)` | `yerd update php <ver>` |
+| 9 | `ResolverBackupSaved` | `Ok` | `resolver_backup == Some(path)` | informational, **no** remedy |
+| 10 | `NoSites` | `Ok` | `sites.parked == 0 && sites.linked == 0` | `yerd park <dir>` / `yerd link <name> <dir>` |
+| 11 | `BinDirNotOnPath` | `Warn` | `path_needs_setup == Some(true)` (a dev tool is installed but `{data}/bin` isn't on `PATH`) | `yerd path install` |
+| 12 | `AllGood` | `Ok` | no `Warn`/`Fail` finding was produced | appended last |
 
 A few rules carry subtle logic worth calling out.
 

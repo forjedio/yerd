@@ -117,7 +117,7 @@ It strips any inbound port from `host` (handling both `host:80` and bracketed IP
 `try_files` decides, purely, whether a request *could* be a static file and what its safe relative path and MIME type would be. It does no I/O - the [`static_file`](#static_file-serving-real-files) forwarder does the actual stat/read.
 
 - **`static_candidate(path)`** maps a URL path to a safe relative `PathBuf`, or `None` when the request must go to the front controller instead. It returns `None` for `/`, for a directory-style request (trailing slash), and for any traversal attempt. It percent-decodes the path and rejects encoded slashes and NUL bytes, so a decoded segment can never escape the served root.
-- **`is_php_source(path)`** flags PHP source extensions (`php`, `phtml`, `php3`–`php7`, `phps`, `pht`) so they are *never* served as static bytes - they fall through to FastCGI.
+- **`is_php_source(path)`** flags PHP source extensions (`php`, `phtml`, `php3`/`php4`/`php5`/`php7`, `phps`, `pht`) so they are *never* served as static bytes - they fall through to FastCGI.
 - **`content_type_for(path)`** maps a file extension to a `Content-Type` for the response (a small MIME table, defaulting to `application/octet-stream`).
 
 ## The `Backend` enum
