@@ -19,15 +19,21 @@ path = "src/lib.rs"
 yerd-core      = { path = "../../crates/yerd-core" }
 yerd-ipc       = { path = "../../crates/yerd-ipc", features = ["transport"] }
 yerd-platform  = { path = "../../crates/yerd-platform" }
+yerd-config    = { path = "../../crates/yerd-config" }
 clap           = { workspace = true }
 tokio          = { workspace = true, features = ["rt", "io-util", "net", "time"] }
 interprocess   = { workspace = true }
 serde_json     = { workspace = true }
 thiserror      = { workspace = true }
 
+[target.'cfg(unix)'.dependencies]
+# `user` resolves the invoking user (home/shell) under sudo for the full
+# uninstall (the daemon is reaped via `pkill`, so no `signal` feature is needed
+# here — the workspace already enables it for other crates anyway).
+nix            = { workspace = true, features = ["user"] }
+
 [dev-dependencies]
 yerdd          = { path = "../yerdd" }
-yerd-config    = { path = "../../crates/yerd-config" }
 tempfile       = { workspace = true }
 tokio          = { workspace = true, features = ["rt-multi-thread", "macros", "net", "io-util", "sync", "time"] }
 

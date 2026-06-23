@@ -80,6 +80,33 @@ pub fn fingerprint_of_first_cert_in_pem(pem_text: &str) -> Option<[u8; 32]> {
     Some(sha256(cert.contents()))
 }
 
+/// DER body of the first `CERTIFICATE` block across `blobs` whose SHA-256
+/// matches `fingerprint`, or `None`.
+///
+/// Uses the same CERTIFICATE-only iteration as [`find_by_fingerprint`] but
+/// returns the matched cert's DER directly, so a caller can inspect the cert
+/// (e.g. its Subject CN) without re-parsing and risking a wrong-block pick. A
+/// blob that fails to parse contributes no match (collapses to "absent"); a
+/// caller needing to distinguish a parse error from a true miss uses
+/// [`find_by_fingerprint`], which surfaces the bad path.
+#[must_use]
+pub fn cert_der_for_fingerprint(
+    blobs: &[(PathBuf, Vec<u8>)],
+    fingerprint: &[u8; 32],
+) -> Option<Vec<u8>> {
+    for (_path, bytes) in blobs {
+        let Ok(parsed) = pem::parse_many(bytes) else {
+            continue;
+        };
+        for block in parsed {
+            if block.tag() == "CERTIFICATE" && sha256(block.contents()) == *fingerprint {
+                return Some(block.contents().to_vec());
+            }
+        }
+    }
+    None
+}
+
 /// DER body of the first `CERTIFICATE` block in `pem_bytes`, or `None`.
 /// Used by the macOS trust-settings probe to build a `SecCertificate`.
 #[must_use]
@@ -153,6 +180,33 @@ mod tests {
         let blobs = vec![(PathBuf::from("/etc/multi.crt"), combined.into_bytes())];
         let m = find_by_fingerprint(&blobs, &fp).unwrap().unwrap();
         assert_eq!(m.block_index, 1);
+    }
+
+    #[test]
+    fn cert_der_for_fingerprint_returns_matched_block_der() {
+        let target = b"target cert body";
+        let earlier = b"earlier cert body";
+        let fp = sha256(target);
+        // Multi-block file: the second CERTIFICATE block matches.
+        let mut combined = fake_cert_pem(earlier);
+        combined.push_str(&fake_cert_pem(target));
+        let blobs = vec![(PathBuf::from("/etc/multi.crt"), combined.into_bytes())];
+        assert_eq!(
+            cert_der_for_fingerprint(&blobs, &fp).as_deref(),
+            Some(&target[..])
+        );
+    }
+
+    #[test]
+    fn cert_der_for_fingerprint_none_when_absent_or_unparseable() {
+        let blobs = vec![
+            (
+                PathBuf::from("/etc/a.crt"),
+                fake_cert_pem(b"a").into_bytes(),
+            ),
+            (PathBuf::from("/etc/junk.crt"), b"not pem".to_vec()),
+        ];
+        assert!(cert_der_for_fingerprint(&blobs, &[0u8; 32]).is_none());
     }
 
     #[test]

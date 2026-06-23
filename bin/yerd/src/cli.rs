@@ -77,11 +77,20 @@ pub enum Command {
         #[command(subcommand)]
         target: RestartTarget,
     },
-    /// Uninstall a component (currently: a PHP version).
+    /// Uninstall a component, or yerd itself.
+    ///
+    /// With a subcommand (`php`/`tool`) removes that component via the daemon.
+    /// With no subcommand, fully uninstalls yerd from this machine: config,
+    /// data, downloads, the PATH entry, the daemon service, and — when run with
+    /// `sudo` — the system-level trust/resolver/port changes from `elevate`.
+    /// Prompts for confirmation first unless `--yes` is given.
     Uninstall {
-        /// What to uninstall.
+        /// What to uninstall; omit to uninstall yerd entirely.
         #[command(subcommand)]
-        target: UninstallTarget,
+        target: Option<UninstallTarget>,
+        /// Skip the confirmation prompt (only affects the full uninstall).
+        #[arg(short = 'y', long)]
+        yes: bool,
     },
     /// List installed components (currently: PHP versions).
     List {

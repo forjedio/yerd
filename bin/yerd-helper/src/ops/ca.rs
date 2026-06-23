@@ -1,22 +1,27 @@
 //! `install-ca` and `uninstall-ca` for Linux + macOS.
 
-use std::path::Path;
-#[cfg(target_os = "linux")]
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
-#[cfg(target_os = "linux")]
-use yerd_platform::pure::pem_match;
+use yerd_platform::pure::{cert_identity, pem_match};
 use yerd_platform::CaFingerprint;
 
 #[cfg(target_os = "macos")]
 use crate::error::CommandReason;
-use crate::error::HelperError;
-#[cfg(target_os = "linux")]
-use crate::error::ValidationReason;
+use crate::error::{HelperError, ValidationReason};
 #[cfg(target_os = "linux")]
 use crate::ops::atomic_write;
 use crate::ops::run_command;
 use crate::validate;
+
+/// True iff `cert_der` is yerd's own CA — its Subject CN equals
+/// [`yerd_core::CA_COMMON_NAME`]. This is the ownership guard the privileged
+/// uninstall applies before removing a certificate from the system trust
+/// store, so a fingerprint that happens to match some *other* trusted root can
+/// never cause its deletion. An unparseable or CN-less cert is treated as
+/// not-yerd (refuse to delete).
+fn cert_is_yerd_owned(cert_der: &[u8]) -> bool {
+    cert_identity::subject_common_name(cert_der).as_deref() == Some(yerd_core::CA_COMMON_NAME)
+}
 
 /// Anchor directories Yerd searches on Linux. Order matches the
 /// distro family precedence.
@@ -155,6 +160,17 @@ pub fn uninstall_ca(fp: &CaFingerprint) -> Result<(), HelperError> {
         return Ok(());
     };
 
+    // Refuse unless the matched cert is yerd's own CA — a fingerprint that
+    // matches some other trusted anchor must never get it deleted.
+    let der = pem_match::cert_der_for_fingerprint(&blobs, fp.as_bytes());
+    if !der.as_deref().is_some_and(cert_is_yerd_owned) {
+        return Err(HelperError::Validation {
+            reason: ValidationReason::CertNotYerdOwned {
+                found_cn: der.as_deref().and_then(cert_identity::subject_common_name),
+            },
+        });
+    }
+
     std::fs::remove_file(&m.path).map_err(|source| HelperError::Io {
         path: m.path.clone(),
         source,
@@ -168,11 +184,46 @@ pub fn uninstall_ca(fp: &CaFingerprint) -> Result<(), HelperError> {
 
 #[cfg(target_os = "macos")]
 pub fn uninstall_ca(fp: &CaFingerprint) -> Result<(), HelperError> {
-    // Idempotent: if the fingerprint isn't in the System keychain there's
-    // nothing to remove.
-    if !macos_system_keychain_contains(fp)? {
+    // Dump every System-keychain cert as PEM, locate the one matching `fp`, and
+    // delete it ONLY if it is yerd's own CA. `find-certificate -a -p` emits all
+    // certs as concatenated PEM (distinct from the `-Z` presence probe used by
+    // `install_ca`, which lists `SHA-256 hash:` lines — don't conflate them).
+    let dump = run_command(
+        "security",
+        "/usr/bin/security",
+        [
+            "find-certificate",
+            "-a",
+            "-p",
+            "/Library/Keychains/System.keychain",
+        ],
+    );
+    let pem_bytes = match dump {
+        Ok(out) => out.stdout,
+        // `security` exits non-zero when no certs match → nothing to remove.
+        Err(HelperError::Command {
+            reason: CommandReason::NonZero(_),
+            ..
+        }) => return Ok(()),
+        Err(e) => return Err(e),
+    };
+
+    let blobs = vec![(
+        PathBuf::from("/Library/Keychains/System.keychain"),
+        pem_bytes,
+    )];
+    let Some(der) = pem_match::cert_der_for_fingerprint(&blobs, fp.as_bytes()) else {
+        // Idempotent: the fingerprint isn't in the System keychain.
         return Ok(());
+    };
+    if !cert_is_yerd_owned(&der) {
+        return Err(HelperError::Validation {
+            reason: ValidationReason::CertNotYerdOwned {
+                found_cn: cert_identity::subject_common_name(&der),
+            },
+        });
     }
+
     let fp_upper = hex::encode_upper(fp.as_bytes());
     run_command(
         "security",
@@ -242,6 +293,33 @@ pub fn macos_find_certificate_contains(stdout: &str, fp_upper: &str) -> bool {
 )]
 mod tests {
     use super::*;
+
+    /// Mint a CA with Subject CN `cn` via yerd-tls and return its DER body.
+    fn ca_der(cn: &str) -> Vec<u8> {
+        let nb = time::OffsetDateTime::UNIX_EPOCH;
+        let na = nb + time::Duration::days(365);
+        let validity = yerd_tls::Validity::new(nb, na).unwrap();
+        let ca = yerd_tls::CertAuthority::generate(cn, validity).unwrap();
+        pem::parse(ca.cert_pem().as_bytes())
+            .unwrap()
+            .into_contents()
+    }
+
+    #[test]
+    fn cert_is_yerd_owned_true_for_yerd_ca() {
+        assert!(cert_is_yerd_owned(&ca_der(yerd_core::CA_COMMON_NAME)));
+    }
+
+    #[test]
+    fn cert_is_yerd_owned_false_for_other_ca() {
+        // A different trusted root with the same op applied must be refused.
+        assert!(!cert_is_yerd_owned(&ca_der("DigiCert Global Root")));
+    }
+
+    #[test]
+    fn cert_is_yerd_owned_false_for_unparseable() {
+        assert!(!cert_is_yerd_owned(b"not a certificate"));
+    }
 
     #[cfg(target_os = "linux")]
     #[test]

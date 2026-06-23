@@ -96,13 +96,23 @@ pub fn to_request(cmd: &Command) -> Result<Request, ClientError> {
             target: crate::cli::RestartTarget::Daemon,
         } => Request::RestartDaemon,
         Command::Uninstall {
-            target: crate::cli::UninstallTarget::Php { version },
+            target: Some(crate::cli::UninstallTarget::Php { version }),
+            ..
         } => Request::UninstallPhp {
             version: parse_php(version)?,
         },
         Command::Uninstall {
-            target: crate::cli::UninstallTarget::Tool { id },
+            target: Some(crate::cli::UninstallTarget::Tool { id }),
+            ..
         } => Request::UninstallTool { tool: id.clone() },
+        // Bare `yerd uninstall` (no target) is the full self-uninstall, handled
+        // locally in `crate::uninstall` (it tears down the daemon + files). `run`
+        // branches before calling `to_request`; this arm keeps the match total.
+        Command::Uninstall { target: None, .. } => {
+            return Err(ClientError::Usage(
+                "full uninstall is handled locally, not over IPC".to_owned(),
+            ));
+        }
         Command::Tools => Request::ListTools,
         Command::List {
             target: crate::cli::ListTarget::Php { check, available },
@@ -979,9 +989,10 @@ mod tests {
         );
         assert_eq!(
             to_request(&Command::Uninstall {
-                target: crate::cli::UninstallTarget::Php {
+                target: Some(crate::cli::UninstallTarget::Php {
                     version: "8.5".into()
-                }
+                }),
+                yes: false
             })
             .unwrap(),
             Request::UninstallPhp {
@@ -1011,7 +1022,8 @@ mod tests {
         );
         assert_eq!(
             to_request(&Command::Uninstall {
-                target: crate::cli::UninstallTarget::Tool { id: "bun".into() }
+                target: Some(crate::cli::UninstallTarget::Tool { id: "bun".into() }),
+                yes: false
             })
             .unwrap(),
             Request::UninstallTool { tool: "bun".into() }

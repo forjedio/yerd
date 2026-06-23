@@ -36,6 +36,23 @@ impl CaFingerprint {
         hex::encode(self.0)
     }
 
+    /// Compute the fingerprint of a raw DER certificate body (`sha256(der)`).
+    ///
+    /// This is the same definition the daemon uses (`yerd_tls`'s
+    /// `fingerprint_sha256`); deriving it on disk lets `yerd uninstall` revert
+    /// the trust store without a running daemon.
+    #[must_use]
+    pub fn from_der(der: &[u8]) -> Self {
+        Self(crate::pure::pem_match::sha256(der))
+    }
+
+    /// Compute the fingerprint of the first `CERTIFICATE` block in a PEM
+    /// document. Returns `None` if the text has no certificate block.
+    #[must_use]
+    pub fn from_pem(pem_text: &str) -> Option<Self> {
+        crate::pure::pem_match::fingerprint_of_first_cert_in_pem(pem_text).map(Self)
+    }
+
     /// Parse exactly 64 **lowercase** hex characters into a fingerprint — the
     /// inverse of [`Self::to_hex`]. Uppercase, wrong length, or non-hex input
     /// is rejected; this is the canonical wire form, so the strict lowercase
@@ -175,6 +192,22 @@ mod tests {
     fn fingerprint_from_hex_round_trips_to_hex() {
         let fp = CaFingerprint::new([0xAB; 32]);
         assert_eq!(CaFingerprint::from_hex(&fp.to_hex()).unwrap(), fp);
+    }
+
+    #[test]
+    fn from_der_matches_sha256_and_from_pem_round_trips() {
+        let der = b"\x30\x82\x01\x0a fake-der-body for fingerprint test";
+        let direct = CaFingerprint::from_der(der);
+        // `from_der` is exactly sha256 over the DER body.
+        assert_eq!(direct.as_bytes(), &crate::pure::pem_match::sha256(der));
+        // Wrapping the same DER in PEM and parsing it back yields the same fp.
+        let pem = crate::pure::pem_match::der_to_pem(der);
+        assert_eq!(CaFingerprint::from_pem(&pem), Some(direct));
+    }
+
+    #[test]
+    fn from_pem_returns_none_without_certificate_block() {
+        assert_eq!(CaFingerprint::from_pem("not a pem"), None);
     }
 
     #[test]

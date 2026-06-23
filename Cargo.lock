@@ -5964,6 +5964,7 @@ version = "2.0.2-rc.3"
 dependencies = [
  "clap",
  "interprocess",
+ "nix",
  "serde_json",
  "tempfile",
  "thiserror 1.0.69",
@@ -6062,8 +6063,10 @@ dependencies = [
  "serde_json",
  "tempfile",
  "thiserror 1.0.69",
+ "time",
  "yerd-core",
  "yerd-platform",
+ "yerd-tls",
 ]
 
 [[package]]
@@ -6119,6 +6122,8 @@ dependencies = [
  "sha2",
  "tempfile",
  "thiserror 1.0.69",
+ "time",
+ "x509-parser",
  "yerd-core",
  "yerd-tls",
 ]

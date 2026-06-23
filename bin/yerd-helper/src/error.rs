@@ -122,6 +122,15 @@ pub enum ValidationReason {
     /// PEM could not be parsed.
     #[error("PEM could not be parsed")]
     PemParseFailed,
+    /// A cert matched the fingerprint to uninstall, but it is not yerd's CA
+    /// (its Subject CN is not `yerd_core::CA_COMMON_NAME`). The helper refuses
+    /// to remove a certificate it can't confirm yerd installed. Not gated:
+    /// both the Linux and macOS uninstall paths can raise it.
+    #[error("certificate is not yerd's CA (subject CN {found_cn:?}); refusing to remove it")]
+    CertNotYerdOwned {
+        /// The Subject CN actually found (if any), for diagnostics.
+        found_cn: Option<String>,
+    },
     /// No recognised Linux CA anchor directory present. Linux-only.
     #[cfg(target_os = "linux")]
     #[error("no recognised CA anchor directory")]
@@ -200,6 +209,13 @@ mod tests {
         assert_eq!(
             exit_code(&HelperError::Validation {
                 reason: ValidationReason::BadFingerprintHex
+            }),
+            65
+        );
+        // The yerd-ownership refusal is a validation failure too → 65.
+        assert_eq!(
+            exit_code(&HelperError::Validation {
+                reason: ValidationReason::CertNotYerdOwned { found_cn: None }
             }),
             65
         );

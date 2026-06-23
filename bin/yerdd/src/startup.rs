@@ -378,7 +378,7 @@ fn load_or_generate_ca(dirs: &PlatformDirs) -> Result<CertAuthority, DaemonError
         Ok(CertAuthority::from_pem(&cert_pem, &key_pem)?)
     } else {
         let validity = ca_validity()?;
-        let ca = CertAuthority::generate("Yerd Local CA", validity)?;
+        let ca = CertAuthority::generate(yerd_core::CA_COMMON_NAME, validity)?;
         std::fs::create_dir_all(&dirs.data).map_err(|source| DaemonError::Io {
             path: dirs.data.clone(),
             source,

@@ -27,6 +27,15 @@ mod tld;
 /// Changing the value means updating both ends.
 pub const PROXY_SERVER_ID: &str = "yerd";
 
+/// Subject Common Name of yerd's local development CA.
+///
+/// A cross-crate contract: `bin/yerdd` stamps it onto the generated CA
+/// (`startup.rs`), and `yerd-helper` checks for it before removing a CA from
+/// the system trust store — so the privileged helper only ever deletes a cert
+/// it can confirm is yerd's, never an unrelated trusted root. Changing the
+/// value means re-generating existing users' CAs, so treat it as frozen.
+pub const CA_COMMON_NAME: &str = "Yerd Local CA";
+
 pub use detect::{detect, Detection, ProjectSignals};
 pub use error::{CoreError, PhpVersionErrorReason, SiteNameErrorReason, TldErrorReason};
 pub use php::PhpVersion;

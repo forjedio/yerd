@@ -20,4 +20,9 @@ pub enum ClientError {
     /// The daemon reported a malformed CA fingerprint (used by `elevate`).
     #[error("{0}")]
     Fingerprint(#[from] yerd_platform::FingerprintParseError),
+    /// `yerd-helper` declined a privileged operation for a safety reason (e.g.
+    /// refused to remove a trust-store cert it couldn't confirm is yerd's).
+    /// Distinct from `Usage` — the invocation was well-formed; the helper said no.
+    #[error("{0}")]
+    Refused(String),
 }
