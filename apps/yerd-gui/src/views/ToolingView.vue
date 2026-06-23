@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, ref } from "vue";
+import { computed, nextTick, onMounted, ref } from "vue";
 import { Download, RefreshCw, Trash2 } from "lucide-vue-next";
 
 import PageHeader from "@/components/PageHeader.vue";
@@ -14,7 +14,13 @@ import Modal from "@/components/ui/Modal.vue";
 import Spinner from "@/components/ui/Spinner.vue";
 import { useDaemon } from "@/composables/useDaemon";
 import { useToast } from "@/composables/useToast";
-import { installTool, IpcError, listTools, uninstallTool } from "@/ipc/client";
+import {
+  installToolStreamed,
+  IpcError,
+  listTools,
+  pollJobToEnd,
+  uninstallTool,
+} from "@/ipc/client";
 import type { ToolStatus } from "@/ipc/types";
 
 const toast = useToast();
@@ -25,8 +31,38 @@ const loading = ref(true);
 // Which tool has a long-running op in flight, e.g. "install:node".
 const busy = ref<string | null>(null);
 
+/** Short description per tool, keyed by wire id. */
+const TOOL_HINTS: Record<string, string> = {
+  composer: "PHP dependency manager.",
+  node: "Node.js runtime for building frontend assets (npm, npx).",
+  bun: "Fast all-in-one JavaScript runtime and package manager.",
+  laravel: "The laravel new installer for scaffolding new Laravel apps. Needs Composer.",
+};
+
+const composerInstalled = computed(() =>
+  tools.value.some((t) => t.id === "composer" && t.installed),
+);
+
+/** The Laravel installer is built via Composer, so it can't install without it. */
+function blockedNoComposer(t: ToolStatus): boolean {
+  return t.id === "laravel" && !composerInstalled.value;
+}
+
 const uninstallOpen = ref(false);
 const uninstallTarget = ref<ToolStatus | null>(null);
+
+// Streamed install log.
+const logOpen = ref(false);
+const logTool = ref<ToolStatus | null>(null);
+const installLog = ref<string[]>([]);
+const logBox = ref<HTMLElement | null>(null);
+
+async function appendLog(lines: string[]): Promise<void> {
+  installLog.value.push(...lines);
+  await nextTick();
+  const el = logBox.value;
+  if (el) el.scrollTop = el.scrollHeight;
+}
 
 async function load(): Promise<void> {
   loading.value = true;
@@ -42,10 +78,23 @@ async function load(): Promise<void> {
 async function doInstall(t: ToolStatus): Promise<void> {
   busy.value = `install:${t.id}`;
   const verb = t.installed ? "Updated" : "Installed";
+  logTool.value = t;
+  installLog.value = [];
+  logOpen.value = true;
   try {
-    await installTool(t.id);
-    toast.success(`${verb} ${t.display_name}`);
+    const jobId = await installToolStreamed(t.id);
+    const final = await pollJobToEnd(
+      jobId,
+      (lines) => void appendLog(lines),
+      () => logOpen.value,
+    );
     await Promise.all([load(), refresh()]);
+    if (final.state === "succeeded") {
+      toast.success(`${verb} ${t.display_name}`);
+    } else if (final.state !== "running") {
+      // "running" = the log modal was closed early; the install continues detached.
+      toast.error(`Install of ${t.display_name} failed`, final.error ?? "install failed");
+    }
   } catch (e) {
     toast.error(`Install of ${t.display_name} failed`, (e as IpcError).message);
   } finally {
@@ -119,7 +168,10 @@ onMounted(load);
                   <div class="font-medium text-foreground">
                     {{ t.display_name }}
                   </div>
-                  <div class="text-xs text-muted-foreground">
+                  <div v-if="TOOL_HINTS[t.id]" class="text-xs text-muted-foreground">
+                    {{ TOOL_HINTS[t.id] }}
+                  </div>
+                  <div class="text-xs text-muted-foreground/70">
                     {{ t.binaries.join(", ") }}
                   </div>
                 </td>
@@ -141,7 +193,8 @@ onMounted(load);
                       <Button
                         variant="outline"
                         size="sm"
-                        :disabled="busy !== null"
+                        :disabled="busy !== null || blockedNoComposer(t)"
+                        :title="blockedNoComposer(t) ? 'Install Composer first' : ''"
                         @click="doInstall(t)"
                       >
                         <RefreshCw class="mr-1.5 size-3.5" /> Update
@@ -160,7 +213,8 @@ onMounted(load);
                     <Button
                       v-else
                       size="sm"
-                      :disabled="busy !== null"
+                      :disabled="busy !== null || blockedNoComposer(t)"
+                      :title="blockedNoComposer(t) ? 'Install Composer first' : ''"
                       @click="doInstall(t)"
                     >
                       <Download class="mr-1.5 size-3.5" /> Install
@@ -173,6 +227,21 @@ onMounted(load);
         </CardContent>
       </Card>
     </div>
+
+    <Modal
+      v-model:open="logOpen"
+      :title="`Installing ${logTool?.display_name ?? 'tool'}`"
+      size="lg"
+    >
+      <pre
+        ref="logBox"
+        class="h-72 overflow-y-auto whitespace-pre-wrap rounded-lg bg-zinc-950 p-3 font-mono text-[11px] leading-relaxed text-zinc-200"
+      >{{ installLog.join("\n") || "Starting…" }}</pre>
+      <template #footer="{ close }">
+        <Spinner v-if="busy?.startsWith('install:')" class="size-4" />
+        <Button :disabled="busy?.startsWith('install:')" @click="close">Done</Button>
+      </template>
+    </Modal>
 
     <Modal
       v-model:open="uninstallOpen"

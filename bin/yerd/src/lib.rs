@@ -15,6 +15,8 @@ pub mod composer_shim;
 pub mod cover_shim;
 pub mod elevate;
 pub mod error;
+#[cfg(unix)]
+pub mod laravel_shim;
 pub mod map;
 pub mod path_cmd;
 #[cfg(unix)]
@@ -39,6 +41,11 @@ pub async fn run(cli: Cli) -> ExitCode {
         Command::Unelevate { target } => return elevate::run_elevate(*target, true).await,
         // `path` edits the user's shell rc file(s); fully local, no IPC.
         Command::Path { action } => return path_cmd::run(*action),
+        // Stream the install output (Composer's, for the Laravel installer) line by
+        // line. JSON mode keeps the plain blocking path for clean machine output.
+        Command::Install {
+            target: crate::cli::InstallTarget::Tool { id },
+        } if !cli.json => return stream_install_tool(id, cli.json).await,
         _ => {}
     }
 
@@ -104,6 +111,95 @@ pub async fn run(cli: Cli) -> ExitCode {
         Err(e) => {
             eprintln!("yerd: {e}");
             ExitCode::from(74)
+        }
+    }
+}
+
+/// Install a dev tool as a streamed job, printing its output line by line until
+/// the job reaches a terminal state. Mirrors the GUI's streamed install.
+async fn stream_install_tool(id: &str, json: bool) -> ExitCode {
+    use std::time::Duration;
+    use yerd_ipc::{JobState, Request, Response};
+
+    let job_id = match transport::exchange(&Request::InstallToolStreamed {
+        tool: id.to_owned(),
+    })
+    .await
+    {
+        Ok(Response::JobStarted { job_id }) => job_id,
+        Ok(Response::Error { message, .. }) => {
+            eprintln!("yerd: {message}");
+            return ExitCode::from(1);
+        }
+        Ok(_) => {
+            eprintln!("yerd: unexpected response starting install");
+            return ExitCode::from(74);
+        }
+        Err(e @ ClientError::DaemonUnreachable(_)) => {
+            eprintln!("yerd: {e}");
+            return ExitCode::from(69);
+        }
+        Err(e) => {
+            eprintln!("yerd: {e}");
+            return ExitCode::from(74);
+        }
+    };
+
+    let mut cursor = 0u64;
+    loop {
+        match transport::exchange(&Request::JobStatus {
+            job_id: job_id.clone(),
+            cursor,
+        })
+        .await
+        {
+            Ok(Response::JobProgress {
+                state,
+                log,
+                next_cursor,
+                error,
+                ..
+            }) => {
+                for line in &log {
+                    println!("{line}");
+                }
+                cursor = next_cursor;
+                match state {
+                    JobState::Running => tokio::time::sleep(Duration::from_millis(400)).await,
+                    JobState::Succeeded => {
+                        // Wire Yerd's bin dir onto PATH so the tool's commands
+                        // resolve in a new shell (same as the blocking path).
+                        path_cmd::ensure_installed_after_tool(json);
+                        return ExitCode::SUCCESS;
+                    }
+                    JobState::Failed => {
+                        if let Some(e) = error {
+                            eprintln!("yerd: {e}");
+                        }
+                        return ExitCode::from(1);
+                    }
+                    JobState::Cancelled => {
+                        eprintln!("yerd: install cancelled");
+                        return ExitCode::from(1);
+                    }
+                }
+            }
+            Ok(Response::Error { message, .. }) => {
+                eprintln!("yerd: {message}");
+                return ExitCode::from(1);
+            }
+            Ok(_) => {
+                eprintln!("yerd: unexpected response polling install");
+                return ExitCode::from(74);
+            }
+            Err(e @ ClientError::DaemonUnreachable(_)) => {
+                eprintln!("yerd: {e}");
+                return ExitCode::from(69);
+            }
+            Err(e) => {
+                eprintln!("yerd: {e}");
+                return ExitCode::from(74);
+            }
         }
     }
 }

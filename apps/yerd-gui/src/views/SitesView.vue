@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, ref } from "vue";
 import {
+  ChevronDown,
   ExternalLink,
   FolderMinus,
   FolderOpen,
@@ -11,12 +12,16 @@ import {
   Lock,
   LockOpen,
   MoreHorizontal,
+  Package,
   Pencil,
+  Plus,
+  Rocket,
   Search,
   ShieldAlert,
   Trash2,
 } from "lucide-vue-next";
 
+import CreateLaravelWizard from "@/components/site-create/CreateLaravelWizard.vue";
 import PageHeader from "@/components/PageHeader.vue";
 import Badge from "@/components/ui/Badge.vue";
 import Button from "@/components/ui/Button.vue";
@@ -65,6 +70,22 @@ const siteFilter = ref("");
 
 const tld = computed(() => report.value?.tld ?? "test");
 const caTrusted = computed(() => report.value?.ca.trusted_system === true);
+
+// ── create new site ──
+const createOpen = ref(false);
+const phpVersionList = computed(() => (report.value?.php ?? []).map((p) => p.version));
+const defaultPhp = computed(() => report.value?.default_php ?? "");
+
+function openCreate(): void {
+  // Defer past the dropdown's close so reka-ui's focus-restore doesn't fight the modal.
+  void nextTick(() => {
+    createOpen.value = true;
+  });
+}
+
+async function onCreated(): Promise<void> {
+  await load();
+}
 
 // PHP options for the edit form, from the live status report.
 const phpOptions = computed(() => {
@@ -289,18 +310,34 @@ onMounted(load);
   <div class="flex h-full flex-col">
     <PageHeader title="Sites" subtitle="Parked and linked .test sites">
       <template #actions>
-        <Button
-          variant="outline"
-          size="sm"
-          :disabled="rowBusy === 'park'"
-          @click="onPark"
-        >
-          <Spinner v-if="rowBusy === 'park'" class="size-4" />
-          <FolderPlus v-else class="size-4" /> Park folder
-        </Button>
-        <Button size="sm" @click="linkOpen = true">
-          <Link2 class="size-4" /> Link site
-        </Button>
+        <DropdownMenu>
+          <DropdownMenuTrigger as-child>
+            <Button size="sm">
+              <Plus class="size-4" /> Create <ChevronDown class="size-3.5 opacity-70" />
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end" class="w-56">
+            <DropdownMenuItem @select="openCreate">
+              <Rocket class="size-4" /> New Laravel site…
+            </DropdownMenuItem>
+            <!-- Future frameworks slot in here. -->
+            <DropdownMenuItem
+              disabled
+              class="opacity-60"
+              @select.prevent
+            >
+              <Package class="size-4" /> Other frameworks
+              <span class="ml-auto rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium">Soon</span>
+            </DropdownMenuItem>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem @select="linkOpen = true">
+              <Link2 class="size-4" /> Link existing site
+            </DropdownMenuItem>
+            <DropdownMenuItem @select="onPark">
+              <FolderPlus class="size-4" /> Park folder
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
       </template>
     </PageHeader>
 
@@ -332,10 +369,11 @@ onMounted(load);
             description="Park a folder of projects to serve every child directory, or link a single project directory."
           >
             <div class="flex gap-2">
+              <Button @click="openCreate"><Rocket class="size-4" /> New Laravel site</Button>
               <Button variant="outline" :disabled="rowBusy === 'park'" @click="onPark">
                 <FolderPlus class="size-4" /> Park folder
               </Button>
-              <Button @click="linkOpen = true"><Link2 class="size-4" /> Link site</Button>
+              <Button variant="outline" @click="linkOpen = true"><Link2 class="size-4" /> Link site</Button>
             </div>
           </EmptyState>
         </template>
@@ -523,6 +561,16 @@ onMounted(load);
         </section>
       </AsyncState>
     </div>
+
+    <!-- create new Laravel site wizard -->
+    <CreateLaravelWizard
+      v-model:open="createOpen"
+      :parked-folders="parked"
+      :php-versions="phpVersionList"
+      :default-php="defaultPhp"
+      :tld="tld"
+      @created="onCreated"
+    />
 
     <!-- edit site modal -->
     <Modal v-model:open="editOpen" :title="`Edit ${editTarget?.name ?? ''}`">

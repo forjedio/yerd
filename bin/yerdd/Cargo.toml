@@ -56,6 +56,11 @@ tar            = { workspace = true }
 zip            = { workspace = true, features = ["deflate"] }
 notify-debouncer-mini = "0.4"
 
+# Site creation streams `laravel new` output and process-group-kills it on
+# cancel/timeout (Unix); `killpg` lives in `nix`.
+[target.'cfg(unix)'.dependencies]
+nix            = { workspace = true }
+
 [dev-dependencies]
 tempfile       = { workspace = true }
 serde_json     = { workspace = true }

@@ -192,6 +192,24 @@ pub enum Response {
         /// One entry per tool, with install status.
         tools: Vec<ToolStatus>,
     },
+    /// Reply to [`crate::Request::CreateSite`] — the background job was started.
+    JobStarted {
+        /// The job id to poll with [`crate::Request::JobStatus`].
+        job_id: crate::JobId,
+    },
+    /// Reply to [`crate::Request::JobStatus`] — a job's current progress.
+    JobProgress {
+        /// The job's lifecycle state.
+        state: crate::JobState,
+        /// A short human label for the current phase (e.g. `"Scaffolding"`).
+        phase: String,
+        /// Log lines newer than the client's cursor, oldest first.
+        log: Vec<String>,
+        /// The cursor the client should send on its next poll.
+        next_cursor: u64,
+        /// Set when `state` is [`crate::JobState::Failed`]: the failure message.
+        error: Option<String>,
+    },
 }
 
 /// An available newer patch for an installed PHP minor.
@@ -266,6 +284,8 @@ mod variant_name_pinning {
             Response::Mails { .. } => {}
             Response::Mail { .. } => {}
             Response::Tools { .. } => {}
+            Response::JobStarted { .. } => {}
+            Response::JobProgress { .. } => {}
         }
     }
 
@@ -415,6 +435,16 @@ mod variant_name_pinning {
                 version: Some("v24.17.0".into()),
                 binaries: vec!["node".into(), "npm".into(), "npx".into()],
             }],
+        });
+        pin_response(Response::JobStarted {
+            job_id: "j1".into(),
+        });
+        pin_response(Response::JobProgress {
+            state: crate::JobState::Running,
+            phase: "Scaffolding".into(),
+            log: vec!["line".into()],
+            next_cursor: 1,
+            error: None,
         });
         for c in [
             ErrorCode::NotFound,

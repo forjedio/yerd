@@ -11,6 +11,7 @@ import { invoke as tauriInvoke } from "@tauri-apps/api/core";
 import type {
   AutostartState,
   AvailablePhpResponse,
+  CreateSiteSpec,
   DatabaseSummary,
   Diagnosis,
   DoctorFixResponse,
@@ -19,6 +20,7 @@ import type {
   DumpsStatusResponse,
   ElevateTarget,
   InfoResponse,
+  JobProgressResponse,
   MailDetail,
   MailSummary,
   PhpVersion,
@@ -229,6 +231,58 @@ export async function installTool(tool: string): Promise<void> {
 
 export async function uninstallTool(tool: string): Promise<void> {
   ensureOk(await call<Response>("uninstall_tool", { tool }));
+}
+
+/** Install a dev tool as a streamed job; returns the job id to poll. */
+export async function installToolStreamed(tool: string): Promise<string> {
+  const r = ensureOk(await call<Response>("install_tool_streamed", { tool }));
+  if (r.type !== "job_started") throw new IpcError("unexpected response to install_tool_streamed");
+  return r.job_id;
+}
+
+/**
+ * Poll a job to completion, delivering each batch of new log lines via
+ * `onLines`. Resolves with the latest {@link JobProgressResponse} — either the
+ * terminal one, or the last seen when `shouldContinue()` returns false (e.g. the
+ * viewing modal closed). `onLines` is the only log-delivery channel; the
+ * returned `.log` is just the final batch.
+ */
+export async function pollJobToEnd(
+  jobId: string,
+  onLines: (lines: string[]) => void,
+  shouldContinue?: () => boolean,
+  intervalMs = 500,
+): Promise<JobProgressResponse> {
+  let cursor = 0;
+  for (;;) {
+    const r = await jobStatus(jobId, cursor);
+    if (r.log.length) onLines(r.log);
+    // Advance unconditionally (the daemon may report a phase change with no new
+    // log lines), so this client never re-fetches a window or stalls.
+    cursor = r.next_cursor;
+    if (r.state !== "running") return r;
+    if (shouldContinue && !shouldContinue()) return r;
+    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+  }
+}
+
+// ── site creation ──────────────────────────────────────────────────────────
+
+/** Start scaffolding a new site; returns the job id to poll with {@link jobStatus}. */
+export async function createSite(spec: CreateSiteSpec): Promise<string> {
+  const r = ensureOk(await call<Response>("create_site", { spec }));
+  if (r.type !== "job_started") throw new IpcError("unexpected response to create_site");
+  return r.job_id;
+}
+
+/** Poll a job's progress. `cursor` is the number of log lines already held. */
+export async function jobStatus(jobId: string, cursor: number): Promise<JobProgressResponse> {
+  return ensureOk(await call<Response>("job_status", { jobId, cursor })) as JobProgressResponse;
+}
+
+/** Request cancellation of a running job. */
+export async function jobCancel(jobId: string): Promise<void> {
+  ensureOk(await call<Response>("job_cancel", { jobId }));
 }
 
 /** Installable vs installed versions per service. Fetches the listing on demand. */

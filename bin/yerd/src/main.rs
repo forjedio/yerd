@@ -20,6 +20,10 @@ fn main() -> ExitCode {
     if let Some(code) = yerd::cover_shim::dispatch() {
         return code;
     }
+    #[cfg(unix)]
+    if let Some(code) = yerd::laravel_shim::dispatch() {
+        return code;
+    }
 
     let cli = Cli::parse();
     let runtime = match tokio::runtime::Builder::new_current_thread()

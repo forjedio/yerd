@@ -1455,3 +1455,106 @@ fn response_tools_byte_shape() {
     assert_eq!(s, expected);
     assert_eq!(serde_json::from_str::<Response>(&s).unwrap(), r);
 }
+
+// ---------- CreateSite / job model ----------
+
+#[test]
+fn request_create_site_byte_shape() {
+    use yerd_ipc::{
+        AuthProvider, CreateSiteSpec, Database, Framework, JsRuntime, LaravelOptions, StarterKit,
+        Testing,
+    };
+    let r = Request::CreateSite {
+        spec: CreateSiteSpec {
+            name: "blog".into(),
+            parent_dir: PathBuf::from("/srv"),
+            php: PhpVersion::new(8, 4),
+            secure: true,
+            framework: Framework::Laravel {
+                options: LaravelOptions {
+                    starter_kit: StarterKit::React,
+                    auth: AuthProvider::Laravel,
+                    livewire_class_components: false,
+                    teams: false,
+                    testing: Testing::Pest,
+                    database: Database::Sqlite,
+                    js: JsRuntime::Npm,
+                    git: true,
+                    boost: false,
+                },
+            },
+        },
+    };
+    let s = serde_json::to_string(&r).unwrap();
+    let expected = r#"{"type":"create_site","spec":{"name":"blog","parent_dir":"/srv","php":"8.4","secure":true,"framework":{"framework":"laravel","options":{"starter_kit":"react","auth":"laravel","livewire_class_components":false,"teams":false,"testing":"pest","database":"sqlite","js":"npm","git":true,"boost":false}}}}"#;
+    assert_eq!(s, expected);
+    assert_eq!(serde_json::from_str::<Request>(&s).unwrap(), r);
+}
+
+#[test]
+fn request_create_site_community_kit_byte_shape() {
+    use yerd_ipc::StarterKit;
+    let s = serde_json::to_string(&StarterKit::Community("acme/kit".into())).unwrap();
+    assert_eq!(s, r#"{"community":"acme/kit"}"#);
+    assert_eq!(
+        serde_json::from_str::<StarterKit>(&s).unwrap(),
+        StarterKit::Community("acme/kit".into())
+    );
+}
+
+#[test]
+fn request_job_status_byte_shape() {
+    let r = Request::JobStatus {
+        job_id: "j1".into(),
+        cursor: 7,
+    };
+    let s = serde_json::to_string(&r).unwrap();
+    assert_eq!(s, r#"{"type":"job_status","job_id":"j1","cursor":7}"#);
+    assert_eq!(serde_json::from_str::<Request>(&s).unwrap(), r);
+}
+
+#[test]
+fn request_job_cancel_byte_shape() {
+    let r = Request::JobCancel {
+        job_id: "j1".into(),
+    };
+    let s = serde_json::to_string(&r).unwrap();
+    assert_eq!(s, r#"{"type":"job_cancel","job_id":"j1"}"#);
+    assert_eq!(serde_json::from_str::<Request>(&s).unwrap(), r);
+}
+
+#[test]
+fn response_job_started_byte_shape() {
+    let r = Response::JobStarted {
+        job_id: "j1".into(),
+    };
+    let s = serde_json::to_string(&r).unwrap();
+    assert_eq!(s, r#"{"type":"job_started","job_id":"j1"}"#);
+    assert_eq!(serde_json::from_str::<Response>(&s).unwrap(), r);
+}
+
+#[test]
+fn response_job_progress_byte_shape() {
+    use yerd_ipc::JobState;
+    let r = Response::JobProgress {
+        state: JobState::Running,
+        phase: "Scaffolding".into(),
+        log: vec!["line one".into()],
+        next_cursor: 1,
+        error: None,
+    };
+    let s = serde_json::to_string(&r).unwrap();
+    let expected = r#"{"type":"job_progress","state":"running","phase":"Scaffolding","log":["line one"],"next_cursor":1,"error":null}"#;
+    assert_eq!(s, expected);
+    assert_eq!(serde_json::from_str::<Response>(&s).unwrap(), r);
+}
+
+#[test]
+fn request_install_tool_streamed_byte_shape() {
+    let r = Request::InstallToolStreamed {
+        tool: "laravel".into(),
+    };
+    let s = serde_json::to_string(&r).unwrap();
+    assert_eq!(s, r#"{"type":"install_tool_streamed","tool":"laravel"}"#);
+    assert_eq!(serde_json::from_str::<Request>(&s).unwrap(), r);
+}
