@@ -22,6 +22,7 @@ pub mod path_cmd;
 #[cfg(unix)]
 pub mod shim;
 pub mod transport;
+pub mod uninstall;
 
 use std::process::ExitCode;
 
@@ -41,6 +42,10 @@ pub async fn run(cli: Cli) -> ExitCode {
         Command::Unelevate { target } => return elevate::run_elevate(*target, true).await,
         // `path` edits the user's shell rc file(s); fully local, no IPC.
         Command::Path { action } => return path_cmd::run(*action),
+        // Bare `yerd uninstall` (no target) tears yerd down locally: it stops
+        // the daemon and deletes files, so it can't go over IPC. `uninstall
+        // php/tool` keeps its daemon-mediated path below.
+        Command::Uninstall { target: None, yes } => return uninstall::run(*yes),
         // Stream the install output (Composer's, for the Laravel installer) line by
         // line. JSON mode keeps the plain blocking path for clean machine output.
         Command::Install {

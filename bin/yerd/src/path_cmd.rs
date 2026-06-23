@@ -46,6 +46,17 @@ pub fn ensure_installed_after_tool(quiet: bool) {
 #[cfg(not(unix))]
 pub fn ensure_installed_after_tool(_quiet: bool) {}
 
+/// Remove the yerd PATH block from an explicit user's shell rc file(s), given
+/// their home directory and login-shell basename (e.g. `zsh`). Unlike [`run`],
+/// this reads neither `$HOME` nor `$SHELL` — `yerd uninstall`, run under sudo,
+/// must target the *invoking* user, not root. Returns the list of files it
+/// edited (the block was present and removed). Best-effort: unreadable files
+/// are skipped.
+#[cfg(unix)]
+pub fn remove_block_for_user(home: &std::path::Path, shell_basename: &str) -> Vec<std::path::PathBuf> {
+    unix::remove_block_for_user(home, shell_basename)
+}
+
 #[cfg(unix)]
 mod unix {
     use std::path::{Path, PathBuf};
@@ -143,6 +154,29 @@ mod unix {
                 bin_dir.display()
             );
         }
+    }
+
+    /// Remove the yerd PATH block from `home`'s rc file(s) for the shell named
+    /// by `shell_basename`. Daemon-free and home-explicit (the uninstall path
+    /// runs under sudo, where `$HOME`/`$SHELL` point at root). `bin_dir` is
+    /// irrelevant to removal — `shell_profile::remove_block` matches the guarded
+    /// markers — so a placeholder is passed. Returns the files actually changed.
+    pub fn remove_block_for_user(home: &Path, shell_basename: &str) -> Vec<PathBuf> {
+        let Some(shell) = detect_shell(shell_basename) else {
+            return Vec::new();
+        };
+        let placeholder_bin = Path::new("");
+        let mut touched = Vec::new();
+        for rel in rc_relpaths(shell, host_os()) {
+            let rc = home.join(&rel);
+            if !rc.exists() {
+                continue;
+            }
+            if let Ok(true) = edit_one(&rc, shell, placeholder_bin, false) {
+                touched.push(rc);
+            }
+        }
+        touched
     }
 
     /// Edit one rc file. Returns `Ok(true)` if the file's contents changed.

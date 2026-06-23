@@ -20,6 +20,13 @@ pub async fn run_elevate(
 #[cfg(unix)]
 pub use unix_impl::run_elevate;
 
+// Small Unix helpers reused by `crate::uninstall` (root detection, the invoking
+// user's uid under sudo, sibling-binary resolution, and the audited helper
+// spawn) so the full-uninstall flow can revert the elevated system changes
+// without a running daemon.
+#[cfg(unix)]
+pub(crate) use unix_impl::{is_root, sibling_binaries, spawn_helper, sudo_uid};
+
 #[cfg(unix)]
 mod unix_impl {
     use std::net::SocketAddr;
@@ -315,7 +322,7 @@ mod unix_impl {
         ]
     }
 
-    fn sudo_uid() -> Option<u32> {
+    pub(crate) fn sudo_uid() -> Option<u32> {
         std::env::var("SUDO_UID").ok()?.parse().ok()
     }
 
@@ -328,7 +335,7 @@ mod unix_impl {
     /// Locate `yerd-helper` and `yerdd` as siblings of the running `yerd`
     /// binary. Deriving `yerdd` here (not from IPC) means a forged daemon can't
     /// point root's setcap at an arbitrary binary.
-    fn sibling_binaries() -> Result<(PathBuf, PathBuf), ClientError> {
+    pub(crate) fn sibling_binaries() -> Result<(PathBuf, PathBuf), ClientError> {
         let exe = std::env::current_exe()
             .map_err(|e| ClientError::Usage(format!("cannot resolve current exe: {e}")))?;
         let dir = exe
@@ -357,7 +364,10 @@ mod unix_impl {
         Ok(())
     }
 
-    fn spawn_helper(helper: &Path, inv: &HelperInvocation) -> Result<Option<i32>, ClientError> {
+    pub(crate) fn spawn_helper(
+        helper: &Path,
+        inv: &HelperInvocation,
+    ) -> Result<Option<i32>, ClientError> {
         let status = Command::new(helper)
             .env_clear()
             .args(inv.to_argv())
@@ -367,7 +377,7 @@ mod unix_impl {
     }
 
     #[cfg(target_os = "linux")]
-    fn is_root() -> bool {
+    pub(crate) fn is_root() -> bool {
         // /proc/self/status "Uid:\t<real>\t<effective>\t<saved>\t<fs>"
         std::fs::read_to_string("/proc/self/status")
             .ok()
@@ -381,7 +391,7 @@ mod unix_impl {
     }
 
     #[cfg(all(unix, not(target_os = "linux")))]
-    fn is_root() -> bool {
+    pub(crate) fn is_root() -> bool {
         Command::new("id")
             .arg("-u")
             .output()

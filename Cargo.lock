@@ -5965,6 +5965,7 @@ version = "2.0.2-rc.3"
 dependencies = [
  "clap",
  "interprocess",
+ "nix",
  "serde_json",
  "tempfile",
  "thiserror 1.0.69",
