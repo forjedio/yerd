@@ -416,7 +416,15 @@ jobs:
             echo "::error::MINISIGN_SECRET_KEY secret is not set — cannot sign the release"
             exit 1
           fi
-          sudo apt-get update -qq && sudo apt-get install -y -qq minisign
+          # `minisign` isn't in the runner's apt repos, so install the official
+          # prebuilt static binary from the canonical (pinned) release over HTTPS.
+          MINISIGN_VERSION=0.11
+          curl -sSfL "https://github.com/jedisct1/minisign/releases/download/${MINISIGN_VERSION}/minisign-${MINISIGN_VERSION}-linux.tar.gz" \
+            | tar -xz -C "$RUNNER_TEMP"
+          MINISIGN_BIN=$(find "$RUNNER_TEMP/minisign-linux" -path '*x86_64*' -name minisign | head -n1)
+          [ -n "$MINISIGN_BIN" ] || { echo "::error::minisign x86_64 binary not found in release tarball"; exit 1; }
+          sudo install -m0755 "$MINISIGN_BIN" /usr/local/bin/minisign
+          command -v minisign
           # Wipe the key on ANY exit (incl. a mid-loop failure), not just success.
           trap 'rm -f "$RUNNER_TEMP/minisign.key"' EXIT
           umask 077; printf '%s\n' "$MINISIGN_SECRET_KEY" > "$RUNNER_TEMP/minisign.key"
