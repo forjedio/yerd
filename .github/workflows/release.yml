@@ -408,13 +408,14 @@ jobs:
             exit 1
           fi
           sudo apt-get update -qq && sudo apt-get install -y -qq minisign
+          # Wipe the key on ANY exit (incl. a mid-loop failure), not just success.
+          trap 'rm -f "$RUNNER_TEMP/minisign.key"' EXIT
           umask 077; printf '%s\n' "$MINISIGN_SECRET_KEY" > "$RUNNER_TEMP/minisign.key"
           shopt -s nullglob
           for f in *.app.tar.gz *.deb; do
             minisign -S -H -s "$RUNNER_TEMP/minisign.key" -m "$f" -x "$f.sig"
             echo "signed $f -> $f.sig"
           done
-          rm -f "$RUNNER_TEMP/minisign.key"
 
       - name: Generate SHA256SUMS
         working-directory: dist

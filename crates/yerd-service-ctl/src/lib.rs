@@ -23,7 +23,8 @@ use std::process::Command;
 
 use thiserror::Error;
 
-/// The launchd / systemd label the daemon is registered under.
+/// The launchd label the daemon is registered under (macOS).
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 const DAEMON_LABEL: &str = "dev.yerd.daemon";
 /// The systemd `--user` unit name (Linux).
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
@@ -242,8 +243,7 @@ fn systemd_user_available() -> bool {
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
+        .is_ok_and(|s| s.success())
 }
 
 /// Run a command, mapping a non-zero exit (or spawn failure) to [`ServiceError`].

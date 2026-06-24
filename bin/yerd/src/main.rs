@@ -29,6 +29,11 @@ fn main() -> ExitCode {
     if let Some(code) = yerd::apply::run_from_env() {
         return code;
     }
+    // Hidden elevated deb-installer (re-exec'd under pkexec, which strips env, so
+    // this one is argv-gated). Also never a clap subcommand.
+    if let Some(code) = yerd::apply::run_install_deb_from_args() {
+        return code;
+    }
 
     let cli = Cli::parse();
     let runtime = match tokio::runtime::Builder::new_current_thread()

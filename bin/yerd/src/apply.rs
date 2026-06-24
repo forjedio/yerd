@@ -43,6 +43,45 @@ pub const APPLY_PATH_ENV: &str = "YERD_APPLY_PATH";
 pub const APPLY_KIND_ENV: &str = "YERD_APPLY_KIND";
 /// Env var: `"1"` to relaunch the GUI after the install.
 pub const APPLY_RELAUNCH_GUI_ENV: &str = "YERD_APPLY_RELAUNCH_GUI";
+/// argv sentinel for the elevated Linux deb-install re-exec. `pkexec` strips the
+/// environment, so the staged path is passed positionally. Internal; not a clap
+/// subcommand, so it never appears in help/completions.
+pub const INSTALL_DEB_ARG: &str = "__yerd-install-deb";
+
+/// If invoked as the elevated deb installer (`yerd __yerd-install-deb <path>`),
+/// run it and return the exit code; otherwise `None` (normal dispatch proceeds).
+/// Parsed from argv (not env) because `pkexec` sanitizes the environment.
+#[must_use]
+pub fn run_install_deb_from_args() -> Option<ExitCode> {
+    let mut args = std::env::args_os().skip(1);
+    if args.next()?.to_str() != Some(INSTALL_DEB_ARG) {
+        return None;
+    }
+    let Some(path) = args.next() else {
+        eprintln!("yerd: {INSTALL_DEB_ARG} requires a path");
+        return Some(ExitCode::from(2));
+    };
+    Some(install_deb_entry(Path::new(&path)))
+}
+
+/// Run the elevated deb install (Linux). The cfg split lives in a helper with a
+/// uniform signature to avoid `#[cfg]`-block-as-tail-expression footguns.
+#[cfg(target_os = "linux")]
+fn install_deb_entry(path: &Path) -> ExitCode {
+    match elevated_install_deb(path) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("yerd: {e}");
+            ExitCode::from(1)
+        }
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn install_deb_entry(_path: &Path) -> ExitCode {
+    eprintln!("yerd: elevated deb install is Linux-only");
+    ExitCode::from(1)
+}
 
 /// If invoked in applier mode (the [`APPLY_ENV`] var is set), run the apply and
 /// return its exit code; otherwise `None` (normal CLI dispatch proceeds). All
@@ -86,6 +125,11 @@ pub fn run(staged: &Path, kind: StagedArtifact, relaunch_gui: bool) -> ExitCode 
         }
         Err(e) => {
             eprintln!("yerd: update failed: {e}");
+            // The GUI quits before spawning us; on failure (bundle rolled back),
+            // bring it back so a failed update doesn't strand the user appless.
+            if relaunch_gui {
+                relaunch_gui_app();
+            }
             ExitCode::from(1)
         }
     }
@@ -164,39 +208,77 @@ fn apply_macos(staged: &Path, relaunch_gui: bool) -> Result<(), String> {
         ));
     }
 
-    // Stage on the SAME volume as the bundle so the rename is atomic.
-    let stage = parent.join(".yerd-staging");
+    // Unique, *exclusively-created* staging dir on the same volume as the bundle.
+    // A fixed name (`.yerd-staging`) was a local-attacker planting risk — a unique
+    // name + `create_dir` (fails if the path exists) means we never extract into
+    // or swap from a directory someone else pre-created.
+    let uniq = unique_suffix();
+    let stage = parent.join(format!(".yerd-staging-{uniq}"));
+    std::fs::create_dir(&stage)
+        .map_err(|e| format!("creating staging dir {}: {e}", stage.display()))?;
+
+    // Everything that can fail after the daemon is stopped runs in this closure so
+    // a single cleanup (remove staging) + daemon-restart-on-failure covers every
+    // early return.
+    let mut stopped = false;
+    let result = (|| -> Result<(), String> {
+        same_volume(&parent, &stage)?;
+        // Extract via system `tar` (bsdtar) so the notarization staple's xattrs
+        // survive — the Rust `tar` crate drops xattrs.
+        let status = Command::new("tar")
+            .arg("-xpf")
+            .arg(staged)
+            .arg("-C")
+            .arg(&stage)
+            .status()
+            .map_err(|e| format!("spawning tar: {e}"))?;
+        if !status.success() {
+            return Err("extracting the update archive failed".to_owned());
+        }
+        // Reject anything but exactly one bundle — defends against a planted .app.
+        let new_app = find_single_dot_app(&stage)?;
+
+        // Stop the daemon so it releases its executable inode, then swap.
+        stop_daemon();
+        stopped = true;
+        let backup = parent.join(format!(".yerd-backup-{uniq}.app"));
+        swap_bundle(&bundle, &new_app, &backup).map_err(|e| format!("swapping bundle: {e}"))?;
+        let _ = std::fs::remove_dir_all(&backup);
+        Ok(())
+    })();
+
     let _ = std::fs::remove_dir_all(&stage);
-    std::fs::create_dir_all(&stage).map_err(|e| format!("creating staging dir: {e}"))?;
-    same_volume(&parent, &stage)?;
-
-    // Extract via system `tar` (bsdtar) so the notarization staple's xattrs
-    // survive — the Rust `tar` crate drops xattrs.
-    let status = Command::new("tar")
-        .arg("-xpf")
-        .arg(staged)
-        .arg("-C")
-        .arg(&stage)
-        .status()
-        .map_err(|e| format!("spawning tar: {e}"))?;
-    if !status.success() {
-        let _ = std::fs::remove_dir_all(&stage);
-        return Err("extracting the update archive failed".to_owned());
+    match result {
+        Ok(()) => {
+            restart_services(relaunch_gui);
+            Ok(())
+        }
+        Err(e) => {
+            // If we got as far as stopping the daemon, the swap rolled the bundle
+            // back — restart the (now-original) daemon so we don't leave it down.
+            if stopped {
+                restart_services(false);
+            }
+            Err(e)
+        }
     }
-    let new_app = find_dot_app(&stage)?;
+}
 
-    // Stop the daemon so it releases its executable inode, then swap.
+/// A per-invocation unique suffix (pid + nanoseconds) for staging paths.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+fn unique_suffix() -> String {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_nanos());
+    format!("{}-{nanos}", std::process::id())
+}
+
+/// Stop the daemon (best-effort) so it releases its executable inode.
+#[cfg(target_os = "macos")]
+fn stop_daemon() {
     if let Some(yerdd) = sibling_yerdd() {
         yerd_service_ctl::ServiceCtl::new(yerdd).stop();
     }
-    let backup = parent.join(".yerd-backup.app");
-    let _ = std::fs::remove_dir_all(&backup);
-    swap_bundle(&bundle, &new_app, &backup).map_err(|e| format!("swapping bundle: {e}"))?;
-    let _ = std::fs::remove_dir_all(&backup);
-    let _ = std::fs::remove_dir_all(&stage);
-
-    restart_services(relaunch_gui);
-    Ok(())
 }
 
 /// Replace `target` with `new_app`, keeping `target`'s old contents at `backup`.
@@ -220,17 +302,24 @@ pub fn swap_bundle(target: &Path, new_app: &Path, backup: &Path) -> std::io::Res
     }
 }
 
-/// Find the single `*.app` directory directly inside `dir`.
+/// Find the *single* `*.app` directory directly inside `dir`. Errors if there
+/// are zero or more than one (a multi-`.app` archive could mean a planted bundle).
 #[cfg(target_os = "macos")]
-fn find_dot_app(dir: &Path) -> Result<PathBuf, String> {
-    let entries = std::fs::read_dir(dir).map_err(|e| format!("reading staging dir: {e}"))?;
-    for entry in entries.flatten() {
+fn find_single_dot_app(dir: &Path) -> Result<PathBuf, String> {
+    let mut found: Option<PathBuf> = None;
+    for entry in std::fs::read_dir(dir)
+        .map_err(|e| format!("reading staging dir: {e}"))?
+        .flatten()
+    {
         let p = entry.path();
         if p.extension().is_some_and(|x| x == "app") {
-            return Ok(p);
+            if found.is_some() {
+                return Err("update archive contained more than one .app bundle".to_owned());
+            }
+            found = Some(p);
         }
     }
-    Err("the update archive contained no .app bundle".to_owned())
+    found.ok_or_else(|| "the update archive contained no .app bundle".to_owned())
 }
 
 /// True if `dir` is writable by the current process (rename needs dir write).
@@ -276,25 +365,76 @@ fn relaunch_gui_app() {
 
 #[cfg(target_os = "linux")]
 fn apply_linux(staged: &Path, relaunch_gui: bool) -> Result<(), String> {
-    // The privileged step is just `dpkg -i`. Elevate via pkexec unless already
-    // root. dpkg's postinst reapplies setcap + /usr/bin symlinks.
-    let is_root = nix::unistd::geteuid().is_root();
-    let status = if is_root {
-        Command::new("dpkg").arg("-i").arg(staged).status()
-    } else {
-        Command::new("pkexec")
-            .arg("dpkg")
-            .arg("-i")
-            .arg(staged)
-            .status()
+    if nix::unistd::geteuid().is_root() {
+        // Already root (unusual direct invocation): install in place. A direct
+        // root run can't reach the user session to restart the daemon, so that
+        // path relies on the systemd unit / next login — acceptable for it.
+        return elevated_install_deb(staged);
     }
-    .map_err(|e| format!("spawning the installer: {e}"))?;
+    // Elevate ONLY the verify+install, by re-exec'ing ourselves under pkexec. The
+    // staged path travels as argv (pkexec sanitizes the environment), and the
+    // elevated process reads + verifies + installs the bytes *once under root*
+    // from root-owned storage — so a same-uid attacker can't swap the
+    // user-writable staged file between verification and dpkg's read.
+    let exe = std::env::current_exe().map_err(|e| format!("current_exe: {e}"))?;
+    let status = Command::new("pkexec")
+        .arg(&exe)
+        .arg(INSTALL_DEB_ARG)
+        .arg(staged)
+        .status()
+        .map_err(|e| format!("spawning pkexec: {e}"))?;
     if !status.success() {
-        return Err("dpkg failed to install the new package".to_owned());
+        return Err("privileged install (pkexec) failed or was cancelled".to_owned());
     }
     // Restart the daemon in the user session (NOT as root) and relaunch the GUI.
     restart_services(relaunch_gui);
     Ok(())
+}
+
+/// Elevated installer (runs as root via the `pkexec` re-exec). Reads + verifies
+/// the staged `.deb` **once**, copies the verified bytes into a root-owned 0700
+/// dir, and `dpkg -i`s that copy — closing the verify→re-read TOCTOU on the
+/// user-writable staged path. `dpkg`'s postinst reapplies setcap + `/usr/bin`
+/// symlinks.
+#[cfg(target_os = "linux")]
+fn elevated_install_deb(staged: &Path) -> Result<(), String> {
+    use std::os::unix::fs::{DirBuilderExt as _, PermissionsExt as _};
+
+    if !nix::unistd::geteuid().is_root() {
+        return Err("the elevated installer must run as root".to_owned());
+    }
+    // Read the artifact + signature once, verify, then never re-read the
+    // user-writable path.
+    let bytes = std::fs::read(staged).map_err(|e| format!("reading staged .deb: {e}"))?;
+    let sig_path = sibling_sig(staged);
+    let sig = std::fs::read_to_string(&sig_path)
+        .map_err(|e| format!("reading signature {}: {e}", sig_path.display()))?;
+    verify_minisign(UPDATE_PUBLIC_KEY, &sig, &bytes).map_err(|e| e.to_string())?;
+
+    // Root-owned, 0700, uniquely-named dir: a non-root attacker can neither enter
+    // it nor replace the root-owned file inside (sticky /tmp).
+    let dir = std::env::temp_dir().join(format!("yerd-update-{}", unique_suffix()));
+    std::fs::DirBuilder::new()
+        .mode(0o700)
+        .create(&dir)
+        .map_err(|e| format!("creating secure install dir: {e}"))?;
+    let pkg = dir.join("update.deb");
+    let install = (|| -> Result<(), String> {
+        std::fs::write(&pkg, &bytes).map_err(|e| format!("writing verified .deb: {e}"))?;
+        let _ = std::fs::set_permissions(&pkg, std::fs::Permissions::from_mode(0o600));
+        let status = Command::new("dpkg")
+            .arg("-i")
+            .arg(&pkg)
+            .status()
+            .map_err(|e| format!("spawning dpkg: {e}"))?;
+        if status.success() {
+            Ok(())
+        } else {
+            Err("dpkg failed to install the new package".to_owned())
+        }
+    })();
+    let _ = std::fs::remove_dir_all(&dir);
+    install
 }
 
 #[cfg(target_os = "linux")]
@@ -378,6 +518,30 @@ mod tests {
         write_bundle(&staged, "NEW");
         swap_bundle(&target, &staged, &backup).unwrap();
         assert!(target.join("Contents/Info.plist").exists());
+    }
+
+    #[test]
+    fn swap_bundle_rolls_back_when_rename_in_fails() {
+        // Force the second rename (new_app → target) to fail by pointing at a
+        // non-existent staged bundle. The OLD bundle must be restored at target,
+        // never left missing.
+        let tmp = tempfile::tempdir().unwrap();
+        let target = tmp.path().join("Yerd.app");
+        let missing = tmp.path().join("does-not-exist.app");
+        let backup = tmp.path().join(".backup.app");
+        write_bundle(&target, "OLD");
+
+        let err = swap_bundle(&target, &missing, &backup);
+        assert!(err.is_err(), "swap should report the rename-in failure");
+        // Rolled back: the original OLD bundle is back at target, not lost.
+        assert_eq!(
+            std::fs::read_to_string(target.join("Contents/Info.plist")).unwrap(),
+            "OLD"
+        );
+        assert!(
+            !backup.exists(),
+            "backup should have been renamed back to target"
+        );
     }
 
     #[test]

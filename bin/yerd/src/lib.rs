@@ -282,8 +282,15 @@ async fn run_self_update_apply(json: bool, edge: bool, stable: bool, force: bool
         }
     };
 
-    // Apply in-process (the CLI doesn't need to relaunch the GUI).
-    apply::run(std::path::Path::new(&path), kind, false)
+    // Apply on a blocking thread (the applier runs `tar`/`dpkg`/`rename` and
+    // sleeps in the daemon-restart wait — keep it off the async worker). The CLI
+    // doesn't relaunch the GUI.
+    tokio::task::spawn_blocking(move || apply::run(std::path::Path::new(&path), kind, false))
+        .await
+        .unwrap_or_else(|e| {
+            eprintln!("yerd: applier task failed: {e}");
+            ExitCode::from(74)
+        })
 }
 
 /// Install a dev tool as a streamed job, printing its output line by line until
