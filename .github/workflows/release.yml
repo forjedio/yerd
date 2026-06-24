@@ -352,7 +352,12 @@ jobs:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       GH_REPO: ${{ github.repository }}
     steps:
+      # Read-only checkout (the trust-anchor gate just reads source); no later
+      # step does any git operation and release auth is GH_TOKEN, so don't leave
+      # the checkout token persisted in .git/config.
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Download all build artifacts
         uses: actions/download-artifact@v4
