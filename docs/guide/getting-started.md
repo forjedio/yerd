@@ -10,7 +10,7 @@ root.
 
 ::: info Supported platforms
 Yerd ships a single desktop app for **macOS** (Apple Silicon) and **Linux**
-(x86-64, Debian/Ubuntu `.deb`). The daemon, the `yerd` CLI, and the privileged
+(x86-64 and arm64, Debian/Ubuntu `.deb`). The daemon, the `yerd` CLI, and the privileged
 helper are all bundled inside it — there is nothing else to install. PHP itself is
 **not** bundled - Yerd downloads prebuilt static PHP builds on demand when you run
 `yerd install php`, so the install stays tiny and fast.
@@ -31,6 +31,7 @@ build from the [releases page](https://github.com/forjedio/yerd/releases):
 |---|---|---|
 | macOS (Apple Silicon) | `Yerd_MacOS_AppleSilicon_v<ver>.dmg` | open, drag Yerd to Applications |
 | Linux (x86-64) | `Yerd_Linux_x86_64_v<ver>.deb` | `sudo apt install ./Yerd_Linux_x86_64_v<ver>.deb` |
+| Linux (arm64) | `Yerd_Linux_Arm64_v<ver>.deb` | `sudo apt install ./Yerd_Linux_Arm64_v<ver>.deb` |
 
 On first launch the app **starts its bundled daemon**, then walks you through a
 **one-time** `sudo yerd elevate` to trust the local CA, route `*.test`, and bind

@@ -12,6 +12,7 @@ The app is the **only** artifact, with the daemon + CLI + helper embedded:
 |---|---|---|
 | macOS (Apple Silicon) | `Yerd_MacOS_AppleSilicon_v<ver>.dmg` | Open the DMG, drag Yerd to Applications |
 | Linux (x86-64) | `Yerd_Linux_x86_64_v<ver>.deb` | `sudo apt install ./Yerd_Linux_x86_64_v<ver>.deb` |
+| Linux (arm64) | `Yerd_Linux_Arm64_v<ver>.deb` | `sudo apt install ./Yerd_Linux_Arm64_v<ver>.deb` |
 
 The macOS DMG targets Apple Silicon (`aarch64`) only; Intel (x86-64) Macs are not supported at this time. There's no Windows bundle yet: the daemon's named-pipe address isn't client-derivable.
 

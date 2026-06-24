@@ -48,6 +48,7 @@ See [Getting Started](./getting-started) for platform-specific instructions. The
 
 | macOS (Apple Silicon) | `Yerd_MacOS_AppleSilicon_v<ver>.dmg` |
 | Linux (x86-64) | `Yerd_Linux_x86_64_v<ver>.deb` |
+| Linux (arm64) | `Yerd_Linux_Arm64_v<ver>.deb` |
 
 The daemon (`yerdd`), the `yerd` CLI, and `yerd-helper` are all bundled inside the app; first launch starts the daemon. PHP is not bundled; you install versions in a later step.
 

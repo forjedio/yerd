@@ -82,6 +82,7 @@ runtime). Grab the latest build from the
 |---|---|---|
 | macOS (Apple Silicon) | `Yerd_MacOS_AppleSilicon_v<ver>.dmg` | open, drag to Applications |
 | Linux (x86-64) | `Yerd_Linux_x86_64_v<ver>.deb` | `sudo apt install ./Yerd_Linux_x86_64_v<ver>.deb` |
+| Linux (arm64) | `Yerd_Linux_Arm64_v<ver>.deb` | `sudo apt install ./Yerd_Linux_Arm64_v<ver>.deb` |
 
 On first launch the app **starts its bundled daemon** - so on macOS setup is
 essentially drag-and-drop. It then walks you through a **one-time**

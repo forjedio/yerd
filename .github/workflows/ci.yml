@@ -25,8 +25,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # macos-14 = Apple Silicon.
-        os: [ubuntu-22.04, macos-14]
+        # macos-14 = Apple Silicon. ubuntu-22.04-arm gates the arm64 Linux leg
+        # the release builds natively (free GitHub-hosted arm64 runner), so the
+        # shipped arm64 .deb is test-covered, not built blind.
+        os: [ubuntu-22.04, ubuntu-22.04-arm, macos-14]
     steps:
       - uses: actions/checkout@v4
 

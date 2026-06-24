@@ -43,7 +43,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-22.04, macos-14]
+        # ubuntu-22.04 / -arm pins the SAME (older) glibc baseline for both Linux
+        # arches so the .debs run on the widest range of hosts. macos-14 is Apple
+        # Silicon. GitHub-hosted arm64 Linux runners are free on public repos, so
+        # the arm64 leg builds natively — no cross-compilation.
+        os: [ubuntu-22.04, ubuntu-22.04-arm, macos-14]
     steps:
       - uses: actions/checkout@v4
 
@@ -118,8 +122,15 @@ jobs:
           set -euo pipefail
           cargo build --release -p yerd -p yerdd -p yerd-helper
           mkdir -p apps/yerd-gui/src-tauri/binaries
-          if [ "$RUNNER_OS" = "macOS" ]; then triple=aarch64-apple-darwin; \
-            else triple=x86_64-unknown-linux-gnu; fi
+          # Native build per runner — the triple suffix is only Tauri's sidecar
+          # naming, so it must match the arch cargo actually produced.
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            triple=aarch64-apple-darwin
+          elif [ "$(uname -m)" = "aarch64" ]; then
+            triple=aarch64-unknown-linux-gnu
+          else
+            triple=x86_64-unknown-linux-gnu
+          fi
           for b in yerd yerdd yerd-helper; do
             cp "target/release/$b" "apps/yerd-gui/src-tauri/binaries/$b-$triple"
           done
