@@ -25,6 +25,13 @@ pub struct Config {
     /// resolver config installed by `yerd elevate resolver` valid across daemon
     /// restarts. `0` means "ephemeral" (dev/tests only — not durable).
     pub dns_port: u16,
+    /// Self-update release channel: [`DEFAULT_UPDATE_CHANNEL`] (`"stable"`) or
+    /// `"edge"`. `stable` tracks the latest non-pre-release; `edge` opts into
+    /// pre-releases / release candidates. Read by `yerd update` and the GUI
+    /// Settings selector; validated to one of those two values by
+    /// [`Config::validate`]. Stored as a `String` (not a typed enum) to avoid a
+    /// dependency on the higher-level `yerd-update` crate.
+    pub update_channel: String,
     /// HTTP / HTTPS listen ports.
     pub ports: Ports,
     /// PHP defaults.
@@ -61,6 +68,7 @@ impl Default for Config {
             version: crate::CURRENT_VERSION,
             tld: Tld::default(),
             dns_port: DEFAULT_DNS_PORT,
+            update_channel: DEFAULT_UPDATE_CHANNEL.to_owned(),
             ports: Ports::default(),
             php: PhpSection::default(),
             parked: ParkedSection::default(),
@@ -154,6 +162,12 @@ impl Config {
 
 /// Default loopback port for the embedded DNS responder (see [`Config::dns_port`]).
 pub const DEFAULT_DNS_PORT: u16 = 1053;
+
+/// Default self-update channel (see [`Config::update_channel`]).
+pub const DEFAULT_UPDATE_CHANNEL: &str = "stable";
+
+/// The two accepted [`Config::update_channel`] values.
+pub const UPDATE_CHANNELS: &[&str] = &["stable", "edge"];
 
 /// HTTP and HTTPS ports.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

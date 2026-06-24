@@ -1,0 +1,17 @@
+[package]
+name                   = "yerd-update"
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+publish.workspace      = true
+description            = "Pure release-channel selection and version-decision logic for Yerd self-update."
+
+[dependencies]
+semver          = { workspace = true }
+sha2            = { workspace = true }
+minisign-verify = { workspace = true }
+hex             = { workspace = true }
+
+[lints]
+workspace = true

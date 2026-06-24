@@ -358,6 +358,30 @@ pub enum Request {
         /// The job to cancel.
         job_id: crate::JobId,
     },
+    /// Check for an available Yerd self-update. Returns
+    /// [`super::Response::UpdateStatus`] reporting the latest stable and edge
+    /// versions, the active channel preference, and whether an update is
+    /// available. Tolerant of network failure (the daemon serves its cache).
+    CheckUpdate {
+        /// Override the configured channel for this check only. `None` uses the
+        /// persisted `update_channel`.
+        channel: Option<crate::Channel>,
+    },
+    /// Persist the self-update channel preference. Returns
+    /// [`super::Response::Ok`].
+    SetUpdateChannel {
+        /// The channel to make the new default.
+        channel: crate::Channel,
+    },
+    /// Download + cryptographically verify the latest update artifact for this
+    /// platform on `channel` (the configured channel when `None`). Blocking: the
+    /// daemon returns [`super::Response::Staged`] with the on-disk path of the
+    /// verified artifact (or [`super::Response::Error`]). The privileged
+    /// install/swap is then performed by the applier, not the daemon.
+    StageUpdate {
+        /// Override the configured channel for this stage only.
+        channel: Option<crate::Channel>,
+    },
 }
 
 #[cfg(test)]
@@ -442,6 +466,9 @@ mod variant_name_pinning {
             Request::CreateSite { .. } => {}
             Request::JobStatus { .. } => {}
             Request::JobCancel { .. } => {}
+            Request::CheckUpdate { .. } => {}
+            Request::SetUpdateChannel { .. } => {}
+            Request::StageUpdate { .. } => {}
         }
     }
 
@@ -601,6 +628,13 @@ mod variant_name_pinning {
         pin(Request::JobCancel {
             job_id: "j1".into(),
         });
+        pin(Request::CheckUpdate {
+            channel: Some(crate::Channel::Edge),
+        });
+        pin(Request::SetUpdateChannel {
+            channel: crate::Channel::Stable,
+        });
+        pin(Request::StageUpdate { channel: None });
     }
 
     fn laravel_options_fixture() -> crate::LaravelOptions {

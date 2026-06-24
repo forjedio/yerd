@@ -390,7 +390,29 @@ export type Response =
       log: string[];
       next_cursor: number;
       error: string | null;
+    }
+  | {
+      type: "update_status";
+      /** The running Yerd version. */
+      current: string;
+      /** Highest stable version available, or null if none/unknown. */
+      latest_stable: string | null;
+      /** Highest edge (pre-release-inclusive) version available, or null. */
+      latest_edge: string | null;
+      /** The channel this check resolved against. */
+      channel: UpdateChannel;
+      /** Whether a newer version is available on `channel`. */
+      available: boolean;
+      /** The version `channel` would update to, or null when up to date. */
+      target: string | null;
+      /** Running a pre-release ahead of stable (stable would be a downgrade). */
+      ahead_of_stable: boolean;
+      /** Whether these figures are from a live fetch or a cached fallback. */
+      source: "live" | "cached";
     };
+
+/** Self-update release channel (mirrors `yerd_ipc::Channel`). */
+export type UpdateChannel = "stable" | "edge";
 
 /** crates/yerd-ipc/src/status.rs — ToolStatus. */
 export interface ToolStatus {
@@ -411,6 +433,7 @@ export type InfoResponse = Extract<Response, { type: "info" }>;
 export type SitesResponse = Extract<Response, { type: "sites" }>;
 export type ParkedResponse = Extract<Response, { type: "parked" }>;
 export type PhpVersionsResponse = Extract<Response, { type: "php_versions" }>;
+export type UpdateStatusResponse = Extract<Response, { type: "update_status" }>;
 export type AvailablePhpResponse = Extract<Response, { type: "available_php" }>;
 export type StatusResponse = Extract<Response, { type: "status" }>;
 export type DiagnosesResponse = Extract<Response, { type: "diagnoses" }>;

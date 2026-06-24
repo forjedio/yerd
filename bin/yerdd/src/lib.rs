@@ -28,6 +28,7 @@ pub mod mutate;
 pub mod php_install;
 pub mod php_updates;
 pub mod secure_fs;
+pub mod self_update;
 pub mod service_install;
 pub mod services;
 pub mod signals;
@@ -142,8 +143,9 @@ async fn run_until_shutdown(
         tokio::spawn(crate::dump_server::run(state, shutdown_rx.clone()))
     };
 
-    // Periodic PHP update checker: poll once at startup, then every 12h, until
-    // shutdown. Notify-only (logs available updates; never auto-installs).
+    // Periodic update checker: poll once at startup, then every 12h, until
+    // shutdown. Notify-only (logs available updates; never auto-installs) for
+    // both PHP patches and Yerd itself.
     let update_check_handle = {
         let state = daemon.state.clone();
         let mut rx = shutdown_rx.clone();
@@ -152,7 +154,10 @@ async fn run_until_shutdown(
             let mut tick = tokio::time::interval(Duration::from_secs(12 * 60 * 60));
             loop {
                 tokio::select! {
-                    _ = tick.tick() => crate::php_updates::poll_and_refresh(&state, &dl).await,
+                    _ = tick.tick() => {
+                        crate::php_updates::poll_and_refresh(&state, &dl).await;
+                        crate::self_update::poll_and_refresh(&state, &dl).await;
+                    }
                     _ = rx.changed() => break,
                 }
             }

@@ -210,6 +210,41 @@ pub enum Response {
         /// Set when `state` is [`crate::JobState::Failed`]: the failure message.
         error: Option<String>,
     },
+    /// Reply to [`crate::Request::CheckUpdate`] — the running version, both
+    /// channel latests, the active channel preference, and whether an update is
+    /// available. Versions are strings (e.g. `"2.0.2-rc.3"`) to keep this crate
+    /// free of a semver dependency.
+    UpdateStatus {
+        /// The running Yerd version.
+        current: String,
+        /// Highest stable version available, or `None` if none / unknown.
+        latest_stable: Option<String>,
+        /// Highest edge (pre-release-inclusive) version available, or `None`.
+        latest_edge: Option<String>,
+        /// The channel this check resolved against (the preference, unless
+        /// overridden for this check).
+        channel: crate::Channel,
+        /// Whether a newer version is available on `channel`.
+        available: bool,
+        /// The version `channel` would update to (strictly newer than current),
+        /// or `None` when already up to date.
+        target: Option<String>,
+        /// True when the running version is a pre-release ahead of the latest
+        /// stable — switching to stable would be a downgrade.
+        ahead_of_stable: bool,
+        /// Whether these figures are from a live fetch or a cached fallback.
+        source: crate::UpdateSource,
+    },
+    /// Reply to [`crate::Request::StageUpdate`] — the verified update artifact
+    /// has been downloaded to `path`. The applier installs it.
+    Staged {
+        /// Absolute path to the verified, downloaded artifact on disk.
+        path: String,
+        /// The version that was staged (e.g. `"2.0.5"`).
+        version: String,
+        /// What kind of artifact it is (drives the applier's install method).
+        kind: crate::StagedArtifact,
+    },
 }
 
 /// An available newer patch for an installed PHP minor.
@@ -286,6 +321,8 @@ mod variant_name_pinning {
             Response::Tools { .. } => {}
             Response::JobStarted { .. } => {}
             Response::JobProgress { .. } => {}
+            Response::UpdateStatus { .. } => {}
+            Response::Staged { .. } => {}
         }
     }
 
@@ -445,6 +482,21 @@ mod variant_name_pinning {
             log: vec!["line".into()],
             next_cursor: 1,
             error: None,
+        });
+        pin_response(Response::UpdateStatus {
+            current: "2.0.2-rc.3".into(),
+            latest_stable: Some("2.0.1".into()),
+            latest_edge: Some("2.0.2-rc.3".into()),
+            channel: crate::Channel::Stable,
+            available: false,
+            target: None,
+            ahead_of_stable: true,
+            source: crate::UpdateSource::Live,
+        });
+        pin_response(Response::Staged {
+            path: "/x/Yerd.app.tar.gz".into(),
+            version: "2.0.5".into(),
+            kind: crate::StagedArtifact::AppTarGz,
         });
         for c in [
             ErrorCode::NotFound,

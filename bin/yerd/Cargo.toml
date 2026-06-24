@@ -20,6 +20,8 @@ yerd-core      = { path = "../../crates/yerd-core" }
 yerd-ipc       = { path = "../../crates/yerd-ipc", features = ["transport"] }
 yerd-platform  = { path = "../../crates/yerd-platform" }
 yerd-config    = { path = "../../crates/yerd-config" }
+yerd-update    = { path = "../../crates/yerd-update" }
+yerd-service-ctl = { path = "../../crates/yerd-service-ctl" }
 clap           = { workspace = true }
 tokio          = { workspace = true, features = ["rt", "io-util", "net", "time"] }
 interprocess   = { workspace = true }

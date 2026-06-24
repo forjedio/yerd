@@ -19,7 +19,7 @@ pub(crate) type MigrationStep = fn(&mut Value) -> Result<(), ConfigError>;
 /// Forward-migration steps, indexed so that **`STEPS[N]` walks `vN → v(N+1)`**.
 /// This matches [`up`], which indexes `STEPS[current]` (== the version being
 /// migrated *from*). Example: a v1 file is migrated by `STEPS[1]`. When
-/// `CURRENT_VERSION == 5`, `STEPS = [v0→v1, v1→v2, v2→v3, v3→v4, v4→v5]`, length 5.
+/// `CURRENT_VERSION == 6`, `STEPS = [v0→v1, …, v4→v5, v5→v6]`, length 6.
 ///
 /// `STEPS[0]` (v0→v1) is only reachable via a hand-crafted `version = 0` file —
 /// v0 was never written to disk — but it must exist so that `STEPS[1]` does.
@@ -29,6 +29,7 @@ pub(crate) const STEPS: &[MigrationStep] = &[
     migrate_v2_to_v3,
     migrate_v3_to_v4,
     migrate_v4_to_v5,
+    migrate_v5_to_v6,
 ];
 
 /// `v0 → v1`: bump the version. v0 predates any shipped config, so there is no
@@ -80,6 +81,13 @@ fn migrate_v3_to_v4(value: &mut Value) -> Result<(), ConfigError> {
 /// defaults when absent, so an in-place version bump is the entire migration.
 fn migrate_v4_to_v5(value: &mut Value) -> Result<(), ConfigError> {
     set_version(value, 5)
+}
+
+/// `v5 → v6`: bump the version. v6 added the top-level `update_channel` scalar,
+/// which defaults to `"stable"` when absent, so an in-place version bump is the
+/// entire migration.
+fn migrate_v5_to_v6(value: &mut Value) -> Result<(), ConfigError> {
+    set_version(value, 6)
 }
 
 /// Set the top-level `version` key, erroring if the root is not a table.
@@ -152,8 +160,8 @@ mod tests {
     }
 
     #[test]
-    fn current_version_pinned_to_five() {
-        assert_eq!(crate::CURRENT_VERSION, 5);
+    fn current_version_pinned_to_six() {
+        assert_eq!(crate::CURRENT_VERSION, 6);
     }
 
     #[test]
@@ -169,6 +177,13 @@ mod tests {
         let mut v: Value = toml::from_str("version = 4\n").unwrap();
         migrate_v4_to_v5(&mut v).unwrap();
         assert_eq!(read_version(&v).unwrap(), 5);
+    }
+
+    #[test]
+    fn v5_to_v6_is_a_bare_version_bump() {
+        let mut v: Value = toml::from_str("version = 5\n").unwrap();
+        migrate_v5_to_v6(&mut v).unwrap();
+        assert_eq!(read_version(&v).unwrap(), 6);
     }
 
     #[test]

@@ -24,6 +24,11 @@ fn main() -> ExitCode {
     if let Some(code) = yerd::laravel_shim::dispatch() {
         return code;
     }
+    // Hidden applier mode (set by `yerd update --yes` / the GUI). Gated by an env
+    // var, parsed from env (not argv), so it never appears in help/completions.
+    if let Some(code) = yerd::apply::run_from_env() {
+        return code;
+    }
 
     let cli = Cli::parse();
     let runtime = match tokio::runtime::Builder::new_current_thread()

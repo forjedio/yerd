@@ -18,10 +18,11 @@ use std::path::PathBuf;
 
 use yerd_ipc::{
     types::{PhpVersion, Site},
-    CaStatus, DatabaseSummary, Diagnosis, DiagnosisCode, DumpCategory, DumpCounts, DumpEvent,
-    DumpExtStatus, ErrorCode, FixReport, FixResult, MailDetail, MailHeader, MailStatus,
+    CaStatus, Channel, DatabaseSummary, Diagnosis, DiagnosisCode, DumpCategory, DumpCounts,
+    DumpEvent, DumpExtStatus, ErrorCode, FixReport, FixResult, MailDetail, MailHeader, MailStatus,
     MailSummary, PhpPoolStatus, PoolRunState, PortStatus, Request, Response, ServiceAvailability,
-    ServiceRunState, ServiceStatus, Severity, SiteCounts, StatusReport, ToolStatus,
+    ServiceRunState, ServiceStatus, Severity, SiteCounts, StagedArtifact, StatusReport, ToolStatus,
+    UpdateSource,
 };
 
 // ---------- Request ----------
@@ -1557,4 +1558,123 @@ fn request_install_tool_streamed_byte_shape() {
     let s = serde_json::to_string(&r).unwrap();
     assert_eq!(s, r#"{"type":"install_tool_streamed","tool":"laravel"}"#);
     assert_eq!(serde_json::from_str::<Request>(&s).unwrap(), r);
+}
+
+// ---------- Self-update (Channel / CheckUpdate / SetUpdateChannel / UpdateStatus) ----------
+
+#[test]
+fn channel_each_variant_byte_shape() {
+    assert_eq!(
+        serde_json::to_string(&Channel::Stable).unwrap(),
+        r#""stable""#
+    );
+    assert_eq!(serde_json::to_string(&Channel::Edge).unwrap(), r#""edge""#);
+    assert_eq!(
+        serde_json::from_str::<Channel>(r#""stable""#).unwrap(),
+        Channel::Stable
+    );
+    assert_eq!(
+        serde_json::from_str::<Channel>(r#""edge""#).unwrap(),
+        Channel::Edge
+    );
+}
+
+#[test]
+fn update_source_each_variant_byte_shape() {
+    assert_eq!(
+        serde_json::to_string(&UpdateSource::Live).unwrap(),
+        r#""live""#
+    );
+    assert_eq!(
+        serde_json::to_string(&UpdateSource::Cached).unwrap(),
+        r#""cached""#
+    );
+    assert_eq!(
+        serde_json::from_str::<UpdateSource>(r#""cached""#).unwrap(),
+        UpdateSource::Cached
+    );
+}
+
+#[test]
+fn request_check_update_byte_shape() {
+    let r = Request::CheckUpdate {
+        channel: Some(Channel::Edge),
+    };
+    let s = serde_json::to_string(&r).unwrap();
+    assert_eq!(s, r#"{"type":"check_update","channel":"edge"}"#);
+    assert_eq!(serde_json::from_str::<Request>(&s).unwrap(), r);
+
+    // `None` channel (use the configured default) serialises as null.
+    let none = Request::CheckUpdate { channel: None };
+    let s = serde_json::to_string(&none).unwrap();
+    assert_eq!(s, r#"{"type":"check_update","channel":null}"#);
+    assert_eq!(serde_json::from_str::<Request>(&s).unwrap(), none);
+}
+
+#[test]
+fn request_set_update_channel_byte_shape() {
+    let r = Request::SetUpdateChannel {
+        channel: Channel::Stable,
+    };
+    let s = serde_json::to_string(&r).unwrap();
+    assert_eq!(s, r#"{"type":"set_update_channel","channel":"stable"}"#);
+    assert_eq!(serde_json::from_str::<Request>(&s).unwrap(), r);
+}
+
+#[test]
+fn staged_artifact_each_variant_byte_shape() {
+    assert_eq!(
+        serde_json::to_string(&StagedArtifact::AppTarGz).unwrap(),
+        r#""app_tar_gz""#
+    );
+    assert_eq!(
+        serde_json::to_string(&StagedArtifact::Deb).unwrap(),
+        r#""deb""#
+    );
+    assert_eq!(
+        serde_json::from_str::<StagedArtifact>(r#""deb""#).unwrap(),
+        StagedArtifact::Deb
+    );
+}
+
+#[test]
+fn request_stage_update_byte_shape() {
+    let r = Request::StageUpdate {
+        channel: Some(Channel::Stable),
+    };
+    let s = serde_json::to_string(&r).unwrap();
+    assert_eq!(s, r#"{"type":"stage_update","channel":"stable"}"#);
+    assert_eq!(serde_json::from_str::<Request>(&s).unwrap(), r);
+}
+
+#[test]
+fn response_staged_byte_shape() {
+    let r = Response::Staged {
+        path: "/x/Yerd.app.tar.gz".into(),
+        version: "2.0.5".into(),
+        kind: StagedArtifact::AppTarGz,
+    };
+    let s = serde_json::to_string(&r).unwrap();
+    let expected =
+        r#"{"type":"staged","path":"/x/Yerd.app.tar.gz","version":"2.0.5","kind":"app_tar_gz"}"#;
+    assert_eq!(s, expected);
+    assert_eq!(serde_json::from_str::<Response>(&s).unwrap(), r);
+}
+
+#[test]
+fn response_update_status_byte_shape() {
+    let r = Response::UpdateStatus {
+        current: "2.0.2-rc.3".into(),
+        latest_stable: Some("2.0.1".into()),
+        latest_edge: Some("2.0.2-rc.3".into()),
+        channel: Channel::Stable,
+        available: false,
+        target: None,
+        ahead_of_stable: true,
+        source: UpdateSource::Live,
+    };
+    let s = serde_json::to_string(&r).unwrap();
+    let expected = r#"{"type":"update_status","current":"2.0.2-rc.3","latest_stable":"2.0.1","latest_edge":"2.0.2-rc.3","channel":"stable","available":false,"target":null,"ahead_of_stable":true,"source":"live"}"#;
+    assert_eq!(s, expected);
+    assert_eq!(serde_json::from_str::<Response>(&s).unwrap(), r);
 }

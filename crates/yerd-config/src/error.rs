@@ -112,6 +112,8 @@ pub enum ValidateErrorReason {
     /// path (absolute, or contained a `..`/root/prefix component) and could
     /// escape the document root.
     WebRootEscapes,
+    /// `update_channel` was not one of the accepted values (`"stable"` / `"edge"`).
+    InvalidUpdateChannel,
 }
 
 impl fmt::Display for ValidateErrorReason {
@@ -130,6 +132,7 @@ impl fmt::Display for ValidateErrorReason {
             Self::WebRootEscapes => {
                 "a web root must be a plain relative path (no leading '/' or '..')"
             }
+            Self::InvalidUpdateChannel => "update_channel must be \"stable\" or \"edge\"",
         };
         f.write_str(msg)
     }
@@ -192,6 +195,7 @@ mod tests {
             ValidateErrorReason::OverridePathEmpty,
             ValidateErrorReason::InvalidPhpSetting,
             ValidateErrorReason::WebRootEscapes,
+            ValidateErrorReason::InvalidUpdateChannel,
         ] {
             assert!(!r.to_string().is_empty());
             let _ = format!("{r:?}");
