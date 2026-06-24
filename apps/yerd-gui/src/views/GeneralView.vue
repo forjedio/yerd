@@ -2,8 +2,10 @@
 import {
   CircleDot,
   CircleOff,
+  Download,
   Info,
   Play,
+  RefreshCw,
   RotateCw,
   Square,
 } from "lucide-vue-next";
@@ -30,6 +32,8 @@ import {
 import { useDaemon } from "@/composables/useDaemon";
 import { useToast } from "@/composables/useToast";
 import {
+  applyUpdate,
+  checkUpdates,
   cliPathStatus,
   dumpsStatus,
   getAutostart,
@@ -42,6 +46,7 @@ import {
   setAutostartDaemon,
   setAutostartGui,
   setAutostartGuiMinimized,
+  setUpdateChannel,
   startDaemon,
   stopDaemon,
 } from "@/ipc/client";
@@ -50,6 +55,8 @@ import type {
   CliPathStatus,
   DumpsStatusResponse,
   StatusReport,
+  UpdateChannel,
+  UpdateStatusResponse,
 } from "@/ipc/types";
 import { useTheme, type ThemePref } from "@/lib/theme";
 import { humaniseBytes, humaniseUptime } from "@/lib/utils";
@@ -74,6 +81,24 @@ const themeOptions = [
   { value: "light", label: "Light" },
   { value: "dark", label: "Dark" },
 ] as const;
+
+// ── self-update ──
+const channelOptions = [
+  { value: "stable", label: "Stable" },
+  { value: "edge", label: "Edge (pre-release)" },
+] as const;
+const updateChannel = ref<UpdateChannel>("stable");
+const updateStatus = ref<UpdateStatusResponse | null>(null);
+const checkingUpdates = ref(false);
+const applyingUpdate = ref(false);
+
+const updateSummary = computed(() => {
+  const s = updateStatus.value;
+  if (!s) return "";
+  if (s.available && s.target) return `Update available: ${s.target}`;
+  if (s.ahead_of_stable) return "Up to date (on a pre-release ahead of stable)";
+  return "Up to date";
+});
 
 const running = computed(() => connected.value === true);
 const daemonStatus = computed(() => {
@@ -254,6 +279,49 @@ async function openApproval(): Promise<void> {
   }
 }
 
+// ── self-update ──
+// Run a check (no override → uses the saved channel). Mirror the saved channel
+// the daemon reports back into the selector so it stays the single source of
+// truth.
+async function runUpdateCheck(): Promise<void> {
+  checkingUpdates.value = true;
+  try {
+    const status = await checkUpdates();
+    updateStatus.value = status;
+    updateChannel.value = status.channel;
+  } catch (e) {
+    toast.error("Couldn't check for updates", (e as IpcError).message);
+  } finally {
+    checkingUpdates.value = false;
+  }
+}
+
+// Download + verify + apply. The app quits during the swap and the applier
+// relaunches it, so `applyUpdate` usually never returns; a thrown error means
+// staging failed (offline, verification, or a non-writable /Applications).
+async function onUpdateNow(): Promise<void> {
+  applyingUpdate.value = true;
+  try {
+    await applyUpdate(updateChannel.value);
+  } catch (e) {
+    applyingUpdate.value = false;
+    toast.error("Couldn't apply the update", (e as IpcError).message);
+  }
+}
+
+// Persist the channel on change, then re-check so the shown status reflects it.
+async function onUpdateChannelChange(value: UpdateChannel): Promise<void> {
+  const previous = updateChannel.value;
+  updateChannel.value = value; // optimistic
+  try {
+    await setUpdateChannel(value);
+    await runUpdateCheck();
+  } catch (e) {
+    updateChannel.value = previous; // revert on failure
+    toast.error("Couldn't change the update channel", (e as IpcError).message);
+  }
+}
+
 onMounted(() => {
   loadAutostart();
   hostPlatform()
@@ -261,13 +329,19 @@ onMounted(() => {
     .catch(() => {});
   loadCli();
   if (running.value) loadDumps();
+  if (running.value) runUpdateCheck();
 });
 
 // Refresh the dump-capture row whenever the daemon comes up (and clear it when
 // it goes away), so the subsystem list doesn't show stale dump state.
 watch(running, (up) => {
-  if (up) loadDumps();
-  else dumps.value = null;
+  if (up) {
+    loadDumps();
+    runUpdateCheck();
+  } else {
+    dumps.value = null;
+    updateStatus.value = null;
+  }
 });
 
 // ── daemon lifecycle ──
@@ -556,6 +630,78 @@ async function toggleGuiMinimized(on: boolean): Promise<void> {
               aria-label="Theme"
               @update:model-value="(v: ThemePref) => setTheme(v)"
             />
+          </div>
+        </CardContent>
+      </Card>
+
+      <!-- Updates -->
+      <Card>
+        <CardHeader>
+          <CardTitle>Updates</CardTitle>
+          <CardDescription>
+            Keep Yerd up to date. Choose a release channel and check for new
+            versions.
+          </CardDescription>
+        </CardHeader>
+        <CardContent class="space-y-4">
+          <div class="flex items-center justify-between gap-4">
+            <div>
+              <p class="text-sm font-medium">Release channel</p>
+              <p class="text-xs text-muted-foreground">
+                Stable tracks final releases; Edge opts in to pre-releases and
+                release candidates.
+              </p>
+            </div>
+            <Select
+              :model-value="updateChannel"
+              :options="channelOptions"
+              aria-label="Update channel"
+              :disabled="!running"
+              @update:model-value="(v: UpdateChannel) => onUpdateChannelChange(v)"
+            />
+          </div>
+
+          <div class="flex items-center justify-between gap-4 border-t pt-4">
+            <div class="min-w-0 text-sm">
+              <template v-if="updateStatus">
+                <p class="font-medium">{{ updateSummary }}</p>
+                <p class="text-xs text-muted-foreground">
+                  Current {{ updateStatus.current }} · stable
+                  {{ updateStatus.latest_stable ?? "—" }} · edge
+                  {{ updateStatus.latest_edge ?? "—" }}
+                  <span v-if="updateStatus.source === 'cached'">
+                    · offline (last known)
+                  </span>
+                </p>
+              </template>
+              <p v-else class="text-xs text-muted-foreground">
+                {{ running ? "Not checked yet." : "Start the daemon to check for updates." }}
+              </p>
+            </div>
+            <Button variant="outline" :disabled="!running || checkingUpdates" @click="runUpdateCheck">
+              <Spinner v-if="checkingUpdates" class="size-4" />
+              <RefreshCw v-else class="size-4" />
+              Check now
+            </Button>
+          </div>
+
+          <div
+            v-if="updateStatus?.available"
+            class="flex items-center justify-between gap-4 rounded-lg border border-success/40 bg-success/10 p-3"
+          >
+            <p class="text-sm">
+              <template v-if="applyingUpdate">
+                Updating to <strong>{{ updateStatus.target }}</strong> — Yerd will restart…
+              </template>
+              <template v-else>
+                Yerd <strong>{{ updateStatus.target }}</strong> is available.
+              </template>
+            </p>
+            <Button :disabled="!running || applyingUpdate" @click="onUpdateNow">
+              <Spinner v-if="applyingUpdate" class="size-4" />
+              <Download v-else class="size-4" />
+              {{ applyingUpdate ? "Updating…" : "Update" }}
+            </Button>
           </div>
         </CardContent>
       </Card>

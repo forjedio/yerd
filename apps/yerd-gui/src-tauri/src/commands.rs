@@ -130,6 +130,86 @@ pub async fn update_php(version: Option<PhpVersion>) -> Result<Response, GuiErro
     finish(exchange(&Request::UpdatePhp { version }).await?)
 }
 
+// ── self-update ────────────────────────────────────────────────────────────
+
+/// Parse a channel string (`"stable"` / `"edge"`) from the frontend.
+fn parse_channel(s: &str) -> Result<yerd_ipc::Channel, GuiError> {
+    match s {
+        "stable" => Ok(yerd_ipc::Channel::Stable),
+        "edge" => Ok(yerd_ipc::Channel::Edge),
+        other => Err(GuiError::internal(format!(
+            "unknown update channel: {other}"
+        ))),
+    }
+}
+
+/// Check for a Yerd self-update. `channel` (`"stable"`/`"edge"`) overrides the
+/// saved preference for this check only; omit to use the saved default.
+#[tauri::command]
+pub async fn check_updates(channel: Option<String>) -> Result<Response, GuiError> {
+    let channel = channel.as_deref().map(parse_channel).transpose()?;
+    finish(exchange(&Request::CheckUpdate { channel }).await?)
+}
+
+/// Persist the self-update channel preference.
+#[tauri::command]
+pub async fn set_update_channel(channel: String) -> Result<Response, GuiError> {
+    let channel = parse_channel(&channel)?;
+    finish(exchange(&Request::SetUpdateChannel { channel }).await?)
+}
+
+/// Download + verify the latest update (via the daemon), then launch the
+/// detached applier and quit so it can swap this running bundle. The applier
+/// relaunches the GUI when it finishes.
+///
+/// On macOS this needs `/Applications/Yerd.app` to be user-writable (the common
+/// admin case); elevated self-update is a follow-up. On Linux the applier uses
+/// `pkexec dpkg -i`, which prompts via the desktop polkit agent.
+#[tauri::command]
+pub async fn apply_update(app: tauri::AppHandle, channel: Option<String>) -> Result<(), GuiError> {
+    let channel = channel.as_deref().map(parse_channel).transpose()?;
+    let (path, kind) = match finish(exchange(&Request::StageUpdate { channel }).await?)? {
+        Response::Staged { path, kind, .. } => (path, kind),
+        _ => return Err(GuiError::internal("unexpected response staging the update")),
+    };
+    let yerd = crate::daemon::resolve_binary("yerd")
+        .ok_or_else(|| GuiError::internal("could not locate the bundled yerd binary"))?;
+    let kind_str = match kind {
+        yerd_ipc::StagedArtifact::Deb => "deb",
+        _ => "app_tar_gz",
+    };
+    spawn_applier(&yerd, &path, kind_str)?;
+    // Quit so the running bundle can be replaced; the applier reopens the GUI.
+    app.exit(0);
+    Ok(())
+}
+
+/// Launch the hidden applier mode of `yerd` detached, via env vars (the contract
+/// mirrors `bin/yerd/src/apply.rs`).
+#[cfg(unix)]
+fn spawn_applier(yerd: &std::path::Path, path: &str, kind: &str) -> Result<(), GuiError> {
+    use std::os::unix::process::CommandExt as _;
+    std::process::Command::new(yerd)
+        .env("YERD_APPLY_UPDATE", "1")
+        .env("YERD_APPLY_PATH", path)
+        .env("YERD_APPLY_KIND", kind)
+        .env("YERD_APPLY_RELAUNCH_GUI", "1")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .process_group(0)
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| GuiError::internal(format!("could not launch the updater: {e}")))
+}
+
+#[cfg(not(unix))]
+fn spawn_applier(_yerd: &std::path::Path, _path: &str, _kind: &str) -> Result<(), GuiError> {
+    Err(GuiError::internal(
+        "self-update is not supported on this platform",
+    ))
+}
+
 #[tauri::command]
 pub async fn set_php_settings(
     settings: std::collections::BTreeMap<String, String>,

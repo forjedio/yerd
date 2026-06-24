@@ -2350,6 +2350,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "68354c5c6bd36d73ff3feceb05efa59b6acb7626617f4962be322a825e61f79a"
 
 [[package]]
+name = "minisign-verify"
+version = "0.2.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "22f9645cb765ea72b8111f36c522475d2daa0d22c957a9826437e97534bc4e9e"
+
+[[package]]
 name = "miniz_oxide"
 version = "0.8.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5973,6 +5979,8 @@ dependencies = [
  "yerd-core",
  "yerd-ipc",
  "yerd-platform",
+ "yerd-service-ctl",
+ "yerd-update",
  "yerdd",
 ]
 
@@ -6153,6 +6161,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "yerd-service-ctl"
+version = "2.0.2-rc.3"
+dependencies = [
+ "nix",
+ "thiserror 1.0.69",
+]
+
+[[package]]
 name = "yerd-services"
 version = "2.0.2-rc.3"
 dependencies = [
@@ -6191,6 +6207,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "yerd-update"
+version = "2.0.2-rc.3"
+dependencies = [
+ "hex",
+ "minisign-verify",
+ "semver",
+ "sha2",
+]
+
+[[package]]
 name = "yerdd"
 version = "2.0.2-rc.3"
 dependencies = [
@@ -6205,6 +6231,7 @@ dependencies = [
  "reqwest 0.12.9",
  "rustls",
  "rustls-pki-types",
+ "semver",
  "serde",
  "serde_json",
  "sha2",
@@ -6227,6 +6254,7 @@ dependencies = [
  "yerd-services",
  "yerd-supervise",
  "yerd-tls",
+ "yerd-update",
  "zip",
 ]
 

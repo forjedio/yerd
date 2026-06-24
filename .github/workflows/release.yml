@@ -264,6 +264,41 @@ jobs:
             echo "::warning::App exited early (exit $code) with no signing error — likely headless/single-instance:"; cat /tmp/app.log
           fi
 
+      # Self-update artifact: a gzip'd tar of the signed+stapled .app that the
+      # in-app/`yerd update` applier swaps into /Applications. Apple-Silicon only
+      # (the build matrix produces no Intel .app). The mandatory gate below
+      # extracts into a FRESH dir and re-asserts codesign + staple + OFFLINE
+      # Gatekeeper assessment + a Team ID, proving the notarization survives the
+      # tar round-trip. If a future macOS drops the staple through tar, switch the
+      # packaging to `ditto`/zip — the gate will catch it before publish.
+      - name: Package + verify macOS .app.tar.gz updater artifact
+        if: runner.os == 'macOS'
+        working-directory: .
+        run: |
+          set -euo pipefail
+          ROOTS=()
+          for d in target apps/yerd-gui/src-tauri/target; do [ -d "$d" ] && ROOTS+=("$d"); done
+          APP=$(find "${ROOTS[@]}" -name 'Yerd.app' -type d 2>/dev/null | head -n1 || true)
+          [ -n "$APP" ] || { echo "::error::Yerd.app not found for tarball packaging"; exit 1; }
+          OUT_DIR="apps/yerd-gui/src-tauri/target/release/bundle/updater"
+          mkdir -p "$OUT_DIR"
+          # Apple-Silicon only; the publish job appends the version to this name.
+          OUT="$OUT_DIR/Yerd_MacOS_AppleSilicon.app.tar.gz"
+          # bsdtar (macOS /usr/bin/tar) preserving permissions; the applier extracts
+          # with the same bsdtar via `tar -xpf`.
+          ( cd "$(dirname "$APP")" && /usr/bin/tar -czpf - "$(basename "$APP")" ) > "$OUT"
+          # ── Gate: fresh extract + offline re-verification ──
+          TMP=$(mktemp -d)
+          /usr/bin/tar -xpf "$OUT" -C "$TMP"
+          EXAPP="$TMP/$(basename "$APP")"
+          codesign --verify --deep --strict --verbose=2 "$EXAPP"
+          xcrun stapler validate "$EXAPP"                        # notarization survived the tar
+          spctl -a -t exec -vvv "$EXAPP"                         # offline Gatekeeper accept
+          codesign -dv --verbose=4 "$EXAPP" 2>&1 | grep -q 'TeamIdentifier=' \
+            || { echo "::error::extracted .app has no Team ID"; exit 1; }
+          rm -rf "$TMP"
+          echo "Packaged + verified $OUT"
+
       # The GUI .deb must EMBED the three binaries (daemon + CLI + helper) and the
       # postinst that co-locates them on PATH + setcaps yerdd. (SPIKE-L1: confirm
       # the exact embedded dir + the symlink/setcap chain on a real Linux box; the
@@ -301,6 +336,7 @@ jobs:
             target/release/bundle/**/*.dmg
             apps/yerd-gui/src-tauri/target/release/bundle/**/*.deb
             apps/yerd-gui/src-tauri/target/release/bundle/**/*.dmg
+            apps/yerd-gui/src-tauri/target/release/bundle/updater/*.app.tar.gz
 
   # The ONLY job that touches the release. Assemble everything, create it as a
   # hidden draft with all files + checksums attached, then flip it public —
@@ -309,11 +345,20 @@ jobs:
     name: publish
     needs: [gui]
     runs-on: ubuntu-22.04
-    # No checkout here, so tell gh which repo to act on.
+    # Checkout is needed so the trust-anchor gate can read the embedded
+    # UPDATE_PUBLIC_KEY from source at the tagged commit. GH_REPO is kept explicit
+    # for gh (harmless once a checkout is present).
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       GH_REPO: ${{ github.repository }}
     steps:
+      # Read-only checkout (the trust-anchor gate just reads source); no later
+      # step does any git operation and release auth is GH_TOKEN, so don't leave
+      # the checkout token persisted in .git/config.
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
       - name: Download all build artifacts
         uses: actions/download-artifact@v4
         with:
@@ -328,24 +373,26 @@ jobs:
         run: |
           set -euo pipefail
           find . -mindepth 2 -type f \
-            \( -name '*.deb' -o -name '*.dmg' \) -exec mv -t . {} +
+            \( -name '*.deb' -o -name '*.dmg' -o -name '*.app.tar.gz' \) -exec mv -t . {} +
           # Drop the now-redundant nested dirs so `dist/*` is files-only.
           find . -mindepth 1 -type d -exec rm -rf {} +
           # Human-friendly release asset names:
           #   Yerd_<OS>_<Arch>_v<version>.<ext>   (e.g. Yerd_MacOS_AppleSilicon_v2-0-2-rc-3.dmg)
-          # Tauri emits Yerd_<ver>_<arch>.{dmg,deb}; we relabel OS+arch and dash
-          # the version (dots → dashes) so the Releases page reads cleanly.
+          # Tauri emits Yerd_<ver>_<arch>.{dmg,deb}; the .app.tar.gz is already
+          # Yerd_MacOS_AppleSilicon.app.tar.gz. We relabel OS+arch and dash the
+          # version (dots → dashes) so the Releases page reads cleanly.
           ver="v$(printf '%s' "${GITHUB_REF_NAME#v}" | tr '.' '-')"
           for f in Yerd_* yerd-gui_* yerd_*; do
             [ -e "$f" ] || continue
-            ext="${f##*.}"
+            # Compound extension first (`.app.tar.gz` would otherwise become `gz`).
             case "$f" in
-              *.dmg) os="MacOS" ;;
-              *.deb) os="Linux" ;;
+              *.app.tar.gz) ext="app.tar.gz"; os="MacOS" ;;
+              *.dmg)        ext="dmg";        os="MacOS" ;;
+              *.deb)        ext="deb";        os="Linux" ;;
               *) continue ;;
             esac
             case "$f" in
-              *aarch64*|*arm64*) [ "$os" = "MacOS" ] && arch="AppleSilicon" || arch="Arm64" ;;
+              *AppleSilicon*|*aarch64*|*arm64*) [ "$os" = "MacOS" ] && arch="AppleSilicon" || arch="Arm64" ;;
               *x86_64*|*amd64*)  arch="x86_64" ;;
               *) arch="unknown" ;;
             esac
@@ -353,11 +400,61 @@ jobs:
           done
           echo "Release artifacts:" && ls -1
 
+      # Detached minisign signatures over the final-named update artifacts, which
+      # the daemon verifies before applying (against the key embedded in
+      # `yerd_update::UPDATE_PUBLIC_KEY`). `-H` = prehashed, which `minisign-verify`
+      # requires. PRECONDITION: provision `MINISIGN_SECRET_KEY` (generate an
+      # *unencrypted* key with `minisign -G -W` to avoid a CI password prompt) and
+      # set `UPDATE_PUBLIC_KEY` to its public half before this is load-bearing.
+      - name: Sign update artifacts (minisign)
+        working-directory: dist
+        env:
+          MINISIGN_SECRET_KEY: ${{ secrets.MINISIGN_SECRET_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "${MINISIGN_SECRET_KEY:-}" ]; then
+            echo "::error::MINISIGN_SECRET_KEY secret is not set — cannot sign the release"
+            exit 1
+          fi
+          sudo apt-get update -qq && sudo apt-get install -y -qq minisign
+          # Wipe the key on ANY exit (incl. a mid-loop failure), not just success.
+          trap 'rm -f "$RUNNER_TEMP/minisign.key"' EXIT
+          umask 077; printf '%s\n' "$MINISIGN_SECRET_KEY" > "$RUNNER_TEMP/minisign.key"
+          shopt -s nullglob
+          for f in *.app.tar.gz *.deb; do
+            minisign -S -H -s "$RUNNER_TEMP/minisign.key" -m "$f" -x "$f.sig"
+            echo "signed $f -> $f.sig"
+          done
+
+      # Trust-anchor gate: prove the public key the daemon EMBEDS
+      # (`yerd_update::UPDATE_PUBLIC_KEY`) actually verifies these signatures — so
+      # a real release can never ship signatures the shipped binary can't check
+      # (catches both the placeholder key being left in and a CI secret mismatch).
+      - name: Verify signatures against the embedded public key
+        working-directory: dist
+        run: |
+          set -euo pipefail
+          ART="$GITHUB_WORKSPACE/crates/yerd-update/src/artifact.rs"
+          KEY=$(grep -oE 'UPDATE_PUBLIC_KEY: &str = "[^"]+"' "$ART" | sed -E 's/.*"([^"]+)".*/\1/')
+          [ -n "$KEY" ] || { echo "::error::could not read UPDATE_PUBLIC_KEY from $ART"; exit 1; }
+          # Refuse to ship the published minisign-verify test key.
+          TEST_KEY="RWQf6LRCGA9i53mlYecO4IzT51TGPpvWucNSCh1CBM0QTaLn73Y7GFO3"
+          if [ "$KEY" = "$TEST_KEY" ]; then
+            echo "::error::UPDATE_PUBLIC_KEY is still the placeholder test key — wire the production key before releasing"
+            exit 1
+          fi
+          shopt -s nullglob
+          for f in *.app.tar.gz *.deb; do
+            minisign -V -H -P "$KEY" -m "$f" -x "$f.sig" \
+              || { echo "::error::embedded UPDATE_PUBLIC_KEY does not verify $f.sig (key/secret mismatch)"; exit 1; }
+            echo "verified $f against embedded key"
+          done
+
       - name: Generate SHA256SUMS
         working-directory: dist
         run: |
           find . -maxdepth 1 -type f \
-            \( -name '*.deb' -o -name '*.dmg' \) \
+            \( -name '*.deb' -o -name '*.dmg' -o -name '*.app.tar.gz' \) \
             -printf '%P\n' | sort | xargs -r sha256sum > SHA256SUMS
           echo "Artifacts:" && cat SHA256SUMS
 

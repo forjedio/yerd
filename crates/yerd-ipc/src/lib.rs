@@ -28,6 +28,7 @@ mod message;
 mod request;
 mod response;
 mod status;
+mod update;
 
 #[cfg(feature = "transport")]
 mod transport;
@@ -52,6 +53,7 @@ pub use status::{
     ServiceAvailability, ServiceRunState, ServiceStatus, Severity, SiteCounts, StatusReport,
     ToolStatus,
 };
+pub use update::{Channel, StagedArtifact, UpdateSource};
 
 /// Re-exports of the shared types that travel on the wire. Consumers
 /// that need only the IPC surface should `use yerd_ipc::types::*;`

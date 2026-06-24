@@ -259,6 +259,18 @@ async fn dispatch(req: Request, state: &DaemonState) -> Response {
         },
         Request::InstallTool { tool } => install_tool(&tool, state).await,
         Request::UninstallTool { tool } => uninstall_tool(&tool, state).await,
+        Request::CheckUpdate { channel } => {
+            let dl = crate::php_install::ReqwestDownloader::new();
+            crate::self_update::check_update(channel, state, &dl).await
+        }
+        Request::SetUpdateChannel { channel } => {
+            crate::self_update::set_update_channel(channel, state).await
+        }
+        Request::StageUpdate { channel } => {
+            let dl = crate::php_install::ReqwestDownloader::new();
+            crate::self_update::stage_update(channel, state, &dl, yerd_update::UPDATE_PUBLIC_KEY)
+                .await
+        }
         // `Request` is `#[non_exhaustive]` (external crate): a wildcard is
         // required even though every known variant is handled above.
         _ => Response::Error {
@@ -1367,7 +1379,7 @@ fn invalid_path(message: String) -> Response {
     }
 }
 
-fn internal(message: String) -> Response {
+pub(crate) fn internal(message: String) -> Response {
     tracing::warn!(%message, "mutation failed");
     Response::Error {
         code: ErrorCode::Internal,
@@ -1380,7 +1392,8 @@ fn internal(message: String) -> Response {
     clippy::unwrap_used,
     clippy::expect_used,
     clippy::panic,
-    clippy::indexing_slicing
+    clippy::indexing_slicing,
+    clippy::case_sensitive_file_extension_comparisons
 )]
 mod tests {
     use super::*;
@@ -1420,6 +1433,7 @@ mod tests {
             ca_path,
             ca_fingerprint: yerd_platform::CaFingerprint::new([0u8; 32]),
             php_updates: tokio::sync::RwLock::new(std::collections::HashMap::new()),
+            yerd_update: tokio::sync::RwLock::new(Vec::new()),
             php_manager,
             service_manager: std::sync::Arc::new(Mutex::new(crate::services::new_manager(
                 dirs_in(tmp),
@@ -2496,6 +2510,238 @@ Subject: Captured\r\n\r\nhi\r\n";
                 .map(String::as_str),
             Some("8.5.6")
         );
+    }
+
+    /// Fake GitHub Releases downloader: returns the canned JSON for the first
+    /// page (the only page fetched, since the body has < 100 entries). The poll
+    /// loop stops after a short page.
+    struct ReleasesDl(&'static str);
+    #[async_trait::async_trait]
+    impl yerd_php::Downloader for ReleasesDl {
+        async fn download(&self, _url: &str) -> Result<Vec<u8>, yerd_php::DownloadError> {
+            Ok(self.0.as_bytes().to_vec())
+        }
+    }
+
+    // A tiny releases payload. Far-future versions so the target is always newer
+    // than the daemon's compiled `current` version, regardless of the build. The
+    // unparsable `nightly-garbage` tag must be skipped.
+    const RELEASES_JSON: &str = r#"[
+        {"tag_name":"v99.1.0-rc.1","prerelease":true,"draft":false,"assets":[]},
+        {"tag_name":"v99.0.1","prerelease":false,"draft":false,"assets":[]},
+        {"tag_name":"v99.0.0","prerelease":false,"draft":false,"assets":[]},
+        {"tag_name":"nightly-garbage","prerelease":true,"draft":false,"assets":[]}
+    ]"#;
+
+    #[tokio::test]
+    async fn check_update_reports_both_channel_latests_live() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_in(tmp.path());
+        let resp = crate::self_update::check_update(None, &state, &ReleasesDl(RELEASES_JSON)).await;
+        match resp {
+            Response::UpdateStatus {
+                latest_stable,
+                latest_edge,
+                channel,
+                source,
+                ..
+            } => {
+                assert_eq!(latest_stable.as_deref(), Some("99.0.1"));
+                assert_eq!(latest_edge.as_deref(), Some("99.1.0-rc.1"));
+                assert_eq!(channel, yerd_ipc::Channel::Stable); // default preference
+                assert_eq!(source, yerd_ipc::UpdateSource::Live);
+            }
+            other => panic!("expected UpdateStatus, got {other:?}"),
+        }
+        // The successful fetch populated the cache (4 entries minus the unparsable tag = 3).
+        assert_eq!(state.yerd_update.read().await.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn check_update_edge_override_selects_prerelease_target() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_in(tmp.path());
+        let resp = crate::self_update::check_update(
+            Some(yerd_ipc::Channel::Edge),
+            &state,
+            &ReleasesDl(RELEASES_JSON),
+        )
+        .await;
+        match resp {
+            Response::UpdateStatus {
+                channel,
+                target,
+                available,
+                ..
+            } => {
+                assert_eq!(channel, yerd_ipc::Channel::Edge);
+                assert_eq!(target.as_deref(), Some("99.1.0-rc.1"));
+                assert!(available);
+            }
+            other => panic!("expected UpdateStatus, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn check_update_falls_back_to_cache_when_offline() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_in(tmp.path());
+        // Prime the cache with a successful poll, then fetch with a failing dl.
+        crate::self_update::poll_and_refresh(&state, &ReleasesDl(RELEASES_JSON)).await;
+        let resp = crate::self_update::check_update(None, &state, &FailingDl).await;
+        match resp {
+            Response::UpdateStatus {
+                latest_stable,
+                source,
+                ..
+            } => {
+                assert_eq!(source, yerd_ipc::UpdateSource::Cached);
+                assert_eq!(latest_stable.as_deref(), Some("99.0.1"));
+            }
+            other => panic!("expected UpdateStatus, got {other:?}"),
+        }
+    }
+
+    // Known-good minisign fixture (the `minisign-verify` crate's published test
+    // vector: a prehashed signature of the bytes `b"test"`).
+    const SIG_PUBKEY: &str = "RWQf6LRCGA9i53mlYecO4IzT51TGPpvWucNSCh1CBM0QTaLn73Y7GFO3";
+    const SIG_FIXTURE: &str = "untrusted comment: signature from minisign secret key\nRUQf6LRCGA9i559r3g7V1qNyJDApGip8MfqcadIgT9CuhV3EMhHoN1mGTkUidF/z7SrlQgXdy8ofjb7bNJJylDOocrCo8KLzZwo=\ntrusted comment: timestamp:1556193335\tfile:test\ny/rUw2y8/hOUYjZU71eHp/Wo1KZ40fGy2VJEDl34XMJM+TX48Ss/17u3IvIfbVR1FkZZSNCisQbuQY+bHwhEBg==";
+
+    /// Fake downloader for the full stage flow. Serves the releases JSON for the
+    /// API URL; the signed fixture bytes (`b"test"`) for any artifact URL; the
+    /// fixture signature for any `.sig` URL; and a matching `SHA256SUMS`.
+    struct StageDl {
+        releases: String,
+        sums: String,
+    }
+    #[async_trait::async_trait]
+    impl yerd_php::Downloader for StageDl {
+        async fn download(&self, url: &str) -> Result<Vec<u8>, yerd_php::DownloadError> {
+            if url.contains("api.github.com") {
+                Ok(self.releases.clone().into_bytes())
+            } else if url.ends_with("SHA256SUMS") {
+                Ok(self.sums.clone().into_bytes())
+            } else if url.ends_with(".sig") {
+                Ok(SIG_FIXTURE.as_bytes().to_vec())
+            } else {
+                Ok(b"test".to_vec())
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn stage_update_downloads_verifies_and_writes_artifact() {
+        // Run only on platforms that actually have a fixture artifact below
+        // (Apple Silicon macOS + Linux x86_64). Intel macOS is not `Unsupported`
+        // but has no fixture, so skip it too.
+        if !matches!(
+            yerd_update::Platform::current(),
+            yerd_update::Platform::MacOsAarch64 | yerd_update::Platform::LinuxX86_64
+        ) {
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_in(tmp.path());
+
+        // Release assets for BOTH platforms, so the test runs on macOS or Linux.
+        let mac = "Yerd_MacOS_AppleSilicon_v99-0-1.app.tar.gz";
+        let deb = "Yerd_Linux_x86_64_v99-0-1.deb";
+        let releases = format!(
+            r#"[{{"tag_name":"v99.0.1","prerelease":false,"draft":false,"assets":[
+                {{"name":"{mac}","browser_download_url":"https://h/{mac}","size":4}},
+                {{"name":"{mac}.sig","browser_download_url":"https://h/{mac}.sig","size":1}},
+                {{"name":"{deb}","browser_download_url":"https://h/{deb}","size":4}},
+                {{"name":"{deb}.sig","browser_download_url":"https://h/{deb}.sig","size":1}},
+                {{"name":"SHA256SUMS","browser_download_url":"https://h/SHA256SUMS","size":1}}
+            ]}}]"#
+        );
+        // sha256("test") for both artifacts.
+        let h = yerd_update::sha256_hex(b"test");
+        let sums = format!("{h}  {mac}\n{h}  {deb}\n");
+        let dl = StageDl { releases, sums };
+
+        let resp = crate::self_update::stage_update(None, &state, &dl, SIG_PUBKEY).await;
+        match resp {
+            Response::Staged {
+                path,
+                version,
+                kind,
+            } => {
+                assert_eq!(version, "99.0.1");
+                let p = std::path::Path::new(&path);
+                assert!(p.exists(), "staged file should exist at {path}");
+                assert_eq!(std::fs::read(p).unwrap(), b"test");
+                // Kind matches the current platform's artifact.
+                let expected = if matches!(
+                    yerd_update::Platform::current(),
+                    yerd_update::Platform::LinuxX86_64
+                ) {
+                    yerd_ipc::StagedArtifact::Deb
+                } else {
+                    yerd_ipc::StagedArtifact::AppTarGz
+                };
+                assert_eq!(kind, expected);
+            }
+            other => panic!("expected Staged, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn stage_update_rejects_verification_failure_and_writes_nothing() {
+        // Only platforms with a fixture artifact below (skip Intel macOS, which is
+        // not `Unsupported` but has no fixture, and any truly unsupported target).
+        if !matches!(
+            yerd_update::Platform::current(),
+            yerd_update::Platform::MacOsAarch64 | yerd_update::Platform::LinuxX86_64
+        ) {
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_in(tmp.path());
+        let mac = "Yerd_MacOS_AppleSilicon_v99-0-1.app.tar.gz";
+        let deb = "Yerd_Linux_x86_64_v99-0-1.deb";
+        let releases = format!(
+            r#"[{{"tag_name":"v99.0.1","prerelease":false,"draft":false,"assets":[
+                {{"name":"{mac}","browser_download_url":"https://h/{mac}","size":4}},
+                {{"name":"{mac}.sig","browser_download_url":"https://h/{mac}.sig","size":1}},
+                {{"name":"{deb}","browser_download_url":"https://h/{deb}","size":4}},
+                {{"name":"{deb}.sig","browser_download_url":"https://h/{deb}.sig","size":1}},
+                {{"name":"SHA256SUMS","browser_download_url":"https://h/SHA256SUMS","size":1}}
+            ]}}]"#
+        );
+        // Wrong checksums → verification fails before any minisign check or write.
+        let bad = "0".repeat(64);
+        let sums = format!("{bad}  {mac}\n{bad}  {deb}\n");
+        let dl = StageDl { releases, sums };
+        match crate::self_update::stage_update(None, &state, &dl, SIG_PUBKEY).await {
+            Response::Error { .. } => {}
+            other => panic!("expected Error on checksum mismatch, got {other:?}"),
+        }
+        assert!(
+            !state.dirs.cache.join("update").join(mac).exists()
+                && !state.dirs.cache.join("update").join(deb).exists(),
+            "must not write an artifact when verification fails"
+        );
+    }
+
+    #[tokio::test]
+    async fn set_update_channel_persists_to_config() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_in(tmp.path());
+        assert_eq!(
+            dispatch(
+                Request::SetUpdateChannel {
+                    channel: yerd_ipc::Channel::Edge,
+                },
+                &state,
+            )
+            .await,
+            Response::Ok
+        );
+        assert_eq!(state.config.lock().await.update_channel, "edge");
+        // Persisted to disk too: reloading the saved file shows edge.
+        let reloaded = yerd_config::Config::load(&state.config_path).unwrap();
+        assert_eq!(reloaded.update_channel, "edge");
     }
 
     #[tokio::test]

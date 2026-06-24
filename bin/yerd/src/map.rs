@@ -9,8 +9,9 @@ use std::fmt::Write as _;
 
 use yerd_core::{PhpVersion, Site, SiteKind};
 use yerd_ipc::{
-    Diagnosis, FixReport, PhpPoolStatus, PoolRunState, PortStatus, Request, Response,
+    Channel, Diagnosis, FixReport, PhpPoolStatus, PoolRunState, PortStatus, Request, Response,
     ServiceAvailability, ServiceRunState, ServiceStatus, Severity, StatusReport, ToolStatus,
+    UpdateSource,
 };
 
 use crate::cli::{Command, DbAction, MailAction, ServiceAction};
@@ -129,9 +130,36 @@ pub fn to_request(cmd: &Command) -> Result<Request, ClientError> {
             target: crate::cli::ListTarget::Parked,
         } => Request::ListParked,
         Command::Update {
-            target: crate::cli::UpdateTarget::Php { version },
-        } => Request::UpdatePhp {
-            version: version.as_deref().map(parse_php).transpose()?,
+            target: Some(crate::cli::UpdateTarget::Php { version }),
+            yes,
+            edge,
+            stable,
+            force,
+        } => {
+            // clap does not structurally reject a parent flag before a
+            // subcommand, so guard here: the self-update flags only apply to
+            // `yerd update` (no subcommand).
+            if *yes || *edge || *stable || *force {
+                return Err(ClientError::Usage(
+                    "--yes/--edge/--stable/--force apply to `yerd update` (no subcommand); \
+                     `yerd update php` takes none of them"
+                        .to_owned(),
+                ));
+            }
+            Request::UpdatePhp {
+                version: version.as_deref().map(parse_php).transpose()?,
+            }
+        }
+        // `yerd update` (no subcommand): a Yerd self-update check. `--edge` /
+        // `--stable` override the channel for this check only. The `--yes` apply
+        // path is intercepted earlier in `run` (it is not a single round-trip).
+        Command::Update {
+            target: None,
+            edge,
+            stable,
+            ..
+        } => Request::CheckUpdate {
+            channel: channel_from_flags(*edge, *stable),
         },
         Command::Services => Request::ListServices,
         Command::Service { action } => service_request(action),
@@ -268,6 +296,62 @@ fn parse_php(s: &str) -> Result<PhpVersion, ClientError> {
         .map_err(|e| ClientError::Usage(format!("invalid PHP version {s:?}: {e}")))
 }
 
+/// The channel override for a self-update check, from the `--edge`/`--stable`
+/// flags (mutually exclusive at the clap layer). `None` = use the saved default.
+#[must_use]
+pub fn channel_from_flags(edge: bool, stable: bool) -> Option<Channel> {
+    if edge {
+        Some(Channel::Edge)
+    } else if stable {
+        Some(Channel::Stable)
+    } else {
+        None
+    }
+}
+
+/// Lowercase display name for a wire channel.
+fn channel_str(c: Channel) -> &'static str {
+    match c {
+        Channel::Edge => "edge",
+        // `Channel` is `#[non_exhaustive]`; treat anything else as stable.
+        _ => "stable",
+    }
+}
+
+/// Render the `yerd update` report: current version, both channel latests, the
+/// active channel, the availability status, and whether the figures are live or
+/// cached. Both channel latests are always shown (per the feature spec).
+#[allow(clippy::too_many_arguments)]
+fn format_update_status(
+    current: &str,
+    latest_stable: Option<&str>,
+    latest_edge: Option<&str>,
+    channel: Channel,
+    available: bool,
+    target: Option<&str>,
+    ahead_of_stable: bool,
+    source: UpdateSource,
+) -> String {
+    let unknown = "unknown";
+    let mut out = String::new();
+    let _ = writeln!(out, "Current:       {current}");
+    let _ = writeln!(out, "Latest stable: {}", latest_stable.unwrap_or(unknown));
+    let _ = writeln!(out, "Latest edge:   {}", latest_edge.unwrap_or(unknown));
+    let _ = writeln!(out, "Channel:       {}", channel_str(channel));
+    let status = match (available, target) {
+        (true, Some(t)) => format!("update available: {t}"),
+        _ if ahead_of_stable => "up to date (on a pre-release ahead of stable)".to_owned(),
+        _ => "up to date".to_owned(),
+    };
+    let _ = writeln!(out, "Status:        {status}");
+    let src = match source {
+        UpdateSource::Cached => "cached (offline — last known values)",
+        _ => "live",
+    };
+    let _ = write!(out, "Source:        {src}");
+    out
+}
+
 /// Validate a PHP setting name (always) and value (when setting, not unsetting)
 /// client-side, so a typo is a clean usage error before connecting.
 fn validate_php_setting(setting: &str, value: Option<&str>) -> Result<(), ClientError> {
@@ -389,6 +473,25 @@ pub fn render(resp: &Response, json: bool) -> Rendered {
         Response::Mails { mails } => Rendered::ok(format_mails(mails)),
         Response::Mail { mail } => Rendered::ok(format_mail(mail)),
         Response::Tools { tools } => Rendered::ok(format_tools(tools)),
+        Response::UpdateStatus {
+            current,
+            latest_stable,
+            latest_edge,
+            channel,
+            available,
+            target,
+            ahead_of_stable,
+            source,
+        } => Rendered::ok(format_update_status(
+            current,
+            latest_stable.as_deref(),
+            latest_edge.as_deref(),
+            *channel,
+            *available,
+            target.as_deref(),
+            *ahead_of_stable,
+            *source,
+        )),
         // `Response` is `#[non_exhaustive]`; a future variant from a newer
         // daemon is surfaced benignly rather than panicking.
         _ => Rendered::err("unexpected response from daemon".to_owned()),
@@ -1062,22 +1165,67 @@ mod tests {
         // `update php` / `update php <ver>`.
         assert_eq!(
             to_request(&Command::Update {
-                target: crate::cli::UpdateTarget::Php { version: None }
+                target: Some(crate::cli::UpdateTarget::Php { version: None }),
+                yes: false,
+                edge: false,
+                stable: false,
+                force: false,
             })
             .unwrap(),
             Request::UpdatePhp { version: None }
         );
         assert_eq!(
             to_request(&Command::Update {
-                target: crate::cli::UpdateTarget::Php {
+                target: Some(crate::cli::UpdateTarget::Php {
                     version: Some("8.5".into())
-                }
+                }),
+                yes: false,
+                edge: false,
+                stable: false,
+                force: false,
             })
             .unwrap(),
             Request::UpdatePhp {
                 version: Some(PhpVersion::new(8, 5))
             }
         );
+        // Bare `yerd update` → CheckUpdate (no channel override).
+        assert_eq!(
+            to_request(&Command::Update {
+                target: None,
+                yes: false,
+                edge: false,
+                stable: false,
+                force: false,
+            })
+            .unwrap(),
+            Request::CheckUpdate { channel: None }
+        );
+        // `yerd update --edge` → CheckUpdate on the edge channel.
+        assert_eq!(
+            to_request(&Command::Update {
+                target: None,
+                yes: false,
+                edge: true,
+                stable: false,
+                force: false,
+            })
+            .unwrap(),
+            Request::CheckUpdate {
+                channel: Some(Channel::Edge)
+            }
+        );
+        // Self-update flags alongside the `php` subcommand are a usage error.
+        assert!(matches!(
+            to_request(&Command::Update {
+                target: Some(crate::cli::UpdateTarget::Php { version: None }),
+                yes: true,
+                edge: false,
+                stable: false,
+                force: false,
+            }),
+            Err(ClientError::Usage(_))
+        ));
         // `secure`/`unsecure` map to SetSecure with the matching flag.
         assert_eq!(
             to_request(&Command::Secure { name: "foo".into() }).unwrap(),
@@ -1188,6 +1336,50 @@ mod tests {
             Err(ClientError::Usage(_)) => {}
             other => panic!("expected Usage error, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn renders_update_status_with_all_rows() {
+        let resp = Response::UpdateStatus {
+            current: "2.0.0".into(),
+            latest_stable: Some("2.0.5".into()),
+            latest_edge: Some("2.1.0-rc.1".into()),
+            channel: Channel::Stable,
+            available: true,
+            target: Some("2.0.5".into()),
+            ahead_of_stable: false,
+            source: UpdateSource::Live,
+        };
+        let out = render(&resp, false).stdout;
+        // Every row present, both channel latests shown, plus status + source.
+        assert!(out.contains("Current:       2.0.0"), "{out}");
+        assert!(out.contains("Latest stable: 2.0.5"), "{out}");
+        assert!(out.contains("Latest edge:   2.1.0-rc.1"), "{out}");
+        assert!(out.contains("Channel:       stable"), "{out}");
+        assert!(
+            out.contains("Status:        update available: 2.0.5"),
+            "{out}"
+        );
+        assert!(out.contains("Source:        live"), "{out}");
+        assert_eq!(render(&resp, false).code, 0);
+    }
+
+    #[test]
+    fn renders_update_status_cached_and_ahead_of_stable() {
+        // On a pre-release ahead of stable, offline: "up to date" + cached note.
+        let resp = Response::UpdateStatus {
+            current: "2.1.0-rc.3".into(),
+            latest_stable: Some("2.0.5".into()),
+            latest_edge: Some("2.1.0-rc.3".into()),
+            channel: Channel::Stable,
+            available: false,
+            target: None,
+            ahead_of_stable: true,
+            source: UpdateSource::Cached,
+        };
+        let out = render(&resp, false).stdout;
+        assert!(out.contains("ahead of stable"), "{out}");
+        assert!(out.contains("Source:        cached"), "{out}");
     }
 
     #[test]

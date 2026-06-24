@@ -71,6 +71,13 @@ fn encode_then_decode_request_roundtrip() {
     assert_request_roundtrips(Request::Status);
     assert_request_roundtrips(Request::Diagnose);
     assert_request_roundtrips(Request::DoctorFix);
+    assert_request_roundtrips(Request::CheckUpdate {
+        channel: Some(yerd_ipc::Channel::Edge),
+    });
+    assert_request_roundtrips(Request::CheckUpdate { channel: None });
+    assert_request_roundtrips(Request::SetUpdateChannel {
+        channel: yerd_ipc::Channel::Stable,
+    });
 }
 
 #[test]
@@ -193,6 +200,16 @@ fn encode_then_decode_response_roundtrip() {
                 remedy: Some("sudo yerd elevate resolver".into()),
             }],
         },
+    });
+    assert_response_roundtrips(Response::UpdateStatus {
+        current: "2.0.2-rc.3".into(),
+        latest_stable: Some("2.0.1".into()),
+        latest_edge: Some("2.0.2-rc.3".into()),
+        channel: yerd_ipc::Channel::Edge,
+        available: true,
+        target: Some("2.0.2-rc.3".into()),
+        ahead_of_stable: false,
+        source: yerd_ipc::UpdateSource::Cached,
     });
 }
 

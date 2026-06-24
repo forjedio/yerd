@@ -98,11 +98,29 @@ pub enum Command {
         #[command(subcommand)]
         target: ListTarget,
     },
-    /// Upgrade an installed component to the latest release.
+    /// Check for a Yerd self-update, or update an installed component.
+    ///
+    /// `yerd update` (no subcommand) reports whether a newer Yerd is available
+    /// on your channel; `yerd update php [version]` upgrades PHP patches.
     Update {
-        /// What to update.
+        /// What to update. Omit to check for a Yerd self-update.
         #[command(subcommand)]
-        target: UpdateTarget,
+        target: Option<UpdateTarget>,
+        /// Apply the self-update: download, verify, and install the new version,
+        /// then restart. Without it, only check and report.
+        #[arg(long)]
+        yes: bool,
+        /// Use the edge (pre-release / RC) channel for this run. With `--yes`,
+        /// also makes edge the saved default.
+        #[arg(long, conflicts_with = "stable")]
+        edge: bool,
+        /// Use the stable channel for this run. With `--yes`, also resets the
+        /// saved default to stable.
+        #[arg(long)]
+        stable: bool,
+        /// Allow a downgrade (e.g. moving from a newer pre-release to stable).
+        #[arg(long, requires = "yes")]
+        force: bool,
     },
     /// List local database / cache services and their status.
     Services,

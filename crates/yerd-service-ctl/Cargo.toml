@@ -1,0 +1,20 @@
+[package]
+name                   = "yerd-service-ctl"
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+publish.workspace      = true
+description            = "Cross-platform start/stop/restart control for the yerdd daemon service."
+
+[dependencies]
+thiserror = { workspace = true }
+
+# Safe wrappers for `kill(2)` and `getuid(2)` — no `unsafe` in this crate, so it
+# keeps the workspace `unsafe_code = "forbid"` lint. Inherit the workspace pin
+# (which enables `process` + `signal`) and add `user` for `getuid`.
+[target.'cfg(unix)'.dependencies]
+nix = { workspace = true, features = ["user"] }
+
+[lints]
+workspace = true

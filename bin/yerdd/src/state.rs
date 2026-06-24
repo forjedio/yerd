@@ -60,6 +60,10 @@ pub struct DaemonState {
     /// distribution poll. Populated by the periodic checker / `CheckPhpUpdates`
     /// and served (no network) on `ListPhp`.
     pub php_updates: RwLock<HashMap<PhpVersion, String>>,
+    /// Yerd self-update cache: the releases seen at the last GitHub poll. Empty
+    /// until the first successful fetch. Populated by the periodic checker /
+    /// `CheckUpdate` and served (no network) when a live fetch fails.
+    pub yerd_update: RwLock<Vec<yerd_update::ReleaseMeta>>,
     /// The FPM pool supervisor, shared with the proxy backend resolver and the
     /// update task. `yerd status` / `yerd doctor` read live pool state from it.
     pub php_manager: Arc<Mutex<DaemonPhpManager>>,

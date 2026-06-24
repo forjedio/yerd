@@ -8,6 +8,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod apply;
 pub mod cli;
 #[cfg(unix)]
 pub mod composer_shim;
@@ -51,6 +52,16 @@ pub async fn run(cli: Cli) -> ExitCode {
         Command::Install {
             target: crate::cli::InstallTarget::Tool { id },
         } if !cli.json => return stream_install_tool(id, cli.json).await,
+        // `yerd update --yes`: the self-update apply path. Not a single
+        // round-trip (it persists the channel, then in a later release will
+        // stage + apply), so it is handled here rather than via `to_request`.
+        Command::Update {
+            target: None,
+            yes: true,
+            edge,
+            stable,
+            force,
+        } => return run_self_update_apply(cli.json, *edge, *stable, *force).await,
         _ => {}
     }
 
@@ -80,6 +91,27 @@ pub async fn run(cli: Cli) -> ExitCode {
             if !cli.json && r.code == 0 && matches!(cli.command, Command::Use { version: None, .. })
             {
                 print_php_path_hint();
+            }
+            // `yerd update --edge`/`--stable` (check, no `--yes`) shows that
+            // channel but does not persist it — say so, so the user isn't
+            // surprised their saved preference is unchanged.
+            if !cli.json && r.code == 0 {
+                if let Command::Update {
+                    target: None,
+                    yes: false,
+                    edge,
+                    stable,
+                    ..
+                } = &cli.command
+                {
+                    if *edge || *stable {
+                        let ch = if *edge { "edge" } else { "stable" };
+                        println!(
+                            "\nyerd: showing the {ch} channel; your saved preference is \
+                             unchanged — add --yes to switch"
+                        );
+                    }
+                }
             }
             // After installing a dev tool, wire Yerd's bin dir onto PATH so the
             // tool's commands resolve in a new shell (idempotent; quiet if
@@ -118,6 +150,157 @@ pub async fn run(cli: Cli) -> ExitCode {
             ExitCode::from(74)
         }
     }
+}
+
+/// `yerd update --yes`: the self-update apply path.
+///
+/// Persists the channel when `--edge`/`--stable` is given, checks the channel,
+/// and — when a newer version is available — asks the daemon to download + verify
+/// the artifact ([`Request::StageUpdate`]) and then applies it **in-process**
+/// (the CLI is a short-lived terminal process: it swaps the bundle it runs from,
+/// off its old inode, then exits). The detached-subprocess applier is only for
+/// the GUI, which must quit during the swap.
+#[allow(clippy::too_many_lines, clippy::fn_params_excessive_bools)]
+async fn run_self_update_apply(json: bool, edge: bool, stable: bool, force: bool) -> ExitCode {
+    use yerd_ipc::{Request, Response};
+
+    // `--json` promises machine-readable output, but applying is a multi-step,
+    // self-replacing operation (the in-process bundle swap re-execs off its own
+    // inode and exits) with no clean JSON result contract. Reject the combination
+    // up front rather than emit stray human text on a `--json` run. The check-only
+    // path (`yerd update --json`, no `--yes`) still honours `--json`.
+    if json {
+        eprintln!("yerd: --json is not supported with `update --yes` (apply); use it for the check-only `yerd update`");
+        return ExitCode::from(2);
+    }
+
+    let channel_override = map::channel_from_flags(edge, stable);
+
+    // Persist the channel half of `--yes` when a channel flag is present.
+    if channel_override.is_some() {
+        let name = if edge { "edge" } else { "stable" };
+        match transport::exchange(&Request::SetUpdateChannel {
+            channel: channel_override.unwrap_or(yerd_ipc::Channel::Stable),
+        })
+        .await
+        {
+            Ok(Response::Ok) => {
+                if !json {
+                    println!("yerd: update channel set to {name}");
+                }
+            }
+            Ok(Response::Error { message, .. }) => {
+                eprintln!("yerd: {message}");
+                return ExitCode::from(1);
+            }
+            Ok(_) => {
+                eprintln!("yerd: unexpected response setting update channel");
+                return ExitCode::from(74);
+            }
+            Err(e @ ClientError::DaemonUnreachable(_)) => {
+                eprintln!("yerd: {e}");
+                return ExitCode::from(69);
+            }
+            Err(e) => {
+                eprintln!("yerd: {e}");
+                return ExitCode::from(74);
+            }
+        }
+    }
+
+    // Is there anything to apply on this channel?
+    let status = match transport::exchange(&Request::CheckUpdate {
+        channel: channel_override,
+    })
+    .await
+    {
+        Ok(Response::UpdateStatus {
+            current,
+            latest_stable,
+            available,
+            target,
+            ahead_of_stable,
+            ..
+        }) => (current, latest_stable, available, target, ahead_of_stable),
+        Ok(Response::Error { message, .. }) => {
+            eprintln!("yerd: {message}");
+            return ExitCode::from(1);
+        }
+        Ok(_) => {
+            eprintln!("yerd: unexpected response checking for updates");
+            return ExitCode::from(74);
+        }
+        Err(e @ ClientError::DaemonUnreachable(_)) => {
+            eprintln!("yerd: {e}");
+            return ExitCode::from(69);
+        }
+        Err(e) => {
+            eprintln!("yerd: {e}");
+            return ExitCode::from(74);
+        }
+    };
+    let (current, latest_stable, available, target, ahead_of_stable) = status;
+
+    if !available {
+        if ahead_of_stable && force {
+            // Downgrade from a newer pre-release to stable is not yet automated.
+            println!(
+                "yerd: you're on pre-release {current} (ahead of stable {}); automated \
+                 downgrade isn't supported yet — reinstall the stable build manually",
+                latest_stable.as_deref().unwrap_or("unknown")
+            );
+        } else if ahead_of_stable {
+            println!(
+                "yerd: on pre-release {current}, ahead of stable {} — staying put (use --force \
+                 to force a downgrade once supported)",
+                latest_stable.as_deref().unwrap_or("unknown")
+            );
+        } else {
+            println!("yerd: already up to date ({current})");
+        }
+        return ExitCode::SUCCESS;
+    }
+
+    // Download + verify the artifact via the daemon.
+    if !json {
+        println!(
+            "yerd: downloading and verifying {}…",
+            target.as_deref().unwrap_or("the update")
+        );
+    }
+    let (path, kind) = match transport::exchange(&Request::StageUpdate {
+        channel: channel_override,
+    })
+    .await
+    {
+        Ok(Response::Staged { path, kind, .. }) => (path, kind),
+        Ok(Response::Error { message, .. }) => {
+            eprintln!("yerd: {message}");
+            return ExitCode::from(1);
+        }
+        Ok(_) => {
+            eprintln!("yerd: unexpected response staging the update");
+            return ExitCode::from(74);
+        }
+        Err(e @ ClientError::DaemonUnreachable(_)) => {
+            eprintln!("yerd: {e}");
+            return ExitCode::from(69);
+        }
+        Err(e) => {
+            eprintln!("yerd: {e}");
+            return ExitCode::from(74);
+        }
+    };
+
+    // Apply on a blocking thread (the applier runs `tar`/`dpkg`/`rename` and
+    // sleeps in the daemon-restart wait — keep it off the async worker). The CLI
+    // doesn't relaunch the GUI.
+    tokio::task::spawn_blocking(move || apply::run(std::path::Path::new(&path), kind, false))
+        .await
+        .unwrap_or_else(|e| {
+            eprintln!("yerd: applier task failed: {e}");
+            ExitCode::from(74)
+        })
 }
 
 /// Install a dev tool as a streamed job, printing its output line by line until

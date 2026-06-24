@@ -28,6 +28,11 @@ struct Wire {
     tld: String,
     #[serde(default = "default_dns_port")]
     dns_port: u16,
+    // v6: self-update channel. `default` is mandatory (Wire is
+    // `deny_unknown_fields`) so a v1..v5 file with no `update_channel` key still
+    // parses, defaulting to "stable".
+    #[serde(default = "default_update_channel")]
+    update_channel: String,
     #[serde(default)]
     ports: PortsWire,
     #[serde(default)]
@@ -211,6 +216,10 @@ fn default_dns_port() -> u16 {
     crate::schema::DEFAULT_DNS_PORT
 }
 
+fn default_update_channel() -> String {
+    crate::schema::DEFAULT_UPDATE_CHANNEL.to_owned()
+}
+
 pub(crate) fn parse_toml(s: &str) -> Result<Config, ConfigError> {
     let mut value: toml::Value = toml::from_str(s)?;
     let found = crate::migrate::read_version(&value)?;
@@ -317,6 +326,7 @@ impl TryFrom<Wire> for Config {
             version: crate::CURRENT_VERSION,
             tld,
             dns_port: w.dns_port,
+            update_channel: w.update_channel,
             ports,
             php,
             parked,
@@ -339,6 +349,17 @@ pub(crate) fn validate(c: &Config) -> Result<(), ConfigError> {
     validate_web_roots(c)?;
     validate_known_services(c)?;
     validate_php_settings(c)?;
+    validate_update_channel(c)?;
+    Ok(())
+}
+
+/// Checked last: `update_channel` must be one of [`crate::schema::UPDATE_CHANNELS`]
+/// (`"stable"` / `"edge"`). A hand-edited or stale value is rejected here rather
+/// than silently coerced.
+fn validate_update_channel(c: &Config) -> Result<(), ConfigError> {
+    if !crate::schema::UPDATE_CHANNELS.contains(&c.update_channel.as_str()) {
+        return Err(ve(ValidateErrorReason::InvalidUpdateChannel));
+    }
     Ok(())
 }
 
@@ -498,7 +519,7 @@ mod tests {
         match Config::from_toml("version = 99\n") {
             Err(ConfigError::UnsupportedVersion {
                 found: 99,
-                current: 5,
+                current: 6,
             }) => {}
             other => panic!("expected UnsupportedVersion, got {other:?}"),
         }
@@ -701,6 +722,53 @@ php = "not-a-version"
 "#;
         // A bad version surfaces as Core (not Parse), like php.default.
         assert!(matches!(Config::from_toml(s), Err(ConfigError::Core(_))));
+    }
+
+    #[test]
+    fn parse_absent_update_channel_defaults_to_stable() {
+        // A pre-v6 file with no `update_channel` migrates forward and defaults
+        // the channel to "stable".
+        let c = Config::from_toml("version = 5\n").unwrap();
+        assert_eq!(c.update_channel, "stable");
+    }
+
+    #[test]
+    #[allow(clippy::field_reassign_with_default)]
+    fn update_channel_round_trips() {
+        let mut c = Config::default();
+        c.update_channel = "edge".to_string();
+        let s = c.to_toml().unwrap();
+        assert!(
+            s.contains("update_channel = \"edge\""),
+            "expected update_channel scalar; got: {s}"
+        );
+        let back = Config::from_toml(&s).unwrap();
+        assert_eq!(back.update_channel, "edge");
+        assert_eq!(back, c);
+    }
+
+    #[test]
+    #[allow(clippy::field_reassign_with_default)]
+    fn validate_rejects_unknown_update_channel() {
+        let mut c = Config::default();
+        c.update_channel = "nightly".to_string();
+        match c.validate() {
+            Err(ConfigError::Validate {
+                reason: ValidateErrorReason::InvalidUpdateChannel,
+            }) => {}
+            other => panic!("expected InvalidUpdateChannel, got {other:?}"),
+        }
+    }
+
+    #[test]
+    #[allow(clippy::field_reassign_with_default)]
+    fn validate_accepts_each_known_update_channel() {
+        for ch in crate::schema::UPDATE_CHANNELS {
+            let mut c = Config::default();
+            c.update_channel = (*ch).to_string();
+            c.validate()
+                .unwrap_or_else(|e| panic!("rejected {ch}: {e}"));
+        }
     }
 
     #[test]

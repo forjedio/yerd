@@ -32,6 +32,8 @@ import type {
   Site,
   StatusReport,
   ToolStatus,
+  UpdateChannel,
+  UpdateStatusResponse,
 } from "./types";
 
 /** A normalised IPC/host failure surfaced to the UI (toasts, banners). */
@@ -166,6 +168,35 @@ export async function setDefaultPhp(version: PhpVersion): Promise<void> {
 /** `version === null` updates every installed version. */
 export async function updatePhp(version: PhpVersion | null): Promise<void> {
   ensureOk(await call<Response>("update_php", { version }));
+}
+
+// ── self-update ────────────────────────────────────────────────────────────
+
+/**
+ * Check for a Yerd self-update. `channel` overrides the saved preference for
+ * this check only; omit (undefined) to use the saved default. Tolerant of
+ * network failure — the daemon serves its cache (`source: "cached"`).
+ */
+export async function checkUpdates(channel?: UpdateChannel): Promise<UpdateStatusResponse> {
+  return ensureOk(
+    await call<Response>("check_updates", { channel: channel ?? null }),
+  ) as UpdateStatusResponse;
+}
+
+/** Persist the self-update channel preference. */
+export async function setUpdateChannel(channel: UpdateChannel): Promise<void> {
+  ensureOk(await call<Response>("set_update_channel", { channel }));
+}
+
+/**
+ * Download + verify the latest update and launch the applier. The GUI quits so
+ * its bundle can be swapped; the applier relaunches it when done. `channel`
+ * overrides the saved preference for this apply only. The returned promise
+ * typically never resolves (the app exits) — callers should show an "updating"
+ * state before awaiting and treat a thrown error as a staging failure.
+ */
+export async function applyUpdate(channel?: UpdateChannel): Promise<void> {
+  await call<void>("apply_update", { channel: channel ?? null });
 }
 
 /** Restart one version's FPM pool (stop + start). */

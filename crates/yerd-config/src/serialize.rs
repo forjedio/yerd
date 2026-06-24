@@ -19,6 +19,9 @@ struct WireSer<'a> {
     tld: &'a yerd_core::Tld,
     // Scalar — must stay above the sub-tables (TOML emits scalars before tables).
     dns_port: u16,
+    // v6 scalar — also above the sub-tables. Always emitted (like `tld` /
+    // `dns_port`) so the channel is visible/editable in the file.
+    update_channel: &'a str,
     ports: PortsSer<'a>,
     php: PhpSectionSer<'a>,
     parked: ParkedSectionSer<'a>,
@@ -131,6 +134,7 @@ pub(crate) fn to_toml(c: &Config) -> Result<String, ConfigError> {
         version: CURRENT_VERSION,
         tld: &c.tld,
         dns_port: c.dns_port,
+        update_channel: &c.update_channel,
         ports: PortsSer {
             http: &c.ports.http,
             https: &c.ports.https,
@@ -209,8 +213,8 @@ mod tests {
     fn default_to_toml_starts_with_version_line() {
         let s = to_toml(&Config::default()).unwrap();
         assert!(
-            s.starts_with("version = 5\n"),
-            "expected `version = 5` first line; got: {s}"
+            s.starts_with("version = 6\n"),
+            "expected `version = 6` first line; got: {s}"
         );
     }
 
