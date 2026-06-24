@@ -3,21 +3,17 @@
 <plist version="1.0">
 <dict>
 	<!--
-	  Hardened Runtime with NO exceptions. Tauri v2 uses WKWebView, whose
-	  JavaScript runs OUT OF PROCESS (com.apple.WebKit.WebContent, entitled by the
-	  system), so the host app does not need com.apple.security.cs.allow-jit or
-	  allow-unsigned-executable-memory — the GUI does no in-process eval/WASM.
-	  Critically, this same file is applied by Tauri to the embedded
-	  yerd/yerdd/yerd-helper sidecars, which MUST stay free of these broad
-	  entitlements (release CI gate B5). An empty entitlements dict signed with
-	  `--options runtime` yields a clean Hardened-Runtime binary for both.
+	  Empty entitlements = Hardened Runtime with NO exceptions, for BOTH the GUI
+	  app and the embedded yerd/yerdd/yerd-helper sidecars (Tauri signs them with
+	  this same file). Tauri v2's WKWebView runs JavaScript out of process, so the
+	  host app does not need allow-jit or allow-unsigned-executable-memory (the GUI
+	  does no in-process eval / WASM), and the sidecars must stay free of those
+	  broad entitlements (CI gate B5).
 
 	  Intentionally NOT set:
 	  - com.apple.security.cs.allow-jit / allow-unsigned-executable-memory
-	      (only needed for IN-PROCESS JIT; WKWebView JITs out-of-process)
-	  - com.apple.security.get-task-allow  (debug-only; causes notarytool rejection)
+	  - com.apple.security.get-task-allow  (debug-only; notarytool rejects it)
 	  - com.apple.security.cs.disable-library-validation
-	      (add only if a launch test shows the transparent-window path needs it)
 	-->
 </dict>
 </plist>
