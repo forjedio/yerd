@@ -252,10 +252,13 @@ fn build_new_args(name: &str, o: &LaravelOptions) -> Vec<String> {
     }
     a.push("--database".to_owned());
     a.push(database_flag(o.database).to_owned());
+    // The installer has no skip-node flag: passing a package-manager flag makes
+    // it *run* install+build, while passing none defaults to npm without running
+    // it. So `Skip` simply omits the flag.
     match o.js {
         JsRuntime::Npm => a.push("--npm".to_owned()),
         JsRuntime::Bun => a.push("--bun".to_owned()),
-        JsRuntime::Skip => a.push("--no-node".to_owned()),
+        JsRuntime::Skip => {}
     }
     if o.git {
         a.push("--git".to_owned());
@@ -658,7 +661,6 @@ mod tests {
                 "--pest",
                 "--database",
                 "sqlite",
-                "--no-node",
                 "--no-boost",
             ]
         );
