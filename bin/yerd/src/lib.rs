@@ -164,6 +164,16 @@ pub async fn run(cli: Cli) -> ExitCode {
 async fn run_self_update_apply(json: bool, edge: bool, stable: bool, force: bool) -> ExitCode {
     use yerd_ipc::{Request, Response};
 
+    // `--json` promises machine-readable output, but applying is a multi-step,
+    // self-replacing operation (the in-process bundle swap re-execs off its own
+    // inode and exits) with no clean JSON result contract. Reject the combination
+    // up front rather than emit stray human text on a `--json` run. The check-only
+    // path (`yerd update --json`, no `--yes`) still honours `--json`.
+    if json {
+        eprintln!("yerd: --json is not supported with `update --yes` (apply); use it for the check-only `yerd update`");
+        return ExitCode::from(2);
+    }
+
     let channel_override = map::channel_from_flags(edge, stable);
 
     // Persist the channel half of `--yes` when a channel flag is present.

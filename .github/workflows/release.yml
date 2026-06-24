@@ -417,6 +417,30 @@ jobs:
             echo "signed $f -> $f.sig"
           done
 
+      # Trust-anchor gate: prove the public key the daemon EMBEDS
+      # (`yerd_update::UPDATE_PUBLIC_KEY`) actually verifies these signatures — so
+      # a real release can never ship signatures the shipped binary can't check
+      # (catches both the placeholder key being left in and a CI secret mismatch).
+      - name: Verify signatures against the embedded public key
+        working-directory: dist
+        run: |
+          set -euo pipefail
+          ART="$GITHUB_WORKSPACE/crates/yerd-update/src/artifact.rs"
+          KEY=$(grep -oE 'UPDATE_PUBLIC_KEY: &str = "[^"]+"' "$ART" | sed -E 's/.*"([^"]+)".*/\1/')
+          [ -n "$KEY" ] || { echo "::error::could not read UPDATE_PUBLIC_KEY from $ART"; exit 1; }
+          # Refuse to ship the published minisign-verify test key.
+          TEST_KEY="RWQf6LRCGA9i53mlYecO4IzT51TGPpvWucNSCh1CBM0QTaLn73Y7GFO3"
+          if [ "$KEY" = "$TEST_KEY" ]; then
+            echo "::error::UPDATE_PUBLIC_KEY is still the placeholder test key — wire the production key before releasing"
+            exit 1
+          fi
+          shopt -s nullglob
+          for f in *.app.tar.gz *.deb; do
+            minisign -V -H -P "$KEY" -m "$f" -x "$f.sig" \
+              || { echo "::error::embedded UPDATE_PUBLIC_KEY does not verify $f.sig (key/secret mismatch)"; exit 1; }
+            echo "verified $f against embedded key"
+          done
+
       - name: Generate SHA256SUMS
         working-directory: dist
         run: |

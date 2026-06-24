@@ -101,7 +101,14 @@ impl ServiceCtl {
                 return run_ok("systemctl", &["--user", "restart", SYSTEMD_UNIT]);
             }
             self.stop();
-            wait_for_exit();
+            // Don't start a second daemon if the old one is still holding the IPC
+            // socket / ports — abort the restart if it didn't exit in time.
+            if !wait_for_exit() {
+                return Err(ServiceError::Tool {
+                    tool: "yerdd",
+                    message: "daemon did not exit before the restart timeout".to_owned(),
+                });
+            }
             self.start()
         }
         #[cfg(not(any(target_os = "macos", target_os = "linux")))]
@@ -127,9 +134,10 @@ fn service_stop() {
     }
 }
 
-/// SIGTERM every running `yerdd` owned by the current user (best-effort).
+/// SIGTERM every running `yerdd` owned by the current user (best-effort). Gated
+/// to the supported OSes so an "unsupported" build never signals user processes.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn sigterm_running() {
-    #[cfg(unix)]
     for pid in running_pids() {
         let _ = nix::sys::signal::kill(
             nix::unistd::Pid::from_raw(pid),
@@ -137,6 +145,9 @@ fn sigterm_running() {
         );
     }
 }
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+fn sigterm_running() {}
 
 // ── start ────────────────────────────────────────────────────────────────────
 
@@ -194,14 +205,14 @@ fn service_target() -> String {
     format!("gui/{}/{DAEMON_LABEL}", current_uid())
 }
 
-#[cfg(unix)]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn current_uid() -> u32 {
     nix::unistd::getuid().as_raw()
 }
 
 /// Running `yerdd` pids owned by the current user, via `pgrep`. Empty on any
 /// failure (no `pgrep`, none running).
-#[cfg(unix)]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn running_pids() -> Vec<i32> {
     let uid = current_uid().to_string();
     let out = Command::new("pgrep")
@@ -222,16 +233,19 @@ fn parse_pids(stdout: &str) -> Vec<i32> {
 }
 
 /// Block (bounded) until no `yerdd` is running, so a restart spawns onto a freed
-/// binary. Caps at ~5s; the daemon exits within well under a second normally.
+/// binary. Returns `true` once it exits, or `false` on the ~5s timeout (the
+/// daemon normally exits well under a second). The caller must not start a new
+/// daemon on `false` — the old one may still hold the socket/ports.
 #[cfg(target_os = "linux")]
-fn wait_for_exit() {
+fn wait_for_exit() -> bool {
     use std::time::Duration;
     for _ in 0..50 {
         if running_pids().is_empty() {
-            return;
+            return true;
         }
         std::thread::sleep(Duration::from_millis(100));
     }
+    false
 }
 
 /// True when a systemd `--user` instance is reachable (`show-environment` exits

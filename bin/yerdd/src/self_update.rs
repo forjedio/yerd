@@ -263,6 +263,13 @@ pub async fn stage_update(
         return internal(format!("signature verification failed: {e}"));
     }
 
+    // The asset name comes from remote release metadata; defence-in-depth, only
+    // join it if it's a single normal path component (no separators, `..`, or
+    // absolute root) so it can never escape the cache dir.
+    if !is_safe_filename(&sel.artifact.name) {
+        return internal(format!("unsafe asset filename: {:?}", sel.artifact.name));
+    }
+
     // Write the verified artifact into the cache dir.
     let dir = state.dirs.cache.join("update");
     if let Err(e) = tokio::fs::create_dir_all(&dir).await {
@@ -309,6 +316,17 @@ pub async fn set_update_channel(channel: yerd_ipc::Channel, state: &DaemonState)
     Response::Ok
 }
 
+/// True if `name` is a single normal path component — no separators, `..`, root,
+/// or drive prefix — so joining it onto a directory can't escape that directory.
+fn is_safe_filename(name: &str) -> bool {
+    use std::path::Component;
+    let mut comps = std::path::Path::new(name).components();
+    matches!(
+        (comps.next(), comps.next()),
+        (Some(Component::Normal(_)), None)
+    )
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
@@ -326,6 +344,17 @@ mod tests {
     fn current_version_parses() {
         // The crate version is always valid semver, so this is never the fallback.
         assert_ne!(current_version(), semver::Version::new(0, 0, 0));
+    }
+
+    #[test]
+    fn safe_filename_accepts_plain_names_rejects_traversal() {
+        assert!(is_safe_filename("Yerd_Linux_x86_64_v2-0-2.deb"));
+        assert!(is_safe_filename("SHA256SUMS"));
+        assert!(!is_safe_filename(""));
+        assert!(!is_safe_filename("../evil"));
+        assert!(!is_safe_filename("a/b"));
+        assert!(!is_safe_filename("/etc/passwd"));
+        assert!(!is_safe_filename(".."));
     }
 
     #[test]

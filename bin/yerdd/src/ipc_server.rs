@@ -2631,8 +2631,13 @@ Subject: Captured\r\n\r\nhi\r\n";
 
     #[tokio::test]
     async fn stage_update_downloads_verifies_and_writes_artifact() {
-        // Skip on platforms with no published artifact (e.g. Windows / linux-arm).
-        if yerd_update::Platform::current() == yerd_update::Platform::Unsupported {
+        // Run only on platforms that actually have a fixture artifact below
+        // (Apple Silicon macOS + Linux x86_64). Intel macOS is not `Unsupported`
+        // but has no fixture, so skip it too.
+        if !matches!(
+            yerd_update::Platform::current(),
+            yerd_update::Platform::MacOsAarch64 | yerd_update::Platform::LinuxX86_64
+        ) {
             return;
         }
         let tmp = tempfile::tempdir().unwrap();
@@ -2683,7 +2688,12 @@ Subject: Captured\r\n\r\nhi\r\n";
 
     #[tokio::test]
     async fn stage_update_rejects_verification_failure_and_writes_nothing() {
-        if yerd_update::Platform::current() == yerd_update::Platform::Unsupported {
+        // Only platforms with a fixture artifact below (skip Intel macOS, which is
+        // not `Unsupported` but has no fixture, and any truly unsupported target).
+        if !matches!(
+            yerd_update::Platform::current(),
+            yerd_update::Platform::MacOsAarch64 | yerd_update::Platform::LinuxX86_64
+        ) {
             return;
         }
         let tmp = tempfile::tempdir().unwrap();

@@ -106,8 +106,8 @@ pub enum Command {
         /// What to update. Omit to check for a Yerd self-update.
         #[command(subcommand)]
         target: Option<UpdateTarget>,
-        /// Apply the self-update (download + install). Without it, only check
-        /// and report. (Applying is coming in a later release.)
+        /// Apply the self-update: download, verify, and install the new version,
+        /// then restart. Without it, only check and report.
         #[arg(long)]
         yes: bool,
         /// Use the edge (pre-release / RC) channel for this run. With `--yes`,

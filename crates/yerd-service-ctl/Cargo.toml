@@ -11,10 +11,10 @@ description            = "Cross-platform start/stop/restart control for the yerd
 thiserror = { workspace = true }
 
 # Safe wrappers for `kill(2)` and `getuid(2)` — no `unsafe` in this crate, so it
-# keeps the workspace `unsafe_code = "forbid"` lint. Pinned to the workspace nix
-# line; `user` is added here (the workspace default omits it).
+# keeps the workspace `unsafe_code = "forbid"` lint. Inherit the workspace pin
+# (which enables `process` + `signal`) and add `user` for `getuid`.
 [target.'cfg(unix)'.dependencies]
-nix = { version = "0.29", default-features = false, features = ["signal", "user"] }
+nix = { workspace = true, features = ["user"] }
 
 [lints]
 workspace = true

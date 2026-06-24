@@ -1,10 +1,16 @@
 //! Self-update applier: install a staged, verified artifact.
 //!
-//! Invoked as a **detached** `yerd` subprocess (gated by the `YERD_APPLY_UPDATE`
-//! env var, so it never shows in help or completions) by `yerd update --yes` and
-//! the GUI Update button. It runs **unprivileged in the user session**; only the
-//! minimal privileged step is elevated (Linux `dpkg` via `pkexec`; macOS only if
-//! `/Applications` isn't user-writable).
+//! Two invocation modes, both ending in [`run`]:
+//! - **CLI** (`yerd update --yes`): calls [`run`] **in-process** (via
+//!   `spawn_blocking`). The CLI is short-lived — it swaps the bundle off its own
+//!   old inode and then exits.
+//! - **GUI** (Update button): the GUI quits and spawns this binary **detached**,
+//!   gated by the `YERD_APPLY_UPDATE` env var (see [`run_from_env`]) so it never
+//!   shows in help or completions.
+//!
+//! It runs **unprivileged in the user session**; only the minimal privileged
+//! step is elevated (Linux `dpkg` via `pkexec`; macOS only if `/Applications`
+//! isn't user-writable).
 //!
 //! Flow:
 //! 1. **Re-verify** the staged artifact's minisign signature (closes the
@@ -94,9 +100,17 @@ pub fn run_from_env() -> Option<ExitCode> {
         eprintln!("yerd: {APPLY_PATH_ENV} is required in apply mode");
         return Some(ExitCode::from(2));
     };
+    // Fail closed on an unknown/typoed kind rather than silently picking the
+    // macOS installer — the value is set by our own GUI (`commands.rs`).
     let kind = match std::env::var(APPLY_KIND_ENV).as_deref() {
         Ok("deb") => StagedArtifact::Deb,
-        _ => StagedArtifact::AppTarGz,
+        Ok("app_tar_gz") => StagedArtifact::AppTarGz,
+        other => {
+            eprintln!(
+                "yerd: invalid {APPLY_KIND_ENV}={other:?} (expected \"deb\" or \"app_tar_gz\")"
+            );
+            return Some(ExitCode::from(2));
+        }
     };
     let relaunch_gui = std::env::var(APPLY_RELAUNCH_GUI_ENV).as_deref() == Ok("1");
     Some(run(Path::new(&path), kind, relaunch_gui))
