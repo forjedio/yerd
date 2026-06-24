@@ -6,16 +6,21 @@ import { useRoute, useRouter } from "vue-router";
 
 import AppShell from "@/components/AppShell.vue";
 import DumpsWindowView from "@/views/DumpsWindowView.vue";
+import MailsViewerView from "@/views/MailsViewerView.vue";
 import Toaster from "@/components/ui/Toaster.vue";
 import { useDaemon } from "@/composables/useDaemon";
 import { useToast } from "@/composables/useToast";
 import { IpcError, startDaemon, status } from "@/ipc/client";
 
-// The auxiliary "dumps" window renders a standalone viewer with no app shell and
-// must NOT run the daemon poller or the first-run auto-start (the main window
-// owns both). Branch on the window label, not the route (which is racy at first
-// paint).
-const isDumpsWindow = getCurrentWindow().label === "dumps";
+// The auxiliary "dumps" and "mails" windows render standalone viewers with no app
+// shell and must NOT run the daemon poller or the first-run auto-start (the main
+// window owns both). Branch on the window label, not the route (which is racy at
+// first paint: Vue Router's initial navigation is async, so `route.meta` is still
+// empty on first render and a route-based check would briefly fall through to the
+// main AppShell).
+const windowLabel = getCurrentWindow().label;
+const isDumpsWindow = windowLabel === "dumps";
+const isMailsWindow = windowLabel === "mails";
 
 // Start the single shared daemon poller for the app's lifetime.
 const { start, stop, refresh } = useDaemon();
@@ -67,7 +72,7 @@ onMounted(async () => {
   // The dumps window and the standalone Mails viewer share this SPA bundle but
   // must not duplicate the poller, the tray-nav listener, or the start flow —
   // those belong to the main window.
-  if (isDumpsWindow || standalone.value) return;
+  if (isDumpsWindow || isMailsWindow || standalone.value) return;
   start(4000);
   // The tray's "go to <page>" items emit `navigate` with a route path (e.g.
   // "/sites") after showing the window; jump the router there.
@@ -78,7 +83,7 @@ onMounted(async () => {
 });
 
 onUnmounted(() => {
-  if (isDumpsWindow || standalone.value) return;
+  if (isDumpsWindow || isMailsWindow || standalone.value) return;
   stop();
   unlistenNav?.();
 });
@@ -87,7 +92,10 @@ onUnmounted(() => {
 <template>
   <!-- The standalone dumps window renders its viewer directly (no SideNav). -->
   <DumpsWindowView v-if="isDumpsWindow" />
-  <!-- Standalone routes (the Mails viewer window) render bare — no shell. -->
+  <!-- The standalone mails window renders its viewer directly (no SideNav).
+       Branch on the window label, not the route, to avoid the first-paint race. -->
+  <MailsViewerView v-else-if="isMailsWindow" />
+  <!-- Other standalone routes render bare — no shell. -->
   <RouterView v-else-if="standalone" />
   <template v-else>
     <AppShell />
