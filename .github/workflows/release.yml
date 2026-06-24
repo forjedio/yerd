@@ -345,11 +345,15 @@ jobs:
     name: publish
     needs: [gui]
     runs-on: ubuntu-22.04
-    # No checkout here, so tell gh which repo to act on.
+    # Checkout is needed so the trust-anchor gate can read the embedded
+    # UPDATE_PUBLIC_KEY from source at the tagged commit. GH_REPO is kept explicit
+    # for gh (harmless once a checkout is present).
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       GH_REPO: ${{ github.repository }}
     steps:
+      - uses: actions/checkout@v4
+
       - name: Download all build artifacts
         uses: actions/download-artifact@v4
         with:

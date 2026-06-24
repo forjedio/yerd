@@ -10,14 +10,7 @@ use sha2::{Digest, Sha256};
 use crate::{Asset, ReleaseMeta};
 
 /// The minisign public key whose secret half signs release artifacts.
-///
-/// **PLACEHOLDER** — this is the `minisign-verify` crate's published test key,
-/// used so the pipeline is exercisable end-to-end before the real CI keypair is
-/// generated. It MUST be replaced with the production public key (output of
-/// `tauri signer generate` / `minisign -G`) before any signed release ships, or
-/// genuine release signatures will fail to verify. Tracked as a Phase B
-/// precondition.
-pub const UPDATE_PUBLIC_KEY: &str = "RWQf6LRCGA9i53mlYecO4IzT51TGPpvWucNSCh1CBM0QTaLn73Y7GFO3";
+pub const UPDATE_PUBLIC_KEY: &str = "RWRXUQIpU8uZ3B6SV3yFsK3+aAWZX+efytjc8F+8PTuViL8/nNPsQxpi";
 
 /// The host platform an artifact targets. Decoupled from `cfg!` so selection is
 /// testable for every platform from any build; the daemon passes
