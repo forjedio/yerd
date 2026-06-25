@@ -32,6 +32,12 @@ struct GuiSettings {
     /// before the webview/localStorage exists, hence a file not localStorage.
     #[serde(default)]
     gui_minimized: bool,
+    /// Whether the first-run welcome journey has been completed at least once.
+    /// `#[serde(default)]` is mandatory: an existing `gui-settings.json` written
+    /// before this field existed must still deserialize (else `load_settings`
+    /// silently resets every preference to its default).
+    #[serde(default)]
+    onboarding_complete: bool,
 }
 
 fn settings_path() -> Result<PathBuf, GuiError> {
@@ -65,6 +71,82 @@ fn save_settings(s: &GuiSettings) -> Result<(), GuiError> {
 /// Read the persisted "start minimized" preference (used by `main`'s setup).
 pub(crate) fn gui_minimized() -> bool {
     load_settings().gui_minimized
+}
+
+// ── onboarding / first-run state ─────────────────────────────────────────────
+
+/// First-run decision inputs for the GUI: has the welcome journey been completed,
+/// and does this machine already have a Yerd setup?
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SetupState {
+    /// The welcome journey has been finished at least once (`gui-settings.json`).
+    pub onboarded: bool,
+    /// Yerd has been set up before — a config file exists, a PHP version is
+    /// installed, or the daemon service is registered. When true (or the daemon
+    /// is reachable), the GUI shows the normal app / "Start daemon" screen rather
+    /// than the first-run journey.
+    pub is_set_up: bool,
+}
+
+/// Resolve yerd's platform dirs (config/data/…) from the host environment.
+fn resolve_dirs() -> Option<yerd_platform::PlatformDirs> {
+    use yerd_platform::{ActivePaths, Paths};
+    ActivePaths::new().resolve().ok()
+}
+
+/// Whether any PHP version is installed under `{data}/php/php-*`. Dependency-free
+/// FS probe (the GUI host doesn't depend on `yerd-php`).
+fn any_php_installed(data: &std::path::Path) -> bool {
+    let Ok(entries) = std::fs::read_dir(data.join("php")) else {
+        return false;
+    };
+    entries
+        .flatten()
+        .any(|e| e.file_name().to_string_lossy().starts_with("php-") && e.path().is_dir())
+}
+
+/// Whether the daemon service is registered with the OS (independent of whether
+/// it's currently running).
+fn service_registered() -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        smapp_registered() || plist_path().map(|p| p.exists()).unwrap_or(false)
+    }
+    #[cfg(target_os = "linux")]
+    {
+        unit_path().map(|p| p.exists()).unwrap_or(false)
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    {
+        false
+    }
+}
+
+/// Whether Yerd has been set up on this machine before (see [`SetupState`]).
+fn is_set_up() -> bool {
+    if let Some(dirs) = resolve_dirs() {
+        if dirs.config.join("yerd.toml").is_file() || any_php_installed(&dirs.data) {
+            return true;
+        }
+    }
+    service_registered()
+}
+
+#[tauri::command]
+pub fn setup_state() -> SetupState {
+    SetupState {
+        onboarded: load_settings().onboarding_complete,
+        is_set_up: is_set_up(),
+    }
+}
+
+/// Mark the first-run welcome journey complete (persisted in `gui-settings.json`).
+#[tauri::command]
+pub fn mark_onboarded() -> Result<(), GuiError> {
+    let mut s = load_settings();
+    s.onboarding_complete = true;
+    save_settings(&s)
 }
 
 // ── command helpers ──────────────────────────────────────────────────────────

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Network, Undo2 } from "lucide-vue-next";
+import { Undo2 } from "lucide-vue-next";
 import { computed, onMounted, ref, watch } from "vue";
 
 import ComingSoon from "@/components/ComingSoon.vue";
@@ -17,6 +17,7 @@ import { useToast } from "@/composables/useToast";
 import {
   elevate,
   elevateAll,
+  elevateResolverPorts,
   hostPlatform,
   IpcError,
   trustCa,
@@ -31,6 +32,10 @@ import type { ElevateTarget, StatusReport } from "@/ipc/types";
 // shared daemon report and refreshes it after any elevation.
 const { connected, report, refresh: refreshStatus } = useDaemon();
 const toast = useToast();
+
+// Emitted after any elevation/revert completes (success or failure), so a parent
+// (e.g. the Doctor page) can re-run dependent checks like the health table.
+const emit = defineEmits<{ elevated: [] }>();
 
 const busy = ref<string | null>(null);
 const platform = ref<string>("");
@@ -150,13 +155,13 @@ async function onFixAll(): Promise<void> {
   busy.value = "elevate:all";
   try {
     if (platform.value === "macos") {
-      // On macOS, CA trust is in-process (user domain, no root); only
-      // resolver + ports go through osascript. Run each step independently so
-      // one cancellation doesn't report the others as failed.
+      // On macOS, CA trust is in-process (user domain, no root) and prompts as
+      // "Yerd"; resolver + ports both need root, so batch them into ONE osascript
+      // prompt (instead of one each). Two steps, run independently so cancelling
+      // the root prompt doesn't mark the trust step failed.
       const steps: { label: string; run: () => Promise<unknown> }[] = [
         { label: "trust", run: () => onTrustCa() },
-        { label: "resolver", run: () => elevate("resolver") },
-        { label: "ports", run: () => elevate("ports") },
+        { label: "resolver + ports", run: () => elevateResolverPorts() },
       ];
       const failed: string[] = [];
       for (const s of steps) {
@@ -167,7 +172,7 @@ async function onFixAll(): Promise<void> {
         }
       }
       if (failed.length === 0) {
-        toast.success("Privileges granted", "You may be prompted by the OS.");
+        toast.success("Privileges granted");
       } else if (failed.length === steps.length) {
         toast.error("Elevation failed", failed.join("; "));
       } else {
@@ -175,13 +180,14 @@ async function onFixAll(): Promise<void> {
       }
     } else {
       await elevateAll();
-      toast.success("Privileges granted", "You may be prompted by the OS.");
+      toast.success("Privileges granted");
     }
   } catch (e) {
     toast.error("Elevation failed", (e as IpcError).message);
   } finally {
     busy.value = null;
     await refreshStatus();
+    emit("elevated");
   }
 }
 
@@ -204,12 +210,13 @@ async function onElevate(target: ElevateTarget): Promise<void> {
     } else {
       await elevate(target);
     }
-    toast.success("Privilege granted", "You may be prompted by the OS.");
+    toast.success("Privilege granted");
   } catch (e) {
     toast.error("Elevation failed", (e as IpcError).message);
   } finally {
     busy.value = null;
     await refreshStatus();
+    emit("elevated");
   }
 }
 
@@ -256,7 +263,7 @@ async function confirmUnelevate(close: () => void): Promise<void> {
       }
     } else {
       await unelevate(target);
-      toast.success("Reverted", "You may be prompted by the OS.");
+      toast.success("Reverted");
     }
   } catch (e) {
     toast.error("Couldn't revert", (e as IpcError).message);
@@ -264,6 +271,7 @@ async function confirmUnelevate(close: () => void): Promise<void> {
     busy.value = null;
     pendingUnelevate.value = null;
     await refreshStatus();
+    emit("elevated");
   }
 }
 </script>
@@ -272,7 +280,7 @@ async function confirmUnelevate(close: () => void): Promise<void> {
   <Card>
     <CardHeader class="flex-row items-center justify-between space-y-0">
       <div class="space-y-1.5">
-        <CardTitle class="flex items-center gap-2"><Network class="size-4" /> Environment</CardTitle>
+        <CardTitle>Environment</CardTitle>
         <CardDescription>
           OS-level trust, resolver, and privileged-port configuration.
         </CardDescription>

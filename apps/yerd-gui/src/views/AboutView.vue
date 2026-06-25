@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import { getVersion } from "@tauri-apps/api/app";
-import { Info } from "lucide-vue-next";
 import { onMounted, ref } from "vue";
 
 import logoUrl from "@/assets/logo.svg";
@@ -72,7 +71,7 @@ onMounted(async () => {
 
       <!-- Versions -->
       <Card>
-        <CardHeader><CardTitle class="flex items-center gap-2"><Info class="size-4" /> Versions</CardTitle></CardHeader>
+        <CardHeader><CardTitle>Versions</CardTitle></CardHeader>
         <CardContent class="space-y-2 text-sm">
           <div class="flex justify-between">
             <span class="text-muted-foreground">App version</span>

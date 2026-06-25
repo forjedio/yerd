@@ -38,6 +38,13 @@ enum Kind {
 struct Spec {
     name: &'static str,
     kind: Kind,
+    /// Yerd's shipped default value (canonical form). Seeded into a fresh
+    /// config's `[php.settings]` and written into every FPM pool.
+    default: &'static str,
+    /// Whether this directive is meaningful for the CLI (`php` shim) and so
+    /// belongs in the generated CLI `php.ini`. Request-only directives
+    /// (upload/post sizes, input time, file uploads) are FPM-only.
+    cli: bool,
 }
 
 /// The fixed allowlist. Extend here to support more directives.
@@ -47,38 +54,54 @@ const SETTINGS: &[Spec] = &[
         kind: Kind::Bytes {
             allow_unlimited: true,
         },
+        default: "512M",
+        cli: true,
     },
     Spec {
         name: "max_execution_time",
         kind: Kind::Int,
+        default: "60",
+        cli: true,
     },
     Spec {
         name: "max_input_time",
         kind: Kind::Int,
+        default: "60",
+        cli: false,
     },
     Spec {
         name: "max_file_uploads",
         kind: Kind::Int,
+        default: "20",
+        cli: false,
     },
     Spec {
         name: "upload_max_filesize",
         kind: Kind::Bytes {
             allow_unlimited: false,
         },
+        default: "100M",
+        cli: false,
     },
     Spec {
         name: "post_max_size",
         kind: Kind::Bytes {
             allow_unlimited: false,
         },
+        default: "100M",
+        cli: false,
     },
     Spec {
         name: "display_errors",
         kind: Kind::Flag,
+        default: "On",
+        cli: true,
     },
     Spec {
         name: "error_reporting",
         kind: Kind::ErrorReporting,
+        default: "E_ALL",
+        cli: true,
     },
 ];
 
@@ -96,6 +119,42 @@ pub fn is_supported(name: &str) -> bool {
 #[must_use]
 pub fn supported_names() -> Vec<&'static str> {
     SETTINGS.iter().map(|s| s.name).collect()
+}
+
+/// Yerd's shipped opinionated defaults as `(name, canonical_value)` pairs, in
+/// declaration order. Seeded into a fresh config (`yerd-config`) and the single
+/// source of truth for "the values Yerd applies out of the box".
+#[must_use]
+pub fn default_settings() -> Vec<(&'static str, &'static str)> {
+    SETTINGS.iter().map(|s| (s.name, s.default)).collect()
+}
+
+/// Whether a supported directive is meaningful for the CLI runtime and so
+/// belongs in the generated CLI `php.ini`. `false` for unknown names.
+#[must_use]
+pub fn applies_to_cli(name: &str) -> bool {
+    spec(name).is_some_and(|s| s.cli)
+}
+
+/// Render the body of the CLI `php.ini` from a set of effective settings:
+/// emit only the CLI-relevant directives (`applies_to_cli`), in the allowlist's
+/// declaration order, each validated and canonicalised, as `name = value` lines.
+/// Unsupported or invalid entries are skipped (defensive — `validate_value` is
+/// the security boundary). Empty when no CLI directives are set.
+#[must_use]
+pub fn render_cli_ini(settings: &std::collections::BTreeMap<String, String>) -> String {
+    let mut out = String::new();
+    for s in SETTINGS.iter().filter(|s| s.cli) {
+        if let Some(raw) = settings.get(s.name) {
+            if validate_value(s.name, raw).is_ok() {
+                out.push_str(s.name);
+                out.push_str(" = ");
+                out.push_str(&canonical_value(s.name, raw));
+                out.push('\n');
+            }
+        }
+    }
+    out
 }
 
 /// The FPM directive a setting renders as: `"php_flag"` for booleans, else
@@ -282,6 +341,36 @@ mod tests {
         assert_eq!(directive("display_errors"), Some("php_flag"));
         assert_eq!(directive("nope"), None);
         assert_eq!(supported_names().len(), 8);
+    }
+
+    #[test]
+    fn default_settings_cover_all_and_are_valid() {
+        let defaults = default_settings();
+        assert_eq!(defaults.len(), 8);
+        for (name, value) in &defaults {
+            assert!(validate_value(name, value).is_ok(), "{name}={value}");
+        }
+        assert!(defaults.contains(&("memory_limit", "512M")));
+        assert!(defaults.contains(&("error_reporting", "E_ALL")));
+    }
+
+    #[test]
+    fn cli_subset_and_ini_render() {
+        assert!(applies_to_cli("memory_limit"));
+        assert!(applies_to_cli("display_errors"));
+        assert!(!applies_to_cli("upload_max_filesize")); // request-only
+        assert!(!applies_to_cli("nope"));
+
+        let settings: std::collections::BTreeMap<String, String> = default_settings()
+            .into_iter()
+            .map(|(k, v)| (k.to_owned(), v.to_owned()))
+            .collect();
+        let ini = render_cli_ini(&settings);
+        assert!(ini.contains("memory_limit = 512M\n"));
+        assert!(ini.contains("display_errors = On\n"));
+        // FPM-only directives must not leak into the CLI ini.
+        assert!(!ini.contains("upload_max_filesize"));
+        assert!(!ini.contains("post_max_size"));
     }
 
     #[test]

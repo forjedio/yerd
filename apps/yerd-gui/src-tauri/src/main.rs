@@ -116,6 +116,7 @@ fn main() {
             commands::host_platform,
             commands::elevate,
             commands::elevate_all,
+            commands::elevate_resolver_ports,
             commands::unelevate,
             commands::trust_ca,
             commands::untrust_ca,
@@ -146,6 +147,8 @@ fn main() {
             autostart::set_autostart_daemon,
             autostart::set_autostart_gui,
             autostart::set_gui_minimized,
+            autostart::setup_state,
+            autostart::mark_onboarded,
         ])
         .setup(setup_app)
         // Close-to-tray: hide the window instead of quitting; the tray's Quit

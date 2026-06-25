@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { Copy, Mail } from "lucide-vue-next";
+import { Copy } from "lucide-vue-next";
 import { computed, ref, watch } from "vue";
 
 import PageHeader from "@/components/PageHeader.vue";
@@ -153,9 +153,7 @@ async function copyEnv(): Promise<void> {
     <div class="flex-1 space-y-4 overflow-y-auto p-6">
       <Card>
         <CardHeader>
-          <CardTitle class="flex items-center gap-2">
-            <Mail class="size-4" /> Mail Server
-          </CardTitle>
+          <CardTitle>Mail Server</CardTitle>
           <CardDescription>
             Yerd runs a local SMTP server that captures every outgoing email so
             you can preview it here. Point your app's mailer at

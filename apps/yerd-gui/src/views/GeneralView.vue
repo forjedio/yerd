@@ -1,7 +1,5 @@
 <script setup lang="ts">
 import {
-  CircleDot,
-  CircleOff,
   Download,
   Info,
   Play,
@@ -289,6 +287,13 @@ async function runUpdateCheck(): Promise<void> {
     const status = await checkUpdates();
     updateStatus.value = status;
     updateChannel.value = status.channel;
+    if (status.available && status.target) {
+      toast.success("Update available", `Version ${status.target} can be installed.`);
+    } else if (status.ahead_of_stable) {
+      toast.info("Up to date", "You're on a pre-release ahead of stable.");
+    } else {
+      toast.success("Up to date", "You're on the latest version.");
+    }
   } catch (e) {
     toast.error("Couldn't check for updates", (e as IpcError).message);
   } finally {
@@ -455,11 +460,7 @@ async function toggleGuiMinimized(on: boolean): Promise<void> {
       <Card>
         <CardHeader class="flex-row items-center justify-between space-y-0">
           <div class="space-y-1.5">
-            <CardTitle class="flex items-center gap-2">
-              <CircleDot v-if="running" class="size-4 text-success" />
-              <CircleOff v-else class="size-4 text-muted-foreground" />
-              Daemon
-            </CardTitle>
+            <CardTitle>Daemon</CardTitle>
             <CardDescription>{{ daemonStatus }}</CardDescription>
           </div>
           <Button v-if="!running" :disabled="busy === 'daemon'" @click="onStart">
@@ -593,7 +594,7 @@ async function toggleGuiMinimized(on: boolean): Promise<void> {
               <p class="text-sm font-medium">Install <code>yerd</code> on your PATH</p>
               <p class="text-xs text-muted-foreground">
                 {{ cli?.installed
-                  ? "Installed — run `yerd` in a new terminal window."
+                  ? "Installed - run `yerd` in a new terminal window."
                   : "Symlinks the bundled CLI into your shell PATH." }}
               </p>
             </div>
@@ -667,8 +668,8 @@ async function toggleGuiMinimized(on: boolean): Promise<void> {
                 <p class="font-medium">{{ updateSummary }}</p>
                 <p class="text-xs text-muted-foreground">
                   Current {{ updateStatus.current }} · stable
-                  {{ updateStatus.latest_stable ?? "—" }} · edge
-                  {{ updateStatus.latest_edge ?? "—" }}
+                  {{ updateStatus.latest_stable ?? "-" }} · edge
+                  {{ updateStatus.latest_edge ?? "-" }}
                   <span v-if="updateStatus.source === 'cached'">
                     · offline (last known)
                   </span>
@@ -691,7 +692,7 @@ async function toggleGuiMinimized(on: boolean): Promise<void> {
           >
             <p class="text-sm">
               <template v-if="applyingUpdate">
-                Updating to <strong>{{ updateStatus.target }}</strong> — Yerd will restart…
+                Updating to <strong>{{ updateStatus.target }}</strong> - Yerd will restart…
               </template>
               <template v-else>
                 Yerd <strong>{{ updateStatus.target }}</strong> is available.

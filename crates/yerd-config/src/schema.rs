@@ -221,7 +221,14 @@ impl Default for PhpSection {
     fn default() -> Self {
         Self {
             default: PhpVersion::new(8, 3),
-            settings: BTreeMap::new(),
+            // Seed Yerd's opinionated defaults so a fresh config (and the
+            // in-memory default the daemon runs with before any `yerd.toml`
+            // exists) applies them to every installed version's FPM pool.
+            // Single source of truth: `yerd_core::php_settings::default_settings`.
+            settings: yerd_core::php_settings::default_settings()
+                .into_iter()
+                .map(|(k, v)| (k.to_owned(), v.to_owned()))
+                .collect(),
         }
     }
 }

@@ -58,7 +58,7 @@ watch(
         <div class="mt-4 min-h-0 flex-1 overflow-auto">
           <slot />
         </div>
-        <div class="mt-6 flex shrink-0 justify-end gap-2">
+        <div class="mt-6 flex shrink-0 items-center justify-end gap-2">
           <slot name="footer" :close="close" />
         </div>
       </div>

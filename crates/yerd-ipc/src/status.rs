@@ -317,6 +317,12 @@ pub struct ToolStatus {
     pub version: Option<String>,
     /// The commands this tool provides on `PATH` (e.g. `node`, `npm`, `npx`).
     pub binaries: Vec<String>,
+    /// `true` when the tool is NOT Yerd-managed but is available on the user's
+    /// PATH (e.g. Homebrew / a global Composer install). Mutually exclusive with
+    /// `installed`. Skipped on the wire when `false` so the byte shape is stable
+    /// for older clients; defaulted on decode for older daemons.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub external: bool,
 }
 
 /// A single doctor finding.

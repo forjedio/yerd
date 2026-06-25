@@ -7,7 +7,6 @@ import {
   Lock,
   LockOpen,
   Mail,
-  Play,
   ShieldAlert,
   ShieldCheck,
   SquareCode,
@@ -16,23 +15,20 @@ import type { Component } from "vue";
 import { computed, onMounted, ref, watch } from "vue";
 import { RouterLink } from "vue-router";
 
+import DaemonDownHero from "@/components/DaemonDownHero.vue";
 import PageHeader from "@/components/PageHeader.vue";
 import StatusPill, { type Tone } from "@/components/StatusPill.vue";
-import Button from "@/components/ui/Button.vue";
 import Card from "@/components/ui/Card.vue";
 import Spinner from "@/components/ui/Spinner.vue";
 import { useDaemon } from "@/composables/useDaemon";
-import { useToast } from "@/composables/useToast";
-import { IpcError, listSites, openInBrowser, startDaemon } from "@/ipc/client";
+import { listSites, openInBrowser } from "@/ipc/client";
 import type { Site, StatusReport } from "@/ipc/types";
 import { humaniseUptime } from "@/lib/utils";
-import logoUrl from "@/assets/logo.svg";
 
 // The home/dashboard. It reads the shared daemon report (no poller of its own)
-// and owns the daemon-down hero, so it stays useful when the socket is gone —
-// the same surface that celebrates "serving N sites" becomes the start button.
-const { report, connected, refresh } = useDaemon();
-const toast = useToast();
+// and shows the shared daemon-down hero, so it stays useful when the socket is
+// gone — the same surface that celebrates "serving N sites" becomes the start button.
+const { report, connected } = useDaemon();
 
 const r = computed(() => report.value);
 const running = computed(() => connected.value === true);
@@ -188,21 +184,6 @@ const anyUnhealthy = computed(() => health.value.some((h) => h.value !== true));
 
 const uptime = computed(() => (r.value ? humaniseUptime(r.value.uptime_secs) : ""));
 const version = computed(() => r.value?.daemon_version ?? "");
-
-// ── start (daemon-down hero) ──
-const starting = ref(false);
-async function onStart(): Promise<void> {
-  starting.value = true;
-  try {
-    await startDaemon();
-    toast.success("Starting Yerd…", "It should connect in a moment.");
-  } catch (e) {
-    toast.error("Couldn't start the daemon", (e as IpcError).message);
-  } finally {
-    starting.value = false;
-    await refresh();
-  }
-}
 </script>
 
 <template>
@@ -215,24 +196,8 @@ async function onStart(): Promise<void> {
         <Spinner class="size-6" />
       </div>
 
-      <!-- Daemon down: the hero becomes the start affordance. -->
-      <Card
-        v-else-if="!running"
-        class="flex flex-col items-center justify-center gap-4 py-16 text-center"
-      >
-        <img :src="logoUrl" alt="" class="size-12 rounded-xl" />
-        <div>
-          <h2 class="text-lg font-semibold">Yerd isn't running</h2>
-          <p class="mx-auto mt-1 max-w-sm text-sm text-muted-foreground">
-            Start the daemon to serve your <span class="font-mono">.{{ tld }}</span>
-            sites, PHP runtimes, and services.
-          </p>
-        </div>
-        <Button :disabled="starting" @click="onStart">
-          <Spinner v-if="starting" class="size-4" />
-          <Play v-else class="size-4" /> Start Yerd
-        </Button>
-      </Card>
+      <!-- Daemon down: the shared start affordance (also used on every blocked page). -->
+      <DaemonDownHero v-else-if="!running" />
 
       <!-- Daemon up: the serving console. -->
       <template v-else>

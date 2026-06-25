@@ -209,6 +209,9 @@ async fn run_until_shutdown(
         let state = daemon.state.clone();
         tokio::spawn(async move {
             crate::ipc_server::refresh_pcov_and_shims(&state).await;
+            // Generate the CLI php.ini (PHPRC target) from the loaded config so
+            // terminal `php` gets Yerd's defaults even before any settings change.
+            crate::ipc_server::write_cli_ini_now(&state).await;
         })
     };
 

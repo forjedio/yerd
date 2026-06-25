@@ -281,9 +281,27 @@ enabled = ["mysql", "redis"]
 }
 
 #[test]
-fn empty_php_settings_emit_no_subtable() {
-    // A settings-free config must not carry a `[php.settings]` table.
+fn default_config_emits_seeded_php_settings_subtable() {
+    // Yerd now ships opinionated PHP defaults, so the default config DOES carry
+    // a `[php.settings]` table with those values.
     let s = Config::default().to_toml().unwrap();
+    assert!(
+        s.contains("[php.settings]"),
+        "default settings must emit the table; got: {s}"
+    );
+    assert!(
+        s.contains("memory_limit = \"512M\""),
+        "default settings must include memory_limit; got: {s}"
+    );
+}
+
+#[test]
+fn cleared_php_settings_emit_no_subtable() {
+    // A config whose settings map is explicitly empty must not carry a
+    // `[php.settings]` table (the user cleared every directive).
+    let mut c = Config::default();
+    c.php.settings.clear();
+    let s = c.to_toml().unwrap();
     assert!(
         !s.contains("[php.settings]"),
         "empty settings must omit the table; got: {s}"

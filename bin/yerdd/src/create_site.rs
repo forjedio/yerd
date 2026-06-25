@@ -107,6 +107,9 @@ enum Outcome {
     Cancelled,
 }
 
+// Linear preflight→scaffold→register pipeline; reads top-to-bottom, so the line
+// count is incidental rather than a complexity signal.
+#[allow(clippy::too_many_lines)]
 async fn run_inner(
     id: &str,
     name: &str,
@@ -131,16 +134,42 @@ async fn run_inner(
             spec.php.major, spec.php.minor
         ));
     }
+
+    // The daemon's own PATH is restricted (launchd/systemd), so resolve the
+    // user's real PATH once: it lets us accept *externally*-installed Composer /
+    // Laravel installer / Node / Bun (and find them at scaffold time). PHP is
+    // always Yerd-managed.
+    let user_dirs = crate::tools::external::resolve_user_path()
+        .await
+        .unwrap_or_default();
+    let data_bin = tools::bin_dir(dirs);
+    let data_root = &dirs.data;
+
+    // Composer: Yerd-managed phar, else an external `composer` on the user PATH.
     let composer_phar = tools::composer::phar_path(dirs);
-    if !composer_phar.is_file() {
+    let composer_managed = composer_phar.is_file();
+    if !composer_managed
+        && crate::tools::external::find_in_path(&user_dirs, "composer", &data_bin, data_root)
+            .is_none()
+    {
         return Outcome::Failed("Composer is not installed — install it first".to_owned());
     }
-    let installer_bin = tools::laravel::installer_bin(dirs);
-    if !installer_bin.is_file() {
+
+    // Laravel installer: Yerd-managed bin, else an external `laravel` on the user
+    // PATH. We run whichever through the managed `php` (see run_scaffold) so the
+    // selected PHP version is always used.
+    let managed_installer = tools::laravel::installer_bin(dirs);
+    let installer_bin = if managed_installer.is_file() {
+        managed_installer
+    } else if let Some(ext) =
+        crate::tools::external::find_in_path(&user_dirs, "laravel", &data_bin, data_root)
+    {
+        ext
+    } else {
         return Outcome::Failed(
             "the Laravel installer is not installed — install it first".to_owned(),
         );
-    }
+    };
 
     // Target dir must be absent or empty (never `--force` over a user's files).
     if let Err(msg) = check_target_dir(&project_dir) {
@@ -151,17 +180,24 @@ async fn run_inner(
         return Outcome::Failed(msg);
     }
 
-    // Install the chosen JS runtime if a kit needs it and it's missing.
-    if let Err(msg) = ensure_js_runtime(id, options.js, state).await {
+    // Install the chosen JS runtime if a kit needs it and it's neither managed
+    // nor available externally on the user PATH.
+    if let Err(msg) = ensure_js_runtime(id, options.js, &user_dirs, state).await {
         return Outcome::Failed(msg);
     }
 
-    // Build the per-job PATH bin dir that pins the chosen PHP.
-    let job_bin = match build_job_bin(job_dir, &php_cli, &composer_phar) {
+    // Build the per-job PATH bin dir that pins the chosen PHP. The Composer
+    // wrapper is only created for the managed phar; an external Composer is found
+    // on the composed PATH and runs under the managed `php` via its shebang.
+    let job_bin = match build_job_bin(
+        job_dir,
+        &php_cli,
+        composer_managed.then_some(composer_phar.as_path()),
+    ) {
         Ok(b) => b,
         Err(msg) => return Outcome::Failed(msg),
     };
-    let path_env = composed_path(&job_bin, &tools::bin_dir(dirs));
+    let path_env = composed_path(&job_bin, &data_bin, &user_dirs);
     let composer_home = tools::laravel::composer_home(dirs);
 
     // `git` is effectively required by the installer (kits + `--git` run `git
@@ -318,10 +354,12 @@ fn probe_writable(parent: &Path) -> Result<(), String> {
     }
 }
 
-/// Install Node/Bun if the chosen JS runtime needs it and it's absent.
+/// Install Node/Bun if the chosen JS runtime needs it and it's neither managed
+/// nor available externally on the user's PATH.
 async fn ensure_js_runtime(
     id: &str,
     js: JsRuntime,
+    user_dirs: &[std::path::PathBuf],
     state: &Arc<DaemonState>,
 ) -> Result<(), String> {
     let tool = match js {
@@ -330,6 +368,12 @@ async fn ensure_js_runtime(
         JsRuntime::Skip => return Ok(()),
     };
     if tools::installed_version(&state.dirs, tool).is_some() {
+        return Ok(());
+    }
+    // Externally installed (e.g. Homebrew/fnm) → use it; don't install a managed copy.
+    let data_bin = tools::bin_dir(&state.dirs);
+    if crate::tools::external::external_tool(user_dirs, tool, &data_bin, &state.dirs.data).is_some()
+    {
         return Ok(());
     }
     state
@@ -346,9 +390,13 @@ async fn ensure_js_runtime(
     Ok(())
 }
 
-/// Compose `PATH` = `<per-job bin> : <{data}/bin> : <inherited PATH>`.
-fn composed_path(job_bin: &Path, data_bin: &Path) -> std::ffi::OsString {
+/// Compose `PATH` = `<per-job bin> : <{data}/bin> : <user PATH> : <inherited>`.
+/// The user's resolved PATH is appended so externally-installed
+/// composer/node/bun/git/laravel are findable, while the per-job bin (managed
+/// `php`) and Yerd shims keep precedence.
+fn composed_path(job_bin: &Path, data_bin: &Path, user_dirs: &[PathBuf]) -> std::ffi::OsString {
     let mut entries = vec![job_bin.to_path_buf(), data_bin.to_path_buf()];
+    entries.extend(user_dirs.iter().cloned());
     if let Some(existing) = std::env::var_os("PATH") {
         entries.extend(std::env::split_paths(&existing));
     }
@@ -589,12 +637,18 @@ fn sh_quote(p: &Path) -> String {
     format!("'{}'", p.to_string_lossy().replace('\'', "'\\''"))
 }
 
-/// Build `{job_dir}/bin` containing a `php` symlink to the chosen version and a
-/// `composer` wrapper that runs that same PHP, so the installer's nested
-/// `composer create-project` uses the requested runtime (Composer derives its
-/// child PHP from `PHP_BINARY`). Unix-only.
+/// Build `{job_dir}/bin` containing a `php` symlink to the chosen version and,
+/// when `composer_phar` is `Some` (Yerd-managed Composer), a `composer` wrapper
+/// that runs that same PHP so the installer's nested `composer create-project`
+/// uses the requested runtime (Composer derives its child PHP from `PHP_BINARY`).
+/// When `None` (external Composer), no wrapper is written — Composer is found on
+/// the composed PATH and runs under the managed `php` via its shebang. Unix-only.
 #[cfg(unix)]
-fn build_job_bin(job_dir: &Path, php_cli: &Path, composer_phar: &Path) -> Result<PathBuf, String> {
+fn build_job_bin(
+    job_dir: &Path,
+    php_cli: &Path,
+    composer_phar: Option<&Path>,
+) -> Result<PathBuf, String> {
     use std::os::unix::fs::PermissionsExt;
 
     let bin = job_dir.join("bin");
@@ -604,15 +658,17 @@ fn build_job_bin(job_dir: &Path, php_cli: &Path, composer_phar: &Path) -> Result
     let _ = std::fs::remove_file(&php_link);
     std::os::unix::fs::symlink(php_cli, &php_link).map_err(|e| format!("link php: {e}"))?;
 
-    let composer = bin.join("composer");
-    let script = format!(
-        "#!/bin/sh\nexec {} {} \"$@\"\n",
-        sh_quote(php_cli),
-        sh_quote(composer_phar)
-    );
-    std::fs::write(&composer, script).map_err(|e| format!("write composer wrapper: {e}"))?;
-    std::fs::set_permissions(&composer, std::fs::Permissions::from_mode(0o755))
-        .map_err(|e| format!("chmod composer wrapper: {e}"))?;
+    if let Some(phar) = composer_phar {
+        let composer = bin.join("composer");
+        let script = format!(
+            "#!/bin/sh\nexec {} {} \"$@\"\n",
+            sh_quote(php_cli),
+            sh_quote(phar)
+        );
+        std::fs::write(&composer, script).map_err(|e| format!("write composer wrapper: {e}"))?;
+        std::fs::set_permissions(&composer, std::fs::Permissions::from_mode(0o755))
+            .map_err(|e| format!("chmod composer wrapper: {e}"))?;
+    }
     Ok(bin)
 }
 
@@ -620,7 +676,7 @@ fn build_job_bin(job_dir: &Path, php_cli: &Path, composer_phar: &Path) -> Result
 fn build_job_bin(
     _job_dir: &Path,
     _php_cli: &Path,
-    _composer_phar: &Path,
+    _composer_phar: Option<&Path>,
 ) -> Result<PathBuf, String> {
     Err("site creation is not yet supported on this platform".to_owned())
 }

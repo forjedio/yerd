@@ -255,7 +255,7 @@ async fn dispatch(req: Request, state: &DaemonState) -> Response {
         Request::SetMailPort { port } => set_mail_port(port, state).await,
         Request::SetMailEnabled { enabled } => set_mail_enabled(enabled, state).await,
         Request::ListTools => Response::Tools {
-            tools: crate::tools::list_status(&state.dirs),
+            tools: list_tools_with_external(state).await,
         },
         Request::InstallTool { tool } => install_tool(&tool, state).await,
         Request::UninstallTool { tool } => uninstall_tool(&tool, state).await,
@@ -710,6 +710,10 @@ async fn install_php(version: yerd_core::PhpVersion, state: &DaemonState) -> Res
             // the just-installed version so the proxy can spawn its FPM pool
             // without a daemon restart.
             refresh_php_binaries(state).await;
+            // First install on a fresh setup: adopt it as the default (so the
+            // `php` shim exists and sites have a runtime). Must run BEFORE the
+            // reconcile below so it builds shims against the new default.
+            adopt_default_if_unset(version, state).await;
             // Bundle pcov for the new version and (re)build its cover/clean
             // shims. Best-effort; the install itself already succeeded.
             refresh_pcov_and_shims(state).await;
@@ -720,6 +724,34 @@ async fn install_php(version: yerd_core::PhpVersion, state: &DaemonState) -> Res
             message: e.to_string(),
         },
     }
+}
+
+/// On the *first* successful install — when the configured default PHP isn't
+/// actually installed yet — adopt the just-installed `version` as the default,
+/// so the `php` shim gets created and sites have a runtime. No-op once a real
+/// default is installed (later installs never steal the default).
+///
+/// Lock-safe: the "is the current default installed?" check and the set happen
+/// under the config lock, so two concurrent first-installs can't both win.
+/// Best-effort (the install already succeeded) and does NOT reconcile shims —
+/// the caller's `refresh_pcov_and_shims` reconciles against the updated default.
+async fn adopt_default_if_unset(version: yerd_core::PhpVersion, state: &DaemonState) {
+    let mut cfg_guard = state.config.lock().await;
+    if crate::php_install::cli_binary_path(&state.dirs, cfg_guard.php.default).exists() {
+        return; // a real default is already installed — leave it alone.
+    }
+    let mut new = cfg_guard.clone();
+    new.php.default = version;
+    if let Err(e) = crate::php_install::set_default_shim(&state.dirs, version) {
+        tracing::warn!(error = %e, "auto-default shim update failed");
+        return;
+    }
+    if let Err(e) = new.save(&state.config_path) {
+        tracing::warn!(error = %e, "auto-default config save failed");
+        return;
+    }
+    *cfg_guard = new;
+    tracing::info!(version = %version, "adopted first installed PHP as the default");
 }
 
 /// Re-discover installed PHP binaries (bundled) and hand the refreshed map to
@@ -758,6 +790,16 @@ async fn reconcile_shims_for(state: &DaemonState, default: yerd_core::PhpVersion
     }
 }
 
+/// Write the CLI `php.ini` (`{data}/php-cli.ini`, the `PHPRC` target) from the
+/// current config settings. Reads the config lock briefly, then releases it
+/// before the disk write. Best-effort: failures are logged.
+pub(crate) async fn write_cli_ini_now(state: &DaemonState) {
+    let settings = state.config.lock().await.php.settings.clone();
+    if let Err(e) = crate::php_install::write_cli_ini(&state.dirs, &settings) {
+        tracing::warn!(error = %e, "failed to write CLI php.ini");
+    }
+}
+
 /// Reconcile shims using the current config default (reads the config lock
 /// briefly, then releases it before reconciling).
 async fn reconcile_shims_now(state: &DaemonState) {
@@ -777,6 +819,31 @@ pub(crate) async fn reconcile_tool_shims_now(state: &DaemonState) {
     if let Err(e) = crate::tools::reconcile_tool_shims(&state.dirs, &yerd_bin) {
         tracing::warn!(error = %e, "tool-shim reconcile failed");
     }
+}
+
+/// Build the tool list and tag any *not* Yerd-managed tool that's available on
+/// the user's PATH as `external` (Tooling shows "External", no actions). Skips the
+/// (login-shell) PATH resolution entirely when everything is already managed.
+async fn list_tools_with_external(state: &DaemonState) -> Vec<yerd_ipc::ToolStatus> {
+    let mut tools = crate::tools::list_status(&state.dirs);
+    if tools.iter().all(|t| t.installed) {
+        return tools; // nothing to detect — avoid spawning a shell.
+    }
+    let Some(dirs) = crate::tools::external::resolve_user_path().await else {
+        return tools;
+    };
+    let data_bin = crate::tools::bin_dir(&state.dirs);
+    let data_root = &state.dirs.data;
+    for t in &mut tools {
+        if t.installed {
+            continue;
+        }
+        if let Some(tool) = crate::tools::Tool::parse(&t.id) {
+            t.external =
+                crate::tools::external::external_tool(&dirs, tool, &data_bin, data_root).is_some();
+        }
+    }
+    tools
 }
 
 /// `install tool <id>` — download + verify the latest release, then (re)build its
@@ -1138,6 +1205,9 @@ async fn set_php_settings(
             }
         }
     }
+    // Refresh the CLI php.ini (PHPRC target) so terminal `php` picks up the
+    // updated directives too. Best-effort.
+    write_cli_ini_now(state).await;
     tracing::info!("applied global PHP settings");
     php_versions_response(state).await
 }

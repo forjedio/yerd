@@ -498,9 +498,7 @@ onUnmounted(stopLogPolling);
     <div class="flex-1 overflow-y-auto p-6">
       <Card>
         <CardHeader>
-          <CardTitle class="flex items-center gap-2">
-            <Database class="size-4" /> Local services
-          </CardTitle>
+          <CardTitle>Local services</CardTitle>
           <CardDescription>
             Each engine binds to localhost only with no password. Install a version,
             then start it; changes to the port apply on the next restart.

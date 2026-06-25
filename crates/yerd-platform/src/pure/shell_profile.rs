@@ -65,20 +65,41 @@ pub fn rc_relpaths(shell: Shell, _os: HostOs) -> Vec<PathBuf> {
     }
 }
 
-/// The shell body (no markers) that prepends `bin_dir` to `PATH`, guarded so a
-/// repeated `source` never stacks a duplicate entry. The path is always quoted
-/// because it contains a space on macOS (`Application Support`).
+/// The shell body (no markers) that prepends `bin_dir` to `PATH` (guarded so a
+/// repeated `source` never stacks a duplicate entry) and exports `PHPRC` to
+/// Yerd's generated CLI ini (`{data}/php-cli.ini`, a sibling of `bin_dir`) so the
+/// `php` shim on this PATH picks up Yerd's opinionated CLI defaults (memory limit
+/// etc.). Paths are always quoted because they contain a space on macOS
+/// (`Application Support`). An absent ini file is harmless — PHP ignores it.
 #[must_use]
 pub fn render_body(shell: Shell, bin_dir: &Path) -> String {
     let dir = bin_dir.display();
+    // `{data}/php-cli.ini`, derived from `{data}/bin`. Omitted only if `bin_dir`
+    // somehow has no parent (never in practice).
+    let phprc = bin_dir.parent().map(|d| d.join("php-cli.ini"));
     match shell {
         Shell::Fish => {
-            format!("if not contains \"{dir}\" $PATH\n    set -gx PATH \"{dir}\" $PATH\nend")
+            let mut s =
+                format!("if not contains \"{dir}\" $PATH\n    set -gx PATH \"{dir}\" $PATH\nend");
+            if let Some(ini) = phprc {
+                s.push_str("\nset -gx PHPRC \"");
+                s.push_str(&ini.display().to_string());
+                s.push('"');
+            }
+            s
         }
         // POSIX-compatible (sh/bash/zsh): only prepend when not already present.
-        Shell::Zsh | Shell::Bash | Shell::Posix => format!(
-            "case \":$PATH:\" in\n  *\":{dir}:\"*) ;;\n  *) export PATH=\"{dir}:$PATH\" ;;\nesac"
-        ),
+        Shell::Zsh | Shell::Bash | Shell::Posix => {
+            let mut s = format!(
+                "case \":$PATH:\" in\n  *\":{dir}:\"*) ;;\n  *) export PATH=\"{dir}:$PATH\" ;;\nesac"
+            );
+            if let Some(ini) = phprc {
+                s.push_str("\nexport PHPRC=\"");
+                s.push_str(&ini.display().to_string());
+                s.push('"');
+            }
+            s
+        }
     }
 }
 
@@ -247,11 +268,19 @@ mod tests {
         assert!(posix.contains("case \":$PATH:\""));
         assert!(posix.contains(") ;;"));
 
+        // PHPRC points at the generated CLI ini beside the bin dir, quoted.
+        assert!(posix.contains(
+            "export PHPRC=\"/Users/x/Library/Application Support/io.yerd.Yerd/php-cli.ini\""
+        ));
+
         let fish = render_body(Shell::Fish, &bin());
         assert!(fish.contains(
             "if not contains \"/Users/x/Library/Application Support/io.yerd.Yerd/bin\" $PATH"
         ));
         assert!(fish.contains("set -gx PATH"));
+        assert!(fish.contains(
+            "set -gx PHPRC \"/Users/x/Library/Application Support/io.yerd.Yerd/php-cli.ini\""
+        ));
     }
 
     #[test]

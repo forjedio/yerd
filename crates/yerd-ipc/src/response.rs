@@ -471,6 +471,7 @@ mod variant_name_pinning {
                 installed: true,
                 version: Some("v24.17.0".into()),
                 binaries: vec!["node".into(), "npm".into(), "npx".into()],
+                external: false,
             }],
         });
         pin_response(Response::JobStarted {

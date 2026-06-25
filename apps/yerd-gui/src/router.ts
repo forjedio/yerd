@@ -20,29 +20,41 @@ export const router = createRouter({
       name: "general",
       component: () => import("@/views/GeneralView.vue"),
     },
+    // `title`/`subtitle` mirror each view's own PageHeader so the daemon-down
+    // screen (rendered by AppShell when the socket is unreachable) shows the same
+    // page header — without the view's action buttons.
     {
       path: "/php",
       name: "php",
+      meta: { title: "PHP", subtitle: "Installed versions, updates, and the global default" },
       component: () => import("@/views/PhpView.vue"),
     },
     {
       path: "/sites",
       name: "sites",
+      meta: { title: "Sites", subtitle: "Parked and linked .test sites" },
       component: () => import("@/views/SitesView.vue"),
     },
     {
       path: "/tooling",
       name: "tooling",
+      meta: {
+        title: "Tooling",
+        subtitle:
+          "Install developer tools - bundled, self-contained, and added to your PATH alongside PHP.",
+      },
       component: () => import("@/views/ToolingView.vue"),
     },
     {
       path: "/services",
       name: "services",
+      meta: { title: "Services", subtitle: "Databases and caches Yerd supervises" },
       component: () => import("@/views/ServicesView.vue"),
     },
     {
       path: "/dumps",
       name: "dumps",
+      meta: { title: "Dumps", subtitle: "Intercept dump() calls and Laravel telemetry" },
       component: () => import("@/views/LaravelDumpsView.vue"),
     },
     {
@@ -54,6 +66,7 @@ export const router = createRouter({
     {
       path: "/mail",
       name: "mail",
+      meta: { title: "Mail", subtitle: "Capture and inspect emails your apps send during development" },
       component: () => import("@/views/MailView.vue"),
     },
     {
@@ -67,6 +80,7 @@ export const router = createRouter({
     {
       path: "/doctor",
       name: "doctor",
+      meta: { title: "Doctor", subtitle: "Health checks and safe one-click fixes" },
       component: () => import("@/views/DoctorView.vue"),
     },
     {

@@ -45,6 +45,29 @@ pub async fn run(verb: &str, target: &str) -> Result<(), GuiError> {
     result
 }
 
+/// Apply **multiple** targets under a single OS elevation prompt (macOS), so
+/// "Fix all" doesn't ask for the password once per target. `targets` must be
+/// non-empty and each from [`TARGETS`].
+pub async fn run_many(verb: &str, targets: &[&str]) -> Result<(), GuiError> {
+    if !VERBS.contains(&verb) {
+        return Err(GuiError::internal(format!("unknown verb: {verb}")));
+    }
+    if targets.is_empty() {
+        return Err(GuiError::internal("no elevate targets given"));
+    }
+    for t in targets {
+        if !TARGETS.contains(t) {
+            return Err(GuiError::internal(format!("unknown elevate target: {t}")));
+        }
+    }
+    let yerd = trusted_yerd()?;
+    let verb = verb.to_owned();
+    let targets: Vec<String> = targets.iter().map(|s| (*s).to_owned()).collect();
+    tokio::task::spawn_blocking(move || spawn_elevated_many(&yerd, &verb, &targets))
+        .await
+        .map_err(|e| GuiError::internal(format!("join error: {e}")))?
+}
+
 /// The `yerd` binary that sits beside this app's executable.
 fn trusted_yerd() -> Result<PathBuf, GuiError> {
     // Refuse to run a privileged helper from a translocated bundle: `current_exe`
@@ -108,29 +131,64 @@ fn spawn_elevated(yerd: &std::path::Path, verb: &str, target: &str) -> Result<()
 
 #[cfg(target_os = "macos")]
 fn spawn_elevated(yerd: &std::path::Path, verb: &str, target: &str) -> Result<(), GuiError> {
-    use std::io::Write as _;
-    use std::process::{Command, Stdio};
-
-    // Build the AppleScript on stdin (not a fragile `-e` one-liner). The `yerd`
-    // path goes through AppleScript's `quoted form of`, making it shell-safe
-    // regardless of spaces/specials; `verb`/`target` are from fixed allowlists
-    // validated in `run` (target may be empty = "all"), so they're injection-safe.
-    // `SUDO_UID` MUST be embedded — `osascript … with administrator privileges`
-    // runs the command as root with a clean env and does NOT set `SUDO_UID` (that's
-    // a `sudo`-ism), yet `yerd elevate` relies on it for socket lookup and the CA
-    // owner-check.
     let uid = current_uid();
-    let yerd_str = yerd.to_string_lossy();
-    // Empty target → run the bare verb (the CLI then applies all steps).
+    let path = applescript_escape(&yerd.to_string_lossy());
+    // Single shell invocation: `env SUDO_UID=N <yerd> <verb> [<target>]`.
+    let script = format!(
+        "do shell script {} with administrator privileges",
+        shell_chunk(uid, &path, verb, target),
+    );
+    run_osascript(&script, verb)
+}
+
+/// Apply **several** targets in ONE `with administrator privileges` prompt by
+/// chaining them with `&&` inside a single `do shell script`, so "Fix all" asks
+/// for the password once instead of once per target. `targets` is non-empty and
+/// each entry is from the validated allowlist (see [`run_many`]).
+#[cfg(target_os = "macos")]
+fn spawn_elevated_many(
+    yerd: &std::path::Path,
+    verb: &str,
+    targets: &[String],
+) -> Result<(), GuiError> {
+    let uid = current_uid();
+    let path = applescript_escape(&yerd.to_string_lossy());
+    // Each chunk is an AppleScript string expression for one invocation; join the
+    // chunks with a literal ` && ` so the shell runs them in sequence under one
+    // elevation.
+    let joined = targets
+        .iter()
+        .map(|t| shell_chunk(uid, &path, verb, t))
+        .collect::<Vec<_>>()
+        .join(" & \" && \" & ");
+    let script = format!("do shell script {joined} with administrator privileges");
+    run_osascript(&script, verb)
+}
+
+/// One AppleScript string expression that yields the shell command
+/// `env SUDO_UID=N <yerd> <verb> [<target>]`. The `yerd` path goes through
+/// `quoted form of` (shell-safe regardless of spaces/specials); `verb`/`target`
+/// are from fixed allowlists validated by callers, so they're injection-safe.
+/// `SUDO_UID` MUST be embedded — `osascript … with administrator privileges` runs
+/// as root with a clean env and does NOT set `SUDO_UID` (a `sudo`-ism), yet
+/// `yerd elevate` relies on it for socket lookup and the CA owner-check.
+#[cfg(target_os = "macos")]
+fn shell_chunk(uid: u32, escaped_path: &str, verb: &str, target: &str) -> String {
+    // Empty target → bare verb (the CLI then applies all steps).
     let tail = if target.is_empty() {
         format!(" {verb}")
     } else {
         format!(" {verb} {target}")
     };
-    let script = format!(
-        "do shell script \"env SUDO_UID={uid} \" & quoted form of \"{path}\" & \"{tail}\" with administrator privileges",
-        path = applescript_escape(&yerd_str),
-    );
+    format!("\"env SUDO_UID={uid} \" & quoted form of \"{escaped_path}\" & \"{tail}\"")
+}
+
+/// Pipe an AppleScript to `osascript` (on stdin, not a fragile `-e` one-liner) and
+/// translate the outcome into a [`GuiError`].
+#[cfg(target_os = "macos")]
+fn run_osascript(script: &str, verb: &str) -> Result<(), GuiError> {
+    use std::io::Write as _;
+    use std::process::{Command, Stdio};
 
     let mut child = Command::new("/usr/bin/osascript")
         .stdin(Stdio::piped())
@@ -177,6 +235,21 @@ fn spawn_elevated(_yerd: &std::path::Path, _verb: &str, _target: &str) -> Result
     Err(GuiError::internal(
         "in-app elevation is not supported on this platform; run `yerd elevate` in a terminal",
     ))
+}
+
+/// Non-macOS batch: apply each target in turn. The GUI only uses the batched path
+/// on macOS (Linux "Fix all" uses the single all-in-one `yerd elevate` via
+/// [`run`]), so this is a correctness fallback rather than a one-prompt path.
+#[cfg(not(target_os = "macos"))]
+fn spawn_elevated_many(
+    yerd: &std::path::Path,
+    verb: &str,
+    targets: &[String],
+) -> Result<(), GuiError> {
+    for t in targets {
+        spawn_elevated(yerd, verb, t)?;
+    }
+    Ok(())
 }
 
 /// The effective uid of the (unprivileged) GUI process.

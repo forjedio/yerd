@@ -70,7 +70,11 @@ const { connected } = useDaemon();
       <span class="text-sm font-semibold tracking-tight">Yerd</span>
     </div>
 
-    <div class="flex flex-1 flex-col gap-5 overflow-y-auto">
+    <!-- Scrolls on very short windows, but its scrollbar chrome is hidden so it
+         never reads as a second scrollbar beside the main content's. -->
+    <div
+      class="flex flex-1 flex-col gap-5 overflow-y-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+    >
       <ul>
         <li><NavLink v-bind="overview" /></li>
       </ul>
