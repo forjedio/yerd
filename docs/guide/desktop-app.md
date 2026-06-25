@@ -31,10 +31,10 @@ The window is something you summon, not keep open.
 
 The window is borderless with a custom title bar (macOS-style traffic lights for close / minimize / zoom) and looks identical on both platforms. A status pill in the bottom-left of the sidebar shows whether the daemon is connected, unreachable, or connecting.
 
-If the daemon isn't running, the main area shows a "Daemon not running" panel with **Start** and **Retry** buttons - Start launches the bundled `yerdd` for you (through your per-user service) without leaving the app. The **Overview**, **Settings**, and **About** pages stay reachable even when the daemon is down: Overview shows its own **Start Yerd** hero, and Settings can start it. You can also start it from a terminal with `yerdd serve &`.
+If the daemon isn't running, every data-backed page shows the same **Yerd isn't running** screen - the page's header plus a **Start Yerd** hero that launches the bundled `yerdd` (through your per-user service) without leaving the app. The button keeps spinning until the daemon actually connects. The **Overview**, **Settings**, and **About** pages stay reachable even when the daemon is down. You can also start it from a terminal with `yerdd serve &`.
 
-::: tip First-run start
-When the app first opens and the daemon isn't already running, it **starts the bundled `yerdd`** and lands you on the Overview dashboard. On macOS, registering the background service may prompt you to enable Yerd in System Settings → Login Items - the app shows a banner with a button to take you there. It never runs as root to do this.
+::: tip First run vs. later starts
+On a **brand-new** install the app opens the [onboarding journey](./welcome-journey), which installs and starts the daemon for you (and walks through PHP, parking, and elevation). Once you've been set up, later launches go straight to the dashboard - or the **Start Yerd** screen if the daemon happens to be stopped. On macOS, registering the background service may prompt you to enable Yerd in System Settings → Login Items - the app shows a button to take you there. It never runs as root to do this.
 :::
 
 ## The window at a glance

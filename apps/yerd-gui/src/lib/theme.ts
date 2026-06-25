@@ -11,12 +11,16 @@
  * `pref` is a module-level singleton ref, so the General tab's selector and the
  * startup `initTheme()` share one source of truth.
  */
+import { emit, listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { ref } from "vue";
 
 export type ThemePref = "system" | "light" | "dark";
 
 const STORAGE_KEY = "yerd.theme";
+/** Cross-window broadcast: each webview (main, mails, dumps) is a separate JS
+ *  context + DOM, so a theme change in one is published to the others. */
+const THEME_EVENT = "yerd:theme-changed";
 
 /** The user's preference (reactive, persisted). */
 const pref = ref<ThemePref>(loadPref());
@@ -46,8 +50,8 @@ function reapply(): void {
   applyDark(effectiveDark());
 }
 
-/** Set + persist the preference and re-render the theme immediately. */
-export function setTheme(p: ThemePref): void {
+/** Apply a preference locally: update the reactive ref, persist, and re-render. */
+function applyPref(p: ThemePref): void {
   pref.value = p;
   try {
     localStorage.setItem(STORAGE_KEY, p);
@@ -55,6 +59,16 @@ export function setTheme(p: ThemePref): void {
     // Best-effort persistence; the in-memory pref still applies this session.
   }
   reapply();
+}
+
+/** Set + persist the preference, re-render immediately, and broadcast the change
+ *  to the app's other windows (mails/dumps) so they switch in lockstep. */
+export function setTheme(p: ThemePref): void {
+  applyPref(p);
+  // Other webviews don't see this window's localStorage write, so tell them.
+  void emit(THEME_EVENT, p).catch(() => {
+    // Not in Tauri (unit/dev) — nothing to broadcast.
+  });
 }
 
 /** Reactive accessor for views (e.g. the General tab's theme selector). */
@@ -91,4 +105,14 @@ export function initTheme(): void {
       // Not running inside Tauri (unit tests, plain Vite) — step 1 stands.
     }
   })();
+
+  // 3) Cross-window sync: when any window changes the theme, apply it here too,
+  //    so the popup viewers (mails/dumps) switch the instant Settings does. The
+  //    emitter receives its own event but the guard makes that a no-op (no loop,
+  //    since the listener applies without re-emitting).
+  void listen<ThemePref>(THEME_EVENT, ({ payload }) => {
+    if (payload !== pref.value) applyPref(payload);
+  }).catch(() => {
+    // Not in Tauri — single context, nothing to sync.
+  });
 }

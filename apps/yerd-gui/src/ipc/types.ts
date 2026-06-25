@@ -421,6 +421,12 @@ export interface ToolStatus {
   installed: boolean;
   version: string | null;
   binaries: string[];
+  /**
+   * Not Yerd-managed but available on the user's PATH (Homebrew / fnm / global
+   * install). Skipped on the wire when false (hence optional). Mutually
+   * exclusive with `installed`.
+   */
+  external?: boolean;
 }
 
 /** One user database in a SQL service (mirrors the daemon's `DatabaseSummary`). */
@@ -474,4 +480,13 @@ export interface AutostartState {
 export interface CliPathStatus {
   installed: boolean;
   target: string;
+}
+
+/**
+ * First-run decision inputs (host command `setup_state`). The welcome journey
+ * shows only when `!onboarded && !isSetUp` and the daemon is unreachable.
+ */
+export interface SetupState {
+  onboarded: boolean;
+  isSetUp: boolean;
 }

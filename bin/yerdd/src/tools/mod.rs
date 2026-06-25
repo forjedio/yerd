@@ -9,6 +9,7 @@
 
 pub mod bun;
 pub mod composer;
+pub mod external;
 pub mod laravel;
 pub mod node;
 
@@ -60,6 +61,18 @@ impl Tool {
             Tool::Node => "Node.js",
             Tool::Bun => "Bun",
             Tool::Laravel => "Laravel Installer",
+        }
+    }
+
+    /// The command used to detect an *external* install of this tool on the
+    /// user's PATH (the canonical entry point, not every exposed bin).
+    #[must_use]
+    pub const fn primary_bin(self) -> &'static str {
+        match self {
+            Tool::Composer => "composer",
+            Tool::Node => "node",
+            Tool::Bun => "bun",
+            Tool::Laravel => "laravel",
         }
     }
 
@@ -140,6 +153,9 @@ pub fn status(dirs: &PlatformDirs, tool: Tool) -> ToolStatus {
             .iter()
             .map(|s| (*s).to_owned())
             .collect(),
+        // Pure managed status: external detection is layered on at the IPC edge
+        // (it needs to spawn the user's login shell to resolve PATH).
+        external: false,
     }
 }
 

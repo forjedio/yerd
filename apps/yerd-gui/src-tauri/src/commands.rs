@@ -433,6 +433,14 @@ pub async fn elevate_all() -> Result<(), GuiError> {
     crate::elevate::run("elevate", "").await
 }
 
+/// Apply resolver + ports in a **single** OS-elevated prompt. macOS "Fix all"
+/// uses this (trust is handled separately in-process) so the user gets one
+/// password prompt for the two root steps instead of one each.
+#[tauri::command]
+pub async fn elevate_resolver_ports() -> Result<(), GuiError> {
+    crate::elevate::run_many("elevate", &["resolver", "ports"]).await
+}
+
 /// Revert what `elevate` configured: runs `yerd unelevate <target>` under the
 /// same OS elevation. On macOS, `unelevate resolver` restores the pre-Yerd
 /// resolver from its backup (else removes Yerd's file).

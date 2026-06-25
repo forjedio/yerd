@@ -141,17 +141,24 @@ async function appendInstallLog(lines: string[]): Promise<void> {
   if (el) el.scrollTop = el.scrollHeight;
 }
 
-function toolInstalled(id: string): boolean {
-  return tools.value.some((t) => t.id === id && t.installed);
+// A tool satisfies a prerequisite if it's Yerd-managed OR externally available
+// on the user's PATH — the scaffold can use either.
+function toolAvailable(id: string): boolean {
+  return tools.value.some((t) => t.id === id && (t.installed || t.external));
 }
+// Managed-only: building the *managed* Laravel installer requires Yerd's own
+// Composer (an external Composer can't build it). Gates the laravel install step.
+const managedComposer = computed(() =>
+  tools.value.some((t) => t.id === "composer" && t.installed),
+);
 // PHP, Composer and the Laravel installer are *required* and gated up front.
-const needsComposer = computed(() => !toolInstalled("composer"));
-const needsInstaller = computed(() => !toolInstalled("laravel"));
+const needsComposer = computed(() => !toolAvailable("composer"));
+const needsInstaller = computed(() => !toolAvailable("laravel"));
 const noPhp = computed(() => props.phpVersions.length === 0);
 // Node/Bun are only conditionally needed and the daemon installs them inline
 // during the job (shown as a phase), so they don't block the wizard.
-const needsNode = computed(() => form.js === "npm" && !toolInstalled("node"));
-const needsBun = computed(() => form.js === "bun" && !toolInstalled("bun"));
+const needsNode = computed(() => form.js === "npm" && !toolAvailable("node"));
+const needsBun = computed(() => form.js === "bun" && !toolAvailable("bun"));
 
 /** Whether the required toolchain is present (the wizard is unlocked). */
 const ready = computed(
@@ -223,8 +230,19 @@ async function installAllMissing(): Promise<void> {
   try {
     if (noPhp.value && !(await installFirstPhp())) return;
     if (needsComposer.value && !(await installPrereq("composer"))) return;
-    // The installer needs Composer, so it must come after.
-    if (needsInstaller.value && !(await installPrereq("laravel"))) return;
+    // The managed Laravel installer is BUILT via Yerd's own Composer, so it can
+    // only be auto-installed when managed Composer is present. If Composer is only
+    // external, skip (the daemon would reject it) and guide the user.
+    if (needsInstaller.value) {
+      if (!managedComposer.value) {
+        toast.error(
+          "Can't install the Laravel installer",
+          "Yerd needs its own Composer to build it — install Yerd's Composer, or run `composer global require laravel/installer`.",
+        );
+        return;
+      }
+      if (!(await installPrereq("laravel"))) return;
+    }
     // Reaching here means every missing tool installed successfully. Don't gate
     // the toast on `ready` — it derives from the async `phpVersions` prop, which
     // may not have propagated yet.
@@ -465,8 +483,8 @@ const busy = computed(() => jobStateRef.value === "running" && step.value === 4)
                 v-else
                 size="sm"
                 variant="outline"
-                :disabled="installBusy || (row.id === 'laravel' && needsComposer)"
-                :title="row.id === 'laravel' && needsComposer ? 'Install Composer first' : ''"
+                :disabled="installBusy || (row.id === 'laravel' && !managedComposer)"
+                :title="row.id === 'laravel' && !managedComposer ? 'Yerd\'s own Composer is required to build the Laravel installer' : ''"
                 @click="row.id === 'php' ? installFirstPhp() : installPrereq(row.id as 'composer' | 'laravel')"
               >
                 Install

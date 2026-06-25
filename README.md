@@ -22,6 +22,25 @@ PHP version per site, and manage it all from one tiny daemon - no Docker, no
 
 ---
 
+<div align="center">
+
+<img src="https://yerd.app/images/overview-dark.png" alt="The Yerd desktop app showing the Overview dashboard in dark mode" width="840" />
+
+</div>
+
+Yerd is a **single desktop app** for macOS and Linux - the daemon, the `yerd`
+CLI, and a privileged one-shot helper are all bundled inside it; nothing is
+downloaded at runtime. The tray-first GUI is a thin client over a tiny (~8 MB)
+background daemon: a live dashboard of what's running, with one-click control of
+PHP versions, `.test` sites, databases, mail capture, dumps, and per-site HTTPS.
+A guided [onboarding journey](https://yerd.app/guide/welcome-journey) gets you
+from install to serving sites in a couple of minutes. Every button maps to the
+same daemon the [CLI](https://yerd.app/reference/cli/) drives, so the app and the
+terminal never drift out of sync - and if you prefer the keyboard, `yerd` does
+everything the app does.
+
+---
+
 ## Why Yerd?
 
 - 🚀 **Zero-config sites** - drop a project in a parked folder, it's live at `<name>.test`.
@@ -42,7 +61,7 @@ PHP version per site, and manage it all from one tiny daemon - no Docker, no
 | Open source | ❌ | ✅ | ✅ |
 | Linux support | ❌ | ✅ | ✅ |
 | macOS support | ✅ | ✅ | ✅ |
-| Windows support | ✅ | ❌ | ✅ * |
+| Windows support | ✅ | ❌ | ❌ * |
 | Automatic `.test` domains | ✅ | ✅ | ✅ |
 | HTTPS with a trusted local CA | ✅ | ✅ | ✅ |
 | Multiple PHP versions | ✅ | ✅ | ✅ |
@@ -58,7 +77,7 @@ PHP version per site, and manage it all from one tiny daemon - no Docker, no
 | Built-in health checks (`doctor`) | ❌ | ❌ | ✅ |
 | Under the hood | Native app (nginx + dnsmasq) | Containers (rootless Podman) | Native Rust (`rustls` proxy + embedded DNS) |
 
-<sub>✅\* = Windows is planned. Everything without an asterisk works today on macOS and Linux.</sub>
+<sub>❌\* = Windows isn't supported yet - it's planned (coming soon). Yerd runs today on macOS and Linux.</sub>
 <br><sub>**Lerd** runs your stack in containers via **rootless Podman** (Linux +
 macOS; no Docker) - so it trivially adds database/cache services, but it pulls and
 runs container images rather than native processes. † Rootless by design on
@@ -103,41 +122,69 @@ sudo yerd elevate    # trust the CA · route *.test · allow 80/443
 
 ## Quick start
 
+Yerd is **GUI-first**: the desktop app drives everything from a few clicks. Each
+step below shows the app, with the equivalent `yerd` CLI commands as an
+alternative - both are clients of the same daemon, so anything you do in one
+shows up in the other.
+
+### 1. Install a PHP version
+
+<div align="center">
+<img src="https://yerd.app/images/php-dark.png" alt="The PHP page in the Yerd desktop app (dark mode)" width="820" />
+</div>
+
+On the **PHP** page, click **Install**, pick a version, and it becomes your
+default (the first one always does). Manage updates and the global default from
+the same page.
+
+Alternative - the CLI:
+
 ```bash
-# 1. Install a PHP version and make it the default
-yerd install php 8.5
-yerd use 8.5
+yerd install php 8.5    # download + install a PHP version
+yerd use 8.5            # make it the global default
+```
 
-# 2a. Park a directory - every sub-folder becomes <folder>.test
-yerd park ~/Sites
-#     ~/Sites/blog  ->  http://blog.test
+### 2. Add and secure sites
 
-# 2b. …or link a single project under a name you choose
-yerd link my-app ~/code/my-app
-#     ->  http://my-app.test
+<div align="center">
+<img src="https://yerd.app/images/sites-dark.png" alt="The Sites page in the Yerd desktop app (dark mode)" width="820" />
+</div>
 
-# 3. Turn on HTTPS for a site
-yerd secure my-app
-#     ->  https://my-app.test  (trusted, thanks to the local CA)
+On the **Sites** page, **park** a folder (every sub-folder becomes
+`<name>.test`) or **link** a single project, flip HTTPS on or off per site, and
+pick a PHP version per site - no commands.
 
-# 4. Pin one site to a different PHP version
-yerd use my-app 8.3
+Alternative - the CLI:
 
-# 5. See what's going on / fix problems
-yerd status
-yerd doctor
-yerd doctor fix
+```bash
+yerd park ~/Sites            # ~/Sites/blog -> http://blog.test
+yerd link my-app ~/code/my-app   # -> http://my-app.test
+yerd secure my-app           # -> https://my-app.test (trusted local CA)
+yerd use my-app 8.3          # pin just this site to a PHP version
 ```
 
 Open `https://my-app.test` in your browser - that's it.
 
-> Every step above has a one-click equivalent in the desktop app - the CLI and
-> GUI are both clients of the same daemon, so anything you do in one shows up in
-> the other.
+### 3. Check and fix your environment
+
+<div align="center">
+<img src="https://yerd.app/images/doctor-dark.png" alt="The Doctor page in the Yerd desktop app (dark mode)" width="820" />
+</div>
+
+The **Doctor** page checks your setup (CA trust, the `.test` resolver,
+privileged ports, PHP, sites) and offers **one-click fixes**.
+
+Alternative - the CLI:
+
+```bash
+yerd status        # what's running
+yerd doctor        # diagnose problems
+yerd doctor fix    # apply the safe fixes
+```
 
 ---
 
-## Command reference
+## CLI command reference
 
 | Command | What it does |
 |---|---|

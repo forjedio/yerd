@@ -1,13 +1,11 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, ref } from "vue";
 import {
-  Boxes,
   Download,
   Info,
   MoreHorizontal,
   RefreshCw,
   RotateCw,
-  SlidersHorizontal,
   Star,
   Trash2,
 } from "lucide-vue-next";
@@ -301,8 +299,8 @@ const installOptions = ref<{ value: PhpVersion; label: string }[]>([]);
 const selectedVersion = ref<PhpVersion>("");
 
 // Open the modal and fetch the distribution's installable versions, hiding any
-// already installed. Pre-selects the first so the Select (no placeholder) is
-// always valid.
+// already installed. Pre-selects the LATEST (the daemon returns them ascending,
+// so the last entry is newest) so the Select (no placeholder) is always valid.
 async function openInstall(): Promise<void> {
   installOpen.value = true;
   installLoading.value = true;
@@ -314,7 +312,8 @@ async function openInstall(): Promise<void> {
     installOptions.value = r.available
       .filter((v) => !installedSet.has(v))
       .map((v) => ({ value: v, label: `PHP ${v}` }));
-    selectedVersion.value = installOptions.value[0]?.value ?? "";
+    const opts = installOptions.value;
+    selectedVersion.value = opts[opts.length - 1]?.value ?? "";
   } catch (e) {
     toast.error("Couldn't load installable versions", (e as IpcError).message);
   } finally {
@@ -352,7 +351,7 @@ onMounted(load);
       <Card>
         <CardHeader class="flex-row items-center justify-between space-y-0">
           <div class="space-y-1.5">
-            <CardTitle class="flex items-center gap-2"><Boxes class="size-4" /> Installed versions</CardTitle>
+            <CardTitle>Installed versions</CardTitle>
             <CardDescription>Versions, updates, and the global default.</CardDescription>
           </div>
           <div class="flex items-center gap-2">
@@ -487,7 +486,7 @@ onMounted(load);
       <!-- Global PHP ini defaults, applied to every installed version. -->
       <Card v-if="!loading" class="mt-8">
         <CardHeader>
-          <CardTitle class="flex items-center gap-2"><SlidersHorizontal class="size-4" /> Default settings</CardTitle>
+          <CardTitle>Default settings</CardTitle>
           <CardDescription>
             Applied to every installed PHP version. Leave a field blank to use
             PHP's built-in default. Saving restarts the running pools.

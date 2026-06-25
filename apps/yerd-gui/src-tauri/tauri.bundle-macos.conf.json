@@ -5,6 +5,12 @@
     "macOS": {
       "files": {
         "Library/LaunchAgents/dev.yerd.daemon.plist": "launchagents/dev.yerd.daemon.plist"
+      },
+      "dmg": {
+        "background": "dmg/background.png",
+        "windowSize": { "width": 660, "height": 420 },
+        "appPosition": { "x": 175, "y": 205 },
+        "applicationFolderPosition": { "x": 485, "y": 205 }
       }
     }
   }

@@ -65,20 +65,74 @@ pub fn rc_relpaths(shell: Shell, _os: HostOs) -> Vec<PathBuf> {
     }
 }
 
-/// The shell body (no markers) that prepends `bin_dir` to `PATH`, guarded so a
-/// repeated `source` never stacks a duplicate entry. The path is always quoted
-/// because it contains a space on macOS (`Application Support`).
+/// Escape a value for a **POSIX** double-quoted string: `\`, `$`, `` ` ``, and
+/// `"` are special inside `"…"`, so backslash-escape them. (Quoting alone only
+/// handles spaces; a data dir containing `$`/`` ` ``/`\` would otherwise expand
+/// or break the rc block — e.g. a home under `$XDG_DATA_HOME`.)
+fn esc_posix_dq(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        if matches!(c, '\\' | '$' | '`' | '"') {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    out
+}
+
+/// Escape a value for a **fish** double-quoted string: only `\`, `$`, and `"`
+/// are special (fish has no backtick command substitution).
+fn esc_fish_dq(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        if matches!(c, '\\' | '$' | '"') {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    out
+}
+
+/// The shell body (no markers) that prepends `bin_dir` to `PATH` (guarded so a
+/// repeated `source` never stacks a duplicate entry) and exports `PHPRC` to
+/// Yerd's generated CLI ini (`{data}/php-cli.ini`, a sibling of `bin_dir`) so the
+/// `php` shim on this PATH picks up Yerd's opinionated CLI defaults (memory limit
+/// etc.). Values are double-quoted *and* metacharacter-escaped, so a data dir
+/// containing a space, `$`, `` ` ``, `\`, or `"` is emitted safely. An absent ini
+/// file is harmless — PHP ignores it.
 #[must_use]
 pub fn render_body(shell: Shell, bin_dir: &Path) -> String {
-    let dir = bin_dir.display();
+    let raw_dir = bin_dir.display().to_string();
+    // `{data}/php-cli.ini`, derived from `{data}/bin`. Omitted only if `bin_dir`
+    // somehow has no parent (never in practice).
+    let raw_phprc = bin_dir
+        .parent()
+        .map(|d| d.join("php-cli.ini").display().to_string());
     match shell {
         Shell::Fish => {
-            format!("if not contains \"{dir}\" $PATH\n    set -gx PATH \"{dir}\" $PATH\nend")
+            let dir = esc_fish_dq(&raw_dir);
+            let mut s =
+                format!("if not contains \"{dir}\" $PATH\n    set -gx PATH \"{dir}\" $PATH\nend");
+            if let Some(ini) = raw_phprc {
+                s.push_str("\nset -gx PHPRC \"");
+                s.push_str(&esc_fish_dq(&ini));
+                s.push('"');
+            }
+            s
         }
         // POSIX-compatible (sh/bash/zsh): only prepend when not already present.
-        Shell::Zsh | Shell::Bash | Shell::Posix => format!(
-            "case \":$PATH:\" in\n  *\":{dir}:\"*) ;;\n  *) export PATH=\"{dir}:$PATH\" ;;\nesac"
-        ),
+        Shell::Zsh | Shell::Bash | Shell::Posix => {
+            let dir = esc_posix_dq(&raw_dir);
+            let mut s = format!(
+                "case \":$PATH:\" in\n  *\":{dir}:\"*) ;;\n  *) export PATH=\"{dir}:$PATH\" ;;\nesac"
+            );
+            if let Some(ini) = raw_phprc {
+                s.push_str("\nexport PHPRC=\"");
+                s.push_str(&esc_posix_dq(&ini));
+                s.push('"');
+            }
+            s
+        }
     }
 }
 
@@ -247,11 +301,35 @@ mod tests {
         assert!(posix.contains("case \":$PATH:\""));
         assert!(posix.contains(") ;;"));
 
+        // PHPRC points at the generated CLI ini beside the bin dir, quoted.
+        assert!(posix.contains(
+            "export PHPRC=\"/Users/x/Library/Application Support/io.yerd.Yerd/php-cli.ini\""
+        ));
+
         let fish = render_body(Shell::Fish, &bin());
         assert!(fish.contains(
             "if not contains \"/Users/x/Library/Application Support/io.yerd.Yerd/bin\" $PATH"
         ));
         assert!(fish.contains("set -gx PATH"));
+        assert!(fish.contains(
+            "set -gx PHPRC \"/Users/x/Library/Application Support/io.yerd.Yerd/php-cli.ini\""
+        ));
+    }
+
+    #[test]
+    fn body_escapes_shell_metacharacters_in_the_path() {
+        // A data dir with `$`, backtick, `\`, and `"` must not expand/break the block.
+        let dir = PathBuf::from(r#"/home/b$x/a`b/c\d/e"f/bin"#);
+
+        let posix = render_body(Shell::Zsh, &dir);
+        // POSIX double quotes: \, $, `, " are all backslash-escaped.
+        assert!(posix.contains(r#"export PATH="/home/b\$x/a\`b/c\\d/e\"f/bin:$PATH""#));
+        assert!(posix.contains(r#"export PHPRC="/home/b\$x/a\`b/c\\d/e\"f/php-cli.ini""#));
+
+        let fish = render_body(Shell::Fish, &dir);
+        // fish double quotes: \, $, " escaped, but backtick stays literal.
+        assert!(fish.contains(r#"set -gx PATH "/home/b\$x/a`b/c\\d/e\"f/bin" $PATH"#));
+        assert!(fish.contains(r#"set -gx PHPRC "/home/b\$x/a`b/c\\d/e\"f/php-cli.ini""#));
     }
 
     #[test]

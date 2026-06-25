@@ -7,10 +7,13 @@ import { useRoute, useRouter } from "vue-router";
 import AppShell from "@/components/AppShell.vue";
 import DumpsWindowView from "@/views/DumpsWindowView.vue";
 import MailsViewerView from "@/views/MailsViewerView.vue";
+import WelcomeView from "@/views/WelcomeView.vue";
 import Toaster from "@/components/ui/Toaster.vue";
+import Spinner from "@/components/ui/Spinner.vue";
 import { useDaemon } from "@/composables/useDaemon";
+import { useOnboarding } from "@/composables/useOnboarding";
 import { useToast } from "@/composables/useToast";
-import { IpcError, startDaemon, status } from "@/ipc/client";
+import { IpcError, startDaemon } from "@/ipc/client";
 
 // The auxiliary "dumps" and "mails" windows render standalone viewers with no app
 // shell and must NOT run the daemon poller or the first-run auto-start (the main
@@ -24,6 +27,7 @@ const isMailsWindow = windowLabel === "mails";
 
 // Start the single shared daemon poller for the app's lifetime.
 const { start, stop, refresh } = useDaemon();
+const { probing, needsOnboarding, probe } = useOnboarding();
 const router = useRouter();
 const route = useRoute();
 const toast = useToast();
@@ -34,29 +38,10 @@ let unlistenNav: UnlistenFn | undefined;
 // first-run start flow (the main window owns those).
 const standalone = computed(() => route.meta.standalone === true);
 
-// First-load auto-START of the (bundled) daemon. A module-level guard keeps it
-// to one run.
-let autoStartDone = false;
-
-/** Is the daemon reachable now? (Direct probe, independent of the poller, which
- *  may have a tick in flight.) Mirrors useDaemon: only an *unreachable* socket
- *  counts as down; a typed daemon error still means it's up. */
-async function daemonReachable(): Promise<boolean> {
-  try {
-    await status();
-    return true;
-  } catch (e) {
-    return !(e instanceof IpcError && e.unreachable);
-  }
-}
-
 // The daemon is bundled inside the app, so first run just *starts* it (no
 // download). If it's already reachable (e.g. autostarted, or `cargo run -p
 // yerdd`) we leave it alone — starting a second would compete for the socket.
-async function maybeAutoStart(): Promise<void> {
-  if (autoStartDone) return;
-  autoStartDone = true;
-  if (await daemonReachable()) return;
+async function autoStart(): Promise<void> {
   try {
     await startDaemon();
   } catch (e) {
@@ -74,12 +59,23 @@ onMounted(async () => {
   // those belong to the main window.
   if (isDumpsWindow || isMailsWindow || standalone.value) return;
   start(4000);
+  // Run the probe FIRST and clear the splash before anything that can throw — a
+  // failing `listen` below must never strand the user on the splash forever. One
+  // shared probe decides between the first-run journey, the start screen, and
+  // auto-starting the bundled daemon; the journey owns starting the daemon, so
+  // skip auto-start when it's showing.
+  const { reachable } = await probe();
   // The tray's "go to <page>" items emit `navigate` with a route path (e.g.
-  // "/sites") after showing the window; jump the router there.
-  unlistenNav = await listen<string>("navigate", (event) => {
-    router.push(event.payload);
-  });
-  maybeAutoStart();
+  // "/sites") after showing the window; jump the router there. Best-effort.
+  try {
+    unlistenNav = await listen<string>("navigate", (event) => {
+      router.push(event.payload);
+    });
+  } catch {
+    /* tray navigation is non-critical */
+  }
+  if (needsOnboarding.value) return;
+  if (!reachable) await autoStart();
 });
 
 onUnmounted(() => {
@@ -97,6 +93,16 @@ onUnmounted(() => {
   <MailsViewerView v-else-if="isMailsWindow" />
   <!-- Other standalone routes render bare — no shell. -->
   <RouterView v-else-if="standalone" />
+  <!-- First-run probe in flight: a brief splash so we never flash the wrong
+       screen (the daemon-stopped panel) before the journey/app is decided. -->
+  <div
+    v-else-if="probing"
+    class="flex h-full w-full items-center justify-center bg-background"
+  >
+    <Spinner class="size-5 text-muted-foreground" />
+  </div>
+  <!-- Never set up → the full-screen welcome journey. -->
+  <WelcomeView v-else-if="needsOnboarding" />
   <template v-else>
     <AppShell />
   </template>

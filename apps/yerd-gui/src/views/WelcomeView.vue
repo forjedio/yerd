@@ -1,0 +1,440 @@
+<script setup lang="ts">
+import {
+  ArrowLeft,
+  ArrowRight,
+  Check,
+  Download,
+  ExternalLink,
+  FolderPlus,
+  Rocket,
+} from "lucide-vue-next";
+import { computed, onUnmounted, ref, watch } from "vue";
+import { useRouter } from "vue-router";
+
+import EnvironmentCard from "@/components/EnvironmentCard.vue";
+import TitleBar from "@/components/TitleBar.vue";
+import Button from "@/components/ui/Button.vue";
+import Select from "@/components/ui/Select.vue";
+import Spinner from "@/components/ui/Spinner.vue";
+import logoUrl from "@/assets/logo.svg";
+import { useDaemon } from "@/composables/useDaemon";
+import { useOnboarding } from "@/composables/useOnboarding";
+import { useToast } from "@/composables/useToast";
+import {
+  availablePhp,
+  getAutostart,
+  installPhp,
+  IpcError,
+  openLoginItems,
+  park,
+  pickDirectory,
+  setAutostartDaemon,
+  setAutostartGui,
+  setAutostartGuiMinimized,
+  startDaemon,
+} from "@/ipc/client";
+import type { AutostartState, PhpVersion } from "@/ipc/types";
+
+// A first-run guided setup, shown only on a never-set-up machine (see
+// useOnboarding). Step 1 (start the daemon) is required; PHP, parking a folder,
+// and elevation are each skippable. Finishing lands on the Overview.
+const router = useRouter();
+const toast = useToast();
+const { connected, refresh } = useDaemon();
+const { finish } = useOnboarding();
+
+const STEPS = [
+  { n: 1, label: "Daemon" },
+  { n: 2, label: "PHP" },
+  { n: 3, label: "Sites" },
+  { n: 4, label: "Trust" },
+  { n: 5, label: "Done" },
+] as const;
+
+const step = ref(1);
+
+// ── step 1: daemon ──
+const daemonStarting = ref(false);
+const pendingApproval = ref(false);
+const daemonUp = computed(() => connected.value === true);
+
+// If a started daemon never connects (and isn't pending approval), stop spinning
+// after this so the button is clickable again rather than stuck forever.
+const START_TIMEOUT_MS = 20_000;
+let startTimer: ReturnType<typeof setTimeout> | undefined;
+function clearStartTimer(): void {
+  if (startTimer) {
+    clearTimeout(startTimer);
+    startTimer = undefined;
+  }
+}
+
+async function installDaemon(): Promise<void> {
+  daemonStarting.value = true;
+  pendingApproval.value = false;
+  try {
+    await startDaemon();
+    await refresh();
+    // macOS may need the user to approve the background item before it runs.
+    let autostart: AutostartState | null = null;
+    try {
+      autostart = await getAutostart();
+    } catch {
+      /* non-fatal */
+    }
+    pendingApproval.value = autostart?.daemonPendingApproval ?? false;
+    // Onboarding default: run the daemon AND the app at login, with the app
+    // started minimized to the tray. Best-effort and idempotent — users change
+    // all three later in Settings. A missing service manager just skips the
+    // daemon toggle.
+    await enableLoginDefaults(autostart?.daemonSupported ?? false);
+    // Keep the spinner running until the daemon actually CONNECTS (the poller
+    // flips `connected` → the watch below clears it and shows "Running"). The
+    // only early-out is macOS pending-approval, where we can't connect until the
+    // user acts, so stop the spinner and show the approval hint.
+    if (pendingApproval.value) {
+      daemonStarting.value = false;
+    } else {
+      clearStartTimer();
+      startTimer = setTimeout(() => {
+        if (daemonStarting.value && connected.value !== true) {
+          daemonStarting.value = false;
+          toast.error(
+            "The daemon didn't come up",
+            "Try again, or check System Settings → Login Items.",
+          );
+        }
+      }, START_TIMEOUT_MS);
+    }
+  } catch (e) {
+    // Start failed outright — let the user retry.
+    daemonStarting.value = false;
+    toast.error("Couldn't start the daemon", (e as IpcError).message);
+  }
+}
+
+/**
+ * Enable the onboarding login defaults: daemon at login, GUI at login, and
+ * start-minimized. Each is best-effort so one failure (e.g. no per-user service
+ * manager for the daemon toggle) never blocks onboarding; users can change all
+ * three in Settings.
+ */
+async function enableLoginDefaults(daemonSupported: boolean): Promise<void> {
+  if (daemonSupported) {
+    try {
+      await setAutostartDaemon(true);
+    } catch {
+      /* no service manager / best-effort */
+    }
+  }
+  try {
+    await setAutostartGui(true);
+  } catch {
+    /* best-effort */
+  }
+  try {
+    await setAutostartGuiMinimized(true);
+  } catch {
+    /* best-effort */
+  }
+}
+
+// Stop the spinner once the daemon is actually reachable. No auto-advance — the
+// user clicks Continue (enabled once `daemonUp`).
+watch(connected, (c) => {
+  if (c === true) {
+    daemonStarting.value = false;
+    clearStartTimer();
+  }
+});
+
+onUnmounted(clearStartTimer);
+
+// ── step 2: PHP ──
+const phpLoading = ref(false);
+const phpInstalling = ref(false);
+const phpOptions = ref<{ value: PhpVersion; label: string }[]>([]);
+const selectedPhp = ref<PhpVersion>("");
+const installedPhp = ref<PhpVersion | null>(null);
+
+async function loadAvailablePhp(): Promise<void> {
+  if (phpOptions.value.length || installedPhp.value) return;
+  phpLoading.value = true;
+  try {
+    const r = await availablePhp();
+    const have = new Set(r.installed);
+    phpOptions.value = r.available
+      .filter((v) => !have.has(v))
+      .map((v) => ({ value: v, label: `PHP ${v}` }));
+    // Preselect the latest (daemon returns ascending → last is newest).
+    const opts = phpOptions.value;
+    selectedPhp.value = opts[opts.length - 1]?.value ?? "";
+    // Something already installed (e.g. revisiting) — reflect it.
+    if (r.installed.length) {
+      installedPhp.value = r.installed[r.installed.length - 1] ?? null;
+    }
+  } catch (e) {
+    toast.error("Couldn't load PHP versions", (e as IpcError).message);
+  } finally {
+    phpLoading.value = false;
+  }
+}
+
+async function doInstallPhp(): Promise<void> {
+  const v = selectedPhp.value;
+  if (!v) return;
+  phpInstalling.value = true;
+  try {
+    await installPhp(v);
+    installedPhp.value = v;
+    await refresh();
+    toast.success(`Installed PHP ${v}`, "It's set as your default.");
+  } catch (e) {
+    toast.error(`Install of PHP ${v} failed`, (e as IpcError).message);
+  } finally {
+    phpInstalling.value = false;
+  }
+}
+
+// ── step 3: park a folder ──
+const parking = ref(false);
+const parkedDir = ref<string | null>(null);
+
+async function doPark(): Promise<void> {
+  const dir = await pickDirectory();
+  if (!dir) return;
+  parking.value = true;
+  try {
+    await park(dir);
+    parkedDir.value = dir;
+    await refresh();
+    toast.success("Parked directory", dir);
+  } catch (e) {
+    toast.error("Park failed", (e as IpcError).message);
+  } finally {
+    parking.value = false;
+  }
+}
+
+// ── navigation ──
+watch(step, (s) => {
+  if (s === 2) void loadAvailablePhp();
+});
+
+const forwardLabel = computed(() => {
+  if (step.value === 1) return "Continue";
+  if (step.value === 5) return "Get started";
+  if (step.value === 2) return installedPhp.value ? "Continue" : "Skip for now";
+  if (step.value === 3) return parkedDir.value ? "Continue" : "Skip for now";
+  return "Continue";
+});
+
+const forwardDisabled = computed(() => step.value === 1 && !daemonUp.value);
+
+const finishing = ref(false);
+
+async function onForward(): Promise<void> {
+  if (step.value < 5) {
+    step.value += 1;
+    return;
+  }
+  finishing.value = true;
+  await finish();
+  void router.push("/overview");
+}
+
+function onBack(): void {
+  if (step.value > 1) step.value -= 1;
+}
+</script>
+
+<template>
+  <div class="flex h-full w-full flex-col bg-background">
+    <TitleBar title="Welcome to Yerd" />
+
+    <div class="flex min-h-0 flex-1 flex-col items-center overflow-y-auto px-8 py-10">
+      <!-- `mx-auto` + `items-center` centre horizontally; `my-auto` centres the
+           whole flow vertically when it fits, and collapses to scroll when not. -->
+      <div class="mx-auto my-auto flex w-full max-w-xl flex-col">
+        <!-- Brand + progress -->
+        <div class="mb-8 flex flex-col items-center text-center">
+          <img :src="logoUrl" alt="" class="size-12 rounded-xl" />
+          <h1 class="mt-3 text-xl font-semibold tracking-tight">Welcome to Yerd</h1>
+          <p class="mt-1 text-sm text-muted-foreground">
+            A few quick steps to get your local PHP environment running.
+          </p>
+        </div>
+
+        <ol class="mb-8 flex items-center justify-center gap-2">
+          <li
+            v-for="s in STEPS"
+            :key="s.n"
+            class="flex items-center gap-2"
+          >
+            <span
+              class="flex size-7 items-center justify-center rounded-full border text-xs font-medium"
+              :class="
+                step > s.n
+                  ? 'border-brand bg-brand text-brand-foreground'
+                  : step === s.n
+                    ? 'border-brand text-brand'
+                    : 'border-border text-muted-foreground'
+              "
+            >
+              <Check v-if="step > s.n" class="size-3.5" />
+              <template v-else>{{ s.n }}</template>
+            </span>
+            <span
+              v-if="s.n !== STEPS.length"
+              class="h-px w-6"
+              :class="step > s.n ? 'bg-brand' : 'bg-border'"
+            />
+          </li>
+        </ol>
+
+        <!-- Step body -->
+        <div class="rounded-xl border bg-card p-6">
+          <!-- 1. Daemon -->
+          <section v-if="step === 1" class="space-y-4">
+            <h2 class="text-base font-semibold">Install the Yerd daemon</h2>
+            <p class="text-sm text-muted-foreground">
+              <code>yerdd</code> is a small background service that supervises
+              PHP-FPM, serves your <code>.test</code> sites over HTTP/HTTPS,
+              answers DNS, and runs databases. It runs unprivileged - this app is
+              just a client and never runs as root.
+            </p>
+
+            <div
+              v-if="pendingApproval"
+              class="rounded-md border border-warning/40 bg-warning/10 p-3 text-sm"
+            >
+              <p class="font-medium">One more step</p>
+              <p class="mt-1 text-muted-foreground">
+                macOS needs you to allow Yerd in the background. Enable it under
+                Login Items, then it'll connect automatically.
+              </p>
+              <Button variant="outline" size="sm" class="mt-2" @click="openLoginItems">
+                <ExternalLink class="size-4" /> Open Login Items
+              </Button>
+            </div>
+
+            <!-- Action, below the content and right-aligned. -->
+            <div class="flex justify-end">
+              <div
+                v-if="daemonUp"
+                class="flex items-center gap-2 rounded-md bg-success/10 px-3 py-1.5 text-sm font-medium text-success"
+              >
+                <Check class="size-4" /> Running
+              </div>
+              <Button v-else :disabled="daemonStarting" @click="installDaemon">
+                <Spinner v-if="daemonStarting" class="size-4" />
+                <Download v-else class="size-4" />
+                Install &amp; start daemon
+              </Button>
+            </div>
+          </section>
+
+          <!-- 2. PHP -->
+          <section v-else-if="step === 2" class="space-y-4">
+            <h2 class="text-base font-semibold">Install a PHP version</h2>
+            <p class="text-sm text-muted-foreground">
+              Pick a version to install - the latest is selected for you. The
+              first version becomes your default. You can add more later.
+              Downloads a prebuilt build; this can take a few minutes.
+            </p>
+
+            <div v-if="phpLoading" class="flex justify-center py-6">
+              <Spinner class="size-5" />
+            </div>
+            <div
+              v-else-if="installedPhp"
+              class="flex items-center gap-2 rounded-md bg-success/10 px-3 py-2 text-sm text-success"
+            >
+              <Check class="size-4" /> PHP {{ installedPhp }} installed.
+            </div>
+            <template v-else-if="phpOptions.length">
+              <Select
+                class="w-full"
+                :model-value="selectedPhp"
+                :options="phpOptions"
+                aria-label="PHP version to install"
+                @update:model-value="(v: PhpVersion) => (selectedPhp = v)"
+              />
+              <div class="flex justify-end">
+                <Button :disabled="phpInstalling || !selectedPhp" @click="doInstallPhp">
+                  <Spinner v-if="phpInstalling" class="size-4" />
+                  <Download v-else class="size-4" />
+                  Install PHP {{ selectedPhp }}
+                </Button>
+              </div>
+            </template>
+            <p v-else class="text-sm text-muted-foreground">
+              No installable versions were found. You can add one later from the
+              PHP page.
+            </p>
+          </section>
+
+          <!-- 3. Park a folder -->
+          <section v-else-if="step === 3" class="space-y-4">
+            <h2 class="text-base font-semibold">Park a projects folder</h2>
+            <p class="text-sm text-muted-foreground">
+              Point Yerd at a folder of projects. Each subfolder is served at
+              <code>&lt;name&gt;.test</code> automatically.
+            </p>
+
+            <div
+              v-if="parkedDir"
+              class="flex items-center gap-2 rounded-md bg-success/10 px-3 py-2 text-sm text-success"
+            >
+              <Check class="size-4" /> Parked <span class="font-mono">{{ parkedDir }}</span>
+            </div>
+            <div v-else class="flex justify-end">
+              <Button :disabled="parking" @click="doPark">
+                <Spinner v-if="parking" class="size-4" />
+                <FolderPlus v-else class="size-4" />
+                Choose a folder…
+              </Button>
+            </div>
+          </section>
+
+          <!-- 4. Elevate -->
+          <section v-else-if="step === 4" class="space-y-4">
+            <h2 class="text-base font-semibold">Trust &amp; system access</h2>
+            <p class="text-sm text-muted-foreground">
+              For HTTPS on <code>.test</code> and serving on ports 80/443, Yerd
+              needs to trust its local certificate authority, install a
+              <code>.test</code> resolver, and bind privileged ports. You'll be
+              asked for your password. This is optional - you can do it later
+              from Doctor.
+            </p>
+            <EnvironmentCard />
+          </section>
+
+          <!-- 5. Done -->
+          <section v-else class="space-y-4 text-center">
+            <Rocket class="mx-auto size-10 text-brand" />
+            <div>
+              <h2 class="text-base font-semibold">You're all set</h2>
+              <p class="mt-1 text-sm text-muted-foreground">
+                Yerd is ready. Manage PHP, sites, and services from the dashboard.
+              </p>
+            </div>
+          </section>
+        </div>
+
+        <!-- Nav -->
+        <div class="mt-6 flex items-center justify-between">
+          <Button v-if="step > 1" variant="ghost" :disabled="finishing" @click="onBack">
+            <ArrowLeft class="size-4" /> Back
+          </Button>
+          <span v-else />
+          <Button :disabled="forwardDisabled || finishing" @click="onForward">
+            <Spinner v-if="finishing" class="size-4" />
+            {{ forwardLabel }}
+            <ArrowRight v-if="!finishing && step < 5" class="size-4" />
+          </Button>
+        </div>
+      </div>
+    </div>
+  </div>
+</template>

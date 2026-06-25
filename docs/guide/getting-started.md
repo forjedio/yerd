@@ -8,6 +8,14 @@ non-ongoing places: installing the system `.deb` (standard for any package),
 and a single, optional, **one-time** setup step. Day-to-day use never touches
 root.
 
+::: tip Coming from Herd, Valet, or Lerd?
+Already running another local PHP environment? They claim the same OS hooks Yerd
+needs - ports **80/443**, the `*.test` **resolver**, and a trusted local **CA** -
+so they can't both own them at once. **Stop the other tool first**, then follow
+**[Switching to Yerd](./switching-to-yerd)** for a clean, step-by-step migration
+(including exactly how to switch back).
+:::
+
 ::: info Supported platforms
 Yerd ships a single desktop app for **macOS** (Apple Silicon) and **Linux**
 (x86-64 and arm64, Debian/Ubuntu `.deb`). The daemon, the `yerd` CLI, and the privileged
@@ -33,11 +41,12 @@ build from the [releases page](https://github.com/forjedio/yerd/releases):
 | Linux (x86-64) | `Yerd_Linux_x86_64_v<ver>.deb` | `sudo apt install ./Yerd_Linux_x86_64_v<ver>.deb` |
 | Linux (arm64) | `Yerd_Linux_Arm64_v<ver>.deb` | `sudo apt install ./Yerd_Linux_Arm64_v<ver>.deb` |
 
-On first launch the app **starts its bundled daemon**, then walks you through a
-**one-time** `sudo yerd elevate` to trust the local CA, route `*.test`, and bind
-ports 80/443 - everything after that runs as your user, never as root. On macOS
-that makes setup essentially **drag-and-drop**: drag Yerd to Applications, launch
-it, done.
+On first launch the app greets you with a short [onboarding journey](./welcome-journey)
+that starts the bundled daemon, installs a PHP version, parks your projects, and
+runs a **one-time** elevation (trust the local CA, route `*.test`, bind ports
+80/443) - everything after that runs as your user, never as root. On macOS that
+makes setup essentially **drag-and-drop**: drag Yerd to Applications, launch it,
+and follow the steps.
 
 <ThemedImage light="/images/overview-light.png" dark="/images/overview-dark.png" alt="The Yerd desktop app, landed on the Overview dashboard" />
 

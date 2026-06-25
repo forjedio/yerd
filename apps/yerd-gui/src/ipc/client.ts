@@ -29,6 +29,7 @@ import type {
   Response,
   ServiceAvailability,
   ServiceStatus,
+  SetupState,
   Site,
   StatusReport,
   ToolStatus,
@@ -524,6 +525,14 @@ export async function elevateAll(): Promise<void> {
 }
 
 /**
+ * Apply resolver + ports in a single OS-elevation prompt (macOS "Fix all" uses
+ * this so the two root steps share one password prompt; trust is in-process).
+ */
+export async function elevateResolverPorts(): Promise<void> {
+  await call<void>("elevate_resolver_ports");
+}
+
+/**
  * Revert `elevate` for `target` under the same OS elevation (`yerd unelevate
  * <target>`). On macOS, unelevating the resolver restores the pre-Yerd resolver
  * from its backup (or removes Yerd's file if none). `ports` is reversible on
@@ -575,6 +584,18 @@ export async function setAutostartGui(on: boolean): Promise<void> {
 
 export async function setAutostartGuiMinimized(on: boolean): Promise<void> {
   await call<void>("set_gui_minimized", { on });
+}
+
+// ── onboarding / first-run ───────────────────────────────────────────────────
+
+/** First-run decision inputs: has the journey run, and is Yerd already set up? */
+export async function setupState(): Promise<SetupState> {
+  return call<SetupState>("setup_state");
+}
+
+/** Mark the first-run welcome journey complete (persisted host-side). */
+export async function markOnboarded(): Promise<void> {
+  await call<void>("mark_onboarded");
 }
 
 // ── optional: install the bundled `yerd` CLI on PATH (macOS) ────────────────

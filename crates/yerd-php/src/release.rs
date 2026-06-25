@@ -12,6 +12,12 @@ use yerd_core::PhpVersion;
 
 use crate::error::PhpError;
 
+/// Lowest PHP minor Yerd supports installing. The bundled `pcov` / `yerd-dump`
+/// extensions are only built for 8.2+, so older minors are filtered out of the
+/// installable list and rejected at resolve time even when the distribution
+/// still publishes them.
+pub const MIN_SUPPORTED: PhpVersion = PhpVersion::new(8, 2);
+
 /// Base URL of the static-php-cli prebuilt distribution for `os`.
 ///
 /// Both platforms use the **bulk** extension set so a real-world Laravel app
@@ -163,6 +169,12 @@ pub fn resolve_from_listing(
     os: Os,
     arch: Arch,
 ) -> Result<Artifact, PhpError> {
+    // Reject unsupported minors (8.0/8.1) up front, reusing `VersionUnavailable`
+    // so callers get one consistent "can't install that" error regardless of
+    // whether the distribution still lists it.
+    if version < MIN_SUPPORTED {
+        return Err(PhpError::VersionUnavailable { version });
+    }
     let prefix = format!("php-{}.{}.", version.major, version.minor);
     let suffix = format!(
         "-{}-{}-{}.tar.gz",
@@ -251,7 +263,11 @@ pub fn available_minors(listing: &str, os: Os, arch: Arch) -> Vec<PhpVersion> {
             continue;
         };
         if after_patch.starts_with(&suffix) {
-            out.push(PhpVersion::new(major, minor));
+            let v = PhpVersion::new(major, minor);
+            // Hide unsupported minors (8.0/8.1) from the installable list.
+            if v >= MIN_SUPPORTED {
+                out.push(v);
+            }
         }
     }
 
@@ -402,6 +418,33 @@ mod tests {
             }
             other => panic!("expected VersionUnavailable, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn min_supported_floor_drops_8_0_and_8_1() {
+        // A listing that includes 8.0/8.1 alongside supported minors.
+        let listing = "\
+            php-8.0.30-cli-linux-x86_64.tar.gz \
+            php-8.1.31-cli-linux-x86_64.tar.gz \
+            php-8.2.27-cli-linux-x86_64.tar.gz \
+            php-8.5.6-cli-linux-x86_64.tar.gz";
+        // available_minors hides 8.0/8.1.
+        let got = available_minors(listing, Os::Linux, Arch::X86_64);
+        assert_eq!(got, vec![PhpVersion::new(8, 2), PhpVersion::new(8, 5)]);
+        // resolve_from_listing rejects them even though the build is published.
+        for minor in [PhpVersion::new(8, 0), PhpVersion::new(8, 1)] {
+            match resolve_from_listing(listing, minor, Os::Linux, Arch::X86_64) {
+                Err(PhpError::VersionUnavailable { version }) => assert_eq!(version, minor),
+                other => panic!("expected VersionUnavailable for {minor}, got {other:?}"),
+            }
+        }
+        // 8.2 still resolves.
+        assert_eq!(
+            resolve_from_listing(listing, PhpVersion::new(8, 2), Os::Linux, Arch::X86_64)
+                .unwrap()
+                .full_version,
+            "8.2.27"
+        );
     }
 
     #[test]

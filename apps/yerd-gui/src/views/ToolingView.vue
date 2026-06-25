@@ -39,9 +39,14 @@ const TOOL_HINTS: Record<string, string> = {
   laravel: "The laravel new installer for scaffolding new Laravel apps. Needs Composer.",
 };
 
+// Managed-only: building the managed Laravel installer requires Yerd's own
+// Composer (an external Composer can't build it), so this gate ignores `external`.
 const composerInstalled = computed(() =>
   tools.value.some((t) => t.id === "composer" && t.installed),
 );
+
+const COMPOSER_REQUIRED_HINT =
+  "Yerd's own Composer is required to build the Laravel installer.";
 
 /** The Laravel installer is built via Composer, so it can't install without it. */
 function blockedNoComposer(t: ToolStatus): boolean {
@@ -179,6 +184,9 @@ onMounted(load);
                   <Badge v-if="t.installed" variant="secondary">
                     {{ t.version ?? "installed" }}
                   </Badge>
+                  <Badge v-else-if="t.external" variant="outline">
+                    External
+                  </Badge>
                   <span v-else class="text-xs text-muted-foreground">
                     Not installed
                   </span>
@@ -194,7 +202,7 @@ onMounted(load);
                         variant="outline"
                         size="sm"
                         :disabled="busy !== null || blockedNoComposer(t)"
-                        :title="blockedNoComposer(t) ? 'Install Composer first' : ''"
+                        :title="blockedNoComposer(t) ? COMPOSER_REQUIRED_HINT : ''"
                         @click="doInstall(t)"
                       >
                         <RefreshCw class="mr-1.5 size-3.5" /> Update
@@ -210,11 +218,13 @@ onMounted(load);
                         <Trash2 class="size-3.5" />
                       </Button>
                     </template>
+                    <!-- External tools are managed by the user, not Yerd: no actions. -->
+                    <template v-else-if="t.external" />
                     <Button
                       v-else
                       size="sm"
                       :disabled="busy !== null || blockedNoComposer(t)"
-                      :title="blockedNoComposer(t) ? 'Install Composer first' : ''"
+                      :title="blockedNoComposer(t) ? COMPOSER_REQUIRED_HINT : ''"
                       @click="doInstall(t)"
                     >
                       <Download class="mr-1.5 size-3.5" /> Install

@@ -96,10 +96,10 @@ onMounted(() => void loadDiagnoses());
 </script>
 
 <template>
-  <div class="flex h-full flex-col">
+  <div class="flex h-full min-h-0 flex-col">
     <PageHeader title="Doctor" subtitle="Health checks and safe one-click fixes" />
 
-    <div class="flex-1 space-y-6 overflow-y-auto p-6">
+    <div class="min-h-0 flex-1 space-y-6 overflow-y-auto p-6">
       <Card>
         <CardHeader class="flex-row items-center justify-between space-y-0">
           <div class="space-y-1.5">
@@ -171,8 +171,10 @@ onMounted(() => void loadDiagnoses());
         </CardContent>
       </Card>
 
-      <!-- OS-level privileges (CA trust, .test resolver, privileged ports). -->
-      <EnvironmentCard />
+      <!-- OS-level privileges (CA trust, .test resolver, privileged ports).
+           Re-run the health checks after any elevation so the table above
+           reflects the new state without a manual re-check. -->
+      <EnvironmentCard @elevated="loadDiagnoses()" />
     </div>
   </div>
 </template>

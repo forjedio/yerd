@@ -1449,9 +1449,11 @@ fn response_tools_byte_shape() {
             installed: true,
             version: Some("v24.17.0".into()),
             binaries: vec!["node".into(), "npm".into(), "npx".into()],
+            external: false,
         }],
     };
     let s = serde_json::to_string(&r).unwrap();
+    // `external: false` is skipped on the wire, so the byte shape is unchanged.
     let expected = r#"{"type":"tools","tools":[{"id":"node","display_name":"Node.js","installed":true,"version":"v24.17.0","binaries":["node","npm","npx"]}]}"#;
     assert_eq!(s, expected);
     assert_eq!(serde_json::from_str::<Response>(&s).unwrap(), r);

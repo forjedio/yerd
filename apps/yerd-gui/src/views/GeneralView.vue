@@ -1,7 +1,5 @@
 <script setup lang="ts">
 import {
-  CircleDot,
-  CircleOff,
   Download,
   Info,
   Play,
@@ -283,14 +281,32 @@ async function openApproval(): Promise<void> {
 // Run a check (no override → uses the saved channel). Mirror the saved channel
 // the daemon reports back into the selector so it stays the single source of
 // truth.
-async function runUpdateCheck(): Promise<void> {
+// `notify` is true only for the explicit "Check now" button — a check triggered
+// any other way (channel change) updates the shown status silently, so opening
+// Settings never pops an unsolicited toast.
+async function runUpdateCheck(notify = false): Promise<void> {
   checkingUpdates.value = true;
   try {
     const status = await checkUpdates();
     updateStatus.value = status;
     updateChannel.value = status.channel;
+    if (!notify) return;
+    if (status.available && status.target) {
+      toast.success("Update available", `Version ${status.target} can be installed.`);
+    } else if (status.ahead_of_stable) {
+      toast.info("Up to date", "You're on a pre-release ahead of stable.");
+    } else if (status.source === "cached") {
+      // The daemon couldn't reach the update server and served its last cached
+      // result — don't claim "latest version" off possibly-stale data.
+      toast.info(
+        "Couldn't reach the update server",
+        "Showing the last cached result — you may be offline.",
+      );
+    } else {
+      toast.success("Up to date", "You're on the latest version.");
+    }
   } catch (e) {
-    toast.error("Couldn't check for updates", (e as IpcError).message);
+    if (notify) toast.error("Couldn't check for updates", (e as IpcError).message);
   } finally {
     checkingUpdates.value = false;
   }
@@ -329,7 +345,7 @@ onMounted(() => {
     .catch(() => {});
   loadCli();
   if (running.value) loadDumps();
-  if (running.value) runUpdateCheck();
+  // No auto update-check on open — it only runs when the user clicks "Check now".
 });
 
 // Refresh the dump-capture row whenever the daemon comes up (and clear it when
@@ -337,7 +353,6 @@ onMounted(() => {
 watch(running, (up) => {
   if (up) {
     loadDumps();
-    runUpdateCheck();
   } else {
     dumps.value = null;
     updateStatus.value = null;
@@ -455,11 +470,7 @@ async function toggleGuiMinimized(on: boolean): Promise<void> {
       <Card>
         <CardHeader class="flex-row items-center justify-between space-y-0">
           <div class="space-y-1.5">
-            <CardTitle class="flex items-center gap-2">
-              <CircleDot v-if="running" class="size-4 text-success" />
-              <CircleOff v-else class="size-4 text-muted-foreground" />
-              Daemon
-            </CardTitle>
+            <CardTitle>Daemon</CardTitle>
             <CardDescription>{{ daemonStatus }}</CardDescription>
           </div>
           <Button v-if="!running" :disabled="busy === 'daemon'" @click="onStart">
@@ -593,7 +604,7 @@ async function toggleGuiMinimized(on: boolean): Promise<void> {
               <p class="text-sm font-medium">Install <code>yerd</code> on your PATH</p>
               <p class="text-xs text-muted-foreground">
                 {{ cli?.installed
-                  ? "Installed — run `yerd` in a new terminal window."
+                  ? "Installed - run `yerd` in a new terminal window."
                   : "Symlinks the bundled CLI into your shell PATH." }}
               </p>
             </div>
@@ -667,8 +678,8 @@ async function toggleGuiMinimized(on: boolean): Promise<void> {
                 <p class="font-medium">{{ updateSummary }}</p>
                 <p class="text-xs text-muted-foreground">
                   Current {{ updateStatus.current }} · stable
-                  {{ updateStatus.latest_stable ?? "—" }} · edge
-                  {{ updateStatus.latest_edge ?? "—" }}
+                  {{ updateStatus.latest_stable ?? "-" }} · edge
+                  {{ updateStatus.latest_edge ?? "-" }}
                   <span v-if="updateStatus.source === 'cached'">
                     · offline (last known)
                   </span>
@@ -678,7 +689,7 @@ async function toggleGuiMinimized(on: boolean): Promise<void> {
                 {{ running ? "Not checked yet." : "Start the daemon to check for updates." }}
               </p>
             </div>
-            <Button variant="outline" :disabled="!running || checkingUpdates" @click="runUpdateCheck">
+            <Button variant="outline" :disabled="!running || checkingUpdates" @click="runUpdateCheck(true)">
               <Spinner v-if="checkingUpdates" class="size-4" />
               <RefreshCw v-else class="size-4" />
               Check now
@@ -691,7 +702,7 @@ async function toggleGuiMinimized(on: boolean): Promise<void> {
           >
             <p class="text-sm">
               <template v-if="applyingUpdate">
-                Updating to <strong>{{ updateStatus.target }}</strong> — Yerd will restart…
+                Updating to <strong>{{ updateStatus.target }}</strong> - Yerd will restart…
               </template>
               <template v-else>
                 Yerd <strong>{{ updateStatus.target }}</strong> is available.

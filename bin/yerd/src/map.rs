@@ -647,6 +647,8 @@ fn format_tools(tools: &[ToolStatus]) -> String {
     for t in tools {
         let status = if t.installed {
             t.version.as_deref().unwrap_or("installed")
+        } else if t.external {
+            "external"
         } else {
             "not installed"
         };
@@ -1401,6 +1403,7 @@ mod tests {
                     installed: true,
                     version: Some("v24.17.0".into()),
                     binaries: vec!["node".into(), "npm".into(), "npx".into()],
+                    external: false,
                 }],
             },
             false,
