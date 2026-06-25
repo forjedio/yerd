@@ -8,6 +8,14 @@ non-ongoing places: installing the system `.deb` (standard for any package),
 and a single, optional, **one-time** setup step. Day-to-day use never touches
 root.
 
+::: tip Coming from Herd, Valet, or Lerd?
+Already running another local PHP environment? They claim the same OS hooks Yerd
+needs - ports **80/443**, the `*.test` **resolver**, and a trusted local **CA** -
+so they can't both own them at once. **Stop the other tool first**, then follow
+**[Switching to Yerd](./switching-to-yerd)** for a clean, step-by-step migration
+(including exactly how to switch back).
+:::
+
 ::: info Supported platforms
 Yerd ships a single desktop app for **macOS** (Apple Silicon) and **Linux**
 (x86-64 and arm64, Debian/Ubuntu `.deb`). The daemon, the `yerd` CLI, and the privileged

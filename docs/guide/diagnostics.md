@@ -41,7 +41,7 @@ A healthy machine looks roughly like this:
 
 ```text
 daemon    running (pid 4821, up 2h 13m, rss 6.2 MB)
-version   2.0.1
+version   2.0.2
 tld       .test
 http      80
 https     443

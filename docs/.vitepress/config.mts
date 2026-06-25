@@ -105,7 +105,7 @@ export default withMermaid({
         activeMatch: '/developer/',
       },
       {
-        text: 'v2.0.1',
+        text: 'v2.0.2',
         items: [
           {
             text: 'Changelog',
@@ -124,6 +124,7 @@ export default withMermaid({
             { text: 'What is Yerd?', link: '/guide/introduction' },
             { text: 'Getting Started', link: '/guide/getting-started' },
             { text: 'Yerd Onboarding', link: '/guide/welcome-journey' },
+            { text: 'Switching to Yerd', link: '/guide/switching-to-yerd' },
             { text: 'Upgrade Guide', link: '/guide/upgrading-from-v1' },
             { text: 'Features', link: '/guide/features' },
           ],
