@@ -33,11 +33,12 @@ build from the [releases page](https://github.com/forjedio/yerd/releases):
 | Linux (x86-64) | `Yerd_Linux_x86_64_v<ver>.deb` | `sudo apt install ./Yerd_Linux_x86_64_v<ver>.deb` |
 | Linux (arm64) | `Yerd_Linux_Arm64_v<ver>.deb` | `sudo apt install ./Yerd_Linux_Arm64_v<ver>.deb` |
 
-On first launch the app **starts its bundled daemon**, then walks you through a
-**one-time** `sudo yerd elevate` to trust the local CA, route `*.test`, and bind
-ports 80/443 - everything after that runs as your user, never as root. On macOS
-that makes setup essentially **drag-and-drop**: drag Yerd to Applications, launch
-it, done.
+On first launch the app greets you with a short [onboarding journey](./welcome-journey)
+that starts the bundled daemon, installs a PHP version, parks your projects, and
+runs a **one-time** elevation (trust the local CA, route `*.test`, bind ports
+80/443) - everything after that runs as your user, never as root. On macOS that
+makes setup essentially **drag-and-drop**: drag Yerd to Applications, launch it,
+and follow the steps.
 
 <ThemedImage light="/images/overview-light.png" dark="/images/overview-dark.png" alt="The Yerd desktop app, landed on the Overview dashboard" />
 

@@ -123,6 +123,7 @@ export default withMermaid({
           items: [
             { text: 'What is Yerd?', link: '/guide/introduction' },
             { text: 'Getting Started', link: '/guide/getting-started' },
+            { text: 'Yerd Onboarding', link: '/guide/welcome-journey' },
             { text: 'Upgrade Guide', link: '/guide/upgrading-from-v1' },
             { text: 'Features', link: '/guide/features' },
           ],
