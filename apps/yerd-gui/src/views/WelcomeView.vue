@@ -28,9 +28,12 @@ import {
   openLoginItems,
   park,
   pickDirectory,
+  setAutostartDaemon,
+  setAutostartGui,
+  setAutostartGuiMinimized,
   startDaemon,
 } from "@/ipc/client";
-import type { PhpVersion } from "@/ipc/types";
+import type { AutostartState, PhpVersion } from "@/ipc/types";
 
 // A first-run guided setup, shown only on a never-set-up machine (see
 // useOnboarding). Step 1 (start the daemon) is required; PHP, parking a folder,
@@ -73,12 +76,18 @@ async function installDaemon(): Promise<void> {
     await startDaemon();
     await refresh();
     // macOS may need the user to approve the background item before it runs.
+    let autostart: AutostartState | null = null;
     try {
-      const a = await getAutostart();
-      pendingApproval.value = a.daemonPendingApproval;
+      autostart = await getAutostart();
     } catch {
       /* non-fatal */
     }
+    pendingApproval.value = autostart?.daemonPendingApproval ?? false;
+    // Onboarding default: run the daemon AND the app at login, with the app
+    // started minimized to the tray. Best-effort and idempotent — users change
+    // all three later in Settings. A missing service manager just skips the
+    // daemon toggle.
+    await enableLoginDefaults(autostart?.daemonSupported ?? false);
     // Keep the spinner running until the daemon actually CONNECTS (the poller
     // flips `connected` → the watch below clears it and shows "Running"). The
     // only early-out is macOS pending-approval, where we can't connect until the
@@ -101,6 +110,32 @@ async function installDaemon(): Promise<void> {
     // Start failed outright — let the user retry.
     daemonStarting.value = false;
     toast.error("Couldn't start the daemon", (e as IpcError).message);
+  }
+}
+
+/**
+ * Enable the onboarding login defaults: daemon at login, GUI at login, and
+ * start-minimized. Each is best-effort so one failure (e.g. no per-user service
+ * manager for the daemon toggle) never blocks onboarding; users can change all
+ * three in Settings.
+ */
+async function enableLoginDefaults(daemonSupported: boolean): Promise<void> {
+  if (daemonSupported) {
+    try {
+      await setAutostartDaemon(true);
+    } catch {
+      /* no service manager / best-effort */
+    }
+  }
+  try {
+    await setAutostartGui(true);
+  } catch {
+    /* best-effort */
+  }
+  try {
+    await setAutostartGuiMinimized(true);
+  } catch {
+    /* best-effort */
   }
 }
 

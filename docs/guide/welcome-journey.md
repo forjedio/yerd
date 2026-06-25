@@ -32,6 +32,8 @@ The journey opens by introducing **`yerdd`**, the small background service that 
 
 Click **Install & start daemon**. The button keeps spinning until the daemon actually connects, then turns into a green **Running** badge and **Continue** unlocks. This is the one required step - everything after it is skippable.
 
+Installing the daemon here also sets some sensible login defaults: the **daemon and the app both start at login**, with the **app started minimized** to the tray. You can change all three under **Settings → Start at login** at any time.
+
 ::: tip macOS background approval
 On macOS the daemon registers as a background **SMAppService** login item (it shows as "Yerd" in System Settings → Login Items). If macOS asks you to approve it first, the step shows an **Open Login Items** button to take you there; once approved it connects automatically.
 :::

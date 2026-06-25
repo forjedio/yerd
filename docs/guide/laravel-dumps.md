@@ -123,6 +123,8 @@ The desktop app gives Dumps its own space:
 - **A standalone Dumps window** can be popped out so you can keep dumps visible
   next to your editor and browser while the rest of the app stays out of the way.
 
+<ThemedImage light="/images/dumps-dialog-light.png" dark="/images/dumps-dialog-dark.png" alt="The Yerd Dumps window showing captured dump events" />
+
 You can filter by category (the tabs), clear the buffer, and remove individual
 events.
 

@@ -12,9 +12,13 @@ import { useToast } from "@/composables/useToast";
 import { clearMails, deleteMails, getMail, IpcError, listMails } from "@/ipc/client";
 import type { MailDetail, MailSummary } from "@/ipc/types";
 
-// The rendered HTML email is sandboxed: no scripts, no same-origin, and a strict
-// child CSP injected into the srcdoc so only inline styles + data: images load.
-const CHILD_CSP = "default-src 'none'; img-src data:; style-src 'unsafe-inline'";
+// The rendered HTML email is sandboxed: no scripts, no same-origin. The child CSP
+// keeps `default-src 'none'` (so nothing executes), but allows images over
+// data:/http/https so emails render with their inline AND remote images (logos
+// etc.). Note: like any mail client, this means remote images can load when you
+// open a message.
+const CHILD_CSP =
+  "default-src 'none'; img-src data: http: https:; style-src 'unsafe-inline'";
 
 const toast = useToast();
 

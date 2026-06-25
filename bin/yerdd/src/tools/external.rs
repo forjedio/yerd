@@ -4,8 +4,9 @@
 //! The daemon runs under launchd / `systemd --user` with a **restricted** PATH,
 //! so it can't see Homebrew / fnm / global-Composer tools from its own env. We
 //! resolve the user's **interactive-login** shell PATH to find them. Spawning the
-//! shell is the I/O edge; the path-walking is pure. Unix-only — Windows yields
-//! `None`/no externals.
+//! shell is the heaviest I/O edge, but the path-walking also hits the filesystem
+//! (`metadata`/`canonicalize`); nothing here is I/O-free. Unix-only — Windows
+//! yields `None`/no externals.
 
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};

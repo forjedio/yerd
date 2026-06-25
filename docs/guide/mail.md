@@ -125,10 +125,15 @@ bodies).
 
 The standalone **Mails** viewer window - opened from the [desktop app](./desktop-app)
 with **Show Mails** - decodes each message for you: headers, the plain-text body,
-and a rendered **HTML** body. HTML is shown in a sandboxed frame with no network
-access - inline images referenced by `cid:` are rewritten to embedded `data:`
-URLs so they render without reaching out to the network. From the GUI you can
-read, delete individual messages, and clear everything.
+and a rendered **HTML** body. From the GUI you can read, delete individual
+messages, and clear everything.
+
+<ThemedImage light="/images/mails-light.png" dark="/images/mails-dark.png" alt="A captured email open in the Yerd Mails viewer" />
+
+The HTML body renders in a **sandboxed frame that can't run scripts**. Inline
+images referenced by `cid:` are embedded as `data:` URLs, and remote images
+(e.g. a logo served over `https://`) load as well - just like a normal mail
+client, so opening a message can fetch its remote images.
 
 ## Configuration
 

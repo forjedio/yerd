@@ -23,6 +23,42 @@ The **Sites** page (under **Environment** in the sidebar) is the home base for m
 
 For the full tour of the app, see [Desktop App](./desktop-app#sites).
 
+## Create a new Laravel site
+
+Beyond registering folders you already have, the app can **scaffold a brand-new Laravel project** for you. Open the **Create** menu in the Sites header and choose **New Laravel site** to launch a short, four-step wizard - **Basics → Stack → Testing → Review** - that runs `laravel new` under the PHP version you pick and registers the result as a `.test` site automatically.
+
+::: tip Prerequisites
+Creating a Laravel site needs a PHP version, **Composer**, and the **Laravel installer**. If any are missing, the wizard offers to install them first; it can also use ones you already have [installed externally](./tooling#external-tools) (e.g. a global Composer). Starter kits that need Node or Bun pull the runtime in during the build.
+:::
+
+### Basics
+
+<ThemedImage light="/images/newlaravel1-light.png" dark="/images/newlaravel1-dark.png" alt="The Create-a-new-Laravel-site wizard, Basics step" />
+
+- **Project name** - the site is served at `<name>.test`.
+- **Location** - pick the parent folder. If it's a [parked](#parking-a-directory) root the new site is served automatically; any other folder is [linked](#linking-a-directory) under the project name.
+- **PHP version** - the version the site (and the installer) runs on.
+- **HTTPS** - serve it over TLS from day one (you can toggle this later too).
+
+### Stack
+
+<ThemedImage light="/images/newlaravel2-light.png" dark="/images/newlaravel2-dark.png" alt="The Create-a-new-Laravel-site wizard, Stack step (starter kit)" />
+
+Choose a **starter kit**: **None** (a plain skeleton, no auth scaffolding), the official **React**, **Vue**, or **Svelte** kits (Inertia + TypeScript), **Livewire** (Blade + PHP), or **Community…** to scaffold from any `--using <package>`.
+
+### Testing
+
+<ThemedImage light="/images/newlaravel3-light.png" dark="/images/newlaravel3-dark.png" alt="The Create-a-new-Laravel-site wizard, Testing step" />
+
+- **Testing framework** - **Pest** or **PHPUnit**.
+- **Database** - SQLite, MySQL, MariaDB, PostgreSQL, or SQL Server.
+- **Initialise git** - run `git init` in the new project.
+- **Laravel Boost** - install [Boost](https://laravel.com/docs) for AI-assisted coding.
+
+### Review
+
+A final summary of your choices. Click **Create** and Yerd runs the installer, streaming its live output so you can watch the scaffold and dependency install happen. When it finishes, the project is on disk, registered (parked or linked), served at `<name>.test`, and ready to open in your browser - no extra steps.
+
 ## From the command line
 
 Everything the Sites page does maps to a `yerd` command. These are the same operations against the same daemon, so anything you do here shows up in the app immediately.

@@ -17,6 +17,10 @@ const probing = ref(true);
 /** True when the first-run journey should replace the normal app shell. */
 const needsOnboarding = ref(false);
 let probed = false;
+// The actual reachability from the one probe, so cached calls report the truth
+// (not `!needsOnboarding`, which is false even when the daemon is down but the
+// machine is already set up).
+let lastReachable = false;
 
 /** Is the daemon reachable now? Mirrors useDaemon: only an *unreachable* socket
  *  counts as down; a typed daemon error still means it's up. */
@@ -36,9 +40,10 @@ export function useOnboarding() {
    * whether to auto-start it (the journey owns starting it otherwise).
    */
   async function probe(): Promise<{ reachable: boolean }> {
-    if (probed) return { reachable: !needsOnboarding.value };
+    if (probed) return { reachable: lastReachable };
     probed = true;
     const reachable = await daemonReachable();
+    lastReachable = reachable;
     if (reachable) {
       needsOnboarding.value = false;
     } else {
