@@ -549,19 +549,48 @@ fn gui_version() -> semver::Version {
         .unwrap_or_else(|_| semver::Version::new(0, 0, 0))
 }
 
+/// Run `program args` discarding its output and return whether it exited
+/// successfully, bounded by `secs` (kill + `None` on timeout). The bounded
+/// sibling of [`capture`] for callers that only need the exit-status predicate —
+/// so a wedged `launchctl` can't hang the launch path (this runs from
+/// startup-repair and daemon start).
+#[cfg(target_os = "macos")]
+fn bounded_status(program: &str, args: &[&str], secs: u64) -> Option<bool> {
+    use std::process::Stdio;
+    use std::time::{Duration, Instant};
+
+    let mut child = Command::new(program)
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()?;
+    let deadline = Instant::now() + Duration::from_secs(secs);
+    loop {
+        match child.try_wait() {
+            Ok(Some(st)) => return Some(st.success()),
+            Ok(None) if Instant::now() >= deadline => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+            Ok(None) => std::thread::sleep(Duration::from_millis(50)),
+            Err(_) => return None,
+        }
+    }
+}
+
 /// Whether launchd currently has the daemon job — by **exit status** (a missing
 /// job makes `launchctl print` exit non-zero). Unlike `service_status_text()`,
 /// which returns `Some("Could not find service…")` for a missing job, this is a
 /// true predicate: `true` for an upgrade victim (job exists), `false` for a
-/// never-registered fresh user.
+/// never-registered fresh user. Bounded so a wedged `launchctl` can't hang the
+/// launch path (timeout → `false`: treat an unresponsive launchctl as "no job",
+/// which skips re-registration rather than hanging).
 #[cfg(target_os = "macos")]
 fn daemon_launchd_job_exists() -> bool {
-    Command::new("launchctl")
-        .arg("print")
-        .arg(service_target())
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
+    bounded_status("launchctl", &["print", &service_target()], 4).unwrap_or(false)
 }
 
 /// Append a line to `{cache}/yerd-gui-repair.log`. The GUI has no `tracing`
@@ -604,6 +633,26 @@ pub(crate) fn ensure_daemon_registration() -> Result<(), GuiError> {
     let _guard = DAEMON_REG_LOCK.lock().unwrap_or_else(|p| p.into_inner());
     let gui = gui_version();
     let mut s = load_settings();
+
+    // Only trust the persisted marker when a daemon is *actually* registered.
+    // Keep an existing registration current — never opt a fresh user in. Crucially,
+    // do this BEFORE the version compare: if the daemon was unregistered (e.g. the
+    // autostart toggle turned off), the stored version is stale, and an older GUI
+    // must not be blocked "protecting" a daemon that no longer exists — so drop the
+    // stale marker. (`smapp_registered()` can read not-registered post-swap, so a
+    // live launchd job also counts. `daemon_autostart` — set whenever the user
+    // enables the daemon — keeps a transient launchctl false from clearing a real
+    // registration; the rare residual edge re-registers harmlessly next launch.)
+    let has_registration = s.daemon_autostart || smapp_registered() || daemon_launchd_job_exists();
+    if !has_registration {
+        if s.daemon_registered_version.is_some() || s.daemon_version_conflict.is_some() {
+            s.daemon_registered_version = None;
+            s.daemon_version_conflict = None;
+            let _ = save_settings(&s);
+        }
+        return Ok(()); // nothing registered → nothing to repair or protect
+    }
+
     let stored = s
         .daemon_registered_version
         .as_deref()
@@ -634,21 +683,9 @@ pub(crate) fn ensure_daemon_registration() -> Result<(), GuiError> {
         Decision::Reconcile => {}
     }
 
-    // Version advanced (or unknown). Keep an *existing* registration current —
-    // never opt a fresh user in. (`smapp_registered()` may read stale-not-
-    // registered post-swap, so also accept a live launchd job.)
-    let has_registration = s.daemon_autostart || smapp_registered() || daemon_launchd_job_exists();
-    if !has_registration {
-        if s.daemon_version_conflict.is_some() {
-            s.daemon_version_conflict = None;
-            let _ = save_settings(&s);
-        }
-        return Ok(()); // nothing registered → record nothing (so a later downgrade isn't a false conflict)
-    }
-
-    // Force a re-register so a stale BTM entry (in-place or automated upgrade) is
-    // re-pointed to THIS bundle: `register()` is an `Ok` no-op on a stale-enabled
-    // entry, so the explicit unregister is what forces the re-point.
+    // Version advanced. Force a re-register so a stale BTM entry (in-place or
+    // automated upgrade) is re-pointed to THIS bundle: `register()` is an `Ok`
+    // no-op on a stale-enabled entry, so the explicit unregister is what forces it.
     repair_log(&format!(
         "self-repair: re-registering daemon for {gui} (was {stored:?})"
     ));
@@ -656,6 +693,11 @@ pub(crate) fn ensure_daemon_registration() -> Result<(), GuiError> {
     match crate::smappservice::register_repairing(crate::smappservice::Service::Daemon) {
         Ok(()) => {
             let _ = run_ok("launchctl", &["kickstart", "-k", &service_target()]);
+            // Reload right before saving: the unregister/register/kickstart above
+            // are slow OS calls during which a concurrent settings write could
+            // land; apply only our two fields to the latest on-disk state so we
+            // don't clobber it.
+            let mut s = load_settings();
             s.daemon_registered_version = Some(gui.to_string());
             s.daemon_version_conflict = None;
             let _ = save_settings(&s);
@@ -979,8 +1021,15 @@ fn daemon_set_login(on: bool, nudge: bool) -> Result<(), GuiError> {
         if use_smappservice() {
             // Unified model: the login toggle *is* registration. On =
             // register (→ "Yerd" Login Items entry + runs at login + now);
-            // off = unregister (removes the entry + stops it).
+            // off = unregister (removes the entry + stops it). Both honour the
+            // directional guard so an older GUI can't reconfigure/tear down a
+            // NEWER registered daemon.
             if on {
+                // `ensure` refuses (Err) when this GUI is older than the
+                // registered daemon, and self-repairs/has-registration-gates
+                // otherwise; for a fresh enable it no-ops and `smapp_enable`
+                // does the real register (recording the version).
+                ensure_daemon_registration()?;
                 smapp_enable(nudge)
             } else {
                 // Unregister the SMAppService agent (only when actually
@@ -989,6 +1038,21 @@ fn daemon_set_login(on: bool, nudge: bool) -> Result<(), GuiError> {
                 // so the toggle doesn't appear stuck "on" for upgrade users who
                 // only ever had the pre-SMAppService loose plist.
                 if smapp_registered() {
+                    // Don't let an older GUI tear down a newer registered daemon.
+                    let gui = gui_version();
+                    let stored = load_settings()
+                        .daemon_registered_version
+                        .as_deref()
+                        .and_then(|v| semver::Version::parse(v).ok());
+                    if let Some(reg) = stored {
+                        if gui < reg {
+                            return Err(GuiError::internal(format!(
+                                "This Yerd ({gui}) is older than the registered background \
+                                 daemon ({reg}); refusing to unregister it — install Yerd \
+                                 {reg} or newer."
+                            )));
+                        }
+                    }
                     crate::smappservice::unregister(crate::smappservice::Service::Daemon)?;
                 }
                 cleanup_legacy();
