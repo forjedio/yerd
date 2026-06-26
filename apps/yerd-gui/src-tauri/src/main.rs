@@ -146,6 +146,7 @@ fn main() {
             commands::job_cancel,
             show_dumps_window,
             daemon::daemon_installed,
+            daemon::daemon_diagnostics,
             daemon::start_daemon,
             daemon::stop_daemon,
             daemon::cli_path_status,

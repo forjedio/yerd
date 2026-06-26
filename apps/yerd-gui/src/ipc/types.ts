@@ -475,6 +475,29 @@ export interface AutostartState {
 }
 
 /**
+ * Why the daemon isn't up (host command `daemon_diagnostics`). Gathered when a
+ * start attempt fails to connect — covers both the ran-and-crashed case
+ * (`logTail`) and the never-launched cases (`startError`, `translocated`,
+ * `yerddPath === null`, `pendingApproval`). `hints` are ready-to-show
+ * plain-English cause+fix lines computed host-side.
+ */
+export interface DaemonDiagnostics {
+  startError: string | null;
+  hints: string[];
+  yerddPath: string | null;
+  translocated: boolean;
+  socketPath: string;
+  socketResponding: boolean;
+  lastConnectError: string | null;
+  serviceManager: string;
+  serviceStatus: string | null;
+  pendingApproval: boolean;
+  logPath: string | null;
+  logTail: string[];
+  spawnLogTail: string[];
+}
+
+/**
  * Whether the bundled `yerd` CLI is symlinked onto PATH (macOS host command
  * `cli_path_status`). On Linux the `.deb` already puts `yerd` on PATH, so the
  * control is hidden there.

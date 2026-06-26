@@ -178,6 +178,89 @@ fn run_ok(program: &str, args: &[&str]) -> Result<(), GuiError> {
     }
 }
 
+/// Run a command and return its combined stdout+stderr regardless of exit
+/// status, truncated to `max` bytes. Unlike [`run_ok`], this keeps the output
+/// of commands that exit non-zero — `systemctl status` / `launchctl print`
+/// routinely do, and that text is exactly what diagnostics want. `None` if the
+/// command can't be launched at all. Only [`service_status_text`] uses it, on
+/// the two platforms with a service manager — gated so a Windows build (where
+/// that arm returns `None`) doesn't see it as dead code under `-D warnings`.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub(crate) fn capture(program: &str, args: &[&str], max: usize) -> Option<String> {
+    let out = Command::new(program).args(args).output().ok()?;
+    let mut s = String::from_utf8_lossy(&out.stdout).into_owned();
+    let err = String::from_utf8_lossy(&out.stderr);
+    if !err.trim().is_empty() {
+        if !s.is_empty() {
+            s.push('\n');
+        }
+        s.push_str(&err);
+    }
+    let s = s.trim().to_string();
+    if s.is_empty() {
+        return None;
+    }
+    if s.len() > max {
+        // Truncate on a char boundary to keep the string valid UTF-8.
+        let mut end = max;
+        while end > 0 && !s.is_char_boundary(end) {
+            end -= 1;
+        }
+        let mut t = s[..end].to_string();
+        t.push_str("\n… (truncated)");
+        Some(t)
+    } else {
+        Some(s)
+    }
+}
+
+/// Human-readable label for the mechanism that supervises the daemon on this
+/// host — surfaced in diagnostics so a user/support can see which path was used.
+pub(crate) fn service_manager_label() -> &'static str {
+    #[cfg(target_os = "linux")]
+    {
+        if systemd_user_available() {
+            "systemd --user"
+        } else {
+            "detached spawn"
+        }
+    }
+    #[cfg(target_os = "macos")]
+    {
+        if use_smappservice() {
+            "launchd (SMAppService)"
+        } else {
+            "launchd (loose)"
+        }
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    {
+        "none"
+    }
+}
+
+/// The service manager's own status text for the daemon job (`systemctl --user
+/// status yerd` / `launchctl print gui/{uid}/dev.yerd.daemon`), truncated.
+/// `None` when no service manager applies or the query produced nothing.
+pub(crate) fn service_status_text() -> Option<String> {
+    #[cfg(target_os = "linux")]
+    {
+        capture(
+            "systemctl",
+            &["--user", "status", "yerd", "--no-pager"],
+            4096,
+        )
+    }
+    #[cfg(target_os = "macos")]
+    {
+        capture("launchctl", &["print", &service_target()], 4096)
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    {
+        None
+    }
+}
+
 // ── service-manager availability ─────────────────────────────────────────────
 
 #[cfg(target_os = "linux")]
@@ -722,7 +805,7 @@ fn daemon_enabled(settings: &GuiSettings, supported: bool) -> bool {
 
 /// macOS SMAppService `requiresApproval` — registered but pending the user's
 /// toggle in Login Items. Always false on the fallback path / other OSes.
-fn daemon_pending_approval() -> bool {
+pub(crate) fn daemon_pending_approval() -> bool {
     #[cfg(target_os = "macos")]
     if use_smappservice() {
         return crate::smappservice::status(crate::smappservice::Service::Daemon)

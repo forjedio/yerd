@@ -252,17 +252,42 @@ fn sigterm(pid: u32) {
     }
 }
 
+/// Build the detached daemon's stdout/stderr targets: a truncate-on-start
+/// `{cache}/yerdd-spawn.log` so a crash *before* the daemon's own tracing log is
+/// up (e.g. the tokio runtime-build failure) still leaves a trace. Both fds are
+/// `try_clone`d from one `File` so they share an open-file-description (one
+/// offset → interleave without clobbering). Best-effort: any failure
+/// (unresolvable cache, create/clone error) degrades to `/dev/null` rather than
+/// turning logging into a spawn failure.
+#[cfg(target_os = "linux")]
+fn spawn_log_stdio() -> (std::process::Stdio, std::process::Stdio) {
+    use yerd_platform::{ActivePaths, Paths};
+    let pair = (|| {
+        let dirs = ActivePaths::new().resolve().ok()?;
+        std::fs::create_dir_all(&dirs.cache).ok()?;
+        let file = std::fs::File::create(dirs.cache.join("yerdd-spawn.log")).ok()?;
+        let clone = file.try_clone().ok()?;
+        Some((file, clone))
+    })();
+    match pair {
+        Some((out, err)) => (out.into(), err.into()),
+        None => (std::process::Stdio::null(), std::process::Stdio::null()),
+    }
+}
+
 /// Spawn `yerdd serve` detached so it survives the GUI exiting (its own
-/// session, stdio to /dev/null). Used only on the no-service-manager path
-/// (Linux without systemd `--user`; macOS always has launchd).
+/// session). stdout/stderr go to `{cache}/yerdd-spawn.log` (or `/dev/null` if
+/// that can't be opened). Used only on the no-service-manager path (Linux
+/// without systemd `--user`; macOS always has launchd).
 #[cfg(target_os = "linux")]
 pub(crate) fn spawn_detached() -> Result<(), GuiError> {
     let yerdd = resolve_yerdd().ok_or_else(|| GuiError::internal("yerdd is not installed"))?;
+    let (stdout, stderr) = spawn_log_stdio();
     let mut cmd = std::process::Command::new(&yerdd);
     cmd.arg("serve")
         .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null());
+        .stdout(stdout)
+        .stderr(stderr);
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt as _;
@@ -278,4 +303,248 @@ pub(crate) fn spawn_detached() -> Result<(), GuiError> {
     cmd.spawn()
         .map(|_| ())
         .map_err(|e| GuiError::internal(format!("could not start {}: {e}", yerdd.display())))
+}
+
+// ── diagnostics ───────────────────────────────────────────────────────────────
+//
+// When a start attempt fails to connect, the GUI calls `daemon_diagnostics` to
+// gather everything that explains *why* — both the ran-and-crashed case (the
+// daemon's rolling log tail) and the never-launched cases (the start error,
+// translocation, a missing sidecar, pending Login-Items approval), which are the
+// likely first-run reports where no daemon log exists yet.
+
+/// A host-side snapshot of daemon-start health. Serialises camelCase for the
+/// webview; see `DaemonDiagnostics` in `ipc/types.ts`.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DaemonDiagnostics {
+    /// The error `start_daemon` threw, passed back from the frontend — the top
+    /// signal for "never launched" failures (register / translocation / missing
+    /// binary), where the daemon log doesn't exist.
+    start_error: Option<String>,
+    /// Plain-English cause+fix lines computed from the signals below.
+    hints: Vec<String>,
+    /// Resolved `yerdd` path, or `None` if the bundled daemon is missing. On
+    /// macOS a translocated run reports the *stable* path (or `None`), never the
+    /// ephemeral `/AppTranslocation/…` one.
+    yerdd_path: Option<String>,
+    /// macOS App Translocation (running from a DMG / quarantine mount).
+    translocated: bool,
+    /// The IPC socket path the GUI connects to.
+    socket_path: String,
+    /// A real connect+`Status` exchange succeeded — not mere file existence (a
+    /// stale socket file can linger after a crash).
+    socket_responding: bool,
+    /// The connect error from the probe, when it failed.
+    last_connect_error: Option<String>,
+    /// Which mechanism supervises the daemon here.
+    service_manager: String,
+    /// The service manager's own status text for the job, truncated.
+    service_status: Option<String>,
+    /// macOS SMAppService `requiresApproval` — registered but awaiting the user.
+    pending_approval: bool,
+    /// Newest `{cache}/yerdd.<date>.log`, if any.
+    log_path: Option<String>,
+    /// Last lines of the daemon's rolling log.
+    log_tail: Vec<String>,
+    /// Last lines of `{cache}/yerdd-spawn.log` (Linux detached-spawn path).
+    spawn_log_tail: Vec<String>,
+}
+
+/// Gather daemon-start diagnostics. `start_error` is the message the frontend's
+/// `startDaemon` call threw (if any). Probes the socket (async), then does the
+/// filesystem/subprocess gathering off the runtime so the UI never stalls.
+#[tauri::command]
+pub async fn daemon_diagnostics(
+    start_error: Option<String>,
+) -> Result<DaemonDiagnostics, GuiError> {
+    let (socket_responding, last_connect_error) =
+        match crate::ipc::exchange(&yerd_ipc::Request::Status).await {
+            Ok(_) => (true, None),
+            Err(e) => (false, Some(e.message)),
+        };
+    tokio::task::spawn_blocking(move || {
+        build_diagnostics(start_error, socket_responding, last_connect_error)
+    })
+    .await
+    .map_err(|e| GuiError::internal(format!("diagnostics task failed: {e}")))
+}
+
+/// Number of trailing log lines surfaced in diagnostics.
+const LOG_TAIL_LINES: usize = 80;
+
+fn build_diagnostics(
+    start_error: Option<String>,
+    socket_responding: bool,
+    last_connect_error: Option<String>,
+) -> DaemonDiagnostics {
+    use yerd_platform::{ActivePaths, Paths};
+
+    let dirs = ActivePaths::new().resolve().ok();
+    let socket_path = dirs
+        .as_ref()
+        .map(|d| d.runtime.join("yerd.sock").display().to_string())
+        .unwrap_or_else(|| "<unresolved>".to_owned());
+    let cache = dirs.as_ref().map(|d| d.cache.clone());
+
+    let translocated = diag_translocated();
+    let yerdd_path = diag_yerdd_path();
+    let pending_approval = crate::autostart::daemon_pending_approval();
+    let service_manager = crate::autostart::service_manager_label().to_owned();
+    let service_status = crate::autostart::service_status_text();
+
+    let log_path = cache
+        .as_ref()
+        .and_then(|c| newest_rolling_log(c).map(|p| p.display().to_string()));
+    let log_tail = log_path
+        .as_ref()
+        .map(|p| tail_lines(std::path::Path::new(p), LOG_TAIL_LINES))
+        .unwrap_or_default();
+    let spawn_log_tail = cache
+        .as_ref()
+        .map(|c| tail_lines(&c.join("yerdd-spawn.log"), LOG_TAIL_LINES))
+        .unwrap_or_default();
+
+    let hints = compute_hints(
+        pending_approval,
+        translocated,
+        yerdd_path.is_none(),
+        start_error.as_deref(),
+        &service_manager,
+        &log_tail,
+        &spawn_log_tail,
+    );
+
+    DaemonDiagnostics {
+        start_error,
+        hints,
+        yerdd_path,
+        translocated,
+        socket_path,
+        socket_responding,
+        last_connect_error,
+        service_manager,
+        service_status,
+        pending_approval,
+        log_path,
+        log_tail,
+        spawn_log_tail,
+    }
+}
+
+/// macOS App Translocation flag (always false off-macOS).
+fn diag_translocated() -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        crate::autostart::is_translocated()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        false
+    }
+}
+
+/// The `yerdd` path to report. On a translocated macOS run, resolve only from
+/// stable install dirs (the beside-exe candidate is an ephemeral mount that
+/// would mislead "installed at …"); otherwise the normal resolver.
+fn diag_yerdd_path() -> Option<String> {
+    #[cfg(target_os = "macos")]
+    if crate::autostart::is_translocated() {
+        return resolve_yerdd_stable().map(|p| p.display().to_string());
+    }
+    resolve_yerdd().map(|p| p.display().to_string())
+}
+
+/// Newest `yerdd.<date>.log` under `dir` (the daily rolling appender's output).
+/// Matches `yerdd.` + `.log` so it never picks up `yerdd-spawn.log`. Chooses by
+/// modification time; tolerates a missing/unreadable dir.
+fn newest_rolling_log(dir: &std::path::Path) -> Option<PathBuf> {
+    let entries = std::fs::read_dir(dir).ok()?;
+    let mut best: Option<(std::time::SystemTime, PathBuf)> = None;
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if !(name.starts_with("yerdd.") && name.ends_with(".log")) {
+            continue;
+        }
+        let Ok(modified) = entry.metadata().and_then(|m| m.modified()) else {
+            continue;
+        };
+        if best.as_ref().is_none_or(|(t, _)| modified > *t) {
+            best = Some((modified, entry.path()));
+        }
+    }
+    best.map(|(_, p)| p)
+}
+
+/// Last `n` lines of `path`. Best-effort: a missing/unreadable file → empty.
+/// Bounded inputs (daily rotation + truncate-on-start spawn log) make reading
+/// the whole file acceptable.
+fn tail_lines(path: &std::path::Path, n: usize) -> Vec<String> {
+    let Ok(content) = std::fs::read_to_string(path) else {
+        return Vec::new();
+    };
+    let lines: Vec<&str> = content.lines().collect();
+    let start = lines.len().saturating_sub(n);
+    lines[start..].iter().map(|s| (*s).to_owned()).collect()
+}
+
+/// Map the gathered signals to one actionable plain-English line each.
+fn compute_hints(
+    pending_approval: bool,
+    translocated: bool,
+    yerdd_missing: bool,
+    start_error: Option<&str>,
+    service_manager: &str,
+    log_tail: &[String],
+    spawn_log_tail: &[String],
+) -> Vec<String> {
+    let mut hints = Vec::new();
+    if pending_approval {
+        hints.push(
+            "Approve Yerd under System Settings → Login Items; it'll connect automatically."
+                .to_owned(),
+        );
+    }
+    if translocated {
+        hints.push(
+            "Yerd is running from a temporary location. Move Yerd.app to your Applications \
+             folder, then try again."
+                .to_owned(),
+        );
+    }
+    if yerdd_missing {
+        hints.push("The bundled daemon (yerdd) wasn't found — reinstall Yerd.".to_owned());
+    }
+    // Scan both logs for known fatal startup signals.
+    let logs = log_tail
+        .iter()
+        .chain(spawn_log_tail.iter())
+        .map(|l| l.to_lowercase())
+        .collect::<Vec<_>>()
+        .join("\n");
+    if logs.contains("dns_port")
+        || logs.contains("address already in use")
+        || logs.contains("address in use")
+    {
+        hints.push(
+            "Another service is holding the DNS port. Change `dns_port` in yerd.toml or stop \
+             the conflicting resolver."
+                .to_owned(),
+        );
+    }
+    if logs.contains("already running") {
+        hints.push("Another Yerd daemon is already running.".to_owned());
+    }
+    if service_manager == "detached spawn" {
+        hints.push(
+            "systemd --user wasn't detected in this session, so the daemon was started \
+             detached and won't run at login."
+                .to_owned(),
+        );
+    }
+    if let Some(err) = start_error {
+        hints.push(format!("Start error: {err}"));
+    }
+    hints
 }

@@ -48,6 +48,7 @@ tokio-rustls       = "0.26"
 rustls             = "0.23"
 tracing            = { version = "0.1", default-features = false, features = ["std"] }
 tracing-subscriber = { version = "0.3", default-features = false, features = ["std", "fmt", "registry"] }
+tracing-appender   = { version = "0.2", default-features = false }
 http               = "1"
 interprocess       = { version = "2", features = ["tokio"] }
 fs4                = { version = "0.13", default-features = false, features = ["sync"] }
