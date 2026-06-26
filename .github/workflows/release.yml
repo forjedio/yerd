@@ -170,6 +170,16 @@ jobs:
         working-directory: .
         run: |
           set -euo pipefail
+          # Universal-binary gate: assert a Mach-O carries BOTH arch slices.
+          # Call directly (never inside a $(...) subshell) so `exit 1` aborts the step.
+          require_universal() {
+            local archs
+            archs=$(lipo -archs "$1" 2>/dev/null || true)
+            case " $archs " in
+              *" x86_64 "*) case " $archs " in *" arm64 "*) ;; *) echo "::error::$2 missing arm64 slice (lipo -archs: '$archs')"; exit 1 ;; esac ;;
+              *) echo "::error::$2 missing x86_64 slice (lipo -archs: '$archs')"; exit 1 ;;
+            esac
+          }
           # Search only dirs that exist — `find` over a missing path exits non-zero
           # and would abort the step under `set -euo pipefail`.
           ROOTS=()
@@ -211,11 +221,7 @@ jobs:
             [ -f "$BIN" ] || { echo "::error::missing bundled binary $BIN"; exit 1; }
             # Universal: each embedded Mach-O must carry BOTH arch slices, else
             # the bundle is not Intel-capable.
-            archs=$(lipo -archs "$BIN" 2>/dev/null || true)
-            case " $archs " in
-              *" x86_64 "*) case " $archs " in *" arm64 "*) ;; *) echo "::error::$b missing arm64 slice (lipo -archs: '$archs')"; exit 1 ;; esac ;;
-              *) echo "::error::$b missing x86_64 slice (lipo -archs: '$archs')"; exit 1 ;;
-            esac
+            require_universal "$BIN" "$b"
             # Developer-ID signed, Hardened Runtime, timestamped, same team as the
             # app (SMAppService trusts the daemon by matching Team ID).
             codesign --verify --strict --verbose=2 "$BIN"
@@ -248,12 +254,8 @@ jobs:
           # The Tauri-built main binary must also be universal (Tauri lipos it for
           # --target universal-apple-darwin).
           MAIN_EXE=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$APP/Contents/Info.plist")
-          MAIN_ARCHS=$(lipo -archs "$APP/Contents/MacOS/$MAIN_EXE" 2>/dev/null || true)
-          case " $MAIN_ARCHS " in
-            *" x86_64 "*) case " $MAIN_ARCHS " in *" arm64 "*) ;; *) echo "::error::main binary $MAIN_EXE missing arm64 slice (lipo -archs: '$MAIN_ARCHS')"; exit 1 ;; esac ;;
-            *) echo "::error::main binary $MAIN_EXE missing x86_64 slice (lipo -archs: '$MAIN_ARCHS')"; exit 1 ;;
-          esac
-          echo "Main binary $MAIN_EXE is universal ($MAIN_ARCHS)"
+          require_universal "$APP/Contents/MacOS/$MAIN_EXE" "main binary $MAIN_EXE"
+          echo "Main binary $MAIN_EXE is universal"
 
           # The .dmg is Developer-ID signed but deliberately NOT notarized/stapled:
           # Tauri only submits the inner .app to notarytool, never the disk image,
@@ -271,6 +273,9 @@ jobs:
           # embedded daemon + agent plist — guards against a stale .app in the dmg.
           MP=$(mktemp -d)
           hdiutil attach -nobrowse -quiet -mountpoint "$MP" "$DMG"
+          # Detach on ANY exit (incl. a require_universal abort below) so the image
+          # never leaks if a check fails mid-block.
+          trap 'hdiutil detach -quiet "$MP" 2>/dev/null || true' EXIT
           DMG_APP=$(find "$MP" -maxdepth 1 -name 'Yerd.app' -type d | head -n1)
           miss=""
           for b in yerd yerdd yerd-helper; do
@@ -279,10 +284,19 @@ jobs:
           [ -f "$DMG_APP/Contents/Library/LaunchAgents/dev.yerd.daemon.plist" ] || miss="$miss plist"
           if [ -n "$miss" ]; then
             echo "::error::shipped DMG is missing:$miss"
-            hdiutil detach -quiet "$MP" || true; exit 1
+            exit 1
           fi
+          # Defense-in-depth: the SHIPPED dmg's binaries must be universal too, not
+          # just the loose build-dir .app (guards a stale/single-slice .app in the
+          # dmg). Resolve the main exe from the DMG's own Info.plist.
+          DMG_MAIN_EXE=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$DMG_APP/Contents/Info.plist")
+          require_universal "$DMG_APP/Contents/MacOS/$DMG_MAIN_EXE" "shipped DMG main binary $DMG_MAIN_EXE"
+          for b in yerd yerdd yerd-helper; do
+            require_universal "$DMG_APP/Contents/MacOS/$b" "shipped DMG $b"
+          done
           hdiutil detach -quiet "$MP" || true
-          echo "Shipped DMG carries the embedded binaries + LaunchAgent — OK"
+          trap - EXIT
+          echo "Shipped DMG carries the embedded binaries + LaunchAgent (all universal) — OK"
           # Launch test: a Hardened-Runtime/AMFI kill is SIGKILL (exit 137) and may
           # leave nothing in the app's own log, so also check the exit signal and
           # the system log. A clean early exit (single-instance/no-daemon/headless)

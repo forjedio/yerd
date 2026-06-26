@@ -122,7 +122,7 @@ pub fn select_asset(
         }
         Platform::LinuxX86_64 => (ArtifactKind::Deb, is_linux_x86_64_artifact),
         Platform::Unsupported => {
-            return Err(AssetError::NoArtifactForPlatform(Platform::Unsupported));
+            return Err(AssetError::NoArtifactForPlatform(platform));
         }
     };
 
