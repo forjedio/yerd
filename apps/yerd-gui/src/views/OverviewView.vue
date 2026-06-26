@@ -7,6 +7,7 @@ import {
   Lock,
   LockOpen,
   Mail,
+  Rocket,
   ShieldAlert,
   ShieldCheck,
   SquareCode,
@@ -18,9 +19,11 @@ import { RouterLink } from "vue-router";
 import DaemonDownHero from "@/components/DaemonDownHero.vue";
 import PageHeader from "@/components/PageHeader.vue";
 import StatusPill, { type Tone } from "@/components/StatusPill.vue";
+import Button from "@/components/ui/Button.vue";
 import Card from "@/components/ui/Card.vue";
 import Spinner from "@/components/ui/Spinner.vue";
 import { useDaemon } from "@/composables/useDaemon";
+import { useOnboarding } from "@/composables/useOnboarding";
 import { listSites, openInBrowser } from "@/ipc/client";
 import type { Site, StatusReport } from "@/ipc/types";
 import { humaniseUptime } from "@/lib/utils";
@@ -29,6 +32,7 @@ import { humaniseUptime } from "@/lib/utils";
 // and shows the shared daemon-down hero, so it stays useful when the socket is
 // gone — the same surface that celebrates "serving N sites" becomes the start button.
 const { report, connected } = useDaemon();
+const { relaunch } = useOnboarding();
 
 const r = computed(() => report.value);
 const running = computed(() => connected.value === true);
@@ -184,6 +188,13 @@ const anyUnhealthy = computed(() => health.value.some((h) => h.value !== true));
 
 const uptime = computed(() => (r.value ? humaniseUptime(r.value.uptime_secs) : ""));
 const version = computed(() => r.value?.daemon_version ?? "");
+
+// Nothing installed and nothing parked → the environment looks freshly set up
+// (or wiped). Offer to re-run the guided onboarding. Driven off the live report,
+// so it only evaluates while the daemon is up (the down branch shows the hero).
+const emptyEnvironment = computed(
+  () => !!r.value && r.value.php.length === 0 && r.value.sites.parked === 0,
+);
 </script>
 
 <template>
@@ -201,6 +212,25 @@ const version = computed(() => r.value?.daemon_version ?? "");
 
       <!-- Daemon up: the serving console. -->
       <template v-else>
+        <!-- Empty environment (no PHP, nothing parked) → re-run guided setup. -->
+        <div
+          v-if="emptyEnvironment"
+          class="flex items-start gap-3 rounded-md border border-brand/40 bg-brand/5 p-4"
+        >
+          <Rocket class="mt-0.5 size-5 shrink-0 text-brand" />
+          <div class="min-w-0 flex-1">
+            <p class="text-sm font-medium">Let's get you set up</p>
+            <p class="mt-1 text-sm text-muted-foreground">
+              You don't have any PHP versions installed or folders parked yet.
+              Walk through the guided setup to install PHP and park your first
+              projects folder.
+            </p>
+          </div>
+          <Button class="shrink-0" @click="relaunch">
+            <Rocket class="size-4" /> Load onboarding
+          </Button>
+        </div>
+
         <Card class="relative overflow-hidden">
           <!-- A soft brand wash — the only place indigo gets a hero surface. -->
           <div

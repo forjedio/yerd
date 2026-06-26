@@ -59,6 +59,17 @@ export function useOnboarding() {
     return { reachable };
   }
 
+  /**
+   * Re-enter the welcome journey on demand (e.g. from the Overview banner shown
+   * when the environment looks empty). App.vue renders `WelcomeView` reactively
+   * off `needsOnboarding`, so flipping it here swaps the wizard in immediately.
+   * The journey handles an already-running daemon / already-onboarded machine
+   * fine: step 1 reads "Running" and `finish()` → `markOnboarded()` is idempotent.
+   */
+  function relaunch(): void {
+    needsOnboarding.value = true;
+  }
+
   /** Persist completion and leave the journey. Best-effort on the persist. */
   async function finish(): Promise<void> {
     try {
@@ -70,5 +81,5 @@ export function useOnboarding() {
     needsOnboarding.value = false;
   }
 
-  return { probing, needsOnboarding, probe, finish };
+  return { probing, needsOnboarding, probe, relaunch, finish };
 }
