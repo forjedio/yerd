@@ -446,7 +446,12 @@ async function loadFallbackPorts(): Promise<void> {
     fbHttpSaved.value = fbHttp.value;
     fbHttpsSaved.value = fbHttps.value;
   } catch {
-    /* daemon down / older daemon — the section just stays empty */
+    // Daemon down / older daemon — clear so a later transient fetch failure
+    // can't leave stale ports shown (or re-savable) under the "running" card.
+    fbHttp.value = "";
+    fbHttps.value = "";
+    fbHttpSaved.value = "";
+    fbHttpsSaved.value = "";
   }
 }
 

@@ -547,7 +547,7 @@ mod tests {
         match Config::from_toml("version = 99\n") {
             Err(ConfigError::UnsupportedVersion {
                 found: 99,
-                current: 6,
+                current: 7,
             }) => {}
             other => panic!("expected UnsupportedVersion, got {other:?}"),
         }
