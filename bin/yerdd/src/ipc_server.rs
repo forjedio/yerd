@@ -2756,6 +2756,20 @@ Subject: Captured\r\n\r\nhi\r\n";
                     yerd_ipc::StagedArtifact::AppTarGz
                 };
                 assert_eq!(kind, expected);
+                // Stronger than `kind`: on arm64 both .debs are `Deb`, so assert
+                // the staged basename is the CURRENT platform's asset — proving the
+                // right arch was selected, not just the right artifact kind.
+                let expected_name = match yerd_update::Platform::current() {
+                    yerd_update::Platform::MacOsAarch64 => mac,
+                    yerd_update::Platform::LinuxX86_64 => deb,
+                    yerd_update::Platform::LinuxAarch64 => arm,
+                    other => panic!("unexpected platform for fixture: {other:?}"),
+                };
+                assert_eq!(
+                    p.file_name().and_then(|n| n.to_str()),
+                    Some(expected_name),
+                    "staged basename should be the current platform's asset"
+                );
             }
             other => panic!("expected Staged, got {other:?}"),
         }
