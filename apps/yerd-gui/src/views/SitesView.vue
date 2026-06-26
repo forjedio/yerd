@@ -39,6 +39,7 @@ import Modal from "@/components/ui/Modal.vue";
 import Select from "@/components/ui/Select.vue";
 import Spinner from "@/components/ui/Spinner.vue";
 import Switch from "@/components/ui/Switch.vue";
+import { openTitle, siteUrl } from "@/lib/siteUrl";
 import { useDaemon } from "@/composables/useDaemon";
 import { useToast } from "@/composables/useToast";
 import {
@@ -121,14 +122,6 @@ const filteredSites = computed(() => {
   );
 });
 
-function siteUrl(s: Site): string {
-  const scheme = s.secure ? "https" : "http";
-  const bound = s.secure ? report.value?.https.bound : report.value?.http.bound;
-  const dflt = s.secure ? 443 : 80;
-  const redirected = report.value?.port_redirect === true;
-  const port = !redirected && bound && bound !== dflt ? `:${bound}` : "";
-  return `${scheme}://${s.name}.${tld.value}${port}`;
-}
 
 /** The served sub-directory label for a site ("/" when the project root is served). */
 function servedLabel(s: Site): string {
@@ -413,8 +406,8 @@ onMounted(load);
               <div class="min-w-0">
                 <button
                   class="flex max-w-full items-center gap-1.5 font-mono text-sm font-medium hover:text-brand"
-                  :title="`Open ${siteUrl(s)}`"
-                  @click="openInBrowser(siteUrl(s))"
+                  :title="openTitle(s, report)"
+                  @click="openInBrowser(siteUrl(s, report))"
                 >
                   <span class="truncate">{{ s.name }}.{{ tld }}</span>
                 </button>
@@ -433,8 +426,9 @@ onMounted(load);
                 <Button
                   variant="ghost"
                   size="icon"
-                  :aria-label="`Open ${s.name}.${tld}`"
-                  @click="openInBrowser(siteUrl(s))"
+                  :aria-label="openTitle(s, report)"
+                  :title="openTitle(s, report)"
+                  @click="openInBrowser(siteUrl(s, report))"
                 >
                   <ExternalLink class="size-4" />
                 </Button>
@@ -448,7 +442,7 @@ onMounted(load);
                     <DropdownMenuItem @select="openEdit(s)">
                       <Pencil class="size-4" /> Edit…
                     </DropdownMenuItem>
-                    <DropdownMenuItem @select="openInBrowser(siteUrl(s))">
+                    <DropdownMenuItem @select="openInBrowser(siteUrl(s, report))">
                       <ExternalLink class="size-4" /> Open in browser
                     </DropdownMenuItem>
                     <DropdownMenuItem @select="openPath(s.document_root)">
@@ -569,6 +563,7 @@ onMounted(load);
       :php-versions="phpVersionList"
       :default-php="defaultPhp"
       :tld="tld"
+      :report="report ?? null"
       @created="onCreated"
     />
 

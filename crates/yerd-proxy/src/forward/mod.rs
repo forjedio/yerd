@@ -25,3 +25,11 @@ pub fn bytes_body(bytes: &'static [u8]) -> BoxBody {
         .map_err(|never| match never {})
         .boxed()
 }
+
+/// Build a `BoxBody` from owned bytes (e.g. a rendered HTML page).
+pub fn owned_bytes_body(bytes: Vec<u8>) -> BoxBody {
+    use http_body_util::BodyExt;
+    http_body_util::Full::new(bytes::Bytes::from(bytes))
+        .map_err(|never| match never {})
+        .boxed()
+}

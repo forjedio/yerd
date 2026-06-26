@@ -108,7 +108,13 @@ If you never run `elevate ports` (or it can't apply), the daemon falls back to h
 | HTTP | 80 | 8080 |
 | HTTPS | 443 | 8443 |
 
-So without elevation you can reach sites at `http://my-app.test:8080`, or `http://127.0.0.1:8080`. Run [`yerd doctor`](./diagnostics) to see which ports are live and what to do.
+So without elevation you can reach sites at `http://my-app.test:8080` - **if** the resolver is installed.
+
+::: tip Can't install the resolver at all?
+If you have no admin rights to route `.test`, those names won't resolve anywhere. Yerd still serves every site through plain `localhost` - open `http://localhost:8080/~my-app.test`, or just `http://localhost:8080/` and pick from the list. See [Localhost Access (No Resolver)](./localhost-access) for the full story (the `/~` switch, the picker, the `X-Yerd-Site` API header, and the caveats).
+:::
+
+Run [`yerd doctor`](./diagnostics) to see which ports are live and what to do.
 
 ::: info macOS port status
 The macOS daemon always binds its high ports (pf does the 80/443 forwarding), so Yerd probes reachability rather than trusting that a config file exists. The probe also **confirms it reaches Yerd's own proxy** - it speaks HTTP to `127.0.0.1:80` and checks for the proxy's `Server: yerd` marker - so a redirect you've torn down (or a foreign web server squatting the port) is correctly reported as *not* redirected. If something that isn't Yerd holds 80/443, `doctor` raises a [`ForeignWebListener`](./diagnostics) warning.

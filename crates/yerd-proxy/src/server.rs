@@ -4,8 +4,10 @@ use std::future::Future;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-use http::header::{CONTENT_TYPE, HOST, LOCATION, SERVER};
-use http::{HeaderValue, StatusCode};
+use http::header::{
+    ACCEPT, CACHE_CONTROL, CONTENT_TYPE, COOKIE, HOST, LOCATION, SERVER, SET_COOKIE,
+};
+use http::{HeaderValue, Method, StatusCode};
 use hyper::body::Incoming;
 use hyper::service::service_fn;
 use hyper::{Request, Response};
@@ -13,13 +15,15 @@ use hyper_util::rt::TokioIo;
 use tokio::net::TcpListener;
 use tokio::sync::Notify;
 use tokio_rustls::TlsAcceptor;
+use yerd_core::{Site, SiteKind, SiteRouter};
 
 use crate::backend::Backend;
 use crate::error::ProxyError;
 use crate::forward::{
-    bytes_body, empty_body, fcgi, http as http_fwd, static_file, upgrade, BoxBody,
+    bytes_body, empty_body, fcgi, http as http_fwd, owned_bytes_body, static_file, upgrade, BoxBody,
 };
 use crate::pure::redirect::build_redirect_uri;
+use crate::pure::unbound::{self, PickerSite};
 use crate::tls::build_server_config;
 use crate::traits::{BackendResolver, CertStore};
 
@@ -292,21 +296,26 @@ async fn dispatch<R: BackendResolver>(
         return Ok(bad_request_response());
     };
 
-    // Take a read guard only long enough to resolve + clone the Site, then
-    // drop it before any await. (Site: Clone is cheap — small strings and
-    // PathBufs.) The daemon's mutation path is the only writer.
-    let guard = router.read().await;
-    let site = match guard.resolve(&host) {
-        Some(s) => s.clone(),
-        None => return Ok(not_found_response()),
+    // Resolve the request to a site (normal Host path) or to a synthetic
+    // response (the unbound `localhost` fallback). The read guard is held only
+    // long enough to clone the matched Site / snapshot the picker list, then
+    // dropped before any await — the daemon's mutation path is the only writer.
+    //
+    // `unbound` is set when the request was routed without the OS `.test`
+    // resolver — via `http://localhost:8080` using the `X-Yerd-Site` header, a
+    // `/~domain` switch, or the pin cookie. In that mode the origin is plain
+    // http on localhost (there is no localhost cert), so the HTTP→HTTPS
+    // redirect below is skipped.
+    let (site, unbound) = match resolve_request(&router, &req, &host).await? {
+        Routed::Site { site, unbound } => (site, unbound),
+        Routed::Respond(resp) => return Ok(resp),
     };
-    drop(guard);
     // Serve from the site's resolved web root (e.g. `<root>/public` for
     // Laravel), falling back to the document root when no subpath is set.
     let document_root = site.served_root();
 
-    // HTTP → HTTPS redirect.
-    if matches!(listener, Listener::Http) {
+    // HTTP → HTTPS redirect (skipped in unbound mode — see above).
+    if matches!(listener, Listener::Http) && !unbound {
         if let (true, Some(port)) = (site.secure(), redirect_port) {
             let pq = req
                 .uri()
@@ -367,6 +376,254 @@ async fn dispatch<R: BackendResolver>(
     }
 }
 
+/// Outcome of resolving a request: either a site to serve, or a ready-made
+/// response (404 / 303 switch / picker) to return as-is.
+enum Routed {
+    /// A site to forward to. `unbound` skips the HTTP→HTTPS redirect.
+    Site { site: Site, unbound: bool },
+    /// A synthetic response to return directly.
+    Respond(Response<BoxBody>),
+}
+
+/// Resolve a request to a [`Routed`] outcome.
+///
+/// Normal `Host` resolution is tried first (unchanged behaviour). On a miss, if
+/// the Host is loopback, the unbound (`localhost`) fallback is applied via
+/// [`classify_unbound`]; otherwise it's a 404 as before.
+async fn resolve_request(
+    router: &SharedRouter,
+    req: &Request<Incoming>,
+    host: &str,
+) -> Result<Routed, ProxyError> {
+    let guard = router.read().await;
+    if let Some(site) = guard.resolve(host).cloned() {
+        return Ok(Routed::Site {
+            site,
+            unbound: false,
+        });
+    }
+    if !unbound::is_loopback_host(host) {
+        return Ok(Routed::Respond(not_found_response()));
+    }
+
+    let site_header = site_header_value(req.headers());
+    let cookie = req.headers().get(COOKIE).and_then(|v| v.to_str().ok());
+    let accept = req.headers().get(ACCEPT).and_then(|v| v.to_str().ok());
+
+    match classify_unbound(
+        &guard,
+        req.method(),
+        req.uri().path(),
+        req.uri().query(),
+        site_header,
+        cookie,
+        accept,
+    ) {
+        UnboundDecision::Serve(site) => Ok(Routed::Site {
+            site,
+            unbound: true,
+        }),
+        UnboundDecision::Switch { name, location } => {
+            Ok(Routed::Respond(switch_response(&name, &location)?))
+        }
+        UnboundDecision::Picker { dest, clear } => {
+            // Snapshot the site list (owned) while the guard is held, then drop
+            // it before rendering — no await crosses the guard.
+            let tld = guard.config().tld().to_owned();
+            let summaries: Vec<(String, bool, &'static str)> = guard
+                .iter()
+                .map(|s| (s.name().to_owned(), s.secure(), kind_label(s.kind())))
+                .collect();
+            drop(guard);
+            let picker_sites: Vec<PickerSite<'_>> = summaries
+                .iter()
+                .map(|(name, secure, kind)| PickerSite {
+                    name,
+                    secure: *secure,
+                    kind,
+                })
+                .collect();
+            let body = unbound::render_picker(&tld, &picker_sites, &dest);
+            Ok(Routed::Respond(picker_response(body, clear)?))
+        }
+        UnboundDecision::NotFound { clear } => Ok(Routed::Respond(unbound_not_found(clear)?)),
+    }
+}
+
+/// One of the ways an unbound (resolver-off, loopback) request resolves to a
+/// site or a synthetic response.
+enum UnboundDecision {
+    /// Serve this site directly — a pin-cookie hit or an `X-Yerd-Site` header.
+    Serve(Site),
+    /// `303` to `location`, setting the pin cookie to `name`.
+    Switch { name: String, location: String },
+    /// Render the picker for `dest`; `clear` also drops a stale pin cookie.
+    Picker { dest: String, clear: bool },
+    /// `404`; `clear` also drops a stale pin cookie.
+    NotFound { clear: bool },
+}
+
+/// Classify a loopback request that didn't resolve via the normal `Host` path.
+///
+/// Priority: explicit `X-Yerd-Site` header → `/~domain` switch → pin cookie →
+/// picker (browser navigations) / `404` (everything else). Pure: returns owned
+/// data so the caller can drop the router guard immediately.
+fn classify_unbound(
+    router: &SiteRouter,
+    method: &Method,
+    path: &str,
+    query: Option<&str>,
+    site_header: Option<&str>,
+    cookie: Option<&str>,
+    accept: Option<&str>,
+) -> UnboundDecision {
+    let is_html_get = *method == Method::GET && accept.is_some_and(|a| a.contains("text/html"));
+
+    // 0. Explicit per-request site header (API clients): no cookie, no redirect.
+    if let Some(value) = site_header.map(str::trim).filter(|v| !v.is_empty()) {
+        return match router.resolve(value).or_else(|| router.get(value)) {
+            Some(site) => UnboundDecision::Serve(site.clone()),
+            None => UnboundDecision::NotFound { clear: false },
+        };
+    }
+
+    // 1. Explicit /~domain switch (pins the origin via the cookie). Accept the
+    // bare-label form (`/~app`) via the same `get` fallback the header path
+    // uses, so `/~app` and `X-Yerd-Site: app` behave identically.
+    if let Some(sw) = unbound::parse_switch(path) {
+        if let Some(site) = router.resolve(sw.domain).or_else(|| router.get(sw.domain)) {
+            return UnboundDecision::Switch {
+                name: site.name().to_owned(),
+                location: join_path_query(sw.remainder, query),
+            };
+        }
+        // Unknown site → picker for browsers, else 404.
+        return decide_picker(is_html_get, join_path_query(sw.remainder, query), false);
+    }
+
+    // 2. Existing pin cookie.
+    if let Some(name) = cookie.and_then(unbound::parse_cookie_site) {
+        if let Some(site) = router.get(name) {
+            return UnboundDecision::Serve(site.clone());
+        }
+        // Stale cookie (site removed) — clear it on the way out.
+        return decide_picker(is_html_get, join_path_query(path, query), true);
+    }
+
+    // 3. No pin yet.
+    decide_picker(is_html_get, join_path_query(path, query), false)
+}
+
+/// Show the picker for browser navigations; otherwise 404 (so asset/XHR/API
+/// stray traffic never receives HTML).
+fn decide_picker(is_html_get: bool, dest: String, clear: bool) -> UnboundDecision {
+    if is_html_get {
+        UnboundDecision::Picker { dest, clear }
+    } else {
+        UnboundDecision::NotFound { clear }
+    }
+}
+
+/// Join a path with an optional non-empty query string. The path is normalised
+/// to a same-origin absolute path first ([`unbound::sanitize_dest`]) so a
+/// protocol-relative remainder can't become an off-origin redirect/href.
+fn join_path_query(path: &str, query: Option<&str>) -> String {
+    let path = unbound::sanitize_dest(path);
+    match query {
+        Some(q) if !q.is_empty() => format!("{path}?{q}"),
+        _ => path.into_owned(),
+    }
+}
+
+/// Read the per-request site directive header (`X-Yerd-Site`, or its dash-free
+/// alias), if present and valid UTF-8.
+fn site_header_value(headers: &http::HeaderMap) -> Option<&str> {
+    headers
+        .get(unbound::SITE_HEADER)
+        .or_else(|| headers.get(unbound::SITE_HEADER_ALIAS))
+        .and_then(|v| v.to_str().ok())
+}
+
+/// Human label for a site kind, used in the picker rows.
+fn kind_label(kind: SiteKind) -> &'static str {
+    match kind {
+        SiteKind::Parked => "parked",
+        SiteKind::Linked => "linked",
+    }
+}
+
+/// Build a `ProxyError` for a (practically unreachable) synthetic-response
+/// construction failure.
+fn synthetic_error(msg: &'static str) -> ProxyError {
+    ProxyError::BackendProtocol {
+        source: std::io::Error::other(msg),
+    }
+}
+
+/// `303 See Other` to `location`, pinning the origin to `name` via `Set-Cookie`.
+fn switch_response(name: &str, location: &str) -> Result<Response<BoxBody>, ProxyError> {
+    let set_cookie = unbound::build_set_cookie(name);
+    Response::builder()
+        .status(StatusCode::SEE_OTHER)
+        .header(
+            LOCATION,
+            HeaderValue::from_str(location)
+                .map_err(|_| synthetic_error("invalid switch location"))?,
+        )
+        .header(
+            SET_COOKIE,
+            HeaderValue::from_str(&set_cookie)
+                .map_err(|_| synthetic_error("invalid pin cookie"))?,
+        )
+        // The same localhost URL serves different sites depending on the pin, so
+        // never let an intermediary cache this redirect.
+        .header(CACHE_CONTROL, "no-store")
+        .header(SERVER, server_header())
+        .body(empty_body())
+        .map_err(|_| synthetic_error("switch response build failed"))
+}
+
+/// `200` picker page; clears a stale pin cookie when `clear` is set.
+fn picker_response(body_html: String, clear: bool) -> Result<Response<BoxBody>, ProxyError> {
+    let mut builder = Response::builder()
+        .status(StatusCode::OK)
+        .header(SERVER, server_header())
+        .header(CACHE_CONTROL, "no-store")
+        .header(CONTENT_TYPE, "text/html; charset=utf-8");
+    if clear {
+        builder = builder.header(
+            SET_COOKIE,
+            HeaderValue::from_str(&unbound::build_clear_cookie())
+                .map_err(|_| synthetic_error("invalid clear cookie"))?,
+        );
+    }
+    builder
+        .body(owned_bytes_body(body_html.into_bytes()))
+        .map_err(|_| synthetic_error("picker response build failed"))
+}
+
+/// `404` for unbound requests. Always `Cache-Control: no-store` — in unbound
+/// mode the same localhost URL serves different sites by pin, so a negative
+/// response must never be cached and resurface after the user pins a site.
+/// Clears a stale pin cookie when `clear` is set.
+fn unbound_not_found(clear: bool) -> Result<Response<BoxBody>, ProxyError> {
+    let mut builder = Response::builder()
+        .status(StatusCode::NOT_FOUND)
+        .header(SERVER, server_header())
+        .header(CACHE_CONTROL, "no-store")
+        .header(CONTENT_TYPE, "text/plain; charset=utf-8");
+    if clear {
+        builder = builder.header(
+            SET_COOKIE,
+            HeaderValue::from_str(&unbound::build_clear_cookie())
+                .map_err(|_| synthetic_error("invalid clear cookie"))?,
+        );
+    }
+    builder
+        .body(bytes_body(b"No site matches this Host.\n"))
+        .map_err(|_| synthetic_error("not found response build failed"))
+}
+
 /// `Server: yerd` — stamped on every synthetic (proxy-originated) response so
 /// the macOS port-redirect probe can confirm a connection to 80/443 actually
 /// reaches *this* proxy, not some other listener. See [`yerd_core::PROXY_SERVER_ID`].
@@ -399,4 +656,294 @@ fn internal_error_response() -> Response<BoxBody> {
         .header(CONTENT_TYPE, "text/plain; charset=utf-8")
         .body(bytes_body(b"Proxy internal error.\n"))
         .unwrap_or_else(|_| Response::new(empty_body()))
+}
+
+#[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing
+)]
+mod unbound_tests {
+    use super::*;
+    use yerd_core::{PhpVersion, RouterConfig};
+
+    const HTML: Option<&str> = Some("text/html,application/xhtml+xml");
+
+    fn router() -> SiteRouter {
+        let cfg = RouterConfig::new("test").unwrap();
+        SiteRouter::from_sites(
+            cfg,
+            [
+                Site::parked("app", "/srv/app", PhpVersion::new(8, 3)).unwrap(),
+                Site::linked("blog", "/srv/blog", PhpVersion::new(8, 3)).unwrap(),
+            ],
+        )
+        .unwrap()
+    }
+
+    /// GET classification with the shared router.
+    fn classify(
+        path: &str,
+        query: Option<&str>,
+        header: Option<&str>,
+        cookie: Option<&str>,
+        accept: Option<&str>,
+    ) -> UnboundDecision {
+        classify_unbound(&router(), &Method::GET, path, query, header, cookie, accept)
+    }
+
+    fn served_name(d: UnboundDecision) -> String {
+        match d {
+            UnboundDecision::Serve(s) => s.name().to_owned(),
+            other => panic!("expected Serve, got {}", variant(&other)),
+        }
+    }
+
+    fn variant(d: &UnboundDecision) -> &'static str {
+        match d {
+            UnboundDecision::Serve(_) => "Serve",
+            UnboundDecision::Switch { .. } => "Switch",
+            UnboundDecision::Picker { .. } => "Picker",
+            UnboundDecision::NotFound { .. } => "NotFound",
+        }
+    }
+
+    #[test]
+    fn header_routes_directly() {
+        // Domain form and bare-label form both resolve; no cookie, no redirect.
+        assert_eq!(
+            served_name(classify("/", None, Some("app.test"), None, None)),
+            "app"
+        );
+        assert_eq!(
+            served_name(classify("/", None, Some("blog"), None, None)),
+            "blog"
+        );
+    }
+
+    #[test]
+    fn header_unknown_is_404_not_picker() {
+        match classify("/", None, Some("ghost.test"), None, HTML) {
+            UnboundDecision::NotFound { clear } => assert!(!clear),
+            other => panic!("expected NotFound, got {}", variant(&other)),
+        }
+    }
+
+    #[test]
+    fn switch_sets_cookie_and_location() {
+        match classify("/~app.test", None, None, None, HTML) {
+            UnboundDecision::Switch { name, location } => {
+                assert_eq!(name, "app");
+                assert_eq!(location, "/");
+            }
+            other => panic!("expected Switch, got {}", variant(&other)),
+        }
+        match classify("/~app.test/x", Some("y=1"), None, None, None) {
+            UnboundDecision::Switch { name, location } => {
+                assert_eq!(name, "app");
+                assert_eq!(location, "/x?y=1");
+            }
+            other => panic!("expected Switch, got {}", variant(&other)),
+        }
+    }
+
+    #[test]
+    fn switch_works_for_any_method() {
+        let d = classify_unbound(
+            &router(),
+            &Method::POST,
+            "/~app.test/login",
+            None,
+            None,
+            None,
+            None,
+        );
+        assert!(matches!(d, UnboundDecision::Switch { .. }));
+    }
+
+    #[test]
+    fn switch_beats_existing_cookie() {
+        assert_eq!(
+            match classify("/~blog.test/p", None, None, Some("yerd-site=app"), HTML) {
+                UnboundDecision::Switch { name, .. } => name,
+                other => panic!("expected Switch, got {}", variant(&other)),
+            },
+            "blog"
+        );
+    }
+
+    #[test]
+    fn unknown_switch_degrades_to_picker_for_browsers() {
+        match classify("/~nope.test/p", None, None, None, HTML) {
+            UnboundDecision::Picker { dest, clear } => {
+                assert_eq!(dest, "/p");
+                assert!(!clear);
+            }
+            other => panic!("expected Picker, got {}", variant(&other)),
+        }
+        // Non-browser → 404.
+        assert!(matches!(
+            classify("/~nope.test/p", None, None, None, Some("application/json")),
+            UnboundDecision::NotFound { .. }
+        ));
+    }
+
+    #[test]
+    fn cookie_serves_pinned_site() {
+        assert_eq!(
+            served_name(classify(
+                "/dashboard",
+                None,
+                None,
+                Some("yerd-site=app"),
+                None
+            )),
+            "app"
+        );
+    }
+
+    #[test]
+    fn stale_cookie_clears_and_picks_or_404s() {
+        match classify("/x", None, None, Some("yerd-site=ghost"), HTML) {
+            UnboundDecision::Picker { dest, clear } => {
+                assert_eq!(dest, "/x");
+                assert!(clear);
+            }
+            other => panic!("expected Picker, got {}", variant(&other)),
+        }
+        match classify(
+            "/x.css",
+            None,
+            None,
+            Some("yerd-site=ghost"),
+            Some("text/css"),
+        ) {
+            UnboundDecision::NotFound { clear } => assert!(clear),
+            other => panic!("expected NotFound, got {}", variant(&other)),
+        }
+    }
+
+    #[test]
+    fn no_cookie_navigation_shows_picker_with_dest() {
+        match classify("/example", Some("x=1"), None, None, HTML) {
+            UnboundDecision::Picker { dest, clear } => {
+                assert_eq!(dest, "/example?x=1");
+                assert!(!clear);
+            }
+            other => panic!("expected Picker, got {}", variant(&other)),
+        }
+    }
+
+    #[test]
+    fn no_cookie_asset_request_is_404() {
+        assert!(matches!(
+            classify("/app.css", None, None, None, Some("text/css,*/*;q=0.1")),
+            UnboundDecision::NotFound { clear: false }
+        ));
+    }
+
+    #[test]
+    fn header_beats_switch() {
+        // X-Yerd-Site wins over a /~ switch path.
+        assert_eq!(
+            served_name(classify(
+                "/~blog.test/p",
+                None,
+                Some("app.test"),
+                None,
+                HTML
+            )),
+            "app"
+        );
+    }
+
+    #[test]
+    fn blank_header_falls_through() {
+        // Whitespace-only header is ignored → normal classification (picker).
+        match classify("/", None, Some("   "), None, HTML) {
+            UnboundDecision::Picker { dest, .. } => assert_eq!(dest, "/"),
+            other => panic!("expected Picker, got {}", variant(&other)),
+        }
+    }
+
+    #[test]
+    fn switch_location_is_same_origin() {
+        // Open-redirect guard: a protocol-relative remainder is normalised.
+        match classify("/~app.test//evil.com", None, None, None, HTML) {
+            UnboundDecision::Switch { location, .. } => assert_eq!(location, "/evil.com"),
+            other => panic!("expected Switch, got {}", variant(&other)),
+        }
+        // And the picker dest for a protocol-relative path is normalised too.
+        match classify("//evil.com", None, None, None, HTML) {
+            UnboundDecision::Picker { dest, .. } => assert_eq!(dest, "/evil.com"),
+            other => panic!("expected Picker, got {}", variant(&other)),
+        }
+    }
+
+    #[test]
+    fn site_header_value_prefers_canonical_then_alias() {
+        let mut h = http::HeaderMap::new();
+        assert_eq!(site_header_value(&h), None);
+        h.insert("x-yerdsite", "blog".parse().unwrap());
+        assert_eq!(site_header_value(&h), Some("blog"));
+        h.insert("x-yerd-site", "app.test".parse().unwrap());
+        assert_eq!(site_header_value(&h), Some("app.test"));
+    }
+
+    fn header(resp: &Response<BoxBody>, name: http::header::HeaderName) -> Option<String> {
+        resp.headers()
+            .get(name)
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_owned)
+    }
+
+    #[test]
+    fn switch_response_shape() {
+        let resp = switch_response("app", "/x?y=1").unwrap();
+        assert_eq!(resp.status(), StatusCode::SEE_OTHER);
+        assert_eq!(header(&resp, LOCATION).as_deref(), Some("/x?y=1"));
+        assert_eq!(header(&resp, CACHE_CONTROL).as_deref(), Some("no-store"));
+        assert!(header(&resp, SET_COOKIE).unwrap().contains("yerd-site=app"));
+    }
+
+    #[test]
+    fn picker_response_shape() {
+        let plain = picker_response("<html></html>".to_owned(), false).unwrap();
+        assert_eq!(plain.status(), StatusCode::OK);
+        assert_eq!(header(&plain, CACHE_CONTROL).as_deref(), Some("no-store"));
+        assert!(header(&plain, CONTENT_TYPE).unwrap().contains("text/html"));
+        assert!(header(&plain, SET_COOKIE).is_none());
+
+        let cleared = picker_response("<html></html>".to_owned(), true).unwrap();
+        assert!(header(&cleared, SET_COOKIE).unwrap().contains("Max-Age=0"));
+    }
+
+    #[test]
+    fn unbound_not_found_clear_variant_carries_no_store_and_clear_cookie() {
+        let cleared = unbound_not_found(true).unwrap();
+        assert_eq!(cleared.status(), StatusCode::NOT_FOUND);
+        assert_eq!(header(&cleared, CACHE_CONTROL).as_deref(), Some("no-store"));
+        assert!(header(&cleared, SET_COOKIE).unwrap().contains("Max-Age=0"));
+
+        // The non-clearing variant also carries no-store (every unbound 404
+        // must be uncacheable), but touches no cookie.
+        let plain = unbound_not_found(false).unwrap();
+        assert_eq!(plain.status(), StatusCode::NOT_FOUND);
+        assert_eq!(header(&plain, CACHE_CONTROL).as_deref(), Some("no-store"));
+        assert!(header(&plain, SET_COOKIE).is_none());
+    }
+
+    #[test]
+    fn bare_label_switch_resolves_like_header() {
+        // `/~app` (no .tld) must switch to `app`, matching `X-Yerd-Site: app`.
+        match classify("/~app/dash", None, None, None, HTML) {
+            UnboundDecision::Switch { name, location } => {
+                assert_eq!(name, "app");
+                assert_eq!(location, "/dash");
+            }
+            other => panic!("expected Switch, got {}", variant(&other)),
+        }
+    }
 }

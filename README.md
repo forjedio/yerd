@@ -49,6 +49,7 @@ everything the app does.
 - 🗄️ **Native MySQL · MariaDB · PostgreSQL · Redis** - no Docker.
 - 🪶 **One ~8 MB daemon** - no containers, no VM, no Electron.
 - 🛡️ **Rootless** - setup elevates once; daily use never does.
+- 🔌 **Works without admin** - can't route `.test`? Reach any site at `http://localhost:8080/~<name>.test`.
 - 🔍 **Self-diagnosing** with `yerd status` and `yerd doctor`.
 
 ---
@@ -237,7 +238,11 @@ Yerd runs as **three** pieces, and the GUI/daemon **never** run as root:
   grant the port capability). It takes typed arguments, never shells out, never
   touches the network, does exactly one thing, and exits.
 
-Setup may elevate **once**; daily use never does.
+Setup may elevate **once**; daily use never does. And if you **can't** elevate at
+all - a locked-down machine where `.test` can't be routed - sites stay reachable
+over plain `http://localhost:8080/~<name>.test` (Yerd pins that origin to the
+site, or shows a picker), so you're never blocked. See
+[Localhost Access](https://yerd.app/guide/localhost-access).
 
 ### 🔒 HTTPS without the hassle
 

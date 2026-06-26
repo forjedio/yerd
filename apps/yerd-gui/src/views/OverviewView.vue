@@ -26,6 +26,7 @@ import { useDaemon } from "@/composables/useDaemon";
 import { useOnboarding } from "@/composables/useOnboarding";
 import { listSites, openInBrowser } from "@/ipc/client";
 import type { Site, StatusReport } from "@/ipc/types";
+import { openTitle, siteUrl } from "@/lib/siteUrl";
 import { humaniseUptime } from "@/lib/utils";
 
 // The home/dashboard. It reads the shared daemon report (no poller of its own)
@@ -91,15 +92,6 @@ const moreCount = computed(() =>
   Math.max(0, sites.value.length - sitePreview.value.length),
 );
 
-/** Same URL math as the Sites view: scheme + the bound port when it isn't standard. */
-function siteUrl(s: Site): string {
-  const scheme = s.secure ? "https" : "http";
-  const bound = s.secure ? r.value?.https.bound : r.value?.http.bound;
-  const dflt = s.secure ? 443 : 80;
-  const redirected = r.value?.port_redirect === true;
-  const port = !redirected && bound && bound !== dflt ? `:${bound}` : "";
-  return `${scheme}://${s.name}.${tld.value}${port}`;
-}
 
 // ── stat tiles ──
 interface Tile {
@@ -304,8 +296,8 @@ const emptyEnvironment = computed(
                 v-for="s in sitePreview"
                 :key="s.name"
                 class="group inline-flex items-center gap-1.5 rounded-md border bg-background px-2 py-1 text-xs transition-colors hover:border-brand/40 hover:bg-brand/5"
-                :title="`Open ${s.name}.${tld}`"
-                @click="openInBrowser(siteUrl(s))"
+                :title="openTitle(s, r)"
+                @click="openInBrowser(siteUrl(s, r))"
               >
                 <Lock v-if="s.secure" class="size-3 text-success" />
                 <LockOpen v-else class="size-3 text-muted-foreground" />
