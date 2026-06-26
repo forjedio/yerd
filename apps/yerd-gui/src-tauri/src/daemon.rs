@@ -358,10 +358,17 @@ pub struct DaemonDiagnostics {
 pub async fn daemon_diagnostics(
     start_error: Option<String>,
 ) -> Result<DaemonDiagnostics, GuiError> {
+    // Bound the probe: a *wedged* daemon (accepting the socket but not replying)
+    // would otherwise make this diagnose-a-sick-daemon command hang the UI.
+    let probe = crate::ipc::exchange(&yerd_ipc::Request::Status);
     let (socket_responding, last_connect_error) =
-        match crate::ipc::exchange(&yerd_ipc::Request::Status).await {
-            Ok(_) => (true, None),
-            Err(e) => (false, Some(e.message)),
+        match tokio::time::timeout(std::time::Duration::from_secs(3), probe).await {
+            Ok(Ok(_)) => (true, None),
+            Ok(Err(e)) => (false, Some(e.message)),
+            Err(_) => (
+                false,
+                Some("daemon did not respond within 3s (it may be wedged)".to_owned()),
+            ),
         };
     tokio::task::spawn_blocking(move || {
         build_diagnostics(start_error, socket_responding, last_connect_error)
@@ -523,10 +530,10 @@ fn compute_hints(
         .map(|l| l.to_lowercase())
         .collect::<Vec<_>>()
         .join("\n");
-    if logs.contains("dns_port")
-        || logs.contains("address already in use")
-        || logs.contains("address in use")
-    {
+    // Key only on the precise `dns_port` token the DNS-bind error logs
+    // (startup.rs). A bare "address in use" would also match the *non-fatal*
+    // mail-port conflict or an HTTP-port conflict and wrongly blame DNS.
+    if logs.contains("dns_port") {
         hints.push(
             "Another service is holding the DNS port. Change `dns_port` in yerd.toml or stop \
              the conflicting resolver."

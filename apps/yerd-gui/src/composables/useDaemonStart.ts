@@ -46,6 +46,9 @@ export function useDaemonStart() {
 
   let pollTimer: ReturnType<typeof setTimeout> | undefined;
   let elapsed = 0;
+  // Set once the component unmounts so an in-flight `await` (refresh/diagnose)
+  // doesn't resume and reschedule a timer / mutate a dead component.
+  let disposed = false;
 
   function clearPoll(): void {
     if (pollTimer) {
@@ -61,9 +64,16 @@ export function useDaemonStart() {
     diagnostics.value = null;
   }
 
+  /** True once the daemon connected or the component went away — never show a
+   * failure panel in that case (avoids "Running" + failure panel together). */
+  function stale(): boolean {
+    return disposed || connected.value === true;
+  }
+
   async function diagnose(startError?: string): Promise<void> {
     try {
       const d = await daemonDiagnostics(startError);
+      if (stale()) return; // connected/unmounted while gathering — don't contradict
       // A registered-but-unapproved daemon isn't a failure: show the approval
       // affordance, not the diagnostics panel.
       if (d.pendingApproval) {
@@ -73,9 +83,12 @@ export function useDaemonStart() {
         diagnostics.value = d;
       }
     } catch {
-      // Diagnostics gathering itself failed — still surface the start error so
-      // the panel isn't empty.
-      diagnostics.value = startError ? minimalDiagnostics(startError) : null;
+      if (stale()) return;
+      // Diagnostics gathering itself failed — still surface something actionable
+      // rather than a silent dead-end.
+      diagnostics.value = minimalDiagnostics(
+        startError ?? "The daemon didn't come up, and diagnostics couldn't be gathered.",
+      );
     }
   }
 
@@ -83,8 +96,9 @@ export function useDaemonStart() {
     clearPoll();
     elapsed = 0;
     const tick = async (): Promise<void> => {
-      if (!starting.value) return;
+      if (disposed || !starting.value) return;
       await refresh(); // drives the shared poller; updates `connected`
+      if (disposed || !starting.value) return; // re-check after the await
       if (connected.value === true) return; // the watch below clears state
       elapsed += POLL_MS;
       if (elapsed >= CEILING_MS) {
@@ -142,16 +156,20 @@ export function useDaemonStart() {
     }
   });
 
-  onUnmounted(clearPoll);
+  onUnmounted(() => {
+    disposed = true;
+    clearPoll();
+  });
 
   return { starting, pendingApproval, diagnostics, start, reset };
 }
 
-/** Minimal fallback when `daemon_diagnostics` itself can't run. */
-function minimalDiagnostics(startError: string): DaemonDiagnostics {
+/** Minimal fallback when `daemon_diagnostics` itself can't run — the message
+ * doubles as the single actionable hint so the panel is never empty. */
+function minimalDiagnostics(message: string): DaemonDiagnostics {
   return {
-    startError,
-    hints: [`Start error: ${startError}`],
+    startError: message,
+    hints: [message],
     yerddPath: null,
     translocated: false,
     socketPath: "",
