@@ -384,6 +384,12 @@ pub enum Request {
         /// persisted `update_channel`.
         channel: Option<crate::Channel>,
     },
+    /// Return the **last persisted** self-update result without any network
+    /// access — used to pre-fill the UI on load. Returns
+    /// [`super::Response::UpdateStatus`] with `source = Cached` and
+    /// `checked_at_epoch` set (or, if never checked, the running version with
+    /// `checked_at_epoch = None`).
+    CachedUpdateStatus,
     /// Persist the self-update channel preference. Returns
     /// [`super::Response::Ok`].
     SetUpdateChannel {
@@ -486,6 +492,7 @@ mod variant_name_pinning {
             Request::JobStatus { .. } => {}
             Request::JobCancel { .. } => {}
             Request::CheckUpdate { .. } => {}
+            Request::CachedUpdateStatus => {}
             Request::SetUpdateChannel { .. } => {}
             Request::StageUpdate { .. } => {}
         }
@@ -654,6 +661,7 @@ mod variant_name_pinning {
         pin(Request::CheckUpdate {
             channel: Some(crate::Channel::Edge),
         });
+        pin(Request::CachedUpdateStatus);
         pin(Request::SetUpdateChannel {
             channel: crate::Channel::Stable,
         });

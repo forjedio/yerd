@@ -431,6 +431,9 @@ export type Response =
       ahead_of_stable: boolean;
       /** Whether these figures are from a live fetch or a cached fallback. */
       source: "live" | "cached";
+      /** Unix epoch (seconds) when this result was obtained, for a "last
+       *  checked …" display. Absent/undefined when never checked. */
+      checked_at_epoch?: number;
     };
 
 /** Self-update release channel (mirrors `yerd_ipc::Channel`). */

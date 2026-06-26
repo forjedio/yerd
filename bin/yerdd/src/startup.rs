@@ -299,6 +299,7 @@ pub async fn bring_up_with_dirs(
         ca_fingerprint,
         php_updates: tokio::sync::RwLock::new(std::collections::HashMap::new()),
         yerd_update: tokio::sync::RwLock::new(Vec::new()),
+        update_snapshot: tokio::sync::RwLock::new(crate::self_update::load_snapshot(&dirs)),
         php_manager: php_manager.clone(),
         service_manager,
         mail_store,

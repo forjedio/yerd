@@ -75,6 +75,7 @@ fn encode_then_decode_request_roundtrip() {
         channel: Some(yerd_ipc::Channel::Edge),
     });
     assert_request_roundtrips(Request::CheckUpdate { channel: None });
+    assert_request_roundtrips(Request::CachedUpdateStatus);
     assert_request_roundtrips(Request::SetUpdateChannel {
         channel: yerd_ipc::Channel::Stable,
     });
@@ -219,6 +220,7 @@ fn encode_then_decode_response_roundtrip() {
         target: Some("2.0.2-rc.3".into()),
         ahead_of_stable: false,
         source: yerd_ipc::UpdateSource::Cached,
+        checked_at_epoch: Some(1_719_445_200),
     });
 }
 

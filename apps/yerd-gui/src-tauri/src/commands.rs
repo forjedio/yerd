@@ -158,6 +158,12 @@ pub async fn check_updates(channel: Option<String>) -> Result<Response, GuiError
     finish(exchange(&Request::CheckUpdate { channel }).await?)
 }
 
+/// Return the last persisted update-check result (no network) to pre-fill the UI.
+#[tauri::command]
+pub async fn cached_update_status() -> Result<Response, GuiError> {
+    finish(exchange(&Request::CachedUpdateStatus).await?)
+}
+
 /// Persist the self-update channel preference.
 #[tauri::command]
 pub async fn set_update_channel(channel: String) -> Result<Response, GuiError> {

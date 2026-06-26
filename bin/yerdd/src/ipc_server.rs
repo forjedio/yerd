@@ -271,6 +271,7 @@ async fn dispatch(req: Request, state: &DaemonState) -> Response {
             let dl = crate::php_install::ReqwestDownloader::new();
             crate::self_update::check_update(channel, state, &dl).await
         }
+        Request::CachedUpdateStatus => crate::self_update::cached_update_status(state).await,
         Request::SetUpdateChannel { channel } => {
             crate::self_update::set_update_channel(channel, state).await
         }
@@ -1585,6 +1586,7 @@ mod tests {
             ca_fingerprint: yerd_platform::CaFingerprint::new([0u8; 32]),
             php_updates: tokio::sync::RwLock::new(std::collections::HashMap::new()),
             yerd_update: tokio::sync::RwLock::new(Vec::new()),
+            update_snapshot: tokio::sync::RwLock::new(None),
             php_manager,
             service_manager: std::sync::Arc::new(Mutex::new(crate::services::new_manager(
                 dirs_in(tmp),

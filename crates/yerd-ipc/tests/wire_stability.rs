@@ -1671,6 +1671,14 @@ fn request_check_update_byte_shape() {
 }
 
 #[test]
+fn request_cached_update_status_byte_shape() {
+    let r = Request::CachedUpdateStatus;
+    let s = serde_json::to_string(&r).unwrap();
+    assert_eq!(s, r#"{"type":"cached_update_status"}"#);
+    assert_eq!(serde_json::from_str::<Request>(&s).unwrap(), r);
+}
+
+#[test]
 fn request_set_update_channel_byte_shape() {
     let r = Request::SetUpdateChannel {
         channel: Channel::Stable,
@@ -1731,9 +1739,31 @@ fn response_update_status_byte_shape() {
         target: None,
         ahead_of_stable: true,
         source: UpdateSource::Live,
+        // `None` + skip_serializing_if → omitted, so the byte shape is unchanged
+        // from before the field existed (older clients decode it fine).
+        checked_at_epoch: None,
     };
     let s = serde_json::to_string(&r).unwrap();
     let expected = r#"{"type":"update_status","current":"2.0.2-rc.3","latest_stable":"2.0.1","latest_edge":"2.0.2-rc.3","channel":"stable","available":false,"target":null,"ahead_of_stable":true,"source":"live"}"#;
     assert_eq!(s, expected);
     assert_eq!(serde_json::from_str::<Response>(&s).unwrap(), r);
+
+    // When set, `checked_at_epoch` serialises after `source` as a bare integer.
+    let with_ts = Response::UpdateStatus {
+        current: "2.0.2-rc.3".into(),
+        latest_stable: Some("2.0.1".into()),
+        latest_edge: Some("2.0.2-rc.3".into()),
+        channel: Channel::Stable,
+        available: false,
+        target: None,
+        ahead_of_stable: true,
+        source: UpdateSource::Cached,
+        checked_at_epoch: Some(1_719_445_200),
+    };
+    let s = serde_json::to_string(&with_ts).unwrap();
+    assert!(
+        s.contains(r#""source":"cached","checked_at_epoch":1719445200"#),
+        "{s}"
+    );
+    assert_eq!(serde_json::from_str::<Response>(&s).unwrap(), with_ts);
 }

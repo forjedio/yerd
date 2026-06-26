@@ -95,6 +95,7 @@ fn main() {
             commands::set_default_php,
             commands::update_php,
             commands::check_updates,
+            commands::cached_update_status,
             commands::set_update_channel,
             commands::apply_update,
             commands::set_php_settings,

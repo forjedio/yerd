@@ -13,6 +13,7 @@ use serde::Deserialize;
 
 use yerd_ipc::{Response, StagedArtifact, UpdateSource};
 use yerd_php::Downloader;
+use yerd_platform::PlatformDirs;
 use yerd_update::{
     select_asset, select_target, verify_minisign, verify_sha256, ArtifactKind, Asset, Channel,
     Platform, ReleaseMeta,
@@ -147,8 +148,12 @@ fn to_ipc(c: Channel) -> yerd_ipc::Channel {
     }
 }
 
-/// Build the `UpdateStatus` reply from a decision + freshness.
-fn status_response(decision: &yerd_update::UpdateDecision, source: UpdateSource) -> Response {
+/// Build the `UpdateStatus` reply from a decision + freshness + timestamp.
+fn status_response(
+    decision: &yerd_update::UpdateDecision,
+    source: UpdateSource,
+    checked_at_epoch: Option<u64>,
+) -> Response {
     Response::UpdateStatus {
         current: decision.current.to_string(),
         latest_stable: decision.latest_stable.as_ref().map(ToString::to_string),
@@ -158,6 +163,122 @@ fn status_response(decision: &yerd_update::UpdateDecision, source: UpdateSource)
         target: decision.target.as_ref().map(ToString::to_string),
         ahead_of_stable: decision.ahead_of_stable,
         source,
+        checked_at_epoch,
+    }
+}
+
+/// A durable snapshot of the last successful update check, persisted to
+/// `{state}/update-check.json` so the UI can pre-fill the Updates section on load
+/// (and across daemon restarts / while offline) and show a "last checked …"
+/// time. Mirrors the [`Response::UpdateStatus`] display fields plus the
+/// timestamp. Lives in the daemon's *cache*, not `yerd.toml` — it is regenerable.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct UpdateSnapshot {
+    /// Unix epoch (seconds) when the check completed.
+    pub checked_at: u64,
+    /// The running Yerd version at check time.
+    pub current: String,
+    /// Highest stable version seen, if any.
+    pub latest_stable: Option<String>,
+    /// Highest edge (pre-release-inclusive) version seen, if any.
+    pub latest_edge: Option<String>,
+    /// Channel the decision resolved against.
+    pub channel: yerd_ipc::Channel,
+    /// Whether a newer version was available on `channel`.
+    pub available: bool,
+    /// The version `channel` would update to, if newer.
+    pub target: Option<String>,
+    /// True when the running version was a pre-release ahead of latest stable.
+    pub ahead_of_stable: bool,
+}
+
+/// Current wall-clock as Unix epoch seconds (`0` if the clock is before the
+/// epoch, which never happens in practice).
+fn now_epoch() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
+}
+
+fn snapshot_path(dirs: &PlatformDirs) -> std::path::PathBuf {
+    dirs.state.join("update-check.json")
+}
+
+/// Read the persisted snapshot, if present and parseable. Best-effort: any I/O
+/// or decode error yields `None` (treated as "never checked").
+pub fn load_snapshot(dirs: &PlatformDirs) -> Option<UpdateSnapshot> {
+    let bytes = std::fs::read(snapshot_path(dirs)).ok()?;
+    serde_json::from_slice(&bytes).ok()
+}
+
+/// Write the snapshot to disk. Best-effort: a failure is logged at `debug` and
+/// otherwise ignored (the in-memory copy still serves this session).
+fn persist_snapshot(dirs: &PlatformDirs, snap: &UpdateSnapshot) {
+    let path = snapshot_path(dirs);
+    let write = || -> std::io::Result<()> {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let json = serde_json::to_vec_pretty(snap).map_err(std::io::Error::other)?;
+        std::fs::write(&path, json)
+    };
+    if let Err(e) = write() {
+        tracing::debug!(error = %e, path = %path.display(), "could not persist update-check cache");
+    }
+}
+
+/// Build a snapshot from a fresh decision, stamped at `checked_at`.
+fn snapshot_from(decision: &yerd_update::UpdateDecision, checked_at: u64) -> UpdateSnapshot {
+    UpdateSnapshot {
+        checked_at,
+        current: decision.current.to_string(),
+        latest_stable: decision.latest_stable.as_ref().map(ToString::to_string),
+        latest_edge: decision.latest_edge.as_ref().map(ToString::to_string),
+        channel: to_ipc(decision.channel),
+        available: decision.available,
+        target: decision.target.as_ref().map(ToString::to_string),
+        ahead_of_stable: decision.ahead_of_stable,
+    }
+}
+
+/// Build an `UpdateStatus` reply from a persisted snapshot.
+fn response_from_snapshot(snap: &UpdateSnapshot, source: UpdateSource) -> Response {
+    Response::UpdateStatus {
+        current: snap.current.clone(),
+        latest_stable: snap.latest_stable.clone(),
+        latest_edge: snap.latest_edge.clone(),
+        channel: snap.channel,
+        available: snap.available,
+        target: snap.target.clone(),
+        ahead_of_stable: snap.ahead_of_stable,
+        source,
+        checked_at_epoch: Some(snap.checked_at),
+    }
+}
+
+/// Persist a fresh snapshot to disk and store it in `state` for this session.
+async fn store_snapshot(state: &DaemonState, snap: UpdateSnapshot) {
+    persist_snapshot(&state.dirs, &snap);
+    *state.update_snapshot.write().await = Some(snap);
+}
+
+/// `CachedUpdateStatus` handler: return the last persisted result without any
+/// network access (for pre-filling the UI on load). When nothing was ever
+/// checked, report the running version with no remote figures.
+pub async fn cached_update_status(state: &DaemonState) -> Response {
+    if let Some(snap) = state.update_snapshot.read().await.clone() {
+        return response_from_snapshot(&snap, UpdateSource::Cached);
+    }
+    Response::UpdateStatus {
+        current: current_version().to_string(),
+        latest_stable: None,
+        latest_edge: None,
+        channel: to_ipc(configured_channel(state).await),
+        available: false,
+        target: None,
+        ahead_of_stable: false,
+        source: UpdateSource::Cached,
+        checked_at_epoch: None,
     }
 }
 
@@ -179,6 +300,8 @@ pub async fn poll_and_refresh(state: &DaemonState, dl: &dyn Downloader) {
             "a newer Yerd version is available (run `yerd update`)"
         );
     }
+    // Persist the outcome so the UI can pre-fill on load and show "last checked".
+    store_snapshot(state, snapshot_from(&decision, now_epoch())).await;
     *state.yerd_update.write().await = releases;
 }
 
@@ -198,11 +321,18 @@ pub async fn check_update(
     if let Some(releases) = fetch_releases(dl).await {
         let decision = select_target(&releases, channel, &current);
         *state.yerd_update.write().await = releases;
-        status_response(&decision, UpdateSource::Live)
+        let snap = snapshot_from(&decision, now_epoch());
+        store_snapshot(state, snap.clone()).await;
+        response_from_snapshot(&snap, UpdateSource::Live)
+    } else if let Some(snap) = state.update_snapshot.read().await.clone() {
+        // Offline: serve the last persisted result (carries its real timestamp).
+        response_from_snapshot(&snap, UpdateSource::Cached)
     } else {
+        // Never persisted a snapshot: derive from whatever is in the in-memory
+        // release cache, with no timestamp.
         let cache = state.yerd_update.read().await;
         let decision = select_target(&cache, channel, &current);
-        status_response(&decision, UpdateSource::Cached)
+        status_response(&decision, UpdateSource::Cached, None)
     }
 }
 
@@ -368,7 +498,7 @@ mod tests {
             available: true,
             ahead_of_stable: false,
         };
-        match status_response(&decision, UpdateSource::Live) {
+        match status_response(&decision, UpdateSource::Live, Some(1_719_445_200)) {
             Response::UpdateStatus {
                 current,
                 latest_stable,
@@ -378,6 +508,7 @@ mod tests {
                 target,
                 ahead_of_stable,
                 source,
+                checked_at_epoch,
             } => {
                 assert_eq!(current, "2.0.0");
                 assert_eq!(latest_stable.as_deref(), Some("2.0.5"));
@@ -387,6 +518,7 @@ mod tests {
                 assert_eq!(target.as_deref(), Some("2.0.5"));
                 assert!(!ahead_of_stable);
                 assert_eq!(source, UpdateSource::Live);
+                assert_eq!(checked_at_epoch, Some(1_719_445_200));
             }
             other => panic!("expected UpdateStatus, got {other:?}"),
         }

@@ -56,6 +56,20 @@ export function humaniseUptime(secs: number): string {
   return parts.join(" ");
 }
 
+/** Render a past Unix-epoch (seconds) as a coarse, single-unit "… ago" string
+ *  (e.g. "5 minutes ago", "2 hours ago", "3 days ago"). */
+export function humaniseAgo(epochSecs: number, nowSecs: number = Date.now() / 1000): string {
+  const diff = Math.floor(nowSecs - epochSecs);
+  if (!Number.isFinite(diff) || diff < 45) return "just now";
+  if (diff < 90) return "a minute ago";
+  const mins = Math.round(diff / 60);
+  if (mins < 60) return `${mins} minutes ago`;
+  const hours = Math.round(diff / 3_600);
+  if (hours < 24) return `${hours} hour${hours === 1 ? "" : "s"} ago`;
+  const days = Math.round(diff / 86_400);
+  return `${days} day${days === 1 ? "" : "s"} ago`;
+}
+
 /** Render bytes as a short human string (e.g. `1536` -> `1.5 MB` base-2). */
 export function humaniseBytes(bytes: number | null | undefined): string {
   if (bytes == null || !Number.isFinite(bytes)) return "-";

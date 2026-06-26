@@ -482,6 +482,8 @@ pub fn render(resp: &Response, json: bool) -> Rendered {
             target,
             ahead_of_stable,
             source,
+            // The CLI `yerd update` output doesn't surface "last checked"; ignore.
+            checked_at_epoch: _,
         } => Rendered::ok(format_update_status(
             current,
             latest_stable.as_deref(),
@@ -1388,6 +1390,7 @@ mod tests {
             target: Some("2.0.5".into()),
             ahead_of_stable: false,
             source: UpdateSource::Live,
+            checked_at_epoch: None,
         };
         let out = render(&resp, false).stdout;
         // Every row present, both channel latests shown, plus status + source.
@@ -1415,6 +1418,7 @@ mod tests {
             target: None,
             ahead_of_stable: true,
             source: UpdateSource::Cached,
+            checked_at_epoch: None,
         };
         let out = render(&resp, false).stdout;
         assert!(out.contains("ahead of stable"), "{out}");

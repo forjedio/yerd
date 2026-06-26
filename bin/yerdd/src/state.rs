@@ -64,6 +64,11 @@ pub struct DaemonState {
     /// until the first successful fetch. Populated by the periodic checker /
     /// `CheckUpdate` and served (no network) when a live fetch fails.
     pub yerd_update: RwLock<Vec<yerd_update::ReleaseMeta>>,
+    /// The last persisted self-update result (loaded from `{state}/update-check.json`
+    /// at boot, refreshed on every successful poll / `CheckUpdate`). Served by
+    /// `CachedUpdateStatus` so the UI can pre-fill the Updates section on load and
+    /// show a "last checked …" time without a network round-trip.
+    pub update_snapshot: RwLock<Option<crate::self_update::UpdateSnapshot>>,
     /// The FPM pool supervisor, shared with the proxy backend resolver and the
     /// update task. `yerd status` / `yerd doctor` read live pool state from it.
     pub php_manager: Arc<Mutex<DaemonPhpManager>>,

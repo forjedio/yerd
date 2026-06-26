@@ -250,6 +250,12 @@ pub enum Response {
         ahead_of_stable: bool,
         /// Whether these figures are from a live fetch or a cached fallback.
         source: crate::UpdateSource,
+        /// Unix epoch (seconds) when this result was obtained, for a "last
+        /// checked …" display. `None` when never checked (or an older daemon that
+        /// predates the field). `#[serde(default, skip_serializing_if)]` keeps the
+        /// wire additive.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        checked_at_epoch: Option<u64>,
     },
     /// Reply to [`crate::Request::StageUpdate`] — the verified update artifact
     /// has been downloaded to `path`. The applier installs it.
@@ -515,6 +521,7 @@ mod variant_name_pinning {
             target: None,
             ahead_of_stable: true,
             source: crate::UpdateSource::Live,
+            checked_at_epoch: Some(1_719_445_200),
         });
         pin_response(Response::Staged {
             path: "/x/Yerd.app.tar.gz".into(),
