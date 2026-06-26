@@ -22,9 +22,22 @@ use objc2_foundation::{NSError, NSString};
 
 use crate::error::GuiError;
 
-/// The agent plist filename, as embedded under `Contents/Library/LaunchAgents/`.
+/// The daemon agent plist filename, as embedded under
+/// `Contents/Library/LaunchAgents/`.
 /// `+[SMAppService agentServiceWithPlistName:]` keys on this exact filename.
-const PLIST_NAME: &str = "dev.yerd.daemon.plist";
+const DAEMON_PLIST: &str = "dev.yerd.daemon.plist";
+
+/// Which login item to manage. The **daemon** is a bundle-embedded launchd agent
+/// (`agentServiceWithPlistName:`); the **GUI** is the main app itself
+/// (`mainAppService`, Swift `SMAppService.mainApp`) → the "Open at Login" entry.
+/// Both register through the app bundle, so macOS attributes both to "Yerd".
+#[derive(Clone, Copy)]
+pub(crate) enum Service {
+    /// The `yerdd` background daemon agent (`dev.yerd.daemon.plist`).
+    Daemon,
+    /// The Yerd GUI itself, as a login item via `SMAppService.mainApp`.
+    MainApp,
+}
 
 // `SMAppServiceStatus` raw values (`NSInteger`).
 pub(crate) const STATUS_NOT_REGISTERED: isize = 0;
@@ -53,12 +66,20 @@ fn smappservice_class() -> Result<&'static AnyClass, GuiError> {
         .ok_or_else(|| GuiError::internal("SMAppService is unavailable (requires macOS 13+)"))
 }
 
+/// Resolve the `SMAppService*` for `svc` — the daemon agent or the main app.
+fn service_obj(svc: Service) -> Result<Retained<AnyObject>, GuiError> {
+    match svc {
+        Service::Daemon => agent_service(DAEMON_PLIST),
+        Service::MainApp => main_app_service(),
+    }
+}
+
 /// `+[SMAppService agentServiceWithPlistName:@"dev.yerd.daemon.plist"]`.
 /// Returns a non-null `SMAppService*` even when the plist is absent (its
 /// `status` is then `notFound`); we still guard against a null return.
-fn agent_service() -> Result<Retained<AnyObject>, GuiError> {
+fn agent_service(plist: &str) -> Result<Retained<AnyObject>, GuiError> {
     let cls = smappservice_class()?;
-    let name = NSString::from_str(PLIST_NAME);
+    let name = NSString::from_str(plist);
     // SAFETY: `agentServiceWithPlistName:` is a class factory returning an
     // autoreleased `SMAppService*`; objc2 takes ownership per ARC conventions.
     // `name` is a valid `NSString` alive across the call. Typed as `Option` so a
@@ -68,37 +89,57 @@ fn agent_service() -> Result<Retained<AnyObject>, GuiError> {
     svc.ok_or_else(|| GuiError::internal("SMAppService returned no agent service"))
 }
 
+/// `+[SMAppService mainAppService]` (Obj-C class property, Swift `mainApp`).
+/// The main-app login item registers the app's own `Info.plist`, so it appears
+/// under **Login Items → Open at Login** attributed to "Yerd". No plist filename.
+fn main_app_service() -> Result<Retained<AnyObject>, GuiError> {
+    let cls = smappservice_class()?;
+    // SAFETY: `mainAppService` is a class-property getter returning an
+    // autoreleased `SMAppService*`; objc2 takes ownership per ARC. Typed as
+    // `Option` so a (not expected) null is a recoverable error, never UB.
+    let svc: Option<Retained<AnyObject>> = unsafe { msg_send![cls, mainAppService] };
+    svc.ok_or_else(|| GuiError::internal("SMAppService returned no main-app service"))
+}
+
 /// Register (enable) the agent. On success the agent is registered as a login
 /// item; with `RunAtLoad` it also starts now. **Success includes the
 /// `requiresApproval` case** — `registerAndReturnError:` returns `true` and the
 /// user must enable it in Login Items; the caller reads [`status`] to decide
 /// whether to nudge the user. Idempotent: registering an already-registered
 /// service succeeds.
-pub(crate) fn register() -> Result<(), GuiError> {
-    let svc = agent_service()?;
+pub(crate) fn register(svc: Service) -> Result<(), GuiError> {
+    let obj = service_obj(svc)?;
+    let action = match svc {
+        Service::Daemon => "register the Yerd background daemon",
+        Service::MainApp => "register Yerd to launch at login",
+    };
     // SAFETY: `-registerAndReturnError:` returns `BOOL` with a trailing
     // `NSError**`; the `_` marker activates objc2's BOOL→Result handling.
-    let res: Result<(), Retained<NSError>> = unsafe { msg_send![&*svc, registerAndReturnError: _] };
-    res.map_err(|e| ns_err("register the Yerd background daemon", &e))
+    let res: Result<(), Retained<NSError>> = unsafe { msg_send![&*obj, registerAndReturnError: _] };
+    res.map_err(|e| ns_err(action, &e))
 }
 
 /// Unregister (disable) the agent: removes the login item / "Yerd" entry and
 /// unloads the job. `errSec`-style "not registered" is reported by the OS as
 /// success here, so a redundant unregister is harmless.
-pub(crate) fn unregister() -> Result<(), GuiError> {
-    let svc = agent_service()?;
+pub(crate) fn unregister(svc: Service) -> Result<(), GuiError> {
+    let obj = service_obj(svc)?;
+    let action = match svc {
+        Service::Daemon => "remove the Yerd background daemon registration",
+        Service::MainApp => "remove the Yerd launch-at-login registration",
+    };
     // SAFETY: as `register`, for `-unregisterAndReturnError:`.
     let res: Result<(), Retained<NSError>> =
-        unsafe { msg_send![&*svc, unregisterAndReturnError: _] };
-    res.map_err(|e| ns_err("remove the Yerd background daemon registration", &e))
+        unsafe { msg_send![&*obj, unregisterAndReturnError: _] };
+    res.map_err(|e| ns_err(action, &e))
 }
 
 /// The agent's `SMAppServiceStatus` (one of the `STATUS_*` constants). Read-only
 /// — safe to call at startup to populate the UI without mutating anything.
-pub(crate) fn status() -> Result<isize, GuiError> {
-    let svc = agent_service()?;
+pub(crate) fn status(svc: Service) -> Result<isize, GuiError> {
+    let obj = service_obj(svc)?;
     // SAFETY: `-status` is a property getter returning `NSInteger`.
-    let s: isize = unsafe { msg_send![&*svc, status] };
+    let s: isize = unsafe { msg_send![&*obj, status] };
     Ok(s)
 }
 
@@ -146,7 +187,7 @@ mod tests {
     #[test]
     #[ignore = "issues a read-only SMAppService query; run manually on macOS 13+"]
     fn status_ffi_roundtrips_readonly() {
-        let s = status().expect("status() should query without error");
+        let s = status(Service::Daemon).expect("status() should query without error");
         assert!(
             (STATUS_NOT_REGISTERED..=STATUS_NOT_FOUND).contains(&s),
             "unexpected SMAppServiceStatus {s}"

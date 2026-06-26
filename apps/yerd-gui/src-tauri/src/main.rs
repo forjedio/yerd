@@ -8,6 +8,8 @@ mod elevate;
 mod error;
 mod ipc;
 #[cfg(target_os = "macos")]
+mod launch_probe;
+#[cfg(target_os = "macos")]
 mod mac_trust;
 mod mail_window;
 #[cfg(target_os = "macos")]
@@ -44,6 +46,13 @@ fn main() {
         glib::set_prgname(Some("yerd-gui"));
         glib::set_application_name("Yerd");
     }
+
+    // macOS: register the launch-type observer BEFORE the run loop starts, so it
+    // catches `applicationDidFinishLaunching` and we can tell a login-item launch
+    // (SMAppService.mainApp) from a manual open — the GUI uses it for the
+    // start-minimized-to-tray behavior now that there's no `--autostarted` arg.
+    #[cfg(target_os = "macos")]
+    launch_probe::install_launch_probe();
 
     tauri::Builder::default()
         // Must be the first plugin: a second launch focuses the existing
@@ -186,6 +195,12 @@ fn setup_app(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     disable_webview_zoom(app);
     build_tray(app.handle())?;
     show_initial_window(app);
+    // macOS: one-time migration of a legacy loose `Yerd.plist` GUI login item to
+    // SMAppService.mainApp (so it shows as "Yerd" under Open at Login). Off the
+    // main thread — it does `launchctl` + SMAppService XPC; flag-guarded so it
+    // runs once and stays silent (no System-Settings popup at startup).
+    #[cfg(target_os = "macos")]
+    std::thread::spawn(autostart::migrate_gui_login_if_needed);
     Ok(())
 }
 
@@ -237,24 +252,45 @@ fn disable_webview_zoom(app: &tauri::App) {
     });
 }
 
-/// Show the main window now — unless this is an autostart launch
-/// (`--autostarted`) AND the user chose "start minimized", in which case it stays
-/// in the tray. The window is born hidden (`"visible": false` in tauri.conf, to
-/// avoid an undecorated flash); a manual open and a non-minimized autostart both
-/// show.
-fn show_initial_window(app: &tauri::App) {
+/// Decide the initial window visibility. On macOS this is **deferred one
+/// main-runloop turn** (see [`show_initial_window`]) because the login-launch
+/// probe is only authoritative once `applicationDidFinishLaunching` has fully
+/// dispatched; elsewhere it runs inline.
+///
+/// Show the main window — unless this is a login/autostart launch AND the user
+/// chose "start minimized", in which case it stays in the tray (Dock hidden).
+/// The window is born hidden (`"visible": false` in tauri.conf, to avoid an
+/// undecorated flash); a manual open and a non-minimized autostart both show.
+fn decide_initial_window(app: &tauri::AppHandle) {
     let Some(win) = app.get_webview_window("main") else {
         return;
     };
+    // `--autostarted` covers the dev / plugin-LaunchAgent fallback; on the macOS
+    // SMAppService.mainApp path there's no arg, so consult the launch probe.
     let autostarted = std::env::args().any(|a| a == AUTOSTART_ARG);
+    #[cfg(target_os = "macos")]
+    let autostarted = autostarted || launch_probe::is_login_launch();
     if autostarted && autostart::gui_minimized() {
         // Launched hidden to the tray — start as a menu-bar-only app (no Dock
         // icon) until the user opens the window.
-        set_dock_visible(app.handle(), false);
+        set_dock_visible(app, false);
     } else {
         let _ = win.show();
         let _ = win.set_focus();
     }
+}
+
+/// Schedule the initial-window decision. On macOS it must wait until the
+/// `applicationDidFinishLaunching` notification has fully dispatched (so the
+/// launch probe is set), so it's posted to the main queue via GCD — which always
+/// drains on a *later* runloop turn. (Tauri's `run_on_main_thread` runs inline
+/// when already on the main thread, which `setup` is, so it would NOT defer.)
+fn show_initial_window(app: &tauri::App) {
+    let handle = app.handle().clone();
+    #[cfg(target_os = "macos")]
+    dispatch2::DispatchQueue::main().exec_async(move || decide_initial_window(&handle));
+    #[cfg(not(target_os = "macos"))]
+    decide_initial_window(&handle);
 }
 
 /// The four navigable views, mirroring the sidebar. Each tray item shows the
@@ -311,7 +347,8 @@ fn build_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
             // never stalls the menu; the GUI's status poller reflects the result.
             "daemon:start" => {
                 tauri::async_runtime::spawn(async {
-                    let _ = daemon::start().await;
+                    // Standalone start: nudge to Login Items if approval is pending.
+                    let _ = daemon::start(true).await;
                 });
             }
             "daemon:stop" => {

@@ -6032,8 +6032,10 @@ dependencies = [
 name = "yerd-gui"
 version = "2.0.2-rc.5"
 dependencies = [
+ "block2",
  "core-foundation 0.9.4",
  "core-foundation-sys",
+ "dispatch2",
  "glib",
  "interprocess",
  "libc",
