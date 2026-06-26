@@ -17,16 +17,11 @@ so they can't both own them at once. **Stop the other tool first**, then follow
 :::
 
 ::: info Supported platforms
-Yerd ships a single desktop app for **macOS** (Apple Silicon) and **Linux**
-(x86-64 and arm64, Debian/Ubuntu `.deb`). The daemon, the `yerd` CLI, and the privileged
-helper are all bundled inside it — there is nothing else to install. PHP itself is
-**not** bundled - Yerd downloads prebuilt static PHP builds on demand when you run
-`yerd install php`, so the install stays tiny and fast.
-:::
-
-::: warning Apple Intel not supported
-Intel (x86-64) Macs are not supported at this time. macOS builds target Apple
-Silicon (arm64) only.
+Yerd ships a single desktop app for **macOS** (Universal — Intel and Apple
+Silicon) and **Linux** (x86-64 and arm64, Debian/Ubuntu `.deb`). The daemon, the
+`yerd` CLI, and the privileged helper are all bundled inside it — there is nothing
+else to install. PHP itself is **not** bundled - Yerd downloads prebuilt static PHP
+builds on demand when you run `yerd install php`, so the install stays tiny and fast.
 :::
 
 ## Install
@@ -37,7 +32,7 @@ build from the [releases page](https://github.com/forjedio/yerd/releases):
 
 | Platform | Download | Install |
 |---|---|---|
-| macOS (Apple Silicon) | `Yerd_MacOS_AppleSilicon_v<ver>.dmg` | open, drag Yerd to Applications |
+| macOS (Universal — Intel & Apple Silicon) | `Yerd_MacOS_Universal_v<ver>.dmg` | open, drag Yerd to Applications |
 | Linux (x86-64) | `Yerd_Linux_x86_64_v<ver>.deb` | `sudo apt install ./Yerd_Linux_x86_64_v<ver>.deb` |
 | Linux (arm64) | `Yerd_Linux_Arm64_v<ver>.deb` | `sudo apt install ./Yerd_Linux_Arm64_v<ver>.deb` |
 

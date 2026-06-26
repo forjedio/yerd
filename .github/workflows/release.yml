@@ -108,32 +108,43 @@ jobs:
       # inside gates correctly. APPLE_CERTIFICATE is deliberately NOT passed: the
       # cert is already in the keychain from the step above, and passing it would
       # make Tauri spin up its own keychain and conflict. Unset/ignored on Linux.
-      # macOS only: build yerdd natively and stage it as the Tauri sidecar so
-      # `bundle.externalBin` embeds it at Contents/MacOS/yerdd (signed by Tauri
-      # as part of the bundle). Native build (no --target) shares the rust-cache
-      # with the rest and matches the `cli` job; the triple-suffixed filename is
-      # only Tauri's sidecar naming convention.
-      # Build the embedded binaries (daemon + CLI + helper) natively and stage
-      # them as Tauri externalBin sidecars (`name-<triple>`). Native build shares
-      # the rust-cache; the triple suffix is only Tauri's sidecar naming.
+      # Build the embedded binaries (daemon + CLI + helper) and stage them as Tauri
+      # externalBin sidecars (`name-<triple>`), signed by Tauri as part of the
+      # bundle at Contents/MacOS/<bin>.
+      #
+      # macOS: ship a UNIVERSAL (x86_64 + arm64) bundle. Tauri lipos its own main
+      # binary for `--target universal-apple-darwin` but NOT the sidecars — for a
+      # universal target it expects each sidecar as `<bin>-universal-apple-darwin`,
+      # so we build both slices and lipo-fuse them ourselves here.
+      #
+      # Linux: native build per runner — the triple suffix is only Tauri's sidecar
+      # naming, so it must match the arch cargo actually produced.
       - name: Stage embedded binaries (externalBin)
         working-directory: .
         run: |
           set -euo pipefail
-          cargo build --release -p yerd -p yerdd -p yerd-helper
           mkdir -p apps/yerd-gui/src-tauri/binaries
-          # Native build per runner — the triple suffix is only Tauri's sidecar
-          # naming, so it must match the arch cargo actually produced.
           if [ "$RUNNER_OS" = "macOS" ]; then
-            triple=aarch64-apple-darwin
-          elif [ "$(uname -m)" = "aarch64" ]; then
-            triple=aarch64-unknown-linux-gnu
+            rustup target add aarch64-apple-darwin x86_64-apple-darwin
+            cargo build --release --target aarch64-apple-darwin -p yerd -p yerdd -p yerd-helper
+            cargo build --release --target x86_64-apple-darwin  -p yerd -p yerdd -p yerd-helper
+            for b in yerd yerdd yerd-helper; do
+              lipo -create -output "apps/yerd-gui/src-tauri/binaries/$b-universal-apple-darwin" \
+                "target/aarch64-apple-darwin/release/$b" \
+                "target/x86_64-apple-darwin/release/$b"
+              lipo -info "apps/yerd-gui/src-tauri/binaries/$b-universal-apple-darwin"
+            done
           else
-            triple=x86_64-unknown-linux-gnu
+            cargo build --release -p yerd -p yerdd -p yerd-helper
+            if [ "$(uname -m)" = "aarch64" ]; then
+              triple=aarch64-unknown-linux-gnu
+            else
+              triple=x86_64-unknown-linux-gnu
+            fi
+            for b in yerd yerdd yerd-helper; do
+              cp "target/release/$b" "apps/yerd-gui/src-tauri/binaries/$b-$triple"
+            done
           fi
-          for b in yerd yerdd yerd-helper; do
-            cp "target/release/$b" "apps/yerd-gui/src-tauri/binaries/$b-$triple"
-          done
 
       - name: Build Tauri bundles (signed + notarised on macOS)
         env:
@@ -146,7 +157,7 @@ jobs:
         # (apps/yerd-gui), so the path is src-tauri-relative.
         run: |
           if [ "$RUNNER_OS" = "macOS" ]; then
-            npm run tauri build -- --config src-tauri/tauri.bundle-macos.conf.json
+            npm run tauri build -- --target universal-apple-darwin --config src-tauri/tauri.bundle-macos.conf.json
           else
             npm run tauri build -- --config src-tauri/tauri.bundle-linux.conf.json
           fi
@@ -159,6 +170,16 @@ jobs:
         working-directory: .
         run: |
           set -euo pipefail
+          # Universal-binary gate: assert a Mach-O carries BOTH arch slices.
+          # Call directly (never inside a $(...) subshell) so `exit 1` aborts the step.
+          require_universal() {
+            local archs
+            archs=$(lipo -archs "$1" 2>/dev/null || true)
+            case " $archs " in
+              *" x86_64 "*) case " $archs " in *" arm64 "*) ;; *) echo "::error::$2 missing arm64 slice (lipo -archs: '$archs')"; exit 1 ;; esac ;;
+              *) echo "::error::$2 missing x86_64 slice (lipo -archs: '$archs')"; exit 1 ;;
+            esac
+          }
           # Search only dirs that exist — `find` over a missing path exits non-zero
           # and would abort the step under `set -euo pipefail`.
           ROOTS=()
@@ -198,6 +219,9 @@ jobs:
           for b in yerd yerdd yerd-helper; do
             BIN="$APP/Contents/MacOS/$b"
             [ -f "$BIN" ] || { echo "::error::missing bundled binary $BIN"; exit 1; }
+            # Universal: each embedded Mach-O must carry BOTH arch slices, else
+            # the bundle is not Intel-capable.
+            require_universal "$BIN" "$b"
             # Developer-ID signed, Hardened Runtime, timestamped, same team as the
             # app (SMAppService trusts the daemon by matching Team ID).
             codesign --verify --strict --verbose=2 "$BIN"
@@ -227,6 +251,12 @@ jobs:
           done
           echo "Embedded binaries + LaunchAgent: present, sealed, Developer-ID, team-matched, entitlement-clean, exec OK"
 
+          # The Tauri-built main binary must also be universal (Tauri lipos it for
+          # --target universal-apple-darwin).
+          MAIN_EXE=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$APP/Contents/Info.plist")
+          require_universal "$APP/Contents/MacOS/$MAIN_EXE" "main binary $MAIN_EXE"
+          echo "Main binary $MAIN_EXE is universal"
+
           # The .dmg is Developer-ID signed but deliberately NOT notarized/stapled:
           # Tauri only submits the inner .app to notarytool, never the disk image,
           # so no ticket exists for the dmg's own cdhash. `stapler validate` fails
@@ -243,6 +273,9 @@ jobs:
           # embedded daemon + agent plist — guards against a stale .app in the dmg.
           MP=$(mktemp -d)
           hdiutil attach -nobrowse -quiet -mountpoint "$MP" "$DMG"
+          # Detach on ANY exit (incl. a require_universal abort below) so the image
+          # never leaks if a check fails mid-block.
+          trap 'hdiutil detach -quiet "$MP" 2>/dev/null || true' EXIT
           DMG_APP=$(find "$MP" -maxdepth 1 -name 'Yerd.app' -type d | head -n1)
           miss=""
           for b in yerd yerdd yerd-helper; do
@@ -251,10 +284,19 @@ jobs:
           [ -f "$DMG_APP/Contents/Library/LaunchAgents/dev.yerd.daemon.plist" ] || miss="$miss plist"
           if [ -n "$miss" ]; then
             echo "::error::shipped DMG is missing:$miss"
-            hdiutil detach -quiet "$MP" || true; exit 1
+            exit 1
           fi
+          # Defense-in-depth: the SHIPPED dmg's binaries must be universal too, not
+          # just the loose build-dir .app (guards a stale/single-slice .app in the
+          # dmg). Resolve the main exe from the DMG's own Info.plist.
+          DMG_MAIN_EXE=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$DMG_APP/Contents/Info.plist")
+          require_universal "$DMG_APP/Contents/MacOS/$DMG_MAIN_EXE" "shipped DMG main binary $DMG_MAIN_EXE"
+          for b in yerd yerdd yerd-helper; do
+            require_universal "$DMG_APP/Contents/MacOS/$b" "shipped DMG $b"
+          done
           hdiutil detach -quiet "$MP" || true
-          echo "Shipped DMG carries the embedded binaries + LaunchAgent — OK"
+          trap - EXIT
+          echo "Shipped DMG carries the embedded binaries + LaunchAgent (all universal) — OK"
           # Launch test: a Hardened-Runtime/AMFI kill is SIGKILL (exit 137) and may
           # leave nothing in the app's own log, so also check the exit signal and
           # the system log. A clean early exit (single-instance/no-daemon/headless)
@@ -283,8 +325,9 @@ jobs:
           fi
 
       # Self-update artifact: a gzip'd tar of the signed+stapled .app that the
-      # in-app/`yerd update` applier swaps into /Applications. Apple-Silicon only
-      # (the build matrix produces no Intel .app). The mandatory gate below
+      # in-app/`yerd update` applier swaps into /Applications. The .app is now
+      # UNIVERSAL (x86_64 + arm64), so this one tarball serves both Mac arches.
+      # The mandatory gate below
       # extracts into a FRESH dir and re-asserts codesign + staple + OFFLINE
       # Gatekeeper assessment + a Team ID, proving the notarization survives the
       # tar round-trip. If a future macOS drops the staple through tar, switch the
@@ -300,7 +343,10 @@ jobs:
           [ -n "$APP" ] || { echo "::error::Yerd.app not found for tarball packaging"; exit 1; }
           OUT_DIR="apps/yerd-gui/src-tauri/target/release/bundle/updater"
           mkdir -p "$OUT_DIR"
-          # Apple-Silicon only; the publish job appends the version to this name.
+          # Universal bundle, but the name retains the legacy `AppleSilicon` token
+          # so pre-universal arm64 clients (whose updater matcher requires that
+          # token) can still self-update. TODO: rename to Universal once
+          # pre-universal clients are EOL. The publish job appends the version.
           OUT="$OUT_DIR/Yerd_MacOS_AppleSilicon.app.tar.gz"
           # bsdtar (macOS /usr/bin/tar) preserving permissions; the applier extracts
           # with the same bsdtar via `tar -xpf`.
@@ -352,8 +398,10 @@ jobs:
           path: |
             target/release/bundle/**/*.deb
             target/release/bundle/**/*.dmg
+            target/universal-apple-darwin/release/bundle/**/*.dmg
             apps/yerd-gui/src-tauri/target/release/bundle/**/*.deb
             apps/yerd-gui/src-tauri/target/release/bundle/**/*.dmg
+            apps/yerd-gui/src-tauri/target/universal-apple-darwin/release/bundle/**/*.dmg
             apps/yerd-gui/src-tauri/target/release/bundle/updater/*.app.tar.gz
 
   # The ONLY job that touches the release. Assemble everything, create it as a
@@ -395,7 +443,7 @@ jobs:
           # Drop the now-redundant nested dirs so `dist/*` is files-only.
           find . -mindepth 1 -type d -exec rm -rf {} +
           # Human-friendly release asset names:
-          #   Yerd_<OS>_<Arch>_v<version>.<ext>   (e.g. Yerd_MacOS_AppleSilicon_v2-0-2-rc-3.dmg)
+          #   Yerd_<OS>_<Arch>_v<version>.<ext>   (e.g. Yerd_MacOS_Universal_v2-0-2-rc-3.dmg)
           # Tauri emits Yerd_<ver>_<arch>.{dmg,deb}; the .app.tar.gz is already
           # Yerd_MacOS_AppleSilicon.app.tar.gz. We relabel OS+arch and dash the
           # version (dots → dashes) so the Releases page reads cleanly.
@@ -411,6 +459,9 @@ jobs:
             esac
             case "$f" in
               *AppleSilicon*|*aarch64*|*arm64*) [ "$os" = "MacOS" ] && arch="AppleSilicon" || arch="Arm64" ;;
+              # The universal macOS .dmg (Tauri emits `..._universal.dmg`); the
+              # .app.tar.gz keeps the AppleSilicon token above for updater compat.
+              *[Uu]niversal*)   arch="Universal" ;;
               *x86_64*|*amd64*)  arch="x86_64" ;;
               *) arch="unknown" ;;
             esac
