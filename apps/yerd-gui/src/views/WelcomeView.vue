@@ -101,7 +101,7 @@ async function installDaemon(): Promise<void> {
       (autostart?.daemonPendingApproval ?? false) ||
       (autostart?.guiPendingApproval ?? false);
     if (pendingApproval.value) {
-      openLoginItems();
+      void openLoginItems(); // best-effort; don't await/block onboarding
     }
     // Keep the spinner running until the daemon actually CONNECTS (the poller
     // flips `connected` → the watch below clears it and shows "Running"). The

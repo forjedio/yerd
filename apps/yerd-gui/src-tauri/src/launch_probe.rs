@@ -36,6 +36,18 @@ const MANUAL: u8 = 2;
 /// (on a deferred main-runloop turn) by [`is_login_launch`].
 static LAUNCH_KIND: AtomicU8 = AtomicU8::new(UNKNOWN);
 
+/// Pure mapping from AppKit's `NSApplicationLaunchIsDefaultLaunchKey` to a launch
+/// kind: a "default" launch (Finder/Dock/`open`) is `MANUAL`; everything else
+/// (login item, state-restoration) is `LOGIN`. Split out so it's unit-testable
+/// without AppKit firing a notification.
+const fn kind_for(is_default: bool) -> u8 {
+    if is_default {
+        MANUAL
+    } else {
+        LOGIN
+    }
+}
+
 /// Register the launch-type observer. Call **before** `tauri::Builder::run()` so
 /// the observer exists when AppKit posts `applicationDidFinishLaunching`. Reading
 /// `LAUNCH_KIND` must be deferred one runloop turn after `setup` (the
@@ -67,7 +79,7 @@ pub(crate) fn install_launch_probe() {
         }
         // SAFETY: the value is an `NSNumber`; `-boolValue` returns its `BOOL`.
         let is_default: bool = unsafe { msg_send![val, boolValue] };
-        LAUNCH_KIND.store(if is_default { MANUAL } else { LOGIN }, Ordering::Relaxed);
+        LAUNCH_KIND.store(kind_for(is_default), Ordering::Relaxed);
     });
 
     // SAFETY: standard `-addObserverForName:object:queue:usingBlock:`. `object`
@@ -101,6 +113,17 @@ pub(crate) fn is_login_launch() -> bool {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
+
+    /// Pure mapping coverage (runs in normal CI, unlike the `#[ignore]` FFI test):
+    /// a "default" launch is manual; a non-default launch (login item / restore)
+    /// is a login launch; the unset state is neither.
+    #[test]
+    fn kind_for_maps_default_and_login() {
+        assert_eq!(kind_for(true), MANUAL);
+        assert_eq!(kind_for(false), LOGIN);
+        assert_ne!(LOGIN, UNKNOWN);
+        assert_ne!(MANUAL, UNKNOWN);
+    }
 
     /// Runtime smoke test: registering the observer exercises the
     /// `addObserverForName:…:usingBlock:` `msg_send!` and the block construction —

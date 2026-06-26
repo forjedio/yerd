@@ -367,7 +367,13 @@ fn nudge_if_requires_approval() {
 #[cfg(target_os = "macos")]
 fn smapp_enable(nudge: bool) -> Result<(), GuiError> {
     if smapp_registered() {
-        return Ok(()); // already on — don't cleanup/re-register a live agent.
+        // Already registered — don't cleanup/re-register a live agent. But it may
+        // still be pending the user's Login-Items approval, so on a nudging caller
+        // (a retry / tray / General-tab start) re-open Login Items.
+        if nudge {
+            nudge_if_requires_approval();
+        }
+        return Ok(());
     }
     cleanup_legacy();
     crate::smappservice::register(crate::smappservice::Service::Daemon)?;
@@ -462,6 +468,10 @@ fn gui_cleanup_legacy() {
 fn gui_smapp_enable(nudge: bool) -> Result<(), GuiError> {
     if gui_smapp_registered() {
         gui_cleanup_legacy(); // already on — just clear any leftover loose plist
+                              // May still be pending approval; re-open Login Items on a nudging caller.
+        if nudge && gui_pending_approval() {
+            crate::smappservice::open_login_items_settings();
+        }
         return Ok(());
     }
     crate::smappservice::register(crate::smappservice::Service::MainApp)?;
@@ -499,7 +509,12 @@ pub(crate) fn migrate_gui_login_if_needed() {
         return;
     }
     let loose = gui_loose_plist_path().map(|p| p.exists()).unwrap_or(false);
-    if loose && !gui_smapp_registered() {
+    // If a loose `Yerd.plist` exists, migrate it even when SMAppService is already
+    // registered: `gui_smapp_enable`'s already-registered branch runs
+    // `gui_cleanup_legacy()`, so the legacy login item is removed rather than left
+    // behind forever. The flag is set only on success, so a failure retries next
+    // launch (the loose plist is still present).
+    if loose {
         if gui_smapp_enable(false).is_ok() {
             s.gui_login_migrated = true;
             let _ = save_settings(&s);
