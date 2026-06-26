@@ -570,7 +570,8 @@ fn switch_response(name: &str, location: &str) -> Result<Response<BoxBody>, Prox
         )
         .header(
             SET_COOKIE,
-            HeaderValue::from_str(&set_cookie).map_err(|_| synthetic_error("invalid pin cookie"))?,
+            HeaderValue::from_str(&set_cookie)
+                .map_err(|_| synthetic_error("invalid pin cookie"))?,
         )
         // The same localhost URL serves different sites depending on the pin, so
         // never let an intermediary cache this redirect.
@@ -707,8 +708,14 @@ mod unbound_tests {
     #[test]
     fn header_routes_directly() {
         // Domain form and bare-label form both resolve; no cookie, no redirect.
-        assert_eq!(served_name(classify("/", None, Some("app.test"), None, None)), "app");
-        assert_eq!(served_name(classify("/", None, Some("blog"), None, None)), "blog");
+        assert_eq!(
+            served_name(classify("/", None, Some("app.test"), None, None)),
+            "app"
+        );
+        assert_eq!(
+            served_name(classify("/", None, Some("blog"), None, None)),
+            "blog"
+        );
     }
 
     #[test]
@@ -781,7 +788,13 @@ mod unbound_tests {
     #[test]
     fn cookie_serves_pinned_site() {
         assert_eq!(
-            served_name(classify("/dashboard", None, None, Some("yerd-site=app"), None)),
+            served_name(classify(
+                "/dashboard",
+                None,
+                None,
+                Some("yerd-site=app"),
+                None
+            )),
             "app"
         );
     }
@@ -795,7 +808,13 @@ mod unbound_tests {
             }
             other => panic!("expected Picker, got {}", variant(&other)),
         }
-        match classify("/x.css", None, None, Some("yerd-site=ghost"), Some("text/css")) {
+        match classify(
+            "/x.css",
+            None,
+            None,
+            Some("yerd-site=ghost"),
+            Some("text/css"),
+        ) {
             UnboundDecision::NotFound { clear } => assert!(clear),
             other => panic!("expected NotFound, got {}", variant(&other)),
         }
@@ -824,7 +843,13 @@ mod unbound_tests {
     fn header_beats_switch() {
         // X-Yerd-Site wins over a /~ switch path.
         assert_eq!(
-            served_name(classify("/~blog.test/p", None, Some("app.test"), None, HTML)),
+            served_name(classify(
+                "/~blog.test/p",
+                None,
+                Some("app.test"),
+                None,
+                HTML
+            )),
             "app"
         );
     }
@@ -875,9 +900,7 @@ mod unbound_tests {
         assert_eq!(resp.status(), StatusCode::SEE_OTHER);
         assert_eq!(header(&resp, LOCATION).as_deref(), Some("/x?y=1"));
         assert_eq!(header(&resp, CACHE_CONTROL).as_deref(), Some("no-store"));
-        assert!(header(&resp, SET_COOKIE)
-            .unwrap()
-            .contains("yerd-site=app"));
+        assert!(header(&resp, SET_COOKIE).unwrap().contains("yerd-site=app"));
     }
 
     #[test]
