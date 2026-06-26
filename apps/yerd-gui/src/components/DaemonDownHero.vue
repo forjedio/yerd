@@ -25,6 +25,12 @@ function onStart(): void {
   // nudge=true: a single-button start may open Login Items on pending approval.
   void start({ nudge: true });
 }
+
+// `openLoginItems` is an async IPC call; swallow any rejection so a raw `@click`
+// binding can't surface an unhandled promise rejection (it's best-effort UX).
+function onOpenLoginItems(): void {
+  void openLoginItems().catch(() => {});
+}
 </script>
 
 <template>
@@ -48,7 +54,7 @@ function onStart(): void {
         macOS needs you to allow Yerd in the background. Enable it under Login
         Items, then it'll connect automatically.
       </p>
-      <Button variant="outline" size="sm" class="mt-2" @click="openLoginItems">
+      <Button variant="outline" size="sm" class="mt-2" @click="onOpenLoginItems">
         <ExternalLink class="size-4" /> Open Login Items
       </Button>
     </div>

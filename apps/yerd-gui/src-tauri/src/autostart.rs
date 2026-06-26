@@ -185,11 +185,52 @@ fn run_ok(program: &str, args: &[&str]) -> Result<(), GuiError> {
 /// command can't be launched at all. Only [`service_status_text`] uses it, on
 /// the two platforms with a service manager — gated so a Windows build (where
 /// that arm returns `None`) doesn't see it as dead code under `-D warnings`.
+///
+/// **Bounded.** This runs on a `spawn_blocking` thread in the diagnostics path,
+/// but a wedged `systemctl --user`/`launchctl` would still leave the UI's
+/// "diagnose" step stuck, so the wait is capped (the child is killed on expiry).
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(crate) fn capture(program: &str, args: &[&str], max: usize) -> Option<String> {
-    let out = Command::new(program).args(args).output().ok()?;
-    let mut s = String::from_utf8_lossy(&out.stdout).into_owned();
-    let err = String::from_utf8_lossy(&out.stderr);
+    use std::io::Read as _;
+    use std::process::Stdio;
+    use std::time::{Duration, Instant};
+
+    let mut child = Command::new(program)
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .ok()?;
+
+    // Status queries are quick; if one hasn't exited within the cap, kill it and
+    // report rather than block. (Output is small — well under the pipe buffer —
+    // so the child won't deadlock waiting for us to drain it before exiting.)
+    let deadline = Instant::now() + Duration::from_secs(4);
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => break,
+            Ok(None) if Instant::now() >= deadline => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Some(format!("(`{program}` did not respond within 4s)"));
+            }
+            Ok(None) => std::thread::sleep(Duration::from_millis(50)),
+            Err(_) => return None,
+        }
+    }
+
+    let mut out_buf = Vec::new();
+    let mut err_buf = Vec::new();
+    if let Some(mut so) = child.stdout.take() {
+        let _ = so.read_to_end(&mut out_buf);
+    }
+    if let Some(mut se) = child.stderr.take() {
+        let _ = se.read_to_end(&mut err_buf);
+    }
+
+    let mut s = String::from_utf8_lossy(&out_buf).into_owned();
+    let err = String::from_utf8_lossy(&err_buf);
     if !err.trim().is_empty() {
         if !s.is_empty() {
             s.push('\n');
@@ -201,12 +242,14 @@ pub(crate) fn capture(program: &str, args: &[&str], max: usize) -> Option<String
         return None;
     }
     if s.len() > max {
-        // Truncate on a char boundary to keep the string valid UTF-8.
-        let mut end = max;
-        while end > 0 && !s.is_char_boundary(end) {
-            end -= 1;
+        // Build a char-bounded prefix (no slicing) so truncation stays UTF-8 safe.
+        let mut t = String::new();
+        for ch in s.chars() {
+            if t.len() + ch.len_utf8() > max {
+                break;
+            }
+            t.push(ch);
         }
-        let mut t = s[..end].to_string();
         t.push_str("\n… (truncated)");
         Some(t)
     } else {

@@ -93,7 +93,8 @@ async function installDaemon(): Promise<void> {
       const pending =
         (autostart?.daemonPendingApproval ?? false) ||
         (autostart?.guiPendingApproval ?? false);
-      if (pending) void openLoginItems(); // best-effort; don't block onboarding
+      // best-effort; don't block onboarding, and swallow any IPC rejection.
+      if (pending) void openLoginItems().catch(() => {});
       return pending;
     },
   });
@@ -124,6 +125,12 @@ async function enableLoginDefaults(daemonSupported: boolean): Promise<void> {
   } catch {
     /* best-effort */
   }
+}
+
+// Swallow any rejection from the async `openLoginItems` IPC call so a raw
+// `@click` binding can't surface an unhandled promise rejection (best-effort UX).
+function onOpenLoginItems(): void {
+  void openLoginItems().catch(() => {});
 }
 
 // (Spinner/diagnostics auto-clear on connect is handled inside useDaemonStart.)
@@ -292,7 +299,7 @@ function onBack(): void {
                 macOS needs you to allow Yerd in the background. Enable it under
                 Login Items, then it'll connect automatically.
               </p>
-              <Button variant="outline" size="sm" class="mt-2" @click="openLoginItems">
+              <Button variant="outline" size="sm" class="mt-2" @click="onOpenLoginItems">
                 <ExternalLink class="size-4" /> Open Login Items
               </Button>
             </div>
