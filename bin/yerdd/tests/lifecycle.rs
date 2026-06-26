@@ -274,7 +274,9 @@ mod tests {
         // DNS now binds ephemerally (`127.0.0.1:0`), so it no longer collides
         // with the host's mDNS responder on 5353 — drive it like production.
         let dns_handle = {
-            let bound = daemon.dns_bound;
+            // The test daemon always binds DNS (ephemeral `127.0.0.1:0`), so the
+            // soft-fail `Option` is always `Some` here.
+            let bound = daemon.dns_bound.expect("test daemon binds its DNS sockets");
             let responder = yerd_dns::Responder::new(daemon.dns_tld.clone());
             let mut rx = shutdown_rx.clone();
             tokio::spawn(async move {

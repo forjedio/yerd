@@ -94,6 +94,7 @@ fn encode_then_decode_response_roundtrip() {
         https_port: 8443,
         fallback_http: 8080,
         fallback_https: 8443,
+        dns_port: 1053,
     });
     assert_response_roundtrips(Response::PhpVersions {
         installed: vec![PhpVersion::new(8, 3), PhpVersion::new(8, 5)],
@@ -180,6 +181,7 @@ fn encode_then_decode_response_roundtrip() {
                 http: 8080,
                 https: 8443,
             }),
+            dns_unbound: Some(1053),
             boot_id: Some(42),
         }),
     });

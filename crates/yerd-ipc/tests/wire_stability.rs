@@ -380,10 +380,11 @@ fn response_info_byte_shape() {
         https_port: 8443,
         fallback_http: 8080,
         fallback_https: 8443,
+        dns_port: 1053,
     };
     let s = serde_json::to_string(&r).unwrap();
     let expected = format!(
-        r#"{{"type":"info","dns_addr":"127.0.0.1:1053","tld":"test","ca_path":"/home/u/.local/share/yerd/ca.cert.pem","ca_fingerprint":"{}","http_port":8080,"https_port":8443,"fallback_http":8080,"fallback_https":8443}}"#,
+        r#"{{"type":"info","dns_addr":"127.0.0.1:1053","tld":"test","ca_path":"/home/u/.local/share/yerd/ca.cert.pem","ca_fingerprint":"{}","http_port":8080,"https_port":8443,"fallback_http":8080,"fallback_https":8443,"dns_port":1053}}"#,
         "ab".repeat(32)
     );
     assert_eq!(s, expected);
@@ -403,6 +404,7 @@ fn response_info_byte_shape() {
             https_port: 0,
             fallback_http: 0,
             fallback_https: 0,
+            dns_port: 0,
             ..
         }
     ));
@@ -577,6 +579,9 @@ fn response_status_byte_shape() {
             mail: None,
             // Likewise omitted when `None`, keeping the byte shape unchanged.
             web_unbound: None,
+            // Omitted when `None` (skip_serializing_if), so the byte shape is
+            // unchanged from before the dns_unbound field existed.
+            dns_unbound: None,
             boot_id: None,
         }),
     };
@@ -679,6 +684,7 @@ fn sample_status_report() -> StatusReport {
         services: vec![],
         mail: None,
         web_unbound: None,
+        dns_unbound: None,
         boot_id: None,
     }
 }
@@ -794,6 +800,7 @@ fn diagnosis_code_each_variant_byte_shape() {
             DiagnosisCode::ForeignWebListener,
             r#""foreign_web_listener""#,
         ),
+        (DiagnosisCode::DnsPortUnbound, r#""dns_port_unbound""#),
         (DiagnosisCode::CaNotTrusted, r#""ca_not_trusted""#),
         (
             DiagnosisCode::ResolverNotInstalled,
@@ -1336,6 +1343,14 @@ fn request_set_fallback_ports_byte_shape() {
 }
 
 #[test]
+fn request_set_dns_port_byte_shape() {
+    let r = Request::SetDnsPort { port: 1053 };
+    let s = serde_json::to_string(&r).unwrap();
+    assert_eq!(s, r#"{"type":"set_dns_port","port":1053}"#);
+    assert_eq!(serde_json::from_str::<Request>(&s).unwrap(), r);
+}
+
+#[test]
 fn request_set_mail_enabled_byte_shape() {
     let r = Request::SetMailEnabled { enabled: true };
     let s = serde_json::to_string(&r).unwrap();
@@ -1432,6 +1447,24 @@ fn status_mail_appears_only_when_some() {
         s.contains(r#""mail":{"enabled":true,"port":2525,"listening":true,"count":3}"#),
         "{s}"
     );
+    let back: StatusReport = serde_json::from_str(&s).unwrap();
+    assert_eq!(back, report);
+}
+
+#[test]
+fn status_dns_unbound_appears_only_when_some() {
+    // `None` → omitted (additive: byte shape unchanged from before the field
+    // existed). `Some` → present as a bare integer.
+    let mut report = sample_status_report();
+    let s = serde_json::to_string(&report).unwrap();
+    assert!(
+        !s.contains("dns_unbound"),
+        "empty dns_unbound must be omitted: {s}"
+    );
+
+    report.dns_unbound = Some(1053);
+    let s = serde_json::to_string(&report).unwrap();
+    assert!(s.contains(r#""dns_unbound":1053"#), "{s}");
     let back: StatusReport = serde_json::from_str(&s).unwrap();
     assert_eq!(back, report);
 }

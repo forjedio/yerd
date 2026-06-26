@@ -232,14 +232,23 @@ const rows = computed<Row[]>(() => {
       }`,
       menu: true,
     },
-    {
-      key: "dns",
-      name: "DNS resolver",
-      tone: "ok",
-      state: "listening",
-      info: `bound on ${r.dns_addr}`,
-      child: true,
-    },
+    r.dns_unbound != null
+      ? {
+          key: "dns",
+          name: "DNS resolver",
+          tone: "bad" as Tone,
+          state: "not resolving",
+          info: `couldn't bind port :${r.dns_unbound}`,
+          child: true,
+        }
+      : {
+          key: "dns",
+          name: "DNS resolver",
+          tone: "ok" as Tone,
+          state: "listening",
+          info: `bound on ${r.dns_addr}`,
+          child: true,
+        },
     portRow("proxy-http", "Proxy (HTTP)", r, "http"),
     portRow("proxy-https", "Proxy (HTTPS)", r, "https"),
   ];
@@ -370,7 +379,7 @@ onMounted(() => {
   loadCli();
   if (running.value) {
     loadDumps();
-    void loadFallbackPorts();
+    void loadApplicationPorts();
   }
   // No auto update-check on open - it only runs when the user clicks "Check now".
 });
@@ -380,7 +389,7 @@ onMounted(() => {
 watch(running, (up) => {
   if (up) {
     loadDumps();
-    void loadFallbackPorts();
+    void loadApplicationPorts();
   } else {
     dumps.value = null;
     updateStatus.value = null;
@@ -429,61 +438,155 @@ async function confirmRestartDaemon(close: () => void): Promise<void> {
   }
 }
 
-// ── rootless fallback ports ──
-const { saveAndRestart: saveFallbackPorts, validate: validateFallbackPorts } =
+// ── application ports (HTTP/HTTPS fallback, DNS, mail, dumps) ──
+const { applyAndRestart, validate: validateFallbackPorts, validateLoopback } =
   useFallbackPorts();
 const fbHttp = ref("");
 const fbHttps = ref("");
+const dnsPort = ref("");
+const mailPort = ref("");
+const dumpsPort = ref("");
 // The values last loaded from / saved to the daemon, to detect a real change.
 const fbHttpSaved = ref("");
 const fbHttpsSaved = ref("");
-const fallbackPortsOpen = ref(false);
+const dnsPortSaved = ref("");
+const mailPortSaved = ref("");
+const dumpsPortSaved = ref("");
+const applicationPortsOpen = ref(false);
 
-async function loadFallbackPorts(): Promise<void> {
+/** Extract the port from a `host:port` socket address (e.g. `127.0.0.1:1053`). */
+function portFromAddr(addr: string | undefined): number {
+  if (!addr) return 0;
+  const port = Number(addr.slice(addr.lastIndexOf(":") + 1));
+  return Number.isInteger(port) ? port : 0;
+}
+
+async function loadApplicationPorts(): Promise<void> {
+  // HTTP/HTTPS fallback + DNS come from `daemonInfo`; dumps from its own status
+  // call; mail from the live status report.
   try {
     const info = await daemonInfo();
-    fbHttp.value = info.fallback_http != null ? String(info.fallback_http) : "";
-    fbHttps.value = info.fallback_https != null ? String(info.fallback_https) : "";
-    fbHttpSaved.value = fbHttp.value;
-    fbHttpsSaved.value = fbHttps.value;
+    fbHttp.value = info.fallback_http ? String(info.fallback_http) : "";
+    fbHttps.value = info.fallback_https ? String(info.fallback_https) : "";
+    // Prefer the configured `dns_port`; fall back to the *bound* DNS address
+    // (always present, incl. on an older daemon that omits `dns_port`) so the
+    // field shows a real value rather than relying on the placeholder.
+    const dp = info.dns_port || portFromAddr(report.value?.dns_addr);
+    dnsPort.value = dp ? String(dp) : "";
   } catch {
     // Daemon down / older daemon - clear so a later transient fetch failure
     // can't leave stale ports shown (or re-savable) under the "running" card.
     fbHttp.value = "";
     fbHttps.value = "";
-    fbHttpSaved.value = "";
-    fbHttpsSaved.value = "";
+    dnsPort.value = "";
   }
+  try {
+    const d = await dumpsStatus();
+    dumpsPort.value = d.port ? String(d.port) : "";
+  } catch {
+    dumpsPort.value = "";
+  }
+  const mp = report.value?.mail?.port;
+  mailPort.value = mp ? String(mp) : "";
+  fbHttpSaved.value = fbHttp.value;
+  fbHttpsSaved.value = fbHttps.value;
+  dnsPortSaved.value = dnsPort.value;
+  mailPortSaved.value = mailPort.value;
+  dumpsPortSaved.value = dumpsPort.value;
 }
 
-// macOS pf redirect is pinned to the current ports, so block edits until the
-// user un-elevates. Only fires on macOS (Linux reports null).
-const portsElevated = computed(() => report.value?.port_redirect === true);
-const fallbackPortsChanged = computed(
-  () => fbHttp.value !== fbHttpSaved.value || fbHttps.value !== fbHttpsSaved.value,
+// The mail port lives in the status report, which can lag the first paint by one
+// poll. Fill it once it arrives, but only while the field is still untouched.
+watch(
+  () => report.value?.mail?.port,
+  (p) => {
+    if (p != null && mailPort.value === "" && mailPortSaved.value === "") {
+      mailPort.value = String(p);
+      mailPortSaved.value = String(p);
+    }
+  },
 );
 
-function openFallbackPorts(): void {
-  const err = validateFallbackPorts(Number(fbHttp.value), Number(fbHttps.value));
-  if (err) {
-    toast.error("Invalid ports", err);
-    return;
+// Same for DNS against an older daemon that omits `dns_port` from `daemonInfo`:
+// backfill from the bound `dns_addr` once the report arrives, while untouched.
+watch(
+  () => report.value?.dns_addr,
+  (addr) => {
+    const p = portFromAddr(addr);
+    if (p && dnsPort.value === "" && dnsPortSaved.value === "") {
+      dnsPort.value = String(p);
+      dnsPortSaved.value = String(p);
+    }
+  },
+);
+
+// macOS pf redirect is pinned to the current HTTP/HTTPS ports, so block edits to
+// those until the user un-elevates. Only fires on macOS (Linux reports null).
+// DNS/mail/dumps are unaffected and stay editable.
+const portsElevated = computed(() => report.value?.port_redirect === true);
+const webPortsChanged = computed(
+  () => fbHttp.value !== fbHttpSaved.value || fbHttps.value !== fbHttpsSaved.value,
+);
+const applicationPortsChanged = computed(
+  () =>
+    webPortsChanged.value ||
+    dnsPort.value !== dnsPortSaved.value ||
+    mailPort.value !== mailPortSaved.value ||
+    dumpsPort.value !== dumpsPortSaved.value,
+);
+
+function openApplicationPorts(): void {
+  // Pre-validate only the fields that changed (and are editable), so the confirm
+  // modal never opens on input the daemon would reject anyway.
+  if (!portsElevated.value && webPortsChanged.value) {
+    const err = validateFallbackPorts(Number(fbHttp.value), Number(fbHttps.value));
+    if (err) {
+      toast.error("Invalid ports", err);
+      return;
+    }
+  }
+  for (const [label, ref_, saved] of [
+    ["DNS", dnsPort, dnsPortSaved],
+    ["mail", mailPort, mailPortSaved],
+    ["dumps", dumpsPort, dumpsPortSaved],
+  ] as const) {
+    if (ref_.value !== saved.value) {
+      const err = validateLoopback(label, Number(ref_.value));
+      if (err) {
+        toast.error("Invalid ports", err);
+        return;
+      }
+    }
   }
   void nextTick(() => {
-    fallbackPortsOpen.value = true;
+    applicationPortsOpen.value = true;
   });
 }
 
-async function confirmFallbackPorts(close: () => void): Promise<void> {
+async function confirmApplicationPorts(close: () => void): Promise<void> {
   close();
-  busy.value = "fallback-ports";
+  busy.value = "application-ports";
   try {
-    const res = await saveFallbackPorts(Number(fbHttp.value), Number(fbHttps.value));
+    const changes: Parameters<typeof applyAndRestart>[0] = {};
+    // Omit HTTP/HTTPS while elevated (the redirect pins them) or unchanged.
+    if (!portsElevated.value && webPortsChanged.value) {
+      changes.web = { http: Number(fbHttp.value), https: Number(fbHttps.value) };
+    }
+    if (dnsPort.value !== dnsPortSaved.value) changes.dns = Number(dnsPort.value);
+    if (mailPort.value !== mailPortSaved.value) changes.mail = Number(mailPort.value);
+    if (dumpsPort.value !== dumpsPortSaved.value) changes.dumps = Number(dumpsPort.value);
+
+    const res = await applyAndRestart(changes);
     if (res.ok) {
+      // Re-snapshot the saved values so the form is no longer "changed".
       fbHttpSaved.value = fbHttp.value;
       fbHttpsSaved.value = fbHttps.value;
-      toast.success("Ports updated", `Yerd is now serving on ${fbHttp.value}/${fbHttps.value}.`);
+      dnsPortSaved.value = dnsPort.value;
+      mailPortSaved.value = mailPort.value;
+      dumpsPortSaved.value = dumpsPort.value;
+      toast.success("Ports updated", "Yerd restarted with the new ports.");
     } else {
+      // Leave the user's edits in place so they can adjust and retry.
       toast.error("Couldn't apply the new ports", res.message ?? "The daemon is still degraded.");
     }
   } finally {
@@ -645,18 +748,18 @@ async function toggleGuiMinimized(on: boolean): Promise<void> {
         </CardContent>
       </Card>
 
-      <!-- Web ports (rootless fallback) -->
+      <!-- Application ports (HTTP/HTTPS fallback, DNS, mail, dumps) -->
       <Card v-if="running">
         <CardHeader>
-          <CardTitle>Web ports</CardTitle>
+          <CardTitle>Application Ports</CardTitle>
           <CardDescription>
-            The rootless ports Yerd serves on when 80/443 need elevation. Must be
-            {{ MIN_PORT }}+ - a privileged port like 80/443 would itself need
-            elevation, which the fallback exists to avoid.
+            The loopback ports Yerd's services listen on. HTTP/HTTPS are the
+            rootless ports used when 80/443 need elevation (must be
+            {{ MIN_PORT }}+). Saving any change restarts the daemon.
           </CardDescription>
         </CardHeader>
-        <CardContent class="space-y-3">
-          <!-- Degraded: nothing bound. -->
+        <CardContent class="space-y-4">
+          <!-- Degraded: no web ports bound. -->
           <div
             v-if="report?.web_unbound"
             class="rounded-md border border-warning/40 bg-warning/10 p-3 text-sm"
@@ -666,52 +769,112 @@ async function toggleGuiMinimized(on: boolean): Promise<void> {
               It couldn't bind ports {{ report.web_unbound.http }}/{{
                 report.web_unbound.https
               }}
-              - they're in use by another process. Pick free ports below and save.
+              - they're in use by another process. Pick free HTTP/HTTPS ports
+              below and save.
             </p>
           </div>
-          <!-- Elevated: editing would break the pinned redirect. -->
+          <!-- Degraded: DNS port not bound. -->
+          <div
+            v-if="report?.dns_unbound != null"
+            class="rounded-md border border-warning/40 bg-warning/10 p-3 text-sm"
+          >
+            <p class="font-medium">Yerd can't resolve .test domains</p>
+            <p class="mt-1 text-muted-foreground">
+              It couldn't bind DNS port {{ report.dns_unbound }} - it's in use by
+              another process. Pick a free DNS port below and save. You may need
+              to re-run Trust afterwards so the system points at the new port.
+            </p>
+          </div>
+          <!-- Elevated: editing HTTP/HTTPS would break the pinned redirect. -->
           <p v-if="portsElevated" class="text-xs text-muted-foreground">
-            Ports are elevated, so the rootless ports are pinned to the active
-            redirect. Un-elevate ports (Doctor) before changing them, then
-            re-elevate.
+            HTTP/HTTPS ports are elevated, so they're pinned to the active
+            redirect. Un-elevate ports (Doctor) before changing them. DNS, mail
+            and dumps ports can still be changed.
           </p>
-          <div class="flex flex-wrap items-end gap-4">
+          <div class="grid grid-cols-2 gap-4 sm:grid-cols-3">
             <div class="space-y-1">
-              <label for="fb-http" class="text-xs font-medium text-muted-foreground">HTTP</label>
+              <label for="ap-http" class="text-xs font-medium text-muted-foreground">HTTP</label>
               <Input
-                id="fb-http"
+                id="ap-http"
                 v-model="fbHttp"
                 type="number"
                 inputmode="numeric"
                 :min="MIN_PORT"
                 :max="MAX_PORT"
-                :disabled="portsElevated || busy === 'fallback-ports'"
+                :disabled="portsElevated || busy === 'application-ports'"
                 aria-label="Rootless HTTP port"
-                class="w-28 font-mono"
+                class="w-full font-mono"
                 placeholder="8080"
               />
             </div>
             <div class="space-y-1">
-              <label for="fb-https" class="text-xs font-medium text-muted-foreground">HTTPS</label>
+              <label for="ap-https" class="text-xs font-medium text-muted-foreground">HTTPS</label>
               <Input
-                id="fb-https"
+                id="ap-https"
                 v-model="fbHttps"
                 type="number"
                 inputmode="numeric"
                 :min="MIN_PORT"
                 :max="MAX_PORT"
-                :disabled="portsElevated || busy === 'fallback-ports'"
+                :disabled="portsElevated || busy === 'application-ports'"
                 aria-label="Rootless HTTPS port"
-                class="w-28 font-mono"
+                class="w-full font-mono"
                 placeholder="8443"
               />
             </div>
+            <div class="space-y-1">
+              <label for="ap-dns" class="text-xs font-medium text-muted-foreground">DNS</label>
+              <Input
+                id="ap-dns"
+                v-model="dnsPort"
+                type="number"
+                inputmode="numeric"
+                min="1"
+                :max="MAX_PORT"
+                :disabled="busy === 'application-ports'"
+                aria-label="DNS responder port"
+                class="w-full font-mono"
+                placeholder="1053"
+              />
+            </div>
+            <div class="space-y-1">
+              <label for="ap-mail" class="text-xs font-medium text-muted-foreground">Mail (SMTP)</label>
+              <Input
+                id="ap-mail"
+                v-model="mailPort"
+                type="number"
+                inputmode="numeric"
+                min="1"
+                :max="MAX_PORT"
+                :disabled="busy === 'application-ports'"
+                aria-label="Mail server port"
+                class="w-full font-mono"
+                placeholder="2525"
+              />
+            </div>
+            <div class="space-y-1">
+              <label for="ap-dumps" class="text-xs font-medium text-muted-foreground">Dumps</label>
+              <Input
+                id="ap-dumps"
+                v-model="dumpsPort"
+                type="number"
+                inputmode="numeric"
+                min="1"
+                :max="MAX_PORT"
+                :disabled="busy === 'application-ports'"
+                aria-label="Dump server port"
+                class="w-full font-mono"
+                placeholder="2304"
+              />
+            </div>
+          </div>
+          <div class="flex justify-end">
             <Button
               size="sm"
-              :disabled="!fallbackPortsChanged || portsElevated || busy === 'fallback-ports'"
-              @click="openFallbackPorts"
+              :disabled="!applicationPortsChanged || busy === 'application-ports'"
+              @click="openApplicationPorts"
             >
-              <Spinner v-if="busy === 'fallback-ports'" class="size-4" />
+              <Spinner v-if="busy === 'application-ports'" class="size-4" />
               Save &amp; restart
             </Button>
           </div>
@@ -910,17 +1073,15 @@ async function toggleGuiMinimized(on: boolean): Promise<void> {
       </template>
     </Modal>
 
-    <Modal v-model:open="fallbackPortsOpen" title="Change web ports?">
+    <Modal v-model:open="applicationPortsOpen" title="Change application ports?">
       <p class="text-sm text-muted-foreground">
-        Saving sets the rootless ports to
-        <strong class="text-foreground font-mono">{{ fbHttp }}/{{ fbHttps }}</strong>
-        and restarts the daemon - this briefly stops all
-        <strong class="text-foreground">.test</strong> sites, DNS, and this
-        connection. It returns in a few seconds.
+        Saving applies your port changes and restarts the daemon - this briefly
+        stops all <strong class="text-foreground">.test</strong> sites, DNS, PHP
+        pools, and this connection. It returns in a few seconds.
       </p>
       <template #footer="{ close }">
         <Button variant="ghost" @click="close">Cancel</Button>
-        <Button @click="confirmFallbackPorts(close)">Save &amp; restart</Button>
+        <Button @click="confirmApplicationPorts(close)">Save &amp; restart</Button>
       </template>
     </Modal>
   </div>

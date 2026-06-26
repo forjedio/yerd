@@ -123,6 +123,7 @@ fn main() {
             commands::delete_mails,
             commands::set_mail_port,
             commands::set_fallback_ports,
+            commands::set_dns_port,
             commands::set_mail_enabled,
             mail_window::show_mails_window,
             commands::status,

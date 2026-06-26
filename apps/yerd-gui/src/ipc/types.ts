@@ -175,6 +175,10 @@ export interface StatusReport {
    *  ports: it runs degraded (no HTTP/HTTPS proxy). Carries the fallback ports
    *  it failed on. Omitted (undefined) on a healthy daemon. */
   web_unbound?: { http: number; https: number } | null;
+  /** Set when the daemon couldn't bind its DNS responder port: it runs degraded
+   *  (`*.test` names won't resolve through Yerd). Carries the configured DNS port
+   *  it failed on. Omitted (undefined) on a healthy daemon. */
+  dns_unbound?: number | null;
   /** A per-process id that changes on every (re)start. Clients use a *change* in
    *  it to confirm a restart completed (the re-exec preserves the pid). Omitted
    *  by a daemon predating the field. */
@@ -351,6 +355,10 @@ export type Response =
        *  → may be absent (0) against an older daemon. */
       fallback_http?: number;
       fallback_https?: number;
+      /** Configured DNS responder port (what Settings edits). Distinct from
+       *  `dns_addr`, which is the *bound* address. `#[serde(default)]` → may be
+       *  absent (0) against an older daemon. */
+      dns_port?: number;
     }
   | {
       type: "php_versions";

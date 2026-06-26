@@ -63,10 +63,13 @@ pub struct Daemon {
     /// IPC listener (Unix socket on Unix, named pipe on Windows).
     pub ipc_listener: IpcListener,
     /// Bound DNS sockets (UDP+TCP), owned by the daemon and consumed when the
-    /// DNS task is spawned.
-    pub dns_bound: yerd_dns::Bound,
-    /// Actual DNS bind address, read back from the kernel after the ephemeral
-    /// bind. The resolver installer (post-MVP) wires `.test → this port`.
+    /// DNS task is spawned. `None` when the DNS port couldn't bind — the daemon
+    /// then runs degraded (no name resolution) rather than aborting, mirroring
+    /// the `http_listener`/`https_listener` web degrade.
+    pub dns_bound: Option<yerd_dns::Bound>,
+    /// Actual DNS bind address, read back from the kernel after the bind. When
+    /// the DNS port couldn't bind this stays the *wanted* address (so the
+    /// resolver-install probe still has a target to report against).
     pub dns_addr: SocketAddr,
     /// Bound mail-capture SMTP listener, when capture is enabled and the port was
     /// free. `None` = disabled, or the bind failed (non-fatal). Consumed when the
@@ -234,16 +237,28 @@ pub async fn bring_up_with_dirs(
 
     // Bind DNS up front (like the HTTP/HTTPS listeners) so the daemon owns the
     // sockets. Uses the fixed configured port (see `DNS_IP`) so an installed
-    // resolver config keeps pointing at us across restarts.
-    let dns_want = SocketAddr::new(DNS_IP, config.dns_port);
-    let dns_bound = yerd_dns::Bound::bind(dns_want).await.inspect_err(|_e| {
-        tracing::error!(
-            dns = %dns_want,
-            "failed to bind DNS responder; another process may hold dns_port — change `dns_port` in yerd.toml or free the port"
-        );
-    })?;
-    let dns_addr = dns_bound.local_addr();
-    tracing::info!(dns = %dns_addr, "DNS responder bound");
+    // resolver config keeps pointing at us across restarts. A bind failure is
+    // **non-fatal** (mirrors the web-port degrade): the daemon comes up without
+    // name resolution so the GUI/CLI can connect and the user can change
+    // `dns_port` or free the port. Capture `config.dns_port` here, before
+    // `config` is moved into `DaemonState` below.
+    let cfg_dns = config.dns_port;
+    let dns_want = SocketAddr::new(DNS_IP, cfg_dns);
+    let (dns_bound, dns_addr, dns_unbound) = match yerd_dns::Bound::bind(dns_want).await {
+        Ok(bound) => {
+            let addr = bound.local_addr();
+            tracing::info!(dns = %addr, "DNS responder bound");
+            (Some(bound), addr, None)
+        }
+        Err(e) => {
+            tracing::error!(
+                error = %e,
+                dns = %dns_want,
+                "could not bind DNS responder; name resolution disabled — free dns_port or change it in Settings, then restart"
+            );
+            (None, dns_want, Some(cfg_dns))
+        }
+    };
 
     // Mail-capture store + (optional, non-fatal) SMTP listener. The store always
     // exists so already-captured mail stays listable even when capture is off; a
@@ -301,6 +316,7 @@ pub async fn bring_up_with_dirs(
             fell_back: bound_https != cfg_https,
         },
         web_unbound,
+        dns_unbound,
         boot_id: rand_boot_id(),
         started_at: std::time::Instant::now(),
         // The shutdown broadcast lives in state so the IPC `RestartDaemon`
@@ -385,7 +401,19 @@ fn load_or_default_config(cfg_path: &std::path::Path) -> Result<yerd_config::Con
             );
             Ok(yerd_config::Config::default())
         }
-        Err(e) => Err(DaemonError::from(e)),
+        Err(e) => {
+            // Log the exact parse/validation error (with its path) to the cache
+            // log before bubbling up — the tracing subscriber is installed in
+            // `main` before `run`, so this lands in the rolling daemon log, not
+            // just stderr. Otherwise an invalid config under launchd/systemd
+            // would exit (78) with no on-disk record of *why*.
+            tracing::error!(
+                config = %cfg_path.display(),
+                error = %e,
+                "invalid config file — refusing to start"
+            );
+            Err(DaemonError::from(e))
+        }
     }
 }
 

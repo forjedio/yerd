@@ -411,6 +411,10 @@ fn validate_ports(c: &Config) -> Result<(), ConfigError> {
     if c.dumps.port == 0 {
         return Err(ve(ValidateErrorReason::DumpsPortZero));
     }
+    // NB: `dns_port == 0` is intentionally NOT rejected here — `0` means
+    // "ephemeral" and must survive a parse round-trip (see
+    // `toml_byte_shape::dns_port_zero_round_trips`). The user-facing guard against
+    // a zero DNS port lives in the daemon's `set_dns_port` IPC handler.
     Ok(())
 }
 

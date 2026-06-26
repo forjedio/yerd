@@ -8,7 +8,7 @@ import {
   FolderPlus,
   Rocket,
 } from "lucide-vue-next";
-import { computed, ref, watch } from "vue";
+import { computed, onMounted, ref, watch } from "vue";
 import { useRouter } from "vue-router";
 
 import DaemonDiagnosticsPanel from "@/components/DaemonDiagnosticsPanel.vue";
@@ -26,7 +26,10 @@ import { useOnboarding } from "@/composables/useOnboarding";
 import { useToast } from "@/composables/useToast";
 import {
   availablePhp,
+  cliPathStatus,
   getAutostart,
+  hostPlatform,
+  installCliToPath,
   installPhp,
   IpcError,
   openLoginItems,
@@ -36,7 +39,7 @@ import {
   setAutostartGui,
   setAutostartGuiMinimized,
 } from "@/ipc/client";
-import type { AutostartState, PhpVersion } from "@/ipc/types";
+import type { AutostartState, CliPathStatus, PhpVersion } from "@/ipc/types";
 
 // A first-run guided setup, shown only on a never-set-up machine (see
 // useOnboarding). Step 1 (start the daemon) is required; PHP, parking a folder,
@@ -68,22 +71,30 @@ const {
 } = useDaemonStart();
 const daemonUp = computed(() => connected.value === true);
 
-// ── degraded web ports (shown in step 1 when the daemon came up but couldn't
-// bind its web ports) ──
-const { saveAndRestart: saveFallbackPorts, validate: validateFallbackPorts } =
+// ── degraded ports (shown in step 1 when the daemon came up but couldn't bind
+// its web ports and/or its DNS port) ──
+const { applyAndRestart, validate: validateFallbackPorts, validateLoopback } =
   useFallbackPorts();
 const fbHttp = ref("");
 const fbHttps = ref("");
+const dnsPort = ref("");
 const fallbackBusy = ref(false);
 const fallbackError = ref<string | null>(null);
 const fallbackSkipped = ref(false);
-// Show the fix panel only once the daemon is up AND reports it bound no web
-// ports, and the user hasn't skipped. Seed the inputs from the ports it tried.
+const webUnbound = computed(() => report.value?.web_unbound ?? null);
+// `dns_unbound` carries the configured DNS port that failed to bind - exactly
+// the value the user wants to change, so seed the input from it.
+const dnsUnbound = computed(() => report.value?.dns_unbound ?? null);
+// Show the fix panel once the daemon is up AND reports a degraded web and/or DNS
+// port, and the user hasn't skipped. Seed the inputs from the ports it tried.
 const showPortFix = computed(
-  () => daemonUp.value && report.value?.web_unbound != null && !fallbackSkipped.value,
+  () =>
+    daemonUp.value &&
+    (webUnbound.value != null || dnsUnbound.value != null) &&
+    !fallbackSkipped.value,
 );
 watch(
-  () => report.value?.web_unbound,
+  webUnbound,
   (u) => {
     if (u && !fbHttp.value) {
       fbHttp.value = String(u.http);
@@ -92,20 +103,39 @@ watch(
   },
   { immediate: true },
 );
+watch(
+  dnsUnbound,
+  (p) => {
+    if (p != null && !dnsPort.value) dnsPort.value = String(p);
+  },
+  { immediate: true },
+);
 
 async function savePortFix(): Promise<void> {
   fallbackError.value = null;
-  const err = validateFallbackPorts(Number(fbHttp.value), Number(fbHttps.value));
-  if (err) {
-    fallbackError.value = err;
-    return;
+  const changes: Parameters<typeof applyAndRestart>[0] = {};
+  if (webUnbound.value != null) {
+    const err = validateFallbackPorts(Number(fbHttp.value), Number(fbHttps.value));
+    if (err) {
+      fallbackError.value = err;
+      return;
+    }
+    changes.web = { http: Number(fbHttp.value), https: Number(fbHttps.value) };
+  }
+  if (dnsUnbound.value != null) {
+    const err = validateLoopback("DNS", Number(dnsPort.value));
+    if (err) {
+      fallbackError.value = err;
+      return;
+    }
+    changes.dns = Number(dnsPort.value);
   }
   fallbackBusy.value = true;
   try {
-    const res = await saveFallbackPorts(Number(fbHttp.value), Number(fbHttps.value));
+    const res = await applyAndRestart(changes);
     if (res.ok) {
-      toast.success("Yerd is serving", `On ports ${fbHttp.value}/${fbHttps.value}.`);
-      // `report.web_unbound` is now null, so the panel hides on its own.
+      toast.success("Yerd is ready", "It restarted with the new ports.");
+      // The `*_unbound` fields are now null, so the panel hides on its own.
     } else {
       fallbackError.value = res.message ?? "The daemon is still degraded.";
     }
@@ -235,6 +265,45 @@ async function doInstallPhp(): Promise<void> {
   }
 }
 
+// ── step 2: install yerd on PATH (macOS only; Linux already ships it on PATH
+// via the .deb, so the button is hidden there - see `isMac`). Optional and
+// recommended; it never blocks "Next". ──
+const platform = ref("");
+const isMac = computed(() => platform.value === "macos");
+const cli = ref<CliPathStatus | null>(null);
+const cliBusy = ref(false);
+
+async function loadCliStatus(): Promise<void> {
+  if (!isMac.value) return;
+  try {
+    cli.value = await cliPathStatus();
+  } catch {
+    cli.value = null;
+  }
+}
+
+async function installCli(): Promise<void> {
+  cliBusy.value = true;
+  try {
+    await installCliToPath();
+    await loadCliStatus();
+    toast.success("yerd is on your PATH", "Run `yerd` in a new terminal window.");
+  } catch (e) {
+    toast.error("Couldn't install the yerd CLI", (e as IpcError).message);
+  } finally {
+    cliBusy.value = false;
+  }
+}
+
+onMounted(() => {
+  hostPlatform()
+    .then((p) => {
+      platform.value = p;
+      void loadCliStatus();
+    })
+    .catch(() => {});
+});
+
 // ── step 3: park a folder ──
 const parking = ref(false);
 const parkedDir = ref<string | null>(null);
@@ -360,23 +429,29 @@ function onBack(): void {
             <!-- Why the daemon didn't come up (hints + log/service details). -->
             <DaemonDiagnosticsPanel v-if="diagnostics" :diagnostics="diagnostics" />
 
-            <!-- Degraded: the daemon is up but couldn't bind its web ports. Let
-                 the user pick free ports (skippable). Stays visible across its own
-                 restart via `fallbackBusy` so the action below doesn't flash. -->
+            <!-- Degraded: the daemon is up but couldn't bind its web and/or DNS
+                 ports. Let the user pick free ports (skippable). Stays visible
+                 across its own restart via `fallbackBusy` so the action below
+                 doesn't flash. -->
             <div
               v-if="showPortFix || fallbackBusy"
               class="space-y-3 rounded-md border border-warning/40 bg-warning/10 p-3 text-sm"
             >
               <div>
-                <p class="font-medium">Yerd started, but isn't serving yet</p>
-                <p class="mt-1 text-muted-foreground">
+                <p class="font-medium">Yerd started, but isn't fully ready yet</p>
+                <p v-if="webUnbound != null" class="mt-1 text-muted-foreground">
                   It couldn't bind its web ports - they're in use by another
                   program. Pick free ports ({{ MIN_PORT }} or higher, so they don't
                   need elevation) and Yerd will serve on those.
                 </p>
+                <p v-if="dnsUnbound != null" class="mt-1 text-muted-foreground">
+                  It couldn't bind its DNS port {{ dnsUnbound }} - it's in use by
+                  another program, so <strong class="text-foreground">.test</strong>
+                  names won't resolve. Pick a free DNS port and restart.
+                </p>
               </div>
               <div class="flex flex-wrap items-end gap-3">
-                <div class="space-y-1">
+                <div v-if="webUnbound != null" class="space-y-1">
                   <label for="ob-fb-http" class="text-xs font-medium text-muted-foreground">
                     HTTP
                   </label>
@@ -393,7 +468,7 @@ function onBack(): void {
                     placeholder="8080"
                   />
                 </div>
-                <div class="space-y-1">
+                <div v-if="webUnbound != null" class="space-y-1">
                   <label for="ob-fb-https" class="text-xs font-medium text-muted-foreground">
                     HTTPS
                   </label>
@@ -408,6 +483,23 @@ function onBack(): void {
                     aria-label="Rootless HTTPS port"
                     class="w-24 font-mono"
                     placeholder="8443"
+                  />
+                </div>
+                <div v-if="dnsUnbound != null" class="space-y-1">
+                  <label for="ob-dns" class="text-xs font-medium text-muted-foreground">
+                    DNS
+                  </label>
+                  <Input
+                    id="ob-dns"
+                    v-model="dnsPort"
+                    type="number"
+                    inputmode="numeric"
+                    min="1"
+                    :max="MAX_PORT"
+                    :disabled="fallbackBusy"
+                    aria-label="DNS responder port"
+                    class="w-24 font-mono"
+                    placeholder="1053"
                   />
                 </div>
                 <Button size="sm" :disabled="fallbackBusy" @click="savePortFix">
@@ -486,6 +578,40 @@ function onBack(): void {
               No installable versions were found. You can add one later from the
               PHP page.
             </p>
+
+            <!-- Optional (recommended): put the `yerd` CLI on PATH. macOS only -
+                 Linux already ships it via the .deb. Never blocks Continue. -->
+            <div
+              v-if="isMac"
+              class="flex items-center justify-between gap-4 rounded-md border bg-muted/30 p-3"
+            >
+              <div>
+                <p class="text-sm font-medium">
+                  Install <code>yerd</code> on your PATH
+                  <span class="text-muted-foreground">(recommended)</span>
+                </p>
+                <p class="text-xs text-muted-foreground">
+                  {{
+                    cli?.installed
+                      ? "Installed - run `yerd` in a new terminal window."
+                      : "Symlinks the bundled CLI so you can run `yerd` in your terminal."
+                  }}
+                </p>
+              </div>
+              <Button
+                v-if="!cli?.installed"
+                variant="outline"
+                size="sm"
+                :disabled="cliBusy"
+                @click="installCli"
+              >
+                <Spinner v-if="cliBusy" class="size-4" />
+                Install
+              </Button>
+              <div v-else class="flex items-center gap-1 text-sm font-medium text-success">
+                <Check class="size-4" /> Installed
+              </div>
+            </div>
           </section>
 
           <!-- 3. Park a folder -->

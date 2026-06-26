@@ -105,6 +105,14 @@ pub struct StatusReport {
     /// skip_serializing_if)]` keeps the wire additive.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub web_unbound: Option<UnboundWeb>,
+    /// Set when the daemon could not bind its DNS responder port (the configured
+    /// `dns_port`): it runs degraded (HTTP/HTTPS/IPC up, but `*.test` names won't
+    /// resolve through Yerd) rather than aborting. Carries the configured port it
+    /// failed on so the UI/doctor can name it. `None`/absent on a healthy daemon;
+    /// `#[serde(default, skip_serializing_if)]` keeps the wire additive. Mirrors
+    /// [`StatusReport::web_unbound`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dns_unbound: Option<u16>,
     /// A random id the daemon generates once per process at startup. Clients use
     /// a *change* in this value to detect that a restart actually completed (the
     /// re-exec preserves the PID and `uptime_secs` has only one-second
@@ -392,6 +400,10 @@ pub enum DiagnosisCode {
     WebPortsUnbound,
     /// A non-Yerd process is listening on a privileged web port (80/443).
     ForeignWebListener,
+    /// The daemon could not bind its DNS responder port, so `*.test` names won't
+    /// resolve through Yerd until the port is freed or changed. See
+    /// [`StatusReport::dns_unbound`].
+    DnsPortUnbound,
     /// The local CA is not trusted in the system store.
     CaNotTrusted,
     /// The OS resolver does not route `*.<tld>` to Yerd.

@@ -129,6 +129,7 @@ async fn dispatch(req: Request, state: &DaemonState) -> Response {
                 https_port: state.https.bound,
                 fallback_http: cfg.ports.fallback_http,
                 fallback_https: cfg.ports.fallback_https,
+                dns_port: cfg.dns_port,
             }
         }
         Request::Park { .. }
@@ -259,6 +260,7 @@ async fn dispatch(req: Request, state: &DaemonState) -> Response {
         },
         Request::SetMailPort { port } => set_mail_port(port, state).await,
         Request::SetFallbackPorts { http, https } => set_fallback_ports(http, https, state).await,
+        Request::SetDnsPort { port } => set_dns_port(port, state).await,
         Request::SetMailEnabled { enabled } => set_mail_enabled(enabled, state).await,
         Request::ListTools => Response::Tools {
             tools: list_tools_with_external(state).await,
@@ -555,6 +557,7 @@ async fn build_status_report(state: &DaemonState) -> yerd_ipc::StatusReport {
             count: state.mail_store.count().await,
         }),
         web_unbound: state.web_unbound,
+        dns_unbound: state.dns_unbound,
         boot_id: Some(state.boot_id),
     }
 }
@@ -1185,6 +1188,33 @@ async fn set_fallback_ports(http: u16, https: u16, state: &DaemonState) -> Respo
     Response::Ok
 }
 
+/// Set the embedded DNS responder port (`dns_port`). Persisted to config; takes
+/// effect on the next daemon restart (the client triggers it). A zero port is
+/// rejected explicitly here — unlike the web/mail/dumps ports, `dns_port == 0` is
+/// a *valid* "ephemeral" value for in-process tests, so `validate()` permits it;
+/// for a user-facing change a zero port (which the OS resolver could never target)
+/// is meaningless.
+async fn set_dns_port(port: u16, state: &DaemonState) -> Response {
+    if port == 0 {
+        return Response::Error {
+            code: yerd_ipc::ErrorCode::Internal,
+            message: "DNS port must be non-zero".to_owned(),
+        };
+    }
+    let mut cfg_guard = state.config.lock().await;
+    let mut new = cfg_guard.clone();
+    new.dns_port = port;
+    if let Err(e) = new.validate() {
+        return internal(format!("config validation failed: {e}"));
+    }
+    if let Err(e) = new.save(&state.config_path) {
+        return internal(format!("config save failed: {e}"));
+    }
+    *cfg_guard = new;
+    tracing::info!(port, "set DNS port (effective on next restart)");
+    Response::Ok
+}
+
 /// Enable or disable mail capture. Persisted to config; takes effect on the next
 /// daemon start/restart.
 async fn set_mail_enabled(enabled: bool, state: &DaemonState) -> Response {
@@ -1572,6 +1602,7 @@ mod tests {
                 fell_back: true,
             },
             web_unbound: None,
+            dns_unbound: None,
             boot_id: 1,
             started_at: std::time::Instant::now(),
             shutdown_tx: tokio::sync::watch::channel(false).0,
@@ -2074,6 +2105,7 @@ Subject: Captured\r\n\r\nhi\r\n";
                 https_port,
                 fallback_http,
                 fallback_https,
+                dns_port,
             } => {
                 assert_eq!(dns_addr, state.dns_addr);
                 assert_eq!(tld, "test");
@@ -2085,6 +2117,7 @@ Subject: Captured\r\n\r\nhi\r\n";
                 assert_eq!(https_port, state.https.bound);
                 assert_eq!(fallback_http, 8080);
                 assert_eq!(fallback_https, 8443);
+                assert_eq!(dns_port, state.config.lock().await.dns_port);
             }
             other => panic!("expected Info, got {other:?}"),
         }

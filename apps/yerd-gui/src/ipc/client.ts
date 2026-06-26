@@ -436,6 +436,11 @@ export async function setFallbackPorts(http: number, https: number): Promise<voi
   ensureOk(await call<Response>("set_fallback_ports", { http, https }));
 }
 
+/** Set the embedded DNS responder port; takes effect on the next daemon restart. */
+export async function setDnsPort(port: number): Promise<void> {
+  ensureOk(await call<Response>("set_dns_port", { port }));
+}
+
 /** Enable/disable mail capture; takes effect on the next daemon restart. */
 export async function setMailEnabled(enabled: boolean): Promise<void> {
   ensureOk(await call<Response>("set_mail_enabled", { enabled }));

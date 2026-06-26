@@ -86,6 +86,10 @@ pub struct DaemonState {
     /// ports — it runs degraded (no proxy). Carries the fallback ports it failed
     /// on, surfaced in `Status` (`web_unbound`) so the UI/doctor can name them.
     pub web_unbound: Option<yerd_ipc::UnboundWeb>,
+    /// Set when the daemon could not bind its DNS responder port — it runs
+    /// degraded (no name resolution). Carries the configured `dns_port` it failed
+    /// on, surfaced in `Status` (`dns_unbound`) so the UI/doctor can name it.
+    pub dns_unbound: Option<u16>,
     /// Per-process id (see `StatusReport::boot_id`) clients use to detect a
     /// completed restart across the pid-preserving re-exec.
     pub boot_id: u64,

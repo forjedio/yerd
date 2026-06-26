@@ -319,6 +319,13 @@ pub enum Request {
         /// New rootless HTTPS port (`>= 1024`).
         https: u16,
     },
+    /// Set the embedded DNS responder port (`dns_port`). Must be non-zero. Takes
+    /// effect on the next daemon restart (no implicit hot rebind). Changing it may
+    /// require re-running the OS-resolver install so it points at the new port.
+    SetDnsPort {
+        /// The new loopback DNS port (must be non-zero).
+        port: u16,
+    },
     /// Enable or disable the mail-capture server. Takes effect on the next
     /// daemon start/restart.
     SetMailEnabled {
@@ -469,6 +476,7 @@ mod variant_name_pinning {
             Request::DeleteMails { .. } => {}
             Request::SetMailPort { .. } => {}
             Request::SetFallbackPorts { .. } => {}
+            Request::SetDnsPort { .. } => {}
             Request::SetMailEnabled { .. } => {}
             Request::ListTools => {}
             Request::InstallTool { .. } => {}
