@@ -39,6 +39,7 @@ import Modal from "@/components/ui/Modal.vue";
 import Select from "@/components/ui/Select.vue";
 import Spinner from "@/components/ui/Spinner.vue";
 import Switch from "@/components/ui/Switch.vue";
+import { isUnbound, siteUrl } from "@/lib/siteUrl";
 import { useDaemon } from "@/composables/useDaemon";
 import { useToast } from "@/composables/useToast";
 import {
@@ -121,13 +122,13 @@ const filteredSites = computed(() => {
   );
 });
 
-function siteUrl(s: Site): string {
-  const scheme = s.secure ? "https" : "http";
-  const bound = s.secure ? report.value?.https.bound : report.value?.http.bound;
-  const dflt = s.secure ? 443 : 80;
-  const redirected = report.value?.port_redirect === true;
-  const port = !redirected && bound && bound !== dflt ? `:${bound}` : "";
-  return `${scheme}://${s.name}.${tld.value}${port}`;
+/** Tooltip for the "Open" action; appends the http-only caveat when the
+ *  resolver is off and the site is reached via the localhost `/~` fallback. */
+function openTitle(s: Site): string {
+  const url = siteUrl(s, report.value);
+  return isUnbound(report.value)
+    ? `Open ${url} — served over http://localhost (forced-HTTPS sites may not load)`
+    : `Open ${url}`;
 }
 
 /** The served sub-directory label for a site ("/" when the project root is served). */
@@ -413,8 +414,8 @@ onMounted(load);
               <div class="min-w-0">
                 <button
                   class="flex max-w-full items-center gap-1.5 font-mono text-sm font-medium hover:text-brand"
-                  :title="`Open ${siteUrl(s)}`"
-                  @click="openInBrowser(siteUrl(s))"
+                  :title="openTitle(s)"
+                  @click="openInBrowser(siteUrl(s, report))"
                 >
                   <span class="truncate">{{ s.name }}.{{ tld }}</span>
                 </button>
@@ -434,7 +435,7 @@ onMounted(load);
                   variant="ghost"
                   size="icon"
                   :aria-label="`Open ${s.name}.${tld}`"
-                  @click="openInBrowser(siteUrl(s))"
+                  @click="openInBrowser(siteUrl(s, report))"
                 >
                   <ExternalLink class="size-4" />
                 </Button>
@@ -448,7 +449,7 @@ onMounted(load);
                     <DropdownMenuItem @select="openEdit(s)">
                       <Pencil class="size-4" /> Edit…
                     </DropdownMenuItem>
-                    <DropdownMenuItem @select="openInBrowser(siteUrl(s))">
+                    <DropdownMenuItem @select="openInBrowser(siteUrl(s, report))">
                       <ExternalLink class="size-4" /> Open in browser
                     </DropdownMenuItem>
                     <DropdownMenuItem @select="openPath(s.document_root)">
@@ -569,6 +570,8 @@ onMounted(load);
       :php-versions="phpVersionList"
       :default-php="defaultPhp"
       :tld="tld"
+      :resolver-installed="report?.resolver_installed ?? null"
+      :http-bound="report?.http.bound ?? 8080"
       @created="onCreated"
     />
 

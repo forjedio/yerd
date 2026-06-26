@@ -108,7 +108,24 @@ If you never run `elevate ports` (or it can't apply), the daemon falls back to h
 | HTTP | 80 | 8080 |
 | HTTPS | 443 | 8443 |
 
-So without elevation you can reach sites at `http://my-app.test:8080`, or `http://127.0.0.1:8080`. Run [`yerd doctor`](./diagnostics) to see which ports are live and what to do.
+So without elevation you can reach sites at `http://my-app.test:8080` - **if** the resolver is installed. If you can't even install the resolver (no admin rights at all), `*.test` names won't resolve. For that case Yerd serves every site through `localhost` - see [Reaching sites without the resolver](#reaching-sites-without-the-resolver) below. Run [`yerd doctor`](./diagnostics) to see which ports are live and what to do.
+
+## Reaching sites without the resolver
+
+If you can't install the OS resolver, `*.test` hostnames don't resolve - but you can still reach `http://localhost:8080`. Yerd lets you select which site that origin serves, three ways:
+
+1. **Open `http://localhost:8080/~my-app.test`.** Yerd pins the `localhost` origin to that site with a cookie and redirects you to `/`. From then on, `http://localhost:8080/...` serves `my-app.test`, and links/assets inside the app work because the browser origin really is `localhost:8080`. Switch sites any time by opening another `/~<other>.test` URL.
+2. **Just open `http://localhost:8080/` (or any path).** With no site pinned yet, Yerd shows a **site picker** listing your sites; clicking one pins it and forwards you to the path you originally asked for.
+3. **For API clients**, send a header instead of dealing with cookies: `X-Yerd-Site: my-app.test` routes that single request to the named site (no redirect, no cookie). A bare label (`X-Yerd-Site: my-app`) works too.
+
+The Yerd desktop app and `yerd` CLI automatically show `http://localhost:8080/~<name>.test` links whenever the resolver isn't installed, so the buttons "just work".
+
+::: warning This path is HTTP-only
+There's no certificate for `localhost`, so this fallback is plain `http://` only. Two consequences:
+
+- Apps that **force HTTPS** (`URL::forceScheme('https')`, forced-https middleware) or that generate URLs from a fixed host (`APP_URL=http://my-app.test`, or absolute URLs stored in a database like WordPress) may redirect or link away from `localhost` and fail to load. Set `APP_URL` to the localhost origin, or install the resolver, for those apps.
+- Only one site is "pinned" per browser at a time (the cookie is per-origin). Switching is one click via another `/~` link or the picker.
+:::
 
 ::: info macOS port status
 The macOS daemon always binds its high ports (pf does the 80/443 forwarding), so Yerd probes reachability rather than trusting that a config file exists. The probe also **confirms it reaches Yerd's own proxy** - it speaks HTTP to `127.0.0.1:80` and checks for the proxy's `Server: yerd` marker - so a redirect you've torn down (or a foreign web server squatting the port) is correctly reported as *not* redirected. If something that isn't Yerd holds 80/443, `doctor` raises a [`ForeignWebListener`](./diagnostics) warning.

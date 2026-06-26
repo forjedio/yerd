@@ -778,6 +778,15 @@ fn format_status(r: &StatusReport) -> String {
         "resolver  installed: {}",
         fmt_tristate(r.resolver_installed)
     );
+    // Resolver off: `.test` names don't resolve, so point the user at the
+    // localhost fallback (the proxy serves any site at /~<name>.<tld>).
+    if r.resolver_installed == Some(false) {
+        let _ = writeln!(
+            s,
+            "          → not installed: reach sites at http://localhost:{}/~<name>.{}",
+            r.http.bound, r.tld
+        );
+    }
     if let Some([one, five, fifteen]) = r.load_avg {
         let _ = writeln!(
             s,
