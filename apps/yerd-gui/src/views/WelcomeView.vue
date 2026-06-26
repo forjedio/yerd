@@ -8,9 +8,10 @@ import {
   FolderPlus,
   Rocket,
 } from "lucide-vue-next";
-import { computed, onUnmounted, ref, watch } from "vue";
+import { computed, ref, watch } from "vue";
 import { useRouter } from "vue-router";
 
+import DaemonDiagnosticsPanel from "@/components/DaemonDiagnosticsPanel.vue";
 import EnvironmentCard from "@/components/EnvironmentCard.vue";
 import TitleBar from "@/components/TitleBar.vue";
 import Button from "@/components/ui/Button.vue";
@@ -18,6 +19,7 @@ import Select from "@/components/ui/Select.vue";
 import Spinner from "@/components/ui/Spinner.vue";
 import logoUrl from "@/assets/logo.svg";
 import { useDaemon } from "@/composables/useDaemon";
+import { useDaemonStart } from "@/composables/useDaemonStart";
 import { useOnboarding } from "@/composables/useOnboarding";
 import { useToast } from "@/composables/useToast";
 import {
@@ -31,7 +33,6 @@ import {
   setAutostartDaemon,
   setAutostartGui,
   setAutostartGuiMinimized,
-  startDaemon,
 } from "@/ipc/client";
 import type { AutostartState, PhpVersion } from "@/ipc/types";
 
@@ -54,78 +55,49 @@ const STEPS = [
 const step = ref(1);
 
 // ── step 1: daemon ──
-const daemonStarting = ref(false);
-const pendingApproval = ref(false);
+// The start→wait→diagnose skeleton lives in the composable; onboarding injects
+// its login-item ordering via `beforeProbe` (see installDaemon).
+const {
+  starting: daemonStarting,
+  pendingApproval,
+  diagnostics,
+  start: startDaemonFlow,
+} = useDaemonStart();
 const daemonUp = computed(() => connected.value === true);
 
-// If a started daemon never connects (and isn't pending approval), stop spinning
-// after this so the button is clickable again rather than stuck forever.
-const START_TIMEOUT_MS = 20_000;
-let startTimer: ReturnType<typeof setTimeout> | undefined;
-function clearStartTimer(): void {
-  if (startTimer) {
-    clearTimeout(startTimer);
-    startTimer = undefined;
-  }
-}
-
 async function installDaemon(): Promise<void> {
-  daemonStarting.value = true;
-  pendingApproval.value = false;
-  try {
+  await startDaemonFlow({
     // Suppress the per-call Login-Items nudge: enabling the daemon and the app
-    // could each open System Settings, so we open it once below instead.
-    await startDaemon(false);
-    await refresh();
-    // Probe service support before enabling the login defaults.
-    let autostart: AutostartState | null = null;
-    try {
-      autostart = await getAutostart();
-    } catch {
-      /* non-fatal */
-    }
-    // Onboarding default: run the daemon AND the app at login, with the app
-    // started minimized to the tray. Best-effort and idempotent — users change
-    // all three later in Settings. A missing service manager just skips the
-    // daemon toggle.
-    await enableLoginDefaults(autostart?.daemonSupported ?? false);
-    // Re-read AFTER enabling: the GUI login item is only registered now, so its
-    // pending-approval state is meaningful. Open Login Items at most once if the
-    // daemon OR the GUI needs the user to approve a background item.
-    try {
-      autostart = await getAutostart();
-    } catch {
-      /* non-fatal */
-    }
-    pendingApproval.value =
-      (autostart?.daemonPendingApproval ?? false) ||
-      (autostart?.guiPendingApproval ?? false);
-    if (pendingApproval.value) {
-      void openLoginItems(); // best-effort; don't await/block onboarding
-    }
-    // Keep the spinner running until the daemon actually CONNECTS (the poller
-    // flips `connected` → the watch below clears it and shows "Running"). The
-    // only early-out is macOS pending-approval, where we can't connect until the
-    // user acts, so stop the spinner and show the approval hint.
-    if (pendingApproval.value) {
-      daemonStarting.value = false;
-    } else {
-      clearStartTimer();
-      startTimer = setTimeout(() => {
-        if (daemonStarting.value && connected.value !== true) {
-          daemonStarting.value = false;
-          toast.error(
-            "The daemon didn't come up",
-            "Try again, or check System Settings → Login Items.",
-          );
-        }
-      }, START_TIMEOUT_MS);
-    }
-  } catch (e) {
-    // Start failed outright — let the user retry.
-    daemonStarting.value = false;
-    toast.error("Couldn't start the daemon", (e as IpcError).message);
-  }
+    // could each open System Settings, so we open it once in beforeProbe instead.
+    nudge: false,
+    beforeProbe: async () => {
+      // Probe service support before enabling the login defaults.
+      let autostart: AutostartState | null = null;
+      try {
+        autostart = await getAutostart();
+      } catch {
+        /* non-fatal */
+      }
+      // Onboarding default: run the daemon AND the app at login, app minimized to
+      // the tray. Best-effort/idempotent — users change all three in Settings; a
+      // missing service manager just skips the daemon toggle.
+      await enableLoginDefaults(autostart?.daemonSupported ?? false);
+      // Re-read AFTER enabling: the GUI login item is only registered now, so its
+      // pending-approval state is meaningful. Open Login Items at most once if the
+      // daemon OR the GUI needs approval.
+      try {
+        autostart = await getAutostart();
+      } catch {
+        /* non-fatal */
+      }
+      const pending =
+        (autostart?.daemonPendingApproval ?? false) ||
+        (autostart?.guiPendingApproval ?? false);
+      // best-effort; don't block onboarding, and swallow any IPC rejection.
+      if (pending) void openLoginItems().catch(() => {});
+      return pending;
+    },
+  });
 }
 
 /**
@@ -155,16 +127,14 @@ async function enableLoginDefaults(daemonSupported: boolean): Promise<void> {
   }
 }
 
-// Stop the spinner once the daemon is actually reachable. No auto-advance — the
-// user clicks Continue (enabled once `daemonUp`).
-watch(connected, (c) => {
-  if (c === true) {
-    daemonStarting.value = false;
-    clearStartTimer();
-  }
-});
+// Swallow any rejection from the async `openLoginItems` IPC call so a raw
+// `@click` binding can't surface an unhandled promise rejection (best-effort UX).
+function onOpenLoginItems(): void {
+  void openLoginItems().catch(() => {});
+}
 
-onUnmounted(clearStartTimer);
+// (Spinner/diagnostics auto-clear on connect is handled inside useDaemonStart.)
+// No auto-advance — the user clicks Continue (enabled once `daemonUp`).
 
 // ── step 2: PHP ──
 const phpLoading = ref(false);
@@ -329,10 +299,13 @@ function onBack(): void {
                 macOS needs you to allow Yerd in the background. Enable it under
                 Login Items, then it'll connect automatically.
               </p>
-              <Button variant="outline" size="sm" class="mt-2" @click="openLoginItems">
+              <Button variant="outline" size="sm" class="mt-2" @click="onOpenLoginItems">
                 <ExternalLink class="size-4" /> Open Login Items
               </Button>
             </div>
+
+            <!-- Why the daemon didn't come up (hints + log/service details). -->
+            <DaemonDiagnosticsPanel v-if="diagnostics" :diagnostics="diagnostics" />
 
             <!-- Action, below the content and right-aligned. -->
             <div class="flex justify-end">

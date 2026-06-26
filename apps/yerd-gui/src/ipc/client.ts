@@ -13,6 +13,7 @@ import type {
   CliPathStatus,
   AvailablePhpResponse,
   CreateSiteSpec,
+  DaemonDiagnostics,
   DatabaseSummary,
   Diagnosis,
   DoctorFixResponse,
@@ -573,6 +574,17 @@ export async function startDaemon(nudge = true): Promise<void> {
 
 export async function stopDaemon(): Promise<void> {
   await call<void>("stop_daemon");
+}
+
+/**
+ * Gather diagnostics explaining why the daemon isn't up — service-manager
+ * status, the daemon's rolling-log tail, binary/socket checks, and host-computed
+ * hints. Pass the message a prior `startDaemon` threw (if any) so the
+ * never-launched cases (missing binary, translocation, register failure) carry
+ * their most actionable signal.
+ */
+export async function daemonDiagnostics(startError?: string): Promise<DaemonDiagnostics> {
+  return call<DaemonDiagnostics>("daemon_diagnostics", { startError });
 }
 
 export async function getAutostart(): Promise<AutostartState> {

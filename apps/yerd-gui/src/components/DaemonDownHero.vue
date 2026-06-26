@@ -1,65 +1,36 @@
 <script setup lang="ts">
-import { Play } from "lucide-vue-next";
-import { computed, onUnmounted, ref, watch } from "vue";
+import { ExternalLink, Play } from "lucide-vue-next";
+import { computed } from "vue";
 
+import DaemonDiagnosticsPanel from "@/components/DaemonDiagnosticsPanel.vue";
 import Button from "@/components/ui/Button.vue";
 import Card from "@/components/ui/Card.vue";
 import Spinner from "@/components/ui/Spinner.vue";
 import { useDaemon } from "@/composables/useDaemon";
-import { useToast } from "@/composables/useToast";
-import { IpcError, startDaemon } from "@/ipc/client";
+import { useDaemonStart } from "@/composables/useDaemonStart";
+import { openLoginItems } from "@/ipc/client";
 import logoUrl from "@/assets/logo.svg";
 
 // The shared "Yerd isn't running" hero + start affordance. Used by the Overview
 // page and as the blocked-page screen in AppShell, so every page shows the same
-// thing when the daemon is down. Keeps the button spinning until the daemon
-// actually connects — with a timeout so it can never stick forever.
-const { connected, report, refresh } = useDaemon();
-const toast = useToast();
-const starting = ref(false);
+// thing when the daemon is down. The start→wait→diagnose logic (with auto-clear
+// on connect) lives in useDaemonStart; on failure we show actionable diagnostics
+// instead of a blind toast, and on macOS pending-approval we show the Login-Items
+// affordance rather than a "failure".
+const { report } = useDaemon();
+const { starting, pendingApproval, diagnostics, start } = useDaemonStart();
 const tld = computed(() => report.value?.tld ?? "test");
 
-// If a started daemon never connects (e.g. crashed, or macOS Login-Items
-// approval pending), stop spinning after this so the button is clickable again.
-const START_TIMEOUT_MS = 20_000;
-let startTimer: ReturnType<typeof setTimeout> | undefined;
-function clearStartTimer(): void {
-  if (startTimer) {
-    clearTimeout(startTimer);
-    startTimer = undefined;
-  }
+function onStart(): void {
+  // nudge=true: a single-button start may open Login Items on pending approval.
+  void start({ nudge: true });
 }
 
-async function onStart(): Promise<void> {
-  starting.value = true;
-  try {
-    await startDaemon();
-    await refresh();
-    clearStartTimer();
-    startTimer = setTimeout(() => {
-      if (starting.value && connected.value !== true) {
-        starting.value = false;
-        toast.error(
-          "The daemon didn't come up",
-          "Try again, or check Settings → Login Items.",
-        );
-      }
-    }, START_TIMEOUT_MS);
-  } catch (e) {
-    starting.value = false;
-    toast.error("Couldn't start the daemon", (e as IpcError).message);
-  }
+// `openLoginItems` is an async IPC call; swallow any rejection so a raw `@click`
+// binding can't surface an unhandled promise rejection (it's best-effort UX).
+function onOpenLoginItems(): void {
+  void openLoginItems().catch(() => {});
 }
-
-// Stop the spinner once the daemon is reachable.
-watch(connected, (c) => {
-  if (c === true) {
-    starting.value = false;
-    clearStartTimer();
-  }
-});
-
-onUnmounted(clearStartTimer);
 </script>
 
 <template>
@@ -72,6 +43,29 @@ onUnmounted(clearStartTimer);
         sites, PHP runtimes, and services.
       </p>
     </div>
+
+    <!-- macOS: registered but awaiting the user's Login-Items approval. -->
+    <div
+      v-if="pendingApproval"
+      class="mx-auto max-w-md rounded-md border border-warning/40 bg-warning/10 p-3 text-left text-sm"
+    >
+      <p class="font-medium">One more step</p>
+      <p class="mt-1 text-muted-foreground">
+        macOS needs you to allow Yerd in the background. Enable it under Login
+        Items, then it'll connect automatically.
+      </p>
+      <Button variant="outline" size="sm" class="mt-2" @click="onOpenLoginItems">
+        <ExternalLink class="size-4" /> Open Login Items
+      </Button>
+    </div>
+
+    <!-- Why the daemon didn't come up. -->
+    <DaemonDiagnosticsPanel
+      v-else-if="diagnostics"
+      :diagnostics="diagnostics"
+      class="mx-auto max-w-md text-left"
+    />
+
     <Button :disabled="starting" @click="onStart">
       <Spinner v-if="starting" class="size-4" />
       <Play v-else class="size-4" /> Start Yerd

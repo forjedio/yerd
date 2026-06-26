@@ -9,6 +9,7 @@ import {
 } from "lucide-vue-next";
 import { computed, nextTick, onMounted, ref, watch } from "vue";
 
+import DaemonDiagnosticsPanel from "@/components/DaemonDiagnosticsPanel.vue";
 import PageHeader from "@/components/PageHeader.vue";
 import StatusPill, { type Tone } from "@/components/StatusPill.vue";
 import Button from "@/components/ui/Button.vue";
@@ -28,6 +29,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { useDaemon } from "@/composables/useDaemon";
+import { useDaemonStart } from "@/composables/useDaemonStart";
 import { useToast } from "@/composables/useToast";
 import {
   applyUpdate,
@@ -45,7 +47,6 @@ import {
   setAutostartGui,
   setAutostartGuiMinimized,
   setUpdateChannel,
-  startDaemon,
   stopDaemon,
 } from "@/ipc/client";
 import type {
@@ -60,6 +61,14 @@ import { useTheme, type ThemePref } from "@/lib/theme";
 import { humaniseBytes, humaniseUptime } from "@/lib/utils";
 
 const { connected, report, refresh: refreshStatus } = useDaemon();
+// Surfaces the same failure diagnostics here as onboarding / the down-hero, so a
+// start attempt from Settings (a screen shown while the daemon is down) isn't a
+// blind toast.
+const {
+  starting: daemonStarting,
+  diagnostics: startDiagnostics,
+  start: startDaemonFlow,
+} = useDaemonStart();
 const toast = useToast();
 const { pref, setTheme } = useTheme();
 
@@ -361,16 +370,11 @@ watch(running, (up) => {
 
 // ── daemon lifecycle ──
 async function onStart(): Promise<void> {
-  busy.value = "daemon";
-  try {
-    await startDaemon();
-    toast.success("Starting daemon…", "It should connect in a moment.");
-  } catch (e) {
-    toast.error("Couldn't start the daemon", (e as IpcError).message);
-  } finally {
-    busy.value = null;
-    await refreshStatus();
-  }
+  // Spinner + on-failure diagnostics are owned by the composable; it keeps
+  // spinning until the daemon connects (watch) or surfaces the panel.
+  await startDaemonFlow({ nudge: true });
+  // Refresh the approval banners (a fresh registration may now be pending).
+  await loadAutostart();
 }
 
 async function onStop(): Promise<void> {
@@ -490,8 +494,8 @@ async function toggleGuiMinimized(on: boolean): Promise<void> {
             <CardTitle>Daemon</CardTitle>
             <CardDescription>{{ daemonStatus }}</CardDescription>
           </div>
-          <Button v-if="!running" :disabled="busy === 'daemon'" @click="onStart">
-            <Spinner v-if="busy === 'daemon'" class="size-4" />
+          <Button v-if="!running" :disabled="daemonStarting" @click="onStart">
+            <Spinner v-if="daemonStarting" class="size-4" />
             <Play v-else class="size-4" /> Start
           </Button>
           <Button v-else variant="outline" :disabled="busy === 'daemon'" @click="onStop">
@@ -499,6 +503,10 @@ async function toggleGuiMinimized(on: boolean): Promise<void> {
             <Square v-else class="size-4" /> Stop
           </Button>
         </CardHeader>
+        <!-- Why a start attempt failed (only when the daemon is down). -->
+        <CardContent v-if="startDiagnostics && !running">
+          <DaemonDiagnosticsPanel :diagnostics="startDiagnostics" />
+        </CardContent>
         <CardContent v-if="report">
           <TooltipProvider :delay-duration="0">
             <div class="text-sm">
