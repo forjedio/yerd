@@ -277,8 +277,8 @@ fn port_findings(report: &StatusReport) -> Vec<Diagnosis> {
             DiagnosisCode::WebPortsUnbound,
             "Not serving any sites",
             format!(
-                "Yerd couldn't bind its web ports (HTTP {}, HTTPS {}) — they're in use by \
-                 another process — so no .test sites are being served.",
+                "Yerd couldn't bind its web ports (HTTP {}, HTTPS {}) — likely because \
+                 another process holds them — so no .test sites are being served.",
                 unbound.http, unbound.https
             ),
             Some(

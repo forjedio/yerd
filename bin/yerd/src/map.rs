@@ -758,8 +758,19 @@ fn format_status(r: &StatusReport) -> String {
     let _ = writeln!(s, "version   {version}");
     let _ = writeln!(s, "tld       .{}", r.tld);
     let redirected = r.port_redirect == Some(true);
-    let _ = writeln!(s, "http      {}", fmt_port(r.http, redirected));
-    let _ = writeln!(s, "https     {}", fmt_port(r.https, redirected));
+    if let Some(u) = r.web_unbound {
+        // Degraded: bound nothing, so `fmt_port` would print a misleading
+        // "80 → 0 (fallback)". Surface the real state instead.
+        let _ = writeln!(
+            s,
+            "http      not serving — couldn't bind {} (run `yerd doctor`)",
+            u.http
+        );
+        let _ = writeln!(s, "https     not serving — couldn't bind {}", u.https);
+    } else {
+        let _ = writeln!(s, "http      {}", fmt_port(r.http, redirected));
+        let _ = writeln!(s, "https     {}", fmt_port(r.https, redirected));
+    }
     if r.foreign_web_listener == Some(true) {
         let _ = writeln!(
             s,
@@ -1619,6 +1630,30 @@ mod tests {
             fell_back: false,
         };
         assert_eq!(fmt_port(bound, true), "80");
+    }
+
+    #[test]
+    fn status_degraded_web_ports_shows_not_serving() {
+        let mut r = sample_report();
+        r.http = PortStatus {
+            requested: 80,
+            bound: 0,
+            fell_back: true,
+        };
+        r.https = PortStatus {
+            requested: 443,
+            bound: 0,
+            fell_back: true,
+        };
+        r.web_unbound = Some(yerd_ipc::UnboundWeb {
+            http: 8080,
+            https: 8443,
+        });
+        let out = format_status(&r);
+        assert!(out.contains("not serving — couldn't bind 8080"), "{out}");
+        assert!(out.contains("not serving — couldn't bind 8443"), "{out}");
+        // The misleading "→ 0" fallback rendering must NOT appear.
+        assert!(!out.contains("→ 0"), "{out}");
     }
 
     #[test]

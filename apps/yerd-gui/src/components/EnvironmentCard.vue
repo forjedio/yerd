@@ -122,18 +122,26 @@ const envItems = computed<EnvItem[]>(() => {
     {
       key: "ports",
       label: "Privileged ports (80/443)",
-      // Degraded: the daemon bound no web ports, so elevation can't help yet
-      // (the redirect would point at nothing, and the CLI refuses) — show the
-      // problem and withhold the fix until working ports are set.
+      // Degraded: the daemon bound no web ports. On macOS elevation can't help
+      // yet (the pf redirect would point at the unbound ports, and the CLI
+      // refuses), so withhold the fix until working ports are set. On Linux the
+      // ports fix is `setcap`, which binds 80/443 DIRECTLY and doesn't depend on
+      // the fallback ports — it's the correct degraded recovery, so keep it
+      // offered there.
       value: r.web_unbound ? false : portsElevated(r),
-      fixable: !r.web_unbound && !portsElevated(r),
+      fixable: r.web_unbound ? !mac : !portsElevated(r),
       unelevatable: r.port_redirect === true && mac,
       target: "ports",
       yes: r.port_redirect === true && privilegedFallback(r) ? "redirected" : "bound",
-      no: r.web_unbound ? "not serving — set working ports first" : "fell back to high ports",
-      note: r.web_unbound
-        ? "Yerd couldn't bind its web ports. Set working ports in Settings, then elevate."
-        : undefined,
+      no: r.web_unbound
+        ? mac
+          ? "not serving — set working ports first"
+          : "not serving — elevate to bind 80/443"
+        : "fell back to high ports",
+      note:
+        r.web_unbound && mac
+          ? "Yerd couldn't bind its web ports. Set working ports in Settings, then elevate."
+          : undefined,
     },
   ];
 });

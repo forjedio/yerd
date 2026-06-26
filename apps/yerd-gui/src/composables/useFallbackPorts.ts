@@ -74,8 +74,13 @@ export function useFallbackPorts() {
     }
     try {
       await restartDaemon();
-    } catch (e) {
-      return { ok: false, message: (e as IpcError).message };
+    } catch {
+      // The restart tears down the socket, so `restartDaemon()` can reject with
+      // a dropped-connection error *even though the restart is underway* (the
+      // daemon may close the connection around its re-exec). The boot_id poll
+      // below is the authoritative completion check, so don't bail here — mirror
+      // GeneralView's restart flow, which also tolerates the throw. A daemon that
+      // genuinely didn't restart simply makes the poll time out.
     }
 
     // Actively poll until the *restarted* daemon answers (fresh boot_id), then
