@@ -169,8 +169,26 @@ where
         // Datadir + config/log (+ MySQL/MariaDB socket) parent directories.
         Self::prepare_dirs(service, &datadir, &config_path, &log_path, &socket)?;
 
+        // For MySQL/MariaDB, write the bootstrap SQL the server runs on every
+        // start (via the `init-file` directive) to grant passwordless root over
+        // TCP loopback. Written before the config so the path the cnf references
+        // always exists; its parent is the config dir `prepare_dirs` just made.
+        let init_file = version::init_file_path(&self.dirs, service);
+        if matches!(service, Service::MySql | Service::MariaDb) {
+            std::fs::write(
+                &init_file,
+                config_render::render_my_bootstrap_sql().as_bytes(),
+            )
+            .map_err(|source| ServiceError::ConfigWrite {
+                path: init_file.clone(),
+                service,
+                source,
+            })?;
+        }
+
         // Render + write the per-engine config.
-        let rendered = render_service_config(service, port, &datadir, &socket, &log_path);
+        let rendered =
+            render_service_config(service, port, &datadir, &socket, &log_path, &init_file);
         std::fs::write(&config_path, rendered.as_bytes()).map_err(|source| {
             ServiceError::ConfigWrite {
                 path: config_path.clone(),
@@ -737,11 +755,12 @@ fn render_service_config(
     datadir: &std::path::Path,
     socket: &std::path::Path,
     log_path: &std::path::Path,
+    init_file: &std::path::Path,
 ) -> String {
     match service {
         Service::Redis => config_render::render_redis_conf(port, datadir, log_path),
         Service::MySql | Service::MariaDb => {
-            config_render::render_my_cnf(port, datadir, socket, log_path)
+            config_render::render_my_cnf(port, datadir, socket, log_path, init_file)
         }
         Service::Postgres => config_render::render_postgresql_conf(port, datadir),
     }
