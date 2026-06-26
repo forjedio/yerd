@@ -202,8 +202,8 @@ pub fn open_login_items() {
 /// available); falls back to a detached `yerdd serve` only when no service
 /// manager exists (in which case daemon-at-login is disabled in the UI). The
 /// blocking service call runs off the async worker so the tray/UI never stalls.
-pub(crate) async fn start() -> Result<(), GuiError> {
-    tokio::task::spawn_blocking(crate::autostart::daemon_start)
+pub(crate) async fn start(nudge: bool) -> Result<(), GuiError> {
+    tokio::task::spawn_blocking(move || crate::autostart::daemon_start(nudge))
         .await
         .map_err(|e| GuiError::internal(format!("start task failed: {e}")))?
 }
@@ -219,9 +219,13 @@ pub(crate) async fn stop() -> Result<(), GuiError> {
     Ok(())
 }
 
+/// Start the daemon. `nudge` (macOS) controls whether a `requiresApproval`
+/// SMAppService state opens Login Items — onboarding passes `false` so it opens
+/// at most once across the daemon + GUI enables; the General-tab button uses
+/// `true`.
 #[tauri::command]
-pub async fn start_daemon() -> Result<(), GuiError> {
-    start().await
+pub async fn start_daemon(nudge: bool) -> Result<(), GuiError> {
+    start(nudge).await
 }
 
 #[tauri::command]

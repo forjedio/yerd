@@ -470,6 +470,8 @@ export interface AutostartState {
   guiMinimized: boolean;
   /** macOS only: registered but awaiting approval in System Settings → Login Items. */
   daemonPendingApproval: boolean;
+  /** macOS only: the GUI login item is registered but awaiting approval in Login Items. */
+  guiPendingApproval: boolean;
 }
 
 /**

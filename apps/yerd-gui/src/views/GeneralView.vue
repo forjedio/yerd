@@ -466,6 +466,23 @@ async function toggleGuiMinimized(on: boolean): Promise<void> {
         </Button>
       </div>
 
+      <!-- macOS: the GUI login item is registered but awaiting Login-Items approval. -->
+      <div
+        v-if="autostart?.guiPendingApproval"
+        class="flex items-start justify-between gap-4 rounded-lg border border-amber-500/40 bg-amber-500/10 p-4"
+      >
+        <div class="space-y-1">
+          <p class="text-sm font-medium">Approve launching Yerd at login</p>
+          <p class="text-xs text-muted-foreground">
+            “Start the Yerd app at login” is set, but macOS needs you to enable it
+            under System Settings → Login Items (Open at Login).
+          </p>
+        </div>
+        <Button variant="outline" size="sm" @click="openApproval">
+          Open Login Items
+        </Button>
+      </div>
+
       <!-- Daemon + subsystems -->
       <Card>
         <CardHeader class="flex-row items-center justify-between space-y-0">

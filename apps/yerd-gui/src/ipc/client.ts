@@ -562,8 +562,13 @@ export async function untrustCa(): Promise<boolean> {
 
 // ── daemon lifecycle + autostart (host commands, NOT daemon IPC) ────────────
 
-export async function startDaemon(): Promise<void> {
-  await call<void>("start_daemon");
+/**
+ * Start the daemon. `nudge` (macOS) controls whether a pending Login-Items
+ * approval auto-opens System Settings; pass `false` from a flow that enables
+ * several login items so they don't each open it (the caller opens it once).
+ */
+export async function startDaemon(nudge = true): Promise<void> {
+  await call<void>("start_daemon", { nudge });
 }
 
 export async function stopDaemon(): Promise<void> {
@@ -574,12 +579,12 @@ export async function getAutostart(): Promise<AutostartState> {
   return call<AutostartState>("get_autostart");
 }
 
-export async function setAutostartDaemon(on: boolean): Promise<void> {
-  await call<void>("set_autostart_daemon", { on });
+export async function setAutostartDaemon(on: boolean, nudge = true): Promise<void> {
+  await call<void>("set_autostart_daemon", { on, nudge });
 }
 
-export async function setAutostartGui(on: boolean): Promise<void> {
-  await call<void>("set_autostart_gui", { on });
+export async function setAutostartGui(on: boolean, nudge = true): Promise<void> {
+  await call<void>("set_autostart_gui", { on, nudge });
 }
 
 export async function setAutostartGuiMinimized(on: boolean): Promise<void> {

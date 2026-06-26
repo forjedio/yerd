@@ -6,9 +6,14 @@
 //!   *single supervisor* — `start` goes through it so a later autostart-enable
 //!   can't end up with a second, competing daemon. Detached spawn is used only
 //!   when no service manager exists (then daemon-at-login is unsupported).
-//! - **GUI autostart**: `tauri-plugin-autostart` (the app's own login entry).
-//!   The "start minimized" preference can't ride on launch args (the plugin
-//!   fixes those at init), so it lives in a tiny Rust-readable settings file.
+//! - **GUI autostart**: the app's own login entry. On a bundled, non-translocated
+//!   macOS build this is `SMAppService.mainApp` (the "Open at Login" entry,
+//!   attributed to "Yerd"); elsewhere — and on dev/translocated macOS — it falls
+//!   back to `tauri-plugin-autostart`. A legacy loose `Yerd.plist` from the
+//!   plugin path is migrated to SMAppService on first launch
+//!   (`migrate_gui_login_if_needed`). The "start minimized" preference lives in
+//!   a Rust-readable settings file (no launch arg survives `mainApp`; `main`'s
+//!   `launch_probe` detects a login launch instead).
 //!
 //! Everything is host-side and threads failures through [`GuiError`].
 
@@ -38,6 +43,12 @@ struct GuiSettings {
     /// silently resets every preference to its default).
     #[serde(default)]
     onboarding_complete: bool,
+    /// macOS one-shot: the legacy loose `Yerd.plist` GUI login item has been
+    /// migrated to `SMAppService.mainApp` (so it shows as "Yerd" under Open at
+    /// Login, not the Developer-ID name). Guards `migrate_gui_login_if_needed` so
+    /// it runs once and never re-enables login for a user who later turned it off.
+    #[serde(default)]
+    gui_login_migrated: bool,
 }
 
 fn settings_path() -> Result<PathBuf, GuiError> {
@@ -309,7 +320,7 @@ fn embedded_plist_path() -> Option<PathBuf> {
 /// SMAppService. Read-only.
 #[cfg(target_os = "macos")]
 fn smapp_registered() -> bool {
-    crate::smappservice::status()
+    crate::smappservice::status(crate::smappservice::Service::Daemon)
         .map(crate::smappservice::status_means_registered)
         .unwrap_or(false)
 }
@@ -341,7 +352,7 @@ fn cleanup_legacy() {
 /// Login Items, take them there. Best-effort.
 #[cfg(target_os = "macos")]
 fn nudge_if_requires_approval() {
-    let pending = crate::smappservice::status()
+    let pending = crate::smappservice::status(crate::smappservice::Service::Daemon)
         .map(|s| s == crate::smappservice::STATUS_REQUIRES_APPROVAL)
         .unwrap_or(false);
     if pending {
@@ -350,16 +361,154 @@ fn nudge_if_requires_approval() {
 }
 
 /// Register the SMAppService agent if not already on (idempotent), migrating any
-/// loose legacy agent first, then nudge for approval if needed.
+/// loose legacy agent first, then nudge for approval if needed. `nudge = false`
+/// suppresses the System-Settings open so the onboarding flow (which enables the
+/// daemon *and* the GUI) doesn't open Login Items more than once.
 #[cfg(target_os = "macos")]
-fn smapp_enable() -> Result<(), GuiError> {
+fn smapp_enable(nudge: bool) -> Result<(), GuiError> {
     if smapp_registered() {
         return Ok(()); // already on — don't cleanup/re-register a live agent.
     }
     cleanup_legacy();
-    crate::smappservice::register()?;
-    nudge_if_requires_approval();
+    crate::smappservice::register(crate::smappservice::Service::Daemon)?;
+    if nudge {
+        nudge_if_requires_approval();
+    }
     Ok(())
+}
+
+// ── macOS: GUI login item via SMAppService.mainApp ───────────────────────────
+//
+// The GUI "launch at login" used to ride `tauri-plugin-autostart` in LaunchAgent
+// mode, which writes a *loose* `~/Library/LaunchAgents/Yerd.plist`. macOS files
+// loose agents under the signing identity's name (an individual's legal name),
+// not "Yerd". Registering the main app via `SMAppService.mainApp` puts it under
+// **Login Items → Open at Login** attributed to "Yerd". `mainApp` uses the app's
+// own `Info.plist`, so there is no embedded plist and no bundle-config change.
+
+/// The loose `~/Library/LaunchAgents/Yerd.plist` that `tauri-plugin-autostart`
+/// writes (Label `Yerd`). Present only on un-migrated installs.
+#[cfg(target_os = "macos")]
+fn gui_loose_plist_path() -> Result<PathBuf, GuiError> {
+    let home = crate::daemon::home_dir().ok_or_else(|| GuiError::internal("HOME is not set"))?;
+    Ok(home.join("Library").join("LaunchAgents").join("Yerd.plist"))
+}
+
+/// launchctl service target for the loose plist (its Label is `Yerd`).
+#[cfg(target_os = "macos")]
+fn gui_loose_service_target() -> String {
+    format!("gui/{}/Yerd", uid())
+}
+
+/// Whether to manage GUI login via SMAppService (vs the `tauri-plugin-autostart`
+/// fallback). Same gates as the daemon's [`use_smappservice`] *except* no
+/// embedded-plist check — `mainApp` registers the app's own `Info.plist`.
+#[cfg(target_os = "macos")]
+fn gui_use_smappservice() -> bool {
+    if std::env::var_os("YERD_NO_AUTO_DAEMON").is_some() {
+        return false;
+    }
+    let Ok(exe) = std::env::current_exe() else {
+        return false;
+    };
+    exe.to_string_lossy().contains(".app/Contents/MacOS/") && !is_translocated()
+}
+
+/// Whether the GUI main-app login item is registered (or pending approval).
+#[cfg(target_os = "macos")]
+fn gui_smapp_registered() -> bool {
+    crate::smappservice::status(crate::smappservice::Service::MainApp)
+        .map(crate::smappservice::status_means_registered)
+        .unwrap_or(false)
+}
+
+/// macOS only: the GUI login item is registered but awaiting the user's approval
+/// in Login Items. Always false on the fallback path / other OSes.
+fn gui_pending_approval() -> bool {
+    #[cfg(target_os = "macos")]
+    if gui_use_smappservice() {
+        return crate::smappservice::status(crate::smappservice::Service::MainApp)
+            .map(|s| s == crate::smappservice::STATUS_REQUIRES_APPROVAL)
+            .unwrap_or(false);
+    }
+    false
+}
+
+/// Tear down the loose `tauri-plugin-autostart` login item (`Yerd.plist`).
+/// Best-effort, and a no-op when the file is absent. Safe even with a live
+/// `mainApp` registration: that item is keyed on the app bundle, not a launchd
+/// Label, so booting out `gui/{uid}/Yerd` cannot affect it.
+#[cfg(target_os = "macos")]
+fn gui_cleanup_legacy() {
+    let Ok(path) = gui_loose_plist_path() else {
+        return;
+    };
+    if !path.exists() {
+        return;
+    }
+    let target = gui_loose_service_target();
+    let _ = run_ok("launchctl", &["bootout", &target]);
+    let _ = std::fs::remove_file(&path);
+    let _ = run_ok("launchctl", &["enable", &target]);
+}
+
+/// Register the GUI as a login item via `SMAppService.mainApp` (idempotent).
+///
+/// Ordering matters: register **first**, then remove the loose `Yerd.plist` only
+/// on success — so a failed register leaves the old login item intact rather than
+/// silently de-registering the user, and a later attempt can still migrate it.
+/// `nudge = false` suppresses the Login-Items open (onboarding opens it once).
+#[cfg(target_os = "macos")]
+fn gui_smapp_enable(nudge: bool) -> Result<(), GuiError> {
+    if gui_smapp_registered() {
+        gui_cleanup_legacy(); // already on — just clear any leftover loose plist
+        return Ok(());
+    }
+    crate::smappservice::register(crate::smappservice::Service::MainApp)?;
+    gui_cleanup_legacy();
+    if nudge && gui_pending_approval() {
+        crate::smappservice::open_login_items_settings();
+    }
+    Ok(())
+}
+
+/// Unregister the GUI login item and remove any leftover loose plist.
+#[cfg(target_os = "macos")]
+fn gui_smapp_disable() -> Result<(), GuiError> {
+    if gui_smapp_registered() {
+        crate::smappservice::unregister(crate::smappservice::Service::MainApp)?;
+    }
+    gui_cleanup_legacy();
+    Ok(())
+}
+
+/// One-time startup migration of an existing loose `Yerd.plist` login item to
+/// `SMAppService.mainApp`, so already-"login-on" users stop showing under the
+/// Developer-ID name. Flag-guarded (`gui_login_migrated`) so it runs once and
+/// won't re-enable login for a user who later turned it off. Silent — never
+/// opens System Settings at startup (the General-tab banner surfaces approval).
+/// The one-shot flag is set only on success, so a failed register retries next
+/// launch with the loose plist still in place.
+#[cfg(target_os = "macos")]
+pub(crate) fn migrate_gui_login_if_needed() {
+    if !gui_use_smappservice() {
+        return;
+    }
+    let mut s = load_settings();
+    if s.gui_login_migrated {
+        return;
+    }
+    let loose = gui_loose_plist_path().map(|p| p.exists()).unwrap_or(false);
+    if loose && !gui_smapp_registered() {
+        if gui_smapp_enable(false).is_ok() {
+            s.gui_login_migrated = true;
+            let _ = save_settings(&s);
+        }
+    } else {
+        // Nothing to migrate — consume the one-shot so we don't probe every launch.
+        s.gui_login_migrated = true;
+        let _ = save_settings(&s);
+    }
 }
 
 /// Write the LaunchAgent plist and bootstrap it (idempotent — an already-loaded
@@ -409,9 +558,10 @@ fn ensure_bootstrapped() -> Result<(), GuiError> {
 // ── daemon start / stop / autostart (used by crate::daemon + the commands) ───
 
 /// Start the daemon via the service manager, or a detached spawn when none.
-pub(crate) fn daemon_start() -> Result<(), GuiError> {
+pub(crate) fn daemon_start(nudge: bool) -> Result<(), GuiError> {
     #[cfg(target_os = "linux")]
     {
+        let _ = nudge; // no SMAppService / Login-Items nudge on Linux
         if systemd_user_available() {
             write_unit()?;
             return run_ok("systemctl", &["--user", "start", "yerd"]);
@@ -425,7 +575,7 @@ pub(crate) fn daemon_start() -> Result<(), GuiError> {
             // kickstart for a fresh start even if it was already up. kickstart is
             // best-effort — when status is `requiresApproval` the job isn't loaded
             // yet, and that's fine (the user was sent to Login Items).
-            smapp_enable()?;
+            smapp_enable(nudge)?;
             let _ = run_ok("launchctl", &["kickstart", "-k", &service_target()]);
             Ok(())
         } else {
@@ -435,6 +585,7 @@ pub(crate) fn daemon_start() -> Result<(), GuiError> {
     }
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     {
+        let _ = nudge;
         Err(GuiError::internal(
             "starting the daemon is not supported on this platform",
         ))
@@ -456,10 +607,12 @@ pub(crate) fn daemon_stop() {
     }
 }
 
-/// Enable/disable launch at login.
-fn daemon_set_login(on: bool) -> Result<(), GuiError> {
+/// Enable/disable launch at login. `nudge` (macOS) gates the auto-open of Login
+/// Items on `requiresApproval` so onboarding can open it just once.
+fn daemon_set_login(on: bool, nudge: bool) -> Result<(), GuiError> {
     #[cfg(target_os = "linux")]
     {
+        let _ = nudge;
         if !systemd_user_available() {
             return Err(GuiError::internal(
                 "systemd --user is unavailable; cannot manage daemon autostart",
@@ -478,7 +631,7 @@ fn daemon_set_login(on: bool) -> Result<(), GuiError> {
             // register (→ "Yerd" Login Items entry + runs at login + now);
             // off = unregister (removes the entry + stops it).
             if on {
-                smapp_enable()
+                smapp_enable(nudge)
             } else {
                 // Unregister the SMAppService agent (only when actually
                 // registered — `unregister()` on a never-registered service is a
@@ -486,7 +639,7 @@ fn daemon_set_login(on: bool) -> Result<(), GuiError> {
                 // so the toggle doesn't appear stuck "on" for upgrade users who
                 // only ever had the pre-SMAppService loose plist.
                 if smapp_registered() {
-                    crate::smappservice::unregister()?;
+                    crate::smappservice::unregister(crate::smappservice::Service::Daemon)?;
                 }
                 cleanup_legacy();
                 Ok(())
@@ -501,7 +654,7 @@ fn daemon_set_login(on: bool) -> Result<(), GuiError> {
     }
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     {
-        let _ = on;
+        let _ = (on, nudge);
         Err(GuiError::internal(
             "daemon autostart is not supported on this platform",
         ))
@@ -518,7 +671,8 @@ pub struct AutostartState {
     pub daemon: bool,
     /// Whether daemon autostart is even possible (a service manager exists).
     pub daemon_supported: bool,
-    /// GUI-at-login (from the autostart plugin — authoritative).
+    /// GUI-at-login: SMAppService.mainApp registration on the bundled macOS path,
+    /// else the autostart plugin's state.
     pub gui: bool,
     /// Start-the-GUI-minimized preference.
     pub gui_minimized: bool,
@@ -526,6 +680,10 @@ pub struct AutostartState {
     /// it in System Settings → Login Items** (SMAppService `requiresApproval`).
     /// Drives a first-run banner; always false elsewhere.
     pub daemon_pending_approval: bool,
+    /// macOS only: the GUI login item is registered but **waiting for the user to
+    /// enable it in System Settings → Login Items** (SMAppService
+    /// `requiresApproval`). Drives a banner; always false elsewhere.
+    pub gui_pending_approval: bool,
 }
 
 /// Current "run daemon at login" state for the General tab. On the macOS
@@ -548,40 +706,62 @@ fn daemon_enabled(settings: &GuiSettings, supported: bool) -> bool {
 fn daemon_pending_approval() -> bool {
     #[cfg(target_os = "macos")]
     if use_smappservice() {
-        return crate::smappservice::status()
+        return crate::smappservice::status(crate::smappservice::Service::Daemon)
             .map(|s| s == crate::smappservice::STATUS_REQUIRES_APPROVAL)
             .unwrap_or(false);
     }
     false
 }
 
+/// "Run the Yerd app at login" state for the General tab. On the bundled macOS
+/// path this is the live SMAppService.mainApp registration plus a read-only
+/// reconcile of a leftover loose `Yerd.plist` (so an un-migrated install doesn't
+/// read as off); elsewhere it's the autostart plugin's own state.
+fn gui_login_enabled(app: &tauri::AppHandle) -> Result<bool, GuiError> {
+    #[cfg(target_os = "macos")]
+    if gui_use_smappservice() {
+        let loose = gui_loose_plist_path().map(|p| p.exists()).unwrap_or(false);
+        return Ok(gui_smapp_registered() || loose);
+    }
+    app.autolaunch()
+        .is_enabled()
+        .map_err(|e| GuiError::internal(format!("could not query GUI autostart: {e}")))
+}
+
 #[tauri::command]
 pub fn get_autostart(app: tauri::AppHandle) -> Result<AutostartState, GuiError> {
     let settings = load_settings();
     let supported = manager_available();
-    let gui = app
-        .autolaunch()
-        .is_enabled()
-        .map_err(|e| GuiError::internal(format!("could not query GUI autostart: {e}")))?;
+    let gui = gui_login_enabled(&app)?;
     Ok(AutostartState {
         daemon: daemon_enabled(&settings, supported),
         daemon_supported: supported,
         gui,
         gui_minimized: settings.gui_minimized,
         daemon_pending_approval: daemon_pending_approval(),
+        gui_pending_approval: gui_pending_approval(),
     })
 }
 
 #[tauri::command]
-pub fn set_autostart_daemon(on: bool) -> Result<(), GuiError> {
-    daemon_set_login(on)?;
+pub fn set_autostart_daemon(on: bool, nudge: bool) -> Result<(), GuiError> {
+    daemon_set_login(on, nudge)?;
     let mut s = load_settings();
     s.daemon_autostart = on;
     save_settings(&s)
 }
 
 #[tauri::command]
-pub fn set_autostart_gui(app: tauri::AppHandle, on: bool) -> Result<(), GuiError> {
+pub fn set_autostart_gui(app: tauri::AppHandle, on: bool, nudge: bool) -> Result<(), GuiError> {
+    #[cfg(target_os = "macos")]
+    if gui_use_smappservice() {
+        return if on {
+            gui_smapp_enable(nudge)
+        } else {
+            gui_smapp_disable()
+        };
+    }
+    let _ = nudge; // the plugin fallback has no Login-Items approval flow
     let mgr = app.autolaunch();
     let r = if on { mgr.enable() } else { mgr.disable() };
     r.map_err(|e| GuiError::internal(format!("could not change GUI autostart: {e}")))

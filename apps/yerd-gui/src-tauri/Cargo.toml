@@ -54,6 +54,14 @@ webkit2gtk = "=2.0.2"
 # executable icon). Versions track what Tauri already resolves, so no duplicates.
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2            = "0.6"
+# `block2` backs the NSNotificationCenter observer block in `launch_probe.rs`
+# (detects a login-item launch via NSApplicationLaunchIsDefaultLaunchKey). 0.6 is
+# ABI-matched to objc2 0.6.
+block2           = "0.6"
+# `dispatch2` defers the initial show/hide decision one main-runloop turn
+# (`DispatchQueue::main().exec_async`) so the login-launch probe is authoritative
+# — `run_on_main_thread` would run inline on the main thread and lose the race.
+dispatch2        = "0.3"
 objc2-app-kit    = { version = "0.3", features = ["NSApplication", "NSImage", "NSResponder", "NSGraphics", "objc2-core-foundation"] }
 objc2-foundation = { version = "0.3", features = ["NSData", "NSString", "NSError", "objc2-core-foundation"] }
 # In-process user-domain CA trust (mac_trust.rs). Versions track what

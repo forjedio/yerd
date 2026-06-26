@@ -73,21 +73,36 @@ async function installDaemon(): Promise<void> {
   daemonStarting.value = true;
   pendingApproval.value = false;
   try {
-    await startDaemon();
+    // Suppress the per-call Login-Items nudge: enabling the daemon and the app
+    // could each open System Settings, so we open it once below instead.
+    await startDaemon(false);
     await refresh();
-    // macOS may need the user to approve the background item before it runs.
+    // Probe service support before enabling the login defaults.
     let autostart: AutostartState | null = null;
     try {
       autostart = await getAutostart();
     } catch {
       /* non-fatal */
     }
-    pendingApproval.value = autostart?.daemonPendingApproval ?? false;
     // Onboarding default: run the daemon AND the app at login, with the app
     // started minimized to the tray. Best-effort and idempotent — users change
     // all three later in Settings. A missing service manager just skips the
     // daemon toggle.
     await enableLoginDefaults(autostart?.daemonSupported ?? false);
+    // Re-read AFTER enabling: the GUI login item is only registered now, so its
+    // pending-approval state is meaningful. Open Login Items at most once if the
+    // daemon OR the GUI needs the user to approve a background item.
+    try {
+      autostart = await getAutostart();
+    } catch {
+      /* non-fatal */
+    }
+    pendingApproval.value =
+      (autostart?.daemonPendingApproval ?? false) ||
+      (autostart?.guiPendingApproval ?? false);
+    if (pendingApproval.value) {
+      openLoginItems();
+    }
     // Keep the spinner running until the daemon actually CONNECTS (the poller
     // flips `connected` → the watch below clears it and shows "Running"). The
     // only early-out is macOS pending-approval, where we can't connect until the
@@ -122,13 +137,14 @@ async function installDaemon(): Promise<void> {
 async function enableLoginDefaults(daemonSupported: boolean): Promise<void> {
   if (daemonSupported) {
     try {
-      await setAutostartDaemon(true);
+      // nudge=false: installDaemon opens Login Items once after all enables.
+      await setAutostartDaemon(true, false);
     } catch {
       /* no service manager / best-effort */
     }
   }
   try {
-    await setAutostartGui(true);
+    await setAutostartGui(true, false);
   } catch {
     /* best-effort */
   }
