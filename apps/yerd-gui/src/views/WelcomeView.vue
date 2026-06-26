@@ -15,11 +15,13 @@ import DaemonDiagnosticsPanel from "@/components/DaemonDiagnosticsPanel.vue";
 import EnvironmentCard from "@/components/EnvironmentCard.vue";
 import TitleBar from "@/components/TitleBar.vue";
 import Button from "@/components/ui/Button.vue";
+import Input from "@/components/ui/Input.vue";
 import Select from "@/components/ui/Select.vue";
 import Spinner from "@/components/ui/Spinner.vue";
 import logoUrl from "@/assets/logo.svg";
 import { useDaemon } from "@/composables/useDaemon";
 import { useDaemonStart } from "@/composables/useDaemonStart";
+import { MIN_PORT, MAX_PORT, useFallbackPorts } from "@/composables/useFallbackPorts";
 import { useOnboarding } from "@/composables/useOnboarding";
 import { useToast } from "@/composables/useToast";
 import {
@@ -41,7 +43,7 @@ import type { AutostartState, PhpVersion } from "@/ipc/types";
 // and elevation are each skippable. Finishing lands on the Overview.
 const router = useRouter();
 const toast = useToast();
-const { connected, refresh } = useDaemon();
+const { connected, report, refresh } = useDaemon();
 const { finish } = useOnboarding();
 
 const STEPS = [
@@ -64,6 +66,56 @@ const {
   start: startDaemonFlow,
 } = useDaemonStart();
 const daemonUp = computed(() => connected.value === true);
+
+// ── degraded web ports (shown in step 1 when the daemon came up but couldn't
+// bind its web ports) ──
+const { saveAndRestart: saveFallbackPorts, validate: validateFallbackPorts } =
+  useFallbackPorts();
+const fbHttp = ref("");
+const fbHttps = ref("");
+const fallbackBusy = ref(false);
+const fallbackError = ref<string | null>(null);
+const fallbackSkipped = ref(false);
+// Show the fix panel only once the daemon is up AND reports it bound no web
+// ports, and the user hasn't skipped. Seed the inputs from the ports it tried.
+const showPortFix = computed(
+  () => daemonUp.value && report.value?.web_unbound != null && !fallbackSkipped.value,
+);
+watch(
+  () => report.value?.web_unbound,
+  (u) => {
+    if (u && !fbHttp.value) {
+      fbHttp.value = String(u.http);
+      fbHttps.value = String(u.https);
+    }
+  },
+  { immediate: true },
+);
+
+async function savePortFix(): Promise<void> {
+  fallbackError.value = null;
+  const err = validateFallbackPorts(Number(fbHttp.value), Number(fbHttps.value));
+  if (err) {
+    fallbackError.value = err;
+    return;
+  }
+  fallbackBusy.value = true;
+  try {
+    const res = await saveFallbackPorts(Number(fbHttp.value), Number(fbHttps.value));
+    if (res.ok) {
+      toast.success("Yerd is serving", `On ports ${fbHttp.value}/${fbHttps.value}.`);
+      // `report.web_unbound` is now null, so the panel hides on its own.
+    } else {
+      fallbackError.value = res.message ?? "The daemon is still degraded.";
+    }
+  } finally {
+    fallbackBusy.value = false;
+  }
+}
+
+function skipPortFix(): void {
+  fallbackSkipped.value = true;
+}
 
 async function installDaemon(): Promise<void> {
   await startDaemonFlow({
@@ -307,6 +359,72 @@ function onBack(): void {
             <!-- Why the daemon didn't come up (hints + log/service details). -->
             <DaemonDiagnosticsPanel v-if="diagnostics" :diagnostics="diagnostics" />
 
+            <!-- Degraded: the daemon is up but couldn't bind its web ports. Let
+                 the user pick free ports (skippable). Stays visible across its own
+                 restart via `fallbackBusy` so the action below doesn't flash. -->
+            <div
+              v-if="showPortFix || fallbackBusy"
+              class="space-y-3 rounded-md border border-warning/40 bg-warning/10 p-3 text-sm"
+            >
+              <div>
+                <p class="font-medium">Yerd started, but isn't serving yet</p>
+                <p class="mt-1 text-muted-foreground">
+                  It couldn't bind its web ports — they're in use by another
+                  program. Pick free ports ({{ MIN_PORT }} or higher, so they don't
+                  need elevation) and Yerd will serve on those.
+                </p>
+              </div>
+              <div class="flex flex-wrap items-end gap-3">
+                <div class="space-y-1">
+                  <label for="ob-fb-http" class="text-xs font-medium text-muted-foreground">
+                    HTTP
+                  </label>
+                  <Input
+                    id="ob-fb-http"
+                    v-model="fbHttp"
+                    type="number"
+                    inputmode="numeric"
+                    :min="MIN_PORT"
+                    :max="MAX_PORT"
+                    :disabled="fallbackBusy"
+                    aria-label="Rootless HTTP port"
+                    class="w-24 font-mono"
+                    placeholder="8080"
+                  />
+                </div>
+                <div class="space-y-1">
+                  <label for="ob-fb-https" class="text-xs font-medium text-muted-foreground">
+                    HTTPS
+                  </label>
+                  <Input
+                    id="ob-fb-https"
+                    v-model="fbHttps"
+                    type="number"
+                    inputmode="numeric"
+                    :min="MIN_PORT"
+                    :max="MAX_PORT"
+                    :disabled="fallbackBusy"
+                    aria-label="Rootless HTTPS port"
+                    class="w-24 font-mono"
+                    placeholder="8443"
+                  />
+                </div>
+                <Button size="sm" :disabled="fallbackBusy" @click="savePortFix">
+                  <Spinner v-if="fallbackBusy" class="size-4" />
+                  Save &amp; validate
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  :disabled="fallbackBusy"
+                  @click="skipPortFix"
+                >
+                  Skip for now
+                </Button>
+              </div>
+              <p v-if="fallbackError" class="text-destructive">{{ fallbackError }}</p>
+            </div>
+
             <!-- Action, below the content and right-aligned. -->
             <div class="flex justify-end">
               <div
@@ -314,6 +432,12 @@ function onBack(): void {
                 class="flex items-center gap-2 rounded-md bg-success/10 px-3 py-1.5 text-sm font-medium text-success"
               >
                 <Check class="size-4" /> Running
+              </div>
+              <div
+                v-else-if="fallbackBusy"
+                class="flex items-center gap-2 rounded-md bg-muted px-3 py-1.5 text-sm font-medium text-muted-foreground"
+              >
+                <Spinner class="size-4" /> Restarting…
               </div>
               <Button v-else :disabled="daemonStarting" @click="installDaemon">
                 <Spinner v-if="daemonStarting" class="size-4" />

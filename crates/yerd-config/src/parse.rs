@@ -96,6 +96,20 @@ fn default_dump_port() -> u16 {
 struct PortsWire {
     http: u16,
     https: u16,
+    // Additive: configs written before rootless ports were configurable omit
+    // these, so each carries a field-level default (8080 / 8443).
+    #[serde(default = "default_fallback_http")]
+    fallback_http: u16,
+    #[serde(default = "default_fallback_https")]
+    fallback_https: u16,
+}
+
+fn default_fallback_http() -> u16 {
+    Ports::default().fallback_http
+}
+
+fn default_fallback_https() -> u16 {
+    Ports::default().fallback_https
 }
 
 impl Default for PortsWire {
@@ -104,6 +118,8 @@ impl Default for PortsWire {
         Self {
             http: p.http,
             https: p.https,
+            fallback_http: p.fallback_http,
+            fallback_https: p.fallback_https,
         }
     }
 }
@@ -258,6 +274,8 @@ impl TryFrom<Wire> for Config {
         let ports = Ports {
             http: w.ports.http,
             https: w.ports.https,
+            fallback_http: w.ports.fallback_http,
+            fallback_https: w.ports.fallback_https,
         };
         let parked = ParkedSection {
             paths: w.parked.paths,
@@ -372,6 +390,16 @@ fn validate_ports(c: &Config) -> Result<(), ConfigError> {
     }
     if c.ports.http == c.ports.https {
         return Err(ve(ValidateErrorReason::HttpHttpsPortsEqual));
+    }
+    // The rootless fallback exists to bind without elevation, so it must be a
+    // non-privileged port — this also structurally forbids 80/443 as a fallback.
+    if c.ports.fallback_http < crate::schema::FIRST_UNPRIVILEGED_PORT
+        || c.ports.fallback_https < crate::schema::FIRST_UNPRIVILEGED_PORT
+    {
+        return Err(ve(ValidateErrorReason::FallbackPortPrivileged));
+    }
+    if c.ports.fallback_http == c.ports.fallback_https {
+        return Err(ve(ValidateErrorReason::FallbackPortsEqual));
     }
     // The mail-capture port is bound on `127.0.0.1` when enabled; a zero port is
     // meaningless (it would bind an ephemeral port no sender could find).
@@ -812,6 +840,49 @@ php = "not-a-version"
                 reason: ValidateErrorReason::HttpsPortZero,
             }) => {}
             other => panic!("expected HttpsPortZero, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn validate_rejects_privileged_fallback_port() {
+        // The rootless fallback must not require elevation — 80/443 (or any
+        // sub-1024 port) is rejected.
+        let mut c = Config::default();
+        c.ports.fallback_http = 80;
+        match c.validate() {
+            Err(ConfigError::Validate {
+                reason: ValidateErrorReason::FallbackPortPrivileged,
+            }) => {}
+            other => panic!("expected FallbackPortPrivileged, got {other:?}"),
+        }
+        let mut c = Config::default();
+        c.ports.fallback_https = 443;
+        match c.validate() {
+            Err(ConfigError::Validate {
+                reason: ValidateErrorReason::FallbackPortPrivileged,
+            }) => {}
+            other => panic!("expected FallbackPortPrivileged, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn validate_accepts_1024_fallback_boundary() {
+        let mut c = Config::default();
+        c.ports.fallback_http = 1024;
+        c.ports.fallback_https = 1025;
+        c.validate().unwrap();
+    }
+
+    #[test]
+    fn validate_rejects_equal_fallback_ports() {
+        let mut c = Config::default();
+        c.ports.fallback_http = 9000;
+        c.ports.fallback_https = 9000;
+        match c.validate() {
+            Err(ConfigError::Validate {
+                reason: ValidateErrorReason::FallbackPortsEqual,
+            }) => {}
+            other => panic!("expected FallbackPortsEqual, got {other:?}"),
         }
     }
 

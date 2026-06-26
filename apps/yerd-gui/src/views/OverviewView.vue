@@ -212,9 +212,32 @@ const emptyEnvironment = computed(
 
       <!-- Daemon up: the serving console. -->
       <template v-else>
+        <!-- Degraded: the daemon couldn't bind its web ports, so nothing serves. -->
+        <div
+          v-if="r?.web_unbound"
+          class="flex items-start gap-3 rounded-md border border-warning/40 bg-warning/10 p-4"
+        >
+          <ShieldAlert class="mt-0.5 size-5 shrink-0 text-warning" />
+          <div class="min-w-0 flex-1">
+            <p class="text-sm font-medium">Yerd isn't serving your sites</p>
+            <p class="mt-1 text-sm text-muted-foreground">
+              It couldn't bind its web ports ({{ r.web_unbound.http }}/{{
+                r.web_unbound.https
+              }}) — they're in use by another process. Change Yerd's ports to free
+              ones to start serving.
+            </p>
+          </div>
+          <RouterLink
+            to="/general"
+            class="shrink-0 self-center rounded-md bg-brand px-3 py-1.5 text-sm font-medium text-brand-foreground hover:bg-brand/90"
+          >
+            Change ports
+          </RouterLink>
+        </div>
+
         <!-- Empty environment (no PHP, nothing parked) → re-run guided setup. -->
         <div
-          v-if="emptyEnvironment"
+          v-else-if="emptyEnvironment"
           class="flex items-start gap-3 rounded-md border border-brand/40 bg-brand/5 p-4"
         >
           <Rocket class="mt-0.5 size-5 shrink-0 text-brand" />

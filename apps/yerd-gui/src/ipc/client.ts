@@ -426,6 +426,15 @@ export async function setMailPort(port: number): Promise<void> {
   ensureOk(await call<Response>("set_mail_port", { port }));
 }
 
+/**
+ * Persist the rootless HTTP/HTTPS fallback ports; takes effect on the next
+ * daemon restart. The daemon rejects values < 1024, equal ports, or a change
+ * while ports are elevated (surfaced as a thrown IpcError).
+ */
+export async function setFallbackPorts(http: number, https: number): Promise<void> {
+  ensureOk(await call<Response>("set_fallback_ports", { http, https }));
+}
+
 /** Enable/disable mail capture; takes effect on the next daemon restart. */
 export async function setMailEnabled(enabled: boolean): Promise<void> {
   ensureOk(await call<Response>("set_mail_enabled", { enabled }));

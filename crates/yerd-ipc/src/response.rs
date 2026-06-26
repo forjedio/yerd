@@ -71,6 +71,15 @@ pub enum Response {
         /// The rootless HTTPS port the daemon actually bound (e.g. 8443).
         #[serde(default)]
         https_port: u16,
+        /// The configured rootless HTTP fallback port (e.g. 8080) — what Settings
+        /// edits. Distinct from `http_port`, which is the *bound* port and equals
+        /// the desired port when privileged binding succeeds. `#[serde(default)]`
+        /// keeps older daemons decodable; defaults to 0.
+        #[serde(default)]
+        fallback_http: u16,
+        /// The configured rootless HTTPS fallback port (e.g. 8443).
+        #[serde(default)]
+        fallback_https: u16,
     },
     /// Reply to [`crate::Request::ListPhp`] / `CheckPhpUpdates` / `UpdatePhp`.
     PhpVersions {
@@ -357,6 +366,8 @@ mod variant_name_pinning {
             ca_fingerprint: "ab".repeat(32),
             http_port: 8080,
             https_port: 8443,
+            fallback_http: 8080,
+            fallback_https: 8443,
         });
         pin_response(Response::PhpVersions {
             installed: vec![PhpVersion::new(8, 5)],
@@ -401,6 +412,8 @@ mod variant_name_pinning {
                 daemon_version: "9.9.9".into(),
                 services: vec![],
                 mail: None,
+                web_unbound: None,
+                boot_id: None,
             }),
         });
         pin_response(Response::Diagnoses {

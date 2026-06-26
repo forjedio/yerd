@@ -98,6 +98,31 @@ pub struct StatusReport {
     /// (an older daemon emits unchanged bytes; an older client ignores it).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mail: Option<MailStatus>,
+    /// Set when the daemon could bind **neither** the desired nor the rootless
+    /// fallback web port pair: it runs degraded (IPC/DNS up, no HTTP/HTTPS
+    /// proxy). Carries the fallback ports it failed on so the UI/doctor can name
+    /// them. `None`/absent on a healthy daemon; `#[serde(default,
+    /// skip_serializing_if)]` keeps the wire additive.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub web_unbound: Option<UnboundWeb>,
+    /// A random id the daemon generates once per process at startup. Clients use
+    /// a *change* in this value to detect that a restart actually completed (the
+    /// re-exec preserves the PID and `uptime_secs` has only one-second
+    /// granularity, so neither is a reliable restart key). `None`/absent on an
+    /// older daemon; `#[serde(default, skip_serializing_if)]` keeps the wire
+    /// additive.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub boot_id: Option<u64>,
+}
+
+/// The rootless fallback ports the daemon failed to bind, surfaced in
+/// [`StatusReport::web_unbound`] when it runs degraded (no web listeners).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UnboundWeb {
+    /// The configured rootless HTTP port that could not be bound.
+    pub http: u16,
+    /// The configured rootless HTTPS port that could not be bound.
+    pub https: u16,
 }
 
 /// Built-in mail-capture SMTP server status, surfaced in [`StatusReport::mail`].
@@ -362,6 +387,9 @@ pub enum DiagnosisCode {
     DaemonDown,
     /// A privileged port fell back to its rootless equivalent.
     PortFallback,
+    /// The daemon could bind neither the desired nor the fallback web port pair,
+    /// so it is serving no sites (degraded). See [`StatusReport::web_unbound`].
+    WebPortsUnbound,
     /// A non-Yerd process is listening on a privileged web port (80/443).
     ForeignWebListener,
     /// The local CA is not trusted in the system store.

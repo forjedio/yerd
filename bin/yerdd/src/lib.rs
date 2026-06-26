@@ -106,27 +106,36 @@ async fn run_until_shutdown(
         })
     };
 
-    // Proxy task.
-    let proxy_handle = {
+    // Proxy task. Skipped entirely when the daemon came up degraded (no web
+    // listeners) — IPC/DNS still run so the GUI/CLI can connect and the user can
+    // fix the ports. Mirrors the optional-mail task below.
+    let proxy_handle = if let (Some(http_listener), Some(tls_listener)) =
+        (daemon.http_listener, daemon.https_listener)
+    {
         let router = daemon.state.router.clone();
         let resolver = Arc::new(DaemonBackendResolver {
             php_manager: daemon.php_manager.clone(),
         });
         let https = yerd_proxy::HttpsBinding {
-            listener: daemon.https_listener,
+            listener: tls_listener,
             public_port: daemon.https_port,
             cert_store: daemon.cert_store.clone(),
         };
         let mut rx = shutdown_rx.clone();
-        tokio::spawn(yerd_proxy::ProxyServer::serve(
-            daemon.http_listener,
+        Some(tokio::spawn(yerd_proxy::ProxyServer::serve(
+            http_listener,
             Some(https),
             router,
             resolver,
             async move {
                 let _ = rx.changed().await;
             },
-        ))
+        )))
+    } else {
+        tracing::warn!(
+            "web proxy disabled (degraded): no HTTP/HTTPS listeners — sites won't be served until the fallback ports are fixed and the daemon restarts"
+        );
+        None
     };
 
     // IPC task.
@@ -235,7 +244,9 @@ async fn run_until_shutdown(
     // Now the subsystems are winding down (they watch the same channel); cap
     // each join so a stuck task can't hang the exit/restart.
     let _ = tokio::time::timeout(Duration::from_secs(10), dns_handle).await;
-    let _ = tokio::time::timeout(Duration::from_secs(10), proxy_handle).await;
+    if let Some(proxy_handle) = proxy_handle {
+        let _ = tokio::time::timeout(Duration::from_secs(10), proxy_handle).await;
+    }
     let _ = tokio::time::timeout(Duration::from_secs(5), ipc_handle).await;
     let _ = tokio::time::timeout(Duration::from_secs(5), dump_handle).await;
     let _ = tokio::time::timeout(Duration::from_secs(5), update_check_handle).await;

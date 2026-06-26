@@ -122,12 +122,18 @@ const envItems = computed<EnvItem[]>(() => {
     {
       key: "ports",
       label: "Privileged ports (80/443)",
-      value: portsElevated(r),
-      fixable: !portsElevated(r),
+      // Degraded: the daemon bound no web ports, so elevation can't help yet
+      // (the redirect would point at nothing, and the CLI refuses) — show the
+      // problem and withhold the fix until working ports are set.
+      value: r.web_unbound ? false : portsElevated(r),
+      fixable: !r.web_unbound && !portsElevated(r),
       unelevatable: r.port_redirect === true && mac,
       target: "ports",
       yes: r.port_redirect === true && privilegedFallback(r) ? "redirected" : "bound",
-      no: "fell back to high ports",
+      no: r.web_unbound ? "not serving — set working ports first" : "fell back to high ports",
+      note: r.web_unbound
+        ? "Yerd couldn't bind its web ports. Set working ports in Settings, then elevate."
+        : undefined,
     },
   ];
 });

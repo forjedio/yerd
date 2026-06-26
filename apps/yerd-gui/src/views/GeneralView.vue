@@ -18,6 +18,7 @@ import CardContent from "@/components/ui/CardContent.vue";
 import CardDescription from "@/components/ui/CardDescription.vue";
 import CardHeader from "@/components/ui/CardHeader.vue";
 import CardTitle from "@/components/ui/CardTitle.vue";
+import Input from "@/components/ui/Input.vue";
 import Modal from "@/components/ui/Modal.vue";
 import Select from "@/components/ui/Select.vue";
 import Spinner from "@/components/ui/Spinner.vue";
@@ -30,11 +31,13 @@ import {
 } from "@/components/ui/tooltip";
 import { useDaemon } from "@/composables/useDaemon";
 import { useDaemonStart } from "@/composables/useDaemonStart";
+import { MIN_PORT, MAX_PORT, useFallbackPorts } from "@/composables/useFallbackPorts";
 import { useToast } from "@/composables/useToast";
 import {
   applyUpdate,
   checkUpdates,
   cliPathStatus,
+  daemonInfo,
   dumpsStatus,
   getAutostart,
   hostPlatform,
@@ -134,6 +137,17 @@ function portRow(
   which: "http" | "https",
 ): Row {
   const ps = r[which];
+  // Degraded: the daemon bound no web ports at all, so there's nothing serving.
+  if (r.web_unbound) {
+    return {
+      key,
+      name,
+      tone: "bad",
+      state: "not serving",
+      info: `couldn't bind the rootless port (tried :${ps.requested === ps.bound ? ps.requested : r.web_unbound[which]})`,
+      child: true,
+    };
+  }
   const privileged = ps.requested < PRIVILEGED_PORT_CEILING;
   const redirected = r.port_redirect === true;
   const viaRedirect = privileged && ps.fell_back && redirected;
@@ -353,7 +367,10 @@ onMounted(() => {
     .then((p) => (platform.value = p))
     .catch(() => {});
   loadCli();
-  if (running.value) loadDumps();
+  if (running.value) {
+    loadDumps();
+    void loadFallbackPorts();
+  }
   // No auto update-check on open — it only runs when the user clicks "Check now".
 });
 
@@ -362,6 +379,7 @@ onMounted(() => {
 watch(running, (up) => {
   if (up) {
     loadDumps();
+    void loadFallbackPorts();
   } else {
     dumps.value = null;
     updateStatus.value = null;
@@ -407,6 +425,64 @@ async function confirmRestartDaemon(close: () => void): Promise<void> {
     toast.info("Restarting daemon…", (e as IpcError).message);
   } finally {
     busy.value = null;
+  }
+}
+
+// ── rootless fallback ports ──
+const { saveAndRestart: saveFallbackPorts, validate: validateFallbackPorts } =
+  useFallbackPorts();
+const fbHttp = ref("");
+const fbHttps = ref("");
+// The values last loaded from / saved to the daemon, to detect a real change.
+const fbHttpSaved = ref("");
+const fbHttpsSaved = ref("");
+const fallbackPortsOpen = ref(false);
+
+async function loadFallbackPorts(): Promise<void> {
+  try {
+    const info = await daemonInfo();
+    fbHttp.value = info.fallback_http != null ? String(info.fallback_http) : "";
+    fbHttps.value = info.fallback_https != null ? String(info.fallback_https) : "";
+    fbHttpSaved.value = fbHttp.value;
+    fbHttpsSaved.value = fbHttps.value;
+  } catch {
+    /* daemon down / older daemon — the section just stays empty */
+  }
+}
+
+// macOS pf redirect is pinned to the current ports, so block edits until the
+// user un-elevates. Only fires on macOS (Linux reports null).
+const portsElevated = computed(() => report.value?.port_redirect === true);
+const fallbackPortsChanged = computed(
+  () => fbHttp.value !== fbHttpSaved.value || fbHttps.value !== fbHttpsSaved.value,
+);
+
+function openFallbackPorts(): void {
+  const err = validateFallbackPorts(Number(fbHttp.value), Number(fbHttps.value));
+  if (err) {
+    toast.error("Invalid ports", err);
+    return;
+  }
+  void nextTick(() => {
+    fallbackPortsOpen.value = true;
+  });
+}
+
+async function confirmFallbackPorts(close: () => void): Promise<void> {
+  close();
+  busy.value = "fallback-ports";
+  try {
+    const res = await saveFallbackPorts(Number(fbHttp.value), Number(fbHttps.value));
+    if (res.ok) {
+      fbHttpSaved.value = fbHttp.value;
+      fbHttpsSaved.value = fbHttps.value;
+      toast.success("Ports updated", `Yerd is now serving on ${fbHttp.value}/${fbHttps.value}.`);
+    } else {
+      toast.error("Couldn't apply the new ports", res.message ?? "The daemon is still degraded.");
+    }
+  } finally {
+    busy.value = null;
+    await refreshStatus();
   }
 }
 
@@ -560,6 +636,79 @@ async function toggleGuiMinimized(on: boolean): Promise<void> {
               </div>
             </div>
           </TooltipProvider>
+        </CardContent>
+      </Card>
+
+      <!-- Web ports (rootless fallback) -->
+      <Card v-if="running">
+        <CardHeader>
+          <CardTitle>Web ports</CardTitle>
+          <CardDescription>
+            The rootless ports Yerd serves on when 80/443 need elevation. Must be
+            {{ MIN_PORT }}+ — a privileged port like 80/443 would itself need
+            elevation, which the fallback exists to avoid.
+          </CardDescription>
+        </CardHeader>
+        <CardContent class="space-y-3">
+          <!-- Degraded: nothing bound. -->
+          <div
+            v-if="report?.web_unbound"
+            class="rounded-md border border-warning/40 bg-warning/10 p-3 text-sm"
+          >
+            <p class="font-medium">Yerd isn't serving any sites</p>
+            <p class="mt-1 text-muted-foreground">
+              It couldn't bind ports {{ report.web_unbound.http }}/{{
+                report.web_unbound.https
+              }}
+              — they're in use by another process. Pick free ports below and save.
+            </p>
+          </div>
+          <!-- Elevated: editing would break the pinned redirect. -->
+          <p v-if="portsElevated" class="text-xs text-muted-foreground">
+            Ports are elevated, so the rootless ports are pinned to the active
+            redirect. Un-elevate ports (Doctor) before changing them, then
+            re-elevate.
+          </p>
+          <div class="flex flex-wrap items-end gap-4">
+            <div class="space-y-1">
+              <label for="fb-http" class="text-xs font-medium text-muted-foreground">HTTP</label>
+              <Input
+                id="fb-http"
+                v-model="fbHttp"
+                type="number"
+                inputmode="numeric"
+                :min="MIN_PORT"
+                :max="MAX_PORT"
+                :disabled="portsElevated || busy === 'fallback-ports'"
+                aria-label="Rootless HTTP port"
+                class="w-28 font-mono"
+                placeholder="8080"
+              />
+            </div>
+            <div class="space-y-1">
+              <label for="fb-https" class="text-xs font-medium text-muted-foreground">HTTPS</label>
+              <Input
+                id="fb-https"
+                v-model="fbHttps"
+                type="number"
+                inputmode="numeric"
+                :min="MIN_PORT"
+                :max="MAX_PORT"
+                :disabled="portsElevated || busy === 'fallback-ports'"
+                aria-label="Rootless HTTPS port"
+                class="w-28 font-mono"
+                placeholder="8443"
+              />
+            </div>
+            <Button
+              size="sm"
+              :disabled="!fallbackPortsChanged || portsElevated || busy === 'fallback-ports'"
+              @click="openFallbackPorts"
+            >
+              <Spinner v-if="busy === 'fallback-ports'" class="size-4" />
+              Save &amp; restart
+            </Button>
+          </div>
         </CardContent>
       </Card>
 
@@ -752,6 +901,20 @@ async function toggleGuiMinimized(on: boolean): Promise<void> {
       <template #footer="{ close }">
         <Button variant="ghost" @click="close">Cancel</Button>
         <Button @click="confirmRestartDaemon(close)">Restart</Button>
+      </template>
+    </Modal>
+
+    <Modal v-model:open="fallbackPortsOpen" title="Change web ports?">
+      <p class="text-sm text-muted-foreground">
+        Saving sets the rootless ports to
+        <strong class="text-foreground font-mono">{{ fbHttp }}/{{ fbHttps }}</strong>
+        and restarts the daemon — this briefly stops all
+        <strong class="text-foreground">.test</strong> sites, DNS, and this
+        connection. It returns in a few seconds.
+      </p>
+      <template #footer="{ close }">
+        <Button variant="ghost" @click="close">Cancel</Button>
+        <Button @click="confirmFallbackPorts(close)">Save &amp; restart</Button>
       </template>
     </Modal>
   </div>

@@ -52,12 +52,13 @@ pub struct Daemon {
     pub php_manager: Arc<Mutex<DaemonPhpManager>>,
     /// TLS cert store for SNI lookups.
     pub cert_store: Arc<DaemonCertStore>,
-    /// Bound HTTP listener.
-    pub http_listener: tokio::net::TcpListener,
-    /// Bound HTTPS listener.
-    pub https_listener: tokio::net::TcpListener,
+    /// Bound HTTP listener. `None` when the daemon could bind neither the
+    /// desired nor the fallback web ports — it then runs degraded (no proxy).
+    pub http_listener: Option<tokio::net::TcpListener>,
+    /// Bound HTTPS listener. `None` in the same degraded case as `http_listener`.
+    pub https_listener: Option<tokio::net::TcpListener>,
     /// Port the redirect target should advertise (≠ `https_listener` port
-    /// when rootless fallback fires).
+    /// when rootless fallback fires). `0` when degraded.
     pub https_port: u16,
     /// IPC listener (Unix socket on Unix, named pipe on Windows).
     pub ipc_listener: IpcListener,
@@ -125,31 +126,66 @@ pub async fn bring_up_with_dirs(
     }
     let router = Arc::new(RwLock::new(router));
 
-    // Bind HTTP/HTTPS — fallback to 8080/8443 if 80/443 require elevation.
-    // Capture the *requested* ports before `config` is moved into `DaemonState`.
+    // Bind HTTP/HTTPS — fall back to the configured rootless pair if 80/443
+    // require elevation. Capture the *requested* + *fallback* ports before
+    // `config` is moved into `DaemonState`. A bind failure (both pairs busy) is
+    // **non-fatal**: the daemon comes up degraded (IPC/DNS only, no proxy) so the
+    // GUI/CLI can connect and the user can change the ports or free them.
     let cfg_http = config.ports.http;
     let cfg_https = config.ports.https;
+    let fb_http = config.ports.fallback_http;
+    let fb_https = config.ports.fallback_https;
     let binder = ActivePortBinder::new();
-    let pair = binder.bind_pair((cfg_http, cfg_https), (8080, 8443))?;
-    let bound_http = pair.http.port().map_err(|source| DaemonError::Io {
-        path: PathBuf::from("<http listener>"),
-        source,
-    })?;
-    let bound_https = pair.https.port().map_err(|source| DaemonError::Io {
-        path: PathBuf::from("<https listener>"),
-        source,
-    })?;
-    if (bound_http, bound_https) != (config.ports.http, config.ports.https) {
-        tracing::warn!(
-            http = bound_http,
-            https = bound_https,
-            wanted_http = config.ports.http,
-            wanted_https = config.ports.https,
-            "bound rootless fallback ports; .test URLs will need explicit ports until setcap or a port-redirector is configured"
-        );
-    }
-    let http_listener = into_tokio_listener(pair.http.listener)?;
-    let tls_listener = into_tokio_listener(pair.https.listener)?;
+    let (http_listener, tls_listener, bound_http, bound_https, web_unbound) = match binder
+        .bind_pair((cfg_http, cfg_https), (fb_http, fb_https))
+    {
+        Ok(pair) => {
+            let bound_http = pair.http.port().map_err(|source| DaemonError::Io {
+                path: PathBuf::from("<http listener>"),
+                source,
+            })?;
+            let bound_https = pair.https.port().map_err(|source| DaemonError::Io {
+                path: PathBuf::from("<https listener>"),
+                source,
+            })?;
+            if (bound_http, bound_https) != (cfg_http, cfg_https) {
+                tracing::warn!(
+                        http = bound_http,
+                        https = bound_https,
+                        wanted_http = cfg_http,
+                        wanted_https = cfg_https,
+                        "bound rootless fallback ports; .test URLs will need explicit ports until setcap or a port-redirector is configured"
+                    );
+            }
+            let http_listener = into_tokio_listener(pair.http.listener)?;
+            let tls_listener = into_tokio_listener(pair.https.listener)?;
+            (
+                Some(http_listener),
+                Some(tls_listener),
+                bound_http,
+                bound_https,
+                None,
+            )
+        }
+        Err(e) => {
+            tracing::error!(
+                error = %e,
+                fallback_http = fb_http,
+                fallback_https = fb_https,
+                "could not bind web ports; serving disabled — free the ports or change the fallback ports in Settings, then restart"
+            );
+            (
+                None,
+                None,
+                0,
+                0,
+                Some(yerd_ipc::UnboundWeb {
+                    http: fb_http,
+                    https: fb_https,
+                }),
+            )
+        }
+    };
 
     // PhpManager — instance_id = daemon PID disambiguates concurrent daemons
     // on the same host (different XDG_RUNTIME_DIRs notwithstanding).
@@ -264,6 +300,8 @@ pub async fn bring_up_with_dirs(
             bound: bound_https,
             fell_back: bound_https != cfg_https,
         },
+        web_unbound,
+        boot_id: rand_boot_id(),
         started_at: std::time::Instant::now(),
         // The shutdown broadcast lives in state so the IPC `RestartDaemon`
         // handler can trigger teardown; `run_with_daemon` subscribes from it.
@@ -548,6 +586,24 @@ fn build_parked_site(
     }
 
     Some(site)
+}
+
+/// A per-process id clients use to detect that a restart actually completed.
+/// Derived from the pid + wall-clock nanos (which differ across restarts), so
+/// it changes even though the in-place re-exec preserves the pid. Needs no RNG
+/// dependency; collisions are irrelevant — only a *change* is observed.
+fn rand_boot_id() -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    std::process::id().hash(&mut h);
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_nanos())
+        .hash(&mut h);
+    // Mask to 52 bits so the value is always exactly representable as a JS
+    // double (the GUI compares it after `JSON.parse`); above 2^53 precision is
+    // lost and two distinct ids could round equal.
+    h.finish() & ((1u64 << 52) - 1)
 }
 
 fn into_tokio_listener(

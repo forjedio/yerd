@@ -1596,6 +1596,8 @@ mod tests {
             daemon_version: "2.0.1".into(),
             services: vec![],
             mail: None,
+            web_unbound: None,
+            boot_id: None,
         }
     }
 

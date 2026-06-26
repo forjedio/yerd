@@ -378,6 +378,11 @@ pub async fn set_mail_port(port: u16) -> Result<Response, GuiError> {
 }
 
 #[tauri::command]
+pub async fn set_fallback_ports(http: u16, https: u16) -> Result<Response, GuiError> {
+    finish(exchange(&Request::SetFallbackPorts { http, https }).await?)
+}
+
+#[tauri::command]
 pub async fn set_mail_enabled(enabled: bool) -> Result<Response, GuiError> {
     finish(exchange(&Request::SetMailEnabled { enabled }).await?)
 }

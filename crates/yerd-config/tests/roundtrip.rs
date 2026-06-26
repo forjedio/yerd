@@ -46,6 +46,9 @@ fn populated_expected() -> Config {
     c.ports = Ports {
         http: 8080,
         https: 8443,
+        // POPULATED omits the fallback keys → they take the 8080 / 8443 defaults.
+        fallback_http: 8080,
+        fallback_https: 8443,
     };
     c.php = PhpSection {
         default: PhpVersion::new(8, 2),

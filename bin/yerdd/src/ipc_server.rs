@@ -118,14 +118,19 @@ async fn dispatch(req: Request, state: &DaemonState) -> Response {
                 .cloned()
                 .collect(),
         },
-        Request::DaemonInfo => Response::Info {
-            dns_addr: state.dns_addr,
-            tld: state.config.lock().await.tld.as_str().to_owned(),
-            ca_path: state.ca_path.clone(),
-            ca_fingerprint: state.ca_fingerprint.to_hex(),
-            http_port: state.http.bound,
-            https_port: state.https.bound,
-        },
+        Request::DaemonInfo => {
+            let cfg = state.config.lock().await;
+            Response::Info {
+                dns_addr: state.dns_addr,
+                tld: cfg.tld.as_str().to_owned(),
+                ca_path: state.ca_path.clone(),
+                ca_fingerprint: state.ca_fingerprint.to_hex(),
+                http_port: state.http.bound,
+                https_port: state.https.bound,
+                fallback_http: cfg.ports.fallback_http,
+                fallback_https: cfg.ports.fallback_https,
+            }
+        }
         Request::Park { .. }
         | Request::Link { .. }
         | Request::Unlink { .. }
@@ -253,6 +258,7 @@ async fn dispatch(req: Request, state: &DaemonState) -> Response {
             Err(e) => internal(format!("mail delete failed: {e}")),
         },
         Request::SetMailPort { port } => set_mail_port(port, state).await,
+        Request::SetFallbackPorts { http, https } => set_fallback_ports(http, https, state).await,
         Request::SetMailEnabled { enabled } => set_mail_enabled(enabled, state).await,
         Request::ListTools => Response::Tools {
             tools: list_tools_with_external(state).await,
@@ -548,6 +554,8 @@ async fn build_status_report(state: &DaemonState) -> yerd_ipc::StatusReport {
             listening: state.mail.listening,
             count: state.mail_store.count().await,
         }),
+        web_unbound: state.web_unbound,
+        boot_id: Some(state.boot_id),
     }
 }
 
@@ -1134,6 +1142,49 @@ async fn set_mail_port(port: u16, state: &DaemonState) -> Response {
     Response::Ok
 }
 
+/// Set the rootless HTTP/HTTPS fallback ports. Persisted to config; takes effect
+/// on the next daemon restart (the client triggers it). Refused while a
+/// privileged-port redirect is active — it is pinned to the current ports, so
+/// changing them would break elevation until the user re-elevates.
+async fn set_fallback_ports(http: u16, https: u16, state: &DaemonState) -> Response {
+    // Probe the redirect off the executor (blocking connects) and *before*
+    // taking the config lock, so a worker thread and the config mutex aren't
+    // held during the ~hundreds-of-ms probe (mirrors the status path).
+    let redirect_active = tokio::task::spawn_blocking(|| {
+        use yerd_platform::PortRedirector;
+        yerd_platform::ActivePortRedirector::new().is_active()
+    })
+    .await
+    .unwrap_or(None);
+    if redirect_active == Some(true) {
+        return internal(
+            "ports are elevated — remove the privileged-port redirect first (un-elevate ports), \
+             change the ports, then re-elevate"
+                .to_owned(),
+        );
+    }
+
+    let mut cfg_guard = state.config.lock().await;
+    let mut new = cfg_guard.clone();
+    new.ports.fallback_http = http;
+    new.ports.fallback_https = https;
+    // `validate()` enforces the >=1024 / non-equal rules — the daemon is the
+    // authority even if a client skipped its own check.
+    if let Err(e) = new.validate() {
+        return internal(format!("config validation failed: {e}"));
+    }
+    if let Err(e) = new.save(&state.config_path) {
+        return internal(format!("config save failed: {e}"));
+    }
+    *cfg_guard = new;
+    tracing::info!(
+        http,
+        https,
+        "set fallback ports (effective on next restart)"
+    );
+    Response::Ok
+}
+
 /// Enable or disable mail capture. Persisted to config; takes effect on the next
 /// daemon start/restart.
 async fn set_mail_enabled(enabled: bool, state: &DaemonState) -> Response {
@@ -1520,6 +1571,8 @@ mod tests {
                 bound: 8443,
                 fell_back: true,
             },
+            web_unbound: None,
+            boot_id: 1,
             started_at: std::time::Instant::now(),
             shutdown_tx: tokio::sync::watch::channel(false).0,
             restart_requested: std::sync::atomic::AtomicBool::new(false),
@@ -2019,6 +2072,8 @@ Subject: Captured\r\n\r\nhi\r\n";
                 ca_fingerprint,
                 http_port,
                 https_port,
+                fallback_http,
+                fallback_https,
             } => {
                 assert_eq!(dns_addr, state.dns_addr);
                 assert_eq!(tld, "test");
@@ -2028,6 +2083,8 @@ Subject: Captured\r\n\r\nhi\r\n";
                 assert_eq!(ca_fingerprint.len(), 64);
                 assert_eq!(http_port, state.http.bound);
                 assert_eq!(https_port, state.https.bound);
+                assert_eq!(fallback_http, 8080);
+                assert_eq!(fallback_https, 8443);
             }
             other => panic!("expected Info, got {other:?}"),
         }

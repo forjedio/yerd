@@ -270,6 +270,25 @@ fn port_findings(report: &StatusReport) -> Vec<Diagnosis> {
             "Stop the other web server (e.g. Apache, nginx, Valet), then `sudo yerd elevate ports`",
         ));
     }
+    // The daemon couldn't bind either web port pair, so it's serving nothing —
+    // a hard failure that supersedes the plain "fell back" warning below.
+    if let Some(unbound) = report.web_unbound {
+        out.push(fail(
+            DiagnosisCode::WebPortsUnbound,
+            "Not serving any sites",
+            format!(
+                "Yerd couldn't bind its web ports (HTTP {}, HTTPS {}) — they're in use by \
+                 another process — so no .test sites are being served.",
+                unbound.http, unbound.https
+            ),
+            Some(
+                "Free those ports, or change Yerd's fallback ports in Settings (Yerd ▸ General), \
+                 then restart the daemon."
+                    .to_owned(),
+            ),
+        ));
+        return out;
+    }
     if privileged_fallback(report) && report.port_redirect != Some(true) && !foreign_listener {
         out.push(warn(
             DiagnosisCode::PortFallback,
@@ -370,6 +389,8 @@ mod tests {
             daemon_version: "2.0.1".into(),
             services: vec![],
             mail: None,
+            web_unbound: None,
+            boot_id: None,
         }
     }
 
@@ -421,6 +442,28 @@ mod tests {
         r2.http.bound = 8081;
         r2.http.fell_back = true;
         assert!(!codes(&diagnose(&r2, None)).contains(&DiagnosisCode::PortFallback));
+    }
+
+    #[test]
+    fn web_unbound_fails_and_supersedes_fallback() {
+        let mut r = healthy();
+        // Degraded: the desired ports fell back, but even the fallback couldn't
+        // bind. The Fail must appear and the plain PortFallback warning must not.
+        r.http.requested = 80;
+        r.http.bound = 0;
+        r.http.fell_back = true;
+        r.https.requested = 443;
+        r.https.bound = 0;
+        r.https.fell_back = true;
+        r.web_unbound = Some(yerd_ipc::UnboundWeb {
+            http: 8080,
+            https: 8443,
+        });
+        let cs = codes(&diagnose(&r, None));
+        assert!(cs.contains(&DiagnosisCode::WebPortsUnbound));
+        assert!(!cs.contains(&DiagnosisCode::PortFallback));
+        // It's a hard failure, so the report is not "all good".
+        assert!(!cs.contains(&DiagnosisCode::AllGood));
     }
 
     #[test]
