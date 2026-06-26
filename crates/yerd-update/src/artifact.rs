@@ -23,13 +23,15 @@ pub enum Platform {
     MacOsX86_64,
     /// `x86_64` Linux — the `.deb` package.
     LinuxX86_64,
+    /// `aarch64` Linux — the arm64 `.deb` package.
+    LinuxAarch64,
     /// Any platform without a published self-update artifact.
     Unsupported,
 }
 
 impl Platform {
     /// The platform this binary was built for. `Unsupported` for anything we
-    /// don't publish a self-update artifact for (incl. Windows, Linux non-x86_64).
+    /// don't publish a self-update artifact for (incl. Windows and other arches).
     #[must_use]
     pub fn current() -> Self {
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
@@ -44,10 +46,15 @@ impl Platform {
         {
             Self::LinuxX86_64
         }
+        #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+        {
+            Self::LinuxAarch64
+        }
         #[cfg(not(any(
             all(target_os = "macos", target_arch = "aarch64"),
             all(target_os = "macos", target_arch = "x86_64"),
             all(target_os = "linux", target_arch = "x86_64"),
+            all(target_os = "linux", target_arch = "aarch64"),
         )))]
         {
             Self::Unsupported
@@ -107,9 +114,9 @@ impl std::error::Error for AssetError {}
 ///
 /// Selection is by filename convention (the names the release workflow emits):
 /// the macOS artifact ends `.app.tar.gz` and is arch-tagged; the Linux artifact
-/// ends `.deb` and is x86_64-tagged; the signature is `<artifact>.sig`; the
-/// manifest is named `SHA256SUMS`. Intel macOS / unsupported platforms return
-/// [`AssetError::NoArtifactForPlatform`] rather than mis-selecting.
+/// ends `.deb` and is arch-tagged (`x86_64` or `arm64`); the signature is
+/// `<artifact>.sig`; the manifest is named `SHA256SUMS`. Intel macOS / unsupported
+/// platforms return [`AssetError::NoArtifactForPlatform`] rather than mis-selecting.
 pub fn select_asset(
     release: &ReleaseMeta,
     platform: Platform,
@@ -117,6 +124,7 @@ pub fn select_asset(
     let (kind, matches): (ArtifactKind, fn(&str) -> bool) = match platform {
         Platform::MacOsAarch64 => (ArtifactKind::AppTarGz, is_macos_aarch64_artifact),
         Platform::LinuxX86_64 => (ArtifactKind::Deb, is_linux_x86_64_artifact),
+        Platform::LinuxAarch64 => (ArtifactKind::Deb, is_linux_aarch64_artifact),
         p @ (Platform::MacOsX86_64 | Platform::Unsupported) => {
             return Err(AssetError::NoArtifactForPlatform(p));
         }
@@ -160,6 +168,14 @@ fn is_macos_aarch64_artifact(name: &str) -> bool {
 #[allow(clippy::case_sensitive_file_extension_comparisons)]
 fn is_linux_x86_64_artifact(name: &str) -> bool {
     name.ends_with(".deb") && (name.contains("x86_64") || name.contains("amd64"))
+}
+
+// The published arm64 .deb is named `Yerd_Linux_Arm64_*.deb` (capital "Arm64"), so
+// match case-insensitively — a lowercase `contains("arm64")` would miss it.
+#[allow(clippy::case_sensitive_file_extension_comparisons)]
+fn is_linux_aarch64_artifact(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    lower.ends_with(".deb") && (lower.contains("aarch64") || lower.contains("arm64"))
 }
 
 /// Why verification failed.
@@ -302,6 +318,43 @@ mod tests {
     }
 
     #[test]
+    fn selects_linux_aarch64_deb() {
+        // Capital "Arm64" — the real published name; locks in case-insensitive matching.
+        let r = release_with(&[
+            "Yerd_Linux_Arm64_v2-0-2.deb",
+            "Yerd_Linux_Arm64_v2-0-2.deb.sig",
+            "SHA256SUMS",
+        ]);
+        let sel = select_asset(&r, Platform::LinuxAarch64).unwrap();
+        assert_eq!(sel.kind, ArtifactKind::Deb);
+        assert_eq!(sel.artifact.name, "Yerd_Linux_Arm64_v2-0-2.deb");
+    }
+
+    #[test]
+    fn linux_arch_matchers_are_disjoint() {
+        // arm64 platform must not pick the x86_64 .deb...
+        let only_x86 = release_with(&[
+            "Yerd_Linux_x86_64_v2-0-2.deb",
+            "Yerd_Linux_x86_64_v2-0-2.deb.sig",
+            "SHA256SUMS",
+        ]);
+        assert_eq!(
+            select_asset(&only_x86, Platform::LinuxAarch64),
+            Err(AssetError::NoArtifactForPlatform(Platform::LinuxAarch64))
+        );
+        // ...and the x86_64 platform must not pick the arm64 .deb.
+        let only_arm = release_with(&[
+            "Yerd_Linux_Arm64_v2-0-2.deb",
+            "Yerd_Linux_Arm64_v2-0-2.deb.sig",
+            "SHA256SUMS",
+        ]);
+        assert_eq!(
+            select_asset(&only_arm, Platform::LinuxX86_64),
+            Err(AssetError::NoArtifactForPlatform(Platform::LinuxX86_64))
+        );
+    }
+
+    #[test]
     fn intel_macos_has_no_artifact() {
         let r = release_with(&["Yerd_MacOS_AppleSilicon_v2-0-2.app.tar.gz", "SHA256SUMS"]);
         assert_eq!(
@@ -399,6 +452,7 @@ mod tests {
         #[cfg(any(
             all(target_os = "macos", target_arch = "aarch64"),
             all(target_os = "linux", target_arch = "x86_64"),
+            all(target_os = "linux", target_arch = "aarch64"),
         ))]
         assert_ne!(p, Platform::Unsupported);
         let _ = p;

@@ -2702,32 +2702,37 @@ Subject: Captured\r\n\r\nhi\r\n";
     #[tokio::test]
     async fn stage_update_downloads_verifies_and_writes_artifact() {
         // Run only on platforms that actually have a fixture artifact below
-        // (Apple Silicon macOS + Linux x86_64). Intel macOS is not `Unsupported`
-        // but has no fixture, so skip it too.
+        // (Apple Silicon macOS + Linux x86_64 + Linux arm64). Intel macOS is not
+        // `Unsupported` but has no fixture, so skip it too.
         if !matches!(
             yerd_update::Platform::current(),
-            yerd_update::Platform::MacOsAarch64 | yerd_update::Platform::LinuxX86_64
+            yerd_update::Platform::MacOsAarch64
+                | yerd_update::Platform::LinuxX86_64
+                | yerd_update::Platform::LinuxAarch64
         ) {
             return;
         }
         let tmp = tempfile::tempdir().unwrap();
         let state = state_in(tmp.path());
 
-        // Release assets for BOTH platforms, so the test runs on macOS or Linux.
+        // Release assets for ALL platforms, so the test runs on macOS or either Linux arch.
         let mac = "Yerd_MacOS_AppleSilicon_v99-0-1.app.tar.gz";
         let deb = "Yerd_Linux_x86_64_v99-0-1.deb";
+        let arm = "Yerd_Linux_Arm64_v99-0-1.deb";
         let releases = format!(
             r#"[{{"tag_name":"v99.0.1","prerelease":false,"draft":false,"assets":[
                 {{"name":"{mac}","browser_download_url":"https://h/{mac}","size":4}},
                 {{"name":"{mac}.sig","browser_download_url":"https://h/{mac}.sig","size":1}},
                 {{"name":"{deb}","browser_download_url":"https://h/{deb}","size":4}},
                 {{"name":"{deb}.sig","browser_download_url":"https://h/{deb}.sig","size":1}},
+                {{"name":"{arm}","browser_download_url":"https://h/{arm}","size":4}},
+                {{"name":"{arm}.sig","browser_download_url":"https://h/{arm}.sig","size":1}},
                 {{"name":"SHA256SUMS","browser_download_url":"https://h/SHA256SUMS","size":1}}
             ]}}]"#
         );
-        // sha256("test") for both artifacts.
+        // sha256("test") for every artifact.
         let h = yerd_update::sha256_hex(b"test");
-        let sums = format!("{h}  {mac}\n{h}  {deb}\n");
+        let sums = format!("{h}  {mac}\n{h}  {deb}\n{h}  {arm}\n");
         let dl = StageDl { releases, sums };
 
         let resp = crate::self_update::stage_update(None, &state, &dl, SIG_PUBKEY).await;
@@ -2744,7 +2749,7 @@ Subject: Captured\r\n\r\nhi\r\n";
                 // Kind matches the current platform's artifact.
                 let expected = if matches!(
                     yerd_update::Platform::current(),
-                    yerd_update::Platform::LinuxX86_64
+                    yerd_update::Platform::LinuxX86_64 | yerd_update::Platform::LinuxAarch64
                 ) {
                     yerd_ipc::StagedArtifact::Deb
                 } else {
@@ -2758,11 +2763,14 @@ Subject: Captured\r\n\r\nhi\r\n";
 
     #[tokio::test]
     async fn stage_update_rejects_verification_failure_and_writes_nothing() {
-        // Only platforms with a fixture artifact below (skip Intel macOS, which is
-        // not `Unsupported` but has no fixture, and any truly unsupported target).
+        // Only platforms with a fixture artifact below (Apple Silicon macOS + Linux
+        // x86_64 + Linux arm64). Skip Intel macOS, which is not `Unsupported` but has
+        // no fixture, and any truly unsupported target.
         if !matches!(
             yerd_update::Platform::current(),
-            yerd_update::Platform::MacOsAarch64 | yerd_update::Platform::LinuxX86_64
+            yerd_update::Platform::MacOsAarch64
+                | yerd_update::Platform::LinuxX86_64
+                | yerd_update::Platform::LinuxAarch64
         ) {
             return;
         }
@@ -2770,18 +2778,21 @@ Subject: Captured\r\n\r\nhi\r\n";
         let state = state_in(tmp.path());
         let mac = "Yerd_MacOS_AppleSilicon_v99-0-1.app.tar.gz";
         let deb = "Yerd_Linux_x86_64_v99-0-1.deb";
+        let arm = "Yerd_Linux_Arm64_v99-0-1.deb";
         let releases = format!(
             r#"[{{"tag_name":"v99.0.1","prerelease":false,"draft":false,"assets":[
                 {{"name":"{mac}","browser_download_url":"https://h/{mac}","size":4}},
                 {{"name":"{mac}.sig","browser_download_url":"https://h/{mac}.sig","size":1}},
                 {{"name":"{deb}","browser_download_url":"https://h/{deb}","size":4}},
                 {{"name":"{deb}.sig","browser_download_url":"https://h/{deb}.sig","size":1}},
+                {{"name":"{arm}","browser_download_url":"https://h/{arm}","size":4}},
+                {{"name":"{arm}.sig","browser_download_url":"https://h/{arm}.sig","size":1}},
                 {{"name":"SHA256SUMS","browser_download_url":"https://h/SHA256SUMS","size":1}}
             ]}}]"#
         );
         // Wrong checksums → verification fails before any minisign check or write.
         let bad = "0".repeat(64);
-        let sums = format!("{bad}  {mac}\n{bad}  {deb}\n");
+        let sums = format!("{bad}  {mac}\n{bad}  {deb}\n{bad}  {arm}\n");
         let dl = StageDl { releases, sums };
         match crate::self_update::stage_update(None, &state, &dl, SIG_PUBKEY).await {
             Response::Error { .. } => {}
@@ -2789,7 +2800,8 @@ Subject: Captured\r\n\r\nhi\r\n";
         }
         assert!(
             !state.dirs.cache.join("update").join(mac).exists()
-                && !state.dirs.cache.join("update").join(deb).exists(),
+                && !state.dirs.cache.join("update").join(deb).exists()
+                && !state.dirs.cache.join("update").join(arm).exists(),
             "must not write an artifact when verification fails"
         );
     }
