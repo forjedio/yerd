@@ -37,8 +37,17 @@ const pageSubtitle = computed(() =>
 
       <!-- Clip, don't scroll: every routed view is `h-full` and owns its own
            inner `overflow-y-auto`, so a scroll container here would be a second,
-           redundant scrollbar nested inside the view's own. -->
-      <main class="min-w-0 flex-1 overflow-hidden">
+           redundant scrollbar nested inside the view's own.
+           `relative` is load-bearing, not cosmetic: it makes `<main>` the
+           containing block for any absolutely-positioned descendant (e.g. the
+           Doctor page's `<thead class="sr-only">` a11y header). Without a
+           positioned ancestor, such an element's containing block is the
+           viewport, so it escapes this `overflow-hidden` clip, lands at its
+           static-flow Y deep in a scrolled list, and inflates the *document's*
+           scroll height — producing a second, window-level scrollbar that
+           reveals the desktop behind the transparent window. Pinning it here
+           keeps every stray abspos clipped to the content region. -->
+      <main class="relative min-w-0 flex-1 overflow-hidden">
         <!-- Daemon-dependent routes show the shared daemon-down screen when the
              socket is unreachable: the page's own header (no action buttons) plus
              the same hero the Overview uses. Overview / Settings / About are
