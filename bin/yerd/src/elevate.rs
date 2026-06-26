@@ -347,6 +347,15 @@ mod unix_impl {
     pub(crate) fn sibling_binaries() -> Result<(PathBuf, PathBuf), ClientError> {
         let exe = std::env::current_exe()
             .map_err(|e| ClientError::Usage(format!("cannot resolve current exe: {e}")))?;
+        // Resolve symlinks first. When `yerd` is invoked via the installed
+        // `{data}/bin/yerd` PATH symlink, macOS `current_exe()` returns the
+        // symlink path itself — so the siblings would resolve to `{data}/bin`,
+        // which holds no `yerd-helper`/`yerdd` (only the `yerd` symlink + php
+        // shims), and the helper spawn fails with ENOENT. Canonicalizing points
+        // us at the real binary inside the app bundle, whose siblings exist. Fall
+        // back to the unresolved path if canonicalize fails (it shouldn't — the
+        // exe exists — but never abort elevation over it).
+        let exe = std::fs::canonicalize(&exe).unwrap_or(exe);
         let dir = exe
             .parent()
             .ok_or_else(|| ClientError::Usage("current exe has no parent directory".to_owned()))?;
