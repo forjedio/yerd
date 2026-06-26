@@ -659,6 +659,12 @@ pub(crate) fn ensure_daemon_registration() -> Result<(), GuiError> {
             s.daemon_registered_version = Some(gui.to_string());
             s.daemon_version_conflict = None;
             let _ = save_settings(&s);
+            // A fresh registration can land in `requiresApproval` (Login Items),
+            // in which case RunAtLoad/kickstart won't start the daemon until the
+            // user approves it. The automated-update path has no follow-on start
+            // to nudge (unlike a manual start), so prompt here when pending —
+            // else the user is left with a non-running daemon and no signal.
+            nudge_if_requires_approval();
             repair_log(&format!("self-repair: OK, daemon registered for {gui}"));
             Ok(())
         }
