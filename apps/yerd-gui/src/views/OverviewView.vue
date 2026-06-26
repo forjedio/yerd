@@ -193,7 +193,11 @@ const version = computed(() => r.value?.daemon_version ?? "");
 // (or wiped). Offer to re-run the guided onboarding. Driven off the live report,
 // so it only evaluates while the daemon is up (the down branch shows the hero).
 const emptyEnvironment = computed(
-  () => !!r.value && r.value.php.length === 0 && r.value.sites.parked === 0,
+  () =>
+    !!r.value &&
+    r.value.php.length === 0 &&
+    r.value.sites.parked === 0 &&
+    r.value.sites.linked === 0,
 );
 </script>
 
