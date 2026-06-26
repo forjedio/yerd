@@ -181,5 +181,6 @@ function minimalDiagnostics(message: string): DaemonDiagnostics {
     logPath: null,
     logTail: [],
     spawnLogTail: [],
+    repairLogTail: [],
   };
 }

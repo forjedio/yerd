@@ -160,6 +160,7 @@ fn main() {
             autostart::set_gui_minimized,
             autostart::setup_state,
             autostart::mark_onboarded,
+            autostart::daemon_version_conflict,
         ])
         .setup(setup_app)
         // Close-to-tray: hide the window instead of quitting; the tray's Quit
@@ -198,11 +199,19 @@ fn setup_app(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     build_tray(app.handle())?;
     show_initial_window(app);
     // macOS: one-time migration of a legacy loose `Yerd.plist` GUI login item to
-    // SMAppService.mainApp (so it shows as "Yerd" under Open at Login). Off the
-    // main thread — it does `launchctl` + SMAppService XPC; flag-guarded so it
-    // runs once and stays silent (no System-Settings popup at startup).
+    // SMAppService.mainApp (so it shows as "Yerd" under Open at Login), then
+    // re-assert the daemon registration if the app version advanced (an in-place
+    // OR automated upgrade swaps the bundle + relaunches this GUI, but neither
+    // re-registers the daemon — so launchd would keep running the old `yerdd`).
+    // One thread keeps the two SMAppService operations sequential; off the main
+    // thread because both do `launchctl`/SMAppService XPC.
     #[cfg(target_os = "macos")]
-    std::thread::spawn(autostart::migrate_gui_login_if_needed);
+    std::thread::spawn(|| {
+        autostart::migrate_gui_login_if_needed();
+        // Best-effort: a directional-guard error (older GUI vs newer daemon) is
+        // persisted for the Overview banner; the start path surfaces it loudly.
+        let _ = autostart::ensure_daemon_registration();
+    });
     Ok(())
 }
 

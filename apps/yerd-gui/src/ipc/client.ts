@@ -596,6 +596,15 @@ export async function daemonDiagnostics(startError?: string): Promise<DaemonDiag
   return call<DaemonDiagnostics>("daemon_diagnostics", { startError });
 }
 
+/**
+ * macOS: the version of a *newer* registered daemon that this (older) GUI refused
+ * to reconfigure/downgrade, or `null` when there's no conflict. Drives the
+ * Overview "this Yerd is older than your daemon" banner.
+ */
+export async function daemonVersionConflict(): Promise<string | null> {
+  return call<string | null>("daemon_version_conflict");
+}
+
 export async function getAutostart(): Promise<AutostartState> {
   return call<AutostartState>("get_autostart");
 }

@@ -238,9 +238,18 @@ pub fn open_login_items() {
 /// manager exists (in which case daemon-at-login is disabled in the UI). The
 /// blocking service call runs off the async worker so the tray/UI never stalls.
 pub(crate) async fn start(nudge: bool) -> Result<(), GuiError> {
-    tokio::task::spawn_blocking(move || crate::autostart::daemon_start(nudge))
-        .await
-        .map_err(|e| GuiError::internal(format!("start task failed: {e}")))?
+    // Bound the blocking service call so a hung `launchctl`/`systemctl`/
+    // SMAppService can't make `start_daemon` never resolve (the frontend awaits
+    // it before it even begins polling — another endless-spinner path). The
+    // blocking thread isn't cancellable; the timeout only frees the await.
+    let join = tokio::task::spawn_blocking(move || crate::autostart::daemon_start(nudge));
+    match tokio::time::timeout(std::time::Duration::from_secs(15), join).await {
+        Ok(Ok(inner)) => inner,
+        Ok(Err(e)) => Err(GuiError::internal(format!("start task failed: {e}"))),
+        Err(_) => Err(GuiError::internal(
+            "starting the daemon timed out (the service manager did not respond)",
+        )),
+    }
 }
 
 /// Stop the daemon: via the service when one manages it, with a universal
@@ -270,7 +279,13 @@ pub async fn stop_daemon() -> Result<(), GuiError> {
 
 /// The running daemon's pid via a `status` IPC, or `None` if unreachable.
 async fn running_pid() -> Option<u32> {
-    match crate::ipc::exchange(&yerd_ipc::Request::Status).await {
+    // Bounded: this runs in the stop path; a wedged daemon mustn't hang it.
+    match crate::ipc::exchange_timeout(
+        &yerd_ipc::Request::Status,
+        std::time::Duration::from_secs(5),
+    )
+    .await
+    {
         Ok(yerd_ipc::Response::Status { report }) => Some(report.daemon_pid),
         _ => None,
     }
@@ -384,6 +399,11 @@ pub struct DaemonDiagnostics {
     log_tail: Vec<String>,
     /// Last lines of `{cache}/yerdd-spawn.log` (Linux detached-spawn path).
     spawn_log_tail: Vec<String>,
+    /// Last lines of `{cache}/yerd-gui-repair.log` — the GUI's daemon-registration
+    /// self-repair trail (macOS upgrade re-registration attempts + outcomes). The
+    /// GUI has no `tracing` subscriber, so this file is how the self-repair attempt
+    /// (and any technical failure) becomes retrievable via "Copy diagnostics".
+    repair_log_tail: Vec<String>,
 }
 
 /// Gather daemon-start diagnostics. `start_error` is the message the frontend's
@@ -446,6 +466,10 @@ fn build_diagnostics(
         .as_ref()
         .map(|c| tail_lines(&c.join("yerdd-spawn.log"), LOG_TAIL_LINES))
         .unwrap_or_default();
+    let repair_log_tail = cache
+        .as_ref()
+        .map(|c| tail_lines(&c.join("yerd-gui-repair.log"), LOG_TAIL_LINES))
+        .unwrap_or_default();
 
     let hints = compute_hints(
         pending_approval,
@@ -471,6 +495,7 @@ fn build_diagnostics(
         log_path,
         log_tail,
         spawn_log_tail,
+        repair_log_tail,
     }
 }
 
@@ -587,6 +612,16 @@ fn compute_hints(
     if logs.contains("already running") {
         hints.push("Another Yerd daemon is already running.".to_owned());
     }
+    // A running daemon older than the config it's reading (e.g. an upgrade left a
+    // stale background registration). The `ConfigError::UnsupportedVersion` text.
+    if logs.contains("incompatible with supported version") {
+        hints.push(
+            "The background daemon is running an older version of Yerd and can't read the \
+             current config — it may not have finished upgrading. Re-register it (toggle the \
+             daemon login item off then on in Settings) or remove any old Yerd.app copies."
+                .to_owned(),
+        );
+    }
     if service_manager == "detached spawn" {
         hints.push(
             "systemd --user wasn't detected in this session, so the daemon was started \
@@ -598,4 +633,30 @@ fn compute_hints(
         hints.push(format!("Start error: {err}"));
     }
     hints
+}
+
+#[cfg(test)]
+mod tests {
+    use super::compute_hints;
+
+    #[test]
+    fn version_skew_log_yields_reregister_hint() {
+        // The `ConfigError::UnsupportedVersion` Display line in the daemon log.
+        let log = vec![
+            "ERROR yerdd: yerdd exiting with error error=config: config schema version 7 is \
+             incompatible with supported version 6"
+                .to_owned(),
+        ];
+        let hints = compute_hints(false, false, false, None, "launchd", &log, &[]);
+        assert!(
+            hints.iter().any(|h| h.contains("older version of Yerd")),
+            "expected a re-register hint, got {hints:?}"
+        );
+    }
+
+    #[test]
+    fn no_version_skew_hint_when_logs_clean() {
+        let hints = compute_hints(false, false, false, None, "launchd", &[], &[]);
+        assert!(!hints.iter().any(|h| h.contains("older version of Yerd")));
+    }
 }

@@ -24,7 +24,7 @@ import Card from "@/components/ui/Card.vue";
 import Spinner from "@/components/ui/Spinner.vue";
 import { useDaemon } from "@/composables/useDaemon";
 import { useOnboarding } from "@/composables/useOnboarding";
-import { listSites, openInBrowser } from "@/ipc/client";
+import { daemonVersionConflict, listSites, openInBrowser } from "@/ipc/client";
 import type { Site, StatusReport } from "@/ipc/types";
 import { openTitle, siteUrl } from "@/lib/siteUrl";
 import { humaniseUptime } from "@/lib/utils";
@@ -54,8 +54,16 @@ async function loadSites(): Promise<void> {
   }
 }
 
+// macOS: set when this (older) GUI refused to reconfigure a NEWER registered
+// daemon. A GUI-vs-registered-daemon condition (independent of reachability), so
+// it shows above every branch below.
+const versionConflict = ref<string | null>(null);
+
 onMounted(() => {
   if (running.value) loadSites();
+  daemonVersionConflict()
+    .then((v) => (versionConflict.value = v))
+    .catch(() => {});
 });
 watch(running, (up) => {
   if (up) {
@@ -198,6 +206,24 @@ const emptyEnvironment = computed(
     <PageHeader title="Overview" subtitle="Your local environment at a glance" />
 
     <div class="flex-1 space-y-4 overflow-y-auto p-6">
+      <!-- Version conflict: this GUI is OLDER than the registered daemon. Shown
+           above every branch — it's independent of daemon reachability. -->
+      <div
+        v-if="versionConflict"
+        class="flex items-start gap-3 rounded-md border border-warning/40 bg-warning/10 p-4"
+      >
+        <ShieldAlert class="mt-0.5 size-5 shrink-0 text-warning" />
+        <div class="min-w-0 flex-1">
+          <p class="text-sm font-medium">This Yerd is older than your daemon</p>
+          <p class="mt-1 text-sm text-muted-foreground">
+            The background daemon is registered at version
+            <span class="font-mono">{{ versionConflict }}</span
+            >, newer than this app. Yerd won't reconfigure or downgrade it — update
+            Yerd to {{ versionConflict }} or newer.
+          </p>
+        </div>
+      </div>
+
       <!-- Connecting: first probe hasn't resolved yet. -->
       <div v-if="connecting" class="flex justify-center py-24">
         <Spinner class="size-6" />

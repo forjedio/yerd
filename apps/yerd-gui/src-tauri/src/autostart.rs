@@ -49,6 +49,49 @@ struct GuiSettings {
     /// it runs once and never re-enables login for a user who later turned it off.
     #[serde(default)]
     gui_login_migrated: bool,
+    /// macOS: the daemon version (= GUI version) that last *successfully*
+    /// (re)registered the SMAppService daemon agent. Drives the upgrade
+    /// self-repair (re-register from the new bundle when this advances) and the
+    /// directional guard (an older GUI must never reconfigure a newer daemon).
+    /// `#[serde(default)]` — additive; absent in pre-existing settings files.
+    #[serde(default)]
+    daemon_registered_version: Option<String>,
+    /// macOS: set when this (older) GUI found a *newer* registered daemon and
+    /// refused to downgrade it (carries the registered version); drives an
+    /// Overview banner. Cleared once the versions agree again.
+    #[serde(default)]
+    daemon_version_conflict: Option<String>,
+}
+
+/// Outcome of comparing the running GUI/daemon version against the version that
+/// last registered the daemon. Pure + unit-tested; the macOS reconcile acts on
+/// it. (Only the macOS reconcile calls `decide`, so it's dead code on other
+/// targets — silenced rather than `#[cfg]`-gated so it stays testable on Linux.)
+#[derive(Debug, PartialEq, Eq)]
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+enum Decision {
+    /// GUI is older than the registered daemon — refuse (carries the registered version).
+    Conflict(semver::Version),
+    /// The registered daemon already matches this GUI — nothing to do.
+    UpToDate,
+    /// Version advanced (or unknown) — (re)register the daemon from this bundle.
+    Reconcile,
+}
+
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn decide(gui: &semver::Version, stored: Option<&semver::Version>) -> Decision {
+    match stored {
+        Some(reg) if gui < reg => Decision::Conflict(reg.clone()),
+        Some(reg) if gui == reg => Decision::UpToDate,
+        _ => Decision::Reconcile,
+    }
+}
+
+/// The persisted "this GUI is older than the registered daemon" marker, for the
+/// Overview banner. Cross-platform (always `None` off macOS, where it's never set).
+#[tauri::command]
+pub fn daemon_version_conflict() -> Option<String> {
+    load_settings().daemon_version_conflict
 }
 
 fn settings_path() -> Result<PathBuf, GuiError> {
@@ -486,12 +529,204 @@ fn nudge_if_requires_approval() {
     }
 }
 
+// ── macOS: version-stamped daemon registration self-repair ───────────────────
+//
+// Both a manual in-place app upgrade and the automated self-update replace the
+// whole bundle and relaunch the GUI, but neither re-registers the daemon — so
+// launchd keeps running the *old* `yerdd` from the stale BTM entry. `setup_app`
+// and `daemon_start` run `ensure_daemon_registration` on every launch: when the
+// app version has advanced it forces a fresh registration (re-pointing launchd
+// at the new bundle); an *older* GUI against a *newer* registered daemon is
+// refused outright. All SMAppService mutations are serialized by this lock.
+
+#[cfg(target_os = "macos")]
+static DAEMON_REG_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// This GUI's version (= the bundled `yerdd` version; both `version.workspace`).
+#[cfg(target_os = "macos")]
+fn gui_version() -> semver::Version {
+    semver::Version::parse(env!("CARGO_PKG_VERSION"))
+        .unwrap_or_else(|_| semver::Version::new(0, 0, 0))
+}
+
+/// Run `program args` discarding its output and return whether it exited
+/// successfully, bounded by `secs` (kill + `None` on timeout). The bounded
+/// sibling of [`capture`] for callers that only need the exit-status predicate —
+/// so a wedged `launchctl` can't hang the launch path (this runs from
+/// startup-repair and daemon start).
+#[cfg(target_os = "macos")]
+fn bounded_status(program: &str, args: &[&str], secs: u64) -> Option<bool> {
+    use std::process::Stdio;
+    use std::time::{Duration, Instant};
+
+    let mut child = Command::new(program)
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()?;
+    let deadline = Instant::now() + Duration::from_secs(secs);
+    loop {
+        match child.try_wait() {
+            Ok(Some(st)) => return Some(st.success()),
+            Ok(None) if Instant::now() >= deadline => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+            Ok(None) => std::thread::sleep(Duration::from_millis(50)),
+            Err(_) => return None,
+        }
+    }
+}
+
+/// Whether launchd currently has the daemon job — by **exit status** (a missing
+/// job makes `launchctl print` exit non-zero). Unlike `service_status_text()`,
+/// which returns `Some("Could not find service…")` for a missing job, this is a
+/// true predicate: `true` for an upgrade victim (job exists), `false` for a
+/// never-registered fresh user. Bounded so a wedged `launchctl` can't hang the
+/// launch path (timeout → `false`: treat an unresponsive launchctl as "no job",
+/// which skips re-registration rather than hanging).
+#[cfg(target_os = "macos")]
+fn daemon_launchd_job_exists() -> bool {
+    bounded_status("launchctl", &["print", &service_target()], 4).unwrap_or(false)
+}
+
+/// Append a line to `{cache}/yerd-gui-repair.log`. The GUI has no `tracing`
+/// subscriber and bundled-`.app` stderr isn't retrievable, so the self-repair
+/// trail goes to a file that `daemon_diagnostics` tails (and "Copy diagnostics"
+/// includes). Best-effort; capped so it can't grow unbounded.
+#[cfg(target_os = "macos")]
+fn repair_log(line: &str) {
+    use std::io::Write as _;
+    use yerd_platform::{ActivePaths, Paths};
+    let Ok(dirs) = ActivePaths::new().resolve() else {
+        return;
+    };
+    let _ = std::fs::create_dir_all(&dirs.cache);
+    let path = dirs.cache.join("yerd-gui-repair.log");
+    if std::fs::metadata(&path)
+        .map(|m| m.len() > 64 * 1024)
+        .unwrap_or(false)
+    {
+        let _ = std::fs::remove_file(&path);
+    }
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+    {
+        let _ = writeln!(f, "{line}");
+    }
+}
+
+/// Re-assert the daemon registration from the *current* bundle when the app
+/// version has advanced (in-place or automated upgrade), and refuse an older GUI
+/// reconfiguring a newer daemon. Run from `setup_app` (covers both upgrade kinds)
+/// and `daemon_start`. Serialized by [`DAEMON_REG_LOCK`].
+#[cfg(target_os = "macos")]
+pub(crate) fn ensure_daemon_registration() -> Result<(), GuiError> {
+    if !use_smappservice() {
+        return Ok(());
+    }
+    let _guard = DAEMON_REG_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    let gui = gui_version();
+    let mut s = load_settings();
+
+    // Only trust the persisted marker when a daemon is *actually* registered.
+    // Keep an existing registration current — never opt a fresh user in. Crucially,
+    // do this BEFORE the version compare: if the daemon was unregistered (e.g. the
+    // autostart toggle turned off), the stored version is stale, and an older GUI
+    // must not be blocked "protecting" a daemon that no longer exists — so drop the
+    // stale marker. (`smapp_registered()` can read not-registered post-swap, so a
+    // live launchd job also counts. `daemon_autostart` — set whenever the user
+    // enables the daemon — keeps a transient launchctl false from clearing a real
+    // registration; the rare residual edge re-registers harmlessly next launch.)
+    let has_registration = s.daemon_autostart || smapp_registered() || daemon_launchd_job_exists();
+    if !has_registration {
+        if s.daemon_registered_version.is_some() || s.daemon_version_conflict.is_some() {
+            s.daemon_registered_version = None;
+            s.daemon_version_conflict = None;
+            let _ = save_settings(&s);
+        }
+        return Ok(()); // nothing registered → nothing to repair or protect
+    }
+
+    let stored = s
+        .daemon_registered_version
+        .as_deref()
+        .and_then(|v| semver::Version::parse(v).ok());
+
+    match decide(&gui, stored.as_ref()) {
+        Decision::Conflict(reg) => {
+            repair_log(&format!(
+                "version conflict: GUI {gui} < registered daemon {reg}; refusing to reconfigure/downgrade"
+            ));
+            let reg_s = reg.to_string();
+            if s.daemon_version_conflict.as_deref() != Some(reg_s.as_str()) {
+                s.daemon_version_conflict = Some(reg_s);
+                let _ = save_settings(&s);
+            }
+            return Err(GuiError::internal(format!(
+                "This Yerd ({gui}) is older than the registered background daemon ({reg}). \
+                 Refusing to reconfigure or downgrade it — install Yerd {reg} or newer."
+            )));
+        }
+        Decision::UpToDate => {
+            if s.daemon_version_conflict.is_some() {
+                s.daemon_version_conflict = None;
+                let _ = save_settings(&s);
+            }
+            return Ok(());
+        }
+        Decision::Reconcile => {}
+    }
+
+    // Version advanced. Force a re-register so a stale BTM entry (in-place or
+    // automated upgrade) is re-pointed to THIS bundle: `register()` is an `Ok`
+    // no-op on a stale-enabled entry, so the explicit unregister is what forces it.
+    repair_log(&format!(
+        "self-repair: re-registering daemon for {gui} (was {stored:?})"
+    ));
+    let _ = crate::smappservice::unregister(crate::smappservice::Service::Daemon);
+    match crate::smappservice::register_repairing(crate::smappservice::Service::Daemon) {
+        Ok(()) => {
+            let _ = run_ok("launchctl", &["kickstart", "-k", &service_target()]);
+            // Reload right before saving: the unregister/register/kickstart above
+            // are slow OS calls during which a concurrent settings write could
+            // land; apply only our two fields to the latest on-disk state so we
+            // don't clobber it.
+            let mut s = load_settings();
+            s.daemon_registered_version = Some(gui.to_string());
+            s.daemon_version_conflict = None;
+            let _ = save_settings(&s);
+            // A fresh registration can land in `requiresApproval` (Login Items),
+            // in which case RunAtLoad/kickstart won't start the daemon until the
+            // user approves it. The automated-update path has no follow-on start
+            // to nudge (unlike a manual start), so prompt here when pending —
+            // else the user is left with a non-running daemon and no signal.
+            nudge_if_requires_approval();
+            repair_log(&format!("self-repair: OK, daemon registered for {gui}"));
+            Ok(())
+        }
+        Err(e) => {
+            repair_log(&format!("self-repair FAILED: {}", e.message));
+            Err(e)
+        }
+    }
+}
+
 /// Register the SMAppService agent if not already on (idempotent), migrating any
 /// loose legacy agent first, then nudge for approval if needed. `nudge = false`
 /// suppresses the System-Settings open so the onboarding flow (which enables the
 /// daemon *and* the GUI) doesn't open Login Items more than once.
 #[cfg(target_os = "macos")]
 fn smapp_enable(nudge: bool) -> Result<(), GuiError> {
+    // Same lock as `ensure_daemon_registration` so concurrent registration
+    // mutations can't overlap. Callers run `ensure` then `smapp_enable`
+    // sequentially (never nested), so this single non-reentrant lock is safe.
+    let _guard = DAEMON_REG_LOCK.lock().unwrap_or_else(|p| p.into_inner());
     if smapp_registered() {
         // Already registered — don't cleanup/re-register a live agent. But it may
         // still be pending the user's Login-Items approval, so on a nudging caller
@@ -505,6 +740,14 @@ fn smapp_enable(nudge: bool) -> Result<(), GuiError> {
     // `register_repairing`, not `register`: an in-place app upgrade can leave a
     // stale BTM entry that makes `register` fail with EINVAL until it's cleared.
     crate::smappservice::register_repairing(crate::smappservice::Service::Daemon)?;
+    // Record the baseline version that registered the daemon — only on an actual
+    // successful register (never the early-return above), so it faithfully means
+    // "the registered daemon is version X" for the directional guard.
+    {
+        let mut s = load_settings();
+        s.daemon_registered_version = Some(gui_version().to_string());
+        let _ = save_settings(&s);
+    }
     if nudge {
         nudge_if_requires_approval();
     }
@@ -716,10 +959,14 @@ pub(crate) fn daemon_start(nudge: bool) -> Result<(), GuiError> {
     #[cfg(target_os = "macos")]
     {
         if use_smappservice() {
-            // Unified model: ensure registered (which RunAtLoad-starts it), then
-            // kickstart for a fresh start even if it was already up. kickstart is
-            // best-effort — when status is `requiresApproval` the job isn't loaded
-            // yet, and that's fine (the user was sent to Login Items).
+            // Self-repair a stale/upgraded registration first (re-points launchd at
+            // the current bundle; errors if this GUI is older than the registered
+            // daemon — surfaced via diagnostics). Then the unified model: ensure
+            // registered (which RunAtLoad-starts it), then kickstart for a fresh
+            // start even if it was already up. kickstart is best-effort — when
+            // status is `requiresApproval` the job isn't loaded yet, and that's fine
+            // (the user was sent to Login Items).
+            ensure_daemon_registration()?;
             smapp_enable(nudge)?;
             let _ = run_ok("launchctl", &["kickstart", "-k", &service_target()]);
             Ok(())
@@ -774,8 +1021,15 @@ fn daemon_set_login(on: bool, nudge: bool) -> Result<(), GuiError> {
         if use_smappservice() {
             // Unified model: the login toggle *is* registration. On =
             // register (→ "Yerd" Login Items entry + runs at login + now);
-            // off = unregister (removes the entry + stops it).
+            // off = unregister (removes the entry + stops it). Both honour the
+            // directional guard so an older GUI can't reconfigure/tear down a
+            // NEWER registered daemon.
             if on {
+                // `ensure` refuses (Err) when this GUI is older than the
+                // registered daemon, and self-repairs/has-registration-gates
+                // otherwise; for a fresh enable it no-ops and `smapp_enable`
+                // does the real register (recording the version).
+                ensure_daemon_registration()?;
                 smapp_enable(nudge)
             } else {
                 // Unregister the SMAppService agent (only when actually
@@ -784,6 +1038,21 @@ fn daemon_set_login(on: bool, nudge: bool) -> Result<(), GuiError> {
                 // so the toggle doesn't appear stuck "on" for upgrade users who
                 // only ever had the pre-SMAppService loose plist.
                 if smapp_registered() {
+                    // Don't let an older GUI tear down a newer registered daemon.
+                    let gui = gui_version();
+                    let stored = load_settings()
+                        .daemon_registered_version
+                        .as_deref()
+                        .and_then(|v| semver::Version::parse(v).ok());
+                    if let Some(reg) = stored {
+                        if gui < reg {
+                            return Err(GuiError::internal(format!(
+                                "This Yerd ({gui}) is older than the registered background \
+                                 daemon ({reg}); refusing to unregister it — install Yerd \
+                                 {reg} or newer."
+                            )));
+                        }
+                    }
                     crate::smappservice::unregister(crate::smappservice::Service::Daemon)?;
                 }
                 cleanup_legacy();
@@ -917,4 +1186,46 @@ pub fn set_gui_minimized(on: bool) -> Result<(), GuiError> {
     let mut s = load_settings();
     s.gui_minimized = on;
     save_settings(&s)
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod tests {
+    use super::{decide, Decision};
+    use semver::Version;
+
+    fn v(s: &str) -> Version {
+        Version::parse(s).unwrap()
+    }
+
+    #[test]
+    fn decide_reconciles_on_advance_or_unknown() {
+        // Unknown (fresh / pre-fix daemon) → reconcile.
+        assert_eq!(decide(&v("2.0.3"), None), Decision::Reconcile);
+        // Newer GUI than the registered daemon → reconcile (the upgrade case).
+        assert_eq!(decide(&v("2.0.3"), Some(&v("2.0.2"))), Decision::Reconcile);
+        assert_eq!(
+            decide(&v("2.0.2"), Some(&v("2.0.2-rc.6"))),
+            Decision::Reconcile
+        );
+    }
+
+    #[test]
+    fn decide_is_up_to_date_on_equal() {
+        assert_eq!(decide(&v("2.0.3"), Some(&v("2.0.3"))), Decision::UpToDate);
+    }
+
+    #[test]
+    fn decide_conflicts_when_gui_is_older() {
+        // Older GUI than the registered daemon → never downgrade.
+        assert_eq!(
+            decide(&v("2.0.2"), Some(&v("2.0.3"))),
+            Decision::Conflict(v("2.0.3"))
+        );
+        // Pre-release ordering: rc.6 < rc.7 < release.
+        assert_eq!(
+            decide(&v("2.0.2-rc.6"), Some(&v("2.0.2-rc.7"))),
+            Decision::Conflict(v("2.0.2-rc.7"))
+        );
+    }
 }

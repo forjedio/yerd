@@ -18,6 +18,27 @@ pub async fn exchange(req: &Request) -> Result<Response, GuiError> {
     exchange_at(&dirs.runtime.join("yerd.sock"), req).await
 }
 
+/// [`exchange`] bounded by a timeout. Used by the liveness/probe commands
+/// (`status`/`ping`/`daemon_info`) so a daemon that accepts the socket but never
+/// replies (crash-looping, wedged, mid-startup) can't make the `invoke` promise
+/// hang forever — the unbounded `read_message` in [`exchange_at`] otherwise never
+/// resolves, freezing the start spinner and the poller. On elapse this returns an
+/// `unreachable` error so the poller treats it as "Stopped" and the start flow
+/// advances to its diagnostics ceiling. NOT used for long-running ops (installs/
+/// updates legitimately block for minutes).
+pub async fn exchange_timeout(
+    req: &Request,
+    timeout: std::time::Duration,
+) -> Result<Response, GuiError> {
+    match tokio::time::timeout(timeout, exchange(req)).await {
+        Ok(res) => res,
+        Err(_) => Err(GuiError::unreachable(format!(
+            "daemon did not respond within {}s (it may be starting, wedged, or crash-looping)",
+            timeout.as_secs()
+        ))),
+    }
+}
+
 /// Connect at an explicit socket path and exchange one request/response.
 /// Factored out so tests can target a tempdir socket. Unix only.
 #[cfg(unix)]
