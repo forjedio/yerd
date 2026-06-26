@@ -51,7 +51,7 @@ pub use status::{
     CaStatus, DatabaseSummary, Diagnosis, DiagnosisCode, FixReport, FixResult, MailDetail,
     MailHeader, MailStatus, MailSummary, PhpPoolStatus, PoolRunState, PortStatus,
     ServiceAvailability, ServiceRunState, ServiceStatus, Severity, SiteCounts, StatusReport,
-    ToolStatus,
+    ToolStatus, UnboundWeb,
 };
 pub use update::{Channel, StagedArtifact, UpdateSource};
 

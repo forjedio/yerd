@@ -309,6 +309,16 @@ pub enum Request {
         /// The new loopback port (must be non-zero).
         port: u16,
     },
+    /// Set the rootless HTTP/HTTPS fallback ports (the pair the daemon drops to
+    /// when 80/443 can't bind without elevation). Both must be `>= 1024` and
+    /// differ. Refused while a privileged-port redirect is active (it is pinned
+    /// to the current ports). Takes effect on the next daemon restart.
+    SetFallbackPorts {
+        /// New rootless HTTP port (`>= 1024`).
+        http: u16,
+        /// New rootless HTTPS port (`>= 1024`).
+        https: u16,
+    },
     /// Enable or disable the mail-capture server. Takes effect on the next
     /// daemon start/restart.
     SetMailEnabled {
@@ -458,6 +468,7 @@ mod variant_name_pinning {
             Request::ClearMails => {}
             Request::DeleteMails { .. } => {}
             Request::SetMailPort { .. } => {}
+            Request::SetFallbackPorts { .. } => {}
             Request::SetMailEnabled { .. } => {}
             Request::ListTools => {}
             Request::InstallTool { .. } => {}
@@ -599,6 +610,10 @@ mod variant_name_pinning {
             ids: vec!["000001".into()],
         });
         pin(Request::SetMailPort { port: 2525 });
+        pin(Request::SetFallbackPorts {
+            http: 8080,
+            https: 8443,
+        });
         pin(Request::SetMailEnabled { enabled: true });
         pin(Request::ListTools);
         pin(Request::InstallTool {

@@ -48,8 +48,9 @@ pub use schema::{
 /// v4 added the optional `[mail]` section ([`MailSection`]) for the built-in
 /// mail-capture SMTP server. v5 added the optional `[dumps]` table
 /// ([`DumpsSection`]). v6 added the top-level `update_channel` scalar
-/// ([`Config::update_channel`]). All default when absent, so the v3→v4, v4→v5,
-/// and v5→v6 migrations are bare version bumps; each bump exists so an *older*
-/// binary rejects a file using the newer field cleanly as
+/// ([`Config::update_channel`]). v7 added the `[ports] fallback_http`/
+/// `fallback_https` keys ([`Ports`]). All default when absent, so the v3→v4,
+/// v4→v5, v5→v6, and v6→v7 migrations are bare version bumps; each bump exists so
+/// an *older* binary rejects a file using the newer field cleanly as
 /// [`ConfigError::UnsupportedVersion`] rather than failing on the unknown key.
-pub const CURRENT_VERSION: u32 = 6;
+pub const CURRENT_VERSION: u32 = 7;

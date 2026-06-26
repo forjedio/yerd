@@ -114,6 +114,11 @@ pub enum ValidateErrorReason {
     WebRootEscapes,
     /// `update_channel` was not one of the accepted values (`"stable"` / `"edge"`).
     InvalidUpdateChannel,
+    /// A `ports.fallback_*` value is below the first unprivileged port (1024).
+    /// The rootless fallback must not need elevation, so 80/443 is rejected.
+    FallbackPortPrivileged,
+    /// `ports.fallback_http == ports.fallback_https`.
+    FallbackPortsEqual,
 }
 
 impl fmt::Display for ValidateErrorReason {
@@ -133,6 +138,10 @@ impl fmt::Display for ValidateErrorReason {
                 "a web root must be a plain relative path (no leading '/' or '..')"
             }
             Self::InvalidUpdateChannel => "update_channel must be \"stable\" or \"edge\"",
+            Self::FallbackPortPrivileged => {
+                "ports.fallback_http and ports.fallback_https must be 1024 or higher"
+            }
+            Self::FallbackPortsEqual => "ports.fallback_http and ports.fallback_https must differ",
         };
         f.write_str(msg)
     }
@@ -196,6 +205,8 @@ mod tests {
             ValidateErrorReason::InvalidPhpSetting,
             ValidateErrorReason::WebRootEscapes,
             ValidateErrorReason::InvalidUpdateChannel,
+            ValidateErrorReason::FallbackPortPrivileged,
+            ValidateErrorReason::FallbackPortsEqual,
         ] {
             assert!(!r.to_string().is_empty());
             let _ = format!("{r:?}");

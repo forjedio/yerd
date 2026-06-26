@@ -169,6 +169,11 @@ pub const DEFAULT_UPDATE_CHANNEL: &str = "stable";
 /// The two accepted [`Config::update_channel`] values.
 pub const UPDATE_CHANNELS: &[&str] = &["stable", "edge"];
 
+/// The lowest non-privileged port. Ports below this need elevation on
+/// macOS / Linux, which is precisely what the rootless fallback exists to
+/// avoid — so `fallback_http`/`fallback_https` are required to be `>=` this.
+pub const FIRST_UNPRIVILEGED_PORT: u16 = 1024;
+
 /// HTTP and HTTPS ports.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Ports {
@@ -176,25 +181,37 @@ pub struct Ports {
     pub http: u16,
     /// HTTPS listen port. Default: 443.
     pub https: u16,
+    /// Rootless HTTP port the daemon drops to when `http` can't bind without
+    /// elevation. Must be `>= FIRST_UNPRIVILEGED_PORT`. Default: 8080.
+    pub fallback_http: u16,
+    /// Rootless HTTPS port the daemon drops to when `https` can't bind without
+    /// elevation. Must be `>= FIRST_UNPRIVILEGED_PORT`. Default: 8443.
+    pub fallback_https: u16,
 }
 
 impl Ports {
-    /// IANA well-known pair, `80 / 443`. Default. Binding these may require
-    /// elevation on macOS / Linux; Windows does not gate them.
+    /// IANA well-known pair, `80 / 443`, with the `8080 / 8443` rootless
+    /// fallback. Default. Binding 80/443 may require elevation on macOS /
+    /// Linux; Windows does not gate them.
     #[must_use]
     pub const fn well_known() -> Self {
         Self {
             http: 80,
             https: 443,
+            fallback_http: 8080,
+            fallback_https: 8443,
         }
     }
 
-    /// Unprivileged fallback, `8080 / 8443`.
+    /// Unprivileged pair, `8080 / 8443`, used directly for `http`/`https` (the
+    /// fallback fields keep their `8080 / 8443` defaults).
     #[must_use]
     pub const fn unprivileged() -> Self {
         Self {
             http: 8080,
             https: 8443,
+            fallback_http: 8080,
+            fallback_https: 8443,
         }
     }
 }

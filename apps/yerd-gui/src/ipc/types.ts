@@ -171,6 +171,14 @@ export interface StatusReport {
    *  the feature (the Rust field is `#[serde(default, skip_serializing_if)]`, so
    *  it is never `null` on the wire — mirrors the `services?` convention). */
   mail?: MailStatus;
+  /** Set when the daemon could bind neither the desired nor the fallback web
+   *  ports: it runs degraded (no HTTP/HTTPS proxy). Carries the fallback ports
+   *  it failed on. Omitted (undefined) on a healthy daemon. */
+  web_unbound?: { http: number; https: number } | null;
+  /** A per-process id that changes on every (re)start. Clients use a *change* in
+   *  it to confirm a restart completed (the re-exec preserves the pid). Omitted
+   *  by a daemon predating the field. */
+  boot_id?: number | null;
 }
 
 export type Severity = "ok" | "warn" | "fail";
@@ -178,6 +186,7 @@ export type Severity = "ok" | "warn" | "fail";
 export type DiagnosisCode =
   | "daemon_down"
   | "port_fallback"
+  | "web_ports_unbound"
   | "foreign_web_listener"
   | "ca_not_trusted"
   | "resolver_not_installed"
@@ -337,6 +346,11 @@ export type Response =
        *  absent (0) against an older daemon. */
       http_port?: number;
       https_port?: number;
+      /** Configured rootless fallback ports (what Settings edits). Distinct from
+       *  `http_port`/`https_port`, which are the *bound* ports. `#[serde(default)]`
+       *  → may be absent (0) against an older daemon. */
+      fallback_http?: number;
+      fallback_https?: number;
     }
   | {
       type: "php_versions";

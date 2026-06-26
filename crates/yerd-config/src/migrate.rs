@@ -19,7 +19,7 @@ pub(crate) type MigrationStep = fn(&mut Value) -> Result<(), ConfigError>;
 /// Forward-migration steps, indexed so that **`STEPS[N]` walks `vN → v(N+1)`**.
 /// This matches [`up`], which indexes `STEPS[current]` (== the version being
 /// migrated *from*). Example: a v1 file is migrated by `STEPS[1]`. When
-/// `CURRENT_VERSION == 6`, `STEPS = [v0→v1, …, v4→v5, v5→v6]`, length 6.
+/// `CURRENT_VERSION == 7`, `STEPS = [v0→v1, …, v5→v6, v6→v7]`, length 7.
 ///
 /// `STEPS[0]` (v0→v1) is only reachable via a hand-crafted `version = 0` file —
 /// v0 was never written to disk — but it must exist so that `STEPS[1]` does.
@@ -30,6 +30,7 @@ pub(crate) const STEPS: &[MigrationStep] = &[
     migrate_v3_to_v4,
     migrate_v4_to_v5,
     migrate_v5_to_v6,
+    migrate_v6_to_v7,
 ];
 
 /// `v0 → v1`: bump the version. v0 predates any shipped config, so there is no
@@ -88,6 +89,13 @@ fn migrate_v4_to_v5(value: &mut Value) -> Result<(), ConfigError> {
 /// entire migration.
 fn migrate_v5_to_v6(value: &mut Value) -> Result<(), ConfigError> {
     set_version(value, 6)
+}
+
+/// `v6 → v7`: bump the version. v7 added the `[ports] fallback_http`/
+/// `fallback_https` keys, which default to `8080`/`8443` when absent, so an
+/// in-place version bump is the entire migration.
+fn migrate_v6_to_v7(value: &mut Value) -> Result<(), ConfigError> {
+    set_version(value, 7)
 }
 
 /// Set the top-level `version` key, erroring if the root is not a table.
@@ -160,8 +168,8 @@ mod tests {
     }
 
     #[test]
-    fn current_version_pinned_to_six() {
-        assert_eq!(crate::CURRENT_VERSION, 6);
+    fn current_version_pinned_to_seven() {
+        assert_eq!(crate::CURRENT_VERSION, 7);
     }
 
     #[test]
@@ -184,6 +192,14 @@ mod tests {
         let mut v: Value = toml::from_str("version = 5\n").unwrap();
         migrate_v5_to_v6(&mut v).unwrap();
         assert_eq!(read_version(&v).unwrap(), 6);
+    }
+
+    #[test]
+    fn v6_to_v7_is_a_bare_version_bump() {
+        // v7 only adds the optional `[ports] fallback_*` keys; the migration is a bump.
+        let mut v: Value = toml::from_str("version = 6\n").unwrap();
+        migrate_v6_to_v7(&mut v).unwrap();
+        assert_eq!(read_version(&v).unwrap(), 7);
     }
 
     #[test]

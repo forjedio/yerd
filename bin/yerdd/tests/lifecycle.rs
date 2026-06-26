@@ -289,15 +289,20 @@ mod tests {
             let resolver = Arc::new(yerdd::backend_resolver::DaemonBackendResolver {
                 php_manager: daemon.php_manager.clone(),
             });
+            // The test daemon always binds its ports, so the listeners are `Some`.
             let https = yerd_proxy::HttpsBinding {
-                listener: daemon.https_listener,
+                listener: daemon
+                    .https_listener
+                    .expect("test daemon binds its https listener"),
                 public_port: daemon.https_port,
                 cert_store: daemon.cert_store.clone(),
             };
             let router = daemon.state.router.clone();
             let mut rx = shutdown_rx.clone();
             tokio::spawn(yerd_proxy::ProxyServer::serve(
-                daemon.http_listener,
+                daemon
+                    .http_listener
+                    .expect("test daemon binds its http listener"),
                 Some(https),
                 router,
                 resolver,
