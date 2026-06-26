@@ -227,11 +227,18 @@ jobs:
           done
           echo "Embedded binaries + LaunchAgent: present, sealed, Developer-ID, team-matched, entitlement-clean, exec OK"
 
-          # The .dmg is signed but not stapled; its assessment needs an online
-          # notary lookup that can flake on CI — keep it advisory.
+          # The .dmg is Developer-ID signed but deliberately NOT notarized/stapled:
+          # Tauri only submits the inner .app to notarytool, never the disk image,
+          # so no ticket exists for the dmg's own cdhash. `stapler validate` fails
+          # ("no ticket") and `spctl` reports `source=Unnotarized Developer ID`
+          # deterministically — this is NOT a network flake. It's fine: Gatekeeper
+          # validates the stapled .app offline once it's copied out of the dmg, and
+          # that's the gate that matters at launch. (Notarizing the dmg itself would
+          # only smooth the mount-time prompt; see the release notes if we revisit.)
+          # Both checks are advisory, so a failure here never blocks a release.
           xcrun stapler validate "$DMG" || echo "::warning::dmg not stapled (expected; .app is the gate)"
           spctl -a -t open --context context:primary-signature -vvv "$DMG" \
-            || echo "::warning::dmg spctl assessment non-fatal (online check may flake)"
+            || echo "::warning::dmg not notarized (expected; spctl=Unnotarized Developer ID, .app is the gate)"
           # Prove the SHIPPED dmg (not just the loose build-dir .app) carries the
           # embedded daemon + agent plist — guards against a stale .app in the dmg.
           MP=$(mktemp -d)

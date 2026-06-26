@@ -8,16 +8,20 @@ import {
   FolderPlus,
   Rocket,
 } from "lucide-vue-next";
-import { computed, onUnmounted, ref, watch } from "vue";
+import { computed, ref, watch } from "vue";
 import { useRouter } from "vue-router";
 
+import DaemonDiagnosticsPanel from "@/components/DaemonDiagnosticsPanel.vue";
 import EnvironmentCard from "@/components/EnvironmentCard.vue";
 import TitleBar from "@/components/TitleBar.vue";
 import Button from "@/components/ui/Button.vue";
+import Input from "@/components/ui/Input.vue";
 import Select from "@/components/ui/Select.vue";
 import Spinner from "@/components/ui/Spinner.vue";
 import logoUrl from "@/assets/logo.svg";
 import { useDaemon } from "@/composables/useDaemon";
+import { useDaemonStart } from "@/composables/useDaemonStart";
+import { MIN_PORT, MAX_PORT, useFallbackPorts } from "@/composables/useFallbackPorts";
 import { useOnboarding } from "@/composables/useOnboarding";
 import { useToast } from "@/composables/useToast";
 import {
@@ -31,7 +35,6 @@ import {
   setAutostartDaemon,
   setAutostartGui,
   setAutostartGuiMinimized,
-  startDaemon,
 } from "@/ipc/client";
 import type { AutostartState, PhpVersion } from "@/ipc/types";
 
@@ -40,7 +43,7 @@ import type { AutostartState, PhpVersion } from "@/ipc/types";
 // and elevation are each skippable. Finishing lands on the Overview.
 const router = useRouter();
 const toast = useToast();
-const { connected, refresh } = useDaemon();
+const { connected, report, refresh } = useDaemon();
 const { finish } = useOnboarding();
 
 const STEPS = [
@@ -54,78 +57,99 @@ const STEPS = [
 const step = ref(1);
 
 // ── step 1: daemon ──
-const daemonStarting = ref(false);
-const pendingApproval = ref(false);
+// The start→wait→diagnose skeleton lives in the composable; onboarding injects
+// its login-item ordering via `beforeProbe` (see installDaemon).
+const {
+  starting: daemonStarting,
+  pendingApproval,
+  diagnostics,
+  start: startDaemonFlow,
+} = useDaemonStart();
 const daemonUp = computed(() => connected.value === true);
 
-// If a started daemon never connects (and isn't pending approval), stop spinning
-// after this so the button is clickable again rather than stuck forever.
-const START_TIMEOUT_MS = 20_000;
-let startTimer: ReturnType<typeof setTimeout> | undefined;
-function clearStartTimer(): void {
-  if (startTimer) {
-    clearTimeout(startTimer);
-    startTimer = undefined;
+// ── degraded web ports (shown in step 1 when the daemon came up but couldn't
+// bind its web ports) ──
+const { saveAndRestart: saveFallbackPorts, validate: validateFallbackPorts } =
+  useFallbackPorts();
+const fbHttp = ref("");
+const fbHttps = ref("");
+const fallbackBusy = ref(false);
+const fallbackError = ref<string | null>(null);
+const fallbackSkipped = ref(false);
+// Show the fix panel only once the daemon is up AND reports it bound no web
+// ports, and the user hasn't skipped. Seed the inputs from the ports it tried.
+const showPortFix = computed(
+  () => daemonUp.value && report.value?.web_unbound != null && !fallbackSkipped.value,
+);
+watch(
+  () => report.value?.web_unbound,
+  (u) => {
+    if (u && !fbHttp.value) {
+      fbHttp.value = String(u.http);
+      fbHttps.value = String(u.https);
+    }
+  },
+  { immediate: true },
+);
+
+async function savePortFix(): Promise<void> {
+  fallbackError.value = null;
+  const err = validateFallbackPorts(Number(fbHttp.value), Number(fbHttps.value));
+  if (err) {
+    fallbackError.value = err;
+    return;
+  }
+  fallbackBusy.value = true;
+  try {
+    const res = await saveFallbackPorts(Number(fbHttp.value), Number(fbHttps.value));
+    if (res.ok) {
+      toast.success("Yerd is serving", `On ports ${fbHttp.value}/${fbHttps.value}.`);
+      // `report.web_unbound` is now null, so the panel hides on its own.
+    } else {
+      fallbackError.value = res.message ?? "The daemon is still degraded.";
+    }
+  } finally {
+    fallbackBusy.value = false;
   }
 }
 
+function skipPortFix(): void {
+  fallbackSkipped.value = true;
+}
+
 async function installDaemon(): Promise<void> {
-  daemonStarting.value = true;
-  pendingApproval.value = false;
-  try {
+  await startDaemonFlow({
     // Suppress the per-call Login-Items nudge: enabling the daemon and the app
-    // could each open System Settings, so we open it once below instead.
-    await startDaemon(false);
-    await refresh();
-    // Probe service support before enabling the login defaults.
-    let autostart: AutostartState | null = null;
-    try {
-      autostart = await getAutostart();
-    } catch {
-      /* non-fatal */
-    }
-    // Onboarding default: run the daemon AND the app at login, with the app
-    // started minimized to the tray. Best-effort and idempotent — users change
-    // all three later in Settings. A missing service manager just skips the
-    // daemon toggle.
-    await enableLoginDefaults(autostart?.daemonSupported ?? false);
-    // Re-read AFTER enabling: the GUI login item is only registered now, so its
-    // pending-approval state is meaningful. Open Login Items at most once if the
-    // daemon OR the GUI needs the user to approve a background item.
-    try {
-      autostart = await getAutostart();
-    } catch {
-      /* non-fatal */
-    }
-    pendingApproval.value =
-      (autostart?.daemonPendingApproval ?? false) ||
-      (autostart?.guiPendingApproval ?? false);
-    if (pendingApproval.value) {
-      void openLoginItems(); // best-effort; don't await/block onboarding
-    }
-    // Keep the spinner running until the daemon actually CONNECTS (the poller
-    // flips `connected` → the watch below clears it and shows "Running"). The
-    // only early-out is macOS pending-approval, where we can't connect until the
-    // user acts, so stop the spinner and show the approval hint.
-    if (pendingApproval.value) {
-      daemonStarting.value = false;
-    } else {
-      clearStartTimer();
-      startTimer = setTimeout(() => {
-        if (daemonStarting.value && connected.value !== true) {
-          daemonStarting.value = false;
-          toast.error(
-            "The daemon didn't come up",
-            "Try again, or check System Settings → Login Items.",
-          );
-        }
-      }, START_TIMEOUT_MS);
-    }
-  } catch (e) {
-    // Start failed outright — let the user retry.
-    daemonStarting.value = false;
-    toast.error("Couldn't start the daemon", (e as IpcError).message);
-  }
+    // could each open System Settings, so we open it once in beforeProbe instead.
+    nudge: false,
+    beforeProbe: async () => {
+      // Probe service support before enabling the login defaults.
+      let autostart: AutostartState | null = null;
+      try {
+        autostart = await getAutostart();
+      } catch {
+        /* non-fatal */
+      }
+      // Onboarding default: run the daemon AND the app at login, app minimized to
+      // the tray. Best-effort/idempotent — users change all three in Settings; a
+      // missing service manager just skips the daemon toggle.
+      await enableLoginDefaults(autostart?.daemonSupported ?? false);
+      // Re-read AFTER enabling: the GUI login item is only registered now, so its
+      // pending-approval state is meaningful. Open Login Items at most once if the
+      // daemon OR the GUI needs approval.
+      try {
+        autostart = await getAutostart();
+      } catch {
+        /* non-fatal */
+      }
+      const pending =
+        (autostart?.daemonPendingApproval ?? false) ||
+        (autostart?.guiPendingApproval ?? false);
+      // best-effort; don't block onboarding, and swallow any IPC rejection.
+      if (pending) void openLoginItems().catch(() => {});
+      return pending;
+    },
+  });
 }
 
 /**
@@ -155,16 +179,14 @@ async function enableLoginDefaults(daemonSupported: boolean): Promise<void> {
   }
 }
 
-// Stop the spinner once the daemon is actually reachable. No auto-advance — the
-// user clicks Continue (enabled once `daemonUp`).
-watch(connected, (c) => {
-  if (c === true) {
-    daemonStarting.value = false;
-    clearStartTimer();
-  }
-});
+// Swallow any rejection from the async `openLoginItems` IPC call so a raw
+// `@click` binding can't surface an unhandled promise rejection (best-effort UX).
+function onOpenLoginItems(): void {
+  void openLoginItems().catch(() => {});
+}
 
-onUnmounted(clearStartTimer);
+// (Spinner/diagnostics auto-clear on connect is handled inside useDaemonStart.)
+// No auto-advance — the user clicks Continue (enabled once `daemonUp`).
 
 // ── step 2: PHP ──
 const phpLoading = ref(false);
@@ -329,9 +351,78 @@ function onBack(): void {
                 macOS needs you to allow Yerd in the background. Enable it under
                 Login Items, then it'll connect automatically.
               </p>
-              <Button variant="outline" size="sm" class="mt-2" @click="openLoginItems">
+              <Button variant="outline" size="sm" class="mt-2" @click="onOpenLoginItems">
                 <ExternalLink class="size-4" /> Open Login Items
               </Button>
+            </div>
+
+            <!-- Why the daemon didn't come up (hints + log/service details). -->
+            <DaemonDiagnosticsPanel v-if="diagnostics" :diagnostics="diagnostics" />
+
+            <!-- Degraded: the daemon is up but couldn't bind its web ports. Let
+                 the user pick free ports (skippable). Stays visible across its own
+                 restart via `fallbackBusy` so the action below doesn't flash. -->
+            <div
+              v-if="showPortFix || fallbackBusy"
+              class="space-y-3 rounded-md border border-warning/40 bg-warning/10 p-3 text-sm"
+            >
+              <div>
+                <p class="font-medium">Yerd started, but isn't serving yet</p>
+                <p class="mt-1 text-muted-foreground">
+                  It couldn't bind its web ports — they're in use by another
+                  program. Pick free ports ({{ MIN_PORT }} or higher, so they don't
+                  need elevation) and Yerd will serve on those.
+                </p>
+              </div>
+              <div class="flex flex-wrap items-end gap-3">
+                <div class="space-y-1">
+                  <label for="ob-fb-http" class="text-xs font-medium text-muted-foreground">
+                    HTTP
+                  </label>
+                  <Input
+                    id="ob-fb-http"
+                    v-model="fbHttp"
+                    type="number"
+                    inputmode="numeric"
+                    :min="MIN_PORT"
+                    :max="MAX_PORT"
+                    :disabled="fallbackBusy"
+                    aria-label="Rootless HTTP port"
+                    class="w-24 font-mono"
+                    placeholder="8080"
+                  />
+                </div>
+                <div class="space-y-1">
+                  <label for="ob-fb-https" class="text-xs font-medium text-muted-foreground">
+                    HTTPS
+                  </label>
+                  <Input
+                    id="ob-fb-https"
+                    v-model="fbHttps"
+                    type="number"
+                    inputmode="numeric"
+                    :min="MIN_PORT"
+                    :max="MAX_PORT"
+                    :disabled="fallbackBusy"
+                    aria-label="Rootless HTTPS port"
+                    class="w-24 font-mono"
+                    placeholder="8443"
+                  />
+                </div>
+                <Button size="sm" :disabled="fallbackBusy" @click="savePortFix">
+                  <Spinner v-if="fallbackBusy" class="size-4" />
+                  Save &amp; validate
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  :disabled="fallbackBusy"
+                  @click="skipPortFix"
+                >
+                  Skip for now
+                </Button>
+              </div>
+              <p v-if="fallbackError" class="text-destructive">{{ fallbackError }}</p>
             </div>
 
             <!-- Action, below the content and right-aligned. -->
@@ -341,6 +432,12 @@ function onBack(): void {
                 class="flex items-center gap-2 rounded-md bg-success/10 px-3 py-1.5 text-sm font-medium text-success"
               >
                 <Check class="size-4" /> Running
+              </div>
+              <div
+                v-else-if="fallbackBusy"
+                class="flex items-center gap-2 rounded-md bg-muted px-3 py-1.5 text-sm font-medium text-muted-foreground"
+              >
+                <Spinner class="size-4" /> Restarting…
               </div>
               <Button v-else :disabled="daemonStarting" @click="installDaemon">
                 <Spinner v-if="daemonStarting" class="size-4" />

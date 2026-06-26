@@ -226,12 +226,26 @@ mod unix_impl {
             // macOS: install/remove a pf redirect 80→http_port, 443→https_port
             // (the daemon keeps binding its rootless ports). Reversible.
             #[cfg(target_os = "macos")]
-            (ElevateTarget::Ports, false) => HelperInvocation::InstallPortRedirect {
-                http_from: 80,
-                http_to: facts.http_port,
-                https_from: 443,
-                https_to: facts.https_port,
-            },
+            (ElevateTarget::Ports, false) => {
+                // A degraded daemon bound no web ports (`http_port`/`https_port`
+                // are 0), so a redirect would point at nothing. Refuse early with
+                // a clear message rather than installing a dead pf rule. (Linux
+                // maps to `setcap`, which ignores these and is the *correct*
+                // degraded recovery — hence this guard is macOS-only.)
+                if facts.http_port == 0 || facts.https_port == 0 {
+                    return Err(ClientError::Usage(
+                        "Yerd isn't serving any web ports yet (it couldn't bind them) — \
+                         set working fallback ports and restart before elevating"
+                            .to_owned(),
+                    ));
+                }
+                HelperInvocation::InstallPortRedirect {
+                    http_from: 80,
+                    http_to: facts.http_port,
+                    https_from: 443,
+                    https_to: facts.https_port,
+                }
+            }
             #[cfg(target_os = "macos")]
             (ElevateTarget::Ports, true) => HelperInvocation::UninstallPortRedirect,
         })
@@ -285,6 +299,9 @@ mod unix_impl {
                     ca_fingerprint,
                     http_port,
                     https_port,
+                    // `fallback_*` are config values Settings edits; the pf
+                    // redirect targets the *bound* ports, so they're not needed here.
+                    ..
                 }) => {
                     return Ok(Facts {
                         dns_addr,
@@ -347,6 +364,15 @@ mod unix_impl {
     pub(crate) fn sibling_binaries() -> Result<(PathBuf, PathBuf), ClientError> {
         let exe = std::env::current_exe()
             .map_err(|e| ClientError::Usage(format!("cannot resolve current exe: {e}")))?;
+        // Resolve symlinks first. When `yerd` is invoked via the installed
+        // `{data}/bin/yerd` PATH symlink, macOS `current_exe()` returns the
+        // symlink path itself — so the siblings would resolve to `{data}/bin`,
+        // which holds no `yerd-helper`/`yerdd` (only the `yerd` symlink + php
+        // shims), and the helper spawn fails with ENOENT. Canonicalizing points
+        // us at the real binary inside the app bundle, whose siblings exist. Fall
+        // back to the unresolved path if canonicalize fails (it shouldn't — the
+        // exe exists — but never abort elevation over it).
+        let exe = std::fs::canonicalize(&exe).unwrap_or(exe);
         let dir = exe
             .parent()
             .ok_or_else(|| ClientError::Usage("current exe has no parent directory".to_owned()))?;

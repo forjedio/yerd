@@ -378,10 +378,12 @@ fn response_info_byte_shape() {
         ca_fingerprint: "ab".repeat(32),
         http_port: 8080,
         https_port: 8443,
+        fallback_http: 8080,
+        fallback_https: 8443,
     };
     let s = serde_json::to_string(&r).unwrap();
     let expected = format!(
-        r#"{{"type":"info","dns_addr":"127.0.0.1:1053","tld":"test","ca_path":"/home/u/.local/share/yerd/ca.cert.pem","ca_fingerprint":"{}","http_port":8080,"https_port":8443}}"#,
+        r#"{{"type":"info","dns_addr":"127.0.0.1:1053","tld":"test","ca_path":"/home/u/.local/share/yerd/ca.cert.pem","ca_fingerprint":"{}","http_port":8080,"https_port":8443,"fallback_http":8080,"fallback_https":8443}}"#,
         "ab".repeat(32)
     );
     assert_eq!(s, expected);
@@ -399,6 +401,8 @@ fn response_info_byte_shape() {
         Response::Info {
             http_port: 0,
             https_port: 0,
+            fallback_http: 0,
+            fallback_https: 0,
             ..
         }
     ));
@@ -571,6 +575,9 @@ fn response_status_byte_shape() {
             // `None` + skip_serializing_if → omitted, so the byte shape is
             // unchanged from before the mail field existed.
             mail: None,
+            // Likewise omitted when `None`, keeping the byte shape unchanged.
+            web_unbound: None,
+            boot_id: None,
         }),
     };
     let s = serde_json::to_string(&r).unwrap();
@@ -671,6 +678,8 @@ fn sample_status_report() -> StatusReport {
         daemon_version: "2.0.1".into(),
         services: vec![],
         mail: None,
+        web_unbound: None,
+        boot_id: None,
     }
 }
 
@@ -780,6 +789,7 @@ fn diagnosis_code_each_variant_byte_shape() {
     let cases: &[(DiagnosisCode, &str)] = &[
         (DiagnosisCode::DaemonDown, r#""daemon_down""#),
         (DiagnosisCode::PortFallback, r#""port_fallback""#),
+        (DiagnosisCode::WebPortsUnbound, r#""web_ports_unbound""#),
         (
             DiagnosisCode::ForeignWebListener,
             r#""foreign_web_listener""#,
@@ -1308,6 +1318,20 @@ fn request_set_mail_port_byte_shape() {
     let r = Request::SetMailPort { port: 2525 };
     let s = serde_json::to_string(&r).unwrap();
     assert_eq!(s, r#"{"type":"set_mail_port","port":2525}"#);
+    assert_eq!(serde_json::from_str::<Request>(&s).unwrap(), r);
+}
+
+#[test]
+fn request_set_fallback_ports_byte_shape() {
+    let r = Request::SetFallbackPorts {
+        http: 8080,
+        https: 8443,
+    };
+    let s = serde_json::to_string(&r).unwrap();
+    assert_eq!(
+        s,
+        r#"{"type":"set_fallback_ports","http":8080,"https":8443}"#
+    );
     assert_eq!(serde_json::from_str::<Request>(&s).unwrap(), r);
 }
 

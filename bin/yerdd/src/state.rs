@@ -82,6 +82,13 @@ pub struct DaemonState {
     pub http: PortStatus,
     /// HTTPS listener: requested vs actually-bound port (reported by `Status`).
     pub https: PortStatus,
+    /// Set when the daemon could bind neither the desired nor the fallback web
+    /// ports — it runs degraded (no proxy). Carries the fallback ports it failed
+    /// on, surfaced in `Status` (`web_unbound`) so the UI/doctor can name them.
+    pub web_unbound: Option<yerd_ipc::UnboundWeb>,
+    /// Per-process id (see `StatusReport::boot_id`) clients use to detect a
+    /// completed restart across the pid-preserving re-exec.
+    pub boot_id: u64,
     /// When the daemon finished bringing up (for `Status` uptime).
     pub started_at: Instant,
     /// Broadcast shutdown trigger. Owned by state so the `RestartDaemon` IPC

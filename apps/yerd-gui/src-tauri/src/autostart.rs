@@ -178,6 +178,132 @@ fn run_ok(program: &str, args: &[&str]) -> Result<(), GuiError> {
     }
 }
 
+/// Run a command and return its combined stdout+stderr regardless of exit
+/// status, truncated to `max` bytes. Unlike [`run_ok`], this keeps the output
+/// of commands that exit non-zero — `systemctl status` / `launchctl print`
+/// routinely do, and that text is exactly what diagnostics want. `None` if the
+/// command can't be launched at all. Only [`service_status_text`] uses it, on
+/// the two platforms with a service manager — gated so a Windows build (where
+/// that arm returns `None`) doesn't see it as dead code under `-D warnings`.
+///
+/// **Bounded.** This runs on a `spawn_blocking` thread in the diagnostics path,
+/// but a wedged `systemctl --user`/`launchctl` would still leave the UI's
+/// "diagnose" step stuck, so the wait is capped (the child is killed on expiry).
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub(crate) fn capture(program: &str, args: &[&str], max: usize) -> Option<String> {
+    use std::io::Read as _;
+    use std::process::Stdio;
+    use std::time::{Duration, Instant};
+
+    let mut child = Command::new(program)
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .ok()?;
+
+    // Status queries are quick; if one hasn't exited within the cap, kill it and
+    // report rather than block. (Output is small — well under the pipe buffer —
+    // so the child won't deadlock waiting for us to drain it before exiting.)
+    let deadline = Instant::now() + Duration::from_secs(4);
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => break,
+            Ok(None) if Instant::now() >= deadline => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Some(format!("(`{program}` did not respond within 4s)"));
+            }
+            Ok(None) => std::thread::sleep(Duration::from_millis(50)),
+            Err(_) => return None,
+        }
+    }
+
+    let mut out_buf = Vec::new();
+    let mut err_buf = Vec::new();
+    if let Some(mut so) = child.stdout.take() {
+        let _ = so.read_to_end(&mut out_buf);
+    }
+    if let Some(mut se) = child.stderr.take() {
+        let _ = se.read_to_end(&mut err_buf);
+    }
+
+    let mut s = String::from_utf8_lossy(&out_buf).into_owned();
+    let err = String::from_utf8_lossy(&err_buf);
+    if !err.trim().is_empty() {
+        if !s.is_empty() {
+            s.push('\n');
+        }
+        s.push_str(&err);
+    }
+    let s = s.trim().to_string();
+    if s.is_empty() {
+        return None;
+    }
+    if s.len() > max {
+        // Build a char-bounded prefix (no slicing) so truncation stays UTF-8 safe.
+        let mut t = String::new();
+        for ch in s.chars() {
+            if t.len() + ch.len_utf8() > max {
+                break;
+            }
+            t.push(ch);
+        }
+        t.push_str("\n… (truncated)");
+        Some(t)
+    } else {
+        Some(s)
+    }
+}
+
+/// Human-readable label for the mechanism that supervises the daemon on this
+/// host — surfaced in diagnostics so a user/support can see which path was used.
+pub(crate) fn service_manager_label() -> &'static str {
+    #[cfg(target_os = "linux")]
+    {
+        if systemd_user_available() {
+            "systemd --user"
+        } else {
+            "detached spawn"
+        }
+    }
+    #[cfg(target_os = "macos")]
+    {
+        if use_smappservice() {
+            "launchd (SMAppService)"
+        } else {
+            "launchd (loose)"
+        }
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    {
+        "none"
+    }
+}
+
+/// The service manager's own status text for the daemon job (`systemctl --user
+/// status yerd` / `launchctl print gui/{uid}/dev.yerd.daemon`), truncated.
+/// `None` when no service manager applies or the query produced nothing.
+pub(crate) fn service_status_text() -> Option<String> {
+    #[cfg(target_os = "linux")]
+    {
+        capture(
+            "systemctl",
+            &["--user", "status", "yerd", "--no-pager"],
+            4096,
+        )
+    }
+    #[cfg(target_os = "macos")]
+    {
+        capture("launchctl", &["print", &service_target()], 4096)
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    {
+        None
+    }
+}
+
 // ── service-manager availability ─────────────────────────────────────────────
 
 #[cfg(target_os = "linux")]
@@ -376,7 +502,9 @@ fn smapp_enable(nudge: bool) -> Result<(), GuiError> {
         return Ok(());
     }
     cleanup_legacy();
-    crate::smappservice::register(crate::smappservice::Service::Daemon)?;
+    // `register_repairing`, not `register`: an in-place app upgrade can leave a
+    // stale BTM entry that makes `register` fail with EINVAL until it's cleared.
+    crate::smappservice::register_repairing(crate::smappservice::Service::Daemon)?;
     if nudge {
         nudge_if_requires_approval();
     }
@@ -474,7 +602,9 @@ fn gui_smapp_enable(nudge: bool) -> Result<(), GuiError> {
         }
         return Ok(());
     }
-    crate::smappservice::register(crate::smappservice::Service::MainApp)?;
+    // `register_repairing`: see the daemon path — an in-place upgrade can leave a
+    // stale BTM entry that makes a plain `register` fail with EINVAL.
+    crate::smappservice::register_repairing(crate::smappservice::Service::MainApp)?;
     gui_cleanup_legacy();
     if nudge && gui_pending_approval() {
         crate::smappservice::open_login_items_settings();
@@ -718,7 +848,7 @@ fn daemon_enabled(settings: &GuiSettings, supported: bool) -> bool {
 
 /// macOS SMAppService `requiresApproval` — registered but pending the user's
 /// toggle in Login Items. Always false on the fallback path / other OSes.
-fn daemon_pending_approval() -> bool {
+pub(crate) fn daemon_pending_approval() -> bool {
     #[cfg(target_os = "macos")]
     if use_smappservice() {
         return crate::smappservice::status(crate::smappservice::Service::Daemon)

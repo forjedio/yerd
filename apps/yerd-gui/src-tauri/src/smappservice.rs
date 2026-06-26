@@ -119,6 +119,27 @@ pub(crate) fn register(svc: Service) -> Result<(), GuiError> {
     res.map_err(|e| ns_err(action, &e))
 }
 
+/// [`register`], self-healing a stale Background-Task-Management entry left by an
+/// **in-place app upgrade**. After the bundle is replaced (e.g. rc.5 → rc.6),
+/// macOS may report [`status`] as not-registered for the new generation while
+/// BTM still holds the prior generation's entry for the same Label; a fresh
+/// `registerAndReturnError:` then fails with `EINVAL` ("Invalid argument", macOS
+/// error 22). Apple's remedy is to clear the stale entry and register afresh, so
+/// on the first failure we `unregister` (best-effort — a genuinely-unregistered
+/// service is a harmless no-op) and retry once. Callers reach this only when
+/// [`status`] already read not-registered, so the unregister can't tear down a
+/// live, working registration. The retry's error (not the first) is propagated,
+/// since it reflects the actual end state after the repair attempt.
+pub(crate) fn register_repairing(svc: Service) -> Result<(), GuiError> {
+    match register(svc) {
+        Ok(()) => Ok(()),
+        Err(_stale) => {
+            let _ = unregister(svc);
+            register(svc)
+        }
+    }
+}
+
 /// Unregister (disable) the agent: removes the login item / "Yerd" entry and
 /// unloads the job. `errSec`-style "not registered" is reported by the OS as
 /// success here, so a redundant unregister is harmless.

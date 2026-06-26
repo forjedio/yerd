@@ -73,6 +73,8 @@ fn bool_map_is_empty(m: &&BTreeMap<String, bool>) -> bool {
 struct PortsSer<'a> {
     http: &'a u16,
     https: &'a u16,
+    fallback_http: &'a u16,
+    fallback_https: &'a u16,
 }
 
 #[derive(Serialize)]
@@ -138,6 +140,8 @@ pub(crate) fn to_toml(c: &Config) -> Result<String, ConfigError> {
         ports: PortsSer {
             http: &c.ports.http,
             https: &c.ports.https,
+            fallback_http: &c.ports.fallback_http,
+            fallback_https: &c.ports.fallback_https,
         },
         php: PhpSectionSer {
             default: &c.php.default,
@@ -213,8 +217,8 @@ mod tests {
     fn default_to_toml_starts_with_version_line() {
         let s = to_toml(&Config::default()).unwrap();
         assert!(
-            s.starts_with("version = 6\n"),
-            "expected `version = 6` first line; got: {s}"
+            s.starts_with("version = 7\n"),
+            "expected `version = 7` first line; got: {s}"
         );
     }
 

@@ -88,12 +88,23 @@ impl Paths for MacosPaths {
     }
 }
 
-/// Read the real UID via the `id -u` command, which is available on
-/// every macOS install. `std::process::Command` is acceptable here
-/// because (a) the input is constant, (b) the output is parsed as a
-/// `u32`, (c) no privilege boundary is crossed.
+/// Read the real UID via `/usr/bin/id -u`, which is present on every macOS
+/// install. `std::process::Command` is acceptable here because (a) the input is
+/// constant, (b) the output is parsed as a `u32`, (c) no privilege boundary is
+/// crossed.
+///
+/// **The path must be absolute.** When the daemon is launched by
+/// launchd/SMAppService its `PATH` is minimal and need not contain `/usr/bin`,
+/// so a bare `id` would fail to exec → `None` → the caller's `unwrap_or(0)` would
+/// silently bind the socket under `/tmp/yerd-0` while the GUI (full login `PATH`)
+/// resolves `/tmp/yerd-$realuid` — the daemon then looks "unreachable" though it
+/// is healthy. Matching the `/bin/ps` call below keeps this deterministic under
+/// the service manager's stripped environment.
 fn read_real_uid() -> Option<u32> {
-    let out = std::process::Command::new("id").arg("-u").output().ok()?;
+    let out = std::process::Command::new("/usr/bin/id")
+        .arg("-u")
+        .output()
+        .ok()?;
     if !out.status.success() {
         return None;
     }

@@ -13,6 +13,7 @@ import type {
   CliPathStatus,
   AvailablePhpResponse,
   CreateSiteSpec,
+  DaemonDiagnostics,
   DatabaseSummary,
   Diagnosis,
   DoctorFixResponse,
@@ -425,6 +426,15 @@ export async function setMailPort(port: number): Promise<void> {
   ensureOk(await call<Response>("set_mail_port", { port }));
 }
 
+/**
+ * Persist the rootless HTTP/HTTPS fallback ports; takes effect on the next
+ * daemon restart. The daemon rejects values < 1024, equal ports, or a change
+ * while ports are elevated (surfaced as a thrown IpcError).
+ */
+export async function setFallbackPorts(http: number, https: number): Promise<void> {
+  ensureOk(await call<Response>("set_fallback_ports", { http, https }));
+}
+
 /** Enable/disable mail capture; takes effect on the next daemon restart. */
 export async function setMailEnabled(enabled: boolean): Promise<void> {
   ensureOk(await call<Response>("set_mail_enabled", { enabled }));
@@ -573,6 +583,17 @@ export async function startDaemon(nudge = true): Promise<void> {
 
 export async function stopDaemon(): Promise<void> {
   await call<void>("stop_daemon");
+}
+
+/**
+ * Gather diagnostics explaining why the daemon isn't up — service-manager
+ * status, the daemon's rolling-log tail, binary/socket checks, and host-computed
+ * hints. Pass the message a prior `startDaemon` threw (if any) so the
+ * never-launched cases (missing binary, translocation, register failure) carry
+ * their most actionable signal.
+ */
+export async function daemonDiagnostics(startError?: string): Promise<DaemonDiagnostics> {
+  return call<DaemonDiagnostics>("daemon_diagnostics", { startError });
 }
 
 export async function getAutostart(): Promise<AutostartState> {

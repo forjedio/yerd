@@ -312,10 +312,33 @@ mod unix {
     }
 
     fn shell_basename() -> String {
+        // Prefer `$SHELL` — always set in an interactive shell. When it's empty,
+        // fall back to the user's login shell from the passwd database: the GUI
+        // app is launched by launchd/Finder, which sets no `$SHELL`, so the
+        // `yerd path install` it shells out to would otherwise fail to detect the
+        // shell and never write the PATH block (the symlink lands, but new
+        // terminals can't find `yerd`).
         std::env::var_os("SHELL")
             .map(PathBuf::from)
-            .and_then(|p| p.file_name().map(|s| s.to_string_lossy().into_owned()))
+            .as_deref()
+            .and_then(basename)
+            .filter(|s| !s.is_empty())
+            .or_else(login_shell_basename)
             .unwrap_or_default()
+    }
+
+    /// The current user's login shell basename from the passwd database, or
+    /// `None` if it can't be resolved. Used only as a `$SHELL` fallback.
+    fn login_shell_basename() -> Option<String> {
+        let user = nix::unistd::User::from_uid(nix::unistd::Uid::current())
+            .ok()
+            .flatten()?;
+        basename(&user.shell).filter(|s| !s.is_empty())
+    }
+
+    /// File-name component of `p` as an owned `String`.
+    fn basename(p: &Path) -> Option<String> {
+        p.file_name().map(|s| s.to_string_lossy().into_owned())
     }
 
     fn host_os() -> HostOs {

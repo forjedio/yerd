@@ -92,6 +92,8 @@ fn encode_then_decode_response_roundtrip() {
         ca_fingerprint: "ab".repeat(32),
         http_port: 8080,
         https_port: 8443,
+        fallback_http: 8080,
+        fallback_https: 8443,
     });
     assert_response_roundtrips(Response::PhpVersions {
         installed: vec![PhpVersion::new(8, 3), PhpVersion::new(8, 5)],
@@ -174,6 +176,11 @@ fn encode_then_decode_response_roundtrip() {
             daemon_version: "2.0.1".into(),
             services: vec![],
             mail: None,
+            web_unbound: Some(yerd_ipc::UnboundWeb {
+                http: 8080,
+                https: 8443,
+            }),
+            boot_id: Some(42),
         }),
     });
     assert_response_roundtrips(Response::Diagnoses {
