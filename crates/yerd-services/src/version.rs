@@ -118,6 +118,19 @@ pub fn config_path(dirs: &PlatformDirs, service: Service) -> PathBuf {
         .join(format!("{}.conf", service.id()))
 }
 
+/// The `MySQL`/`MariaDB` bootstrap-SQL path: `state/services/<id>/<id>-init.sql`.
+///
+/// Referenced by the `init-file` directive in the rendered `my.cnf`; the server
+/// runs it on every start. Lives beside the config (rewritten each start), not in
+/// the datadir, so it persists independently of re-initialisation.
+#[must_use]
+pub fn init_file_path(dirs: &PlatformDirs, service: Service) -> PathBuf {
+    dirs.state
+        .join("services")
+        .join(service.id())
+        .join(format!("{}-init.sql", service.id()))
+}
+
 /// The server log-file path: `state/services/<id>/<id>.log`.
 #[must_use]
 pub fn log_path(dirs: &PlatformDirs, service: Service) -> PathBuf {

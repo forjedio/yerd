@@ -53,15 +53,27 @@ fn quote_conf_path(p: &Path) -> String {
 ///   localhost.
 /// - The empty root password is set by `mysqld --initialize-insecure` at init
 ///   time, so there is no password directive here.
+/// - `init-file` points at the bootstrap SQL from [`render_my_bootstrap_sql`],
+///   run on every start, which makes passwordless `root` reachable over TCP
+///   loopback (`--initialize-insecure` creates only the socket-matching
+///   `root@localhost`, so without this a TCP client on `127.0.0.1` is rejected
+///   with `[1130] Host '127.0.0.1' is not allowed`).
 /// - The server runs in the foreground (no `--daemonize`); see [`crate::manager`].
 /// - `pid-file` lives inside the datadir, whose parent `--initialize` creates,
 ///   so its directory always exists at start.
 #[must_use]
-pub fn render_my_cnf(port: u16, datadir: &Path, socket: &Path, log_path: &Path) -> String {
+pub fn render_my_cnf(
+    port: u16,
+    datadir: &Path,
+    socket: &Path,
+    log_path: &Path,
+    init_file: &Path,
+) -> String {
     let dir = quote_conf_path(datadir);
     let sock = quote_conf_path(socket);
     let log = quote_conf_path(log_path);
     let pid = quote_conf_path(&datadir.join("mysqld.pid"));
+    let init = quote_conf_path(init_file);
     format!(
         "# Managed by Yerd — do not edit by hand.\n\
          # Local development database (MySQL / MariaDB).\n\
@@ -72,8 +84,37 @@ pub fn render_my_cnf(port: u16, datadir: &Path, socket: &Path, log_path: &Path) 
          datadir = {dir}\n\
          socket = {sock}\n\
          pid-file = {pid}\n\
-         log-error = {log}\n"
+         log-error = {log}\n\
+         init-file = {init}\n"
     )
+}
+
+/// Render the `MySQL`/`MariaDB` bootstrap SQL the server runs on every start (via
+/// the `init-file` directive — see [`render_my_cnf`]).
+///
+/// It makes the passwordless `root` account reachable over **TCP loopback** so
+/// apps using `DB_HOST=127.0.0.1` (Laravel's default) connect out of the box.
+/// `mysqld --initialize-insecure` creates only `root@localhost`, which — under
+/// `skip-name-resolve` — matches the Unix socket but not a TCP client presenting
+/// the literal host `127.0.0.1`; that mismatch is the `[1130]` rejection.
+///
+/// Invariants that keep this safe to run on every start:
+/// - Every statement is **idempotent**: `CREATE USER IF NOT EXISTS` is a no-op
+///   when the account exists (so it never clobbers `MariaDB`'s own `root@127.0.0.1`
+///   /`root@::1`, which `mariadb-install-db` already creates), and `GRANT` simply
+///   re-asserts the privileges.
+/// - Each statement is on a **single line** — `--init-file` executes one
+///   statement per line and rejects multi-line statements.
+/// - Only loopback hosts (`127.0.0.1`, `::1`) get accounts; `bind-address`
+///   already pins the listener to loopback, so this widens nothing beyond it.
+#[must_use]
+pub fn render_my_bootstrap_sql() -> &'static str {
+    "-- Managed by Yerd — do not edit by hand.\n\
+     -- Make passwordless root reachable over TCP loopback (apps use DB_HOST=127.0.0.1).\n\
+     CREATE USER IF NOT EXISTS 'root'@'127.0.0.1' IDENTIFIED BY '';\n\
+     GRANT ALL PRIVILEGES ON *.* TO 'root'@'127.0.0.1' WITH GRANT OPTION;\n\
+     CREATE USER IF NOT EXISTS 'root'@'::1' IDENTIFIED BY '';\n\
+     GRANT ALL PRIVILEGES ON *.* TO 'root'@'::1' WITH GRANT OPTION;\n"
 }
 
 /// Render a `postgresql.conf`: loopback TCP only, no Unix socket, no password.
@@ -167,6 +208,7 @@ mod tests {
             &PathBuf::from("/data/mysql"),
             &PathBuf::from("/run/mysql.sock"),
             &PathBuf::from("/log/mysql.log"),
+            &PathBuf::from("/cfg/mysql-init.sql"),
         );
         assert!(conf.contains("[mysqld]"));
         assert!(conf.contains("bind-address = 127.0.0.1"));
@@ -177,6 +219,8 @@ mod tests {
         assert!(conf.contains("log-error = \"/log/mysql.log\""));
         // pid-file is inside the datadir (parent always exists post-init).
         assert!(conf.contains("pid-file = \"/data/mysql/mysqld.pid\""));
+        // init-file points at the bootstrap SQL (TCP-loopback root grant).
+        assert!(conf.contains("init-file = \"/cfg/mysql-init.sql\""));
         // No password directive — root is left empty by --initialize-insecure.
         assert!(!conf.to_lowercase().contains("password"));
     }
@@ -188,11 +232,46 @@ mod tests {
             &PathBuf::from("/Users/a b/Library/Application Support/yerd/data"),
             &PathBuf::from("/run/u/mysql.sock"),
             &PathBuf::from("/Users/a b/log.log"),
+            &PathBuf::from("/Users/a b/mysql-init.sql"),
         );
         assert!(
             conf.contains("datadir = \"/Users/a b/Library/Application Support/yerd/data\""),
             "spaced datadir must be quoted intact: {conf}"
         );
+        assert!(
+            conf.contains("init-file = \"/Users/a b/mysql-init.sql\""),
+            "spaced init-file path must be quoted intact: {conf}"
+        );
+    }
+
+    #[test]
+    fn my_bootstrap_sql_grants_passwordless_root_over_tcp_loopback() {
+        let sql = render_my_bootstrap_sql();
+        // Both loopback hosts get a passwordless root with full privileges.
+        assert!(sql.contains("CREATE USER IF NOT EXISTS 'root'@'127.0.0.1' IDENTIFIED BY '';"));
+        assert!(
+            sql.contains("GRANT ALL PRIVILEGES ON *.* TO 'root'@'127.0.0.1' WITH GRANT OPTION;")
+        );
+        assert!(sql.contains("CREATE USER IF NOT EXISTS 'root'@'::1' IDENTIFIED BY '';"));
+        assert!(sql.contains("GRANT ALL PRIVILEGES ON *.* TO 'root'@'::1' WITH GRANT OPTION;"));
+        // Idempotent: every CREATE USER is guarded so re-running on each start is safe.
+        for line in sql.lines() {
+            if line.trim_start().starts_with("CREATE USER") {
+                assert!(line.contains("IF NOT EXISTS"), "non-idempotent: {line}");
+            }
+        }
+        // --init-file executes one statement per line: no statement may span lines,
+        // so every non-comment, non-empty line must terminate with a semicolon.
+        for line in sql.lines() {
+            let t = line.trim();
+            if t.is_empty() || t.starts_with("--") {
+                continue;
+            }
+            assert!(
+                t.ends_with(';'),
+                "statement not single-line/terminated: {line}"
+            );
+        }
     }
 
     #[test]
