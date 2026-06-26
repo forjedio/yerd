@@ -47,9 +47,44 @@ pub(crate) fn resolve_binary(name: &str) -> Option<PathBuf> {
             }
         }
     }
-    search_dirs()
+    if let Some(found) = search_dirs()
         .into_iter()
         .map(|d| d.join(name))
+        .find(|c| c.is_file())
+    {
+        return Some(found);
+    }
+    // Linux: the `.deb` installs the Tauri sidecars under `/usr/lib/<product>/`
+    // and the postinst *symlinks* them into `/usr/bin`. That symlink is not
+    // dpkg-tracked and the postinst fails closed (a leftover `/usr/bin/yerd`
+    // from the v1 Go project, or a Tauri path change, aborts it), so search the
+    // real install dir directly as a fallback — otherwise a postinst hiccup
+    // leaves `yerdd` present on disk but unfindable and the daemon "won't start".
+    #[cfg(target_os = "linux")]
+    {
+        lib_sidecar(name)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        None
+    }
+}
+
+/// Find a Tauri sidecar in its real `.deb` install location: a `yerd*`-named
+/// directory under `/usr/lib` (e.g. `/usr/lib/Yerd/yerdd`). Restricted to
+/// yerd-named dirs so an unrelated `/usr/lib/<other>/yerd` can't be picked up.
+#[cfg(target_os = "linux")]
+fn lib_sidecar(name: &str) -> Option<PathBuf> {
+    let entries = std::fs::read_dir("/usr/lib").ok()?;
+    entries
+        .flatten()
+        .filter(|e| {
+            e.file_name()
+                .to_string_lossy()
+                .to_lowercase()
+                .contains("yerd")
+        })
+        .map(|e| e.path().join(name))
         .find(|c| c.is_file())
 }
 
@@ -439,11 +474,20 @@ fn build_diagnostics(
     }
 }
 
-/// macOS App Translocation flag (always false off-macOS).
+/// "Running from a non-installed location" flag for diagnostics (always false
+/// off-macOS). True for App Translocation *and* for launching straight from a
+/// mounted disk image (`/Volumes/…`): both make SMAppService registration fail,
+/// and both are fixed by moving Yerd to /Applications — so the same
+/// "move to Applications" hint applies. This drives only the hint, not the
+/// registration gating, so a legitimate read-write external-drive install still
+/// registers normally.
 fn diag_translocated() -> bool {
     #[cfg(target_os = "macos")]
     {
         crate::autostart::is_translocated()
+            || std::env::current_exe()
+                .map(|p| p.to_string_lossy().contains("/Volumes/"))
+                .unwrap_or(false)
     }
     #[cfg(not(target_os = "macos"))]
     {
