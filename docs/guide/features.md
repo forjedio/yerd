@@ -73,7 +73,7 @@ yerd unelevate               # reverse what elevate configured
 ```
 
 ::: tip Prefer no sudo at all?
-Skip elevation and run sites on `127.0.0.1:8080` / `:8443`. Yerd binds those unprivileged ports out of the box and falls back to them when it can't bind 80/443.
+Skip elevation and run sites on `127.0.0.1:8080` / `:8443`. Yerd binds those unprivileged ports out of the box and falls back to them when it can't bind 80/443. Can't even route `.test`? Reach any site through `http://localhost:8080/~<name>.test` - see [Localhost Access (No Resolver)](./localhost-access).
 :::
 
 [Elevation & privileges guide →](./elevation)

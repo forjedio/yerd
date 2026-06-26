@@ -142,6 +142,7 @@ export default withMermaid({
             { text: 'HTTPS & Certificates', link: '/guide/https' },
             { text: 'DNS & .test Domains', link: '/guide/dns' },
             { text: 'Elevation & Privileges', link: '/guide/elevation' },
+            { text: 'Localhost Access (No Resolver)', link: '/guide/localhost-access' },
             { text: 'The Daemon', link: '/guide/daemon' },
             { text: 'Diagnostics', link: '/guide/diagnostics' },
             { text: 'Desktop App', link: '/guide/desktop-app' },
