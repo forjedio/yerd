@@ -406,11 +406,7 @@ async fn resolve_request(
         return Ok(Routed::Respond(not_found_response()));
     }
 
-    let site_header = req
-        .headers()
-        .get(unbound::SITE_HEADER)
-        .or_else(|| req.headers().get(unbound::SITE_HEADER_ALIAS))
-        .and_then(|v| v.to_str().ok());
+    let site_header = site_header_value(req.headers());
     let cookie = req.headers().get(COOKIE).and_then(|v| v.to_str().ok());
     let accept = req.headers().get(ACCEPT).and_then(|v| v.to_str().ok());
 
@@ -526,12 +522,24 @@ fn decide_picker(is_html_get: bool, dest: String, clear: bool) -> UnboundDecisio
     }
 }
 
-/// Join a path with an optional non-empty query string.
+/// Join a path with an optional non-empty query string. The path is normalised
+/// to a same-origin absolute path first ([`unbound::sanitize_dest`]) so a
+/// protocol-relative remainder can't become an off-origin redirect/href.
 fn join_path_query(path: &str, query: Option<&str>) -> String {
+    let path = unbound::sanitize_dest(path);
     match query {
         Some(q) if !q.is_empty() => format!("{path}?{q}"),
-        _ => path.to_owned(),
+        _ => path.into_owned(),
     }
+}
+
+/// Read the per-request site directive header (`X-Yerd-Site`, or its dash-free
+/// alias), if present and valid UTF-8.
+fn site_header_value(headers: &http::HeaderMap) -> Option<&str> {
+    headers
+        .get(unbound::SITE_HEADER)
+        .or_else(|| headers.get(unbound::SITE_HEADER_ALIAS))
+        .and_then(|v| v.to_str().ok())
 }
 
 /// Human label for a site kind, used in the picker rows.
@@ -599,6 +607,7 @@ fn unbound_not_found(clear: bool) -> Result<Response<BoxBody>, ProxyError> {
     Response::builder()
         .status(StatusCode::NOT_FOUND)
         .header(SERVER, server_header())
+        .header(CACHE_CONTROL, "no-store")
         .header(CONTENT_TYPE, "text/plain; charset=utf-8")
         .header(
             SET_COOKIE,
@@ -809,5 +818,90 @@ mod unbound_tests {
             classify("/app.css", None, None, None, Some("text/css,*/*;q=0.1")),
             UnboundDecision::NotFound { clear: false }
         ));
+    }
+
+    #[test]
+    fn header_beats_switch() {
+        // X-Yerd-Site wins over a /~ switch path.
+        assert_eq!(
+            served_name(classify("/~blog.test/p", None, Some("app.test"), None, HTML)),
+            "app"
+        );
+    }
+
+    #[test]
+    fn blank_header_falls_through() {
+        // Whitespace-only header is ignored → normal classification (picker).
+        match classify("/", None, Some("   "), None, HTML) {
+            UnboundDecision::Picker { dest, .. } => assert_eq!(dest, "/"),
+            other => panic!("expected Picker, got {}", variant(&other)),
+        }
+    }
+
+    #[test]
+    fn switch_location_is_same_origin() {
+        // Open-redirect guard: a protocol-relative remainder is normalised.
+        match classify("/~app.test//evil.com", None, None, None, HTML) {
+            UnboundDecision::Switch { location, .. } => assert_eq!(location, "/evil.com"),
+            other => panic!("expected Switch, got {}", variant(&other)),
+        }
+        // And the picker dest for a protocol-relative path is normalised too.
+        match classify("//evil.com", None, None, None, HTML) {
+            UnboundDecision::Picker { dest, .. } => assert_eq!(dest, "/evil.com"),
+            other => panic!("expected Picker, got {}", variant(&other)),
+        }
+    }
+
+    #[test]
+    fn site_header_value_prefers_canonical_then_alias() {
+        let mut h = http::HeaderMap::new();
+        assert_eq!(site_header_value(&h), None);
+        h.insert("x-yerdsite", "blog".parse().unwrap());
+        assert_eq!(site_header_value(&h), Some("blog"));
+        h.insert("x-yerd-site", "app.test".parse().unwrap());
+        assert_eq!(site_header_value(&h), Some("app.test"));
+    }
+
+    fn header(resp: &Response<BoxBody>, name: http::header::HeaderName) -> Option<String> {
+        resp.headers()
+            .get(name)
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_owned)
+    }
+
+    #[test]
+    fn switch_response_shape() {
+        let resp = switch_response("app", "/x?y=1").unwrap();
+        assert_eq!(resp.status(), StatusCode::SEE_OTHER);
+        assert_eq!(header(&resp, LOCATION).as_deref(), Some("/x?y=1"));
+        assert_eq!(header(&resp, CACHE_CONTROL).as_deref(), Some("no-store"));
+        assert!(header(&resp, SET_COOKIE)
+            .unwrap()
+            .contains("yerd-site=app"));
+    }
+
+    #[test]
+    fn picker_response_shape() {
+        let plain = picker_response("<html></html>".to_owned(), false).unwrap();
+        assert_eq!(plain.status(), StatusCode::OK);
+        assert_eq!(header(&plain, CACHE_CONTROL).as_deref(), Some("no-store"));
+        assert!(header(&plain, CONTENT_TYPE).unwrap().contains("text/html"));
+        assert!(header(&plain, SET_COOKIE).is_none());
+
+        let cleared = picker_response("<html></html>".to_owned(), true).unwrap();
+        assert!(header(&cleared, SET_COOKIE).unwrap().contains("Max-Age=0"));
+    }
+
+    #[test]
+    fn unbound_not_found_clear_variant_carries_no_store_and_clear_cookie() {
+        let cleared = unbound_not_found(true).unwrap();
+        assert_eq!(cleared.status(), StatusCode::NOT_FOUND);
+        assert_eq!(header(&cleared, CACHE_CONTROL).as_deref(), Some("no-store"));
+        assert!(header(&cleared, SET_COOKIE).unwrap().contains("Max-Age=0"));
+
+        // The non-clearing variant is the shared 404 (no cookie touched).
+        let plain = unbound_not_found(false).unwrap();
+        assert_eq!(plain.status(), StatusCode::NOT_FOUND);
+        assert!(header(&plain, SET_COOKIE).is_none());
     }
 }

@@ -42,3 +42,15 @@ export function siteUrl(s: Site, report: StatusReport | null | undefined): strin
   const port = !redirected && bound && bound !== dflt ? `:${bound}` : "";
   return `${scheme}://${s.name}.${tld}${port}`;
 }
+
+/**
+ * Tooltip / aria text for an "Open" affordance. Appends the http-only caveat
+ * when the resolver is off (the site is reached via the localhost `/~`
+ * fallback). Shared so every Open affordance shows the same target + caveat.
+ */
+export function openTitle(s: Site, report: StatusReport | null | undefined): string {
+  const url = siteUrl(s, report);
+  return isUnbound(report)
+    ? `Open ${url} — served over http://localhost (forced-HTTPS sites may not load)`
+    : `Open ${url}`;
+}

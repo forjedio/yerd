@@ -39,7 +39,7 @@ import Modal from "@/components/ui/Modal.vue";
 import Select from "@/components/ui/Select.vue";
 import Spinner from "@/components/ui/Spinner.vue";
 import Switch from "@/components/ui/Switch.vue";
-import { isUnbound, siteUrl } from "@/lib/siteUrl";
+import { openTitle, siteUrl } from "@/lib/siteUrl";
 import { useDaemon } from "@/composables/useDaemon";
 import { useToast } from "@/composables/useToast";
 import {
@@ -122,14 +122,6 @@ const filteredSites = computed(() => {
   );
 });
 
-/** Tooltip for the "Open" action; appends the http-only caveat when the
- *  resolver is off and the site is reached via the localhost `/~` fallback. */
-function openTitle(s: Site): string {
-  const url = siteUrl(s, report.value);
-  return isUnbound(report.value)
-    ? `Open ${url} — served over http://localhost (forced-HTTPS sites may not load)`
-    : `Open ${url}`;
-}
 
 /** The served sub-directory label for a site ("/" when the project root is served). */
 function servedLabel(s: Site): string {
@@ -414,7 +406,7 @@ onMounted(load);
               <div class="min-w-0">
                 <button
                   class="flex max-w-full items-center gap-1.5 font-mono text-sm font-medium hover:text-brand"
-                  :title="openTitle(s)"
+                  :title="openTitle(s, report)"
                   @click="openInBrowser(siteUrl(s, report))"
                 >
                   <span class="truncate">{{ s.name }}.{{ tld }}</span>
@@ -434,7 +426,8 @@ onMounted(load);
                 <Button
                   variant="ghost"
                   size="icon"
-                  :aria-label="`Open ${s.name}.${tld}`"
+                  :aria-label="openTitle(s, report)"
+                  :title="openTitle(s, report)"
                   @click="openInBrowser(siteUrl(s, report))"
                 >
                   <ExternalLink class="size-4" />

@@ -110,6 +110,27 @@ pub fn parse_cookie_site(cookie_header: &str) -> Option<&str> {
     })
 }
 
+/// Normalise a request path into a guaranteed **same-origin absolute path**:
+/// exactly one leading `/`, with any leading run of `/` or `\` collapsed to it.
+///
+/// This stops a protocol-relative (`//evil.com`) or backslash (`/\evil.com`,
+/// which some browsers fold into `//`) destination from smuggling an off-origin
+/// target into a redirect `Location` or a picker `href` — i.e. it closes the
+/// open-redirect vector on the `/~switch` path.
+#[must_use]
+pub fn sanitize_dest(path: &str) -> Cow<'_, str> {
+    let trimmed = path.trim_start_matches(['/', '\\']);
+    let stripped = path.len() - trimmed.len();
+    if stripped == 1 && path.starts_with('/') {
+        // Already a single leading '/', nothing to collapse.
+        return Cow::Borrowed(path);
+    }
+    if trimmed.is_empty() {
+        return Cow::Borrowed("/");
+    }
+    Cow::Owned(format!("/{trimmed}"))
+}
+
 /// Build the `Set-Cookie` value that pins the origin to `site_name`.
 ///
 /// No `Secure` attribute (the origin is plain http), session-scoped (no
@@ -292,6 +313,26 @@ mod tests {
         for (path, want) in cases {
             let got = parse_switch(path).map(|s| (s.domain, s.remainder));
             assert_eq!(got, *want, "path {path:?}");
+        }
+    }
+
+    #[test]
+    fn sanitize_dest_collapses_off_origin_prefixes() {
+        let cases: &[(&str, &str)] = &[
+            ("/", "/"),
+            ("/foo", "/foo"),
+            ("/foo/bar?x=1", "/foo/bar?x=1"),
+            ("/foo//bar", "/foo//bar"), // internal double slash is a normal path
+            ("//evil.com", "/evil.com"), // protocol-relative → same-origin
+            ("///evil.com", "/evil.com"),
+            ("/\\evil.com", "/evil.com"), // backslash fold
+            ("/\\/evil.com", "/evil.com"),
+            ("\\evil.com", "/evil.com"),
+            ("//", "/"),
+            ("", "/"),
+        ];
+        for (input, want) in cases {
+            assert_eq!(sanitize_dest(input), *want, "input {input:?}");
         }
     }
 

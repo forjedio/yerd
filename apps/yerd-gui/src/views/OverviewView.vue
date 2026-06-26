@@ -23,7 +23,7 @@ import Spinner from "@/components/ui/Spinner.vue";
 import { useDaemon } from "@/composables/useDaemon";
 import { listSites, openInBrowser } from "@/ipc/client";
 import type { Site, StatusReport } from "@/ipc/types";
-import { siteUrl } from "@/lib/siteUrl";
+import { openTitle, siteUrl } from "@/lib/siteUrl";
 import { humaniseUptime } from "@/lib/utils";
 
 // The home/dashboard. It reads the shared daemon report (no poller of its own)
@@ -239,7 +239,7 @@ const version = computed(() => r.value?.daemon_version ?? "");
                 v-for="s in sitePreview"
                 :key="s.name"
                 class="group inline-flex items-center gap-1.5 rounded-md border bg-background px-2 py-1 text-xs transition-colors hover:border-brand/40 hover:bg-brand/5"
-                :title="`Open ${s.name}.${tld}`"
+                :title="openTitle(s, r)"
                 @click="openInBrowser(siteUrl(s, r))"
               >
                 <Lock v-if="s.secure" class="size-3 text-success" />
