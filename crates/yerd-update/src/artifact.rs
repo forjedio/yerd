@@ -17,9 +17,10 @@ pub const UPDATE_PUBLIC_KEY: &str = "RWRXUQIpU8uZ3B6SV3yFsK3+aAWZX+efytjc8F+8PTu
 /// [`Platform::current`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Platform {
-    /// Apple Silicon macOS — the `.app.tar.gz` bundle.
+    /// Apple Silicon macOS — the universal `.app.tar.gz` bundle.
     MacOsAarch64,
-    /// Intel macOS — no artifact is published (Apple-Silicon-only for MVP).
+    /// Intel macOS — the same universal `.app.tar.gz` bundle (one fat bundle
+    /// serves both Mac arches).
     MacOsX86_64,
     /// `x86_64` Linux — the `.deb` package.
     LinuxX86_64,
@@ -81,7 +82,7 @@ pub struct ArtifactSelection<'a> {
 /// Why [`select_asset`] could not resolve a download set.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AssetError {
-    /// No artifact is published for this platform (e.g. Intel macOS, Windows).
+    /// No artifact is published for this platform (e.g. Windows, non-x86_64 Linux).
     NoArtifactForPlatform(Platform),
     /// The artifact is present but its `.sig` is missing.
     MissingSignature(String),
@@ -106,19 +107,22 @@ impl std::error::Error for AssetError {}
 /// Pick the artifact + signature + checksums for `platform` from `release`.
 ///
 /// Selection is by filename convention (the names the release workflow emits):
-/// the macOS artifact ends `.app.tar.gz` and is arch-tagged; the Linux artifact
-/// ends `.deb` and is x86_64-tagged; the signature is `<artifact>.sig`; the
-/// manifest is named `SHA256SUMS`. Intel macOS / unsupported platforms return
-/// [`AssetError::NoArtifactForPlatform`] rather than mis-selecting.
+/// the macOS artifact ends `.app.tar.gz` (a single universal bundle serving both
+/// Mac arches); the Linux artifact ends `.deb` and is x86_64-tagged; the
+/// signature is `<artifact>.sig`; the manifest is named `SHA256SUMS`. Unsupported
+/// platforms return [`AssetError::NoArtifactForPlatform`] rather than
+/// mis-selecting.
 pub fn select_asset(
     release: &ReleaseMeta,
     platform: Platform,
 ) -> Result<ArtifactSelection<'_>, AssetError> {
     let (kind, matches): (ArtifactKind, fn(&str) -> bool) = match platform {
-        Platform::MacOsAarch64 => (ArtifactKind::AppTarGz, is_macos_aarch64_artifact),
+        Platform::MacOsAarch64 | Platform::MacOsX86_64 => {
+            (ArtifactKind::AppTarGz, is_macos_app_tarball)
+        }
         Platform::LinuxX86_64 => (ArtifactKind::Deb, is_linux_x86_64_artifact),
-        p @ (Platform::MacOsX86_64 | Platform::Unsupported) => {
-            return Err(AssetError::NoArtifactForPlatform(p));
+        Platform::Unsupported => {
+            return Err(AssetError::NoArtifactForPlatform(Platform::Unsupported));
         }
     };
 
@@ -151,10 +155,15 @@ pub fn select_asset(
 
 // The release workflow controls these filenames and their exact (lowercase)
 // extensions, so a case-sensitive suffix check is correct here.
+//
+// macOS ships exactly one `.app.tar.gz` per release — a universal (x86_64 + arm64)
+// bundle — so we match it by extension alone and route both Mac arches to it. The
+// updater tarball keeps the legacy `AppleSilicon` token in its name (so
+// pre-universal arm64 clients, whose matcher requires that token, can still
+// self-update); this matcher is token-agnostic and works for Intel hosts too.
 #[allow(clippy::case_sensitive_file_extension_comparisons)]
-fn is_macos_aarch64_artifact(name: &str) -> bool {
+fn is_macos_app_tarball(name: &str) -> bool {
     name.ends_with(".app.tar.gz")
-        && (name.contains("AppleSilicon") || name.contains("aarch64") || name.contains("arm64"))
 }
 
 #[allow(clippy::case_sensitive_file_extension_comparisons)]
@@ -302,11 +311,26 @@ mod tests {
     }
 
     #[test]
-    fn intel_macos_has_no_artifact() {
+    fn intel_macos_selects_app_tarball() {
+        // The shipped tarball keeps the legacy `AppleSilicon` token (for old
+        // arm64 clients) but is universal; Intel must resolve it too.
+        let r = release_with(&[
+            "Yerd_MacOS_AppleSilicon_v2-0-2.app.tar.gz",
+            "Yerd_MacOS_AppleSilicon_v2-0-2.app.tar.gz.sig",
+            "SHA256SUMS",
+        ]);
+        let sel = select_asset(&r, Platform::MacOsX86_64).unwrap();
+        assert_eq!(sel.kind, ArtifactKind::AppTarGz);
+        assert!(sel.artifact.name.ends_with(".app.tar.gz"));
+        assert!(sel.signature.name.ends_with(".app.tar.gz.sig"));
+    }
+
+    #[test]
+    fn unsupported_platform_has_no_artifact() {
         let r = release_with(&["Yerd_MacOS_AppleSilicon_v2-0-2.app.tar.gz", "SHA256SUMS"]);
         assert_eq!(
-            select_asset(&r, Platform::MacOsX86_64),
-            Err(AssetError::NoArtifactForPlatform(Platform::MacOsX86_64))
+            select_asset(&r, Platform::Unsupported),
+            Err(AssetError::NoArtifactForPlatform(Platform::Unsupported))
         );
     }
 

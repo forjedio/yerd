@@ -2702,11 +2702,13 @@ Subject: Captured\r\n\r\nhi\r\n";
     #[tokio::test]
     async fn stage_update_downloads_verifies_and_writes_artifact() {
         // Run only on platforms that actually have a fixture artifact below
-        // (Apple Silicon macOS + Linux x86_64). Intel macOS is not `Unsupported`
-        // but has no fixture, so skip it too.
+        // (macOS — both arches resolve the one universal `.app.tar.gz` — + Linux
+        // x86_64). Truly unsupported targets are skipped.
         if !matches!(
             yerd_update::Platform::current(),
-            yerd_update::Platform::MacOsAarch64 | yerd_update::Platform::LinuxX86_64
+            yerd_update::Platform::MacOsAarch64
+                | yerd_update::Platform::MacOsX86_64
+                | yerd_update::Platform::LinuxX86_64
         ) {
             return;
         }
@@ -2758,11 +2760,14 @@ Subject: Captured\r\n\r\nhi\r\n";
 
     #[tokio::test]
     async fn stage_update_rejects_verification_failure_and_writes_nothing() {
-        // Only platforms with a fixture artifact below (skip Intel macOS, which is
-        // not `Unsupported` but has no fixture, and any truly unsupported target).
+        // Only platforms with a fixture artifact below (macOS — both arches resolve
+        // the one universal `.app.tar.gz` — + Linux x86_64); skip truly unsupported
+        // targets.
         if !matches!(
             yerd_update::Platform::current(),
-            yerd_update::Platform::MacOsAarch64 | yerd_update::Platform::LinuxX86_64
+            yerd_update::Platform::MacOsAarch64
+                | yerd_update::Platform::MacOsX86_64
+                | yerd_update::Platform::LinuxX86_64
         ) {
             return;
         }

@@ -46,7 +46,7 @@ After removing v1, reboot or flush DNS so the OS forgets v1's resolver before v2
 
 See [Getting Started](./getting-started) for platform-specific instructions. The short version: download the Yerd app from the [releases page](https://github.com/forjedio/yerd/releases/latest) -
 
-| macOS (Apple Silicon) | `Yerd_MacOS_AppleSilicon_v<ver>.dmg` |
+| macOS (Universal — Intel & Apple Silicon) | `Yerd_MacOS_Universal_v<ver>.dmg` |
 | Linux (x86-64) | `Yerd_Linux_x86_64_v<ver>.deb` |
 | Linux (arm64) | `Yerd_Linux_Arm64_v<ver>.deb` |
 

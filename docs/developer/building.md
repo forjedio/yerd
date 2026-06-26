@@ -143,6 +143,13 @@ host you're on - which can *hide* a bug that only the real per-OS implementation
 would surface. When you change OS-specific code under `yerd-platform`, run the
 suite on the affected platform, not just your own. CI runs the full gate on both
 `ubuntu-22.04` and `macos-14` (Apple Silicon) for exactly this reason.
+
+The shipped macOS bundle is **Universal 2**, but its `x86_64` slice is
+cross-compiled on the Apple-Silicon runner and **not** natively exercised in CI —
+the release verify step only proves both slices are present and signed
+(`lipo -archs`), and the launch smoke runs the arm64 slice. If you touch
+arch-sensitive macOS code, test the Intel slice by hand (run the x86_64 build under
+Rosetta, or `cargo test --target x86_64-apple-darwin`).
 :::
 
 ## The CI gate (run this before pushing)
@@ -298,6 +305,15 @@ The shipped artifact is the **GUI bundle** (`.dmg` on macOS, `.deb` on Linux),
 built by Tauri with the three binaries (`yerd`/`yerdd`/`yerd-helper`) embedded via
 `externalBin` (per-platform overlays in `apps/yerd-gui/src-tauri/`). There is no
 standalone CLI tarball/`.deb`.
+
+The macOS bundle is a **Universal 2** build (`x86_64` + `arm64`), produced on the
+`macos-14` runner with `tauri build --target universal-apple-darwin`. Tauri lipos
+its own main binary, but **not** the `externalBin` sidecars — the release workflow
+builds each sidecar for both Apple targets and `lipo`-fuses them into
+`binaries/<bin>-universal-apple-darwin` before the Tauri build. The CI verify step
+asserts every embedded Mach-O carries both arch slices (`lipo -archs`). The single
+universal `.app.tar.gz` self-update artifact retains the legacy `AppleSilicon`
+token in its name so pre-universal Apple-Silicon clients can still self-update.
 
 `bump` keeps three files in sync - `Cargo.toml`,
 `apps/yerd-gui/src-tauri/tauri.conf.json`, and `apps/yerd-gui/package.json` - so

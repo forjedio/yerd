@@ -99,7 +99,7 @@ runtime). Grab the latest build from the
 
 | Platform | Download | Install |
 |---|---|---|
-| macOS (Apple Silicon) | `Yerd_MacOS_AppleSilicon_v<ver>.dmg` | open, drag to Applications |
+| macOS (Universal — Intel & Apple Silicon) | `Yerd_MacOS_Universal_v<ver>.dmg` | open, drag to Applications |
 | Linux (x86-64) | `Yerd_Linux_x86_64_v<ver>.deb` | `sudo apt install ./Yerd_Linux_x86_64_v<ver>.deb` |
 | Linux (arm64) | `Yerd_Linux_Arm64_v<ver>.deb` | `sudo apt install ./Yerd_Linux_Arm64_v<ver>.deb` |
 
