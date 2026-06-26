@@ -100,25 +100,24 @@ pub fn render_my_cnf(
 ///
 /// Invariants that keep this safe to run on every start:
 /// - Every statement is **idempotent**: `CREATE USER IF NOT EXISTS` is a no-op
-///   when the account exists (so it never clobbers `MariaDB`'s own `root@127.0.0.1`
-///   /`root@::1`, which `mariadb-install-db` already creates), and `GRANT` simply
-///   re-asserts the privileges.
+///   when the account exists (so it never clobbers `MariaDB`'s own `root@127.0.0.1`,
+///   which `mariadb-install-db` already creates), and `GRANT` simply re-asserts
+///   the privileges.
 /// - **Any statement error aborts server startup** (the `init-file` runs on
 ///   every normal start, not just init), so every statement must be safe to
 ///   re-run — hence the `IF NOT EXISTS` guards and re-assertable `GRANT`s. The
 ///   reader is `;`-delimited and folds the leading `--` comments into the first
 ///   statement (the lexer then strips them); statements are kept one-per-line
 ///   here for legibility, not because the reader requires it.
-/// - Only loopback hosts (`127.0.0.1`, `::1`) get accounts; `bind-address`
-///   already pins the listener to loopback, so this widens nothing beyond it.
+/// - Only the IPv4 loopback host `127.0.0.1` gets an account, matching the
+///   `bind-address = 127.0.0.1` listener (the server never accepts IPv6
+///   loopback, so a `root@::1` account would be dead privileged surface).
 #[must_use]
 pub fn render_my_bootstrap_sql() -> &'static str {
     "-- Managed by Yerd — do not edit by hand.\n\
      -- Make passwordless root reachable over TCP loopback (apps use DB_HOST=127.0.0.1).\n\
      CREATE USER IF NOT EXISTS 'root'@'127.0.0.1' IDENTIFIED BY '';\n\
-     GRANT ALL PRIVILEGES ON *.* TO 'root'@'127.0.0.1' WITH GRANT OPTION;\n\
-     CREATE USER IF NOT EXISTS 'root'@'::1' IDENTIFIED BY '';\n\
-     GRANT ALL PRIVILEGES ON *.* TO 'root'@'::1' WITH GRANT OPTION;\n"
+     GRANT ALL PRIVILEGES ON *.* TO 'root'@'127.0.0.1' WITH GRANT OPTION;\n"
 }
 
 /// Render a `postgresql.conf`: loopback TCP only, no Unix socket, no password.
@@ -251,13 +250,17 @@ mod tests {
     #[test]
     fn my_bootstrap_sql_grants_passwordless_root_over_tcp_loopback() {
         let sql = render_my_bootstrap_sql();
-        // Both loopback hosts get a passwordless root with full privileges.
+        // The IPv4 loopback host gets a passwordless root with full privileges.
+        // Only 127.0.0.1 — the listener is IPv4-only (`bind-address = 127.0.0.1`),
+        // so a `root@::1` account would be unreachable dead surface.
         assert!(sql.contains("CREATE USER IF NOT EXISTS 'root'@'127.0.0.1' IDENTIFIED BY '';"));
         assert!(
             sql.contains("GRANT ALL PRIVILEGES ON *.* TO 'root'@'127.0.0.1' WITH GRANT OPTION;")
         );
-        assert!(sql.contains("CREATE USER IF NOT EXISTS 'root'@'::1' IDENTIFIED BY '';"));
-        assert!(sql.contains("GRANT ALL PRIVILEGES ON *.* TO 'root'@'::1' WITH GRANT OPTION;"));
+        assert!(
+            !sql.contains("::1"),
+            "no IPv6-loopback account (listener is IPv4-only)"
+        );
         // Idempotent: every CREATE USER is guarded so re-running on each start is safe.
         for line in sql.lines() {
             if line.trim_start().starts_with("CREATE USER") {
