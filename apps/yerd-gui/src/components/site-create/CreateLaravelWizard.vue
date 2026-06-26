@@ -17,7 +17,7 @@ import Modal from "@/components/ui/Modal.vue";
 import Select from "@/components/ui/Select.vue";
 import Switch from "@/components/ui/Switch.vue";
 import Spinner from "@/components/ui/Spinner.vue";
-import { unboundUrlFor } from "@/lib/siteUrl";
+import { siteUrl } from "@/lib/siteUrl";
 import { useDaemon } from "@/composables/useDaemon";
 import { useToast } from "@/composables/useToast";
 import {
@@ -42,6 +42,7 @@ import type {
   LaravelOptions,
   StarterKit,
   StarterKitTag,
+  StatusReport,
   Testing,
   ToolStatus,
 } from "@/ipc/types";
@@ -52,11 +53,9 @@ const props = defineProps<{
   phpVersions: string[];
   defaultPhp: string;
   tld: string;
-  /** Tri-state OS `.test` resolver status (null = unknown). When not `true`,
-   *  the "Open in browser" action uses the http://localhost/~ fallback. */
-  resolverInstalled: boolean | null;
-  /** Bound rootless HTTP port, used to build the localhost fallback URL. */
-  httpBound: number;
+  /** Live daemon status, used to build the post-create "Open" URL so it matches
+   *  the rest of the GUI (resolver-on `.test` + bound port vs localhost `/~`). */
+  report: StatusReport | null;
 }>();
 const emit = defineEmits<{
   (e: "update:open", v: boolean): void;
@@ -124,15 +123,13 @@ const projectPath = computed(() =>
   form.location ? `${form.location}/${form.name.trim()}` : "",
 );
 const domain = computed(() => `${form.name.trim().toLowerCase() || "name"}.${props.tld}`);
-// Browser URL for the finished site's "Open" action: the `.test` domain when
-// the resolver is active, else the http://localhost/~ fallback.
-const openUrl = computed(() => {
-  const name = form.name.trim().toLowerCase() || "name";
-  if (props.resolverInstalled !== true) {
-    return unboundUrlFor(name, { httpBound: props.httpBound, tld: props.tld });
-  }
-  return `${form.secure ? "https" : "http"}://${name}.${props.tld}`;
-});
+// Browser URL for the finished site's "Open" action. Reuse the shared helper so
+// it matches the rest of the GUI exactly: resolver-on uses the `.test` domain
+// with the correct scheme + bound port (honouring port-redirect), resolver-off
+// uses the http://localhost/~ fallback.
+const openUrl = computed(() =>
+  siteUrl({ name: form.name.trim().toLowerCase() || "name", secure: form.secure }, props.report),
+);
 
 const basicsValid = computed(
   () => nameValid.value && form.location.trim() !== "" && form.php !== "",

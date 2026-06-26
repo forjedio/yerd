@@ -790,12 +790,20 @@ fn format_status(r: &StatusReport) -> String {
         fmt_tristate(r.resolver_installed)
     );
     // Resolver off: `.test` names don't resolve, so point the user at the
-    // localhost fallback (the proxy serves any site at /~<name>.<tld>).
-    if r.resolver_installed == Some(false) {
+    // localhost fallback (the proxy serves any site at /~<name>.<tld>). Skip it
+    // when degraded (`web_unbound`): there's no bound web port to reach, so
+    // `r.http.bound` would be a misleading 0.
+    if r.resolver_installed == Some(false) && r.web_unbound.is_none() {
+        // Omit the port when it's the default 80 (matches the GUI's URL math).
+        let port = if r.http.bound == 80 {
+            String::new()
+        } else {
+            format!(":{}", r.http.bound)
+        };
         let _ = writeln!(
             s,
-            "          → not installed: reach sites at http://localhost:{}/~<name>.{}",
-            r.http.bound, r.tld
+            "          → not installed: reach sites at http://localhost{port}/~<name>.{}",
+            r.tld
         );
     }
     if let Some([one, five, fifteen]) = r.load_avg {

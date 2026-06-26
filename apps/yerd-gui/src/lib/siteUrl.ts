@@ -1,5 +1,9 @@
 import type { Site, StatusReport } from "@/ipc/types";
 
+/** The minimal site shape the URL helpers need — satisfied by a full `Site` and
+ *  by the create wizard's in-progress form (which has no real `Site` yet). */
+export type SiteLike = Pick<Site, "name" | "secure">;
+
 /**
  * True when the OS `.test` resolver is not active, so sites must be reached via
  * the `http://localhost/~{domain}` fallback rather than their `.test` domain.
@@ -20,7 +24,10 @@ interface UnboundOpts {
  * it is the default 80.
  */
 export function unboundUrlFor(name: string, opts: UnboundOpts): string {
-  const port = opts.httpBound ?? 8080;
+  // Guard against a non-positive bound port: the daemon reports `http.bound = 0`
+  // in degraded mode (couldn't bind web ports). `?? 8080` would NOT catch 0, so
+  // use a truthiness check to avoid emitting a malformed `:0` URL.
+  const port = opts.httpBound && opts.httpBound > 0 ? opts.httpBound : 8080;
   const portPart = port === 80 ? "" : `:${port}`;
   return `http://localhost${portPart}/~${name}.${opts.tld}`;
 }
@@ -30,7 +37,7 @@ export function unboundUrlFor(name: string, opts: UnboundOpts): string {
  * the site's `.test` domain (honouring scheme + bound port); when it is off,
  * the localhost `/~` fallback (forced http, `secure` ignored).
  */
-export function siteUrl(s: Site, report: StatusReport | null | undefined): string {
+export function siteUrl(s: SiteLike, report: StatusReport | null | undefined): string {
   const tld = report?.tld ?? "test";
   if (isUnbound(report)) {
     return unboundUrlFor(s.name, { httpBound: report?.http.bound, tld });
@@ -48,7 +55,7 @@ export function siteUrl(s: Site, report: StatusReport | null | undefined): strin
  * when the resolver is off (the site is reached via the localhost `/~`
  * fallback). Shared so every Open affordance shows the same target + caveat.
  */
-export function openTitle(s: Site, report: StatusReport | null | undefined): string {
+export function openTitle(s: SiteLike, report: StatusReport | null | undefined): string {
   const url = siteUrl(s, report);
   return isUnbound(report)
     ? `Open ${url} — served over http://localhost (forced-HTTPS sites may not load)`

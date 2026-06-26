@@ -487,9 +487,11 @@ fn classify_unbound(
         };
     }
 
-    // 1. Explicit /~domain switch (pins the origin via the cookie).
+    // 1. Explicit /~domain switch (pins the origin via the cookie). Accept the
+    // bare-label form (`/~app`) via the same `get` fallback the header path
+    // uses, so `/~app` and `X-Yerd-Site: app` behave identically.
     if let Some(sw) = unbound::parse_switch(path) {
-        if let Some(site) = router.resolve(sw.domain) {
+        if let Some(site) = router.resolve(sw.domain).or_else(|| router.get(sw.domain)) {
             return UnboundDecision::Switch {
                 name: site.name().to_owned(),
                 location: join_path_query(sw.remainder, query),
@@ -600,21 +602,24 @@ fn picker_response(body_html: String, clear: bool) -> Result<Response<BoxBody>, 
         .map_err(|_| synthetic_error("picker response build failed"))
 }
 
-/// `404` for unbound requests, clearing a stale pin cookie when `clear` is set.
+/// `404` for unbound requests. Always `Cache-Control: no-store` — in unbound
+/// mode the same localhost URL serves different sites by pin, so a negative
+/// response must never be cached and resurface after the user pins a site.
+/// Clears a stale pin cookie when `clear` is set.
 fn unbound_not_found(clear: bool) -> Result<Response<BoxBody>, ProxyError> {
-    if !clear {
-        return Ok(not_found_response());
-    }
-    Response::builder()
+    let mut builder = Response::builder()
         .status(StatusCode::NOT_FOUND)
         .header(SERVER, server_header())
         .header(CACHE_CONTROL, "no-store")
-        .header(CONTENT_TYPE, "text/plain; charset=utf-8")
-        .header(
+        .header(CONTENT_TYPE, "text/plain; charset=utf-8");
+    if clear {
+        builder = builder.header(
             SET_COOKIE,
             HeaderValue::from_str(&unbound::build_clear_cookie())
                 .map_err(|_| synthetic_error("invalid clear cookie"))?,
-        )
+        );
+    }
+    builder
         .body(bytes_body(b"No site matches this Host.\n"))
         .map_err(|_| synthetic_error("not found response build failed"))
 }
@@ -922,9 +927,23 @@ mod unbound_tests {
         assert_eq!(header(&cleared, CACHE_CONTROL).as_deref(), Some("no-store"));
         assert!(header(&cleared, SET_COOKIE).unwrap().contains("Max-Age=0"));
 
-        // The non-clearing variant is the shared 404 (no cookie touched).
+        // The non-clearing variant also carries no-store (every unbound 404
+        // must be uncacheable), but touches no cookie.
         let plain = unbound_not_found(false).unwrap();
         assert_eq!(plain.status(), StatusCode::NOT_FOUND);
+        assert_eq!(header(&plain, CACHE_CONTROL).as_deref(), Some("no-store"));
         assert!(header(&plain, SET_COOKIE).is_none());
+    }
+
+    #[test]
+    fn bare_label_switch_resolves_like_header() {
+        // `/~app` (no .tld) must switch to `app`, matching `X-Yerd-Site: app`.
+        match classify("/~app/dash", None, None, None, HTML) {
+            UnboundDecision::Switch { name, location } => {
+                assert_eq!(name, "app");
+                assert_eq!(location, "/dash");
+            }
+            other => panic!("expected Switch, got {}", variant(&other)),
+        }
     }
 }

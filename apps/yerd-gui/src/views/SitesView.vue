@@ -563,8 +563,7 @@ onMounted(load);
       :php-versions="phpVersionList"
       :default-php="defaultPhp"
       :tld="tld"
-      :resolver-installed="report?.resolver_installed ?? null"
-      :http-bound="report?.http.bound ?? 8080"
+      :report="report ?? null"
       @created="onCreated"
     />
 
