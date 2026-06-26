@@ -21,7 +21,7 @@ import logoUrl from "@/assets/logo.svg";
 // Grouped left nav. Sections name the app's three real concerns: the runtime you
 // configure (Environment), what the daemon supervises (Services), and the system
 // itself (System). Overview sits above them as the home/dashboard. Icons are
-// monochrome — see NavLink; status colour is reserved for the pill below.
+// monochrome - see NavLink; status colour is reserved for the pill below.
 type Item = { to: string; label: string; icon: Component };
 
 const overview: Item = {
@@ -64,7 +64,7 @@ const { connected } = useDaemon();
   <nav
     class="flex h-full w-56 shrink-0 flex-col border-r bg-muted px-3 py-3 dark:bg-card/40"
   >
-    <!-- Brand lockup — the logo's indigo is the app's one accent. -->
+    <!-- Brand lockup - the logo's indigo is the app's one accent. -->
     <div class="mb-4 flex items-center gap-2 px-2 pt-1">
       <img :src="logoUrl" alt="" class="size-6 rounded-[7px]" />
       <span class="text-sm font-semibold tracking-tight">Yerd</span>

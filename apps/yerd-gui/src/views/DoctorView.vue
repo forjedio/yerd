@@ -36,7 +36,7 @@ const sevVariant: Record<Severity, "success" | "warning" | "destructive"> = {
   fail: "destructive",
 };
 
-// Human labels — the wire uses bare enum tokens (ok/warn/fail) that read as
+// Human labels - the wire uses bare enum tokens (ok/warn/fail) that read as
 // unfinished in the UI.
 const sevLabel: Record<Severity, string> = {
   ok: "Healthy",

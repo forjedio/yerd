@@ -62,7 +62,7 @@ function tabCount(tab: (typeof TABS)[number]): number {
 async function poll(): Promise<void> {
   const r = await listDumps(cursor);
   // Drop deleted rows AND anything below the server's min_live_id (evicted or
-  // cleared) — so reconciliation never depends on the bounded removed-ids log,
+  // cleared) - so reconciliation never depends on the bounded removed-ids log,
   // and the client array can't outgrow the server buffer.
   const removed = new Set(r.removed_ids);
   events.value = events.value.filter((e) => e.id >= r.min_live_id && !removed.has(e.id));

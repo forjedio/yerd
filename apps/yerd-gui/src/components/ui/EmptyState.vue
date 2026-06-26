@@ -6,7 +6,7 @@ import type { Component } from "vue";
  * optional sentence, and a slot for a call-to-action. Replaces the per-view
  * hand-rolled "No X yet" panels so every empty list reads the same and always
  * invites the next action rather than showing a blank table. Copy should be an
- * invitation ("No sites yet — park a folder to get started"), never an apology.
+ * invitation ("No sites yet - park a folder to get started"), never an apology.
  */
 defineProps<{ icon?: Component; title: string; description?: string }>();
 </script>

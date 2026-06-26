@@ -3,7 +3,7 @@ import type { Component } from "vue";
 import { RouterLink } from "vue-router";
 
 /**
- * One sidebar row. The icon is monochrome — muted by default, brand-indigo when
+ * One sidebar row. The icon is monochrome - muted by default, brand-indigo when
  * active or hovered. Colour is reserved for real status elsewhere; the nav never
  * uses it as decoration. Only the active row tints; the chip backgrounds the old
  * nav painted per-item are gone.

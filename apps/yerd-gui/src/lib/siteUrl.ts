@@ -1,6 +1,6 @@
 import type { Site, StatusReport } from "@/ipc/types";
 
-/** The minimal site shape the URL helpers need — satisfied by a full `Site` and
+/** The minimal site shape the URL helpers need - satisfied by a full `Site` and
  *  by the create wizard's in-progress form (which has no real `Site` yet). */
 export type SiteLike = Pick<Site, "name" | "secure">;
 
@@ -58,6 +58,6 @@ export function siteUrl(s: SiteLike, report: StatusReport | null | undefined): s
 export function openTitle(s: SiteLike, report: StatusReport | null | undefined): string {
   const url = siteUrl(s, report);
   return isUnbound(report)
-    ? `Open ${url} — served over http://localhost (forced-HTTPS sites may not load)`
+    ? `Open ${url} - served over http://localhost (forced-HTTPS sites may not load)`
     : `Open ${url}`;
 }

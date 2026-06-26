@@ -10,7 +10,7 @@ import Spinner from "@/components/ui/Spinner.vue";
  * → the `#empty` slot (use an <EmptyState>); otherwise the default slot.
  *
  * This is what makes the daemon-down / loading / failed / empty stories
- * consistent across views — before this each view rolled its own spinner size,
+ * consistent across views - before this each view rolled its own spinner size,
  * silently swallowed poll errors, or left a blank table after a failed load.
  *
  * Pass `loading` only on the *first* load (no data yet); a background poll

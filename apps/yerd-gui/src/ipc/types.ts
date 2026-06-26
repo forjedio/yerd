@@ -4,8 +4,8 @@
  * These are a *contract*, pinned by hand to the Rust source. Each type notes
  * its origin so review catches drift; `tests/wire_stability.rs` and the
  * `Request`/`Response` enums are the source of truth:
- *   - crates/yerd-ipc/src/request.rs   (Request — not consumed here; the GUI
- *     never builds raw Requests, the bridge does — kept for reference)
+ *   - crates/yerd-ipc/src/request.rs   (Request - not consumed here; the GUI
+ *     never builds raw Requests, the bridge does - kept for reference)
  *   - crates/yerd-ipc/src/response.rs  (Response, PhpUpdate, ErrorCode)
  *   - crates/yerd-ipc/src/status.rs    (StatusReport and friends)
  *   - crates/yerd-core/src/site.rs     (Site, SiteKind)
@@ -19,10 +19,10 @@
 /** A PHP minor version on the wire is the bare string, e.g. `"8.5"`. */
 export type PhpVersion = string;
 
-/** crates/yerd-core/src/site.rs — SiteKind. */
+/** crates/yerd-core/src/site.rs - SiteKind. */
 export type SiteKind = "parked" | "linked";
 
-/** crates/yerd-core/src/site.rs — Site (serialised field order is fixed). */
+/** crates/yerd-core/src/site.rs - Site (serialised field order is fixed). */
 export interface Site {
   name: string;
   document_root: string;
@@ -58,10 +58,10 @@ export interface SiteCounts {
 
 export type PoolRunState = "running" | "stopped" | "failed";
 
-/** crates/yerd-ipc/src/status.rs — ServiceRunState. */
+/** crates/yerd-ipc/src/status.rs - ServiceRunState. */
 export type ServiceRunState = "running" | "stopped" | "failed";
 
-/** crates/yerd-ipc/src/status.rs — ServiceStatus (integer-only fields). */
+/** crates/yerd-ipc/src/status.rs - ServiceStatus (integer-only fields). */
 export interface ServiceStatus {
   service: string;
   display_name: string;
@@ -75,7 +75,7 @@ export interface ServiceStatus {
   supports_databases: boolean;
 }
 
-/** crates/yerd-ipc/src/status.rs — ServiceAvailability. */
+/** crates/yerd-ipc/src/status.rs - ServiceAvailability. */
 export interface ServiceAvailability {
   service: string;
   available: string[];
@@ -92,7 +92,7 @@ export interface PhpPoolStatus {
   update_available: string | null;
 }
 
-/** crates/yerd-ipc/src/status.rs — MailStatus. */
+/** crates/yerd-ipc/src/status.rs - MailStatus. */
 export interface MailStatus {
   enabled: boolean;
   port: number;
@@ -101,7 +101,7 @@ export interface MailStatus {
   count: number;
 }
 
-/** crates/yerd-ipc/src/status.rs — MailSummary. */
+/** crates/yerd-ipc/src/status.rs - MailSummary. */
 export interface MailSummary {
   id: string;
   from: string;
@@ -111,13 +111,13 @@ export interface MailSummary {
   date_epoch: number;
 }
 
-/** crates/yerd-ipc/src/status.rs — MailHeader. */
+/** crates/yerd-ipc/src/status.rs - MailHeader. */
 export interface MailHeader {
   name: string;
   value: string;
 }
 
-/** crates/yerd-ipc/src/status.rs — MailDetail. */
+/** crates/yerd-ipc/src/status.rs - MailDetail. */
 export interface MailDetail {
   id: string;
   from: string;
@@ -140,14 +140,14 @@ export interface StatusReport {
   https: PortStatus;
   dns_addr: string;
   ca: CaStatus;
-  /** Tri-state — null means "unknown", never coerce to false. */
+  /** Tri-state - null means "unknown", never coerce to false. */
   resolver_installed: boolean | null;
   /** macOS: is the pf redirect carrying 80/443 to the rootless ports? true =
    *  privileged ports served via the redirect, false = not, null = unknown / not
    *  applicable (Linux binds directly after setcap). */
   port_redirect: boolean | null;
   /** True when a non-Yerd process is listening on a privileged web port (80/443)
-   *  — a foreign squatter. Confirmed via the proxy's Server marker, so it never
+   *  - a foreign squatter. Confirmed via the proxy's Server marker, so it never
    *  misreads Yerd as foreign. false = no conflict, null/undefined = not probed.
    *  Cross-platform (unlike port_redirect). */
   foreign_web_listener?: boolean | null;
@@ -169,7 +169,7 @@ export interface StatusReport {
   services?: ServiceStatus[];
   /** Built-in mail-capture status. Omitted (undefined) by a daemon predating
    *  the feature (the Rust field is `#[serde(default, skip_serializing_if)]`, so
-   *  it is never `null` on the wire — mirrors the `services?` convention). */
+   *  it is never `null` on the wire - mirrors the `services?` convention). */
   mail?: MailStatus;
   /** Set when the daemon could bind neither the desired nor the fallback web
    *  ports: it runs degraded (no HTTP/HTTPS proxy). Carries the fallback ports
@@ -221,7 +221,7 @@ export interface FixReport {
 
 // ── dumps (dump.rs) ─────────────────────────────────────────────────────────
 
-/** crates/yerd-ipc/src/dump.rs — DumpCategory (the viewer tabs). */
+/** crates/yerd-ipc/src/dump.rs - DumpCategory (the viewer tabs). */
 export type DumpCategory =
   | "dump"
   | "query"
@@ -233,7 +233,7 @@ export type DumpCategory =
   | "http";
 
 /**
- * crates/yerd-ipc/src/dump.rs — DumpEvent. `payload` is category-specific and
+ * crates/yerd-ipc/src/dump.rs - DumpEvent. `payload` is category-specific and
  * opaque to the daemon; the viewer renders it per `category` (see the
  * `yerd-php-ext` architecture doc for the per-category shape).
  */
@@ -249,7 +249,7 @@ export interface DumpEvent {
   payload: Record<string, unknown>;
 }
 
-/** crates/yerd-ipc/src/dump.rs — DumpCounts (current per-category buffer counts). */
+/** crates/yerd-ipc/src/dump.rs - DumpCounts (current per-category buffer counts). */
 export interface DumpCounts {
   dumps: number;
   queries: number;
@@ -261,7 +261,7 @@ export interface DumpCounts {
   http: number;
 }
 
-/** crates/yerd-ipc/src/dump.rs — DumpExtStatus (per-version extension presence). */
+/** crates/yerd-ipc/src/dump.rs - DumpExtStatus (per-version extension presence). */
 export interface DumpExtStatus {
   version: PhpVersion;
   present: boolean;
@@ -281,7 +281,7 @@ export type Testing = "pest" | "php_unit";
 export type Database = "sqlite" | "mysql" | "mariadb" | "pgsql" | "sqlsrv";
 export type JsRuntime = "npm" | "bun" | "skip";
 
-/** crates/yerd-ipc/src/create.rs — LaravelOptions. */
+/** crates/yerd-ipc/src/create.rs - LaravelOptions. */
 export interface LaravelOptions {
   starter_kit: StarterKit;
   auth: AuthProvider;
@@ -297,7 +297,7 @@ export interface LaravelOptions {
 /** Framework is internally tagged on `framework`. Only Laravel today. */
 export type Framework = { framework: "laravel"; options: LaravelOptions };
 
-/** crates/yerd-ipc/src/create.rs — CreateSiteSpec. */
+/** crates/yerd-ipc/src/create.rs - CreateSiteSpec. */
 export interface CreateSiteSpec {
   name: string;
   /** Directory the new project dir is created inside (parked root or any folder). */
@@ -307,7 +307,7 @@ export interface CreateSiteSpec {
   framework: Framework;
 }
 
-/** crates/yerd-ipc/src/create.rs — JobState. */
+/** crates/yerd-ipc/src/create.rs - JobState. */
 export type JobState = "running" | "succeeded" | "failed" | "cancelled";
 
 // ── response variants (response.rs) ────────────────────────────────────────
@@ -428,7 +428,7 @@ export type Response =
 /** Self-update release channel (mirrors `yerd_ipc::Channel`). */
 export type UpdateChannel = "stable" | "edge";
 
-/** crates/yerd-ipc/src/status.rs — ToolStatus. */
+/** crates/yerd-ipc/src/status.rs - ToolStatus. */
 export interface ToolStatus {
   id: string;
   display_name: string;
@@ -490,7 +490,7 @@ export interface AutostartState {
 
 /**
  * Why the daemon isn't up (host command `daemon_diagnostics`). Gathered when a
- * start attempt fails to connect — covers both the ran-and-crashed case
+ * start attempt fails to connect - covers both the ran-and-crashed case
  * (`logTail`) and the never-launched cases (`startError`, `translocated`,
  * `yerddPath === null`, `pendingApproval`). `hints` are ready-to-show
  * plain-English cause+fix lines computed host-side.
@@ -509,7 +509,7 @@ export interface DaemonDiagnostics {
   logPath: string | null;
   logTail: string[];
   spawnLogTail: string[];
-  /** GUI daemon-registration self-repair trail ({cache}/yerd-gui-repair.log) —
+  /** GUI daemon-registration self-repair trail ({cache}/yerd-gui-repair.log) -
    *  macOS upgrade re-registration attempts + outcomes (incl. technical errors). */
   repairLogTail: string[];
 }
@@ -531,4 +531,16 @@ export interface CliPathStatus {
 export interface SetupState {
   onboarded: boolean;
   isSetUp: boolean;
+}
+
+/**
+ * The GUI diagnostic logs surfaced in About → GUI Logs (host command
+ * `get_gui_logs`): the per-session GUI host log plus a tail of the daemon's own
+ * rolling log. Paths are shown so the dialog can say where each lives.
+ */
+export interface GuiLogs {
+  guiPath: string | null;
+  guiLog: string[];
+  daemonPath: string | null;
+  daemonLog: string[];
 }

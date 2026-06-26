@@ -6076,6 +6076,8 @@ dependencies = [
  "tauri-plugin-single-instance",
  "tempfile",
  "tokio",
+ "tracing",
+ "tracing-subscriber",
  "webkit2gtk",
  "yerd-config",
  "yerd-core",

@@ -27,7 +27,7 @@ import {
 import type { ElevateTarget, StatusReport } from "@/ipc/types";
 
 // Self-contained OS-privileges panel (CA trust, .test resolver, privileged
-// ports). Lives on the Doctor page alongside the health checks — it's the same
+// ports). Lives on the Doctor page alongside the health checks - it's the same
 // "diagnose and fix" job. Owns its own busy state and platform probe; reads the
 // shared daemon report and refreshes it after any elevation.
 const { connected, report, refresh: refreshStatus } = useDaemon();
@@ -40,9 +40,9 @@ const emit = defineEmits<{ elevated: [] }>();
 const busy = ref<string | null>(null);
 const platform = ref<string>("");
 // macOS only: set true when a GUI untrust left a system-wide trust (set via
-// `sudo yerd elevate trust`) in place — the GUI can't remove that without root.
+// `sudo yerd elevate trust`) in place - the GUI can't remove that without root.
 // Drives the trust row to hide the (now-useless) Revert button and show guidance.
-// Cleared once the CA actually reads not-trusted again — see the watcher below.
+// Cleared once the CA actually reads not-trusted again - see the watcher below.
 const systemTrustRemains = ref(false);
 const canElevate = computed(
   () => platform.value === "linux" || platform.value === "macos",
@@ -98,7 +98,7 @@ const envItems = computed<EnvItem[]>(() => {
       label: "Local CA trusted",
       value: r.ca.trusted_system,
       fixable: r.ca.trusted_system !== true,
-      // Hide Revert when a system-wide trust remains that the GUI can't undo —
+      // Hide Revert when a system-wide trust remains that the GUI can't undo -
       // a lingering Revert there does nothing and looks broken.
       unelevatable: r.ca.trusted_system === true && !(mac && systemTrustRemains.value),
       target: "trust",
@@ -126,7 +126,7 @@ const envItems = computed<EnvItem[]>(() => {
       // yet (the pf redirect would point at the unbound ports, and the CLI
       // refuses), so withhold the fix until working ports are set. On Linux the
       // ports fix is `setcap`, which binds 80/443 DIRECTLY and doesn't depend on
-      // the fallback ports — it's the correct degraded recovery, so keep it
+      // the fallback ports - it's the correct degraded recovery, so keep it
       // offered there.
       value: r.web_unbound ? false : portsElevated(r),
       fixable: r.web_unbound ? !mac : !portsElevated(r),
@@ -135,8 +135,8 @@ const envItems = computed<EnvItem[]>(() => {
       yes: r.port_redirect === true && privilegedFallback(r) ? "redirected" : "bound",
       no: r.web_unbound
         ? mac
-          ? "not serving — set working ports first"
-          : "not serving — elevate to bind 80/443"
+          ? "not serving - set working ports first"
+          : "not serving - elevate to bind 80/443"
         : "fell back to high ports",
       note:
         r.web_unbound && mac

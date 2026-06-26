@@ -132,7 +132,7 @@ async function doRestart(s: ServiceStatus): Promise<void> {
 
 // ── version modal (shared by "Install" and "Change version") ──
 // A service holds one installed version; both flows pick from the versions you
-// don't currently have, so the option list is identical — only the action,
+// don't currently have, so the option list is identical - only the action,
 // titles, and empty-state copy differ by mode.
 const installOpen = ref(false);
 const installLoading = ref(false);

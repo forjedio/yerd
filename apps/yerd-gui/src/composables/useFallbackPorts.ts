@@ -8,7 +8,7 @@ import { IpcError, restartDaemon, setFallbackPorts } from "@/ipc/client";
  *
  * The restart detection is deliberately careful (see `saveAndRestart`): the
  * shared `useDaemon` poller runs every 4 s, so a fast re-exec can complete
- * inside one gap — meaning a passive watch on `connected` could never observe
+ * inside one gap - meaning a passive watch on `connected` could never observe
  * the drop, and `connected === true` holds at *both* ends of a restart. We
  * therefore actively drive `refresh()` and key completion on a change in the
  * daemon's per-process `boot_id` (the re-exec preserves the pid and
@@ -42,7 +42,7 @@ export function useFallbackPorts() {
   function validate(http: number, https: number): string | null {
     for (const p of [http, https]) {
       if (!Number.isInteger(p) || p < MIN_PORT || p > MAX_PORT) {
-        return `Ports must be whole numbers between ${MIN_PORT} and ${MAX_PORT} — a privileged port like 80/443 would need elevation, which the fallback exists to avoid.`;
+        return `Ports must be whole numbers between ${MIN_PORT} and ${MAX_PORT} - a privileged port like 80/443 would need elevation, which the fallback exists to avoid.`;
       }
     }
     if (http === https) {
@@ -54,7 +54,7 @@ export function useFallbackPorts() {
   /**
    * Persist the new fallback ports and restart the daemon, then wait for it to
    * come back and report whether it is now serving. The daemon rejects invalid
-   * or elevated changes (thrown `IpcError`) — surfaced as `{ ok: false }` with
+   * or elevated changes (thrown `IpcError`) - surfaced as `{ ok: false }` with
    * its message; the caller never has to try/catch.
    */
   async function saveAndRestart(http: number, https: number): Promise<SaveResult> {
@@ -78,7 +78,7 @@ export function useFallbackPorts() {
       // The restart tears down the socket, so `restartDaemon()` can reject with
       // a dropped-connection error *even though the restart is underway* (the
       // daemon may close the connection around its re-exec). The boot_id poll
-      // below is the authoritative completion check, so don't bail here — mirror
+      // below is the authoritative completion check, so don't bail here - mirror
       // GeneralView's restart flow, which also tolerates the throw. A daemon that
       // genuinely didn't restart simply makes the poll time out.
     }
@@ -102,7 +102,7 @@ export function useFallbackPorts() {
       const u = report.value.web_unbound;
       return {
         ok: false,
-        message: `Yerd still couldn't bind ports ${u.http}/${u.https} — they may be in use too. Try different ports.`,
+        message: `Yerd still couldn't bind ports ${u.http}/${u.https} - they may be in use too. Try different ports.`,
       };
     }
     return {

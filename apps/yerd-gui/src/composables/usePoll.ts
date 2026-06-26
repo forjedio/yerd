@@ -14,14 +14,14 @@ export interface PollHandle<T> {
  * Poll `fn` every `intervalMs` while the component is mounted.
  *
  * Discipline that matters for the daemon (each `status` call reads the trust
- * store and live FPM state — see the plan's "poll cost" note):
+ * store and live FPM state - see the plan's "poll cost" note):
  *   - never overlaps in-flight calls,
  *   - pauses entirely while the document is hidden (background tab / tray),
  *   - stops on unmount (no leaked timers).
  *
  * Default cadence is 4s; callers should not go below ~3s for `status`.
  *
- * `pollWhileHidden` keeps polling when the document is hidden — needed for the
+ * `pollWhileHidden` keeps polling when the document is hidden - needed for the
  * standalone dumps window, which is usually unfocused (and reports `hidden` when
  * minimised/occluded) yet must keep streaming. Default `false` so the shared
  * status poller is unaffected.

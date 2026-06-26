@@ -61,6 +61,7 @@ const step = ref(1);
 // its login-item ordering via `beforeProbe` (see installDaemon).
 const {
   starting: daemonStarting,
+  activeLabel: daemonStartLabel,
   pendingApproval,
   diagnostics,
   start: startDaemonFlow,
@@ -131,7 +132,7 @@ async function installDaemon(): Promise<void> {
         /* non-fatal */
       }
       // Onboarding default: run the daemon AND the app at login, app minimized to
-      // the tray. Best-effort/idempotent — users change all three in Settings; a
+      // the tray. Best-effort/idempotent - users change all three in Settings; a
       // missing service manager just skips the daemon toggle.
       await enableLoginDefaults(autostart?.daemonSupported ?? false);
       // Re-read AFTER enabling: the GUI login item is only registered now, so its
@@ -186,7 +187,7 @@ function onOpenLoginItems(): void {
 }
 
 // (Spinner/diagnostics auto-clear on connect is handled inside useDaemonStart.)
-// No auto-advance — the user clicks Continue (enabled once `daemonUp`).
+// No auto-advance - the user clicks Continue (enabled once `daemonUp`).
 
 // ── step 2: PHP ──
 const phpLoading = ref(false);
@@ -207,7 +208,7 @@ async function loadAvailablePhp(): Promise<void> {
     // Preselect the latest (daemon returns ascending → last is newest).
     const opts = phpOptions.value;
     selectedPhp.value = opts[opts.length - 1]?.value ?? "";
-    // Something already installed (e.g. revisiting) — reflect it.
+    // Something already installed (e.g. revisiting) - reflect it.
     if (r.installed.length) {
       installedPhp.value = r.installed[r.installed.length - 1] ?? null;
     }
@@ -369,7 +370,7 @@ function onBack(): void {
               <div>
                 <p class="font-medium">Yerd started, but isn't serving yet</p>
                 <p class="mt-1 text-muted-foreground">
-                  It couldn't bind its web ports — they're in use by another
+                  It couldn't bind its web ports - they're in use by another
                   program. Pick free ports ({{ MIN_PORT }} or higher, so they don't
                   need elevation) and Yerd will serve on those.
                 </p>
@@ -442,7 +443,7 @@ function onBack(): void {
               <Button v-else :disabled="daemonStarting" @click="installDaemon">
                 <Spinner v-if="daemonStarting" class="size-4" />
                 <Download v-else class="size-4" />
-                Install &amp; start daemon
+                {{ daemonStartLabel ?? "Install & start daemon" }}
               </Button>
             </div>
           </section>

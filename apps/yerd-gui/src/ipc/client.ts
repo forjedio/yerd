@@ -21,6 +21,7 @@ import type {
   DumpsResponse,
   DumpsStatusResponse,
   ElevateTarget,
+  GuiLogs,
   InfoResponse,
   JobProgressResponse,
   MailDetail,
@@ -111,7 +112,7 @@ export async function listParked(): Promise<string[]> {
 
 /**
  * Un-park a directory root: removes it from the parked set and re-scans. Pass a
- * path verbatim from {@link listParked} — the daemon matches it exactly (no
+ * path verbatim from {@link listParked} - the daemon matches it exactly (no
  * canonicalisation), so a folder deleted from disk is still removable.
  */
 export async function unpark(path: string): Promise<void> {
@@ -177,7 +178,7 @@ export async function updatePhp(version: PhpVersion | null): Promise<void> {
 /**
  * Check for a Yerd self-update. `channel` overrides the saved preference for
  * this check only; omit (undefined) to use the saved default. Tolerant of
- * network failure — the daemon serves its cache (`source: "cached"`).
+ * network failure - the daemon serves its cache (`source: "cached"`).
  */
 export async function checkUpdates(channel?: UpdateChannel): Promise<UpdateStatusResponse> {
   return ensureOk(
@@ -194,7 +195,7 @@ export async function setUpdateChannel(channel: UpdateChannel): Promise<void> {
  * Download + verify the latest update and launch the applier. The GUI quits so
  * its bundle can be swapped; the applier relaunches it when done. `channel`
  * overrides the saved preference for this apply only. The returned promise
- * typically never resolves (the app exits) — callers should show an "updating"
+ * typically never resolves (the app exits) - callers should show an "updating"
  * state before awaiting and treat a thrown error as a staging failure.
  */
 export async function applyUpdate(channel?: UpdateChannel): Promise<void> {
@@ -258,7 +259,7 @@ export async function listTools(): Promise<ToolStatus[]> {
   return r.tools;
 }
 
-/** Install (or update to latest) a dev tool by id. Slow — downloads + verifies. */
+/** Install (or update to latest) a dev tool by id. Slow - downloads + verifies. */
 export async function installTool(tool: string): Promise<void> {
   ensureOk(await call<Response>("install_tool", { tool }));
 }
@@ -276,7 +277,7 @@ export async function installToolStreamed(tool: string): Promise<string> {
 
 /**
  * Poll a job to completion, delivering each batch of new log lines via
- * `onLines`. Resolves with the latest {@link JobProgressResponse} — either the
+ * `onLines`. Resolves with the latest {@link JobProgressResponse} - either the
  * terminal one, or the last seen when `shouldContinue()` returns false (e.g. the
  * viewing modal closed). `onLines` is the only log-delivery channel; the
  * returned `.log` is just the final batch.
@@ -473,7 +474,7 @@ export async function protocolVersion(): Promise<number> {
   return call<number>("protocol_version");
 }
 
-/** Host OS, e.g. `"linux"` / `"macos"` / `"windows"` — gates platform UI. */
+/** Host OS, e.g. `"linux"` / `"macos"` / `"windows"` - gates platform UI. */
 export async function hostPlatform(): Promise<string> {
   return call<string>("host_platform");
 }
@@ -527,7 +528,7 @@ export async function elevate(target: ElevateTarget): Promise<void> {
 }
 
 /**
- * Run `yerd elevate` with no target under OS elevation — applies every step
+ * Run `yerd elevate` with no target under OS elevation - applies every step
  * (trust, resolver, ports) in one prompt.
  */
 export async function elevateAll(): Promise<void> {
@@ -546,7 +547,7 @@ export async function elevateResolverPorts(): Promise<void> {
  * Revert `elevate` for `target` under the same OS elevation (`yerd unelevate
  * <target>`). On macOS, unelevating the resolver restores the pre-Yerd resolver
  * from its backup (or removes Yerd's file if none). `ports` is reversible on
- * macOS only — callers gate the button accordingly.
+ * macOS only - callers gate the button accordingly.
  */
 export async function unelevate(target: ElevateTarget): Promise<void> {
   await call<void>("unelevate", { target });
@@ -563,7 +564,7 @@ export async function trustCa(): Promise<void> {
 
 /**
  * Remove the current user's trust of the local CA (macOS only). Resolves to
- * `true` if the CA is *still* trusted afterwards — i.e. a system-wide trust set
+ * `true` if the CA is *still* trusted afterwards - i.e. a system-wide trust set
  * via the terminal remains, which the GUI can't remove without root.
  */
 export async function untrustCa(): Promise<boolean> {
@@ -586,7 +587,7 @@ export async function stopDaemon(): Promise<void> {
 }
 
 /**
- * Gather diagnostics explaining why the daemon isn't up — service-manager
+ * Gather diagnostics explaining why the daemon isn't up - service-manager
  * status, the daemon's rolling-log tail, binary/socket checks, and host-computed
  * hints. Pass the message a prior `startDaemon` threw (if any) so the
  * never-launched cases (missing binary, translocation, register failure) carry
@@ -718,4 +719,22 @@ export async function showDumpsWindow(): Promise<void> {
 
 function emptyDumpCounts(): DumpCounts {
   return { dumps: 0, queries: 0, jobs: 0, views: 0, requests: 0, logs: 0, cache: 0, http: 0 };
+}
+
+// ── GUI diagnostic logs (host-only; no daemon IPC) ──────────────────────────
+
+/** Append a line to the per-session GUI host log ({cache}/yerd-gui.log). */
+export async function guiLog(level: string, message: string): Promise<void> {
+  await call<void>("gui_log", { level, message });
+}
+
+/** The GUI session log + a tail of the daemon's own rolling log (About → Logs). */
+export async function getGuiLogs(): Promise<GuiLogs> {
+  return call<GuiLogs>("get_gui_logs");
+}
+
+/** A pretty-printed JSON diagnostics snapshot (paths, service config, ERROR
+ * lines from the logs) for the About → Diagnostics button. */
+export async function getDiagnostics(): Promise<string> {
+  return call<string>("get_diagnostics");
 }

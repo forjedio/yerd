@@ -14,7 +14,7 @@ export type StatusTone = "ok" | "warn" | "bad" | "unknown" | "muted";
 /**
  * Human label for an FPM pool's run state. PHP-FPM is started **on demand** when
  * a site first uses a version, so an installed-but-not-serving version is
- * `stopped` on the wire — which reads as alarming. Show it as "idle" instead;
+ * `stopped` on the wire - which reads as alarming. Show it as "idle" instead;
  * reserve "failed" (red) for a pool that actually crashed. A version not yet in
  * the status report (e.g. just installed, before the next poll) is also "idle"
  * rather than a transient "not started".
@@ -70,7 +70,7 @@ export function humaniseBytes(bytes: number | null | undefined): string {
 }
 
 /**
- * Render the daemon's `load_avg` (each value is load × 100, i.e. hundredths —
+ * Render the daemon's `load_avg` (each value is load × 100, i.e. hundredths -
  * see yerd-ipc status.rs) back to the conventional `x.xx` triple.
  */
 export function formatLoadAvg(load: [number, number, number] | null): string {

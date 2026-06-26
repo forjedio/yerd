@@ -69,6 +69,7 @@ const { connected, report, refresh: refreshStatus } = useDaemon();
 // blind toast.
 const {
   starting: daemonStarting,
+  activeLabel: daemonStartLabel,
   diagnostics: startDiagnostics,
   start: startDaemonFlow,
 } = useDaemonStart();
@@ -77,13 +78,13 @@ const { pref, setTheme } = useTheme();
 
 const busy = ref<string | null>(null);
 const autostart = ref<AutostartState | null>(null);
-// Host platform — drives macOS-specific daemon copy (on macOS the daemon runs
+// Host platform - drives macOS-specific daemon copy (on macOS the daemon runs
 // as a background login item registered via SMAppService; see below).
 const platform = ref("");
 const isMac = computed(() => platform.value === "macos");
 // macOS-only: whether the bundled `yerd` CLI is symlinked onto PATH.
 const cli = ref<CliPathStatus | null>(null);
-// Dump-capture status (separate IPC from the report) — feeds the subsystem list.
+// Dump-capture status (separate IPC from the report) - feeds the subsystem list.
 const dumps = ref<DumpsStatusResponse | null>(null);
 
 const themeOptions = [
@@ -304,7 +305,7 @@ async function openApproval(): Promise<void> {
 // Run a check (no override → uses the saved channel). Mirror the saved channel
 // the daemon reports back into the selector so it stays the single source of
 // truth.
-// `notify` is true only for the explicit "Check now" button — a check triggered
+// `notify` is true only for the explicit "Check now" button - a check triggered
 // any other way (channel change) updates the shown status silently, so opening
 // Settings never pops an unsolicited toast.
 async function runUpdateCheck(notify = false): Promise<void> {
@@ -320,10 +321,10 @@ async function runUpdateCheck(notify = false): Promise<void> {
       toast.info("Up to date", "You're on a pre-release ahead of stable.");
     } else if (status.source === "cached") {
       // The daemon couldn't reach the update server and served its last cached
-      // result — don't claim "latest version" off possibly-stale data.
+      // result - don't claim "latest version" off possibly-stale data.
       toast.info(
         "Couldn't reach the update server",
-        "Showing the last cached result — you may be offline.",
+        "Showing the last cached result - you may be offline.",
       );
     } else {
       toast.success("Up to date", "You're on the latest version.");
@@ -371,7 +372,7 @@ onMounted(() => {
     loadDumps();
     void loadFallbackPorts();
   }
-  // No auto update-check on open — it only runs when the user clicks "Check now".
+  // No auto update-check on open - it only runs when the user clicks "Check now".
 });
 
 // Refresh the dump-capture row whenever the daemon comes up (and clear it when
@@ -446,7 +447,7 @@ async function loadFallbackPorts(): Promise<void> {
     fbHttpSaved.value = fbHttp.value;
     fbHttpsSaved.value = fbHttps.value;
   } catch {
-    // Daemon down / older daemon — clear so a later transient fetch failure
+    // Daemon down / older daemon - clear so a later transient fetch failure
     // can't leave stale ports shown (or re-savable) under the "running" card.
     fbHttp.value = "";
     fbHttps.value = "";
@@ -577,7 +578,7 @@ async function toggleGuiMinimized(on: boolean): Promise<void> {
           </div>
           <Button v-if="!running" :disabled="daemonStarting" @click="onStart">
             <Spinner v-if="daemonStarting" class="size-4" />
-            <Play v-else class="size-4" /> Start
+            <Play v-else class="size-4" /> {{ daemonStartLabel ?? "Start" }}
           </Button>
           <Button v-else variant="outline" :disabled="busy === 'daemon'" @click="onStop">
             <Spinner v-if="busy === 'daemon'" class="size-4" />
@@ -650,7 +651,7 @@ async function toggleGuiMinimized(on: boolean): Promise<void> {
           <CardTitle>Web ports</CardTitle>
           <CardDescription>
             The rootless ports Yerd serves on when 80/443 need elevation. Must be
-            {{ MIN_PORT }}+ — a privileged port like 80/443 would itself need
+            {{ MIN_PORT }}+ - a privileged port like 80/443 would itself need
             elevation, which the fallback exists to avoid.
           </CardDescription>
         </CardHeader>
@@ -665,7 +666,7 @@ async function toggleGuiMinimized(on: boolean): Promise<void> {
               It couldn't bind ports {{ report.web_unbound.http }}/{{
                 report.web_unbound.https
               }}
-              — they're in use by another process. Pick free ports below and save.
+              - they're in use by another process. Pick free ports below and save.
             </p>
           </div>
           <!-- Elevated: editing would break the pinned redirect. -->
@@ -771,7 +772,7 @@ async function toggleGuiMinimized(on: boolean): Promise<void> {
         </CardContent>
       </Card>
 
-      <!-- Terminal CLI (macOS) — Linux exposes `yerd` on PATH via the .deb. -->
+      <!-- Terminal CLI (macOS) - Linux exposes `yerd` on PATH via the .deb. -->
       <Card v-if="isMac">
         <CardHeader>
           <CardTitle>Terminal CLI</CardTitle>
@@ -913,7 +914,7 @@ async function toggleGuiMinimized(on: boolean): Promise<void> {
       <p class="text-sm text-muted-foreground">
         Saving sets the rootless ports to
         <strong class="text-foreground font-mono">{{ fbHttp }}/{{ fbHttps }}</strong>
-        and restarts the daemon — this briefly stops all
+        and restarts the daemon - this briefly stops all
         <strong class="text-foreground">.test</strong> sites, DNS, and this
         connection. It returns in a few seconds.
       </p>

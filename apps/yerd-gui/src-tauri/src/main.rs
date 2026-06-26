@@ -9,6 +9,7 @@ mod error;
 mod ipc;
 #[cfg(target_os = "macos")]
 mod launch_probe;
+mod logging;
 #[cfg(target_os = "macos")]
 mod mac_trust;
 mod mail_window;
@@ -37,6 +38,12 @@ const AUTOSTART_ARG: &str = "--autostarted";
 const TRAY_ICON_MAC: &[u8] = include_bytes!("../icons/tray-mac.png");
 
 fn main() {
+    // Install the per-session GUI log subscriber first, before any other startup
+    // work, so the macOS launch probe and the whole daemon install/start flow are
+    // captured. Truncates {cache}/yerd-gui.log for this session; degrades to
+    // stderr-only if the cache dir can't be resolved.
+    logging::init();
+
     // On Linux/Wayland the dock takes a window's icon from the .desktop file
     // matching its app_id — which GTK derives from the program name. Pin it
     // before GTK initialises so it deterministically matches `yerd-gui.desktop`
@@ -161,6 +168,9 @@ fn main() {
             autostart::setup_state,
             autostart::mark_onboarded,
             autostart::daemon_version_conflict,
+            logging::gui_log,
+            logging::get_gui_logs,
+            logging::get_diagnostics,
         ])
         .setup(setup_app)
         // Close-to-tray: hide the window instead of quitting; the tray's Quit
@@ -357,9 +367,10 @@ fn build_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
             // Start/Stop run off the event thread so a slow systemctl/launchctl
             // never stalls the menu; the GUI's status poller reflects the result.
             "daemon:start" => {
-                tauri::async_runtime::spawn(async {
+                let app = app.clone();
+                tauri::async_runtime::spawn(async move {
                     // Standalone start: nudge to Login Items if approval is pending.
-                    let _ = daemon::start(true).await;
+                    let _ = daemon::start(app, true).await;
                 });
             }
             "daemon:stop" => {

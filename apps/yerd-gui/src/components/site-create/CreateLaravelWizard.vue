@@ -154,7 +154,7 @@ async function appendInstallLog(lines: string[]): Promise<void> {
 }
 
 // A tool satisfies a prerequisite if it's Yerd-managed OR externally available
-// on the user's PATH — the scaffold can use either.
+// on the user's PATH - the scaffold can use either.
 function toolAvailable(id: string): boolean {
   return tools.value.some((t) => t.id === id && (t.installed || t.external));
 }
@@ -249,14 +249,14 @@ async function installAllMissing(): Promise<void> {
       if (!managedComposer.value) {
         toast.error(
           "Can't install the Laravel installer",
-          "Yerd needs its own Composer to build it — install Yerd's Composer, or run `composer global require laravel/installer`.",
+          "Yerd needs its own Composer to build it - install Yerd's Composer, or run `composer global require laravel/installer`.",
         );
         return;
       }
       if (!(await installPrereq("laravel"))) return;
     }
     // Reaching here means every missing tool installed successfully. Don't gate
-    // the toast on `ready` — it derives from the async `phpVersions` prop, which
+    // the toast on `ready` - it derives from the async `phpVersions` prop, which
     // may not have propagated yet.
     await nextTick();
     toast.success("Toolchain ready");
@@ -695,7 +695,7 @@ const busy = computed(() => jobStateRef.value === "running" && step.value === 4)
       </div>
 
       <p v-if="kitChoice === 'none'" class="text-xs text-muted-foreground">
-        No starter kit — a plain Laravel application with no auth scaffolding.
+        No starter kit - a plain Laravel application with no auth scaffolding.
       </p>
     </div>
 

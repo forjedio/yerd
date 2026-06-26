@@ -88,7 +88,7 @@ async function copy(): Promise<void> {
             </div>
             <div v-if="diagnostics.logTail.length">
               <p class="text-xs font-medium text-muted-foreground">
-                Daemon log — {{ diagnostics.logPath }}
+                Daemon log - {{ diagnostics.logPath }}
               </p>
               <pre
                 class="mt-1 max-h-40 overflow-auto rounded bg-muted p-2 font-mono text-xs"

@@ -94,6 +94,13 @@ pub fn daemon_version_conflict() -> Option<String> {
     load_settings().daemon_version_conflict
 }
 
+/// macOS: the daemon version (= GUI version) that last successfully registered
+/// the SMAppService agent — surfaced in the diagnostics payload. `None` where the
+/// field is unused (other OSes / never registered).
+pub(crate) fn daemon_registered_version() -> Option<String> {
+    load_settings().daemon_registered_version
+}
+
 fn settings_path() -> Result<PathBuf, GuiError> {
     use yerd_platform::{ActivePaths, Paths};
     let dirs = ActivePaths::new()
@@ -391,19 +398,40 @@ fn unit_path() -> Result<PathBuf, GuiError> {
     Ok(base.join("systemd").join("user").join("yerd.service"))
 }
 
+/// Render the systemd unit text (resolving the current `yerdd` path). Extracted
+/// so [`unit_is_current`] can compare against the on-disk file without
+/// duplicating the template.
 #[cfg(target_os = "linux")]
-fn write_unit() -> Result<(), GuiError> {
+fn render_unit() -> Result<String, GuiError> {
     let yerdd = crate::daemon::resolve_yerdd()
         .ok_or_else(|| GuiError::internal("yerdd is not installed"))?;
+    Ok(format!(
+        "[Unit]\nDescription=Yerd local PHP development daemon\n\n[Service]\nType=simple\nExecStart={} serve\nRestart=on-failure\n\n[Install]\nWantedBy=default.target\n",
+        yerdd.display()
+    ))
+}
+
+/// Whether the on-disk unit already matches what we'd write (same `ExecStart`
+/// etc.). Drives only the install-vs-start *label* — `write_unit` still runs
+/// unconditionally. Best-effort: any error → `false` (treat as needs-install).
+#[cfg(target_os = "linux")]
+fn unit_is_current() -> bool {
+    match (render_unit(), unit_path()) {
+        (Ok(rendered), Ok(path)) => std::fs::read_to_string(&path)
+            .map(|c| c == rendered)
+            .unwrap_or(false),
+        _ => false,
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn write_unit() -> Result<(), GuiError> {
+    let unit = render_unit()?;
     let path = unit_path()?;
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
             .map_err(|e| GuiError::internal(format!("cannot create {}: {e}", parent.display())))?;
     }
-    let unit = format!(
-        "[Unit]\nDescription=Yerd local PHP development daemon\n\n[Service]\nType=simple\nExecStart={} serve\nRestart=on-failure\n\n[Install]\nWantedBy=default.target\n",
-        yerdd.display()
-    );
     std::fs::write(&path, unit)
         .map_err(|e| GuiError::internal(format!("cannot write {}: {e}", path.display())))?;
     let _ = run_ok("systemctl", &["--user", "daemon-reload"]);
@@ -945,34 +973,180 @@ fn ensure_bootstrapped() -> Result<(), GuiError> {
 
 // ── daemon start / stop / autostart (used by crate::daemon + the commands) ───
 
-/// Start the daemon via the service manager, or a detached spawn when none.
-pub(crate) fn daemon_start(nudge: bool) -> Result<(), GuiError> {
+/// A phase of "starting the daemon", surfaced to the GUI start button so it can
+/// show the current step. Rust emits only the phases that map to work it
+/// performs (install / upgrade / start); the frontend owns `running` (the
+/// readiness wait) and `idle`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum StartPhase {
+    Installing,
+    Upgrading,
+    Starting,
+}
+
+impl StartPhase {
+    /// Wire string for the `daemon-start-phase` Tauri event.
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            StartPhase::Installing => "installing",
+            StartPhase::Upgrading => "upgrading",
+            StartPhase::Starting => "starting",
+        }
+    }
+
+    /// Subject for a phase-named timeout error ("<subject> timed out …").
+    pub(crate) fn timed_out_subject(self) -> &'static str {
+        match self {
+            StartPhase::Installing => "installing the daemon",
+            StartPhase::Upgrading => "upgrading the daemon",
+            StartPhase::Starting => "starting the daemon",
+        }
+    }
+}
+
+/// One ordered step of the start sequence: a phase label (for the button), its
+/// OWN timeout budget, and the blocking work to run. `daemon.rs` emits the phase,
+/// then runs `run` inside a `spawn_blocking` bounded by `budget`. The budget is
+/// explicit (not derived from the label) so the slow macOS register/reconcile
+/// step gets the worst-case allowance even when its label is the optimistic
+/// "Starting". Independent per-step budgets replace the former single combined
+/// 15 s, so a hung `launchctl`/`systemctl` can't exceed one step's slice.
+pub(crate) struct StartStep {
+    pub phase: StartPhase,
+    pub budget: std::time::Duration,
+    pub run: Box<dyn FnOnce() -> Result<(), GuiError> + Send>,
+}
+
+/// Writing a unit/plist + service-manager start.
+const INSTALL_BUDGET: std::time::Duration = std::time::Duration::from_secs(12);
+/// The macOS SMAppService ensure/register step: unregister + register_repairing +
+/// kickstart is the slowest single action (XPC), so it gets the largest slice
+/// regardless of the optimistic label `reg_phase` chose.
+const REGISTER_BUDGET: std::time::Duration = std::time::Duration::from_secs(20);
+/// A plain service-manager start/kickstart.
+const START_BUDGET: std::time::Duration = std::time::Duration::from_secs(8);
+
+/// Map the macOS daemon-registration state to the phase *label* to show. Pure +
+/// unit-tested (kept cross-platform so it builds/tests on Linux); the step still
+/// calls the real [`ensure_daemon_registration`], which re-derives and acts on
+/// the same inputs.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn reg_plan(
+    has_registration: bool,
+    gui: &semver::Version,
+    stored: Option<&semver::Version>,
+) -> StartPhase {
+    if !has_registration {
+        return StartPhase::Installing; // fresh register
+    }
+    match stored {
+        // Version advanced → reconcile / re-register == an upgrade.
+        Some(s) if gui > s => StartPhase::Upgrading,
+        // Up to date, unknown, or older-than-registered (a conflict, surfaced by
+        // the step's own Err) → just a start.
+        _ => StartPhase::Starting,
+    }
+}
+
+/// Label for the macOS SMAppService register/ensure step (gathers the live
+/// registration inputs, then defers to the pure [`reg_plan`]). May block on a
+/// `launchctl print` probe — callers run it off the async runtime.
+#[cfg(target_os = "macos")]
+fn reg_phase() -> StartPhase {
+    let gui = gui_version();
+    let s = load_settings();
+    let has_registration = s.daemon_autostart || smapp_registered() || daemon_launchd_job_exists();
+    let stored = s
+        .daemon_registered_version
+        .as_deref()
+        .and_then(|v| semver::Version::parse(v).ok());
+    reg_plan(has_registration, &gui, stored.as_ref())
+}
+
+/// Build the ordered start steps for this platform. **May block** (the macOS
+/// label probes `launchctl`, the Linux label reads the unit file), so
+/// `daemon.rs` calls it inside `spawn_blocking`. Each step keeps the same work
+/// the former one-shot `daemon_start` did; only the timeout is now per-phase.
+pub(crate) fn plan_start(nudge: bool) -> Result<Vec<StartStep>, GuiError> {
     #[cfg(target_os = "linux")]
     {
         let _ = nudge; // no SMAppService / Login-Items nudge on Linux
         if systemd_user_available() {
-            write_unit()?;
-            return run_ok("systemctl", &["--user", "start", "yerd"]);
+            // `write_unit()` always runs (preserves the ExecStart refresh); only
+            // the label is conditional on whether the unit was already current.
+            if unit_is_current() {
+                return Ok(vec![StartStep {
+                    phase: StartPhase::Starting,
+                    budget: START_BUDGET,
+                    run: Box::new(|| {
+                        write_unit()?;
+                        run_ok("systemctl", &["--user", "start", "yerd"])
+                    }),
+                }]);
+            }
+            return Ok(vec![
+                StartStep {
+                    phase: StartPhase::Installing,
+                    budget: INSTALL_BUDGET,
+                    run: Box::new(write_unit),
+                },
+                StartStep {
+                    phase: StartPhase::Starting,
+                    budget: START_BUDGET,
+                    run: Box::new(|| run_ok("systemctl", &["--user", "start", "yerd"])),
+                },
+            ]);
         }
-        crate::daemon::spawn_detached()
+        Ok(vec![StartStep {
+            phase: StartPhase::Starting,
+            budget: START_BUDGET,
+            run: Box::new(crate::daemon::spawn_detached),
+        }])
     }
     #[cfg(target_os = "macos")]
     {
         if use_smappservice() {
-            // Self-repair a stale/upgraded registration first (re-points launchd at
-            // the current bundle; errors if this GUI is older than the registered
-            // daemon — surfaced via diagnostics). Then the unified model: ensure
-            // registered (which RunAtLoad-starts it), then kickstart for a fresh
-            // start even if it was already up. kickstart is best-effort — when
-            // status is `requiresApproval` the job isn't loaded yet, and that's fine
-            // (the user was sent to Login Items).
-            ensure_daemon_registration()?;
-            smapp_enable(nudge)?;
-            let _ = run_ok("launchctl", &["kickstart", "-k", &service_target()]);
-            Ok(())
+            // Step A self-repairs a stale/upgraded registration (re-points launchd
+            // at the current bundle; errors if this GUI is older than the
+            // registered daemon — surfaced via diagnostics) then ensures it's
+            // registered (RunAtLoad-starts it). Step B kickstarts for a fresh
+            // start even if it was already up (best-effort — a `requiresApproval`
+            // job isn't loaded yet, and that's fine; the user was sent to Login
+            // Items).
+            Ok(vec![
+                StartStep {
+                    phase: reg_phase(),
+                    // The reconcile path runs even when the label is "Starting"
+                    // (e.g. registered-but-no-stored-version), so always allow the
+                    // worst-case register budget here, not the label's.
+                    budget: REGISTER_BUDGET,
+                    run: Box::new(move || {
+                        ensure_daemon_registration()?;
+                        smapp_enable(nudge)
+                    }),
+                },
+                StartStep {
+                    phase: StartPhase::Starting,
+                    budget: START_BUDGET,
+                    run: Box::new(|| {
+                        let _ = run_ok("launchctl", &["kickstart", "-k", &service_target()]);
+                        Ok(())
+                    }),
+                },
+            ])
         } else {
-            ensure_bootstrapped()?;
-            run_ok("launchctl", &["kickstart", "-k", &service_target()])
+            Ok(vec![
+                StartStep {
+                    phase: StartPhase::Installing,
+                    budget: INSTALL_BUDGET,
+                    run: Box::new(ensure_bootstrapped),
+                },
+                StartStep {
+                    phase: StartPhase::Starting,
+                    budget: START_BUDGET,
+                    run: Box::new(|| run_ok("launchctl", &["kickstart", "-k", &service_target()])),
+                },
+            ])
         }
     }
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
@@ -1191,11 +1365,45 @@ pub fn set_gui_minimized(on: bool) -> Result<(), GuiError> {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
-    use super::{decide, Decision};
+    use super::{decide, reg_plan, Decision, StartPhase};
     use semver::Version;
 
     fn v(s: &str) -> Version {
         Version::parse(s).unwrap()
+    }
+
+    #[test]
+    fn reg_plan_installs_when_unregistered() {
+        // No registration → a fresh register, regardless of any stale stored ver.
+        assert_eq!(reg_plan(false, &v("2.0.3"), None), StartPhase::Installing);
+        assert_eq!(
+            reg_plan(false, &v("2.0.3"), Some(&v("2.0.1"))),
+            StartPhase::Installing
+        );
+    }
+
+    #[test]
+    fn reg_plan_upgrades_on_version_advance() {
+        assert_eq!(
+            reg_plan(true, &v("2.0.3"), Some(&v("2.0.2"))),
+            StartPhase::Upgrading
+        );
+    }
+
+    #[test]
+    fn reg_plan_starts_when_current_unknown_or_conflicting() {
+        // Equal → just start (no upgrade flash).
+        assert_eq!(
+            reg_plan(true, &v("2.0.3"), Some(&v("2.0.3"))),
+            StartPhase::Starting
+        );
+        // Unknown stored version → start (the step reconciles if needed).
+        assert_eq!(reg_plan(true, &v("2.0.3"), None), StartPhase::Starting);
+        // Older GUI than registered (a conflict) → start label; the step Errs.
+        assert_eq!(
+            reg_plan(true, &v("2.0.2"), Some(&v("2.0.3"))),
+            StartPhase::Starting
+        );
     }
 
     #[test]

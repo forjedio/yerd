@@ -40,8 +40,8 @@ const selectedApp = ref<string>("");
 
 const list = computed<MailSummary[]>(() => mails.value ?? []);
 
-/** The "application" an email belongs to: its From display name, or — when the
- *  From has no name — the bare email address. */
+/** The "application" an email belongs to: its From display name, or - when the
+ *  From has no name - the bare email address. */
 function applicationOf(from: string): string {
   const named = from.match(/^\s*(.*?)\s*<([^>]+)>\s*$/);
   if (named) {

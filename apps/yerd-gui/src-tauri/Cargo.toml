@@ -33,6 +33,11 @@ interprocess = { workspace = true }
 tokio        = { workspace = true, features = ["rt", "rt-multi-thread", "io-util", "net", "time"] }
 serde        = { workspace = true }
 serde_json   = { workspace = true }
+# Per-session GUI diagnostic log (logging.rs): a truncate-on-launch tracing
+# subscriber writing {cache}/yerd-gui.log. No tracing-appender — the session file
+# uses a hand-rolled truncate/staleness MakeWriter the 'static registry owns.
+tracing            = { workspace = true }
+tracing-subscriber = { workspace = true }
 libc         = "0.2"
 # Compare the GUI/daemon version (`env!("CARGO_PKG_VERSION")`) against the
 # last-registered daemon version for the upgrade self-repair + directional guard.

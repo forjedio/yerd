@@ -24,7 +24,7 @@ const THEME_EVENT = "yerd:theme-changed";
 
 /** The user's preference (reactive, persisted). */
 const pref = ref<ThemePref>(loadPref());
-/** Latest OS dark-mode signal — only consulted while `pref === "system"`. */
+/** Latest OS dark-mode signal - only consulted while `pref === "system"`. */
 let osDark = false;
 
 function loadPref(): ThemePref {
@@ -32,7 +32,7 @@ function loadPref(): ThemePref {
     const v = localStorage.getItem(STORAGE_KEY);
     if (v === "light" || v === "dark" || v === "system") return v;
   } catch {
-    // localStorage unavailable (e.g. unit env) — fall through to default.
+    // localStorage unavailable (e.g. unit env) - fall through to default.
   }
   return "system";
 }
@@ -67,7 +67,7 @@ export function setTheme(p: ThemePref): void {
   applyPref(p);
   // Other webviews don't see this window's localStorage write, so tell them.
   void emit(THEME_EVENT, p).catch(() => {
-    // Not in Tauri (unit/dev) — nothing to broadcast.
+    // Not in Tauri (unit/dev) - nothing to broadcast.
   });
 }
 
@@ -102,7 +102,7 @@ export function initTheme(): void {
         reapply();
       });
     } catch {
-      // Not running inside Tauri (unit tests, plain Vite) — step 1 stands.
+      // Not running inside Tauri (unit tests, plain Vite) - step 1 stands.
     }
   })();
 
@@ -113,6 +113,6 @@ export function initTheme(): void {
   void listen<ThemePref>(THEME_EVENT, ({ payload }) => {
     if (payload !== pref.value) applyPref(payload);
   }).catch(() => {
-    // Not in Tauri — single context, nothing to sync.
+    // Not in Tauri - single context, nothing to sync.
   });
 }

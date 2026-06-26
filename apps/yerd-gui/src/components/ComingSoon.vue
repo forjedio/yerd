@@ -9,7 +9,7 @@ import { cn } from "@/lib/utils";
  */
 withDefaults(
   defineProps<{
-    /** Why it's disabled — shown on hover. */
+    /** Why it's disabled - shown on hover. */
     reason?: string;
     /** Render as a small inline pill instead of a button-sized control. */
     pill?: boolean;
