@@ -509,6 +509,9 @@ export interface DaemonDiagnostics {
   logPath: string | null;
   logTail: string[];
   spawnLogTail: string[];
+  /** GUI daemon-registration self-repair trail ({cache}/yerd-gui-repair.log) —
+   *  macOS upgrade re-registration attempts + outcomes (incl. technical errors). */
+  repairLogTail: string[];
 }
 
 /**

@@ -17,7 +17,8 @@ const hasRaw = computed(
   () =>
     !!props.diagnostics.serviceStatus ||
     props.diagnostics.logTail.length > 0 ||
-    props.diagnostics.spawnLogTail.length > 0,
+    props.diagnostics.spawnLogTail.length > 0 ||
+    props.diagnostics.repairLogTail.length > 0,
 );
 
 /** A flat, paste-able plain-text dump of the whole diagnostics struct. */
@@ -39,6 +40,8 @@ function asText(): string {
   if (d.serviceStatus) lines.push("", "Service status:", d.serviceStatus);
   if (d.logTail.length) lines.push("", "Daemon log (tail):", ...d.logTail);
   if (d.spawnLogTail.length) lines.push("", "Spawn log (tail):", ...d.spawnLogTail);
+  if (d.repairLogTail.length)
+    lines.push("", "Daemon re-registration log (tail):", ...d.repairLogTail);
   return lines.join("\n");
 }
 
@@ -96,6 +99,14 @@ async function copy(): Promise<void> {
               <pre
                 class="mt-1 max-h-40 overflow-auto rounded bg-muted p-2 font-mono text-xs"
               >{{ diagnostics.spawnLogTail.join("\n") }}</pre>
+            </div>
+            <div v-if="diagnostics.repairLogTail.length">
+              <p class="text-xs font-medium text-muted-foreground">
+                Daemon re-registration log
+              </p>
+              <pre
+                class="mt-1 max-h-40 overflow-auto rounded bg-muted p-2 font-mono text-xs"
+              >{{ diagnostics.repairLogTail.join("\n") }}</pre>
             </div>
           </div>
         </details>

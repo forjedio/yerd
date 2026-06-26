@@ -34,6 +34,9 @@ tokio        = { workspace = true, features = ["rt", "rt-multi-thread", "io-util
 serde        = { workspace = true }
 serde_json   = { workspace = true }
 libc         = "0.2"
+# Compare the GUI/daemon version (`env!("CARGO_PKG_VERSION")`) against the
+# last-registered daemon version for the upgrade self-repair + directional guard.
+semver       = { workspace = true }
 
 # SHA-256 for in-process CA fingerprint verification (mac_trust.rs). The daemon
 # is bundled (Tauri externalBin), so there's no runtime download — the former

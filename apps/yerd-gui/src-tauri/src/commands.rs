@@ -11,7 +11,14 @@ use yerd_core::PhpVersion;
 use yerd_ipc::{ErrorCode, Request, Response};
 
 use crate::error::GuiError;
-use crate::ipc::exchange;
+use crate::ipc::{exchange, exchange_timeout};
+
+/// Bound for the liveness/probe commands (`status`/`ping`/`daemon_info`): a
+/// healthy in-memory reply returns in ms (the daemon serves connections
+/// concurrently, so an in-flight install doesn't block it), so 5 s only ever
+/// trips for a wedged/crash-looping daemon — letting the poller advance instead
+/// of hanging. Heavy/mutating commands deliberately stay unbounded.
+const PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// Convert a daemon `Response::Error` into a `GuiError`; pass success through.
 fn finish(resp: Response) -> Result<Response, GuiError> {
@@ -34,7 +41,7 @@ fn code_str(code: &ErrorCode) -> String {
 
 #[tauri::command]
 pub async fn ping() -> Result<Response, GuiError> {
-    finish(exchange(&Request::Ping).await?)
+    finish(exchange_timeout(&Request::Ping, PROBE_TIMEOUT).await?)
 }
 
 // ── sites ──────────────────────────────────────────────────────────────────
@@ -391,7 +398,7 @@ pub async fn set_mail_enabled(enabled: bool) -> Result<Response, GuiError> {
 
 #[tauri::command]
 pub async fn status() -> Result<Response, GuiError> {
-    finish(exchange(&Request::Status).await?)
+    finish(exchange_timeout(&Request::Status, PROBE_TIMEOUT).await?)
 }
 
 #[tauri::command]
@@ -406,7 +413,7 @@ pub async fn doctor_fix() -> Result<Response, GuiError> {
 
 #[tauri::command]
 pub async fn daemon_info() -> Result<Response, GuiError> {
-    finish(exchange(&Request::DaemonInfo).await?)
+    finish(exchange_timeout(&Request::DaemonInfo, PROBE_TIMEOUT).await?)
 }
 
 // ── host-only helpers (no daemon IPC) ──────────────────────────────────────
