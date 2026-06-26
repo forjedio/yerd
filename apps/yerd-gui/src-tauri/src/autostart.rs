@@ -376,7 +376,9 @@ fn smapp_enable(nudge: bool) -> Result<(), GuiError> {
         return Ok(());
     }
     cleanup_legacy();
-    crate::smappservice::register(crate::smappservice::Service::Daemon)?;
+    // `register_repairing`, not `register`: an in-place app upgrade can leave a
+    // stale BTM entry that makes `register` fail with EINVAL until it's cleared.
+    crate::smappservice::register_repairing(crate::smappservice::Service::Daemon)?;
     if nudge {
         nudge_if_requires_approval();
     }
@@ -474,7 +476,9 @@ fn gui_smapp_enable(nudge: bool) -> Result<(), GuiError> {
         }
         return Ok(());
     }
-    crate::smappservice::register(crate::smappservice::Service::MainApp)?;
+    // `register_repairing`: see the daemon path — an in-place upgrade can leave a
+    // stale BTM entry that makes a plain `register` fail with EINVAL.
+    crate::smappservice::register_repairing(crate::smappservice::Service::MainApp)?;
     gui_cleanup_legacy();
     if nudge && gui_pending_approval() {
         crate::smappservice::open_login_items_settings();
