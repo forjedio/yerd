@@ -103,8 +103,12 @@ pub fn render_my_cnf(
 ///   when the account exists (so it never clobbers `MariaDB`'s own `root@127.0.0.1`
 ///   /`root@::1`, which `mariadb-install-db` already creates), and `GRANT` simply
 ///   re-asserts the privileges.
-/// - Each statement is on a **single line** — `--init-file` executes one
-///   statement per line and rejects multi-line statements.
+/// - **Any statement error aborts server startup** (the `init-file` runs on
+///   every normal start, not just init), so every statement must be safe to
+///   re-run — hence the `IF NOT EXISTS` guards and re-assertable `GRANT`s. The
+///   reader is `;`-delimited and folds the leading `--` comments into the first
+///   statement (the lexer then strips them); statements are kept one-per-line
+///   here for legibility, not because the reader requires it.
 /// - Only loopback hosts (`127.0.0.1`, `::1`) get accounts; `bind-address`
 ///   already pins the listener to loopback, so this widens nothing beyond it.
 #[must_use]
@@ -260,8 +264,9 @@ mod tests {
                 assert!(line.contains("IF NOT EXISTS"), "non-idempotent: {line}");
             }
         }
-        // --init-file executes one statement per line: no statement may span lines,
-        // so every non-comment, non-empty line must terminate with a semicolon.
+        // init-file aborts startup on any statement error, so keep each statement
+        // self-contained and ;-terminated on its own line (defence against a future
+        // multi-line edit silently changing what the `;`-delimited reader executes).
         for line in sql.lines() {
             let t = line.trim();
             if t.is_empty() || t.starts_with("--") {
