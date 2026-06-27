@@ -24,6 +24,14 @@ jobs:
   sonarqube:
     name: sonarqube
     runs-on: ubuntu-22.04
+    # Repository secrets (SONAR_TOKEN / SONAR_HOST_URL / SONAR_PROJECT_KEY) are
+    # NOT exposed to pull_request runs from forks, so the scanner gets an empty
+    # host URL and fails. Run only when secrets are actually available: pushes to
+    # main, and PRs from branches within this repo (maintainers). Fork PRs skip
+    # Sonar — they're still covered by the ci.yml gate.
+    if: >-
+      github.event_name == 'push' ||
+      github.event.pull_request.head.repo.full_name == github.repository
     steps:
       - uses: actions/checkout@v4
         with:

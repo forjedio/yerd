@@ -132,8 +132,8 @@ installed app runs the daemon as a **per-user service**, and the daemon is a
 owns the IPC socket the GUI and CLI connect to. Start a second `yerdd` against
 the same runtime dir and it exits immediately:
 
-```
-another yerdd is already running (lock held at /tmp/yerd-501/yerdd.lock)
+```text
+another yerdd is already running (lock held at /tmp/yerd-501/yerd.lock)
 ```
 
 So there are two workflows: **take over** the production paths (stop production,
