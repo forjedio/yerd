@@ -465,3 +465,180 @@ fn first_php_on_path() -> Option<std::path::PathBuf> {
         .map(|dir| dir.join("php"))
         .find(|candidate| candidate.is_file())
 }
+
+#[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing
+)]
+mod tests {
+    use super::*;
+    use std::path::{Path, PathBuf};
+    use yerd_ipc::Request;
+
+    // ─── canonicalize_unpark ────────────────────────────────────────
+
+    #[test]
+    fn canonicalize_unpark_resolves_existing_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        let nested = tmp.path().join("sub");
+        std::fs::create_dir(&nested).unwrap();
+        let req = Request::Unpark {
+            path: nested.to_string_lossy().into_owned(),
+        };
+        let out = canonicalize_unpark(req);
+        let Request::Unpark { path } = out else {
+            panic!("expected Unpark");
+        };
+        let canon = std::fs::canonicalize(&nested).unwrap();
+        assert_eq!(path, canon.to_string_lossy());
+    }
+
+    #[test]
+    fn canonicalize_unpark_leaves_missing_path_untouched() {
+        let raw = "/no/such/dir/that/exists/anywhere-xyz";
+        let req = Request::Unpark {
+            path: raw.to_owned(),
+        };
+        match canonicalize_unpark(req) {
+            Request::Unpark { path } => assert_eq!(path, raw),
+            _ => panic!("expected Unpark"),
+        }
+    }
+
+    #[test]
+    fn canonicalize_unpark_passes_through_other_requests() {
+        assert_eq!(canonicalize_unpark(Request::Ping), Request::Ping);
+        let listed = canonicalize_unpark(Request::ListSites);
+        assert_eq!(listed, Request::ListSites);
+    }
+
+    // ─── canonicalize_db_paths ──────────────────────────────────────
+
+    #[test]
+    fn canonicalize_db_paths_restore_existing_file_is_canonicalised() {
+        let tmp = tempfile::tempdir().unwrap();
+        let file = tmp.path().join("dump.sql");
+        std::fs::write(&file, b"-- sql").unwrap();
+        let req = Request::RestoreDatabase {
+            service: "mysql".into(),
+            name: "app".into(),
+            path: file.clone(),
+        };
+        let out = canonicalize_db_paths(req).unwrap();
+        let Request::RestoreDatabase {
+            path,
+            service,
+            name,
+        } = out
+        else {
+            panic!("expected RestoreDatabase");
+        };
+        assert_eq!(service, "mysql");
+        assert_eq!(name, "app");
+        assert_eq!(path, std::fs::canonicalize(&file).unwrap());
+    }
+
+    #[test]
+    fn canonicalize_db_paths_restore_missing_file_is_usage_error() {
+        let req = Request::RestoreDatabase {
+            service: "mysql".into(),
+            name: "app".into(),
+            path: PathBuf::from("/no/such/backup-file-xyz.sql"),
+        };
+        let err = canonicalize_db_paths(req).unwrap_err();
+        assert!(matches!(err, ClientError::Usage(_)), "got: {err:?}");
+        assert!(err.to_string().contains("cannot read backup file"));
+    }
+
+    #[test]
+    fn canonicalize_db_paths_backup_relative_is_absolutised() {
+        let req = Request::BackupDatabase {
+            service: "mysql".into(),
+            name: "app".into(),
+            path: PathBuf::from("rel/app.sql"),
+        };
+        let out = canonicalize_db_paths(req).unwrap();
+        let Request::BackupDatabase { path, .. } = out else {
+            panic!("expected BackupDatabase");
+        };
+        assert!(
+            path.is_absolute(),
+            "backup path should be absolutised: {path:?}"
+        );
+        assert!(path.ends_with("rel/app.sql"));
+    }
+
+    #[test]
+    fn canonicalize_db_paths_backup_absolute_is_unchanged() {
+        let abs = PathBuf::from("/var/tmp/app.sql");
+        let req = Request::BackupDatabase {
+            service: "mysql".into(),
+            name: "app".into(),
+            path: abs.clone(),
+        };
+        let out = canonicalize_db_paths(req).unwrap();
+        match out {
+            Request::BackupDatabase { path, .. } => assert_eq!(path, abs),
+            _ => panic!("expected BackupDatabase"),
+        }
+    }
+
+    #[test]
+    fn canonicalize_db_paths_other_request_passes_through() {
+        let out = canonicalize_db_paths(Request::Ping).unwrap();
+        assert_eq!(out, Request::Ping);
+    }
+
+    // ─── absolutise ─────────────────────────────────────────────────
+
+    #[test]
+    fn absolutise_returns_absolute_path_unchanged() {
+        let abs = Path::new("/etc/hosts");
+        assert_eq!(absolutise(abs).unwrap(), abs.to_path_buf());
+    }
+
+    #[test]
+    fn absolutise_joins_relative_onto_cwd() {
+        let rel = Path::new("some/where.sql");
+        let out = absolutise(rel).unwrap();
+        assert!(out.is_absolute());
+        let cwd = std::env::current_dir().unwrap();
+        assert_eq!(out, cwd.join(rel));
+    }
+
+    // ─── daemon_down_response ───────────────────────────────────────
+
+    #[test]
+    fn daemon_down_response_is_single_fail_diagnosis() {
+        match daemon_down_response() {
+            yerd_ipc::Response::Diagnoses { items } => {
+                assert_eq!(items.len(), 1);
+                assert_eq!(items[0].code, yerd_ipc::DiagnosisCode::DaemonDown);
+                assert_eq!(items[0].severity, yerd_ipc::Severity::Fail);
+                assert!(items[0].remedy.is_some());
+            }
+            other => panic!("expected Diagnoses, got {other:?}"),
+        }
+    }
+
+    // ─── PATH helpers ───────────────────────────────────────────────
+
+    /// The result depends on the host PATH, so any returned candidate (if one
+    /// exists) must end in `php` and be a file.
+    #[test]
+    fn first_php_on_path_returns_option() {
+        if let Some(p) = first_php_on_path() {
+            assert!(p.ends_with("php"));
+            assert!(p.is_file());
+        }
+    }
+
+    /// Best-effort printer; must not panic regardless of environment.
+    #[test]
+    fn print_php_path_hint_runs() {
+        print_php_path_hint();
+    }
+}

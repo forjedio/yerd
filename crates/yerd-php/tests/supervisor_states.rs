@@ -41,6 +41,10 @@ enum ChildBehavior {
     Lives,
     /// `wait()` blocks forever, but `kill()` flips it to "exited".
     LivesUntilKilled,
+    /// `wait()` blocks forever (so `ensure` stores the pool as `Running`), but
+    /// `try_wait()` immediately reports an exit, modelling a master that died
+    /// *after* it was stored healthy, which `snapshots` must report as `Failed`.
+    LivesButTryWaitReportsExited(ExitReason),
 }
 
 struct FakeChild {
@@ -59,7 +63,9 @@ impl ChildHandle for FakeChild {
     fn try_wait(&mut self) -> Result<Option<ExitReason>, io::Error> {
         let guard = self.behavior.try_lock().ok();
         match guard.as_deref() {
-            Some(ChildBehavior::Crashes(r)) => Ok(Some(*r)),
+            Some(ChildBehavior::Crashes(r) | ChildBehavior::LivesButTryWaitReportsExited(r)) => {
+                Ok(Some(*r))
+            }
             _ => Ok(None),
         }
     }
@@ -69,7 +75,7 @@ impl ChildHandle for FakeChild {
             let behavior = self.behavior.lock().await.clone();
             match behavior {
                 ChildBehavior::Crashes(r) => return Ok(r),
-                ChildBehavior::Lives => {
+                ChildBehavior::Lives | ChildBehavior::LivesButTryWaitReportsExited(_) => {
                     std::future::pending::<()>().await;
                 }
                 ChildBehavior::LivesUntilKilled => {
@@ -423,4 +429,129 @@ async fn ensure_unknown_version_errors() {
 #[allow(dead_code)]
 async fn _spawn_count_helper(s: &FakeSpawner) -> usize {
     s.spawn_count().await
+}
+
+// ─── Added coverage: restart / shutdown / Failed snapshots / idempotency ──
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn restart_stops_then_starts_with_fresh_pid() {
+    let v = PhpVersion::new(8, 3);
+    let spawner = FakeSpawner::new(vec![
+        SpawnPlan {
+            pid: 201,
+            behavior: ChildBehavior::LivesUntilKilled,
+        },
+        SpawnPlan {
+            pid: 202,
+            behavior: ChildBehavior::Lives,
+        },
+    ]);
+    let mut mgr = make_manager(spawner, FakeProbe::always_ok(), v);
+
+    mgr.ensure(v).await.unwrap();
+    assert_eq!(mgr.snapshots()[0].pid, Some(201));
+
+    mgr.restart(v).await.unwrap();
+    let snaps = mgr.snapshots();
+    assert_eq!(snaps.len(), 1);
+    assert_eq!(snaps[0].state, PoolRunState::Running);
+    assert_eq!(snaps[0].pid, Some(202));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn shutdown_stops_every_running_pool() {
+    let v83 = PhpVersion::new(8, 3);
+    let v82 = PhpVersion::new(8, 2);
+    let spawner = FakeSpawner::new(vec![
+        SpawnPlan {
+            pid: 301,
+            behavior: ChildBehavior::LivesUntilKilled,
+        },
+        SpawnPlan {
+            pid: 302,
+            behavior: ChildBehavior::LivesUntilKilled,
+        },
+    ]);
+    let kills = spawner.kills_handle();
+
+    let dirs = make_dirs();
+    std::fs::create_dir_all(&dirs.config).unwrap();
+    std::fs::create_dir_all(&dirs.state).unwrap();
+    std::fs::create_dir_all(&dirs.runtime).unwrap();
+    let mut binaries = BTreeMap::new();
+    binaries.insert(v83, PathBuf::from("/usr/bin/true"));
+    binaries.insert(v82, PathBuf::from("/usr/bin/true"));
+    let mut mgr = PhpManager::new(
+        spawner,
+        FakeClock,
+        FakeProbe::always_ok(),
+        dirs,
+        ActivePortBinder::new(),
+        1234,
+        binaries,
+    );
+
+    mgr.ensure(v83).await.unwrap();
+    mgr.ensure(v82).await.unwrap();
+    assert_eq!(mgr.snapshots().len(), 2);
+
+    mgr.shutdown().await.unwrap();
+
+    assert!(mgr.snapshots().is_empty());
+    let kills_now = kills.lock().await;
+    assert!(
+        kills_now.iter().filter(|k| **k == KillSignal::Term).count() >= 2,
+        "expected a SIGTERM per pool, got {kills_now:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn snapshots_report_failed_when_master_exited() {
+    let v = PhpVersion::new(8, 3);
+    let spawner = FakeSpawner::new(vec![SpawnPlan {
+        pid: 401,
+        behavior: ChildBehavior::LivesButTryWaitReportsExited(ExitReason::Code(1)),
+    }]);
+    let mut mgr = make_manager(spawner, FakeProbe::always_ok(), v);
+
+    mgr.ensure(v).await.unwrap();
+    let snaps = mgr.snapshots();
+    assert_eq!(snaps.len(), 1);
+    assert_eq!(snaps[0].state, PoolRunState::Failed);
+    assert_eq!(snaps[0].pid, None);
+    assert!(snaps[0].listen.is_some());
+}
+
+/// A second ensure on a still-live pool must reuse the cached listen and not
+/// pull a second spawn plan; only one plan is provided.
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn ensure_is_idempotent_without_respawning() {
+    let v = PhpVersion::new(8, 3);
+    let spawner = FakeSpawner::new(vec![SpawnPlan {
+        pid: 501,
+        behavior: ChildBehavior::Lives,
+    }]);
+    let mut mgr = make_manager(spawner, FakeProbe::always_ok(), v);
+
+    let first = mgr.ensure(v).await.unwrap();
+    let second = mgr.ensure(v).await.unwrap();
+    assert_eq!(first, second);
+    let snaps = mgr.snapshots();
+    assert_eq!(snaps.len(), 1);
+    assert_eq!(snaps[0].pid, Some(501));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn stop_then_snapshot_is_empty() {
+    let v = PhpVersion::new(8, 3);
+    let spawner = FakeSpawner::new(vec![SpawnPlan {
+        pid: 601,
+        behavior: ChildBehavior::LivesUntilKilled,
+    }]);
+    let mut mgr = make_manager(spawner, FakeProbe::always_ok(), v);
+
+    mgr.ensure(v).await.unwrap();
+    mgr.stop(v).await.unwrap();
+    assert!(mgr.snapshots().is_empty());
+    mgr.stop(v).await.unwrap();
 }

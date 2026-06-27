@@ -385,6 +385,58 @@ mod tests {
     }
 
     #[test]
+    fn tool_metadata_is_consistent() {
+        for t in Tool::ALL {
+            assert!(!t.display_name().is_empty());
+            assert!(!t.primary_bin().is_empty());
+            assert!(
+                t.exposed_bins().contains(&t.primary_bin()),
+                "{t:?} primary_bin not in exposed_bins",
+            );
+        }
+        assert_eq!(Tool::Node.exposed_bins(), &["node", "npm", "npx"]);
+        assert_eq!(Tool::Bun.exposed_bins(), &["bun", "bunx"]);
+        assert_eq!(Tool::Composer.primary_bin(), "composer");
+        assert_eq!(Tool::Laravel.display_name(), "Laravel Installer");
+    }
+
+    #[test]
+    fn installed_version_ignores_blank_marker() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dirs = dirs_in(tmp.path());
+        let d = tool_dir(&dirs, Tool::Composer);
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::write(d.join(VERSION_MARKER), "   \n").unwrap();
+        assert_eq!(installed_version(&dirs, Tool::Composer), None);
+        std::fs::write(d.join(VERSION_MARKER), "  2.10.1\n").unwrap();
+        assert_eq!(
+            installed_version(&dirs, Tool::Composer).as_deref(),
+            Some("2.10.1")
+        );
+    }
+
+    #[test]
+    fn uninstall_removes_tool_dir_and_is_idempotent() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dirs = dirs_in(tmp.path());
+        let d = tool_dir(&dirs, Tool::Bun);
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::write(d.join(VERSION_MARKER), "bun-v1.0.0").unwrap();
+        uninstall(&dirs, Tool::Bun).unwrap();
+        assert!(!d.exists());
+        uninstall(&dirs, Tool::Bun).unwrap();
+    }
+
+    #[test]
+    fn list_status_covers_every_tool() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dirs = dirs_in(tmp.path());
+        let all = list_status(&dirs);
+        assert_eq!(all.len(), Tool::ALL.len());
+        assert!(all.iter().all(|s| !s.installed && !s.external));
+    }
+
+    #[test]
     fn sha_for_asset_matches_exact_filename_among_decoys() {
         let h = "a".repeat(64);
         let want = "b".repeat(64);

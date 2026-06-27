@@ -195,7 +195,7 @@ fn shell_invocation(shell: &str) -> Vec<String> {
 }
 
 #[cfg(all(test, unix))]
-#[allow(clippy::unwrap_used)]
+#[allow(clippy::unwrap_used, clippy::panic, clippy::indexing_slicing)]
 mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt as _;
@@ -253,5 +253,70 @@ mod tests {
         std::os::unix::fs::symlink(&managed, userbin.join("node")).unwrap();
 
         assert!(find_in_path(&[userbin], "node", &data_bin, &data).is_none());
+    }
+
+    #[test]
+    fn between_requires_both_markers_in_order() {
+        assert_eq!(between("__A__/usr/bin", "__A__", "__B__"), None);
+        assert_eq!(between("__B____A__", "__A__", "__B__"), None);
+        assert_eq!(between("__A____B__", "__A__", "__B__"), Some(""));
+    }
+
+    #[test]
+    fn find_in_path_skips_non_executable_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        let data = tmp.path().join("data");
+        let dir = tmp.path().join("bin");
+        std::fs::create_dir_all(&data).unwrap();
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("composer"), b"#!/bin/sh\n").unwrap();
+        assert!(find_in_path(
+            std::slice::from_ref(&dir),
+            "composer",
+            &data.join("bin"),
+            &data
+        )
+        .is_none());
+        std::fs::set_permissions(dir.join("composer"), std::fs::Permissions::from_mode(0o755))
+            .unwrap();
+        assert!(find_in_path(&[dir], "composer", &data.join("bin"), &data).is_some());
+    }
+
+    #[test]
+    fn external_tool_resolves_primary_bin() {
+        let tmp = tempfile::tempdir().unwrap();
+        let data = tmp.path().join("data");
+        let dir = tmp.path().join("opt");
+        std::fs::create_dir_all(&data).unwrap();
+        std::fs::create_dir_all(&dir).unwrap();
+        let bun = touch_exec(&dir, "bun");
+        let found = external_tool(&[dir], Tool::Bun, &data.join("bin"), &data).unwrap();
+        assert_eq!(found, bun);
+    }
+
+    #[test]
+    fn shell_invocation_picks_interactive_login_flags() {
+        assert_eq!(shell_invocation("/bin/zsh")[0], "-ilc");
+        assert_eq!(shell_invocation("/usr/bin/bash")[0], "-ilc");
+        let fish = shell_invocation("/opt/homebrew/bin/fish");
+        assert_eq!(fish[0], "-il");
+        assert_eq!(fish[1], "-c");
+        assert!(fish[2].contains("string join"));
+        assert_eq!(shell_invocation("/bin/dash")[0], "-ic");
+        let z = shell_invocation("/bin/zsh");
+        assert!(z[1].contains(BEGIN) && z[1].contains(END));
+    }
+
+    #[test]
+    fn user_shell_prefers_shell_env() {
+        static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        let _guard = ENV_LOCK.get_or_init(|| Mutex::new(())).lock().unwrap();
+        let prev = std::env::var_os("SHELL");
+        std::env::set_var("SHELL", "/custom/myshell");
+        assert_eq!(user_shell(), "/custom/myshell");
+        match prev {
+            Some(v) => std::env::set_var("SHELL", v),
+            None => std::env::remove_var("SHELL"),
+        }
     }
 }

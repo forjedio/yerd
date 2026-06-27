@@ -161,4 +161,63 @@ mod tests {
         assert_eq!(choose_version(&v, Some(70_000)).as_deref(), Some("2.2.22"));
         assert_eq!(choose_version(&v, None).as_deref(), Some("2.10.1"));
     }
+
+    #[test]
+    fn choose_version_none_when_host_too_old() {
+        let v: Versions = serde_json::from_str(versions_json()).unwrap();
+        assert_eq!(choose_version(&v, Some(50_000)), None);
+    }
+
+    #[test]
+    fn choose_version_skips_invalid_version_strings() {
+        let v: Versions = serde_json::from_str(
+            r#"{"stable":[
+                {"path":"x","version":"../evil","min-php":50302},
+                {"path":"y","version":"2.7.9","min-php":50302}
+            ]}"#,
+        )
+        .unwrap();
+        assert_eq!(choose_version(&v, Some(80_000)).as_deref(), Some("2.7.9"));
+    }
+
+    #[test]
+    fn version_id_minor_offsets() {
+        assert_eq!(version_id(PhpVersion::new(7, 2)), 70_200);
+        assert_eq!(version_id(PhpVersion::new(8, 0)), 80_000);
+    }
+
+    #[test]
+    fn valid_version_edge_cases() {
+        assert!(valid_version("8"));
+        assert!(!valid_version(""));
+        assert!(!valid_version(".5"));
+        assert!(!valid_version("1..2"));
+        assert!(!valid_version("1.2-rc"));
+    }
+
+    struct ShaDownloader(Vec<u8>);
+
+    #[async_trait::async_trait]
+    impl Downloader for ShaDownloader {
+        async fn download(&self, _url: &str) -> Result<Vec<u8>, yerd_php::DownloadError> {
+            Ok(self.0.clone())
+        }
+    }
+
+    #[tokio::test]
+    async fn fetch_sha256sum_parses_sidecar() {
+        let hex = "a".repeat(64);
+        let body = format!("{hex}  composer.phar\n");
+        let dl = ShaDownloader(body.into_bytes());
+        assert_eq!(fetch_sha256sum(&dl, "url").await.unwrap(), hex);
+    }
+
+    #[tokio::test]
+    async fn fetch_sha256sum_rejects_bad_format() {
+        let dl = ShaDownloader(b"deadbeef  composer.phar\n".to_vec());
+        assert!(fetch_sha256sum(&dl, "url").await.is_err());
+        let hex = "A".repeat(64);
+        let dl2 = ShaDownloader(format!("{hex}  composer.phar").into_bytes());
+        assert_eq!(fetch_sha256sum(&dl2, "url").await.unwrap(), "a".repeat(64));
+    }
 }

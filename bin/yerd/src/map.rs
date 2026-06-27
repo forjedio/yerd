@@ -1735,4 +1735,571 @@ mod tests {
         assert_eq!(v["type"], "error");
         assert_eq!(err.code, 1);
     }
+
+    #[test]
+    fn maps_services_command() {
+        assert_eq!(
+            to_request(&Command::Services).unwrap(),
+            Request::ListServices
+        );
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn maps_every_service_action() {
+        use crate::cli::ServiceAction;
+        assert_eq!(
+            to_request(&Command::Service {
+                action: ServiceAction::Available
+            })
+            .unwrap(),
+            Request::AvailableServices
+        );
+        assert_eq!(
+            to_request(&Command::Service {
+                action: ServiceAction::Install {
+                    service: "redis".into(),
+                    version: "8".into()
+                }
+            })
+            .unwrap(),
+            Request::InstallService {
+                service: "redis".into(),
+                version: "8".into()
+            }
+        );
+        assert_eq!(
+            to_request(&Command::Service {
+                action: ServiceAction::ChangeVersion {
+                    service: "mysql".into(),
+                    version: "9.1.0".into()
+                }
+            })
+            .unwrap(),
+            Request::ChangeServiceVersion {
+                service: "mysql".into(),
+                version: "9.1.0".into()
+            }
+        );
+        assert_eq!(
+            to_request(&Command::Service {
+                action: ServiceAction::Uninstall {
+                    service: "mariadb".into(),
+                    version: "11".into(),
+                    purge: true
+                }
+            })
+            .unwrap(),
+            Request::UninstallService {
+                service: "mariadb".into(),
+                version: "11".into(),
+                purge: true
+            }
+        );
+        assert_eq!(
+            to_request(&Command::Service {
+                action: ServiceAction::Start {
+                    service: "redis".into()
+                }
+            })
+            .unwrap(),
+            Request::StartService {
+                service: "redis".into()
+            }
+        );
+        assert_eq!(
+            to_request(&Command::Service {
+                action: ServiceAction::Stop {
+                    service: "redis".into()
+                }
+            })
+            .unwrap(),
+            Request::StopService {
+                service: "redis".into()
+            }
+        );
+        assert_eq!(
+            to_request(&Command::Service {
+                action: ServiceAction::Restart {
+                    service: "redis".into()
+                }
+            })
+            .unwrap(),
+            Request::RestartService {
+                service: "redis".into()
+            }
+        );
+        assert_eq!(
+            to_request(&Command::Service {
+                action: ServiceAction::SetPort {
+                    service: "redis".into(),
+                    port: 6380
+                }
+            })
+            .unwrap(),
+            Request::SetServicePort {
+                service: "redis".into(),
+                port: 6380
+            }
+        );
+        assert_eq!(
+            to_request(&Command::Service {
+                action: ServiceAction::Logs {
+                    service: "mysql".into(),
+                    lines: 50
+                }
+            })
+            .unwrap(),
+            Request::ServiceLogs {
+                service: "mysql".into(),
+                lines: 50
+            }
+        );
+    }
+
+    #[test]
+    fn maps_every_db_action() {
+        use crate::cli::DbAction;
+        assert_eq!(
+            to_request(&Command::Db {
+                action: DbAction::List {
+                    service: "mysql".into()
+                }
+            })
+            .unwrap(),
+            Request::ListDatabases {
+                service: "mysql".into()
+            }
+        );
+        assert_eq!(
+            to_request(&Command::Db {
+                action: DbAction::Create {
+                    service: "mysql".into(),
+                    name: "app".into()
+                }
+            })
+            .unwrap(),
+            Request::CreateDatabase {
+                service: "mysql".into(),
+                name: "app".into()
+            }
+        );
+        assert_eq!(
+            to_request(&Command::Db {
+                action: DbAction::Drop {
+                    service: "mysql".into(),
+                    name: "app".into()
+                }
+            })
+            .unwrap(),
+            Request::DropDatabase {
+                service: "mysql".into(),
+                name: "app".into()
+            }
+        );
+        assert_eq!(
+            to_request(&Command::Db {
+                action: DbAction::Backup {
+                    service: "mysql".into(),
+                    name: "app".into(),
+                    path: PathBuf::from("dump.sql")
+                }
+            })
+            .unwrap(),
+            Request::BackupDatabase {
+                service: "mysql".into(),
+                name: "app".into(),
+                path: PathBuf::from("dump.sql")
+            }
+        );
+        assert_eq!(
+            to_request(&Command::Db {
+                action: DbAction::Restore {
+                    service: "mysql".into(),
+                    name: "app".into(),
+                    path: PathBuf::from("dump.sql")
+                }
+            })
+            .unwrap(),
+            Request::RestoreDatabase {
+                service: "mysql".into(),
+                name: "app".into(),
+                path: PathBuf::from("dump.sql")
+            }
+        );
+    }
+
+    #[test]
+    fn maps_every_mail_action() {
+        use crate::cli::MailAction;
+        assert_eq!(
+            to_request(&Command::Mail {
+                action: MailAction::List
+            })
+            .unwrap(),
+            Request::ListMails
+        );
+        assert_eq!(
+            to_request(&Command::Mail {
+                action: MailAction::Show { id: "abc".into() }
+            })
+            .unwrap(),
+            Request::GetMail { id: "abc".into() }
+        );
+        assert_eq!(
+            to_request(&Command::Mail {
+                action: MailAction::Clear
+            })
+            .unwrap(),
+            Request::ClearMails
+        );
+    }
+
+    #[test]
+    fn install_php_rejects_bad_version() {
+        match to_request(&Command::Install {
+            target: crate::cli::InstallTarget::Php {
+                version: "not-a-version".into(),
+            },
+        }) {
+            Err(ClientError::Usage(_)) => {}
+            other => panic!("expected Usage error, got {other:?}"),
+        }
+        match to_request(&Command::Restart {
+            target: crate::cli::RestartTarget::Php {
+                version: Some("xx".into()),
+            },
+        }) {
+            Err(ClientError::Usage(_)) => {}
+            other => panic!("expected Usage error, got {other:?}"),
+        }
+        match to_request(&Command::Uninstall {
+            target: Some(crate::cli::UninstallTarget::Php {
+                version: "xx".into(),
+            }),
+            yes: false,
+        }) {
+            Err(ClientError::Usage(_)) => {}
+            other => panic!("expected Usage error, got {other:?}"),
+        }
+        match to_request(&Command::Update {
+            target: Some(crate::cli::UpdateTarget::Php {
+                version: Some("xx".into()),
+            }),
+            yes: false,
+            edge: false,
+            stable: false,
+            force: false,
+        }) {
+            Err(ClientError::Usage(_)) => {}
+            other => panic!("expected Usage error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn unset_unknown_php_setting_is_usage_error() {
+        match to_request(&Command::Unset {
+            target: crate::cli::UnsetTarget::Php {
+                setting: "not_a_setting".into(),
+            },
+        }) {
+            Err(ClientError::Usage(_)) => {}
+            other => panic!("expected Usage error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn root_rejects_bad_name() {
+        match to_request(&Command::Root {
+            name: "bad name".into(),
+            path: None,
+            auto: true,
+        }) {
+            Err(ClientError::Usage(_)) => {}
+            other => panic!("expected Usage error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn update_php_with_self_update_flags_each_error() {
+        for (yes, edge, stable, force) in [
+            (true, false, false, false),
+            (false, true, false, false),
+            (false, false, true, false),
+            (false, false, false, true),
+        ] {
+            assert!(
+                matches!(
+                    to_request(&Command::Update {
+                        target: Some(crate::cli::UpdateTarget::Php { version: None }),
+                        yes,
+                        edge,
+                        stable,
+                        force,
+                    }),
+                    Err(ClientError::Usage(_))
+                ),
+                "flags y={yes} e={edge} s={stable} f={force} should be a usage error"
+            );
+        }
+    }
+
+    #[test]
+    fn bare_update_stable_flag_overrides_channel() {
+        assert_eq!(
+            to_request(&Command::Update {
+                target: None,
+                yes: false,
+                edge: false,
+                stable: true,
+                force: false,
+            })
+            .unwrap(),
+            Request::CheckUpdate {
+                channel: Some(Channel::Stable)
+            }
+        );
+    }
+
+    #[test]
+    fn local_only_commands_are_usage_errors() {
+        for cmd in [
+            Command::Uninstall {
+                target: None,
+                yes: false,
+            },
+            Command::Elevate { target: None },
+            Command::Unelevate { target: None },
+            Command::Elevate {
+                target: Some(crate::cli::ElevateTarget::Trust),
+            },
+            Command::Unelevate {
+                target: Some(crate::cli::ElevateTarget::Resolver),
+            },
+            Command::Path {
+                action: crate::cli::PathAction::Install,
+            },
+        ] {
+            match to_request(&cmd) {
+                Err(ClientError::Usage(_)) => {}
+                other => panic!("expected Usage error for {cmd:?}, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn channel_from_flags_table() {
+        assert_eq!(channel_from_flags(true, false), Some(Channel::Edge));
+        assert_eq!(channel_from_flags(false, true), Some(Channel::Stable));
+        assert_eq!(channel_from_flags(false, false), None);
+        assert_eq!(channel_from_flags(true, true), Some(Channel::Edge));
+    }
+
+    fn service_status(installed: Vec<String>) -> ServiceStatus {
+        ServiceStatus {
+            service: "redis".into(),
+            display_name: "Redis".into(),
+            installed_versions: installed,
+            selected_version: None,
+            state: ServiceRunState::Running,
+            pid: Some(42),
+            listen: Some("127.0.0.1:6379".into()),
+            port: 6379,
+            enabled: true,
+            supports_databases: false,
+        }
+    }
+
+    #[test]
+    fn renders_services_table_and_states() {
+        let empty = render(&Response::Services { services: vec![] }, false);
+        assert_eq!(empty.stdout, "no services");
+        assert_eq!(empty.code, 0);
+
+        let installed = render(
+            &Response::Services {
+                services: vec![service_status(vec!["7".into(), "8".into()])],
+            },
+            false,
+        );
+        assert!(installed.stdout.contains("SERVICE\tSTATE\tPORT"));
+        assert!(installed.stdout.contains("redis\trunning\t6379"));
+        assert!(installed.stdout.contains("\t8\t"), "{}", installed.stdout);
+        assert!(installed.stdout.contains("7,8"));
+
+        let not_installed = render(
+            &Response::Services {
+                services: vec![service_status(vec![])],
+            },
+            false,
+        );
+        assert!(not_installed.stdout.contains("redis\tnot installed\t-\t-"));
+
+        let mut stopped = service_status(vec!["8".into()]);
+        stopped.state = ServiceRunState::Stopped;
+        stopped.selected_version = Some("8".into());
+        assert!(render(
+            &Response::Services {
+                services: vec![stopped]
+            },
+            false
+        )
+        .stdout
+        .contains("redis\tstopped"));
+
+        let mut failed = service_status(vec!["8".into()]);
+        failed.state = ServiceRunState::Failed;
+        assert!(render(
+            &Response::Services {
+                services: vec![failed]
+            },
+            false
+        )
+        .stdout
+        .contains("redis\tfailed"));
+    }
+
+    #[test]
+    fn renders_available_services() {
+        let empty = render(&Response::AvailableServices { services: vec![] }, false);
+        assert_eq!(empty.stdout, "no services available");
+
+        let listed = render(
+            &Response::AvailableServices {
+                services: vec![
+                    ServiceAvailability {
+                        service: "redis".into(),
+                        available: vec!["7".into(), "8".into()],
+                        installed: vec!["8".into()],
+                    },
+                    ServiceAvailability {
+                        service: "mysql".into(),
+                        available: vec![],
+                        installed: vec![],
+                    },
+                ],
+            },
+            false,
+        );
+        assert!(listed.stdout.contains("SERVICE\tAVAILABLE\tINSTALLED"));
+        assert!(listed.stdout.contains("redis\t7,8\t8"));
+        assert!(listed.stdout.contains("mysql\t-\t-"));
+    }
+
+    #[test]
+    fn renders_service_logs() {
+        let empty = render(&Response::ServiceLogs { lines: vec![] }, false);
+        assert_eq!(empty.stdout, "no log output");
+
+        let lines = render(
+            &Response::ServiceLogs {
+                lines: vec!["line one".into(), "line two".into()],
+            },
+            false,
+        );
+        assert_eq!(lines.stdout, "line one\nline two");
+        assert_eq!(lines.code, 0);
+    }
+
+    #[test]
+    fn renders_databases() {
+        let empty = render(&Response::Databases { databases: vec![] }, false);
+        assert_eq!(empty.stdout, "no databases");
+
+        let listed = render(
+            &Response::Databases {
+                databases: vec![
+                    yerd_ipc::DatabaseSummary { name: "app".into() },
+                    yerd_ipc::DatabaseSummary {
+                        name: "blog".into(),
+                    },
+                ],
+            },
+            false,
+        );
+        assert_eq!(listed.stdout, "app\nblog");
+    }
+
+    #[test]
+    fn renders_mail_list() {
+        let empty = render(&Response::Mails { mails: vec![] }, false);
+        assert_eq!(empty.stdout, "no captured emails");
+
+        let listed = render(
+            &Response::Mails {
+                mails: vec![
+                    yerd_ipc::MailSummary {
+                        id: "id1".into(),
+                        from: "a@example.com".into(),
+                        to: vec!["b@example.com".into()],
+                        subject: "hello\tthere\nworld".into(),
+                        date_epoch: 0,
+                    },
+                    yerd_ipc::MailSummary {
+                        id: "id2".into(),
+                        from: "c@example.com".into(),
+                        to: vec![],
+                        subject: String::new(),
+                        date_epoch: 0,
+                    },
+                ],
+            },
+            false,
+        );
+        assert!(listed.stdout.contains("ID\tFROM\tSUBJECT"));
+        assert!(listed
+            .stdout
+            .contains("id1\ta@example.com\thello there world"));
+        assert!(listed.stdout.contains("id2\tc@example.com\t(no subject)"));
+    }
+
+    #[test]
+    fn renders_mail_detail_body_variants() {
+        let base = yerd_ipc::MailDetail {
+            id: "id1".into(),
+            from: "a@example.com".into(),
+            to: vec!["b@example.com".into(), "c@example.com".into()],
+            subject: "Hi".into(),
+            date_epoch: 0,
+            headers: vec![],
+            html_body: None,
+            text_body: Some("plain body".into()),
+        };
+        let text = render(
+            &Response::Mail {
+                mail: Box::new(base.clone()),
+            },
+            false,
+        );
+        assert!(text.stdout.contains("From:    a@example.com"));
+        assert!(text
+            .stdout
+            .contains("To:      b@example.com, c@example.com"));
+        assert!(text.stdout.contains("Subject: Hi"));
+        assert!(text.stdout.contains("plain body"));
+
+        let mut html_only = base.clone();
+        html_only.text_body = None;
+        html_only.html_body = Some("<p>hi</p>".into());
+        assert!(render(
+            &Response::Mail {
+                mail: Box::new(html_only)
+            },
+            false
+        )
+        .stdout
+        .contains("HTML-only message"));
+
+        let mut empty = base;
+        empty.text_body = None;
+        empty.html_body = None;
+        assert!(render(
+            &Response::Mail {
+                mail: Box::new(empty)
+            },
+            false
+        )
+        .stdout
+        .contains("(empty message)"));
+    }
 }

@@ -883,4 +883,109 @@ mod tests {
         assert_eq!(blog.php(), PhpVersion::new(7, 4));
         assert!(!blog.secure());
     }
+
+    #[test]
+    fn rand_boot_id_fits_52_bits() {
+        let id = rand_boot_id();
+        assert!(id < (1u64 << 52), "boot id {id} exceeds 52 bits");
+    }
+
+    #[test]
+    fn build_router_and_routing_empty_config_is_empty() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dirs = make_dirs(tmp.path());
+        let cfg = yerd_config::Config::default();
+        let cache = DetectCache::new();
+        let router = build_router(&cfg, &dirs, &cache).unwrap();
+        assert!(router.is_empty());
+        let (router2, watch_roots) = build_routing(&cfg, &dirs, &cache).unwrap();
+        assert!(router2.is_empty());
+        assert!(watch_roots.is_empty());
+    }
+
+    #[test]
+    fn build_routing_includes_parked_site() {
+        let tmp = tempfile::tempdir().unwrap();
+        let parked_root = tmp.path().join("Sites");
+        std::fs::create_dir_all(parked_root.join("shop")).unwrap();
+        let mut cfg = yerd_config::Config::default();
+        cfg.parked
+            .paths
+            .insert(parked_root.to_string_lossy().into_owned());
+        let dirs = make_dirs(tmp.path());
+        let (router, watch_roots) = build_routing(&cfg, &dirs, &DetectCache::new()).unwrap();
+        assert!(!router.is_empty());
+        assert_eq!(watch_roots, vec![parked_root.join("shop")]);
+    }
+
+    #[test]
+    fn parked_site_name_filters_and_lowercases() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::create_dir_all(root.join("MyApp")).unwrap();
+        std::fs::create_dir_all(root.join(".hidden")).unwrap();
+        std::fs::create_dir_all(root.join("linked")).unwrap();
+        std::fs::write(root.join("afile"), b"x").unwrap();
+
+        let mut linked = std::collections::HashSet::new();
+        linked.insert("linked");
+
+        let mut got: std::collections::BTreeMap<String, Option<String>> =
+            std::collections::BTreeMap::default();
+        for entry in std::fs::read_dir(root).unwrap().flatten() {
+            let key = entry.file_name().to_string_lossy().into_owned();
+            got.insert(key, parked_site_name(&entry, &linked));
+        }
+        assert_eq!(got.get("MyApp").unwrap().as_deref(), Some("myapp"));
+        assert_eq!(got.get(".hidden").unwrap().as_deref(), None);
+        assert_eq!(got.get("afile").unwrap().as_deref(), None);
+        assert_eq!(got.get("linked").unwrap().as_deref(), None);
+    }
+
+    #[test]
+    fn load_or_default_config_uses_defaults_when_missing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("absent").join("yerd.toml");
+        let cfg = load_or_default_config(&path).unwrap();
+        assert_eq!(cfg.tld, yerd_config::Config::default().tld);
+    }
+
+    #[test]
+    fn load_or_default_config_loads_existing_then_rejects_invalid() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("yerd.toml");
+        yerd_config::Config::default().save(&path).unwrap();
+        assert!(load_or_default_config(&path).is_ok());
+        std::fs::write(&path, b"this is = not valid = toml {{{").unwrap();
+        assert!(load_or_default_config(&path).is_err());
+    }
+
+    #[test]
+    fn load_or_generate_ca_generates_then_reloads() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dirs = make_dirs(tmp.path());
+        std::fs::create_dir_all(&dirs.data).unwrap();
+        let ca = load_or_generate_ca(&dirs).unwrap();
+        let fp1 = ca.fingerprint_sha256();
+        assert!(dirs.data.join("ca.cert.pem").is_file());
+        assert!(dirs.data.join("ca.key.pem").is_file());
+        let ca2 = load_or_generate_ca(&dirs).unwrap();
+        assert_eq!(ca2.fingerprint_sha256(), fp1);
+    }
+
+    #[tokio::test]
+    async fn into_tokio_listener_converts_a_bound_socket() {
+        let std_listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let local = std_listener.local_addr().unwrap();
+        let tokio_listener = into_tokio_listener(std_listener).unwrap();
+        assert_eq!(tokio_listener.local_addr().unwrap(), local);
+    }
+
+    #[test]
+    fn ca_validity_spans_the_past_into_the_future() {
+        let v = ca_validity().unwrap();
+        let now = time::OffsetDateTime::now_utc();
+        assert!(v.not_before() < now);
+        assert!(v.not_after() > now);
+    }
 }
