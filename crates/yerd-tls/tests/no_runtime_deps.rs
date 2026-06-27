@@ -41,7 +41,6 @@ fn run_cargo_metadata() -> Value {
 fn no_tokio_or_anyhow_in_runtime_graph_and_pinned_versions_unique() {
     let meta = run_cargo_metadata();
 
-    // Build id → package-name + id → resolve-node maps.
     let mut pkg_name: HashMap<&str, &str> = HashMap::new();
     let mut pkg_version: HashMap<&str, &str> = HashMap::new();
     for p in meta["packages"].as_array().unwrap() {
@@ -57,16 +56,12 @@ fn no_tokio_or_anyhow_in_runtime_graph_and_pinned_versions_unique() {
         nodes_by_id.insert(n["id"].as_str().unwrap(), n);
     }
 
-    // Locate yerd-tls's node id.
     let yerd_tls_id = pkg_name
         .iter()
         .find(|(_, n)| **n == "yerd-tls")
         .map(|(id, _)| *id)
         .expect("yerd-tls must appear in cargo metadata");
 
-    // BFS over normal-kind edges only. Each `node.deps[i].dep_kinds[j].kind`
-    // is `null` for normal runtime deps, `"dev"` for dev-deps, `"build"` for
-    // build-deps. We scope to normal.
     let mut reachable: HashSet<&str> = HashSet::new();
     let mut queue: VecDeque<&str> = VecDeque::new();
     queue.push_back(yerd_tls_id);
@@ -86,26 +81,22 @@ fn no_tokio_or_anyhow_in_runtime_graph_and_pinned_versions_unique() {
         }
     }
 
-    // Collect (name, version) pairs from the reachable set.
     let mut reachable_pairs: Vec<(&str, &str)> = reachable
         .iter()
         .map(|id| (pkg_name[id], pkg_version[id]))
         .collect();
     reachable_pairs.sort_unstable();
 
-    // (1) No tokio in the runtime graph.
     assert!(
         !reachable_pairs.iter().any(|(n, _)| *n == "tokio"),
         "tokio appeared in yerd-tls's runtime graph: {reachable_pairs:?}"
     );
 
-    // (2) No anyhow in the runtime graph.
     assert!(
         !reachable_pairs.iter().any(|(n, _)| *n == "anyhow"),
         "anyhow appeared in yerd-tls's runtime graph"
     );
 
-    // (3) Exactly one `time` version.
     let time_versions: HashSet<&str> = reachable_pairs
         .iter()
         .filter(|(n, _)| *n == "time")
@@ -117,7 +108,6 @@ fn no_tokio_or_anyhow_in_runtime_graph_and_pinned_versions_unique() {
         "expected exactly one `time` version, found {time_versions:?}"
     );
 
-    // (4) Exactly one `x509-parser` version.
     let x509_versions: HashSet<&str> = reachable_pairs
         .iter()
         .filter(|(n, _)| *n == "x509-parser")

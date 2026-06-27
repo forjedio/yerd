@@ -5,8 +5,8 @@
 //! each file's `php`/`os`/`arch`/`sha256`. yerd resolves
 //! the file matching the host triple for each installed PHP minor, verifies the
 //! SHA-256, and places it at `{data}/php-ext/php-<ver>/yerd-dump.so` (a sibling
-//! of the PHP installs, so a PHP patch update — which wipes `{data}/php/php-<ver>`
-//! — never removes the extension).
+//! of the PHP installs, so a PHP patch update - which wipes `{data}/php/php-<ver>`
+//! - never removes the extension).
 //!
 //! Everything here is best-effort: a download/verify failure logs and leaves the
 //! site running with no dumps.
@@ -65,7 +65,7 @@ const PCOV_SPEC: ExtSpec = ExtSpec {
 };
 
 /// The host OS/arch as the manifest names them (`macos`/`linux`,
-/// `aarch64`/`x86_64`) — `std::env::consts` already uses these spellings.
+/// `aarch64`/`x86_64`) - `std::env::consts` already uses these spellings.
 fn host_os_arch() -> (&'static str, &'static str) {
     (std::env::consts::OS, std::env::consts::ARCH)
 }
@@ -111,13 +111,11 @@ pub async fn ensure_for_installed(dirs: &PlatformDirs, dl: &dyn Downloader) {
 /// Used by the CLI cover shims (`phpcover`/`php<ver>cover`); ungated, unlike the
 /// dump fetch. Warm/offline starts skip the network entirely: if every installed
 /// version already has a `pcov.so`, return without touching GitHub. (The "present"
-/// check is a proxy for "current" — a stale `.so` won't refresh on a pure restart,
+/// check is a proxy for "current" - a stale `.so` won't refresh on a pure restart,
 /// which is fine: pcov is ABI-stable per PHP minor and any *missing* `.so` still
 /// forces a full manifest fetch + re-verify.)
 pub async fn ensure_pcov_for_installed(dirs: &PlatformDirs, dl: &dyn Downloader) {
     let versions = installed_versions(dirs);
-    // Nothing to fetch when no PHP is installed, or when every version already
-    // has its `.so` — skip the manifest GET entirely.
     if versions.is_empty() || versions.iter().all(|v| pcov_so_path(dirs, *v).is_file()) {
         return;
     }
@@ -143,7 +141,7 @@ async fn ensure_for_installed_spec(dirs: &PlatformDirs, dl: &dyn Downloader, spe
         };
         let dest = so_path_named(dirs, v, spec.so_name);
         if existing_matches(&dest, &file.sha256) {
-            continue; // already current
+            continue;
         }
         match download_and_place(dl, &file.name, &file.sha256, &dest).await {
             Ok(()) => tracing::info!(php = %minor, ext = spec.label, "installed PHP extension"),
@@ -200,7 +198,7 @@ async fn download_and_place(
         std::fs::create_dir_all(parent)?;
     }
     // Atomic place: write a unique temp sibling (pid + sequence, so overlapping
-    // installs of the same version don't share a temp path) then rename over.
+    // installs of the same version don't share a temp path), then rename over.
     let seq = TMP_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let tmp = dest.with_extension(format!("so.{}.{}.tmp", std::process::id(), seq));
     std::fs::write(&tmp, &bytes)?;

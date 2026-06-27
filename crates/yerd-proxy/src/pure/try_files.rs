@@ -4,7 +4,7 @@
 //! This is the *pure* half of nginx/Caddy's `try_files $uri /index.php`: decide
 //! whether a request *could* map to a static file (returning a traversal-safe
 //! relative path) or whether it belongs to the PHP front controller (`None`).
-//! The caller performs the filesystem existence/type check — that's the I/O
+//! The caller performs the filesystem existence/type check - that's the I/O
 //! half, in `forward::static_file`.
 
 use std::path::{Path, PathBuf};
@@ -20,9 +20,7 @@ use std::path::{Path, PathBuf};
 /// as defence-in-depth against symlinks.
 #[must_use]
 pub fn static_candidate(url_path: &str) -> Option<PathBuf> {
-    // Be defensive if a path_and_query slips in.
     let path = url_path.split('?').next().unwrap_or(url_path);
-    // Root or any directory request is the front controller's job.
     if path.is_empty() || path.ends_with('/') {
         return None;
     }
@@ -31,13 +29,12 @@ pub fn static_candidate(url_path: &str) -> Option<PathBuf> {
     let mut segments = 0usize;
     for raw in path.split('/') {
         if raw.is_empty() {
-            continue; // leading slash or `//`
+            continue;
         }
         let seg = percent_decode(raw)?;
         if seg.is_empty() || seg == "." || seg == ".." {
             return None;
         }
-        // An encoded slash or NUL would let a single "segment" span directories.
         if seg.bytes().any(|b| b == b'/' || b == b'\\' || b == 0) {
             return None;
         }
@@ -50,7 +47,7 @@ pub fn static_candidate(url_path: &str) -> Option<PathBuf> {
     Some(rel)
 }
 
-/// Whether `path` looks like PHP source — these must never be served as a static
+/// Whether `path` looks like PHP source - these must never be served as a static
 /// file (it would leak source), so the front controller handles them instead.
 #[must_use]
 pub fn is_php_source(path: &Path) -> bool {
@@ -180,11 +177,8 @@ mod tests {
         assert_eq!(static_candidate("/../etc/passwd"), None);
         assert_eq!(static_candidate("/foo/../../bar"), None);
         assert_eq!(static_candidate("/."), None);
-        // Encoded dot-dot (`%2e%2e`) decodes to `..` and is rejected.
         assert_eq!(static_candidate("/%2e%2e/secret"), None);
-        // Encoded slash must not smuggle a separator into one segment.
         assert_eq!(static_candidate("/foo%2fbar"), None);
-        // Malformed escape.
         assert_eq!(static_candidate("/foo%2"), None);
         assert_eq!(static_candidate("/foo%zz"), None);
     }

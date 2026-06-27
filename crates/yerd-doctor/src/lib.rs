@@ -39,36 +39,19 @@ pub enum FixAction {
 /// Findings are emitted in a stable order. When no `Warn`/`Fail` finding is
 /// produced, a single [`DiagnosisCode::AllGood`] `Ok` finding is appended so the
 /// caller always has something to show. `Option<bool>` probes that are `None`
-/// ("couldn't determine") emit **no** finding — never a false-alarm warning.
+/// ("couldn't determine") emit no finding, never a false-alarm warning.
 #[must_use]
 pub fn diagnose(report: &StatusReport, path_needs_setup: Option<bool>) -> Vec<Diagnosis> {
     let mut out = Vec::new();
 
-    // --- Port findings: a foreign listener squatting 80/443, or a privileged
-    // fallback that needs elevation (see `port_findings`).
     out.extend(port_findings(report));
-
-    // --- CA trust + resolver (each skipped when undeterminable).
     out.extend(trust_findings(report));
-
-    // --- PHP install state (NoPhpInstalled suppresses DefaultPhpNotInstalled),
-    // then failed FPM pools (one per pool; auto-fixable by restart).
     out.extend(php_state_findings(report));
-
-    // --- Failed services (one finding per engine).
     out.extend(service_findings(report));
-
-    // --- Available PHP updates (informational).
     out.extend(php_update_findings(report));
-
-    // --- Replaced resolver file backed up (informational). The daemon only
-    // sets this for a recent backup, so it auto-clears rather than nagging.
     out.extend(resolver_backup_finding(report));
-
-    // --- No sites (informational).
     out.extend(no_sites_finding(report));
 
-    // --- Dev-tool bin dir not on PATH (warn; daemon-supplied env probe).
     if path_needs_setup == Some(true) {
         out.push(warn(
             DiagnosisCode::BinDirNotOnPath,
@@ -80,7 +63,6 @@ pub fn diagnose(report: &StatusReport, path_needs_setup: Option<bool>) -> Vec<Di
         ));
     }
 
-    // --- All-good summary when nothing is wrong.
     if !out
         .iter()
         .any(|d| matches!(d.severity, Severity::Warn | Severity::Fail))
@@ -208,7 +190,7 @@ fn no_sites_finding(report: &StatusReport) -> Option<Diagnosis> {
 }
 
 /// Informational finding when the daemon reports a recent backup of a replaced
-/// `/etc/resolver/<tld>`. `Ok` severity with **no remedy** — the GUI renders
+/// `/etc/resolver/<tld>`. `Ok` severity with no remedy - the GUI renders
 /// `remedy` as a copy-a-command chip, which would misrepresent this path/guidance
 /// as a runnable command.
 fn resolver_backup_finding(report: &StatusReport) -> Option<Diagnosis> {
@@ -242,7 +224,7 @@ pub fn plan_auto_fixes(report: &StatusReport) -> Vec<FixAction> {
         .collect()
 }
 
-/// Whether a finding with this `code` is one the daemon auto-fixes — used by the
+/// Whether a finding with this `code` is one the daemon auto-fixes - used by the
 /// daemon to drop already-handled findings from the "manual" remainder.
 #[must_use]
 pub fn is_auto_fixable(code: DiagnosisCode) -> bool {
@@ -256,14 +238,9 @@ pub fn is_auto_fixable(code: DiagnosisCode) -> bool {
 /// instead and suppress the fallback advice (elevation can't bind a port
 /// another process owns). On macOS the daemon still binds the rootless ports
 /// even once elevated, so an active pf redirect (`port_redirect == Some(true)`)
-/// means 80/443 are in fact reachable — also suppressing the fallback warning.
+/// means 80/443 are in fact reachable - also suppressing the fallback warning.
 fn port_findings(report: &StatusReport) -> Vec<Diagnosis> {
     let mut out = Vec::new();
-    // DNS is independent of the web ports, so check it first — it must surface
-    // even when `web_unbound` triggers the early return below. A bind failure is
-    // a `Warn`, not a `Fail`: the daemon still runs, and on a fresh setup the OS
-    // resolver may not be installed yet (in which case `ResolverNotInstalled`
-    // already covers "names won't resolve").
     if let Some(dns_port) = report.dns_unbound {
         out.push(warn(
             DiagnosisCode::DnsPortUnbound,
@@ -287,8 +264,6 @@ fn port_findings(report: &StatusReport) -> Vec<Diagnosis> {
             "Stop the other web server (e.g. Apache, nginx, Valet), then `sudo yerd elevate ports`",
         ));
     }
-    // The daemon couldn't bind either web port pair, so it's serving nothing —
-    // a hard failure that supersedes the plain "fell back" warning below.
     if let Some(unbound) = report.web_unbound {
         out.push(fail(
             DiagnosisCode::WebPortsUnbound,
@@ -441,7 +416,6 @@ mod tests {
             "info finding must not render a command chip"
         );
         assert!(finding.detail.contains("resolver-backups/test-1.conf"));
-        // Informational → does not suppress AllGood and is not auto-fixable.
         assert!(codes(&ds).contains(&DiagnosisCode::AllGood));
         assert!(!is_auto_fixable(DiagnosisCode::ResolverBackupSaved));
     }
@@ -454,7 +428,6 @@ mod tests {
         r.http.fell_back = true;
         assert!(codes(&diagnose(&r, None)).contains(&DiagnosisCode::PortFallback));
 
-        // Configured unprivileged port that "fell back" is NOT a warning.
         let mut r2 = healthy();
         r2.http.requested = 8080;
         r2.http.bound = 8081;
@@ -465,8 +438,6 @@ mod tests {
     #[test]
     fn web_unbound_fails_and_supersedes_fallback() {
         let mut r = healthy();
-        // Degraded: the desired ports fell back, but even the fallback couldn't
-        // bind. The Fail must appear and the plain PortFallback warning must not.
         r.http.requested = 80;
         r.http.bound = 0;
         r.http.fell_back = true;
@@ -480,7 +451,6 @@ mod tests {
         let cs = codes(&diagnose(&r, None));
         assert!(cs.contains(&DiagnosisCode::WebPortsUnbound));
         assert!(!cs.contains(&DiagnosisCode::PortFallback));
-        // It's a hard failure, so the report is not "all good".
         assert!(!cs.contains(&DiagnosisCode::AllGood));
     }
 
@@ -492,7 +462,6 @@ mod tests {
         let cs = codes(&ds);
         assert!(cs.contains(&DiagnosisCode::DnsPortUnbound));
         assert!(!cs.contains(&DiagnosisCode::AllGood));
-        // It's a warning (daemon still runs), not a hard fail.
         let dns = ds
             .iter()
             .find(|d| d.code == DiagnosisCode::DnsPortUnbound)
@@ -509,15 +478,12 @@ mod tests {
             https: 8443,
         });
         let cs = codes(&diagnose(&r, None));
-        // The web early-return must not swallow the DNS finding.
         assert!(cs.contains(&DiagnosisCode::DnsPortUnbound));
         assert!(cs.contains(&DiagnosisCode::WebPortsUnbound));
     }
 
     #[test]
     fn active_port_redirect_suppresses_fallback_warning() {
-        // Privileged port fell back, but a pf redirect is live (macOS): the
-        // ports are reachable, so no warning.
         let mut r = healthy();
         r.http.requested = 80;
         r.http.bound = 8080;
@@ -525,20 +491,15 @@ mod tests {
         r.port_redirect = Some(true);
         assert!(!codes(&diagnose(&r, None)).contains(&DiagnosisCode::PortFallback));
 
-        // Redirect present but NOT active → still a warning.
         r.port_redirect = Some(false);
         assert!(codes(&diagnose(&r, None)).contains(&DiagnosisCode::PortFallback));
 
-        // Not applicable (Linux, None) → unchanged warning behaviour.
         r.port_redirect = None;
         assert!(codes(&diagnose(&r, None)).contains(&DiagnosisCode::PortFallback));
     }
 
     #[test]
     fn foreign_web_listener_warns_and_suppresses_fallback() {
-        // A privileged port fell back AND something foreign holds 80/443: show
-        // the specific "another process" warning, not the (misleading) elevate
-        // advice.
         let mut r = healthy();
         r.http.requested = 80;
         r.http.bound = 8080;
@@ -552,7 +513,6 @@ mod tests {
         );
         assert!(!cs.contains(&DiagnosisCode::AllGood));
 
-        // No foreign listener (false/None) → the plain fallback warning returns.
         r.foreign_web_listener = Some(false);
         let cs = codes(&diagnose(&r, None));
         assert!(!cs.contains(&DiagnosisCode::ForeignWebListener));
@@ -564,8 +524,6 @@ mod tests {
 
     #[test]
     fn foreign_web_listener_warns_even_without_fallback() {
-        // Even if the daemon reports ports bound, a foreign listener signal is
-        // surfaced (e.g. the proxy lost the port to another process).
         let mut r = healthy();
         r.foreign_web_listener = Some(true);
         let cs = codes(&diagnose(&r, None));
@@ -605,7 +563,6 @@ mod tests {
     #[test]
     fn default_not_installed_when_other_versions_present() {
         let mut r = healthy();
-        // Installed 8.4, but default is 8.5.
         r.php[0].version = PhpVersion::new(8, 4);
         let cs = codes(&diagnose(&r, None));
         assert!(cs.contains(&DiagnosisCode::DefaultPhpNotInstalled));
@@ -636,7 +593,6 @@ mod tests {
         let ds = diagnose(&r, None);
         let cs = codes(&ds);
         assert!(cs.contains(&DiagnosisCode::PhpUpdateAvailable));
-        // Ok/info findings don't suppress the all-good summary.
         assert!(cs.contains(&DiagnosisCode::AllGood));
     }
 
@@ -657,11 +613,9 @@ mod tests {
     #[test]
     fn bin_dir_not_on_path_warns_only_on_some_true() {
         let r = healthy();
-        // Some(true) → warn, and it suppresses the all-good summary.
         let on = codes(&diagnose(&r, Some(true)));
         assert!(on.contains(&DiagnosisCode::BinDirNotOnPath));
         assert!(!on.contains(&DiagnosisCode::AllGood));
-        // Some(false) / None → no finding (no false alarm).
         assert!(!codes(&diagnose(&r, Some(false))).contains(&DiagnosisCode::BinDirNotOnPath));
         assert!(!codes(&diagnose(&r, None)).contains(&DiagnosisCode::BinDirNotOnPath));
     }

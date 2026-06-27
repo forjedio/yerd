@@ -10,7 +10,7 @@ use std::path::Path;
 /// `rename`).
 ///
 /// If `path`'s parent doesn't exist, returns an `io::Error` of kind
-/// `NotFound` rather than attempting `create_dir_all` — directory creation
+/// `NotFound` rather than attempting `create_dir_all` - directory creation
 /// is the caller's contract (`PlatformDirs` documents the same convention).
 pub fn write(path: &Path, bytes: &[u8]) -> io::Result<()> {
     let parent = path.parent().ok_or_else(|| {
@@ -62,7 +62,6 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("nonexistent").join("out.txt");
         let err = write(&path, b"x").unwrap_err();
-        // `tempfile::NamedTempFile::new_in` returns NotFound here.
         assert_eq!(err.kind(), io::ErrorKind::NotFound);
     }
 }

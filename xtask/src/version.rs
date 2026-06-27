@@ -4,7 +4,7 @@
 //!
 //! Pure string transforms live here (unit-tested table-style); the I/O wrappers
 //! (`bump` / `version-check`) live in `main.rs`. We edit only the single version
-//! line in each file — never reformat the whole document.
+//! line in each file - never reformat the whole document.
 
 use anyhow::{bail, Result};
 
@@ -163,7 +163,6 @@ mod tests {
             out.contains("version      = \"2.1.0\""),
             "alignment preserved"
         );
-        // The dependency version must be untouched.
         assert!(out.contains("serde = { version = \"1\" }"));
         assert_eq!(get_cargo(&out).unwrap(), "2.1.0");
     }
@@ -172,7 +171,7 @@ mod tests {
     fn json_value_and_trailing_comma_preserved() {
         let out = set_json(TAURI, "2.1.0").unwrap();
         assert!(out.contains("  \"version\": \"2.1.0\","));
-        assert!(out.contains("\"productName\": \"Yerd\"")); // untouched
+        assert!(out.contains("\"productName\": \"Yerd\""));
         assert_eq!(get_json(&out).unwrap(), "2.1.0");
 
         let out2 = set_json(PKG, "2.1.0").unwrap();
@@ -230,6 +229,6 @@ mod tests {
         let err = assert_all_match("2.0.1", &bad).unwrap_err().to_string();
         assert!(err.contains("package.json = 2.0.0"));
         assert!(err.contains("cargo xtask bump 2.0.1"));
-        assert!(!err.contains("Cargo.toml = 2.0.1 (expected")); // matching one omitted
+        assert!(!err.contains("Cargo.toml = 2.0.1 (expected"));
     }
 }

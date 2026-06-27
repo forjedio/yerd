@@ -80,6 +80,28 @@ yerd-tls  ◄── yerd-platform ◄── yerd-php, yerd-proxy, binaries
   wire-stability reasons; do not bump a pinned crate without understanding the
   comment next to it in the root `Cargo.toml`.
 
+## Comments
+
+Comments are for humans reading the code, not narration of it. Keep them short,
+in plain developer English, and accurate — the code is the source of truth, so
+fix or delete a comment that has drifted from what the code does.
+
+- **No inline comments inside function bodies.** If a line needs a comment to be
+  understood, make the code clearer instead. Two exceptions: a `// SAFETY:`
+  justification on the rare `unsafe` block (GUI/FFI edges where the workspace
+  `forbid` is lifted), and a short field label on an otherwise-opaque byte or
+  magic number in protocol code (`1, // version`).
+- **Prefer item and module docs (`///`, `//!`) over inline narration.** Document
+  the non-obvious *why* — RFC references, gotchas, cross-platform quirks — not
+  the obvious *what*. Don't restate the signature.
+- **Skip docs on self-evident private items** where the name says it all. Public
+  (`pub`) API items still get a short doc line even when obvious; `missing_docs`
+  is `warn` and it feeds the generated API docs.
+- **No em dashes in comments.** Use a plain hyphen, comma, or colon. And never
+  start a wrapped doc-comment line with `- `: rustfmt and clippy read it as a
+  bullet-list item (`doc_lazy_continuation`), so reword to keep the dash
+  mid-line.
+
 ## Cross-platform discipline
 
 - Per-OS code is selected with `#[cfg(target_os = ...)]`; exactly one of

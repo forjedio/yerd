@@ -27,7 +27,7 @@ use tauri_plugin_autostart::MacosLauncher;
 
 /// Launch arg the GUI's autostart entry carries (so a login-launched process is
 /// distinguishable from a manual open). `tauri-plugin-autostart` fixes the args
-/// at `init()` — they can't vary per `enable()` — so this is a constant marker;
+/// at `init()` - they can't vary per `enable()` - so this is a constant marker;
 /// the *minimized* preference is read separately from `gui-settings.json`.
 const AUTOSTART_ARG: &str = "--autostarted";
 
@@ -40,41 +40,23 @@ const AUTOSTART_ARG: &str = "--autostarted";
 const TRAY_ICON_MAC: &[u8] = include_bytes!("../icons/tray-mac.png");
 
 fn main() {
-    // Install the per-session GUI log subscriber first, before any other startup
-    // work, so the macOS launch probe and the whole daemon install/start flow are
-    // captured. Truncates {cache}/yerd-gui.log for this session; degrades to
-    // stderr-only if the cache dir can't be resolved.
     logging::init();
 
-    // On Linux/Wayland the dock takes a window's icon from the .desktop file
-    // matching its app_id — which GTK derives from the program name. Pin it
-    // before GTK initialises so it deterministically matches `yerd-gui.desktop`
-    // (installed in dev by scripts/install-dev-desktop.sh, shipped by the .deb).
     #[cfg(target_os = "linux")]
     {
         glib::set_prgname(Some("yerd-gui"));
         glib::set_application_name("Yerd");
     }
 
-    // macOS: register the launch-type observer BEFORE the run loop starts, so it
-    // catches `applicationDidFinishLaunching` and we can tell a login-item launch
-    // (SMAppService.mainApp) from a manual open — the GUI uses it for the
-    // start-minimized-to-tray behavior now that there's no `--autostarted` arg.
     #[cfg(target_os = "macos")]
     launch_probe::install_launch_probe();
 
     tauri::Builder::default()
-        // Must be the first plugin: a second launch focuses the existing
-        // window instead of spawning a duplicate (which would risk a duplicate
-        // daemon connection / tray).
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             show_main(app);
         }))
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
-        // GUI login-autostart. macOS must use a LaunchAgent (the default
-        // AppleScript login item can't carry args); the fixed `--autostarted`
-        // arg marks login-launched processes.
         .plugin(tauri_plugin_autostart::init(
             MacosLauncher::LaunchAgent,
             Some(vec![AUTOSTART_ARG]),
@@ -177,17 +159,13 @@ fn main() {
             logging::get_diagnostics,
         ])
         .setup(setup_app)
-        // App-menu events (macOS). The only custom item is "close-window"
-        // (Cmd+W): the windows are borderless+transparent, so AppKit's standard
-        // `performClose:` (what the predefined Close item fires) silently no-ops
-        // — a borderless NSWindow lacks the closable style mask. So Cmd+W routes
-        // here and calls `close()` on the focused window, which goes through the
-        // `CloseRequested` handler below (close-to-tray, same as the titlebar's
-        // red button). Other items are predefined and handled natively.
+        // Cmd+W on a borderless/transparent window: AppKit's performClose: no-ops
+        // (no closable style mask), so the custom close-window menu item routes
+        // here and calls close(), hitting the CloseRequested handler below.
         .on_menu_event(|app, event| {
             if event.id.as_ref() == "close-window" {
-                // `get_focused_window` is behind Tauri's `unstable` feature, so
-                // find the focused window among the managed webview windows.
+                // get_focused_window is behind Tauri's unstable feature; find the
+                // focused window among the managed webview windows instead.
                 if let Some(win) = app
                     .webview_windows()
                     .into_values()
@@ -197,20 +175,10 @@ fn main() {
                 }
             }
         })
-        // Close-to-tray: hide the window instead of quitting; the tray's Quit
-        // item is the real exit.
+        // Close-to-tray: hide instead of quitting; the tray's Quit item exits.
         .on_window_event(|window, event| {
             if let WindowEvent::CloseRequested { api, .. } = event {
-                // The handler is global (fires for every window). The Mails
-                // viewer just hides on close — but must NOT touch the Dock
-                // activation policy, or closing it would drop the app's Dock
-                // icon while the main window is still open. Only the main window
-                // drives the close-to-tray + Dock-accessory behaviour.
                 let _ = window.hide();
-                // Only the main window drops the Dock icon on close — the dumps
-                // and Mails viewer windows are auxiliary, so closing one must not
-                // yank the main app's presence (or it would minimise the whole
-                // app to the tray).
                 if window.label() == "main" {
                     set_dock_visible(window.app_handle(), false);
                 }
@@ -234,18 +202,9 @@ fn setup_app(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     app.set_menu(build_app_menu(app.handle())?)?;
     build_tray(app.handle())?;
     show_initial_window(app);
-    // macOS: one-time migration of a legacy loose `Yerd.plist` GUI login item to
-    // SMAppService.mainApp (so it shows as "Yerd" under Open at Login), then
-    // re-assert the daemon registration if the app version advanced (an in-place
-    // OR automated upgrade swaps the bundle + relaunches this GUI, but neither
-    // re-registers the daemon — so launchd would keep running the old `yerdd`).
-    // One thread keeps the two SMAppService operations sequential; off the main
-    // thread because both do `launchctl`/SMAppService XPC.
     #[cfg(target_os = "macos")]
     std::thread::spawn(|| {
         autostart::migrate_gui_login_if_needed();
-        // Best-effort: a directional-guard error (older GUI vs newer daemon) is
-        // persisted for the Overview banner; the start path surfaces it loudly.
         let _ = autostart::ensure_daemon_registration();
     });
     Ok(())
@@ -253,17 +212,11 @@ fn setup_app(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
 
 /// Build the macOS application menu.
 ///
-/// This mirrors Tauri's standard macOS menu (`Menu::default`) — App, File, Edit,
-/// View, Window, Help — with ONE change: the "Close" item is a custom
-/// `MenuItem` (id `close-window`, accelerator `Cmd+W`) instead of the predefined
-/// one. The predefined Close fires AppKit's `performClose:`, which a borderless,
-/// transparent `NSWindow` (our `decorations: false` windows) silently ignores
-/// because it lacks the closable style mask — so the standard Cmd+W did nothing.
-/// Routing Cmd+W through Tauri's `window.close()` (in `on_menu_event`) instead
-/// gives the same close-to-tray gesture as the titlebar's red button.
-///
-/// macOS only: on Linux these windows have no app menu bar and the predefined
-/// `close_window` is unsupported there anyway.
+/// Mirrors Tauri's default macOS menu but replaces the predefined Close with a
+/// custom `close-window` item (Cmd+W). The predefined Close fires AppKit's
+/// `performClose:`, which our borderless transparent windows ignore (no closable
+/// style mask), so Cmd+W routes through `window.close()` in `on_menu_event`
+/// instead, giving the same close-to-tray gesture as the titlebar button.
 #[cfg(target_os = "macos")]
 fn build_app_menu(app: &tauri::AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
     let pkg = app.package_info();
@@ -276,8 +229,7 @@ fn build_app_menu(app: &tauri::AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
         ..Default::default()
     };
 
-    // The one custom item: Cmd+W → close the focused window (handled in
-    // `on_menu_event`). Used in both File and Window, matching `Menu::default`.
+    // Custom Cmd+W item (handled in on_menu_event), used in both File and Window.
     let close = MenuItem::with_id(app, "close-window", "Close", true, Some("CmdOrCtrl+W"))?;
 
     let app_menu = Submenu::with_items(
@@ -351,7 +303,7 @@ fn set_main_window_icon(app: &tauri::App) {
 ///   - touchpad pinch is a GtkGestureZoom WebKit installs on its view, which
 ///     ignores `zoom-level` entirely → remove its handlers.
 ///
-/// (Documented wry workaround, GTK3-only — which is our stack.)
+/// (Documented wry workaround, GTK3-only - which is our stack.)
 #[cfg(target_os = "linux")]
 fn disable_webview_zoom(app: &tauri::App) {
     let Some(win) = app.get_webview_window("main") else {
@@ -371,7 +323,7 @@ fn disable_webview_zoom(app: &tauri::App) {
 
         // SAFETY: `wk-view-zoom-gesture` is WebKitWebViewBase's internal
         // GtkGestureZoom, stored via `g_object_set_data`. We only destroy its
-        // signal handlers so "scale-changed" no longer zooms — we do NOT free the
+        // signal handlers so "scale-changed" no longer zooms - we do NOT free the
         // data (which segfaults when JS later prevents events), leaving the object
         // owned by WebKit.
         unsafe {
@@ -387,7 +339,7 @@ fn disable_webview_zoom(app: &tauri::App) {
 /// probe is only authoritative once `applicationDidFinishLaunching` has fully
 /// dispatched; elsewhere it runs inline.
 ///
-/// Show the main window — unless this is a login/autostart launch AND the user
+/// Show the main window - unless this is a login/autostart launch AND the user
 /// chose "start minimized", in which case it stays in the tray (Dock hidden).
 /// The window is born hidden (`"visible": false` in tauri.conf, to avoid an
 /// undecorated flash); a manual open and a non-minimized autostart both show.
@@ -395,14 +347,10 @@ fn decide_initial_window(app: &tauri::AppHandle) {
     let Some(win) = app.get_webview_window("main") else {
         return;
     };
-    // `--autostarted` covers the dev / plugin-LaunchAgent fallback; on the macOS
-    // SMAppService.mainApp path there's no arg, so consult the launch probe.
     let autostarted = std::env::args().any(|a| a == AUTOSTART_ARG);
     #[cfg(target_os = "macos")]
     let autostarted = autostarted || launch_probe::is_login_launch();
     if autostarted && autostart::gui_minimized() {
-        // Launched hidden to the tray — start as a menu-bar-only app (no Dock
-        // icon) until the user opens the window.
         set_dock_visible(app, false);
     } else {
         let _ = win.show();
@@ -412,7 +360,7 @@ fn decide_initial_window(app: &tauri::AppHandle) {
 
 /// Schedule the initial-window decision. On macOS it must wait until the
 /// `applicationDidFinishLaunching` notification has fully dispatched (so the
-/// launch probe is set), so it's posted to the main queue via GCD — which always
+/// launch probe is set), so it's posted to the main queue via GCD - which always
 /// drains on a *later* runloop turn. (Tauri's `run_on_main_thread` runs inline
 /// when already on the main thread, which `setup` is, so it would NOT defer.)
 fn show_initial_window(app: &tauri::App) {
@@ -444,9 +392,6 @@ fn build_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
     let sep_daemon = PredefinedMenuItem::separator(app)?;
     let sep_bottom = PredefinedMenuItem::separator(app)?;
 
-    // Build the per-view "go to page" items, then assemble the menu in order:
-    // Open · ─ · PHP · Sites · Services · About · ─ · Start daemon · Stop daemon
-    // · ─ · Quit. (Start/Stop are idempotent — both stay enabled.)
     let nav: Vec<MenuItem<_>> = NAV_ITEMS
         .iter()
         .map(|(id, label)| MenuItem::with_id(app, *id, *label, true, None::<&str>))
@@ -463,9 +408,6 @@ fn build_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
     let mut builder = TrayIconBuilder::with_id("yerd-tray")
         .tooltip("Yerd")
         .menu(&menu)
-        // Left-click activates (opens the window) on macOS/Windows; right-click
-        // shows the menu. On Linux (AppIndicator) clicks aren't delivered, so the
-        // menu items are the way in there.
         .show_menu_on_left_click(false)
         .on_menu_event(|app, event| match event.id.as_ref() {
             "open" => show_main(app),
@@ -473,12 +415,9 @@ fn build_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
                 let _ = show_dumps(app);
             }
             "quit" => app.exit(0),
-            // Start/Stop run off the event thread so a slow systemctl/launchctl
-            // never stalls the menu; the GUI's status poller reflects the result.
             "daemon:start" => {
                 let app = app.clone();
                 tauri::async_runtime::spawn(async move {
-                    // Standalone start: nudge to Login Items if approval is pending.
                     let _ = daemon::start(app, true).await;
                 });
             }
@@ -487,7 +426,6 @@ fn build_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
                     let _ = daemon::stop().await;
                 });
             }
-            // "nav:/sites" → show the window and route the frontend to "/sites".
             id => {
                 if let Some(route) = id.strip_prefix("nav:") {
                     show_main(app);
@@ -507,9 +445,6 @@ fn build_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
             }
         });
 
-    // macOS: a monochrome template glyph sized for the menu bar (see
-    // `TRAY_ICON_MAC`). Linux/Windows trays aren't template-based, so keep the
-    // full-colour app icon there.
     #[cfg(target_os = "macos")]
     {
         builder = builder
@@ -526,14 +461,10 @@ fn build_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
 }
 
 fn show_main(app: &tauri::AppHandle) {
-    // Restore the Dock icon (macOS) before showing, so a tray-reopened window
-    // gets a normal app presence and can take focus.
     set_dock_visible(app, true);
     if let Some(win) = app.get_webview_window("main") {
-        // macOS: by default a window stays bound to the Space it was last shown
-        // on, so re-opening from the tray would yank you to that Space. Mark it
-        // to follow you onto whatever Space is active *now* — must be set before
-        // `show()`/`set_focus()`, which is what makes the window appear.
+        // Must run before show()/set_focus() so the window lands on the active
+        // Space rather than the one it was last shown on.
         #[cfg(target_os = "macos")]
         move_window_to_active_space(&win);
         let _ = win.show();
@@ -541,14 +472,13 @@ fn show_main(app: &tauri::AppHandle) {
     }
 }
 
-/// macOS: make the main window appear on the *currently active* Space when it is
-/// re-shown, instead of pulling the user back to whatever Space it was last on.
+/// macOS: show the main window on the currently active Space instead of pulling
+/// the user back to the Space it was last on.
 ///
-/// A normal `NSWindow` is bound to a single Space; `show()` then switches Spaces
-/// to it. Adding `MoveToActiveSpace` to its collection behaviour tells the window
-/// server to bring the window to the active Space on activation. We set it on
-/// every show (cheap, idempotent) rather than once, so it survives any later
-/// behaviour resets and applies even if the window was created before this ran.
+/// An NSWindow is bound to one Space, so show() switches Spaces to it. Adding
+/// MoveToActiveSpace to its collection behaviour brings it to the active Space on
+/// activation. Set on every show (cheap, idempotent) so it survives behaviour
+/// resets and applies to windows created before this ran.
 #[cfg(target_os = "macos")]
 fn move_window_to_active_space(win: &tauri::WebviewWindow) {
     use objc2_app_kit::{NSWindow, NSWindowCollectionBehavior};
@@ -559,15 +489,15 @@ fn move_window_to_active_space(win: &tauri::WebviewWindow) {
     if ptr.is_null() {
         return;
     }
-    // SAFETY: `ns_window()` hands back the window's live `NSWindow` pointer, and
-    // tray/window-event handlers (the only `show_main` callers) run on the main
-    // thread, where AppKit window mutation is required to happen.
+    // SAFETY: ns_window() returns the window's live NSWindow pointer, and the only
+    // show_main callers (tray/window-event handlers) run on the main thread, where
+    // AppKit window mutation must happen.
     let ns_window: &NSWindow = unsafe { &*ptr.cast::<NSWindow>() };
     let behavior = ns_window.collectionBehavior() | NSWindowCollectionBehavior::MoveToActiveSpace;
     ns_window.setCollectionBehavior(behavior);
 }
 
-/// Show (or lazily create) the auxiliary "dumps" window — the live Laravel
+/// Show (or lazily create) the auxiliary "dumps" window - the live Laravel
 /// telemetry viewer. Reuses the statically-declared window when it already
 /// exists; rebuilds it only if a prior close destroyed it.
 fn show_dumps(app: &tauri::AppHandle) -> tauri::Result<()> {
@@ -611,9 +541,6 @@ fn set_dock_visible(app: &tauri::AppHandle, visible: bool) {
         tauri::ActivationPolicy::Accessory
     };
     let _ = app.set_activation_policy(policy);
-    // Re-apply the icon *after* the policy change in both directions: switching
-    // policy re-reads the app icon, which is generic in a dev (unbundled) run, so
-    // without this the tile flashes the exec icon on hide and shows it on reopen.
     restore_dock_icon();
 }
 
@@ -634,10 +561,6 @@ fn restore_dock_icon() {
     use objc2_foundation::{NSData, NSPoint, NSRect, NSSize};
 
     const APP_ICON_PNG: &[u8] = include_bytes!("../icons/icon.png");
-    // Our `icon.png` is full-bleed artwork; real macOS app icons reserve a ~10%
-    // transparent margin (the icon grid). Composite onto an inset, transparent
-    // canvas so the Dock renders it at the same footprint as its neighbours
-    // instead of edge-to-edge (oversized).
     const TILE: f64 = 512.0;
     const MARGIN: f64 = TILE * 0.1;
     const INNER: f64 = TILE - 2.0 * MARGIN;
@@ -656,7 +579,6 @@ fn restore_dock_icon() {
     canvas.lockFocus();
     src.drawInRect_fromRect_operation_fraction(
         NSRect::new(NSPoint::new(MARGIN, MARGIN), NSSize::new(INNER, INNER)),
-        // A zero `fromRect` means "the whole source image".
         NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(0.0, 0.0)),
         NSCompositingOperation::SourceOver,
         1.0,

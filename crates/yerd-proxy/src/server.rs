@@ -1,4 +1,4 @@
-//! `ProxyServer::serve` — accept loops + per-connection hyper service.
+//! `ProxyServer::serve` - accept loops + per-connection hyper service.
 
 use std::future::Future;
 use std::net::SocketAddr;
@@ -28,7 +28,7 @@ use crate::tls::build_server_config;
 use crate::traits::{BackendResolver, CertStore};
 
 /// Router shared between the proxy's request path (read) and the daemon's
-/// mutation path (write-replace). Reads are brief and uncontended — each
+/// mutation path (write-replace). Reads are brief and uncontended - each
 /// request takes a read guard only long enough to resolve + clone its
 /// [`yerd_core::Site`]; the daemon swaps the whole router under a write guard
 /// when a site is parked/linked/unlinked or its PHP version changes.
@@ -48,7 +48,7 @@ pub struct HttpsBinding<C: CertStore> {
     /// The bound TCP listener (caller obtained from `PortBinder::bind_pair`
     /// and converted via `tokio::net::TcpListener::from_std`).
     pub listener: TcpListener,
-    /// Public port the HTTP→HTTPS redirect should target — not
+    /// Public port the HTTP→HTTPS redirect should target - not
     /// necessarily what `listener.local_addr()` reports (rootless
     /// mode may bind 8443 but the redirect should still go to 8443).
     pub public_port: u16,
@@ -81,8 +81,6 @@ impl ProxyServer {
 
         let notify = Arc::new(Notify::new());
 
-        // Shutdown task: when `shutdown` resolves, wake every accept
-        // loop via `notify_waiters`.
         let notify_for_shutdown = notify.clone();
         let shutdown_task = tokio::spawn(async move {
             shutdown.await;
@@ -95,7 +93,6 @@ impl ProxyServer {
             .map(|h| TlsAcceptor::from(build_server_config(h.cert_store.clone())));
         let https_listener_opt = https.map(|h| h.listener);
 
-        // HTTP accept loop.
         let http_router = router.clone();
         let http_resolver = backend_resolver.clone();
         let http_notify = notify.clone();
@@ -128,7 +125,6 @@ impl ProxyServer {
             }
         });
 
-        // HTTPS accept loop (if configured).
         let tls_accept =
             if let (Some(listener), Some(acceptor)) = (https_listener_opt, tls_acceptor) {
                 let router = router.clone();
@@ -243,7 +239,7 @@ async fn serve_https_connection<R: BackendResolver>(
     let _ = conn.await;
 }
 
-/// Service entry point. Infallible — internal errors translate to 5xx
+/// Service entry point. Infallible - internal errors translate to 5xx
 /// responses so hyper's connection loop keeps going.
 async fn handle_request<R: BackendResolver>(
     req: Request<Incoming>,
@@ -296,25 +292,12 @@ async fn dispatch<R: BackendResolver>(
         return Ok(bad_request_response());
     };
 
-    // Resolve the request to a site (normal Host path) or to a synthetic
-    // response (the unbound `localhost` fallback). The read guard is held only
-    // long enough to clone the matched Site / snapshot the picker list, then
-    // dropped before any await — the daemon's mutation path is the only writer.
-    //
-    // `unbound` is set when the request was routed without the OS `.test`
-    // resolver — via `http://localhost:8080` using the `X-Yerd-Site` header, a
-    // `/~domain` switch, or the pin cookie. In that mode the origin is plain
-    // http on localhost (there is no localhost cert), so the HTTP→HTTPS
-    // redirect below is skipped.
     let (site, unbound) = match resolve_request(&router, &req, &host).await? {
         Routed::Site { site, unbound } => (site, unbound),
         Routed::Respond(resp) => return Ok(resp),
     };
-    // Serve from the site's resolved web root (e.g. `<root>/public` for
-    // Laravel), falling back to the document root when no subpath is set.
     let document_root = site.served_root();
 
-    // HTTP → HTTPS redirect (skipped in unbound mode — see above).
     if matches!(listener, Listener::Http) && !unbound {
         if let (true, Some(port)) = (site.secure(), redirect_port) {
             let pq = req
@@ -338,7 +321,6 @@ async fn dispatch<R: BackendResolver>(
         }
     }
 
-    // Resolve backend (calls into yerd-php at the daemon level).
     let backend = resolver.backend_for(&site).await.map_err(|e| match e {
         ProxyError::BackendResolver { .. }
         | ProxyError::BackendConnect { .. }
@@ -351,7 +333,6 @@ async fn dispatch<R: BackendResolver>(
 
     let https = matches!(listener, Listener::Https);
 
-    // Upgrade dispatch.
     if upgrade::is_upgrade(req.headers()) {
         return match backend {
             Backend::FrankenPhp { addr } => upgrade::forward(req, addr).await,
@@ -360,12 +341,8 @@ async fn dispatch<R: BackendResolver>(
     }
 
     match backend {
-        // FrankenPHP is a full HTTP server and serves its own static files.
         Backend::FrankenPhp { addr } => http_fwd::forward(req, addr).await,
         bk @ (Backend::PhpFpm { .. } | Backend::PhpFpmTcp { .. }) => {
-            // `try_files`: a request that maps to a real file under the served
-            // root is served directly (so favicons/CSS/JS/images load); anything
-            // else falls through to the PHP front controller (`index.php`).
             if let Some(resp) =
                 static_file::try_serve(req.method(), req.uri().path(), &document_root).await
             {
@@ -427,8 +404,6 @@ async fn resolve_request(
             Ok(Routed::Respond(switch_response(&name, &location)?))
         }
         UnboundDecision::Picker { dest, clear } => {
-            // Snapshot the site list (owned) while the guard is held, then drop
-            // it before rendering — no await crosses the guard.
             let tld = guard.config().tld().to_owned();
             let summaries: Vec<(String, bool, &'static str)> = guard
                 .iter()
@@ -453,7 +428,7 @@ async fn resolve_request(
 /// One of the ways an unbound (resolver-off, loopback) request resolves to a
 /// site or a synthetic response.
 enum UnboundDecision {
-    /// Serve this site directly — a pin-cookie hit or an `X-Yerd-Site` header.
+    /// Serve this site directly - a pin-cookie hit or an `X-Yerd-Site` header.
     Serve(Site),
     /// `303` to `location`, setting the pin cookie to `name`.
     Switch { name: String, location: String },
@@ -479,7 +454,6 @@ fn classify_unbound(
 ) -> UnboundDecision {
     let is_html_get = *method == Method::GET && accept.is_some_and(|a| a.contains("text/html"));
 
-    // 0. Explicit per-request site header (API clients): no cookie, no redirect.
     if let Some(value) = site_header.map(str::trim).filter(|v| !v.is_empty()) {
         return match router.resolve(value).or_else(|| router.get(value)) {
             Some(site) => UnboundDecision::Serve(site.clone()),
@@ -487,9 +461,6 @@ fn classify_unbound(
         };
     }
 
-    // 1. Explicit /~domain switch (pins the origin via the cookie). Accept the
-    // bare-label form (`/~app`) via the same `get` fallback the header path
-    // uses, so `/~app` and `X-Yerd-Site: app` behave identically.
     if let Some(sw) = unbound::parse_switch(path) {
         if let Some(site) = router.resolve(sw.domain).or_else(|| router.get(sw.domain)) {
             return UnboundDecision::Switch {
@@ -497,20 +468,16 @@ fn classify_unbound(
                 location: join_path_query(sw.remainder, query),
             };
         }
-        // Unknown site → picker for browsers, else 404.
         return decide_picker(is_html_get, join_path_query(sw.remainder, query), false);
     }
 
-    // 2. Existing pin cookie.
     if let Some(name) = cookie.and_then(unbound::parse_cookie_site) {
         if let Some(site) = router.get(name) {
             return UnboundDecision::Serve(site.clone());
         }
-        // Stale cookie (site removed) — clear it on the way out.
         return decide_picker(is_html_get, join_path_query(path, query), true);
     }
 
-    // 3. No pin yet.
     decide_picker(is_html_get, join_path_query(path, query), false)
 }
 
@@ -575,8 +542,6 @@ fn switch_response(name: &str, location: &str) -> Result<Response<BoxBody>, Prox
             HeaderValue::from_str(&set_cookie)
                 .map_err(|_| synthetic_error("invalid pin cookie"))?,
         )
-        // The same localhost URL serves different sites depending on the pin, so
-        // never let an intermediary cache this redirect.
         .header(CACHE_CONTROL, "no-store")
         .header(SERVER, server_header())
         .body(empty_body())
@@ -602,7 +567,7 @@ fn picker_response(body_html: String, clear: bool) -> Result<Response<BoxBody>, 
         .map_err(|_| synthetic_error("picker response build failed"))
 }
 
-/// `404` for unbound requests. Always `Cache-Control: no-store` — in unbound
+/// `404` for unbound requests. Always `Cache-Control: no-store` - in unbound
 /// mode the same localhost URL serves different sites by pin, so a negative
 /// response must never be cached and resurface after the user pins a site.
 /// Clears a stale pin cookie when `clear` is set.
@@ -624,7 +589,7 @@ fn unbound_not_found(clear: bool) -> Result<Response<BoxBody>, ProxyError> {
         .map_err(|_| synthetic_error("not found response build failed"))
 }
 
-/// `Server: yerd` — stamped on every synthetic (proxy-originated) response so
+/// `Server: yerd` - stamped on every synthetic (proxy-originated) response so
 /// the macOS port-redirect probe can confirm a connection to 80/443 actually
 /// reaches *this* proxy, not some other listener. See [`yerd_core::PROXY_SERVER_ID`].
 fn server_header() -> HeaderValue {
@@ -712,7 +677,6 @@ mod unbound_tests {
 
     #[test]
     fn header_routes_directly() {
-        // Domain form and bare-label form both resolve; no cookie, no redirect.
         assert_eq!(
             served_name(classify("/", None, Some("app.test"), None, None)),
             "app"
@@ -783,7 +747,6 @@ mod unbound_tests {
             }
             other => panic!("expected Picker, got {}", variant(&other)),
         }
-        // Non-browser → 404.
         assert!(matches!(
             classify("/~nope.test/p", None, None, None, Some("application/json")),
             UnboundDecision::NotFound { .. }
@@ -846,7 +809,6 @@ mod unbound_tests {
 
     #[test]
     fn header_beats_switch() {
-        // X-Yerd-Site wins over a /~ switch path.
         assert_eq!(
             served_name(classify(
                 "/~blog.test/p",
@@ -861,7 +823,6 @@ mod unbound_tests {
 
     #[test]
     fn blank_header_falls_through() {
-        // Whitespace-only header is ignored → normal classification (picker).
         match classify("/", None, Some("   "), None, HTML) {
             UnboundDecision::Picker { dest, .. } => assert_eq!(dest, "/"),
             other => panic!("expected Picker, got {}", variant(&other)),
@@ -870,12 +831,10 @@ mod unbound_tests {
 
     #[test]
     fn switch_location_is_same_origin() {
-        // Open-redirect guard: a protocol-relative remainder is normalised.
         match classify("/~app.test//evil.com", None, None, None, HTML) {
             UnboundDecision::Switch { location, .. } => assert_eq!(location, "/evil.com"),
             other => panic!("expected Switch, got {}", variant(&other)),
         }
-        // And the picker dest for a protocol-relative path is normalised too.
         match classify("//evil.com", None, None, None, HTML) {
             UnboundDecision::Picker { dest, .. } => assert_eq!(dest, "/evil.com"),
             other => panic!("expected Picker, got {}", variant(&other)),
@@ -927,8 +886,6 @@ mod unbound_tests {
         assert_eq!(header(&cleared, CACHE_CONTROL).as_deref(), Some("no-store"));
         assert!(header(&cleared, SET_COOKIE).unwrap().contains("Max-Age=0"));
 
-        // The non-clearing variant also carries no-store (every unbound 404
-        // must be uncacheable), but touches no cookie.
         let plain = unbound_not_found(false).unwrap();
         assert_eq!(plain.status(), StatusCode::NOT_FOUND);
         assert_eq!(header(&plain, CACHE_CONTROL).as_deref(), Some("no-store"));
@@ -937,7 +894,6 @@ mod unbound_tests {
 
     #[test]
     fn bare_label_switch_resolves_like_header() {
-        // `/~app` (no .tld) must switch to `app`, matching `X-Yerd-Site: app`.
         match classify("/~app/dash", None, None, None, HTML) {
             UnboundDecision::Switch { name, location } => {
                 assert_eq!(name, "app");

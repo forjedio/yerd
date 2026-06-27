@@ -6,13 +6,13 @@
 //! osascript-spawned root child can't show (no Window Server session), so that
 //! path silently fails. The GUI process *does* have a Window Server session, so
 //! `SecTrustSettingsSetTrustSettings` for the **user** domain works, prompts as
-//! "Yerd", and needs no root — it touches only `~/Library/Keychains`.
+//! "Yerd", and needs no root - it touches only `~/Library/Keychains`.
 //!
 //! Integrity gate: the CA path + fingerprint come from the daemon over IPC
 //! (never the webview), and we re-verify the PEM's SHA-256 against that
 //! fingerprint on the *exact bytes we import* before trusting. This guards
 //! against the on-disk CA being corrupted/swapped; it is not a boundary against
-//! a compromised daemon (same uid — out of scope).
+//! a compromised daemon (same uid - out of scope).
 
 use std::path::{Path, PathBuf};
 
@@ -53,14 +53,13 @@ const ERR_USER_CANCELED: i32 = -128;
 /// Trust the local CA for the current user. Pops a "Yerd" SecurityAgent prompt.
 pub async fn trust_ca() -> Result<(), GuiError> {
     let (ca_path, fp) = fetch_facts().await?;
-    // The keychain dialog + I/O block, so run off the async runtime.
     tokio::task::spawn_blocking(move || do_trust(&ca_path, &fp))
         .await
         .map_err(|e| GuiError::internal(format!("trust task failed to run: {e}")))?
 }
 
 /// Remove the user-domain trust for the local CA. Returns `true` if the CA is
-/// *still* effectively trusted afterwards — i.e. a system-wide trust set via the
+/// *still* effectively trusted afterwards - i.e. a system-wide trust set via the
 /// terminal (`sudo yerd elevate trust`) remains, which the GUI cannot remove
 /// without root.
 pub async fn untrust_ca() -> Result<bool, GuiError> {
@@ -97,8 +96,6 @@ fn do_trust(ca_path: &Path, fp: &CaFingerprint) -> Result<(), GuiError> {
     let cert =
         SecCertificate::from_der(&der).map_err(|e| sec_err("read the CA certificate", e.code()))?;
 
-    // Import the verified bytes into the login keychain. A public cert import is
-    // silent (no prompt); tolerate the cert already being present.
     let keychain =
         SecKeychain::default().map_err(|e| sec_err("open your login keychain", e.code()))?;
     let mut opts = ImportOptions::new();
@@ -110,7 +107,6 @@ fn do_trust(ca_path: &Path, fp: &CaFingerprint) -> Result<(), GuiError> {
         }
     }
 
-    // The trust write — this is the call that shows the "Yerd" prompt.
     TrustSettings::new(Domain::User)
         .set_trust_settings_always(&cert)
         .map_err(|e| sec_err("trust the CA", e.code()))
@@ -128,25 +124,17 @@ fn do_untrust(ca_path: &Path, fp: &CaFingerprint) -> Result<bool, GuiError> {
     let status = unsafe {
         SecTrustSettingsRemoveTrustSettings(cert.as_concrete_TypeRef(), kSecTrustSettingsDomainUser)
     };
-    // errSecItemNotFound = nothing to remove (already untrusted) → success.
     if status != 0 && status != ERR_SEC_ITEM_NOT_FOUND {
         return Err(sec_err("remove the CA trust", status));
     }
 
-    // We deliberately do NOT delete the cert from the keychain: removing the
-    // trust setting is enough (verify-cert then reports not-trusted), and a
-    // delete error must not mask a successful untrust.
-
-    // Report whether the CA is still effectively trusted — a residual
-    // admin/System-domain trust (set via terminal `sudo yerd elevate trust`)
-    // can't be removed by an unprivileged GUI.
     yerd_platform::ActiveTrustStore::new()
         .is_trusted(ca_path, fp)
         .map_err(|e| GuiError::internal(format!("could not re-check trust state: {e}")))
 }
 
 /// Owner-check the CA file, read it once, and verify its first certificate's
-/// SHA-256 against `fp`. Returns the verified DER — the exact bytes the caller
+/// SHA-256 against `fp`. Returns the verified DER - the exact bytes the caller
 /// must import and trust (no second read between verify and use).
 fn verified_der(ca_path: &Path, fp: &CaFingerprint) -> Result<Vec<u8>, GuiError> {
     require_user_owned(ca_path)?;
@@ -173,7 +161,7 @@ fn first_cert_der(pem_bytes: &[u8]) -> Option<Vec<u8>> {
 }
 
 /// Reject anything that isn't a regular file owned by us and not group/
-/// world-writable. Uses `symlink_metadata` (lstat) and rejects symlinks — a
+/// world-writable. Uses `symlink_metadata` (lstat) and rejects symlinks - a
 /// hardened variant of the CLI's `require_user_owned`.
 fn require_user_owned(path: &Path) -> Result<(), GuiError> {
     use std::os::unix::fs::MetadataExt;

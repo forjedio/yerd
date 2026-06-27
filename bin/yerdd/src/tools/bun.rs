@@ -1,4 +1,4 @@
-//! Bun installer — fetch the latest release zip into `{data}/tools/bun/` and
+//! Bun installer - fetch the latest release zip into `{data}/tools/bun/` and
 //! expose `bun`/`bunx`.
 //!
 //! Bun ships a single self-contained binary in a `.zip` (one per platform).
@@ -56,7 +56,6 @@ pub async fn install(dirs: &PlatformDirs, dl: &dyn Downloader) -> Result<(), Too
         return Err(ToolError::Download(format!("unexpected bun tag {tag:?}")));
     }
 
-    // Plain (non-baseline) asset; baseline/musl/profile are decoys in SHASUMS.
     let asset = format!("bun-{plat}.zip");
     let zip_url = format!("{RELEASE_BASE}/{tag}/{asset}");
     let sums_url = format!("{RELEASE_BASE}/{tag}/SHASUMS256.txt");
@@ -166,7 +165,6 @@ mod tests {
 
     #[test]
     fn unpack_zip_extracts_executable_binary() {
-        // Build a tiny zip containing `bun-darwin-aarch64/bun` with mode 0755.
         let mut buf = Vec::new();
         {
             let mut w = zip::ZipWriter::new(Cursor::new(&mut buf));

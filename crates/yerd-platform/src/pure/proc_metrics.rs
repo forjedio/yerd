@@ -1,7 +1,7 @@
 //! Pure parsers for Linux `/proc` metric files.
 //!
 //! Both functions are I/O-free: the OS layer reads the file and hands the
-//! contents here. Kept lenient — a malformed line yields `None` rather than a
+//! contents here. Kept lenient - a malformed line yields `None` rather than a
 //! panic, because metrics are best-effort.
 
 /// Parse the resident set size (in bytes) from the contents of
@@ -17,8 +17,6 @@
 pub fn parse_vmrss_bytes(status_contents: &str) -> Option<u64> {
     for line in status_contents.lines() {
         if let Some(rest) = line.strip_prefix("VmRSS:") {
-            // rest is like "\t   12345 kB"; the first whitespace-delimited token
-            // is the number, the second ("kB") is the (fixed) unit.
             let kib: u64 = rest.split_whitespace().next()?.parse().ok()?;
             return Some(kib.saturating_mul(1024));
         }

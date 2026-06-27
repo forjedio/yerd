@@ -11,14 +11,11 @@ use crate::traits::CertStore;
 /// Install the ring `CryptoProvider` as the process-level default exactly once.
 ///
 /// Required because the workspace pins rustls 0.23 with no global provider
-/// preinstalled — the first call into `ServerConfig::builder()` would
+/// preinstalled - the first call into `ServerConfig::builder()` would
 /// otherwise panic. Idempotent via [`OnceLock`].
 pub fn init_crypto_once() {
     static ONCE: OnceLock<()> = OnceLock::new();
     ONCE.get_or_init(|| {
-        // If another provider is already installed (multi-process tests,
-        // multi-binary daemons), `install_default` returns Err; that's
-        // fine — we just need *some* provider in place.
         let _ = rustls::crypto::ring::default_provider().install_default();
     });
 }
@@ -103,7 +100,6 @@ mod tests {
             misses: Mutex::new(HashMap::new()),
         });
         let cfg = build_server_config(store);
-        // Smoke: Arc::strong_count > 0 means we got back something usable.
         assert!(Arc::strong_count(&cfg) >= 1);
     }
 }

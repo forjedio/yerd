@@ -15,7 +15,6 @@ pub async fn wait_for_shutdown(tx: watch::Sender<bool>) {
             Ok(s) => s,
             Err(e) => {
                 tracing::warn!(error = %e, "SIGTERM handler installation failed");
-                // Best-effort: still await ctrl_c so we don't hang forever.
                 let _ = tokio::signal::ctrl_c().await;
                 tx.send_replace(true);
                 return;

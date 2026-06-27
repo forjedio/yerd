@@ -74,7 +74,7 @@ async fn handle_conn(stream: TcpStream, store: Arc<Store>) -> std::io::Result<()
         line.clear();
         let n = reader.read_until(b'\n', &mut line).await?;
         if n == 0 {
-            break; // client closed
+            break;
         }
         let text = String::from_utf8_lossy(&line);
         match session.command(&text) {
@@ -113,20 +113,15 @@ where
         line.clear();
         let n = reader.read_until(b'\n', &mut line).await?;
         if n == 0 {
-            break; // EOF mid-DATA — keep what we have
+            break;
         }
         if line == b".\r\n" || line == b".\n" {
-            break; // end-of-data marker — always consumed
+            break;
         }
-        // Once oversized, stop *appending* but keep *consuming* lines until the
-        // terminating dot, so the leftover body is never re-read as SMTP commands
-        // (which would desync the connection for any subsequent message).
         if capped {
             continue;
         }
         if data.len() + line.len() > MAX_MESSAGE_BYTES {
-            // For a local capture sink, truncating an oversized message is
-            // acceptable; keep as much of this line as fits, then drain the rest.
             let take = MAX_MESSAGE_BYTES.saturating_sub(data.len());
             data.extend_from_slice(line.get(..take).unwrap_or(&line));
             capped = true;
@@ -165,10 +160,8 @@ mod tests {
             .unwrap();
         });
 
-        // Speak SMTP as a client.
         let mut client = TcpStream::connect(addr).await.unwrap();
         let mut buf = [0u8; 256];
-        // greeting
         let n = client.read(&mut buf).await.unwrap();
         assert!(buf[..n].starts_with(b"220 "));
 
@@ -190,7 +183,6 @@ mod tests {
         assert!(b[..n].starts_with(b"250 "), "expected 250 after data");
         cmd(&mut client, "QUIT\r\n").await;
 
-        // Give the spawned per-connection task a moment to persist, then assert.
         for _ in 0..50 {
             if store.count().await == 1 {
                 break;

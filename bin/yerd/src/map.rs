@@ -18,8 +18,8 @@ use crate::cli::{Command, DbAction, MailAction, ServiceAction};
 use crate::error::ClientError;
 
 /// Map a parsed [`Command`] to the wire [`Request`], validating site names and
-/// PHP versions client-side. `Use` maps to [`Request::SetPhp`].
-#[allow(clippy::too_many_lines)] // one arm per command — naturally long
+/// PHP versions client-side.
+#[allow(clippy::too_many_lines)]
 pub fn to_request(cmd: &Command) -> Result<Request, ClientError> {
     Ok(match cmd {
         Command::Ping => Request::Ping,
@@ -36,14 +36,9 @@ pub fn to_request(cmd: &Command) -> Result<Request, ClientError> {
             validate_name(name)?;
             Request::Unlink { name: name.clone() }
         }
-        // Pure: the path is passed through as a string (like `Park`, which the
-        // daemon canonicalises). For `unpark` the daemon matches the stored
-        // canonical string *exactly* (no canonicalisation), so `run` best-effort
-        // canonicalises this path at the I/O boundary before sending.
         Command::Unpark { path } => Request::Unpark {
             path: path.to_string_lossy().into_owned(),
         },
-        // One arg = global default PHP; two args = a site's version.
         Command::Use {
             first,
             version: None,
@@ -72,7 +67,6 @@ pub fn to_request(cmd: &Command) -> Result<Request, ClientError> {
             target: crate::cli::UnsetTarget::Php { setting },
         } => {
             validate_php_setting(setting, None)?;
-            // Empty value is the wire convention for "remove / reset".
             Request::SetPhpSettings {
                 settings: std::collections::BTreeMap::from([(setting.clone(), String::new())]),
             }
@@ -106,9 +100,6 @@ pub fn to_request(cmd: &Command) -> Result<Request, ClientError> {
             target: Some(crate::cli::UninstallTarget::Tool { id }),
             ..
         } => Request::UninstallTool { tool: id.clone() },
-        // Bare `yerd uninstall` (no target) is the full self-uninstall, handled
-        // locally in `crate::uninstall` (it tears down the daemon + files). `run`
-        // branches before calling `to_request`; this arm keeps the match total.
         Command::Uninstall { target: None, .. } => {
             return Err(ClientError::Usage(
                 "full uninstall is handled locally, not over IPC".to_owned(),
@@ -136,9 +127,6 @@ pub fn to_request(cmd: &Command) -> Result<Request, ClientError> {
             stable,
             force,
         } => {
-            // clap does not structurally reject a parent flag before a
-            // subcommand, so guard here: the self-update flags only apply to
-            // `yerd update` (no subcommand).
             if *yes || *edge || *stable || *force {
                 return Err(ClientError::Usage(
                     "--yes/--edge/--stable/--force apply to `yerd update` (no subcommand); \
@@ -150,9 +138,6 @@ pub fn to_request(cmd: &Command) -> Result<Request, ClientError> {
                 version: version.as_deref().map(parse_php).transpose()?,
             }
         }
-        // `yerd update` (no subcommand): a Yerd self-update check. `--edge` /
-        // `--stable` override the channel for this check only. The `--yes` apply
-        // path is intercepted earlier in `run` (it is not a single round-trip).
         Command::Update {
             target: None,
             edge,
@@ -188,7 +173,6 @@ pub fn to_request(cmd: &Command) -> Result<Request, ClientError> {
                 secure: false,
             }
         }
-        // `--auto` (or omitting the path) resets to auto-detection (`None`).
         Command::Root { name, path, auto } => {
             validate_name(name)?;
             Request::SetWebRoot {
@@ -196,10 +180,6 @@ pub fn to_request(cmd: &Command) -> Result<Request, ClientError> {
                 path: if *auto { None } else { path.clone() },
             }
         }
-        // `elevate`/`unelevate` are handled locally in `crate::elevate` (they
-        // spawn the privileged helper), never mapped to a single IPC request.
-        // `run` branches before calling `to_request`; these arms keep the match
-        // total.
         Command::Elevate { .. } | Command::Unelevate { .. } => {
             return Err(ClientError::Usage(
                 "elevate/unelevate are handled locally, not over IPC".to_owned(),
@@ -214,7 +194,7 @@ pub fn to_request(cmd: &Command) -> Result<Request, ClientError> {
 }
 
 /// Map a `yerd service <action>` to its wire request. Service ids are passed
-/// through verbatim — the daemon returns `NotFound` for an unknown id.
+/// through verbatim - the daemon returns `NotFound` for an unknown id.
 fn service_request(action: &ServiceAction) -> Request {
     match action {
         ServiceAction::Available => Request::AvailableServices,
@@ -268,8 +248,6 @@ fn db_request(action: &DbAction) -> Request {
             service: service.clone(),
             name: name.clone(),
         },
-        // Paths are passed through untouched here to keep this mapping I/O-free;
-        // `lib::run` absolutises them against the user's cwd at the I/O boundary.
         DbAction::Backup {
             service,
             name,
@@ -313,7 +291,6 @@ pub fn channel_from_flags(edge: bool, stable: bool) -> Option<Channel> {
 fn channel_str(c: Channel) -> &'static str {
     match c {
         Channel::Edge => "edge",
-        // `Channel` is `#[non_exhaustive]`; treat anything else as stable.
         _ => "stable",
     }
 }
@@ -369,7 +346,7 @@ fn validate_php_setting(setting: &str, value: Option<&str>) -> Result<(), Client
 }
 
 /// Validate a site name client-side by constructing a throwaway `Site` (the
-/// document root is irrelevant — only the name is checked).
+/// document root is irrelevant - only the name is checked).
 fn validate_name(name: &str) -> Result<(), ClientError> {
     Site::linked(name, "/", PhpVersion::new(8, 3))
         .map(|_| ())
@@ -409,8 +386,6 @@ impl Rendered {
 /// `json`, prints the response as pretty JSON instead of a human table.
 #[must_use]
 pub fn render(resp: &Response, json: bool) -> Rendered {
-    // Exit code is doctor-aware and computed once, so the `--json` and human
-    // paths agree: `1` for an error response or any `Fail` finding, else `0`.
     let code = doctor_exit_code(resp);
     if json {
         let body = serde_json::to_string_pretty(resp)
@@ -482,7 +457,6 @@ pub fn render(resp: &Response, json: bool) -> Rendered {
             target,
             ahead_of_stable,
             source,
-            // The CLI `yerd update` output doesn't surface "last checked"; ignore.
             checked_at_epoch: _,
         } => Rendered::ok(format_update_status(
             current,
@@ -494,8 +468,6 @@ pub fn render(resp: &Response, json: bool) -> Rendered {
             *ahead_of_stable,
             *source,
         )),
-        // `Response` is `#[non_exhaustive]`; a future variant from a newer
-        // daemon is surfaced benignly rather than panicking.
         _ => Rendered::err("unexpected response from daemon".to_owned()),
     }
 }
@@ -526,8 +498,6 @@ fn format_sites(sites: &[Site]) -> String {
             SiteKind::Parked => "parked",
             SiteKind::Linked => "linked",
         };
-        // The served subdirectory (web root) relative to the document root;
-        // "/" when the project root itself is served.
         let served = if s.web_subpath().as_os_str().is_empty() {
             "/".to_owned()
         } else {
@@ -559,20 +529,18 @@ fn format_service_state(s: ServiceRunState) -> &'static str {
         ServiceRunState::Running => "running",
         ServiceRunState::Stopped => "stopped",
         ServiceRunState::Failed => "failed",
-        // `ServiceRunState` is `#[non_exhaustive]`; a newer daemon's state reads
-        // as "unknown" rather than failing the render.
         _ => "unknown",
     }
 }
 
 /// Flatten tab/CR/LF in a value so a folded or multi-line mail header can't
 /// break the tab-separated `yerd mail list` table (the `--json` path needs no
-/// such treatment — serde already escapes control bytes).
+/// such treatment - serde already escapes control bytes).
 fn flatten_cell(s: &str) -> String {
     s.replace(['\t', '\r', '\n'], " ")
 }
 
-/// Render `yerd mail list` — a tab-separated table of captured emails.
+/// Render `yerd mail list` - a tab-separated table of captured emails.
 fn format_mails(mails: &[yerd_ipc::MailSummary]) -> String {
     if mails.is_empty() {
         return "no captured emails".to_owned();
@@ -589,7 +557,7 @@ fn format_mails(mails: &[yerd_ipc::MailSummary]) -> String {
     out
 }
 
-/// Render `yerd mail show <id>` — headers followed by the text body (falling
+/// Render `yerd mail show <id>` - headers followed by the text body (falling
 /// back to a note when only an HTML body is present).
 fn format_mail(mail: &yerd_ipc::MailDetail) -> String {
     let mut out = String::new();
@@ -611,7 +579,6 @@ fn format_services(services: &[ServiceStatus]) -> String {
     }
     let mut out = String::from("SERVICE\tSTATE\tPORT\tVERSION\tENABLED\tINSTALLED");
     for s in services {
-        // Not installed: there's no live state, port, or version to report.
         if s.installed_versions.is_empty() {
             let _ = write!(
                 out,
@@ -620,7 +587,6 @@ fn format_services(services: &[ServiceStatus]) -> String {
             );
             continue;
         }
-        // The active/selected version, falling back to the latest on disk.
         let version = s
             .selected_version
             .as_deref()
@@ -738,7 +704,6 @@ fn format_available_php(available: &[PhpVersion], installed: &[PhpVersion]) -> S
 fn format_status(r: &StatusReport) -> String {
     use std::fmt::Write;
     let mut s = String::new();
-    // The proxy + DNS run inside the daemon process, so its RSS covers them.
     let rss = r
         .daemon_rss_bytes
         .map(|b| format!(", rss {}", fmt_bytes(b)))
@@ -750,8 +715,6 @@ fn format_status(r: &StatusReport) -> String {
         fmt_duration(r.uptime_secs),
         rss
     );
-    // Empty when talking to a daemon predating version reporting (the field is
-    // `#[serde(default)]`); show "unknown" rather than a blank value.
     let version = if r.daemon_version.is_empty() {
         "unknown"
     } else {
@@ -761,8 +724,6 @@ fn format_status(r: &StatusReport) -> String {
     let _ = writeln!(s, "tld       .{}", r.tld);
     let redirected = r.port_redirect == Some(true);
     if let Some(u) = r.web_unbound {
-        // Degraded: bound nothing, so `fmt_port` would print a misleading
-        // "80 → 0 (fallback)". Surface the real state instead.
         let _ = writeln!(
             s,
             "http      not serving — couldn't bind {} (run `yerd doctor`)",
@@ -780,8 +741,6 @@ fn format_status(r: &StatusReport) -> String {
         );
     }
     if let Some(port) = r.dns_unbound {
-        // Degraded: `dns_addr` holds the *wanted* address, so printing it would
-        // read as healthy. Surface the real state instead.
         let _ = writeln!(
             s,
             "dns       not resolving — couldn't bind port {port} (run `yerd doctor`)"
@@ -800,12 +759,7 @@ fn format_status(r: &StatusReport) -> String {
         "resolver  installed: {}",
         fmt_tristate(r.resolver_installed)
     );
-    // Resolver off: `.test` names don't resolve, so point the user at the
-    // localhost fallback (the proxy serves any site at /~<name>.<tld>). Skip it
-    // when degraded (`web_unbound`): there's no bound web port to reach, so
-    // `r.http.bound` would be a misleading 0.
     if r.resolver_installed == Some(false) && r.web_unbound.is_none() {
-        // Omit the port when it's the default 80 (matches the GUI's URL math).
         let port = if r.http.bound == 80 {
             String::new()
         } else {
@@ -931,9 +885,6 @@ fn severity_mark(sev: Severity) -> &'static str {
 
 fn fmt_port(p: PortStatus, redirected: bool) -> String {
     if p.fell_back {
-        // The listener bound a rootless port, but on macOS an active pf redirect
-        // (`redirected`) carries the privileged port to it — so it's reachable on
-        // the requested port, not merely "fallen back".
         let tag = if redirected { "redirected" } else { "fallback" };
         format!("{} → {} ({tag})", p.requested, p.bound)
     } else {
@@ -993,7 +944,7 @@ mod tests {
     use yerd_ipc::ErrorCode;
 
     #[test]
-    #[allow(clippy::too_many_lines)] // one assertion per command — naturally long
+    #[allow(clippy::too_many_lines)]
     fn maps_each_command_to_its_request() {
         assert_eq!(to_request(&Command::Ping).unwrap(), Request::Ping);
         assert_eq!(to_request(&Command::Sites).unwrap(), Request::ListSites);
@@ -1021,8 +972,6 @@ mod tests {
             to_request(&Command::Unlink { name: "foo".into() }).unwrap(),
             Request::Unlink { name: "foo".into() }
         );
-        // `unpark <path>` maps to Unpark with the path as a string (pure; the
-        // I/O-boundary canonicalisation in `run` is tested separately).
         assert_eq!(
             to_request(&Command::Unpark {
                 path: PathBuf::from("/srv/sites")
@@ -1032,7 +981,6 @@ mod tests {
                 path: "/srv/sites".into()
             }
         );
-        // `list parked` maps to ListParked.
         assert_eq!(
             to_request(&Command::List {
                 target: crate::cli::ListTarget::Parked
@@ -1040,7 +988,6 @@ mod tests {
             .unwrap(),
             Request::ListParked
         );
-        // `use <site> <ver>` (two args) maps to SetPhp.
         assert_eq!(
             to_request(&Command::Use {
                 first: "foo".into(),
@@ -1052,7 +999,6 @@ mod tests {
                 version: PhpVersion::new(8, 4)
             }
         );
-        // `use <ver>` (one arg) maps to the global SetDefaultPhp.
         assert_eq!(
             to_request(&Command::Use {
                 first: "8.5".into(),
@@ -1063,7 +1009,6 @@ mod tests {
                 version: PhpVersion::new(8, 5)
             }
         );
-        // `set php <k> <v>` and `unset php <k>`.
         assert_eq!(
             to_request(&Command::Set {
                 target: crate::cli::SetTarget::Php {
@@ -1093,7 +1038,6 @@ mod tests {
                 )])
             }
         );
-        // `install php <ver>` and `list php`.
         assert_eq!(
             to_request(&Command::Install {
                 target: crate::cli::InstallTarget::Php {
@@ -1105,7 +1049,6 @@ mod tests {
                 version: PhpVersion::new(8, 5)
             }
         );
-        // `restart php <ver>` / `restart php` (all) and `uninstall php <ver>`.
         assert_eq!(
             to_request(&Command::Restart {
                 target: crate::cli::RestartTarget::Php {
@@ -1153,7 +1096,6 @@ mod tests {
             .unwrap(),
             Request::ListPhp
         );
-        // `tools` / `install tool <id>` / `uninstall tool <id>`.
         assert_eq!(to_request(&Command::Tools).unwrap(), Request::ListTools);
         assert_eq!(
             to_request(&Command::Install {
@@ -1192,7 +1134,6 @@ mod tests {
             .unwrap(),
             Request::AvailablePhp
         );
-        // `--available` wins over `--check`.
         assert_eq!(
             to_request(&Command::List {
                 target: crate::cli::ListTarget::Php {
@@ -1203,7 +1144,6 @@ mod tests {
             .unwrap(),
             Request::AvailablePhp
         );
-        // `update php` / `update php <ver>`.
         assert_eq!(
             to_request(&Command::Update {
                 target: Some(crate::cli::UpdateTarget::Php { version: None }),
@@ -1230,7 +1170,6 @@ mod tests {
                 version: Some(PhpVersion::new(8, 5))
             }
         );
-        // Bare `yerd update` → CheckUpdate (no channel override).
         assert_eq!(
             to_request(&Command::Update {
                 target: None,
@@ -1242,7 +1181,6 @@ mod tests {
             .unwrap(),
             Request::CheckUpdate { channel: None }
         );
-        // `yerd update --edge` → CheckUpdate on the edge channel.
         assert_eq!(
             to_request(&Command::Update {
                 target: None,
@@ -1256,7 +1194,6 @@ mod tests {
                 channel: Some(Channel::Edge)
             }
         );
-        // Self-update flags alongside the `php` subcommand are a usage error.
         assert!(matches!(
             to_request(&Command::Update {
                 target: Some(crate::cli::UpdateTarget::Php { version: None }),
@@ -1267,7 +1204,6 @@ mod tests {
             }),
             Err(ClientError::Usage(_))
         ));
-        // `secure`/`unsecure` map to SetSecure with the matching flag.
         assert_eq!(
             to_request(&Command::Secure { name: "foo".into() }).unwrap(),
             Request::SetSecure {
@@ -1282,7 +1218,6 @@ mod tests {
                 secure: false
             }
         );
-        // `root <site> <path>` maps to SetWebRoot with the path.
         assert_eq!(
             to_request(&Command::Root {
                 name: "foo".into(),
@@ -1295,7 +1230,6 @@ mod tests {
                 path: Some("public".into()),
             }
         );
-        // `root <site> --auto` (and bare `root <site>`) reset to auto-detect.
         assert_eq!(
             to_request(&Command::Root {
                 name: "foo".into(),
@@ -1331,7 +1265,6 @@ mod tests {
             Err(ClientError::Usage(_)) => {}
             other => panic!("expected Usage error, got {other:?}"),
         }
-        // One-arg `use <not-a-version>` (global) must also be a usage error.
         match to_request(&Command::Use {
             first: "not-a-version".into(),
             version: None,
@@ -1358,7 +1291,6 @@ mod tests {
             Err(ClientError::Usage(_)) => {}
             other => panic!("expected Usage error, got {other:?}"),
         }
-        // Unknown setting name and bad value are rejected client-side.
         match to_request(&Command::Set {
             target: crate::cli::SetTarget::Php {
                 setting: "not_a_setting".into(),
@@ -1393,7 +1325,6 @@ mod tests {
             checked_at_epoch: None,
         };
         let out = render(&resp, false).stdout;
-        // Every row present, both channel latests shown, plus status + source.
         assert!(out.contains("Current:       2.0.0"), "{out}");
         assert!(out.contains("Latest stable: 2.0.5"), "{out}");
         assert!(out.contains("Latest edge:   2.1.0-rc.1"), "{out}");
@@ -1408,7 +1339,6 @@ mod tests {
 
     #[test]
     fn renders_update_status_cached_and_ahead_of_stable() {
-        // On a pre-release ahead of stable, offline: "up to date" + cached note.
         let resp = Response::UpdateStatus {
             current: "2.1.0-rc.3".into(),
             latest_stable: Some("2.0.5".into()),
@@ -1435,7 +1365,6 @@ mod tests {
         assert_eq!(empty.stdout, "no sites");
         assert_eq!(empty.code, 0);
 
-        // `yerd tools` renders a table, not the "unexpected response" fallback.
         let tools = render(
             &Response::Tools {
                 tools: vec![ToolStatus {
@@ -1508,10 +1437,8 @@ mod tests {
         assert_eq!(r.code, 0);
         assert!(r.stdout.contains("8.5 (default)"));
         assert!(!r.stdout.contains("8.3 (default)"));
-        // The 8.3 line carries the update annotation; 8.5 does not.
         assert!(r.stdout.contains("8.3 — update available: 8.3.6 → 8.3.31"));
         assert!(!r.stdout.contains("8.5 — update available"));
-        // No settings → no settings block.
         assert!(!r.stdout.contains("settings:"));
 
         let empty = render(
@@ -1561,7 +1488,6 @@ mod tests {
         );
         assert_eq!(r.code, 0);
         assert!(r.stdout.contains("8.4 (installed)"));
-        // Not-installed versions appear bare (no tag).
         assert!(r.stdout.contains("\n8.3") || r.stdout.starts_with("8.3"));
         assert!(!r.stdout.contains("8.3 (installed)"));
         assert!(!r.stdout.contains("8.5 (installed)"));
@@ -1650,11 +1576,8 @@ mod tests {
             bound: 8080,
             fell_back: true,
         };
-        // No redirect: a plain rootless fallback.
         assert_eq!(fmt_port(fell_back, false), "80 → 8080 (fallback)");
-        // pf redirect active: reachable on :80, just internally on :8080.
         assert_eq!(fmt_port(fell_back, true), "80 → 8080 (redirected)");
-        // Bound directly: redirect flag is irrelevant.
         let bound = PortStatus {
             requested: 80,
             bound: 80,
@@ -1683,7 +1606,6 @@ mod tests {
         let out = format_status(&r);
         assert!(out.contains("not serving — couldn't bind 8080"), "{out}");
         assert!(out.contains("not serving — couldn't bind 8443"), "{out}");
-        // The misleading "→ 0" fallback rendering must NOT appear.
         assert!(!out.contains("→ 0"), "{out}");
     }
 
@@ -1696,7 +1618,6 @@ mod tests {
             out.contains("not resolving — couldn't bind port 1053"),
             "{out}"
         );
-        // The healthy "dns       127.0.0.1:1053" line must NOT appear.
         assert!(!out.contains("dns       127.0.0.1:1053"), "{out}");
     }
 
@@ -1713,15 +1634,14 @@ mod tests {
         assert!(out.stdout.contains("version   2.0.1"));
         assert!(out.stdout.contains("80 → 8080 (fallback)"));
         assert!(out.stdout.contains("trusted: no"));
-        assert!(out.stdout.contains("installed: unknown")); // resolver None
-        assert!(out.stdout.contains("1.52 0.48 0.05")); // load hundredths → x.xx
+        assert!(out.stdout.contains("installed: unknown"));
+        assert!(out.stdout.contains("1.52 0.48 0.05"));
         assert!(out.stdout.contains("8.5 (default)  running"));
         assert!(out.stdout.contains("pid 99"));
     }
 
     #[test]
     fn status_shows_unknown_for_empty_daemon_version() {
-        // An older daemon predating version reporting sends `""` (serde default).
         let mut report = sample_report();
         report.daemon_version = String::new();
         let out = render(
@@ -1763,7 +1683,6 @@ mod tests {
             }],
         };
         assert_eq!(render(&with_fail, false).code, 1);
-        // The JSON path must agree on the exit code.
         assert_eq!(render(&with_fail, true).code, 1);
     }
 
@@ -1786,7 +1705,7 @@ mod tests {
             },
         };
         let r = render(&resp, false);
-        assert_eq!(r.code, 0); // only a Warn remains
+        assert_eq!(r.code, 0);
         assert!(r.stdout.contains("✓ restarted PHP 8.5 FPM pool"));
         assert!(r.stdout.contains("still needs attention"));
         assert!(r.stdout.contains("sudo yerd elevate resolver"));

@@ -82,15 +82,10 @@ pub(crate) fn leaf_params(
     ];
     params.extended_key_usages = vec![ExtendedKeyUsagePurpose::ServerAuth];
     params.use_authority_key_identifier_extension = true;
-    // Set a CN to the first name. Browsers match the hostname against the SAN,
-    // not the CN, but the subject must not be empty: RFC 5280 §4.1.2.6 requires
-    // an empty subject to carry a *critical* subjectAltName, and rcgen emits the
-    // SAN as non-critical. macOS's Security framework (and thus Chrome/Safari on
-    // macOS) enforces this and rejects an empty-subject leaf with
-    // ERR_CERT_INVALID. A non-empty CN sidesteps the requirement entirely.
-    // The CN AttributeValue is capped at 64 bytes (`ub-common-name`); names
-    // longer than that fall back to an empty subject, which is still served via
-    // the SAN on platforms that accept it.
+    // Set a CN to the first name. macOS Security (Chrome/Safari) rejects an
+    // empty-subject leaf (RFC 5280 4.1.2.6 wants a critical SAN, but rcgen
+    // emits it non-critical), so a non-empty CN sidesteps it. Names over
+    // 64 bytes (ub-common-name) fall back to an empty subject.
     params.distinguished_name = {
         let mut dn = rcgen::DistinguishedName::new();
         if let Some(cn) = names.first() {
@@ -159,7 +154,6 @@ mod tests {
     fn ca_params_accepts_cn_at_64() {
         let cn = "a".repeat(64);
         let p = ca_params(&cn, v()).unwrap();
-        // Path length 0 — no intermediates.
         assert!(matches!(
             p.is_ca,
             IsCa::Ca(BasicConstraints::Constrained(0))
@@ -190,7 +184,6 @@ mod tests {
 
     #[test]
     fn leaf_params_rejects_non_ia5_with_index() {
-        // U+00F6 ö is non-ASCII → not IA5.
         let names = vec!["ok.test".to_string(), "f\u{00f6}\u{00f6}.test".to_string()];
         let err = leaf_params(&names, v()).unwrap_err();
         match err {

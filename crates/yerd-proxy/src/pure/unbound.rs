@@ -3,11 +3,11 @@
 //! When the OS `.test` resolver isn't installed, sites are reached over
 //! `http://localhost:8080`. Three mechanisms let a request select a site:
 //!
-//! 1. **`X-Yerd-Site: app.test`** header — for API clients: route this one
+//! 1. **`X-Yerd-Site: app.test`** header - for API clients: route this one
 //!    request to that site, no cookie, no redirect.
-//! 2. **`/~app.test/<path>`** switch URL — pins the origin to the site with a
+//! 2. **`/~app.test/<path>`** switch URL - pins the origin to the site with a
 //!    `yerd-site` cookie and redirects (303) to `<path>`.
-//! 3. The **`yerd-site` cookie** — subsequent requests on the pinned origin.
+//! 3. The **`yerd-site` cookie** - subsequent requests on the pinned origin.
 //!
 //! With none of those, a browser navigation gets a **picker page** listing the
 //! sites; selecting one forwards the originally-requested path.
@@ -55,7 +55,6 @@ pub struct PickerSite<'a> {
 #[must_use]
 pub fn is_loopback_host(raw_host: &str) -> bool {
     let bare = strip_host_port(raw_host);
-    // `[::1]` → `::1`.
     let bare = bare
         .strip_prefix('[')
         .and_then(|inner| inner.strip_suffix(']'))
@@ -115,14 +114,13 @@ pub fn parse_cookie_site(cookie_header: &str) -> Option<&str> {
 ///
 /// This stops a protocol-relative (`//evil.com`) or backslash (`/\evil.com`,
 /// which some browsers fold into `//`) destination from smuggling an off-origin
-/// target into a redirect `Location` or a picker `href` — i.e. it closes the
+/// target into a redirect `Location` or a picker `href` - i.e. it closes the
 /// open-redirect vector on the `/~switch` path.
 #[must_use]
 pub fn sanitize_dest(path: &str) -> Cow<'_, str> {
     let trimmed = path.trim_start_matches(['/', '\\']);
     let stripped = path.len() - trimmed.len();
     if stripped == 1 && path.starts_with('/') {
-        // Already a single leading '/', nothing to collapse.
         return Cow::Borrowed(path);
     }
     if trimmed.is_empty() {
@@ -199,7 +197,6 @@ pub fn render_picker(tld: &str, sites: &[PickerSite<'_>], dest: &str) -> String 
             } else {
                 ""
             };
-            // Infallible: writing to a String never errors.
             let _ = write!(
                 list,
                 "<a class=\"site\" href=\"/~{name}.{tld_e}{dest_e}\">\
@@ -322,10 +319,10 @@ mod tests {
             ("/", "/"),
             ("/foo", "/foo"),
             ("/foo/bar?x=1", "/foo/bar?x=1"),
-            ("/foo//bar", "/foo//bar"), // internal double slash is a normal path
-            ("//evil.com", "/evil.com"), // protocol-relative → same-origin
+            ("/foo//bar", "/foo//bar"),
+            ("//evil.com", "/evil.com"),
             ("///evil.com", "/evil.com"),
-            ("/\\evil.com", "/evil.com"), // backslash fold
+            ("/\\evil.com", "/evil.com"),
             ("/\\/evil.com", "/evil.com"),
             ("\\evil.com", "/evil.com"),
             ("//", "/"),
@@ -386,9 +383,7 @@ mod tests {
         assert!(html.contains("href=\"/~app.test/example?x=1\""));
         assert!(html.contains("href=\"/~blog.test/example?x=1\""));
         assert!(html.contains(">app.test<"));
-        // secure site renders the badge; non-secure doesn't double it.
         assert_eq!(html.matches("class=\"badge\"").count(), 1);
-        // dark-mode block present.
         assert!(html.contains("prefers-color-scheme:dark"));
     }
 

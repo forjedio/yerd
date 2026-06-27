@@ -1,7 +1,7 @@
 //! Filesystem hardening helpers for daemon-owned paths.
 //!
 //! `yerd-platform`'s `PlatformDirs` contract makes the *caller* responsible
-//! for locking down the runtime directory and the secrets it holds —
+//! for locking down the runtime directory and the secrets it holds -
 //! specifically because the Linux fallback when `XDG_RUNTIME_DIR` is unset is
 //! the world-traversable `/tmp/yerd-$UID`. The daemon's only access control
 //! over the IPC socket is the directory/socket permissions, so these helpers
@@ -20,7 +20,7 @@ use std::path::Path;
 /// the mode whether the directory was just created (umask may have widened it)
 /// or already existed. If a different user pre-created the directory, the
 /// `chmod` fails with `PermissionDenied` and the daemon refuses to start
-/// rather than trusting a directory it cannot lock down — fail-closed.
+/// rather than trusting a directory it cannot lock down - fail-closed.
 pub fn create_private_dir(path: &Path) -> io::Result<()> {
     std::fs::create_dir_all(path)?;
     set_mode(path, 0o700)
@@ -36,8 +36,8 @@ pub fn restrict_to_owner(path: &Path) -> io::Result<()> {
 /// No-op elsewhere. Used for the **public** CA certificate: world-readable is
 /// fine for a cert, but it must not be group/world-*writable* or the trust
 /// helper refuses to install it (a tamper guard). Newly-created files inherit
-/// the umask, which on common setups (`umask 002`) leaves `0o664` —
-/// group-writable — so we force the mode explicitly.
+/// the umask, which on common setups (`umask 002`) leaves `0o664` -
+/// group-writable - so we force the mode explicitly.
 pub fn restrict_writes_to_owner(path: &Path) -> io::Result<()> {
     set_mode(path, 0o644)
 }
@@ -100,7 +100,6 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let file = tmp.path().join("ca.cert.pem");
         std::fs::write(&file, b"public cert").unwrap();
-        // Simulate a umask-002 write: group/world-writable.
         std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o664)).unwrap();
         restrict_writes_to_owner(&file).unwrap();
         let mode = std::fs::metadata(&file).unwrap().permissions().mode() & 0o777;
@@ -108,7 +107,6 @@ mod tests {
             mode, 0o644,
             "cert must be world-readable but owner-write only"
         );
-        // The property the trust helper checks: no group/world write bits.
         assert_eq!(mode & 0o022, 0);
     }
 }

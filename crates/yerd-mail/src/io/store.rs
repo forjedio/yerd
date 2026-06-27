@@ -1,8 +1,8 @@
 //! On-disk store of captured emails.
 //!
 //! Layout under the store directory:
-//! - `<id>.eml` — the verbatim captured message (one per email).
-//! - `index.json` — an ordered (oldest-first) list of [`MailSummary`] metadata,
+//! - `<id>.eml` - the verbatim captured message (one per email).
+//! - `index.json` - an ordered (oldest-first) list of [`MailSummary`] metadata,
 //!   so listing doesn't re-parse every `.eml`.
 //!
 //! All mutations go through a single [`tokio::sync::Mutex`] so concurrent SMTP
@@ -53,10 +53,6 @@ impl Store {
             source,
         })?;
         let entries = load_index(&dir)?;
-        // Seed the id counter from the max of the index AND any `.eml` on disk.
-        // Scanning the directory too means an `.eml` that was written but never
-        // recorded in `index.json` (e.g. a crash between the two writes) can never
-        // have its id reused, honouring the "ids never reused" guarantee.
         let max_index = entries
             .iter()
             .filter_map(|e| e.id.parse::<u64>().ok())
@@ -87,7 +83,6 @@ impl Store {
 
         inner.entries.push(mime::summary(&id, raw));
 
-        // Evict oldest beyond the cap.
         let evict = retention::evict_count(inner.entries.len(), self.cap);
         for old in inner.entries.drain(0..evict).collect::<Vec<_>>() {
             let p = self.eml_path(&old.id);
@@ -202,8 +197,8 @@ fn max_eml_id(dir: &Path) -> Option<u64> {
 ///
 /// A **corrupt** index (truncated/garbled JSON, e.g. from a crash mid-write on a
 /// pre-atomic-write store) is treated as recoverable, NOT fatal: the index is
-/// only a cache — the `.eml` files are the source of truth and `max_eml_id`
-/// reseeds the id counter from them — so we log a warning and start from empty
+/// only a cache - the `.eml` files are the source of truth and `max_eml_id`
+/// reseeds the id counter from them - so we log a warning and start from empty
 /// rather than aborting `Store::open` (which would otherwise take down the whole
 /// daemon, since mail capture is meant to be best-effort).
 fn load_index(dir: &Path) -> Result<Vec<MailSummary>, MailError> {
@@ -244,7 +239,6 @@ mod tests {
 
         let list = store.list().await;
         assert_eq!(list.len(), 2);
-        // Newest first.
         assert_eq!(list[0].subject, "Second");
         assert_eq!(list[1].subject, "First");
         assert_eq!(store.count().await, 2);
@@ -262,7 +256,6 @@ mod tests {
         store.clear().await.unwrap();
         assert_eq!(store.count().await, 0);
         store.append(&msg("B")).await.unwrap();
-        // Id did not reset to 000000.
         assert_eq!(store.list().await[0].id, "000001");
     }
 
@@ -273,7 +266,6 @@ mod tests {
         for s in ["a", "b", "c"] {
             store.append(&msg(s)).await.unwrap();
         }
-        // Delete "a" (000000) and "c" (000002); keep "b" (000001).
         store
             .delete_many(&["000000".to_string(), "000002".to_string()])
             .await
@@ -284,7 +276,6 @@ mod tests {
         assert!(!dir.path().join("000000.eml").exists());
         assert!(dir.path().join("000001.eml").exists());
         assert!(!dir.path().join("000002.eml").exists());
-        // Unknown ids are ignored.
         store.delete_many(&["999999".to_string()]).await.unwrap();
         assert_eq!(store.count().await, 1);
     }
@@ -300,7 +291,6 @@ mod tests {
         assert_eq!(list.len(), 2);
         assert_eq!(list[0].subject, "three");
         assert_eq!(list[1].subject, "two");
-        // The evicted .eml is gone from disk.
         assert!(!dir.path().join("000000.eml").exists());
     }
 
@@ -315,16 +305,12 @@ mod tests {
         let list = store.list().await;
         assert_eq!(list.len(), 1);
         assert_eq!(list[0].subject, "Persisted");
-        // Next id continues after the loaded max.
         store.append(&msg("Next")).await.unwrap();
         assert_eq!(store.list().await[0].id, "000001");
     }
 
     #[tokio::test]
     async fn next_id_skips_orphaned_eml_not_in_index() {
-        // Simulate a crash between writing an `.eml` and updating index.json: an
-        // orphan `000007.eml` exists with no index entry. A reopened store must
-        // NOT reuse id 7 (or any id ≤ 7).
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("000007.eml"), msg("orphan")).unwrap();
         let store = Store::open(dir.path().to_path_buf()).unwrap();

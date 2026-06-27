@@ -17,13 +17,13 @@ pub const UPDATE_PUBLIC_KEY: &str = "RWRXUQIpU8uZ3B6SV3yFsK3+aAWZX+efytjc8F+8PTu
 /// [`Platform::current`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Platform {
-    /// Apple Silicon macOS — the `.app.tar.gz` bundle.
+    /// Apple Silicon macOS - the `.app.tar.gz` bundle.
     MacOsAarch64,
-    /// Intel macOS — no artifact is published (Apple-Silicon-only for MVP).
+    /// Intel macOS - no artifact is published (Apple-Silicon-only for MVP).
     MacOsX86_64,
-    /// `x86_64` Linux — the `.deb` package.
+    /// `x86_64` Linux - the `.deb` package.
     LinuxX86_64,
-    /// `aarch64` Linux — the arm64 `.deb` package.
+    /// `aarch64` Linux - the arm64 `.deb` package.
     LinuxAarch64,
     /// Any platform without a published self-update artifact.
     Unsupported,
@@ -171,7 +171,7 @@ fn is_linux_x86_64_artifact(name: &str) -> bool {
 }
 
 // The published arm64 .deb is named `Yerd_Linux_Arm64_*.deb` (capital "Arm64"), so
-// match case-insensitively — a lowercase `contains("arm64")` would miss it.
+// match case-insensitively - a lowercase `contains("arm64")` would miss it.
 #[allow(clippy::case_sensitive_file_extension_comparisons)]
 fn is_linux_aarch64_artifact(name: &str) -> bool {
     let lower = name.to_ascii_lowercase();
@@ -243,7 +243,7 @@ pub fn verify_sha256(bytes: &[u8], sums: &str, filename: &str) -> Result<(), Ver
 /// Verify a detached minisign `signature` over `bytes` using `public_key_b64`.
 ///
 /// Requires a **prehashed** signature (`minisign -H`, which `tauri signer` and
-/// the modern `minisign` default produce) — legacy ed25519 signatures are
+/// the modern `minisign` default produce); legacy ed25519 signatures are
 /// rejected. The release workflow signs with prehashing.
 pub fn verify_minisign(
     public_key_b64: &str,
@@ -285,8 +285,8 @@ mod tests {
         }
     }
 
-    // ── Known-good minisign fixture (the `minisign-verify` crate's test vector:
-    //    a prehashed signature of the bytes `b"test"`). ──
+    // Known-good minisign fixture from the `minisign-verify` crate's test vector:
+    // a prehashed signature of the bytes `b"test"`.
     const FIXTURE_PUBKEY: &str = "RWQf6LRCGA9i53mlYecO4IzT51TGPpvWucNSCh1CBM0QTaLn73Y7GFO3";
     const FIXTURE_SIG: &str = "untrusted comment: signature from minisign secret key\nRUQf6LRCGA9i559r3g7V1qNyJDApGip8MfqcadIgT9CuhV3EMhHoN1mGTkUidF/z7SrlQgXdy8ofjb7bNJJylDOocrCo8KLzZwo=\ntrusted comment: timestamp:1556193335\tfile:test\ny/rUw2y8/hOUYjZU71eHp/Wo1KZ40fGy2VJEDl34XMJM+TX48Ss/17u3IvIfbVR1FkZZSNCisQbuQY+bHwhEBg==";
 
@@ -319,7 +319,6 @@ mod tests {
 
     #[test]
     fn selects_linux_aarch64_deb() {
-        // Capital "Arm64" — the real published name; locks in case-insensitive matching.
         let r = release_with(&[
             "Yerd_Linux_Arm64_v2-0-2.deb",
             "Yerd_Linux_Arm64_v2-0-2.deb.sig",
@@ -332,7 +331,6 @@ mod tests {
 
     #[test]
     fn linux_arch_matchers_are_disjoint() {
-        // arm64 platform must not pick the x86_64 .deb...
         let only_x86 = release_with(&[
             "Yerd_Linux_x86_64_v2-0-2.deb",
             "Yerd_Linux_x86_64_v2-0-2.deb.sig",
@@ -342,7 +340,6 @@ mod tests {
             select_asset(&only_x86, Platform::LinuxAarch64),
             Err(AssetError::NoArtifactForPlatform(Platform::LinuxAarch64))
         );
-        // ...and the x86_64 platform must not pick the arm64 .deb.
         let only_arm = release_with(&[
             "Yerd_Linux_Arm64_v2-0-2.deb",
             "Yerd_Linux_Arm64_v2-0-2.deb.sig",
@@ -390,12 +387,10 @@ mod tests {
         let hexsum = sha256_hex(data);
         let sums = format!("{hexsum}  Yerd_Linux_x86_64_v2-0-2.deb\nffff  other\n");
         verify_sha256(data, &sums, "Yerd_Linux_x86_64_v2-0-2.deb").unwrap();
-        // Tampered bytes fail.
         assert_eq!(
             verify_sha256(b"tampered", &sums, "Yerd_Linux_x86_64_v2-0-2.deb"),
             Err(VerifyError::ChecksumMismatch)
         );
-        // Unknown filename fails.
         assert_eq!(
             verify_sha256(data, &sums, "absent.deb"),
             Err(VerifyError::ChecksumMissing)
@@ -427,7 +422,6 @@ mod tests {
 
     #[test]
     fn minisign_rejects_wrong_key() {
-        // A syntactically-valid but different key → key-id mismatch / verify fail.
         let other = "RWSd1IZw0v2bQ0i4i6kTQ7jHj1xFkfHb9G0Vn8u0kHkP9wXxJ8qXJ0kZ";
         let err = verify_minisign(other, FIXTURE_SIG, b"test").unwrap_err();
         assert!(matches!(
@@ -446,8 +440,6 @@ mod tests {
 
     #[test]
     fn current_platform_is_known_on_dev_hosts() {
-        // On the supported dev/CI hosts this is never Unsupported; elsewhere the
-        // assertion is vacuously skipped.
         let p = Platform::current();
         #[cfg(any(
             all(target_os = "macos", target_arch = "aarch64"),

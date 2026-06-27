@@ -2,7 +2,7 @@
 //!
 //! `main.rs` is the only place that turns [`HelperError`] into an exit
 //! code; everything else returns `Result<(), HelperError>`. The
-//! [`exit_code`] mapping below is exhaustive — adding a new
+//! [`exit_code`] mapping below is exhaustive - adding a new
 //! [`HelperError`] variant without extending the match is a compile
 //! error rather than a silent code change.
 
@@ -137,7 +137,7 @@ pub enum ValidationReason {
     NoAnchorDir,
     /// A port-redirect port argument was zero. macOS-only: the pf-redirect op
     /// that validates it is `#[cfg(target_os = "macos")]`, so the variant is
-    /// gated to match — otherwise it is dead code on Linux/Windows.
+    /// gated to match - otherwise it is dead code on Linux/Windows.
     #[cfg(target_os = "macos")]
     #[error("port must be non-zero (flag {0})")]
     PortInvalid(&'static str),
@@ -212,7 +212,6 @@ mod tests {
             }),
             65
         );
-        // The yerd-ownership refusal is a validation failure too → 65.
         assert_eq!(
             exit_code(&HelperError::Validation {
                 reason: ValidationReason::CertNotYerdOwned { found_cn: None }

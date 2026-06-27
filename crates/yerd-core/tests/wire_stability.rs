@@ -2,7 +2,7 @@
 //!
 //! Every assertion in this file pins a byte-exact JSON shape produced by
 //! `yerd-core`'s public types. Renaming any public field, variant, or type
-//! name fails this file — which fails CI before `yerd-ipc` sees a divergent
+//! name fails this file - which fails CI before `yerd-ipc` sees a divergent
 //! wire format.
 
 #![allow(

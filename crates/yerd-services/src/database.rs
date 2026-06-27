@@ -20,7 +20,7 @@ use crate::service::Service;
 pub enum DbNameError {
     /// The name was empty.
     Empty,
-    /// The name exceeded the 63-character limit (the lowest engine cap —
+    /// The name exceeded the 63-character limit (the lowest engine cap -
     /// `PostgreSQL` truncates at 63; `MySQL` allows 64).
     TooLong,
     /// The first character was not an ASCII letter or underscore.
@@ -54,7 +54,7 @@ const MAX_DB_NAME_LEN: usize = 63;
 
 /// Validate a user-supplied database name against a strict allowlist:
 /// non-empty, ≤ 63 chars, first char an ASCII letter or `_`, remainder ASCII
-/// alphanumerics or `_`. This makes SQL injection impossible by construction —
+/// alphanumerics or `_`. This makes SQL injection impossible by construction -
 /// no quote, backtick, semicolon, whitespace, or control character can pass.
 pub fn validate_db_name(name: &str) -> Result<(), DbNameError> {
     if name.is_empty() {
@@ -64,7 +64,6 @@ pub fn validate_db_name(name: &str) -> Result<(), DbNameError> {
         return Err(DbNameError::TooLong);
     }
     let mut chars = name.chars();
-    // `name` is non-empty, so `next()` is `Some`.
     if let Some(first) = chars.next() {
         if !(first.is_ascii_alphabetic() || first == '_') {
             return Err(DbNameError::BadStart);
@@ -100,7 +99,6 @@ pub fn is_system_database(service: Service, name: &str) -> bool {
 pub fn quote_ident(service: Service, name: &str) -> String {
     match service {
         Service::MySql | Service::MariaDb => format!("`{}`", name.replace('`', "``")),
-        // Postgres and (unused) Redis use SQL-standard double quoting.
         Service::Postgres | Service::Redis => format!("\"{}\"", name.replace('"', "\"\"")),
     }
 }
@@ -135,8 +133,8 @@ pub fn list_sql(service: Service) -> &'static str {
 
 /// Build the bundled-client argv to run `sql` against `service`.
 ///
-/// `MySQL`/`MariaDB` connect over the Unix `socket` (passwordless `root@localhost`
-/// — a TCP login would fail under `skip-name-resolve`); `PostgreSQL` connects
+/// `MySQL`/`MariaDB` connect over the Unix `socket` (passwordless `root@localhost`,
+/// since a TCP login would fail under `skip-name-resolve`); `PostgreSQL` connects
 /// over TCP loopback on `port` (its Unix socket is disabled), authenticated by
 /// the `trust` line `initdb` wrote for `127.0.0.1/32`.
 #[must_use]
@@ -168,7 +166,7 @@ pub fn client_args(service: Service, socket: &Path, port: u16, sql: &str) -> Vec
 /// Build the dump-tool argv to write a complete plain-SQL dump of `db` to **stdout**.
 ///
 /// Same connection model as [`client_args`] (`MySQL`/`MariaDB` over the Unix
-/// `socket`; `PostgreSQL` over TCP loopback on `port`). The args differ per engine —
+/// `socket`; `PostgreSQL` over TCP loopback on `port`). The args differ per engine -
 /// they are **not** uniform:
 /// - `MySQL`/`MariaDB` add `--routines --events --triggers` because the dump tools
 ///   omit stored routines and events by default (silent data loss otherwise). The
@@ -182,7 +180,7 @@ pub fn client_args(service: Service, socket: &Path, port: u16, sql: &str) -> Vec
 ///   first instead of erroring under `ON_ERROR_STOP`) and `--no-owner --no-privileges`
 ///   (so `OWNER`/`GRANT` lines can't fail when the restoring role differs).
 ///
-/// The output file is never named here — the daemon captures stdout and writes it.
+/// The output file is never named here - the daemon captures stdout and writes it.
 #[must_use]
 pub fn dump_args(service: Service, socket: &Path, port: u16, db: &str) -> Vec<String> {
     match service {
@@ -224,7 +222,7 @@ pub fn dump_args(service: Service, socket: &Path, port: u16, db: &str) -> Vec<St
 /// `MySQL`/`MariaDB` take `db` positionally; `PostgreSQL` connects with
 /// `--dbname=db` (not the `postgres` maintenance db) and `--set=ON_ERROR_STOP=1` so a
 /// failed statement aborts with a non-zero exit instead of silently partially
-/// restoring. The input file is never named here — the daemon feeds it on stdin.
+/// restoring. The input file is never named here - the daemon feeds it on stdin.
 #[must_use]
 pub fn restore_args(service: Service, socket: &Path, port: u16, db: &str) -> Vec<String> {
     match service {
@@ -283,10 +281,8 @@ mod tests {
     fn validate_rejects_injection_and_bad_input() {
         assert_eq!(validate_db_name(""), Err(DbNameError::Empty));
         assert_eq!(validate_db_name(&"a".repeat(64)), Err(DbNameError::TooLong));
-        // Leading digit / symbol.
         assert_eq!(validate_db_name("1db"), Err(DbNameError::BadStart));
         assert_eq!(validate_db_name("-db"), Err(DbNameError::BadStart));
-        // Injection attempts and metacharacters are all BadChar.
         for bad in [
             "a;DROP DATABASE x",
             "a b",
@@ -310,7 +306,7 @@ mod tests {
     #[test]
     fn system_databases_per_engine() {
         assert!(is_system_database(Service::MySql, "mysql"));
-        assert!(is_system_database(Service::MySql, "INFORMATION_SCHEMA")); // case-insensitive
+        assert!(is_system_database(Service::MySql, "INFORMATION_SCHEMA"));
         assert!(is_system_database(Service::MariaDb, "sys"));
         assert!(!is_system_database(Service::MySql, "app"));
         assert!(is_system_database(Service::Postgres, "template0"));
@@ -356,16 +352,13 @@ mod tests {
         let my = dump_args(Service::MySql, &sock, 3306, "app");
         assert!(my.contains(&"--socket=/run/yerd/mysql.sock".to_owned()));
         assert!(my.contains(&"--user=root".to_owned()));
-        // Completeness: routines + events + triggers, else silent data loss.
         for flag in ["--routines", "--events", "--triggers"] {
             assert!(my.contains(&flag.to_owned()), "mysql dump missing {flag}");
         }
-        // MySQL-only GTID flag, and the single-db positional form (no --databases).
         assert!(my.contains(&"--set-gtid-purged=OFF".to_owned()));
         assert!(my.iter().all(|a| a != "--databases"));
         assert_eq!(my.last().unwrap(), "app");
 
-        // MariaDB shares the completeness flags but must NOT get --set-gtid-purged.
         let maria = dump_args(Service::MariaDb, &sock, 3306, "app");
         for flag in ["--routines", "--events", "--triggers"] {
             assert!(
@@ -376,7 +369,6 @@ mod tests {
         assert!(maria.iter().all(|a| !a.starts_with("--set-gtid-purged")));
         assert_eq!(maria.last().unwrap(), "app");
 
-        // Postgres dumps over TCP with clean/idempotent + owner/privilege stripping.
         let pg = dump_args(Service::Postgres, &sock, 5432, "app");
         assert!(pg.contains(&"--host=127.0.0.1".to_owned()));
         assert!(pg.contains(&"--port=5432".to_owned()));
@@ -401,7 +393,6 @@ mod tests {
         let pg = restore_args(Service::Postgres, &sock, 5432, "app");
         assert!(pg.contains(&"--host=127.0.0.1".to_owned()));
         assert!(pg.contains(&"--set=ON_ERROR_STOP=1".to_owned()));
-        // Targets the requested db, not the `postgres` maintenance db.
         assert!(pg.contains(&"--dbname=app".to_owned()));
         assert!(pg.iter().all(|a| a != "--dbname=postgres"));
 

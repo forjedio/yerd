@@ -53,7 +53,7 @@ impl CaFingerprint {
         crate::pure::pem_match::fingerprint_of_first_cert_in_pem(pem_text).map(Self)
     }
 
-    /// Parse exactly 64 **lowercase** hex characters into a fingerprint — the
+    /// Parse exactly 64 **lowercase** hex characters into a fingerprint - the
     /// inverse of [`Self::to_hex`]. Uppercase, wrong length, or non-hex input
     /// is rejected; this is the canonical wire form, so the strict lowercase
     /// rule keeps it byte-stable.
@@ -108,7 +108,7 @@ pub enum NssFailure {
 /// `install_system` / `uninstall_system` always return `NeedsHelper` in
 /// Phase 1; daemon orchestrates the `yerd-helper` invocation. The probe
 /// `is_present_system` runs unprivileged and is a *presence* check, not a
-/// trust-policy check — a true result means the certificate is in the
+/// trust-policy check - a true result means the certificate is in the
 /// store, not necessarily trusted for SSL by every consumer.
 pub trait TrustStore {
     /// Request system-store install of `ca_pem`.
@@ -134,7 +134,7 @@ pub trait TrustStore {
     fn is_present_system(&self, fp: &CaFingerprint) -> Result<bool, PlatformError>;
 
     /// Report whether the CA at `ca_path` is **effectively trusted** for
-    /// SSL — not merely present. Read-only, unprivileged.
+    /// SSL - not merely present. Read-only, unprivileged.
     ///
     /// macOS: runs `security verify-cert -c <ca_path> -p ssl`, which
     /// evaluates the user, admin, and system trust domains (presence
@@ -143,7 +143,7 @@ pub trait TrustStore {
     /// [`Self::is_present_system`].
     ///
     /// This method has a default `Unsupported` body so non-macOS/Linux
-    /// impls (and test fakes) need not override it — the only deliberate
+    /// impls (and test fakes) need not override it - the only deliberate
     /// defaulted method on this trait.
     fn is_trusted(&self, ca_path: &Path, fp: &CaFingerprint) -> Result<bool, PlatformError> {
         let _ = (ca_path, fp);
@@ -198,9 +198,7 @@ mod tests {
     fn from_der_matches_sha256_and_from_pem_round_trips() {
         let der = b"\x30\x82\x01\x0a fake-der-body for fingerprint test";
         let direct = CaFingerprint::from_der(der);
-        // `from_der` is exactly sha256 over the DER body.
         assert_eq!(direct.as_bytes(), &crate::pure::pem_match::sha256(der));
-        // Wrapping the same DER in PEM and parsing it back yields the same fp.
         let pem = crate::pure::pem_match::der_to_pem(der);
         assert_eq!(CaFingerprint::from_pem(&pem), Some(direct));
     }
@@ -212,12 +210,9 @@ mod tests {
 
     #[test]
     fn fingerprint_from_hex_rejects_malformed() {
-        // wrong length
         assert!(CaFingerprint::from_hex("ab").is_err());
         assert!(CaFingerprint::from_hex(&"ab".repeat(33)).is_err());
-        // uppercase (canonical form is lowercase)
         assert!(CaFingerprint::from_hex(&"AB".repeat(32)).is_err());
-        // non-hex
         assert!(CaFingerprint::from_hex(&"zz".repeat(32)).is_err());
     }
 

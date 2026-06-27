@@ -2,7 +2,7 @@
 //!
 //! One place for the platform service mechanics so the GUI, the `bin/yerd`
 //! self-update applier, and the uninstaller don't each re-implement them (the
-//! applier `bin/yerd` cannot depend on the GUI binary — strict downhill
+//! applier `bin/yerd` cannot depend on the GUI binary - strict downhill
 //! dep-flow). The logic mirrors the GUI's existing `autostart`/`daemon` modules:
 //!
 //! - **macOS:** `launchctl kill SIGTERM gui/$uid/dev.yerd.daemon` to stop, and
@@ -14,7 +14,7 @@
 //!   instance is reachable, else SIGTERM the running pid and (for start) a
 //!   detached `yerdd serve`.
 //!
-//! No `unsafe`, no async, no IPC, no network — it shells out to the platform
+//! No `unsafe`, no async, no IPC, no network - it shells out to the platform
 //! tools and uses `nix` safe wrappers for `kill`/`getuid`, so its dependency
 //! graph stays minimal.
 
@@ -101,8 +101,6 @@ impl ServiceCtl {
                 return run_ok("systemctl", &["--user", "restart", SYSTEMD_UNIT]);
             }
             self.stop();
-            // Don't start a second daemon if the old one is still holding the IPC
-            // socket / ports — abort the restart if it didn't exit in time.
             if !wait_for_exit() {
                 return Err(ServiceError::Tool {
                     tool: "yerdd",
@@ -173,8 +171,6 @@ fn service_start(yerdd_path: &Path) -> Result<(), ServiceError> {
 
 #[cfg(target_os = "macos")]
 fn kickstart() -> Result<(), ServiceError> {
-    // `-k` kills the job (if running) then restarts it, re-exec'ing the binary
-    // at the plist's path — which is what we want after a bundle swap.
     run_ok("launchctl", &["kickstart", "-k", &service_target()])
 }
 
@@ -190,8 +186,6 @@ fn spawn_detached(yerdd_path: &Path) -> Result<(), ServiceError> {
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
-        // New process group → detached from the caller's controlling terminal
-        // and signals. Safe (no pre_exec / unsafe needed).
         .process_group(0)
         .spawn()
         .map(|_| ())
@@ -235,7 +229,7 @@ fn parse_pids(stdout: &str) -> Vec<i32> {
 /// Block (bounded) until no `yerdd` is running, so a restart spawns onto a freed
 /// binary. Returns `true` once it exits, or `false` on the ~5s timeout (the
 /// daemon normally exits well under a second). The caller must not start a new
-/// daemon on `false` — the old one may still hold the socket/ports.
+/// daemon on `false` - the old one may still hold the socket/ports.
 #[cfg(target_os = "linux")]
 fn wait_for_exit() -> bool {
     use std::time::Duration;

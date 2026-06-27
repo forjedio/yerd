@@ -1,9 +1,9 @@
-//! `PortRedirector` trait — probe whether the privileged-port redirect is live.
+//! `PortRedirector` trait - probe whether the privileged-port redirect is live.
 //!
 //! On macOS the unprivileged daemon can't bind 80/443, so `yerd elevate ports`
 //! installs a pf `rdr` redirect to its rootless ports (see
 //! `crate::pure::pf_anchor`). Because the daemon still *binds* the high ports,
-//! `StatusReport.http.fell_back` stays `true` even once the redirect works — so
+//! `StatusReport.http.fell_back` stays `true` even once the redirect works - so
 //! the doctor needs a separate signal to know 80/443 are actually reachable.
 //!
 //! This probe is **active and unprivileged**, and it confirms the redirect
@@ -12,7 +12,7 @@
 //! web server, or a stale `pf` rule the user thinks they removed), so it would
 //! report a redirect as live after it had actually been torn down. Instead we
 //! speak HTTP to the port and require the yerd proxy's `Server:` marker
-//! ([`yerd_core::PROXY_SERVER_ID`]) on the response — reading pf's own state
+//! ([`yerd_core::PROXY_SERVER_ID`]) on the response - reading pf's own state
 //! would need root, which the daemon doesn't have.
 
 use std::io::{Read as _, Write as _};
@@ -30,14 +30,14 @@ const PROBE_REQUEST: &[u8] = b"GET / HTTP/1.0\r\n\r\n";
 
 /// Privileged-port redirect probe.
 pub trait PortRedirector {
-    /// Whether the privileged-port redirect is currently live — i.e. 80/443 on
+    /// Whether the privileged-port redirect is currently live - i.e. 80/443 on
     /// loopback are carried to this daemon's proxy. `None` = not applicable on
     /// this OS (Linux binds the privileged ports directly after `setcap`) or
     /// undeterminable.
     fn is_active(&self) -> Option<bool>;
 
     /// Whether a privileged web port (80/443) is currently held by a listener
-    /// that is **not** this daemon's proxy — a foreign process (or a stale `pf`
+    /// that is **not** this daemon's proxy - a foreign process (or a stale `pf`
     /// rule) squatting the port Yerd wants. Cross-platform, unlike
     /// [`Self::is_active`]: a port answers, but the proxy's `Server:` marker
     /// ([`yerd_core::PROXY_SERVER_ID`]) is absent.
@@ -46,13 +46,9 @@ pub trait PortRedirector {
     /// so platform impls only override [`Self::is_active`]. `None` is reserved
     /// for platforms that don't run the proxy (see the unsupported impl).
     fn foreign_web_listener(&self) -> Option<bool> {
-        // If the Yerd proxy answers on :80, the privileged ports are ours — the
-        // redirect (macOS) or direct bind (Linux) covers both 80 and 443, so a
-        // reachable :443 is also us. No conflict.
         if loopback_redirect_reaches_proxy(80) {
             return Some(false);
         }
-        // Otherwise anything answering on a privileged web port is foreign.
         Some(loopback_port_reachable(80) || loopback_port_reachable(443))
     }
 }
@@ -67,7 +63,7 @@ pub fn loopback_port_reachable(port: u16) -> bool {
 }
 
 /// Returns `true` iff a connection to `127.0.0.1:port` is answered by *the yerd
-/// proxy* — verified via the `Server: yerd` ([`yerd_core::PROXY_SERVER_ID`])
+/// proxy* - verified via the `Server: yerd` ([`yerd_core::PROXY_SERVER_ID`])
 /// marker on the proxy's synthetic responses. This distinguishes a live yerd
 /// privileged-port redirect from any other process (or stale `pf` rule) merely
 /// holding the port, which [`loopback_port_reachable`] alone cannot.
@@ -83,9 +79,6 @@ pub fn loopback_redirect_reaches_proxy(port: u16) -> bool {
     {
         return false;
     }
-    // The status line + headers (where the marker lives) are tiny; cap the read
-    // so a chatty or stalled peer can't make the probe linger. A read timeout
-    // mid-response still leaves the head we did receive in `buf` for the check.
     let mut buf = Vec::new();
     let _ = stream.take(512).read_to_end(&mut buf);
     response_identifies_proxy(&buf)

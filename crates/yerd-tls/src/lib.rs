@@ -2,7 +2,7 @@
 //!
 //! `yerd-tls` generates a self-signed CA, loads it back from PEM, computes its
 //! SHA-256 fingerprint, and issues per-site leaf certs signed by it. It does
-//! **no I/O**, **no clock reads**, and **no env reads** — callers pass
+//! **no I/O**, **no clock reads**, and **no env reads** - callers pass
 //! timestamps via [`Validity`]; persistence and trust-store install live in
 //! `yerd-config` and `yerd-platform` respectively.
 //!

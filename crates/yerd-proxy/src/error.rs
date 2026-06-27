@@ -1,6 +1,6 @@
 //! Errors produced by `yerd-proxy`.
 //!
-//! Not `Clone + Eq` — wraps `io::Error`, `hyper::Error`, `rustls::Error`,
+//! Not `Clone + Eq` - wraps `io::Error`, `hyper::Error`, `rustls::Error`,
 //! and a `Box<dyn Error>` source. The crate mirrors `yerd-config` /
 //! `yerd-php`'s shape; the daemon translates to a stable IPC code when
 //! crossing the wire.

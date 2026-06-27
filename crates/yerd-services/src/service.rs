@@ -8,7 +8,7 @@ use std::fmt;
 
 /// A database / cache engine Yerd can install and supervise.
 ///
-/// The "Redis" slot is served by **Valkey** (the BSD-licensed fork) — Redis
+/// The "Redis" slot is served by **Valkey** (the BSD-licensed fork) - Redis
 /// 7.4+ is SSPL/RSALv2 and not cleanly redistributable. It stays wire-compatible
 /// so clients are unaffected.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -23,7 +23,7 @@ pub enum Service {
     Postgres,
 }
 
-/// Whether a service is a cache or a SQL database — gates the "Create Database"
+/// Whether a service is a cache or a SQL database - gates the "Create Database"
 /// action.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ServiceKind {
@@ -76,8 +76,6 @@ impl Service {
     pub const fn default_port(self) -> u16 {
         match self {
             Service::Redis => 6379,
-            // MySQL and MariaDB share the MySQL port; only one can be enabled on
-            // it at a time (the config layer allows a per-instance override).
             Service::MySql | Service::MariaDb => 3306,
             Service::Postgres => 5432,
         }
@@ -87,7 +85,6 @@ impl Service {
     #[must_use]
     pub const fn server_binary(self) -> &'static str {
         match self {
-            // Valkey ships a `valkey-server`; we surface it as "Redis".
             Service::Redis => "valkey-server",
             Service::MySql => "mysqld",
             Service::MariaDb => "mariadbd",
@@ -146,7 +143,6 @@ impl Service {
     pub const fn init_binary(self) -> Option<&'static str> {
         match self {
             Service::Redis => None,
-            // `mysqld --initialize-insecure` initialises in-process.
             Service::MySql => Some("mysqld"),
             Service::MariaDb => Some("mariadb-install-db"),
             Service::Postgres => Some("initdb"),
@@ -237,7 +233,6 @@ mod tests {
         assert_eq!(Service::MySql.client_binary(), Some("mysql"));
         assert_eq!(Service::MariaDb.client_binary(), Some("mariadb"));
         assert_eq!(Service::Postgres.client_binary(), Some("psql"));
-        // Every database engine has a client; the cache does not.
         for svc in Service::ALL {
             assert_eq!(
                 matches!(svc.kind(), ServiceKind::Database),
@@ -253,7 +248,6 @@ mod tests {
         assert_eq!(Service::MySql.dump_binary(), Some("mysqldump"));
         assert_eq!(Service::MariaDb.dump_binary(), Some("mariadb-dump"));
         assert_eq!(Service::Postgres.dump_binary(), Some("pg_dump"));
-        // A dump tool exists exactly for the database engines (mirrors the client).
         for svc in Service::ALL {
             assert_eq!(
                 matches!(svc.kind(), ServiceKind::Database),
@@ -269,7 +263,6 @@ mod tests {
         assert_eq!(Service::MySql.init_binary(), Some("mysqld"));
         assert_eq!(Service::MariaDb.init_binary(), Some("mariadb-install-db"));
         assert_eq!(Service::Postgres.init_binary(), Some("initdb"));
-        // Every engine that needs init names an init binary, and vice versa.
         for svc in Service::ALL {
             assert_eq!(svc.needs_init(), svc.init_binary().is_some(), "{svc}");
         }

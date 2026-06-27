@@ -143,16 +143,12 @@ mod tests {
 
     #[test]
     fn issues_on_miss_then_caches() {
-        // Provider must be installed before any rustls signing-key
-        // operation; mirrors `yerd_proxy::tls::init_crypto_once`.
         let _ = rustls::crypto::ring::default_provider().install_default();
         let tmp = tempfile::tempdir().unwrap();
         let store = DaemonCertStore::new(ca(), tmp.path().to_path_buf());
         let key1 = store.certified_key("app.test").expect("issued");
         let key2 = store.certified_key("app.test").expect("cached");
-        // Identity check: both arms produced the same `Arc`.
         assert!(Arc::ptr_eq(&key1, &key2));
-        // The leaf PEM files were persisted.
         assert!(tmp.path().join("app.test.cert.pem").exists());
         assert!(tmp.path().join("app.test.key.pem").exists());
     }

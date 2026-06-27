@@ -1,7 +1,7 @@
 //! OS abstraction layer for Yerd.
 //!
-//! The core traits live here — [`Paths`], [`TrustStore`], [`ResolverInstaller`],
-//! [`PortBinder`], and [`PortRedirector`] — each with a single thin
+//! The core traits live here - [`Paths`], [`TrustStore`], [`ResolverInstaller`],
+//! [`PortBinder`], and [`PortRedirector`] - each with a single thin
 //! implementation per OS selected by `#[cfg(target_os = ...)]`. macOS and Linux
 //! ship in Phase 1;
 //! Windows compiles against the [`os::unsupported`] stub that returns
@@ -12,7 +12,7 @@
 //! `yerd-platform` is unprivileged library code. Operations that need root
 //! return [`PlatformError::NeedsHelper`]. The typed [`HelperInvocation`]
 //! enum carries the request to the `yerd-helper` binary (a separate crate)
-//! for execution. The OS impls never spawn the helper themselves — a
+//! for execution. The OS impls never spawn the helper themselves - a
 //! privileged caller owns the `Command::new(...)` call: the daemon for its
 //! own setup, or the `yerd elevate` CLI when run under `sudo`.
 //!

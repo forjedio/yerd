@@ -1,6 +1,6 @@
 //! End-to-end: drive the CLI client transport against a real daemon booted on
 //! a tempdir, exercising every command through the socket. Only the IPC task is
-//! spawned (no proxy/DNS) — none of the shipped commands touch them, and
+//! spawned (no proxy/DNS) - none of the shipped commands touch them, and
 //! skipping them keeps the test fast and CI-stable.
 
 #![allow(
@@ -30,7 +30,7 @@ mod tests {
         }
     }
 
-    /// Two distinct, currently-free, non-zero ports — required because a
+    /// Two distinct, currently-free, non-zero ports - required because a
     /// mutation persists the config and `validate()` rejects port 0 / equal.
     fn valid_config() -> yerd_config::Config {
         let a = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -45,7 +45,7 @@ mod tests {
         let mut cfg = yerd_config::Config::default();
         cfg.ports.http = pa;
         cfg.ports.https = pb;
-        cfg.dns_port = 0; // ephemeral DNS — avoid colliding on the fixed default across tests
+        cfg.dns_port = 0;
         cfg
     }
 
@@ -100,13 +100,12 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    #[allow(clippy::too_many_lines)] // one end-to-end script exercising every command
+    #[allow(clippy::too_many_lines)]
     async fn cli_commands_round_trip_against_daemon() {
         let tmp = tempfile::tempdir().unwrap();
         let dirs = make_dirs(tmp.path());
         let cfg_path = dirs.config.join("yerd.toml");
 
-        // A parked root with one child, and a separate dir to `link`.
         let sites_root = tmp.path().join("Sites");
         std::fs::create_dir_all(sites_root.join("blog")).unwrap();
         let linked_dir = tmp.path().join("standalone");
@@ -118,8 +117,6 @@ mod tests {
                 .expect("bring_up_with_dirs");
         let sock = dirs.runtime.join("yerd.sock");
 
-        // Spawn ONLY the IPC task. Keep `daemon` alive (holds the instance lock
-        // + bound listeners) until the test ends.
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         let state = daemon.state.clone();
         let ipc_task = tokio::spawn(yerdd::ipc_server::run(
@@ -127,7 +124,6 @@ mod tests {
             state,
             shutdown_rx,
         ));
-        // Remaining daemon fields stay owned by this binding (not dropped).
         let keep_alive = (
             daemon.lock,
             daemon.dns_bound,
@@ -137,10 +133,8 @@ mod tests {
         );
         tokio::time::sleep(Duration::from_millis(100)).await;
 
-        // ping
         assert!(matches!(send(&sock, &Command::Ping).await, Response::Pong));
 
-        // park → the child becomes a site
         assert!(matches!(
             send(
                 &sock,
@@ -153,7 +147,6 @@ mod tests {
         ));
         assert!(site_names(&send(&sock, &Command::Sites).await).contains(&"blog".to_owned()));
 
-        // link a standalone dir
         assert!(matches!(
             send(
                 &sock,
@@ -167,7 +160,6 @@ mod tests {
         ));
         assert!(site_names(&send(&sock, &Command::Sites).await).contains(&"app".to_owned()));
 
-        // use → records a per-site override at 8.4, keeping `blog` parked
         assert!(matches!(
             send(
                 &sock,
@@ -183,30 +175,23 @@ mod tests {
             Response::Sites { sites } => {
                 let blog = sites.iter().find(|s| s.name() == "blog").unwrap();
                 assert_eq!(blog.php(), yerd_core::PhpVersion::new(8, 4));
-                // Override applied, but the site stays parked (no promotion).
                 assert_eq!(blog.kind(), yerd_core::SiteKind::Parked);
             }
             other => panic!("expected Sites, got {other:?}"),
         }
 
-        // secure → marks `blog` for HTTPS; unsecure flips it back
         exercise_secure_toggle(&sock).await;
 
-        // status → a live snapshot reflecting the configured ports + sites.
         match send(&sock, &Command::Status).await {
             Response::Status { report } => {
                 assert_eq!(report.tld, "test");
                 assert_eq!(report.daemon_pid, std::process::id());
-                // `blog` was promoted to linked; `app` still present at this point.
                 assert!(report.sites.linked >= 1);
-                // No PHP installed under the tempdir → reported empty.
                 assert!(report.php.is_empty());
             }
             other => panic!("expected Status, got {other:?}"),
         }
 
-        // doctor → with no PHP installed, a NoPhpInstalled FAIL is reported, and
-        // `render` returns a non-zero exit code for it.
         let diag = send(&sock, &Command::Doctor { action: None }).await;
         match &diag {
             Response::Diagnoses { items } => {
@@ -223,8 +208,6 @@ mod tests {
             "JSON path agrees on exit 1"
         );
 
-        // doctor fix → no running pools to repair, so nothing performed, but the
-        // unresolved problems surface as manual steps.
         match send(
             &sock,
             &Command::Doctor {
@@ -243,14 +226,12 @@ mod tests {
             other => panic!("expected DoctorFix, got {other:?}"),
         }
 
-        // unlink the linked app
         assert!(matches!(
             send(&sock, &Command::Unlink { name: "app".into() }).await,
             Response::Ok
         ));
         assert!(!site_names(&send(&sock, &Command::Sites).await).contains(&"app".to_owned()));
 
-        // unlink unknown → NotFound error response (exit-code 1 via render)
         match send(
             &sock,
             &Command::Unlink {
@@ -265,13 +246,11 @@ mod tests {
             other => panic!("expected Error, got {other:?}"),
         }
 
-        // The config was persisted with the parked path.
         let on_disk = std::fs::read_to_string(&cfg_path).expect("config written");
         let canonical = std::fs::canonicalize(&sites_root).unwrap();
         let canonical_str = canonical.to_string_lossy().into_owned();
         assert!(on_disk.contains(&canonical_str));
 
-        // list parked → the registered root is reported (canonical form).
         match send(
             &sock,
             &Command::List {
@@ -286,7 +265,6 @@ mod tests {
             other => panic!("expected Parked, got {other:?}"),
         }
 
-        // unpark the root (sent canonical, as the daemon matches exactly).
         assert!(matches!(
             send(
                 &sock,
@@ -297,7 +275,6 @@ mod tests {
             .await,
             Response::Ok
         ));
-        // list parked → now empty.
         match send(
             &sock,
             &Command::List {
@@ -312,7 +289,6 @@ mod tests {
             other => panic!("expected Parked, got {other:?}"),
         }
 
-        // unpark again (absent) → idempotent Ok.
         assert!(matches!(
             send(&sock, &Command::Unpark { path: canonical }).await,
             Response::Ok

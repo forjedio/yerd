@@ -2,7 +2,7 @@
 //!
 //! These golden assertions pin the argv vectors `yerd-helper` will
 //! receive. Adding a field, reordering, or renaming a flag trips the
-//! test — that's exactly what the wire contract is for.
+//! test - that's exactly what the wire contract is for.
 
 #![allow(
     clippy::unwrap_used,

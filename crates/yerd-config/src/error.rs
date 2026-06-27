@@ -34,7 +34,7 @@ pub enum ConfigError {
     #[error("could not parse TOML: {0}")]
     Parse(#[from] toml::de::Error),
 
-    /// TOML serialisation failed (always a bug — types in this crate must
+    /// TOML serialisation failed (always a bug - types in this crate must
     /// serialise cleanly).
     #[error("could not serialise TOML: {0}")]
     Serialize(#[from] toml::ser::Error),
@@ -309,13 +309,7 @@ mod tests {
     fn toml_ser_error() -> toml::ser::Error {
         use std::collections::BTreeMap;
         let mut top = BTreeMap::new();
-        // A bare top-level integer cannot serialise as a TOML document
-        // because TOML's root must be a table.
         top.insert("k".to_string(), 1i64);
-        // Force a failure by attempting to serialise something `toml`
-        // disallows at top level: a sub-table after a value with the same
-        // key. The simplest reliable trigger is to serialise a non-table
-        // root.
         match toml::to_string(&42i64) {
             Ok(_) => panic!("expected toml::ser to reject non-table root"),
             Err(e) => e,

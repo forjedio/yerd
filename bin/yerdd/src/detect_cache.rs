@@ -4,7 +4,7 @@
 //! `scan_sites` runs on every config mutation *and* every filesystem-watcher
 //! tick, so without a cache an unrelated `yerd use`/`yerd secure` would re-read
 //! every parked project. This cache keys a [`Detection`] on a cheap freshness
-//! stamp — `max(project-root dir mtime, composer.json mtime)` — so a rescan that
+//! stamp - `max(project-root dir mtime, composer.json mtime)` - so a rescan that
 //! finds nothing changed reuses the previous result after one or two `stat`s.
 //!
 //! The stamp captures the two ways a project's web root can change: adding or
@@ -55,7 +55,7 @@ impl DetectCache {
 
     /// Lock helper that recovers from a poisoned mutex rather than panicking
     /// (the crate forbids `unwrap`/`expect`). A poisoned detection cache is
-    /// harmless — the worst case is a stale-but-valid `Detection`.
+    /// harmless - the worst case is a stale-but-valid `Detection`.
     fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<PathBuf, (SystemTime, Detection)>> {
         match self.inner.lock() {
             Ok(g) => g,
@@ -93,7 +93,6 @@ mod tests {
         let cache = DetectCache::new();
         let first = cache.detect(dir.path());
         assert_eq!(first.subpath, PathBuf::from("public"));
-        // Second call hits the cache (same stamp) and returns the same result.
         let second = cache.detect(dir.path());
         assert_eq!(first, second);
     }

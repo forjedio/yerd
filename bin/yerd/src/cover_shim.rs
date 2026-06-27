@@ -3,7 +3,7 @@
 //! These names are symlinks in `{data}/bin` pointing at *this* `yerd` binary.
 //! When `yerd` is invoked under such a name (detected from `argv[0]` before clap),
 //! it resolves the matching PHP CLI binary plus that version's `pcov.so` and
-//! `exec`s PHP with coverage enabled — leaving the clean `php`/`php<ver>` shims
+//! `exec`s PHP with coverage enabled - leaving the clean `php`/`php<ver>` shims
 //! untouched. Unix-only: cover shims are never created on other platforms.
 
 use std::os::unix::process::CommandExt;
@@ -16,9 +16,9 @@ use crate::shim::{cli_binary, fail, resolve_default_php};
 
 /// Which PHP a cover alias targets.
 enum CoverSpec {
-    /// `phpcover` — the default version (resolved at run time).
+    /// `phpcover` - the default version (resolved at run time).
     Default,
-    /// `php<major>.<minor>cover` — an explicit version.
+    /// `php<major>.<minor>cover` - an explicit version.
     Version(u8, u8),
 }
 
@@ -38,7 +38,7 @@ pub fn dispatch() -> Option<ExitCode> {
 /// `yerd` invocation, or a clean versioned shim, is never intercepted).
 fn parse_cover_name(name: &str) -> Option<CoverSpec> {
     let rest = name.strip_prefix("php")?;
-    let rest = rest.strip_suffix("cover")?; // must end with `cover` to be a cover alias
+    let rest = rest.strip_suffix("cover")?;
     if rest.is_empty() {
         return Some(CoverSpec::Default);
     }
@@ -71,10 +71,6 @@ fn run(spec: &CoverSpec) -> ExitCode {
         ));
     }
 
-    // `exec` only returns on failure. argv[0] defaults to the real php path
-    // (correct: PHP reads PHP_BINARY from /proc/self/exe and $_SERVER['argv'][0]
-    // becomes the real php, not the cover name). pcov is a normal extension, so
-    // `-d extension=` (absolute path) is the right directive.
     let err = Command::new(&php_bin)
         .arg("-d")
         .arg(format!("extension={}", pcov.display()))
@@ -128,7 +124,6 @@ mod tests {
 
     #[test]
     fn ignores_non_cover_names() {
-        // Clean versioned + default names and foreign binaries must fall through.
         assert!(parse_cover_name("php").is_none());
         assert!(parse_cover_name("php8.4").is_none());
         assert!(parse_cover_name("phpunit").is_none());

@@ -38,14 +38,14 @@ pub fn new_manager(dirs: yerd_platform::PlatformDirs) -> DaemonServiceManager {
 
 // ── handlers ────────────────────────────────────────────────────────────────
 
-/// `list services` — every manageable engine with its live status.
+/// `list services` - every manageable engine with its live status.
 pub async fn list_services(state: &DaemonState) -> Response {
     Response::Services {
         services: service_statuses(state).await,
     }
 }
 
-/// `available services` — installable vs installed versions per engine. Fetches
+/// `available services` - installable vs installed versions per engine. Fetches
 /// yerd's services listing on demand; a transport failure is the only error.
 pub async fn available_services(state: &DaemonState, dl: &dyn Downloader) -> Response {
     let (os, arch) = match current_os_arch() {
@@ -78,9 +78,9 @@ pub async fn available_services(state: &DaemonState, dl: &dyn Downloader) -> Res
     Response::AvailableServices { services }
 }
 
-/// `install service <svc> <version>` — download + unpack (no config lock held),
+/// `install service <svc> <version>` - download + unpack (no config lock held),
 /// then start it. Installing a service is taken as intent to run it, so a fresh
-/// install comes up immediately and — like every installed engine — survives
+/// install comes up immediately and - like every installed engine - survives
 /// daemon restarts (see [`auto_start_installed`]). `enabled` is still set for the
 /// status record, but no longer gates boot auto-start.
 pub async fn install_service(
@@ -100,9 +100,6 @@ pub async fn install_service(
         return service_error_response(&e);
     }
 
-    // Auto-start the freshly installed version. Pick up any pre-configured port
-    // override (else the engine default), ensure it's running, and persist
-    // enabled=true so it also comes back on the next daemon boot.
     let port = {
         let cfg = state.config.lock().await;
         cfg.services
@@ -127,7 +124,7 @@ pub async fn install_service(
     }
 }
 
-/// `change-version <svc> <new>` — switch the engine's single installed version.
+/// `change-version <svc> <new>` - switch the engine's single installed version.
 /// Installs the new version, restarts the instance onto it, then removes the
 /// previously-installed version(s). The datadir is retained (it's shared per
 /// engine / per major), so this is safe for SQL engines in later phases.
@@ -145,21 +142,15 @@ pub async fn change_service_version(
         Err(e) => return service_error_response(&e),
     };
 
-    // Versions currently on disk, to be removed once the new one is running.
     let superseded: Vec<ServiceVersion> = installed_versions(service, &state.dirs)
         .into_iter()
         .filter(|v| v != &new_version)
         .collect();
 
-    // 1. Install the new version first — a failed download leaves the current
-    //    install untouched.
     if let Err(e) = service_install::install(service, &new_version, &state.dirs, dl).await {
         return service_error_response(&e);
     }
 
-    // 2. Restart onto the new version (stop old → start new). `restart`, not
-    //    `ensure`: `ensure` short-circuits when an instance is already running
-    //    and would not switch to the new binary.
     let port = {
         let cfg = state.config.lock().await;
         cfg.services
@@ -173,13 +164,9 @@ pub async fn change_service_version(
         mgr.restart(service, new_version.clone(), port).await
     };
     if let Err(e) = outcome {
-        // The new version is installed but didn't start; leave the old version
-        // in place (don't strand the user with nothing) and surface the error.
         return service_error_response(&e);
     }
 
-    // 3. Persist the new selection, then drop the superseded version(s). Keep
-    //    the datadir (purge = false).
     if let Err(resp) = persist_instance(state, service, |inst| {
         inst.enabled = true;
         inst.version = Some(new_version.to_string());
@@ -216,13 +203,8 @@ pub async fn uninstall_service(
         Ok(v) => v,
         Err(e) => return service_error_response(&e),
     };
-    // Stop a running instance first (clean teardown) before removing files.
     let _ = state.service_manager.lock().await.stop(service).await;
     match service_install::uninstall(service, &version, &state.dirs, purge) {
-        // Retaining the datadir is the SUCCESSFUL default — not an error. (A
-        // previous version returned Response::Error here, which the CLI/GUI both
-        // surface as a failure; that was a mis-signal.) Log where the data was
-        // kept; the client just sees success.
         Ok(retained) => {
             if let Some(path) = retained {
                 tracing::info!(
@@ -237,12 +219,11 @@ pub async fn uninstall_service(
     }
 }
 
-/// `start service <svc>` — ensure it's running, enable auto-start, persist config.
+/// `start service <svc>` - ensure it's running, enable auto-start, persist config.
 pub async fn start_service(service_id: &str, state: &DaemonState) -> Response {
     let Some(service) = Service::from_id(service_id) else {
         return unknown_service(service_id);
     };
-    // Resolve version + port under a brief lock, then drop it for the slow ensure.
     let (configured_version, port) = {
         let cfg = state.config.lock().await;
         let inst = cfg.services.instances.get(service.id());
@@ -272,7 +253,7 @@ pub async fn start_service(service_id: &str, state: &DaemonState) -> Response {
     }
 }
 
-/// `stop service <svc>` — stop it and disable auto-start.
+/// `stop service <svc>` - stop it and disable auto-start.
 pub async fn stop_service(service_id: &str, state: &DaemonState) -> Response {
     let Some(service) = Service::from_id(service_id) else {
         return unknown_service(service_id);
@@ -288,7 +269,7 @@ pub async fn stop_service(service_id: &str, state: &DaemonState) -> Response {
         .unwrap_or_else(|resp| resp)
 }
 
-/// `restart service <svc>` — stop + ensure with the configured/selected version.
+/// `restart service <svc>` - stop + ensure with the configured/selected version.
 pub async fn restart_service(service_id: &str, state: &DaemonState) -> Response {
     let Some(service) = Service::from_id(service_id) else {
         return unknown_service(service_id);
@@ -315,7 +296,7 @@ pub async fn restart_service(service_id: &str, state: &DaemonState) -> Response 
     }
 }
 
-/// `set-port <svc> <port>` — persist the port (takes effect on next start/restart).
+/// `set-port <svc> <port>` - persist the port (takes effect on next start/restart).
 pub async fn set_service_port(service_id: &str, port: u16, state: &DaemonState) -> Response {
     let Some(service) = Service::from_id(service_id) else {
         return unknown_service(service_id);
@@ -325,7 +306,7 @@ pub async fn set_service_port(service_id: &str, port: u16, state: &DaemonState) 
         .unwrap_or_else(|resp| resp)
 }
 
-/// `service logs <svc>` — the last `lines` lines of the engine's log file.
+/// `service logs <svc>` - the last `lines` lines of the engine's log file.
 pub fn service_logs(service_id: &str, lines: u32, state: &DaemonState) -> Response {
     let Some(service) = Service::from_id(service_id) else {
         return unknown_service(service_id);
@@ -402,7 +383,7 @@ pub async fn service_statuses(state: &DaemonState) -> Vec<ServiceStatus> {
 /// task so a slow/failing DB cold-boot never blocks the proxy/DNS listeners.
 ///
 /// Policy: any engine with an installed version is brought up on boot,
-/// regardless of the persisted `enabled` flag — installing a service is taken as
+/// regardless of the persisted `enabled` flag - installing a service is taken as
 /// intent to run it. A `Stop` still stops the engine for the current session,
 /// but it returns on the next daemon start; to keep one off for good, uninstall
 /// it.

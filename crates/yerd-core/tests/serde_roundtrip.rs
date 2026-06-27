@@ -40,7 +40,6 @@ fn toml_round_trip_config_shape() {
     };
 
     let s = toml::to_string(&original).unwrap();
-    // Sanity-check the human-readable shape.
     assert!(s.contains("php = \"8.3\""), "missing top-level php: {s}");
     assert!(s.contains("tld = \"test\""), "missing top-level tld: {s}");
 

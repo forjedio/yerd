@@ -27,7 +27,7 @@ use crate::state::DaemonState;
 /// not the mDNS-contended `5353`).
 ///
 /// A **fixed** port (rather than ephemeral) is required so the resolver config
-/// written by `yerd elevate resolver` — which hard-codes `DNS=127.0.0.1:<port>` —
+/// written by `yerd elevate resolver` - which hard-codes `DNS=127.0.0.1:<port>` -
 /// stays valid across daemon restarts. `dns_port = 0` still means ephemeral
 /// (dev/tests only); the kernel-assigned port is read back via
 /// [`yerd_dns::Bound::local_addr`] and stored on [`Daemon::dns_addr`].
@@ -46,14 +46,14 @@ pub struct Daemon {
     pub config_path: PathBuf,
     /// Resolved per-user directories.
     pub dirs: PlatformDirs,
-    /// Held until `run()` returns — releases on drop.
+    /// Held until `run()` returns - releases on drop.
     pub lock: InstanceLock,
     /// PHP-FPM pool supervisor.
     pub php_manager: Arc<Mutex<DaemonPhpManager>>,
     /// TLS cert store for SNI lookups.
     pub cert_store: Arc<DaemonCertStore>,
     /// Bound HTTP listener. `None` when the daemon could bind neither the
-    /// desired nor the fallback web ports — it then runs degraded (no proxy).
+    /// desired nor the fallback web ports - it then runs degraded (no proxy).
     pub http_listener: Option<tokio::net::TcpListener>,
     /// Bound HTTPS listener. `None` in the same degraded case as `http_listener`.
     pub https_listener: Option<tokio::net::TcpListener>,
@@ -63,7 +63,7 @@ pub struct Daemon {
     /// IPC listener (Unix socket on Unix, named pipe on Windows).
     pub ipc_listener: IpcListener,
     /// Bound DNS sockets (UDP+TCP), owned by the daemon and consumed when the
-    /// DNS task is spawned. `None` when the DNS port couldn't bind — the daemon
+    /// DNS task is spawned. `None` when the DNS port couldn't bind - the daemon
     /// then runs degraded (no name resolution) rather than aborting, mirroring
     /// the `http_listener`/`https_listener` web degrade.
     pub dns_bound: Option<yerd_dns::Bound>,
@@ -95,7 +95,7 @@ pub async fn bring_up(args: &ServeArgs) -> Result<Daemon, DaemonError> {
 /// `tempfile`-rooted `PlatformDirs`. The body is identical to `bring_up`
 /// from step 2 onwards.
 #[doc(hidden)]
-#[allow(clippy::too_many_lines)] // linear startup wiring; splitting hurts readability
+#[allow(clippy::too_many_lines)]
 pub async fn bring_up_with_dirs(
     dirs: PlatformDirs,
     config: yerd_config::Config,
@@ -103,24 +103,18 @@ pub async fn bring_up_with_dirs(
 ) -> Result<Daemon, DaemonError> {
     let lock = InstanceLock::acquire(&dirs)?;
 
-    // PHP discovery — bundled installs in yerd's data dir.
     let bundled = discover_bundled(&dirs).map_err(DaemonError::from)?;
     let binaries: BTreeMap<PhpVersion, PathBuf> = bundled.into_iter().collect();
     if binaries.is_empty() {
         tracing::warn!("no PHP versions discovered — bundled scan empty");
     }
 
-    // Load or generate the CA. Capture its path + fingerprint *before* `ca`
-    // is moved into the cert store — `yerd elevate trust` needs both.
     let ca = load_or_generate_ca(&dirs)?;
     let ca_path = dirs.data.join("ca.cert.pem");
     let ca_fingerprint = yerd_platform::CaFingerprint::new(ca.fingerprint_sha256());
 
     let cert_store = Arc::new(DaemonCertStore::new(ca, dirs.data.join("leaves")));
 
-    // Build the router from parked + linked sites. The detection cache is
-    // created here (before the router) and shared with the daemon state so the
-    // mutation path and the filesystem watcher reuse cached web-root results.
     let detect_cache = Arc::new(DetectCache::new());
     let dns_tld = config.tld.clone();
     let router = build_router(&config, &dirs, &detect_cache)?;
@@ -129,11 +123,6 @@ pub async fn bring_up_with_dirs(
     }
     let router = Arc::new(RwLock::new(router));
 
-    // Bind HTTP/HTTPS — fall back to the configured rootless pair if 80/443
-    // require elevation. Capture the *requested* + *fallback* ports before
-    // `config` is moved into `DaemonState`. A bind failure (both pairs busy) is
-    // **non-fatal**: the daemon comes up degraded (IPC/DNS only, no proxy) so the
-    // GUI/CLI can connect and the user can change the ports or free them.
     let cfg_http = config.ports.http;
     let cfg_https = config.ports.https;
     let fb_http = config.ports.fallback_http;
@@ -190,8 +179,6 @@ pub async fn bring_up_with_dirs(
         }
     };
 
-    // PhpManager — instance_id = daemon PID disambiguates concurrent daemons
-    // on the same host (different XDG_RUNTIME_DIRs notwithstanding).
     let mut php_manager = PhpManager::new(
         TokioProcessSpawner,
         SystemClock,
@@ -201,8 +188,6 @@ pub async fn bring_up_with_dirs(
         std::process::id(),
         binaries,
     );
-    // Seed the global PHP ini settings from config so the first pool start
-    // renders with the user's values (not just after the first `set php`).
     php_manager.set_ini_settings(
         config
             .php
@@ -211,10 +196,6 @@ pub async fn bring_up_with_dirs(
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect(),
     );
-    // Wire dump-extension loading: any pool with a matching `yerd-dump.so` under
-    // `{data}/php-ext/php-<ver>/` starts with `-d zend_extension=<so>` plus the
-    // extension's state-file path. The `.so` is downloaded on demand (when dumps
-    // are enabled); the extension self-disables via the state file.
     php_manager.set_dump_ext(Some(yerd_php::DumpExtSettings {
         so_dir: dirs.data.join("php-ext"),
         ini_defines: vec![(
@@ -228,20 +209,10 @@ pub async fn bring_up_with_dirs(
     }));
     let php_manager = Arc::new(Mutex::new(php_manager));
 
-    // Service (database/cache) supervisor. Every installed instance is
-    // auto-started later by a background task in `run_until_shutdown` (never on
-    // this path, so a slow DB boot can't block the proxy/DNS listeners coming up).
     let service_manager = Arc::new(Mutex::new(crate::services::new_manager(dirs.clone())));
 
     let ipc_listener = build_ipc_listener(&dirs)?;
 
-    // Bind DNS up front (like the HTTP/HTTPS listeners) so the daemon owns the
-    // sockets. Uses the fixed configured port (see `DNS_IP`) so an installed
-    // resolver config keeps pointing at us across restarts. A bind failure is
-    // **non-fatal** (mirrors the web-port degrade): the daemon comes up without
-    // name resolution so the GUI/CLI can connect and the user can change
-    // `dns_port` or free the port. Capture `config.dns_port` here, before
-    // `config` is moved into `DaemonState` below.
     let cfg_dns = config.dns_port;
     let dns_want = SocketAddr::new(DNS_IP, cfg_dns);
     let (dns_bound, dns_addr, dns_unbound) = match yerd_dns::Bound::bind(dns_want).await {
@@ -260,10 +231,6 @@ pub async fn bring_up_with_dirs(
         }
     };
 
-    // Mail-capture store + (optional, non-fatal) SMTP listener. The store always
-    // exists so already-captured mail stays listable even when capture is off; a
-    // bind failure (e.g. the port is busy) is logged and degrades to
-    // not-listening rather than aborting the whole daemon.
     let mail_enabled = config.mail.enabled;
     let mail_port = config.mail.port;
     let mail_store =
@@ -320,8 +287,6 @@ pub async fn bring_up_with_dirs(
         dns_unbound,
         boot_id: rand_boot_id(),
         started_at: std::time::Instant::now(),
-        // The shutdown broadcast lives in state so the IPC `RestartDaemon`
-        // handler can trigger teardown; `run_with_daemon` subscribes from it.
         shutdown_tx: tokio::sync::watch::channel(false).0,
         restart_requested: std::sync::atomic::AtomicBool::new(false),
         detect_cache,
@@ -333,9 +298,6 @@ pub async fn bring_up_with_dirs(
         reserved_names: tokio::sync::Mutex::new(std::collections::HashSet::new()),
     });
 
-    // Seed the extension's runtime state file from the persisted `[dumps]`
-    // config so a fresh boot reflects the durable settings. Best-effort: a
-    // failure here only means dumps stay off until the next toggle.
     {
         let dumps = state.config.lock().await.dumps.clone();
         state.dumps.set_persist(dumps.persist);
@@ -377,7 +339,7 @@ pub(crate) fn build_router(
 /// Like [`build_router`], but also returns the project roots the filesystem
 /// watcher should keep watching: parked sites whose web root could **not** be
 /// resolved yet (no framework/web-dir detected, no manual override). Resolved
-/// sites are deliberately *not* watched — "don't watch what we already know".
+/// sites are deliberately *not* watched - "don't watch what we already know".
 pub(crate) fn build_routing(
     cfg: &yerd_config::Config,
     dirs: &PlatformDirs,
@@ -403,11 +365,6 @@ fn load_or_default_config(cfg_path: &std::path::Path) -> Result<yerd_config::Con
             Ok(yerd_config::Config::default())
         }
         Err(e) => {
-            // Log the exact parse/validation error (with its path) to the cache
-            // log before bubbling up — the tracing subscriber is installed in
-            // `main` before `run`, so this lands in the rolling daemon log, not
-            // just stderr. Otherwise an invalid config under launchd/systemd
-            // would exit (78) with no on-disk record of *why*.
             tracing::error!(
                 config = %cfg_path.display(),
                 error = %e,
@@ -422,9 +379,6 @@ fn load_or_generate_ca(dirs: &PlatformDirs) -> Result<CertAuthority, DaemonError
     let ca_pem_path = dirs.data.join("ca.cert.pem");
     let ca_key_path = dirs.data.join("ca.key.pem");
     if ca_pem_path.exists() && ca_key_path.exists() {
-        // Re-assert secure modes on every start: an earlier run (or a loose
-        // umask) may have left the cert group/world-writable, which makes the
-        // trust helper refuse it. Cert is public (0o644); key is owner-only.
         crate::secure_fs::restrict_writes_to_owner(&ca_pem_path).map_err(|source| {
             DaemonError::Io {
                 path: ca_pem_path.clone(),
@@ -459,13 +413,10 @@ fn load_or_generate_ca(dirs: &PlatformDirs) -> Result<CertAuthority, DaemonError
             path: ca_key_path.clone(),
             source,
         })?;
-        // The CA private key is the local trust root — lock it to the owner.
         crate::secure_fs::restrict_to_owner(&ca_key_path).map_err(|source| DaemonError::Io {
             path: ca_key_path.clone(),
             source,
         })?;
-        // The public cert must not be group/world-writable (the trust helper
-        // refuses a tamperable cert); force 0o644 since the write inherits umask.
         crate::secure_fs::restrict_writes_to_owner(&ca_pem_path).map_err(|source| {
             DaemonError::Io {
                 path: ca_pem_path.clone(),
@@ -495,8 +446,6 @@ pub(crate) fn scan_sites(
     detect_cache: &DetectCache,
 ) -> Result<(Vec<Site>, Vec<PathBuf>), DaemonError> {
     let mut parked: Vec<Site> = Vec::new();
-    // Project roots of parked sites whose web root is still unresolved — the
-    // watcher tracks these so a project cloned in later is picked up.
     let mut watch_roots: Vec<PathBuf> = Vec::new();
     let linked_names: std::collections::HashSet<&str> =
         cfg.linked.iter().map(yerd_core::Site::name).collect();
@@ -519,9 +468,6 @@ pub(crate) fn scan_sites(
             let Some(name_lower) = parked_site_name(&entry, &linked_names) else {
                 continue;
             };
-            // Compute the path once: it's both the site's document_root and the
-            // key into `cfg.overrides` (see `mutate::override_key` — both stringify
-            // this same `DirEntry::path()` with `to_string_lossy`, so they match).
             let doc_root = entry.path();
             if let Some(site) = build_parked_site(
                 &name_lower,
@@ -541,7 +487,7 @@ pub(crate) fn scan_sites(
 }
 
 /// Filter one parked-directory entry to its lowercased site name, or `None` to
-/// skip it (non-UTF-8, hidden, not a directory, or shadowed by a linked site —
+/// skip it (non-UTF-8, hidden, not a directory, or shadowed by a linked site -
 /// linked wins on a name collision).
 fn parked_site_name(
     entry: &std::fs::DirEntry,
@@ -569,7 +515,7 @@ fn parked_site_name(
 }
 
 /// Build a parked [`Site`] for `doc_root`, re-applying any persisted per-site
-/// override (kept parked — no promotion to linked) and resolving its web root.
+/// override (kept parked - no promotion to linked) and resolving its web root.
 /// A manual `web_root` override pins it; otherwise it auto-detects, and an
 /// unresolved detection serves the root provisionally and pushes `doc_root` onto
 /// `watch_roots`. Returns `None` (logging) for an invalid site name.
@@ -620,7 +566,7 @@ fn build_parked_site(
 /// A per-process id clients use to detect that a restart actually completed.
 /// Derived from the pid + wall-clock nanos (which differ across restarts), so
 /// it changes even though the in-place re-exec preserves the pid. Needs no RNG
-/// dependency; collisions are irrelevant — only a *change* is observed.
+/// dependency; collisions are irrelevant - only a *change* is observed.
 fn rand_boot_id() -> u64 {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
@@ -684,10 +630,6 @@ fn build_ipc_listener(dirs: &PlatformDirs) -> Result<IpcListener, DaemonError> {
             path: dirs.runtime.clone(),
             source,
         })?;
-    // Lock the socket to the owning user. The runtime dir is already 0o700
-    // (see `single_instance`), but tightening the socket itself is defence in
-    // depth — the IPC server does no peer-credential check, so file
-    // permissions are the access boundary.
     #[cfg(unix)]
     crate::secure_fs::restrict_to_owner(&socket_path).map_err(|source| DaemonError::Io {
         path: socket_path,
@@ -722,7 +664,6 @@ mod tests {
         let parked_root = tmp.path().join("Sites");
         std::fs::create_dir_all(parked_root.join("app1")).unwrap();
         std::fs::create_dir_all(parked_root.join("app2")).unwrap();
-        // Hidden dir is skipped.
         std::fs::create_dir_all(parked_root.join(".hidden")).unwrap();
 
         let mut cfg = yerd_config::Config::default();
@@ -742,12 +683,10 @@ mod tests {
     fn scan_sites_detects_web_root_and_collects_unresolved() {
         let tmp = tempfile::tempdir().unwrap();
         let parked_root = tmp.path().join("Sites");
-        // A Laravel-ish app: artisan + public/index.php → resolves to "public".
         let laravel = parked_root.join("app");
         std::fs::create_dir_all(laravel.join("public")).unwrap();
         std::fs::write(laravel.join("artisan"), b"").unwrap();
         std::fs::write(laravel.join("public/index.php"), b"").unwrap();
-        // An empty child → unresolved, serves root, ends up in the watch set.
         std::fs::create_dir_all(parked_root.join("empty")).unwrap();
 
         let mut cfg = yerd_config::Config::default();
@@ -762,7 +701,6 @@ mod tests {
         assert_eq!(app.web_subpath(), std::path::Path::new("public"));
         let empty = sites.iter().find(|s| s.name() == "empty").unwrap();
         assert_eq!(empty.web_subpath(), std::path::Path::new(""));
-        // Only the unresolved "empty" child is watched; "app" resolved.
         assert_eq!(watch_roots, vec![parked_root.join("empty")]);
     }
 
@@ -788,7 +726,6 @@ mod tests {
             scan_sites(&cfg, PhpVersion::new(8, 3), &dirs, &DetectCache::new()).unwrap();
         let app = sites.iter().find(|s| s.name() == "app").unwrap();
         assert_eq!(app.web_subpath(), std::path::Path::new("public"));
-        // A pinned override is never watched (we already know its web root).
         assert!(watch_roots.is_empty());
     }
 
@@ -829,7 +766,6 @@ mod tests {
         let dirs = make_dirs(tmp.path());
         let (sites, _) =
             scan_sites(&cfg, PhpVersion::new(8, 3), &dirs, &DetectCache::new()).unwrap();
-        // Exactly one site, and its document_root is the linked one.
         assert_eq!(sites.len(), 1);
         assert_eq!(
             sites[0].document_root(),
@@ -866,13 +802,11 @@ mod tests {
             },
         );
         let dirs = make_dirs(tmp.path());
-        // Default php is 8.3, but the override pins 8.5.
         let (sites, _) =
             scan_sites(&cfg, PhpVersion::new(8, 3), &dirs, &DetectCache::new()).unwrap();
         let blog = sites.iter().find(|s| s.name() == "blog").unwrap();
         assert_eq!(blog.php(), PhpVersion::new(8, 5));
         assert!(!blog.secure());
-        // Critically: it stays PARKED, not promoted to linked.
         assert_eq!(blog.kind(), yerd_core::SiteKind::Parked);
     }
 
@@ -892,16 +826,12 @@ mod tests {
             scan_sites(&cfg, PhpVersion::new(8, 3), &dirs, &DetectCache::new()).unwrap();
         let blog = sites.iter().find(|s| s.name() == "blog").unwrap();
         assert!(blog.secure());
-        // php inherits the default (override didn't pin it).
         assert_eq!(blog.php(), PhpVersion::new(8, 3));
         assert_eq!(blog.kind(), yerd_core::SiteKind::Parked);
     }
 
     #[test]
     fn scan_sites_orphan_override_is_ignored() {
-        // An override for a path with no matching discovered child is never
-        // looked up — no panic, no effect. (The "keep on un-park" decision: an
-        // orphaned override sits harmlessly in config.)
         let tmp = tempfile::tempdir().unwrap();
         let parked_root = tmp.path().join("Sites");
         std::fs::create_dir_all(parked_root.join("blog")).unwrap();
@@ -909,7 +839,6 @@ mod tests {
         cfg.parked
             .paths
             .insert(parked_root.to_string_lossy().into_owned());
-        // Override keyed by a child that does not exist on disk.
         cfg.overrides.insert(
             parked_root.join("ghost").to_string_lossy().into_owned(),
             yerd_config::SiteOverride {
@@ -922,16 +851,12 @@ mod tests {
         let (sites, _) =
             scan_sites(&cfg, PhpVersion::new(8, 3), &dirs, &DetectCache::new()).unwrap();
         let blog = sites.iter().find(|s| s.name() == "blog").unwrap();
-        // blog is untouched by the ghost override.
         assert_eq!(blog.php(), PhpVersion::new(8, 3));
         assert!(!blog.secure());
     }
 
     #[test]
     fn scan_sites_linked_collision_leaves_override_dormant() {
-        // If a parked child's name collides with a linked site, the linked site
-        // wins and the parked override (keyed by the parked doc-root) never
-        // applies — the linked site keeps its own settings.
         let tmp = tempfile::tempdir().unwrap();
         let parked_root = tmp.path().join("Sites");
         std::fs::create_dir_all(parked_root.join("blog")).unwrap();
@@ -954,7 +879,6 @@ mod tests {
         let (sites, _) =
             scan_sites(&cfg, PhpVersion::new(8, 3), &dirs, &DetectCache::new()).unwrap();
         let blog = sites.iter().find(|s| s.name() == "blog").unwrap();
-        // The linked site wins: php 7.4, not the override's 8.5; and linked.
         assert_eq!(blog.kind(), yerd_core::SiteKind::Linked);
         assert_eq!(blog.php(), PhpVersion::new(7, 4));
         assert!(!blog.secure());

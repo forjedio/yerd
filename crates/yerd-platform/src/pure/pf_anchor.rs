@@ -84,8 +84,6 @@ pub fn insert_anchor_refs(pf_conf: &str) -> String {
 
     let mut lines: Vec<String> = pf_conf.lines().map(str::to_owned).collect();
 
-    // Find the insertion index for the rdr-anchor: after the last translation
-    // anchor declaration, else at the top.
     let after = lines
         .iter()
         .enumerate()
@@ -192,9 +190,7 @@ load anchor \"com.apple\" from \"/etc/pf.anchors/com.apple\"
             .iter()
             .position(|l| l.contains("dummynet-anchor"))
             .unwrap();
-        // Our rdr-anchor sits between the apple rdr-anchor and the next section.
         assert!(rdr_yerd > rdr_apple && rdr_yerd < dummynet);
-        // load anchor is appended at the end.
         assert!(lines
             .last()
             .unwrap()

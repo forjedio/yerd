@@ -140,8 +140,6 @@ fn prune_terminal(map: &mut HashMap<JobId, Job>) {
     if terminal <= TERMINAL_CAP {
         return;
     }
-    // Job ids are `job-<n>` with monotonically increasing `n`; sort terminal
-    // ids by that suffix and drop the lowest (oldest) ones.
     let mut victims: Vec<JobId> = map
         .iter()
         .filter(|(_, j)| j.is_terminal())
@@ -153,7 +151,7 @@ fn prune_terminal(map: &mut HashMap<JobId, Job>) {
     }
 }
 
-/// Numeric suffix of a `job-<n>` id (0 if malformed — never expected).
+/// Numeric suffix of a `job-<n>` id (0 if malformed - never expected).
 fn id_suffix(id: &str) -> u64 {
     id.rsplit('-')
         .next()
@@ -194,7 +192,6 @@ mod tests {
         reg.push_log(&id, "a".into()).await;
         reg.push_log(&id, "b".into()).await;
 
-        // From cursor 0 we see both, next cursor is 2.
         let r = reg.poll(&id, 0).await;
         let (state, log, next, err) = progress(&r);
         assert_eq!(state, JobState::Running);
@@ -202,13 +199,11 @@ mod tests {
         assert_eq!(next, 2);
         assert_eq!(err, None);
 
-        // From cursor 2 there's nothing new yet.
         let r = reg.poll(&id, 2).await;
         let (_, log, next, _) = progress(&r);
         assert!(log.is_empty());
         assert_eq!(next, 2);
 
-        // A new line shows only to a caller at cursor 2.
         reg.push_log(&id, "c".into()).await;
         let r = reg.poll(&id, 2).await;
         let (_, log, next, _) = progress(&r);
@@ -223,13 +218,10 @@ mod tests {
         for i in 0..(LOG_CAP + 10) {
             reg.push_log(&id, format!("line{i}")).await;
         }
-        // Total is everything pushed; the tail is capped but the cursor reflects
-        // the true total so the client never double-reads.
         let r = reg.poll(&id, 0).await;
         let (_, log, next, _) = progress(&r);
         assert_eq!(next, (LOG_CAP + 10) as u64);
         assert_eq!(log.len(), LOG_CAP);
-        // The first retained line is the 11th pushed (10 evicted).
         assert_eq!(log[0], "line10");
     }
 

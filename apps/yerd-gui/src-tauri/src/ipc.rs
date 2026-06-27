@@ -1,4 +1,4 @@
-//! The daemon transport — a near-verbatim mirror of `bin/yerd/src/transport.rs`.
+//! The daemon transport - a near-verbatim mirror of `bin/yerd/src/transport.rs`.
 //!
 //! The socket path is derived identically to the daemon and the CLI
 //! (`<runtime>/yerd.sock`, where `<runtime>` comes from
@@ -21,7 +21,7 @@ pub async fn exchange(req: &Request) -> Result<Response, GuiError> {
 /// [`exchange`] bounded by a timeout. Used by the liveness/probe commands
 /// (`status`/`ping`/`daemon_info`) so a daemon that accepts the socket but never
 /// replies (crash-looping, wedged, mid-startup) can't make the `invoke` promise
-/// hang forever — the unbounded `read_message` in [`exchange_at`] otherwise never
+/// hang forever - the unbounded `read_message` in [`exchange_at`] otherwise never
 /// resolves, freezing the start spinner and the poller. On elapse this returns an
 /// `unreachable` error so the poller treats it as "Stopped" and the start flow
 /// advances to its diagnostics ceiling. NOT used for long-running ops (installs/
@@ -74,7 +74,7 @@ pub async fn exchange_at(sock: &std::path::Path, req: &Request) -> Result<Respon
 }
 
 /// The Windows named-pipe name is non-deterministic for clients today (a tracked
-/// Phase-2 follow-up), so the GUI is macOS/Linux-only for now — exactly as the
+/// Phase-2 follow-up), so the GUI is macOS/Linux-only for now - exactly as the
 /// CLI's transport is.
 #[cfg(not(unix))]
 pub async fn exchange(_req: &Request) -> Result<Response, GuiError> {

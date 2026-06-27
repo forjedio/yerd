@@ -1,7 +1,7 @@
 //! Length-prefixed frame codec.
 //!
 //! Wire format: a 4-byte big-endian `u32` length prefix followed by
-//! that many bytes of payload. The codec itself is byte-agnostic — it
+//! that many bytes of payload. The codec itself is byte-agnostic - it
 //! takes/returns `&[u8]` / `Vec<u8>` and never inspects payload
 //! contents.
 //!
@@ -12,7 +12,7 @@
 
 use crate::error::FrameError;
 
-/// 16 MiB — the default maximum frame size on both sides.
+/// 16 MiB - the default maximum frame size on both sides.
 pub const DEFAULT_MAX_FRAME: usize = 16 * 1024 * 1024;
 
 /// Size of the length prefix, in bytes.
@@ -120,10 +120,10 @@ impl FrameDecoder {
 
     /// Pull a frame from the buffer.
     ///
-    /// - `Ok(Some(payload))` — one full frame ready; surplus bytes
+    /// - `Ok(Some(payload))` - one full frame ready; surplus bytes
     ///   stay buffered for the next call.
-    /// - `Ok(None)` — header or body still incomplete; feed more bytes.
-    /// - `Err(FrameError::TooLarge)` — declared length exceeds `max`.
+    /// - `Ok(None)` - header or body still incomplete; feed more bytes.
+    /// - `Err(FrameError::TooLarge)` - declared length exceeds `max`.
     ///   The decoder is now poisoned; see the type-level docs.
     pub fn next_frame(&mut self) -> Result<Option<Vec<u8>>, FrameError> {
         if let Some(err) = &self.poisoned {

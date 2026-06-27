@@ -70,7 +70,6 @@ fn every_variant_round_trips_via_from_argv() {
             op_tag(inv),
             "round-trip op tag mismatch for {inv:?}"
         );
-        // Re-serialising the parsed result must produce the same argv.
         assert_eq!(parsed.to_argv(), v, "round-trip argv mismatch for {inv:?}");
     }
 }

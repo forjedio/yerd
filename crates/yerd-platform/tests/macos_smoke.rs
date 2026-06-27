@@ -39,9 +39,6 @@ fn paths_resolve_returns_all_five_fields() {
 
 #[test]
 fn runtime_dir_is_deterministic_tmp_path() {
-    // The runtime dir must be a deterministic, uid-derived `/tmp/yerd-$UID`
-    // (not `$TMPDIR`/`/var/folders/…`) so the root-elevated `yerd elevate`
-    // can reconstruct the daemon socket path from `SUDO_UID` alone.
     let dirs = ActivePaths.resolve().expect("resolve should succeed");
     let s = dirs.runtime.to_string_lossy();
     assert!(
@@ -80,9 +77,6 @@ fn uninstall_system_returns_needs_helper() {
 
 #[test]
 fn is_trusted_errors_for_unreadable_cert() {
-    // `is_trusted` reads the CA PEM to build a `SecCertificate`. A missing file
-    // is an error (not a false "trusted"); the daemon maps that to `None`
-    // (unknown) via `.ok()`, never to a spurious trusted state.
     let ts = ActiveTrustStore;
     let fp = random_fingerprint(0xCC);
     let missing = std::path::Path::new("/tmp/yerd-nonexistent-ca-xyz.cert.pem");

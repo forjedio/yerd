@@ -1,5 +1,5 @@
 //! Source-byte tripwire: `responder.rs` and `answer.rs` must not name any
-//! I/O-shaped path. Smoke check, **not** a purity proof — determined
+//! I/O-shaped path. Smoke check, **not** a purity proof - determined
 //! contributors can sneak imports past it (`use std::time as t; t::Instant`).
 //! The realistic regression mode is an accidental `use tokio::…` line, and
 //! that is caught.

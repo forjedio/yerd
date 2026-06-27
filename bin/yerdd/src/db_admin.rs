@@ -1,10 +1,10 @@
 //! Database administration ("Manage DBs"): list / create / drop databases in a
 //! running SQL service.
 //!
-//! This is the I/O edge — it shells out to the **bundled client** for each
+//! This is the I/O edge - it shells out to the **bundled client** for each
 //! engine (`mysql`/`mariadb` over the Unix socket; `psql` over TCP loopback) and
-//! captures its output. All the decision logic — name validation, SQL and `argv`
-//! construction, output parsing — is pure and unit-tested in
+//! captures its output. All the decision logic - name validation, SQL and `argv`
+//! construction, output parsing - is pure and unit-tested in
 //! `yerd_services::database`. The SQL is passed as a single `argv` element (never
 //! a shell), so combined with the validating allowlist there is no injection
 //! surface.
@@ -21,7 +21,7 @@ use yerd_services::{database, version, Service, ServiceRunState};
 use crate::services::resolve_version;
 use crate::state::DaemonState;
 
-/// `list databases <svc>` — the user databases (system schemas filtered out).
+/// `list databases <svc>` - the user databases (system schemas filtered out).
 pub async fn list(service_id: &str, state: &DaemonState) -> Response {
     let ctx = match prepare(service_id, state).await {
         Ok(c) => c,
@@ -53,7 +53,7 @@ pub async fn create(service_id: &str, name: &str, state: &DaemonState) -> Respon
     }
 }
 
-/// `drop database <svc> <name>` — refuses system databases.
+/// `drop database <svc> <name>` - refuses system databases.
 pub async fn drop(service_id: &str, name: &str, state: &DaemonState) -> Response {
     let ctx = match prepare(service_id, state).await {
         Ok(c) => c,
@@ -74,11 +74,11 @@ pub async fn drop(service_id: &str, name: &str, state: &DaemonState) -> Response
     }
 }
 
-/// `backup database <svc> <name> <path>` — stream a plain-SQL dump to `path`.
+/// `backup database <svc> <name> <path>` - stream a plain-SQL dump to `path`.
 ///
 /// The dump tool writes to stdout; we stream that to a temp sibling of `path` and
 /// atomically rename on success, so a failed dump never truncates an existing target.
-/// The destination path is never passed to the dump tool — there is no path-injection
+/// The destination path is never passed to the dump tool - there is no path-injection
 /// surface.
 pub async fn backup(service_id: &str, name: &str, path: &Path, state: &DaemonState) -> Response {
     let ctx = match prepare(service_id, state).await {
@@ -103,7 +103,6 @@ pub async fn backup(service_id: &str, name: &str, path: &Path, state: &DaemonSta
     }
     let args = database::dump_args(ctx.service, &ctx.socket, ctx.port, name);
 
-    // Stream to a temp sibling, rename on success (atomic; never truncates `path`).
     let tmp = tmp_sibling(path);
     let mut file = match tokio::fs::File::create(&tmp).await {
         Ok(f) => f,
@@ -124,8 +123,6 @@ pub async fn backup(service_id: &str, name: &str, path: &Path, state: &DaemonSta
         }
     };
 
-    // Take both pipes and drain them concurrently with `wait()`; draining only one
-    // while the other's buffer fills would deadlock the child.
     let (Some(mut stdout), Some(mut stderr)) = (child.stdout.take(), child.stderr.take()) else {
         let _ = tokio::fs::remove_file(&tmp).await;
         return internal("dump tool produced no stdio pipes");
@@ -159,7 +156,7 @@ pub async fn backup(service_id: &str, name: &str, path: &Path, state: &DaemonSta
     Response::Ok
 }
 
-/// `restore database <svc> <name> <path>` — replay a plain-SQL file into `name`.
+/// `restore database <svc> <name> <path>` - replay a plain-SQL file into `name`.
 ///
 /// The file is streamed into the restore client's stdin (the source path never
 /// reaches its argv). The target database must already exist (single-db dumps carry
@@ -197,12 +194,8 @@ pub async fn restore(service_id: &str, name: &str, path: &Path, state: &DaemonSt
     let (Some(mut stdin), Some(mut stderr)) = (child.stdin.take(), child.stderr.take()) else {
         return internal("restore client produced no stdio pipes");
     };
-    // `stdin` is MOVED into this future so it drops (→ EOF) when the copy finishes,
-    // letting the client exit and `wait()` resolve. Keeping it alive would hang.
     let feed = async move {
         let res = tokio::io::copy(&mut file, &mut stdin).await;
-        // Close the write side → EOF, so the client can finish and `wait()` resolve.
-        // `stdin` is dropped at the end of this `async move` block regardless.
         let _ = stdin.shutdown().await;
         res
     };
@@ -270,7 +263,6 @@ async fn prepare(service_id: &str, state: &DaemonState) -> Result<DbCtx, Respons
         });
     }
 
-    // Database ops need a live server.
     let running = {
         let mut mgr = state.service_manager.lock().await;
         mgr.snapshots()

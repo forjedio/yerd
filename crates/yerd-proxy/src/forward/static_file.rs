@@ -1,4 +1,4 @@
-//! Static-file serving — the `try_files`-style short-circuit in front of the
+//! Static-file serving - the `try_files`-style short-circuit in front of the
 //! PHP front controller.
 //!
 //! A GET/HEAD whose URL resolves to a real, non-PHP file under the served root
@@ -20,15 +20,13 @@ use crate::pure::try_files::{content_type_for, is_php_source, static_candidate};
 
 /// Try to serve `uri_path` as a static file under `served_root`.
 ///
-/// `Some(response)` — a file was found and served (200). `None` — the request
+/// `Some(response)` - a file was found and served (200). `None` - the request
 /// should fall through to the PHP front controller.
 pub async fn try_serve(
     method: &Method,
     uri_path: &str,
     served_root: &Path,
 ) -> Option<Response<BoxBody>> {
-    // Only safe, idempotent reads are served statically; POST/PUT/… are the
-    // application's.
     if *method != Method::GET && *method != Method::HEAD {
         return None;
     }
@@ -36,17 +34,12 @@ pub async fn try_serve(
     let rel = static_candidate(uri_path)?;
     let candidate = served_root.join(&rel);
 
-    // Defence-in-depth against symlink escape: resolve both ends and require the
-    // real file to live under the real served root. A non-existent file fails
-    // canonicalisation → `None` → the front controller handles it (e.g. a
-    // framework route that happens to look like a path).
     let real_file = tokio::fs::canonicalize(&candidate).await.ok()?;
     let real_root = tokio::fs::canonicalize(served_root).await.ok()?;
     if !real_file.starts_with(&real_root) {
         return None;
     }
 
-    // Never serve PHP source as bytes.
     if is_php_source(&real_file) {
         return None;
     }

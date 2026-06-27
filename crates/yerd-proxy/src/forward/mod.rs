@@ -5,7 +5,7 @@ pub mod http;
 pub mod static_file;
 pub mod upgrade;
 
-/// Body type used in proxy responses — boxed so all forward variants
+/// Body type used in proxy responses - boxed so all forward variants
 /// (streaming FCGI STDOUT, streaming hyper Incoming, empty 101) can be
 /// returned from the same `handle_request`.
 pub type BoxBody = http_body_util::combinators::BoxBody<bytes::Bytes, std::io::Error>;

@@ -58,8 +58,6 @@ fn validity_pre_2050_uses_utctime() {
     let v = Validity::new(nb, na).unwrap();
     let ca = CertAuthority::generate("Yerd Local CA", v).unwrap();
     let cert = parse_cert(ca.cert_der());
-    // Round-trip is what matters most; pinning the raw ASN.1 tag bytes is
-    // brittle. Confirm equality at the OffsetDateTime layer.
     assert_eq!(cert.validity().not_before.to_datetime(), nb);
     assert_eq!(cert.validity().not_after.to_datetime(), na);
 }

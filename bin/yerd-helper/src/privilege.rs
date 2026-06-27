@@ -3,7 +3,7 @@
 //! Linux reads `/proc/self/status`; macOS shells out to `/usr/bin/id`
 //! by absolute path so a poisoned `PATH` from the elevation mechanism
 //! cannot redirect the lookup. If `/proc` is missing (chroot, minimal
-//! container), Linux conservatively reports `false` — better to fail
+//! container), Linux conservatively reports `false` - better to fail
 //! with `NotPrivileged` than to assume we're root.
 //!
 //! Neither path uses `unsafe` FFI to `geteuid`, which is forbidden by
@@ -35,9 +35,6 @@ fn effective_uid() -> Option<u32> {
 
 #[cfg(target_os = "macos")]
 fn effective_uid() -> Option<u32> {
-    // Absolute path — runs before subprocess hardening, so a poisoned
-    // PATH from the elevation mechanism cannot redirect this. Use
-    // env_clear() defensively even at this early stage.
     let out = std::process::Command::new("/usr/bin/id")
         .arg("-u")
         .env_clear()
@@ -67,17 +64,12 @@ mod tests {
 
     #[test]
     fn is_privileged_returns_a_bool() {
-        // We can't assert true/false generically — depends on how the
-        // test process is invoked. Just confirm the call doesn't
-        // panic and returns a value.
         let _ = is_privileged();
     }
 
     #[cfg(target_os = "linux")]
     #[test]
     fn effective_uid_parses_status_format() {
-        // /proc/self/status is mounted on CI hosts; assert the parser
-        // returns Some.
         assert!(effective_uid().is_some());
     }
 }

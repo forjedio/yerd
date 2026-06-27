@@ -1,9 +1,9 @@
-//! Composer installer — fetch + verify `composer.phar` into `{data}/tools/composer/`.
+//! Composer installer - fetch + verify `composer.phar` into `{data}/tools/composer/`.
 //!
 //! Composer is a PHP phar run via yerd's managed PHP (the `composer` multi-call
 //! shim execs `php composer.phar …`). Integrity uses Composer's published
 //! `composer.phar.sha256sum` sidecar (the `/versions` JSON carries no digest).
-//! Installed on demand from the Tooling page — not auto-fetched.
+//! Installed on demand from the Tooling page - not auto-fetched.
 
 use std::path::{Path, PathBuf};
 
@@ -34,7 +34,7 @@ struct Versions {
     stable: Vec<VersionEntry>,
 }
 
-/// `{data}/tools/composer/composer.phar` — the path the `composer` shim execs.
+/// `{data}/tools/composer/composer.phar` - the path the `composer` shim execs.
 /// Kept in sync with `bin/yerd/src/composer_shim.rs`.
 #[must_use]
 pub fn phar_path(dirs: &PlatformDirs) -> PathBuf {
@@ -70,8 +70,6 @@ fn choose_version(versions: &Versions, host_id: Option<u32>) -> Option<String> {
 /// Download, verify, and install the latest Composer the installed PHP can run.
 pub async fn install(dirs: &PlatformDirs, dl: &dyn Downloader) -> Result<(), ToolError> {
     let versions = fetch_versions(dl).await?;
-    // Composer runs through yerd's managed PHP shim, so an install with no PHP
-    // present would produce a non-runnable command — require one up front.
     let Some(host_id) = installed_versions(dirs).into_iter().map(version_id).max() else {
         return Err(ToolError::UnsupportedHost(
             "Composer (requires an installed PHP)",

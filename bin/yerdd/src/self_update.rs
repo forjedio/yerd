@@ -4,7 +4,7 @@
 //! parsed releases (`DaemonState::yerd_update`), and answers `CheckUpdate` by
 //! running the pure [`yerd_update::select_target`] decision over them. Like the
 //! PHP checker this is **notify-only**: it never installs anything (apply is a
-//! CLI/GUI-initiated, interactively-elevated path — see the feature plan).
+//! CLI/GUI-initiated, interactively-elevated path - see the feature plan).
 //!
 //! Network failure is tolerated: the periodic poll leaves the cache untouched,
 //! and `CheckUpdate` falls back to the cache with [`UpdateSource::Cached`].
@@ -32,7 +32,7 @@ const PER_PAGE: usize = 100;
 const MAX_PAGES: u32 = 3;
 
 /// The running daemon version (compile-time). Falls back to `0.0.0` if the
-/// crate version is ever not valid semver (it always is — the workspace pins it).
+/// crate version is ever not valid semver (it always is - the workspace pins it).
 fn current_version() -> semver::Version {
     semver::Version::parse(env!("CARGO_PKG_VERSION"))
         .unwrap_or_else(|_| semver::Version::new(0, 0, 0))
@@ -73,8 +73,6 @@ async fn fetch_releases(dl: &dyn Downloader) -> Option<Vec<ReleaseMeta>> {
         let bytes = match dl.download(&url).await {
             Ok(b) => b,
             Err(e) => {
-                // A failure on the first page means we have nothing; later pages
-                // failing just truncate the (already useful) accumulated list.
                 if page == 1 {
                     tracing::debug!(error = %e, "yerd self-update: releases fetch failed");
                     return None;
@@ -117,7 +115,6 @@ async fn fetch_releases(dl: &dyn Downloader) -> Option<Vec<ReleaseMeta>> {
                 notes: r.body,
             });
         }
-        // A short page is the last page.
         if count < PER_PAGE {
             break;
         }
@@ -171,7 +168,7 @@ fn status_response(
 /// `{state}/update-check.json` so the UI can pre-fill the Updates section on load
 /// (and across daemon restarts / while offline) and show a "last checked …"
 /// time. Mirrors the [`Response::UpdateStatus`] display fields plus the
-/// timestamp. Lives in the daemon's *cache*, not `yerd.toml` — it is regenerable.
+/// timestamp. Lives in the daemon's *cache*, not `yerd.toml` - it is regenerable.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct UpdateSnapshot {
     /// Unix epoch (seconds) when the check completed.
@@ -248,15 +245,6 @@ fn response_from_snapshot(
     effective: yerd_ipc::Channel,
     source: UpdateSource,
 ) -> Response {
-    // Reconcile against the *currently running* version and the *effective*
-    // channel. If the snapshot was recorded for a different version (e.g. the
-    // daemon self-updated since it was written) or a different channel (the user
-    // switched channels since the last poll), its `available`/`target`/
-    // `ahead_of_stable` decision fields can't be trusted — they'd describe a
-    // resolution that no longer applies. Present the live channel with no pending
-    // update; the `latest_*` figures + timestamp are channel-independent raw
-    // observations and still describe the last remote check. The next successful
-    // live check overwrites all of this.
     let running = current_version().to_string();
     let drifted = snap.current != running || snap.channel != effective;
     Response::UpdateStatus {
@@ -317,7 +305,6 @@ pub async fn poll_and_refresh(state: &DaemonState, dl: &dyn Downloader) {
             "a newer Yerd version is available (run `yerd update`)"
         );
     }
-    // Persist the outcome so the UI can pre-fill on load and show "last checked".
     store_snapshot(state, snapshot_from(&decision, now_epoch())).await;
     *state.yerd_update.write().await = releases;
 }
@@ -342,12 +329,8 @@ pub async fn check_update(
         store_snapshot(state, snap.clone()).await;
         response_from_snapshot(&snap, to_ipc(channel), UpdateSource::Live)
     } else if let Some(snap) = state.update_snapshot.read().await.clone() {
-        // Offline: serve the last persisted result (carries its real timestamp),
-        // reconciled against the channel this check is answering for.
         response_from_snapshot(&snap, to_ipc(channel), UpdateSource::Cached)
     } else {
-        // Never persisted a snapshot: derive from whatever is in the in-memory
-        // release cache, with no timestamp.
         let cache = state.yerd_update.read().await;
         let decision = select_target(&cache, channel, &current);
         status_response(&decision, UpdateSource::Cached, None)
@@ -361,7 +344,7 @@ pub async fn check_update(
 ///
 /// `public_key` is [`yerd_update::UPDATE_PUBLIC_KEY`] in production and a test
 /// key in unit tests. The privileged install/swap is the applier's job, not the
-/// daemon's — this only produces a verified local file.
+/// daemon's - this only produces a verified local file.
 pub async fn stage_update(
     channel_override: Option<yerd_ipc::Channel>,
     state: &DaemonState,
@@ -389,7 +372,6 @@ pub async fn stage_update(
         Err(e) => return internal(format!("no installable artifact: {e}")),
     };
 
-    // Download artifact + detached signature + checksum manifest.
     let artifact = match dl.download(&sel.artifact.url).await {
         Ok(b) => b,
         Err(e) => return internal(format!("artifact download failed: {e}")),
@@ -403,7 +385,6 @@ pub async fn stage_update(
         Err(e) => return internal(format!("checksums download failed: {e}")),
     };
 
-    // Verify before writing anything to disk.
     if let Err(e) = verify_sha256(&artifact, &sums, &sel.artifact.name) {
         return internal(format!("checksum verification failed: {e}"));
     }
@@ -411,14 +392,10 @@ pub async fn stage_update(
         return internal(format!("signature verification failed: {e}"));
     }
 
-    // The asset name comes from remote release metadata; defence-in-depth, only
-    // join it if it's a single normal path component (no separators, `..`, or
-    // absolute root) so it can never escape the cache dir.
     if !is_safe_filename(&sel.artifact.name) {
         return internal(format!("unsafe asset filename: {:?}", sel.artifact.name));
     }
 
-    // Write the verified artifact into the cache dir.
     let dir = state.dirs.cache.join("update");
     if let Err(e) = tokio::fs::create_dir_all(&dir).await {
         return internal(format!("could not create staging dir: {e}"));
@@ -427,8 +404,6 @@ pub async fn stage_update(
     if let Err(e) = tokio::fs::write(&path, &artifact).await {
         return internal(format!("could not write staged artifact: {e}"));
     }
-    // Persist the detached signature beside it so the applier can re-verify
-    // (closes the daemon-verify → applier-swap TOCTOU window).
     let sig_path = dir.join(format!("{}.sig", sel.artifact.name));
     if let Err(e) = tokio::fs::write(&sig_path, sig.as_bytes()).await {
         return internal(format!("could not write staged signature: {e}"));
@@ -464,8 +439,8 @@ pub async fn set_update_channel(channel: yerd_ipc::Channel, state: &DaemonState)
     Response::Ok
 }
 
-/// True if `name` is a single normal path component — no separators, `..`, root,
-/// or drive prefix — so joining it onto a directory can't escape that directory.
+/// True if `name` is a single normal path component - no separators, `..`, root,
+/// or drive prefix - so joining it onto a directory can't escape that directory.
 fn is_safe_filename(name: &str) -> bool {
     use std::path::Component;
     let mut comps = std::path::Path::new(name).components();
@@ -490,7 +465,6 @@ mod tests {
 
     #[test]
     fn current_version_parses() {
-        // The crate version is always valid semver, so this is never the fallback.
         assert_ne!(current_version(), semver::Version::new(0, 0, 0));
     }
 
@@ -544,13 +518,9 @@ mod tests {
 
     #[test]
     fn snapshot_response_suppresses_stale_decision_after_version_drift() {
-        // A snapshot recorded for a *different* running version (e.g. before a
-        // self-update) must not advertise a phantom update against the version we
-        // now run. `current` is reported as the running version; available/target
-        // are cleared. The remote `latest_*` and timestamp survive.
         let snap = UpdateSnapshot {
             checked_at: 1_719_445_200,
-            current: "0.0.1".into(), // deliberately != the running version
+            current: "0.0.1".into(),
             latest_stable: Some("2.0.5".into()),
             latest_edge: Some("2.1.0-rc.1".into()),
             channel: yerd_ipc::Channel::Stable,
@@ -558,8 +528,6 @@ mod tests {
             target: Some("9.9.9".into()),
             ahead_of_stable: true,
         };
-        // Answer for the *same* channel the snapshot used, so the only drift
-        // under test is the running version.
         match response_from_snapshot(&snap, yerd_ipc::Channel::Stable, UpdateSource::Cached) {
             Response::UpdateStatus {
                 current,
@@ -606,14 +574,9 @@ mod tests {
 
     #[test]
     fn snapshot_response_suppresses_stale_decision_after_channel_switch() {
-        // A snapshot recorded on one channel must not advertise that channel's
-        // resolution after the user switches channels. The reported channel is
-        // the effective one; available/target/ahead are cleared because they were
-        // resolved for the old channel. The channel-independent `latest_*` figures
-        // and timestamp survive.
         let snap = UpdateSnapshot {
             checked_at: 1_719_445_200,
-            current: current_version().to_string(), // version matches: only channel drifts
+            current: current_version().to_string(),
             latest_stable: Some("2.0.5".into()),
             latest_edge: Some("2.1.0-rc.1".into()),
             channel: yerd_ipc::Channel::Stable,
