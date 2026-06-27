@@ -33,6 +33,6 @@
   <dict>
     <key>SuccessfulExit</key><false/>
   </dict>
-  <key>ThrottleInterval</key><integer>3</integer>
+  <key>ThrottleInterval</key><integer>5</integer>
 </dict>
 </plist>

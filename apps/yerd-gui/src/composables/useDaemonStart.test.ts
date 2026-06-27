@@ -36,6 +36,13 @@ vi.mock("@/lib/log", () => ({
 import { IpcError } from "@/ipc/client";
 import { useDaemonStart } from "./useDaemonStart";
 
+// POLL_MS / RUNNING_CEILING_MS are module-private in useDaemonStart.ts; mirror
+// them here so the ceiling assertions stay pinned to the same granularity.
+const POLL_MS = 500;
+const RUNNING_CEILING_MS = 30_000;
+
+let activeWrapper: ReturnType<typeof mount> | null = null;
+
 function mountComposable() {
   let api!: ReturnType<typeof useDaemonStart>;
   const Comp = defineComponent({
@@ -44,8 +51,8 @@ function mountComposable() {
       return () => h("div");
     },
   });
-  const wrapper = mount(Comp);
-  return { wrapper, api };
+  activeWrapper = mount(Comp);
+  return { wrapper: activeWrapper, api };
 }
 
 const diag = {
@@ -73,6 +80,8 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  activeWrapper?.unmount();
+  activeWrapper = null;
   vi.useRealTimers();
 });
 
@@ -93,11 +102,13 @@ describe("useDaemonStart readiness wait", () => {
     const { api } = mountComposable();
 
     void api.start();
-    await vi.advanceTimersByTimeAsync(29_500);
+    // One poll short of the ceiling: still waiting, no diagnostics yet.
+    await vi.advanceTimersByTimeAsync(RUNNING_CEILING_MS - POLL_MS);
     expect(mocks.daemonDiagnostics).not.toHaveBeenCalled();
     expect(api.phase.value).toBe("running");
 
-    await vi.advanceTimersByTimeAsync(1_500);
+    // The poll that crosses the ceiling surfaces diagnostics exactly once.
+    await vi.advanceTimersByTimeAsync(POLL_MS);
     expect(mocks.daemonDiagnostics).toHaveBeenCalledOnce();
     expect(api.diagnostics.value).not.toBeNull();
     expect(api.phase.value).toBe("idle");
