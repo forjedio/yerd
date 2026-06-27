@@ -15,8 +15,8 @@ use std::path::PathBuf;
 /// `127.0.0.1:<port>` literal written into `listen = 127.0.0.1:9000`.
 ///
 /// A closed set (a socket path or a TCP address) matched exhaustively by
-/// consumers in other crates, so it is intentionally **not** `#[non_exhaustive]`
-/// - adding a variant is a deliberate breaking change that should light up every
+/// consumers in other crates, so it is intentionally not `#[non_exhaustive]`:
+/// adding a variant is a deliberate breaking change that should light up every
 /// match site.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Listen {

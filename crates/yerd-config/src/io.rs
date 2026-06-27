@@ -19,7 +19,7 @@ pub(crate) fn load(path: &Path) -> Result<Config, ConfigError> {
 /// Atomically replaces the config file.
 ///
 /// `persist` does an atomic rename on the same filesystem (Unix) or
-/// MoveFileExW (Windows), which can fail with ERROR_SHARING_VIOLATION if
+/// `MoveFileExW` (Windows), which can fail with `ERROR_SHARING_VIOLATION` if
 /// another process holds the dest open, so the daemon must not keep a write
 /// handle between saves. The temp file is mode 0600 (the daemon is the only
 /// writer). No fsync: durability isn't worth the Windows portability cost for

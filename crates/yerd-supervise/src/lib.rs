@@ -9,8 +9,8 @@
 //! ([`supervisor`]).
 //!
 //! It is consumed by both `yerd-php` (FPM pools) and `yerd-services` (database /
-//! cache daemons). The state machine's timing/restart policy is **not** baked in
-//! - it is supplied per call via [`supervisor::SupervisorPolicy`], so an FPM pool
+//! cache daemons). The state machine's timing/restart policy is not baked in:
+//! it is supplied per call via [`supervisor::SupervisorPolicy`], so an FPM pool
 //! (fast to start, cheap to retry) and a database (slow cold-boot, expensive to
 //! retry) can drive the same logic with different policies.
 //!

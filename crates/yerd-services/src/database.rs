@@ -133,8 +133,8 @@ pub fn list_sql(service: Service) -> &'static str {
 
 /// Build the bundled-client argv to run `sql` against `service`.
 ///
-/// `MySQL`/`MariaDB` connect over the Unix `socket` (passwordless `root@localhost`
-/// - a TCP login would fail under `skip-name-resolve`); `PostgreSQL` connects
+/// `MySQL`/`MariaDB` connect over the Unix `socket` (passwordless `root@localhost`,
+/// since a TCP login would fail under `skip-name-resolve`); `PostgreSQL` connects
 /// over TCP loopback on `port` (its Unix socket is disabled), authenticated by
 /// the `trust` line `initdb` wrote for `127.0.0.1/32`.
 #[must_use]

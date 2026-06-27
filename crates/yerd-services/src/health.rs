@@ -130,8 +130,8 @@ impl HealthProbe for MySqlProbe {
 
 /// `PostgreSQL` readiness probe: send a minimal `StartupMessage` and require any
 /// well-formed reply. With `--auth=trust` the server answers `R`
-/// (Authentication → `AuthenticationOk`); a refusal answers `E` (`ErrorResponse`)
-/// - either proves the postmaster is up and processing the protocol. The
+/// (Authentication → `AuthenticationOk`); a refusal answers `E` (`ErrorResponse`),
+/// either of which proves the postmaster is up and processing the protocol. The
 /// reduced (zonky-style) build may ship no `pg_isready`, so a protocol probe is
 /// required rather than a CLI shell-out.
 pub struct PostgresProbe;
