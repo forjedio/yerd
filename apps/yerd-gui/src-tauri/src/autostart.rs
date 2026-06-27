@@ -1021,7 +1021,9 @@ pub(crate) struct StartStep {
 const INSTALL_BUDGET: std::time::Duration = std::time::Duration::from_secs(12);
 /// The macOS SMAppService ensure/register step: unregister + register_repairing +
 /// kickstart is the slowest single action (XPC), so it gets the largest slice
-/// regardless of the optimistic label `reg_phase` chose.
+/// regardless of the optimistic label `reg_phase` chose. macOS-only — the Linux
+/// start plan never uses it.
+#[cfg(target_os = "macos")]
 const REGISTER_BUDGET: std::time::Duration = std::time::Duration::from_secs(20);
 /// A plain service-manager start/kickstart.
 const START_BUDGET: std::time::Duration = std::time::Duration::from_secs(8);
