@@ -643,7 +643,9 @@ mod tests {
             .await;
         });
 
-        entered.notified().await;
+        timeout(Duration::from_secs(1), entered.notified())
+            .await
+            .expect("first start_one should be entered");
         let _ = tx.send(true);
 
         timeout(Duration::from_secs(1), handle)
