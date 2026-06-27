@@ -9,7 +9,7 @@ import { IpcError, markOnboarded, setupState, status } from "@/ipc/client";
 // The journey is shown only on a never-set-up machine: not previously onboarded,
 // no existing config/PHP/service, and the daemon currently unreachable. A real
 // `yerd uninstall` wipes the config dir (which holds the onboarding flag), so the
-// journey reappears afterwards — a plain Trash-drag of the app leaves the setup
+// journey reappears afterwards - a plain Trash-drag of the app leaves the setup
 // intact and correctly does not.
 
 /** True until the one-time probe resolves; gates the first paint. */

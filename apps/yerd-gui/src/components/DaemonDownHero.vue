@@ -18,7 +18,7 @@ import logoUrl from "@/assets/logo.svg";
 // instead of a blind toast, and on macOS pending-approval we show the Login-Items
 // affordance rather than a "failure".
 const { report } = useDaemon();
-const { starting, pendingApproval, diagnostics, start } = useDaemonStart();
+const { starting, activeLabel, pendingApproval, diagnostics, start } = useDaemonStart();
 const tld = computed(() => report.value?.tld ?? "test");
 
 function onStart(): void {
@@ -68,7 +68,7 @@ function onOpenLoginItems(): void {
 
     <Button :disabled="starting" @click="onStart">
       <Spinner v-if="starting" class="size-4" />
-      <Play v-else class="size-4" /> Start Yerd
+      <Play v-else class="size-4" /> {{ activeLabel ?? "Start Yerd" }}
     </Button>
   </Card>
 </template>

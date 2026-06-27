@@ -8,7 +8,7 @@ import type { StatusReport } from "@/ipc/types";
  *
  * One poller for the whole app (the global connection pill, the tray, and the
  * Services/PHP views all read this), so the daemon isn't hit by N independent
- * `status` loops. `status` doubles as the liveness probe — a successful report
+ * `status` loops. `status` doubles as the liveness probe - a successful report
  * means "connected". Started/stopped from App.vue's lifecycle.
  */
 const report = ref<StatusReport | null>(null);

@@ -129,6 +129,7 @@ async fn dispatch(req: Request, state: &DaemonState) -> Response {
                 https_port: state.https.bound,
                 fallback_http: cfg.ports.fallback_http,
                 fallback_https: cfg.ports.fallback_https,
+                dns_port: cfg.dns_port,
             }
         }
         Request::Park { .. }
@@ -259,6 +260,7 @@ async fn dispatch(req: Request, state: &DaemonState) -> Response {
         },
         Request::SetMailPort { port } => set_mail_port(port, state).await,
         Request::SetFallbackPorts { http, https } => set_fallback_ports(http, https, state).await,
+        Request::SetDnsPort { port } => set_dns_port(port, state).await,
         Request::SetMailEnabled { enabled } => set_mail_enabled(enabled, state).await,
         Request::ListTools => Response::Tools {
             tools: list_tools_with_external(state).await,
@@ -269,6 +271,7 @@ async fn dispatch(req: Request, state: &DaemonState) -> Response {
             let dl = crate::php_install::ReqwestDownloader::new();
             crate::self_update::check_update(channel, state, &dl).await
         }
+        Request::CachedUpdateStatus => crate::self_update::cached_update_status(state).await,
         Request::SetUpdateChannel { channel } => {
             crate::self_update::set_update_channel(channel, state).await
         }
@@ -555,6 +558,7 @@ async fn build_status_report(state: &DaemonState) -> yerd_ipc::StatusReport {
             count: state.mail_store.count().await,
         }),
         web_unbound: state.web_unbound,
+        dns_unbound: state.dns_unbound,
         boot_id: Some(state.boot_id),
     }
 }
@@ -1185,6 +1189,33 @@ async fn set_fallback_ports(http: u16, https: u16, state: &DaemonState) -> Respo
     Response::Ok
 }
 
+/// Set the embedded DNS responder port (`dns_port`). Persisted to config; takes
+/// effect on the next daemon restart (the client triggers it). A zero port is
+/// rejected explicitly here — unlike the web/mail/dumps ports, `dns_port == 0` is
+/// a *valid* "ephemeral" value for in-process tests, so `validate()` permits it;
+/// for a user-facing change a zero port (which the OS resolver could never target)
+/// is meaningless.
+async fn set_dns_port(port: u16, state: &DaemonState) -> Response {
+    if port == 0 {
+        return Response::Error {
+            code: yerd_ipc::ErrorCode::Internal,
+            message: "DNS port must be non-zero".to_owned(),
+        };
+    }
+    let mut cfg_guard = state.config.lock().await;
+    let mut new = cfg_guard.clone();
+    new.dns_port = port;
+    if let Err(e) = new.validate() {
+        return internal(format!("config validation failed: {e}"));
+    }
+    if let Err(e) = new.save(&state.config_path) {
+        return internal(format!("config save failed: {e}"));
+    }
+    *cfg_guard = new;
+    tracing::info!(port, "set DNS port (effective on next restart)");
+    Response::Ok
+}
+
 /// Enable or disable mail capture. Persisted to config; takes effect on the next
 /// daemon start/restart.
 async fn set_mail_enabled(enabled: bool, state: &DaemonState) -> Response {
@@ -1555,6 +1586,7 @@ mod tests {
             ca_fingerprint: yerd_platform::CaFingerprint::new([0u8; 32]),
             php_updates: tokio::sync::RwLock::new(std::collections::HashMap::new()),
             yerd_update: tokio::sync::RwLock::new(Vec::new()),
+            update_snapshot: tokio::sync::RwLock::new(None),
             php_manager,
             service_manager: std::sync::Arc::new(Mutex::new(crate::services::new_manager(
                 dirs_in(tmp),
@@ -1572,6 +1604,7 @@ mod tests {
                 fell_back: true,
             },
             web_unbound: None,
+            dns_unbound: None,
             boot_id: 1,
             started_at: std::time::Instant::now(),
             shutdown_tx: tokio::sync::watch::channel(false).0,
@@ -2074,6 +2107,7 @@ Subject: Captured\r\n\r\nhi\r\n";
                 https_port,
                 fallback_http,
                 fallback_https,
+                dns_port,
             } => {
                 assert_eq!(dns_addr, state.dns_addr);
                 assert_eq!(tld, "test");
@@ -2085,8 +2119,55 @@ Subject: Captured\r\n\r\nhi\r\n";
                 assert_eq!(https_port, state.https.bound);
                 assert_eq!(fallback_http, 8080);
                 assert_eq!(fallback_https, 8443);
+                assert_eq!(dns_port, state.config.lock().await.dns_port);
             }
             other => panic!("expected Info, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn dispatch_set_dns_port_rejects_zero_and_persists_valid() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_in(tmp.path());
+
+        // A zero port is rejected explicitly by the handler (mapped to Internal),
+        // even though config `validate()` permits `0` as the ephemeral sentinel.
+        match dispatch(Request::SetDnsPort { port: 0 }, &state).await {
+            Response::Error { code, .. } => assert!(matches!(code, ErrorCode::Internal)),
+            other => panic!("expected Error, got {other:?}"),
+        }
+
+        // A valid port is persisted through both in-memory state and to disk.
+        assert!(matches!(
+            dispatch(Request::SetDnsPort { port: 5354 }, &state).await,
+            Response::Ok
+        ));
+        assert_eq!(state.config.lock().await.dns_port, 5354);
+        let reloaded = yerd_config::Config::load(&state.config_path).unwrap();
+        assert_eq!(reloaded.dns_port, 5354);
+    }
+
+    #[tokio::test]
+    async fn dispatch_cached_update_status_uncached_reports_running_version() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_in(tmp.path());
+
+        // Nothing was ever persisted, so the cached path reports the running
+        // version with no remote figures, no pending update, and no timestamp.
+        match dispatch(Request::CachedUpdateStatus, &state).await {
+            Response::UpdateStatus {
+                source,
+                available,
+                target,
+                checked_at_epoch,
+                ..
+            } => {
+                assert!(matches!(source, yerd_ipc::UpdateSource::Cached));
+                assert!(!available);
+                assert!(target.is_none());
+                assert!(checked_at_epoch.is_none());
+            }
+            other => panic!("expected UpdateStatus, got {other:?}"),
         }
     }
 

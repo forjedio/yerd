@@ -92,18 +92,25 @@ async fn run_until_shutdown(
     shutdown_rx: watch::Receiver<bool>,
 ) -> Result<Outcome, DaemonError> {
     // DNS task. The socket pair was bound during `bring_up`, so the daemon
-    // owns it here — we just consume it into the serve loop.
-    let dns_handle = {
-        let bound = daemon.dns_bound;
+    // owns it here — we just consume it into the serve loop. Skipped entirely
+    // when the daemon came up degraded (DNS port couldn't bind) — IPC/proxy
+    // still run so the GUI/CLI can connect and the user can fix the port.
+    // Mirrors the optional proxy/mail tasks below.
+    let dns_handle = if let Some(bound) = daemon.dns_bound {
         let responder = yerd_dns::Responder::new(daemon.dns_tld.clone());
         let mut rx = shutdown_rx.clone();
-        tokio::spawn(async move {
+        Some(tokio::spawn(async move {
             bound
                 .serve(responder, async move {
                     let _ = rx.changed().await;
                 })
                 .await
-        })
+        }))
+    } else {
+        tracing::warn!(
+            "DNS responder disabled (degraded): dns_port couldn't bind — .test names won't resolve until the port is fixed and the daemon restarts"
+        );
+        None
     };
 
     // Proxy task. Skipped entirely when the daemon came up degraded (no web
@@ -243,7 +250,9 @@ async fn run_until_shutdown(
 
     // Now the subsystems are winding down (they watch the same channel); cap
     // each join so a stuck task can't hang the exit/restart.
-    let _ = tokio::time::timeout(Duration::from_secs(10), dns_handle).await;
+    if let Some(dns_handle) = dns_handle {
+        let _ = tokio::time::timeout(Duration::from_secs(10), dns_handle).await;
+    }
     if let Some(proxy_handle) = proxy_handle {
         let _ = tokio::time::timeout(Duration::from_secs(10), proxy_handle).await;
     }

@@ -158,6 +158,12 @@ pub async fn check_updates(channel: Option<String>) -> Result<Response, GuiError
     finish(exchange(&Request::CheckUpdate { channel }).await?)
 }
 
+/// Return the last persisted update-check result (no network) to pre-fill the UI.
+#[tauri::command]
+pub async fn cached_update_status() -> Result<Response, GuiError> {
+    finish(exchange(&Request::CachedUpdateStatus).await?)
+}
+
 /// Persist the self-update channel preference.
 #[tauri::command]
 pub async fn set_update_channel(channel: String) -> Result<Response, GuiError> {
@@ -387,6 +393,11 @@ pub async fn set_mail_port(port: u16) -> Result<Response, GuiError> {
 #[tauri::command]
 pub async fn set_fallback_ports(http: u16, https: u16) -> Result<Response, GuiError> {
     finish(exchange(&Request::SetFallbackPorts { http, https }).await?)
+}
+
+#[tauri::command]
+pub async fn set_dns_port(port: u16) -> Result<Response, GuiError> {
+    finish(exchange(&Request::SetDnsPort { port }).await?)
 }
 
 #[tauri::command]

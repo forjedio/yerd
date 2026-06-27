@@ -319,6 +319,13 @@ pub enum Request {
         /// New rootless HTTPS port (`>= 1024`).
         https: u16,
     },
+    /// Set the embedded DNS responder port (`dns_port`). Must be non-zero. Takes
+    /// effect on the next daemon restart (no implicit hot rebind). Changing it may
+    /// require re-running the OS-resolver install so it points at the new port.
+    SetDnsPort {
+        /// The new loopback DNS port (must be non-zero).
+        port: u16,
+    },
     /// Enable or disable the mail-capture server. Takes effect on the next
     /// daemon start/restart.
     SetMailEnabled {
@@ -377,6 +384,12 @@ pub enum Request {
         /// persisted `update_channel`.
         channel: Option<crate::Channel>,
     },
+    /// Return the **last persisted** self-update result without any network
+    /// access — used to pre-fill the UI on load. Returns
+    /// [`super::Response::UpdateStatus`] with `source = Cached` and
+    /// `checked_at_epoch` set (or, if never checked, the running version with
+    /// `checked_at_epoch = None`).
+    CachedUpdateStatus,
     /// Persist the self-update channel preference. Returns
     /// [`super::Response::Ok`].
     SetUpdateChannel {
@@ -469,6 +482,7 @@ mod variant_name_pinning {
             Request::DeleteMails { .. } => {}
             Request::SetMailPort { .. } => {}
             Request::SetFallbackPorts { .. } => {}
+            Request::SetDnsPort { .. } => {}
             Request::SetMailEnabled { .. } => {}
             Request::ListTools => {}
             Request::InstallTool { .. } => {}
@@ -478,6 +492,7 @@ mod variant_name_pinning {
             Request::JobStatus { .. } => {}
             Request::JobCancel { .. } => {}
             Request::CheckUpdate { .. } => {}
+            Request::CachedUpdateStatus => {}
             Request::SetUpdateChannel { .. } => {}
             Request::StageUpdate { .. } => {}
         }
@@ -646,6 +661,7 @@ mod variant_name_pinning {
         pin(Request::CheckUpdate {
             channel: Some(crate::Channel::Edge),
         });
+        pin(Request::CachedUpdateStatus);
         pin(Request::SetUpdateChannel {
             channel: crate::Channel::Stable,
         });

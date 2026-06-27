@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ExternalLink } from "lucide-vue-next";
-import { computed, ref, watch } from "vue";
+import { computed } from "vue";
 
 import PageHeader from "@/components/PageHeader.vue";
 import StatusPill from "@/components/StatusPill.vue";
@@ -11,7 +11,6 @@ import CardContent from "@/components/ui/CardContent.vue";
 import CardDescription from "@/components/ui/CardDescription.vue";
 import CardHeader from "@/components/ui/CardHeader.vue";
 import CardTitle from "@/components/ui/CardTitle.vue";
-import Input from "@/components/ui/Input.vue";
 import Switch from "@/components/ui/Switch.vue";
 import { usePoll } from "@/composables/usePoll";
 import { useToast } from "@/composables/useToast";
@@ -20,7 +19,6 @@ import {
   IpcError,
   setDumpFeature,
   setDumpsEnabled,
-  setDumpsPort,
   showDumpsWindow,
 } from "@/ipc/client";
 import type { DumpsStatusResponse } from "@/ipc/types";
@@ -43,39 +41,8 @@ const running = computed(() => status.value?.running ?? false);
 const enabled = computed(() => status.value?.enabled ?? false);
 const extensions = computed(() => status.value?.extensions ?? []);
 
-// Port draft, synced from the daemon until the user edits it.
-const portDraft = ref("");
-let portDirty = false;
-watch(
-  status,
-  (s) => {
-    if (s && !portDirty) portDraft.value = String(s.port);
-  },
-  { immediate: true },
-);
-function onPortInput(v: string): void {
-  portDraft.value = v;
-  portDirty = true;
-}
-const portChanged = computed(
-  () => status.value !== null && portDraft.value !== String(status.value.port),
-);
-
-async function savePort(): Promise<void> {
-  const port = Number.parseInt(portDraft.value, 10);
-  if (!Number.isInteger(port) || port < 1 || port > 65535) {
-    toast.error("Invalid port", "Enter a number between 1 and 65535.");
-    return;
-  }
-  try {
-    await setDumpsPort(port);
-    portDirty = false;
-    await refresh();
-    toast.success("Dump server port updated");
-  } catch (e) {
-    toast.error("Couldn't set port", (e as IpcError).message);
-  }
-}
+// The dump server *port* is now edited centrally on Settings ▸ Application Ports;
+// this page shows it read-only via `status.port`.
 
 async function toggleEnabled(next: boolean): Promise<void> {
   try {
@@ -152,26 +119,15 @@ async function openViewer(): Promise<void> {
             />
           </div>
 
-          <!-- Port -->
+          <!-- Port (read-only; edited centrally on Settings ▸ Application Ports) -->
           <div class="flex items-center justify-between gap-4">
             <div>
               <p class="text-sm font-medium">Dump server port</p>
               <p class="text-xs text-muted-foreground">
-                The port the dump server listens on (default 2304).
+                Change it in Settings ▸ Application Ports.
               </p>
             </div>
-            <div class="flex items-center gap-2">
-              <Input
-                :model-value="portDraft"
-                type="number"
-                inputmode="numeric"
-                min="1"
-                max="65535"
-                class="w-28 font-mono"
-                @update:model-value="onPortInput"
-              />
-              <Button size="sm" :disabled="!portChanged" @click="savePort">Save</Button>
-            </div>
+            <span class="font-mono text-sm">{{ status?.port ?? "—" }}</span>
           </div>
 
           <div class="flex justify-end border-t pt-4">

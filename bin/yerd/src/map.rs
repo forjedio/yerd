@@ -482,6 +482,8 @@ pub fn render(resp: &Response, json: bool) -> Rendered {
             target,
             ahead_of_stable,
             source,
+            // The CLI `yerd update` output doesn't surface "last checked"; ignore.
+            checked_at_epoch: _,
         } => Rendered::ok(format_update_status(
             current,
             latest_stable.as_deref(),
@@ -777,7 +779,16 @@ fn format_status(r: &StatusReport) -> String {
             "ports     conflict: another process is using 80/443 (run `yerd doctor`)"
         );
     }
-    let _ = writeln!(s, "dns       {}", r.dns_addr);
+    if let Some(port) = r.dns_unbound {
+        // Degraded: `dns_addr` holds the *wanted* address, so printing it would
+        // read as healthy. Surface the real state instead.
+        let _ = writeln!(
+            s,
+            "dns       not resolving — couldn't bind port {port} (run `yerd doctor`)"
+        );
+    } else {
+        let _ = writeln!(s, "dns       {}", r.dns_addr);
+    }
     let _ = writeln!(
         s,
         "ca        trusted: {}  ({})",
@@ -1379,6 +1390,7 @@ mod tests {
             target: Some("2.0.5".into()),
             ahead_of_stable: false,
             source: UpdateSource::Live,
+            checked_at_epoch: None,
         };
         let out = render(&resp, false).stdout;
         // Every row present, both channel latests shown, plus status + source.
@@ -1406,6 +1418,7 @@ mod tests {
             target: None,
             ahead_of_stable: true,
             source: UpdateSource::Cached,
+            checked_at_epoch: None,
         };
         let out = render(&resp, false).stdout;
         assert!(out.contains("ahead of stable"), "{out}");
@@ -1625,6 +1638,7 @@ mod tests {
             services: vec![],
             mail: None,
             web_unbound: None,
+            dns_unbound: None,
             boot_id: None,
         }
     }
@@ -1671,6 +1685,19 @@ mod tests {
         assert!(out.contains("not serving — couldn't bind 8443"), "{out}");
         // The misleading "→ 0" fallback rendering must NOT appear.
         assert!(!out.contains("→ 0"), "{out}");
+    }
+
+    #[test]
+    fn status_degraded_dns_shows_not_resolving() {
+        let mut r = sample_report();
+        r.dns_unbound = Some(1053);
+        let out = format_status(&r);
+        assert!(
+            out.contains("not resolving — couldn't bind port 1053"),
+            "{out}"
+        );
+        // The healthy "dns       127.0.0.1:1053" line must NOT appear.
+        assert!(!out.contains("dns       127.0.0.1:1053"), "{out}");
     }
 
     #[test]

@@ -31,7 +31,7 @@ import { humaniseUptime } from "@/lib/utils";
 
 // The home/dashboard. It reads the shared daemon report (no poller of its own)
 // and shows the shared daemon-down hero, so it stays useful when the socket is
-// gone — the same surface that celebrates "serving N sites" becomes the start button.
+// gone - the same surface that celebrates "serving N sites" becomes the start button.
 const { report, connected } = useDaemon();
 const { relaunch } = useOnboarding();
 
@@ -91,7 +91,7 @@ const securedCount = computed(() =>
 
 const SITE_CHIP_LIMIT = 14;
 const sitePreview = computed(() => {
-  // Secured first, then alphabetical — a stable, scannable order.
+  // Secured first, then alphabetical - a stable, scannable order.
   return [...sites.value]
     .sort((a, b) => Number(b.secure) - Number(a.secure) || a.name.localeCompare(b.name))
     .slice(0, SITE_CHIP_LIMIT);
@@ -207,7 +207,7 @@ const emptyEnvironment = computed(
 
     <div class="flex-1 space-y-4 overflow-y-auto p-6">
       <!-- Version conflict: this GUI is OLDER than the registered daemon. Shown
-           above every branch — it's independent of daemon reachability. -->
+           above every branch - it's independent of daemon reachability. -->
       <div
         v-if="versionConflict"
         class="flex items-start gap-3 rounded-md border border-warning/40 bg-warning/10 p-4"
@@ -218,7 +218,7 @@ const emptyEnvironment = computed(
           <p class="mt-1 text-sm text-muted-foreground">
             The background daemon is registered at version
             <span class="font-mono">{{ versionConflict }}</span
-            >, newer than this app. Yerd won't reconfigure or downgrade it — update
+            >, newer than this app. Yerd won't reconfigure or downgrade it - update
             Yerd to {{ versionConflict }} or newer.
           </p>
         </div>
@@ -245,7 +245,7 @@ const emptyEnvironment = computed(
             <p class="mt-1 text-sm text-muted-foreground">
               It couldn't bind its web ports ({{ r.web_unbound.http }}/{{
                 r.web_unbound.https
-              }}) — they're in use by another process. Change Yerd's ports to free
+              }}) - they're in use by another process. Change Yerd's ports to free
               ones to start serving.
             </p>
           </div>
@@ -277,7 +277,7 @@ const emptyEnvironment = computed(
         </div>
 
         <Card class="relative overflow-hidden">
-          <!-- A soft brand wash — the only place indigo gets a hero surface. -->
+          <!-- A soft brand wash - the only place indigo gets a hero surface. -->
           <div
             class="pointer-events-none absolute -right-20 -top-20 size-56 rounded-full bg-brand/5 blur-2xl"
             aria-hidden="true"

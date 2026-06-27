@@ -6,7 +6,7 @@
   :root {
     /* Neutral grays (no blue tint), mirroring the charcoal dark theme for a
        native macOS / Herd feel. The main content area is white (`--background`);
-       the chrome — titlebar + sidebar — is the soft gray (`--muted`), applied in
+       the chrome - titlebar + sidebar - is the soft gray (`--muted`), applied in
        those components, so the content reads as the bright focus framed by gray
        chrome. */
     /* Tell the UA to render native controls (number-input spin buttons, etc.)
@@ -34,7 +34,7 @@
     --warning-foreground: 0 0% 9%;
     /* Brand indigo, lifted straight from the logo's gradient (#6366F1). The one
        signal colour: active nav, focus rings, links, and the live "serving"
-       state. Used with restraint — status (success/warning/destructive) still
+       state. Used with restraint - status (success/warning/destructive) still
        owns green/amber/red. */
     --brand: 239 84% 67%;
     --brand-foreground: 0 0% 100%;
@@ -46,7 +46,7 @@
 
   .dark {
     /* Neutral charcoal grays (no blue tint), lifted off pure-black so panels and
-       borders read clearly — closer to a native macOS / Herd dark surface. */
+       borders read clearly - closer to a native macOS / Herd dark surface. */
     color-scheme: dark;
     --background: 0 0% 11%;
     --foreground: 0 0% 98%;
@@ -106,7 +106,7 @@
   #app {
     height: 100%;
   }
-  /* The opaque, rounded surface — its overflow clip gives every child (the
+  /* The opaque, rounded surface - its overflow clip gives every child (the
      titlebar, sidebar) native macOS-style rounded corners. */
   #app {
     @apply overflow-hidden bg-background;
@@ -129,7 +129,7 @@
   }
 
   /* Slim, neutral scrollbars. Light thumb on the light theme, dark thumb on the
-     dark theme — a single hardcoded gray looked heavy on white. */
+     dark theme - a single hardcoded gray looked heavy on white. */
   ::-webkit-scrollbar {
     width: 12px;
     height: 12px;

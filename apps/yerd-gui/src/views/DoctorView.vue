@@ -1,9 +1,11 @@
 <script setup lang="ts">
-import { CheckCircle2, Copy, RefreshCw, Wrench } from "lucide-vue-next";
-import { computed, onMounted, ref } from "vue";
+import { CheckCircle2, Copy, Info, Play, RefreshCw, RotateCw, Square, Wrench } from "lucide-vue-next";
+import { computed, nextTick, onMounted, ref } from "vue";
 
+import DaemonDiagnosticsPanel from "@/components/DaemonDiagnosticsPanel.vue";
 import EnvironmentCard from "@/components/EnvironmentCard.vue";
 import PageHeader from "@/components/PageHeader.vue";
+import StatusPill from "@/components/StatusPill.vue";
 import Badge from "@/components/ui/Badge.vue";
 import Button from "@/components/ui/Button.vue";
 import Card from "@/components/ui/Card.vue";
@@ -11,14 +13,76 @@ import CardContent from "@/components/ui/CardContent.vue";
 import CardDescription from "@/components/ui/CardDescription.vue";
 import CardHeader from "@/components/ui/CardHeader.vue";
 import CardTitle from "@/components/ui/CardTitle.vue";
+import Modal from "@/components/ui/Modal.vue";
 import Spinner from "@/components/ui/Spinner.vue";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { useDaemon } from "@/composables/useDaemon";
+import { useDaemonStart } from "@/composables/useDaemonStart";
 import { useToast } from "@/composables/useToast";
-import { diagnose, doctorFix, IpcError } from "@/ipc/client";
+import { diagnose, doctorFix, IpcError, restartDaemon, stopDaemon } from "@/ipc/client";
 import type { Diagnosis, Severity } from "@/ipc/types";
 
 const toast = useToast();
-const { refresh: refreshStatus } = useDaemon();
+const { connected, report, refresh: refreshStatus } = useDaemon();
+
+// ── daemon lifecycle (moved here from Settings) ──
+const {
+  starting: daemonStarting,
+  activeLabel: daemonStartLabel,
+  diagnostics: startDiagnostics,
+  start: startDaemonFlow,
+} = useDaemonStart();
+const busy = ref<string | null>(null);
+const running = computed(() => connected.value === true);
+const daemonPid = computed(() => report.value?.daemon_pid ?? null);
+
+async function onStart(): Promise<void> {
+  // Spinner + on-failure diagnostics are owned by the composable; it keeps
+  // spinning until the daemon connects (watch) or surfaces the panel.
+  await startDaemonFlow({ nudge: true });
+  await refreshStatus();
+}
+
+async function onStop(): Promise<void> {
+  busy.value = "daemon";
+  try {
+    await stopDaemon();
+    toast.success("Stopping daemon…");
+  } catch (e) {
+    toast.error("Couldn't stop the daemon", (e as IpcError).message);
+  } finally {
+    busy.value = null;
+    await refreshStatus();
+  }
+}
+
+const restartDaemonOpen = ref(false);
+function openRestartDaemon(): void {
+  void nextTick(() => {
+    restartDaemonOpen.value = true;
+  });
+}
+async function confirmRestartDaemon(close: () => void): Promise<void> {
+  busy.value = "restart:daemon";
+  close();
+  try {
+    await restartDaemon();
+    // The daemon replies before it re-execs, so a resolved call means the
+    // restart was accepted; the connection drop is handled by the status poll.
+    toast.info("Restarting daemon…", "It returns in a few seconds.");
+  } catch (e) {
+    // Reaching here is a genuine failure (the reply arrives ahead of the drop),
+    // so don't imply the restart started.
+    toast.error("Couldn't restart the daemon", (e as IpcError).message);
+  } finally {
+    busy.value = null;
+  }
+}
 
 const diagnoses = ref<Diagnosis[]>([]);
 const diagLoading = ref(true);
@@ -36,7 +100,7 @@ const sevVariant: Record<Severity, "success" | "warning" | "destructive"> = {
   fail: "destructive",
 };
 
-// Human labels — the wire uses bare enum tokens (ok/warn/fail) that read as
+// Human labels - the wire uses bare enum tokens (ok/warn/fail) that read as
 // unfinished in the UI.
 const sevLabel: Record<Severity, string> = {
   ok: "Healthy",
@@ -100,6 +164,56 @@ onMounted(() => void loadDiagnoses());
     <PageHeader title="Doctor" subtitle="Health checks and safe one-click fixes" />
 
     <div class="min-h-0 flex-1 space-y-6 overflow-y-auto p-6">
+      <!-- Daemon control -->
+      <Card>
+        <CardHeader class="flex-row items-center justify-between space-y-0">
+          <div class="flex items-center gap-1.5">
+            <CardTitle>Daemon</CardTitle>
+            <TooltipProvider v-if="running && daemonPid" :delay-duration="0">
+              <Tooltip>
+                <TooltipTrigger as-child>
+                  <span class="inline-flex cursor-help text-muted-foreground">
+                    <Info class="size-3.5" />
+                  </span>
+                </TooltipTrigger>
+                <TooltipContent side="top">running as pid {{ daemonPid }}</TooltipContent>
+              </Tooltip>
+            </TooltipProvider>
+          </div>
+          <StatusPill
+            :tone="running ? 'ok' : 'bad'"
+            :label="running ? 'Running' : 'Stopped'"
+          />
+        </CardHeader>
+        <CardContent class="space-y-4">
+          <p class="text-sm text-muted-foreground">
+            <code>yerdd</code> is the background service that supervises PHP-FPM,
+            serves your <code>.test</code> sites over HTTP/HTTPS, answers DNS, and
+            runs databases. It runs unprivileged - this app is just a client.
+          </p>
+          <!-- Why a start attempt failed (only when the daemon is down). -->
+          <DaemonDiagnosticsPanel v-if="startDiagnostics && !running" :diagnostics="startDiagnostics" />
+          <div class="flex justify-end gap-2">
+            <Button v-if="!running" :disabled="daemonStarting" @click="onStart">
+              <Spinner v-if="daemonStarting" class="size-4" />
+              <Play v-else class="size-4" /> {{ daemonStartLabel ?? "Start" }}
+            </Button>
+            <Button v-else variant="outline" :disabled="busy !== null" @click="onStop">
+              <Spinner v-if="busy === 'daemon'" class="size-4" />
+              <Square v-else class="size-4" /> Stop
+            </Button>
+            <Button
+              variant="outline"
+              :disabled="!running || busy !== null"
+              @click="openRestartDaemon"
+            >
+              <Spinner v-if="busy === 'restart:daemon'" class="size-4" />
+              <RotateCw v-else class="size-4" /> Restart
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
+
       <Card>
         <CardHeader class="flex-row items-center justify-between space-y-0">
           <div class="space-y-1.5">
@@ -176,5 +290,17 @@ onMounted(() => void loadDiagnoses());
            reflects the new state without a manual re-check. -->
       <EnvironmentCard @elevated="loadDiagnoses()" />
     </div>
+
+    <Modal v-model:open="restartDaemonOpen" title="Restart daemon">
+      <p class="text-sm text-muted-foreground">
+        This briefly stops all <strong class="text-foreground">.test</strong> sites,
+        DNS, and this connection while the daemon restarts. It returns in a few
+        seconds.
+      </p>
+      <template #footer="{ close }">
+        <Button variant="ghost" @click="close">Cancel</Button>
+        <Button @click="confirmRestartDaemon(close)">Restart</Button>
+      </template>
+    </Modal>
   </div>
 </template>

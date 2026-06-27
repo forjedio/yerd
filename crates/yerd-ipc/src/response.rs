@@ -80,6 +80,13 @@ pub enum Response {
         /// The configured rootless HTTPS fallback port (e.g. 8443).
         #[serde(default)]
         fallback_https: u16,
+        /// The configured DNS responder port (`dns_port`, e.g. 1053) — what
+        /// Settings edits. Distinct from `dns_addr`, which is the *bound* address
+        /// (and stays the wanted addr when the DNS port couldn't bind).
+        /// `#[serde(default)]` keeps older daemons (which omit it) decodable;
+        /// defaults to 0.
+        #[serde(default)]
+        dns_port: u16,
     },
     /// Reply to [`crate::Request::ListPhp`] / `CheckPhpUpdates` / `UpdatePhp`.
     PhpVersions {
@@ -243,6 +250,12 @@ pub enum Response {
         ahead_of_stable: bool,
         /// Whether these figures are from a live fetch or a cached fallback.
         source: crate::UpdateSource,
+        /// Unix epoch (seconds) when this result was obtained, for a "last
+        /// checked …" display. `None` when never checked (or an older daemon that
+        /// predates the field). `#[serde(default, skip_serializing_if)]` keeps the
+        /// wire additive.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        checked_at_epoch: Option<u64>,
     },
     /// Reply to [`crate::Request::StageUpdate`] — the verified update artifact
     /// has been downloaded to `path`. The applier installs it.
@@ -368,6 +381,7 @@ mod variant_name_pinning {
             https_port: 8443,
             fallback_http: 8080,
             fallback_https: 8443,
+            dns_port: 1053,
         });
         pin_response(Response::PhpVersions {
             installed: vec![PhpVersion::new(8, 5)],
@@ -413,6 +427,7 @@ mod variant_name_pinning {
                 services: vec![],
                 mail: None,
                 web_unbound: None,
+                dns_unbound: None,
                 boot_id: None,
             }),
         });
@@ -506,6 +521,7 @@ mod variant_name_pinning {
             target: None,
             ahead_of_stable: true,
             source: crate::UpdateSource::Live,
+            checked_at_epoch: Some(1_719_445_200),
         });
         pin_response(Response::Staged {
             path: "/x/Yerd.app.tar.gz".into(),

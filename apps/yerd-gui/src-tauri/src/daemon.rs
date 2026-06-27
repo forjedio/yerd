@@ -237,19 +237,35 @@ pub fn open_login_items() {
 /// available); falls back to a detached `yerdd serve` only when no service
 /// manager exists (in which case daemon-at-login is disabled in the UI). The
 /// blocking service call runs off the async worker so the tray/UI never stalls.
-pub(crate) async fn start(nudge: bool) -> Result<(), GuiError> {
-    // Bound the blocking service call so a hung `launchctl`/`systemctl`/
-    // SMAppService can't make `start_daemon` never resolve (the frontend awaits
-    // it before it even begins polling — another endless-spinner path). The
-    // blocking thread isn't cancellable; the timeout only frees the await.
-    let join = tokio::task::spawn_blocking(move || crate::autostart::daemon_start(nudge));
-    match tokio::time::timeout(std::time::Duration::from_secs(15), join).await {
-        Ok(Ok(inner)) => inner,
-        Ok(Err(e)) => Err(GuiError::internal(format!("start task failed: {e}"))),
-        Err(_) => Err(GuiError::internal(
-            "starting the daemon timed out (the service manager did not respond)",
-        )),
+pub(crate) async fn start(app: tauri::AppHandle, nudge: bool) -> Result<(), GuiError> {
+    use tauri::Emitter;
+
+    // Build the ordered step plan off the runtime: `plan_start` may block (the
+    // macOS label probes `launchctl`, the Linux label reads the unit file).
+    let plan = tokio::task::spawn_blocking(move || crate::autostart::plan_start(nudge))
+        .await
+        .map_err(|e| GuiError::internal(format!("start planning failed: {e}")))??;
+
+    // Run each phase with its OWN timeout budget and announce it to the button
+    // first, so a hung `launchctl`/`systemctl` can't exceed one phase's slice
+    // (the blocking thread isn't cancellable; the timeout only frees the await).
+    for step in plan {
+        let phase = step.phase;
+        let budget = step.budget;
+        let _ = app.emit("daemon-start-phase", phase.as_str());
+        let join = tokio::task::spawn_blocking(step.run);
+        match tokio::time::timeout(budget, join).await {
+            Ok(Ok(inner)) => inner?,
+            Ok(Err(e)) => return Err(GuiError::internal(format!("start task failed: {e}"))),
+            Err(_) => {
+                return Err(GuiError::internal(format!(
+                    "{} timed out (the service manager did not respond)",
+                    phase.timed_out_subject()
+                )))
+            }
+        }
     }
+    Ok(())
 }
 
 /// Stop the daemon: via the service when one manages it, with a universal
@@ -268,8 +284,8 @@ pub(crate) async fn stop() -> Result<(), GuiError> {
 /// at most once across the daemon + GUI enables; the General-tab button uses
 /// `true`.
 #[tauri::command]
-pub async fn start_daemon(nudge: bool) -> Result<(), GuiError> {
-    start(nudge).await
+pub async fn start_daemon(app: tauri::AppHandle, nudge: bool) -> Result<(), GuiError> {
+    start(app, nudge).await
 }
 
 #[tauri::command]
@@ -534,7 +550,7 @@ fn diag_yerdd_path() -> Option<String> {
 /// Newest `yerdd.<date>.log` under `dir` (the daily rolling appender's output).
 /// Matches `yerdd.` + `.log` so it never picks up `yerdd-spawn.log`. Chooses by
 /// modification time; tolerates a missing/unreadable dir.
-fn newest_rolling_log(dir: &std::path::Path) -> Option<PathBuf> {
+pub(crate) fn newest_rolling_log(dir: &std::path::Path) -> Option<PathBuf> {
     let entries = std::fs::read_dir(dir).ok()?;
     let mut best: Option<(std::time::SystemTime, PathBuf)> = None;
     for entry in entries.flatten() {
@@ -556,7 +572,7 @@ fn newest_rolling_log(dir: &std::path::Path) -> Option<PathBuf> {
 /// Last `n` lines of `path`. Best-effort: a missing/unreadable file → empty.
 /// Bounded inputs (daily rotation + truncate-on-start spawn log) make reading
 /// the whole file acceptable.
-fn tail_lines(path: &std::path::Path, n: usize) -> Vec<String> {
+pub(crate) fn tail_lines(path: &std::path::Path, n: usize) -> Vec<String> {
     let Ok(content) = std::fs::read_to_string(path) else {
         return Vec::new();
     };

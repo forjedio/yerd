@@ -41,6 +41,12 @@ mod tests {
         let mut cfg = yerd_config::Config::default();
         cfg.ports.http = 0;
         cfg.ports.https = 0;
+        // Ephemeral DNS too: the default `dns_port` (1053) is a fixed port that
+        // can be busy (a concurrent test, a stray binder), in which case the
+        // soft-fail `bring_up_with_dirs` returns `dns_bound: None` and the
+        // `drive_subsystems` setup below would panic. `0` binds `127.0.0.1:0`,
+        // which the OS always satisfies, so `dns_bound` is reliably `Some`.
+        cfg.dns_port = 0;
         cfg
     }
 
@@ -274,7 +280,9 @@ mod tests {
         // DNS now binds ephemerally (`127.0.0.1:0`), so it no longer collides
         // with the host's mDNS responder on 5353 — drive it like production.
         let dns_handle = {
-            let bound = daemon.dns_bound;
+            // The test daemon always binds DNS (ephemeral `127.0.0.1:0`), so the
+            // soft-fail `Option` is always `Some` here.
+            let bound = daemon.dns_bound.expect("test daemon binds its DNS sockets");
             let responder = yerd_dns::Responder::new(daemon.dns_tld.clone());
             let mut rx = shutdown_rx.clone();
             tokio::spawn(async move {

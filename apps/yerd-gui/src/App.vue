@@ -40,13 +40,13 @@ const standalone = computed(() => route.meta.standalone === true);
 
 // The daemon is bundled inside the app, so first run just *starts* it (no
 // download). If it's already reachable (e.g. autostarted, or `cargo run -p
-// yerdd`) we leave it alone — starting a second would compete for the socket.
+// yerdd`) we leave it alone - starting a second would compete for the socket.
 async function autoStart(): Promise<void> {
   try {
     await startDaemon();
   } catch (e) {
     // Non-fatal: on macOS the daemon may be pending Login-Items approval, or the
-    // user can start it from the General tab — both are surfaced there.
+    // user can start it from the General tab - both are surfaced there.
     toast.error("Couldn't start the Yerd daemon", (e as IpcError).message);
   } finally {
     await refresh();
@@ -55,11 +55,11 @@ async function autoStart(): Promise<void> {
 
 onMounted(async () => {
   // The dumps window and the standalone Mails viewer share this SPA bundle but
-  // must not duplicate the poller, the tray-nav listener, or the start flow —
+  // must not duplicate the poller, the tray-nav listener, or the start flow -
   // those belong to the main window.
   if (isDumpsWindow || isMailsWindow || standalone.value) return;
   start(4000);
-  // Run the probe FIRST and clear the splash before anything that can throw — a
+  // Run the probe FIRST and clear the splash before anything that can throw - a
   // failing `listen` below must never strand the user on the splash forever. One
   // shared probe decides between the first-run journey, the start screen, and
   // auto-starting the bundled daemon; the journey owns starting the daemon, so
@@ -91,7 +91,7 @@ onUnmounted(() => {
   <!-- The standalone mails window renders its viewer directly (no SideNav).
        Branch on the window label, not the route, to avoid the first-paint race. -->
   <MailsViewerView v-else-if="isMailsWindow" />
-  <!-- Other standalone routes render bare — no shell. -->
+  <!-- Other standalone routes render bare - no shell. -->
   <RouterView v-else-if="standalone" />
   <!-- First-run probe in flight: a brief splash so we never flash the wrong
        screen (the daemon-stopped panel) before the journey/app is decided. -->

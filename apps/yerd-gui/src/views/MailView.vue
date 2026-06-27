@@ -15,13 +15,7 @@ import Input from "@/components/ui/Input.vue";
 import Switch from "@/components/ui/Switch.vue";
 import { useDaemon } from "@/composables/useDaemon";
 import { useToast } from "@/composables/useToast";
-import {
-  IpcError,
-  openInBrowser,
-  setMailEnabled,
-  setMailPort,
-  showMailsWindow,
-} from "@/ipc/client";
+import { IpcError, openInBrowser, setMailEnabled, showMailsWindow } from "@/ipc/client";
 
 const DOCS_URL = "https://yerd.dev/guide/features";
 
@@ -31,27 +25,18 @@ const { report, refresh } = useDaemon();
 // Live mail status comes from the shared 4s status poll (no extra loop).
 const mail = computed(() => report.value?.mail ?? null);
 
-// Local editable copies of the config values, seeded from the live status and
-// re-seeded whenever it changes (unless the user is mid-edit).
-const portInput = ref("");
+// Local editable copy of the enable toggle, seeded from the live status. The
+// mail *port* is now edited centrally on the Settings ▸ Application Ports page.
 const enabled = ref(false);
 const busy = ref(false);
-let dirtyPort = false;
 
 watch(
   mail,
   (m) => {
     if (!m) return;
     enabled.value = m.enabled;
-    if (!dirtyPort) portInput.value = String(m.port);
   },
   { immediate: true },
-);
-
-// Save is enabled only once the draft differs from the live port (mirrors the
-// Dumps page).
-const portChanged = computed(
-  () => mail.value != null && portInput.value !== String(mail.value.port),
 );
 
 const statusTone = computed<Tone>(() => {
@@ -79,25 +64,6 @@ async function onToggleEnabled(next: boolean): Promise<void> {
     await refresh();
   } catch (e) {
     toast.error("Couldn't update mail capture", (e as IpcError).message);
-  } finally {
-    busy.value = false;
-  }
-}
-
-async function onSavePort(): Promise<void> {
-  const port = Number(portInput.value);
-  if (!Number.isInteger(port) || port < 1 || port > 65535) {
-    toast.error("Invalid port", "Enter a number between 1 and 65535.");
-    return;
-  }
-  busy.value = true;
-  try {
-    await setMailPort(port);
-    dirtyPort = false;
-    toast.success("Mail port saved", "Takes effect after the daemon restarts.");
-    await refresh();
-  } catch (e) {
-    toast.error("Couldn't save the mail port", (e as IpcError).message);
   } finally {
     busy.value = false;
   }
@@ -192,29 +158,15 @@ async function copyEnv(): Promise<void> {
             />
           </div>
 
-          <!-- Port -->
+          <!-- Port (read-only; edited centrally on Settings ▸ Application Ports) -->
           <div class="flex items-center justify-between gap-4">
             <div>
               <p class="text-sm font-medium">Mail server port</p>
               <p class="text-xs text-muted-foreground">
-                The port the mail server listens on (default 2525).
+                Change it in Settings ▸ Application Ports.
               </p>
             </div>
-            <div class="flex items-center gap-2">
-              <Input
-                id="mail-port"
-                v-model="portInput"
-                type="number"
-                inputmode="numeric"
-                min="1"
-                max="65535"
-                aria-label="Mail server port"
-                class="w-28 font-mono"
-                placeholder="2525"
-                @input="dirtyPort = true"
-              />
-              <Button size="sm" :disabled="!portChanged || busy" @click="onSavePort">Save</Button>
-            </div>
+            <span class="font-mono text-sm">{{ mailPort }}</span>
           </div>
 
           <!-- Actions -->

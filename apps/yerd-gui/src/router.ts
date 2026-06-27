@@ -22,7 +22,7 @@ export const router = createRouter({
     },
     // `title`/`subtitle` mirror each view's own PageHeader so the daemon-down
     // screen (rendered by AppShell when the socket is unreachable) shows the same
-    // page header — without the view's action buttons.
+    // page header - without the view's action buttons.
     {
       path: "/php",
       name: "php",

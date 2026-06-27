@@ -259,6 +259,23 @@ pub fn is_auto_fixable(code: DiagnosisCode) -> bool {
 /// means 80/443 are in fact reachable — also suppressing the fallback warning.
 fn port_findings(report: &StatusReport) -> Vec<Diagnosis> {
     let mut out = Vec::new();
+    // DNS is independent of the web ports, so check it first — it must surface
+    // even when `web_unbound` triggers the early return below. A bind failure is
+    // a `Warn`, not a `Fail`: the daemon still runs, and on a fresh setup the OS
+    // resolver may not be installed yet (in which case `ResolverNotInstalled`
+    // already covers "names won't resolve").
+    if let Some(dns_port) = report.dns_unbound {
+        out.push(warn(
+            DiagnosisCode::DnsPortUnbound,
+            "Yerd's DNS port is busy",
+            format!(
+                "Yerd couldn't bind its DNS port ({dns_port}) — another process holds it — so \
+                 *.test names won't resolve through Yerd until it's freed or changed."
+            ),
+            "Free that port, or change Yerd's DNS port in Settings (Yerd ▸ General), then restart. \
+             If you changed the port, re-run Trust so the OS resolver points at the new one.",
+        ));
+    }
     let foreign_listener = report.foreign_web_listener == Some(true);
     if foreign_listener {
         out.push(warn(
@@ -390,6 +407,7 @@ mod tests {
             services: vec![],
             mail: None,
             web_unbound: None,
+            dns_unbound: None,
             boot_id: None,
         }
     }
@@ -464,6 +482,36 @@ mod tests {
         assert!(!cs.contains(&DiagnosisCode::PortFallback));
         // It's a hard failure, so the report is not "all good".
         assert!(!cs.contains(&DiagnosisCode::AllGood));
+    }
+
+    #[test]
+    fn dns_unbound_warns_independently_of_web() {
+        let mut r = healthy();
+        r.dns_unbound = Some(1053);
+        let ds = diagnose(&r, None);
+        let cs = codes(&ds);
+        assert!(cs.contains(&DiagnosisCode::DnsPortUnbound));
+        assert!(!cs.contains(&DiagnosisCode::AllGood));
+        // It's a warning (daemon still runs), not a hard fail.
+        let dns = ds
+            .iter()
+            .find(|d| d.code == DiagnosisCode::DnsPortUnbound)
+            .expect("dns finding present");
+        assert_eq!(dns.severity, Severity::Warn);
+    }
+
+    #[test]
+    fn dns_unbound_surfaces_even_when_web_unbound() {
+        let mut r = healthy();
+        r.dns_unbound = Some(1053);
+        r.web_unbound = Some(yerd_ipc::UnboundWeb {
+            http: 8080,
+            https: 8443,
+        });
+        let cs = codes(&diagnose(&r, None));
+        // The web early-return must not swallow the DNS finding.
+        assert!(cs.contains(&DiagnosisCode::DnsPortUnbound));
+        assert!(cs.contains(&DiagnosisCode::WebPortsUnbound));
     }
 
     #[test]
