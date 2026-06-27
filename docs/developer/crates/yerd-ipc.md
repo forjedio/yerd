@@ -149,7 +149,7 @@ The variants, grouped by area:
 | --- | --- |
 | Liveness / info | `Ping`, `DaemonInfo`, `Status`, `Diagnose`, `DoctorFix`, `RestartDaemon` |
 | Sites | `ListSites`, `Park`, `Link`, `Unlink`, `ListParked`, `Unpark`, `SetPhp`, `SetSecure`, `SetWebRoot` |
-| PHP | `InstallPhp`, `SetDefaultPhp`, `ListPhp`, `UpdatePhp`, `CheckPhpUpdates`, `AvailablePhp`, `SetPhpSettings`, `RestartPhp`, `RestartAllPhp`, `UninstallPhp` |
+| PHP | `InstallPhp`, `InstallPhpStreamed`, `SetDefaultPhp`, `ListPhp`, `UpdatePhp`, `CheckPhpUpdates`, `AvailablePhp`, `SetPhpSettings`, `RestartPhp`, `RestartAllPhp`, `UninstallPhp` |
 | Services | `ListServices`, `AvailableServices`, `InstallService`, `UninstallService`, `StartService`, `StopService`, `RestartService`, `SetServicePort`, `ServiceLogs`, `ChangeServiceVersion` |
 | Databases | `CreateDatabase`, `ListDatabases`, `DropDatabase`, `BackupDatabase`, `RestoreDatabase` |
 | Dumps (Laravel ▸ telemetry) | `ListDumps`, `ClearDumps`, `DeleteDump`, `SetDumpsEnabled`, `SetDumpsPort`, `SetDumpFeature`, `SetDumpsPersist`, `DumpsStatus` |
@@ -192,7 +192,7 @@ Same shape - internally tagged, `snake_case`, `#[non_exhaustive]`:
 | `Mails` | `ListMails` | `mails: Vec<MailSummary>` |
 | `Mail` | `GetMail` | `Box<MailDetail>` |
 | `Tools` | `ListTools` | `tools: Vec<ToolStatus>` |
-| `JobStarted` | `CreateSite` / `InstallToolStreamed` | `job_id: JobId` (poll with `JobStatus`) |
+| `JobStarted` | `CreateSite` / `InstallToolStreamed` / `InstallPhpStreamed` | `job_id: JobId` (poll with `JobStatus`) |
 | `JobProgress` | streamed job updates | `state: JobState`, phase label, … |
 
 Notable behaviours:

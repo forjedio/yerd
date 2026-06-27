@@ -161,6 +161,7 @@ The variant set is the daemon's whole RPC surface - liveness, site management, P
 | `SetSecure { name, secure }` | `{"type":"set_secure","name":"foo","secure":true}` |
 | `SetWebRoot { name, path: Option }` | `{"type":"set_web_root","name":"foo","path":"public"}` or `…,"path":null` (reset to auto-detect) |
 | `InstallPhp { version }` | `{"type":"install_php","version":"8.5"}` |
+| `InstallPhpStreamed { version }` | `{"type":"install_php_streamed","version":"8.5"}` (replies `JobStarted`; poll `JobStatus`) |
 | `UpdatePhp { version: Option }` | `{"type":"update_php","version":"8.5"}` or `…,"version":null` |
 | `SetPhpSettings { settings }` | `{"type":"set_php_settings","settings":{…}}` |
 | `ListServices` / `AvailableServices` | `{"type":"list_services"}` / `{"type":"available_services"}` |
@@ -237,7 +238,7 @@ pub enum Response {
         counts: DumpCounts,
         features: BTreeMap<String, bool>,
     },
-    JobStarted { job_id: JobId },                 // CreateSite / InstallToolStreamed
+    JobStarted { job_id: JobId },                 // CreateSite / InstallToolStreamed / InstallPhpStreamed
     JobProgress { state: JobState, /* phase label, … */ },  // streamed updates
 }
 ```

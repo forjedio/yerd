@@ -318,9 +318,11 @@ jobs:
           echo "Packaged + verified $OUT"
 
       # The GUI .deb must EMBED the three binaries (daemon + CLI + helper) and the
-      # postinst that co-locates them on PATH + setcaps yerdd. (SPIKE-L1: confirm
-      # the exact embedded dir + the symlink/setcap chain on a real Linux box; the
-      # binaries land under /usr/lib/<product>/, not /usr/bin.)
+      # postinst that setcaps yerdd. Tauri's deb bundler copies externalBin
+      # sidecars into /usr/bin (beside the GUI), so they are already on PATH; the
+      # postinst only setcaps the daemon. Assert the exact dir so a future Tauri
+      # path change that moves them out of /usr/bin fails CI instead of users'
+      # `dpkg --configure` (which is how rc.9 shipped a broken postinst).
       - name: Assert Linux GUI bundle embeds the binaries + postinst
         if: runner.os == 'Linux'
         working-directory: .
@@ -333,9 +335,16 @@ jobs:
           for deb in "${debs[@]}"; do
             list=$(dpkg-deb -c "$deb")
             for b in yerd yerdd yerd-helper; do
-              printf '%s\n' "$list" | grep -Eq "/$b\$" \
-                || { echo "::error::GUI .deb ($deb) is missing embedded $b"; exit 1; }
+              printf '%s\n' "$list" | grep -Eq "(\./)?usr/bin/$b\$" \
+                || { echo "::error::GUI .deb ($deb) is missing /usr/bin/$b (postinst setcap target)"; exit 1; }
             done
+            tmp=$(mktemp -d)
+            dpkg-deb -x "$deb" "$tmp"
+            for b in yerd yerdd yerd-helper; do
+              [ -x "$tmp/usr/bin/$b" ] \
+                || { echo "::error::GUI .deb ($deb) /usr/bin/$b is not executable (lost its execute bit)"; rm -rf "$tmp"; exit 1; }
+            done
+            rm -rf "$tmp"
             dpkg-deb -e "$deb" /tmp/ctrl-$$ 2>/dev/null || true
             [ -f "/tmp/ctrl-$$/postinst" ] \
               || { echo "::error::GUI .deb ($deb) has no postinst (setcap/symlink)"; exit 1; }

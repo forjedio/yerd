@@ -9,6 +9,8 @@
 
 use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 
 use async_trait::async_trait;
 
@@ -23,14 +25,56 @@ pub struct ReqwestDownloader {
     client: reqwest::Client,
 }
 
+/// Emit a coarse byte-progress line at most once per [`PROGRESS_STEP`] (plus the
+/// first call and completion), so a 40 MB+ download streams "X / Y MB" updates
+/// into the job log without flooding it. `last` tracks the last *emitted* byte
+/// count (`u64::MAX` = nothing emitted yet).
+const PROGRESS_STEP: u64 = 4 * 1024 * 1024;
+
+/// Byte counts are formatted as integer tenths-of-a-MB to avoid a float cast and
+/// its precision lint.
+fn emit_byte_progress(
+    tx: &ProgressTx,
+    label: &str,
+    done: u64,
+    total: Option<u64>,
+    last: &AtomicU64,
+) {
+    let prev = last.load(Ordering::Relaxed);
+    let first = prev == u64::MAX;
+    let complete = total.is_some_and(|t| done >= t);
+    if !first && !complete && done < prev.wrapping_add(PROGRESS_STEP) {
+        return;
+    }
+    last.store(done, Ordering::Relaxed);
+    let mb = |b: u64| {
+        let tenths = b.saturating_mul(10) / (1024 * 1024);
+        format!("{}.{} MB", tenths / 10, tenths % 10)
+    };
+    let line = match total {
+        Some(t) => format!("Downloading {label}: {} / {}", mb(done), mb(t)),
+        None => format!("Downloading {label}: {}", mb(done)),
+    };
+    let _ = tx.send(line);
+}
+
 impl ReqwestDownloader {
     /// Construct a fresh client. Sets a `User-Agent` (some hosts - notably the
     /// GitHub API used for Bun releases - reject requests without one); falls
     /// back to the default client if the builder fails.
+    ///
+    /// Bounds the two ways a download can wedge indefinitely: a `connect_timeout`
+    /// for a connection that never establishes, and a `read_timeout` (idle/stall
+    /// timeout between reads) for a body that stops mid-stream. reqwest's default
+    /// is *unbounded*: the cause of a PHP install "spinning" for minutes until
+    /// the kernel gives up. Deliberately no hard overall `.timeout()`, so a
+    /// slow-but-progressing large download isn't killed.
     #[must_use]
     pub fn new() -> Self {
         let client = reqwest::Client::builder()
             .user_agent(concat!("yerd/", env!("CARGO_PKG_VERSION")))
+            .connect_timeout(Duration::from_secs(30))
+            .read_timeout(Duration::from_secs(60))
             .build()
             .unwrap_or_default();
         Self { client }
@@ -46,11 +90,24 @@ impl Default for ReqwestDownloader {
 #[async_trait]
 impl Downloader for ReqwestDownloader {
     async fn download(&self, url: &str) -> Result<Vec<u8>, DownloadError> {
+        self.download_with_progress(url, &|_, _| {}).await
+    }
+
+    /// Streams the body chunk-by-chunk so progress can be reported and a
+    /// mid-stream stall trips `read_timeout` rather than buffering forever. The
+    /// `Content-Length` capacity hint is clamped (the header is server-controlled;
+    /// a bogus huge value would otherwise abort the daemon on a failed
+    /// allocation), and the `Vec` still grows past the cap as needed.
+    async fn download_with_progress(
+        &self,
+        url: &str,
+        progress: &(dyn Fn(u64, Option<u64>) + Send + Sync),
+    ) -> Result<Vec<u8>, DownloadError> {
         let transport = |e: reqwest::Error| DownloadError::Transport {
             url: url.to_owned(),
             reason: e.to_string(),
         };
-        let resp = self
+        let mut resp = self
             .client
             .get(url)
             .send()
@@ -58,8 +115,27 @@ impl Downloader for ReqwestDownloader {
             .map_err(transport)?
             .error_for_status()
             .map_err(transport)?;
-        let bytes = resp.bytes().await.map_err(transport)?;
-        Ok(bytes.to_vec())
+        let total = resp.content_length();
+        let cap = total.map_or(0, |n| n.min(64 * 1024 * 1024) as usize);
+        let mut buf = Vec::with_capacity(cap);
+        progress(0, total);
+        while let Some(chunk) = resp.chunk().await.map_err(transport)? {
+            buf.extend_from_slice(&chunk);
+            progress(buf.len() as u64, total);
+        }
+        Ok(buf)
+    }
+}
+
+/// Sink for human-readable progress lines streamed into a job log (the streamed
+/// install). `tokio`'s `UnboundedSender<String>`, same concrete type the tool
+/// installer uses, so a job handler can hand its sender to either.
+pub type ProgressTx = tokio::sync::mpsc::UnboundedSender<String>;
+
+/// Emit one progress line if a sink is attached.
+fn note(progress: Option<&ProgressTx>, msg: impl Into<String>) {
+    if let Some(tx) = progress {
+        let _ = tx.send(msg.into());
     }
 }
 
@@ -70,15 +146,25 @@ impl Downloader for ReqwestDownloader {
 /// atomically swaps the result into place. Idempotent: reinstalling replaces
 /// the dir. **Integrity is TLS-only** - the distribution publishes no checksum
 /// sidecars and yerd does not pin hashes (deliberate; see `yerd_php::release`).
+///
+/// When `progress` is set, coarse phase + byte-count updates are streamed to it
+/// (the GUI's streamed install polls these); pass `None` for the silent path.
 pub async fn install(
     version: PhpVersion,
     dirs: &PlatformDirs,
     dl: &dyn Downloader,
+    progress: Option<&ProgressTx>,
 ) -> Result<(), PhpError> {
     let (os, arch) = current_os_arch()?;
+    note(progress, format!("Resolving latest PHP {version}…"));
     let listing = dl.download(&yerd_php::listing_url(os)).await?;
     let listing = String::from_utf8_lossy(&listing);
     let artifact = yerd_php::resolve_from_listing(&listing, version, os, arch)?;
+    tracing::info!(%version, patch = %artifact.full_version, "resolved PHP build; downloading");
+    note(
+        progress,
+        format!("Found PHP {} — downloading…", artifact.full_version),
+    );
 
     let php_root = dirs.data.join("php");
     fs_ctx(std::fs::create_dir_all(&php_root), &php_root)?;
@@ -90,11 +176,12 @@ pub async fn install(
     ));
     let _ = std::fs::remove_dir_all(&staging);
 
-    if let Err(e) = stage(&artifact, dl, &staging).await {
+    if let Err(e) = stage(&artifact, dl, &staging, progress).await {
         let _ = std::fs::remove_dir_all(&staging);
         return Err(e);
     }
 
+    note(progress, "Finalising install…");
     let final_dir = php_root.join(&artifact.install_dir_name);
     if final_dir.exists() {
         if let Err(e) = std::fs::remove_dir_all(&final_dir) {
@@ -126,9 +213,30 @@ pub fn write_cli_ini(
 /// Filename of the installed-patch marker inside a per-version dir.
 const VERSION_MARKER: &str = ".yerd-version";
 
-async fn stage(artifact: &Artifact, dl: &dyn Downloader, staging: &Path) -> Result<(), PhpError> {
-    fetch_and_extract(dl, &artifact.cli_url, BinaryKind::Cli, staging).await?;
-    fetch_and_extract(dl, &artifact.fpm_url, BinaryKind::Fpm, staging).await?;
+async fn stage(
+    artifact: &Artifact,
+    dl: &dyn Downloader,
+    staging: &Path,
+    progress: Option<&ProgressTx>,
+) -> Result<(), PhpError> {
+    fetch_and_extract(
+        dl,
+        &artifact.cli_url,
+        BinaryKind::Cli,
+        staging,
+        progress,
+        "CLI",
+    )
+    .await?;
+    fetch_and_extract(
+        dl,
+        &artifact.fpm_url,
+        BinaryKind::Fpm,
+        staging,
+        progress,
+        "FPM",
+    )
+    .await?;
     fs_ctx(std::fs::create_dir_all(staging), staging)?;
     let marker = staging.join(VERSION_MARKER);
     fs_ctx(std::fs::write(&marker, &artifact.full_version), &marker)?;
@@ -153,13 +261,29 @@ pub fn installed_patch(dirs: &PlatformDirs, minor: PhpVersion) -> Option<String>
     }
 }
 
+/// Download one PHP binary tarball and extract its single member into `staging`.
+///
+/// Streams with byte-progress when `progress` is attached, otherwise takes the
+/// silent path; a download error converts to `PhpError` via `#[from]`.
 async fn fetch_and_extract(
     dl: &dyn Downloader,
     url: &str,
     kind: BinaryKind,
     staging: &Path,
+    progress: Option<&ProgressTx>,
+    label: &str,
 ) -> Result<(), PhpError> {
-    let bytes = dl.download(url).await?;
+    tracing::info!(%url, "downloading PHP binary");
+    let bytes = match progress {
+        Some(tx) => {
+            let last = AtomicU64::new(u64::MAX);
+            let cb = |done: u64, total: Option<u64>| {
+                emit_byte_progress(tx, label, done, total, &last);
+            };
+            dl.download_with_progress(url, &cb).await?
+        }
+        None => dl.download(url).await?,
+    };
     let binary = extract_member(&bytes, kind, url)?;
 
     let mut target = staging.to_path_buf();
@@ -536,7 +660,9 @@ mod tests {
             fpm: gzip_tar_single("php-fpm", b"FPM-BYTES", 0o755),
         };
 
-        install(PhpVersion::new(8, 5), &dirs, &dl).await.unwrap();
+        install(PhpVersion::new(8, 5), &dirs, &dl, None)
+            .await
+            .unwrap();
 
         let base = dirs.data.join("php").join("php-8.5");
         assert_eq!(
@@ -573,7 +699,7 @@ mod tests {
             cli: vec![],
             fpm: vec![],
         };
-        let err = install(PhpVersion::new(8, 5), &dirs, &dl)
+        let err = install(PhpVersion::new(8, 5), &dirs, &dl, None)
             .await
             .unwrap_err();
         assert!(

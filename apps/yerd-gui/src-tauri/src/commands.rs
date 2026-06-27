@@ -124,6 +124,14 @@ pub async fn install_php(version: PhpVersion) -> Result<Response, GuiError> {
     finish(exchange(&Request::InstallPhp { version }).await?)
 }
 
+/// Start a streamed PHP install; replies `JobStarted` for the client to poll via
+/// `job_status`. The non-blocking sibling of `install_php`, used by the GUI so a
+/// multi-minute download streams progress instead of spinning a single request.
+#[tauri::command]
+pub async fn install_php_streamed(version: PhpVersion) -> Result<Response, GuiError> {
+    finish(exchange(&Request::InstallPhpStreamed { version }).await?)
+}
+
 #[tauri::command]
 pub async fn set_default_php(version: PhpVersion) -> Result<Response, GuiError> {
     finish(exchange(&Request::SetDefaultPhp { version }).await?)

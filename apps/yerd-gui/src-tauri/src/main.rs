@@ -76,6 +76,7 @@ fn main() {
             commands::check_php_updates,
             commands::available_php,
             commands::install_php,
+            commands::install_php_streamed,
             commands::set_default_php,
             commands::update_php,
             commands::check_updates,

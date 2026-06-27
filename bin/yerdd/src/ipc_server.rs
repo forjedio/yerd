@@ -65,6 +65,9 @@ async fn handle_client(stream: IpcStream, state: Arc<DaemonState>) {
             Request::InstallToolStreamed { tool } => {
                 install_tool_streamed(tool, state.clone()).await
             }
+            Request::InstallPhpStreamed { version } => {
+                install_php_streamed(version, state.clone()).await
+            }
             Request::JobStatus { job_id, cursor } => state.jobs.poll(&job_id, cursor).await,
             Request::JobCancel { job_id } => state.jobs.cancel(&job_id).await,
             other => dispatch(other, &state).await,
@@ -615,6 +618,10 @@ async fn run_doctor_fix(state: &DaemonState) -> Response {
 
 /// `update php [<ver>]` - upgrade the given minor (or all installed) to the
 /// latest published patch when newer; refresh the cache; return the new list.
+///
+/// Holds `php_mutate` across the install loop so it can't race
+/// `install_php`/`install_php_streamed` over the same per-version staging dir.
+/// Not re-entrant: dispatched directly, never while `php_mutate` is already held.
 async fn update_php(version: Option<yerd_core::PhpVersion>, state: &DaemonState) -> Response {
     let dl = crate::php_install::ReqwestDownloader::new();
     let (os, arch) = match yerd_php::current_os_arch() {
@@ -642,6 +649,7 @@ async fn update_php(version: Option<yerd_core::PhpVersion>, state: &DaemonState)
         Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
         Err(e) => return internal(format!("listing fetch failed: {e}")),
     };
+    let _guard = state.php_mutate.lock().await;
     for minor in targets {
         let Some(installed) = crate::php_install::installed_patch(&state.dirs, minor) else {
             continue;
@@ -650,7 +658,8 @@ async fn update_php(version: Option<yerd_core::PhpVersion>, state: &DaemonState)
             continue;
         };
         if yerd_php::is_newer(&installed, &artifact.full_version) {
-            if let Err(e) = crate::php_install::install(minor, &state.dirs, &dl).await {
+            if let Err(e) = crate::php_install::install(minor, &state.dirs, &dl, None).await {
+                tracing::error!(version = %minor, error = %e, "PHP update failed");
                 return Response::Error {
                     code: php_error_code(&e),
                     message: e.to_string(),
@@ -665,21 +674,132 @@ async fn update_php(version: Option<yerd_core::PhpVersion>, state: &DaemonState)
 
 /// `install php <ver>` - download + verify + unpack a prebuilt build. Runs the
 /// (slow) download with no config lock held; the per-connection task model means
-/// other clients are unaffected.
+/// other clients are unaffected. Synchronous (the CLI's `yerd php install` path);
+/// the GUI uses [`install_php_streamed`] for live progress.
+///
+/// Serializes installs under `php_mutate` (the staging dir is keyed by
+/// version + pid, so concurrent installs of the same version would clobber each
+/// other). A failure is logged as the only durable record of it (the line the
+/// GUI diagnostics / About > Logs panel tails).
 async fn install_php(version: yerd_core::PhpVersion, state: &DaemonState) -> Response {
     let dl = crate::php_install::ReqwestDownloader::new();
-    match crate::php_install::install(version, &state.dirs, &dl).await {
+    let _guard = state.php_mutate.lock().await;
+    match crate::php_install::install(version, &state.dirs, &dl, None).await {
         Ok(()) => {
-            refresh_php_binaries(state).await;
-            adopt_default_if_unset(version, state).await;
-            refresh_pcov_and_shims(state).await;
+            finalize_php_install(version, state).await;
             Response::Ok
         }
-        Err(e) => Response::Error {
-            code: php_error_code(&e),
-            message: e.to_string(),
-        },
+        Err(e) => {
+            tracing::error!(%version, error = %e, "PHP install failed");
+            Response::Error {
+                code: php_error_code(&e),
+                message: e.to_string(),
+            }
+        }
     }
+}
+
+/// Post-install bookkeeping shared by the sync and streamed install paths: teach
+/// the live `PhpManager` about the new binaries (its binary map is a startup
+/// snapshot, so this lets the proxy spawn the new FPM pool without a daemon
+/// restart), adopt the first install as the default so the `php` shim exists and
+/// sites have a runtime, then bundle pcov + rebuild shims. Adopting the default
+/// runs before the shim rebuild so the shims are built against the new default.
+/// All best-effort - the install itself has already succeeded by the time this
+/// runs.
+async fn finalize_php_install(version: yerd_core::PhpVersion, state: &DaemonState) {
+    refresh_php_binaries(state).await;
+    adopt_default_if_unset(version, state).await;
+    refresh_pcov_and_shims(state).await;
+}
+
+/// `InstallPhpStreamed` - download + unpack a PHP build as a background job,
+/// streaming phase + byte-count progress into the job log. Returns `JobStarted`
+/// immediately; the client polls `JobStatus`. The streaming sibling of
+/// [`install_php`] (used by the GUI onboarding + PHP screen) so a multi-minute
+/// download shows progress and can be cancelled instead of spinning a request.
+///
+/// The `php_mutate` lock is acquired by racing it against `JobCancel` so a job
+/// queued behind another install can cancel without waiting for the lock, and is
+/// held through [`finalize_php_install`] so no other PHP mutation interleaves
+/// with the default/shim/manager updates. On cancel the install future is
+/// dropped: its only side effects are in a `.staging-` dir the next install
+/// clears, so an interrupted download leaves nothing half-installed. Every arm
+/// closes the progress channel and drains it before finishing the job, so no log
+/// line is lost.
+pub(crate) async fn install_php_streamed(
+    version: yerd_core::PhpVersion,
+    state: Arc<DaemonState>,
+) -> Response {
+    let (job_id, mut cancel) = state.jobs.create().await;
+    let id = job_id.clone();
+    tokio::spawn(async move {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+        let drain = {
+            let state = state.clone();
+            let id = id.clone();
+            tokio::spawn(async move {
+                while let Some(line) = rx.recv().await {
+                    state.jobs.push_log(&id, line).await;
+                }
+            })
+        };
+
+        state
+            .jobs
+            .set_phase(&id, format!("Installing PHP {version}"))
+            .await;
+        let dl = crate::php_install::ReqwestDownloader::new();
+        let guard = tokio::select! {
+            g = state.php_mutate.lock() => g,
+            _ = cancel.changed() => {
+                drop(tx);
+                let _ = drain.await;
+                state
+                    .jobs
+                    .finish(&id, yerd_ipc::JobState::Cancelled, None)
+                    .await;
+                return;
+            }
+        };
+        let result = tokio::select! {
+            r = crate::php_install::install(version, &state.dirs, &dl, Some(&tx)) => Some(r),
+            _ = cancel.changed() => None,
+        };
+
+        match result {
+            Some(Ok(())) => {
+                finalize_php_install(version, &state).await;
+                drop(guard);
+                drop(tx);
+                let _ = drain.await;
+                state
+                    .jobs
+                    .finish(&id, yerd_ipc::JobState::Succeeded, None)
+                    .await;
+            }
+            Some(Err(e)) => {
+                drop(guard);
+                drop(tx);
+                let _ = drain.await;
+                tracing::error!(%version, error = %e, "PHP install failed");
+                state
+                    .jobs
+                    .finish(&id, yerd_ipc::JobState::Failed, Some(e.to_string()))
+                    .await;
+            }
+            None => {
+                drop(guard);
+                drop(tx);
+                let _ = drain.await;
+                state
+                    .jobs
+                    .finish(&id, yerd_ipc::JobState::Cancelled, None)
+                    .await;
+            }
+        }
+    });
+    Response::JobStarted { job_id }
 }
 
 /// On the *first* successful install - when the configured default PHP isn't
@@ -1504,6 +1624,7 @@ mod tests {
             dumps: std::sync::Arc::new(crate::dump_server::DumpStore::new()),
             shim_reconcile: tokio::sync::Mutex::new(()),
             tool_mutate: tokio::sync::Mutex::new(()),
+            php_mutate: tokio::sync::Mutex::new(()),
             jobs: crate::jobs::JobRegistry::default(),
             reserved_names: tokio::sync::Mutex::new(std::collections::HashSet::new()),
         }

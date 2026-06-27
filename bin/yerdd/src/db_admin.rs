@@ -463,6 +463,7 @@ mod tests {
             dumps: Arc::new(crate::dump_server::DumpStore::new()),
             shim_reconcile: tokio::sync::Mutex::new(()),
             tool_mutate: tokio::sync::Mutex::new(()),
+            php_mutate: tokio::sync::Mutex::new(()),
             jobs: crate::jobs::JobRegistry::default(),
             reserved_names: tokio::sync::Mutex::new(std::collections::HashSet::new()),
         }

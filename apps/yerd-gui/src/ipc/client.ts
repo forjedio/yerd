@@ -164,6 +164,30 @@ export async function installPhp(version: PhpVersion): Promise<void> {
   ensureOk(await call<Response>("install_php", { version }));
 }
 
+/** Start a streamed PHP install as a background job; returns the job id to poll. */
+export async function installPhpStreamed(version: PhpVersion): Promise<string> {
+  const r = ensureOk(await call<Response>("install_php_streamed", { version }));
+  if (r.type !== "job_started") throw new IpcError("unexpected response to install_php_streamed");
+  return r.job_id;
+}
+
+/**
+ * Install a PHP version as a streamed job, delivering progress lines via
+ * `onProgress`, and resolving only when it finishes. Throws (toast-worthy) on a
+ * failed/cancelled job, so callers keep their existing try/catch around a
+ * single awaited install.
+ */
+export async function installPhpWithProgress(
+  version: PhpVersion,
+  onProgress?: (lines: string[]) => void,
+): Promise<void> {
+  const jobId = await installPhpStreamed(version);
+  const final = await pollJobToEnd(jobId, (lines) => onProgress?.(lines));
+  if (final.state !== "succeeded") {
+    throw new IpcError(final.error || `PHP ${version} install ${final.state}`);
+  }
+}
+
 export async function setDefaultPhp(version: PhpVersion): Promise<void> {
   ensureOk(await call<Response>("set_default_php", { version }));
 }

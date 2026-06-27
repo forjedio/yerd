@@ -38,6 +38,14 @@ fn search_dirs() -> Vec<PathBuf> {
 /// `Contents/MacOS/`; Linux `.deb` symlinks `yerd`/`yerdd`/`yerd-helper` into
 /// `/usr/bin` beside `yerd-gui`), then the usual dirs. Mirrors
 /// `bin/yerd/src/elevate.rs::sibling_binaries`.
+///
+/// On Linux the deb bundler normally installs the sidecars straight into
+/// `/usr/bin` (covered by `search_dirs`); a `/usr/lib/<product>/` layout is the
+/// fallback for older/foreign Tauri builds that staged them there, where the
+/// postinst symlinks them onto PATH. That symlink isn't dpkg-tracked and the
+/// postinst can fail closed, so the real `/usr/lib` dir is searched directly via
+/// [`lib_sidecar`]; otherwise a postinst hiccup would leave `yerdd` on disk but
+/// unfindable and the daemon "won't start".
 pub(crate) fn resolve_binary(name: &str) -> Option<PathBuf> {
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {

@@ -228,11 +228,17 @@ async fn run_inner(
 
 /// Build the `laravel new …` argument vector (after the installer binary).
 /// Pure - unit-tested.
+///
+/// `--no-ansi` is included because the stream is rendered in a plain text panel
+/// with no ANSI interpreter; it is forwarded to the composer/npm commands the
+/// installer shells out to, so no raw escape sequences leak (the daemon also
+/// forces NO_COLOR/TERM=dumb on the child, see `run_scaffold`).
 fn build_new_args(name: &str, o: &LaravelOptions) -> Vec<String> {
     let mut a = vec![
         "new".to_owned(),
         name.to_owned(),
         "--no-interaction".to_owned(),
+        "--no-ansi".to_owned(),
     ];
     match &o.starter_kit {
         StarterKit::None => {}
@@ -470,6 +476,13 @@ enum ScaffoldOutcome {
 
 /// Spawn `php <installer> new …`, stream both pipes into the job log, and wait -
 /// killing the whole process group on cancel or timeout.
+///
+/// Forces `NO_COLOR=1` + `TERM=dumb` on the child: stdout/stderr are pipes (not a
+/// tty), but the Laravel installer / Symfony Console / Laravel Prompts still emit
+/// ANSI colour and cursor-control (spinner redraws) from the inherited TERM. The
+/// job log is shown in a plain `<pre>` with no terminal emulator, so those escapes
+/// render literally and spinner frames stack as duplicate lines; the two env vars
+/// make the installer fall back to undecorated, single-line output.
 #[allow(clippy::too_many_arguments)]
 async fn run_scaffold(
     id: &str,
@@ -489,6 +502,8 @@ async fn run_scaffold(
         .env("PATH", path_env)
         .env("COMPOSER_HOME", composer_home)
         .env("COMPOSER_NO_INTERACTION", "1")
+        .env("NO_COLOR", "1")
+        .env("TERM", "dumb")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -717,6 +732,7 @@ mod tests {
             dumps: Arc::new(crate::dump_server::DumpStore::new()),
             shim_reconcile: tokio::sync::Mutex::new(()),
             tool_mutate: tokio::sync::Mutex::new(()),
+            php_mutate: tokio::sync::Mutex::new(()),
             jobs: crate::jobs::JobRegistry::default(),
             reserved_names: tokio::sync::Mutex::new(std::collections::HashSet::new()),
         }
@@ -745,6 +761,7 @@ mod tests {
                 "new",
                 "blog",
                 "--no-interaction",
+                "--no-ansi",
                 "--pest",
                 "--database",
                 "sqlite",
@@ -766,6 +783,7 @@ mod tests {
                 "new",
                 "shop",
                 "--no-interaction",
+                "--no-ansi",
                 "--react",
                 "--pest",
                 "--database",
@@ -797,6 +815,7 @@ mod tests {
                 "new",
                 "crm",
                 "--no-interaction",
+                "--no-ansi",
                 "--livewire",
                 "--workos",
                 "--livewire-class-components",

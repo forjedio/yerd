@@ -41,7 +41,7 @@ import { useToast } from "@/composables/useToast";
 import {
   availablePhp,
   checkPhpUpdates,
-  installPhp,
+  installPhpWithProgress,
   IpcError,
   listPhp,
   restartAllPhp,
@@ -62,6 +62,7 @@ const defaultVersion = ref<PhpVersion | null>(null);
 const updates = ref<PhpUpdate[]>([]);
 const loading = ref(true);
 const busy = ref<string | null>(null); // a key naming the in-flight long op
+const installProgress = ref(""); // latest streamed install line, shown by the Install button
 
 // Live FPM state, keyed by version, from the shared status poll.
 const poolByVersion = computed<Record<string, PhpPoolStatus>>(() => {
@@ -325,9 +326,12 @@ async function confirmInstall(close: () => void): Promise<void> {
   const v = selectedVersion.value;
   if (!v) return;
   busy.value = "install";
+  installProgress.value = "";
   close();
   try {
-    await installPhp(v);
+    await installPhpWithProgress(v, (lines) => {
+      installProgress.value = lines[lines.length - 1] ?? installProgress.value;
+    });
     toast.success(`Installed PHP ${v}`);
     // Refresh the version list *and* the status poll so the new row shows its
     // patch + "idle" state immediately instead of on the next 4s tick.
@@ -336,6 +340,7 @@ async function confirmInstall(close: () => void): Promise<void> {
     toast.error(`Install of PHP ${v} failed`, (e as IpcError).message);
   } finally {
     busy.value = null;
+    installProgress.value = "";
   }
 }
 
@@ -354,7 +359,7 @@ onMounted(load);
             <CardTitle>Installed versions</CardTitle>
             <CardDescription>Versions, updates, and the global default.</CardDescription>
           </div>
-          <div class="flex items-center gap-2">
+          <div class="flex min-w-0 items-center gap-2">
             <Button
               variant="outline"
               size="sm"
@@ -374,6 +379,12 @@ onMounted(load);
               <Spinner v-if="busy === 'update:all'" class="size-4" />
               Update all
             </Button>
+            <span
+              v-if="busy === 'install' && installProgress"
+              class="min-w-0 max-w-[16rem] truncate text-xs text-muted-foreground"
+            >
+              {{ installProgress }}
+            </span>
             <Button size="sm" :disabled="busy === 'install'" @click="openInstall">
               <Spinner v-if="busy === 'install'" class="size-4" />
               <Download v-else class="size-4" />

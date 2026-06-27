@@ -125,6 +125,12 @@ pub struct DaemonState {
     /// IPC dispatch is `tokio::spawn`-per-connection, so two clients could swap
     /// `{data}/tools/<id>` concurrently; this guard makes commit+reconcile atomic.
     pub tool_mutate: Mutex<()>,
+    /// Serializes PHP-version install/update mutations. IPC dispatch is
+    /// `tokio::spawn`-per-connection (and the streamed install is its own task),
+    /// so two clients could install concurrently; the staging dir is keyed by
+    /// version (+ this daemon's pid), so two installs of the *same* version would
+    /// otherwise clobber each other's staging + race the final rename.
+    pub php_mutate: Mutex<()>,
     /// Background-job registry. Long-running operations (site creation) run as
     /// jobs whose streamed progress the client polls via `JobStatus`.
     pub jobs: crate::jobs::JobRegistry,

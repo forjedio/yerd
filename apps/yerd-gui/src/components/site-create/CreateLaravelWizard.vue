@@ -21,8 +21,9 @@ import { siteUrl } from "@/lib/siteUrl";
 import { useDaemon } from "@/composables/useDaemon";
 import { useToast } from "@/composables/useToast";
 import {
+  availablePhp,
   createSite,
-  installPhp,
+  installPhpWithProgress,
   installToolStreamed,
   IpcError,
   jobCancel,
@@ -217,16 +218,24 @@ async function installPrereq(id: "composer" | "laravel" | "node" | "bun"): Promi
 }
 
 async function installFirstPhp(): Promise<boolean> {
-  // The user has no PHP: install the current installer default (8.4). The daemon
-  // picks the patch and makes it the global default; the live status poll then
-  // surfaces it, which unlocks the wizard automatically.
+  // The user has no PHP: install the latest available minor (the distribution
+  // returns them ascending, so the last entry is newest), matching the onboarding
+  // flow rather than pinning a version that rots each release. The daemon resolves
+  // the patch and makes it the global default; the live status poll then surfaces
+  // it, which unlocks the wizard automatically.
   installingTool.value = "php";
   installLog.value = [];
-  void appendInstallLog(["Installing PHP 8.4…"]);
   try {
-    await installPhp("8.4");
+    const { available } = await availablePhp();
+    const version = available[available.length - 1];
+    if (!version) {
+      toast.error("Couldn't install PHP", "No installable PHP versions were found.");
+      return false;
+    }
+    void appendInstallLog([`Installing PHP ${version}…`]);
+    await installPhpWithProgress(version, (lines) => void appendInstallLog(lines));
     await refresh();
-    void appendInstallLog(["Installed PHP 8.4"]);
+    void appendInstallLog([`Installed PHP ${version}`]);
     return true;
   } catch (e) {
     toast.error("Couldn't install PHP", (e as IpcError).message);
