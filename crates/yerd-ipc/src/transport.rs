@@ -2,7 +2,7 @@
 //!
 //! Gated behind the `transport` feature so the default build stays
 //! runtime-free. The helpers are generic over [`tokio::io::AsyncRead`]
-//! / [`tokio::io::AsyncWrite`] — socket and named-pipe binding stays in
+//! / [`tokio::io::AsyncWrite`] - socket and named-pipe binding stays in
 //! the binaries.
 
 use serde::{de::DeserializeOwned, Serialize};
@@ -32,10 +32,10 @@ where
 /// Returns the raw payload so callers can inspect the `type` tag
 /// before fully decoding.
 ///
-/// - `Ok(Some(payload))` — one full frame ready.
-/// - `Ok(None)` — clean EOF with an empty decoder buffer.
-/// - `Err(IpcError::UnexpectedEof { bytes })` — EOF mid-frame.
-/// - `Err(IpcError::Frame(_))` — declared length exceeded the
+/// - `Ok(Some(payload))` - one full frame ready.
+/// - `Ok(None)` - clean EOF with an empty decoder buffer.
+/// - `Err(IpcError::UnexpectedEof { bytes })` - EOF mid-frame.
+/// - `Err(IpcError::Frame(_))` - declared length exceeded the
 ///   decoder's cap (decoder is now poisoned).
 pub async fn read_frame<R>(
     reader: &mut R,
@@ -127,8 +127,6 @@ mod tests {
         let payload = encode_message(&Request::Ping).unwrap();
         let frame = encode_frame(&payload, DEFAULT_MAX_FRAME).unwrap();
 
-        // Spawn a writer that ships the frame in two halves, with a
-        // yield in between.
         let writer = tokio::spawn(async move {
             let mid = frame.len() / 2;
             a.write_all(&frame[..mid]).await.unwrap();
@@ -158,7 +156,6 @@ mod tests {
         let (mut a, mut b) = duplex(64);
         let payload = encode_message(&Request::Ping).unwrap();
         let frame = encode_frame(&payload, DEFAULT_MAX_FRAME).unwrap();
-        // Send only the 4-byte header — no body.
         a.write_all(&frame[..4]).await.unwrap();
         a.shutdown().await.unwrap();
         drop(a);
@@ -175,14 +172,8 @@ mod tests {
 
     #[tokio::test]
     async fn write_to_closed_reader_surfaces_as_io_error() {
-        // Drop the reader before writing. The writer's `write_all`
-        // will eventually fail with a broken-pipe / closed-channel
-        // io::Error, which should map to `IpcError::Io`.
         let (mut a, b) = duplex(8);
         drop(b);
-        // Pad the payload to be sure the write spans more than the
-        // 8-byte duplex buffer so the second syscall hits the closed
-        // half.
         let payload = vec![0_u8; 1024];
         let req = Request::Park {
             path: PathBuf::from(String::from_utf8(payload).unwrap_or_default()),
@@ -195,7 +186,6 @@ mod tests {
 
     #[tokio::test]
     async fn write_message_survives_partial_writes_on_small_duplex() {
-        // Tiny duplex buffer forces write_all to span multiple syscalls.
         let (mut a, mut b) = duplex(8);
         let want = Request::Link {
             name: "alpha".into(),

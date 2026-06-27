@@ -5,7 +5,7 @@
 //! so it can't see Homebrew / fnm / global-Composer tools from its own env. We
 //! resolve the user's **interactive-login** shell PATH to find them. Spawning the
 //! shell is the heaviest I/O edge, but the path-walking also hits the filesystem
-//! (`metadata`/`canonicalize`); nothing here is I/O-free. Unix-only — Windows
+//! (`metadata`/`canonicalize`); nothing here is I/O-free. Unix-only - Windows
 //! yields `None`/no externals.
 
 use std::path::{Path, PathBuf};
@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 use super::Tool;
 
 /// Markers wrapping the printed PATH so rc-file banners / `echo` can't corrupt
-/// the capture — we extract strictly between them.
+/// the capture - we extract strictly between them.
 const BEGIN: &str = "__YERD_PATH_BEGIN__";
 const END: &str = "__YERD_PATH_END__";
 
@@ -36,7 +36,6 @@ fn path_cache() -> &'static PathCache {
 /// shell (cached for [`PATH_TTL`]). `None` on non-Unix, spawn/timeout failure, or
 /// unparseable output.
 pub async fn resolve_user_path() -> Option<Vec<PathBuf>> {
-    // Serve a recent cached result without spawning a shell.
     if let Ok(guard) = path_cache().lock() {
         if let Some((at, dirs)) = guard.as_ref() {
             if at.elapsed() < PATH_TTL {
@@ -62,7 +61,7 @@ pub async fn resolve_user_path() -> Option<Vec<PathBuf>> {
 
 /// Find an executable named `bin` on `dirs`, skipping `exclude_dir` (Yerd's
 /// `{data}/bin` shim dir) and rejecting any hit that canonicalises under
-/// `data_root` (e.g. a user symlink into `{data}` — that's managed, not external).
+/// `data_root` (e.g. a user symlink into `{data}` - that's managed, not external).
 #[must_use]
 pub fn find_in_path(
     dirs: &[PathBuf],
@@ -70,8 +69,6 @@ pub fn find_in_path(
     exclude_dir: &Path,
     data_root: &Path,
 ) -> Option<PathBuf> {
-    // Canonicalise the data root too: on macOS `/var`→`/private/var` (and similar)
-    // mean the candidate's canonical path won't `starts_with` an un-canonical root.
     let data_canon = std::fs::canonicalize(data_root).unwrap_or_else(|_| data_root.to_path_buf());
     for dir in dirs {
         if dir == exclude_dir {
@@ -83,7 +80,7 @@ pub fn find_in_path(
         }
         let canon = std::fs::canonicalize(&cand).unwrap_or_else(|_| cand.clone());
         if canon.starts_with(&data_canon) {
-            continue; // a Yerd-managed binary reached via a symlink elsewhere.
+            continue;
         }
         return Some(cand);
     }
@@ -139,13 +136,10 @@ async fn capture_path_string() -> Option<String> {
         .stderr(Stdio::null())
         .kill_on_drop(true);
     let child = cmd.spawn().ok()?;
-    // Bound the wait — a misconfigured rc could hang; `kill_on_drop` reaps it.
     let out = tokio::time::timeout(std::time::Duration::from_secs(3), child.wait_with_output())
         .await
         .ok()?
         .ok()?;
-    // Don't require a zero exit: some shells exit non-zero from rc quirks, but
-    // still print our marker-delimited PATH on stdout, which is all we need.
     Some(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
@@ -196,7 +190,6 @@ fn shell_invocation(shell: &str) -> Vec<String> {
             format!("printf '{BEGIN}%s{END}' (string join : $PATH)"),
         ],
         Some(Shell::Zsh | Shell::Bash) => vec!["-ilc".to_owned(), posix_cmd],
-        // POSIX / unknown (incl. dash, which rejects `-l`): interactive only.
         _ => vec!["-ic".to_owned(), posix_cmd],
     }
 }
@@ -232,16 +225,13 @@ mod tests {
         std::fs::create_dir_all(&data_bin).unwrap();
         std::fs::create_dir_all(&ext).unwrap();
 
-        // A managed shim in {data}/bin and a genuine external in /opt.
         touch_exec(&data_bin, "composer");
         let real = touch_exec(&ext, "composer");
 
         let dirs = vec![data_bin.clone(), ext.clone()];
-        // {data}/bin is excluded → resolves to the external one.
         let found = find_in_path(&dirs, "composer", &data_bin, &data).unwrap();
         assert_eq!(found, real);
 
-        // Only the managed dir present → nothing external.
         assert!(find_in_path(
             std::slice::from_ref(&data_bin),
             "composer",
@@ -260,10 +250,8 @@ mod tests {
         std::fs::create_dir_all(&data_bin).unwrap();
         std::fs::create_dir_all(&userbin).unwrap();
         let managed = touch_exec(&data_bin, "node");
-        // ~/bin/node -> {data}/bin/node : on PATH but canonicalises into {data}.
         std::os::unix::fs::symlink(&managed, userbin.join("node")).unwrap();
 
-        // userbin is NOT the excluded dir, but the canonicalize guard rejects it.
         assert!(find_in_path(&[userbin], "node", &data_bin, &data).is_none());
     }
 }

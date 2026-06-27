@@ -3,7 +3,7 @@
 //! Provides `bump` (set the project version across the three manifests) and
 //! `version-check` (assert a tag matches them). Pure helpers live in
 //! [`version`]; per-command I/O glue lives here. (Linux packaging is no longer an
-//! xtask concern — the single GUI bundle is produced by Tauri; see
+//! xtask concern - the single GUI bundle is produced by Tauri; see
 //! `apps/yerd-gui/src-tauri/tauri.bundle-linux.conf.json`.)
 
 #![forbid(unsafe_code)]
@@ -57,7 +57,6 @@ struct Manifests {
 
 impl Manifests {
     fn locate() -> Self {
-        // xtask lives at <root>/xtask, so the workspace root is its parent.
         let root = Path::new(env!("CARGO_MANIFEST_DIR"))
             .parent()
             .map_or_else(|| PathBuf::from("."), Path::to_path_buf);

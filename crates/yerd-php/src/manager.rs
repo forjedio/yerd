@@ -1,4 +1,4 @@
-//! `PhpManager` — drives the pure state machine through real I/O.
+//! `PhpManager` - drives the pure state machine through real I/O.
 //!
 //! The manager holds one `Pool<S::Child>` per supervised PHP version. Each
 //! pool tracks its current [`PoolState`], the wall-clock baseline used to
@@ -54,7 +54,7 @@ use crate::traits::{ChildHandle, Clock, HealthProbe, ProcessSpawner};
 const MAX_BIND_ATTEMPTS: usize = 5;
 /// Per-attempt `FastCGI` probe timeout.
 const HEALTH_PROBE_TIMEOUT: Duration = Duration::from_millis(500);
-/// Floor between probe attempts — prevents hot-spin when the listener
+/// Floor between probe attempts - prevents hot-spin when the listener
 /// briefly returns connection-refused.
 const HEALTH_PROBE_GAP: Duration = Duration::from_millis(100);
 
@@ -71,8 +71,8 @@ struct Pool<Ch: ChildHandle> {
 ///
 /// The manager only ever *stores* pools that were healthy at insert time, so a
 /// snapshot is either `Running` (the master process is still alive) or `Failed`
-/// (the master has since exited). "No pool at all" — installed but never started
-/// — is not represented here; the daemon fills that in as `Stopped`.
+/// (the master has since exited). "No pool at all" - installed but never started
+/// - is not represented here; the daemon fills that in as `Stopped`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PoolRunState {
     /// The FPM master process is alive.
@@ -191,7 +191,7 @@ where
     ///
     /// Stored as `(name, value)` pairs and injected into each pool's rendered
     /// FPM config on the next `ensure` (a running pool keeps its current config
-    /// until restarted — the daemon restarts live pools after calling this).
+    /// until restarted - the daemon restarts live pools after calling this).
     pub fn set_ini_settings(&mut self, settings: Vec<(String, String)>) {
         self.ini_settings = settings;
     }
@@ -218,27 +218,19 @@ where
             .cloned()
             .ok_or(PhpError::VersionNotInstalled { version: v })?;
 
-        // Fast path: already Running and child still alive.
         if let Some(listen) = self.running_listen(v)? {
             return Ok(listen);
         }
 
-        // Plan listen address with retry (Windows port-pair race).
         let listen = self.plan_listen(v)?;
 
-        // Clean any stale Unix socket file.
         if let Listen::UnixSocket(ref path) = listen {
             let _ = fs::remove_file(path);
         }
 
-        // Build config + render + write. Inject the current global ini settings
-        // so a (re)started pool picks up the latest values.
         let mut cfg = PoolConfig::dev_defaults(v, listen, &self.dirs, self.instance_id);
         cfg.ini = self.ini_settings.clone();
 
-        // Load the daemon-managed dump extension if a matching `.so` is present
-        // for this version. The extension self-disables via its state file, so we
-        // load it whenever present regardless of whether dumps are enabled.
         if let Some(ext) = &self.dump_ext {
             let so = ext.so_dir.join(format!("php-{v}")).join("yerd-dump.so");
             if so.is_file() {
@@ -247,9 +239,6 @@ where
             }
         }
 
-        // FPM does not create parent directories for its config, pid file, or
-        // error_log — and the per-user state dir may not exist yet on first run.
-        // Create them up front so FPM initialisation does not fail with ENOENT.
         for path in [&cfg.config_path, &cfg.pid_file, &cfg.error_log] {
             if let Some(parent) = path.parent() {
                 fs::create_dir_all(parent).map_err(|source| PhpError::ConfigWrite {
@@ -267,7 +256,6 @@ where
             }
         })?;
 
-        // Snapshot + scrub env once; the builder closure clones into each Command.
         let env = env_scrub::allowlist(&std::env::vars().collect::<Vec<_>>());
         let extension = cfg.extension.clone();
         let ini_defines = cfg.ini_defines.clone();
@@ -310,8 +298,6 @@ where
                 Ok(listen)
             }
             Outcome::Stopped => {
-                // Stopped from EnsureRequested can't happen via the supervisor
-                // table — defensive default.
                 Err(PhpError::Spawn {
                     version: v,
                     reason: SpawnFailureReason::Other,
@@ -363,8 +349,6 @@ where
 
     /// Restart the pool: stop it cleanly, then `ensure` again.
     pub async fn restart(&mut self, v: PhpVersion) -> Result<Listen, PhpError> {
-        // Surface stop errors but continue so the next ensure() gets a
-        // chance — pool is gone from `self.pools` either way.
         let _ = self.stop(v).await;
         self.ensure(v).await
     }
@@ -417,7 +401,7 @@ where
     ///
     /// Read-only intent, but takes `&mut self` because liveness uses
     /// [`ChildHandle::try_wait`] (which needs `&mut` on the handle). A pool whose
-    /// child has exited — or whose stored state is somehow non-`Running` — is
+    /// child has exited - or whose stored state is somehow non-`Running` - is
     /// reported as [`PoolRunState::Failed`]; an alive child is `Running` with its
     /// PID. This does **not** reconcile the pool set (no insert/remove); the next
     /// `ensure`/`restart` does that.
@@ -428,10 +412,8 @@ where
             let (state, pid) = match (&pool.state, pool.child.as_mut()) {
                 (PoolState::Running { pid }, Some(child)) => match child.try_wait() {
                     Ok(None) => (PoolRunState::Running, Some(*pid)),
-                    // Exited (Ok(Some)) or unreadable (Err) ⇒ the master is gone.
                     _ => (PoolRunState::Failed, None),
                 },
-                // Stored as non-Running, or Running with no child handle: failed.
                 _ => (PoolRunState::Failed, None),
             };
             out.push(PoolSnapshot {
@@ -485,7 +467,6 @@ where
 
                 Action::Kill { signal } => {
                     if let Some(ch) = child.as_mut() {
-                        // FPM pools stop as a process group (SIGTERM → workers).
                         ch.kill(signal, StopProtocol::GroupTerm)
                             .await
                             .map_err(|source| PhpError::Kill { version: v, source })?;
@@ -518,7 +499,6 @@ where
     ) -> Result<DriveResult<S::Child>, PhpError> {
         match state {
             PoolState::Running { pid } => {
-                // `child` is the local from the most recent Spawn.
                 let ch = child.take().ok_or_else(|| PhpError::Spawn {
                     version: v,
                     reason: SpawnFailureReason::Other,
@@ -607,8 +587,6 @@ where
             if matches!(p, Ok(Ok(()))) {
                 Ok(Event::HealthCheckOk)
             } else {
-                // Compute elapsed AFTER the probe finished, so probe duration
-                // counts against the window.
                 let elapsed = Elapsed(self.clock.now().saturating_duration_since(state_since));
                 Ok(Event::HealthCheckTick {
                     elapsed_since_starting: elapsed,
@@ -623,7 +601,6 @@ where
             *child = None;
             Ok(Event::Crashed { reason })
         } else {
-            // Unreachable: `tokio::select!` resolves exactly one branch.
             Err(PhpError::Spawn {
                 version: v,
                 reason: SpawnFailureReason::Other,
@@ -657,8 +634,6 @@ async fn wait_after_kill<Ch: ChildHandle>(
                     Event::StopComplete
                 }
                 () = tokio::time::sleep(stop_grace) => {
-                    // Child still alive — put it back so the next iteration
-                    // can SIGKILL it.
                     *child = Some(owned);
                     return Ok(Event::StopTick {
                         elapsed_since_stopping: Elapsed(stop_grace),
@@ -703,10 +678,6 @@ fn build_cmd(
     ini_defines: &[(String, String)],
 ) -> StdCommand {
     let mut cmd = StdCommand::new(binary);
-    // `-d` startup-INI overrides go before `--fpm-config`. They apply at PHP
-    // startup (MINIT), which is required for the extension to register its
-    // observers. The yerd-dump build is a regular extension (`extension=`), not
-    // a `zend_extension`. Only emitted when a `.so` is present (see `ensure`).
     if let Some(so) = extension {
         cmd.arg("-d").arg(format!("extension={}", so.display()));
         for (k, val) in ini_defines {

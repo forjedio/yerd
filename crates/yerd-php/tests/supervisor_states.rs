@@ -57,7 +57,6 @@ impl ChildHandle for FakeChild {
     }
 
     fn try_wait(&mut self) -> Result<Option<ExitReason>, io::Error> {
-        // Non-blocking: only resolves if Crashes (already exited).
         let guard = self.behavior.try_lock().ok();
         match guard.as_deref() {
             Some(ChildBehavior::Crashes(r)) => Ok(Some(*r)),
@@ -71,12 +70,10 @@ impl ChildHandle for FakeChild {
             match behavior {
                 ChildBehavior::Crashes(r) => return Ok(r),
                 ChildBehavior::Lives => {
-                    // Pending forever.
                     std::future::pending::<()>().await;
                 }
                 ChildBehavior::LivesUntilKilled => {
                     self.killed_notify.notified().await;
-                    // After kill, behavior is updated by kill().
                 }
             }
         }
@@ -128,7 +125,6 @@ impl ProcessSpawner for FakeSpawner {
     type Child = FakeChild;
 
     fn spawn(&self, _cmd: std::process::Command) -> Result<FakeChild, io::Error> {
-        // Sync trait — block on the mutex briefly using try_lock.
         let mut plans = self
             .plans
             .try_lock()
@@ -213,7 +209,6 @@ fn make_manager(
     probe: FakeProbe,
     v: PhpVersion,
 ) -> PhpManager<FakeSpawner, FakeClock, FakeProbe> {
-    // Make sure the config dir exists so atomic_write succeeds.
     let dirs = make_dirs();
     std::fs::create_dir_all(&dirs.config).unwrap();
     std::fs::create_dir_all(&dirs.state).unwrap();
@@ -243,25 +238,19 @@ async fn ensure_happy_path_returns_listen() {
     let listen = mgr.ensure(v).await.unwrap();
     match listen {
         Listen::UnixSocket(p) => assert!(p.to_string_lossy().contains("fpm-8.3-1234.sock")),
-        Listen::TcpLoopback(_) => { /* Windows path, fine */ }
+        Listen::TcpLoopback(_) => {}
     }
 
-    // Idempotent: second ensure returns immediately without re-spawning.
     let _ = mgr.ensure(v).await.unwrap();
-    // Drop the manager so its child handles get dropped cleanly.
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn set_binaries_makes_a_runtime_install_visible() {
-    // Regression: a PHP version installed after the manager was built must
-    // become usable once `set_binaries` is called (the daemon does this after
-    // `yerd install php`). Before: ensure → VersionNotInstalled.
     let v = PhpVersion::new(8, 3);
     let spawner = FakeSpawner::new(vec![SpawnPlan {
         pid: 101,
         behavior: ChildBehavior::Lives,
     }]);
-    // Build with an EMPTY binary map.
     let dirs = make_dirs();
     std::fs::create_dir_all(&dirs.config).unwrap();
     std::fs::create_dir_all(&dirs.state).unwrap();
@@ -285,24 +274,21 @@ async fn set_binaries_makes_a_runtime_install_visible() {
     binaries.insert(v, PathBuf::from("/usr/bin/true"));
     mgr.set_binaries(binaries);
 
-    // Now the version resolves and the (faked) spawn + health-check succeed.
     assert!(mgr.ensure(v).await.is_ok());
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn ensure_creates_missing_state_dir_for_logs() {
-    // Regression: FPM cannot open its error_log if the per-user state dir is
-    // absent. `ensure` must create the parent dirs before spawning.
     let v = PhpVersion::new(8, 3);
     let tmp = tempfile::tempdir().unwrap();
     let dirs = yerd_platform::PlatformDirs {
         config: tmp.path().join("config"),
         data: tmp.path().join("data"),
-        state: tmp.path().join("state"), // deliberately NOT created
+        state: tmp.path().join("state"),
         cache: tmp.path().join("cache"),
         runtime: tmp.path().join("run"),
     };
-    std::fs::create_dir_all(&dirs.runtime).unwrap(); // socket dir only
+    std::fs::create_dir_all(&dirs.runtime).unwrap();
     let spawner = FakeSpawner::new(vec![SpawnPlan {
         pid: 101,
         behavior: ChildBehavior::Lives,
@@ -320,7 +306,6 @@ async fn ensure_creates_missing_state_dir_for_logs() {
     );
 
     assert!(mgr.ensure(v).await.is_ok());
-    // The state dir (parent of the error_log / pid file) now exists.
     assert!(
         dirs.state.is_dir(),
         "ensure() should have created the state dir"
@@ -374,10 +359,6 @@ async fn ensure_recovers_after_one_crash() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn ensure_surfaces_permanent_failure() {
     let v = PhpVersion::new(8, 3);
-    // Need max_restart_attempts+1 crashing children: attempts 1..=MAX
-    // each crash; on the MAX-th BackoffElapsed the supervisor emits
-    // PermanentFailure. Provide a few extra plans so a counting bug
-    // doesn't infinite-loop the test. PhpManager uses the FPM policy.
     let max = SupervisorPolicy::fpm().max_restart_attempts;
     let plans: Vec<SpawnPlan> = (0..=max + 2)
         .map(|i| SpawnPlan {
@@ -386,8 +367,6 @@ async fn ensure_surfaces_permanent_failure() {
         })
         .collect();
     let spawner = FakeSpawner::new(plans);
-    // Probe must NOT win the race against `wait()` — use refused so the
-    // crashing child wins.
     let mut mgr = make_manager(spawner, FakeProbe::always_refused(), v);
 
     let err = mgr.ensure(v).await.unwrap_err();
@@ -439,8 +418,8 @@ async fn ensure_unknown_version_errors() {
     );
 }
 
-// Sanity: silences `dead_code` warning for `FakeSpawner::spawn_count` if a
-// future test wants to assert spawn counts directly.
+// Silences `dead_code` for `FakeSpawner::spawn_count` so a future test can
+// assert spawn counts directly.
 #[allow(dead_code)]
 async fn _spawn_count_helper(s: &FakeSpawner) -> usize {
     s.spawn_count().await

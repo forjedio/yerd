@@ -49,9 +49,9 @@ fn every_passed_name_appears_in_san() {
 
 #[test]
 fn leaf_subject_carries_common_name() {
-    // RFC 5280 §4.1.2.6: an empty subject requires a *critical* SAN, which
-    // rcgen does not emit — macOS rejects such leaves with ERR_CERT_INVALID.
-    // A non-empty CN (= first name) sidesteps the requirement.
+    // RFC 5280 4.1.2.6: an empty subject requires a critical SAN, which
+    // rcgen does not emit - macOS rejects such leaves with ERR_CERT_INVALID.
+    // A non-empty CN (first name) sidesteps the requirement.
     let ca = CertAuthority::generate("Yerd Local CA", standard_validity()).unwrap();
     let names = vec!["vito4.test".to_string(), "alt.test".to_string()];
     let leaf = ca.issue_leaf(&names, standard_validity()).unwrap();

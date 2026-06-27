@@ -64,7 +64,6 @@ impl CertStore for OneCertStore {
 }
 
 fn validity() -> Validity {
-    // Use the current wall clock so the cert is valid right now.
     let now = time::OffsetDateTime::now_utc();
     let nb = now - time::Duration::days(1);
     let na = now + time::Duration::days(365);
@@ -107,7 +106,6 @@ async fn run_fake_fcgi(listener: TcpListener, stdout_payload: Vec<u8>) {
             conn.read_exact(&mut pad).await.unwrap();
         }
         if record_type == 5 && content.is_empty() {
-            // STDIN terminator — done.
             break;
         }
     }
@@ -141,12 +139,10 @@ async fn write_record(conn: &mut TcpStream, record_type: u8, content: &[u8]) {
 async fn https_handshake_routes_to_backend() {
     yerd_proxy::tls::init_crypto_once();
 
-    // 1. Issue CA + leaf for app.test.
     let ca = CertAuthority::generate("Yerd Test CA", validity()).unwrap();
     let leaf = ca.issue_leaf(&["app.test".to_owned()], validity()).unwrap();
     let certified = Arc::new(parse_certified(leaf.cert_pem(), leaf.key_pem()));
 
-    // 2. Fake FCGI listener.
     let fcgi_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let fcgi_addr = fcgi_listener.local_addr().unwrap();
     let fake_task = tokio::spawn(run_fake_fcgi(
@@ -154,13 +150,10 @@ async fn https_handshake_routes_to_backend() {
         b"Status: 200 OK\r\nContent-Type: text/plain\r\n\r\nsecure-hello".to_vec(),
     ));
 
-    // 3. HTTPS proxy listener.
     let proxy_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let proxy_addr = proxy_listener.local_addr().unwrap();
-    // 4. HTTP listener (unused, but `serve` needs it).
     let http_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
 
-    // 5. Router.
     let tld = Tld::new("test").unwrap();
     let cfg = RouterConfig::with_tld(tld);
     let mut router = SiteRouter::new(cfg);
@@ -190,7 +183,6 @@ async fn https_handshake_routes_to_backend() {
         .await;
     });
 
-    // 6. TLS client trusting the CA.
     let response = client_https_get(proxy_addr, "app.test", ca.cert_pem(), "/").await;
     assert_eq!(response, b"secure-hello");
 

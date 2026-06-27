@@ -1,8 +1,8 @@
 //! Project-signal gathering (I/O) for web-root detection.
 //!
 //! This is the I/O half of framework detection: it reads a project directory on
-//! disk and produces an in-memory [`ProjectSignals`]. The *decision* — turning
-//! signals into a served subpath — is the pure [`yerd_core::detect::detect`].
+//! disk and produces an in-memory [`ProjectSignals`]. The decision - turning
+//! signals into a served subpath - is the pure [`yerd_core::detect::detect`].
 //!
 //! Per the platform crate's "side effects behind traits" rule, gathering is
 //! exposed through the [`ProjectSignalSource`] trait so callers can inject a
@@ -18,7 +18,7 @@ use yerd_core::detect::{ProjectSignals, ROOT_MARKERS, WEB_DIR_CANDIDATES};
 /// mock that returns canned signals without touching disk.
 pub trait ProjectSignalSource {
     /// Gather signals for the project rooted at `project_root`. Best-effort:
-    /// implementations must not error — missing/unreadable inputs simply yield
+    /// implementations must not error - missing/unreadable inputs simply yield
     /// fewer signals.
     fn gather(&self, project_root: &Path) -> ProjectSignals;
 }
@@ -37,22 +37,19 @@ impl ProjectSignalSource for FsSignalSource {
 ///
 /// Best-effort and infallible: a missing or malformed `composer.json`, an
 /// unreadable directory, etc. just contribute no signals. Reads are limited to
-/// the project root and the immediate candidate web dirs — never recursive.
+/// the project root and the immediate candidate web dirs - never recursive.
 #[must_use]
 pub fn gather_project_signals(project_root: &Path) -> ProjectSignals {
     let mut signals = ProjectSignals::default();
 
-    // composer.json `require` + `require-dev` package names (lowercased).
     gather_composer_requires(project_root, &mut signals);
 
-    // Root markers — presence as a file or directory.
     for marker in ROOT_MARKERS {
         if project_root.join(marker).exists() {
             signals.markers.insert((*marker).to_string());
         }
     }
 
-    // Candidate web dirs that contain an `index.php` front controller.
     for cand in WEB_DIR_CANDIDATES {
         if project_root.join(cand).join("index.php").is_file() {
             signals.web_dirs_with_index.insert((*cand).to_string());
@@ -168,7 +165,6 @@ mod tests {
         let dir = TempDir::new().unwrap();
         fs::write(dir.path().join("composer.json"), b"{ not valid json").unwrap();
         touch(dir.path().join("public/index.php"));
-        // Falls through to the generic public/ branch.
         let sig = gather_project_signals(dir.path());
         assert!(sig.composer_requires.is_empty());
         assert_eq!(detect(&sig).subpath, PathBuf::from("public"));

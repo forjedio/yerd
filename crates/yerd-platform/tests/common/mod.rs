@@ -102,7 +102,7 @@ impl ResolverInstaller for MockResolverInstaller {
     }
 }
 
-/// `PortBinder` fake — binds on `127.0.0.1` using `std::net` so the
+/// `PortBinder` fake - binds on `127.0.0.1` using `std::net` so the
 /// returned `BoundPort` is a real listener that downstream tests can
 /// connect to.
 #[derive(Debug, Default)]
@@ -120,8 +120,6 @@ impl PortBinder for MockPortBinder {
         desired: (u16, u16),
         _fallback: (u16, u16),
     ) -> Result<PortPair, PlatformError> {
-        // No fallback logic in the mock; tests that exercise fallback
-        // use the real per-OS binder.
         Ok(PortPair {
             http: self.bind(desired.0)?,
             https: self.bind(desired.1)?,

@@ -7,8 +7,8 @@
 //! layers (`yerdd` and the applier); this crate is the testable brain they call.
 //!
 //! The two release channels are:
-//! - [`Channel::Stable`] — the highest non-pre-release version.
-//! - [`Channel::Edge`] — the highest version across *all* releases, including
+//! - [`Channel::Stable`] - the highest non-pre-release version.
+//! - [`Channel::Edge`] - the highest version across *all* releases, including
 //!   pre-releases / release candidates.
 //!
 //! Version precedence follows semver, so `2.1.0-rc.1 < 2.1.0` and build metadata
@@ -75,7 +75,7 @@ pub struct Asset {
 }
 
 /// Metadata for a single release, already parsed from whatever source produced
-/// it (the GitHub Releases API in production). Plain data — no serde derive, so
+/// it (the GitHub Releases API in production). Plain data - no serde derive, so
 /// the I/O layer maps its own wire structs into this.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReleaseMeta {
@@ -121,7 +121,7 @@ pub struct UpdateDecision {
     /// Convenience: `target.is_some()`.
     pub available: bool,
     /// True when `current` is a pre-release that is at least as new as the
-    /// latest stable — i.e. switching to the stable channel would be a
+    /// latest stable - i.e. switching to the stable channel would be a
     /// *downgrade*. Drives the `--stable` downgrade guard.
     pub ahead_of_stable: bool,
 }
@@ -143,7 +143,7 @@ pub fn parse_tag(tag: &str) -> Option<Version> {
 /// `latest_stable` is the max over non-pre-releases; `latest_edge` is the max
 /// over everything. The chosen channel's latest becomes `target` only if it is
 /// strictly newer than `current` (so the stable channel never *downgrades* a
-/// user who is running a newer pre-release — see [`UpdateDecision::ahead_of_stable`]).
+/// user who is running a newer pre-release - see [`UpdateDecision::ahead_of_stable`]).
 #[must_use]
 pub fn select_target(
     releases: &[ReleaseMeta],
@@ -216,7 +216,7 @@ mod tests {
         assert_eq!(parse_tag("V2.0.2-rc.3"), Some(ver("2.0.2-rc.3")));
         assert_eq!(parse_tag("2.0.2"), Some(ver("2.0.2")));
         assert_eq!(parse_tag("not-a-version"), None);
-        assert_eq!(parse_tag("v2.0"), None); // not full semver
+        assert_eq!(parse_tag("v2.0"), None);
     }
 
     #[test]
@@ -251,7 +251,6 @@ mod tests {
 
     #[test]
     fn prerelease_ordering_respects_semver() {
-        // rc.2 > rc.1, and both < the final release.
         let releases = [rel("v2.1.0-rc.1", true), rel("v2.1.0-rc.2", true)];
         let d = select_target(&releases, Channel::Edge, &ver("2.1.0-rc.1"));
         assert_eq!(d.latest_edge, Some(ver("2.1.0-rc.2")));
@@ -268,8 +267,6 @@ mod tests {
 
     #[test]
     fn ahead_of_stable_when_on_newer_prerelease() {
-        // Running 2.1.0-rc.3; latest stable is 2.0.5 (lower). Switching to
-        // stable would be a downgrade → ahead_of_stable, no stable target.
         let releases = [rel("v2.0.5", false), rel("v2.1.0-rc.3", true)];
         let d = select_target(&releases, Channel::Stable, &ver("2.1.0-rc.3"));
         assert_eq!(d.latest_stable, Some(ver("2.0.5")));
@@ -292,14 +289,11 @@ mod tests {
         assert_eq!(d.latest_edge, None);
         assert_eq!(d.target, None);
         assert!(!d.available);
-        // A stable current with no releases is not "ahead of stable".
         assert!(!d.ahead_of_stable);
     }
 
     #[test]
     fn no_stable_releases_at_all() {
-        // Only pre-releases exist. Stable channel has no target; a pre-release
-        // current is considered ahead of (non-existent) stable.
         let releases = [rel("v2.1.0-rc.1", true)];
         let d = select_target(&releases, Channel::Stable, &ver("2.1.0-rc.1"));
         assert_eq!(d.latest_stable, None);
@@ -310,7 +304,6 @@ mod tests {
 
     #[test]
     fn build_metadata_is_ignored_in_precedence() {
-        // 2.0.5+build and 2.0.5 compare equal → no update.
         let releases = [rel("v2.0.5", false)];
         let d = select_target(&releases, Channel::Stable, &ver("2.0.5+build.7"));
         assert_eq!(d.target, None);

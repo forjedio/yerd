@@ -1,4 +1,4 @@
-//! Yerd CLI — a thin `yerd-ipc` client of the `yerdd` daemon.
+//! Yerd CLI - a thin `yerd-ipc` client of the `yerdd` daemon.
 //!
 //! Binary-only crates don't expose a Rust API to integration tests under
 //! `tests/`. This lib publishes the CLI's modules so `tests/cli_e2e.rs` can
@@ -36,25 +36,14 @@ use cli::{Cli, Command};
 /// `0` success, `1` daemon error response, `2` usage error, `69` daemon
 /// unreachable, `74` other transport/IO failure.
 pub async fn run(cli: Cli) -> ExitCode {
-    // `elevate`/`unelevate` do local privileged orchestration (spawn the
-    // helper), not a single IPC round-trip — branch before the IPC path.
     match &cli.command {
         Command::Elevate { target } => return elevate::run_elevate(*target, false).await,
         Command::Unelevate { target } => return elevate::run_elevate(*target, true).await,
-        // `path` edits the user's shell rc file(s); fully local, no IPC.
         Command::Path { action } => return path_cmd::run(*action),
-        // Bare `yerd uninstall` (no target) tears yerd down locally: it stops
-        // the daemon and deletes files, so it can't go over IPC. `uninstall
-        // php/tool` keeps its daemon-mediated path below.
         Command::Uninstall { target: None, yes } => return uninstall::run(*yes),
-        // Stream the install output (Composer's, for the Laravel installer) line by
-        // line. JSON mode keeps the plain blocking path for clean machine output.
         Command::Install {
             target: crate::cli::InstallTarget::Tool { id },
         } if !cli.json => return stream_install_tool(id, cli.json).await,
-        // `yerd update --yes`: the self-update apply path. Not a single
-        // round-trip (it persists the channel, then in a later release will
-        // stage + apply), so it is handled here rather than via `to_request`.
         Command::Update {
             target: None,
             yes: true,
@@ -72,7 +61,6 @@ pub async fn run(cli: Cli) -> ExitCode {
         Ok(r) => r,
         Err(e) => {
             eprintln!("yerd: {e}");
-            // `to_request` / path resolution only fail with client-side usage errors.
             return ExitCode::from(2);
         }
     };
@@ -86,15 +74,10 @@ pub async fn run(cli: Cli) -> ExitCode {
             if !r.stderr.is_empty() {
                 eprintln!("{}", r.stderr);
             }
-            // After a successful global `yerd use <ver>`, nudge the user about
-            // the terminal `php` shim PATH (human output only).
             if !cli.json && r.code == 0 && matches!(cli.command, Command::Use { version: None, .. })
             {
                 print_php_path_hint();
             }
-            // `yerd update --edge`/`--stable` (check, no `--yes`) shows that
-            // channel but does not persist it — say so, so the user isn't
-            // surprised their saved preference is unchanged.
             if !cli.json && r.code == 0 {
                 if let Command::Update {
                     target: None,
@@ -113,10 +96,6 @@ pub async fn run(cli: Cli) -> ExitCode {
                     }
                 }
             }
-            // After installing a dev tool, wire Yerd's bin dir onto PATH so the
-            // tool's commands resolve in a new shell (idempotent; quiet if
-            // already configured). The Doctor `BinDirNotOnPath` warning backstops
-            // the GUI / any case this can't run.
             if r.code == 0
                 && matches!(
                     cli.command,
@@ -130,10 +109,6 @@ pub async fn run(cli: Cli) -> ExitCode {
             ExitCode::from(r.code)
         }
         Err(e @ ClientError::DaemonUnreachable(_)) => {
-            // For `doctor`, a down daemon is itself a FAIL finding: render it as
-            // a one-item diagnosis through the normal path so `--json` and the
-            // exit code behave like any other doctor run (exits 1). Other
-            // commands keep the generic "daemon unreachable" (69) handling.
             if matches!(cli.command, Command::Doctor { .. }) {
                 let resp = daemon_down_response();
                 let r = map::render(&resp, cli.json);
@@ -155,7 +130,7 @@ pub async fn run(cli: Cli) -> ExitCode {
 /// `yerd update --yes`: the self-update apply path.
 ///
 /// Persists the channel when `--edge`/`--stable` is given, checks the channel,
-/// and — when a newer version is available — asks the daemon to download + verify
+/// and when a newer version is available asks the daemon to download + verify
 /// the artifact ([`Request::StageUpdate`]) and then applies it **in-process**
 /// (the CLI is a short-lived terminal process: it swaps the bundle it runs from,
 /// off its old inode, then exits). The detached-subprocess applier is only for
@@ -164,11 +139,6 @@ pub async fn run(cli: Cli) -> ExitCode {
 async fn run_self_update_apply(json: bool, edge: bool, stable: bool, force: bool) -> ExitCode {
     use yerd_ipc::{Request, Response};
 
-    // `--json` promises machine-readable output, but applying is a multi-step,
-    // self-replacing operation (the in-process bundle swap re-execs off its own
-    // inode and exits) with no clean JSON result contract. Reject the combination
-    // up front rather than emit stray human text on a `--json` run. The check-only
-    // path (`yerd update --json`, no `--yes`) still honours `--json`.
     if json {
         eprintln!("yerd: --json is not supported with `update --yes` (apply); use it for the check-only `yerd update`");
         return ExitCode::from(2);
@@ -176,7 +146,6 @@ async fn run_self_update_apply(json: bool, edge: bool, stable: bool, force: bool
 
     let channel_override = map::channel_from_flags(edge, stable);
 
-    // Persist the channel half of `--yes` when a channel flag is present.
     if channel_override.is_some() {
         let name = if edge { "edge" } else { "stable" };
         match transport::exchange(&Request::SetUpdateChannel {
@@ -208,7 +177,6 @@ async fn run_self_update_apply(json: bool, edge: bool, stable: bool, force: bool
         }
     }
 
-    // Is there anything to apply on this channel?
     let status = match transport::exchange(&Request::CheckUpdate {
         channel: channel_override,
     })
@@ -243,7 +211,6 @@ async fn run_self_update_apply(json: bool, edge: bool, stable: bool, force: bool
 
     if !available {
         if ahead_of_stable && force {
-            // Downgrade from a newer pre-release to stable is not yet automated.
             println!(
                 "yerd: you're on pre-release {current} (ahead of stable {}); automated \
                  downgrade isn't supported yet — reinstall the stable build manually",
@@ -261,7 +228,6 @@ async fn run_self_update_apply(json: bool, edge: bool, stable: bool, force: bool
         return ExitCode::SUCCESS;
     }
 
-    // Download + verify the artifact via the daemon.
     if !json {
         println!(
             "yerd: downloading and verifying {}…",
@@ -292,9 +258,6 @@ async fn run_self_update_apply(json: bool, edge: bool, stable: bool, force: bool
         }
     };
 
-    // Apply on a blocking thread (the applier runs `tar`/`dpkg`/`rename` and
-    // sleeps in the daemon-restart wait — keep it off the async worker). The CLI
-    // doesn't relaunch the GUI.
     tokio::task::spawn_blocking(move || apply::run(std::path::Path::new(&path), kind, false))
         .await
         .unwrap_or_else(|e| {
@@ -355,8 +318,6 @@ async fn stream_install_tool(id: &str, json: bool) -> ExitCode {
                 match state {
                     JobState::Running => tokio::time::sleep(Duration::from_millis(400)).await,
                     JobState::Succeeded => {
-                        // Wire Yerd's bin dir onto PATH so the tool's commands
-                        // resolve in a new shell (same as the blocking path).
                         path_cmd::ensure_installed_after_tool(json);
                         return ExitCode::SUCCESS;
                     }
@@ -395,7 +356,7 @@ async fn stream_install_tool(id: &str, json: bool) -> ExitCode {
 /// Best-effort: rewrite an `Unpark` request's path to its canonical form so a
 /// relative or symlinked path the user typed matches the canonical string the
 /// daemon stored when the directory was parked. The daemon matches `unpark`
-/// *exactly* (it deliberately does not canonicalise — so a directory deleted
+/// *exactly* (it deliberately does not canonicalise - so a directory deleted
 /// from disk is still removable by its exact stored path); doing it here, at the
 /// I/O boundary, keeps `map::to_request` pure. A path that can't be canonicalised
 /// (e.g. already deleted) is left exactly as typed.
@@ -411,7 +372,7 @@ fn canonicalize_unpark(req: yerd_ipc::Request) -> yerd_ipc::Request {
 }
 
 /// Absolutise the file path of a `BackupDatabase`/`RestoreDatabase` request against
-/// the user's current directory before it reaches the daemon — the daemon's own cwd
+/// the user's current directory before it reaches the daemon - the daemon's own cwd
 /// differs from the user's shell, so a relative path would otherwise resolve in the
 /// wrong place. Done here, at the I/O boundary, to keep `map::to_request` pure.
 ///
@@ -486,7 +447,6 @@ fn print_php_path_hint() {
         bin.display()
     );
     println!("  (also provides `php<ver>` and `phpcover`/`php<ver>cover` for pcov coverage)");
-    // Warn if a different `php` is found earlier on PATH (would shadow the shim).
     if let Some(existing) = first_php_on_path() {
         if existing != bin.join("php") {
             println!(

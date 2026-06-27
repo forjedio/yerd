@@ -1,4 +1,4 @@
-//! Dev-tool installer subsystem — Composer, Node (node/npm/npx), Bun (bun/bunx).
+//! Dev-tool installer subsystem - Composer, Node (node/npm/npx), Bun (bun/bunx).
 //!
 //! Each tool ships as a self-contained, relocatable binary (no global install):
 //! Node's tarball, Bun's zip, Composer's phar. yerd downloads + sha256-verifies
@@ -24,13 +24,13 @@ use crate::ext_install::sha256_hex;
 /// The dev tools yerd can install.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tool {
-    /// Composer (PHP dependency manager) — a phar run via the managed PHP.
+    /// Composer (PHP dependency manager) - a phar run via the managed PHP.
     Composer,
-    /// Node.js — `node`, `npm`, `npx`.
+    /// Node.js - `node`, `npm`, `npx`.
     Node,
-    /// Bun — `bun`, `bunx`.
+    /// Bun - `bun`, `bunx`.
     Bun,
-    /// The Laravel installer (`laravel new`) — a Composer package run via the
+    /// The Laravel installer (`laravel new`) - a Composer package run via the
     /// managed PHP, exposed as the `laravel` multi-call shim.
     Laravel,
 }
@@ -153,8 +153,6 @@ pub fn status(dirs: &PlatformDirs, tool: Tool) -> ToolStatus {
             .iter()
             .map(|s| (*s).to_owned())
             .collect(),
-        // Pure managed status: external detection is layered on at the IPC edge
-        // (it needs to spawn the user's login shell to resolve PATH).
         external: false,
     }
 }
@@ -191,8 +189,6 @@ pub async fn install(
         Tool::Composer => composer::install(dirs, dl).await,
         Tool::Node => node::install(dirs, dl).await,
         Tool::Bun => bun::install(dirs, dl).await,
-        // The installer is a Composer package, not a downloadable artifact, so it
-        // ignores `dl` and drives the managed Composer itself — streaming its output.
         Tool::Laravel => laravel::install(dirs, progress).await,
     };
     match &result {
@@ -217,12 +213,9 @@ pub fn uninstall(dirs: &PlatformDirs, tool: Tool) -> Result<(), ToolError> {
 #[cfg(unix)]
 fn shim_links(dirs: &PlatformDirs, tool: Tool, yerd_bin: &Path) -> Vec<(String, PathBuf)> {
     match tool {
-        // Composer runs via the managed PHP — its `composer` command is the
-        // multi-call shim into the `yerd` binary, like the cover shims.
         Tool::Composer => vec![("composer".to_owned(), yerd_bin.to_path_buf())],
         Tool::Node => node::shim_links(dirs),
         Tool::Bun => bun::shim_links(dirs),
-        // The `laravel` command is likewise a multi-call shim into `yerd`.
         Tool::Laravel => vec![("laravel".to_owned(), yerd_bin.to_path_buf())],
     }
 }
@@ -245,7 +238,6 @@ pub fn reconcile_tool_shims(dirs: &PlatformDirs, yerd_bin: &Path) -> Result<(), 
                     .map_err(|e| ToolError::Io(e.to_string()))?;
             }
         } else {
-            // Prune this tool's owned names if present as a symlink.
             for &name in tool.exposed_bins() {
                 let p = bin.join(name);
                 let is_link =
@@ -276,8 +268,6 @@ pub(crate) fn sha_for_asset(sums_text: &str, exact_filename: &str) -> Option<Str
         let line = raw.trim_start_matches('\u{feff}').trim();
         let mut parts = line.split_whitespace();
         let hex = parts.next()?;
-        // The filename is the remainder; coreutils uses `<hex>  <name>` (a `*`
-        // prefix marks binary mode). Take the last token and strip a leading `*`.
         let Some(name) = parts.last() else { continue };
         let name = name.strip_prefix('*').unwrap_or(name);
         if name == exact_filename && hex.len() == 64 && hex.bytes().all(|b| b.is_ascii_hexdigit()) {
@@ -301,7 +291,7 @@ pub(crate) fn verify_sha256(bytes: &[u8], want_sha: &str, label: &str) -> Result
 
 /// The single child **directory** of `dir` (Node/Bun archives wrap their payload
 /// in one top-level dir whose name encodes the version). Errors unless exactly
-/// one directory entry exists — never reconstructed from a version string.
+/// one directory entry exists - never reconstructed from a version string.
 pub(crate) fn extract_root_dir(dir: &Path) -> Result<PathBuf, ToolError> {
     let mut found: Option<PathBuf> = None;
     let entries =
@@ -331,8 +321,6 @@ pub(crate) fn stage_and_swap(
     unpack: impl FnOnce(&Path) -> Result<(), ToolError>,
 ) -> Result<(), ToolError> {
     use std::sync::atomic::{AtomicU64, Ordering};
-    // Monotonic per-call counter so two overlapping installs/updates of the same
-    // tool in this process can't race on the same staging/backup paths.
     static SEQ: AtomicU64 = AtomicU64::new(0);
     let seq = SEQ.fetch_add(1, Ordering::Relaxed);
 
@@ -359,9 +347,6 @@ pub(crate) fn stage_and_swap(
         return Err(e);
     }
 
-    // Move the current install aside (rather than deleting it) so a failure
-    // between the swap-out and swap-in leaves the previous, still-valid payload
-    // recoverable instead of uninstalling the tool.
     let final_dir = tool_dir(dirs, tool);
     let backup = tools_root.join(format!(
         ".previous-{}-{}-{seq}",
@@ -376,7 +361,6 @@ pub(crate) fn stage_and_swap(
         }
     }
     if let Err(e) = std::fs::rename(&staging, &final_dir) {
-        // Roll the previous install back into place before surfacing the error.
         if backup.exists() {
             let _ = std::fs::rename(&backup, &final_dir);
         }
@@ -402,7 +386,6 @@ mod tests {
 
     #[test]
     fn sha_for_asset_matches_exact_filename_among_decoys() {
-        // Mixed: CRLF, BOM on line 1, a binary `*` marker, and decoy variants.
         let h = "a".repeat(64);
         let want = "b".repeat(64);
         let body = format!(
@@ -415,7 +398,6 @@ mod tests {
             sha_for_asset(&body, "bun-linux-x64.zip").as_deref(),
             Some(want.as_str())
         );
-        // A platform we didn't list is absent.
         assert_eq!(sha_for_asset(&body, "bun-darwin-aarch64.zip"), None);
     }
 
@@ -439,11 +421,9 @@ mod tests {
     fn status_reflects_marker() {
         let tmp = tempfile::tempdir().unwrap();
         let dirs = dirs_in(tmp.path());
-        // Not installed.
         let s = status(&dirs, Tool::Node);
         assert!(!s.installed);
         assert_eq!(s.binaries, vec!["node", "npm", "npx"]);
-        // Write a marker → installed with version.
         let d = tool_dir(&dirs, Tool::Node);
         std::fs::create_dir_all(&d).unwrap();
         std::fs::write(d.join(VERSION_MARKER), "v24.17.0").unwrap();
@@ -456,15 +436,15 @@ mod tests {
     fn extract_root_dir_requires_exactly_one() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
-        assert!(extract_root_dir(root).is_err()); // none
+        assert!(extract_root_dir(root).is_err());
         std::fs::create_dir(root.join("node-v24.17.0-darwin-arm64")).unwrap();
-        std::fs::write(root.join(".version"), "x").unwrap(); // a file is ignored
+        std::fs::write(root.join(".version"), "x").unwrap();
         assert_eq!(
             extract_root_dir(root).unwrap(),
             root.join("node-v24.17.0-darwin-arm64")
         );
         std::fs::create_dir(root.join("second")).unwrap();
-        assert!(extract_root_dir(root).is_err()); // two dirs
+        assert!(extract_root_dir(root).is_err());
     }
 
     #[cfg(unix)]
@@ -476,7 +456,6 @@ mod tests {
         std::fs::write(&yerd_bin, b"#!fake").unwrap();
         let bin = bin_dir(&dirs);
 
-        // Install node (versioned subdir) + composer (phar), leave bun absent.
         let node_root = tool_dir(&dirs, Tool::Node).join("node-v24.17.0-darwin-arm64");
         std::fs::create_dir_all(node_root.join("bin")).unwrap();
         std::fs::write(node_root.join("bin").join("node"), b"n").unwrap();
@@ -488,13 +467,11 @@ mod tests {
         std::fs::write(composer_dir.join("composer.phar"), b"phar").unwrap();
         std::fs::write(composer_dir.join(VERSION_MARKER), "2.10.1").unwrap();
 
-        // A stale bun shim from a prior install that's since been removed.
         std::fs::create_dir_all(&bin).unwrap();
         std::os::unix::fs::symlink(&yerd_bin, bin.join("bun")).unwrap();
 
         reconcile_tool_shims(&dirs, &yerd_bin).unwrap();
 
-        // node/npm/npx → the dist bin; composer → the yerd binary.
         assert_eq!(
             std::fs::read_link(bin.join("node")).unwrap(),
             node_root.join("bin").join("node")
@@ -502,7 +479,6 @@ mod tests {
         assert!(bin.join("npm").exists());
         assert!(bin.join("npx").exists());
         assert_eq!(std::fs::read_link(bin.join("composer")).unwrap(), yerd_bin);
-        // The stale bun shim (tool not installed) was pruned.
         assert!(!bin.join("bun").exists());
     }
 
@@ -520,7 +496,6 @@ mod tests {
             installed_version(&dirs, Tool::Bun).as_deref(),
             Some("bun-v1.0.0")
         );
-        // Reinstall replaces in place — still exactly one child dir.
         stage_and_swap(&dirs, Tool::Bun, "bun-v1.1.0", |s| {
             std::fs::create_dir(s.join("bun-darwin-aarch64")).unwrap();
             std::fs::write(s.join("bun-darwin-aarch64").join("bun"), b"v2").unwrap();

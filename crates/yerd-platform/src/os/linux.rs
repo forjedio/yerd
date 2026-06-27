@@ -5,8 +5,6 @@
 //! when `XDG_RUNTIME_DIR` is unset. Privileged ops return
 //! `NeedsHelper`; probes are read-only.
 
-// `http_…` vs `https_…` binding names differ by one character —
-// semantically meaningful, and aliasing them only obscures the code.
 #![allow(clippy::similar_names)]
 
 use std::fs;
@@ -44,7 +42,7 @@ impl Paths for LinuxPaths {
         let data = pd.data_dir().to_path_buf();
         let cache = pd.cache_dir().to_path_buf();
 
-        // state_dir() — XDG_STATE_HOME — is the right answer; if None,
+        // state_dir() - XDG_STATE_HOME - is the right answer; if None,
         // fall back to $HOME/.local/state/yerd. Never collapse to data.
         let state = pd.state_dir().map_or_else(
             || {
@@ -56,7 +54,7 @@ impl Paths for LinuxPaths {
             Path::to_path_buf,
         );
 
-        // runtime_dir() — XDG_RUNTIME_DIR — falls back to /tmp/yerd-$UID
+        // runtime_dir() - XDG_RUNTIME_DIR - falls back to /tmp/yerd-$UID
         // when None. Caller is responsible for mkdir(mode=0o700) and
         // ownership/mode verification.
         let runtime = pd.runtime_dir().map_or_else(
@@ -127,11 +125,10 @@ impl TrustStore for LinuxTrustStore {
     }
 
     fn is_present_system(&self, fp: &CaFingerprint) -> Result<bool, PlatformError> {
-        // Find the first anchor directory that exists; ignore the rest.
         let chosen = ANCHOR_DIRS.iter().map(Path::new).find(|p| p.is_dir());
 
         let Some(dir) = chosen else {
-            // No recognised layout — caller likely needs to install
+            // No recognised layout - caller likely needs to install
             // ca-certificates first.
             return Err(PlatformError::TrustStore {
                 reason: TrustStoreErrorReason::AnchorDirMissing(PathBuf::from(
@@ -173,9 +170,6 @@ impl TrustStore for LinuxTrustStore {
     }
 
     fn install_firefox_nss(&self, _: &str) -> Result<NssOutcome, PlatformError> {
-        // Phase 1: report not-attempted by surfacing a degraded outcome.
-        // Actual certutil invocation is wired in a follow-up when the
-        // daemon + helper are present to drive it end-to-end.
         Ok(NssOutcome {
             profiles_attempted: 0,
             profiles_succeeded: 0,
@@ -230,7 +224,7 @@ impl ResolverInstaller for LinuxResolverInstaller {
         // Backend probe: prefer the systemd-resolved drop-in if its
         // content parses to a matching shape; otherwise check
         // /etc/resolv.conf for the Yerd marker. We do not require
-        // detect_systemd_resolved() to short-circuit — the drop-in
+        // detect_systemd_resolved() to short-circuit - the drop-in
         // can be present on systems where resolved is also active.
         let drop_in = drop_in_path(tld);
         if let Ok(text) = fs::read_to_string(drop_in) {
@@ -242,8 +236,6 @@ impl ResolverInstaller for LinuxResolverInstaller {
             }
         }
 
-        // Fallback: look for Yerd's nameserver marker in resolv.conf.
-        // We treat presence of `127.0.0.1` as a positive signal.
         let resolv = fs::read_to_string("/etc/resolv.conf").unwrap_or_default();
         if !resolv.is_empty() {
             let _ = resolv_conf::detect_systemd_resolved(&resolv, false);
@@ -320,8 +312,6 @@ pub(crate) fn bind_pair_impl(
             },
         }),
         port_plan::DesiredPairAction::HardFail(_) => {
-            // Surface the first non-retry error. http takes precedence
-            // (it was attempted first).
             if let Err(e) = http_attempt {
                 return Err(PlatformError::Bind {
                     port: desired.0,
@@ -334,7 +324,6 @@ pub(crate) fn bind_pair_impl(
                     source: e,
                 });
             }
-            // Unreachable per classify_desired's contract.
             Err(PlatformError::Bind {
                 port: desired.0,
                 source: std::io::Error::from(std::io::ErrorKind::Other),
@@ -343,7 +332,6 @@ pub(crate) fn bind_pair_impl(
         port_plan::DesiredPairAction::UseFallback => {
             let desired_http_kind = http_outcome.err().unwrap_or(std::io::ErrorKind::Other);
             let desired_https_kind = https_outcome.err().unwrap_or(std::io::ErrorKind::Other);
-            // Drop any successful partial listener.
             drop(http_attempt);
             drop(https_attempt);
 
@@ -385,7 +373,7 @@ pub(crate) fn bind_pair_impl(
 ///
 /// Reads `/proc/<pid>/status` (`VmRSS`) and `/proc/loadavg`, delegating the
 /// parsing to [`crate::pure::proc_metrics`]. Every read failure collapses to
-/// `None` — metrics are best-effort.
+/// `None` - metrics are best-effort.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct LinuxSystemMetrics;
 
@@ -452,8 +440,6 @@ mod tests {
 
     #[test]
     fn read_real_uid_returns_some_when_proc_present() {
-        // On Linux test hosts /proc is always mounted; assert we can
-        // read SOMETHING. On unusual hosts the assertion is skipped.
         if Path::new("/proc/self/status").exists() {
             assert!(read_real_uid().is_some());
         }

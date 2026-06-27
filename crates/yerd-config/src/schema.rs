@@ -23,7 +23,7 @@ pub struct Config {
     /// Loopback UDP/TCP port for the embedded `.test` DNS responder. Default:
     /// [`DEFAULT_DNS_PORT`]. A fixed port (rather than ephemeral) keeps the
     /// resolver config installed by `yerd elevate resolver` valid across daemon
-    /// restarts. `0` means "ephemeral" (dev/tests only — not durable).
+    /// restarts. `0` means "ephemeral" (dev/tests only - not durable).
     pub dns_port: u16,
     /// Self-update release channel: [`DEFAULT_UPDATE_CHANNEL`] (`"stable"`) or
     /// `"edge"`. `stable` tracks the latest non-pre-release; `edge` opts into
@@ -51,7 +51,7 @@ pub struct Config {
     /// additively.
     ///
     /// The key is the parked site's `document_root` **string, byte-exact and
-    /// non-canonical** — see [`SiteOverride`]. `BTreeMap` for stable
+    /// non-canonical** - see [`SiteOverride`]. `BTreeMap` for stable
     /// serialisation order.
     pub overrides: BTreeMap<String, SiteOverride>,
     /// Optional services.
@@ -140,17 +140,17 @@ impl Config {
         crate::parse::validate(self)
     }
 
-    /// Thin I/O leaf — read + parse a TOML file at `path`.
+    /// Thin I/O leaf - read + parse a TOML file at `path`.
     pub fn load(path: &std::path::Path) -> Result<Self, crate::ConfigError> {
         crate::io::load(path)
     }
 
-    /// Thin I/O leaf — serialise + save atomically via write-temp-then-rename.
+    /// Thin I/O leaf - serialise + save atomically via write-temp-then-rename.
     ///
     /// `save` may create intermediate parent directories
     /// (`fs::create_dir_all`); they are not removed on a later failure. On
     /// Unix the destination ends up with mode 0600 (owner read/write only)
-    /// inherited from the temp file — the daemon is the only intended
+    /// inherited from the temp file - the daemon is the only intended
     /// writer.
     ///
     /// A parent-less path (e.g. `Path::new("config.toml")`) is treated as
@@ -171,7 +171,7 @@ pub const UPDATE_CHANNELS: &[&str] = &["stable", "edge"];
 
 /// The lowest non-privileged port. Ports below this need elevation on
 /// macOS / Linux, which is precisely what the rootless fallback exists to
-/// avoid — so `fallback_http`/`fallback_https` are required to be `>=` this.
+/// avoid - so `fallback_http`/`fallback_https` are required to be `>=` this.
 pub const FIRST_UNPRIVILEGED_PORT: u16 = 1024;
 
 /// HTTP and HTTPS ports.
@@ -238,10 +238,6 @@ impl Default for PhpSection {
     fn default() -> Self {
         Self {
             default: PhpVersion::new(8, 3),
-            // Seed Yerd's opinionated defaults so a fresh config (and the
-            // in-memory default the daemon runs with before any `yerd.toml`
-            // exists) applies them to every installed version's FPM pool.
-            // Single source of truth: `yerd_core::php_settings::default_settings`.
             settings: yerd_core::php_settings::default_settings()
                 .into_iter()
                 .map(|(k, v)| (k.to_owned(), v.to_owned()))
@@ -260,7 +256,7 @@ pub struct ParkedSection {
     /// for non-UTF-8 paths on Windows. Callers convert to `PathBuf` at the
     /// point of use.
     ///
-    /// Storage is byte-exact — the config layer does not canonicalise.
+    /// Storage is byte-exact - the config layer does not canonicalise.
     /// `"/srv/foo"` and `"/srv/foo/"` are distinct entries. Callers wanting
     /// equality semantics must normalise before insertion.
     ///
@@ -272,14 +268,14 @@ pub struct ParkedSection {
 /// A per-site override applied to a **parked** site (see [`Config::overrides`]).
 ///
 /// Every field is `Option`: `None` means "inherit" (global default PHP, or
-/// HTTPS off), `Some(v)` pins that value. This keeps the type extensible —
+/// HTTPS off), `Some(v)` pins that value. This keeps the type extensible -
 /// future per-site settings (e.g. a `FrankenPHP` toggle) are added as more
 /// `Option` fields without a wire break.
 ///
 /// ## Keying
 ///
 /// In [`Config::overrides`] the key is the parked site's `document_root`
-/// **string, stored byte-exact and never canonicalised** — exactly the form
+/// **string, stored byte-exact and never canonicalised** - exactly the form
 /// produced by `Site::document_root().to_string_lossy()`, which is in turn the
 /// `std::fs::DirEntry::path()` the daemon's scan yields. Because both the writer
 /// (the IPC mutation handler) and the reader (the directory scan) derive the key
@@ -352,7 +348,7 @@ pub const DEFAULT_MAIL_PORT: u16 = 2525;
 ///
 /// A Herd-style capture sink: it accepts mail on a loopback port and stores it
 /// for inspection in the GUI. Enabled by default; when enabled the daemon binds
-/// [`Self::port`] on `127.0.0.1` (a busy port is non-fatal — the daemon logs and
+/// [`Self::port`] on `127.0.0.1` (a busy port is non-fatal - the daemon logs and
 /// runs with capture not listening).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MailSection {
@@ -422,7 +418,6 @@ mod tests {
     #[test]
     fn default_overrides_empty() {
         assert!(Config::default().overrides.is_empty());
-        // A defaulted override inherits everything.
         assert_eq!(
             SiteOverride::default(),
             SiteOverride {

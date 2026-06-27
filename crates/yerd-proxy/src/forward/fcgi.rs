@@ -35,7 +35,6 @@ pub async fn forward(
     let backend_label = backend.to_string();
     let (parts, body) = req.into_parts();
 
-    // 1. Connect.
     let mut stream = open_backend(&backend)
         .await
         .map_err(|source| ProxyError::BackendConnect {
@@ -43,7 +42,6 @@ pub async fn forward(
             source,
         })?;
 
-    // 2. BEGIN_REQUEST.
     let mut framed: Vec<u8> = Vec::with_capacity(64);
     write_record(
         &mut framed,
@@ -51,7 +49,6 @@ pub async fn forward(
         &encode_begin_request_body(FCGI_RESPONDER, false),
     );
 
-    // 3. PARAMS — encoded into chunks of <= FCGI_MAX_PAYLOAD bytes.
     let params = build_params(
         parts.method.as_str(),
         path_and_query_of(&parts.uri),
@@ -68,19 +65,15 @@ pub async fn forward(
     for chunk in param_buf.chunks(FCGI_MAX_PAYLOAD) {
         write_record(&mut framed, RecordType::Params, chunk);
     }
-    // Zero-length PARAMS terminator.
     write_record(&mut framed, RecordType::Params, &[]);
 
-    // Flush the prelude before draining the body.
     stream
         .write_all(&framed)
         .await
         .map_err(|source| ProxyError::BackendProtocol { source })?;
 
-    // 4. STDIN — stream the request body chunked at FCGI_MAX_PAYLOAD.
     write_stdin(&mut stream, body, &backend_label).await?;
 
-    // 5. Read STDOUT/STDERR until END_REQUEST.
     let (stdout, stderr) = read_fcgi_response(&mut stream).await?;
 
     if !stderr.is_empty() {
@@ -92,14 +85,13 @@ pub async fn forward(
         );
     }
 
-    // 6. Parse CGI headers from STDOUT and synthesise the response.
     let (status, headers, body_bytes) = parse_cgi_response(&stdout);
     synthesise_response(status, headers, body_bytes)
 }
 
 /// Stream the request `body` to the backend as FCGI STDIN records (each chunked
 /// at `FCGI_MAX_PAYLOAD`), then write the zero-length STDIN terminator. HTTP
-/// trailers are dropped — FastCGI cannot represent them.
+/// trailers are dropped - FastCGI cannot represent them.
 async fn write_stdin(
     stream: &mut BackendStream,
     mut body: Incoming,
@@ -132,7 +124,6 @@ async fn write_stdin(
             }
         }
     }
-    // Zero-length STDIN terminator.
     let mut term = Vec::with_capacity(8);
     write_record(&mut term, RecordType::Stdin, &[]);
     stream
@@ -175,9 +166,7 @@ async fn read_fcgi_response(stream: &mut BackendStream) -> Result<(Vec<u8>, Vec<
             RecordType::Stdout => stdout.extend_from_slice(&content),
             RecordType::Stderr => stderr.extend_from_slice(&content),
             RecordType::EndRequest => break,
-            _ => {
-                // Ignore other record types defensively.
-            }
+            _ => {}
         }
     }
     Ok((stdout, stderr))
@@ -213,7 +202,7 @@ fn synthesise_response(
     })
 }
 
-/// Forward an upgrade request — FastCGI cannot model duplex byte streams,
+/// Forward an upgrade request - FastCGI cannot model duplex byte streams,
 /// so MVP returns 501 Not Implemented.
 pub fn upgrade_not_supported() -> Response<BoxBody> {
     Response::builder()
@@ -222,10 +211,7 @@ pub fn upgrade_not_supported() -> Response<BoxBody> {
         .body(crate::forward::bytes_body(
             b"WebSocket upgrade not supported on FastCGI backends.\n",
         ))
-        .unwrap_or_else(|_| {
-            // Builder failure here is unreachable for static inputs.
-            Response::new(empty_body())
-        })
+        .unwrap_or_else(|_| Response::new(empty_body()))
 }
 
 enum BackendStream {
@@ -355,7 +341,7 @@ fn parse_cgi_response(stdout: &[u8]) -> (http::StatusCode, Vec<(String, String)>
     (status, headers, body)
 }
 
-/// Parse a CGI `Status:` header value — `"200 OK"` or a bare `"200"` — into an
+/// Parse a CGI `Status:` header value - `"200 OK"` or a bare `"200"` - into an
 /// HTTP status code. Returns `None` when it isn't a valid code (caller keeps the
 /// default 200).
 fn parse_cgi_status(value: &str) -> Option<http::StatusCode> {
@@ -364,7 +350,7 @@ fn parse_cgi_status(value: &str) -> Option<http::StatusCode> {
 }
 
 /// Return `(offset_of_terminator, terminator_length)`. If no terminator is
-/// found, returns `(stdout.len(), 0)` — body is then empty.
+/// found, returns `(stdout.len(), 0)` - body is then empty.
 fn find_header_terminator(stdout: &[u8]) -> (usize, usize) {
     for i in 0..stdout.len() {
         if i + 4 <= stdout.len() && stdout.get(i..i + 4) == Some(b"\r\n\r\n") {

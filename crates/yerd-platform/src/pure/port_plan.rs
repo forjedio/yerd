@@ -7,14 +7,14 @@
 
 use std::io::ErrorKind;
 
-/// Single-side bind outcome — either `Ok` (we bound a real listener and
-/// know its port) or `Err(kind)`, the OS-level error kind.
+/// Single-side bind outcome: `Ok` if we bound a real listener, else
+/// `Err(kind)` with the OS-level error kind.
 pub type BindOutcome = Result<(), ErrorKind>;
 
 /// Decision produced after attempting the desired pair.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DesiredPairAction {
-    /// Both desired binds succeeded — keep them; no fallback needed.
+    /// Both desired binds succeeded; keep them, no fallback needed.
     KeepDesired,
     /// At least one desired bind failed with a retry-triggering kind
     /// (`PermissionDenied`, `AddrInUse`, or `AddrNotAvailable`). The
@@ -31,7 +31,7 @@ pub enum DesiredPairAction {
 /// Decision produced after attempting the fallback pair.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FallbackPairAction {
-    /// Both fallback binds succeeded — return the pair.
+    /// Both fallback binds succeeded; return the pair.
     KeepFallback,
     /// At least one fallback bind failed. Surface
     /// [`crate::BindPairErrorReason::BothPairsFailed`] carrying all four
@@ -45,9 +45,6 @@ pub fn classify_desired(http: BindOutcome, https: BindOutcome) -> DesiredPairAct
     if http.is_ok() && https.is_ok() {
         return DesiredPairAction::KeepDesired;
     }
-    // Hard failures take precedence over retry-triggers: a non-retry
-    // ErrorKind means the bind is structurally impossible, so trying the
-    // fallback would just produce a worse diagnostic.
     if let Err(k) = http {
         if !is_retry_kind(k) {
             return DesiredPairAction::HardFail(k);
@@ -151,8 +148,6 @@ mod tests {
 
     #[test]
     fn retry_kind_on_http_lets_hard_kind_on_https_decide() {
-        // Per the precedence pin: a retry-kind never beats a hard-kind in
-        // determining the action. http retry + https hard = hard fail.
         let action = classify_desired(
             Err(ErrorKind::PermissionDenied),
             Err(ErrorKind::InvalidInput),

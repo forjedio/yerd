@@ -45,12 +45,10 @@ async fn serve_and_query(tld: Tld, site_fqdn: &str, apex_fqdn: &str) {
         let _ = rx.await;
     }));
 
-    // --- UDP client -----------------------------------------------------
     let conn = hickory_client::udp::UdpClientStream::<tokio::net::UdpSocket>::new(addr);
     let (mut udp_client, bg) = AsyncClient::connect(conn).await.unwrap();
     tokio::spawn(bg);
 
-    // 1. $site A → Loopback4
     let site = Name::from_str(site_fqdn).unwrap();
     let resp = timeout(udp_client.query(site.clone(), DNSClass::IN, RecordType::A)).await;
     assert_eq!(resp.response_code(), ResponseCode::NoError);
@@ -61,7 +59,6 @@ async fn serve_and_query(tld: Tld, site_fqdn: &str, apex_fqdn: &str) {
         other => panic!("expected RData::A, got {other:?}"),
     }
 
-    // 2. $site AAAA → Loopback6
     let resp = timeout(udp_client.query(site.clone(), DNSClass::IN, RecordType::AAAA)).await;
     assert_eq!(resp.response_code(), ResponseCode::NoError);
     assert_eq!(resp.answers().len(), 1);
@@ -70,14 +67,11 @@ async fn serve_and_query(tld: Tld, site_fqdn: &str, apex_fqdn: &str) {
         other => panic!("expected RData::AAAA, got {other:?}"),
     }
 
-    // 3. $site MX → NoData (NOERROR + empty answer + no SOA in authority).
-    //    Pins the RFC 8020 §2 / RFC 2308 §3 decision from lib.rs.
     let resp = timeout(udp_client.query(site.clone(), DNSClass::IN, RecordType::MX)).await;
     assert_eq!(resp.response_code(), ResponseCode::NoError);
     assert_eq!(resp.answers().len(), 0);
     assert_eq!(resp.name_servers().len(), 0);
 
-    // 4. unrelated.com A → REFUSED, non-authoritative (out of our zone).
     let unrelated = Name::from_str("unrelated.com.").unwrap();
     let resp = timeout(udp_client.query(unrelated, DNSClass::IN, RecordType::A)).await;
     assert_eq!(resp.response_code(), ResponseCode::Refused);
@@ -86,13 +80,11 @@ async fn serve_and_query(tld: Tld, site_fqdn: &str, apex_fqdn: &str) {
         "out-of-zone reply must clear the AA bit"
     );
 
-    // 5. $apex A → NoData (apex carve-out).
     let apex = Name::from_str(apex_fqdn).unwrap();
     let resp = timeout(udp_client.query(apex, DNSClass::IN, RecordType::A)).await;
     assert_eq!(resp.response_code(), ResponseCode::NoError);
     assert_eq!(resp.answers().len(), 0);
 
-    // --- TCP client to exercise the TCP listener path -------------------
     let (tcp_conn, sender) =
         hickory_client::tcp::TcpClientStream::<AsyncIoTokioAsStd<tokio::net::TcpStream>>::new(addr);
     let (mut tcp_client, bg) = AsyncClient::new(tcp_conn, sender, None).await.unwrap();
@@ -105,16 +97,10 @@ async fn serve_and_query(tld: Tld, site_fqdn: &str, apex_fqdn: &str) {
         other => panic!("expected RData::A over TCP, got {other:?}"),
     }
 
-    // --- Malformed UDP packet: QDCOUNT=0 --------------------------------
-    // Hickory's parser pre-handler FORMERRs this; our LoopbackHandler is
-    // never invoked. Pins:
-    //   - hickory echoes the request ID rather than synthesising a fresh header
-    //   - RCode = FORMERR (1)
     {
         let sock = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
         sock.connect(addr).await.unwrap();
-        // 12-byte DNS header: id=0xCAFE, flags 0x0100 (RD), QDCOUNT=0,
-        // ANCOUNT=0, NSCOUNT=0, ARCOUNT=0.
+        // 12-byte DNS header: id=0xCAFE, flags 0x0100 (RD), QDCOUNT=0.
         let probe: [u8; 12] = [0xCA, 0xFE, 0x01, 0x00, 0, 0, 0, 0, 0, 0, 0, 0];
         sock.send(&probe).await.unwrap();
         let mut buf = [0u8; 512];
@@ -128,7 +114,6 @@ async fn serve_and_query(tld: Tld, site_fqdn: &str, apex_fqdn: &str) {
         assert_eq!(buf[3] & 0x0F, 1, "expected FORMERR (RCode 1)");
     }
 
-    // --- Shutdown, bounded ---------------------------------------------
     tx.send(()).expect("shutdown receiver dropped early");
     let shut = tokio::time::timeout(Duration::from_secs(5), handle)
         .await
@@ -137,7 +122,7 @@ async fn serve_and_query(tld: Tld, site_fqdn: &str, apex_fqdn: &str) {
     assert!(shut.is_ok(), "server task returned error: {shut:?}");
 }
 
-/// Wrap a single hickory query in a bounded timeout — CI hangs are worse
+/// Wrap a single hickory query in a bounded timeout - CI hangs are worse
 /// than CI failures.
 async fn timeout<F, T>(fut: F) -> T
 where
@@ -149,8 +134,8 @@ where
         .expect("query returned ClientError")
 }
 
-// Type-check `SocketAddr` import is genuinely used (silences `dead_code` if
-// the integration test ever drops its explicit annotations).
+// Force-use the `SocketAddr` import (silences dead_code if the test drops its
+// explicit annotations).
 const _: fn() = || {
     let _: Option<SocketAddr> = None;
 };

@@ -36,12 +36,10 @@ pub fn install_port_redirect(
     require_nonzero(https_from, "--https-from")?;
     require_nonzero(https_to, "--https-to")?;
 
-    // 1. Write the anchor rules file (inert until referenced from pf.conf).
     let rules = pf_anchor::compose_anchor_rules(http_from, http_to, https_from, https_to);
     atomic_write(Path::new(pf_anchor::ANCHOR_PATH), rules.as_bytes(), true)?;
 
-    // 2. Hook the anchor into /etc/pf.conf (idempotent, preserving its content).
-    //    Keep the original so we can roll back if the live load rejects it.
+    // Keep the original so we can roll back if the live `pfctl -f` rejects the edit.
     let original =
         std::fs::read_to_string(pf_anchor::PF_CONF_PATH).map_err(|source| HelperError::Io {
             path: pf_anchor::PF_CONF_PATH.into(),
@@ -52,10 +50,9 @@ pub fn install_port_redirect(
         atomic_write(Path::new(pf_anchor::PF_CONF_PATH), updated.as_bytes(), true)?;
     }
 
-    // 3. Load + enable pf now. `pfctl -f` both applies and validates the
-    //    ruleset; if it rejects the edited config, roll the pf.conf edit back
-    //    before surfacing the error so we never leave (or later persist) a
-    //    broken canonical config.
+    // `pfctl -f` both applies and validates the ruleset; on rejection, roll the
+    // pf.conf edit back before surfacing the error so we never persist a broken
+    // canonical config.
     if let Err(e) = run_command("pfctl", "/sbin/pfctl", ["-f", pf_anchor::PF_CONF_PATH]) {
         if updated != original {
             let _ = atomic_write(
@@ -66,14 +63,14 @@ pub fn install_port_redirect(
         }
         return Err(e);
     }
-    // `pfctl -e` exits non-zero with "pf already enabled" when pf is already
-    // on — that's success for our purposes, so ignore a non-zero exit here.
+    // `pfctl -e` exits non-zero with "pf already enabled" when pf is already on;
+    // that's success here, so ignore a non-zero exit.
     ignore_command_failure(run_command("pfctl", "/sbin/pfctl", ["-e"]));
 
-    // 4. Only once the ruleset loads cleanly, install boot persistence: the
-    //    `LaunchDaemon` re-runs `pfctl -E -f /etc/pf.conf` at every boot, so it
-    //    must never be installed against a config that doesn't load. Plist must
-    //    be root:wheel, ≤0644 or launchd refuses it.
+    // Install boot persistence only after the ruleset loads cleanly: the
+    // `LaunchDaemon` re-runs `pfctl -E -f /etc/pf.conf` at every boot, so it must
+    // never be installed against a config that doesn't load. The plist must be
+    // root:wheel and <=0644 or launchd refuses it.
     let plist = pf_anchor::compose_launchdaemon_plist();
     atomic_write(Path::new(pf_anchor::PLIST_PATH), plist.as_bytes(), true)?;
     run_command(
@@ -99,19 +96,18 @@ pub fn install_port_redirect(
 
 #[cfg(target_os = "macos")]
 pub fn uninstall_port_redirect() -> Result<(), HelperError> {
-    // 1. Tear down the boot `LaunchDaemon` (idempotent).
+    // Tear down the boot `LaunchDaemon` (idempotent).
     ignore_command_failure(run_command(
         "launchctl",
         "/bin/launchctl",
         ["bootout", "system", pf_anchor::PLIST_PATH],
     ));
 
-    // 2. Remove our hook lines from /etc/pf.conf and reload, leaving pf's
-    //    enabled state as-is (an Apple-default ruleset is harmless; we never
-    //    force-disable a pf the user/system may rely on). Do this BEFORE
-    //    deleting the anchor file so pf.conf never references a missing anchor.
-    //    A read failure is fatal (skipping the cleanup would leave a dangling
-    //    `load anchor`); a missing pf.conf means there's nothing to clean.
+    // Remove our hook lines from /etc/pf.conf and reload, leaving pf's enabled
+    // state as-is (we never force-disable a pf the system may rely on). Do this
+    // BEFORE deleting the anchor file so pf.conf never references a missing
+    // anchor. A read failure is fatal (skipping cleanup would leave a dangling
+    // `load anchor`); a missing pf.conf means there's nothing to clean.
     match std::fs::read_to_string(pf_anchor::PF_CONF_PATH) {
         Ok(pf_conf) => {
             let cleaned = pf_anchor::remove_anchor_refs(&pf_conf);
@@ -133,8 +129,8 @@ pub fn uninstall_port_redirect() -> Result<(), HelperError> {
         }
     }
 
-    // 3. Now that pf.conf no longer references it, remove the anchor + plist
-    //    files (idempotent: absent → Ok).
+    // pf.conf no longer references them, so remove the anchor + plist files
+    // (idempotent: absent is Ok).
     remove_if_present(pf_anchor::ANCHOR_PATH)?;
     remove_if_present(pf_anchor::PLIST_PATH)?;
     Ok(())
@@ -150,8 +146,8 @@ fn require_nonzero(port: u16, flag: &'static str) -> Result<(), HelperError> {
     Ok(())
 }
 
-/// pf/launchctl steps that are "best effort" — already-enabled pf, an
-/// already-unloaded `LaunchDaemon` — must not fail the whole operation.
+/// pf/launchctl steps that are "best effort" - already-enabled pf, an
+/// already-unloaded `LaunchDaemon` - must not fail the whole operation.
 #[cfg(target_os = "macos")]
 fn ignore_command_failure(result: Result<std::process::Output, HelperError>) {
     let _ = result;

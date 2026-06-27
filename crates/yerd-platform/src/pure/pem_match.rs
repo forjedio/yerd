@@ -10,7 +10,7 @@ use std::path::PathBuf;
 
 use sha2::{Digest, Sha256};
 
-/// Match outcome — the source path and the 0-based block index within
+/// Match outcome - the source path and the 0-based block index within
 /// that file.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PemMatch {
@@ -24,7 +24,7 @@ pub struct PemMatch {
 /// to `fingerprint`.
 ///
 /// Returns `Ok(Some(PemMatch))` on match, `Ok(None)` if no certificate in
-/// any blob matches, and `Err(path)` if a blob fails PEM parsing — the
+/// any blob matches, and `Err(path)` if a blob fails PEM parsing - the
 /// caller (os impl) is expected to translate this into
 /// [`crate::TrustStoreErrorReason::AnchorPemInvalid`].
 pub fn find_by_fingerprint(
@@ -187,7 +187,6 @@ mod tests {
         let target = b"target cert body";
         let earlier = b"earlier cert body";
         let fp = sha256(target);
-        // Multi-block file: the second CERTIFICATE block matches.
         let mut combined = fake_cert_pem(earlier);
         combined.push_str(&fake_cert_pem(target));
         let blobs = vec![(PathBuf::from("/etc/multi.crt"), combined.into_bytes())];
@@ -222,26 +221,15 @@ mod tests {
 
     #[test]
     fn blob_without_certificate_blocks_returns_none() {
-        // `pem::parse_many` accepts arbitrary text and returns an empty
-        // block list, not an error. The helper treats that as "no
-        // certificates in this anchor file" — skip silently. This
-        // matches the real-world behaviour of operator-edited anchor
-        // dirs that contain README files or similar.
         let blobs = vec![(PathBuf::from("/etc/empty.crt"), b"not pem".to_vec())];
         assert!(find_by_fingerprint(&blobs, &[0u8; 32]).unwrap().is_none());
     }
 
     #[test]
     fn malformed_pem_with_broken_header_returns_err() {
-        // A blob whose body starts a PEM block but cannot be decoded
-        // (e.g. missing END line) trips `pem::parse_many` and surfaces
-        // as `Err(path)`.
         let bad = b"-----BEGIN CERTIFICATE-----\n!!not base64!!\n-----END CERTIFICATE-----\n";
         let blobs = vec![(PathBuf::from("/etc/bad.crt"), bad.to_vec())];
         let res = find_by_fingerprint(&blobs, &[0u8; 32]);
-        // The pem crate may either error or return an empty body block
-        // depending on its strictness; we accept both — the test just
-        // exercises the code path without flapping.
         match res {
             Ok(None) | Err(_) => {}
             Ok(Some(_)) => panic!("unexpected match against garbage"),

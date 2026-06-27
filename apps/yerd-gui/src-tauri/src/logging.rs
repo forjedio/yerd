@@ -4,7 +4,7 @@
 //! `.app` / login launch its stderr is discarded, so when the daemon won't come
 //! up there's nothing to inspect. This module installs a tracing subscriber that
 //! writes a single **truncate-on-launch** file at `{cache}/yerd-gui.log`
-//! (user-owned on macOS + Linux — no permission traps), capturing every
+//! (user-owned on macOS + Linux - no permission traps), capturing every
 //! command/action/warning/error in the daemon install/upgrade/start flow at
 //! `DEBUG`, interleaved with frontend lines pushed via [`gui_log`].
 //!
@@ -43,7 +43,7 @@ const DAEMON_TAIL_LINES: usize = 200;
 /// Mutable interior of a [`SessionLog`]: the current file handle and the instant
 /// it was (re)created, behind the lock so concurrent tracing writers serialise.
 struct State {
-    /// `None` if the file could not be (re)created — writes then degrade to a
+    /// `None` if the file could not be (re)created - writes then degrade to a
     /// no-op rather than erroring (logging must never break a UI flow).
     file: Option<File>,
     epoch: Instant,
@@ -84,7 +84,7 @@ impl io::Write for SessionWriter<'_> {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         match self.0.file.as_mut() {
             Some(f) => f.write(buf),
-            None => Ok(buf.len()), // degrade silently; never error/panic
+            None => Ok(buf.len()),
         }
     }
     fn flush(&mut self) -> io::Result<()> {
@@ -98,10 +98,7 @@ impl io::Write for SessionWriter<'_> {
 impl<'a> MakeWriter<'a> for SessionLog {
     type Writer = SessionWriter<'a>;
     fn make_writer(&'a self) -> Self::Writer {
-        // Poison-tolerant: a panicked writer thread must not take logging down.
         let mut state = self.inner.lock().unwrap_or_else(|p| p.into_inner());
-        // Staleness reset — checked once per event (here), before the line's
-        // bytes, so it can never truncate between the partial writes of one line.
         if state.epoch.elapsed() >= self.max_age {
             state.file = File::create(&self.path).ok();
             state.epoch = Instant::now();
@@ -151,13 +148,11 @@ pub fn init() {
         }
     };
 
-    // Swallow the `try_init` error: it only fires if a global subscriber already
-    // exists (nothing else in this crate installs one), the desired no-op.
     let _ = registry().with(stderr_layer).with(file_layer).try_init();
 }
 
 /// Append a line to the session log from the frontend. Synchronous, infallible,
-/// no daemon IPC — it just emits into the global subscriber so the line lands in
+/// no daemon IPC - it just emits into the global subscriber so the line lands in
 /// the same file, interleaved with the host's own events.
 #[tauri::command]
 pub fn gui_log(level: String, message: String) {
@@ -180,7 +175,7 @@ pub struct GuiLogs {
     daemon_log: Vec<String>,
 }
 
-/// Read both logs (off the runtime — filesystem work).
+/// Read both logs (off the runtime - filesystem work).
 #[tauri::command]
 pub async fn get_gui_logs() -> Result<GuiLogs, GuiError> {
     tokio::task::spawn_blocking(read_gui_logs)
@@ -198,7 +193,6 @@ fn read_gui_logs() -> GuiLogs {
         .map(|p| tail_file_bounded(p, GUI_TAIL_BYTES, GUI_TAIL_LINES))
         .unwrap_or_default();
 
-    // Reuse the daemon module's single rolling-log finder + line tail.
     let daemon_path = cache
         .as_ref()
         .and_then(|c| crate::daemon::newest_rolling_log(c));
@@ -220,7 +214,7 @@ fn read_gui_logs() -> GuiLogs {
 /// `from_utf8_lossy` and drops the first line **only when the read began
 /// mid-line** (the byte before the window isn't a newline), so a mid-codepoint
 /// seek start is safe while a boundary-aligned seek keeps its whole first line.
-/// Takes no lock vs. the writer — a benign display race (worst case: a clipped
+/// Takes no lock vs. the writer - a benign display race (worst case: a clipped
 /// final line).
 fn tail_file_bounded(path: &Path, max_bytes: u64, max_lines: usize) -> Vec<String> {
     use std::io::{Read, Seek, SeekFrom};
@@ -229,8 +223,6 @@ fn tail_file_bounded(path: &Path, max_bytes: u64, max_lines: usize) -> Vec<Strin
     };
     let len = f.metadata().map(|m| m.len()).unwrap_or(0);
     let start = len.saturating_sub(max_bytes);
-    // Seek one byte *before* the window (when not already at the file start) so
-    // the byte preceding it reveals whether the read began on a line boundary.
     let seek_to = if start > 0 {
         start.saturating_sub(1)
     } else {
@@ -243,10 +235,6 @@ fn tail_file_bounded(path: &Path, max_bytes: u64, max_lines: usize) -> Vec<Strin
     if f.read_to_end(&mut buf).is_err() {
         return Vec::new();
     }
-    // When we seeked, `buf`'s first byte is the one before the window: a '\n'
-    // means the window starts exactly on a line boundary (first line is whole —
-    // keep it), anything else means the read began mid-line (first line is a
-    // partial tail — drop it). Peel that probe byte off either way.
     let (drop_first, body) = match buf.split_first() {
         Some((&first, rest)) if start > 0 => (first != b'\n', rest),
         _ => (false, buf.as_slice()),
@@ -270,7 +258,7 @@ const DIAG_SCAN_BYTES: u64 = 1024 * 1024;
 const REPAIR_TAIL_LINES: usize = 200;
 /// Payload shape version, so a pasted blob is identifiable later.
 const DIAG_SCHEMA: u32 = 1;
-/// Bound for each diagnostics IPC probe — the daemon may be down/wedged (the
+/// Bound for each diagnostics IPC probe - the daemon may be down/wedged (the
 /// common diagnostic case), and the probe must never hang the command.
 const DIAG_IPC_TIMEOUT: Duration = Duration::from_secs(4);
 
@@ -310,7 +298,7 @@ struct Diagnostics {
     daemon_reachable: bool,
     service_manager: String,
     /// `launchctl print gui/<uid>/dev.yerd.daemon` (macOS) or `systemctl --user
-    /// status yerd` (Linux) — the daemon's service-manager configuration/status.
+    /// status yerd` (Linux) - the daemon's service-manager configuration/status.
     service_status: Option<String>,
     pending_approval: bool,
     translocated: bool,
@@ -318,7 +306,7 @@ struct Diagnostics {
     daemon_version_conflict: Option<String>,
     paths: DiagPaths,
     /// The daemon's runtime status (ports, DNS, CA, PHP, services …) when
-    /// reachable. Carries no secrets — the CA section is path + fingerprint +
+    /// reachable. Carries no secrets - the CA section is path + fingerprint +
     /// trust bool only, never key material. `None` when the daemon is down.
     #[serde(skip_serializing_if = "Option::is_none")]
     status: Option<Box<yerd_ipc::StatusReport>>,
@@ -328,12 +316,12 @@ struct Diagnostics {
     gui_log_errors: Vec<String>,
     daemon_log_errors: Vec<String>,
     spawn_log_errors: Vec<String>,
-    /// Full tail of the macOS SMAppService self-repair trail — the GUI's only
+    /// Full tail of the macOS SMAppService self-repair trail - the GUI's only
     /// record of re-registration attempts/outcomes (empty off macOS / when absent).
     repair_log: Vec<String>,
 }
 
-/// Build the diagnostics JSON. Probes the daemon (bounded — it may be down),
+/// Build the diagnostics JSON. Probes the daemon (bounded - it may be down),
 /// then does the host-side filesystem/subprocess gathering off the runtime.
 #[tauri::command]
 pub async fn get_diagnostics() -> Result<String, GuiError> {
@@ -372,8 +360,6 @@ fn error_lines(path: Option<&Path>, max: usize) -> Vec<String> {
     let Some(path) = path else {
         return Vec::new();
     };
-    // Scan a generous tail, then keep only the lines a `tracing` ERROR event
-    // prints (the level token appears verbatim in the compact/file format).
     let mut errs: Vec<String> = tail_file_bounded(path, DIAG_SCAN_BYTES, usize::MAX)
         .into_iter()
         .filter(|l| l.contains("ERROR"))
@@ -488,7 +474,6 @@ mod tests {
     fn resets_when_stale() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("s.log");
-        // max_age = ZERO → every event is "stale" and re-truncates first.
         let log = SessionLog::create(path.clone(), Duration::ZERO);
         log.make_writer().write_all(b"a\n").unwrap();
         log.make_writer().write_all(b"b\n").unwrap();
@@ -510,7 +495,6 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("t.log");
         std::fs::write(&path, b"line1\nline2\nline3\n").unwrap();
-        // Tiny byte budget forces a mid-file seek; the partial first line drops.
         let out = tail_file_bounded(&path, 8, 100);
         assert_eq!(out, vec!["line3".to_owned()]);
     }
@@ -520,9 +504,6 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("t.log");
         std::fs::write(&path, b"line1\nline2\nline3\n").unwrap();
-        // A 12-byte budget seeks to offset 6 — exactly after the first '\n', so the
-        // window opens on a line boundary and the whole first line must be kept
-        // (the old unconditional remove(0) wrongly dropped "line2" here).
         let out = tail_file_bounded(&path, 12, 100);
         assert_eq!(out, vec!["line2".to_owned(), "line3".to_owned()]);
     }

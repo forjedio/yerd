@@ -6,7 +6,7 @@
 //! without parsing message strings.
 //!
 //! Unlike `yerd-tls`, `PlatformError` is **not** `Clone + Eq` because it
-//! wraps [`std::io::Error`] in two variants — the same pattern as
+//! wraps [`std::io::Error`] in two variants - the same pattern as
 //! `yerd-config::ConfigError`. Each reason sub-enum is `#[non_exhaustive]`
 //! so additions are semver-compatible.
 

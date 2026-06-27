@@ -9,8 +9,8 @@
 /// Returns `true` if `systemd-resolved` appears to be in charge.
 ///
 /// Inputs:
-/// - `resolv_conf_text` — verbatim content of `/etc/resolv.conf`.
-/// - `run_systemd_resolve_exists` — `std::fs::metadata("/run/systemd/resolve").is_ok()`.
+/// - `resolv_conf_text` - verbatim content of `/etc/resolv.conf`.
+/// - `run_systemd_resolve_exists` - `std::fs::metadata("/run/systemd/resolve").is_ok()`.
 ///
 /// Either piece of evidence is sufficient. A symlink to
 /// `stub-resolv.conf` produces the marker comment Linux distros use, but

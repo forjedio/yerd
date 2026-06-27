@@ -1,4 +1,4 @@
-//! The `Backend` enum — where a routed request gets forwarded to.
+//! The `Backend` enum - where a routed request gets forwarded to.
 
 use std::fmt;
 use std::net::SocketAddr;
@@ -6,7 +6,7 @@ use std::path::PathBuf;
 
 /// Per-site forwarding target.
 ///
-/// `From<yerd_php::Listen>` is intentionally **not** implemented — the
+/// `From<yerd_php::Listen>` is intentionally **not** implemented - the
 /// daemon's [`crate::traits::BackendResolver`] impl translates between the
 /// two so `yerd-proxy` doesn't depend on `yerd-php`.
 #[non_exhaustive]

@@ -29,7 +29,6 @@ impl Responder {
     pub(crate) fn answer(&self, name: &str, qtype: QClass) -> Answer {
         let bytes = name.as_bytes();
 
-        // 1. Strip one trailing '.' (FQDN form).
         let bytes = match bytes.split_last() {
             Some((&b'.', rest)) => rest,
             _ => bytes,
@@ -37,9 +36,6 @@ impl Responder {
 
         let tld_bytes = self.tld.as_str().as_bytes();
 
-        // 2. Decide whether the name falls inside our zone *before* judging its
-        //    validity: a name is in-zone when it is the bare TLD (apex) or ends
-        //    in `.<tld>`. Anything else we are NOT authoritative for.
         let is_apex = bytes.len() == tld_bytes.len() && bytes.eq_ignore_ascii_case(tld_bytes);
         let ends_in_dot_tld = bytes.len() > tld_bytes.len()
             && bytes.get(bytes.len() - tld_bytes.len() - 1) == Some(&b'.')
@@ -47,20 +43,14 @@ impl Responder {
                 .get(bytes.len() - tld_bytes.len()..)
                 .is_some_and(|s| s.eq_ignore_ascii_case(tld_bytes));
 
-        // 3. Outside our zone ⇒ REFUSED (not authoritative; let the resolver
-        //    ask another server).
         if !is_apex && !ends_in_dot_tld {
             return Answer::Refused;
         }
 
-        // 4. Apex: the bare TLD has no A/AAAA.
         if is_apex {
             return Answer::NoData;
         }
 
-        // 5. In-zone subdomain. Reject a malformed label (empty first label or
-        //    consecutive dots) as authoritative NXDOMAIN — the name is ours but
-        //    does not exist.
         if bytes.first() == Some(&b'.') {
             return Answer::NxDomain;
         }
@@ -103,7 +93,6 @@ mod tests {
             ("test", QClass::Aaaa, "test", Answer::NoData),
             ("test", QClass::Other, "test", Answer::NoData),
             ("test.", QClass::A, "test", Answer::NoData),
-            // Outside the TLD ⇒ REFUSED (not our zone).
             ("app.com", QClass::A, "test", Answer::Refused),
             ("app.testify", QClass::A, "test", Answer::Refused),
             ("testify", QClass::A, "test", Answer::Refused),
@@ -111,7 +100,6 @@ mod tests {
             ("app.somethingtest", QClass::A, "test", Answer::Refused),
             ("", QClass::A, "test", Answer::Refused),
             (".", QClass::A, "test", Answer::Refused),
-            // Within `.test` but malformed ⇒ authoritative NXDOMAIN.
             (".test", QClass::A, "test", Answer::NxDomain),
             ("x..test", QClass::A, "test", Answer::NxDomain),
             ("app..test", QClass::A, "test", Answer::NxDomain),

@@ -3,7 +3,7 @@
 //! A [`Site`] is a routable target with a validated DNS-label `name`, a
 //! `document_root`, a [`PhpVersion`](crate::PhpVersion), an HTTPS flag, and
 //! a [`SiteKind`]. Fields are private to enforce the name invariant; mutation
-//! goes through typed setters (no `set_name` — renaming is a router-level
+//! goes through typed setters (no `set_name` - renaming is a router-level
 //! operation).
 
 use std::path::{Path, PathBuf};
@@ -30,7 +30,7 @@ pub enum SiteKind {
 /// router's lookup key. To rename a site, remove it from the router and
 /// reinsert with a fresh `Site`.
 ///
-/// `document_root` is **not** validated by `yerd-core` — this is a pure crate.
+/// `document_root` is **not** validated by `yerd-core` - this is a pure crate.
 /// It may be empty, relative, or non-canonical. Path semantics, existence, and
 /// platform normalisation are owned by `yerd-config` (load time) and
 /// `yerd-platform` (runtime). Round-trip through `serde` uses `PathBuf`'s
@@ -42,7 +42,7 @@ pub enum SiteKind {
 /// `document_root` (empty = serve `document_root` itself). Modern frameworks
 /// serve from a subdirectory (`public/`, `web/`, `webroot/`, `pub/`); the daemon
 /// detects this and the proxy serves [`Self::served_root`]. Like
-/// `document_root`, the value is not validated here — but [`Self::served_root`]
+/// `document_root`, the value is not validated here - but [`Self::served_root`]
 /// is deliberately defensive so it can never escape `document_root` even if the
 /// stored subpath is absolute or contains `..` (see that method). Containment is
 /// enforced authoritatively at config-load validation in `yerd-config`.
@@ -57,7 +57,7 @@ pub struct Site {
 }
 
 impl Site {
-    /// Constructs a parked site. **Initialises `secure = false`** — promote
+    /// Constructs a parked site. **Initialises `secure = false`** - promote
     /// via [`Self::set_secure`].
     pub fn parked(
         name: &str,
@@ -75,7 +75,7 @@ impl Site {
         })
     }
 
-    /// Constructs a linked site. **Initialises `secure = false`** — promote
+    /// Constructs a linked site. **Initialises `secure = false`** - promote
     /// via [`Self::set_secure`].
     pub fn linked(
         name: &str,
@@ -99,7 +99,7 @@ impl Site {
         &self.name
     }
 
-    /// The document root (unvalidated — see type-level docs).
+    /// The document root (unvalidated - see type-level docs).
     #[must_use]
     pub fn document_root(&self) -> &Path {
         &self.document_root
@@ -115,7 +115,7 @@ impl Site {
     /// The absolute directory the proxy serves: [`Self::document_root`] joined
     /// with [`Self::web_subpath`].
     ///
-    /// **Defensive by construction — never escapes the document root.** An empty
+    /// **Defensive by construction - never escapes the document root.** An empty
     /// subpath returns the document root verbatim (avoiding `join("")`, which
     /// would append a trailing separator). A subpath that is absolute or
     /// contains a `..`/root/prefix component is treated as empty: `Path::join`
@@ -151,13 +151,13 @@ impl Site {
         self.kind
     }
 
-    /// Replaces the document root. Not validated — see type-level docs.
+    /// Replaces the document root. Not validated - see type-level docs.
     pub fn set_document_root(&mut self, p: impl Into<PathBuf>) {
         self.document_root = p.into();
     }
 
     /// Replaces the served web subpath (relative to the document root). Not
-    /// validated here — see [`Self::served_root`] for the containment guarantee.
+    /// validated here - see [`Self::served_root`] for the containment guarantee.
     pub fn set_web_subpath(&mut self, p: impl Into<PathBuf>) {
         self.web_subpath = p.into();
     }
@@ -178,20 +178,16 @@ impl Site {
     }
 }
 
-/// Pinned, ordered validation algorithm (steps numbered inline below).
+/// Validates and lowercases a site name. Checks run in a fixed, pinned order.
 fn validate_and_lowercase_name(raw: &str) -> Result<String, CoreError> {
-    // 1.
     if raw.is_empty() {
         return Err(err(raw, SiteNameErrorReason::Empty));
     }
 
-    // 2. dot rejection (sites are single DNS labels)
     if raw.contains('.') {
         return Err(err(raw, SiteNameErrorReason::ContainsDot));
     }
 
-    // 3. ASCII alphanumeric ∪ '-' only (rejects whitespace, '_', ':', '/', '\\',
-    //    '+', '@', etc., and non-ASCII)
     for &b in raw.as_bytes() {
         if !b.is_ascii() {
             return Err(err(raw, SiteNameErrorReason::InvalidCharacter));
@@ -202,16 +198,14 @@ fn validate_and_lowercase_name(raw: &str) -> Result<String, CoreError> {
         }
     }
 
-    // 4. lowercase
     let lowered = raw.to_ascii_lowercase();
 
-    // 5. leading/trailing hyphen
     if lowered.starts_with('-') || lowered.ends_with('-') {
         return Err(err(raw, SiteNameErrorReason::LeadingOrTrailingHyphen));
     }
 
-    // 6. length cap (RFC 1035 single label). Byte length equals char length
-    //    because non-ASCII is rejected at step 3.
+    // RFC 1035 single-label cap. Byte length equals char length here because
+    // non-ASCII is rejected above.
     if lowered.len() > 63 {
         return Err(err(raw, SiteNameErrorReason::LabelTooLong));
     }
@@ -242,10 +236,6 @@ pub(crate) fn is_safe_relative(p: &Path) -> bool {
 impl serde::Serialize for Site {
     fn serialize<S: serde::Serializer>(&self, ser: S) -> Result<S::Ok, S::Error> {
         use serde::ser::SerializeStruct;
-        // `web_subpath` is skipped when empty so the wire/TOML bytes for
-        // root-served sites are byte-identical to before the field existed
-        // (the byte-shape goldens depend on this). Field count is adjusted to
-        // match what is actually emitted.
         let emit_subpath = !self.web_subpath.as_os_str().is_empty();
         let fields = if emit_subpath { 6 } else { 5 };
         let mut s = ser.serialize_struct("Site", fields)?;
@@ -341,7 +331,6 @@ mod tests {
         let cases: &[(&str, SiteNameErrorReason)] = &[
             ("", Empty),
             ("foo.bar", ContainsDot),
-            // InvalidCharacter — every ASCII whitespace + ASCII non-[a-z0-9-] + non-ASCII
             ("foo bar", InvalidCharacter),
             ("foo\tbar", InvalidCharacter),
             ("foo\nbar", InvalidCharacter),
@@ -353,7 +342,6 @@ mod tests {
             ("foo/bar", InvalidCharacter),
             ("foo\\bar", InvalidCharacter),
             ("fü", InvalidCharacter),
-            // LeadingOrTrailingHyphen
             ("-foo", LeadingOrTrailingHyphen),
             ("foo-", LeadingOrTrailingHyphen),
         ];
@@ -366,7 +354,6 @@ mod tests {
             }
         }
 
-        // Length-based cases
         let long_name = "a".repeat(64);
         match Site::parked(&long_name, "/x", v83()) {
             Err(CoreError::InvalidSiteName {
@@ -377,7 +364,6 @@ mod tests {
         }
         let dashes64 = "-".repeat(64);
         match Site::parked(&dashes64, "/x", v83()) {
-            // step 5 (hyphen) beats step 6 (length)
             Err(CoreError::InvalidSiteName {
                 reason: LeadingOrTrailingHyphen,
                 ..
@@ -388,7 +374,6 @@ mod tests {
 
     #[test]
     fn name_ordering_pin() {
-        // step 2 (ContainsDot) beats step 6 (LabelTooLong)
         let long_dotted = format!("{}.", "a".repeat(64));
         match Site::parked(&long_dotted, "/x", v83()) {
             Err(CoreError::InvalidSiteName {
@@ -397,7 +382,6 @@ mod tests {
             }) => {}
             other => panic!("ContainsDot expected, got {other:?}"),
         }
-        // step 2 (ContainsDot) beats step 3 (InvalidCharacter for non-ASCII)
         match Site::parked("fü.bar", "/x", v83()) {
             Err(CoreError::InvalidSiteName {
                 reason: SiteNameErrorReason::ContainsDot,
@@ -435,7 +419,6 @@ mod tests {
         s.set_kind(SiteKind::Linked);
         assert_eq!(s.kind(), SiteKind::Linked);
 
-        // Name unchanged through it all.
         assert_eq!(s.name(), "foo");
     }
 
@@ -461,13 +444,11 @@ mod tests {
     fn serde_full_site_roundtrip() {
         let s = Site::parked("foo", "/srv/foo", v83()).unwrap();
         let v = serde_json::to_value(&s).unwrap();
-        // Field names and `php` rendered as the string "8.3"
         assert_eq!(v["name"], "foo");
         assert_eq!(v["document_root"], "/srv/foo");
         assert_eq!(v["php"], "8.3");
         assert_eq!(v["secure"], false);
         assert_eq!(v["kind"], "parked");
-        // Empty web_subpath is omitted entirely.
         assert!(v.get("web_subpath").is_none());
 
         let back: Site = serde_json::from_value(v).unwrap();
@@ -483,7 +464,6 @@ mod tests {
     #[test]
     fn served_root_empty_subpath_is_document_root() {
         let s = Site::parked("foo", "/srv/foo", v83()).unwrap();
-        // No trailing separator from a stray join("").
         assert_eq!(s.served_root(), PathBuf::from("/srv/foo"));
     }
 
@@ -497,16 +477,13 @@ mod tests {
 
     #[test]
     fn served_root_is_defensive_against_escapes() {
-        // Absolute subpath would otherwise replace the base via Path::join.
         let mut s = Site::linked("foo", "/srv/foo", v83()).unwrap();
         s.set_web_subpath("/etc");
         assert_eq!(s.served_root(), PathBuf::from("/srv/foo"));
 
-        // `..` traversal is clamped back to the document root.
         s.set_web_subpath("../../etc");
         assert_eq!(s.served_root(), PathBuf::from("/srv/foo"));
 
-        // A nested-but-contained relative path is allowed.
         s.set_web_subpath("app/public");
         assert_eq!(s.served_root(), PathBuf::from("/srv/foo/app/public"));
     }
@@ -518,7 +495,6 @@ mod tests {
         let v = serde_json::to_value(&s).unwrap();
         assert_eq!(v["web_subpath"], "public");
         let json = serde_json::to_string(&s).unwrap();
-        // Field order: web_subpath sits right after document_root.
         assert_eq!(
             json,
             r#"{"name":"foo","document_root":"/srv/foo","web_subpath":"public","php":"8.3","secure":false,"kind":"linked"}"#

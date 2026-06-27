@@ -61,7 +61,6 @@ fn save_overwrites_existing_with_new_content() {
     let dir = tempdir().unwrap();
     let path = dir.path().join("config.toml");
 
-    // Write a sentinel first.
     fs::write(&path, "sentinel = 0\n").unwrap();
 
     let mut new = Config::default();

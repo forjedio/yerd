@@ -21,7 +21,7 @@ pub use yerd_supervise::Listen;
 
 /// Result of pre-flighting a listen address for one FPM pool.
 ///
-/// **Unix:** no socket has been created yet — FPM creates it itself when
+/// **Unix:** no socket has been created yet - FPM creates it itself when
 /// it starts.
 /// **Windows:** the planner briefly bound `127.0.0.1:0` via the supplied
 /// `PortBinder`, captured the resolved port, and **dropped** the listener

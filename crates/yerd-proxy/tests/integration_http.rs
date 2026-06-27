@@ -60,7 +60,6 @@ async fn run_fake_fcgi(
     captured_params: Arc<tokio::sync::Mutex<HashMap<String, String>>>,
 ) {
     let (mut conn, _) = listener.accept().await.unwrap();
-    // Read all incoming records until STDIN terminator (empty STDIN record).
     let mut params_buf: Vec<u8> = Vec::new();
     loop {
         let mut header = [0u8; 8];
@@ -78,29 +77,25 @@ async fn run_fake_fcgi(
             let mut pad = vec![0u8; padding];
             conn.read_exact(&mut pad).await.unwrap();
         }
-        // 4 = PARAMS, 5 = STDIN, 1 = BEGIN_REQUEST, 2 = ABORT_REQUEST, ...
+        // record types: 4 = PARAMS, 5 = STDIN
         if record_type == 4 {
             if content.is_empty() {
-                // PARAMS terminator.
             } else {
                 params_buf.extend_from_slice(&content);
             }
         } else if record_type == 5 && content.is_empty() {
-            // STDIN terminator — done reading.
             break;
         }
     }
 
-    // Decode the collected params and stash them in the shared map.
     let parsed = decode_params(&params_buf);
     {
         let mut guard = captured_params.lock().await;
         *guard = parsed;
     }
 
-    // STDOUT record + END_REQUEST.
     write_record(&mut conn, 6 /* STDOUT */, &stdout_payload).await;
-    write_record(&mut conn, 6 /* STDOUT */, &[]).await; // STDOUT terminator (optional)
+    write_record(&mut conn, 6 /* STDOUT */, &[]).await;
     write_record(
         &mut conn,
         3, /* END_REQUEST */
@@ -158,7 +153,6 @@ fn read_len(buf: &[u8]) -> (usize, usize) {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn proxy_forwards_to_fcgi_backend() {
-    // 1. Fake FCGI listener.
     let fcgi_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let fcgi_addr = fcgi_listener.local_addr().unwrap();
     let captured = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
@@ -170,11 +164,9 @@ async fn proxy_forwards_to_fcgi_backend() {
         captured_for_fake,
     ));
 
-    // 2. Proxy listener (HTTP only).
     let proxy_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let proxy_addr = proxy_listener.local_addr().unwrap();
 
-    // 3. Router: one Site at app.test.
     let tld = Tld::new("test").unwrap();
     let cfg = RouterConfig::with_tld(tld);
     let mut router = SiteRouter::new(cfg);
@@ -182,12 +174,10 @@ async fn proxy_forwards_to_fcgi_backend() {
     router.insert(site).unwrap();
     let router = Arc::new(tokio::sync::RwLock::new(router));
 
-    // 4. Resolver.
     let resolver = Arc::new(StaticResolver {
         backend: Backend::PhpFpmTcp { addr: fcgi_addr },
     });
 
-    // 5. Run proxy with a shutdown channel.
     let (tx_shutdown, rx_shutdown) = oneshot::channel::<()>();
     let proxy_task = tokio::spawn(async move {
         let _ = ProxyServer::serve::<_, StubCertStore, _>(
@@ -202,11 +192,9 @@ async fn proxy_forwards_to_fcgi_backend() {
         .await;
     });
 
-    // 6. Hyper client → proxy.
     let response_body = client_get(proxy_addr, "app.test", "/foo?bar=1").await;
     assert_eq!(response_body, b"hello");
 
-    // 7. Verify captured params.
     let params = captured.lock().await.clone();
     assert_eq!(
         params.get("REQUEST_METHOD").map(String::as_str),
@@ -301,7 +289,6 @@ async fn missing_host_header_returns_400() {
         .await;
     });
 
-    // Send a request without the Host header (manual TCP).
     let mut s = TcpStream::connect(proxy_addr).await.unwrap();
     s.write_all(b"GET / HTTP/1.1\r\n\r\n").await.unwrap();
     let mut buf = Vec::new();
@@ -315,8 +302,6 @@ async fn missing_host_header_returns_400() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn static_file_is_served_without_touching_fcgi() {
-    // A real document root holding a favicon. The backend points at a dead
-    // address — static serving must short-circuit before any FCGI connect.
     let docroot = tempfile::tempdir().unwrap();
     let favicon = b"\x00\x00\x01\x00 fake-ico-bytes";
     std::fs::write(docroot.path().join("favicon.ico"), favicon).unwrap();
@@ -327,14 +312,11 @@ async fn static_file_is_served_without_touching_fcgi() {
     let tld = Tld::new("test").unwrap();
     let cfg = RouterConfig::with_tld(tld);
     let mut router = SiteRouter::new(cfg);
-    // No web_subpath → served_root == document_root == the temp dir.
     let site = Site::linked("app", docroot.path().to_path_buf(), PhpVersion::new(8, 3)).unwrap();
     router.insert(site).unwrap();
     let router = Arc::new(tokio::sync::RwLock::new(router));
 
     let resolver = Arc::new(StaticResolver {
-        // Dead address: if static serving fails to short-circuit, the FCGI
-        // connect fails and we'd see a 500 instead of the file.
         backend: Backend::PhpFpmTcp {
             addr: "127.0.0.1:1".parse().unwrap(),
         },

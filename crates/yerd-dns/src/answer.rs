@@ -17,7 +17,7 @@ pub enum Answer {
     /// Name is *within* the configured TLD but does not exist (e.g. an empty or
     /// malformed label). Wire: authoritative NXDOMAIN + no SOA.
     NxDomain,
-    /// Name is *outside* the configured TLD — we are not authoritative for it.
+    /// Name is *outside* the configured TLD - we are not authoritative for it.
     /// Wire: REFUSED with the AA bit cleared, so a resolver that (mis)routes a
     /// non-`.test` query here treats it as "ask someone else" rather than
     /// trusting an authoritative answer for a domain we don't own.
@@ -43,7 +43,6 @@ mod tests {
 
     #[test]
     fn answer_match_is_exhaustive() {
-        // Adding a variant without updating responder.rs's table breaks compile.
         match Answer::Loopback4 {
             Answer::Loopback4
             | Answer::Loopback6

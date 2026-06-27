@@ -3,7 +3,7 @@
 //! [`HelperInvocation`] is the typed enum the daemon hands to its
 //! subprocess spawner when it sees `PlatformError::NeedsHelper`. Values
 //! stay typed all the way until [`HelperInvocation::to_argv`] serialises
-//! them at the spawn site — there is no `Vec<String>` round-trip in
+//! them at the spawn site - there is no `Vec<String>` round-trip in
 //! between.
 //!
 //! The argv shape is a **wire contract** with the `yerd-helper` binary
@@ -135,7 +135,7 @@ impl HelperInvocation {
     /// into the typed enum.
     ///
     /// The first element is the operation tag; subsequent elements
-    /// alternate `--flag` and a typed value. The parser is strict —
+    /// alternate `--flag` and a typed value. The parser is strict -
     /// unknown flags, missing values, and trailing argv are rejected.
     /// This pairs with `to_argv`; both sides of the wire are
     /// round-trip tested in `tests/helper_argv_roundtrip.rs`.
@@ -223,8 +223,8 @@ impl HelperInvocation {
 
 // ---- per-op argv parsers ----------------------------------------------------
 
-/// Pull the next argv element as `(flag, value)`, returning a typed
-/// error if the flag is absent or the value is missing.
+/// Pull the next argv element as `(flag, value)`, or `None` if the flag
+/// or its value is missing.
 fn next_pair<'a>(iter: &mut std::slice::Iter<'a, OsString>) -> Option<(&'a OsStr, &'a OsString)> {
     let flag = iter.next()?;
     Some((flag.as_os_str(), iter.next()?))
@@ -395,9 +395,6 @@ fn parse_port(value: &OsStr, flag: &'static str) -> Result<u16, ArgvParseError> 
         })
 }
 
-// `http_from`/`https_from` and `http_to`/`https_to` mirror the helper's CLI
-// flags and `HelperInvocation` fields, so the near-identical names are
-// intentional and clearer than any disambiguating rename.
 #[allow(clippy::similar_names)]
 fn parse_install_port_redirect(rest: &[OsString]) -> Result<HelperInvocation, ArgvParseError> {
     let mut http_from: Option<u16> = None;
@@ -763,10 +760,7 @@ mod tests {
 
     #[test]
     fn from_argv_setcap_missing_value_after_flag() {
-        // "--binary" with no following value
         let v = argv(&["setcap", "--binary"]);
-        // The pair-iterator yields nothing for an odd-length tail, so
-        // we fall through to MissingFlag.
         let err = HelperInvocation::from_argv(&v).unwrap_err();
         assert!(matches!(
             err,
@@ -825,8 +819,6 @@ mod tests {
         for inv in cases {
             let v = inv.to_argv();
             let back = HelperInvocation::from_argv(&v).expect("round-trip parse");
-            // Re-serialise both and compare argv vectors — avoids
-            // needing PartialEq on HelperInvocation.
             assert_eq!(inv.to_argv(), back.to_argv());
         }
     }

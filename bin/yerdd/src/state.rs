@@ -28,8 +28,8 @@ use crate::detect_cache::DetectCache;
 /// Mail-capture runtime fact captured at startup: whether the SMTP listener
 /// actually bound. `Status` sources `enabled`/`port` from the live config (so a
 /// `SetMailPort`/`SetMailEnabled` save is reflected immediately), but whether the
-/// server is *actually* bound is a startup property — a config change only takes
-/// effect on the next restart — so it lives here.
+/// server is *actually* bound is a startup property - a config change only takes
+/// effect on the next restart - so it lives here.
 #[derive(Debug, Clone, Copy)]
 pub struct MailRuntime {
     /// Whether the SMTP listener actually bound (and is accepting mail).
@@ -81,17 +81,17 @@ pub struct DaemonState {
     pub mail_store: Arc<yerd_mail::Store>,
     /// Mail-capture runtime facts, surfaced in `Status`. `listening` reflects
     /// whether the SMTP port was actually bound (it can be `enabled && !listening`
-    /// when the port was busy at startup — a non-fatal condition).
+    /// when the port was busy at startup - a non-fatal condition).
     pub mail: MailRuntime,
     /// HTTP listener: requested vs actually-bound port (reported by `Status`).
     pub http: PortStatus,
     /// HTTPS listener: requested vs actually-bound port (reported by `Status`).
     pub https: PortStatus,
     /// Set when the daemon could bind neither the desired nor the fallback web
-    /// ports — it runs degraded (no proxy). Carries the fallback ports it failed
+    /// ports - it runs degraded (no proxy). Carries the fallback ports it failed
     /// on, surfaced in `Status` (`web_unbound`) so the UI/doctor can name them.
     pub web_unbound: Option<yerd_ipc::UnboundWeb>,
-    /// Set when the daemon could not bind its DNS responder port — it runs
+    /// Set when the daemon could not bind its DNS responder port - it runs
     /// degraded (no name resolution). Carries the configured `dns_port` it failed
     /// on, surfaced in `Status` (`dns_unbound`) so the UI/doctor can name it.
     pub dns_unbound: Option<u16>,

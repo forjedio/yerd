@@ -1,6 +1,6 @@
 //! Hand-rolled `FastCGI` record framing.
 //!
-//! Pure encode/decode only — the forwarder owns socket reads/writes.
+//! Pure encode/decode only - the forwarder owns socket reads/writes.
 
 use thiserror::Error;
 
@@ -8,7 +8,7 @@ use thiserror::Error;
 pub const FCGI_VERSION: u8 = 1;
 /// `role` value in `BeginRequest` for the Responder role.
 pub const FCGI_RESPONDER: u16 = 1;
-/// FCGI's `content_length` is a `u16` — 65 535 bytes is the hard cap.
+/// FCGI's `content_length` is a `u16` - 65 535 bytes is the hard cap.
 pub const FCGI_MAX_PAYLOAD: usize = 65_535;
 
 /// `protocol_status` value indicating a request completed without error.
@@ -139,7 +139,7 @@ fn encode_length(len: usize, out: &mut Vec<u8>) -> Result<(), FcgiError> {
 #[must_use]
 pub fn encode_begin_request_body(role: u16, keep_conn: bool) -> [u8; 8] {
     let role_bytes = role.to_be_bytes();
-    let flags = u8::from(keep_conn); // FCGI_KEEP_CONN = 1
+    let flags = u8::from(keep_conn);
     [role_bytes[0], role_bytes[1], flags, 0, 0, 0, 0, 0]
 }
 
@@ -237,10 +237,7 @@ mod tests {
         let big = vec![b'a'; 200];
         let mut out = Vec::new();
         encode_name_value(&big, b"v", &mut out).unwrap();
-        // First 4 bytes are the big-endian length OR'd with 0x80000000;
-        // 200 = 0x000000C8, so encoded = 0x800000C8 = [80, 00, 00, c8].
         assert_eq!(&out[..4], &[0x80, 0x00, 0x00, 0xC8]);
-        // Value length 1, single byte.
         assert_eq!(out[4], 1);
         assert_eq!(&out[5..205], big.as_slice());
         assert_eq!(out[205], b'v');

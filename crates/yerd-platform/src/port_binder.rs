@@ -7,8 +7,8 @@ use crate::PlatformError;
 /// A bound TCP listener returned by [`PortBinder::bind`] and the two
 /// halves of [`PortPair`].
 ///
-/// `TcpListener` is intentionally `std::net::TcpListener` — not the tokio
-/// variant — so `yerd-platform` does not pull `tokio` into its public
+/// `TcpListener` is intentionally `std::net::TcpListener` - not the tokio
+/// variant - so `yerd-platform` does not pull `tokio` into its public
 /// surface. `yerd-proxy` (which does use tokio) can convert via
 /// `tokio::net::TcpListener::from_std`.
 #[derive(Debug)]
@@ -44,8 +44,8 @@ pub trait PortBinder {
     /// Bind 80 and 443 (or the rootless equivalent) atomically.
     ///
     /// Internally: attempt `desired.0` then `desired.1`. If either fails
-    /// with one of the retry-trigger kinds — `PermissionDenied`,
-    /// `AddrInUse`, or `AddrNotAvailable` — drop any successful partial
+    /// with one of the retry-trigger kinds - `PermissionDenied`,
+    /// `AddrInUse`, or `AddrNotAvailable` - drop any successful partial
     /// listener and retry with `(fallback.0, fallback.1)`. Any other
     /// `io::Error` on the desired pair surfaces immediately as
     /// [`PlatformError::Bind`] without trying the fallback. If both

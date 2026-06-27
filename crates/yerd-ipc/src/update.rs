@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 /// Self-update release channel.
 ///
 /// Serialised lowercase (`"stable"` / `"edge"`). `#[non_exhaustive]` so a future
-/// channel can be added without a hard wire break — an older peer that receives
+/// channel can be added without a hard wire break - an older peer that receives
 /// an unknown channel fails closed as [`crate::IpcError::Decode`] (no
 /// `#[serde(other)]` catch-all), consistent with the rest of this crate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -40,8 +40,8 @@ pub enum UpdateSource {
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum StagedArtifact {
-    /// macOS `.app.tar.gz` — the applier extracts + swaps the bundle.
+    /// macOS `.app.tar.gz` - the applier extracts + swaps the bundle.
     AppTarGz,
-    /// Linux `.deb` — the applier reinstalls via `dpkg -i`.
+    /// Linux `.deb` - the applier reinstalls via `dpkg -i`.
     Deb,
 }

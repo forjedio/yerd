@@ -1,4 +1,4 @@
-//! [`CertAuthority`] — the local CA's generated or loaded material.
+//! [`CertAuthority`] - the local CA's generated or loaded material.
 //!
 //! Stores `cert_pem` + `cert_der` + `key_pem` + `key_pair`. The duplication
 //! is deliberate: `cert_pem` and `cert_der` are the canonical wire forms
@@ -75,9 +75,8 @@ impl CertAuthority {
     ///
     /// Validates: cert PEM tag is `"CERTIFICATE"`; key PEM tag is
     /// `"PRIVATE KEY"`; key's `SPKI` byte-equals the cert's `SPKI` (the
-    /// primary safeguard — rcgen does not check this for us).
+    /// primary safeguard - rcgen does not check this for us).
     pub fn from_pem(cert_pem: &str, key_pem: &str) -> Result<Self, TlsError> {
-        // Cert PEM: decode and tag-check.
         let cert_block = pem::parse(cert_pem).map_err(|_| TlsError::Parse {
             reason: ParseErrorReason::InvalidCertificatePem,
         })?;
@@ -88,8 +87,6 @@ impl CertAuthority {
         }
         let cert_der = cert_block.contents().to_vec();
 
-        // Key PEM: tag-check first (defensive layer — rcgen's from_pem does
-        // not enforce tags).
         let key_block = pem::parse(key_pem).map_err(|_| TlsError::Parse {
             reason: ParseErrorReason::InvalidPrivateKeyPem,
         })?;
@@ -103,7 +100,6 @@ impl CertAuthority {
             reason: ParseErrorReason::InvalidPrivateKeyPem,
         })?;
 
-        // SPKI byte-comparison (D5 primary mechanism).
         let cert_der_typed = CertificateDer::from(cert_der.as_slice());
         let (_, parsed_cert) =
             x509_parser::parse_x509_certificate(&cert_der).map_err(|_| TlsError::Parse {
@@ -119,8 +115,6 @@ impl CertAuthority {
             });
         }
 
-        // Probe rcgen parseability so issue_leaf does not surprise the caller.
-        // This catches multi-AVA RDN subjects, unsupported extensions, etc.
         CertificateParams::from_ca_cert_der(&cert_der_typed).map_err(|e| TlsError::Parse {
             reason: ParseErrorReason::InvalidCertificateDer {
                 detail: rcgen_detail(&e),
@@ -165,10 +159,6 @@ impl CertAuthority {
     pub fn issue_leaf(&self, names: &[String], validity: Validity) -> Result<LeafCert, TlsError> {
         let leaf_params = params::leaf_params(names, validity)?;
 
-        // Reconstruct a synthetic issuer Certificate from the cached DER +
-        // live KeyPair. The synthetic cert has a fresh random serial and
-        // signature but the same SPKI/DN/key, which is all rcgen's leaf-
-        // signing path reads.
         let cert_der_typed = CertificateDer::from(self.cert_der.as_slice());
         let issuer_params =
             CertificateParams::from_ca_cert_der(&cert_der_typed).map_err(|e| TlsError::Parse {
@@ -185,7 +175,6 @@ impl CertAuthority {
                     },
                 })?;
 
-        // Fresh key for the leaf.
         let leaf_key = KeyPair::generate_for(key_alg()).map_err(|e| TlsError::Generate {
             reason: GenerateErrorReason::KeyGenerationFailed {
                 detail: rcgen_detail(&e),
@@ -226,7 +215,6 @@ impl fmt::Debug for CertAuthority {
         let mut hex = String::with_capacity(64);
         for b in self.fingerprint_sha256() {
             use std::fmt::Write as _;
-            // Test exemption: only writes to a String, can't fail.
             let _ = write!(&mut hex, "{b:02x}");
         }
         f.debug_struct("CertAuthority")
@@ -334,7 +322,6 @@ mod tests {
             !dbg.contains(ca.key_pem()),
             "Debug leaks the full key PEM: {dbg}"
         );
-        // The base64 body — split on the BEGIN/END lines, concatenate the middle.
         let key_pem = ca.key_pem();
         let body: String = key_pem
             .lines()

@@ -3,7 +3,7 @@
 //! [`TlsError`] is the single error type exposed by every fallible public API
 //! in this crate. Each variant carries a typed `*Reason` sub-enum so callers
 //! can match on precise failure modes without parsing message strings. We
-//! deliberately do not wrap [`rcgen::Error`] — instead, [`rcgen_detail`] maps
+//! deliberately do not wrap [`rcgen::Error`] - instead, [`rcgen_detail`] maps
 //! every variant to a `&'static str` tag exposed through Reason variants like
 //! [`GenerateErrorReason::SelfSignFailed`]. This keeps [`TlsError`] fully
 //! `Clone + PartialEq + Eq` and preserves diagnostic detail without leaking

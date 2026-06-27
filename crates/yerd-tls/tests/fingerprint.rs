@@ -26,8 +26,6 @@ fn fingerprint_matches_hand_computed_sha256() {
 fn fingerprint_differs_between_independent_generations() {
     let a = CertAuthority::generate("CA A", standard_validity()).unwrap();
     let b = CertAuthority::generate("CA A", standard_validity()).unwrap();
-    // Even with the same common-name and validity, fresh CAs differ because
-    // the key pair and serial number are random.
     assert_ne!(a.fingerprint_sha256(), b.fingerprint_sha256());
 }
 

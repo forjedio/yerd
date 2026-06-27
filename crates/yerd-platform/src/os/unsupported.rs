@@ -115,7 +115,7 @@ impl PortBinder for UnsupportedPortBinder {
     }
 }
 
-/// Stub `SystemMetrics` for unsupported OSes — metrics are best-effort, so this
+/// Stub `SystemMetrics` for unsupported OSes - metrics are best-effort, so this
 /// returns `None` (no metrics) rather than an error.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct UnsupportedSystemMetrics;
@@ -156,7 +156,7 @@ impl PortRedirector for UnsupportedPortRedirector {
     }
 
     /// The proxy doesn't run on unsupported platforms, so the loopback-probe
-    /// default would be meaningless — report "not probed".
+    /// default would be meaningless - report "not probed".
     fn foreign_web_listener(&self) -> Option<bool> {
         None
     }

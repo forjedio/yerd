@@ -10,7 +10,7 @@ use crate::ConfigError;
 /// parsed [`toml::Value`]. The step is responsible for leaving the
 /// `version` key set to `N + 1` on success.
 ///
-/// Migrations need not produce a *valid* config — the parser unconditionally
+/// Migrations need not produce a *valid* config - the parser unconditionally
 /// runs wire-mirror deserialisation (per-field invariants via `yerd-core`)
 /// and [`crate::Config::validate`] (cross-field invariants) after the final
 /// migration step, so the validator is the gate.
@@ -21,8 +21,8 @@ pub(crate) type MigrationStep = fn(&mut Value) -> Result<(), ConfigError>;
 /// migrated *from*). Example: a v1 file is migrated by `STEPS[1]`. When
 /// `CURRENT_VERSION == 7`, `STEPS = [v0→v1, …, v5→v6, v6→v7]`, length 7.
 ///
-/// `STEPS[0]` (v0→v1) is only reachable via a hand-crafted `version = 0` file —
-/// v0 was never written to disk — but it must exist so that `STEPS[1]` does.
+/// `STEPS[0]` (v0→v1) is only reachable via a hand-crafted `version = 0` file -
+/// v0 was never written to disk - but it must exist so that `STEPS[1]` does.
 pub(crate) const STEPS: &[MigrationStep] = &[
     migrate_v0_to_v1,
     migrate_v1_to_v2,
@@ -63,7 +63,6 @@ fn migrate_v2_to_v3(value: &mut Value) -> Result<(), ConfigError> {
                 if let Value::String(name) = entry {
                     let mut inst = toml::value::Table::new();
                     inst.insert("enabled".to_string(), Value::Boolean(true));
-                    // Last-wins on a duplicate (only reachable by hand-editing).
                     services.insert(name, Value::Table(inst));
                 }
             }
@@ -162,8 +161,6 @@ mod tests {
 
     #[test]
     fn steps_cover_every_version_below_current() {
-        // One step per version from 0..CURRENT_VERSION, so `up()` can walk any
-        // on-disk version forward without a MissingStep.
         assert_eq!(STEPS.len(), crate::CURRENT_VERSION as usize);
     }
 
@@ -174,7 +171,6 @@ mod tests {
 
     #[test]
     fn v3_to_v4_is_a_bare_version_bump() {
-        // v4 only adds the optional `[mail]` section; the migration is a bump.
         let mut v: Value = toml::from_str("version = 3\n").unwrap();
         migrate_v3_to_v4(&mut v).unwrap();
         assert_eq!(read_version(&v).unwrap(), 4);
@@ -196,7 +192,6 @@ mod tests {
 
     #[test]
     fn v6_to_v7_is_a_bare_version_bump() {
-        // v7 only adds the optional `[ports] fallback_*` keys; the migration is a bump.
         let mut v: Value = toml::from_str("version = 6\n").unwrap();
         migrate_v6_to_v7(&mut v).unwrap();
         assert_eq!(read_version(&v).unwrap(), 7);
@@ -259,7 +254,7 @@ mod tests {
     }
 
     /// Pins the defensive non-table branch via a hand-constructed
-    /// `Value::Integer(42)` — unreachable through `toml::from_str`
+    /// `Value::Integer(42)` - unreachable through `toml::from_str`
     /// (TOML's grammar guarantees a table root).
     #[test]
     fn read_version_rejects_non_table_root_via_constructed_value() {
@@ -274,7 +269,6 @@ mod tests {
 
     #[test]
     fn up_migrates_v1_to_current_via_steps_index_one() {
-        // A real v1 file is migrated by STEPS[1], [2], [3]… up to current.
         let mut v: Value = toml::from_str("version = 1").unwrap();
         up(&mut v, 1).unwrap();
         assert_eq!(read_version(&v).unwrap(), crate::CURRENT_VERSION);
@@ -282,7 +276,6 @@ mod tests {
 
     #[test]
     fn up_walks_v0_all_the_way_to_current() {
-        // A hand-crafted v0 file walks STEPS[0], [1], [2], [3]… up to current.
         let mut v: Value = toml::from_str("version = 0").unwrap();
         up(&mut v, 0).unwrap();
         assert_eq!(read_version(&v).unwrap(), crate::CURRENT_VERSION);

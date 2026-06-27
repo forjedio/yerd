@@ -82,7 +82,7 @@ fn encode_then_decode_request_roundtrip() {
 }
 
 #[test]
-#[allow(clippy::too_many_lines)] // one roundtrip assertion per variant — naturally long
+#[allow(clippy::too_many_lines)]
 fn encode_then_decode_response_roundtrip() {
     assert_response_roundtrips(Response::Pong);
     assert_response_roundtrips(Response::Ok);
@@ -233,7 +233,6 @@ fn decode_rejects_unknown_type_tag() {
 
 #[test]
 fn decode_rejects_missing_required_field() {
-    // `Link` requires both `name` and `path`; omit `path`.
     let bytes = br#"{"type":"link","name":"foo"}"#;
     let err = decode_message::<Request>(bytes).unwrap_err();
     assert!(matches!(err, IpcError::Decode(_)), "got {err:?}");
@@ -241,8 +240,6 @@ fn decode_rejects_missing_required_field() {
 
 #[test]
 fn decode_accepts_unknown_envelope_field() {
-    // The envelope tolerates additive fields so newer daemons can
-    // extend requests/responses without breaking older clients.
     let bytes = br#"{"type":"ping","__extra":42}"#;
     let r: Request = decode_message(bytes).unwrap();
     assert_eq!(r, Request::Ping);
@@ -250,9 +247,6 @@ fn decode_accepts_unknown_envelope_field() {
 
 #[test]
 fn decode_rejects_unknown_field_inside_site() {
-    // `yerd-core::Site`'s Deserialize impl is strict: unknown fields
-    // on the *inner* Site payload are rejected. This is the
-    // intentional asymmetry — envelope-permissive, payload-strict.
     let bytes = br#"{"type":"sites","sites":[{"name":"foo","document_root":"/srv/foo","php":"8.3","secure":false,"kind":"parked","surprise":1}]}"#;
     let err = decode_message::<Response>(bytes).unwrap_err();
     assert!(matches!(err, IpcError::Decode(_)), "got {err:?}");
@@ -260,7 +254,6 @@ fn decode_rejects_unknown_field_inside_site() {
 
 #[test]
 fn decode_rejects_unknown_error_code() {
-    // Fail-closed on unknown ErrorCode (no #[serde(other)] Unknown).
     let bytes = br#"{"type":"error","code":"rate_limited","message":"x"}"#;
     let err = decode_message::<Response>(bytes).unwrap_err();
     assert!(matches!(err, IpcError::Decode(_)), "got {err:?}");

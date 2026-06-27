@@ -17,7 +17,7 @@ use std::net::SocketAddr;
 /// The two fields Yerd writes into `/etc/resolver/<tld>`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ResolverFile {
-    /// `nameserver` directive — the IP address only.
+    /// `nameserver` directive - the IP address only.
     pub nameserver: std::net::IpAddr,
     /// `port` directive (defaults to 53 in `resolver(5)` but Yerd always
     /// writes it explicitly).
@@ -88,7 +88,7 @@ pub fn matches(text: &str, expected: SocketAddr) -> bool {
 
 /// Whether `text` is safe to restore as an `/etc/resolver/<tld>` file: it parses
 /// to a valid `nameserver`/`port`. Guards the macOS unelevate restore path from
-/// writing an empty or garbage backup back as the system resolver config — when
+/// writing an empty or garbage backup back as the system resolver config - when
 /// this is false the helper deletes Yerd's file instead of restoring junk.
 #[must_use]
 pub fn restorable(text: &str) -> bool {
@@ -100,7 +100,7 @@ pub fn restorable(text: &str) -> bool {
 // When the helper overwrites a pre-existing resolver file (e.g. a Valet/Herd
 // leftover), it first copies the old content here so it can be restored. The
 // helper (root) writes the dir; the user's daemon reads it back to report the
-// backup in `doctor`. Filenames are `"<tld>-<unixsecs>.conf"` — the path/format
+// backup in `doctor`. Filenames are `"<tld>-<unixsecs>.conf"` - the path/format
 // logic is pure and lives here; the I/O lives in the helper and daemon.
 
 /// The system-level directory Yerd stores replaced-resolver backups in.
@@ -133,7 +133,7 @@ pub fn parse_backup_secs(name: &str, tld: &str) -> Option<u64> {
 }
 
 /// From a directory listing, return the most recent backup filename for `tld`
-/// (the entry with the **numerically** largest stamp — `1000` beats `999`,
+/// (the entry with the **numerically** largest stamp - `1000` beats `999`,
 /// which a lexicographic compare would get wrong). `None` if none match. Pure;
 /// the OS layer supplies the listing.
 #[must_use]
@@ -203,9 +203,9 @@ mod tests {
     #[test]
     fn restorable_accepts_valid_and_rejects_junk() {
         assert!(restorable("nameserver 192.168.1.1\nport 53\n"));
-        assert!(restorable("nameserver 127.0.0.1\n")); // port defaults to 53
-        assert!(!restorable("")); // empty backup → don't restore
-        assert!(!restorable("port 53\n")); // no nameserver
+        assert!(restorable("nameserver 127.0.0.1\n"));
+        assert!(!restorable(""));
+        assert!(!restorable("port 53\n"));
         assert!(!restorable("garbage not a resolver file"));
     }
 
@@ -238,7 +238,6 @@ mod tests {
 
     #[test]
     fn parse_backup_secs_rejects_foreign_and_malformed() {
-        // Different tld, tld as a strict prefix, and a non-numeric stamp.
         assert_eq!(parse_backup_secs("other-123.conf", "test"), None);
         assert_eq!(parse_backup_secs("testextra-123.conf", "test"), None);
         assert_eq!(parse_backup_secs("test-nope.conf", "test"), None);
@@ -248,7 +247,6 @@ mod tests {
     #[test]
     fn parse_backup_secs_handles_hyphenated_tld() {
         assert_eq!(parse_backup_secs("my-test-99.conf", "my-test"), Some(99));
-        // The middle hyphen must not be mistaken for the stamp separator.
         assert_eq!(parse_backup_secs("my-test-99.conf", "my"), None);
     }
 
@@ -257,10 +255,9 @@ mod tests {
         let names = vec![
             "test-999.conf".to_owned(),
             "test-1000.conf".to_owned(),
-            "other-5000.conf".to_owned(), // foreign tld — ignored
+            "other-5000.conf".to_owned(),
             "test-123.conf".to_owned(),
         ];
-        // 1000 > 999 numerically (lexicographically "999" > "1000").
         assert_eq!(latest_backup(&names, "test"), Some("test-1000.conf"));
     }
 

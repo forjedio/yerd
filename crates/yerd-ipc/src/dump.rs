@@ -13,7 +13,7 @@
 
 use serde::{Deserialize, Serialize};
 
-/// The category of a captured telemetry frame — one per GUI tab.
+/// The category of a captured telemetry frame - one per GUI tab.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
@@ -39,7 +39,7 @@ pub enum DumpCategory {
 /// A single buffered telemetry event.
 ///
 /// `id` is assigned by the daemon; the remaining fields come from the
-/// extension's frame. `payload` is opaque to the daemon — see the module docs.
+/// extension's frame. `payload` is opaque to the daemon - see the module docs.
 ///
 /// Not `Eq` because `payload` is a [`serde_json::Value`] (floats); `PartialEq`
 /// is enough for the wire-stability round-trip assertions.
@@ -63,7 +63,7 @@ pub struct DumpEvent {
 ///
 /// The GUI sums these for the "All" tab. `u32` (not `u64`): counts are bounded by
 /// the ring capacity (~2000), and the smaller struct keeps `Response` under
-/// clippy's large-error threshold. Wire-compatible — JSON numbers are identical.
+/// clippy's large-error threshold. Wire-compatible - JSON numbers are identical.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DumpCounts {
     /// Number of buffered `dump` events.
@@ -103,7 +103,7 @@ impl DumpCounts {
 /// Whether a matching extension `.so` is present for an installed PHP version.
 ///
 /// This is a yerd-side fact ("a matching artifact is present and was wired to
-/// `-d zend_extension`") — not proof that FPM actually `dlopen`'d it.
+/// `-d zend_extension`") - not proof that FPM actually `dlopen`'d it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DumpExtStatus {
     /// The installed PHP minor (e.g. `8.3`).

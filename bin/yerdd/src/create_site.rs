@@ -1,4 +1,4 @@
-//! `CreateSite` — scaffold a new project (`laravel new`) then register it.
+//! `CreateSite` - scaffold a new project (`laravel new`) then register it.
 //!
 //! Scaffolding runs far longer than one request/response round-trip and streams
 //! output, so this runs as a background [job](crate::jobs): [`start`] spawns the
@@ -40,9 +40,6 @@ pub async fn start(spec: CreateSiteSpec, state: Arc<DaemonState>) -> Response {
         _ => return error(ErrorCode::Internal, "unsupported framework".to_owned()),
     }
 
-    // Validate (and lowercase) the name up front so a bad request fails now,
-    // before any job/spinner. `Site::linked` applies the DNS-label rules; the
-    // path is not validated at this layer, so any value works for the check.
     let name = match yerd_core::Site::linked(&spec.name, spec.parent_dir.clone(), spec.php) {
         Ok(site) => site.name().to_owned(),
         Err(e) => return error(ErrorCode::InvalidPath, e.to_string()),
@@ -65,7 +62,6 @@ async fn run_job(
     state: Arc<DaemonState>,
     cancel_rx: watch::Receiver<bool>,
 ) {
-    // Reserve the name so two concurrent creates can't both scaffold it.
     if !state.reserved_names.lock().await.insert(name.clone()) {
         state
             .jobs
@@ -107,8 +103,6 @@ enum Outcome {
     Cancelled,
 }
 
-// Linear preflight→scaffold→register pipeline; reads top-to-bottom, so the line
-// count is incidental rather than a complexity signal.
 #[allow(clippy::too_many_lines)]
 async fn run_inner(
     id: &str,
@@ -124,7 +118,6 @@ async fn run_inner(
     let dirs = &state.dirs;
     let project_dir = spec.parent_dir.join(name);
 
-    // --- Preflight -----------------------------------------------------------
     state.jobs.set_phase(id, "Preflight").await;
 
     let php_cli = crate::php_install::cli_binary_path(dirs, spec.php);
@@ -135,17 +128,12 @@ async fn run_inner(
         ));
     }
 
-    // The daemon's own PATH is restricted (launchd/systemd), so resolve the
-    // user's real PATH once: it lets us accept *externally*-installed Composer /
-    // Laravel installer / Node / Bun (and find them at scaffold time). PHP is
-    // always Yerd-managed.
     let user_dirs = crate::tools::external::resolve_user_path()
         .await
         .unwrap_or_default();
     let data_bin = tools::bin_dir(dirs);
     let data_root = &dirs.data;
 
-    // Composer: Yerd-managed phar, else an external `composer` on the user PATH.
     let composer_phar = tools::composer::phar_path(dirs);
     let composer_managed = composer_phar.is_file();
     if !composer_managed
@@ -155,9 +143,6 @@ async fn run_inner(
         return Outcome::Failed("Composer is not installed — install it first".to_owned());
     }
 
-    // Laravel installer: Yerd-managed bin, else an external `laravel` on the user
-    // PATH. We run whichever through the managed `php` (see run_scaffold) so the
-    // selected PHP version is always used.
     let managed_installer = tools::laravel::installer_bin(dirs);
     let installer_bin = if managed_installer.is_file() {
         managed_installer
@@ -171,24 +156,17 @@ async fn run_inner(
         );
     };
 
-    // Target dir must be absent or empty (never `--force` over a user's files).
     if let Err(msg) = check_target_dir(&project_dir) {
         return Outcome::Failed(msg);
     }
-    // Parent must exist and be writable by the daemon.
     if let Err(msg) = probe_writable(&spec.parent_dir) {
         return Outcome::Failed(msg);
     }
 
-    // Install the chosen JS runtime if a kit needs it and it's neither managed
-    // nor available externally on the user PATH.
     if let Err(msg) = ensure_js_runtime(id, options.js, &user_dirs, state).await {
         return Outcome::Failed(msg);
     }
 
-    // Build the per-job PATH bin dir that pins the chosen PHP. The Composer
-    // wrapper is only created for the managed phar; an external Composer is found
-    // on the composed PATH and runs under the managed `php` via its shebang.
     let job_bin = match build_job_bin(
         job_dir,
         &php_cli,
@@ -200,15 +178,12 @@ async fn run_inner(
     let path_env = composed_path(&job_bin, &data_bin, &user_dirs);
     let composer_home = tools::laravel::composer_home(dirs);
 
-    // `git` is effectively required by the installer (kits + `--git` run `git
-    // init`); fail clearly in preflight rather than mid-scaffold.
     if needs_git(options) && !git_available(&path_env).await {
         return Outcome::Failed(
             "git was not found on PATH — install git to use a starter kit or git init".to_owned(),
         );
     }
 
-    // --- Scaffold ------------------------------------------------------------
     state.jobs.set_phase(id, "Scaffolding").await;
     let args = build_new_args(name, options);
     state
@@ -240,11 +215,8 @@ async fn run_inner(
         }
     }
 
-    // --- Register ------------------------------------------------------------
     state.jobs.set_phase(id, "Registering").await;
     if let Err(msg) = register(name, &spec.parent_dir, &project_dir, spec, state).await {
-        // The project files are valid; leave them on disk but report the failure
-        // (the user can retry registration via Link). Do NOT delete their code.
         return Outcome::Failed(format!("scaffolded, but registration failed: {msg}"));
     }
     state
@@ -255,7 +227,7 @@ async fn run_inner(
 }
 
 /// Build the `laravel new …` argument vector (after the installer binary).
-/// Pure — unit-tested.
+/// Pure - unit-tested.
 fn build_new_args(name: &str, o: &LaravelOptions) -> Vec<String> {
     let mut a = vec![
         "new".to_owned(),
@@ -288,9 +260,6 @@ fn build_new_args(name: &str, o: &LaravelOptions) -> Vec<String> {
     }
     a.push("--database".to_owned());
     a.push(database_flag(o.database).to_owned());
-    // The installer has no skip-node flag: passing a package-manager flag makes
-    // it *run* install+build, while passing none defaults to npm without running
-    // it. So `Skip` simply omits the flag.
     match o.js {
         JsRuntime::Npm => a.push("--npm".to_owned()),
         JsRuntime::Bun => a.push("--bun".to_owned()),
@@ -299,7 +268,6 @@ fn build_new_args(name: &str, o: &LaravelOptions) -> Vec<String> {
     if o.git {
         a.push("--git".to_owned());
     }
-    // Pass an explicit boost flag either way so the installer never prompts.
     a.push(if o.boost { "--boost" } else { "--no-boost" }.to_owned());
     a
 }
@@ -370,7 +338,6 @@ async fn ensure_js_runtime(
     if tools::installed_version(&state.dirs, tool).is_some() {
         return Ok(());
     }
-    // Externally installed (e.g. Homebrew/fnm) → use it; don't install a managed copy.
     let data_bin = tools::bin_dir(&state.dirs);
     if crate::tools::external::external_tool(user_dirs, tool, &data_bin, &state.dirs.data).is_some()
     {
@@ -436,8 +403,6 @@ async fn register(
     };
 
     if is_parked {
-        // Inside a parked root → the site auto-discovers; force a rescan/rebuild
-        // via an idempotent re-Park (Park always rebuilds the router).
         mutate_ok(
             crate::ipc_server::handle_mutation(
                 Request::Park {
@@ -460,7 +425,6 @@ async fn register(
         )?;
     }
 
-    // Apply non-default PHP / HTTPS (these also re-validate the now-present site).
     if spec.php != default_php {
         mutate_ok(
             crate::ipc_server::handle_mutation(
@@ -504,7 +468,7 @@ enum ScaffoldOutcome {
     Cancelled,
 }
 
-/// Spawn `php <installer> new …`, stream both pipes into the job log, and wait —
+/// Spawn `php <installer> new …`, stream both pipes into the job log, and wait -
 /// killing the whole process group on cancel or timeout.
 #[allow(clippy::too_many_arguments)]
 async fn run_scaffold(
@@ -528,8 +492,6 @@ async fn run_scaffold(
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    // New process group so cancel/timeout can signal the installer's children
-    // (composer, npm, git), not just the `php` parent.
     #[cfg(unix)]
     cmd.process_group(0);
 
@@ -553,12 +515,7 @@ async fn run_scaffold(
 
     let result = tokio::select! {
         changed = cancel_rx.changed() => {
-            // `changed()` resolves on the cancel signal; if the sender is gone we
-            // also stop. Either way, tear the process down.
             let cancelled = changed.is_ok() && *cancel_rx.borrow();
-            // Abort the pipe readers first: closing the read ends makes any
-            // grandchild blocked on a full pipe get SIGPIPE, so the group dies
-            // promptly instead of stalling the SIGTERM grace window.
             for r in &readers { r.abort(); }
             terminate_group(pgid, &mut child).await;
             if cancelled { ScaffoldOutcome::Cancelled } else { ScaffoldOutcome::Failed("cancel channel closed".to_owned()) }
@@ -577,7 +534,6 @@ async fn run_scaffold(
         }
     };
 
-    // Let the readers drain any buffered output before returning.
     for r in readers {
         let _ = r.await;
     }
@@ -621,8 +577,6 @@ async fn terminate_group(pgid: Option<u32>, child: &mut tokio::process::Child) {
 #[cfg(unix)]
 fn kill_group(pgid: Option<u32>, signal: nix::sys::signal::Signal) {
     if let Some(p) = pgid {
-        // The child is the group leader (pgid == pid) because we set
-        // `process_group(0)` at spawn.
         if let Ok(pid) = i32::try_from(p) {
             let _ = nix::sys::signal::killpg(nix::unistd::Pid::from_raw(pid), signal);
         }
@@ -641,7 +595,7 @@ fn sh_quote(p: &Path) -> String {
 /// when `composer_phar` is `Some` (Yerd-managed Composer), a `composer` wrapper
 /// that runs that same PHP so the installer's nested `composer create-project`
 /// uses the requested runtime (Composer derives its child PHP from `PHP_BINARY`).
-/// When `None` (external Composer), no wrapper is written — Composer is found on
+/// When `None` (external Composer), no wrapper is written - Composer is found on
 /// the composed PATH and runs under the managed `php` via its shebang. Unix-only.
 #[cfg(unix)]
 fn build_job_bin(

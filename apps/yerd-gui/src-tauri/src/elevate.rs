@@ -2,7 +2,7 @@
 //!
 //! Invariants (see the plan's elevation section, grounded in
 //! `bin/yerd/src/elevate.rs`):
-//!   1. Elevate the CLI, not the GUI — the GUI process never becomes root.
+//!   1. Elevate the CLI, not the GUI - the GUI process never becomes root.
 //!   2. Resolve the trusted `yerd` path as a sibling of our own `current_exe`,
 //!      never from `PATH` or the daemon (anti-forgery, like the CLI does).
 //!   3. Thread the real uid through `env SUDO_UID=<uid>` because the elevation
@@ -19,13 +19,13 @@ use crate::error::GuiError;
 
 const TARGETS: [&str; 3] = ["trust", "resolver", "ports"];
 /// The two CLI verbs we drive. Validated (like `TARGETS`) before reaching
-/// `spawn_elevated`, where `verb` is interpolated into the macOS AppleScript —
+/// `spawn_elevated`, where `verb` is interpolated into the macOS AppleScript -
 /// both come from fixed allowlists, keeping that string injection-safe.
 const VERBS: [&str; 2] = ["elevate", "unelevate"];
 
 /// Validate the verb + target and run the elevated command, returning when it
 /// exits. `verb` is `"elevate"` or `"unelevate"`; an **empty** `target` means
-/// "all" — the CLI applies every step (`yerd elevate` with no subcommand).
+/// "all" - the CLI applies every step (`yerd elevate` with no subcommand).
 pub async fn run(verb: &str, target: &str) -> Result<(), GuiError> {
     if !VERBS.contains(&verb) {
         return Err(GuiError::internal(format!("unknown verb: {verb}")));
@@ -38,7 +38,6 @@ pub async fn run(verb: &str, target: &str) -> Result<(), GuiError> {
     let yerd = trusted_yerd()?;
     let verb = verb.to_owned();
     let target = target.to_owned();
-    // Spawn the blocking, prompt-driven process off the async runtime.
     let result = tokio::task::spawn_blocking(move || spawn_elevated(&yerd, &verb, &target))
         .await
         .map_err(|e| GuiError::internal(format!("join error: {e}")))?;
@@ -70,9 +69,6 @@ pub async fn run_many(verb: &str, targets: &[&str]) -> Result<(), GuiError> {
 
 /// The `yerd` binary that sits beside this app's executable.
 fn trusted_yerd() -> Result<PathBuf, GuiError> {
-    // Refuse to run a privileged helper from a translocated bundle: `current_exe`
-    // would be an ephemeral `/AppTranslocation/…` path that vanishes on unmount,
-    // and root would be spawned from a non-stable location.
     #[cfg(target_os = "macos")]
     if crate::autostart::is_translocated() {
         return Err(GuiError::internal(
@@ -98,8 +94,6 @@ fn trusted_yerd() -> Result<PathBuf, GuiError> {
 
 #[cfg(target_os = "linux")]
 fn spawn_elevated(yerd: &std::path::Path, verb: &str, target: &str) -> Result<(), GuiError> {
-    // `pkexec /usr/bin/env SUDO_UID=<uid> <yerd> <verb> [<target>]`
-    // (an empty target means "all", so the subcommand arg is omitted).
     let uid = current_uid();
     let mut cmd = std::process::Command::new("pkexec");
     cmd.arg("/usr/bin/env")
@@ -116,7 +110,6 @@ fn spawn_elevated(yerd: &std::path::Path, verb: &str, target: &str) -> Result<()
     if status.success() {
         return Ok(());
     }
-    // pkexec: 126 = user dismissed/not authorized, 127 = auth could not start.
     match status.code() {
         Some(126) => Err(GuiError::internal("authorization was dismissed or denied")),
         Some(127) => Err(GuiError::internal("authentication could not be started")),
@@ -133,7 +126,6 @@ fn spawn_elevated(yerd: &std::path::Path, verb: &str, target: &str) -> Result<()
 fn spawn_elevated(yerd: &std::path::Path, verb: &str, target: &str) -> Result<(), GuiError> {
     let uid = current_uid();
     let path = applescript_escape(&yerd.to_string_lossy());
-    // Single shell invocation: `env SUDO_UID=N <yerd> <verb> [<target>]`.
     let script = format!(
         "do shell script {} with administrator privileges",
         shell_chunk(uid, &path, verb, target),
@@ -153,9 +145,6 @@ fn spawn_elevated_many(
 ) -> Result<(), GuiError> {
     let uid = current_uid();
     let path = applescript_escape(&yerd.to_string_lossy());
-    // Each chunk is an AppleScript string expression for one invocation; join the
-    // chunks with a literal ` && ` so the shell runs them in sequence under one
-    // elevation.
     let joined = targets
         .iter()
         .map(|t| shell_chunk(uid, &path, verb, t))
@@ -169,12 +158,11 @@ fn spawn_elevated_many(
 /// `env SUDO_UID=N <yerd> <verb> [<target>]`. The `yerd` path goes through
 /// `quoted form of` (shell-safe regardless of spaces/specials); `verb`/`target`
 /// are from fixed allowlists validated by callers, so they're injection-safe.
-/// `SUDO_UID` MUST be embedded — `osascript … with administrator privileges` runs
+/// `SUDO_UID` MUST be embedded - `osascript … with administrator privileges` runs
 /// as root with a clean env and does NOT set `SUDO_UID` (a `sudo`-ism), yet
 /// `yerd elevate` relies on it for socket lookup and the CA owner-check.
 #[cfg(target_os = "macos")]
 fn shell_chunk(uid: u32, escaped_path: &str, verb: &str, target: &str) -> String {
-    // Empty target → bare verb (the CLI then applies all steps).
     let tail = if target.is_empty() {
         format!(" {verb}")
     } else {
@@ -209,10 +197,6 @@ fn run_osascript(script: &str, verb: &str) -> Result<(), GuiError> {
     if out.status.success() {
         return Ok(());
     }
-    // osascript surfaces a dismissed auth dialog as error -128 / "User
-    // canceled", but it ALSO re-raises the inner command's non-zero exit as a
-    // numbered error — exit code alone can't tell "dismissed" from "elevate
-    // failed", so branch on the stderr text.
     let stderr = String::from_utf8_lossy(&out.stderr);
     if stderr.contains("User canceled") || stderr.contains("-128") {
         return Err(GuiError::internal("authorization was dismissed"));

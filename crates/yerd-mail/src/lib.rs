@@ -2,12 +2,12 @@
 //!
 //! Herd-style: the daemon runs a tiny SMTP sink on a loopback port; everything
 //! it receives is stored as a raw `.eml` file and surfaced (decoded) to the GUI
-//! for inspection. There is no relaying — captured mail never leaves the box.
+//! for inspection. There is no relaying - captured mail never leaves the box.
 //!
 //! ## Purity boundary
 //!
 //! Like the rest of the workspace, pure logic lives in [`pure`] (the SMTP
-//! command state machine, MIME decoding, retention policy — all sync and
+//! command state machine, MIME decoding, retention policy - all sync and
 //! testable with no I/O) and the side-effecting edges live in [`io`] (the tokio
 //! TCP server and the disk store).
 

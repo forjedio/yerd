@@ -208,7 +208,6 @@ mod tests {
     /// test, coverage drops and the omission becomes visible.
     #[test]
     fn construct_every_error_variant() {
-        // CoreError variants
         let _ = CoreError::InvalidPhpVersion {
             input: "x".into(),
             reason: PhpVersionErrorReason::Empty,
@@ -224,7 +223,6 @@ mod tests {
             reason: SiteNameErrorReason::Empty,
         };
 
-        // Every PhpVersionErrorReason — Display for each.
         for r in [
             PhpVersionErrorReason::Empty,
             PhpVersionErrorReason::MissingMinor,
@@ -237,7 +235,6 @@ mod tests {
             let _debug = format!("{r:?}");
         }
 
-        // Every TldErrorReason
         for r in [
             TldErrorReason::Empty,
             TldErrorReason::LeadingOrTrailingDot,
@@ -253,7 +250,6 @@ mod tests {
             let _debug = format!("{r:?}");
         }
 
-        // Every SiteNameErrorReason
         for r in [
             SiteNameErrorReason::Empty,
             SiteNameErrorReason::ContainsDot,

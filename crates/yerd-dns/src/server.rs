@@ -4,7 +4,7 @@
 //!
 //! `Bound::bind` is two-stage from `Bound::serve` because the daemon needs the
 //! resolved [`SocketAddr`] (after kernel-assigns an ephemeral port) *before*
-//! starting `serve` — it has to hand the address to
+//! starting `serve` - it has to hand the address to
 //! `yerd_platform::ResolverInstaller::install`.
 
 use std::future::Future;
@@ -35,7 +35,7 @@ impl Bound {
     ///
     /// `addr.ip().is_loopback()` should hold (`127.0.0.0/8` or `::1`). Binding
     /// to `0.0.0.0` / `::` would expose the responder to the LAN; this is a
-    /// documented contract, **not enforced** — the daemon validates inputs
+    /// documented contract, **not enforced** - the daemon validates inputs
     /// before opening sockets.
     ///
     /// If `addr.port() == 0`, UDP is bound first to capture the kernel-assigned
@@ -43,7 +43,7 @@ impl Bound {
     /// dropped and the loop retries up to a fixed internal budget (5
     /// attempts). After retries are exhausted, returns
     /// [`DnsError::PortPairMismatch`]. When called with an explicit port,
-    /// no retry — TCP bind failure surfaces immediately as [`DnsError::Bind`].
+    /// no retry - TCP bind failure surfaces immediately as [`DnsError::Bind`].
     ///
     /// On success, [`Bound::local_addr`] returns the actual port (which may
     /// differ from the input `addr.port()` when the latter was 0). Operator
@@ -130,12 +130,9 @@ impl Bound {
 }
 
 // `tokio::spawn(bound.serve(...))` requires the returned future to be
-// `Send + 'static`. The future captures `Bound` and `Responder`; both must
-// therefore be `Send + 'static` so auto-trait inference carries through. A
-// future `&'a` field on either would silently break the daemon's spawn site;
-// this assertion catches it at type-check time. (`const fn` with trait
-// bounds: stable since Rust 1.61; empty body has no const-disallowed
-// operations.)
+// `Send + 'static`. The future captures `Bound` and `Responder`, so both must
+// be `Send + 'static`; a future `&'a` field on either would silently break the
+// daemon's spawn site. This assertion catches it at type-check time.
 const _: () = {
     const fn assert_send_static<T: Send + 'static>() {}
     assert_send_static::<Bound>();
@@ -152,8 +149,6 @@ impl RequestHandler for LoopbackHandler {
     where
         R: ResponseHandler,
     {
-        // Hickory's parser pre-handler FORMERRs malformed packets (0 or >1
-        // queries) before this code runs (server_future.rs:1051-1082).
         let q: &LowerQuery = request.query();
 
         let qclass = match q.query_type() {
@@ -162,23 +157,13 @@ impl RequestHandler for LoopbackHandler {
             _ => QClass::Other,
         };
 
-        // hickory's `Name::Display` writes a trailing dot when the name is
-        // FQDN-flagged (the typical case for inbound queries). Strip it so
-        // the responder's exact-match path sees the bare TLD, not
-        // <bareTLD>+'.'. This trim is load-bearing.
-        // (`LowerName` already lowercases; the responder also does
-        // `eq_ignore_ascii_case`. Belt-and-braces.)
         let raw = q.name().to_string();
         let name = raw.trim_end_matches('.');
 
         let decision = self.responder.answer(name, qclass);
 
-        // `response_from_request` copies op_code, message_type, etc. from
-        // the request and sets QR=1. We only override AA and RCODE.
         let builder = MessageResponseBuilder::from_message_request(request);
         let mut header = Header::response_from_request(request.header());
-        // Authoritative only for names in our zone; a REFUSED (out-of-zone)
-        // reply must clear AA so resolvers don't trust it.
         header.set_authoritative(!matches!(decision, Answer::Refused));
 
         let owner: hickory_proto::rr::Name = q.name().into();
@@ -206,8 +191,8 @@ impl RequestHandler for LoopbackHandler {
         let response = builder.build(
             header,
             answers.iter(),
-            std::iter::empty::<&Record>(), // name_servers — no NS records
-            std::iter::empty::<&Record>(), // soa — RFC 2308 §3: deliberately no SOA
+            std::iter::empty::<&Record>(), // name_servers
+            std::iter::empty::<&Record>(), // soa: RFC 2308 §3, no SOA
             std::iter::empty::<&Record>(), // additionals
         );
         handle

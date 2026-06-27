@@ -30,7 +30,7 @@ pub trait ProcessSpawner: Send + Sync + 'static {
 /// On Unix the consumer's command builder sets `process_group(0)` at spawn time
 /// so the child's PID is also the process-group ID. By default `kill` signals
 /// the whole **process group** ([`StopProtocol::GroupTerm`]) so child workers
-/// are reaped with the parent — **do not refactor that path to `kill(pid)`; it
+/// are reaped with the parent - **do not refactor that path to `kill(pid)`; it
 /// would leak workers.** The one exception is [`StopProtocol::MasterInterrupt`]
 /// (Postgres fast shutdown), which deliberately signals only the master PID,
 /// because the postmaster reaps its own backends and a group signal would
@@ -46,7 +46,7 @@ pub trait ChildHandle: Send + 'static {
     /// stashes it as `u32`.
     fn id(&self) -> u32;
 
-    /// Non-blocking liveness probe — wraps `tokio::process::Child::try_wait`.
+    /// Non-blocking liveness probe - wraps `tokio::process::Child::try_wait`.
     fn try_wait(&mut self) -> Result<Option<ExitReason>, io::Error>;
 
     /// Block until the child exits. Cancel-safe (per tokio docs); the driver
@@ -70,7 +70,7 @@ pub trait Clock: Send + Sync + 'static {
 ///
 /// The supervisor races this against the child's exit while in `Starting`: a
 /// successful probe is the signal that the process is actually ready to serve
-/// (not merely that its port is open). Implementations are program-specific —
+/// (not merely that its port is open). Implementations are program-specific -
 /// FPM uses a `FastCGI` `FCGI_GET_VALUES` round-trip; a database uses a
 /// protocol-level probe (e.g. Redis `PING` → `+PONG`). Test fakes return a
 /// programmed outcome.

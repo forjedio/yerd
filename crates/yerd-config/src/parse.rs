@@ -167,7 +167,7 @@ fn default_service_enabled() -> bool {
 }
 
 /// The `[mail]` table. Both keys default (off / 2525) so a config written before
-/// v4 — which has no `[mail]` table at all — still deserialises.
+/// v4 - which has no `[mail]` table at all - still deserialises.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct MailSectionWire {
@@ -258,8 +258,6 @@ impl TryFrom<Wire> for Config {
     type Error = ConfigError;
 
     fn try_from(w: Wire) -> Result<Self, ConfigError> {
-        // Post-migration sanity check: wire.version must equal CURRENT_VERSION.
-        // A STEPS misconfiguration that fails to bump it surfaces here.
         if w.version != crate::CURRENT_VERSION {
             return Err(ConfigError::UnsupportedVersion {
                 found: w.version,
@@ -280,10 +278,6 @@ impl TryFrom<Wire> for Config {
         let parked = ParkedSection {
             paths: w.parked.paths,
         };
-        // Fold the `[[overrides]]` array into a path-keyed map. A duplicate `path`
-        // (only reachable by hand-editing the file) is last-wins via
-        // `BTreeMap::insert`. `php` is parsed here so an invalid version
-        // propagates as `ConfigError::Core` (like `php.default` above).
         let mut overrides = BTreeMap::new();
         for o in w.overrides {
             let php = o
@@ -358,9 +352,6 @@ impl TryFrom<Wire> for Config {
 }
 
 pub(crate) fn validate(c: &Config) -> Result<(), ConfigError> {
-    // Order is fixed for test predictability; pinned by
-    // validate_returns_first_failure_in_documented_order. Each phase preserves
-    // the documented order internally.
     validate_ports(c)?;
     validate_unique_linked(c)?;
     validate_nonempty_paths(c)?;
@@ -391,8 +382,6 @@ fn validate_ports(c: &Config) -> Result<(), ConfigError> {
     if c.ports.http == c.ports.https {
         return Err(ve(ValidateErrorReason::HttpHttpsPortsEqual));
     }
-    // The rootless fallback exists to bind without elevation, so it must be a
-    // non-privileged port — this also structurally forbids 80/443 as a fallback.
     if c.ports.fallback_http < crate::schema::FIRST_UNPRIVILEGED_PORT
         || c.ports.fallback_https < crate::schema::FIRST_UNPRIVILEGED_PORT
     {
@@ -401,20 +390,15 @@ fn validate_ports(c: &Config) -> Result<(), ConfigError> {
     if c.ports.fallback_http == c.ports.fallback_https {
         return Err(ve(ValidateErrorReason::FallbackPortsEqual));
     }
-    // The mail-capture port is bound on `127.0.0.1` when enabled; a zero port is
-    // meaningless (it would bind an ephemeral port no sender could find).
     if c.mail.port == 0 {
         return Err(ve(ValidateErrorReason::MailPortZero));
     }
-    // The dump server is bound on `127.0.0.1` when enabled; the PHP extension
-    // connects to this fixed port, so a zero (ephemeral) port is unreachable.
     if c.dumps.port == 0 {
         return Err(ve(ValidateErrorReason::DumpsPortZero));
     }
-    // NB: `dns_port == 0` is intentionally NOT rejected here — `0` means
-    // "ephemeral" and must survive a parse round-trip (see
-    // `toml_byte_shape::dns_port_zero_round_trips`). The user-facing guard against
-    // a zero DNS port lives in the daemon's `set_dns_port` IPC handler.
+    // dns_port == 0 is allowed: 0 means ephemeral and must round-trip
+    // (toml_byte_shape::dns_port_zero_round_trips); the zero-port guard
+    // lives in the daemon's set_dns_port handler.
     Ok(())
 }
 
@@ -434,8 +418,6 @@ fn validate_nonempty_paths(c: &Config) -> Result<(), ConfigError> {
             return Err(ve(ValidateErrorReason::ParkedPathEmpty));
         }
     }
-    // Sibling of the parked-path check: an override key is a document-root path
-    // and must not be empty.
     for key in c.overrides.keys() {
         if key.is_empty() {
             return Err(ve(ValidateErrorReason::OverridePathEmpty));
@@ -735,11 +717,9 @@ secure = false
         let blog = c.overrides.get("/srv/blog").unwrap();
         assert_eq!(blog.php, Some(yerd_core::PhpVersion::new(8, 4)));
         assert_eq!(blog.secure, Some(true));
-        // A partial override: only `secure` pinned, `php` inherits.
         let wiki = c.overrides.get("/srv/wiki").unwrap();
         assert_eq!(wiki.php, None);
         assert_eq!(wiki.secure, Some(false));
-        // Re-serialise and re-parse → identical.
         let back = Config::from_toml(&c.to_toml().unwrap()).unwrap();
         assert_eq!(back, c);
     }
@@ -752,14 +732,11 @@ version = 1
 path = "/srv/blog"
 php = "not-a-version"
 "#;
-        // A bad version surfaces as Core (not Parse), like php.default.
         assert!(matches!(Config::from_toml(s), Err(ConfigError::Core(_))));
     }
 
     #[test]
     fn parse_absent_update_channel_defaults_to_stable() {
-        // A pre-v6 file with no `update_channel` migrates forward and defaults
-        // the channel to "stable".
         let c = Config::from_toml("version = 5\n").unwrap();
         assert_eq!(c.update_channel, "stable");
     }
@@ -849,8 +826,6 @@ php = "not-a-version"
 
     #[test]
     fn validate_rejects_privileged_fallback_port() {
-        // The rootless fallback must not require elevation — 80/443 (or any
-        // sub-1024 port) is rejected.
         let mut c = Config::default();
         c.ports.fallback_http = 80;
         match c.validate() {
@@ -981,7 +956,6 @@ php = "not-a-version"
 
     #[test]
     fn validate_returns_first_failure_in_documented_order() {
-        // (a) http=0 + duplicate-linked → HttpPortZero
         let mut c = Config::default();
         c.ports.http = 0;
         let s1 = yerd_core::Site::linked("api", "/a", yerd_core::PhpVersion::new(8, 3)).unwrap();
@@ -995,7 +969,6 @@ php = "not-a-version"
             other => panic!("(a) expected HttpPortZero, got {other:?}"),
         }
 
-        // (b) http=https + duplicate-linked → HttpHttpsPortsEqual
         let mut c = Config::default();
         c.ports.http = 9000;
         c.ports.https = 9000;
@@ -1010,7 +983,6 @@ php = "not-a-version"
             other => panic!("(b) expected HttpHttpsPortsEqual, got {other:?}"),
         }
 
-        // (c) duplicate-linked + empty-parked → DuplicateLinkedSite
         let mut c = Config::default();
         let s1 = yerd_core::Site::linked("api", "/a", yerd_core::PhpVersion::new(8, 3)).unwrap();
         let s2 = yerd_core::Site::linked("api", "/b", yerd_core::PhpVersion::new(8, 3)).unwrap();
@@ -1024,7 +996,6 @@ php = "not-a-version"
             other => panic!("(c) expected DuplicateLinkedSite, got {other:?}"),
         }
 
-        // (d) empty-parked + empty-override → ParkedPathEmpty (parked first)
         let mut c = Config::default();
         c.parked.paths.insert(String::new());
         c.overrides
@@ -1036,8 +1007,6 @@ php = "not-a-version"
             other => panic!("(d) expected ParkedPathEmpty, got {other:?}"),
         }
 
-        // (f) empty-override + unknown-service → OverridePathEmpty (overrides
-        // are checked after parked, before services)
         let mut c = Config::default();
         c.overrides
             .insert(String::new(), crate::SiteOverride::default());
@@ -1051,7 +1020,6 @@ php = "not-a-version"
             other => panic!("(f) expected OverridePathEmpty, got {other:?}"),
         }
 
-        // (e) unknown-service + bad-setting → UnknownService (settings checked last)
         let mut c = Config::default();
         c.services
             .instances
@@ -1099,7 +1067,6 @@ php = "not-a-version"
             !s.contains("[dumps]"),
             "default config must omit the dumps table; got: {s}"
         );
-        // Absent `[dumps]` parses back to the default section.
         let back = Config::from_toml(&s).unwrap();
         assert_eq!(back.dumps, crate::DumpsSection::default());
     }
@@ -1121,7 +1088,6 @@ php = "not-a-version"
 
     #[test]
     fn v3_config_without_dumps_migrates_to_default_dumps() {
-        // A v3 file (no `[dumps]`) migrates to v4 and gets the default section.
         let c = Config::from_toml("version = 3\n").unwrap();
         assert_eq!(c.dumps, crate::DumpsSection::default());
     }

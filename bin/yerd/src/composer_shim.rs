@@ -2,7 +2,7 @@
 //!
 //! `{data}/bin/composer` is a symlink to *this* `yerd` binary. When invoked under
 //! that name (detected from `argv[0]` before clap), yerd runs the bundled
-//! `composer.phar` under the default managed PHP — `php composer.phar <args…>` —
+//! `composer.phar` under the default managed PHP - `php composer.phar <args…>` -
 //! then `exec`s, so Composer sees a normal `php` process. Unix-only.
 
 use std::os::unix::process::CommandExt;
@@ -36,7 +36,6 @@ fn run() -> ExitCode {
         return fail("no PHP installed — run `yerd install php <version>`".to_owned());
     };
 
-    // Kept in sync with `yerdd`'s `tools::composer::phar_path`.
     let phar = dirs
         .data
         .join("tools")
@@ -50,8 +49,6 @@ fn run() -> ExitCode {
         );
     }
 
-    // `exec` only returns on failure. Composer reads PHP_BINARY from the running
-    // php process, so argv[0] staying the real php path is correct.
     let err = Command::new(&php_bin)
         .arg(&phar)
         .args(std::env::args_os().skip(1))
@@ -72,8 +69,6 @@ mod tests {
 
     #[test]
     fn dispatch_ignores_non_composer_argv0() {
-        // We can't easily fake argv[0] here, but the parse rule is exact-match;
-        // assert the basename rule the dispatch relies on.
         assert_eq!(Path::new("/x/composer").file_name().unwrap(), "composer");
         assert_ne!(Path::new("/x/composer2").file_name().unwrap(), "composer");
     }

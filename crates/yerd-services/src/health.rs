@@ -1,8 +1,8 @@
 //! Protocol-level readiness probes.
 //!
 //! The probe is the signal that ends the supervisor's `Starting` window, so it
-//! must confirm the server actually answers its protocol — not merely that the
-//! TCP port is open. Redis answers `PING` → `+PONG`; `MySQL`/`MariaDB` send an
+//! must confirm the server actually answers its protocol - not merely that the
+//! TCP port is open. Redis answers `PING` with `+PONG`; `MySQL`/`MariaDB` send an
 //! initial handshake packet; Postgres replies to a startup message.
 //!
 //! [`ReadinessProbe`] is the service-aware dispatch the manager drives:
@@ -34,7 +34,7 @@ pub trait ReadinessProbe: Send + Sync + 'static {
 }
 
 /// The production [`ReadinessProbe`]: dispatches by [`Service`] to the matching
-/// protocol probe. A unit struct — the per-protocol probes are themselves unit
+/// protocol probe. A unit struct - the per-protocol probes are themselves unit
 /// structs.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct ServiceProbes;
@@ -52,7 +52,6 @@ impl ReadinessProbe for ServiceProbes {
     async fn probe(&self, service: Service, listen: &Listen) -> Result<(), io::Error> {
         match service {
             Service::Redis => RedisProbe.probe(listen).await,
-            // MariaDB speaks the MySQL wire protocol — same handshake probe.
             Service::MySql | Service::MariaDb => MySqlProbe.probe(listen).await,
             Service::Postgres => PostgresProbe.probe(listen).await,
         }
@@ -90,7 +89,6 @@ impl HealthProbe for RedisProbe {
         let mut buf = [0u8; 16];
         let n = stream.read(&mut buf).await?;
         let reply = buf.get(..n).unwrap_or(&[]);
-        // A healthy server answers RESP `+PONG\r\n`. Accept any case of "pong".
         if reply.starts_with(b"+PONG") || reply.eq_ignore_ascii_case(b"+pong\r\n") {
             Ok(())
         } else {
@@ -103,9 +101,9 @@ impl HealthProbe for RedisProbe {
 }
 
 /// `MySQL` / `MariaDB` readiness probe: connect and **read** the server's
-/// initial handshake packet. A bare TCP connect is not enough — during datadir
+/// initial handshake packet. A bare TCP connect is not enough - during datadir
 /// init / crash recovery the listener may already accept connections without
-/// yet sending the greeting, so we require an actual handshake byte.
+/// yet sending the greeting, so require an actual handshake byte.
 ///
 /// `MySQL` packet framing: a 3-byte little-endian length + 1-byte sequence id,
 /// then the payload. For the server greeting the payload's first byte is the
@@ -118,13 +116,9 @@ impl HealthProbe for MySqlProbe {
     async fn probe(&self, listen: &Listen) -> Result<(), io::Error> {
         let addr = tcp_addr(listen)?;
         let mut stream = TcpStream::connect(addr).await?;
-        // Header (4 bytes) + at least the first payload byte.
         let mut buf = [0u8; 5];
         stream.read_exact(&mut buf).await?;
         match buf[4] {
-            // `0x0a`: server greeting (protocol v10) — fully ready.
-            // `0xff`: ERR packet — server is up and talking, just refusing (e.g.
-            // too many connections); that still proves readiness.
             0x0a | 0xff => Ok(()),
             other => Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -137,7 +131,7 @@ impl HealthProbe for MySqlProbe {
 /// `PostgreSQL` readiness probe: send a minimal `StartupMessage` and require any
 /// well-formed reply. With `--auth=trust` the server answers `R`
 /// (Authentication → `AuthenticationOk`); a refusal answers `E` (`ErrorResponse`)
-/// — either proves the postmaster is up and processing the protocol. The
+/// - either proves the postmaster is up and processing the protocol. The
 /// reduced (zonky-style) build may ship no `pg_isready`, so a protocol probe is
 /// required rather than a CLI shell-out.
 pub struct PostgresProbe;
@@ -148,8 +142,6 @@ impl HealthProbe for PostgresProbe {
         let addr = tcp_addr(listen)?;
         let mut stream = TcpStream::connect(addr).await?;
 
-        // StartupMessage: Int32 length, Int32 protocol (196608 = 3.0), then
-        // null-terminated key/value pairs and a final null terminator.
         let params: &[u8] = b"user\0postgres\0database\0postgres\0\0";
         let len = u32::try_from(8 + params.len())
             .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "startup message too large"))?;
@@ -159,7 +151,6 @@ impl HealthProbe for PostgresProbe {
         msg.extend_from_slice(params);
         stream.write_all(&msg).await?;
 
-        // First reply byte is the message-type tag.
         let mut tag = [0u8; 1];
         stream.read_exact(&mut tag).await?;
         match tag[0] {
@@ -228,11 +219,9 @@ mod tests {
         let addr = listener.local_addr().unwrap();
         tokio::spawn(async move {
             if let Ok((mut sock, _)) = listener.accept().await {
-                // Drain whatever the client sends first (PG startup msg), ignore.
                 let mut scratch = [0u8; 64];
                 let _ = sock.try_read(&mut scratch);
                 let _ = sock.write_all(reply).await;
-                // Keep the socket open briefly so the client can read.
                 let _ = sock.read(&mut scratch).await;
             }
         });
@@ -241,14 +230,12 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn mysql_probe_accepts_handshake() {
-        // Header (len=0x20, seq=0) then protocol-version byte 0x0a.
         let addr = fake_server(&[0x20, 0x00, 0x00, 0x00, 0x0a, 0xde, 0xad]).await;
         assert!(MySqlProbe.probe(&Listen::TcpLoopback(addr)).await.is_ok());
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn mysql_probe_accepts_err_packet() {
-        // ERR packet (first payload byte 0xff) — server up but refusing.
         let addr = fake_server(&[0x10, 0x00, 0x00, 0x00, 0xff, 0x15, 0x04]).await;
         assert!(MySqlProbe.probe(&Listen::TcpLoopback(addr)).await.is_ok());
     }
@@ -261,7 +248,6 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn postgres_probe_accepts_authentication() {
-        // 'R' AuthenticationOk: tag 'R', Int32 len 8, Int32 0.
         let addr = fake_server(b"R\x00\x00\x00\x08\x00\x00\x00\x00").await;
         assert!(PostgresProbe
             .probe(&Listen::TcpLoopback(addr))
@@ -271,7 +257,6 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn postgres_probe_accepts_error_response() {
-        // 'E' ErrorResponse — server up, refused; still proves readiness.
         let addr = fake_server(b"E\x00\x00\x00\x05X").await;
         assert!(PostgresProbe
             .probe(&Listen::TcpLoopback(addr))
@@ -290,7 +275,6 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn service_probes_dispatches_by_service() {
-        // Redis path through the dispatcher.
         let redis = fake_server(b"+PONG\r\n").await;
         let probes = ServiceProbes::new();
         assert!(probes
@@ -298,7 +282,6 @@ mod tests {
             .await
             .is_ok());
 
-        // MySQL / MariaDB path (shared handshake).
         let mysql = fake_server(&[0x20, 0x00, 0x00, 0x00, 0x0a]).await;
         assert!(probes
             .probe(Service::MySql, &Listen::TcpLoopback(mysql))
@@ -310,7 +293,6 @@ mod tests {
             .await
             .is_ok());
 
-        // Postgres path.
         let pg = fake_server(b"R\x00\x00\x00\x08\x00\x00\x00\x00").await;
         assert!(probes
             .probe(Service::Postgres, &Listen::TcpLoopback(pg))

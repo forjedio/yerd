@@ -2,15 +2,15 @@
 //! distribution and unpack it into yerd's data dir.
 //!
 //! Mirrors `php_install` (the I/O edge; version resolution + tar-member safety
-//! are pure helpers from `yerd-services` / `yerd-php`). Unlike PHP — a single
-//! binary — a service archive is a small tree (`bin/`, `lib/`, …), so the whole
+//! are pure helpers from `yerd-services` / `yerd-php`). Unlike PHP - a single
+//! binary - a service archive is a small tree (`bin/`, `lib/`, …), so the whole
 //! archive is unpacked (each member zip-slip-guarded) into a staging dir, then
 //! atomically renamed into place. Integrity is TLS-only (no sha pinning), as for
 //! PHP.
 
 use std::path::Path;
 
-use yerd_php::is_safe_member; // shared zip-slip guard
+use yerd_php::is_safe_member;
 use yerd_supervise::Downloader;
 
 use yerd_platform::PlatformDirs;
@@ -89,8 +89,6 @@ async fn stage(
     fs_ctx(std::fs::create_dir_all(staging), staging)?;
     extract_all(&bytes, staging, url)?;
 
-    // Verify the server binary actually landed (so a malformed archive fails
-    // here, before the atomic swap, not at first start).
     let server = staging.join("bin").join(service.server_binary());
     if !server.is_file() {
         return Err(ServiceError::Extract {
@@ -99,8 +97,6 @@ async fn stage(
         });
     }
     let marker = staging.join(VERSION_MARKER);
-    // The artifact's version is encoded in the URL we resolved; record the
-    // requested label as the marker (callers pass the resolved version).
     fs_ctx(std::fs::write(&marker, b"installed"), &marker)?;
     Ok(())
 }
@@ -124,10 +120,6 @@ fn extract_all(gz_bytes: &[u8], dest: &Path, url: &str) -> Result<(), ServiceErr
         if let Some(parent) = out.parent() {
             fs_ctx(std::fs::create_dir_all(parent), parent)?;
         }
-        // `unpack` writes the member (file/dir/symlink), applies its mode, and
-        // fully consumes the entry body — the `Entries` iterator then seeks to
-        // the next header on its own. We have already rejected `..`/absolute
-        // names above.
         entry.unpack(&out).map_err(|e| extract_err(url, &e))?;
     }
     Ok(())

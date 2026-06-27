@@ -16,11 +16,17 @@ pub(crate) fn load(path: &Path) -> Result<Config, ConfigError> {
     Config::from_toml(&s)
 }
 
+/// Atomically replaces the config file.
+///
+/// `persist` does an atomic rename on the same filesystem (Unix) or
+/// MoveFileExW (Windows), which can fail with ERROR_SHARING_VIOLATION if
+/// another process holds the dest open, so the daemon must not keep a write
+/// handle between saves. The temp file is mode 0600 (the daemon is the only
+/// writer). No fsync: durability isn't worth the Windows portability cost for
+/// a dev-only config.
 pub(crate) fn save(cfg: &Config, path: &Path) -> Result<(), ConfigError> {
     let serialised = cfg.to_toml()?;
 
-    // `path.parent()` is `None` for the empty path; an empty parent (`""`)
-    // arises for bare file names. Treat both as CWD-relative.
     let parent = path
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
@@ -40,26 +46,6 @@ pub(crate) fn save(cfg: &Config, path: &Path) -> Result<(), ConfigError> {
         source,
     })?;
 
-    // `persist` calls `rename(2)` on Unix (atomic when src and dst are on
-    // the same filesystem — guaranteed: we created the temp file in
-    // `parent`). On Windows it calls `MoveFileExW` with
-    // `MOVEFILE_REPLACE_EXISTING`, which is atomic for the rename itself
-    // but can fail with `ERROR_SHARING_VIOLATION` if another process holds
-    // an exclusive handle to the destination. The daemon must not hold a
-    // write handle to the config file between save calls.
-    //
-    // On failure, `persist` returns a `PersistError` carrying the original
-    // `NamedTempFile`; we drop it, which deletes the temp file via
-    // `NamedTempFile::Drop`. No orphan tmp files are left behind.
-    //
-    // Unix mode: `NamedTempFile` creates the file with mode 0600 (owner
-    // read/write only). This propagates to the destination on `persist`.
-    // Intentional — the daemon is the only writer; broader permissions are
-    // the operator's call to set after install.
-    //
-    // No `fsync` of file or parent dir: portability cost (Windows lacks an
-    // exact equivalent) outweighs durability gain for a developer-only
-    // config file. Loss under sudden power loss is acceptable.
     tmp.persist(path).map_err(|e| ConfigError::Io {
         path: path.to_path_buf(),
         source: e.error,

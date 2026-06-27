@@ -9,7 +9,7 @@ use crate::PlatformError;
 /// **Existence is not guaranteed.** Callers are responsible for
 /// `std::fs::create_dir_all` before writing into any of these paths.
 /// `runtime` is security-sensitive on Linux when the fallback to
-/// `/tmp/yerd-$UID` kicks in — caller should `mkdir(mode=0o700)` and, if
+/// `/tmp/yerd-$UID` kicks in - caller should `mkdir(mode=0o700)` and, if
 /// the directory already exists, verify ownership (`uid == geteuid()`)
 /// and mode (`0o700`) before using it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -50,8 +50,6 @@ impl PlatformDirs {
         let runtime = PathBuf::from(format!("/tmp/yerd-{uid}"));
         #[cfg(target_os = "macos")]
         {
-            // `directories` v5 builds the macOS fragment as the reverse-DNS
-            // `io.yerd.Yerd` ("qualifier.org.app", joined by '.', no lowercasing).
             let app = home
                 .join("Library")
                 .join("Application Support")
@@ -60,7 +58,6 @@ impl PlatformDirs {
             Self {
                 config: app.clone(),
                 data: app.clone(),
-                // macOS has no XDG state distinction; state coincides with data.
                 state: app,
                 cache,
                 runtime,
@@ -68,7 +65,6 @@ impl PlatformDirs {
         }
         #[cfg(target_os = "linux")]
         {
-            // XDG: `directories` lowercases the app name to `yerd`.
             Self {
                 config: home.join(".config").join("yerd"),
                 data: home.join(".local").join("share").join("yerd"),
@@ -79,9 +75,6 @@ impl PlatformDirs {
         }
         #[cfg(not(any(target_os = "linux", target_os = "macos")))]
         {
-            // Unsupported targets: keep the deterministic XDG-style fallback
-            // (matches `os::unsupported`) until a dedicated layout is added. Per
-            // the per-OS convention in `os/mod.rs`, this branch is explicit.
             Self {
                 config: home.join(".config").join("yerd"),
                 data: home.join(".local").join("share").join("yerd"),
@@ -110,7 +103,7 @@ mod for_user_tests {
     use crate::{ActivePaths, Paths};
 
     /// `for_user` must reproduce the home-derived dirs that `directories`
-    /// produces in `resolve` — guards against the macOS fragment (`io.yerd.Yerd`
+    /// produces in `resolve` - guards against the macOS fragment (`io.yerd.Yerd`
     /// vs bare `Yerd`) silently drifting. `runtime` is uid/env-derived and
     /// handled separately, so it is not compared.
     #[test]
@@ -118,8 +111,6 @@ mod for_user_tests {
         let Some(home) = std::env::var_os("HOME") else {
             return;
         };
-        // A custom XDG base would make `resolve` legitimately differ from the
-        // default layout `for_user` assumes; skip rather than false-fail.
         #[cfg(not(target_os = "macos"))]
         for v in [
             "XDG_CONFIG_HOME",

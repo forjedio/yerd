@@ -2,7 +2,7 @@
 //!
 //! Thin wrappers around `serde_json` that map errors to
 //! [`IpcError::Encode`] / [`IpcError::Decode`]. The framing is
-//! orthogonal — see [`crate::encode_frame`] / [`crate::FrameDecoder`].
+//! orthogonal - see [`crate::encode_frame`] / [`crate::FrameDecoder`].
 
 use serde::{de::DeserializeOwned, Serialize};
 

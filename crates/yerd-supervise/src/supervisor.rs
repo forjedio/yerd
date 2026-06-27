@@ -14,7 +14,7 @@
 //! The timing/restart knobs ([`SupervisorPolicy`]) are supplied per call rather
 //! than baked in as module constants. FPM pools start in well under a second and
 //! are cheap to retry; database daemons can take tens of seconds to cold-boot
-//! (redo-log init, crash recovery, fsync) and are expensive — and dangerous — to
+//! (redo-log init, crash recovery, fsync) and are expensive - and dangerous - to
 //! kill and respawn mid-startup. Same state machine, different policy.
 //!
 //! The full transition table (and the policy decisions baked into it) lives in
@@ -43,7 +43,7 @@ pub struct SupervisorPolicy {
     pub health_check_window: Duration,
     /// First backoff wait (doubles each retry up to `backoff_max`).
     pub backoff_initial: Duration,
-    /// Cap on backoff wait — exponential doubling saturates here.
+    /// Cap on backoff wait - exponential doubling saturates here.
     pub backoff_max: Duration,
     /// Consecutive failures before `PermanentFailure` is surfaced.
     pub max_restart_attempts: u32,
@@ -158,7 +158,7 @@ pub enum Event {
 /// What the driver should do next.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Action {
-    /// Nothing — the driver should return to the caller (terminal state) or, in
+    /// Nothing - the driver should return to the caller (terminal state) or, in
     /// the non-terminal case, observe an invariant violation.
     None,
     /// Call the spawner to start the process.
@@ -199,7 +199,7 @@ pub enum KillSignal {
 
 /// How a *graceful* stop ([`KillSignal::Term`]) is delivered to a service's
 /// process tree. A forced stop ([`KillSignal::Kill`]) always SIGKILLs the whole
-/// process group regardless of this — at force time we want to reap stragglers.
+/// process group regardless of this - at force time we want to reap stragglers.
 ///
 /// This is a per-service delivery choice the driver makes; it is deliberately
 /// NOT part of the FSM (which only ever decides graceful-vs-force) nor of
@@ -207,11 +207,11 @@ pub enum KillSignal {
 /// instances).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum StopProtocol {
-    /// SIGTERM to the whole process group — reaps workers with the master.
+    /// SIGTERM to the whole process group - reaps workers with the master.
     /// Correct for PHP-FPM, Redis, and `MySQL`/`MariaDB`.
     #[default]
     GroupTerm,
-    /// SIGINT to the master PID only — Postgres "fast shutdown". The postmaster
+    /// SIGINT to the master PID only - Postgres "fast shutdown". The postmaster
     /// then shuts its own backends down. SIGTERM would be "smart shutdown" (it
     /// waits for clients and can hang), and signalling the whole group would
     /// mis-deliver to backends, where SIGINT means "cancel query".
@@ -221,13 +221,11 @@ pub enum StopProtocol {
 /// Backoff sleep for the `attempts`-th retry (1-indexed).
 ///
 /// `min(policy.backoff_initial * 2^(attempts - 1), policy.backoff_max)`,
-/// saturating. `attempts == 0` is treated as `1` (defensive — the state machine
+/// saturating. `attempts == 0` is treated as `1` (defensive - the state machine
 /// should never produce a `Failed` with `attempts == 0`).
 #[must_use]
 pub fn backoff_for(attempts: u32, policy: &SupervisorPolicy) -> Duration {
     let n = attempts.max(1).saturating_sub(1);
-    // Saturating shift: anything past `u64::BITS - 1` saturates to `u64::MAX`,
-    // then `min` clamps to `backoff_max`. Use `u32` math.
     let factor: u64 = 1u64.checked_shl(n).unwrap_or(u64::MAX);
     let scaled = policy
         .backoff_initial
@@ -248,7 +246,6 @@ pub fn transition(
     policy: &SupervisorPolicy,
 ) -> (PoolState, Action) {
     match (state, event) {
-        // -- Stopped --------------------------------------------------
         (PoolState::Stopped, Event::EnsureRequested) => (
             PoolState::Starting {
                 attempts: 1,
@@ -257,7 +254,6 @@ pub fn transition(
             Action::Spawn,
         ),
 
-        // -- Starting -------------------------------------------------
         (PoolState::Starting { attempts, .. }, Event::SpawnSucceeded { pid }) => (
             PoolState::Starting {
                 attempts,
@@ -268,11 +264,7 @@ pub fn transition(
         (PoolState::Starting { pid: Some(pid), .. }, Event::HealthCheckOk) => {
             (PoolState::Running { pid }, Action::None)
         }
-        (PoolState::Starting { .. }, Event::HealthCheckOk) => {
-            // HealthCheckOk before SpawnSucceeded is an out-of-order event;
-            // ignore.
-            (state, Action::None)
-        }
+        (PoolState::Starting { .. }, Event::HealthCheckOk) => (state, Action::None),
         (
             PoolState::Starting { .. },
             Event::HealthCheckTick {
@@ -301,7 +293,6 @@ pub fn transition(
             },
         ),
 
-        // -- Running --------------------------------------------------
         (PoolState::Running { .. }, Event::Crashed { reason }) => (
             PoolState::Failed {
                 last_exit: reason,
@@ -319,7 +310,6 @@ pub fn transition(
             },
         ),
 
-        // -- Failed ---------------------------------------------------
         (
             PoolState::Failed {
                 last_exit,
@@ -354,7 +344,6 @@ pub fn transition(
         ),
         (PoolState::Failed { .. }, Event::StopRequested) => (PoolState::Stopped, Action::None),
 
-        // -- Stopping -------------------------------------------------
         (
             PoolState::Stopping { sigkilled: false },
             Event::StopTick {
@@ -370,7 +359,6 @@ pub fn transition(
         (PoolState::Stopping { .. }, Event::StopComplete) => (PoolState::Stopped, Action::None),
         (PoolState::Stopping { .. }, Event::EnsureRequested) => (state, Action::None),
 
-        // -- Catchall -------------------------------------------------
         _ => (state, Action::None),
     }
 }
@@ -434,13 +422,11 @@ mod tests {
         let p = SupervisorPolicy::fpm();
         let r1 = ExitReason::Code(1);
 
-        // Stopped
         assert_eq!(
             transition(PoolState::Stopped, Event::EnsureRequested, &p),
             (starting(1, None), Action::Spawn)
         );
 
-        // Starting
         assert_eq!(
             transition(starting(1, None), Event::SpawnSucceeded { pid: 42 }, &p),
             (starting(1, Some(42)), Action::HealthCheck)
@@ -449,7 +435,6 @@ mod tests {
             transition(starting(1, Some(42)), Event::HealthCheckOk, &p),
             (PoolState::Running { pid: 42 }, Action::None)
         );
-        // HealthCheckOk before SpawnSucceeded — out of order, ignored.
         assert_eq!(
             transition(starting(1, None), Event::HealthCheckOk, &p),
             (starting(1, None), Action::None)
@@ -501,7 +486,6 @@ mod tests {
             )
         );
 
-        // Running
         assert_eq!(
             transition(
                 PoolState::Running { pid: 42 },
@@ -532,7 +516,6 @@ mod tests {
             )
         );
 
-        // Failed — under MAX
         assert_eq!(
             transition(
                 PoolState::Failed {
@@ -544,7 +527,6 @@ mod tests {
             ),
             (starting(2, None), Action::Spawn)
         );
-        // Failed — at MAX
         assert_eq!(
             transition(
                 PoolState::Failed {
@@ -562,7 +544,6 @@ mod tests {
                 Action::EmitError(ErrorTag::PermanentFailure)
             )
         );
-        // Operator restart resets budget
         assert_eq!(
             transition(
                 PoolState::Failed {
@@ -574,7 +555,6 @@ mod tests {
             ),
             (starting(1, None), Action::Spawn)
         );
-        // Stop from Failed is immediate
         assert_eq!(
             transition(
                 PoolState::Failed {
@@ -587,7 +567,6 @@ mod tests {
             (PoolState::Stopped, Action::None)
         );
 
-        // Stopping
         assert_eq!(
             transition(
                 PoolState::Stopping { sigkilled: false },
@@ -643,8 +622,6 @@ mod tests {
 
     #[test]
     fn database_policy_tolerates_slow_startup() {
-        // A 6s-elapsed tick that would TERM-kill an FPM pool keeps health-checking
-        // under the database policy (60s window) — the corruption-avoidance fix.
         let db = SupervisorPolicy::database();
         assert_eq!(
             transition(
@@ -661,7 +638,6 @@ mod tests {
     #[test]
     fn no_accidental_transitions() {
         let p = SupervisorPolicy::fpm();
-        // Stopped + HealthCheckTick: catchall.
         let (next, act) = transition(
             PoolState::Stopped,
             Event::HealthCheckTick {
@@ -672,7 +648,6 @@ mod tests {
         assert_eq!(next, PoolState::Stopped);
         assert_eq!(act, Action::None);
 
-        // Running + BackoffElapsed: catchall.
         let (next, act) = transition(PoolState::Running { pid: 7 }, Event::BackoffElapsed, &p);
         assert_eq!(next, PoolState::Running { pid: 7 });
         assert_eq!(act, Action::None);

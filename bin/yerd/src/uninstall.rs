@@ -1,4 +1,4 @@
-//! `yerd uninstall` (no subcommand) — remove yerd entirely from this machine.
+//! `yerd uninstall` (no subcommand) - remove yerd entirely from this machine.
 //!
 //! Fully local and daemon-independent: the daemon is usually the first thing to
 //! go, and may already be down. The flow is, in order:
@@ -6,7 +6,7 @@
 //! 1. Resolve the *invoking* user (under `sudo`, `$HOME`/`$SHELL` point at root,
 //!    so the user is recovered from `SUDO_UID` + the passwd database).
 //! 2. Capture the facts a manual/automatic unelevate needs (`tld`, CA
-//!    fingerprint) from disk **before** anything is deleted — otherwise deleting
+//!    fingerprint) from disk **before** anything is deleted - otherwise deleting
 //!    the data dir would strand a trusted root CA with no way to identify it.
 //! 3. Confirm (unless `--yes`).
 //! 4. Root only: revert the system changes from `yerd elevate` (CA trust, DNS
@@ -42,7 +42,7 @@ mod unix_impl {
 
     use crate::{elevate, path_cmd};
 
-    /// The user yerd is being uninstalled for — the invoking user, even under
+    /// The user yerd is being uninstalled for - the invoking user, even under
     /// sudo. All user-owned artefacts (dirs, rc files, `~/.local/bin`) live in
     /// `home`; service teardown runs in this user's session.
     struct Actor {
@@ -82,7 +82,6 @@ mod unix_impl {
         let dirs = PlatformDirs::for_user(&actor.home, actor.uid);
         let root = elevate::is_root();
 
-        // Capture before any deletion (data-safety: see module docs).
         let facts = CapturedFacts::capture(&dirs);
 
         print_header(&actor, &dirs, root);
@@ -95,11 +94,8 @@ mod unix_impl {
             return ExitCode::from(1);
         }
 
-        // Things that couldn't be removed and need the user's attention.
         let mut residue: Vec<String> = Vec::new();
 
-        // 1. System changes from `elevate` (root only; otherwise the warning
-        //    above already listed the manual steps).
         if root {
             revert_system_changes(&facts, &mut residue);
         } else {
@@ -110,20 +106,16 @@ mod unix_impl {
             );
         }
 
-        // 2. Daemon service + process (graceful, so it reaps its children).
         stop_daemon_service(&actor, root);
         reap_daemon(actor.uid);
 
-        // 3. PATH block from the invoking user's shell rc files.
         let touched = path_cmd::remove_block_for_user(&actor.home, &shell_basename(&actor.shell));
         for f in &touched {
             println!("  removed PATH entry from {}", f.display());
         }
 
-        // 4. Service unit file.
         remove_service_unit(&actor);
 
-        // 5. User dirs.
         for dir in dirs_to_delete(&dirs, actor.uid) {
             match std::fs::remove_dir_all(&dir) {
                 Ok(()) => println!("  removed {}", dir.display()),
@@ -132,7 +124,6 @@ mod unix_impl {
             }
         }
 
-        // 6. Binaries (self last; never `rm` a packaged install).
         remove_binaries(&actor, &mut residue);
 
         print_summary(&residue);
@@ -157,8 +148,6 @@ mod unix_impl {
             });
         }
 
-        // No passwd entry. Falling back to the process env is only correct when
-        // we are NOT under sudo (then the env belongs to the invoking user).
         if sudo.is_some() {
             return Err(format!(
                 "cannot resolve the invoking user (uid {uid}) — no passwd entry"
@@ -180,7 +169,7 @@ mod unix_impl {
     }
 
     /// Revert the privileged system changes by driving `yerd-helper` directly
-    /// from the captured on-disk facts — no daemon needed. Best-effort: every
+    /// from the captured on-disk facts - no daemon needed. Best-effort: every
     /// failure is recorded in `residue`, never fatal.
     fn revert_system_changes(facts: &CapturedFacts, residue: &mut Vec<String>) {
         let helper = match elevate::sibling_binaries() {
@@ -200,9 +189,6 @@ mod unix_impl {
                 "remove the CA from the system trust store",
                 residue,
             ),
-            // The cert was already gone from disk, so we have no fingerprint to
-            // hand the helper. A yerd CA may still be trusted system-wide; give
-            // the concrete manual removal steps rather than a vague note.
             None => residue.push(format!(
                 "a yerd CA may remain in the system trust store (its cert was \
                  not on disk to identify it) — remove it manually: {}",
@@ -219,9 +205,6 @@ mod unix_impl {
             );
         }
 
-        // Ports: macOS removes the pf redirect (+ its boot LaunchDaemon). On
-        // Linux the `setcap` grant has no clean reverse, but it disappears with
-        // the binary (tarball) or via `apt purge` (deb) — nothing to do here.
         #[cfg(target_os = "macos")]
         run_helper(
             &helper,
@@ -237,7 +220,6 @@ mod unix_impl {
         let _ = std::io::Write::flush(&mut std::io::stdout());
         match elevate::spawn_helper(helper, inv) {
             Ok(Some(0)) => println!("ok"),
-            // EX_CONFIG (78): the helper deems it unsupported / not configured.
             Ok(Some(78)) => println!("skipped (not configured)"),
             Ok(Some(code)) => {
                 println!("failed (exit {code})");
@@ -255,12 +237,10 @@ mod unix_impl {
     }
 
     /// Stop and disable the per-user daemon service, in the invoking user's
-    /// session. Best-effort — the service may not be installed.
+    /// session. Best-effort - the service may not be installed.
     fn stop_daemon_service(actor: &Actor, root: bool) {
         #[cfg(target_os = "linux")]
         {
-            // Under sudo, `systemctl --user` would hit root's bus; run it as the
-            // invoking user with their session env.
             if root && elevate::sudo_uid().is_some() {
                 let xdg = format!("XDG_RUNTIME_DIR=/run/user/{}", actor.uid);
                 let dbus = format!(
@@ -289,8 +269,6 @@ mod unix_impl {
         }
         #[cfg(target_os = "macos")]
         {
-            // `bootout` stops AND unloads, so KeepAlive can't relaunch it. From
-            // root we can target the invoking user's gui domain by uid.
             let _ = root;
             let target = format!("gui/{}/dev.yerd.daemon", actor.uid);
             let _ = run_quiet("launchctl", &["bootout", &target]);
@@ -301,7 +279,7 @@ mod unix_impl {
         }
     }
 
-    /// Reap any still-running `yerdd` for this user: SIGTERM (graceful — it
+    /// Reap any still-running `yerdd` for this user: SIGTERM (graceful - it
     /// reaps its php-fpm/DB/mail children), wait a bounded grace, then SIGKILL
     /// any holdout. `pgrep`/`pkill -U <uid>` match by *real* uid on both
     /// Linux and macOS; `-x yerdd` matches the exact process name (so it never
@@ -311,7 +289,7 @@ mod unix_impl {
     /// (`bin/yerdd/src/lib.rs`) walks several task-join timeouts before it
     /// gracefully stops (then force-kills) its php-fpm/DB/mail children; killing
     /// the daemon too early would skip that and orphan those children. In
-    /// practice it exits in well under a second — we only wait the full budget
+    /// practice it exits in well under a second - we only wait the full budget
     /// if one of its tasks is wedged.
     fn reap_daemon(uid: u32) {
         let uid = uid.to_string();
@@ -322,7 +300,6 @@ mod unix_impl {
             }
             std::thread::sleep(std::time::Duration::from_millis(100));
         }
-        // Still alive after the graceful budget — force it as a last resort.
         let _ = run_quiet("pkill", &["-KILL", "-U", &uid, "-x", "yerdd"]);
     }
 
@@ -354,12 +331,12 @@ mod unix_impl {
     }
 
     /// Remove the yerd binaries across the candidate dirs (the running exe's
-    /// dir — `current_exe` resolves symlinks, so this is the real install dir —
+    /// dir - `current_exe` resolves symlinks, so this is the real install dir -
     /// plus `~/.local/bin` and the system dirs). A symlink at a candidate path
     /// is unlinked (its target is cleaned only if that target also lands in a
     /// candidate dir); a real file in a package-managed system path is left for
     /// `apt purge`; anything else is deleted. `yerd` (this running binary) is
-    /// removed last — unlinking a running executable is safe on Unix.
+    /// removed last - unlinking a running executable is safe on Unix.
     fn remove_binaries(actor: &Actor, residue: &mut Vec<String>) {
         let mut dirs: Vec<PathBuf> = Vec::new();
         if let Ok(exe) = std::env::current_exe() {
@@ -396,9 +373,6 @@ mod unix_impl {
             }
         }
         if packaged {
-            // The only way a yerd binary lands in a dpkg-owned dir is the Debian
-            // `.deb` (installs to /usr/bin); advise the matching removal. On other
-            // OSes this is effectively unreachable, but keep the guidance correct.
             #[cfg(target_os = "linux")]
             residue.push(
                 "system-installed binaries (a .deb install) — remove with: sudo apt purge yerd"
@@ -428,7 +402,7 @@ mod unix_impl {
         ])
     }
 
-    /// A package-managed location whose binaries dpkg owns — advise removal via
+    /// A package-managed location whose binaries dpkg owns - advise removal via
     /// the package manager rather than `rm`. `/usr/local/bin` is deliberately
     /// excluded: Debian Policy reserves `/usr/local` for the local admin and no
     /// package may own files there, so a yerd binary in `/usr/local/bin` is a
@@ -440,7 +414,7 @@ mod unix_impl {
         )
     }
 
-    /// The shell's basename (e.g. `/bin/zsh` → `zsh`) for shell detection.
+    /// The shell's basename (e.g. `/bin/zsh` → `zsh`).
     fn shell_basename(shell: &Path) -> String {
         shell
             .file_name()
@@ -526,8 +500,6 @@ mod unix_impl {
         );
         eprintln!("  or remove them manually afterwards:");
         eprintln!("    • CA trust: {}", manual_ca_removal_hint());
-        // The cert is about to be deleted; print its fingerprint now so the CA
-        // stays identifiable in the trust store afterwards.
         if let Some(fp) = facts.ca_fp {
             eprintln!(
                 "                (yerd CA SHA-256 fingerprint: {})",
@@ -583,8 +555,6 @@ mod unix_impl {
         fn system_dirs_are_recognised() {
             assert!(is_system_install_dir(Path::new("/usr/bin")));
             assert!(!is_system_install_dir(Path::new("/home/u/.local/bin")));
-            // `/usr/local/bin` is admin-owned, not dpkg-managed — a binary there
-            // is a manual install we should unlink, not defer to a package mgr.
             assert!(!is_system_install_dir(Path::new("/usr/local/bin")));
         }
 
@@ -610,13 +580,10 @@ mod unix_impl {
         fn dirs_to_delete_dedups_and_includes_both_runtime_candidates() {
             let dirs = PlatformDirs::for_user(Path::new("/home/u"), 1000);
             let out = dirs_to_delete(&dirs, 1000);
-            // No duplicates (macOS collapses config/data/state to one path).
             let unique: std::collections::HashSet<_> = out.iter().collect();
             assert_eq!(unique.len(), out.len());
-            // Both Linux runtime candidates present regardless of host.
             assert!(out.contains(&PathBuf::from("/run/user/1000/yerd")));
             assert!(out.contains(&PathBuf::from("/tmp/yerd-1000")));
-            // The persistent dirs are in the set.
             assert!(out.contains(&dirs.config));
             assert!(out.contains(&dirs.data));
             assert!(out.contains(&dirs.cache));

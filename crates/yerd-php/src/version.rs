@@ -112,21 +112,17 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let dirs = make_dirs(tmp.path());
 
-        // php/php-8.3/sbin/php-fpm
         let v83 = dirs.data.join("php").join("php-8.3").join("sbin");
         std::fs::create_dir_all(&v83).unwrap();
         std::fs::write(v83.join("php-fpm"), b"#!/bin/sh\n").unwrap();
 
-        // php/php-7.4/sbin/php-fpm (out-of-order to exercise sort)
         let v74 = dirs.data.join("php").join("php-7.4").join("sbin");
         std::fs::create_dir_all(&v74).unwrap();
         std::fs::write(v74.join("php-fpm"), b"#!/bin/sh\n").unwrap();
 
-        // php/php-bogus — should be skipped (no PhpVersion parse).
         let bogus = dirs.data.join("php").join("php-bogus");
         std::fs::create_dir_all(bogus).unwrap();
 
-        // php/php-9.0 — present dir but no binary; should be skipped.
         std::fs::create_dir_all(dirs.data.join("php").join("php-9.0")).unwrap();
 
         let out = discover_bundled(&dirs).unwrap();
@@ -138,7 +134,6 @@ mod tests {
     fn discover_bundled_missing_root_returns_empty_ok() {
         let tmp = tempfile::tempdir().unwrap();
         let dirs = make_dirs(tmp.path());
-        // dirs.data exists (the tempdir), but dirs.data/php does not.
         let out = discover_bundled(&dirs).unwrap();
         assert!(out.is_empty());
     }

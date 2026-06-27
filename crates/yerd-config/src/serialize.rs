@@ -12,21 +12,21 @@ use crate::{Config, ConfigError, CURRENT_VERSION};
 
 #[derive(Serialize)]
 struct WireSer<'a> {
-    // MUST remain first — TOML emits scalars before sub-tables in a parent,
+    // MUST remain first - TOML emits scalars before sub-tables in a parent,
     // and within scalars `to_string_pretty` follows struct field order.
     // Pinned by tests/toml_byte_shape.rs::default_config_starts_with_version_line.
     version: u32,
     tld: &'a yerd_core::Tld,
-    // Scalar — must stay above the sub-tables (TOML emits scalars before tables).
+    // Scalar - must stay above the sub-tables (TOML emits scalars before tables).
     dns_port: u16,
-    // v6 scalar — also above the sub-tables. Always emitted (like `tld` /
+    // v6 scalar - also above the sub-tables. Always emitted (like `tld` /
     // `dns_port`) so the channel is visible/editable in the file.
     update_channel: &'a str,
     ports: PortsSer<'a>,
     php: PhpSectionSer<'a>,
     parked: ParkedSectionSer<'a>,
     linked: &'a [yerd_core::Site],
-    // Array-of-tables (`[[overrides]]`), a sub-table region like `linked` — any
+    // Array-of-tables (`[[overrides]]`), a sub-table region like `linked` - any
     // order among the tables is fine for `to_string_pretty`. Skipped when empty
     // so a default config emits no `[[overrides]]` (load-bearing for the
     // byte-shape goldens, which assume no extra tables).
@@ -44,7 +44,7 @@ struct WireSer<'a> {
     // extra tables).
     #[serde(skip_serializing_if = "Option::is_none")]
     mail: Option<MailSectionSer>,
-    // v5: optional `[dumps]` table — another trailing sub-table region. `None`
+    // v5: optional `[dumps]` table - another trailing sub-table region. `None`
     // (skipped) when the section equals its default, so a default config emits
     // no `[dumps]` region, keeping the byte-shape goldens intact.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -79,7 +79,7 @@ struct PortsSer<'a> {
 
 #[derive(Serialize)]
 struct PhpSectionSer<'a> {
-    // Scalar — must stay above the `settings` sub-table (TOML emits scalars
+    // Scalar - must stay above the `settings` sub-table (TOML emits scalars
     // before sub-tables within `[php]`).
     default: &'a yerd_core::PhpVersion,
     // Skipped when empty so a settings-free config has no `[php.settings]`
@@ -110,7 +110,7 @@ struct ServiceInstanceSer<'a> {
     enabled: bool,
 }
 
-/// `[mail]` table. Owned (not borrowed) — the fields are `Copy` scalars, so
+/// `[mail]` table. Owned (not borrowed) - the fields are `Copy` scalars, so
 /// there's nothing to borrow. Emitted only when the section is non-default.
 #[derive(Serialize)]
 struct MailSectionSer {
@@ -151,7 +151,6 @@ pub(crate) fn to_toml(c: &Config) -> Result<String, ConfigError> {
             paths: &c.parked.paths,
         },
         linked: &c.linked,
-        // BTreeMap iteration is sorted → deterministic `[[overrides]]` order.
         overrides: c
             .overrides
             .iter()
@@ -177,8 +176,6 @@ pub(crate) fn to_toml(c: &Config) -> Result<String, ConfigError> {
                 )
             })
             .collect(),
-        // Emit `[mail]` only when it differs from the default, so a default
-        // config stays minimal (and the byte-shape goldens hold).
         mail: if c.mail == crate::MailSection::default() {
             None
         } else {
@@ -187,8 +184,6 @@ pub(crate) fn to_toml(c: &Config) -> Result<String, ConfigError> {
                 port: c.mail.port,
             })
         },
-        // Omit `[dumps]` entirely when it is the default — keeps a default
-        // config's byte shape unchanged (no extra tables).
         dumps: if c.dumps == crate::schema::DumpsSection::default() {
             None
         } else {
@@ -224,7 +219,6 @@ mod tests {
 
     #[test]
     fn default_config_emits_no_mail_table() {
-        // A default (disabled) mail section must not emit a `[mail]` table.
         let s = to_toml(&Config::default()).unwrap();
         assert!(
             !s.contains("[mail]"),

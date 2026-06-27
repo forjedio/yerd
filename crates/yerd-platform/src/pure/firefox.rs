@@ -1,6 +1,6 @@
 //! Parse Firefox `profiles.ini` to extract profile directory entries.
 //!
-//! Output is intentionally raw — callers join `Path` against the parent
+//! Output is intentionally raw - callers join `Path` against the parent
 //! directory of `profiles.ini` (which `pure::firefox` does not know about)
 //! when `is_relative` is true.
 

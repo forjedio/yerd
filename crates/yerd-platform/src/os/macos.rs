@@ -51,7 +51,6 @@ impl Paths for MacosPaths {
         let config = pd.config_dir().to_path_buf();
         let data = pd.data_dir().to_path_buf();
         let cache = pd.cache_dir().to_path_buf();
-        // macOS has no XDG state distinction; collapse to data.
         let state = data.clone();
 
         // No XDG_RUNTIME_DIR on macOS. Use a deterministic, uid-derived
@@ -67,14 +66,14 @@ impl Paths for MacosPaths {
         // Trade-off: `/tmp` is world-traversable + sticky, so a hostile local
         // uid could pre-create `/tmp/yerd-$UID` to make the daemon's
         // fail-closed `secure_fs::create_private_dir` (0o700, owner-checked)
-        // refuse to start — the same DoS surface the Linux fallback already
+        // refuse to start - the same DoS surface the Linux fallback already
         // accepts. Caller must still set mode 0o700.
         //
         // Sandbox caveat: this works because the GUI `.app` is unsigned and
         // unsandboxed, so it shares the user's `/tmp` namespace with a
         // terminal-launched daemon. If the app is ever signed + sandboxed,
         // `temp_dir()`/`/tmp` access becomes a container path and GUI↔daemon
-        // IPC over this socket would break — revisit then.
+        // IPC over this socket would break - revisit then.
         let uid = read_real_uid().unwrap_or(0);
         let runtime = PathBuf::from(format!("/tmp/yerd-{uid}"));
 
@@ -97,7 +96,7 @@ impl Paths for MacosPaths {
 /// launchd/SMAppService its `PATH` is minimal and need not contain `/usr/bin`,
 /// so a bare `id` would fail to exec → `None` → the caller's `unwrap_or(0)` would
 /// silently bind the socket under `/tmp/yerd-0` while the GUI (full login `PATH`)
-/// resolves `/tmp/yerd-$realuid` — the daemon then looks "unreachable" though it
+/// resolves `/tmp/yerd-$realuid` - the daemon then looks "unreachable" though it
 /// is healthy. Matching the `/bin/ps` call below keeps this deterministic under
 /// the service manager's stripped environment.
 fn read_real_uid() -> Option<u32> {
@@ -166,8 +165,8 @@ impl TrustStore for MacosTrustStore {
             Domain, TrustSettings, TrustSettingsForCertificate,
         };
 
-        // Read the cert's *stored trust settings* in the user and admin domains
-        // — NOT `security verify-cert`. verify-cert reflects `trustd`'s effective
+        // Read the cert's *stored trust settings* in the user and admin domains,
+        // NOT `security verify-cert`. verify-cert reflects `trustd`'s effective
         // evaluation, which is cached and can serve a stale "trusted" result
         // after the trust setting is removed (observed: it survives even
         // `killall trustd`). Reading the settings store reflects the actual
@@ -193,7 +192,7 @@ impl TrustStore for MacosTrustStore {
                 // CA. Crucially, `set_trust_settings_always` / `add-trusted-cert
                 // -r trustRoot` write an *empty* settings array ("always trust as
                 // root"), which this API surfaces as `Ok(None)` (its loop over the
-                // empty array never runs) — so `Ok(None)` here means **trusted**,
+                // empty array never runs) - so `Ok(None)` here means **trusted**,
                 // not untrusted. The function only ever yields `Some(TrustRoot)`,
                 // `Some(TrustAsRoot)`, `Some(Deny)`, or `None` (it filters
                 // Unspecified/Invalid to `None`), so an explicit SSL `Deny` is the
@@ -212,10 +211,6 @@ impl TrustStore for MacosTrustStore {
     }
 
     fn install_firefox_nss(&self, _: &str) -> Result<NssOutcome, PlatformError> {
-        // Phase 1: report not-attempted via a degraded outcome with
-        // certutil_missing = true (it usually is on macOS without
-        // the Homebrew nss formula). Real certutil wiring lands in a
-        // follow-up.
         Ok(NssOutcome {
             profiles_attempted: 0,
             profiles_succeeded: 0,
@@ -272,7 +267,7 @@ impl ResolverInstaller for MacosResolverInstaller {
         };
         // Require the file to actually point at the daemon's DNS responder
         // (nameserver AND port). A bare `nameserver 127.0.0.1` left by Valet/Herd
-        // or an older Yerd defaults to port 53 — where nothing listens — so it
+        // or an older Yerd defaults to port 53 - where nothing listens - so it
         // must read as NOT installed and get rewritten with the right port.
         Ok(resolver_file::matches(&text, addr))
     }
@@ -404,7 +399,7 @@ fn bind_pair_impl(desired: (u16, u16), fallback: (u16, u16)) -> Result<PortPair,
 ///
 /// RSS is read from `ps -o rss= -p <pid>` (no `unsafe`-free per-process RSS
 /// source exists in `std`), delegating the parse to
-/// [`crate::pure::ps_metrics`]. Every failure collapses to `None` — metrics are
+/// [`crate::pure::ps_metrics`]. Every failure collapses to `None` - metrics are
 /// best-effort. `load_average` remains unimplemented (the Services UI shows
 /// only memory; a `getloadavg`/`sysctl`-based impl can land later).
 #[derive(Debug, Default, Clone, Copy)]
@@ -454,7 +449,7 @@ impl MacosPortRedirector {
 impl PortRedirector for MacosPortRedirector {
     fn is_active(&self) -> Option<bool> {
         // The pf redirect installs 80 and 443 together. Require the HTTP half to
-        // actually reach *this* proxy (the `Server: yerd` marker) — not merely
+        // actually reach *this* proxy (the `Server: yerd` marker), not merely
         // that something answers on :80, which would false-green when a foreign
         // listener or a stale `pf` rule still holds the port after the user
         // removed the redirect. The HTTPS half only needs reachability: it's

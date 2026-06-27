@@ -47,13 +47,13 @@ pub enum Response {
         /// Human-readable error message.
         message: String,
     },
-    /// Reply to [`crate::Request::ListParked`] — the registered parked roots,
+    /// Reply to [`crate::Request::ListParked`] - the registered parked roots,
     /// in lexicographic order (the daemon stores them in a `BTreeSet`).
     Parked {
         /// Canonical parked root paths.
         paths: Vec<String>,
     },
-    /// Reply to [`crate::Request::DaemonInfo`] — read-only runtime facts.
+    /// Reply to [`crate::Request::DaemonInfo`] - read-only runtime facts.
     Info {
         /// Address the embedded DNS responder is bound on (`127.0.0.1:<port>`).
         dns_addr: SocketAddr,
@@ -71,7 +71,7 @@ pub enum Response {
         /// The rootless HTTPS port the daemon actually bound (e.g. 8443).
         #[serde(default)]
         https_port: u16,
-        /// The configured rootless HTTP fallback port (e.g. 8080) — what Settings
+        /// The configured rootless HTTP fallback port (e.g. 8080) - what Settings
         /// edits. Distinct from `http_port`, which is the *bound* port and equals
         /// the desired port when privileged binding succeeds. `#[serde(default)]`
         /// keeps older daemons decodable; defaults to 0.
@@ -80,7 +80,7 @@ pub enum Response {
         /// The configured rootless HTTPS fallback port (e.g. 8443).
         #[serde(default)]
         fallback_https: u16,
-        /// The configured DNS responder port (`dns_port`, e.g. 1053) — what
+        /// The configured DNS responder port (`dns_port`, e.g. 1053) - what
         /// Settings edits. Distinct from `dns_addr`, which is the *bound* address
         /// (and stays the wanted addr when the DNS port couldn't bind).
         /// `#[serde(default)]` keeps older daemons (which omit it) decodable;
@@ -111,7 +111,7 @@ pub enum Response {
         /// dropdown) or tag (CLI) them.
         installed: Vec<PhpVersion>,
     },
-    /// Reply to [`crate::Request::Status`] — a runtime health snapshot.
+    /// Reply to [`crate::Request::Status`] - a runtime health snapshot.
     ///
     /// Boxed so the (large) report does not bloat every `Response` value;
     /// `Box<T>` serializes transparently, so the wire bytes are unchanged.
@@ -119,12 +119,12 @@ pub enum Response {
         /// The assembled health report.
         report: Box<StatusReport>,
     },
-    /// Reply to [`crate::Request::Diagnose`] — the doctor findings.
+    /// Reply to [`crate::Request::Diagnose`] - the doctor findings.
     Diagnoses {
         /// One entry per check that produced a finding.
         items: Vec<Diagnosis>,
     },
-    /// Reply to [`crate::Request::DoctorFix`] — what was fixed + what remains.
+    /// Reply to [`crate::Request::DoctorFix`] - what was fixed + what remains.
     DoctorFix {
         /// The fix outcome.
         report: FixReport,
@@ -139,18 +139,18 @@ pub enum Response {
         /// Installable vs installed versions, per service.
         services: Vec<ServiceAvailability>,
     },
-    /// Reply to [`crate::Request::ServiceLogs`] — trailing log lines, oldest first.
+    /// Reply to [`crate::Request::ServiceLogs`] - trailing log lines, oldest first.
     ServiceLogs {
         /// The log lines.
         lines: Vec<String>,
     },
-    /// Reply to [`crate::Request::ListDatabases`] — the user databases in a SQL
+    /// Reply to [`crate::Request::ListDatabases`] - the user databases in a SQL
     /// service (system schemas filtered out).
     Databases {
         /// One entry per database, sorted by name.
         databases: Vec<DatabaseSummary>,
     },
-    /// Reply to [`crate::Request::ListDumps`] — events newer than the client's
+    /// Reply to [`crate::Request::ListDumps`] - events newer than the client's
     /// cursor, the ids removed since then, the per-category counts, and the
     /// newest id currently buffered.
     Dumps {
@@ -166,11 +166,11 @@ pub enum Response {
         /// uses it as the next `since_id`.
         latest_id: u64,
         /// Smallest id still buffered. Clients drop any held id `< min_live_id`
-        /// unconditionally — so dropping evicted/cleared rows never depends on
+        /// unconditionally - so dropping evicted/cleared rows never depends on
         /// the bounded `removed_ids` log.
         min_live_id: u64,
     },
-    /// Reply to [`crate::Request::DumpsStatus`] — dump-server configuration and
+    /// Reply to [`crate::Request::DumpsStatus`] - dump-server configuration and
     /// liveness.
     DumpsStatus {
         /// Whether dump interception is enabled (the antenna).
@@ -189,31 +189,31 @@ pub enum Response {
         /// config means on). `BTreeMap` for stable order.
         features: BTreeMap<String, bool>,
     },
-    /// Reply to [`crate::Request::ListMails`] — captured email metadata, newest first.
+    /// Reply to [`crate::Request::ListMails`] - captured email metadata, newest first.
     Mails {
         /// One entry per captured email.
         mails: Vec<MailSummary>,
     },
-    /// Reply to [`crate::Request::GetMail`] — one captured email's full content.
+    /// Reply to [`crate::Request::GetMail`] - one captured email's full content.
     ///
-    /// Boxed so the (large) `MailDetail` does not bloat every `Response` value —
+    /// Boxed so the (large) `MailDetail` does not bloat every `Response` value -
     /// the same treatment as [`Self::Status`]. `Box<T>` serializes transparently,
     /// so the wire bytes are unchanged.
     Mail {
         /// The decoded email.
         mail: Box<MailDetail>,
     },
-    /// Reply to [`crate::Request::ListTools`] — the installable dev tools.
+    /// Reply to [`crate::Request::ListTools`] - the installable dev tools.
     Tools {
         /// One entry per tool, with install status.
         tools: Vec<ToolStatus>,
     },
-    /// Reply to [`crate::Request::CreateSite`] — the background job was started.
+    /// Reply to [`crate::Request::CreateSite`] - the background job was started.
     JobStarted {
         /// The job id to poll with [`crate::Request::JobStatus`].
         job_id: crate::JobId,
     },
-    /// Reply to [`crate::Request::JobStatus`] — a job's current progress.
+    /// Reply to [`crate::Request::JobStatus`] - a job's current progress.
     JobProgress {
         /// The job's lifecycle state.
         state: crate::JobState,
@@ -226,7 +226,7 @@ pub enum Response {
         /// Set when `state` is [`crate::JobState::Failed`]: the failure message.
         error: Option<String>,
     },
-    /// Reply to [`crate::Request::CheckUpdate`] — the running version, both
+    /// Reply to [`crate::Request::CheckUpdate`] - the running version, both
     /// channel latests, the active channel preference, and whether an update is
     /// available. Versions are strings (e.g. `"2.0.2-rc.3"`) to keep this crate
     /// free of a semver dependency.
@@ -246,7 +246,7 @@ pub enum Response {
         /// or `None` when already up to date.
         target: Option<String>,
         /// True when the running version is a pre-release ahead of the latest
-        /// stable — switching to stable would be a downgrade.
+        /// stable - switching to stable would be a downgrade.
         ahead_of_stable: bool,
         /// Whether these figures are from a live fetch or a cached fallback.
         source: crate::UpdateSource,
@@ -257,7 +257,7 @@ pub enum Response {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         checked_at_epoch: Option<u64>,
     },
-    /// Reply to [`crate::Request::StageUpdate`] — the verified update artifact
+    /// Reply to [`crate::Request::StageUpdate`] - the verified update artifact
     /// has been downloaded to `path`. The applier installs it.
     Staged {
         /// Absolute path to the verified, downloaded artifact on disk.
@@ -283,7 +283,7 @@ pub struct PhpUpdate {
 /// Machine-readable error category for [`Response::Error`].
 ///
 /// Fail-closed on unknown variants from a newer daemon (no
-/// `#[serde(other)]` catch-all) — an unknown code surfaces as
+/// `#[serde(other)]` catch-all) - an unknown code surfaces as
 /// [`crate::IpcError::Decode`], which is the broader "version mismatch
 /// signal" until a `Hello`/`Welcome` handshake lands.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -360,7 +360,7 @@ mod variant_name_pinning {
     }
 
     #[test]
-    #[allow(clippy::too_many_lines)] // one `pin_response(...)` per variant; grows with the enum
+    #[allow(clippy::too_many_lines)]
     fn touch_every_variant() {
         pin_response(Response::Pong);
         pin_response(Response::Sites { sites: vec![] });

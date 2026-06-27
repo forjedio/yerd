@@ -1,9 +1,9 @@
-//! `yerd path install|uninstall|print` — manage the yerd-owned PATH block in the
+//! `yerd path install|uninstall|print` - manage the yerd-owned PATH block in the
 //! user's shell rc file(s), so a bare `php`/`composer` resolves to `{data}/bin`.
 //!
 //! Local, daemon-free, unprivileged: it only edits files the user owns. The pure
 //! string logic lives in `yerd_platform::pure::shell_profile`; this module is the
-//! I/O edge — it reads `$SHELL`/`$HOME`, picks the rc file(s), reads/writes them
+//! I/O edge - it reads `$SHELL`/`$HOME`, picks the rc file(s), reads/writes them
 //! atomically (preserving dotfiles symlinks), and reports what changed.
 
 use std::process::ExitCode;
@@ -48,7 +48,7 @@ pub fn ensure_installed_after_tool(_quiet: bool) {}
 
 /// Remove the yerd PATH block from an explicit user's shell rc file(s), given
 /// their home directory and login-shell basename (e.g. `zsh`). Unlike [`run`],
-/// this reads neither `$HOME` nor `$SHELL` — `yerd uninstall`, run under sudo,
+/// this reads neither `$HOME` nor `$SHELL` - `yerd uninstall`, run under sudo,
 /// must target the *invoking* user, not root. Returns the list of files it
 /// edited (the block was present and removed). Best-effort: unreadable files
 /// are skipped.
@@ -78,8 +78,6 @@ mod unix {
             Err(e) => return fail(format!("cannot resolve yerd directories: {e}")),
         };
 
-        // `Print` doesn't need a real rc file — just emit the guarded block for
-        // the detected (or POSIX-fallback) shell so the user can eval/paste it.
         let shell = detect_shell(&shell_basename());
         if matches!(action, PathAction::Print) {
             print!("{}", render_block(shell.unwrap_or(Shell::Posix), &bin_dir));
@@ -104,7 +102,6 @@ mod unix {
         let mut any_err = false;
         for rel in rc_relpaths(shell, host_os()) {
             let rc = home.join(&rel);
-            // On uninstall, skip files that don't exist (nothing to remove).
             if !install && !rc.exists() {
                 continue;
             }
@@ -126,7 +123,7 @@ mod unix {
         }
     }
 
-    /// Add the PATH block after a tool install — idempotent and quiet. Does
+    /// Add the PATH block after a tool install - idempotent and quiet. Does
     /// nothing when it's already present, or when the shell / `$HOME` can't be
     /// determined (the `BinDirNotOnPath` doctor warning is the backstop). Prints
     /// a one-line note only when it actually adds the block, so repeat installs
@@ -162,8 +159,8 @@ mod unix {
     /// Remove the yerd PATH block from `home`'s rc file(s) for the shell named
     /// by `shell_basename`. Daemon-free and home-explicit (the uninstall path
     /// runs under sudo, where `$HOME`/`$SHELL` point at root). `bin_dir` is
-    /// irrelevant to removal — `shell_profile::remove_block` matches the guarded
-    /// markers — so a placeholder is passed. Returns the files actually changed.
+    /// irrelevant to removal - `shell_profile::remove_block` matches the guarded
+    /// markers - so a placeholder is passed. Returns the files actually changed.
     pub fn remove_block_for_user(home: &Path, shell_basename: &str) -> Vec<PathBuf> {
         let Some(shell) = detect_shell(shell_basename) else {
             return Vec::new();
@@ -184,8 +181,6 @@ mod unix {
 
     /// Edit one rc file. Returns `Ok(true)` if the file's contents changed.
     fn edit_one(rc: &Path, shell: Shell, bin_dir: &Path, install: bool) -> std::io::Result<bool> {
-        // Resolve a dotfiles symlink to its real target so we write *through* it
-        // (a plain rename would replace the symlink with a regular file).
         let real = resolve_symlink(rc)?;
 
         let existing = match std::fs::read_to_string(&real) {
@@ -203,7 +198,6 @@ mod unix {
             return Ok(false);
         }
 
-        // One-time pristine backup, never overwriting an earlier one.
         if real.exists() {
             let bak = backup_path(&real);
             if !bak.exists() {
@@ -220,8 +214,6 @@ mod unix {
     /// created). A broken/parent-relative case falls back to `rc` itself.
     fn resolve_symlink(rc: &Path) -> std::io::Result<PathBuf> {
         match std::fs::symlink_metadata(rc) {
-            // A broken (dangling-target) symlink can't be canonicalized — fall
-            // back to `rc` itself, as documented, instead of aborting.
             Ok(m) if m.file_type().is_symlink() => match std::fs::canonicalize(rc) {
                 Ok(real) => Ok(real),
                 Err(ref e) if e.kind() == std::io::ErrorKind::NotFound => Ok(rc.to_path_buf()),
@@ -248,8 +240,6 @@ mod unix {
         use std::os::unix::fs::PermissionsExt;
         use std::sync::atomic::{AtomicU64, Ordering};
 
-        // Monotonic per-call counter so two concurrent edits in the same process
-        // (or a retry loop) can't collide on the same temp path.
         static SEQ: AtomicU64 = AtomicU64::new(0);
 
         if let Some(parent) = dest.parent() {
@@ -263,9 +253,6 @@ mod unix {
         let tmp = dest.with_file_name(name);
         let _ = std::fs::remove_file(&tmp);
 
-        // Best-effort guard against a concurrent edit between the read we based
-        // `contents` on and this write: if `dest` no longer matches `prev`,
-        // someone else changed it under us — bail rather than clobber.
         if let Ok(current) = std::fs::read_to_string(dest) {
             if current != prev {
                 return Err(std::io::Error::other(
@@ -282,7 +269,6 @@ mod unix {
 
     fn report(touched: &[PathBuf], install: bool, bin_dir: &Path, had_errors: bool) {
         if touched.is_empty() {
-            // All edits failed (already reported above) — don't claim "nothing to do".
             if had_errors {
                 return;
             }
@@ -312,12 +298,6 @@ mod unix {
     }
 
     fn shell_basename() -> String {
-        // Prefer `$SHELL` — always set in an interactive shell. When it's empty,
-        // fall back to the user's login shell from the passwd database: the GUI
-        // app is launched by launchd/Finder, which sets no `$SHELL`, so the
-        // `yerd path install` it shells out to would otherwise fail to detect the
-        // shell and never write the PATH block (the symlink lands, but new
-        // terminals can't find `yerd`).
         std::env::var_os("SHELL")
             .map(PathBuf::from)
             .as_deref()

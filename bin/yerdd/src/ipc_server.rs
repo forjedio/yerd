@@ -54,18 +54,12 @@ async fn handle_client(stream: IpcStream, state: Arc<DaemonState>) {
             Ok(Some(r)) => r,
             Ok(None) => return,
             Err(e) => {
-                // Decode errors close the connection but stay quiet at
-                // debug — common with mismatched-version clients.
                 if !matches!(e, IpcError::UnexpectedEof { .. }) {
                     tracing::debug!(error = %e, "ipc decode error");
                 }
                 return;
             }
         };
-        // Site creation and job polling are matched here (not in `dispatch`)
-        // because they need the owned `Arc<DaemonState>`: `CreateSite` spawns a
-        // background task that outlives this connection. Everything else routes
-        // through the borrowing `dispatch`.
         let resp = match req {
             Request::CreateSite { spec } => crate::create_site::start(spec, state.clone()).await,
             Request::InstallToolStreamed { tool } => {
@@ -79,10 +73,6 @@ async fn handle_client(stream: IpcStream, state: Arc<DaemonState>) {
             tracing::debug!(error = %e, "ipc write error");
             return;
         }
-        // A `RestartDaemon` request armed the flag in `dispatch`. Now that the
-        // `Ok` is written, flush it and *then* trip the shutdown broadcast, so
-        // the response is on the wire before any task observes teardown (no
-        // timing race / sleep). `main` re-execs after the graceful shutdown.
         if state
             .restart_requested
             .load(std::sync::atomic::Ordering::Acquire)
@@ -95,8 +85,6 @@ async fn handle_client(stream: IpcStream, state: Arc<DaemonState>) {
     }
 }
 
-// One arm per request variant — the match is naturally long and grows with the
-// protocol; splitting it would only scatter the routing.
 #[allow(clippy::too_many_lines)]
 async fn dispatch(req: Request, state: &DaemonState) -> Response {
     match req {
@@ -104,9 +92,6 @@ async fn dispatch(req: Request, state: &DaemonState) -> Response {
         Request::ListSites => Response::Sites {
             sites: state.router.read().await.iter().cloned().collect(),
         },
-        // Registered parked roots, incl. empty ones (which produce no sites and
-        // so never appear in `ListSites`). `parked.paths` is a `BTreeSet`, so the
-        // collected order is already lexicographic — no explicit sort.
         Request::ListParked => Response::Parked {
             paths: state
                 .config
@@ -163,8 +148,6 @@ async fn dispatch(req: Request, state: &DaemonState) -> Response {
             ),
         },
         Request::DoctorFix => run_doctor_fix(state).await,
-        // Arm the restart flag; `handle_client` trips the shutdown broadcast
-        // *after* writing this `Ok`, and `main` re-execs once teardown completes.
         #[cfg(unix)]
         Request::RestartDaemon => {
             state
@@ -280,8 +263,6 @@ async fn dispatch(req: Request, state: &DaemonState) -> Response {
             crate::self_update::stage_update(channel, state, &dl, yerd_update::UPDATE_PUBLIC_KEY)
                 .await
         }
-        // `Request` is `#[non_exhaustive]` (external crate): a wildcard is
-        // required even though every known variant is handled above.
         _ => Response::Error {
             code: ErrorCode::Internal,
             message: "unsupported request".into(),
@@ -289,7 +270,7 @@ async fn dispatch(req: Request, state: &DaemonState) -> Response {
     }
 }
 
-/// Installed PHP versions — the bundled installs in yerd's data dir — ascending
+/// Installed PHP versions (the bundled installs in yerd's data dir), ascending
 /// and deduped. The single source of "what's installed" for the `PhpVersions`
 /// and `AvailablePhp` replies.
 fn installed_versions(state: &DaemonState) -> Vec<yerd_core::PhpVersion> {
@@ -317,7 +298,7 @@ async fn php_versions_response(state: &DaemonState) -> Response {
     }
 }
 
-/// `available php` — list the major.minor versions installable from the
+/// `available php` - list the major.minor versions installable from the
 /// distribution, plus what's already installed (so clients hide or tag them).
 /// Fetches the listing on demand; only a fetch/transport failure is an error
 /// (an empty parse result is a valid empty list).
@@ -349,11 +330,11 @@ async fn available_php_with(state: &DaemonState, dl: &dyn yerd_php::Downloader) 
 }
 
 /// Whether a dev tool is installed but Yerd's `{data}/bin` isn't on the user's
-/// PATH yet (no managed block in any known shell rc) — drives the doctor's
+/// PATH yet (no managed block in any known shell rc) - drives the doctor's
 /// [`yerd_ipc::DiagnosisCode::BinDirNotOnPath`] warning. `Some(false)` when no
 /// tool is installed or PATH is already wired; `None` when undeterminable
 /// (non-Unix, or `$HOME` unset). Computed on demand from the `Diagnose` handler,
-/// not on the per-poll status path. The cover/pcov shims alone don't count — the
+/// not on the per-poll status path. The cover/pcov shims alone don't count - the
 /// gate is an actual installed dev tool.
 fn path_needs_setup(state: &DaemonState) -> Option<bool> {
     #[cfg(not(unix))]
@@ -379,8 +360,6 @@ fn path_needs_setup(state: &DaemonState) -> Option<bool> {
         } else {
             HostOs::Linux
         };
-        // Check the union of candidate rc files across shells (the daemon may not
-        // have $SHELL set), so the probe doesn't depend on shell detection.
         let present = [Shell::Zsh, Shell::Bash, Shell::Fish, Shell::Posix]
             .into_iter()
             .flat_map(|s| rc_relpaths(s, os))
@@ -395,14 +374,13 @@ fn path_needs_setup(state: &DaemonState) -> Option<bool> {
 /// Assemble a read-only [`yerd_ipc::StatusReport`].
 ///
 /// Lock discipline: each guard is acquired, drained into owned data, and dropped
-/// before the next acquisition — never two at once, never a guard held across an
+/// before the next acquisition - never two at once, never a guard held across an
 /// `.await` that touches another lock. Mirrors the hazard documented in
 /// `handle_mutation`.
-#[allow(clippy::too_many_lines)] // straight-line assembly: one block per fact
+#[allow(clippy::too_many_lines)]
 async fn build_status_report(state: &DaemonState) -> yerd_ipc::StatusReport {
     use yerd_platform::SystemMetrics;
 
-    // 1. Router read → site counts (guard dropped at block end).
     let sites = {
         let router = state.router.read().await;
         let mut counts = yerd_ipc::SiteCounts::default();
@@ -418,12 +396,6 @@ async fn build_status_report(state: &DaemonState) -> yerd_ipc::StatusReport {
         counts
     };
 
-    // 2. Config lock → tld + default PHP + the *configured* mail enabled/port
-    // (dropped). Sourcing mail enabled/port from config (not the startup
-    // snapshot) means `SetMailPort`/`SetMailEnabled` are reflected in `Status`
-    // immediately, so the GUI can confirm a save; `listening` below still comes
-    // from the runtime snapshot, so an enabled-but-not-yet-bound state (a change
-    // pending the next restart) reads as `enabled && !listening`.
     let (tld, default_php, mail_enabled, mail_port) = {
         let cfg = state.config.lock().await;
         (
@@ -434,13 +406,11 @@ async fn build_status_report(state: &DaemonState) -> yerd_ipc::StatusReport {
         )
     };
 
-    // 3. PHP manager lock → live pool snapshots (dropped).
     let snapshots = {
         let mut mgr = state.php_manager.lock().await;
         mgr.snapshots()
     };
 
-    // 4. Installed versions + cached updates, off any guard.
     let installed = installed_versions(state);
     let updates = crate::php_updates::cached_updates(state).await;
 
@@ -472,10 +442,6 @@ async fn build_status_report(state: &DaemonState) -> yerd_ipc::StatusReport {
         })
         .collect();
 
-    // 5. Unprivileged probes off any guard, on a blocking thread, errors → None.
-    // `is_trusted` is an effective-trust check (not mere presence): macOS shells
-    // `security verify-cert`, Linux checks anchor-dir presence. `ca_path` is a
-    // `PathBuf` (not `Copy`), so clone it into the closure alongside `fp`.
     let fp = state.ca_fingerprint;
     let ca_path = state.ca_path.clone();
     let trusted_system = tokio::task::spawn_blocking(move || {
@@ -500,12 +466,6 @@ async fn build_status_report(state: &DaemonState) -> yerd_ipc::StatusReport {
     .ok()
     .flatten();
 
-    // Active probes (bounded TCP/HTTP connects, off the executor so they can't
-    // stall status assembly):
-    //  - `port_redirect`: is the privileged-port redirect carrying 80/443 to
-    //    *this* proxy? `None` on Linux (binds directly after setcap).
-    //  - `foreign_web_listener`: is a non-Yerd process squatting 80/443?
-    //    Cross-platform; confirmed via the proxy's `Server:` marker.
     let (port_redirect, foreign_web_listener) = tokio::task::spawn_blocking(|| {
         use yerd_platform::PortRedirector;
         let r = yerd_platform::ActivePortRedirector::new();
@@ -514,10 +474,6 @@ async fn build_status_report(state: &DaemonState) -> yerd_ipc::StatusReport {
     .await
     .unwrap_or((None, None));
 
-    // macOS only: if installing the resolver replaced a pre-existing file, the
-    // path of the most recent backup (within the last week) so `doctor` can
-    // point at it. `None` on Linux / when nothing was replaced. Off the executor
-    // (fs I/O), mirroring the probes above.
     let backup_tld = tld.clone();
     let resolver_backup = tokio::task::spawn_blocking(move || latest_resolver_backup(&backup_tld))
         .await
@@ -564,7 +520,7 @@ async fn build_status_report(state: &DaemonState) -> yerd_ipc::StatusReport {
 }
 
 /// The path of the most recent replaced-resolver backup for `tld`, if one was
-/// saved within the last 7 days. macOS-only — the helper writes these when it
+/// saved within the last 7 days. macOS-only - the helper writes these when it
 /// overwrites a pre-existing `/etc/resolver/<tld>`. The age bound keeps the
 /// `doctor` finding a transient migration notice rather than permanent noise.
 #[cfg(target_os = "macos")]
@@ -583,7 +539,6 @@ fn latest_resolver_backup(tld: &str) -> Option<String> {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_secs());
-    // saturating: a future-dated backup (clock moved back) reads as age 0 → shown.
     (now.saturating_sub(secs) <= MAX_AGE_SECS)
         .then(|| dir.join(latest).to_string_lossy().into_owned())
 }
@@ -616,14 +571,12 @@ fn load_to_centi(x: f64) -> u32 {
     }
 }
 
-/// `doctor fix` — run the safe auto-fixes, then re-diagnose for the remainder.
+/// `doctor fix` - run the safe auto-fixes, then re-diagnose for the remainder.
 async fn run_doctor_fix(state: &DaemonState) -> Response {
     let report = build_status_report(state).await;
     let mut performed: Vec<yerd_ipc::FixResult> = Vec::new();
 
     for action in yerd_doctor::plan_auto_fixes(&report) {
-        // `FixAction` is `#[non_exhaustive]`; `if let` handles the one known
-        // variant and ignores any future ones safely.
         if let yerd_doctor::FixAction::RestartFpm(v) = action {
             let outcome = {
                 let mut mgr = state.php_manager.lock().await;
@@ -644,7 +597,6 @@ async fn run_doctor_fix(state: &DaemonState) -> Response {
         }
     }
 
-    // Re-diagnose against a fresh report; surface the remaining problems.
     let after = build_status_report(state).await;
     let manual = yerd_doctor::diagnose(&after, path_needs_setup(state))
         .into_iter()
@@ -661,7 +613,7 @@ async fn run_doctor_fix(state: &DaemonState) -> Response {
     }
 }
 
-/// `update php [<ver>]` — upgrade the given minor (or all installed) to the
+/// `update php [<ver>]` - upgrade the given minor (or all installed) to the
 /// latest published patch when newer; refresh the cache; return the new list.
 async fn update_php(version: Option<yerd_core::PhpVersion>, state: &DaemonState) -> Response {
     let dl = crate::php_install::ReqwestDownloader::new();
@@ -711,23 +663,15 @@ async fn update_php(version: Option<yerd_core::PhpVersion>, state: &DaemonState)
     php_versions_response(state).await
 }
 
-/// `install php <ver>` — download + verify + unpack a prebuilt build. Runs the
+/// `install php <ver>` - download + verify + unpack a prebuilt build. Runs the
 /// (slow) download with no config lock held; the per-connection task model means
 /// other clients are unaffected.
 async fn install_php(version: yerd_core::PhpVersion, state: &DaemonState) -> Response {
     let dl = crate::php_install::ReqwestDownloader::new();
     match crate::php_install::install(version, &state.dirs, &dl).await {
         Ok(()) => {
-            // The PhpManager's binary map is a startup snapshot; teach it about
-            // the just-installed version so the proxy can spawn its FPM pool
-            // without a daemon restart.
             refresh_php_binaries(state).await;
-            // First install on a fresh setup: adopt it as the default (so the
-            // `php` shim exists and sites have a runtime). Must run BEFORE the
-            // reconcile below so it builds shims against the new default.
             adopt_default_if_unset(version, state).await;
-            // Bundle pcov for the new version and (re)build its cover/clean
-            // shims. Best-effort; the install itself already succeeded.
             refresh_pcov_and_shims(state).await;
             Response::Ok
         }
@@ -738,19 +682,19 @@ async fn install_php(version: yerd_core::PhpVersion, state: &DaemonState) -> Res
     }
 }
 
-/// On the *first* successful install — when the configured default PHP isn't
-/// actually installed yet — adopt the just-installed `version` as the default,
+/// On the *first* successful install - when the configured default PHP isn't
+/// actually installed yet - adopt the just-installed `version` as the default,
 /// so the `php` shim gets created and sites have a runtime. No-op once a real
 /// default is installed (later installs never steal the default).
 ///
 /// Lock-safe: the "is the current default installed?" check and the set happen
 /// under the config lock, so two concurrent first-installs can't both win.
-/// Best-effort (the install already succeeded) and does NOT reconcile shims —
+/// Best-effort (the install already succeeded) and does NOT reconcile shims -
 /// the caller's `refresh_pcov_and_shims` reconciles against the updated default.
 async fn adopt_default_if_unset(version: yerd_core::PhpVersion, state: &DaemonState) {
     let mut cfg_guard = state.config.lock().await;
     if crate::php_install::cli_binary_path(&state.dirs, cfg_guard.php.default).exists() {
-        return; // a real default is already installed — leave it alone.
+        return;
     }
     let mut new = cfg_guard.clone();
     new.php.default = version;
@@ -839,7 +783,7 @@ pub(crate) async fn reconcile_tool_shims_now(state: &DaemonState) {
 async fn list_tools_with_external(state: &DaemonState) -> Vec<yerd_ipc::ToolStatus> {
     let mut tools = crate::tools::list_status(&state.dirs);
     if tools.iter().all(|t| t.installed) {
-        return tools; // nothing to detect — avoid spawning a shell.
+        return tools;
     }
     let Some(dirs) = crate::tools::external::resolve_user_path().await else {
         return tools;
@@ -858,7 +802,7 @@ async fn list_tools_with_external(state: &DaemonState) -> Vec<yerd_ipc::ToolStat
     tools
 }
 
-/// `install tool <id>` — download + verify the latest release, then (re)build its
+/// `install tool <id>` - download + verify the latest release, then (re)build its
 /// `{data}/bin` shims. Runs the slow download with no lock held.
 async fn install_tool(tool: &str, state: &DaemonState) -> Response {
     let Some(t) = crate::tools::Tool::parse(tool) else {
@@ -868,9 +812,6 @@ async fn install_tool(tool: &str, state: &DaemonState) -> Response {
         };
     };
     let dl = crate::php_install::ReqwestDownloader::new();
-    // Serialize tool mutations: two concurrent IPC clients mutating
-    // `{data}/tools/<id>` (commit) + `{data}/bin` (reconcile) would otherwise
-    // race and could leave files and shims inconsistent.
     let _mutate = state.tool_mutate.lock().await;
     match crate::tools::install(t, &state.dirs, &dl, None).await {
         Ok(()) => {
@@ -884,7 +825,7 @@ async fn install_tool(tool: &str, state: &DaemonState) -> Response {
     }
 }
 
-/// `InstallToolStreamed` — install a tool as a background job, streaming its
+/// `InstallToolStreamed` - install a tool as a background job, streaming its
 /// output (Composer's, for the Laravel installer) into the job log. Returns
 /// `JobStarted` immediately; the client polls `JobStatus`.
 pub(crate) async fn install_tool_streamed(tool: String, state: Arc<DaemonState>) -> Response {
@@ -897,7 +838,6 @@ pub(crate) async fn install_tool_streamed(tool: String, state: Arc<DaemonState>)
     let (job_id, mut cancel) = state.jobs.create().await;
     let id = job_id.clone();
     tokio::spawn(async move {
-        // Forward streamed lines into the job log via a drain task.
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
         let drain = {
             let state = state.clone();
@@ -915,14 +855,12 @@ pub(crate) async fn install_tool_streamed(tool: String, state: Arc<DaemonState>)
             .await;
         let dl = crate::php_install::ReqwestDownloader::new();
         let guard = state.tool_mutate.lock().await;
-        // Honour `JobCancel`: on cancel, drop the install future — its child has
-        // `kill_on_drop`, so the spawned process is reaped.
         let result = tokio::select! {
             r = crate::tools::install(t, &state.dirs, &dl, Some(&tx)) => Some(r),
             _ = cancel.changed() => None,
         };
         drop(guard);
-        drop(tx); // close the channel so the drain task finishes
+        drop(tx);
         let _ = drain.await;
 
         match result {
@@ -950,7 +888,7 @@ pub(crate) async fn install_tool_streamed(tool: String, state: Arc<DaemonState>)
     Response::JobStarted { job_id }
 }
 
-/// `uninstall tool <id>` — remove the tool's files, then prune its shims.
+/// `uninstall tool <id>` - remove the tool's files, then prune its shims.
 async fn uninstall_tool(tool: &str, state: &DaemonState) -> Response {
     let Some(t) = crate::tools::Tool::parse(tool) else {
         return Response::Error {
@@ -990,7 +928,7 @@ pub(crate) async fn refresh_pcov_and_shims(state: &DaemonState) {
     reconcile_shims_now(state).await;
 }
 
-/// `restart php <ver>` — stop + ensure the version's FPM pool. Starts a stopped
+/// `restart php <ver>` - stop + ensure the version's FPM pool. Starts a stopped
 /// pool too (the GUI greys "Restart" when idle; the CLI may use it to start one).
 async fn restart_php(version: yerd_core::PhpVersion, state: &DaemonState) -> Response {
     let outcome = {
@@ -1007,7 +945,7 @@ async fn restart_php(version: yerd_core::PhpVersion, state: &DaemonState) -> Res
     }
 }
 
-/// `restart php` (no version) — restart every started pool (running or failed).
+/// `restart php` (no version) - restart every started pool (running or failed).
 /// Best-effort: a per-pool failure is logged, not fatal. Idle/never-started
 /// ondemand pools are left alone (they spawn fresh on the next request).
 async fn restart_all_php(state: &DaemonState) -> Response {
@@ -1020,7 +958,7 @@ async fn restart_all_php(state: &DaemonState) -> Response {
     Response::Ok
 }
 
-/// `uninstall php <ver>` — remove an installed version after safety checks.
+/// `uninstall php <ver>` - remove an installed version after safety checks.
 ///
 /// Blocked (→ `InvalidPath` with a human message) when the version is in use by
 /// a site, is the last installed version while sites remain, or is the current
@@ -1072,9 +1010,6 @@ async fn uninstall_php(version: yerd_core::PhpVersion, state: &DaemonState) -> R
         };
     }
 
-    // Stop the pool before removing its files (clean socket teardown). On
-    // Windows `remove_dir_all` would fail while php-fpm.exe runs — revisit with
-    // the Windows port.
     let _ = state.php_manager.lock().await.stop(version).await;
     let version_dir = state
         .dirs
@@ -1084,18 +1019,14 @@ async fn uninstall_php(version: yerd_core::PhpVersion, state: &DaemonState) -> R
     if let Err(e) = std::fs::remove_dir_all(&version_dir) {
         return internal(format!("failed to remove PHP {version}: {e}"));
     }
-    // Drop the orphaned pcov `.so` for this minor (a true uninstall, unlike a PHP
-    // patch update). Remove the file only — the `php-ext/php-<minor>` dir is shared
-    // with `yerd-dump.so`.
     let _ = std::fs::remove_file(crate::ext_install::pcov_so_path(&state.dirs, version));
     refresh_php_binaries(state).await;
-    // Prune this version's now-dangling cover/clean shims.
     reconcile_shims_now(state).await;
     tracing::info!(version = %version, "uninstalled PHP");
     php_versions_response(state).await
 }
 
-/// `use <ver>` (global) — require the version installed, set the live default +
+/// `use <ver>` (global) - require the version installed, set the live default +
 /// site fallback (`config.php.default`), persist, and repoint the `php` shim.
 async fn set_default_php(version: yerd_core::PhpVersion, state: &DaemonState) -> Response {
     if !crate::php_install::cli_binary_path(&state.dirs, version).exists() {
@@ -1108,9 +1039,6 @@ async fn set_default_php(version: yerd_core::PhpVersion, state: &DaemonState) ->
         let mut cfg_guard = state.config.lock().await;
         let mut new = cfg_guard.clone();
         new.php.default = version;
-        // Repoint the shim before persisting: it's the more failure-prone step,
-        // so doing it first means a shim failure persists nothing (disk + memory
-        // stay consistent), rather than leaving disk ahead of memory.
         if let Err(e) = crate::php_install::set_default_shim(&state.dirs, version) {
             return internal(format!("update php shim failed: {e}"));
         }
@@ -1118,9 +1046,7 @@ async fn set_default_php(version: yerd_core::PhpVersion, state: &DaemonState) ->
             return internal(format!("config save failed: {e}"));
         }
         *cfg_guard = new;
-    } // release the config lock before reconciling (reconcile reads no config lock,
-      // but we must not hold a non-reentrant guard across the call).
-      // Ensure `phpcover` + the versioned shim set track the new default.
+    }
     reconcile_shims_for(state, version).await;
     tracing::info!(version = %version, "set default PHP");
     Response::Ok
@@ -1148,12 +1074,9 @@ async fn set_mail_port(port: u16, state: &DaemonState) -> Response {
 
 /// Set the rootless HTTP/HTTPS fallback ports. Persisted to config; takes effect
 /// on the next daemon restart (the client triggers it). Refused while a
-/// privileged-port redirect is active — it is pinned to the current ports, so
+/// privileged-port redirect is active - it is pinned to the current ports, so
 /// changing them would break elevation until the user re-elevates.
 async fn set_fallback_ports(http: u16, https: u16, state: &DaemonState) -> Response {
-    // Probe the redirect off the executor (blocking connects) and *before*
-    // taking the config lock, so a worker thread and the config mutex aren't
-    // held during the ~hundreds-of-ms probe (mirrors the status path).
     let redirect_active = tokio::task::spawn_blocking(|| {
         use yerd_platform::PortRedirector;
         yerd_platform::ActivePortRedirector::new().is_active()
@@ -1172,8 +1095,6 @@ async fn set_fallback_ports(http: u16, https: u16, state: &DaemonState) -> Respo
     let mut new = cfg_guard.clone();
     new.ports.fallback_http = http;
     new.ports.fallback_https = https;
-    // `validate()` enforces the >=1024 / non-equal rules — the daemon is the
-    // authority even if a client skipped its own check.
     if let Err(e) = new.validate() {
         return internal(format!("config validation failed: {e}"));
     }
@@ -1191,7 +1112,7 @@ async fn set_fallback_ports(http: u16, https: u16, state: &DaemonState) -> Respo
 
 /// Set the embedded DNS responder port (`dns_port`). Persisted to config; takes
 /// effect on the next daemon restart (the client triggers it). A zero port is
-/// rejected explicitly here — unlike the web/mail/dumps ports, `dns_port == 0` is
+/// rejected explicitly here - unlike the web/mail/dumps ports, `dns_port == 0` is
 /// a *valid* "ephemeral" value for in-process tests, so `validate()` permits it;
 /// for a user-facing change a zero port (which the OS resolver could never target)
 /// is meaningless.
@@ -1230,7 +1151,7 @@ async fn set_mail_enabled(enabled: bool, state: &DaemonState) -> Response {
     Response::Ok
 }
 
-/// `set/unset php` — merge global PHP ini settings into the config and apply
+/// `set/unset php` - merge global PHP ini settings into the config and apply
 /// them to every live FPM pool. An empty-string value removes a key (reset to
 /// PHP's default).
 ///
@@ -1242,7 +1163,6 @@ async fn set_php_settings(
     settings: std::collections::BTreeMap<String, String>,
     state: &DaemonState,
 ) -> Response {
-    // Build the merged settings on a config clone, validating each entry.
     let mut cfg_guard = state.config.lock().await;
     let mut new = cfg_guard.clone();
     for (key, value) in settings {
@@ -1260,7 +1180,6 @@ async fn set_php_settings(
         new.php.settings.insert(key, canonical);
     }
 
-    // No-op: nothing changed → skip the disk write and the pool restarts.
     if new.php.settings == cfg_guard.php.settings {
         drop(cfg_guard);
         return php_versions_response(state).await;
@@ -1276,8 +1195,6 @@ async fn set_php_settings(
     *cfg_guard = new;
     drop(cfg_guard);
 
-    // Apply to the live pools: update the manager's settings and restart every
-    // started pool so the new directives take effect. Single lock span.
     {
         let mut mgr = state.php_manager.lock().await;
         mgr.set_ini_settings(applied);
@@ -1287,8 +1204,6 @@ async fn set_php_settings(
             }
         }
     }
-    // Refresh the CLI php.ini (PHPRC target) so terminal `php` picks up the
-    // updated directives too. Best-effort.
     write_cli_ini_now(state).await;
     tracing::info!("applied global PHP settings");
     php_versions_response(state).await
@@ -1314,10 +1229,9 @@ fn php_error_code(e: &yerd_php::PhpError) -> ErrorCode {
 }
 
 /// Apply a mutation: canonicalise paths, run the pure delta, validate, persist,
-/// and swap the live router — **build-then-validate-then-commit** so a failed
+/// and swap the live router - **build-then-validate-then-commit** so a failed
 /// mutation leaves disk and the live router untouched.
 pub(crate) async fn handle_mutation(req: Request, state: &DaemonState) -> Response {
-    // 1. Canonicalise the path (Park/Link) *outside* the lock.
     let canonical = match &req {
         Request::Park { path } | Request::Link { path, .. } => match canonicalize_dir(path) {
             Ok(p) => Some(p),
@@ -1326,24 +1240,11 @@ pub(crate) async fn handle_mutation(req: Request, state: &DaemonState) -> Respon
         _ => None,
     };
 
-    // 2. Take the config mutex for the whole build→commit (serializes writers).
     let mut cfg_guard = state.config.lock().await;
     let mut new = cfg_guard.clone();
 
-    // 3. Pure delta, reading the *pre-mutation* router so SetPhp promotion can
-    //    recover a parked site's document_root. The read guard is an inline
-    //    temporary dropped at the `;` — it must NOT be hoisted to a `let` and
-    //    held across the step-7 write (that self-deadlocks the RwLock).
-    // Source the linked-site default from the *live* config (not the startup
-    // snapshot) so `SetDefaultPhp` (`yerd use <ver>`) changes the fallback that
-    // newly-linked/promoted sites inherit.
     let live_default = new.php.default;
     let applied = match &req {
-        // SetWebRoot needs the target site's document_root (from the router /
-        // linked list) and does filesystem I/O (canonicalise + containment, or
-        // re-detect). Resolve it here rather than in the pure `mutate::apply`.
-        // The router read guard is an inline temporary dropped before step 7's
-        // write — same discipline as the `mutate::apply` call below.
         Request::SetWebRoot { name, path } => {
             match resolve_web_root_mutation(
                 &mut new,
@@ -1372,12 +1273,10 @@ pub(crate) async fn handle_mutation(req: Request, state: &DaemonState) -> Respon
         },
     };
 
-    // 4. Never persist an invalid config.
     if let Err(e) = new.validate() {
         return internal(format!("config validation failed: {e}"));
     }
 
-    // 5. Build the candidate router (re-scans parked roots).
     let candidate = match startup::build_router(&new, &state.dirs, &state.detect_cache) {
         Ok(r) => r,
         Err(DaemonError::Core(yerd_core::CoreError::DuplicateSite { name })) => {
@@ -1389,19 +1288,14 @@ pub(crate) async fn handle_mutation(req: Request, state: &DaemonState) -> Respon
         Err(e) => return internal(format!("router rebuild failed: {e}")),
     };
 
-    // 6. Persist atomically (write-temp-then-rename).
     if let Err(e) = new.save(&state.config_path) {
         return internal(format!("config save failed: {e}"));
     }
 
-    // 7. Commit: swap in the new config + router.
     *cfg_guard = new;
     *state.router.write().await = candidate;
     drop(cfg_guard);
 
-    // Nudge the filesystem watcher to reconcile its watch set against the new
-    // config (e.g. a newly-parked root to start watching, or a now-resolved
-    // site to stop watching).
     state.watch_dirty.notify_one();
 
     tracing::info!(summary = %applied.summary, "applied mutation");
@@ -1421,7 +1315,6 @@ fn resolve_web_root_mutation(
 ) -> Result<mutate::Applied, Response> {
     let name_lc = name.to_ascii_lowercase();
 
-    // Linked sites carry the subpath directly on the persisted `Site`.
     if let Some(site) = new.linked.iter_mut().find(|s| s.name() == name_lc) {
         let doc_root = site.document_root().to_path_buf();
         let rel = if let Some(p) = path {
@@ -1438,7 +1331,6 @@ fn resolve_web_root_mutation(
         });
     }
 
-    // Parked sites store the pin in `overrides`, keyed by document_root.
     if let Some(parked) = router.get(&name_lc) {
         let key = parked.document_root().to_string_lossy().into_owned();
         if let Some(p) = path {
@@ -1448,8 +1340,6 @@ fn resolve_web_root_mutation(
                 summary: web_root_summary(&name_lc, &rel),
             });
         }
-        // Clear the web_root override; drop the whole entry if it no longer
-        // pins anything, to avoid leaving an empty override.
         if let Some(ov) = new.overrides.get_mut(&key) {
             ov.web_root = None;
             if ov.php.is_none() && ov.secure.is_none() {
@@ -1638,14 +1528,11 @@ Subject: Captured\r\n\r\nhi\r\n";
         let tmp = tempfile::tempdir().unwrap();
         let state = state_in(tmp.path());
 
-        // Empty.
         match dispatch(Request::ListMails, &state).await {
             Response::Mails { mails } => assert!(mails.is_empty()),
             other => panic!("expected Mails, got {other:?}"),
         }
 
-        // Capture one directly through the store (the SMTP path is covered in
-        // yerd-mail) and list it.
         state.mail_store.append(SAMPLE_EML).await.unwrap();
         let id = match dispatch(Request::ListMails, &state).await {
             Response::Mails { mails } => {
@@ -1656,13 +1543,11 @@ Subject: Captured\r\n\r\nhi\r\n";
             other => panic!("expected Mails, got {other:?}"),
         };
 
-        // Fetch the detail by id.
         match dispatch(Request::GetMail { id: id.clone() }, &state).await {
             Response::Mail { mail } => assert_eq!(mail.subject, "Captured"),
             other => panic!("expected Mail, got {other:?}"),
         }
 
-        // Unknown id → NotFound.
         match dispatch(
             Request::GetMail {
                 id: "999999".into(),
@@ -1675,7 +1560,6 @@ Subject: Captured\r\n\r\nhi\r\n";
             other => panic!("expected NotFound, got {other:?}"),
         }
 
-        // Clear empties the store.
         assert!(matches!(
             dispatch(Request::ClearMails, &state).await,
             Response::Ok
@@ -1693,8 +1577,6 @@ Subject: Captured\r\n\r\nhi\r\n";
         match dispatch(Request::Status, &state).await {
             Response::Status { report } => {
                 let mail = report.mail.expect("status should carry mail");
-                // `enabled`/`port` come from the (default) config; `listening` is
-                // the runtime snapshot (false in this test harness).
                 assert!(mail.enabled);
                 assert_eq!(mail.port, yerd_config::DEFAULT_MAIL_PORT);
                 assert!(!mail.listening);
@@ -1709,8 +1591,6 @@ Subject: Captured\r\n\r\nhi\r\n";
         let tmp = tempfile::tempdir().unwrap();
         let state = state_in(tmp.path());
 
-        // A zero port is rejected by the config validator (mapped to Internal),
-        // not by overloading a path/port code.
         match dispatch(Request::SetMailPort { port: 0 }, &state).await {
             Response::Error { code, .. } => assert!(matches!(code, ErrorCode::Internal)),
             other => panic!("expected Error, got {other:?}"),
@@ -1728,7 +1608,6 @@ Subject: Captured\r\n\r\nhi\r\n";
         ));
         assert!(state.config.lock().await.mail.enabled);
 
-        // Persisted to disk.
         let reloaded = yerd_config::Config::load(&state.config_path).unwrap();
         assert_eq!(reloaded.mail.port, 3030);
         assert!(reloaded.mail.enabled);
@@ -1760,7 +1639,6 @@ Subject: Captured\r\n\r\nhi\r\n";
         .await;
         assert!(matches!(resp, Response::Ok), "got {resp:?}");
 
-        // The child directory is the routable site, not the root.
         match dispatch(Request::ListSites, &state).await {
             Response::Sites { sites } => {
                 let names: Vec<&str> = sites.iter().map(yerd_core::Site::name).collect();
@@ -1768,7 +1646,6 @@ Subject: Captured\r\n\r\nhi\r\n";
             }
             other => panic!("expected Sites, got {other:?}"),
         }
-        // Config persisted to disk + reflected in memory.
         assert!(state.config_path.exists());
         assert!(!state.config.lock().await.parked.paths.is_empty());
     }
@@ -1822,7 +1699,6 @@ Subject: Captured\r\n\r\nhi\r\n";
         )
         .await;
 
-        // Explicit pin to "public".
         let ok = dispatch(
             Request::SetWebRoot {
                 name: "app".into(),
@@ -1835,7 +1711,6 @@ Subject: Captured\r\n\r\nhi\r\n";
         let subpath = web_subpath_of(&state, "app").await;
         assert_eq!(subpath, std::path::PathBuf::from("public"));
 
-        // Reset to auto-detect: the Laravel layout re-detects "public".
         let ok = dispatch(
             Request::SetWebRoot {
                 name: "app".into(),
@@ -1856,7 +1731,6 @@ Subject: Captured\r\n\r\nhi\r\n";
         let tmp = tempfile::tempdir().unwrap();
         let docroot = tmp.path().join("app");
         std::fs::create_dir_all(&docroot).unwrap();
-        // A sibling directory that exists but is outside the document root.
         std::fs::create_dir_all(tmp.path().join("outside")).unwrap();
         let state = state_in(tmp.path());
         dispatch(
@@ -1955,7 +1829,6 @@ Subject: Captured\r\n\r\nhi\r\n";
         let state = state_in(tmp.path());
         dispatch(Request::Park { path: sites_root }, &state).await;
 
-        // Mixed-case name must resolve the stored lowercase `blog`.
         let resp = dispatch(
             Request::SetPhp {
                 name: "Blog".into(),
@@ -1970,7 +1843,6 @@ Subject: Captured\r\n\r\nhi\r\n";
             Response::Sites { sites } => {
                 let blog = sites.iter().find(|s| s.name() == "blog").unwrap();
                 assert_eq!(blog.php(), PhpVersion::new(8, 4));
-                // Override applied, but the site stays parked (no promotion).
                 assert_eq!(blog.kind(), yerd_core::SiteKind::Parked);
             }
             other => panic!("expected Sites, got {other:?}"),
@@ -1980,7 +1852,6 @@ Subject: Captured\r\n\r\nhi\r\n";
     #[tokio::test]
     async fn list_parked_and_unpark_roundtrip() {
         let tmp = tempfile::tempdir().unwrap();
-        // One populated root (yields a site) and one empty root (yields none).
         let populated = tmp.path().join("populated");
         std::fs::create_dir_all(populated.join("blog")).unwrap();
         let empty = tmp.path().join("empty");
@@ -1989,13 +1860,11 @@ Subject: Captured\r\n\r\nhi\r\n";
         dispatch(Request::Park { path: populated }, &state).await;
         dispatch(Request::Park { path: empty }, &state).await;
 
-        // Both roots are registered — the empty one included.
         let parked = match dispatch(Request::ListParked, &state).await {
             Response::Parked { paths } => paths,
             other => panic!("expected Parked, got {other:?}"),
         };
         assert_eq!(parked.len(), 2, "both roots registered: {parked:?}");
-        // BTreeSet → already lexicographically sorted.
         let mut sorted = parked.clone();
         sorted.sort();
         assert_eq!(parked, sorted, "ListParked must be sorted");
@@ -2005,7 +1874,6 @@ Subject: Captured\r\n\r\nhi\r\n";
             .unwrap()
             .clone();
 
-        // Un-park the populated root (echo the exact string back).
         let resp = dispatch(
             Request::Unpark {
                 path: populated_root.clone(),
@@ -2015,7 +1883,6 @@ Subject: Captured\r\n\r\nhi\r\n";
         .await;
         assert!(matches!(resp, Response::Ok), "got {resp:?}");
 
-        // ListParked now shows only the empty root.
         match dispatch(Request::ListParked, &state).await {
             Response::Parked { paths } => {
                 assert_eq!(paths.len(), 1);
@@ -2023,7 +1890,6 @@ Subject: Captured\r\n\r\nhi\r\n";
             }
             other => panic!("expected Parked, got {other:?}"),
         }
-        // And its parked site is gone from the listing.
         match dispatch(Request::ListSites, &state).await {
             Response::Sites { sites } => {
                 assert!(
@@ -2034,7 +1900,6 @@ Subject: Captured\r\n\r\nhi\r\n";
             other => panic!("expected Sites, got {other:?}"),
         }
 
-        // Un-parking an absent path is an idempotent success.
         let resp = dispatch(
             Request::Unpark {
                 path: populated_root,
@@ -2053,7 +1918,6 @@ Subject: Captured\r\n\r\nhi\r\n";
         let state = state_in(tmp.path());
         dispatch(Request::Park { path: sites_root }, &state).await;
 
-        // Securing a parked site (mixed-case) records the override + sets flag.
         let resp = dispatch(
             Request::SetSecure {
                 name: "Blog".into(),
@@ -2068,13 +1932,11 @@ Subject: Captured\r\n\r\nhi\r\n";
             Response::Sites { sites } => {
                 let blog = sites.iter().find(|s| s.name() == "blog").unwrap();
                 assert!(blog.secure());
-                // Override applied, but the site stays parked (no promotion).
                 assert_eq!(blog.kind(), yerd_core::SiteKind::Parked);
             }
             other => panic!("expected Sites, got {other:?}"),
         }
 
-        // Unsecuring flips it back.
         let resp = dispatch(
             Request::SetSecure {
                 name: "blog".into(),
@@ -2112,7 +1974,6 @@ Subject: Captured\r\n\r\nhi\r\n";
                 assert_eq!(dns_addr, state.dns_addr);
                 assert_eq!(tld, "test");
                 assert_eq!(ca_path, state.ca_path);
-                // 64 lowercase hex chars; matches the stored fingerprint.
                 assert_eq!(ca_fingerprint, state.ca_fingerprint.to_hex());
                 assert_eq!(ca_fingerprint.len(), 64);
                 assert_eq!(http_port, state.http.bound);
@@ -2130,14 +1991,11 @@ Subject: Captured\r\n\r\nhi\r\n";
         let tmp = tempfile::tempdir().unwrap();
         let state = state_in(tmp.path());
 
-        // A zero port is rejected explicitly by the handler (mapped to Internal),
-        // even though config `validate()` permits `0` as the ephemeral sentinel.
         match dispatch(Request::SetDnsPort { port: 0 }, &state).await {
             Response::Error { code, .. } => assert!(matches!(code, ErrorCode::Internal)),
             other => panic!("expected Error, got {other:?}"),
         }
 
-        // A valid port is persisted through both in-memory state and to disk.
         assert!(matches!(
             dispatch(Request::SetDnsPort { port: 5354 }, &state).await,
             Response::Ok
@@ -2152,8 +2010,6 @@ Subject: Captured\r\n\r\nhi\r\n";
         let tmp = tempfile::tempdir().unwrap();
         let state = state_in(tmp.path());
 
-        // Nothing was ever persisted, so the cached path reports the running
-        // version with no remote figures, no pending update, and no timestamp.
         match dispatch(Request::CachedUpdateStatus, &state).await {
             Response::UpdateStatus {
                 source,
@@ -2180,11 +2036,9 @@ Subject: Captured\r\n\r\nhi\r\n";
                 assert_eq!(report.tld, "test");
                 assert_eq!(report.default_php, PhpVersion::new(8, 3));
                 assert_eq!(report.daemon_pid, std::process::id());
-                // state_in seeds the rootless fallback ports.
                 assert!(report.http.fell_back);
                 assert_eq!(report.http.requested, 80);
                 assert_eq!(report.http.bound, 8080);
-                // No PHP installed under the tempdir.
                 assert!(report.php.is_empty());
             }
             other => panic!("expected Status, got {other:?}"),
@@ -2211,9 +2065,7 @@ Subject: Captured\r\n\r\nhi\r\n";
         let state = state_in(tmp.path());
         match dispatch(Request::DoctorFix, &state).await {
             Response::DoctorFix { report } => {
-                // No running pools means nothing to auto-fix.
                 assert!(report.performed.is_empty());
-                // The unresolved problems (no PHP installed) surface as manual.
                 assert!(report
                     .manual
                     .iter()
@@ -2254,7 +2106,7 @@ Subject: Captured\r\n\r\nhi\r\n";
                     installed.contains(&PhpVersion::new(8, 4)),
                     "got {installed:?}"
                 );
-                assert_eq!(default, PhpVersion::new(8, 3)); // Config::default()
+                assert_eq!(default, PhpVersion::new(8, 3));
             }
             other => panic!("expected PhpVersions, got {other:?}"),
         }
@@ -2270,7 +2122,6 @@ Subject: Captured\r\n\r\nhi\r\n";
             .load(std::sync::atomic::Ordering::Acquire));
         let resp = dispatch(Request::RestartDaemon, &state).await;
         assert!(matches!(resp, Response::Ok), "got {resp:?}");
-        // The flag is armed; `handle_client` trips shutdown after writing Ok.
         assert!(state
             .restart_requested
             .load(std::sync::atomic::Ordering::Acquire));
@@ -2307,7 +2158,6 @@ Subject: Captured\r\n\r\nhi\r\n";
         .await;
         assert!(matches!(resp, Response::Ok), "got {resp:?}");
         assert_eq!(state.config.lock().await.php.default, PhpVersion::new(8, 4));
-        // The shim symlink now exists and points at the 8.4 CLI binary.
         let shim = state.dirs.data.join("bin").join("php");
         assert_eq!(
             std::fs::canonicalize(shim).unwrap(),
@@ -2400,7 +2250,6 @@ Subject: Captured\r\n\r\nhi\r\n";
         let state = state_in(tmp.path());
         fake_install(&state.dirs, PhpVersion::new(8, 4));
         fake_install(&state.dirs, PhpVersion::new(8, 5));
-        // Make 8.4 the default; 8.5 also installed; no sites.
         dispatch(
             Request::SetDefaultPhp {
                 version: PhpVersion::new(8, 4),
@@ -2502,7 +2351,6 @@ Subject: Captured\r\n\r\nhi\r\n";
         let tmp = tempfile::tempdir().unwrap();
         let state = state_in(tmp.path());
 
-        // Set two settings (no pools running → restart loop is a no-op).
         let resp = dispatch(
             Request::SetPhpSettings {
                 settings: std::collections::BTreeMap::from([
@@ -2519,7 +2367,6 @@ Subject: Captured\r\n\r\nhi\r\n";
                     settings.get("memory_limit").map(String::as_str),
                     Some("512M")
                 );
-                // Flag canonicalised to On.
                 assert_eq!(
                     settings.get("display_errors").map(String::as_str),
                     Some("On")
@@ -2527,7 +2374,6 @@ Subject: Captured\r\n\r\nhi\r\n";
             }
             other => panic!("expected PhpVersions, got {other:?}"),
         }
-        // Persisted to the live config.
         assert_eq!(
             state
                 .config
@@ -2540,7 +2386,6 @@ Subject: Captured\r\n\r\nhi\r\n";
             Some("512M")
         );
 
-        // Invalid value is rejected without mutating config.
         assert!(matches!(
             dispatch(
                 Request::SetPhpSettings {
@@ -2566,7 +2411,6 @@ Subject: Captured\r\n\r\nhi\r\n";
             Some("512M")
         );
 
-        // Empty value removes (resets) the key.
         let resp = dispatch(
             Request::SetPhpSettings {
                 settings: std::collections::BTreeMap::from([(
@@ -2593,7 +2437,6 @@ Subject: Captured\r\n\r\nhi\r\n";
         let tmp = tempfile::tempdir().unwrap();
         let state = state_in(tmp.path());
         fake_install_patch(&state.dirs, PhpVersion::new(8, 5), "8.5.6");
-        // Seed the cache as if a poll found a newer patch.
         state
             .php_updates
             .write()
@@ -2621,7 +2464,7 @@ Subject: Captured\r\n\r\nhi\r\n";
             .php_updates
             .write()
             .await
-            .insert(PhpVersion::new(8, 5), "8.5.6".to_owned()); // same patch
+            .insert(PhpVersion::new(8, 5), "8.5.6".to_owned());
 
         match dispatch(Request::ListPhp, &state).await {
             Response::PhpVersions { updates, .. } => assert!(updates.is_empty()),
@@ -2706,7 +2549,6 @@ Subject: Captured\r\n\r\nhi\r\n";
             .await
             .insert(PhpVersion::new(8, 5), "8.5.6".to_owned());
 
-        // Network failure must not panic and must leave the cache untouched.
         crate::php_updates::poll_and_refresh(&state, &FailingDl).await;
 
         assert_eq!(
@@ -2756,12 +2598,11 @@ Subject: Captured\r\n\r\nhi\r\n";
             } => {
                 assert_eq!(latest_stable.as_deref(), Some("99.0.1"));
                 assert_eq!(latest_edge.as_deref(), Some("99.1.0-rc.1"));
-                assert_eq!(channel, yerd_ipc::Channel::Stable); // default preference
+                assert_eq!(channel, yerd_ipc::Channel::Stable);
                 assert_eq!(source, yerd_ipc::UpdateSource::Live);
             }
             other => panic!("expected UpdateStatus, got {other:?}"),
         }
-        // The successful fetch populated the cache (4 entries minus the unparsable tag = 3).
         assert_eq!(state.yerd_update.read().await.len(), 3);
     }
 
@@ -2794,7 +2635,6 @@ Subject: Captured\r\n\r\nhi\r\n";
     async fn check_update_falls_back_to_cache_when_offline() {
         let tmp = tempfile::tempdir().unwrap();
         let state = state_in(tmp.path());
-        // Prime the cache with a successful poll, then fetch with a failing dl.
         crate::self_update::poll_and_refresh(&state, &ReleasesDl(RELEASES_JSON)).await;
         let resp = crate::self_update::check_update(None, &state, &FailingDl).await;
         match resp {
@@ -2839,9 +2679,6 @@ Subject: Captured\r\n\r\nhi\r\n";
 
     #[tokio::test]
     async fn stage_update_downloads_verifies_and_writes_artifact() {
-        // Run only on platforms that actually have a fixture artifact below
-        // (Apple Silicon macOS + Linux x86_64 + Linux arm64). Intel macOS is not
-        // `Unsupported` but has no fixture, so skip it too.
         if !matches!(
             yerd_update::Platform::current(),
             yerd_update::Platform::MacOsAarch64
@@ -2853,7 +2690,6 @@ Subject: Captured\r\n\r\nhi\r\n";
         let tmp = tempfile::tempdir().unwrap();
         let state = state_in(tmp.path());
 
-        // Release assets for ALL platforms, so the test runs on macOS or either Linux arch.
         let mac = "Yerd_MacOS_AppleSilicon_v99-0-1.app.tar.gz";
         let deb = "Yerd_Linux_x86_64_v99-0-1.deb";
         let arm = "Yerd_Linux_Arm64_v99-0-1.deb";
@@ -2868,7 +2704,6 @@ Subject: Captured\r\n\r\nhi\r\n";
                 {{"name":"SHA256SUMS","browser_download_url":"https://h/SHA256SUMS","size":1}}
             ]}}]"#
         );
-        // sha256("test") for every artifact.
         let h = yerd_update::sha256_hex(b"test");
         let sums = format!("{h}  {mac}\n{h}  {deb}\n{h}  {arm}\n");
         let dl = StageDl { releases, sums };
@@ -2884,7 +2719,6 @@ Subject: Captured\r\n\r\nhi\r\n";
                 let p = std::path::Path::new(&path);
                 assert!(p.exists(), "staged file should exist at {path}");
                 assert_eq!(std::fs::read(p).unwrap(), b"test");
-                // Kind matches the current platform's artifact.
                 let expected = if matches!(
                     yerd_update::Platform::current(),
                     yerd_update::Platform::LinuxX86_64 | yerd_update::Platform::LinuxAarch64
@@ -2894,9 +2728,6 @@ Subject: Captured\r\n\r\nhi\r\n";
                     yerd_ipc::StagedArtifact::AppTarGz
                 };
                 assert_eq!(kind, expected);
-                // Stronger than `kind`: on arm64 both .debs are `Deb`, so assert
-                // the staged basename is the CURRENT platform's asset — proving the
-                // right arch was selected, not just the right artifact kind.
                 let expected_name = match yerd_update::Platform::current() {
                     yerd_update::Platform::MacOsAarch64 => mac,
                     yerd_update::Platform::LinuxX86_64 => deb,
@@ -2915,9 +2746,6 @@ Subject: Captured\r\n\r\nhi\r\n";
 
     #[tokio::test]
     async fn stage_update_rejects_verification_failure_and_writes_nothing() {
-        // Only platforms with a fixture artifact below (Apple Silicon macOS + Linux
-        // x86_64 + Linux arm64). Skip Intel macOS, which is not `Unsupported` but has
-        // no fixture, and any truly unsupported target.
         if !matches!(
             yerd_update::Platform::current(),
             yerd_update::Platform::MacOsAarch64
@@ -2942,7 +2770,6 @@ Subject: Captured\r\n\r\nhi\r\n";
                 {{"name":"SHA256SUMS","browser_download_url":"https://h/SHA256SUMS","size":1}}
             ]}}]"#
         );
-        // Wrong checksums → verification fails before any minisign check or write.
         let bad = "0".repeat(64);
         let sums = format!("{bad}  {mac}\n{bad}  {deb}\n{bad}  {arm}\n");
         let dl = StageDl { releases, sums };
@@ -2973,7 +2800,6 @@ Subject: Captured\r\n\r\nhi\r\n";
             Response::Ok
         );
         assert_eq!(state.config.lock().await.update_channel, "edge");
-        // Persisted to disk too: reloading the saved file shows edge.
         let reloaded = yerd_config::Config::load(&state.config_path).unwrap();
         assert_eq!(reloaded.update_channel, "edge");
     }

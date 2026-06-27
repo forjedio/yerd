@@ -35,8 +35,8 @@ const RING_CAP: usize = 2000;
 /// guarantee for clients dropping evicted rows.
 const REMOVED_LOG_CAP: usize = 4096;
 /// In non-persist mode, how many distinct recent requests to retain. A rolling
-/// window (rather than "only the latest request") so concurrent requests —
-/// whose frames interleave at the ring from separate FPM workers — coexist
+/// window (rather than "only the latest request") so concurrent requests -
+/// whose frames interleave at the ring from separate FPM workers - coexist
 /// instead of clearing each other on every cross-request frame.
 const RETAINED_REQUESTS: usize = 25;
 /// Hard cap on a single newline-delimited frame; longer lines drop the
@@ -132,10 +132,6 @@ impl DumpRing {
     }
 
     fn push(&mut self, frame: IncomingFrame, now_ms: u64, persist: bool) {
-        // Track the request and, in non-persist mode, evict the oldest request's
-        // events once the rolling window is exceeded. Keying on a *window* (not a
-        // single "current request") means interleaved frames from concurrent
-        // requests no longer clear each other.
         if !self.recent_requests.iter().any(|r| r == &frame.request_id) {
             self.recent_requests.push_back(frame.request_id.clone());
             while self.recent_requests.len() > RETAINED_REQUESTS {
@@ -321,13 +317,12 @@ async fn handle_conn(stream: TcpStream, store: Arc<DumpStore>) {
             return;
         };
         if pending.len().saturating_add(slice.len()) > MAX_LINE_BYTES {
-            // A single frame must fit the cap; otherwise treat the peer as hostile.
             return;
         }
         pending.extend_from_slice(slice);
         while let Some(pos) = pending.iter().position(|&b| b == b'\n') {
             let line: Vec<u8> = pending.drain(..pos).collect();
-            pending.drain(..1); // drop the '\n'
+            pending.drain(..1);
             if line.is_empty() {
                 continue;
             }
@@ -413,7 +408,7 @@ pub async fn set_persist(state: &DaemonState, persist: bool) -> Response {
 ///
 /// On the first enable, also fetch the extension `.so` for each installed PHP
 /// version and restart any started pools so they load `-d zend_extension`
-/// (subsequent toggles only rewrite the state file — no restart). The extension
+/// (subsequent toggles only rewrite the state file - no restart). The extension
 /// self-disables when off, so disabling never restarts FPM.
 pub async fn set_enabled(state: &DaemonState, enabled: bool) -> Response {
     let was = state.config.lock().await.dumps.enabled;
@@ -466,12 +461,9 @@ pub async fn set_port(state: &DaemonState, port: u16) -> Response {
             message: "dump server port must be non-zero".into(),
         };
     }
-    // No-op if unchanged — avoids a spurious bind conflict against our own server.
     if port == state.config.lock().await.dumps.port {
         return Response::Ok;
     }
-    // Test-bind the new port up front so the GUI gets immediate "port in use"
-    // feedback instead of a silent `Ok` for a server that then fails to rebind.
     match TcpListener::bind((Ipv4Addr::LOCALHOST, port)).await {
         Ok(l) => drop(l),
         Err(e) => {
@@ -541,8 +533,6 @@ pub fn write_state_file(dirs: &PlatformDirs, dumps: &DumpsSection) -> std::io::R
         features,
     };
     let json = serde_json::to_vec(&body).map_err(std::io::Error::other)?;
-    // Unique temp per call (pid + sequence) so concurrent config toggles each
-    // write a distinct temp and the atomic renames never tear the published file.
     let seq = TMP_SEQ.fetch_add(1, Ordering::Relaxed);
     let tmp = dir.join(format!("state.json.{}.{}.tmp", std::process::id(), seq));
     let final_path = dir.join("state.json");
@@ -595,7 +585,6 @@ mod tests {
     #[test]
     fn concurrent_requests_do_not_clear_each_other() {
         let mut ring = DumpRing::new();
-        // Interleaved frames from two concurrent requests (separate FPM workers).
         ring.push(frame_req(DumpCategory::Query, "a"), 100, false); // id 1
         ring.push(frame_req(DumpCategory::Query, "b"), 100, false); // id 2
         ring.push(frame_req(DumpCategory::Query, "a"), 100, false); // id 3
@@ -611,13 +600,11 @@ mod tests {
     #[test]
     fn non_persist_evicts_oldest_request_beyond_window() {
         let mut ring = DumpRing::new();
-        // One event per distinct request, exceeding the rolling window by 2.
         for i in 0..RETAINED_REQUESTS + 2 {
             ring.push(frame_req(DumpCategory::Query, &format!("r{i}")), 100, false);
         }
         let page = ring.list(0);
         assert_eq!(page.events.len(), RETAINED_REQUESTS, "window-bounded");
-        // The first two requests (ids 1,2) were evicted; min_live_id reflects it.
         assert!(!page.events.iter().any(|e| e.id == 1 || e.id == 2));
         assert_eq!(page.min_live_id, 3);
     }
@@ -626,7 +613,7 @@ mod tests {
     fn persist_keeps_events_across_requests() {
         let mut ring = DumpRing::new();
         ring.push(frame_req(DumpCategory::Query, "r1"), 100, true); // id 1
-        ring.push(frame_req(DumpCategory::Query, "r2"), 100, true); // id 2 (new request, persist)
+        ring.push(frame_req(DumpCategory::Query, "r2"), 100, true); // id 2
         assert_eq!(
             ring.list(0).events.len(),
             2,
@@ -655,7 +642,6 @@ mod tests {
         let mut ring = DumpRing::new();
         ring.push(frame(DumpCategory::Query), 100, false); // id 1
         ring.push(frame(DumpCategory::Query), 100, false); // id 2
-                                                           // Client has seen up to id 2.
         ring.delete(1);
         let page = ring.list(2);
         assert!(page.events.is_empty(), "no events newer than id 2");
@@ -666,7 +652,6 @@ mod tests {
     #[test]
     fn eviction_drops_oldest_over_cap() {
         let mut ring = DumpRing::new();
-        // All in one request so per-request eviction doesn't fire; fill past cap.
         for _ in 0..RING_CAP + 10 {
             ring.push(frame(DumpCategory::Query), 100, false);
         }
@@ -678,7 +663,6 @@ mod tests {
             "newest retained"
         );
         assert!(!page.events.iter().any(|e| e.id == 1), "oldest evicted");
-        // min_live_id advanced past the evicted head.
         assert!(page.min_live_id > 1);
     }
 
@@ -687,7 +671,6 @@ mod tests {
         let mut ring = DumpRing::new();
         ring.push(frame(DumpCategory::Dump), 100, false); // id 1
         ring.clear();
-        // A client that had seen up to id 1 learns it was removed.
         let page = ring.list(1);
         assert!(page.events.is_empty());
         assert_eq!(page.removed, vec![1]);
@@ -707,7 +690,6 @@ mod tests {
         assert_eq!(f.site, "blog.test");
         assert_eq!(f.request_id, "abc");
         assert_eq!(f.payload, serde_json::json!({"sql": "select 1"}));
-        // ts/site/request_id are optional (extension may omit on early frames).
         let minimal: IncomingFrame =
             serde_json::from_str(r#"{"category":"dump","payload":{}}"#).unwrap();
         assert_eq!(minimal.ts, 0);

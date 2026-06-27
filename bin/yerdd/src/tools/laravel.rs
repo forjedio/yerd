@@ -1,4 +1,4 @@
-//! Laravel installer — `composer create-project laravel/installer` into
+//! Laravel installer - `composer create-project laravel/installer` into
 //! `{data}/tools/laravel/`.
 //!
 //! Unlike the download-and-unpack tools (Composer/Node/Bun), the Laravel
@@ -19,7 +19,7 @@ use crate::ext_install::installed_versions;
 /// The Composer package providing `laravel new`.
 const PACKAGE: &str = "laravel/installer";
 
-/// `{data}/tools/laravel/bin/laravel` — the installer binary the `laravel` shim
+/// `{data}/tools/laravel/bin/laravel` - the installer binary the `laravel` shim
 /// and the site-creation handler exec. `composer create-project` installs the
 /// package *as the root project*, so its `bin/` is at the tool-dir root (not
 /// under `vendor/`).
@@ -65,9 +65,6 @@ pub async fn install(dirs: &PlatformDirs, progress: Option<&ProgressTx>) -> Resu
     let build = tools_root.join(format!(".laravel-build-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&build);
 
-    // `php composer.phar create-project --prefer-dist --no-interaction
-    //  laravel/installer <build>`. stdin is null so a stray prompt can't hang us;
-    // stdout/stderr are piped and streamed line-by-line to `progress`.
     let mut child = tokio::process::Command::new(&php)
         .arg(&phar)
         .arg("create-project")
@@ -84,11 +81,6 @@ pub async fn install(dirs: &PlatformDirs, progress: Option<&ProgressTx>) -> Resu
         .spawn()
         .map_err(|e| ToolError::Io(format!("spawn composer: {e}")))?;
 
-    // Drain both pipes concurrently with the wait (draining one while the other
-    // fills would deadlock the child). A wall-clock cap guards against a Composer
-    // that stalls with no output and no exit (it would otherwise hang the job and
-    // hold the tool mutex). On timeout the join future is dropped, and
-    // `kill_on_drop` reaps the child.
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
     let joined = tokio::time::timeout(std::time::Duration::from_secs(600), async {
@@ -114,8 +106,6 @@ pub async fn install(dirs: &PlatformDirs, progress: Option<&ProgressTx>) -> Resu
     }
 
     let version = read_installer_version(&build).unwrap_or_else(|| "installed".to_owned());
-    // Move the freshly-built tree into the tool's staging dir (same filesystem,
-    // so the renames are atomic), then let `stage_and_swap` mark + swap it in.
     let swapped = stage_and_swap(dirs, Tool::Laravel, &version, |staging| {
         move_dir_contents(&build, staging)
     });

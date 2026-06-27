@@ -12,7 +12,7 @@ use crate::PlatformError;
 /// `is_installed` reads public files and is unprivileged.
 ///
 /// Both `uninstall(tld)` for an absent TLD and `is_installed(tld)` for an
-/// absent TLD return `Ok(())` / `Ok(false)` — idempotent.
+/// absent TLD return `Ok(())` / `Ok(false)` - idempotent.
 pub trait ResolverInstaller {
     /// Request resolver redirection for `tld` to `addr`.
     ///
@@ -29,7 +29,7 @@ pub trait ResolverInstaller {
     /// `addr`. Idempotent.
     ///
     /// `addr` is the IP+port the resolver should forward to (the daemon's live
-    /// DNS responder). Implementations verify the on-disk config points there —
+    /// DNS responder). Implementations verify the on-disk config points there -
     /// a stale file aimed elsewhere (e.g. a Valet/Herd leftover on `:53`) must
     /// report `false` so the redirect gets (re)installed.
     fn is_installed(&self, tld: &str, addr: SocketAddr) -> Result<bool, PlatformError>;

@@ -18,46 +18,37 @@ pub(crate) enum HostKind<'a> {
 
 /// Normalises a raw host string into a [`HostKind`].
 pub(crate) fn normalise(raw: &str) -> HostKind<'_> {
-    // 1. empty
     if raw.is_empty() {
         return HostKind::Unroutable;
     }
 
-    // 2. IPv6 / bracketed-host guard
     if raw.starts_with('[') {
         return HostKind::Unroutable;
     }
 
-    // 3. ASCII guard
     if raw.bytes().any(|b| !b.is_ascii()) {
         return HostKind::Unroutable;
     }
 
-    // 4. port strip via rsplit_once(':'). Empty tail and all-digit tail both
-    //    mean "strip"; anything else is junk.
     let host: &str = match raw.rsplit_once(':') {
         None => raw,
         Some((head, tail)) if tail.is_empty() || tail.bytes().all(|b| b.is_ascii_digit()) => head,
         Some(_) => return HostKind::Unroutable,
     };
 
-    // 5. empty after strip
     if host.is_empty() {
         return HostKind::Unroutable;
     }
 
-    // 6. strip one trailing '.'
     let host: &str = host.strip_suffix('.').unwrap_or(host);
     if host.is_empty() {
         return HostKind::Unroutable;
     }
 
-    // 7. leading-dot rejection
     if host.starts_with('.') {
         return HostKind::Unroutable;
     }
 
-    // 8. lowercase if any uppercase ASCII; else borrow
     if host.bytes().any(|b| b.is_ascii_uppercase()) {
         HostKind::Hostname(Cow::Owned(host.to_ascii_lowercase()))
     } else {
@@ -75,7 +66,6 @@ pub(crate) fn normalise(raw: &str) -> HostKind<'_> {
 mod tests {
     use super::*;
 
-    /// Helper: extract the hostname or panic.
     fn host_of(raw: &str) -> Cow<'_, str> {
         match normalise(raw) {
             HostKind::Hostname(c) => c,
@@ -83,7 +73,6 @@ mod tests {
         }
     }
 
-    /// Helper: assert input is rejected as Unroutable.
     fn assert_unroutable(raw: &str) {
         assert!(
             matches!(normalise(raw), HostKind::Unroutable),
@@ -135,7 +124,6 @@ mod tests {
     #[test]
     fn normalise_strips_one_trailing_dot() {
         assert_eq!(host_of("foo.test."), "foo.test");
-        // After stripping the port, a trailing dot is then stripped.
         assert_eq!(host_of("foo.test.:80"), "foo.test");
     }
 
