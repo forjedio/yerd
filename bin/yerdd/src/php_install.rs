@@ -112,7 +112,11 @@ impl Downloader for ReqwestDownloader {
             .error_for_status()
             .map_err(transport)?;
         let total = resp.content_length();
-        let mut buf = total.map_or_else(Vec::new, |n| Vec::with_capacity(n as usize));
+        // Pre-size from Content-Length, but clamp the eager allocation: the header
+        // is server-controlled, and a bogus huge value would otherwise abort the
+        // daemon on a failed allocation. The Vec still grows past the cap as needed.
+        let cap = total.map_or(0, |n| n.min(64 * 1024 * 1024) as usize);
+        let mut buf = Vec::with_capacity(cap);
         progress(0, total);
         while let Some(chunk) = resp.chunk().await.map_err(transport)? {
             buf.extend_from_slice(&chunk);

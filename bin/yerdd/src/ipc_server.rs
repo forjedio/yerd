@@ -702,6 +702,7 @@ async fn update_php(version: Option<yerd_core::PhpVersion>, state: &DaemonState)
         };
         if yerd_php::is_newer(&installed, &artifact.full_version) {
             if let Err(e) = crate::php_install::install(minor, &state.dirs, &dl, None).await {
+                tracing::error!(version = %minor, error = %e, "PHP update failed");
                 return Response::Error {
                     code: php_error_code(&e),
                     message: e.to_string(),
@@ -720,6 +721,9 @@ async fn update_php(version: Option<yerd_core::PhpVersion>, state: &DaemonState)
 /// the GUI uses [`install_php_streamed`] for live progress.
 async fn install_php(version: yerd_core::PhpVersion, state: &DaemonState) -> Response {
     let dl = crate::php_install::ReqwestDownloader::new();
+    // Serialize installs: the staging dir is keyed by version (+ pid), so two
+    // concurrent installs of the same version would clobber each other.
+    let _guard = state.php_mutate.lock().await;
     match crate::php_install::install(version, &state.dirs, &dl, None).await {
         Ok(()) => {
             finalize_php_install(version, state).await;
@@ -783,6 +787,8 @@ pub(crate) async fn install_php_streamed(
             .set_phase(&id, format!("Installing PHP {version}"))
             .await;
         let dl = crate::php_install::ReqwestDownloader::new();
+        // Serialize against other installs (same staging dir per version+pid).
+        let guard = state.php_mutate.lock().await;
         // Honour `JobCancel`: on cancel, drop the install future. Its only side
         // effects are in a `.staging-…` dir that the next install clears, so an
         // interrupted download leaves nothing half-installed in place.
@@ -790,6 +796,7 @@ pub(crate) async fn install_php_streamed(
             r = crate::php_install::install(version, &state.dirs, &dl, Some(&tx)) => Some(r),
             _ = cancel.changed() => None,
         };
+        drop(guard);
         drop(tx); // close the channel so the drain task finishes
         let _ = drain.await;
 
@@ -1695,6 +1702,7 @@ mod tests {
             dumps: std::sync::Arc::new(crate::dump_server::DumpStore::new()),
             shim_reconcile: tokio::sync::Mutex::new(()),
             tool_mutate: tokio::sync::Mutex::new(()),
+            php_mutate: tokio::sync::Mutex::new(()),
             jobs: crate::jobs::JobRegistry::default(),
             reserved_names: tokio::sync::Mutex::new(std::collections::HashSet::new()),
         }

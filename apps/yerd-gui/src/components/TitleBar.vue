@@ -29,8 +29,10 @@ function guessPlatform(): string {
   return "macos"; // default also covers macOS ("Macintosh")
 }
 const platform = ref(guessPlatform());
+// macOS gets traffic lights; every other host gets the left-close / right-min-max
+// layout. Keyed off `isMac` (not an `isLinux` allowlist) so an unclassified host
+// still renders working controls.
 const isMac = computed(() => platform.value === "macos");
-const isLinux = computed(() => platform.value === "linux");
 onMounted(() => {
   hostPlatform()
     .then((p) => (platform.value = p))
@@ -88,9 +90,11 @@ function toggleMaximize() {
       </button>
     </div>
 
-    <!-- Linux: close on the left (Pantheon/GNOME convention). -->
+    <!-- Non-macOS (Linux/Pantheon convention, and any other host): close on the
+         left. `v-else` rather than `v-else-if="isLinux"` so a host that isn't
+         classified still gets a working close button. -->
     <button
-      v-else-if="isLinux"
+      v-else
       type="button"
       aria-label="Close"
       class="flex size-6 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-black/10 dark:hover:bg-white/10"
@@ -110,7 +114,7 @@ function toggleMaximize() {
          on Linux the minimize/maximize controls sit at the far right edge. -->
     <div class="ml-auto flex items-center gap-1">
       <slot name="actions" />
-      <template v-if="isLinux">
+      <template v-if="!isMac">
         <button
           type="button"
           aria-label="Minimize"
