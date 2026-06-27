@@ -25,14 +25,24 @@ yerdd=""
 if [ -x /usr/bin/yerdd ] && [ -x /usr/bin/yerd ] && [ -x /usr/bin/yerd-helper ]; then
   yerdd=/usr/bin/yerdd
 else
+  # Locate the single embedded dir holding all three binaries; refuse on an
+  # ambiguous match (a stale/foreign tree) before touching /usr/bin.
+  dir=""
   for cand in /usr/lib/*/yerdd; do
     [ -f "$cand" ] || continue
     d=$(dirname "$cand")
     [ -f "$d/yerd" ] && [ -f "$d/yerd-helper" ] || continue
+    if [ -n "$dir" ] && [ "$dir" != "$d" ]; then
+      echo "yerd: multiple embedded binary dirs ($dir and $d); refusing to symlink" >&2
+      exit 1
+    fi
+    dir="$d"
+  done
+  if [ -n "$dir" ]; then
     # Co-locate on PATH; refuse to clobber a real file or a foreign symlink at
     # /usr/bin/$b — that would steal a path owned by another package.
     for b in yerd yerdd yerd-helper; do
-      src="$d/$b"
+      src="$dir/$b"
       dst="/usr/bin/$b"
       if [ -e "$dst" ] && [ ! -L "$dst" ]; then
         echo "yerd: $dst exists and is not a symlink; refusing to overwrite" >&2
@@ -44,9 +54,8 @@ else
       fi
       ln -sfn "$src" "$dst"
     done
-    yerdd="$d/yerdd"
-    break
-  done
+    yerdd="$dir/yerdd"
+  fi
 fi
 if [ -z "$yerdd" ]; then
   echo "yerd: could not locate the yerdd binary in /usr/bin or /usr/lib" >&2

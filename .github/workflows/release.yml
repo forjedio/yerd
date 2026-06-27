@@ -338,6 +338,13 @@ jobs:
               printf '%s\n' "$list" | grep -Eq "(\./)?usr/bin/$b\$" \
                 || { echo "::error::GUI .deb ($deb) is missing /usr/bin/$b (postinst setcap target)"; exit 1; }
             done
+            tmp=$(mktemp -d)
+            dpkg-deb -x "$deb" "$tmp"
+            for b in yerd yerdd yerd-helper; do
+              [ -x "$tmp/usr/bin/$b" ] \
+                || { echo "::error::GUI .deb ($deb) /usr/bin/$b is not executable (lost its execute bit)"; rm -rf "$tmp"; exit 1; }
+            done
+            rm -rf "$tmp"
             dpkg-deb -e "$deb" /tmp/ctrl-$$ 2>/dev/null || true
             [ -f "/tmp/ctrl-$$/postinst" ] \
               || { echo "::error::GUI .deb ($deb) has no postinst (setcap/symlink)"; exit 1; }

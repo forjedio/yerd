@@ -359,7 +359,7 @@ onMounted(load);
             <CardTitle>Installed versions</CardTitle>
             <CardDescription>Versions, updates, and the global default.</CardDescription>
           </div>
-          <div class="flex items-center gap-2">
+          <div class="flex min-w-0 items-center gap-2">
             <Button
               variant="outline"
               size="sm"
@@ -381,7 +381,7 @@ onMounted(load);
             </Button>
             <span
               v-if="busy === 'install' && installProgress"
-              class="max-w-[16rem] truncate text-xs text-muted-foreground"
+              class="min-w-0 max-w-[16rem] truncate text-xs text-muted-foreground"
             >
               {{ installProgress }}
             </span>

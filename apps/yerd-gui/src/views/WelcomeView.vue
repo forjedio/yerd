@@ -571,10 +571,10 @@ function onBack(): void {
                 aria-label="PHP version to install"
                 @update:model-value="(v: PhpVersion) => (selectedPhp = v)"
               />
-              <div class="flex items-center justify-end gap-3">
+              <div class="flex min-w-0 items-center justify-end gap-3">
                 <span
                   v-if="phpInstalling && phpProgress"
-                  class="truncate text-xs text-muted-foreground"
+                  class="min-w-0 truncate text-xs text-muted-foreground"
                 >
                   {{ phpProgress }}
                 </span>

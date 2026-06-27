@@ -219,7 +219,7 @@ async function installPrereq(id: "composer" | "laravel" | "node" | "bun"): Promi
 
 async function installFirstPhp(): Promise<boolean> {
   // The user has no PHP: install the latest available minor (the distribution
-  // returns them ascending, so the last entry is newest) — matching the onboarding
+  // returns them ascending, so the last entry is newest), matching the onboarding
   // flow rather than pinning a version that rots each release. The daemon resolves
   // the patch and makes it the global default; the live status poll then surfaces
   // it, which unlocks the wizard automatically.

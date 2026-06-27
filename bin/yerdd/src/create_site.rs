@@ -228,15 +228,16 @@ async fn run_inner(
 
 /// Build the `laravel new …` argument vector (after the installer binary).
 /// Pure - unit-tested.
+///
+/// `--no-ansi` is included because the stream is rendered in a plain text panel
+/// with no ANSI interpreter; it is forwarded to the composer/npm commands the
+/// installer shells out to, so no raw escape sequences leak (the daemon also
+/// forces NO_COLOR/TERM=dumb on the child, see `run_scaffold`).
 fn build_new_args(name: &str, o: &LaravelOptions) -> Vec<String> {
     let mut a = vec![
         "new".to_owned(),
         name.to_owned(),
         "--no-interaction".to_owned(),
-        // Undecorated output: the stream is rendered in a plain text panel with no
-        // ANSI interpreter, and the daemon also forces NO_COLOR/TERM=dumb on the
-        // child (see `run_scaffold`). `--no-ansi` is forwarded to the composer/npm
-        // commands the installer shells out to, so no raw escape sequences leak.
         "--no-ansi".to_owned(),
     ];
     match &o.starter_kit {
@@ -475,6 +476,13 @@ enum ScaffoldOutcome {
 
 /// Spawn `php <installer> new …`, stream both pipes into the job log, and wait -
 /// killing the whole process group on cancel or timeout.
+///
+/// Forces `NO_COLOR=1` + `TERM=dumb` on the child: stdout/stderr are pipes (not a
+/// tty), but the Laravel installer / Symfony Console / Laravel Prompts still emit
+/// ANSI colour and cursor-control (spinner redraws) from the inherited TERM. The
+/// job log is shown in a plain `<pre>` with no terminal emulator, so those escapes
+/// render literally and spinner frames stack as duplicate lines; the two env vars
+/// make the installer fall back to undecorated, single-line output.
 #[allow(clippy::too_many_arguments)]
 async fn run_scaffold(
     id: &str,
@@ -494,12 +502,6 @@ async fn run_scaffold(
         .env("PATH", path_env)
         .env("COMPOSER_HOME", composer_home)
         .env("COMPOSER_NO_INTERACTION", "1")
-        // Force plain output: stdout/stderr are pipes (not a tty), but the Laravel
-        // installer / Symfony Console / Laravel Prompts still emit ANSI colour and
-        // cursor-control (spinner redraws) based on the inherited TERM. The job log
-        // is shown in a plain `<pre>` with no terminal emulator, so those escapes
-        // render literally and spinner frames stack as duplicate lines. NO_COLOR +
-        // TERM=dumb make the installer fall back to undecorated, single-line output.
         .env("NO_COLOR", "1")
         .env("TERM", "dumb")
         .stdin(Stdio::null())

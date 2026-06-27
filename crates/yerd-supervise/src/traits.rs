@@ -93,7 +93,7 @@ pub trait Downloader: Send + Sync + 'static {
     async fn download(&self, url: &str) -> Result<Vec<u8>, DownloadError>;
 
     /// Fetch the body bytes at `url`, reporting progress as
-    /// `(bytes_so_far, total_bytes)` — `total` is `None` when the server sends no
+    /// `(bytes_so_far, total_bytes)`: `total` is `None` when the server sends no
     /// `Content-Length`. The default ignores `progress` and delegates to
     /// [`Self::download`]; a streaming transport (the daemon's real downloader)
     /// overrides it so long installs can show a live byte count instead of

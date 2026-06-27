@@ -125,7 +125,7 @@ pub async fn install_php(version: PhpVersion) -> Result<Response, GuiError> {
 }
 
 /// Start a streamed PHP install; replies `JobStarted` for the client to poll via
-/// `job_status`. The non-blocking sibling of `install_php` — used by the GUI so a
+/// `job_status`. The non-blocking sibling of `install_php`, used by the GUI so a
 /// multi-minute download streams progress instead of spinning a single request.
 #[tauri::command]
 pub async fn install_php_streamed(version: PhpVersion) -> Result<Response, GuiError> {

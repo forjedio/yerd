@@ -174,7 +174,7 @@ export async function installPhpStreamed(version: PhpVersion): Promise<string> {
 /**
  * Install a PHP version as a streamed job, delivering progress lines via
  * `onProgress`, and resolving only when it finishes. Throws (toast-worthy) on a
- * failed/cancelled job — so callers keep their existing try/catch around a
+ * failed/cancelled job, so callers keep their existing try/catch around a
  * single awaited install.
  */
 export async function installPhpWithProgress(

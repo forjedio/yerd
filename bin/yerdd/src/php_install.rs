@@ -31,6 +31,8 @@ pub struct ReqwestDownloader {
 /// count (`u64::MAX` = nothing emitted yet).
 const PROGRESS_STEP: u64 = 4 * 1024 * 1024;
 
+/// Byte counts are formatted as integer tenths-of-a-MB to avoid a float cast and
+/// its precision lint.
 fn emit_byte_progress(
     tx: &ProgressTx,
     label: &str,
@@ -45,7 +47,6 @@ fn emit_byte_progress(
         return;
     }
     last.store(done, Ordering::Relaxed);
-    // Integer tenths-of-a-MB, avoiding a float cast (and its precision lint).
     let mb = |b: u64| {
         let tenths = b.saturating_mul(10) / (1024 * 1024);
         format!("{}.{} MB", tenths / 10, tenths % 10)
@@ -65,7 +66,7 @@ impl ReqwestDownloader {
     /// Bounds the two ways a download can wedge indefinitely: a `connect_timeout`
     /// for a connection that never establishes, and a `read_timeout` (idle/stall
     /// timeout between reads) for a body that stops mid-stream. reqwest's default
-    /// is *unbounded* — the cause of a PHP install "spinning" for minutes until
+    /// is *unbounded*: the cause of a PHP install "spinning" for minutes until
     /// the kernel gives up. Deliberately no hard overall `.timeout()`, so a
     /// slow-but-progressing large download isn't killed.
     #[must_use]
@@ -92,6 +93,11 @@ impl Downloader for ReqwestDownloader {
         self.download_with_progress(url, &|_, _| {}).await
     }
 
+    /// Streams the body chunk-by-chunk so progress can be reported and a
+    /// mid-stream stall trips `read_timeout` rather than buffering forever. The
+    /// `Content-Length` capacity hint is clamped (the header is server-controlled;
+    /// a bogus huge value would otherwise abort the daemon on a failed
+    /// allocation), and the `Vec` still grows past the cap as needed.
     async fn download_with_progress(
         &self,
         url: &str,
@@ -101,8 +107,6 @@ impl Downloader for ReqwestDownloader {
             url: url.to_owned(),
             reason: e.to_string(),
         };
-        // Stream the body chunk-by-chunk so we can report progress (and so a
-        // mid-stream stall trips `read_timeout` rather than buffering forever).
         let mut resp = self
             .client
             .get(url)
@@ -112,9 +116,6 @@ impl Downloader for ReqwestDownloader {
             .error_for_status()
             .map_err(transport)?;
         let total = resp.content_length();
-        // Pre-size from Content-Length, but clamp the eager allocation: the header
-        // is server-controlled, and a bogus huge value would otherwise abort the
-        // daemon on a failed allocation. The Vec still grows past the cap as needed.
         let cap = total.map_or(0, |n| n.min(64 * 1024 * 1024) as usize);
         let mut buf = Vec::with_capacity(cap);
         progress(0, total);
@@ -260,6 +261,10 @@ pub fn installed_patch(dirs: &PlatformDirs, minor: PhpVersion) -> Option<String>
     }
 }
 
+/// Download one PHP binary tarball and extract its single member into `staging`.
+///
+/// Streams with byte-progress when `progress` is attached, otherwise takes the
+/// silent path; a download error converts to `PhpError` via `#[from]`.
 async fn fetch_and_extract(
     dl: &dyn Downloader,
     url: &str,
@@ -269,8 +274,6 @@ async fn fetch_and_extract(
     label: &str,
 ) -> Result<(), PhpError> {
     tracing::info!(%url, "downloading PHP binary");
-    // Stream with byte-progress when a sink is attached; otherwise take the plain
-    // (silent) path. Download error -> PhpError::Download via #[from].
     let bytes = match progress {
         Some(tx) => {
             let last = AtomicU64::new(u64::MAX);
