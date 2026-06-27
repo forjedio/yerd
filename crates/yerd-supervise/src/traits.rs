@@ -91,4 +91,19 @@ pub trait HealthProbe: Send + Sync + 'static {
 pub trait Downloader: Send + Sync + 'static {
     /// Fetch the body bytes at `url`.
     async fn download(&self, url: &str) -> Result<Vec<u8>, DownloadError>;
+
+    /// Fetch the body bytes at `url`, reporting progress as
+    /// `(bytes_so_far, total_bytes)` — `total` is `None` when the server sends no
+    /// `Content-Length`. The default ignores `progress` and delegates to
+    /// [`Self::download`]; a streaming transport (the daemon's real downloader)
+    /// overrides it so long installs can show a live byte count instead of
+    /// appearing to hang. Used for big artifacts like a PHP build.
+    async fn download_with_progress(
+        &self,
+        url: &str,
+        progress: &(dyn Fn(u64, Option<u64>) + Send + Sync),
+    ) -> Result<Vec<u8>, DownloadError> {
+        let _ = progress;
+        self.download(url).await
+    }
 }

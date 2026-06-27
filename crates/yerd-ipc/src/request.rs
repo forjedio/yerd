@@ -91,6 +91,14 @@ pub enum Request {
         /// The major.minor version to install (resolved to a pinned patch).
         version: PhpVersion,
     },
+    /// Install a PHP version as a streamed background job. The daemon replies
+    /// [`super::Response::JobStarted`] immediately; phase + byte-count progress is
+    /// polled via [`Self::JobStatus`]. The streaming sibling of [`Self::InstallPhp`]
+    /// (used by the GUI so a multi-minute download shows progress / can cancel).
+    InstallPhpStreamed {
+        /// The major.minor version to install (resolved to a pinned patch).
+        version: PhpVersion,
+    },
     /// Set the global default PHP version (terminal `php` shim + site fallback).
     SetDefaultPhp {
         /// The version to make the default; must already be installed.
@@ -440,6 +448,7 @@ mod variant_name_pinning {
             Request::SetWebRoot { .. } => {}
             Request::DaemonInfo => {}
             Request::InstallPhp { .. } => {}
+            Request::InstallPhpStreamed { .. } => {}
             Request::SetDefaultPhp { .. } => {}
             Request::ListPhp => {}
             Request::UpdatePhp { .. } => {}

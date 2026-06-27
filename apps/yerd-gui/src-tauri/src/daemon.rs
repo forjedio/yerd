@@ -54,12 +54,13 @@ pub(crate) fn resolve_binary(name: &str) -> Option<PathBuf> {
     {
         return Some(found);
     }
-    // Linux: the `.deb` installs the Tauri sidecars under `/usr/lib/<product>/`
-    // and the postinst *symlinks* them into `/usr/bin`. That symlink is not
-    // dpkg-tracked and the postinst fails closed (a leftover `/usr/bin/yerd`
-    // from the v1 Go project, or a Tauri path change, aborts it), so search the
-    // real install dir directly as a fallback — otherwise a postinst hiccup
-    // leaves `yerdd` present on disk but unfindable and the daemon "won't start".
+    // Linux: Tauri's deb bundler normally installs the sidecars straight into
+    // `/usr/bin` (covered by `search_dirs` above). A `/usr/lib/<product>/` layout
+    // is the fallback — older/foreign Tauri builds staged them there and the
+    // postinst *symlinks* them onto PATH. That symlink isn't dpkg-tracked and the
+    // postinst can fail closed, so search the real `/usr/lib` dir directly here —
+    // otherwise a postinst hiccup leaves `yerdd` on disk but unfindable and the
+    // daemon "won't start".
     #[cfg(target_os = "linux")]
     {
         lib_sidecar(name)

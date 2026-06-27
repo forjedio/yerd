@@ -71,6 +71,9 @@ async fn handle_client(stream: IpcStream, state: Arc<DaemonState>) {
             Request::InstallToolStreamed { tool } => {
                 install_tool_streamed(tool, state.clone()).await
             }
+            Request::InstallPhpStreamed { version } => {
+                install_php_streamed(version, state.clone()).await
+            }
             Request::JobStatus { job_id, cursor } => state.jobs.poll(&job_id, cursor).await,
             Request::JobCancel { job_id } => state.jobs.cancel(&job_id).await,
             other => dispatch(other, &state).await,
@@ -698,7 +701,7 @@ async fn update_php(version: Option<yerd_core::PhpVersion>, state: &DaemonState)
             continue;
         };
         if yerd_php::is_newer(&installed, &artifact.full_version) {
-            if let Err(e) = crate::php_install::install(minor, &state.dirs, &dl).await {
+            if let Err(e) = crate::php_install::install(minor, &state.dirs, &dl, None).await {
                 return Response::Error {
                     code: php_error_code(&e),
                     message: e.to_string(),
@@ -713,29 +716,107 @@ async fn update_php(version: Option<yerd_core::PhpVersion>, state: &DaemonState)
 
 /// `install php <ver>` — download + verify + unpack a prebuilt build. Runs the
 /// (slow) download with no config lock held; the per-connection task model means
-/// other clients are unaffected.
+/// other clients are unaffected. Synchronous (the CLI's `yerd php install` path);
+/// the GUI uses [`install_php_streamed`] for live progress.
 async fn install_php(version: yerd_core::PhpVersion, state: &DaemonState) -> Response {
     let dl = crate::php_install::ReqwestDownloader::new();
-    match crate::php_install::install(version, &state.dirs, &dl).await {
+    match crate::php_install::install(version, &state.dirs, &dl, None).await {
         Ok(()) => {
-            // The PhpManager's binary map is a startup snapshot; teach it about
-            // the just-installed version so the proxy can spawn its FPM pool
-            // without a daemon restart.
-            refresh_php_binaries(state).await;
-            // First install on a fresh setup: adopt it as the default (so the
-            // `php` shim exists and sites have a runtime). Must run BEFORE the
-            // reconcile below so it builds shims against the new default.
-            adopt_default_if_unset(version, state).await;
-            // Bundle pcov for the new version and (re)build its cover/clean
-            // shims. Best-effort; the install itself already succeeded.
-            refresh_pcov_and_shims(state).await;
+            finalize_php_install(version, state).await;
             Response::Ok
         }
-        Err(e) => Response::Error {
-            code: php_error_code(&e),
-            message: e.to_string(),
-        },
+        Err(e) => {
+            // Log the real cause: this is the line the GUI diagnostics / About →
+            // Logs panel tails, and the only durable record of a failed install.
+            tracing::error!(%version, error = %e, "PHP install failed");
+            Response::Error {
+                code: php_error_code(&e),
+                message: e.to_string(),
+            }
+        }
     }
+}
+
+/// Post-install bookkeeping shared by the sync and streamed install paths: teach
+/// the live `PhpManager` about the new binaries, adopt the first install as the
+/// default, then bundle pcov + rebuild shims. All best-effort — the install
+/// itself has already succeeded by the time this runs.
+async fn finalize_php_install(version: yerd_core::PhpVersion, state: &DaemonState) {
+    // The PhpManager's binary map is a startup snapshot; teach it about the
+    // just-installed version so the proxy can spawn its FPM pool without a
+    // daemon restart.
+    refresh_php_binaries(state).await;
+    // First install on a fresh setup: adopt it as the default (so the `php` shim
+    // exists and sites have a runtime). Must run BEFORE the reconcile below so it
+    // builds shims against the new default.
+    adopt_default_if_unset(version, state).await;
+    // Bundle pcov for the new version and (re)build its cover/clean shims.
+    refresh_pcov_and_shims(state).await;
+}
+
+/// `InstallPhpStreamed` — download + unpack a PHP build as a background job,
+/// streaming phase + byte-count progress into the job log. Returns `JobStarted`
+/// immediately; the client polls `JobStatus`. The streaming sibling of
+/// [`install_php`] (used by the GUI onboarding + PHP screen) so a multi-minute
+/// download shows progress and can be cancelled instead of spinning a request.
+pub(crate) async fn install_php_streamed(
+    version: yerd_core::PhpVersion,
+    state: Arc<DaemonState>,
+) -> Response {
+    let (job_id, mut cancel) = state.jobs.create().await;
+    let id = job_id.clone();
+    tokio::spawn(async move {
+        // Forward streamed progress lines into the job log via a drain task.
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+        let drain = {
+            let state = state.clone();
+            let id = id.clone();
+            tokio::spawn(async move {
+                while let Some(line) = rx.recv().await {
+                    state.jobs.push_log(&id, line).await;
+                }
+            })
+        };
+
+        state
+            .jobs
+            .set_phase(&id, format!("Installing PHP {version}"))
+            .await;
+        let dl = crate::php_install::ReqwestDownloader::new();
+        // Honour `JobCancel`: on cancel, drop the install future. Its only side
+        // effects are in a `.staging-…` dir that the next install clears, so an
+        // interrupted download leaves nothing half-installed in place.
+        let result = tokio::select! {
+            r = crate::php_install::install(version, &state.dirs, &dl, Some(&tx)) => Some(r),
+            _ = cancel.changed() => None,
+        };
+        drop(tx); // close the channel so the drain task finishes
+        let _ = drain.await;
+
+        match result {
+            Some(Ok(())) => {
+                finalize_php_install(version, &state).await;
+                state
+                    .jobs
+                    .finish(&id, yerd_ipc::JobState::Succeeded, None)
+                    .await;
+            }
+            Some(Err(e)) => {
+                tracing::error!(%version, error = %e, "PHP install failed");
+                state
+                    .jobs
+                    .finish(&id, yerd_ipc::JobState::Failed, Some(e.to_string()))
+                    .await;
+            }
+            None => {
+                state
+                    .jobs
+                    .finish(&id, yerd_ipc::JobState::Cancelled, None)
+                    .await;
+            }
+        }
+    });
+    Response::JobStarted { job_id }
 }
 
 /// On the *first* successful install — when the configured default PHP isn't

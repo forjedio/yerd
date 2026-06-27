@@ -261,6 +261,11 @@ fn build_new_args(name: &str, o: &LaravelOptions) -> Vec<String> {
         "new".to_owned(),
         name.to_owned(),
         "--no-interaction".to_owned(),
+        // Undecorated output: the stream is rendered in a plain text panel with no
+        // ANSI interpreter, and the daemon also forces NO_COLOR/TERM=dumb on the
+        // child (see `run_scaffold`). `--no-ansi` is forwarded to the composer/npm
+        // commands the installer shells out to, so no raw escape sequences leak.
+        "--no-ansi".to_owned(),
     ];
     match &o.starter_kit {
         StarterKit::None => {}
@@ -525,6 +530,14 @@ async fn run_scaffold(
         .env("PATH", path_env)
         .env("COMPOSER_HOME", composer_home)
         .env("COMPOSER_NO_INTERACTION", "1")
+        // Force plain output: stdout/stderr are pipes (not a tty), but the Laravel
+        // installer / Symfony Console / Laravel Prompts still emit ANSI colour and
+        // cursor-control (spinner redraws) based on the inherited TERM. The job log
+        // is shown in a plain `<pre>` with no terminal emulator, so those escapes
+        // render literally and spinner frames stack as duplicate lines. NO_COLOR +
+        // TERM=dumb make the installer fall back to undecorated, single-line output.
+        .env("NO_COLOR", "1")
+        .env("TERM", "dumb")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -714,6 +727,7 @@ mod tests {
                 "new",
                 "blog",
                 "--no-interaction",
+                "--no-ansi",
                 "--pest",
                 "--database",
                 "sqlite",
@@ -735,6 +749,7 @@ mod tests {
                 "new",
                 "shop",
                 "--no-interaction",
+                "--no-ansi",
                 "--react",
                 "--pest",
                 "--database",
@@ -766,6 +781,7 @@ mod tests {
                 "new",
                 "crm",
                 "--no-interaction",
+                "--no-ansi",
                 "--livewire",
                 "--workos",
                 "--livewire-class-components",

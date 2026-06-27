@@ -30,7 +30,7 @@ import {
   getAutostart,
   hostPlatform,
   installCliToPath,
-  installPhp,
+  installPhpWithProgress,
   IpcError,
   openLoginItems,
   park,
@@ -222,6 +222,7 @@ function onOpenLoginItems(): void {
 // ── step 2: PHP ──
 const phpLoading = ref(false);
 const phpInstalling = ref(false);
+const phpProgress = ref(""); // latest streamed install line, shown beside the spinner
 const phpOptions = ref<{ value: PhpVersion; label: string }[]>([]);
 const selectedPhp = ref<PhpVersion>("");
 const installedPhp = ref<PhpVersion | null>(null);
@@ -253,8 +254,11 @@ async function doInstallPhp(): Promise<void> {
   const v = selectedPhp.value;
   if (!v) return;
   phpInstalling.value = true;
+  phpProgress.value = "";
   try {
-    await installPhp(v);
+    await installPhpWithProgress(v, (lines) => {
+      phpProgress.value = lines[lines.length - 1] ?? phpProgress.value;
+    });
     installedPhp.value = v;
     await refresh();
     toast.success(`Installed PHP ${v}`, "It's set as your default.");
@@ -262,6 +266,7 @@ async function doInstallPhp(): Promise<void> {
     toast.error(`Install of PHP ${v} failed`, (e as IpcError).message);
   } finally {
     phpInstalling.value = false;
+    phpProgress.value = "";
   }
 }
 
@@ -566,7 +571,13 @@ function onBack(): void {
                 aria-label="PHP version to install"
                 @update:model-value="(v: PhpVersion) => (selectedPhp = v)"
               />
-              <div class="flex justify-end">
+              <div class="flex items-center justify-end gap-3">
+                <span
+                  v-if="phpInstalling && phpProgress"
+                  class="truncate text-xs text-muted-foreground"
+                >
+                  {{ phpProgress }}
+                </span>
                 <Button :disabled="phpInstalling || !selectedPhp" @click="doInstallPhp">
                   <Spinner v-if="phpInstalling" class="size-4" />
                   <Download v-else class="size-4" />
