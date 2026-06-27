@@ -121,6 +121,12 @@ jobs:
         run: |
           set -euo pipefail
           cargo build --release -p yerd -p yerdd -p yerd-helper
+          # Symmetric guard to the arch job: the bundled daemon MUST be deb-format
+          # (the `pacman` self-update feature must never leak into the .deb/macOS
+          # build, or a .deb daemon would try `pacman -U` on Debian).
+          fmt=$(./target/release/yerdd --pkg-format)
+          [ "$fmt" = "deb" ] \
+            || { echo "::error::bundle yerdd --pkg-format=$fmt (expected deb); the pacman feature leaked into the GUI bundle build"; exit 1; }
           mkdir -p apps/yerd-gui/src-tauri/binaries
           # Native build per runner — the triple suffix is only Tauri's sidecar
           # naming, so it must match the arch cargo actually produced.
@@ -375,6 +381,11 @@ jobs:
     runs-on: ubuntu-22.04
     container: archlinux:base-devel
     steps:
+      # `git` isn't in base-devel; install it BEFORE checkout so actions/checkout
+      # does a real clone instead of the slower, rate-limited REST-tarball fallback.
+      - name: Install git (for a real checkout)
+        run: pacman -Sy --noconfirm git
+
       - uses: actions/checkout@v4
 
       - name: Install build deps
@@ -394,12 +405,12 @@ jobs:
           # the checkout (actions/checkout runs as root inside the container).
           useradd -m builder
           chown -R builder:builder "$GITHUB_WORKSPACE"
-          git config --global --add safe.directory '*'
-          # pkgver forbids '-'; a prerelease tag carries `-rc.N`. Strip leading `v`,
-          # then `-` → `_`. The release asset name is derived from the tag later, so
+          # pkgver may only contain [A-Za-z0-9._]; a tag can carry `-rc.N` (and in
+          # principle `+build`). Strip leading `v`, then map every other illegal
+          # char to `_`. The release asset name is derived from the tag later, so
           # this sanitisation only affects the in-package version string.
           RAWVER="${GITHUB_REF_NAME#v}"
-          YERD_PKGVER="${RAWVER//-/_}"
+          YERD_PKGVER=$(printf '%s' "$RAWVER" | tr -c 'A-Za-z0-9._' '_')
           echo "YERD_PKGVER=$YERD_PKGVER" >> "$GITHUB_ENV"
           # Build from the in-tree checkout (PKGBUILD has no source=()).
           sudo -u builder env \

@@ -495,16 +495,18 @@ fn elevated_install_pacman(staged: &Path) -> Result<(), String> {
         .mode(0o700)
         .create(&dir)
         .map_err(|e| format!("creating secure install dir: {e}"))?;
-    // pacman infers the package name from the filename, so keep the `.pkg.tar.zst`
-    // suffix on the root-owned copy.
+    // Keep a recognizable `.pkg.tar.zst` suffix on the root-owned copy (clarity;
+    // the package name itself comes from the embedded `.PKGINFO`, not the filename).
     let pkg = dir.join("update.pkg.tar.zst");
     let install = (|| -> Result<(), String> {
         std::fs::write(&pkg, &bytes).map_err(|e| format!("writing verified .pkg.tar.zst: {e}"))?;
         let _ = std::fs::set_permissions(&pkg, std::fs::Permissions::from_mode(0o600));
         // `pacman -U` installs the given file regardless of version (so an
         // edge→stable downgrade works, like `dpkg -i`); `--noconfirm` for the
-        // non-interactive re-exec. Capture stderr so db-lock / unresolved-dep
-        // failures are legible rather than a generic "failed".
+        // non-interactive re-exec. Capture output so db-lock / unresolved-dep /
+        // SigLevel failures are legible rather than a generic "failed". (`pacman -U`
+        // is a partial upgrade: if the host is behind on `pacman -Syu`, a newer
+        // library soname can make it abort — surfaced here.)
         let out = Command::new("pacman")
             .arg("-U")
             .arg("--noconfirm")
@@ -514,8 +516,12 @@ fn elevated_install_pacman(staged: &Path) -> Result<(), String> {
         if out.status.success() {
             Ok(())
         } else {
+            // Prefer stderr; fall back to stdout (pacman writes some diagnostics there).
             let stderr = String::from_utf8_lossy(&out.stderr);
-            let detail = stderr.trim();
+            let mut detail = stderr.trim().to_owned();
+            if detail.is_empty() {
+                detail = String::from_utf8_lossy(&out.stdout).trim().to_owned();
+            }
             if detail.is_empty() {
                 Err("pacman failed to install the new package".to_owned())
             } else {

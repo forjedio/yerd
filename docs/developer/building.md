@@ -447,10 +447,19 @@ job in [`release.yml`](https://github.com/forjedio/yerd/blob/main/.github/workfl
 runs an `archlinux:base-devel` container, compiles the frontend + all four
 binaries from source, and assembles the package with
 [`packaging/arch/PKGBUILD`](https://github.com/forjedio/yerd/blob/main/packaging/arch).
-Unlike the `.deb`, the Arch package installs the four binaries as real files in
-`/usr/bin` (matching the upstream `.deb`'s current layout), and a `.install`
-scriptlet `setcap`s `/usr/bin/yerdd` on install/upgrade so the daemon can bind
-ports 80/443.
+The package installs the four binaries as real files in `/usr/bin` — the three
+driven binaries (`yerd`/`yerdd`/`yerd-helper`) land at the same paths as the
+upstream `.deb`, so the daemon's sibling-binary lookup is identical (the GUI binary
+is `/usr/bin/yerd-gui`). A `.install` scriptlet `setcap`s `/usr/bin/yerdd` on
+install/upgrade so the daemon can bind ports 80/443.
+
+In-app `yerd update` on Arch runs `pacman -U` on the downloaded, minisign-verified
+`.pkg.tar.zst` — a **partial upgrade**: if the host is behind on `pacman -Syu`, a
+newer library soname can make it abort (Yerd surfaces pacman's message), so Arch
+users should keep their system current. It also requires the default
+`LocalFileSigLevel = Optional` in `pacman.conf` — the package is not pacman-signed
+(Yerd verifies it itself with the embedded update key), so a hardened
+`LocalFileSigLevel = Required` rejects the local install.
 
 **The `pacman` feature / `PkgFormat` tiebreak.** A release carries *both* a `.deb`
 and a `.pkg.tar.zst` for x86-64, so a running Linux binary can't tell which to

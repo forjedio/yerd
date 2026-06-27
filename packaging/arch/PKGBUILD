@@ -41,8 +41,9 @@ build() {
 package() {
   cd "${YERD_SRCROOT:?YERD_SRCROOT must point at the workspace checkout root}"
 
-  # All four binaries as real files in /usr/bin (matches the upstream .deb so the
-  # GUI's trusted_yerd()/resolve_binary sibling lookup is identical).
+  # All four binaries as real files in /usr/bin. The three driven binaries
+  # (yerd/yerdd/yerd-helper) land at the same paths as the upstream .deb, so the
+  # GUI's trusted_yerd()/resolve_binary sibling lookup is identical.
   install -Dm755 target/release/yerd        "$pkgdir/usr/bin/yerd"
   install -Dm755 target/release/yerdd       "$pkgdir/usr/bin/yerdd"
   install -Dm755 target/release/yerd-helper "$pkgdir/usr/bin/yerd-helper"
