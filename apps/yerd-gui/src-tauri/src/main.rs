@@ -423,9 +423,41 @@ fn show_main(app: &tauri::AppHandle) {
     // gets a normal app presence and can take focus.
     set_dock_visible(app, true);
     if let Some(win) = app.get_webview_window("main") {
+        // macOS: by default a window stays bound to the Space it was last shown
+        // on, so re-opening from the tray would yank you to that Space. Mark it
+        // to follow you onto whatever Space is active *now* — must be set before
+        // `show()`/`set_focus()`, which is what makes the window appear.
+        #[cfg(target_os = "macos")]
+        move_window_to_active_space(&win);
         let _ = win.show();
         let _ = win.set_focus();
     }
+}
+
+/// macOS: make the main window appear on the *currently active* Space when it is
+/// re-shown, instead of pulling the user back to whatever Space it was last on.
+///
+/// A normal `NSWindow` is bound to a single Space; `show()` then switches Spaces
+/// to it. Adding `MoveToActiveSpace` to its collection behaviour tells the window
+/// server to bring the window to the active Space on activation. We set it on
+/// every show (cheap, idempotent) rather than once, so it survives any later
+/// behaviour resets and applies even if the window was created before this ran.
+#[cfg(target_os = "macos")]
+fn move_window_to_active_space(win: &tauri::WebviewWindow) {
+    use objc2_app_kit::{NSWindow, NSWindowCollectionBehavior};
+
+    let Ok(ptr) = win.ns_window() else {
+        return;
+    };
+    if ptr.is_null() {
+        return;
+    }
+    // SAFETY: `ns_window()` hands back the window's live `NSWindow` pointer, and
+    // tray/window-event handlers (the only `show_main` callers) run on the main
+    // thread, where AppKit window mutation is required to happen.
+    let ns_window: &NSWindow = unsafe { &*ptr.cast::<NSWindow>() };
+    let behavior = ns_window.collectionBehavior() | NSWindowCollectionBehavior::MoveToActiveSpace;
+    ns_window.setCollectionBehavior(behavior);
 }
 
 /// Show (or lazily create) the auxiliary "dumps" window — the live Laravel
