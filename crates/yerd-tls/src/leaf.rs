@@ -20,7 +20,7 @@ impl LeafCert {
 
     /// Hand-rolled constructor for inline unit tests only. Hidden behind
     /// `#[cfg(test)]`. The `#[cfg(test)]` gate (not the visibility keyword)
-    /// is what hides this from integration tests — they compile against the
+    /// is what hides this from integration tests - they compile against the
     /// library built without `--test`, so the item is absent from their view.
     #[cfg(test)]
     fn from_parts(cert_pem: String, key_pem: String) -> Self {
@@ -78,8 +78,6 @@ mod tests {
 
     #[test]
     fn chain_pem_passes_through_arbitrary_ca_string() {
-        // Pins the no-validation invariant. A future contributor adding
-        // "smart" validation breaks this test.
         let leaf = LeafCert::from_parts("LEAF".to_string(), "K".to_string());
         let chain = leaf.chain_pem("not even pem");
         assert_eq!(chain, "LEAF\nnot even pem");

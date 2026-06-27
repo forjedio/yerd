@@ -1,11 +1,11 @@
-//! `yerd elevate` / `yerd unelevate` — one-shot privileged setup, run via sudo.
+//! `yerd elevate` / `yerd unelevate` - one-shot privileged setup, run via sudo.
 //!
 //! The CLI runs as root **only to orchestrate**: it fetches read-only facts
 //! from the invoking user's running daemon (over that user's socket, located
 //! from `SUDO_UID`), then spawns the audited `yerd-helper` for each privileged
 //! operation. The helper independently re-validates every argument; this module
 //! additionally (a) derives the `yerdd` binary from its own trusted
-//! `current_exe` sibling — never from the daemon — and (b) owner-checks the CA
+//! `current_exe` sibling - never from the daemon - and (b) owner-checks the CA
 //! path before trusting it. The daemon itself is never restarted as root.
 
 #[cfg(not(unix))]
@@ -114,9 +114,6 @@ mod unix_impl {
         yerdd: &Path,
         undo: bool,
     ) -> Result<(), ClientError> {
-        // Linux only: `setcap` has no clean reverse op, so `ports`+undo is
-        // guidance rather than a helper call. macOS reverts the pf redirect via
-        // `UninstallPortRedirect`, so it falls through to the normal path.
         #[cfg(not(target_os = "macos"))]
         if target == ElevateTarget::Ports && undo {
             println!("==> ports: capabilities can't be dropped automatically.");
@@ -127,8 +124,6 @@ mod unix_impl {
             return Ok(());
         }
 
-        // The CA pem is the only path we take from the daemon; verify it's owned
-        // by the invoking user and not world-writable before trusting it.
         if target == ElevateTarget::Trust && !undo {
             require_user_owned(&facts.ca_path, invoking_uid())?;
         }
@@ -156,8 +151,6 @@ mod unix_impl {
                 }
                 Ok(())
             }
-            // EX_CONFIG (78): the helper deems this unsupported on this host
-            // (e.g. resolver without systemd-resolved). A skip, not a failure.
             Some(78) => {
                 println!("    skipped (unsupported on this host)");
                 if target == ElevateTarget::Resolver {
@@ -168,10 +161,6 @@ mod unix_impl {
                 }
                 Ok(())
             }
-            // EX_DATAERR (65): the helper validated its input and declined.
-            // For `trust`+undo that means it refused to remove a trust-store
-            // cert it couldn't confirm is yerd's — surface it as a refusal, not
-            // a usage error, with a clear explanation.
             Some(65) => Err(ClientError::Refused(
                 "yerd-helper declined: it refused to remove a certificate it couldn't \
                  confirm is yerd's (or the input failed validation)"
@@ -195,7 +184,6 @@ mod unix_impl {
         yerdd: &Path,
         undo: bool,
     ) -> Result<HelperInvocation, ClientError> {
-        // `yerdd` is only needed for the Linux `setcap` path.
         #[cfg(target_os = "macos")]
         let _ = yerdd;
         let fp =
@@ -213,8 +201,6 @@ mod unix_impl {
             (ElevateTarget::Resolver, true) => HelperInvocation::UninstallResolver {
                 tld: facts.tld.clone(),
             },
-            // Linux: a one-time `setcap` grant lets the daemon bind 80/443
-            // directly, and there's no clean reverse op.
             #[cfg(not(target_os = "macos"))]
             (ElevateTarget::Ports, false) => HelperInvocation::Setcap {
                 daemon_binary: yerdd.to_path_buf(),
@@ -223,15 +209,8 @@ mod unix_impl {
             (ElevateTarget::Ports, true) => {
                 return Err(ClientError::Usage("ports cannot be reverted".to_owned()))
             }
-            // macOS: install/remove a pf redirect 80→http_port, 443→https_port
-            // (the daemon keeps binding its rootless ports). Reversible.
             #[cfg(target_os = "macos")]
             (ElevateTarget::Ports, false) => {
-                // A degraded daemon bound no web ports (`http_port`/`https_port`
-                // are 0), so a redirect would point at nothing. Refuse early with
-                // a clear message rather than installing a dead pf rule. (Linux
-                // maps to `setcap`, which ignores these and is the *correct*
-                // degraded recovery — hence this guard is macOS-only.)
                 if facts.http_port == 0 || facts.https_port == 0 {
                     return Err(ClientError::Usage(
                         "Yerd isn't serving any web ports yet (it couldn't bind them) — \
@@ -262,8 +241,6 @@ mod unix_impl {
             (ElevateTarget::Resolver, false) => {
                 format!("resolver: routing *.{} → {}", facts.tld, facts.dns_addr)
             }
-            // macOS restores the pre-Yerd resolver from its backup (if any);
-            // Linux just removes the systemd drop-in — no restore there.
             #[cfg(target_os = "macos")]
             (ElevateTarget::Resolver, true) => format!(
                 "resolver: restoring your previous *.{} resolver (or removing yerd's route if none was backed up)",
@@ -299,8 +276,6 @@ mod unix_impl {
                     ca_fingerprint,
                     http_port,
                     https_port,
-                    // `fallback_*` are config values Settings edits; the pf
-                    // redirect targets the *bound* ports, so they're not needed here.
                     ..
                 }) => {
                     return Ok(Facts {
@@ -364,14 +339,6 @@ mod unix_impl {
     pub(crate) fn sibling_binaries() -> Result<(PathBuf, PathBuf), ClientError> {
         let exe = std::env::current_exe()
             .map_err(|e| ClientError::Usage(format!("cannot resolve current exe: {e}")))?;
-        // Resolve symlinks first. When `yerd` is invoked via the installed
-        // `{data}/bin/yerd` PATH symlink, macOS `current_exe()` returns the
-        // symlink path itself — so the siblings would resolve to `{data}/bin`,
-        // which holds no `yerd-helper`/`yerdd` (only the `yerd` symlink + php
-        // shims), and the helper spawn fails with ENOENT. Canonicalizing points
-        // us at the real binary inside the app bundle, whose siblings exist. Fall
-        // back to the unresolved path if canonicalize fails (it shouldn't — the
-        // exe exists — but never abort elevation over it).
         let exe = std::fs::canonicalize(&exe).unwrap_or(exe);
         let dir = exe
             .parent()
@@ -413,7 +380,6 @@ mod unix_impl {
 
     #[cfg(target_os = "linux")]
     pub(crate) fn is_root() -> bool {
-        // /proc/self/status "Uid:\t<real>\t<effective>\t<saved>\t<fs>"
         std::fs::read_to_string("/proc/self/status")
             .ok()
             .and_then(|s| {

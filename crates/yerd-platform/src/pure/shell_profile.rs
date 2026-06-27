@@ -13,20 +13,20 @@ use std::path::{Path, PathBuf};
 /// The shells we know how to edit. `Posix` is the generic `.profile` fallback.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Shell {
-    /// Z shell — `~/.zshrc`.
+    /// Z shell - `~/.zshrc`.
     Zsh,
-    /// Bash — `~/.bashrc` + `~/.bash_profile` (see [`rc_relpaths`]).
+    /// Bash - `~/.bashrc` + `~/.bash_profile` (see [`rc_relpaths`]).
     Bash,
-    /// Fish — `~/.config/fish/config.fish`.
+    /// Fish - `~/.config/fish/config.fish`.
     Fish,
-    /// POSIX `sh` and unknown shells — `~/.profile`.
+    /// POSIX `sh` and unknown shells - `~/.profile`.
     Posix,
 }
 
 /// Host OS, passed in by the caller so this stays env-free.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HostOs {
-    /// macOS — login shells (Terminal.app) read `.bash_profile`.
+    /// macOS - login shells (Terminal.app) read `.bash_profile`.
     MacOs,
     /// Linux and other Unix.
     Linux,
@@ -68,7 +68,7 @@ pub fn rc_relpaths(shell: Shell, _os: HostOs) -> Vec<PathBuf> {
 /// Escape a value for a **POSIX** double-quoted string: `\`, `$`, `` ` ``, and
 /// `"` are special inside `"…"`, so backslash-escape them. (Quoting alone only
 /// handles spaces; a data dir containing `$`/`` ` ``/`\` would otherwise expand
-/// or break the rc block — e.g. a home under `$XDG_DATA_HOME`.)
+/// or break the rc block - e.g. a home under `$XDG_DATA_HOME`.)
 fn esc_posix_dq(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for c in s.chars() {
@@ -99,12 +99,10 @@ fn esc_fish_dq(s: &str) -> String {
 /// `php` shim on this PATH picks up Yerd's opinionated CLI defaults (memory limit
 /// etc.). Values are double-quoted *and* metacharacter-escaped, so a data dir
 /// containing a space, `$`, `` ` ``, `\`, or `"` is emitted safely. An absent ini
-/// file is harmless — PHP ignores it.
+/// file is harmless - PHP ignores it.
 #[must_use]
 pub fn render_body(shell: Shell, bin_dir: &Path) -> String {
     let raw_dir = bin_dir.display().to_string();
-    // `{data}/php-cli.ini`, derived from `{data}/bin`. Omitted only if `bin_dir`
-    // somehow has no parent (never in practice).
     let raw_phprc = bin_dir
         .parent()
         .map(|d| d.join("php-cli.ini").display().to_string());
@@ -120,7 +118,6 @@ pub fn render_body(shell: Shell, bin_dir: &Path) -> String {
             }
             s
         }
-        // POSIX-compatible (sh/bash/zsh): only prepend when not already present.
         Shell::Zsh | Shell::Bash | Shell::Posix => {
             let dir = esc_posix_dq(&raw_dir);
             let mut s = format!(
@@ -160,8 +157,6 @@ pub fn contains_block(existing: &str) -> bool {
 pub fn upsert_block(existing: &str, shell: Shell, bin_dir: &Path) -> String {
     let block = render_block(shell, bin_dir);
     if let Some((open, close)) = marker_line_indices(existing) {
-        // Replace lines [open, close] inclusive with the freshly rendered block,
-        // keeping everything before and after byte-for-byte.
         let lines: Vec<&str> = existing.split('\n').collect();
         let before = join_lines(&lines, 0, open);
         let after = join_lines(&lines, close + 1, lines.len());
@@ -170,8 +165,7 @@ pub fn upsert_block(existing: &str, shell: Shell, bin_dir: &Path) -> String {
             out.push_str(&before);
             out.push('\n');
         }
-        out.push_str(&block); // block already ends in '\n'
-                              // `after` is whatever followed the close marker; re-attach verbatim.
+        out.push_str(&block);
         if !after.is_empty() {
             out.push_str(&after);
         }
@@ -179,7 +173,6 @@ pub fn upsert_block(existing: &str, shell: Shell, bin_dir: &Path) -> String {
     } else {
         let mut out = String::from(existing);
         if !out.is_empty() {
-            // Guarantee exactly one blank line before the block.
             while out.ends_with('\n') {
                 out.pop();
             }
@@ -212,7 +205,6 @@ pub fn remove_block(existing: &str) -> String {
         return existing.to_owned();
     };
     let lines: Vec<&str> = existing.split('\n').collect();
-    // Drop a single blank separator line directly above the open marker.
     let start = if open > 0 && lines.get(open - 1).is_some_and(|l| l.is_empty()) {
         open - 1
     } else {
@@ -224,7 +216,6 @@ pub fn remove_block(existing: &str) -> String {
         (true, true) => String::new(),
         (true, false) => after,
         (false, true) => {
-            // Preserve the original trailing newline iff the source had one.
             let mut s = before;
             if existing.ends_with('\n') {
                 s.push('\n');
@@ -294,14 +285,12 @@ mod tests {
     fn body_is_guarded_and_quotes_the_space() {
         let posix = render_body(Shell::Zsh, &bin());
         assert!(posix.contains("Application Support"));
-        // Quoted (space) and guarded (case + already-present arm).
         assert!(posix.contains(
             "export PATH=\"/Users/x/Library/Application Support/io.yerd.Yerd/bin:$PATH\""
         ));
         assert!(posix.contains("case \":$PATH:\""));
         assert!(posix.contains(") ;;"));
 
-        // PHPRC points at the generated CLI ini beside the bin dir, quoted.
         assert!(posix.contains(
             "export PHPRC=\"/Users/x/Library/Application Support/io.yerd.Yerd/php-cli.ini\""
         ));
@@ -318,16 +307,13 @@ mod tests {
 
     #[test]
     fn body_escapes_shell_metacharacters_in_the_path() {
-        // A data dir with `$`, backtick, `\`, and `"` must not expand/break the block.
         let dir = PathBuf::from(r#"/home/b$x/a`b/c\d/e"f/bin"#);
 
         let posix = render_body(Shell::Zsh, &dir);
-        // POSIX double quotes: \, $, `, " are all backslash-escaped.
         assert!(posix.contains(r#"export PATH="/home/b\$x/a\`b/c\\d/e\"f/bin:$PATH""#));
         assert!(posix.contains(r#"export PHPRC="/home/b\$x/a\`b/c\\d/e\"f/php-cli.ini""#));
 
         let fish = render_body(Shell::Fish, &dir);
-        // fish double quotes: \, $, " escaped, but backtick stays literal.
         assert!(fish.contains(r#"set -gx PATH "/home/b\$x/a`b/c\\d/e\"f/bin" $PATH"#));
         assert!(fish.contains(r#"set -gx PHPRC "/home/b\$x/a`b/c\\d/e\"f/php-cli.ini""#));
     }
@@ -345,13 +331,11 @@ mod tests {
         let once = upsert_block("# my zshrc\nexport FOO=1\n", Shell::Zsh, &bin());
         let twice = upsert_block(&once, Shell::Zsh, &bin());
         assert_eq!(once, twice);
-        // Exactly one block.
         assert_eq!(once.matches(MARKER_OPEN).count(), 1);
     }
 
     #[test]
     fn upsert_appends_with_single_blank_separator_no_trailing_newline() {
-        // Existing file with NO trailing newline.
         let out = upsert_block("export FOO=1", Shell::Bash, &bin());
         assert!(out.starts_with("export FOO=1\n\n# >>> yerd PATH >>>"));
         assert!(out.matches(MARKER_OPEN).count() == 1);
@@ -360,7 +344,6 @@ mod tests {
     #[test]
     fn upsert_replaces_in_place_preserving_surroundings() {
         let original = format!("A\n\n{}B\nC\n", render_block(Shell::Zsh, &bin()));
-        // Re-upsert (e.g. bin dir unchanged): content around the block is intact.
         let out = upsert_block(&original, Shell::Zsh, &bin());
         assert!(out.starts_with("A\n"));
         assert!(out.contains("B\nC\n"));
@@ -378,7 +361,6 @@ mod tests {
 
     #[test]
     fn remove_does_not_eat_a_nonblank_line_above_the_marker() {
-        // User content abuts the open marker (no blank separator).
         let block = render_block(Shell::Zsh, &bin());
         let text = format!("export KEEP=1\n{block}");
         let out = remove_block(&text);

@@ -46,7 +46,6 @@ fn populated_expected() -> Config {
     c.ports = Ports {
         http: 8080,
         https: 8443,
-        // POPULATED omits the fallback keys → they take the 8080 / 8443 defaults.
         fallback_http: 8080,
         fallback_https: 8443,
     };
@@ -67,8 +66,6 @@ fn populated_expected() -> Config {
             web_root: None,
         },
     );
-    // POPULATED is a v1 file: its `enabled = ["mysql", "redis"]` array migrates
-    // to per-service instances, each enabled (version/port unset).
     c.services
         .instances
         .insert("mysql".to_string(), ServiceInstance::default());

@@ -30,7 +30,7 @@ pub use schema::{
 /// The on-disk schema version this crate writes. Bumped together with a new
 /// entry in `migrate::STEPS`.
 ///
-/// Decoupled from `yerd_ipc::PROTOCOL_VERSION` — the on-disk TOML schema and
+/// Decoupled from `yerd_ipc::PROTOCOL_VERSION` - the on-disk TOML schema and
 /// the IPC wire protocol evolve independently.
 ///
 /// v2 added per-site web roots: `web_subpath` inside `[[linked]]` and
@@ -42,7 +42,7 @@ pub use schema::{
 ///
 /// v3 promoted `[services]` from an `enabled = [...]` array of names to per-
 /// service `[services.<id>]` tables ([`ServiceInstance`], carrying version /
-/// port / enabled). The v2→v3 migration rewrites the old array — the first
+/// port / enabled). The v2→v3 migration rewrites the old array - the first
 /// *structural* migration step (v0→v1 and v1→v2 are bare version bumps).
 ///
 /// v4 added the optional `[mail]` section ([`MailSection`]) for the built-in

@@ -2,7 +2,7 @@
 //!
 //! `{data}/bin/laravel` is a symlink to *this* `yerd` binary. When invoked under
 //! that name (detected from `argv[0]` before clap), yerd execs the managed
-//! Laravel installer under the default managed PHP —
+//! Laravel installer under the default managed PHP -
 //! `php …/tools/laravel/bin/laravel <args…>`. Unix-only. The daemon's
 //! own site-creation handler does **not** use this shim (it pins a specific PHP
 //! per job); this is purely for terminal use of `laravel new`.
@@ -38,7 +38,6 @@ fn run() -> ExitCode {
         return fail("no PHP installed — run `yerd install php <version>`".to_owned());
     };
 
-    // Kept in sync with `yerdd`'s `tools::laravel::installer_bin`.
     let installer = dirs
         .data
         .join("tools")
@@ -53,9 +52,6 @@ fn run() -> ExitCode {
         );
     }
 
-    // `exec` only returns on failure. Composer (which the installer shells out to)
-    // reads PHP_BINARY from the running php process, so argv[0] staying the real
-    // php path is correct.
     let err = Command::new(&php_bin)
         .arg(&installer)
         .args(std::env::args_os().skip(1))

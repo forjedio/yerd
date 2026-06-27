@@ -1,9 +1,9 @@
-//! Composer installer — fetch + verify `composer.phar` into `{data}/tools/composer/`.
+//! Composer installer - fetch + verify `composer.phar` into `{data}/tools/composer/`.
 //!
 //! Composer is a PHP phar run via yerd's managed PHP (the `composer` multi-call
 //! shim execs `php composer.phar …`). Integrity uses Composer's published
 //! `composer.phar.sha256sum` sidecar (the `/versions` JSON carries no digest).
-//! Installed on demand from the Tooling page — not auto-fetched.
+//! Installed on demand from the Tooling page - not auto-fetched.
 
 use std::path::{Path, PathBuf};
 
@@ -34,7 +34,7 @@ struct Versions {
     stable: Vec<VersionEntry>,
 }
 
-/// `{data}/tools/composer/composer.phar` — the path the `composer` shim execs.
+/// `{data}/tools/composer/composer.phar` - the path the `composer` shim execs.
 /// Kept in sync with `bin/yerd/src/composer_shim.rs`.
 #[must_use]
 pub fn phar_path(dirs: &PlatformDirs) -> PathBuf {
@@ -70,8 +70,6 @@ fn choose_version(versions: &Versions, host_id: Option<u32>) -> Option<String> {
 /// Download, verify, and install the latest Composer the installed PHP can run.
 pub async fn install(dirs: &PlatformDirs, dl: &dyn Downloader) -> Result<(), ToolError> {
     let versions = fetch_versions(dl).await?;
-    // Composer runs through yerd's managed PHP shim, so an install with no PHP
-    // present would produce a non-runnable command — require one up front.
     let Some(host_id) = installed_versions(dirs).into_iter().map(version_id).max() else {
         return Err(ToolError::UnsupportedHost(
             "Composer (requires an installed PHP)",
@@ -162,5 +160,64 @@ mod tests {
         assert_eq!(choose_version(&v, Some(80_400)).as_deref(), Some("2.10.1"));
         assert_eq!(choose_version(&v, Some(70_000)).as_deref(), Some("2.2.22"));
         assert_eq!(choose_version(&v, None).as_deref(), Some("2.10.1"));
+    }
+
+    #[test]
+    fn choose_version_none_when_host_too_old() {
+        let v: Versions = serde_json::from_str(versions_json()).unwrap();
+        assert_eq!(choose_version(&v, Some(50_000)), None);
+    }
+
+    #[test]
+    fn choose_version_skips_invalid_version_strings() {
+        let v: Versions = serde_json::from_str(
+            r#"{"stable":[
+                {"path":"x","version":"../evil","min-php":50302},
+                {"path":"y","version":"2.7.9","min-php":50302}
+            ]}"#,
+        )
+        .unwrap();
+        assert_eq!(choose_version(&v, Some(80_000)).as_deref(), Some("2.7.9"));
+    }
+
+    #[test]
+    fn version_id_minor_offsets() {
+        assert_eq!(version_id(PhpVersion::new(7, 2)), 70_200);
+        assert_eq!(version_id(PhpVersion::new(8, 0)), 80_000);
+    }
+
+    #[test]
+    fn valid_version_edge_cases() {
+        assert!(valid_version("8"));
+        assert!(!valid_version(""));
+        assert!(!valid_version(".5"));
+        assert!(!valid_version("1..2"));
+        assert!(!valid_version("1.2-rc"));
+    }
+
+    struct ShaDownloader(Vec<u8>);
+
+    #[async_trait::async_trait]
+    impl Downloader for ShaDownloader {
+        async fn download(&self, _url: &str) -> Result<Vec<u8>, yerd_php::DownloadError> {
+            Ok(self.0.clone())
+        }
+    }
+
+    #[tokio::test]
+    async fn fetch_sha256sum_parses_sidecar() {
+        let hex = "a".repeat(64);
+        let body = format!("{hex}  composer.phar\n");
+        let dl = ShaDownloader(body.into_bytes());
+        assert_eq!(fetch_sha256sum(&dl, "url").await.unwrap(), hex);
+    }
+
+    #[tokio::test]
+    async fn fetch_sha256sum_rejects_bad_format() {
+        let dl = ShaDownloader(b"deadbeef  composer.phar\n".to_vec());
+        assert!(fetch_sha256sum(&dl, "url").await.is_err());
+        let hex = "A".repeat(64);
+        let dl2 = ShaDownloader(format!("{hex}  composer.phar").into_bytes());
+        assert_eq!(fetch_sha256sum(&dl2, "url").await.unwrap(), "a".repeat(64));
     }
 }

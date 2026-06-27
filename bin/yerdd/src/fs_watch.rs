@@ -8,14 +8,14 @@
 //! ## What we watch (and what we don't)
 //!
 //! Watches are **non-recursive**, so the descriptor count scales with the number
-//! of sites — not project size — and `vendor/`/`node_modules/` churn never
+//! of sites - not project size - and `vendor/`/`node_modules/` churn never
 //! reaches a parent watch. The set is:
 //! - every **parked root** (to notice child sites appearing/disappearing), plus
 //! - the project root of every **unresolved** parked site (web root not detected
-//!   yet) — so a project cloned in is picked up.
+//!   yet) - so a project cloned in is picked up.
 //!
 //! A site is dropped from the watch set once it resolves (a framework/web root
-//! was found) or is manually overridden — "don't watch what we already know".
+//! was found) or is manually overridden - "don't watch what we already know".
 //! The trade-off: deleting a resolved site's web root in place is not noticed
 //! until the next scan from another trigger (a mutation, a sibling change, or a
 //! restart).
@@ -28,7 +28,7 @@
 //!
 //! On either wake the task rebuilds the router from the *current* config under
 //! the config lock (same lock order as the mutation path: config → router), so
-//! it never races a concurrent mutation, and it **never writes config** — so it
+//! it never races a concurrent mutation, and it **never writes config** - so it
 //! cannot feed back into its own fs events.
 
 use std::collections::HashSet;
@@ -51,11 +51,8 @@ const DEBOUNCE: Duration = Duration::from_millis(500);
 /// created the task logs and exits, leaving on-demand rescans (mutations,
 /// restart) as the freshness path.
 pub async fn run(state: Arc<DaemonState>, mut shutdown_rx: watch::Receiver<bool>) {
-    // notify runs the event handler on its own thread; bridge to async with an
-    // unbounded channel. We only need a wake signal, not the event payload.
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<()>();
     let mut debouncer = match new_debouncer(DEBOUNCE, move |res: DebounceEventResult| {
-        // Any successful batch is a wake; on error we still wake to re-sync.
         let _ = res;
         let _ = tx.send(());
     }) {
@@ -67,10 +64,6 @@ pub async fn run(state: Arc<DaemonState>, mut shutdown_rx: watch::Receiver<bool>
     };
 
     let mut watched: HashSet<PathBuf> = HashSet::new();
-    // Seed the watch set from the current routing (also fixes up the router if
-    // the disk changed between startup's scan and now). `reconcile` is
-    // synchronous and runs *after* the await, so the non-`Send` watcher handle
-    // is never held across an `.await` (which would make this task un-spawnable).
     if let Some(desired) = recompute(&state).await {
         reconcile(debouncer.watcher(), &mut watched, &desired);
     }
@@ -94,9 +87,6 @@ pub async fn run(state: Arc<DaemonState>, mut shutdown_rx: watch::Receiver<bool>
 /// (every parked root + every unresolved project root). Returns `None` if the
 /// rebuild failed (the previous router is left in place).
 async fn recompute(state: &DaemonState) -> Option<HashSet<PathBuf>> {
-    // Hold the config lock across the rebuild + router swap so we serialise with
-    // the IPC mutation path (same config → router lock order). The detection
-    // cache keeps the rescan cheap.
     let guard = state.config.lock().await;
     let (router, watch_roots) = match startup::build_routing(
         &guard,
@@ -119,7 +109,7 @@ async fn recompute(state: &DaemonState) -> Option<HashSet<PathBuf>> {
 }
 
 /// Add watches for newly-desired paths and drop watches for ones no longer
-/// wanted. Watch/unwatch failures are logged at debug and otherwise ignored —
+/// wanted. Watch/unwatch failures are logged at debug and otherwise ignored -
 /// e.g. a parked root that doesn't exist on disk simply isn't watched (and is
 /// retried on the next reconcile).
 fn reconcile(
@@ -127,7 +117,6 @@ fn reconcile(
     tracked: &mut HashSet<PathBuf>,
     desired: &HashSet<PathBuf>,
 ) {
-    // Remove stale watches.
     let stale: Vec<PathBuf> = tracked.difference(desired).cloned().collect();
     for path in stale {
         if let Err(e) = watcher.unwatch(&path) {
@@ -135,7 +124,6 @@ fn reconcile(
         }
         tracked.remove(&path);
     }
-    // Add new watches (non-recursive).
     let additions: Vec<PathBuf> = desired.difference(tracked).cloned().collect();
     for path in additions {
         match watcher.watch(&path, RecursiveMode::NonRecursive) {

@@ -49,8 +49,10 @@ export type StartPhase = "idle" | "installing" | "upgrading" | "starting" | "run
 
 const POLL_MS = 500;
 // The readiness ("running") wait gets its own ceiling, separate from the
-// per-phase budgets the Rust host enforces on install/upgrade/start.
-const RUNNING_CEILING_MS = 20_000;
+// per-phase budgets the Rust host enforces on install/upgrade/start. Sized to
+// outlast a cold daemon start after an upgrade (the surviving instance still
+// boots and warms its services) so a normal upgrade never trips a false timeout.
+const RUNNING_CEILING_MS = 30_000;
 
 /** Button label for a phase, or `null` when idle (callers fall back to their
  * own resting label). */

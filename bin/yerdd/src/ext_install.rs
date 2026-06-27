@@ -5,8 +5,8 @@
 //! each file's `php`/`os`/`arch`/`sha256`. yerd resolves
 //! the file matching the host triple for each installed PHP minor, verifies the
 //! SHA-256, and places it at `{data}/php-ext/php-<ver>/yerd-dump.so` (a sibling
-//! of the PHP installs, so a PHP patch update — which wipes `{data}/php/php-<ver>`
-//! — never removes the extension).
+//! of the PHP installs, so a PHP patch update - which wipes `{data}/php/php-<ver>`
+//! - never removes the extension).
 //!
 //! Everything here is best-effort: a download/verify failure logs and leaves the
 //! site running with no dumps.
@@ -65,7 +65,7 @@ const PCOV_SPEC: ExtSpec = ExtSpec {
 };
 
 /// The host OS/arch as the manifest names them (`macos`/`linux`,
-/// `aarch64`/`x86_64`) — `std::env::consts` already uses these spellings.
+/// `aarch64`/`x86_64`) - `std::env::consts` already uses these spellings.
 fn host_os_arch() -> (&'static str, &'static str) {
     (std::env::consts::OS, std::env::consts::ARCH)
 }
@@ -111,13 +111,11 @@ pub async fn ensure_for_installed(dirs: &PlatformDirs, dl: &dyn Downloader) {
 /// Used by the CLI cover shims (`phpcover`/`php<ver>cover`); ungated, unlike the
 /// dump fetch. Warm/offline starts skip the network entirely: if every installed
 /// version already has a `pcov.so`, return without touching GitHub. (The "present"
-/// check is a proxy for "current" — a stale `.so` won't refresh on a pure restart,
+/// check is a proxy for "current" - a stale `.so` won't refresh on a pure restart,
 /// which is fine: pcov is ABI-stable per PHP minor and any *missing* `.so` still
 /// forces a full manifest fetch + re-verify.)
 pub async fn ensure_pcov_for_installed(dirs: &PlatformDirs, dl: &dyn Downloader) {
     let versions = installed_versions(dirs);
-    // Nothing to fetch when no PHP is installed, or when every version already
-    // has its `.so` — skip the manifest GET entirely.
     if versions.is_empty() || versions.iter().all(|v| pcov_so_path(dirs, *v).is_file()) {
         return;
     }
@@ -143,7 +141,7 @@ async fn ensure_for_installed_spec(dirs: &PlatformDirs, dl: &dyn Downloader, spe
         };
         let dest = so_path_named(dirs, v, spec.so_name);
         if existing_matches(&dest, &file.sha256) {
-            continue; // already current
+            continue;
         }
         match download_and_place(dl, &file.name, &file.sha256, &dest).await {
             Ok(()) => tracing::info!(php = %minor, ext = spec.label, "installed PHP extension"),
@@ -200,7 +198,7 @@ async fn download_and_place(
         std::fs::create_dir_all(parent)?;
     }
     // Atomic place: write a unique temp sibling (pid + sequence, so overlapping
-    // installs of the same version don't share a temp path) then rename over.
+    // installs of the same version don't share a temp path), then rename over.
     let seq = TMP_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let tmp = dest.with_extension(format!("so.{}.{}.tmp", std::process::id(), seq));
     std::fs::write(&tmp, &bytes)?;
@@ -275,5 +273,126 @@ mod tests {
         assert!(existing_matches(&f, &good));
         assert!(!existing_matches(&f, "deadbeef"));
         assert!(!existing_matches(&tmp.path().join("missing.so"), &good));
+    }
+
+    #[test]
+    fn host_os_arch_uses_std_env_consts() {
+        let (os, arch) = host_os_arch();
+        assert_eq!(os, std::env::consts::OS);
+        assert_eq!(arch, std::env::consts::ARCH);
+    }
+
+    #[test]
+    fn so_path_named_layout() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dirs = dirs_in(tmp.path());
+        let p = so_path_named(&dirs, PhpVersion::new(8, 3), "custom.so");
+        assert!(p.ends_with("php-ext/php-8.3/custom.so"));
+    }
+
+    /// A URL-keyed fake downloader: returns the queued bytes for any URL that
+    /// ends with one of the registered suffixes, else a transport error. Counts
+    /// `download` invocations so tests can assert the network is never touched.
+    struct FakeDownloader {
+        routes: std::collections::HashMap<String, Vec<u8>>,
+        calls: std::sync::atomic::AtomicUsize,
+    }
+
+    impl FakeDownloader {
+        fn new(routes: std::collections::HashMap<String, Vec<u8>>) -> Self {
+            Self {
+                routes,
+                calls: std::sync::atomic::AtomicUsize::new(0),
+            }
+        }
+
+        fn call_count(&self) -> usize {
+            self.calls.load(std::sync::atomic::Ordering::Relaxed)
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl Downloader for FakeDownloader {
+        async fn download(&self, url: &str) -> Result<Vec<u8>, yerd_php::DownloadError> {
+            self.calls
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            for (suffix, bytes) in &self.routes {
+                if url.ends_with(suffix) {
+                    return Ok(bytes.clone());
+                }
+            }
+            Err(yerd_php::DownloadError::Transport {
+                url: url.to_owned(),
+                reason: "no route".into(),
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn fetch_manifest_parses_valid_json() {
+        let body = serde_json::json!({
+            "files": [
+                {"name":"yerd-dump-php8.4-macos-aarch64.so","php":"8.4","os":"macos","arch":"aarch64","sha256":"ab"}
+            ]
+        })
+        .to_string();
+        let dl = FakeDownloader::new(
+            [("manifest.json".to_owned(), body.into_bytes())]
+                .into_iter()
+                .collect(),
+        );
+        let m = fetch_manifest(&dl, "manifest.json", "yerd-dump")
+            .await
+            .expect("manifest parses");
+        assert_eq!(m.files.len(), 1);
+        assert_eq!(m.files[0].php, "8.4");
+    }
+
+    #[tokio::test]
+    async fn fetch_manifest_none_on_bad_json_or_transport() {
+        let dl = FakeDownloader::new(
+            [("manifest.json".to_owned(), b"not json".to_vec())]
+                .into_iter()
+                .collect(),
+        );
+        assert!(fetch_manifest(&dl, "manifest.json", "yerd-dump")
+            .await
+            .is_none());
+        let empty = FakeDownloader::new(std::collections::HashMap::new());
+        assert!(fetch_manifest(&empty, "manifest.json", "yerd-dump")
+            .await
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn ensure_pcov_skips_network_when_no_php_installed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dirs = dirs_in(tmp.path());
+        let dl = FakeDownloader::new(std::collections::HashMap::new());
+        ensure_pcov_for_installed(&dirs, &dl).await;
+        assert_eq!(
+            dl.call_count(),
+            0,
+            "no PHP installed: must not hit the network"
+        );
+    }
+
+    #[tokio::test]
+    async fn ensure_for_installed_is_noop_without_versions() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dirs = dirs_in(tmp.path());
+        let body = serde_json::json!({ "files": [] }).to_string();
+        let dl = FakeDownloader::new(
+            [("manifest.json".to_owned(), body.into_bytes())]
+                .into_iter()
+                .collect(),
+        );
+        ensure_for_installed(&dirs, &dl).await;
+        assert!(!dirs.data.join("php-ext").exists());
+        assert_eq!(
+            dl.call_count(),
+            1,
+            "fetches the manifest once, then places no .so because no PHP is installed"
+        );
     }
 }

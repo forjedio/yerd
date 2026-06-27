@@ -45,7 +45,7 @@ pub enum Command {
         path: PathBuf,
     },
     /// Set the PHP version. One argument (`yerd use 8.5`) sets the **global**
-    /// default — the terminal `php` shim and the site fallback. Two arguments
+    /// default - the terminal `php` shim and the site fallback. Two arguments
     /// (`yerd use <site> 8.5`) set a single site's version.
     Use {
         /// A PHP version (global) or a site name (when `version` is given).
@@ -81,8 +81,8 @@ pub enum Command {
     ///
     /// With a subcommand (`php`/`tool`) removes that component via the daemon.
     /// With no subcommand, fully uninstalls yerd from this machine: config,
-    /// data, downloads, the PATH entry, the daemon service, and — when run with
-    /// `sudo` — the system-level trust/resolver/port changes from `elevate`.
+    /// data, downloads, the PATH entry, the daemon service, and - when run with
+    /// `sudo` - the system-level trust/resolver/port changes from `elevate`.
     /// Prompts for confirmation first unless `--yes` is given.
     Uninstall {
         /// What to uninstall; omit to uninstall yerd entirely.
@@ -188,7 +188,7 @@ pub enum Command {
         target: Option<ElevateTarget>,
     },
     /// Add or remove yerd's shim directory (`php`, `composer`, …) from your
-    /// shell's PATH. Local — does not talk to the daemon.
+    /// shell's PATH. Local - does not talk to the daemon.
     Path {
         /// What to do.
         #[command(subcommand)]

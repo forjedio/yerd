@@ -1,6 +1,6 @@
 //! Pure rendering of service config files.
 //!
-//! No I/O — each function takes the resolved values and returns the file body as
+//! No I/O - each function takes the resolved values and returns the file body as
 //! a string. The manager writes it. Covers Redis/Valkey (`redis.conf`), `MySQL` and
 //! `MariaDB` (`my.cnf`), and `PostgreSQL` (`postgresql.conf`).
 
@@ -17,9 +17,6 @@ use std::path::Path;
 /// - no `requirepass` → empty/no password, as specified.
 #[must_use]
 pub fn render_redis_conf(port: u16, datadir: &Path, logfile: &Path) -> String {
-    // Paths MUST be double-quoted: the per-user data dir routinely contains a
-    // space (e.g. macOS `~/Library/Application Support/io.yerd.Yerd/…`), and an
-    // unquoted `dir /a b/c` would be mis-parsed by Redis/Valkey's arg splitter.
     let dir = quote_conf_path(datadir);
     let log = quote_conf_path(logfile);
     format!(
@@ -47,7 +44,7 @@ fn quote_conf_path(p: &Path) -> String {
 
 /// Render a `MySQL` / `MariaDB` option file: loopback-only, no password.
 ///
-/// One renderer serves both engines — `mariadbd` reads the `[mysqld]` group as
+/// One renderer serves both engines - `mariadbd` reads the `[mysqld]` group as
 /// well as `[mariadbd]`. Key invariants:
 /// - `bind-address = 127.0.0.1` + `skip-name-resolve` → reachable only from
 ///   localhost.
@@ -90,12 +87,12 @@ pub fn render_my_cnf(
 }
 
 /// Render the `MySQL`/`MariaDB` bootstrap SQL the server runs on every start (via
-/// the `init-file` directive — see [`render_my_cnf`]).
+/// the `init-file` directive - see [`render_my_cnf`]).
 ///
 /// It makes the passwordless `root` account reachable over **TCP loopback** so
 /// apps using `DB_HOST=127.0.0.1` (Laravel's default) connect out of the box.
-/// `mysqld --initialize-insecure` creates only `root@localhost`, which — under
-/// `skip-name-resolve` — matches the Unix socket but not a TCP client presenting
+/// `mysqld --initialize-insecure` creates only `root@localhost`, which - under
+/// `skip-name-resolve` - matches the Unix socket but not a TCP client presenting
 /// the literal host `127.0.0.1`; that mismatch is the `[1130]` rejection.
 ///
 /// Invariants that keep this safe to run on every start:
@@ -105,7 +102,7 @@ pub fn render_my_cnf(
 ///   the privileges.
 /// - **Any statement error aborts server startup** (the `init-file` runs on
 ///   every normal start, not just init), so every statement must be safe to
-///   re-run — hence the `IF NOT EXISTS` guards and re-assertable `GRANT`s. The
+///   re-run - hence the `IF NOT EXISTS` guards and re-assertable `GRANT`s. The
 ///   reader is `;`-delimited and folds the leading `--` comments into the first
 ///   statement (the lexer then strips them); statements are kept one-per-line
 ///   here for legibility, not because the reader requires it.
@@ -180,7 +177,6 @@ mod tests {
         assert!(conf.contains("daemonize no"), "must run in foreground");
         assert!(!conf.contains("requirepass"), "no password");
         assert!(conf.contains("port 6379"));
-        // Paths are double-quoted so a space in the data dir doesn't break parsing.
         assert!(conf.contains("dir \"/data/redis\""));
         assert!(conf.contains("logfile \"/log/redis.log\""));
     }
@@ -220,11 +216,8 @@ mod tests {
         assert!(conf.contains("datadir = \"/data/mysql\""));
         assert!(conf.contains("socket = \"/run/mysql.sock\""));
         assert!(conf.contains("log-error = \"/log/mysql.log\""));
-        // pid-file is inside the datadir (parent always exists post-init).
         assert!(conf.contains("pid-file = \"/data/mysql/mysqld.pid\""));
-        // init-file points at the bootstrap SQL (TCP-loopback root grant).
         assert!(conf.contains("init-file = \"/cfg/mysql-init.sql\""));
-        // No password directive — root is left empty by --initialize-insecure.
         assert!(!conf.to_lowercase().contains("password"));
     }
 
@@ -250,9 +243,6 @@ mod tests {
     #[test]
     fn my_bootstrap_sql_grants_passwordless_root_over_tcp_loopback() {
         let sql = render_my_bootstrap_sql();
-        // The IPv4 loopback host gets a passwordless root with full privileges.
-        // Only 127.0.0.1 — the listener is IPv4-only (`bind-address = 127.0.0.1`),
-        // so a `root@::1` account would be unreachable dead surface.
         assert!(sql.contains("CREATE USER IF NOT EXISTS 'root'@'127.0.0.1' IDENTIFIED BY '';"));
         assert!(
             sql.contains("GRANT ALL PRIVILEGES ON *.* TO 'root'@'127.0.0.1' WITH GRANT OPTION;")
@@ -261,15 +251,11 @@ mod tests {
             !sql.contains("::1"),
             "no IPv6-loopback account (listener is IPv4-only)"
         );
-        // Idempotent: every CREATE USER is guarded so re-running on each start is safe.
         for line in sql.lines() {
             if line.trim_start().starts_with("CREATE USER") {
                 assert!(line.contains("IF NOT EXISTS"), "non-idempotent: {line}");
             }
         }
-        // init-file aborts startup on any statement error, so keep each statement
-        // self-contained and ;-terminated on its own line (defence against a future
-        // multi-line edit silently changing what the `;`-delimited reader executes).
         for line in sql.lines() {
             let t = line.trim();
             if t.is_empty() || t.starts_with("--") {
@@ -288,17 +274,14 @@ mod tests {
         assert!(conf.contains("listen_addresses = '127.0.0.1'"));
         assert!(!conf.contains("0.0.0.0"));
         assert!(conf.contains("port = 5432"));
-        // No Unix socket; logging to stderr (manager redirects it).
         assert!(conf.contains("unix_socket_directories = ''"));
         assert!(conf.contains("logging_collector = off"));
-        // hba/ident pinned to the trust-configured files initdb wrote.
         assert!(conf.contains("hba_file = '/data/pg/data-17/pg_hba.conf'"));
         assert!(conf.contains("ident_file = '/data/pg/data-17/pg_ident.conf'"));
     }
 
     #[test]
     fn postgresql_conf_escapes_single_quotes_in_paths() {
-        // A datadir containing a single quote must double it inside the value.
         let conf = render_postgresql_conf(5432, &PathBuf::from("/data/o'brien/data-17"));
         assert!(
             conf.contains("hba_file = '/data/o''brien/data-17/pg_hba.conf'"),

@@ -4,7 +4,7 @@
 //!
 //! `Bound::bind` is two-stage from `Bound::serve` because the daemon needs the
 //! resolved [`SocketAddr`] (after kernel-assigns an ephemeral port) *before*
-//! starting `serve` — it has to hand the address to
+//! starting `serve` - it has to hand the address to
 //! `yerd_platform::ResolverInstaller::install`.
 
 use std::future::Future;
@@ -35,7 +35,7 @@ impl Bound {
     ///
     /// `addr.ip().is_loopback()` should hold (`127.0.0.0/8` or `::1`). Binding
     /// to `0.0.0.0` / `::` would expose the responder to the LAN; this is a
-    /// documented contract, **not enforced** — the daemon validates inputs
+    /// documented contract, **not enforced** - the daemon validates inputs
     /// before opening sockets.
     ///
     /// If `addr.port() == 0`, UDP is bound first to capture the kernel-assigned
@@ -43,7 +43,7 @@ impl Bound {
     /// dropped and the loop retries up to a fixed internal budget (5
     /// attempts). After retries are exhausted, returns
     /// [`DnsError::PortPairMismatch`]. When called with an explicit port,
-    /// no retry — TCP bind failure surfaces immediately as [`DnsError::Bind`].
+    /// no retry - TCP bind failure surfaces immediately as [`DnsError::Bind`].
     ///
     /// On success, [`Bound::local_addr`] returns the actual port (which may
     /// differ from the input `addr.port()` when the latter was 0). Operator
@@ -130,12 +130,9 @@ impl Bound {
 }
 
 // `tokio::spawn(bound.serve(...))` requires the returned future to be
-// `Send + 'static`. The future captures `Bound` and `Responder`; both must
-// therefore be `Send + 'static` so auto-trait inference carries through. A
-// future `&'a` field on either would silently break the daemon's spawn site;
-// this assertion catches it at type-check time. (`const fn` with trait
-// bounds: stable since Rust 1.61; empty body has no const-disallowed
-// operations.)
+// `Send + 'static`. The future captures `Bound` and `Responder`, so both must
+// be `Send + 'static`; a future `&'a` field on either would silently break the
+// daemon's spawn site. This assertion catches it at type-check time.
 const _: () = {
     const fn assert_send_static<T: Send + 'static>() {}
     assert_send_static::<Bound>();
@@ -152,8 +149,6 @@ impl RequestHandler for LoopbackHandler {
     where
         R: ResponseHandler,
     {
-        // Hickory's parser pre-handler FORMERRs malformed packets (0 or >1
-        // queries) before this code runs (server_future.rs:1051-1082).
         let q: &LowerQuery = request.query();
 
         let qclass = match q.query_type() {
@@ -162,23 +157,13 @@ impl RequestHandler for LoopbackHandler {
             _ => QClass::Other,
         };
 
-        // hickory's `Name::Display` writes a trailing dot when the name is
-        // FQDN-flagged (the typical case for inbound queries). Strip it so
-        // the responder's exact-match path sees the bare TLD, not
-        // <bareTLD>+'.'. This trim is load-bearing.
-        // (`LowerName` already lowercases; the responder also does
-        // `eq_ignore_ascii_case`. Belt-and-braces.)
         let raw = q.name().to_string();
         let name = raw.trim_end_matches('.');
 
         let decision = self.responder.answer(name, qclass);
 
-        // `response_from_request` copies op_code, message_type, etc. from
-        // the request and sets QR=1. We only override AA and RCODE.
         let builder = MessageResponseBuilder::from_message_request(request);
         let mut header = Header::response_from_request(request.header());
-        // Authoritative only for names in our zone; a REFUSED (out-of-zone)
-        // reply must clear AA so resolvers don't trust it.
         header.set_authoritative(!matches!(decision, Answer::Refused));
 
         let owner: hickory_proto::rr::Name = q.name().into();
@@ -206,8 +191,8 @@ impl RequestHandler for LoopbackHandler {
         let response = builder.build(
             header,
             answers.iter(),
-            std::iter::empty::<&Record>(), // name_servers — no NS records
-            std::iter::empty::<&Record>(), // soa — RFC 2308 §3: deliberately no SOA
+            std::iter::empty::<&Record>(), // name_servers
+            std::iter::empty::<&Record>(), // soa: RFC 2308 §3, no SOA
             std::iter::empty::<&Record>(), // additionals
         );
         handle
@@ -221,3 +206,164 @@ const _: () = {
     const fn assert<T: RequestHandler>() {}
     assert::<LoopbackHandler>();
 };
+
+#[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing
+)]
+mod tests {
+    //! Socket-free unit coverage of `LoopbackHandler::handle_request`: build a
+    //! `Request` from an in-memory query packet, drive the handler with a
+    //! capturing `ResponseHandler`, and decode the emitted bytes back into a
+    //! `Message` to assert the wire shape (RCODE, AA bit, answer records). No
+    //! UDP/TCP socket is bound and no live resolver is involved.
+
+    use std::net::SocketAddr;
+    use std::str::FromStr;
+    use std::sync::{Arc, Mutex};
+
+    use hickory_proto::op::{Message, MessageType, OpCode, Query};
+    use hickory_proto::rr::Name;
+    use hickory_proto::serialize::binary::{BinDecodable, BinDecoder, BinEncodable, BinEncoder};
+    use hickory_server::authority::{MessageRequest, MessageResponse};
+    use hickory_server::server::Protocol;
+
+    use yerd_core::Tld;
+
+    use super::*;
+
+    /// A `ResponseHandler` that serialises the handler's response into a shared
+    /// buffer (mirrors hickory's own `ResponseHandle::send_response` encode
+    /// path) so the test can decode and inspect it.
+    #[derive(Clone)]
+    struct CaptureHandler {
+        buf: Arc<Mutex<Vec<u8>>>,
+    }
+
+    #[async_trait::async_trait]
+    impl ResponseHandler for CaptureHandler {
+        async fn send_response<'a>(
+            &mut self,
+            response: MessageResponse<
+                '_,
+                'a,
+                impl Iterator<Item = &'a Record> + Send + 'a,
+                impl Iterator<Item = &'a Record> + Send + 'a,
+                impl Iterator<Item = &'a Record> + Send + 'a,
+                impl Iterator<Item = &'a Record> + Send + 'a,
+            >,
+        ) -> std::io::Result<ResponseInfo> {
+            let mut buffer = Vec::with_capacity(512);
+            let info = {
+                let mut encoder = BinEncoder::new(&mut buffer);
+                response
+                    .destructive_emit(&mut encoder)
+                    .map_err(|e| std::io::Error::other(format!("{e}")))?
+            };
+            *self.buf.lock().unwrap() = buffer;
+            Ok(info)
+        }
+    }
+
+    /// Round-trip through the wire so we get a genuine `MessageRequest`,
+    /// exactly as hickory's `handle_raw_request` would after a socket read.
+    fn build_request(qname: &str, qtype: RecordType) -> Request {
+        let name = Name::from_str(qname).unwrap();
+        let query = Query::query(name, qtype);
+        let mut msg = Message::new();
+        msg.set_id(0x1234)
+            .set_message_type(MessageType::Query)
+            .set_op_code(OpCode::Query)
+            .set_recursion_desired(true)
+            .add_query(query);
+        let bytes = msg.to_bytes().unwrap();
+        let mut decoder = BinDecoder::new(&bytes);
+        let req = MessageRequest::read(&mut decoder).unwrap();
+        let src: SocketAddr = "127.0.0.1:5353".parse().unwrap();
+        Request::new(req, src, Protocol::Udp)
+    }
+
+    async fn handle(tld: &str, qname: &str, qtype: RecordType) -> Message {
+        let handler = LoopbackHandler {
+            responder: Responder::new(Tld::new(tld).unwrap()),
+        };
+        let request = build_request(qname, qtype);
+        let buf = Arc::new(Mutex::new(Vec::new()));
+        let capture = CaptureHandler {
+            buf: Arc::clone(&buf),
+        };
+        let _info = handler.handle_request(&request, capture).await;
+        let bytes = buf.lock().unwrap().clone();
+        assert!(!bytes.is_empty(), "handler emitted no response bytes");
+        let resp = Message::from_bytes(&bytes).unwrap();
+        assert_eq!(resp.id(), 0x1234, "response must echo request id");
+        assert_eq!(resp.message_type(), MessageType::Response);
+        resp
+    }
+
+    #[tokio::test]
+    async fn a_query_in_zone_yields_authoritative_loopback4() {
+        let resp = handle("test", "app.test.", RecordType::A).await;
+        assert_eq!(resp.response_code(), ResponseCode::NoError);
+        assert!(resp.header().authoritative(), "in-zone reply must set AA");
+        assert_eq!(resp.answers().len(), 1);
+        let rec = &resp.answers()[0];
+        assert_eq!(rec.ttl(), crate::ANSWER_TTL_SECS);
+        match rec.data() {
+            Some(RData::A(rdata::A(ip))) => assert_eq!(*ip, std::net::Ipv4Addr::LOCALHOST),
+            other => panic!("expected RData::A, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn aaaa_query_in_zone_yields_loopback6() {
+        let resp = handle("test", "app.test.", RecordType::AAAA).await;
+        assert_eq!(resp.response_code(), ResponseCode::NoError);
+        assert!(resp.header().authoritative());
+        assert_eq!(resp.answers().len(), 1);
+        match resp.answers()[0].data() {
+            Some(RData::AAAA(rdata::AAAA(ip))) => assert_eq!(*ip, std::net::Ipv6Addr::LOCALHOST),
+            other => panic!("expected RData::AAAA, got {other:?}"),
+        }
+    }
+
+    /// MX yields `NoData`: NOERROR, empty answer, AA still set (it is our zone).
+    #[tokio::test]
+    async fn non_address_qtype_in_zone_yields_nodata() {
+        let resp = handle("test", "app.test.", RecordType::MX).await;
+        assert_eq!(resp.response_code(), ResponseCode::NoError);
+        assert!(resp.header().authoritative());
+        assert_eq!(resp.answers().len(), 0);
+        assert_eq!(resp.name_servers().len(), 0, "RFC 2308 §3: no SOA");
+    }
+
+    #[tokio::test]
+    async fn apex_a_query_yields_nodata() {
+        let resp = handle("test", "test.", RecordType::A).await;
+        assert_eq!(resp.response_code(), ResponseCode::NoError);
+        assert!(resp.header().authoritative());
+        assert_eq!(resp.answers().len(), 0);
+    }
+
+    #[tokio::test]
+    async fn out_of_zone_query_yields_refused_non_authoritative() {
+        let resp = handle("test", "unrelated.com.", RecordType::A).await;
+        assert_eq!(resp.response_code(), ResponseCode::Refused);
+        assert!(
+            !resp.header().authoritative(),
+            "out-of-zone reply must clear the AA bit"
+        );
+        assert_eq!(resp.answers().len(), 0);
+    }
+
+    #[tokio::test]
+    async fn multi_label_tld_in_zone_yields_loopback4() {
+        let resp = handle("dev.local", "app.dev.local.", RecordType::A).await;
+        assert_eq!(resp.response_code(), ResponseCode::NoError);
+        assert!(resp.header().authoritative());
+        assert_eq!(resp.answers().len(), 1);
+    }
+}

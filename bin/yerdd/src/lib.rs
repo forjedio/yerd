@@ -1,4 +1,4 @@
-//! Yerd daemon — library shim.
+//! Yerd daemon - library shim.
 //!
 //! Binary-only crates don't expose a Rust API to integration tests
 //! under `tests/`. This lib publishes the daemon's modules as a normal
@@ -8,8 +8,6 @@
 //! `main.rs` and the tests.
 
 #![forbid(unsafe_code)]
-// Sysexits constants, kernel symbols, and OS shorthand show up
-// throughout daemon docs; backticking every one is noise.
 #![allow(clippy::doc_markdown)]
 
 pub mod args;
@@ -53,9 +51,9 @@ use crate::startup::Daemon;
 /// process, or re-exec it in place (a `RestartDaemon` request).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Outcome {
-    /// Normal shutdown — the process should exit.
+    /// Normal shutdown - the process should exit.
     Exit,
-    /// A restart was requested — `main` should re-exec the binary.
+    /// A restart was requested - `main` should re-exec the binary.
     Restart,
 }
 
@@ -71,31 +69,20 @@ pub async fn run(args: ServeArgs) -> Result<Outcome, DaemonError> {
 /// Drive an already-bootstrapped `Daemon` to completion.
 #[doc(hidden)]
 pub async fn run_with_daemon(daemon: Daemon) -> Result<Outcome, DaemonError> {
-    // The shutdown channel lives in `DaemonState` so the IPC `RestartDaemon`
-    // handler can trip it; the signal task and every subsystem share it.
     let shutdown_tx = daemon.state.shutdown_tx.clone();
     let shutdown_rx = shutdown_tx.subscribe();
     let signal_task = tokio::spawn(signals::wait_for_shutdown(shutdown_tx));
     let result = run_until_shutdown(daemon, shutdown_rx).await;
-    // The signal task only finishes when it actually receives SIGTERM/Ctrl-C.
-    // When shutdown was triggered another way (a `RestartDaemon` IPC trips the
-    // channel directly, no signal), the task is still parked — abort it rather
-    // than awaiting it forever, which would otherwise hang the restart.
     signal_task.abort();
     let _ = signal_task.await;
     result
 }
 
-#[allow(clippy::too_many_lines)] // linear task wiring: one spawn block per subsystem; splitting hurts readability
+#[allow(clippy::too_many_lines)]
 async fn run_until_shutdown(
     daemon: Daemon,
     shutdown_rx: watch::Receiver<bool>,
 ) -> Result<Outcome, DaemonError> {
-    // DNS task. The socket pair was bound during `bring_up`, so the daemon
-    // owns it here — we just consume it into the serve loop. Skipped entirely
-    // when the daemon came up degraded (DNS port couldn't bind) — IPC/proxy
-    // still run so the GUI/CLI can connect and the user can fix the port.
-    // Mirrors the optional proxy/mail tasks below.
     let dns_handle = if let Some(bound) = daemon.dns_bound {
         let responder = yerd_dns::Responder::new(daemon.dns_tld.clone());
         let mut rx = shutdown_rx.clone();
@@ -113,9 +100,6 @@ async fn run_until_shutdown(
         None
     };
 
-    // Proxy task. Skipped entirely when the daemon came up degraded (no web
-    // listeners) — IPC/DNS still run so the GUI/CLI can connect and the user can
-    // fix the ports. Mirrors the optional-mail task below.
     let proxy_handle = if let (Some(http_listener), Some(tls_listener)) =
         (daemon.http_listener, daemon.https_listener)
     {
@@ -145,23 +129,17 @@ async fn run_until_shutdown(
         None
     };
 
-    // IPC task.
     let ipc_handle = tokio::spawn(ipc_server::run(
         daemon.ipc_listener,
         daemon.state.clone(),
         shutdown_rx.clone(),
     ));
 
-    // Dump-telemetry server: loopback TCP receiving frames from the PHP
-    // extension. Rebinds on a port change; a bind failure is non-fatal.
     let dump_handle = {
         let state = daemon.state.clone();
         tokio::spawn(crate::dump_server::run(state, shutdown_rx.clone()))
     };
 
-    // Periodic update checker: poll once at startup, then every 12h, until
-    // shutdown. Notify-only (logs available updates; never auto-installs) for
-    // both PHP patches and Yerd itself.
     let update_check_handle = {
         let state = daemon.state.clone();
         let mut rx = shutdown_rx.clone();
@@ -180,18 +158,12 @@ async fn run_until_shutdown(
         })
     };
 
-    // Filesystem watcher: rebuilds the router as parked projects appear/change
-    // (e.g. a project cloned into a parked folder), so detection stays fresh
-    // without a manual refresh. Non-recursive; see `watch.rs`.
     let watch_handle = {
         let state = daemon.state.clone();
         let rx = shutdown_rx.clone();
         tokio::spawn(crate::fs_watch::run(state, rx))
     };
 
-    // Mail-capture SMTP task (the 6th subsystem). Present only when capture is
-    // enabled AND the port bound at startup; otherwise nothing is spawned (a
-    // disabled/failed bind is non-fatal — already logged in `bring_up`).
     let mail_handle = daemon.mail_listener.map(|listener| {
         let store = daemon.state.mail_store.clone();
         let mut rx = shutdown_rx.clone();
@@ -200,13 +172,8 @@ async fn run_until_shutdown(
         }))
     });
 
-    // Auto-start every installed service in the background — deliberately NOT
-    // awaited, so a slow/failing DB cold-boot never delays the listeners above.
-    // Each engine's outcome is logged inside the task.
     let _autostart = tokio::spawn(crate::services::auto_start_installed(daemon.state.clone()));
 
-    // If dumps are enabled in config, fetch the extension `.so` for installed PHP
-    // versions in the background so on-demand pools pick it up. Best-effort.
     let _ext_install = {
         let state = daemon.state.clone();
         tokio::spawn(async move {
@@ -217,23 +184,14 @@ async fn run_until_shutdown(
         })
     };
 
-    // Bundle pcov for installed PHP versions and (re)build the cover/clean
-    // versioned CLI shims (`phpcover`, `php<ver>`, `php<ver>cover`). Ungated and
-    // best-effort; also self-heals cover symlinks if the `yerd` binary moved
-    // between runs. Warm/offline starts skip the network (local presence check).
     let _pcov_shims = {
         let state = daemon.state.clone();
         tokio::spawn(async move {
             crate::ipc_server::refresh_pcov_and_shims(&state).await;
-            // Generate the CLI php.ini (PHPRC target) from the loaded config so
-            // terminal `php` gets Yerd's defaults even before any settings change.
             crate::ipc_server::write_cli_ini_now(&state).await;
         })
     };
 
-    // Self-heal the installed dev-tool shims (`composer`/`node`/`npm`/`npx`/
-    // `bun`/`bunx`) — re-points the `composer` multi-call link if the `yerd`
-    // binary moved, and prunes shims for tools removed between runs. No network.
     let _tool_shims = {
         let state = daemon.state.clone();
         tokio::spawn(async move {
@@ -241,15 +199,9 @@ async fn run_until_shutdown(
         })
     };
 
-    // Serve until a shutdown is requested — a SIGTERM/Ctrl-C, or a
-    // `RestartDaemon` IPC tripping the same channel. Without this wait the
-    // daemon would fall straight through to the graceful-join timeouts below
-    // and exit on its own ~30s after startup.
     let mut wait_rx = shutdown_rx;
     let _ = wait_rx.changed().await;
 
-    // Now the subsystems are winding down (they watch the same channel); cap
-    // each join so a stuck task can't hang the exit/restart.
     if let Some(dns_handle) = dns_handle {
         let _ = tokio::time::timeout(Duration::from_secs(10), dns_handle).await;
     }
@@ -268,15 +220,11 @@ async fn run_until_shutdown(
         let mut mgr = daemon.php_manager.lock().await;
         let _ = mgr.shutdown().await;
     }
-    // Stop supervised services cleanly (graceful SIGTERM→grace→SIGKILL); any
-    // still-running children would otherwise be reaped by kill-on-drop.
     {
         let mut mgr = daemon.state.service_manager.lock().await;
         let _ = mgr.shutdown().await;
     }
 
-    // Read the restart decision before releasing the lock; `main` re-execs on
-    // `Restart` (never here — this path is also reached by the lifecycle test).
     let outcome = if daemon.state.restart_requested.load(Ordering::Acquire) {
         Outcome::Restart
     } else {

@@ -51,7 +51,6 @@ impl Paths for MacosPaths {
         let config = pd.config_dir().to_path_buf();
         let data = pd.data_dir().to_path_buf();
         let cache = pd.cache_dir().to_path_buf();
-        // macOS has no XDG state distinction; collapse to data.
         let state = data.clone();
 
         // No XDG_RUNTIME_DIR on macOS. Use a deterministic, uid-derived
@@ -67,14 +66,14 @@ impl Paths for MacosPaths {
         // Trade-off: `/tmp` is world-traversable + sticky, so a hostile local
         // uid could pre-create `/tmp/yerd-$UID` to make the daemon's
         // fail-closed `secure_fs::create_private_dir` (0o700, owner-checked)
-        // refuse to start — the same DoS surface the Linux fallback already
+        // refuse to start - the same DoS surface the Linux fallback already
         // accepts. Caller must still set mode 0o700.
         //
         // Sandbox caveat: this works because the GUI `.app` is unsigned and
         // unsandboxed, so it shares the user's `/tmp` namespace with a
         // terminal-launched daemon. If the app is ever signed + sandboxed,
         // `temp_dir()`/`/tmp` access becomes a container path and GUI↔daemon
-        // IPC over this socket would break — revisit then.
+        // IPC over this socket would break - revisit then.
         let uid = read_real_uid().unwrap_or(0);
         let runtime = PathBuf::from(format!("/tmp/yerd-{uid}"));
 
@@ -97,7 +96,7 @@ impl Paths for MacosPaths {
 /// launchd/SMAppService its `PATH` is minimal and need not contain `/usr/bin`,
 /// so a bare `id` would fail to exec → `None` → the caller's `unwrap_or(0)` would
 /// silently bind the socket under `/tmp/yerd-0` while the GUI (full login `PATH`)
-/// resolves `/tmp/yerd-$realuid` — the daemon then looks "unreachable" though it
+/// resolves `/tmp/yerd-$realuid` - the daemon then looks "unreachable" though it
 /// is healthy. Matching the `/bin/ps` call below keeps this deterministic under
 /// the service manager's stripped environment.
 fn read_real_uid() -> Option<u32> {
@@ -166,8 +165,8 @@ impl TrustStore for MacosTrustStore {
             Domain, TrustSettings, TrustSettingsForCertificate,
         };
 
-        // Read the cert's *stored trust settings* in the user and admin domains
-        // — NOT `security verify-cert`. verify-cert reflects `trustd`'s effective
+        // Read the cert's *stored trust settings* in the user and admin domains,
+        // NOT `security verify-cert`. verify-cert reflects `trustd`'s effective
         // evaluation, which is cached and can serve a stale "trusted" result
         // after the trust setting is removed (observed: it survives even
         // `killall trustd`). Reading the settings store reflects the actual
@@ -193,7 +192,7 @@ impl TrustStore for MacosTrustStore {
                 // CA. Crucially, `set_trust_settings_always` / `add-trusted-cert
                 // -r trustRoot` write an *empty* settings array ("always trust as
                 // root"), which this API surfaces as `Ok(None)` (its loop over the
-                // empty array never runs) — so `Ok(None)` here means **trusted**,
+                // empty array never runs) - so `Ok(None)` here means **trusted**,
                 // not untrusted. The function only ever yields `Some(TrustRoot)`,
                 // `Some(TrustAsRoot)`, `Some(Deny)`, or `None` (it filters
                 // Unspecified/Invalid to `None`), so an explicit SSL `Deny` is the
@@ -212,10 +211,6 @@ impl TrustStore for MacosTrustStore {
     }
 
     fn install_firefox_nss(&self, _: &str) -> Result<NssOutcome, PlatformError> {
-        // Phase 1: report not-attempted via a degraded outcome with
-        // certutil_missing = true (it usually is on macOS without
-        // the Homebrew nss formula). Real certutil wiring lands in a
-        // follow-up.
         Ok(NssOutcome {
             profiles_attempted: 0,
             profiles_succeeded: 0,
@@ -272,7 +267,7 @@ impl ResolverInstaller for MacosResolverInstaller {
         };
         // Require the file to actually point at the daemon's DNS responder
         // (nameserver AND port). A bare `nameserver 127.0.0.1` left by Valet/Herd
-        // or an older Yerd defaults to port 53 — where nothing listens — so it
+        // or an older Yerd defaults to port 53 - where nothing listens - so it
         // must read as NOT installed and get rewritten with the right port.
         Ok(resolver_file::matches(&text, addr))
     }
@@ -404,7 +399,7 @@ fn bind_pair_impl(desired: (u16, u16), fallback: (u16, u16)) -> Result<PortPair,
 ///
 /// RSS is read from `ps -o rss= -p <pid>` (no `unsafe`-free per-process RSS
 /// source exists in `std`), delegating the parse to
-/// [`crate::pure::ps_metrics`]. Every failure collapses to `None` — metrics are
+/// [`crate::pure::ps_metrics`]. Every failure collapses to `None` - metrics are
 /// best-effort. `load_average` remains unimplemented (the Services UI shows
 /// only memory; a `getloadavg`/`sysctl`-based impl can land later).
 #[derive(Debug, Default, Clone, Copy)]
@@ -454,7 +449,7 @@ impl MacosPortRedirector {
 impl PortRedirector for MacosPortRedirector {
     fn is_active(&self) -> Option<bool> {
         // The pf redirect installs 80 and 443 together. Require the HTTP half to
-        // actually reach *this* proxy (the `Server: yerd` marker) — not merely
+        // actually reach *this* proxy (the `Server: yerd` marker), not merely
         // that something answers on :80, which would false-green when a foreign
         // listener or a stale `pf` rule still holds the port after the user
         // removed the redirect. The HTTPS half only needs reachability: it's
@@ -481,5 +476,199 @@ mod tests {
     fn resolver_file_path_shape() {
         let p = resolver_file_path("test");
         assert_eq!(p, Path::new("/etc/resolver/test"));
+    }
+
+    /// A hyphenated/multi-char TLD lands verbatim under /etc/resolver.
+    #[test]
+    fn resolver_file_path_interpolates_tld() {
+        assert_eq!(
+            resolver_file_path("my-app"),
+            Path::new("/etc/resolver/my-app")
+        );
+    }
+
+    // ---- constructors are pure and infallible -------------------------
+
+    /// Exercise every `const fn new()`; they're zero-sized markers.
+    #[test]
+    fn constructors_are_usable() {
+        let _ = MacosPaths::new();
+        let _ = MacosTrustStore::new();
+        let _ = MacosResolverInstaller::new();
+        let _ = MacosPortBinder::new();
+        let _ = MacosSystemMetrics::new();
+        let _ = MacosPortRedirector::new();
+    }
+
+    // ---- Paths::resolve / read_real_uid -------------------------------
+
+    /// The runtime dir is derived from `read_real_uid().unwrap_or(0)`; tie
+    /// the two together without depending on `/usr/bin/id` succeeding (both
+    /// sides collapse to uid 0 if it doesn't). State collapses to data on
+    /// macOS (no XDG state distinction).
+    #[test]
+    fn resolve_runtime_path_matches_read_real_uid() {
+        let uid = read_real_uid().unwrap_or(0);
+        let dirs = MacosPaths::new().resolve().unwrap();
+        assert_eq!(dirs.runtime, PathBuf::from(format!("/tmp/yerd-{uid}")));
+        assert_eq!(dirs.state, dirs.data);
+    }
+
+    // ---- ResolverInstaller TldEmpty guards ----------------------------
+
+    #[test]
+    fn resolver_install_empty_tld_is_tld_empty() {
+        let r = MacosResolverInstaller::new();
+        let addr: SocketAddr = "127.0.0.1:53".parse().unwrap();
+        let err = r.install("", addr).unwrap_err();
+        assert!(matches!(
+            err,
+            PlatformError::Resolver {
+                reason: ResolverErrorReason::TldEmpty
+            }
+        ));
+    }
+
+    #[test]
+    fn resolver_uninstall_empty_tld_is_tld_empty() {
+        let r = MacosResolverInstaller::new();
+        let err = r.uninstall("").unwrap_err();
+        assert!(matches!(
+            err,
+            PlatformError::Resolver {
+                reason: ResolverErrorReason::TldEmpty
+            }
+        ));
+    }
+
+    #[test]
+    fn resolver_is_installed_empty_tld_is_tld_empty() {
+        let r = MacosResolverInstaller::new();
+        let addr: SocketAddr = "127.0.0.1:53".parse().unwrap();
+        let err = r.is_installed("", addr).unwrap_err();
+        assert!(matches!(
+            err,
+            PlatformError::Resolver {
+                reason: ResolverErrorReason::TldEmpty
+            }
+        ));
+    }
+
+    /// `/etc/resolver/<unlikely tld>` won't exist; the read fails and the
+    /// probe reports "not installed" rather than erroring.
+    #[test]
+    fn resolver_is_installed_unreadable_file_is_false() {
+        let r = MacosResolverInstaller::new();
+        let addr: SocketAddr = "127.0.0.1:1053".parse().unwrap();
+        assert!(!r.is_installed("yerd-absent-tld-zzz", addr).unwrap());
+    }
+
+    // ---- TrustStore NeedsHelper + NSS ---------------------------------
+
+    #[test]
+    fn trust_install_uninstall_return_needs_helper() {
+        let ts = MacosTrustStore::new();
+        let fp = CaFingerprint::new([0x11; 32]);
+        assert!(matches!(
+            ts.install_system("pem", &fp).unwrap_err(),
+            PlatformError::NeedsHelper { operation } if operation == ops::INSTALL_CA
+        ));
+        assert!(matches!(
+            ts.uninstall_system(&fp).unwrap_err(),
+            PlatformError::NeedsHelper { operation } if operation == ops::UNINSTALL_CA
+        ));
+    }
+
+    #[test]
+    fn install_firefox_nss_reports_certutil_missing() {
+        let ts = MacosTrustStore::new();
+        let outcome = ts.install_firefox_nss("pem").unwrap();
+        assert!(outcome.certutil_missing);
+        assert_eq!(outcome.profiles_attempted, 0);
+        assert_eq!(outcome.profiles_succeeded, 0);
+        assert!(outcome.failures.is_empty());
+    }
+
+    // ---- bind_loopback / bind_pair_impl integration -------------------
+
+    #[test]
+    fn bind_loopback_zero_yields_ephemeral_port() {
+        let listener = bind_loopback(0).unwrap();
+        assert_ne!(listener.local_addr().unwrap().port(), 0);
+    }
+
+    /// (0, 0) makes both ephemeral binds succeed, exercising the `KeepDesired` arm.
+    #[test]
+    fn bind_pair_impl_keeps_desired_when_both_free() {
+        let pair = bind_pair_impl((0, 0), (0, 0)).unwrap();
+        let http = pair.http.port().unwrap();
+        let https = pair.https.port().unwrap();
+        assert_ne!(http, 0);
+        assert_ne!(https, 0);
+        assert_ne!(http, https);
+    }
+
+    /// Occupy a real loopback port so the desired-HTTP bind fails with
+    /// `AddrInUse` (a retry kind), driving `UseFallback` then `KeepFallback` on
+    /// (0, 0).
+    #[test]
+    fn bind_pair_impl_uses_fallback_when_desired_http_taken() {
+        let occupied = bind_loopback(0).unwrap();
+        let taken = occupied.local_addr().unwrap().port();
+
+        let pair = bind_pair_impl((taken, 0), (0, 0)).unwrap();
+        assert_ne!(pair.http.port().unwrap(), 0);
+        assert_ne!(pair.https.port().unwrap(), 0);
+    }
+
+    /// Occupy both the desired-HTTP and fallback-HTTP ports so the desired
+    /// pair retries, then the fallback also fails: `BothFailed` then `BindPair`.
+    #[test]
+    fn bind_pair_impl_both_pairs_failed_yields_bind_pair_error() {
+        let occ_desired = bind_loopback(0).unwrap();
+        let desired_http = occ_desired.local_addr().unwrap().port();
+        let occ_fallback = bind_loopback(0).unwrap();
+        let fallback_http = occ_fallback.local_addr().unwrap().port();
+
+        let err = bind_pair_impl((desired_http, 0), (fallback_http, 0)).unwrap_err();
+        assert!(matches!(
+            err,
+            PlatformError::BindPair {
+                reason: BindPairErrorReason::BothPairsFailed { .. }
+            }
+        ));
+    }
+
+    #[test]
+    fn port_binder_bind_reports_bind_error_for_taken_port() {
+        let occupied = bind_loopback(0).unwrap();
+        let taken = occupied.local_addr().unwrap().port();
+        let err = MacosPortBinder::new().bind(taken).unwrap_err();
+        assert!(matches!(err, PlatformError::Bind { port, .. } if port == taken));
+    }
+
+    // ---- SystemMetrics ------------------------------------------------
+
+    /// For an implausible pid, `/bin/ps` exits non-zero with empty stdout
+    /// (and if ps were absent, the spawn collapses to None too), so either
+    /// way the result is deterministically None.
+    #[test]
+    fn rss_bytes_none_for_nonexistent_pid() {
+        let m = MacosSystemMetrics::new();
+        assert!(m.rss_bytes(u32::MAX).is_none());
+    }
+
+    #[test]
+    fn load_average_is_none() {
+        assert_eq!(MacosSystemMetrics::new().load_average(), None);
+    }
+
+    // ---- PortRedirector ----------------------------------------------
+
+    /// The result is best-effort over live sockets, but the macOS impl
+    /// always returns `Some(_)` (never `None`) regardless of the network.
+    #[test]
+    fn port_redirector_is_active_always_some() {
+        assert!(MacosPortRedirector::new().is_active().is_some());
     }
 }

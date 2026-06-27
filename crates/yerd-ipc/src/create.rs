@@ -26,7 +26,7 @@ pub type JobId = String;
 /// reshuffle of this struct.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CreateSiteSpec {
-    /// The site name — a single DNS label. Becomes the directory name under
+    /// The site name - a single DNS label. Becomes the directory name under
     /// `parent_dir` and the `<name>.test` domain.
     pub name: String,
     /// The directory the new project directory is created *inside*. May be an
@@ -58,7 +58,7 @@ pub enum Framework {
 
 /// Options mapped onto `laravel new` flags.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[allow(clippy::struct_excessive_bools)] // independent installer flags, not a state machine
+#[allow(clippy::struct_excessive_bools)]
 pub struct LaravelOptions {
     /// The starter kit (`--react`/`--vue`/`--livewire`/`--svelte`/`--using`, or none).
     pub starter_kit: StarterKit,
@@ -74,9 +74,9 @@ pub struct LaravelOptions {
     pub database: Database,
     /// Frontend dependency install/build (`--npm`/`--bun`/none-to-skip).
     pub js: JsRuntime,
-    /// `--git` — initialise a git repository.
+    /// `--git` - initialise a git repository.
     pub git: bool,
-    /// `--boost` — install Laravel Boost (AI assist).
+    /// `--boost` - install Laravel Boost (AI assist).
     pub boost: bool,
 }
 
@@ -84,7 +84,7 @@ pub struct LaravelOptions {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum StarterKit {
-    /// No starter kit — the plain skeleton.
+    /// No starter kit - the plain skeleton.
     None,
     /// React + Inertia + TypeScript (`--react`).
     React,

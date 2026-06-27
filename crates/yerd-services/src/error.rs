@@ -157,7 +157,7 @@ pub enum ServiceError {
     },
 
     /// The listing declared a `schema` version this build does not understand.
-    /// A schema bump signals an incompatible format change — the user should
+    /// A schema bump signals an incompatible format change - the user should
     /// update yerd rather than have us misread it.
     #[error("services listing schema {found} is unsupported (this build understands {supported})")]
     UnsupportedListingSchema {

@@ -3,7 +3,7 @@
 //! Every daemon command maps `command → Request`, calls [`crate::ipc::exchange`],
 //! and converts a `Response::Error` into a [`GuiError`] so the frontend only
 //! ever sees a success variant or a typed failure. There is no business logic
-//! here — that lives in the daemon and its crates (the thin-client rule).
+//! here - that lives in the daemon and its crates (the thin-client rule).
 
 use std::path::PathBuf;
 
@@ -16,7 +16,7 @@ use crate::ipc::{exchange, exchange_timeout};
 /// Bound for the liveness/probe commands (`status`/`ping`/`daemon_info`): a
 /// healthy in-memory reply returns in ms (the daemon serves connections
 /// concurrently, so an in-flight install doesn't block it), so 5 s only ever
-/// trips for a wedged/crash-looping daemon — letting the poller advance instead
+/// trips for a wedged/crash-looping daemon - letting the poller advance instead
 /// of hanging. Heavy/mutating commands deliberately stay unbounded.
 const PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
@@ -84,9 +84,6 @@ pub async fn list_parked() -> Result<Response, GuiError> {
 
 #[tauri::command]
 pub async fn unpark(path: String) -> Result<Response, GuiError> {
-    // Unlike `park`, the path is sent verbatim as a `String` (no `PathBuf::from`
-    // wrap): the daemon matches it exactly against the stored parked root and
-    // does not canonicalise, so a deleted-from-disk folder is still removable.
     finish(exchange(&Request::Unpark { path }).await?)
 }
 
@@ -200,7 +197,6 @@ pub async fn apply_update(app: tauri::AppHandle, channel: Option<String>) -> Res
         _ => "app_tar_gz",
     };
     spawn_applier(&yerd, &path, kind_str)?;
-    // Quit so the running bundle can be replaced; the applier reopens the GUI.
     app.exit(0);
     Ok(())
 }
@@ -457,7 +453,7 @@ pub async fn elevate(target: String) -> Result<(), GuiError> {
     crate::elevate::run("elevate", &target).await
 }
 
-/// Run `yerd elevate` with no subcommand — applies every step (trust, resolver,
+/// Run `yerd elevate` with no subcommand - applies every step (trust, resolver,
 /// ports) in one OS-elevated invocation.
 #[tauri::command]
 pub async fn elevate_all() -> Result<(), GuiError> {
@@ -601,7 +597,6 @@ mod tests {
 
     #[test]
     fn finish_passes_success_through() {
-        // A non-error response is returned unchanged.
         match finish(Response::Ok) {
             Ok(Response::Ok) => {}
             other => panic!("expected Ok(Response::Ok), got {other:?}"),

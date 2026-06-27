@@ -21,7 +21,7 @@ use thiserror::Error;
 #[derive(Debug, Error)]
 #[non_exhaustive]
 pub enum DownloadError {
-    /// The transfer failed — connection, TLS, timeout, or a non-success HTTP
+    /// The transfer failed - connection, TLS, timeout, or a non-success HTTP
     /// status.
     #[error("download failed for {url}: {reason}")]
     Transport {
@@ -42,9 +42,9 @@ pub enum DownloadError {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum SpawnFailureReason {
-    /// `io::ErrorKind::NotFound` — usually a missing binary path.
+    /// `io::ErrorKind::NotFound` - usually a missing binary path.
     BinaryNotFound,
-    /// `io::ErrorKind::PermissionDenied` — binary present but not executable,
+    /// `io::ErrorKind::PermissionDenied` - binary present but not executable,
     /// or denied by a security policy.
     PermissionDenied,
     /// The child was alive but `child.wait()` failed mid-supervision.

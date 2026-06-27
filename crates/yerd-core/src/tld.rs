@@ -32,9 +32,6 @@ impl Tld {
 impl Default for Tld {
     /// The `.test` TLD (Yerd's default).
     fn default() -> Self {
-        // INVARIANT: "test" is a hard-coded literal that passes every step of
-        // `Tld::new`. The only hard-coded TLD construction in the crate.
-        // Verified by `default_is_test_and_matches_new` below.
         Self(String::from("test"))
     }
 }
@@ -81,37 +78,30 @@ fn err(input: &str, reason: TldErrorReason) -> CoreError {
     }
 }
 
-/// Pinned, ordered validation algorithm (steps numbered inline below). The
-/// per-step logic lives in [`validate_steps`]; this wrapper attaches `raw` to any
-/// failure reason.
+/// Pinned, ordered validation algorithm. The per-step logic lives in
+/// [`validate_steps`]; this wrapper attaches `raw` to any failure reason.
 fn validate(raw: &str) -> Result<String, CoreError> {
     validate_steps(raw).map_err(|reason| err(raw, reason))
 }
 
 fn validate_steps(raw: &str) -> Result<String, TldErrorReason> {
-    // 1.
     if raw.is_empty() {
         return Err(TldErrorReason::Empty);
     }
 
-    // 2. strip one trailing '.' if present, then reject any leading/trailing dot
     let stripped: &str = raw.strip_suffix('.').unwrap_or(raw);
     if stripped.is_empty() || stripped.ends_with('.') || stripped.starts_with('.') {
         return Err(TldErrorReason::LeadingOrTrailingDot);
     }
 
-    // 3. total length cap (RFC 1035: 253 octets)
     if stripped.len() > 253 {
         return Err(TldErrorReason::TooLong);
     }
 
-    // 4. non-ASCII / whitespace
     validate_charset(stripped)?;
 
-    // 5. lowercase
     let lowered = stripped.to_ascii_lowercase();
 
-    // 6. per-label checks
     for label in lowered.split('.') {
         validate_label(label)?;
     }
@@ -119,7 +109,7 @@ fn validate_steps(raw: &str) -> Result<String, TldErrorReason> {
     Ok(lowered)
 }
 
-/// Step 4: every byte must be ASCII and non-whitespace.
+/// Every byte must be ASCII and non-whitespace.
 fn validate_charset(stripped: &str) -> Result<(), TldErrorReason> {
     for &b in stripped.as_bytes() {
         if !b.is_ascii() {
@@ -132,7 +122,7 @@ fn validate_charset(stripped: &str) -> Result<(), TldErrorReason> {
     Ok(())
 }
 
-/// Step 6: one DNS label — non-empty, ≤ 63 octets, `[a-z0-9-]` only (input is
+/// One DNS label - non-empty, ≤ 63 octets, `[a-z0-9-]` only (input is
 /// already lowercased), and no leading/trailing hyphen.
 fn validate_label(label: &str) -> Result<(), TldErrorReason> {
     if label.is_empty() {
@@ -211,7 +201,6 @@ mod tests {
             }
         }
 
-        // Length-based cases via owned strings.
         let long_label = "a".repeat(64);
         match Tld::new(&long_label) {
             Err(CoreError::InvalidTld {
@@ -247,8 +236,6 @@ mod tests {
         let n = Tld::new("test").unwrap();
         assert_eq!(d.as_str(), "test");
         assert_eq!(d, n);
-        // Also walk every algorithm step against "test" so a future tightening
-        // of `validate` that breaks "test" trips this test (covers [LOW-2]).
         assert_eq!(validate("test").unwrap(), "test");
     }
 

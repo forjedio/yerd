@@ -55,7 +55,7 @@ pub struct StatusReport {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub port_redirect: Option<bool>,
     /// `Some(true)` when a privileged web port (80/443) is held by a listener
-    /// that is **not** this daemon's proxy — a foreign process (or stale `pf`
+    /// that is **not** this daemon's proxy - a foreign process (or stale `pf`
     /// rule) squatting the port Yerd wants. Confirmed via the proxy's `Server:`
     /// marker, so it never mistakes Yerd for a foreign listener. `Some(false)` =
     /// no conflict; `None` = not probed. Cross-platform (unlike `port_redirect`).
@@ -65,7 +65,7 @@ pub struct StatusReport {
     pub foreign_web_listener: Option<bool>,
     /// If installing the OS resolver replaced a pre-existing `/etc/resolver/<tld>`
     /// (e.g. a Valet/Herd leftover), the absolute path of the timestamped backup
-    /// Yerd saved — surfaced as an informational `doctor` finding. `None` when
+    /// Yerd saved - surfaced as an informational `doctor` finding. `None` when
     /// nothing was replaced (or the backup is older than the daemon's reporting
     /// window). macOS-only; omitted from the wire when `None` (`#[serde(default,
     /// skip_serializing_if)]`) so Linux/older clients are unaffected.
@@ -83,7 +83,7 @@ pub struct StatusReport {
     /// The daemon's own version (its `CARGO_PKG_VERSION`, e.g. `"2.0.1"`).
     /// `#[serde(default)]` so a newer client decoding an *older* daemon's status
     /// (which lacks this key) gets `""` and renders "unknown" rather than failing
-    /// the whole decode — the daemon/GUI version skew this field exists to show.
+    /// the whole decode - the daemon/GUI version skew this field exists to show.
     /// The daemon always sets a non-empty value, so it is always emitted.
     #[serde(default)]
     pub daemon_version: String,
@@ -152,7 +152,7 @@ pub struct MailStatus {
 
 /// One captured email's metadata, returned in [`crate::Response::Mails`].
 ///
-/// String/integer only (no `Cow`/lifetimes, no floats) — fully owned so it
+/// String/integer only (no `Cow`/lifetimes, no floats) - fully owned so it
 /// crosses the wire and keeps the enclosing `Response`'s `Eq` derive.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MailSummary {
@@ -219,7 +219,7 @@ pub struct CaStatus {
     pub path: PathBuf,
     /// SHA-256 fingerprint, 64 lowercase hex chars.
     pub fingerprint: String,
-    /// Whether the CA is **effectively trusted** for SSL by the OS — not merely
+    /// Whether the CA is **effectively trusted** for SSL by the OS - not merely
     /// present in a store. macOS evaluates the user/admin/system trust domains
     /// (`security verify-cert`); Linux treats anchor-dir presence as trust.
     /// `None` = the probe could not determine it (**not** `false`).

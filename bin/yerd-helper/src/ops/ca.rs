@@ -13,7 +13,7 @@ use crate::ops::atomic_write;
 use crate::ops::run_command;
 use crate::validate;
 
-/// True iff `cert_der` is yerd's own CA — its Subject CN equals
+/// True iff `cert_der` is yerd's own CA - its Subject CN equals
 /// [`yerd_core::CA_COMMON_NAME`]. This is the ownership guard the privileged
 /// uninstall applies before removing a certificate from the system trust
 /// store, so a fingerprint that happens to match some *other* trusted root can
@@ -33,7 +33,7 @@ const ANCHOR_DIRS: &[&str] = &[
 ];
 
 /// On Linux, determine the post-install command from the anchor dir.
-/// Pure function — table-tested.
+/// Pure function - table-tested.
 #[cfg(target_os = "linux")]
 #[must_use]
 pub fn linux_post_install_cmd(anchor_dir: &Path) -> Option<(&'static str, Vec<&'static str>)> {
@@ -76,8 +76,6 @@ pub fn install_ca(pem_path: &Path, fp: &CaFingerprint) -> Result<(), HelperError
     let der = validate::require_pem_matches_fingerprint(pem_path, fp)?;
     let anchor_dir = pick_anchor_dir()?;
     let dest = anchor_dir.join(anchor_filename(fp));
-    // Re-emit the PEM from the validated DER to avoid copying anything
-    // the daemon prepended outside the single CERTIFICATE block.
     let pem_text = pem_match::der_to_pem(&der);
     atomic_write(&dest, pem_text.as_bytes(), true)?;
     let (tool, args) = linux_post_install_cmd(&anchor_dir).ok_or(HelperError::Validation {
@@ -90,13 +88,9 @@ pub fn install_ca(pem_path: &Path, fp: &CaFingerprint) -> Result<(), HelperError
 pub fn install_ca(pem_path: &Path, fp: &CaFingerprint) -> Result<(), HelperError> {
     validate::require_existing_file(pem_path)?;
     let _der = validate::require_pem_matches_fingerprint(pem_path, fp)?;
-    // `security add-trusted-cert` (mkcert's approach: -d admin domain + -r
-    // trustRoot) writes the certificate *and* its trust setting atomically —
-    // but only when the cert is not already in the keychain. If the cert is
-    // already present it exits non-zero with errSecDuplicateItem and SKIPS the
-    // trust-settings write, leaving the anchor present-but-untrusted (Chrome:
-    // ERR_CERT_AUTHORITY_INVALID) while still appearing installed. So delete any
-    // existing copy first, guaranteeing the add below applies the trust setting.
+    // add-trusted-cert skips the trust-settings write when the cert already
+    // exists (errSecDuplicateItem), leaving it present-but-untrusted. Delete
+    // any existing copy first so the trust setting is always applied.
     if macos_system_keychain_contains(fp)? {
         let fp_upper = hex::encode_upper(fp.as_bytes());
         run_command(
@@ -156,12 +150,9 @@ pub fn uninstall_ca(fp: &CaFingerprint) -> Result<(), HelperError> {
     })?;
 
     let Some(m) = matched else {
-        // Idempotent: nothing to remove.
         return Ok(());
     };
 
-    // Refuse unless the matched cert is yerd's own CA — a fingerprint that
-    // matches some other trusted anchor must never get it deleted.
     let der = pem_match::cert_der_for_fingerprint(&blobs, fp.as_bytes());
     if !der.as_deref().is_some_and(cert_is_yerd_owned) {
         return Err(HelperError::Validation {
@@ -184,10 +175,6 @@ pub fn uninstall_ca(fp: &CaFingerprint) -> Result<(), HelperError> {
 
 #[cfg(target_os = "macos")]
 pub fn uninstall_ca(fp: &CaFingerprint) -> Result<(), HelperError> {
-    // Dump every System-keychain cert as PEM, locate the one matching `fp`, and
-    // delete it ONLY if it is yerd's own CA. `find-certificate -a -p` emits all
-    // certs as concatenated PEM (distinct from the `-Z` presence probe used by
-    // `install_ca`, which lists `SHA-256 hash:` lines — don't conflate them).
     let dump = run_command(
         "security",
         "/usr/bin/security",
@@ -200,7 +187,6 @@ pub fn uninstall_ca(fp: &CaFingerprint) -> Result<(), HelperError> {
     );
     let pem_bytes = match dump {
         Ok(out) => out.stdout,
-        // `security` exits non-zero when no certs match → nothing to remove.
         Err(HelperError::Command {
             reason: CommandReason::NonZero(_),
             ..
@@ -213,7 +199,6 @@ pub fn uninstall_ca(fp: &CaFingerprint) -> Result<(), HelperError> {
         pem_bytes,
     )];
     let Some(der) = pem_match::cert_der_for_fingerprint(&blobs, fp.as_bytes()) else {
-        // Idempotent: the fingerprint isn't in the System keychain.
         return Ok(());
     };
     if !cert_is_yerd_owned(&der) {
@@ -312,7 +297,6 @@ mod tests {
 
     #[test]
     fn cert_is_yerd_owned_false_for_other_ca() {
-        // A different trusted root with the same op applied must be refused.
         assert!(!cert_is_yerd_owned(&ca_der("DigiCert Global Root")));
     }
 

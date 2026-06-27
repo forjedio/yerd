@@ -31,7 +31,6 @@ fn loopback(port: u16) -> SocketAddr {
 fn paths_resolve_returns_all_five_fields() {
     let p = ActivePaths;
     let dirs = p.resolve().expect("Paths::resolve should succeed on Linux");
-    // Every path is non-empty.
     assert!(!dirs.config.as_os_str().is_empty());
     assert!(!dirs.data.as_os_str().is_empty());
     assert!(!dirs.state.as_os_str().is_empty());
@@ -76,11 +75,9 @@ fn uninstall_system_returns_needs_helper() {
 fn is_present_system_returns_false_for_random_fingerprint() {
     let ts = ActiveTrustStore;
     let fp = random_fingerprint(0x42);
-    // On systems without any known anchor dir we accept an error; on
-    // typical Linux desktops (Debian/RHEL/Arch/Alpine) we expect false.
     match ts.is_present_system(&fp) {
         Ok(present) => assert!(!present, "random fingerprint must not match"),
-        Err(PlatformError::TrustStore { .. }) => {} // anchor dir missing — acceptable
+        Err(PlatformError::TrustStore { .. }) => {}
         Err(other) => panic!("unexpected error: {other:?}"),
     }
 }
@@ -144,14 +141,9 @@ fn port_binder_bind_pair_zero_pair_returns_two_distinct_ports() {
 fn port_binder_bind_pair_falls_back_when_desired_is_occupied() {
     let b = ActivePortBinder;
 
-    // Occupy a sacrificial port — bind a listener on 0, read its port,
-    // keep the listener alive for the duration of the test.
     let sacrifice = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let occupied = sacrifice.local_addr().unwrap().port();
 
-    // Desired pair has the occupied port in the http slot; fallback is
-    // a pair of kernel-assigned ports. The binder should drop the
-    // half-bound listener and retry with the fallback pair.
     let pair = b
         .bind_pair((occupied, 0), (0, 0))
         .expect("bind_pair must fall back when desired http is in use");
@@ -165,6 +157,5 @@ fn port_binder_bind_pair_falls_back_when_desired_is_occupied() {
     assert_ne!(http_port, 0);
     assert_ne!(https_port, 0);
 
-    // sacrifice drops at end of test.
     drop(sacrifice);
 }

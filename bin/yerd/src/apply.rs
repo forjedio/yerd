@@ -2,7 +2,7 @@
 //!
 //! Two invocation modes, both ending in [`run`]:
 //! - **CLI** (`yerd update --yes`): calls [`run`] **in-process** (via
-//!   `spawn_blocking`). The CLI is short-lived — it swaps the bundle off its own
+//!   `spawn_blocking`). The CLI is short-lived - it swaps the bundle off its own
 //!   old inode and then exits.
 //! - **GUI** (Update button): the GUI quits and spawns this binary **detached**,
 //!   gated by the `YERD_APPLY_UPDATE` env var (see [`run_from_env`]) so it never
@@ -23,7 +23,7 @@
 //! The bundle-swap mechanics ([`swap_bundle`]) are unit-tested on temp dirs. The
 //! live elevation, the real Gatekeeper/SMAppService behaviour, and whether a
 //! bundle swap preserves the `SMAppService` Login-Item registration are **not**
-//! exercisable in CI — they are the Phase B hardware-spike preconditions.
+//! exercisable in CI - they are the Phase B hardware-spike preconditions.
 //!
 //! ## Atomicity note
 //!
@@ -40,7 +40,7 @@ use yerd_ipc::StagedArtifact;
 use yerd_update::{verify_minisign, UPDATE_PUBLIC_KEY};
 
 /// Env var that switches `yerd` into applier mode. Its presence (set by the
-/// spawner) is what makes this a hidden, non-discoverable entry point — there is
+/// spawner) is what makes this a hidden, non-discoverable entry point - there is
 /// no clap subcommand, so it never appears in `--help` or shell completions.
 pub const APPLY_ENV: &str = "YERD_APPLY_UPDATE";
 /// Env var carrying the staged artifact path.
@@ -94,14 +94,11 @@ fn install_deb_entry(_path: &Path) -> ExitCode {
 /// inputs travel via env vars so nothing leaks into the argv-driven help.
 #[must_use]
 pub fn run_from_env() -> Option<ExitCode> {
-    // Not in apply mode → let normal CLI dispatch proceed.
     std::env::var_os(APPLY_ENV)?;
     let Some(path) = std::env::var_os(APPLY_PATH_ENV) else {
         eprintln!("yerd: {APPLY_PATH_ENV} is required in apply mode");
         return Some(ExitCode::from(2));
     };
-    // Fail closed on an unknown/typoed kind rather than silently picking the
-    // macOS installer — the value is set by our own GUI (`commands.rs`).
     let kind = match std::env::var(APPLY_KIND_ENV).as_deref() {
         Ok("deb") => StagedArtifact::Deb,
         Ok("app_tar_gz") => StagedArtifact::AppTarGz,
@@ -128,8 +125,6 @@ pub fn run(staged: &Path, kind: StagedArtifact, relaunch_gui: bool) -> ExitCode 
     let result = match kind {
         StagedArtifact::AppTarGz => apply_macos(staged, relaunch_gui),
         StagedArtifact::Deb => apply_linux(staged, relaunch_gui),
-        // `StagedArtifact` is `#[non_exhaustive]`: a newer daemon could stage a
-        // kind this binary doesn't know how to install.
         _ => Err("unknown staged artifact kind from the daemon".to_owned()),
     };
     match result {
@@ -139,8 +134,6 @@ pub fn run(staged: &Path, kind: StagedArtifact, relaunch_gui: bool) -> ExitCode 
         }
         Err(e) => {
             eprintln!("yerd: update failed: {e}");
-            // The GUI quits before spawning us; on failure (bundle rolled back),
-            // bring it back so a failed update doesn't strand the user appless.
             if relaunch_gui {
                 relaunch_gui_app();
             }
@@ -191,7 +184,6 @@ fn restart_services(relaunch_gui: bool) {
 
 #[cfg(target_os = "macos")]
 fn apply_macos(staged: &Path, relaunch_gui: bool) -> Result<(), String> {
-    // Resolve the running bundle: current_exe is <Bundle>.app/Contents/MacOS/yerd.
     let exe = std::env::current_exe().map_err(|e| format!("current_exe: {e}"))?;
     let bundle = exe
         .ancestors()
@@ -200,8 +192,6 @@ fn apply_macos(staged: &Path, relaunch_gui: bool) -> Result<(), String> {
         .ok_or_else(|| "not running from an .app bundle (dev build?)".to_owned())?
         .to_path_buf();
 
-    // Guard: only update an app installed in /Applications (App Translocation /
-    // dev runs make in-place replacement impossible or unsafe).
     if !bundle.starts_with("/Applications/") {
         return Err(format!(
             "Yerd must be in /Applications to self-update (it is at {}); move it there first",
@@ -212,8 +202,6 @@ fn apply_macos(staged: &Path, relaunch_gui: bool) -> Result<(), String> {
         .parent()
         .ok_or_else(|| "bundle has no parent dir".to_owned())?
         .to_path_buf();
-    // Directory write access is what a rename needs (the parent dir, not the
-    // bundle). Elevation for the swap is a follow-up; for now require it writable.
     if !dir_is_writable(&parent) {
         return Err(format!(
             "{} is not writable by you; elevated self-update is not yet wired — \
@@ -222,23 +210,14 @@ fn apply_macos(staged: &Path, relaunch_gui: bool) -> Result<(), String> {
         ));
     }
 
-    // Unique, *exclusively-created* staging dir on the same volume as the bundle.
-    // A fixed name (`.yerd-staging`) was a local-attacker planting risk — a unique
-    // name + `create_dir` (fails if the path exists) means we never extract into
-    // or swap from a directory someone else pre-created.
     let uniq = unique_suffix();
     let stage = parent.join(format!(".yerd-staging-{uniq}"));
     std::fs::create_dir(&stage)
         .map_err(|e| format!("creating staging dir {}: {e}", stage.display()))?;
 
-    // Everything that can fail after the daemon is stopped runs in this closure so
-    // a single cleanup (remove staging) + daemon-restart-on-failure covers every
-    // early return.
     let mut stopped = false;
     let result = (|| -> Result<(), String> {
         same_volume(&parent, &stage)?;
-        // Extract via system `tar` (bsdtar) so the notarization staple's xattrs
-        // survive — the Rust `tar` crate drops xattrs.
         let status = Command::new("tar")
             .arg("-xpf")
             .arg(staged)
@@ -249,10 +228,8 @@ fn apply_macos(staged: &Path, relaunch_gui: bool) -> Result<(), String> {
         if !status.success() {
             return Err("extracting the update archive failed".to_owned());
         }
-        // Reject anything but exactly one bundle — defends against a planted .app.
         let new_app = find_single_dot_app(&stage)?;
 
-        // Stop the daemon so it releases its executable inode, then swap.
         stop_daemon();
         stopped = true;
         let backup = parent.join(format!(".yerd-backup-{uniq}.app"));
@@ -268,8 +245,6 @@ fn apply_macos(staged: &Path, relaunch_gui: bool) -> Result<(), String> {
             Ok(())
         }
         Err(e) => {
-            // If we got as far as stopping the daemon, the swap rolled the bundle
-            // back — restart the (now-original) daemon so we don't leave it down.
             if stopped {
                 restart_services(false);
             }
@@ -307,7 +282,6 @@ pub fn swap_bundle(target: &Path, new_app: &Path, backup: &Path) -> std::io::Res
     match std::fs::rename(new_app, target) {
         Ok(()) => Ok(()),
         Err(e) => {
-            // Roll back: put the original back so we never leave the app missing.
             if backup.exists() {
                 let _ = std::fs::rename(backup, target);
             }
@@ -339,7 +313,6 @@ fn find_single_dot_app(dir: &Path) -> Result<PathBuf, String> {
 /// True if `dir` is writable by the current process (rename needs dir write).
 #[cfg(target_os = "macos")]
 fn dir_is_writable(dir: &Path) -> bool {
-    // A probe create/remove is the most reliable cross-config check.
     let probe = dir.join(".yerd-write-probe");
     match std::fs::File::create(&probe) {
         Ok(_) => {
@@ -380,16 +353,8 @@ fn relaunch_gui_app() {
 #[cfg(target_os = "linux")]
 fn apply_linux(staged: &Path, relaunch_gui: bool) -> Result<(), String> {
     if nix::unistd::geteuid().is_root() {
-        // Already root (unusual direct invocation): install in place. A direct
-        // root run can't reach the user session to restart the daemon, so that
-        // path relies on the systemd unit / next login — acceptable for it.
         return elevated_install_deb(staged);
     }
-    // Elevate ONLY the verify+install, by re-exec'ing ourselves under pkexec. The
-    // staged path travels as argv (pkexec sanitizes the environment), and the
-    // elevated process reads + verifies + installs the bytes *once under root*
-    // from root-owned storage — so a same-uid attacker can't swap the
-    // user-writable staged file between verification and dpkg's read.
     let exe = std::env::current_exe().map_err(|e| format!("current_exe: {e}"))?;
     let status = Command::new("pkexec")
         .arg(&exe)
@@ -400,14 +365,13 @@ fn apply_linux(staged: &Path, relaunch_gui: bool) -> Result<(), String> {
     if !status.success() {
         return Err("privileged install (pkexec) failed or was cancelled".to_owned());
     }
-    // Restart the daemon in the user session (NOT as root) and relaunch the GUI.
     restart_services(relaunch_gui);
     Ok(())
 }
 
 /// Elevated installer (runs as root via the `pkexec` re-exec). Reads + verifies
 /// the staged `.deb` **once**, copies the verified bytes into a root-owned 0700
-/// dir, and `dpkg -i`s that copy — closing the verify→re-read TOCTOU on the
+/// dir, and `dpkg -i`s that copy - closing the verify→re-read TOCTOU on the
 /// user-writable staged path. `dpkg`'s postinst reapplies setcap + `/usr/bin`
 /// symlinks.
 #[cfg(target_os = "linux")]
@@ -417,16 +381,12 @@ fn elevated_install_deb(staged: &Path) -> Result<(), String> {
     if !nix::unistd::geteuid().is_root() {
         return Err("the elevated installer must run as root".to_owned());
     }
-    // Read the artifact + signature once, verify, then never re-read the
-    // user-writable path.
     let bytes = std::fs::read(staged).map_err(|e| format!("reading staged .deb: {e}"))?;
     let sig_path = sibling_sig(staged);
     let sig = std::fs::read_to_string(&sig_path)
         .map_err(|e| format!("reading signature {}: {e}", sig_path.display()))?;
     verify_minisign(UPDATE_PUBLIC_KEY, &sig, &bytes).map_err(|e| e.to_string())?;
 
-    // Root-owned, 0700, uniquely-named dir: a non-root attacker can neither enter
-    // it nor replace the root-owned file inside (sticky /tmp).
     let dir = std::env::temp_dir().join(format!("yerd-update-{}", unique_suffix()));
     std::fs::DirBuilder::new()
         .mode(0o700)
@@ -455,7 +415,6 @@ fn elevated_install_deb(staged: &Path) -> Result<(), String> {
 fn relaunch_gui_app() {
     use std::os::unix::process::CommandExt as _;
     if let Some(gui) = sibling_gui() {
-        // Detached (own process group) so it outlives this applier.
         let _ = Command::new(gui).process_group(0).spawn();
     }
 }
@@ -509,13 +468,11 @@ mod tests {
 
         swap_bundle(&target, &staged, &backup).unwrap();
 
-        // Target now holds the NEW bundle; the staged path is consumed.
         assert_eq!(
             std::fs::read_to_string(target.join("Contents/Info.plist")).unwrap(),
             "NEW"
         );
         assert!(!staged.exists());
-        // The OLD bundle was preserved at the backup path.
         assert_eq!(
             std::fs::read_to_string(backup.join("Contents/Info.plist")).unwrap(),
             "OLD"
@@ -524,7 +481,6 @@ mod tests {
 
     #[test]
     fn swap_bundle_into_empty_target_works() {
-        // First-ever placement (no existing target) must still install.
         let tmp = tempfile::tempdir().unwrap();
         let target = tmp.path().join("Yerd.app");
         let staged = tmp.path().join("Yerd.app.new");
@@ -536,9 +492,6 @@ mod tests {
 
     #[test]
     fn swap_bundle_rolls_back_when_rename_in_fails() {
-        // Force the second rename (new_app → target) to fail by pointing at a
-        // non-existent staged bundle. The OLD bundle must be restored at target,
-        // never left missing.
         let tmp = tempfile::tempdir().unwrap();
         let target = tmp.path().join("Yerd.app");
         let missing = tmp.path().join("does-not-exist.app");
@@ -547,7 +500,6 @@ mod tests {
 
         let err = swap_bundle(&target, &missing, &backup);
         assert!(err.is_err(), "swap should report the rename-in failure");
-        // Rolled back: the original OLD bundle is back at target, not lost.
         assert_eq!(
             std::fs::read_to_string(target.join("Contents/Info.plist")).unwrap(),
             "OLD"
@@ -565,5 +517,40 @@ mod tests {
             sibling_sig(p),
             Path::new("/cache/update/Yerd_MacOS_AppleSilicon_v2.app.tar.gz.sig")
         );
+    }
+
+    #[test]
+    fn sibling_sig_handles_bare_filename() {
+        assert_eq!(
+            sibling_sig(Path::new("update.deb")),
+            Path::new("update.deb.sig")
+        );
+    }
+
+    /// Two reads differ because the nanosecond clock advances, and the value
+    /// carries this process's pid so concurrent stagers can't collide.
+    #[test]
+    fn unique_suffix_is_per_call_distinct() {
+        let a = unique_suffix();
+        let b = unique_suffix();
+        assert_ne!(a, b);
+        assert!(a.starts_with(&format!("{}-", std::process::id())));
+    }
+
+    #[test]
+    fn reverify_errors_when_artifact_missing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let missing = tmp.path().join("nope.tar.gz");
+        let err = reverify(&missing).unwrap_err();
+        assert!(err.contains("reading staged artifact"), "{err}");
+    }
+
+    #[test]
+    fn reverify_errors_when_signature_missing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let staged = tmp.path().join("Yerd.app.tar.gz");
+        std::fs::write(&staged, b"payload").unwrap();
+        let err = reverify(&staged).unwrap_err();
+        assert!(err.contains("reading signature"), "{err}");
     }
 }

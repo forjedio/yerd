@@ -35,7 +35,6 @@ pub async fn forward(
     let backend_label = backend.to_string();
     let (parts, body) = req.into_parts();
 
-    // 1. Connect.
     let mut stream = open_backend(&backend)
         .await
         .map_err(|source| ProxyError::BackendConnect {
@@ -43,7 +42,6 @@ pub async fn forward(
             source,
         })?;
 
-    // 2. BEGIN_REQUEST.
     let mut framed: Vec<u8> = Vec::with_capacity(64);
     write_record(
         &mut framed,
@@ -51,7 +49,6 @@ pub async fn forward(
         &encode_begin_request_body(FCGI_RESPONDER, false),
     );
 
-    // 3. PARAMS — encoded into chunks of <= FCGI_MAX_PAYLOAD bytes.
     let params = build_params(
         parts.method.as_str(),
         path_and_query_of(&parts.uri),
@@ -68,19 +65,15 @@ pub async fn forward(
     for chunk in param_buf.chunks(FCGI_MAX_PAYLOAD) {
         write_record(&mut framed, RecordType::Params, chunk);
     }
-    // Zero-length PARAMS terminator.
     write_record(&mut framed, RecordType::Params, &[]);
 
-    // Flush the prelude before draining the body.
     stream
         .write_all(&framed)
         .await
         .map_err(|source| ProxyError::BackendProtocol { source })?;
 
-    // 4. STDIN — stream the request body chunked at FCGI_MAX_PAYLOAD.
     write_stdin(&mut stream, body, &backend_label).await?;
 
-    // 5. Read STDOUT/STDERR until END_REQUEST.
     let (stdout, stderr) = read_fcgi_response(&mut stream).await?;
 
     if !stderr.is_empty() {
@@ -92,14 +85,13 @@ pub async fn forward(
         );
     }
 
-    // 6. Parse CGI headers from STDOUT and synthesise the response.
     let (status, headers, body_bytes) = parse_cgi_response(&stdout);
     synthesise_response(status, headers, body_bytes)
 }
 
 /// Stream the request `body` to the backend as FCGI STDIN records (each chunked
 /// at `FCGI_MAX_PAYLOAD`), then write the zero-length STDIN terminator. HTTP
-/// trailers are dropped — FastCGI cannot represent them.
+/// trailers are dropped - FastCGI cannot represent them.
 async fn write_stdin(
     stream: &mut BackendStream,
     mut body: Incoming,
@@ -132,7 +124,6 @@ async fn write_stdin(
             }
         }
     }
-    // Zero-length STDIN terminator.
     let mut term = Vec::with_capacity(8);
     write_record(&mut term, RecordType::Stdin, &[]);
     stream
@@ -175,9 +166,7 @@ async fn read_fcgi_response(stream: &mut BackendStream) -> Result<(Vec<u8>, Vec<
             RecordType::Stdout => stdout.extend_from_slice(&content),
             RecordType::Stderr => stderr.extend_from_slice(&content),
             RecordType::EndRequest => break,
-            _ => {
-                // Ignore other record types defensively.
-            }
+            _ => {}
         }
     }
     Ok((stdout, stderr))
@@ -213,7 +202,7 @@ fn synthesise_response(
     })
 }
 
-/// Forward an upgrade request — FastCGI cannot model duplex byte streams,
+/// Forward an upgrade request - FastCGI cannot model duplex byte streams,
 /// so MVP returns 501 Not Implemented.
 pub fn upgrade_not_supported() -> Response<BoxBody> {
     Response::builder()
@@ -222,10 +211,7 @@ pub fn upgrade_not_supported() -> Response<BoxBody> {
         .body(crate::forward::bytes_body(
             b"WebSocket upgrade not supported on FastCGI backends.\n",
         ))
-        .unwrap_or_else(|_| {
-            // Builder failure here is unreachable for static inputs.
-            Response::new(empty_body())
-        })
+        .unwrap_or_else(|_| Response::new(empty_body()))
 }
 
 enum BackendStream {
@@ -355,7 +341,7 @@ fn parse_cgi_response(stdout: &[u8]) -> (http::StatusCode, Vec<(String, String)>
     (status, headers, body)
 }
 
-/// Parse a CGI `Status:` header value — `"200 OK"` or a bare `"200"` — into an
+/// Parse a CGI `Status:` header value - `"200 OK"` or a bare `"200"` - into an
 /// HTTP status code. Returns `None` when it isn't a valid code (caller keeps the
 /// default 200).
 fn parse_cgi_status(value: &str) -> Option<http::StatusCode> {
@@ -364,7 +350,7 @@ fn parse_cgi_status(value: &str) -> Option<http::StatusCode> {
 }
 
 /// Return `(offset_of_terminator, terminator_length)`. If no terminator is
-/// found, returns `(stdout.len(), 0)` — body is then empty.
+/// found, returns `(stdout.len(), 0)` - body is then empty.
 fn find_header_terminator(stdout: &[u8]) -> (usize, usize) {
     for i in 0..stdout.len() {
         if i + 4 <= stdout.len() && stdout.get(i..i + 4) == Some(b"\r\n\r\n") {
@@ -428,5 +414,125 @@ mod tests {
     fn find_header_terminator_falls_back_to_lf() {
         let s = b"A: B\n\nbody";
         assert_eq!(find_header_terminator(s), (4, 2));
+    }
+
+    #[test]
+    fn parse_cgi_status_with_reason_phrase() {
+        assert_eq!(parse_cgi_status("200 OK"), Some(http::StatusCode::OK));
+        assert_eq!(
+            parse_cgi_status("301 Moved Permanently"),
+            Some(http::StatusCode::MOVED_PERMANENTLY)
+        );
+    }
+
+    #[test]
+    fn parse_cgi_status_bare_code() {
+        assert_eq!(parse_cgi_status("404"), Some(http::StatusCode::NOT_FOUND));
+    }
+
+    #[test]
+    fn parse_cgi_status_invalid_is_none() {
+        assert!(parse_cgi_status("").is_none());
+        assert!(parse_cgi_status("abc").is_none());
+        assert!(parse_cgi_status("999999").is_none());
+        assert!(parse_cgi_status("99").is_none());
+    }
+
+    /// The Status line drives the response code; it is not echoed as a header.
+    #[test]
+    fn parse_cgi_response_status_header_not_surfaced() {
+        let stdout = b"Status: 301 Moved\r\nLocation: /x\r\n\r\n";
+        let (status, headers, body) = parse_cgi_response(stdout);
+        assert_eq!(status, http::StatusCode::MOVED_PERMANENTLY);
+        assert!(headers.iter().any(|(k, v)| k == "Location" && v == "/x"));
+        assert!(!headers
+            .iter()
+            .any(|(k, _)| k.eq_ignore_ascii_case("Status")));
+        assert_eq!(body, b"");
+    }
+
+    #[test]
+    fn synthesise_response_carries_status_headers_and_body() {
+        let resp = synthesise_response(
+            http::StatusCode::CREATED,
+            vec![("X-Test".to_owned(), "1".to_owned())],
+            b"hello",
+        )
+        .unwrap();
+        assert_eq!(resp.status(), http::StatusCode::CREATED);
+        assert_eq!(resp.headers().get("X-Test").unwrap(), "1");
+    }
+
+    /// A header name with a space is not a valid HTTP token, so it is dropped.
+    #[test]
+    fn synthesise_response_skips_invalid_header_name() {
+        let resp = synthesise_response(
+            http::StatusCode::OK,
+            vec![
+                ("Bad Name".to_owned(), "v".to_owned()),
+                ("Good".to_owned(), "y".to_owned()),
+            ],
+            b"",
+        )
+        .unwrap();
+        assert!(resp.headers().get("Good").is_some());
+        assert_eq!(resp.headers().len(), 1);
+    }
+
+    #[test]
+    fn synthesise_response_empty_body_builds() {
+        let resp = synthesise_response(http::StatusCode::NO_CONTENT, vec![], b"").unwrap();
+        assert_eq!(resp.status(), http::StatusCode::NO_CONTENT);
+        assert!(resp.headers().is_empty());
+    }
+
+    #[test]
+    fn upgrade_not_supported_is_501_plaintext() {
+        let resp = upgrade_not_supported();
+        assert_eq!(resp.status(), http::StatusCode::NOT_IMPLEMENTED);
+        assert_eq!(
+            resp.headers()
+                .get(http::header::CONTENT_TYPE)
+                .and_then(|v| v.to_str().ok()),
+            Some("text/plain; charset=utf-8")
+        );
+    }
+
+    #[test]
+    fn write_record_frames_header_then_content() {
+        let mut out = Vec::new();
+        write_record(&mut out, RecordType::Stdout, b"abc");
+        assert_eq!(out.len(), 11);
+        let header = Header::decode(&out[..8]).unwrap();
+        assert_eq!(header.record_type, RecordType::Stdout);
+        assert_eq!(header.request_id, REQUEST_ID);
+        assert_eq!(header.content_length, 3);
+        assert_eq!(header.padding_length, 0);
+        assert_eq!(&out[8..], b"abc");
+    }
+
+    #[test]
+    fn write_record_empty_content_is_terminator() {
+        let mut out = Vec::new();
+        write_record(&mut out, RecordType::Params, &[]);
+        assert_eq!(out.len(), 8);
+        assert_eq!(Header::decode(&out).unwrap().content_length, 0);
+    }
+
+    #[test]
+    fn path_and_query_of_extracts_or_defaults_to_slash() {
+        let uri: http::Uri = "http://h/foo?a=1".parse().unwrap();
+        assert_eq!(path_and_query_of(&uri), "/foo?a=1");
+        let uri: http::Uri = "http://h".parse().unwrap();
+        assert_eq!(path_and_query_of(&uri), "/");
+    }
+
+    /// `BackendStream` isn't `Debug`, so match rather than `unwrap_err`.
+    #[test]
+    fn unreachable_franken_returns_error() {
+        match unreachable_franken() {
+            Err(e) => assert!(e.to_string().contains("dispatch bug")),
+            Ok(_) => panic!("expected an error"),
+        }
     }
 }

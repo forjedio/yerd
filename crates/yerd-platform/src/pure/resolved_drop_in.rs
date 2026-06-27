@@ -176,8 +176,6 @@ Domains=~test
 
     #[test]
     fn parse_handles_domains_without_tilde_prefix() {
-        // Yerd always writes the `~` prefix, but accept a non-routing
-        // form too — operators might edit by hand.
         let text = "[Resolve]\nDNS=127.0.0.1:53\nDomains=test\n";
         let parsed = parse(text).unwrap();
         assert_eq!(parsed.domain, "test");

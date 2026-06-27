@@ -51,8 +51,6 @@ fn from_pem_recovers_signing_capability() {
     let ca = CertAuthority::generate("Yerd Local CA", standard_validity()).unwrap();
     let reloaded = CertAuthority::from_pem(ca.cert_pem(), ca.key_pem()).unwrap();
     let names = vec!["foo.test".to_string(), "*.foo.test".to_string()];
-    // Issue from the reloaded CA; verify the leaf parses and its issuer DN
-    // matches the original CA's subject DN (proving the chain is intact).
     let leaf = reloaded.issue_leaf(&names, standard_validity()).unwrap();
     assert!(leaf.cert_pem().contains("BEGIN CERTIFICATE"));
     assert!(leaf.key_pem().contains("BEGIN PRIVATE KEY"));

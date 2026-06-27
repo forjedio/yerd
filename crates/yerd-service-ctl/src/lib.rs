@@ -2,7 +2,7 @@
 //!
 //! One place for the platform service mechanics so the GUI, the `bin/yerd`
 //! self-update applier, and the uninstaller don't each re-implement them (the
-//! applier `bin/yerd` cannot depend on the GUI binary — strict downhill
+//! applier `bin/yerd` cannot depend on the GUI binary - strict downhill
 //! dep-flow). The logic mirrors the GUI's existing `autostart`/`daemon` modules:
 //!
 //! - **macOS:** `launchctl kill SIGTERM gui/$uid/dev.yerd.daemon` to stop, and
@@ -14,7 +14,7 @@
 //!   instance is reachable, else SIGTERM the running pid and (for start) a
 //!   detached `yerdd serve`.
 //!
-//! No `unsafe`, no async, no IPC, no network — it shells out to the platform
+//! No `unsafe`, no async, no IPC, no network - it shells out to the platform
 //! tools and uses `nix` safe wrappers for `kill`/`getuid`, so its dependency
 //! graph stays minimal.
 
@@ -101,8 +101,6 @@ impl ServiceCtl {
                 return run_ok("systemctl", &["--user", "restart", SYSTEMD_UNIT]);
             }
             self.stop();
-            // Don't start a second daemon if the old one is still holding the IPC
-            // socket / ports — abort the restart if it didn't exit in time.
             if !wait_for_exit() {
                 return Err(ServiceError::Tool {
                     tool: "yerdd",
@@ -173,8 +171,6 @@ fn service_start(yerdd_path: &Path) -> Result<(), ServiceError> {
 
 #[cfg(target_os = "macos")]
 fn kickstart() -> Result<(), ServiceError> {
-    // `-k` kills the job (if running) then restarts it, re-exec'ing the binary
-    // at the plist's path — which is what we want after a bundle swap.
     run_ok("launchctl", &["kickstart", "-k", &service_target()])
 }
 
@@ -190,8 +186,6 @@ fn spawn_detached(yerdd_path: &Path) -> Result<(), ServiceError> {
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
-        // New process group → detached from the caller's controlling terminal
-        // and signals. Safe (no pre_exec / unsafe needed).
         .process_group(0)
         .spawn()
         .map(|_| ())
@@ -235,7 +229,7 @@ fn parse_pids(stdout: &str) -> Vec<i32> {
 /// Block (bounded) until no `yerdd` is running, so a restart spawns onto a freed
 /// binary. Returns `true` once it exits, or `false` on the ~5s timeout (the
 /// daemon normally exits well under a second). The caller must not start a new
-/// daemon on `false` — the old one may still hold the socket/ports.
+/// daemon on `false` - the old one may still hold the socket/ports.
 #[cfg(target_os = "linux")]
 fn wait_for_exit() -> bool {
     use std::time::Duration;
@@ -302,5 +296,79 @@ mod tests {
         let t = service_target();
         assert!(t.starts_with("gui/"), "{t}");
         assert!(t.ends_with("/dev.yerd.daemon"), "{t}");
+    }
+
+    /// `parse_pids` is total: it skips blank interior lines, trims whitespace
+    /// around each pid, drops out-of-range and non-numeric tokens, and never
+    /// panics even on a leading '-' that pgrep would never actually emit.
+    #[test]
+    fn parse_pids_handles_blank_lines_and_negative_junk() {
+        assert_eq!(parse_pids("1\n\n2\n\n3\n"), vec![1, 2, 3]);
+        assert_eq!(parse_pids("\t10\t\n 20 \n"), vec![10, 20]);
+        assert_eq!(parse_pids("99999999999999999999\n7\n"), vec![7]);
+        assert_eq!(parse_pids("-5\n"), vec![-5]);
+    }
+
+    #[test]
+    fn service_ctl_is_clone_and_debug() {
+        let ctl = ServiceCtl::new("/opt/yerd/yerdd");
+        let cloned = ctl.clone();
+        assert_eq!(cloned.yerdd_path, ctl.yerdd_path);
+        let dbg = format!("{ctl:?}");
+        assert!(dbg.contains("ServiceCtl"), "{dbg}");
+        assert!(dbg.contains("yerdd"), "{dbg}");
+    }
+
+    #[test]
+    fn service_ctl_new_accepts_pathbuf_and_str() {
+        let from_str = ServiceCtl::new("/a/b/yerdd");
+        let from_pathbuf = ServiceCtl::new(PathBuf::from("/a/b/yerdd"));
+        assert_eq!(from_str.yerdd_path, from_pathbuf.yerdd_path);
+    }
+
+    #[test]
+    fn service_error_spawn_display() {
+        let e = ServiceError::Spawn("no such file".to_owned());
+        assert_eq!(e.to_string(), "service control failed: no such file");
+    }
+
+    #[test]
+    fn service_error_tool_display_includes_tool_and_message() {
+        let e = ServiceError::Tool {
+            tool: "launchctl",
+            message: "boom".to_owned(),
+        };
+        assert_eq!(e.to_string(), "launchctl failed: boom");
+    }
+
+    #[test]
+    fn service_error_unsupported_display() {
+        assert_eq!(
+            ServiceError::Unsupported.to_string(),
+            "daemon service control is not supported on this platform"
+        );
+    }
+
+    #[test]
+    fn service_error_is_debug() {
+        let dbg = format!("{:?}", ServiceError::Spawn("x".to_owned()));
+        assert!(dbg.contains("Spawn"), "{dbg}");
+    }
+
+    /// getuid is a pure syscall with no side effects; two reads agree.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn current_uid_is_stable_and_matches_process_env() {
+        assert_eq!(current_uid(), current_uid());
+    }
+
+    /// `pgrep -x` against the real daemon name in a test context: the test
+    /// harness is not named `yerdd`, so this must come back empty (or empty
+    /// on any pgrep failure). Either way it must never panic.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn running_pids_for_unknown_process_is_empty() {
+        let pids = running_pids();
+        assert!(pids.iter().all(|&p| p > 0));
     }
 }

@@ -48,12 +48,11 @@ pub(crate) const STATUS_NOT_FOUND: isize = 3;
 /// Whether a status means the user-facing "run daemon at login" toggle is **on**.
 /// `requiresApproval` counts as on: registration *succeeded*; the daemon just
 /// won't launch until the user approves it in Login Items, so the switch must
-/// not snap back to off. Pure (no FFI) — unit-tested.
+/// not snap back to off. Pure (no FFI) - unit-tested.
 pub(crate) fn status_means_registered(status: isize) -> bool {
     match status {
         STATUS_ENABLED | STATUS_REQUIRES_APPROVAL => true,
         STATUS_NOT_REGISTERED | STATUS_NOT_FOUND => false,
-        // Unknown future value: treat as not-on (conservative).
         _ => false,
     }
 }
@@ -66,7 +65,7 @@ fn smappservice_class() -> Result<&'static AnyClass, GuiError> {
         .ok_or_else(|| GuiError::internal("SMAppService is unavailable (requires macOS 13+)"))
 }
 
-/// Resolve the `SMAppService*` for `svc` — the daemon agent or the main app.
+/// Resolve the `SMAppService*` for `svc` - the daemon agent or the main app.
 fn service_obj(svc: Service) -> Result<Retained<AnyObject>, GuiError> {
     match svc {
         Service::Daemon => agent_service(DAEMON_PLIST),
@@ -103,7 +102,7 @@ fn main_app_service() -> Result<Retained<AnyObject>, GuiError> {
 
 /// Register (enable) the agent. On success the agent is registered as a login
 /// item; with `RunAtLoad` it also starts now. **Success includes the
-/// `requiresApproval` case** — `registerAndReturnError:` returns `true` and the
+/// `requiresApproval` case** - `registerAndReturnError:` returns `true` and the
 /// user must enable it in Login Items; the caller reads [`status`] to decide
 /// whether to nudge the user. Idempotent: registering an already-registered
 /// service succeeds.
@@ -125,7 +124,7 @@ pub(crate) fn register(svc: Service) -> Result<(), GuiError> {
 /// BTM still holds the prior generation's entry for the same Label; a fresh
 /// `registerAndReturnError:` then fails with `EINVAL` ("Invalid argument", macOS
 /// error 22). Apple's remedy is to clear the stale entry and register afresh, so
-/// on the first failure we `unregister` (best-effort — a genuinely-unregistered
+/// on the first failure we `unregister` (best-effort - a genuinely-unregistered
 /// service is a harmless no-op) and retry once. Callers reach this only when
 /// [`status`] already read not-registered, so the unregister can't tear down a
 /// live, working registration. The retry's error (not the first) is propagated,
@@ -156,7 +155,7 @@ pub(crate) fn unregister(svc: Service) -> Result<(), GuiError> {
 }
 
 /// The agent's `SMAppServiceStatus` (one of the `STATUS_*` constants). Read-only
-/// — safe to call at startup to populate the UI without mutating anything.
+/// safe to call at startup to populate the UI without mutating anything.
 pub(crate) fn status(svc: Service) -> Result<isize, GuiError> {
     let obj = service_obj(svc)?;
     // SAFETY: `-status` is a property getter returning `NSInteger`.
@@ -200,7 +199,7 @@ mod tests {
 
     /// Runtime FFI smoke test: `agentServiceWithPlistName:` + `status` must
     /// round-trip on a real ServiceManagement runtime (macOS 13+) without
-    /// mutating anything — `status` is a read-only query, and for a plist that
+    /// mutating anything - `status` is a read-only query, and for a plist that
     /// isn't part of a registered bundle it returns `notFound`. This catches
     /// `msg_send!` signature mistakes that compile but are UB at call time.
     /// `#[ignore]` so plain `cargo test` (incl. CI) never issues an SMAppService

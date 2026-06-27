@@ -30,7 +30,6 @@ fn save_treats_parentless_path_as_cwd() {
         Ok(())
     })();
 
-    // Restore CWD before propagating the result.
     env::set_current_dir(prev_cwd).unwrap();
     result.unwrap();
 }

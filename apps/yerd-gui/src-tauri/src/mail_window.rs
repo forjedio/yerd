@@ -2,7 +2,7 @@
 //!
 //! The window is declared statically in `tauri.conf.json` (label `mails`,
 //! `visible: false`, loading `index.html#/mails-viewer`), so this command just
-//! shows-and-focuses it — mirroring `show_main`. It is hidden (never destroyed)
+//! shows-and-focuses it - mirroring `show_main`. It is hidden (never destroyed)
 //! on close by the window-event handler in `main.rs`, so "show the existing
 //! window" is always correct.
 

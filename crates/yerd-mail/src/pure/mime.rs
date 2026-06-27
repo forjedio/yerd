@@ -41,9 +41,6 @@ pub fn detail(id: &str, raw: &[u8]) -> MailDetail {
         .collect();
 
     let text_body = msg.body_text(0).map(std::borrow::Cow::into_owned);
-    // `body_html` synthesises HTML from a text-only message; only surface a real
-    // HTML body when the message genuinely carries a `text/html` part, so the
-    // viewer can fall back to `text_body` otherwise.
     let html_body = if msg.parts.iter().any(is_html_part) {
         msg.body_html(0).map(|c| rewrite_cids(&msg, c.into_owned()))
     } else {
@@ -143,7 +140,6 @@ fn rewrite_cids(msg: &Message, mut html: String) -> String {
 /// Kept local to avoid pulling a base64 dependency for the one inline-image use.
 fn base64_encode(input: &[u8]) -> String {
     const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    // Mask to 6 bits then look up; `unwrap_or` keeps it panic-free for clippy.
     let sextet = |v: u32| ALPHABET.get((v & 0x3f) as usize).copied().unwrap_or(b'A') as char;
     let mut out = String::with_capacity(input.len().div_ceil(3) * 4);
     for chunk in input.chunks(3) {

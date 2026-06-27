@@ -22,12 +22,12 @@ use tracing_subscriber::registry;
 /// when debugging. The cap is shared by both layers (the filter is cloned).
 ///
 /// Returns the file appender's [`WorkerGuard`] when a file layer was installed;
-/// the caller **must keep it alive** for the lifetime of the process — dropping
+/// the caller **must keep it alive** for the lifetime of the process - dropping
 /// it stops the background flush worker and log lines are lost. Returns `None`
 /// when `log_dir` is `None` (unit tests, or dirs couldn't be resolved) or when
 /// the rolling appender could not be built.
 ///
-/// Idempotency: with `log_dir = None` this is idempotent — the `try_init` error
+/// Idempotency: with `log_dir = None` this is idempotent - the `try_init` error
 /// is swallowed because it fires only when a global subscriber already exists
 /// (test re-entry), the desired no-op. With `log_dir = Some(..)` it is **not**
 /// idempotent (the appender + its worker are created before `try_init`), which
@@ -39,15 +39,11 @@ pub fn init(verbose: u8, log_dir: Option<&Path>) -> Option<WorkerGuard> {
         1 => tracing::Level::DEBUG,
         _ => tracing::Level::TRACE,
     };
-    // hickory's per-request logging stays quiet at the default level; `-v`
-    // (and above) lets it through with everything else.
     let hickory_level = if verbose == 0 {
         tracing::Level::WARN
     } else {
         level
     };
-    // Built once; `Targets` is `Clone`, so each layer gets its own copy and the
-    // hickory-WARN cap applies to both sinks independently.
     let filter = Targets::new()
         .with_default(level)
         .with_target("hickory_server", hickory_level);
@@ -57,8 +53,6 @@ pub fn init(verbose: u8, log_dir: Option<&Path>) -> Option<WorkerGuard> {
         .compact()
         .with_filter(filter.clone());
 
-    // Try to add a rolling file layer. The builder returns a `Result` (no panic
-    // → clippy-safe); on failure we warn to stderr and degrade to stderr-only.
     let (file_layer, guard) = match log_dir {
         Some(dir) => match build_file_appender(dir) {
             Ok(appender) => {
@@ -109,8 +103,6 @@ mod tests {
 
     #[test]
     fn init_is_idempotent() {
-        // `None` log dir keeps the test from writing files and preserves the
-        // try_init no-op on re-entry.
         assert!(init(0, None).is_none());
         assert!(init(1, None).is_none());
         assert!(init(2, None).is_none());

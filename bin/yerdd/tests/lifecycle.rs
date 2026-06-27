@@ -34,18 +34,9 @@ mod tests {
     }
 
     fn default_config() -> yerd_config::Config {
-        // `Config::default()` uses 80/443; replace with 0/0 so the
-        // PortBinder picks ephemeral ports (the bind_pair fallback
-        // pair 8080/8443 is also fine on a CI runner, but 0/0 is
-        // safest).
         let mut cfg = yerd_config::Config::default();
         cfg.ports.http = 0;
         cfg.ports.https = 0;
-        // Ephemeral DNS too: the default `dns_port` (1053) is a fixed port that
-        // can be busy (a concurrent test, a stray binder), in which case the
-        // soft-fail `bring_up_with_dirs` returns `dns_bound: None` and the
-        // `drive_subsystems` setup below would panic. `0` binds `127.0.0.1:0`,
-        // which the OS always satisfies, so `dns_bound` is reliably `Some`.
         cfg.dns_port = 0;
         cfg
     }
@@ -69,7 +60,7 @@ mod tests {
         let mut cfg = yerd_config::Config::default();
         cfg.ports.http = http;
         cfg.ports.https = https;
-        cfg.dns_port = 0; // ephemeral DNS — avoid colliding on the fixed default across tests
+        cfg.dns_port = 0;
         cfg
     }
 
@@ -82,7 +73,6 @@ mod tests {
         let cfg = valid_config();
         let cfg_path = dirs.config.join("yerd.toml");
 
-        // A parked root containing one child directory (the routable site).
         let sites_root = tmp.path().join("Sites");
         std::fs::create_dir_all(sites_root.join("blog")).unwrap();
 
@@ -96,14 +86,12 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(100)).await;
         let ipc_sock = dirs.runtime.join("yerd.sock");
 
-        // Park the root.
         let park = Request::Park {
             path: sites_root.clone(),
         };
         let resp = round_trip(&ipc_sock, &park).await;
         assert!(matches!(resp, Response::Ok), "park got {resp:?}");
 
-        // ListSites must show the *child* directory as a site.
         let resp = round_trip(&ipc_sock, &Request::ListSites).await;
         match resp {
             Response::Sites { sites } => {
@@ -115,7 +103,6 @@ mod tests {
             other => panic!("expected Sites, got {other:?}"),
         }
 
-        // Config persisted to disk with the parked path.
         let on_disk = std::fs::read_to_string(&cfg_path).expect("config file written");
         let canonical = std::fs::canonicalize(&sites_root).unwrap();
         assert!(
@@ -150,7 +137,6 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(100)).await;
         let ipc_sock = dirs.runtime.join("yerd.sock");
 
-        // Park, then secure the discovered `blog` site.
         let resp = round_trip(
             &ipc_sock,
             &Request::Park {
@@ -170,7 +156,6 @@ mod tests {
         .await;
         assert!(matches!(resp, Response::Ok), "set_secure got {resp:?}");
 
-        // ListSites reflects the secured site — still PARKED (no promotion).
         match round_trip(&ipc_sock, &Request::ListSites).await {
             Response::Sites { sites } => {
                 let blog = sites
@@ -187,8 +172,6 @@ mod tests {
             other => panic!("expected Sites, got {other:?}"),
         }
 
-        // Persisted to disk under an `[[overrides]]` table (not promoted to
-        // `[[linked]]`).
         let on_disk = std::fs::read_to_string(&cfg_path).expect("config file written");
         assert!(
             on_disk.contains("[[overrides]]"),
@@ -231,7 +214,6 @@ mod tests {
         let cfg = default_config();
         let cfg_path = dirs.config.join("yerd.toml");
 
-        // 1. Bring up the daemon (the tempdir variant).
         let daemon = yerdd::startup::bring_up_with_dirs(dirs.clone(), cfg, cfg_path.clone())
             .await
             .expect("bring_up_with_dirs");
@@ -239,16 +221,11 @@ mod tests {
         let ipc_sock = dirs.runtime.join("yerd.sock");
         assert!(ipc_sock.exists(), "IPC socket should be bound");
 
-        // 2. Drive the daemon's tasks. We avoid `yerdd::run_with_daemon`
-        //    because it installs signal handlers; here we want to drive
-        //    shutdown via the watch channel manually.
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         let daemon_for_task = daemon;
         let daemon_task =
             tokio::spawn(async move { drive_subsystems(daemon_for_task, shutdown_rx).await });
 
-        // 3. Connect via interprocess + send a Ping.
-        // Give the accept loop a moment to start polling.
         tokio::time::sleep(Duration::from_millis(100)).await;
 
         let name = ipc_sock.as_path().to_fs_name::<GenericFilePath>().unwrap();
@@ -264,7 +241,6 @@ mod tests {
         let resp: Option<Response> = read_message(&mut reader, &mut decoder).await.unwrap();
         assert!(matches!(resp, Some(Response::Pong)));
 
-        // 4. Send shutdown and wait for the daemon to wind down.
         shutdown_tx.send_replace(true);
         let exit_result = tokio::time::timeout(Duration::from_secs(10), daemon_task)
             .await
@@ -277,11 +253,7 @@ mod tests {
         daemon: yerdd::startup::Daemon,
         shutdown_rx: watch::Receiver<bool>,
     ) -> Result<(), yerdd::error::DaemonError> {
-        // DNS now binds ephemerally (`127.0.0.1:0`), so it no longer collides
-        // with the host's mDNS responder on 5353 — drive it like production.
         let dns_handle = {
-            // The test daemon always binds DNS (ephemeral `127.0.0.1:0`), so the
-            // soft-fail `Option` is always `Some` here.
             let bound = daemon.dns_bound.expect("test daemon binds its DNS sockets");
             let responder = yerd_dns::Responder::new(daemon.dns_tld.clone());
             let mut rx = shutdown_rx.clone();
@@ -297,7 +269,6 @@ mod tests {
             let resolver = Arc::new(yerdd::backend_resolver::DaemonBackendResolver {
                 php_manager: daemon.php_manager.clone(),
             });
-            // The test daemon always binds its ports, so the listeners are `Some`.
             let https = yerd_proxy::HttpsBinding {
                 listener: daemon
                     .https_listener

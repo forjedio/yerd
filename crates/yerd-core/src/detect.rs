@@ -15,7 +15,7 @@
 //! The returned [`Detection::resolved`] flag tells the daemon whether detection
 //! was *confident* (a framework/web-root was identified, or the project is a
 //! confident root like `WordPress`) or merely a provisional root fallback for a
-//! project that shows no evidence yet — the daemon keeps watching the latter.
+//! project that shows no evidence yet - the daemon keeps watching the latter.
 
 use std::collections::BTreeSet;
 use std::path::PathBuf;
@@ -64,7 +64,7 @@ pub struct Detection {
     pub subpath: PathBuf,
     /// `true` when a framework/web-root was confidently identified (or the
     /// project is a confident root). `false` only for the provisional
-    /// no-evidence root fallback — the daemon keeps watching those.
+    /// no-evidence root fallback - the daemon keeps watching those.
     pub resolved: bool,
 }
 
@@ -142,36 +142,29 @@ const OTHER_FRAMEWORKS: &[FrameworkRule] = &[
 
 /// Decide the web root for a project from its [`ProjectSignals`]. Pure; no I/O.
 ///
-/// Precedence is first-match-wins (see module docs and the inline comments).
+/// Precedence is first-match-wins (see module docs).
 #[must_use]
 pub fn detect(sig: &ProjectSignals) -> Detection {
-    // 1–4. Laravel / Symfony / CodeIgniter 4 (`public/`), CakePHP (`webroot/`).
     if let Some(d) = match_framework(sig, PUBLIC_FRAMEWORKS) {
         return d;
     }
-    // 5. Drupal (composer `drupal/core*`) — `web/`, else legacy tarball root.
     if let Some(d) = detect_drupal(sig) {
         return d;
     }
-    // 6–7. Yii2 (`web/`), then Magento 2 (`pub/`).
     if let Some(d) = match_framework(sig, OTHER_FRAMEWORKS) {
         return d;
     }
-    // 8. WordPress — root-served.
     if sig.markers.contains("wp-config.php") || sig.markers.contains("wp-load.php") {
         return Detection::root();
     }
-    // 9. Generic — first candidate web dir that has an index.php.
     for cand in WEB_DIR_CANDIDATES {
         if sig.web_dirs_with_index.contains(*cand) {
             return Detection::sub(cand);
         }
     }
-    // 10. Plain PHP — index.php at the root.
     if sig.markers.contains("index.php") {
         return Detection::root();
     }
-    // 11. No evidence — serve root provisionally, keep watching.
     Detection::unresolved()
 }
 
@@ -185,7 +178,7 @@ fn match_framework(sig: &ProjectSignals, rules: &[FrameworkRule]) -> Option<Dete
     })
 }
 
-/// Rule 5: Drupal via composer `drupal/core*` — serve `web/` when present, else
+/// Rule 5: Drupal via composer `drupal/core*` - serve `web/` when present, else
 /// a legacy tarball root (`index.php` + `core/`). `None` if this isn't Drupal.
 fn detect_drupal(sig: &ProjectSignals) -> Option<Detection> {
     if !sig
@@ -327,7 +320,6 @@ mod tests {
 
     #[test]
     fn laravel_marker_without_public_yet_is_unresolved() {
-        // `artisan` present but `public/index.php` not cloned yet → keep watching.
         let d = detect(&signals(&[], &["artisan"], &[]));
         assert_eq!(sub(&d), std::path::Path::new(""));
         assert!(!d.resolved);
@@ -335,7 +327,6 @@ mod tests {
 
     #[test]
     fn laravel_precedence_beats_generic_web() {
-        // Both a Laravel public/ and a stray web/ with index.php → Laravel wins.
         let d = detect(&signals(
             &["laravel/framework"],
             &["artisan"],

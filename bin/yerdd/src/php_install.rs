@@ -5,7 +5,7 @@
 //! stays dependency-light. Version resolution + tar-member safety are pure
 //! helpers from `yerd_php::release`; this module is the I/O edge: fetch the
 //! listing → resolve → fetch tarballs → safe-extract the single binary →
-//! atomic install. Integrity is TLS-only (no sha pinning — per user decision).
+//! atomic install. Integrity is TLS-only (no sha pinning - per user decision).
 
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -58,8 +58,8 @@ fn emit_byte_progress(
 }
 
 impl ReqwestDownloader {
-    /// Construct a fresh client. Sets a `User-Agent` (some hosts — notably the
-    /// GitHub API used for Bun releases — reject requests without one); falls
+    /// Construct a fresh client. Sets a `User-Agent` (some hosts - notably the
+    /// GitHub API used for Bun releases - reject requests without one); falls
     /// back to the default client if the builder fails.
     ///
     /// Bounds the two ways a download can wedge indefinitely: a `connect_timeout`
@@ -143,7 +143,7 @@ fn note(progress: Option<&ProgressTx>, msg: impl Into<String>) {
 /// Resolves the latest patch from the distribution's live listing, downloads
 /// the CLI and FPM tarballs, safely extracts the single binary from each, and
 /// atomically swaps the result into place. Idempotent: reinstalling replaces
-/// the dir. **Integrity is TLS-only** — the distribution publishes no checksum
+/// the dir. **Integrity is TLS-only** - the distribution publishes no checksum
 /// sidecars and yerd does not pin hashes (deliberate; see `yerd_php::release`).
 ///
 /// When `progress` is set, coarse phase + byte-count updates are streamed to it
@@ -173,9 +173,8 @@ pub async fn install(
         artifact.install_dir_name,
         std::process::id()
     ));
-    let _ = std::fs::remove_dir_all(&staging); // clear any stale staging
+    let _ = std::fs::remove_dir_all(&staging);
 
-    // Stage both binaries; on any failure, clean up and propagate.
     if let Err(e) = stage(&artifact, dl, &staging, progress).await {
         let _ = std::fs::remove_dir_all(&staging);
         return Err(e);
@@ -237,8 +236,6 @@ async fn stage(
         "FPM",
     )
     .await?;
-    // Record the exact patch *in the staging dir* so it lands atomically with
-    // the binaries on rename (update-checks read it back).
     fs_ctx(std::fs::create_dir_all(staging), staging)?;
     let marker = staging.join(VERSION_MARKER);
     fs_ctx(std::fs::write(&marker, &artifact.full_version), &marker)?;
@@ -272,8 +269,8 @@ async fn fetch_and_extract(
     label: &str,
 ) -> Result<(), PhpError> {
     tracing::info!(%url, "downloading PHP binary");
-    // -> PhpError::Download via #[from]. Stream with byte-progress when a sink is
-    // attached; otherwise take the plain (silent) path.
+    // Stream with byte-progress when a sink is attached; otherwise take the plain
+    // (silent) path. Download error -> PhpError::Download via #[from].
     let bytes = match progress {
         Some(tx) => {
             let last = AtomicU64::new(u64::MAX);
@@ -300,7 +297,7 @@ async fn fetch_and_extract(
 
 /// Extract the single expected `Regular`-file member from a `.tar.gz`,
 /// rejecting traversal, non-regular entries (symlink/hardlink/dir), unexpected
-/// names, and duplicates — closes zip-slip and link-target escapes.
+/// names, and duplicates - closes zip-slip and link-target escapes.
 fn extract_member(gz_bytes: &[u8], kind: BinaryKind, url: &str) -> Result<Vec<u8>, PhpError> {
     let want = kind.archive_member();
     let decoder = flate2::read::GzDecoder::new(gz_bytes);
@@ -413,7 +410,6 @@ pub(crate) fn place_symlink(link: &Path, target: &Path) -> Result<(), PhpError> 
     let tmp = parent.join(format!(".{name}.tmp-{}-{seq}", std::process::id()));
     let _ = std::fs::remove_file(&tmp);
     fs_ctx(std::os::unix::fs::symlink(target, &tmp), &tmp)?;
-    // rename is atomic and replaces any existing shim.
     fs_ctx(std::fs::rename(&tmp, link), link)?;
     Ok(())
 }
@@ -446,7 +442,7 @@ fn versioned_shim_name(v: PhpVersion, cover: bool) -> String {
 
 /// Parse a yerd-managed shim filename back to its PHP version. Matches **exactly**
 /// `php<MAJOR>.<MINOR>` or `php<MAJOR>.<MINOR>cover`; returns `None` for `php`,
-/// `phpcover`, and any other name — so the pruner never touches foreign files.
+/// `phpcover`, and any other name - so the pruner never touches foreign files.
 #[cfg(unix)]
 fn managed_shim_version(name: &str) -> Option<PhpVersion> {
     let rest = name.strip_prefix("php")?;
@@ -457,9 +453,6 @@ fn managed_shim_version(name: &str) -> Option<PhpVersion> {
     }
     let major: u8 = maj.parse().ok()?;
     let minor: u8 = min.parse().ok()?;
-    // Reject non-canonical spellings (leading zeros, signs) so a foreign symlink
-    // like `php08.04` is never mistaken for one yerd created (`versioned_shim_name`
-    // only emits canonical `php8.4`).
     if maj != major.to_string() || min != minor.to_string() {
         return None;
     }
@@ -487,8 +480,6 @@ pub fn reconcile_shims(
     let bin = shim_dir(dirs);
     fs_ctx(std::fs::create_dir_all(&bin), &bin)?;
 
-    // One snapshot drives create AND prune (a second scan could straddle a
-    // concurrent install's atomic rename and prune a just-created link).
     let installed: Vec<PhpVersion> = yerd_php::discover_bundled(dirs)
         .map_err(|e| {
             fs_err(
@@ -517,7 +508,6 @@ pub fn reconcile_shims(
         }
     }
 
-    // Prune from the same directory listing; touch only managed symlinks.
     let entries = match std::fs::read_dir(&bin) {
         Ok(e) => e,
         Err(ref e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
@@ -680,7 +670,6 @@ mod tests {
             std::fs::read(base.join("sbin").join("php-fpm")).unwrap(),
             b"FPM-BYTES"
         );
-        // The version marker records the resolved patch (latest in the listing).
         assert_eq!(
             installed_patch(&dirs, PhpVersion::new(8, 5)).as_deref(),
             Some("8.5.6")
@@ -701,7 +690,6 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let dirs = dirs_in(tmp.path());
         let (os, arch) = current_os_arch().unwrap();
-        // Listing has only 8.4, not the requested 8.5.
         let listing = format!("php-8.4.21-cli-{}-{}.tar.gz", os.as_str(), arch.as_str());
         let dl = FakeDownloader {
             listing,
@@ -741,14 +729,12 @@ mod tests {
             managed_shim_version("php8.4cover"),
             Some(PhpVersion::new(8, 4))
         );
-        // Never the default/clean names or foreign files.
         assert_eq!(managed_shim_version("php"), None);
         assert_eq!(managed_shim_version("phpcover"), None);
         assert_eq!(managed_shim_version("php8"), None);
         assert_eq!(managed_shim_version("php8.4.1"), None);
         assert_eq!(managed_shim_version("phpunit"), None);
         assert_eq!(managed_shim_version("php8.4covers"), None);
-        // Non-canonical (leading-zero) spellings are foreign, not managed.
         assert_eq!(managed_shim_version("php08.04"), None);
         assert_eq!(managed_shim_version("php8.04"), None);
     }
@@ -769,7 +755,6 @@ mod tests {
         let yerd_bin = tmp.path().join("yerd");
         std::fs::write(&yerd_bin, b"#!fake").unwrap();
 
-        // Lay down an installed 8.4 (discover_bundled keys on the FPM binary).
         let mk = |v: PhpVersion| {
             let base = dirs
                 .data
@@ -784,22 +769,18 @@ mod tests {
 
         let bin = shim_dir(&dirs);
         std::fs::create_dir_all(&bin).unwrap();
-        // A stale managed shim for an uninstalled 8.2 + a foreign file that must survive.
         std::os::unix::fs::symlink(&yerd_bin, bin.join("php8.2cover")).unwrap();
         std::fs::write(bin.join("keep.txt"), b"user file").unwrap();
 
         reconcile_shims(&dirs, &yerd_bin, PhpVersion::new(8, 4)).unwrap();
 
-        // Created for 8.4.
         assert!(bin.join("php8.4").exists());
         assert!(bin.join("php8.4cover").exists());
         assert!(bin.join("phpcover").exists());
-        // `php` repointed to the (installed) default.
         assert_eq!(
             std::fs::read_link(bin.join("php")).unwrap(),
             cli_binary_path(&dirs, PhpVersion::new(8, 4))
         );
-        // Stale 8.2 cover pruned; foreign file untouched.
         assert!(!bin.join("php8.2cover").exists());
         assert!(bin.join("keep.txt").exists());
     }
@@ -811,7 +792,6 @@ mod tests {
         let dirs = dirs_in(tmp.path());
         let yerd_bin = tmp.path().join("yerd");
         std::fs::write(&yerd_bin, b"#!fake").unwrap();
-        // Install 8.4 only; configured default 8.3 is absent.
         let base = dirs.data.join("php").join("php-8.4");
         std::fs::create_dir_all(base.join("bin")).unwrap();
         std::fs::create_dir_all(base.join("sbin")).unwrap();
@@ -820,7 +800,6 @@ mod tests {
 
         reconcile_shims(&dirs, &yerd_bin, PhpVersion::new(8, 3)).unwrap();
 
-        // No `php` created for an uninstalled default; versioned shims still made.
         assert!(!shim_dir(&dirs).join("php").exists());
         assert!(shim_dir(&dirs).join("php8.4cover").exists());
     }

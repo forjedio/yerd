@@ -5,7 +5,7 @@
 //! the daemon fetches the directory listing and `resolve_from_listing` (pure)
 //! picks the latest patch of the requested minor and builds the download URLs.
 //! Integrity rests on HTTPS to the distribution host (it publishes no checksum
-//! sidecars); there is no sha256 pinning — a deliberate trade-off so the
+//! sidecars); there is no sha256 pinning - a deliberate trade-off so the
 //! supported set isn't frozen into the binary.
 
 use yerd_core::PhpVersion;
@@ -21,7 +21,7 @@ pub const MIN_SUPPORTED: PhpVersion = PhpVersion::new(8, 2);
 /// Base URL of the static-php-cli prebuilt distribution for `os`.
 ///
 /// Both platforms use the **bulk** extension set so a real-world Laravel app
-/// has what it needs out of the box — notably `intl` (ICU), plus `sodium`,
+/// has what it needs out of the box - notably `intl` (ICU), plus `sodium`,
 /// `mysqli`, `xsl`, `readline`, `apcu`, … which the leaner `common` channel
 /// omits. The cost is a larger binary (~38 MB compressed); acceptable for a dev
 /// tool, and it keeps macOS and Linux on the *same* extension set.
@@ -42,7 +42,7 @@ const fn channel_base(os: Os) -> &'static str {
 /// Target operating system for a prebuilt artifact.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Os {
-    /// Linux (glibc `gnu-bulk` build — can load shared extensions; **not** the
+    /// Linux (glibc `gnu-bulk` build - can load shared extensions; **not** the
     /// musl `bulk` build, which can't `dlopen`).
     Linux,
     /// macOS.
@@ -169,9 +169,6 @@ pub fn resolve_from_listing(
     os: Os,
     arch: Arch,
 ) -> Result<Artifact, PhpError> {
-    // Reject unsupported minors (8.0/8.1) up front, reusing `VersionUnavailable`
-    // so callers get one consistent "can't install that" error regardless of
-    // whether the distribution still lists it.
     if version < MIN_SUPPORTED {
         return Err(PhpError::VersionUnavailable { version });
     }
@@ -183,13 +180,9 @@ pub fn resolve_from_listing(
         arch.as_str()
     );
 
-    // Split on the prefix; each chunk after the first begins right after
-    // `php-<maj>.<min>.`. Take its leading digits as the patch, then require the
-    // exact CLI suffix. Uses `split`/`strip_prefix`/`starts_with` only — no
-    // indexing (the prefix's trailing dot already rules out `8.5` vs `8.50`).
     let mut best: Option<u32> = None;
     let mut chunks = listing.split(prefix.as_str());
-    let _ = chunks.next(); // text before the first occurrence
+    let _ = chunks.next();
     for chunk in chunks {
         let digits: String = chunk.chars().take_while(char::is_ascii_digit).collect();
         if digits.is_empty() {
@@ -234,13 +227,9 @@ pub fn available_minors(listing: &str, os: Os, arch: Arch) -> Vec<PhpVersion> {
         arch.as_str()
     );
 
-    // Each chunk after the first begins right after a literal `php-`. Parse
-    // `<digits>.<digits>.<digits>` then require the exact CLI suffix; only the
-    // major.minor is kept. Uses `split`/`strip_prefix`/`split_once` — no
-    // indexing.
     let mut out: Vec<PhpVersion> = Vec::new();
     let mut chunks = listing.split("php-");
-    let _ = chunks.next(); // text before the first occurrence
+    let _ = chunks.next();
     for chunk in chunks {
         let Some((major, rest)) = take_u8(chunk) else {
             continue;
@@ -254,7 +243,6 @@ pub fn available_minors(listing: &str, os: Os, arch: Arch) -> Vec<PhpVersion> {
         let Some(rest) = rest.strip_prefix('.') else {
             continue;
         };
-        // Patch digits then the exact `-cli-<os>-<arch>.tar.gz` suffix.
         let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
         if digits.is_empty() {
             continue;
@@ -264,7 +252,6 @@ pub fn available_minors(listing: &str, os: Os, arch: Arch) -> Vec<PhpVersion> {
         };
         if after_patch.starts_with(&suffix) {
             let v = PhpVersion::new(major, minor);
-            // Hide unsupported minors (8.0/8.1) from the installable list.
             if v >= MIN_SUPPORTED {
                 out.push(v);
             }
@@ -356,7 +343,7 @@ mod tests {
     fn resolve_from_listing_picks_max_patch_and_builds_urls() {
         let a =
             resolve_from_listing(LISTING, PhpVersion::new(8, 5), Os::Linux, Arch::X86_64).unwrap();
-        assert_eq!(a.full_version, "8.5.6"); // 8.5.6 > 8.5.2, ignores 8.50.1
+        assert_eq!(a.full_version, "8.5.6");
         assert_eq!(a.install_dir_name, "php-8.5");
         assert_eq!(
             a.cli_url,
@@ -370,7 +357,6 @@ mod tests {
 
     #[test]
     fn channel_differs_by_os() {
-        // Linux → glibc `gnu-bulk` (its PHP can dlopen the dump extension).
         assert_eq!(
             artifact_url("8.5.6", BinaryKind::Fpm, Os::Linux, Arch::X86_64),
             "https://dl.static-php.dev/static-php-cli/gnu-bulk/php-8.5.6-fpm-linux-x86_64.tar.gz"
@@ -379,7 +365,6 @@ mod tests {
             listing_url(Os::Linux),
             "https://dl.static-php.dev/static-php-cli/gnu-bulk/"
         );
-        // macOS → `bulk` channel (same extension set as Linux's gnu-bulk).
         assert_eq!(
             artifact_url("8.5.6", BinaryKind::Cli, Os::Macos, Arch::Aarch64),
             "https://dl.static-php.dev/static-php-cli/bulk/php-8.5.6-cli-macos-aarch64.tar.gz"
@@ -392,7 +377,6 @@ mod tests {
 
     #[test]
     fn resolve_from_listing_does_not_confuse_8_5_with_8_50() {
-        // Only 8.50.1 is present for x86_64; asking for 8.5 must NOT match it.
         let only_850 = "php-8.50.1-cli-linux-x86_64.tar.gz";
         assert!(matches!(
             resolve_from_listing(only_850, PhpVersion::new(8, 5), Os::Linux, Arch::X86_64),
@@ -402,8 +386,6 @@ mod tests {
 
     #[test]
     fn resolve_from_listing_anchors_arch() {
-        // 8.5 only has an aarch64 build in LISTING beyond x86_64; asking x86_64
-        // must not pick the aarch64 patch (8.5.4).
         let a =
             resolve_from_listing(LISTING, PhpVersion::new(8, 5), Os::Linux, Arch::Aarch64).unwrap();
         assert_eq!(a.full_version, "8.5.4");
@@ -422,23 +404,19 @@ mod tests {
 
     #[test]
     fn min_supported_floor_drops_8_0_and_8_1() {
-        // A listing that includes 8.0/8.1 alongside supported minors.
         let listing = "\
             php-8.0.30-cli-linux-x86_64.tar.gz \
             php-8.1.31-cli-linux-x86_64.tar.gz \
             php-8.2.27-cli-linux-x86_64.tar.gz \
             php-8.5.6-cli-linux-x86_64.tar.gz";
-        // available_minors hides 8.0/8.1.
         let got = available_minors(listing, Os::Linux, Arch::X86_64);
         assert_eq!(got, vec![PhpVersion::new(8, 2), PhpVersion::new(8, 5)]);
-        // resolve_from_listing rejects them even though the build is published.
         for minor in [PhpVersion::new(8, 0), PhpVersion::new(8, 1)] {
             match resolve_from_listing(listing, minor, Os::Linux, Arch::X86_64) {
                 Err(PhpError::VersionUnavailable { version }) => assert_eq!(version, minor),
                 other => panic!("expected VersionUnavailable for {minor}, got {other:?}"),
             }
         }
-        // 8.2 still resolves.
         assert_eq!(
             resolve_from_listing(listing, PhpVersion::new(8, 2), Os::Linux, Arch::X86_64)
                 .unwrap()
@@ -449,8 +427,6 @@ mod tests {
 
     #[test]
     fn available_minors_lists_distinct_cli_builds_for_platform() {
-        // x86_64 linux: 8.4.21, 8.5.2, 8.5.6, 8.50.1 have CLI builds; the
-        // aarch64-only 8.5.4 must not leak in.
         let got = available_minors(LISTING, Os::Linux, Arch::X86_64);
         assert_eq!(
             got,
@@ -464,7 +440,6 @@ mod tests {
 
     #[test]
     fn available_minors_anchors_arch() {
-        // aarch64 linux only has the 8.5.4 CLI build in LISTING.
         let got = available_minors(LISTING, Os::Linux, Arch::Aarch64);
         assert_eq!(got, vec![PhpVersion::new(8, 5)]);
     }
@@ -480,7 +455,6 @@ mod tests {
     #[test]
     fn available_minors_empty_listing_is_empty() {
         assert!(available_minors("", Os::Linux, Arch::X86_64).is_empty());
-        // fpm-only build (no CLI) contributes no minor.
         let fpm_only = "php-8.5.6-fpm-linux-x86_64.tar.gz";
         assert!(available_minors(fpm_only, Os::Linux, Arch::X86_64).is_empty());
     }
@@ -490,7 +464,7 @@ mod tests {
         assert!(is_newer("8.5.6", "8.5.7"));
         assert!(!is_newer("8.5.6", "8.5.6"));
         assert!(!is_newer("8.5.7", "8.5.6"));
-        assert!(!is_newer("8.5", "8.5.7")); // malformed installed
+        assert!(!is_newer("8.5", "8.5.7"));
         assert!(!is_newer("8.5.6", "nope"));
         assert_eq!(patch_of("8.5.6"), Some(6));
         assert_eq!(patch_of("8.5"), None);

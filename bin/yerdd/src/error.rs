@@ -55,7 +55,7 @@ pub enum DaemonError {
 /// 70  EX_SOFTWARE  generic software failure (fallback)
 /// 71  EX_OSERR     OS error (platform / TLS)
 /// 74  EX_IOERR     I/O error
-/// 75  EX_TEMPFAIL  temporary failure — another instance already running
+/// 75  EX_TEMPFAIL  temporary failure - another instance already running
 /// 78  EX_CONFIG    config error (Config / Core)
 #[must_use]
 pub fn exit_code(e: &DaemonError) -> u8 {
@@ -97,7 +97,6 @@ mod tests {
             }),
             74
         );
-        // Synthesise a config error via the `From` impl.
         let cfg_err: yerd_config::ConfigError = yerd_config::ConfigError::Io {
             path: PathBuf::from("/tmp/x"),
             source: io_err(),

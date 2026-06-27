@@ -24,7 +24,7 @@
 //! filenames: the listing is the source of truth for *what exists*, and the
 //! `<service-id>-<version>-<os>-<arch>.tar.gz` filename convention is only used
 //! to build the download URL once a build is confirmed present. The `schema`
-//! field gates compatibility — an unknown schema is rejected rather than
+//! field gates compatibility - an unknown schema is rejected rather than
 //! misparsed. Integrity rests on HTTPS to the host.
 
 use serde::Deserialize;
@@ -81,7 +81,7 @@ fn parse_listing(listing: &str) -> Result<Listing, ServiceError> {
 /// release holds every `<service>-<version>-<os>-<arch>.tar.gz` asset plus the
 /// generated `services.json` listing (a human-facing `index.html` is published
 /// alongside but is not consumed here). Asset URLs 302-redirect to the blob; the
-/// daemon's downloader follows redirects. This crate is a pure *consumer* — the
+/// daemon's downloader follows redirects. This crate is a pure *consumer* - the
 /// producer lives entirely in `forjedio/yerd-services`.
 pub const SERVICES_BASE_URL: &str =
     "https://github.com/forjedio/yerd-services/releases/download/services";
@@ -315,7 +315,6 @@ mod tests {
 
     #[test]
     fn resolve_missing_artifact_errors() {
-        // Version not published.
         assert!(matches!(
             resolve_from_listing(
                 LISTING,
@@ -326,7 +325,6 @@ mod tests {
             ),
             Err(ServiceError::VersionUnavailable { .. })
         ));
-        // Right version, platform not listed (7.4.0 is linux-x86_64 only).
         assert!(matches!(
             resolve_from_listing(
                 LISTING,
@@ -337,7 +335,6 @@ mod tests {
             ),
             Err(ServiceError::VersionUnavailable { .. })
         ));
-        // Service not in the listing at all.
         assert!(matches!(
             resolve_from_listing(
                 LISTING,
@@ -352,23 +349,18 @@ mod tests {
 
     #[test]
     fn available_versions_filters_by_service_and_platform() {
-        // linux/x86_64 redis has both versions, ascending.
         let got = available_versions(LISTING, Service::Redis, Os::Linux, Arch::X86_64);
         assert_eq!(got, vec![v("7.4.0"), v("9.1.0")]);
 
-        // macos/aarch64 redis only has 9.1.0.
         let got = available_versions(LISTING, Service::Redis, Os::Macos, Arch::Aarch64);
         assert_eq!(got, vec![v("9.1.0")]);
 
-        // mysql, dotted version, present on macos.
         let got = available_versions(LISTING, Service::MySql, Os::Macos, Arch::Aarch64);
         assert_eq!(got, vec![v("8.4.9")]);
 
-        // Postgres present only on linux/x86_64.
         assert!(
             available_versions(LISTING, Service::Postgres, Os::Macos, Arch::Aarch64).is_empty()
         );
-        // MariaDb absent from the listing entirely.
         assert!(available_versions(LISTING, Service::MariaDb, Os::Linux, Arch::X86_64).is_empty());
     }
 
@@ -402,8 +394,6 @@ mod tests {
 
     #[test]
     fn parses_the_real_published_listing_shape() {
-        // The exact bytes the producer ships (mirrors services.json at the
-        // rolling `services` release). Guards drift in either direction.
         let real = r#"{"schema":1,"services":{"mysql":{"versions":[{"version":"8.4.9","platforms":["linux-aarch64","linux-x86_64","macos-aarch64"]}]},"postgres":{"versions":[{"version":"17.10","platforms":["linux-aarch64","linux-x86_64","macos-aarch64"]}]},"redis":{"versions":[{"version":"9.1.0","platforms":["linux-aarch64","linux-x86_64","macos-aarch64"]}]}}}"#;
         let a = resolve_from_listing(real, Service::Redis, &v("9.1.0"), Os::Macos, Arch::Aarch64)
             .unwrap();

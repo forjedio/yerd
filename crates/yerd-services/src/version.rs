@@ -1,7 +1,7 @@
 //! Service version identifiers, on-disk layout, and install discovery.
 //!
 //! A [`ServiceVersion`] is an opaque, validated label (e.g. `"8"` for Valkey 8,
-//! `"8.4"` for `MySQL`, `"16"` for Postgres) — services don't share PHP's
+//! `"8.4"` for `MySQL`, `"16"` for Postgres) - services don't share PHP's
 //! `major.minor` structure, so it stays a string. The path helpers and
 //! [`discover_installed`] define the on-disk layout under `dirs.data/services`
 //! and `dirs.state/services`.
@@ -276,14 +276,11 @@ mod tests {
         let dirs = dirs_in(tmp.path());
         let v = ServiceVersion::from_str("8").unwrap();
 
-        // Empty root → empty map.
         assert!(discover_installed(&dirs).unwrap().is_empty());
 
-        // A version dir WITHOUT the binary is ignored.
         std::fs::create_dir_all(install_dir(&dirs, Service::Redis, &v).join("bin")).unwrap();
         assert!(discover_installed(&dirs).unwrap().is_empty());
 
-        // With the server binary present, it is discovered.
         std::fs::write(server_path(&dirs, Service::Redis, &v), b"#!/bin/sh\n").unwrap();
         let found = discover_installed(&dirs).unwrap();
         assert_eq!(found.get(&Service::Redis), Some(&vec![v]));

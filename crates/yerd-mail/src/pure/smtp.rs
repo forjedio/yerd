@@ -2,7 +2,7 @@
 //!
 //! It speaks just enough of RFC 5321 to capture mail from a local app's mailer:
 //! `EHLO`/`HELO`, `MAIL FROM`, `RCPT TO`, `DATA`, `RSET`, `NOOP`, `QUIT`. There
-//! is no AUTH, no TLS, and no relaying — every recipient is accepted and the
+//! is no AUTH, no TLS, and no relaying - every recipient is accepted and the
 //! message body is captured verbatim.
 //!
 //! This module owns no sockets. The I/O layer ([`crate::io::server`]) reads a
@@ -67,9 +67,6 @@ impl Session {
         match verb.as_str() {
             "HELO" | "EHLO" => Reply::Line("250 yerd\r\n".to_string()),
             "MAIL" => {
-                // `MAIL FROM` begins a new transaction (RFC 5321 §4.1.1.2): clear
-                // any recipients left over from an abandoned prior envelope so they
-                // can't leak into this message's captured metadata.
                 self.recipients.clear();
                 self.from = Some(extract_address(trimmed));
                 Reply::Line("250 OK\r\n".to_string())
@@ -92,7 +89,6 @@ impl Session {
             }
             "NOOP" => Reply::Line("250 OK\r\n".to_string()),
             "QUIT" => Reply::Close("221 Bye\r\n".to_string()),
-            // Be lenient: a capture sink accepts whatever a dev mailer sends.
             "" => Reply::Line("500 Syntax error\r\n".to_string()),
             _ => Reply::Line("250 OK\r\n".to_string()),
         }
@@ -120,7 +116,6 @@ pub fn unstuff(data: &[u8]) -> Vec<u8> {
     let mut at_line_start = true;
     for &b in data {
         if at_line_start && b == b'.' {
-            // Drop exactly one leading dot of a stuffed line; keep the rest.
             at_line_start = false;
             continue;
         }
@@ -213,7 +208,6 @@ mod tests {
 
     #[test]
     fn second_mail_from_resets_recipients() {
-        // A new MAIL FROM before DATA must drop the prior envelope's recipients.
         let mut s = Session::new();
         s.command("MAIL FROM:<a@b.c>");
         s.command("RCPT TO:<stale@old.test>");
@@ -226,11 +220,8 @@ mod tests {
 
     #[test]
     fn unstuff_removes_one_leading_dot() {
-        // A body line ".hidden" is wire-encoded as "..hidden".
         assert_eq!(unstuff(b"a\r\n..hidden\r\n"), b"a\r\n.hidden\r\n");
-        // A genuine single dot at line start (rare) is also de-stuffed by one.
         assert_eq!(unstuff(b".x\r\n"), b"x\r\n");
-        // No dots → unchanged.
         assert_eq!(unstuff(b"hello\r\nworld\r\n"), b"hello\r\nworld\r\n");
     }
 

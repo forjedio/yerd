@@ -2,8 +2,8 @@
 //! `Response`, and `ErrorCode` variant.
 //!
 //! These literals are the published contract. A rename, reorder, or
-//! casing change of any field or variant fails this file — which
-//! fails CI before any downstream client sees a divergent wire format.
+//! casing change of any field or variant fails this file, which fails
+//! CI before any downstream client sees a divergent wire format.
 
 #![allow(
     clippy::unwrap_used,
@@ -331,8 +331,6 @@ fn response_sites_one_byte_shape() {
 #[test]
 fn response_sites_two_byte_shape() {
     let alpha = Site::parked("alpha", "/srv/alpha", PhpVersion::new(8, 3)).unwrap();
-    // beta must call set_secure(true) explicitly — constructors
-    // initialise secure=false.
     let mut beta = Site::linked("beta", "/srv/beta", PhpVersion::new(7, 4)).unwrap();
     beta.set_secure(true);
     let r = Response::Sites {
@@ -347,8 +345,6 @@ fn response_sites_two_byte_shape() {
 
 #[test]
 fn response_sites_with_web_subpath_byte_shape() {
-    // A site with a non-empty web_subpath emits the key right after
-    // document_root; empty subpaths are omitted (pinned by the tests above).
     let mut app = Site::linked("app", "/srv/app", PhpVersion::new(8, 3)).unwrap();
     app.set_web_subpath("public");
     let r = Response::Sites { sites: vec![app] };
@@ -401,7 +397,6 @@ fn response_info_byte_shape() {
     let back: Response = serde_json::from_str(&s).unwrap();
     assert_eq!(back, r);
 
-    // Back-compat: an older daemon omits the port fields; they default to 0.
     let legacy = format!(
         r#"{{"type":"info","dns_addr":"127.0.0.1:1053","tld":"test","ca_path":"/x","ca_fingerprint":"{}"}}"#,
         "ab".repeat(32)
@@ -422,8 +417,6 @@ fn response_info_byte_shape() {
 
 #[test]
 fn response_php_versions_byte_shape() {
-    // Empty `updates` is skipped on the wire → same bytes as before the field
-    // was added (the round-trip restores it to an empty Vec via `default`).
     let r = Response::PhpVersions {
         installed: vec![PhpVersion::new(8, 3), PhpVersion::new(8, 5)],
         default: PhpVersion::new(8, 5),
@@ -460,8 +453,6 @@ fn response_php_versions_with_updates_byte_shape() {
 
 #[test]
 fn response_php_versions_with_settings_byte_shape() {
-    // Non-empty `settings` is appended after `updates`; BTreeMap keys are
-    // serialised in sorted order.
     let r = Response::PhpVersions {
         installed: vec![PhpVersion::new(8, 5)],
         default: PhpVersion::new(8, 5),
@@ -561,8 +552,6 @@ fn response_status_byte_shape() {
                 trusted_system: Some(false),
             },
             resolver_installed: Some(true),
-            // `None` + skip_serializing_if → omitted from the wire, so the
-            // Linux byte shape is unchanged from before the field existed.
             port_redirect: None,
             foreign_web_listener: None,
             resolver_backup: None,
@@ -584,13 +573,8 @@ fn response_status_byte_shape() {
             load_avg: Some([100, 50, 25]),
             daemon_version: "2.0.1".into(),
             services: vec![],
-            // `None` + skip_serializing_if → omitted, so the byte shape is
-            // unchanged from before the mail field existed.
             mail: None,
-            // Likewise omitted when `None`, keeping the byte shape unchanged.
             web_unbound: None,
-            // Omitted when `None` (skip_serializing_if), so the byte shape is
-            // unchanged from before the dns_unbound field existed.
             dns_unbound: None,
             boot_id: None,
         }),
@@ -607,8 +591,6 @@ fn response_status_byte_shape() {
 
 #[test]
 fn status_port_redirect_appears_only_when_some() {
-    // When set (macOS), `port_redirect` serializes right after
-    // `resolver_installed`; when `None` it is omitted entirely.
     let mut report = sample_status_report();
     report.port_redirect = Some(true);
     let s = serde_json::to_string(&report).unwrap();
@@ -624,8 +606,6 @@ fn status_port_redirect_appears_only_when_some() {
 
 #[test]
 fn status_foreign_web_listener_appears_only_when_some() {
-    // When set, `foreign_web_listener` serializes between `port_redirect` and
-    // `resolver_backup`; when `None` it is omitted entirely (additive wire).
     let mut report = sample_status_report();
     report.port_redirect = Some(true);
     report.foreign_web_listener = Some(true);
@@ -642,8 +622,6 @@ fn status_foreign_web_listener_appears_only_when_some() {
 
 #[test]
 fn status_resolver_backup_appears_only_when_some() {
-    // When set (macOS), `resolver_backup` serializes right after
-    // `port_redirect`; when `None` it is omitted entirely.
     let mut report = sample_status_report();
     report.port_redirect = Some(true);
     report.resolver_backup =
@@ -701,8 +679,6 @@ fn sample_status_report() -> StatusReport {
 
 #[test]
 fn status_services_appear_only_when_non_empty() {
-    // Empty services → omitted (additive: byte shape unchanged from before the
-    // field existed). Non-empty → appended after `daemon_version`.
     let mut report = sample_status_report();
     let s = serde_json::to_string(&report).unwrap();
     assert!(
@@ -1387,8 +1363,6 @@ fn response_mails_byte_shape() {
 
 #[test]
 fn response_dumps_status_byte_shape() {
-    // Pin the full "every key present" features contract (see DumpsStatus doc),
-    // not just one key, so wire drift in the map shape fails this test.
     let mut features = BTreeMap::new();
     features.insert("dumps".to_string(), true);
     features.insert("queries".to_string(), false);
@@ -1441,7 +1415,6 @@ fn response_mail_byte_shape() {
 
 #[test]
 fn status_mail_appears_only_when_some() {
-    // `None` → omitted; `Some` → appended after `services`.
     let mut report = sample_status_report();
     let s = serde_json::to_string(&report).unwrap();
     assert!(!s.contains("mail"), "empty mail must be omitted: {s}");
@@ -1463,8 +1436,6 @@ fn status_mail_appears_only_when_some() {
 
 #[test]
 fn status_dns_unbound_appears_only_when_some() {
-    // `None` → omitted (additive: byte shape unchanged from before the field
-    // existed). `Some` → present as a bare integer.
     let mut report = sample_status_report();
     let s = serde_json::to_string(&report).unwrap();
     assert!(
@@ -1520,7 +1491,6 @@ fn response_tools_byte_shape() {
         }],
     };
     let s = serde_json::to_string(&r).unwrap();
-    // `external: false` is skipped on the wire, so the byte shape is unchanged.
     let expected = r#"{"type":"tools","tools":[{"id":"node","display_name":"Node.js","installed":true,"version":"v24.17.0","binaries":["node","npm","npx"]}]}"#;
     assert_eq!(s, expected);
     assert_eq!(serde_json::from_str::<Response>(&s).unwrap(), r);
@@ -1673,7 +1643,6 @@ fn request_check_update_byte_shape() {
     assert_eq!(s, r#"{"type":"check_update","channel":"edge"}"#);
     assert_eq!(serde_json::from_str::<Request>(&s).unwrap(), r);
 
-    // `None` channel (use the configured default) serialises as null.
     let none = Request::CheckUpdate { channel: None };
     let s = serde_json::to_string(&none).unwrap();
     assert_eq!(s, r#"{"type":"check_update","channel":null}"#);
@@ -1749,8 +1718,6 @@ fn response_update_status_byte_shape() {
         target: None,
         ahead_of_stable: true,
         source: UpdateSource::Live,
-        // `None` + skip_serializing_if → omitted, so the byte shape is unchanged
-        // from before the field existed (older clients decode it fine).
         checked_at_epoch: None,
     };
     let s = serde_json::to_string(&r).unwrap();
@@ -1758,7 +1725,6 @@ fn response_update_status_byte_shape() {
     assert_eq!(s, expected);
     assert_eq!(serde_json::from_str::<Response>(&s).unwrap(), r);
 
-    // When set, `checked_at_epoch` serialises after `source` as a bare integer.
     let with_ts = Response::UpdateStatus {
         current: "2.0.2-rc.3".into(),
         latest_stable: Some("2.0.1".into()),

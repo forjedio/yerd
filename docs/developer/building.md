@@ -123,6 +123,141 @@ The three binaries map to the three-process privilege model: the
 privileged one-shot [`yerd-helper`](./binaries/yerd-helper). See
 [Elevation & Privileges](../guide/elevation) for why they are separate.
 
+## Running a from-source build with a production Yerd installed
+
+Most contributors keep the released Yerd app installed for day-to-day work and
+want to test a from-source build without losing that setup. The catch: the
+installed app runs the daemon as a **per-user service**, and the daemon is a
+*singleton* - it takes an exclusive instance lock on its runtime directory and
+owns the IPC socket the GUI and CLI connect to. Start a second `yerdd` against
+the same runtime dir and it exits immediately:
+
+```text
+another yerdd is already running (lock held at /tmp/yerd-501/yerd.lock)
+```
+
+So there are two workflows: **take over** the production paths (stop production,
+run your build in its place) or **isolate** your build onto a separate set of
+paths (Linux only). Pick based on your platform and what you're testing.
+
+### Step 1 - stop the production daemon and GUI
+
+First quit the desktop app from the tray / menu-bar icon - it's a daemon
+*client*, so quitting it doesn't stop the daemon, but it stops the app from
+issuing requests while you work.
+
+Then stop the daemon service itself. The service label is `dev.yerd.daemon` on
+macOS (a GUI-scoped `LaunchAgent`) and the `yerd` systemd **user** unit on Linux:
+
+```sh
+# macOS
+launchctl kill SIGTERM "gui/$(id -u)/dev.yerd.daemon"
+
+# Linux
+systemctl --user stop yerd
+```
+
+Confirm nothing is listening before you continue - `yerd ping` should now fail:
+
+```sh
+yerd ping   # expect a connection error once the daemon is down
+```
+
+### Step 2 - rebuild
+
+Rebuild whatever you changed. For daemon/CLI work the binaries are enough (no
+GTK/WebKit needed):
+
+```sh
+cargo build -p yerdd -p yerd
+```
+
+### Step 3 - run your build in the foreground
+
+Run the daemon you just built directly from the workspace. `serve` is the
+default subcommand, and `-v` turns up logging so you can watch it come up:
+
+```sh
+cargo run -p yerdd -- -v
+```
+
+On a rootless host it binds the fallback ports (`http=8080`, `https=8443`) and
+prints the socket, DNS, and mail-capture bindings as it starts. Drive it with
+your freshly built CLI in another shell:
+
+```sh
+cargo run -p yerd -- ping
+cargo run -p yerd -- status
+```
+
+To exercise the desktop app against your dev daemon, start the daemon first,
+then run the GUI in dev mode (see [The frontend](#the-frontend-apps-yerd-gui)):
+
+```sh
+cd apps/yerd-gui && npm run tauri dev
+```
+
+### Pointing at a different config file
+
+`yerdd` takes `--config` (`-c`) to override **just** the `yerd.toml` location,
+which is handy for testing config changes without touching your real one:
+
+```sh
+cargo run -p yerdd -- --config ~/yerd-dev.toml -v
+```
+
+::: warning `--config` does not isolate the instance
+`--config` swaps only the config *file*. The data, state, cache, and - crucially
+- the **runtime socket** still resolve to the normal platform directories, so a
+daemon started this way still collides with the instance lock above. Use it
+*after* stopping the production daemon, not alongside it. For a fully parallel
+instance, isolate the directories instead (next section, Linux only).
+:::
+
+### Fully isolating a parallel instance (Linux)
+
+On Linux the directory layout comes from the XDG base-directory variables, so
+you can point an entire dev instance at a scratch tree - separate config, data,
+state, cache, **and** socket - and run it *alongside* the production daemon
+without stopping anything:
+
+```sh
+export XDG_CONFIG_HOME=/tmp/yerd-dev/config
+export XDG_DATA_HOME=/tmp/yerd-dev/data
+export XDG_STATE_HOME=/tmp/yerd-dev/state
+export XDG_CACHE_HOME=/tmp/yerd-dev/cache
+export XDG_RUNTIME_DIR=/tmp/yerd-dev/run   # different socket → no lock clash
+cargo run -p yerdd -- -v
+```
+
+Any `yerd` CLI (or `npm run tauri dev` GUI) launched with the *same* environment
+resolves the same scratch socket and talks to your dev daemon; a shell without
+those variables still reaches production. Tear the instance down by deleting
+`/tmp/yerd-dev`.
+
+::: warning macOS has no equivalent override
+On macOS the config/data/state/cache paths are fixed to
+`~/Library/Application Support/io.yerd.Yerd` and the socket to `/tmp/yerd-$UID`,
+with **no** environment override (the daemon and GUI must agree on a single,
+discoverable socket path). A from-source daemon therefore shares production's
+directories and socket. On macOS you must **stop the production daemon first**
+(Step 1) and accept that your build reads and writes the same state - you can't
+run two isolated instances side by side.
+:::
+
+### Step 4 - restore production
+
+When you're done, stop your foreground daemon (`Ctrl-C`), then bring the service
+back and relaunch the app:
+
+```sh
+# macOS
+launchctl kickstart -k "gui/$(id -u)/dev.yerd.daemon"
+
+# Linux
+systemctl --user start yerd
+```
+
 ## Running tests
 
 ```sh

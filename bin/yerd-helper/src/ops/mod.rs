@@ -53,12 +53,12 @@ where
 
 /// Write `data` to `path` atomically with the given mode.
 ///
-/// `mode_writable = false` → 0o600 (anchor PEMs).
-/// `mode_writable = true`  → 0o644 (resolver files, drop-ins).
+/// `mode_public = false` → 0o600 (anchor PEMs).
+/// `mode_public = true`  → 0o644 (resolver files, drop-ins).
 ///
 /// Atomicity: writes to a `.tmp` sibling in the same directory, fsyncs
 /// it, then `rename(2)`s into place. Mode is set at creation time via
-/// `OpenOptionsExt::mode` — no race window between create and chmod.
+/// `OpenOptionsExt::mode` - no race window between create and chmod.
 #[cfg(unix)]
 pub fn atomic_write(
     path: &std::path::Path,
@@ -135,8 +135,6 @@ mod tests {
 
     #[test]
     fn run_command_propagates_nonzero_exit() {
-        // `/usr/bin/false` exits 1 on every Unix (present on both Linux and
-        // macOS; `/bin/false` is absent on recent macOS).
         let err = run_command("false", "/usr/bin/false", Vec::<&str>::new()).unwrap_err();
         match err {
             HelperError::Command {
@@ -149,8 +147,6 @@ mod tests {
 
     #[test]
     fn run_command_succeeds_for_true() {
-        // `/usr/bin/true` is present on both Linux and macOS; `/bin/true` is
-        // absent on recent macOS.
         let out = run_command("true", "/usr/bin/true", Vec::<&str>::new()).unwrap();
         assert!(out.status.success());
     }

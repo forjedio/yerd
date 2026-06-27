@@ -33,10 +33,6 @@ fn cargo_bin() -> OsString {
 }
 
 fn run_cargo_metadata() -> Value {
-    // `--filter-platform` scopes the dep graph to the current target so
-    // `cfg(target_os = ...)` gates apply. Without it cargo metadata
-    // returns the universal graph and the cfg-gated security-framework
-    // dep would surface on Linux runs.
     let target = current_target();
     let output = Command::new(cargo_bin())
         .args([
@@ -101,8 +97,6 @@ fn no_forbidden_crates_in_runtime_graph() {
         let node = nodes_by_id.get(id).copied().unwrap();
         for dep in node["deps"].as_array().unwrap() {
             let kinds = dep["dep_kinds"].as_array().unwrap();
-            // Normal-kind only: `null` for runtime deps; `"dev"` and
-            // `"build"` excluded.
             let is_normal = kinds.iter().any(|k| k["kind"].is_null());
             if !is_normal {
                 continue;

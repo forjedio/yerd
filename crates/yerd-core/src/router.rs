@@ -90,7 +90,7 @@ impl<'de> serde::Deserialize<'de> for RouterConfig {
 
 /// Host→site router.
 ///
-/// `Default` is deliberately not derived — callers should pass a
+/// `Default` is deliberately not derived - callers should pass a
 /// [`RouterConfig`] consciously rather than relying on implicit `"test"`.
 #[derive(Debug, Clone)]
 pub struct SiteRouter {
@@ -188,18 +188,15 @@ impl SiteRouter {
         let tld = self.config.tld();
         let dotted = self.config.dotted_tld();
 
-        // Bare TLD has no site label.
         if host.as_ref() == tld {
             return None;
         }
 
-        // Must end with ".{tld}".
         let label = host.as_ref().strip_suffix(dotted)?;
         if label.is_empty() {
             return None;
         }
 
-        // Exact match beats wildcard.
         if let Some(s) = self.sites.get(label) {
             return Some(s);
         }
@@ -249,15 +246,14 @@ mod tests {
         r
     }
 
-    /// Resolver table — 27 cases covering every rule (exact, port strip,
+    /// Resolver table - 27 cases covering every rule (exact, port strip,
     /// FQDN dot, case-insensitive, TLD enforcement, exact-beats-wildcard,
     /// wildcard→parent) plus normalisation edge cases.
     #[test]
     fn resolve_table() {
-        // Build a single fixture router for the default-TLD cases.
         let r = router_with("test", &["foo", "api-foo"]);
 
-        // (host, expected site name) — None means no match
+        // (host, expected site name) - None means no match
         let cases: &[(&str, Option<&str>)] = &[
             ("foo.test", Some("foo")),         // 1 Exact
             ("foo.test:8443", Some("foo")),    // 2 Port strip
@@ -289,7 +285,7 @@ mod tests {
             assert_eq!(got, *want, "host {host:?}");
         }
 
-        // Rows 24/25/26 — custom TLDs.
+        // Rows 24/25/26 - custom TLDs.
         let r_lh = router_with("localhost", &["foo"]);
         assert_eq!(
             r_lh.resolve("api.foo.localhost").map(Site::name),
@@ -371,7 +367,6 @@ mod tests {
         let mut r = router_with("test", &["foo"]);
         r.get_mut("foo").unwrap().set_php(PhpVersion::new(8, 4));
         assert_eq!(r.get("foo").unwrap().php(), PhpVersion::new(8, 4));
-        // Routing still works under the original name.
         assert_eq!(r.resolve("foo.test").map(Site::name), Some("foo"));
     }
 
@@ -465,6 +460,7 @@ mod tests {
         // Just exercises that Linked sites route exactly like Parked ones.
         let cfg = RouterConfig::default();
         let mut r = SiteRouter::new(cfg);
+        // Linked sites route exactly like Parked ones.
         r.insert(Site::linked("foo", "/srv/foo", v83()).unwrap())
             .unwrap();
         assert_eq!(

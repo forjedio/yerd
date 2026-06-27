@@ -33,9 +33,6 @@ pub fn install_resolver(tld: &str, addr: SocketAddr) -> Result<(), HelperError> 
     let resolv = std::fs::read_to_string("/etc/resolv.conf").unwrap_or_default();
     let runtime_dir_exists = std::fs::metadata("/run/systemd/resolve").is_ok_and(|m| m.is_dir());
     if !resolv_conf::detect_systemd_resolved(&resolv, runtime_dir_exists) {
-        // No safe automatic edit path on Phase 1. /etc/resolv.conf is
-        // rewritten by NetworkManager / resolvconf / cloud-init on
-        // many distros; we refuse rather than do something fragile.
         return Err(HelperError::Unsupported {
             operation: yerd_platform::error::ops::INSTALL_RESOLVER,
         });
@@ -56,24 +53,19 @@ pub fn install_resolver(tld: &str, addr: SocketAddr) -> Result<(), HelperError> 
     let tld_obj = validate::require_valid_tld(tld)?;
     let dest = resolver_file_path(tld_obj.as_str());
     let body = resolver_file::compose(addr);
-    // Preserve a pre-existing foreign file (Valet/Herd/older yerd) before we
-    // overwrite it. Only when it doesn't already point at our responder, so an
-    // already-correct file or a repeated run produces no spurious backup.
     if let Ok(existing) = std::fs::read_to_string(&dest) {
         if !resolver_file::matches(&existing, addr) {
             macos_back_up_existing(tld_obj.as_str(), &dest, existing.as_bytes());
         }
     }
     atomic_write(&dest, body.as_bytes(), true)?;
-    // macOS picks up new /etc/resolver/<tld> at the next query — no
-    // reload needed.
     Ok(())
 }
 
 /// Best-effort copy of the about-to-be-replaced `/etc/resolver/<tld>` into the
 /// system backups dir as `<tld>-<unixsecs>.conf`, printing where it went so the
 /// CLI `elevate resolver` output surfaces it. **Any failure is logged and
-/// swallowed** — backing up must never fail the install.
+/// swallowed** - backing up must never fail the install.
 ///
 /// The dir is created mode `0755` (umask-proof) so the unprivileged daemon can
 /// later traverse + list it to report the backup in `doctor`.
@@ -86,8 +78,6 @@ fn macos_back_up_existing(tld: &str, dest: &std::path::Path, content: &[u8]) {
         .map_or(0, |d| d.as_secs());
     let dir = resolver_file::macos_backup_dir();
 
-    // create_dir_all alone is umask-masked (could yield 0700 → daemon can't
-    // read), so set the mode explicitly and re-assert it on the leaf.
     if let Err(e) = std::fs::DirBuilder::new()
         .recursive(true)
         .mode(0o755)
@@ -120,10 +110,6 @@ pub fn uninstall_resolver(tld: &str) -> Result<(), HelperError> {
     let path = drop_in_path(tld_obj.as_str());
     match std::fs::remove_file(&path) {
         Ok(()) => {
-            // Reload so resolved picks up the removal. If the unit is
-            // inactive (e.g. resolved isn't even installed) systemctl
-            // will surface an error; we accept that since the drop-in
-            // is already gone.
             let _ = run_command(
                 "systemctl",
                 "systemctl",
@@ -131,7 +117,7 @@ pub fn uninstall_resolver(tld: &str) -> Result<(), HelperError> {
             );
             Ok(())
         }
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()), // idempotent
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(source) => Err(HelperError::Io { path, source }),
     }
 }
@@ -140,16 +126,12 @@ pub fn uninstall_resolver(tld: &str) -> Result<(), HelperError> {
 pub fn uninstall_resolver(tld: &str) -> Result<(), HelperError> {
     let tld_obj = validate::require_valid_tld(tld)?;
     let path = resolver_file_path(tld_obj.as_str());
-    // Undo of the resolver is a *restore* when we have a backup of the pre-Yerd
-    // file (Valet/Herd leftover) we replaced at install time — put it back so the
-    // system returns to its prior state. Only when there's no safe backup do we
-    // remove Yerd's file outright.
     if macos_try_restore_backup(tld_obj.as_str(), &path)? {
         return Ok(());
     }
     match std::fs::remove_file(&path) {
         Ok(()) => Ok(()),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()), // idempotent
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(source) => Err(HelperError::Io { path, source }),
     }
 }
@@ -159,7 +141,7 @@ pub fn uninstall_resolver(tld: &str) -> Result<(), HelperError> {
 /// restored, `Ok(false)` when there's nothing safe to restore (caller then
 /// removes Yerd's file).
 ///
-/// Security — the helper runs as **root** and the backup dir is world-traversable
+/// Security - the helper runs as **root** and the backup dir is world-traversable
 /// (`0755`), so before trusting any backup we require the dir and the chosen file
 /// to be **root-owned**, the file a non-symlink **regular** file with **no
 /// group/other write bit**, and its contents to **parse** as a real resolver
@@ -170,8 +152,6 @@ fn macos_try_restore_backup(tld: &str, dest: &std::path::Path) -> Result<bool, H
     use std::os::unix::fs::{MetadataExt as _, PermissionsExt as _};
 
     let dir = resolver_file::macos_backup_dir();
-    // The backup dir must be a root-owned real directory (a non-root-owned or
-    // symlinked dir means its entries can't be trusted).
     match std::fs::symlink_metadata(&dir) {
         Ok(m) if m.is_dir() && m.uid() == 0 => {}
         _ => return Ok(false),
@@ -191,12 +171,8 @@ fn macos_try_restore_backup(tld: &str, dest: &std::path::Path) -> Result<bool, H
     let Some(secs) = resolver_file::parse_backup_secs(latest, tld) else {
         return Ok(false);
     };
-    // Re-derive the path from the validated (tld, secs) — never join a raw,
-    // untrusted dir-entry name.
     let backup = dir.join(resolver_file::backup_filename(tld, secs));
 
-    // The chosen backup must be a root-owned regular file (rejects symlinks) with
-    // no group/other write bit.
     match std::fs::symlink_metadata(&backup) {
         Ok(m)
             if m.file_type().is_file() && m.uid() == 0 && (m.permissions().mode() & 0o022) == 0 => {
@@ -204,7 +180,6 @@ fn macos_try_restore_backup(tld: &str, dest: &std::path::Path) -> Result<bool, H
         _ => return Ok(false),
     }
 
-    // Validate the content before writing it back as the system resolver config.
     let Ok(bytes) = std::fs::read(&backup) else {
         return Ok(false);
     };
@@ -212,12 +187,8 @@ fn macos_try_restore_backup(tld: &str, dest: &std::path::Path) -> Result<bool, H
         return Ok(false);
     }
 
-    // Atomic replace; on failure the `?` returns Err, leaving Yerd's live file and
-    // the backups untouched.
     atomic_write(dest, &bytes, true)?;
 
-    // Restore succeeded — drop *every* backup for this tld (best-effort) so the
-    // daemon doesn't resurface a stale "resolver replaced" finding.
     for name in &names {
         if resolver_file::parse_backup_secs(name, tld).is_some() {
             let _ = std::fs::remove_file(dir.join(name));

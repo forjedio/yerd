@@ -3,7 +3,7 @@
 //! [`DnsError`] is the single error type exposed by every fallible public API
 //! in this crate. Unlike `yerd-tls`'s `TlsError`, it is **not** `Clone + Eq`
 //! because it carries `std::io::Error` and `hickory_proto::ProtoError` via
-//! `#[source]` — this mirrors `yerd-config::ConfigError`'s pattern. The daemon
+//! `#[source]` - this mirrors `yerd-config::ConfigError`'s pattern. The daemon
 //! either logs the error or maps it to `yerd_ipc::ErrorCode` at the IPC
 //! boundary.
 
@@ -58,7 +58,7 @@ pub enum DnsError {
 
 /// Transport tag used in [`DnsError::Bind`].
 ///
-/// Not `#[non_exhaustive]` — this crate services only unencrypted UDP/TCP.
+/// Not `#[non_exhaustive]` - this crate services only unencrypted UDP/TCP.
 /// `DoT` / `DoH` / `DoQ` would be separate crates entirely.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BindProto {
@@ -126,10 +126,6 @@ mod tests {
             "missing attempt count: {s}"
         );
 
-        // `From<io::Error> for ProtoError` is reachable via the blanket
-        // `impl<E: Into<ProtoErrorKind>> From<E> for ProtoError` over the
-        // `ProtoErrorKind::Io` variant. If hickory ever removes this path,
-        // this test fails and we re-evaluate.
         let proto = hickory_proto::error::ProtoError::from(io());
         let task = DnsError::ServerTask { source: proto };
         assert!(task.to_string().contains("hickory server task failed"));

@@ -6,14 +6,14 @@
 //! Layout:
 //! - `[global]` block with `pid`, `error_log`, `daemonize = no`
 //!   (we supervise in the foreground; `--nodaemonize` is **not** also
-//!   passed on the CLI — single source of truth).
+//!   passed on the CLI - single source of truth).
 //! - `[yerd-<version>]` pool block with `listen`, `pm`, `pm.max_children`,
 //!   `clear_env = no`, `catch_workers_output = yes`.
 //!
 //! `clear_env = no` is deliberate: it lets the manager pre-scrub the env
 //! via [`crate::pure::env_scrub::allowlist`] before spawn instead of FPM
 //! doing its own (more aggressive) scrub. The allowlist is the security
-//! boundary — see `env_scrub` rustdoc for the retained keys.
+//! boundary - see `env_scrub` rustdoc for the retained keys.
 
 use std::fmt::Write;
 
@@ -28,7 +28,6 @@ pub fn render_fpm_conf(cfg: &PoolConfig) -> String {
     let pm = render_pm(cfg.pm);
     let pool = format!("yerd-{}", cfg.version);
 
-    // `write!` to `String` cannot fail.
     let _ = writeln!(out, "[global]");
     let _ = writeln!(out, "pid = {}", cfg.pid_file.display());
     let _ = writeln!(out, "error_log = {}", cfg.error_log.display());
@@ -41,11 +40,6 @@ pub fn render_fpm_conf(cfg: &PoolConfig) -> String {
     let _ = writeln!(out, "clear_env = no");
     let _ = writeln!(out, "catch_workers_output = yes");
 
-    // Global PHP ini directives. Each value is re-validated defensively (the
-    // daemon already validates on set + config-load), so an unsupported key or
-    // an unsafe value is silently skipped rather than written raw into the FPM
-    // master config — this module is pure, so it cannot log. `directive` picks
-    // `php_value` vs `php_flag`.
     for (key, value) in &cfg.ini {
         if let Some(directive) = yerd_core::php_settings::directive(key) {
             if yerd_core::php_settings::validate_value(key, value).is_ok() {
@@ -169,7 +163,6 @@ catch_workers_output = yes
         let s = render_fpm_conf(&cfg);
         assert!(s.contains("php_value[memory_limit] = 512M\n"), "got: {s}");
         assert!(s.contains("php_flag[display_errors] = On\n"), "got: {s}");
-        // Directives come after the pool's standard keys.
         assert!(
             s.find("catch_workers_output").unwrap() < s.find("php_value[memory_limit]").unwrap()
         );

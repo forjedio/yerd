@@ -64,8 +64,6 @@ fn default_config_starts_with_version_line() {
 #[test]
 fn default_config_emits_dns_port_scalar_before_tables() {
     let s = Config::default().to_toml().unwrap();
-    // Default is the fixed loopback DNS port, emitted as a top-level scalar
-    // (before any `[section]` table).
     assert!(
         s.contains("dns_port = 1053\n"),
         "expected `dns_port = 1053` scalar; got: {s}"
@@ -73,7 +71,6 @@ fn default_config_emits_dns_port_scalar_before_tables() {
     let dns_at = s.find("dns_port = ").expect("dns_port present");
     let first_table = s.find("\n[").expect("at least one table");
     assert!(dns_at < first_table, "dns_port must precede tables in: {s}");
-    // And it round-trips.
     let back = Config::from_toml(&s).unwrap();
     assert_eq!(back.dns_port, 1053);
 }
@@ -89,8 +86,6 @@ fn dns_port_zero_round_trips() {
 #[test]
 fn default_config_contains_each_section_header() {
     let s = Config::default().to_toml().unwrap();
-    // `[services]` is omitted when empty (v3: per-service tables, skipped like
-    // `[[overrides]]` / `[php.settings]`).
     for header in ["\n[ports]\n", "\n[php]\n", "\n[parked]\n"] {
         assert!(
             s.contains(header),
@@ -119,14 +114,12 @@ fn populated_config_uses_double_bracket_override_form() {
         s.contains("\n[[overrides]]\n"),
         "missing `[[overrides]]` header in: {s}"
     );
-    // Round-trips back to the same overrides map.
     let back = Config::from_toml(&s).unwrap();
     assert_eq!(back.overrides, populated().overrides);
 }
 
 #[test]
 fn empty_overrides_emit_no_table() {
-    // A config with no overrides must not carry any `[[overrides]]` table.
     let s = Config::default().to_toml().unwrap();
     assert!(
         !s.contains("[[overrides]]"),
@@ -136,7 +129,6 @@ fn empty_overrides_emit_no_table() {
 
 #[test]
 fn default_config_emits_no_mail_table() {
-    // The default (disabled) mail section must not carry a `[mail]` table.
     let s = Config::default().to_toml().unwrap();
     assert!(
         !s.contains("[mail]"),
@@ -167,7 +159,6 @@ fn override_with_only_php_omits_secure_key() {
 
 #[test]
 fn parked_paths_emitted_in_lex_order() {
-    // Insert in reverse alphabetical order; BTreeSet sorts to "a" before "b".
     let mut c = Config::default();
     c.parked.paths.insert("b".to_string());
     c.parked.paths.insert("a".to_string());
@@ -187,7 +178,6 @@ fn services_tables_emitted_in_lex_order_and_round_trip() {
         .instances
         .insert("mysql".to_string(), ServiceInstance::default());
     let s = c.to_toml().unwrap();
-    // BTreeMap iteration → `[services.mysql]` is emitted before `[services.redis]`.
     let mysql_at = s.find("[services.mysql]").expect("mysql table present");
     let redis_at = s.find("[services.redis]").expect("redis table present");
     assert!(
@@ -200,8 +190,6 @@ fn services_tables_emitted_in_lex_order_and_round_trip() {
 
 #[test]
 fn service_instance_wire_shape_is_per_service_table() {
-    // v3: each enabled service is a `[services.<id>]` table carrying `enabled`
-    // (+ optional version/port) — NOT the old `enabled = [...]` array.
     let mut c = Config::default();
     c.services.instances.insert(
         "redis".to_string(),
@@ -221,9 +209,6 @@ fn service_instance_wire_shape_is_per_service_table() {
     assert_eq!(redis.get("enabled"), Some(&toml::Value::Boolean(true)));
     assert_eq!(redis.get("version"), Some(&toml::Value::String("8".into())));
     assert_eq!(redis.get("port"), Some(&toml::Value::Integer(6380)));
-    // An unset value must be omitted (no `version = ""` noise) — inspect the
-    // service's own table, not the whole doc (which carries a top-level
-    // `version = 4` line).
     let mut c2 = Config::default();
     c2.services
         .instances
@@ -282,8 +267,6 @@ enabled = ["mysql", "redis"]
 
 #[test]
 fn default_config_emits_seeded_php_settings_subtable() {
-    // Yerd now ships opinionated PHP defaults, so the default config DOES carry
-    // a `[php.settings]` table with those values.
     let s = Config::default().to_toml().unwrap();
     assert!(
         s.contains("[php.settings]"),
@@ -297,8 +280,6 @@ fn default_config_emits_seeded_php_settings_subtable() {
 
 #[test]
 fn cleared_php_settings_emit_no_subtable() {
-    // A config whose settings map is explicitly empty must not carry a
-    // `[php.settings]` table (the user cleared every directive).
     let mut c = Config::default();
     c.php.settings.clear();
     let s = c.to_toml().unwrap();
@@ -319,7 +300,6 @@ fn populated_php_settings_emit_subtable_after_default_and_round_trip() {
         .insert("display_errors".to_string(), "On".to_string());
     let s = c.to_toml().unwrap();
 
-    // The `default` scalar must precede the `[php.settings]` sub-table.
     let php_at = s.find("\n[php]\n").expect("[php] table present");
     let settings_at = s.find("[php.settings]").expect("[php.settings] present");
     assert!(
@@ -340,19 +320,16 @@ fn empty_parked_emits_empty_array_and_services_omitted() {
     let c = Config::default();
     let s = c.to_toml().unwrap();
     let v: toml::Value = toml::from_str(&s).unwrap();
-    // `parked.paths` still serialises as an explicit empty array.
     let paths = v
         .get("parked")
         .and_then(|x| x.get("paths"))
         .and_then(|x| x.as_array())
         .expect("expected parked.paths array");
     assert!(paths.is_empty());
-    // v3: an empty services map is omitted entirely (no `[services]` table).
     assert!(
         v.get("services").is_none(),
         "empty services must be omitted; got: {s}"
     );
 
-    // Belt and braces: `BTreeSet::new()` here matches parked's storage.
     let _: BTreeSet<String> = BTreeSet::new();
 }

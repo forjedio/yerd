@@ -28,7 +28,6 @@ mod tests {
 
     #[test]
     fn rss_parses_kib_to_bytes() {
-        // `-o rss=` is headerless; ps right-pads with leading spaces.
         assert_eq!(parse_ps_rss_bytes("  12345\n"), Some(12345 * 1024));
     }
 
@@ -39,7 +38,6 @@ mod tests {
 
     #[test]
     fn rss_empty_is_none() {
-        // ps prints nothing for a pid that no longer exists.
         assert_eq!(parse_ps_rss_bytes(""), None);
         assert_eq!(parse_ps_rss_bytes("   \n"), None);
     }

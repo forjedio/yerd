@@ -39,7 +39,7 @@ pub enum PhpError {
     },
 
     /// Spawning the FPM child process failed (or the wait failed while
-    /// supervising — see [`SpawnFailureReason::WaitFailed`]).
+    /// supervising - see [`SpawnFailureReason::WaitFailed`]).
     #[error("spawn FPM for {version} ({reason:?}): {source}")]
     Spawn {
         /// Which version's FPM we tried to spawn.

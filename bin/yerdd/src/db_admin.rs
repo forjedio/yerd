@@ -1,10 +1,10 @@
 //! Database administration ("Manage DBs"): list / create / drop databases in a
 //! running SQL service.
 //!
-//! This is the I/O edge — it shells out to the **bundled client** for each
+//! This is the I/O edge - it shells out to the **bundled client** for each
 //! engine (`mysql`/`mariadb` over the Unix socket; `psql` over TCP loopback) and
-//! captures its output. All the decision logic — name validation, SQL and `argv`
-//! construction, output parsing — is pure and unit-tested in
+//! captures its output. All the decision logic - name validation, SQL and `argv`
+//! construction, output parsing - is pure and unit-tested in
 //! `yerd_services::database`. The SQL is passed as a single `argv` element (never
 //! a shell), so combined with the validating allowlist there is no injection
 //! surface.
@@ -21,7 +21,7 @@ use yerd_services::{database, version, Service, ServiceRunState};
 use crate::services::resolve_version;
 use crate::state::DaemonState;
 
-/// `list databases <svc>` — the user databases (system schemas filtered out).
+/// `list databases <svc>` - the user databases (system schemas filtered out).
 pub async fn list(service_id: &str, state: &DaemonState) -> Response {
     let ctx = match prepare(service_id, state).await {
         Ok(c) => c,
@@ -53,7 +53,7 @@ pub async fn create(service_id: &str, name: &str, state: &DaemonState) -> Respon
     }
 }
 
-/// `drop database <svc> <name>` — refuses system databases.
+/// `drop database <svc> <name>` - refuses system databases.
 pub async fn drop(service_id: &str, name: &str, state: &DaemonState) -> Response {
     let ctx = match prepare(service_id, state).await {
         Ok(c) => c,
@@ -74,11 +74,11 @@ pub async fn drop(service_id: &str, name: &str, state: &DaemonState) -> Response
     }
 }
 
-/// `backup database <svc> <name> <path>` — stream a plain-SQL dump to `path`.
+/// `backup database <svc> <name> <path>` - stream a plain-SQL dump to `path`.
 ///
 /// The dump tool writes to stdout; we stream that to a temp sibling of `path` and
 /// atomically rename on success, so a failed dump never truncates an existing target.
-/// The destination path is never passed to the dump tool — there is no path-injection
+/// The destination path is never passed to the dump tool - there is no path-injection
 /// surface.
 pub async fn backup(service_id: &str, name: &str, path: &Path, state: &DaemonState) -> Response {
     let ctx = match prepare(service_id, state).await {
@@ -103,7 +103,6 @@ pub async fn backup(service_id: &str, name: &str, path: &Path, state: &DaemonSta
     }
     let args = database::dump_args(ctx.service, &ctx.socket, ctx.port, name);
 
-    // Stream to a temp sibling, rename on success (atomic; never truncates `path`).
     let tmp = tmp_sibling(path);
     let mut file = match tokio::fs::File::create(&tmp).await {
         Ok(f) => f,
@@ -124,8 +123,6 @@ pub async fn backup(service_id: &str, name: &str, path: &Path, state: &DaemonSta
         }
     };
 
-    // Take both pipes and drain them concurrently with `wait()`; draining only one
-    // while the other's buffer fills would deadlock the child.
     let (Some(mut stdout), Some(mut stderr)) = (child.stdout.take(), child.stderr.take()) else {
         let _ = tokio::fs::remove_file(&tmp).await;
         return internal("dump tool produced no stdio pipes");
@@ -159,7 +156,7 @@ pub async fn backup(service_id: &str, name: &str, path: &Path, state: &DaemonSta
     Response::Ok
 }
 
-/// `restore database <svc> <name> <path>` — replay a plain-SQL file into `name`.
+/// `restore database <svc> <name> <path>` - replay a plain-SQL file into `name`.
 ///
 /// The file is streamed into the restore client's stdin (the source path never
 /// reaches its argv). The target database must already exist (single-db dumps carry
@@ -197,12 +194,8 @@ pub async fn restore(service_id: &str, name: &str, path: &Path, state: &DaemonSt
     let (Some(mut stdin), Some(mut stderr)) = (child.stdin.take(), child.stderr.take()) else {
         return internal("restore client produced no stdio pipes");
     };
-    // `stdin` is MOVED into this future so it drops (→ EOF) when the copy finishes,
-    // letting the client exit and `wait()` resolve. Keeping it alive would hang.
     let feed = async move {
         let res = tokio::io::copy(&mut file, &mut stdin).await;
-        // Close the write side → EOF, so the client can finish and `wait()` resolve.
-        // `stdin` is dropped at the end of this `async move` block regardless.
         let _ = stdin.shutdown().await;
         res
     };
@@ -270,7 +263,6 @@ async fn prepare(service_id: &str, state: &DaemonState) -> Result<DbCtx, Respons
         });
     }
 
-    // Database ops need a live server.
     let running = {
         let mut mgr = state.service_manager.lock().await;
         mgr.snapshots()
@@ -373,7 +365,7 @@ fn invalid_path(message: impl Into<String>) -> Response {
 /// carries the engine's exact wording).
 fn classify(detail: &str) -> ErrorCode {
     let d = detail.to_ascii_lowercase();
-    if d.contains("already exists") {
+    if d.contains("already exists") || d.contains("database exists") {
         ErrorCode::AlreadyExists
     } else if d.contains("does not exist")
         || d.contains("doesn't exist")
@@ -390,5 +382,217 @@ fn invalid_name(detail: &str) -> Response {
     Response::Error {
         code: ErrorCode::InvalidPath,
         message: detail.to_owned(),
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::panic)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+    use tokio::sync::{Mutex, RwLock};
+    use yerd_core::{RouterConfig, SiteRouter, Tld};
+    use yerd_platform::PlatformDirs;
+
+    /// Pull `(code, message)` out of a `Response::Error`, panicking otherwise.
+    fn err_parts(r: Response) -> (ErrorCode, String) {
+        match r {
+            Response::Error { code, message } => (code, message),
+            other => panic!("expected Response::Error, got {other:?}"),
+        }
+    }
+
+    fn dirs_in(tmp: &Path) -> PlatformDirs {
+        PlatformDirs {
+            config: tmp.join("c"),
+            data: tmp.join("d"),
+            state: tmp.join("s"),
+            cache: tmp.join("ca"),
+            runtime: tmp.join("r"),
+        }
+    }
+
+    /// Copied verbatim from `ipc_server`'s test module (its `state_in` is private
+    /// to that module). A `DaemonState` rooted at `tmp` with no engines installed.
+    fn state_in(tmp: &Path) -> DaemonState {
+        let dirs = dirs_in(tmp);
+        let router = SiteRouter::new(RouterConfig::with_tld(Tld::new("test").unwrap()));
+        let ca_path = dirs.data.join("ca.cert.pem");
+        let php_manager = Arc::new(Mutex::new(yerd_php::PhpManager::new(
+            yerd_php::TokioProcessSpawner,
+            yerd_php::SystemClock,
+            yerd_php::io::FastCgiProbe,
+            dirs.clone(),
+            yerd_platform::ActivePortBinder::new(),
+            std::process::id(),
+            std::collections::BTreeMap::new(),
+        )));
+        DaemonState {
+            config: Mutex::new(yerd_config::Config::default()),
+            router: Arc::new(RwLock::new(router)),
+            config_path: dirs.config.join("yerd.toml"),
+            dirs,
+            dns_addr: "127.0.0.1:1053".parse().unwrap(),
+            ca_path,
+            ca_fingerprint: yerd_platform::CaFingerprint::new([0u8; 32]),
+            php_updates: tokio::sync::RwLock::new(std::collections::HashMap::new()),
+            yerd_update: tokio::sync::RwLock::new(Vec::new()),
+            update_snapshot: tokio::sync::RwLock::new(None),
+            php_manager,
+            service_manager: Arc::new(Mutex::new(crate::services::new_manager(dirs_in(tmp)))),
+            mail_store: Arc::new(yerd_mail::Store::open(tmp.join("mail")).unwrap()),
+            mail: crate::state::MailRuntime { listening: false },
+            http: yerd_ipc::PortStatus {
+                requested: 80,
+                bound: 8080,
+                fell_back: true,
+            },
+            https: yerd_ipc::PortStatus {
+                requested: 443,
+                bound: 8443,
+                fell_back: true,
+            },
+            web_unbound: None,
+            dns_unbound: None,
+            boot_id: 1,
+            started_at: std::time::Instant::now(),
+            shutdown_tx: tokio::sync::watch::channel(false).0,
+            restart_requested: std::sync::atomic::AtomicBool::new(false),
+            detect_cache: Arc::new(crate::detect_cache::DetectCache::new()),
+            watch_dirty: tokio::sync::Notify::new(),
+            dumps: Arc::new(crate::dump_server::DumpStore::new()),
+            shim_reconcile: tokio::sync::Mutex::new(()),
+            tool_mutate: tokio::sync::Mutex::new(()),
+            php_mutate: tokio::sync::Mutex::new(()),
+            jobs: crate::jobs::JobRegistry::default(),
+            reserved_names: tokio::sync::Mutex::new(std::collections::HashSet::new()),
+        }
+    }
+
+    #[tokio::test]
+    async fn prepare_rejects_unknown_service() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_in(tmp.path());
+        let (code, msg) = err_parts(list("nonsense", &state).await);
+        assert_eq!(code, ErrorCode::NotFound);
+        assert!(msg.contains("nonsense"));
+    }
+
+    #[tokio::test]
+    async fn prepare_rejects_non_sql_engine() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_in(tmp.path());
+        let (code, msg) = err_parts(list("redis", &state).await);
+        assert_eq!(code, ErrorCode::InvalidPath);
+        assert!(msg.contains("does not host SQL databases"));
+    }
+
+    #[tokio::test]
+    async fn prepare_errors_when_engine_not_installed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_in(tmp.path());
+        let (code, _) = err_parts(list("mysql", &state).await);
+        assert_eq!(code, ErrorCode::NotFound);
+    }
+
+    #[tokio::test]
+    async fn every_db_op_propagates_prepare_error() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_in(tmp.path());
+        let p = std::path::Path::new("/tmp/x.sql");
+        assert_eq!(
+            err_parts(create("mysql", "blog", &state).await).0,
+            ErrorCode::NotFound
+        );
+        assert_eq!(
+            err_parts(drop("mysql", "blog", &state).await).0,
+            ErrorCode::NotFound
+        );
+        assert_eq!(
+            err_parts(backup("mysql", "blog", p, &state).await).0,
+            ErrorCode::NotFound
+        );
+        assert_eq!(
+            err_parts(restore("mysql", "blog", p, &state).await).0,
+            ErrorCode::NotFound
+        );
+    }
+
+    #[test]
+    fn classify_maps_already_exists() {
+        assert_eq!(
+            classify("ERROR 1007: Can't create database 'x'; database exists"),
+            ErrorCode::AlreadyExists,
+            "MySQL's duplicate-database phrasing maps to AlreadyExists"
+        );
+        assert_eq!(
+            classify("database \"foo\" already exists"),
+            ErrorCode::AlreadyExists
+        );
+        assert_eq!(classify("Already Exists"), ErrorCode::AlreadyExists);
+    }
+
+    #[test]
+    fn classify_maps_not_found_variants() {
+        assert_eq!(
+            classify("database \"foo\" does not exist"),
+            ErrorCode::NotFound
+        );
+        assert_eq!(
+            classify("ERROR 1008: Can't drop database 'x'; doesn't exist"),
+            ErrorCode::NotFound
+        );
+        assert_eq!(classify("Unknown database 'bar'"), ErrorCode::NotFound);
+    }
+
+    #[test]
+    fn classify_defaults_to_internal() {
+        assert_eq!(classify("some other failure"), ErrorCode::Internal);
+        assert_eq!(classify(""), ErrorCode::Internal);
+    }
+
+    #[test]
+    fn tmp_sibling_appends_part_suffix() {
+        let p = Path::new("/tmp/dumps/blog.sql");
+        let sib = tmp_sibling(p);
+        assert_eq!(sib, Path::new("/tmp/dumps/blog.sql.yerd-part"));
+        assert_eq!(sib.parent(), p.parent());
+    }
+
+    #[test]
+    fn tmp_sibling_handles_pathless_name() {
+        let sib = tmp_sibling(Path::new("/"));
+        assert!(sib.to_string_lossy().ends_with(".yerd-part"));
+    }
+
+    #[test]
+    fn map_stderr_uses_first_non_empty_trimmed_line() {
+        let (code, msg) = err_parts(map_stderr(
+            b"\n   \n  ERROR: database \"x\" already exists  \nignored second line\n",
+        ));
+        assert_eq!(msg, "ERROR: database \"x\" already exists");
+        assert_eq!(code, ErrorCode::AlreadyExists);
+    }
+
+    #[test]
+    fn map_stderr_empty_falls_back_to_default_message() {
+        let (code, msg) = err_parts(map_stderr(b""));
+        assert_eq!(msg, "the database client exited with an error");
+        assert_eq!(code, ErrorCode::Internal);
+    }
+
+    #[test]
+    fn map_stderr_lossy_decodes_invalid_utf8() {
+        let (_code, msg) = err_parts(map_stderr(&[0xff, 0xfe, b'\n']));
+        assert!(!msg.is_empty());
+    }
+
+    #[test]
+    fn constructors_set_expected_codes() {
+        assert_eq!(err_parts(internal("boom")).0, ErrorCode::Internal);
+        assert_eq!(err_parts(invalid_path("nope")).0, ErrorCode::InvalidPath);
+        let (code, msg) = err_parts(invalid_name("bad name"));
+        assert_eq!(code, ErrorCode::InvalidPath);
+        assert_eq!(msg, "bad name");
     }
 }

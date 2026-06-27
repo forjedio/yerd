@@ -120,7 +120,6 @@ fn from_pem_key_does_not_match_cert_rejected() {
 #[test]
 fn from_pem_cert_with_wrong_tag_rejected() {
     let ca = CertAuthority::generate("CA", standard_validity()).unwrap();
-    // Pass the key PEM where the cert PEM is expected → wrong tag.
     let err = CertAuthority::from_pem(ca.key_pem(), ca.key_pem()).unwrap_err();
     assert!(matches!(
         err,
@@ -132,8 +131,6 @@ fn from_pem_cert_with_wrong_tag_rejected() {
 
 #[test]
 fn from_pem_cross_algorithm_rejected() {
-    // ECDSA P-256 cert (what yerd-tls generates) paired with an Ed25519 key
-    // (generated directly via rcgen) — SPKI byte-compare must reject this.
     let p256 = CertAuthority::generate("CA", standard_validity()).unwrap();
     let ed25519 = rcgen::KeyPair::generate_for(&rcgen::PKCS_ED25519).unwrap();
     let ed25519_pem = ed25519.serialize_pem();
@@ -149,8 +146,6 @@ fn from_pem_cross_algorithm_rejected() {
 #[test]
 fn from_pem_key_with_wrong_tag_rejected() {
     let ca = CertAuthority::generate("CA", standard_validity()).unwrap();
-    // Pass the cert PEM where the key PEM is expected → wrong tag
-    // (block decodes fine, but tag check fails before rcgen sees it).
     let err = CertAuthority::from_pem(ca.cert_pem(), ca.cert_pem()).unwrap_err();
     assert!(matches!(
         err,

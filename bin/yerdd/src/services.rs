@@ -8,6 +8,7 @@
 
 use std::sync::Arc;
 
+use tokio::sync::watch;
 use yerd_config::ServiceInstance;
 use yerd_ipc::{ErrorCode, Response, ServiceAvailability, ServiceRunState, ServiceStatus};
 use yerd_services::{
@@ -38,14 +39,14 @@ pub fn new_manager(dirs: yerd_platform::PlatformDirs) -> DaemonServiceManager {
 
 // ── handlers ────────────────────────────────────────────────────────────────
 
-/// `list services` — every manageable engine with its live status.
+/// `list services` - every manageable engine with its live status.
 pub async fn list_services(state: &DaemonState) -> Response {
     Response::Services {
         services: service_statuses(state).await,
     }
 }
 
-/// `available services` — installable vs installed versions per engine. Fetches
+/// `available services` - installable vs installed versions per engine. Fetches
 /// yerd's services listing on demand; a transport failure is the only error.
 pub async fn available_services(state: &DaemonState, dl: &dyn Downloader) -> Response {
     let (os, arch) = match current_os_arch() {
@@ -78,9 +79,9 @@ pub async fn available_services(state: &DaemonState, dl: &dyn Downloader) -> Res
     Response::AvailableServices { services }
 }
 
-/// `install service <svc> <version>` — download + unpack (no config lock held),
+/// `install service <svc> <version>` - download + unpack (no config lock held),
 /// then start it. Installing a service is taken as intent to run it, so a fresh
-/// install comes up immediately and — like every installed engine — survives
+/// install comes up immediately and - like every installed engine - survives
 /// daemon restarts (see [`auto_start_installed`]). `enabled` is still set for the
 /// status record, but no longer gates boot auto-start.
 pub async fn install_service(
@@ -100,9 +101,6 @@ pub async fn install_service(
         return service_error_response(&e);
     }
 
-    // Auto-start the freshly installed version. Pick up any pre-configured port
-    // override (else the engine default), ensure it's running, and persist
-    // enabled=true so it also comes back on the next daemon boot.
     let port = {
         let cfg = state.config.lock().await;
         cfg.services
@@ -127,7 +125,7 @@ pub async fn install_service(
     }
 }
 
-/// `change-version <svc> <new>` — switch the engine's single installed version.
+/// `change-version <svc> <new>` - switch the engine's single installed version.
 /// Installs the new version, restarts the instance onto it, then removes the
 /// previously-installed version(s). The datadir is retained (it's shared per
 /// engine / per major), so this is safe for SQL engines in later phases.
@@ -145,21 +143,15 @@ pub async fn change_service_version(
         Err(e) => return service_error_response(&e),
     };
 
-    // Versions currently on disk, to be removed once the new one is running.
     let superseded: Vec<ServiceVersion> = installed_versions(service, &state.dirs)
         .into_iter()
         .filter(|v| v != &new_version)
         .collect();
 
-    // 1. Install the new version first — a failed download leaves the current
-    //    install untouched.
     if let Err(e) = service_install::install(service, &new_version, &state.dirs, dl).await {
         return service_error_response(&e);
     }
 
-    // 2. Restart onto the new version (stop old → start new). `restart`, not
-    //    `ensure`: `ensure` short-circuits when an instance is already running
-    //    and would not switch to the new binary.
     let port = {
         let cfg = state.config.lock().await;
         cfg.services
@@ -173,13 +165,9 @@ pub async fn change_service_version(
         mgr.restart(service, new_version.clone(), port).await
     };
     if let Err(e) = outcome {
-        // The new version is installed but didn't start; leave the old version
-        // in place (don't strand the user with nothing) and surface the error.
         return service_error_response(&e);
     }
 
-    // 3. Persist the new selection, then drop the superseded version(s). Keep
-    //    the datadir (purge = false).
     if let Err(resp) = persist_instance(state, service, |inst| {
         inst.enabled = true;
         inst.version = Some(new_version.to_string());
@@ -216,13 +204,8 @@ pub async fn uninstall_service(
         Ok(v) => v,
         Err(e) => return service_error_response(&e),
     };
-    // Stop a running instance first (clean teardown) before removing files.
     let _ = state.service_manager.lock().await.stop(service).await;
     match service_install::uninstall(service, &version, &state.dirs, purge) {
-        // Retaining the datadir is the SUCCESSFUL default — not an error. (A
-        // previous version returned Response::Error here, which the CLI/GUI both
-        // surface as a failure; that was a mis-signal.) Log where the data was
-        // kept; the client just sees success.
         Ok(retained) => {
             if let Some(path) = retained {
                 tracing::info!(
@@ -237,12 +220,11 @@ pub async fn uninstall_service(
     }
 }
 
-/// `start service <svc>` — ensure it's running, enable auto-start, persist config.
+/// `start service <svc>` - ensure it's running, enable auto-start, persist config.
 pub async fn start_service(service_id: &str, state: &DaemonState) -> Response {
     let Some(service) = Service::from_id(service_id) else {
         return unknown_service(service_id);
     };
-    // Resolve version + port under a brief lock, then drop it for the slow ensure.
     let (configured_version, port) = {
         let cfg = state.config.lock().await;
         let inst = cfg.services.instances.get(service.id());
@@ -272,7 +254,7 @@ pub async fn start_service(service_id: &str, state: &DaemonState) -> Response {
     }
 }
 
-/// `stop service <svc>` — stop it and disable auto-start.
+/// `stop service <svc>` - stop it and disable auto-start.
 pub async fn stop_service(service_id: &str, state: &DaemonState) -> Response {
     let Some(service) = Service::from_id(service_id) else {
         return unknown_service(service_id);
@@ -288,7 +270,7 @@ pub async fn stop_service(service_id: &str, state: &DaemonState) -> Response {
         .unwrap_or_else(|resp| resp)
 }
 
-/// `restart service <svc>` — stop + ensure with the configured/selected version.
+/// `restart service <svc>` - stop + ensure with the configured/selected version.
 pub async fn restart_service(service_id: &str, state: &DaemonState) -> Response {
     let Some(service) = Service::from_id(service_id) else {
         return unknown_service(service_id);
@@ -315,7 +297,7 @@ pub async fn restart_service(service_id: &str, state: &DaemonState) -> Response 
     }
 }
 
-/// `set-port <svc> <port>` — persist the port (takes effect on next start/restart).
+/// `set-port <svc> <port>` - persist the port (takes effect on next start/restart).
 pub async fn set_service_port(service_id: &str, port: u16, state: &DaemonState) -> Response {
     let Some(service) = Service::from_id(service_id) else {
         return unknown_service(service_id);
@@ -325,7 +307,7 @@ pub async fn set_service_port(service_id: &str, port: u16, state: &DaemonState) 
         .unwrap_or_else(|resp| resp)
 }
 
-/// `service logs <svc>` — the last `lines` lines of the engine's log file.
+/// `service logs <svc>` - the last `lines` lines of the engine's log file.
 pub fn service_logs(service_id: &str, lines: u32, state: &DaemonState) -> Response {
     let Some(service) = Service::from_id(service_id) else {
         return unknown_service(service_id);
@@ -402,19 +384,52 @@ pub async fn service_statuses(state: &DaemonState) -> Vec<ServiceStatus> {
 /// task so a slow/failing DB cold-boot never blocks the proxy/DNS listeners.
 ///
 /// Policy: any engine with an installed version is brought up on boot,
-/// regardless of the persisted `enabled` flag — installing a service is taken as
+/// regardless of the persisted `enabled` flag - installing a service is taken as
 /// intent to run it. A `Stop` still stops the engine for the current session,
 /// but it returns on the next daemon start; to keep one off for good, uninstall
 /// it.
+///
+/// Shutdown-aware: an instance torn down shortly after booting (the
+/// upgrade-restart thrash) bails before spawning DB engines, so the 10s DB
+/// `stop_grace` never holds the instance lock and serialises the next relaunch.
 pub async fn auto_start_installed(state: Arc<DaemonState>) {
     let installed: Vec<Service> = Service::ALL
         .into_iter()
         .filter(|svc| !installed_versions(*svc, &state.dirs).is_empty())
         .collect();
+    let mut shutdown = state.shutdown_tx.subscribe();
+    run_auto_start(installed, &mut shutdown, |service| {
+        let state = state.clone();
+        async move { list_services_start_one(service, &state).await }
+    })
+    .await;
+}
+
+/// Start each installed service in order, stopping the moment `shutdown` trips.
+/// Extracted from [`auto_start_installed`] so both the already-shutting-down and
+/// the mid-loop-abort branches are unit-testable with a fake `start_one`. The
+/// `biased` select checks shutdown first each iteration; a SIGTERM landing
+/// mid-start cancels the in-flight future, whose not-yet-tracked child the
+/// spawner's `kill_on_drop` then reaps.
+async fn run_auto_start<F, Fut>(
+    installed: Vec<Service>,
+    shutdown: &mut watch::Receiver<bool>,
+    mut start_one: F,
+) where
+    F: FnMut(Service) -> Fut,
+    Fut: std::future::Future<Output = Result<(), ServiceError>>,
+{
+    if *shutdown.borrow() {
+        return;
+    }
     for service in installed {
-        match list_services_start_one(service, &state).await {
-            Ok(()) => tracing::info!(service = %service, "auto-started service"),
-            Err(e) => tracing::warn!(service = %service, error = %e, "service auto-start failed"),
+        tokio::select! {
+            biased;
+            _ = shutdown.changed() => return,
+            res = start_one(service) => match res {
+                Ok(()) => tracing::info!(service = %service, "auto-started service"),
+                Err(e) => tracing::warn!(service = %service, error = %e, "service auto-start failed"),
+            },
         }
     }
 }
@@ -540,5 +555,542 @@ fn service_error_code(e: &ServiceError) -> ErrorCode {
         | ServiceError::UnsupportedPlatform { .. }
         | ServiceError::Unsupported { .. } => ErrorCode::InvalidPath,
         _ => ErrorCode::Internal,
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::panic)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+    use tokio::sync::{Mutex, RwLock};
+    use yerd_core::{RouterConfig, SiteRouter, Tld};
+    use yerd_platform::PlatformDirs;
+
+    fn dirs_in(tmp: &std::path::Path) -> PlatformDirs {
+        PlatformDirs {
+            config: tmp.join("c"),
+            data: tmp.join("d"),
+            state: tmp.join("s"),
+            cache: tmp.join("ca"),
+            runtime: tmp.join("r"),
+        }
+    }
+
+    /// Copied verbatim from `ipc_server`'s test module (its `state_in` is private
+    /// to that module). Builds a fully-wired `DaemonState` rooted at `tmp` with no
+    /// services installed and a default config.
+    fn state_in(tmp: &Path) -> DaemonState {
+        let dirs = dirs_in(tmp);
+        let router = SiteRouter::new(RouterConfig::with_tld(Tld::new("test").unwrap()));
+        let ca_path = dirs.data.join("ca.cert.pem");
+        let php_manager = std::sync::Arc::new(Mutex::new(yerd_php::PhpManager::new(
+            yerd_php::TokioProcessSpawner,
+            yerd_php::SystemClock,
+            yerd_php::io::FastCgiProbe,
+            dirs.clone(),
+            yerd_platform::ActivePortBinder::new(),
+            std::process::id(),
+            std::collections::BTreeMap::new(),
+        )));
+        DaemonState {
+            config: Mutex::new(yerd_config::Config::default()),
+            router: Arc::new(RwLock::new(router)),
+            config_path: dirs.config.join("yerd.toml"),
+            dirs,
+            dns_addr: "127.0.0.1:1053".parse().unwrap(),
+            ca_path,
+            ca_fingerprint: yerd_platform::CaFingerprint::new([0u8; 32]),
+            php_updates: tokio::sync::RwLock::new(std::collections::HashMap::new()),
+            yerd_update: tokio::sync::RwLock::new(Vec::new()),
+            update_snapshot: tokio::sync::RwLock::new(None),
+            php_manager,
+            service_manager: std::sync::Arc::new(Mutex::new(crate::services::new_manager(
+                dirs_in(tmp),
+            ))),
+            mail_store: std::sync::Arc::new(yerd_mail::Store::open(tmp.join("mail")).unwrap()),
+            mail: crate::state::MailRuntime { listening: false },
+            http: yerd_ipc::PortStatus {
+                requested: 80,
+                bound: 8080,
+                fell_back: true,
+            },
+            https: yerd_ipc::PortStatus {
+                requested: 443,
+                bound: 8443,
+                fell_back: true,
+            },
+            web_unbound: None,
+            dns_unbound: None,
+            boot_id: 1,
+            started_at: std::time::Instant::now(),
+            shutdown_tx: tokio::sync::watch::channel(false).0,
+            restart_requested: std::sync::atomic::AtomicBool::new(false),
+            detect_cache: std::sync::Arc::new(crate::detect_cache::DetectCache::new()),
+            watch_dirty: tokio::sync::Notify::new(),
+            dumps: std::sync::Arc::new(crate::dump_server::DumpStore::new()),
+            shim_reconcile: tokio::sync::Mutex::new(()),
+            tool_mutate: tokio::sync::Mutex::new(()),
+            php_mutate: tokio::sync::Mutex::new(()),
+            jobs: crate::jobs::JobRegistry::default(),
+            reserved_names: tokio::sync::Mutex::new(std::collections::HashSet::new()),
+        }
+    }
+
+    /// A `Downloader` that always reports a transport failure, or yields a fixed
+    /// listing body - enough to drive `available_services`' two arms without IO.
+    struct FakeDownloader {
+        body: Option<Vec<u8>>,
+    }
+
+    #[async_trait::async_trait]
+    impl Downloader for FakeDownloader {
+        async fn download(&self, url: &str) -> Result<Vec<u8>, yerd_supervise::DownloadError> {
+            match &self.body {
+                Some(b) => Ok(b.clone()),
+                None => Err(yerd_supervise::DownloadError::Transport {
+                    url: url.to_owned(),
+                    reason: "offline".into(),
+                }),
+            }
+        }
+    }
+
+    /// Fabricate an "installed" service version by laying down its server binary
+    /// at the layout `svc_version::discover_installed` scans for.
+    fn install_fake(dirs: &PlatformDirs, service: Service, version: &str) {
+        let ver: ServiceVersion = version.parse().unwrap();
+        let bin = svc_version::install_dir(dirs, service, &ver).join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::write(bin.join(service.server_binary()), b"#!fake").unwrap();
+    }
+
+    fn ver(s: &str) -> ServiceVersion {
+        s.parse().unwrap()
+    }
+
+    #[test]
+    fn map_run_state_maps_both_variants() {
+        assert_eq!(
+            map_run_state(MgrRunState::Running),
+            ServiceRunState::Running
+        );
+        assert_eq!(map_run_state(MgrRunState::Failed), ServiceRunState::Failed);
+    }
+
+    #[test]
+    fn service_error_code_classifies_variants() {
+        let svc = Service::MySql;
+        assert_eq!(
+            service_error_code(&ServiceError::PortInUse {
+                service: svc,
+                port: 3306
+            }),
+            ErrorCode::PortInUse
+        );
+        assert_eq!(
+            service_error_code(&ServiceError::VersionNotInstalled {
+                service: svc,
+                version: ver("8.4")
+            }),
+            ErrorCode::NotFound
+        );
+        assert_eq!(
+            service_error_code(&ServiceError::VersionUnavailable {
+                service: svc,
+                version: ver("8.4")
+            }),
+            ErrorCode::InvalidPath
+        );
+        assert_eq!(
+            service_error_code(&ServiceError::UnsupportedPlatform {
+                detail: "no builds".to_owned()
+            }),
+            ErrorCode::InvalidPath
+        );
+        assert_eq!(
+            service_error_code(&ServiceError::Unsupported {
+                service: svc,
+                detail: "nope".to_owned()
+            }),
+            ErrorCode::InvalidPath
+        );
+        assert_eq!(
+            service_error_code(&ServiceError::ListingParse {
+                detail: "bad".to_owned()
+            }),
+            ErrorCode::Internal
+        );
+    }
+
+    #[test]
+    fn unknown_service_is_not_found() {
+        match unknown_service("nope") {
+            Response::Error { code, message } => {
+                assert_eq!(code, ErrorCode::NotFound);
+                assert!(message.contains("nope"));
+            }
+            other => panic!("expected error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn service_error_response_carries_message_and_code() {
+        let e = ServiceError::PortInUse {
+            service: Service::Postgres,
+            port: 5432,
+        };
+        match service_error_response(&e) {
+            Response::Error { code, message } => {
+                assert_eq!(code, ErrorCode::PortInUse);
+                assert_eq!(message, e.to_string());
+            }
+            other => panic!("expected error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn installed_versions_empty_when_nothing_on_disk() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dirs = dirs_in(tmp.path());
+        assert!(installed_versions(Service::MySql, &dirs).is_empty());
+    }
+
+    #[test]
+    fn installed_versions_discovers_laid_down_binary() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dirs = dirs_in(tmp.path());
+        install_fake(&dirs, Service::MariaDb, "11.4");
+        let found = installed_versions(Service::MariaDb, &dirs);
+        assert_eq!(found, vec![ver("11.4")]);
+        assert!(installed_versions(Service::MySql, &dirs).is_empty());
+    }
+
+    #[test]
+    fn resolve_version_errors_when_nothing_installed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dirs = dirs_in(tmp.path());
+        match resolve_version(Service::Redis, None, &dirs) {
+            Err(Response::Error { code, message }) => {
+                assert_eq!(code, ErrorCode::NotFound);
+                assert!(message.contains("redis"));
+            }
+            other => panic!("expected NotFound error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn resolve_version_prefers_configured_when_installed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dirs = dirs_in(tmp.path());
+        install_fake(&dirs, Service::Postgres, "16.2");
+        install_fake(&dirs, Service::Postgres, "17.0");
+        assert_eq!(
+            resolve_version(Service::Postgres, Some("16.2"), &dirs).unwrap(),
+            ver("16.2")
+        );
+    }
+
+    #[test]
+    fn resolve_version_falls_back_to_latest_installed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dirs = dirs_in(tmp.path());
+        install_fake(&dirs, Service::Postgres, "16.2");
+        install_fake(&dirs, Service::Postgres, "17.0");
+        assert_eq!(
+            resolve_version(Service::Postgres, Some("99.0"), &dirs).unwrap(),
+            ver("17.0")
+        );
+        assert_eq!(
+            resolve_version(Service::Postgres, None, &dirs).unwrap(),
+            ver("17.0")
+        );
+    }
+
+    #[test]
+    fn new_manager_constructs_without_io() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dirs = dirs_in(tmp.path());
+        let _mgr = new_manager(dirs);
+    }
+
+    /// Pull `(code, message)` out of a `Response::Error`, panicking otherwise.
+    fn err_parts(r: Response) -> (ErrorCode, String) {
+        match r {
+            Response::Error { code, message } => (code, message),
+            other => panic!("expected Response::Error, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn service_statuses_lists_all_engines_stopped_when_none_installed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_in(tmp.path());
+        let statuses = service_statuses(&state).await;
+        assert_eq!(statuses.len(), Service::ALL.len());
+        for s in &statuses {
+            assert_eq!(s.state, ServiceRunState::Stopped);
+            assert!(s.pid.is_none());
+            assert!(s.listen.is_none());
+            assert!(s.installed_versions.is_empty());
+            assert!(s.selected_version.is_none());
+            assert!(!s.enabled);
+        }
+        let mysql = statuses.iter().find(|s| s.service == "mysql").unwrap();
+        assert!(mysql.supports_databases);
+        let redis = statuses.iter().find(|s| s.service == "redis").unwrap();
+        assert!(!redis.supports_databases);
+    }
+
+    #[tokio::test]
+    async fn list_services_wraps_statuses() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_in(tmp.path());
+        match list_services(&state).await {
+            Response::Services { services } => {
+                assert_eq!(services.len(), Service::ALL.len());
+            }
+            other => panic!("expected Services, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn available_services_reports_transport_failure() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_in(tmp.path());
+        let dl = FakeDownloader { body: None };
+        let (code, msg) = err_parts(available_services(&state, &dl).await);
+        assert_eq!(code, ErrorCode::Internal);
+        assert!(msg.contains("services distribution"));
+    }
+
+    #[tokio::test]
+    async fn available_services_success_lists_every_engine_empty() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_in(tmp.path());
+        let dl = FakeDownloader {
+            body: Some(b"{\"services\":{}}".to_vec()),
+        };
+        match available_services(&state, &dl).await {
+            Response::AvailableServices { services } => {
+                assert_eq!(services.len(), Service::ALL.len());
+                for s in &services {
+                    assert!(s.available.is_empty());
+                    assert!(s.installed.is_empty());
+                }
+            }
+            other => panic!("expected AvailableServices, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn unknown_service_id_is_not_found_across_handlers() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_in(tmp.path());
+        let dl = FakeDownloader { body: None };
+        let cases = vec![
+            install_service("nope", "1.0", &state, &dl).await,
+            change_service_version("nope", "1.0", &state, &dl).await,
+            uninstall_service("nope", "1.0", false, &state).await,
+            start_service("nope", &state).await,
+            stop_service("nope", &state).await,
+            restart_service("nope", &state).await,
+            set_service_port("nope", 1234, &state).await,
+            service_logs("nope", 10, &state),
+        ];
+        for r in cases {
+            assert_eq!(err_parts(r).0, ErrorCode::NotFound);
+        }
+    }
+
+    #[tokio::test]
+    async fn install_and_change_reject_bad_version_string() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_in(tmp.path());
+        let dl = FakeDownloader { body: None };
+        let (code, _) = err_parts(install_service("mysql", "not-a-version!!", &state, &dl).await);
+        assert_eq!(code, ErrorCode::InvalidPath);
+        let (code, _) =
+            err_parts(change_service_version("mysql", "not-a-version!!", &state, &dl).await);
+        assert_eq!(code, ErrorCode::InvalidPath);
+        let (code, _) = err_parts(uninstall_service("mysql", "bad!", false, &state).await);
+        assert_eq!(code, ErrorCode::InvalidPath);
+    }
+
+    #[tokio::test]
+    async fn start_and_restart_error_when_nothing_installed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_in(tmp.path());
+        let (code, msg) = err_parts(start_service("postgres", &state).await);
+        assert_eq!(code, ErrorCode::NotFound);
+        assert!(msg.contains("install"));
+        assert_eq!(
+            err_parts(restart_service("postgres", &state).await).0,
+            ErrorCode::NotFound
+        );
+    }
+
+    #[tokio::test]
+    async fn stop_service_succeeds_and_persists_disabled() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_in(tmp.path());
+        assert!(matches!(stop_service("redis", &state).await, Response::Ok));
+        let cfg = state.config.lock().await;
+        let inst = cfg.services.instances.get("redis").unwrap();
+        assert!(!inst.enabled);
+    }
+
+    #[tokio::test]
+    async fn set_service_port_persists_port() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_in(tmp.path());
+        assert!(matches!(
+            set_service_port("mysql", 13306, &state).await,
+            Response::Ok
+        ));
+        let cfg = state.config.lock().await;
+        assert_eq!(
+            cfg.services.instances.get("mysql").unwrap().port,
+            Some(13306)
+        );
+    }
+
+    #[tokio::test]
+    async fn service_logs_empty_when_no_log_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_in(tmp.path());
+        match service_logs("mysql", 50, &state) {
+            Response::ServiceLogs { lines } => assert!(lines.is_empty()),
+            other => panic!("expected ServiceLogs, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn service_logs_tails_last_lines() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_in(tmp.path());
+        let path = svc_version::log_path(&state.dirs, Service::MySql);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, b"l1\nl2\nl3\nl4\nl5\n").unwrap();
+        match service_logs("mysql", 2, &state) {
+            Response::ServiceLogs { lines } => assert_eq!(lines, vec!["l4", "l5"]),
+            other => panic!("expected ServiceLogs, got {other:?}"),
+        }
+        match service_logs("mysql", 100, &state) {
+            Response::ServiceLogs { lines } => assert_eq!(lines.len(), 5),
+            other => panic!("expected ServiceLogs, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn auto_start_installed_is_noop_with_nothing_installed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = std::sync::Arc::new(state_in(tmp.path()));
+        auto_start_installed(state).await;
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::indexing_slicing)]
+mod auto_start_tests {
+    use std::sync::Mutex;
+
+    use super::{run_auto_start, watch, Arc, Service, ServiceError};
+
+    fn two_services() -> Vec<Service> {
+        Service::ALL.into_iter().take(2).collect()
+    }
+
+    #[tokio::test]
+    async fn skips_everything_when_shutdown_already_requested() {
+        let (_tx, mut rx) = watch::channel(true);
+        let started: Arc<Mutex<Vec<Service>>> = Arc::new(Mutex::new(Vec::new()));
+        let rec = started.clone();
+        run_auto_start(two_services(), &mut rx, move |svc| {
+            let rec = rec.clone();
+            async move {
+                rec.lock().unwrap().push(svc);
+                Ok::<(), ServiceError>(())
+            }
+        })
+        .await;
+        assert!(started.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn stops_after_shutdown_trips_mid_loop() {
+        let (tx, mut rx) = watch::channel(false);
+        let tx = Arc::new(tx);
+        let started: Arc<Mutex<Vec<Service>>> = Arc::new(Mutex::new(Vec::new()));
+        let rec = started.clone();
+        run_auto_start(two_services(), &mut rx, move |svc| {
+            let rec = rec.clone();
+            let tx = tx.clone();
+            async move {
+                rec.lock().unwrap().push(svc);
+                let _ = tx.send(true);
+                Ok::<(), ServiceError>(())
+            }
+        })
+        .await;
+        let started = started.lock().unwrap();
+        assert_eq!(started.len(), 1, "only the first service should start");
+        assert_eq!(started[0], Service::ALL[0]);
+    }
+
+    /// Shutdown landing *while* `start_one` is still pending must cancel that
+    /// in-flight start (and skip the rest) - the load-bearing behaviour of the
+    /// `biased` select. The first start parks on a never-fired gate, so the only
+    /// way the spawned task completes is the shutdown arm cancelling it.
+    #[tokio::test]
+    async fn shutdown_cancels_in_flight_start_one() {
+        use tokio::sync::Notify;
+        use tokio::time::{timeout, Duration};
+
+        let (tx, rx) = watch::channel(false);
+        let entered = Arc::new(Notify::new());
+        let gate = Arc::new(Notify::new());
+        let started: Arc<Mutex<Vec<Service>>> = Arc::new(Mutex::new(Vec::new()));
+        let completed: Arc<Mutex<Vec<Service>>> = Arc::new(Mutex::new(Vec::new()));
+
+        let entered_task = entered.clone();
+        let gate_task = gate.clone();
+        let started_task = started.clone();
+        let completed_task = completed.clone();
+        let handle = tokio::spawn(async move {
+            let mut rx = rx;
+            run_auto_start(two_services(), &mut rx, move |svc| {
+                let entered = entered_task.clone();
+                let gate = gate_task.clone();
+                let started = started_task.clone();
+                let completed = completed_task.clone();
+                async move {
+                    started.lock().unwrap().push(svc);
+                    entered.notify_one();
+                    gate.notified().await;
+                    completed.lock().unwrap().push(svc);
+                    Ok::<(), ServiceError>(())
+                }
+            })
+            .await;
+        });
+
+        timeout(Duration::from_secs(1), entered.notified())
+            .await
+            .expect("first start_one should be entered");
+        let _ = tx.send(true);
+
+        timeout(Duration::from_secs(1), handle)
+            .await
+            .expect("biased shutdown must cancel the in-flight start_one")
+            .unwrap();
+
+        assert!(
+            completed.lock().unwrap().is_empty(),
+            "the cancelled start must not run past its await"
+        );
+        let started = started.lock().unwrap();
+        assert_eq!(started.len(), 1, "only the first service should start");
+        assert_eq!(started[0], Service::ALL[0]);
     }
 }

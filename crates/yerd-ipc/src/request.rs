@@ -1,7 +1,7 @@
 //! Client → daemon request envelope.
 //!
 //! Internally tagged on `type`, `snake_case`. Treat this enum as a
-//! published contract — add variants and fields additively, never
+//! published contract - add variants and fields additively, never
 //! rename, and let `tests/wire_stability.rs` pin the byte-exact wire
 //! shape.
 
@@ -25,7 +25,7 @@ pub enum Request {
     ListSites,
     /// Register a parked directory. `path` is opaque to `yerd-ipc`;
     /// the daemon canonicalises before storing. Windows paths arrive
-    /// with backslashes — that is fine.
+    /// with backslashes - that is fine.
     Park {
         /// The directory to park.
         path: PathBuf,
@@ -52,7 +52,7 @@ pub enum Request {
         /// `PathBuf`: the daemon stores parked roots as canonical
         /// `String`s (`config.parked.paths` is a `BTreeSet<String>`), and
         /// clients echo a value straight from [`super::Response::Parked`].
-        /// Keeping it a `String` makes the removal an exact identity match —
+        /// Keeping it a `String` makes the removal an exact identity match -
         /// a `PathBuf` round-trip risks lossy normalisation. The daemon does
         /// **not** canonicalise it (so a folder deleted from disk is still
         /// removable).
@@ -393,7 +393,7 @@ pub enum Request {
         channel: Option<crate::Channel>,
     },
     /// Return the **last persisted** self-update result without any network
-    /// access — used to pre-fill the UI on load. Returns
+    /// access - used to pre-fill the UI on load. Returns
     /// [`super::Response::UpdateStatus`] with `source = Cached` and
     /// `checked_at_epoch` set (or, if never checked, the running version with
     /// `checked_at_epoch = None`).
@@ -421,9 +421,6 @@ pub enum Request {
     clippy::expect_used,
     clippy::panic,
     clippy::indexing_slicing,
-    // The rename-trap match arms are deliberately all `{}`; merging
-    // them would collapse the per-variant check that catches Rust
-    // variant renames.
     clippy::match_same_arms
 )]
 mod variant_name_pinning {
@@ -431,8 +428,7 @@ mod variant_name_pinning {
     use std::path::PathBuf;
 
     // Inline (not in tests/) so the #[non_exhaustive] enum matches
-    // exhaustively. A renamed Rust variant fails this match at compile
-    // time.
+    // exhaustively: a renamed Rust variant fails this match at compile time.
     #[allow(dead_code)]
     fn pin(r: Request) {
         match r {
@@ -508,7 +504,7 @@ mod variant_name_pinning {
     }
 
     #[test]
-    #[allow(clippy::too_many_lines)] // one `pin(...)` per variant; grows with the enum
+    #[allow(clippy::too_many_lines)]
     fn touch_every_variant() {
         pin(Request::Ping);
         pin(Request::ListSites);

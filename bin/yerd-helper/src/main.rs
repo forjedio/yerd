@@ -18,7 +18,6 @@ mod validate;
 use std::process::ExitCode;
 
 fn main() -> ExitCode {
-    // Windows is not supported in Phase 1; stub exits 78 (EX_CONFIG).
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     {
         eprintln!("yerd-helper: not supported on this OS");
@@ -41,7 +40,6 @@ fn run() -> ExitCode {
         }
     };
 
-    // Defang any relative-path argv before doing any per-op work.
     let _ = std::env::set_current_dir("/");
 
     if !parsed.skip_priv_check && !privilege::is_privileged() {

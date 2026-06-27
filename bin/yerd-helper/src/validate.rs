@@ -14,7 +14,7 @@ use yerd_platform::CaFingerprint;
 
 use crate::error::{HelperError, ValidationReason};
 
-/// Reject relative paths and missing files. We do NOT canonicalise —
+/// Reject relative paths and missing files. We do NOT canonicalise -
 /// canonicalisation against a path an attacker controls introduces
 /// TOCTOU (the path could be swapped between canonicalize and open).
 pub fn require_existing_file(path: &Path) -> Result<(), HelperError> {
@@ -232,7 +232,6 @@ mod tests {
     fn require_pem_matches_fingerprint_rejects_zero_cert_pem() {
         let dir = tempfile::tempdir().unwrap();
         let p = dir.path().join("ca.pem");
-        // Write a PRIVATE KEY block but no CERTIFICATE.
         let block = pem::Pem::new("PRIVATE KEY", b"key".to_vec());
         std::fs::write(&p, pem::encode(&block)).unwrap();
         let fp = CaFingerprint::new([0u8; 32]);

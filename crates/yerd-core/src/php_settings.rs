@@ -139,7 +139,7 @@ pub fn applies_to_cli(name: &str) -> bool {
 /// Render the body of the CLI `php.ini` from a set of effective settings:
 /// emit only the CLI-relevant directives (`applies_to_cli`), in the allowlist's
 /// declaration order, each validated and canonicalised, as `name = value` lines.
-/// Unsupported or invalid entries are skipped (defensive — `validate_value` is
+/// Unsupported or invalid entries are skipped (defensive - `validate_value` is
 /// the security boundary). Empty when no CLI directives are set.
 #[must_use]
 pub fn render_cli_ini(settings: &std::collections::BTreeMap<String, String>) -> String {
@@ -186,7 +186,6 @@ pub fn validate_value(name: &str, value: &str) -> Result<(), PhpSettingError> {
         reason,
     };
 
-    // Global invariant.
     if value.is_empty() || value.chars().all(char::is_whitespace) {
         return Err(err(ValueErrorReason::Empty));
     }
@@ -199,7 +198,6 @@ pub fn validate_value(name: &str, value: &str) -> Result<(), PhpSettingError> {
         }
     }
 
-    // Per-kind shape, on the trimmed value.
     let t = value.trim();
     let ok = match spec.kind {
         Kind::Bytes { allow_unlimited } => is_byte_size(t, allow_unlimited),
@@ -358,7 +356,7 @@ mod tests {
     fn cli_subset_and_ini_render() {
         assert!(applies_to_cli("memory_limit"));
         assert!(applies_to_cli("display_errors"));
-        assert!(!applies_to_cli("upload_max_filesize")); // request-only
+        assert!(!applies_to_cli("upload_max_filesize"));
         assert!(!applies_to_cli("nope"));
 
         let settings: std::collections::BTreeMap<String, String> = default_settings()
@@ -368,7 +366,6 @@ mod tests {
         let ini = render_cli_ini(&settings);
         assert!(ini.contains("memory_limit = 512M\n"));
         assert!(ini.contains("display_errors = On\n"));
-        // FPM-only directives must not leak into the CLI ini.
         assert!(!ini.contains("upload_max_filesize"));
         assert!(!ini.contains("post_max_size"));
     }
@@ -389,7 +386,6 @@ mod tests {
         for v in ["256MB", "1.5G", "M", "12X", "-5", "-1K"] {
             assert!(validate_value("memory_limit", v).is_err(), "{v}");
         }
-        // -1 (unlimited) only for memory_limit.
         assert!(validate_value("upload_max_filesize", "-1").is_err());
         assert!(validate_value("upload_max_filesize", "100M").is_ok());
     }
@@ -429,7 +425,6 @@ mod tests {
 
     #[test]
     fn injection_attempts_are_rejected() {
-        // Newline, FPM/ini metacharacters, and over-length are all blocked.
         assert!(validate_value("memory_limit", "1\nuser = root").is_err());
         assert!(validate_value("memory_limit", "256M; evil").is_err());
         assert!(validate_value("error_reporting", "E_ALL # comment").is_err());

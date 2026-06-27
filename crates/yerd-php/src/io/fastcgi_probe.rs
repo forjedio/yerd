@@ -96,8 +96,7 @@ mod tests {
     #[tokio::test]
     async fn read_one_record_header_accepts_version_1() {
         let (mut a, mut b) = tokio::io::duplex(64);
-        // Server end writes a valid header.
-        let bytes = [1u8, 10, 0, 0, 0, 0, 0, 0]; // type doesn't matter
+        let bytes = [1u8, 10, 0, 0, 0, 0, 0, 0];
         b.write_all(&bytes).await.unwrap();
         b.flush().await.unwrap();
         drop(b);

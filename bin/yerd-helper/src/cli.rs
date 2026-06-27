@@ -113,15 +113,10 @@ where
     let skip_priv_check = skip_priv_check_value(&cli);
     let invocation = cli.op.into_invocation()?;
 
-    // Debug-only wire-contract cross-check. The argv presented to
-    // `from_argv` is argv[1..] — clap's first element is the binary
-    // name. Drift surfaces as WireDrift; CI catches it.
     #[cfg(debug_assertions)]
     {
         if argv.len() > 1 {
             let tail: Vec<OsString> = argv.iter().skip(1).cloned().collect();
-            // Strip the global debug-only flag before handing to
-            // from_argv (which doesn't know about it).
             let filtered: Vec<OsString> = tail
                 .into_iter()
                 .filter(|a| a != "--skip-priv-check")
@@ -311,8 +306,6 @@ mod tests {
 
     #[test]
     fn install_resolver_bad_addr_rejected_as_usage() {
-        // clap parses --addr via FromStr on SocketAddr; failure
-        // surfaces as a usage error.
         let err = parse_err(&["install-resolver", "--tld", "test", "--addr", "not-an-addr"]);
         assert!(matches!(err, HelperError::ArgvUsage(_)));
     }

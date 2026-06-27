@@ -2,19 +2,17 @@
 //!
 //! Used by the privileged `yerd-helper` to confirm a certificate it is about to
 //! remove from the system trust store is yerd's own CA (Subject CN ==
-//! [`yerd_core::CA_COMMON_NAME`]) before deleting it — so a bad fingerprint
+//! [`yerd_core::CA_COMMON_NAME`]) before deleting it - so a bad fingerprint
 //! handed to the helper can never delete an unrelated trusted root.
 
 /// The Subject Common Name of a DER-encoded X.509 certificate, if present.
 ///
-/// Returns `None` when the DER can't be parsed or carries no CN — callers
+/// Returns `None` when the DER can't be parsed or carries no CN - callers
 /// treat that as "not confirmably yerd's" and refuse to delete. Never panics:
 /// every fallible step degrades to `None` (this runs as root).
 #[must_use]
 pub fn subject_common_name(cert_der: &[u8]) -> Option<String> {
     let (_, cert) = x509_parser::parse_x509_certificate(cert_der).ok()?;
-    // Bind to a local so the iterator temporary (which borrows `cert`) is
-    // dropped before `cert` at end of scope.
     let cn = cert
         .subject()
         .iter_common_name()

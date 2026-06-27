@@ -14,6 +14,10 @@
   KeepAlive{SuccessfulExit:false}: relaunch on a crash but not after a clean
   stop. `yerdd serve` exits 0 on SIGTERM (graceful), so `launchctl kill SIGTERM`
   stops it for the session without launchd respawning it.
+
+  ThrottleInterval shortens launchd's default ~10s relaunch floor: during an
+  upgrade handoff a brief AlreadyRunning (exit 75) relaunch should retry in a
+  few seconds, not stall the GUI's start.
 -->
 <plist version="1.0">
 <dict>
@@ -29,5 +33,6 @@
   <dict>
     <key>SuccessfulExit</key><false/>
   </dict>
+  <key>ThrottleInterval</key><integer>5</integer>
 </dict>
 </plist>

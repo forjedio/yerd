@@ -58,7 +58,6 @@ fn decoder_yields_none_on_partial_body() {
     let frame = encode_frame(&payload, DEFAULT_MAX_FRAME).unwrap();
     let mut dec = FrameDecoder::new();
 
-    // Header + half body.
     let split = 4 + 2;
     dec.extend_from_slice(&frame[..split]);
     assert_eq!(dec.next_frame().unwrap(), None);
@@ -85,7 +84,6 @@ fn decoder_yields_multiple_frames_pipelined() {
 fn decoder_handles_extra_trailing_bytes() {
     let payload = b"frame".to_vec();
     let mut wire = encode_frame(&payload, DEFAULT_MAX_FRAME).unwrap();
-    // Append a partial next-frame header (2 of 4 bytes).
     wire.push(0);
     wire.push(0);
 
@@ -100,7 +98,6 @@ fn decoder_handles_extra_trailing_bytes() {
 fn decoder_yields_first_then_rejects_oversized_second() {
     let first = b"ok".to_vec();
     let first_frame = encode_frame(&first, SMALL_MAX).unwrap();
-    // Hand-build an oversized declared length: SMALL_MAX + 1.
     let mut oversized_header = ((SMALL_MAX + 1) as u32).to_be_bytes().to_vec();
     let mut wire = first_frame;
     wire.append(&mut oversized_header);
@@ -131,8 +128,6 @@ fn decoder_rejects_oversized_length() {
             max: SMALL_MAX as u64,
         }
     );
-    // Touch header so its allocation isn't optimised out — also ensures
-    // header is not consumed by the decoder after the error.
     header.clear();
 }
 
@@ -142,14 +137,10 @@ fn decoder_stays_poisoned_after_oversized() {
     let mut dec = FrameDecoder::with_max(SMALL_MAX);
     dec.extend_from_slice(&header);
     let err_first = dec.next_frame().unwrap_err();
-    // Subsequent calls return the *same* error with the *same* size/max.
     let err_second = dec.next_frame().unwrap_err();
     assert_eq!(err_first, err_second);
-    // extend_from_slice is now a no-op; buffered() reflects the post-
-    // poison cleared state.
     dec.extend_from_slice(b"junk");
     assert_eq!(dec.buffered(), 0);
-    // And next_frame keeps returning the same error.
     assert_eq!(dec.next_frame().unwrap_err(), err_first);
 }
 
@@ -164,7 +155,6 @@ fn encode_succeeds_at_exact_max_boundary() {
 
 #[test]
 fn decoder_rejects_one_byte_over_boundary() {
-    // Hand-build a declared length of exactly SMALL_MAX + 1.
     let header = ((SMALL_MAX + 1) as u32).to_be_bytes().to_vec();
     let mut dec = FrameDecoder::with_max(SMALL_MAX);
     dec.extend_from_slice(&header);

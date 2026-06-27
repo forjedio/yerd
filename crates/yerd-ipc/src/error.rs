@@ -10,7 +10,7 @@ use thiserror::Error;
 
 /// Framing errors. Produced by [`crate::encode_frame`] and
 /// [`crate::FrameDecoder::next_frame`]. Pure (`Clone + Eq`); the
-/// transport layer does **not** produce these directly — EOF is
+/// transport layer does **not** produce these directly - EOF is
 /// surfaced via [`IpcError::UnexpectedEof`] instead.
 #[derive(Debug, Error, Clone, PartialEq, Eq)]
 #[non_exhaustive]
@@ -161,12 +161,6 @@ impl IpcError {
         match self {
             Self::Encode(_) => IpcErrorKind::Encode,
             Self::Decode(_) => IpcErrorKind::Decode,
-            // The catch-all arm is unreachable today (every variant
-            // above is explicit) but it is the future-proofing slot
-            // for new `FrameError` variants added before their paired
-            // `IpcErrorKind` variant lands. The
-            // `frame_error_to_kind_is_exhaustive` test enforces the
-            // pairing invariant.
             #[allow(unreachable_patterns)]
             Self::Frame(fe) => match fe {
                 FrameError::TooLarge { size, max } => IpcErrorKind::FrameTooLarge {

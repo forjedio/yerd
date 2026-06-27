@@ -1,4 +1,4 @@
-//! `CreateSite` — scaffold a new project (`laravel new`) then register it.
+//! `CreateSite` - scaffold a new project (`laravel new`) then register it.
 //!
 //! Scaffolding runs far longer than one request/response round-trip and streams
 //! output, so this runs as a background [job](crate::jobs): [`start`] spawns the
@@ -40,9 +40,6 @@ pub async fn start(spec: CreateSiteSpec, state: Arc<DaemonState>) -> Response {
         _ => return error(ErrorCode::Internal, "unsupported framework".to_owned()),
     }
 
-    // Validate (and lowercase) the name up front so a bad request fails now,
-    // before any job/spinner. `Site::linked` applies the DNS-label rules; the
-    // path is not validated at this layer, so any value works for the check.
     let name = match yerd_core::Site::linked(&spec.name, spec.parent_dir.clone(), spec.php) {
         Ok(site) => site.name().to_owned(),
         Err(e) => return error(ErrorCode::InvalidPath, e.to_string()),
@@ -65,7 +62,6 @@ async fn run_job(
     state: Arc<DaemonState>,
     cancel_rx: watch::Receiver<bool>,
 ) {
-    // Reserve the name so two concurrent creates can't both scaffold it.
     if !state.reserved_names.lock().await.insert(name.clone()) {
         state
             .jobs
@@ -107,8 +103,6 @@ enum Outcome {
     Cancelled,
 }
 
-// Linear preflight→scaffold→register pipeline; reads top-to-bottom, so the line
-// count is incidental rather than a complexity signal.
 #[allow(clippy::too_many_lines)]
 async fn run_inner(
     id: &str,
@@ -124,7 +118,6 @@ async fn run_inner(
     let dirs = &state.dirs;
     let project_dir = spec.parent_dir.join(name);
 
-    // --- Preflight -----------------------------------------------------------
     state.jobs.set_phase(id, "Preflight").await;
 
     let php_cli = crate::php_install::cli_binary_path(dirs, spec.php);
@@ -135,17 +128,12 @@ async fn run_inner(
         ));
     }
 
-    // The daemon's own PATH is restricted (launchd/systemd), so resolve the
-    // user's real PATH once: it lets us accept *externally*-installed Composer /
-    // Laravel installer / Node / Bun (and find them at scaffold time). PHP is
-    // always Yerd-managed.
     let user_dirs = crate::tools::external::resolve_user_path()
         .await
         .unwrap_or_default();
     let data_bin = tools::bin_dir(dirs);
     let data_root = &dirs.data;
 
-    // Composer: Yerd-managed phar, else an external `composer` on the user PATH.
     let composer_phar = tools::composer::phar_path(dirs);
     let composer_managed = composer_phar.is_file();
     if !composer_managed
@@ -155,9 +143,6 @@ async fn run_inner(
         return Outcome::Failed("Composer is not installed — install it first".to_owned());
     }
 
-    // Laravel installer: Yerd-managed bin, else an external `laravel` on the user
-    // PATH. We run whichever through the managed `php` (see run_scaffold) so the
-    // selected PHP version is always used.
     let managed_installer = tools::laravel::installer_bin(dirs);
     let installer_bin = if managed_installer.is_file() {
         managed_installer
@@ -171,24 +156,17 @@ async fn run_inner(
         );
     };
 
-    // Target dir must be absent or empty (never `--force` over a user's files).
     if let Err(msg) = check_target_dir(&project_dir) {
         return Outcome::Failed(msg);
     }
-    // Parent must exist and be writable by the daemon.
     if let Err(msg) = probe_writable(&spec.parent_dir) {
         return Outcome::Failed(msg);
     }
 
-    // Install the chosen JS runtime if a kit needs it and it's neither managed
-    // nor available externally on the user PATH.
     if let Err(msg) = ensure_js_runtime(id, options.js, &user_dirs, state).await {
         return Outcome::Failed(msg);
     }
 
-    // Build the per-job PATH bin dir that pins the chosen PHP. The Composer
-    // wrapper is only created for the managed phar; an external Composer is found
-    // on the composed PATH and runs under the managed `php` via its shebang.
     let job_bin = match build_job_bin(
         job_dir,
         &php_cli,
@@ -200,15 +178,12 @@ async fn run_inner(
     let path_env = composed_path(&job_bin, &data_bin, &user_dirs);
     let composer_home = tools::laravel::composer_home(dirs);
 
-    // `git` is effectively required by the installer (kits + `--git` run `git
-    // init`); fail clearly in preflight rather than mid-scaffold.
     if needs_git(options) && !git_available(&path_env).await {
         return Outcome::Failed(
             "git was not found on PATH — install git to use a starter kit or git init".to_owned(),
         );
     }
 
-    // --- Scaffold ------------------------------------------------------------
     state.jobs.set_phase(id, "Scaffolding").await;
     let args = build_new_args(name, options);
     state
@@ -240,11 +215,8 @@ async fn run_inner(
         }
     }
 
-    // --- Register ------------------------------------------------------------
     state.jobs.set_phase(id, "Registering").await;
     if let Err(msg) = register(name, &spec.parent_dir, &project_dir, spec, state).await {
-        // The project files are valid; leave them on disk but report the failure
-        // (the user can retry registration via Link). Do NOT delete their code.
         return Outcome::Failed(format!("scaffolded, but registration failed: {msg}"));
     }
     state
@@ -255,7 +227,7 @@ async fn run_inner(
 }
 
 /// Build the `laravel new …` argument vector (after the installer binary).
-/// Pure — unit-tested.
+/// Pure - unit-tested.
 fn build_new_args(name: &str, o: &LaravelOptions) -> Vec<String> {
     let mut a = vec![
         "new".to_owned(),
@@ -293,9 +265,6 @@ fn build_new_args(name: &str, o: &LaravelOptions) -> Vec<String> {
     }
     a.push("--database".to_owned());
     a.push(database_flag(o.database).to_owned());
-    // The installer has no skip-node flag: passing a package-manager flag makes
-    // it *run* install+build, while passing none defaults to npm without running
-    // it. So `Skip` simply omits the flag.
     match o.js {
         JsRuntime::Npm => a.push("--npm".to_owned()),
         JsRuntime::Bun => a.push("--bun".to_owned()),
@@ -304,7 +273,6 @@ fn build_new_args(name: &str, o: &LaravelOptions) -> Vec<String> {
     if o.git {
         a.push("--git".to_owned());
     }
-    // Pass an explicit boost flag either way so the installer never prompts.
     a.push(if o.boost { "--boost" } else { "--no-boost" }.to_owned());
     a
 }
@@ -375,7 +343,6 @@ async fn ensure_js_runtime(
     if tools::installed_version(&state.dirs, tool).is_some() {
         return Ok(());
     }
-    // Externally installed (e.g. Homebrew/fnm) → use it; don't install a managed copy.
     let data_bin = tools::bin_dir(&state.dirs);
     if crate::tools::external::external_tool(user_dirs, tool, &data_bin, &state.dirs.data).is_some()
     {
@@ -441,8 +408,6 @@ async fn register(
     };
 
     if is_parked {
-        // Inside a parked root → the site auto-discovers; force a rescan/rebuild
-        // via an idempotent re-Park (Park always rebuilds the router).
         mutate_ok(
             crate::ipc_server::handle_mutation(
                 Request::Park {
@@ -465,7 +430,6 @@ async fn register(
         )?;
     }
 
-    // Apply non-default PHP / HTTPS (these also re-validate the now-present site).
     if spec.php != default_php {
         mutate_ok(
             crate::ipc_server::handle_mutation(
@@ -509,7 +473,7 @@ enum ScaffoldOutcome {
     Cancelled,
 }
 
-/// Spawn `php <installer> new …`, stream both pipes into the job log, and wait —
+/// Spawn `php <installer> new …`, stream both pipes into the job log, and wait -
 /// killing the whole process group on cancel or timeout.
 #[allow(clippy::too_many_arguments)]
 async fn run_scaffold(
@@ -541,8 +505,6 @@ async fn run_scaffold(
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    // New process group so cancel/timeout can signal the installer's children
-    // (composer, npm, git), not just the `php` parent.
     #[cfg(unix)]
     cmd.process_group(0);
 
@@ -566,12 +528,7 @@ async fn run_scaffold(
 
     let result = tokio::select! {
         changed = cancel_rx.changed() => {
-            // `changed()` resolves on the cancel signal; if the sender is gone we
-            // also stop. Either way, tear the process down.
             let cancelled = changed.is_ok() && *cancel_rx.borrow();
-            // Abort the pipe readers first: closing the read ends makes any
-            // grandchild blocked on a full pipe get SIGPIPE, so the group dies
-            // promptly instead of stalling the SIGTERM grace window.
             for r in &readers { r.abort(); }
             terminate_group(pgid, &mut child).await;
             if cancelled { ScaffoldOutcome::Cancelled } else { ScaffoldOutcome::Failed("cancel channel closed".to_owned()) }
@@ -590,7 +547,6 @@ async fn run_scaffold(
         }
     };
 
-    // Let the readers drain any buffered output before returning.
     for r in readers {
         let _ = r.await;
     }
@@ -634,8 +590,6 @@ async fn terminate_group(pgid: Option<u32>, child: &mut tokio::process::Child) {
 #[cfg(unix)]
 fn kill_group(pgid: Option<u32>, signal: nix::sys::signal::Signal) {
     if let Some(p) = pgid {
-        // The child is the group leader (pgid == pid) because we set
-        // `process_group(0)` at spawn.
         if let Ok(pid) = i32::try_from(p) {
             let _ = nix::sys::signal::killpg(nix::unistd::Pid::from_raw(pid), signal);
         }
@@ -654,7 +608,7 @@ fn sh_quote(p: &Path) -> String {
 /// when `composer_phar` is `Some` (Yerd-managed Composer), a `composer` wrapper
 /// that runs that same PHP so the installer's nested `composer create-project`
 /// uses the requested runtime (Composer derives its child PHP from `PHP_BINARY`).
-/// When `None` (external Composer), no wrapper is written — Composer is found on
+/// When `None` (external Composer), no wrapper is written - Composer is found on
 /// the composed PATH and runs under the managed `php` via its shebang. Unix-only.
 #[cfg(unix)]
 fn build_job_bin(
@@ -699,10 +653,88 @@ fn error(code: ErrorCode, message: String) -> Response {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing
+)]
 mod tests {
     use super::*;
-    use yerd_ipc::{AuthProvider, Database, JsRuntime, LaravelOptions, StarterKit, Testing};
+    use tokio::sync::{Mutex, RwLock};
+    use yerd_core::{PhpVersion, RouterConfig, SiteRouter, Tld};
+    use yerd_ipc::{
+        AuthProvider, CreateSiteSpec, Database, Framework, JsRuntime, LaravelOptions, StarterKit,
+        Testing,
+    };
+    use yerd_platform::PlatformDirs;
+
+    fn dirs_in(tmp: &Path) -> PlatformDirs {
+        PlatformDirs {
+            config: tmp.join("c"),
+            data: tmp.join("d"),
+            state: tmp.join("s"),
+            cache: tmp.join("ca"),
+            runtime: tmp.join("r"),
+        }
+    }
+
+    /// Copied verbatim from `ipc_server`'s test module (its `state_in` is private
+    /// to that module). A `DaemonState` rooted at `tmp`.
+    fn state_in(tmp: &Path) -> DaemonState {
+        let dirs = dirs_in(tmp);
+        let router = SiteRouter::new(RouterConfig::with_tld(Tld::new("test").unwrap()));
+        let ca_path = dirs.data.join("ca.cert.pem");
+        let php_manager = Arc::new(Mutex::new(yerd_php::PhpManager::new(
+            yerd_php::TokioProcessSpawner,
+            yerd_php::SystemClock,
+            yerd_php::io::FastCgiProbe,
+            dirs.clone(),
+            yerd_platform::ActivePortBinder::new(),
+            std::process::id(),
+            std::collections::BTreeMap::new(),
+        )));
+        DaemonState {
+            config: Mutex::new(yerd_config::Config::default()),
+            router: Arc::new(RwLock::new(router)),
+            config_path: dirs.config.join("yerd.toml"),
+            dirs,
+            dns_addr: "127.0.0.1:1053".parse().unwrap(),
+            ca_path,
+            ca_fingerprint: yerd_platform::CaFingerprint::new([0u8; 32]),
+            php_updates: tokio::sync::RwLock::new(std::collections::HashMap::new()),
+            yerd_update: tokio::sync::RwLock::new(Vec::new()),
+            update_snapshot: tokio::sync::RwLock::new(None),
+            php_manager,
+            service_manager: Arc::new(Mutex::new(crate::services::new_manager(dirs_in(tmp)))),
+            mail_store: Arc::new(yerd_mail::Store::open(tmp.join("mail")).unwrap()),
+            mail: crate::state::MailRuntime { listening: false },
+            http: yerd_ipc::PortStatus {
+                requested: 80,
+                bound: 8080,
+                fell_back: true,
+            },
+            https: yerd_ipc::PortStatus {
+                requested: 443,
+                bound: 8443,
+                fell_back: true,
+            },
+            web_unbound: None,
+            dns_unbound: None,
+            boot_id: 1,
+            started_at: std::time::Instant::now(),
+            shutdown_tx: tokio::sync::watch::channel(false).0,
+            restart_requested: std::sync::atomic::AtomicBool::new(false),
+            detect_cache: Arc::new(crate::detect_cache::DetectCache::new()),
+            watch_dirty: tokio::sync::Notify::new(),
+            dumps: Arc::new(crate::dump_server::DumpStore::new()),
+            shim_reconcile: tokio::sync::Mutex::new(()),
+            tool_mutate: tokio::sync::Mutex::new(()),
+            php_mutate: tokio::sync::Mutex::new(()),
+            jobs: crate::jobs::JobRegistry::default(),
+            reserved_names: tokio::sync::Mutex::new(std::collections::HashSet::new()),
+        }
+    }
 
     fn opts() -> LaravelOptions {
         LaravelOptions {
@@ -823,5 +855,180 @@ mod tests {
         assert!(check_target_dir(&empty).is_ok());
         std::fs::write(empty.join("f"), b"x").unwrap();
         assert!(check_target_dir(&empty).is_err());
+    }
+
+    #[test]
+    fn database_flag_covers_every_engine() {
+        for (db, flag) in [
+            (Database::Sqlite, "sqlite"),
+            (Database::Mysql, "mysql"),
+            (Database::Mariadb, "mariadb"),
+            (Database::Pgsql, "pgsql"),
+            (Database::Sqlsrv, "sqlsrv"),
+        ] {
+            let mut o = opts();
+            o.database = db;
+            let a = build_new_args("app", &o);
+            let idx = a.iter().position(|s| s == "--database").unwrap();
+            assert_eq!(a[idx + 1], flag, "wrong flag for {db:?}");
+        }
+    }
+
+    #[test]
+    fn svelte_kit_and_skip_js_emit_expected_flags() {
+        let mut o = opts();
+        o.starter_kit = StarterKit::Svelte;
+        let a = build_new_args("app", &o);
+        assert!(a.iter().any(|s| s == "--svelte"));
+        assert!(!a.iter().any(|s| s == "--npm" || s == "--bun"));
+    }
+
+    #[test]
+    fn npm_runtime_emits_npm_flag() {
+        let mut o = opts();
+        o.js = JsRuntime::Npm;
+        let a = build_new_args("app", &o);
+        assert!(a.iter().any(|s| s == "--npm"));
+    }
+
+    #[test]
+    fn needs_git_true_for_community_kit() {
+        let mut o = opts();
+        o.starter_kit = StarterKit::Community("acme/kit".to_owned());
+        assert!(needs_git(&o));
+    }
+
+    #[test]
+    fn mutate_ok_maps_responses() {
+        assert!(mutate_ok(Response::Ok).is_ok());
+        assert_eq!(
+            mutate_ok(Response::Error {
+                code: ErrorCode::Internal,
+                message: "boom".to_owned(),
+            }),
+            Err("boom".to_owned())
+        );
+        assert!(mutate_ok(Response::JobStarted {
+            job_id: "j1".to_owned()
+        })
+        .is_err());
+    }
+
+    #[test]
+    fn error_builds_response_error() {
+        match error(ErrorCode::InvalidPath, "nope".to_owned()) {
+            Response::Error { code, message } => {
+                assert_eq!(code, ErrorCode::InvalidPath);
+                assert_eq!(message, "nope");
+            }
+            other => panic!("expected error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn probe_writable_accepts_dir_and_rejects_non_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert!(probe_writable(tmp.path()).is_ok());
+        let leftovers: Vec<_> = std::fs::read_dir(tmp.path())
+            .unwrap()
+            .flatten()
+            .filter(|e| e.file_name().to_string_lossy().contains("yerd-write-probe"))
+            .collect();
+        assert!(leftovers.is_empty(), "probe file should be removed");
+
+        let f = tmp.path().join("afile");
+        std::fs::write(&f, b"x").unwrap();
+        assert!(probe_writable(&f).is_err());
+        assert!(probe_writable(&tmp.path().join("missing")).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn composed_path_puts_job_bin_first() {
+        let job_bin = Path::new("/jobs/abc/bin");
+        let data_bin = Path::new("/data/bin");
+        let user = vec![PathBuf::from("/opt/homebrew/bin")];
+        let composed = composed_path(job_bin, data_bin, &user);
+        let entries: Vec<PathBuf> = std::env::split_paths(&composed).collect();
+        assert_eq!(entries.first().unwrap(), job_bin);
+        assert_eq!(entries.get(1).unwrap(), data_bin);
+        assert!(entries.iter().any(|p| p == Path::new("/opt/homebrew/bin")));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn sh_quote_escapes_embedded_single_quotes() {
+        assert_eq!(sh_quote(Path::new("/Users/obrien")), "'/Users/obrien'");
+        assert_eq!(
+            sh_quote(Path::new("/Users/o'brien/data")),
+            "'/Users/o'\\''brien/data'"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn build_job_bin_links_php_and_writes_composer_wrapper() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let job_dir = tmp.path().join("job");
+        let php = tmp.path().join("php-bin");
+        std::fs::write(&php, b"#!fake-php").unwrap();
+        let phar = tmp.path().join("composer.phar");
+        std::fs::write(&phar, b"phar").unwrap();
+
+        let bin = build_job_bin(&job_dir, &php, Some(phar.as_path())).unwrap();
+        assert_eq!(std::fs::read_link(bin.join("php")).unwrap(), php);
+        let wrapper = std::fs::read_to_string(bin.join("composer")).unwrap();
+        assert!(wrapper.starts_with("#!/bin/sh\n"));
+        assert!(wrapper.contains(&php.to_string_lossy().into_owned()));
+        assert!(wrapper.contains(&phar.to_string_lossy().into_owned()));
+        let mode = std::fs::metadata(bin.join("composer"))
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o111, 0o111, "wrapper should be executable");
+    }
+
+    #[test]
+    fn check_target_dir_errors_on_unreadable_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        let f = tmp.path().join("afile");
+        std::fs::write(&f, b"x").unwrap();
+        let err = check_target_dir(&f).unwrap_err();
+        assert!(err.contains("cannot read"), "got {err:?}");
+    }
+
+    fn laravel_spec(name: &str, parent: &Path) -> CreateSiteSpec {
+        CreateSiteSpec {
+            name: name.to_owned(),
+            parent_dir: parent.to_path_buf(),
+            php: PhpVersion::new(8, 3),
+            secure: false,
+            framework: Framework::Laravel { options: opts() },
+        }
+    }
+
+    #[tokio::test]
+    async fn start_rejects_invalid_site_name() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = Arc::new(state_in(tmp.path()));
+        let spec = laravel_spec("Not A Valid Name!", tmp.path());
+        match start(spec, state).await {
+            Response::Error { code, .. } => assert_eq!(code, ErrorCode::InvalidPath),
+            other => panic!("expected error, got {other:?}"),
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn build_job_bin_without_phar_writes_no_composer_wrapper() {
+        let tmp = tempfile::tempdir().unwrap();
+        let job_dir = tmp.path().join("job");
+        let php = tmp.path().join("php-bin");
+        std::fs::write(&php, b"#!fake-php").unwrap();
+
+        let bin = build_job_bin(&job_dir, &php, None).unwrap();
+        assert!(bin.join("php").exists());
+        assert!(!bin.join("composer").exists());
     }
 }

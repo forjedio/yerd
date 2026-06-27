@@ -49,10 +49,8 @@ pub async fn forward(
     mut req: Request<Incoming>,
     addr: SocketAddr,
 ) -> Result<Response<BoxBody>, ProxyError> {
-    // Capture the client's upgrade future BEFORE moving `req` upstream.
     let on_client = hyper::upgrade::on(&mut req);
 
-    // Open the backend connection.
     let tcp = TcpStream::connect(addr)
         .await
         .map_err(|source| ProxyError::BackendConnect {
@@ -63,7 +61,6 @@ pub async fn forward(
     let (mut sender, conn) = hyper::client::conn::http1::handshake(io)
         .await
         .map_err(|source| ProxyError::Hyper { source })?;
-    // The connection task must run with `with_upgrades` enabled.
     let conn = conn.with_upgrades();
     tokio::spawn(async move {
         if let Err(e) = conn.await {
@@ -75,8 +72,6 @@ pub async fn forward(
         }
     });
 
-    // Rebuild the upstream request with an Empty body — the bytes flow
-    // through the upgraded socket, not the request body.
     let (parts, _body) = req.into_parts();
     let upstream_req = Request::from_parts(parts, Empty::<bytes::Bytes>::new());
     let mut backend_resp = sender
@@ -84,16 +79,12 @@ pub async fn forward(
         .await
         .map_err(|source| ProxyError::Hyper { source })?;
 
-    // Capture the backend's upgrade future before we move the response.
     let on_backend = hyper::upgrade::on(&mut backend_resp);
 
-    // Strip hop-by-hop headers, then surface the response back to hyper.
     let (mut parts, _body) = backend_resp.into_parts();
     strip_hop_by_hop(&mut parts.headers);
     let resp: Response<BoxBody> = Response::from_parts(parts, empty_body());
 
-    // Tunnel runs in a detached task — the response must be returned
-    // first so hyper writes the 101 to the client.
     tokio::spawn(async move {
         match tokio::try_join!(on_client, on_backend) {
             Ok((client_upgraded, backend_upgraded)) => {
@@ -137,14 +128,12 @@ static HOP_BY_HOP_FIXED: &[&str] = &[
 
 /// Strip hop-by-hop headers per RFC 9110 §7.6.1.
 fn strip_hop_by_hop(headers: &mut HeaderMap) {
-    // Collect tokens listed in `Connection:` headers — those are hop-by-hop too.
     let conn_tokens: Vec<String> = headers
         .get_all(CONNECTION)
         .iter()
         .filter_map(|v| v.to_str().ok())
         .flat_map(|s| s.split(',').map(|t| t.trim().to_ascii_lowercase()))
         .collect();
-    // Drop fixed hop-by-hop set + Connection-listed tokens; preserve Upgrade.
     let to_remove: Vec<http::HeaderName> = headers
         .iter()
         .filter_map(|(name, _)| {
@@ -163,7 +152,6 @@ fn strip_hop_by_hop(headers: &mut HeaderMap) {
     for name in to_remove {
         headers.remove(&name);
     }
-    // Re-insert a fresh `Connection: upgrade` for the client hop.
     headers.insert(CONNECTION, HeaderValue::from_static("upgrade"));
 }
 
@@ -212,5 +200,59 @@ mod tests {
         assert_eq!(h.get(CONNECTION).unwrap(), "upgrade");
         assert!(h.get(http::header::TRANSFER_ENCODING).is_none());
         assert!(h.get(http::header::CONTENT_TYPE).is_some());
+    }
+
+    #[test]
+    fn is_upgrade_false_when_connection_lacks_token() {
+        let mut h = HeaderMap::new();
+        h.insert(UPGRADE, "websocket".parse().unwrap());
+        h.insert(CONNECTION, "keep-alive".parse().unwrap());
+        assert!(!is_upgrade(&h));
+    }
+
+    #[test]
+    fn is_upgrade_false_without_connection_header() {
+        let mut h = HeaderMap::new();
+        h.insert(UPGRADE, "websocket".parse().unwrap());
+        assert!(!is_upgrade(&h));
+    }
+
+    /// The Connection-listed `x-custom` token is hop-by-hop and stripped.
+    #[test]
+    fn strip_hop_by_hop_removes_connection_listed_tokens() {
+        let mut h = HeaderMap::new();
+        h.insert(UPGRADE, "websocket".parse().unwrap());
+        h.insert(CONNECTION, "upgrade, x-custom".parse().unwrap());
+        h.insert("x-custom", "drop-me".parse().unwrap());
+        h.insert(http::header::CONTENT_TYPE, "text/plain".parse().unwrap());
+        strip_hop_by_hop(&mut h);
+        assert!(h.get("x-custom").is_none());
+        assert!(h.get(http::header::CONTENT_TYPE).is_some());
+        assert_eq!(h.get(CONNECTION).unwrap(), "upgrade");
+    }
+
+    /// A fresh `Connection: upgrade` is always stamped for the client hop.
+    #[test]
+    fn strip_hop_by_hop_inserts_connection_upgrade_when_absent() {
+        let mut h = HeaderMap::new();
+        h.insert(http::header::CONTENT_TYPE, "text/plain".parse().unwrap());
+        strip_hop_by_hop(&mut h);
+        assert_eq!(h.get(CONNECTION).unwrap(), "upgrade");
+    }
+
+    #[test]
+    fn strip_hop_by_hop_removes_each_fixed_token() {
+        let mut h = HeaderMap::new();
+        h.insert(http::header::TE, "trailers".parse().unwrap());
+        h.insert("proxy-connection", "keep-alive".parse().unwrap());
+        h.insert(http::header::TRAILER, "x".parse().unwrap());
+        h.insert("keep-alive", "timeout=5".parse().unwrap());
+        h.insert(http::header::TRANSFER_ENCODING, "chunked".parse().unwrap());
+        strip_hop_by_hop(&mut h);
+        assert!(h.get(http::header::TE).is_none());
+        assert!(h.get("proxy-connection").is_none());
+        assert!(h.get(http::header::TRAILER).is_none());
+        assert!(h.get("keep-alive").is_none());
+        assert!(h.get(http::header::TRANSFER_ENCODING).is_none());
     }
 }

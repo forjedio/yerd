@@ -1,4 +1,4 @@
-//! Node.js installer — fetch the latest **LTS** tarball into `{data}/tools/node/`
+//! Node.js installer - fetch the latest **LTS** tarball into `{data}/tools/node/`
 //! and expose `node`/`npm`/`npx`.
 //!
 //! Node's `.tar.gz` bundles `node` plus npm/npx (relative symlinks into
@@ -151,7 +151,6 @@ mod tests {
 
     #[test]
     fn host_platform_known() {
-        // The dev/test hosts are macOS or Linux on x86_64/aarch64 — all mapped.
         assert!(host_platform().is_some());
     }
 }

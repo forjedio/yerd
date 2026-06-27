@@ -70,7 +70,6 @@ pub fn build_params(
         push(&mut out, b"HTTPS", b"on");
     }
 
-    // Standard headers FPM expects un-prefixed.
     if let Some(host) = headers
         .get(http::header::HOST)
         .and_then(|v| v.to_str().ok())
@@ -91,7 +90,6 @@ pub fn build_params(
         push(&mut out, b"CONTENT_LENGTH", cl.as_bytes());
     }
 
-    // Generic HTTP_* translation for everything else.
     for (name, value) in headers {
         if matches!(
             name,
@@ -187,9 +185,6 @@ mod tests {
 
     #[test]
     fn web_root_subdir_drives_script_filename_and_document_root() {
-        // A site with web_subpath = "public" serves from <root>/public: the
-        // daemon passes Site::served_root() here, and DOCUMENT_ROOT /
-        // SCRIPT_FILENAME follow it.
         let mut site =
             yerd_core::Site::linked("app", "/srv/www/app", yerd_core::PhpVersion::new(8, 3))
                 .unwrap();

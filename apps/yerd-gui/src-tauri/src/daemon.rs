@@ -1,13 +1,13 @@
 //! `yerdd` lifecycle from the GUI: locate, start, stop.
 //!
-//! All host-side — the daemon may be down when these run. Mirrors `elevate.rs`:
+//! All host-side - the daemon may be down when these run. Mirrors `elevate.rs`:
 //! resolve trusted binaries relative to our own exe, do blocking work off the
 //! async runtime, and thread every failure through [`GuiError`] (the crate bans
 //! `unwrap`/`expect`/`panic` under clippy). The OS service mechanism
 //! (systemd/launchd/SMAppService) lives in [`crate::autostart`]; this module owns
 //! binary resolution, the start/stop orchestration, and the optional
 //! "install the bundled CLI on PATH" helper. The daemon binary is **bundled**
-//! inside the app (Tauri `externalBin`) — there is no runtime download.
+//! inside the app (Tauri `externalBin`) - there is no runtime download.
 
 use std::path::PathBuf;
 
@@ -56,9 +56,9 @@ pub(crate) fn resolve_binary(name: &str) -> Option<PathBuf> {
     }
     // Linux: Tauri's deb bundler normally installs the sidecars straight into
     // `/usr/bin` (covered by `search_dirs` above). A `/usr/lib/<product>/` layout
-    // is the fallback — older/foreign Tauri builds staged them there and the
+    // is the fallback - older/foreign Tauri builds staged them there and the
     // postinst *symlinks* them onto PATH. That symlink isn't dpkg-tracked and the
-    // postinst can fail closed, so search the real `/usr/lib` dir directly here —
+    // postinst can fail closed, so search the real `/usr/lib` dir directly here -
     // otherwise a postinst hiccup leaves `yerdd` on disk but unfindable and the
     // daemon "won't start".
     #[cfg(target_os = "linux")]
@@ -94,7 +94,7 @@ pub(crate) fn resolve_yerdd() -> Option<PathBuf> {
     resolve_binary("yerdd")
 }
 
-/// Like [`resolve_yerdd`] but **skips the "beside `current_exe`" candidate** —
+/// Like [`resolve_yerdd`] but skips the "beside `current_exe`" candidate -
 /// used on the macOS translocated-fallback path, where the sibling `yerdd` lives
 /// on an ephemeral AppTranslocation mount that vanishes when torn down (launchd
 /// must not be pointed at it). Resolves only from stable install dirs.
@@ -118,11 +118,11 @@ pub fn daemon_installed() -> bool {
 //
 // Linux already exposes `yerd` on PATH (the `.deb` postinst symlinks it into
 // `/usr/bin`), so this is macOS-only. We symlink the bundled `yerd` into
-// `{data}/bin` — the exact dir the `yerd path` rc-block puts on PATH — and shell
+// `{data}/bin` - the exact dir the `yerd path` rc-block puts on PATH - and shell
 // out to the bundled `yerd path install` to manage the rc block (we do NOT depend
 // on the `bin/yerd` crate; that would violate the dep-flow rule).
 
-/// `{data}/bin/yerd` — where the CLI symlink lives (matches `yerd path`).
+/// `{data}/bin/yerd` - where the CLI symlink lives (matches `yerd path`).
 fn cli_symlink_path() -> Result<PathBuf, GuiError> {
     use yerd_platform::{ActivePaths, Paths};
     let dirs = ActivePaths::new()
@@ -144,8 +144,6 @@ pub struct CliPathStatus {
 #[tauri::command]
 pub fn cli_path_status() -> Result<CliPathStatus, GuiError> {
     let link = cli_symlink_path()?;
-    // A dangling symlink (app moved/removed) reports not-installed so the UI can
-    // offer to repair it.
     let installed = link.symlink_metadata().is_ok() && link.exists();
     Ok(CliPathStatus {
         installed,
@@ -154,13 +152,11 @@ pub fn cli_path_status() -> Result<CliPathStatus, GuiError> {
 }
 
 /// Symlink the bundled `yerd` into `{data}/bin` and ensure that dir is on PATH.
-/// macOS-only behaviour — Linux already exposes `yerd` on PATH via the `.deb`.
+/// macOS-only behaviour - Linux already exposes `yerd` on PATH via the `.deb`.
 #[tauri::command]
 pub async fn install_cli_to_path() -> Result<(), GuiError> {
     #[cfg(target_os = "macos")]
     {
-        // Refuse when translocated: the symlink would point into an ephemeral
-        // `/AppTranslocation/…` mount that disappears.
         if crate::autostart::is_translocated() {
             return Err(GuiError::internal(
                 "Move Yerd to your Applications folder first, then install the CLI.",
@@ -169,20 +165,16 @@ pub async fn install_cli_to_path() -> Result<(), GuiError> {
         let yerd = resolve_binary("yerd")
             .ok_or_else(|| GuiError::internal("the bundled yerd CLI was not found in the app"))?;
         let link = cli_symlink_path()?;
-        // The symlink ops and the `yerd path install` subprocess block; run them
-        // off the async runtime so the tray/UI never stalls (mirrors `start`/`stop`).
         tokio::task::spawn_blocking(move || {
             if let Some(parent) = link.parent() {
                 std::fs::create_dir_all(parent).map_err(|e| {
                     GuiError::internal(format!("cannot create {}: {e}", parent.display()))
                 })?;
             }
-            // Replace any existing (possibly dangling) link.
             let _ = std::fs::remove_file(&link);
             std::os::unix::fs::symlink(&yerd, &link).map_err(|e| {
                 GuiError::internal(format!("cannot link yerd into {}: {e}", link.display()))
             })?;
-            // Put `{data}/bin` on PATH via the bundled CLI's own rc-block manager.
             let out = std::process::Command::new(&yerd)
                 .args(["path", "install"])
                 .output()
@@ -208,7 +200,7 @@ pub async fn install_cli_to_path() -> Result<(), GuiError> {
     }
 }
 
-/// Remove the `{data}/bin/yerd` symlink. (Leaves the `yerd path` rc block alone —
+/// Remove the `{data}/bin/yerd` symlink. (Leaves the `yerd path` rc block alone -
 /// other yerd shims, e.g. `php`/`composer`, also live in `{data}/bin`.)
 #[tauri::command]
 pub fn remove_cli_from_path() -> Result<(), GuiError> {
@@ -241,15 +233,10 @@ pub fn open_login_items() {
 pub(crate) async fn start(app: tauri::AppHandle, nudge: bool) -> Result<(), GuiError> {
     use tauri::Emitter;
 
-    // Build the ordered step plan off the runtime: `plan_start` may block (the
-    // macOS label probes `launchctl`, the Linux label reads the unit file).
     let plan = tokio::task::spawn_blocking(move || crate::autostart::plan_start(nudge))
         .await
         .map_err(|e| GuiError::internal(format!("start planning failed: {e}")))??;
 
-    // Run each phase with its OWN timeout budget and announce it to the button
-    // first, so a hung `launchctl`/`systemctl` can't exceed one phase's slice
-    // (the blocking thread isn't cancellable; the timeout only frees the await).
     for step in plan {
         let phase = step.phase;
         let budget = step.budget;
@@ -281,7 +268,7 @@ pub(crate) async fn stop() -> Result<(), GuiError> {
 }
 
 /// Start the daemon. `nudge` (macOS) controls whether a `requiresApproval`
-/// SMAppService state opens Login Items — onboarding passes `false` so it opens
+/// SMAppService state opens Login Items - onboarding passes `false` so it opens
 /// at most once across the daemon + GUI enables; the General-tab button uses
 /// `true`.
 #[tauri::command]
@@ -296,7 +283,6 @@ pub async fn stop_daemon() -> Result<(), GuiError> {
 
 /// The running daemon's pid via a `status` IPC, or `None` if unreachable.
 async fn running_pid() -> Option<u32> {
-    // Bounded: this runs in the stop path; a wedged daemon mustn't hang it.
     match crate::ipc::exchange_timeout(
         &yerd_ipc::Request::Status,
         std::time::Duration::from_secs(5),
@@ -375,7 +361,7 @@ pub(crate) fn spawn_detached() -> Result<(), GuiError> {
 // ── diagnostics ───────────────────────────────────────────────────────────────
 //
 // When a start attempt fails to connect, the GUI calls `daemon_diagnostics` to
-// gather everything that explains *why* — both the ran-and-crashed case (the
+// gather everything that explains *why* - both the ran-and-crashed case (the
 // daemon's rolling log tail) and the never-launched cases (the start error,
 // translocation, a missing sidecar, pending Login-Items approval), which are the
 // likely first-run reports where no daemon log exists yet.
@@ -385,7 +371,7 @@ pub(crate) fn spawn_detached() -> Result<(), GuiError> {
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DaemonDiagnostics {
-    /// The error `start_daemon` threw, passed back from the frontend — the top
+    /// The error `start_daemon` threw, passed back from the frontend - the top
     /// signal for "never launched" failures (register / translocation / missing
     /// binary), where the daemon log doesn't exist.
     start_error: Option<String>,
@@ -399,7 +385,7 @@ pub struct DaemonDiagnostics {
     translocated: bool,
     /// The IPC socket path the GUI connects to.
     socket_path: String,
-    /// A real connect+`Status` exchange succeeded — not mere file existence (a
+    /// A real connect+`Status` exchange succeeded - not mere file existence (a
     /// stale socket file can linger after a crash).
     socket_responding: bool,
     /// The connect error from the probe, when it failed.
@@ -408,7 +394,7 @@ pub struct DaemonDiagnostics {
     service_manager: String,
     /// The service manager's own status text for the job, truncated.
     service_status: Option<String>,
-    /// macOS SMAppService `requiresApproval` — registered but awaiting the user.
+    /// macOS SMAppService `requiresApproval` - registered but awaiting the user.
     pending_approval: bool,
     /// Newest `{cache}/yerdd.<date>.log`, if any.
     log_path: Option<String>,
@@ -416,7 +402,7 @@ pub struct DaemonDiagnostics {
     log_tail: Vec<String>,
     /// Last lines of `{cache}/yerdd-spawn.log` (Linux detached-spawn path).
     spawn_log_tail: Vec<String>,
-    /// Last lines of `{cache}/yerd-gui-repair.log` — the GUI's daemon-registration
+    /// Last lines of `{cache}/yerd-gui-repair.log` - the GUI's daemon-registration
     /// self-repair trail (macOS upgrade re-registration attempts + outcomes). The
     /// GUI has no `tracing` subscriber, so this file is how the self-repair attempt
     /// (and any technical failure) becomes retrievable via "Copy diagnostics".
@@ -430,8 +416,6 @@ pub struct DaemonDiagnostics {
 pub async fn daemon_diagnostics(
     start_error: Option<String>,
 ) -> Result<DaemonDiagnostics, GuiError> {
-    // Bound the probe: a *wedged* daemon (accepting the socket but not replying)
-    // would otherwise make this diagnose-a-sick-daemon command hang the UI.
     let probe = crate::ipc::exchange(&yerd_ipc::Request::Status);
     let (socket_responding, last_connect_error) =
         match tokio::time::timeout(std::time::Duration::from_secs(3), probe).await {
@@ -519,7 +503,7 @@ fn build_diagnostics(
 /// "Running from a non-installed location" flag for diagnostics (always false
 /// off-macOS). True for App Translocation *and* for launching straight from a
 /// mounted disk image (`/Volumes/…`): both make SMAppService registration fail,
-/// and both are fixed by moving Yerd to /Applications — so the same
+/// and both are fixed by moving Yerd to /Applications - so the same
 /// "move to Applications" hint applies. This drives only the hint, not the
 /// registration gating, so a legitimate read-write external-drive install still
 /// registers normally.
@@ -609,16 +593,12 @@ fn compute_hints(
     if yerdd_missing {
         hints.push("The bundled daemon (yerdd) wasn't found — reinstall Yerd.".to_owned());
     }
-    // Scan both logs for known fatal startup signals.
     let logs = log_tail
         .iter()
         .chain(spawn_log_tail.iter())
         .map(|l| l.to_lowercase())
         .collect::<Vec<_>>()
         .join("\n");
-    // Key only on the precise `dns_port` token the DNS-bind error logs
-    // (startup.rs). A bare "address in use" would also match the *non-fatal*
-    // mail-port conflict or an HTTP-port conflict and wrongly blame DNS.
     if logs.contains("dns_port") {
         hints.push(
             "Another service is holding the DNS port. Change `dns_port` in yerd.toml or stop \
@@ -629,8 +609,6 @@ fn compute_hints(
     if logs.contains("already running") {
         hints.push("Another Yerd daemon is already running.".to_owned());
     }
-    // A running daemon older than the config it's reading (e.g. an upgrade left a
-    // stale background registration). The `ConfigError::UnsupportedVersion` text.
     if logs.contains("incompatible with supported version") {
         hints.push(
             "The background daemon is running an older version of Yerd and can't read the \
@@ -658,7 +636,6 @@ mod tests {
 
     #[test]
     fn version_skew_log_yields_reregister_hint() {
-        // The `ConfigError::UnsupportedVersion` Display line in the daemon log.
         let log = vec![
             "ERROR yerdd: yerdd exiting with error error=config: config schema version 7 is \
              incompatible with supported version 6"

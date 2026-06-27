@@ -8,7 +8,7 @@
 //! rejects timestamps with `year() > 9998`. The year cap reserves a one-year
 //! gap below `time`'s representable ceiling (the type is bounded to ±9999
 //! without the `large-dates` feature) so callers cannot accidentally emit
-//! `99991231235959Z` `GeneralizedTime` — several trust stores treat that as
+//! `99991231235959Z` `GeneralizedTime` - several trust stores treat that as
 //! "no expiry" or refuse it outright. Pre-1950 timestamps are *not* rejected
 //! (RFC 5280 §4.2.1.5 permits `GeneralizedTime` for them); the daemon's
 //! policy module is the right layer for "no certs from before unix epoch"
@@ -110,8 +110,6 @@ mod tests {
 
     #[test]
     fn new_rejects_year_above_9998_via_9999_input() {
-        // 9999 is the smallest representable value > 9998 on time 0.3.36
-        // without `large-dates`.
         let err =
             Validity::new(at(2026, Month::January, 1), at(9999, Month::January, 1)).unwrap_err();
         match err {
@@ -124,14 +122,11 @@ mod tests {
 
     #[test]
     fn new_accepts_2049_to_2050_cutover() {
-        // UTCTime → GeneralizedTime boundary; rcgen handles the encoding
-        // switch, our validation does not care.
         Validity::new(at(2049, Month::January, 1), at(2050, Month::January, 1)).unwrap();
     }
 
     #[test]
     fn new_accepts_pre_1950() {
-        // Pre-1950 is RFC 5280-legal via GeneralizedTime; we do not reject it.
         Validity::new(at(1900, Month::January, 1), at(2050, Month::January, 1)).unwrap();
     }
 

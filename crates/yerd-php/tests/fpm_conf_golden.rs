@@ -1,5 +1,5 @@
 //! Byte-exact golden test for the rendered FPM config. Pins the
-//! template format — future edits flip this test deliberately.
+//! template format - future edits flip this test deliberately.
 
 #![allow(
     clippy::unwrap_used,
