@@ -640,10 +640,87 @@ fn error(code: ErrorCode, message: String) -> Response {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing
+)]
 mod tests {
     use super::*;
-    use yerd_ipc::{AuthProvider, Database, JsRuntime, LaravelOptions, StarterKit, Testing};
+    use tokio::sync::{Mutex, RwLock};
+    use yerd_core::{PhpVersion, RouterConfig, SiteRouter, Tld};
+    use yerd_ipc::{
+        AuthProvider, CreateSiteSpec, Database, Framework, JsRuntime, LaravelOptions, StarterKit,
+        Testing,
+    };
+    use yerd_platform::PlatformDirs;
+
+    fn dirs_in(tmp: &Path) -> PlatformDirs {
+        PlatformDirs {
+            config: tmp.join("c"),
+            data: tmp.join("d"),
+            state: tmp.join("s"),
+            cache: tmp.join("ca"),
+            runtime: tmp.join("r"),
+        }
+    }
+
+    /// Copied verbatim from `ipc_server`'s test module (its `state_in` is private
+    /// to that module). A `DaemonState` rooted at `tmp`.
+    fn state_in(tmp: &Path) -> DaemonState {
+        let dirs = dirs_in(tmp);
+        let router = SiteRouter::new(RouterConfig::with_tld(Tld::new("test").unwrap()));
+        let ca_path = dirs.data.join("ca.cert.pem");
+        let php_manager = Arc::new(Mutex::new(yerd_php::PhpManager::new(
+            yerd_php::TokioProcessSpawner,
+            yerd_php::SystemClock,
+            yerd_php::io::FastCgiProbe,
+            dirs.clone(),
+            yerd_platform::ActivePortBinder::new(),
+            std::process::id(),
+            std::collections::BTreeMap::new(),
+        )));
+        DaemonState {
+            config: Mutex::new(yerd_config::Config::default()),
+            router: Arc::new(RwLock::new(router)),
+            config_path: dirs.config.join("yerd.toml"),
+            dirs,
+            dns_addr: "127.0.0.1:1053".parse().unwrap(),
+            ca_path,
+            ca_fingerprint: yerd_platform::CaFingerprint::new([0u8; 32]),
+            php_updates: tokio::sync::RwLock::new(std::collections::HashMap::new()),
+            yerd_update: tokio::sync::RwLock::new(Vec::new()),
+            update_snapshot: tokio::sync::RwLock::new(None),
+            php_manager,
+            service_manager: Arc::new(Mutex::new(crate::services::new_manager(dirs_in(tmp)))),
+            mail_store: Arc::new(yerd_mail::Store::open(tmp.join("mail")).unwrap()),
+            mail: crate::state::MailRuntime { listening: false },
+            http: yerd_ipc::PortStatus {
+                requested: 80,
+                bound: 8080,
+                fell_back: true,
+            },
+            https: yerd_ipc::PortStatus {
+                requested: 443,
+                bound: 8443,
+                fell_back: true,
+            },
+            web_unbound: None,
+            dns_unbound: None,
+            boot_id: 1,
+            started_at: std::time::Instant::now(),
+            shutdown_tx: tokio::sync::watch::channel(false).0,
+            restart_requested: std::sync::atomic::AtomicBool::new(false),
+            detect_cache: Arc::new(crate::detect_cache::DetectCache::new()),
+            watch_dirty: tokio::sync::Notify::new(),
+            dumps: Arc::new(crate::dump_server::DumpStore::new()),
+            shim_reconcile: tokio::sync::Mutex::new(()),
+            tool_mutate: tokio::sync::Mutex::new(()),
+            jobs: crate::jobs::JobRegistry::default(),
+            reserved_names: tokio::sync::Mutex::new(std::collections::HashSet::new()),
+        }
+    }
 
     fn opts() -> LaravelOptions {
         LaravelOptions {
@@ -761,5 +838,180 @@ mod tests {
         assert!(check_target_dir(&empty).is_ok());
         std::fs::write(empty.join("f"), b"x").unwrap();
         assert!(check_target_dir(&empty).is_err());
+    }
+
+    #[test]
+    fn database_flag_covers_every_engine() {
+        for (db, flag) in [
+            (Database::Sqlite, "sqlite"),
+            (Database::Mysql, "mysql"),
+            (Database::Mariadb, "mariadb"),
+            (Database::Pgsql, "pgsql"),
+            (Database::Sqlsrv, "sqlsrv"),
+        ] {
+            let mut o = opts();
+            o.database = db;
+            let a = build_new_args("app", &o);
+            let idx = a.iter().position(|s| s == "--database").unwrap();
+            assert_eq!(a[idx + 1], flag, "wrong flag for {db:?}");
+        }
+    }
+
+    #[test]
+    fn svelte_kit_and_skip_js_emit_expected_flags() {
+        let mut o = opts();
+        o.starter_kit = StarterKit::Svelte;
+        let a = build_new_args("app", &o);
+        assert!(a.iter().any(|s| s == "--svelte"));
+        assert!(!a.iter().any(|s| s == "--npm" || s == "--bun"));
+    }
+
+    #[test]
+    fn npm_runtime_emits_npm_flag() {
+        let mut o = opts();
+        o.js = JsRuntime::Npm;
+        let a = build_new_args("app", &o);
+        assert!(a.iter().any(|s| s == "--npm"));
+    }
+
+    #[test]
+    fn needs_git_true_for_community_kit() {
+        let mut o = opts();
+        o.starter_kit = StarterKit::Community("acme/kit".to_owned());
+        assert!(needs_git(&o));
+    }
+
+    #[test]
+    fn mutate_ok_maps_responses() {
+        assert!(mutate_ok(Response::Ok).is_ok());
+        assert_eq!(
+            mutate_ok(Response::Error {
+                code: ErrorCode::Internal,
+                message: "boom".to_owned(),
+            }),
+            Err("boom".to_owned())
+        );
+        assert!(mutate_ok(Response::JobStarted {
+            job_id: "j1".to_owned()
+        })
+        .is_err());
+    }
+
+    #[test]
+    fn error_builds_response_error() {
+        match error(ErrorCode::InvalidPath, "nope".to_owned()) {
+            Response::Error { code, message } => {
+                assert_eq!(code, ErrorCode::InvalidPath);
+                assert_eq!(message, "nope");
+            }
+            other => panic!("expected error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn probe_writable_accepts_dir_and_rejects_non_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert!(probe_writable(tmp.path()).is_ok());
+        let leftovers: Vec<_> = std::fs::read_dir(tmp.path())
+            .unwrap()
+            .flatten()
+            .filter(|e| e.file_name().to_string_lossy().contains("yerd-write-probe"))
+            .collect();
+        assert!(leftovers.is_empty(), "probe file should be removed");
+
+        let f = tmp.path().join("afile");
+        std::fs::write(&f, b"x").unwrap();
+        assert!(probe_writable(&f).is_err());
+        assert!(probe_writable(&tmp.path().join("missing")).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn composed_path_puts_job_bin_first() {
+        let job_bin = Path::new("/jobs/abc/bin");
+        let data_bin = Path::new("/data/bin");
+        let user = vec![PathBuf::from("/opt/homebrew/bin")];
+        let composed = composed_path(job_bin, data_bin, &user);
+        let entries: Vec<PathBuf> = std::env::split_paths(&composed).collect();
+        assert_eq!(entries.first().unwrap(), job_bin);
+        assert_eq!(entries.get(1).unwrap(), data_bin);
+        assert!(entries.iter().any(|p| p == Path::new("/opt/homebrew/bin")));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn sh_quote_escapes_embedded_single_quotes() {
+        assert_eq!(sh_quote(Path::new("/Users/obrien")), "'/Users/obrien'");
+        assert_eq!(
+            sh_quote(Path::new("/Users/o'brien/data")),
+            "'/Users/o'\\''brien/data'"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn build_job_bin_links_php_and_writes_composer_wrapper() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let job_dir = tmp.path().join("job");
+        let php = tmp.path().join("php-bin");
+        std::fs::write(&php, b"#!fake-php").unwrap();
+        let phar = tmp.path().join("composer.phar");
+        std::fs::write(&phar, b"phar").unwrap();
+
+        let bin = build_job_bin(&job_dir, &php, Some(phar.as_path())).unwrap();
+        assert_eq!(std::fs::read_link(bin.join("php")).unwrap(), php);
+        let wrapper = std::fs::read_to_string(bin.join("composer")).unwrap();
+        assert!(wrapper.starts_with("#!/bin/sh\n"));
+        assert!(wrapper.contains(&php.to_string_lossy().into_owned()));
+        assert!(wrapper.contains(&phar.to_string_lossy().into_owned()));
+        let mode = std::fs::metadata(bin.join("composer"))
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o111, 0o111, "wrapper should be executable");
+    }
+
+    #[test]
+    fn check_target_dir_errors_on_unreadable_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        let f = tmp.path().join("afile");
+        std::fs::write(&f, b"x").unwrap();
+        let err = check_target_dir(&f).unwrap_err();
+        assert!(err.contains("cannot read"), "got {err:?}");
+    }
+
+    fn laravel_spec(name: &str, parent: &Path) -> CreateSiteSpec {
+        CreateSiteSpec {
+            name: name.to_owned(),
+            parent_dir: parent.to_path_buf(),
+            php: PhpVersion::new(8, 3),
+            secure: false,
+            framework: Framework::Laravel { options: opts() },
+        }
+    }
+
+    #[tokio::test]
+    async fn start_rejects_invalid_site_name() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = Arc::new(state_in(tmp.path()));
+        let spec = laravel_spec("Not A Valid Name!", tmp.path());
+        match start(spec, state).await {
+            Response::Error { code, .. } => assert_eq!(code, ErrorCode::InvalidPath),
+            other => panic!("expected error, got {other:?}"),
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn build_job_bin_without_phar_writes_no_composer_wrapper() {
+        let tmp = tempfile::tempdir().unwrap();
+        let job_dir = tmp.path().join("job");
+        let php = tmp.path().join("php-bin");
+        std::fs::write(&php, b"#!fake-php").unwrap();
+
+        let bin = build_job_bin(&job_dir, &php, None).unwrap();
+        assert!(bin.join("php").exists());
+        assert!(!bin.join("composer").exists());
     }
 }

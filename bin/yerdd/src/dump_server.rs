@@ -640,7 +640,7 @@ mod tests {
     #[test]
     fn list_since_filters_and_reports_removed() {
         let mut ring = DumpRing::new();
-        ring.push(frame(DumpCategory::Query), 100, false); // id 1
+        ring.push(frame(DumpCategory::Query), 100, false);
         ring.push(frame(DumpCategory::Query), 100, false); // id 2
         ring.delete(1);
         let page = ring.list(2);
@@ -713,6 +713,70 @@ mod tests {
     }
 
     #[test]
+    fn feature_default_only_http_is_off() {
+        assert!(!feature_default("http"));
+        for f in [
+            "dumps", "queries", "jobs", "views", "requests", "logs", "cache",
+        ] {
+            assert!(feature_default(f), "{f} should default on");
+        }
+        for &f in FEATURES {
+            let _ = feature_default(f);
+        }
+    }
+
+    #[test]
+    fn now_ms_is_nonzero() {
+        assert!(now_ms() > 0, "wall clock should be well past the epoch");
+    }
+
+    #[test]
+    fn push_stamps_now_when_ts_zero_and_preserves_explicit_ts() {
+        let mut ring = DumpRing::new();
+        ring.push(frame_req(DumpCategory::Dump, "r"), 12_345, false);
+        let mut f = frame_req(DumpCategory::Dump, "r");
+        f.ts = 999;
+        ring.push(f, 12_345, false);
+        let page = ring.list(0);
+        assert_eq!(page.events[0].ts_ms, 12_345, "stamped on receipt");
+        assert_eq!(page.events[1].ts_ms, 999, "explicit ts preserved");
+    }
+
+    #[test]
+    fn delete_missing_id_is_noop() {
+        let mut ring = DumpRing::new();
+        ring.push(frame(DumpCategory::Query), 100, false);
+        ring.delete(42);
+        let page = ring.list(0);
+        assert_eq!(page.events.len(), 1);
+        assert!(page.removed.is_empty(), "no spurious removed entry");
+    }
+
+    #[test]
+    fn counts_reflect_only_live_events_after_delete() {
+        let mut ring = DumpRing::new();
+        ring.push(frame(DumpCategory::Query), 100, false);
+        ring.push(frame(DumpCategory::Dump), 100, false);
+        ring.delete(2);
+        let c = ring.counts();
+        assert_eq!(c.queries, 1);
+        assert_eq!(c.dumps, 0);
+    }
+
+    #[test]
+    fn extension_presence_empty_without_installed_php() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dirs = yerd_platform::PlatformDirs {
+            config: tmp.path().join("c"),
+            data: tmp.path().join("d"),
+            state: tmp.path().join("s"),
+            cache: tmp.path().join("ca"),
+            runtime: tmp.path().join("r"),
+        };
+        assert!(extension_presence(&dirs).is_empty());
+    }
+
+    #[test]
     fn write_state_file_round_trips() {
         let tmp = tempfile::tempdir().unwrap();
         let dirs = yerd_platform::PlatformDirs {
@@ -736,5 +800,271 @@ mod tests {
         assert_eq!(v["port"], serde_json::json!(2304));
         assert_eq!(v["features"]["queries"], serde_json::json!(false));
         assert_eq!(v["features"]["dumps"], serde_json::json!(true));
+    }
+
+    // ---------- `&DaemonState` IPC-handler coverage ----------
+
+    use crate::state::DaemonState;
+    use tokio::sync::RwLock;
+    use yerd_core::{RouterConfig, SiteRouter, Tld};
+
+    fn dirs_in(tmp: &std::path::Path) -> PlatformDirs {
+        PlatformDirs {
+            config: tmp.join("c"),
+            data: tmp.join("d"),
+            state: tmp.join("s"),
+            cache: tmp.join("ca"),
+            runtime: tmp.join("r"),
+        }
+    }
+
+    fn state_in(tmp: &std::path::Path) -> DaemonState {
+        let dirs = dirs_in(tmp);
+        let router = SiteRouter::new(RouterConfig::with_tld(Tld::new("test").unwrap()));
+        let ca_path = dirs.data.join("ca.cert.pem");
+        let php_manager = std::sync::Arc::new(Mutex::new(yerd_php::PhpManager::new(
+            yerd_php::TokioProcessSpawner,
+            yerd_php::SystemClock,
+            yerd_php::io::FastCgiProbe,
+            dirs.clone(),
+            yerd_platform::ActivePortBinder::new(),
+            std::process::id(),
+            std::collections::BTreeMap::new(),
+        )));
+        DaemonState {
+            config: Mutex::new(yerd_config::Config::default()),
+            router: Arc::new(RwLock::new(router)),
+            config_path: dirs.config.join("yerd.toml"),
+            dirs,
+            dns_addr: "127.0.0.1:1053".parse().unwrap(),
+            ca_path,
+            ca_fingerprint: yerd_platform::CaFingerprint::new([0u8; 32]),
+            php_updates: tokio::sync::RwLock::new(std::collections::HashMap::new()),
+            yerd_update: tokio::sync::RwLock::new(Vec::new()),
+            update_snapshot: tokio::sync::RwLock::new(None),
+            php_manager,
+            service_manager: std::sync::Arc::new(Mutex::new(crate::services::new_manager(
+                dirs_in(tmp),
+            ))),
+            mail_store: std::sync::Arc::new(yerd_mail::Store::open(tmp.join("mail")).unwrap()),
+            mail: crate::state::MailRuntime { listening: false },
+            http: yerd_ipc::PortStatus {
+                requested: 80,
+                bound: 8080,
+                fell_back: true,
+            },
+            https: yerd_ipc::PortStatus {
+                requested: 443,
+                bound: 8443,
+                fell_back: true,
+            },
+            web_unbound: None,
+            dns_unbound: None,
+            boot_id: 1,
+            started_at: std::time::Instant::now(),
+            shutdown_tx: tokio::sync::watch::channel(false).0,
+            restart_requested: std::sync::atomic::AtomicBool::new(false),
+            detect_cache: std::sync::Arc::new(crate::detect_cache::DetectCache::new()),
+            watch_dirty: tokio::sync::Notify::new(),
+            dumps: std::sync::Arc::new(crate::dump_server::DumpStore::new()),
+            shim_reconcile: tokio::sync::Mutex::new(()),
+            tool_mutate: tokio::sync::Mutex::new(()),
+            jobs: crate::jobs::JobRegistry::default(),
+            reserved_names: tokio::sync::Mutex::new(std::collections::HashSet::new()),
+        }
+    }
+
+    /// Push a frame directly into the live ring (bypassing the TCP path).
+    async fn push_live(state: &DaemonState, category: DumpCategory, req: &str) {
+        state
+            .dumps
+            .ring
+            .lock()
+            .await
+            .push(frame_req(category, req), 100, false);
+    }
+
+    #[tokio::test]
+    async fn list_handler_pages_live_ring() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_in(tmp.path());
+        push_live(&state, DumpCategory::Query, "r1").await;
+        push_live(&state, DumpCategory::Dump, "r1").await;
+
+        match list(&state, 0).await {
+            Response::Dumps {
+                events,
+                removed_ids,
+                counts,
+                latest_id,
+                min_live_id,
+            } => {
+                assert_eq!(events.len(), 2);
+                assert!(removed_ids.is_empty());
+                assert_eq!(counts.queries, 1);
+                assert_eq!(counts.dumps, 1);
+                assert_eq!(latest_id, 2);
+                assert_eq!(min_live_id, 1);
+            }
+            other => panic!("expected Dumps, got {other:?}"),
+        }
+
+        match list(&state, 2).await {
+            Response::Dumps { events, .. } => assert!(events.is_empty()),
+            other => panic!("expected Dumps, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn delete_handler_removes_one_and_clear_empties() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_in(tmp.path());
+        push_live(&state, DumpCategory::Query, "r").await;
+        push_live(&state, DumpCategory::Query, "r").await;
+
+        assert!(matches!(delete(&state, 1).await, Response::Ok));
+        match list(&state, 0).await {
+            Response::Dumps { events, .. } => {
+                assert_eq!(events.len(), 1);
+                assert_eq!(events[0].id, 2);
+            }
+            other => panic!("expected Dumps, got {other:?}"),
+        }
+
+        assert!(matches!(clear(&state).await, Response::Ok));
+        match list(&state, 0).await {
+            Response::Dumps { events, counts, .. } => {
+                assert!(events.is_empty());
+                assert_eq!(counts.queries, 0);
+            }
+            other => panic!("expected Dumps, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn status_handler_reports_defaults_and_counts() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_in(tmp.path());
+        push_live(&state, DumpCategory::Query, "r").await;
+
+        match status(&state).await {
+            Response::DumpsStatus {
+                enabled,
+                port,
+                running,
+                persist,
+                extensions,
+                counts,
+                features,
+            } => {
+                assert!(!enabled);
+                assert_eq!(port, 2304);
+                assert!(!running);
+                assert!(!persist);
+                assert!(extensions.is_empty());
+                assert_eq!(counts.queries, 1);
+                assert_eq!(features.len(), FEATURES.len());
+                assert_eq!(features.get("http"), Some(&false));
+                assert_eq!(features.get("dumps"), Some(&true));
+            }
+            other => panic!("expected DumpsStatus, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn set_persist_updates_config_flag_and_state_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_in(tmp.path());
+
+        assert!(matches!(set_persist(&state, true).await, Response::Ok));
+        assert!(state.config.lock().await.dumps.persist);
+        assert!(state.dumps.persist.load(Ordering::Acquire));
+        let reloaded = yerd_config::Config::load(&state.config_path).unwrap();
+        assert!(reloaded.dumps.persist);
+        let sf = state.dirs.state.join("dumps").join("state.json");
+        assert!(sf.is_file());
+
+        assert!(matches!(set_persist(&state, false).await, Response::Ok));
+        assert!(!state.dumps.persist.load(Ordering::Acquire));
+    }
+
+    #[tokio::test]
+    async fn set_feature_known_persists_unknown_is_not_found() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_in(tmp.path());
+
+        assert!(matches!(
+            set_feature(&state, "queries".into(), false).await,
+            Response::Ok
+        ));
+        assert_eq!(
+            state.config.lock().await.dumps.features.get("queries"),
+            Some(&false)
+        );
+
+        match set_feature(&state, "bogus".into(), true).await {
+            Response::Error { code, message } => {
+                assert!(matches!(code, yerd_ipc::ErrorCode::NotFound));
+                assert!(message.contains("bogus"), "{message}");
+            }
+            other => panic!("expected NotFound, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn set_enabled_config_only_branches_are_ok() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_in(tmp.path());
+
+        assert!(matches!(set_enabled(&state, false).await, Response::Ok));
+        assert!(!state.config.lock().await.dumps.enabled);
+
+        state.config.lock().await.dumps.enabled = true;
+        assert!(matches!(set_enabled(&state, true).await, Response::Ok));
+        assert!(state.config.lock().await.dumps.enabled);
+        let reloaded = yerd_config::Config::load(&state.config_path).unwrap();
+        assert!(reloaded.dumps.enabled);
+    }
+
+    #[tokio::test]
+    async fn set_port_rejects_zero_noops_same_and_moves_to_new() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_in(tmp.path());
+
+        match set_port(&state, 0).await {
+            Response::Error { code, .. } => {
+                assert!(matches!(code, yerd_ipc::ErrorCode::Internal));
+            }
+            other => panic!("expected Error, got {other:?}"),
+        }
+
+        let cur = state.config.lock().await.dumps.port;
+        assert!(matches!(set_port(&state, cur).await, Response::Ok));
+
+        let probe = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let free = probe.local_addr().unwrap().port();
+        drop(probe);
+        assert_ne!(free, cur);
+        assert!(matches!(set_port(&state, free).await, Response::Ok));
+        assert_eq!(state.config.lock().await.dumps.port, free);
+        let reloaded = yerd_config::Config::load(&state.config_path).unwrap();
+        assert_eq!(reloaded.dumps.port, free);
+    }
+
+    #[tokio::test]
+    async fn apply_config_writes_state_file_matching_config() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_in(tmp.path());
+
+        assert!(matches!(
+            set_feature(&state, "cache".into(), false).await,
+            Response::Ok
+        ));
+        let sf = state.dirs.state.join("dumps").join("state.json");
+        let body = std::fs::read_to_string(sf).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(v["features"]["cache"], serde_json::json!(false));
+        assert_eq!(v["features"]["queries"], serde_json::json!(true));
+        assert_eq!(v["enabled"], serde_json::json!(false));
     }
 }

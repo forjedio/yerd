@@ -577,6 +577,19 @@ mod unix_impl {
         }
 
         #[test]
+        fn manual_ca_removal_hint_is_os_appropriate() {
+            let hint = manual_ca_removal_hint();
+            assert!(!hint.is_empty());
+            #[cfg(target_os = "macos")]
+            assert!(hint.contains("Keychain Access"), "{hint}");
+            #[cfg(not(target_os = "macos"))]
+            assert!(
+                hint.contains("ca-certificates") || hint.contains("ca-trust"),
+                "{hint}"
+            );
+        }
+
+        #[test]
         fn dirs_to_delete_dedups_and_includes_both_runtime_candidates() {
             let dirs = PlatformDirs::for_user(Path::new("/home/u"), 1000);
             let out = dirs_to_delete(&dirs, 1000);

@@ -518,4 +518,39 @@ mod tests {
             Path::new("/cache/update/Yerd_MacOS_AppleSilicon_v2.app.tar.gz.sig")
         );
     }
+
+    #[test]
+    fn sibling_sig_handles_bare_filename() {
+        assert_eq!(
+            sibling_sig(Path::new("update.deb")),
+            Path::new("update.deb.sig")
+        );
+    }
+
+    /// Two reads differ because the nanosecond clock advances, and the value
+    /// carries this process's pid so concurrent stagers can't collide.
+    #[test]
+    fn unique_suffix_is_per_call_distinct() {
+        let a = unique_suffix();
+        let b = unique_suffix();
+        assert_ne!(a, b);
+        assert!(a.starts_with(&format!("{}-", std::process::id())));
+    }
+
+    #[test]
+    fn reverify_errors_when_artifact_missing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let missing = tmp.path().join("nope.tar.gz");
+        let err = reverify(&missing).unwrap_err();
+        assert!(err.contains("reading staged artifact"), "{err}");
+    }
+
+    #[test]
+    fn reverify_errors_when_signature_missing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let staged = tmp.path().join("Yerd.app.tar.gz");
+        std::fs::write(&staged, b"payload").unwrap();
+        let err = reverify(&staged).unwrap_err();
+        assert!(err.contains("reading signature"), "{err}");
+    }
 }

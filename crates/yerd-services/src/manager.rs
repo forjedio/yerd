@@ -909,3 +909,213 @@ fn failed_reason(s: PoolState) -> ExitReason {
         _ => ExitReason::Unknown,
     }
 }
+
+#[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing
+)]
+mod tests {
+    use super::*;
+    use std::str::FromStr;
+    use yerd_platform::PlatformDirs;
+
+    fn dirs_in(tmp: &std::path::Path) -> PlatformDirs {
+        PlatformDirs {
+            config: tmp.join("config"),
+            data: tmp.join("data"),
+            state: tmp.join("state"),
+            cache: tmp.join("cache"),
+            runtime: tmp.join("run"),
+        }
+    }
+
+    fn v(s: &str) -> ServiceVersion {
+        ServiceVersion::from_str(s).unwrap()
+    }
+
+    #[test]
+    fn stop_protocol_selects_master_interrupt_for_postgres_only() {
+        assert_eq!(
+            stop_protocol(Service::Postgres),
+            StopProtocol::MasterInterrupt
+        );
+        for service in [Service::Redis, Service::MySql, Service::MariaDb] {
+            assert_eq!(stop_protocol(service), StopProtocol::GroupTerm);
+        }
+    }
+
+    /// Redis has no datadir bootstrap, so it is initialised even with no files present.
+    #[test]
+    fn is_initialized_redis_is_always_true() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert!(is_initialized(tmp.path(), Service::Redis));
+    }
+
+    #[test]
+    fn is_initialized_postgres_keys_on_pg_version_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert!(!is_initialized(tmp.path(), Service::Postgres));
+        std::fs::write(tmp.path().join("PG_VERSION"), b"16\n").unwrap();
+        assert!(is_initialized(tmp.path(), Service::Postgres));
+    }
+
+    #[test]
+    fn is_initialized_mysql_family_keys_on_mysql_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        for service in [Service::MySql, Service::MariaDb] {
+            let datadir = tmp.path().join(service.id());
+            std::fs::create_dir_all(&datadir).unwrap();
+            assert!(!is_initialized(&datadir, service));
+            std::fs::create_dir_all(datadir.join("mysql")).unwrap();
+            assert!(is_initialized(&datadir, service));
+        }
+    }
+
+    #[test]
+    fn check_pg_major_accepts_matching_or_missing_marker() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert!(check_pg_major(tmp.path(), &v("16.2")).is_ok());
+        std::fs::write(tmp.path().join("PG_VERSION"), b"16\n").unwrap();
+        assert!(check_pg_major(tmp.path(), &v("16.4")).is_ok());
+    }
+
+    #[test]
+    fn check_pg_major_rejects_cross_major_datadir() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("PG_VERSION"), b"15\n").unwrap();
+        let err = check_pg_major(tmp.path(), &v("16")).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                ServiceError::Init {
+                    service: Service::Postgres,
+                    ..
+                }
+            ),
+            "got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn starting_attempts_reads_the_counter_or_zero() {
+        assert_eq!(
+            starting_attempts(PoolState::Starting {
+                attempts: 3,
+                pid: Some(7),
+            }),
+            3
+        );
+        assert_eq!(starting_attempts(PoolState::Stopped), 0);
+        assert_eq!(starting_attempts(PoolState::Running { pid: 1 }), 0);
+    }
+
+    #[test]
+    fn failed_reason_reads_last_exit_or_unknown() {
+        assert_eq!(
+            failed_reason(PoolState::Failed {
+                last_exit: ExitReason::Code(7),
+                attempts: 2,
+            }),
+            ExitReason::Code(7)
+        );
+        assert_eq!(failed_reason(PoolState::Stopped), ExitReason::Unknown);
+    }
+
+    #[test]
+    fn render_service_config_embeds_the_port_per_engine() {
+        let datadir = std::path::Path::new("/d");
+        let socket = std::path::Path::new("/s/x.sock");
+        let log = std::path::Path::new("/l/x.log");
+        let init = std::path::Path::new("/i/x-init.sql");
+        for service in Service::ALL {
+            let rendered = render_service_config(service, 6543, datadir, socket, log, init);
+            assert!(
+                rendered.contains("6543"),
+                "{service} config should mention the port:\n{rendered}"
+            );
+        }
+    }
+
+    #[test]
+    fn build_cmd_redis_passes_only_the_config_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        let binary = tmp.path().join("valkey-server");
+        let config = tmp.path().join("redis.conf");
+        let datadir = tmp.path().join("data");
+        let log = tmp.path().join("redis.log");
+        let cmd = build_cmd(Service::Redis, &binary, &config, &datadir, &log).unwrap();
+        assert_eq!(cmd.get_program(), binary.as_os_str());
+        let args: Vec<_> = cmd.get_args().collect();
+        assert_eq!(args, vec![config.as_os_str()]);
+    }
+
+    #[test]
+    fn build_cmd_mysql_passes_defaults_file_first() {
+        let tmp = tempfile::tempdir().unwrap();
+        let binary = tmp.path().join("mysqld");
+        let config = tmp.path().join("my.cnf");
+        let datadir = tmp.path().join("data");
+        let log = tmp.path().join("mysql.log");
+        let cmd = build_cmd(Service::MySql, &binary, &config, &datadir, &log).unwrap();
+        let args: Vec<_> = cmd
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(args.len(), 1);
+        assert!(args[0].starts_with("--defaults-file="), "got: {args:?}");
+        assert!(args[0].contains("my.cnf"));
+    }
+
+    /// The Postgres arm opens the log file for stderr capture, creating it.
+    #[test]
+    fn build_cmd_postgres_opens_log_and_sets_datadir_args() {
+        let tmp = tempfile::tempdir().unwrap();
+        let binary = tmp.path().join("postgres");
+        let config = tmp.path().join("postgresql.conf");
+        let datadir = tmp.path().join("data");
+        let log = tmp.path().join("pg.log");
+        let cmd = build_cmd(Service::Postgres, &binary, &config, &datadir, &log).unwrap();
+        let args: Vec<_> = cmd
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(args[0], "-D");
+        assert_eq!(args[1], datadir.to_string_lossy());
+        assert_eq!(args[2], "-c");
+        assert!(args[3].starts_with("config_file="));
+        assert!(log.is_file());
+    }
+
+    #[test]
+    fn build_cmd_postgres_errors_when_log_parent_is_missing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let binary = tmp.path().join("postgres");
+        let config = tmp.path().join("postgresql.conf");
+        let datadir = tmp.path().join("data");
+        let log = tmp.path().join("missing").join("pg.log");
+        let err = build_cmd(Service::Postgres, &binary, &config, &datadir, &log).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                ServiceError::ConfigWrite {
+                    service: Service::Postgres,
+                    ..
+                }
+            ),
+            "got: {err:?}"
+        );
+    }
+
+    /// The version path helpers compose the `install_dir/bin` layout that `init_datadir` relies on.
+    #[test]
+    fn init_datadir_paths_resolve_under_service_root() {
+        let dirs = dirs_in(std::path::Path::new("/x"));
+        let bin = version::install_dir(&dirs, Service::Postgres, &v("16"))
+            .join("bin")
+            .join("initdb");
+        assert!(bin.ends_with("services/postgres/16/bin/initdb"));
+    }
+}

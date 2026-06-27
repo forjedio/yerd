@@ -415,4 +415,124 @@ mod tests {
         let s = b"A: B\n\nbody";
         assert_eq!(find_header_terminator(s), (4, 2));
     }
+
+    #[test]
+    fn parse_cgi_status_with_reason_phrase() {
+        assert_eq!(parse_cgi_status("200 OK"), Some(http::StatusCode::OK));
+        assert_eq!(
+            parse_cgi_status("301 Moved Permanently"),
+            Some(http::StatusCode::MOVED_PERMANENTLY)
+        );
+    }
+
+    #[test]
+    fn parse_cgi_status_bare_code() {
+        assert_eq!(parse_cgi_status("404"), Some(http::StatusCode::NOT_FOUND));
+    }
+
+    #[test]
+    fn parse_cgi_status_invalid_is_none() {
+        assert!(parse_cgi_status("").is_none());
+        assert!(parse_cgi_status("abc").is_none());
+        assert!(parse_cgi_status("999999").is_none());
+        assert!(parse_cgi_status("99").is_none());
+    }
+
+    /// The Status line drives the response code; it is not echoed as a header.
+    #[test]
+    fn parse_cgi_response_status_header_not_surfaced() {
+        let stdout = b"Status: 301 Moved\r\nLocation: /x\r\n\r\n";
+        let (status, headers, body) = parse_cgi_response(stdout);
+        assert_eq!(status, http::StatusCode::MOVED_PERMANENTLY);
+        assert!(headers.iter().any(|(k, v)| k == "Location" && v == "/x"));
+        assert!(!headers
+            .iter()
+            .any(|(k, _)| k.eq_ignore_ascii_case("Status")));
+        assert_eq!(body, b"");
+    }
+
+    #[test]
+    fn synthesise_response_carries_status_headers_and_body() {
+        let resp = synthesise_response(
+            http::StatusCode::CREATED,
+            vec![("X-Test".to_owned(), "1".to_owned())],
+            b"hello",
+        )
+        .unwrap();
+        assert_eq!(resp.status(), http::StatusCode::CREATED);
+        assert_eq!(resp.headers().get("X-Test").unwrap(), "1");
+    }
+
+    /// A header name with a space is not a valid HTTP token, so it is dropped.
+    #[test]
+    fn synthesise_response_skips_invalid_header_name() {
+        let resp = synthesise_response(
+            http::StatusCode::OK,
+            vec![
+                ("Bad Name".to_owned(), "v".to_owned()),
+                ("Good".to_owned(), "y".to_owned()),
+            ],
+            b"",
+        )
+        .unwrap();
+        assert!(resp.headers().get("Good").is_some());
+        assert_eq!(resp.headers().len(), 1);
+    }
+
+    #[test]
+    fn synthesise_response_empty_body_builds() {
+        let resp = synthesise_response(http::StatusCode::NO_CONTENT, vec![], b"").unwrap();
+        assert_eq!(resp.status(), http::StatusCode::NO_CONTENT);
+        assert!(resp.headers().is_empty());
+    }
+
+    #[test]
+    fn upgrade_not_supported_is_501_plaintext() {
+        let resp = upgrade_not_supported();
+        assert_eq!(resp.status(), http::StatusCode::NOT_IMPLEMENTED);
+        assert_eq!(
+            resp.headers()
+                .get(http::header::CONTENT_TYPE)
+                .and_then(|v| v.to_str().ok()),
+            Some("text/plain; charset=utf-8")
+        );
+    }
+
+    #[test]
+    fn write_record_frames_header_then_content() {
+        let mut out = Vec::new();
+        write_record(&mut out, RecordType::Stdout, b"abc");
+        assert_eq!(out.len(), 11);
+        let header = Header::decode(&out[..8]).unwrap();
+        assert_eq!(header.record_type, RecordType::Stdout);
+        assert_eq!(header.request_id, REQUEST_ID);
+        assert_eq!(header.content_length, 3);
+        assert_eq!(header.padding_length, 0);
+        assert_eq!(&out[8..], b"abc");
+    }
+
+    #[test]
+    fn write_record_empty_content_is_terminator() {
+        let mut out = Vec::new();
+        write_record(&mut out, RecordType::Params, &[]);
+        assert_eq!(out.len(), 8);
+        assert_eq!(Header::decode(&out).unwrap().content_length, 0);
+    }
+
+    #[test]
+    fn path_and_query_of_extracts_or_defaults_to_slash() {
+        let uri: http::Uri = "http://h/foo?a=1".parse().unwrap();
+        assert_eq!(path_and_query_of(&uri), "/foo?a=1");
+        let uri: http::Uri = "http://h".parse().unwrap();
+        assert_eq!(path_and_query_of(&uri), "/");
+    }
+
+    /// `BackendStream` isn't `Debug`, so match rather than `unwrap_err`.
+    #[test]
+    fn unreachable_franken_returns_error() {
+        match unreachable_franken() {
+            Err(e) => assert!(e.to_string().contains("dispatch bug")),
+            Ok(_) => panic!("expected an error"),
+        }
+    }
 }

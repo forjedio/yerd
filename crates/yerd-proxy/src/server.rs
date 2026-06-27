@@ -903,3 +903,211 @@ mod unbound_tests {
         }
     }
 }
+
+#[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing
+)]
+mod synthetic_response_tests {
+    use super::*;
+
+    fn header_val(resp: &Response<BoxBody>, name: http::header::HeaderName) -> Option<String> {
+        resp.headers()
+            .get(name)
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_owned)
+    }
+
+    #[test]
+    fn join_path_query_appends_non_empty_query() {
+        assert_eq!(join_path_query("/x", Some("a=1")), "/x?a=1");
+    }
+
+    #[test]
+    fn join_path_query_drops_empty_or_missing_query() {
+        assert_eq!(join_path_query("/x", Some("")), "/x");
+        assert_eq!(join_path_query("/x", None), "/x");
+    }
+
+    /// sanitize_dest collapses a protocol-relative remainder to same-origin.
+    #[test]
+    fn join_path_query_normalises_protocol_relative_path() {
+        assert_eq!(join_path_query("//evil.com", None), "/evil.com");
+        assert_eq!(join_path_query("//evil.com", Some("q=1")), "/evil.com?q=1");
+    }
+
+    #[test]
+    fn kind_label_maps_each_variant() {
+        assert_eq!(kind_label(SiteKind::Parked), "parked");
+        assert_eq!(kind_label(SiteKind::Linked), "linked");
+    }
+
+    #[test]
+    fn synthetic_error_is_backend_protocol() {
+        let e = synthetic_error("boom");
+        assert!(matches!(e, ProxyError::BackendProtocol { .. }));
+        assert!(e.to_string().contains("backend protocol"));
+    }
+
+    #[test]
+    fn server_header_is_proxy_id() {
+        assert_eq!(
+            server_header().to_str().unwrap(),
+            yerd_core::PROXY_SERVER_ID
+        );
+    }
+
+    #[test]
+    fn decide_picker_picks_for_html_get() {
+        match decide_picker(true, "/x".to_owned(), false) {
+            UnboundDecision::Picker { dest, clear } => {
+                assert_eq!(dest, "/x");
+                assert!(!clear);
+            }
+            _ => panic!("expected Picker"),
+        }
+    }
+
+    #[test]
+    fn decide_picker_404s_for_non_html() {
+        match decide_picker(false, "/x".to_owned(), true) {
+            UnboundDecision::NotFound { clear } => assert!(clear),
+            _ => panic!("expected NotFound"),
+        }
+    }
+
+    #[test]
+    fn bad_request_response_shape() {
+        let resp = bad_request_response();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            header_val(&resp, SERVER).as_deref(),
+            Some(yerd_core::PROXY_SERVER_ID)
+        );
+        assert!(header_val(&resp, CONTENT_TYPE)
+            .unwrap()
+            .contains("text/plain"));
+    }
+
+    #[test]
+    fn not_found_response_shape() {
+        let resp = not_found_response();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+        assert_eq!(
+            header_val(&resp, SERVER).as_deref(),
+            Some(yerd_core::PROXY_SERVER_ID)
+        );
+        assert!(header_val(&resp, CONTENT_TYPE)
+            .unwrap()
+            .contains("text/plain"));
+    }
+
+    #[test]
+    fn internal_error_response_shape() {
+        let resp = internal_error_response();
+        assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(
+            header_val(&resp, SERVER).as_deref(),
+            Some(yerd_core::PROXY_SERVER_ID)
+        );
+        assert!(header_val(&resp, CONTENT_TYPE)
+            .unwrap()
+            .contains("text/plain"));
+    }
+
+    /// A control char in the Location makes `HeaderValue::from_str` fail,
+    /// exercising the synthetic_error map_err branch (otherwise unreachable
+    /// from the sanitised happy path).
+    #[test]
+    fn switch_response_rejects_invalid_location() {
+        let err = switch_response("app", "/bad\nlocation").unwrap_err();
+        assert!(matches!(err, ProxyError::BackendProtocol { .. }));
+    }
+}
+
+#[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing
+)]
+mod classify_fallthrough_tests {
+    use super::*;
+    use yerd_core::{PhpVersion, RouterConfig, Site};
+
+    const HTML: Option<&str> = Some("text/html");
+
+    fn router() -> SiteRouter {
+        let cfg = RouterConfig::new("test").unwrap();
+        SiteRouter::from_sites(
+            cfg,
+            [Site::parked("app", "/srv/app", PhpVersion::new(8, 3)).unwrap()],
+        )
+        .unwrap()
+    }
+
+    /// A cookie that carries no `yerd-site` pin must NOT clear anything and
+    /// must fall through to the no-pin picker/404 path.
+    #[test]
+    fn unparseable_cookie_falls_through_to_normal_classification() {
+        let d = classify_unbound(
+            &router(),
+            &Method::GET,
+            "/dash",
+            None,
+            None,
+            Some("session=abc; theme=dark"),
+            HTML,
+        );
+        match d {
+            UnboundDecision::Picker { dest, clear } => {
+                assert_eq!(dest, "/dash");
+                assert!(!clear);
+            }
+            other => panic!("expected Picker, got {other:?}"),
+        }
+    }
+
+    /// POST with an HTML Accept is still not a browser navigation we render a
+    /// picker for, so it must 404 (no HTML to non-GET traffic).
+    #[test]
+    fn non_get_navigation_without_pin_is_not_found() {
+        let d = classify_unbound(&router(), &Method::POST, "/", None, None, None, HTML);
+        assert!(matches!(d, UnboundDecision::NotFound { clear: false }));
+    }
+
+    /// The dotted `app.test` form resolves through `router.resolve` (not the
+    /// bare-label `get` fallback) and serves directly.
+    #[test]
+    fn header_domain_form_resolves_via_resolver() {
+        let d = classify_unbound(
+            &router(),
+            &Method::GET,
+            "/",
+            None,
+            Some("app.test"),
+            None,
+            None,
+        );
+        match d {
+            UnboundDecision::Serve(s) => assert_eq!(s.name(), "app"),
+            other => panic!("expected Serve, got {other:?}"),
+        }
+    }
+
+    impl std::fmt::Debug for UnboundDecision {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            let label = match self {
+                UnboundDecision::Serve(_) => "Serve",
+                UnboundDecision::Switch { .. } => "Switch",
+                UnboundDecision::Picker { .. } => "Picker",
+                UnboundDecision::NotFound { .. } => "NotFound",
+            };
+            f.write_str(label)
+        }
+    }
+}

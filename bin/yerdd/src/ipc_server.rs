@@ -2841,4 +2841,192 @@ Subject: Captured\r\n\r\nhi\r\n";
             other => panic!("expected Error, got {other:?}"),
         }
     }
+
+    // ---------- pure helpers ----------
+
+    #[test]
+    fn map_pool_state_maps_both_variants() {
+        assert_eq!(
+            map_pool_state(yerd_php::PoolRunState::Running),
+            yerd_ipc::PoolRunState::Running
+        );
+        assert_eq!(
+            map_pool_state(yerd_php::PoolRunState::Failed),
+            yerd_ipc::PoolRunState::Failed
+        );
+    }
+
+    #[test]
+    fn load_to_centi_clamps_and_rounds() {
+        assert_eq!(load_to_centi(0.0), 0);
+        assert_eq!(load_to_centi(-5.0), 0, "negative clamps to 0");
+        assert_eq!(load_to_centi(1.234), 123, "rounded to hundredths");
+        assert_eq!(load_to_centi(f64::from(u32::MAX)), u32::MAX, "saturates");
+    }
+
+    #[tokio::test]
+    async fn installed_versions_empty_then_lists_fake_install() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_in(tmp.path());
+        assert!(installed_versions(&state).is_empty());
+        fake_install(&state.dirs, PhpVersion::new(8, 4));
+        fake_install(&state.dirs, PhpVersion::new(8, 3));
+        let versions = installed_versions(&state);
+        assert_eq!(versions, vec![PhpVersion::new(8, 3), PhpVersion::new(8, 4)]);
+    }
+
+    #[test]
+    fn path_needs_setup_no_tools_is_some_false() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_in(tmp.path());
+        #[cfg(unix)]
+        assert_eq!(path_needs_setup(&state), Some(false));
+        #[cfg(not(unix))]
+        assert_eq!(path_needs_setup(&state), None);
+    }
+
+    // ---------- additional `dispatch` arms ----------
+
+    #[tokio::test]
+    async fn dispatch_list_services_reports_all_engines_uninstalled() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_in(tmp.path());
+        match dispatch(Request::ListServices, &state).await {
+            Response::Services { services } => {
+                assert!(!services.is_empty(), "all engines enumerated");
+                assert!(
+                    services.iter().all(|s| s.installed_versions.is_empty()),
+                    "{services:?}"
+                );
+            }
+            other => panic!("expected Services, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn dispatch_restart_all_php_no_pools_is_ok() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_in(tmp.path());
+        assert!(matches!(
+            dispatch(Request::RestartAllPhp, &state).await,
+            Response::Ok
+        ));
+    }
+
+    #[tokio::test]
+    async fn dispatch_set_fallback_ports_validates_and_persists() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_in(tmp.path());
+
+        match dispatch(
+            Request::SetFallbackPorts {
+                http: 9000,
+                https: 9000,
+            },
+            &state,
+        )
+        .await
+        {
+            Response::Error { code, .. } => assert!(matches!(code, ErrorCode::Internal)),
+            other => panic!("expected Error, got {other:?}"),
+        }
+
+        match dispatch(
+            Request::SetFallbackPorts {
+                http: 8081,
+                https: 8444,
+            },
+            &state,
+        )
+        .await
+        {
+            Response::Ok => {
+                {
+                    let cfg = state.config.lock().await;
+                    assert_eq!(cfg.ports.fallback_http, 8081);
+                    assert_eq!(cfg.ports.fallback_https, 8444);
+                }
+                let reloaded = yerd_config::Config::load(&state.config_path).unwrap();
+                assert_eq!(reloaded.ports.fallback_http, 8081);
+                assert_eq!(reloaded.ports.fallback_https, 8444);
+            }
+            Response::Error { code, message } => {
+                assert!(matches!(code, ErrorCode::Internal));
+                assert!(message.contains("elevated"), "{message}");
+                assert_eq!(state.config.lock().await.ports.fallback_http, 8080);
+            }
+            other => panic!("expected Ok or elevated Error, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn dispatch_delete_mails_empty_is_ok() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_in(tmp.path());
+        assert!(matches!(
+            dispatch(Request::DeleteMails { ids: vec![] }, &state).await,
+            Response::Ok
+        ));
+    }
+
+    // ---------- dump-server arms routed through `dispatch` ----------
+
+    #[tokio::test]
+    async fn dispatch_dumps_status_lifecycle() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_in(tmp.path());
+
+        assert!(matches!(
+            dispatch(Request::SetDumpsPersist { persist: true }, &state).await,
+            Response::Ok
+        ));
+        assert!(state.config.lock().await.dumps.persist);
+
+        assert!(matches!(
+            dispatch(
+                Request::SetDumpFeature {
+                    feature: "queries".into(),
+                    enabled: false,
+                },
+                &state,
+            )
+            .await,
+            Response::Ok
+        ));
+        match dispatch(
+            Request::SetDumpFeature {
+                feature: "nope".into(),
+                enabled: true,
+            },
+            &state,
+        )
+        .await
+        {
+            Response::Error { code, .. } => assert_eq!(code, ErrorCode::NotFound),
+            other => panic!("expected NotFound, got {other:?}"),
+        }
+
+        match dispatch(Request::DumpsStatus, &state).await {
+            Response::DumpsStatus {
+                persist, features, ..
+            } => {
+                assert!(persist);
+                assert_eq!(features.get("queries"), Some(&false));
+            }
+            other => panic!("expected DumpsStatus, got {other:?}"),
+        }
+
+        match dispatch(Request::ListDumps { since_id: 0 }, &state).await {
+            Response::Dumps { events, .. } => assert!(events.is_empty()),
+            other => panic!("expected Dumps, got {other:?}"),
+        }
+        assert!(matches!(
+            dispatch(Request::ClearDumps, &state).await,
+            Response::Ok
+        ));
+        assert!(matches!(
+            dispatch(Request::DeleteDump { id: 42 }, &state).await,
+            Response::Ok
+        ));
+    }
 }

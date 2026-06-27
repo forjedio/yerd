@@ -274,4 +274,102 @@ mod tests {
         assert!(!existing_matches(&f, "deadbeef"));
         assert!(!existing_matches(&tmp.path().join("missing.so"), &good));
     }
+
+    #[test]
+    fn host_os_arch_uses_std_env_consts() {
+        let (os, arch) = host_os_arch();
+        assert_eq!(os, std::env::consts::OS);
+        assert_eq!(arch, std::env::consts::ARCH);
+    }
+
+    #[test]
+    fn so_path_named_layout() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dirs = dirs_in(tmp.path());
+        let p = so_path_named(&dirs, PhpVersion::new(8, 3), "custom.so");
+        assert!(p.ends_with("php-ext/php-8.3/custom.so"));
+    }
+
+    /// A URL-keyed fake downloader: returns the queued bytes for any URL that
+    /// ends with one of the registered suffixes, else a transport error.
+    struct FakeDownloader {
+        routes: std::collections::HashMap<String, Vec<u8>>,
+    }
+
+    #[async_trait::async_trait]
+    impl Downloader for FakeDownloader {
+        async fn download(&self, url: &str) -> Result<Vec<u8>, yerd_php::DownloadError> {
+            for (suffix, bytes) in &self.routes {
+                if url.ends_with(suffix) {
+                    return Ok(bytes.clone());
+                }
+            }
+            Err(yerd_php::DownloadError::Transport {
+                url: url.to_owned(),
+                reason: "no route".into(),
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn fetch_manifest_parses_valid_json() {
+        let body = serde_json::json!({
+            "files": [
+                {"name":"yerd-dump-php8.4-macos-aarch64.so","php":"8.4","os":"macos","arch":"aarch64","sha256":"ab"}
+            ]
+        })
+        .to_string();
+        let dl = FakeDownloader {
+            routes: [("manifest.json".to_owned(), body.into_bytes())]
+                .into_iter()
+                .collect(),
+        };
+        let m = fetch_manifest(&dl, "manifest.json", "yerd-dump")
+            .await
+            .expect("manifest parses");
+        assert_eq!(m.files.len(), 1);
+        assert_eq!(m.files[0].php, "8.4");
+    }
+
+    #[tokio::test]
+    async fn fetch_manifest_none_on_bad_json_or_transport() {
+        let dl = FakeDownloader {
+            routes: [("manifest.json".to_owned(), b"not json".to_vec())]
+                .into_iter()
+                .collect(),
+        };
+        assert!(fetch_manifest(&dl, "manifest.json", "yerd-dump")
+            .await
+            .is_none());
+        let empty = FakeDownloader {
+            routes: std::collections::HashMap::new(),
+        };
+        assert!(fetch_manifest(&empty, "manifest.json", "yerd-dump")
+            .await
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn ensure_pcov_skips_network_when_no_php_installed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dirs = dirs_in(tmp.path());
+        let dl = FakeDownloader {
+            routes: std::collections::HashMap::new(),
+        };
+        ensure_pcov_for_installed(&dirs, &dl).await;
+    }
+
+    #[tokio::test]
+    async fn ensure_for_installed_is_noop_without_versions() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dirs = dirs_in(tmp.path());
+        let body = serde_json::json!({ "files": [] }).to_string();
+        let dl = FakeDownloader {
+            routes: [("manifest.json".to_owned(), body.into_bytes())]
+                .into_iter()
+                .collect(),
+        };
+        ensure_for_installed(&dirs, &dl).await;
+        assert!(!dirs.data.join("php-ext").exists());
+    }
 }

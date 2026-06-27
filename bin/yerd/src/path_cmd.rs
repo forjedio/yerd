@@ -333,4 +333,108 @@ mod unix {
         eprintln!("yerd: {msg}");
         ExitCode::FAILURE
     }
+
+    #[cfg(test)]
+    #[allow(clippy::unwrap_used, clippy::panic, clippy::indexing_slicing)]
+    mod tests {
+        use super::*;
+        use std::fs;
+
+        /// Build the exact guarded PATH block `yerd path install` writes, so the
+        /// removal path matches the real markers byte-for-byte.
+        fn block_for(shell: Shell, bin: &Path) -> String {
+            render_block(shell, bin)
+        }
+
+        #[test]
+        fn remove_block_for_user_removes_zsh_block_and_reports_file() {
+            let home = tempfile::tempdir().unwrap();
+            let rc = home.path().join(".zshrc");
+            let bin = Path::new("/data/io.yerd.Yerd/bin");
+            let original = format!("# my zshrc\nexport FOO=1\n\n{}", block_for(Shell::Zsh, bin));
+            fs::write(&rc, &original).unwrap();
+
+            let touched = remove_block_for_user(home.path(), "zsh");
+
+            assert_eq!(touched, vec![rc.clone()]);
+            let after = fs::read_to_string(&rc).unwrap();
+            assert!(
+                !shell_profile::contains_block(&after),
+                "block remained: {after}"
+            );
+            assert!(after.contains("export FOO=1"));
+            assert_eq!(after, "# my zshrc\nexport FOO=1\n");
+        }
+
+        #[test]
+        fn remove_block_for_user_no_block_present_returns_empty() {
+            let home = tempfile::tempdir().unwrap();
+            let rc = home.path().join(".zshrc");
+            fs::write(&rc, "export FOO=1\n").unwrap();
+
+            let touched = remove_block_for_user(home.path(), "zsh");
+            assert!(touched.is_empty());
+            assert_eq!(fs::read_to_string(&rc).unwrap(), "export FOO=1\n");
+        }
+
+        #[test]
+        fn remove_block_for_user_unknown_shell_is_noop() {
+            let home = tempfile::tempdir().unwrap();
+            assert!(remove_block_for_user(home.path(), "nushell").is_empty());
+            assert!(remove_block_for_user(home.path(), "").is_empty());
+        }
+
+        #[test]
+        fn remove_block_for_user_missing_rc_file_is_skipped() {
+            let home = tempfile::tempdir().unwrap();
+            assert!(remove_block_for_user(home.path(), "zsh").is_empty());
+        }
+
+        #[test]
+        fn remove_block_for_user_bash_touches_only_files_with_the_block() {
+            let home = tempfile::tempdir().unwrap();
+            let bin = Path::new("/data/io.yerd.Yerd/bin");
+            let bashrc = home.path().join(".bashrc");
+            let bash_profile = home.path().join(".bash_profile");
+            fs::write(&bashrc, block_for(Shell::Bash, bin)).unwrap();
+            fs::write(&bash_profile, "export EDITOR=vim\n").unwrap();
+
+            let touched = remove_block_for_user(home.path(), "bash");
+
+            assert_eq!(touched, vec![bashrc.clone()]);
+            assert_eq!(fs::read_to_string(&bashrc).unwrap(), "");
+            assert_eq!(
+                fs::read_to_string(&bash_profile).unwrap(),
+                "export EDITOR=vim\n"
+            );
+        }
+
+        /// A dotfiles setup where `~/.zshrc` is a symlink to a real file
+        /// elsewhere: removal must write through the link, leaving the symlink
+        /// intact.
+        #[test]
+        fn remove_block_for_user_follows_symlinked_rc() {
+            let home = tempfile::tempdir().unwrap();
+            let store = tempfile::tempdir().unwrap();
+            let real = store.path().join("zshrc");
+            let bin = Path::new("/data/io.yerd.Yerd/bin");
+            fs::write(
+                &real,
+                format!("export KEEP=1\n\n{}", block_for(Shell::Zsh, bin)),
+            )
+            .unwrap();
+            let link = home.path().join(".zshrc");
+            std::os::unix::fs::symlink(&real, &link).unwrap();
+
+            let touched = remove_block_for_user(home.path(), "zsh");
+            assert_eq!(touched.len(), 1);
+            assert!(fs::symlink_metadata(&link)
+                .unwrap()
+                .file_type()
+                .is_symlink());
+            let after = fs::read_to_string(&real).unwrap();
+            assert!(!shell_profile::contains_block(&after));
+            assert!(after.contains("export KEEP=1"));
+        }
+    }
 }

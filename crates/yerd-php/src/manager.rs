@@ -711,3 +711,102 @@ fn failed_reason(s: PoolState) -> (ExitReason, u32) {
         _ => (ExitReason::Unknown, 0),
     }
 }
+
+#[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing
+)]
+mod pure_helper_tests {
+    use super::*;
+    use std::ffi::OsStr;
+    use std::path::Path;
+
+    fn args_of(cmd: &StdCommand) -> Vec<String> {
+        cmd.get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect()
+    }
+
+    #[test]
+    fn build_cmd_without_extension_only_passes_fpm_config() {
+        let binary = PathBuf::from("/opt/php/bin/php");
+        let config = PathBuf::from("/run/yerd/fpm-8.3.conf");
+        let env = vec![("PATH".to_owned(), "/usr/bin".to_owned())];
+        let cmd = build_cmd(&binary, &config, &env, None, &[]);
+
+        assert_eq!(cmd.get_program(), OsStr::new("/opt/php/bin/php"));
+        let args = args_of(&cmd);
+        assert_eq!(args, vec!["--fpm-config", "/run/yerd/fpm-8.3.conf"]);
+        assert!(!args.iter().any(|a| a == "-d"));
+
+        let envs: Vec<_> = cmd
+            .get_envs()
+            .map(|(k, v)| {
+                (
+                    k.to_string_lossy().into_owned(),
+                    v.map(|val| val.to_string_lossy().into_owned()),
+                )
+            })
+            .collect();
+        assert!(envs.contains(&("PATH".to_owned(), Some("/usr/bin".to_owned()))));
+    }
+
+    #[test]
+    fn build_cmd_with_extension_emits_defines_before_fpm_config() {
+        let binary = PathBuf::from("/opt/php/bin/php");
+        let config = PathBuf::from("/run/yerd/fpm-8.3.conf");
+        let env: Vec<(String, String)> = vec![];
+        let so = Path::new("/lib/yerd-dump.so");
+        let defines = vec![("yerd_dump.state_path".to_owned(), "/var/state".to_owned())];
+        let cmd = build_cmd(&binary, &config, &env, Some(so), &defines);
+
+        let args = args_of(&cmd);
+        assert_eq!(
+            args,
+            vec![
+                "-d",
+                "extension=/lib/yerd-dump.so",
+                "-d",
+                "yerd_dump.state_path=/var/state",
+                "--fpm-config",
+                "/run/yerd/fpm-8.3.conf",
+            ]
+        );
+        let ext_pos = args
+            .iter()
+            .position(|a| a.starts_with("extension="))
+            .unwrap();
+        let conf_pos = args.iter().position(|a| a == "--fpm-config").unwrap();
+        assert!(ext_pos < conf_pos);
+    }
+
+    #[test]
+    fn starting_attempts_reads_attempts_from_starting_else_zero() {
+        assert_eq!(
+            starting_attempts(PoolState::Starting {
+                attempts: 4,
+                pid: Some(9),
+            }),
+            4
+        );
+        assert_eq!(starting_attempts(PoolState::Running { pid: 1 }), 0);
+        assert_eq!(starting_attempts(PoolState::Stopped), 0);
+    }
+
+    #[test]
+    fn failed_reason_extracts_exit_and_attempts_else_default() {
+        let (reason, attempts) = failed_reason(PoolState::Failed {
+            last_exit: ExitReason::Code(7),
+            attempts: 3,
+        });
+        assert_eq!(reason, ExitReason::Code(7));
+        assert_eq!(attempts, 3);
+
+        let (reason, attempts) = failed_reason(PoolState::Running { pid: 1 });
+        assert_eq!(reason, ExitReason::Unknown);
+        assert_eq!(attempts, 0);
+    }
+}
