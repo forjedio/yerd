@@ -93,9 +93,15 @@ its own Rust proxy + DNS. No Valet, no Homebrew.</sub>
 
 ## Installation
 
+> **Release status — Release Candidate.** Yerd is currently shipping **Release
+> Candidate** builds, available from the
+> [releases page](https://github.com/forjedio/yerd/releases). We're tracking a
+> **stable v2.0.2** release on **8 July 2026**. The RCs are ready for everyday use —
+> please [report any bugs on GitHub](https://github.com/forjedio/yerd/issues).
+
 Yerd is a **single desktop app** - the daemon (`yerdd`), the `yerd` CLI, and the
 privileged `yerd-helper` are all embedded inside it (nothing is downloaded at
-runtime). Grab the latest build from the
+runtime). Grab the latest **Release Candidate** build from the
 [releases page](https://github.com/forjedio/yerd/releases):
 
 | Platform | Download | Install |
