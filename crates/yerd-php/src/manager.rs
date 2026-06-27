@@ -297,13 +297,11 @@ where
                 );
                 Ok(listen)
             }
-            Outcome::Stopped => {
-                Err(PhpError::Spawn {
-                    version: v,
-                    reason: SpawnFailureReason::Other,
-                    source: io::Error::other("ensure: drive returned Stopped"),
-                })
-            }
+            Outcome::Stopped => Err(PhpError::Spawn {
+                version: v,
+                reason: SpawnFailureReason::Other,
+                source: io::Error::other("ensure: drive returned Stopped"),
+            }),
         }
     }
 
