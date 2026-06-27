@@ -16,6 +16,8 @@ mod mail_window;
 #[cfg(target_os = "macos")]
 mod smappservice;
 
+#[cfg(target_os = "macos")]
+use tauri::menu::{AboutMetadata, Submenu};
 use tauri::{
     menu::{Menu, MenuItem, PredefinedMenuItem},
     tray::TrayIconBuilder,
@@ -157,6 +159,23 @@ fn main() {
             logging::get_diagnostics,
         ])
         .setup(setup_app)
+        // Cmd+W on a borderless/transparent window: AppKit's performClose: no-ops
+        // (no closable style mask), so the custom close-window menu item routes
+        // here and calls close(), hitting the CloseRequested handler below.
+        .on_menu_event(|app, event| {
+            if event.id.as_ref() == "close-window" {
+                // get_focused_window is behind Tauri's unstable feature; find the
+                // focused window among the managed webview windows instead.
+                if let Some(win) = app
+                    .webview_windows()
+                    .into_values()
+                    .find(|w| w.is_focused().unwrap_or(false))
+                {
+                    let _ = win.close();
+                }
+            }
+        })
+        // Close-to-tray: hide instead of quitting; the tray's Quit item exits.
         .on_window_event(|window, event| {
             if let WindowEvent::CloseRequested { api, .. } = event {
                 let _ = window.hide();
@@ -179,6 +198,8 @@ fn setup_app(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     set_main_window_icon(app);
     #[cfg(target_os = "linux")]
     disable_webview_zoom(app);
+    #[cfg(target_os = "macos")]
+    app.set_menu(build_app_menu(app.handle())?)?;
     build_tray(app.handle())?;
     show_initial_window(app);
     #[cfg(target_os = "macos")]
@@ -187,6 +208,82 @@ fn setup_app(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         let _ = autostart::ensure_daemon_registration();
     });
     Ok(())
+}
+
+/// Build the macOS application menu.
+///
+/// Mirrors Tauri's default macOS menu but replaces the predefined Close with a
+/// custom `close-window` item (Cmd+W). The predefined Close fires AppKit's
+/// `performClose:`, which our borderless transparent windows ignore (no closable
+/// style mask), so Cmd+W routes through `window.close()` in `on_menu_event`
+/// instead, giving the same close-to-tray gesture as the titlebar button.
+#[cfg(target_os = "macos")]
+fn build_app_menu(app: &tauri::AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
+    let pkg = app.package_info();
+    let config = app.config();
+    let about = AboutMetadata {
+        name: Some(pkg.name.clone()),
+        version: Some(pkg.version.to_string()),
+        copyright: config.bundle.copyright.clone(),
+        authors: config.bundle.publisher.clone().map(|p| vec![p]),
+        ..Default::default()
+    };
+
+    // Custom Cmd+W item (handled in on_menu_event), used in both File and Window.
+    let close = MenuItem::with_id(app, "close-window", "Close", true, Some("CmdOrCtrl+W"))?;
+
+    let app_menu = Submenu::with_items(
+        app,
+        pkg.name.clone(),
+        true,
+        &[
+            &PredefinedMenuItem::about(app, None, Some(about))?,
+            &PredefinedMenuItem::separator(app)?,
+            &PredefinedMenuItem::services(app, None)?,
+            &PredefinedMenuItem::separator(app)?,
+            &PredefinedMenuItem::hide(app, None)?,
+            &PredefinedMenuItem::hide_others(app, None)?,
+            &PredefinedMenuItem::separator(app)?,
+            &PredefinedMenuItem::quit(app, None)?,
+        ],
+    )?;
+    let file_menu = Submenu::with_items(app, "File", true, &[&close])?;
+    let edit_menu = Submenu::with_items(
+        app,
+        "Edit",
+        true,
+        &[
+            &PredefinedMenuItem::undo(app, None)?,
+            &PredefinedMenuItem::redo(app, None)?,
+            &PredefinedMenuItem::separator(app)?,
+            &PredefinedMenuItem::cut(app, None)?,
+            &PredefinedMenuItem::copy(app, None)?,
+            &PredefinedMenuItem::paste(app, None)?,
+            &PredefinedMenuItem::select_all(app, None)?,
+        ],
+    )?;
+    let view_menu = Submenu::with_items(
+        app,
+        "View",
+        true,
+        &[&PredefinedMenuItem::fullscreen(app, None)?],
+    )?;
+    let window_menu = Submenu::with_items(
+        app,
+        "Window",
+        true,
+        &[
+            &PredefinedMenuItem::minimize(app, None)?,
+            &PredefinedMenuItem::maximize(app, None)?,
+            &PredefinedMenuItem::separator(app)?,
+            &close,
+        ],
+    )?;
+
+    Menu::with_items(
+        app,
+        &[&app_menu, &file_menu, &edit_menu, &view_menu, &window_menu],
+    )
 }
 
 /// Explicitly set the window icon so the Linux taskbar shows the Yerd mark in
@@ -366,9 +463,38 @@ fn build_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
 fn show_main(app: &tauri::AppHandle) {
     set_dock_visible(app, true);
     if let Some(win) = app.get_webview_window("main") {
+        // Must run before show()/set_focus() so the window lands on the active
+        // Space rather than the one it was last shown on.
+        #[cfg(target_os = "macos")]
+        move_window_to_active_space(&win);
         let _ = win.show();
         let _ = win.set_focus();
     }
+}
+
+/// macOS: show the main window on the currently active Space instead of pulling
+/// the user back to the Space it was last on.
+///
+/// An NSWindow is bound to one Space, so show() switches Spaces to it. Adding
+/// MoveToActiveSpace to its collection behaviour brings it to the active Space on
+/// activation. Set on every show (cheap, idempotent) so it survives behaviour
+/// resets and applies to windows created before this ran.
+#[cfg(target_os = "macos")]
+fn move_window_to_active_space(win: &tauri::WebviewWindow) {
+    use objc2_app_kit::{NSWindow, NSWindowCollectionBehavior};
+
+    let Ok(ptr) = win.ns_window() else {
+        return;
+    };
+    if ptr.is_null() {
+        return;
+    }
+    // SAFETY: ns_window() returns the window's live NSWindow pointer, and the only
+    // show_main callers (tray/window-event handlers) run on the main thread, where
+    // AppKit window mutation must happen.
+    let ns_window: &NSWindow = unsafe { &*ptr.cast::<NSWindow>() };
+    let behavior = ns_window.collectionBehavior() | NSWindowCollectionBehavior::MoveToActiveSpace;
+    ns_window.setCollectionBehavior(behavior);
 }
 
 /// Show (or lazily create) the auxiliary "dumps" window - the live Laravel

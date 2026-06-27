@@ -1,0 +1,25 @@
+name: Documentation issue
+description: Report something missing, unclear, or wrong in the docs
+labels: ["documentation"]
+body:
+  - type: input
+    id: location
+    attributes:
+      label: Page / location
+      description: Link or path to the docs page (e.g. https://yerd.app/reference/cli/).
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: What's wrong or missing?
+      description: Describe the gap, error, or confusion.
+    validations:
+      required: true
+  - type: textarea
+    id: suggestion
+    attributes:
+      label: Suggested improvement
+      description: How would you word or structure it instead? (Optional)
+    validations:
+      required: false
