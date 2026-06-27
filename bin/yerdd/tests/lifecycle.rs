@@ -41,6 +41,12 @@ mod tests {
         let mut cfg = yerd_config::Config::default();
         cfg.ports.http = 0;
         cfg.ports.https = 0;
+        // Ephemeral DNS too: the default `dns_port` (1053) is a fixed port that
+        // can be busy (a concurrent test, a stray binder), in which case the
+        // soft-fail `bring_up_with_dirs` returns `dns_bound: None` and the
+        // `drive_subsystems` setup below would panic. `0` binds `127.0.0.1:0`,
+        // which the OS always satisfies, so `dns_bound` is reliably `Some`.
+        cfg.dns_port = 0;
         cfg
     }
 

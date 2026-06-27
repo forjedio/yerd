@@ -2126,6 +2126,52 @@ Subject: Captured\r\n\r\nhi\r\n";
     }
 
     #[tokio::test]
+    async fn dispatch_set_dns_port_rejects_zero_and_persists_valid() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_in(tmp.path());
+
+        // A zero port is rejected explicitly by the handler (mapped to Internal),
+        // even though config `validate()` permits `0` as the ephemeral sentinel.
+        match dispatch(Request::SetDnsPort { port: 0 }, &state).await {
+            Response::Error { code, .. } => assert!(matches!(code, ErrorCode::Internal)),
+            other => panic!("expected Error, got {other:?}"),
+        }
+
+        // A valid port is persisted through both in-memory state and to disk.
+        assert!(matches!(
+            dispatch(Request::SetDnsPort { port: 5354 }, &state).await,
+            Response::Ok
+        ));
+        assert_eq!(state.config.lock().await.dns_port, 5354);
+        let reloaded = yerd_config::Config::load(&state.config_path).unwrap();
+        assert_eq!(reloaded.dns_port, 5354);
+    }
+
+    #[tokio::test]
+    async fn dispatch_cached_update_status_uncached_reports_running_version() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_in(tmp.path());
+
+        // Nothing was ever persisted, so the cached path reports the running
+        // version with no remote figures, no pending update, and no timestamp.
+        match dispatch(Request::CachedUpdateStatus, &state).await {
+            Response::UpdateStatus {
+                source,
+                available,
+                target,
+                checked_at_epoch,
+                ..
+            } => {
+                assert!(matches!(source, yerd_ipc::UpdateSource::Cached));
+                assert!(!available);
+                assert!(target.is_none());
+                assert!(checked_at_epoch.is_none());
+            }
+            other => panic!("expected UpdateStatus, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
     async fn dispatch_status_reports_runtime_facts() {
         let tmp = tempfile::tempdir().unwrap();
         let state = state_in(tmp.path());

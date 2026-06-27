@@ -241,22 +241,29 @@ fn snapshot_from(decision: &yerd_update::UpdateDecision, checked_at: u64) -> Upd
     }
 }
 
-/// Build an `UpdateStatus` reply from a persisted snapshot.
-fn response_from_snapshot(snap: &UpdateSnapshot, source: UpdateSource) -> Response {
-    // Reconcile against the *currently running* version. If the snapshot was
-    // recorded for a different version (e.g. the daemon self-updated since it was
-    // written, and we're now serving it offline before a fresh poll), its
-    // decision fields can't be trusted — they'd claim a phantom update *to* the
-    // version we may already be running. Present the real running version with no
-    // pending update; the `latest_*` figures + timestamp still describe the last
-    // remote check. The next successful live check overwrites all of this.
+/// Build an `UpdateStatus` reply from a persisted snapshot, reconciled against
+/// the `effective` channel the caller is answering for.
+fn response_from_snapshot(
+    snap: &UpdateSnapshot,
+    effective: yerd_ipc::Channel,
+    source: UpdateSource,
+) -> Response {
+    // Reconcile against the *currently running* version and the *effective*
+    // channel. If the snapshot was recorded for a different version (e.g. the
+    // daemon self-updated since it was written) or a different channel (the user
+    // switched channels since the last poll), its `available`/`target`/
+    // `ahead_of_stable` decision fields can't be trusted — they'd describe a
+    // resolution that no longer applies. Present the live channel with no pending
+    // update; the `latest_*` figures + timestamp are channel-independent raw
+    // observations and still describe the last remote check. The next successful
+    // live check overwrites all of this.
     let running = current_version().to_string();
-    let drifted = snap.current != running;
+    let drifted = snap.current != running || snap.channel != effective;
     Response::UpdateStatus {
         current: running,
         latest_stable: snap.latest_stable.clone(),
         latest_edge: snap.latest_edge.clone(),
-        channel: snap.channel,
+        channel: effective,
         available: !drifted && snap.available,
         target: if drifted { None } else { snap.target.clone() },
         ahead_of_stable: !drifted && snap.ahead_of_stable,
@@ -276,7 +283,8 @@ async fn store_snapshot(state: &DaemonState, snap: UpdateSnapshot) {
 /// checked, report the running version with no remote figures.
 pub async fn cached_update_status(state: &DaemonState) -> Response {
     if let Some(snap) = state.update_snapshot.read().await.clone() {
-        return response_from_snapshot(&snap, UpdateSource::Cached);
+        let effective = to_ipc(configured_channel(state).await);
+        return response_from_snapshot(&snap, effective, UpdateSource::Cached);
     }
     Response::UpdateStatus {
         current: current_version().to_string(),
@@ -332,10 +340,11 @@ pub async fn check_update(
         *state.yerd_update.write().await = releases;
         let snap = snapshot_from(&decision, now_epoch());
         store_snapshot(state, snap.clone()).await;
-        response_from_snapshot(&snap, UpdateSource::Live)
+        response_from_snapshot(&snap, to_ipc(channel), UpdateSource::Live)
     } else if let Some(snap) = state.update_snapshot.read().await.clone() {
-        // Offline: serve the last persisted result (carries its real timestamp).
-        response_from_snapshot(&snap, UpdateSource::Cached)
+        // Offline: serve the last persisted result (carries its real timestamp),
+        // reconciled against the channel this check is answering for.
+        response_from_snapshot(&snap, to_ipc(channel), UpdateSource::Cached)
     } else {
         // Never persisted a snapshot: derive from whatever is in the in-memory
         // release cache, with no timestamp.
@@ -549,7 +558,9 @@ mod tests {
             target: Some("9.9.9".into()),
             ahead_of_stable: true,
         };
-        match response_from_snapshot(&snap, UpdateSource::Cached) {
+        // Answer for the *same* channel the snapshot used, so the only drift
+        // under test is the running version.
+        match response_from_snapshot(&snap, yerd_ipc::Channel::Stable, UpdateSource::Cached) {
             Response::UpdateStatus {
                 current,
                 available,
@@ -582,12 +593,50 @@ mod tests {
             target: Some("99.0.0".into()),
             ahead_of_stable: false,
         };
-        match response_from_snapshot(&snap, UpdateSource::Cached) {
+        match response_from_snapshot(&snap, yerd_ipc::Channel::Stable, UpdateSource::Cached) {
             Response::UpdateStatus {
                 available, target, ..
             } => {
                 assert!(available);
                 assert_eq!(target.as_deref(), Some("99.0.0"));
+            }
+            other => panic!("expected UpdateStatus, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn snapshot_response_suppresses_stale_decision_after_channel_switch() {
+        // A snapshot recorded on one channel must not advertise that channel's
+        // resolution after the user switches channels. The reported channel is
+        // the effective one; available/target/ahead are cleared because they were
+        // resolved for the old channel. The channel-independent `latest_*` figures
+        // and timestamp survive.
+        let snap = UpdateSnapshot {
+            checked_at: 1_719_445_200,
+            current: current_version().to_string(), // version matches: only channel drifts
+            latest_stable: Some("2.0.5".into()),
+            latest_edge: Some("2.1.0-rc.1".into()),
+            channel: yerd_ipc::Channel::Stable,
+            available: true,
+            target: Some("2.1.0-rc.1".into()),
+            ahead_of_stable: true,
+        };
+        match response_from_snapshot(&snap, yerd_ipc::Channel::Edge, UpdateSource::Cached) {
+            Response::UpdateStatus {
+                channel,
+                available,
+                target,
+                ahead_of_stable,
+                latest_edge,
+                checked_at_epoch,
+                ..
+            } => {
+                assert_eq!(channel, yerd_ipc::Channel::Edge);
+                assert!(!available);
+                assert_eq!(target, None);
+                assert!(!ahead_of_stable);
+                assert_eq!(latest_edge.as_deref(), Some("2.1.0-rc.1"));
+                assert_eq!(checked_at_epoch, Some(1_719_445_200));
             }
             other => panic!("expected UpdateStatus, got {other:?}"),
         }

@@ -217,9 +217,11 @@ fn read_gui_logs() -> GuiLogs {
 
 /// Tail the last `max_lines` of `path`, reading at most the final `max_bytes`.
 /// Best-effort: a missing/unreadable file → empty. Decodes with
-/// `from_utf8_lossy` and drops the first (possibly partial) line when the read
-/// started mid-file, so a mid-codepoint seek start is safe. Takes no lock vs.
-/// the writer — a benign display race (worst case: a clipped final line).
+/// `from_utf8_lossy` and drops the first line **only when the read began
+/// mid-line** (the byte before the window isn't a newline), so a mid-codepoint
+/// seek start is safe while a boundary-aligned seek keeps its whole first line.
+/// Takes no lock vs. the writer — a benign display race (worst case: a clipped
+/// final line).
 fn tail_file_bounded(path: &Path, max_bytes: u64, max_lines: usize) -> Vec<String> {
     use std::io::{Read, Seek, SeekFrom};
     let Ok(mut f) = File::open(path) else {
@@ -227,20 +229,35 @@ fn tail_file_bounded(path: &Path, max_bytes: u64, max_lines: usize) -> Vec<Strin
     };
     let len = f.metadata().map(|m| m.len()).unwrap_or(0);
     let start = len.saturating_sub(max_bytes);
-    if start > 0 && f.seek(SeekFrom::Start(start)).is_err() {
+    // Seek one byte *before* the window (when not already at the file start) so
+    // the byte preceding it reveals whether the read began on a line boundary.
+    let seek_to = if start > 0 {
+        start.saturating_sub(1)
+    } else {
+        0
+    };
+    if start > 0 && f.seek(SeekFrom::Start(seek_to)).is_err() {
         return Vec::new();
     }
     let mut buf = Vec::new();
     if f.read_to_end(&mut buf).is_err() {
         return Vec::new();
     }
-    let text = String::from_utf8_lossy(&buf);
+    // When we seeked, `buf`'s first byte is the one before the window: a '\n'
+    // means the window starts exactly on a line boundary (first line is whole —
+    // keep it), anything else means the read began mid-line (first line is a
+    // partial tail — drop it). Peel that probe byte off either way.
+    let (drop_first, body) = match buf.split_first() {
+        Some((&first, rest)) if start > 0 => (first != b'\n', rest),
+        _ => (false, buf.as_slice()),
+    };
+    let text = String::from_utf8_lossy(body);
     let mut lines: Vec<&str> = text.lines().collect();
-    if start > 0 && !lines.is_empty() {
-        lines.remove(0); // first line is partial when we seeked into the middle
+    if drop_first && !lines.is_empty() {
+        lines.remove(0);
     }
     let from = lines.len().saturating_sub(max_lines);
-    lines[from..].iter().map(|s| (*s).to_owned()).collect()
+    lines.iter().skip(from).map(|s| (*s).to_owned()).collect()
 }
 
 // ── Diagnostics payload (About → Diagnostics) ───────────────────────────────
@@ -496,5 +513,17 @@ mod tests {
         // Tiny byte budget forces a mid-file seek; the partial first line drops.
         let out = tail_file_bounded(&path, 8, 100);
         assert_eq!(out, vec!["line3".to_owned()]);
+    }
+
+    #[test]
+    fn bounded_tail_keeps_boundary_aligned_first_line() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("t.log");
+        std::fs::write(&path, b"line1\nline2\nline3\n").unwrap();
+        // A 12-byte budget seeks to offset 6 — exactly after the first '\n', so the
+        // window opens on a line boundary and the whole first line must be kept
+        // (the old unconditional remove(0) wrongly dropped "line2" here).
+        let out = tail_file_bounded(&path, 12, 100);
+        assert_eq!(out, vec!["line2".to_owned(), "line3".to_owned()]);
     }
 }

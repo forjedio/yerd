@@ -1079,7 +1079,9 @@ pub(crate) fn plan_start(nudge: bool) -> Result<Vec<StartStep>, GuiError> {
             if unit_is_current() {
                 return Ok(vec![StartStep {
                     phase: StartPhase::Starting,
-                    budget: START_BUDGET,
+                    // Heavy: still rewrites the unit + daemon-reloads before the
+                    // start, so it needs the install budget, not the start one.
+                    budget: INSTALL_BUDGET,
                     run: Box::new(|| {
                         write_unit()?;
                         run_ok("systemctl", &["--user", "start", "yerd"])

@@ -61,11 +61,14 @@ export function humaniseUptime(secs: number): string {
 export function humaniseAgo(epochSecs: number, nowSecs: number = Date.now() / 1000): string {
   const diff = Math.floor(nowSecs - epochSecs);
   if (!Number.isFinite(diff) || diff < 45) return "just now";
-  const mins = Math.round(diff / 60);
+  // Floor within each unit so age isn't overstated (e.g. 59m31s stays minutes,
+  // 23h31m stays hours) rather than rounding up into the next unit. `mins` is
+  // clamped to >= 1 since the sub-45s window is already "just now".
+  const mins = Math.max(1, Math.floor(diff / 60));
   if (mins < 60) return `${mins} minute${mins === 1 ? "" : "s"} ago`;
-  const hours = Math.round(diff / 3_600);
+  const hours = Math.floor(diff / 3_600);
   if (hours < 24) return `${hours} hour${hours === 1 ? "" : "s"} ago`;
-  const days = Math.round(diff / 86_400);
+  const days = Math.floor(diff / 86_400);
   return `${days} day${days === 1 ? "" : "s"} ago`;
 }
 

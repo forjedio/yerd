@@ -127,7 +127,7 @@ async function openViewer(): Promise<void> {
                 Change it in Settings ▸ Application Ports.
               </p>
             </div>
-            <span class="font-mono text-sm">{{ status?.port ?? 2304 }}</span>
+            <span class="font-mono text-sm">{{ status?.port ?? "—" }}</span>
           </div>
 
           <div class="flex justify-end border-t pt-4">

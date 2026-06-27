@@ -203,7 +203,9 @@ const webPortsChanged = computed(
 );
 const applicationPortsChanged = computed(
   () =>
-    webPortsChanged.value ||
+    // While elevated the web ports are pinned and never submitted, so a stale
+    // web delta must not flip Save on (or get snapshotted as if applied).
+    (!portsElevated.value && webPortsChanged.value) ||
     dnsPort.value !== dnsPortSaved.value ||
     mailPort.value !== mailPortSaved.value ||
     dumpsPort.value !== dumpsPortSaved.value,
@@ -252,9 +254,13 @@ async function confirmApplicationPorts(close: () => void): Promise<void> {
 
     const res = await applyAndRestart(changes);
     if (res.ok) {
-      // Re-snapshot the saved values so the form is no longer "changed".
-      fbHttpSaved.value = fbHttp.value;
-      fbHttpsSaved.value = fbHttps.value;
+      // Re-snapshot the saved values so the form is no longer "changed". Only
+      // re-snapshot web ports when they were actually submitted, so a pinned
+      // (elevated) edit isn't silently recorded as applied.
+      if (changes.web) {
+        fbHttpSaved.value = fbHttp.value;
+        fbHttpsSaved.value = fbHttps.value;
+      }
       dnsPortSaved.value = dnsPort.value;
       mailPortSaved.value = mailPort.value;
       dumpsPortSaved.value = dumpsPort.value;

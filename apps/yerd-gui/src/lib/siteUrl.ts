@@ -5,12 +5,15 @@ import type { Site, StatusReport } from "@/ipc/types";
 export type SiteLike = Pick<Site, "name" | "secure">;
 
 /**
- * True when the OS `.test` resolver is not active, so sites must be reached via
- * the `http://localhost/~{domain}` fallback rather than their `.test` domain.
- * Tri-state aware: `resolver_installed` is only "on" when strictly `true`.
+ * True when `.test` resolution is unavailable, so sites must be reached via the
+ * `http://localhost/~{domain}` fallback rather than their `.test` domain. This
+ * covers both the OS resolver not being active (`resolver_installed` is only
+ * "on" when strictly `true`, tri-state aware) *and* the daemon failing to bind
+ * its DNS responder port (`dns_unbound` set) - in which case names won't resolve
+ * through Yerd even when the resolver is installed.
  */
 export function isUnbound(report: StatusReport | null | undefined): boolean {
-  return report?.resolver_installed !== true;
+  return report?.resolver_installed !== true || report?.dns_unbound != null;
 }
 
 interface UnboundOpts {

@@ -63,11 +63,16 @@ const lastCheckedAgo = computed(() => {
   return at ? humaniseAgo(at) : null;
 });
 
+// Set once the user triggers a live check or changes the channel, so the slower
+// cached prefetch can't clobber fresher state when it resolves later.
+let liveUpdateFlow = false;
+
 // Pre-fill the section from the daemon's persisted last-check result (no network)
 // so the channel + status + "last checked" show immediately on load.
 async function loadCachedUpdate(): Promise<void> {
   try {
     const s = await cachedUpdateStatus();
+    if (liveUpdateFlow) return; // a newer check / channel change already won the race
     updateStatus.value = s;
     updateChannel.value = s.channel;
   } catch {
@@ -78,6 +83,7 @@ async function loadCachedUpdate(): Promise<void> {
 // Notify only on an explicit "Check now" (notify=true). A check triggered any
 // other way (channel change) updates the shown status silently.
 async function runUpdateCheck(notify = false): Promise<void> {
+  liveUpdateFlow = true;
   checkingUpdates.value = true;
   try {
     const s = await checkUpdates();
@@ -120,6 +126,7 @@ async function onUpdateNow(): Promise<void> {
 
 // Persist the channel on change, then re-check so the shown status reflects it.
 async function onUpdateChannelChange(value: UpdateChannel): Promise<void> {
+  liveUpdateFlow = true;
   const previous = updateChannel.value;
   updateChannel.value = value; // optimistic
   try {
@@ -164,11 +171,13 @@ const activePath = computed(() =>
   activeTab.value === "gui" ? logs.value?.guiPath : logs.value?.daemonPath,
 );
 
-async function fetchLogs(): Promise<void> {
+async function fetchLogs(silent = false): Promise<void> {
   try {
     logs.value = await getGuiLogs();
   } catch (e) {
-    toast.error("Couldn't read logs", (e as IpcError).message);
+    // The 2s poll passes silent=true so a transient read failure doesn't spam a
+    // toast every tick; only the initial/manual load surfaces the error.
+    if (!silent) toast.error("Couldn't read logs", (e as IpcError).message);
   }
 }
 
@@ -177,7 +186,7 @@ function openLogs(): void {
   void fetchLogs();
   // Light polling while open so a live daemon-start trail streams in.
   stopLogPolling();
-  logsTimer = setInterval(() => void fetchLogs(), 2000);
+  logsTimer = setInterval(() => void fetchLogs(true), 2000);
 }
 
 function stopLogPolling(): void {
@@ -309,14 +318,21 @@ async function copyDiagnostics(): Promise<void> {
 
           <div class="flex items-center justify-between gap-4">
             <div class="min-w-0 text-sm">
-              <template v-if="updateStatus && updateStatus.checked_at_epoch">
+              <template
+                v-if="
+                  updateStatus &&
+                  (updateStatus.checked_at_epoch || updateStatus.latest_stable || updateStatus.latest_edge)
+                "
+              >
                 <p class="font-medium">{{ updateSummary }}</p>
                 <p class="text-xs text-muted-foreground">
                   Current {{ updateStatus.current }} · stable
                   {{ updateStatus.latest_stable ?? "-" }} · edge
                   {{ updateStatus.latest_edge ?? "-" }}
                 </p>
-                <p class="text-xs text-muted-foreground">Last checked {{ lastCheckedAgo }}.</p>
+                <p v-if="lastCheckedAgo" class="text-xs text-muted-foreground">
+                  Last checked {{ lastCheckedAgo }}.
+                </p>
               </template>
               <p v-else class="text-xs text-muted-foreground">
                 {{ running ? "Not checked yet." : "Start the daemon to check for updates." }}
@@ -398,7 +414,7 @@ async function copyDiagnostics(): Promise<void> {
             </Button>
           </div>
           <div class="flex gap-1">
-            <Button variant="outline" size="sm" @click="fetchLogs">Refresh</Button>
+            <Button variant="outline" size="sm" @click="fetchLogs()">Refresh</Button>
             <Button variant="outline" size="sm" @click="copyActive">Copy</Button>
           </div>
         </div>

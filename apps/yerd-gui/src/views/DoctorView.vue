@@ -72,9 +72,13 @@ async function confirmRestartDaemon(close: () => void): Promise<void> {
   close();
   try {
     await restartDaemon();
+    // The daemon replies before it re-execs, so a resolved call means the
+    // restart was accepted; the connection drop is handled by the status poll.
     toast.info("Restarting daemon…", "It returns in a few seconds.");
   } catch (e) {
-    toast.info("Restarting daemon…", (e as IpcError).message);
+    // Reaching here is a genuine failure (the reply arrives ahead of the drop),
+    // so don't imply the restart started.
+    toast.error("Couldn't restart the daemon", (e as IpcError).message);
   } finally {
     busy.value = null;
   }
@@ -194,13 +198,13 @@ onMounted(() => void loadDiagnoses());
               <Spinner v-if="daemonStarting" class="size-4" />
               <Play v-else class="size-4" /> {{ daemonStartLabel ?? "Start" }}
             </Button>
-            <Button v-else variant="outline" :disabled="busy === 'daemon'" @click="onStop">
+            <Button v-else variant="outline" :disabled="busy !== null" @click="onStop">
               <Spinner v-if="busy === 'daemon'" class="size-4" />
               <Square v-else class="size-4" /> Stop
             </Button>
             <Button
               variant="outline"
-              :disabled="!running || busy === 'restart:daemon'"
+              :disabled="!running || busy !== null"
               @click="openRestartDaemon"
             >
               <Spinner v-if="busy === 'restart:daemon'" class="size-4" />

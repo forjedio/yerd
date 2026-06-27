@@ -143,9 +143,11 @@ export interface StatusReport {
   /** Tri-state - null means "unknown", never coerce to false. */
   resolver_installed: boolean | null;
   /** macOS: is the pf redirect carrying 80/443 to the rootless ports? true =
-   *  privileged ports served via the redirect, false = not, null = unknown / not
-   *  applicable (Linux binds directly after setcap). */
-  port_redirect: boolean | null;
+   *  privileged ports served via the redirect, false = not, null/undefined =
+   *  unknown / not applicable (Linux binds directly after setcap). Omitted on the
+   *  wire when not set (the Rust field is `#[serde(default, skip_serializing_if)]`,
+   *  so it can be absent against a Linux/older daemon). */
+  port_redirect?: boolean | null;
   /** True when a non-Yerd process is listening on a privileged web port (80/443)
    *  - a foreign squatter. Confirmed via the proxy's Server marker, so it never
    *  misreads Yerd as foreign. false = no conflict, null/undefined = not probed.

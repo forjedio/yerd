@@ -133,11 +133,17 @@ export function useFallbackPorts() {
     // 3. Restart and wait for the new process.
     try {
       await restartDaemon();
-    } catch {
+    } catch (e) {
       // The restart tears down the socket, so `restartDaemon()` can reject with
-      // a dropped-connection error *even though the restart is underway*. The
-      // boot_id poll below is the authoritative completion check, so don't bail
-      // here - a daemon that genuinely didn't restart simply makes it time out.
+      // a dropped-connection error *even though the restart is underway*. That
+      // unreachable case is expected - the boot_id poll below is the
+      // authoritative completion check, so don't bail on it. Any *other* error
+      // means the daemon refused the restart (it never re-execs, so the poll
+      // would only time out with a useless message) - surface it immediately.
+      const err = e as IpcError;
+      if (!err.unreachable) {
+        return { ok: false, message: err.message };
+      }
     }
 
     let elapsed = 0;
