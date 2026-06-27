@@ -559,7 +559,7 @@ fn service_error_code(e: &ServiceError) -> ErrorCode {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::indexing_slicing)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::indexing_slicing)]
 mod tests {
     use std::sync::Mutex;
 
@@ -601,6 +601,60 @@ mod tests {
             }
         })
         .await;
+        let started = started.lock().unwrap();
+        assert_eq!(started.len(), 1, "only the first service should start");
+        assert_eq!(started[0], Service::ALL[0]);
+    }
+
+    /// Shutdown landing *while* `start_one` is still pending must cancel that
+    /// in-flight start (and skip the rest) - the load-bearing behaviour of the
+    /// `biased` select. The first start parks on a never-fired gate, so the only
+    /// way the spawned task completes is the shutdown arm cancelling it.
+    #[tokio::test]
+    async fn shutdown_cancels_in_flight_start_one() {
+        use tokio::sync::Notify;
+        use tokio::time::{timeout, Duration};
+
+        let (tx, rx) = watch::channel(false);
+        let entered = Arc::new(Notify::new());
+        let gate = Arc::new(Notify::new());
+        let started: Arc<Mutex<Vec<Service>>> = Arc::new(Mutex::new(Vec::new()));
+        let completed: Arc<Mutex<Vec<Service>>> = Arc::new(Mutex::new(Vec::new()));
+
+        let entered_task = entered.clone();
+        let gate_task = gate.clone();
+        let started_task = started.clone();
+        let completed_task = completed.clone();
+        let handle = tokio::spawn(async move {
+            let mut rx = rx;
+            run_auto_start(two_services(), &mut rx, move |svc| {
+                let entered = entered_task.clone();
+                let gate = gate_task.clone();
+                let started = started_task.clone();
+                let completed = completed_task.clone();
+                async move {
+                    started.lock().unwrap().push(svc);
+                    entered.notify_one();
+                    gate.notified().await;
+                    completed.lock().unwrap().push(svc);
+                    Ok::<(), ServiceError>(())
+                }
+            })
+            .await;
+        });
+
+        entered.notified().await;
+        let _ = tx.send(true);
+
+        timeout(Duration::from_secs(1), handle)
+            .await
+            .expect("biased shutdown must cancel the in-flight start_one")
+            .unwrap();
+
+        assert!(
+            completed.lock().unwrap().is_empty(),
+            "the cancelled start must not run past its await"
+        );
         let started = started.lock().unwrap();
         assert_eq!(started.len(), 1, "only the first service should start");
         assert_eq!(started[0], Service::ALL[0]);

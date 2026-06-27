@@ -87,7 +87,7 @@ afterEach(() => {
 
 describe("useDaemonStart readiness wait", () => {
   it("connects before the ceiling and shows no diagnostics panel", async () => {
-    mocks.statusImpl.mockResolvedValue({}); // status OK => connected
+    mocks.statusImpl.mockResolvedValue({});
     const { api } = mountComposable();
 
     await api.start();
