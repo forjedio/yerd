@@ -365,7 +365,7 @@ fn invalid_path(message: impl Into<String>) -> Response {
 /// carries the engine's exact wording).
 fn classify(detail: &str) -> ErrorCode {
     let d = detail.to_ascii_lowercase();
-    if d.contains("already exists") {
+    if d.contains("already exists") || d.contains("database exists") {
         ErrorCode::AlreadyExists
     } else if d.contains("does not exist")
         || d.contains("doesn't exist")
@@ -520,9 +520,9 @@ mod tests {
     #[test]
     fn classify_maps_already_exists() {
         assert_eq!(
-            classify("ERROR 1007: Can't create database; database exists"),
-            ErrorCode::Internal,
-            "only the literal 'already exists' phrase maps to AlreadyExists"
+            classify("ERROR 1007: Can't create database 'x'; database exists"),
+            ErrorCode::AlreadyExists,
+            "MySQL's duplicate-database phrasing maps to AlreadyExists"
         );
         assert_eq!(
             classify("database \"foo\" already exists"),

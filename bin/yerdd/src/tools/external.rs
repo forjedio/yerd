@@ -309,6 +309,8 @@ mod tests {
 
     #[test]
     fn user_shell_prefers_shell_env() {
+        static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        let _guard = ENV_LOCK.get_or_init(|| Mutex::new(())).lock().unwrap();
         let prev = std::env::var_os("SHELL");
         std::env::set_var("SHELL", "/custom/myshell");
         assert_eq!(user_shell(), "/custom/myshell");

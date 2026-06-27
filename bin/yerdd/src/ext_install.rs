@@ -291,14 +291,31 @@ mod tests {
     }
 
     /// A URL-keyed fake downloader: returns the queued bytes for any URL that
-    /// ends with one of the registered suffixes, else a transport error.
+    /// ends with one of the registered suffixes, else a transport error. Counts
+    /// `download` invocations so tests can assert the network is never touched.
     struct FakeDownloader {
         routes: std::collections::HashMap<String, Vec<u8>>,
+        calls: std::sync::atomic::AtomicUsize,
+    }
+
+    impl FakeDownloader {
+        fn new(routes: std::collections::HashMap<String, Vec<u8>>) -> Self {
+            Self {
+                routes,
+                calls: std::sync::atomic::AtomicUsize::new(0),
+            }
+        }
+
+        fn call_count(&self) -> usize {
+            self.calls.load(std::sync::atomic::Ordering::Relaxed)
+        }
     }
 
     #[async_trait::async_trait]
     impl Downloader for FakeDownloader {
         async fn download(&self, url: &str) -> Result<Vec<u8>, yerd_php::DownloadError> {
+            self.calls
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             for (suffix, bytes) in &self.routes {
                 if url.ends_with(suffix) {
                     return Ok(bytes.clone());
@@ -319,11 +336,11 @@ mod tests {
             ]
         })
         .to_string();
-        let dl = FakeDownloader {
-            routes: [("manifest.json".to_owned(), body.into_bytes())]
+        let dl = FakeDownloader::new(
+            [("manifest.json".to_owned(), body.into_bytes())]
                 .into_iter()
                 .collect(),
-        };
+        );
         let m = fetch_manifest(&dl, "manifest.json", "yerd-dump")
             .await
             .expect("manifest parses");
@@ -333,17 +350,15 @@ mod tests {
 
     #[tokio::test]
     async fn fetch_manifest_none_on_bad_json_or_transport() {
-        let dl = FakeDownloader {
-            routes: [("manifest.json".to_owned(), b"not json".to_vec())]
+        let dl = FakeDownloader::new(
+            [("manifest.json".to_owned(), b"not json".to_vec())]
                 .into_iter()
                 .collect(),
-        };
+        );
         assert!(fetch_manifest(&dl, "manifest.json", "yerd-dump")
             .await
             .is_none());
-        let empty = FakeDownloader {
-            routes: std::collections::HashMap::new(),
-        };
+        let empty = FakeDownloader::new(std::collections::HashMap::new());
         assert!(fetch_manifest(&empty, "manifest.json", "yerd-dump")
             .await
             .is_none());
@@ -353,10 +368,13 @@ mod tests {
     async fn ensure_pcov_skips_network_when_no_php_installed() {
         let tmp = tempfile::tempdir().unwrap();
         let dirs = dirs_in(tmp.path());
-        let dl = FakeDownloader {
-            routes: std::collections::HashMap::new(),
-        };
+        let dl = FakeDownloader::new(std::collections::HashMap::new());
         ensure_pcov_for_installed(&dirs, &dl).await;
+        assert_eq!(
+            dl.call_count(),
+            0,
+            "no PHP installed: must not hit the network"
+        );
     }
 
     #[tokio::test]
@@ -364,12 +382,17 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let dirs = dirs_in(tmp.path());
         let body = serde_json::json!({ "files": [] }).to_string();
-        let dl = FakeDownloader {
-            routes: [("manifest.json".to_owned(), body.into_bytes())]
+        let dl = FakeDownloader::new(
+            [("manifest.json".to_owned(), body.into_bytes())]
                 .into_iter()
                 .collect(),
-        };
+        );
         ensure_for_installed(&dirs, &dl).await;
         assert!(!dirs.data.join("php-ext").exists());
+        assert_eq!(
+            dl.call_count(),
+            1,
+            "fetches the manifest once, then places no .so because no PHP is installed"
+        );
     }
 }

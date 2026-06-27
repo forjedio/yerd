@@ -2953,7 +2953,9 @@ Subject: Captured\r\n\r\nhi\r\n";
             Response::Error { code, message } => {
                 assert!(matches!(code, ErrorCode::Internal));
                 assert!(message.contains("elevated"), "{message}");
-                assert_eq!(state.config.lock().await.ports.fallback_http, 8080);
+                let cfg = state.config.lock().await;
+                assert_eq!(cfg.ports.fallback_http, 8080);
+                assert_eq!(cfg.ports.fallback_https, 8443);
             }
             other => panic!("expected Ok or elevated Error, got {other:?}"),
         }
