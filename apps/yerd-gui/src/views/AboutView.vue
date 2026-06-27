@@ -67,6 +67,13 @@ const lastCheckedAgo = computed(() => {
 // cached prefetch can't clobber fresher state when it resolves later.
 let liveUpdateFlow = false;
 
+// Monotonic guard for overlapping live checks. The channel Select stays enabled
+// while a check is in flight (only `!running` disables it), so a second channel
+// change / check can start before the first resolves. Each check captures the
+// current seq before awaiting and only commits if it's still the latest, so an
+// older response that resolves last can't overwrite newer state out of order.
+let checkSeq = 0;
+
 // Pre-fill the section from the daemon's persisted last-check result (no network)
 // so the channel + status + "last checked" show immediately on load.
 async function loadCachedUpdate(): Promise<void> {
@@ -85,8 +92,10 @@ async function loadCachedUpdate(): Promise<void> {
 async function runUpdateCheck(notify = false): Promise<void> {
   liveUpdateFlow = true;
   checkingUpdates.value = true;
+  const seq = ++checkSeq;
   try {
     const s = await checkUpdates();
+    if (seq !== checkSeq) return; // a newer check superseded this one
     updateStatus.value = s;
     updateChannel.value = s.channel;
     if (!notify) return;
@@ -105,9 +114,12 @@ async function runUpdateCheck(notify = false): Promise<void> {
       toast.success("Up to date", "You're on the latest version.");
     }
   } catch (e) {
+    if (seq !== checkSeq) return; // superseded; stay quiet, the latest owns the UI
     if (notify) toast.error("Couldn't check for updates", (e as IpcError).message);
   } finally {
-    checkingUpdates.value = false;
+    // Only the latest in-flight check clears the spinner; an older one resolving
+    // first must leave it spinning until the newer check finishes.
+    if (seq === checkSeq) checkingUpdates.value = false;
   }
 }
 
