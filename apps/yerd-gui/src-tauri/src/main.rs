@@ -16,6 +16,8 @@ mod mail_window;
 #[cfg(target_os = "macos")]
 mod smappservice;
 
+#[cfg(target_os = "macos")]
+use tauri::menu::{AboutMetadata, Submenu};
 use tauri::{
     menu::{Menu, MenuItem, PredefinedMenuItem},
     tray::TrayIconBuilder,
@@ -175,6 +177,26 @@ fn main() {
             logging::get_diagnostics,
         ])
         .setup(setup_app)
+        // App-menu events (macOS). The only custom item is "close-window"
+        // (Cmd+W): the windows are borderless+transparent, so AppKit's standard
+        // `performClose:` (what the predefined Close item fires) silently no-ops
+        // — a borderless NSWindow lacks the closable style mask. So Cmd+W routes
+        // here and calls `close()` on the focused window, which goes through the
+        // `CloseRequested` handler below (close-to-tray, same as the titlebar's
+        // red button). Other items are predefined and handled natively.
+        .on_menu_event(|app, event| {
+            if event.id.as_ref() == "close-window" {
+                // `get_focused_window` is behind Tauri's `unstable` feature, so
+                // find the focused window among the managed webview windows.
+                if let Some(win) = app
+                    .webview_windows()
+                    .into_values()
+                    .find(|w| w.is_focused().unwrap_or(false))
+                {
+                    let _ = win.close();
+                }
+            }
+        })
         // Close-to-tray: hide the window instead of quitting; the tray's Quit
         // item is the real exit.
         .on_window_event(|window, event| {
@@ -208,6 +230,8 @@ fn setup_app(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     set_main_window_icon(app);
     #[cfg(target_os = "linux")]
     disable_webview_zoom(app);
+    #[cfg(target_os = "macos")]
+    app.set_menu(build_app_menu(app.handle())?)?;
     build_tray(app.handle())?;
     show_initial_window(app);
     // macOS: one-time migration of a legacy loose `Yerd.plist` GUI login item to
@@ -225,6 +249,89 @@ fn setup_app(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         let _ = autostart::ensure_daemon_registration();
     });
     Ok(())
+}
+
+/// Build the macOS application menu.
+///
+/// This mirrors Tauri's standard macOS menu (`Menu::default`) — App, File, Edit,
+/// View, Window, Help — with ONE change: the "Close" item is a custom
+/// `MenuItem` (id `close-window`, accelerator `Cmd+W`) instead of the predefined
+/// one. The predefined Close fires AppKit's `performClose:`, which a borderless,
+/// transparent `NSWindow` (our `decorations: false` windows) silently ignores
+/// because it lacks the closable style mask — so the standard Cmd+W did nothing.
+/// Routing Cmd+W through Tauri's `window.close()` (in `on_menu_event`) instead
+/// gives the same close-to-tray gesture as the titlebar's red button.
+///
+/// macOS only: on Linux these windows have no app menu bar and the predefined
+/// `close_window` is unsupported there anyway.
+#[cfg(target_os = "macos")]
+fn build_app_menu(app: &tauri::AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
+    let pkg = app.package_info();
+    let config = app.config();
+    let about = AboutMetadata {
+        name: Some(pkg.name.clone()),
+        version: Some(pkg.version.to_string()),
+        copyright: config.bundle.copyright.clone(),
+        authors: config.bundle.publisher.clone().map(|p| vec![p]),
+        ..Default::default()
+    };
+
+    // The one custom item: Cmd+W → close the focused window (handled in
+    // `on_menu_event`). Used in both File and Window, matching `Menu::default`.
+    let close = MenuItem::with_id(app, "close-window", "Close", true, Some("CmdOrCtrl+W"))?;
+
+    let app_menu = Submenu::with_items(
+        app,
+        pkg.name.clone(),
+        true,
+        &[
+            &PredefinedMenuItem::about(app, None, Some(about))?,
+            &PredefinedMenuItem::separator(app)?,
+            &PredefinedMenuItem::services(app, None)?,
+            &PredefinedMenuItem::separator(app)?,
+            &PredefinedMenuItem::hide(app, None)?,
+            &PredefinedMenuItem::hide_others(app, None)?,
+            &PredefinedMenuItem::separator(app)?,
+            &PredefinedMenuItem::quit(app, None)?,
+        ],
+    )?;
+    let file_menu = Submenu::with_items(app, "File", true, &[&close])?;
+    let edit_menu = Submenu::with_items(
+        app,
+        "Edit",
+        true,
+        &[
+            &PredefinedMenuItem::undo(app, None)?,
+            &PredefinedMenuItem::redo(app, None)?,
+            &PredefinedMenuItem::separator(app)?,
+            &PredefinedMenuItem::cut(app, None)?,
+            &PredefinedMenuItem::copy(app, None)?,
+            &PredefinedMenuItem::paste(app, None)?,
+            &PredefinedMenuItem::select_all(app, None)?,
+        ],
+    )?;
+    let view_menu = Submenu::with_items(
+        app,
+        "View",
+        true,
+        &[&PredefinedMenuItem::fullscreen(app, None)?],
+    )?;
+    let window_menu = Submenu::with_items(
+        app,
+        "Window",
+        true,
+        &[
+            &PredefinedMenuItem::minimize(app, None)?,
+            &PredefinedMenuItem::maximize(app, None)?,
+            &PredefinedMenuItem::separator(app)?,
+            &close,
+        ],
+    )?;
+
+    Menu::with_items(
+        app,
+        &[&app_menu, &file_menu, &edit_menu, &view_menu, &window_menu],
+    )
 }
 
 /// Explicitly set the window icon so the Linux taskbar shows the Yerd mark in
