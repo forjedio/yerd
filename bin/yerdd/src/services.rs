@@ -8,6 +8,7 @@
 
 use std::sync::Arc;
 
+use tokio::sync::watch;
 use yerd_config::ServiceInstance;
 use yerd_ipc::{ErrorCode, Response, ServiceAvailability, ServiceRunState, ServiceStatus};
 use yerd_services::{
@@ -387,15 +388,48 @@ pub async fn service_statuses(state: &DaemonState) -> Vec<ServiceStatus> {
 /// intent to run it. A `Stop` still stops the engine for the current session,
 /// but it returns on the next daemon start; to keep one off for good, uninstall
 /// it.
+///
+/// Shutdown-aware: an instance torn down shortly after booting (the
+/// upgrade-restart thrash) bails before spawning DB engines, so the 10s DB
+/// `stop_grace` never holds the instance lock and serialises the next relaunch.
 pub async fn auto_start_installed(state: Arc<DaemonState>) {
     let installed: Vec<Service> = Service::ALL
         .into_iter()
         .filter(|svc| !installed_versions(*svc, &state.dirs).is_empty())
         .collect();
+    let mut shutdown = state.shutdown_tx.subscribe();
+    run_auto_start(installed, &mut shutdown, |service| {
+        let state = state.clone();
+        async move { list_services_start_one(service, &state).await }
+    })
+    .await;
+}
+
+/// Start each installed service in order, stopping the moment `shutdown` trips.
+/// Extracted from [`auto_start_installed`] so both the already-shutting-down and
+/// the mid-loop-abort branches are unit-testable with a fake `start_one`. The
+/// `biased` select checks shutdown first each iteration; a SIGTERM landing
+/// mid-start cancels the in-flight future, whose not-yet-tracked child the
+/// spawner's `kill_on_drop` then reaps.
+async fn run_auto_start<F, Fut>(
+    installed: Vec<Service>,
+    shutdown: &mut watch::Receiver<bool>,
+    mut start_one: F,
+) where
+    F: FnMut(Service) -> Fut,
+    Fut: std::future::Future<Output = Result<(), ServiceError>>,
+{
+    if *shutdown.borrow() {
+        return;
+    }
     for service in installed {
-        match list_services_start_one(service, &state).await {
-            Ok(()) => tracing::info!(service = %service, "auto-started service"),
-            Err(e) => tracing::warn!(service = %service, error = %e, "service auto-start failed"),
+        tokio::select! {
+            biased;
+            _ = shutdown.changed() => return,
+            res = start_one(service) => match res {
+                Ok(()) => tracing::info!(service = %service, "auto-started service"),
+                Err(e) => tracing::warn!(service = %service, error = %e, "service auto-start failed"),
+            },
         }
     }
 }
@@ -952,5 +986,110 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let state = std::sync::Arc::new(state_in(tmp.path()));
         auto_start_installed(state).await;
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::indexing_slicing)]
+mod auto_start_tests {
+    use std::sync::Mutex;
+
+    use super::{run_auto_start, watch, Arc, Service, ServiceError};
+
+    fn two_services() -> Vec<Service> {
+        Service::ALL.into_iter().take(2).collect()
+    }
+
+    #[tokio::test]
+    async fn skips_everything_when_shutdown_already_requested() {
+        let (_tx, mut rx) = watch::channel(true);
+        let started: Arc<Mutex<Vec<Service>>> = Arc::new(Mutex::new(Vec::new()));
+        let rec = started.clone();
+        run_auto_start(two_services(), &mut rx, move |svc| {
+            let rec = rec.clone();
+            async move {
+                rec.lock().unwrap().push(svc);
+                Ok::<(), ServiceError>(())
+            }
+        })
+        .await;
+        assert!(started.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn stops_after_shutdown_trips_mid_loop() {
+        let (tx, mut rx) = watch::channel(false);
+        let tx = Arc::new(tx);
+        let started: Arc<Mutex<Vec<Service>>> = Arc::new(Mutex::new(Vec::new()));
+        let rec = started.clone();
+        run_auto_start(two_services(), &mut rx, move |svc| {
+            let rec = rec.clone();
+            let tx = tx.clone();
+            async move {
+                rec.lock().unwrap().push(svc);
+                let _ = tx.send(true);
+                Ok::<(), ServiceError>(())
+            }
+        })
+        .await;
+        let started = started.lock().unwrap();
+        assert_eq!(started.len(), 1, "only the first service should start");
+        assert_eq!(started[0], Service::ALL[0]);
+    }
+
+    /// Shutdown landing *while* `start_one` is still pending must cancel that
+    /// in-flight start (and skip the rest) - the load-bearing behaviour of the
+    /// `biased` select. The first start parks on a never-fired gate, so the only
+    /// way the spawned task completes is the shutdown arm cancelling it.
+    #[tokio::test]
+    async fn shutdown_cancels_in_flight_start_one() {
+        use tokio::sync::Notify;
+        use tokio::time::{timeout, Duration};
+
+        let (tx, rx) = watch::channel(false);
+        let entered = Arc::new(Notify::new());
+        let gate = Arc::new(Notify::new());
+        let started: Arc<Mutex<Vec<Service>>> = Arc::new(Mutex::new(Vec::new()));
+        let completed: Arc<Mutex<Vec<Service>>> = Arc::new(Mutex::new(Vec::new()));
+
+        let entered_task = entered.clone();
+        let gate_task = gate.clone();
+        let started_task = started.clone();
+        let completed_task = completed.clone();
+        let handle = tokio::spawn(async move {
+            let mut rx = rx;
+            run_auto_start(two_services(), &mut rx, move |svc| {
+                let entered = entered_task.clone();
+                let gate = gate_task.clone();
+                let started = started_task.clone();
+                let completed = completed_task.clone();
+                async move {
+                    started.lock().unwrap().push(svc);
+                    entered.notify_one();
+                    gate.notified().await;
+                    completed.lock().unwrap().push(svc);
+                    Ok::<(), ServiceError>(())
+                }
+            })
+            .await;
+        });
+
+        timeout(Duration::from_secs(1), entered.notified())
+            .await
+            .expect("first start_one should be entered");
+        let _ = tx.send(true);
+
+        timeout(Duration::from_secs(1), handle)
+            .await
+            .expect("biased shutdown must cancel the in-flight start_one")
+            .unwrap();
+
+        assert!(
+            completed.lock().unwrap().is_empty(),
+            "the cancelled start must not run past its await"
+        );
+        let started = started.lock().unwrap();
+        assert_eq!(started.len(), 1, "only the first service should start");
+        assert_eq!(started[0], Service::ALL[0]);
     }
 }
