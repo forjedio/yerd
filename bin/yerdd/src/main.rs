@@ -12,9 +12,6 @@ use yerdd::{error, run, tracing_init, Outcome};
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
-    // Hidden diagnostic (release gate): print the build's self-update package
-    // format and exit before any daemon work. Reads `yerd_update::PkgFormat`,
-    // which the `pacman` feature flips — see `args::Cli::pkg_format`.
     if cli.pkg_format {
         println!("{}", pkg_format_str());
         return ExitCode::SUCCESS;

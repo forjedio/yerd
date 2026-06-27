@@ -432,7 +432,9 @@ cargo xtask version-check v2.0.2 # release gate: assert a tag matches the manife
 The shipped artifacts are the **GUI bundle** (`.dmg` on macOS, `.deb` on Linux),
 built by Tauri with the three binaries (`yerd`/`yerdd`/`yerd-helper`) embedded via
 `externalBin` (per-platform overlays in `apps/yerd-gui/src-tauri/`), **plus a native
-Arch package** (`.pkg.tar.zst`, x86-64). There is no standalone CLI tarball/`.deb`.
+Arch package** (`.pkg.tar.zst`, x86-64). The CLI and daemon are never shipped on
+their own - there is no CLI-only artifact (tarball or `.deb`) separate from the GUI
+bundle and the Arch package.
 
 `bump` keeps three files in sync - `Cargo.toml`,
 `apps/yerd-gui/src-tauri/tauri.conf.json`, and `apps/yerd-gui/package.json` - so

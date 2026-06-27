@@ -367,9 +367,6 @@ pub async fn stage_update(
     let Some(target_rel) = releases.iter().find(|r| r.version == target_ver) else {
         return internal("internal: resolved target release vanished".to_owned());
     };
-    // `PkgFormat::current()` is the build-time deb-vs-pacman tiebreak: a release
-    // carries both Linux artifacts and only the format this binary was packaged
-    // for is installable here (see `yerd_update::PkgFormat`).
     let sel = match select_asset(target_rel, Platform::current(), PkgFormat::current()) {
         Ok(s) => s,
         Err(e) => return internal(format!("no installable artifact: {e}")),

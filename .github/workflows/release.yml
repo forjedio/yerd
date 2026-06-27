@@ -386,7 +386,12 @@ jobs:
       - name: Install git (for a real checkout)
         run: pacman -Sy --noconfirm git
 
+      # `persist-credentials: false` so the GitHub token isn't left in
+      # .git/config — the workspace is chowned to the unprivileged `builder` user
+      # for makepkg, and the build needs no authenticated git operations.
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Install build deps
         # `namcap` and `desktop-file-utils` are separate `extra` packages (not in
@@ -437,16 +442,17 @@ jobs:
             || { echo "::error::Arch package has no .desktop"; exit 1; }
           printf '%s\n' "$list" | grep -q '^usr/share/licenses/yerd/LICENSE$' \
             || { echo "::error::Arch package has no license"; exit 1; }
-          # Validate the desktop file; run namcap (informational).
+          # Extract the .desktop and the packaged daemon for validation.
           tmp=$(mktemp -d)
-          bsdtar -xf "$PKG" -C "$tmp" usr/share/applications/yerd-gui.desktop
+          bsdtar -xf "$PKG" -C "$tmp" usr/share/applications/yerd-gui.desktop usr/bin/yerdd
           desktop-file-validate "$tmp/usr/share/applications/yerd-gui.desktop"
           namcap "$PKG" || true
-          # Pkg-format gate: the SHIPPED daemon must self-update via pacman, else a
-          # forgotten `--features` flag would ship a `.deb`-format updater here.
-          fmt=$("$GITHUB_WORKSPACE/target/release/yerdd" --pkg-format)
+          # Pkg-format gate: run the daemon FROM THE PACKAGE (not the build tree) so a
+          # packaging-path mistake can't pass. The shipped daemon must self-update via
+          # pacman, else a forgotten `--features` flag would ship a `.deb`-format updater.
+          fmt=$("$tmp/usr/bin/yerdd" --pkg-format)
           [ "$fmt" = "pacman" ] \
-            || { echo "::error::yerdd --pkg-format=$fmt (expected pacman); the pacman feature did not take"; exit 1; }
+            || { echo "::error::packaged yerdd --pkg-format=$fmt (expected pacman); the pacman feature did not take"; exit 1; }
           echo "Arch package OK: $PKG (pkg-format=$fmt)"
 
       - name: Stage with a Yerd_* name for the publish renamer

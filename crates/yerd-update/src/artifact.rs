@@ -368,8 +368,6 @@ mod tests {
 
     #[test]
     fn macos_selection_ignores_pkg_format() {
-        // A pacman-format build on macOS still picks the `.app.tar.gz`: `format`
-        // only disambiguates Linux.
         let r = release_with(&[
             "Yerd_MacOS_AppleSilicon_v2-0-2.app.tar.gz",
             "Yerd_MacOS_AppleSilicon_v2-0-2.app.tar.gz.sig",
@@ -418,8 +416,6 @@ mod tests {
 
     #[test]
     fn both_artifacts_present_resolves_per_format() {
-        // The real release carries BOTH the .deb and the .pkg.tar.zst for x86_64;
-        // the build-time format is the only tiebreak.
         let r = release_with(&[
             "Yerd_Linux_x86_64_v2-0-2.deb",
             "Yerd_Linux_x86_64_v2-0-2.deb.sig",
@@ -459,8 +455,6 @@ mod tests {
 
     #[test]
     fn pacman_matchers_are_disjoint_from_deb_and_across_arch() {
-        // A pacman-format build must never pick a `.deb`, and the x86_64/arm64
-        // pacman matchers must not cross-select.
         let only_deb = release_with(&[
             "Yerd_Linux_x86_64_v2-0-2.deb",
             "Yerd_Linux_x86_64_v2-0-2.deb.sig",
@@ -470,7 +464,6 @@ mod tests {
             select_asset(&only_deb, Platform::LinuxX86_64, PkgFormat::Pacman),
             Err(AssetError::NoArtifactForPlatform(Platform::LinuxX86_64))
         );
-        // A .deb build must never pick a `.pkg.tar.zst`.
         let only_pac = release_with(&[
             "Yerd_Linux_x86_64_v2-0-2.pkg.tar.zst",
             "Yerd_Linux_x86_64_v2-0-2.pkg.tar.zst.sig",
@@ -480,7 +473,6 @@ mod tests {
             select_asset(&only_pac, Platform::LinuxX86_64, PkgFormat::Deb),
             Err(AssetError::NoArtifactForPlatform(Platform::LinuxX86_64))
         );
-        // x86_64 pacman build must not pick an arm64 `.pkg.tar.zst`.
         let only_arm_pac = release_with(&[
             "Yerd_Linux_Arm64_v2-0-2.pkg.tar.zst",
             "Yerd_Linux_Arm64_v2-0-2.pkg.tar.zst.sig",

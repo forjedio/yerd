@@ -2814,9 +2814,6 @@ Subject: Captured\r\n\r\nhi\r\n";
         let mac = "Yerd_MacOS_AppleSilicon_v99-0-1.app.tar.gz";
         let deb = "Yerd_Linux_x86_64_v99-0-1.deb";
         let arm = "Yerd_Linux_Arm64_v99-0-1.deb";
-        // A real release carries the `.pkg.tar.zst` alongside the `.deb`; include
-        // both so the fixture resolves whether this build's `PkgFormat` is Deb or
-        // Pacman (the `pacman` feature flips selection to the `.pkg.tar.zst`).
         let pkg = "Yerd_Linux_x86_64_v99-0-1.pkg.tar.zst";
         let pkg_arm = "Yerd_Linux_Arm64_v99-0-1.pkg.tar.zst";
         let releases = format!(
@@ -2849,8 +2846,6 @@ Subject: Captured\r\n\r\nhi\r\n";
                 let p = std::path::Path::new(&path);
                 assert!(p.exists(), "staged file should exist at {path}");
                 assert_eq!(std::fs::read(p).unwrap(), b"test");
-                // The selected artifact depends on BOTH the running platform and
-                // the build's `PkgFormat` (the `pacman` feature picks pacman).
                 let (expected_kind, expected_name) = match (
                     yerd_update::Platform::current(),
                     yerd_update::PkgFormat::current(),
@@ -2898,8 +2893,6 @@ Subject: Captured\r\n\r\nhi\r\n";
         let mac = "Yerd_MacOS_AppleSilicon_v99-0-1.app.tar.gz";
         let deb = "Yerd_Linux_x86_64_v99-0-1.deb";
         let arm = "Yerd_Linux_Arm64_v99-0-1.deb";
-        // Include the pacman artifacts too, so the checksum-mismatch path is
-        // exercised regardless of this build's `PkgFormat`.
         let pkg = "Yerd_Linux_x86_64_v99-0-1.pkg.tar.zst";
         let pkg_arm = "Yerd_Linux_Arm64_v99-0-1.pkg.tar.zst";
         let releases = format!(

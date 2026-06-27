@@ -182,7 +182,9 @@ pub async fn set_update_channel(channel: String) -> Result<Response, GuiError> {
 ///
 /// On macOS this needs `/Applications/Yerd.app` to be user-writable (the common
 /// admin case); elevated self-update is a follow-up. On Linux the applier uses
-/// `pkexec dpkg -i`, which prompts via the desktop polkit agent.
+/// `pkexec dpkg -i` (`.deb`) or `pkexec pacman -U` (`.pkg.tar.zst`), which prompt
+/// via the desktop polkit agent. The `kind_str` mapping below must stay in sync
+/// with the `YERD_APPLY_KIND` parser in `bin/yerd/src/apply.rs`.
 #[tauri::command]
 pub async fn apply_update(app: tauri::AppHandle, channel: Option<String>) -> Result<(), GuiError> {
     let channel = channel.as_deref().map(parse_channel).transpose()?;
@@ -192,14 +194,15 @@ pub async fn apply_update(app: tauri::AppHandle, channel: Option<String>) -> Res
     };
     let yerd = crate::daemon::resolve_binary("yerd")
         .ok_or_else(|| GuiError::internal("could not locate the bundled yerd binary"))?;
-    // `StagedArtifact` is `#[non_exhaustive]`, so a wildcard arm is required; the
-    // explicit Pacman arm is what stops an Arch update falling through to the
-    // macOS installer (`"app_tar_gz"`). Keep these in sync with the applier's
-    // `YERD_APPLY_KIND` parser in `bin/yerd/src/apply.rs`.
     let kind_str = match kind {
+        yerd_ipc::StagedArtifact::AppTarGz => "app_tar_gz",
         yerd_ipc::StagedArtifact::Deb => "deb",
         yerd_ipc::StagedArtifact::Pacman => "pacman",
-        _ => "app_tar_gz",
+        _ => {
+            return Err(GuiError::internal(
+                "unknown staged artifact kind from the daemon",
+            ))
+        }
     };
     spawn_applier(&yerd, &path, kind_str)?;
     app.exit(0);

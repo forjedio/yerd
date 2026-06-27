@@ -475,8 +475,16 @@ fn apply_linux_pacman(staged: &Path, relaunch_gui: bool) -> Result<(), String> {
 /// Elevated installer (runs as root via the `pkexec` re-exec). Mirror of
 /// [`elevated_install_deb`] for the Arch package: reads + verifies the staged
 /// `.pkg.tar.zst` **once**, copies the verified bytes into a root-owned 0700 dir,
-/// and `pacman -U`s that copy — closing the verify→re-read TOCTOU on the
+/// and `pacman -U`s that copy - closing the verify→re-read TOCTOU on the
 /// user-writable staged path. The package's `.install` scriptlet reapplies setcap.
+///
+/// `pacman -U` installs the file regardless of version (so an edge-to-stable
+/// downgrade works, like `dpkg -i`); `--noconfirm` because the re-exec is
+/// non-interactive. It is a partial upgrade, so on a host behind on `pacman -Syu`
+/// a newer library soname can make it abort; pacman's output (stderr, then stdout)
+/// is surfaced in the error so db-lock / unresolved-dep / `SigLevel` failures are
+/// legible rather than a generic "failed". The copy keeps a `.pkg.tar.zst` suffix
+/// for clarity; the package name itself comes from the embedded `.PKGINFO`.
 #[cfg(target_os = "linux")]
 fn elevated_install_pacman(staged: &Path) -> Result<(), String> {
     use std::os::unix::fs::{DirBuilderExt as _, PermissionsExt as _};
@@ -495,18 +503,10 @@ fn elevated_install_pacman(staged: &Path) -> Result<(), String> {
         .mode(0o700)
         .create(&dir)
         .map_err(|e| format!("creating secure install dir: {e}"))?;
-    // Keep a recognizable `.pkg.tar.zst` suffix on the root-owned copy (clarity;
-    // the package name itself comes from the embedded `.PKGINFO`, not the filename).
     let pkg = dir.join("update.pkg.tar.zst");
     let install = (|| -> Result<(), String> {
         std::fs::write(&pkg, &bytes).map_err(|e| format!("writing verified .pkg.tar.zst: {e}"))?;
         let _ = std::fs::set_permissions(&pkg, std::fs::Permissions::from_mode(0o600));
-        // `pacman -U` installs the given file regardless of version (so an
-        // edge→stable downgrade works, like `dpkg -i`); `--noconfirm` for the
-        // non-interactive re-exec. Capture output so db-lock / unresolved-dep /
-        // SigLevel failures are legible rather than a generic "failed". (`pacman -U`
-        // is a partial upgrade: if the host is behind on `pacman -Syu`, a newer
-        // library soname can make it abort — surfaced here.)
         let out = Command::new("pacman")
             .arg("-U")
             .arg("--noconfirm")
@@ -516,7 +516,6 @@ fn elevated_install_pacman(staged: &Path) -> Result<(), String> {
         if out.status.success() {
             Ok(())
         } else {
-            // Prefer stderr; fall back to stdout (pacman writes some diagnostics there).
             let stderr = String::from_utf8_lossy(&out.stderr);
             let detail = if stderr.trim().is_empty() {
                 String::from_utf8_lossy(&out.stdout).trim().to_owned()
