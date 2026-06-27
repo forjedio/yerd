@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Documentation
+    url: https://yerd.app
+    about: Read the docs — installation, CLI reference, and guides.
+  - name: Questions & Discussion
+    url: https://github.com/forjedio/yerd/discussions
+    about: Ask a question or share an idea with the community.

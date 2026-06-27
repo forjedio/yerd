@@ -1,0 +1,50 @@
+name: Feature request
+description: Suggest an idea or improvement for Yerd
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the suggestion! Please describe the problem you're trying to
+        solve, not just the solution — it helps us find the best fix.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem / Motivation
+      description: What are you trying to do, and where does Yerd get in the way today?
+      placeholder: I'm always frustrated when ...
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed Solution
+      description: What would you like Yerd to do instead?
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives Considered
+      description: Any workarounds you currently use, or other approaches you thought about.
+    validations:
+      required: false
+  - type: dropdown
+    id: surface
+    attributes:
+      label: Which part of Yerd?
+      options:
+        - Desktop app (GUI)
+        - CLI (`yerd`)
+        - Daemon / background service
+        - Setup / installation
+        - Other / not sure
+    validations:
+      required: false
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional Context
+      description: Anything else — screenshots, mockups, links to related issues.
+    validations:
+      required: false

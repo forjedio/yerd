@@ -1,0 +1,83 @@
+name: Bug report
+description: Report something in Yerd that isn't working the way it should
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for filing a bug. The more of this you can fill in, the faster we
+        can reproduce and fix it — the **Specifications** and **Logs** sections
+        are especially helpful.
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected Behavior
+      description: What did you expect to happen?
+      placeholder: When the daemon is upgraded, the GUI should wait and not report a timeout if it's going to start.
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual Behavior
+      description: What actually happened instead?
+      placeholder: The start button shows a loading state, a timeout warning appears, then the daemon starts a couple of seconds later.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to Reproduce the Problem
+      description: The exact commands or clicks that trigger the bug.
+      placeholder: |
+        1. Install v2.0.2-rc.9 or upgrade from v2.0.2-rc.8
+        2. Click Start/Install daemon
+        3. See an error that the daemon start has timed out
+    validations:
+      required: true
+  - type: dropdown
+    id: surface
+    attributes:
+      label: Where did it happen?
+      description: Which part of Yerd is affected?
+      options:
+        - Desktop app (GUI)
+        - CLI (`yerd`)
+        - Daemon / background service
+        - Setup / installation
+        - Not sure
+    validations:
+      required: true
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Platform
+      options:
+        - macOS
+        - Linux
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Output of `yerd --version`, or the version shown in the app's About panel.
+      placeholder: v2.0.2-rc.9
+    validations:
+      required: true
+  - type: textarea
+    id: gui-logs
+    attributes:
+      label: GUI Logs
+      description: Logs from the desktop app, if relevant. Automatically formatted as code.
+      render: shell
+    validations:
+      required: false
+  - type: textarea
+    id: daemon-logs
+    attributes:
+      label: Daemon Logs
+      description: Logs from the daemon (`yerdd`), if relevant. Automatically formatted as code.
+      render: shell
+    validations:
+      required: false
