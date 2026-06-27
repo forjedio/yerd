@@ -5968,7 +5968,7 @@ dependencies = [
 
 [[package]]
 name = "xtask"
-version = "2.0.2-rc.8"
+version = "2.0.2-rc.9"
 dependencies = [
  "anyhow",
  "clap",
@@ -5985,7 +5985,7 @@ dependencies = [
 
 [[package]]
 name = "yerd"
-version = "2.0.2-rc.8"
+version = "2.0.2-rc.9"
 dependencies = [
  "clap",
  "interprocess",
@@ -6005,7 +6005,7 @@ dependencies = [
 
 [[package]]
 name = "yerd-config"
-version = "2.0.2-rc.8"
+version = "2.0.2-rc.9"
 dependencies = [
  "serde",
  "tempfile",
@@ -6016,7 +6016,7 @@ dependencies = [
 
 [[package]]
 name = "yerd-core"
-version = "2.0.2-rc.8"
+version = "2.0.2-rc.9"
 dependencies = [
  "serde",
  "serde_json",
@@ -6027,7 +6027,7 @@ dependencies = [
 
 [[package]]
 name = "yerd-dns"
-version = "2.0.2-rc.8"
+version = "2.0.2-rc.9"
 dependencies = [
  "async-trait",
  "hickory-client",
@@ -6041,7 +6041,7 @@ dependencies = [
 
 [[package]]
 name = "yerd-doctor"
-version = "2.0.2-rc.8"
+version = "2.0.2-rc.9"
 dependencies = [
  "yerd-core",
  "yerd-ipc",
@@ -6049,7 +6049,7 @@ dependencies = [
 
 [[package]]
 name = "yerd-gui"
-version = "2.0.2-rc.8"
+version = "2.0.2-rc.9"
 dependencies = [
  "block2",
  "core-foundation 0.9.4",
@@ -6087,7 +6087,7 @@ dependencies = [
 
 [[package]]
 name = "yerd-helper"
-version = "2.0.2-rc.8"
+version = "2.0.2-rc.9"
 dependencies = [
  "clap",
  "hex",
@@ -6103,7 +6103,7 @@ dependencies = [
 
 [[package]]
 name = "yerd-ipc"
-version = "2.0.2-rc.8"
+version = "2.0.2-rc.9"
 dependencies = [
  "serde",
  "serde_json",
@@ -6114,7 +6114,7 @@ dependencies = [
 
 [[package]]
 name = "yerd-mail"
-version = "2.0.2-rc.8"
+version = "2.0.2-rc.9"
 dependencies = [
  "mail-parser",
  "serde",
@@ -6128,7 +6128,7 @@ dependencies = [
 
 [[package]]
 name = "yerd-php"
-version = "2.0.2-rc.8"
+version = "2.0.2-rc.9"
 dependencies = [
  "async-trait",
  "nix",
@@ -6144,7 +6144,7 @@ dependencies = [
 
 [[package]]
 name = "yerd-platform"
-version = "2.0.2-rc.8"
+version = "2.0.2-rc.9"
 dependencies = [
  "directories",
  "hex",
@@ -6162,7 +6162,7 @@ dependencies = [
 
 [[package]]
 name = "yerd-proxy"
-version = "2.0.2-rc.8"
+version = "2.0.2-rc.9"
 dependencies = [
  "async-trait",
  "bytes",
@@ -6186,7 +6186,7 @@ dependencies = [
 
 [[package]]
 name = "yerd-service-ctl"
-version = "2.0.2-rc.8"
+version = "2.0.2-rc.9"
 dependencies = [
  "nix",
  "thiserror 1.0.69",
@@ -6194,7 +6194,7 @@ dependencies = [
 
 [[package]]
 name = "yerd-services"
-version = "2.0.2-rc.8"
+version = "2.0.2-rc.9"
 dependencies = [
  "async-trait",
  "serde",
@@ -6208,7 +6208,7 @@ dependencies = [
 
 [[package]]
 name = "yerd-supervise"
-version = "2.0.2-rc.8"
+version = "2.0.2-rc.9"
 dependencies = [
  "async-trait",
  "nix",
@@ -6218,7 +6218,7 @@ dependencies = [
 
 [[package]]
 name = "yerd-tls"
-version = "2.0.2-rc.8"
+version = "2.0.2-rc.9"
 dependencies = [
  "pem",
  "rcgen",
@@ -6232,7 +6232,7 @@ dependencies = [
 
 [[package]]
 name = "yerd-update"
-version = "2.0.2-rc.8"
+version = "2.0.2-rc.9"
 dependencies = [
  "hex",
  "minisign-verify",
@@ -6242,7 +6242,7 @@ dependencies = [
 
 [[package]]
 name = "yerdd"
-version = "2.0.2-rc.8"
+version = "2.0.2-rc.9"
 dependencies = [
  "async-trait",
  "clap",
