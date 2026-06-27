@@ -1,0 +1,66 @@
+# Maintainer: Yerd <yerd@forjed.io>
+#
+# Native Arch package for Yerd: the Tauri GUI plus the three binaries (yerd CLI,
+# yerdd daemon, yerd-helper) that the GUI drives. Mirrors the layout of the
+# upstream .deb (all four binaries in /usr/bin), so the daemon's sibling-binary
+# lookup behaves identically. The daemon is built with the `pacman` feature so
+# in-app `yerd update` self-updates via `pacman -U` (not `dpkg -i`).
+#
+# Built in CI from the in-tree checkout (no source=()/AUR fetch in v1). The
+# release workflow exports YERD_SRCROOT (the workspace root) and YERD_PKGVER (the
+# release version with any `-` replaced by `_`, since makepkg forbids `-` in
+# pkgver) before invoking makepkg.
+pkgname=yerd
+pkgver="${YERD_PKGVER:-0.0.0}"
+pkgrel=1
+pkgdesc="Local PHP development environment — daemon, CLI, and desktop app"
+arch=('x86_64')
+url="https://github.com/forjedio/yerd"
+license=('MIT')
+# Runtime deps. webkit2gtk-4.1/gtk3/librsvg/libayatana-appindicator back the Tauri
+# GUI; libayatana-appindicator + librsvg are dlopen'd (not ELF-NEEDED) so namcap
+# can't infer them — list explicitly. cairo/pango/gdk-pixbuf2/glib2 come in via
+# gtk3. libcap provides setcap, used by the install scriptlet (namcap will report
+# it "not needed" — a false positive, it is not ELF-linked).
+depends=('webkit2gtk-4.1' 'gtk3' 'libayatana-appindicator' 'librsvg' 'libcap')
+makedepends=('rust' 'cargo' 'nodejs' 'npm')
+options=('!strip' '!debug')
+install="yerd.install"
+
+build() {
+  cd "${YERD_SRCROOT:?YERD_SRCROOT must point at the workspace checkout root}"
+  # The GUI embeds the built frontend (frontendDist=../dist) at compile time, so
+  # build the web assets BEFORE cargo.
+  ( cd apps/yerd-gui && npm ci && npm run build )
+  # Build the daemon with the pacman self-update format (`yerdd/pacman` →
+  # `yerd-update/pacman`) plus the CLI, helper, and GUI binaries.
+  cargo build --release --locked --features yerdd/pacman \
+    -p yerd -p yerdd -p yerd-helper -p yerd-gui
+}
+
+package() {
+  cd "${YERD_SRCROOT:?YERD_SRCROOT must point at the workspace checkout root}"
+
+  # All four binaries as real files in /usr/bin (matches the upstream .deb so the
+  # GUI's trusted_yerd()/resolve_binary sibling lookup is identical).
+  install -Dm755 target/release/yerd        "$pkgdir/usr/bin/yerd"
+  install -Dm755 target/release/yerdd       "$pkgdir/usr/bin/yerdd"
+  install -Dm755 target/release/yerd-helper "$pkgdir/usr/bin/yerd-helper"
+  install -Dm755 target/release/yerd-gui    "$pkgdir/usr/bin/yerd-gui"
+
+  # Desktop entry + hicolor icons, named after the GUI binary (its runtime
+  # WM_CLASS is `yerd-gui`) so the dock binds the window to the launcher.
+  install -Dm644 packaging/arch/yerd-gui.desktop \
+    "$pkgdir/usr/share/applications/yerd-gui.desktop"
+  install -Dm644 apps/yerd-gui/src-tauri/icons/32x32.png \
+    "$pkgdir/usr/share/icons/hicolor/32x32/apps/yerd-gui.png"
+  install -Dm644 apps/yerd-gui/src-tauri/icons/64x64.png \
+    "$pkgdir/usr/share/icons/hicolor/64x64/apps/yerd-gui.png"
+  install -Dm644 apps/yerd-gui/src-tauri/icons/128x128.png \
+    "$pkgdir/usr/share/icons/hicolor/128x128/apps/yerd-gui.png"
+  # 256px source is the @2x variant (there is no 256x256.png).
+  install -Dm644 apps/yerd-gui/src-tauri/icons/128x128@2x.png \
+    "$pkgdir/usr/share/icons/hicolor/256x256/apps/yerd-gui.png"
+
+  install -Dm644 LICENSE.md "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+}

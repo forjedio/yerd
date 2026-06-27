@@ -192,8 +192,13 @@ pub async fn apply_update(app: tauri::AppHandle, channel: Option<String>) -> Res
     };
     let yerd = crate::daemon::resolve_binary("yerd")
         .ok_or_else(|| GuiError::internal("could not locate the bundled yerd binary"))?;
+    // `StagedArtifact` is `#[non_exhaustive]`, so a wildcard arm is required; the
+    // explicit Pacman arm is what stops an Arch update falling through to the
+    // macOS installer (`"app_tar_gz"`). Keep these in sync with the applier's
+    // `YERD_APPLY_KIND` parser in `bin/yerd/src/apply.rs`.
     let kind_str = match kind {
         yerd_ipc::StagedArtifact::Deb => "deb",
+        yerd_ipc::StagedArtifact::Pacman => "pacman",
         _ => "app_tar_gz",
     };
     spawn_applier(&yerd, &path, kind_str)?;

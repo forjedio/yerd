@@ -69,6 +69,41 @@ pub enum ArtifactKind {
     AppTarGz,
     /// A Debian package (reinstalled via `dpkg -i`).
     Deb,
+    /// An Arch package (reinstalled via `pacman -U`).
+    Pacman,
+}
+
+/// The Linux package format a build self-updates with.
+///
+/// A release ships BOTH a `.deb` and a `.pkg.tar.zst` for the same arch, so a
+/// running Linux binary cannot tell which to install from [`Platform`] alone
+/// (that only knows OS + arch, not distro). Instead the format is fixed at build
+/// time: [`PkgFormat::current`] returns [`PkgFormat::Pacman`] when compiled with
+/// the `pacman` feature (the Arch package build) and [`PkgFormat::Deb`] otherwise.
+/// macOS selection ignores it. This is decoupled from `cfg!` in the type so
+/// selection stays testable for either format from any build.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PkgFormat {
+    /// Debian `.deb` (installed via `dpkg -i`). The default build.
+    Deb,
+    /// Arch `.pkg.tar.zst` (installed via `pacman -U`).
+    Pacman,
+}
+
+impl PkgFormat {
+    /// The package format this binary was built for: [`PkgFormat::Pacman`] when
+    /// compiled with the `pacman` feature, else [`PkgFormat::Deb`].
+    #[must_use]
+    pub fn current() -> Self {
+        #[cfg(feature = "pacman")]
+        {
+            Self::Pacman
+        }
+        #[cfg(not(feature = "pacman"))]
+        {
+            Self::Deb
+        }
+    }
 }
 
 /// A fully-resolved download set for one platform: the artifact, its detached
@@ -110,22 +145,32 @@ impl std::fmt::Display for AssetError {
 
 impl std::error::Error for AssetError {}
 
-/// Pick the artifact + signature + checksums for `platform` from `release`.
+/// Pick the artifact + signature + checksums for `platform` + `format` from
+/// `release`.
 ///
 /// Selection is by filename convention (the names the release workflow emits):
 /// the macOS artifact ends `.app.tar.gz` and is arch-tagged; the Linux artifact
-/// ends `.deb` and is arch-tagged (`x86_64` or `arm64`); the signature is
-/// `<artifact>.sig`; the manifest is named `SHA256SUMS`. Intel macOS / unsupported
-/// platforms return [`AssetError::NoArtifactForPlatform`] rather than mis-selecting.
+/// ends `.deb` (Debian) or `.pkg.tar.zst` (Arch) per `format` and is arch-tagged
+/// (`x86_64` or `arm64`); the signature is `<artifact>.sig`; the manifest is named
+/// `SHA256SUMS`. `format` resolves the deb-vs-pacman ambiguity on Linux (a release
+/// carries both) and is ignored on macOS. Intel macOS / unsupported platforms
+/// return [`AssetError::NoArtifactForPlatform`] rather than mis-selecting.
 pub fn select_asset(
     release: &ReleaseMeta,
     platform: Platform,
+    format: PkgFormat,
 ) -> Result<ArtifactSelection<'_>, AssetError> {
-    let (kind, matches): (ArtifactKind, fn(&str) -> bool) = match platform {
-        Platform::MacOsAarch64 => (ArtifactKind::AppTarGz, is_macos_aarch64_artifact),
-        Platform::LinuxX86_64 => (ArtifactKind::Deb, is_linux_x86_64_artifact),
-        Platform::LinuxAarch64 => (ArtifactKind::Deb, is_linux_aarch64_artifact),
-        p @ (Platform::MacOsX86_64 | Platform::Unsupported) => {
+    let (kind, matches): (ArtifactKind, fn(&str) -> bool) = match (platform, format) {
+        (Platform::MacOsAarch64, _) => (ArtifactKind::AppTarGz, is_macos_aarch64_artifact),
+        (Platform::LinuxX86_64, PkgFormat::Deb) => (ArtifactKind::Deb, is_linux_x86_64_artifact),
+        (Platform::LinuxX86_64, PkgFormat::Pacman) => {
+            (ArtifactKind::Pacman, is_linux_x86_64_pacman)
+        }
+        (Platform::LinuxAarch64, PkgFormat::Deb) => (ArtifactKind::Deb, is_linux_aarch64_artifact),
+        (Platform::LinuxAarch64, PkgFormat::Pacman) => {
+            (ArtifactKind::Pacman, is_linux_aarch64_pacman)
+        }
+        (p @ (Platform::MacOsX86_64 | Platform::Unsupported), _) => {
             return Err(AssetError::NoArtifactForPlatform(p));
         }
     };
@@ -176,6 +221,22 @@ fn is_linux_x86_64_artifact(name: &str) -> bool {
 fn is_linux_aarch64_artifact(name: &str) -> bool {
     let lower = name.to_ascii_lowercase();
     lower.ends_with(".deb") && (lower.contains("aarch64") || lower.contains("arm64"))
+}
+
+// The Arch package is named `Yerd_Linux_x86_64_*.pkg.tar.zst`. The `.zst` suffix is
+// disjoint from `.deb`, so deb and pacman matchers never collide on the same name.
+#[allow(clippy::case_sensitive_file_extension_comparisons)]
+fn is_linux_x86_64_pacman(name: &str) -> bool {
+    name.ends_with(".pkg.tar.zst") && (name.contains("x86_64") || name.contains("amd64"))
+}
+
+// arm64 Arch is not built for v1 (no artifact is published), but the matcher is kept
+// symmetric with the .deb side and tested for disjointness. Case-insensitive for the
+// `Arm64`/`aarch64` token, mirroring `is_linux_aarch64_artifact`.
+#[allow(clippy::case_sensitive_file_extension_comparisons)]
+fn is_linux_aarch64_pacman(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    lower.ends_with(".pkg.tar.zst") && (lower.contains("aarch64") || lower.contains("arm64"))
 }
 
 /// Why verification failed.
@@ -298,11 +359,24 @@ mod tests {
             "Yerd_MacOS_AppleSilicon_v2-0-2.dmg",
             "SHA256SUMS",
         ]);
-        let sel = select_asset(&r, Platform::MacOsAarch64).unwrap();
+        let sel = select_asset(&r, Platform::MacOsAarch64, PkgFormat::Deb).unwrap();
         assert_eq!(sel.kind, ArtifactKind::AppTarGz);
         assert!(sel.artifact.name.ends_with(".app.tar.gz"));
         assert!(sel.signature.name.ends_with(".app.tar.gz.sig"));
         assert_eq!(sel.checksums.name, "SHA256SUMS");
+    }
+
+    #[test]
+    fn macos_selection_ignores_pkg_format() {
+        // A pacman-format build on macOS still picks the `.app.tar.gz`: `format`
+        // only disambiguates Linux.
+        let r = release_with(&[
+            "Yerd_MacOS_AppleSilicon_v2-0-2.app.tar.gz",
+            "Yerd_MacOS_AppleSilicon_v2-0-2.app.tar.gz.sig",
+            "SHA256SUMS",
+        ]);
+        let sel = select_asset(&r, Platform::MacOsAarch64, PkgFormat::Pacman).unwrap();
+        assert_eq!(sel.kind, ArtifactKind::AppTarGz);
     }
 
     #[test]
@@ -312,7 +386,7 @@ mod tests {
             "Yerd_Linux_x86_64_v2-0-2.deb.sig",
             "SHA256SUMS",
         ]);
-        let sel = select_asset(&r, Platform::LinuxX86_64).unwrap();
+        let sel = select_asset(&r, Platform::LinuxX86_64, PkgFormat::Deb).unwrap();
         assert_eq!(sel.kind, ArtifactKind::Deb);
         assert!(sel.artifact.name.ends_with(".deb"));
     }
@@ -324,9 +398,41 @@ mod tests {
             "Yerd_Linux_Arm64_v2-0-2.deb.sig",
             "SHA256SUMS",
         ]);
-        let sel = select_asset(&r, Platform::LinuxAarch64).unwrap();
+        let sel = select_asset(&r, Platform::LinuxAarch64, PkgFormat::Deb).unwrap();
         assert_eq!(sel.kind, ArtifactKind::Deb);
         assert_eq!(sel.artifact.name, "Yerd_Linux_Arm64_v2-0-2.deb");
+    }
+
+    #[test]
+    fn selects_linux_x86_64_pacman() {
+        let r = release_with(&[
+            "Yerd_Linux_x86_64_v2-0-2.pkg.tar.zst",
+            "Yerd_Linux_x86_64_v2-0-2.pkg.tar.zst.sig",
+            "SHA256SUMS",
+        ]);
+        let sel = select_asset(&r, Platform::LinuxX86_64, PkgFormat::Pacman).unwrap();
+        assert_eq!(sel.kind, ArtifactKind::Pacman);
+        assert!(sel.artifact.name.ends_with(".pkg.tar.zst"));
+        assert!(sel.signature.name.ends_with(".pkg.tar.zst.sig"));
+    }
+
+    #[test]
+    fn both_artifacts_present_resolves_per_format() {
+        // The real release carries BOTH the .deb and the .pkg.tar.zst for x86_64;
+        // the build-time format is the only tiebreak.
+        let r = release_with(&[
+            "Yerd_Linux_x86_64_v2-0-2.deb",
+            "Yerd_Linux_x86_64_v2-0-2.deb.sig",
+            "Yerd_Linux_x86_64_v2-0-2.pkg.tar.zst",
+            "Yerd_Linux_x86_64_v2-0-2.pkg.tar.zst.sig",
+            "SHA256SUMS",
+        ]);
+        let deb = select_asset(&r, Platform::LinuxX86_64, PkgFormat::Deb).unwrap();
+        assert_eq!(deb.kind, ArtifactKind::Deb);
+        assert!(deb.artifact.name.ends_with(".deb"));
+        let pac = select_asset(&r, Platform::LinuxX86_64, PkgFormat::Pacman).unwrap();
+        assert_eq!(pac.kind, ArtifactKind::Pacman);
+        assert!(pac.artifact.name.ends_with(".pkg.tar.zst"));
     }
 
     #[test]
@@ -337,7 +443,7 @@ mod tests {
             "SHA256SUMS",
         ]);
         assert_eq!(
-            select_asset(&only_x86, Platform::LinuxAarch64),
+            select_asset(&only_x86, Platform::LinuxAarch64, PkgFormat::Deb),
             Err(AssetError::NoArtifactForPlatform(Platform::LinuxAarch64))
         );
         let only_arm = release_with(&[
@@ -346,7 +452,42 @@ mod tests {
             "SHA256SUMS",
         ]);
         assert_eq!(
-            select_asset(&only_arm, Platform::LinuxX86_64),
+            select_asset(&only_arm, Platform::LinuxX86_64, PkgFormat::Deb),
+            Err(AssetError::NoArtifactForPlatform(Platform::LinuxX86_64))
+        );
+    }
+
+    #[test]
+    fn pacman_matchers_are_disjoint_from_deb_and_across_arch() {
+        // A pacman-format build must never pick a `.deb`, and the x86_64/arm64
+        // pacman matchers must not cross-select.
+        let only_deb = release_with(&[
+            "Yerd_Linux_x86_64_v2-0-2.deb",
+            "Yerd_Linux_x86_64_v2-0-2.deb.sig",
+            "SHA256SUMS",
+        ]);
+        assert_eq!(
+            select_asset(&only_deb, Platform::LinuxX86_64, PkgFormat::Pacman),
+            Err(AssetError::NoArtifactForPlatform(Platform::LinuxX86_64))
+        );
+        // A .deb build must never pick a `.pkg.tar.zst`.
+        let only_pac = release_with(&[
+            "Yerd_Linux_x86_64_v2-0-2.pkg.tar.zst",
+            "Yerd_Linux_x86_64_v2-0-2.pkg.tar.zst.sig",
+            "SHA256SUMS",
+        ]);
+        assert_eq!(
+            select_asset(&only_pac, Platform::LinuxX86_64, PkgFormat::Deb),
+            Err(AssetError::NoArtifactForPlatform(Platform::LinuxX86_64))
+        );
+        // x86_64 pacman build must not pick an arm64 `.pkg.tar.zst`.
+        let only_arm_pac = release_with(&[
+            "Yerd_Linux_Arm64_v2-0-2.pkg.tar.zst",
+            "Yerd_Linux_Arm64_v2-0-2.pkg.tar.zst.sig",
+            "SHA256SUMS",
+        ]);
+        assert_eq!(
+            select_asset(&only_arm_pac, Platform::LinuxX86_64, PkgFormat::Pacman),
             Err(AssetError::NoArtifactForPlatform(Platform::LinuxX86_64))
         );
     }
@@ -355,7 +496,7 @@ mod tests {
     fn intel_macos_has_no_artifact() {
         let r = release_with(&["Yerd_MacOS_AppleSilicon_v2-0-2.app.tar.gz", "SHA256SUMS"]);
         assert_eq!(
-            select_asset(&r, Platform::MacOsX86_64),
+            select_asset(&r, Platform::MacOsX86_64, PkgFormat::Deb),
             Err(AssetError::NoArtifactForPlatform(Platform::MacOsX86_64))
         );
     }
@@ -364,7 +505,7 @@ mod tests {
     fn missing_signature_is_an_error() {
         let r = release_with(&["Yerd_Linux_x86_64_v2-0-2.deb", "SHA256SUMS"]);
         assert!(matches!(
-            select_asset(&r, Platform::LinuxX86_64),
+            select_asset(&r, Platform::LinuxX86_64, PkgFormat::Deb),
             Err(AssetError::MissingSignature(_))
         ));
     }
@@ -376,7 +517,7 @@ mod tests {
             "Yerd_Linux_x86_64_v2-0-2.deb.sig",
         ]);
         assert_eq!(
-            select_asset(&r, Platform::LinuxX86_64),
+            select_asset(&r, Platform::LinuxX86_64, PkgFormat::Deb),
             Err(AssetError::MissingChecksums)
         );
     }

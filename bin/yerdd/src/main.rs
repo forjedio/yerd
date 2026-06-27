@@ -12,6 +12,13 @@ use yerdd::{error, run, tracing_init, Outcome};
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
+    // Hidden diagnostic (release gate): print the build's self-update package
+    // format and exit before any daemon work. Reads `yerd_update::PkgFormat`,
+    // which the `pacman` feature flips — see `args::Cli::pkg_format`.
+    if cli.pkg_format {
+        println!("{}", pkg_format_str());
+        return ExitCode::SUCCESS;
+    }
     let Command::Serve(args) = cli
         .command
         .unwrap_or_else(|| Command::Serve(ServeArgs::default()));
@@ -49,6 +56,16 @@ fn main() -> ExitCode {
             tracing::error!(error = %e, "yerdd exiting with error");
             ExitCode::from(error::exit_code(&e))
         }
+    }
+}
+
+/// The build's self-update package format as a stable lowercase string
+/// (`"pacman"` when compiled with the `pacman` feature, else `"deb"`). Used by the
+/// hidden `--pkg-format` diagnostic the release pipeline asserts on.
+fn pkg_format_str() -> &'static str {
+    match yerd_update::PkgFormat::current() {
+        yerd_update::PkgFormat::Pacman => "pacman",
+        yerd_update::PkgFormat::Deb => "deb",
     }
 }
 

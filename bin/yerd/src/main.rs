@@ -26,6 +26,9 @@ fn main() -> ExitCode {
     if let Some(code) = yerd::apply::run_install_deb_from_args() {
         return code;
     }
+    if let Some(code) = yerd::apply::run_install_pacman_from_args() {
+        return code;
+    }
 
     let cli = Cli::parse();
     let runtime = match tokio::runtime::Builder::new_current_thread()

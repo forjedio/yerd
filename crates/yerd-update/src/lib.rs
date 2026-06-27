@@ -19,7 +19,7 @@ use semver::Version;
 mod artifact;
 pub use artifact::{
     select_asset, sha256_for, sha256_hex, verify_minisign, verify_sha256, ArtifactKind,
-    ArtifactSelection, AssetError, Platform, VerifyError, UPDATE_PUBLIC_KEY,
+    ArtifactSelection, AssetError, PkgFormat, Platform, VerifyError, UPDATE_PUBLIC_KEY,
 };
 
 /// Self-update release channel.

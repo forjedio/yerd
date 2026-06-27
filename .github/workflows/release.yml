@@ -365,12 +365,99 @@ jobs:
             apps/yerd-gui/src-tauri/target/release/bundle/**/*.dmg
             apps/yerd-gui/src-tauri/target/release/bundle/updater/*.app.tar.gz
 
+  # Build the native Arch package (.pkg.tar.zst). Tauri has no pacman bundler, so
+  # we compile the binaries + GUI from source in an Arch container and assemble
+  # the package via packaging/arch/PKGBUILD. x86_64 only for v1. The daemon is
+  # built with the `pacman` self-update feature; the gate below proves it took.
+  arch:
+    name: arch (x86_64)
+    needs: check
+    runs-on: ubuntu-22.04
+    container: archlinux:base-devel
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build deps
+        # `namcap` and `desktop-file-utils` are separate `extra` packages (not in
+        # base-devel); the assert step needs them. libayatana-appindicator/librsvg
+        # are dlopen'd by the GUI at runtime (see PKGBUILD depends).
+        run: |
+          pacman -Syu --noconfirm --needed \
+            rust cargo nodejs npm git \
+            webkit2gtk-4.1 gtk3 libayatana-appindicator librsvg libcap \
+            namcap desktop-file-utils
+
+      - name: Build the Arch package
+        run: |
+          set -euo pipefail
+          # makepkg refuses to run as root; build as an unprivileged user that owns
+          # the checkout (actions/checkout runs as root inside the container).
+          useradd -m builder
+          chown -R builder:builder "$GITHUB_WORKSPACE"
+          git config --global --add safe.directory '*'
+          # pkgver forbids '-'; a prerelease tag carries `-rc.N`. Strip leading `v`,
+          # then `-` → `_`. The release asset name is derived from the tag later, so
+          # this sanitisation only affects the in-package version string.
+          RAWVER="${GITHUB_REF_NAME#v}"
+          YERD_PKGVER="${RAWVER//-/_}"
+          echo "YERD_PKGVER=$YERD_PKGVER" >> "$GITHUB_ENV"
+          # Build from the in-tree checkout (PKGBUILD has no source=()).
+          sudo -u builder env \
+            YERD_PKGVER="$YERD_PKGVER" \
+            YERD_SRCROOT="$GITHUB_WORKSPACE" \
+            PKGEXT=".pkg.tar.zst" \
+            bash -c 'cd "$YERD_SRCROOT/packaging/arch" && makepkg -f --noconfirm'
+          pkg=$(find "$GITHUB_WORKSPACE/packaging/arch" -maxdepth 1 -name '*.pkg.tar.zst' | head -n1)
+          [ -n "$pkg" ] || { echo "::error::no .pkg.tar.zst produced"; exit 1; }
+          echo "PKG=$pkg" >> "$GITHUB_ENV"
+
+      - name: Assert package contents + lint + pkg-format
+        run: |
+          set -euo pipefail
+          list=$(bsdtar tf "$PKG")
+          # All four binaries embedded under /usr/bin (matches the .deb layout).
+          for b in yerd yerdd yerd-helper yerd-gui; do
+            printf '%s\n' "$list" | grep -Eq "^usr/bin/$b\$" \
+              || { echo "::error::Arch package missing /usr/bin/$b"; exit 1; }
+          done
+          printf '%s\n' "$list" | grep -q '^\.INSTALL$' \
+            || { echo "::error::Arch package has no .INSTALL scriptlet (setcap)"; exit 1; }
+          printf '%s\n' "$list" | grep -q '^usr/share/applications/yerd-gui\.desktop$' \
+            || { echo "::error::Arch package has no .desktop"; exit 1; }
+          printf '%s\n' "$list" | grep -q '^usr/share/licenses/yerd/LICENSE$' \
+            || { echo "::error::Arch package has no license"; exit 1; }
+          # Validate the desktop file; run namcap (informational).
+          tmp=$(mktemp -d)
+          bsdtar -xf "$PKG" -C "$tmp" usr/share/applications/yerd-gui.desktop
+          desktop-file-validate "$tmp/usr/share/applications/yerd-gui.desktop"
+          namcap "$PKG" || true
+          # Pkg-format gate: the SHIPPED daemon must self-update via pacman, else a
+          # forgotten `--features` flag would ship a `.deb`-format updater here.
+          fmt=$("$GITHUB_WORKSPACE/target/release/yerdd" --pkg-format)
+          [ "$fmt" = "pacman" ] \
+            || { echo "::error::yerdd --pkg-format=$fmt (expected pacman); the pacman feature did not take"; exit 1; }
+          echo "Arch package OK: $PKG (pkg-format=$fmt)"
+
+      - name: Stage with a Yerd_* name for the publish renamer
+        run: |
+          set -euo pipefail
+          mkdir -p "$GITHUB_WORKSPACE/arch-out"
+          # `Yerd_*` + `x86_64` + `.pkg.tar.zst` so the publish rename loop relabels
+          # it to Yerd_Linux_x86_64_v<ver>.pkg.tar.zst.
+          cp "$PKG" "$GITHUB_WORKSPACE/arch-out/Yerd_${YERD_PKGVER}_x86_64.pkg.tar.zst"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: arch-x86_64
+          if-no-files-found: error
+          path: arch-out/*.pkg.tar.zst
+
   # The ONLY job that touches the release. Assemble everything, create it as a
   # hidden draft with all files + checksums attached, then flip it public —
   # so nobody can ever see a release missing its artifacts.
   publish:
     name: publish
-    needs: [gui]
+    needs: [gui, arch]
     runs-on: ubuntu-22.04
     # Checkout is needed so the trust-anchor gate can read the embedded
     # UPDATE_PUBLIC_KEY from source at the tagged commit. GH_REPO is kept explicit
@@ -400,22 +487,26 @@ jobs:
         run: |
           set -euo pipefail
           find . -mindepth 2 -type f \
-            \( -name '*.deb' -o -name '*.dmg' -o -name '*.app.tar.gz' \) -exec mv -t . {} +
+            \( -name '*.deb' -o -name '*.dmg' -o -name '*.app.tar.gz' -o -name '*.pkg.tar.zst' \) \
+            -exec mv -t . {} +
           # Drop the now-redundant nested dirs so `dist/*` is files-only.
           find . -mindepth 1 -type d -exec rm -rf {} +
           # Human-friendly release asset names:
           #   Yerd_<OS>_<Arch>_v<version>.<ext>   (e.g. Yerd_MacOS_AppleSilicon_v2-0-2-rc-3.dmg)
           # Tauri emits Yerd_<ver>_<arch>.{dmg,deb}; the .app.tar.gz is already
-          # Yerd_MacOS_AppleSilicon.app.tar.gz. We relabel OS+arch and dash the
-          # version (dots → dashes) so the Releases page reads cleanly.
+          # Yerd_MacOS_AppleSilicon.app.tar.gz; the arch job emits
+          # Yerd_<ver>_x86_64.pkg.tar.zst. We relabel OS+arch and dash the version
+          # (dots → dashes) so the Releases page reads cleanly.
           ver="v$(printf '%s' "${GITHUB_REF_NAME#v}" | tr '.' '-')"
           for f in Yerd_* yerd-gui_* yerd_*; do
             [ -e "$f" ] || continue
-            # Compound extension first (`.app.tar.gz` would otherwise become `gz`).
+            # Compound extensions first (`.app.tar.gz`/`.pkg.tar.zst` would
+            # otherwise collapse to `gz`/`zst`).
             case "$f" in
-              *.app.tar.gz) ext="app.tar.gz"; os="MacOS" ;;
-              *.dmg)        ext="dmg";        os="MacOS" ;;
-              *.deb)        ext="deb";        os="Linux" ;;
+              *.app.tar.gz)  ext="app.tar.gz";  os="MacOS" ;;
+              *.pkg.tar.zst) ext="pkg.tar.zst"; os="Linux" ;;
+              *.dmg)         ext="dmg";         os="MacOS" ;;
+              *.deb)         ext="deb";         os="Linux" ;;
               *) continue ;;
             esac
             case "$f" in
@@ -456,7 +547,7 @@ jobs:
           trap 'rm -f "$RUNNER_TEMP/minisign.key"' EXIT
           umask 077; printf '%s\n' "$MINISIGN_SECRET_KEY" > "$RUNNER_TEMP/minisign.key"
           shopt -s nullglob
-          for f in *.app.tar.gz *.deb; do
+          for f in *.app.tar.gz *.deb *.pkg.tar.zst; do
             minisign -S -H -s "$RUNNER_TEMP/minisign.key" -m "$f" -x "$f.sig"
             echo "signed $f -> $f.sig"
           done
@@ -479,7 +570,7 @@ jobs:
             exit 1
           fi
           shopt -s nullglob
-          for f in *.app.tar.gz *.deb; do
+          for f in *.app.tar.gz *.deb *.pkg.tar.zst; do
             minisign -V -H -P "$KEY" -m "$f" -x "$f.sig" \
               || { echo "::error::embedded UPDATE_PUBLIC_KEY does not verify $f.sig (key/secret mismatch)"; exit 1; }
             echo "verified $f against embedded key"
@@ -489,7 +580,7 @@ jobs:
         working-directory: dist
         run: |
           find . -maxdepth 1 -type f \
-            \( -name '*.deb' -o -name '*.dmg' -o -name '*.app.tar.gz' \) \
+            \( -name '*.deb' -o -name '*.dmg' -o -name '*.app.tar.gz' -o -name '*.pkg.tar.zst' \) \
             -printf '%P\n' | sort | xargs -r sha256sum > SHA256SUMS
           echo "Artifacts:" && cat SHA256SUMS
 

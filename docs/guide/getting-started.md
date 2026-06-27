@@ -25,7 +25,8 @@ so they can't both own them at once. **Stop the other tool first**, then follow
 
 ::: info Supported platforms
 Yerd ships a single desktop app for **macOS** (Apple Silicon) and **Linux**
-(x86-64 and arm64, Debian/Ubuntu `.deb`). The daemon, the `yerd` CLI, and the privileged
+(Debian/Ubuntu `.deb` for x86-64 and arm64, plus an Arch `.pkg.tar.zst` for
+x86-64). The daemon, the `yerd` CLI, and the privileged
 helper are all bundled inside it — there is nothing else to install. PHP itself is
 **not** bundled - Yerd downloads prebuilt static PHP builds on demand when you run
 `yerd install php`, so the install stays tiny and fast.
@@ -47,8 +48,15 @@ tracked for **8 July 2026**):
 | Platform | Download | Install |
 |---|---|---|
 | macOS (Apple Silicon) | `Yerd_MacOS_AppleSilicon_v<ver>.dmg` | open, drag Yerd to Applications |
-| Linux (x86-64) | `Yerd_Linux_x86_64_v<ver>.deb` | `sudo apt install ./Yerd_Linux_x86_64_v<ver>.deb` |
-| Linux (arm64) | `Yerd_Linux_Arm64_v<ver>.deb` | `sudo apt install ./Yerd_Linux_Arm64_v<ver>.deb` |
+| Linux · Debian/Ubuntu (x86-64) | `Yerd_Linux_x86_64_v<ver>.deb` | `sudo apt install ./Yerd_Linux_x86_64_v<ver>.deb` |
+| Linux · Debian/Ubuntu (arm64) | `Yerd_Linux_Arm64_v<ver>.deb` | `sudo apt install ./Yerd_Linux_Arm64_v<ver>.deb` |
+| Linux · Arch (x86-64) | `Yerd_Linux_x86_64_v<ver>.pkg.tar.zst` | `sudo pacman -U ./Yerd_Linux_x86_64_v<ver>.pkg.tar.zst` |
+
+::: tip Arch Linux
+Remove any leftover `/usr/bin/yerd` from the old v1 (Go) project first — pacman
+won't install over a file it doesn't own — and `pacman -Syu` before installing so
+the bundled GUI's WebKit/GTK libraries match your system.
+:::
 
 On first launch the app greets you with a short [onboarding journey](./welcome-journey)
 that starts the bundled daemon, installs a PHP version, parks your projects, and
@@ -60,9 +68,10 @@ and follow the steps.
 <ThemedImage light="/images/overview-light.png" dark="/images/overview-dark.png" alt="The Yerd desktop app, landed on the Overview dashboard" />
 
 ::: tip How the daemon binds 80/443
-On Linux the `.deb`'s post-install grants `yerdd` the `cap_net_bind_service`
-capability (via `setcap`) so the **unprivileged** daemon can bind ports 80/443,
-and re-applies it on every upgrade. On macOS the one-time elevate installs a `pf`
+On Linux the package's post-install (the `.deb` postinst / the Arch `.install`
+scriptlet) grants `yerdd` the `cap_net_bind_service` capability (via `setcap`) so
+the **unprivileged** daemon can bind ports 80/443, and re-applies it on every
+upgrade. On macOS the one-time elevate installs a `pf`
 redirect. If neither is in place, Yerd falls back to `8080`/`8443` automatically -
 and `yerd doctor` tells you.
 :::
@@ -71,7 +80,7 @@ and `yerd doctor` tells you.
 
 The `yerd` command comes with the app:
 
-- **Linux:** the `.deb` puts `yerd` on your `PATH` automatically.
+- **Linux:** the `.deb`/`.pkg.tar.zst` puts `yerd` on your `PATH` automatically.
 - **macOS:** open **Settings → Terminal CLI** and click **Install** - it links the
   bundled `yerd` onto your `PATH` (via `yerd path`).
 

@@ -44,4 +44,6 @@ pub enum StagedArtifact {
     AppTarGz,
     /// Linux `.deb` - the applier reinstalls via `dpkg -i`.
     Deb,
+    /// Arch `.pkg.tar.zst` - the applier reinstalls via `pacman -U`.
+    Pacman,
 }
