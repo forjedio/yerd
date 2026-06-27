@@ -27,7 +27,9 @@ pub struct PlatformDirs {
     ///
     /// Linux: `XDG_RUNTIME_DIR/yerd` or, when `XDG_RUNTIME_DIR` is unset,
     /// `/tmp/yerd-$UID` (see struct-level docs for the caller contract).
-    /// macOS: a `yerd-$UID` directory inside `std::env::temp_dir()`.
+    /// macOS: a deterministic `/tmp/yerd-$UID` directory (NOT
+    /// `std::env::temp_dir()`/`$TMPDIR` — see `os::macos::resolve` for why the
+    /// uid-derived `/tmp` path is load-bearing for socket reconstruction).
     pub runtime: PathBuf,
 }
 
