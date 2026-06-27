@@ -94,7 +94,7 @@ The platforms diverge most here.
 - **Linux:** grants `cap_net_bind_service=+ep` on the `yerdd` binary (`setcap`). The unprivileged daemon can then bind 80/443 directly. Restart the daemon (as your user) for it to take effect.
 
   ::: warning setcap is reset by upgrades
-  The capability lives on the binary file, so replacing that file (a package upgrade) clears it. The `.deb` re-applies it on every upgrade; other install methods need `sudo yerd elevate ports` again after upgrading. There's no clean reverse, so `sudo yerd unelevate ports` only prints the manual command (`sudo setcap -r <path-to-yerdd>`).
+  The capability lives on the binary file, so replacing that file (a package upgrade) clears it. The Linux packages re-apply it on every upgrade (the `.deb`'s post-install and the Arch package's `.install` scriptlet); other install methods need `sudo yerd elevate ports` again after upgrading. There's no clean reverse, so `sudo yerd unelevate ports` only prints the manual command (`sudo setcap -r <path-to-yerdd>`).
   :::
 
 - **macOS:** no `setcap`. The helper installs a `pf` redirect (`rdr`) mapping `80 -> http_port` and `443 -> https_port`, the rootless ports the daemon already bound. The daemon keeps its high ports; pf forwards the privileged ones. A `LaunchDaemon` re-applies the redirect at boot. It's live immediately (no restart) and fully reversible via `sudo yerd unelevate ports`.

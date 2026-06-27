@@ -60,6 +60,19 @@ jobs:
       - name: Test
         run: cargo test --workspace
 
+      # The Arch package builds the daemon with `--features yerdd/pacman`, which
+      # default `--workspace` never exercises — so lint + test that path too
+      # (the `PkgFormat::Pacman` selection arm + the cfg-gated stage_update
+      # fixtures). Linux-only: it's where the Arch package ships, and the arm64
+      # leg also covers the aarch64 selection arm. Mirrors the release `arch`
+      # job's build flag so a feature-gated break fails on push, not at tag time.
+      - name: Clippy + test (pacman feature)
+        if: runner.os == 'Linux'
+        run: |
+          cargo clippy -p yerdd -p yerd-update --features yerdd/pacman \
+            --all-targets -- -D warnings
+          cargo test -p yerdd -p yerd-update --features yerdd/pacman
+
   # Frontend unit/component tests + production build (type-check via vue-tsc).
   frontend:
     name: frontend

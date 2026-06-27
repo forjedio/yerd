@@ -98,7 +98,7 @@ loginctl enable-linger "$USER"
 :::
 
 ::: info Binding 80/443 unprivileged
-On the `.deb` install, the post-install step grants `yerdd` the `cap_net_bind_service` capability so the unprivileged daemon can bind 80/443, and re-applies it on every upgrade (dpkg replaces the binary, wiping file capabilities). Without the capability, the daemon falls back to `8080`/`8443` and `yerd doctor` tells you. See [Elevation & Privileges](./elevation).
+On a Linux package install (the `.deb`'s post-install, or the Arch package's `.install` scriptlet), the step grants `yerdd` the `cap_net_bind_service` capability so the unprivileged daemon can bind 80/443, and re-applies it on every upgrade (the package manager replaces the binary, wiping file capabilities). Without the capability, the daemon falls back to `8080`/`8443` and `yerd doctor` tells you. See [Elevation & Privileges](./elevation).
 :::
 
 ### macOS

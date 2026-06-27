@@ -11,13 +11,14 @@ The app is the **only** artifact, with the daemon + CLI + helper embedded:
 | Platform | Artifact | Install |
 |---|---|---|
 | macOS (Apple Silicon) | `Yerd_MacOS_AppleSilicon_v<ver>.dmg` | Open the DMG, drag Yerd to Applications |
-| Linux (x86-64) | `Yerd_Linux_x86_64_v<ver>.deb` | `sudo apt install ./Yerd_Linux_x86_64_v<ver>.deb` |
-| Linux (arm64) | `Yerd_Linux_Arm64_v<ver>.deb` | `sudo apt install ./Yerd_Linux_Arm64_v<ver>.deb` |
+| Linux · Debian/Ubuntu (x86-64) | `Yerd_Linux_x86_64_v<ver>.deb` | `sudo apt install ./Yerd_Linux_x86_64_v<ver>.deb` |
+| Linux · Debian/Ubuntu (arm64) | `Yerd_Linux_Arm64_v<ver>.deb` | `sudo apt install ./Yerd_Linux_Arm64_v<ver>.deb` |
+| Linux · Arch (x86-64) | `Yerd_Linux_x86_64_v<ver>.pkg.tar.zst` | `sudo pacman -U ./Yerd_Linux_x86_64_v<ver>.pkg.tar.zst` |
 
 The macOS DMG targets Apple Silicon (`aarch64`) only; Intel (x86-64) Macs are not supported at this time. There's no Windows bundle yet: the daemon's named-pipe address isn't client-derivable.
 
 ::: tip The GUI sets up the backend for you
-The GUI is a client of the [daemon](./daemon), and the daemon (`yerdd`), the `yerd` CLI, and `yerd-helper` are all **bundled inside the app** - nothing is downloaded at runtime. On first launch the app simply **starts its bundled daemon**, then lands you on the Overview dashboard. On macOS that makes setup essentially **drag-and-drop**: drag Yerd to Applications, launch it, done. On macOS the daemon registers as a background **SMAppService** login item (shown as "Yerd" in System Settings → Login Items); on Linux the `.deb` puts `yerd` on your `PATH` and grants the daemon its privileged-port capability.
+The GUI is a client of the [daemon](./daemon), and the daemon (`yerdd`), the `yerd` CLI, and `yerd-helper` are all **bundled inside the app** - nothing is downloaded at runtime. On first launch the app simply **starts its bundled daemon**, then lands you on the Overview dashboard. On macOS that makes setup essentially **drag-and-drop**: drag Yerd to Applications, launch it, done. On macOS the daemon registers as a background **SMAppService** login item (shown as "Yerd" in System Settings → Login Items); on Linux the package (`.deb`/`.pkg.tar.zst`) puts `yerd` on your `PATH` and grants the daemon its privileged-port capability.
 :::
 
 ## Tray-first by design

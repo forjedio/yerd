@@ -287,7 +287,7 @@ all happen for you on first launch - drag Yerd to Applications (macOS), open it,
 and you land ready to add a site. The terminal path, start to finish:
 
 ```sh
-# Install the app (.dmg on macOS, .deb on Linux) from the releases page. The app
+# Install the app (.dmg on macOS, .deb/.pkg.tar.zst on Linux) from the releases page. The app
 # starts the daemon for you; to run it from a terminal instead:
 yerdd serve &                           # start the bundled daemon directly
 sudo yerd elevate                       # one-time: trust CA, resolver, ports

@@ -529,8 +529,8 @@ export interface DaemonDiagnostics {
 
 /**
  * Whether the bundled `yerd` CLI is symlinked onto PATH (macOS host command
- * `cli_path_status`). On Linux the `.deb` already puts `yerd` on PATH, so the
- * control is hidden there.
+ * `cli_path_status`). On Linux the package (`.deb`/`.pkg.tar.zst`) already puts
+ * `yerd` on PATH, so the control is hidden there.
  */
 export interface CliPathStatus {
   installed: boolean;

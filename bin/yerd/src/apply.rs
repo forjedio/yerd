@@ -518,10 +518,11 @@ fn elevated_install_pacman(staged: &Path) -> Result<(), String> {
         } else {
             // Prefer stderr; fall back to stdout (pacman writes some diagnostics there).
             let stderr = String::from_utf8_lossy(&out.stderr);
-            let mut detail = stderr.trim().to_owned();
-            if detail.is_empty() {
-                detail = String::from_utf8_lossy(&out.stdout).trim().to_owned();
-            }
+            let detail = if stderr.trim().is_empty() {
+                String::from_utf8_lossy(&out.stdout).trim().to_owned()
+            } else {
+                stderr.trim().to_owned()
+            };
             if detail.is_empty() {
                 Err("pacman failed to install the new package".to_owned())
             } else {

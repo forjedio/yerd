@@ -27,7 +27,7 @@ It removes, in order:
 2. **The daemon** — stops and disables the per-user service (systemd `--user` / launchd) and reaps the running `yerdd` (which in turn stops its PHP-FPM pools and any managed services).
 3. **The PATH entry** — removes the yerd block from your shell startup files (the same block [`yerd path`](./tooling) manages).
 4. **Config, data, and cache** — the `yerd.toml` config, installed PHP versions, dev tools, downloads, the local CA, and the runtime socket directory.
-5. **The binaries** — `yerd`, `yerdd`, and `yerd-helper`. A `.deb` install is left for `sudo apt purge yerd` instead (yerd never `rm`s package-managed files).
+5. **The binaries** — `yerd`, `yerdd`, and `yerd-helper`. A package install is left for your package manager instead (`sudo apt purge yerd` on Debian/Ubuntu, `sudo pacman -R yerd` on Arch) — yerd never `rm`s package-managed files.
 
 When something can't be removed automatically, it's listed at the end as a leftover to handle manually.
 
@@ -48,7 +48,7 @@ You'll be asked to confirm before anything is removed. Pass `--yes` (`-y`) to sk
 
 ## Platform support
 
-Full uninstall is supported on **macOS** and **Linux**. The desktop app itself (the `.app` / `.deb`) is removed the usual way for your platform — drag to Trash on macOS, or `sudo apt purge yerd` on Linux.
+Full uninstall is supported on **macOS** and **Linux**. The desktop app itself (the `.app` / `.deb` / `.pkg.tar.zst`) is removed the usual way for your platform — drag to Trash on macOS, or `sudo apt purge yerd` (Debian/Ubuntu) / `sudo pacman -R yerd` (Arch) on Linux.
 
 ## See also
 
