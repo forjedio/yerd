@@ -45,7 +45,7 @@ use yerd_update::{verify_minisign, UPDATE_PUBLIC_KEY};
 pub const APPLY_ENV: &str = "YERD_APPLY_UPDATE";
 /// Env var carrying the staged artifact path.
 pub const APPLY_PATH_ENV: &str = "YERD_APPLY_PATH";
-/// Env var carrying the artifact kind (`"deb"` / anything else = app tarball).
+/// Env var carrying the artifact kind: `"deb"`, `"pacman"`, or `"app_tar_gz"`.
 pub const APPLY_KIND_ENV: &str = "YERD_APPLY_KIND";
 /// Env var: `"1"` to relaunch the GUI after the install.
 pub const APPLY_RELAUNCH_GUI_ENV: &str = "YERD_APPLY_RELAUNCH_GUI";
@@ -53,6 +53,10 @@ pub const APPLY_RELAUNCH_GUI_ENV: &str = "YERD_APPLY_RELAUNCH_GUI";
 /// environment, so the staged path is passed positionally. Internal; not a clap
 /// subcommand, so it never appears in help/completions.
 pub const INSTALL_DEB_ARG: &str = "__yerd-install-deb";
+
+/// argv sentinel for the elevated Arch pacman-install re-exec. Mirrors
+/// [`INSTALL_DEB_ARG`] for the `.pkg.tar.zst` install path.
+pub const INSTALL_PACMAN_ARG: &str = "__yerd-install-pacman";
 
 /// If invoked as the elevated deb installer (`yerd __yerd-install-deb <path>`),
 /// run it and return the exit code; otherwise `None` (normal dispatch proceeds).
@@ -68,6 +72,22 @@ pub fn run_install_deb_from_args() -> Option<ExitCode> {
         return Some(ExitCode::from(2));
     };
     Some(install_deb_entry(Path::new(&path)))
+}
+
+/// If invoked as the elevated pacman installer (`yerd __yerd-install-pacman
+/// <path>`), run it and return the exit code; otherwise `None`. The pacman
+/// counterpart of [`run_install_deb_from_args`].
+#[must_use]
+pub fn run_install_pacman_from_args() -> Option<ExitCode> {
+    let mut args = std::env::args_os().skip(1);
+    if args.next()?.to_str() != Some(INSTALL_PACMAN_ARG) {
+        return None;
+    }
+    let Some(path) = args.next() else {
+        eprintln!("yerd: {INSTALL_PACMAN_ARG} requires a path");
+        return Some(ExitCode::from(2));
+    };
+    Some(install_pacman_entry(Path::new(&path)))
 }
 
 /// Run the elevated deb install (Linux). The cfg split lives in a helper with a
@@ -89,6 +109,24 @@ fn install_deb_entry(_path: &Path) -> ExitCode {
     ExitCode::from(1)
 }
 
+/// Run the elevated pacman install (Linux). Mirror of [`install_deb_entry`].
+#[cfg(target_os = "linux")]
+fn install_pacman_entry(path: &Path) -> ExitCode {
+    match elevated_install_pacman(path) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("yerd: {e}");
+            ExitCode::from(1)
+        }
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn install_pacman_entry(_path: &Path) -> ExitCode {
+    eprintln!("yerd: elevated pacman install is Linux-only");
+    ExitCode::from(1)
+}
+
 /// If invoked in applier mode (the [`APPLY_ENV`] var is set), run the apply and
 /// return its exit code; otherwise `None` (normal CLI dispatch proceeds). All
 /// inputs travel via env vars so nothing leaks into the argv-driven help.
@@ -101,10 +139,11 @@ pub fn run_from_env() -> Option<ExitCode> {
     };
     let kind = match std::env::var(APPLY_KIND_ENV).as_deref() {
         Ok("deb") => StagedArtifact::Deb,
+        Ok("pacman") => StagedArtifact::Pacman,
         Ok("app_tar_gz") => StagedArtifact::AppTarGz,
         other => {
             eprintln!(
-                "yerd: invalid {APPLY_KIND_ENV}={other:?} (expected \"deb\" or \"app_tar_gz\")"
+                "yerd: invalid {APPLY_KIND_ENV}={other:?} (expected \"deb\", \"pacman\" or \"app_tar_gz\")"
             );
             return Some(ExitCode::from(2));
         }
@@ -125,6 +164,7 @@ pub fn run(staged: &Path, kind: StagedArtifact, relaunch_gui: bool) -> ExitCode 
     let result = match kind {
         StagedArtifact::AppTarGz => apply_macos(staged, relaunch_gui),
         StagedArtifact::Deb => apply_linux(staged, relaunch_gui),
+        StagedArtifact::Pacman => apply_linux_pacman(staged, relaunch_gui),
         _ => Err("unknown staged artifact kind from the daemon".to_owned()),
     };
     match result {
@@ -411,6 +451,90 @@ fn elevated_install_deb(staged: &Path) -> Result<(), String> {
     install
 }
 
+// ── Linux (Arch): reinstall the .pkg.tar.zst ─────────────────────────────────
+
+#[cfg(target_os = "linux")]
+fn apply_linux_pacman(staged: &Path, relaunch_gui: bool) -> Result<(), String> {
+    if nix::unistd::geteuid().is_root() {
+        return elevated_install_pacman(staged);
+    }
+    let exe = std::env::current_exe().map_err(|e| format!("current_exe: {e}"))?;
+    let status = Command::new("pkexec")
+        .arg(&exe)
+        .arg(INSTALL_PACMAN_ARG)
+        .arg(staged)
+        .status()
+        .map_err(|e| format!("spawning pkexec: {e}"))?;
+    if !status.success() {
+        return Err("privileged install (pkexec) failed or was cancelled".to_owned());
+    }
+    restart_services(relaunch_gui);
+    Ok(())
+}
+
+/// Elevated installer (runs as root via the `pkexec` re-exec). Mirror of
+/// [`elevated_install_deb`] for the Arch package: reads + verifies the staged
+/// `.pkg.tar.zst` **once**, copies the verified bytes into a root-owned 0700 dir,
+/// and `pacman -U`s that copy - closing the verify→re-read TOCTOU on the
+/// user-writable staged path. The package's `.install` scriptlet reapplies setcap.
+///
+/// `pacman -U` installs the file regardless of version (so an edge-to-stable
+/// downgrade works, like `dpkg -i`); `--noconfirm` because the re-exec is
+/// non-interactive. It is a partial upgrade, so on a host behind on `pacman -Syu`
+/// a newer library soname can make it abort; pacman's output (stderr, then stdout)
+/// is surfaced in the error so db-lock / unresolved-dep / `SigLevel` failures are
+/// legible rather than a generic "failed". The copy keeps a `.pkg.tar.zst` suffix
+/// for clarity; the package name itself comes from the embedded `.PKGINFO`.
+#[cfg(target_os = "linux")]
+fn elevated_install_pacman(staged: &Path) -> Result<(), String> {
+    use std::os::unix::fs::{DirBuilderExt as _, PermissionsExt as _};
+
+    if !nix::unistd::geteuid().is_root() {
+        return Err("the elevated installer must run as root".to_owned());
+    }
+    let bytes = std::fs::read(staged).map_err(|e| format!("reading staged .pkg.tar.zst: {e}"))?;
+    let sig_path = sibling_sig(staged);
+    let sig = std::fs::read_to_string(&sig_path)
+        .map_err(|e| format!("reading signature {}: {e}", sig_path.display()))?;
+    verify_minisign(UPDATE_PUBLIC_KEY, &sig, &bytes).map_err(|e| e.to_string())?;
+
+    let dir = std::env::temp_dir().join(format!("yerd-update-{}", unique_suffix()));
+    std::fs::DirBuilder::new()
+        .mode(0o700)
+        .create(&dir)
+        .map_err(|e| format!("creating secure install dir: {e}"))?;
+    let pkg = dir.join("update.pkg.tar.zst");
+    let install = (|| -> Result<(), String> {
+        std::fs::write(&pkg, &bytes).map_err(|e| format!("writing verified .pkg.tar.zst: {e}"))?;
+        let _ = std::fs::set_permissions(&pkg, std::fs::Permissions::from_mode(0o600));
+        let out = Command::new("pacman")
+            .arg("-U")
+            .arg("--noconfirm")
+            .arg(&pkg)
+            .output()
+            .map_err(|e| format!("spawning pacman: {e}"))?;
+        if out.status.success() {
+            Ok(())
+        } else {
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            let detail = if stderr.trim().is_empty() {
+                String::from_utf8_lossy(&out.stdout).trim().to_owned()
+            } else {
+                stderr.trim().to_owned()
+            };
+            if detail.is_empty() {
+                Err("pacman failed to install the new package".to_owned())
+            } else {
+                Err(format!(
+                    "pacman failed to install the new package: {detail}"
+                ))
+            }
+        }
+    })();
+    let _ = std::fs::remove_dir_all(&dir);
+    install
+}
+
 #[cfg(target_os = "linux")]
 fn relaunch_gui_app() {
     use std::os::unix::process::CommandExt as _;
@@ -442,6 +566,11 @@ fn apply_macos(_staged: &Path, _relaunch_gui: bool) -> Result<(), String> {
 #[cfg(not(target_os = "linux"))]
 fn apply_linux(_staged: &Path, _relaunch_gui: bool) -> Result<(), String> {
     Err("a .deb package cannot be installed on this platform".to_owned())
+}
+
+#[cfg(not(target_os = "linux"))]
+fn apply_linux_pacman(_staged: &Path, _relaunch_gui: bool) -> Result<(), String> {
+    Err("an Arch .pkg.tar.zst cannot be installed on this platform".to_owned())
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]

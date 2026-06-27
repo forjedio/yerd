@@ -539,7 +539,7 @@ async function toggleGuiMinimized(on: boolean): Promise<void> {
         </CardContent>
       </Card>
 
-      <!-- Terminal CLI (macOS) - Linux exposes `yerd` on PATH via the .deb. -->
+      <!-- Terminal CLI (macOS) - Linux exposes `yerd` on PATH via the package (.deb/.pkg.tar.zst). -->
       <Card v-if="isMac">
         <CardHeader>
           <CardTitle>Terminal CLI</CardTitle>

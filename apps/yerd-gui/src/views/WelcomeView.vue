@@ -270,9 +270,9 @@ async function doInstallPhp(): Promise<void> {
   }
 }
 
-// ── step 2: install yerd on PATH (macOS only; Linux already ships it on PATH
-// via the .deb, so the button is hidden there - see `isMac`). Optional and
-// recommended; it never blocks "Next". ──
+// ── step 2: install yerd on PATH (macOS only; the Linux package (.deb/.pkg.tar.zst)
+// already ships it on PATH, so the button is hidden there - see `isMac`). Optional
+// and recommended; it never blocks "Next". ──
 const platform = ref("");
 const isMac = computed(() => platform.value === "macos");
 const cli = ref<CliPathStatus | null>(null);
@@ -591,7 +591,7 @@ function onBack(): void {
             </p>
 
             <!-- Optional (recommended): put the `yerd` CLI on PATH. macOS only -
-                 Linux already ships it via the .deb. Never blocks Continue. -->
+                 the Linux package (.deb/.pkg.tar.zst) already ships it. Never blocks Continue. -->
             <div
               v-if="isMac"
               class="flex items-center justify-between gap-4 rounded-md border bg-muted/30 p-3"

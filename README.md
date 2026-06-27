@@ -107,8 +107,14 @@ runtime). Grab the latest **Release Candidate** build from the
 | Platform | Download | Install |
 |---|---|---|
 | macOS (Apple Silicon) | `Yerd_MacOS_AppleSilicon_v<ver>.dmg` | open, drag to Applications |
-| Linux (x86-64) | `Yerd_Linux_x86_64_v<ver>.deb` | `sudo apt install ./Yerd_Linux_x86_64_v<ver>.deb` |
-| Linux (arm64) | `Yerd_Linux_Arm64_v<ver>.deb` | `sudo apt install ./Yerd_Linux_Arm64_v<ver>.deb` |
+| Linux · Debian/Ubuntu (x86-64) | `Yerd_Linux_x86_64_v<ver>.deb` | `sudo apt install ./Yerd_Linux_x86_64_v<ver>.deb` |
+| Linux · Debian/Ubuntu (arm64) | `Yerd_Linux_Arm64_v<ver>.deb` | `sudo apt install ./Yerd_Linux_Arm64_v<ver>.deb` |
+| Linux · Arch (x86-64) | `Yerd_Linux_x86_64_v<ver>.pkg.tar.zst` | `sudo pacman -U ./Yerd_Linux_x86_64_v<ver>.pkg.tar.zst` |
+
+> **Arch note.** If you have a leftover `/usr/bin/yerd` from the old v1 (Go)
+> project, remove it first — pacman refuses to install over a file it doesn't
+> own. Run `pacman -Syu` before installing/upgrading so the WebKit/GTK libraries
+> the app links match (it's built against current Arch packages).
 
 On first launch the app **starts its bundled daemon** - so on macOS setup is
 essentially drag-and-drop. It then walks you through a **one-time**
@@ -117,8 +123,9 @@ Everything after runs as your user - never as root.
 
 ### Terminal CLI
 
-The `yerd` command ships with the app: on **Linux** the `.deb` puts it on your
-`PATH`; on **macOS** open *Settings → Terminal CLI → Install*. Then the one-time
+The `yerd` command ships with the app: on **Linux** the `.deb`/`.pkg.tar.zst`
+puts it on your `PATH`; on **macOS** open *Settings → Terminal CLI → Install*.
+Then the one-time
 setup is available from the terminal too:
 
 ```bash

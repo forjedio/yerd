@@ -13,5 +13,12 @@ sha2            = { workspace = true }
 minisign-verify = { workspace = true }
 hex             = { workspace = true }
 
+[features]
+# Build-time package-format tiebreak. A release ships BOTH a `.deb` and a
+# `.pkg.tar.zst` for the same Linux arch; the running binary must pick the one
+# matching how it was installed. Enabling `pacman` (the Arch package build only)
+# flips `PkgFormat::current()` to `Pacman`. Default off → `Deb`. See `PkgFormat`.
+pacman = []
+
 [lints]
 workspace = true

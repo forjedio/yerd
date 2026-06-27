@@ -429,16 +429,52 @@ cargo xtask bump 2.0.2           # set the version across the three manifests
 cargo xtask version-check v2.0.2 # release gate: assert a tag matches the manifests
 ```
 
-The shipped artifact is the **GUI bundle** (`.dmg` on macOS, `.deb` on Linux),
+The shipped artifacts are the **GUI bundle** (`.dmg` on macOS, `.deb` on Linux),
 built by Tauri with the three binaries (`yerd`/`yerdd`/`yerd-helper`) embedded via
-`externalBin` (per-platform overlays in `apps/yerd-gui/src-tauri/`). There is no
-standalone CLI tarball/`.deb`.
+`externalBin` (per-platform overlays in `apps/yerd-gui/src-tauri/`), **plus a native
+Arch package** (`.pkg.tar.zst`, x86-64). The CLI and daemon are never shipped on
+their own - there is no CLI-only artifact (tarball or `.deb`) separate from the GUI
+bundle and the Arch package.
 
 `bump` keeps three files in sync - `Cargo.toml`,
 `apps/yerd-gui/src-tauri/tauri.conf.json`, and `apps/yerd-gui/package.json` - so
 the CLI/daemon and the GUI never disagree on version. The release pipeline runs
 `version-check` to fail fast on a mismatched tag. See
 [Build Automation (xtask)](./xtask) for the full breakdown.
+
+### The Arch package (`.pkg.tar.zst`)
+
+Tauri has no pacman bundler, so the Arch package is built separately: the `arch`
+job in [`release.yml`](https://github.com/forjedio/yerd/blob/main/.github/workflows/release.yml)
+runs an `archlinux:base-devel` container, compiles the frontend + all four
+binaries from source, and assembles the package with
+[`packaging/arch/PKGBUILD`](https://github.com/forjedio/yerd/blob/main/packaging/arch).
+The package installs the four binaries as real files in `/usr/bin` — the three
+driven binaries (`yerd`/`yerdd`/`yerd-helper`) land at the same paths as the
+upstream `.deb`, so the daemon's sibling-binary lookup is identical (the GUI binary
+is `/usr/bin/yerd-gui`). A `.install` scriptlet `setcap`s `/usr/bin/yerdd` on
+install/upgrade so the daemon can bind ports 80/443.
+
+In-app `yerd update` on Arch runs `pacman -U` on the downloaded, minisign-verified
+`.pkg.tar.zst` — a **partial upgrade**: if the host is behind on `pacman -Syu`, a
+newer library soname can make it abort (Yerd surfaces pacman's message), so Arch
+users should keep their system current. It also requires the default
+`LocalFileSigLevel = Optional` in `pacman.conf` — the package is not pacman-signed
+(Yerd verifies it itself with the embedded update key), so a hardened
+`LocalFileSigLevel = Required` rejects the local install.
+
+**The `pacman` feature / `PkgFormat` tiebreak.** A release carries *both* a `.deb`
+and a `.pkg.tar.zst` for x86-64, so a running Linux binary can't tell which to
+self-update from `Platform` (OS + arch) alone. The format is fixed at **build
+time**: `yerd_update::PkgFormat::current()` returns `Pacman` only when compiled
+with the `pacman` Cargo feature. The `arch` job builds the daemon with
+`--features yerdd/pacman` (→ `yerd-update/pacman`), so its `yerdd` selects the
+`.pkg.tar.zst` and the applier installs it via `pacman -U`; every other build
+defaults to `Deb`/`dpkg -i`. **This only works because the Arch package is built
+in a separate job (its own cargo invocation/target dir)** — within one cargo
+build, the feature would unify across the whole graph. The release gate proves
+the flag took by running the freshly-built `yerdd --pkg-format` and asserting it
+prints `pacman`. arm64 Arch is not built for v1.
 
 ### macOS code signing & notarisation
 

@@ -228,7 +228,12 @@ baked into the artifact: the `postinst` script grants
 re-applies it on every upgrade, since dpkg wipes file capabilities) — falling
 back to ports 8080/8443 if `setcap` is missing or the filesystem can't hold
 caps. There's no AppImage target because its ephemeral mount can't host a
-`postinst` step, so the daemon's `setcap` can't be persisted that way.
+`postinst` step, so the daemon's `setcap` can't be persisted that way. The native
+Arch package (`.pkg.tar.zst`) is **not** a Tauri bundle target (Tauri has no
+pacman bundler) — it's built separately from
+[`packaging/arch/PKGBUILD`](https://github.com/forjedio/yerd/blob/main/packaging/arch)
+in the release workflow's `arch` job, with a `.install` scriptlet doing the same
+`setcap`. See [Packaging and releasing](./building#the-arch-package-pkg-tar-zst).
 
 ::: info Three windows, one bundle
 The app is no longer single-window. `tauri.conf.json` declares **three** windows,

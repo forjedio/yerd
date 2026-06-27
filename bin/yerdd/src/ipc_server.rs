@@ -2814,6 +2814,8 @@ Subject: Captured\r\n\r\nhi\r\n";
         let mac = "Yerd_MacOS_AppleSilicon_v99-0-1.app.tar.gz";
         let deb = "Yerd_Linux_x86_64_v99-0-1.deb";
         let arm = "Yerd_Linux_Arm64_v99-0-1.deb";
+        let pkg = "Yerd_Linux_x86_64_v99-0-1.pkg.tar.zst";
+        let pkg_arm = "Yerd_Linux_Arm64_v99-0-1.pkg.tar.zst";
         let releases = format!(
             r#"[{{"tag_name":"v99.0.1","prerelease":false,"draft":false,"assets":[
                 {{"name":"{mac}","browser_download_url":"https://h/{mac}","size":4}},
@@ -2822,11 +2824,15 @@ Subject: Captured\r\n\r\nhi\r\n";
                 {{"name":"{deb}.sig","browser_download_url":"https://h/{deb}.sig","size":1}},
                 {{"name":"{arm}","browser_download_url":"https://h/{arm}","size":4}},
                 {{"name":"{arm}.sig","browser_download_url":"https://h/{arm}.sig","size":1}},
+                {{"name":"{pkg}","browser_download_url":"https://h/{pkg}","size":4}},
+                {{"name":"{pkg}.sig","browser_download_url":"https://h/{pkg}.sig","size":1}},
+                {{"name":"{pkg_arm}","browser_download_url":"https://h/{pkg_arm}","size":4}},
+                {{"name":"{pkg_arm}.sig","browser_download_url":"https://h/{pkg_arm}.sig","size":1}},
                 {{"name":"SHA256SUMS","browser_download_url":"https://h/SHA256SUMS","size":1}}
             ]}}]"#
         );
         let h = yerd_update::sha256_hex(b"test");
-        let sums = format!("{h}  {mac}\n{h}  {deb}\n{h}  {arm}\n");
+        let sums = format!("{h}  {mac}\n{h}  {deb}\n{h}  {arm}\n{h}  {pkg}\n{h}  {pkg_arm}\n");
         let dl = StageDl { releases, sums };
 
         let resp = crate::self_update::stage_update(None, &state, &dl, SIG_PUBKEY).await;
@@ -2840,25 +2846,32 @@ Subject: Captured\r\n\r\nhi\r\n";
                 let p = std::path::Path::new(&path);
                 assert!(p.exists(), "staged file should exist at {path}");
                 assert_eq!(std::fs::read(p).unwrap(), b"test");
-                let expected = if matches!(
+                let (expected_kind, expected_name) = match (
                     yerd_update::Platform::current(),
-                    yerd_update::Platform::LinuxX86_64 | yerd_update::Platform::LinuxAarch64
+                    yerd_update::PkgFormat::current(),
                 ) {
-                    yerd_ipc::StagedArtifact::Deb
-                } else {
-                    yerd_ipc::StagedArtifact::AppTarGz
+                    (yerd_update::Platform::MacOsAarch64, _) => {
+                        (yerd_ipc::StagedArtifact::AppTarGz, mac)
+                    }
+                    (yerd_update::Platform::LinuxX86_64, yerd_update::PkgFormat::Deb) => {
+                        (yerd_ipc::StagedArtifact::Deb, deb)
+                    }
+                    (yerd_update::Platform::LinuxX86_64, yerd_update::PkgFormat::Pacman) => {
+                        (yerd_ipc::StagedArtifact::Pacman, pkg)
+                    }
+                    (yerd_update::Platform::LinuxAarch64, yerd_update::PkgFormat::Deb) => {
+                        (yerd_ipc::StagedArtifact::Deb, arm)
+                    }
+                    (yerd_update::Platform::LinuxAarch64, yerd_update::PkgFormat::Pacman) => {
+                        (yerd_ipc::StagedArtifact::Pacman, pkg_arm)
+                    }
+                    (other, _) => panic!("unexpected platform for fixture: {other:?}"),
                 };
-                assert_eq!(kind, expected);
-                let expected_name = match yerd_update::Platform::current() {
-                    yerd_update::Platform::MacOsAarch64 => mac,
-                    yerd_update::Platform::LinuxX86_64 => deb,
-                    yerd_update::Platform::LinuxAarch64 => arm,
-                    other => panic!("unexpected platform for fixture: {other:?}"),
-                };
+                assert_eq!(kind, expected_kind);
                 assert_eq!(
                     p.file_name().and_then(|n| n.to_str()),
                     Some(expected_name),
-                    "staged basename should be the current platform's asset"
+                    "staged basename should be the current platform+format's asset"
                 );
             }
             other => panic!("expected Staged, got {other:?}"),
@@ -2880,6 +2893,8 @@ Subject: Captured\r\n\r\nhi\r\n";
         let mac = "Yerd_MacOS_AppleSilicon_v99-0-1.app.tar.gz";
         let deb = "Yerd_Linux_x86_64_v99-0-1.deb";
         let arm = "Yerd_Linux_Arm64_v99-0-1.deb";
+        let pkg = "Yerd_Linux_x86_64_v99-0-1.pkg.tar.zst";
+        let pkg_arm = "Yerd_Linux_Arm64_v99-0-1.pkg.tar.zst";
         let releases = format!(
             r#"[{{"tag_name":"v99.0.1","prerelease":false,"draft":false,"assets":[
                 {{"name":"{mac}","browser_download_url":"https://h/{mac}","size":4}},
@@ -2888,11 +2903,16 @@ Subject: Captured\r\n\r\nhi\r\n";
                 {{"name":"{deb}.sig","browser_download_url":"https://h/{deb}.sig","size":1}},
                 {{"name":"{arm}","browser_download_url":"https://h/{arm}","size":4}},
                 {{"name":"{arm}.sig","browser_download_url":"https://h/{arm}.sig","size":1}},
+                {{"name":"{pkg}","browser_download_url":"https://h/{pkg}","size":4}},
+                {{"name":"{pkg}.sig","browser_download_url":"https://h/{pkg}.sig","size":1}},
+                {{"name":"{pkg_arm}","browser_download_url":"https://h/{pkg_arm}","size":4}},
+                {{"name":"{pkg_arm}.sig","browser_download_url":"https://h/{pkg_arm}.sig","size":1}},
                 {{"name":"SHA256SUMS","browser_download_url":"https://h/SHA256SUMS","size":1}}
             ]}}]"#
         );
         let bad = "0".repeat(64);
-        let sums = format!("{bad}  {mac}\n{bad}  {deb}\n{bad}  {arm}\n");
+        let sums =
+            format!("{bad}  {mac}\n{bad}  {deb}\n{bad}  {arm}\n{bad}  {pkg}\n{bad}  {pkg_arm}\n");
         let dl = StageDl { releases, sums };
         match crate::self_update::stage_update(None, &state, &dl, SIG_PUBKEY).await {
             Response::Error { .. } => {}
@@ -2901,7 +2921,9 @@ Subject: Captured\r\n\r\nhi\r\n";
         assert!(
             !state.dirs.cache.join("update").join(mac).exists()
                 && !state.dirs.cache.join("update").join(deb).exists()
-                && !state.dirs.cache.join("update").join(arm).exists(),
+                && !state.dirs.cache.join("update").join(arm).exists()
+                && !state.dirs.cache.join("update").join(pkg).exists()
+                && !state.dirs.cache.join("update").join(pkg_arm).exists(),
             "must not write an artifact when verification fails"
         );
     }

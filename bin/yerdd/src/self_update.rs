@@ -16,7 +16,7 @@ use yerd_php::Downloader;
 use yerd_platform::PlatformDirs;
 use yerd_update::{
     select_asset, select_target, verify_minisign, verify_sha256, ArtifactKind, Asset, Channel,
-    Platform, ReleaseMeta,
+    PkgFormat, Platform, ReleaseMeta,
 };
 
 use crate::ipc_server::internal;
@@ -367,7 +367,7 @@ pub async fn stage_update(
     let Some(target_rel) = releases.iter().find(|r| r.version == target_ver) else {
         return internal("internal: resolved target release vanished".to_owned());
     };
-    let sel = match select_asset(target_rel, Platform::current()) {
+    let sel = match select_asset(target_rel, Platform::current(), PkgFormat::current()) {
         Ok(s) => s,
         Err(e) => return internal(format!("no installable artifact: {e}")),
     };
@@ -412,6 +412,7 @@ pub async fn stage_update(
     let kind = match sel.kind {
         ArtifactKind::AppTarGz => StagedArtifact::AppTarGz,
         ArtifactKind::Deb => StagedArtifact::Deb,
+        ArtifactKind::Pacman => StagedArtifact::Pacman,
     };
     tracing::info!(version = %target_ver, path = %path.display(), "staged verified update artifact");
     Response::Staged {

@@ -7,6 +7,12 @@ license.workspace      = true
 publish.workspace      = true
 description            = "Yerd unprivileged daemon — wires every Phase-1 library together."
 
+[features]
+# Build the daemon for the Arch package: flips `yerd_update::PkgFormat::current()`
+# to `Pacman` so self-update selects the `.pkg.tar.zst` and installs via `pacman -U`.
+# Enabled ONLY by the Arch CI build (`--features yerdd/pacman`); default off → `.deb`.
+pacman = ["yerd-update/pacman"]
+
 [[bin]]
 name = "yerdd"
 path = "src/main.rs"

@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Name=Yerd
+GenericName=PHP development environment
+Comment=Local PHP development environment
+Exec=yerd-gui
+Icon=yerd-gui
+Terminal=false
+Categories=Development;Utility;
+# Must equal the window's runtime WM_CLASS so the dock binds it to this launcher;
+# the GUI sets prgname "yerd-gui" (apps/yerd-gui/src-tauri/src/main.rs).
+StartupWMClass=yerd-gui
+StartupNotify=true

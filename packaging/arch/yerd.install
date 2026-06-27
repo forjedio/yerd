@@ -1,0 +1,18 @@
+# Yerd pacman install scriptlet.
+#
+# Grant the daemon permission to bind privileged ports (80/443). pacman replaces
+# the binary on upgrade and drops its file capabilities, so reapply on both
+# install and upgrade. Best-effort: on overlayfs/NFS/noxattr mounts that can't
+# hold file capabilities, setcap fails and the daemon falls back to 8080/8443.
+# Capabilities can't be baked into the package (fakeroot can't grant them), so
+# the scriptlet is the right place. The /usr/bin symlinks and desktop/icon cache
+# are pacman-tracked / handled by pacman hooks, so nothing else is needed here.
+
+post_install() {
+  setcap 'cap_net_bind_service=+ep' /usr/bin/yerdd 2>/dev/null \
+    || echo "yerd: setcap failed; the daemon will use ports 8080/8443" >&2
+}
+
+post_upgrade() {
+  post_install "$@"
+}
