@@ -309,7 +309,7 @@ async function toggleGuiMinimized(on: boolean): Promise<void> {
 
 <template>
   <div class="flex h-full flex-col">
-    <PageHeader title="Settings" subtitle="Updates, ports, startup, and appearance" />
+    <PageHeader title="Settings" subtitle="Ports, startup, and appearance" />
 
     <div class="flex-1 space-y-4 overflow-y-auto p-6">
       <!-- macOS: registered via SMAppService but awaiting Login-Items approval. -->

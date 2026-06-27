@@ -168,6 +168,18 @@ export function useFallbackPorts() {
           message: `Yerd still couldn't bind the DNS port ${report.value.dns_unbound} - it may be in use too. Try a different port.`,
         };
       }
+      // Mail has no test-bind and no dedicated `*_unbound` field; detect a busy
+      // port via the SMTP listener state (`enabled && !listening` = port busy).
+      if (
+        changes.mail != null &&
+        report.value.mail?.enabled === true &&
+        report.value.mail.listening === false
+      ) {
+        return {
+          ok: false,
+          message: `Yerd couldn't bind the mail port ${changes.mail} - it may be in use. Try a different port.`,
+        };
+      }
       return { ok: true };
     }
     return {
@@ -176,21 +188,11 @@ export function useFallbackPorts() {
     };
   }
 
-  /**
-   * Thin convenience wrapper for the common web-only case (a fallback pair).
-   * Equivalent to `applyAndRestart({ web: { http, https } })`.
-   */
-  function saveAndRestart(http: number, https: number): Promise<SaveResult> {
-    return applyAndRestart({ web: { http, https } });
-  }
-
   return {
     validate,
     validateLoopback,
     applyAndRestart,
-    saveAndRestart,
     MIN_PORT,
     MAX_PORT,
-    MIN_LOOPBACK_PORT,
   };
 }

@@ -243,14 +243,23 @@ fn snapshot_from(decision: &yerd_update::UpdateDecision, checked_at: u64) -> Upd
 
 /// Build an `UpdateStatus` reply from a persisted snapshot.
 fn response_from_snapshot(snap: &UpdateSnapshot, source: UpdateSource) -> Response {
+    // Reconcile against the *currently running* version. If the snapshot was
+    // recorded for a different version (e.g. the daemon self-updated since it was
+    // written, and we're now serving it offline before a fresh poll), its
+    // decision fields can't be trusted — they'd claim a phantom update *to* the
+    // version we may already be running. Present the real running version with no
+    // pending update; the `latest_*` figures + timestamp still describe the last
+    // remote check. The next successful live check overwrites all of this.
+    let running = current_version().to_string();
+    let drifted = snap.current != running;
     Response::UpdateStatus {
-        current: snap.current.clone(),
+        current: running,
         latest_stable: snap.latest_stable.clone(),
         latest_edge: snap.latest_edge.clone(),
         channel: snap.channel,
-        available: snap.available,
-        target: snap.target.clone(),
-        ahead_of_stable: snap.ahead_of_stable,
+        available: !drifted && snap.available,
+        target: if drifted { None } else { snap.target.clone() },
+        ahead_of_stable: !drifted && snap.ahead_of_stable,
         source,
         checked_at_epoch: Some(snap.checked_at),
     }
@@ -519,6 +528,66 @@ mod tests {
                 assert!(!ahead_of_stable);
                 assert_eq!(source, UpdateSource::Live);
                 assert_eq!(checked_at_epoch, Some(1_719_445_200));
+            }
+            other => panic!("expected UpdateStatus, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn snapshot_response_suppresses_stale_decision_after_version_drift() {
+        // A snapshot recorded for a *different* running version (e.g. before a
+        // self-update) must not advertise a phantom update against the version we
+        // now run. `current` is reported as the running version; available/target
+        // are cleared. The remote `latest_*` and timestamp survive.
+        let snap = UpdateSnapshot {
+            checked_at: 1_719_445_200,
+            current: "0.0.1".into(), // deliberately != the running version
+            latest_stable: Some("2.0.5".into()),
+            latest_edge: Some("2.1.0-rc.1".into()),
+            channel: yerd_ipc::Channel::Stable,
+            available: true,
+            target: Some("9.9.9".into()),
+            ahead_of_stable: true,
+        };
+        match response_from_snapshot(&snap, UpdateSource::Cached) {
+            Response::UpdateStatus {
+                current,
+                available,
+                target,
+                ahead_of_stable,
+                latest_stable,
+                checked_at_epoch,
+                ..
+            } => {
+                assert_eq!(current, current_version().to_string());
+                assert!(!available);
+                assert_eq!(target, None);
+                assert!(!ahead_of_stable);
+                assert_eq!(latest_stable.as_deref(), Some("2.0.5"));
+                assert_eq!(checked_at_epoch, Some(1_719_445_200));
+            }
+            other => panic!("expected UpdateStatus, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn snapshot_response_preserves_decision_when_version_matches() {
+        let snap = UpdateSnapshot {
+            checked_at: 1_719_445_200,
+            current: current_version().to_string(),
+            latest_stable: Some("99.0.0".into()),
+            latest_edge: Some("99.0.0".into()),
+            channel: yerd_ipc::Channel::Stable,
+            available: true,
+            target: Some("99.0.0".into()),
+            ahead_of_stable: false,
+        };
+        match response_from_snapshot(&snap, UpdateSource::Cached) {
+            Response::UpdateStatus {
+                available, target, ..
+            } => {
+                assert!(available);
+                assert_eq!(target.as_deref(), Some("99.0.0"));
             }
             other => panic!("expected UpdateStatus, got {other:?}"),
         }
