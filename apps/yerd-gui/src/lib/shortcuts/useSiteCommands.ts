@@ -68,6 +68,7 @@ export function useSiteCommands(paletteOpen: Ref<boolean>): Ref<Command[]> {
   const sites = ref<Site[]>([]);
 
   async function load(): Promise<void> {
+    sites.value = [];
     try {
       sites.value = await listSites();
     } catch {
