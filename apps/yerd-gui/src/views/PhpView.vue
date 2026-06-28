@@ -155,27 +155,38 @@ const DISPLAY_ERRORS_OPTIONS = [
 ] as const;
 
 const settingsForm = ref<Record<string, string>>({});
+// Snapshot of the values last seeded from the server, so we can tell whether the
+// user has edited the form since (and thus whether a fresh server value may
+// safely replace it).
+let lastSeeded: Record<string, string> = {};
 
 function applySettings(settings: Record<string, string> | undefined): void {
   const next: Record<string, string> = {};
   for (const s of TEXT_SETTINGS) next[s.key] = settings?.[s.key] ?? "";
   next.display_errors = settings?.display_errors ?? "";
   settingsForm.value = next;
+  lastSeeded = { ...next };
 }
 
-// Seed the settings form once, on the first non-null data (synchronously on a
-// warm-cache revisit via immediate:true, so the inputs never flash empty).
-// Deliberately NOT re-seeded on later data changes - optimistic writes and
-// background revalidations must not discard the user's unsaved edits;
-// `saveSettings` re-seeds explicitly from the server's echo.
-let settingsSeeded = false;
+/** True when the form still matches what we last seeded (i.e. no unsaved edits). */
+function settingsPristine(): boolean {
+  const form = settingsForm.value;
+  const keys = new Set([...Object.keys(form), ...Object.keys(lastSeeded)]);
+  for (const k of keys) {
+    if ((form[k] ?? "") !== (lastSeeded[k] ?? "")) return false;
+  }
+  return true;
+}
+
+// Seed the settings form from the server: on first load, and on later
+// revalidations *only while the form is pristine* - so an out-of-band ini change
+// (e.g. via the CLI) self-corrects, but the user's unsaved edits are never
+// clobbered by an optimistic write or a background refresh. `immediate:true`
+// seeds synchronously on a warm-cache revisit so the inputs never flash empty.
 watch(
   data,
   (d) => {
-    if (!settingsSeeded && d) {
-      applySettings(d.settings);
-      settingsSeeded = true;
-    }
+    if (d && settingsPristine()) applySettings(d.settings);
   },
   { immediate: true },
 );

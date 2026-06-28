@@ -73,13 +73,13 @@ fn lock_menu() -> MutexGuard<'static, ()> {
 }
 
 /// A diffable snapshot of the daemon state the menu renders. Plain data only, so
-/// the per-tick equality check never touches muda objects. `uptime_label` is
-/// minute-bucketed, so a running daemon only rebuilds the menu about once a
-/// minute rather than every tick.
+/// the per-tick equality check never touches muda objects. Deliberately does NOT
+/// include live uptime: it would change every tick and rebuild the menu on a
+/// timer (churn, and a rebuild can disrupt the menu if the user has it open), for
+/// only a cosmetic label - so the menu rebuilds solely on meaningful state change.
 #[derive(Clone, Default, PartialEq, Eq)]
 struct TrayState {
     running: bool,
-    uptime_label: String,
     default_php: Option<String>,
     installed: Vec<String>,
     http: Option<u16>,
@@ -90,7 +90,6 @@ struct TrayState {
 /// Build the tray and register it; called once from `setup_app`.
 pub(crate) fn build_tray(app: &AppHandle) -> tauri::Result<()> {
     let menu = build_menu(app, &TrayState::default())?;
-    #[cfg_attr(target_os = "macos", allow(unused_mut))]
     let mut builder = TrayIconBuilder::with_id(TRAY_ID)
         .tooltip("Yerd")
         .menu(&menu)
@@ -158,27 +157,11 @@ async fn fetch_state() -> TrayState {
     };
     TrayState {
         running: true,
-        uptime_label: humanize_uptime(report.uptime_secs),
         default_php: Some(report.default_php.to_string()),
         installed: report.php.iter().map(|p| p.version.to_string()).collect(),
         http: Some(report.http.bound),
         https: Some(report.https.bound),
         update_target,
-    }
-}
-
-/// Coarse, minute-granularity uptime so the diff (and the rebuild) only fire
-/// about once a minute while the daemon runs.
-fn humanize_uptime(secs: u64) -> String {
-    let days = secs / 86_400;
-    let hours = (secs % 86_400) / 3_600;
-    let mins = (secs % 3_600) / 60;
-    if days > 0 {
-        format!("{days}d {hours}h")
-    } else if hours > 0 {
-        format!("{hours}h {mins}m")
-    } else {
-        format!("{mins}m")
     }
 }
 
@@ -252,11 +235,7 @@ fn build_menu(app: &AppHandle, state: &TrayState) -> tauri::Result<Menu<Wry>> {
     if state.running {
         push(
             &mut items,
-            disabled(
-                app,
-                "noop:header",
-                "● Daemon running · ".to_string() + &state.uptime_label,
-            )?,
+            disabled(app, "noop:header", "● Daemon running")?,
         );
         if let (Some(http), Some(https)) = (state.http, state.https) {
             push(
@@ -418,13 +397,29 @@ enum Lifecycle {
     Stop,
 }
 
-/// Run a daemon lifecycle action while owning the menu: flip `TRANSITION` first
-/// (before any await), show a transient menu, await the bounded settle, then
-/// rebuild from fresh state and clear `TRANSITION` - all under the lock for the
-/// final apply.
+/// Clears `TRANSITION` on drop, so even a panicking lifecycle task or a runtime
+/// shutdown mid-action can't leave the tray and poller frozen on "Restarting…".
+struct TransitionGuard;
+impl Drop for TransitionGuard {
+    fn drop(&mut self) {
+        TRANSITION.store(false, Ordering::Release);
+    }
+}
+
+/// Run a daemon lifecycle action while owning the menu: claim `TRANSITION` (a
+/// second click while one is in flight is ignored - the transient menu also hides
+/// the lifecycle items), show a transient menu, await the bounded settle, then
+/// rebuild from fresh state. The final apply clears `TRANSITION` under the lock;
+/// the `TransitionGuard` is a backstop that clears it on any abnormal exit.
 fn spawn_lifecycle(app: AppHandle, action: Lifecycle) {
-    TRANSITION.store(true, Ordering::Release);
+    if TRANSITION
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        return; // another lifecycle action already owns the menu
+    }
     tauri::async_runtime::spawn(async move {
+        let _guard = TransitionGuard;
         let label = match action {
             Lifecycle::Start => "Starting…",
             Lifecycle::Restart => "Restarting…",
@@ -439,9 +434,10 @@ fn spawn_lifecycle(app: AppHandle, action: Lifecycle) {
             }
             Lifecycle::Restart => {
                 let prev = current_boot_id().await;
-                // `RestartDaemon` replies Ok *before* the re-exec, so the socket
-                // briefly drops; we don't act on this reply, only the boot_id change.
-                let _ = exchange(&Request::RestartDaemon).await;
+                // `RestartDaemon` replies Ok *before* the re-exec (then the socket
+                // briefly drops); we act only on the boot_id change, but bound the
+                // call so a wedged daemon can't hang the task with TRANSITION set.
+                let _ = exchange_timeout(&Request::RestartDaemon, PROBE_TIMEOUT).await;
                 wait_until_restarted(prev).await;
             }
             Lifecycle::Stop => {

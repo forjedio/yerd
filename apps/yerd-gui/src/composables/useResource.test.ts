@@ -115,4 +115,39 @@ describe("useResource", () => {
     expect(fetcher).toHaveBeenCalledTimes(1);
     expect(api.data.value).toBe("v");
   });
+
+  it("does not let an in-flight fetch clobber an optimistic mutate", async () => {
+    let resolveFetch!: (v: number) => void;
+    const fetcher = vi.fn(
+      () =>
+        new Promise<number>((res) => {
+          resolveFetch = res;
+        }),
+    );
+    const { api } = mountResource<number>("epoch", fetcher, { immediate: false });
+    const pending = api.refresh(); // fetch started, still pending
+    api.mutate(() => 99); // optimistic write lands during the in-flight fetch
+    expect(api.data.value).toBe(99);
+    resolveFetch(1); // the now-stale fetch resolves
+    await pending;
+    expect(api.data.value).toBe(99); // the newer mutate wins
+  });
+
+  it("shows the spinner again when retrying after a failed first load", async () => {
+    const fetcher = vi
+      .fn()
+      .mockRejectedValueOnce(new IpcError("down"))
+      .mockResolvedValueOnce("ok");
+    const { api } = mountResource("retry", fetcher);
+    await flushPromises();
+    expect(api.data.value).toBeNull();
+    expect(api.error.value?.message).toBe("down");
+    expect(api.loading.value).toBe(false);
+
+    const pending = api.refresh();
+    expect(api.loading.value).toBe(true); // cold retry drives the full-page spinner
+    await pending;
+    expect(api.loading.value).toBe(false);
+    expect(api.data.value).toBe("ok");
+  });
 });

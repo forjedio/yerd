@@ -24,6 +24,9 @@ interface Entry<T> {
   /** Non-null while a fetch is in flight; shared so concurrent callers dedup. */
   inFlight: Promise<void> | null;
   fetcher: () => Promise<T>;
+  /** Bumped on every `mutate`; a fetch that started before the bump must not
+   * overwrite the newer optimistic value when it finally resolves. */
+  epoch: number;
 }
 
 const cache = new Map<string, Entry<unknown>>();
@@ -40,6 +43,7 @@ function entryFor<T>(key: string, fetcher: () => Promise<T>): Entry<T> {
     error: ref<IpcError | null>(null),
     inFlight: null,
     fetcher,
+    epoch: 0,
   };
   cache.set(key, created as Entry<unknown>);
   return created;
@@ -48,10 +52,16 @@ function entryFor<T>(key: string, fetcher: () => Promise<T>): Entry<T> {
 /** Run the fetch unless one is already in flight (dedup); errors keep last-good data. */
 function revalidate<T>(entry: Entry<T>): Promise<void> {
   if (entry.inFlight) return entry.inFlight;
+  const epoch = entry.epoch;
   const run = (async () => {
     try {
-      entry.data.value = await entry.fetcher();
-      entry.error.value = null;
+      const value = await entry.fetcher();
+      // If an optimistic `mutate` landed during the fetch, the newer value wins -
+      // don't clobber it with the now-stale server response.
+      if (entry.epoch === epoch) {
+        entry.data.value = value;
+        entry.error.value = null;
+      }
     } catch (e) {
       entry.error.value = e instanceof IpcError ? e : new IpcError(String(e));
     } finally {
@@ -96,7 +106,10 @@ export function useResource<T>(
 
   async function refresh(): Promise<void> {
     const firstLoad = entry.data.value === null;
-    if (!firstLoad) refreshing.value = true;
+    // First load (incl. retry after a failed first load) drives the full-page
+    // spinner; a revalidation over cached data only drives `refreshing`.
+    if (firstLoad) loading.value = true;
+    else refreshing.value = true;
     try {
       await revalidate(entry);
     } finally {
@@ -106,6 +119,7 @@ export function useResource<T>(
   }
 
   function mutate(next: T | ((cur: T | null) => T | null)): void {
+    entry.epoch += 1;
     entry.data.value =
       typeof next === "function" ? (next as (cur: T | null) => T | null)(entry.data.value) : next;
   }

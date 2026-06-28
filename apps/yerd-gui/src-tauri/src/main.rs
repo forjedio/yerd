@@ -155,6 +155,13 @@ fn main() {
         // APIs directly. close() hits the CloseRequested handler below; minimize()
         // works the same as the titlebar control.
         .on_menu_event(|app, event| {
+            // This global listener also fires for tray-menu events (both register
+            // into the same list), so ignore everything but the window-control
+            // items the macOS app menu owns - the tray has its own handler.
+            let id = event.id.as_ref();
+            if id != "close-window" && id != "minimize-window" {
+                return;
+            }
             // get_focused_window is behind Tauri's unstable feature; find the
             // focused window among the managed webview windows instead.
             let focused = app
@@ -162,7 +169,7 @@ fn main() {
                 .into_values()
                 .find(|w| w.is_focused().unwrap_or(false));
             if let Some(win) = focused {
-                match event.id.as_ref() {
+                match id {
                     "close-window" => {
                         let _ = win.close();
                     }

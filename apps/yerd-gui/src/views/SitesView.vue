@@ -307,7 +307,7 @@ function consumeIntent(): void {
   sitesIntent.value = null;
   if (intent === "link") linkOpen.value = true;
   else if (intent === "create") openCreate();
-  else void onPark();
+  else if (intent === "park") void onPark();
 }
 
 onMounted(consumeIntent);

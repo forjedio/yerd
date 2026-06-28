@@ -44,8 +44,10 @@ function begin(op: Operation): void {
   operations.value = [...rest, op];
 }
 
-/** Patch a live operation; a no-op if it already ended (avoids reviving it). */
+/** Patch a live operation; a no-op if it already ended (avoids reviving it, and
+ * avoids needlessly reallocating the array / waking dependents). */
 function update(id: string, patch: Partial<Omit<Operation, "id">>): void {
+  if (!operations.value.some((o) => o.id === id)) return;
   operations.value = operations.value.map((o) =>
     o.id === id ? { ...o, ...patch } : o,
   );
