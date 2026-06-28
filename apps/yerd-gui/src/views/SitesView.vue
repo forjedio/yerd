@@ -43,12 +43,11 @@ import { openTitle, siteUrl } from "@/lib/siteUrl";
 import { registerViewActions } from "@/lib/shortcuts/useViewActions";
 import { sitesIntent } from "@/lib/shortcuts/sitesIntent";
 import { useDaemon } from "@/composables/useDaemon";
+import { useResource } from "@/composables/useResource";
 import { useToast } from "@/composables/useToast";
 import {
   IpcError,
   link,
-  listParked,
-  listSites,
   openInBrowser,
   openPath,
   park,
@@ -56,6 +55,7 @@ import {
   setPhp,
   setSecure,
   setWebRoot,
+  sitesAndParked,
   unlink,
   unpark,
 } from "@/ipc/client";
@@ -64,10 +64,17 @@ import type { Site } from "@/ipc/types";
 const toast = useToast();
 const { report } = useDaemon();
 
-const sites = ref<Site[]>([]);
-const parked = ref<string[]>([]);
-const loading = ref(true);
-const error = ref<string | null>(null);
+// Cached SWR resource shared with the Overview and the command palette (same
+// "sites" key + fetcher), so revisits render instantly instead of flashing.
+const { data, loading, error: resourceError, refresh: load } = useResource(
+  "sites",
+  sitesAndParked,
+);
+const sites = computed(() => data.value?.sites ?? []);
+const parked = computed(() => data.value?.parked ?? []);
+// Surface a load failure only when nothing is cached to show; a failed
+// background revalidation keeps the last-good list and never masks it.
+const error = computed(() => (data.value ? null : (resourceError.value?.message ?? null)));
 const rowBusy = ref<string | null>(null);
 const siteFilter = ref("");
 const filterInput = ref<InstanceType<typeof Input> | null>(null);
@@ -131,19 +138,6 @@ function servedLabel(s: Site): string {
   return s.web_subpath && s.web_subpath !== "" ? s.web_subpath : "/";
 }
 
-async function load(): Promise<void> {
-  loading.value = true;
-  error.value = null;
-  try {
-    const [s, p] = await Promise.all([listSites(), listParked()]);
-    sites.value = s;
-    parked.value = p;
-  } catch (e) {
-    error.value = (e as IpcError).message;
-  } finally {
-    loading.value = false;
-  }
-}
 
 // ── edit site (PHP + web root + HTTPS) ──
 const editOpen = ref(false);
@@ -299,8 +293,6 @@ async function confirmUnlink(close: () => void): Promise<void> {
   }
 }
 
-onMounted(load);
-
 onUnmounted(
   registerViewActions({
     create: openCreate,
@@ -314,6 +306,7 @@ function consumeIntent(): void {
   if (!intent) return;
   sitesIntent.value = null;
   if (intent === "link") linkOpen.value = true;
+  else if (intent === "create") openCreate();
   else void onPark();
 }
 

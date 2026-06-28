@@ -15,14 +15,11 @@ mod mac_trust;
 mod mail_window;
 #[cfg(target_os = "macos")]
 mod smappservice;
+mod tray;
 
 #[cfg(target_os = "macos")]
-use tauri::menu::{AboutMetadata, Submenu};
-use tauri::{
-    menu::{Menu, MenuItem, PredefinedMenuItem},
-    tray::TrayIconBuilder,
-    Emitter, Manager, WindowEvent,
-};
+use tauri::menu::{AboutMetadata, Menu, MenuItem, PredefinedMenuItem, Submenu};
+use tauri::{Manager, WindowEvent};
 use tauri_plugin_autostart::MacosLauncher;
 
 /// Launch arg the GUI's autostart entry carries (so a login-launched process is
@@ -30,14 +27,6 @@ use tauri_plugin_autostart::MacosLauncher;
 /// at `init()` - they can't vary per `enable()` - so this is a constant marker;
 /// the *minimized* preference is read separately from `gui-settings.json`.
 const AUTOSTART_ARG: &str = "--autostarted";
-
-/// macOS menu-bar tray icon: a monochrome **template** "Y" (see
-/// `icons/tray-mac.svg`). Embedded at compile time so it ships in the bundle and
-/// is loaded without a runtime path. Template images auto-tint for light/dark
-/// and `tray-icon` scales it to the menu-bar's 18pt height, so it sits among the
-/// system icons instead of dwarfing them like the full-colour app icon did.
-#[cfg(target_os = "macos")]
-const TRAY_ICON_MAC: &[u8] = include_bytes!("../icons/tray-mac.png");
 
 fn main() {
     logging::init();
@@ -209,7 +198,8 @@ fn setup_app(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     disable_webview_zoom(app);
     #[cfg(target_os = "macos")]
     app.set_menu(build_app_menu(app.handle())?)?;
-    build_tray(app.handle())?;
+    tray::build_tray(app.handle())?;
+    tray::spawn_tray_poller(app.handle().clone());
     show_initial_window(app);
     #[cfg(target_os = "macos")]
     std::thread::spawn(|| {
@@ -389,96 +379,7 @@ fn show_initial_window(app: &tauri::App) {
     decide_initial_window(&handle);
 }
 
-/// The four navigable views, mirroring the sidebar. Each tray item shows the
-/// window and routes the frontend to that page via a `navigate` event.
-const NAV_ITEMS: &[(&str, &str)] = &[
-    ("nav:/php", "PHP"),
-    ("nav:/sites", "Sites"),
-    ("nav:/services", "Services"),
-    ("nav:/mail", "Mail"),
-    ("nav:/about", "About"),
-];
-
-/// System tray: open the window, jump to a specific page, or quit.
-fn build_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
-    let open = MenuItem::with_id(app, "open", "Open Yerd", true, None::<&str>)?;
-    let dumps = MenuItem::with_id(app, "dumps", "Show Dumps", true, None::<&str>)?;
-    let quit = MenuItem::with_id(app, "quit", "Quit Yerd", true, None::<&str>)?;
-    let start = MenuItem::with_id(app, "daemon:start", "Start daemon", true, None::<&str>)?;
-    let stop = MenuItem::with_id(app, "daemon:stop", "Stop daemon", true, None::<&str>)?;
-    let sep_top = PredefinedMenuItem::separator(app)?;
-    let sep_daemon = PredefinedMenuItem::separator(app)?;
-    let sep_bottom = PredefinedMenuItem::separator(app)?;
-
-    let nav: Vec<MenuItem<_>> = NAV_ITEMS
-        .iter()
-        .map(|(id, label)| MenuItem::with_id(app, *id, *label, true, None::<&str>))
-        .collect::<tauri::Result<_>>()?;
-    let mut items: Vec<&dyn tauri::menu::IsMenuItem<_>> = vec![&open, &dumps, &sep_top];
-    items.extend(nav.iter().map(|m| m as &dyn tauri::menu::IsMenuItem<_>));
-    items.push(&sep_daemon);
-    items.push(&start);
-    items.push(&stop);
-    items.push(&sep_bottom);
-    items.push(&quit);
-    let menu = Menu::with_items(app, &items)?;
-
-    let mut builder = TrayIconBuilder::with_id("yerd-tray")
-        .tooltip("Yerd")
-        .menu(&menu)
-        .show_menu_on_left_click(false)
-        .on_menu_event(|app, event| match event.id.as_ref() {
-            "open" => show_main(app),
-            "dumps" => {
-                let _ = show_dumps(app);
-            }
-            "quit" => app.exit(0),
-            "daemon:start" => {
-                let app = app.clone();
-                tauri::async_runtime::spawn(async move {
-                    let _ = daemon::start(app, true).await;
-                });
-            }
-            "daemon:stop" => {
-                tauri::async_runtime::spawn(async {
-                    let _ = daemon::stop().await;
-                });
-            }
-            id => {
-                if let Some(route) = id.strip_prefix("nav:") {
-                    show_main(app);
-                    let _ = app.emit("navigate", route);
-                }
-            }
-        })
-        .on_tray_icon_event(|tray, event| {
-            use tauri::tray::{MouseButton, MouseButtonState, TrayIconEvent};
-            if let TrayIconEvent::Click {
-                button: MouseButton::Left,
-                button_state: MouseButtonState::Up,
-                ..
-            } = event
-            {
-                show_main(tray.app_handle());
-            }
-        });
-
-    #[cfg(target_os = "macos")]
-    {
-        builder = builder
-            .icon(tauri::image::Image::from_bytes(TRAY_ICON_MAC)?)
-            .icon_as_template(true);
-    }
-    #[cfg(not(target_os = "macos"))]
-    if let Some(icon) = app.default_window_icon().cloned() {
-        builder = builder.icon(icon);
-    }
-
-    builder.build(app)?;
-    Ok(())
-}
-
-fn show_main(app: &tauri::AppHandle) {
+pub(crate) fn show_main(app: &tauri::AppHandle) {
     set_dock_visible(app, true);
     if let Some(win) = app.get_webview_window("main") {
         // Must run before show()/set_focus() so the window lands on the active
@@ -518,7 +419,7 @@ fn move_window_to_active_space(win: &tauri::WebviewWindow) {
 /// Show (or lazily create) the auxiliary "dumps" window - the live Laravel
 /// telemetry viewer. Reuses the statically-declared window when it already
 /// exists; rebuilds it only if a prior close destroyed it.
-fn show_dumps(app: &tauri::AppHandle) -> tauri::Result<()> {
+pub(crate) fn show_dumps(app: &tauri::AppHandle) -> tauri::Result<()> {
     if let Some(win) = app.get_webview_window("dumps") {
         win.show()?;
         win.set_focus()?;

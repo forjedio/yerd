@@ -12,16 +12,12 @@
  * depending on it directly would churn the list and reset the palette selection
  * while it is open.
  */
-import { computed, ref, watch, type Ref } from "vue";
+import { computed, watch, type Ref } from "vue";
 
 import { useDaemon } from "@/composables/useDaemon";
+import { useResource } from "@/composables/useResource";
 import { useToast } from "@/composables/useToast";
-import {
-  IpcError,
-  listSites,
-  openInBrowser,
-  setSecure,
-} from "@/ipc/client";
+import { IpcError, openInBrowser, setSecure, sitesAndParked } from "@/ipc/client";
 import { siteUrl } from "@/lib/siteUrl";
 import type { Site } from "@/ipc/types";
 import type { Command } from "./registry";
@@ -61,23 +57,20 @@ export function buildSiteCommands(
   });
 }
 
-/** Live per-site palette commands; refetches each time the palette opens. */
+/** Live per-site palette commands; revalidates each time the palette opens. */
 export function useSiteCommands(paletteOpen: Ref<boolean>): Ref<Command[]> {
   const { report, refresh } = useDaemon();
   const toast = useToast();
-  const sites = ref<Site[]>([]);
-
-  async function load(): Promise<void> {
-    sites.value = [];
-    try {
-      sites.value = await listSites();
-    } catch {
-      sites.value = [];
-    }
-  }
+  // Shared "sites" cache (same key + fetcher as the Sites view and Overview), so
+  // the palette renders from the same data with no clear-then-load flash on open.
+  // immediate:false: the palette is always mounted, so only fetch when it opens.
+  const { data, refresh: reloadSites } = useResource("sites", sitesAndParked, {
+    immediate: false,
+  });
+  const sites = computed(() => data.value?.sites ?? []);
 
   watch(paletteOpen, (open) => {
-    if (open) void load();
+    if (open) void reloadSites();
   });
 
   const handlers: SiteCommandHandlers = {
@@ -86,8 +79,8 @@ export function useSiteCommands(paletteOpen: Ref<boolean>): Ref<Command[]> {
       try {
         await setSecure(s.name, !s.secure);
         toast.success(`Updated ${s.name}`);
-        await refresh();
-        await load();
+        // Invalidate the shared cache so the Sites view / Overview reflect it too.
+        await Promise.all([refresh(), reloadSites()]);
       } catch (e) {
         toast.error("Couldn't update site", (e as IpcError).message);
       }

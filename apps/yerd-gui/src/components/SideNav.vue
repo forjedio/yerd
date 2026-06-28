@@ -14,6 +14,7 @@ import {
 } from "lucide-vue-next";
 
 import NavLink from "@/components/NavLink.vue";
+import OperationsIndicator from "@/components/OperationsIndicator.vue";
 import StatusPill from "@/components/StatusPill.vue";
 import { useDaemon } from "@/composables/useDaemon";
 import logoUrl from "@/assets/logo.svg";
@@ -94,6 +95,7 @@ const { connected } = useDaemon();
     </div>
 
     <div class="mt-2 border-t px-2 pt-3">
+      <OperationsIndicator />
       <StatusPill
         v-if="connected === true"
         tone="ok"

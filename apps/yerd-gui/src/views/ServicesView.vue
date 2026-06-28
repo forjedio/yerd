@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from "vue";
+import { computed, onUnmounted, ref, watch } from "vue";
 import {
   Copy,
   Database,
@@ -37,6 +37,7 @@ import Select from "@/components/ui/Select.vue";
 import Spinner from "@/components/ui/Spinner.vue";
 import { registerViewActions } from "@/lib/shortcuts/useViewActions";
 import { useDaemon } from "@/composables/useDaemon";
+import { useResource } from "@/composables/useResource";
 import { useToast } from "@/composables/useToast";
 import {
   availableServices,
@@ -64,19 +65,17 @@ import { poolStateLabel, poolStateTone } from "@/lib/utils";
 const toast = useToast();
 const { refresh } = useDaemon();
 
-const services = ref<ServiceStatus[]>([]);
-const loading = ref(true);
+// Cached SWR resource: a revisit renders the last service list instantly and
+// revalidates underneath, so the table no longer flashes a spinner each time.
+const { data, loading, error, refresh: load } = useResource("services", listServices);
+const services = computed(() => data.value ?? []);
 const busy = ref<string | null>(null); // a key naming the in-flight op (e.g. "start:redis")
 
-async function load(): Promise<void> {
-  try {
-    services.value = await listServices();
-  } catch (e) {
-    toast.error("Couldn't load services", (e as IpcError).message);
-  } finally {
-    loading.value = false;
-  }
-}
+// No AsyncState here, so surface a load failure as a toast - but only on a cold
+// load (no cached data), so a transient background revalidation stays silent.
+watch(error, (e) => {
+  if (e && !data.value) toast.error("Couldn't load services", e.message);
+});
 
 function canStart(s: ServiceStatus): boolean {
   return s.installed_versions.length > 0 && s.state !== "running";
@@ -488,7 +487,6 @@ async function copyConfig(): Promise<void> {
   }
 }
 
-onMounted(load);
 onUnmounted(stopLogPolling);
 onUnmounted(registerViewActions({ refresh: () => void load() }));
 </script>

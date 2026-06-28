@@ -14,6 +14,7 @@ import { useDaemon } from "@/composables/useDaemon";
 import { useOnboarding } from "@/composables/useOnboarding";
 import { useToast } from "@/composables/useToast";
 import { useShortcuts } from "@/lib/shortcuts/useShortcuts";
+import { sitesIntent, type SitesIntent } from "@/lib/shortcuts/sitesIntent";
 import { IpcError, startDaemon } from "@/ipc/client";
 
 // The auxiliary "dumps" and "mails" windows render standalone viewers with no app
@@ -36,6 +37,7 @@ const router = useRouter();
 const route = useRoute();
 const toast = useToast();
 let unlistenNav: UnlistenFn | undefined;
+let unlistenSitesIntent: UnlistenFn | undefined;
 
 // The separate Mails viewer window loads a `standalone` route: it must render
 // bare (no sidebar/titlebar) and must NOT spin up a second daemon poller or the
@@ -75,6 +77,12 @@ onMounted(async () => {
     unlistenNav = await listen<string>("navigate", (event) => {
       router.push(event.payload);
     });
+    // The tray's "New Laravel site…" emits `sites-intent` ("create"); set the
+    // intent then route to /sites, where SitesView opens the matching dialog.
+    unlistenSitesIntent = await listen<string>("sites-intent", (event) => {
+      sitesIntent.value = event.payload as SitesIntent;
+      router.push("/sites");
+    });
   } catch {
     /* tray navigation is non-critical */
   }
@@ -86,6 +94,7 @@ onUnmounted(() => {
   if (isDumpsWindow || isMailsWindow || standalone.value) return;
   stop();
   unlistenNav?.();
+  unlistenSitesIntent?.();
 });
 </script>
 
