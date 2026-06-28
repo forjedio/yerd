@@ -31,10 +31,14 @@ interface Entry<T> {
 
 const cache = new Map<string, Entry<unknown>>();
 
+/**
+ * The shared entry for `key`, created on first use. Re-supplying the fetcher is a
+ * latest-caller-wins no-op: every consumer of a given key is expected to pass an
+ * identical fetcher, so the shared dedup/cache stay coherent.
+ */
 function entryFor<T>(key: string, fetcher: () => Promise<T>): Entry<T> {
   const existing = cache.get(key) as Entry<T> | undefined;
   if (existing) {
-    // Latest caller wins; callers of the same key pass an identical fetcher.
     existing.fetcher = fetcher;
     return existing;
   }
@@ -49,15 +53,18 @@ function entryFor<T>(key: string, fetcher: () => Promise<T>): Entry<T> {
   return created;
 }
 
-/** Run the fetch unless one is already in flight (dedup); errors keep last-good data. */
+/**
+ * Run the fetch unless one is already in flight (dedup); errors keep last-good
+ * data. The captured `epoch` is the optimistic-write guard: if a `mutate` landed
+ * during the fetch the epoch advances, and this now-stale response is discarded
+ * rather than clobbering the newer value.
+ */
 function revalidate<T>(entry: Entry<T>): Promise<void> {
   if (entry.inFlight) return entry.inFlight;
   const epoch = entry.epoch;
   const run = (async () => {
     try {
       const value = await entry.fetcher();
-      // If an optimistic `mutate` landed during the fetch, the newer value wins -
-      // don't clobber it with the now-stale server response.
       if (entry.epoch === epoch) {
         entry.data.value = value;
         entry.error.value = null;
@@ -73,8 +80,9 @@ function revalidate<T>(entry: Entry<T>): Promise<void> {
 }
 
 export interface ResourceHandle<T> {
-  /** Shared cache value; writing it (or via `mutate`) persists for every reader. */
-  data: ShallowRef<T | null>;
+  /** Shared cache value (read-only); use `mutate` to write so the epoch guard
+   * applies and a stale in-flight fetch can't clobber an optimistic update. */
+  data: Readonly<ShallowRef<T | null>>;
   /** True only until the first load settles (no cached value yet) - drives the spinner. */
   loading: Ref<boolean>;
   /** True while a background revalidation runs over already-cached data. */
@@ -93,6 +101,12 @@ export interface ResourceHandle<T> {
  * the shared entry - so a consumer that must not fetch eagerly (e.g. the Overview
  * while the daemon is down) can pass `false` and drive `refresh()` itself, while
  * another consumer of the same key still fetches on mount.
+ *
+ * `loading` starts true only for an eager consumer over a cold cache (an
+ * `immediate:false` consumer never auto-fetches, so it must not spin until it
+ * calls `refresh()`). Each `refresh` then drives `loading` on a first load
+ * (including a retry after a failed first load) and `refreshing` on a
+ * revalidation over already-cached data.
  */
 export function useResource<T>(
   key: string,
@@ -101,16 +115,11 @@ export function useResource<T>(
 ): ResourceHandle<T> {
   const { immediate = true } = opts;
   const entry = entryFor<T>(key, fetcher);
-  // Only an eager consumer over a cold cache starts in the loading state; an
-  // `immediate:false` consumer never auto-fetches, so it must not show a spinner
-  // until it drives `refresh()` itself.
   const loading = ref(immediate && entry.data.value === null);
   const refreshing = ref(false);
 
   async function refresh(): Promise<void> {
     const firstLoad = entry.data.value === null;
-    // First load (incl. retry after a failed first load) drives the full-page
-    // spinner; a revalidation over cached data only drives `refreshing`.
     if (firstLoad) loading.value = true;
     else refreshing.value = true;
     try {

@@ -57,13 +57,17 @@ export function buildSiteCommands(
   });
 }
 
-/** Live per-site palette commands; revalidates each time the palette opens. */
+/**
+ * Live per-site palette commands. Backed by the shared `"sites"` resource (same
+ * key + fetcher as the Sites view and Overview), so the palette renders from the
+ * same data with no clear-then-load flash. `immediate:false` because the palette
+ * is always mounted - it only revalidates when it opens. A toggle invalidates the
+ * shared cache via `Promise.all([refresh(), reloadSites()])` so the Sites view and
+ * Overview reflect the change too.
+ */
 export function useSiteCommands(paletteOpen: Ref<boolean>): Ref<Command[]> {
   const { report, refresh } = useDaemon();
   const toast = useToast();
-  // Shared "sites" cache (same key + fetcher as the Sites view and Overview), so
-  // the palette renders from the same data with no clear-then-load flash on open.
-  // immediate:false: the palette is always mounted, so only fetch when it opens.
   const { data, refresh: reloadSites } = useResource("sites", sitesAndParked, {
     immediate: false,
   });
@@ -79,7 +83,6 @@ export function useSiteCommands(paletteOpen: Ref<boolean>): Ref<Command[]> {
       try {
         await setSecure(s.name, !s.secure);
         toast.success(`Updated ${s.name}`);
-        // Invalidate the shared cache so the Sites view / Overview reflect it too.
         await Promise.all([refresh(), reloadSites()]);
       } catch (e) {
         toast.error("Couldn't update site", (e as IpcError).message);

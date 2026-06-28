@@ -54,7 +54,6 @@ describe("useResource", () => {
     await flushPromises();
     first.w.unmount();
 
-    // Revisit: data is already cached, so loading must start false (no flash).
     const second = mountResource("greet", fetcher);
     expect(second.api.loading.value).toBe(false);
     expect(second.api.data.value).toBe("hi");
@@ -63,7 +62,7 @@ describe("useResource", () => {
   it("dedupes concurrent fetches for the same key", async () => {
     const fetcher = vi.fn().mockResolvedValue("x");
     mountResource("dup", fetcher);
-    mountResource("dup", fetcher); // mounts before the first fetch settles
+    mountResource("dup", fetcher);
     await flushPromises();
     expect(fetcher).toHaveBeenCalledTimes(1);
   });
@@ -76,7 +75,7 @@ describe("useResource", () => {
 
     a.api.mutate((cur) => ({ n: (cur?.n ?? 0) + 41 }));
     expect(a.api.data.value).toEqual({ n: 42 });
-    expect(b.api.data.value).toEqual({ n: 42 }); // same shared ref
+    expect(b.api.data.value).toEqual({ n: 42 });
   });
 
   it("invalidate refetches the latest value", async () => {
@@ -100,14 +99,13 @@ describe("useResource", () => {
     expect(api.data.value).toBe("good");
 
     await api.refresh();
-    expect(api.data.value).toBe("good"); // unchanged
+    expect(api.data.value).toBe("good");
     expect(api.error.value?.message).toBe("boom");
   });
 
   it("does not fetch on mount when immediate is false", async () => {
     const fetcher = vi.fn().mockResolvedValue("v");
     const { api } = mountResource("lazy", fetcher, { immediate: false });
-    // An immediate:false consumer never auto-fetches, so it must not spin.
     expect(api.loading.value).toBe(false);
     await flushPromises();
     expect(fetcher).not.toHaveBeenCalled();
@@ -135,7 +133,7 @@ describe("useResource", () => {
 
     const pending = api.refresh();
     expect(api.refreshing.value).toBe(true);
-    expect(api.loading.value).toBe(false); // cached data stays visible, no spinner
+    expect(api.loading.value).toBe(false);
     resolveSecond("second");
     await pending;
     expect(api.refreshing.value).toBe(false);
@@ -168,12 +166,12 @@ describe("useResource", () => {
         }),
     );
     const { api } = mountResource<number>("epoch", fetcher, { immediate: false });
-    const pending = api.refresh(); // fetch started, still pending
-    api.mutate(() => 99); // optimistic write lands during the in-flight fetch
+    const pending = api.refresh();
+    api.mutate(() => 99);
     expect(api.data.value).toBe(99);
-    resolveFetch(1); // the now-stale fetch resolves
+    resolveFetch(1);
     await pending;
-    expect(api.data.value).toBe(99); // the newer mutate wins
+    expect(api.data.value).toBe(99);
   });
 
   it("shows the spinner again when retrying after a failed first load", async () => {
@@ -188,7 +186,7 @@ describe("useResource", () => {
     expect(api.loading.value).toBe(false);
 
     const pending = api.refresh();
-    expect(api.loading.value).toBe(true); // cold retry drives the full-page spinner
+    expect(api.loading.value).toBe(true);
     await pending;
     expect(api.loading.value).toBe(false);
     expect(api.data.value).toBe("ok");

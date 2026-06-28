@@ -160,13 +160,7 @@ fn main() {
             if id != "close-window" && id != "minimize-window" {
                 return;
             }
-            // get_focused_window is behind Tauri's unstable feature; find the
-            // focused window among the managed webview windows instead.
-            let focused = app
-                .webview_windows()
-                .into_values()
-                .find(|w| w.is_focused().unwrap_or(false));
-            if let Some(win) = focused {
+            if let Some(win) = focused_webview_window(app) {
                 match id {
                     "close-window" => {
                         let _ = win.close();
@@ -382,6 +376,14 @@ fn show_initial_window(app: &tauri::App) {
     dispatch2::DispatchQueue::main().exec_async(move || decide_initial_window(&handle));
     #[cfg(not(target_os = "macos"))]
     decide_initial_window(&handle);
+}
+
+/// The currently focused managed webview window, if any. `AppHandle::get_focused_window`
+/// is behind Tauri's unstable feature, so this scans the managed windows instead.
+fn focused_webview_window(app: &tauri::AppHandle) -> Option<tauri::WebviewWindow> {
+    app.webview_windows()
+        .into_values()
+        .find(|w| w.is_focused().unwrap_or(false))
 }
 
 /// Reveal and focus the main window (from the tray or a window-control handler),

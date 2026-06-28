@@ -32,9 +32,10 @@ capture and read what's been caught.
 Captured mail is tracked as **read or unread**. New messages count toward an
 unread badge that shows in three places: a pill on the sidebar **Mail** item
 (click it to open the viewer), an orange dot on the tray icon, and a **Mail (N)**
-label in the tray menu. Opening a message in the Mails viewer marks it read, and
-unread messages are highlighted in the list - so the badge always reflects what
-you haven't looked at yet.
+label in the tray menu. Clicking a message in the Mails viewer marks it read, and
+unread messages are highlighted in the list - the message the viewer auto-selects
+on open stays unread until you click it - so the badge always reflects what you
+haven't looked at yet.
 
 ## From the command line
 

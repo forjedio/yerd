@@ -100,20 +100,25 @@ watch(
       return;
     }
     if (!selectedId.value || !items.some((m) => m.id === selectedId.value)) {
-      // Auto-selection is not a user action, so it must not mark mail read.
       void select(items[0].id, false);
     }
   },
   { immediate: true },
 );
 
+/**
+ * Open a message in the reading pane. `fromUser` distinguishes a genuine row click
+ * (which marks the mail read) from the watcher's auto-selection (which must not).
+ * A monotonic `selectSeq` suppresses a superseded in-flight `getMail`, so an
+ * out-of-order response can't overwrite a newer selection.
+ */
 async function select(id: string, fromUser: boolean): Promise<void> {
   const seq = ++selectSeq;
   selectedId.value = id;
   loadingDetail.value = true;
   try {
     const mail = await getMail(id);
-    if (seq !== selectSeq) return; // a newer select() superseded this one
+    if (seq !== selectSeq) return;
     detail.value = mail;
     if (fromUser) void markRead(id);
   } catch (e) {
@@ -125,13 +130,17 @@ async function select(id: string, fromUser: boolean): Promise<void> {
   }
 }
 
-// Mark one email read on a genuine open: persist via the daemon, then replace the
-// list array (usePoll's data is a shallowRef, so an in-place mutation wouldn't be
-// reactive) so the unread styling/badges clear immediately. Best-effort - a
-// failure just leaves it unread; the next poll reconciles.
+/**
+ * Mark one email read on a genuine open: persist via the daemon, then replace the
+ * list array (usePoll's data is a shallowRef, so an in-place mutation wouldn't be
+ * reactive) so the unread styling/badges clear immediately. Best-effort: a failure
+ * just leaves it unread and the next poll reconciles. Only acts when the daemon
+ * explicitly reported the mail unread (`read === false`); an older daemon omits
+ * `read` (and the `MarkMailsRead` request), so we must not call it there.
+ */
 async function markRead(id: string): Promise<void> {
   const current = mails.value?.find((m) => m.id === id);
-  if (!current || current.read) return;
+  if (!current || current.read !== false) return;
   try {
     await markMailsRead([id]);
     if (mails.value) {

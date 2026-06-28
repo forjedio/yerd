@@ -59,27 +59,20 @@ async function autoStart(): Promise<void> {
   }
 }
 
-onMounted(async () => {
-  // The dumps window and the standalone Mails viewer share this SPA bundle but
-  // must not duplicate the poller, the tray-nav listener, or the start flow -
-  // those belong to the main window.
-  if (isDumpsWindow || isMailsWindow || standalone.value) return;
-  start(4000);
-  // Run the probe FIRST and clear the splash before anything that can throw - a
-  // failing `listen` below must never strand the user on the splash forever. One
-  // shared probe decides between the first-run journey, the start screen, and
-  // auto-starting the bundled daemon; the journey owns starting the daemon, so
-  // skip auto-start when it's showing.
-  const { reachable } = await probe();
-  // The tray's "go to <page>" items emit `navigate` with a route path (e.g.
-  // "/sites") after showing the window; jump the router there. Best-effort.
+/**
+ * Subscribe to the tray's navigation events for the main window. `navigate`
+ * carries a route path the tray's "go to <page>" items emit after showing the
+ * window; `sites-intent` carries a "link"/"park"/"create" action from the
+ * New-site / Link / Park items (validated at this external boundary), which routes
+ * to /sites where SitesView opens the matching dialog. Registered before the probe
+ * so an event fired during the probe round-trip isn't dropped, and wrapped so a
+ * `listen` failure (tray nav is non-critical) never strands the user on the splash.
+ */
+async function registerTrayNav(): Promise<void> {
   try {
     unlistenNav = await listen<string>("navigate", (event) => {
       router.push(event.payload);
     });
-    // The tray's "New Laravel site…" emits `sites-intent` ("create"); set the
-    // intent then route to /sites, where SitesView opens the matching dialog.
-    // Validate the payload (external boundary) before trusting the union cast.
     unlistenSitesIntent = await listen<string>("sites-intent", (event) => {
       if (event.payload !== "link" && event.payload !== "park" && event.payload !== "create") {
         return;
@@ -90,6 +83,13 @@ onMounted(async () => {
   } catch {
     /* tray navigation is non-critical */
   }
+}
+
+onMounted(async () => {
+  if (isDumpsWindow || isMailsWindow || standalone.value) return;
+  start(4000);
+  await registerTrayNav();
+  const { reachable } = await probe();
   if (needsOnboarding.value) return;
   if (!reachable) await autoStart();
 });

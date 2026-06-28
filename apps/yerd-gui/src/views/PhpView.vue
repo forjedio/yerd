@@ -212,7 +212,9 @@ async function refreshUpdates(): Promise<void> {
   try {
     const r = await checkPhpUpdates();
     mutate((cur) =>
-      cur ? { ...cur, installed: r.installed, default: r.default, updates: r.updates ?? [] } : cur,
+      cur
+        ? { ...cur, installed: r.installed, default: r.default, updates: r.updates ?? [] }
+        : { ...r, updates: r.updates ?? [] },
     );
     toast.success(
       "Update check complete",
@@ -353,10 +355,18 @@ async function openInstall(): Promise<void> {
   }
 }
 
+/**
+ * Install the selected PHP version with live progress. Guards against a
+ * double-submit (double-click / re-opened modal) by no-opping when the same
+ * install operation is already active. On success it refreshes the version list
+ * AND the status poll so the new row shows its patch + "idle" state immediately
+ * rather than on the next 4s tick.
+ */
 async function confirmInstall(close: () => void): Promise<void> {
   const v = selectedVersion.value;
   if (!v) return;
   const opId = `php-install:${v}`;
+  if (operations.isRunning(opId)) return;
   operations.begin({ id: opId, kind: "php-install", label: `Installing PHP ${v}` });
   close();
   try {
@@ -365,8 +375,6 @@ async function confirmInstall(close: () => void): Promise<void> {
       if (latest) operations.update(opId, { detail: latest });
     });
     toast.success(`Installed PHP ${v}`);
-    // Refresh the version list *and* the status poll so the new row shows its
-    // patch + "idle" state immediately instead of on the next 4s tick.
     await Promise.all([reloadPhp(), refresh()]);
   } catch (e) {
     toast.error(`Install of PHP ${v} failed`, (e as IpcError).message);

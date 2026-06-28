@@ -37,9 +37,15 @@ const TRAY_ID: &str = "yerd-tray";
 const POLL_INTERVAL: Duration = Duration::from_secs(6);
 /// Bound for each tray status probe so a wedged daemon can't stall the poller.
 const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
-/// Bounded wait for a daemon lifecycle action to settle (500ms × 20 ≈ 10s).
+/// Bounded wait for a daemon lifecycle action to settle: `SETTLE_STEPS` steps of
+/// a `SETTLE_STEP` sleep plus a short `SETTLE_PROBE_TIMEOUT` status probe, so the
+/// whole transition stays near 10s even if every probe times out (rather than the
+/// ~110s a 5s `PROBE_TIMEOUT` per step would give against a half-wedged socket).
 const SETTLE_STEPS: u32 = 20;
 const SETTLE_STEP: Duration = Duration::from_millis(500);
+/// Per-probe timeout inside the settle loops - short so an unresponsive daemon
+/// can't blow the settle bound far past `SETTLE_STEPS × SETTLE_STEP`.
+const SETTLE_PROBE_TIMEOUT: Duration = Duration::from_millis(400);
 
 /// Bundled menu-item icons (lucide, rasterised to 36px black PNGs, the glyph
 /// padded to ~75% of the canvas so muda's fixed 18pt menu icon isn't oversized;
@@ -723,7 +729,7 @@ async fn wait_until_reachable(want: bool) {
     for _ in 0..SETTLE_STEPS {
         tokio::time::sleep(SETTLE_STEP).await;
         let reachable = matches!(
-            exchange_timeout(&Request::Status, PROBE_TIMEOUT).await,
+            exchange_timeout(&Request::Status, SETTLE_PROBE_TIMEOUT).await,
             Ok(Response::Status { .. })
         );
         if reachable == want {
@@ -740,7 +746,7 @@ async fn wait_until_restarted(prev: Option<u64>) {
     let mut saw_down = false;
     for _ in 0..SETTLE_STEPS {
         tokio::time::sleep(SETTLE_STEP).await;
-        match exchange_timeout(&Request::Status, PROBE_TIMEOUT).await {
+        match exchange_timeout(&Request::Status, SETTLE_PROBE_TIMEOUT).await {
             Ok(Response::Status { report }) => match prev {
                 Some(old) => {
                     if report.boot_id.is_some_and(|new| new != old) {

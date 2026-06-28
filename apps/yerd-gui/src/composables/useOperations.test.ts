@@ -41,7 +41,7 @@ describe("useOperations", () => {
 
     ops.end("php-install:8.4");
     ops.update("php-install:8.4", { detail: "late" });
-    expect(ops.isRunning("php-install:8.4")).toBe(false); // not revived
+    expect(ops.isRunning("php-install:8.4")).toBe(false);
   });
 
   it("shares state across separate useOperations() calls (singleton)", () => {
