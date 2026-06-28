@@ -13,7 +13,7 @@ import {
   SquareCode,
 } from "lucide-vue-next";
 import type { Component } from "vue";
-import { computed, onMounted, ref, watch } from "vue";
+import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { RouterLink } from "vue-router";
 
 import DaemonDownHero from "@/components/DaemonDownHero.vue";
@@ -22,6 +22,7 @@ import StatusPill, { type Tone } from "@/components/StatusPill.vue";
 import Button from "@/components/ui/Button.vue";
 import Card from "@/components/ui/Card.vue";
 import Spinner from "@/components/ui/Spinner.vue";
+import { registerViewActions } from "@/lib/shortcuts/useViewActions";
 import { useDaemon } from "@/composables/useDaemon";
 import { useOnboarding } from "@/composables/useOnboarding";
 import { daemonVersionConflict, listSites, openInBrowser } from "@/ipc/client";
@@ -73,6 +74,14 @@ watch(running, (up) => {
     sitesLoaded.value = false;
   }
 });
+
+onUnmounted(
+  registerViewActions({
+    refresh: () => {
+      if (running.value) loadSites();
+    },
+  }),
+);
 
 // Once the real list is in, drive every count from it so the headline and the
 // chips never disagree; fall back to the report's counts until then.

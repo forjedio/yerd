@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ExternalLink } from "lucide-vue-next";
-import { computed } from "vue";
+import { computed, onUnmounted } from "vue";
 
 import PageHeader from "@/components/PageHeader.vue";
 import StatusPill from "@/components/StatusPill.vue";
@@ -12,6 +12,7 @@ import CardDescription from "@/components/ui/CardDescription.vue";
 import CardHeader from "@/components/ui/CardHeader.vue";
 import CardTitle from "@/components/ui/CardTitle.vue";
 import Switch from "@/components/ui/Switch.vue";
+import { registerViewActions } from "@/lib/shortcuts/useViewActions";
 import { usePoll } from "@/composables/usePoll";
 import { useToast } from "@/composables/useToast";
 import {
@@ -25,6 +26,8 @@ import type { DumpsStatusResponse } from "@/ipc/types";
 
 const toast = useToast();
 const { data: status, refresh } = usePoll<DumpsStatusResponse>(dumpsStatus, 2500);
+
+onUnmounted(registerViewActions({ refresh: () => void refresh() }));
 
 const FEATURES: { key: string; label: string }[] = [
   { key: "dumps", label: "Dumps (dump / dd)" },

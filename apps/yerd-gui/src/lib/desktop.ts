@@ -9,7 +9,8 @@
  * Text-selection is handled in CSS (style.css) so it stays declarative.
  */
 
-function isEditable(el: EventTarget | null): boolean {
+/** True when the event target is a text field, so shortcuts can defer to typing. */
+export function isEditable(el: EventTarget | null): boolean {
   const node = el as HTMLElement | null;
   if (!node?.tagName) return false;
   const tag = node.tagName.toLowerCase();

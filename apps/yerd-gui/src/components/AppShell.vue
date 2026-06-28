@@ -2,14 +2,18 @@
 import { computed } from "vue";
 import { useRoute } from "vue-router";
 
+import CommandPalette from "@/components/CommandPalette.vue";
 import DaemonDownHero from "@/components/DaemonDownHero.vue";
 import PageHeader from "@/components/PageHeader.vue";
+import ShortcutsCheatSheet from "@/components/ShortcutsCheatSheet.vue";
 import SideNav from "@/components/SideNav.vue";
 import TitleBar from "@/components/TitleBar.vue";
 import { useDaemon } from "@/composables/useDaemon";
+import { useShortcuts } from "@/lib/shortcuts/useShortcuts";
 
 const route = useRoute();
 const { unreachable } = useDaemon();
+const { paletteOpen, cheatSheetOpen, commands, run } = useShortcuts("main");
 
 // Only three views work without a live daemon: Overview (owns its own
 // daemon-down hero + start affordance), Settings/General (can start/install it),
@@ -62,5 +66,12 @@ const pageSubtitle = computed(() =>
         <RouterView v-else />
       </main>
     </div>
+
+    <CommandPalette
+      v-model:open="paletteOpen"
+      :commands="commands"
+      :run="run"
+    />
+    <ShortcutsCheatSheet v-model:open="cheatSheetOpen" :commands="commands" />
   </div>
 </template>

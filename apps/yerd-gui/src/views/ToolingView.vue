@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, ref } from "vue";
+import { computed, nextTick, onMounted, onUnmounted, ref } from "vue";
 import { Download, RefreshCw, Trash2 } from "lucide-vue-next";
 
 import PageHeader from "@/components/PageHeader.vue";
@@ -12,6 +12,7 @@ import CardHeader from "@/components/ui/CardHeader.vue";
 import CardTitle from "@/components/ui/CardTitle.vue";
 import Modal from "@/components/ui/Modal.vue";
 import Spinner from "@/components/ui/Spinner.vue";
+import { registerViewActions } from "@/lib/shortcuts/useViewActions";
 import { useDaemon } from "@/composables/useDaemon";
 import { useToast } from "@/composables/useToast";
 import {
@@ -129,6 +130,7 @@ async function confirmUninstall(close: () => void): Promise<void> {
 }
 
 onMounted(load);
+onUnmounted(registerViewActions({ refresh: () => void load() }));
 </script>
 
 <template>

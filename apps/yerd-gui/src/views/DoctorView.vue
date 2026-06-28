@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { CheckCircle2, Copy, Info, Play, RefreshCw, RotateCw, Square, Wrench } from "lucide-vue-next";
-import { computed, nextTick, onMounted, ref } from "vue";
+import { computed, nextTick, onMounted, onUnmounted, ref } from "vue";
 
 import DaemonDiagnosticsPanel from "@/components/DaemonDiagnosticsPanel.vue";
 import EnvironmentCard from "@/components/EnvironmentCard.vue";
@@ -21,6 +21,7 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { registerViewActions } from "@/lib/shortcuts/useViewActions";
 import { useDaemon } from "@/composables/useDaemon";
 import { useDaemonStart } from "@/composables/useDaemonStart";
 import { useToast } from "@/composables/useToast";
@@ -157,6 +158,7 @@ async function copyRemedy(text: string): Promise<void> {
 }
 
 onMounted(() => void loadDiagnoses());
+onUnmounted(registerViewActions({ refresh: () => void loadDiagnoses() }));
 </script>
 
 <template>

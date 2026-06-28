@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { Copy } from "lucide-vue-next";
-import { computed, ref, watch } from "vue";
+import { computed, onUnmounted, ref, watch } from "vue";
 
 import PageHeader from "@/components/PageHeader.vue";
 import StatusPill from "@/components/StatusPill.vue";
@@ -13,6 +13,7 @@ import CardHeader from "@/components/ui/CardHeader.vue";
 import CardTitle from "@/components/ui/CardTitle.vue";
 import Input from "@/components/ui/Input.vue";
 import Switch from "@/components/ui/Switch.vue";
+import { registerViewActions } from "@/lib/shortcuts/useViewActions";
 import { useDaemon } from "@/composables/useDaemon";
 import { useToast } from "@/composables/useToast";
 import { IpcError, openInBrowser, setMailEnabled, showMailsWindow } from "@/ipc/client";
@@ -24,6 +25,8 @@ const { report, refresh } = useDaemon();
 
 // Live mail status comes from the shared 4s status poll (no extra loop).
 const mail = computed(() => report.value?.mail ?? null);
+
+onUnmounted(registerViewActions({ refresh: () => void refresh() }));
 
 // Local editable copy of the enable toggle, seeded from the live status. The
 // mail *port* is now edited centrally on the Settings ▸ Application Ports page.
