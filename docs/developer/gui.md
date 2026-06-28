@@ -213,6 +213,15 @@ are the only categories the frontend's `IpcError` needs to distinguish.
   `api.prevent_close()`. The tray's **Quit** item is the real exit; **Open Yerd**
   reshows the window. (On Linux AppIndicator, clicks aren't delivered, so the
   menu item is the only way in.)
+- **Dynamic tray menu** (`tray.rs`): the menu is rebuilt from live daemon state,
+  not static. A Rust-side poll over the same `yerd-ipc` socket the commands use
+  (the frontend poller pauses when the window is hidden to tray) diffs a snapshot
+  and `set_menu`s a fresh menu only on change - showing daemon status + ports,
+  Start/Restart/Stop, an inline default-PHP switcher, update items, the Mail/Dumps
+  viewers, site actions, and nav shortcuts. A `TRANSITION`/`MENU_LOCK` guard keeps
+  a tray-initiated lifecycle action's transient menu from being stomped by a
+  late poll tick. The same poll composites status badges onto the tray icon: a red
+  dot for a waiting update and an orange dot for unread mail (`draw_dot`).
 - On **Linux**, before GTK initialises, `glib::set_prgname("yerd-gui")` pins the
   Wayland `app_id` so the dock matches `yerd-gui.desktop`, and a `with_webview`
   block clamps WebKitGTK's zoom level (the only place that can intercept
@@ -249,6 +258,9 @@ shown:
 
 The auxiliary windows are **shown, not spawned**: `mail_window::show_mails_window`
 and `show_dumps_window` just `get_webview_window(label)` then `show()` + focus.
+When a window isn't already open, the shared `reveal_aux_window` helper first
+centres it on the monitor under the cursor (the active screen), so it appears
+where the user is looking rather than on whatever display it last lived on.
 The `CloseRequested` handler is **global** (fires for every window) and hides
 rather than closes each one, so the windows persist across opens. Crucially it
 gates the close-to-tray + Dock-accessory behaviour on `window.label() == "main"`:
@@ -257,7 +269,8 @@ minimise the whole app to the tray. On the frontend side, `App.vue` detects the
 auxiliary windows (`getCurrentWindow().label === "dumps"`, or a route with
 `meta.standalone`) and renders the bare viewer with **no SideNav/TitleBar shell
 and no daemon poller**, so an auxiliary window never runs a second `status` loop.
-The tray menu also carries a **"Show Dumps"** item alongside "Open Yerd".
+The dynamic tray menu opens both auxiliary windows directly (its **Mail** and
+**Dumps** items call the same reveal helpers).
 :::
 
 ### Capabilities

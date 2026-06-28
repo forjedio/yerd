@@ -104,7 +104,7 @@ yerd mail show 000003 --json   # one email's full decoded content
 ```
 
 `yerd mail list --json` emits the captured-email metadata (`id`, `from`, `to`,
-`subject`, `date_epoch`). `yerd mail show <id> --json` emits the full decoded
+`subject`, `date_epoch`, `read`). `yerd mail show <id> --json` emits the full decoded
 message, including all `headers` and both the `html_body` and `text_body`
 (whichever the message carries). `date_epoch` is the message `Date:` as Unix epoch
 seconds, or `0` when absent/unparseable.

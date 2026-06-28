@@ -212,7 +212,7 @@ After `run_until_shutdown` returns, the signal task is **aborted** rather than a
 - **PHP lifecycle:** `InstallPhp`, `UpdatePhp`, `CheckPhpUpdates`, `SetDefaultPhp`, `SetPhpSettings`, `RestartPhp`, `RestartAllPhp`, `UninstallPhp`.
 - **Doctor:** `Diagnose` (via `yerd_doctor::diagnose`), `DoctorFix` (runs `plan_auto_fixes`, applies FPM restarts, re-diagnoses).
 - **Dumps (Laravel telemetry):** `ListDumps` (pages the ring), `ClearDumps`, `DeleteDump`, `DumpsStatus`, `SetDumpsEnabled` (first enable fetches the `.so` and restarts started pools), `SetDumpsPort` (test-binds then triggers a hot rebind), `SetDumpsPersist`, `SetDumpFeature` → `dump_server::*`.
-- **Mail capture:** `ListMails`, `GetMail`, `ClearMails`, `DeleteMails`, `SetMailPort`, `SetMailEnabled` (port/enabled persist to config and take effect on the next restart - no hot rebind) → the `mail_store` / `set_mail_*` handlers.
+- **Mail capture:** `ListMails`, `GetMail`, `ClearMails`, `DeleteMails`, `MarkMailsRead` (flips the read flag in the store), `SetMailPort`, `SetMailEnabled` (port/enabled persist to config and take effect on the next restart - no hot rebind) → the `mail_store` / `set_mail_*` handlers. `Status` reports the store's total and unread counts via `MailStatus`.
 - **Dev tools:** `ListTools` (pure fs status), `InstallTool`/`UninstallTool` → `tools::*` then a `{data}/bin` shim reconcile. See [Dev-tool installers](../dev-tools).
 - **Lifecycle:** `RestartDaemon` (Unix only).
 

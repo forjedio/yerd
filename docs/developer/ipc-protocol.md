@@ -182,6 +182,7 @@ The variant set is the daemon's whole RPC surface - liveness, site management, P
 | `GetMail { id }` | `{"type":"get_mail","id":"000001"}` |
 | `ClearMails` | `{"type":"clear_mails"}` |
 | `DeleteMails { ids }` | `{"type":"delete_mails","ids":["000001"]}` |
+| `MarkMailsRead { ids }` | `{"type":"mark_mails_read","ids":["000001"]}` |
 | `SetMailPort { port }` | `{"type":"set_mail_port","port":2525}` |
 | `SetMailEnabled { enabled }` | `{"type":"set_mail_enabled","enabled":true}` |
 | `ListDumps { since_id }` | `{"type":"list_dumps","since_id":0}` |
@@ -247,6 +248,10 @@ pub enum Response {
 
 ::: info The `Site` payload gained a field additively
 `Site` (inside `Response::Sites`) gained an optional `web_subpath` after `document_root`. It is **skipped when empty**, so a root-served site's JSON is byte-identical to before the field existed - the wire-stability goldens for the empty case are unchanged, and only the non-empty case (`"web_subpath":"public"`) added a new pin. Old clients ignore the field; no `PROTOCOL_VERSION` bump was needed.
+:::
+
+::: info The mail payloads gained read/unread fields additively
+For read/unread tracking, `MailSummary` gained a `read: bool` (last field) and `MailStatus` gained an `unread: u32` (last field), both `#[serde(default)]`. A missing key decodes to `false`/`0`, so old daemons and old clients interoperate without a `PROTOCOL_VERSION` bump; the goldens grew a `,"read":false` / `,"unread":0` suffix. The matching mutator is the additive `Request::MarkMailsRead { ids }`.
 :::
 
 ### ErrorCode
