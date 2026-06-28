@@ -152,20 +152,16 @@ export function buildCommands(): Command[] {
       run: (ctx) => ctx.view().nextTab?.(),
     },
     {
+      // Linux only: macOS owns Cmd+W via the native menu. On Linux a window
+      // close hides to the tray (the daemon keeps running), matching the
+      // titlebar button. There is intentionally no "Quit" chord: the app is a
+      // tray app with no JS path to a true exit, and a Quit that merely hid
+      // would duplicate this. macOS keeps a real Cmd+Q via its native menu.
       id: "close-window",
       title: "Close window",
       group: "Window",
       chord: { mod: true, key: "w" },
       scopes: ALL,
-      linuxOnly: true,
-      run: (ctx) => ctx.closeWindow(),
-    },
-    {
-      id: "quit",
-      title: "Quit",
-      group: "Window",
-      chord: { mod: true, key: "q" },
-      scopes: ["main"],
       linuxOnly: true,
       run: (ctx) => ctx.closeWindow(),
     },

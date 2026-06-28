@@ -51,13 +51,15 @@ describe("commandsForScope", () => {
     expect(dumps).not.toContain("new");
   });
 
-  it("drops Close/Quit on macOS (the native menu owns them)", () => {
+  it("drops the Linux-only Close on macOS (the native menu owns Cmd+W)", () => {
     const macMain = commandsForScope(all, "main", true).map((c) => c.id);
     expect(macMain).not.toContain("close-window");
-    expect(macMain).not.toContain("quit");
     const linuxMain = commandsForScope(all, "main", false).map((c) => c.id);
     expect(linuxMain).toContain("close-window");
-    expect(linuxMain).toContain("quit");
+  });
+
+  it("does not bind a Quit chord (tray app; macOS quits via native menu)", () => {
+    expect(all.some((c) => c.id === "quit")).toBe(false);
   });
 });
 
