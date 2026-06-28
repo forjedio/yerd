@@ -160,19 +160,27 @@ fn main() {
             logging::get_diagnostics,
         ])
         .setup(setup_app)
-        // Cmd+W on a borderless/transparent window: AppKit's performClose: no-ops
-        // (no closable style mask), so the custom close-window menu item routes
-        // here and calls close(), hitting the CloseRequested handler below.
+        // Cmd+W and Cmd+M on a borderless/transparent window: AppKit's
+        // performClose: / performMiniaturize: no-op (no closable/miniaturizable
+        // style mask), so the custom menu items route here and call the Tauri
+        // APIs directly. close() hits the CloseRequested handler below; minimize()
+        // works the same as the titlebar control.
         .on_menu_event(|app, event| {
-            if event.id.as_ref() == "close-window" {
-                // get_focused_window is behind Tauri's unstable feature; find the
-                // focused window among the managed webview windows instead.
-                if let Some(win) = app
-                    .webview_windows()
-                    .into_values()
-                    .find(|w| w.is_focused().unwrap_or(false))
-                {
-                    let _ = win.close();
+            // get_focused_window is behind Tauri's unstable feature; find the
+            // focused window among the managed webview windows instead.
+            let focused = app
+                .webview_windows()
+                .into_values()
+                .find(|w| w.is_focused().unwrap_or(false));
+            if let Some(win) = focused {
+                match event.id.as_ref() {
+                    "close-window" => {
+                        let _ = win.close();
+                    }
+                    "minimize-window" => {
+                        let _ = win.minimize();
+                    }
+                    _ => {}
                 }
             }
         })
@@ -230,8 +238,17 @@ fn build_app_menu(app: &tauri::AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
         ..Default::default()
     };
 
-    // Custom Cmd+W item (handled in on_menu_event), used in both File and Window.
+    // Custom Cmd+W / Cmd+M items (handled in on_menu_event): the predefined
+    // Close/Minimize no-op on our borderless windows, so these route to the Tauri
+    // close()/minimize() APIs instead.
     let close = MenuItem::with_id(app, "close-window", "Close", true, Some("CmdOrCtrl+W"))?;
+    let minimize = MenuItem::with_id(
+        app,
+        "minimize-window",
+        "Minimize",
+        true,
+        Some("CmdOrCtrl+M"),
+    )?;
 
     let app_menu = Submenu::with_items(
         app,
@@ -274,7 +291,7 @@ fn build_app_menu(app: &tauri::AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
         "Window",
         true,
         &[
-            &PredefinedMenuItem::minimize(app, None)?,
+            &minimize,
             &PredefinedMenuItem::maximize(app, None)?,
             &PredefinedMenuItem::separator(app)?,
             &close,

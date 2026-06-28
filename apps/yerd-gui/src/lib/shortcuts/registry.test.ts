@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   buildCommands,
   commandsForScope,
+  nativeShortcuts,
   VIEW_TARGETS,
   type ShortcutCtx,
 } from "./registry";
@@ -12,10 +13,12 @@ function fakeCtx(view: ViewActions = {}): ShortcutCtx {
   return {
     push: vi.fn(),
     openPalette: vi.fn(),
-    openCheatSheet: vi.fn(),
+    toggleCheatSheet: vi.fn(),
     toggleTheme: vi.fn(),
     restartDaemon: vi.fn(),
     closeWindow: vi.fn(),
+    openMailWindow: vi.fn(),
+    openDumpsWindow: vi.fn(),
     view: () => view,
   };
 }
@@ -26,6 +29,22 @@ describe("VIEW_TARGETS", () => {
     expect(VIEW_TARGETS[0]?.path).toBe("/overview");
     expect(VIEW_TARGETS[VIEW_TARGETS.length - 1]?.path).toBe("/doctor");
     expect(VIEW_TARGETS.map((v) => v.path)).not.toContain("/about");
+  });
+});
+
+describe("nativeShortcuts", () => {
+  it("documents the macOS native window shortcuts", () => {
+    const mac = nativeShortcuts(true);
+    expect(mac.map((s) => s.title)).toEqual([
+      "Minimise window",
+      "Close window",
+      "Quit Yerd",
+    ]);
+    expect(mac.every((s) => s.group === "Window")).toBe(true);
+  });
+
+  it("returns nothing on Linux (no native menu)", () => {
+    expect(nativeShortcuts(false)).toEqual([]);
   });
 });
 
@@ -74,8 +93,12 @@ describe("command run wiring", () => {
 
   it("contextual commands no-op when the view registers no handler", () => {
     const ctx = fakeCtx({});
-    expect(() => all.find((c) => c.id === "find")?.run(ctx)).not.toThrow();
-    expect(() => all.find((c) => c.id === "new")?.run(ctx)).not.toThrow();
+    const find = all.find((c) => c.id === "find");
+    const create = all.find((c) => c.id === "new");
+    expect(find).toBeDefined();
+    expect(create).toBeDefined();
+    expect(() => find?.run(ctx)).not.toThrow();
+    expect(() => create?.run(ctx)).not.toThrow();
   });
 
   it("contextual commands call the active view handler", () => {
@@ -83,5 +106,18 @@ describe("command run wiring", () => {
     const ctx = fakeCtx({ create });
     all.find((c) => c.id === "new")?.run(ctx);
     expect(create).toHaveBeenCalledOnce();
+  });
+
+  it("opens the viewer windows via their chords", () => {
+    const mail = all.find((c) => c.id === "open-mail");
+    const dumps = all.find((c) => c.id === "open-dumps");
+    expect(mail?.chord).toEqual({ mod: true, shift: true, key: "m" });
+    expect(dumps?.chord).toEqual({ mod: true, shift: true, key: "d" });
+
+    const ctx = fakeCtx();
+    mail?.run(ctx);
+    dumps?.run(ctx);
+    expect(ctx.openMailWindow).toHaveBeenCalledOnce();
+    expect(ctx.openDumpsWindow).toHaveBeenCalledOnce();
   });
 });

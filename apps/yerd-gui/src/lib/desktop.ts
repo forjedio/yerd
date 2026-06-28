@@ -5,6 +5,8 @@
  *  - Suppresses the web context menu everywhere except editable fields (so
  *    inputs keep cut/copy/paste).
  *  - Cancels ghost-dragging of images/links.
+ *  - Turns off native text assistance (autocorrect, autocapitalize,
+ *    spellcheck) on every form field, current and future.
  *
  * Text-selection is handled in CSS (style.css) so it stays declarative.
  */
@@ -18,6 +20,36 @@ export function isEditable(el: EventTarget | null): boolean {
 }
 
 const ZOOM_KEYS = new Set(["+", "-", "=", "0"]);
+
+/** Strip WKWebView's text substitution off a single field. */
+function harden(el: Element): void {
+  el.setAttribute("autocorrect", "off");
+  el.setAttribute("autocapitalize", "off");
+  el.setAttribute("spellcheck", "false");
+}
+
+function hardenWithin(root: ParentNode): void {
+  root.querySelectorAll("input, textarea").forEach(harden);
+}
+
+/**
+ * Disable macOS autocorrect/autocapitalize/spellcheck on all form fields. The
+ * attributes are set at element creation (before focus) via a MutationObserver,
+ * since WKWebView may latch the correction state when a field is focused.
+ */
+function disableTextAssist(): void {
+  hardenWithin(document);
+  const observer = new MutationObserver((records) => {
+    for (const rec of records) {
+      rec.addedNodes.forEach((node) => {
+        if (!(node instanceof Element)) return;
+        if (node.matches("input, textarea")) harden(node);
+        hardenWithin(node);
+      });
+    }
+  });
+  observer.observe(document.documentElement, { childList: true, subtree: true });
+}
 
 export function initDesktopChrome(): void {
   // Ctrl/Cmd + wheel zoom.
@@ -52,4 +84,6 @@ export function initDesktopChrome(): void {
   globalThis.addEventListener("dragstart", (e) => {
     if (!isEditable(e.target)) e.preventDefault();
   });
+
+  disableTextAssist();
 }

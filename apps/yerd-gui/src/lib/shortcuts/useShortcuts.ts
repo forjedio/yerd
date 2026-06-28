@@ -9,13 +9,13 @@
  * ⌘R page reload) and runs the command.
  */
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { onMounted, onUnmounted, ref, type Ref } from "vue";
+import { onMounted, onUnmounted, ref, watch, type Ref } from "vue";
 import { useRouter } from "vue-router";
 
 import { useToast } from "@/composables/useToast";
 import { isEditable } from "@/lib/desktop";
 import { setTheme } from "@/lib/theme";
-import { IpcError, restartDaemon } from "@/ipc/client";
+import { IpcError, restartDaemon, showDumpsWindow, showMailsWindow } from "@/ipc/client";
 
 import { matchChord } from "./chord";
 import { isMac } from "./platform";
@@ -46,7 +46,7 @@ export function useShortcuts(scope: WindowScope): UseShortcuts {
   const ctx: ShortcutCtx = {
     push: (path) => void router.push(path),
     openPalette: () => (paletteOpen.value = true),
-    openCheatSheet: () => (cheatSheetOpen.value = true),
+    toggleCheatSheet: () => (cheatSheetOpen.value = !cheatSheetOpen.value),
     toggleTheme: () => {
       const dark = document.documentElement.classList.contains("dark");
       setTheme(dark ? "light" : "dark");
@@ -60,15 +60,39 @@ export function useShortcuts(scope: WindowScope): UseShortcuts {
       }
     },
     closeWindow: () => void getCurrentWindow().close(),
+    openMailWindow: async () => {
+      try {
+        await showMailsWindow();
+      } catch (e) {
+        toast.error("Couldn't open the Mail viewer", (e as IpcError).message);
+      }
+    },
+    openDumpsWindow: async () => {
+      try {
+        await showDumpsWindow();
+      } catch (e) {
+        toast.error("Couldn't open the Dumps viewer", (e as IpcError).message);
+      }
+    },
     view: getViewActions,
   };
+
+  watch(
+    () => router.currentRoute.value.fullPath,
+    () => {
+      paletteOpen.value = false;
+      cheatSheetOpen.value = false;
+    },
+  );
 
   const mac = isMac();
   const commands = commandsForScope(buildCommands(), scope, mac);
 
   function onKey(e: KeyboardEvent): void {
+    if (paletteOpen.value) return;
     const editable = isEditable(e.target);
     for (const cmd of commands) {
+      if (!cmd.chord) continue;
       if (editable && !cmd.chord.mod && !cmd.chord.ctrl) continue;
       if (!matchChord(e, cmd.chord, mac)) continue;
       e.preventDefault();

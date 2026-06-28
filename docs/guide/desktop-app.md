@@ -160,6 +160,8 @@ The window is fully keyboard-driven. Shortcuts follow each platform's convention
 | Refresh | `⌘R` | `Ctrl+R` | Re-fetch the current page's data |
 | Restart daemon | `⇧⌘R` | `Ctrl+Shift+R` | Restart `yerdd` |
 | Toggle theme | `⇧⌘L` | `Ctrl+Shift+L` | Switch light / dark (applies to every window) |
+| Open Mail viewer | `⇧⌘M` | `Ctrl+Shift+M` | Open the standalone Mail capture window |
+| Open Dumps viewer | `⇧⌘D` | `Ctrl+Shift+D` | Open the standalone Dumps telemetry window |
 | Cycle Dumps tabs | `⌃⇥` / `⌃⇧⇥` | `Ctrl+Tab` / `Ctrl+Shift+Tab` | Move between categories in the Dumps viewer |
 | Close window | `⌘W` | `Ctrl+W` | Hide the window to the tray |
 | Close dialog | `Esc` | `Esc` | Dismiss the open modal |

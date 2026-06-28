@@ -78,7 +78,7 @@ function onKey(e: KeyboardEvent): void {
       v-if="open"
       class="fixed inset-0 z-50 flex items-start justify-center p-4 pt-[12vh]"
     >
-      <div class="absolute inset-0 bg-black/50 animate-fade-in" @click="close" />
+      <div class="absolute inset-0 bg-black/50 rounded-[10px] animate-fade-in" @click="close" />
       <div
         role="dialog"
         aria-modal="true"
@@ -106,7 +106,10 @@ function onKey(e: KeyboardEvent): void {
             @mousemove="selected = i"
           >
             <span>{{ cmd.title }}</span>
-            <span class="ml-4 shrink-0 text-xs text-muted-foreground">
+            <span
+              v-if="cmd.chord"
+              class="ml-4 shrink-0 text-xs text-muted-foreground"
+            >
               {{ formatChord(cmd.chord, mac) }}
             </span>
           </li>

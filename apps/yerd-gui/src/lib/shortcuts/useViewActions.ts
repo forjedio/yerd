@@ -4,9 +4,9 @@
  * cycle. A view registers its handlers on mount and the returned disposer clears
  * them on unmount; the dispatcher reads the live set when a chord fires.
  *
- * `register` returns a disposer that only clears if its own handlers are still
- * the current ones, so a route change (new view mounts before the old unmounts)
- * never wipes the incoming view's registration.
+ * `register` returns a disposer that clears state only if its registration is
+ * still the active one (tracked by a per-call token), so a stale disposer from
+ * an unmounting view can't wipe a newer view's registration.
  */
 import { shallowRef } from "vue";
 
@@ -23,15 +23,20 @@ export interface ViewActions {
   nextTab?: () => void;
 }
 
-// shallowRef, not ref: a deep reactive proxy would break the identity check in
-// the disposer (current.value would be a proxy, never === the raw `actions`).
+// shallowRef: the handlers are invoked imperatively by the dispatcher, never
+// rendered, so deep reactivity would be wasted work.
 const current = shallowRef<ViewActions>({});
+// Monotonic registration id: a disposer clears state only while its own
+// registration is still the active one, so a stale disposer can't wipe a newer
+// view's registration even when the same actions object is reused.
+let activeToken = 0;
 
 /** Register the active view's contextual handlers; returns a disposer. */
 export function registerViewActions(actions: ViewActions): () => void {
+  const token = ++activeToken;
   current.value = actions;
   return () => {
-    if (current.value === actions) current.value = {};
+    if (token === activeToken) current.value = {};
   };
 }
 

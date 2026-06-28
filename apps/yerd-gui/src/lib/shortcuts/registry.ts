@@ -24,10 +24,14 @@ export interface ShortcutCtx {
   /** Navigate the main window's router. */
   push: (path: string) => void;
   openPalette: () => void;
-  openCheatSheet: () => void;
+  toggleCheatSheet: () => void;
   toggleTheme: () => void;
   restartDaemon: () => void;
   closeWindow: () => void;
+  /** Open the standalone Mail viewer window. */
+  openMailWindow: () => void;
+  /** Open the standalone Dumps viewer window. */
+  openDumpsWindow: () => void;
   /** Live contextual handlers for the currently mounted view. */
   view: () => ViewActions;
 }
@@ -36,7 +40,8 @@ export interface Command {
   id: string;
   title: string;
   group: string;
-  chord: Chord;
+  /** The key chord, when bound. Palette-only actions (e.g. Open Mail) omit it. */
+  chord?: Chord;
   scopes: WindowScope[];
   /** Skipped on macOS (the native menu provides it there). */
   linuxOnly?: boolean;
@@ -86,7 +91,7 @@ export function buildCommands(): Command[] {
       chord: { mod: true, key: "/" },
       scopes: ["main"],
       inPalette: true,
-      run: (ctx) => ctx.openCheatSheet(),
+      run: (ctx) => ctx.toggleCheatSheet(),
     },
     {
       id: "settings",
@@ -114,6 +119,24 @@ export function buildCommands(): Command[] {
       scopes: ALL,
       inPalette: true,
       run: (ctx) => ctx.toggleTheme(),
+    },
+    {
+      id: "open-mail",
+      title: "Open Mail viewer",
+      group: "Actions",
+      chord: { mod: true, shift: true, key: "m" },
+      scopes: ["main"],
+      inPalette: true,
+      run: (ctx) => ctx.openMailWindow(),
+    },
+    {
+      id: "open-dumps",
+      title: "Open Dumps viewer",
+      group: "Actions",
+      chord: { mod: true, shift: true, key: "d" },
+      scopes: ["main"],
+      inPalette: true,
+      run: (ctx) => ctx.openDumpsWindow(),
     },
     {
       id: "find",
@@ -167,6 +190,26 @@ export function buildCommands(): Command[] {
   ];
 
   return [...nav, ...rest];
+}
+
+/**
+ * OS-provided shortcuts shown in the cheat-sheet for discoverability but handled
+ * by the native macOS menu, not the JS dispatcher. Linux has no native app menu,
+ * so it returns nothing (its Ctrl+W close is a real dispatched command).
+ */
+export interface NativeShortcut {
+  title: string;
+  chord: Chord;
+  group: string;
+}
+
+export function nativeShortcuts(isMac: boolean): NativeShortcut[] {
+  if (!isMac) return [];
+  return [
+    { title: "Minimise window", chord: { mod: true, key: "m" }, group: "Window" },
+    { title: "Close window", chord: { mod: true, key: "w" }, group: "Window" },
+    { title: "Quit Yerd", chord: { mod: true, key: "q" }, group: "Window" },
+  ];
 }
 
 /** Commands active in `scope` on this platform (drops macOS-native duplicates). */

@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { X } from "lucide-vue-next";
 import { watch } from "vue";
 
 import { cn } from "@/lib/utils";
@@ -39,7 +40,7 @@ watch(
       class="fixed inset-0 z-50 flex items-center justify-center p-4"
     >
       <div
-        class="absolute inset-0 bg-black/50 animate-fade-in"
+        class="absolute inset-0 bg-black/50 rounded-[10px] animate-fade-in"
         @click="close"
       />
       <div
@@ -54,7 +55,17 @@ watch(
           )
         "
       >
-        <h2 class="shrink-0 text-lg font-semibold">{{ title }}</h2>
+        <div class="flex shrink-0 items-start justify-between gap-4">
+          <h2 class="text-lg font-semibold">{{ title }}</h2>
+          <button
+            type="button"
+            aria-label="Close"
+            class="-mr-1 -mt-1 rounded-md p-1 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+            @click="close"
+          >
+            <X class="size-5" />
+          </button>
+        </div>
         <div class="mt-4 min-h-0 flex-1 overflow-auto">
           <slot />
         </div>
