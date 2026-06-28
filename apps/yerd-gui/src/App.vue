@@ -14,7 +14,7 @@ import { useDaemon } from "@/composables/useDaemon";
 import { useOnboarding } from "@/composables/useOnboarding";
 import { useToast } from "@/composables/useToast";
 import { useShortcuts } from "@/lib/shortcuts/useShortcuts";
-import { sitesIntent, type SitesIntent } from "@/lib/shortcuts/sitesIntent";
+import { sitesIntent } from "@/lib/shortcuts/sitesIntent";
 import { IpcError, startDaemon } from "@/ipc/client";
 
 // The auxiliary "dumps" and "mails" windows render standalone viewers with no app
@@ -79,8 +79,12 @@ onMounted(async () => {
     });
     // The tray's "New Laravel site…" emits `sites-intent` ("create"); set the
     // intent then route to /sites, where SitesView opens the matching dialog.
+    // Validate the payload (external boundary) before trusting the union cast.
     unlistenSitesIntent = await listen<string>("sites-intent", (event) => {
-      sitesIntent.value = event.payload as SitesIntent;
+      if (event.payload !== "link" && event.payload !== "park" && event.payload !== "create") {
+        return;
+      }
+      sitesIntent.value = event.payload;
       router.push("/sites");
     });
   } catch {

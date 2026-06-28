@@ -9,7 +9,9 @@ import { RouterLink } from "vue-router";
  * nav painted per-item are gone.
  *
  * `badge` shows a count pill on the right. When `onBadgeClick` is set, clicking
- * the pill runs it instead of navigating the row (e.g. open the mail viewer).
+ * the pill runs it instead of navigating the row (a mouse shortcut - keyboard
+ * users still reach the same place via the row itself), and `badgeTitle` gives
+ * the pill its tooltip.
  */
 const props = defineProps<{
   to: string;
@@ -17,6 +19,7 @@ const props = defineProps<{
   icon: Component;
   badge?: number;
   onBadgeClick?: () => void;
+  badgeTitle?: string;
 }>();
 
 function handleBadge(e: MouseEvent): void {
@@ -54,8 +57,7 @@ function handleBadge(e: MouseEvent): void {
         v-if="badge && badge > 0"
         class="ml-auto shrink-0 rounded-full bg-brand px-1.5 py-0.5 text-[10px] font-semibold leading-none text-white tabular-nums"
         :class="onBadgeClick ? 'cursor-pointer hover:bg-brand/80' : ''"
-        :role="onBadgeClick ? 'button' : undefined"
-        :title="onBadgeClick ? 'Open mail viewer' : undefined"
+        :title="onBadgeClick ? badgeTitle : undefined"
         @click="handleBadge"
       >
         {{ badge > 99 ? "99+" : badge }}

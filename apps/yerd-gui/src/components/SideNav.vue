@@ -32,6 +32,7 @@ type Item = {
   icon: Component;
   badge?: number;
   onBadgeClick?: () => void;
+  badgeTitle?: string;
 };
 
 const overview: Item = {
@@ -63,6 +64,7 @@ const sections = computed<{ title: string; items: Item[] }[]>(() => [
         icon: Mail,
         badge: unread.value,
         onBadgeClick: () => void showMailsWindow(),
+        badgeTitle: "Open mail viewer",
       },
       { to: "/dumps", label: "Dumps", icon: ClipboardList },
     ],

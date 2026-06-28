@@ -384,6 +384,8 @@ fn show_initial_window(app: &tauri::App) {
     decide_initial_window(&handle);
 }
 
+/// Reveal and focus the main window (from the tray or a window-control handler),
+/// restoring the dock icon. On macOS it first moves to the active Space.
 pub(crate) fn show_main(app: &tauri::AppHandle) {
     set_dock_visible(app, true);
     if let Some(win) = app.get_webview_window("main") {

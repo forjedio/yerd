@@ -107,6 +107,8 @@ describe("useResource", () => {
   it("does not fetch on mount when immediate is false", async () => {
     const fetcher = vi.fn().mockResolvedValue("v");
     const { api } = mountResource("lazy", fetcher, { immediate: false });
+    // An immediate:false consumer never auto-fetches, so it must not spin.
+    expect(api.loading.value).toBe(false);
     await flushPromises();
     expect(fetcher).not.toHaveBeenCalled();
     expect(api.data.value).toBeNull();
@@ -114,6 +116,47 @@ describe("useResource", () => {
     await api.refresh();
     expect(fetcher).toHaveBeenCalledTimes(1);
     expect(api.data.value).toBe("v");
+  });
+
+  it("drives refreshing (not loading) on a warm revalidation", async () => {
+    let resolveSecond!: (v: string) => void;
+    const fetcher = vi
+      .fn()
+      .mockResolvedValueOnce("first")
+      .mockImplementationOnce(
+        () =>
+          new Promise<string>((res) => {
+            resolveSecond = res;
+          }),
+      );
+    const { api } = mountResource("warm", fetcher);
+    await flushPromises();
+    expect(api.data.value).toBe("first");
+
+    const pending = api.refresh();
+    expect(api.refreshing.value).toBe(true);
+    expect(api.loading.value).toBe(false); // cached data stays visible, no spinner
+    resolveSecond("second");
+    await pending;
+    expect(api.refreshing.value).toBe(false);
+    expect(api.data.value).toBe("second");
+  });
+
+  it("clears the error after a successful refresh following a failure", async () => {
+    const fetcher = vi
+      .fn()
+      .mockResolvedValueOnce("good")
+      .mockRejectedValueOnce(new IpcError("boom"))
+      .mockResolvedValueOnce("recovered");
+    const { api } = mountResource("recover", fetcher);
+    await flushPromises();
+
+    await api.refresh();
+    expect(api.error.value?.message).toBe("boom");
+
+    await api.refresh();
+    expect(api.error.value).toBeNull();
+    expect(api.data.value).toBe("recovered");
   });
 
   it("does not let an in-flight fetch clobber an optimistic mutate", async () => {

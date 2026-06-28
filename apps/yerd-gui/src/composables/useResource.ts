@@ -82,7 +82,7 @@ export interface ResourceHandle<T> {
   error: Ref<IpcError | null>;
   refresh: () => Promise<void>;
   /** Write the cache directly for optimistic / partial updates. An updater may
-   * return `null` (or read a `null` cur) to no-op before the first load. */
+   * return `null` to leave/clear the value before the first load. */
   mutate: (next: T | ((cur: T | null) => T | null)) => void;
 }
 
@@ -101,7 +101,10 @@ export function useResource<T>(
 ): ResourceHandle<T> {
   const { immediate = true } = opts;
   const entry = entryFor<T>(key, fetcher);
-  const loading = ref(entry.data.value === null);
+  // Only an eager consumer over a cold cache starts in the loading state; an
+  // `immediate:false` consumer never auto-fetches, so it must not show a spinner
+  // until it drives `refresh()` itself.
+  const loading = ref(immediate && entry.data.value === null);
   const refreshing = ref(false);
 
   async function refresh(): Promise<void> {

@@ -8,6 +8,7 @@ import Modal from "@/components/ui/Modal.vue";
 import Select from "@/components/ui/Select.vue";
 import Spinner from "@/components/ui/Spinner.vue";
 import { registerViewActions } from "@/lib/shortcuts/useViewActions";
+import { log } from "@/lib/log";
 import { usePoll } from "@/composables/usePoll";
 import { useToast } from "@/composables/useToast";
 import {
@@ -139,7 +140,7 @@ async function markRead(id: string): Promise<void> {
       );
     }
   } catch (e) {
-    console.warn("mark mail read failed", e);
+    log.warn(`mark mail read failed: ${(e as IpcError).message}`);
   }
 }
 

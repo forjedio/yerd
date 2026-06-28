@@ -215,7 +215,8 @@ impl Badges {
 
 /// Build + install the menu for `state`, and badge the icon for waiting updates
 /// and/or unread mail. No lock / no transition logic - callers hold `MENU_LOCK`
-/// as needed.
+/// as needed. On macOS a coloured badge can't be a template, so templating is
+/// dropped while any badge shows (and restored when none do).
 fn apply(app: &AppHandle, state: &TrayState) {
     let Ok(menu) = build_menu(app, state) else {
         return;
@@ -230,7 +231,6 @@ fn apply(app: &AppHandle, state: &TrayState) {
             let _ = tray.set_icon(Some(icon));
             #[cfg(target_os = "macos")]
             {
-                // A colour badge can't be a template, so drop templating when badged.
                 let _ = tray.set_icon_as_template(!badges.any());
             }
         }
@@ -343,7 +343,6 @@ fn draw_dot(rgba: &mut [u8], width: u32, height: u32, color: (u8, u8, u8), pos: 
 #[cfg(target_os = "macos")]
 fn dark_menu_bar() -> bool {
     use objc2_foundation::{NSString, NSUserDefaults};
-    // NSUserDefaults is thread-safe, so this is fine off the main thread.
     let defaults = NSUserDefaults::standardUserDefaults();
     defaults
         .stringForKey(&NSString::from_str("AppleInterfaceStyle"))
@@ -397,11 +396,16 @@ fn mail_label(unread: u32) -> String {
 }
 
 /// The full menu for the current daemon state.
+///
+/// Layout: a top zone (Open Yerd, plus Update Yerd / Update PHP while an update
+/// waits) before the status header, then the running- or stopped-daemon block,
+/// then Quit. In the running block the installed PHP versions sit under a
+/// "Default PHP:" label, each indented with a tick drawn into the label text
+/// itself (rather than the fixed native checkmark column) so it nests with the
+/// versions; picking one switches the default and the tick moves.
 fn build_menu(app: &AppHandle, state: &TrayState) -> tauri::Result<Menu<Wry>> {
     let mut items: Vec<Box<dyn IsMenuItem<Wry>>> = Vec::new();
 
-    // Top zone, before the status header: open the app, plus update actions while
-    // an update waits.
     push(&mut items, action(app, "open", "Open Yerd", icons::OPEN)?);
     if state.update_target.is_some() {
         push(
@@ -449,10 +453,6 @@ fn build_menu(app: &AppHandle, state: &TrayState) -> tauri::Result<Menu<Wry>> {
         );
         push(&mut items, PredefinedMenuItem::separator(app)?);
 
-        // Installed PHP versions under a "Default PHP:" label, indented with a
-        // tick drawn into the label itself (so it nests with the versions rather
-        // than sitting in the fixed native checkmark column); picking another
-        // switches the default and the tick moves.
         if !state.installed.is_empty() {
             push(&mut items, disabled(app, "noop:phplabel", "Default PHP:")?);
             for v in &state.installed {
@@ -645,7 +645,7 @@ impl Drop for TransitionGuard {
 /// re-execs (then the socket briefly drops), so the boot_id change is the only
 /// reliable completion signal; the request itself is bounded so a wedged daemon
 /// can't hang the task with `TRANSITION` set.
-fn spawn_lifecycle(app: AppHandle, action: Lifecycle) {
+fn spawn_lifecycle(app: AppHandle, kind: Lifecycle) {
     if TRANSITION
         .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
         .is_err()
@@ -654,14 +654,14 @@ fn spawn_lifecycle(app: AppHandle, action: Lifecycle) {
     }
     tauri::async_runtime::spawn(async move {
         let _guard = TransitionGuard;
-        let label = match action {
+        let label = match kind {
             Lifecycle::Start => "Starting…",
             Lifecycle::Restart => "Restarting…",
             Lifecycle::Stop => "Stopping…",
         };
         apply_transient(&app, label);
 
-        match action {
+        match kind {
             Lifecycle::Start => {
                 let _ = crate::daemon::start(app.clone(), true).await;
                 wait_until_reachable(true).await;
