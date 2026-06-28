@@ -33,9 +33,11 @@ function hardenWithin(root: ParentNode): void {
 }
 
 /**
- * Disable macOS autocorrect/autocapitalize/spellcheck on all form fields. The
- * attributes are set at element creation (before focus) via a MutationObserver,
- * since WKWebView may latch the correction state when a field is focused.
+ * Disable browser text assistance (autocorrect/autocapitalize/spellcheck) on all
+ * form fields. Harmless no-ops off WebKit, so it runs on every platform; it
+ * chiefly matters on macOS WKWebView, which may latch the correction state when a
+ * field is focused, so the attributes are set at element creation (before focus)
+ * via a MutationObserver.
  */
 function disableTextAssist(): void {
   hardenWithin(document);

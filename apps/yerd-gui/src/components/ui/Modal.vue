@@ -1,8 +1,10 @@
 <script setup lang="ts">
 import { X } from "lucide-vue-next";
-import { watch } from "vue";
+import { useId, watch } from "vue";
 
 import { cn } from "@/lib/utils";
+
+const titleId = useId();
 
 const props = withDefaults(
   defineProps<{
@@ -46,6 +48,7 @@ watch(
       <div
         role="dialog"
         aria-modal="true"
+        :aria-labelledby="titleId"
         :class="
           cn(
             'relative z-10 flex max-h-[90vh] w-full flex-col rounded-lg border bg-background p-6 shadow-lg animate-fade-in',
@@ -56,7 +59,7 @@ watch(
         "
       >
         <div class="flex shrink-0 items-start justify-between gap-4">
-          <h2 class="text-lg font-semibold">{{ title }}</h2>
+          <h2 :id="titleId" class="text-lg font-semibold">{{ title }}</h2>
           <button
             type="button"
             aria-label="Close"

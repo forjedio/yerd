@@ -36,7 +36,7 @@ export interface ShortcutCtx {
   openLinkSite: () => void;
   /** Go to the Sites page and open the Park-folder picker. */
   parkFolder: () => void;
-  /** Live contextual handlers for the currently mounted view. */
+  /** Live contextual handlers for the active view. */
   view: () => ViewActions;
 }
 
@@ -44,7 +44,7 @@ export interface Command {
   id: string;
   title: string;
   group: string;
-  /** The key chord, when bound. Palette-only actions (e.g. Open Mail) omit it. */
+  /** The key chord, when bound. Some palette entries have none, e.g. the dynamic per-site commands. */
   chord?: Chord;
   scopes: WindowScope[];
   /** Skipped on macOS (the native menu provides it there). */

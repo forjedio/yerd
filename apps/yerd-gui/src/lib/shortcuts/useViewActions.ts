@@ -1,8 +1,9 @@
 /**
  * Per-view contextual handlers for the shortcuts whose target depends on the
  * active view: Find (⌘F), New (⌘N), Refresh (⌘R), and the dumps-window tab
- * cycle. A view registers its handlers on mount and the returned disposer clears
- * them on unmount; the dispatcher reads the live set when a chord fires.
+ * cycle. A view registers its handlers during setup and clears them via the
+ * returned disposer on unmount; the dispatcher reads the live set when a chord
+ * fires.
  *
  * `register` returns a disposer that clears state only if its registration is
  * still the active one (tracked by a per-call token), so a stale disposer from
@@ -40,7 +41,7 @@ export function registerViewActions(actions: ViewActions): () => void {
   };
 }
 
-/** The contextual handlers for the currently mounted view. */
+/** The contextual handlers for the active view. */
 export function getViewActions(): ViewActions {
   return current.value;
 }
