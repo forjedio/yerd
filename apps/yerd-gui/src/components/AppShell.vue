@@ -10,10 +10,13 @@ import SideNav from "@/components/SideNav.vue";
 import TitleBar from "@/components/TitleBar.vue";
 import { useDaemon } from "@/composables/useDaemon";
 import { useShortcuts } from "@/lib/shortcuts/useShortcuts";
+import { useSiteCommands } from "@/lib/shortcuts/useSiteCommands";
 
 const route = useRoute();
 const { unreachable } = useDaemon();
 const { paletteOpen, cheatSheetOpen, commands, run } = useShortcuts("main");
+const siteCommands = useSiteCommands(paletteOpen);
+const paletteCommands = computed(() => [...commands, ...siteCommands.value]);
 
 // Only three views work without a live daemon: Overview (owns its own
 // daemon-down hero + start affordance), Settings/General (can start/install it),
@@ -69,7 +72,7 @@ const pageSubtitle = computed(() =>
 
     <CommandPalette
       v-model:open="paletteOpen"
-      :commands="commands"
+      :commands="paletteCommands"
       :run="run"
     />
     <ShortcutsCheatSheet v-model:open="cheatSheetOpen" :commands="commands" />

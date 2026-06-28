@@ -32,7 +32,7 @@ describe("registerViewActions", () => {
   it("a reused actions object is not wiped by a stale disposer", () => {
     const shared = { find: vi.fn() };
     const disposeA = registerViewActions(shared);
-    registerViewActions(shared); // same object, new active registration
+    registerViewActions(shared);
     disposeA();
     expect(getViewActions().find).toBe(shared.find);
   });

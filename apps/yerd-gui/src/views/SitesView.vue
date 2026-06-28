@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, onUnmounted, ref } from "vue";
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 import {
   ChevronDown,
   ExternalLink,
@@ -41,6 +41,7 @@ import Spinner from "@/components/ui/Spinner.vue";
 import Switch from "@/components/ui/Switch.vue";
 import { openTitle, siteUrl } from "@/lib/siteUrl";
 import { registerViewActions } from "@/lib/shortcuts/useViewActions";
+import { sitesIntent } from "@/lib/shortcuts/sitesIntent";
 import { useDaemon } from "@/composables/useDaemon";
 import { useToast } from "@/composables/useToast";
 import {
@@ -307,6 +308,17 @@ onUnmounted(
     refresh: () => void load(),
   }),
 );
+
+function consumeIntent(): void {
+  const intent = sitesIntent.value;
+  if (!intent) return;
+  sitesIntent.value = null;
+  if (intent === "link") linkOpen.value = true;
+  else void onPark();
+}
+
+onMounted(consumeIntent);
+watch(sitesIntent, consumeIntent);
 </script>
 
 <template>

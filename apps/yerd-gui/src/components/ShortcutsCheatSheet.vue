@@ -11,14 +11,20 @@ const props = defineProps<{ open: boolean; commands: Command[] }>();
 defineEmits<{ "update:open": [boolean] }>();
 
 const mac = isMac();
-const GROUP_ORDER = ["Go to", "General", "Actions", "View", "Window"];
+const GROUP_ORDER = ["Go to", "General", "Actions", "View"];
+
+// In the cheat-sheet the Sites and Window shortcuts live under General.
+function displayGroup(group: string): string {
+  return group === "Sites" || group === "Window" ? "General" : group;
+}
 
 const groups = computed(() => {
   const by = new Map<string, { title: string; chord: Chord }[]>();
   const add = (group: string, title: string, chord: Chord): void => {
-    const list = by.get(group) ?? [];
+    const key = displayGroup(group);
+    const list = by.get(key) ?? [];
     list.push({ title, chord });
-    by.set(group, list);
+    by.set(key, list);
   };
   for (const cmd of props.commands) {
     if (cmd.chord) add(cmd.group, cmd.title, cmd.chord);

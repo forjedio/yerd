@@ -32,6 +32,10 @@ export interface ShortcutCtx {
   openMailWindow: () => void;
   /** Open the standalone Dumps viewer window. */
   openDumpsWindow: () => void;
+  /** Go to the Sites page and open the Link-site dialog. */
+  openLinkSite: () => void;
+  /** Go to the Sites page and open the Park-folder picker. */
+  parkFolder: () => void;
   /** Live contextual handlers for the currently mounted view. */
   view: () => ViewActions;
 }
@@ -139,6 +143,24 @@ export function buildCommands(): Command[] {
       run: (ctx) => ctx.openDumpsWindow(),
     },
     {
+      id: "link-site",
+      title: "Link Site",
+      group: "Sites",
+      chord: { mod: true, shift: true, key: "n" },
+      scopes: ["main"],
+      inPalette: true,
+      run: (ctx) => ctx.openLinkSite(),
+    },
+    {
+      id: "park-folder",
+      title: "Park Folder",
+      group: "Sites",
+      chord: { mod: true, shift: true, key: "p" },
+      scopes: ["main"],
+      inPalette: true,
+      run: (ctx) => ctx.parkFolder(),
+    },
+    {
       id: "find",
       title: "Find in view",
       group: "Actions",
@@ -203,6 +225,7 @@ export interface NativeShortcut {
   group: string;
 }
 
+/** The native macOS window shortcuts to display in the cheat-sheet (none on Linux). */
 export function nativeShortcuts(isMac: boolean): NativeShortcut[] {
   if (!isMac) return [];
   return [

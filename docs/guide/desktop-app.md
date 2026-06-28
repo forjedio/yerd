@@ -149,6 +149,8 @@ Shows the app, daemon, and negotiated IPC protocol versions, plus your local env
 
 The window is fully keyboard-driven. Shortcuts follow each platform's convention: where macOS uses **Cmd** (`⌘`), Linux uses **Ctrl** with the same letter. Two of them are all you need to remember - the **command palette** (`⌘K` / `Ctrl+K`) jumps to any page or runs any action by typing, and the **shortcuts** overlay (`⌘/` / `Ctrl+/`) lists everything below in the app itself.
 
+The command palette also lists your sites at the bottom (grouped by domain): **Open** a site in the browser, or **Secure / Unsecure** it (toggle HTTPS), without leaving the keyboard.
+
 | Action | macOS | Linux | What it does |
 |---|---|---|---|
 | Command palette | `⌘K` | `Ctrl+K` | Search-and-run overlay for every page and action |
@@ -162,6 +164,8 @@ The window is fully keyboard-driven. Shortcuts follow each platform's convention
 | Toggle theme | `⇧⌘L` | `Ctrl+Shift+L` | Switch light / dark (applies to every window) |
 | Open Mail viewer | `⇧⌘M` | `Ctrl+Shift+M` | Open the standalone Mail capture window |
 | Open Dumps viewer | `⇧⌘D` | `Ctrl+Shift+D` | Open the standalone Dumps telemetry window |
+| Link Site | `⇧⌘N` | `Ctrl+Shift+N` | Open the Link-site dialog on the Sites page |
+| Park Folder | `⇧⌘P` | `Ctrl+Shift+P` | Open the park-folder picker on the Sites page |
 | Cycle Dumps tabs | `⌃⇥` / `⌃⇧⇥` | `Ctrl+Tab` / `Ctrl+Shift+Tab` | Move between categories in the Dumps viewer |
 | Close window | `⌘W` | `Ctrl+W` | Hide the window to the tray |
 | Close dialog | `Esc` | `Esc` | Dismiss the open modal |

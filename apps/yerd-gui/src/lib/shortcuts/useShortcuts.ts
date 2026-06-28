@@ -12,6 +12,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { onMounted, onUnmounted, ref, watch, type Ref } from "vue";
 import { useRouter } from "vue-router";
 
+import { useDaemon } from "@/composables/useDaemon";
 import { useToast } from "@/composables/useToast";
 import { isEditable } from "@/lib/desktop";
 import { setTheme } from "@/lib/theme";
@@ -26,6 +27,7 @@ import {
   type ShortcutCtx,
   type WindowScope,
 } from "./registry";
+import { sitesIntent } from "./sitesIntent";
 import { getViewActions } from "./useViewActions";
 
 export interface UseShortcuts {
@@ -40,13 +42,20 @@ export interface UseShortcuts {
 export function useShortcuts(scope: WindowScope): UseShortcuts {
   const router = useRouter();
   const toast = useToast();
+  const { unreachable } = useDaemon();
   const paletteOpen = ref(false);
   const cheatSheetOpen = ref(false);
 
   const ctx: ShortcutCtx = {
     push: (path) => void router.push(path),
-    openPalette: () => (paletteOpen.value = true),
-    toggleCheatSheet: () => (cheatSheetOpen.value = !cheatSheetOpen.value),
+    openPalette: () => {
+      cheatSheetOpen.value = false;
+      paletteOpen.value = true;
+    },
+    toggleCheatSheet: () => {
+      paletteOpen.value = false;
+      cheatSheetOpen.value = !cheatSheetOpen.value;
+    },
     toggleTheme: () => {
       const dark = document.documentElement.classList.contains("dark");
       setTheme(dark ? "light" : "dark");
@@ -60,6 +69,14 @@ export function useShortcuts(scope: WindowScope): UseShortcuts {
       }
     },
     closeWindow: () => void getCurrentWindow().close(),
+    openLinkSite: () => {
+      if (!unreachable.value) sitesIntent.value = "link";
+      void router.push("/sites");
+    },
+    parkFolder: () => {
+      if (!unreachable.value) sitesIntent.value = "park";
+      void router.push("/sites");
+    },
     openMailWindow: async () => {
       try {
         await showMailsWindow();
@@ -82,6 +99,7 @@ export function useShortcuts(scope: WindowScope): UseShortcuts {
     () => {
       paletteOpen.value = false;
       cheatSheetOpen.value = false;
+      if (router.currentRoute.value.path !== "/sites") sitesIntent.value = null;
     },
   );
 

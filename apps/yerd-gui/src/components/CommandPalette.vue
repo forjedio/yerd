@@ -17,13 +17,33 @@ const selected = ref(0);
 const input = ref<HTMLInputElement | null>(null);
 const mac = isMac();
 
-const listed = computed(() => props.commands.filter((c) => c.inPalette));
+// Known groups render first in this order; everything else (the per-site groups)
+// follows, sorted by name descending.
+const KNOWN_GROUPS = ["Go to", "General", "Actions", "Sites"];
 
-const filtered = computed(() => {
+const groups = computed(() => {
   const q = query.value.trim().toLowerCase();
-  if (!q) return listed.value;
-  return listed.value.filter((c) => c.title.toLowerCase().includes(q));
+  const items = props.commands.filter(
+    (c) => c.inPalette && (!q || c.title.toLowerCase().includes(q)),
+  );
+  const by = new Map<string, Command[]>();
+  for (const c of items) {
+    const list = by.get(c.group) ?? [];
+    list.push(c);
+    by.set(c.group, list);
+  }
+  const known = KNOWN_GROUPS.filter((g) => by.has(g));
+  const sites = [...by.keys()]
+    .filter((g) => !KNOWN_GROUPS.includes(g))
+    .sort()
+    .reverse();
+  return [...known, ...sites].map((title) => ({
+    title,
+    items: by.get(title) ?? [],
+  }));
 });
+
+const flat = computed(() => groups.value.flatMap((g) => g.items));
 
 watch(
   () => props.open,
@@ -35,7 +55,7 @@ watch(
   },
 );
 
-watch(filtered, () => {
+watch(flat, () => {
   selected.value = 0;
 });
 
@@ -50,7 +70,7 @@ function choose(cmd: Command | undefined): void {
 }
 
 function move(delta: number): void {
-  const n = filtered.value.length;
+  const n = flat.value.length;
   if (n === 0) return;
   selected.value = (selected.value + delta + n) % n;
 }
@@ -67,7 +87,7 @@ function onKey(e: KeyboardEvent): void {
     move(-1);
   } else if (e.key === "Enter") {
     e.preventDefault();
-    choose(filtered.value[selected.value]);
+    choose(flat.value[selected.value]);
   }
 }
 </script>
@@ -93,33 +113,42 @@ function onKey(e: KeyboardEvent): void {
           class="w-full shrink-0 border-b bg-transparent px-4 py-3 text-sm outline-none placeholder:text-muted-foreground"
           @keydown="onKey"
         />
-        <ul class="min-h-0 flex-1 overflow-auto p-1">
-          <li
-            v-for="(cmd, i) in filtered"
-            :key="cmd.id"
-            :class="
-              i === selected
-                ? 'flex cursor-pointer items-center justify-between rounded-md bg-muted px-3 py-2 text-sm'
-                : 'flex cursor-pointer items-center justify-between rounded-md px-3 py-2 text-sm'
-            "
-            @click="choose(cmd)"
-            @mousemove="selected = i"
-          >
-            <span>{{ cmd.title }}</span>
-            <span
-              v-if="cmd.chord"
-              class="ml-4 shrink-0 text-xs text-muted-foreground"
+        <div class="min-h-0 flex-1 overflow-auto p-1">
+          <template v-for="group in groups" :key="group.title">
+            <p
+              class="px-3 pb-1 pt-2 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground/70"
             >
-              {{ formatChord(cmd.chord, mac) }}
-            </span>
-          </li>
-          <li
-            v-if="filtered.length === 0"
+              {{ group.title }}
+            </p>
+            <ul>
+              <li
+                v-for="cmd in group.items"
+                :key="cmd.id"
+                :class="
+                  cmd === flat[selected]
+                    ? 'flex cursor-pointer items-center justify-between rounded-md bg-muted px-3 py-2 text-sm'
+                    : 'flex cursor-pointer items-center justify-between rounded-md px-3 py-2 text-sm'
+                "
+                @click="choose(cmd)"
+                @mousemove="selected = flat.indexOf(cmd)"
+              >
+                <span>{{ cmd.title }}</span>
+                <span
+                  v-if="cmd.chord"
+                  class="ml-4 shrink-0 text-xs text-muted-foreground"
+                >
+                  {{ formatChord(cmd.chord, mac) }}
+                </span>
+              </li>
+            </ul>
+          </template>
+          <p
+            v-if="flat.length === 0"
             class="px-3 py-2 text-sm text-muted-foreground"
           >
             No matching commands
-          </li>
-        </ul>
+          </p>
+        </div>
       </div>
     </div>
   </Teleport>

@@ -19,6 +19,8 @@ function fakeCtx(view: ViewActions = {}): ShortcutCtx {
     closeWindow: vi.fn(),
     openMailWindow: vi.fn(),
     openDumpsWindow: vi.fn(),
+    openLinkSite: vi.fn(),
+    parkFolder: vi.fn(),
     view: () => view,
   };
 }
@@ -106,6 +108,22 @@ describe("command run wiring", () => {
     const ctx = fakeCtx({ create });
     all.find((c) => c.id === "new")?.run(ctx);
     expect(create).toHaveBeenCalledOnce();
+  });
+
+  it("Link Site / Park Folder route to the Sites dialogs via their chords", () => {
+    const link = all.find((c) => c.id === "link-site");
+    const park = all.find((c) => c.id === "park-folder");
+    expect(link?.group).toBe("Sites");
+    expect(park?.group).toBe("Sites");
+    expect(link?.chord).toEqual({ mod: true, shift: true, key: "n" });
+    expect(park?.chord).toEqual({ mod: true, shift: true, key: "p" });
+    expect(link?.inPalette).toBe(true);
+
+    const ctx = fakeCtx();
+    link?.run(ctx);
+    park?.run(ctx);
+    expect(ctx.openLinkSite).toHaveBeenCalledOnce();
+    expect(ctx.parkFolder).toHaveBeenCalledOnce();
   });
 
   it("opens the viewer windows via their chords", () => {
