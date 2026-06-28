@@ -96,7 +96,7 @@ async function doStart(s: ServiceStatus): Promise<void> {
   try {
     await startService(s.service);
     toast.success(`Started ${s.display_name}`);
-    await Promise.all([load(), refresh()]);
+    await Promise.all([load({ force: true }), refresh()]);
   } catch (e) {
     toast.error(`Couldn't start ${s.display_name}`, (e as IpcError).message);
   } finally {
@@ -109,7 +109,7 @@ async function doStop(s: ServiceStatus): Promise<void> {
   try {
     await stopService(s.service);
     toast.success(`Stopped ${s.display_name}`);
-    await Promise.all([load(), refresh()]);
+    await Promise.all([load({ force: true }), refresh()]);
   } catch (e) {
     toast.error(`Couldn't stop ${s.display_name}`, (e as IpcError).message);
   } finally {
@@ -122,7 +122,7 @@ async function doRestart(s: ServiceStatus): Promise<void> {
   try {
     await restartService(s.service);
     toast.success(`Restarted ${s.display_name}`);
-    await Promise.all([load(), refresh()]);
+    await Promise.all([load({ force: true }), refresh()]);
   } catch (e) {
     toast.error(`Couldn't restart ${s.display_name}`, (e as IpcError).message);
   } finally {
@@ -180,7 +180,7 @@ async function confirmInstall(close: () => void): Promise<void> {
       await installService(s.service, v);
       toast.success(`Installed ${s.display_name} v${v}`, "Started and enabled on boot.");
     }
-    await Promise.all([load(), refresh()]);
+    await Promise.all([load({ force: true }), refresh()]);
   } catch (e) {
     const verb = mode === "change" ? "Change" : "Install";
     toast.error(`${verb} of ${s.display_name} failed`, (e as IpcError).message);
@@ -212,7 +212,7 @@ async function confirmPort(close: () => void): Promise<void> {
   try {
     await setServicePort(s.service, port);
     toast.success(`${s.display_name} port set to ${port}`, "Restart the service to apply.");
-    await load();
+    await load({ force: true });
   } catch (e) {
     toast.error(`Couldn't set ${s.display_name} port`, (e as IpcError).message);
   } finally {
@@ -274,11 +274,11 @@ async function confirmUninstall(close: () => void): Promise<void> {
   try {
     await uninstallService(s.service, v, uninstallPurge.value);
     toast.success(`Uninstalled ${s.display_name} v${v}`);
-    await Promise.all([load(), refresh()]);
+    await Promise.all([load({ force: true }), refresh()]);
   } catch (e) {
     // A retained-data notice comes back as an error code with a message; show it.
     toast.error(`Uninstall of ${s.display_name}`, (e as IpcError).message);
-    await load();
+    await load({ force: true });
   } finally {
     busy.value = null;
   }

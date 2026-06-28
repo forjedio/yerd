@@ -83,7 +83,7 @@ export function useSiteCommands(paletteOpen: Ref<boolean>): Ref<Command[]> {
       try {
         await setSecure(s.name, !s.secure);
         toast.success(`Updated ${s.name}`);
-        await Promise.all([refresh(), reloadSites()]);
+        await Promise.all([refresh(), reloadSites({ force: true })]);
       } catch (e) {
         toast.error("Couldn't update site", (e as IpcError).message);
       }

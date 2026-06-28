@@ -95,7 +95,7 @@ function openCreate(): void {
 }
 
 async function onCreated(): Promise<void> {
-  await load();
+  await load({ force: true });
 }
 
 // PHP options for the edit form, from the live status report.
@@ -182,7 +182,7 @@ async function confirmEdit(close: () => void): Promise<void> {
       await setSecure(s.name, editSecure.value);
     }
     toast.success(`Updated ${s.name}`);
-    await load();
+    await load({ force: true });
   } catch (e) {
     toast.error("Couldn't update site", (e as IpcError).message);
   } finally {
@@ -198,7 +198,7 @@ async function onPark(): Promise<void> {
   try {
     await park(dir);
     toast.success("Parked directory", dir);
-    await load();
+    await load({ force: true });
   } catch (e) {
     toast.error("Park failed", (e as IpcError).message);
   } finally {
@@ -225,7 +225,7 @@ async function confirmUnpark(close: () => void): Promise<void> {
   try {
     await unpark(folder);
     toast.success("Un-parked folder", folder);
-    await load();
+    await load({ force: true });
   } catch (e) {
     toast.error("Un-park failed", (e as IpcError).message);
   } finally {
@@ -257,7 +257,7 @@ async function confirmLink(close: () => void): Promise<void> {
     toast.success(`Linked ${name}`);
     linkName.value = "";
     linkPath.value = "";
-    await load();
+    await load({ force: true });
   } catch (e) {
     toast.error("Link failed", (e as IpcError).message);
   } finally {
@@ -284,7 +284,7 @@ async function confirmUnlink(close: () => void): Promise<void> {
   try {
     await unlink(s.name);
     toast.success(`Removed ${s.name}`);
-    await load();
+    await load({ force: true });
   } catch (e) {
     toast.error("Couldn't remove site", (e as IpcError).message);
   } finally {

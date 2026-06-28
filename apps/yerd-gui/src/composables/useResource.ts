@@ -58,9 +58,16 @@ function entryFor<T>(key: string, fetcher: () => Promise<T>): Entry<T> {
  * data. The captured `epoch` is the optimistic-write guard: if a `mutate` landed
  * during the fetch the epoch advances, and this now-stale response is discarded
  * rather than clobbering the newer value.
+ *
+ * `force` is for a post-write refresh: an in-flight fetch may have started before
+ * the write reached the daemon, so deduping onto it would observe pre-write state.
+ * A forced call instead chains a fresh fetch after the in-flight one settles, so
+ * the caller is guaranteed to see post-write data.
  */
-function revalidate<T>(entry: Entry<T>): Promise<void> {
-  if (entry.inFlight) return entry.inFlight;
+function revalidate<T>(entry: Entry<T>, force = false): Promise<void> {
+  if (entry.inFlight) {
+    return force ? entry.inFlight.then(() => revalidate(entry, false)) : entry.inFlight;
+  }
   const epoch = entry.epoch;
   const run = (async () => {
     try {
@@ -88,7 +95,9 @@ export interface ResourceHandle<T> {
   /** True while a background revalidation runs over already-cached data. */
   refreshing: Ref<boolean>;
   error: Ref<IpcError | null>;
-  refresh: () => Promise<void>;
+  /** Revalidate the shared cache. Pass `{ force: true }` after an awaited write so
+   * a fetch already in flight (possibly pre-write) can't satisfy this refresh. */
+  refresh: (opts?: { force?: boolean }) => Promise<void>;
   /** Write the cache directly for optimistic / partial updates. An updater may
    * return `null` to leave/clear the value before the first load. */
   mutate: (next: T | ((cur: T | null) => T | null)) => void;
@@ -118,12 +127,12 @@ export function useResource<T>(
   const loading = ref(immediate && entry.data.value === null);
   const refreshing = ref(false);
 
-  async function refresh(): Promise<void> {
+  async function refresh(opts: { force?: boolean } = {}): Promise<void> {
     const firstLoad = entry.data.value === null;
     if (firstLoad) loading.value = true;
     else refreshing.value = true;
     try {
-      await revalidate(entry);
+      await revalidate(entry, opts.force);
     } finally {
       loading.value = false;
       refreshing.value = false;
@@ -145,10 +154,11 @@ export function useResource<T>(
   return { data: entry.data, loading, refreshing, error: entry.error, refresh, mutate };
 }
 
-/** Silently refetch a key after a mutation; no-op if nothing subscribes to it yet. */
+/** Silently refetch a key after a mutation; no-op if nothing subscribes to it yet.
+ * Forced, since it follows a write: it must not dedupe onto a pre-write fetch. */
 export function invalidate(key: string): Promise<void> {
   const entry = cache.get(key);
-  return entry ? revalidate(entry) : Promise.resolve();
+  return entry ? revalidate(entry, true) : Promise.resolve();
 }
 
 /** Test-only: drop all cached entries so specs start from a cold cache. */

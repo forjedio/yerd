@@ -116,6 +116,26 @@ describe("useResource", () => {
     expect(api.data.value).toBe("v");
   });
 
+  it("a forced refresh chains a fresh fetch instead of deduping onto an in-flight one", async () => {
+    let resolveFirst!: (v: string) => void;
+    const fetcher = vi
+      .fn()
+      .mockImplementationOnce(
+        () =>
+          new Promise<string>((res) => {
+            resolveFirst = res;
+          }),
+      )
+      .mockResolvedValueOnce("post-write");
+    const { api } = mountResource("force", fetcher, { immediate: false });
+    const inflight = api.refresh();
+    const forced = api.refresh({ force: true });
+    resolveFirst("pre-write");
+    await Promise.all([inflight, forced]);
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    expect(api.data.value).toBe("post-write");
+  });
+
   it("drives refreshing (not loading) on a warm revalidation", async () => {
     let resolveSecond!: (v: string) => void;
     const fetcher = vi

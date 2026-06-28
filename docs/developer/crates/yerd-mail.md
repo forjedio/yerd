@@ -235,8 +235,9 @@ pub async fn clear(&self) -> Result<(), MailError>;
 
 `MailSummary` carries a `read: bool` that lives in `index.json` (it is store
 state, not decoded from the message). New captures start unread; `mark_read`
-flips the flag for the given ids and rewrites the index only when something
-changed, and `counts` returns the total and the unread tally under one lock so
+sets the read flag (one-way, unread to read) for the given ids and rewrites the
+index only when something changed, and `counts` returns the total and the unread
+tally under one lock so
 the daemon's `Status` can report both consistently.
 
 Design properties worth knowing as a contributor:

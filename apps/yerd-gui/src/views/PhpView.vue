@@ -199,7 +199,7 @@ async function saveSettings(): Promise<void> {
     const r = await setPhpSettings(payload);
     applySettings(r.settings);
     toast.success("PHP settings updated", "Pools restart to apply the changes.");
-    await reloadPhp();
+    await reloadPhp({ force: true });
   } catch (e) {
     toast.error("Couldn't update PHP settings", (e as IpcError).message);
   } finally {
@@ -246,7 +246,7 @@ async function doUpdate(v: PhpVersion | null): Promise<void> {
     await updatePhp(v);
     toast.success(v ? `Updated PHP ${v}` : "Updated all PHP versions");
     // Refresh the status poll too so the new patch shows without the 4s lag.
-    await Promise.all([reloadPhp(), refresh()]);
+    await Promise.all([reloadPhp({ force: true }), refresh()]);
   } catch (e) {
     toast.error("Update failed", (e as IpcError).message);
   } finally {
@@ -317,7 +317,7 @@ async function confirmUninstall(close: () => void): Promise<void> {
   try {
     await uninstallPhp(v);
     toast.success(`Uninstalled PHP ${v}`);
-    await reloadPhp();
+    await reloadPhp({ force: true });
   } catch (e) {
     toast.error(`Couldn't uninstall PHP ${v}`, (e as IpcError).message);
   } finally {
@@ -375,7 +375,7 @@ async function confirmInstall(close: () => void): Promise<void> {
       if (latest) operations.update(opId, { detail: latest });
     });
     toast.success(`Installed PHP ${v}`);
-    await Promise.all([reloadPhp(), refresh()]);
+    await Promise.all([reloadPhp({ force: true }), refresh()]);
   } catch (e) {
     toast.error(`Install of PHP ${v} failed`, (e as IpcError).message);
   } finally {

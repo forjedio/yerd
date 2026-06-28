@@ -81,7 +81,10 @@ async function registerTrayNav(): Promise<void> {
       router.push("/sites");
     });
   } catch {
-    /* tray navigation is non-critical */
+    unlistenNav?.();
+    unlistenSitesIntent?.();
+    unlistenNav = undefined;
+    unlistenSitesIntent = undefined;
   }
 }
 

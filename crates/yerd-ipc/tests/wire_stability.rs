@@ -1373,6 +1373,18 @@ fn response_mails_byte_shape() {
 }
 
 #[test]
+fn response_mails_legacy_without_read_decodes_default() {
+    let legacy = r#"{"type":"mails","mails":[{"id":"000001","from":"Example <hello@example.com>","to":["test@test.com"],"subject":"Hi","date_epoch":1700000000}]}"#;
+    match serde_json::from_str::<Response>(legacy).unwrap() {
+        Response::Mails { mails } => {
+            assert_eq!(mails.len(), 1);
+            assert!(!mails[0].read);
+        }
+        other => panic!("expected Mails, got {other:?}"),
+    }
+}
+
+#[test]
 fn response_dumps_status_byte_shape() {
     let mut features = BTreeMap::new();
     features.insert("dumps".to_string(), true);
@@ -1444,6 +1456,14 @@ fn status_mail_appears_only_when_some() {
     );
     let back: StatusReport = serde_json::from_str(&s).unwrap();
     assert_eq!(back, report);
+}
+
+#[test]
+fn status_mail_legacy_without_unread_decodes_default() {
+    let legacy = r#"{"enabled":true,"port":2525,"listening":true,"count":3}"#;
+    let mail: MailStatus = serde_json::from_str(legacy).unwrap();
+    assert_eq!(mail.count, 3);
+    assert_eq!(mail.unread, 0);
 }
 
 #[test]

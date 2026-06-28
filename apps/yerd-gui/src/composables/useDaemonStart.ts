@@ -182,7 +182,9 @@ function beginPolling(startError?: string): void {
  * before the first phase event). Once `startDaemon` returns, `acceptRustPhases` is
  * dropped so a straggler phase event can't flip the label after the frontend owns
  * running/idle; a launch throw (missing sidecar, translocation refusal, register
- * failure) diagnoses immediately.
+ * failure) diagnoses immediately. `nudge` defaults to true (open Login Items on a
+ * pending approval); only onboarding passes false. A throwing `beforeProbe` is
+ * treated as not-pending-approval.
  */
 async function start(opts: StartOptions = {}): Promise<void> {
   if (starting.value) return;
@@ -192,7 +194,7 @@ async function start(opts: StartOptions = {}): Promise<void> {
   log.info("daemon start requested");
   let startError: string | undefined;
   try {
-    await startDaemon(opts.nudge ?? false);
+    await startDaemon(opts.nudge ?? true);
   } catch (e) {
     acceptRustPhases = false;
     startError = (e as IpcError).message;
@@ -206,7 +208,7 @@ async function start(opts: StartOptions = {}): Promise<void> {
     try {
       pendingApproval.value = await opts.beforeProbe();
     } catch {
-      /* best-effort; treat as not-pending */
+      pendingApproval.value = false;
     }
   }
   await refresh();

@@ -241,7 +241,7 @@ function formatDate(epoch: number): string {
             <div class="flex items-center justify-between gap-2">
               <span class="flex min-w-0 items-center gap-1.5">
                 <span
-                  v-if="!m.read"
+                  v-if="m.read === false"
                   class="size-2 shrink-0 rounded-full bg-brand"
                   aria-label="Unread"
                 />
@@ -251,7 +251,7 @@ function formatDate(epoch: number): string {
                 {{ formatDate(m.date_epoch) }}
               </span>
             </div>
-            <p class="mt-0.5 truncate text-sm" :class="m.read ? '' : 'font-semibold'">
+            <p class="mt-0.5 truncate text-sm" :class="m.read === false ? 'font-semibold' : ''">
               {{ m.subject || "(no subject)" }}
             </p>
           </li>

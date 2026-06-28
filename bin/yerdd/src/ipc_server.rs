@@ -1709,6 +1709,7 @@ Subject: Captured\r\n\r\nhi\r\n";
                 assert_eq!(mail.port, yerd_config::DEFAULT_MAIL_PORT);
                 assert!(!mail.listening);
                 assert_eq!(mail.count, 0);
+                assert_eq!(mail.unread, 0);
             }
             other => panic!("expected Status, got {other:?}"),
         }
