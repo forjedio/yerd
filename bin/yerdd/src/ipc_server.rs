@@ -244,6 +244,10 @@ async fn dispatch(req: Request, state: &DaemonState) -> Response {
             Ok(()) => Response::Ok,
             Err(e) => internal(format!("mail delete failed: {e}")),
         },
+        Request::MarkMailsRead { ids } => match state.mail_store.mark_read(&ids).await {
+            Ok(()) => Response::Ok,
+            Err(e) => internal(format!("mail mark-read failed: {e}")),
+        },
         Request::SetMailPort { port } => set_mail_port(port, state).await,
         Request::SetFallbackPorts { http, https } => set_fallback_ports(http, https, state).await,
         Request::SetDnsPort { port } => set_dns_port(port, state).await,
@@ -487,6 +491,8 @@ async fn build_status_report(state: &DaemonState) -> yerd_ipc::StatusReport {
         .load_average()
         .map(|[a, b, c]| [load_to_centi(a), load_to_centi(b), load_to_centi(c)]);
 
+    let (mail_count, mail_unread) = state.mail_store.counts().await;
+
     yerd_ipc::StatusReport {
         daemon_pid: std::process::id(),
         uptime_secs: state.started_at.elapsed().as_secs(),
@@ -514,7 +520,8 @@ async fn build_status_report(state: &DaemonState) -> yerd_ipc::StatusReport {
             enabled: mail_enabled,
             port: mail_port,
             listening: state.mail.listening,
-            count: state.mail_store.count().await,
+            count: mail_count,
+            unread: mail_unread,
         }),
         web_unbound: state.web_unbound,
         dns_unbound: state.dns_unbound,

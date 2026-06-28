@@ -398,6 +398,11 @@ pub async fn delete_mails(ids: Vec<String>) -> Result<Response, GuiError> {
 }
 
 #[tauri::command]
+pub async fn mark_mails_read(ids: Vec<String>) -> Result<Response, GuiError> {
+    finish(exchange(&Request::MarkMailsRead { ids }).await?)
+}
+
+#[tauri::command]
 pub async fn set_mail_port(port: u16) -> Result<Response, GuiError> {
     finish(exchange(&Request::SetMailPort { port }).await?)
 }

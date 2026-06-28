@@ -1307,6 +1307,16 @@ fn request_delete_mails_byte_shape() {
 }
 
 #[test]
+fn request_mark_mails_read_byte_shape() {
+    let r = Request::MarkMailsRead {
+        ids: vec!["000001".into()],
+    };
+    let s = serde_json::to_string(&r).unwrap();
+    assert_eq!(s, r#"{"type":"mark_mails_read","ids":["000001"]}"#);
+    assert_eq!(serde_json::from_str::<Request>(&s).unwrap(), r);
+}
+
+#[test]
 fn request_set_mail_port_byte_shape() {
     let r = Request::SetMailPort { port: 2525 };
     let s = serde_json::to_string(&r).unwrap();
@@ -1353,10 +1363,11 @@ fn response_mails_byte_shape() {
             to: vec!["test@test.com".into()],
             subject: "Hi".into(),
             date_epoch: 1_700_000_000,
+            read: false,
         }],
     };
     let s = serde_json::to_string(&r).unwrap();
-    let expected = r#"{"type":"mails","mails":[{"id":"000001","from":"Example <hello@example.com>","to":["test@test.com"],"subject":"Hi","date_epoch":1700000000}]}"#;
+    let expected = r#"{"type":"mails","mails":[{"id":"000001","from":"Example <hello@example.com>","to":["test@test.com"],"subject":"Hi","date_epoch":1700000000,"read":false}]}"#;
     assert_eq!(s, expected);
     assert_eq!(serde_json::from_str::<Response>(&s).unwrap(), r);
 }
@@ -1424,10 +1435,11 @@ fn status_mail_appears_only_when_some() {
         port: 2525,
         listening: true,
         count: 3,
+        unread: 2,
     });
     let s = serde_json::to_string(&report).unwrap();
     assert!(
-        s.contains(r#""mail":{"enabled":true,"port":2525,"listening":true,"count":3}"#),
+        s.contains(r#""mail":{"enabled":true,"port":2525,"listening":true,"count":3,"unread":2}"#),
         "{s}"
     );
     let back: StatusReport = serde_json::from_str(&s).unwrap();

@@ -7,8 +7,24 @@ import { RouterLink } from "vue-router";
  * active or hovered. Colour is reserved for real status elsewhere; the nav never
  * uses it as decoration. Only the active row tints; the chip backgrounds the old
  * nav painted per-item are gone.
+ *
+ * `badge` shows a count pill on the right. When `onBadgeClick` is set, clicking
+ * the pill runs it instead of navigating the row (e.g. open the mail viewer).
  */
-defineProps<{ to: string; label: string; icon: Component }>();
+const props = defineProps<{
+  to: string;
+  label: string;
+  icon: Component;
+  badge?: number;
+  onBadgeClick?: () => void;
+}>();
+
+function handleBadge(e: MouseEvent): void {
+  if (!props.onBadgeClick) return;
+  e.stopPropagation();
+  e.preventDefault();
+  props.onBadgeClick();
+}
 </script>
 
 <template>
@@ -33,7 +49,17 @@ defineProps<{ to: string; label: string; icon: Component }>();
             : 'text-muted-foreground/80 group-hover:text-foreground'
         "
       />
-      <span class="truncate">{{ label }}</span>
+      <span class="min-w-0 truncate">{{ label }}</span>
+      <span
+        v-if="badge && badge > 0"
+        class="ml-auto shrink-0 rounded-full bg-brand px-1.5 py-0.5 text-[10px] font-semibold leading-none text-white tabular-nums"
+        :class="onBadgeClick ? 'cursor-pointer hover:bg-brand/80' : ''"
+        :role="onBadgeClick ? 'button' : undefined"
+        :title="onBadgeClick ? 'Open mail viewer' : undefined"
+        @click="handleBadge"
+      >
+        {{ badge > 99 ? "99+" : badge }}
+      </span>
     </a>
   </RouterLink>
 </template>

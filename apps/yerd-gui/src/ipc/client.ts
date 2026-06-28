@@ -459,6 +459,11 @@ export async function deleteMails(ids: string[]): Promise<void> {
   ensureOk(await call<Response>("delete_mails", { ids }));
 }
 
+/** Mark a specific set of captured emails as read by id. */
+export async function markMailsRead(ids: string[]): Promise<void> {
+  ensureOk(await call<Response>("mark_mails_read", { ids }));
+}
+
 /** Persist the mail-capture SMTP port; takes effect on the next daemon restart. */
 export async function setMailPort(port: number): Promise<void> {
   ensureOk(await call<Response>("set_mail_port", { port }));

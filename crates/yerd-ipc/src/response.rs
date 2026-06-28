@@ -475,6 +475,7 @@ mod variant_name_pinning {
                 to: vec!["test@test.com".into()],
                 subject: "Hi".into(),
                 date_epoch: 1_700_000_000,
+                read: false,
             }],
         });
         pin_response(Response::Mail {

@@ -22,10 +22,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, MutexGuard};
 use std::time::Duration;
 
-use tauri::menu::{
-    CheckMenuItem, IsMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem, Submenu,
-};
-use tauri::tray::{MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
+use tauri::menu::{IconMenuItem, IsMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem};
+use tauri::tray::TrayIconBuilder;
 use tauri::{AppHandle, Emitter, Wry};
 
 use yerd_core::PhpVersion;
@@ -43,13 +41,35 @@ const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 const SETTLE_STEPS: u32 = 20;
 const SETTLE_STEP: Duration = Duration::from_millis(500);
 
-/// The three navigable pages the tray links to (demoted below the direct
-/// actions). PHP has its own submenu and Mail/Dumps their own openers, so they
-/// aren't repeated here.
-const NAV_ITEMS: &[(&str, &str)] = &[
-    ("nav:/sites", "Sites"),
-    ("nav:/services", "Services"),
-    ("nav:/about", "About"),
+/// Bundled menu-item icons (lucide, rasterised to 36px black PNGs, the glyph
+/// padded to ~75% of the canvas so muda's fixed 18pt menu icon isn't oversized;
+/// recoloured to white for dark mode at runtime by `menu_icon`, since muda
+/// doesn't treat menu icons as templates).
+mod icons {
+    pub const OPEN: &[u8] = include_bytes!("../icons/menu/app-window.png");
+    pub const UPDATE: &[u8] = include_bytes!("../icons/menu/download.png");
+    pub const UPDATE_PHP: &[u8] = include_bytes!("../icons/menu/arrow-down-to-line.png");
+    pub const NEW_SITE: &[u8] = include_bytes!("../icons/menu/rocket.png");
+    pub const LINK: &[u8] = include_bytes!("../icons/menu/link.png");
+    pub const PARK: &[u8] = include_bytes!("../icons/menu/folder-plus.png");
+    pub const RESTART: &[u8] = include_bytes!("../icons/menu/rotate-cw.png");
+    pub const STOP: &[u8] = include_bytes!("../icons/menu/square.png");
+    pub const START: &[u8] = include_bytes!("../icons/menu/play.png");
+    pub const CHECK_UPDATES: &[u8] = include_bytes!("../icons/menu/refresh-cw.png");
+    pub const MAIL: &[u8] = include_bytes!("../icons/menu/mail.png");
+    pub const DUMPS: &[u8] = include_bytes!("../icons/menu/clipboard-list.png");
+    pub const SITES: &[u8] = include_bytes!("../icons/menu/layout-grid.png");
+    pub const SERVICES: &[u8] = include_bytes!("../icons/menu/database.png");
+    pub const ABOUT: &[u8] = include_bytes!("../icons/menu/info.png");
+    pub const QUIT: &[u8] = include_bytes!("../icons/menu/power.png");
+}
+
+/// The navigable pages the tray links to (demoted below the direct actions). PHP
+/// is listed inline and Mail/Dumps have their own openers, so they aren't here.
+const NAV_ITEMS: &[(&str, &str, &[u8])] = &[
+    ("nav:/sites", "Sites", icons::SITES),
+    ("nav:/services", "Services", icons::SERVICES),
+    ("nav:/about", "About", icons::ABOUT),
 ];
 
 /// macOS menu-bar template icon (see `main.rs` for the rationale).
@@ -77,6 +97,8 @@ fn lock_menu() -> MutexGuard<'static, ()> {
 /// include live uptime: it would change every tick and rebuild the menu on a
 /// timer (churn, and a rebuild can disrupt the menu if the user has it open), for
 /// only a cosmetic label - so the menu rebuilds solely on meaningful state change.
+/// `unread` is included (unlike uptime) because it drives the "Mail (N)" label and
+/// only changes when mail arrives or is read, not on a timer.
 #[derive(Clone, Default, PartialEq, Eq)]
 struct TrayState {
     running: bool,
@@ -84,18 +106,27 @@ struct TrayState {
     installed: Vec<String>,
     http: Option<u16>,
     https: Option<u16>,
+    /// The Yerd self-update target version, when one is available.
     update_target: Option<String>,
+    /// True when any installed PHP version has a newer patch available.
+    php_update: bool,
+    /// Captured emails not yet marked read.
+    unread: u32,
 }
 
 /// Build the tray and register it; called once from `setup_app`.
+///
+/// The dynamic menu is the primary surface, so it opens on a plain left-click
+/// (the native macOS/Linux menu-bar convention) as well as right-click; the
+/// "Open Yerd" item opens the main window. (Windows convention is left-click =
+/// open the app; revisit if/when Windows support lands.)
 pub(crate) fn build_tray(app: &AppHandle) -> tauri::Result<()> {
     let menu = build_menu(app, &TrayState::default())?;
     let mut builder = TrayIconBuilder::with_id(TRAY_ID)
         .tooltip("Yerd")
         .menu(&menu)
-        .show_menu_on_left_click(false)
-        .on_menu_event(on_menu_event)
-        .on_tray_icon_event(on_tray_icon_event);
+        .show_menu_on_left_click(true)
+        .on_menu_event(on_menu_event);
 
     #[cfg(target_os = "macos")]
     {
@@ -113,13 +144,17 @@ pub(crate) fn build_tray(app: &AppHandle) -> tauri::Result<()> {
 }
 
 /// Spawn the background poll loop; called from `setup_app` after `build_tray`.
+///
+/// Skips while a transition owns the menu, diffs the snapshot to avoid needless
+/// rebuilds, and re-checks `TRANSITION` under `MENU_LOCK` before applying so a
+/// tick whose fetch overlapped a starting transition can't overwrite its
+/// transient menu (see the module concurrency note).
 pub(crate) fn spawn_tray_poller(app: AppHandle) {
     tauri::async_runtime::spawn(async move {
         let mut last: Option<TrayState> = None;
         let mut interval = tokio::time::interval(POLL_INTERVAL);
         loop {
             interval.tick().await;
-            // A transition owns the menu; don't even fetch-and-compare.
             if TRANSITION.load(Ordering::Acquire) {
                 continue;
             }
@@ -127,8 +162,6 @@ pub(crate) fn spawn_tray_poller(app: AppHandle) {
             if last.as_ref() == Some(&state) {
                 continue;
             }
-            // Re-check TRANSITION under the lock so a transition that began during
-            // the fetch above wins (its transient menu is not overwritten).
             let guard = lock_menu();
             if !TRANSITION.load(Ordering::Acquire) {
                 apply(&app, &state);
@@ -139,14 +172,13 @@ pub(crate) fn spawn_tray_poller(app: AppHandle) {
     });
 }
 
-/// Fetch daemon status (+ cached update target) into a snapshot. An unreachable
-/// daemon yields the "stopped" snapshot.
+/// Fetch daemon status into a snapshot, plus the cached (network-free) update
+/// target. An unreachable daemon yields the "stopped" snapshot.
 async fn fetch_state() -> TrayState {
     let report = match exchange_timeout(&Request::Status, PROBE_TIMEOUT).await {
         Ok(Response::Status { report }) => report,
         _ => return TrayState::default(),
     };
-    // Cache-only, so cheap and offline-safe; only surface a target when available.
     let update_target = match exchange_timeout(&Request::CachedUpdateStatus, PROBE_TIMEOUT).await {
         Ok(Response::UpdateStatus {
             available: true,
@@ -162,22 +194,160 @@ async fn fetch_state() -> TrayState {
         http: Some(report.http.bound),
         https: Some(report.https.bound),
         update_target,
+        php_update: report.php.iter().any(|p| p.update_available.is_some()),
+        unread: report.mail.as_ref().map_or(0, |m| m.unread),
     }
 }
 
-/// Build + install the menu for `state` (and the macOS title). No lock / no
-/// transition logic - callers hold `MENU_LOCK` as needed.
+/// Which badges the icon needs: a red dot bottom-right for a waiting update (app
+/// or PHP), an orange dot bottom-left for unread mail. They can coexist.
+#[derive(Clone, Copy)]
+struct Badges {
+    update: bool,
+    unread: bool,
+}
+
+impl Badges {
+    fn any(self) -> bool {
+        self.update || self.unread
+    }
+}
+
+/// Build + install the menu for `state`, and badge the icon for waiting updates
+/// and/or unread mail. No lock / no transition logic - callers hold `MENU_LOCK`
+/// as needed.
 fn apply(app: &AppHandle, state: &TrayState) {
     let Ok(menu) = build_menu(app, state) else {
         return;
     };
     if let Some(tray) = app.tray_by_id(TRAY_ID) {
         let _ = tray.set_menu(Some(menu));
-        #[cfg(target_os = "macos")]
-        {
-            let _ = tray.set_title(Some(tray_title(state)));
+        let badges = Badges {
+            update: state.update_target.is_some() || state.php_update,
+            unread: state.unread > 0,
+        };
+        if let Some(icon) = tray_icon(app, badges) {
+            let _ = tray.set_icon(Some(icon));
+            #[cfg(target_os = "macos")]
+            {
+                // A colour badge can't be a template, so drop templating when badged.
+                let _ = tray.set_icon_as_template(!badges.any());
+            }
         }
     }
+}
+
+/// Red update dot, drawn bottom-right.
+const BADGE_UPDATE: (u8, u8, u8) = (235, 64, 52);
+/// Orange unread-mail dot, drawn bottom-left (opposite the update dot).
+const BADGE_UNREAD: (u8, u8, u8) = (255, 149, 0);
+
+/// Which bottom corner a badge dot sits in.
+#[derive(Clone, Copy)]
+enum DotPos {
+    /// Bottom-right corner (the update dot).
+    BottomRight,
+    /// Bottom-left corner (the unread-mail dot).
+    BottomLeft,
+}
+
+/// The tray icon for the current state. Plain icon when nothing's waiting; a copy
+/// with a red dot (bottom-right) for a waiting update and/or an orange dot
+/// (bottom-left) for unread mail. On macOS the plain icon is the monochrome template
+/// (auto-tinted); a colour dot can't be a template, so the badged copy paints the
+/// glyph in the current appearance's label colour (black in light, white in dark)
+/// to stay native-looking, and `apply` flips the template flag to match.
+#[cfg_attr(target_os = "macos", allow(unused_variables))]
+fn tray_icon(app: &AppHandle, badges: Badges) -> Option<tauri::image::Image<'static>> {
+    #[cfg(target_os = "macos")]
+    {
+        let base = tauri::image::Image::from_bytes(TRAY_ICON_MAC).ok()?;
+        let (w, h) = (base.width(), base.height());
+        let mut rgba = base.rgba().to_vec();
+        if !badges.any() {
+            return Some(tauri::image::Image::new_owned(rgba, w, h));
+        }
+        let glyph = if dark_menu_bar() { 255u8 } else { 0u8 };
+        for px in rgba.chunks_exact_mut(4) {
+            if let [r, g, b, a] = px {
+                if *a > 0 {
+                    (*r, *g, *b) = (glyph, glyph, glyph);
+                }
+            }
+        }
+        Some(draw_badges(rgba, w, h, badges))
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let base = app.default_window_icon()?;
+        let (w, h) = (base.width(), base.height());
+        let rgba = base.rgba().to_vec();
+        if !badges.any() {
+            return Some(tauri::image::Image::new_owned(rgba, w, h));
+        }
+        Some(draw_badges(rgba, w, h, badges))
+    }
+}
+
+/// Composite the requested dots onto an RGBA buffer: red bottom-right for an
+/// update, orange bottom-left for unread mail.
+fn draw_badges(
+    mut rgba: Vec<u8>,
+    width: u32,
+    height: u32,
+    badges: Badges,
+) -> tauri::image::Image<'static> {
+    if badges.update {
+        draw_dot(&mut rgba, width, height, BADGE_UPDATE, DotPos::BottomRight);
+    }
+    if badges.unread {
+        draw_dot(&mut rgba, width, height, BADGE_UNREAD, DotPos::BottomLeft);
+    }
+    tauri::image::Image::new_owned(rgba, width, height)
+}
+
+/// Paint a small anti-aliased solid dot of `color` onto `rgba`, in the requested
+/// bottom corner. (`as` casts and the per-pixel math are inherent to image work.)
+#[allow(
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss
+)]
+fn draw_dot(rgba: &mut [u8], width: u32, height: u32, color: (u8, u8, u8), pos: DotPos) {
+    let radius = ((width.min(height) as f32) * 0.16).max(3.0);
+    let cy = height as f32 - radius * 1.3;
+    let cx = match pos {
+        DotPos::BottomRight => width as f32 - radius,
+        DotPos::BottomLeft => radius,
+    };
+    for (i, px) in rgba.chunks_exact_mut(4).enumerate() {
+        let dx = (i as u32 % width) as f32 + 0.5 - cx;
+        let dy = (i as u32 / width) as f32 + 0.5 - cy;
+        let coverage = (radius - dx.hypot(dy) + 0.5).clamp(0.0, 1.0);
+        if coverage <= 0.0 {
+            continue;
+        }
+        if let [r, g, b, a] = px {
+            let inv = 1.0 - coverage;
+            *r = (f32::from(color.0) * coverage + f32::from(*r) * inv) as u8;
+            *g = (f32::from(color.1) * coverage + f32::from(*g) * inv) as u8;
+            *b = (f32::from(color.2) * coverage + f32::from(*b) * inv) as u8;
+            *a = (255.0 * coverage + f32::from(*a) * inv) as u8;
+        }
+    }
+}
+
+/// Whether the system is in Dark mode, so the badged (non-template) icon can
+/// paint its glyph in the matching label colour. Reads the thread-safe
+/// `AppleInterfaceStyle` user default, so it's fine off the main thread.
+#[cfg(target_os = "macos")]
+fn dark_menu_bar() -> bool {
+    use objc2_foundation::{NSString, NSUserDefaults};
+    // NSUserDefaults is thread-safe, so this is fine off the main thread.
+    let defaults = NSUserDefaults::standardUserDefaults();
+    defaults
+        .stringForKey(&NSString::from_str("AppleInterfaceStyle"))
+        .is_some_and(|s| s.to_string().eq_ignore_ascii_case("dark"))
 }
 
 /// Install the transient menu shown while a lifecycle action is in flight.
@@ -188,10 +358,6 @@ fn apply_transient(app: &AppHandle, label: &str) {
     let guard = lock_menu();
     if let Some(tray) = app.tray_by_id(TRAY_ID) {
         let _ = tray.set_menu(Some(menu));
-        #[cfg(target_os = "macos")]
-        {
-            let _ = tray.set_title(Some("…"));
-        }
     }
     drop(guard);
 }
@@ -207,16 +373,6 @@ async fn refresh_now(app: &AppHandle) {
     drop(guard);
 }
 
-/// macOS menu-bar title: the active PHP version when running, else a stopped dot.
-#[cfg(target_os = "macos")]
-fn tray_title(state: &TrayState) -> String {
-    if state.running {
-        state.default_php.clone().unwrap_or_else(|| "●".to_string())
-    } else {
-        "○".to_string()
-    }
-}
-
 /// Push an owned menu item as a boxed trait object (lets the builder mix
 /// `MenuItem`/`CheckMenuItem`/`Submenu`/separators in one list).
 fn push(items: &mut Vec<Box<dyn IsMenuItem<Wry>>>, item: impl IsMenuItem<Wry> + 'static) {
@@ -228,9 +384,38 @@ fn finish_menu(app: &AppHandle, items: &[Box<dyn IsMenuItem<Wry>>]) -> tauri::Re
     Menu::with_items(app, &refs)
 }
 
+/// The Mail menu label: "Mail (N)" with the unread count ("99+" over 100), or
+/// plain "Mail" when nothing is unread.
+fn mail_label(unread: u32) -> String {
+    if unread == 0 {
+        "Mail".to_string()
+    } else if unread > 99 {
+        "Mail (99+)".to_string()
+    } else {
+        format!("Mail ({unread})")
+    }
+}
+
 /// The full menu for the current daemon state.
 fn build_menu(app: &AppHandle, state: &TrayState) -> tauri::Result<Menu<Wry>> {
     let mut items: Vec<Box<dyn IsMenuItem<Wry>>> = Vec::new();
+
+    // Top zone, before the status header: open the app, plus update actions while
+    // an update waits.
+    push(&mut items, action(app, "open", "Open Yerd", icons::OPEN)?);
+    if state.update_target.is_some() {
+        push(
+            &mut items,
+            action(app, "update:apply", "Update Yerd", icons::UPDATE)?,
+        );
+    }
+    if state.php_update {
+        push(
+            &mut items,
+            action(app, "update:php", "Update PHP", icons::UPDATE_PHP)?,
+        );
+    }
+    push(&mut items, PredefinedMenuItem::separator(app)?);
 
     if state.running {
         push(
@@ -243,46 +428,86 @@ fn build_menu(app: &AppHandle, state: &TrayState) -> tauri::Result<Menu<Wry>> {
                 disabled(app, "noop:ports", format!("HTTP :{http} · HTTPS :{https}"))?,
             );
         }
-        match &state.update_target {
-            Some(target) => push(
+        if state.update_target.is_none() {
+            push(
                 &mut items,
-                action(app, "update:apply", format!("Update to {target}…"))?,
-            ),
-            None => push(
-                &mut items,
-                action(app, "update:check", "Check for updates")?,
-            ),
+                action(
+                    app,
+                    "update:check",
+                    "Check for updates",
+                    icons::CHECK_UPDATES,
+                )?,
+            );
         }
-        push(&mut items, action(app, "daemon:restart", "Restart daemon")?);
-        push(&mut items, action(app, "daemon:stop", "Stop daemon")?);
+        push(
+            &mut items,
+            action(app, "daemon:restart", "Restart daemon", icons::RESTART)?,
+        );
+        push(
+            &mut items,
+            action(app, "daemon:stop", "Stop daemon", icons::STOP)?,
+        );
         push(&mut items, PredefinedMenuItem::separator(app)?);
 
+        // Installed PHP versions under a "Default PHP:" label, indented with a
+        // tick drawn into the label itself (so it nests with the versions rather
+        // than sitting in the fixed native checkmark column); picking another
+        // switches the default and the tick moves.
         if !state.installed.is_empty() {
-            push(&mut items, build_php_submenu(app, state)?);
+            push(&mut items, disabled(app, "noop:phplabel", "Default PHP:")?);
+            for v in &state.installed {
+                let checked = state.default_php.as_deref() == Some(v.as_str());
+                let label = format!("    {}PHP {v}", if checked { "✓ " } else { "  " });
+                push(
+                    &mut items,
+                    MenuItem::with_id(app, format!("php:set:{v}"), label, true, None::<&str>)?,
+                );
+            }
             push(&mut items, PredefinedMenuItem::separator(app)?);
         }
 
-        push(&mut items, action(app, "new-site", "New Laravel site…")?);
+        push(
+            &mut items,
+            action(app, "new-site", "New Laravel site…", icons::NEW_SITE)?,
+        );
+        push(
+            &mut items,
+            action(app, "sites:link", "Link Site", icons::LINK)?,
+        );
+        push(
+            &mut items,
+            action(app, "sites:park", "Park Directory", icons::PARK)?,
+        );
+        push(&mut items, PredefinedMenuItem::separator(app)?);
+        push(
+            &mut items,
+            action(app, "mail", mail_label(state.unread), icons::MAIL)?,
+        );
+        push(&mut items, action(app, "dumps", "Dumps", icons::DUMPS)?);
+        push(&mut items, PredefinedMenuItem::separator(app)?);
+        for (id, label, icon) in NAV_ITEMS {
+            push(&mut items, action(app, *id, *label, icon)?);
+        }
+        push(&mut items, PredefinedMenuItem::separator(app)?);
     } else {
         push(
             &mut items,
             disabled(app, "noop:header", "○ Daemon stopped")?,
         );
-        push(&mut items, action(app, "daemon:start", "Start daemon")?);
+        push(
+            &mut items,
+            action(app, "daemon:start", "Start daemon", icons::START)?,
+        );
+        push(&mut items, PredefinedMenuItem::separator(app)?);
+        push(
+            &mut items,
+            action(app, "mail", mail_label(state.unread), icons::MAIL)?,
+        );
+        push(&mut items, action(app, "dumps", "Dumps", icons::DUMPS)?);
         push(&mut items, PredefinedMenuItem::separator(app)?);
     }
 
-    push(&mut items, action(app, "open", "Open Yerd")?);
-    push(&mut items, PredefinedMenuItem::separator(app)?);
-    push(&mut items, action(app, "mail", "Mail")?);
-    push(&mut items, action(app, "dumps", "Dumps")?);
-    push(&mut items, PredefinedMenuItem::separator(app)?);
-    for (id, label) in NAV_ITEMS {
-        push(&mut items, action(app, id, *label)?);
-    }
-    push(&mut items, PredefinedMenuItem::separator(app)?);
-    push(&mut items, action(app, "quit", "Quit Yerd")?);
-
+    push(&mut items, action(app, "quit", "Quit Yerd", icons::QUIT)?);
     finish_menu(app, &items)
 }
 
@@ -293,41 +518,43 @@ fn build_transient_menu(app: &AppHandle, label: &str) -> tauri::Result<Menu<Wry>
     let mut items: Vec<Box<dyn IsMenuItem<Wry>>> = Vec::new();
     push(&mut items, disabled(app, "noop:transient", label)?);
     push(&mut items, PredefinedMenuItem::separator(app)?);
-    push(&mut items, action(app, "open", "Open Yerd")?);
-    push(&mut items, action(app, "mail", "Mail")?);
-    push(&mut items, action(app, "dumps", "Dumps")?);
+    push(&mut items, action(app, "open", "Open Yerd", icons::OPEN)?);
+    push(&mut items, action(app, "mail", "Mail", icons::MAIL)?);
+    push(&mut items, action(app, "dumps", "Dumps", icons::DUMPS)?);
     push(&mut items, PredefinedMenuItem::separator(app)?);
-    push(&mut items, action(app, "quit", "Quit Yerd")?);
+    push(&mut items, action(app, "quit", "Quit Yerd", icons::QUIT)?);
     finish_menu(app, &items)
 }
 
-/// The "Default PHP ▸" submenu: one checkable item per installed version, the
-/// current default checked.
-fn build_php_submenu(app: &AppHandle, state: &TrayState) -> tauri::Result<Submenu<Wry>> {
-    let title = match &state.default_php {
-        Some(v) => format!("Default PHP: {v}"),
-        None => "Default PHP".to_string(),
-    };
-    let checks: Vec<CheckMenuItem<Wry>> = state
-        .installed
-        .iter()
-        .map(|v| {
-            let checked = state.default_php.as_deref() == Some(v.as_str());
-            CheckMenuItem::with_id(app, format!("php:set:{v}"), v, true, checked, None::<&str>)
-        })
-        .collect::<tauri::Result<_>>()?;
-    let refs: Vec<&dyn IsMenuItem<Wry>> =
-        checks.iter().map(|c| c as &dyn IsMenuItem<Wry>).collect();
-    Submenu::with_items(app, title, true, &refs)
-}
-
-/// A clickable item.
+/// A clickable item with a leading icon.
 fn action(
     app: &AppHandle,
     id: impl Into<tauri::menu::MenuId>,
     text: impl AsRef<str>,
-) -> tauri::Result<MenuItem<Wry>> {
-    MenuItem::with_id(app, id, text, true, None::<&str>)
+    icon: &[u8],
+) -> tauri::Result<IconMenuItem<Wry>> {
+    IconMenuItem::with_id(app, id, text, true, menu_icon(icon), None::<&str>)
+}
+
+/// Decode a bundled menu-item PNG, recolouring its black glyph to white in dark
+/// mode so it reads on the menu background (muda menu icons aren't templates, so
+/// they don't auto-tint).
+fn menu_icon(png: &[u8]) -> Option<tauri::image::Image<'static>> {
+    let img = tauri::image::Image::from_bytes(png).ok()?;
+    let (w, h) = (img.width(), img.height());
+    #[cfg_attr(not(target_os = "macos"), allow(unused_mut))]
+    let mut rgba = img.rgba().to_vec();
+    #[cfg(target_os = "macos")]
+    if dark_menu_bar() {
+        for px in rgba.chunks_exact_mut(4) {
+            if let [r, g, b, a] = px {
+                if *a > 0 {
+                    (*r, *g, *b) = (255, 255, 255);
+                }
+            }
+        }
+    }
+    Some(tauri::image::Image::new_owned(rgba, w, h))
 }
 
 /// A non-interactive label (status header / subline).
@@ -343,6 +570,9 @@ fn disabled(
 /// installed later via `set_menu` (the listener is registered on the tray, not
 /// the menu instance), so every dynamic id is matched here. Runs on the main
 /// thread; it must never take `MENU_LOCK` (it only spawns work or shows windows).
+/// `noop:*` labels and unknown ids - including the macOS app menu's
+/// `close-window`/`minimize-window`, which share this global event stream - fall
+/// through unmatched.
 fn on_menu_event(app: &AppHandle, event: MenuEvent) {
     let id = event.id.as_ref();
     match id {
@@ -358,9 +588,21 @@ fn on_menu_event(app: &AppHandle, event: MenuEvent) {
             crate::show_main(app);
             let _ = app.emit("sites-intent", "create");
         }
+        "sites:link" => {
+            crate::show_main(app);
+            let _ = app.emit("sites-intent", "link");
+        }
+        "sites:park" => {
+            crate::show_main(app);
+            let _ = app.emit("sites-intent", "park");
+        }
         "update:apply" => {
             crate::show_main(app);
             let _ = app.emit("navigate", "/about");
+        }
+        "update:php" => {
+            crate::show_main(app);
+            let _ = app.emit("navigate", "/php");
         }
         "update:check" => spawn_update_check(app.clone()),
         "daemon:start" => spawn_lifecycle(app.clone(), Lifecycle::Start),
@@ -373,20 +615,7 @@ fn on_menu_event(app: &AppHandle, event: MenuEvent) {
                 crate::show_main(app);
                 let _ = app.emit("navigate", route.to_string());
             }
-            // `noop:*` labels and any unknown id (incl. the window-control menu's
-            // `close-window`/`minimize-window`) fall through here, ignored.
         }
-    }
-}
-
-fn on_tray_icon_event(tray: &TrayIcon, event: TrayIconEvent) {
-    if let TrayIconEvent::Click {
-        button: MouseButton::Left,
-        button_state: MouseButtonState::Up,
-        ..
-    } = event
-    {
-        crate::show_main(tray.app_handle());
     }
 }
 
@@ -411,12 +640,17 @@ impl Drop for TransitionGuard {
 /// the lifecycle items), show a transient menu, await the bounded settle, then
 /// rebuild from fresh state. The final apply clears `TRANSITION` under the lock;
 /// the `TransitionGuard` is a backstop that clears it on any abnormal exit.
+///
+/// Restart waits on a `boot_id` change: the daemon replies `Ok` *before* it
+/// re-execs (then the socket briefly drops), so the boot_id change is the only
+/// reliable completion signal; the request itself is bounded so a wedged daemon
+/// can't hang the task with `TRANSITION` set.
 fn spawn_lifecycle(app: AppHandle, action: Lifecycle) {
     if TRANSITION
         .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
         .is_err()
     {
-        return; // another lifecycle action already owns the menu
+        return;
     }
     tauri::async_runtime::spawn(async move {
         let _guard = TransitionGuard;
@@ -434,9 +668,6 @@ fn spawn_lifecycle(app: AppHandle, action: Lifecycle) {
             }
             Lifecycle::Restart => {
                 let prev = current_boot_id().await;
-                // `RestartDaemon` replies Ok *before* the re-exec (then the socket
-                // briefly drops); we act only on the boot_id change, but bound the
-                // call so a wedged daemon can't hang the task with TRANSITION set.
                 let _ = exchange_timeout(&Request::RestartDaemon, PROBE_TIMEOUT).await;
                 wait_until_restarted(prev).await;
             }
@@ -454,9 +685,11 @@ fn spawn_lifecycle(app: AppHandle, action: Lifecycle) {
     });
 }
 
+/// Apply a tray PHP-version pick (`php:set:{v}`) and refresh the menu. A
+/// non-parseable id is ignored.
 fn spawn_set_default_php(app: AppHandle, version: String) {
     let Ok(version) = PhpVersion::from_str(&version) else {
-        return; // not a parseable version id; ignore
+        return;
     };
     tauri::async_runtime::spawn(async move {
         let _ = exchange(&Request::SetDefaultPhp { version }).await;
@@ -464,10 +697,10 @@ fn spawn_set_default_php(app: AppHandle, version: String) {
     });
 }
 
+/// Run a live (network) self-update check bounded by a timeout - a `None` channel
+/// resolves the daemon's persisted preference - then refresh the menu.
 fn spawn_update_check(app: AppHandle) {
     tauri::async_runtime::spawn(async move {
-        // Live check (network) bounded by a timeout; `None` channel resolves the
-        // daemon's persisted preference.
         let _ = exchange_timeout(
             &Request::CheckUpdate { channel: None },
             Duration::from_secs(20),

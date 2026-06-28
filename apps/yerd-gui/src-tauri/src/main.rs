@@ -96,6 +96,7 @@ fn main() {
             commands::get_mail,
             commands::clear_mails,
             commands::delete_mails,
+            commands::mark_mails_read,
             commands::set_mail_port,
             commands::set_fallback_ports,
             commands::set_dns_port,
@@ -155,9 +156,6 @@ fn main() {
         // APIs directly. close() hits the CloseRequested handler below; minimize()
         // works the same as the titlebar control.
         .on_menu_event(|app, event| {
-            // This global listener also fires for tray-menu events (both register
-            // into the same list), so ignore everything but the window-control
-            // items the macOS app menu owns - the tray has its own handler.
             let id = event.id.as_ref();
             if id != "close-window" && id != "minimize-window" {
                 return;
@@ -423,16 +421,59 @@ fn move_window_to_active_space(win: &tauri::WebviewWindow) {
     ns_window.setCollectionBehavior(behavior);
 }
 
+/// Reveal an auxiliary window (mails/dumps): if it's already open just focus it,
+/// otherwise center it on the monitor under the cursor (the user's active screen)
+/// before showing. `cfg_w`/`cfg_h` are the window's configured *logical* size - a
+/// hidden/never-presented window's `outer_size()` is unreliable, so the caller
+/// passes the size it built the window with.
+///
+/// Must run on the main thread (it calls `move_window_to_active_space`, which does
+/// AppKit mutation): only call from synchronous commands / menu-event handlers.
+pub(crate) fn reveal_aux_window(win: &tauri::WebviewWindow, cfg_w: f64, cfg_h: f64) {
+    if win.is_visible().unwrap_or(false) {
+        let _ = win.set_focus();
+        return;
+    }
+    position_on_cursor_monitor(win, cfg_w, cfg_h);
+    #[cfg(target_os = "macos")]
+    move_window_to_active_space(win);
+    let _ = win.show();
+    let _ = win.set_focus();
+}
+
+/// Center `win` on the monitor containing the cursor. Monitor geometry is in
+/// physical pixels but the configured size is logical, so scale by the monitor's
+/// factor before centering. Best-effort: a failed cursor/monitor query or a
+/// platform that rejects `set_position` (e.g. Wayland) just leaves the OS default.
+#[allow(clippy::cast_possible_truncation)]
+fn position_on_cursor_monitor(win: &tauri::WebviewWindow, cfg_w: f64, cfg_h: f64) {
+    let Ok(cursor) = win.cursor_position() else {
+        return;
+    };
+    let monitor = match win.monitor_from_point(cursor.x, cursor.y) {
+        Ok(Some(m)) => m,
+        _ => match win.primary_monitor() {
+            Ok(Some(m)) => m,
+            _ => return,
+        },
+    };
+    let scale = monitor.scale_factor();
+    let pos = monitor.position();
+    let size = monitor.size();
+    let x = pos.x + ((f64::from(size.width) - cfg_w * scale) / 2.0) as i32;
+    let y = pos.y + ((f64::from(size.height) - cfg_h * scale) / 2.0) as i32;
+    let _ = win.set_position(tauri::PhysicalPosition::new(x, y));
+}
+
 /// Show (or lazily create) the auxiliary "dumps" window - the live Laravel
 /// telemetry viewer. Reuses the statically-declared window when it already
 /// exists; rebuilds it only if a prior close destroyed it.
 pub(crate) fn show_dumps(app: &tauri::AppHandle) -> tauri::Result<()> {
     if let Some(win) = app.get_webview_window("dumps") {
-        win.show()?;
-        win.set_focus()?;
+        reveal_aux_window(&win, 900.0, 640.0);
         return Ok(());
     }
-    tauri::WebviewWindowBuilder::new(
+    let win = tauri::WebviewWindowBuilder::new(
         app,
         "dumps",
         tauri::WebviewUrl::App("index.html#/dumps-window".into()),
@@ -442,7 +483,9 @@ pub(crate) fn show_dumps(app: &tauri::AppHandle) -> tauri::Result<()> {
     .min_inner_size(640.0, 420.0)
     .decorations(false)
     .transparent(true)
+    .visible(false)
     .build()?;
+    reveal_aux_window(&win, 900.0, 640.0);
     Ok(())
 }
 

@@ -10,7 +10,14 @@ import Spinner from "@/components/ui/Spinner.vue";
 import { registerViewActions } from "@/lib/shortcuts/useViewActions";
 import { usePoll } from "@/composables/usePoll";
 import { useToast } from "@/composables/useToast";
-import { clearMails, deleteMails, getMail, IpcError, listMails } from "@/ipc/client";
+import {
+  clearMails,
+  deleteMails,
+  getMail,
+  IpcError,
+  listMails,
+  markMailsRead,
+} from "@/ipc/client";
 import type { MailDetail, MailSummary } from "@/ipc/types";
 
 // The rendered HTML email is sandboxed: no scripts, no same-origin. The child CSP
@@ -92,13 +99,14 @@ watch(
       return;
     }
     if (!selectedId.value || !items.some((m) => m.id === selectedId.value)) {
-      void select(items[0].id);
+      // Auto-selection is not a user action, so it must not mark mail read.
+      void select(items[0].id, false);
     }
   },
   { immediate: true },
 );
 
-async function select(id: string): Promise<void> {
+async function select(id: string, fromUser: boolean): Promise<void> {
   const seq = ++selectSeq;
   selectedId.value = id;
   loadingDetail.value = true;
@@ -106,12 +114,32 @@ async function select(id: string): Promise<void> {
     const mail = await getMail(id);
     if (seq !== selectSeq) return; // a newer select() superseded this one
     detail.value = mail;
+    if (fromUser) void markRead(id);
   } catch (e) {
     if (seq !== selectSeq) return;
     toast.error("Couldn't open the email", (e as IpcError).message);
     detail.value = null;
   } finally {
     if (seq === selectSeq) loadingDetail.value = false;
+  }
+}
+
+// Mark one email read on a genuine open: persist via the daemon, then replace the
+// list array (usePoll's data is a shallowRef, so an in-place mutation wouldn't be
+// reactive) so the unread styling/badges clear immediately. Best-effort - a
+// failure just leaves it unread; the next poll reconciles.
+async function markRead(id: string): Promise<void> {
+  const current = mails.value?.find((m) => m.id === id);
+  if (!current || current.read) return;
+  try {
+    await markMailsRead([id]);
+    if (mails.value) {
+      mails.value = mails.value.map((m) =>
+        m.id === id ? { ...m, read: true } : m,
+      );
+    }
+  } catch (e) {
+    console.warn("mark mail read failed", e);
   }
 }
 
@@ -198,15 +226,22 @@ function formatDate(epoch: number): string {
             :key="m.id"
             class="cursor-pointer px-3 py-2.5 transition-colors hover:bg-accent/60"
             :class="m.id === selectedId ? 'bg-accent' : ''"
-            @click="select(m.id)"
+            @click="select(m.id, true)"
           >
             <div class="flex items-center justify-between gap-2">
-              <span class="truncate text-xs font-medium">{{ applicationOf(m.from) }}</span>
+              <span class="flex min-w-0 items-center gap-1.5">
+                <span
+                  v-if="!m.read"
+                  class="size-2 shrink-0 rounded-full bg-brand"
+                  aria-label="Unread"
+                />
+                <span class="truncate text-xs font-medium">{{ applicationOf(m.from) }}</span>
+              </span>
               <span class="shrink-0 text-[10px] text-muted-foreground">
                 {{ formatDate(m.date_epoch) }}
               </span>
             </div>
-            <p class="mt-0.5 truncate text-sm">
+            <p class="mt-0.5 truncate text-sm" :class="m.read ? '' : 'font-semibold'">
               {{ m.subject || "(no subject)" }}
             </p>
           </li>

@@ -148,6 +148,10 @@ pub struct MailStatus {
     pub listening: bool,
     /// Number of captured emails currently stored on disk.
     pub count: u32,
+    /// Number of captured emails not yet marked read. `#[serde(default)]` so an
+    /// older daemon (no `unread`) decodes as `0`.
+    #[serde(default)]
+    pub unread: u32,
 }
 
 /// One captured email's metadata, returned in [`crate::Response::Mails`].
@@ -166,6 +170,10 @@ pub struct MailSummary {
     pub subject: String,
     /// The message `Date:` as Unix epoch seconds; `0` when unparseable/absent.
     pub date_epoch: u64,
+    /// Whether the email has been marked read. `#[serde(default)]` so an older
+    /// `index.json` (no `read`) decodes as `false` (unread).
+    #[serde(default)]
+    pub read: bool,
 }
 
 /// A single decoded header line, for [`MailDetail::headers`].
