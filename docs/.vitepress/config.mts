@@ -5,7 +5,7 @@ import { withMermaid } from 'vitepress-plugin-mermaid'
 const SITE_TITLE = 'Yerd - Local PHP development environment for macOS & Linux'
 const SITE_DESCRIPTION =
   'A fast, rootless, open-source local PHP development environment for macOS and Linux. Serve .test sites over HTTP and HTTPS, run a different PHP version per site, and manage databases, mail, and tooling from one tiny daemon - a Laravel Herd alternative.'
-const OG_IMAGE = 'https://yerd.app/images/overview-light.png'
+const OG_IMAGE = 'https://yerd.app/images/social-card.png'
 
 // Site config for the Yerd documentation (https://yerd.app).
 // Run with `npm run dev` from the `docs/` directory.
@@ -42,7 +42,15 @@ export default withMermaid({
     ['meta', { property: 'og:site_name', content: 'Yerd' }],
     ['meta', { property: 'og:locale', content: 'en_US' }],
     ['meta', { property: 'og:image', content: OG_IMAGE }],
-    ['meta', { property: 'og:image:alt', content: 'The Yerd desktop app' }],
+    ['meta', { property: 'og:image:width', content: '1200' }],
+    ['meta', { property: 'og:image:height', content: '630' }],
+    [
+      'meta',
+      {
+        property: 'og:image:alt',
+        content: 'Yerd - local PHP dev for macOS and Linux',
+      },
+    ],
     ['meta', { name: 'twitter:card', content: 'summary_large_image' }],
     ['meta', { name: 'twitter:image', content: OG_IMAGE }],
     // Structured data: marks Yerd as a free developer application for rich results.

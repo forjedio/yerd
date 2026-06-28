@@ -6,7 +6,202 @@
  * contrast on white, and a shade lighter in dark mode for readability.
  */
 
+/* Forjed display face (Outage Cut), self-hosted. Used for the hero wordmark,
+ * the navbar title, and documentation page titles - matching forjed.io and the
+ * Yerd social cards. It's a single heavy all-caps weight, so headings using it
+ * set font-weight: normal to avoid faux-bold synthesis. */
+@font-face {
+  font-family: 'Outage Cut';
+  src: url('/fonts/OutageCut.ttf') format('truetype');
+  font-weight: normal;
+  font-style: normal;
+  font-display: swap;
+}
+
+/* Homepage hero: the "Yerd" wordmark and the "Local PHP, without the friction."
+ * line, in the Forjed display face. The wordmark keeps its indigo gradient
+ * (background-clip: text). The homepage showcase headings get the same face (see
+ * the .home-showcase rules); documentation body headings stay in the default
+ * readable face. */
+.VPHero .name,
+.VPHero .text {
+  font-family: var(--forjed-display);
+  font-weight: 400;
+  letter-spacing: 0.01em;
+}
+
+/* Hero lockup (logo + "Yerd"), matching the social card. Markup comes from the
+ * #home-hero-info slot in Layout.vue. */
+.VPHero .hero-brand {
+  display: flex;
+  align-items: center;
+  gap: 1.4em;
+  margin-bottom: 3rem;
+}
+.VPHero .hero-logo {
+  display: block;
+  flex-shrink: 0;
+  width: 34px;
+  height: 34px;
+}
+@media (min-width: 640px) {
+  .VPHero .hero-logo {
+    width: 46px;
+    height: 46px;
+  }
+}
+@media (min-width: 960px) {
+  .VPHero .hero-logo {
+    width: 54px;
+    height: 54px;
+  }
+}
+/* "Yerd" in the foreground colour (white on dark, ink on light) - the default
+ * hero gradient is overridden here. */
+.VPHero .name {
+  color: var(--vp-c-text-1);
+  -webkit-text-fill-color: var(--vp-c-text-1);
+  background: none;
+  font-size: 34px;
+  line-height: 1.05;
+  /* Outage Cut's caps sit high in the line box; nudge down to centre on the logo. */
+  position: relative;
+  top: 0.07em;
+}
+@media (min-width: 640px) {
+  .VPHero .name {
+    font-size: 46px;
+  }
+}
+@media (min-width: 960px) {
+  .VPHero .name {
+    font-size: 54px;
+  }
+}
+/* "without the friction." in brand blue, like the social card's accent line. */
+.VPHero .text .accent {
+  color: var(--vp-c-brand-1);
+  -webkit-text-fill-color: var(--vp-c-brand-1);
+}
+
+/* The headline reads large in a heavy display face, so pull it below the default
+ * hero sizes at each breakpoint. */
+.VPHero .text {
+  display: block;
+  font-size: 28px;
+  line-height: 1.2;
+}
+@media (min-width: 640px) {
+  .VPHero .text {
+    font-size: 36px;
+  }
+}
+@media (min-width: 960px) {
+  .VPHero .text {
+    font-size: 44px;
+  }
+}
+
+/* Supporting tagline: a touch smaller for balance, with a generous gap above it
+ * to separate it clearly from the headline. */
+.VPHero .tagline {
+  margin-top: 2rem;
+  font-size: 16px;
+  line-height: 1.6;
+}
+@media (min-width: 960px) {
+  .VPHero .tagline {
+    font-size: 18px;
+  }
+}
+
+/* Navbar site title, matching the hero wordmark. Sized up so it reads as a
+ * wordmark and sits centered against the logo - the display face has a small cap
+ * height, so the default 16px looks tiny and high. */
+.VPNavBarTitle .title {
+  font-family: var(--forjed-display);
+  font-weight: 400;
+  font-size: 22px;
+  letter-spacing: 0.02em;
+}
+/* Centre the wordmark against the logo (the display face sits high in its box). */
+.VPNavBarTitle .title span {
+  display: inline-block;
+  transform: translateY(2px);
+}
+
+/* ---- Hero screenshot (replaces the logo image) ----
+ * A rounded card on the right showing the overview dashboard from the top.
+ * Pushed to the page's right edge (margin-left:auto opens a wide gap from the
+ * text); about 90% of the shot's height is visible, with all corners rounded -
+ * framed like a product shot rather than a hard bleed. */
+.VPHero .image-bg {
+  display: none;
+}
+/* Vertically centre the text column against the taller screenshot card. */
+@media (min-width: 960px) {
+  .VPHero .container {
+    align-items: center;
+  }
+}
+.VPHero .image {
+  flex: 0 0 auto;
+  margin: 0 0 0 auto;
+}
+.VPHero .image-container {
+  display: block;
+  width: 520px;
+  height: auto;
+  max-height: 466px;
+  margin: 0;
+  transform: none;
+  overflow: hidden;
+  border-radius: 16px;
+  border: 1px solid var(--vp-c-divider);
+  box-shadow:
+    0 26px 50px -20px rgba(0, 0, 0, 0.3),
+    0 10px 22px -12px rgba(0, 0, 0, 0.18);
+}
+.dark .VPHero .image-container {
+  border-color: rgba(255, 255, 255, 0.08);
+  box-shadow:
+    0 26px 50px -16px rgba(0, 0, 0, 0.6),
+    0 10px 22px -12px rgba(0, 0, 0, 0.5);
+}
+/* Anchor the shot to its top-left so the window titlebar shows; it's wider than
+ * the card, so the right of the dashboard is cropped behind the rounded edge.
+ * The light/dark variants both render and CSS hides the off-theme one (keyed on
+ * the .dark class VitePress sets on <html> before paint, so there's no flash). */
+.VPHero .hero-shot {
+  display: block;
+  position: relative;
+  width: 780px;
+  max-width: none;
+  max-height: none;
+  height: auto;
+}
+html.dark .VPHero .hero-shot--light {
+  display: none;
+}
+html:not(.dark) .VPHero .hero-shot--dark {
+  display: none;
+}
+@media (max-width: 959px) {
+  .VPHero .image {
+    margin: 0;
+  }
+  .VPHero .image-container {
+    width: 100%;
+    max-height: none;
+  }
+  .VPHero .hero-shot {
+    width: 100%;
+  }
+}
+
 :root {
+  --forjed-display: 'Outage Cut', var(--vp-font-family-base);
+
   --vp-c-brand-1: #4f46e5; /* indigo-600 — links, accents (light) */
   --vp-c-brand-2: #4338ca; /* indigo-700 */
   --vp-c-brand-3: #6366f1; /* indigo-500 — button hover */
@@ -80,9 +275,10 @@ html:not(.dark) .themed-img--dark {
   border-top: 0;
   margin: 0 0 0.5rem;
   padding-top: 0;
+  font-family: var(--forjed-display);
   font-size: clamp(1.8rem, 4vw, 2.4rem);
-  font-weight: 700;
-  letter-spacing: -0.02em;
+  font-weight: 400;
+  letter-spacing: 0.01em;
 }
 .home-showcase p.home-showcase__sub {
   text-align: center;
@@ -119,10 +315,11 @@ html:not(.dark) .themed-img--dark {
   box-shadow: 0 14px 36px rgba(0, 0, 0, 0.45);
 }
 .showcase__title {
+  font-family: var(--forjed-display);
   font-size: 1.6rem;
-  font-weight: 700;
+  font-weight: 400;
   line-height: 1.2;
-  letter-spacing: -0.02em;
+  letter-spacing: 0.01em;
   margin: 0 0 0.75rem;
   border-top: 0;
   padding-top: 0;

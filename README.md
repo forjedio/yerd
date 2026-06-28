@@ -1,14 +1,6 @@
 <div align="center">
 
-<img src="https://yerd.app/logo.svg" alt="Yerd logo" width="120" />
-
-# Yerd
-
-**A fast, rootless, open-source local PHP development environment.**
-
-Serve your projects on `.test` domains over HTTP **and** HTTPS, run a different
-PHP version per site, and manage it all from one tiny daemon - no Docker, no
-`sudo` for everyday work, no subscription.
+<img src="https://yerd.app/images/social-card.png" alt="Yerd - Local PHP, without the friction. A fast, rootless, open-source local PHP development environment for macOS and Linux: serve .test domains over HTTP and HTTPS, run a different PHP version per site, and manage it all from one tiny daemon - no Docker, no sudo for everyday work, no subscription." width="840" />
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](#license)
 [![Platforms: macOS · Linux](https://img.shields.io/badge/platforms-macOS%20%C2%B7%20Linux-success.svg)](#installation)
