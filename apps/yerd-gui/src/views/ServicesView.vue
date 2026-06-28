@@ -35,6 +35,7 @@ import Input from "@/components/ui/Input.vue";
 import Modal from "@/components/ui/Modal.vue";
 import Select from "@/components/ui/Select.vue";
 import Spinner from "@/components/ui/Spinner.vue";
+import { registerViewActions } from "@/lib/shortcuts/useViewActions";
 import { useDaemon } from "@/composables/useDaemon";
 import { useToast } from "@/composables/useToast";
 import {
@@ -489,6 +490,7 @@ async function copyConfig(): Promise<void> {
 
 onMounted(load);
 onUnmounted(stopLogPolling);
+onUnmounted(registerViewActions({ refresh: () => void load() }));
 </script>
 
 <template>

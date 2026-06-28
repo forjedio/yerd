@@ -1,10 +1,11 @@
 <script setup lang="ts">
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { Antenna, Layers, Pin, PinOff, Search, Trash2 } from "lucide-vue-next";
-import { computed, onMounted, ref } from "vue";
+import { computed, onMounted, onUnmounted, ref } from "vue";
 
 import TitleBar from "@/components/TitleBar.vue";
 import Input from "@/components/ui/Input.vue";
+import { registerViewActions } from "@/lib/shortcuts/useViewActions";
 import { useToast } from "@/composables/useToast";
 import { usePoll } from "@/composables/usePoll";
 import {
@@ -36,6 +37,7 @@ const persist = ref(false);
 const alwaysOnTop = ref(false);
 const activeTab = ref<DumpCategory | "all">("all");
 const search = ref("");
+const searchInput = ref<InstanceType<typeof Input> | null>(null);
 let cursor = 0;
 
 const TABS: { key: DumpCategory | "all"; label: string; countKey?: keyof DumpCounts }[] = [
@@ -335,6 +337,21 @@ onMounted(async () => {
   }
   await refresh();
 });
+
+function cycleTab(delta: number): void {
+  const i = TABS.findIndex((t) => t.key === activeTab.value);
+  const next = TABS[(i + delta + TABS.length) % TABS.length];
+  if (next) activeTab.value = next.key;
+}
+
+onUnmounted(
+  registerViewActions({
+    find: () => searchInput.value?.focus(),
+    refresh: () => void refresh(),
+    prevTab: () => cycleTab(-1),
+    nextTab: () => cycleTab(1),
+  }),
+);
 </script>
 
 <template>
@@ -396,7 +413,12 @@ onMounted(async () => {
           <Search
             class="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground"
           />
-          <Input v-model="search" placeholder="Filter…" class="pl-8" />
+          <Input
+            ref="searchInput"
+            v-model="search"
+            placeholder="Filter…"
+            class="pl-8"
+          />
         </div>
       </div>
 

@@ -13,6 +13,7 @@ import Spinner from "@/components/ui/Spinner.vue";
 import { useDaemon } from "@/composables/useDaemon";
 import { useOnboarding } from "@/composables/useOnboarding";
 import { useToast } from "@/composables/useToast";
+import { useShortcuts } from "@/lib/shortcuts/useShortcuts";
 import { IpcError, startDaemon } from "@/ipc/client";
 
 // The auxiliary "dumps" and "mails" windows render standalone viewers with no app
@@ -24,6 +25,9 @@ import { IpcError, startDaemon } from "@/ipc/client";
 const windowLabel = getCurrentWindow().label;
 const isDumpsWindow = windowLabel === "dumps";
 const isMailsWindow = windowLabel === "mails";
+
+if (isDumpsWindow) useShortcuts("dumps");
+else if (isMailsWindow) useShortcuts("mails");
 
 // Start the single shared daemon poller for the app's lifetime.
 const { start, stop, refresh } = useDaemon();

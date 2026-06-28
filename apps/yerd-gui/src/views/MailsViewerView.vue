@@ -1,12 +1,13 @@
 <script setup lang="ts">
 import { Inbox, Trash2 } from "lucide-vue-next";
-import { computed, ref, watch } from "vue";
+import { computed, onUnmounted, ref, watch } from "vue";
 
 import TitleBar from "@/components/TitleBar.vue";
 import Button from "@/components/ui/Button.vue";
 import Modal from "@/components/ui/Modal.vue";
 import Select from "@/components/ui/Select.vue";
 import Spinner from "@/components/ui/Spinner.vue";
+import { registerViewActions } from "@/lib/shortcuts/useViewActions";
 import { usePoll } from "@/composables/usePoll";
 import { useToast } from "@/composables/useToast";
 import { clearMails, deleteMails, getMail, IpcError, listMails } from "@/ipc/client";
@@ -24,6 +25,8 @@ const toast = useToast();
 
 // Live list of captured mail (newest first).
 const { data: mails, refresh } = usePoll<MailSummary[]>(listMails, 4000);
+
+onUnmounted(registerViewActions({ refresh: () => void refresh() }));
 
 const selectedId = ref<string | null>(null);
 const detail = ref<MailDetail | null>(null);

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, ref } from "vue";
+import { computed, nextTick, onMounted, onUnmounted, ref } from "vue";
 import {
   Download,
   Info,
@@ -36,6 +36,7 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { registerViewActions } from "@/lib/shortcuts/useViewActions";
 import { useDaemon } from "@/composables/useDaemon";
 import { useToast } from "@/composables/useToast";
 import {
@@ -345,6 +346,13 @@ async function confirmInstall(close: () => void): Promise<void> {
 }
 
 onMounted(load);
+
+onUnmounted(
+  registerViewActions({
+    create: () => void openInstall(),
+    refresh: () => void load(),
+  }),
+);
 </script>
 
 <template>

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, ref } from "vue";
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 import {
   ChevronDown,
   ExternalLink,
@@ -40,6 +40,8 @@ import Select from "@/components/ui/Select.vue";
 import Spinner from "@/components/ui/Spinner.vue";
 import Switch from "@/components/ui/Switch.vue";
 import { openTitle, siteUrl } from "@/lib/siteUrl";
+import { registerViewActions } from "@/lib/shortcuts/useViewActions";
+import { sitesIntent } from "@/lib/shortcuts/sitesIntent";
 import { useDaemon } from "@/composables/useDaemon";
 import { useToast } from "@/composables/useToast";
 import {
@@ -68,6 +70,7 @@ const loading = ref(true);
 const error = ref<string | null>(null);
 const rowBusy = ref<string | null>(null);
 const siteFilter = ref("");
+const filterInput = ref<InstanceType<typeof Input> | null>(null);
 
 const tld = computed(() => report.value?.tld ?? "test");
 const caTrusted = computed(() => report.value?.ca.trusted_system === true);
@@ -297,6 +300,25 @@ async function confirmUnlink(close: () => void): Promise<void> {
 }
 
 onMounted(load);
+
+onUnmounted(
+  registerViewActions({
+    create: openCreate,
+    find: () => filterInput.value?.focus(),
+    refresh: () => void load(),
+  }),
+);
+
+function consumeIntent(): void {
+  const intent = sitesIntent.value;
+  if (!intent) return;
+  sitesIntent.value = null;
+  if (intent === "link") linkOpen.value = true;
+  else void onPark();
+}
+
+onMounted(consumeIntent);
+watch(sitesIntent, consumeIntent);
 </script>
 
 <template>
@@ -381,6 +403,7 @@ onMounted(load);
               class="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground"
             />
             <Input
+              ref="filterInput"
               v-model="siteFilter"
               placeholder="Filter by domain…"
               aria-label="Filter sites by domain"
