@@ -110,6 +110,14 @@ export async function listParked(): Promise<string[]> {
   return r.type === "parked" ? r.paths : [];
 }
 
+/** Combined sites + parked roots, the shape backing the shared `"sites"`
+ * cached resource. One definition so the Sites view, the Overview, and the
+ * command palette all key the same cache and can never drift apart. */
+export async function sitesAndParked(): Promise<{ sites: Site[]; parked: string[] }> {
+  const [sites, parked] = await Promise.all([listSites(), listParked()]);
+  return { sites, parked };
+}
+
 /**
  * Un-park a directory root: removes it from the parked set and re-scans. Pass a
  * path verbatim from {@link listParked} - the daemon matches it exactly (no
@@ -449,6 +457,11 @@ export async function clearMails(): Promise<void> {
 /** Delete a specific set of captured emails by id (e.g. one application's mail). */
 export async function deleteMails(ids: string[]): Promise<void> {
   ensureOk(await call<Response>("delete_mails", { ids }));
+}
+
+/** Mark a specific set of captured emails as read by id. */
+export async function markMailsRead(ids: string[]): Promise<void> {
+  ensureOk(await call<Response>("mark_mails_read", { ids }));
 }
 
 /** Persist the mail-capture SMTP port; takes effect on the next daemon restart. */

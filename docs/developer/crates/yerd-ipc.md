@@ -153,7 +153,7 @@ The variants, grouped by area:
 | Services | `ListServices`, `AvailableServices`, `InstallService`, `UninstallService`, `StartService`, `StopService`, `RestartService`, `SetServicePort`, `ServiceLogs`, `ChangeServiceVersion` |
 | Databases | `CreateDatabase`, `ListDatabases`, `DropDatabase`, `BackupDatabase`, `RestoreDatabase` |
 | Dumps (Laravel ▸ telemetry) | `ListDumps`, `ClearDumps`, `DeleteDump`, `SetDumpsEnabled`, `SetDumpsPort`, `SetDumpFeature`, `SetDumpsPersist`, `DumpsStatus` |
-| Mail | `ListMails`, `GetMail`, `ClearMails`, `DeleteMails`, `SetMailPort`, `SetMailEnabled` |
+| Mail | `ListMails`, `GetMail`, `ClearMails`, `DeleteMails`, `MarkMailsRead`, `SetMailPort`, `SetMailEnabled` |
 | Tools | `ListTools`, `InstallTool`, `UninstallTool`, `InstallToolStreamed` |
 | Site creation / jobs | `CreateSite`, `JobStatus`, `JobCancel` |
 

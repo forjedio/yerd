@@ -25,8 +25,9 @@ import Spinner from "@/components/ui/Spinner.vue";
 import { registerViewActions } from "@/lib/shortcuts/useViewActions";
 import { useDaemon } from "@/composables/useDaemon";
 import { useOnboarding } from "@/composables/useOnboarding";
-import { daemonVersionConflict, listSites, openInBrowser } from "@/ipc/client";
-import type { Site, StatusReport } from "@/ipc/types";
+import { useResource } from "@/composables/useResource";
+import { daemonVersionConflict, openInBrowser, sitesAndParked } from "@/ipc/client";
+import type { StatusReport } from "@/ipc/types";
 import { openTitle, siteUrl } from "@/lib/siteUrl";
 import { humaniseUptime } from "@/lib/utils";
 
@@ -43,17 +44,15 @@ const connecting = computed(() => connected.value === null && !report.value);
 const tld = computed(() => r.value?.tld ?? "test");
 
 // ── live site list (for the console chips) ──
-const sites = ref<Site[]>([]);
-const sitesLoaded = ref(false);
-
-async function loadSites(): Promise<void> {
-  try {
-    sites.value = await listSites();
-    sitesLoaded.value = true;
-  } catch {
-    sites.value = []; // a chip strip is non-critical; the headline still shows
-  }
-}
+// Shared "sites" cache (same key + fetcher as the Sites view and the command
+// palette). `immediate:false` so it never fetches while the daemon is down (the
+// hero shows then); the `running`-gated triggers below drive it instead. A chip
+// strip is non-critical, so a failed fetch just leaves the last-good list.
+const { data: sitesData, refresh: reloadSites } = useResource("sites", sitesAndParked, {
+  immediate: false,
+});
+const sites = computed(() => sitesData.value?.sites ?? []);
+const sitesLoaded = computed(() => sitesData.value !== null);
 
 // macOS: set when this (older) GUI refused to reconfigure a NEWER registered
 // daemon. A GUI-vs-registered-daemon condition (independent of reachability), so
@@ -61,24 +60,22 @@ async function loadSites(): Promise<void> {
 const versionConflict = ref<string | null>(null);
 
 onMounted(() => {
-  if (running.value) loadSites();
+  if (running.value) void reloadSites();
   daemonVersionConflict()
     .then((v) => (versionConflict.value = v))
     .catch(() => {});
 });
+// Refetch on (re)connect. On daemon-down do nothing: the display is derived from
+// the shared cache and the hero renders regardless, so clearing it would only
+// hurt the Sites view / palette that share the entry.
 watch(running, (up) => {
-  if (up) {
-    loadSites();
-  } else {
-    sites.value = [];
-    sitesLoaded.value = false;
-  }
+  if (up) void reloadSites();
 });
 
 onUnmounted(
   registerViewActions({
     refresh: () => {
-      if (running.value) loadSites();
+      if (running.value) void reloadSites();
     },
   }),
 );

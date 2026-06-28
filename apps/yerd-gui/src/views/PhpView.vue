@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, onUnmounted, ref } from "vue";
+import { computed, nextTick, onUnmounted, ref, watch } from "vue";
 import {
   Download,
   Info,
@@ -38,6 +38,8 @@ import {
 } from "@/components/ui/tooltip";
 import { registerViewActions } from "@/lib/shortcuts/useViewActions";
 import { useDaemon } from "@/composables/useDaemon";
+import { useOperations } from "@/composables/useOperations";
+import { useResource } from "@/composables/useResource";
 import { useToast } from "@/composables/useToast";
 import {
   availablePhp,
@@ -57,13 +59,28 @@ import { humaniseBytes, poolStateLabel, poolStateTone } from "@/lib/utils";
 
 const toast = useToast();
 const { report, refresh } = useDaemon();
+const operations = useOperations();
 
-const installed = ref<PhpVersion[]>([]);
-const defaultVersion = ref<PhpVersion | null>(null);
-const updates = ref<PhpUpdate[]>([]);
-const loading = ref(true);
+// Cached SWR resource: revisits render the installed-versions table instantly
+// and revalidate underneath instead of flashing a spinner each time.
+const { data, loading, error, refresh: reloadPhp, mutate } = useResource("php", listPhp);
+const installed = computed<PhpVersion[]>(() => data.value?.installed ?? []);
+const defaultVersion = computed<PhpVersion | null>(() => data.value?.default ?? null);
+const updates = computed<PhpUpdate[]>(() => data.value?.updates ?? []);
 const busy = ref<string | null>(null); // a key naming the in-flight long op
-const installProgress = ref(""); // latest streamed install line, shown by the Install button
+
+// Surface a cold-load failure as a toast (no AsyncState here), masked once
+// there's cached data so a background revalidation stays silent.
+watch(error, (e) => {
+  if (e && !data.value) toast.error("Couldn't load PHP versions", e.message);
+});
+
+// An install is tracked in the global operations registry so it persists and
+// stays visible (here and in the SideNav) across navigation.
+const installing = computed(() => operations.active.value.some((o) => o.kind === "php-install"));
+const installDetail = computed(
+  () => operations.active.value.find((o) => o.kind === "php-install")?.detail ?? "",
+);
 
 // Live FPM state, keyed by version, from the shared status poll.
 const poolByVersion = computed<Record<string, PhpPoolStatus>>(() => {
@@ -138,28 +155,41 @@ const DISPLAY_ERRORS_OPTIONS = [
 ] as const;
 
 const settingsForm = ref<Record<string, string>>({});
+// Snapshot of the values last seeded from the server, so we can tell whether the
+// user has edited the form since (and thus whether a fresh server value may
+// safely replace it).
+let lastSeeded: Record<string, string> = {};
 
 function applySettings(settings: Record<string, string> | undefined): void {
   const next: Record<string, string> = {};
   for (const s of TEXT_SETTINGS) next[s.key] = settings?.[s.key] ?? "";
   next.display_errors = settings?.display_errors ?? "";
   settingsForm.value = next;
+  lastSeeded = { ...next };
 }
 
-async function load(): Promise<void> {
-  loading.value = true;
-  try {
-    const r = await listPhp();
-    installed.value = r.installed;
-    defaultVersion.value = r.default;
-    updates.value = r.updates ?? [];
-    applySettings(r.settings);
-  } catch (e) {
-    toast.error("Couldn't load PHP versions", (e as IpcError).message);
-  } finally {
-    loading.value = false;
+/** True when the form still matches what we last seeded (i.e. no unsaved edits). */
+function settingsPristine(): boolean {
+  const form = settingsForm.value;
+  const keys = new Set([...Object.keys(form), ...Object.keys(lastSeeded)]);
+  for (const k of keys) {
+    if ((form[k] ?? "") !== (lastSeeded[k] ?? "")) return false;
   }
+  return true;
 }
+
+// Seed the settings form from the server: on first load, and on later
+// revalidations *only while the form is pristine* - so an out-of-band ini change
+// (e.g. via the CLI) self-corrects, but the user's unsaved edits are never
+// clobbered by an optimistic write or a background refresh. `immediate:true`
+// seeds synchronously on a warm-cache revisit so the inputs never flash empty.
+watch(
+  data,
+  (d) => {
+    if (d && settingsPristine()) applySettings(d.settings);
+  },
+  { immediate: true },
+);
 
 async function saveSettings(): Promise<void> {
   busy.value = "settings";
@@ -169,7 +199,7 @@ async function saveSettings(): Promise<void> {
     const r = await setPhpSettings(payload);
     applySettings(r.settings);
     toast.success("PHP settings updated", "Pools restart to apply the changes.");
-    await load();
+    await reloadPhp({ force: true });
   } catch (e) {
     toast.error("Couldn't update PHP settings", (e as IpcError).message);
   } finally {
@@ -181,9 +211,11 @@ async function refreshUpdates(): Promise<void> {
   busy.value = "refresh";
   try {
     const r = await checkPhpUpdates();
-    installed.value = r.installed;
-    defaultVersion.value = r.default;
-    updates.value = r.updates ?? [];
+    mutate((cur) =>
+      cur
+        ? { ...cur, installed: r.installed, default: r.default, updates: r.updates ?? [] }
+        : { ...r, updates: r.updates ?? [] },
+    );
     toast.success(
       "Update check complete",
       r.updates?.length ? `${r.updates.length} update(s) available` : "All up to date",
@@ -199,7 +231,7 @@ async function makeDefault(v: PhpVersion): Promise<void> {
   busy.value = `default:${v}`;
   try {
     await setDefaultPhp(v);
-    defaultVersion.value = v;
+    mutate((cur) => (cur ? { ...cur, default: v } : cur));
     toast.success(`PHP ${v} is now the default`);
   } catch (e) {
     toast.error("Couldn't set default", (e as IpcError).message);
@@ -214,7 +246,7 @@ async function doUpdate(v: PhpVersion | null): Promise<void> {
     await updatePhp(v);
     toast.success(v ? `Updated PHP ${v}` : "Updated all PHP versions");
     // Refresh the status poll too so the new patch shows without the 4s lag.
-    await Promise.all([load(), refresh()]);
+    await Promise.all([reloadPhp({ force: true }), refresh()]);
   } catch (e) {
     toast.error("Update failed", (e as IpcError).message);
   } finally {
@@ -285,7 +317,7 @@ async function confirmUninstall(close: () => void): Promise<void> {
   try {
     await uninstallPhp(v);
     toast.success(`Uninstalled PHP ${v}`);
-    await load();
+    await reloadPhp({ force: true });
   } catch (e) {
     toast.error(`Couldn't uninstall PHP ${v}`, (e as IpcError).message);
   } finally {
@@ -323,34 +355,37 @@ async function openInstall(): Promise<void> {
   }
 }
 
+/**
+ * Install the selected PHP version with live progress. Only one PHP install runs
+ * at a time, so this no-ops while any `php-install` operation is active (covering
+ * a double-submit or a second version picked from a still-open modal). On success
+ * it refreshes the version list AND the status poll so the new row shows its
+ * patch + "idle" state immediately rather than on the next 4s tick.
+ */
 async function confirmInstall(close: () => void): Promise<void> {
   const v = selectedVersion.value;
-  if (!v) return;
-  busy.value = "install";
-  installProgress.value = "";
+  if (!v || installing.value) return;
+  const opId = `php-install:${v}`;
+  operations.begin({ id: opId, kind: "php-install", label: `Installing PHP ${v}` });
   close();
   try {
     await installPhpWithProgress(v, (lines) => {
-      installProgress.value = lines[lines.length - 1] ?? installProgress.value;
+      const latest = lines[lines.length - 1];
+      if (latest) operations.update(opId, { detail: latest });
     });
     toast.success(`Installed PHP ${v}`);
-    // Refresh the version list *and* the status poll so the new row shows its
-    // patch + "idle" state immediately instead of on the next 4s tick.
-    await Promise.all([load(), refresh()]);
+    await Promise.all([reloadPhp({ force: true }), refresh()]);
   } catch (e) {
     toast.error(`Install of PHP ${v} failed`, (e as IpcError).message);
   } finally {
-    busy.value = null;
-    installProgress.value = "";
+    operations.end(opId);
   }
 }
-
-onMounted(load);
 
 onUnmounted(
   registerViewActions({
     create: () => void openInstall(),
-    refresh: () => void load(),
+    refresh: () => void reloadPhp(),
   }),
 );
 </script>
@@ -388,13 +423,13 @@ onUnmounted(
               Update all
             </Button>
             <span
-              v-if="busy === 'install' && installProgress"
+              v-if="installDetail"
               class="min-w-0 max-w-[16rem] truncate text-xs text-muted-foreground"
             >
-              {{ installProgress }}
+              {{ installDetail }}
             </span>
-            <Button size="sm" :disabled="busy === 'install'" @click="openInstall">
-              <Spinner v-if="busy === 'install'" class="size-4" />
+            <Button size="sm" :disabled="installing" @click="openInstall">
+              <Spinner v-if="installing" class="size-4" />
               <Download v-else class="size-4" />
               Install
             </Button>
@@ -596,7 +631,7 @@ onUnmounted(
       <template #footer="{ close }">
         <Button variant="ghost" @click="close">Cancel</Button>
         <Button
-          :disabled="!installOptions.length || !selectedVersion"
+          :disabled="!installOptions.length || !selectedVersion || installing"
           @click="confirmInstall(close)"
         >
           Install

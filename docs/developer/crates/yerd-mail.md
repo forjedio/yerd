@@ -226,10 +226,19 @@ pub fn open_with_cap(dir: PathBuf, cap: usize) -> Result<Self, MailError>;
 pub async fn append(&self, raw: &[u8]) -> Result<(), MailError>;
 pub async fn list(&self) -> Vec<MailSummary>;             // newest-first
 pub async fn count(&self) -> u32;
+pub async fn counts(&self) -> (u32, u32);                 // (total, unread)
 pub async fn get(&self, id: &str) -> Result<Option<MailDetail>, MailError>;
 pub async fn delete_many(&self, ids: &[String]) -> Result<(), MailError>;
+pub async fn mark_read(&self, ids: &[String]) -> Result<(), MailError>;
 pub async fn clear(&self) -> Result<(), MailError>;
 ```
+
+`MailSummary` carries a `read: bool` that lives in `index.json` (it is store
+state, not decoded from the message). New captures start unread; `mark_read`
+sets the read flag (one-way, unread to read) for the given ids and rewrites the
+index only when something changed, and `counts` returns the total and the unread
+tally under one lock so
+the daemon's `Status` can report both consistently.
 
 Design properties worth knowing as a contributor:
 
@@ -294,7 +303,11 @@ The IPC server then maps the mail [requests](./yerd-ipc) onto the store:
 | `GetMail { id }` | `store.get(&id)` → `Option<MailDetail>` |
 | `ClearMails` | `store.clear()` |
 | `DeleteMails { ids }` | `store.delete_many(&ids)` (e.g. all mail for one app) |
+| `MarkMailsRead { ids }` | `store.mark_read(&ids)` (mark opened mail read) |
 | `SetMailPort { port }` / `SetMailEnabled { enabled }` | persist to the `[mail]` config table |
+
+The `Status` report's `MailStatus` also calls `store.counts()` so the GUI's
+unread badge (sidebar pill, tray dot, "Mail (N)" label) tracks captured mail.
 
 ::: warning Port / enabled changes need a restart
 `SetMailPort` and `SetMailEnabled` save to config immediately but take effect on

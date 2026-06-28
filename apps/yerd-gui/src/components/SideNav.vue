@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import type { Component } from "vue";
+import { computed } from "vue";
 import {
   ClipboardList,
   Database,
@@ -14,15 +15,25 @@ import {
 } from "lucide-vue-next";
 
 import NavLink from "@/components/NavLink.vue";
+import OperationsIndicator from "@/components/OperationsIndicator.vue";
 import StatusPill from "@/components/StatusPill.vue";
 import { useDaemon } from "@/composables/useDaemon";
+import { showMailsWindow } from "@/ipc/client";
 import logoUrl from "@/assets/logo.svg";
 
 // Grouped left nav. Sections name the app's three real concerns: the runtime you
 // configure (Environment), what the daemon supervises (Services), and the system
 // itself (System). Overview sits above them as the home/dashboard. Icons are
-// monochrome - see NavLink; status colour is reserved for the pill below.
-type Item = { to: string; label: string; icon: Component };
+// monochrome - see NavLink; status colour is reserved for the pill below. The
+// Mail item carries an optional unread-count badge whose click opens the viewer.
+type Item = {
+  to: string;
+  label: string;
+  icon: Component;
+  badge?: number;
+  onBadgeClick?: () => void;
+  badgeTitle?: string;
+};
 
 const overview: Item = {
   to: "/overview",
@@ -30,7 +41,11 @@ const overview: Item = {
   icon: LayoutDashboard,
 };
 
-const sections: { title: string; items: Item[] }[] = [
+const { connected, report } = useDaemon();
+const unread = computed(() => report.value?.mail?.unread ?? 0);
+
+// A computed (not a const) so the Mail item's unread badge stays reactive.
+const sections = computed<{ title: string; items: Item[] }[]>(() => [
   {
     title: "Environment",
     items: [
@@ -43,7 +58,14 @@ const sections: { title: string; items: Item[] }[] = [
     items: [
       { to: "/tooling", label: "Tooling", icon: Wrench },
       { to: "/services", label: "Services", icon: Database },
-      { to: "/mail", label: "Mail", icon: Mail },
+      {
+        to: "/mail",
+        label: "Mail",
+        icon: Mail,
+        badge: unread.value,
+        onBadgeClick: () => void showMailsWindow(),
+        badgeTitle: "Open mail viewer",
+      },
       { to: "/dumps", label: "Dumps", icon: ClipboardList },
     ],
   },
@@ -55,9 +77,7 @@ const sections: { title: string; items: Item[] }[] = [
       { to: "/about", label: "About", icon: Info },
     ],
   },
-];
-
-const { connected } = useDaemon();
+]);
 </script>
 
 <template>
@@ -94,6 +114,7 @@ const { connected } = useDaemon();
     </div>
 
     <div class="mt-2 border-t px-2 pt-3">
+      <OperationsIndicator />
       <StatusPill
         v-if="connected === true"
         tone="ok"

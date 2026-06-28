@@ -8,9 +8,17 @@ import Modal from "@/components/ui/Modal.vue";
 import Select from "@/components/ui/Select.vue";
 import Spinner from "@/components/ui/Spinner.vue";
 import { registerViewActions } from "@/lib/shortcuts/useViewActions";
+import { log } from "@/lib/log";
 import { usePoll } from "@/composables/usePoll";
 import { useToast } from "@/composables/useToast";
-import { clearMails, deleteMails, getMail, IpcError, listMails } from "@/ipc/client";
+import {
+  clearMails,
+  deleteMails,
+  getMail,
+  IpcError,
+  listMails,
+  markMailsRead,
+} from "@/ipc/client";
 import type { MailDetail, MailSummary } from "@/ipc/types";
 
 // The rendered HTML email is sandboxed: no scripts, no same-origin. The child CSP
@@ -92,26 +100,56 @@ watch(
       return;
     }
     if (!selectedId.value || !items.some((m) => m.id === selectedId.value)) {
-      void select(items[0].id);
+      void select(items[0].id, false);
     }
   },
   { immediate: true },
 );
 
-async function select(id: string): Promise<void> {
+/**
+ * Open a message in the reading pane. `fromUser` distinguishes a genuine row click
+ * (which marks the mail read) from the watcher's auto-selection (which must not).
+ * A monotonic `selectSeq` suppresses a superseded in-flight `getMail`, so an
+ * out-of-order response can't overwrite a newer selection.
+ */
+async function select(id: string, fromUser: boolean): Promise<void> {
   const seq = ++selectSeq;
   selectedId.value = id;
   loadingDetail.value = true;
   try {
     const mail = await getMail(id);
-    if (seq !== selectSeq) return; // a newer select() superseded this one
+    if (seq !== selectSeq) return;
     detail.value = mail;
+    if (fromUser) void markRead(id);
   } catch (e) {
     if (seq !== selectSeq) return;
     toast.error("Couldn't open the email", (e as IpcError).message);
     detail.value = null;
   } finally {
     if (seq === selectSeq) loadingDetail.value = false;
+  }
+}
+
+/**
+ * Mark one email read on a genuine open: persist via the daemon, then replace the
+ * list array (usePoll's data is a shallowRef, so an in-place mutation wouldn't be
+ * reactive) so the unread styling/badges clear immediately. Best-effort: a failure
+ * just leaves it unread and the next poll reconciles. Only acts when the daemon
+ * explicitly reported the mail unread (`read === false`); an older daemon omits
+ * `read` (and the `MarkMailsRead` request), so we must not call it there.
+ */
+async function markRead(id: string): Promise<void> {
+  const current = mails.value?.find((m) => m.id === id);
+  if (!current || current.read !== false) return;
+  try {
+    await markMailsRead([id]);
+    if (mails.value) {
+      mails.value = mails.value.map((m) =>
+        m.id === id ? { ...m, read: true } : m,
+      );
+    }
+  } catch (e) {
+    log.warn(`mark mail read failed: ${(e as IpcError).message}`);
   }
 }
 
@@ -198,15 +236,22 @@ function formatDate(epoch: number): string {
             :key="m.id"
             class="cursor-pointer px-3 py-2.5 transition-colors hover:bg-accent/60"
             :class="m.id === selectedId ? 'bg-accent' : ''"
-            @click="select(m.id)"
+            @click="select(m.id, true)"
           >
             <div class="flex items-center justify-between gap-2">
-              <span class="truncate text-xs font-medium">{{ applicationOf(m.from) }}</span>
+              <span class="flex min-w-0 items-center gap-1.5">
+                <span
+                  v-if="m.read === false"
+                  class="size-2 shrink-0 rounded-full bg-brand"
+                  aria-label="Unread"
+                />
+                <span class="truncate text-xs font-medium">{{ applicationOf(m.from) }}</span>
+              </span>
               <span class="shrink-0 text-[10px] text-muted-foreground">
                 {{ formatDate(m.date_epoch) }}
               </span>
             </div>
-            <p class="mt-0.5 truncate text-sm">
+            <p class="mt-0.5 truncate text-sm" :class="m.read === false ? 'font-semibold' : ''">
               {{ m.subject || "(no subject)" }}
             </p>
           </li>

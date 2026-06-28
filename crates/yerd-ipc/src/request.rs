@@ -311,6 +311,11 @@ pub enum Request {
         /// The email ids to delete.
         ids: Vec<String>,
     },
+    /// Mark a set of captured emails as read. Unknown ids are ignored.
+    MarkMailsRead {
+        /// The email ids to mark read.
+        ids: Vec<String>,
+    },
     /// Set the mail-capture SMTP port. Takes effect on the next daemon
     /// start/restart (no implicit hot rebind), like [`Self::SetServicePort`].
     SetMailPort {
@@ -485,6 +490,7 @@ mod variant_name_pinning {
             Request::GetMail { .. } => {}
             Request::ClearMails => {}
             Request::DeleteMails { .. } => {}
+            Request::MarkMailsRead { .. } => {}
             Request::SetMailPort { .. } => {}
             Request::SetFallbackPorts { .. } => {}
             Request::SetDnsPort { .. } => {}
@@ -627,6 +633,9 @@ mod variant_name_pinning {
         });
         pin(Request::ClearMails);
         pin(Request::DeleteMails {
+            ids: vec!["000001".into()],
+        });
+        pin(Request::MarkMailsRead {
             ids: vec!["000001".into()],
         });
         pin(Request::SetMailPort { port: 2525 });

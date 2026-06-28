@@ -1,16 +1,23 @@
-import { computed, onMounted, onUnmounted, ref } from "vue";
-import { watch } from "vue";
-import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { computed, ref, watch } from "vue";
+import { listen } from "@tauri-apps/api/event";
 
 import { useDaemon } from "@/composables/useDaemon";
+import { useOperations } from "@/composables/useOperations";
 import { daemonDiagnostics, IpcError, startDaemon } from "@/ipc/client";
 import type { DaemonDiagnostics } from "@/ipc/types";
 import { log } from "@/lib/log";
 
 /**
  * Shared "start the daemon, wait for it to actually connect, and diagnose on
- * failure" skeleton - used by the onboarding step 1 and the DaemonDownHero so
- * both surface the same diagnostics instead of a blind 20 s toast.
+ * failure" store - used by onboarding step 1, the DaemonDownHero, and Doctor so
+ * all surface the same diagnostics instead of a blind 20 s toast.
+ *
+ * Module-level **singleton** (like `useDaemon` / `useToast`): the phase, the
+ * readiness-poll timer, and the diagnostics live here, not in component setup, so
+ * a start kicked off on one screen keeps running and stays visible after the user
+ * navigates away (previously the per-instance state was lost on unmount and the
+ * Start button reappeared). The active start is mirrored into `useOperations` so
+ * the global indicator shows "Starting Yerd…" from anywhere.
  *
  * Deliberately narrow: it owns only the phase / timeout / fast-poll / diagnose
  * state. It does NOT own macOS login-item orchestration - that ordering is
@@ -21,16 +28,10 @@ import { log } from "@/lib/log";
  *
  * Phased button: "starting the daemon" may install / upgrade / start it before
  * the readiness wait. The Rust host emits a `daemon-start-phase` event as it
- * walks those steps (each with its own per-phase timeout); we reflect it in
- * `phase`, which drives a step label on the button ("Installing Daemon" →
- * "Starting Daemon" → "Running Daemon"), resetting to idle on completion. The
- * frontend owns the `running` (readiness wait) and `idle` phases; Rust owns the
- * earlier ones.
- *
- * Per-instance state (declared here, in component setup scope) + a
- * component-scoped `watch`/`onMounted`/`onUnmounted`, so the two mount sites
- * don't share a timer OR a phase listener. `connected` only updates when the
- * shared `useDaemon` poller ticks, so the fast-poll actively drives `refresh()`.
+ * walks those steps; we reflect it in `phase`, which drives a step label on the
+ * button ("Installing Daemon" -> "Starting Daemon" -> "Running Daemon"), resetting
+ * to idle on completion. The frontend owns the `running` (readiness wait) and
+ * `idle` phases; Rust owns the earlier ones.
  */
 
 export interface StartOptions {
@@ -71,178 +72,196 @@ function labelFor(p: StartPhase): string | null {
   }
 }
 
-export function useDaemonStart() {
-  const { connected, refresh } = useDaemon();
+const { connected, refresh } = useDaemon();
+const operations = useOperations();
 
-  // `phase` is the single source of truth; `starting` is derived so the existing
-  // `:disabled` / spinner bindings keep working unchanged.
-  const phase = ref<StartPhase>("idle");
-  const starting = computed(() => phase.value !== "idle");
-  const activeLabel = computed(() => labelFor(phase.value));
-  const pendingApproval = ref(false);
-  const diagnostics = ref<DaemonDiagnostics | null>(null);
+// `phase` is the single source of truth; `starting` is derived so the existing
+// `:disabled` / spinner bindings keep working unchanged.
+const phase = ref<StartPhase>("idle");
+const starting = computed(() => phase.value !== "idle");
+const activeLabel = computed(() => labelFor(phase.value));
+const pendingApproval = ref(false);
+const diagnostics = ref<DaemonDiagnostics | null>(null);
 
-  let pollTimer: ReturnType<typeof setTimeout> | undefined;
-  let elapsed = 0;
-  // Set once the component unmounts so an in-flight `await` (refresh/diagnose)
-  // doesn't resume and reschedule a timer / mutate a dead component.
-  let disposed = false;
-  // True only from `start()` entry until `startDaemon` resolves - the window in
-  // which the Rust host owns the phase label. Per-instance, so a non-initiating
-  // mounted instance ignores the global phase event.
-  let acceptRustPhases = false;
-  let unlistenPhase: UnlistenFn | undefined;
+let pollTimer: ReturnType<typeof setTimeout> | undefined;
+let elapsed = 0;
+// True only from `start()` entry until `startDaemon` resolves - the window in
+// which the Rust host owns the phase label.
+let acceptRustPhases = false;
+let listenerStarted = false;
 
-  function clearPoll(): void {
-    if (pollTimer) {
-      clearTimeout(pollTimer);
-      pollTimer = undefined;
+const OP_ID = "daemon-start";
+
+// Mirror the active start into the global operations registry so the SideNav
+// indicator (and anything else) shows it from any screen.
+watch(phase, (p) => {
+  if (p === "idle") {
+    operations.end(OP_ID);
+    return;
+  }
+  const detail = labelFor(p) ?? undefined;
+  if (operations.isRunning(OP_ID)) {
+    operations.update(OP_ID, { detail });
+  } else {
+    operations.begin({ id: OP_ID, kind: "daemon-start", label: "Starting Yerd", detail });
+  }
+});
+
+function clearPoll(): void {
+  if (pollTimer) {
+    clearTimeout(pollTimer);
+    pollTimer = undefined;
+  }
+}
+
+function reset(): void {
+  clearPoll();
+  acceptRustPhases = false;
+  phase.value = "idle";
+  pendingApproval.value = false;
+  diagnostics.value = null;
+}
+
+/**
+ * Gather and surface daemon-start diagnostics, unless we've since connected (a
+ * race where the daemon came up while gathering - don't contradict the connected
+ * state). A registered-but-unapproved daemon isn't a failure: show the approval
+ * affordance instead of the diagnostics panel. If gathering itself throws, fall
+ * back to a minimal but actionable diagnostic rather than a silent dead-end.
+ */
+async function diagnose(startError?: string): Promise<void> {
+  try {
+    const d = await daemonDiagnostics(startError);
+    if (connected.value === true) return;
+    if (d.pendingApproval) {
+      pendingApproval.value = true;
+      diagnostics.value = null;
+    } else {
+      diagnostics.value = d;
     }
+  } catch {
+    if (connected.value === true) return;
+    diagnostics.value = minimalDiagnostics(
+      startError ?? "The daemon didn't come up, and diagnostics couldn't be gathered.",
+    );
   }
+}
 
-  function reset(): void {
-    clearPoll();
-    acceptRustPhases = false;
-    phase.value = "idle";
-    pendingApproval.value = false;
-    diagnostics.value = null;
-  }
-
-  /** True once the daemon connected or the component went away - never show a
-   * failure panel in that case (avoids "Running" + failure panel together). */
-  function stale(): boolean {
-    return disposed || connected.value === true;
-  }
-
-  async function diagnose(startError?: string): Promise<void> {
-    try {
-      const d = await daemonDiagnostics(startError);
-      if (stale()) return; // connected/unmounted while gathering - don't contradict
-      // A registered-but-unapproved daemon isn't a failure: show the approval
-      // affordance, not the diagnostics panel.
-      if (d.pendingApproval) {
-        pendingApproval.value = true;
-        diagnostics.value = null;
-      } else {
-        diagnostics.value = d;
-      }
-    } catch {
-      if (stale()) return;
-      // Diagnostics gathering itself failed - still surface something actionable
-      // rather than a silent dead-end.
-      diagnostics.value = minimalDiagnostics(
-        startError ?? "The daemon didn't come up, and diagnostics couldn't be gathered.",
-      );
-    }
-  }
-
-  function beginPolling(startError?: string): void {
-    clearPoll();
-    elapsed = 0;
-    phase.value = "running"; // the readiness wait - frontend-owned
-    const tick = async (): Promise<void> => {
-      if (disposed || !starting.value) return;
-      await refresh(); // drives the shared poller; updates `connected`
-      if (disposed || !starting.value) return; // re-check after the await
-      if (connected.value === true) return; // the watch below clears state
-      elapsed += POLL_MS;
-      if (elapsed >= RUNNING_CEILING_MS) {
-        log.warn("daemon start: readiness wait timed out");
-        await diagnose(startError);
-        phase.value = "idle";
-        return;
-      }
-      pollTimer = setTimeout(() => void tick(), POLL_MS);
-    };
-    pollTimer = setTimeout(() => void tick(), POLL_MS);
-  }
-
-  async function start(opts: StartOptions = {}): Promise<void> {
-    reset();
-    // Show the spinner immediately on click: the macOS plan can spend a few
-    // seconds probing launchctl before the first phase event arrives.
-    phase.value = "starting";
-    acceptRustPhases = true;
-    log.info("daemon start requested");
-    let startError: string | undefined;
-    try {
-      await startDaemon(opts.nudge ?? false);
-    } catch (e) {
-      // Launch threw outright (missing sidecar, translocation refusal, register
-      // failure) - capture the message and diagnose immediately.
-      acceptRustPhases = false;
-      startError = (e as IpcError).message;
-      log.error(`daemon start failed: ${startError}`);
+/**
+ * Poll for readiness after a successful launch. The frontend owns this "running"
+ * phase, ticking `refresh()` to update `connected`. Each tick re-checks `starting`
+ * after the await and bails once connected (the `connected` watch clears the rest
+ * of the state) or once the ceiling is hit, where it diagnoses and returns to idle.
+ */
+function beginPolling(startError?: string): void {
+  clearPoll();
+  elapsed = 0;
+  phase.value = "running";
+  const tick = async (): Promise<void> => {
+    if (!starting.value) return;
+    await refresh();
+    if (!starting.value) return;
+    if (connected.value === true) return;
+    elapsed += POLL_MS;
+    if (elapsed >= RUNNING_CEILING_MS) {
+      log.warn("daemon start: readiness wait timed out");
       await diagnose(startError);
       phase.value = "idle";
       return;
     }
-    // Rust is done walking its steps; the frontend now owns running/idle so a
-    // straggler phase event can't flip the label back.
+    pollTimer = setTimeout(() => void tick(), POLL_MS);
+  };
+  pollTimer = setTimeout(() => void tick(), POLL_MS);
+}
+
+/**
+ * Begin the daemon-start flow (singleton). A second call while one is already in
+ * flight is a no-op: the in-flight guard stops two callers interleaving and
+ * clearing each other's shared state. `phase` goes to "starting" synchronously so
+ * the spinner shows on click (the macOS plan can spend seconds probing launchctl
+ * before the first phase event). Once `startDaemon` returns, `acceptRustPhases` is
+ * dropped so a straggler phase event can't flip the label after the frontend owns
+ * running/idle; a launch throw (missing sidecar, translocation refusal, register
+ * failure) diagnoses immediately. `nudge` defaults to true (open Login Items on a
+ * pending approval); only onboarding passes false. A throwing `beforeProbe` is
+ * treated as not-pending-approval.
+ */
+async function start(opts: StartOptions = {}): Promise<void> {
+  if (starting.value) return;
+  reset();
+  phase.value = "starting";
+  acceptRustPhases = true;
+  log.info("daemon start requested");
+  let startError: string | undefined;
+  try {
+    await startDaemon(opts.nudge ?? true);
+  } catch (e) {
     acceptRustPhases = false;
-    // Let the caller enable login items / re-probe approval, then read it.
-    if (opts.beforeProbe) {
-      try {
-        pendingApproval.value = await opts.beforeProbe();
-      } catch {
-        /* best-effort; treat as not-pending */
-      }
-    }
-    await refresh();
-    if (connected.value === true) {
-      phase.value = "idle";
-      return;
-    }
-    if (pendingApproval.value) {
-      // Can't connect until the user approves; show the affordance, not a panel.
-      phase.value = "idle";
-      return;
-    }
-    beginPolling(startError);
+    startError = (e as IpcError).message;
+    log.error(`daemon start failed: ${startError}`);
+    await diagnose(startError);
+    phase.value = "idle";
+    return;
   }
-
-  // Once the daemon is actually reachable, drop any failure/approval UI.
-  watch(connected, (c) => {
-    if (c === true) {
-      acceptRustPhases = false;
-      phase.value = "idle";
-      pendingApproval.value = false;
-      diagnostics.value = null;
-      clearPoll();
-      log.debug("daemon connected");
-    }
-  });
-
-  // One always-on phase listener per instance; gated by `acceptRustPhases` so
-  // only the instance whose `start()` is in flight reflects the event.
-  onMounted(async () => {
+  acceptRustPhases = false;
+  if (opts.beforeProbe) {
     try {
-      const un = await listen<string>("daemon-start-phase", (e) => {
-        if (!acceptRustPhases || disposed) return;
-        const p = e.payload;
-        if (p === "installing" || p === "upgrading" || p === "starting") {
-          phase.value = p;
-          log.debug(`daemon start phase: ${p}`);
-        }
-      });
-      // If we unmounted while `listen` was awaiting, onUnmounted already ran (and
-      // saw no handle) - drop this now-orphaned registration instead of leaking it.
-      if (disposed) un();
-      else unlistenPhase = un;
+      pendingApproval.value = await opts.beforeProbe();
     } catch {
-      /* events unavailable (non-Tauri/test context) - phases just won't update */
+      pendingApproval.value = false;
     }
-  });
+  }
+  await refresh();
+  if (connected.value === true) {
+    phase.value = "idle";
+    return;
+  }
+  if (pendingApproval.value) {
+    phase.value = "idle";
+    return;
+  }
+  beginPolling(startError);
+}
 
-  onUnmounted(() => {
-    disposed = true;
+// Once the daemon is actually reachable, drop any failure/approval UI.
+watch(connected, (c) => {
+  if (c === true) {
+    acceptRustPhases = false;
+    phase.value = "idle";
+    pendingApproval.value = false;
+    diagnostics.value = null;
     clearPoll();
-    if (unlistenPhase) {
-      unlistenPhase();
-      unlistenPhase = undefined;
-    }
-  });
+    log.debug("daemon connected");
+  }
+});
 
+/**
+ * Register the always-on Rust phase listener, lazily on first use (not at import,
+ * so a non-Tauri context that imports this module doesn't call `listen`). Gated by
+ * `acceptRustPhases` so only an in-flight `start()` reflects the event. The
+ * singleton lives for the app's lifetime, so the unlisten handle is intentionally
+ * dropped; if events are unavailable (non-Tauri/test context) the listener flag is
+ * reset so phases simply won't update.
+ */
+async function ensureListener(): Promise<void> {
+  if (listenerStarted) return;
+  listenerStarted = true;
+  try {
+    await listen<string>("daemon-start-phase", (e) => {
+      if (!acceptRustPhases) return;
+      const p = e.payload;
+      if (p === "installing" || p === "upgrading" || p === "starting") {
+        phase.value = p;
+        log.debug(`daemon start phase: ${p}`);
+      }
+    });
+  } catch {
+    listenerStarted = false;
+  }
+}
+
+export function useDaemonStart() {
+  void ensureListener();
   return { starting, phase, activeLabel, pendingApproval, diagnostics, start, reset };
 }
 

@@ -43,12 +43,11 @@ import { openTitle, siteUrl } from "@/lib/siteUrl";
 import { registerViewActions } from "@/lib/shortcuts/useViewActions";
 import { sitesIntent } from "@/lib/shortcuts/sitesIntent";
 import { useDaemon } from "@/composables/useDaemon";
+import { useResource } from "@/composables/useResource";
 import { useToast } from "@/composables/useToast";
 import {
   IpcError,
   link,
-  listParked,
-  listSites,
   openInBrowser,
   openPath,
   park,
@@ -56,6 +55,7 @@ import {
   setPhp,
   setSecure,
   setWebRoot,
+  sitesAndParked,
   unlink,
   unpark,
 } from "@/ipc/client";
@@ -64,10 +64,17 @@ import type { Site } from "@/ipc/types";
 const toast = useToast();
 const { report } = useDaemon();
 
-const sites = ref<Site[]>([]);
-const parked = ref<string[]>([]);
-const loading = ref(true);
-const error = ref<string | null>(null);
+// Cached SWR resource shared with the Overview and the command palette (same
+// "sites" key + fetcher), so revisits render instantly instead of flashing.
+const { data, loading, error: resourceError, refresh: load } = useResource(
+  "sites",
+  sitesAndParked,
+);
+const sites = computed(() => data.value?.sites ?? []);
+const parked = computed(() => data.value?.parked ?? []);
+// Surface a load failure only when nothing is cached to show; a failed
+// background revalidation keeps the last-good list and never masks it.
+const error = computed(() => (data.value ? null : (resourceError.value?.message ?? null)));
 const rowBusy = ref<string | null>(null);
 const siteFilter = ref("");
 const filterInput = ref<InstanceType<typeof Input> | null>(null);
@@ -88,7 +95,7 @@ function openCreate(): void {
 }
 
 async function onCreated(): Promise<void> {
-  await load();
+  await load({ force: true });
 }
 
 // PHP options for the edit form, from the live status report.
@@ -131,19 +138,6 @@ function servedLabel(s: Site): string {
   return s.web_subpath && s.web_subpath !== "" ? s.web_subpath : "/";
 }
 
-async function load(): Promise<void> {
-  loading.value = true;
-  error.value = null;
-  try {
-    const [s, p] = await Promise.all([listSites(), listParked()]);
-    sites.value = s;
-    parked.value = p;
-  } catch (e) {
-    error.value = (e as IpcError).message;
-  } finally {
-    loading.value = false;
-  }
-}
 
 // ── edit site (PHP + web root + HTTPS) ──
 const editOpen = ref(false);
@@ -188,7 +182,7 @@ async function confirmEdit(close: () => void): Promise<void> {
       await setSecure(s.name, editSecure.value);
     }
     toast.success(`Updated ${s.name}`);
-    await load();
+    await load({ force: true });
   } catch (e) {
     toast.error("Couldn't update site", (e as IpcError).message);
   } finally {
@@ -204,7 +198,7 @@ async function onPark(): Promise<void> {
   try {
     await park(dir);
     toast.success("Parked directory", dir);
-    await load();
+    await load({ force: true });
   } catch (e) {
     toast.error("Park failed", (e as IpcError).message);
   } finally {
@@ -231,7 +225,7 @@ async function confirmUnpark(close: () => void): Promise<void> {
   try {
     await unpark(folder);
     toast.success("Un-parked folder", folder);
-    await load();
+    await load({ force: true });
   } catch (e) {
     toast.error("Un-park failed", (e as IpcError).message);
   } finally {
@@ -263,7 +257,7 @@ async function confirmLink(close: () => void): Promise<void> {
     toast.success(`Linked ${name}`);
     linkName.value = "";
     linkPath.value = "";
-    await load();
+    await load({ force: true });
   } catch (e) {
     toast.error("Link failed", (e as IpcError).message);
   } finally {
@@ -290,7 +284,7 @@ async function confirmUnlink(close: () => void): Promise<void> {
   try {
     await unlink(s.name);
     toast.success(`Removed ${s.name}`);
-    await load();
+    await load({ force: true });
   } catch (e) {
     toast.error("Couldn't remove site", (e as IpcError).message);
   } finally {
@@ -298,8 +292,6 @@ async function confirmUnlink(close: () => void): Promise<void> {
     unlinkTarget.value = null;
   }
 }
-
-onMounted(load);
 
 onUnmounted(
   registerViewActions({
@@ -314,7 +306,8 @@ function consumeIntent(): void {
   if (!intent) return;
   sitesIntent.value = null;
   if (intent === "link") linkOpen.value = true;
-  else void onPark();
+  else if (intent === "create") openCreate();
+  else if (intent === "park") void onPark();
 }
 
 onMounted(consumeIntent);

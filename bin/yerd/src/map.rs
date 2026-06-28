@@ -2234,6 +2234,7 @@ mod tests {
                         to: vec!["b@example.com".into()],
                         subject: "hello\tthere\nworld".into(),
                         date_epoch: 0,
+                        read: false,
                     },
                     yerd_ipc::MailSummary {
                         id: "id2".into(),
@@ -2241,6 +2242,7 @@ mod tests {
                         to: vec![],
                         subject: String::new(),
                         date_epoch: 0,
+                        read: false,
                     },
                 ],
             },

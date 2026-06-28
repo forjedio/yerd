@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from "vue";
+import { computed, onUnmounted, ref, watch } from "vue";
 import {
   Copy,
   Database,
@@ -37,6 +37,7 @@ import Select from "@/components/ui/Select.vue";
 import Spinner from "@/components/ui/Spinner.vue";
 import { registerViewActions } from "@/lib/shortcuts/useViewActions";
 import { useDaemon } from "@/composables/useDaemon";
+import { useResource } from "@/composables/useResource";
 import { useToast } from "@/composables/useToast";
 import {
   availableServices,
@@ -64,19 +65,17 @@ import { poolStateLabel, poolStateTone } from "@/lib/utils";
 const toast = useToast();
 const { refresh } = useDaemon();
 
-const services = ref<ServiceStatus[]>([]);
-const loading = ref(true);
+// Cached SWR resource: a revisit renders the last service list instantly and
+// revalidates underneath, so the table no longer flashes a spinner each time.
+const { data, loading, error, refresh: load } = useResource("services", listServices);
+const services = computed(() => data.value ?? []);
 const busy = ref<string | null>(null); // a key naming the in-flight op (e.g. "start:redis")
 
-async function load(): Promise<void> {
-  try {
-    services.value = await listServices();
-  } catch (e) {
-    toast.error("Couldn't load services", (e as IpcError).message);
-  } finally {
-    loading.value = false;
-  }
-}
+// No AsyncState here, so surface a load failure as a toast - but only on a cold
+// load (no cached data), so a transient background revalidation stays silent.
+watch(error, (e) => {
+  if (e && !data.value) toast.error("Couldn't load services", e.message);
+});
 
 function canStart(s: ServiceStatus): boolean {
   return s.installed_versions.length > 0 && s.state !== "running";
@@ -97,7 +96,7 @@ async function doStart(s: ServiceStatus): Promise<void> {
   try {
     await startService(s.service);
     toast.success(`Started ${s.display_name}`);
-    await Promise.all([load(), refresh()]);
+    await Promise.all([load({ force: true }), refresh()]);
   } catch (e) {
     toast.error(`Couldn't start ${s.display_name}`, (e as IpcError).message);
   } finally {
@@ -110,7 +109,7 @@ async function doStop(s: ServiceStatus): Promise<void> {
   try {
     await stopService(s.service);
     toast.success(`Stopped ${s.display_name}`);
-    await Promise.all([load(), refresh()]);
+    await Promise.all([load({ force: true }), refresh()]);
   } catch (e) {
     toast.error(`Couldn't stop ${s.display_name}`, (e as IpcError).message);
   } finally {
@@ -123,7 +122,7 @@ async function doRestart(s: ServiceStatus): Promise<void> {
   try {
     await restartService(s.service);
     toast.success(`Restarted ${s.display_name}`);
-    await Promise.all([load(), refresh()]);
+    await Promise.all([load({ force: true }), refresh()]);
   } catch (e) {
     toast.error(`Couldn't restart ${s.display_name}`, (e as IpcError).message);
   } finally {
@@ -181,7 +180,7 @@ async function confirmInstall(close: () => void): Promise<void> {
       await installService(s.service, v);
       toast.success(`Installed ${s.display_name} v${v}`, "Started and enabled on boot.");
     }
-    await Promise.all([load(), refresh()]);
+    await Promise.all([load({ force: true }), refresh()]);
   } catch (e) {
     const verb = mode === "change" ? "Change" : "Install";
     toast.error(`${verb} of ${s.display_name} failed`, (e as IpcError).message);
@@ -213,7 +212,7 @@ async function confirmPort(close: () => void): Promise<void> {
   try {
     await setServicePort(s.service, port);
     toast.success(`${s.display_name} port set to ${port}`, "Restart the service to apply.");
-    await load();
+    await load({ force: true });
   } catch (e) {
     toast.error(`Couldn't set ${s.display_name} port`, (e as IpcError).message);
   } finally {
@@ -266,6 +265,11 @@ function openUninstall(s: ServiceStatus): void {
   uninstallOpen.value = true;
 }
 
+/**
+ * Uninstall a service version. A retained-data notice comes back as a typed
+ * error with a message (not a hard failure), so the catch surfaces that message
+ * and still reloads the list.
+ */
 async function confirmUninstall(close: () => void): Promise<void> {
   const s = uninstallTarget.value;
   const v = uninstallVersion.value;
@@ -275,11 +279,10 @@ async function confirmUninstall(close: () => void): Promise<void> {
   try {
     await uninstallService(s.service, v, uninstallPurge.value);
     toast.success(`Uninstalled ${s.display_name} v${v}`);
-    await Promise.all([load(), refresh()]);
+    await Promise.all([load({ force: true }), refresh()]);
   } catch (e) {
-    // A retained-data notice comes back as an error code with a message; show it.
     toast.error(`Uninstall of ${s.display_name}`, (e as IpcError).message);
-    await load();
+    await load({ force: true });
   } finally {
     busy.value = null;
   }
@@ -488,7 +491,6 @@ async function copyConfig(): Promise<void> {
   }
 }
 
-onMounted(load);
 onUnmounted(stopLogPolling);
 onUnmounted(registerViewActions({ refresh: () => void load() }));
 </script>

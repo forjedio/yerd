@@ -104,6 +104,16 @@ impl Store {
         u32::try_from(inner.entries.len()).unwrap_or(u32::MAX)
     }
 
+    /// The total and unread counts, computed under one lock for a consistent
+    /// snapshot. Unread is the number of entries not yet marked read.
+    pub async fn counts(&self) -> (u32, u32) {
+        let inner = self.inner.lock().await;
+        let total = u32::try_from(inner.entries.len()).unwrap_or(u32::MAX);
+        let unread =
+            u32::try_from(inner.entries.iter().filter(|e| !e.read).count()).unwrap_or(u32::MAX);
+        (total, unread)
+    }
+
     /// Fetch one captured email's full decoded content by id, or `None` if no
     /// such id is stored.
     ///
@@ -136,6 +146,27 @@ impl Store {
         for e in drop {
             let p = self.eml_path(&e.id);
             let _ = tokio::fs::remove_file(&p).await;
+        }
+        self.write_index(&inner.entries).await
+    }
+
+    /// Mark a specific set of captured emails as read by id. Unknown ids are
+    /// ignored. Rewrites the index only when something actually changed.
+    ///
+    /// # Errors
+    /// [`MailError::Io`] / [`MailError::Index`] on a filesystem failure.
+    pub async fn mark_read(&self, ids: &[String]) -> Result<(), MailError> {
+        let mut inner = self.inner.lock().await;
+        let target: std::collections::HashSet<&str> = ids.iter().map(String::as_str).collect();
+        let mut changed = false;
+        for e in &mut inner.entries {
+            if !e.read && target.contains(e.id.as_str()) {
+                e.read = true;
+                changed = true;
+            }
+        }
+        if !changed {
+            return Ok(());
         }
         self.write_index(&inner.entries).await
     }
@@ -333,5 +364,68 @@ mod tests {
             h.await.unwrap();
         }
         assert_eq!(store.count().await, 20);
+    }
+
+    #[tokio::test]
+    async fn append_starts_unread() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path().to_path_buf()).unwrap();
+        store.append(&msg("A")).await.unwrap();
+        store.append(&msg("B")).await.unwrap();
+        assert!(store.list().await.iter().all(|e| !e.read));
+        assert_eq!(store.counts().await, (2, 2));
+    }
+
+    #[tokio::test]
+    async fn mark_read_marks_only_given_ids_and_persists() {
+        let dir = tempfile::tempdir().unwrap();
+        {
+            let store = Store::open(dir.path().to_path_buf()).unwrap();
+            store.append(&msg("a")).await.unwrap();
+            store.append(&msg("b")).await.unwrap();
+            store.append(&msg("c")).await.unwrap();
+            store
+                .mark_read(&["000000".to_string(), "000002".to_string()])
+                .await
+                .unwrap();
+        }
+        let store = Store::open(dir.path().to_path_buf()).unwrap();
+        let list = store.list().await;
+        let read: std::collections::HashMap<&str, bool> =
+            list.iter().map(|e| (e.id.as_str(), e.read)).collect();
+        assert!(read["000000"]);
+        assert!(!read["000001"]);
+        assert!(read["000002"]);
+    }
+
+    #[tokio::test]
+    async fn counts_reflects_marks() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path().to_path_buf()).unwrap();
+        for s in ["a", "b", "c"] {
+            store.append(&msg(s)).await.unwrap();
+        }
+        assert_eq!(store.counts().await, (3, 3));
+        store.mark_read(&["000001".to_string()]).await.unwrap();
+        assert_eq!(store.counts().await, (3, 2));
+    }
+
+    #[tokio::test]
+    async fn mark_read_unknown_ids_ignored() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path().to_path_buf()).unwrap();
+        store.append(&msg("a")).await.unwrap();
+        store.mark_read(&["999999".to_string()]).await.unwrap();
+        assert_eq!(store.counts().await, (1, 1));
+    }
+
+    #[tokio::test]
+    async fn mark_read_is_idempotent() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(dir.path().to_path_buf()).unwrap();
+        store.append(&msg("a")).await.unwrap();
+        store.mark_read(&["000000".to_string()]).await.unwrap();
+        store.mark_read(&["000000".to_string()]).await.unwrap();
+        assert_eq!(store.counts().await, (1, 0));
     }
 }

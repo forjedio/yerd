@@ -99,6 +99,8 @@ export interface MailStatus {
   /** Whether the SMTP listener actually bound (enabled && !listening = port busy). */
   listening: boolean;
   count: number;
+  /** Captured emails not yet marked read (absent against an older daemon). */
+  unread?: number;
 }
 
 /** crates/yerd-ipc/src/status.rs - MailSummary. */
@@ -109,6 +111,8 @@ export interface MailSummary {
   subject: string;
   /** Unix epoch seconds; 0 when the Date header was absent/unparseable. */
   date_epoch: number;
+  /** Whether the email has been marked read (absent against an older daemon). */
+  read?: boolean;
 }
 
 /** crates/yerd-ipc/src/status.rs - MailHeader. */

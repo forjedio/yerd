@@ -244,6 +244,10 @@ async fn dispatch(req: Request, state: &DaemonState) -> Response {
             Ok(()) => Response::Ok,
             Err(e) => internal(format!("mail delete failed: {e}")),
         },
+        Request::MarkMailsRead { ids } => match state.mail_store.mark_read(&ids).await {
+            Ok(()) => Response::Ok,
+            Err(e) => internal(format!("mail mark-read failed: {e}")),
+        },
         Request::SetMailPort { port } => set_mail_port(port, state).await,
         Request::SetFallbackPorts { http, https } => set_fallback_ports(http, https, state).await,
         Request::SetDnsPort { port } => set_dns_port(port, state).await,
@@ -487,6 +491,8 @@ async fn build_status_report(state: &DaemonState) -> yerd_ipc::StatusReport {
         .load_average()
         .map(|[a, b, c]| [load_to_centi(a), load_to_centi(b), load_to_centi(c)]);
 
+    let (mail_count, mail_unread) = state.mail_store.counts().await;
+
     yerd_ipc::StatusReport {
         daemon_pid: std::process::id(),
         uptime_secs: state.started_at.elapsed().as_secs(),
@@ -514,7 +520,8 @@ async fn build_status_report(state: &DaemonState) -> yerd_ipc::StatusReport {
             enabled: mail_enabled,
             port: mail_port,
             listening: state.mail.listening,
-            count: state.mail_store.count().await,
+            count: mail_count,
+            unread: mail_unread,
         }),
         web_unbound: state.web_unbound,
         dns_unbound: state.dns_unbound,
@@ -1691,20 +1698,42 @@ Subject: Captured\r\n\r\nhi\r\n";
         }
     }
 
+    async fn status_mail(state: &DaemonState) -> yerd_ipc::MailStatus {
+        match dispatch(Request::Status, state).await {
+            Response::Status { report } => report.mail.expect("status should carry mail"),
+            other => panic!("expected Status, got {other:?}"),
+        }
+    }
+
     #[tokio::test]
     async fn dispatch_status_includes_mail() {
         let tmp = tempfile::tempdir().unwrap();
         let state = state_in(tmp.path());
-        match dispatch(Request::Status, &state).await {
-            Response::Status { report } => {
-                let mail = report.mail.expect("status should carry mail");
-                assert!(mail.enabled);
-                assert_eq!(mail.port, yerd_config::DEFAULT_MAIL_PORT);
-                assert!(!mail.listening);
-                assert_eq!(mail.count, 0);
-            }
-            other => panic!("expected Status, got {other:?}"),
-        }
+
+        let empty = status_mail(&state).await;
+        assert!(empty.enabled);
+        assert_eq!(empty.port, yerd_config::DEFAULT_MAIL_PORT);
+        assert!(!empty.listening);
+        assert_eq!(empty.count, 0);
+        assert_eq!(empty.unread, 0);
+
+        state
+            .mail_store
+            .append(b"From: a@b.c\r\nTo: d@e.f\r\nSubject: Hi\r\n\r\nbody\r\n")
+            .await
+            .unwrap();
+        let seeded = status_mail(&state).await;
+        assert_eq!(seeded.count, 1);
+        assert_eq!(seeded.unread, 1);
+
+        state
+            .mail_store
+            .mark_read(&["000000".to_string()])
+            .await
+            .unwrap();
+        let read = status_mail(&state).await;
+        assert_eq!(read.count, 1);
+        assert_eq!(read.unread, 0);
     }
 
     #[tokio::test]

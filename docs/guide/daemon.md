@@ -103,7 +103,7 @@ On a Linux package install (the `.deb`'s post-install, or the Arch package's `.i
 
 ### macOS
 
-The app **bundles the daemon** and registers it as a background **`SMAppService`** agent, so it shows up as **Yerd** in System Settings → General → Login Items → Allow in the Background (attributed to the app, with its icon - not to the signing team). Manage it from **Settings → "Run the Yerd daemon in the background"** in the app; the tray's Start/Stop control the running process for the current session.
+The app **bundles the daemon** and registers it as a background **`SMAppService`** agent, so it shows up as **Yerd** in System Settings → General → Login Items → Allow in the Background (attributed to the app, with its icon - not to the signing team). Manage it from **Settings → "Run the Yerd daemon in the background"** in the app; the tray menu's Start/Stop/Restart control the running process for the current session.
 
 ::: tip First-time approval
 The first time the daemon registers, macOS may ask you to enable Yerd in Login Items. The app shows a banner with a button that takes you straight there. A LaunchAgent runs as your user, matching Yerd's rootless model.

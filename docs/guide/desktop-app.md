@@ -26,8 +26,9 @@ The GUI is a client of the [daemon](./daemon), and the daemon (`yerdd`), the `ye
 The window is something you summon, not keep open.
 
 - Closing the window hides it to the tray instead of quitting. The daemon and your sites keep running.
-- The tray menu has two items: Open Yerd (reopen the window) and Quit (exits the GUI, not the daemon).
-- On macOS, left-click the tray icon to open the window. On Linux (AppIndicator), tray clicks aren't delivered, so use Open Yerd.
+- The tray menu is a **live dropdown**, not a static list. It shows daemon status (running/stopped, with the bound HTTP/HTTPS ports) and **Restart** / **Stop** (or **Start** when stopped); an inline **Default PHP** switcher over your installed versions (a tick marks the current default, pick another to switch); **Update Yerd** / **Update PHP** when an update is waiting (otherwise **Check for updates**); shortcuts to open the **Mail** and **Dumps** viewer windows; **New Laravel site**, **Link Site**, **Park Directory**; page-navigation shortcuts; **Open Yerd**; and **Quit** (exits the GUI, not the daemon). The menu refreshes from the daemon even while the window is hidden to the tray.
+- The tray icon also carries status badges: a small red dot when a Yerd or PHP update is available, and an orange dot when there's unread captured mail.
+- On macOS, left-click the tray icon to open the menu. On Linux (AppIndicator), use the menu's **Open Yerd** to reshow the window.
 - Single-instance: launching again re-focuses the existing window.
 
 The window is borderless with a custom title bar (macOS-style traffic lights for close / minimize / zoom) and looks identical on both platforms. A status pill in the bottom-left of the sidebar shows whether the daemon is connected, unreachable, or connecting.
@@ -118,7 +119,7 @@ The database and cache engines Yerd supervises - Redis (Valkey), MySQL, MariaDB,
 
 <ThemedImage light="/images/mail-light.png" dark="/images/mail-dark.png" alt="Mail capture page" />
 
-The built-in SMTP **mail capture** server - point your app's mailer at `127.0.0.1` on the shown port and every outgoing email is captured for preview instead of being sent. Toggle capture, set the port, and open the separate **Mails** viewer with Show Mails. A **Laravel configuration** card emits the `.env` mail keys (`MAIL_HOST`, `MAIL_PORT`, …) to paste into your app, with editable From name/address. See [Mail Capture](./mail).
+The built-in SMTP **mail capture** server - point your app's mailer at `127.0.0.1` on the shown port and every outgoing email is captured for preview instead of being sent. Toggle capture, set the port, and open the separate **Mails** viewer with Show Mails. A **Laravel configuration** card emits the `.env` mail keys (`MAIL_HOST`, `MAIL_PORT`, …) to paste into your app, with editable From name/address. Captured mail is tracked read/unread: the sidebar **Mail** item shows an unread-count pill (click it to jump straight to the viewer), and opening a message marks it read. See [Mail Capture](./mail).
 
 ### Dumps
 
