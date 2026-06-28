@@ -265,6 +265,11 @@ function openUninstall(s: ServiceStatus): void {
   uninstallOpen.value = true;
 }
 
+/**
+ * Uninstall a service version. A retained-data notice comes back as a typed
+ * error with a message (not a hard failure), so the catch surfaces that message
+ * and still reloads the list.
+ */
 async function confirmUninstall(close: () => void): Promise<void> {
   const s = uninstallTarget.value;
   const v = uninstallVersion.value;
@@ -276,7 +281,6 @@ async function confirmUninstall(close: () => void): Promise<void> {
     toast.success(`Uninstalled ${s.display_name} v${v}`);
     await Promise.all([load({ force: true }), refresh()]);
   } catch (e) {
-    // A retained-data notice comes back as an error code with a message; show it.
     toast.error(`Uninstall of ${s.display_name}`, (e as IpcError).message);
     await load({ force: true });
   } finally {

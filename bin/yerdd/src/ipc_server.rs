@@ -1698,21 +1698,42 @@ Subject: Captured\r\n\r\nhi\r\n";
         }
     }
 
+    async fn status_mail(state: &DaemonState) -> yerd_ipc::MailStatus {
+        match dispatch(Request::Status, state).await {
+            Response::Status { report } => report.mail.expect("status should carry mail"),
+            other => panic!("expected Status, got {other:?}"),
+        }
+    }
+
     #[tokio::test]
     async fn dispatch_status_includes_mail() {
         let tmp = tempfile::tempdir().unwrap();
         let state = state_in(tmp.path());
-        match dispatch(Request::Status, &state).await {
-            Response::Status { report } => {
-                let mail = report.mail.expect("status should carry mail");
-                assert!(mail.enabled);
-                assert_eq!(mail.port, yerd_config::DEFAULT_MAIL_PORT);
-                assert!(!mail.listening);
-                assert_eq!(mail.count, 0);
-                assert_eq!(mail.unread, 0);
-            }
-            other => panic!("expected Status, got {other:?}"),
-        }
+
+        let empty = status_mail(&state).await;
+        assert!(empty.enabled);
+        assert_eq!(empty.port, yerd_config::DEFAULT_MAIL_PORT);
+        assert!(!empty.listening);
+        assert_eq!(empty.count, 0);
+        assert_eq!(empty.unread, 0);
+
+        state
+            .mail_store
+            .append(b"From: a@b.c\r\nTo: d@e.f\r\nSubject: Hi\r\n\r\nbody\r\n")
+            .await
+            .unwrap();
+        let seeded = status_mail(&state).await;
+        assert_eq!(seeded.count, 1);
+        assert_eq!(seeded.unread, 1);
+
+        state
+            .mail_store
+            .mark_read(&["000000".to_string()])
+            .await
+            .unwrap();
+        let read = status_mail(&state).await;
+        assert_eq!(read.count, 1);
+        assert_eq!(read.unread, 0);
     }
 
     #[tokio::test]

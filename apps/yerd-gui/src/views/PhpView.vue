@@ -356,17 +356,16 @@ async function openInstall(): Promise<void> {
 }
 
 /**
- * Install the selected PHP version with live progress. Guards against a
- * double-submit (double-click / re-opened modal) by no-opping when the same
- * install operation is already active. On success it refreshes the version list
- * AND the status poll so the new row shows its patch + "idle" state immediately
- * rather than on the next 4s tick.
+ * Install the selected PHP version with live progress. Only one PHP install runs
+ * at a time, so this no-ops while any `php-install` operation is active (covering
+ * a double-submit or a second version picked from a still-open modal). On success
+ * it refreshes the version list AND the status poll so the new row shows its
+ * patch + "idle" state immediately rather than on the next 4s tick.
  */
 async function confirmInstall(close: () => void): Promise<void> {
   const v = selectedVersion.value;
-  if (!v) return;
+  if (!v || installing.value) return;
   const opId = `php-install:${v}`;
-  if (operations.isRunning(opId)) return;
   operations.begin({ id: opId, kind: "php-install", label: `Installing PHP ${v}` });
   close();
   try {
@@ -632,7 +631,7 @@ onUnmounted(
       <template #footer="{ close }">
         <Button variant="ghost" @click="close">Cancel</Button>
         <Button
-          :disabled="!installOptions.length || !selectedVersion"
+          :disabled="!installOptions.length || !selectedVersion || installing"
           @click="confirmInstall(close)"
         >
           Install
