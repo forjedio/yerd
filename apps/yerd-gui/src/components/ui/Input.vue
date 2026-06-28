@@ -13,7 +13,6 @@ defineEmits<{ "update:modelValue": [string] }>();
 
 const el = ref<HTMLInputElement | null>(null);
 
-// Exposed so callers (e.g. the ⌘F shortcut) can move focus to the field.
 defineExpose({ focus: () => el.value?.focus() });
 </script>
 

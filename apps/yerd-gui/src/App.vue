@@ -26,8 +26,6 @@ const windowLabel = getCurrentWindow().label;
 const isDumpsWindow = windowLabel === "dumps";
 const isMailsWindow = windowLabel === "mails";
 
-// The standalone viewer windows render bare (no AppShell), so they install their
-// own scoped shortcut dispatcher here. The main window's lives in AppShell.
 if (isDumpsWindow) useShortcuts("dumps");
 else if (isMailsWindow) useShortcuts("mails");
 

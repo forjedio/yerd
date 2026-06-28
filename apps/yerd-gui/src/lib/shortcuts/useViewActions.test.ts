@@ -3,7 +3,6 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { getViewActions, registerViewActions } from "./useViewActions";
 
 afterEach(() => {
-  // Leave the module-level registry empty between tests.
   registerViewActions({})();
 });
 
@@ -25,7 +24,7 @@ describe("registerViewActions", () => {
     const disposeA = registerViewActions({ find: vi.fn() });
     const bFind = vi.fn();
     registerViewActions({ find: bFind });
-    disposeA(); // A unmounts after B mounted - must be a no-op
+    disposeA();
     getViewActions().find?.();
     expect(bFind).toHaveBeenCalledOnce();
   });

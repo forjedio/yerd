@@ -6,7 +6,11 @@
  *
  * `scopes` lists the windows a command is active in ("main" is the app shell;
  * "dumps"/"mails" are the standalone viewer windows). `linuxOnly` commands are
- * skipped on macOS, where the native app menu already owns them (Close/Quit).
+ * skipped on macOS, where the native app menu already owns them (e.g. Close).
+ *
+ * There is intentionally no Quit chord: closing the window hides it to the tray
+ * (the daemon keeps running), so a JS Quit would only duplicate Close. macOS
+ * keeps a real Cmd+Q via its native menu.
  */
 import type { Chord } from "./chord";
 import type { ViewActions } from "./useViewActions";
@@ -152,11 +156,6 @@ export function buildCommands(): Command[] {
       run: (ctx) => ctx.view().nextTab?.(),
     },
     {
-      // Linux only: macOS owns Cmd+W via the native menu. On Linux a window
-      // close hides to the tray (the daemon keeps running), matching the
-      // titlebar button. There is intentionally no "Quit" chord: the app is a
-      // tray app with no JS path to a true exit, and a Quit that merely hid
-      // would duplicate this. macOS keeps a real Cmd+Q via its native menu.
       id: "close-window",
       title: "Close window",
       group: "Window",
