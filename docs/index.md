@@ -10,8 +10,8 @@ hero:
   text: Local PHP, without the friction.
   tagline: Serve your projects on .test domains over HTTP and HTTPS, run a different PHP version per site, and manage it all from one tiny daemon. No Docker, no sudo for everyday work, no subscription.
   image:
-    src: /logo.svg
-    alt: Yerd
+    src: /images/overview-dark.png
+    alt: The Yerd desktop app
   actions:
     - theme: brand
       text: Get Started
