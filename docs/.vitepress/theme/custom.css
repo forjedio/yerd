@@ -64,9 +64,10 @@
   background: none;
   font-size: 34px;
   line-height: 1.05;
-  /* Outage Cut's caps sit high in the line box; nudge down to centre on the logo. */
+  /* Outage Cut's caps sit high in the line box and carry no descenders, so the
+   * ink centre lands above the line-box centre; nudge down to centre on the logo. */
   position: relative;
-  top: 0.07em;
+  top: 0.125em;
 }
 @media (min-width: 640px) {
   .VPHero .name {
@@ -144,9 +145,25 @@
     align-items: center;
   }
 }
+/* The screenshot card is a deliberate product-shot bleed off the page's right edge.
+ * Clip the hero horizontally so that bleed (and the row's intrinsic width at the
+ * in-between widths where the card no longer fits) never adds a horizontal scrollbar
+ * to the page - the shot just runs off the edge instead of stretching the layout. */
+.VPHero {
+  overflow-x: clip;
+}
 .VPHero .image {
   flex: 0 0 auto;
   margin: 0 0 0 auto;
+}
+/* Pad the right of the text column so its long tagline lines wrap earlier and keep
+ * clear breathing room from the screenshot card instead of running right up to it.
+ * Padding (not a narrower max-width) leaves the column box - and so the card's
+ * position - untouched, avoiding the scoped-style specificity fight over max-width. */
+@media (min-width: 960px) {
+  .VPHero .main {
+    padding-right: 3rem;
+  }
 }
 .VPHero .image-container {
   display: block;
@@ -187,8 +204,20 @@ html:not(.dark) .VPHero .hero-shot--dark {
   display: none;
 }
 @media (max-width: 959px) {
+  /* Lead with the brand and pitch, not the screenshot: on mobile the stacked order
+   * should read text -> shot, not shot -> text (the VPHero default puts the image on
+   * top). The card also goes full-width here rather than bleeding off the edge. */
+  .VPHero .main {
+    order: 0;
+  }
+  /* The narrow mobile hero centres its headline and tagline, so centre the logo +
+   * wordmark lockup with them (it's a flex row, so text-align can't). */
+  .VPHero .hero-brand {
+    justify-content: center;
+  }
   .VPHero .image {
-    margin: 0;
+    order: 1;
+    margin: 2.5rem 0 0;
   }
   .VPHero .image-container {
     width: 100%;
