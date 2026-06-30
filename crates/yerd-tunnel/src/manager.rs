@@ -37,6 +37,22 @@ use crate::TunnelKind;
 /// Floor between readiness checks while a tunnel is connecting.
 const READINESS_GAP: Duration = Duration::from_millis(150);
 
+/// Everything needed to spawn one supervised `cloudflared` child: the binary,
+/// its argument vector, the pinned environment, and the logfile its output is
+/// redirected to. Passed to [`TunnelManager::begin`].
+#[derive(Debug, Clone)]
+pub struct LaunchSpec {
+    /// Path to the `cloudflared` binary.
+    pub binary: PathBuf,
+    /// Argument vector (excluding the program name).
+    pub args: Vec<OsString>,
+    /// Environment pinned on every spawn (e.g. `HOME`, `TUNNEL_ORIGIN_CERT`).
+    pub env: Vec<(OsString, OsString)>,
+    /// Logfile the child's stdout+stderr are redirected to (and tailed for
+    /// readiness).
+    pub logfile: PathBuf,
+}
+
 /// What the caller should do after one [`TunnelManager::advance`] tick.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Step {
@@ -87,9 +103,17 @@ struct Instance<Ch: ChildHandle> {
     kind: TunnelKind,
     binary: PathBuf,
     args: Vec<OsString>,
+    /// Environment pinned on every spawn of this child (e.g. `HOME`,
+    /// `TUNNEL_ORIGIN_CERT`), so `cloudflared` never resolves against the real
+    /// user's home or writes secrets outside the daemon-owned dir.
+    env: Vec<(OsString, OsString)>,
     logfile: PathBuf,
     url: Option<String>,
     hostname: Option<String>,
+    /// Set when the child was killed for missing its readiness window, so a
+    /// terminal failure can be reported as a readiness timeout rather than an
+    /// opaque permanent failure.
+    timed_out: bool,
     child: Option<Ch>,
 }
 
@@ -133,9 +157,7 @@ where
     pub async fn begin(
         &mut self,
         site: &str,
-        binary: &Path,
-        args: Vec<OsString>,
-        logfile: PathBuf,
+        spec: LaunchSpec,
         kind: TunnelKind,
         hostname: Option<String>,
     ) -> Result<bool, TunnelError> {
@@ -152,7 +174,7 @@ where
                 return Ok(false);
             }
         }
-        if let Some(parent) = logfile.parent() {
+        if let Some(parent) = spec.logfile.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
         let now = self.clock.now();
@@ -163,11 +185,13 @@ where
                 state_since: now,
                 pending: Event::EnsureRequested,
                 kind,
-                binary: binary.to_path_buf(),
-                args,
-                logfile,
+                binary: spec.binary,
+                args: spec.args,
+                env: spec.env,
+                logfile: spec.logfile,
                 url: None,
                 hostname,
+                timed_out: false,
                 child: None,
             },
         );
@@ -220,6 +244,13 @@ where
                     site: site.to_owned(),
                 })
             }
+            Action::EmitError(ErrorTag::PermanentFailure)
+                if self.instances.get(site).is_some_and(|i| i.timed_out) =>
+            {
+                Err(TunnelError::ReadinessTimedOut {
+                    site: site.to_owned(),
+                })
+            }
             Action::EmitError(ErrorTag::PermanentFailure) => Err(TunnelError::PermanentFailure {
                 site: site.to_owned(),
                 last_exit: failed_reason(next),
@@ -229,14 +260,17 @@ where
 
     /// `Action::Spawn`: build + spawn the child, record it, advance to readiness.
     fn do_spawn(&mut self, site: &str) -> Result<Step, TunnelError> {
-        let Some((binary, args, logfile)) = self
-            .instances
-            .get(site)
-            .map(|i| (i.binary.clone(), i.args.clone(), i.logfile.clone()))
-        else {
+        let Some((binary, args, env, logfile)) = self.instances.get(site).map(|i| {
+            (
+                i.binary.clone(),
+                i.args.clone(),
+                i.env.clone(),
+                i.logfile.clone(),
+            )
+        }) else {
             return Ok(Step::Gone);
         };
-        let cmd = build_cmd(&binary, &args, &logfile)?;
+        let cmd = build_cmd(&binary, &args, &env, &logfile)?;
         let child = self.spawner.spawn(cmd).map_err(TunnelError::Spawn)?;
         let pid = child.id();
         if let Some(i) = self.instances.get_mut(site) {
@@ -311,6 +345,7 @@ where
         }
         if let Some(i) = self.instances.get_mut(site) {
             i.child = None;
+            i.timed_out = true;
             i.pending = Event::Crashed {
                 reason: ExitReason::Unknown,
             };
@@ -403,20 +438,32 @@ async fn graceful_reap<Ch: ChildHandle>(child: &mut Ch, grace: Duration) {
     }
 }
 
-/// Build the `cloudflared` command, redirecting stdout+stderr to a freshly
-/// truncated logfile (so a stale URL from a prior run is not re-parsed) and, on
-/// Unix, putting the child in its own process group so the supervisor's `killpg`
-/// reaps it cleanly.
-fn build_cmd(binary: &Path, args: &[OsString], logfile: &Path) -> Result<StdCommand, TunnelError> {
-    let f = std::fs::OpenOptions::new()
-        .create(true)
-        .write(true)
-        .truncate(true)
-        .open(logfile)
-        .map_err(TunnelError::Io)?;
+/// Build the `cloudflared` command, applying the pinned `env`, redirecting
+/// stdout+stderr to a freshly truncated logfile (so a stale URL from a prior run
+/// is not re-parsed) and, on Unix, putting the child in its own process group so
+/// the supervisor's `killpg` reaps it cleanly. The logfile is opened `0600` on
+/// Unix: a Quick tunnel's only access control is its unguessable URL, which is
+/// captured here, and a Named tunnel's log carries connection metadata.
+fn build_cmd(
+    binary: &Path,
+    args: &[OsString],
+    env: &[(OsString, OsString)],
+    logfile: &Path,
+) -> Result<StdCommand, TunnelError> {
+    let mut opts = std::fs::OpenOptions::new();
+    opts.create(true).write(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        opts.mode(0o600);
+    }
+    let f = opts.open(logfile).map_err(TunnelError::Io)?;
     let f2 = f.try_clone().map_err(TunnelError::Io)?;
     let mut cmd = StdCommand::new(binary);
     cmd.args(args);
+    for (k, v) in env {
+        cmd.env(k, v);
+    }
     cmd.stdout(Stdio::from(f2));
     cmd.stderr(Stdio::from(f));
     #[cfg(unix)]
@@ -543,9 +590,12 @@ mod tests {
         let started = mgr
             .begin(
                 "app",
-                Path::new("/usr/bin/cloudflared"),
-                vec![],
-                logfile,
+                LaunchSpec {
+                    binary: Path::new("/usr/bin/cloudflared").to_path_buf(),
+                    args: vec![],
+                    env: vec![],
+                    logfile,
+                },
                 TunnelKind::Quick,
                 None,
             )
@@ -569,9 +619,12 @@ mod tests {
         let again = mgr
             .begin(
                 "app",
-                Path::new("/usr/bin/cloudflared"),
-                vec![],
-                tmp.path().join("app.log"),
+                LaunchSpec {
+                    binary: Path::new("/usr/bin/cloudflared").to_path_buf(),
+                    args: vec![],
+                    env: vec![],
+                    logfile: tmp.path().join("app.log"),
+                },
                 TunnelKind::Quick,
                 None,
             )
@@ -593,9 +646,12 @@ mod tests {
         let mut mgr = TunnelManager::new(spawner, FakeClock);
         mgr.begin(
             "blog",
-            Path::new("/cf"),
-            vec![],
-            logfile,
+            LaunchSpec {
+                binary: Path::new("/cf").to_path_buf(),
+                args: vec![],
+                env: vec![],
+                logfile,
+            },
             TunnelKind::Quick,
             None,
         )
@@ -623,9 +679,12 @@ mod tests {
         let mut mgr = TunnelManager::new(spawner, FakeClock);
         mgr.begin(
             "shop",
-            Path::new("/cf"),
-            vec![],
-            logfile,
+            LaunchSpec {
+                binary: Path::new("/cf").to_path_buf(),
+                args: vec![],
+                env: vec![],
+                logfile,
+            },
             TunnelKind::Named,
             Some("shop.example.com".to_string()),
         )

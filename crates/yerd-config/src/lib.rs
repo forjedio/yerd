@@ -24,7 +24,8 @@ mod serialize;
 pub use error::{ConfigError, MigrationErrorReason, ValidateErrorReason};
 pub use schema::{
     Config, DumpsSection, MailSection, ParkedSection, PhpSection, Ports, ServiceInstance,
-    ServicesSection, SiteOverride, DEFAULT_DNS_PORT, DEFAULT_DUMP_PORT, DEFAULT_MAIL_PORT,
+    ServicesSection, SiteOverride, TunnelSection, DEFAULT_DNS_PORT, DEFAULT_DUMP_PORT,
+    DEFAULT_MAIL_PORT,
 };
 
 /// The on-disk schema version this crate writes. Bumped together with a new
@@ -49,8 +50,9 @@ pub use schema::{
 /// mail-capture SMTP server. v5 added the optional `[dumps]` table
 /// ([`DumpsSection`]). v6 added the top-level `update_channel` scalar
 /// ([`Config::update_channel`]). v7 added the `[ports] fallback_http`/
-/// `fallback_https` keys ([`Ports`]). All default when absent, so the v3→v4,
-/// v4→v5, v5→v6, and v6→v7 migrations are bare version bumps; each bump exists so
-/// an *older* binary rejects a file using the newer field cleanly as
+/// `fallback_https` keys ([`Ports`]). v8 added the optional `[tunnel]` table
+/// ([`TunnelSection`]). All default when absent, so the v3→v4, v4→v5, v5→v6,
+/// v6→v7, and v7→v8 migrations are bare version bumps; each bump exists so an
+/// *older* binary rejects a file using the newer field cleanly as
 /// [`ConfigError::UnsupportedVersion`] rather than failing on the unknown key.
-pub const CURRENT_VERSION: u32 = 7;
+pub const CURRENT_VERSION: u32 = 8;

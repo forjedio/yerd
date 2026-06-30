@@ -293,6 +293,37 @@ pub enum TunnelAction {
     },
     /// Show live tunnels and `cloudflared` install status.
     Status,
+    /// Log in to a Cloudflare account (opens a browser) for Named Tunnels.
+    Login,
+    /// Create a named tunnel on the logged-in account.
+    Create {
+        /// The tunnel name to create.
+        name: String,
+    },
+    /// List the named tunnels recorded locally.
+    List,
+    /// Route a public hostname to a named tunnel (creates the DNS record).
+    Route {
+        /// Tunnel name (or UUID) to route to.
+        tunnel: String,
+        /// Public hostname to create (on your Cloudflare domain).
+        hostname: String,
+    },
+    /// Set (or clear, with `--clear`) a site's persisted public hostname.
+    SetHost {
+        /// Site name.
+        site: String,
+        /// The public hostname to assign. Omit with `--clear` to remove it.
+        hostname: Option<String>,
+        /// Clear the site's hostname instead of setting one.
+        #[arg(long)]
+        clear: bool,
+    },
+    /// (Re)start the named tunnel, exposing every site that has a hostname set.
+    /// Requires login and a created tunnel.
+    Publish,
+    /// Stop the named tunnel (takes every named site offline).
+    Unpublish,
 }
 
 /// Action of `yerd db`.

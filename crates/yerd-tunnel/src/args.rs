@@ -21,6 +21,7 @@ use crate::origin::OriginTarget;
 pub fn quick_tunnel_args(origin: &OriginTarget) -> Vec<OsString> {
     let mut args: Vec<OsString> = vec![
         "tunnel".into(),
+        "--no-autoupdate".into(),
         "--url".into(),
         origin.url().into(),
         "--http-host-header".into(),
@@ -40,6 +41,7 @@ pub fn quick_tunnel_args(origin: &OriginTarget) -> Vec<OsString> {
 #[must_use]
 pub fn named_run_args(config_path: &Path, origincert: &Path) -> Vec<OsString> {
     vec![
+        "--no-autoupdate".into(),
         "--origincert".into(),
         origincert.as_os_str().to_os_string(),
         "--config".into(),
@@ -138,8 +140,9 @@ mod tests {
         let origin = OriginTarget::for_site("app", "test", true, 8080, 8443);
         let args = strings(&quick_tunnel_args(&origin));
         assert_eq!(args[0], "tunnel");
-        assert_eq!(args[1], "--url");
-        assert_eq!(args[2], "https://127.0.0.1:8443");
+        assert!(args.iter().any(|a| a == "--no-autoupdate"));
+        assert!(args.iter().any(|a| a == "--url"));
+        assert!(args.contains(&"https://127.0.0.1:8443".to_string()));
         assert!(args.iter().any(|a| a == "--http-host-header"));
         assert!(args.contains(&"app.test".to_string()));
         assert!(args.iter().any(|a| a == "--origin-server-name"));
@@ -150,7 +153,8 @@ mod tests {
     fn quick_non_secure_omits_tls_flags() {
         let origin = OriginTarget::for_site("blog", "test", false, 8080, 8443);
         let args = strings(&quick_tunnel_args(&origin));
-        assert_eq!(args[2], "http://127.0.0.1:8080");
+        assert!(args.contains(&"http://127.0.0.1:8080".to_string()));
+        assert!(args.iter().any(|a| a == "--no-autoupdate"));
         assert!(!args.iter().any(|a| a == "--origin-server-name"));
         assert!(!args.iter().any(|a| a == "--no-tls-verify"));
         assert!(args.iter().any(|a| a == "--http-host-header"));
@@ -165,6 +169,7 @@ mod tests {
         assert_eq!(
             args,
             vec![
+                "--no-autoupdate",
                 "--origincert",
                 "/t/cert.pem",
                 "--config",

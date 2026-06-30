@@ -439,6 +439,44 @@ pub enum Request {
     /// Fetch the live tunnel state plus `cloudflared` install status. Returns
     /// [`super::Response::Tunnels`].
     TunnelStatus,
+    /// Run the interactive Cloudflare account login (`cloudflared tunnel login`)
+    /// as a streamed background job. The job log carries the one-time auth URL
+    /// line for the GUI to open. Replies [`super::Response::JobStarted`]. Named
+    /// Tunnels (Phase 2).
+    CloudflaredLogin,
+    /// Create a named tunnel on the logged-in account, recording its UUID.
+    /// Replies [`super::Response::Ok`] (or `Error`). Requires a prior login.
+    CreateNamedTunnel {
+        /// The tunnel name to create.
+        name: String,
+    },
+    /// List the named tunnels recorded locally. Returns
+    /// [`super::Response::NamedTunnels`].
+    ListNamedTunnels,
+    /// Route a DNS hostname to a named tunnel (`cloudflared tunnel route dns`),
+    /// creating the proxied CNAME on the user's Cloudflare zone. Account- and
+    /// DNS-mutating; replies [`super::Response::Ok`].
+    RouteTunnelDns {
+        /// The tunnel name (or UUID) to route to.
+        tunnel: String,
+        /// The public hostname to create.
+        hostname: String,
+    },
+    /// Set or clear a site's persisted public hostname (the named-tunnel
+    /// mapping). Setting a hostname enables the site in the named tunnel;
+    /// `None` removes (disables) it. Replies [`super::Response::Ok`].
+    SetSiteTunnel {
+        /// The site name.
+        site: String,
+        /// The public hostname, or `None` to remove the mapping.
+        hostname: Option<String>,
+    },
+    /// (Re)start the single consolidated Named Tunnel serving every enabled site
+    /// (one process, one config with one ingress rule per site). Returns
+    /// [`super::Response::Tunnels`].
+    StartNamedTunnel,
+    /// Stop the consolidated Named Tunnel. Returns [`super::Response::Tunnels`].
+    StopNamedTunnel,
 }
 
 #[cfg(test)]
@@ -531,6 +569,13 @@ mod variant_name_pinning {
             Request::StartQuickTunnel { .. } => {}
             Request::StopTunnel { .. } => {}
             Request::TunnelStatus => {}
+            Request::CloudflaredLogin => {}
+            Request::CreateNamedTunnel { .. } => {}
+            Request::ListNamedTunnels => {}
+            Request::RouteTunnelDns { .. } => {}
+            Request::SetSiteTunnel { .. } => {}
+            Request::StartNamedTunnel => {}
+            Request::StopNamedTunnel => {}
         }
     }
 
@@ -709,6 +754,21 @@ mod variant_name_pinning {
         pin(Request::StartQuickTunnel { site: "app".into() });
         pin(Request::StopTunnel { site: "app".into() });
         pin(Request::TunnelStatus);
+        pin(Request::CloudflaredLogin);
+        pin(Request::CreateNamedTunnel {
+            name: "mysite".into(),
+        });
+        pin(Request::ListNamedTunnels);
+        pin(Request::RouteTunnelDns {
+            tunnel: "mysite".into(),
+            hostname: "app.example.com".into(),
+        });
+        pin(Request::SetSiteTunnel {
+            site: "app".into(),
+            hostname: Some("app.example.com".into()),
+        });
+        pin(Request::StartNamedTunnel);
+        pin(Request::StopNamedTunnel);
     }
 
     fn laravel_options_fixture() -> crate::LaravelOptions {

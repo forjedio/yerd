@@ -236,14 +236,32 @@ fn service_request(action: &ServiceAction) -> Request {
     }
 }
 
-/// Map a `yerd tunnel <action>` to its wire request. `Install` is a streamed job
-/// the CLI intercepts before this point; mapping it here keeps the match total.
+/// Map a `yerd tunnel <action>` to its wire request. `Install` and `Login` are
+/// streamed jobs the CLI intercepts before this point; mapping them here keeps
+/// the match total.
 fn tunnel_request(action: &TunnelAction) -> Request {
     match action {
         TunnelAction::Install => Request::InstallCloudflaredStreamed,
         TunnelAction::Share { site } => Request::StartQuickTunnel { site: site.clone() },
         TunnelAction::Stop { site } => Request::StopTunnel { site: site.clone() },
         TunnelAction::Status => Request::TunnelStatus,
+        TunnelAction::Login => Request::CloudflaredLogin,
+        TunnelAction::Create { name } => Request::CreateNamedTunnel { name: name.clone() },
+        TunnelAction::List => Request::ListNamedTunnels,
+        TunnelAction::Route { tunnel, hostname } => Request::RouteTunnelDns {
+            tunnel: tunnel.clone(),
+            hostname: hostname.clone(),
+        },
+        TunnelAction::SetHost {
+            site,
+            hostname,
+            clear,
+        } => Request::SetSiteTunnel {
+            site: site.clone(),
+            hostname: if *clear { None } else { hostname.clone() },
+        },
+        TunnelAction::Publish => Request::StartNamedTunnel,
+        TunnelAction::Unpublish => Request::StopNamedTunnel,
     }
 }
 
@@ -464,6 +482,9 @@ pub fn render(resp: &Response, json: bool) -> Rendered {
             tunnels,
             cloudflared,
         } => Rendered::ok(format_tunnels(tunnels, cloudflared)),
+        Response::NamedTunnels { tunnels, sites } => {
+            Rendered::ok(format_named_tunnels(tunnels, sites))
+        }
         Response::UpdateStatus {
             current,
             latest_stable,
@@ -662,6 +683,28 @@ fn format_tunnels(tunnels: &[TunnelInfo], cloudflared: &CloudflaredStatus) -> St
         };
         let target = t.url.as_deref().or(t.hostname.as_deref()).unwrap_or("-");
         let _ = write!(out, "\n{}\t{}\t{}", t.site, state, target);
+    }
+    out
+}
+
+fn format_named_tunnels(
+    tunnels: &[yerd_ipc::NamedTunnelMeta],
+    sites: &[yerd_ipc::SiteHostname],
+) -> String {
+    let mut out = if tunnels.is_empty() {
+        "no named tunnels".to_owned()
+    } else {
+        let mut s = String::from("NAME\tUUID");
+        for t in tunnels {
+            let _ = write!(s, "\n{}\t{}", t.name, t.uuid);
+        }
+        s
+    };
+    if !sites.is_empty() {
+        out.push_str("\n\nEXPOSED SITE\tHOSTNAME");
+        for s in sites {
+            let _ = write!(out, "\n{}\t{}", s.site, s.hostname);
+        }
     }
     out
 }

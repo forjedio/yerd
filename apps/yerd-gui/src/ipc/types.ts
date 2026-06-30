@@ -445,6 +445,11 @@ export type Response =
       type: "tunnels";
       tunnels: TunnelInfo[];
       cloudflared: CloudflaredStatus;
+    }
+  | {
+      type: "named_tunnels";
+      tunnels: NamedTunnelMeta[];
+      sites: SiteHostname[];
     };
 
 /** Self-update release channel (mirrors `yerd_ipc::Channel`). */
@@ -498,6 +503,18 @@ export interface CloudflaredStatus {
   logged_in: boolean;
 }
 
+/** crates/yerd-ipc/src/status.rs - NamedTunnelMeta. */
+export interface NamedTunnelMeta {
+  name: string;
+  uuid: string;
+}
+
+/** crates/yerd-ipc/src/status.rs - SiteHostname (a site enabled in the named tunnel). */
+export interface SiteHostname {
+  site: string;
+  hostname: string;
+}
+
 // Narrowed aliases for the variants the views actually read.
 export type InfoResponse = Extract<Response, { type: "info" }>;
 export type SitesResponse = Extract<Response, { type: "sites" }>;
@@ -518,6 +535,7 @@ export type MailResponse = Extract<Response, { type: "mail" }>;
 export type JobStartedResponse = Extract<Response, { type: "job_started" }>;
 export type JobProgressResponse = Extract<Response, { type: "job_progress" }>;
 export type TunnelsResponse = Extract<Response, { type: "tunnels" }>;
+export type NamedTunnelsResponse = Extract<Response, { type: "named_tunnels" }>;
 
 /** Privilege targets for the OS-elevated `yerd elevate` host command. */
 export type ElevateTarget = "trust" | "resolver" | "ports";

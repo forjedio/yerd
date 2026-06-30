@@ -13,7 +13,8 @@ use yerd_core::{PhpVersion, Site};
 use crate::dump::{DumpCounts, DumpEvent, DumpExtStatus};
 use crate::status::{
     CloudflaredStatus, DatabaseSummary, Diagnosis, FixReport, MailDetail, MailSummary,
-    ServiceAvailability, ServiceStatus, StatusReport, ToolStatus, TunnelInfo,
+    NamedTunnelMeta, ServiceAvailability, ServiceStatus, SiteHostname, StatusReport, ToolStatus,
+    TunnelInfo,
 };
 
 // Same rule: no per-field serde renames.
@@ -276,6 +277,15 @@ pub enum Response {
         /// `cloudflared` install / account status.
         cloudflared: CloudflaredStatus,
     },
+    /// Reply to [`crate::Request::ListNamedTunnels`] - the account's named
+    /// tunnels recorded locally, plus the per-site hostname mappings that are
+    /// enabled in the consolidated tunnel.
+    NamedTunnels {
+        /// One entry per named tunnel.
+        tunnels: Vec<NamedTunnelMeta>,
+        /// The sites enabled in the named tunnel (site → hostname).
+        sites: Vec<SiteHostname>,
+    },
 }
 
 /// An available newer patch for an installed PHP minor.
@@ -355,6 +365,7 @@ mod variant_name_pinning {
             Response::UpdateStatus { .. } => {}
             Response::Staged { .. } => {}
             Response::Tunnels { .. } => {}
+            Response::NamedTunnels { .. } => {}
         }
     }
 
@@ -552,6 +563,16 @@ mod variant_name_pinning {
                 version: Some("2026.6.1".into()),
                 logged_in: false,
             },
+        });
+        pin_response(Response::NamedTunnels {
+            tunnels: vec![crate::status::NamedTunnelMeta {
+                name: "mysite".into(),
+                uuid: "uuid-123".into(),
+            }],
+            sites: vec![crate::status::SiteHostname {
+                site: "app".into(),
+                hostname: "app.example.com".into(),
+            }],
         });
         for c in [
             ErrorCode::NotFound,

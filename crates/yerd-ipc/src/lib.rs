@@ -49,9 +49,9 @@ pub use request::Request;
 pub use response::{ErrorCode, PhpUpdate, Response};
 pub use status::{
     CaStatus, CloudflaredStatus, DatabaseSummary, Diagnosis, DiagnosisCode, FixReport, FixResult,
-    MailDetail, MailHeader, MailStatus, MailSummary, PhpPoolStatus, PoolRunState, PortStatus,
-    ServiceAvailability, ServiceRunState, ServiceStatus, Severity, SiteCounts, StatusReport,
-    ToolStatus, TunnelInfo, TunnelKind, TunnelRunState, UnboundWeb,
+    MailDetail, MailHeader, MailStatus, MailSummary, NamedTunnelMeta, PhpPoolStatus, PoolRunState,
+    PortStatus, ServiceAvailability, ServiceRunState, ServiceStatus, Severity, SiteCounts,
+    SiteHostname, StatusReport, ToolStatus, TunnelInfo, TunnelKind, TunnelRunState, UnboundWeb,
 };
 pub use update::{Channel, StagedArtifact, UpdateSource};
 

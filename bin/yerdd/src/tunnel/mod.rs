@@ -9,6 +9,7 @@
 //! `tunnel_mutate` only.
 
 pub mod install;
+pub mod named;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -38,18 +39,17 @@ pub fn new_manager() -> DaemonTunnelManager {
 
 /// `{state}/tunnel/<site>.log`, where a tunnel's `cloudflared` output is
 /// captured for readiness parsing and `yerd tunnel logs`.
-fn logfile(dirs: &PlatformDirs, site: &str) -> PathBuf {
+pub(super) fn logfile(dirs: &PlatformDirs, site: &str) -> PathBuf {
     dirs.state.join("tunnel").join(format!("{site}.log"))
 }
 
-/// `cloudflared` install + account status for the wire. `logged_in` is always
-/// false until Named Tunnels (Phase 2) add account login.
+/// `cloudflared` install + account status for the wire.
 #[must_use]
 pub fn cloudflared_status(dirs: &PlatformDirs) -> CloudflaredStatus {
     CloudflaredStatus {
         installed: install::is_installed(dirs),
         version: install::installed_version(dirs),
-        logged_in: false,
+        logged_in: named::is_logged_in(dirs),
     }
 }
 
@@ -67,17 +67,7 @@ pub async fn start_quick_tunnel(site: &str, state: &DaemonState) -> Response {
         };
     }
 
-    let resolved = {
-        let router = state.router.read().await;
-        router.resolve(site).or_else(|| router.get(site)).map(|s| {
-            (
-                s.name().to_owned(),
-                s.secure(),
-                router.config().tld().to_owned(),
-            )
-        })
-    };
-    let Some((name, secure, tld)) = resolved else {
+    let Some((name, secure, tld)) = resolve_site(state, site).await else {
         return Response::Error {
             code: ErrorCode::NotFound,
             message: format!("no site named {site:?}"),
@@ -86,13 +76,78 @@ pub async fn start_quick_tunnel(site: &str, state: &DaemonState) -> Response {
 
     let origin = OriginTarget::for_site(&name, &tld, secure, state.http.bound, state.https.bound);
     let args = yerd_tunnel::args::quick_tunnel_args(&origin);
-    let binary = install::binary_path(&state.dirs);
-    let logfile = logfile(&state.dirs, &name);
+    run_to_ready(
+        state,
+        &name,
+        args,
+        pinned_home_env(state),
+        TunnelKind::Quick,
+        None,
+    )
+    .await
+}
 
+/// The minimal pinned environment for a `cloudflared` subprocess: `HOME` points
+/// at the daemon-owned `{data}/tunnel` dir so `cloudflared` never reads or writes
+/// `~/.cloudflared`. Named runs add `TUNNEL_ORIGIN_CERT` on top of this.
+pub(super) fn pinned_home_env(
+    state: &DaemonState,
+) -> Vec<(std::ffi::OsString, std::ffi::OsString)> {
+    vec![(
+        "HOME".into(),
+        install::tunnel_dir(&state.dirs).into_os_string(),
+    )]
+}
+
+/// Resolve a site by name or `.test` host to its `(name, secure, tld)`, reading
+/// the router under a brief lock that is released before the caller takes any
+/// other lock.
+pub(super) async fn resolve_site(
+    state: &DaemonState,
+    site: &str,
+) -> Option<(String, bool, String)> {
+    let router = state.router.read().await;
+    router.resolve(site).or_else(|| router.get(site)).map(|s| {
+        (
+            s.name().to_owned(),
+            s.secure(),
+            router.config().tld().to_owned(),
+        )
+    })
+}
+
+/// Register + spawn a tunnel for `name` under a brief manager lock, then drive
+/// readiness with the lock released between ticks (see [`yerd_tunnel`]'s tick
+/// model). Shared by the Quick and Named start paths. Returns the live
+/// `Response::Tunnels` on readiness, or a `Response::Error` on failure.
+pub(super) async fn run_to_ready(
+    state: &DaemonState,
+    name: &str,
+    args: Vec<std::ffi::OsString>,
+    env: Vec<(std::ffi::OsString, std::ffi::OsString)>,
+    kind: TunnelKind,
+    hostname: Option<String>,
+) -> Response {
+    let binary = install::binary_path(&state.dirs);
+    let logfile = logfile(&state.dirs, name);
+    if let Some(parent) = logfile.parent() {
+        if let Err(e) = crate::secure_fs::create_private_dir(parent) {
+            return Response::Error {
+                code: ErrorCode::Internal,
+                message: format!("could not prepare tunnel log dir: {e}"),
+            };
+        }
+    }
+
+    let spec = yerd_tunnel::LaunchSpec {
+        binary,
+        args,
+        env,
+        logfile,
+    };
     let started = {
         let mut mgr = state.tunnel_manager.lock().await;
-        mgr.begin(&name, &binary, args, logfile, TunnelKind::Quick, None)
-            .await
+        mgr.begin(name, spec, kind, hostname).await
     };
     match started {
         Ok(false) => return tunnels_response(state).await,
@@ -108,14 +163,14 @@ pub async fn start_quick_tunnel(site: &str, state: &DaemonState) -> Response {
     loop {
         let step = {
             let mut mgr = state.tunnel_manager.lock().await;
-            mgr.advance(&name).await
+            mgr.advance(name).await
         };
         match step {
             Ok(Step::Continue) => {}
             Ok(Step::Sleep(d)) => tokio::time::sleep(d).await,
             Ok(Step::Ready | Step::Gone) => return tunnels_response(state).await,
             Err(e) => {
-                let _ = state.tunnel_manager.lock().await.stop(&name).await;
+                let _ = state.tunnel_manager.lock().await.stop(name).await;
                 return Response::Error {
                     code: ErrorCode::Internal,
                     message: format!("could not start tunnel for {name}: {e}"),
@@ -145,7 +200,7 @@ pub async fn tunnel_status(state: &DaemonState) -> Response {
 }
 
 /// Shared `Response::Tunnels` builder.
-async fn tunnels_response(state: &DaemonState) -> Response {
+pub(super) async fn tunnels_response(state: &DaemonState) -> Response {
     let tunnels = {
         let mut mgr = state.tunnel_manager.lock().await;
         mgr.snapshots().into_iter().map(to_wire).collect()

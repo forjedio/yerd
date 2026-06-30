@@ -46,7 +46,12 @@ pub async fn run(cli: Cli) -> ExitCode {
         } if !cli.json => return stream_install_tool(id, cli.json).await,
         Command::Tunnel {
             action: crate::cli::TunnelAction::Install,
-        } if !cli.json => return stream_install_cloudflared().await,
+        } if !cli.json => {
+            return stream_tunnel_job(yerd_ipc::Request::InstallCloudflaredStreamed).await
+        }
+        Command::Tunnel {
+            action: crate::cli::TunnelAction::Login,
+        } if !cli.json => return stream_tunnel_job(yerd_ipc::Request::CloudflaredLogin).await,
         Command::Update {
             target: None,
             yes: true,
@@ -356,13 +361,14 @@ async fn stream_install_tool(id: &str, json: bool) -> ExitCode {
     }
 }
 
-/// `yerd tunnel install` - download `cloudflared` as a streamed job, printing
-/// progress lines as they arrive. Mirrors [`stream_install_tool`].
-async fn stream_install_cloudflared() -> ExitCode {
+/// Run a streamed tunnel job (`cloudflared` install or account login), printing
+/// progress lines (including the login auth URL) as they arrive. Mirrors
+/// [`stream_install_tool`].
+async fn stream_tunnel_job(req: yerd_ipc::Request) -> ExitCode {
     use std::time::Duration;
     use yerd_ipc::{JobState, Request, Response};
 
-    let job_id = match transport::exchange(&Request::InstallCloudflaredStreamed).await {
+    let job_id = match transport::exchange(&req).await {
         Ok(Response::JobStarted { job_id }) => job_id,
         Ok(Response::Error { message, .. }) => {
             eprintln!("yerd: {message}");

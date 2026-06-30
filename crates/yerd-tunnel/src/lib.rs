@@ -19,8 +19,9 @@ pub mod manager;
 pub mod origin;
 pub mod parse;
 
+pub use config::IngressRule;
 pub use error::TunnelError;
-pub use manager::{Step, TunnelManager, TunnelSnapshot, TunnelState};
+pub use manager::{LaunchSpec, Step, TunnelManager, TunnelSnapshot, TunnelState};
 pub use origin::{OriginTarget, Scheme};
 
 /// Which tunnel tier a supervised `cloudflared` instance is serving.

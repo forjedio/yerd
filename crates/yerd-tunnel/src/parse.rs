@@ -32,6 +32,29 @@ pub fn is_named_ready(line: &str) -> bool {
     MARKERS.iter().any(|m| line.contains(m))
 }
 
+/// Extract the first UUID (`8-4-4-4-12` lowercase hex) from text, e.g. the id
+/// `cloudflared tunnel create` prints ("Created tunnel NAME with id <uuid>").
+#[must_use]
+pub fn find_tunnel_id(text: &str) -> Option<String> {
+    split_tokens(text)
+        .map(|t| t.trim_matches(|c: char| !c.is_ascii_alphanumeric() && c != '-'))
+        .find(|t| is_uuid(t))
+        .map(str::to_owned)
+}
+
+/// Whether `s` is a canonical `8-4-4-4-12` hex UUID.
+fn is_uuid(s: &str) -> bool {
+    let groups = [8usize, 4, 4, 4, 12];
+    let mut parts = s.split('-');
+    for &len in &groups {
+        match parts.next() {
+            Some(p) if p.len() == len && p.bytes().all(|b| b.is_ascii_hexdigit()) => {}
+            _ => return false,
+        }
+    }
+    parts.next().is_none()
+}
+
 /// Split a chunk into candidate tokens on whitespace and the box-drawing /
 /// quoting characters `cloudflared`'s banner wraps URLs in.
 fn split_tokens(chunk: &str) -> impl Iterator<Item = &str> {
@@ -123,5 +146,22 @@ mod tests {
     #[test]
     fn login_url_absent_yields_none() {
         assert_eq!(find_auth_url("INF waiting for login"), None);
+    }
+
+    #[test]
+    fn finds_tunnel_id_from_create_output() {
+        let out = "Created tunnel mysite with id 6ff42ae2-765d-4adf-8112-31c55c1551ef\n";
+        assert_eq!(
+            find_tunnel_id(out).as_deref(),
+            Some("6ff42ae2-765d-4adf-8112-31c55c1551ef")
+        );
+    }
+
+    #[test]
+    fn rejects_non_uuid() {
+        assert_eq!(find_tunnel_id("no id here, just words and 12345"), None);
+        assert!(!is_uuid("6ff42ae2-765d-4adf-8112-31c55c1551e")); // 11 in last group
+        assert!(!is_uuid("zzzzzzzz-765d-4adf-8112-31c55c1551ef")); // non-hex
+        assert!(is_uuid("6ff42ae2-765d-4adf-8112-31c55c1551ef"));
     }
 }

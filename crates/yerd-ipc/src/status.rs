@@ -497,6 +497,25 @@ pub struct TunnelInfo {
     pub hostname: Option<String>,
 }
 
+/// One named tunnel recorded on the account, for
+/// [`crate::Response::NamedTunnels`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NamedTunnelMeta {
+    /// The tunnel name.
+    pub name: String,
+    /// The tunnel UUID.
+    pub uuid: String,
+}
+
+/// One site enabled in the named tunnel: its public hostname mapping.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SiteHostname {
+    /// The local site name.
+    pub site: String,
+    /// The public hostname it is exposed at.
+    pub hostname: String,
+}
+
 /// `cloudflared` install / account status, reported alongside the live tunnels.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CloudflaredStatus {
@@ -506,7 +525,6 @@ pub struct CloudflaredStatus {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub version: Option<String>,
     /// Whether a Cloudflare account is logged in (a `cert.pem` is present).
-    /// Always `false` until Named Tunnels (Phase 2) land.
     #[serde(default)]
     pub logged_in: bool,
 }

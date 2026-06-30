@@ -68,6 +68,7 @@ async fn handle_client(stream: IpcStream, state: Arc<DaemonState>) {
             Request::InstallCloudflaredStreamed => {
                 crate::tunnel::install_cloudflared_streamed(state.clone()).await
             }
+            Request::CloudflaredLogin => crate::tunnel::named::login_streamed(state.clone()).await,
             Request::InstallPhpStreamed { version } => {
                 install_php_streamed(version, state.clone()).await
             }
@@ -276,6 +277,16 @@ async fn dispatch(req: Request, state: &DaemonState) -> Response {
         Request::StartQuickTunnel { site } => crate::tunnel::start_quick_tunnel(&site, state).await,
         Request::StopTunnel { site } => crate::tunnel::stop_tunnel(&site, state).await,
         Request::TunnelStatus => crate::tunnel::tunnel_status(state).await,
+        Request::CreateNamedTunnel { name } => crate::tunnel::named::create(&name, state).await,
+        Request::ListNamedTunnels => crate::tunnel::named::list(state).await,
+        Request::RouteTunnelDns { tunnel, hostname } => {
+            crate::tunnel::named::route_dns(&tunnel, &hostname, state).await
+        }
+        Request::SetSiteTunnel { site, hostname } => {
+            crate::tunnel::named::set_site_hostname(&site, hostname.as_deref(), state).await
+        }
+        Request::StartNamedTunnel => crate::tunnel::named::start(state).await,
+        Request::StopNamedTunnel => crate::tunnel::named::stop(state).await,
         _ => Response::Error {
             code: ErrorCode::Internal,
             message: "unsupported request".into(),

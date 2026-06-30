@@ -608,6 +608,41 @@ pub async fn tunnel_status() -> Result<Response, GuiError> {
     finish(exchange(&Request::TunnelStatus).await?)
 }
 
+#[tauri::command]
+pub async fn cloudflared_login() -> Result<Response, GuiError> {
+    finish(exchange(&Request::CloudflaredLogin).await?)
+}
+
+#[tauri::command]
+pub async fn create_named_tunnel(name: String) -> Result<Response, GuiError> {
+    finish(exchange(&Request::CreateNamedTunnel { name }).await?)
+}
+
+#[tauri::command]
+pub async fn list_named_tunnels() -> Result<Response, GuiError> {
+    finish(exchange(&Request::ListNamedTunnels).await?)
+}
+
+#[tauri::command]
+pub async fn route_tunnel_dns(tunnel: String, hostname: String) -> Result<Response, GuiError> {
+    finish(exchange(&Request::RouteTunnelDns { tunnel, hostname }).await?)
+}
+
+#[tauri::command]
+pub async fn set_site_tunnel(site: String, hostname: Option<String>) -> Result<Response, GuiError> {
+    finish(exchange(&Request::SetSiteTunnel { site, hostname }).await?)
+}
+
+#[tauri::command]
+pub async fn start_named_tunnel() -> Result<Response, GuiError> {
+    finish(exchange(&Request::StartNamedTunnel).await?)
+}
+
+#[tauri::command]
+pub async fn stop_named_tunnel() -> Result<Response, GuiError> {
+    finish(exchange(&Request::StopNamedTunnel).await?)
+}
+
 // ── site creation ──────────────────────────────────────────────────────────
 
 #[tauri::command]

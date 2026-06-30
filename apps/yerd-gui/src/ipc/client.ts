@@ -33,6 +33,7 @@ import type {
   ServiceStatus,
   SetupState,
   Site,
+  NamedTunnelsResponse,
   StatusReport,
   ToolStatus,
   TunnelsResponse,
@@ -362,6 +363,43 @@ export async function stopTunnel(site: string): Promise<TunnelsResponse> {
 /** Live tunnels plus `cloudflared` install status. */
 export async function tunnelStatus(): Promise<TunnelsResponse> {
   return ensureOk(await call<Response>("tunnel_status")) as TunnelsResponse;
+}
+
+/** Start the Cloudflare account login as a streamed job; returns the job id. */
+export async function cloudflaredLogin(): Promise<string> {
+  const r = ensureOk(await call<Response>("cloudflared_login"));
+  if (r.type !== "job_started") throw new IpcError("unexpected response to cloudflared_login");
+  return r.job_id;
+}
+
+/** Create a named tunnel on the logged-in account. */
+export async function createNamedTunnel(name: string): Promise<void> {
+  ensureOk(await call<Response>("create_named_tunnel", { name }));
+}
+
+/** The named tunnels recorded locally. */
+export async function listNamedTunnels(): Promise<NamedTunnelsResponse> {
+  return ensureOk(await call<Response>("list_named_tunnels")) as NamedTunnelsResponse;
+}
+
+/** Route a public hostname to a named tunnel (creates the DNS record). */
+export async function routeTunnelDns(tunnel: string, hostname: string): Promise<void> {
+  ensureOk(await call<Response>("route_tunnel_dns", { tunnel, hostname }));
+}
+
+/** Set (or clear, with `null`) a site's persisted public hostname. */
+export async function setSiteTunnel(site: string, hostname: string | null): Promise<void> {
+  ensureOk(await call<Response>("set_site_tunnel", { site, hostname }));
+}
+
+/** (Re)start the consolidated Named Tunnel serving all enabled sites. */
+export async function startNamedTunnel(): Promise<TunnelsResponse> {
+  return ensureOk(await call<Response>("start_named_tunnel")) as TunnelsResponse;
+}
+
+/** Stop the consolidated Named Tunnel. */
+export async function stopNamedTunnel(): Promise<TunnelsResponse> {
+  return ensureOk(await call<Response>("stop_named_tunnel")) as TunnelsResponse;
 }
 
 // ── site creation ──────────────────────────────────────────────────────────

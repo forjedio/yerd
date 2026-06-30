@@ -20,9 +20,10 @@ use yerd_ipc::{
     types::{PhpVersion, Site},
     CaStatus, Channel, CloudflaredStatus, DatabaseSummary, Diagnosis, DiagnosisCode, DumpCategory,
     DumpCounts, DumpEvent, DumpExtStatus, ErrorCode, FixReport, FixResult, MailDetail, MailHeader,
-    MailStatus, MailSummary, PhpPoolStatus, PoolRunState, PortStatus, Request, Response,
-    ServiceAvailability, ServiceRunState, ServiceStatus, Severity, SiteCounts, StagedArtifact,
-    StatusReport, ToolStatus, TunnelInfo, TunnelKind, TunnelRunState, UpdateSource,
+    MailStatus, MailSummary, NamedTunnelMeta, PhpPoolStatus, PoolRunState, PortStatus, Request,
+    Response, ServiceAvailability, ServiceRunState, ServiceStatus, Severity, SiteCounts,
+    SiteHostname, StagedArtifact, StatusReport, ToolStatus, TunnelInfo, TunnelKind, TunnelRunState,
+    UpdateSource,
 };
 
 // ---------- Request ----------
@@ -1880,4 +1881,113 @@ fn response_tunnels_named_and_empty_byte_shape() {
         r#"{"type":"tunnels","tunnels":[],"cloudflared":{"installed":false,"logged_in":false}}"#
     );
     assert_eq!(serde_json::from_str::<Response>(&s).unwrap(), empty);
+}
+
+#[test]
+fn request_cloudflared_login_byte_shape() {
+    let s = serde_json::to_string(&Request::CloudflaredLogin).unwrap();
+    assert_eq!(s, r#"{"type":"cloudflared_login"}"#);
+    assert_eq!(
+        serde_json::from_str::<Request>(&s).unwrap(),
+        Request::CloudflaredLogin
+    );
+}
+
+#[test]
+fn request_create_named_tunnel_byte_shape() {
+    let r = Request::CreateNamedTunnel {
+        name: "mysite".into(),
+    };
+    let s = serde_json::to_string(&r).unwrap();
+    assert_eq!(s, r#"{"type":"create_named_tunnel","name":"mysite"}"#);
+    assert_eq!(serde_json::from_str::<Request>(&s).unwrap(), r);
+}
+
+#[test]
+fn request_list_named_tunnels_byte_shape() {
+    let s = serde_json::to_string(&Request::ListNamedTunnels).unwrap();
+    assert_eq!(s, r#"{"type":"list_named_tunnels"}"#);
+    assert_eq!(
+        serde_json::from_str::<Request>(&s).unwrap(),
+        Request::ListNamedTunnels
+    );
+}
+
+#[test]
+fn request_route_tunnel_dns_byte_shape() {
+    let r = Request::RouteTunnelDns {
+        tunnel: "mysite".into(),
+        hostname: "app.example.com".into(),
+    };
+    let s = serde_json::to_string(&r).unwrap();
+    assert_eq!(
+        s,
+        r#"{"type":"route_tunnel_dns","tunnel":"mysite","hostname":"app.example.com"}"#
+    );
+    assert_eq!(serde_json::from_str::<Request>(&s).unwrap(), r);
+}
+
+#[test]
+fn request_set_site_tunnel_byte_shape() {
+    let set = Request::SetSiteTunnel {
+        site: "app".into(),
+        hostname: Some("app.example.com".into()),
+    };
+    let s = serde_json::to_string(&set).unwrap();
+    assert_eq!(
+        s,
+        r#"{"type":"set_site_tunnel","site":"app","hostname":"app.example.com"}"#
+    );
+    assert_eq!(serde_json::from_str::<Request>(&s).unwrap(), set);
+
+    let clear = Request::SetSiteTunnel {
+        site: "app".into(),
+        hostname: None,
+    };
+    let s = serde_json::to_string(&clear).unwrap();
+    assert_eq!(
+        s,
+        r#"{"type":"set_site_tunnel","site":"app","hostname":null}"#
+    );
+    assert_eq!(serde_json::from_str::<Request>(&s).unwrap(), clear);
+}
+
+#[test]
+fn request_start_named_tunnel_byte_shape() {
+    let s = serde_json::to_string(&Request::StartNamedTunnel).unwrap();
+    assert_eq!(s, r#"{"type":"start_named_tunnel"}"#);
+    assert_eq!(
+        serde_json::from_str::<Request>(&s).unwrap(),
+        Request::StartNamedTunnel
+    );
+}
+
+#[test]
+fn request_stop_named_tunnel_byte_shape() {
+    let s = serde_json::to_string(&Request::StopNamedTunnel).unwrap();
+    assert_eq!(s, r#"{"type":"stop_named_tunnel"}"#);
+    assert_eq!(
+        serde_json::from_str::<Request>(&s).unwrap(),
+        Request::StopNamedTunnel
+    );
+}
+
+#[test]
+fn response_named_tunnels_byte_shape() {
+    let r = Response::NamedTunnels {
+        tunnels: vec![NamedTunnelMeta {
+            name: "mysite".into(),
+            uuid: "uuid-123".into(),
+        }],
+        sites: vec![SiteHostname {
+            site: "app".into(),
+            hostname: "app.example.com".into(),
+        }],
+    };
+    let s = serde_json::to_string(&r).unwrap();
+    assert_eq!(
+        s,
+        r#"{"type":"named_tunnels","tunnels":[{"name":"mysite","uuid":"uuid-123"}],"sites":[{"site":"app","hostname":"app.example.com"}]}"#
+    );
+    assert_eq!(serde_json::from_str::<Response>(&s).unwrap(), r);
 }

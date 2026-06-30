@@ -7,10 +7,14 @@
 //! Yerd-distribution tarball), so it gets its own module + atomic swap rather
 //! than reusing the `Tool`-keyed `stage_and_swap`.
 //!
-//! Integrity: `cloudflared` publishes no `SHASUMS` sidecar, so we verify the
-//! downloaded bytes against the per-asset `digest` (`sha256:…`) the GitHub
-//! Releases API reports when present. Absent a digest we fall back to TLS trust
-//! (the same trust boundary the dev-tool installers rely on for their fetches).
+//! Integrity is **fail-closed**. `cloudflared` publishes no `SHASUMS` sidecar, so
+//! the download is verified against, in order of preference: (1) a compiled-in
+//! pinned `(version, asset) → sha256` entry in [`PINNED_SHA256`] when one exists,
+//! which is authoritative; otherwise (2) the per-asset `digest` (`sha256:…`) the
+//! GitHub Releases API reports. If neither is available the install is refused
+//! rather than trusting TLS alone. The asset URL must also resolve to a GitHub
+//! host (see [`host_is_trusted`]) so a tampered metadata response cannot redirect
+//! the fetch to an attacker-controlled origin.
 
 use std::path::{Path, PathBuf};
 
@@ -23,6 +27,41 @@ use super::ProgressTx;
 /// Latest-release metadata endpoint for the `cloudflared` repo.
 const LATEST_RELEASE_API: &str =
     "https://api.github.com/repos/cloudflare/cloudflared/releases/latest";
+
+/// Authoritative `(release tag, asset name, lowercase sha256-hex)` pins.
+///
+/// When the resolved release+asset matches an entry here, that hash is the
+/// primary integrity source and a downloaded binary MUST match it. Empty by
+/// default: a maintainer pins a known-good release by appending its tag, asset
+/// filename, and `sha256sum` here, after which that release installs
+/// reproducibly even if GitHub's per-asset digest is absent or changes. Releases
+/// not listed fall back to the GitHub per-asset digest (still fail-closed).
+const PINNED_SHA256: &[(&str, &str, &str)] = &[];
+
+/// The pinned sha256 for a `(tag, asset)`, if one is compiled in.
+fn pinned_sha256(tag: &str, asset: &str) -> Option<&'static str> {
+    PINNED_SHA256
+        .iter()
+        .find(|(t, a, _)| *t == tag && *a == asset)
+        .map(|(_, _, sha)| *sha)
+}
+
+/// Whether `url` is an `https` URL whose host is GitHub's (`github.com` or a
+/// `*.githubusercontent.com` asset host). The asset URL comes from the release
+/// JSON, so this stops a tampered response from redirecting the fetch elsewhere.
+fn host_is_trusted(url: &str) -> bool {
+    let Some(rest) = url.strip_prefix("https://") else {
+        return false;
+    };
+    let authority = rest.split('/').next().unwrap_or(rest);
+    let hostport = authority.rsplit('@').next().unwrap_or(authority);
+    let host = hostport.split(':').next().unwrap_or(hostport);
+    host.eq_ignore_ascii_case("github.com")
+        || host.eq_ignore_ascii_case("githubusercontent.com")
+        || host
+            .to_ascii_lowercase()
+            .ends_with(".githubusercontent.com")
+}
 
 /// Failure modes of a `cloudflared` install.
 #[derive(Debug, thiserror::Error)]
@@ -39,6 +78,13 @@ pub enum CloudflaredInstallError {
     /// The downloaded artifact's SHA-256 did not match the published digest.
     #[error("integrity check failed: {0}")]
     Sha256Mismatch(String),
+    /// No pinned hash and no published digest were available to verify against,
+    /// so the install was refused (integrity is fail-closed).
+    #[error("refusing to install unverified cloudflared: {0}")]
+    MissingDigest(String),
+    /// The asset download URL did not resolve to a trusted GitHub host.
+    #[error("refusing to download from untrusted host: {0}")]
+    UntrustedHost(String),
     /// Unpacking the macOS `.tgz` failed or its layout was unexpected.
     #[error("unpack failed: {0}")]
     Unpack(String),
@@ -142,13 +188,24 @@ pub async fn install(
             CloudflaredInstallError::Metadata(format!("no asset {asset_name} in latest release"))
         })?;
 
+    if !host_is_trusted(&asset.browser_download_url) {
+        return Err(CloudflaredInstallError::UntrustedHost(
+            asset.browser_download_url.clone(),
+        ));
+    }
+
     note(progress, format!("Downloading {asset_name}…"));
     let bytes = dl
         .download(&asset.browser_download_url)
         .await
         .map_err(|e| CloudflaredInstallError::Download(format!("{asset_name}: {e}")))?;
 
-    verify_digest(&bytes, asset.digest.as_deref(), &asset_name)?;
+    verify_integrity(
+        &bytes,
+        pinned_sha256(&release.tag_name, &asset_name),
+        asset.digest.as_deref(),
+        &asset_name,
+    )?;
 
     let binary = if is_tgz {
         note(progress, "Extracting…");
@@ -166,21 +223,38 @@ pub async fn install(
     Ok(())
 }
 
-/// Verify `bytes` against a `sha256:<hex>` digest if present; otherwise accept
-/// (TLS-trust fallback) with a warning.
-fn verify_digest(
+/// Verify `bytes`, fail-closed. A compiled-in `pinned` hash is authoritative
+/// when present (and the GitHub `digest`, if any, is cross-checked against it);
+/// otherwise the GitHub `digest` is required and must match. With neither, the
+/// install is refused rather than trusting TLS alone.
+fn verify_integrity(
     bytes: &[u8],
+    pinned: Option<&str>,
     digest: Option<&str>,
     label: &str,
 ) -> Result<(), CloudflaredInstallError> {
-    let Some(want) = digest.and_then(|d| d.strip_prefix("sha256:")) else {
-        tracing::warn!(
-            asset = label,
-            "cloudflared asset has no digest; relying on TLS trust"
-        );
-        return Ok(());
-    };
     let got = yerd_update::sha256_hex(bytes);
+    let github = digest.and_then(|d| d.strip_prefix("sha256:"));
+    if let Some(want) = pinned {
+        if !got.eq_ignore_ascii_case(want) {
+            return Err(CloudflaredInstallError::Sha256Mismatch(format!(
+                "{label}: got {got}, want pinned {want}"
+            )));
+        }
+        if let Some(gh) = github {
+            if !got.eq_ignore_ascii_case(gh) {
+                return Err(CloudflaredInstallError::Sha256Mismatch(format!(
+                    "{label}: pinned hash and GitHub digest disagree (github {gh})"
+                )));
+            }
+        }
+        return Ok(());
+    }
+    let Some(want) = github else {
+        return Err(CloudflaredInstallError::MissingDigest(format!(
+            "{label}: no pinned hash and no published digest"
+        )));
+    };
     if got.eq_ignore_ascii_case(want) {
         Ok(())
     } else {
@@ -225,7 +299,10 @@ fn install_binary(
     version: &str,
     bytes: &[u8],
 ) -> Result<(), CloudflaredInstallError> {
-    let bin_dir = tunnel_dir(dirs).join("bin");
+    let tunnel_root = tunnel_dir(dirs);
+    crate::secure_fs::create_private_dir(&tunnel_root)
+        .map_err(|e| CloudflaredInstallError::Io(format!("{}: {e}", tunnel_root.display())))?;
+    let bin_dir = tunnel_root.join("bin");
     std::fs::create_dir_all(&bin_dir)
         .map_err(|e| CloudflaredInstallError::Io(format!("{}: {e}", bin_dir.display())))?;
     let final_path = binary_path(dirs);
@@ -293,13 +370,34 @@ mod tests {
     }
 
     #[test]
-    fn verify_digest_matches_and_mismatches() {
+    fn verify_integrity_is_fail_closed() {
         let bytes = b"hello cloudflared";
-        let good = format!("sha256:{}", yerd_update::sha256_hex(bytes));
-        assert!(verify_digest(bytes, Some(&good), "x").is_ok());
-        assert!(verify_digest(bytes, Some("sha256:deadbeef"), "x").is_err());
-        // No digest: accepted (TLS-trust fallback).
-        assert!(verify_digest(bytes, None, "x").is_ok());
+        let hex = yerd_update::sha256_hex(bytes);
+        let good = format!("sha256:{hex}");
+        assert!(verify_integrity(bytes, None, Some(&good), "x").is_ok());
+        assert!(verify_integrity(bytes, None, Some("sha256:deadbeef"), "x").is_err());
+        assert!(matches!(
+            verify_integrity(bytes, None, None, "x"),
+            Err(CloudflaredInstallError::MissingDigest(_))
+        ));
+        assert!(verify_integrity(bytes, Some(&hex), None, "x").is_ok());
+        assert!(verify_integrity(bytes, Some("deadbeef"), Some(&good), "x").is_err());
+        assert!(verify_integrity(bytes, Some(&hex), Some("sha256:deadbeef"), "x").is_err());
+    }
+
+    #[test]
+    fn host_allowlist_rejects_non_github() {
+        assert!(host_is_trusted(
+            "https://github.com/cloudflare/cloudflared/releases/download/x/cloudflared-linux-amd64"
+        ));
+        assert!(host_is_trusted(
+            "https://release-assets.githubusercontent.com/github-production-release/x"
+        ));
+        assert!(host_is_trusted("https://objects.githubusercontent.com/x"));
+        assert!(!host_is_trusted("https://evil.example.com/cloudflared"));
+        assert!(!host_is_trusted("http://github.com/x"));
+        assert!(!host_is_trusted("https://github.com.evil.example.com/x"));
+        assert!(!host_is_trusted("https://evil.example.com/?u=github.com"));
     }
 
     #[test]
