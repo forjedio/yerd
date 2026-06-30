@@ -32,9 +32,24 @@ use crate::state::DaemonState;
 /// Bound on the network one-shots (`create` / `route dns`).
 const ONESHOT_TIMEOUT: Duration = Duration::from_secs(60);
 
+/// Bound on the interactive browser login. It holds `tunnel_mutate` while it
+/// waits, so it must not wait forever if the user never finishes the browser
+/// flow; five minutes is generous for a real login.
+const LOGIN_TIMEOUT: Duration = Duration::from_secs(300);
+
 /// Reserved supervisor key for the single consolidated named-tunnel process.
 /// The `@` can't appear in a DNS label, so it never collides with a real site.
 const NAMED_KEY: &str = "@named";
+
+/// How the interactive `cloudflared tunnel login` child ended.
+enum LoginEnd {
+    /// The child exited on its own (success or failure determined by the cert).
+    Exited,
+    /// The client cancelled the job.
+    Cancelled,
+    /// The browser authorization was not completed within [`LOGIN_TIMEOUT`].
+    TimedOut,
+}
 
 /// `{data}/tunnel/cert.pem` - the account origin cert from `cloudflared login`.
 fn origincert(dirs: &PlatformDirs) -> PathBuf {
@@ -52,16 +67,29 @@ fn creds_file(dirs: &PlatformDirs, name: &str) -> PathBuf {
 }
 
 /// Whether a tunnel name is safe to use as a path component and a `cloudflared`
-/// argument: non-empty, bounded, and limited to DNS-label-ish characters so it
-/// can never escape `creds/` (no `/`, `..`, NUL, or whitespace).
+/// argument: non-empty, bounded, limited to DNS-label-ish characters so it can
+/// never escape `creds/` (no `/`, `..`, NUL, or whitespace), and not starting
+/// with `-` (which `cloudflared` could misparse as a flag).
 fn is_valid_tunnel_name(name: &str) -> bool {
     !name.is_empty()
         && name.len() <= 64
+        && !name.starts_with('-')
         && name
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_' || b == b'.')
         && name != "."
         && name != ".."
+}
+
+/// A conservative guard for a value passed as a positional `cloudflared`
+/// argument (e.g. a routed hostname): non-empty, bounded, no leading `-`, and
+/// only DNS-name characters, so it can't be misparsed as a flag.
+fn is_safe_cli_value(s: &str) -> bool {
+    !s.is_empty()
+        && s.len() <= 253
+        && !s.starts_with('-')
+        && s.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'.' || b == b'_')
 }
 
 /// Whether a Cloudflare account is logged in (the origin cert is present).
@@ -175,18 +203,28 @@ pub async fn login_streamed(state: Arc<DaemonState>) -> Response {
             tasks.push(tokio::spawn(drain_lines(state.clone(), id.clone(), err)));
         }
 
-        let cancelled = tokio::select! {
-            _ = child.wait() => false,
-            _ = cancel.changed() => { let _ = child.kill().await; true }
+        let end = tokio::select! {
+            _ = child.wait() => LoginEnd::Exited,
+            _ = cancel.changed() => { let _ = child.kill().await; LoginEnd::Cancelled }
+            () = tokio::time::sleep(LOGIN_TIMEOUT) => { let _ = child.kill().await; LoginEnd::TimedOut }
         };
         for t in tasks {
             let _ = t.await;
         }
 
-        if cancelled {
+        if matches!(end, LoginEnd::Cancelled) {
             state
                 .jobs
                 .finish(&id, yerd_ipc::JobState::Cancelled, None)
+                .await;
+        } else if matches!(end, LoginEnd::TimedOut) {
+            state
+                .jobs
+                .finish(
+                    &id,
+                    yerd_ipc::JobState::Failed,
+                    Some("login timed out - the browser authorization wasn't completed".into()),
+                )
                 .await;
         } else if is_logged_in(&state.dirs) {
             if let Err(e) = crate::secure_fs::restrict_to_owner(&origincert(&state.dirs)) {
@@ -332,6 +370,12 @@ pub async fn route_dns(tunnel: &str, hostname: &str, state: &DaemonState) -> Res
     }
     if !is_logged_in(&state.dirs) {
         return need_login();
+    }
+    if !is_valid_tunnel_name(tunnel) || !is_safe_cli_value(hostname) {
+        return Response::Error {
+            code: ErrorCode::InvalidPath,
+            message: "invalid tunnel name or hostname".into(),
+        };
     }
     let args = yerd_tunnel::args::route_dns_args(tunnel, hostname, &origincert(&state.dirs));
     match run_oneshot(&state.dirs, args).await {

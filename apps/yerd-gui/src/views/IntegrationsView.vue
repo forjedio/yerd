@@ -128,7 +128,7 @@ async function appendLogin(lines: string[]): Promise<void> {
   for (const line of lines) {
     // The daemon prefixes the auth URL; open it in the system browser.
     const m = line.match(/https:\/\/\S*cloudflare\.com\S*/);
-    if (m) void openInBrowser(m[0]);
+    if (m) openExternal(m[0]);
   }
   loginLog.value.push(...lines);
   await nextTick();

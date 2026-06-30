@@ -110,9 +110,10 @@ struct Instance<Ch: ChildHandle> {
     logfile: PathBuf,
     url: Option<String>,
     hostname: Option<String>,
-    /// Set when the child was killed for missing its readiness window, so a
-    /// terminal failure can be reported as a readiness timeout rather than an
-    /// opaque permanent failure.
+    /// Set when the child was killed for missing its readiness window, and
+    /// cleared on each respawn so it reflects only the most recent attempt. A
+    /// terminal failure whose last attempt timed out is reported as a readiness
+    /// timeout rather than an opaque permanent failure.
     timed_out: bool,
     child: Option<Ch>,
 }
@@ -274,6 +275,7 @@ where
         let child = self.spawner.spawn(cmd).map_err(TunnelError::Spawn)?;
         let pid = child.id();
         if let Some(i) = self.instances.get_mut(site) {
+            i.timed_out = false;
             i.child = Some(child);
             i.pending = Event::SpawnSucceeded { pid };
         }
