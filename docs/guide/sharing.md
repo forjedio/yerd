@@ -125,8 +125,9 @@ shared, the sidebar item shows a count.
 - The **Named tunnels** card walks you through connecting your Cloudflare account,
   creating the tunnel, and choosing which sites to expose. Each site's hostname
   box is pre-filled with `{site}.{your-domain}`. Exposing a site brings the
-  tunnel up automatically; removing the last one takes it back down - there are
-  no separate start/stop buttons to manage.
+  tunnel up automatically and removing the last one takes it back down, so you
+  rarely touch the lifecycle yourself; a **Start/Restart** button is there to
+  recover the tunnel if its `cloudflared` process dies.
 
 ## Removing a named tunnel
 

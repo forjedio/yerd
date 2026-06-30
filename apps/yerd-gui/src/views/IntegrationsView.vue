@@ -179,16 +179,14 @@ function applyData(d: SharePageData): void {
   cloudflared.value = d.cloudflared;
   tunnels.value = d.tunnels;
   sites.value = d.sites;
-  // Don't auto-pick a site; only clear a stale selection (one that's no longer
-  // shareable) so the picker falls back to its placeholder.
-  if (shareSite.value && !shareableSites.value.some((s) => s.name === shareSite.value)) {
+  const staleSelection =
+    shareSite.value && !shareableSites.value.some((s) => s.name === shareSite.value);
+  if (staleSelection) {
     shareSite.value = "";
   }
   namedTunnels.value = d.named.tunnels;
   authorizedDomain.value = d.named.zone ?? null;
   enabledHosts.value = Object.fromEntries(d.named.sites.map((s) => [s.site, s.hostname]));
-  // Seed each site's input from its enabled hostname, else the suggested
-  // {site}.{domain} (keep any edits the user already typed).
   for (const s of d.sites) {
     if (hostInputs.value[s.name] === undefined || hostInputs.value[s.name] === "") {
       hostInputs.value[s.name] = enabledHosts.value[s.name] ?? suggestedHost(s.name);
@@ -387,8 +385,6 @@ async function doShare(): Promise<void> {
   try {
     const r = await startQuickTunnel(site);
     applyTunnelStatus(r);
-    // The shared site drops out of shareableSites; clear the picker back to its
-    // placeholder rather than auto-selecting another site.
     shareSite.value = "";
     const url = r.tunnels.find((t) => t.site === site)?.url;
     toast.success(`Sharing ${site}`, url ?? undefined);

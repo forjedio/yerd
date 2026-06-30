@@ -74,7 +74,7 @@ flowchart TD
     gui["yerd-gui (app)"]
     xtask["xtask (no internal deps)"]
     yerd["yerd (CLI)"]
-    yerdd["yerdd (depends on all twelve libs)"]
+    yerdd["yerdd (depends on all thirteen libs)"]
     helper["yerd-helper"]
 
     ipc["yerd-ipc"]
@@ -150,7 +150,7 @@ crate's `Cargo.toml`):
 - **`yerd-helper`** (bin) → `yerd-core`, `yerd-platform`
 - **`yerd`** (bin) → `yerd-core`, `yerd-ipc` (`transport`), `yerd-platform`
 - **`yerd-gui`** (app) → `yerd-core`, `yerd-ipc` (`transport`), `yerd-platform`
-- **`yerdd`** (bin) → `yerd-core`, `yerd-config`, `yerd-ipc` (`transport`), `yerd-tls`, `yerd-platform`, `yerd-dns`, `yerd-supervise`, `yerd-php`, `yerd-services`, `yerd-proxy`, `yerd-doctor`, `yerd-mail` - **all twelve libraries**
+- **`yerdd`** (bin) → `yerd-core`, `yerd-config`, `yerd-ipc` (`transport`), `yerd-tls`, `yerd-platform`, `yerd-dns`, `yerd-supervise`, `yerd-php`, `yerd-services`, `yerd-proxy`, `yerd-doctor`, `yerd-mail`, `yerd-tunnel` - **all thirteen libraries**
 - **`xtask`** → *(no internal deps; `anyhow` + `clap` only)*
 
 ::: tip The daemon is the assembly point

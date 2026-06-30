@@ -327,8 +327,14 @@ async function shareSitePublicly(s: Site): Promise<void> {
     const r = await startQuickTunnel(s.name);
     const url = r.tunnels.find((t) => t.site === s.name)?.url;
     if (url) {
-      await navigator.clipboard.writeText(url).catch(() => undefined);
-      toast.success(`Sharing ${s.name}`, `${url} (copied) - manage in Integrations`);
+      const copied = await navigator.clipboard
+        .writeText(url)
+        .then(() => true)
+        .catch(() => false);
+      toast.success(
+        `Sharing ${s.name}`,
+        copied ? `${url} (copied) - manage in Integrations` : `${url} - manage in Integrations`,
+      );
     } else {
       toast.success(`Sharing ${s.name}`, "Starting - see Integrations for the URL");
     }

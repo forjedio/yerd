@@ -10,6 +10,16 @@ use std::path::Path;
 
 use crate::origin::OriginTarget;
 
+/// The shared prefix for every account-scoped `cloudflared` subcommand:
+/// `--origincert <cert> tunnel`. Callers append their command-specific args.
+fn origincert_tunnel_prefix(origincert: &Path) -> Vec<OsString> {
+    vec![
+        "--origincert".into(),
+        origincert.as_os_str().to_os_string(),
+        "tunnel".into(),
+    ]
+}
+
 /// Args for a Quick Tunnel: `cloudflared tunnel --url <origin> ...`.
 ///
 /// `cloudflared` logs (including the assigned `*.trycloudflare.com` URL banner)
@@ -59,27 +69,23 @@ pub fn named_run_args(config_path: &Path, origincert: &Path) -> Vec<OsString> {
 /// and the GUI opens it.
 #[must_use]
 pub fn login_args(origincert: &Path) -> Vec<OsString> {
-    vec![
-        "--origincert".into(),
-        origincert.as_os_str().to_os_string(),
-        "tunnel".into(),
-        "login".into(),
-    ]
+    let mut args = origincert_tunnel_prefix(origincert);
+    args.push("login".into());
+    args
 }
 
 /// Args to create a named tunnel writing its credentials to a chosen path:
 /// `cloudflared --origincert <cert> tunnel create --credentials-file <file> <name>`.
 #[must_use]
 pub fn create_args(name: &str, origincert: &Path, credentials_file: &Path) -> Vec<OsString> {
-    vec![
-        "--origincert".into(),
-        origincert.as_os_str().to_os_string(),
-        "tunnel".into(),
+    let mut args = origincert_tunnel_prefix(origincert);
+    args.extend([
         "create".into(),
         "--credentials-file".into(),
         credentials_file.as_os_str().to_os_string(),
         name.into(),
-    ]
+    ]);
+    args
 }
 
 /// Args to route a DNS hostname to a tunnel:
@@ -91,16 +97,15 @@ pub fn create_args(name: &str, origincert: &Path, credentials_file: &Path) -> Ve
 /// duplicate record.
 #[must_use]
 pub fn route_dns_args(tunnel: &str, hostname: &str, origincert: &Path) -> Vec<OsString> {
-    vec![
-        "--origincert".into(),
-        origincert.as_os_str().to_os_string(),
-        "tunnel".into(),
+    let mut args = origincert_tunnel_prefix(origincert);
+    args.extend([
         "route".into(),
         "dns".into(),
         "--overwrite-dns".into(),
         tunnel.into(),
         hostname.into(),
-    ]
+    ]);
+    args
 }
 
 /// Args to clean up a tunnel's stale edge connections before deletion:
@@ -110,40 +115,27 @@ pub fn route_dns_args(tunnel: &str, hostname: &str, origincert: &Path) -> Vec<Os
 /// tunnel that still shows active connections from a just-stopped process.
 #[must_use]
 pub fn cleanup_args(tunnel: &str, origincert: &Path) -> Vec<OsString> {
-    vec![
-        "--origincert".into(),
-        origincert.as_os_str().to_os_string(),
-        "tunnel".into(),
-        "cleanup".into(),
-        tunnel.into(),
-    ]
+    let mut args = origincert_tunnel_prefix(origincert);
+    args.extend(["cleanup".into(), tunnel.into()]);
+    args
 }
 
 /// Args to delete a named tunnel from the account:
 /// `cloudflared --origincert <cert> tunnel delete <tunnel>`.
 #[must_use]
 pub fn delete_args(tunnel: &str, origincert: &Path) -> Vec<OsString> {
-    vec![
-        "--origincert".into(),
-        origincert.as_os_str().to_os_string(),
-        "tunnel".into(),
-        "delete".into(),
-        tunnel.into(),
-    ]
+    let mut args = origincert_tunnel_prefix(origincert);
+    args.extend(["delete".into(), tunnel.into()]);
+    args
 }
 
 /// Args to list the account's named tunnels as JSON:
 /// `cloudflared --origincert <cert> tunnel list --output json`.
 #[must_use]
 pub fn list_args(origincert: &Path) -> Vec<OsString> {
-    vec![
-        "--origincert".into(),
-        origincert.as_os_str().to_os_string(),
-        "tunnel".into(),
-        "list".into(),
-        "--output".into(),
-        "json".into(),
-    ]
+    let mut args = origincert_tunnel_prefix(origincert);
+    args.extend(["list".into(), "--output".into(), "json".into()]);
+    args
 }
 
 /// Append the secure-origin TLS flags (`--origin-server-name`, `--no-tls-verify`)

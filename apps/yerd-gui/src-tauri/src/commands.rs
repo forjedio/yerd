@@ -588,61 +588,73 @@ pub async fn install_tool_streamed(tool: String) -> Result<Response, GuiError> {
 
 // ── tunnels (Cloudflare Tunnel integration) ──────────────────────────────────
 
+/// Install the `cloudflared` binary as a streamed job (returns a job id).
 #[tauri::command]
 pub async fn install_cloudflared_streamed() -> Result<Response, GuiError> {
     finish(exchange(&Request::InstallCloudflaredStreamed).await?)
 }
 
+/// Publish a site at a temporary `*.trycloudflare.com` Quick Tunnel URL.
 #[tauri::command]
 pub async fn start_quick_tunnel(site: String) -> Result<Response, GuiError> {
     finish(exchange(&Request::StartQuickTunnel { site }).await?)
 }
 
+/// Tear down a site's running tunnel.
 #[tauri::command]
 pub async fn stop_tunnel(site: String) -> Result<Response, GuiError> {
     finish(exchange(&Request::StopTunnel { site }).await?)
 }
 
+/// Report the live tunnels plus `cloudflared` install/login status.
 #[tauri::command]
 pub async fn tunnel_status() -> Result<Response, GuiError> {
     finish(exchange(&Request::TunnelStatus).await?)
 }
 
+/// Log in to a Cloudflare account as a streamed job (surfaces the auth URL).
 #[tauri::command]
 pub async fn cloudflared_login() -> Result<Response, GuiError> {
     finish(exchange(&Request::CloudflaredLogin).await?)
 }
 
+/// Create a named tunnel on the logged-in account.
 #[tauri::command]
 pub async fn create_named_tunnel(name: String) -> Result<Response, GuiError> {
     finish(exchange(&Request::CreateNamedTunnel { name }).await?)
 }
 
+/// Delete a named tunnel from the account and forget it locally.
 #[tauri::command]
 pub async fn delete_named_tunnel(name: String) -> Result<Response, GuiError> {
     finish(exchange(&Request::DeleteNamedTunnel { name }).await?)
 }
 
+/// List the locally recorded named tunnels, site mappings, and authorized zone.
 #[tauri::command]
 pub async fn list_named_tunnels() -> Result<Response, GuiError> {
     finish(exchange(&Request::ListNamedTunnels).await?)
 }
 
+/// Create the proxied DNS route pointing `hostname` at `tunnel`.
 #[tauri::command]
 pub async fn route_tunnel_dns(tunnel: String, hostname: String) -> Result<Response, GuiError> {
     finish(exchange(&Request::RouteTunnelDns { tunnel, hostname }).await?)
 }
 
+/// Persist (or clear, with `None`) a site's public hostname mapping.
 #[tauri::command]
 pub async fn set_site_tunnel(site: String, hostname: Option<String>) -> Result<Response, GuiError> {
     finish(exchange(&Request::SetSiteTunnel { site, hostname }).await?)
 }
 
+/// (Re)start the consolidated named tunnel serving every enabled site.
 #[tauri::command]
 pub async fn start_named_tunnel() -> Result<Response, GuiError> {
     finish(exchange(&Request::StartNamedTunnel).await?)
 }
 
+/// Stop the consolidated named tunnel.
 #[tauri::command]
 pub async fn stop_named_tunnel() -> Result<Response, GuiError> {
     finish(exchange(&Request::StopNamedTunnel).await?)

@@ -2020,9 +2020,10 @@ fn request_delete_named_tunnel_byte_shape() {
     assert_eq!(serde_json::from_str::<Request>(&s).unwrap(), r);
 }
 
+/// `zone: None` serializes to nothing (the field is skipped), preserving the
+/// byte shape for older clients.
 #[test]
-fn response_named_tunnels_byte_shape() {
-    // `zone: None` is skipped, preserving the byte shape for older clients.
+fn response_named_tunnels_with_none_zone_skips_field() {
     let r = Response::NamedTunnels {
         tunnels: vec![NamedTunnelMeta {
             name: "mysite".into(),

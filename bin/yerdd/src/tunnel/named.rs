@@ -434,7 +434,10 @@ pub async fn set_site_hostname(
         }
     }
     if let Err(e) = new.validate() {
-        return internal(format!("config validation failed: {e}"));
+        return Response::Error {
+            code: ErrorCode::InvalidPath,
+            message: format!("invalid hostname: {e}"),
+        };
     }
     if let Err(e) = new.save(&state.config_path) {
         return internal(format!("config save failed: {e}"));

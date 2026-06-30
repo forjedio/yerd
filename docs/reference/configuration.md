@@ -289,7 +289,7 @@ Every config file **must** carry a top-level `version = N` key - it is the singl
 
 When the daemon loads a file, it routes on the version it finds:
 
-```
+```text
 found  > CURRENT (8)   →  error (UnsupportedVersion) - a newer Yerd wrote this file
 found == CURRENT (8)   →  parse directly
 found  < CURRENT (8)   →  walk forward migration steps, then parse

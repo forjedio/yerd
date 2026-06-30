@@ -40,10 +40,16 @@ const props = withDefaults(
   },
 );
 
-const emit = defineEmits<{ "update:modelValue": [T] }>();
+const emit = defineEmits<{ "update:modelValue": [T | null] }>();
 
 function labelFor(value: T | null): string {
   return props.options.find((o) => o.value === value)?.label ?? "";
+}
+
+// reka-ui can emit `undefined` when a single-select is cleared; normalize it to
+// `null` so the v-model contract (`T | null`) is honoured and parents can clear.
+function onUpdate(value: T | undefined | null): void {
+  emit("update:modelValue", value ?? null);
 }
 </script>
 
@@ -52,7 +58,7 @@ function labelFor(value: T | null): string {
     :model-value="modelValue ?? undefined"
     :disabled="disabled"
     :ignore-filter="false"
-    @update:model-value="(v) => emit('update:modelValue', v as T)"
+    @update:model-value="(v) => onUpdate(v as T | undefined)"
   >
     <ComboboxAnchor class="w-full">
       <ComboboxTrigger
@@ -65,8 +71,10 @@ function labelFor(value: T | null): string {
           )
         "
       >
-        <span :class="cn('truncate', modelValue ? 'text-foreground' : 'text-muted-foreground')">
-          {{ modelValue ? labelFor(modelValue) : placeholder }}
+        <span
+          :class="cn('truncate', modelValue && labelFor(modelValue) ? 'text-foreground' : 'text-muted-foreground')"
+        >
+          {{ (modelValue && labelFor(modelValue)) || placeholder }}
         </span>
         <ChevronsUpDown class="size-4 shrink-0 opacity-50" />
       </ComboboxTrigger>
