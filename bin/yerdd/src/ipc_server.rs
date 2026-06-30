@@ -287,6 +287,7 @@ async fn dispatch(req: Request, state: &DaemonState) -> Response {
         }
         Request::StartNamedTunnel => crate::tunnel::named::start(state).await,
         Request::StopNamedTunnel => crate::tunnel::named::stop(state).await,
+        Request::DeleteNamedTunnel { name } => crate::tunnel::named::delete(&name, state).await,
         _ => Response::Error {
             code: ErrorCode::Internal,
             message: "unsupported request".into(),
@@ -509,6 +510,7 @@ async fn build_status_report(state: &DaemonState) -> yerd_ipc::StatusReport {
         .map(|[a, b, c]| [load_to_centi(a), load_to_centi(b), load_to_centi(c)]);
 
     let (mail_count, mail_unread) = state.mail_store.counts().await;
+    let shared_sites = crate::tunnel::shared_site_count(state).await;
 
     yerd_ipc::StatusReport {
         daemon_pid: std::process::id(),
@@ -543,6 +545,7 @@ async fn build_status_report(state: &DaemonState) -> yerd_ipc::StatusReport {
         web_unbound: state.web_unbound,
         dns_unbound: state.dns_unbound,
         boot_id: Some(state.boot_id),
+        shared_sites,
     }
 }
 

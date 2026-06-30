@@ -121,6 +121,21 @@ pub struct StatusReport {
     /// additive.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub boot_id: Option<u64>,
+    /// Number of sites currently shared to the public internet: live quick
+    /// tunnels plus, when the named tunnel is running, the sites it exposes. `0`
+    /// when nothing is shared. `#[serde(default, skip_serializing_if)]` keeps the
+    /// wire additive (an older daemon emits unchanged bytes; an older client
+    /// ignores it).
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub shared_sites: u32,
+}
+
+/// `skip_serializing_if` helper: a `u32` that is zero is omitted from the wire.
+/// Takes `&u32` because that is the signature serde's `skip_serializing_if`
+/// requires.
+#[allow(clippy::trivially_copy_pass_by_ref)]
+fn is_zero_u32(n: &u32) -> bool {
+    *n == 0
 }
 
 /// The rootless fallback ports the daemon failed to bind, surfaced in

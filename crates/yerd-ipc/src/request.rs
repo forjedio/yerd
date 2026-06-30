@@ -477,6 +477,13 @@ pub enum Request {
     StartNamedTunnel,
     /// Stop the consolidated Named Tunnel. Returns [`super::Response::Tunnels`].
     StopNamedTunnel,
+    /// Delete a named tunnel from the Cloudflare account and forget it locally
+    /// (stops the process, removes its credentials, and clears the persisted
+    /// tunnel/site mappings). Account-mutating; replies [`super::Response::Ok`].
+    DeleteNamedTunnel {
+        /// The tunnel name to delete.
+        name: String,
+    },
 }
 
 #[cfg(test)]
@@ -576,6 +583,7 @@ mod variant_name_pinning {
             Request::SetSiteTunnel { .. } => {}
             Request::StartNamedTunnel => {}
             Request::StopNamedTunnel => {}
+            Request::DeleteNamedTunnel { .. } => {}
         }
     }
 
@@ -769,6 +777,9 @@ mod variant_name_pinning {
         });
         pin(Request::StartNamedTunnel);
         pin(Request::StopNamedTunnel);
+        pin(Request::DeleteNamedTunnel {
+            name: "mysite".into(),
+        });
     }
 
     fn laravel_options_fixture() -> crate::LaravelOptions {

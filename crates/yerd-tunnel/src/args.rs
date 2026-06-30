@@ -83,7 +83,12 @@ pub fn create_args(name: &str, origincert: &Path, credentials_file: &Path) -> Ve
 }
 
 /// Args to route a DNS hostname to a tunnel:
-/// `cloudflared --origincert <cert> tunnel route dns <tunnel> <hostname>`.
+/// `cloudflared --origincert <cert> tunnel route dns --overwrite-dns <tunnel> <hostname>`.
+///
+/// `--overwrite-dns` repoints an existing CNAME rather than failing on it, so
+/// re-exposing a hostname (e.g. after deleting and recreating the tunnel, which
+/// leaves the old proxied record behind) succeeds instead of erroring on a
+/// duplicate record.
 #[must_use]
 pub fn route_dns_args(tunnel: &str, hostname: &str, origincert: &Path) -> Vec<OsString> {
     vec![
@@ -92,8 +97,38 @@ pub fn route_dns_args(tunnel: &str, hostname: &str, origincert: &Path) -> Vec<Os
         "tunnel".into(),
         "route".into(),
         "dns".into(),
+        "--overwrite-dns".into(),
         tunnel.into(),
         hostname.into(),
+    ]
+}
+
+/// Args to clean up a tunnel's stale edge connections before deletion:
+/// `cloudflared --origincert <cert> tunnel cleanup <tunnel>`.
+///
+/// Run before [`delete_args`] so `cloudflared tunnel delete` doesn't refuse a
+/// tunnel that still shows active connections from a just-stopped process.
+#[must_use]
+pub fn cleanup_args(tunnel: &str, origincert: &Path) -> Vec<OsString> {
+    vec![
+        "--origincert".into(),
+        origincert.as_os_str().to_os_string(),
+        "tunnel".into(),
+        "cleanup".into(),
+        tunnel.into(),
+    ]
+}
+
+/// Args to delete a named tunnel from the account:
+/// `cloudflared --origincert <cert> tunnel delete <tunnel>`.
+#[must_use]
+pub fn delete_args(tunnel: &str, origincert: &Path) -> Vec<OsString> {
+    vec![
+        "--origincert".into(),
+        origincert.as_os_str().to_os_string(),
+        "tunnel".into(),
+        "delete".into(),
+        tunnel.into(),
     ]
 }
 
@@ -214,6 +249,7 @@ mod tests {
                 "tunnel",
                 "route",
                 "dns",
+                "--overwrite-dns",
                 "mysite",
                 "app.example.com",
             ]
@@ -225,5 +261,18 @@ mod tests {
         let args = strings(&list_args(Path::new("/t/cert.pem")));
         assert!(args.iter().any(|a| a == "--output"));
         assert!(args.iter().any(|a| a == "json"));
+    }
+
+    #[test]
+    fn cleanup_then_delete_target_the_named_tunnel() {
+        let cert = Path::new("/t/cert.pem");
+        assert_eq!(
+            strings(&cleanup_args("mysite", cert)),
+            vec!["--origincert", "/t/cert.pem", "tunnel", "cleanup", "mysite"]
+        );
+        assert_eq!(
+            strings(&delete_args("mysite", cert)),
+            vec!["--origincert", "/t/cert.pem", "tunnel", "delete", "mysite"]
+        );
     }
 }

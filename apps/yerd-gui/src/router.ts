@@ -61,8 +61,8 @@ export const router = createRouter({
       path: "/integrations",
       name: "integrations",
       meta: {
-        title: "Integrations",
-        subtitle: "Publish local sites to the internet via Cloudflare Tunnel",
+        title: "Share",
+        subtitle: "Publish a local site to the internet over a secure public URL",
       },
       component: () => import("@/views/IntegrationsView.vue"),
     },

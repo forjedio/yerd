@@ -285,6 +285,11 @@ pub enum Response {
         tunnels: Vec<NamedTunnelMeta>,
         /// The sites enabled in the named tunnel (site → hostname).
         sites: Vec<SiteHostname>,
+        /// The authorized Cloudflare zone (domain) the account cert is scoped to,
+        /// e.g. `"example.com"`. `None` when not logged in or unresolvable.
+        /// `#[serde(default, skip_serializing_if)]` keeps the wire additive.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        zone: Option<String>,
     },
 }
 
@@ -450,6 +455,7 @@ mod variant_name_pinning {
                 web_unbound: None,
                 dns_unbound: None,
                 boot_id: None,
+                shared_sites: 0,
             }),
         });
         pin_response(Response::Diagnoses {
@@ -573,6 +579,7 @@ mod variant_name_pinning {
                 site: "app".into(),
                 hostname: "app.example.com".into(),
             }],
+            zone: None,
         });
         for c in [
             ErrorCode::NotFound,

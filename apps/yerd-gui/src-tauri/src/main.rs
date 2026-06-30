@@ -132,6 +132,7 @@ fn main() {
             commands::tunnel_status,
             commands::cloudflared_login,
             commands::create_named_tunnel,
+            commands::delete_named_tunnel,
             commands::list_named_tunnels,
             commands::route_tunnel_dns,
             commands::set_site_tunnel,

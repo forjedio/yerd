@@ -300,6 +300,11 @@ pub enum TunnelAction {
         /// The tunnel name to create.
         name: String,
     },
+    /// Delete a named tunnel from the account and forget it locally.
+    Delete {
+        /// The tunnel name to delete.
+        name: String,
+    },
     /// List the named tunnels recorded locally.
     List,
     /// Route a public hostname to a named tunnel (creates the DNS record).

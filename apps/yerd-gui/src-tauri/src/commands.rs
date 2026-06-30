@@ -619,6 +619,11 @@ pub async fn create_named_tunnel(name: String) -> Result<Response, GuiError> {
 }
 
 #[tauri::command]
+pub async fn delete_named_tunnel(name: String) -> Result<Response, GuiError> {
+    finish(exchange(&Request::DeleteNamedTunnel { name }).await?)
+}
+
+#[tauri::command]
 pub async fn list_named_tunnels() -> Result<Response, GuiError> {
     finish(exchange(&Request::ListNamedTunnels).await?)
 }

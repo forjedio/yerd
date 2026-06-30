@@ -578,6 +578,7 @@ fn response_status_byte_shape() {
             web_unbound: None,
             dns_unbound: None,
             boot_id: None,
+            shared_sites: 0,
         }),
     };
     let s = serde_json::to_string(&r).unwrap();
@@ -675,6 +676,7 @@ fn sample_status_report() -> StatusReport {
         web_unbound: None,
         dns_unbound: None,
         boot_id: None,
+        shared_sites: 0,
     }
 }
 
@@ -1483,6 +1485,22 @@ fn status_dns_unbound_appears_only_when_some() {
     assert_eq!(back, report);
 }
 
+#[test]
+fn status_shared_sites_appears_only_when_nonzero() {
+    let mut report = sample_status_report();
+    let s = serde_json::to_string(&report).unwrap();
+    assert!(
+        !s.contains("shared_sites"),
+        "zero shared_sites must be omitted: {s}"
+    );
+
+    report.shared_sites = 3;
+    let s = serde_json::to_string(&report).unwrap();
+    assert!(s.contains(r#""shared_sites":3"#), "{s}");
+    let back: StatusReport = serde_json::from_str(&s).unwrap();
+    assert_eq!(back, report);
+}
+
 // ---------- Tools ----------
 
 #[test]
@@ -1993,7 +2011,18 @@ fn request_stop_named_tunnel_byte_shape() {
 }
 
 #[test]
+fn request_delete_named_tunnel_byte_shape() {
+    let r = Request::DeleteNamedTunnel {
+        name: "mysite".into(),
+    };
+    let s = serde_json::to_string(&r).unwrap();
+    assert_eq!(s, r#"{"type":"delete_named_tunnel","name":"mysite"}"#);
+    assert_eq!(serde_json::from_str::<Request>(&s).unwrap(), r);
+}
+
+#[test]
 fn response_named_tunnels_byte_shape() {
+    // `zone: None` is skipped, preserving the byte shape for older clients.
     let r = Response::NamedTunnels {
         tunnels: vec![NamedTunnelMeta {
             name: "mysite".into(),
@@ -2003,11 +2032,27 @@ fn response_named_tunnels_byte_shape() {
             site: "app".into(),
             hostname: "app.example.com".into(),
         }],
+        zone: None,
     };
     let s = serde_json::to_string(&r).unwrap();
     assert_eq!(
         s,
         r#"{"type":"named_tunnels","tunnels":[{"name":"mysite","uuid":"uuid-123"}],"sites":[{"site":"app","hostname":"app.example.com"}]}"#
+    );
+    assert_eq!(serde_json::from_str::<Response>(&s).unwrap(), r);
+}
+
+#[test]
+fn response_named_tunnels_with_zone_byte_shape() {
+    let r = Response::NamedTunnels {
+        tunnels: vec![],
+        sites: vec![],
+        zone: Some("example.com".into()),
+    };
+    let s = serde_json::to_string(&r).unwrap();
+    assert_eq!(
+        s,
+        r#"{"type":"named_tunnels","tunnels":[],"sites":[],"zone":"example.com"}"#
     );
     assert_eq!(serde_json::from_str::<Response>(&s).unwrap(), r);
 }

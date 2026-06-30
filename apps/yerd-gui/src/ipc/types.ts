@@ -189,6 +189,9 @@ export interface StatusReport {
    *  it to confirm a restart completed (the re-exec preserves the pid). Omitted
    *  by a daemon predating the field. */
   boot_id?: number | null;
+  /** Number of sites currently shared publicly (quick tunnels + named-tunnel
+   *  exposed sites). Omitted/`0` when nothing is shared. */
+  shared_sites?: number;
 }
 
 export type Severity = "ok" | "warn" | "fail";
@@ -450,6 +453,8 @@ export type Response =
       type: "named_tunnels";
       tunnels: NamedTunnelMeta[];
       sites: SiteHostname[];
+      /** Authorized Cloudflare zone (domain), when resolvable. */
+      zone?: string;
     };
 
 /** Self-update release channel (mirrors `yerd_ipc::Channel`). */

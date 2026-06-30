@@ -51,9 +51,16 @@ enum LoginEnd {
     TimedOut,
 }
 
-/// `{data}/tunnel/cert.pem` - the account origin cert from `cloudflared login`.
-fn origincert(dirs: &PlatformDirs) -> PathBuf {
-    install::tunnel_dir(dirs).join("cert.pem")
+/// `{data}/tunnel/.cloudflared/cert.pem` - the account origin cert.
+///
+/// `cloudflared tunnel login` ignores `--origincert` for the *write* and always
+/// saves the cert to `$HOME/.cloudflared/cert.pem`; since we pin
+/// `HOME={data}/tunnel`, that resolves here. Reading commands (`create`/`route`/
+/// `run`) are pointed back at this same path via `--origincert`.
+pub(super) fn origincert(dirs: &PlatformDirs) -> PathBuf {
+    install::tunnel_dir(dirs)
+        .join(".cloudflared")
+        .join("cert.pem")
 }
 
 /// `{data}/tunnel/creds` - per-tunnel credentials JSONs.
@@ -338,29 +345,43 @@ pub async fn create(name: &str, state: &DaemonState) -> Response {
     Response::Ok
 }
 
-/// `ListNamedTunnels` - the named tunnels recorded locally plus the per-site
-/// hostname mappings enabled in the consolidated tunnel (no network).
+/// `ListNamedTunnels` - the named tunnels recorded locally, the per-site hostname
+/// mappings enabled in the consolidated tunnel, and the authorized Cloudflare
+/// zone. The zone is resolved via a bounded, cached Cloudflare API call (see
+/// [`super::credentials::resolve_zone`]); everything else is read from config.
 pub async fn list(state: &DaemonState) -> Response {
-    let cfg = state.config.lock().await;
-    let tunnels = cfg
-        .tunnel
-        .named
-        .iter()
-        .map(|(name, uuid)| NamedTunnelMeta {
-            name: name.clone(),
-            uuid: uuid.clone(),
-        })
-        .collect();
-    let sites = cfg
-        .tunnel
-        .sites
-        .iter()
-        .map(|(site, hostname)| SiteHostname {
-            site: site.clone(),
-            hostname: hostname.clone(),
-        })
-        .collect();
-    Response::NamedTunnels { tunnels, sites }
+    let (tunnels, sites) = {
+        let cfg = state.config.lock().await;
+        let tunnels = cfg
+            .tunnel
+            .named
+            .iter()
+            .map(|(name, uuid)| NamedTunnelMeta {
+                name: name.clone(),
+                uuid: uuid.clone(),
+            })
+            .collect();
+        let sites = cfg
+            .tunnel
+            .sites
+            .iter()
+            .map(|(site, hostname)| SiteHostname {
+                site: site.clone(),
+                hostname: hostname.clone(),
+            })
+            .collect();
+        (tunnels, sites)
+    };
+    let zone = if is_logged_in(&state.dirs) {
+        super::credentials::resolve_zone(&state.dirs).await
+    } else {
+        None
+    };
+    Response::NamedTunnels {
+        tunnels,
+        sites,
+        zone,
+    }
 }
 
 /// `RouteTunnelDns` - create the proxied CNAME routing `hostname` to `tunnel`.
@@ -502,4 +523,72 @@ pub async fn stop(state: &DaemonState) -> Response {
         }
     }
     super::tunnels_response(state).await
+}
+
+/// `DeleteNamedTunnel` - delete `name` from the Cloudflare account and forget it
+/// locally. Refuses any `name` that isn't the one recorded tunnel (v1 is
+/// single-tunnel), so a stray request can't destroy an unrelated account tunnel.
+/// Stops the running process, runs `cloudflared tunnel cleanup` (so the
+/// just-stopped edge connections don't block deletion) then `tunnel delete`,
+/// removes the credentials file, and clears the persisted tunnel + site mappings
+/// (the per-site DNS records point at the now-deleted tunnel, so the clean slate
+/// avoids re-routing a stale UUID; the records themselves remain on the account
+/// and need removing in the Cloudflare dashboard). Best-effort cleanup; a failed
+/// `delete` is surfaced.
+pub async fn delete(name: &str, state: &DaemonState) -> Response {
+    if !install::is_installed(&state.dirs) {
+        return not_installed();
+    }
+    if !is_logged_in(&state.dirs) {
+        return need_login();
+    }
+    if !is_valid_tunnel_name(name) {
+        return Response::Error {
+            code: ErrorCode::InvalidPath,
+            message: "invalid tunnel name".into(),
+        };
+    }
+
+    let _guard = state.tunnel_mutate.lock().await;
+
+    let is_configured = state
+        .config
+        .lock()
+        .await
+        .tunnel
+        .named
+        .keys()
+        .any(|n| n == name);
+    if !is_configured {
+        return Response::Error {
+            code: ErrorCode::NotFound,
+            message: "no such named tunnel".into(),
+        };
+    }
+
+    let _ = state.tunnel_manager.lock().await.stop(NAMED_KEY).await;
+
+    let cert = origincert(&state.dirs);
+    let _ = run_oneshot(&state.dirs, yerd_tunnel::args::cleanup_args(name, &cert)).await;
+    match run_oneshot(&state.dirs, yerd_tunnel::args::delete_args(name, &cert)).await {
+        Ok(out) if out.status.success() => {}
+        Ok(out) => return internal(format!("delete tunnel failed: {}", last_error_line(&out))),
+        Err(e) => return internal(e),
+    }
+
+    let _ = std::fs::remove_file(creds_file(&state.dirs, name));
+
+    let mut cfg_guard = state.config.lock().await;
+    let mut new = cfg_guard.clone();
+    new.tunnel.named.remove(name);
+    new.tunnel.sites.clear();
+    if let Err(e) = new.validate() {
+        return internal(format!("config validation failed: {e}"));
+    }
+    if let Err(e) = new.save(&state.config_path) {
+        return internal(format!("config save failed: {e}"));
+    }
+    *cfg_guard = new;
+    tracing::info!(name, "deleted named tunnel");
+    Response::Ok
 }

@@ -377,6 +377,11 @@ export async function createNamedTunnel(name: string): Promise<void> {
   ensureOk(await call<Response>("create_named_tunnel", { name }));
 }
 
+/** Delete a named tunnel from the account and forget it locally. */
+export async function deleteNamedTunnel(name: string): Promise<void> {
+  ensureOk(await call<Response>("delete_named_tunnel", { name }));
+}
+
 /** The named tunnels recorded locally. */
 export async function listNamedTunnels(): Promise<NamedTunnelsResponse> {
   return ensureOk(await call<Response>("list_named_tunnels")) as NamedTunnelsResponse;

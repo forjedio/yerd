@@ -247,6 +247,7 @@ fn tunnel_request(action: &TunnelAction) -> Request {
         TunnelAction::Status => Request::TunnelStatus,
         TunnelAction::Login => Request::CloudflaredLogin,
         TunnelAction::Create { name } => Request::CreateNamedTunnel { name: name.clone() },
+        TunnelAction::Delete { name } => Request::DeleteNamedTunnel { name: name.clone() },
         TunnelAction::List => Request::ListNamedTunnels,
         TunnelAction::Route { tunnel, hostname } => Request::RouteTunnelDns {
             tunnel: tunnel.clone(),
@@ -482,9 +483,11 @@ pub fn render(resp: &Response, json: bool) -> Rendered {
             tunnels,
             cloudflared,
         } => Rendered::ok(format_tunnels(tunnels, cloudflared)),
-        Response::NamedTunnels { tunnels, sites } => {
-            Rendered::ok(format_named_tunnels(tunnels, sites))
-        }
+        Response::NamedTunnels {
+            tunnels,
+            sites,
+            zone,
+        } => Rendered::ok(format_named_tunnels(tunnels, sites, zone.as_deref())),
         Response::UpdateStatus {
             current,
             latest_stable,
@@ -690,6 +693,7 @@ fn format_tunnels(tunnels: &[TunnelInfo], cloudflared: &CloudflaredStatus) -> St
 fn format_named_tunnels(
     tunnels: &[yerd_ipc::NamedTunnelMeta],
     sites: &[yerd_ipc::SiteHostname],
+    zone: Option<&str>,
 ) -> String {
     let mut out = if tunnels.is_empty() {
         "no named tunnels".to_owned()
@@ -700,6 +704,9 @@ fn format_named_tunnels(
         }
         s
     };
+    if let Some(zone) = zone {
+        let _ = write!(out, "\n\nauthorized domain: {zone}");
+    }
     if !sites.is_empty() {
         out.push_str("\n\nEXPOSED SITE\tHOSTNAME");
         for s in sites {
@@ -1650,6 +1657,7 @@ mod tests {
             web_unbound: None,
             dns_unbound: None,
             boot_id: None,
+            shared_sites: 0,
         }
     }
 

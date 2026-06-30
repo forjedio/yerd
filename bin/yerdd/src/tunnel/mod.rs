@@ -8,6 +8,7 @@
 //! simultaneously across an `.await`. The `cloudflared` install runs under
 //! `tunnel_mutate` only.
 
+pub mod credentials;
 pub mod install;
 pub mod named;
 
@@ -197,6 +198,32 @@ pub async fn stop_tunnel(site: &str, state: &DaemonState) -> Response {
 /// `TunnelStatus`: the live tunnels plus `cloudflared` install status.
 pub async fn tunnel_status(state: &DaemonState) -> Response {
     tunnels_response(state).await
+}
+
+/// Number of distinct sites currently shared to the public internet: sites with
+/// a live quick tunnel, plus the sites the named tunnel exposes when it is
+/// running. A site shared via both is counted once. Surfaced in `StatusReport`
+/// so the GUI can badge the count.
+pub async fn shared_site_count(state: &DaemonState) -> u32 {
+    let (mut shared, named_running) = {
+        let mut mgr = state.tunnel_manager.lock().await;
+        let snaps = mgr.snapshots();
+        let shared: std::collections::BTreeSet<String> = snaps
+            .iter()
+            .filter(|s| matches!(s.kind, TunnelKind::Quick) && s.state == TunnelState::Running)
+            .map(|s| s.site.clone())
+            .collect();
+        let named_running = snaps
+            .iter()
+            .any(|s| matches!(s.kind, TunnelKind::Named) && s.state == TunnelState::Running);
+        (shared, named_running)
+    };
+    if named_running {
+        for site in state.config.lock().await.tunnel.sites.keys() {
+            shared.insert(site.clone());
+        }
+    }
+    u32::try_from(shared.len()).unwrap_or(u32::MAX)
 }
 
 /// Shared `Response::Tunnels` builder.
