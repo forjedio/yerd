@@ -308,6 +308,12 @@ async function copyUrl(url: string): Promise<void> {
   }
 }
 
+// Open an external URL through the Tauri shell opener, surfacing (not floating)
+// any failure.
+function openExternal(url: string): void {
+  void openInBrowser(url).catch(() => toast.error("Couldn't open link"));
+}
+
 // Light refresh of just the tunnel list while any tunnel is live, so a
 // cloudflared child that dies (state -> "failed") becomes visible without a
 // manual reload. Skipped while a long-running op is in flight to avoid clobbering
@@ -435,7 +441,7 @@ onUnmounted(registerViewActions({ refresh: () => void load() }));
                     v-if="t.url ?? t.hostname"
                     type="button"
                     class="font-mono text-xs text-brand hover:underline"
-                    @click="openInBrowser(t.url ?? `https://${t.hostname}`)"
+                    @click="openExternal(t.url ?? `https://${t.hostname}`)"
                   >
                     {{ t.url ?? t.hostname }}
                   </button>
@@ -533,7 +539,7 @@ onUnmounted(registerViewActions({ refresh: () => void load() }));
                     v-if="namedRunning"
                     variant="outline"
                     size="sm"
-                    :disabled="busy !== null"
+                    :disabled="busy !== null || connected !== true"
                     @click="doStopNamed"
                   >
                     <Spinner v-if="busy === 'named'" class="mr-1.5 size-3.5" />
@@ -542,7 +548,7 @@ onUnmounted(registerViewActions({ refresh: () => void load() }));
                   </Button>
                   <Button
                     size="sm"
-                    :disabled="busy !== null || namedTunnels.length === 0"
+                    :disabled="busy !== null || namedTunnels.length === 0 || connected !== true"
                     @click="doStartNamed"
                   >
                     <Spinner v-if="busy === 'named'" class="mr-1.5 size-3.5" />
@@ -580,7 +586,7 @@ onUnmounted(registerViewActions({ refresh: () => void load() }));
                         v-if="enabledHosts[s.name]"
                         variant="ghost"
                         size="sm"
-                        :disabled="busy !== null"
+                        :disabled="busy !== null || connected !== true"
                         @click="doDisableSite(s.name)"
                       >
                         <Spinner v-if="busy === `enable:${s.name}`" class="mr-1.5 size-3.5" />
@@ -590,7 +596,7 @@ onUnmounted(registerViewActions({ refresh: () => void load() }));
                         v-else
                         variant="outline"
                         size="sm"
-                        :disabled="busy !== null || !(hostInputs[s.name] ?? '').trim()"
+                        :disabled="busy !== null || !(hostInputs[s.name] ?? '').trim() || connected !== true"
                         @click="doEnableSite(s.name)"
                       >
                         <Spinner v-if="busy === `enable:${s.name}`" class="mr-1.5 size-3.5" />

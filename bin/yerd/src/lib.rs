@@ -368,6 +368,12 @@ async fn stream_tunnel_job(req: yerd_ipc::Request) -> ExitCode {
     use std::time::Duration;
     use yerd_ipc::{JobState, Request, Response};
 
+    let noun = if matches!(req, Request::CloudflaredLogin) {
+        "login"
+    } else {
+        "install"
+    };
+
     let job_id = match transport::exchange(&req).await {
         Ok(Response::JobStarted { job_id }) => job_id,
         Ok(Response::Error { message, .. }) => {
@@ -375,7 +381,7 @@ async fn stream_tunnel_job(req: yerd_ipc::Request) -> ExitCode {
             return ExitCode::from(1);
         }
         Ok(_) => {
-            eprintln!("yerd: unexpected response starting install");
+            eprintln!("yerd: unexpected response starting {noun}");
             return ExitCode::from(74);
         }
         Err(e @ ClientError::DaemonUnreachable(_)) => {
@@ -417,7 +423,7 @@ async fn stream_tunnel_job(req: yerd_ipc::Request) -> ExitCode {
                         return ExitCode::from(1);
                     }
                     JobState::Cancelled => {
-                        eprintln!("yerd: install cancelled");
+                        eprintln!("yerd: {noun} cancelled");
                         return ExitCode::from(1);
                     }
                 }
@@ -427,7 +433,7 @@ async fn stream_tunnel_job(req: yerd_ipc::Request) -> ExitCode {
                 return ExitCode::from(1);
             }
             Ok(_) => {
-                eprintln!("yerd: unexpected response polling install");
+                eprintln!("yerd: unexpected response polling {noun}");
                 return ExitCode::from(74);
             }
             Err(e @ ClientError::DaemonUnreachable(_)) => {

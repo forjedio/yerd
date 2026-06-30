@@ -189,7 +189,9 @@ pub async fn login_streamed(state: Arc<DaemonState>) -> Response {
                 .finish(&id, yerd_ipc::JobState::Cancelled, None)
                 .await;
         } else if is_logged_in(&state.dirs) {
-            let _ = crate::secure_fs::restrict_to_owner(&origincert(&state.dirs));
+            if let Err(e) = crate::secure_fs::restrict_to_owner(&origincert(&state.dirs)) {
+                tracing::warn!(error = %e, "could not tighten permissions on cloudflared cert");
+            }
             state
                 .jobs
                 .finish(&id, yerd_ipc::JobState::Succeeded, None)
@@ -271,7 +273,9 @@ pub async fn create(name: &str, state: &DaemonState) -> Response {
     if !out.status.success() {
         return internal(format!("create tunnel failed: {}", last_error_line(&out)));
     }
-    let _ = crate::secure_fs::restrict_to_owner(&creds);
+    if let Err(e) = crate::secure_fs::restrict_to_owner(&creds) {
+        tracing::warn!(error = %e, "could not tighten permissions on tunnel credentials");
+    }
 
     let combined = format!(
         "{}{}",
@@ -375,6 +379,8 @@ pub async fn start(state: &DaemonState) -> Response {
         return need_login();
     }
 
+    let _guard = state.tunnel_mutate.lock().await;
+
     let (uuid, tunnel_name, enabled) = {
         let cfg = state.config.lock().await;
         let Some((tunnel_name, uuid)) = cfg
@@ -429,7 +435,7 @@ pub async fn start(state: &DaemonState) -> Response {
     if let Err(e) = ensure_secret_dirs(&state.dirs) {
         return internal(e);
     }
-    if let Err(e) = std::fs::write(&config_path, config_yml.as_bytes()) {
+    if let Err(e) = yerd_php::io::atomic_write::write(&config_path, config_yml.as_bytes()) {
         return internal(format!("write tunnel config: {e}"));
     }
 

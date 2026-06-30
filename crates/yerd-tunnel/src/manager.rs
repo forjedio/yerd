@@ -543,6 +543,40 @@ mod tests {
         }
     }
 
+    /// A child that has already exited (every `try_wait` reports a crash).
+    struct DeadChild;
+
+    #[async_trait]
+    impl ChildHandle for DeadChild {
+        fn id(&self) -> u32 {
+            7
+        }
+        fn try_wait(&mut self) -> Result<Option<ExitReason>, io::Error> {
+            Ok(Some(ExitReason::Code(1)))
+        }
+        async fn wait(&mut self) -> Result<ExitReason, io::Error> {
+            Ok(ExitReason::Code(1))
+        }
+        async fn kill(
+            &mut self,
+            _signal: KillSignal,
+            _protocol: StopProtocol,
+        ) -> Result<(), io::Error> {
+            Ok(())
+        }
+    }
+
+    /// Spawns children that are immediately dead, to exercise the
+    /// crash → backoff → restart → permanent-failure path.
+    struct CrashSpawner;
+
+    impl ProcessSpawner for CrashSpawner {
+        type Child = DeadChild;
+        fn spawn(&self, _cmd: StdCommand) -> Result<DeadChild, io::Error> {
+            Ok(DeadChild)
+        }
+    }
+
     /// Writes a canned logfile when spawned (standing in for cloudflared's own
     /// output), then returns a live [`FakeChild`].
     struct FakeSpawner {
@@ -664,6 +698,40 @@ mod tests {
         // Stopping an unknown site is a no-op; advancing a gone site is Gone.
         mgr.stop("nope").await.unwrap();
         assert_eq!(mgr.advance("blog").await.unwrap(), Step::Gone);
+    }
+
+    #[tokio::test]
+    async fn crashing_tunnel_exhausts_restart_budget_then_fails_permanently() {
+        let tmp = tempfile::tempdir().unwrap();
+        let logfile = tmp.path().join("dead.log");
+        let mut mgr = TunnelManager::new(CrashSpawner, FakeClock);
+        mgr.begin(
+            "dead",
+            LaunchSpec {
+                binary: Path::new("/cf").to_path_buf(),
+                args: vec![],
+                env: vec![],
+                logfile,
+            },
+            TunnelKind::Quick,
+            None,
+        )
+        .await
+        .unwrap();
+
+        let err = loop {
+            match mgr.advance("dead").await {
+                Ok(Step::Continue) => {}
+                Ok(Step::Sleep(d)) => tokio::time::sleep(d).await,
+                Ok(other) => panic!("unexpected terminal step {other:?}"),
+                Err(e) => break e,
+            }
+        };
+        assert!(
+            matches!(err, TunnelError::PermanentFailure { .. }),
+            "got {err:?}"
+        );
+        assert_eq!(mgr.snapshots()[0].state, TunnelState::Failed);
     }
 
     #[tokio::test]

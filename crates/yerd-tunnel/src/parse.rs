@@ -24,12 +24,13 @@ pub fn find_auth_url(chunk: &str) -> Option<String> {
     })
 }
 
-/// Whether a log line indicates a named tunnel finished registering with the
-/// Cloudflare edge (i.e. it is now serving).
+/// Whether the log output so far indicates a named tunnel finished registering
+/// with the Cloudflare edge (i.e. it is now serving). Fed the whole log buffer,
+/// not a single line.
 #[must_use]
-pub fn is_named_ready(line: &str) -> bool {
+pub fn is_named_ready(chunk: &str) -> bool {
     const MARKERS: [&str; 2] = ["Registered tunnel connection", "Connection registered"];
-    MARKERS.iter().any(|m| line.contains(m))
+    MARKERS.iter().any(|m| chunk.contains(m))
 }
 
 /// Extract the first UUID (`8-4-4-4-12` lowercase hex) from text, e.g. the id

@@ -422,16 +422,35 @@ fn is_safe_key(s: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_' || b == b'.')
 }
 
-/// A loose hostname sanity check: no whitespace, at least one dot, and only
-/// hostname characters. Cloudflare is the real authority on the name; this just
-/// catches obvious junk before it reaches `config.yml`.
+/// A hostname sanity check: a dotted name (at least two labels) where each label
+/// is 1..=63 hostname characters and neither starts nor ends with a hyphen, with
+/// a total length cap. Cloudflare is the real authority on the name; this catches
+/// obvious junk (empty labels like `a..b`, leading-hyphen labels, overlong
+/// names) before it reaches `config.yml`.
 fn is_plausible_hostname(host: &str) -> bool {
-    host.contains('.')
-        && !host.starts_with('.')
-        && !host.ends_with('.')
-        && host
+    if host.is_empty() || host.len() > 253 {
+        return false;
+    }
+    let mut labels = 0usize;
+    for label in host.split('.') {
+        labels += 1;
+        if !is_hostname_label(label) {
+            return false;
+        }
+    }
+    labels >= 2
+}
+
+/// One DNS label: non-empty, at most 63 bytes, only alphanumerics and hyphens,
+/// and not hyphen-bounded.
+fn is_hostname_label(label: &str) -> bool {
+    !label.is_empty()
+        && label.len() <= 63
+        && !label.starts_with('-')
+        && !label.ends_with('-')
+        && label
             .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'-')
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-')
 }
 
 /// Checked last: `update_channel` must be one of [`crate::schema::UPDATE_CHANNELS`]
@@ -668,10 +687,16 @@ mod tests {
     fn is_plausible_hostname_checks() {
         assert!(is_plausible_hostname("app.example.com"));
         assert!(is_plausible_hostname("a.b"));
+        assert!(is_plausible_hostname("a-b.example.com"));
         assert!(!is_plausible_hostname("nodot"));
         assert!(!is_plausible_hostname(".leading"));
         assert!(!is_plausible_hostname("trailing."));
         assert!(!is_plausible_hostname("has space.com"));
+        assert!(!is_plausible_hostname("a..b"));
+        assert!(!is_plausible_hostname("-app.com"));
+        assert!(!is_plausible_hostname("app-.com"));
+        assert!(!is_plausible_hostname(&format!("{}.com", "a".repeat(64))));
+        assert!(!is_plausible_hostname(&format!("{}.com", "a".repeat(252))));
     }
 
     #[test]

@@ -313,10 +313,12 @@ pub enum TunnelAction {
     SetHost {
         /// Site name.
         site: String,
-        /// The public hostname to assign. Omit with `--clear` to remove it.
+        /// The public hostname to assign. Required unless `--clear` is given, so
+        /// forgetting it can't silently clear the mapping.
+        #[arg(required_unless_present = "clear")]
         hostname: Option<String>,
         /// Clear the site's hostname instead of setting one.
-        #[arg(long)]
+        #[arg(long, conflicts_with = "hostname")]
         clear: bool,
     },
     /// (Re)start the named tunnel, exposing every site that has a hostname set.

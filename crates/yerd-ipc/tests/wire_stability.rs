@@ -1884,6 +1884,26 @@ fn response_tunnels_named_and_empty_byte_shape() {
 }
 
 #[test]
+fn tunnel_run_state_each_variant_byte_shape() {
+    for (st, expected) in [
+        (TunnelRunState::Running, r#""running""#),
+        (TunnelRunState::Failed, r#""failed""#),
+    ] {
+        assert_eq!(serde_json::to_string(&st).unwrap(), expected);
+    }
+}
+
+#[test]
+fn tunnel_kind_each_variant_byte_shape() {
+    for (k, expected) in [
+        (TunnelKind::Quick, r#""quick""#),
+        (TunnelKind::Named, r#""named""#),
+    ] {
+        assert_eq!(serde_json::to_string(&k).unwrap(), expected);
+    }
+}
+
+#[test]
 fn request_cloudflared_login_byte_shape() {
     let s = serde_json::to_string(&Request::CloudflaredLogin).unwrap();
     assert_eq!(s, r#"{"type":"cloudflared_login"}"#);
