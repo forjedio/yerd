@@ -136,12 +136,19 @@ type SharePageData = {
   cloudflared: CloudflaredStatus;
   tunnels: TunnelInfo[];
   sites: Site[];
-  named: Awaited<ReturnType<typeof listNamedTunnels>> | null;
+  named: Awaited<ReturnType<typeof listNamedTunnels>>;
 };
 
+// The named-tunnel list is fetched unconditionally: the daemon returns the saved
+// tunnels and site mappings even when logged out (only the live zone needs an
+// account), so a logged-out user keeps visibility and control of an existing
+// tunnel instead of having it vanish from the UI.
 async function fetchSharePage(): Promise<SharePageData> {
-  const [status, siteList] = await Promise.all([tunnelStatus(), listSites()]);
-  const named = status.cloudflared.logged_in ? await listNamedTunnels() : null;
+  const [status, siteList, named] = await Promise.all([
+    tunnelStatus(),
+    listSites(),
+    listNamedTunnels(),
+  ]);
   return { cloudflared: status.cloudflared, tunnels: status.tunnels, sites: siteList, named };
 }
 
@@ -177,21 +184,15 @@ function applyData(d: SharePageData): void {
   if (shareSite.value && !shareableSites.value.some((s) => s.name === shareSite.value)) {
     shareSite.value = "";
   }
-  if (d.named) {
-    namedTunnels.value = d.named.tunnels;
-    authorizedDomain.value = d.named.zone ?? null;
-    enabledHosts.value = Object.fromEntries(d.named.sites.map((s) => [s.site, s.hostname]));
-    // Seed each site's input from its enabled hostname, else the suggested
-    // {site}.{domain} (keep any edits the user already typed).
-    for (const s of d.sites) {
-      if (hostInputs.value[s.name] === undefined || hostInputs.value[s.name] === "") {
-        hostInputs.value[s.name] = enabledHosts.value[s.name] ?? suggestedHost(s.name);
-      }
+  namedTunnels.value = d.named.tunnels;
+  authorizedDomain.value = d.named.zone ?? null;
+  enabledHosts.value = Object.fromEntries(d.named.sites.map((s) => [s.site, s.hostname]));
+  // Seed each site's input from its enabled hostname, else the suggested
+  // {site}.{domain} (keep any edits the user already typed).
+  for (const s of d.sites) {
+    if (hostInputs.value[s.name] === undefined || hostInputs.value[s.name] === "") {
+      hostInputs.value[s.name] = enabledHosts.value[s.name] ?? suggestedHost(s.name);
     }
-  } else {
-    namedTunnels.value = [];
-    enabledHosts.value = {};
-    authorizedDomain.value = null;
   }
 }
 
@@ -304,10 +305,10 @@ async function doEnableSite(site: string): Promise<void> {
     try {
       await routeTunnelDns(tunnel.name, hostname);
     } catch (routeErr) {
-      // Routing failed (e.g. the domain isn't on this Cloudflare account), so
-      // roll back the persisted mapping rather than leave a site flagged
-      // "exposed" with no DNS record behind it.
-      await setSiteTunnel(site, null).catch(() => {});
+      const rolledBack = await setSiteTunnel(site, null)
+        .then(() => true)
+        .catch(() => false);
+      if (!rolledBack) await reload();
       throw routeErr;
     }
     setNamedSite(site, hostname);
@@ -618,20 +619,28 @@ onUnmounted(registerViewActions({ refresh: () => void reload() }));
         </CardHeader>
 
         <CardContent>
-          <div v-if="!loggedIn" class="flex items-center justify-between gap-4">
+          <div
+            v-if="!loggedIn"
+            class="mb-5 flex items-center justify-between gap-4 rounded-md border bg-muted/40 px-3 py-2.5"
+          >
             <span class="text-sm text-muted-foreground">
-              Not connected to a Cloudflare account.
+              {{ hasNamedTunnel
+                ? "Reconnect your Cloudflare account to manage this tunnel."
+                : "Not connected to a Cloudflare account." }}
             </span>
             <Button :disabled="busy !== null || connected !== true" @click="doLogin">
               <Cloud class="mr-1.5 size-3.5" /> Connect Cloudflare account
             </Button>
           </div>
 
-          <div v-else class="space-y-5">
+          <div v-if="loggedIn || hasNamedTunnel" class="space-y-5">
             <div class="flex items-center justify-between gap-2">
-              <Badge variant="secondary">
+              <Badge v-if="loggedIn" variant="secondary">
                 Cloudflare connected<template v-if="authorizedDomain">
                   · {{ authorizedDomain }}</template>
+              </Badge>
+              <Badge v-else variant="outline" class="text-muted-foreground">
+                Account disconnected
               </Badge>
               <div class="flex items-center gap-2">
                 <Badge v-if="namedRunning" variant="secondary" class="gap-1">
@@ -648,7 +657,7 @@ onUnmounted(registerViewActions({ refresh: () => void reload() }));
                   v-if="anyExposed"
                   variant="outline"
                   size="sm"
-                  :disabled="busy !== null || connected !== true"
+                  :disabled="busy !== null || connected !== true || !loggedIn"
                   @click="doRestartNamed"
                 >
                   <Spinner v-if="busy === 'named'" class="mr-1.5 size-3.5" />
@@ -668,7 +677,7 @@ onUnmounted(registerViewActions({ refresh: () => void reload() }));
                     class="flex-1"
                   />
                   <Button
-                    :disabled="busy !== null || !newTunnelName.trim() || connected !== true"
+                    :disabled="busy !== null || !newTunnelName.trim() || connected !== true || !loggedIn"
                     @click="doCreateTunnel"
                   >
                     <Spinner v-if="busy === 'create'" class="mr-1.5 size-3.5" />
@@ -690,7 +699,7 @@ onUnmounted(registerViewActions({ refresh: () => void reload() }));
                     variant="ghost"
                     size="sm"
                     class="shrink-0 text-destructive hover:bg-destructive/10 hover:text-destructive"
-                    :disabled="busy !== null || connected !== true"
+                    :disabled="busy !== null || connected !== true || !loggedIn"
                     @click="askDeleteTunnel(t.name)"
                   >
                     <Spinner v-if="busy === 'delete-tunnel'" class="mr-1.5 size-3.5" />
@@ -761,7 +770,7 @@ onUnmounted(registerViewActions({ refresh: () => void reload() }));
                           v-else
                           variant="outline"
                           size="sm"
-                          :disabled="busy !== null || !(hostInputs[s.name] ?? '').trim() || connected !== true"
+                          :disabled="busy !== null || !(hostInputs[s.name] ?? '').trim() || connected !== true || !loggedIn"
                           @click="doEnableSite(s.name)"
                         >
                           <Spinner v-if="busy === `enable:${s.name}`" class="mr-1.5 size-3.5" />

@@ -407,11 +407,22 @@ pub async fn route_dns(tunnel: &str, hostname: &str, state: &DaemonState) -> Res
 }
 
 /// `SetSiteTunnel` - persist (or clear, with `None`) a site's public hostname.
+///
+/// Setting a hostname is rejected for a site that does not exist, so the
+/// persisted map can never accumulate entries that `list` would show but
+/// `start` silently drops. Clearing (`None`) is always allowed so a stale entry
+/// for a since-removed site can still be cleaned up.
 pub async fn set_site_hostname(
     site: &str,
     hostname: Option<&str>,
     state: &DaemonState,
 ) -> Response {
+    if hostname.is_some() && super::resolve_site(state, site).await.is_none() {
+        return Response::Error {
+            code: ErrorCode::NotFound,
+            message: format!("no site named {site:?}"),
+        };
+    }
     let mut cfg_guard = state.config.lock().await;
     let mut new = cfg_guard.clone();
     match hostname {
@@ -504,7 +515,11 @@ pub async fn start(state: &DaemonState) -> Response {
         return internal(format!("write tunnel config: {e}"));
     }
 
-    let _ = state.tunnel_manager.lock().await.stop(NAMED_KEY).await;
+    if let Err(e) = state.tunnel_manager.lock().await.stop(NAMED_KEY).await {
+        return internal(format!(
+            "could not stop the running named tunnel to apply the new config: {e}"
+        ));
+    }
     let args = yerd_tunnel::args::named_run_args(&config_path, &origincert(&state.dirs));
     let mut env = super::pinned_home_env(state);
     env.push((
@@ -566,7 +581,11 @@ pub async fn delete(name: &str, state: &DaemonState) -> Response {
         };
     }
 
-    let _ = state.tunnel_manager.lock().await.stop(NAMED_KEY).await;
+    if let Err(e) = state.tunnel_manager.lock().await.stop(NAMED_KEY).await {
+        return internal(format!(
+            "could not stop the named tunnel before deleting it: {e}"
+        ));
+    }
 
     let cert = origincert(&state.dirs);
     let _ = run_oneshot(&state.dirs, yerd_tunnel::args::cleanup_args(name, &cert)).await;

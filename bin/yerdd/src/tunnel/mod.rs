@@ -88,16 +88,32 @@ pub async fn start_quick_tunnel(site: &str, state: &DaemonState) -> Response {
     .await
 }
 
-/// The minimal pinned environment for a `cloudflared` subprocess: `HOME` points
-/// at the daemon-owned `{data}/tunnel` dir so `cloudflared` never reads or writes
-/// `~/.cloudflared`. Named runs add `TUNNEL_ORIGIN_CERT` on top of this.
+/// Daemon variables forwarded into a `cloudflared` child after the manager
+/// clears its inherited environment. The child's env is otherwise fully pinned
+/// (see [`yerd_tunnel::LaunchSpec::env`]); these are the few variables
+/// `cloudflared` legitimately needs and that are safe to pass through. `PATH`
+/// and `TMPDIR` keep subprocess/temp behaviour sane, and `SSL_CERT_FILE`/
+/// `SSL_CERT_DIR` let edge-TLS trust-store discovery work on Linux distros that
+/// rely on them. Secrets and unrelated daemon config are deliberately excluded.
+const FORWARDED_ENV: [&str; 4] = ["PATH", "TMPDIR", "SSL_CERT_FILE", "SSL_CERT_DIR"];
+
+/// The pinned environment for a `cloudflared` subprocess: `HOME` points at the
+/// daemon-owned `{data}/tunnel` dir so `cloudflared` never reads or writes
+/// `~/.cloudflared`, plus the [`FORWARDED_ENV`] allowlist the cleared child still
+/// needs. Named runs add `TUNNEL_ORIGIN_CERT` on top of this.
 pub(super) fn pinned_home_env(
     state: &DaemonState,
 ) -> Vec<(std::ffi::OsString, std::ffi::OsString)> {
-    vec![(
+    let mut env = vec![(
         "HOME".into(),
         install::tunnel_dir(&state.dirs).into_os_string(),
-    )]
+    )];
+    for key in FORWARDED_ENV {
+        if let Some(val) = std::env::var_os(key) {
+            env.push((key.into(), val));
+        }
+    }
+    env
 }
 
 /// Resolve a site by name or `.test` host to its `(name, secure, tld)`, reading
@@ -275,7 +291,18 @@ pub async fn install_cloudflared_streamed(state: Arc<DaemonState>) -> Response {
 
         state.jobs.set_phase(&id, "Installing cloudflared").await;
         let dl = crate::php_install::ReqwestDownloader::new();
-        let guard = state.tunnel_mutate.lock().await;
+        let guard = tokio::select! {
+            g = state.tunnel_mutate.lock() => g,
+            _ = cancel.changed() => {
+                drop(tx);
+                let _ = drain.await;
+                state
+                    .jobs
+                    .finish(&id, yerd_ipc::JobState::Cancelled, None)
+                    .await;
+                return;
+            }
+        };
         let result = tokio::select! {
             r = install::install(&state.dirs, &dl, Some(&tx)) => Some(r),
             _ = cancel.changed() => None,

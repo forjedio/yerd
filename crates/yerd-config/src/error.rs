@@ -128,6 +128,14 @@ pub enum ValidateErrorReason {
     /// characters outside the safe set, so it could escape a path or break the
     /// generated `config.yml` (e.g. `/`, `..`, whitespace, control bytes).
     TunnelKeyInvalid,
+    /// `[tunnel.named]` held more than one tunnel. The daemon supports a single
+    /// consolidated named tunnel and starts only the first entry, so more than
+    /// one would silently drop the rest after load.
+    TunnelMultipleNamed,
+    /// Two `[tunnel.sites]` entries mapped to the same hostname. `start` emits
+    /// one ingress rule per `(site, hostname)` pair, so a duplicate hostname
+    /// would shadow all but the first matching site.
+    TunnelDuplicateHostname,
 }
 
 impl fmt::Display for ValidateErrorReason {
@@ -154,6 +162,8 @@ impl fmt::Display for ValidateErrorReason {
             Self::TunnelEntryEmpty => "tunnel entries must have non-empty names and values",
             Self::TunnelHostnameInvalid => "tunnel.sites hostnames must be valid DNS names",
             Self::TunnelKeyInvalid => "tunnel keys and UUIDs contain unsafe characters",
+            Self::TunnelMultipleNamed => "only one named tunnel is supported",
+            Self::TunnelDuplicateHostname => "tunnel.sites hostnames must be unique",
         };
         f.write_str(msg)
     }
@@ -222,6 +232,8 @@ mod tests {
             ValidateErrorReason::TunnelEntryEmpty,
             ValidateErrorReason::TunnelHostnameInvalid,
             ValidateErrorReason::TunnelKeyInvalid,
+            ValidateErrorReason::TunnelMultipleNamed,
+            ValidateErrorReason::TunnelDuplicateHostname,
         ] {
             assert!(!r.to_string().is_empty());
             let _ = format!("{r:?}");

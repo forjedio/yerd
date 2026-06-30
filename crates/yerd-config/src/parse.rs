@@ -387,7 +387,17 @@ pub(crate) fn validate(c: &Config) -> Result<(), ConfigError> {
 /// per-site hostname must look like a DNS name (no whitespace, contains a dot).
 /// Whether the keyed site actually exists is not checked here: parked sites are
 /// discovered from disk and have no config record.
+///
+/// Two cardinality invariants the daemon relies on are also enforced, so a
+/// hand-edited config can't load into a state the runtime silently mishandles:
+/// at most one `[tunnel.named]` entry (the daemon runs a single consolidated
+/// tunnel and starts only the first), and unique `[tunnel.sites]` hostnames (one
+/// ingress rule is emitted per pair, so a duplicate hostname would shadow all
+/// but the first site).
 fn validate_tunnel(c: &Config) -> Result<(), ConfigError> {
+    if c.tunnel.named.len() > 1 {
+        return Err(ve(ValidateErrorReason::TunnelMultipleNamed));
+    }
     for (name, uuid) in &c.tunnel.named {
         if name.is_empty() || uuid.is_empty() {
             return Err(ve(ValidateErrorReason::TunnelEntryEmpty));
@@ -396,6 +406,7 @@ fn validate_tunnel(c: &Config) -> Result<(), ConfigError> {
             return Err(ve(ValidateErrorReason::TunnelKeyInvalid));
         }
     }
+    let mut seen_hostnames = std::collections::BTreeSet::new();
     for (site, hostname) in &c.tunnel.sites {
         if site.is_empty() || hostname.is_empty() {
             return Err(ve(ValidateErrorReason::TunnelEntryEmpty));
@@ -405,6 +416,9 @@ fn validate_tunnel(c: &Config) -> Result<(), ConfigError> {
         }
         if !is_plausible_hostname(hostname) {
             return Err(ve(ValidateErrorReason::TunnelHostnameInvalid));
+        }
+        if !seen_hostnames.insert(hostname.as_str()) {
+            return Err(ve(ValidateErrorReason::TunnelDuplicateHostname));
         }
     }
     Ok(())
@@ -681,6 +695,34 @@ mod tests {
                 reason: ValidateErrorReason::TunnelKeyInvalid,
             })
         ));
+    }
+
+    #[test]
+    fn tunnel_rejects_more_than_one_named_tunnel() {
+        let two = "version = 8\n[tunnel.named]\none = \"uuid-1\"\ntwo = \"uuid-2\"\n";
+        assert!(matches!(
+            Config::from_toml(two),
+            Err(ConfigError::Validate {
+                reason: ValidateErrorReason::TunnelMultipleNamed,
+            })
+        ));
+        let one = "version = 8\n[tunnel.named]\none = \"uuid-1\"\n";
+        assert!(Config::from_toml(one).is_ok());
+    }
+
+    #[test]
+    fn tunnel_rejects_duplicate_site_hostnames() {
+        let dup = "version = 8\n[tunnel.sites]\n\
+                   app = \"shared.example.com\"\nblog = \"shared.example.com\"\n";
+        assert!(matches!(
+            Config::from_toml(dup),
+            Err(ConfigError::Validate {
+                reason: ValidateErrorReason::TunnelDuplicateHostname,
+            })
+        ));
+        let unique = "version = 8\n[tunnel.sites]\n\
+                      app = \"app.example.com\"\nblog = \"blog.example.com\"\n";
+        assert!(Config::from_toml(unique).is_ok());
     }
 
     #[test]

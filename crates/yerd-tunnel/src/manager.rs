@@ -46,7 +46,9 @@ pub struct LaunchSpec {
     pub binary: PathBuf,
     /// Argument vector (excluding the program name).
     pub args: Vec<OsString>,
-    /// Environment pinned on every spawn (e.g. `HOME`, `TUNNEL_ORIGIN_CERT`).
+    /// The child's complete environment: the inherited environment is cleared
+    /// before these are applied, so this is the only environment `cloudflared`
+    /// sees (e.g. `HOME`, `TUNNEL_ORIGIN_CERT`, and any forwarded allowlist).
     pub env: Vec<(OsString, OsString)>,
     /// Logfile the child's stdout+stderr are redirected to (and tailed for
     /// readiness).
@@ -103,9 +105,10 @@ struct Instance<Ch: ChildHandle> {
     kind: TunnelKind,
     binary: PathBuf,
     args: Vec<OsString>,
-    /// Environment pinned on every spawn of this child (e.g. `HOME`,
-    /// `TUNNEL_ORIGIN_CERT`), so `cloudflared` never resolves against the real
-    /// user's home or writes secrets outside the daemon-owned dir.
+    /// The child's complete environment, applied after the inherited
+    /// environment is cleared on every spawn (e.g. `HOME`, `TUNNEL_ORIGIN_CERT`,
+    /// and any forwarded allowlist), so `cloudflared` never resolves against the
+    /// real user's home or inherits unrelated daemon secrets.
     env: Vec<(OsString, OsString)>,
     logfile: PathBuf,
     url: Option<String>,
@@ -155,6 +158,10 @@ where
     /// The first step (the spawn) is primed synchronously here so the instance
     /// is immediately `Starting` with a child, closing the window in which a
     /// concurrent `begin` could see a half-registered `Stopped` instance.
+    ///
+    /// An indeterminate `try_wait` (an `Err`, never `Ok`) counts the existing
+    /// child as alive, so a transient wait error can never make `begin`
+    /// overwrite a still-running instance and spawn a duplicate `cloudflared`.
     pub async fn begin(
         &mut self,
         site: &str,
@@ -166,7 +173,7 @@ where
             let alive = inst
                 .child
                 .as_mut()
-                .is_some_and(|ch| matches!(ch.try_wait(), Ok(None)));
+                .is_some_and(|ch| !matches!(ch.try_wait(), Ok(Some(_))));
             let in_progress = matches!(
                 inst.state,
                 PoolState::Starting { .. } | PoolState::Stopping { .. }
@@ -440,10 +447,14 @@ async fn graceful_reap<Ch: ChildHandle>(child: &mut Ch, grace: Duration) {
     }
 }
 
-/// Build the `cloudflared` command, applying the pinned `env`, redirecting
-/// stdout+stderr to a freshly truncated logfile (so a stale URL from a prior run
-/// is not re-parsed) and, on Unix, putting the child in its own process group so
-/// the supervisor's `killpg` reaps it cleanly. The logfile is opened `0600` on
+/// Build the `cloudflared` command. The inherited environment is cleared first
+/// (`env_clear`) and only the pinned `env` is applied, so the daemon's own
+/// environment, including any unrelated secrets, never reaches the child; the
+/// caller is responsible for forwarding the few variables `cloudflared`
+/// legitimately needs. stdout+stderr are redirected to a freshly truncated
+/// logfile (so a stale URL from a prior run is not re-parsed) and, on Unix, the
+/// child is placed in its own process group so the supervisor's `killpg` reaps
+/// it cleanly. The logfile is opened `0600` on
 /// Unix: a Quick tunnel's only access control is its unguessable URL, which is
 /// captured here, and a Named tunnel's log carries connection metadata.
 fn build_cmd(
@@ -463,6 +474,7 @@ fn build_cmd(
     let f2 = f.try_clone().map_err(TunnelError::Io)?;
     let mut cmd = StdCommand::new(binary);
     cmd.args(args);
+    cmd.env_clear();
     for (k, v) in env {
         cmd.env(k, v);
     }
