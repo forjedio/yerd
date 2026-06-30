@@ -20,6 +20,7 @@ import {
   installCloudflaredStreamed,
   IpcError,
   listSites,
+  openInBrowser,
   pollJobToEnd,
   startQuickTunnel,
   stopTunnel,
@@ -107,6 +108,11 @@ async function doShare(): Promise<void> {
     const r = await startQuickTunnel(site);
     tunnels.value = r.tunnels;
     cloudflared.value = r.cloudflared;
+    // The shared site drops out of shareableSites; re-point the picker so the
+    // model and the rendered <select> don't diverge (matches load()).
+    if (!shareableSites.value.some((s) => s.name === shareSite.value)) {
+      shareSite.value = shareableSites.value[0]?.name ?? "";
+    }
     const url = r.tunnels.find((t) => t.site === site)?.url;
     toast.success(`Sharing ${site}`, url ?? undefined);
   } catch (e) {
@@ -238,15 +244,14 @@ onUnmounted(registerViewActions({ refresh: () => void load() }));
                   </Badge>
                 </td>
                 <td class="py-3 pr-4">
-                  <a
+                  <button
                     v-if="t.url ?? t.hostname"
-                    :href="t.url ?? `https://${t.hostname}`"
-                    target="_blank"
-                    rel="noopener"
+                    type="button"
                     class="font-mono text-xs text-brand hover:underline"
+                    @click="openInBrowser(t.url ?? `https://${t.hostname}`)"
                   >
                     {{ t.url ?? t.hostname }}
-                  </a>
+                  </button>
                   <span v-else class="text-xs text-muted-foreground">starting…</span>
                 </td>
                 <td class="py-3 pl-4">
