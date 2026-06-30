@@ -14,7 +14,7 @@ use crate::origin::OriginTarget;
 ///
 /// `cloudflared` logs (including the assigned `*.trycloudflare.com` URL banner)
 /// go to stderr, which the supervisor captures by redirecting the child's
-/// stderr to a file it tails — so no `--logfile` flag is passed (a second writer
+/// stderr to a file it tails, so no `--logfile` flag is passed (a second writer
 /// to the same path would interleave). For a secure origin the SNI name and
 /// `--no-tls-verify` are added (the loopback hop uses Yerd's private CA).
 #[must_use]

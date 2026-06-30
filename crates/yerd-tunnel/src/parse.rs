@@ -3,7 +3,7 @@
 //! `cloudflared` reports its assigned Quick Tunnel URL, named-tunnel edge
 //! registration, and browser-login URL as lines of human-readable log text.
 //! These hand-rolled scanners extract the bits the supervisor needs. They use no
-//! regex dependency, no slice indexing, and never panic — an absent match is
+//! regex dependency, no slice indexing, and never panic: an absent match is
 //! simply `None`/`false`, so the supervisor stays in "starting" until the line
 //! appears (or the readiness window elapses).
 

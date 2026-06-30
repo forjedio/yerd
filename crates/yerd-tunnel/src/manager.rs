@@ -1,19 +1,22 @@
-//! `TunnelManager` — drives the shared `yerd-supervise` state machine for one
+//! `TunnelManager` drives the shared `yerd-supervise` state machine for one
 //! supervised `cloudflared` child per site, doing the real I/O.
 //!
-//! Mirrors `yerd_services::ServiceManager` in shape (same FSM, same
-//! spawn/health/kill driver loop) but differs where a tunnel differs:
+//! Differs from `yerd_services::ServiceManager` in one important way: a tunnel's
+//! readiness can take tens of seconds (a cold edge connect), and the whole
+//! manager sits behind a single async mutex shared by every tunnel op. So rather
+//! than pump the FSM to a terminal state inside one `&mut self` call (which would
+//! hold that mutex for the entire multi-minute readiness drive and make a stuck
+//! start un-stoppable), supervision is **tick-based**: [`begin`](TunnelManager::begin)
+//! spawns the child and the caller then calls [`advance`](TunnelManager::advance)
+//! repeatedly, **re-acquiring the lock per tick and sleeping with the lock
+//! released**. Every lock-hold is therefore bounded (a sync FSM step, or at most
+//! one stop-grace window on a kill), so `StopTunnel`/`TunnelStatus`/shutdown stay
+//! responsive and a stuck start can be cancelled.
 //!
-//! - **No datadir, no port to bind, no init step** — a tunnel is purely an
-//!   outbound child.
-//! - **Readiness comes from the logfile, not a socket probe.** The child's
-//!   stderr is redirected to a file; readiness is the appearance of the assigned
-//!   `*.trycloudflare.com` URL (Quick) or an edge-registration line (Named),
-//!   parsed by [`crate::parse`]. The whole (small, startup-phase) logfile is
-//!   re-read each tick so a URL line can't scroll past.
-//! - **The tunnel [`SupervisorPolicy`]** (generous readiness window, short stop
-//!   grace) — `cloudflared` can take seconds to connect and drains cleanly on
-//!   SIGTERM.
+//! Other differences from a database service: no datadir/port/init, and
+//! readiness comes from the logfile (the child's stderr is redirected there):
+//! the assigned `*.trycloudflare.com` URL (Quick) or an edge-registration line
+//! (Named), parsed by [`crate::parse`].
 
 use std::collections::BTreeMap;
 use std::ffi::OsString;
@@ -34,11 +37,24 @@ use crate::TunnelKind;
 /// Floor between readiness checks while a tunnel is connecting.
 const READINESS_GAP: Duration = Duration::from_millis(150);
 
+/// What the caller should do after one [`TunnelManager::advance`] tick.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Step {
+    /// Call `advance` again immediately (the FSM took a non-waiting action).
+    Continue,
+    /// Sleep this long (lock released), then call `advance` again.
+    Sleep(Duration),
+    /// The tunnel is up; its URL (Quick) is captured. Read it via `snapshots`.
+    Ready,
+    /// The instance no longer exists (it was stopped concurrently). Stop driving.
+    Gone,
+}
+
 /// Live run state of a supervised tunnel, as reported by
 /// [`TunnelManager::snapshots`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TunnelState {
-    /// The `cloudflared` process is alive and serving.
+    /// The `cloudflared` process is alive (connecting or serving).
     Running,
     /// The process has exited unexpectedly.
     Failed,
@@ -61,30 +77,20 @@ pub struct TunnelSnapshot {
     pub hostname: Option<String>,
 }
 
-/// One supervised tunnel instance.
+/// One supervised tunnel instance. The child lives here for its whole life (not
+/// owned by a transient driver), so a concurrent `stop` can reach it.
 struct Instance<Ch: ChildHandle> {
     state: PoolState,
     state_since: Instant,
+    /// The event fed to the FSM on the next `advance` tick.
+    pending: Event,
     kind: TunnelKind,
+    binary: PathBuf,
+    args: Vec<OsString>,
     logfile: PathBuf,
     url: Option<String>,
     hostname: Option<String>,
     child: Option<Ch>,
-}
-
-/// Outcome of pumping the FSM to a terminal state.
-struct RunResult<Ch: ChildHandle> {
-    child: Option<Ch>,
-    state: PoolState,
-    state_since: Instant,
-    url: Option<String>,
-}
-
-/// Per-drive context that does not change across the loop.
-struct DriveCtx<'a> {
-    site: &'a str,
-    kind: TunnelKind,
-    logfile: &'a Path,
 }
 
 /// Supervises local `cloudflared` tunnels, one instance per site.
@@ -115,73 +121,224 @@ where
         }
     }
 
-    /// Ensure a Quick Tunnel for `site` is running, returning its public
-    /// `*.trycloudflare.com` URL. Idempotent: a still-alive tunnel returns its
-    /// cached URL.
-    pub async fn ensure_quick(
+    /// Begin supervising a tunnel for `site`: register it and spawn the child
+    /// (the first FSM step), leaving it `Starting`. Returns `Ok(false)` without
+    /// touching anything if a tunnel for `site` is already live or starting
+    /// (idempotent / concurrent-start safe), `Ok(true)` if a fresh one was
+    /// started. The caller then drives readiness via [`Self::advance`].
+    ///
+    /// The first step (the spawn) is primed synchronously here so the instance
+    /// is immediately `Starting` with a child, closing the window in which a
+    /// concurrent `begin` could see a half-registered `Stopped` instance.
+    pub async fn begin(
         &mut self,
         site: &str,
         binary: &Path,
         args: Vec<OsString>,
         logfile: PathBuf,
-    ) -> Result<String, TunnelError> {
-        if let Some(url) = self.running_url(site) {
-            return Ok(url);
+        kind: TunnelKind,
+        hostname: Option<String>,
+    ) -> Result<bool, TunnelError> {
+        if let Some(inst) = self.instances.get_mut(site) {
+            let alive = inst
+                .child
+                .as_mut()
+                .is_some_and(|ch| matches!(ch.try_wait(), Ok(None)));
+            let in_progress = matches!(
+                inst.state,
+                PoolState::Starting { .. } | PoolState::Stopping { .. }
+            );
+            if alive || in_progress {
+                return Ok(false);
+            }
         }
-        let result = self
-            .start(site, binary, args, &logfile, TunnelKind::Quick)
-            .await?;
-        let url = result
-            .url
-            .clone()
-            .ok_or_else(|| TunnelError::ReadinessTimedOut {
+        if let Some(parent) = logfile.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let now = self.clock.now();
+        self.instances.insert(
+            site.to_owned(),
+            Instance {
+                state: PoolState::Stopped,
+                state_since: now,
+                pending: Event::EnsureRequested,
+                kind,
+                binary: binary.to_path_buf(),
+                args,
+                logfile,
+                url: None,
+                hostname,
+                child: None,
+            },
+        );
+        if let Err(e) = self.advance(site).await {
+            self.instances.remove(site);
+            return Err(e);
+        }
+        Ok(true)
+    }
+
+    /// Drive the FSM one step for `site`, doing the I/O its action requires.
+    /// Every step is bounded: a synchronous FSM transition, or at most one
+    /// stop-grace window when a readiness timeout has to kill the child.
+    pub async fn advance(&mut self, site: &str) -> Result<Step, TunnelError> {
+        let policy = self.policy;
+        let now = self.clock.now();
+        let Some((state, pending, state_since)) = self
+            .instances
+            .get(site)
+            .map(|i| (i.state, i.pending, i.state_since))
+        else {
+            return Ok(Step::Gone);
+        };
+
+        let (next, action) = transition(state, pending, &policy);
+        if next != state {
+            if let Some(i) = self.instances.get_mut(site) {
+                i.state = next;
+                i.state_since = now;
+            }
+        }
+
+        match action {
+            Action::None => match next {
+                PoolState::Running { .. } => Ok(Step::Ready),
+                PoolState::Stopped => Ok(Step::Gone),
+                other => Err(TunnelError::Spawn(std::io::Error::other(format!(
+                    "advance: Action::None in non-terminal state {other:?}"
+                )))),
+            },
+            Action::Spawn => self.do_spawn(site),
+            Action::HealthCheck => Ok(self.do_health_check(site, state_since, now)),
+            Action::Backoff { wait } => {
+                self.set_pending(site, Event::BackoffElapsed);
+                Ok(Step::Sleep(wait))
+            }
+            Action::Kill { signal } => self.do_kill(site, signal).await,
+            Action::EmitError(ErrorTag::HealthCheckTimedOut) => {
+                Err(TunnelError::ReadinessTimedOut {
+                    site: site.to_owned(),
+                })
+            }
+            Action::EmitError(ErrorTag::PermanentFailure) => Err(TunnelError::PermanentFailure {
                 site: site.to_owned(),
-            })?;
-        self.record(site, TunnelKind::Quick, logfile, result, None);
-        Ok(url)
-    }
-
-    /// Ensure a Named Tunnel for `site` is running against a prepared config.
-    /// Idempotent for an already-running tunnel.
-    pub async fn ensure_named(
-        &mut self,
-        site: &str,
-        binary: &Path,
-        args: Vec<OsString>,
-        logfile: PathBuf,
-        hostname: String,
-    ) -> Result<(), TunnelError> {
-        if self.running_url(site).is_some() || self.is_running(site) {
-            return Ok(());
+                last_exit: failed_reason(next),
+            }),
         }
-        let result = self
-            .start(site, binary, args, &logfile, TunnelKind::Named)
-            .await?;
-        self.record(site, TunnelKind::Named, logfile, result, Some(hostname));
-        Ok(())
     }
 
-    /// Stop the tunnel for `site`. No-op if there is none.
+    /// `Action::Spawn`: build + spawn the child, record it, advance to readiness.
+    fn do_spawn(&mut self, site: &str) -> Result<Step, TunnelError> {
+        let Some((binary, args, logfile)) = self
+            .instances
+            .get(site)
+            .map(|i| (i.binary.clone(), i.args.clone(), i.logfile.clone()))
+        else {
+            return Ok(Step::Gone);
+        };
+        let cmd = build_cmd(&binary, &args, &logfile)?;
+        let child = self.spawner.spawn(cmd).map_err(TunnelError::Spawn)?;
+        let pid = child.id();
+        if let Some(i) = self.instances.get_mut(site) {
+            i.child = Some(child);
+            i.pending = Event::SpawnSucceeded { pid };
+        }
+        Ok(Step::Continue)
+    }
+
+    /// `Action::HealthCheck`: non-blocking. Check for a crash, then read the
+    /// logfile for the readiness marker. Never `await`s, so the lock-hold is a
+    /// file read.
+    fn do_health_check(&mut self, site: &str, state_since: Instant, now: Instant) -> Step {
+        let crashed = self
+            .instances
+            .get_mut(site)
+            .and_then(|i| i.child.as_mut())
+            .and_then(|ch| ch.try_wait().ok().flatten());
+        if let Some(reason) = crashed {
+            if let Some(i) = self.instances.get_mut(site) {
+                i.child = None;
+                i.pending = Event::Crashed { reason };
+            }
+            return Step::Continue;
+        }
+
+        let Some((kind, logfile)) = self
+            .instances
+            .get(site)
+            .map(|i| (i.kind, i.logfile.clone()))
+        else {
+            return Step::Gone;
+        };
+        let text = read_file_lossy(&logfile);
+        let ready = match kind {
+            TunnelKind::Quick => match parse_quick_url(&text) {
+                Some(url) => {
+                    if let Some(i) = self.instances.get_mut(site) {
+                        i.url = Some(url);
+                    }
+                    true
+                }
+                None => false,
+            },
+            TunnelKind::Named => is_named_ready(&text),
+        };
+        if ready {
+            self.set_pending(site, Event::HealthCheckOk);
+            Step::Continue
+        } else {
+            let elapsed = Elapsed(now.saturating_duration_since(state_since));
+            self.set_pending(
+                site,
+                Event::HealthCheckTick {
+                    elapsed_since_starting: elapsed,
+                },
+            );
+            Step::Sleep(READINESS_GAP)
+        }
+    }
+
+    /// `Action::Kill` (only reached on a readiness timeout): SIGTERM the child,
+    /// wait up to the stop grace, then SIGKILL (bounded), and feed `Crashed` so
+    /// the FSM applies its restart/backoff policy.
+    async fn do_kill(&mut self, site: &str, signal: KillSignal) -> Result<Step, TunnelError> {
+        let mut child = self.instances.get_mut(site).and_then(|i| i.child.take());
+        if let Some(ch) = child.as_mut() {
+            ch.kill(signal, StopProtocol::GroupTerm)
+                .await
+                .map_err(TunnelError::Io)?;
+            graceful_reap(ch, self.policy.stop_grace).await;
+        }
+        if let Some(i) = self.instances.get_mut(site) {
+            i.child = None;
+            i.pending = Event::Crashed {
+                reason: ExitReason::Unknown,
+            };
+        }
+        Ok(Step::Continue)
+    }
+
+    fn set_pending(&mut self, site: &str, event: Event) {
+        if let Some(i) = self.instances.get_mut(site) {
+            i.pending = event;
+        }
+    }
+
+    /// Stop the tunnel for `site`: SIGTERM, wait up to the stop grace, then
+    /// SIGKILL, and drop the instance. No-op if there is none. Bounded by the
+    /// stop grace.
     pub async fn stop(&mut self, site: &str) -> Result<(), TunnelError> {
         let Some(mut inst) = self.instances.remove(site) else {
             return Ok(());
         };
-        let child = inst.child.take();
-        let ctx = DriveCtx {
-            site,
-            kind: inst.kind,
-            logfile: &inst.logfile,
-        };
-        self.drive(
-            inst.state,
-            inst.state_since,
-            child,
-            Event::StopRequested,
-            None,
-            &ctx,
-        )
-        .await
-        .map(|_| ())
+        if let Some(mut child) = inst.child.take() {
+            child
+                .kill(KillSignal::Term, StopProtocol::GroupTerm)
+                .await
+                .map_err(TunnelError::Io)?;
+            graceful_reap(&mut child, self.policy.stop_grace).await;
+        }
+        Ok(())
     }
 
     /// Stop every supervised tunnel in deterministic order.
@@ -198,21 +355,33 @@ where
         first_err.map_or(Ok(()), Err)
     }
 
-    /// Report a live snapshot of every supervised tunnel.
+    /// Report a live snapshot of every supervised tunnel. A still-connecting
+    /// (`Starting`) tunnel with a live child reads as `Running` with no URL yet.
     pub fn snapshots(&mut self) -> Vec<TunnelSnapshot> {
         let mut out = Vec::with_capacity(self.instances.len());
         for (site, inst) in &mut self.instances {
-            let (state, pid) = match (&inst.state, inst.child.as_mut()) {
-                (PoolState::Running { pid }, Some(child)) => match child.try_wait() {
-                    Ok(None) => (TunnelState::Running, Some(*pid)),
-                    _ => (TunnelState::Failed, None),
-                },
-                _ => (TunnelState::Failed, None),
+            let alive = inst
+                .child
+                .as_mut()
+                .is_some_and(|ch| matches!(ch.try_wait(), Ok(None)));
+            let running = alive
+                && matches!(
+                    inst.state,
+                    PoolState::Running { .. } | PoolState::Starting { .. }
+                );
+            let pid = if alive {
+                inst.child.as_ref().map(ChildHandle::id)
+            } else {
+                None
             };
             out.push(TunnelSnapshot {
                 site: site.clone(),
                 kind: inst.kind,
-                state,
+                state: if running {
+                    TunnelState::Running
+                } else {
+                    TunnelState::Failed
+                },
                 pid,
                 url: inst.url.clone(),
                 hostname: inst.hostname.clone(),
@@ -220,202 +389,16 @@ where
         }
         out
     }
+}
 
-    /// Fast path: cached public URL of a still-alive Quick tunnel for `site`.
-    fn running_url(&mut self, site: &str) -> Option<String> {
-        let inst = self.instances.get_mut(site)?;
-        if !matches!(inst.state, PoolState::Running { .. }) {
-            return None;
-        }
-        let alive = inst
-            .child
-            .as_mut()
-            .is_some_and(|ch| matches!(ch.try_wait(), Ok(None)));
-        alive.then(|| inst.url.clone()).flatten()
-    }
-
-    /// Whether `site` has a recorded, still-alive tunnel.
-    fn is_running(&mut self, site: &str) -> bool {
-        let Some(inst) = self.instances.get_mut(site) else {
-            return false;
-        };
-        matches!(inst.state, PoolState::Running { .. })
-            && inst
-                .child
-                .as_mut()
-                .is_some_and(|ch| matches!(ch.try_wait(), Ok(None)))
-    }
-
-    /// Spawn and drive a fresh tunnel to `Running`.
-    async fn start(
-        &mut self,
-        site: &str,
-        binary: &Path,
-        args: Vec<OsString>,
-        logfile: &Path,
-        kind: TunnelKind,
-    ) -> Result<RunResult<S::Child>, TunnelError> {
-        if let Some(parent) = logfile.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
-        let cmd_builder = || build_cmd(binary, &args, logfile);
-        let ctx = DriveCtx {
-            site,
-            kind,
-            logfile,
-        };
-        let since = self.clock.now();
-        self.drive(
-            PoolState::Stopped,
-            since,
-            None,
-            Event::EnsureRequested,
-            Some(&cmd_builder),
-            &ctx,
-        )
-        .await
-    }
-
-    /// Record a freshly started tunnel in the instance map.
-    fn record(
-        &mut self,
-        site: &str,
-        kind: TunnelKind,
-        logfile: PathBuf,
-        result: RunResult<S::Child>,
-        hostname: Option<String>,
-    ) {
-        self.instances.insert(
-            site.to_owned(),
-            Instance {
-                state: result.state,
-                state_since: result.state_since,
-                kind,
-                logfile,
-                url: result.url,
-                hostname,
-                child: result.child,
-            },
-        );
-    }
-
-    /// Pump the pure state machine to a terminal state, doing the I/O each
-    /// `Action` requires. Mirrors `yerd_services::ServiceManager::drive`.
-    async fn drive(
-        &mut self,
-        mut state: PoolState,
-        mut state_since: Instant,
-        mut child: Option<S::Child>,
-        initial: Event,
-        cmd_builder: Option<&(dyn Fn() -> Result<StdCommand, TunnelError> + Sync)>,
-        ctx: &DriveCtx<'_>,
-    ) -> Result<RunResult<S::Child>, TunnelError> {
-        let mut pending = initial;
-        let mut url: Option<String> = None;
-        loop {
-            let (next, action) = transition(state, pending, &self.policy);
-            if next != state {
-                state = next;
-                state_since = self.clock.now();
-            }
-
-            match action {
-                Action::None => {
-                    return Ok(RunResult {
-                        child,
-                        state,
-                        state_since,
-                        url,
-                    });
-                }
-                Action::Spawn => {
-                    pending = self.spawn_child(cmd_builder, &mut child)?;
-                }
-                Action::HealthCheck => {
-                    pending = self
-                        .health_check(ctx, state_since, &mut child, &mut url)
-                        .await?;
-                }
-                Action::Backoff { wait } => {
-                    tokio::time::sleep(wait).await;
-                    pending = Event::BackoffElapsed;
-                }
-                Action::Kill { signal } => {
-                    if let Some(ch) = child.as_mut() {
-                        ch.kill(signal, StopProtocol::GroupTerm)
-                            .await
-                            .map_err(TunnelError::Io)?;
-                    }
-                    pending =
-                        wait_after_kill(&mut child, state, signal, self.policy.stop_grace).await?;
-                }
-                Action::EmitError(ErrorTag::HealthCheckTimedOut) => {
-                    return Err(TunnelError::ReadinessTimedOut {
-                        site: ctx.site.to_owned(),
-                    });
-                }
-                Action::EmitError(ErrorTag::PermanentFailure) => {
-                    return Err(TunnelError::PermanentFailure {
-                        site: ctx.site.to_owned(),
-                        last_exit: failed_reason(state),
-                    });
-                }
-            }
-        }
-    }
-
-    /// Handle `Action::Spawn`: build + spawn the command, record the child.
-    fn spawn_child(
-        &mut self,
-        cmd_builder: Option<&(dyn Fn() -> Result<StdCommand, TunnelError> + Sync)>,
-        child: &mut Option<S::Child>,
-    ) -> Result<Event, TunnelError> {
-        let builder = cmd_builder.ok_or_else(|| {
-            TunnelError::Spawn(std::io::Error::other("drive: Spawn without cmd_builder"))
-        })?;
-        let cmd = builder()?;
-        let ch = self.spawner.spawn(cmd).map_err(TunnelError::Spawn)?;
-        let pid = ch.id();
-        *child = Some(ch);
-        Ok(Event::SpawnSucceeded { pid })
-    }
-
-    /// Handle `Action::HealthCheck`: read the logfile for the readiness marker,
-    /// first checking whether the child already crashed.
-    async fn health_check(
-        &mut self,
-        ctx: &DriveCtx<'_>,
-        state_since: Instant,
-        child: &mut Option<S::Child>,
-        url: &mut Option<String>,
-    ) -> Result<Event, TunnelError> {
-        tokio::time::sleep(READINESS_GAP).await;
-        let ch = child.as_mut().ok_or_else(|| {
-            TunnelError::Spawn(std::io::Error::other("HealthCheck with no child handle"))
-        })?;
-        if let Some(reason) = ch.try_wait().map_err(TunnelError::Io)? {
-            *child = None;
-            return Ok(Event::Crashed { reason });
-        }
-
-        let text = read_file_lossy(ctx.logfile);
-        let ready = match ctx.kind {
-            TunnelKind::Quick => match parse_quick_url(&text) {
-                Some(found) => {
-                    *url = Some(found);
-                    true
-                }
-                None => false,
-            },
-            TunnelKind::Named => is_named_ready(&text),
-        };
-        if ready {
-            Ok(Event::HealthCheckOk)
-        } else {
-            let elapsed = Elapsed(self.clock.now().saturating_duration_since(state_since));
-            Ok(Event::HealthCheckTick {
-                elapsed_since_starting: elapsed,
-            })
+/// Reap a child that has been signalled: wait up to `grace`, then SIGKILL and
+/// wait. Errors are swallowed (teardown is best-effort).
+async fn graceful_reap<Ch: ChildHandle>(child: &mut Ch, grace: Duration) {
+    tokio::select! {
+        _ = child.wait() => {}
+        () = tokio::time::sleep(grace) => {
+            let _ = child.kill(KillSignal::Kill, StopProtocol::GroupTerm).await;
+            let _ = child.wait().await;
         }
     }
 }
@@ -442,52 +425,6 @@ fn build_cmd(binary: &Path, args: &[OsString], logfile: &Path) -> Result<StdComm
         cmd.process_group(0);
     }
     Ok(cmd)
-}
-
-/// Post-kill follow-up: wait for the child to exit (bounded by the grace budget
-/// on the first SIGTERM) and return the next synthetic event. Mirrors the
-/// `yerd_services` helper of the same name.
-async fn wait_after_kill<Ch: ChildHandle>(
-    child: &mut Option<Ch>,
-    state: PoolState,
-    signal: KillSignal,
-    stop_grace: Duration,
-) -> Result<Event, TunnelError> {
-    match (state, signal) {
-        (PoolState::Stopping { sigkilled: false }, KillSignal::Term) => {
-            let Some(mut owned) = child.take() else {
-                return Ok(Event::StopComplete);
-            };
-            let event = tokio::select! {
-                exit = owned.wait() => {
-                    exit.map_err(TunnelError::Io)?;
-                    Event::StopComplete
-                }
-                () = tokio::time::sleep(stop_grace) => {
-                    *child = Some(owned);
-                    return Ok(Event::StopTick { elapsed_since_stopping: Elapsed(stop_grace) });
-                }
-            };
-            Ok(event)
-        }
-        (PoolState::Stopping { sigkilled: true }, _) => {
-            if let Some(ch) = child.as_mut() {
-                ch.wait().await.map_err(TunnelError::Io)?;
-            }
-            *child = None;
-            Ok(Event::StopComplete)
-        }
-        (PoolState::Starting { .. }, KillSignal::Term) => {
-            if let Some(ch) = child.as_mut() {
-                ch.wait().await.map_err(TunnelError::Io)?;
-            }
-            *child = None;
-            Ok(Event::Crashed {
-                reason: ExitReason::Unknown,
-            })
-        }
-        _ => Ok(Event::StopComplete),
-    }
 }
 
 /// Read a logfile as lossy UTF-8; a missing/unreadable file is treated as empty
@@ -578,8 +515,21 @@ mod tests {
         }
     }
 
+    /// Drive a freshly-begun tunnel to readiness the way the daemon handler does.
+    async fn drive_to_ready<S: ProcessSpawner, C: Clock>(
+        mgr: &mut TunnelManager<S, C>,
+        site: &str,
+    ) -> Step {
+        loop {
+            match mgr.advance(site).await.unwrap() {
+                Step::Continue | Step::Sleep(_) => {}
+                done => return done,
+            }
+        }
+    }
+
     #[tokio::test]
-    async fn ensure_quick_captures_url_and_reports_running() {
+    async fn begin_then_advance_captures_url_and_reports_running() {
         let tmp = tempfile::tempdir().unwrap();
         let logfile = tmp.path().join("app.log");
         let killed = Arc::new(AtomicBool::new(false));
@@ -590,30 +540,44 @@ mod tests {
         };
         let mut mgr = TunnelManager::new(spawner, FakeClock);
 
-        let url = mgr
-            .ensure_quick("app", Path::new("/usr/bin/cloudflared"), vec![], logfile)
+        let started = mgr
+            .begin(
+                "app",
+                Path::new("/usr/bin/cloudflared"),
+                vec![],
+                logfile,
+                TunnelKind::Quick,
+                None,
+            )
             .await
             .unwrap();
-        assert_eq!(url, "https://calm-river-1234.trycloudflare.com");
+        assert!(started);
+
+        assert_eq!(drive_to_ready(&mut mgr, "app").await, Step::Ready);
 
         let snaps = mgr.snapshots();
         assert_eq!(snaps.len(), 1);
         assert_eq!(snaps[0].site, "app");
         assert_eq!(snaps[0].kind, TunnelKind::Quick);
         assert_eq!(snaps[0].state, TunnelState::Running);
-        assert_eq!(snaps[0].url.as_deref(), Some(url.as_str()));
+        assert_eq!(
+            snaps[0].url.as_deref(),
+            Some("https://calm-river-1234.trycloudflare.com")
+        );
 
-        // Idempotent: a second ensure returns the cached URL without respawning.
+        // Idempotent: a second begin for a live site does not restart it.
         let again = mgr
-            .ensure_quick(
+            .begin(
                 "app",
                 Path::new("/usr/bin/cloudflared"),
                 vec![],
                 tmp.path().join("app.log"),
+                TunnelKind::Quick,
+                None,
             )
             .await
             .unwrap();
-        assert_eq!(again, "https://calm-river-1234.trycloudflare.com");
+        assert!(!again);
     }
 
     #[tokio::test]
@@ -627,18 +591,27 @@ mod tests {
             killed,
         };
         let mut mgr = TunnelManager::new(spawner, FakeClock);
-        mgr.ensure_quick("blog", Path::new("/cf"), vec![], logfile)
-            .await
-            .unwrap();
+        mgr.begin(
+            "blog",
+            Path::new("/cf"),
+            vec![],
+            logfile,
+            TunnelKind::Quick,
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(drive_to_ready(&mut mgr, "blog").await, Step::Ready);
         assert_eq!(mgr.snapshots().len(), 1);
         mgr.stop("blog").await.unwrap();
         assert!(mgr.snapshots().is_empty());
-        // Stopping an unknown site is a no-op.
+        // Stopping an unknown site is a no-op; advancing a gone site is Gone.
         mgr.stop("nope").await.unwrap();
+        assert_eq!(mgr.advance("blog").await.unwrap(), Step::Gone);
     }
 
     #[tokio::test]
-    async fn ensure_named_marks_running_on_registration_line() {
+    async fn named_tunnel_marks_running_on_registration_line() {
         let tmp = tempfile::tempdir().unwrap();
         let logfile = tmp.path().join("named.log");
         let killed = Arc::new(AtomicBool::new(false));
@@ -648,15 +621,17 @@ mod tests {
             killed,
         };
         let mut mgr = TunnelManager::new(spawner, FakeClock);
-        mgr.ensure_named(
+        mgr.begin(
             "shop",
             Path::new("/cf"),
             vec![],
             logfile,
-            "shop.example.com".to_string(),
+            TunnelKind::Named,
+            Some("shop.example.com".to_string()),
         )
         .await
         .unwrap();
+        assert_eq!(drive_to_ready(&mut mgr, "shop").await, Step::Ready);
         let snaps = mgr.snapshots();
         assert_eq!(snaps[0].kind, TunnelKind::Named);
         assert_eq!(snaps[0].state, TunnelState::Running);

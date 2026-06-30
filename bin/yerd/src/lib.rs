@@ -94,7 +94,7 @@ pub async fn run(cli: Cli) -> ExitCode {
                         let ch = if *edge { "edge" } else { "stable" };
                         println!(
                             "\nyerd: showing the {ch} channel; your saved preference is \
-                             unchanged — add --yes to switch"
+                             unchanged - add --yes to switch"
                         );
                     }
                 }
@@ -216,12 +216,12 @@ async fn run_self_update_apply(json: bool, edge: bool, stable: bool, force: bool
         if ahead_of_stable && force {
             println!(
                 "yerd: you're on pre-release {current} (ahead of stable {}); automated \
-                 downgrade isn't supported yet — reinstall the stable build manually",
+                 downgrade isn't supported yet - reinstall the stable build manually",
                 latest_stable.as_deref().unwrap_or("unknown")
             );
         } else if ahead_of_stable {
             println!(
-                "yerd: on pre-release {current}, ahead of stable {} — staying put (use --force \
+                "yerd: on pre-release {current}, ahead of stable {} - staying put (use --force \
                  to force a downgrade once supported)",
                 latest_stable.as_deref().unwrap_or("unknown")
             );
@@ -533,7 +533,7 @@ fn print_php_path_hint() {
     if let Some(existing) = first_php_on_path() {
         if existing != bin.join("php") {
             println!(
-                "  note: `php` currently resolves to {} — put {} earlier on PATH to override",
+                "  note: `php` currently resolves to {} - put {} earlier on PATH to override",
                 existing.display(),
                 bin.display()
             );

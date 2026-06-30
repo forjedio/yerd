@@ -106,7 +106,7 @@ pub async fn bring_up_with_dirs(
     let bundled = discover_bundled(&dirs).map_err(DaemonError::from)?;
     let binaries: BTreeMap<PhpVersion, PathBuf> = bundled.into_iter().collect();
     if binaries.is_empty() {
-        tracing::warn!("no PHP versions discovered — bundled scan empty");
+        tracing::warn!("no PHP versions discovered - bundled scan empty");
     }
 
     let ca = load_or_generate_ca(&dirs)?;
@@ -119,7 +119,7 @@ pub async fn bring_up_with_dirs(
     let dns_tld = config.tld.clone();
     let router = build_router(&config, &dirs, &detect_cache)?;
     if router.is_empty() {
-        tracing::info!("no sites configured — every request will 404 until a site is added");
+        tracing::info!("no sites configured - every request will 404 until a site is added");
     }
     let router = Arc::new(RwLock::new(router));
 
@@ -164,7 +164,7 @@ pub async fn bring_up_with_dirs(
                 error = %e,
                 fallback_http = fb_http,
                 fallback_https = fb_https,
-                "could not bind web ports; serving disabled — free the ports or change the fallback ports in Settings, then restart"
+                "could not bind web ports; serving disabled - free the ports or change the fallback ports in Settings, then restart"
             );
             (
                 None,
@@ -226,7 +226,7 @@ pub async fn bring_up_with_dirs(
             tracing::error!(
                 error = %e,
                 dns = %dns_want,
-                "could not bind DNS responder; name resolution disabled — free dns_port or change it in Settings, then restart"
+                "could not bind DNS responder; name resolution disabled - free dns_port or change it in Settings, then restart"
             );
             (None, dns_want, Some(cfg_dns))
         }
@@ -364,7 +364,7 @@ fn load_or_default_config(cfg_path: &std::path::Path) -> Result<yerd_config::Con
         {
             tracing::info!(
                 config = %cfg_path.display(),
-                "config file not found — using defaults for first-run boot"
+                "config file not found - using defaults for first-run boot"
             );
             Ok(yerd_config::Config::default())
         }
@@ -372,7 +372,7 @@ fn load_or_default_config(cfg_path: &std::path::Path) -> Result<yerd_config::Con
             tracing::error!(
                 config = %cfg_path.display(),
                 error = %e,
-                "invalid config file — refusing to start"
+                "invalid config file - refusing to start"
             );
             Err(DaemonError::from(e))
         }

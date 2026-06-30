@@ -651,7 +651,7 @@ async fn update_php(version: Option<yerd_core::PhpVersion>, state: &DaemonState)
             if crate::php_install::installed_patch(&state.dirs, v).is_none() {
                 return Response::Error {
                     code: ErrorCode::NotFound,
-                    message: format!("PHP {v} is not installed — run `yerd install php {v}`"),
+                    message: format!("PHP {v} is not installed - run `yerd install php {v}`"),
                 };
             }
             vec![v]
@@ -1123,7 +1123,7 @@ async fn uninstall_php(version: yerd_core::PhpVersion, state: &DaemonState) -> R
         return Response::Error {
             code: ErrorCode::InvalidPath,
             message: format!(
-                "PHP {version} is assigned to site(s): {} — reassign them first",
+                "PHP {version} is assigned to site(s): {} - reassign them first",
                 sites_using.join(", ")
             ),
         };
@@ -1139,7 +1139,7 @@ async fn uninstall_php(version: yerd_core::PhpVersion, state: &DaemonState) -> R
     if version == default && installed.len() > 1 {
         return Response::Error {
             code: ErrorCode::InvalidPath,
-            message: format!("PHP {version} is the default — set another version as default first"),
+            message: format!("PHP {version} is the default - set another version as default first"),
         };
     }
 
@@ -1165,7 +1165,7 @@ async fn set_default_php(version: yerd_core::PhpVersion, state: &DaemonState) ->
     if !crate::php_install::cli_binary_path(&state.dirs, version).exists() {
         return Response::Error {
             code: ErrorCode::NotFound,
-            message: format!("PHP {version} is not installed — run `yerd install php {version}`"),
+            message: format!("PHP {version} is not installed - run `yerd install php {version}`"),
         };
     }
     {
@@ -1218,7 +1218,7 @@ async fn set_fallback_ports(http: u16, https: u16, state: &DaemonState) -> Respo
     .unwrap_or(None);
     if redirect_active == Some(true) {
         return internal(
-            "ports are elevated — remove the privileged-port redirect first (un-elevate ports), \
+            "ports are elevated - remove the privileged-port redirect first (un-elevate ports), \
              change the ports, then re-elevate"
                 .to_owned(),
         );

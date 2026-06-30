@@ -19,7 +19,7 @@ use yerd_ipc::{
 use yerd_platform::PlatformDirs;
 use yerd_supervise::{SystemClock, TokioProcessSpawner};
 use yerd_tunnel::manager::{TunnelSnapshot, TunnelState};
-use yerd_tunnel::{OriginTarget, TunnelKind, TunnelManager};
+use yerd_tunnel::{OriginTarget, Step, TunnelKind, TunnelManager};
 
 use crate::state::DaemonState;
 
@@ -36,29 +36,34 @@ pub fn new_manager() -> DaemonTunnelManager {
     TunnelManager::new(TokioProcessSpawner, SystemClock)
 }
 
-/// `{state}/tunnel/<site>.log` — where a tunnel's `cloudflared` output is
+/// `{state}/tunnel/<site>.log`, where a tunnel's `cloudflared` output is
 /// captured for readiness parsing and `yerd tunnel logs`.
 fn logfile(dirs: &PlatformDirs, site: &str) -> PathBuf {
     dirs.state.join("tunnel").join(format!("{site}.log"))
 }
 
-/// `cloudflared` install + account status for the wire.
+/// `cloudflared` install + account status for the wire. `logged_in` is always
+/// false until Named Tunnels (Phase 2) add account login.
 #[must_use]
 pub fn cloudflared_status(dirs: &PlatformDirs) -> CloudflaredStatus {
     CloudflaredStatus {
         installed: install::is_installed(dirs),
         version: install::installed_version(dirs),
-        // Account login is a Phase-2 (Named Tunnels) capability.
         logged_in: false,
     }
 }
 
-/// `StartQuickTunnel` — publish a site at a random `*.trycloudflare.com` URL.
+/// `StartQuickTunnel`: publish a site at a random `*.trycloudflare.com` URL.
+///
+/// Registers + spawns the child under a brief manager lock, then drives
+/// readiness with the lock released between ticks (see [`yerd_tunnel`]'s tick
+/// model) so `StopTunnel`/`TunnelStatus`/shutdown stay responsive and a stuck
+/// connect can be cancelled.
 pub async fn start_quick_tunnel(site: &str, state: &DaemonState) -> Response {
     if !install::is_installed(&state.dirs) {
         return Response::Error {
             code: ErrorCode::NotFound,
-            message: "cloudflared is not installed — install it from Integrations first".into(),
+            message: "cloudflared is not installed - install it from Integrations first".into(),
         };
     }
 
@@ -84,20 +89,43 @@ pub async fn start_quick_tunnel(site: &str, state: &DaemonState) -> Response {
     let binary = install::binary_path(&state.dirs);
     let logfile = logfile(&state.dirs, &name);
 
-    let outcome = {
+    let started = {
         let mut mgr = state.tunnel_manager.lock().await;
-        mgr.ensure_quick(&name, &binary, args, logfile).await
+        mgr.begin(&name, &binary, args, logfile, TunnelKind::Quick, None)
+            .await
     };
-    match outcome {
-        Ok(_url) => tunnels_response(state).await,
-        Err(e) => Response::Error {
-            code: ErrorCode::Internal,
-            message: format!("could not start tunnel for {name}: {e}"),
-        },
+    match started {
+        Ok(false) => return tunnels_response(state).await,
+        Ok(true) => {}
+        Err(e) => {
+            return Response::Error {
+                code: ErrorCode::Internal,
+                message: format!("could not start tunnel for {name}: {e}"),
+            }
+        }
+    }
+
+    loop {
+        let step = {
+            let mut mgr = state.tunnel_manager.lock().await;
+            mgr.advance(&name).await
+        };
+        match step {
+            Ok(Step::Continue) => {}
+            Ok(Step::Sleep(d)) => tokio::time::sleep(d).await,
+            Ok(Step::Ready | Step::Gone) => return tunnels_response(state).await,
+            Err(e) => {
+                let _ = state.tunnel_manager.lock().await.stop(&name).await;
+                return Response::Error {
+                    code: ErrorCode::Internal,
+                    message: format!("could not start tunnel for {name}: {e}"),
+                };
+            }
+        }
     }
 }
 
-/// `StopTunnel` — tear down a site's tunnel (no-op if none).
+/// `StopTunnel`: tear down a site's tunnel (no-op if none).
 pub async fn stop_tunnel(site: &str, state: &DaemonState) -> Response {
     {
         let mut mgr = state.tunnel_manager.lock().await;
@@ -111,7 +139,7 @@ pub async fn stop_tunnel(site: &str, state: &DaemonState) -> Response {
     tunnels_response(state).await
 }
 
-/// `TunnelStatus` — the live tunnels plus `cloudflared` install status.
+/// `TunnelStatus`: the live tunnels plus `cloudflared` install status.
 pub async fn tunnel_status(state: &DaemonState) -> Response {
     tunnels_response(state).await
 }
@@ -145,7 +173,7 @@ fn to_wire(s: TunnelSnapshot) -> TunnelInfo {
     }
 }
 
-/// `InstallCloudflaredStreamed` — download `cloudflared` as a background job,
+/// `InstallCloudflaredStreamed`: download `cloudflared` as a background job,
 /// streaming progress into the job log. Returns `JobStarted` immediately; the
 /// client polls `JobStatus`.
 pub async fn install_cloudflared_streamed(state: Arc<DaemonState>) -> Response {

@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 /// Top-level parser. `yerd` is a thin `yerd-ipc` client of the `yerdd` daemon.
 #[derive(clap::Parser, Debug)]
-#[command(name = "yerd", version, about = "Yerd CLI — talks to the yerdd daemon")]
+#[command(name = "yerd", version, about = "Yerd CLI - talks to the yerdd daemon")]
 pub struct Cli {
     /// Emit machine-readable JSON instead of human-readable text.
     #[arg(long, global = true)]

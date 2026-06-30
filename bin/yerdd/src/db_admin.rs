@@ -273,7 +273,7 @@ async fn prepare(service_id: &str, state: &DaemonState) -> Result<DbCtx, Respons
         return Err(Response::Error {
             code: ErrorCode::Internal,
             message: format!(
-                "start {} first — managing databases needs a running server",
+                "start {} first - managing databases needs a running server",
                 service.id()
             ),
         });

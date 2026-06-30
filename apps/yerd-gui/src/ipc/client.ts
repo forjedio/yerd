@@ -219,7 +219,7 @@ export async function checkUpdates(channel?: UpdateChannel): Promise<UpdateStatu
   ) as UpdateStatusResponse;
 }
 
-/** Last persisted update-check result (no network) — pre-fills the UI on load. */
+/** Last persisted update-check result (no network) - pre-fills the UI on load. */
 export async function cachedUpdateStatus(): Promise<UpdateStatusResponse> {
   return ensureOk(await call<Response>("cached_update_status")) as UpdateStatusResponse;
 }

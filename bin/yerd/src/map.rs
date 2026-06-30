@@ -334,7 +334,7 @@ fn format_update_status(
     };
     let _ = writeln!(out, "Status:        {status}");
     let src = match source {
-        UpdateSource::Cached => "cached (offline — last known values)",
+        UpdateSource::Cached => "cached (offline - last known values)",
         _ => "live",
     };
     let _ = write!(out, "Source:        {src}");
@@ -583,7 +583,7 @@ fn format_mail(mail: &yerd_ipc::MailDetail) -> String {
     out.push('\n');
     match (&mail.text_body, &mail.html_body) {
         (Some(text), _) => out.push_str(text),
-        (None, Some(_)) => out.push_str("(HTML-only message — open it in the GUI viewer)"),
+        (None, Some(_)) => out.push_str("(HTML-only message - open it in the GUI viewer)"),
         (None, None) => out.push_str("(empty message)"),
     }
     out
@@ -694,7 +694,7 @@ fn format_php_versions(
     settings: &std::collections::BTreeMap<String, String>,
 ) -> String {
     let versions = if installed.is_empty() {
-        format!("no PHP versions installed (default: {default}) — `yerd install php {default}`")
+        format!("no PHP versions installed (default: {default}) - `yerd install php {default}`")
     } else {
         installed
             .iter()
@@ -705,7 +705,7 @@ fn format_php_versions(
                     v.to_string()
                 };
                 if let Some(u) = updates.iter().find(|u| u.version == *v) {
-                    let _ = write!(line, " — update available: {} → {}", u.installed, u.latest);
+                    let _ = write!(line, " - update available: {} → {}", u.installed, u.latest);
                 }
                 line
             })
@@ -767,10 +767,10 @@ fn format_status(r: &StatusReport) -> String {
     if let Some(u) = r.web_unbound {
         let _ = writeln!(
             s,
-            "http      not serving — couldn't bind {} (run `yerd doctor`)",
+            "http      not serving - couldn't bind {} (run `yerd doctor`)",
             u.http
         );
-        let _ = writeln!(s, "https     not serving — couldn't bind {}", u.https);
+        let _ = writeln!(s, "https     not serving - couldn't bind {}", u.https);
     } else {
         let _ = writeln!(s, "http      {}", fmt_port(r.http, redirected));
         let _ = writeln!(s, "https     {}", fmt_port(r.https, redirected));
@@ -784,7 +784,7 @@ fn format_status(r: &StatusReport) -> String {
     if let Some(port) = r.dns_unbound {
         let _ = writeln!(
             s,
-            "dns       not resolving — couldn't bind port {port} (run `yerd doctor`)"
+            "dns       not resolving - couldn't bind port {port} (run `yerd doctor`)"
         );
     } else {
         let _ = writeln!(s, "dns       {}", r.dns_addr);
@@ -1478,8 +1478,8 @@ mod tests {
         assert_eq!(r.code, 0);
         assert!(r.stdout.contains("8.5 (default)"));
         assert!(!r.stdout.contains("8.3 (default)"));
-        assert!(r.stdout.contains("8.3 — update available: 8.3.6 → 8.3.31"));
-        assert!(!r.stdout.contains("8.5 — update available"));
+        assert!(r.stdout.contains("8.3 - update available: 8.3.6 → 8.3.31"));
+        assert!(!r.stdout.contains("8.5 - update available"));
         assert!(!r.stdout.contains("settings:"));
 
         let empty = render(
@@ -1645,8 +1645,8 @@ mod tests {
             https: 8443,
         });
         let out = format_status(&r);
-        assert!(out.contains("not serving — couldn't bind 8080"), "{out}");
-        assert!(out.contains("not serving — couldn't bind 8443"), "{out}");
+        assert!(out.contains("not serving - couldn't bind 8080"), "{out}");
+        assert!(out.contains("not serving - couldn't bind 8443"), "{out}");
         assert!(!out.contains("→ 0"), "{out}");
     }
 
@@ -1656,7 +1656,7 @@ mod tests {
         r.dns_unbound = Some(1053);
         let out = format_status(&r);
         assert!(
-            out.contains("not resolving — couldn't bind port 1053"),
+            out.contains("not resolving - couldn't bind port 1053"),
             "{out}"
         );
         assert!(!out.contains("dns       127.0.0.1:1053"), "{out}");

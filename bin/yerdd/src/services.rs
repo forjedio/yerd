@@ -491,7 +491,7 @@ pub(crate) fn resolve_version(
     installed.pop().ok_or_else(|| Response::Error {
         code: ErrorCode::NotFound,
         message: format!(
-            "no {} version installed — run `yerd service install {}` first",
+            "no {} version installed - run `yerd service install {}` first",
             service.display_name(),
             service.id()
         ),
