@@ -1,0 +1,199 @@
+//! Cloudflare Tunnel wiring: the daemon's `TunnelManager` type, the IPC handlers
+//! for the tunnel requests, the `cloudflared` install job, and the
+//! snapshot→wire mapping.
+//!
+//! Lock discipline mirrors the services path: the site facts are read under the
+//! router lock, which is released before the (slow) `tunnel_manager` `ensure`;
+//! the config/router lock and the tunnel-manager lock are never held
+//! simultaneously across an `.await`. The `cloudflared` install runs under
+//! `tunnel_mutate` only.
+
+pub mod install;
+
+use std::path::PathBuf;
+use std::sync::Arc;
+
+use yerd_ipc::{
+    CloudflaredStatus, ErrorCode, Response, TunnelInfo, TunnelKind as WireKind, TunnelRunState,
+};
+use yerd_platform::PlatformDirs;
+use yerd_supervise::{SystemClock, TokioProcessSpawner};
+use yerd_tunnel::manager::{TunnelSnapshot, TunnelState};
+use yerd_tunnel::{OriginTarget, TunnelKind, TunnelManager};
+
+use crate::state::DaemonState;
+
+/// A sink for streamed install output (one line per send), drained into the job
+/// log by the streamed-install job.
+pub type ProgressTx = tokio::sync::mpsc::UnboundedSender<String>;
+
+/// Concrete `TunnelManager` the daemon uses.
+pub type DaemonTunnelManager = TunnelManager<TokioProcessSpawner, SystemClock>;
+
+/// Build the daemon's tunnel manager.
+#[must_use]
+pub fn new_manager() -> DaemonTunnelManager {
+    TunnelManager::new(TokioProcessSpawner, SystemClock)
+}
+
+/// `{state}/tunnel/<site>.log` — where a tunnel's `cloudflared` output is
+/// captured for readiness parsing and `yerd tunnel logs`.
+fn logfile(dirs: &PlatformDirs, site: &str) -> PathBuf {
+    dirs.state.join("tunnel").join(format!("{site}.log"))
+}
+
+/// `cloudflared` install + account status for the wire.
+#[must_use]
+pub fn cloudflared_status(dirs: &PlatformDirs) -> CloudflaredStatus {
+    CloudflaredStatus {
+        installed: install::is_installed(dirs),
+        version: install::installed_version(dirs),
+        // Account login is a Phase-2 (Named Tunnels) capability.
+        logged_in: false,
+    }
+}
+
+/// `StartQuickTunnel` — publish a site at a random `*.trycloudflare.com` URL.
+pub async fn start_quick_tunnel(site: &str, state: &DaemonState) -> Response {
+    if !install::is_installed(&state.dirs) {
+        return Response::Error {
+            code: ErrorCode::NotFound,
+            message: "cloudflared is not installed — install it from Integrations first".into(),
+        };
+    }
+
+    let resolved = {
+        let router = state.router.read().await;
+        router.resolve(site).or_else(|| router.get(site)).map(|s| {
+            (
+                s.name().to_owned(),
+                s.secure(),
+                router.config().tld().to_owned(),
+            )
+        })
+    };
+    let Some((name, secure, tld)) = resolved else {
+        return Response::Error {
+            code: ErrorCode::NotFound,
+            message: format!("no site named {site:?}"),
+        };
+    };
+
+    let origin = OriginTarget::for_site(&name, &tld, secure, state.http.bound, state.https.bound);
+    let args = yerd_tunnel::args::quick_tunnel_args(&origin);
+    let binary = install::binary_path(&state.dirs);
+    let logfile = logfile(&state.dirs, &name);
+
+    let outcome = {
+        let mut mgr = state.tunnel_manager.lock().await;
+        mgr.ensure_quick(&name, &binary, args, logfile).await
+    };
+    match outcome {
+        Ok(_url) => tunnels_response(state).await,
+        Err(e) => Response::Error {
+            code: ErrorCode::Internal,
+            message: format!("could not start tunnel for {name}: {e}"),
+        },
+    }
+}
+
+/// `StopTunnel` — tear down a site's tunnel (no-op if none).
+pub async fn stop_tunnel(site: &str, state: &DaemonState) -> Response {
+    {
+        let mut mgr = state.tunnel_manager.lock().await;
+        if let Err(e) = mgr.stop(site).await {
+            return Response::Error {
+                code: ErrorCode::Internal,
+                message: format!("could not stop tunnel for {site}: {e}"),
+            };
+        }
+    }
+    tunnels_response(state).await
+}
+
+/// `TunnelStatus` — the live tunnels plus `cloudflared` install status.
+pub async fn tunnel_status(state: &DaemonState) -> Response {
+    tunnels_response(state).await
+}
+
+/// Shared `Response::Tunnels` builder.
+async fn tunnels_response(state: &DaemonState) -> Response {
+    let tunnels = {
+        let mut mgr = state.tunnel_manager.lock().await;
+        mgr.snapshots().into_iter().map(to_wire).collect()
+    };
+    Response::Tunnels {
+        tunnels,
+        cloudflared: cloudflared_status(&state.dirs),
+    }
+}
+
+/// Map a manager snapshot to its wire form.
+fn to_wire(s: TunnelSnapshot) -> TunnelInfo {
+    TunnelInfo {
+        site: s.site,
+        kind: match s.kind {
+            TunnelKind::Quick => WireKind::Quick,
+            TunnelKind::Named => WireKind::Named,
+        },
+        state: match s.state {
+            TunnelState::Running => TunnelRunState::Running,
+            TunnelState::Failed => TunnelRunState::Failed,
+        },
+        url: s.url,
+        hostname: s.hostname,
+    }
+}
+
+/// `InstallCloudflaredStreamed` — download `cloudflared` as a background job,
+/// streaming progress into the job log. Returns `JobStarted` immediately; the
+/// client polls `JobStatus`.
+pub async fn install_cloudflared_streamed(state: Arc<DaemonState>) -> Response {
+    let (job_id, mut cancel) = state.jobs.create().await;
+    let id = job_id.clone();
+    tokio::spawn(async move {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+        let drain = {
+            let state = state.clone();
+            let id = id.clone();
+            tokio::spawn(async move {
+                while let Some(line) = rx.recv().await {
+                    state.jobs.push_log(&id, line).await;
+                }
+            })
+        };
+
+        state.jobs.set_phase(&id, "Installing cloudflared").await;
+        let dl = crate::php_install::ReqwestDownloader::new();
+        let guard = state.tunnel_mutate.lock().await;
+        let result = tokio::select! {
+            r = install::install(&state.dirs, &dl, Some(&tx)) => Some(r),
+            _ = cancel.changed() => None,
+        };
+        drop(guard);
+        drop(tx);
+        let _ = drain.await;
+
+        match result {
+            Some(Ok(())) => {
+                state
+                    .jobs
+                    .finish(&id, yerd_ipc::JobState::Succeeded, None)
+                    .await;
+            }
+            Some(Err(e)) => {
+                state
+                    .jobs
+                    .finish(&id, yerd_ipc::JobState::Failed, Some(e.to_string()))
+                    .await;
+            }
+            None => {
+                state
+                    .jobs
+                    .finish(&id, yerd_ipc::JobState::Cancelled, None)
+                    .await;
+            }
+        }
+    });
+    Response::JobStarted { job_id }
+}

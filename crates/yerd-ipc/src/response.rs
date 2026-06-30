@@ -12,8 +12,8 @@ use yerd_core::{PhpVersion, Site};
 
 use crate::dump::{DumpCounts, DumpEvent, DumpExtStatus};
 use crate::status::{
-    DatabaseSummary, Diagnosis, FixReport, MailDetail, MailSummary, ServiceAvailability,
-    ServiceStatus, StatusReport, ToolStatus,
+    CloudflaredStatus, DatabaseSummary, Diagnosis, FixReport, MailDetail, MailSummary,
+    ServiceAvailability, ServiceStatus, StatusReport, ToolStatus, TunnelInfo,
 };
 
 // Same rule: no per-field serde renames.
@@ -267,6 +267,15 @@ pub enum Response {
         /// What kind of artifact it is (drives the applier's install method).
         kind: crate::StagedArtifact,
     },
+    /// Reply to [`crate::Request::StartQuickTunnel`] / [`crate::Request::StopTunnel`]
+    /// / [`crate::Request::TunnelStatus`] - the live tunnels plus `cloudflared`
+    /// install status.
+    Tunnels {
+        /// One entry per live tunnel.
+        tunnels: Vec<TunnelInfo>,
+        /// `cloudflared` install / account status.
+        cloudflared: CloudflaredStatus,
+    },
 }
 
 /// An available newer patch for an installed PHP minor.
@@ -345,6 +354,7 @@ mod variant_name_pinning {
             Response::JobProgress { .. } => {}
             Response::UpdateStatus { .. } => {}
             Response::Staged { .. } => {}
+            Response::Tunnels { .. } => {}
         }
     }
 
@@ -528,6 +538,20 @@ mod variant_name_pinning {
             path: "/x/Yerd.app.tar.gz".into(),
             version: "2.0.5".into(),
             kind: crate::StagedArtifact::AppTarGz,
+        });
+        pin_response(Response::Tunnels {
+            tunnels: vec![crate::status::TunnelInfo {
+                site: "app".into(),
+                kind: crate::status::TunnelKind::Quick,
+                state: crate::status::TunnelRunState::Running,
+                url: Some("https://calm-river-1234.trycloudflare.com".into()),
+                hostname: None,
+            }],
+            cloudflared: crate::status::CloudflaredStatus {
+                installed: true,
+                version: Some("2026.6.1".into()),
+                logged_in: false,
+            },
         });
         for c in [
             ErrorCode::NotFound,

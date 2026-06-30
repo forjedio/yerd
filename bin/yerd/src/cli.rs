@@ -138,6 +138,12 @@ pub enum Command {
         #[command(subcommand)]
         action: DbAction,
     },
+    /// Publish a local site to the internet via a Cloudflare Tunnel.
+    Tunnel {
+        /// What to do.
+        #[command(subcommand)]
+        action: TunnelAction,
+    },
     /// Inspect emails captured by the built-in mail server.
     Mail {
         /// What to do.
@@ -267,6 +273,26 @@ pub enum ServiceAction {
         #[arg(long, default_value_t = 100)]
         lines: u32,
     },
+}
+
+/// Action of `yerd tunnel`.
+#[derive(clap::Subcommand, Debug, Clone)]
+pub enum TunnelAction {
+    /// Download the `cloudflared` binary (required before sharing a site).
+    Install,
+    /// Share a site publicly via a Quick Tunnel (a random `*.trycloudflare.com`
+    /// URL). Requires `cloudflared` to be installed.
+    Share {
+        /// Site name (e.g. `app` or `app.test`).
+        site: String,
+    },
+    /// Stop sharing a site.
+    Stop {
+        /// Site name whose tunnel to stop.
+        site: String,
+    },
+    /// Show live tunnels and `cloudflared` install status.
+    Status,
 }
 
 /// Action of `yerd db`.

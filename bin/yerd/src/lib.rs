@@ -44,6 +44,9 @@ pub async fn run(cli: Cli) -> ExitCode {
         Command::Install {
             target: crate::cli::InstallTarget::Tool { id },
         } if !cli.json => return stream_install_tool(id, cli.json).await,
+        Command::Tunnel {
+            action: crate::cli::TunnelAction::Install,
+        } if !cli.json => return stream_install_cloudflared().await,
         Command::Update {
             target: None,
             yes: true,
@@ -321,6 +324,86 @@ async fn stream_install_tool(id: &str, json: bool) -> ExitCode {
                         path_cmd::ensure_installed_after_tool(json);
                         return ExitCode::SUCCESS;
                     }
+                    JobState::Failed => {
+                        if let Some(e) = error {
+                            eprintln!("yerd: {e}");
+                        }
+                        return ExitCode::from(1);
+                    }
+                    JobState::Cancelled => {
+                        eprintln!("yerd: install cancelled");
+                        return ExitCode::from(1);
+                    }
+                }
+            }
+            Ok(Response::Error { message, .. }) => {
+                eprintln!("yerd: {message}");
+                return ExitCode::from(1);
+            }
+            Ok(_) => {
+                eprintln!("yerd: unexpected response polling install");
+                return ExitCode::from(74);
+            }
+            Err(e @ ClientError::DaemonUnreachable(_)) => {
+                eprintln!("yerd: {e}");
+                return ExitCode::from(69);
+            }
+            Err(e) => {
+                eprintln!("yerd: {e}");
+                return ExitCode::from(74);
+            }
+        }
+    }
+}
+
+/// `yerd tunnel install` - download `cloudflared` as a streamed job, printing
+/// progress lines as they arrive. Mirrors [`stream_install_tool`].
+async fn stream_install_cloudflared() -> ExitCode {
+    use std::time::Duration;
+    use yerd_ipc::{JobState, Request, Response};
+
+    let job_id = match transport::exchange(&Request::InstallCloudflaredStreamed).await {
+        Ok(Response::JobStarted { job_id }) => job_id,
+        Ok(Response::Error { message, .. }) => {
+            eprintln!("yerd: {message}");
+            return ExitCode::from(1);
+        }
+        Ok(_) => {
+            eprintln!("yerd: unexpected response starting install");
+            return ExitCode::from(74);
+        }
+        Err(e @ ClientError::DaemonUnreachable(_)) => {
+            eprintln!("yerd: {e}");
+            return ExitCode::from(69);
+        }
+        Err(e) => {
+            eprintln!("yerd: {e}");
+            return ExitCode::from(74);
+        }
+    };
+
+    let mut cursor = 0u64;
+    loop {
+        match transport::exchange(&Request::JobStatus {
+            job_id: job_id.clone(),
+            cursor,
+        })
+        .await
+        {
+            Ok(Response::JobProgress {
+                state,
+                log,
+                next_cursor,
+                error,
+                ..
+            }) => {
+                for line in &log {
+                    println!("{line}");
+                }
+                cursor = next_cursor;
+                match state {
+                    JobState::Running => tokio::time::sleep(Duration::from_millis(400)).await,
+                    JobState::Succeeded => return ExitCode::SUCCESS,
                     JobState::Failed => {
                         if let Some(e) = error {
                             eprintln!("yerd: {e}");

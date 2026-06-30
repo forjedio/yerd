@@ -9,12 +9,12 @@ use std::fmt::Write as _;
 
 use yerd_core::{PhpVersion, Site, SiteKind};
 use yerd_ipc::{
-    Channel, Diagnosis, FixReport, PhpPoolStatus, PoolRunState, PortStatus, Request, Response,
-    ServiceAvailability, ServiceRunState, ServiceStatus, Severity, StatusReport, ToolStatus,
-    UpdateSource,
+    Channel, CloudflaredStatus, Diagnosis, FixReport, PhpPoolStatus, PoolRunState, PortStatus,
+    Request, Response, ServiceAvailability, ServiceRunState, ServiceStatus, Severity, StatusReport,
+    ToolStatus, TunnelInfo, TunnelRunState, UpdateSource,
 };
 
-use crate::cli::{Command, DbAction, MailAction, ServiceAction};
+use crate::cli::{Command, DbAction, MailAction, ServiceAction, TunnelAction};
 use crate::error::ClientError;
 
 /// Map a parsed [`Command`] to the wire [`Request`], validating site names and
@@ -148,6 +148,7 @@ pub fn to_request(cmd: &Command) -> Result<Request, ClientError> {
         },
         Command::Services => Request::ListServices,
         Command::Service { action } => service_request(action),
+        Command::Tunnel { action } => tunnel_request(action),
         Command::Db { action } => db_request(action),
         Command::Mail { action } => match action {
             MailAction::List => Request::ListMails,
@@ -232,6 +233,17 @@ fn service_request(action: &ServiceAction) -> Request {
             service: service.clone(),
             lines: *lines,
         },
+    }
+}
+
+/// Map a `yerd tunnel <action>` to its wire request. `Install` is a streamed job
+/// the CLI intercepts before this point; mapping it here keeps the match total.
+fn tunnel_request(action: &TunnelAction) -> Request {
+    match action {
+        TunnelAction::Install => Request::InstallCloudflaredStreamed,
+        TunnelAction::Share { site } => Request::StartQuickTunnel { site: site.clone() },
+        TunnelAction::Stop { site } => Request::StopTunnel { site: site.clone() },
+        TunnelAction::Status => Request::TunnelStatus,
     }
 }
 
@@ -448,6 +460,10 @@ pub fn render(resp: &Response, json: bool) -> Rendered {
         Response::Mails { mails } => Rendered::ok(format_mails(mails)),
         Response::Mail { mail } => Rendered::ok(format_mail(mail)),
         Response::Tools { tools } => Rendered::ok(format_tools(tools)),
+        Response::Tunnels {
+            tunnels,
+            cloudflared,
+        } => Rendered::ok(format_tunnels(tunnels, cloudflared)),
         Response::UpdateStatus {
             current,
             latest_stable,
@@ -621,6 +637,31 @@ fn format_tools(tools: &[ToolStatus]) -> String {
             "not installed"
         };
         let _ = write!(out, "\n{}\t{}\t{}", t.id, status, t.binaries.join(","));
+    }
+    out
+}
+
+fn format_tunnels(tunnels: &[TunnelInfo], cloudflared: &CloudflaredStatus) -> String {
+    let cf = if cloudflared.installed {
+        cloudflared.version.as_deref().map_or_else(
+            || "cloudflared: installed".to_owned(),
+            |v| format!("cloudflared: {v}"),
+        )
+    } else {
+        "cloudflared: not installed (run `yerd tunnel install`)".to_owned()
+    };
+    if tunnels.is_empty() {
+        return format!("{cf}\nno active tunnels");
+    }
+    let mut out = format!("{cf}\n\nSITE\tSTATE\tURL");
+    for t in tunnels {
+        let state = match t.state {
+            TunnelRunState::Running => "running",
+            TunnelRunState::Failed => "failed",
+            _ => "unknown",
+        };
+        let target = t.url.as_deref().or(t.hostname.as_deref()).unwrap_or("-");
+        let _ = write!(out, "\n{}\t{}\t{}", t.site, state, target);
     }
     out
 }

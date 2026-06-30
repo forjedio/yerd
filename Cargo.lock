@@ -6231,6 +6231,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "yerd-tunnel"
+version = "2.0.2-rc.9"
+dependencies = [
+ "async-trait",
+ "nix",
+ "tempfile",
+ "thiserror 1.0.69",
+ "tokio",
+ "yerd-supervise",
+]
+
+[[package]]
 name = "yerd-update"
 version = "2.0.2-rc.9"
 dependencies = [
@@ -6279,6 +6291,7 @@ dependencies = [
  "yerd-services",
  "yerd-supervise",
  "yerd-tls",
+ "yerd-tunnel",
  "yerd-update",
  "zip",
 ]

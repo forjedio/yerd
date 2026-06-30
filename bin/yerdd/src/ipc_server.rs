@@ -65,6 +65,9 @@ async fn handle_client(stream: IpcStream, state: Arc<DaemonState>) {
             Request::InstallToolStreamed { tool } => {
                 install_tool_streamed(tool, state.clone()).await
             }
+            Request::InstallCloudflaredStreamed => {
+                crate::tunnel::install_cloudflared_streamed(state.clone()).await
+            }
             Request::InstallPhpStreamed { version } => {
                 install_php_streamed(version, state.clone()).await
             }
@@ -270,6 +273,9 @@ async fn dispatch(req: Request, state: &DaemonState) -> Response {
             crate::self_update::stage_update(channel, state, &dl, yerd_update::UPDATE_PUBLIC_KEY)
                 .await
         }
+        Request::StartQuickTunnel { site } => crate::tunnel::start_quick_tunnel(&site, state).await,
+        Request::StopTunnel { site } => crate::tunnel::stop_tunnel(&site, state).await,
+        Request::TunnelStatus => crate::tunnel::tunnel_status(state).await,
         _ => Response::Error {
             code: ErrorCode::Internal,
             message: "unsupported request".into(),
@@ -1630,7 +1636,11 @@ mod tests {
             watch_dirty: tokio::sync::Notify::new(),
             dumps: std::sync::Arc::new(crate::dump_server::DumpStore::new()),
             shim_reconcile: tokio::sync::Mutex::new(()),
+            tunnel_manager: std::sync::Arc::new(tokio::sync::Mutex::new(
+                crate::tunnel::new_manager(),
+            )),
             tool_mutate: tokio::sync::Mutex::new(()),
+            tunnel_mutate: tokio::sync::Mutex::new(()),
             php_mutate: tokio::sync::Mutex::new(()),
             jobs: crate::jobs::JobRegistry::default(),
             reserved_names: tokio::sync::Mutex::new(std::collections::HashSet::new()),

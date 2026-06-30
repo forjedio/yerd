@@ -586,6 +586,28 @@ pub async fn install_tool_streamed(tool: String) -> Result<Response, GuiError> {
     finish(exchange(&Request::InstallToolStreamed { tool }).await?)
 }
 
+// ── tunnels (Cloudflare Tunnel integration) ──────────────────────────────────
+
+#[tauri::command]
+pub async fn install_cloudflared_streamed() -> Result<Response, GuiError> {
+    finish(exchange(&Request::InstallCloudflaredStreamed).await?)
+}
+
+#[tauri::command]
+pub async fn start_quick_tunnel(site: String) -> Result<Response, GuiError> {
+    finish(exchange(&Request::StartQuickTunnel { site }).await?)
+}
+
+#[tauri::command]
+pub async fn stop_tunnel(site: String) -> Result<Response, GuiError> {
+    finish(exchange(&Request::StopTunnel { site }).await?)
+}
+
+#[tauri::command]
+pub async fn tunnel_status() -> Result<Response, GuiError> {
+    finish(exchange(&Request::TunnelStatus).await?)
+}
+
 // ── site creation ──────────────────────────────────────────────────────────
 
 #[tauri::command]

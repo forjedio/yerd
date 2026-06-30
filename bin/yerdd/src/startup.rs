@@ -210,6 +210,7 @@ pub async fn bring_up_with_dirs(
     let php_manager = Arc::new(Mutex::new(php_manager));
 
     let service_manager = Arc::new(Mutex::new(crate::services::new_manager(dirs.clone())));
+    let tunnel_manager = Arc::new(Mutex::new(crate::tunnel::new_manager()));
 
     let ipc_listener = build_ipc_listener(&dirs)?;
 
@@ -269,6 +270,7 @@ pub async fn bring_up_with_dirs(
         update_snapshot: tokio::sync::RwLock::new(crate::self_update::load_snapshot(&dirs)),
         php_manager: php_manager.clone(),
         service_manager,
+        tunnel_manager,
         mail_store,
         mail: crate::state::MailRuntime {
             listening: mail_listening,
@@ -294,6 +296,7 @@ pub async fn bring_up_with_dirs(
         dumps: Arc::new(crate::dump_server::DumpStore::new()),
         shim_reconcile: tokio::sync::Mutex::new(()),
         tool_mutate: tokio::sync::Mutex::new(()),
+        tunnel_mutate: tokio::sync::Mutex::new(()),
         php_mutate: tokio::sync::Mutex::new(()),
         jobs: crate::jobs::JobRegistry::default(),
         reserved_names: tokio::sync::Mutex::new(std::collections::HashSet::new()),

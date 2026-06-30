@@ -18,11 +18,11 @@ use std::path::PathBuf;
 
 use yerd_ipc::{
     types::{PhpVersion, Site},
-    CaStatus, Channel, DatabaseSummary, Diagnosis, DiagnosisCode, DumpCategory, DumpCounts,
-    DumpEvent, DumpExtStatus, ErrorCode, FixReport, FixResult, MailDetail, MailHeader, MailStatus,
-    MailSummary, PhpPoolStatus, PoolRunState, PortStatus, Request, Response, ServiceAvailability,
-    ServiceRunState, ServiceStatus, Severity, SiteCounts, StagedArtifact, StatusReport, ToolStatus,
-    UpdateSource,
+    CaStatus, Channel, CloudflaredStatus, DatabaseSummary, Diagnosis, DiagnosisCode, DumpCategory,
+    DumpCounts, DumpEvent, DumpExtStatus, ErrorCode, FixReport, FixResult, MailDetail, MailHeader,
+    MailStatus, MailSummary, PhpPoolStatus, PoolRunState, PortStatus, Request, Response,
+    ServiceAvailability, ServiceRunState, ServiceStatus, Severity, SiteCounts, StagedArtifact,
+    StatusReport, ToolStatus, TunnelInfo, TunnelKind, TunnelRunState, UpdateSource,
 };
 
 // ---------- Request ----------
@@ -1782,4 +1782,102 @@ fn response_update_status_byte_shape() {
         "{s}"
     );
     assert_eq!(serde_json::from_str::<Response>(&s).unwrap(), with_ts);
+}
+
+#[test]
+fn request_install_cloudflared_streamed_byte_shape() {
+    let s = serde_json::to_string(&Request::InstallCloudflaredStreamed).unwrap();
+    assert_eq!(s, r#"{"type":"install_cloudflared_streamed"}"#);
+    assert_eq!(
+        serde_json::from_str::<Request>(&s).unwrap(),
+        Request::InstallCloudflaredStreamed
+    );
+}
+
+#[test]
+fn request_start_quick_tunnel_byte_shape() {
+    let r = Request::StartQuickTunnel { site: "app".into() };
+    let s = serde_json::to_string(&r).unwrap();
+    assert_eq!(s, r#"{"type":"start_quick_tunnel","site":"app"}"#);
+    assert_eq!(serde_json::from_str::<Request>(&s).unwrap(), r);
+}
+
+#[test]
+fn request_stop_tunnel_byte_shape() {
+    let r = Request::StopTunnel { site: "app".into() };
+    let s = serde_json::to_string(&r).unwrap();
+    assert_eq!(s, r#"{"type":"stop_tunnel","site":"app"}"#);
+    assert_eq!(serde_json::from_str::<Request>(&s).unwrap(), r);
+}
+
+#[test]
+fn request_tunnel_status_byte_shape() {
+    let s = serde_json::to_string(&Request::TunnelStatus).unwrap();
+    assert_eq!(s, r#"{"type":"tunnel_status"}"#);
+    assert_eq!(
+        serde_json::from_str::<Request>(&s).unwrap(),
+        Request::TunnelStatus
+    );
+}
+
+#[test]
+fn response_tunnels_byte_shape() {
+    let r = Response::Tunnels {
+        tunnels: vec![TunnelInfo {
+            site: "app".into(),
+            kind: TunnelKind::Quick,
+            state: TunnelRunState::Running,
+            url: Some("https://calm-river-1234.trycloudflare.com".into()),
+            hostname: None,
+        }],
+        cloudflared: CloudflaredStatus {
+            installed: true,
+            version: Some("2026.6.1".into()),
+            logged_in: false,
+        },
+    };
+    let s = serde_json::to_string(&r).unwrap();
+    let expected = r#"{"type":"tunnels","tunnels":[{"site":"app","kind":"quick","state":"running","url":"https://calm-river-1234.trycloudflare.com"}],"cloudflared":{"installed":true,"version":"2026.6.1","logged_in":false}}"#;
+    assert_eq!(s, expected);
+    assert_eq!(serde_json::from_str::<Response>(&s).unwrap(), r);
+}
+
+/// A named tunnel omits `url` and includes `hostname`; an empty tunnel list and
+/// uninstalled `cloudflared` round-trip too.
+#[test]
+fn response_tunnels_named_and_empty_byte_shape() {
+    let named = Response::Tunnels {
+        tunnels: vec![TunnelInfo {
+            site: "shop".into(),
+            kind: TunnelKind::Named,
+            state: TunnelRunState::Running,
+            url: None,
+            hostname: Some("shop.example.com".into()),
+        }],
+        cloudflared: CloudflaredStatus {
+            installed: true,
+            version: None,
+            logged_in: true,
+        },
+    };
+    let s = serde_json::to_string(&named).unwrap();
+    assert!(s.contains(r#""kind":"named""#), "{s}");
+    assert!(s.contains(r#""hostname":"shop.example.com""#), "{s}");
+    assert!(!s.contains(r#""url""#), "{s}");
+    assert_eq!(serde_json::from_str::<Response>(&s).unwrap(), named);
+
+    let empty = Response::Tunnels {
+        tunnels: vec![],
+        cloudflared: CloudflaredStatus {
+            installed: false,
+            version: None,
+            logged_in: false,
+        },
+    };
+    let s = serde_json::to_string(&empty).unwrap();
+    assert_eq!(
+        s,
+        r#"{"type":"tunnels","tunnels":[],"cloudflared":{"installed":false,"logged_in":false}}"#
+    );
+    assert_eq!(serde_json::from_str::<Response>(&s).unwrap(), empty);
 }

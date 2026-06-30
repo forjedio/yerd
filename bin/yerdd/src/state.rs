@@ -75,6 +75,10 @@ pub struct DaemonState {
     /// The database/cache service supervisor (Redis/Valkey in Phase 1). Holds
     /// one supervised instance per engine; status/doctor read live state from it.
     pub service_manager: Arc<Mutex<crate::services::DaemonServiceManager>>,
+    /// The Cloudflare Tunnel supervisor. Holds one supervised `cloudflared`
+    /// child per shared site; `TunnelStatus` reads live state from it. Quick
+    /// tunnels are ephemeral (not persisted) and torn down on daemon shutdown.
+    pub tunnel_manager: Arc<Mutex<crate::tunnel::DaemonTunnelManager>>,
     /// Captured-mail store (the built-in SMTP sink writes here; IPC reads/clears
     /// it). Always present even when capture is disabled, so stored mail remains
     /// listable/clearable after the server is turned off.
@@ -125,6 +129,9 @@ pub struct DaemonState {
     /// IPC dispatch is `tokio::spawn`-per-connection, so two clients could swap
     /// `{data}/tools/<id>` concurrently; this guard makes commit+reconcile atomic.
     pub tool_mutate: Mutex<()>,
+    /// Serializes `cloudflared` install (and Phase-2 login) mutations of
+    /// `{data}/tunnel`, so two clients can't clobber the staging binary.
+    pub tunnel_mutate: Mutex<()>,
     /// Serializes PHP-version install/update mutations. IPC dispatch is
     /// `tokio::spawn`-per-connection (and the streamed install is its own task),
     /// so two clients could install concurrently; the staging dir is keyed by

@@ -35,6 +35,7 @@ import type {
   Site,
   StatusReport,
   ToolStatus,
+  TunnelsResponse,
   UpdateChannel,
   UpdateStatusResponse,
 } from "./types";
@@ -336,6 +337,31 @@ export async function pollJobToEnd(
     if (shouldContinue && !shouldContinue()) return r;
     await new Promise((resolve) => setTimeout(resolve, intervalMs));
   }
+}
+
+// ── tunnels (Cloudflare Tunnel integration) ──────────────────────────────────
+
+/** Install the `cloudflared` binary as a streamed job; returns the job id to poll. */
+export async function installCloudflaredStreamed(): Promise<string> {
+  const r = ensureOk(await call<Response>("install_cloudflared_streamed"));
+  if (r.type !== "job_started")
+    throw new IpcError("unexpected response to install_cloudflared_streamed");
+  return r.job_id;
+}
+
+/** Share a site via a Quick Tunnel; returns the refreshed tunnel list. */
+export async function startQuickTunnel(site: string): Promise<TunnelsResponse> {
+  return ensureOk(await call<Response>("start_quick_tunnel", { site })) as TunnelsResponse;
+}
+
+/** Stop a site's tunnel; returns the refreshed tunnel list. */
+export async function stopTunnel(site: string): Promise<TunnelsResponse> {
+  return ensureOk(await call<Response>("stop_tunnel", { site })) as TunnelsResponse;
+}
+
+/** Live tunnels plus `cloudflared` install status. */
+export async function tunnelStatus(): Promise<TunnelsResponse> {
+  return ensureOk(await call<Response>("tunnel_status")) as TunnelsResponse;
 }
 
 // ── site creation ──────────────────────────────────────────────────────────

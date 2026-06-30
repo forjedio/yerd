@@ -81,6 +81,23 @@ impl SupervisorPolicy {
             stop_grace: Duration::from_secs(10),
         }
     }
+
+    /// Policy for a `cloudflared` tunnel: a single outbound-only child whose
+    /// readiness is the appearance of its public URL / edge-registration line in
+    /// the logfile, which can take several seconds over a cold network. A
+    /// generous readiness window avoids restart-looping a healthy-but-slow
+    /// connect; `cloudflared` drains gracefully on SIGTERM so a short stop grace
+    /// is enough.
+    #[must_use]
+    pub const fn tunnel() -> Self {
+        Self {
+            health_check_window: Duration::from_secs(60),
+            backoff_initial: Duration::from_millis(250),
+            backoff_max: Duration::from_secs(10),
+            max_restart_attempts: 3,
+            stop_grace: Duration::from_secs(5),
+        }
+    }
 }
 
 /// One supervised unit's state.
@@ -400,6 +417,26 @@ mod tests {
         assert!(db.stop_grace > fpm.stop_grace);
         assert_eq!(fpm.health_check_window, Duration::from_secs(5));
         assert_eq!(db.health_check_window, Duration::from_secs(60));
+    }
+
+    #[test]
+    fn tunnel_policy_tolerates_slow_connect_with_short_stop() {
+        let t = SupervisorPolicy::tunnel();
+        let fpm = SupervisorPolicy::fpm();
+        assert_eq!(t.health_check_window, Duration::from_secs(60));
+        assert!(t.health_check_window > fpm.health_check_window);
+        assert_eq!(t.stop_grace, Duration::from_secs(5));
+        assert_eq!(t.max_restart_attempts, 3);
+        assert_eq!(
+            transition(
+                starting(1, Some(42)),
+                Event::HealthCheckTick {
+                    elapsed_since_starting: elapsed(10)
+                },
+                &t
+            ),
+            (starting(1, Some(42)), Action::HealthCheck)
+        );
     }
 
     fn elapsed(secs: u64) -> Elapsed {

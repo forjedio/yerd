@@ -440,6 +440,11 @@ export type Response =
       /** Unix epoch (seconds) when this result was obtained, for a "last
        *  checked …" display. Absent/undefined when never checked. */
       checked_at_epoch?: number;
+    }
+  | {
+      type: "tunnels";
+      tunnels: TunnelInfo[];
+      cloudflared: CloudflaredStatus;
     };
 
 /** Self-update release channel (mirrors `yerd_ipc::Channel`). */
@@ -465,6 +470,34 @@ export interface DatabaseSummary {
   name: string;
 }
 
+// ── tunnels (status.rs - Cloudflare Tunnel integration) ──────────────────────
+
+/** crates/yerd-ipc/src/status.rs - TunnelKind. */
+export type TunnelKind = "quick" | "named";
+
+/** crates/yerd-ipc/src/status.rs - TunnelRunState. */
+export type TunnelRunState = "running" | "failed";
+
+/** crates/yerd-ipc/src/status.rs - TunnelInfo. */
+export interface TunnelInfo {
+  site: string;
+  kind: TunnelKind;
+  state: TunnelRunState;
+  /** Public URL of a Quick tunnel once captured; absent otherwise. */
+  url?: string;
+  /** Configured public hostname of a Named tunnel; absent otherwise. */
+  hostname?: string;
+}
+
+/** crates/yerd-ipc/src/status.rs - CloudflaredStatus. */
+export interface CloudflaredStatus {
+  installed: boolean;
+  /** Installed cloudflared version when known; absent otherwise. */
+  version?: string;
+  /** Whether a Cloudflare account is logged in (Phase 2). */
+  logged_in: boolean;
+}
+
 // Narrowed aliases for the variants the views actually read.
 export type InfoResponse = Extract<Response, { type: "info" }>;
 export type SitesResponse = Extract<Response, { type: "sites" }>;
@@ -484,6 +517,7 @@ export type MailsResponse = Extract<Response, { type: "mails" }>;
 export type MailResponse = Extract<Response, { type: "mail" }>;
 export type JobStartedResponse = Extract<Response, { type: "job_started" }>;
 export type JobProgressResponse = Extract<Response, { type: "job_progress" }>;
+export type TunnelsResponse = Extract<Response, { type: "tunnels" }>;
 
 /** Privilege targets for the OS-elevated `yerd elevate` host command. */
 export type ElevateTarget = "trust" | "resolver" | "ports";

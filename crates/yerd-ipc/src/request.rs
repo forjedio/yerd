@@ -418,6 +418,27 @@ pub enum Request {
         /// Override the configured channel for this stage only.
         channel: Option<crate::Channel>,
     },
+    /// Download + install the `cloudflared` binary as a streamed background job
+    /// (the Cloudflare Tunnel integration's prerequisite). Replies
+    /// [`super::Response::JobStarted`] immediately; progress is polled via
+    /// [`Self::JobStatus`]. The streaming-only sibling of the dev-tool installers.
+    InstallCloudflaredStreamed,
+    /// Start a Quick Tunnel for a site, publishing it at a random
+    /// `*.trycloudflare.com` URL. Replies [`super::Response::Tunnels`] with the
+    /// live tunnel (including its URL once captured). Requires `cloudflared` to be
+    /// installed.
+    StartQuickTunnel {
+        /// The site name to share.
+        site: String,
+    },
+    /// Stop and tear down the tunnel for a site. No-op if none is running.
+    StopTunnel {
+        /// The site whose tunnel to stop.
+        site: String,
+    },
+    /// Fetch the live tunnel state plus `cloudflared` install status. Returns
+    /// [`super::Response::Tunnels`].
+    TunnelStatus,
 }
 
 #[cfg(test)]
@@ -506,6 +527,10 @@ mod variant_name_pinning {
             Request::CachedUpdateStatus => {}
             Request::SetUpdateChannel { .. } => {}
             Request::StageUpdate { .. } => {}
+            Request::InstallCloudflaredStreamed => {}
+            Request::StartQuickTunnel { .. } => {}
+            Request::StopTunnel { .. } => {}
+            Request::TunnelStatus => {}
         }
     }
 
@@ -680,6 +705,10 @@ mod variant_name_pinning {
             channel: crate::Channel::Stable,
         });
         pin(Request::StageUpdate { channel: None });
+        pin(Request::InstallCloudflaredStreamed);
+        pin(Request::StartQuickTunnel { site: "app".into() });
+        pin(Request::StopTunnel { site: "app".into() });
+        pin(Request::TunnelStatus);
     }
 
     fn laravel_options_fixture() -> crate::LaravelOptions {

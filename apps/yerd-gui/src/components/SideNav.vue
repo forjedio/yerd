@@ -4,6 +4,7 @@ import { computed } from "vue";
 import {
   ClipboardList,
   Database,
+  Globe,
   Info,
   LayoutDashboard,
   LayoutGrid,
@@ -68,6 +69,10 @@ const sections = computed<{ title: string; items: Item[] }[]>(() => [
       },
       { to: "/dumps", label: "Dumps", icon: ClipboardList },
     ],
+  },
+  {
+    title: "Integrations",
+    items: [{ to: "/integrations", label: "Integrations", icon: Globe }],
   },
   {
     title: "System",

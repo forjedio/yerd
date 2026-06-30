@@ -58,6 +58,15 @@ export const router = createRouter({
       component: () => import("@/views/LaravelDumpsView.vue"),
     },
     {
+      path: "/integrations",
+      name: "integrations",
+      meta: {
+        title: "Integrations",
+        subtitle: "Publish local sites to the internet via Cloudflare Tunnel",
+      },
+      component: () => import("@/views/IntegrationsView.vue"),
+    },
+    {
       // Standalone viewer rendered in the separate "dumps" window (no app shell).
       path: "/dumps-window",
       name: "dumps-window",

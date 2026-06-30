@@ -56,6 +56,7 @@ import {
   setSecure,
   setWebRoot,
   sitesAndParked,
+  startQuickTunnel,
   unlink,
   unpark,
 } from "@/ipc/client";
@@ -312,6 +313,31 @@ function consumeIntent(): void {
 
 onMounted(consumeIntent);
 watch(sitesIntent, consumeIntent);
+
+/**
+ * Publish a site over a Cloudflare Quick Tunnel. The tunnel is then managed
+ * (and stopped) from the Integrations page; here we just kick it off and surface
+ * the public URL. A missing `cloudflared` surfaces as a daemon error toast that
+ * points at Integrations.
+ */
+const sharing = ref<string | null>(null);
+async function shareSitePublicly(s: Site): Promise<void> {
+  sharing.value = s.name;
+  try {
+    const r = await startQuickTunnel(s.name);
+    const url = r.tunnels.find((t) => t.site === s.name)?.url;
+    if (url) {
+      await navigator.clipboard.writeText(url).catch(() => undefined);
+      toast.success(`Sharing ${s.name}`, `${url} (copied) - manage in Integrations`);
+    } else {
+      toast.success(`Sharing ${s.name}`, "Starting - see Integrations for the URL");
+    }
+  } catch (e) {
+    toast.error(`Couldn't share ${s.name}`, (e as IpcError).message);
+  } finally {
+    sharing.value = null;
+  }
+}
 </script>
 
 <template>
@@ -463,6 +489,12 @@ watch(sitesIntent, consumeIntent);
                     </DropdownMenuItem>
                     <DropdownMenuItem @select="openPath(s.document_root)">
                       <FolderOpen class="size-4" /> Reveal folder
+                    </DropdownMenuItem>
+                    <DropdownMenuItem
+                      :disabled="sharing === s.name"
+                      @select="shareSitePublicly(s)"
+                    >
+                      <Globe class="size-4" /> Share publicly…
                     </DropdownMenuItem>
                     <!-- Only linked sites are removable here (by name). A parked
                          site is removed by un-parking its folder. -->

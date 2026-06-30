@@ -31,6 +31,7 @@ yerd-dns       = { path = "../../crates/yerd-dns" }
 yerd-php       = { path = "../../crates/yerd-php" }
 yerd-services  = { path = "../../crates/yerd-services" }
 yerd-supervise = { path = "../../crates/yerd-supervise" }
+yerd-tunnel    = { path = "../../crates/yerd-tunnel" }
 yerd-proxy     = { path = "../../crates/yerd-proxy" }
 yerd-doctor    = { path = "../../crates/yerd-doctor" }
 yerd-mail      = { path = "../../crates/yerd-mail" }
