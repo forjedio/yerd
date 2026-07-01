@@ -139,7 +139,7 @@ pub enum PhpError {
     /// A downloaded tarball's SHA-256 did not match the manifest's value.
     #[error("sha256 mismatch for {file}")]
     ShaMismatch {
-        /// The manifest `file` whose bytes failed verification.
+        /// The artifact URL whose downloaded bytes failed SHA-256 verification.
         file: String,
     },
 

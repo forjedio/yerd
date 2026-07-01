@@ -323,10 +323,11 @@ async fn php_versions_response(state: &DaemonState) -> Response {
     }
 }
 
-/// `available php` - list the major.minor versions installable from the
-/// distribution, plus what's already installed (so clients hide or tag them).
-/// Fetches the listing on demand; only a fetch/transport failure is an error
-/// (an empty parse result is a valid empty list).
+/// `available php` - list the major.minor versions installable from the signed
+/// `php.json` manifest, plus what's already installed (so clients hide or tag
+/// them). Fetches + verifies the manifest on demand; a fetch/transport OR
+/// signature-verification failure is an error (an empty parse result is still a
+/// valid empty list).
 async fn available_php_response(state: &DaemonState) -> Response {
     let dl = crate::php_install::ReqwestDownloader::new();
     available_php_with(state, &dl, yerd_update::PHP_LISTING_PUBLIC_KEY).await
@@ -350,7 +351,7 @@ async fn available_php_with(
     };
     let listing = match crate::php_install::fetch_verified_listing(dl, public_key).await {
         Ok(body) => body,
-        Err(e) => return internal(format!("couldn't reach the PHP listing: {e}")),
+        Err(e) => return internal(format!("couldn't load the PHP listing: {e}")),
     };
     Response::AvailablePhp {
         available: yerd_php::available_minors(&listing, os, arch),
@@ -648,7 +649,13 @@ async fn run_doctor_fix(state: &DaemonState) -> Response {
 }
 
 /// `update php [<ver>]` - upgrade the given minor (or all installed) to the
-/// latest published patch when newer; refresh the cache; return the new list.
+/// latest published build when newer; restart the updated pools; refresh the
+/// cache; return the new list.
+///
+/// A resolve failure for a **targeted** update (`version: Some`) is surfaced as
+/// an error rather than a silent no-op; update-all skips an unresolvable minor.
+/// If a later minor's install fails, the minors that already updated are still
+/// finalised (pools restarted, cache refreshed) before the error is returned.
 ///
 /// Holds `php_mutate` across the install loop so it can't race
 /// `install_php`/`install_php_streamed` over the same per-version staging dir.
@@ -685,13 +692,21 @@ async fn update_php(version: Option<yerd_core::PhpVersion>, state: &DaemonState)
         };
     let _guard = state.php_mutate.lock().await;
     let mut updated: Vec<yerd_core::PhpVersion> = Vec::new();
+    let mut install_error: Option<yerd_php::PhpError> = None;
     for minor in targets {
         let Some(installed) = crate::php_install::installed_patch(&state.dirs, minor) else {
             continue;
         };
         let installed_rev = crate::php_install::installed_revision(&state.dirs, minor);
-        let Ok(artifact) = yerd_php::resolve_from_listing(&listing, minor, os, arch) else {
-            continue;
+        let artifact = match yerd_php::resolve_from_listing(&listing, minor, os, arch) {
+            Ok(a) => a,
+            Err(e) if version.is_some() => {
+                return Response::Error {
+                    code: php_error_code(&e),
+                    message: e.to_string(),
+                };
+            }
+            Err(_) => continue,
         };
         if yerd_php::is_newer_build(
             &installed,
@@ -709,10 +724,8 @@ async fn update_php(version: Option<yerd_core::PhpVersion>, state: &DaemonState)
             .await
             {
                 tracing::error!(version = %minor, error = %e, "PHP update failed");
-                return Response::Error {
-                    code: php_error_code(&e),
-                    message: e.to_string(),
-                };
+                install_error = Some(e);
+                break;
             }
             tracing::info!(version = %minor, from = %installed, to = %artifact.full_version, "updated PHP");
             updated.push(minor);
@@ -720,6 +733,12 @@ async fn update_php(version: Option<yerd_core::PhpVersion>, state: &DaemonState)
     }
     restart_updated_pools(state, &updated).await;
     crate::php_updates::poll_and_refresh(state, &dl, yerd_update::PHP_LISTING_PUBLIC_KEY).await;
+    if let Some(e) = install_error {
+        return Response::Error {
+            code: php_error_code(&e),
+            message: e.to_string(),
+        };
+    }
     php_versions_response(state).await
 }
 
@@ -2875,6 +2894,35 @@ Subject: Captured\r\n\r\nhi\r\n";
                 .get(&PhpVersion::new(8, 5))
                 .cloned(),
             Some(("8.5.6".to_owned(), 1))
+        );
+    }
+
+    /// A validly-signed but unknown-schema manifest must NOT wipe a good cache:
+    /// resolve fails schema-wide, so the poll aborts without overwriting.
+    #[tokio::test]
+    async fn poll_and_refresh_keeps_cache_on_unknown_schema() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_in(tmp.path());
+        fake_install_build(&state.dirs, PhpVersion::new(8, 5), "8.5.6", 1);
+        state
+            .php_updates
+            .write()
+            .await
+            .insert(PhpVersion::new(8, 5), ("8.5.7".to_owned(), 1));
+        let signed = crate::test_support::sign_manifest(r#"{ "schema": 2, "builds": [] }"#);
+
+        crate::php_updates::poll_and_refresh(&state, &ListingDl::new(&signed), &signed.public_key)
+            .await;
+
+        assert_eq!(
+            state
+                .php_updates
+                .read()
+                .await
+                .get(&PhpVersion::new(8, 5))
+                .cloned(),
+            Some(("8.5.7".to_owned(), 1)),
+            "a bad-schema manifest must not clear the previously-cached update"
         );
     }
 

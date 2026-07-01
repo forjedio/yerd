@@ -55,8 +55,13 @@ pub async fn poll_and_refresh(state: &DaemonState, dl: &dyn Downloader, public_k
 
     let mut latest: HashMap<PhpVersion, (String, u32)> = HashMap::new();
     for minor in minors {
-        let Ok(artifact) = resolve_from_listing(&listing, minor, os, arch) else {
-            continue;
+        let artifact = match resolve_from_listing(&listing, minor, os, arch) {
+            Ok(a) => a,
+            Err(yerd_php::PhpError::VersionUnavailable { .. }) => continue,
+            Err(e) => {
+                tracing::debug!(error = %e, "php update poll aborted: manifest unusable, keeping cache");
+                return;
+            }
         };
         if let Some(installed) = installed_patch(&state.dirs, minor) {
             let installed_rev = installed_revision(&state.dirs, minor);

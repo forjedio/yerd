@@ -149,7 +149,9 @@ fn note(progress: Option<&ProgressTx>, msg: impl Into<String>) {
 /// (install, update poll, available-versions). The signature is **prehashed**
 /// (`minisign -H`); `verify_minisign` rejects legacy signatures. Mirrors
 /// `self_update::stage_update`, which likewise threads the public key so tests
-/// can sign a fixture manifest with their own key.
+/// can sign a fixture manifest with their own key. Returns the body via
+/// `from_utf8` (not lossily), so the parsed manifest is byte-for-byte what the
+/// signature covered - invalid UTF-8 is rejected as `ListingParse`.
 pub(crate) async fn fetch_verified_listing(
     dl: &dyn Downloader,
     public_key: &str,
@@ -161,7 +163,9 @@ pub(crate) async fn fetch_verified_listing(
         tracing::warn!(error = %e, "php.json signature verification failed");
         PhpError::ListingUntrusted
     })?;
-    Ok(String::from_utf8_lossy(&body).into_owned())
+    String::from_utf8(body).map_err(|e| PhpError::ListingParse {
+        detail: format!("listing body is not valid UTF-8: {e}"),
+    })
 }
 
 /// Install `version` (major.minor) into `dirs.data/php/php-<minor>/`.

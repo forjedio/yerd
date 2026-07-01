@@ -243,6 +243,17 @@ pub fn resolve_from_listing(
         .find(|b| b.os == os.as_str() && b.arch == arch.as_str() && b.minor == want_minor)
         .ok_or(PhpError::VersionUnavailable { version })?;
 
+    if entry.revision == 0 {
+        return Err(PhpError::ListingParse {
+            detail: format!(
+                "build {} ({}-{}) has revision 0, but published builds must be >= 1",
+                entry.php,
+                os.as_str(),
+                arch.as_str()
+            ),
+        });
+    }
+
     Ok(Artifact {
         install_dir_name: format!("php-{}.{}", version.major, version.minor),
         revision: entry.revision,
@@ -458,6 +469,19 @@ mod tests {
         match resolve_from_listing("not json", PhpVersion::new(8, 5), Os::Linux, Arch::X86_64) {
             Err(PhpError::ListingParse { .. }) => {}
             other => panic!("expected ListingParse, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn resolve_rejects_revision_zero() {
+        let bad = r#"{ "schema": 1, "builds": [
+            { "php": "8.5.7", "minor": "8.5", "os": "linux", "arch": "x86_64", "revision": 0,
+              "cli": { "file": "c.tar.gz", "sha256": "aa", "size": 1 },
+              "fpm": { "file": "f.tar.gz", "sha256": "bb", "size": 1 } }
+        ] }"#;
+        match resolve_from_listing(bad, PhpVersion::new(8, 5), Os::Linux, Arch::X86_64) {
+            Err(PhpError::ListingParse { .. }) => {}
+            other => panic!("expected ListingParse for revision 0, got {other:?}"),
         }
     }
 
