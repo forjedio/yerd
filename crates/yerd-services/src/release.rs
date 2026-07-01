@@ -1,9 +1,9 @@
 //! Pure resolution of prebuilt service download artifacts from **yerd's own**
 //! hosted listing.
 //!
-//! Unlike PHP (which consumes the upstream `static-php-cli` distribution), there
-//! is no single multi-platform distribution for databases, so yerd builds and
-//! hosts its own (the `forjedio/yerd-services` build matrix) and publishes a
+//! Like PHP (whose signed `php.json` yerd hosts on `forjedio/yerd-php`), there
+//! is no ready-made multi-platform distribution for databases, so yerd builds
+//! and hosts its own (the `forjedio/yerd-services` build matrix) and publishes a
 //! machine-readable `services.json` listing. The daemon fetches the listing and
 //! hands the body to [`resolve_from_listing`] / [`available_versions`] (both
 //! pure).

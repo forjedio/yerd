@@ -66,7 +66,7 @@ silences it; server-down is invisible to the app.
 
 ## Phase C - Build matrix & releases (CI)
 
-1. **Per-target builds** against the matching PHP headers (the same static-php.dev
+1. **Per-target builds** against the matching PHP headers (the same `forjedio/yerd-php`
    builds Yerd ships: glibc/NTS on Linux, NTS on macOS) so build-ids match. Cells:
    PHP minor × {macos-arm64, macos-x86_64, linux-x86_64, linux-aarch64}.
 2. **Artifact naming** `yerd-dump-<phpminor>-<os>-<arch>.so`; publish to GitHub

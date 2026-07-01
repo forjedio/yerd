@@ -3,9 +3,11 @@
 //!
 //! The `reqwest`-backed [`Downloader`] lives here (a binary) so `yerd-php`
 //! stays dependency-light. Version resolution + tar-member safety are pure
-//! helpers from `yerd_php::release`; this module is the I/O edge: fetch the
-//! listing → resolve → fetch tarballs → safe-extract the single binary →
-//! atomic install. Integrity is TLS-only (no sha pinning - per user decision).
+//! helpers from `yerd_php::release`; this module is the I/O edge: fetch +
+//! **verify** the signed `php.json` manifest → resolve → fetch tarballs →
+//! **SHA-256-verify** and safe-extract the single binary → atomic install.
+//! Integrity is anchored by the manifest's minisign signature (verified here)
+//! and each tarball's published SHA-256.
 
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -16,7 +18,8 @@ use async_trait::async_trait;
 
 use yerd_core::PhpVersion;
 use yerd_php::{
-    current_os_arch, is_safe_member, Artifact, BinaryKind, DownloadError, Downloader, PhpError,
+    current_os_arch, is_safe_member, listing_sig_url, listing_url, Artifact, BinaryKind,
+    DownloadError, Downloader, PhpError,
 };
 use yerd_platform::PlatformDirs;
 
@@ -139,13 +142,40 @@ fn note(progress: Option<&ProgressTx>, msg: impl Into<String>) {
     }
 }
 
+/// Download the signed `php.json` manifest and its detached minisign signature,
+/// verify the signature against `public_key`, and return the trusted JSON body.
+///
+/// This is the single choke point through which every PHP listing read passes
+/// (install, update poll, available-versions). The signature is **prehashed**
+/// (`minisign -H`); `verify_minisign` rejects legacy signatures. Mirrors
+/// `self_update::stage_update`, which likewise threads the public key so tests
+/// can sign a fixture manifest with their own key. Returns the body via
+/// `from_utf8` (not lossily), so the parsed manifest is byte-for-byte what the
+/// signature covered - invalid UTF-8 is rejected as `ListingParse`.
+pub(crate) async fn fetch_verified_listing(
+    dl: &dyn Downloader,
+    public_key: &str,
+) -> Result<String, PhpError> {
+    let body = dl.download(&listing_url()).await?;
+    let sig = dl.download(&listing_sig_url()).await?;
+    let sig = String::from_utf8_lossy(&sig);
+    yerd_update::verify_minisign(public_key, &sig, &body).map_err(|e| {
+        tracing::warn!(error = %e, "php.json signature verification failed");
+        PhpError::ListingUntrusted
+    })?;
+    String::from_utf8(body).map_err(|e| PhpError::ListingParse {
+        detail: format!("listing body is not valid UTF-8: {e}"),
+    })
+}
+
 /// Install `version` (major.minor) into `dirs.data/php/php-<minor>/`.
 ///
-/// Resolves the latest patch from the distribution's live listing, downloads
-/// the CLI and FPM tarballs, safely extracts the single binary from each, and
-/// atomically swaps the result into place. Idempotent: reinstalling replaces
-/// the dir. **Integrity is TLS-only** - the distribution publishes no checksum
-/// sidecars and yerd does not pin hashes (deliberate; see `yerd_php::release`).
+/// Fetches + verifies the signed `php.json` manifest, resolves the single build
+/// for this platform, downloads the CLI and FPM tarballs, **verifies each
+/// tarball's SHA-256** against the manifest, safely extracts the single binary
+/// from each, and atomically swaps the result into place. Idempotent:
+/// reinstalling replaces the dir. `public_key` is the minisign key the manifest
+/// is verified against (prod passes [`yerd_update::PHP_LISTING_PUBLIC_KEY`]).
 ///
 /// When `progress` is set, coarse phase + byte-count updates are streamed to it
 /// (the GUI's streamed install polls these); pass `None` for the silent path.
@@ -153,14 +183,14 @@ pub async fn install(
     version: PhpVersion,
     dirs: &PlatformDirs,
     dl: &dyn Downloader,
+    public_key: &str,
     progress: Option<&ProgressTx>,
 ) -> Result<(), PhpError> {
     let (os, arch) = current_os_arch()?;
-    note(progress, format!("Resolving latest PHP {version}…"));
-    let listing = dl.download(&yerd_php::listing_url(os)).await?;
-    let listing = String::from_utf8_lossy(&listing);
+    note(progress, format!("Resolving PHP {version}…"));
+    let listing = fetch_verified_listing(dl, public_key).await?;
     let artifact = yerd_php::resolve_from_listing(&listing, version, os, arch)?;
-    tracing::info!(%version, patch = %artifact.full_version, "resolved PHP build; downloading");
+    tracing::info!(%version, patch = %artifact.full_version, revision = artifact.revision, "resolved PHP build; downloading");
     note(
         progress,
         format!("Found PHP {} — downloading…", artifact.full_version),
@@ -210,8 +240,14 @@ pub fn write_cli_ini(
     yerd_php::io::atomic_write::write(&dirs.data.join("php-cli.ini"), contents.as_bytes())
 }
 
-/// Filename of the installed-patch marker inside a per-version dir.
+/// Filename of the installed-patch marker inside a per-version dir. Kept
+/// byte-identical to older yerd (bare patch string) so a rolled-back client
+/// still parses it; the revision lives in a sibling [`REVISION_MARKER`].
 const VERSION_MARKER: &str = ".yerd-version";
+
+/// Filename of the installed-revision marker inside a per-version dir (the `-N`
+/// suffix). Absent for pre-cutover installs, which read as revision 0.
+const REVISION_MARKER: &str = ".yerd-revision";
 
 async fn stage(
     artifact: &Artifact,
@@ -222,6 +258,7 @@ async fn stage(
     fetch_and_extract(
         dl,
         &artifact.cli_url,
+        &artifact.cli_sha256,
         BinaryKind::Cli,
         staging,
         progress,
@@ -231,6 +268,7 @@ async fn stage(
     fetch_and_extract(
         dl,
         &artifact.fpm_url,
+        &artifact.fpm_sha256,
         BinaryKind::Fpm,
         staging,
         progress,
@@ -240,6 +278,11 @@ async fn stage(
     fs_ctx(std::fs::create_dir_all(staging), staging)?;
     let marker = staging.join(VERSION_MARKER);
     fs_ctx(std::fs::write(&marker, &artifact.full_version), &marker)?;
+    let rev_marker = staging.join(REVISION_MARKER);
+    fs_ctx(
+        std::fs::write(&rev_marker, artifact.revision.to_string()),
+        &rev_marker,
+    )?;
     Ok(())
 }
 
@@ -261,13 +304,33 @@ pub fn installed_patch(dirs: &PlatformDirs, minor: PhpVersion) -> Option<String>
     }
 }
 
-/// Download one PHP binary tarball and extract its single member into `staging`.
+/// The installed build revision of `minor` (reads the `.yerd-revision` marker).
+/// A missing/unparseable marker reads as `0` - a legacy install predating the
+/// c-ares cutover, which every `revision >= 1` manifest build then supersedes.
+#[must_use]
+pub fn installed_revision(dirs: &PlatformDirs, minor: PhpVersion) -> u32 {
+    let marker = dirs
+        .data
+        .join("php")
+        .join(format!("php-{}.{}", minor.major, minor.minor))
+        .join(REVISION_MARKER);
+    std::fs::read_to_string(marker)
+        .ok()
+        .and_then(|s| s.trim().parse().ok())
+        .unwrap_or(0)
+}
+
+/// Download one PHP binary tarball, verify its SHA-256 against the manifest, and
+/// extract its single member into `staging`.
 ///
 /// Streams with byte-progress when `progress` is attached, otherwise takes the
-/// silent path; a download error converts to `PhpError` via `#[from]`.
+/// silent path; a download error converts to `PhpError` via `#[from]`. The
+/// SHA-256 check happens on both paths (this is the single fetch site) - bytes
+/// that don't match `expected_sha256` are never extracted.
 async fn fetch_and_extract(
     dl: &dyn Downloader,
     url: &str,
+    expected_sha256: &str,
     kind: BinaryKind,
     staging: &Path,
     progress: Option<&ProgressTx>,
@@ -284,6 +347,12 @@ async fn fetch_and_extract(
         }
         None => dl.download(url).await?,
     };
+    if !yerd_update::sha256_hex(&bytes).eq_ignore_ascii_case(expected_sha256) {
+        tracing::warn!(%url, "PHP tarball sha256 mismatch");
+        return Err(PhpError::ShaMismatch {
+            file: url.to_owned(),
+        });
+    }
     let binary = extract_member(&bytes, kind, url)?;
 
     let mut target = staging.to_path_buf();
@@ -616,10 +685,12 @@ mod tests {
         }
     }
 
-    /// URL-keyed fake: the directory URL (ends `/`) → listing; `-cli-`/`-fpm-`
-    /// URLs → the respective tarball.
+    /// URL-keyed fake: `php.json.minisig` → signature; `php.json` → manifest;
+    /// `-cli-`/`-fpm-` → the respective tarball. Missing tarballs (empty) still
+    /// answer so a resolve-then-download path can run.
     struct FakeDownloader {
-        listing: String,
+        manifest: String,
+        minisig: String,
         cli: Vec<u8>,
         fpm: Vec<u8>,
     }
@@ -627,8 +698,10 @@ mod tests {
     #[async_trait]
     impl Downloader for FakeDownloader {
         async fn download(&self, url: &str) -> Result<Vec<u8>, DownloadError> {
-            if url.ends_with('/') {
-                Ok(self.listing.clone().into_bytes())
+            if url.ends_with(".minisig") {
+                Ok(self.minisig.clone().into_bytes())
+            } else if url.ends_with("php.json") {
+                Ok(self.manifest.clone().into_bytes())
             } else if url.contains("-cli-") {
                 Ok(self.cli.clone())
             } else if url.contains("-fpm-") {
@@ -642,25 +715,49 @@ mod tests {
         }
     }
 
+    /// Build a one-build `php.json` for the host platform whose `cli`/`fpm`
+    /// sha256 match the given tarball bytes, then sign it.
+    fn signed_manifest_for(
+        php: &str,
+        minor: &str,
+        revision: u32,
+        cli: &[u8],
+        fpm: &[u8],
+    ) -> crate::test_support::SignedManifest {
+        let (os, arch) = current_os_arch().unwrap();
+        let manifest = format!(
+            r#"{{ "schema": 1, "builds": [
+                {{ "php": "{php}", "minor": "{minor}", "os": "{os}", "arch": "{arch}", "revision": {revision},
+                   "cli": {{ "file": "php-{php}-{revision}-cli-{os}-{arch}.tar.gz", "sha256": "{cli_sha}", "size": {cli_len} }},
+                   "fpm": {{ "file": "php-{php}-{revision}-fpm-{os}-{arch}.tar.gz", "sha256": "{fpm_sha}", "size": {fpm_len} }} }}
+            ] }}"#,
+            os = os.as_str(),
+            arch = arch.as_str(),
+            cli_sha = yerd_update::sha256_hex(cli),
+            fpm_sha = yerd_update::sha256_hex(fpm),
+            cli_len = cli.len(),
+            fpm_len = fpm.len(),
+        );
+        crate::test_support::sign_manifest(&manifest)
+    }
+
+    const KEY: &str = yerd_update::PHP_LISTING_PUBLIC_KEY;
+
     #[tokio::test]
     async fn install_lays_down_both_binaries_executable() {
         let tmp = tempfile::tempdir().unwrap();
         let dirs = dirs_in(tmp.path());
-        let (os, arch) = current_os_arch().unwrap();
-        let listing = format!(
-            "<a href=\"php-8.5.2-cli-{os}-{arch}.tar.gz\">x</a>\
-             <a href=\"php-8.5.6-cli-{os}-{arch}.tar.gz\">y</a>\
-             <a href=\"php-8.5.6-fpm-{os}-{arch}.tar.gz\">z</a>",
-            os = os.as_str(),
-            arch = arch.as_str()
-        );
+        let cli = gzip_tar_single("php", b"CLI-BYTES", 0o755);
+        let fpm = gzip_tar_single("php-fpm", b"FPM-BYTES", 0o755);
+        let signed = signed_manifest_for("8.5.7", "8.5", 1, &cli, &fpm);
         let dl = FakeDownloader {
-            listing,
-            cli: gzip_tar_single("php", b"CLI-BYTES", 0o755),
-            fpm: gzip_tar_single("php-fpm", b"FPM-BYTES", 0o755),
+            manifest: signed.manifest.clone(),
+            minisig: signed.minisig.clone(),
+            cli,
+            fpm,
         };
 
-        install(PhpVersion::new(8, 5), &dirs, &dl, None)
+        install(PhpVersion::new(8, 5), &dirs, &dl, &signed.public_key, None)
             .await
             .unwrap();
 
@@ -675,8 +772,9 @@ mod tests {
         );
         assert_eq!(
             installed_patch(&dirs, PhpVersion::new(8, 5)).as_deref(),
-            Some("8.5.6")
+            Some("8.5.7")
         );
+        assert_eq!(installed_revision(&dirs, PhpVersion::new(8, 5)), 1);
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -688,18 +786,86 @@ mod tests {
         }
     }
 
+    /// The manifest is signed over the correct shas, but the fake serves
+    /// different tarball bytes, so the post-download sha check must abort.
+    #[tokio::test]
+    async fn install_rejects_sha_mismatch_and_writes_nothing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dirs = dirs_in(tmp.path());
+        let cli = gzip_tar_single("php", b"CLI-BYTES", 0o755);
+        let fpm = gzip_tar_single("php-fpm", b"FPM-BYTES", 0o755);
+        let signed = signed_manifest_for("8.5.7", "8.5", 1, &cli, &fpm);
+        let dl = FakeDownloader {
+            manifest: signed.manifest.clone(),
+            minisig: signed.minisig.clone(),
+            cli: gzip_tar_single("php", b"TAMPERED", 0o755),
+            fpm,
+        };
+        let err = install(PhpVersion::new(8, 5), &dirs, &dl, &signed.public_key, None)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, PhpError::ShaMismatch { .. }), "got {err:?}");
+        assert!(!dirs.data.join("php").join("php-8.5").exists());
+    }
+
+    /// A manifest signed by a throwaway key fails when verified against the
+    /// production `PHP_LISTING_PUBLIC_KEY`, and nothing is installed.
+    #[tokio::test]
+    async fn install_rejects_untrusted_listing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dirs = dirs_in(tmp.path());
+        let cli = gzip_tar_single("php", b"CLI-BYTES", 0o755);
+        let fpm = gzip_tar_single("php-fpm", b"FPM-BYTES", 0o755);
+        let signed = signed_manifest_for("8.5.7", "8.5", 1, &cli, &fpm);
+        let dl = FakeDownloader {
+            manifest: signed.manifest.clone(),
+            minisig: signed.minisig.clone(),
+            cli,
+            fpm,
+        };
+        let err = install(PhpVersion::new(8, 5), &dirs, &dl, KEY, None)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, PhpError::ListingUntrusted), "got {err:?}");
+        assert!(!dirs.data.join("php").join("php-8.5").exists());
+    }
+
+    /// A validly-signed manifest that simply lacks the requested minor (only 8.4
+    /// present) resolves to `VersionUnavailable`, not a trust error.
+    /// The fetch choke point rejects a manifest whose body was altered after
+    /// signing: the original signature no longer covers the served bytes, so
+    /// `fetch_verified_listing` returns `ListingUntrusted` before any resolve.
+    #[tokio::test]
+    async fn fetch_verified_listing_rejects_tampered_body() {
+        let cli = gzip_tar_single("php", b"CLI-BYTES", 0o755);
+        let fpm = gzip_tar_single("php-fpm", b"FPM-BYTES", 0o755);
+        let signed = signed_manifest_for("8.5.7", "8.5", 1, &cli, &fpm);
+        let dl = FakeDownloader {
+            manifest: signed.manifest.replace("8.5.7", "8.5.9"),
+            minisig: signed.minisig.clone(),
+            cli,
+            fpm,
+        };
+        let err = fetch_verified_listing(&dl, &signed.public_key)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, PhpError::ListingUntrusted), "got {err:?}");
+    }
+
     #[tokio::test]
     async fn install_errors_when_version_not_published_and_writes_nothing() {
         let tmp = tempfile::tempdir().unwrap();
         let dirs = dirs_in(tmp.path());
-        let (os, arch) = current_os_arch().unwrap();
-        let listing = format!("php-8.4.21-cli-{}-{}.tar.gz", os.as_str(), arch.as_str());
+        let cli = gzip_tar_single("php", b"x", 0o755);
+        let fpm = gzip_tar_single("php-fpm", b"y", 0o755);
+        let signed = signed_manifest_for("8.4.21", "8.4", 1, &cli, &fpm);
         let dl = FakeDownloader {
-            listing,
-            cli: vec![],
-            fpm: vec![],
+            manifest: signed.manifest.clone(),
+            minisig: signed.minisig.clone(),
+            cli,
+            fpm,
         };
-        let err = install(PhpVersion::new(8, 5), &dirs, &dl, None)
+        let err = install(PhpVersion::new(8, 5), &dirs, &dl, &signed.public_key, None)
             .await
             .unwrap_err();
         assert!(

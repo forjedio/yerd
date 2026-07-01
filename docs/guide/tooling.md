@@ -153,7 +153,7 @@ first (`yerd install php 8.4`); otherwise `composer` reports that no PHP is
 available. Node and Bun are standalone and have no such dependency.
 
 ::: tip ext-intl and friends
-Yerd's PHP builds ship the **bulk** static-php-cli extension set, including
+Yerd's PHP builds ship the **bulk** extension set, including
 `intl`, `sodium`, `mysqli`, and more — so Composer packages that require them
 install without extra steps. See [PHP Versions](./php-versions) for the bundled
 extension list.

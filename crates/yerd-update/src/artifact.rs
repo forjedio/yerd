@@ -12,6 +12,13 @@ use crate::{Asset, ReleaseMeta};
 /// The minisign public key whose secret half signs release artifacts.
 pub const UPDATE_PUBLIC_KEY: &str = "RWRXUQIpU8uZ3B6SV3yFsK3+aAWZX+efytjc8F+8PTuViL8/nNPsQxpi";
 
+/// The minisign public key whose secret half signs the `php.json` manifest in
+/// `forjedio/yerd-php`. A **dedicated** key, distinct from [`UPDATE_PUBLIC_KEY`]:
+/// PHP executes as the user, so the manifest is verified on the install critical
+/// path (not just app updates). Rotating it requires shipping a new yerd with the
+/// new key, since it is pinned in the binary.
+pub const PHP_LISTING_PUBLIC_KEY: &str = "RWRtVdsOqEEQ4/LBPGjnS97agmhMj0k/X18GXFHHOJfIuuzE4SMymlQD";
+
 /// The host platform an artifact targets. Decoupled from `cfg!` so selection is
 /// testable for every platform from any build; the daemon passes
 /// [`Platform::current`].

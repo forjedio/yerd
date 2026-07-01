@@ -13,7 +13,6 @@ use yerd_ipc::{
     read_message, write_message, ErrorCode, FrameDecoder, IpcError, Request, Response,
     DEFAULT_MAX_FRAME,
 };
-use yerd_php::Downloader; // brings the `download` method into scope for `update_php`
 
 use crate::error::DaemonError;
 use crate::state::DaemonState;
@@ -136,7 +135,8 @@ async fn dispatch(req: Request, state: &DaemonState) -> Response {
         Request::SetDefaultPhp { version } => set_default_php(version, state).await,
         Request::CheckPhpUpdates => {
             let dl = crate::php_install::ReqwestDownloader::new();
-            crate::php_updates::poll_and_refresh(state, &dl).await;
+            crate::php_updates::poll_and_refresh(state, &dl, yerd_update::PHP_LISTING_PUBLIC_KEY)
+                .await;
             php_versions_response(state).await
         }
         Request::UpdatePhp { version } => update_php(version, state).await,
@@ -323,18 +323,23 @@ async fn php_versions_response(state: &DaemonState) -> Response {
     }
 }
 
-/// `available php` - list the major.minor versions installable from the
-/// distribution, plus what's already installed (so clients hide or tag them).
-/// Fetches the listing on demand; only a fetch/transport failure is an error
-/// (an empty parse result is a valid empty list).
+/// `available php` - list the major.minor versions installable from the signed
+/// `php.json` manifest, plus what's already installed (so clients hide or tag
+/// them). Fetches + verifies the manifest on demand; a fetch/transport OR
+/// signature-verification failure is an error (an empty parse result is still a
+/// valid empty list).
 async fn available_php_response(state: &DaemonState) -> Response {
     let dl = crate::php_install::ReqwestDownloader::new();
-    available_php_with(state, &dl).await
+    available_php_with(state, &dl, yerd_update::PHP_LISTING_PUBLIC_KEY).await
 }
 
 /// Injectable core of [`available_php_response`] (the downloader is a parameter
 /// so tests can feed a fixture listing without touching the network).
-async fn available_php_with(state: &DaemonState, dl: &dyn yerd_php::Downloader) -> Response {
+async fn available_php_with(
+    state: &DaemonState,
+    dl: &dyn yerd_php::Downloader,
+    public_key: &str,
+) -> Response {
     let (os, arch) = match yerd_php::current_os_arch() {
         Ok(p) => p,
         Err(e) => {
@@ -344,9 +349,9 @@ async fn available_php_with(state: &DaemonState, dl: &dyn yerd_php::Downloader) 
             }
         }
     };
-    let listing = match dl.download(&yerd_php::listing_url(os)).await {
-        Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
-        Err(e) => return internal(format!("couldn't reach the PHP distribution: {e}")),
+    let listing = match crate::php_install::fetch_verified_listing(dl, public_key).await {
+        Ok(body) => body,
+        Err(e) => return internal(format!("couldn't load the PHP listing: {e}")),
     };
     Response::AvailablePhp {
         available: yerd_php::available_minors(&listing, os, arch),
@@ -644,7 +649,15 @@ async fn run_doctor_fix(state: &DaemonState) -> Response {
 }
 
 /// `update php [<ver>]` - upgrade the given minor (or all installed) to the
-/// latest published patch when newer; refresh the cache; return the new list.
+/// latest published build when newer; restart the updated pools; refresh the
+/// cache; return the new list.
+///
+/// Update-all skips only a minor that is genuinely absent from the manifest
+/// (`VersionUnavailable`); a manifest-wide fault (parse/schema/untrusted) and any
+/// failure for a **targeted** update (`version: Some`) are surfaced as an error
+/// rather than a silent no-op. If a later minor's install fails, the minors that
+/// already updated are still finalised (pools restarted, cache refreshed) before
+/// the error is returned.
 ///
 /// Holds `php_mutate` across the install loop so it can't race
 /// `install_php`/`install_php_streamed` over the same per-version staging dir.
@@ -672,31 +685,98 @@ async fn update_php(version: Option<yerd_core::PhpVersion>, state: &DaemonState)
         }
         None => crate::php_updates::installed_minors(state),
     };
-    let listing = match dl.download(&yerd_php::listing_url(os)).await {
-        Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
-        Err(e) => return internal(format!("listing fetch failed: {e}")),
-    };
+    let listing =
+        match crate::php_install::fetch_verified_listing(&dl, yerd_update::PHP_LISTING_PUBLIC_KEY)
+            .await
+        {
+            Ok(body) => body,
+            Err(e) => return internal(format!("listing fetch/verify failed: {e}")),
+        };
     let _guard = state.php_mutate.lock().await;
+    let mut updated: Vec<yerd_core::PhpVersion> = Vec::new();
+    let mut pending_error: Option<yerd_php::PhpError> = None;
     for minor in targets {
         let Some(installed) = crate::php_install::installed_patch(&state.dirs, minor) else {
             continue;
         };
-        let Ok(artifact) = yerd_php::resolve_from_listing(&listing, minor, os, arch) else {
-            continue;
+        let installed_rev = crate::php_install::installed_revision(&state.dirs, minor);
+        let artifact = match yerd_php::resolve_from_listing(&listing, minor, os, arch) {
+            Ok(a) => a,
+            Err(yerd_php::PhpError::VersionUnavailable { .. }) if version.is_none() => continue,
+            Err(e) => {
+                pending_error = Some(e);
+                break;
+            }
         };
-        if yerd_php::is_newer(&installed, &artifact.full_version) {
-            if let Err(e) = crate::php_install::install(minor, &state.dirs, &dl, None).await {
+        if yerd_php::is_newer_build(
+            &installed,
+            installed_rev,
+            &artifact.full_version,
+            artifact.revision,
+        ) {
+            if let Err(e) = crate::php_install::install(
+                minor,
+                &state.dirs,
+                &dl,
+                yerd_update::PHP_LISTING_PUBLIC_KEY,
+                None,
+            )
+            .await
+            {
                 tracing::error!(version = %minor, error = %e, "PHP update failed");
-                return Response::Error {
-                    code: php_error_code(&e),
-                    message: e.to_string(),
-                };
+                pending_error = Some(e);
+                break;
             }
             tracing::info!(version = %minor, from = %installed, to = %artifact.full_version, "updated PHP");
+            updated.push(minor);
         }
     }
-    crate::php_updates::poll_and_refresh(state, &dl).await;
+    restart_updated_pools(state, &updated).await;
+    crate::php_updates::poll_and_refresh(state, &dl, yerd_update::PHP_LISTING_PUBLIC_KEY).await;
+    if let Some(e) = pending_error {
+        return Response::Error {
+            code: php_error_code(&e),
+            message: e.to_string(),
+        };
+    }
     php_versions_response(state).await
+}
+
+/// Restart the FPM pool of each just-updated minor that has a **started** pool
+/// (running or crashed/`Failed`), so it re-execs the freshly-installed binary
+/// instead of the stale process. A never-started / stopped ondemand pool is left
+/// alone (the next request spawns it from the new binary), matching
+/// [`restart_all_php`]'s semantics. Per-pool failures are logged, not fatal - the
+/// update itself already succeeded. Runs under the caller's `php_mutate` guard.
+async fn restart_updated_pools(state: &DaemonState, updated: &[yerd_core::PhpVersion]) {
+    if updated.is_empty() {
+        return;
+    }
+    let mut mgr = state.php_manager.lock().await;
+    let active: std::collections::HashSet<yerd_core::PhpVersion> =
+        mgr.snapshots().into_iter().map(|s| s.version).collect();
+    for minor in pools_needing_restart(&active, updated) {
+        match mgr.restart(minor).await {
+            Ok(_) => tracing::info!(version = %minor, "restarted FPM pool after PHP update"),
+            Err(e) => {
+                tracing::warn!(version = %minor, error = %e, "failed to restart FPM pool after PHP update");
+            }
+        }
+    }
+}
+
+/// The just-updated minors whose pool is currently active, preserving `updated`
+/// order. Updated-but-inactive minors are excluded so an update never *starts* a
+/// pool the user had stopped - it only re-execs one already running.
+fn pools_needing_restart(
+    active: &std::collections::HashSet<yerd_core::PhpVersion>,
+    updated: &[yerd_core::PhpVersion],
+) -> Vec<yerd_core::PhpVersion> {
+    updated
+        .iter()
+        .copied()
+        .filter(|m| active.contains(m))
+        .collect()
 }
 
 /// `install php <ver>` - download + verify + unpack a prebuilt build. Runs the
@@ -711,7 +791,15 @@ async fn update_php(version: Option<yerd_core::PhpVersion>, state: &DaemonState)
 async fn install_php(version: yerd_core::PhpVersion, state: &DaemonState) -> Response {
     let dl = crate::php_install::ReqwestDownloader::new();
     let _guard = state.php_mutate.lock().await;
-    match crate::php_install::install(version, &state.dirs, &dl, None).await {
+    match crate::php_install::install(
+        version,
+        &state.dirs,
+        &dl,
+        yerd_update::PHP_LISTING_PUBLIC_KEY,
+        None,
+    )
+    .await
+    {
         Ok(()) => {
             finalize_php_install(version, state).await;
             Response::Ok
@@ -790,7 +878,7 @@ pub(crate) async fn install_php_streamed(
             }
         };
         let result = tokio::select! {
-            r = crate::php_install::install(version, &state.dirs, &dl, Some(&tx)) => Some(r),
+            r = crate::php_install::install(version, &state.dirs, &dl, yerd_update::PHP_LISTING_PUBLIC_KEY, Some(&tx)) => Some(r),
             _ = cancel.changed() => None,
         };
 
@@ -2610,35 +2698,58 @@ Subject: Captured\r\n\r\nhi\r\n";
     async fn dispatch_list_php_surfaces_cached_update() {
         let tmp = tempfile::tempdir().unwrap();
         let state = state_in(tmp.path());
-        fake_install_patch(&state.dirs, PhpVersion::new(8, 5), "8.5.6");
+        fake_install_build(&state.dirs, PhpVersion::new(8, 5), "8.5.6", 1);
         state
             .php_updates
             .write()
             .await
-            .insert(PhpVersion::new(8, 5), "8.5.7".to_owned());
+            .insert(PhpVersion::new(8, 5), ("8.5.7".to_owned(), 1));
 
         match dispatch(Request::ListPhp, &state).await {
             Response::PhpVersions { updates, .. } => {
                 assert_eq!(updates.len(), 1);
                 assert_eq!(updates[0].version, PhpVersion::new(8, 5));
-                assert_eq!(updates[0].installed, "8.5.6");
-                assert_eq!(updates[0].latest, "8.5.7");
+                assert_eq!(updates[0].installed, "8.5.6-1");
+                assert_eq!(updates[0].latest, "8.5.7-1");
             }
             other => panic!("expected PhpVersions, got {other:?}"),
         }
     }
 
-    /// No cache entry (or not-newer) → no update annotation.
+    /// A legacy install (no `.yerd-revision`, so revision 0) is offered the
+    /// c-ares-cutover rebuild of the *same* patch - the auto-heal contract.
     #[tokio::test]
-    async fn dispatch_list_php_no_update_when_cache_not_newer() {
+    async fn dispatch_list_php_surfaces_revision_autoheal() {
         let tmp = tempfile::tempdir().unwrap();
         let state = state_in(tmp.path());
-        fake_install_patch(&state.dirs, PhpVersion::new(8, 5), "8.5.6");
+        fake_install_patch(&state.dirs, PhpVersion::new(8, 5), "8.5.7");
         state
             .php_updates
             .write()
             .await
-            .insert(PhpVersion::new(8, 5), "8.5.6".to_owned());
+            .insert(PhpVersion::new(8, 5), ("8.5.7".to_owned(), 1));
+
+        match dispatch(Request::ListPhp, &state).await {
+            Response::PhpVersions { updates, .. } => {
+                assert_eq!(updates.len(), 1);
+                assert_eq!(updates[0].installed, "8.5.7");
+                assert_eq!(updates[0].latest, "8.5.7-1");
+            }
+            other => panic!("expected PhpVersions, got {other:?}"),
+        }
+    }
+
+    /// Same build (patch + revision) → no update annotation.
+    #[tokio::test]
+    async fn dispatch_list_php_no_update_when_cache_not_newer() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_in(tmp.path());
+        fake_install_build(&state.dirs, PhpVersion::new(8, 5), "8.5.6", 1);
+        state
+            .php_updates
+            .write()
+            .await
+            .insert(PhpVersion::new(8, 5), ("8.5.6".to_owned(), 1));
 
         match dispatch(Request::ListPhp, &state).await {
             Response::PhpVersions { updates, .. } => assert!(updates.is_empty()),
@@ -2663,14 +2774,28 @@ Subject: Captured\r\n\r\nhi\r\n";
         }
     }
 
-    /// Fake downloader: directory URL (ends `/`) → the given listing; anything
-    /// else errors (the poll only fetches the listing).
-    struct ListingDl(String);
+    /// Fake downloader for the listing path: serves a signed `php.json` +
+    /// `php.json.minisig`; anything else errors (the poll/available paths only
+    /// fetch the manifest, not tarballs).
+    struct ListingDl {
+        manifest: String,
+        minisig: String,
+    }
+    impl ListingDl {
+        fn new(signed: &crate::test_support::SignedManifest) -> Self {
+            Self {
+                manifest: signed.manifest.clone(),
+                minisig: signed.minisig.clone(),
+            }
+        }
+    }
     #[async_trait::async_trait]
     impl yerd_php::Downloader for ListingDl {
         async fn download(&self, url: &str) -> Result<Vec<u8>, yerd_php::DownloadError> {
-            if url.ends_with('/') {
-                Ok(self.0.clone().into_bytes())
+            if url.ends_with(".minisig") {
+                Ok(self.minisig.clone().into_bytes())
+            } else if url.ends_with("php.json") {
+                Ok(self.manifest.clone().into_bytes())
             } else {
                 Err(yerd_php::DownloadError::Transport {
                     url: url.to_owned(),
@@ -2678,6 +2803,37 @@ Subject: Captured\r\n\r\nhi\r\n";
                 })
             }
         }
+    }
+
+    /// Build + sign a `php.json` with the given `(php, minor, revision)` builds
+    /// for the host platform. Tarball shas are placeholders (`"00"`) - the poll /
+    /// available paths never download tarballs.
+    fn signed_listing(builds: &[(&str, &str, u32)]) -> crate::test_support::SignedManifest {
+        let (os, arch) = yerd_php::current_os_arch().unwrap();
+        let entries: Vec<String> = builds
+            .iter()
+            .map(|(php, minor, rev)| {
+                format!(
+                    r#"{{ "php": "{php}", "minor": "{minor}", "os": "{os}", "arch": "{arch}", "revision": {rev},
+                       "cli": {{ "file": "php-{php}-{rev}-cli-{os}-{arch}.tar.gz", "sha256": "00", "size": 1 }},
+                       "fpm": {{ "file": "php-{php}-{rev}-fpm-{os}-{arch}.tar.gz", "sha256": "00", "size": 1 }} }}"#,
+                    os = os.as_str(),
+                    arch = arch.as_str(),
+                )
+            })
+            .collect();
+        let manifest = format!("{{ \"schema\": 1, \"builds\": [{}] }}", entries.join(","));
+        crate::test_support::sign_manifest(&manifest)
+    }
+
+    /// Like `fake_install_patch` but also writes the `.yerd-revision` marker.
+    fn fake_install_build(dirs: &PlatformDirs, v: PhpVersion, full: &str, revision: u32) {
+        fake_install_patch(dirs, v, full);
+        let base = dirs
+            .data
+            .join("php")
+            .join(format!("php-{}.{}", v.major, v.minor));
+        std::fs::write(base.join(".yerd-revision"), revision.to_string()).unwrap();
     }
 
     struct FailingDl;
@@ -2695,11 +2851,11 @@ Subject: Captured\r\n\r\nhi\r\n";
     async fn poll_and_refresh_populates_cache_from_listing() {
         let tmp = tempfile::tempdir().unwrap();
         let state = state_in(tmp.path());
-        fake_install_patch(&state.dirs, PhpVersion::new(8, 5), "8.5.6");
-        let (os, arch) = yerd_php::current_os_arch().unwrap();
-        let listing = format!("php-8.5.9-cli-{}-{}.tar.gz", os.as_str(), arch.as_str());
+        fake_install_build(&state.dirs, PhpVersion::new(8, 5), "8.5.6", 1);
+        let signed = signed_listing(&[("8.5.9", "8.5", 1)]);
 
-        crate::php_updates::poll_and_refresh(&state, &ListingDl(listing)).await;
+        crate::php_updates::poll_and_refresh(&state, &ListingDl::new(&signed), &signed.public_key)
+            .await;
 
         assert_eq!(
             state
@@ -2707,8 +2863,8 @@ Subject: Captured\r\n\r\nhi\r\n";
                 .read()
                 .await
                 .get(&PhpVersion::new(8, 5))
-                .map(String::as_str),
-            Some("8.5.9")
+                .cloned(),
+            Some(("8.5.9".to_owned(), 1))
         );
     }
 
@@ -2716,14 +2872,19 @@ Subject: Captured\r\n\r\nhi\r\n";
     async fn poll_and_refresh_is_failure_tolerant() {
         let tmp = tempfile::tempdir().unwrap();
         let state = state_in(tmp.path());
-        fake_install_patch(&state.dirs, PhpVersion::new(8, 5), "8.5.6");
+        fake_install_build(&state.dirs, PhpVersion::new(8, 5), "8.5.6", 1);
         state
             .php_updates
             .write()
             .await
-            .insert(PhpVersion::new(8, 5), "8.5.6".to_owned());
+            .insert(PhpVersion::new(8, 5), ("8.5.6".to_owned(), 1));
 
-        crate::php_updates::poll_and_refresh(&state, &FailingDl).await;
+        crate::php_updates::poll_and_refresh(
+            &state,
+            &FailingDl,
+            yerd_update::PHP_LISTING_PUBLIC_KEY,
+        )
+        .await;
 
         assert_eq!(
             state
@@ -2731,8 +2892,37 @@ Subject: Captured\r\n\r\nhi\r\n";
                 .read()
                 .await
                 .get(&PhpVersion::new(8, 5))
-                .map(String::as_str),
-            Some("8.5.6")
+                .cloned(),
+            Some(("8.5.6".to_owned(), 1))
+        );
+    }
+
+    /// A validly-signed but unknown-schema manifest must NOT wipe a good cache:
+    /// resolve fails schema-wide, so the poll aborts without overwriting.
+    #[tokio::test]
+    async fn poll_and_refresh_keeps_cache_on_unknown_schema() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_in(tmp.path());
+        fake_install_build(&state.dirs, PhpVersion::new(8, 5), "8.5.6", 1);
+        state
+            .php_updates
+            .write()
+            .await
+            .insert(PhpVersion::new(8, 5), ("8.5.7".to_owned(), 1));
+        let signed = crate::test_support::sign_manifest(r#"{ "schema": 2, "builds": [] }"#);
+
+        crate::php_updates::poll_and_refresh(&state, &ListingDl::new(&signed), &signed.public_key)
+            .await;
+
+        assert_eq!(
+            state
+                .php_updates
+                .read()
+                .await
+                .get(&PhpVersion::new(8, 5))
+                .cloned(),
+            Some(("8.5.7".to_owned(), 1)),
+            "a bad-schema manifest must not clear the previously-cached update"
         );
     }
 
@@ -3005,14 +3195,9 @@ Subject: Captured\r\n\r\nhi\r\n";
         let tmp = tempfile::tempdir().unwrap();
         let state = state_in(tmp.path());
         fake_install_patch(&state.dirs, PhpVersion::new(8, 5), "8.5.6");
-        let (os, arch) = yerd_php::current_os_arch().unwrap();
-        let listing = format!(
-            "php-8.3.20-cli-{os}-{arch}.tar.gz php-8.5.9-cli-{os}-{arch}.tar.gz",
-            os = os.as_str(),
-            arch = arch.as_str()
-        );
+        let signed = signed_listing(&[("8.3.20", "8.3", 1), ("8.5.9", "8.5", 1)]);
 
-        match available_php_with(&state, &ListingDl(listing)).await {
+        match available_php_with(&state, &ListingDl::new(&signed), &signed.public_key).await {
             Response::AvailablePhp {
                 available,
                 installed,
@@ -3032,13 +3217,28 @@ Subject: Captured\r\n\r\nhi\r\n";
         let tmp = tempfile::tempdir().unwrap();
         let state = state_in(tmp.path());
 
-        match available_php_with(&state, &FailingDl).await {
+        match available_php_with(&state, &FailingDl, yerd_update::PHP_LISTING_PUBLIC_KEY).await {
             Response::Error { code, .. } => assert_eq!(code, ErrorCode::Internal),
             other => panic!("expected Error, got {other:?}"),
         }
     }
 
     // ---------- pure helpers ----------
+
+    #[test]
+    fn pools_needing_restart_only_targets_active_updated_minors() {
+        let active: std::collections::HashSet<PhpVersion> =
+            [PhpVersion::new(8, 4), PhpVersion::new(8, 5)]
+                .into_iter()
+                .collect();
+        let updated = [PhpVersion::new(8, 5), PhpVersion::new(8, 3)];
+        assert_eq!(
+            pools_needing_restart(&active, &updated),
+            vec![PhpVersion::new(8, 5)]
+        );
+        assert!(pools_needing_restart(&active, &[]).is_empty());
+        assert!(pools_needing_restart(&std::collections::HashSet::new(), &updated).is_empty());
+    }
 
     #[test]
     fn map_pool_state_maps_both_variants() {

@@ -37,6 +37,9 @@ pub mod tools;
 pub mod tracing_init;
 pub mod tunnel;
 
+#[cfg(test)]
+pub mod test_support;
+
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::Duration;
@@ -150,7 +153,12 @@ async fn run_until_shutdown(
             loop {
                 tokio::select! {
                     _ = tick.tick() => {
-                        crate::php_updates::poll_and_refresh(&state, &dl).await;
+                        crate::php_updates::poll_and_refresh(
+                            &state,
+                            &dl,
+                            yerd_update::PHP_LISTING_PUBLIC_KEY,
+                        )
+                        .await;
                         crate::self_update::poll_and_refresh(&state, &dl).await;
                     }
                     _ = rx.changed() => break,

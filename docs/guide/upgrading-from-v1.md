@@ -11,7 +11,7 @@ Yerd v2 (`forjedio/yerd`) is a ground-up Rust rewrite. Different binaries, a dif
 | Area | v1 (Go) | v2 (Rust) |
 |---|---|---|
 | Privileges | leaned on `sudo` for most operations | rootless; elevates once, then runs as your user |
-| PHP | built from source | prebuilt static builds (`static-php-cli`) downloaded on demand |
+| PHP | built from source | prebuilt, signed static builds downloaded on demand |
 | Platforms | - | macOS + Linux today (Windows on the [roadmap](./services)) |
 | Config & layout | v1's format | new, incompatible TOML config and layout |
 | Commands | v1's names | redesigned; don't assume names carry over |
