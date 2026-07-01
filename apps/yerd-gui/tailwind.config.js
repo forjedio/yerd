@@ -13,6 +13,10 @@ export default {
     },
     extend: {
       fontFamily: {
+        // Forjed brand display face (Outage Cut), self-hosted via @font-face in
+        // style.css. Used for the "YERD" wordmark and the nav section headings;
+        // it's a single heavy all-caps weight, so set font-weight: normal.
+        display: ['"Outage Cut"', "sans-serif"],
         // Pin a crisp, native UI stack (SF Pro on macOS) rather than relying on
         // the bare default; "Inter" leads the fallbacks so a self-hosted copy is
         // picked up automatically if we ever bundle one.
@@ -70,7 +74,7 @@ export default {
           DEFAULT: "hsl(var(--card))",
           foreground: "hsl(var(--card-foreground))",
         },
-        // Brand indigo (from the logo) — the single accent. See style.css.
+        // Brand indigo (from the logo), the single accent. See style.css.
         brand: {
           DEFAULT: "hsl(var(--brand))",
           foreground: "hsl(var(--brand-foreground))",

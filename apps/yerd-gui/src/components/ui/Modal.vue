@@ -59,7 +59,9 @@ watch(
         "
       >
         <div class="flex shrink-0 items-start justify-between gap-4">
-          <h2 :id="titleId" class="text-lg font-semibold">{{ title }}</h2>
+          <h2 :id="titleId" class="font-display text-lg font-normal tracking-wide">
+            {{ title }}
+          </h2>
           <button
             type="button"
             aria-label="Close"

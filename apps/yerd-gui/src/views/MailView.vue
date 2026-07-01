@@ -16,9 +16,7 @@ import Switch from "@/components/ui/Switch.vue";
 import { registerViewActions } from "@/lib/shortcuts/useViewActions";
 import { useDaemon } from "@/composables/useDaemon";
 import { useToast } from "@/composables/useToast";
-import { IpcError, openInBrowser, setMailEnabled, showMailsWindow } from "@/ipc/client";
-
-const DOCS_URL = "https://yerd.dev/guide/features";
+import { IpcError, setMailEnabled, showMailsWindow } from "@/ipc/client";
 
 const toast = useToast();
 const { report, refresh } = useDaemon();
@@ -117,6 +115,7 @@ async function copyEnv(): Promise<void> {
     <PageHeader
       title="Mail"
       subtitle="Capture and inspect emails your apps send during development"
+      docs="/guide/mail"
     />
 
     <div class="flex-1 space-y-4 overflow-y-auto p-6">
@@ -173,10 +172,7 @@ async function copyEnv(): Promise<void> {
           </div>
 
           <!-- Actions -->
-          <div class="flex items-center justify-between border-t pt-4">
-            <Button variant="ghost" size="sm" @click="openInBrowser(DOCS_URL)">
-              Learn how to use Yerd's mailserver
-            </Button>
+          <div class="flex items-center justify-end border-t pt-4">
             <Button @click="onShowMails">Show Mails</Button>
           </div>
         </CardContent>

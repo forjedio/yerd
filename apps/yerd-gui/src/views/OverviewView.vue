@@ -209,7 +209,11 @@ const emptyEnvironment = computed(
 
 <template>
   <div class="flex h-full flex-col">
-    <PageHeader title="Overview" subtitle="Your local environment at a glance" />
+    <PageHeader
+      title="Overview"
+      subtitle="Your local environment at a glance"
+      docs="/guide/desktop-app"
+    />
 
     <div class="flex-1 space-y-4 overflow-y-auto p-6">
       <!-- Version conflict: this GUI is OLDER than the registered daemon. Shown

@@ -348,11 +348,11 @@ async function shareSitePublicly(s: Site): Promise<void> {
 
 <template>
   <div class="flex h-full flex-col">
-    <PageHeader title="Sites" subtitle="Parked and linked .test sites">
+    <PageHeader title="Sites" subtitle="Parked and linked .test sites" docs="/guide/sites">
       <template #actions>
         <DropdownMenu>
           <DropdownMenuTrigger as-child>
-            <Button size="sm">
+            <Button>
               <Plus class="size-4" /> Create <ChevronDown class="size-3.5 opacity-70" />
             </Button>
           </DropdownMenuTrigger>
