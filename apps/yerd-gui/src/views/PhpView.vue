@@ -644,8 +644,8 @@ onUnmounted(
           />
         </div>
         <p class="mt-2 text-xs text-muted-foreground">
-          Downloads a prebuilt static build; this can take a few minutes with no
-          progress bar (the daemon reports only on completion).
+          Downloads a prebuilt static build; this can take a few minutes. A
+          dialog shows live progress and can be closed once it finishes.
         </p>
       </template>
       <p v-else class="py-2 text-sm text-muted-foreground">
