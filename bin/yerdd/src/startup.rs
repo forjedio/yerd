@@ -11,7 +11,9 @@ use tokio::sync::{Mutex, RwLock};
 
 use yerd_core::{PhpVersion, RouterConfig, Site, SiteRouter};
 use yerd_php::{discover_bundled, io::FastCgiProbe, PhpManager, SystemClock, TokioProcessSpawner};
-use yerd_platform::{ActivePaths, ActivePortBinder, Paths, PlatformDirs, PortBinder};
+use yerd_platform::{
+    ActivePaths, ActivePortBinder, ActiveTrustStore, Paths, PlatformDirs, PortBinder, TrustStore,
+};
 use yerd_tls::{CertAuthority, Validity};
 
 use crate::args::ServeArgs;
@@ -113,6 +115,14 @@ pub async fn bring_up_with_dirs(
     let ca_path = dirs.data.join("ca.cert.pem");
     let ca_fingerprint = yerd_platform::CaFingerprint::new(ca.fingerprint_sha256());
 
+    let host_roots = ActiveTrustStore
+        .system_root_bundle()
+        .unwrap_or_else(|e| {
+            tracing::warn!(error = %e, "reading host CA roots failed; PHP keeps its default trust store");
+            None
+        });
+    let php_ca_bundle = build_php_ca_bundle(&dirs, ca.cert_pem(), host_roots.as_deref());
+
     let cert_store = Arc::new(DaemonCertStore::new(ca, dirs.data.join("leaves")));
 
     let detect_cache = Arc::new(DetectCache::new());
@@ -207,6 +217,7 @@ pub async fn bring_up_with_dirs(
                 .into_owned(),
         )],
     }));
+    php_manager.set_ca_bundle(php_ca_bundle.clone());
     let php_manager = Arc::new(Mutex::new(php_manager));
 
     let service_manager = Arc::new(Mutex::new(crate::services::new_manager(dirs.clone())));
@@ -265,6 +276,7 @@ pub async fn bring_up_with_dirs(
         dns_addr,
         ca_path,
         ca_fingerprint,
+        php_ca_bundle,
         php_updates: tokio::sync::RwLock::new(std::collections::HashMap::new()),
         yerd_update: tokio::sync::RwLock::new(Vec::new()),
         update_snapshot: tokio::sync::RwLock::new(crate::self_update::load_snapshot(&dirs)),
@@ -433,6 +445,47 @@ fn load_or_generate_ca(dirs: &PlatformDirs) -> Result<CertAuthority, DaemonError
         );
         Ok(ca)
     }
+}
+
+/// Build `{data}/cacert.pem` = host public roots + the Yerd CA, the bundle the
+/// bundled PHP verifies TLS against so it trusts `.test` HTTPS.
+///
+/// Returns `Some(path)` only when `roots` actually contains public roots (at
+/// least one `CERTIFICATE` block). When no usable roots are present the file is
+/// **not written or modified** and `None` is returned, so the caller leaves
+/// PHP's compiled-in default trust store untouched rather than pointing it at a
+/// rootless bundle (which would break public-internet HTTPS). Not writing on the
+/// empty path also means a transient host-roots read failure during a rebuild
+/// can never clobber a previously-good bundle. Best-effort: a write failure logs
+/// and yields `None`. `roots` is passed in (not read here) so both branches are
+/// unit-testable without touching the host trust store.
+pub(crate) fn build_php_ca_bundle(
+    dirs: &PlatformDirs,
+    ca_cert_pem: &str,
+    roots: Option<&str>,
+) -> Option<PathBuf> {
+    let Some(roots_pem) = roots.filter(|r| r.contains("-----BEGIN CERTIFICATE-----")) else {
+        tracing::warn!(
+            "no host CA roots found; leaving PHP's default trust store in place to avoid breaking public HTTPS"
+        );
+        return None;
+    };
+    let bundle = yerd_tls::compose_ca_bundle(roots_pem, ca_cert_pem);
+    let path = dirs.data.join("cacert.pem");
+
+    if let Err(e) = std::fs::create_dir_all(&dirs.data) {
+        tracing::warn!(error = %e, "could not create data dir for PHP CA bundle");
+        return None;
+    }
+    if let Err(e) = yerd_php::io::atomic_write::write(&path, bundle.as_bytes()) {
+        tracing::warn!(error = %e, path = %path.display(), "could not write PHP CA bundle");
+        return None;
+    }
+    if let Err(e) = crate::secure_fs::restrict_writes_to_owner(&path) {
+        tracing::warn!(error = %e, path = %path.display(), "could not set PHP CA bundle permissions");
+    }
+    tracing::info!(path = %path.display(), "wrote PHP CA bundle (host roots + Yerd CA)");
+    Some(path)
 }
 
 fn ca_validity() -> Result<Validity, DaemonError> {
@@ -991,5 +1044,62 @@ mod tests {
         let now = time::OffsetDateTime::now_utc();
         assert!(v.not_before() < now);
         assert!(v.not_after() > now);
+    }
+
+    fn test_ca() -> CertAuthority {
+        CertAuthority::generate(yerd_core::CA_COMMON_NAME, ca_validity().unwrap()).unwrap()
+    }
+
+    const FAKE_ROOT_PEM: &str =
+        "-----BEGIN CERTIFICATE-----\nMIIFAKEROOTBLOCK\n-----END CERTIFICATE-----\n";
+
+    #[test]
+    fn build_php_ca_bundle_with_roots_returns_path_and_writes_bundle() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dirs = make_dirs(tmp.path());
+        let ca = test_ca();
+        let out = build_php_ca_bundle(&dirs, ca.cert_pem(), Some(FAKE_ROOT_PEM));
+        let path = dirs.data.join("cacert.pem");
+        assert_eq!(out.as_deref(), Some(path.as_path()));
+        let written = std::fs::read_to_string(&path).unwrap();
+        assert!(written.contains("MIIFAKEROOTBLOCK"));
+        assert!(written.contains(ca.cert_pem().trim()));
+        assert!(written.matches("BEGIN CERTIFICATE").count() >= 2);
+    }
+
+    #[test]
+    fn build_php_ca_bundle_without_roots_returns_none_and_does_not_write() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dirs = make_dirs(tmp.path());
+        let ca = test_ca();
+        let out = build_php_ca_bundle(&dirs, ca.cert_pem(), None);
+        assert!(out.is_none());
+        assert!(
+            !dirs.data.join("cacert.pem").exists(),
+            "must not write a rootless bundle"
+        );
+    }
+
+    #[test]
+    fn build_php_ca_bundle_with_rootless_content_returns_none_and_does_not_write() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dirs = make_dirs(tmp.path());
+        let ca = test_ca();
+        let out = build_php_ca_bundle(&dirs, ca.cert_pem(), Some("garbage, no cert block"));
+        assert!(out.is_none());
+        assert!(!dirs.data.join("cacert.pem").exists());
+    }
+
+    #[test]
+    fn build_php_ca_bundle_no_roots_does_not_clobber_existing_good_bundle() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dirs = make_dirs(tmp.path());
+        let ca = test_ca();
+        // A prior run wrote a good roots+CA bundle.
+        let good = build_php_ca_bundle(&dirs, ca.cert_pem(), Some(FAKE_ROOT_PEM)).unwrap();
+        let before = std::fs::read_to_string(&good).unwrap();
+        // A later rebuild finds no roots (transient): it must leave the good file intact.
+        assert!(build_php_ca_bundle(&dirs, ca.cert_pem(), None).is_none());
+        assert_eq!(std::fs::read_to_string(&good).unwrap(), before);
     }
 }

@@ -1630,6 +1630,7 @@ mod tests {
                 path: "/x/ca.cert.pem".into(),
                 fingerprint: "ab".repeat(32),
                 trusted_system: Some(false),
+                php_trusts_ca: None,
             },
             resolver_installed: None,
             port_redirect: None,

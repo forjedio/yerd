@@ -14,12 +14,14 @@
 
 #![forbid(unsafe_code)]
 
+mod bundle;
 mod ca;
 mod error;
 mod leaf;
 mod params;
 mod validity;
 
+pub use bundle::compose_ca_bundle;
 pub use ca::CertAuthority;
 pub use error::{GenerateErrorReason, ParseErrorReason, TlsError, ValidityErrorReason};
 pub use leaf::LeafCert;

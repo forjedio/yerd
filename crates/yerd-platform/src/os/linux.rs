@@ -18,7 +18,9 @@ use crate::metrics::SystemMetrics;
 use crate::paths::{Paths, PlatformDirs};
 use crate::port_binder::{BoundPort, PortBinder, PortPair};
 use crate::port_redirect::PortRedirector;
-use crate::pure::{pem_match, port_plan, proc_metrics, resolv_conf, resolved_drop_in};
+use crate::pure::{
+    pem_match, port_plan, proc_metrics, resolv_conf, resolved_drop_in, system_roots,
+};
 use crate::resolver::ResolverInstaller;
 use crate::trust_store::{CaFingerprint, NssOutcome, TrustStore};
 use crate::{BindPairErrorReason, PlatformError, ResolverErrorReason, TrustStoreErrorReason};
@@ -176,6 +178,13 @@ impl TrustStore for LinuxTrustStore {
             failures: vec![],
             certutil_missing: false,
         })
+    }
+
+    fn system_root_bundle(&self) -> Result<Option<String>, PlatformError> {
+        Ok(system_roots::pick_first_readable(
+            &system_roots::linux_root_candidates(),
+            |p| fs::read_to_string(p).ok(),
+        ))
     }
 }
 

@@ -43,6 +43,11 @@ pub struct PoolConfig {
     /// applied only when an [`Self::extension`] is set (e.g. the extension's
     /// state-file path). Kept off the pool config file deliberately.
     pub ini_defines: Vec<(String, String)>,
+    /// Managed CA bundle the bundled PHP verifies TLS against, rendered as
+    /// `php_admin_value[openssl.cafile]` / `php_admin_value[curl.cainfo]` so
+    /// PHP trusts the Yerd CA on `.test` HTTPS. Daemon-controlled (not a user
+    /// setting); `None` leaves PHP's compiled-in default untouched.
+    pub ca_bundle: Option<PathBuf>,
 }
 
 /// FPM process-manager mode.
@@ -85,6 +90,7 @@ impl PoolConfig {
             ini: Vec::new(),
             extension: None,
             ini_defines: Vec::new(),
+            ca_bundle: None,
         }
     }
 }

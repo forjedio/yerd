@@ -524,6 +524,7 @@ async fn build_status_report(state: &DaemonState) -> yerd_ipc::StatusReport {
             path: state.ca_path.clone(),
             fingerprint: state.ca_fingerprint.to_hex(),
             trusted_system,
+            php_trusts_ca: php_trusts_ca(state).await,
         },
         resolver_installed,
         port_redirect,
@@ -607,23 +608,40 @@ async fn run_doctor_fix(state: &DaemonState) -> Response {
     let mut performed: Vec<yerd_ipc::FixResult> = Vec::new();
 
     for action in yerd_doctor::plan_auto_fixes(&report) {
-        if let yerd_doctor::FixAction::RestartFpm(v) = action {
-            let outcome = {
-                let mut mgr = state.php_manager.lock().await;
-                mgr.restart(v).await
-            };
-            performed.push(match outcome {
-                Ok(_) => yerd_ipc::FixResult {
-                    code: yerd_ipc::DiagnosisCode::FpmPoolFailed,
-                    ok: true,
-                    message: format!("restarted PHP {v} FPM pool"),
-                },
-                Err(e) => yerd_ipc::FixResult {
-                    code: yerd_ipc::DiagnosisCode::FpmPoolFailed,
-                    ok: false,
-                    message: format!("failed to restart PHP {v}: {e}"),
-                },
-            });
+        match action {
+            yerd_doctor::FixAction::RestartFpm(v) => {
+                let outcome = {
+                    let mut mgr = state.php_manager.lock().await;
+                    mgr.restart(v).await
+                };
+                performed.push(match outcome {
+                    Ok(_) => yerd_ipc::FixResult {
+                        code: yerd_ipc::DiagnosisCode::FpmPoolFailed,
+                        ok: true,
+                        message: format!("restarted PHP {v} FPM pool"),
+                    },
+                    Err(e) => yerd_ipc::FixResult {
+                        code: yerd_ipc::DiagnosisCode::FpmPoolFailed,
+                        ok: false,
+                        message: format!("failed to restart PHP {v}: {e}"),
+                    },
+                });
+            }
+            yerd_doctor::FixAction::RebuildPhpCaBundle => {
+                let rebuilt = rebuild_php_ca_bundle(state).await;
+                performed.push(yerd_ipc::FixResult {
+                    code: yerd_ipc::DiagnosisCode::PhpCaNotTrusted,
+                    ok: rebuilt,
+                    message: if rebuilt {
+                        "rebuilt the PHP CA bundle".to_owned()
+                    } else {
+                        "could not rebuild the PHP CA bundle (no host roots found?)".to_owned()
+                    },
+                });
+            }
+            other => {
+                tracing::warn!(?other, "unhandled doctor auto-fix action");
+            }
         }
     }
 
@@ -896,9 +914,62 @@ async fn reconcile_shims_for(state: &DaemonState, default: yerd_core::PhpVersion
 /// Write the CLI `php.ini` (`{data}/php-cli.ini`, the `PHPRC` target) from the
 /// current config settings. Reads the config lock briefly, then releases it
 /// before the disk write. Best-effort: failures are logged.
+/// Rebuild `{data}/cacert.pem` (host roots + Yerd CA) from the current host
+/// trust store. Returns whether the file now contains public roots. Because FPM
+/// and the CLI read the bundle by its stable path at TLS-handshake / invocation
+/// time, restoring a deleted/stale file takes effect without a pool restart.
+async fn rebuild_php_ca_bundle(state: &DaemonState) -> bool {
+    let dirs = state.dirs.clone();
+    let ca_path = state.ca_path.clone();
+    tokio::task::spawn_blocking(move || {
+        use yerd_platform::TrustStore;
+        let Ok(ca_pem) = std::fs::read_to_string(&ca_path) else {
+            return false;
+        };
+        let roots = yerd_platform::ActiveTrustStore
+            .system_root_bundle()
+            .ok()
+            .flatten();
+        crate::startup::build_php_ca_bundle(&dirs, &ca_pem, roots.as_deref()).is_some()
+    })
+    .await
+    .unwrap_or(false)
+}
+
+/// Probe whether the bundled PHP trusts the Yerd CA: `None` when the feature is
+/// off (no managed bundle wired at startup), else `Some(true)` when
+/// `{data}/cacert.pem` exists and contains the CA cert, `Some(false)` otherwise
+/// (missing / stale bundle → PHP HTTPS to `.test` fails).
+async fn php_trusts_ca(state: &DaemonState) -> Option<bool> {
+    let bundle = state.php_ca_bundle.clone()?;
+    let ca_path = state.ca_path.clone();
+    tokio::task::spawn_blocking(move || {
+        match (
+            std::fs::read_to_string(&ca_path),
+            std::fs::read_to_string(&bundle),
+        ) {
+            (Ok(ca), Ok(b)) => bundle_contains_ca(&ca, &b),
+            _ => false,
+        }
+    })
+    .await
+    .ok()
+}
+
+/// Whether `bundle_pem` embeds the CA certificate `ca_pem` (both read from disk,
+/// both originating from the same `cert_pem()` so the CA block is byte-identical
+/// and a contiguous substring). An empty/whitespace-only `ca_pem` (corrupt CA
+/// file) is never treated as trusted, to avoid the trivial `contains("")` match.
+fn bundle_contains_ca(ca_pem: &str, bundle_pem: &str) -> bool {
+    let ca = ca_pem.trim();
+    !ca.is_empty() && bundle_pem.contains(ca)
+}
+
 pub(crate) async fn write_cli_ini_now(state: &DaemonState) {
     let settings = state.config.lock().await.php.settings.clone();
-    if let Err(e) = crate::php_install::write_cli_ini(&state.dirs, &settings) {
+    if let Err(e) =
+        crate::php_install::write_cli_ini(&state.dirs, &settings, state.php_ca_bundle.as_deref())
+    {
         tracing::warn!(error = %e, "failed to write CLI php.ini");
     }
 }
@@ -1590,6 +1661,28 @@ mod tests {
     use yerd_core::{PhpVersion, RouterConfig, SiteRouter, Tld};
     use yerd_platform::PlatformDirs;
 
+    #[test]
+    fn bundle_contains_ca_matches_embedded_ca() {
+        let ca = "-----BEGIN CERTIFICATE-----\nCA\n-----END CERTIFICATE-----";
+        let bundle =
+            format!("-----BEGIN CERTIFICATE-----\nROOT\n-----END CERTIFICATE-----\n{ca}\n");
+        assert!(bundle_contains_ca(ca, &bundle));
+        assert!(bundle_contains_ca(&format!("{ca}\n\n"), &bundle));
+    }
+
+    #[test]
+    fn bundle_contains_ca_false_when_absent() {
+        let ca = "-----BEGIN CERTIFICATE-----\nCA\n-----END CERTIFICATE-----";
+        let bundle = "-----BEGIN CERTIFICATE-----\nOTHER\n-----END CERTIFICATE-----\n";
+        assert!(!bundle_contains_ca(ca, bundle));
+    }
+
+    #[test]
+    fn bundle_contains_ca_empty_ca_is_never_trusted() {
+        assert!(!bundle_contains_ca("", "anything"));
+        assert!(!bundle_contains_ca("   \n", "anything"));
+    }
+
     fn dirs_in(tmp: &Path) -> PlatformDirs {
         PlatformDirs {
             config: tmp.join("c"),
@@ -1621,6 +1714,7 @@ mod tests {
             dns_addr: "127.0.0.1:1053".parse().unwrap(),
             ca_path,
             ca_fingerprint: yerd_platform::CaFingerprint::new([0u8; 32]),
+            php_ca_bundle: None,
             php_updates: tokio::sync::RwLock::new(std::collections::HashMap::new()),
             yerd_update: tokio::sync::RwLock::new(Vec::new()),
             update_snapshot: tokio::sync::RwLock::new(None),
@@ -2244,6 +2338,40 @@ Subject: Captured\r\n\r\nhi\r\n";
                     .manual
                     .iter()
                     .any(|d| d.severity == yerd_ipc::Severity::Fail));
+            }
+            other => panic!("expected DoctorFix, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn dispatch_doctor_fix_rebuilds_missing_php_ca_bundle() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut state = state_in(tmp.path());
+        std::fs::create_dir_all(&state.dirs.data).unwrap();
+        let validity = yerd_tls::Validity::new(
+            time::OffsetDateTime::now_utc() - time::Duration::days(1),
+            time::OffsetDateTime::now_utc() + time::Duration::days(365),
+        )
+        .unwrap();
+        let ca = yerd_tls::CertAuthority::generate(yerd_core::CA_COMMON_NAME, validity).unwrap();
+        std::fs::write(&state.ca_path, ca.cert_pem()).unwrap();
+        // Feature on, but the managed bundle was deleted at runtime.
+        state.php_ca_bundle = Some(state.dirs.data.join("cacert.pem"));
+
+        match dispatch(Request::DoctorFix, &state).await {
+            Response::DoctorFix { report } => {
+                let fix = report
+                    .performed
+                    .iter()
+                    .find(|r| r.code == yerd_ipc::DiagnosisCode::PhpCaNotTrusted)
+                    .expect("rebuild fix should have run");
+                // The rebuild succeeds when the host has public roots (true on CI).
+                // Either way the dispatch arm executed; on success the file returns.
+                if fix.ok {
+                    let bundle =
+                        std::fs::read_to_string(state.dirs.data.join("cacert.pem")).unwrap();
+                    assert!(bundle.contains(ca.cert_pem().trim()));
+                }
             }
             other => panic!("expected DoctorFix, got {other:?}"),
         }

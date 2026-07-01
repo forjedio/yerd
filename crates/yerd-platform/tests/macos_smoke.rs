@@ -84,6 +84,20 @@ fn is_trusted_errors_for_unreadable_cert() {
 }
 
 #[test]
+fn system_root_bundle_returns_public_roots() {
+    let ts = ActiveTrustStore;
+    let pem = ts
+        .system_root_bundle()
+        .expect("keychain enumeration should not error")
+        .expect("macOS ships system root certificates");
+    let count = pem.matches("-----BEGIN CERTIFICATE-----").count();
+    assert!(
+        count > 50,
+        "expected a substantial set of Apple public roots, got {count}"
+    );
+}
+
+#[test]
 fn resolver_install_returns_needs_helper() {
     let r = ActiveResolverInstaller;
     let err = r.install("test", loopback(53)).unwrap_err();

@@ -48,6 +48,11 @@ export interface CaStatus {
   fingerprint: string;
   /** Tri-state: true / false / null = "probe could not determine" (NOT false). */
   trusted_system: boolean | null;
+  /**
+   * Whether the bundled PHP trusts the Yerd CA (managed `cacert.pem` present +
+   * contains the CA). Optional/`null` when the feature is off or undeterminable.
+   */
+  php_trusts_ca?: boolean | null;
 }
 
 export interface SiteCounts {
@@ -211,6 +216,7 @@ export type DiagnosisCode =
   | "resolver_backup_saved"
   | "service_failed"
   | "bin_dir_not_on_path"
+  | "php_ca_not_trusted"
   | "all_good";
 
 export interface Diagnosis {

@@ -40,6 +40,14 @@ pub fn render_fpm_conf(cfg: &PoolConfig) -> String {
     let _ = writeln!(out, "clear_env = no");
     let _ = writeln!(out, "catch_workers_output = yes");
 
+    if let Some(path) = &cfg.ca_bundle {
+        let p = path.display().to_string();
+        if !p.chars().any(char::is_control) {
+            let _ = writeln!(out, "php_admin_value[openssl.cafile] = {p}");
+            let _ = writeln!(out, "php_admin_value[curl.cainfo] = {p}");
+        }
+    }
+
     for (key, value) in &cfg.ini {
         if let Some(directive) = yerd_core::php_settings::directive(key) {
             if yerd_core::php_settings::validate_value(key, value).is_ok() {
@@ -90,6 +98,7 @@ mod tests {
             ini: Vec::new(),
             extension: None,
             ini_defines: Vec::new(),
+            ca_bundle: None,
         }
     }
 
@@ -105,6 +114,7 @@ mod tests {
             ini: Vec::new(),
             extension: None,
             ini_defines: Vec::new(),
+            ca_bundle: None,
         }
     }
 
@@ -178,5 +188,63 @@ catch_workers_output = yes
         let s = render_fpm_conf(&cfg);
         assert!(!s.contains("not_a_setting"), "unsupported key leaked: {s}");
         assert!(!s.contains("evil"), "unsafe value leaked: {s}");
+    }
+
+    #[test]
+    fn ca_bundle_renders_admin_cafile_and_cainfo() {
+        let mut cfg = cfg_unix(ProcessManagerMode::OnDemand);
+        cfg.ca_bundle = Some(PathBuf::from("/data/dir/cacert.pem"));
+        let s = render_fpm_conf(&cfg);
+        assert!(
+            s.contains("php_admin_value[openssl.cafile] = /data/dir/cacert.pem\n"),
+            "got: {s}"
+        );
+        assert!(
+            s.contains("php_admin_value[curl.cainfo] = /data/dir/cacert.pem\n"),
+            "got: {s}"
+        );
+    }
+
+    #[test]
+    fn ca_bundle_lines_precede_user_ini() {
+        let mut cfg = cfg_unix(ProcessManagerMode::OnDemand);
+        cfg.ca_bundle = Some(PathBuf::from("/d/cacert.pem"));
+        cfg.ini = vec![("memory_limit".to_string(), "512M".to_string())];
+        let s = render_fpm_conf(&cfg);
+        assert!(
+            s.find("php_admin_value[openssl.cafile]").unwrap()
+                < s.find("php_value[memory_limit]").unwrap()
+        );
+    }
+
+    #[test]
+    fn ca_bundle_absent_when_none() {
+        let s = render_fpm_conf(&cfg_unix(ProcessManagerMode::OnDemand));
+        assert!(!s.contains("openssl.cafile"), "got: {s}");
+        assert!(!s.contains("curl.cainfo"), "got: {s}");
+    }
+
+    #[test]
+    fn ca_bundle_with_control_char_in_path_is_skipped() {
+        let mut cfg = cfg_unix(ProcessManagerMode::OnDemand);
+        cfg.ca_bundle = Some(PathBuf::from("/d/ca\ncert.pem"));
+        let s = render_fpm_conf(&cfg);
+        assert!(!s.contains("openssl.cafile"), "injection not skipped: {s}");
+        assert!(!s.contains("curl.cainfo"), "injection not skipped: {s}");
+    }
+
+    #[test]
+    fn ca_bundle_path_with_spaces_is_unquoted() {
+        let mut cfg = cfg_unix(ProcessManagerMode::OnDemand);
+        cfg.ca_bundle = Some(PathBuf::from(
+            "/Users/x/Library/Application Support/io.yerd.Yerd/cacert.pem",
+        ));
+        let s = render_fpm_conf(&cfg);
+        assert!(
+            s.contains(
+                "php_admin_value[openssl.cafile] = /Users/x/Library/Application Support/io.yerd.Yerd/cacert.pem\n"
+            ),
+            "got: {s}"
+        );
     }
 }

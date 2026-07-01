@@ -74,6 +74,10 @@ impl TrustStore for MockTrustStore {
             certutil_missing: true,
         })
     }
+
+    fn system_root_bundle(&self) -> Result<Option<String>, PlatformError> {
+        Ok(None)
+    }
 }
 
 /// `ResolverInstaller` fake.

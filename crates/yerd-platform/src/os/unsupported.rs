@@ -63,6 +63,13 @@ impl TrustStore for UnsupportedTrustStore {
             operation: ops::INSTALL_FIREFOX_NSS,
         })
     }
+
+    /// No host root source on unsupported OSes: reports "no roots" (`Ok(None)`)
+    /// rather than erroring, so the daemon simply leaves PHP's default trust
+    /// store untouched.
+    fn system_root_bundle(&self) -> Result<Option<String>, PlatformError> {
+        Ok(None)
+    }
 }
 
 /// Stub `ResolverInstaller` for unsupported OSes.
