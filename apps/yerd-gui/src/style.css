@@ -2,6 +2,19 @@
 @tailwind components;
 @tailwind utilities;
 
+/* Forjed display face (Outage Cut), self-hosted - the brand wordmark and section
+   headings, matching the docs site (docs/.vitepress/theme/custom.css) and the
+   Yerd social cards. A single heavy all-caps weight, so anything set in it uses
+   font-weight: normal to avoid faux-bold synthesis. Exposed to Tailwind as the
+   `font-display` utility (see tailwind.config.js). */
+@font-face {
+  font-family: "Outage Cut";
+  src: url("./assets/fonts/OutageCut.ttf") format("truetype");
+  font-weight: normal;
+  font-style: normal;
+  font-display: swap;
+}
+
 @layer base {
   :root {
     /* Neutral grays (no blue tint), mirroring the charcoal dark theme for a
@@ -151,6 +164,16 @@
   }
   .dark ::-webkit-scrollbar-thumb:hover {
     background-color: hsl(0 0% 44%);
+  }
+  /* Slimmer variant for narrow chrome (the sidebar): a narrower 10px gutter than
+     the 12px main-content scrollbar, so the visible thumb reads thinner (~4px).
+     It inherits the base thumb's colour and 3px transparent inset border, so the
+     thumb still floats clear of the nav items; because that gutter only exists
+     while the list overflows, the inset gap shows only when there's actually a
+     scrollbar - it takes no space otherwise. */
+  .scrollbar-slim::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
   }
   ::-webkit-scrollbar-corner {
     background: transparent;

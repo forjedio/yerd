@@ -76,6 +76,7 @@ nix            = { workspace = true, features = ["user"] }
 [dev-dependencies]
 tempfile       = { workspace = true }
 serde_json     = { workspace = true }
+minisign       = { workspace = true }
 tokio          = { workspace = true, features = ["macros", "rt-multi-thread", "net", "io-util", "sync", "time"] }
 
 [lints]

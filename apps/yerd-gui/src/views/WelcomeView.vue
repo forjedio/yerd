@@ -372,7 +372,7 @@ function onBack(): void {
         <!-- Brand + progress -->
         <div class="mb-8 flex flex-col items-center text-center">
           <img :src="logoUrl" alt="" class="size-12 rounded-xl" />
-          <h1 class="mt-3 text-xl font-semibold tracking-tight">Welcome to Yerd</h1>
+          <h1 class="mt-3 font-display text-xl font-normal tracking-wide">Welcome to Yerd</h1>
           <p class="mt-1 text-sm text-muted-foreground">
             A few quick steps to get your local PHP environment running.
           </p>
@@ -409,7 +409,7 @@ function onBack(): void {
         <div class="rounded-xl border bg-card p-6">
           <!-- 1. Daemon -->
           <section v-if="step === 1" class="space-y-4">
-            <h2 class="text-base font-semibold">Install the Yerd daemon</h2>
+            <h2 class="font-display text-base font-normal tracking-wide">Install the Yerd daemon</h2>
             <p class="text-sm text-muted-foreground">
               <code>yerdd</code> is a small background service that supervises
               PHP-FPM, serves your <code>.test</code> sites over HTTP/HTTPS,
@@ -547,7 +547,7 @@ function onBack(): void {
 
           <!-- 2. PHP -->
           <section v-else-if="step === 2" class="space-y-4">
-            <h2 class="text-base font-semibold">Install a PHP version</h2>
+            <h2 class="font-display text-base font-normal tracking-wide">Install a PHP version</h2>
             <p class="text-sm text-muted-foreground">
               Pick a version to install - the latest is selected for you. The
               first version becomes your default. You can add more later.
@@ -627,7 +627,7 @@ function onBack(): void {
 
           <!-- 3. Park a folder -->
           <section v-else-if="step === 3" class="space-y-4">
-            <h2 class="text-base font-semibold">Park a projects folder</h2>
+            <h2 class="font-display text-base font-normal tracking-wide">Park a projects folder</h2>
             <p class="text-sm text-muted-foreground">
               Point Yerd at a folder of projects. Each subfolder is served at
               <code>&lt;name&gt;.test</code> automatically.
@@ -650,7 +650,7 @@ function onBack(): void {
 
           <!-- 4. Elevate -->
           <section v-else-if="step === 4" class="space-y-4">
-            <h2 class="text-base font-semibold">Trust &amp; system access</h2>
+            <h2 class="font-display text-base font-normal tracking-wide">Trust &amp; system access</h2>
             <p class="text-sm text-muted-foreground">
               For HTTPS on <code>.test</code> and serving on ports 80/443, Yerd
               needs to trust its local certificate authority, install a
@@ -665,7 +665,7 @@ function onBack(): void {
           <section v-else class="space-y-4 text-center">
             <Rocket class="mx-auto size-10 text-brand" />
             <div>
-              <h2 class="text-base font-semibold">You're all set</h2>
+              <h2 class="font-display text-base font-normal tracking-wide">You're all set</h2>
               <p class="mt-1 text-sm text-muted-foreground">
                 Yerd is ready. Manage PHP, sites, and services from the dashboard.
               </p>

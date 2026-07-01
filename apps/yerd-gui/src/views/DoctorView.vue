@@ -163,7 +163,11 @@ onUnmounted(registerViewActions({ refresh: () => void loadDiagnoses() }));
 
 <template>
   <div class="flex h-full min-h-0 flex-col">
-    <PageHeader title="Doctor" subtitle="Health checks and safe one-click fixes" />
+    <PageHeader
+      title="Doctor"
+      subtitle="Health checks and safe one-click fixes"
+      docs="/guide/diagnostics"
+    />
 
     <div class="min-h-0 flex-1 space-y-6 overflow-y-auto p-6">
       <!-- Daemon control -->

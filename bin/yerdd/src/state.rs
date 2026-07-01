@@ -61,10 +61,10 @@ pub struct DaemonState {
     /// `None` when no host roots were found (PHP keeps its compiled default).
     /// Fed to FPM pools (`set_ca_bundle`) and the CLI `php.ini`.
     pub php_ca_bundle: Option<PathBuf>,
-    /// Update cache: installed minor → newest full patch known from the last
-    /// distribution poll. Populated by the periodic checker / `CheckPhpUpdates`
-    /// and served (no network) on `ListPhp`.
-    pub php_updates: RwLock<HashMap<PhpVersion, String>>,
+    /// Update cache: installed minor → newest build `(patch, revision)` known
+    /// from the last manifest poll. Populated by the periodic checker /
+    /// `CheckPhpUpdates` and served (no network) on `ListPhp`.
+    pub php_updates: RwLock<HashMap<PhpVersion, (String, u32)>>,
     /// Yerd self-update cache: the releases seen at the last GitHub poll. Empty
     /// until the first successful fetch. Populated by the periodic checker /
     /// `CheckUpdate` and served (no network) when a live fetch fails.

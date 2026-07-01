@@ -17,6 +17,7 @@ serde_test  = "1"
 toml        = "0.8"
 semver      = "1"
 minisign-verify = "0.2"
+minisign    = "0.7"
 tokio       = { version = "1", default-features = false, features = ["io-util"] }
 tempfile    = "=3.10.1"
 rcgen            = { version = "=0.13.2", default-features = false, features = ["pem", "crypto", "ring", "x509-parser"] }

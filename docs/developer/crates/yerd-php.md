@@ -352,23 +352,22 @@ During `HealthCheck`, the driver `tokio::select!`s the FastCGI probe (wrapped in
 ## Version & release handling
 
 ::: tip PHP is downloaded, not bundled
-Yerd does not ship PHP. It downloads prebuilt, fully-static PHP builds from the [static-php-cli](https://dl.static-php.dev/static-php-cli/) distribution on demand when you run `yerd install php`. It uses the **bulk** extension set (glibc `gnu-bulk` on Linux, `bulk` on macOS) so common Laravel needs like `intl`, `sodium`, and `mysqli` are included. See the [PHP Versions guide](../../guide/php-versions).
+Yerd does not ship PHP. It downloads prebuilt, statically-linked PHP builds that Yerd publishes itself (the `forjedio/yerd-php` build repo) on demand when you run `yerd install php`. Those builds link libcurl **without c-ares** so PHP resolves Yerd's scoped `.test` resolver, and ship the **bulk** extension set (glibc on Linux) so common Laravel needs like `intl`, `sodium`, and `mysqli` are included. See the [PHP Versions guide](../../guide/php-versions).
 :::
 
-### `release.rs` - pure artifact resolution
+### `release.rs` - pure manifest resolution
 
-Supported versions are discovered **dynamically** from the distribution's directory listing, so Yerd needs no new release to support a new PHP patch. The daemon fetches the listing (over HTTPS - there is no checksum sidecar and no SHA pinning, a deliberate trade-off so the supported set isn't frozen into the binary) and hands the body to the pure functions here:
+Supported versions come from Yerd's signed `php.json` manifest. The daemon fetches `php.json` + its detached `php.json.minisig`, **verifies the minisign signature** (at the I/O edge, against the embedded `PHP_LISTING_PUBLIC_KEY`), then hands the trusted JSON body to the pure functions here. Each build also carries a per-tarball SHA-256 (verified after download) and a `revision` (`-N`) counter:
 
 | Function | Purpose |
 | --- | --- |
-| `resolve_from_listing(listing, version, os, arch)` | Scans for `php-<maj>.<min>.<patch>-cli-<os>-<arch>.tar.gz`, takes the highest patch, and returns an `Artifact` with both `cli_url` and `fpm_url`. Errors `VersionUnavailable` if none match. |
-| `available_minors(listing, os, arch)` | Every distinct major.minor with a CLI build for the platform, sorted + deduped. Feeds the GUI dropdown / `yerd list php`. |
-| `artifact_url(full, kind, os, arch)` | Builds a canonical `dl.static-php.dev` URL. |
-| `listing_url()` | URL of the directory listing the daemon fetches. |
+| `resolve_from_listing(listing, version, os, arch)` | Selects the single `(minor, os, arch)` build and returns an `Artifact` with `cli_url`/`fpm_url`, their `sha256`s, and the `revision`. Errors `VersionUnavailable` if none match, or `UnsupportedListingSchema` / `ListingParse` on a bad manifest. |
+| `available_minors(listing, os, arch)` | Every distinct major.minor with a build for the platform, sorted + deduped. Feeds the GUI dropdown / `yerd list php`. |
+| `listing_url()` / `listing_sig_url()` | URLs of the `php.json` manifest and its detached signature. |
 | `is_safe_member(name)` | Zip-slip guard: a tar member is trusted only if relative with no `..`, root, or prefix components. |
-| `is_newer` / `patch_of` | Patch-level comparison for update checks. |
+| `is_newer_build` / `patch_of` / `display_build` | Build-level `(patch, revision)` comparison for update checks, and the `<patch>-<revision>` display string. |
 
-The parsing is carefully anchored. The `php-<maj>.<min>.` prefix carries a **trailing dot**, so a request for `8.5` never matches a `8.50.x` artifact; `available_minors` parses major/minor as *integers* (not substrings) for the same reason, and the `-cli-<os>-<arch>` suffix anchors the architecture so an x86_64 query never picks up an aarch64-only patch. `Os` is `Linux | Macos` and `Arch` is `X86_64 | Aarch64`; `current_os_arch()` errors with `UnsupportedPlatform` on anything else (e.g. Windows, 32-bit) and must be called before any download.
+`Os` is `Linux | Macos` and `Arch` is `X86_64 | Aarch64` (the `std::env::consts` spellings the manifest uses); `current_os_arch()` errors with `UnsupportedPlatform` on anything else (e.g. Windows, 32-bit) and must be called before any download. The `revision` dimension is what makes a rebuild of an unchanged patch (e.g. the c-ares cutover, `8.5.7-1`) reach an existing install: a pre-cutover install recorded as revision 0 is offered the `-1` rebuild.
 
 `BinaryKind` (`Cli` / `Fpm`) maps to install layout: CLI installs to `bin/php`, FPM to `sbin/php-fpm`, and the archive members are named `php` / `php-fpm`.
 
