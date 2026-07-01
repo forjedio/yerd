@@ -12,8 +12,15 @@ const props = withDefaults(
     title: string;
     /** Dialog footprint: "md" (default), "lg", or "full" (~80% of the window). */
     size?: "md" | "lg" | "full";
+    /**
+     * When false, the dialog can't be dismissed by the backdrop, Escape, or the
+     * built-in close (X) button - the only way out is a control the caller
+     * renders in the footer (e.g. a "Close" button enabled once work finishes).
+     * Defaults to true (the usual dismiss-anywhere modal).
+     */
+    dismissible?: boolean;
   }>(),
-  { size: "md" },
+  { size: "md", dismissible: true },
 );
 const emit = defineEmits<{ "update:open": [boolean] }>();
 
@@ -21,8 +28,13 @@ function close(): void {
   emit("update:open", false);
 }
 
+/** Backdrop/Escape dismissal path; a no-op when the dialog is non-dismissible. */
+function requestDismiss(): void {
+  if (props.dismissible) close();
+}
+
 function onKey(e: KeyboardEvent): void {
-  if (e.key === "Escape") close();
+  if (e.key === "Escape") requestDismiss();
 }
 
 // Toggle a global key listener only while open.
@@ -43,7 +55,7 @@ watch(
     >
       <div
         class="absolute inset-0 bg-black/50 rounded-[10px] animate-fade-in"
-        @click="close"
+        @click="requestDismiss"
       />
       <div
         role="dialog"
@@ -63,6 +75,7 @@ watch(
             {{ title }}
           </h2>
           <button
+            v-if="dismissible"
             type="button"
             aria-label="Close"
             class="-mr-1 -mt-1 rounded-md p-1 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
