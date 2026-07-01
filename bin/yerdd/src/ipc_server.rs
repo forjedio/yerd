@@ -684,6 +684,7 @@ async fn update_php(version: Option<yerd_core::PhpVersion>, state: &DaemonState)
             Err(e) => return internal(format!("listing fetch/verify failed: {e}")),
         };
     let _guard = state.php_mutate.lock().await;
+    let mut updated: Vec<yerd_core::PhpVersion> = Vec::new();
     for minor in targets {
         let Some(installed) = crate::php_install::installed_patch(&state.dirs, minor) else {
             continue;
@@ -714,10 +715,49 @@ async fn update_php(version: Option<yerd_core::PhpVersion>, state: &DaemonState)
                 };
             }
             tracing::info!(version = %minor, from = %installed, to = %artifact.full_version, "updated PHP");
+            updated.push(minor);
         }
     }
+    restart_updated_pools(state, &updated).await;
     crate::php_updates::poll_and_refresh(state, &dl, yerd_update::PHP_LISTING_PUBLIC_KEY).await;
     php_versions_response(state).await
+}
+
+/// Restart the FPM pool of each just-updated minor **that is currently active**,
+/// so a running pool re-execs the freshly-installed binary instead of the stale
+/// process. A pool that isn't started is left alone (the next request spawns it
+/// from the new binary), matching [`restart_all_php`]'s ondemand semantics.
+/// Per-pool failures are logged, not fatal - the update itself already
+/// succeeded. Runs under the caller's `php_mutate` guard.
+async fn restart_updated_pools(state: &DaemonState, updated: &[yerd_core::PhpVersion]) {
+    if updated.is_empty() {
+        return;
+    }
+    let mut mgr = state.php_manager.lock().await;
+    let active: std::collections::HashSet<yerd_core::PhpVersion> =
+        mgr.snapshots().into_iter().map(|s| s.version).collect();
+    for minor in pools_needing_restart(&active, updated) {
+        match mgr.restart(minor).await {
+            Ok(_) => tracing::info!(version = %minor, "restarted FPM pool after PHP update"),
+            Err(e) => {
+                tracing::warn!(version = %minor, error = %e, "failed to restart FPM pool after PHP update");
+            }
+        }
+    }
+}
+
+/// The just-updated minors whose pool is currently active, preserving `updated`
+/// order. Updated-but-inactive minors are excluded so an update never *starts* a
+/// pool the user had stopped - it only re-execs one already running.
+fn pools_needing_restart(
+    active: &std::collections::HashSet<yerd_core::PhpVersion>,
+    updated: &[yerd_core::PhpVersion],
+) -> Vec<yerd_core::PhpVersion> {
+    updated
+        .iter()
+        .copied()
+        .filter(|m| active.contains(m))
+        .collect()
 }
 
 /// `install php <ver>` - download + verify + unpack a prebuilt build. Runs the
@@ -3136,6 +3176,24 @@ Subject: Captured\r\n\r\nhi\r\n";
     }
 
     // ---------- pure helpers ----------
+
+    #[test]
+    fn pools_needing_restart_only_targets_active_updated_minors() {
+        let active: std::collections::HashSet<PhpVersion> =
+            [PhpVersion::new(8, 4), PhpVersion::new(8, 5)]
+                .into_iter()
+                .collect();
+        let updated = [
+            PhpVersion::new(8, 5), // active -> restart
+            PhpVersion::new(8, 3), // updated but not running -> skip
+        ];
+        assert_eq!(
+            pools_needing_restart(&active, &updated),
+            vec![PhpVersion::new(8, 5)]
+        );
+        assert!(pools_needing_restart(&active, &[]).is_empty());
+        assert!(pools_needing_restart(&std::collections::HashSet::new(), &updated).is_empty());
+    }
 
     #[test]
     fn map_pool_state_maps_both_variants() {
