@@ -450,28 +450,27 @@ fn load_or_generate_ca(dirs: &PlatformDirs) -> Result<CertAuthority, DaemonError
 /// Build `{data}/cacert.pem` = host public roots + the Yerd CA, the bundle the
 /// bundled PHP verifies TLS against so it trusts `.test` HTTPS.
 ///
-/// Returns `Some(path)` only when `roots` actually contains public roots (at
-/// least one `CERTIFICATE` block). When no usable roots are present the file is
-/// **not written or modified** and `None` is returned, so the caller leaves
-/// PHP's compiled-in default trust store untouched rather than pointing it at a
-/// rootless bundle (which would break public-internet HTTPS). Not writing on the
-/// empty path also means a transient host-roots read failure during a rebuild
-/// can never clobber a previously-good bundle. Best-effort: a write failure logs
-/// and yields `None`. `roots` is passed in (not read here) so both branches are
-/// unit-testable without touching the host trust store.
+/// Returns `Some(path)` when `roots` contains public roots (at least one
+/// `CERTIFICATE` block): the bundle is rewritten and its path returned. When no
+/// usable roots are present the file is **not written or modified**; instead a
+/// previously-written bundle that still embeds the current CA plus public roots
+/// is reused (`Some(path)`), so a transient host-roots read failure doesn't
+/// disable CA wiring while a good bundle sits on disk. Only when neither fresh
+/// roots nor a reusable bundle exist is `None` returned, leaving PHP's
+/// compiled-in default trust store untouched rather than pointing it at a
+/// rootless bundle (which would break public-internet HTTPS). Best-effort: a
+/// write failure logs and yields `None`. `roots` is passed in (not read here) so
+/// the branches are unit-testable without touching the host trust store.
 pub(crate) fn build_php_ca_bundle(
     dirs: &PlatformDirs,
     ca_cert_pem: &str,
     roots: Option<&str>,
 ) -> Option<PathBuf> {
+    let path = dirs.data.join("cacert.pem");
     let Some(roots_pem) = roots.filter(|r| r.contains("-----BEGIN CERTIFICATE-----")) else {
-        tracing::warn!(
-            "no host CA roots found; leaving PHP's default trust store in place to avoid breaking public HTTPS"
-        );
-        return None;
+        return reuse_existing_php_ca_bundle(&path, ca_cert_pem);
     };
     let bundle = yerd_tls::compose_ca_bundle(roots_pem, ca_cert_pem);
-    let path = dirs.data.join("cacert.pem");
 
     if let Err(e) = std::fs::create_dir_all(&dirs.data) {
         tracing::warn!(error = %e, "could not create data dir for PHP CA bundle");
@@ -486,6 +485,28 @@ pub(crate) fn build_php_ca_bundle(
     }
     tracing::info!(path = %path.display(), "wrote PHP CA bundle (host roots + Yerd CA)");
     Some(path)
+}
+
+/// Keep PHP CA wiring alive when fresh host roots are unavailable: if a bundle
+/// previously written to `path` still embeds the current CA plus public roots
+/// (at least two certificate blocks), reuse it by returning `Some(path)`. Never
+/// returns a rootless bundle, and never writes or modifies the file; returns
+/// `None` (leaving PHP's default trust store) when no reusable bundle exists.
+fn reuse_existing_php_ca_bundle(path: &std::path::Path, ca_cert_pem: &str) -> Option<PathBuf> {
+    let ca = ca_cert_pem.trim();
+    let existing = std::fs::read_to_string(path).ok()?;
+    let cert_blocks = existing.matches("-----BEGIN CERTIFICATE-----").count();
+    if !ca.is_empty() && existing.contains(ca) && cert_blocks >= 2 {
+        tracing::warn!(
+            path = %path.display(),
+            "host CA roots unavailable; reusing existing PHP CA bundle (already has public roots + Yerd CA)"
+        );
+        return Some(path.to_path_buf());
+    }
+    tracing::warn!(
+        "no host CA roots and no reusable bundle; leaving PHP's default trust store in place to avoid breaking public HTTPS"
+    );
+    None
 }
 
 fn ca_validity() -> Result<Validity, DaemonError> {
@@ -1091,13 +1112,40 @@ mod tests {
     }
 
     #[test]
-    fn build_php_ca_bundle_no_roots_does_not_clobber_existing_good_bundle() {
+    fn build_php_ca_bundle_no_roots_reuses_existing_good_bundle_unchanged() {
         let tmp = tempfile::tempdir().unwrap();
         let dirs = make_dirs(tmp.path());
         let ca = test_ca();
         let good = build_php_ca_bundle(&dirs, ca.cert_pem(), Some(FAKE_ROOT_PEM)).unwrap();
         let before = std::fs::read_to_string(&good).unwrap();
-        assert!(build_php_ca_bundle(&dirs, ca.cert_pem(), None).is_none());
+        let reused = build_php_ca_bundle(&dirs, ca.cert_pem(), None);
+        assert_eq!(reused.as_deref(), Some(good.as_path()));
         assert_eq!(std::fs::read_to_string(&good).unwrap(), before);
+    }
+
+    #[test]
+    fn build_php_ca_bundle_no_roots_does_not_reuse_ca_only_or_stale_bundle() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dirs = make_dirs(tmp.path());
+        let ca = test_ca();
+        std::fs::create_dir_all(&dirs.data).unwrap();
+        let path = dirs.data.join("cacert.pem");
+
+        std::fs::write(&path, format!("{}\n", ca.cert_pem().trim())).unwrap();
+        assert!(
+            build_php_ca_bundle(&dirs, ca.cert_pem(), None).is_none(),
+            "a CA-only bundle (one block, no public roots) must not be reused"
+        );
+
+        let other = test_ca();
+        std::fs::write(
+            &path,
+            format!("{}\n{}\n", FAKE_ROOT_PEM.trim(), other.cert_pem().trim()),
+        )
+        .unwrap();
+        assert!(
+            build_php_ca_bundle(&dirs, ca.cert_pem(), None).is_none(),
+            "a bundle missing the current CA must not be reused"
+        );
     }
 }

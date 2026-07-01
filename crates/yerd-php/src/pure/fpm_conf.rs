@@ -41,8 +41,7 @@ pub fn render_fpm_conf(cfg: &PoolConfig) -> String {
     let _ = writeln!(out, "catch_workers_output = yes");
 
     if let Some(path) = &cfg.ca_bundle {
-        let p = path.display().to_string();
-        if !p.chars().any(char::is_control) {
+        if let Some(p) = yerd_core::php_settings::sanitize_ca_bundle_path(path) {
             let _ = writeln!(out, "php_admin_value[openssl.cafile] = {p}");
             let _ = writeln!(out, "php_admin_value[curl.cainfo] = {p}");
         }
@@ -225,12 +224,20 @@ catch_workers_output = yes
     }
 
     #[test]
-    fn ca_bundle_with_control_char_in_path_is_skipped() {
-        let mut cfg = cfg_unix(ProcessManagerMode::OnDemand);
-        cfg.ca_bundle = Some(PathBuf::from("/d/ca\ncert.pem"));
-        let s = render_fpm_conf(&cfg);
-        assert!(!s.contains("openssl.cafile"), "injection not skipped: {s}");
-        assert!(!s.contains("curl.cainfo"), "injection not skipped: {s}");
+    fn ca_bundle_with_unsafe_path_is_skipped() {
+        for bad in ["/d/ca\ncert.pem", "/d/ca;cert.pem", "/d/ca#cert.pem"] {
+            let mut cfg = cfg_unix(ProcessManagerMode::OnDemand);
+            cfg.ca_bundle = Some(PathBuf::from(bad));
+            let s = render_fpm_conf(&cfg);
+            assert!(
+                !s.contains("openssl.cafile"),
+                "injection not skipped for {bad:?}: {s}"
+            );
+            assert!(
+                !s.contains("curl.cainfo"),
+                "injection not skipped for {bad:?}: {s}"
+            );
+        }
     }
 
     #[test]

@@ -640,7 +640,8 @@ async fn run_doctor_fix(state: &DaemonState) -> Response {
                     message: if rebuilt {
                         "rebuilt the PHP CA bundle".to_owned()
                     } else {
-                        "could not rebuild the PHP CA bundle (no host roots found?)".to_owned()
+                        "could not rebuild the PHP CA bundle; see the daemon logs for details"
+                            .to_owned()
                     },
                 });
             }

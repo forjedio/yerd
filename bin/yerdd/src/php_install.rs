@@ -240,8 +240,7 @@ pub fn write_cli_ini(
     );
     if let Some(path) = ca_bundle {
         use std::fmt::Write as _;
-        let p = path.display().to_string();
-        if !p.chars().any(char::is_control) {
+        if let Some(p) = yerd_core::php_settings::sanitize_ca_bundle_path(path) {
             let _ = write!(contents, "openssl.cafile = {p}\ncurl.cainfo = {p}\n");
         }
     }
@@ -680,13 +679,15 @@ mod tests {
         assert!(with.contains(&format!("openssl.cafile = {}\n", bundle.display())));
         assert!(with.contains(&format!("curl.cainfo = {}\n", bundle.display())));
 
-        write_cli_ini(&dirs, &settings, Some(Path::new("/d/ca\ncert.pem"))).unwrap();
-        let injected = std::fs::read_to_string(dirs.data.join("php-cli.ini")).unwrap();
-        assert!(
-            !injected.contains("openssl.cafile"),
-            "injection not skipped"
-        );
-        assert!(!injected.contains("curl.cainfo"), "injection not skipped");
+        for bad in ["/d/ca\ncert.pem", "/d/ca;cert.pem", "/d/ca#cert.pem"] {
+            write_cli_ini(&dirs, &settings, Some(Path::new(bad))).unwrap();
+            let injected = std::fs::read_to_string(dirs.data.join("php-cli.ini")).unwrap();
+            assert!(
+                !injected.contains("openssl.cafile"),
+                "not skipped for {bad:?}"
+            );
+            assert!(!injected.contains("curl.cainfo"), "not skipped for {bad:?}");
+        }
     }
 
     #[test]
