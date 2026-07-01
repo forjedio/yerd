@@ -723,12 +723,12 @@ async fn update_php(version: Option<yerd_core::PhpVersion>, state: &DaemonState)
     php_versions_response(state).await
 }
 
-/// Restart the FPM pool of each just-updated minor **that is currently active**,
-/// so a running pool re-execs the freshly-installed binary instead of the stale
-/// process. A pool that isn't started is left alone (the next request spawns it
-/// from the new binary), matching [`restart_all_php`]'s ondemand semantics.
-/// Per-pool failures are logged, not fatal - the update itself already
-/// succeeded. Runs under the caller's `php_mutate` guard.
+/// Restart the FPM pool of each just-updated minor that has a **started** pool
+/// (running or crashed/`Failed`), so it re-execs the freshly-installed binary
+/// instead of the stale process. A never-started / stopped ondemand pool is left
+/// alone (the next request spawns it from the new binary), matching
+/// [`restart_all_php`]'s semantics. Per-pool failures are logged, not fatal - the
+/// update itself already succeeded. Runs under the caller's `php_mutate` guard.
 async fn restart_updated_pools(state: &DaemonState, updated: &[yerd_core::PhpVersion]) {
     if updated.is_empty() {
         return;

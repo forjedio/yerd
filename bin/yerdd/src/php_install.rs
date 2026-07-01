@@ -828,6 +828,26 @@ mod tests {
 
     /// A validly-signed manifest that simply lacks the requested minor (only 8.4
     /// present) resolves to `VersionUnavailable`, not a trust error.
+    /// The fetch choke point rejects a manifest whose body was altered after
+    /// signing: the original signature no longer covers the served bytes, so
+    /// `fetch_verified_listing` returns `ListingUntrusted` before any resolve.
+    #[tokio::test]
+    async fn fetch_verified_listing_rejects_tampered_body() {
+        let cli = gzip_tar_single("php", b"CLI-BYTES", 0o755);
+        let fpm = gzip_tar_single("php-fpm", b"FPM-BYTES", 0o755);
+        let signed = signed_manifest_for("8.5.7", "8.5", 1, &cli, &fpm);
+        let dl = FakeDownloader {
+            manifest: signed.manifest.replace("8.5.7", "8.5.9"),
+            minisig: signed.minisig.clone(),
+            cli,
+            fpm,
+        };
+        let err = fetch_verified_listing(&dl, &signed.public_key)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, PhpError::ListingUntrusted), "got {err:?}");
+    }
+
     #[tokio::test]
     async fn install_errors_when_version_not_published_and_writes_nothing() {
         let tmp = tempfile::tempdir().unwrap();
