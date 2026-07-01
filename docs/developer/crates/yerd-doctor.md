@@ -54,27 +54,34 @@ Returns the safe, unprivileged fixes the daemon may apply for this report.
 ```rust
 #[must_use]
 pub fn plan_auto_fixes(report: &StatusReport) -> Vec<FixAction> {
-    report
+    let mut fixes: Vec<FixAction> = report
         .php
         .iter()
         .filter(|p| p.state == PoolRunState::Failed)
         .map(|p| FixAction::RestartFpm(p.version))
-        .collect()
+        .collect();
+    if report.ca.php_trusts_ca == Some(false) {
+        fixes.push(FixAction::RebuildPhpCaBundle);
+    }
+    fixes
 }
 ```
 
-Conservative by design: the *only* auto-fix is restarting a failed FPM pool, which needs no elevation. Privileged or slow remediation - CA trust, resolver install, `setcap`/pf, PHP install - is never auto-applied; it is left to the user to run the suggested command.
+Conservative by design: the auto-fixes are restarting a failed FPM pool and rebuilding the bundled PHP's CA bundle (`{data}/cacert.pem`) when it's missing or stale - both fast, idempotent, and unprivileged (each writes only user-owned files). Privileged or slow remediation - CA trust, resolver install, `setcap`/pf, PHP install - is never auto-applied; it is left to the user to run the suggested command.
 
 ### `is_auto_fixable(DiagnosisCode) -> bool`
 
 ```rust
 #[must_use]
 pub fn is_auto_fixable(code: DiagnosisCode) -> bool {
-    matches!(code, DiagnosisCode::FpmPoolFailed)
+    matches!(
+        code,
+        DiagnosisCode::FpmPoolFailed | DiagnosisCode::PhpCaNotTrusted
+    )
 }
 ```
 
-Lets the daemon drop already-handled findings from the "manual" remainder it reports after a fix run. It is kept in lockstep with `plan_auto_fixes`: `FpmPoolFailed` is the single code both treat as auto-fixable.
+Lets the daemon drop already-handled findings from the "manual" remainder it reports after a fix run. It is kept in lockstep with `plan_auto_fixes`: `FpmPoolFailed` and `PhpCaNotTrusted` are the codes both treat as auto-fixable.
 
 ### `FixAction`
 
@@ -85,6 +92,9 @@ Lets the daemon drop already-handled findings from the "manual" remainder it rep
 pub enum FixAction {
     /// Restart the FPM pool for this PHP version.
     RestartFpm(PhpVersion),
+    /// Rebuild the managed PHP CA bundle (`{data}/cacert.pem`) so the bundled
+    /// PHP trusts the Yerd CA again.
+    RebuildPhpCaBundle,
 }
 ```
 

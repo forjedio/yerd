@@ -999,9 +999,6 @@ async fn reconcile_shims_for(state: &DaemonState, default: yerd_core::PhpVersion
     }
 }
 
-/// Write the CLI `php.ini` (`{data}/php-cli.ini`, the `PHPRC` target) from the
-/// current config settings. Reads the config lock briefly, then releases it
-/// before the disk write. Best-effort: failures are logged.
 /// Rebuild `{data}/cacert.pem` (host roots + Yerd CA) from the current host
 /// trust store. Returns whether the file now contains public roots. Because FPM
 /// and the CLI read the bundle by its stable path at TLS-handshake / invocation
@@ -2443,7 +2440,6 @@ Subject: Captured\r\n\r\nhi\r\n";
         .unwrap();
         let ca = yerd_tls::CertAuthority::generate(yerd_core::CA_COMMON_NAME, validity).unwrap();
         std::fs::write(&state.ca_path, ca.cert_pem()).unwrap();
-        // Feature on, but the managed bundle was deleted at runtime.
         state.php_ca_bundle = Some(state.dirs.data.join("cacert.pem"));
 
         match dispatch(Request::DoctorFix, &state).await {
@@ -2453,8 +2449,6 @@ Subject: Captured\r\n\r\nhi\r\n";
                     .iter()
                     .find(|r| r.code == yerd_ipc::DiagnosisCode::PhpCaNotTrusted)
                     .expect("rebuild fix should have run");
-                // The rebuild succeeds when the host has public roots (true on CI).
-                // Either way the dispatch arm executed; on success the file returns.
                 if fix.ok {
                     let bundle =
                         std::fs::read_to_string(state.dirs.data.join("cacert.pem")).unwrap();

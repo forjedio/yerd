@@ -71,12 +71,12 @@ fn uninstall_system_returns_needs_helper() {
     ));
 }
 
+/// Reading the host CA bundle must not error. The `ca-certificates` package
+/// (present on CI) makes a bundle file exist; a minimal container without it is
+/// tolerated by only requiring no error and, when `Some`, real cert content.
 #[test]
 fn system_root_bundle_reads_host_roots_without_error() {
     let ts = ActiveTrustStore;
-    // The `ca-certificates` package (present on CI) makes a bundle file exist;
-    // tolerate its absence in a minimal container by only requiring no error
-    // and, when Some, real certificate content.
     let out = ts
         .system_root_bundle()
         .expect("reading the host CA bundle must not error");

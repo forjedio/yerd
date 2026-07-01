@@ -1095,10 +1095,8 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let dirs = make_dirs(tmp.path());
         let ca = test_ca();
-        // A prior run wrote a good roots+CA bundle.
         let good = build_php_ca_bundle(&dirs, ca.cert_pem(), Some(FAKE_ROOT_PEM)).unwrap();
         let before = std::fs::read_to_string(&good).unwrap();
-        // A later rebuild finds no roots (transient): it must leave the good file intact.
         assert!(build_php_ca_bundle(&dirs, ca.cert_pem(), None).is_none());
         assert_eq!(std::fs::read_to_string(&good).unwrap(), before);
     }
