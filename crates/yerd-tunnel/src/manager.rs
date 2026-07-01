@@ -454,9 +454,11 @@ async fn graceful_reap<Ch: ChildHandle>(child: &mut Ch, grace: Duration) {
 /// legitimately needs. stdout+stderr are redirected to a freshly truncated
 /// logfile (so a stale URL from a prior run is not re-parsed) and, on Unix, the
 /// child is placed in its own process group so the supervisor's `killpg` reaps
-/// it cleanly. The logfile is opened `0600` on
-/// Unix: a Quick tunnel's only access control is its unguessable URL, which is
-/// captured here, and a Named tunnel's log carries connection metadata.
+/// it cleanly. The logfile is forced to `0600` on Unix, both at create time and
+/// with an explicit `set_permissions` after open so a reused path (`open`'s
+/// create-mode is ignored for an existing file) is re-tightened: a Quick
+/// tunnel's only access control is its unguessable URL, which is captured here,
+/// and a Named tunnel's log carries connection metadata.
 fn build_cmd(
     binary: &Path,
     args: &[OsString],
@@ -471,6 +473,12 @@ fn build_cmd(
         opts.mode(0o600);
     }
     let f = opts.open(logfile).map_err(TunnelError::Io)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        f.set_permissions(std::fs::Permissions::from_mode(0o600))
+            .map_err(TunnelError::Io)?;
+    }
     let f2 = f.try_clone().map_err(TunnelError::Io)?;
     let mut cmd = StdCommand::new(binary);
     cmd.args(args);
