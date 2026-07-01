@@ -251,6 +251,56 @@ async fn ensure_happy_path_returns_listen() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn set_ca_bundle_is_rendered_into_pool_config() {
+    let v = PhpVersion::new(8, 3);
+    let spawner = FakeSpawner::new(vec![SpawnPlan {
+        pid: 101,
+        behavior: ChildBehavior::Lives,
+    }]);
+    let tmp = tempfile::tempdir().unwrap();
+    let dirs = PlatformDirs {
+        config: tmp.path().join("cfg"),
+        data: tmp.path().join("data"),
+        state: tmp.path().join("state"),
+        cache: tmp.path().join("cache"),
+        runtime: tmp.path().join("run"),
+    };
+    std::fs::create_dir_all(&dirs.config).unwrap();
+    std::fs::create_dir_all(&dirs.state).unwrap();
+    std::fs::create_dir_all(&dirs.runtime).unwrap();
+    let bundle = dirs.data.join("cacert.pem");
+    let mut mgr = PhpManager::new(
+        spawner,
+        FakeClock,
+        FakeProbe::always_ok(),
+        dirs.clone(),
+        ActivePortBinder::new(),
+        5150,
+        binaries_with(v),
+    );
+    mgr.set_ca_bundle(Some(bundle.clone()));
+
+    mgr.ensure(v).await.unwrap();
+
+    let cfg_path = dirs.config.join("php-fpm-8.3-5150.conf");
+    let on_disk = std::fs::read_to_string(&cfg_path).unwrap();
+    assert!(
+        on_disk.contains(&format!(
+            "php_admin_value[openssl.cafile] = {}\n",
+            bundle.display()
+        )),
+        "got: {on_disk}"
+    );
+    assert!(
+        on_disk.contains(&format!(
+            "php_admin_value[curl.cainfo] = {}\n",
+            bundle.display()
+        )),
+        "got: {on_disk}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn set_binaries_makes_a_runtime_install_visible() {
     let v = PhpVersion::new(8, 3);
     let spawner = FakeSpawner::new(vec![SpawnPlan {

@@ -218,6 +218,61 @@ impl TrustStore for MacosTrustStore {
             certutil_missing: true,
         })
     }
+
+    /// Enumerates the system root keychains **in-process** via
+    /// `security-framework` (no `security` subprocess, so a launchd-stripped
+    /// PATH can't silently defeat it). The result is a superset baseline: it
+    /// applies no trust-settings filtering and does not see login/profile
+    /// roots, which is acceptable for a local dev tool.
+    fn system_root_bundle(&self) -> Result<Option<String>, PlatformError> {
+        use security_framework::item::{ItemClass, ItemSearchOptions, Reference, SearchResult};
+        use security_framework::os::macos::item::ItemSearchOptionsExt;
+        use security_framework::os::macos::keychain::SecKeychain;
+
+        const ROOT_KEYCHAINS: [&str; 2] = [
+            "/System/Library/Keychains/SystemRootCertificates.keychain",
+            "/Library/Keychains/System.keychain",
+        ];
+
+        let keychains: Vec<SecKeychain> = ROOT_KEYCHAINS
+            .iter()
+            .filter_map(|p| SecKeychain::open(p).ok())
+            .collect();
+        if keychains.is_empty() {
+            return Ok(None);
+        }
+
+        let mut opts = ItemSearchOptions::new();
+        opts.class(ItemClass::certificate());
+        opts.keychains(&keychains);
+        opts.load_refs(true);
+        opts.limit(10_000);
+
+        let results = match opts.search() {
+            Ok(r) => r,
+            Err(e) if e.code() == -25300 => return Ok(None),
+            Err(e) => {
+                return Err(PlatformError::TrustStore {
+                    reason: TrustStoreErrorReason::SystemApi(e.to_string()),
+                })
+            }
+        };
+
+        let mut pem = String::new();
+        for result in results {
+            if let SearchResult::Ref(Reference::Certificate(cert)) = result {
+                pem.push_str(&pem_match::der_to_pem(&cert.to_der()));
+                if !pem.ends_with('\n') {
+                    pem.push('\n');
+                }
+            }
+        }
+        if pem.trim().is_empty() {
+            Ok(None)
+        } else {
+            Ok(Some(pem))
+        }
+    }
 }
 
 /// macOS `ResolverInstaller` implementation.

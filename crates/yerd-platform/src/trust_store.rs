@@ -159,6 +159,17 @@ pub trait TrustStore {
     /// missing or some profiles fail. The caller decides whether to
     /// surface the degraded outcome to the user.
     fn install_firefox_nss(&self, ca_pem: &str) -> Result<NssOutcome, PlatformError>;
+
+    /// Return the host's public CA roots as a PEM string, for composing the
+    /// bundle the bundled PHP verifies against (see `yerd_tls::compose_ca_bundle`).
+    /// Read-only, unprivileged.
+    ///
+    /// macOS enumerates the system root keychains in-process; Linux reads the
+    /// first present `ca-certificates` bundle file; the `unsupported` stub
+    /// returns `Ok(None)`. `Ok(None)` means "no host roots available" - the
+    /// caller must then leave PHP's compiled-in default untouched rather than
+    /// pointing it at a rootless bundle.
+    fn system_root_bundle(&self) -> Result<Option<String>, PlatformError>;
 }
 
 #[cfg(test)]

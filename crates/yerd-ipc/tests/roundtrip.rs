@@ -154,6 +154,7 @@ fn encode_then_decode_response_roundtrip() {
                 path: PathBuf::from("/x/ca.cert.pem"),
                 fingerprint: "ab".repeat(32),
                 trusted_system: None,
+                php_trusts_ca: Some(true),
             },
             resolver_installed: Some(false),
             port_redirect: Some(true),

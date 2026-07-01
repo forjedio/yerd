@@ -27,6 +27,9 @@ const PRIVILEGED_PORT_CEILING: u16 = 1024;
 pub enum FixAction {
     /// Restart the FPM pool for this PHP version.
     RestartFpm(PhpVersion),
+    /// Rebuild the managed PHP CA bundle (`{data}/cacert.pem`) so the bundled
+    /// PHP trusts the Yerd CA again. Unprivileged: writes only a user-owned file.
+    RebuildPhpCaBundle,
 }
 
 /// Run every check against `report` and return the findings.
@@ -88,6 +91,16 @@ fn trust_findings(report: &StatusReport) -> Vec<Diagnosis> {
             "Local CA not trusted",
             "HTTPS sites will show certificate warnings until the CA is trusted.".to_owned(),
             "sudo yerd elevate trust",
+        ));
+    }
+    if report.ca.php_trusts_ca == Some(false) {
+        out.push(warn(
+            DiagnosisCode::PhpCaNotTrusted,
+            "PHP doesn't trust the local CA",
+            "PHP HTTPS calls to .test sites fail with cURL error 60 until the \
+             CA bundle is rebuilt. If it keeps failing, restart Yerd."
+                .to_owned(),
+            "yerd doctor fix",
         ));
     }
     if report.resolver_installed == Some(false) {
@@ -216,19 +229,26 @@ fn resolver_backup_finding(report: &StatusReport) -> Option<Diagnosis> {
 /// resolver, setcap, PHP install) is left for the user to run.
 #[must_use]
 pub fn plan_auto_fixes(report: &StatusReport) -> Vec<FixAction> {
-    report
+    let mut fixes: Vec<FixAction> = report
         .php
         .iter()
         .filter(|p| p.state == PoolRunState::Failed)
         .map(|p| FixAction::RestartFpm(p.version))
-        .collect()
+        .collect();
+    if report.ca.php_trusts_ca == Some(false) {
+        fixes.push(FixAction::RebuildPhpCaBundle);
+    }
+    fixes
 }
 
 /// Whether a finding with this `code` is one the daemon auto-fixes - used by the
 /// daemon to drop already-handled findings from the "manual" remainder.
 #[must_use]
 pub fn is_auto_fixable(code: DiagnosisCode) -> bool {
-    matches!(code, DiagnosisCode::FpmPoolFailed)
+    matches!(
+        code,
+        DiagnosisCode::FpmPoolFailed | DiagnosisCode::PhpCaNotTrusted
+    )
 }
 
 /// Findings about the privileged web ports (80/443), in stable order.
@@ -357,6 +377,7 @@ mod tests {
                 path: "/x/ca.cert.pem".into(),
                 fingerprint: "ab".repeat(32),
                 trusted_system: Some(true),
+                php_trusts_ca: Some(true),
             },
             resolver_installed: Some(true),
             port_redirect: None,
@@ -585,6 +606,28 @@ mod tests {
         );
         assert!(is_auto_fixable(DiagnosisCode::FpmPoolFailed));
         assert!(!is_auto_fixable(DiagnosisCode::CaNotTrusted));
+    }
+
+    #[test]
+    fn php_ca_untrusted_warns_and_plans_rebuild() {
+        let mut r = healthy();
+        r.ca.php_trusts_ca = Some(false);
+        let ds = diagnose(&r, None);
+        assert!(ds
+            .iter()
+            .any(|d| d.code == DiagnosisCode::PhpCaNotTrusted && d.severity == Severity::Warn));
+        assert!(plan_auto_fixes(&r).contains(&FixAction::RebuildPhpCaBundle));
+        assert!(is_auto_fixable(DiagnosisCode::PhpCaNotTrusted));
+    }
+
+    #[test]
+    fn php_ca_none_or_true_emits_no_finding() {
+        let mut r = healthy();
+        r.ca.php_trusts_ca = None;
+        assert!(!codes(&diagnose(&r, None)).contains(&DiagnosisCode::PhpCaNotTrusted));
+        r.ca.php_trusts_ca = Some(true);
+        assert!(!codes(&diagnose(&r, None)).contains(&DiagnosisCode::PhpCaNotTrusted));
+        assert!(!plan_auto_fixes(&r).contains(&FixAction::RebuildPhpCaBundle));
     }
 
     #[test]

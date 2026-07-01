@@ -704,6 +704,7 @@ mod tests {
             dns_addr: "127.0.0.1:1053".parse().unwrap(),
             ca_path,
             ca_fingerprint: yerd_platform::CaFingerprint::new([0u8; 32]),
+            php_ca_bundle: None,
             php_updates: tokio::sync::RwLock::new(std::collections::HashMap::new()),
             yerd_update: tokio::sync::RwLock::new(Vec::new()),
             update_snapshot: tokio::sync::RwLock::new(None),

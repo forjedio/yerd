@@ -116,6 +116,7 @@ When nothing is wrong:
 | `PortFallback` | `Warn` | A privileged port (below 1024) fell back to rootless and isn't reachable on the requested port. | `sudo yerd elevate ports` |
 | `ForeignWebListener` | `Warn` | A process **other than Yerd** is listening on 80/443 (confirmed via the proxy's `Server` marker, so Yerd is never mistaken for the squatter). Cross-platform. Supersedes `PortFallback` - elevation can't bind a port someone else owns. | Stop the other web server, then `sudo yerd elevate ports` |
 | `CaNotTrusted` | `Warn` | The local CA isn't in the system trust store, so HTTPS shows warnings. | `sudo yerd elevate trust` |
+| `PhpCaNotTrusted` | `Warn` | The bundled PHP's CA bundle (`cacert.pem`) is missing or stale, so PHP HTTPS to `.test` fails with cURL error 60. **Auto-fixable.** | `yerd doctor fix` (rebuilds the bundle; restart Yerd if it persists) |
 | `ResolverNotInstalled` | `Warn` | The OS resolver doesn't route `*.<tld>` to Yerd's DNS. | `sudo yerd elevate resolver` |
 | `NoPhpInstalled` | `Fail` | No PHP versions installed. | `yerd install php <default>` |
 | `DefaultPhpNotInstalled` | `Fail` | The default PHP version isn't installed (others are). | `yerd install php <default>` |
@@ -154,7 +155,7 @@ no automatic fixes were applicable
 
 #### Auto-fixes are safe-only
 
-The only thing `doctor fix` does on its own is **restart a failed PHP-FPM pool** - fast, idempotent, and unprivileged. Everything privileged or consequential is left for you to run, surfaced under "still needs attention" with the exact command:
+`doctor fix` only applies fast, idempotent, unprivileged repairs on its own: **restarting a failed PHP-FPM pool**, and **rebuilding the bundled PHP's CA bundle** (`cacert.pem`) when it's missing or stale. Everything privileged or consequential is left for you to run, surfaced under "still needs attention" with the exact command:
 
 - Trusting the CA (`sudo yerd elevate trust`)
 - Installing the DNS resolver (`sudo yerd elevate resolver`)
@@ -169,7 +170,7 @@ The only thing `doctor fix` does on its own is **restart a failed PHP-FPM pool**
 
 ```text
 1. daemon builds a StatusReport
-2. plan_auto_fixes(report)  ->  only failed FPM pools become RestartFpm actions
+2. plan_auto_fixes(report)  ->  failed FPM pools become RestartFpm; a stale PHP CA bundle becomes RebuildPhpCaBundle
 3. daemon performs each restart, recording success/failure  ->  "applied fixes"
 4. daemon re-builds a fresh StatusReport and re-diagnoses
 5. remaining Warn/Fail findings  ->  "still needs attention"

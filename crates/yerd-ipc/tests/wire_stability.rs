@@ -551,6 +551,7 @@ fn response_status_byte_shape() {
                 path: PathBuf::from("/x/ca.cert.pem"),
                 fingerprint: "ab".repeat(32),
                 trusted_system: Some(false),
+                php_trusts_ca: None,
             },
             resolver_installed: Some(true),
             port_redirect: None,
@@ -661,6 +662,7 @@ fn sample_status_report() -> StatusReport {
             path: PathBuf::from("/x/ca.cert.pem"),
             fingerprint: "ab".repeat(32),
             trusted_system: Some(true),
+            php_trusts_ca: None,
         },
         resolver_installed: Some(true),
         port_redirect: None,
@@ -812,6 +814,7 @@ fn diagnosis_code_each_variant_byte_shape() {
         ),
         (DiagnosisCode::ServiceFailed, r#""service_failed""#),
         (DiagnosisCode::BinDirNotOnPath, r#""bin_dir_not_on_path""#),
+        (DiagnosisCode::PhpCaNotTrusted, r#""php_ca_not_trusted""#),
         (DiagnosisCode::AllGood, r#""all_good""#),
     ];
     for (code, expected) in cases {

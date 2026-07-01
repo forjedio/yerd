@@ -56,6 +56,11 @@ pub struct DaemonState {
     pub ca_path: PathBuf,
     /// SHA-256 fingerprint of the CA cert (reported by `DaemonInfo`).
     pub ca_fingerprint: CaFingerprint,
+    /// Path to the managed PHP CA bundle (`{data}/cacert.pem` = host public
+    /// roots + the Yerd CA) that the bundled PHP verifies TLS against, or
+    /// `None` when no host roots were found (PHP keeps its compiled default).
+    /// Fed to FPM pools (`set_ca_bundle`) and the CLI `php.ini`.
+    pub php_ca_bundle: Option<PathBuf>,
     /// Update cache: installed minor → newest build `(patch, revision)` known
     /// from the last manifest poll. Populated by the periodic checker /
     /// `CheckPhpUpdates` and served (no network) on `ListPhp`.

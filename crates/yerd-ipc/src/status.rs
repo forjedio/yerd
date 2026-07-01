@@ -247,6 +247,14 @@ pub struct CaStatus {
     /// (`security verify-cert`); Linux treats anchor-dir presence as trust.
     /// `None` = the probe could not determine it (**not** `false`).
     pub trusted_system: Option<bool>,
+    /// Whether the **bundled PHP** trusts the Yerd CA: the managed
+    /// `{data}/cacert.pem` exists and contains the CA. `Some(false)` means the
+    /// bundle is missing/stale (PHP HTTPS to `.test` fails); `None` = the
+    /// feature is off (no host roots found) or the probe could not run.
+    /// `#[serde(default, skip_serializing_if)]` keeps the wire additive for
+    /// older clients/daemons.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub php_trusts_ca: Option<bool>,
 }
 
 /// Site counts by kind, for [`StatusReport`].
@@ -448,6 +456,9 @@ pub enum DiagnosisCode {
     /// A dev tool is installed but Yerd's `{data}/bin` isn't on the user's PATH,
     /// so the tool's commands won't resolve in the shell (remedy: `yerd path install`).
     BinDirNotOnPath,
+    /// The bundled PHP does not trust the Yerd CA: the managed `{data}/cacert.pem`
+    /// is missing or stale, so PHP HTTPS to `.test` fails (`cURL error 60`).
+    PhpCaNotTrusted,
     /// Everything checks out.
     AllGood,
 }

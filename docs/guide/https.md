@@ -167,6 +167,46 @@ install was almost certainly skipped because `certutil` wasn't available. Instal
 it and re-run the trust step.
 :::
 
+## PHP and the local CA
+
+Your browser and shell `curl` trust `.test` HTTPS as soon as you run
+`sudo yerd elevate trust`, because they read the OS trust store. The **bundled
+PHP is different**: it verifies TLS against its own OpenSSL certificate bundle,
+not the system keychain. Without help, a PHP HTTPS call to a secured `.test`
+site fails even though the browser is happy:
+
+```php
+Http::get('https://site-b.test/api/example');
+// cURL error 60: SSL certificate problem: unable to get local issuer certificate
+```
+
+Yerd fixes this automatically. On daemon start it writes a managed bundle,
+`cacert.pem`, into its data directory - your host's public root certificates
+**plus** the Yerd CA - and points the bundled PHP at it via `openssl.cafile` and
+`curl.cainfo`, for both FPM (served apps) and the CLI (`artisan`, `tinker`,
+`composer`). Laravel's `Http`/Guzzle, `file_get_contents('https://…')`, and curl
+all then verify `.test` certificates like the browser does.
+
+::: info Public HTTPS is never sacrificed
+The managed bundle always includes your host's public roots, so PHP keeps
+verifying real-internet HTTPS (Composer, external APIs). If Yerd can't find any
+host roots, it deliberately leaves PHP's default trust store untouched rather
+than risk breaking public HTTPS - and `yerd doctor` will flag it.
+:::
+
+If a PHP HTTPS call to a `.test` site still fails with `cURL error 60` after a
+Yerd upgrade, the daemon most likely hasn't restarted yet (the bundle is written
+at start-up). Run `yerd doctor` - it detects a missing or stale bundle and can
+rebuild it:
+
+```sh
+yerd doctor        # reports "PHP doesn't trust the local CA" if wrong
+yerd doctor fix    # rebuilds cacert.pem
+```
+
+For direct `php` calls in your shell, make sure Yerd's environment is wired up
+with `yerd path install` (this exports `PHPRC` so the CLI reads Yerd's `php.ini`).
+
 ## Turning HTTPS on and off per site
 
 HTTPS is a per-site toggle. Both commands take a site **name** (not a URL):

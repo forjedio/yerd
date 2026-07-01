@@ -157,6 +157,22 @@ pub fn render_cli_ini(settings: &std::collections::BTreeMap<String, String>) -> 
     out
 }
 
+/// Sanitise a CA-bundle path for use as an unquoted `openssl.cafile` /
+/// `curl.cainfo` value in a php.ini or FPM pool config. An unquoted ini value is
+/// not escaped, so a control character breaks the line and a `;` or `#` starts a
+/// comment that would truncate the directive; either would leave PHP pointed at
+/// a broken path. Returns the path as a string when safe, else `None` (skip
+/// emitting the directive). Also `None` for a non-UTF-8 path, which can't be
+/// represented safely here.
+#[must_use]
+pub fn sanitize_ca_bundle_path(path: &std::path::Path) -> Option<String> {
+    let s = path.to_str()?;
+    if s.chars().any(|c| c.is_control() || matches!(c, ';' | '#')) {
+        return None;
+    }
+    Some(s.to_owned())
+}
+
 /// The FPM directive a setting renders as: `"php_flag"` for booleans, else
 /// `"php_value"`. `None` if the setting is not supported.
 #[must_use]
@@ -350,6 +366,21 @@ mod tests {
         }
         assert!(defaults.contains(&("memory_limit", "512M")));
         assert!(defaults.contains(&("error_reporting", "E_ALL")));
+    }
+
+    #[test]
+    fn sanitize_ca_bundle_path_accepts_clean_paths_and_rejects_ini_metachars() {
+        use std::path::Path;
+        assert_eq!(
+            sanitize_ca_bundle_path(Path::new(
+                "/Users/x/Library/Application Support/io.yerd.Yerd/cacert.pem"
+            ))
+            .as_deref(),
+            Some("/Users/x/Library/Application Support/io.yerd.Yerd/cacert.pem")
+        );
+        assert!(sanitize_ca_bundle_path(Path::new("/d/ca\ncert.pem")).is_none());
+        assert!(sanitize_ca_bundle_path(Path::new("/d/ca;cert.pem")).is_none());
+        assert!(sanitize_ca_bundle_path(Path::new("/d/ca#cert.pem")).is_none());
     }
 
     #[test]

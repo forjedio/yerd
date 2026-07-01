@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onUnmounted, ref, watch } from "vue";
 import {
+  CheckCircle2,
   Download,
   Info,
   MoreHorizontal,
@@ -8,6 +9,7 @@ import {
   RotateCw,
   Star,
   Trash2,
+  TriangleAlert,
 } from "lucide-vue-next";
 
 import PageHeader from "@/components/PageHeader.vue";
@@ -332,6 +334,15 @@ const installLoading = ref(false);
 const installOptions = ref<{ value: PhpVersion; label: string }[]>([]);
 const selectedVersion = ref<PhpVersion>("");
 
+// ── install-progress dialog ──
+// A blocking, non-dismissible dialog owns the install's status (spinner + the
+// latest streamed line). It stays up until the install finishes, at which point
+// its "Close" button becomes available - the only way to dismiss it.
+const installProgressOpen = ref(false);
+const installPhase = ref<"running" | "done" | "error">("running");
+const installError = ref("");
+const installTarget = ref<PhpVersion>("");
+
 // Open the modal and fetch the distribution's installable versions, hiding any
 // already installed. Pre-selects the LATEST (the daemon returns them ascending,
 // so the last entry is newest) so the Select (no placeholder) is always valid.
@@ -356,30 +367,45 @@ async function openInstall(): Promise<void> {
 }
 
 /**
- * Install the selected PHP version with live progress. Only one PHP install runs
- * at a time, so this no-ops while any `php-install` operation is active (covering
- * a double-submit or a second version picked from a still-open modal). On success
- * it refreshes the version list AND the status poll so the new row shows its
- * patch + "idle" state immediately rather than on the next 4s tick.
+ * Install the selected PHP version with live progress, surfaced in the blocking
+ * install-progress dialog. Only one PHP install runs at a time, so this no-ops
+ * while any `php-install` operation is active (covering a double-submit or a
+ * second version picked from a still-open modal). On success it refreshes the
+ * version list AND the status poll so the new row shows its patch + "idle" state
+ * immediately rather than on the next 4s tick.
  */
-async function confirmInstall(close: () => void): Promise<void> {
+async function confirmInstall(closePicker: () => void): Promise<void> {
   const v = selectedVersion.value;
   if (!v || installing.value) return;
   const opId = `php-install:${v}`;
+  installTarget.value = v;
+  installPhase.value = "running";
+  installError.value = "";
   operations.begin({ id: opId, kind: "php-install", label: `Installing PHP ${v}` });
-  close();
+  closePicker();
+  installProgressOpen.value = true;
   try {
     await installPhpWithProgress(v, (lines) => {
       const latest = lines[lines.length - 1];
       if (latest) operations.update(opId, { detail: latest });
     });
+    installPhase.value = "done";
     toast.success(`Installed PHP ${v}`);
     await Promise.all([reloadPhp({ force: true }), refresh()]);
   } catch (e) {
+    installPhase.value = "error";
+    installError.value = (e as IpcError).message;
     toast.error(`Install of PHP ${v} failed`, (e as IpcError).message);
   } finally {
     operations.end(opId);
   }
+}
+
+// Dismiss the install-progress dialog. Guarded so it can only close once the
+// install has finished (success or failure), never mid-run.
+function closeInstallProgress(): void {
+  if (installPhase.value === "running") return;
+  installProgressOpen.value = false;
 }
 
 onUnmounted(
@@ -426,12 +452,6 @@ onUnmounted(
               <Spinner v-if="busy === 'update:all'" class="size-4" />
               Update all
             </Button>
-            <span
-              v-if="installDetail"
-              class="min-w-0 max-w-[16rem] truncate text-xs text-muted-foreground"
-            >
-              {{ installDetail }}
-            </span>
             <Button size="sm" :disabled="installing" @click="openInstall">
               <Spinner v-if="installing" class="size-4" />
               <Download v-else class="size-4" />
@@ -624,8 +644,8 @@ onUnmounted(
           />
         </div>
         <p class="mt-2 text-xs text-muted-foreground">
-          Downloads a prebuilt static build; this can take a few minutes with no
-          progress bar (the daemon reports only on completion).
+          Downloads a prebuilt static build; this can take a few minutes. A
+          dialog shows live progress and can be closed once it finishes.
         </p>
       </template>
       <p v-else class="py-2 text-sm text-muted-foreground">
@@ -639,6 +659,38 @@ onUnmounted(
           @click="confirmInstall(close)"
         >
           Install
+        </Button>
+      </template>
+    </Modal>
+
+    <Modal
+      v-model:open="installProgressOpen"
+      :dismissible="false"
+      :title="
+        installPhase === 'error'
+          ? `Couldn't install PHP ${installTarget}`
+          : installPhase === 'done'
+            ? `PHP ${installTarget} installed`
+            : `Installing PHP ${installTarget}`
+      "
+    >
+      <div class="flex flex-col items-center gap-4 py-4 text-center">
+        <Spinner v-if="installPhase === 'running'" class="size-8" />
+        <CheckCircle2 v-else-if="installPhase === 'done'" class="size-8 text-success" />
+        <TriangleAlert v-else class="size-8 text-destructive" />
+        <p class="min-h-[2.5rem] max-w-sm text-sm text-muted-foreground">
+          <template v-if="installPhase === 'running'">
+            {{ installDetail || "Preparing the download…" }}
+          </template>
+          <template v-else-if="installPhase === 'done'">
+            PHP {{ installTarget }} is ready to use.
+          </template>
+          <template v-else>{{ installError }}</template>
+        </p>
+      </div>
+      <template #footer>
+        <Button :disabled="installPhase === 'running'" @click="closeInstallProgress">
+          Close
         </Button>
       </template>
     </Modal>

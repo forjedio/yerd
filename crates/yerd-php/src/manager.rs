@@ -134,6 +134,7 @@ where
     binaries: BTreeMap<PhpVersion, PathBuf>,
     ini_settings: Vec<(String, String)>,
     dump_ext: Option<DumpExtSettings>,
+    ca_bundle: Option<PathBuf>,
     instance_id: u32,
     /// Timing/restart policy fed to the pure state machine. FPM pools use the
     /// fast-start / cheap-retry profile.
@@ -171,6 +172,7 @@ where
             binaries,
             ini_settings: Vec::new(),
             dump_ext: None,
+            ca_bundle: None,
             instance_id,
             policy: SupervisorPolicy::fpm(),
         }
@@ -205,6 +207,14 @@ where
         self.dump_ext = settings;
     }
 
+    /// Set the managed CA bundle every pool points PHP at (`openssl.cafile` /
+    /// `curl.cainfo`), so PHP trusts the Yerd CA on `.test` HTTPS. `None`
+    /// leaves PHP's compiled-in default untouched. Takes effect on the next
+    /// `ensure` / restart of a pool.
+    pub fn set_ca_bundle(&mut self, path: Option<PathBuf>) {
+        self.ca_bundle = path;
+    }
+
     /// Ensure FPM is running for `v` and return its listen address.
     ///
     /// Idempotent: if the pool is already `Running` and the child is
@@ -230,6 +240,7 @@ where
 
         let mut cfg = PoolConfig::dev_defaults(v, listen, &self.dirs, self.instance_id);
         cfg.ini = self.ini_settings.clone();
+        cfg.ca_bundle = self.ca_bundle.clone();
 
         if let Some(ext) = &self.dump_ext {
             let so = ext.so_dir.join(format!("php-{v}")).join("yerd-dump.so");
