@@ -652,10 +652,12 @@ async fn run_doctor_fix(state: &DaemonState) -> Response {
 /// latest published build when newer; restart the updated pools; refresh the
 /// cache; return the new list.
 ///
-/// A resolve failure for a **targeted** update (`version: Some`) is surfaced as
-/// an error rather than a silent no-op; update-all skips an unresolvable minor.
-/// If a later minor's install fails, the minors that already updated are still
-/// finalised (pools restarted, cache refreshed) before the error is returned.
+/// Update-all skips only a minor that is genuinely absent from the manifest
+/// (`VersionUnavailable`); a manifest-wide fault (parse/schema/untrusted) and any
+/// failure for a **targeted** update (`version: Some`) are surfaced as an error
+/// rather than a silent no-op. If a later minor's install fails, the minors that
+/// already updated are still finalised (pools restarted, cache refreshed) before
+/// the error is returned.
 ///
 /// Holds `php_mutate` across the install loop so it can't race
 /// `install_php`/`install_php_streamed` over the same per-version staging dir.
@@ -692,7 +694,7 @@ async fn update_php(version: Option<yerd_core::PhpVersion>, state: &DaemonState)
         };
     let _guard = state.php_mutate.lock().await;
     let mut updated: Vec<yerd_core::PhpVersion> = Vec::new();
-    let mut install_error: Option<yerd_php::PhpError> = None;
+    let mut pending_error: Option<yerd_php::PhpError> = None;
     for minor in targets {
         let Some(installed) = crate::php_install::installed_patch(&state.dirs, minor) else {
             continue;
@@ -700,13 +702,11 @@ async fn update_php(version: Option<yerd_core::PhpVersion>, state: &DaemonState)
         let installed_rev = crate::php_install::installed_revision(&state.dirs, minor);
         let artifact = match yerd_php::resolve_from_listing(&listing, minor, os, arch) {
             Ok(a) => a,
-            Err(e) if version.is_some() => {
-                return Response::Error {
-                    code: php_error_code(&e),
-                    message: e.to_string(),
-                };
+            Err(yerd_php::PhpError::VersionUnavailable { .. }) if version.is_none() => continue,
+            Err(e) => {
+                pending_error = Some(e);
+                break;
             }
-            Err(_) => continue,
         };
         if yerd_php::is_newer_build(
             &installed,
@@ -724,7 +724,7 @@ async fn update_php(version: Option<yerd_core::PhpVersion>, state: &DaemonState)
             .await
             {
                 tracing::error!(version = %minor, error = %e, "PHP update failed");
-                install_error = Some(e);
+                pending_error = Some(e);
                 break;
             }
             tracing::info!(version = %minor, from = %installed, to = %artifact.full_version, "updated PHP");
@@ -733,7 +733,7 @@ async fn update_php(version: Option<yerd_core::PhpVersion>, state: &DaemonState)
     }
     restart_updated_pools(state, &updated).await;
     crate::php_updates::poll_and_refresh(state, &dl, yerd_update::PHP_LISTING_PUBLIC_KEY).await;
-    if let Some(e) = install_error {
+    if let Some(e) = pending_error {
         return Response::Error {
             code: php_error_code(&e),
             message: e.to_string(),
@@ -3231,10 +3231,7 @@ Subject: Captured\r\n\r\nhi\r\n";
             [PhpVersion::new(8, 4), PhpVersion::new(8, 5)]
                 .into_iter()
                 .collect();
-        let updated = [
-            PhpVersion::new(8, 5), // active -> restart
-            PhpVersion::new(8, 3), // updated but not running -> skip
-        ];
+        let updated = [PhpVersion::new(8, 5), PhpVersion::new(8, 3)];
         assert_eq!(
             pools_needing_restart(&active, &updated),
             vec![PhpVersion::new(8, 5)]
