@@ -79,7 +79,11 @@ async function openViewer(): Promise<void> {
 
 <template>
   <div class="flex h-full flex-col">
-    <PageHeader title="Dumps" subtitle="Intercept dump() calls and Laravel telemetry" />
+    <PageHeader
+      title="Dumps"
+      subtitle="Intercept dump() calls and Laravel telemetry"
+      docs="/guide/laravel-dumps"
+    />
 
     <div class="flex-1 space-y-6 overflow-y-auto p-6">
       <Card>

@@ -497,7 +497,11 @@ onUnmounted(registerViewActions({ refresh: () => void load() }));
 
 <template>
   <div class="flex h-full flex-col">
-    <PageHeader title="Services" subtitle="Databases and caches Yerd supervises" />
+    <PageHeader
+      title="Services"
+      subtitle="Databases and caches Yerd supervises"
+      docs="/guide/services"
+    />
 
     <div class="flex-1 overflow-y-auto p-6">
       <Card>

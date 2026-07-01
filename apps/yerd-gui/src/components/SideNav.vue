@@ -36,18 +36,19 @@ type Item = {
   badgeTitle?: string;
 };
 
-const overview: Item = {
-  to: "/overview",
-  label: "Overview",
-  icon: LayoutDashboard,
-};
-
 const { connected, report } = useDaemon();
 const unread = computed(() => report.value?.mail?.unread ?? 0);
 const sharedSites = computed(() => report.value?.shared_sites ?? 0);
 
 // A computed (not a const) so the Mail item's unread badge stays reactive.
 const sections = computed<{ title: string; items: Item[] }[]>(() => [
+  {
+    title: "General",
+    items: [
+      { to: "/overview", label: "Overview", icon: LayoutDashboard },
+      { to: "/about", label: "About", icon: Info },
+    ],
+  },
   {
     title: "Environment",
     items: [
@@ -87,7 +88,6 @@ const sections = computed<{ title: string; items: Item[] }[]>(() => [
     items: [
       { to: "/general", label: "Settings", icon: Settings },
       { to: "/doctor", label: "Doctor", icon: Stethoscope },
-      { to: "/about", label: "About", icon: Info },
     ],
   },
 ]);
@@ -98,23 +98,20 @@ const sections = computed<{ title: string; items: Item[] }[]>(() => [
     class="flex h-full w-56 shrink-0 flex-col border-r bg-muted px-3 py-3 dark:bg-card/40"
   >
     <!-- Brand lockup - the logo's indigo is the app's one accent. -->
-    <div class="mb-4 flex items-center gap-2 px-2 pt-1">
+    <div class="mb-6 flex items-center gap-2.5 px-2 pt-1">
       <img :src="logoUrl" alt="" class="size-6 rounded-[7px]" />
-      <span class="text-sm font-semibold tracking-tight">Yerd</span>
+      <span
+        class="relative top-[3px] font-display text-lg font-normal leading-none tracking-wide"
+        >YERD</span
+      >
     </div>
 
-    <!-- Scrolls on very short windows, but its scrollbar chrome is hidden so it
-         never reads as a second scrollbar beside the main content's. -->
-    <div
-      class="flex flex-1 flex-col gap-5 overflow-y-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
-    >
-      <ul>
-        <li><NavLink v-bind="overview" /></li>
-      </ul>
-
+    <!-- Scrolls on very short windows; shows the app's slim scrollbar (styled in
+         style.css) only when the items overflow. -->
+    <div class="scrollbar-slim flex flex-1 flex-col gap-5 overflow-y-auto">
       <div v-for="section in sections" :key="section.title">
         <p
-          class="mb-1 px-2 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground/70"
+          class="mb-1 px-2 font-display text-xs font-normal uppercase tracking-wider text-muted-foreground/70"
         >
           {{ section.title }}
         </p>

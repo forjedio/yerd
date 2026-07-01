@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { getVersion } from "@tauri-apps/api/app";
-import { Download, FileText, RefreshCw, Stethoscope } from "lucide-vue-next";
+import { ArrowUpRight, Download, FileText, RefreshCw, Stethoscope } from "lucide-vue-next";
 import { computed, onMounted, onUnmounted, ref } from "vue";
 
 import logoUrl from "@/assets/logo.svg";
@@ -254,17 +254,46 @@ async function copyDiagnostics(): Promise<void> {
     <PageHeader title="About" subtitle="Build info and links" />
 
     <div class="flex-1 space-y-6 overflow-y-auto p-6">
-      <!-- Identity + links -->
-      <Card>
-        <CardContent class="flex flex-col items-center gap-3 py-8 text-center">
-          <img :src="logoUrl" alt="Yerd" class="size-20" />
-          <div class="space-y-1">
-            <p class="text-lg font-semibold">Yerd</p>
-            <p class="text-xs text-muted-foreground">
-              A cross-platform local PHP development environment.
-            </p>
+      <!-- Identity + build: the wordmark and the version list share one line,
+           split by a hairline; both stack on a narrow window. -->
+      <Card class="p-6 sm:p-8">
+        <div
+          class="flex flex-col gap-6 lg:flex-row lg:items-center lg:justify-between lg:gap-10"
+        >
+          <div class="flex items-center gap-4">
+            <img :src="logoUrl" alt="" class="size-16 shrink-0" />
+            <div>
+              <p class="pt-2 font-display text-3xl font-normal leading-none tracking-wide">
+                YERD
+              </p>
+              <p class="mt-0.5 text-sm text-muted-foreground">
+                Local PHP, without the friction.
+              </p>
+            </div>
           </div>
-          <div class="flex flex-wrap items-center justify-center gap-x-4 gap-y-1 text-sm">
+
+          <dl
+            class="space-y-2 border-t pt-6 text-sm lg:min-w-[15rem] lg:border-l lg:border-t-0 lg:pl-10 lg:pt-0"
+          >
+            <div class="flex items-center justify-between gap-8 whitespace-nowrap">
+              <dt class="text-muted-foreground">App version</dt>
+              <dd class="font-mono">{{ appVersion || "-" }}</dd>
+            </div>
+            <div class="flex items-center justify-between gap-8 whitespace-nowrap">
+              <dt class="text-muted-foreground">Daemon version</dt>
+              <dd class="font-mono">{{ daemonVersion || "unknown" }}</dd>
+            </div>
+            <div class="flex items-center justify-between gap-8 whitespace-nowrap">
+              <dt class="text-muted-foreground">IPC protocol</dt>
+              <dd class="font-mono">{{ protocol ?? "-" }}</dd>
+            </div>
+          </dl>
+        </div>
+
+        <div
+          class="mt-6 flex flex-col gap-3 border-t pt-4 text-sm sm:flex-row sm:items-center sm:justify-between"
+        >
+          <div class="flex flex-wrap items-center gap-x-4 gap-y-1">
             <button class="text-brand hover:underline" @click="openInBrowser('https://yerd.app')">
               yerd.app
             </button>
@@ -274,31 +303,28 @@ async function copyDiagnostics(): Promise<void> {
             >
               GitHub
             </button>
-            <button class="text-brand hover:underline" @click="openInBrowser('https://forjed.io')">
-              forjed.io
-            </button>
           </div>
           <p class="text-xs text-muted-foreground">Licensed under MIT.</p>
-        </CardContent>
+        </div>
       </Card>
 
-      <!-- Versions -->
-      <Card>
-        <CardHeader><CardTitle>Versions</CardTitle></CardHeader>
-        <CardContent class="space-y-2 text-sm">
-          <div class="flex justify-between">
-            <span class="text-muted-foreground">App version</span>
-            <span class="font-mono">{{ appVersion || "-" }}</span>
-          </div>
-          <div class="flex justify-between">
-            <span class="text-muted-foreground">Daemon version</span>
-            <span class="font-mono">{{ daemonVersion || "unknown" }}</span>
-          </div>
-          <div class="flex justify-between">
-            <span class="text-muted-foreground">IPC protocol</span>
-            <span class="font-mono">{{ protocol ?? "-" }}</span>
-          </div>
-        </CardContent>
+      <!-- Maker: developed by Forjed, with a call to action to the studio site. -->
+      <Card
+        class="flex flex-col gap-5 border-brand/30 bg-brand/5 sm:flex-row sm:items-center sm:justify-between sm:gap-6 dark:bg-brand/10"
+      >
+        <div>
+          <p class="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+            Created by
+          </p>
+          <p class="font-display text-2xl font-normal leading-tight tracking-wide">FORJED</p>
+          <p class="text-sm text-muted-foreground">
+            The independent studio behind Yerd.
+          </p>
+        </div>
+        <Button class="shrink-0" @click="openInBrowser('https://forjed.io')">
+          Visit forjed.io
+          <ArrowUpRight class="opacity-80" />
+        </Button>
       </Card>
 
       <!-- Updates -->
