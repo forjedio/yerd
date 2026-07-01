@@ -48,6 +48,7 @@ The sidebar opens on **Overview** and groups the rest:
 | (top) | **Overview** - a live dashboard of what's running |
 | Environment | **PHP** · **Sites** |
 | Developer | **Tooling** · **Services** · **Mail** · **Dumps** |
+| Integrations | **Share** - publish a site over a public URL ([guide](./sharing)) |
 | System | **Settings** · **Doctor** · **About** |
 
 ### Overview

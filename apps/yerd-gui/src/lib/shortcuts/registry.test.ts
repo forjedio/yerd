@@ -26,11 +26,19 @@ function fakeCtx(view: ViewActions = {}): ShortcutCtx {
 }
 
 describe("VIEW_TARGETS", () => {
-  it("covers nine views in sidebar order, About excluded", () => {
-    expect(VIEW_TARGETS).toHaveLength(9);
+  it("covers the main views in sidebar order, About excluded", () => {
+    expect(VIEW_TARGETS).toHaveLength(10);
     expect(VIEW_TARGETS[0]?.path).toBe("/overview");
     expect(VIEW_TARGETS[VIEW_TARGETS.length - 1]?.path).toBe("/doctor");
     expect(VIEW_TARGETS.map((v) => v.path)).not.toContain("/about");
+    expect(VIEW_TARGETS.map((v) => v.path)).toContain("/integrations");
+  });
+
+  it("binds exactly nine digit chords (⌘1…⌘9); Share is palette-only", () => {
+    const withDigit = VIEW_TARGETS.filter((v) => v.digit !== undefined);
+    expect(withDigit).toHaveLength(9);
+    expect(withDigit.map((v) => v.digit)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9]);
+    expect(VIEW_TARGETS.find((v) => v.path === "/integrations")?.digit).toBeUndefined();
   });
 });
 
@@ -57,7 +65,9 @@ describe("commandsForScope", () => {
     const main = commandsForScope(all, "main", false).filter((c) =>
       c.id.startsWith("nav:"),
     );
-    expect(main).toHaveLength(9);
+    expect(main).toHaveLength(10);
+    expect(main.filter((c) => c.chord)).toHaveLength(9);
+    expect(main.find((c) => c.id === "nav:/integrations")?.chord).toBeUndefined();
     expect(commandsForScope(all, "dumps", false).some((c) => c.id.startsWith("nav:"))).toBe(
       false,
     );

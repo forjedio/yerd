@@ -190,3 +190,19 @@ a richer, always-on view than `dd()` in the browser. It's off by default; enable
 it when you want the live feed.
 
 [Laravel Dumps guide →](./laravel-dumps)
+
+## Share sites publicly
+
+Put a local site on the internet over a secure HTTPS URL through Cloudflare
+Tunnel - outbound-only, no open ports, no `sudo`. One click gives a temporary
+`*.trycloudflare.com` URL for a quick demo or webhook test; or connect your own
+Cloudflare account for a stable hostname on a domain you manage. `cloudflared` is
+downloaded on demand and runs unprivileged; nothing is shared until you ask.
+
+```sh
+yerd tunnel install        # one-time: fetch cloudflared
+yerd tunnel share app      # -> https://calm-river-1234.trycloudflare.com
+yerd tunnel stop app       # take it back offline
+```
+
+[Sharing Sites guide →](./sharing)

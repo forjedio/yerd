@@ -189,6 +189,9 @@ export interface StatusReport {
    *  it to confirm a restart completed (the re-exec preserves the pid). Omitted
    *  by a daemon predating the field. */
   boot_id?: number | null;
+  /** Number of sites currently shared publicly (quick tunnels + named-tunnel
+   *  exposed sites). Omitted/`0` when nothing is shared. */
+  shared_sites?: number;
 }
 
 export type Severity = "ok" | "warn" | "fail";
@@ -440,6 +443,18 @@ export type Response =
       /** Unix epoch (seconds) when this result was obtained, for a "last
        *  checked …" display. Absent/undefined when never checked. */
       checked_at_epoch?: number;
+    }
+  | {
+      type: "tunnels";
+      tunnels: TunnelInfo[];
+      cloudflared: CloudflaredStatus;
+    }
+  | {
+      type: "named_tunnels";
+      tunnels: NamedTunnelMeta[];
+      sites: SiteHostname[];
+      /** Authorized Cloudflare zone (domain), when resolvable. */
+      zone?: string;
     };
 
 /** Self-update release channel (mirrors `yerd_ipc::Channel`). */
@@ -465,6 +480,46 @@ export interface DatabaseSummary {
   name: string;
 }
 
+// ── tunnels (status.rs - Cloudflare Tunnel integration) ──────────────────────
+
+/** crates/yerd-ipc/src/status.rs - TunnelKind. */
+export type TunnelKind = "quick" | "named";
+
+/** crates/yerd-ipc/src/status.rs - TunnelRunState. */
+export type TunnelRunState = "running" | "failed";
+
+/** crates/yerd-ipc/src/status.rs - TunnelInfo. */
+export interface TunnelInfo {
+  site: string;
+  kind: TunnelKind;
+  state: TunnelRunState;
+  /** Public URL of a Quick tunnel once captured; absent otherwise. */
+  url?: string;
+  /** Configured public hostname of a Named tunnel; absent otherwise. */
+  hostname?: string;
+}
+
+/** crates/yerd-ipc/src/status.rs - CloudflaredStatus. */
+export interface CloudflaredStatus {
+  installed: boolean;
+  /** Installed cloudflared version when known; absent otherwise. */
+  version?: string;
+  /** Whether a Cloudflare account is logged in (Phase 2). */
+  logged_in: boolean;
+}
+
+/** crates/yerd-ipc/src/status.rs - NamedTunnelMeta. */
+export interface NamedTunnelMeta {
+  name: string;
+  uuid: string;
+}
+
+/** crates/yerd-ipc/src/status.rs - SiteHostname (a site enabled in the named tunnel). */
+export interface SiteHostname {
+  site: string;
+  hostname: string;
+}
+
 // Narrowed aliases for the variants the views actually read.
 export type InfoResponse = Extract<Response, { type: "info" }>;
 export type SitesResponse = Extract<Response, { type: "sites" }>;
@@ -484,6 +539,8 @@ export type MailsResponse = Extract<Response, { type: "mails" }>;
 export type MailResponse = Extract<Response, { type: "mail" }>;
 export type JobStartedResponse = Extract<Response, { type: "job_started" }>;
 export type JobProgressResponse = Extract<Response, { type: "job_progress" }>;
+export type TunnelsResponse = Extract<Response, { type: "tunnels" }>;
+export type NamedTunnelsResponse = Extract<Response, { type: "named_tunnels" }>;
 
 /** Privilege targets for the OS-elevated `yerd elevate` host command. */
 export type ElevateTarget = "trust" | "resolver" | "ports";

@@ -9,12 +9,12 @@ use std::fmt::Write as _;
 
 use yerd_core::{PhpVersion, Site, SiteKind};
 use yerd_ipc::{
-    Channel, Diagnosis, FixReport, PhpPoolStatus, PoolRunState, PortStatus, Request, Response,
-    ServiceAvailability, ServiceRunState, ServiceStatus, Severity, StatusReport, ToolStatus,
-    UpdateSource,
+    Channel, CloudflaredStatus, Diagnosis, FixReport, PhpPoolStatus, PoolRunState, PortStatus,
+    Request, Response, ServiceAvailability, ServiceRunState, ServiceStatus, Severity, StatusReport,
+    ToolStatus, TunnelInfo, TunnelRunState, UpdateSource,
 };
 
-use crate::cli::{Command, DbAction, MailAction, ServiceAction};
+use crate::cli::{Command, DbAction, MailAction, ServiceAction, TunnelAction};
 use crate::error::ClientError;
 
 /// Map a parsed [`Command`] to the wire [`Request`], validating site names and
@@ -148,6 +148,7 @@ pub fn to_request(cmd: &Command) -> Result<Request, ClientError> {
         },
         Command::Services => Request::ListServices,
         Command::Service { action } => service_request(action),
+        Command::Tunnel { action } => tunnel_request(action),
         Command::Db { action } => db_request(action),
         Command::Mail { action } => match action {
             MailAction::List => Request::ListMails,
@@ -232,6 +233,36 @@ fn service_request(action: &ServiceAction) -> Request {
             service: service.clone(),
             lines: *lines,
         },
+    }
+}
+
+/// Map a `yerd tunnel <action>` to its wire request. `Install` and `Login` are
+/// streamed jobs the CLI intercepts before this point; mapping them here keeps
+/// the match total.
+fn tunnel_request(action: &TunnelAction) -> Request {
+    match action {
+        TunnelAction::Install => Request::InstallCloudflaredStreamed,
+        TunnelAction::Share { site } => Request::StartQuickTunnel { site: site.clone() },
+        TunnelAction::Stop { site } => Request::StopTunnel { site: site.clone() },
+        TunnelAction::Status => Request::TunnelStatus,
+        TunnelAction::Login => Request::CloudflaredLogin,
+        TunnelAction::Create { name } => Request::CreateNamedTunnel { name: name.clone() },
+        TunnelAction::Delete { name } => Request::DeleteNamedTunnel { name: name.clone() },
+        TunnelAction::List => Request::ListNamedTunnels,
+        TunnelAction::Route { tunnel, hostname } => Request::RouteTunnelDns {
+            tunnel: tunnel.clone(),
+            hostname: hostname.clone(),
+        },
+        TunnelAction::SetHost {
+            site,
+            hostname,
+            clear,
+        } => Request::SetSiteTunnel {
+            site: site.clone(),
+            hostname: if *clear { None } else { hostname.clone() },
+        },
+        TunnelAction::Publish => Request::StartNamedTunnel,
+        TunnelAction::Unpublish => Request::StopNamedTunnel,
     }
 }
 
@@ -322,7 +353,7 @@ fn format_update_status(
     };
     let _ = writeln!(out, "Status:        {status}");
     let src = match source {
-        UpdateSource::Cached => "cached (offline — last known values)",
+        UpdateSource::Cached => "cached (offline - last known values)",
         _ => "live",
     };
     let _ = write!(out, "Source:        {src}");
@@ -448,6 +479,15 @@ pub fn render(resp: &Response, json: bool) -> Rendered {
         Response::Mails { mails } => Rendered::ok(format_mails(mails)),
         Response::Mail { mail } => Rendered::ok(format_mail(mail)),
         Response::Tools { tools } => Rendered::ok(format_tools(tools)),
+        Response::Tunnels {
+            tunnels,
+            cloudflared,
+        } => Rendered::ok(format_tunnels(tunnels, cloudflared)),
+        Response::NamedTunnels {
+            tunnels,
+            sites,
+            zone,
+        } => Rendered::ok(format_named_tunnels(tunnels, sites, zone.as_deref())),
         Response::UpdateStatus {
             current,
             latest_stable,
@@ -567,7 +607,7 @@ fn format_mail(mail: &yerd_ipc::MailDetail) -> String {
     out.push('\n');
     match (&mail.text_body, &mail.html_body) {
         (Some(text), _) => out.push_str(text),
-        (None, Some(_)) => out.push_str("(HTML-only message — open it in the GUI viewer)"),
+        (None, Some(_)) => out.push_str("(HTML-only message - open it in the GUI viewer)"),
         (None, None) => out.push_str("(empty message)"),
     }
     out
@@ -625,6 +665,57 @@ fn format_tools(tools: &[ToolStatus]) -> String {
     out
 }
 
+fn format_tunnels(tunnels: &[TunnelInfo], cloudflared: &CloudflaredStatus) -> String {
+    let cf = if cloudflared.installed {
+        cloudflared.version.as_deref().map_or_else(
+            || "cloudflared: installed".to_owned(),
+            |v| format!("cloudflared: {v}"),
+        )
+    } else {
+        "cloudflared: not installed (run `yerd tunnel install`)".to_owned()
+    };
+    if tunnels.is_empty() {
+        return format!("{cf}\nno active tunnels");
+    }
+    let mut out = format!("{cf}\n\nSITE\tSTATE\tURL");
+    for t in tunnels {
+        let state = match t.state {
+            TunnelRunState::Running => "running",
+            TunnelRunState::Failed => "failed",
+            _ => "unknown",
+        };
+        let target = t.url.as_deref().or(t.hostname.as_deref()).unwrap_or("-");
+        let _ = write!(out, "\n{}\t{}\t{}", t.site, state, target);
+    }
+    out
+}
+
+fn format_named_tunnels(
+    tunnels: &[yerd_ipc::NamedTunnelMeta],
+    sites: &[yerd_ipc::SiteHostname],
+    zone: Option<&str>,
+) -> String {
+    let mut out = if tunnels.is_empty() {
+        "no named tunnels".to_owned()
+    } else {
+        let mut s = String::from("NAME\tUUID");
+        for t in tunnels {
+            let _ = write!(s, "\n{}\t{}", t.name, t.uuid);
+        }
+        s
+    };
+    if let Some(zone) = zone {
+        let _ = write!(out, "\n\nauthorized domain: {zone}");
+    }
+    if !sites.is_empty() {
+        out.push_str("\n\nEXPOSED SITE\tHOSTNAME");
+        for s in sites {
+            let _ = write!(out, "\n{}\t{}", s.site, s.hostname);
+        }
+    }
+    out
+}
+
 fn format_available_services(services: &[ServiceAvailability]) -> String {
     if services.is_empty() {
         return "no services available".to_owned();
@@ -653,7 +744,7 @@ fn format_php_versions(
     settings: &std::collections::BTreeMap<String, String>,
 ) -> String {
     let versions = if installed.is_empty() {
-        format!("no PHP versions installed (default: {default}) — `yerd install php {default}`")
+        format!("no PHP versions installed (default: {default}) - `yerd install php {default}`")
     } else {
         installed
             .iter()
@@ -664,7 +755,7 @@ fn format_php_versions(
                     v.to_string()
                 };
                 if let Some(u) = updates.iter().find(|u| u.version == *v) {
-                    let _ = write!(line, " — update available: {} → {}", u.installed, u.latest);
+                    let _ = write!(line, " - update available: {} → {}", u.installed, u.latest);
                 }
                 line
             })
@@ -726,10 +817,10 @@ fn format_status(r: &StatusReport) -> String {
     if let Some(u) = r.web_unbound {
         let _ = writeln!(
             s,
-            "http      not serving — couldn't bind {} (run `yerd doctor`)",
+            "http      not serving - couldn't bind {} (run `yerd doctor`)",
             u.http
         );
-        let _ = writeln!(s, "https     not serving — couldn't bind {}", u.https);
+        let _ = writeln!(s, "https     not serving - couldn't bind {}", u.https);
     } else {
         let _ = writeln!(s, "http      {}", fmt_port(r.http, redirected));
         let _ = writeln!(s, "https     {}", fmt_port(r.https, redirected));
@@ -743,7 +834,7 @@ fn format_status(r: &StatusReport) -> String {
     if let Some(port) = r.dns_unbound {
         let _ = writeln!(
             s,
-            "dns       not resolving — couldn't bind port {port} (run `yerd doctor`)"
+            "dns       not resolving - couldn't bind port {port} (run `yerd doctor`)"
         );
     } else {
         let _ = writeln!(s, "dns       {}", r.dns_addr);
@@ -1437,8 +1528,8 @@ mod tests {
         assert_eq!(r.code, 0);
         assert!(r.stdout.contains("8.5 (default)"));
         assert!(!r.stdout.contains("8.3 (default)"));
-        assert!(r.stdout.contains("8.3 — update available: 8.3.6 → 8.3.31"));
-        assert!(!r.stdout.contains("8.5 — update available"));
+        assert!(r.stdout.contains("8.3 - update available: 8.3.6 → 8.3.31"));
+        assert!(!r.stdout.contains("8.5 - update available"));
         assert!(!r.stdout.contains("settings:"));
 
         let empty = render(
@@ -1566,6 +1657,7 @@ mod tests {
             web_unbound: None,
             dns_unbound: None,
             boot_id: None,
+            shared_sites: 0,
         }
     }
 
@@ -1604,8 +1696,8 @@ mod tests {
             https: 8443,
         });
         let out = format_status(&r);
-        assert!(out.contains("not serving — couldn't bind 8080"), "{out}");
-        assert!(out.contains("not serving — couldn't bind 8443"), "{out}");
+        assert!(out.contains("not serving - couldn't bind 8080"), "{out}");
+        assert!(out.contains("not serving - couldn't bind 8443"), "{out}");
         assert!(!out.contains("→ 0"), "{out}");
     }
 
@@ -1615,7 +1707,7 @@ mod tests {
         r.dns_unbound = Some(1053);
         let out = format_status(&r);
         assert!(
-            out.contains("not resolving — couldn't bind port 1053"),
+            out.contains("not resolving - couldn't bind port 1053"),
             "{out}"
         );
         assert!(!out.contains("dns       127.0.0.1:1053"), "{out}");

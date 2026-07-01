@@ -12,8 +12,9 @@ use yerd_core::{PhpVersion, Site};
 
 use crate::dump::{DumpCounts, DumpEvent, DumpExtStatus};
 use crate::status::{
-    DatabaseSummary, Diagnosis, FixReport, MailDetail, MailSummary, ServiceAvailability,
-    ServiceStatus, StatusReport, ToolStatus,
+    CloudflaredStatus, DatabaseSummary, Diagnosis, FixReport, MailDetail, MailSummary,
+    NamedTunnelMeta, ServiceAvailability, ServiceStatus, SiteHostname, StatusReport, ToolStatus,
+    TunnelInfo,
 };
 
 // Same rule: no per-field serde renames.
@@ -267,6 +268,29 @@ pub enum Response {
         /// What kind of artifact it is (drives the applier's install method).
         kind: crate::StagedArtifact,
     },
+    /// Reply to [`crate::Request::StartQuickTunnel`] / [`crate::Request::StopTunnel`]
+    /// / [`crate::Request::TunnelStatus`] - the live tunnels plus `cloudflared`
+    /// install status.
+    Tunnels {
+        /// One entry per live tunnel.
+        tunnels: Vec<TunnelInfo>,
+        /// `cloudflared` install / account status.
+        cloudflared: CloudflaredStatus,
+    },
+    /// Reply to [`crate::Request::ListNamedTunnels`] - the account's named
+    /// tunnels recorded locally, plus the per-site hostname mappings that are
+    /// enabled in the consolidated tunnel.
+    NamedTunnels {
+        /// One entry per named tunnel.
+        tunnels: Vec<NamedTunnelMeta>,
+        /// The sites enabled in the named tunnel (site → hostname).
+        sites: Vec<SiteHostname>,
+        /// The authorized Cloudflare zone (domain) the account cert is scoped to,
+        /// e.g. `"example.com"`. `None` when not logged in or unresolvable.
+        /// `#[serde(default, skip_serializing_if)]` keeps the wire additive.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        zone: Option<String>,
+    },
 }
 
 /// An available newer patch for an installed PHP minor.
@@ -345,6 +369,8 @@ mod variant_name_pinning {
             Response::JobProgress { .. } => {}
             Response::UpdateStatus { .. } => {}
             Response::Staged { .. } => {}
+            Response::Tunnels { .. } => {}
+            Response::NamedTunnels { .. } => {}
         }
     }
 
@@ -429,6 +455,7 @@ mod variant_name_pinning {
                 web_unbound: None,
                 dns_unbound: None,
                 boot_id: None,
+                shared_sites: 0,
             }),
         });
         pin_response(Response::Diagnoses {
@@ -528,6 +555,31 @@ mod variant_name_pinning {
             path: "/x/Yerd.app.tar.gz".into(),
             version: "2.0.5".into(),
             kind: crate::StagedArtifact::AppTarGz,
+        });
+        pin_response(Response::Tunnels {
+            tunnels: vec![crate::status::TunnelInfo {
+                site: "app".into(),
+                kind: crate::status::TunnelKind::Quick,
+                state: crate::status::TunnelRunState::Running,
+                url: Some("https://calm-river-1234.trycloudflare.com".into()),
+                hostname: None,
+            }],
+            cloudflared: crate::status::CloudflaredStatus {
+                installed: true,
+                version: Some("2026.6.1".into()),
+                logged_in: false,
+            },
+        });
+        pin_response(Response::NamedTunnels {
+            tunnels: vec![crate::status::NamedTunnelMeta {
+                name: "mysite".into(),
+                uuid: "uuid-123".into(),
+            }],
+            sites: vec![crate::status::SiteHostname {
+                site: "app".into(),
+                hostname: "app.example.com".into(),
+            }],
+            zone: None,
         });
         for c in [
             ErrorCode::NotFound,

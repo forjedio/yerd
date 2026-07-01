@@ -60,6 +60,8 @@ pub struct Config {
     pub mail: MailSection,
     /// Dump-telemetry settings (the Laravel ▸ Dumps feature).
     pub dumps: DumpsSection,
+    /// Cloudflare Tunnel persistence (Named Tunnels). Empty by default.
+    pub tunnel: TunnelSection,
 }
 
 impl Default for Config {
@@ -77,8 +79,22 @@ impl Default for Config {
             services: ServicesSection::default(),
             mail: MailSection::default(),
             dumps: DumpsSection::default(),
+            tunnel: TunnelSection::default(),
         }
     }
+}
+
+/// Cloudflare Tunnel persistence (the Named Tunnels feature).
+///
+/// Both maps are empty by default, so a config without a `[tunnel]` table is the
+/// common case. Keyed by **site name** (not document-root) so the per-site
+/// hostname applies to parked and linked sites alike.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct TunnelSection {
+    /// Named tunnels created locally, by tunnel name → tunnel UUID.
+    pub named: BTreeMap<String, String>,
+    /// Per-site public hostname mapping, by site name → hostname.
+    pub sites: BTreeMap<String, String>,
 }
 
 /// Default loopback port for the dump server (see [`DumpsSection::port`]).

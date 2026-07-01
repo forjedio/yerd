@@ -38,6 +38,8 @@ yerd [--json] <COMMAND> [ARGS...]
 | [Tooling](./tooling) | `tools`, `install tool`, `uninstall tool`, `path install`, `path uninstall`, `path print` |
 | [Services](./services) | `services`, `service available`, `service install`, `service change-version`, `service uninstall`, `service start`, `service stop`, `service restart`, `service set-port`, `service logs` |
 | [Databases](./db) | `db list`, `db create`, `db drop`, `db backup`, `db restore` |
+| [Mail](./mail) | `mail list`, `mail show`, `mail clear` |
+| [Tunnel](./tunnel) | `tunnel install`, `tunnel share`, `tunnel stop`, `tunnel status`, `tunnel login`, `tunnel create`, `tunnel delete`, `tunnel list`, `tunnel route`, `tunnel set-host`, `tunnel publish`, `tunnel unpublish` |
 | [Diagnostics](./diagnostics) | `ping`, `status`, `doctor`, `doctor fix` |
 | [Elevation](./elevation) | `elevate`, `unelevate` |
 | [Daemon control](./daemon) | `restart daemon` |
@@ -84,6 +86,7 @@ The exit code in JSON mode matches the human path exactly, including doctor's `F
 - [PHP Versions](../../guide/php-versions): installing, switching, and tuning PHP
 - [Services & Databases](../../guide/services): native MySQL · MariaDB · Postgres · Redis
 - [HTTPS & Certificates](../../guide/https): securing sites
+- [Sharing Sites](../../guide/sharing): publishing a site over a public URL via Cloudflare Tunnel
 - [Elevation & Privileges](../../guide/elevation): what `sudo yerd elevate` does
 - [Configuration Reference](../configuration): config file keys and locations
 - [IPC Protocol](../../developer/ipc-protocol): the request/response surface each command maps to

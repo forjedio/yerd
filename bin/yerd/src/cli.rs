@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 /// Top-level parser. `yerd` is a thin `yerd-ipc` client of the `yerdd` daemon.
 #[derive(clap::Parser, Debug)]
-#[command(name = "yerd", version, about = "Yerd CLI — talks to the yerdd daemon")]
+#[command(name = "yerd", version, about = "Yerd CLI - talks to the yerdd daemon")]
 pub struct Cli {
     /// Emit machine-readable JSON instead of human-readable text.
     #[arg(long, global = true)]
@@ -138,6 +138,12 @@ pub enum Command {
         #[command(subcommand)]
         action: DbAction,
     },
+    /// Publish a local site to the internet via a Cloudflare Tunnel.
+    Tunnel {
+        /// What to do.
+        #[command(subcommand)]
+        action: TunnelAction,
+    },
     /// Inspect emails captured by the built-in mail server.
     Mail {
         /// What to do.
@@ -267,6 +273,64 @@ pub enum ServiceAction {
         #[arg(long, default_value_t = 100)]
         lines: u32,
     },
+}
+
+/// Action of `yerd tunnel`.
+#[derive(clap::Subcommand, Debug, Clone)]
+pub enum TunnelAction {
+    /// Download the `cloudflared` binary (required before sharing a site).
+    Install,
+    /// Share a site publicly via a Quick Tunnel (a random `*.trycloudflare.com`
+    /// URL). Requires `cloudflared` to be installed.
+    Share {
+        /// Site name (e.g. `app` or `app.test`).
+        site: String,
+    },
+    /// Stop sharing a site.
+    Stop {
+        /// Site name whose tunnel to stop.
+        site: String,
+    },
+    /// Show live tunnels and `cloudflared` install status.
+    Status,
+    /// Log in to a Cloudflare account (opens a browser) for Named Tunnels.
+    Login,
+    /// Create a named tunnel on the logged-in account.
+    Create {
+        /// The tunnel name to create.
+        name: String,
+    },
+    /// Delete a named tunnel from the account and forget it locally.
+    Delete {
+        /// The tunnel name to delete.
+        name: String,
+    },
+    /// List the named tunnels recorded locally.
+    List,
+    /// Route a public hostname to a named tunnel (creates the DNS record).
+    Route {
+        /// Tunnel name (or UUID) to route to.
+        tunnel: String,
+        /// Public hostname to create (on your Cloudflare domain).
+        hostname: String,
+    },
+    /// Set (or clear, with `--clear`) a site's persisted public hostname.
+    SetHost {
+        /// Site name.
+        site: String,
+        /// The public hostname to assign. Required unless `--clear` is given, so
+        /// forgetting it can't silently clear the mapping.
+        #[arg(required_unless_present = "clear")]
+        hostname: Option<String>,
+        /// Clear the site's hostname instead of setting one.
+        #[arg(long, conflicts_with = "hostname")]
+        clear: bool,
+    },
+    /// (Re)start the named tunnel, exposing every site that has a hostname set.
+    /// Requires login and a created tunnel.
+    Publish,
+    /// Stop the named tunnel (takes every named site offline).
+    Unpublish,
 }
 
 /// Action of `yerd db`.

@@ -264,16 +264,35 @@ persist = false
 queries = false   # absent keys default to on; only the off ones need listing
 ```
 
+### `[tunnel]`
+
+Persisted state for [sharing sites](../guide/sharing) through Cloudflare Tunnel. Two maps, both **empty by default** - the whole `[tunnel]` table is omitted from the file until you create a named tunnel or expose a site. Quick-tunnel state is never persisted (it lives only in the running daemon).
+
+| Sub-table        | Shape                     | Meaning                                                        |
+| ---------------- | ------------------------- | ------------------------------------------------------------- |
+| `[tunnel.named]` | map `name → uuid`         | The named tunnels created on your Cloudflare account.         |
+| `[tunnel.sites]` | map `site → hostname`     | Per-site public hostnames exposed through the named tunnel.   |
+
+Validation rejects empty keys/values (`TunnelEntryEmpty`), a `[tunnel.sites]` hostname that isn't a plausible DNS name (`TunnelHostnameInvalid`), and any key or UUID containing path- or YAML-unsafe characters (`TunnelKeyInvalid`). The account certificate and per-tunnel credentials are **not** stored here - they live in a daemon-owned `0700` directory, never in the config file.
+
+```toml
+[tunnel.named]
+my-tunnel = "6ff42ae2-765d-4adf-8112-31c55c1551ef"
+
+[tunnel.sites]
+app = "app.example.com"
+```
+
 ## Schema versioning and migration
 
-Every config file **must** carry a top-level `version = N` key - it is the single trigger for forward migration. The current schema version is `5`.
+Every config file **must** carry a top-level `version = N` key - it is the single trigger for forward migration. The current schema version is `8`.
 
 When the daemon loads a file, it routes on the version it finds:
 
-```
-found  > CURRENT (5)   →  error (UnsupportedVersion) - a newer Yerd wrote this file
-found == CURRENT (5)   →  parse directly
-found  < CURRENT (5)   →  walk forward migration steps, then parse
+```text
+found  > CURRENT (8)   →  error (UnsupportedVersion) - a newer Yerd wrote this file
+found == CURRENT (8)   →  parse directly
+found  < CURRENT (8)   →  walk forward migration steps, then parse
 ```
 
 A file written by a *newer* Yerd than you are running is refused rather than misread. Older files are migrated forward in place, one version at a time, before the normal wire-deserialisation and validation run:
@@ -282,6 +301,9 @@ A file written by a *newer* Yerd than you are running is refused rather than mis
 - **`v2 → v3`** is the first *structural* migration: it rewrites the old `[services]` shape (a flat `enabled = ["redis", ...]` array of identifiers) into per-service `[services.<id>]` tables, carrying each previously-enabled id forward as an `enabled = true` instance.
 - **`v3 → v4`** is a bare version bump: v4 only **added** the optional `[mail]` section, which defaults when absent, so a v3 file needs no structural rewrite. The bump exists so an *older* binary rejects a file using `[mail]` cleanly as `UnsupportedVersion` rather than failing on the unknown table.
 - **`v4 → v5`** is likewise a bare version bump: v5 only **added** the optional `[dumps]` table, which defaults when absent. Same rationale - the bump lets an older binary refuse a `[dumps]`-bearing file cleanly instead of tripping `deny_unknown_fields`.
+- **`v5 → v6`** is a bare version bump: v6 only **added** the top-level `update_channel` scalar (defaults to `"stable"` when absent).
+- **`v6 → v7`** is a bare version bump: v7 only **added** the `[ports]` `fallback_http` / `fallback_https` keys (defaulting to `8080` / `8443`).
+- **`v7 → v8`** is a bare version bump: v8 only **added** the optional `[tunnel]` table, which defaults to empty when absent. Same rationale - the bump lets an older binary refuse a `[tunnel]`-bearing file cleanly rather than tripping `deny_unknown_fields`.
 
 The on-disk schema version is deliberately decoupled from the IPC protocol version; the two evolve independently.
 

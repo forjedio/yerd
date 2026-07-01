@@ -149,7 +149,7 @@ The two derives differ in one respect: `Request` derives `Eq`, but **`Response` 
 
 ### Request (client → daemon)
 
-The variant set is the daemon's whole RPC surface - liveness, site management, PHP version management, **database/cache service management**, **SQL database administration**, **mail capture**, **dump telemetry**, status/doctor, and daemon lifecycle. A representative sample with its exact wire shape (the full list of tags lives in `request.rs`):
+The variant set is the daemon's whole RPC surface - liveness, site management, PHP version management, **database/cache service management**, **SQL database administration**, **mail capture**, **dump telemetry**, **Cloudflare Tunnel sharing**, status/doctor, and daemon lifecycle. A representative sample with its exact wire shape (the full list of tags lives in `request.rs`):
 
 | Variant | Wire JSON |
 | --- | --- |

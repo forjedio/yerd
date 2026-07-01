@@ -59,6 +59,20 @@ struct Wire {
     // (disabled, port 2304, no per-feature overrides).
     #[serde(default)]
     dumps: DumpsSectionWire,
+    // v8: optional `[tunnel]` table; absent in v7 and earlier → default (empty).
+    #[serde(default)]
+    tunnel: TunnelSectionWire,
+}
+
+/// The `[tunnel]` table. Both maps default to empty, so an absent table parses
+/// to [`crate::schema::TunnelSection::default`].
+#[derive(Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TunnelSectionWire {
+    #[serde(default)]
+    named: BTreeMap<String, String>,
+    #[serde(default)]
+    sites: BTreeMap<String, String>,
 }
 
 /// The `[dumps]` table. All fields default, so an absent table parses to
@@ -334,6 +348,10 @@ impl TryFrom<Wire> for Config {
             persist: w.dumps.persist,
             features: w.dumps.features,
         };
+        let tunnel = crate::schema::TunnelSection {
+            named: w.tunnel.named,
+            sites: w.tunnel.sites,
+        };
         Ok(Config {
             version: crate::CURRENT_VERSION,
             tld,
@@ -347,6 +365,7 @@ impl TryFrom<Wire> for Config {
             services,
             mail,
             dumps,
+            tunnel,
         })
     }
 }
@@ -359,7 +378,93 @@ pub(crate) fn validate(c: &Config) -> Result<(), ConfigError> {
     validate_known_services(c)?;
     validate_php_settings(c)?;
     validate_update_channel(c)?;
+    validate_tunnel(c)?;
     Ok(())
+}
+
+/// `[tunnel]` entries must have non-empty keys/values, the keys (tunnel names,
+/// site names) and UUIDs must be free of path-/YAML-unsafe characters, and every
+/// per-site hostname must look like a DNS name (no whitespace, contains a dot).
+/// Whether the keyed site actually exists is not checked here: parked sites are
+/// discovered from disk and have no config record.
+///
+/// Two cardinality invariants the daemon relies on are also enforced, so a
+/// hand-edited config can't load into a state the runtime silently mishandles:
+/// at most one `[tunnel.named]` entry (the daemon runs a single consolidated
+/// tunnel and starts only the first), and unique `[tunnel.sites]` hostnames (one
+/// ingress rule is emitted per pair, so a duplicate hostname would shadow all
+/// but the first site).
+fn validate_tunnel(c: &Config) -> Result<(), ConfigError> {
+    if c.tunnel.named.len() > 1 {
+        return Err(ve(ValidateErrorReason::TunnelMultipleNamed));
+    }
+    for (name, uuid) in &c.tunnel.named {
+        if name.is_empty() || uuid.is_empty() {
+            return Err(ve(ValidateErrorReason::TunnelEntryEmpty));
+        }
+        if !is_safe_key(name) || !is_safe_key(uuid) {
+            return Err(ve(ValidateErrorReason::TunnelKeyInvalid));
+        }
+    }
+    let mut seen_hostnames = std::collections::BTreeSet::new();
+    for (site, hostname) in &c.tunnel.sites {
+        if site.is_empty() || hostname.is_empty() {
+            return Err(ve(ValidateErrorReason::TunnelEntryEmpty));
+        }
+        if !is_safe_key(site) {
+            return Err(ve(ValidateErrorReason::TunnelKeyInvalid));
+        }
+        if !is_plausible_hostname(hostname) {
+            return Err(ve(ValidateErrorReason::TunnelHostnameInvalid));
+        }
+        if !seen_hostnames.insert(hostname.as_str()) {
+            return Err(ve(ValidateErrorReason::TunnelDuplicateHostname));
+        }
+    }
+    Ok(())
+}
+
+/// A `[tunnel]` map key or UUID is safe when it is a short token of DNS-label-ish
+/// characters: it can never act as a path separator, escape `creds/`, or break
+/// out of its line in the generated `config.yml`.
+fn is_safe_key(s: &str) -> bool {
+    !s.is_empty()
+        && s.len() <= 64
+        && s != "."
+        && s != ".."
+        && s.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_' || b == b'.')
+}
+
+/// A hostname sanity check: a dotted name (at least two labels) where each label
+/// is 1..=63 hostname characters and neither starts nor ends with a hyphen, with
+/// a total length cap. Cloudflare is the real authority on the name; this catches
+/// obvious junk (empty labels like `a..b`, leading-hyphen labels, overlong
+/// names) before it reaches `config.yml`.
+fn is_plausible_hostname(host: &str) -> bool {
+    if host.is_empty() || host.len() > 253 {
+        return false;
+    }
+    let mut labels = 0usize;
+    for label in host.split('.') {
+        labels += 1;
+        if !is_hostname_label(label) {
+            return false;
+        }
+    }
+    labels >= 2
+}
+
+/// One DNS label: non-empty, at most 63 bytes, only alphanumerics and hyphens,
+/// and not hyphen-bounded.
+fn is_hostname_label(label: &str) -> bool {
+    !label.is_empty()
+        && label.len() <= 63
+        && !label.starts_with('-')
+        && !label.ends_with('-')
+        && label
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-')
 }
 
 /// Checked last: `update_channel` must be one of [`crate::schema::UPDATE_CHANNELS`]
@@ -533,7 +638,7 @@ mod tests {
         match Config::from_toml("version = 99\n") {
             Err(ConfigError::UnsupportedVersion {
                 found: 99,
-                current: 7,
+                current: 8,
             }) => {}
             other => panic!("expected UnsupportedVersion, got {other:?}"),
         }
@@ -543,6 +648,97 @@ mod tests {
     fn parse_rejects_unknown_top_level_key() {
         let s = "version = 1\nbogus = true\n";
         assert!(matches!(Config::from_toml(s), Err(ConfigError::Parse(_))));
+    }
+
+    #[test]
+    fn tunnel_section_parses_and_validates() {
+        let s = "version = 8\n[tunnel.named]\nmysite = \"uuid-1\"\n\
+                 [tunnel.sites]\napp = \"app.example.com\"\n";
+        let c = Config::from_toml(s).unwrap();
+        assert_eq!(
+            c.tunnel.named.get("mysite").map(String::as_str),
+            Some("uuid-1")
+        );
+        assert_eq!(
+            c.tunnel.sites.get("app").map(String::as_str),
+            Some("app.example.com")
+        );
+    }
+
+    #[test]
+    fn tunnel_rejects_non_hostname_and_empty_entries() {
+        assert!(Config::from_toml("version = 8\n[tunnel.sites]\napp = \"nodot\"\n").is_err());
+        assert!(Config::from_toml("version = 8\n[tunnel.sites]\napp = \"\"\n").is_err());
+        assert!(Config::from_toml("version = 8\n[tunnel.named]\nmysite = \"\"\n").is_err());
+    }
+
+    #[test]
+    fn tunnel_rejects_unsafe_keys_and_uuids() {
+        let bad_site = "version = 8\n[tunnel.sites]\n\"../escape\" = \"app.example.com\"\n";
+        assert!(matches!(
+            Config::from_toml(bad_site),
+            Err(ConfigError::Validate {
+                reason: ValidateErrorReason::TunnelKeyInvalid,
+            })
+        ));
+        let bad_uuid = "version = 8\n[tunnel.named]\nmysite = \"../../etc\"\n";
+        assert!(matches!(
+            Config::from_toml(bad_uuid),
+            Err(ConfigError::Validate {
+                reason: ValidateErrorReason::TunnelKeyInvalid,
+            })
+        ));
+        let bad_name = "version = 8\n[tunnel.named]\n\"a/b\" = \"uuid-1\"\n";
+        assert!(matches!(
+            Config::from_toml(bad_name),
+            Err(ConfigError::Validate {
+                reason: ValidateErrorReason::TunnelKeyInvalid,
+            })
+        ));
+    }
+
+    #[test]
+    fn tunnel_rejects_more_than_one_named_tunnel() {
+        let two = "version = 8\n[tunnel.named]\none = \"uuid-1\"\ntwo = \"uuid-2\"\n";
+        assert!(matches!(
+            Config::from_toml(two),
+            Err(ConfigError::Validate {
+                reason: ValidateErrorReason::TunnelMultipleNamed,
+            })
+        ));
+        let one = "version = 8\n[tunnel.named]\none = \"uuid-1\"\n";
+        assert!(Config::from_toml(one).is_ok());
+    }
+
+    #[test]
+    fn tunnel_rejects_duplicate_site_hostnames() {
+        let dup = "version = 8\n[tunnel.sites]\n\
+                   app = \"shared.example.com\"\nblog = \"shared.example.com\"\n";
+        assert!(matches!(
+            Config::from_toml(dup),
+            Err(ConfigError::Validate {
+                reason: ValidateErrorReason::TunnelDuplicateHostname,
+            })
+        ));
+        let unique = "version = 8\n[tunnel.sites]\n\
+                      app = \"app.example.com\"\nblog = \"blog.example.com\"\n";
+        assert!(Config::from_toml(unique).is_ok());
+    }
+
+    #[test]
+    fn is_plausible_hostname_checks() {
+        assert!(is_plausible_hostname("app.example.com"));
+        assert!(is_plausible_hostname("a.b"));
+        assert!(is_plausible_hostname("a-b.example.com"));
+        assert!(!is_plausible_hostname("nodot"));
+        assert!(!is_plausible_hostname(".leading"));
+        assert!(!is_plausible_hostname("trailing."));
+        assert!(!is_plausible_hostname("has space.com"));
+        assert!(!is_plausible_hostname("a..b"));
+        assert!(!is_plausible_hostname("-app.com"));
+        assert!(!is_plausible_hostname("app-.com"));
+        assert!(!is_plausible_hostname(&format!("{}.com", "a".repeat(64))));
+        assert!(!is_plausible_hostname(&format!("{}.com", "a".repeat(252))));
     }
 
     #[test]

@@ -49,6 +49,19 @@ struct WireSer<'a> {
     // no `[dumps]` region, keeping the byte-shape goldens intact.
     #[serde(skip_serializing_if = "Option::is_none")]
     dumps: Option<DumpsSectionSer<'a>>,
+    // v8: optional `[tunnel]` table - a trailing sub-table region. `None`
+    // (skipped) when both maps are empty, so a default config emits no `[tunnel]`
+    // region, keeping the byte-shape goldens intact.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tunnel: Option<TunnelSectionSer<'a>>,
+}
+
+#[derive(Serialize)]
+struct TunnelSectionSer<'a> {
+    #[serde(skip_serializing_if = "map_is_empty")]
+    named: &'a BTreeMap<String, String>,
+    #[serde(skip_serializing_if = "map_is_empty")]
+    sites: &'a BTreeMap<String, String>,
 }
 
 #[derive(Serialize)]
@@ -194,6 +207,14 @@ pub(crate) fn to_toml(c: &Config) -> Result<String, ConfigError> {
                 features: &c.dumps.features,
             })
         },
+        tunnel: if c.tunnel == crate::schema::TunnelSection::default() {
+            None
+        } else {
+            Some(TunnelSectionSer {
+                named: &c.tunnel.named,
+                sites: &c.tunnel.sites,
+            })
+        },
     };
     toml::to_string_pretty(&w).map_err(Into::into)
 }
@@ -212,8 +233,8 @@ mod tests {
     fn default_to_toml_starts_with_version_line() {
         let s = to_toml(&Config::default()).unwrap();
         assert!(
-            s.starts_with("version = 7\n"),
-            "expected `version = 7` first line; got: {s}"
+            s.starts_with("version = 8\n"),
+            "expected `version = 8` first line; got: {s}"
         );
     }
 
@@ -245,5 +266,29 @@ mod tests {
         let s = to_toml(&Config::default()).unwrap();
         let back = Config::from_toml(&s).unwrap();
         assert_eq!(back, Config::default());
+    }
+
+    #[test]
+    fn default_config_emits_no_tunnel_table() {
+        let s = to_toml(&Config::default()).unwrap();
+        assert!(
+            !s.contains("[tunnel]"),
+            "default config must omit the tunnel table; got: {s}"
+        );
+    }
+
+    #[test]
+    #[allow(clippy::field_reassign_with_default)]
+    fn non_default_tunnel_section_round_trips() {
+        let mut c = Config::default();
+        c.tunnel = crate::TunnelSection {
+            named: BTreeMap::from([("mysite".to_owned(), "uuid-123".to_owned())]),
+            sites: BTreeMap::from([("app".to_owned(), "app.example.com".to_owned())]),
+        };
+        let s = to_toml(&c).unwrap();
+        assert!(s.contains("[tunnel.named]"), "must emit named table: {s}");
+        assert!(s.contains("[tunnel.sites]"), "must emit sites table: {s}");
+        let back = Config::from_toml(&s).unwrap();
+        assert_eq!(back, c);
     }
 }

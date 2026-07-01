@@ -273,7 +273,7 @@ async fn prepare(service_id: &str, state: &DaemonState) -> Result<DbCtx, Respons
         return Err(Response::Error {
             code: ErrorCode::Internal,
             message: format!(
-                "start {} first — managing databases needs a running server",
+                "start {} first - managing databases needs a running server",
                 service.id()
             ),
         });
@@ -462,7 +462,11 @@ mod tests {
             watch_dirty: tokio::sync::Notify::new(),
             dumps: Arc::new(crate::dump_server::DumpStore::new()),
             shim_reconcile: tokio::sync::Mutex::new(()),
+            tunnel_manager: std::sync::Arc::new(tokio::sync::Mutex::new(
+                crate::tunnel::new_manager(),
+            )),
             tool_mutate: tokio::sync::Mutex::new(()),
+            tunnel_mutate: tokio::sync::Mutex::new(()),
             php_mutate: tokio::sync::Mutex::new(()),
             jobs: crate::jobs::JobRegistry::default(),
             reserved_names: tokio::sync::Mutex::new(std::collections::HashSet::new()),

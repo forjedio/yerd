@@ -44,6 +44,14 @@ pub async fn run(cli: Cli) -> ExitCode {
         Command::Install {
             target: crate::cli::InstallTarget::Tool { id },
         } if !cli.json => return stream_install_tool(id, cli.json).await,
+        Command::Tunnel {
+            action: crate::cli::TunnelAction::Install,
+        } if !cli.json => {
+            return stream_tunnel_job(yerd_ipc::Request::InstallCloudflaredStreamed).await
+        }
+        Command::Tunnel {
+            action: crate::cli::TunnelAction::Login,
+        } if !cli.json => return stream_tunnel_job(yerd_ipc::Request::CloudflaredLogin).await,
         Command::Update {
             target: None,
             yes: true,
@@ -91,7 +99,7 @@ pub async fn run(cli: Cli) -> ExitCode {
                         let ch = if *edge { "edge" } else { "stable" };
                         println!(
                             "\nyerd: showing the {ch} channel; your saved preference is \
-                             unchanged — add --yes to switch"
+                             unchanged - add --yes to switch"
                         );
                     }
                 }
@@ -213,12 +221,12 @@ async fn run_self_update_apply(json: bool, edge: bool, stable: bool, force: bool
         if ahead_of_stable && force {
             println!(
                 "yerd: you're on pre-release {current} (ahead of stable {}); automated \
-                 downgrade isn't supported yet — reinstall the stable build manually",
+                 downgrade isn't supported yet - reinstall the stable build manually",
                 latest_stable.as_deref().unwrap_or("unknown")
             );
         } else if ahead_of_stable {
             println!(
-                "yerd: on pre-release {current}, ahead of stable {} — staying put (use --force \
+                "yerd: on pre-release {current}, ahead of stable {} - staying put (use --force \
                  to force a downgrade once supported)",
                 latest_stable.as_deref().unwrap_or("unknown")
             );
@@ -353,6 +361,93 @@ async fn stream_install_tool(id: &str, json: bool) -> ExitCode {
     }
 }
 
+/// Run a streamed tunnel job (`cloudflared` install or account login), printing
+/// progress lines (including the login auth URL) as they arrive. Mirrors
+/// [`stream_install_tool`].
+async fn stream_tunnel_job(req: yerd_ipc::Request) -> ExitCode {
+    use std::time::Duration;
+    use yerd_ipc::{JobState, Request, Response};
+
+    let noun = if matches!(req, Request::CloudflaredLogin) {
+        "login"
+    } else {
+        "install"
+    };
+
+    let job_id = match transport::exchange(&req).await {
+        Ok(Response::JobStarted { job_id }) => job_id,
+        Ok(Response::Error { message, .. }) => {
+            eprintln!("yerd: {message}");
+            return ExitCode::from(1);
+        }
+        Ok(_) => {
+            eprintln!("yerd: unexpected response starting {noun}");
+            return ExitCode::from(74);
+        }
+        Err(e @ ClientError::DaemonUnreachable(_)) => {
+            eprintln!("yerd: {e}");
+            return ExitCode::from(69);
+        }
+        Err(e) => {
+            eprintln!("yerd: {e}");
+            return ExitCode::from(74);
+        }
+    };
+
+    let mut cursor = 0u64;
+    loop {
+        match transport::exchange(&Request::JobStatus {
+            job_id: job_id.clone(),
+            cursor,
+        })
+        .await
+        {
+            Ok(Response::JobProgress {
+                state,
+                log,
+                next_cursor,
+                error,
+                ..
+            }) => {
+                for line in &log {
+                    println!("{line}");
+                }
+                cursor = next_cursor;
+                match state {
+                    JobState::Running => tokio::time::sleep(Duration::from_millis(400)).await,
+                    JobState::Succeeded => return ExitCode::SUCCESS,
+                    JobState::Failed => {
+                        if let Some(e) = error {
+                            eprintln!("yerd: {e}");
+                        }
+                        return ExitCode::from(1);
+                    }
+                    JobState::Cancelled => {
+                        eprintln!("yerd: {noun} cancelled");
+                        return ExitCode::from(1);
+                    }
+                }
+            }
+            Ok(Response::Error { message, .. }) => {
+                eprintln!("yerd: {message}");
+                return ExitCode::from(1);
+            }
+            Ok(_) => {
+                eprintln!("yerd: unexpected response polling {noun}");
+                return ExitCode::from(74);
+            }
+            Err(e @ ClientError::DaemonUnreachable(_)) => {
+                eprintln!("yerd: {e}");
+                return ExitCode::from(69);
+            }
+            Err(e) => {
+                eprintln!("yerd: {e}");
+                return ExitCode::from(74);
+            }
+        }
+    }
+}
+
 /// Best-effort: rewrite an `Unpark` request's path to its canonical form so a
 /// relative or symlinked path the user typed matches the canonical string the
 /// daemon stored when the directory was parked. The daemon matches `unpark`
@@ -450,7 +545,7 @@ fn print_php_path_hint() {
     if let Some(existing) = first_php_on_path() {
         if existing != bin.join("php") {
             println!(
-                "  note: `php` currently resolves to {} — put {} earlier on PATH to override",
+                "  note: `php` currently resolves to {} - put {} earlier on PATH to override",
                 existing.display(),
                 bin.display()
             );

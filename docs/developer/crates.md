@@ -42,6 +42,7 @@ set (it wraps macro-heavy generated Tauri code) but still bans
 | `yerd-doctor` | Pure diagnosis and fix-planning for `yerd doctor`. Turns a `StatusReport` into findings and safe auto-fixes. | pure | [yerd-doctor](./crates/yerd-doctor) |
 | `yerd-platform` | OS abstraction layer: paths, trust store, resolver installer, port binder/redirector, metrics - one impl per OS. | owns I/O (pure submodule) | [yerd-platform](./crates/yerd-platform) |
 | `yerd-mail` | Built-in mail-capture SMTP sink plus its on-disk store. Accepts mail on a loopback port (Herd-style) and persists parsed messages for the GUI. Depends on `yerd-ipc` + `mail-parser`. | owns I/O | [yerd-mail](./crates/yerd-mail) |
+| `yerd-tunnel` | Cloudflare Tunnel support: pure `cloudflared` argv / `config.yml` generation and log parsing, plus a supervised `cloudflared` lifecycle. Powers public site sharing. Depends on `yerd-supervise`. | owns I/O (pure submodules) | [yerd-tunnel](./crates/yerd-tunnel) |
 
 ### Binaries
 
@@ -73,7 +74,7 @@ flowchart TD
     gui["yerd-gui (app)"]
     xtask["xtask (no internal deps)"]
     yerd["yerd (CLI)"]
-    yerdd["yerdd (depends on all twelve libs)"]
+    yerdd["yerdd (depends on all thirteen libs)"]
     helper["yerd-helper"]
 
     ipc["yerd-ipc"]
@@ -87,6 +88,7 @@ flowchart TD
     tls["yerd-tls"]
     platform["yerd-platform"]
     mail["yerd-mail"]
+    tunnel["yerd-tunnel"]
     core["yerd-core (pure, zero internal deps)"]
 
     gui --> core
@@ -112,6 +114,7 @@ flowchart TD
     yerdd --> proxy
     yerdd --> doctor
     yerdd --> mail
+    yerdd --> tunnel
 
     ipc --> core
     config --> core
@@ -125,6 +128,7 @@ flowchart TD
     php --> supervise
     services --> platform
     services --> supervise
+    tunnel --> supervise
     platform --> tls
 ```
 
@@ -146,7 +150,7 @@ crate's `Cargo.toml`):
 - **`yerd-helper`** (bin) → `yerd-core`, `yerd-platform`
 - **`yerd`** (bin) → `yerd-core`, `yerd-ipc` (`transport`), `yerd-platform`
 - **`yerd-gui`** (app) → `yerd-core`, `yerd-ipc` (`transport`), `yerd-platform`
-- **`yerdd`** (bin) → `yerd-core`, `yerd-config`, `yerd-ipc` (`transport`), `yerd-tls`, `yerd-platform`, `yerd-dns`, `yerd-supervise`, `yerd-php`, `yerd-services`, `yerd-proxy`, `yerd-doctor`, `yerd-mail` - **all twelve libraries**
+- **`yerdd`** (bin) → `yerd-core`, `yerd-config`, `yerd-ipc` (`transport`), `yerd-tls`, `yerd-platform`, `yerd-dns`, `yerd-supervise`, `yerd-php`, `yerd-services`, `yerd-proxy`, `yerd-doctor`, `yerd-mail`, `yerd-tunnel` - **all thirteen libraries**
 - **`xtask`** → *(no internal deps; `anyhow` + `clap` only)*
 
 ::: tip The daemon is the assembly point

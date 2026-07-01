@@ -9,6 +9,7 @@ import {
   LayoutGrid,
   Mail,
   Settings,
+  Share2,
   SquareCode,
   Stethoscope,
   Wrench,
@@ -43,6 +44,7 @@ const overview: Item = {
 
 const { connected, report } = useDaemon();
 const unread = computed(() => report.value?.mail?.unread ?? 0);
+const sharedSites = computed(() => report.value?.shared_sites ?? 0);
 
 // A computed (not a const) so the Mail item's unread badge stays reactive.
 const sections = computed<{ title: string; items: Item[] }[]>(() => [
@@ -67,6 +69,17 @@ const sections = computed<{ title: string; items: Item[] }[]>(() => [
         badgeTitle: "Open mail viewer",
       },
       { to: "/dumps", label: "Dumps", icon: ClipboardList },
+    ],
+  },
+  {
+    title: "Integrations",
+    items: [
+      {
+        to: "/integrations",
+        label: "Share",
+        icon: Share2,
+        badge: sharedSites.value,
+      },
     ],
   },
   {

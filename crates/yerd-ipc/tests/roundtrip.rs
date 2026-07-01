@@ -184,6 +184,7 @@ fn encode_then_decode_response_roundtrip() {
             }),
             dns_unbound: Some(1053),
             boot_id: Some(42),
+            shared_sites: 3,
         }),
     });
     assert_response_roundtrips(Response::Diagnoses {

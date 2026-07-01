@@ -140,7 +140,7 @@ async fn run_inner(
         && crate::tools::external::find_in_path(&user_dirs, "composer", &data_bin, data_root)
             .is_none()
     {
-        return Outcome::Failed("Composer is not installed — install it first".to_owned());
+        return Outcome::Failed("Composer is not installed - install it first".to_owned());
     }
 
     let managed_installer = tools::laravel::installer_bin(dirs);
@@ -152,7 +152,7 @@ async fn run_inner(
         ext
     } else {
         return Outcome::Failed(
-            "the Laravel installer is not installed — install it first".to_owned(),
+            "the Laravel installer is not installed - install it first".to_owned(),
         );
     };
 
@@ -180,7 +180,7 @@ async fn run_inner(
 
     if needs_git(options) && !git_available(&path_env).await {
         return Outcome::Failed(
-            "git was not found on PATH — install git to use a starter kit or git init".to_owned(),
+            "git was not found on PATH - install git to use a starter kit or git init".to_owned(),
         );
     }
 
@@ -731,7 +731,11 @@ mod tests {
             watch_dirty: tokio::sync::Notify::new(),
             dumps: Arc::new(crate::dump_server::DumpStore::new()),
             shim_reconcile: tokio::sync::Mutex::new(()),
+            tunnel_manager: std::sync::Arc::new(tokio::sync::Mutex::new(
+                crate::tunnel::new_manager(),
+            )),
             tool_mutate: tokio::sync::Mutex::new(()),
+            tunnel_mutate: tokio::sync::Mutex::new(()),
             php_mutate: tokio::sync::Mutex::new(()),
             jobs: crate::jobs::JobRegistry::default(),
             reserved_names: tokio::sync::Mutex::new(std::collections::HashSet::new()),

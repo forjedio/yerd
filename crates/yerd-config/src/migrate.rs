@@ -19,7 +19,7 @@ pub(crate) type MigrationStep = fn(&mut Value) -> Result<(), ConfigError>;
 /// Forward-migration steps, indexed so that **`STEPS[N]` walks `vN → v(N+1)`**.
 /// This matches [`up`], which indexes `STEPS[current]` (== the version being
 /// migrated *from*). Example: a v1 file is migrated by `STEPS[1]`. When
-/// `CURRENT_VERSION == 7`, `STEPS = [v0→v1, …, v5→v6, v6→v7]`, length 7.
+/// `CURRENT_VERSION == 8`, `STEPS = [v0→v1, …, v6→v7, v7→v8]`, length 8.
 ///
 /// `STEPS[0]` (v0→v1) is only reachable via a hand-crafted `version = 0` file -
 /// v0 was never written to disk - but it must exist so that `STEPS[1]` does.
@@ -31,6 +31,7 @@ pub(crate) const STEPS: &[MigrationStep] = &[
     migrate_v4_to_v5,
     migrate_v5_to_v6,
     migrate_v6_to_v7,
+    migrate_v7_to_v8,
 ];
 
 /// `v0 → v1`: bump the version. v0 predates any shipped config, so there is no
@@ -95,6 +96,13 @@ fn migrate_v5_to_v6(value: &mut Value) -> Result<(), ConfigError> {
 /// in-place version bump is the entire migration.
 fn migrate_v6_to_v7(value: &mut Value) -> Result<(), ConfigError> {
     set_version(value, 7)
+}
+
+/// `v7 → v8`: bump the version. v8 added the optional `[tunnel]` table, which
+/// defaults (empty) when absent, so an in-place version bump is the entire
+/// migration.
+fn migrate_v7_to_v8(value: &mut Value) -> Result<(), ConfigError> {
+    set_version(value, 8)
 }
 
 /// Set the top-level `version` key, erroring if the root is not a table.
@@ -165,8 +173,8 @@ mod tests {
     }
 
     #[test]
-    fn current_version_pinned_to_seven() {
-        assert_eq!(crate::CURRENT_VERSION, 7);
+    fn current_version_pinned() {
+        assert_eq!(crate::CURRENT_VERSION, 8);
     }
 
     #[test]

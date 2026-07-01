@@ -18,10 +18,11 @@ use std::path::PathBuf;
 
 use yerd_ipc::{
     types::{PhpVersion, Site},
-    CaStatus, Channel, DatabaseSummary, Diagnosis, DiagnosisCode, DumpCategory, DumpCounts,
-    DumpEvent, DumpExtStatus, ErrorCode, FixReport, FixResult, MailDetail, MailHeader, MailStatus,
-    MailSummary, PhpPoolStatus, PoolRunState, PortStatus, Request, Response, ServiceAvailability,
-    ServiceRunState, ServiceStatus, Severity, SiteCounts, StagedArtifact, StatusReport, ToolStatus,
+    CaStatus, Channel, CloudflaredStatus, DatabaseSummary, Diagnosis, DiagnosisCode, DumpCategory,
+    DumpCounts, DumpEvent, DumpExtStatus, ErrorCode, FixReport, FixResult, MailDetail, MailHeader,
+    MailStatus, MailSummary, NamedTunnelMeta, PhpPoolStatus, PoolRunState, PortStatus, Request,
+    Response, ServiceAvailability, ServiceRunState, ServiceStatus, Severity, SiteCounts,
+    SiteHostname, StagedArtifact, StatusReport, ToolStatus, TunnelInfo, TunnelKind, TunnelRunState,
     UpdateSource,
 };
 
@@ -577,6 +578,7 @@ fn response_status_byte_shape() {
             web_unbound: None,
             dns_unbound: None,
             boot_id: None,
+            shared_sites: 0,
         }),
     };
     let s = serde_json::to_string(&r).unwrap();
@@ -674,6 +676,7 @@ fn sample_status_report() -> StatusReport {
         web_unbound: None,
         dns_unbound: None,
         boot_id: None,
+        shared_sites: 0,
     }
 }
 
@@ -1482,6 +1485,22 @@ fn status_dns_unbound_appears_only_when_some() {
     assert_eq!(back, report);
 }
 
+#[test]
+fn status_shared_sites_appears_only_when_nonzero() {
+    let mut report = sample_status_report();
+    let s = serde_json::to_string(&report).unwrap();
+    assert!(
+        !s.contains("shared_sites"),
+        "zero shared_sites must be omitted: {s}"
+    );
+
+    report.shared_sites = 3;
+    let s = serde_json::to_string(&report).unwrap();
+    assert!(s.contains(r#""shared_sites":3"#), "{s}");
+    let back: StatusReport = serde_json::from_str(&s).unwrap();
+    assert_eq!(back, report);
+}
+
 // ---------- Tools ----------
 
 #[test]
@@ -1782,4 +1801,259 @@ fn response_update_status_byte_shape() {
         "{s}"
     );
     assert_eq!(serde_json::from_str::<Response>(&s).unwrap(), with_ts);
+}
+
+#[test]
+fn request_install_cloudflared_streamed_byte_shape() {
+    let s = serde_json::to_string(&Request::InstallCloudflaredStreamed).unwrap();
+    assert_eq!(s, r#"{"type":"install_cloudflared_streamed"}"#);
+    assert_eq!(
+        serde_json::from_str::<Request>(&s).unwrap(),
+        Request::InstallCloudflaredStreamed
+    );
+}
+
+#[test]
+fn request_start_quick_tunnel_byte_shape() {
+    let r = Request::StartQuickTunnel { site: "app".into() };
+    let s = serde_json::to_string(&r).unwrap();
+    assert_eq!(s, r#"{"type":"start_quick_tunnel","site":"app"}"#);
+    assert_eq!(serde_json::from_str::<Request>(&s).unwrap(), r);
+}
+
+#[test]
+fn request_stop_tunnel_byte_shape() {
+    let r = Request::StopTunnel { site: "app".into() };
+    let s = serde_json::to_string(&r).unwrap();
+    assert_eq!(s, r#"{"type":"stop_tunnel","site":"app"}"#);
+    assert_eq!(serde_json::from_str::<Request>(&s).unwrap(), r);
+}
+
+#[test]
+fn request_tunnel_status_byte_shape() {
+    let s = serde_json::to_string(&Request::TunnelStatus).unwrap();
+    assert_eq!(s, r#"{"type":"tunnel_status"}"#);
+    assert_eq!(
+        serde_json::from_str::<Request>(&s).unwrap(),
+        Request::TunnelStatus
+    );
+}
+
+#[test]
+fn response_tunnels_byte_shape() {
+    let r = Response::Tunnels {
+        tunnels: vec![TunnelInfo {
+            site: "app".into(),
+            kind: TunnelKind::Quick,
+            state: TunnelRunState::Running,
+            url: Some("https://calm-river-1234.trycloudflare.com".into()),
+            hostname: None,
+        }],
+        cloudflared: CloudflaredStatus {
+            installed: true,
+            version: Some("2026.6.1".into()),
+            logged_in: false,
+        },
+    };
+    let s = serde_json::to_string(&r).unwrap();
+    let expected = r#"{"type":"tunnels","tunnels":[{"site":"app","kind":"quick","state":"running","url":"https://calm-river-1234.trycloudflare.com"}],"cloudflared":{"installed":true,"version":"2026.6.1","logged_in":false}}"#;
+    assert_eq!(s, expected);
+    assert_eq!(serde_json::from_str::<Response>(&s).unwrap(), r);
+}
+
+/// A named tunnel omits `url` and includes `hostname`; an empty tunnel list and
+/// uninstalled `cloudflared` round-trip too.
+#[test]
+fn response_tunnels_named_and_empty_byte_shape() {
+    let named = Response::Tunnels {
+        tunnels: vec![TunnelInfo {
+            site: "shop".into(),
+            kind: TunnelKind::Named,
+            state: TunnelRunState::Running,
+            url: None,
+            hostname: Some("shop.example.com".into()),
+        }],
+        cloudflared: CloudflaredStatus {
+            installed: true,
+            version: None,
+            logged_in: true,
+        },
+    };
+    let s = serde_json::to_string(&named).unwrap();
+    assert!(s.contains(r#""kind":"named""#), "{s}");
+    assert!(s.contains(r#""hostname":"shop.example.com""#), "{s}");
+    assert!(!s.contains(r#""url""#), "{s}");
+    assert_eq!(serde_json::from_str::<Response>(&s).unwrap(), named);
+
+    let empty = Response::Tunnels {
+        tunnels: vec![],
+        cloudflared: CloudflaredStatus {
+            installed: false,
+            version: None,
+            logged_in: false,
+        },
+    };
+    let s = serde_json::to_string(&empty).unwrap();
+    assert_eq!(
+        s,
+        r#"{"type":"tunnels","tunnels":[],"cloudflared":{"installed":false,"logged_in":false}}"#
+    );
+    assert_eq!(serde_json::from_str::<Response>(&s).unwrap(), empty);
+}
+
+#[test]
+fn tunnel_run_state_each_variant_byte_shape() {
+    for (st, expected) in [
+        (TunnelRunState::Running, r#""running""#),
+        (TunnelRunState::Failed, r#""failed""#),
+    ] {
+        assert_eq!(serde_json::to_string(&st).unwrap(), expected);
+    }
+}
+
+#[test]
+fn tunnel_kind_each_variant_byte_shape() {
+    for (k, expected) in [
+        (TunnelKind::Quick, r#""quick""#),
+        (TunnelKind::Named, r#""named""#),
+    ] {
+        assert_eq!(serde_json::to_string(&k).unwrap(), expected);
+    }
+}
+
+#[test]
+fn request_cloudflared_login_byte_shape() {
+    let s = serde_json::to_string(&Request::CloudflaredLogin).unwrap();
+    assert_eq!(s, r#"{"type":"cloudflared_login"}"#);
+    assert_eq!(
+        serde_json::from_str::<Request>(&s).unwrap(),
+        Request::CloudflaredLogin
+    );
+}
+
+#[test]
+fn request_create_named_tunnel_byte_shape() {
+    let r = Request::CreateNamedTunnel {
+        name: "mysite".into(),
+    };
+    let s = serde_json::to_string(&r).unwrap();
+    assert_eq!(s, r#"{"type":"create_named_tunnel","name":"mysite"}"#);
+    assert_eq!(serde_json::from_str::<Request>(&s).unwrap(), r);
+}
+
+#[test]
+fn request_list_named_tunnels_byte_shape() {
+    let s = serde_json::to_string(&Request::ListNamedTunnels).unwrap();
+    assert_eq!(s, r#"{"type":"list_named_tunnels"}"#);
+    assert_eq!(
+        serde_json::from_str::<Request>(&s).unwrap(),
+        Request::ListNamedTunnels
+    );
+}
+
+#[test]
+fn request_route_tunnel_dns_byte_shape() {
+    let r = Request::RouteTunnelDns {
+        tunnel: "mysite".into(),
+        hostname: "app.example.com".into(),
+    };
+    let s = serde_json::to_string(&r).unwrap();
+    assert_eq!(
+        s,
+        r#"{"type":"route_tunnel_dns","tunnel":"mysite","hostname":"app.example.com"}"#
+    );
+    assert_eq!(serde_json::from_str::<Request>(&s).unwrap(), r);
+}
+
+#[test]
+fn request_set_site_tunnel_byte_shape() {
+    let set = Request::SetSiteTunnel {
+        site: "app".into(),
+        hostname: Some("app.example.com".into()),
+    };
+    let s = serde_json::to_string(&set).unwrap();
+    assert_eq!(
+        s,
+        r#"{"type":"set_site_tunnel","site":"app","hostname":"app.example.com"}"#
+    );
+    assert_eq!(serde_json::from_str::<Request>(&s).unwrap(), set);
+
+    let clear = Request::SetSiteTunnel {
+        site: "app".into(),
+        hostname: None,
+    };
+    let s = serde_json::to_string(&clear).unwrap();
+    assert_eq!(
+        s,
+        r#"{"type":"set_site_tunnel","site":"app","hostname":null}"#
+    );
+    assert_eq!(serde_json::from_str::<Request>(&s).unwrap(), clear);
+}
+
+#[test]
+fn request_start_named_tunnel_byte_shape() {
+    let s = serde_json::to_string(&Request::StartNamedTunnel).unwrap();
+    assert_eq!(s, r#"{"type":"start_named_tunnel"}"#);
+    assert_eq!(
+        serde_json::from_str::<Request>(&s).unwrap(),
+        Request::StartNamedTunnel
+    );
+}
+
+#[test]
+fn request_stop_named_tunnel_byte_shape() {
+    let s = serde_json::to_string(&Request::StopNamedTunnel).unwrap();
+    assert_eq!(s, r#"{"type":"stop_named_tunnel"}"#);
+    assert_eq!(
+        serde_json::from_str::<Request>(&s).unwrap(),
+        Request::StopNamedTunnel
+    );
+}
+
+#[test]
+fn request_delete_named_tunnel_byte_shape() {
+    let r = Request::DeleteNamedTunnel {
+        name: "mysite".into(),
+    };
+    let s = serde_json::to_string(&r).unwrap();
+    assert_eq!(s, r#"{"type":"delete_named_tunnel","name":"mysite"}"#);
+    assert_eq!(serde_json::from_str::<Request>(&s).unwrap(), r);
+}
+
+/// `zone: None` serializes to nothing (the field is skipped), preserving the
+/// byte shape for older clients.
+#[test]
+fn response_named_tunnels_with_none_zone_skips_field() {
+    let r = Response::NamedTunnels {
+        tunnels: vec![NamedTunnelMeta {
+            name: "mysite".into(),
+            uuid: "uuid-123".into(),
+        }],
+        sites: vec![SiteHostname {
+            site: "app".into(),
+            hostname: "app.example.com".into(),
+        }],
+        zone: None,
+    };
+    let s = serde_json::to_string(&r).unwrap();
+    assert_eq!(
+        s,
+        r#"{"type":"named_tunnels","tunnels":[{"name":"mysite","uuid":"uuid-123"}],"sites":[{"site":"app","hostname":"app.example.com"}]}"#
+    );
+    assert_eq!(serde_json::from_str::<Response>(&s).unwrap(), r);
+}
+
+#[test]
+fn response_named_tunnels_with_zone_byte_shape() {
+    let r = Response::NamedTunnels {
+        tunnels: vec![],
+        sites: vec![],
+        zone: Some("example.com".into()),
+    };
+    let s = serde_json::to_string(&r).unwrap();
+    assert_eq!(
+        s,
+        r#"{"type":"named_tunnels","tunnels":[],"sites":[],"zone":"example.com"}"#
+    );
+    assert_eq!(serde_json::from_str::<Response>(&s).unwrap(), r);
 }

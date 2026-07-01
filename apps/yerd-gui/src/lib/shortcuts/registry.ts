@@ -54,26 +54,29 @@ export interface Command {
   run: (ctx: ShortcutCtx) => void;
 }
 
-/** Main-window views reachable by ⌘1…⌘9, in sidebar order (About omitted). */
-export const VIEW_TARGETS: { path: string; title: string }[] = [
-  { path: "/overview", title: "Overview" },
-  { path: "/php", title: "PHP" },
-  { path: "/sites", title: "Sites" },
-  { path: "/tooling", title: "Tooling" },
-  { path: "/services", title: "Services" },
-  { path: "/mail", title: "Mail" },
-  { path: "/dumps", title: "Dumps" },
-  { path: "/general", title: "Settings" },
-  { path: "/doctor", title: "Doctor" },
+/** Main-window views in sidebar order (About omitted). The first nine bind
+ *  ⌘1…⌘9 via an explicit `digit`; Share has no digit (the digit slots are full),
+ *  so it is reachable from the command palette only. */
+export const VIEW_TARGETS: { path: string; title: string; digit?: number }[] = [
+  { path: "/overview", title: "Overview", digit: 1 },
+  { path: "/php", title: "PHP", digit: 2 },
+  { path: "/sites", title: "Sites", digit: 3 },
+  { path: "/tooling", title: "Tooling", digit: 4 },
+  { path: "/services", title: "Services", digit: 5 },
+  { path: "/mail", title: "Mail", digit: 6 },
+  { path: "/dumps", title: "Dumps", digit: 7 },
+  { path: "/integrations", title: "Share" },
+  { path: "/general", title: "Settings", digit: 8 },
+  { path: "/doctor", title: "Doctor", digit: 9 },
 ];
 
 /** Build the full command catalog. Pure: no side effects until a `run` fires. */
 export function buildCommands(): Command[] {
-  const nav: Command[] = VIEW_TARGETS.map((v, i) => ({
+  const nav: Command[] = VIEW_TARGETS.map((v) => ({
     id: `nav:${v.path}`,
     title: `Go to ${v.title}`,
     group: "Go to",
-    chord: { mod: true, code: `Digit${i + 1}` },
+    ...(v.digit ? { chord: { mod: true, code: `Digit${v.digit}` } } : {}),
     scopes: ["main"],
     inPalette: true,
     run: (ctx) => ctx.push(v.path),

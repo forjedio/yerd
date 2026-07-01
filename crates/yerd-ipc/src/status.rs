@@ -121,6 +121,21 @@ pub struct StatusReport {
     /// additive.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub boot_id: Option<u64>,
+    /// Number of sites currently shared to the public internet: live quick
+    /// tunnels plus, when the named tunnel is running, the sites it exposes. `0`
+    /// when nothing is shared. `#[serde(default, skip_serializing_if)]` keeps the
+    /// wire additive (an older daemon emits unchanged bytes; an older client
+    /// ignores it).
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub shared_sites: u32,
+}
+
+/// `skip_serializing_if` helper: a `u32` that is zero is omitted from the wire.
+/// Takes `&u32` because that is the signature serde's `skip_serializing_if`
+/// requires.
+#[allow(clippy::trivially_copy_pass_by_ref)]
+fn is_zero_u32(n: &u32) -> bool {
+    *n == 0
 }
 
 /// The rootless fallback ports the daemon failed to bind, surfaced in
@@ -455,4 +470,76 @@ pub struct FixResult {
     pub ok: bool,
     /// Human-readable detail about what happened.
     pub message: String,
+}
+
+/// Which Cloudflare Tunnel tier a published site uses. Wire-level mirror of
+/// `yerd_tunnel::TunnelKind` (this crate stays free of that dependency).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum TunnelKind {
+    /// Ephemeral `*.trycloudflare.com` tunnel (no account).
+    Quick,
+    /// Named tunnel on the user's Cloudflare domain (stable hostname).
+    Named,
+}
+
+/// Live run state of a supervised tunnel.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum TunnelRunState {
+    /// The `cloudflared` process is alive and serving.
+    Running,
+    /// The process has exited unexpectedly.
+    Failed,
+}
+
+/// One live tunnel, as reported in [`crate::Response::Tunnels`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TunnelInfo {
+    /// The site the tunnel publishes.
+    pub site: String,
+    /// Quick vs Named.
+    pub kind: TunnelKind,
+    /// Whether the process is alive or has died.
+    pub state: TunnelRunState,
+    /// The public URL (Quick tunnels) once captured.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    /// The configured public hostname (Named tunnels).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hostname: Option<String>,
+}
+
+/// One named tunnel recorded on the account, for
+/// [`crate::Response::NamedTunnels`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NamedTunnelMeta {
+    /// The tunnel name.
+    pub name: String,
+    /// The tunnel UUID.
+    pub uuid: String,
+}
+
+/// One site enabled in the named tunnel: its public hostname mapping.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SiteHostname {
+    /// The local site name.
+    pub site: String,
+    /// The public hostname it is exposed at.
+    pub hostname: String,
+}
+
+/// `cloudflared` install / account status, reported alongside the live tunnels.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CloudflaredStatus {
+    /// Whether the `cloudflared` binary is installed.
+    pub installed: bool,
+    /// The installed `cloudflared` version, when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+    /// Whether a Cloudflare account is logged in (a `cert.pem` is present).
+    #[serde(default)]
+    pub logged_in: bool,
 }

@@ -65,6 +65,10 @@ async fn handle_client(stream: IpcStream, state: Arc<DaemonState>) {
             Request::InstallToolStreamed { tool } => {
                 install_tool_streamed(tool, state.clone()).await
             }
+            Request::InstallCloudflaredStreamed => {
+                crate::tunnel::install_cloudflared_streamed(state.clone()).await
+            }
+            Request::CloudflaredLogin => crate::tunnel::named::login_streamed(state.clone()).await,
             Request::InstallPhpStreamed { version } => {
                 install_php_streamed(version, state.clone()).await
             }
@@ -270,6 +274,20 @@ async fn dispatch(req: Request, state: &DaemonState) -> Response {
             crate::self_update::stage_update(channel, state, &dl, yerd_update::UPDATE_PUBLIC_KEY)
                 .await
         }
+        Request::StartQuickTunnel { site } => crate::tunnel::start_quick_tunnel(&site, state).await,
+        Request::StopTunnel { site } => crate::tunnel::stop_tunnel(&site, state).await,
+        Request::TunnelStatus => crate::tunnel::tunnel_status(state).await,
+        Request::CreateNamedTunnel { name } => crate::tunnel::named::create(&name, state).await,
+        Request::ListNamedTunnels => crate::tunnel::named::list(state).await,
+        Request::RouteTunnelDns { tunnel, hostname } => {
+            crate::tunnel::named::route_dns(&tunnel, &hostname, state).await
+        }
+        Request::SetSiteTunnel { site, hostname } => {
+            crate::tunnel::named::set_site_hostname(&site, hostname.as_deref(), state).await
+        }
+        Request::StartNamedTunnel => crate::tunnel::named::start(state).await,
+        Request::StopNamedTunnel => crate::tunnel::named::stop(state).await,
+        Request::DeleteNamedTunnel { name } => crate::tunnel::named::delete(&name, state).await,
         _ => Response::Error {
             code: ErrorCode::Internal,
             message: "unsupported request".into(),
@@ -492,6 +510,7 @@ async fn build_status_report(state: &DaemonState) -> yerd_ipc::StatusReport {
         .map(|[a, b, c]| [load_to_centi(a), load_to_centi(b), load_to_centi(c)]);
 
     let (mail_count, mail_unread) = state.mail_store.counts().await;
+    let shared_sites = crate::tunnel::shared_site_count(state).await;
 
     yerd_ipc::StatusReport {
         daemon_pid: std::process::id(),
@@ -526,6 +545,7 @@ async fn build_status_report(state: &DaemonState) -> yerd_ipc::StatusReport {
         web_unbound: state.web_unbound,
         dns_unbound: state.dns_unbound,
         boot_id: Some(state.boot_id),
+        shared_sites,
     }
 }
 
@@ -645,7 +665,7 @@ async fn update_php(version: Option<yerd_core::PhpVersion>, state: &DaemonState)
             if crate::php_install::installed_patch(&state.dirs, v).is_none() {
                 return Response::Error {
                     code: ErrorCode::NotFound,
-                    message: format!("PHP {v} is not installed — run `yerd install php {v}`"),
+                    message: format!("PHP {v} is not installed - run `yerd install php {v}`"),
                 };
             }
             vec![v]
@@ -1117,7 +1137,7 @@ async fn uninstall_php(version: yerd_core::PhpVersion, state: &DaemonState) -> R
         return Response::Error {
             code: ErrorCode::InvalidPath,
             message: format!(
-                "PHP {version} is assigned to site(s): {} — reassign them first",
+                "PHP {version} is assigned to site(s): {} - reassign them first",
                 sites_using.join(", ")
             ),
         };
@@ -1133,7 +1153,7 @@ async fn uninstall_php(version: yerd_core::PhpVersion, state: &DaemonState) -> R
     if version == default && installed.len() > 1 {
         return Response::Error {
             code: ErrorCode::InvalidPath,
-            message: format!("PHP {version} is the default — set another version as default first"),
+            message: format!("PHP {version} is the default - set another version as default first"),
         };
     }
 
@@ -1159,7 +1179,7 @@ async fn set_default_php(version: yerd_core::PhpVersion, state: &DaemonState) ->
     if !crate::php_install::cli_binary_path(&state.dirs, version).exists() {
         return Response::Error {
             code: ErrorCode::NotFound,
-            message: format!("PHP {version} is not installed — run `yerd install php {version}`"),
+            message: format!("PHP {version} is not installed - run `yerd install php {version}`"),
         };
     }
     {
@@ -1212,7 +1232,7 @@ async fn set_fallback_ports(http: u16, https: u16, state: &DaemonState) -> Respo
     .unwrap_or(None);
     if redirect_active == Some(true) {
         return internal(
-            "ports are elevated — remove the privileged-port redirect first (un-elevate ports), \
+            "ports are elevated - remove the privileged-port redirect first (un-elevate ports), \
              change the ports, then re-elevate"
                 .to_owned(),
         );
@@ -1630,7 +1650,11 @@ mod tests {
             watch_dirty: tokio::sync::Notify::new(),
             dumps: std::sync::Arc::new(crate::dump_server::DumpStore::new()),
             shim_reconcile: tokio::sync::Mutex::new(()),
+            tunnel_manager: std::sync::Arc::new(tokio::sync::Mutex::new(
+                crate::tunnel::new_manager(),
+            )),
             tool_mutate: tokio::sync::Mutex::new(()),
+            tunnel_mutate: tokio::sync::Mutex::new(()),
             php_mutate: tokio::sync::Mutex::new(()),
             jobs: crate::jobs::JobRegistry::default(),
             reserved_names: tokio::sync::Mutex::new(std::collections::HashSet::new()),

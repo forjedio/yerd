@@ -47,7 +47,7 @@ features:
 <div class="home-showcase">
 
 <h2 class="home-showcase__heading">See Yerd in action</h2>
-<p class="home-showcase__sub">A tiny tray app over the whole toolchain - PHP, sites, services, mail, and Laravel telemetry, all in one place.</p>
+<p class="home-showcase__sub">A tiny tray app over the whole toolchain - PHP, sites, services, mail, Laravel telemetry, and public sharing, all in one place.</p>
 
 <ShowcaseRow
   title="Multiple PHP versions"

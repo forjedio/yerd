@@ -15,7 +15,7 @@ Setting up local PHP the traditional way means stitching together a web server, 
 - **Any PHP version, per site.** Install as many versions as you need and point each project at the one it wants. [PHP versions →](./php-versions)
 - **Rootless by design.** After a single one-time setup, nothing runs as administrator - the daemon, CLI, and app all run as you. [Elevation →](./elevation)
 - **Tiny and native.** One small daemon (~8 MB), no containers, no VM, no Electron. PHP builds download only when you ask.
-- **Batteries included.** Databases and caches (MySQL, MariaDB, PostgreSQL, Redis), mail capture, and live Laravel dump streaming are built in - not bolt-ons.
+- **Batteries included.** Databases and caches (MySQL, MariaDB, PostgreSQL, Redis), mail capture, live Laravel dump streaming, and one-click public [sharing](./sharing) over Cloudflare Tunnel are built in - not bolt-ons.
 - **Self-diagnosing.** Built-in health checks show what's wrong and repair the safe problems for you. [Diagnostics →](./diagnostics)
 
 ## One tool, two ways to drive it

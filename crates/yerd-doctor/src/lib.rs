@@ -384,6 +384,7 @@ mod tests {
             web_unbound: None,
             dns_unbound: None,
             boot_id: None,
+            shared_sites: 0,
         }
     }
 

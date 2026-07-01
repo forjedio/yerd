@@ -35,6 +35,7 @@ pub mod startup;
 pub mod state;
 pub mod tools;
 pub mod tracing_init;
+pub mod tunnel;
 
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
@@ -95,7 +96,7 @@ async fn run_until_shutdown(
         }))
     } else {
         tracing::warn!(
-            "DNS responder disabled (degraded): dns_port couldn't bind — .test names won't resolve until the port is fixed and the daemon restarts"
+            "DNS responder disabled (degraded): dns_port couldn't bind - .test names won't resolve until the port is fixed and the daemon restarts"
         );
         None
     };
@@ -124,7 +125,7 @@ async fn run_until_shutdown(
         )))
     } else {
         tracing::warn!(
-            "web proxy disabled (degraded): no HTTP/HTTPS listeners — sites won't be served until the fallback ports are fixed and the daemon restarts"
+            "web proxy disabled (degraded): no HTTP/HTTPS listeners - sites won't be served until the fallback ports are fixed and the daemon restarts"
         );
         None
     };
@@ -222,6 +223,10 @@ async fn run_until_shutdown(
     }
     {
         let mut mgr = daemon.state.service_manager.lock().await;
+        let _ = mgr.shutdown().await;
+    }
+    {
+        let mut mgr = daemon.state.tunnel_manager.lock().await;
         let _ = mgr.shutdown().await;
     }
 

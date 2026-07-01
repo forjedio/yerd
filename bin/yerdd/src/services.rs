@@ -491,7 +491,7 @@ pub(crate) fn resolve_version(
     installed.pop().ok_or_else(|| Response::Error {
         code: ErrorCode::NotFound,
         message: format!(
-            "no {} version installed — run `yerd service install {}` first",
+            "no {} version installed - run `yerd service install {}` first",
             service.display_name(),
             service.id()
         ),
@@ -630,7 +630,11 @@ mod tests {
             watch_dirty: tokio::sync::Notify::new(),
             dumps: std::sync::Arc::new(crate::dump_server::DumpStore::new()),
             shim_reconcile: tokio::sync::Mutex::new(()),
+            tunnel_manager: std::sync::Arc::new(tokio::sync::Mutex::new(
+                crate::tunnel::new_manager(),
+            )),
             tool_mutate: tokio::sync::Mutex::new(()),
+            tunnel_mutate: tokio::sync::Mutex::new(()),
             php_mutate: tokio::sync::Mutex::new(()),
             jobs: crate::jobs::JobRegistry::default(),
             reserved_names: tokio::sync::Mutex::new(std::collections::HashSet::new()),
