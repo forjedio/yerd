@@ -24,7 +24,11 @@ license=('MIT')
 # it "not needed" — a false positive, it is not ELF-linked).
 depends=('webkit2gtk-4.1' 'gtk3' 'libayatana-appindicator' 'librsvg' 'libcap')
 makedepends=('rust' 'cargo' 'nodejs' 'npm')
-options=('!strip' '!debug')
+# !lto is required: Arch's makepkg.conf enables LTO by default, which archives
+# ring's hand-written crypto assembly as LLVM bitcode and drops the real symbol
+# table, leaving ring_core_* symbols (p256/poly1305/x25519) undefined at the
+# final link. Ring's asm is not LTO-compatible, so opt this package out of LTO.
+options=('!strip' '!debug' '!lto')
 install="yerd.install"
 
 build() {
