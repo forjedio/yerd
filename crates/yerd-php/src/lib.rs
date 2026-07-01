@@ -22,8 +22,9 @@ pub use manager::{DumpExtSettings, PhpManager, PoolRunState, PoolSnapshot};
 pub use pool::{PoolConfig, ProcessManagerMode};
 pub use real::{SystemClock, TokioChild, TokioProcessSpawner};
 pub use release::{
-    artifact_url, available_minors, current_os_arch, is_newer, is_safe_member, listing_url,
-    patch_of, resolve_from_listing, Arch, Artifact, BinaryKind, Os,
+    available_minors, current_os_arch, display_build, is_newer_build, is_safe_member,
+    listing_sig_url, listing_url, patch_of, resolve_from_listing, Arch, Artifact, BinaryKind, Os,
+    PHP_LISTING_BASE_URL, PHP_LISTING_SCHEMA,
 };
 pub use traits::{ChildHandle, Clock, Downloader, HealthProbe, ProcessSpawner};
 pub use version::discover_bundled;

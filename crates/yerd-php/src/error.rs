@@ -107,11 +107,40 @@ pub enum PhpError {
     },
 
     /// No prebuilt build of the requested version is published for this
-    /// platform (discovered from the distribution's listing).
-    #[error("no prebuilt PHP {version} found for this platform at the distribution")]
+    /// platform (looked up in the `php.json` manifest).
+    #[error("no prebuilt PHP {version} found for this platform in the listing")]
     VersionUnavailable {
         /// The version that was requested.
         version: PhpVersion,
+    },
+
+    /// The `php.json` manifest body could not be parsed as JSON.
+    #[error("parse php.json listing: {detail}")]
+    ListingParse {
+        /// Human-readable serde failure detail.
+        detail: String,
+    },
+
+    /// The `php.json` manifest declared a schema version this build does not
+    /// understand (a producer-side breaking change).
+    #[error("unsupported php.json schema {found} (this build understands {supported})")]
+    UnsupportedListingSchema {
+        /// The schema version found in the manifest.
+        found: u32,
+        /// The schema version this build supports.
+        supported: u32,
+    },
+
+    /// The `php.json` manifest failed minisign signature verification, so its
+    /// contents are not trusted. Constructed by the daemon after the fetch.
+    #[error("php.json listing failed signature verification")]
+    ListingUntrusted,
+
+    /// A downloaded tarball's SHA-256 did not match the manifest's value.
+    #[error("sha256 mismatch for {file}")]
+    ShaMismatch {
+        /// The manifest `file` whose bytes failed verification.
+        file: String,
     },
 
     /// Downloading an artifact failed.

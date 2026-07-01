@@ -1,6 +1,6 @@
 # PHP Versions
 
-Yerd runs **any number of PHP versions side by side** and lets you pick which one each site uses. PHP isn't bundled, so the install stays small. The first time you ask for a version, Yerd downloads a prebuilt static [`static-php-cli`](https://github.com/crazywhalecc/static-php-cli) build and supervises one PHP-FPM pool per version behind the [reverse proxy](./sites).
+Yerd runs **any number of PHP versions side by side** and lets you pick which one each site uses. PHP isn't bundled, so the install stays small. The first time you ask for a version, Yerd downloads a prebuilt, statically-linked PHP build that Yerd publishes itself (signed and checksummed) and supervises one PHP-FPM pool per version behind the [reverse proxy](./sites).
 
 ## In the desktop app
 
@@ -22,21 +22,21 @@ The fastest way to manage PHP is the **PHP** page (under the **Environment** gro
 yerd install php 8.5
 ```
 
-Yerd detects your platform (`linux`/`macos`, `x86_64`/`aarch64`), fetches the live listing from the static-php-cli distribution, resolves the latest published patch of that minor, downloads the CLI and FPM tarballs, then atomically swaps them into place. Versions are discovered from the distribution at runtime, so a brand-new PHP patch is installable the day it ships, with no Yerd release needed.
+Yerd detects your platform (`linux`/`macos`, `x86_64`/`aarch64`), fetches Yerd's signed `php.json` manifest, resolves the single published build for your platform and minor, downloads the CLI and FPM tarballs, verifies each against its published SHA-256, then atomically swaps them into place. The manifest is the source of truth for what's installable, so a new PHP patch becomes available as soon as Yerd's build pipeline publishes it.
 
-Installs are **idempotent**: running it again replaces the directory with a fresh download of the latest patch. If the version isn't published for your platform, the install fails cleanly and writes nothing. The running daemon picks up a new version automatically, no restart required.
+Installs are **idempotent**: running it again replaces the directory with a fresh download of the current build. If the version isn't published for your platform, the install fails cleanly and writes nothing. The running daemon picks up a new version automatically, no restart required.
 
 ::: info A version is always a major.minor
 A "PHP version" means a `major.minor` pair like `8.5`, never a full patch like `8.3.12`. Yerd installs and tracks the latest patch of the minor you ask for, and updates move you to a newer patch of that same minor. Input is `8.5` (or `php8.5`); major must be `5..=9`, minor `0..=99`.
 :::
 
-::: info Integrity is TLS-pinned, not hash-pinned
-The distribution publishes no checksums, so Yerd verifies downloads over HTTPS to the distribution host rather than a pinned SHA-256. That keeps the supported version set from being frozen into the binary. (Yerd's own release artifacts are separately verified against a `SHA256SUMS` manifest; see [Getting Started](./getting-started).)
+::: info Downloads are signed and hash-verified
+The `php.json` manifest is signed with a dedicated minisign key whose public half is embedded in Yerd; the daemon verifies that signature before trusting the manifest, then verifies each downloaded tarball against the SHA-256 the manifest lists. Because PHP runs as you, this verification is on the install critical path, not just updates.
 :::
 
 ### Bundled extensions
 
-Yerd uses static-php-cli's **bulk** extension set, so a real-world Laravel app has
+Yerd's builds ship the **bulk** extension set, so a real-world Laravel app has
 what it needs out of the box. Beyond the common extensions, this includes
 **`intl`** (ICU — required by Laravel's `Number` helper and many localization
 packages), **`sodium`**, **`mysqli`**, **`xsl`**, **`readline`**, and **`apcu`**,

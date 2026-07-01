@@ -56,10 +56,10 @@ pub struct DaemonState {
     pub ca_path: PathBuf,
     /// SHA-256 fingerprint of the CA cert (reported by `DaemonInfo`).
     pub ca_fingerprint: CaFingerprint,
-    /// Update cache: installed minor → newest full patch known from the last
-    /// distribution poll. Populated by the periodic checker / `CheckPhpUpdates`
-    /// and served (no network) on `ListPhp`.
-    pub php_updates: RwLock<HashMap<PhpVersion, String>>,
+    /// Update cache: installed minor → newest build `(patch, revision)` known
+    /// from the last manifest poll. Populated by the periodic checker /
+    /// `CheckPhpUpdates` and served (no network) on `ListPhp`.
+    pub php_updates: RwLock<HashMap<PhpVersion, (String, u32)>>,
     /// Yerd self-update cache: the releases seen at the last GitHub poll. Empty
     /// until the first successful fetch. Populated by the periodic checker /
     /// `CheckUpdate` and served (no network) when a live fetch fails.

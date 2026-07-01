@@ -182,8 +182,8 @@ and debug flags. PHP refuses to load a `.so` whose build-id doesn't match the en
 arch) are fixed by how Yerd ships PHP, so they're statically known - no runtime
 introspection needed.
 
-**Build against the same PHP that Yerd ships** (static-php.dev: `gnu-bulk`/glibc on
-Linux, the macOS channel on macOS, all **NTS**) so the build-id matches. Mismatched
+**Build against the same PHP that Yerd ships** (the `forjedio/yerd-php` builds:
+glibc on Linux, all **NTS**) so the build-id matches. Mismatched
 NTS/debug/minor → load failure or crash.
 
 ### 5.2 Build matrix
