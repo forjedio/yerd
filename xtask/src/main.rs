@@ -38,6 +38,8 @@ pub enum Command {
         /// The tag/version to check, e.g. `v2.0.2` (a leading `v` is stripped).
         version: String,
     },
+    /// Print the workspace version (bare, one line) for scripts/CI to consume.
+    PrintVersion,
 }
 
 fn main() -> Result<()> {
@@ -45,6 +47,7 @@ fn main() -> Result<()> {
     match &cli.command {
         Command::Bump { version } => run_bump(version),
         Command::VersionCheck { version } => run_version_check(version),
+        Command::PrintVersion => run_print_version(),
     }
 }
 
@@ -114,5 +117,15 @@ fn run_version_check(raw: &str) -> Result<()> {
 
     version::assert_all_match(expected, &found)?;
     println!("OK: all manifests are at {expected}");
+    Ok(())
+}
+
+/// Print the workspace `Cargo.toml` version and nothing else, so a caller can do
+/// `version=$(cargo xtask print-version)`. Used by the CDN build workflow (which
+/// has no tag to derive the version from).
+fn run_print_version() -> Result<()> {
+    let m = Manifests::locate();
+    let version = version::get_cargo(&read(&m.cargo)?)?;
+    println!("{version}");
     Ok(())
 }

@@ -87,6 +87,36 @@ fn decide(gui: &semver::Version, stored: Option<&semver::Version>) -> Decision {
     }
 }
 
+/// The concrete registration action for the macOS self-repair, folded purely from
+/// the version [`Decision`] and `phantom`. Pure + unit-tested (kept cross-platform
+/// so it builds/tests on Linux). A `phantom` is an `.enabled` (approved, active)
+/// registration whose launchd job is nonetheless definitively absent: SMAppService
+/// can report `.enabled` while launchd has dropped the job from the user domain
+/// (a BTM hiccup, crash, or manual `bootout`), leaving the same version registered.
+/// A plain kickstart of a missing job fails, so that case still needs a full
+/// re-register even though the version is unchanged. `phantom` is only ever true in
+/// the `UpToDate` case; the other decisions ignore it.
+#[derive(Debug, PartialEq, Eq)]
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+enum RegAction {
+    /// This GUI is older than the registered daemon; refuse (carries reg version).
+    Refuse(semver::Version),
+    /// Registration matches this GUI and the launchd job is healthy; nothing to do.
+    NoOp,
+    /// Re-materialise from this bundle: unregister, register_repairing, kickstart.
+    Reregister,
+}
+
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn reg_action(decision: Decision, phantom: bool) -> RegAction {
+    match decision {
+        Decision::Conflict(reg) => RegAction::Refuse(reg),
+        Decision::Reconcile => RegAction::Reregister,
+        Decision::UpToDate if phantom => RegAction::Reregister,
+        Decision::UpToDate => RegAction::NoOp,
+    }
+}
+
 /// The persisted "this GUI is older than the registered daemon" marker, for the
 /// Overview banner. Cross-platform (always `None` off macOS, where it's never set).
 #[tauri::command]
@@ -514,6 +544,18 @@ fn smapp_registered() -> bool {
         .unwrap_or(false)
 }
 
+/// Whether SMAppService reports the daemon exactly `.enabled` (approved and
+/// active). Unlike [`smapp_registered`], this excludes `.requiresApproval`: a
+/// not-yet-approved agent has no loaded launchd job by design, so it must not be
+/// mistaken for a phantom (see [`reg_action`]) and re-registered on every launch.
+/// Read-only.
+#[cfg(target_os = "macos")]
+fn smapp_status_enabled() -> bool {
+    crate::smappservice::status(crate::smappservice::Service::Daemon)
+        .map(|s| s == crate::smappservice::STATUS_ENABLED)
+        .unwrap_or(false)
+}
+
 /// Migrate away from a prior release's **loose** LaunchAgent before registering
 /// via SMAppService. The loose agent and the SMAppService agent share the Label
 /// `dev.yerd.daemon`, so an unconditional teardown could boot out the *live*
@@ -611,6 +653,17 @@ fn daemon_launchd_job_exists() -> bool {
     bounded_status("launchctl", &["print", &service_target()], 4).unwrap_or(false)
 }
 
+/// Whether launchd DEFINITIVELY has no job for the daemon - `launchctl print` ran
+/// and exited non-zero (`Some(false)`). A timeout yields `None` → `false` here
+/// (unknown, not "missing"), so a wedged launchctl never triggers a needless
+/// re-register. This is the strict inverse of [`daemon_launchd_job_exists`],
+/// which folds a timeout into "no job" because its caller wants the conservative
+/// default; the self-repair heal wants the opposite conservatism.
+#[cfg(target_os = "macos")]
+fn daemon_launchd_job_missing() -> bool {
+    bounded_status("launchctl", &["print", &service_target()], 4) == Some(false)
+}
+
 /// Append a line to `{cache}/yerd-gui-repair.log`. The GUI has no `tracing`
 /// subscriber and bundled-`.app` stderr isn't retrievable, so the self-repair
 /// trail goes to a file that `daemon_diagnostics` tails (and "Copy diagnostics"
@@ -667,8 +720,13 @@ pub(crate) fn ensure_daemon_registration() -> Result<(), GuiError> {
         .as_deref()
         .and_then(|v| semver::Version::parse(v).ok());
 
-    match decide(&gui, stored.as_ref()) {
-        Decision::Conflict(reg) => {
+    let decision = decide(&gui, stored.as_ref());
+    let phantom = matches!(decision, Decision::UpToDate)
+        && smapp_status_enabled()
+        && daemon_launchd_job_missing();
+
+    match reg_action(decision, phantom) {
+        RegAction::Refuse(reg) => {
             repair_log(&format!(
                 "version conflict: GUI {gui} < registered daemon {reg}; refusing to reconfigure/downgrade"
             ));
@@ -682,18 +740,23 @@ pub(crate) fn ensure_daemon_registration() -> Result<(), GuiError> {
                  Refusing to reconfigure or downgrade it — install Yerd {reg} or newer."
             )));
         }
-        Decision::UpToDate => {
+        RegAction::NoOp => {
             if s.daemon_version_conflict.is_some() {
                 s.daemon_version_conflict = None;
                 let _ = save_settings(&s);
             }
             return Ok(());
         }
-        Decision::Reconcile => {}
+        RegAction::Reregister => {}
     }
 
+    let reason = if phantom {
+        "launchd job missing despite enabled registration"
+    } else {
+        "version advanced"
+    };
     repair_log(&format!(
-        "self-repair: re-registering daemon for {gui} (was {stored:?})"
+        "self-repair: re-registering daemon for {gui} (was {stored:?}, {reason})"
     ));
     let _ = crate::smappservice::unregister(crate::smappservice::Service::Daemon);
     match crate::smappservice::register_repairing(crate::smappservice::Service::Daemon) {
@@ -1280,7 +1343,7 @@ pub fn set_gui_minimized(on: bool) -> Result<(), GuiError> {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
-    use super::{decide, reg_plan, Decision, StartPhase};
+    use super::{decide, reg_action, reg_plan, Decision, RegAction, StartPhase};
     use semver::Version;
 
     fn v(s: &str) -> Version {
@@ -1342,5 +1405,28 @@ mod tests {
             decide(&v("2.0.2-rc.6"), Some(&v("2.0.2-rc.7"))),
             Decision::Conflict(v("2.0.2-rc.7"))
         );
+    }
+
+    #[test]
+    fn reg_action_covers_version_and_phantom() {
+        let cases = [
+            (
+                Decision::Conflict(v("2.1.0")),
+                false,
+                RegAction::Refuse(v("2.1.0")),
+            ),
+            (
+                Decision::Conflict(v("2.1.0")),
+                true,
+                RegAction::Refuse(v("2.1.0")),
+            ),
+            (Decision::Reconcile, false, RegAction::Reregister),
+            (Decision::Reconcile, true, RegAction::Reregister),
+            (Decision::UpToDate, false, RegAction::NoOp),
+            (Decision::UpToDate, true, RegAction::Reregister),
+        ];
+        for (decision, phantom, expected) in cases {
+            assert_eq!(reg_action(decision, phantom), expected);
+        }
     }
 }
