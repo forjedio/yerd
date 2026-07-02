@@ -21,8 +21,14 @@ license=('MIT')
 # GUI; libayatana-appindicator + librsvg are dlopen'd (not ELF-NEEDED) so namcap
 # can't infer them — list explicitly. cairo/pango/gdk-pixbuf2/glib2 come in via
 # gtk3. libcap provides setcap, used by the install scriptlet (namcap will report
-# it "not needed" — a false positive, it is not ELF-linked).
-depends=('webkit2gtk-4.1' 'gtk3' 'libayatana-appindicator' 'librsvg' 'libcap')
+# it "not needed" — a false positive, it is not ELF-linked). libxcrypt-compat
+# ships libcrypt.so.1: Yerd's managed PHP builds (fetched at runtime, not part of
+# this package - see crates/yerd-php) are glibc-dynamic and still link against
+# the legacy crypt() ABI, which stock Arch dropped in favour of libxcrypt.so.2;
+# without it `php`/composer/etc. fail with "libcrypt.so.1: cannot open shared
+# object file". namcap can't infer this either, since it isn't ELF-NEEDED by
+# anything in this package.
+depends=('webkit2gtk-4.1' 'gtk3' 'libayatana-appindicator' 'librsvg' 'libcap' 'libxcrypt-compat')
 makedepends=('rust' 'cargo' 'nodejs' 'npm')
 # !lto is required: Arch's makepkg.conf enables LTO by default, which archives
 # ring's hand-written crypto assembly as LLVM bitcode and drops the real symbol
@@ -38,7 +44,15 @@ build() {
   ( cd apps/yerd-gui && npm ci && npm run build )
   # Build the daemon with the pacman self-update format (`yerdd/pacman` →
   # `yerd-update/pacman`) plus the CLI, helper, and GUI binaries.
-  cargo build --release --locked --features yerdd/pacman \
+  #
+  # `tauri/custom-protocol` must be enabled here: unlike `tauri build`/`npm run
+  # tauri build` (which the .deb/.dmg release path uses and which inject this
+  # feature automatically), a raw `cargo build` does not. Without it, Tauri's
+  # generate_context!() bakes `dev: true` into the binary and it tries to load
+  # devUrl (http://localhost:1420) at runtime instead of the embedded frontend
+  # dist, failing with "Could not connect to localhost: Connection refused".
+  cargo build --release --locked \
+    --features yerdd/pacman,tauri/custom-protocol \
     -p yerd -p yerdd -p yerd-helper -p yerd-gui
 }
 

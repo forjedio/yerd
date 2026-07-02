@@ -6,8 +6,9 @@
 //! `unwrap`/`expect`/`panic` under clippy). The OS service mechanism
 //! (systemd/launchd/SMAppService) lives in [`crate::autostart`]; this module owns
 //! binary resolution, the start/stop orchestration, and the optional
-//! "install the bundled CLI on PATH" helper. The daemon binary is **bundled**
-//! inside the app (Tauri `externalBin`) - there is no runtime download.
+//! "install the bundled CLI on PATH" helper (macOS and Linux; PATH management
+//! isn't wired up for Windows yet). The daemon binary is **bundled** inside the
+//! app (Tauri `externalBin`) - there is no runtime download.
 
 use std::path::PathBuf;
 
@@ -115,13 +116,18 @@ pub fn daemon_installed() -> bool {
     resolve_yerdd().is_some()
 }
 
-// ── optional: install the bundled `yerd` CLI on PATH (macOS) ─────────────────
+// ── optional: install the bundled `yerd` CLI on PATH (macOS + Linux) ────────
 //
-// Linux already exposes `yerd` on PATH (the `.deb` postinst symlinks it into
-// `/usr/bin`), so this is macOS-only. We symlink the bundled `yerd` into
-// `{data}/bin` - the exact dir the `yerd path` rc-block puts on PATH - and shell
-// out to the bundled `yerd path install` to manage the rc block (we do NOT depend
-// on the `bin/yerd` crate; that would violate the dep-flow rule).
+// `yerd` itself is already on PATH on a packaged Linux install (the `.deb`/Arch
+// package puts it in `/usr/bin`), but the PHP/tool shims it manages (`php`,
+// `composer`, ...) live in `{data}/bin`, which is the *same* directory this
+// helper's `yerd path install` call puts on PATH - so running it on Linux too
+// fixes the real gap (GUI-only installs never invoke the CLI's own
+// `ensure_installed_after_tool`, so `{data}/bin` never lands on PATH without
+// this). We symlink the bundled `yerd` into `{data}/bin` - harmless when `yerd`
+// is already reachable elsewhere - and shell out to the bundled `yerd path
+// install` to manage the rc block (we do NOT depend on the `bin/yerd` crate;
+// that would violate the dep-flow rule).
 
 /// `{data}/bin/yerd` - where the CLI symlink lives (matches `yerd path`).
 fn cli_symlink_path() -> Result<PathBuf, GuiError> {
@@ -153,11 +159,12 @@ pub fn cli_path_status() -> Result<CliPathStatus, GuiError> {
 }
 
 /// Symlink the bundled `yerd` into `{data}/bin` and ensure that dir is on PATH.
-/// macOS-only behaviour - Linux already exposes `yerd` on PATH via the `.deb`.
+/// macOS and Linux; PATH management isn't wired up for Windows yet.
 #[tauri::command]
 pub async fn install_cli_to_path() -> Result<(), GuiError> {
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     {
+        #[cfg(target_os = "macos")]
         if crate::autostart::is_translocated() {
             return Err(GuiError::internal(
                 "Move Yerd to your Applications folder first, then install the CLI.",
@@ -193,10 +200,10 @@ pub async fn install_cli_to_path() -> Result<(), GuiError> {
         .await
         .map_err(|e| GuiError::internal(format!("install task failed: {e}")))?
     }
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     {
         Err(GuiError::internal(
-            "The Yerd CLI is already installed on this platform.",
+            "PATH installation is not supported on this platform yet.",
         ))
     }
 }

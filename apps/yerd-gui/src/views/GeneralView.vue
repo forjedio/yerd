@@ -43,7 +43,10 @@ const autostart = ref<AutostartState | null>(null);
 // as a background login item registered via SMAppService; see below).
 const platform = ref("");
 const isMac = computed(() => platform.value === "macos");
-// macOS-only: whether the bundled `yerd` CLI is symlinked onto PATH.
+const isLinux = computed(() => platform.value === "linux");
+// macOS and Linux (not yet wired up on Windows): whether the bundled `yerd`
+// CLI is symlinked onto PATH.
+const supportsPathInstall = computed(() => isMac.value || isLinux.value);
 const cli = ref<CliPathStatus | null>(null);
 
 const themeOptions = [
@@ -63,7 +66,7 @@ async function loadAutostart(): Promise<void> {
   }
 }
 
-// ── CLI on PATH (macOS) + Login-Items approval ──
+// ── CLI on PATH (macOS + Linux) + Login-Items approval ──
 async function loadCli(): Promise<void> {
   try {
     cli.value = await cliPathStatus();
@@ -539,8 +542,10 @@ async function toggleGuiMinimized(on: boolean): Promise<void> {
         </CardContent>
       </Card>
 
-      <!-- Terminal CLI (macOS) - Linux exposes `yerd` on PATH via the package (.deb/.pkg.tar.zst). -->
-      <Card v-if="isMac">
+      <!-- Terminal CLI (macOS + Linux). `yerd` itself is already on PATH on a
+           packaged Linux install, but this also puts the PHP/tool shims dir on
+           PATH, so it's still useful there. -->
+      <Card v-if="supportsPathInstall">
         <CardHeader>
           <CardTitle>Terminal CLI</CardTitle>
           <CardDescription>Use the <code>yerd</code> command in your terminal.</CardDescription>
@@ -552,7 +557,7 @@ async function toggleGuiMinimized(on: boolean): Promise<void> {
               <p class="text-xs text-muted-foreground">
                 {{ cli?.installed
                   ? "Installed - run `yerd` in a new terminal window."
-                  : "Symlinks the bundled CLI into your shell PATH." }}
+                  : "Adds yerd and your installed tools (php, composer, ...) to your shell PATH." }}
               </p>
             </div>
             <Button
