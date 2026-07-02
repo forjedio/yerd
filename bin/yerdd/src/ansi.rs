@@ -13,6 +13,13 @@
 ///
 /// Works over `char`s (via `.get()`, never indexing) so multi-byte UTF-8 text
 /// around an escape sequence is never split mid-codepoint.
+///
+/// Recognises three escape forms, each consumed in full:
+/// - CSI: `ESC '[' [0x30-0x3F]* [0x20-0x2F]* [0x40-0x7E]` (colour, cursor
+///   movement, private-mode toggles like `?25l`/`?25h`, etc).
+/// - OSC: `ESC ']' ...` terminated by BEL or `ESC '\'` (e.g. window-title
+///   sequences).
+/// - Two-byte forms, e.g. `ESC c`, `ESC =`, `ESC 7`.
 pub fn strip(input: &str) -> String {
     let chars: Vec<char> = input.chars().collect();
     let mut out = String::with_capacity(input.len());
@@ -25,7 +32,6 @@ pub fn strip(input: &str) -> String {
         }
         match chars.get(i + 1) {
             Some('[') => {
-                // CSI: ESC '[' [0x30-0x3F]* [0x20-0x2F]* [0x40-0x7E]
                 let mut j = i + 2;
                 while matches!(chars.get(j), Some(c) if ('0'..='?').contains(c)) {
                     j += 1;
@@ -39,7 +45,6 @@ pub fn strip(input: &str) -> String {
                 i = j;
             }
             Some(']') => {
-                // OSC: ESC ']' ... terminated by BEL or ESC '\'
                 let mut j = i + 2;
                 loop {
                     match chars.get(j) {
@@ -57,7 +62,7 @@ pub fn strip(input: &str) -> String {
                 }
                 i = j;
             }
-            Some(_) => i += 2, // two-byte forms, e.g. `ESC c`, `ESC =`, `ESC 7`
+            Some(_) => i += 2,
             None => i += 1,
         }
     }
