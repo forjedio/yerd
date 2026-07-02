@@ -348,6 +348,11 @@ async fn dispatch<R: BackendResolver>(
             {
                 return Ok(resp);
             }
+            if let Some(resp) =
+                static_file::try_serve_index(req.method(), req.uri().path(), &document_root).await
+            {
+                return Ok(resp);
+            }
             fcgi::forward(req, bk, document_root, server_addr, peer_addr, https).await
         }
     }
