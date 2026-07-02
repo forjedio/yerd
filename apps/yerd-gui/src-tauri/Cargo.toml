@@ -56,6 +56,13 @@ sha2 = { workspace = true }
 [target.'cfg(target_os = "linux")'.dependencies]
 glib       = "0.18"
 webkit2gtk = "=2.0.2"
+# Dark-mode probe for the tray menu icons (tray.rs's `dark_menu_bar`), read via
+# the xdg-desktop-portal `Settings` interface so it works across desktop
+# environments (GNOME, KDE Plasma, ...) rather than a GTK/GSettings-only check.
+# Brings in `ashpd` plus its own `async-std` executor as a self-contained stack
+# (not otherwise in the dependency graph); its D-Bus I/O never touches our
+# tokio runtime, so it's safe to call off the main thread.
+dark-light = "2"
 
 # macOS: re-apply the Dock icon after an activation-policy change (dev builds have
 # no .app bundle, so the recreated Dock tile would otherwise show the generic
