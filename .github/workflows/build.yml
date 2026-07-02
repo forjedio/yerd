@@ -1,0 +1,492 @@
+name: Build (reusable)
+
+# Reusable build of the shipped artifacts, shared by `release.yml` (tag-driven →
+# GitHub Release) and `build-cdn.yml` (manual → Bunny CDN). It ONLY builds +
+# signs + uploads workflow artifacts; the caller owns distribution. No
+# tag/version-check coupling: the Arch pkgver comes from `inputs.version`, so it
+# works from a tag (release) or a branch dispatch (CDN).
+#
+# One matrix drives everything. Each target is an object
+# `{id, runner, container, kind}` (kind = "gui" | "arch"); GUI and Arch steps are
+# gated by `matrix.kind`. The GUI steps keep the `apps/yerd-gui` run default; the
+# Arch steps (which run in a container from the repo root) set an explicit
+# `working-directory`.
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: "Dotted version for the Arch pkgver (e.g. 2.0.2-rc.10). No leading v needed."
+        required: true
+        type: string
+      targets:
+        description: >-
+          JSON array of build targets, each {id, runner, container, kind}.
+          e.g. [{"id":"macos","runner":"macos-14","container":"","kind":"gui"}].
+          Pass "[]" to build nothing (the job is skipped).
+        required: true
+        type: string
+
+# The build only checkouts + builds + uploads artifacts; no release write. The
+# effective token is the caller∩callee intersection, so this read floor is safe
+# under both a contents:write (release) and contents:read (build-cdn) caller.
+permissions:
+  contents: read
+
+# The caller's top-level `env` is NOT inherited by a reusable workflow; re-declare
+# for colored cargo logs (cosmetic parity with release.yml).
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: build (${{ matrix.id }})
+    runs-on: ${{ matrix.runner }}
+    # Empty for the GUI legs (runs on the host); archlinux image for the Arch leg.
+    container: ${{ matrix.container }}
+    defaults:
+      run:
+        working-directory: apps/yerd-gui
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(inputs.targets) }}
+    steps:
+      # ─────────────────────────────── GUI targets ──────────────────────────────
+      # Build the GUI bundles (.deb on Linux, per-arch .dmg on macOS) — the ONLY
+      # shipped desktop artifact. The daemon + CLI + helper are embedded in the
+      # bundle (Tauri externalBin); there is no standalone CLI tarball/.deb.
+      # No authenticated git op in the GUI build (npm ci / cargo / tauri), so
+      # don't leave the token in .git/config where third-party build code runs.
+      - uses: actions/checkout@v4
+        if: matrix.kind == 'gui'
+        with:
+          persist-credentials: false
+
+      - name: Install Linux GUI build deps
+        if: matrix.kind == 'gui' && runner.os == 'Linux'
+        working-directory: .
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-dev libgtk-3-dev libsoup-3.0-dev \
+            libjavascriptcoregtk-4.1-dev libayatana-appindicator3-dev \
+            libdbus-1-dev libxdo-dev librsvg2-dev
+
+      - uses: actions/setup-node@v4
+        if: matrix.kind == 'gui'
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: apps/yerd-gui/package-lock.json
+      - uses: Swatinem/rust-cache@v2
+        if: matrix.kind == 'gui'
+
+      - name: Install frontend deps
+        if: matrix.kind == 'gui'
+        run: npm ci
+
+      # macOS: import the Developer ID cert into an ephemeral keychain and stage
+      # the App Store Connect API key. Absolute paths, so working-directory: .
+      # (the job default is apps/yerd-gui). No-op on the Linux leg.
+      - name: Set up macOS signing
+        if: matrix.kind == 'gui' && runner.os == 'macOS'
+        working-directory: .
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+        run: |
+          set -euo pipefail
+          KC="$RUNNER_TEMP/signing.keychain-db"
+          KP="$(openssl rand -base64 24)"
+          security create-keychain -p "$KP" "$KC"
+          security set-keychain-settings -lut 21600 "$KC"
+          security unlock-keychain -p "$KP" "$KC"
+          echo "$APPLE_CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" -k "$KC" \
+            -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KP" "$KC"
+          # Prepend the ephemeral keychain to the existing user search list,
+          # reading each path space-safely. NB the macos-14 runner ships bash 3.2
+          # (no `mapfile`), so use a while-read loop; guard the empty expansion
+          # for `set -u`.
+          EXISTING=()
+          while IFS= read -r kc; do EXISTING+=("$kc"); done \
+            < <(security list-keychains -d user | sed -e 's/^[[:space:]]*"//' -e 's/"[[:space:]]*$//')
+          security list-keychains -d user -s "$KC" ${EXISTING[@]+"${EXISTING[@]}"}
+          echo "$APPLE_API_KEY_P8" | base64 --decode > "$RUNNER_TEMP/AuthKey.p8"
+          echo "APPLE_API_KEY_PATH=$RUNNER_TEMP/AuthKey.p8" >> "$GITHUB_ENV"
+
+      # Tauri signs the bundle and notarises + staples the .app when these are set
+      # (macOS); the .dmg is signed but not separately stapled — the stapled .app
+      # inside gates correctly. APPLE_CERTIFICATE is deliberately NOT passed: the
+      # cert is already in the keychain from the step above, and passing it would
+      # make Tauri spin up its own keychain and conflict. Unset/ignored on Linux.
+      # Build the embedded binaries (daemon + CLI + helper) natively and stage
+      # them as Tauri externalBin sidecars (`name-<triple>`). Native build shares
+      # the rust-cache; the triple suffix is only Tauri's sidecar naming.
+      - name: Stage embedded binaries (externalBin)
+        if: matrix.kind == 'gui'
+        working-directory: .
+        run: |
+          set -euo pipefail
+          cargo build --release -p yerd -p yerdd -p yerd-helper
+          # Symmetric guard to the arch target: the bundled daemon MUST be
+          # deb-format (the `pacman` self-update feature must never leak into the
+          # .deb/macOS build, or a .deb daemon would try `pacman -U` on Debian).
+          fmt=$(./target/release/yerdd --pkg-format)
+          [ "$fmt" = "deb" ] \
+            || { echo "::error::bundle yerdd --pkg-format=$fmt (expected deb); the pacman feature leaked into the GUI bundle build"; exit 1; }
+          mkdir -p apps/yerd-gui/src-tauri/binaries
+          # Native build per runner — the triple suffix is only Tauri's sidecar
+          # naming, so it must match the arch cargo actually produced.
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            triple=aarch64-apple-darwin
+          elif [ "$(uname -m)" = "aarch64" ]; then
+            triple=aarch64-unknown-linux-gnu
+          else
+            triple=x86_64-unknown-linux-gnu
+          fi
+          for b in yerd yerdd yerd-helper; do
+            cp "target/release/$b" "apps/yerd-gui/src-tauri/binaries/$b-$triple"
+          done
+
+      - name: Build Tauri bundles (signed + notarised on macOS)
+        if: matrix.kind == 'gui'
+        env:
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_KEY_PATH: ${{ env.APPLE_API_KEY_PATH }}
+        # Each platform applies its release overlay (externalBin + macOS plist /
+        # Linux deb postinst). `--config` is resolved relative to the cwd
+        # (apps/yerd-gui), so the path is src-tauri-relative.
+        run: |
+          if [ "$RUNNER_OS" = "macOS" ]; then
+            npm run tauri build -- --config src-tauri/tauri.bundle-macos.conf.json
+          else
+            npm run tauri build -- --config src-tauri/tauri.bundle-linux.conf.json
+          fi
+
+      # Fail-closed: prove the .app is Developer-ID signed with Hardened Runtime,
+      # stapled, and Gatekeeper-accepted. The launch test catches entitlement
+      # gaps (they crash at runtime, not at notarisation).
+      - name: Verify macOS signing
+        if: matrix.kind == 'gui' && runner.os == 'macOS'
+        working-directory: .
+        run: |
+          set -euo pipefail
+          # Search only dirs that exist — `find` over a missing path exits non-zero
+          # and would abort the step under `set -euo pipefail`.
+          ROOTS=()
+          for d in target apps/yerd-gui/src-tauri/target; do [ -d "$d" ] && ROOTS+=("$d"); done
+          [ "${#ROOTS[@]}" -gt 0 ] || { echo "::error::no build output dir found"; exit 1; }
+          # `|| true`: with 2+ matches, head closes the pipe and find takes SIGPIPE,
+          # which pipefail would otherwise turn into a step abort.
+          APP=$(find "${ROOTS[@]}" -name 'Yerd.app' -type d 2>/dev/null | head -n1 || true)
+          DMG=$(find "${ROOTS[@]}" -name '*.dmg' -type f 2>/dev/null | head -n1 || true)
+          # Explicit fail-fast: under `set -e`, a failure on the LEFT of `&&` does
+          # not abort, so `test -n "$APP" && test -n "$DMG"` would sail past an
+          # empty APP into a cryptic codesign error. Check each separately.
+          [ -n "$APP" ] || { echo "::error::Yerd.app not found under ${ROOTS[*]} (is \"app\" in tauri.conf.json bundle.targets?)"; exit 1; }
+          [ -n "$DMG" ] || { echo "::error::no .dmg found under ${ROOTS[*]}"; exit 1; }
+          echo "Verifying $APP and $DMG"
+          codesign --verify --strict --verbose=2 "$APP"
+          codesign -dv --verbose=4 "$APP" > /tmp/cs.txt 2>&1
+          grep -q "Authority=Developer ID Application" /tmp/cs.txt
+          grep -Eq "flags=.*runtime" /tmp/cs.txt
+          xcrun stapler validate "$APP"                        # primary gate (the .app is stapled)
+          # The .app is stapled, so this assesses offline and reliably.
+          spctl -a -t exec -vvv "$APP"
+
+          # ── Embedded binaries (daemon + CLI + helper) + SMAppService plist ──
+          AGENT="$APP/Contents/Library/LaunchAgents/dev.yerd.daemon.plist"
+          [ -f "$AGENT" ] || { echo "::error::missing embedded LaunchAgent $AGENT"; exit 1; }
+          # The plist must be sealed into the bundle's code signature (not a late,
+          # unsigned add). `codesign -dvvv` only prints a SUMMARY count of sealed
+          # resources, never individual paths, so query the CodeResources plist
+          # directly. Depending on the signing rules the entry lives under
+          # `files2` (modern) or `files` (legacy) — accept either.
+          CR="$APP/Contents/_CodeSignature/CodeResources"
+          /usr/libexec/PlistBuddy -c 'Print :files2:Library/LaunchAgents/dev.yerd.daemon.plist' "$CR" >/dev/null 2>&1 \
+            || /usr/libexec/PlistBuddy -c 'Print :files:Library/LaunchAgents/dev.yerd.daemon.plist' "$CR" >/dev/null 2>&1 \
+            || { echo "::error::LaunchAgent plist is not sealed into the app signature"; exit 1; }
+          APP_TEAM=$(sed -n 's/^TeamIdentifier=//p' /tmp/cs.txt)
+          for b in yerd yerdd yerd-helper; do
+            BIN="$APP/Contents/MacOS/$b"
+            [ -f "$BIN" ] || { echo "::error::missing bundled binary $BIN"; exit 1; }
+            # Developer-ID signed, Hardened Runtime, timestamped, same team as the
+            # app (SMAppService trusts the daemon by matching Team ID).
+            codesign --verify --strict --verbose=2 "$BIN"
+            codesign -dv --verbose=4 "$BIN" > "/tmp/cs-$b.txt" 2>&1
+            grep -q "Authority=Developer ID Application" "/tmp/cs-$b.txt"
+            grep -Eq "flags=.*runtime" "/tmp/cs-$b.txt"
+            grep -q "Timestamp=" "/tmp/cs-$b.txt" || { echo "::error::$b has no secure timestamp"; exit 1; }
+            team=$(sed -n 's/^TeamIdentifier=//p' "/tmp/cs-$b.txt")
+            [ -n "$APP_TEAM" ] && [ "$APP_TEAM" = "$team" ] \
+              || { echo "::error::$b TeamIdentifier '$team' != app '$APP_TEAM'"; exit 1; }
+            # B5: must NOT inherit the webview's Hardened-Runtime exceptions
+            # (allow-jit / unsigned-exec-mem) or get-task-allow. If this fails,
+            # apply the sidecar re-sign remediation (see the plan, gate B5).
+            ENT=$(codesign -d --entitlements - --xml "$BIN" 2>/dev/null || true)
+            for bad in com.apple.security.cs.allow-jit \
+                       com.apple.security.cs.allow-unsigned-executable-memory \
+                       com.apple.security.get-task-allow; do
+              if printf '%s' "$ENT" | grep -q "$bad"; then
+                echo "::error::$b carries entitlement $bad (Hardened-Runtime regression)"; exit 1
+              fi
+            done
+            # Exec smoke: an AMFI/HR kill is signal 9 (exit >=128); a normal
+            # non-zero exit (bad args / helper refusing non-root) is fine.
+            code=0; "$BIN" --version >/dev/null 2>&1 || code=$?
+            [ "$code" -lt 128 ] \
+              || { echo "::error::$b was killed (exit $code) — signing/Hardened-Runtime failure"; exit 1; }
+          done
+          echo "Embedded binaries + LaunchAgent: present, sealed, Developer-ID, team-matched, entitlement-clean, exec OK"
+
+          # The .dmg is Developer-ID signed but deliberately NOT notarized/stapled:
+          # Tauri only submits the inner .app to notarytool, never the disk image,
+          # so no ticket exists for the dmg's own cdhash. `stapler validate` fails
+          # ("no ticket") and `spctl` reports `source=Unnotarized Developer ID`
+          # deterministically — this is NOT a network flake. It's fine: Gatekeeper
+          # validates the stapled .app offline once it's copied out of the dmg, and
+          # that's the gate that matters at launch. (Notarizing the dmg itself would
+          # only smooth the mount-time prompt; see the release notes if we revisit.)
+          # Both checks are advisory, so a failure here never blocks a release.
+          xcrun stapler validate "$DMG" || echo "::warning::dmg not stapled (expected; .app is the gate)"
+          spctl -a -t open --context context:primary-signature -vvv "$DMG" \
+            || echo "::warning::dmg not notarized (expected; spctl=Unnotarized Developer ID, .app is the gate)"
+          # Prove the SHIPPED dmg (not just the loose build-dir .app) carries the
+          # embedded daemon + agent plist — guards against a stale .app in the dmg.
+          MP=$(mktemp -d)
+          hdiutil attach -nobrowse -quiet -mountpoint "$MP" "$DMG"
+          DMG_APP=$(find "$MP" -maxdepth 1 -name 'Yerd.app' -type d | head -n1)
+          miss=""
+          for b in yerd yerdd yerd-helper; do
+            [ -f "$DMG_APP/Contents/MacOS/$b" ] || miss="$miss $b"
+          done
+          [ -f "$DMG_APP/Contents/Library/LaunchAgents/dev.yerd.daemon.plist" ] || miss="$miss plist"
+          if [ -n "$miss" ]; then
+            echo "::error::shipped DMG is missing:$miss"
+            hdiutil detach -quiet "$MP" || true; exit 1
+          fi
+          hdiutil detach -quiet "$MP" || true
+          echo "Shipped DMG carries the embedded binaries + LaunchAgent — OK"
+          # Launch test: a Hardened-Runtime/AMFI kill is SIGKILL (exit 137) and may
+          # leave nothing in the app's own log, so also check the exit signal and
+          # the system log. A clean early exit (single-instance/no-daemon/headless)
+          # is tolerated; the human prerelease check is definitive.
+          # The bundle's main binary is the Cargo bin name (`yerd-gui`), NOT the
+          # productName ("Yerd"), so resolve it from Info.plist rather than
+          # hardcoding — a hardcoded `Yerd` would be "No such file or directory"
+          # and the test would pass vacuously. YERD_NO_AUTO_DAEMON disables the
+          # SMAppService path so this headless launch makes no register()/status()
+          # call (which could otherwise pollute the signing-failure grep below).
+          EXE=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$APP/Contents/Info.plist")
+          YERD_NO_AUTO_DAEMON=1 "$APP/Contents/MacOS/$EXE" >/tmp/app.log 2>&1 & PID=$!
+          sleep 8
+          if kill -0 "$PID" 2>/dev/null; then
+            echo "App stayed up — entitlements OK"; kill "$PID" 2>/dev/null || true; wait "$PID" 2>/dev/null || true
+          else
+            # `|| code=$?`: `wait` returns the child's non-zero status, which would
+            # abort under `set -e` before we could classify it.
+            code=0; wait "$PID" || code=$?
+            if [ "$code" -ge 128 ] \
+               || grep -Eiq "code signature|library not loaded|amfi|invalid signature" /tmp/app.log \
+               || log show --last 3m --predicate "process == \"$EXE\"" 2>/dev/null | grep -Eiq "AMFI|code signature|killed"; then
+              echo "::error::App was killed/crashed (exit $code) — likely signing/entitlement failure:"; cat /tmp/app.log; exit 1
+            fi
+            echo "::warning::App exited early (exit $code) with no signing error — likely headless/single-instance:"; cat /tmp/app.log
+          fi
+
+      # Self-update artifact: a gzip'd tar of the signed+stapled .app that the
+      # in-app/`yerd update` applier swaps into /Applications. Apple-Silicon only
+      # (the build matrix produces no Intel .app). The mandatory gate below
+      # extracts into a FRESH dir and re-asserts codesign + staple + OFFLINE
+      # Gatekeeper assessment + a Team ID, proving the notarization survives the
+      # tar round-trip. If a future macOS drops the staple through tar, switch the
+      # packaging to `ditto`/zip — the gate will catch it before publish.
+      - name: Package + verify macOS .app.tar.gz updater artifact
+        if: matrix.kind == 'gui' && runner.os == 'macOS'
+        working-directory: .
+        run: |
+          set -euo pipefail
+          ROOTS=()
+          for d in target apps/yerd-gui/src-tauri/target; do [ -d "$d" ] && ROOTS+=("$d"); done
+          APP=$(find "${ROOTS[@]}" -name 'Yerd.app' -type d 2>/dev/null | head -n1 || true)
+          [ -n "$APP" ] || { echo "::error::Yerd.app not found for tarball packaging"; exit 1; }
+          OUT_DIR="apps/yerd-gui/src-tauri/target/release/bundle/updater"
+          mkdir -p "$OUT_DIR"
+          # Apple-Silicon only; the publish/upload job appends the version to this name.
+          OUT="$OUT_DIR/Yerd_MacOS_AppleSilicon.app.tar.gz"
+          # bsdtar (macOS /usr/bin/tar) preserving permissions; the applier extracts
+          # with the same bsdtar via `tar -xpf`.
+          ( cd "$(dirname "$APP")" && /usr/bin/tar -czpf - "$(basename "$APP")" ) > "$OUT"
+          # ── Gate: fresh extract + offline re-verification ──
+          TMP=$(mktemp -d)
+          /usr/bin/tar -xpf "$OUT" -C "$TMP"
+          EXAPP="$TMP/$(basename "$APP")"
+          codesign --verify --deep --strict --verbose=2 "$EXAPP"
+          xcrun stapler validate "$EXAPP"                        # notarization survived the tar
+          spctl -a -t exec -vvv "$EXAPP"                         # offline Gatekeeper accept
+          codesign -dv --verbose=4 "$EXAPP" 2>&1 | grep -q 'TeamIdentifier=' \
+            || { echo "::error::extracted .app has no Team ID"; exit 1; }
+          rm -rf "$TMP"
+          echo "Packaged + verified $OUT"
+
+      # The GUI .deb must EMBED the three binaries (daemon + CLI + helper) and the
+      # postinst that setcaps yerdd. Tauri's deb bundler copies externalBin
+      # sidecars into /usr/bin (beside the GUI), so they are already on PATH; the
+      # postinst only setcaps the daemon. Assert the exact dir so a future Tauri
+      # path change that moves them out of /usr/bin fails CI instead of users'
+      # `dpkg --configure` (which is how rc.9 shipped a broken postinst).
+      - name: Assert Linux GUI bundle embeds the binaries + postinst
+        if: matrix.kind == 'gui' && runner.os == 'Linux'
+        working-directory: .
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          debs=(target/release/bundle/deb/*.deb \
+                apps/yerd-gui/src-tauri/target/release/bundle/deb/*.deb)
+          [ "${#debs[@]}" -gt 0 ] || { echo "::error::no GUI .deb produced"; exit 1; }
+          for deb in "${debs[@]}"; do
+            list=$(dpkg-deb -c "$deb")
+            for b in yerd yerdd yerd-helper; do
+              printf '%s\n' "$list" | grep -Eq "(\./)?usr/bin/$b\$" \
+                || { echo "::error::GUI .deb ($deb) is missing /usr/bin/$b (postinst setcap target)"; exit 1; }
+            done
+            tmp=$(mktemp -d)
+            dpkg-deb -x "$deb" "$tmp"
+            for b in yerd yerdd yerd-helper; do
+              [ -x "$tmp/usr/bin/$b" ] \
+                || { echo "::error::GUI .deb ($deb) /usr/bin/$b is not executable (lost its execute bit)"; rm -rf "$tmp"; exit 1; }
+            done
+            rm -rf "$tmp"
+            dpkg-deb -e "$deb" /tmp/ctrl-$$ 2>/dev/null || true
+            [ -f "/tmp/ctrl-$$/postinst" ] \
+              || { echo "::error::GUI .deb ($deb) has no postinst (setcap/symlink)"; exit 1; }
+            rm -rf "/tmp/ctrl-$$"
+          done
+          echo "Linux GUI .deb embeds yerd/yerdd/yerd-helper + postinst — OK"
+
+      # ─────────────────────────────── Arch target ──────────────────────────────
+      # Native Arch package (.pkg.tar.zst). Tauri has no pacman bundler, so compile
+      # the binaries + GUI from source in an Arch container and assemble via
+      # packaging/arch/PKGBUILD. x86_64 only. The daemon is built with the `pacman`
+      # self-update feature; the gate below proves it took. These steps run from
+      # the repo root (explicit working-directory) rather than the GUI default.
+      #
+      # `git` isn't in base-devel; install it BEFORE checkout so actions/checkout
+      # does a real clone instead of the slower, rate-limited REST-tarball fallback.
+      - name: Install git (for a real checkout)
+        if: matrix.kind == 'arch'
+        working-directory: ${{ github.workspace }}
+        run: pacman -Sy --noconfirm git
+
+      # `persist-credentials: false` so the GitHub token isn't left in
+      # .git/config — the workspace is chowned to the unprivileged `builder` user
+      # for makepkg, and the build needs no authenticated git operations.
+      - uses: actions/checkout@v4
+        if: matrix.kind == 'arch'
+        with:
+          persist-credentials: false
+
+      - name: Install build deps
+        if: matrix.kind == 'arch'
+        working-directory: ${{ github.workspace }}
+        # `namcap` and `desktop-file-utils` are separate `extra` packages (not in
+        # base-devel); the assert step needs them. libayatana-appindicator/librsvg
+        # are dlopen'd by the GUI at runtime (see PKGBUILD depends).
+        run: |
+          pacman -Syu --noconfirm --needed \
+            rust cargo nodejs npm git \
+            webkit2gtk-4.1 gtk3 libayatana-appindicator librsvg libcap \
+            namcap desktop-file-utils
+
+      - name: Build the Arch package
+        if: matrix.kind == 'arch'
+        working-directory: ${{ github.workspace }}
+        # The version comes from the caller (`inputs.version`), NOT GITHUB_REF_NAME:
+        # under a tag caller it is the tag's version; under a branch dispatch (CDN)
+        # GITHUB_REF_NAME would be a branch name and yield a bogus pkgver.
+        env:
+          YERD_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          # makepkg refuses to run as root; build as an unprivileged user that owns
+          # the checkout (actions/checkout runs as root inside the container).
+          useradd -m builder
+          chown -R builder:builder "$GITHUB_WORKSPACE"
+          # pkgver may only contain [A-Za-z0-9._]; a version can carry `-rc.N` (and in
+          # principle `+build`). Strip a leading `v`, then map every other illegal
+          # char to `_`. The release asset name is derived separately later, so
+          # this sanitisation only affects the in-package version string.
+          RAWVER="${YERD_VERSION#v}"
+          YERD_PKGVER=$(printf '%s' "$RAWVER" | tr -c 'A-Za-z0-9._' '_')
+          echo "YERD_PKGVER=$YERD_PKGVER" >> "$GITHUB_ENV"
+          # Build from the in-tree checkout (PKGBUILD has no source=()).
+          sudo -u builder env \
+            YERD_PKGVER="$YERD_PKGVER" \
+            YERD_SRCROOT="$GITHUB_WORKSPACE" \
+            PKGEXT=".pkg.tar.zst" \
+            bash -c 'cd "$YERD_SRCROOT/packaging/arch" && makepkg -f --noconfirm'
+          pkg=$(find "$GITHUB_WORKSPACE/packaging/arch" -maxdepth 1 -name '*.pkg.tar.zst' | head -n1)
+          [ -n "$pkg" ] || { echo "::error::no .pkg.tar.zst produced"; exit 1; }
+          echo "PKG=$pkg" >> "$GITHUB_ENV"
+
+      - name: Assert package contents + lint + pkg-format
+        if: matrix.kind == 'arch'
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          list=$(bsdtar tf "$PKG")
+          # All four binaries embedded under /usr/bin (matches the .deb layout).
+          for b in yerd yerdd yerd-helper yerd-gui; do
+            printf '%s\n' "$list" | grep -Eq "^usr/bin/$b\$" \
+              || { echo "::error::Arch package missing /usr/bin/$b"; exit 1; }
+          done
+          printf '%s\n' "$list" | grep -q '^\.INSTALL$' \
+            || { echo "::error::Arch package has no .INSTALL scriptlet (setcap)"; exit 1; }
+          printf '%s\n' "$list" | grep -q '^usr/share/applications/yerd-gui\.desktop$' \
+            || { echo "::error::Arch package has no .desktop"; exit 1; }
+          printf '%s\n' "$list" | grep -q '^usr/share/licenses/yerd/LICENSE$' \
+            || { echo "::error::Arch package has no license"; exit 1; }
+          # Extract the .desktop and the packaged daemon for validation.
+          tmp=$(mktemp -d)
+          bsdtar -xf "$PKG" -C "$tmp" usr/share/applications/yerd-gui.desktop usr/bin/yerdd
+          desktop-file-validate "$tmp/usr/share/applications/yerd-gui.desktop"
+          namcap "$PKG" || true
+          # Pkg-format gate: run the daemon FROM THE PACKAGE (not the build tree) so a
+          # packaging-path mistake can't pass. The shipped daemon must self-update via
+          # pacman, else a forgotten `--features` flag would ship a `.deb`-format updater.
+          fmt=$("$tmp/usr/bin/yerdd" --pkg-format)
+          [ "$fmt" = "pacman" ] \
+            || { echo "::error::packaged yerdd --pkg-format=$fmt (expected pacman); the pacman feature did not take"; exit 1; }
+          echo "Arch package OK: $PKG (pkg-format=$fmt)"
+
+      - name: Stage with a Yerd_* name for the rename step
+        if: matrix.kind == 'arch'
+        working-directory: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$GITHUB_WORKSPACE/arch-out"
+          # `Yerd_*` + `x86_64` + `.pkg.tar.zst` so the publish/upload rename loop
+          # relabels it to Yerd_Linux_x86_64_v<ver>.pkg.tar.zst.
+          cp "$PKG" "$GITHUB_WORKSPACE/arch-out/Yerd_${YERD_PKGVER}_x86_64.pkg.tar.zst"
+
+      # ──────────────────────────────── Upload ──────────────────────────────────
+      # One upload for either kind: on a GUI leg the bundle globs match and
+      # arch-out is absent; on the Arch leg only arch-out matches. `if-no-files-
+      # found: error` fires only if the whole union is empty. Paths are resolved
+      # relative to the workspace (upload-artifact ignores the run default).
+      - uses: actions/upload-artifact@v4
+        with:
+          name: build-${{ matrix.id }}
+          if-no-files-found: error
+          path: |
+            target/release/bundle/**/*.deb
+            target/release/bundle/**/*.dmg
+            apps/yerd-gui/src-tauri/target/release/bundle/**/*.deb
+            apps/yerd-gui/src-tauri/target/release/bundle/**/*.dmg
+            apps/yerd-gui/src-tauri/target/release/bundle/updater/*.app.tar.gz
+            arch-out/*.pkg.tar.zst

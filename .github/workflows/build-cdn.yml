@@ -1,0 +1,250 @@
+name: Build (CDN)
+
+# Manually build the CURRENT committed version for a chosen subset of targets and
+# upload the artifacts to a Bunny CDN Storage Zone under
+# builds/<YYYY-MM-DD_HH-MM>/... . Distinct from the tag release (release.yml),
+# which never touches Bunny. Shares the build via the reusable build.yml.
+on:
+  workflow_dispatch:
+    inputs:
+      macos:
+        description: "macOS (Apple Silicon) — .dmg / .app.tar.gz"
+        type: boolean
+        default: true
+      linux_x64:
+        description: "Linux x86_64 — .deb"
+        type: boolean
+        default: false
+      linux_arm64:
+        description: "Linux arm64 — .deb"
+        type: boolean
+        default: false
+      arch:
+        description: "Arch Linux x86_64 — .pkg.tar.zst"
+        type: boolean
+        default: false
+      folder:
+        description: "Override the builds/<folder> name (default: UTC YYYY-MM-DD_HH-MM-<run>). Must match ^[A-Za-z0-9][A-Za-z0-9._-]*$."
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+# Unique per run (no serialization); runs are isolated from each other and from
+# releases by the per-run `dest` folder, not by this group.
+concurrency:
+  group: build-cdn-${{ github.run_id }}
+
+jobs:
+  # Resolve the destination folder, the version (from the manifest — there is no
+  # tag), and the build target matrix from the selected checkboxes.
+  setup:
+    runs-on: ubuntu-22.04
+    outputs:
+      targets: ${{ steps.plan.outputs.targets }}
+      version: ${{ steps.plan.outputs.version }}
+      dest: ${{ steps.plan.outputs.dest }}
+    steps:
+      # Only runs `cargo run -p xtask` (read-only); no authenticated git op, so
+      # don't leave the token in .git/config for the reusable build to inherit.
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - id: plan
+        # Inputs are env-mapped (never interpolated into the script body) so the
+        # free-text `folder` can't inject shell.
+        env:
+          IN_MACOS: ${{ inputs.macos }}
+          IN_LINUX_X64: ${{ inputs.linux_x64 }}
+          IN_LINUX_ARM64: ${{ inputs.linux_arm64 }}
+          IN_ARCH: ${{ inputs.arch }}
+          IN_FOLDER: ${{ inputs.folder }}
+        run: |
+          set -euo pipefail
+
+          # ── target matrix from the checkboxes ──
+          targets='[]'
+          add() { targets=$(printf '%s' "$targets" | jq -c --argjson o "$1" '. + [$o]'); }
+          if [ "$IN_MACOS" = "true" ]; then
+            add '{"id":"macos","runner":"macos-14","container":"","kind":"gui"}'
+          fi
+          if [ "$IN_LINUX_X64" = "true" ]; then
+            add '{"id":"linux-x86_64","runner":"ubuntu-22.04","container":"","kind":"gui"}'
+          fi
+          if [ "$IN_LINUX_ARM64" = "true" ]; then
+            add '{"id":"linux-arm64","runner":"ubuntu-22.04-arm","container":"","kind":"gui"}'
+          fi
+          if [ "$IN_ARCH" = "true" ]; then
+            add '{"id":"arch-x86_64","runner":"ubuntu-22.04","container":"archlinux:base-devel","kind":"arch"}'
+          fi
+          [ "$(printf '%s' "$targets" | jq 'length')" -gt 0 ] \
+            || { echo "::error::select at least one target"; exit 1; }
+          echo "targets=$targets" >> "$GITHUB_OUTPUT"
+
+          # ── destination folder ──
+          if [ -n "$IN_FOLDER" ]; then
+            case "$IN_FOLDER" in
+              .|..) echo "::error::folder must not be . or .."; exit 1 ;;
+            esac
+            printf '%s' "$IN_FOLDER" | grep -Eq '^[A-Za-z0-9][A-Za-z0-9._-]*$' \
+              || { echo "::error::folder must match ^[A-Za-z0-9][A-Za-z0-9._-]*$"; exit 1; }
+            dest="$IN_FOLDER"
+          else
+            dest="$(date -u +%Y-%m-%d_%H-%M)-${{ github.run_id }}"
+          fi
+          echo "dest=$dest" >> "$GITHUB_OUTPUT"
+
+          # ── version (manifest, v-less) ──
+          version="$(cargo run -q -p xtask -- print-version)"
+          [ -n "$version" ] || { echo "::error::could not read workspace version"; exit 1; }
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+          {
+            echo "### CDN build plan"
+            echo ""
+            echo "- version: \`$version\`"
+            echo "- folder: \`builds/$dest/\`"
+            echo "- targets: \`$targets\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  build:
+    needs: setup
+    uses: ./.github/workflows/build.yml
+    with:
+      version: ${{ needs.setup.outputs.version }}
+      targets: ${{ needs.setup.outputs.targets }}
+    secrets: inherit
+
+  # Collect the built artifacts, name them like release assets, checksum them, and
+  # PUT them to the Bunny Storage Zone. No minisign: these are internal test
+  # builds, not a self-update channel (the updater reads GitHub Releases).
+  upload:
+    needs: [setup, build]
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      # upload-artifact preserved each file's source path, so bundles arrive
+      # nested. Flatten to the dist root, then relabel to release-style names
+      # (dotted version — CDN names aren't consumed by the self-updater).
+      - name: Flatten + rename
+        working-directory: dist
+        env:
+          VERSION: ${{ needs.setup.outputs.version }}
+        run: |
+          set -euo pipefail
+          find . -mindepth 2 -type f \
+            \( -name '*.deb' -o -name '*.dmg' -o -name '*.app.tar.gz' -o -name '*.pkg.tar.zst' \) \
+            -exec mv -t . {} +
+          find . -mindepth 1 -type d -exec rm -rf {} +
+          ver="v${VERSION}"
+          for f in Yerd_* yerd-gui_* yerd_*; do
+            [ -e "$f" ] || continue
+            case "$f" in
+              *.app.tar.gz)  ext="app.tar.gz";  os="MacOS" ;;
+              *.pkg.tar.zst) ext="pkg.tar.zst"; os="Linux" ;;
+              *.dmg)         ext="dmg";         os="MacOS" ;;
+              *.deb)         ext="deb";         os="Linux" ;;
+              *) continue ;;
+            esac
+            case "$f" in
+              *AppleSilicon*|*aarch64*|*arm64*) [ "$os" = "MacOS" ] && arch="AppleSilicon" || arch="Arm64" ;;
+              *x86_64*|*amd64*)  arch="x86_64" ;;
+              *) arch="unknown" ;;
+            esac
+            mv -- "$f" "Yerd_${os}_${arch}_${ver}.${ext}"
+          done
+          echo "Artifacts:" && ls -1
+
+      - name: Generate SHA256SUMS
+        working-directory: dist
+        run: |
+          find . -maxdepth 1 -type f \
+            \( -name '*.deb' -o -name '*.dmg' -o -name '*.app.tar.gz' -o -name '*.pkg.tar.zst' \) \
+            -printf '%P\n' | sort | xargs -r sha256sum > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Upload to Bunny Storage
+        id: bunny
+        working-directory: dist
+        env:
+          BUNNY_KEY: ${{ secrets.BUNNY_STORAGE_ACCESS_KEY }}
+          BUNNY_ZONE: ${{ vars.BUNNY_STORAGE_ZONE }}
+          BUNNY_ENDPOINT: ${{ vars.BUNNY_STORAGE_ENDPOINT }}
+          DEST: ${{ needs.setup.outputs.dest }}
+        run: |
+          set -euo pipefail
+          [ -n "${BUNNY_KEY:-}" ] \
+            || { echo "::error::secret BUNNY_STORAGE_ACCESS_KEY is not set"; exit 1; }
+          [ -n "${BUNNY_ZONE:-}" ] \
+            || { echo "::error::variable BUNNY_STORAGE_ZONE is not set"; exit 1; }
+          # Mandatory: a wrong/absent region host hard-401s (indistinguishable from
+          # a bad key), so never silently default to the DE region.
+          [ -n "${BUNNY_ENDPOINT:-}" ] \
+            || { echo "::error::variable BUNNY_STORAGE_ENDPOINT is not set (region host, e.g. ny.storage.bunnycdn.com — must match the zone's region)"; exit 1; }
+
+          url() { printf 'https://%s/%s/builds/%s/%s' "$BUNNY_ENDPOINT" "$BUNNY_ZONE" "$DEST" "$1"; }
+          put() {
+            # -T streams the file (implies PUT, sets Content-Length; no chunked,
+            # which Bunny rejects). -f makes any non-2xx a hard failure.
+            curl -fsS --retry 3 --retry-connrefused --retry-delay 2 \
+              -T "$1" -H "AccessKey: ${BUNNY_KEY}" \
+              -H "Content-Type: application/octet-stream" \
+              "$(url "$(basename "$1")")"
+          }
+
+          shopt -s nullglob
+          arts=(Yerd_*)
+          [ ${#arts[@]} -gt 0 ] || { echo "::error::no artifacts to upload"; exit 1; }
+          for f in "${arts[@]}"; do echo "PUT $f"; put "$f"; done
+          # Manifest strictly last, so its presence signals a complete upload
+          # (Yerd_* sorts AFTER SHA256SUMS, so it must not ride the loop).
+          echo "PUT SHA256SUMS"; put SHA256SUMS
+
+          # Verify each object landed with a cheap ranged GET (Bunny Storage has no
+          # HEAD method; a GET with AccessKey is the documented existence check).
+          for f in "${arts[@]}" SHA256SUMS; do
+            curl -fsS -o /dev/null -r 0-0 -H "AccessKey: ${BUNNY_KEY}" "$(url "$f")" \
+              || { echo "::error::post-upload verify failed for $f"; exit 1; }
+          done
+          echo "Uploaded + verified ${#arts[@]} artifact(s) + SHA256SUMS."
+
+      # Runs even on failure, but only claims success (and prints download URLs)
+      # when the upload step actually succeeded. No `working-directory: dist` so it
+      # can't error if an earlier step never created it; globs are dist-prefixed.
+      - name: Summarize
+        if: always()
+        env:
+          PULLZONE: ${{ vars.BUNNY_PULLZONE_HOST }}
+          DEST: ${{ needs.setup.outputs.dest }}
+          UPLOAD_OUTCOME: ${{ steps.bunny.outcome }}
+        run: |
+          set -euo pipefail
+          {
+            if [ "$UPLOAD_OUTCOME" = "success" ]; then
+              echo "### CDN build uploaded"
+              echo ""
+              echo "Folder: \`builds/${DEST}/\`"
+              echo ""
+              if [ -n "${PULLZONE:-}" ]; then
+                shopt -s nullglob
+                for f in dist/Yerd_* dist/SHA256SUMS; do
+                  [ -e "$f" ] || continue
+                  b=$(basename "$f")
+                  echo "- [\`$b\`](https://${PULLZONE}/builds/${DEST}/$b)"
+                done
+              else
+                echo "_Set the \`BUNNY_PULLZONE_HOST\` variable to show public download URLs._"
+              fi
+            else
+              echo "### CDN build upload did not complete"
+              echo ""
+              echo "Target folder was \`builds/${DEST}/\` — objects may be missing or partial."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
