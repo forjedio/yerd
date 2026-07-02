@@ -74,8 +74,13 @@ impl JobRegistry {
         (id, rx)
     }
 
-    /// Append a log line to a job (no-op if the job is gone).
+    /// Append a log line to a job (no-op if the job is gone). ANSI escapes are
+    /// stripped first - the log is rendered in a plain-text panel, and some
+    /// subprocesses (npm, git, the Laravel installer's spinner) emit them even
+    /// with `NO_COLOR`/`TERM=dumb`/`--no-ansi` set on the child (see
+    /// `crate::create_site::run_scaffold`).
     pub async fn push_log(&self, id: &str, line: String) {
+        let line = crate::ansi::strip(&line);
         let mut map = self.inner.lock().await;
         if let Some(job) = map.get_mut(id) {
             job.log.push(line);
@@ -182,6 +187,22 @@ mod tests {
             } => (*state, log.as_slice(), *next_cursor, error.as_deref()),
             other => panic!("expected JobProgress, got {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn push_log_strips_ansi_escapes() {
+        let reg = JobRegistry::default();
+        let (id, _cancel) = reg.create().await;
+
+        reg.push_log(
+            &id,
+            "\x1b[36mCreating Laravel application...\x1b[39m".into(),
+        )
+        .await;
+
+        let r = reg.poll(&id, 0).await;
+        let (_, log, _, _) = progress(&r);
+        assert_eq!(log, ["Creating Laravel application..."]);
     }
 
     #[tokio::test]

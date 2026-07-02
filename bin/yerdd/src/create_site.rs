@@ -231,8 +231,10 @@ async fn run_inner(
 ///
 /// `--no-ansi` is included because the stream is rendered in a plain text panel
 /// with no ANSI interpreter; it is forwarded to the composer/npm commands the
-/// installer shells out to, so no raw escape sequences leak (the daemon also
-/// forces NO_COLOR/TERM=dumb on the child, see `run_scaffold`).
+/// installer shells out to, cutting down on raw escape sequences (the daemon
+/// also forces NO_COLOR/TERM=dumb on the child, see `run_scaffold`). Anything
+/// that still slips through is stripped defensively in
+/// `crate::jobs::JobRegistry::push_log`.
 fn build_new_args(name: &str, o: &LaravelOptions) -> Vec<String> {
     let mut a = vec![
         "new".to_owned(),
@@ -482,7 +484,9 @@ enum ScaffoldOutcome {
 /// ANSI colour and cursor-control (spinner redraws) from the inherited TERM. The
 /// job log is shown in a plain `<pre>` with no terminal emulator, so those escapes
 /// render literally and spinner frames stack as duplicate lines; the two env vars
-/// make the installer fall back to undecorated, single-line output.
+/// push most tools toward undecorated, single-line output, and
+/// `crate::jobs::JobRegistry::push_log` strips whatever colour/cursor escapes
+/// still get through (some spinners write them unconditionally).
 #[allow(clippy::too_many_arguments)]
 async fn run_scaffold(
     id: &str,
