@@ -2060,3 +2060,92 @@ fn response_named_tunnels_with_zone_byte_shape() {
     );
     assert_eq!(serde_json::from_str::<Response>(&s).unwrap(), r);
 }
+
+// ---------- Groups ----------
+
+#[test]
+fn request_list_groups_byte_shape() {
+    let s = serde_json::to_string(&Request::ListGroups).unwrap();
+    assert_eq!(s, r#"{"type":"list_groups"}"#);
+    assert_eq!(
+        serde_json::from_str::<Request>(&s).unwrap(),
+        Request::ListGroups
+    );
+}
+
+#[test]
+fn request_create_group_byte_shape() {
+    let r = Request::CreateGroup {
+        name: "Blog".into(),
+    };
+    let s = serde_json::to_string(&r).unwrap();
+    assert_eq!(s, r#"{"type":"create_group","name":"Blog"}"#);
+    assert_eq!(serde_json::from_str::<Request>(&s).unwrap(), r);
+}
+
+#[test]
+fn request_delete_group_byte_shape() {
+    let r = Request::DeleteGroup {
+        name: "Blog".into(),
+    };
+    let s = serde_json::to_string(&r).unwrap();
+    assert_eq!(s, r#"{"type":"delete_group","name":"Blog"}"#);
+    assert_eq!(serde_json::from_str::<Request>(&s).unwrap(), r);
+}
+
+#[test]
+fn request_set_group_order_byte_shape() {
+    let r = Request::SetGroupOrder {
+        order: vec!["Blog".into(), "Shop".into()],
+    };
+    let s = serde_json::to_string(&r).unwrap();
+    assert_eq!(s, r#"{"type":"set_group_order","order":["Blog","Shop"]}"#);
+    assert_eq!(serde_json::from_str::<Request>(&s).unwrap(), r);
+}
+
+#[test]
+fn request_set_site_group_byte_shape() {
+    let some = Request::SetSiteGroup {
+        site: "app".into(),
+        group: Some("Blog".into()),
+    };
+    let s = serde_json::to_string(&some).unwrap();
+    assert_eq!(
+        s,
+        r#"{"type":"set_site_group","site":"app","group":"Blog"}"#
+    );
+    assert_eq!(serde_json::from_str::<Request>(&s).unwrap(), some);
+
+    let none = Request::SetSiteGroup {
+        site: "app".into(),
+        group: None,
+    };
+    let s = serde_json::to_string(&none).unwrap();
+    assert_eq!(s, r#"{"type":"set_site_group","site":"app","group":null}"#);
+    assert_eq!(serde_json::from_str::<Request>(&s).unwrap(), none);
+}
+
+#[test]
+fn response_groups_byte_shape() {
+    let r = Response::Groups {
+        order: vec!["Blog".into(), "Shop".into()],
+        members: BTreeMap::from([("app".to_string(), "Blog".to_string())]),
+    };
+    let s = serde_json::to_string(&r).unwrap();
+    assert_eq!(
+        s,
+        r#"{"type":"groups","order":["Blog","Shop"],"members":{"app":"Blog"}}"#
+    );
+    assert_eq!(serde_json::from_str::<Response>(&s).unwrap(), r);
+}
+
+#[test]
+fn response_groups_empty_byte_shape() {
+    let r = Response::Groups {
+        order: vec![],
+        members: BTreeMap::new(),
+    };
+    let s = serde_json::to_string(&r).unwrap();
+    assert_eq!(s, r#"{"type":"groups","order":[],"members":{}}"#);
+    assert_eq!(serde_json::from_str::<Response>(&s).unwrap(), r);
+}

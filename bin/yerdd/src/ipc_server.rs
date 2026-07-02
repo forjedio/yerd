@@ -130,6 +130,17 @@ async fn dispatch(req: Request, state: &DaemonState) -> Response {
         | Request::SetPhp { .. }
         | Request::SetSecure { .. }
         | Request::SetWebRoot { .. } => handle_mutation(req, state).await,
+        Request::ListGroups => {
+            let cfg = state.config.lock().await;
+            Response::Groups {
+                order: cfg.groups.order.clone(),
+                members: cfg.groups.members.clone(),
+            }
+        }
+        Request::CreateGroup { .. }
+        | Request::DeleteGroup { .. }
+        | Request::SetGroupOrder { .. }
+        | Request::SetSiteGroup { .. } => handle_group_mutation(req, state).await,
         Request::ListPhp => php_versions_response(state).await,
         Request::InstallPhp { version } => install_php(version, state).await,
         Request::SetDefaultPhp { version } => set_default_php(version, state).await,
@@ -1603,6 +1614,46 @@ pub(crate) async fn handle_mutation(req: Request, state: &DaemonState) -> Respon
     state.watch_dirty.notify_one();
 
     tracing::info!(summary = %applied.summary, "applied mutation");
+    Response::Ok
+}
+
+/// Apply a group mutation (create/delete/reorder/assign). Groups are a
+/// config-only organisational overlay that never affects routing, so this uses
+/// the lighter clone → apply → validate → save → commit path (like
+/// [`set_dns_port`]) - **no** router rebuild and **no** `watch_dirty` notify,
+/// which would only provoke a needless parked-dir rescan.
+async fn handle_group_mutation(req: Request, state: &DaemonState) -> Response {
+    let mut cfg_guard = state.config.lock().await;
+    let mut new = cfg_guard.clone();
+
+    // Groups ignore `default_php`, but `apply` still takes it; capture before the
+    // mutable borrow of `new`.
+    let live_default = new.php.default;
+    let applied = match mutate::apply(
+        &mut new,
+        &*state.router.read().await,
+        &req,
+        None,
+        live_default,
+    ) {
+        Ok(a) => a,
+        Err(e) => {
+            return Response::Error {
+                code: mutate::error_code(&e),
+                message: e.to_string(),
+            }
+        }
+    };
+
+    if let Err(e) = new.validate() {
+        return internal(format!("config validation failed: {e}"));
+    }
+    if let Err(e) = new.save(&state.config_path) {
+        return internal(format!("config save failed: {e}"));
+    }
+
+    *cfg_guard = new;
+    tracing::info!(summary = %applied.summary, "applied group mutation");
     Response::Ok
 }
 

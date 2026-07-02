@@ -56,8 +56,8 @@ fn populated() -> Config {
 fn default_config_starts_with_version_line() {
     let s = Config::default().to_toml().unwrap();
     assert!(
-        s.starts_with("version = 8\n"),
-        "expected first line `version = 8`; got: {s}"
+        s.starts_with("version = 9\n"),
+        "expected first line `version = 9`; got: {s}"
     );
 }
 
@@ -313,6 +313,40 @@ fn populated_php_settings_emit_subtable_after_default_and_round_trip() {
         back.php.settings.get("memory_limit").map(String::as_str),
         Some("512M")
     );
+}
+
+#[test]
+fn default_config_emits_no_groups_table() {
+    let s = Config::default().to_toml().unwrap();
+    assert!(
+        !s.contains("[groups]"),
+        "default config must omit the groups table; got: {s}"
+    );
+}
+
+#[test]
+fn populated_groups_section_emits_after_defaults_and_round_trips() {
+    let mut c = Config::default();
+    c.groups.order.push("Blog".to_string());
+    c.groups.order.push("Shop".to_string());
+    c.groups
+        .members
+        .insert("api".to_string(), "Blog".to_string());
+    let s = c.to_toml().unwrap();
+
+    let php_at = s.find("\n[php]\n").expect("[php] table present");
+    let groups_at = s.find("\n[groups]\n").expect("[groups] table present");
+    assert!(
+        php_at < groups_at,
+        "existing tables must precede the trailing [groups] region; got: {s}"
+    );
+    assert!(
+        s.contains("[groups.members]"),
+        "membership must emit a subtable; got: {s}"
+    );
+
+    let back = Config::from_toml(&s).unwrap();
+    assert_eq!(back, c);
 }
 
 #[test]

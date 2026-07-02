@@ -461,7 +461,19 @@ export type Response =
       sites: SiteHostname[];
       /** Authorized Cloudflare zone (domain), when resolvable. */
       zone?: string;
-    };
+    }
+  | ({ type: "groups" } & GroupsState);
+
+/** crates/yerd-config/src/schema.rs - GroupsSection (mirrored on the wire by the
+ *  daemon's `Response::Groups`). Groups are a GUI organisational overlay for the
+ *  Sites view; they do not affect routing. */
+export interface GroupsState {
+  /** Group display names, in display order (the index is the ordering). */
+  order: string[];
+  /** Per-site membership: site name → group name. A site absent from the map is
+   *  ungrouped (the synthetic "Unallocated" bucket). */
+  members: Record<string, string>;
+}
 
 /** Self-update release channel (mirrors `yerd_ipc::Channel`). */
 export type UpdateChannel = "stable" | "edge";
@@ -547,6 +559,7 @@ export type JobStartedResponse = Extract<Response, { type: "job_started" }>;
 export type JobProgressResponse = Extract<Response, { type: "job_progress" }>;
 export type TunnelsResponse = Extract<Response, { type: "tunnels" }>;
 export type NamedTunnelsResponse = Extract<Response, { type: "named_tunnels" }>;
+export type GroupsResponse = Extract<Response, { type: "groups" }>;
 
 /** Privilege targets for the OS-elevated `yerd elevate` host command. */
 export type ElevateTarget = "trust" | "resolver" | "ports";

@@ -62,9 +62,10 @@ fn override_key(site: &Site) -> String {
 /// already-canonicalised directory for `Park`/`Link`. `default_php` is the
 /// version assigned to newly linked sites.
 ///
-/// Pure: no filesystem, clock, or environment access. Only the four mutation
-/// variants are handled; anything else is [`MutateError::Invalid`] (the I/O
-/// wrapper never routes `Ping`/`ListSites` here).
+/// Pure: no filesystem, clock, or environment access. Only the site- and
+/// group-mutation variants are handled; anything else is [`MutateError::Invalid`]
+/// (the I/O wrapper never routes `Ping`/`ListSites` here). The group variants
+/// ignore `router`/`canonical`/`default_php` - groups are a config-only overlay.
 pub fn apply(
     cfg: &mut Config,
     router: &SiteRouter,
@@ -79,6 +80,10 @@ pub fn apply(
         Request::Unlink { name } => apply_unlink(cfg, router, name),
         Request::SetPhp { name, version } => apply_set_php(cfg, router, name, *version),
         Request::SetSecure { name, secure } => apply_set_secure(cfg, router, name, *secure),
+        Request::CreateGroup { name } => apply_create_group(cfg, name),
+        Request::DeleteGroup { name } => Ok(apply_delete_group(cfg, name)),
+        Request::SetGroupOrder { order } => apply_set_group_order(cfg, order),
+        Request::SetSiteGroup { site, group } => apply_set_site_group(cfg, site, group.as_deref()),
         _ => Err(MutateError::Invalid("unsupported request".into())),
     }
 }
@@ -192,6 +197,99 @@ fn apply_set_secure(
         })
     } else {
         Err(MutateError::NotFound(format!("no site named {name_lc}")))
+    }
+}
+
+/// Create a site group, appended last in display order. Rejects an empty name,
+/// the reserved `Unallocated` (case-insensitive), and a case-insensitive
+/// duplicate of an existing group. The entered case is preserved. Group names
+/// are display strings (validated cross-field by `Config::validate` too).
+fn apply_create_group(cfg: &mut Config, name: &str) -> Result<Applied, MutateError> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err(MutateError::Invalid("group name must not be empty".into()));
+    }
+    if name.eq_ignore_ascii_case(yerd_config::RESERVED_GROUP_NAME) {
+        return Err(MutateError::Invalid(format!(
+            "\"{}\" is a reserved group name",
+            yerd_config::RESERVED_GROUP_NAME
+        )));
+    }
+    if cfg
+        .groups
+        .order
+        .iter()
+        .any(|g| g.eq_ignore_ascii_case(name))
+    {
+        return Err(MutateError::AlreadyExists(format!(
+            "group already exists: {name}"
+        )));
+    }
+    cfg.groups.order.push(name.to_owned());
+    Ok(Applied {
+        summary: format!("created group {name}"),
+    })
+}
+
+/// Delete a site group by exact name and drop every membership pointing at it,
+/// so its sites fall back to the synthetic "Unallocated" bucket. Idempotent - an
+/// absent group is a successful no-op.
+fn apply_delete_group(cfg: &mut Config, name: &str) -> Applied {
+    let existed = cfg.groups.order.iter().any(|g| g == name);
+    cfg.groups.order.retain(|g| g != name);
+    cfg.groups.members.retain(|_, g| g != name);
+    Applied {
+        summary: if existed {
+            format!("deleted group {name}")
+        } else {
+            format!("{name} was not a group")
+        },
+    }
+}
+
+/// Replace the group display order. `order` must be an exact permutation of the
+/// current group names (same multiset), so it can only reorder - never add,
+/// drop, or rename a group.
+fn apply_set_group_order(cfg: &mut Config, order: &[String]) -> Result<Applied, MutateError> {
+    let mut want: Vec<&str> = order.iter().map(String::as_str).collect();
+    let mut have: Vec<&str> = cfg.groups.order.iter().map(String::as_str).collect();
+    want.sort_unstable();
+    have.sort_unstable();
+    if want != have {
+        return Err(MutateError::Invalid(
+            "group order must be a permutation of the existing groups".into(),
+        ));
+    }
+    cfg.groups.order = order.to_vec();
+    Ok(Applied {
+        summary: "reordered groups".into(),
+    })
+}
+
+/// Set or clear a site's group membership (a site belongs to at most one group).
+/// `Some(group)` must name an existing group; `None` moves the site to
+/// "Unallocated". The `site` key is lowercased to match the router's lowercased
+/// site identities. Membership is intentionally not validated against live sites
+/// (a transiently-unscanned parked site keeps its group), mirroring `overrides`.
+fn apply_set_site_group(
+    cfg: &mut Config,
+    site: &str,
+    group: Option<&str>,
+) -> Result<Applied, MutateError> {
+    let site_lc = site.to_ascii_lowercase();
+    if let Some(g) = group {
+        if !cfg.groups.order.iter().any(|existing| existing == g) {
+            return Err(MutateError::NotFound(format!("no group named {g}")));
+        }
+        cfg.groups.members.insert(site_lc.clone(), g.to_owned());
+        Ok(Applied {
+            summary: format!("{site_lc} added to {g}"),
+        })
+    } else {
+        cfg.groups.members.remove(&site_lc);
+        Ok(Applied {
+            summary: format!("{site_lc} ungrouped"),
+        })
     }
 }
 
@@ -601,6 +699,185 @@ mod tests {
         )
         .unwrap();
         assert!(cfg.linked.iter().all(|s| s.name() != "foo"));
+    }
+
+    // ------------------ groups ------------------
+
+    fn create_group(cfg: &mut Config, name: &str) -> Result<Applied, MutateError> {
+        let r = empty_router();
+        apply(
+            cfg,
+            &r,
+            &Request::CreateGroup { name: name.into() },
+            None,
+            v(8, 3),
+        )
+    }
+
+    #[test]
+    fn create_group_appends_in_order() {
+        let mut cfg = Config::default();
+        create_group(&mut cfg, "Blog").unwrap();
+        create_group(&mut cfg, "Shop").unwrap();
+        assert_eq!(
+            cfg.groups.order,
+            vec!["Blog".to_string(), "Shop".to_string()]
+        );
+    }
+
+    #[test]
+    fn create_group_rejects_empty_reserved_and_duplicate() {
+        let mut cfg = Config::default();
+        assert!(matches!(
+            create_group(&mut cfg, "   "),
+            Err(MutateError::Invalid(_))
+        ));
+        assert!(matches!(
+            create_group(&mut cfg, "unallocated"),
+            Err(MutateError::Invalid(_))
+        ));
+        create_group(&mut cfg, "Blog").unwrap();
+        assert!(matches!(
+            create_group(&mut cfg, "blog"),
+            Err(MutateError::AlreadyExists(_))
+        ));
+        assert_eq!(cfg.groups.order, vec!["Blog".to_string()]);
+    }
+
+    #[test]
+    fn create_group_trims_name() {
+        let mut cfg = Config::default();
+        create_group(&mut cfg, "  Blog  ").unwrap();
+        assert_eq!(cfg.groups.order, vec!["Blog".to_string()]);
+    }
+
+    #[test]
+    fn delete_group_moves_members_to_unallocated_and_is_idempotent() {
+        let mut cfg = Config::default();
+        create_group(&mut cfg, "Blog").unwrap();
+        cfg.groups.members.insert("api".into(), "Blog".into());
+        cfg.groups.members.insert("shop".into(), "Blog".into());
+        let r = empty_router();
+        let a = apply(
+            &mut cfg,
+            &r,
+            &Request::DeleteGroup {
+                name: "Blog".into(),
+            },
+            None,
+            v(8, 3),
+        )
+        .unwrap();
+        assert!(a.summary.contains("deleted"));
+        assert!(cfg.groups.order.is_empty());
+        assert!(cfg.groups.members.is_empty());
+        let a2 = apply(
+            &mut cfg,
+            &r,
+            &Request::DeleteGroup {
+                name: "Blog".into(),
+            },
+            None,
+            v(8, 3),
+        )
+        .unwrap();
+        assert!(a2.summary.contains("was not a group"));
+    }
+
+    #[test]
+    fn set_group_order_requires_permutation() {
+        let mut cfg = Config::default();
+        create_group(&mut cfg, "Blog").unwrap();
+        create_group(&mut cfg, "Shop").unwrap();
+        let r = empty_router();
+        apply(
+            &mut cfg,
+            &r,
+            &Request::SetGroupOrder {
+                order: vec!["Shop".into(), "Blog".into()],
+            },
+            None,
+            v(8, 3),
+        )
+        .unwrap();
+        assert_eq!(
+            cfg.groups.order,
+            vec!["Shop".to_string(), "Blog".to_string()]
+        );
+
+        for bad in [
+            vec!["Shop".to_string()],
+            vec!["Blog".to_string(), "Nope".to_string()],
+            vec!["Blog".to_string(), "Shop".to_string(), "Extra".to_string()],
+        ] {
+            assert!(
+                matches!(
+                    apply(
+                        &mut cfg,
+                        &r,
+                        &Request::SetGroupOrder { order: bad.clone() },
+                        None,
+                        v(8, 3),
+                    ),
+                    Err(MutateError::Invalid(_))
+                ),
+                "expected Invalid for {bad:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn set_site_group_assigns_clears_and_lowercases() {
+        let mut cfg = Config::default();
+        create_group(&mut cfg, "Blog").unwrap();
+        let r = empty_router();
+        apply(
+            &mut cfg,
+            &r,
+            &Request::SetSiteGroup {
+                site: "API".into(),
+                group: Some("Blog".into()),
+            },
+            None,
+            v(8, 3),
+        )
+        .unwrap();
+        assert_eq!(
+            cfg.groups.members.get("api").map(String::as_str),
+            Some("Blog")
+        );
+
+        apply(
+            &mut cfg,
+            &r,
+            &Request::SetSiteGroup {
+                site: "api".into(),
+                group: None,
+            },
+            None,
+            v(8, 3),
+        )
+        .unwrap();
+        assert!(cfg.groups.members.is_empty());
+    }
+
+    #[test]
+    fn set_site_group_unknown_group_is_not_found() {
+        let mut cfg = Config::default();
+        let r = empty_router();
+        match apply(
+            &mut cfg,
+            &r,
+            &Request::SetSiteGroup {
+                site: "api".into(),
+                group: Some("Ghost".into()),
+            },
+            None,
+            v(8, 3),
+        ) {
+            Err(MutateError::NotFound(_)) => {}
+            other => panic!("expected NotFound, got {other:?}"),
+        }
     }
 
     #[test]

@@ -291,6 +291,15 @@ pub enum Response {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         zone: Option<String>,
     },
+    /// Reply to [`crate::Request::ListGroups`] - the user-defined site groups in
+    /// display order and the per-site membership map (site name → group name).
+    Groups {
+        /// Group display names, in display order.
+        order: Vec<String>,
+        /// Per-site membership: site name → group name. A site absent from the
+        /// map is ungrouped ("Unallocated").
+        members: BTreeMap<String, String>,
+    },
 }
 
 /// An available newer patch for an installed PHP minor.
@@ -371,6 +380,7 @@ mod variant_name_pinning {
             Response::Staged { .. } => {}
             Response::Tunnels { .. } => {}
             Response::NamedTunnels { .. } => {}
+            Response::Groups { .. } => {}
         }
     }
 
@@ -581,6 +591,10 @@ mod variant_name_pinning {
                 hostname: "app.example.com".into(),
             }],
             zone: None,
+        });
+        pin_response(Response::Groups {
+            order: vec!["Blog".into(), "Shop".into()],
+            members: BTreeMap::from([("app".into(), "Blog".into())]),
         });
         for c in [
             ErrorCode::NotFound,

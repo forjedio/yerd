@@ -62,6 +62,20 @@ struct Wire {
     // v8: optional `[tunnel]` table; absent in v7 and earlier → default (empty).
     #[serde(default)]
     tunnel: TunnelSectionWire,
+    // v9: optional `[groups]` table; absent in v8 and earlier → default (empty).
+    #[serde(default)]
+    groups: GroupsSectionWire,
+}
+
+/// The `[groups]` table. Both fields default to empty, so an absent table parses
+/// to [`crate::schema::GroupsSection::default`].
+#[derive(Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct GroupsSectionWire {
+    #[serde(default)]
+    order: Vec<String>,
+    #[serde(default)]
+    members: BTreeMap<String, String>,
 }
 
 /// The `[tunnel]` table. Both maps default to empty, so an absent table parses
@@ -352,6 +366,10 @@ impl TryFrom<Wire> for Config {
             named: w.tunnel.named,
             sites: w.tunnel.sites,
         };
+        let groups = crate::schema::GroupsSection {
+            order: w.groups.order,
+            members: w.groups.members,
+        };
         Ok(Config {
             version: crate::CURRENT_VERSION,
             tld,
@@ -366,6 +384,7 @@ impl TryFrom<Wire> for Config {
             mail,
             dumps,
             tunnel,
+            groups,
         })
     }
 }
@@ -379,6 +398,36 @@ pub(crate) fn validate(c: &Config) -> Result<(), ConfigError> {
     validate_php_settings(c)?;
     validate_update_channel(c)?;
     validate_tunnel(c)?;
+    validate_groups(c)?;
+    Ok(())
+}
+
+/// `[groups]` invariants: every group name in `order` is non-empty, not the
+/// reserved `Unallocated` (case-insensitive - that name is the GUI's synthetic
+/// ungrouped bucket), and unique case-insensitively; every `members` value
+/// references a name present in `order`. Group names are arbitrary display
+/// strings and never touch the filesystem, so - unlike `[tunnel]` keys - the
+/// charset is intentionally unrestricted beyond non-empty. Whether a keyed site
+/// actually exists is not checked: parked sites are discovered from disk and
+/// have no config record.
+fn validate_groups(c: &Config) -> Result<(), ConfigError> {
+    let mut seen: BTreeSet<String> = BTreeSet::new();
+    for name in &c.groups.order {
+        if name.is_empty() {
+            return Err(ve(ValidateErrorReason::GroupNameEmpty));
+        }
+        if name.eq_ignore_ascii_case(crate::schema::RESERVED_GROUP_NAME) {
+            return Err(ve(ValidateErrorReason::GroupNameReserved));
+        }
+        if !seen.insert(name.to_ascii_lowercase()) {
+            return Err(ve(ValidateErrorReason::GroupDuplicate));
+        }
+    }
+    for group in c.groups.members.values() {
+        if !c.groups.order.contains(group) {
+            return Err(ve(ValidateErrorReason::GroupMemberDangling));
+        }
+    }
     Ok(())
 }
 
@@ -638,7 +687,7 @@ mod tests {
         match Config::from_toml("version = 99\n") {
             Err(ConfigError::UnsupportedVersion {
                 found: 99,
-                current: 8,
+                current: 9,
             }) => {}
             other => panic!("expected UnsupportedVersion, got {other:?}"),
         }
@@ -723,6 +772,91 @@ mod tests {
         let unique = "version = 8\n[tunnel.sites]\n\
                       app = \"app.example.com\"\nblog = \"blog.example.com\"\n";
         assert!(Config::from_toml(unique).is_ok());
+    }
+
+    #[test]
+    fn groups_section_parses_and_round_trips() {
+        let s = "version = 9\n[groups]\norder = [\"Blog\", \"Shop\"]\n\
+                 [groups.members]\napi = \"Blog\"\n";
+        let c = Config::from_toml(s).unwrap();
+        assert_eq!(c.groups.order, vec!["Blog".to_string(), "Shop".to_string()]);
+        assert_eq!(
+            c.groups.members.get("api").map(String::as_str),
+            Some("Blog")
+        );
+        let back = Config::from_toml(&c.to_toml().unwrap()).unwrap();
+        assert_eq!(back, c);
+    }
+
+    #[test]
+    fn groups_absent_table_is_empty_and_migrates() {
+        let c = Config::from_toml("version = 8\n").unwrap();
+        assert!(c.groups.is_empty());
+    }
+
+    #[test]
+    fn validate_rejects_empty_group_name() {
+        let mut c = Config::default();
+        c.groups.order.push(String::new());
+        match c.validate() {
+            Err(ConfigError::Validate {
+                reason: ValidateErrorReason::GroupNameEmpty,
+            }) => {}
+            other => panic!("expected GroupNameEmpty, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn validate_rejects_reserved_group_name() {
+        for name in ["Unallocated", "unallocated", "UNALLOCATED"] {
+            let mut c = Config::default();
+            c.groups.order.push(name.to_string());
+            match c.validate() {
+                Err(ConfigError::Validate {
+                    reason: ValidateErrorReason::GroupNameReserved,
+                }) => {}
+                other => panic!("expected GroupNameReserved for {name}, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn validate_rejects_case_insensitive_duplicate_group() {
+        let mut c = Config::default();
+        c.groups.order.push("Blog".to_string());
+        c.groups.order.push("blog".to_string());
+        match c.validate() {
+            Err(ConfigError::Validate {
+                reason: ValidateErrorReason::GroupDuplicate,
+            }) => {}
+            other => panic!("expected GroupDuplicate, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn validate_rejects_dangling_group_membership() {
+        let mut c = Config::default();
+        c.groups.order.push("Blog".to_string());
+        c.groups
+            .members
+            .insert("api".to_string(), "Nope".to_string());
+        match c.validate() {
+            Err(ConfigError::Validate {
+                reason: ValidateErrorReason::GroupMemberDangling,
+            }) => {}
+            other => panic!("expected GroupMemberDangling, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn validate_accepts_valid_groups() {
+        let mut c = Config::default();
+        c.groups.order.push("Blog".to_string());
+        c.groups.order.push("Shop".to_string());
+        c.groups
+            .members
+            .insert("api".to_string(), "Blog".to_string());
+        c.validate().unwrap();
     }
 
     #[test]
