@@ -23,12 +23,12 @@ import { useDaemon } from "@/composables/useDaemon";
 import { useDaemonStart } from "@/composables/useDaemonStart";
 import { MIN_PORT, MAX_PORT, useFallbackPorts } from "@/composables/useFallbackPorts";
 import { useOnboarding } from "@/composables/useOnboarding";
+import { loadPlatform, usePlatform } from "@/composables/usePlatform";
 import { useToast } from "@/composables/useToast";
 import {
   availablePhp,
   cliPathStatus,
   getAutostart,
-  hostPlatform,
   installCliToPath,
   installPhpWithProgress,
   IpcError,
@@ -270,16 +270,17 @@ async function doInstallPhp(): Promise<void> {
   }
 }
 
-// ── step 2: install yerd on PATH (macOS only; the Linux package (.deb/.pkg.tar.zst)
-// already ships it on PATH, so the button is hidden there - see `isMac`). Optional
-// and recommended; it never blocks "Next". ──
-const platform = ref("");
-const isMac = computed(() => platform.value === "macos");
+// ── step 2: install yerd on PATH. macOS and Linux (not yet wired up on
+// Windows - see `supportsPathInstall`). `yerd` itself is already on PATH on a
+// packaged Linux install, but the PHP/tool shims it manages live in the same
+// `{data}/bin` dir this installs onto PATH, so it's still useful there.
+// Optional and recommended; it never blocks "Next". ──
+const { supportsPathInstall } = usePlatform();
 const cli = ref<CliPathStatus | null>(null);
 const cliBusy = ref(false);
 
 async function loadCliStatus(): Promise<void> {
-  if (!isMac.value) return;
+  if (!supportsPathInstall.value) return;
   try {
     cli.value = await cliPathStatus();
   } catch {
@@ -301,12 +302,7 @@ async function installCli(): Promise<void> {
 }
 
 onMounted(() => {
-  hostPlatform()
-    .then((p) => {
-      platform.value = p;
-      void loadCliStatus();
-    })
-    .catch(() => {});
+  void loadPlatform().then(() => loadCliStatus());
 });
 
 // ── step 3: park a folder ──
@@ -590,22 +586,22 @@ function onBack(): void {
               PHP page.
             </p>
 
-            <!-- Optional (recommended): put the `yerd` CLI on PATH. macOS only -
-                 the Linux package (.deb/.pkg.tar.zst) already ships it. Never blocks Continue. -->
+            <!-- Optional (recommended): put `yerd` and its managed tool shims (php,
+                 composer, ...) on PATH. Never blocks Continue. -->
             <div
-              v-if="isMac"
+              v-if="supportsPathInstall"
               class="flex items-center justify-between gap-4 rounded-md border bg-muted/30 p-3"
             >
               <div>
                 <p class="text-sm font-medium">
-                  Install <code>yerd</code> on your PATH
+                  Add <code>yerd</code> to your PATH
                   <span class="text-muted-foreground">(recommended)</span>
                 </p>
                 <p class="text-xs text-muted-foreground">
                   {{
                     cli?.installed
                       ? "Installed - run `yerd` in a new terminal window."
-                      : "Symlinks the bundled CLI so you can run `yerd` in your terminal."
+                      : "Lets you run `yerd`, `php`, and installed tools directly in your terminal."
                   }}
                 </p>
               </div>
