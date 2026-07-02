@@ -194,10 +194,74 @@ jobs:
           fail_on_unmatched_files: true
           files: dist/*
 
+# Regroup GitHub's auto-generated notes (What's Changed) into
+      # Features / Fixes / Others by PR-title prefix, WHILE the release is still a
+      # hidden draft, so it goes public already formatted. GH_TOKEN/GH_REPO come
+      # from the job env. The prefix convention is enforced on PRs by pr-title.yml.
+      - name: Group release notes by prefix
+        run: |
+          set -euo pipefail
+          RAW_NOTES=$(gh release view "${GITHUB_REF_NAME}" --json body -q .body)
+          NOTES=$(printf '%s' "$RAW_NOTES" | bash .github/scripts/group-release-notes.sh)
+          gh release edit "${GITHUB_REF_NAME}" --notes "$NOTES"
+
       - name: Publish (flip draft -> public)
         run: |
           if [[ "${GITHUB_REF_NAME}" == *-* ]]; then
             gh release edit "${GITHUB_REF_NAME}" --draft=false --prerelease
           else
             gh release edit "${GITHUB_REF_NAME}" --draft=false --latest
+          fi
+
+      # Announce the now-public release to Discord. Best-effort: a missing webhook
+      # or a failed POST must never fail the release, hence continue-on-error + the
+      # explicit guard. Prerelease (tag has a '-') switches the embed colour/footer
+      # to the pre-release channel styling.
+      - name: Notify Discord
+        continue-on-error: true
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          PRERELEASE: ${{ contains(github.ref_name, '-') }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${DISCORD_WEBHOOK_URL:-}" ]]; then
+            echo "DISCORD_WEBHOOK_URL not set, skipping Discord notification"
+            exit 0
+          fi
+          TAG="${GITHUB_REF_NAME}"
+          # Drop the "by @author in <PR-url>" suffixes GitHub appends; cleaner in Discord.
+          NOTES=$(gh release view "$TAG" --json body --jq .body \
+            | sed -E 's# by @[A-Za-z0-9_-]+ in https://github\.com/[^ ]+/pull/[0-9]+##g')
+          # Discord embed descriptions cap at 4096; stay well under with a margin.
+          if [[ ${#NOTES} -gt 3800 ]]; then
+            NOTES="${NOTES:0:3800}…"
+          fi
+          URL="https://github.com/${GH_REPO}/releases/tag/${TAG}"
+          if [[ "$PRERELEASE" == "true" ]]; then
+            FOOTER="Pre-release channel"
+            COLOR=15844367
+          else
+            FOOTER="Stable channel"
+            COLOR=3066993
+          fi
+          PAYLOAD=$(jq -n \
+            --arg title "Yerd ${TAG} released" \
+            --arg url "$URL" \
+            --arg notes "$NOTES" \
+            --arg footer "$FOOTER" \
+            --argjson color "$COLOR" \
+            '{
+              username: "Yerd Releases",
+              embeds: [{
+                title: $title,
+                url: $url,
+                description: $notes,
+                color: $color,
+                footer: { text: $footer },
+                timestamp: (now | todate)
+              }]
+            }')
+          if ! curl -fsSL -H "Content-Type: application/json" \
+            -X POST -d "$PAYLOAD" "$DISCORD_WEBHOOK_URL"; then
+            echo "Discord notification failed; release succeeded regardless"
           fi

@@ -1,0 +1,47 @@
+name: pr-title
+
+# Enforce the bracket-prefix PR-title convention on PRs into `main` (the branch we
+# release from). The prefix drives the grouped release notes
+# (.github/scripts/group-release-notes.sh): [Feat] -> Features, [Fix] -> Fixes,
+# and the rest -> Others. A wrong-format title fails this check; make it a
+# required status check on `main` in branch protection to block the merge.
+#
+# `edited` is included so retitling a PR re-runs the check.
+
+concurrency:
+  group: pr-title-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+on:
+  pull_request:
+    types:
+      - opened
+      - edited
+      - reopened
+      - synchronize
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-22.04
+
+    name: Validate PR title
+
+    steps:
+      - name: Check title prefix
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          if [[ "$PR_TITLE" =~ ^\[(Feat|Fix|Docs|Task)\]\ .+ ]]; then
+            echo "PR title is valid: $PR_TITLE"
+            exit 0
+          fi
+
+          echo "::error::Invalid PR title: \"$PR_TITLE\""
+          echo "::error::PR titles must start with [Feat], [Fix], [Docs] or [Task], followed by a space and a description."
+          echo "::error::Examples: \"[Feat] Per-site PHP runtime settings\" or \"[Fix] Resolve .test HTTPS handshake\"."
+          exit 1
