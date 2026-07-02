@@ -15,13 +15,13 @@ import Spinner from "@/components/ui/Spinner.vue";
 import Switch from "@/components/ui/Switch.vue";
 import { useDaemon } from "@/composables/useDaemon";
 import { MIN_PORT, MAX_PORT, useFallbackPorts } from "@/composables/useFallbackPorts";
+import { loadPlatform, usePlatform } from "@/composables/usePlatform";
 import { useToast } from "@/composables/useToast";
 import {
   cliPathStatus,
   daemonInfo,
   dumpsStatus,
   getAutostart,
-  hostPlatform,
   installCliToPath,
   IpcError,
   openLoginItems,
@@ -40,13 +40,9 @@ const { pref, setTheme } = useTheme();
 const busy = ref<string | null>(null);
 const autostart = ref<AutostartState | null>(null);
 // Host platform - drives macOS-specific daemon copy (on macOS the daemon runs
-// as a background login item registered via SMAppService; see below).
-const platform = ref("");
-const isMac = computed(() => platform.value === "macos");
-const isLinux = computed(() => platform.value === "linux");
-// macOS and Linux (not yet wired up on Windows): whether the bundled `yerd`
-// CLI is symlinked onto PATH.
-const supportsPathInstall = computed(() => isMac.value || isLinux.value);
+// as a background login item registered via SMAppService; see below) and
+// whether the bundled `yerd` CLI on-PATH card is shown.
+const { isMac, supportsPathInstall } = usePlatform();
 const cli = ref<CliPathStatus | null>(null);
 
 const themeOptions = [
@@ -101,9 +97,7 @@ async function openApproval(): Promise<void> {
 
 onMounted(() => {
   loadAutostart();
-  hostPlatform()
-    .then((p) => (platform.value = p))
-    .catch(() => {});
+  void loadPlatform();
   loadCli();
   if (running.value) {
     void loadApplicationPorts();

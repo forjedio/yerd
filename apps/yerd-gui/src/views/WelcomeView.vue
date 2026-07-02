@@ -23,12 +23,12 @@ import { useDaemon } from "@/composables/useDaemon";
 import { useDaemonStart } from "@/composables/useDaemonStart";
 import { MIN_PORT, MAX_PORT, useFallbackPorts } from "@/composables/useFallbackPorts";
 import { useOnboarding } from "@/composables/useOnboarding";
+import { loadPlatform, usePlatform } from "@/composables/usePlatform";
 import { useToast } from "@/composables/useToast";
 import {
   availablePhp,
   cliPathStatus,
   getAutostart,
-  hostPlatform,
   installCliToPath,
   installPhpWithProgress,
   IpcError,
@@ -275,10 +275,7 @@ async function doInstallPhp(): Promise<void> {
 // packaged Linux install, but the PHP/tool shims it manages live in the same
 // `{data}/bin` dir this installs onto PATH, so it's still useful there.
 // Optional and recommended; it never blocks "Next". ──
-const platform = ref("");
-const isMac = computed(() => platform.value === "macos");
-const isLinux = computed(() => platform.value === "linux");
-const supportsPathInstall = computed(() => isMac.value || isLinux.value);
+const { supportsPathInstall } = usePlatform();
 const cli = ref<CliPathStatus | null>(null);
 const cliBusy = ref(false);
 
@@ -305,12 +302,7 @@ async function installCli(): Promise<void> {
 }
 
 onMounted(() => {
-  hostPlatform()
-    .then((p) => {
-      platform.value = p;
-      void loadCliStatus();
-    })
-    .catch(() => {});
+  void loadPlatform().then(() => loadCliStatus());
 });
 
 // ── step 3: park a folder ──
