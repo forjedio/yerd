@@ -1,4 +1,4 @@
-import { computed, ref, type ComputedRef, type Ref } from "vue";
+import { computed, readonly, ref, type ComputedRef, type Ref } from "vue";
 
 import { hostPlatform } from "@/ipc/client";
 
@@ -9,20 +9,24 @@ import { hostPlatform } from "@/ipc/client";
 const platform = ref("");
 let loadPromise: Promise<void> | null = null;
 
-/** Fetch the host platform once; safe to call from multiple components. */
+/** Fetch the host platform once; safe to call from multiple components. A
+ *  failed call clears the cache so a later call can retry, rather than
+ *  leaving `platform` permanently empty. */
 export function loadPlatform(): Promise<void> {
   if (!loadPromise) {
     loadPromise = hostPlatform()
       .then((p) => {
         platform.value = p;
       })
-      .catch(() => {});
+      .catch(() => {
+        loadPromise = null;
+      });
   }
   return loadPromise;
 }
 
 export interface PlatformInfo {
-  platform: Ref<string>;
+  platform: Readonly<Ref<string>>;
   isMac: ComputedRef<boolean>;
   isLinux: ComputedRef<boolean>;
   /** macOS and Linux only - PATH management isn't wired up for Windows yet. */
@@ -31,7 +35,7 @@ export interface PlatformInfo {
 
 export function usePlatform(): PlatformInfo {
   return {
-    platform,
+    platform: readonly(platform),
     isMac: computed(() => platform.value === "macos"),
     isLinux: computed(() => platform.value === "linux"),
     supportsPathInstall: computed(() => platform.value === "macos" || platform.value === "linux"),
