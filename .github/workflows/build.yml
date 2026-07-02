@@ -400,7 +400,7 @@ jobs:
         run: |
           pacman -Syu --noconfirm --needed \
             rust cargo nodejs npm git \
-            webkit2gtk-4.1 gtk3 libayatana-appindicator librsvg libcap \
+            webkit2gtk-4.1 gtk3 libayatana-appindicator librsvg libcap libxcrypt-compat \
             namcap desktop-file-utils
 
       - name: Build the Arch package
