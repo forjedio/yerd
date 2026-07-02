@@ -25,23 +25,8 @@ pub fn static_candidate(url_path: &str) -> Option<PathBuf> {
         return None;
     }
 
-    let mut rel = PathBuf::new();
-    let mut segments = 0usize;
-    for raw in path.split('/') {
-        if raw.is_empty() {
-            continue;
-        }
-        let seg = percent_decode(raw)?;
-        if seg.is_empty() || seg == "." || seg == ".." {
-            return None;
-        }
-        if seg.bytes().any(|b| b == b'/' || b == b'\\' || b == 0) {
-            return None;
-        }
-        rel.push(seg);
-        segments += 1;
-    }
-    if segments == 0 {
+    let rel = resolve_segments(path)?;
+    if rel.as_os_str().is_empty() {
         return None;
     }
     Some(rel)
@@ -63,6 +48,16 @@ pub fn directory_candidate(url_path: &str) -> Option<PathBuf> {
         return None;
     }
 
+    resolve_segments(path)
+}
+
+/// Percent-decode and traversal-guard every `/`-separated segment of `path`,
+/// building the safe relative path. `None` if any segment is a malformed
+/// escape, empty, `.`/`..`, or contains an embedded `/`, `\`, or NUL after
+/// decoding. Shared by [`static_candidate`] and [`directory_candidate`] so
+/// the traversal guard can't drift between the two; each caller applies its
+/// own path-shape gate (root/trailing-slash rules) before calling this.
+fn resolve_segments(path: &str) -> Option<PathBuf> {
     let mut rel = PathBuf::new();
     for raw in path.split('/') {
         if raw.is_empty() {

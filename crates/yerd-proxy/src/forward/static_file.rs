@@ -39,7 +39,8 @@ pub async fn try_serve(
     }
 
     let rel = static_candidate(uri_path)?;
-    let real_file = canonical_within(&served_root.join(&rel), served_root).await?;
+    let real_root = tokio::fs::canonicalize(served_root).await.ok()?;
+    let real_file = canonical_within(&served_root.join(&rel), &real_root).await?;
 
     if is_php_source(&real_file) {
         return None;
@@ -77,7 +78,8 @@ pub async fn try_serve_index(
     }
 
     let rel = directory_candidate(uri_path)?;
-    let real_dir = canonical_within(&served_root.join(&rel), served_root).await?;
+    let real_root = tokio::fs::canonicalize(served_root).await.ok()?;
+    let real_dir = canonical_within(&served_root.join(&rel), &real_root).await?;
 
     if !tokio::fs::metadata(&real_dir).await.ok()?.is_dir() {
         return None;
@@ -90,7 +92,7 @@ pub async fn try_serve_index(
     }
 
     for name in ["index.html", "index.htm"] {
-        let Some(real_file) = canonical_within(&real_dir.join(name), served_root).await else {
+        let Some(real_file) = canonical_within(&real_dir.join(name), &real_root).await else {
             continue;
         };
         if is_php_source(&real_file) {
@@ -107,29 +109,36 @@ pub async fn try_serve_index(
     None
 }
 
-/// Canonicalise `candidate` and verify it's still within `served_root`
-/// (defence-in-depth against symlink traversal beyond the string-level guard
-/// in the `pure` candidate functions).
-async fn canonical_within(candidate: &Path, served_root: &Path) -> Option<PathBuf> {
+/// Canonicalise `candidate` and verify it's still within `real_root`,
+/// defence-in-depth against symlink traversal beyond the string-level guard
+/// in the `pure` candidate functions. `real_root` is an already-canonicalised
+/// `served_root`, passed in so a caller checking several candidates against
+/// the same root (e.g. `try_serve_index`'s directory plus each index-file
+/// probe) only resolves `served_root` once.
+async fn canonical_within(candidate: &Path, real_root: &Path) -> Option<PathBuf> {
     let real = tokio::fs::canonicalize(candidate).await.ok()?;
-    let real_root = tokio::fs::canonicalize(served_root).await.ok()?;
-    real.starts_with(&real_root).then_some(real)
+    real.starts_with(real_root).then_some(real)
 }
 
-/// Read `path` and build a 200 response with a guessed `Content-Type`, empty
-/// body for `HEAD` requests.
+/// Build a 200 response with a guessed `Content-Type`. `HEAD` stats `path`
+/// for its length and returns an empty body without reading the file's
+/// contents; any other method reads and returns the full body.
 async fn respond_with_file(method: &Method, path: &Path) -> Option<Response<BoxBody>> {
-    let bytes = tokio::fs::read(path).await.ok()?;
-    let len = bytes.len();
     let content_type = content_type_for(path);
-    let head_only = *method == Method::HEAD;
 
-    let body: BoxBody = if head_only || bytes.is_empty() {
-        empty_body()
+    let (body, len): (BoxBody, u64) = if *method == Method::HEAD {
+        (empty_body(), tokio::fs::metadata(path).await.ok()?.len())
     } else {
-        http_body_util::Full::new(Bytes::from(bytes))
-            .map_err(|never| match never {})
-            .boxed()
+        let bytes = tokio::fs::read(path).await.ok()?;
+        let len = bytes.len() as u64;
+        let body = if bytes.is_empty() {
+            empty_body()
+        } else {
+            http_body_util::Full::new(Bytes::from(bytes))
+                .map_err(|never| match never {})
+                .boxed()
+        };
+        (body, len)
     };
 
     Response::builder()

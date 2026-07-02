@@ -346,6 +346,10 @@ async fn static_file_is_served_without_touching_fcgi() {
     let _ = tokio::time::timeout(std::time::Duration::from_secs(5), proxy_task).await;
 }
 
+/// The configured FastCGI backend (`127.0.0.1:1`) is deliberately
+/// unreachable: if the request ever fell through to `fcgi::forward` it
+/// would hard-fail, so a 200 here proves the directory index short-circuited
+/// the front-controller path.
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn directory_index_html_served_when_no_index_php() {
     let docroot = tempfile::tempdir().unwrap();
@@ -361,9 +365,6 @@ async fn directory_index_html_served_when_no_index_php() {
     router.insert(site).unwrap();
     let router = Arc::new(tokio::sync::RwLock::new(router));
 
-    // No FastCGI backend is reachable at this address - if the request ever
-    // fell through to `fcgi::forward` it would hard-fail, so a 200 here
-    // proves the directory index short-circuited it.
     let resolver = Arc::new(StaticResolver {
         backend: Backend::PhpFpmTcp {
             addr: "127.0.0.1:1".parse().unwrap(),
@@ -438,6 +439,10 @@ async fn directory_index_htm_served_as_fallback() {
     let _ = tokio::time::timeout(std::time::Duration::from_secs(5), proxy_task).await;
 }
 
+/// The response body alone can't distinguish "correctly deferred to the
+/// front controller" from "the fix is entirely absent" - both forward to
+/// FastCGI and get the same canned reply. The assertion on `SCRIPT_NAME`
+/// below is what proves the request actually reached `index.php`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn index_php_present_wins_over_index_html() {
     let docroot = tempfile::tempdir().unwrap();
@@ -486,10 +491,6 @@ async fn index_php_present_wins_over_index_html() {
     let body = client_get(proxy_addr, "app.test", "/").await;
     assert_eq!(body, b"from fpm");
 
-    // The body alone can't distinguish "correctly deferred to the front
-    // controller" from "the fix is entirely absent" (both forward to fcgi and
-    // get the same canned reply) - assert the FastCGI params actually show
-    // the request reached the front controller.
     let params = captured.lock().await.clone();
     assert_eq!(
         params.get("SCRIPT_NAME").map(String::as_str),
@@ -501,6 +502,8 @@ async fn index_php_present_wins_over_index_html() {
     let _ = fake_task.await;
 }
 
+/// A real directory with none of index.php/html/htm must still reach the
+/// front controller rather than dead-ending in a 404.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn directory_with_no_index_at_all_falls_through_to_fcgi() {
     let docroot = tempfile::tempdir().unwrap();
@@ -545,8 +548,6 @@ async fn directory_with_no_index_at_all_falls_through_to_fcgi() {
         .await;
     });
 
-    // A real directory (docroot/empty) with none of index.php/html/htm must
-    // still reach the front controller, not dead-end in a 404.
     let body = client_get(proxy_addr, "app.test", "/empty/").await;
     assert_eq!(body, b"from fpm");
     assert_eq!(
@@ -559,6 +560,9 @@ async fn directory_with_no_index_at_all_falls_through_to_fcgi() {
     let _ = fake_task.await;
 }
 
+/// Covers the trailing-slash pretty-URL framework route (e.g.
+/// `/blog/some-post/`) where nothing on disk matches the path:
+/// `canonicalize()` fails, and the request must still reach `index.php`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn nonexistent_directory_falls_through_to_fcgi() {
     let docroot = tempfile::tempdir().unwrap();
@@ -602,9 +606,6 @@ async fn nonexistent_directory_falls_through_to_fcgi() {
         .await;
     });
 
-    // The shape of every trailing-slash pretty-URL framework route
-    // (/blog/some-post/) where nothing on disk matches the path at all -
-    // canonicalize() fails, and the request must still reach index.php.
     let body = client_get(proxy_addr, "app.test", "/blog/some-post/").await;
     assert_eq!(body, b"from fpm");
     assert_eq!(
@@ -730,8 +731,6 @@ async fn symlinked_index_html_escaping_root_is_not_served() {
         .await;
     });
 
-    // Must fall through to the front controller, never leak the symlink
-    // target's contents.
     let body = client_get(proxy_addr, "app.test", "/").await;
     assert_eq!(body, b"from fpm");
     assert!(!body
