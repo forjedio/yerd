@@ -28,7 +28,10 @@ jobs:
     outputs:
       version: ${{ steps.ver.outputs.version }}
     steps:
+      # Only runs xtask version-check (reads manifests); no authenticated git op.
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - name: Assert tag == manifests
         run: cargo run -p xtask -- version-check "${GITHUB_REF_NAME}"
       - id: ver
@@ -194,7 +197,7 @@ jobs:
           fail_on_unmatched_files: true
           files: dist/*
 
-# Regroup GitHub's auto-generated notes (What's Changed) into
+      # Regroup GitHub's auto-generated notes (What's Changed) into
       # Features / Fixes / Others by PR-title prefix, WHILE the release is still a
       # hidden draft, so it goes public already formatted. GH_TOKEN/GH_REPO come
       # from the job env. The prefix convention is enforced on PRs by pr-title.yml.
@@ -261,7 +264,8 @@ jobs:
                 timestamp: (now | todate)
               }]
             }')
-          if ! curl -fsSL -H "Content-Type: application/json" \
+          if ! curl -fsSL --connect-timeout 10 --max-time 30 \
+            -H "Content-Type: application/json" \
             -X POST -d "$PAYLOAD" "$DISCORD_WEBHOOK_URL"; then
             echo "Discord notification failed; release succeeded regardless"
           fi

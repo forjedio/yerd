@@ -55,8 +55,12 @@ jobs:
       # Build the GUI bundles (.deb on Linux, per-arch .dmg on macOS) — the ONLY
       # shipped desktop artifact. The daemon + CLI + helper are embedded in the
       # bundle (Tauri externalBin); there is no standalone CLI tarball/.deb.
+      # No authenticated git op in the GUI build (npm ci / cargo / tauri), so
+      # don't leave the token in .git/config where third-party build code runs.
       - uses: actions/checkout@v4
         if: matrix.kind == 'gui'
+        with:
+          persist-credentials: false
 
       - name: Install Linux GUI build deps
         if: matrix.kind == 'gui' && runner.os == 'Linux'

@@ -46,7 +46,11 @@ jobs:
       version: ${{ steps.plan.outputs.version }}
       dest: ${{ steps.plan.outputs.dest }}
     steps:
+      # Only runs `cargo run -p xtask` (read-only); no authenticated git op, so
+      # don't leave the token in .git/config for the reusable build to inherit.
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - id: plan
         # Inputs are env-mapped (never interpolated into the script body) so the
