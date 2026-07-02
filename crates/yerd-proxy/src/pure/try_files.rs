@@ -47,6 +47,39 @@ pub fn static_candidate(url_path: &str) -> Option<PathBuf> {
     Some(rel)
 }
 
+/// Turn a request URL path into a safe relative **directory** path under the
+/// served root, for resolving a directory-index file (`index.html` /
+/// `index.htm`) when no `index.php` is present there.
+///
+/// `None` for anything that isn't a directory request (no trailing `/`, and
+/// not the bare root `/`), or that fails the traversal guard. Percent-decoding
+/// and traversal rules match [`static_candidate`]; unlike it, this accepts a
+/// trailing `/` and returns the directory itself (the root `/` decodes to an
+/// empty relative path, i.e. `served_root` itself).
+#[must_use]
+pub fn directory_candidate(url_path: &str) -> Option<PathBuf> {
+    let path = url_path.split('?').next().unwrap_or(url_path);
+    if !path.starts_with('/') || (path != "/" && !path.ends_with('/')) {
+        return None;
+    }
+
+    let mut rel = PathBuf::new();
+    for raw in path.split('/') {
+        if raw.is_empty() {
+            continue;
+        }
+        let seg = percent_decode(raw)?;
+        if seg.is_empty() || seg == "." || seg == ".." {
+            return None;
+        }
+        if seg.bytes().any(|b| b == b'/' || b == b'\\' || b == 0) {
+            return None;
+        }
+        rel.push(seg);
+    }
+    Some(rel)
+}
+
 /// Whether `path` looks like PHP source - these must never be served as a static
 /// file (it would leak source), so the front controller handles them instead.
 #[must_use]
@@ -184,6 +217,32 @@ mod tests {
     }
 
     #[test]
+    fn directory_candidate_accepts_root_and_trailing_slashes() {
+        assert_eq!(directory_candidate("/"), Some(PathBuf::new()));
+        assert_eq!(directory_candidate("/foo/"), Some(PathBuf::from("foo")));
+        assert_eq!(
+            directory_candidate("/foo/bar/"),
+            Some(PathBuf::from("foo/bar"))
+        );
+        assert_eq!(directory_candidate("/foo/?x=1"), Some(PathBuf::from("foo")));
+    }
+
+    #[test]
+    fn directory_candidate_rejects_non_directory_paths() {
+        assert_eq!(directory_candidate(""), None);
+        assert_eq!(directory_candidate("/foo"), None);
+        assert_eq!(directory_candidate("/foo/bar"), None);
+    }
+
+    #[test]
+    fn directory_candidate_rejects_traversal() {
+        assert_eq!(directory_candidate("/../"), None);
+        assert_eq!(directory_candidate("/foo/../../bar/"), None);
+        assert_eq!(directory_candidate("/%2e%2e/"), None);
+        assert_eq!(directory_candidate("/foo%2fbar/"), None);
+    }
+
+    #[test]
     fn php_sources_are_flagged() {
         assert!(is_php_source(Path::new("index.php")));
         assert!(is_php_source(Path::new("legacy.PHTML")));
@@ -193,6 +252,14 @@ mod tests {
 
     #[test]
     fn content_types_cover_common_assets() {
+        assert_eq!(
+            content_type_for(Path::new("index.html")),
+            "text/html; charset=utf-8"
+        );
+        assert_eq!(
+            content_type_for(Path::new("index.htm")),
+            "text/html; charset=utf-8"
+        );
         assert_eq!(content_type_for(Path::new("favicon.ico")), "image/x-icon");
         assert_eq!(
             content_type_for(Path::new("app.css")),

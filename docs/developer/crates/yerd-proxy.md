@@ -26,11 +26,11 @@ crates/yerd-proxy/src/
 │   ├── mod.rs
 │   ├── cgi_params.rs   # build the CGI/1.1 param list for FastCGI
 │   ├── fcgi_codec.rs   # FastCGI record framing (encode/decode)
-│   ├── try_files.rs    # static-file candidate resolution + MIME map
+│   ├── try_files.rs    # static-file/directory-index candidate resolution + MIME map
 │   └── redirect.rs     # HTTP → HTTPS redirect URI builder
 └── forward/         # async per-backend forwarding I/O
     ├── mod.rs          # BoxBody + body helpers
-    ├── static_file.rs  # serve a real static file from the served root
+    ├── static_file.rs  # serve a real static file, or a directory's index.html/.htm
     ├── fcgi.rs         # FastCGI forwarder (PHP-FPM)
     ├── http.rs         # plain HTTP/1.1 forwarder (FrankenPHP)
     └── upgrade.rs      # Connection: Upgrade tunnel (WebSocket etc.)
@@ -93,7 +93,7 @@ For requests that reach FastCGI, the policy is Caddy-style front-controller rout
 - `PATH_INFO       = <original path>`
 - `REQUEST_URI     = <original path_and_query>`
 
-Static files are handled *before* this, by a `try_files`-style short-circuit (see [`try_files`](#try_files-static-file-resolution) and [`static_file`](#static_file-serving-real-files)): a request that resolves to a real, non-PHP file under the served root is returned directly, and only everything else falls through to the front controller. Arbitrary on-disk `.php` scripts are still routed through `index.php` (and PHP source is never served as a static file).
+Static files are handled *before* this, by a `try_files`-style short-circuit (see [`try_files`](#try_files-static-file-resolution) and [`static_file`](#static_file-serving-real-files)): a request that resolves to a real, non-PHP file under the served root is returned directly. A directory-style request (trailing slash, including the site root) with no `index.php` falls back to that directory's `index.html`/`index.htm` next, so a plain static site works without a front controller at all. Only everything else falls through to FastCGI. Arbitrary on-disk `.php` scripts are still routed through `index.php` (and PHP source is never served as a static file, directly or via a directory index).
 :::
 
 ::: info `document_root` here is the site's *served web root*
@@ -117,6 +117,7 @@ It strips any inbound port from `host` (handling both `host:80` and bracketed IP
 `try_files` decides, purely, whether a request *could* be a static file and what its safe relative path and MIME type would be. It does no I/O - the [`static_file`](#static_file-serving-real-files) forwarder does the actual stat/read.
 
 - **`static_candidate(path)`** maps a URL path to a safe relative `PathBuf`, or `None` when the request must go to the front controller instead. It returns `None` for `/`, for a directory-style request (trailing slash), and for any traversal attempt. It percent-decodes the path and rejects encoded slashes and NUL bytes, so a decoded segment can never escape the served root.
+- **`directory_candidate(path)`** is `static_candidate`'s counterpart for directory-index resolution: it maps a *directory-style* URL path (trailing slash, or the bare root `/`) to a safe relative directory `PathBuf`, or `None` for anything else. Same percent-decoding and traversal rules as `static_candidate` - the two intentionally partition every URL shape between them (a path never satisfies both).
 - **`is_php_source(path)`** flags PHP source extensions (`php`, `phtml`, `php3`/`php4`/`php5`/`php7`, `phps`, `pht`) so they are *never* served as static bytes - they fall through to FastCGI.
 - **`content_type_for(path)`** maps a file extension to a `Content-Type` for the response (a small MIME table, defaulting to `application/octet-stream`).
 
@@ -244,7 +245,8 @@ The hyper service is **infallible** - internal errors are logged and turned into
 4. **Resolve backend** via `BackendResolver::backend_for(&site)`. Errors already in the connect/protocol/resolver family pass through; any other variant is wrapped in `ProxyError::BackendResolver { host, source }`.
 5. **Upgrade dispatch.** If `upgrade::is_upgrade(headers)`, forward to `upgrade::forward` for `FrankenPhp`, or return `501 Not Implemented` for FastCGI backends (FastCGI cannot model a duplex byte stream).
 6. **Static-file short-circuit.** For the FastCGI backends (`PhpFpm`/`PhpFpmTcp`), `static_file::try_serve` is attempted first: a GET/HEAD request that resolves to a real, non-PHP file under the served root is returned directly with a guessed `Content-Type`. (`FrankenPhp` serves its own static files, so this step is skipped for it.)
-7. **Normal dispatch.** Anything not served as a static file goes to the front controller: `FrankenPhp` → `http::forward`; `PhpFpm`/`PhpFpmTcp` → `fcgi::forward`.
+7. **Directory-index short-circuit.** Still FastCGI-only: if `try_serve` didn't match, `static_file::try_serve_index` is tried next - a GET/HEAD directory-style request (trailing slash, including the site root) with no `index.php` in that directory serves its `index.html`/`index.htm` directly, so plain static sites work with no PHP front controller at all.
+8. **Normal dispatch.** Anything not served as a static file or directory index goes to the front controller: `FrankenPhp` → `http::forward`; `PhpFpm`/`PhpFpmTcp` → `fcgi::forward`.
 
 The `Listener::{Http, Https}` discriminator is threaded through so the redirect rule and the `HTTPS=on` CGI var both know which listener the connection arrived on.
 
@@ -268,6 +270,16 @@ with `empty_body()` (for 301/404/501/101) and `bytes_body(&'static [u8])` helper
 4. on a hit, reads the file and returns `200 OK` with the `Content-Type` from `content_type_for` and the `Server: <PROXY_SERVER_ID>` header (a `HEAD` returns an empty body).
 
 A `None` result simply means "not a static file" and the request continues to the front controller.
+
+`static_file::try_serve_index` is the directory-index counterpart, tried next when `try_serve` misses. Given the served root and the request, it:
+
+1. asks [`try_files::directory_candidate`](#try_files-static-file-resolution) for a safe relative directory path (returns `None` for anything that isn't a directory-style request, or a non-GET/HEAD method);
+2. joins the candidate onto the served root, canonicalises, and verifies it's still inside the root and is actually a directory;
+3. defers to the front controller (`None`) if that directory contains `index.php` - the front controller always wins when present;
+4. otherwise probes `index.html`, then `index.htm`: each candidate is joined onto the (already-canonical) directory and **re-canonicalised in its own right** before being served, so a symlinked `index.html`/`index.htm` that escapes the served root - or points at PHP source inside it - is rejected, not served. This mirrors `try_serve`'s canonicalise-the-full-path guarantee rather than only canonicalising the directory.
+5. on a hit, serves the file exactly like `try_serve` (same `Content-Type` lookup, `HEAD` handling, headers).
+
+A `None` result here means no index file exists (or `index.php` won) and the request falls through to `fcgi::forward` exactly as it did before this short-circuit existed.
 
 ### `fcgi` - the PHP-FPM forwarder
 
@@ -306,7 +318,7 @@ A `None` result simply means "not a static file" and the request continues to th
 ## Tests and invariants
 
 - **`pure/` unit tests** pin the wire format and policy: `fcgi_codec` round-trips headers and verifies short/long name-value encoding; `cgi_params` asserts the Caddy-style mapping, the `HTTPS=on` rule, and `HTTP_*` translation; `redirect` runs the full host/port table.
-- **`tests/integration_http.rs`** drives `ProxyServer::serve` against a fake FastCGI listener and a hyper client, asserting both the round-trip body (`hello`) and the captured CGI params (`REQUEST_METHOD`, `REQUEST_URI`, `SCRIPT_NAME`, `PATH_INFO`, `QUERY_STRING`, `SERVER_NAME`). It also covers the `404` (unknown host) and `400` (missing Host) paths.
+- **`tests/integration_http.rs`** drives `ProxyServer::serve` against a fake FastCGI listener and a hyper client, asserting both the round-trip body (`hello`) and the captured CGI params (`REQUEST_METHOD`, `REQUEST_URI`, `SCRIPT_NAME`, `PATH_INFO`, `QUERY_STRING`, `SERVER_NAME`). It also covers the `404` (unknown host) and `400` (missing Host) paths, plain static-file serving, and the directory-index fallback end to end: `index.html`/`index.htm` served when there's no `index.php`, `index.php` winning when both are present (asserted via the captured `SCRIPT_NAME`, not just the response body), a directory with no index of any kind and a nonexistent directory both still falling through to FastCGI, `HEAD` returning an empty body, and a symlinked `index.html` escaping the served root being refused rather than served.
 - **`tests/integration_https.rs`** issues a real CA + leaf from [`yerd-tls`](./yerd-tls), serves over TLS with a single-host `CertStore`, and drives a rustls hyper client through the full SNI handshake to the fake backend.
 - **`tests/no_runtime_deps.rs`** is a dependency-graph guard: it walks `cargo metadata` and asserts the runtime graph never pulls `anyhow`, the OpenSSL/native-tls family, `hyper-tls`, `tokio-native-tls`, or `webpki-roots`, and that `hyper`, `rustls`, `tokio`, and `time` each resolve to a single version. This keeps the proxy on a pure-Rust, rustls-only TLS stack.
 
