@@ -17,7 +17,6 @@ import {
   Rocket,
   Search,
   ShieldAlert,
-  Trash2,
 } from "lucide-vue-next";
 
 import CreateLaravelWizard from "@/components/site-create/CreateLaravelWizard.vue";
@@ -189,10 +188,12 @@ async function confirmCreateGroup(close: () => void): Promise<void> {
   }
 }
 
-// ── rename group ──
+// ── rename / delete group (one modal: delete is a second step of the same
+// "manage group" dialog rather than its own header button + popup) ──
 const renameGroupOpen = ref(false);
 const renameGroupTarget = ref<string | null>(null);
 const renameGroupName = ref("");
+const renameGroupConfirmingDelete = ref(false);
 const renameGroupValid = computed(() => {
   const n = asciiLower(renameGroupName.value.trim());
   if (!n || n === asciiLower(UNALLOCATED)) return false;
@@ -206,6 +207,7 @@ const renameGroupValid = computed(() => {
 function openRenameGroup(name: string): void {
   renameGroupTarget.value = name;
   renameGroupName.value = name;
+  renameGroupConfirmingDelete.value = false;
   void nextTick(() => {
     renameGroupOpen.value = true;
   });
@@ -233,19 +235,8 @@ async function confirmRenameGroup(close: () => void): Promise<void> {
   }
 }
 
-// ── delete group ──
-const deleteGroupOpen = ref(false);
-const deleteGroupTarget = ref<string | null>(null);
-
-function openDeleteGroup(name: string): void {
-  deleteGroupTarget.value = name;
-  void nextTick(() => {
-    deleteGroupOpen.value = true;
-  });
-}
-
 async function confirmDeleteGroup(close: () => void): Promise<void> {
-  const name = deleteGroupTarget.value;
+  const name = renameGroupTarget.value;
   close();
   if (!name) return;
   rowBusy.value = `group:${name}`;
@@ -257,7 +248,6 @@ async function confirmDeleteGroup(close: () => void): Promise<void> {
     toast.error("Couldn't delete group", (e as IpcError).message);
   } finally {
     rowBusy.value = null;
-    deleteGroupTarget.value = null;
   }
 }
 
@@ -719,7 +709,7 @@ async function shareSitePublicly(s: Site): Promise<void> {
               :key="sec.name"
               class="rounded-lg border"
             >
-              <div class="flex items-center gap-2 px-3 py-2.5">
+              <div class="group flex items-center gap-2 px-3 py-2.5">
                 <button
                   class="flex min-w-0 flex-1 items-center gap-2 text-left"
                   :aria-expanded="sectionExpanded(sec)"
@@ -732,18 +722,22 @@ async function shareSitePublicly(s: Site): Promise<void> {
                   <span class="truncate text-sm font-semibold">{{ sec.name }}</span>
                   <Badge variant="secondary">{{ sec.sites.length }}</Badge>
                 </button>
-                <!-- Reorder + delete controls (named groups only; hidden while
+                <!-- Reorder + edit controls (named groups only; hidden while
                      searching, since a search-hidden neighbour would make a move
-                     look like a no-op). -->
+                     look like a no-op). Faded in only on hover/focus of this row
+                     so the header matches Unallocated's height at rest. -->
                 <div
                   v-if="!sec.isUnallocated && !searching"
                   class="flex shrink-0 items-center gap-0.5"
                 >
                   <Spinner v-if="rowBusy === `group:${sec.name}`" class="size-4" />
-                  <template v-else>
+                  <div
+                    v-else
+                    class="flex items-center gap-0.5 pointer-events-none opacity-0 transition-opacity duration-300 group-hover:pointer-events-auto group-hover:opacity-70 focus-within:pointer-events-auto focus-within:opacity-70"
+                  >
                     <Button
                       variant="ghost"
-                      size="icon"
+                      size="icon-sm"
                       :disabled="groups.order.indexOf(sec.name) === 0"
                       :aria-label="`Move ${sec.name} up`"
                       title="Move up"
@@ -753,7 +747,7 @@ async function shareSitePublicly(s: Site): Promise<void> {
                     </Button>
                     <Button
                       variant="ghost"
-                      size="icon"
+                      size="icon-sm"
                       :disabled="groups.order.indexOf(sec.name) === groups.order.length - 1"
                       :aria-label="`Move ${sec.name} down`"
                       title="Move down"
@@ -763,24 +757,14 @@ async function shareSitePublicly(s: Site): Promise<void> {
                     </Button>
                     <Button
                       variant="ghost"
-                      size="icon"
-                      :aria-label="`Rename ${sec.name}`"
-                      title="Rename group"
+                      size="icon-sm"
+                      :aria-label="`Edit ${sec.name}`"
+                      title="Edit group"
                       @click="openRenameGroup(sec.name)"
                     >
                       <Pencil class="size-4" />
                     </Button>
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      class="text-destructive hover:text-destructive"
-                      :aria-label="`Delete ${sec.name}`"
-                      title="Delete group"
-                      @click="openDeleteGroup(sec.name)"
-                    >
-                      <Trash2 class="size-4" />
-                    </Button>
-                  </template>
+                  </div>
                 </div>
               </div>
               <div v-if="sectionExpanded(sec)" class="border-t p-3">
@@ -997,39 +981,49 @@ async function shareSitePublicly(s: Site): Promise<void> {
       </template>
     </Modal>
 
-    <!-- rename group -->
+    <!-- edit group: rename, or a second step to delete -->
     <Modal
       v-model:open="renameGroupOpen"
-      title="Rename group"
-      @update:open="(v: boolean) => { if (!v) renameGroupTarget = null; }"
+      :title="renameGroupConfirmingDelete ? 'Delete group' : 'Edit group'"
+      @update:open="
+        (v: boolean) => {
+          if (!v) {
+            renameGroupTarget = null;
+            renameGroupConfirmingDelete = false;
+          }
+        }
+      "
     >
-      <label class="text-sm font-medium" for="renamegroupname">Group name</label>
-      <Input
-        id="renamegroupname"
-        v-model="renameGroupName"
-        placeholder="e.g. Client work"
-        class="mt-2"
-        @keyup.enter="renameGroupValid && confirmRenameGroup(() => (renameGroupOpen = false))"
-      />
-      <template #footer="{ close }">
-        <Button variant="ghost" @click="close">Cancel</Button>
-        <Button :disabled="!renameGroupValid" @click="confirmRenameGroup(close)">Save</Button>
+      <template v-if="!renameGroupConfirmingDelete">
+        <label class="text-sm font-medium" for="renamegroupname">Group name</label>
+        <Input
+          id="renamegroupname"
+          v-model="renameGroupName"
+          placeholder="e.g. Client work"
+          class="mt-2"
+          @keyup.enter="renameGroupValid && confirmRenameGroup(() => (renameGroupOpen = false))"
+        />
       </template>
-    </Modal>
-
-    <!-- delete group confirm -->
-    <Modal
-      v-model:open="deleteGroupOpen"
-      title="Delete group"
-      @update:open="(v: boolean) => { if (!v) deleteGroupTarget = null; }"
-    >
-      <p class="text-sm text-muted-foreground">
-        Delete <strong class="text-foreground">{{ deleteGroupTarget }}</strong>? Its
+      <p v-else class="text-sm text-muted-foreground">
+        Delete <strong class="text-foreground">{{ renameGroupTarget }}</strong>? Its
         sites aren't removed - they move to <strong class="text-foreground">Unallocated</strong>.
       </p>
       <template #footer="{ close }">
-        <Button variant="ghost" @click="close">Cancel</Button>
-        <Button variant="destructive" @click="confirmDeleteGroup(close)">Delete group</Button>
+        <template v-if="!renameGroupConfirmingDelete">
+          <Button
+            variant="ghost"
+            class="mr-auto text-destructive hover:text-destructive"
+            @click="renameGroupConfirmingDelete = true"
+          >
+            Delete group
+          </Button>
+          <Button variant="ghost" @click="close">Cancel</Button>
+          <Button :disabled="!renameGroupValid" @click="confirmRenameGroup(close)">Save</Button>
+        </template>
+        <template v-else>
+          <Button variant="ghost" @click="renameGroupConfirmingDelete = false">Back</Button>
+          <Button variant="destructive" @click="confirmDeleteGroup(close)">Delete group</Button>
+        </template>
       </template>
     </Modal>
   </div>
