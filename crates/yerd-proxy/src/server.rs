@@ -301,7 +301,8 @@ async fn dispatch<R: BackendResolver>(
         Routed::Site { site, unbound } => (site, unbound),
         Routed::Respond(resp) => return Ok(resp),
     };
-    let document_root = site.served_root();
+    let served_root = site.served_root();
+    let allowed_root = site.document_root().to_path_buf();
 
     if matches!(listener, Listener::Http) && !unbound {
         if let (true, Some(port)) = (site.secure(), redirect_port) {
@@ -348,18 +349,42 @@ async fn dispatch<R: BackendResolver>(
     match backend {
         Backend::FrankenPhp { addr } => http_fwd::forward(req, addr).await,
         bk @ (Backend::PhpFpm { .. } | Backend::PhpFpmTcp { .. }) => {
-            if let Some(resp) =
-                static_file::try_serve(req.method(), req.uri().path(), &document_root).await
-            {
+            let outcome =
+                static_file::try_serve(req.method(), req.uri().path(), &served_root, &allowed_root)
+                    .await;
+            if let Some(resp) = resolve_static_outcome(outcome) {
                 return Ok(resp);
             }
-            if let Some(resp) =
-                static_file::try_serve_index(req.method(), req.uri().path(), &document_root).await
-            {
+            let outcome = static_file::try_serve_index(
+                req.method(),
+                req.uri().path(),
+                &served_root,
+                &allowed_root,
+            )
+            .await;
+            if let Some(resp) = resolve_static_outcome(outcome) {
                 return Ok(resp);
             }
-            fcgi::forward(req, bk, document_root, server_addr, peer_addr, https).await
+            fcgi::forward(req, bk, served_root, server_addr, peer_addr, https).await
         }
+    }
+}
+
+/// Turn a [`static_file::StaticOutcome`] into a response to return
+/// immediately, or `None` to fall through to the front controller.
+fn resolve_static_outcome(outcome: static_file::StaticOutcome) -> Option<Response<BoxBody>> {
+    match outcome {
+        static_file::StaticOutcome::Served(resp) => Some(resp),
+        static_file::StaticOutcome::SymlinkEscape {
+            requested_path,
+            resolved,
+            allowed_root,
+        } => Some(static_file::symlink_escape_response(
+            &requested_path,
+            &resolved,
+            &allowed_root,
+        )),
+        static_file::StaticOutcome::NotFound => None,
     }
 }
 

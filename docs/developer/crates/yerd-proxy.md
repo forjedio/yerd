@@ -247,8 +247,8 @@ The hyper service is **infallible** - internal errors are logged and turned into
 3. **HTTP → HTTPS redirect.** On the HTTP listener, if `site.secure()` is true and a `redirect_port` is set, return `301 Moved Permanently` with `Location` built by `build_redirect_uri`.
 4. **Resolve backend** via `BackendResolver::backend_for(&site)`. Errors already in the connect/protocol/resolver family pass through; any other variant is wrapped in `ProxyError::BackendResolver { host, source }`.
 5. **Upgrade dispatch.** If `upgrade::is_upgrade(headers)`, forward to `upgrade::forward` for `FrankenPhp`, or return `501 Not Implemented` for FastCGI backends (FastCGI cannot model a duplex byte stream).
-6. **Static-file short-circuit.** For the FastCGI backends (`PhpFpm`/`PhpFpmTcp`), `static_file::try_serve` is attempted first: a GET/HEAD request that resolves to a real, non-PHP file under the served root is returned directly with a guessed `Content-Type`. (`FrankenPhp` serves its own static files, so this step is skipped for it.)
-7. **Directory-index short-circuit.** Still FastCGI-only: if `try_serve` didn't match, `static_file::try_serve_index` is tried next - a GET/HEAD directory-style request (trailing slash, including the site root) with no `index.php` in that directory serves its `index.html`/`index.htm` directly, so plain static sites work with no PHP front controller at all.
+6. **Static-file short-circuit.** For the FastCGI backends (`PhpFpm`/`PhpFpmTcp`), `static_file::try_serve` is attempted first: a GET/HEAD request that resolves to a real, non-PHP file under the served root - allowing symlinks that resolve anywhere within the site's `document_root`, not just the served subdirectory - is returned directly with a guessed `Content-Type`. A candidate that resolves outside `document_root` gets an explicit `403 Forbidden` from yerd-proxy instead of falling through. (`FrankenPhp` serves its own static files, so this step is skipped for it.)
+7. **Directory-index short-circuit.** Still FastCGI-only: if `try_serve` didn't match, `static_file::try_serve_index` is tried next - a GET/HEAD directory-style request (trailing slash, including the site root) with no `index.php` in that directory serves its `index.html`/`index.htm` directly, so plain static sites work with no PHP front controller at all. Same `document_root` containment and `403` behavior as `try_serve`.
 8. **Normal dispatch.** Anything not served as a static file or directory index goes to the front controller: `FrankenPhp` → `http::forward`; `PhpFpm`/`PhpFpmTcp` → `fcgi::forward`.
 
 The `Listener::{Http, Https}` discriminator is threaded through so the redirect rule and the `HTTPS=on` CGI var both know which listener the connection arrived on.
@@ -265,24 +265,24 @@ with `empty_body()` (for 301/404/501/101) and `bytes_body(&'static [u8])` helper
 
 ### `static_file` - serving real files {#static_file-serving-real-files}
 
-`static_file::try_serve` is the static short-circuit for the FastCGI backends. Given the served root and the request, it:
+Both lookup functions return a `StaticOutcome`: `Served(Response)`, `NotFound` (fall through to the front controller, same as a bare `None` before this type existed), or `SymlinkEscape { requested_path, resolved, allowed_root }` (the candidate resolved via symlink to somewhere outside the site's `document_root` - the caller turns this into a `403` via `symlink_escape_response`, never a silent fallthrough). The `403` body names only `requested_path`; `resolved` and `allowed_root` go to a `tracing::warn!` (target `yerd_proxy::static_file`) instead, since a site can be exposed beyond loopback via `yerd-tunnel` and absolute local paths shouldn't reach a remote client.
 
-1. asks [`try_files::static_candidate`](#try_files-static-file-resolution) for a safe relative path (returns `None` - fall through to FastCGI - for `/`, directory requests, traversal, or a non-GET/HEAD method);
+`static_file::try_serve` is the static short-circuit for the FastCGI backends. Given the served root, the site's `document_root`, and the request, it:
+
+1. asks [`try_files::static_candidate`](#try_files-static-file-resolution) for a safe relative path (`NotFound` for `/`, directory requests, traversal, or a non-GET/HEAD method);
 2. refuses PHP source (`is_php_source`) so a `.php` file is never returned as bytes;
-3. joins the candidate onto the served root, **canonicalises**, and verifies the result is still inside the root - a symlink that escapes the root is rejected (fall through, not served);
+3. joins the candidate onto the served root, **canonicalises**, and verifies the result is still inside the site's `document_root` - not just the served subdirectory, so e.g. Laravel's `public/storage -> ../storage/app/public` symlink is served normally even though it points outside `public/`. A candidate that canonicalises fine but lands outside `document_root` entirely is a `SymlinkEscape`; a candidate that simply doesn't exist is `NotFound`, unchanged;
 4. on a hit, reads the file and returns `200 OK` with the `Content-Type` from `content_type_for` and the `Server: <PROXY_SERVER_ID>` header (a `HEAD` returns an empty body).
 
-A `None` result simply means "not a static file" and the request continues to the front controller.
+`static_file::try_serve_index` is the directory-index counterpart, tried next when `try_serve` misses. Given the same served root, `document_root`, and the request, it:
 
-`static_file::try_serve_index` is the directory-index counterpart, tried next when `try_serve` misses. Given the served root and the request, it:
-
-1. asks [`try_files::directory_candidate`](#try_files-static-file-resolution) for a safe relative directory path (returns `None` for anything that isn't a directory-style request, or a non-GET/HEAD method);
-2. joins the candidate onto the served root, canonicalises, and verifies it's still inside the root and is actually a directory;
-3. defers to the front controller (`None`) if that directory contains `index.php` - the front controller always wins when present;
-4. otherwise probes `index.html`, then `index.htm`: each candidate is joined onto the (already-canonical) directory and **re-canonicalised in its own right** before being served, so a symlinked `index.html`/`index.htm` that escapes the served root - or points at PHP source inside it - is rejected, not served. This mirrors `try_serve`'s canonicalise-the-full-path guarantee rather than only canonicalising the directory.
+1. asks [`try_files::directory_candidate`](#try_files-static-file-resolution) for a safe relative directory path (`NotFound` for anything that isn't a directory-style request, or a non-GET/HEAD method);
+2. joins the candidate onto the served root, canonicalises, and verifies it's still inside `document_root` and is actually a directory - an escaped directory candidate is reported immediately, since there's no other candidate to fall back to;
+3. defers to the front controller (`NotFound`) if that directory contains `index.php` - the front controller always wins when present;
+4. otherwise probes `index.html`, then `index.htm`: each candidate is joined onto the (already-canonical) directory and **re-canonicalised in its own right** against `document_root` before being served. If one candidate escapes but the other is servable, the servable one still wins - a `SymlinkEscape` is only reported once every candidate has been tried and none served.
 5. on a hit, serves the file exactly like `try_serve` (same `Content-Type` lookup, `HEAD` handling, headers).
 
-A `None` result here means no index file exists (or `index.php` won) and the request falls through to `fcgi::forward` exactly as it did before this short-circuit existed.
+A `NotFound` result here means no index file exists (or `index.php` won) and the request falls through to `fcgi::forward` exactly as it did before this short-circuit existed.
 
 ### `fcgi` - the PHP-FPM forwarder
 
