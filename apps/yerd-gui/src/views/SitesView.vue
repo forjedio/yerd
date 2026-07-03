@@ -151,13 +151,19 @@ async function moveGroup(name: string, dir: -1 | 1): Promise<void> {
   }
 }
 
+// ASCII-only case-fold, matching the daemon's `eq_ignore_ascii_case` group
+// identity; full-Unicode `toLowerCase` disagrees on non-ASCII names.
+function asciiLower(s: string): string {
+  return s.replace(/[A-Z]/g, (c) => String.fromCharCode(c.charCodeAt(0) + 32));
+}
+
 // ── create group ──
 const createGroupOpen = ref(false);
 const createGroupName = ref("");
 const createGroupValid = computed(() => {
-  const n = createGroupName.value.trim().toLowerCase();
-  if (!n || n === UNALLOCATED.toLowerCase()) return false;
-  return !groups.value.order.some((g) => g.toLowerCase() === n);
+  const n = asciiLower(createGroupName.value.trim());
+  if (!n || n === asciiLower(UNALLOCATED)) return false;
+  return !groups.value.order.some((g) => asciiLower(g) === n);
 });
 
 function openCreateGroup(): void {
@@ -188,11 +194,11 @@ const renameGroupOpen = ref(false);
 const renameGroupTarget = ref<string | null>(null);
 const renameGroupName = ref("");
 const renameGroupValid = computed(() => {
-  const n = renameGroupName.value.trim().toLowerCase();
-  if (!n || n === UNALLOCATED.toLowerCase()) return false;
-  const from = renameGroupTarget.value?.toLowerCase() ?? "";
+  const n = asciiLower(renameGroupName.value.trim());
+  if (!n || n === asciiLower(UNALLOCATED)) return false;
+  const from = renameGroupTarget.value ? asciiLower(renameGroupTarget.value) : "";
   return !groups.value.order.some((g) => {
-    const gl = g.toLowerCase();
+    const gl = asciiLower(g);
     return gl === n && gl !== from;
   });
 });
@@ -255,11 +261,13 @@ async function confirmDeleteGroup(close: () => void): Promise<void> {
   }
 }
 
-/** A site's current, sanitised group membership ("" when ungrouped or the stored
- *  group no longer exists). */
+/** A site's current, sanitised group membership: the canonical `order` casing
+ *  (matched ASCII-case-insensitively, like the daemon), or "" when ungrouped or
+ *  the stored group no longer exists. */
 function currentGroupOf(name: string): string {
   const g = groups.value.members[name];
-  return g && groups.value.order.includes(g) ? g : "";
+  if (!g) return "";
+  return groups.value.order.find((o) => asciiLower(o) === asciiLower(g)) ?? "";
 }
 
 const groupSelectOptions = computed(() => [
@@ -320,15 +328,21 @@ const filteredSites = computed(() => {
 // no longer exists - defensive). Each section keeps filteredSites' sort order.
 const groupSections = computed<GroupSection[]>(() => {
   const { order, members } = groups.value;
-  const known = new Set(order);
-  const sections: GroupSection[] = order.map((name) => ({
-    name,
-    isUnallocated: false,
-    sites: filteredSites.value.filter((s) => members[s.name] === name),
-  }));
+  const known = new Set(order.map(asciiLower));
+  const sections: GroupSection[] = order.map((name) => {
+    const folded = asciiLower(name);
+    return {
+      name,
+      isUnallocated: false,
+      sites: filteredSites.value.filter((s) => {
+        const g = members[s.name];
+        return g !== undefined && asciiLower(g) === folded;
+      }),
+    };
+  });
   const unallocated = filteredSites.value.filter((s) => {
     const g = members[s.name];
-    return !g || !known.has(g);
+    return !g || !known.has(asciiLower(g));
   });
   sections.push({ name: UNALLOCATED, isUnallocated: true, sites: unallocated });
   return sections;

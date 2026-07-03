@@ -89,7 +89,7 @@ function servedLabel(s: Site): string {
             </Button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end">
-            <DropdownMenuItem @select="emit('edit', site)">
+            <DropdownMenuItem :disabled="busy" @select="emit('edit', site)">
               <Pencil class="size-4" /> Edit…
             </DropdownMenuItem>
             <DropdownMenuItem @select="openInBrowser(siteUrl(site, report))">
@@ -106,6 +106,7 @@ function servedLabel(s: Site): string {
             <template v-if="site.kind === 'linked'">
               <DropdownMenuSeparator />
               <DropdownMenuItem
+                :disabled="busy"
                 class="text-destructive focus:bg-destructive/10 focus:text-destructive"
                 @select="emit('unlink', site)"
               >
