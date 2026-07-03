@@ -28,6 +28,7 @@ The window is something you summon, not keep open.
 - Closing the window hides it to the tray instead of quitting. The daemon and your sites keep running.
 - The tray menu is a **live dropdown**, not a static list. It shows daemon status (running/stopped, with the bound HTTP/HTTPS ports) and **Restart** / **Stop** (or **Start** when stopped); an inline **Default PHP** switcher over your installed versions (a tick marks the current default, pick another to switch); **Update Yerd** / **Update PHP** when an update is waiting (otherwise **Check for updates**); shortcuts to open the **Mail** and **Dumps** viewer windows; **New Laravel site**, **Link Site**, **Park Directory**; page-navigation shortcuts; **Open Yerd**; and **Quit** (exits the GUI, not the daemon). The menu refreshes from the daemon even while the window is hidden to the tray.
 - The tray icon also carries status badges: a small red dot when a Yerd or PHP update is available, and an orange dot when there's unread captured mail.
+- You don't need to click **Check for updates** for the badge to stay current: the daemon checks for new Yerd releases on its own roughly every 4 hours, and the app also checks immediately on launch (or when you re-open an already-running Yerd) if the last check is more than 4 hours old.
 - On macOS, left-click the tray icon to open the menu. On Linux (AppIndicator), use the menu's **Open Yerd** to reshow the window.
 - Single-instance: launching again re-focuses the existing window.
 

@@ -18,7 +18,7 @@ For internal architecture (task wiring, shutdown channel, lock ordering) see [ye
 | DNS responder | A loopback-only resolver answering `*.test`. See [DNS & .test Domains](./dns). |
 | PHP-FPM pools | One supervised pool per installed PHP version, started on demand. See [PHP Versions](./php-versions). |
 | IPC server | A Unix-socket listener for the CLI and desktop app. See [the desktop app](./desktop-app). |
-| Update checker | Polls for newer PHP patch releases every 12 hours and logs them. It never installs anything. |
+| Update checker | Polls for newer PHP patch releases every 12 hours, and for newer Yerd releases roughly every 4 hours (checked immediately if stale when the desktop app launches). Notify-only - it never installs anything. |
 | Local CA | Loads (or on first run generates) the local certificate authority used to issue per-site certs. |
 
 All of this runs as you, never as root. The only operations needing privilege (trusting the CA, configuring the system resolver, granting the port capability) are handled once by a separate audited helper. See [Elevation & Privileges](./elevation).

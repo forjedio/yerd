@@ -82,6 +82,15 @@ pub async fn run_with_daemon(daemon: Daemon) -> Result<Outcome, DaemonError> {
     result
 }
 
+/// Self-update poll wake interval. Short (15 min) so the wall-clock due-check
+/// in `self_update::poll_if_due` recovers quickly after the process was
+/// suspended. The default `MissedTickBehavior::Burst` means missed ticks from
+/// runtime starvation (not suspend itself: a stalled monotonic clock accrues
+/// no missed ticks) fire back-to-back on resume. Harmless either way: each is
+/// awaited serially and `poll_if_due` wall-clock-gates every tick, so only the
+/// first (or, on repeated fetch failures, the first few) actually fetch.
+const SELF_UPDATE_WAKE: Duration = Duration::from_secs(15 * 60);
+
 #[allow(clippy::too_many_lines)]
 async fn run_until_shutdown(
     daemon: Daemon,
@@ -150,15 +159,7 @@ async fn run_until_shutdown(
         tokio::spawn(async move {
             let dl = crate::php_install::ReqwestDownloader::new();
             let mut php_tick = tokio::time::interval(Duration::from_secs(12 * 60 * 60));
-            // Short wake so the wall-clock due-check in `poll_if_due` recovers
-            // quickly after the process was suspended (see self_update::poll_if_due).
-            // Default MissedTickBehavior::Burst means a burst of missed ticks
-            // (e.g. from runtime starvation, not suspend itself - a stalled
-            // monotonic clock accrues no missed ticks) fires back-to-back on
-            // resume. Harmless either way: each is awaited serially, and
-            // `poll_if_due` wall-clock-gates every tick, so only the first
-            // (or, on repeated fetch failures, the first few) actually fetch.
-            let mut self_tick = tokio::time::interval(Duration::from_secs(15 * 60));
+            let mut self_tick = tokio::time::interval(SELF_UPDATE_WAKE);
             loop {
                 tokio::select! {
                     _ = php_tick.tick() => {
