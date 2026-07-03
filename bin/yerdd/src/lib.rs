@@ -113,7 +113,7 @@ async fn run_until_shutdown(
         });
         let https = yerd_proxy::HttpsBinding {
             listener: tls_listener,
-            public_port: daemon.https_port,
+            public_port: daemon.state.redirect_https_port.clone(),
             cert_store: daemon.cert_store.clone(),
         };
         let mut rx = shutdown_rx.clone();
@@ -130,6 +130,36 @@ async fn run_until_shutdown(
         tracing::warn!(
             "web proxy disabled (degraded): no HTTP/HTTPS listeners - sites won't be served until the fallback ports are fixed and the daemon restarts"
         );
+        None
+    };
+
+    // Only needed when the HTTPS listener fell back to a rootless port: that's
+    // the only case where a privileged-port redirect (macOS `pf`, installed by
+    // `yerd elevate ports`) could make the well-known port reachable too,
+    // which `redirect_https_port` needs to learn about without a restart (see
+    // its doc comment on `DaemonState`).
+    let redirect_probe_handle = if proxy_handle.is_some() && daemon.state.https.fell_back {
+        let state = daemon.state.clone();
+        let mut rx = shutdown_rx.clone();
+        Some(tokio::spawn(async move {
+            let mut tick = tokio::time::interval(Duration::from_secs(5));
+            loop {
+                tokio::select! {
+                    _ = tick.tick() => {
+                        let active = tokio::task::spawn_blocking(|| {
+                            use yerd_platform::PortRedirector;
+                            yerd_platform::ActivePortRedirector::new().is_active()
+                        })
+                        .await
+                        .unwrap_or(None);
+                        let port = effective_redirect_port(state.https, active);
+                        state.redirect_https_port.store(port, Ordering::Relaxed);
+                    }
+                    _ = rx.changed() => break,
+                }
+            }
+        }))
+    } else {
         None
     };
 
@@ -217,6 +247,9 @@ async fn run_until_shutdown(
     if let Some(proxy_handle) = proxy_handle {
         let _ = tokio::time::timeout(Duration::from_secs(10), proxy_handle).await;
     }
+    if let Some(redirect_probe_handle) = redirect_probe_handle {
+        let _ = tokio::time::timeout(Duration::from_secs(5), redirect_probe_handle).await;
+    }
     let _ = tokio::time::timeout(Duration::from_secs(5), ipc_handle).await;
     let _ = tokio::time::timeout(Duration::from_secs(5), dump_handle).await;
     let _ = tokio::time::timeout(Duration::from_secs(5), update_check_handle).await;
@@ -245,4 +278,55 @@ async fn run_until_shutdown(
     };
     drop(daemon.lock);
     Ok(outcome)
+}
+
+/// Port the HTTP→HTTPS redirect `Location` header should advertise, given the
+/// HTTPS listener's bind status and a live
+/// [`yerd_platform::PortRedirector::is_active`] probe result.
+///
+/// When the daemon bound the well-known port directly there's nothing to
+/// correct. When it fell back to a rootless port, a live privileged-port
+/// redirect (macOS `pf`, installed by `yerd elevate ports`) makes the
+/// well-known port reachable too, so the redirect should advertise it instead
+/// of leaking the internal fallback port into the browser's address bar.
+fn effective_redirect_port(https: yerd_ipc::PortStatus, redirect_active: Option<bool>) -> u16 {
+    if !https.fell_back || redirect_active == Some(true) {
+        https.requested
+    } else {
+        https.bound
+    }
+}
+
+#[cfg(test)]
+mod redirect_port_tests {
+    use super::effective_redirect_port;
+
+    fn status(requested: u16, bound: u16) -> yerd_ipc::PortStatus {
+        yerd_ipc::PortStatus {
+            requested,
+            bound,
+            fell_back: requested != bound,
+        }
+    }
+
+    #[test]
+    fn bound_on_well_known_port_ignores_the_probe() {
+        assert_eq!(effective_redirect_port(status(443, 443), None), 443);
+        assert_eq!(effective_redirect_port(status(443, 443), Some(false)), 443);
+        assert_eq!(effective_redirect_port(status(443, 443), Some(true)), 443);
+    }
+
+    #[test]
+    fn fallback_with_a_live_redirect_advertises_the_well_known_port() {
+        assert_eq!(effective_redirect_port(status(443, 8443), Some(true)), 443);
+    }
+
+    #[test]
+    fn fallback_without_a_live_redirect_advertises_the_bound_port() {
+        assert_eq!(
+            effective_redirect_port(status(443, 8443), Some(false)),
+            8443
+        );
+        assert_eq!(effective_redirect_port(status(443, 8443), None), 8443);
+    }
 }

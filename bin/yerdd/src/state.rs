@@ -11,7 +11,7 @@
 use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
 use std::path::PathBuf;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, AtomicU16};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -96,6 +96,15 @@ pub struct DaemonState {
     pub http: PortStatus,
     /// HTTPS listener: requested vs actually-bound port (reported by `Status`).
     pub https: PortStatus,
+    /// Port the HTTP→HTTPS redirect `Location` header currently advertises.
+    /// Starts at `https.bound`; when `https.fell_back`, a background prober
+    /// (`redirect_probe_handle` in `lib.rs`) flips it to `https.requested`
+    /// once it observes a live privileged-port redirect (macOS `pf`, via
+    /// `yerd elevate ports`) via `yerd_platform::PortRedirector::is_active`,
+    /// and back when that redirect goes away - so the proxy can advertise a
+    /// portless `https://site.test` without restarting. Shared with
+    /// `yerd_proxy::HttpsBinding::public_port`.
+    pub redirect_https_port: Arc<AtomicU16>,
     /// Set when the daemon could bind neither the desired nor the fallback web
     /// ports - it runs degraded (no proxy). Carries the fallback ports it failed
     /// on, surfaced in `Status` (`web_unbound`) so the UI/doctor can name them.

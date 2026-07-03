@@ -171,7 +171,7 @@ async fn https_handshake_routes_to_backend() {
 
     let https = HttpsBinding {
         listener: proxy_listener,
-        public_port: proxy_addr.port(),
+        public_port: Arc::new(std::sync::atomic::AtomicU16::new(proxy_addr.port())),
         cert_store,
     };
 
@@ -189,6 +189,92 @@ async fn https_handshake_routes_to_backend() {
     let _ = tx_shutdown.send(());
     let _ = tokio::time::timeout(std::time::Duration::from_secs(5), proxy_task).await;
     let _ = fake_task.await;
+}
+
+/// The `Location` header on an HTTP→HTTPS redirect must track live updates to
+/// `HttpsBinding::public_port` - this is what lets the daemon flip a secure
+/// site's redirect target from the rootless fallback port to the well-known
+/// port (and back) as a privileged-port redirect (e.g. macOS `yerd elevate
+/// ports`) goes up or down, without restarting the proxy.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn http_redirect_tracks_live_public_port_updates() {
+    yerd_proxy::tls::init_crypto_once();
+
+    let ca = CertAuthority::generate("Yerd Test CA", validity()).unwrap();
+    let leaf = ca.issue_leaf(&["app.test".to_owned()], validity()).unwrap();
+    let certified = Arc::new(parse_certified(leaf.cert_pem(), leaf.key_pem()));
+
+    let proxy_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let http_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let http_addr = http_listener.local_addr().unwrap();
+
+    let tld = Tld::new("test").unwrap();
+    let cfg = RouterConfig::with_tld(tld);
+    let mut router = SiteRouter::new(cfg);
+    let mut site =
+        Site::linked("app", PathBuf::from("/srv/www/app"), PhpVersion::new(8, 3)).unwrap();
+    site.set_secure(true);
+    router.insert(site).unwrap();
+    let router = Arc::new(tokio::sync::RwLock::new(router));
+
+    let resolver = Arc::new(StaticResolver {
+        backend: Backend::PhpFpmTcp {
+            addr: "127.0.0.1:1".parse().unwrap(),
+        },
+    });
+    let cert_store = Arc::new(OneCertStore {
+        host: "app.test".to_owned(),
+        key: certified,
+    });
+
+    let public_port = Arc::new(std::sync::atomic::AtomicU16::new(8443));
+    let https = HttpsBinding {
+        listener: proxy_listener,
+        public_port: public_port.clone(),
+        cert_store,
+    };
+
+    let (tx_shutdown, rx_shutdown) = oneshot::channel::<()>();
+    let proxy_task = tokio::spawn(async move {
+        let _ = ProxyServer::serve(http_listener, Some(https), router, resolver, async move {
+            let _ = rx_shutdown.await;
+        })
+        .await;
+    });
+
+    let loc = redirect_location(http_addr, "app.test", "/dash").await;
+    assert_eq!(loc.as_deref(), Some("https://app.test:8443/dash"));
+
+    public_port.store(443, std::sync::atomic::Ordering::Relaxed);
+
+    let loc = redirect_location(http_addr, "app.test", "/dash").await;
+    assert_eq!(loc.as_deref(), Some("https://app.test/dash"));
+
+    let _ = tx_shutdown.send(());
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(5), proxy_task).await;
+}
+
+async fn redirect_location(addr: SocketAddr, host: &str, path: &str) -> Option<String> {
+    let stream = TcpStream::connect(addr).await.unwrap();
+    let io = TokioIo::new(stream);
+    let (mut sender, conn) = hyper::client::conn::http1::handshake::<_, Empty<Bytes>>(io)
+        .await
+        .unwrap();
+    tokio::spawn(async move {
+        let _ = conn.await;
+    });
+    let req = Request::builder()
+        .method("GET")
+        .uri(path)
+        .header("Host", host)
+        .body(Empty::<Bytes>::new())
+        .unwrap();
+    let resp = sender.send_request(req).await.unwrap();
+    assert_eq!(resp.status(), hyper::StatusCode::MOVED_PERMANENTLY);
+    resp.headers()
+        .get(hyper::header::LOCATION)
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_owned)
 }
 
 async fn client_https_get(addr: SocketAddr, sni_host: &str, ca_pem: &str, path: &str) -> Vec<u8> {
