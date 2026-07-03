@@ -12,6 +12,10 @@
 //! With none of those, a browser navigation gets a **picker page** listing the
 //! sites; selecting one forwards the originally-requested path.
 //!
+//! A pinned browser can get back to the picker via the bare **`/~`** path,
+//! which clears the pin cookie and redirects to `/` - an escape hatch, not a
+//! fourth selection mechanism.
+//!
 //! Everything here is synchronous, I/O-free, and unit-tested. The orchestration
 //! that needs the live [`yerd_core::SiteRouter`] and async drop ordering lives
 //! in [`crate::server`].
@@ -97,6 +101,14 @@ pub fn parse_switch(path: &str) -> Option<SwitchParse<'_>> {
         return None;
     }
     Some(SwitchParse { domain, remainder })
+}
+
+/// Returns `true` for the bare "back to picker" path (`/~` or `/~/`), as
+/// opposed to `/~<domain>` (see [`parse_switch`]). Checked ahead of the pin
+/// cookie so it always wins and clears an existing pin.
+#[must_use]
+pub fn is_clear_switch(path: &str) -> bool {
+    matches!(path, "/~" | "/~/")
 }
 
 /// Extract the `yerd-site` value from a `Cookie:` header, tolerating other
@@ -310,6 +322,22 @@ mod tests {
         for (path, want) in cases {
             let got = parse_switch(path).map(|s| (s.domain, s.remainder));
             assert_eq!(got, *want, "path {path:?}");
+        }
+    }
+
+    #[test]
+    fn is_clear_switch_table() {
+        let cases: &[(&str, bool)] = &[
+            ("/~", true),
+            ("/~/", true),
+            ("/~app.test", false),
+            ("/~app", false),
+            ("/~/x", false),
+            ("/", false),
+            ("/foo", false),
+        ];
+        for (path, want) in cases {
+            assert_eq!(is_clear_switch(path), *want, "path {path:?}");
         }
     }
 

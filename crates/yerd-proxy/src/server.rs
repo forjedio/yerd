@@ -432,6 +432,7 @@ async fn resolve_request(
             Ok(Routed::Respond(picker_response(body, clear)?))
         }
         UnboundDecision::NotFound { clear } => Ok(Routed::Respond(unbound_not_found(clear)?)),
+        UnboundDecision::ClearPin => Ok(Routed::Respond(clear_response()?)),
     }
 }
 
@@ -446,13 +447,16 @@ enum UnboundDecision {
     Picker { dest: String, clear: bool },
     /// `404`; `clear` also drops a stale pin cookie.
     NotFound { clear: bool },
+    /// `303` to `/`, clearing the pin cookie - the bare `/~` escape hatch.
+    ClearPin,
 }
 
 /// Classify a loopback request that didn't resolve via the normal `Host` path.
 ///
-/// Priority: explicit `X-Yerd-Site` header → `/~domain` switch → pin cookie →
-/// picker (browser navigations) / `404` (everything else). Pure: returns owned
-/// data so the caller can drop the router guard immediately.
+/// Priority: explicit `X-Yerd-Site` header → bare `/~` clear → `/~domain`
+/// switch → pin cookie → picker (browser navigations) / `404` (everything
+/// else). Pure: returns owned data so the caller can drop the router guard
+/// immediately.
 fn classify_unbound(
     router: &SiteRouter,
     method: &Method,
@@ -469,6 +473,10 @@ fn classify_unbound(
             Some(site) => UnboundDecision::Serve(site.clone()),
             None => UnboundDecision::NotFound { clear: false },
         };
+    }
+
+    if unbound::is_clear_switch(path) {
+        return UnboundDecision::ClearPin;
     }
 
     if let Some(sw) = unbound::parse_switch(path) {
@@ -556,6 +564,23 @@ fn switch_response(name: &str, location: &str) -> Result<Response<BoxBody>, Prox
         .header(SERVER, server_header())
         .body(empty_body())
         .map_err(|_| synthetic_error("switch response build failed"))
+}
+
+/// `303 See Other` to `/`, clearing the pin cookie - the bare `/~` escape
+/// hatch back to the picker.
+fn clear_response() -> Result<Response<BoxBody>, ProxyError> {
+    Response::builder()
+        .status(StatusCode::SEE_OTHER)
+        .header(LOCATION, HeaderValue::from_static("/"))
+        .header(
+            SET_COOKIE,
+            HeaderValue::from_str(&unbound::build_clear_cookie())
+                .map_err(|_| synthetic_error("invalid clear cookie"))?,
+        )
+        .header(CACHE_CONTROL, "no-store")
+        .header(SERVER, server_header())
+        .body(empty_body())
+        .map_err(|_| synthetic_error("clear response build failed"))
 }
 
 /// `200` picker page; clears a stale pin cookie when `clear` is set.
@@ -682,6 +707,7 @@ mod unbound_tests {
             UnboundDecision::Switch { .. } => "Switch",
             UnboundDecision::Picker { .. } => "Picker",
             UnboundDecision::NotFound { .. } => "NotFound",
+            UnboundDecision::ClearPin => "ClearPin",
         }
     }
 
@@ -746,6 +772,47 @@ mod unbound_tests {
             },
             "blog"
         );
+    }
+
+    #[test]
+    fn bare_tilde_clears_pin() {
+        for path in ["/~", "/~/"] {
+            assert!(
+                matches!(
+                    classify(path, None, None, None, HTML),
+                    UnboundDecision::ClearPin
+                ),
+                "path {path:?} with no cookie"
+            );
+            assert!(
+                matches!(
+                    classify(path, None, None, Some("yerd-site=app"), HTML),
+                    UnboundDecision::ClearPin
+                ),
+                "path {path:?} should clear an existing pin"
+            );
+        }
+    }
+
+    #[test]
+    fn header_beats_bare_clear() {
+        assert_eq!(
+            served_name(classify("/~", None, Some("app.test"), None, HTML)),
+            "app"
+        );
+    }
+
+    #[test]
+    fn domain_switch_not_confused_with_clear() {
+        for path in ["/~app.test", "/~app.test/"] {
+            assert!(
+                matches!(
+                    classify(path, None, None, None, HTML),
+                    UnboundDecision::Switch { .. }
+                ),
+                "path {path:?} should still switch"
+            );
+        }
     }
 
     #[test]
@@ -875,6 +942,17 @@ mod unbound_tests {
         assert_eq!(header(&resp, LOCATION).as_deref(), Some("/x?y=1"));
         assert_eq!(header(&resp, CACHE_CONTROL).as_deref(), Some("no-store"));
         assert!(header(&resp, SET_COOKIE).unwrap().contains("yerd-site=app"));
+    }
+
+    #[test]
+    fn clear_response_shape() {
+        let resp = clear_response().unwrap();
+        assert_eq!(resp.status(), StatusCode::SEE_OTHER);
+        assert_eq!(header(&resp, LOCATION).as_deref(), Some("/"));
+        assert_eq!(header(&resp, CACHE_CONTROL).as_deref(), Some("no-store"));
+        let set_cookie = header(&resp, SET_COOKIE).unwrap();
+        assert!(set_cookie.contains("Max-Age=0"));
+        assert!(set_cookie.contains("yerd-site=;"));
     }
 
     #[test]
@@ -1116,6 +1194,7 @@ mod classify_fallthrough_tests {
                 UnboundDecision::Switch { .. } => "Switch",
                 UnboundDecision::Picker { .. } => "Picker",
                 UnboundDecision::NotFound { .. } => "NotFound",
+                UnboundDecision::ClearPin => "ClearPin",
             };
             f.write_str(label)
         }
