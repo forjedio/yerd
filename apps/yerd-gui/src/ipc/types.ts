@@ -491,6 +491,13 @@ export interface ToolStatus {
    * exclusive with `installed`.
    */
   external?: boolean;
+  /**
+   * Where the external tool was found on the user's PATH (e.g.
+   * `/opt/homebrew/bin/node`), when `external` is true. Not guaranteed to be
+   * absolute. Skipped on the wire (key absent, not null) when there's nothing
+   * to report.
+   */
+  external_path?: string;
 }
 
 /** One user database in a SQL service (mirrors the daemon's `DatabaseSummary`). */

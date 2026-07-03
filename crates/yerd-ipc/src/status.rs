@@ -387,6 +387,14 @@ pub struct ToolStatus {
     /// for older clients; defaulted on decode for older daemons.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub external: bool,
+    /// Where the external tool was found on the user's `PATH` (e.g.
+    /// `/opt/homebrew/bin/node`), when `external` is `true`. Not guaranteed to
+    /// be absolute - it mirrors whatever `PATH` entry matched, which is
+    /// conventionally but not necessarily absolute. `None` when managed or not
+    /// installed. `#[serde(default, skip_serializing_if)]` keeps the wire
+    /// additive for older clients/daemons.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub external_path: Option<String>,
 }
 
 /// A single doctor finding.

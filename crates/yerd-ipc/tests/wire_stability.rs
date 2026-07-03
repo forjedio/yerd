@@ -1542,10 +1542,30 @@ fn response_tools_byte_shape() {
             version: Some("v24.17.0".into()),
             binaries: vec!["node".into(), "npm".into(), "npx".into()],
             external: false,
+            external_path: None,
         }],
     };
     let s = serde_json::to_string(&r).unwrap();
     let expected = r#"{"type":"tools","tools":[{"id":"node","display_name":"Node.js","installed":true,"version":"v24.17.0","binaries":["node","npm","npx"]}]}"#;
+    assert_eq!(s, expected);
+    assert_eq!(serde_json::from_str::<Response>(&s).unwrap(), r);
+}
+
+#[test]
+fn response_tools_external_byte_shape() {
+    let r = Response::Tools {
+        tools: vec![ToolStatus {
+            id: "node".into(),
+            display_name: "Node.js".into(),
+            installed: false,
+            version: None,
+            binaries: vec!["node".into(), "npm".into(), "npx".into()],
+            external: true,
+            external_path: Some("/opt/homebrew/bin/node".into()),
+        }],
+    };
+    let s = serde_json::to_string(&r).unwrap();
+    let expected = r#"{"type":"tools","tools":[{"id":"node","display_name":"Node.js","installed":false,"version":null,"binaries":["node","npm","npx"],"external":true,"external_path":"/opt/homebrew/bin/node"}]}"#;
     assert_eq!(s, expected);
     assert_eq!(serde_json::from_str::<Response>(&s).unwrap(), r);
 }
