@@ -17,8 +17,9 @@
 /// Recognises three escape forms, each consumed in full:
 /// - CSI: `ESC '[' [0x30-0x3F]* [0x20-0x2F]* [0x40-0x7E]` (colour, cursor
 ///   movement, private-mode toggles like `?25l`/`?25h`, etc).
-/// - OSC: `ESC ']' ...` terminated by BEL or `ESC '\'` (e.g. window-title
-///   sequences).
+/// - String-type sequences - OSC (`]`), DCS (`P`), SOS (`X`), PM (`^`), APC
+///   (`_`) - `ESC <introducer> ...` terminated by BEL or `ESC '\'` (e.g.
+///   window-title sequences and device-control payloads).
 /// - Two-byte forms, e.g. `ESC c`, `ESC =`, `ESC 7`.
 pub fn strip(input: &str) -> String {
     let chars: Vec<char> = input.chars().collect();
@@ -44,7 +45,7 @@ pub fn strip(input: &str) -> String {
                 }
                 i = j;
             }
-            Some(']') => {
+            Some(']' | 'P' | 'X' | '^' | '_') => {
                 let mut j = i + 2;
                 loop {
                     match chars.get(j) {
@@ -104,6 +105,16 @@ mod tests {
     #[test]
     fn strips_osc_terminated_by_string_terminator() {
         assert_eq!(strip("\x1b]0;title\x1b\\visible"), "visible");
+    }
+
+    #[test]
+    fn strips_dcs_terminated_by_string_terminator() {
+        assert_eq!(strip("\x1bPsome device payload\x1b\\visible"), "visible");
+    }
+
+    #[test]
+    fn strips_apc_terminated_by_bel() {
+        assert_eq!(strip("\x1b_app payload\x07visible"), "visible");
     }
 
     #[test]
