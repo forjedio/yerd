@@ -560,7 +560,8 @@ pub fn resolve_link(
         map::validate_name(n)?;
         n.to_owned()
     } else {
-        let folder = resolved_path
+        let normalized = normalize_lexically(&resolved_path);
+        let folder = normalized
             .file_name()
             .map(|s| s.to_string_lossy())
             .unwrap_or_default();
@@ -577,6 +578,33 @@ pub fn resolve_link(
         name: resolved_name,
         path: resolved_path,
     })
+}
+
+/// Lexically resolve `.`/`..` components out of `path` without touching the
+/// filesystem (no `canonicalize` - `resolve_link` deliberately doesn't
+/// require the target to exist), so `Path::file_name()` sees the folder
+/// actually being linked. `Path::file_name()` already normalises a trailing
+/// `.` away on its own, but a trailing `..` survives as-is (it can't tell
+/// what it cancels without looking further back), so e.g. `yerd link ..`
+/// would otherwise fail to derive the parent folder's name even though it's
+/// well-defined.
+fn normalize_lexically(path: &std::path::Path) -> std::path::PathBuf {
+    use std::path::{Component, PathBuf};
+    let mut out = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if matches!(out.components().next_back(), Some(Component::Normal(_))) {
+                    out.pop();
+                } else {
+                    out.push("..");
+                }
+            }
+            other => out.push(other.as_os_str()),
+        }
+    }
+    out
 }
 
 /// A synthetic `daemon_down` FAIL diagnosis, used when `yerd doctor` can't reach
@@ -855,12 +883,50 @@ mod tests {
         assert!(matches!(err, ClientError::Usage(_)), "got: {err:?}");
     }
 
-    /// ".." looks like a path, but `Path::new("..").file_name()` is `None`,
-    /// so there's no folder name to slugify.
+    /// "/" normalises to the filesystem root, which has no `Normal`
+    /// component left to derive a name from.
     #[test]
-    fn resolve_link_path_with_no_file_name_errors() {
-        let err = resolve_link(Some(".."), None).unwrap_err();
+    fn resolve_link_root_path_has_no_file_name_errors() {
+        let err = resolve_link(Some("/"), None).unwrap_err();
         assert!(matches!(err, ClientError::Usage(_)), "got: {err:?}");
+    }
+
+    #[test]
+    fn resolve_link_trailing_curdir_derives_name() {
+        let req = resolve_link(Some("some/dir/."), None).unwrap();
+        let Request::Link { name, .. } = req else {
+            panic!("expected Link");
+        };
+        assert_eq!(name, "dir");
+    }
+
+    #[test]
+    fn resolve_link_trailing_parentdir_derives_name() {
+        let req = resolve_link(Some("some/parent/child/.."), None).unwrap();
+        let Request::Link { name, .. } = req else {
+            panic!("expected Link");
+        };
+        assert_eq!(name, "parent");
+    }
+
+    // ─── normalize_lexically ────────────────────────────────────────
+
+    #[test]
+    fn normalize_lexically_cases() {
+        let cases: &[(&str, &str)] = &[
+            ("/home/user/myapp/.", "/home/user/myapp"),
+            ("/home/user/myapp/..", "/home/user"),
+            ("/a/b/../c", "/a/c"),
+            ("/../../foo", "/../../foo"),
+            ("/", "/"),
+        ];
+        for (input, expected) in cases {
+            assert_eq!(
+                normalize_lexically(Path::new(input)),
+                Path::new(expected),
+                "input {input:?}"
+            );
+        }
     }
 
     // ─── daemon_down_response ───────────────────────────────────────
