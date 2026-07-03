@@ -24,7 +24,7 @@ flowchart TD
     DNS["DNS task (yerd-dns)"]
     PROXY["proxy task (yerd-proxy)"]
     IPC["IPC task (ipc_server)"]
-    UPD["PHP update-check task (poll every 12h)"]
+    UPD["update-check task (PHP every 12h; Yerd self-update wall-clock-gated at 4h)"]
     WATCH["fs-watch task (re-scan parked roots on change)"]
 
     PROXY -->|"resolves backends,<br/>ensure() FPM pools"| HELPER
@@ -105,7 +105,8 @@ The daemon's modules (`src/lib.rs` re-exports each as `pub mod`):
 | `fs_watch` | Debounced filesystem watcher that re-scans parked roots as projects appear/change. |
 | `mutate` | Pure, I/O-free config-mutation logic (`Park`/`Link`/`SetPhp`/…). |
 | `php_install` | Download + unpack prebuilt PHP builds; `reqwest` downloader. |
-| `php_updates` | Update poller + cache (notify-only). |
+| `php_updates` | PHP update poller + cache (notify-only). |
+| `self_update` | Yerd self-update poller: fetches the GitHub Releases API, decides via the pure `yerd-update` crate, and persists a snapshot (`checked_at` + decision) both to disk and in `DaemonState` (notify-only). |
 | `dump_server` | Loopback TCP server reading newline-delimited JSON dump frames from the native `yerd-dump` extension into a bounded ring buffer; serves the ring to the GUI over IPC (`ListDumps`/`DumpsStatus`/…). |
 | `ext_install` | Downloads + SHA-256-verifies native PHP extension `.so`s per installed PHP version (from the `forjedio/yerd-php-ext` releases) into `{data}/php-ext/php-<ver>/`. An `ExtSpec` abstraction drives one fetch loop for **both** `yerd-dump` (`DUMP_SPEC`, gated on dumps) and `pcov` (`PCOV_SPEC`, ungated) - two manifests, one release. |
 | `tools` | Dev-tool installers (Composer, Node, Bun): download + SHA-256-verify self-contained binaries into `{data}/tools/<id>/` and reconcile their `{data}/bin` shims. See [Dev-tool installers](../dev-tools). |
@@ -191,7 +192,12 @@ The mutation path is the only place that holds two locks, and always in the orde
    - **proxy** (`yerd_proxy::ProxyServer::serve` with the `DaemonBackendResolver` and an `HttpsBinding` carrying the cert store),
    - **IPC** (`ipc_server::run`),
    - the **dump-telemetry server** (`dump_server::run`) - a loopback TCP listener receiving newline-delimited JSON frames from the native PHP `yerd-dump` extension into a ring buffer; it rebinds on a port change and a bind failure is non-fatal (logged, retried on the next rebind),
-   - a **PHP update checker** (poll once, then every 12h; notify-only),
+   - an **update checker** covering two independent cadences in one task: a
+     **PHP checker** (poll once, then every 12h) and a **Yerd self-update
+     checker** (`self_update::poll_if_due`, woken every 15 minutes but only
+     fetching when `yerd_update::is_check_due` says its own 4h wall-clock
+     interval has elapsed - robust to the process being suspended, unlike a
+     plain `tokio::time::interval`). Both are notify-only,
    - the **filesystem watcher** (`fs_watch::run`, see above), and
    - conditionally, the **mail-capture SMTP task** (`yerd_mail::serve`) - spawned only when `daemon.mail_listener` is `Some` (mail capture enabled *and* the SMTP port bound at startup; a disabled or failed bind is non-fatal and already logged in `bring_up`).
 
