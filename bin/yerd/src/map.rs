@@ -2152,6 +2152,10 @@ mod tests {
             Command::Path {
                 action: crate::cli::PathAction::Install,
             },
+            Command::Link {
+                name_or_path: None,
+                path: None,
+            },
         ] {
             match to_request(&cmd) {
                 Err(ClientError::Usage(_)) => {}

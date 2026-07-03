@@ -38,7 +38,7 @@ yerd sites
 :::
 
 ::: tip Web root detection
-Yerd auto-detects the directory each site is served from (e.g. `public/` for Laravel, the project root for WordPress). For a **parked** site it re-detects continuously as the project changes. For a **linked** site detection runs once, when the site is first linked; it isn't re-run automatically afterwards. `yerd root <name> <path>` pins it explicitly for either kind; `yerd root <name> --auto` (or with no path) re-runs detection immediately and returns to auto-detection. The path must resolve to a directory inside the site's folder. See the [Sites guide](../../guide/sites#web-root-the-served-directory).
+Yerd auto-detects the directory each site is served from (e.g. `public/` for Laravel, the project root for WordPress). For a **parked** site it re-detects continuously as the project changes. For a **linked** site detection runs once, when the site is first linked; it isn't re-run automatically afterward. `yerd root <name> <path>` pins it explicitly for either kind. `yerd root <name> --auto` (or with no path) returns to auto-detection: for a linked site this re-runs the one-shot detection immediately and pins the fresh result; for a parked site it clears the pin and hands the site back to the continuous watched detection. The path must resolve to a directory inside the site's folder. See the [Sites guide](../../guide/sites#web-root-the-served-directory).
 :::
 
 ::: warning About `unpark`

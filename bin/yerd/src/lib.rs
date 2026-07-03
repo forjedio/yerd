@@ -562,9 +562,9 @@ pub fn resolve_link(
     } else {
         let folder = resolved_path
             .file_name()
-            .and_then(|s| s.to_str())
-            .unwrap_or("");
-        yerd_core::slugify_site_name(folder).ok_or_else(|| {
+            .map(|s| s.to_string_lossy())
+            .unwrap_or_default();
+        yerd_core::slugify_site_name(&folder).ok_or_else(|| {
             ClientError::Usage(format!(
                 "cannot derive a site name from '{}'; run `yerd link <name> {}` to set one explicitly",
                 resolved_path.display(),
@@ -833,10 +833,10 @@ mod tests {
         assert!(path.ends_with("rel/blog"));
     }
 
+    /// "weird/???" looks like a path (contains '/'), so the name is derived
+    /// from its final component "???", which slugifies to `None`.
     #[test]
     fn resolve_link_undecipherable_name_errors() {
-        // "weird/???" looks like a path (contains '/'), so the name is
-        // derived from its final component "???", which slugifies to `None`.
         let err = resolve_link(Some("weird/???"), None).unwrap_err();
         assert!(matches!(err, ClientError::Usage(_)), "got: {err:?}");
     }
@@ -847,18 +847,18 @@ mod tests {
         assert!(matches!(err, ClientError::Usage(_)), "got: {err:?}");
     }
 
+    /// "" doesn't look like a path, so it's routed to explicit-name
+    /// validation, which rejects an empty name.
     #[test]
     fn resolve_link_empty_string_name_errors() {
-        // "" doesn't look like a path, so it's routed to explicit-name
-        // validation, which rejects an empty name.
         let err = resolve_link(Some(""), None).unwrap_err();
         assert!(matches!(err, ClientError::Usage(_)), "got: {err:?}");
     }
 
+    /// ".." looks like a path, but `Path::new("..").file_name()` is `None`,
+    /// so there's no folder name to slugify.
     #[test]
     fn resolve_link_path_with_no_file_name_errors() {
-        // ".." looks like a path, but `Path::new("..").file_name()` is
-        // `None`, so there's no folder name to slugify.
         let err = resolve_link(Some(".."), None).unwrap_err();
         assert!(matches!(err, ClientError::Usage(_)), "got: {err:?}");
     }

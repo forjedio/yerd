@@ -1546,13 +1546,20 @@ fn php_error_code(e: &yerd_php::PhpError) -> ErrorCode {
 
 /// Apply a mutation: canonicalise paths, run the pure delta, validate, persist,
 /// and swap the live router - **build-then-validate-then-commit** so a failed
-/// mutation leaves disk and the live router untouched.
+/// mutation leaves disk and the live router untouched. A `Link`'s web-root
+/// detection scan runs here, before `state.config` is locked, so a slow or
+/// network-mounted project directory can't stall other mutating requests
+/// that share the lock.
 pub(crate) async fn handle_mutation(req: Request, state: &DaemonState) -> Response {
     let canonical = match &req {
         Request::Park { path } | Request::Link { path, .. } => match canonicalize_dir(path) {
             Ok(p) => Some(p),
             Err(resp) => return resp,
         },
+        _ => None,
+    };
+    let link_web_subpath = match &req {
+        Request::Link { .. } => canonical.as_deref().map(detect_web_subpath),
         _ => None,
     };
 
@@ -1589,11 +1596,10 @@ pub(crate) async fn handle_mutation(req: Request, state: &DaemonState) -> Respon
         },
     };
 
-    if let Request::Link { name, .. } = &req {
+    if let (Request::Link { name, .. }, Some(subpath)) = (&req, &link_web_subpath) {
         let name_lc = name.to_ascii_lowercase();
         if let Some(site) = new.linked.iter_mut().find(|s| s.name() == name_lc) {
-            let doc_root = site.document_root().to_path_buf();
-            site.set_web_subpath(detect_web_subpath(&doc_root));
+            site.set_web_subpath(subpath);
         }
     }
 

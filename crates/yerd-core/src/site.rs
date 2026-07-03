@@ -457,9 +457,12 @@ mod tests {
         let slug = slugify_site_name(&long).unwrap();
         assert_eq!(slug.len(), 63);
         assert!(!slug.ends_with('-'));
+    }
 
-        // A separator right at the 63-byte boundary must not leave a
-        // dangling trailing hyphen after truncation.
+    /// A separator that lands exactly on the 63-byte truncation boundary
+    /// must not leave a dangling trailing hyphen in the result.
+    #[test]
+    fn slugify_site_name_boundary_separator_has_no_trailing_hyphen() {
         let boundary = format!("{} {}", "a".repeat(62), "b".repeat(5));
         let slug = slugify_site_name(&boundary).unwrap();
         assert_eq!(slug.len(), 62);

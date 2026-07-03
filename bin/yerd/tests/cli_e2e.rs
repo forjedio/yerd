@@ -54,6 +54,15 @@ mod tests {
         transport::exchange_at(sock, &req).await.expect("exchange")
     }
 
+    /// Drives `Command::Link`'s CLI-side resolution (`resolve_link`) directly
+    /// and exchanges the resulting `Request::Link` with the daemon -
+    /// `Command::Link` never reaches `map::to_request`, so `send()` can't be
+    /// used for it.
+    async fn link(sock: &std::path::Path, name: &str, path: &std::path::Path) -> Response {
+        let req = yerd::resolve_link(Some(name), Some(path)).expect("resolve_link");
+        transport::exchange_at(sock, &req).await.expect("exchange")
+    }
+
     fn site_names(resp: &Response) -> Vec<String> {
         match resp {
             Response::Sites { sites } => sites.iter().map(|s| s.name().to_owned()).collect(),
@@ -149,17 +158,8 @@ mod tests {
         ));
         assert!(site_names(&send(&sock, &Command::Sites).await).contains(&"blog".to_owned()));
 
-        // `Command::Link`'s cwd-resolution (`resolve_link`) is CLI-only and
-        // never reaches `map::to_request`, so drive `resolve_link` itself
-        // (explicit name+path here - the cwd-inferring forms are unit-tested
-        // in `lib.rs`) and exchange its `Request::Link` with the real daemon,
-        // proving the CLI resolution and the daemon's link-time web-root
-        // auto-detection work together end to end over the socket.
-        let link_req = yerd::resolve_link(Some("app"), Some(&linked_dir)).expect("resolve_link");
         assert!(matches!(
-            transport::exchange_at(&sock, &link_req)
-                .await
-                .expect("exchange"),
+            link(&sock, "app", &linked_dir).await,
             Response::Ok
         ));
         assert!(site_names(&send(&sock, &Command::Sites).await).contains(&"app".to_owned()));
