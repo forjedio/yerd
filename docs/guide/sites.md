@@ -258,7 +258,7 @@ Detection runs in the daemon when a site is registered and whenever its project 
 The served path shows up in `yerd sites` (the `SERVED` column, `/` meaning the project root itself).
 
 ::: info Static files are served directly
-A request that resolves to a real file under the served root (a stylesheet, image, `favicon.ico`, compiled JS, …) is returned straight from disk by the proxy, with a guessed `Content-Type` - it never touches PHP. A directory request (including the site root) falls back to `index.html` or `index.htm` from that directory when there's no `index.php` there, so a plain static site (no PHP at all) works with no extra configuration. Everything else is handed to the framework's front controller (`index.php`). PHP source files are never served as static bytes, and a symlink that escapes the served root is refused.
+A request that resolves to a real file under the served root (a stylesheet, image, `favicon.ico`, compiled JS, …) is returned straight from disk by the proxy, with a guessed `Content-Type` - it never touches PHP. A directory request (including the site root) falls back to `index.html` or `index.htm` from that directory when there's no `index.php` there, so a plain static site (no PHP at all) works with no extra configuration. Everything else is handed to the framework's front controller (`index.php`). PHP source files are never served as static bytes. A symlink is allowed to point anywhere inside the site's project directory - so Laravel's `public/storage -> ../storage/app/public` link works with no extra setup - but a symlink that escapes the project directory entirely is refused with an explicit `403 Forbidden` naming the requested path, rather than being silently handed to PHP.
 :::
 
 ### Overriding the served path

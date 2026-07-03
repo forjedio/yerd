@@ -682,26 +682,22 @@ async fn head_request_to_directory_index_returns_empty_body() {
     let _ = tokio::time::timeout(std::time::Duration::from_secs(5), proxy_task).await;
 }
 
-/// Regression test for a symlink-escape hole: `try_serve_index` used to
-/// canonicalise only the *directory*, then serve `directory.join("index.html")`
-/// without re-canonicalising the resolved file. A symlink named `index.html`
-/// pointing outside `served_root` (or at PHP source inside it) was served
-/// verbatim as a 200 `text/html` response.
+/// Regression test for the Laravel `public/storage -> ../storage/app/public`
+/// shape: a symlink under the served root that points outside it, but stays
+/// within the site's `document_root`, must be served normally rather than
+/// rejected. Uses a relative symlink target, matching exactly what
+/// `artisan storage:link` creates (as opposed to an absolute target).
 #[cfg(unix)]
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn symlinked_index_html_escaping_root_is_not_served() {
-    let secret_dir = tempfile::tempdir().unwrap();
-    let secret_path = secret_dir.path().join("secret.php");
-    std::fs::write(&secret_path, b"<?php secret_credentials(); ?>").unwrap();
-
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn symlink_within_document_root_outside_served_root_is_served() {
     let docroot = tempfile::tempdir().unwrap();
-    std::os::unix::fs::symlink(&secret_path, docroot.path().join("index.html")).unwrap();
+    let storage_dir = docroot.path().join("storage/app/public");
+    std::fs::create_dir_all(&storage_dir).unwrap();
+    std::fs::write(storage_dir.join("logo.png"), b"logo-bytes").unwrap();
 
-    let fcgi_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let fcgi_addr = fcgi_listener.local_addr().unwrap();
-    let captured = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
-    let stdout_payload = b"Status: 200 OK\r\nContent-Type: text/plain\r\n\r\nfrom fpm".to_vec();
-    let fake_task = tokio::spawn(run_fake_fcgi(fcgi_listener, stdout_payload, captured));
+    let public_dir = docroot.path().join("public");
+    std::fs::create_dir_all(&public_dir).unwrap();
+    std::os::unix::fs::symlink("../storage/app/public", public_dir.join("storage")).unwrap();
 
     let proxy_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let proxy_addr = proxy_listener.local_addr().unwrap();
@@ -709,12 +705,16 @@ async fn symlinked_index_html_escaping_root_is_not_served() {
     let tld = Tld::new("test").unwrap();
     let cfg = RouterConfig::with_tld(tld);
     let mut router = SiteRouter::new(cfg);
-    let site = Site::linked("app", docroot.path().to_path_buf(), PhpVersion::new(8, 3)).unwrap();
+    let mut site =
+        Site::linked("app", docroot.path().to_path_buf(), PhpVersion::new(8, 3)).unwrap();
+    site.set_web_subpath("public");
     router.insert(site).unwrap();
     let router = Arc::new(tokio::sync::RwLock::new(router));
 
     let resolver = Arc::new(StaticResolver {
-        backend: Backend::PhpFpmTcp { addr: fcgi_addr },
+        backend: Backend::PhpFpmTcp {
+            addr: "127.0.0.1:1".parse().unwrap(),
+        },
     });
 
     let (tx_shutdown, rx_shutdown) = oneshot::channel::<()>();
@@ -731,15 +731,130 @@ async fn symlinked_index_html_escaping_root_is_not_served() {
         .await;
     });
 
-    let body = client_get(proxy_addr, "app.test", "/").await;
-    assert_eq!(body, b"from fpm");
+    let (status, _content_type, body) =
+        client_get_response(proxy_addr, "app.test", "/storage/logo.png").await;
+    assert_eq!(status, 200);
+    assert_eq!(body, b"logo-bytes");
+
+    let _ = tx_shutdown.send(());
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(5), proxy_task).await;
+}
+
+/// A symlink that escapes the site's `document_root` entirely still gets
+/// rejected - but now with an explicit `403` from yerd-proxy naming the
+/// requested and resolved paths, instead of a silent fallthrough to FastCGI.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn symlink_escaping_document_root_returns_403() {
+    let outside = tempfile::tempdir().unwrap();
+    std::fs::write(outside.path().join("secret.txt"), b"leaked-secret").unwrap();
+
+    let docroot = tempfile::tempdir().unwrap();
+    std::os::unix::fs::symlink(
+        outside.path().join("secret.txt"),
+        docroot.path().join("evil.txt"),
+    )
+    .unwrap();
+
+    let proxy_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let proxy_addr = proxy_listener.local_addr().unwrap();
+
+    let tld = Tld::new("test").unwrap();
+    let cfg = RouterConfig::with_tld(tld);
+    let mut router = SiteRouter::new(cfg);
+    let site = Site::linked("app", docroot.path().to_path_buf(), PhpVersion::new(8, 3)).unwrap();
+    router.insert(site).unwrap();
+    let router = Arc::new(tokio::sync::RwLock::new(router));
+
+    let resolver = Arc::new(StaticResolver {
+        backend: Backend::PhpFpmTcp {
+            addr: "127.0.0.1:1".parse().unwrap(),
+        },
+    });
+
+    let (tx_shutdown, rx_shutdown) = oneshot::channel::<()>();
+    let proxy_task = tokio::spawn(async move {
+        let _ = ProxyServer::serve::<_, StubCertStore, _>(
+            proxy_listener,
+            None,
+            router,
+            resolver,
+            async move {
+                let _ = rx_shutdown.await;
+            },
+        )
+        .await;
+    });
+
+    let (status, _content_type, body) =
+        client_get_response(proxy_addr, "app.test", "/evil.txt").await;
+    assert_eq!(status, 403);
+    assert!(!body
+        .windows(b"leaked-secret".len())
+        .any(|w| w == b"leaked-secret"));
+    let body_str = String::from_utf8_lossy(&body);
+    assert!(body_str.contains("/evil.txt"));
+    assert!(!body_str.contains(&docroot.path().to_string_lossy().into_owned()));
+
+    let _ = tx_shutdown.send(());
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(5), proxy_task).await;
+}
+
+/// Regression test for a symlink-escape hole: `try_serve_index` used to
+/// canonicalise only the *directory*, then serve `directory.join("index.html")`
+/// without re-canonicalising the resolved file. A symlink named `index.html`
+/// pointing outside the site's `document_root` (or at PHP source inside it)
+/// was served verbatim as a 200 `text/html` response. It's now rejected with
+/// an explicit `403 Forbidden` from yerd-proxy rather than a silent
+/// fallthrough to FastCGI.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn symlinked_index_html_escaping_root_is_not_served() {
+    let secret_dir = tempfile::tempdir().unwrap();
+    let secret_path = secret_dir.path().join("secret.php");
+    std::fs::write(&secret_path, b"<?php secret_credentials(); ?>").unwrap();
+
+    let docroot = tempfile::tempdir().unwrap();
+    std::os::unix::fs::symlink(&secret_path, docroot.path().join("index.html")).unwrap();
+
+    let proxy_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let proxy_addr = proxy_listener.local_addr().unwrap();
+
+    let tld = Tld::new("test").unwrap();
+    let cfg = RouterConfig::with_tld(tld);
+    let mut router = SiteRouter::new(cfg);
+    let site = Site::linked("app", docroot.path().to_path_buf(), PhpVersion::new(8, 3)).unwrap();
+    router.insert(site).unwrap();
+    let router = Arc::new(tokio::sync::RwLock::new(router));
+
+    let resolver = Arc::new(StaticResolver {
+        backend: Backend::PhpFpmTcp {
+            addr: "127.0.0.1:1".parse().unwrap(),
+        },
+    });
+
+    let (tx_shutdown, rx_shutdown) = oneshot::channel::<()>();
+    let proxy_task = tokio::spawn(async move {
+        let _ = ProxyServer::serve::<_, StubCertStore, _>(
+            proxy_listener,
+            None,
+            router,
+            resolver,
+            async move {
+                let _ = rx_shutdown.await;
+            },
+        )
+        .await;
+    });
+
+    let (status, _content_type, body) = client_get_response(proxy_addr, "app.test", "/").await;
+    assert_eq!(status, 403);
     assert!(!body
         .windows(b"secret_credentials".len())
         .any(|w| w == b"secret_credentials"));
 
     let _ = tx_shutdown.send(());
     let _ = tokio::time::timeout(std::time::Duration::from_secs(5), proxy_task).await;
-    let _ = fake_task.await;
 }
 
 // ─── Hyper client helpers ───────────────────────────────────────────
