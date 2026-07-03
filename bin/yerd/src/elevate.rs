@@ -147,6 +147,10 @@ mod unix_impl {
                     #[cfg(target_os = "macos")]
                     {
                         println!("    the pf redirect is live now; no daemon restart needed.");
+                        println!(
+                            "    secure sites' HTTP→HTTPS redirects will drop the :{} port within a few seconds.",
+                            facts.https_port
+                        );
                     }
                 }
                 Ok(())

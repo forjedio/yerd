@@ -273,7 +273,7 @@ mod tests {
                 listener: daemon
                     .https_listener
                     .expect("test daemon binds its https listener"),
-                public_port: daemon.https_port,
+                public_port: daemon.state.redirect_https_port.clone(),
                 cert_store: daemon.cert_store.clone(),
             };
             let router = daemon.state.router.clone();

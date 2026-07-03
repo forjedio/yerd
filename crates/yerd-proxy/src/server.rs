@@ -2,6 +2,7 @@
 
 use std::future::Future;
 use std::net::SocketAddr;
+use std::sync::atomic::{AtomicU16, Ordering};
 use std::sync::Arc;
 
 use http::header::{
@@ -49,9 +50,12 @@ pub struct HttpsBinding<C: CertStore> {
     /// and converted via `tokio::net::TcpListener::from_std`).
     pub listener: TcpListener,
     /// Public port the HTTP→HTTPS redirect should target - not
-    /// necessarily what `listener.local_addr()` reports (rootless
-    /// mode may bind 8443 but the redirect should still go to 8443).
-    pub public_port: u16,
+    /// necessarily what `listener.local_addr()` reports (rootless mode may
+    /// bind 8443 while a live privileged-port redirect, e.g. `yerd elevate
+    /// ports`'s macOS `pf` rule, makes 443 the port to advertise instead).
+    /// Shared (not a plain `u16`) so the daemon can flip it as that redirect
+    /// goes up or down, without restarting the proxy to pick up the change.
+    pub public_port: Arc<AtomicU16>,
     /// Cert lookup. Arc-wrapped so the SNI resolver can clone cheaply.
     pub cert_store: Arc<C>,
 }
@@ -87,7 +91,7 @@ impl ProxyServer {
             notify_for_shutdown.notify_waiters();
         });
 
-        let redirect_port = https.as_ref().map(|h| h.public_port);
+        let redirect_port = https.as_ref().map(|h| h.public_port.clone());
         let tls_acceptor = https
             .as_ref()
             .map(|h| TlsAcceptor::from(build_server_config(h.cert_store.clone())));
@@ -109,7 +113,7 @@ impl ProxyServer {
                                 let router = http_router.clone();
                                 let resolver = http_resolver.clone();
                                 tokio::spawn(serve_http_connection(
-                                    stream, peer, router, resolver, redirect_port,
+                                    stream, peer, router, resolver, redirect_port.clone(),
                                 ));
                             }
                             Err(e) => {
@@ -177,7 +181,7 @@ async fn serve_http_connection<R: BackendResolver>(
     peer: SocketAddr,
     router: SharedRouter,
     resolver: Arc<R>,
-    redirect_port: Option<u16>,
+    redirect_port: Option<Arc<AtomicU16>>,
 ) {
     let server_addr = stream
         .local_addr()
@@ -191,7 +195,7 @@ async fn serve_http_connection<R: BackendResolver>(
             Listener::Http,
             router.clone(),
             resolver.clone(),
-            redirect_port,
+            redirect_port.clone(),
         )
     });
     let conn = hyper::server::conn::http1::Builder::new()
@@ -248,7 +252,7 @@ async fn handle_request<R: BackendResolver>(
     listener: Listener,
     router: SharedRouter,
     resolver: Arc<R>,
-    redirect_port: Option<u16>,
+    redirect_port: Option<Arc<AtomicU16>>,
 ) -> Result<Response<BoxBody>, std::convert::Infallible> {
     match dispatch(
         req,
@@ -281,8 +285,9 @@ async fn dispatch<R: BackendResolver>(
     listener: Listener,
     router: SharedRouter,
     resolver: Arc<R>,
-    redirect_port: Option<u16>,
+    redirect_port: Option<Arc<AtomicU16>>,
 ) -> Result<Response<BoxBody>, ProxyError> {
+    let redirect_port = redirect_port.map(|p| p.load(Ordering::Relaxed));
     let Some(host) = req
         .headers()
         .get(HOST)

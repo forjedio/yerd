@@ -59,9 +59,6 @@ pub struct Daemon {
     pub http_listener: Option<tokio::net::TcpListener>,
     /// Bound HTTPS listener. `None` in the same degraded case as `http_listener`.
     pub https_listener: Option<tokio::net::TcpListener>,
-    /// Port the redirect target should advertise (≠ `https_listener` port
-    /// when rootless fallback fires). `0` when degraded.
-    pub https_port: u16,
     /// IPC listener (Unix socket on Unix, named pipe on Windows).
     pub ipc_listener: IpcListener,
     /// Bound DNS sockets (UDP+TCP), owned by the daemon and consumed when the
@@ -297,6 +294,7 @@ pub async fn bring_up_with_dirs(
             bound: bound_https,
             fell_back: bound_https != cfg_https,
         },
+        redirect_https_port: Arc::new(std::sync::atomic::AtomicU16::new(bound_https)),
         web_unbound,
         dns_unbound,
         boot_id: rand_boot_id(),
@@ -332,7 +330,6 @@ pub async fn bring_up_with_dirs(
         cert_store,
         http_listener,
         https_listener: tls_listener,
-        https_port: bound_https,
         ipc_listener,
         dns_bound,
         dns_addr,
