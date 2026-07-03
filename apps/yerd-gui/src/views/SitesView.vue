@@ -248,7 +248,6 @@ async function confirmDeleteGroup(close: () => void): Promise<void> {
     toast.error("Couldn't delete group", (e as IpcError).message);
   } finally {
     rowBusy.value = null;
-    renameGroupConfirmingDelete.value = false;
   }
 }
 
@@ -723,7 +722,7 @@ async function shareSitePublicly(s: Site): Promise<void> {
                   <span class="truncate text-sm font-semibold">{{ sec.name }}</span>
                   <Badge variant="secondary">{{ sec.sites.length }}</Badge>
                 </button>
-                <!-- Reorder + delete controls (named groups only; hidden while
+                <!-- Reorder + edit controls (named groups only; hidden while
                      searching, since a search-hidden neighbour would make a move
                      look like a no-op). Faded in only on hover/focus of this row
                      so the header matches Unallocated's height at rest. -->
@@ -985,7 +984,7 @@ async function shareSitePublicly(s: Site): Promise<void> {
     <!-- edit group: rename, or a second step to delete -->
     <Modal
       v-model:open="renameGroupOpen"
-      :title="renameGroupConfirmingDelete ? 'Delete group' : 'Rename group'"
+      :title="renameGroupConfirmingDelete ? 'Delete group' : 'Edit group'"
       @update:open="
         (v: boolean) => {
           if (!v) {
