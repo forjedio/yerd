@@ -130,6 +130,18 @@ async fn dispatch(req: Request, state: &DaemonState) -> Response {
         | Request::SetPhp { .. }
         | Request::SetSecure { .. }
         | Request::SetWebRoot { .. } => handle_mutation(req, state).await,
+        Request::ListGroups => {
+            let cfg = state.config.lock().await;
+            Response::Groups {
+                order: cfg.groups.order.clone(),
+                members: cfg.groups.members.clone(),
+            }
+        }
+        Request::CreateGroup { .. }
+        | Request::DeleteGroup { .. }
+        | Request::SetGroupOrder { .. }
+        | Request::SetSiteGroup { .. }
+        | Request::RenameGroup { .. } => handle_group_mutation(req, state).await,
         Request::ListPhp => php_versions_response(state).await,
         Request::InstallPhp { version } => install_php(version, state).await,
         Request::SetDefaultPhp { version } => set_default_php(version, state).await,
@@ -1606,6 +1618,46 @@ pub(crate) async fn handle_mutation(req: Request, state: &DaemonState) -> Respon
     Response::Ok
 }
 
+/// Apply a group mutation (create/delete/reorder/assign). Groups are a
+/// config-only organisational overlay that never affects routing, so this uses
+/// the lighter clone → apply → validate → save → commit path (like
+/// [`set_dns_port`]) - **no** router rebuild and **no** `watch_dirty` notify,
+/// which would only provoke a needless parked-dir rescan.
+async fn handle_group_mutation(req: Request, state: &DaemonState) -> Response {
+    let mut cfg_guard = state.config.lock().await;
+    let mut new = cfg_guard.clone();
+
+    // Groups ignore `default_php`, but `apply` still takes it; capture before the
+    // mutable borrow of `new`.
+    let live_default = new.php.default;
+    let applied = match mutate::apply(
+        &mut new,
+        &*state.router.read().await,
+        &req,
+        None,
+        live_default,
+    ) {
+        Ok(a) => a,
+        Err(e) => {
+            return Response::Error {
+                code: mutate::error_code(&e),
+                message: e.to_string(),
+            }
+        }
+    };
+
+    if let Err(e) = new.validate() {
+        return internal(format!("config validation failed: {e}"));
+    }
+    if let Err(e) = new.save(&state.config_path) {
+        return internal(format!("config save failed: {e}"));
+    }
+
+    *cfg_guard = new;
+    tracing::info!(summary = %applied.summary, "applied group mutation");
+    Response::Ok
+}
+
 /// Resolve a `SetWebRoot` request against `new`, doing the filesystem I/O
 /// (containment check, or re-detection) the pure `mutate::apply` can't. A
 /// **linked** site stores the chosen subpath on its `Site`; a **parked** site
@@ -2357,6 +2409,79 @@ Subject: Captured\r\n\r\nhi\r\n";
         assert_eq!(state.config.lock().await.dns_port, 5354);
         let reloaded = yerd_config::Config::load(&state.config_path).unwrap();
         assert_eq!(reloaded.dns_port, 5354);
+    }
+
+    #[tokio::test]
+    async fn dispatch_group_mutations_persist_without_router_churn() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_in(tmp.path());
+
+        for name in ["Blog", "Shop"] {
+            assert!(matches!(
+                dispatch(Request::CreateGroup { name: name.into() }, &state).await,
+                Response::Ok
+            ));
+        }
+        assert!(matches!(
+            dispatch(
+                Request::SetSiteGroup {
+                    site: "api".into(),
+                    group: Some("Blog".into()),
+                },
+                &state,
+            )
+            .await,
+            Response::Ok
+        ));
+
+        // ListGroups reflects the mutations in memory...
+        match dispatch(Request::ListGroups, &state).await {
+            Response::Groups { order, members } => {
+                assert_eq!(order, vec!["Blog".to_string(), "Shop".to_string()]);
+                assert_eq!(members.get("api").map(String::as_str), Some("Blog"));
+            }
+            other => panic!("expected Groups, got {other:?}"),
+        }
+        // ...and they persisted to disk.
+        let reloaded = yerd_config::Config::load(&state.config_path).unwrap();
+        assert_eq!(
+            reloaded.groups.order,
+            vec!["Blog".to_string(), "Shop".to_string()]
+        );
+        assert_eq!(
+            reloaded.groups.members.get("api").map(String::as_str),
+            Some("Blog")
+        );
+
+        // Group mutations take the lighter commit path, so they must NOT signal
+        // the parked-dir/router watcher (that would provoke a needless rescan).
+        let not_notified = tokio::time::timeout(
+            std::time::Duration::from_millis(50),
+            state.watch_dirty.notified(),
+        )
+        .await;
+        assert!(
+            not_notified.is_err(),
+            "a group mutation must not notify watch_dirty"
+        );
+
+        // Contrast: a real site mutation DOES notify it - proving the probe works
+        // and that the group path genuinely diverges from handle_mutation.
+        let dir = tmp.path().join("sites");
+        std::fs::create_dir_all(&dir).unwrap();
+        assert!(matches!(
+            dispatch(Request::Park { path: dir }, &state).await,
+            Response::Ok
+        ));
+        let notified = tokio::time::timeout(
+            std::time::Duration::from_millis(50),
+            state.watch_dirty.notified(),
+        )
+        .await;
+        assert!(
+            notified.is_ok(),
+            "a site mutation should notify watch_dirty"
+        );
     }
 
     #[tokio::test]

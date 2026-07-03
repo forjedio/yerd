@@ -79,6 +79,28 @@ fn encode_then_decode_request_roundtrip() {
     assert_request_roundtrips(Request::SetUpdateChannel {
         channel: yerd_ipc::Channel::Stable,
     });
+    assert_request_roundtrips(Request::ListGroups);
+    assert_request_roundtrips(Request::CreateGroup {
+        name: "Blog".into(),
+    });
+    assert_request_roundtrips(Request::DeleteGroup {
+        name: "Blog".into(),
+    });
+    assert_request_roundtrips(Request::SetGroupOrder {
+        order: vec!["Blog".into(), "Shop".into()],
+    });
+    assert_request_roundtrips(Request::SetSiteGroup {
+        site: "app".into(),
+        group: Some("Blog".into()),
+    });
+    assert_request_roundtrips(Request::SetSiteGroup {
+        site: "app".into(),
+        group: None,
+    });
+    assert_request_roundtrips(Request::RenameGroup {
+        from: "Blog".into(),
+        to: "Journal".into(),
+    });
 }
 
 #[test]
@@ -223,6 +245,10 @@ fn encode_then_decode_response_roundtrip() {
         ahead_of_stable: false,
         source: yerd_ipc::UpdateSource::Cached,
         checked_at_epoch: Some(1_719_445_200),
+    });
+    assert_response_roundtrips(Response::Groups {
+        order: vec!["Blog".into(), "Shop".into()],
+        members: std::collections::BTreeMap::from([("app".to_string(), "Blog".to_string())]),
     });
 }
 

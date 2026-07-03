@@ -1,0 +1,155 @@
+<script setup lang="ts">
+import {
+  ExternalLink,
+  FolderOpen,
+  FolderTree,
+  Globe,
+  Link2,
+  Lock,
+  LockOpen,
+  MoreHorizontal,
+  Pencil,
+  Trash2,
+} from "lucide-vue-next";
+
+import Button from "@/components/ui/Button.vue";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import Spinner from "@/components/ui/Spinner.vue";
+import { openTitle, siteUrl } from "@/lib/siteUrl";
+import { openInBrowser, openPath } from "@/ipc/client";
+import type { Site, StatusReport } from "@/ipc/types";
+
+defineProps<{
+  site: Site;
+  report: StatusReport | null;
+  tld: string;
+  /** Whether a mutation targeting this site is in flight (shows a spinner). */
+  busy?: boolean;
+  /** Whether a "share publicly" action for this site is in flight. */
+  sharing?: boolean;
+}>();
+
+const emit = defineEmits<{
+  edit: [site: Site];
+  unlink: [site: Site];
+  share: [site: Site];
+  toggleSecure: [site: Site];
+}>();
+
+/** The served sub-directory label ("/" when the project root is served). */
+function servedLabel(s: Site): string {
+  return s.web_subpath && s.web_subpath !== "" ? s.web_subpath : "/";
+}
+</script>
+
+<template>
+  <div
+    class="group rounded-lg border bg-card p-4 shadow-sm transition-colors hover:border-brand/40"
+  >
+    <div class="flex items-start justify-between gap-2">
+      <div class="min-w-0">
+        <button
+          class="flex max-w-full items-center gap-1.5 font-mono text-sm font-medium hover:text-brand"
+          :title="openTitle(site, report)"
+          @click="openInBrowser(siteUrl(site, report))"
+        >
+          <span class="truncate">{{ site.name }}.{{ tld }}</span>
+        </button>
+        <button
+          class="mt-1 flex max-w-full items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
+          :title="`Reveal ${site.document_root}`"
+          @click="openPath(site.document_root)"
+        >
+          <FolderOpen class="size-3 shrink-0" />
+          <span class="truncate font-mono">{{ site.document_root }}</span>
+        </button>
+      </div>
+
+      <div class="flex shrink-0 items-center">
+        <Spinner v-if="busy" class="size-4" />
+        <Button
+          variant="ghost"
+          size="icon"
+          :aria-label="openTitle(site, report)"
+          :title="openTitle(site, report)"
+          @click="openInBrowser(siteUrl(site, report))"
+        >
+          <ExternalLink class="size-4" />
+        </Button>
+        <DropdownMenu>
+          <DropdownMenuTrigger as-child>
+            <Button variant="ghost" size="icon" :aria-label="`Actions for ${site.name}`">
+              <MoreHorizontal class="size-4" />
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end">
+            <DropdownMenuItem :disabled="busy" @select="emit('edit', site)">
+              <Pencil class="size-4" /> Edit…
+            </DropdownMenuItem>
+            <DropdownMenuItem @select="openInBrowser(siteUrl(site, report))">
+              <ExternalLink class="size-4" /> Open in browser
+            </DropdownMenuItem>
+            <DropdownMenuItem @select="openPath(site.document_root)">
+              <FolderOpen class="size-4" /> Reveal folder
+            </DropdownMenuItem>
+            <DropdownMenuItem :disabled="sharing" @select="emit('share', site)">
+              <Globe class="size-4" /> Share publicly…
+            </DropdownMenuItem>
+            <!-- Only linked sites are removable here (by name). A parked site is
+                 removed by un-parking its folder. -->
+            <template v-if="site.kind === 'linked'">
+              <DropdownMenuSeparator />
+              <DropdownMenuItem
+                :disabled="busy"
+                class="text-destructive focus:bg-destructive/10 focus:text-destructive"
+                @select="emit('unlink', site)"
+              >
+                <Trash2 class="size-4" /> Unlink
+              </DropdownMenuItem>
+            </template>
+          </DropdownMenuContent>
+        </DropdownMenu>
+      </div>
+    </div>
+
+    <!-- meta chips -->
+    <div class="mt-3 flex flex-wrap items-center gap-1.5">
+      <span
+        class="inline-flex items-center rounded-md bg-muted px-1.5 py-0.5 font-mono text-[11px] font-medium text-muted-foreground"
+      >
+        PHP {{ site.php }}
+      </span>
+      <button
+        type="button"
+        :disabled="busy"
+        :aria-label="site.secure ? 'Serve over HTTP' : 'Serve over HTTPS'"
+        :title="site.secure ? 'Serving over HTTPS - click to switch to HTTP' : 'Serving over HTTP - click to switch to HTTPS'"
+        class="inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[11px] font-medium transition-opacity hover:opacity-70 disabled:cursor-not-allowed disabled:opacity-50"
+        :class="site.secure ? 'bg-success/10 text-success' : 'bg-muted text-muted-foreground'"
+        @click="emit('toggleSecure', site)"
+      >
+        <Lock v-if="site.secure" class="size-3" />
+        <LockOpen v-else class="size-3" />
+        {{ site.secure ? "HTTPS" : "HTTP" }}
+      </button>
+      <span
+        v-if="site.web_subpath"
+        class="inline-flex items-center rounded-md bg-muted px-1.5 py-0.5 font-mono text-[11px] text-muted-foreground"
+        :title="`Serves ${servedLabel(site)} as the document root`"
+      >
+        /{{ servedLabel(site) }}
+      </span>
+      <span class="ml-auto inline-flex items-center gap-1 text-[11px] text-muted-foreground">
+        <Link2 v-if="site.kind === 'linked'" class="size-3" />
+        <FolderTree v-else class="size-3" />
+        {{ site.kind }}
+      </span>
+    </div>
+  </div>
+</template>

@@ -19,7 +19,7 @@ pub(crate) type MigrationStep = fn(&mut Value) -> Result<(), ConfigError>;
 /// Forward-migration steps, indexed so that **`STEPS[N]` walks `vN → v(N+1)`**.
 /// This matches [`up`], which indexes `STEPS[current]` (== the version being
 /// migrated *from*). Example: a v1 file is migrated by `STEPS[1]`. When
-/// `CURRENT_VERSION == 8`, `STEPS = [v0→v1, …, v6→v7, v7→v8]`, length 8.
+/// `CURRENT_VERSION == 9`, `STEPS = [v0→v1, …, v7→v8, v8→v9]`, length 9.
 ///
 /// `STEPS[0]` (v0→v1) is only reachable via a hand-crafted `version = 0` file -
 /// v0 was never written to disk - but it must exist so that `STEPS[1]` does.
@@ -32,6 +32,7 @@ pub(crate) const STEPS: &[MigrationStep] = &[
     migrate_v5_to_v6,
     migrate_v6_to_v7,
     migrate_v7_to_v8,
+    migrate_v8_to_v9,
 ];
 
 /// `v0 → v1`: bump the version. v0 predates any shipped config, so there is no
@@ -105,6 +106,13 @@ fn migrate_v7_to_v8(value: &mut Value) -> Result<(), ConfigError> {
     set_version(value, 8)
 }
 
+/// `v8 → v9`: bump the version. v9 added the optional `[groups]` table, which
+/// defaults (empty) when absent, so an in-place version bump is the entire
+/// migration.
+fn migrate_v8_to_v9(value: &mut Value) -> Result<(), ConfigError> {
+    set_version(value, 9)
+}
+
 /// Set the top-level `version` key, erroring if the root is not a table.
 fn set_version(value: &mut Value, n: i64) -> Result<(), ConfigError> {
     let table = value.as_table_mut().ok_or(ConfigError::Migration {
@@ -174,7 +182,7 @@ mod tests {
 
     #[test]
     fn current_version_pinned() {
-        assert_eq!(crate::CURRENT_VERSION, 8);
+        assert_eq!(crate::CURRENT_VERSION, 9);
     }
 
     #[test]
@@ -203,6 +211,13 @@ mod tests {
         let mut v: Value = toml::from_str("version = 6\n").unwrap();
         migrate_v6_to_v7(&mut v).unwrap();
         assert_eq!(read_version(&v).unwrap(), 7);
+    }
+
+    #[test]
+    fn v8_to_v9_is_a_bare_version_bump() {
+        let mut v: Value = toml::from_str("version = 8\n").unwrap();
+        migrate_v8_to_v9(&mut v).unwrap();
+        assert_eq!(read_version(&v).unwrap(), 9);
     }
 
     #[test]

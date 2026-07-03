@@ -62,6 +62,8 @@ pub struct Config {
     pub dumps: DumpsSection,
     /// Cloudflare Tunnel persistence (Named Tunnels). Empty by default.
     pub tunnel: TunnelSection,
+    /// User-defined site groups and per-site membership. Empty by default.
+    pub groups: GroupsSection,
 }
 
 impl Default for Config {
@@ -80,9 +82,47 @@ impl Default for Config {
             mail: MailSection::default(),
             dumps: DumpsSection::default(),
             tunnel: TunnelSection::default(),
+            groups: GroupsSection::default(),
         }
     }
 }
+
+/// User-defined site groups (see [`Config::groups`]).
+///
+/// Purely an organisational overlay for the GUI's Sites view: groups do not
+/// affect routing. Modeled on [`TunnelSection`] - membership is keyed by
+/// **site name** (not document-root) so a site's group applies to parked and
+/// linked sites alike, without touching the [`Site`] wire shape. Both fields
+/// are empty by default, so a config without a `[groups]` table is the common
+/// case.
+///
+/// The synthetic "Unallocated" bucket (sites with no membership) lives only in
+/// the GUI and is never stored here; the name `Unallocated` is reserved and
+/// rejected by [`Config::validate`].
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct GroupsSection {
+    /// Group display names in display order; the index is the ordering. Names
+    /// are arbitrary display strings (deduplicated ASCII-case-insensitively).
+    pub order: Vec<String>,
+    /// Per-site group membership, by site name → group name. A site maps to at
+    /// most one group; an absent key means "Unallocated". `BTreeMap` for stable
+    /// serialisation order.
+    pub members: BTreeMap<String, String>,
+}
+
+impl GroupsSection {
+    /// True when there are no groups and no memberships - lets the serialiser
+    /// omit the `[groups]` table entirely so a default config stays byte-stable.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.order.is_empty() && self.members.is_empty()
+    }
+}
+
+/// The reserved group name for the GUI's synthetic ungrouped bucket. It is never
+/// a real stored group, so [`Config::validate`] (and the daemon's create-group
+/// mutation) reject it case-insensitively.
+pub const RESERVED_GROUP_NAME: &str = "Unallocated";
 
 /// Cloudflare Tunnel persistence (the Named Tunnels feature).
 ///
@@ -429,6 +469,14 @@ mod tests {
         assert!(inst.enabled);
         assert_eq!(inst.version, None);
         assert_eq!(inst.port, None);
+    }
+
+    #[test]
+    fn default_groups_empty() {
+        let g = &Config::default().groups;
+        assert!(g.is_empty());
+        assert!(g.order.is_empty());
+        assert!(g.members.is_empty());
     }
 
     #[test]

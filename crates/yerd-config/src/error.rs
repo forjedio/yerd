@@ -136,6 +136,16 @@ pub enum ValidateErrorReason {
     /// one ingress rule per `(site, hostname)` pair, so a duplicate hostname
     /// would shadow all but the first matching site.
     TunnelDuplicateHostname,
+    /// A `[groups]` order entry was an empty string.
+    GroupNameEmpty,
+    /// A `[groups]` order entry used the reserved name `Unallocated` (the GUI's
+    /// synthetic ungrouped bucket), which must never be a real stored group.
+    GroupNameReserved,
+    /// Two `[groups.order]` entries were the same name (case-insensitively).
+    GroupDuplicate,
+    /// A `[groups.members]` value referenced a group name absent from
+    /// `[groups.order]`.
+    GroupMemberDangling,
 }
 
 impl fmt::Display for ValidateErrorReason {
@@ -164,6 +174,10 @@ impl fmt::Display for ValidateErrorReason {
             Self::TunnelKeyInvalid => "tunnel keys and UUIDs contain unsafe characters",
             Self::TunnelMultipleNamed => "only one named tunnel is supported",
             Self::TunnelDuplicateHostname => "tunnel.sites hostnames must be unique",
+            Self::GroupNameEmpty => "groups.order contains an empty group name",
+            Self::GroupNameReserved => "\"Unallocated\" is reserved and cannot be a group name",
+            Self::GroupDuplicate => "groups.order contains a duplicate group name",
+            Self::GroupMemberDangling => "groups.members references an unknown group",
         };
         f.write_str(msg)
     }
@@ -234,6 +248,10 @@ mod tests {
             ValidateErrorReason::TunnelKeyInvalid,
             ValidateErrorReason::TunnelMultipleNamed,
             ValidateErrorReason::TunnelDuplicateHostname,
+            ValidateErrorReason::GroupNameEmpty,
+            ValidateErrorReason::GroupNameReserved,
+            ValidateErrorReason::GroupDuplicate,
+            ValidateErrorReason::GroupMemberDangling,
         ] {
             assert!(!r.to_string().is_empty());
             let _ = format!("{r:?}");

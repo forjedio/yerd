@@ -102,6 +102,38 @@ pub async fn set_web_root(name: String, path: Option<String>) -> Result<Response
     finish(exchange(&Request::SetWebRoot { name, path }).await?)
 }
 
+// ── site groups ────────────────────────────────────────────────────────────
+
+#[tauri::command]
+pub async fn list_groups() -> Result<Response, GuiError> {
+    finish(exchange(&Request::ListGroups).await?)
+}
+
+#[tauri::command]
+pub async fn create_group(name: String) -> Result<Response, GuiError> {
+    finish(exchange(&Request::CreateGroup { name }).await?)
+}
+
+#[tauri::command]
+pub async fn delete_group(name: String) -> Result<Response, GuiError> {
+    finish(exchange(&Request::DeleteGroup { name }).await?)
+}
+
+#[tauri::command]
+pub async fn set_group_order(order: Vec<String>) -> Result<Response, GuiError> {
+    finish(exchange(&Request::SetGroupOrder { order }).await?)
+}
+
+#[tauri::command]
+pub async fn set_site_group(site: String, group: Option<String>) -> Result<Response, GuiError> {
+    finish(exchange(&Request::SetSiteGroup { site, group }).await?)
+}
+
+#[tauri::command]
+pub async fn rename_group(from: String, to: String) -> Result<Response, GuiError> {
+    finish(exchange(&Request::RenameGroup { from, to }).await?)
+}
+
 // ── php versions ───────────────────────────────────────────────────────────
 
 #[tauri::command]

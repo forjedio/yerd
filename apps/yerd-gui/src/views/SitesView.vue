@@ -1,17 +1,16 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 import {
+  ArrowDown,
+  ArrowUp,
   ChevronDown,
-  ExternalLink,
+  ChevronRight,
   FolderMinus,
   FolderOpen,
   FolderPlus,
-  FolderTree,
   Globe,
+  Layers,
   Link2,
-  Lock,
-  LockOpen,
-  MoreHorizontal,
   Package,
   Pencil,
   Plus,
@@ -22,6 +21,7 @@ import {
 } from "lucide-vue-next";
 
 import CreateLaravelWizard from "@/components/site-create/CreateLaravelWizard.vue";
+import SiteCard from "@/components/SiteCard.vue";
 import PageHeader from "@/components/PageHeader.vue";
 import Badge from "@/components/ui/Badge.vue";
 import Button from "@/components/ui/Button.vue";
@@ -39,28 +39,32 @@ import Modal from "@/components/ui/Modal.vue";
 import Select from "@/components/ui/Select.vue";
 import Spinner from "@/components/ui/Spinner.vue";
 import Switch from "@/components/ui/Switch.vue";
-import { openTitle, siteUrl } from "@/lib/siteUrl";
 import { registerViewActions } from "@/lib/shortcuts/useViewActions";
 import { sitesIntent } from "@/lib/shortcuts/sitesIntent";
+import { useSitesGroupState } from "@/lib/sitesGroupState";
 import { useDaemon } from "@/composables/useDaemon";
 import { useResource } from "@/composables/useResource";
 import { useToast } from "@/composables/useToast";
 import {
+  createGroup,
+  deleteGroup,
   IpcError,
   link,
-  openInBrowser,
   openPath,
   park,
   pickDirectory,
+  renameGroup,
+  setGroupOrder,
   setPhp,
   setSecure,
+  setSiteGroup,
   setWebRoot,
   sitesAndParked,
   startQuickTunnel,
   unlink,
   unpark,
 } from "@/ipc/client";
-import type { Site } from "@/ipc/types";
+import type { GroupsState, Site } from "@/ipc/types";
 
 const toast = useToast();
 const { report } = useDaemon();
@@ -82,6 +86,194 @@ const filterInput = ref<InstanceType<typeof Input> | null>(null);
 
 const tld = computed(() => report.value?.tld ?? "test");
 const caTrusted = computed(() => report.value?.ca.trusted_system === true);
+
+// ── site groups ──
+const emptyGroups: GroupsState = { order: [], members: {} };
+const groups = computed<GroupsState>(() => data.value?.groups ?? emptyGroups);
+const hasGroups = computed(() => groups.value.order.length > 0);
+const searching = computed(() => siteFilter.value.trim() !== "");
+const { isCollapsed, toggle: toggleCollapse, rename: renameCollapse } = useSitesGroupState();
+
+/** The synthetic bucket for ungrouped sites; never a stored group. */
+const UNALLOCATED = "Unallocated";
+
+interface GroupSection {
+  name: string;
+  sites: Site[];
+  isUnallocated: boolean;
+}
+
+/** Whether a site-scoped mutation is in flight for `name`. Matches the exact
+ *  `edit:`/`unlink:` tokens rather than a `:${name}` suffix, so a group op
+ *  (`group:<name>`) can't spuriously spin a same-named site's card. */
+function siteBusy(name: string): boolean {
+  return rowBusy.value === `edit:${name}` || rowBusy.value === `unlink:${name}`;
+}
+
+async function toggleSecure(site: Site): Promise<void> {
+  const next = !site.secure;
+  rowBusy.value = `edit:${site.name}`;
+  try {
+    await setSecure(site.name, next);
+    toast.success(
+      next
+        ? `HTTPS enabled for ${site.name}.${tld.value}`
+        : `HTTPS disabled for ${site.name}.${tld.value}`,
+    );
+    await load({ force: true });
+  } catch (e) {
+    toast.error("Couldn't change HTTPS", (e as IpcError).message);
+  } finally {
+    rowBusy.value = null;
+  }
+}
+
+async function moveGroup(name: string, dir: -1 | 1): Promise<void> {
+  const order = [...groups.value.order];
+  const i = order.indexOf(name);
+  const j = i + dir;
+  const a = order[i];
+  const b = order[j];
+  if (a === undefined || b === undefined) return;
+  order[i] = b;
+  order[j] = a;
+  rowBusy.value = `group:${name}`;
+  try {
+    await setGroupOrder(order);
+  } catch (e) {
+    toast.error("Couldn't reorder groups", (e as IpcError).message);
+  } finally {
+    // Always reconcile with the daemon's actual group set - on a permutation
+    // rejection (a group added/removed in another window) this drops the stale
+    // section instead of leaving it stuck until an unrelated refresh.
+    await load({ force: true });
+    rowBusy.value = null;
+  }
+}
+
+// ASCII-only case-fold, matching the daemon's `eq_ignore_ascii_case` group
+// identity; full-Unicode `toLowerCase` disagrees on non-ASCII names.
+function asciiLower(s: string): string {
+  return s.replace(/[A-Z]/g, (c) => String.fromCharCode(c.charCodeAt(0) + 32));
+}
+
+// ── create group ──
+const createGroupOpen = ref(false);
+const createGroupName = ref("");
+const createGroupValid = computed(() => {
+  const n = asciiLower(createGroupName.value.trim());
+  if (!n || n === asciiLower(UNALLOCATED)) return false;
+  return !groups.value.order.some((g) => asciiLower(g) === n);
+});
+
+function openCreateGroup(): void {
+  createGroupName.value = "";
+  void nextTick(() => {
+    createGroupOpen.value = true;
+  });
+}
+
+async function confirmCreateGroup(close: () => void): Promise<void> {
+  const name = createGroupName.value.trim();
+  close();
+  if (!name) return;
+  rowBusy.value = "group:create";
+  try {
+    await createGroup(name);
+    toast.success(`Created group ${name}`);
+    await load({ force: true });
+  } catch (e) {
+    toast.error("Couldn't create group", (e as IpcError).message);
+  } finally {
+    rowBusy.value = null;
+  }
+}
+
+// ── rename group ──
+const renameGroupOpen = ref(false);
+const renameGroupTarget = ref<string | null>(null);
+const renameGroupName = ref("");
+const renameGroupValid = computed(() => {
+  const n = asciiLower(renameGroupName.value.trim());
+  if (!n || n === asciiLower(UNALLOCATED)) return false;
+  const from = renameGroupTarget.value ? asciiLower(renameGroupTarget.value) : "";
+  return !groups.value.order.some((g) => {
+    const gl = asciiLower(g);
+    return gl === n && gl !== from;
+  });
+});
+
+function openRenameGroup(name: string): void {
+  renameGroupTarget.value = name;
+  renameGroupName.value = name;
+  void nextTick(() => {
+    renameGroupOpen.value = true;
+  });
+}
+
+// Validity is captured before close(): Modal's close emits update:open, whose
+// listener nulls renameGroupTarget synchronously, which would otherwise flip the
+// renameGroupValid computed to false for a case-only rename.
+async function confirmRenameGroup(close: () => void): Promise<void> {
+  const from = renameGroupTarget.value;
+  const to = renameGroupName.value.trim();
+  const wasValid = renameGroupValid.value;
+  close();
+  if (!from || !to || !wasValid || to === from) return;
+  rowBusy.value = `group:${from}`;
+  try {
+    await renameGroup(from, to);
+    renameCollapse(from, to);
+    toast.success(`Renamed group ${from} to ${to}`);
+    await load({ force: true });
+  } catch (e) {
+    toast.error("Couldn't rename group", (e as IpcError).message);
+  } finally {
+    rowBusy.value = null;
+  }
+}
+
+// ── delete group ──
+const deleteGroupOpen = ref(false);
+const deleteGroupTarget = ref<string | null>(null);
+
+function openDeleteGroup(name: string): void {
+  deleteGroupTarget.value = name;
+  void nextTick(() => {
+    deleteGroupOpen.value = true;
+  });
+}
+
+async function confirmDeleteGroup(close: () => void): Promise<void> {
+  const name = deleteGroupTarget.value;
+  close();
+  if (!name) return;
+  rowBusy.value = `group:${name}`;
+  try {
+    await deleteGroup(name);
+    toast.success(`Deleted group ${name}`);
+    await load({ force: true });
+  } catch (e) {
+    toast.error("Couldn't delete group", (e as IpcError).message);
+  } finally {
+    rowBusy.value = null;
+    deleteGroupTarget.value = null;
+  }
+}
+
+/** A site's current, sanitised group membership: the canonical `order` casing
+ *  (matched ASCII-case-insensitively, like the daemon), or "" when ungrouped or
+ *  the stored group no longer exists. */
+function currentGroupOf(name: string): string {
+  const g = groups.value.members[name];
+  if (!g) return "";
+  return groups.value.order.find((o) => asciiLower(o) === asciiLower(g)) ?? "";
+}
+
+const groupSelectOptions = computed(() => [
+  { value: "", label: "No group" },
+  ...groups.value.order.map((g) => ({ value: g, label: g })),
+]);
 
 // ── create new site ──
 const createOpen = ref(false);
@@ -121,37 +313,78 @@ const folderRows = computed(() =>
   })),
 );
 
-// Live, case-insensitive filter on the full `<name>.<tld>` domain, secured
-// first then alphabetical so the list is stable and scannable.
+// Live, case-insensitive filter on the full `<name>.<tld>` domain, sorted
+// alphabetically by name so the list is stable and scannable.
 const filteredSites = computed(() => {
   const q = siteFilter.value.trim().toLowerCase();
   const list = q
     ? sites.value.filter((s) => `${s.name}.${tld.value}`.toLowerCase().includes(q))
     : [...sites.value];
-  return list.sort(
-    (a, b) => Number(b.secure) - Number(a.secure) || a.name.localeCompare(b.name),
-  );
+  return list.sort((a, b) => a.name.localeCompare(b.name));
 });
 
+// One section per group (in order) plus a trailing synthetic "Unallocated"
+// section for sites with no membership (or a membership pointing at a group that
+// no longer exists - defensive). Each section keeps filteredSites' sort order.
+const groupSections = computed<GroupSection[]>(() => {
+  const { order, members } = groups.value;
+  const known = new Set(order.map(asciiLower));
+  const sections: GroupSection[] = order.map((name) => {
+    const folded = asciiLower(name);
+    return {
+      name,
+      isUnallocated: false,
+      sites: filteredSites.value.filter((s) => {
+        const g = members[s.name];
+        return g !== undefined && asciiLower(g) === folded;
+      }),
+    };
+  });
+  const unallocated = filteredSites.value.filter((s) => {
+    const g = members[s.name];
+    return !g || !known.has(asciiLower(g));
+  });
+  sections.push({ name: UNALLOCATED, isUnallocated: true, sites: unallocated });
+  return sections;
+});
 
-/** The served sub-directory label for a site ("/" when the project root is served). */
-function servedLabel(s: Site): string {
-  return s.web_subpath && s.web_subpath !== "" ? s.web_subpath : "/";
+// While searching, hide any section with no matching sites. Unallocated is also
+// hidden whenever empty (it has no controls, so an empty header is pure noise).
+// Empty named groups otherwise stay visible so they remain manageable.
+const visibleSections = computed(() =>
+  groupSections.value.filter((sec) => {
+    if (sec.isUnallocated) return sec.sites.length > 0;
+    if (searching.value) return sec.sites.length > 0;
+    return true;
+  }),
+);
+
+// Searching that matches nothing across every group → show the same "No sites
+// match" copy as the flat view instead of a blank pane.
+const groupedNoMatch = computed(() => searching.value && visibleSections.value.length === 0);
+
+/** A section renders expanded when searching (to reveal matches) or when not
+ *  remembered-collapsed. */
+function sectionExpanded(sec: GroupSection): boolean {
+  return searching.value || !isCollapsed(sec.name);
 }
 
-
-// ── edit site (PHP + web root + HTTPS) ──
+// ── edit site (PHP + web root + HTTPS + group) ──
 const editOpen = ref(false);
 const editTarget = ref<Site | null>(null);
 const editPhp = ref<string>("");
 const editWebRoot = ref("");
 const editSecure = ref(false);
+const editGroup = ref<string>("");
 
 function openEdit(s: Site): void {
   editTarget.value = s;
   editPhp.value = s.php;
   editWebRoot.value = s.web_subpath ?? "";
   editSecure.value = s.secure;
+  // Seed from current membership, coercing a stale value (group deleted in
+  // another window/CLI) to "" so the Select never sits out of range.
+  editGroup.value = currentGroupOf(s.name);
   // Defer past the dropdown's close so reka-ui's focus-restore doesn't steal
   // focus from the modal.
   void nextTick(() => {
@@ -181,6 +414,9 @@ async function confirmEdit(close: () => void): Promise<void> {
     }
     if (editSecure.value !== s.secure) {
       await setSecure(s.name, editSecure.value);
+    }
+    if (hasGroups.value && editGroup.value !== currentGroupOf(s.name)) {
+      await setSiteGroup(s.name, editGroup.value === "" ? null : editGroup.value);
     }
     toast.success(`Updated ${s.name}`);
     await load({ force: true });
@@ -376,6 +612,10 @@ async function shareSitePublicly(s: Site): Promise<void> {
             <DropdownMenuItem @select="onPark">
               <FolderPlus class="size-4" /> Park folder
             </DropdownMenuItem>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem @select="openCreateGroup">
+              <Layers class="size-4" /> New group…
+            </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
       </template>
@@ -398,7 +638,7 @@ async function shareSitePublicly(s: Site): Promise<void> {
       <AsyncState
         :loading="loading"
         :error="error"
-        :empty="sites.length === 0 && parked.length === 0"
+        :empty="sites.length === 0 && parked.length === 0 && !hasGroups"
         pad="py-16"
         @retry="load"
       >
@@ -440,131 +680,141 @@ async function shareSitePublicly(s: Site): Promise<void> {
           </span>
         </div>
 
-        <!-- Site grid -->
-        <div
-          v-if="filteredSites.length"
-          class="grid gap-3 sm:grid-cols-2 xl:grid-cols-3"
-        >
+        <!-- Flat listing (no groups defined): the classic card grid. -->
+        <template v-if="!hasGroups">
           <div
-            v-for="s in filteredSites"
-            :key="s.name"
-            class="group rounded-lg border bg-card p-4 shadow-sm transition-colors hover:border-brand/40"
+            v-if="filteredSites.length"
+            class="grid gap-3 sm:grid-cols-2 xl:grid-cols-3"
           >
-            <div class="flex items-start justify-between gap-2">
-              <div class="min-w-0">
-                <button
-                  class="flex max-w-full items-center gap-1.5 font-mono text-sm font-medium hover:text-brand"
-                  :title="openTitle(s, report)"
-                  @click="openInBrowser(siteUrl(s, report))"
-                >
-                  <span class="truncate">{{ s.name }}.{{ tld }}</span>
-                </button>
-                <button
-                  class="mt-1 flex max-w-full items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
-                  :title="`Reveal ${s.document_root}`"
-                  @click="openPath(s.document_root)"
-                >
-                  <FolderOpen class="size-3 shrink-0" />
-                  <span class="truncate font-mono">{{ s.document_root }}</span>
-                </button>
-              </div>
-
-              <div class="flex shrink-0 items-center">
-                <Spinner v-if="rowBusy?.endsWith(`:${s.name}`)" class="size-4" />
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  :aria-label="openTitle(s, report)"
-                  :title="openTitle(s, report)"
-                  @click="openInBrowser(siteUrl(s, report))"
-                >
-                  <ExternalLink class="size-4" />
-                </Button>
-                <DropdownMenu>
-                  <DropdownMenuTrigger as-child>
-                    <Button variant="ghost" size="icon" :aria-label="`Actions for ${s.name}`">
-                      <MoreHorizontal class="size-4" />
-                    </Button>
-                  </DropdownMenuTrigger>
-                  <DropdownMenuContent align="end">
-                    <DropdownMenuItem @select="openEdit(s)">
-                      <Pencil class="size-4" /> Edit…
-                    </DropdownMenuItem>
-                    <DropdownMenuItem @select="openInBrowser(siteUrl(s, report))">
-                      <ExternalLink class="size-4" /> Open in browser
-                    </DropdownMenuItem>
-                    <DropdownMenuItem @select="openPath(s.document_root)">
-                      <FolderOpen class="size-4" /> Reveal folder
-                    </DropdownMenuItem>
-                    <DropdownMenuItem
-                      :disabled="sharing === s.name"
-                      @select="shareSitePublicly(s)"
-                    >
-                      <Globe class="size-4" /> Share publicly…
-                    </DropdownMenuItem>
-                    <!-- Only linked sites are removable here (by name). A parked
-                         site is removed by un-parking its folder. -->
-                    <template v-if="s.kind === 'linked'">
-                      <DropdownMenuSeparator />
-                      <DropdownMenuItem
-                        class="text-destructive focus:bg-destructive/10 focus:text-destructive"
-                        @select="openUnlink(s)"
-                      >
-                        <Trash2 class="size-4" /> Unlink
-                      </DropdownMenuItem>
-                    </template>
-                  </DropdownMenuContent>
-                </DropdownMenu>
-              </div>
-            </div>
-
-            <!-- meta chips -->
-            <div class="mt-3 flex flex-wrap items-center gap-1.5">
-              <span
-                class="inline-flex items-center rounded-md bg-muted px-1.5 py-0.5 font-mono text-[11px] font-medium text-muted-foreground"
-              >
-                PHP {{ s.php }}
-              </span>
-              <span
-                v-if="s.secure"
-                class="inline-flex items-center gap-1 rounded-md bg-success/10 px-1.5 py-0.5 text-[11px] font-medium text-success"
-              >
-                <Lock class="size-3" /> HTTPS
-              </span>
-              <span
-                v-else
-                class="inline-flex items-center gap-1 rounded-md bg-muted px-1.5 py-0.5 text-[11px] font-medium text-muted-foreground"
-              >
-                <LockOpen class="size-3" /> HTTP
-              </span>
-              <span
-                v-if="s.web_subpath"
-                class="inline-flex items-center rounded-md bg-muted px-1.5 py-0.5 font-mono text-[11px] text-muted-foreground"
-                :title="`Serves ${servedLabel(s)} as the document root`"
-              >
-                /{{ servedLabel(s) }}
-              </span>
-              <span
-                class="ml-auto inline-flex items-center gap-1 text-[11px] text-muted-foreground"
-              >
-                <Link2 v-if="s.kind === 'linked'" class="size-3" />
-                <FolderTree v-else class="size-3" />
-                {{ s.kind }}
-              </span>
-            </div>
+            <SiteCard
+              v-for="s in filteredSites"
+              :key="s.name"
+              :site="s"
+              :report="report ?? null"
+              :tld="tld"
+              :busy="siteBusy(s.name)"
+              :sharing="sharing === s.name"
+              @edit="openEdit"
+              @unlink="openUnlink"
+              @share="shareSitePublicly"
+              @toggle-secure="toggleSecure"
+            />
           </div>
-        </div>
+          <p
+            v-else-if="siteFilter"
+            class="py-12 text-center text-sm text-muted-foreground"
+          >
+            No sites match “{{ siteFilter }}”.
+          </p>
+          <p v-else class="py-12 text-center text-sm text-muted-foreground">
+            Your parked folders have no child directories yet.
+          </p>
+        </template>
 
-        <!-- filtered to nothing -->
-        <p
-          v-else-if="siteFilter"
-          class="py-12 text-center text-sm text-muted-foreground"
-        >
-          No sites match “{{ siteFilter }}”.
-        </p>
-        <p v-else class="py-12 text-center text-sm text-muted-foreground">
-          Your parked folders have no child directories yet.
-        </p>
+        <!-- Grouped listing: collapsible sections + trailing Unallocated. -->
+        <template v-else>
+          <div class="space-y-3">
+            <section
+              v-for="sec in visibleSections"
+              :key="sec.name"
+              class="rounded-lg border"
+            >
+              <div class="flex items-center gap-2 px-3 py-2.5">
+                <button
+                  class="flex min-w-0 flex-1 items-center gap-2 text-left"
+                  :aria-expanded="sectionExpanded(sec)"
+                  @click="searching ? undefined : toggleCollapse(sec.name)"
+                >
+                  <component
+                    :is="sectionExpanded(sec) ? ChevronDown : ChevronRight"
+                    class="size-4 shrink-0 text-muted-foreground"
+                  />
+                  <span class="truncate text-sm font-semibold">{{ sec.name }}</span>
+                  <Badge variant="secondary">{{ sec.sites.length }}</Badge>
+                </button>
+                <!-- Reorder + delete controls (named groups only; hidden while
+                     searching, since a search-hidden neighbour would make a move
+                     look like a no-op). -->
+                <div
+                  v-if="!sec.isUnallocated && !searching"
+                  class="flex shrink-0 items-center gap-0.5"
+                >
+                  <Spinner v-if="rowBusy === `group:${sec.name}`" class="size-4" />
+                  <template v-else>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      :disabled="groups.order.indexOf(sec.name) === 0"
+                      :aria-label="`Move ${sec.name} up`"
+                      title="Move up"
+                      @click="moveGroup(sec.name, -1)"
+                    >
+                      <ArrowUp class="size-4" />
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      :disabled="groups.order.indexOf(sec.name) === groups.order.length - 1"
+                      :aria-label="`Move ${sec.name} down`"
+                      title="Move down"
+                      @click="moveGroup(sec.name, 1)"
+                    >
+                      <ArrowDown class="size-4" />
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      :aria-label="`Rename ${sec.name}`"
+                      title="Rename group"
+                      @click="openRenameGroup(sec.name)"
+                    >
+                      <Pencil class="size-4" />
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      class="text-destructive hover:text-destructive"
+                      :aria-label="`Delete ${sec.name}`"
+                      title="Delete group"
+                      @click="openDeleteGroup(sec.name)"
+                    >
+                      <Trash2 class="size-4" />
+                    </Button>
+                  </template>
+                </div>
+              </div>
+              <div v-if="sectionExpanded(sec)" class="border-t p-3">
+                <div
+                  v-if="sec.sites.length"
+                  class="grid gap-3 sm:grid-cols-2 xl:grid-cols-3"
+                >
+                  <SiteCard
+                    v-for="s in sec.sites"
+                    :key="s.name"
+                    :site="s"
+                    :report="report ?? null"
+                    :tld="tld"
+                    :busy="siteBusy(s.name)"
+                    :sharing="sharing === s.name"
+                    @edit="openEdit"
+                    @unlink="openUnlink"
+                    @share="shareSitePublicly"
+                    @toggle-secure="toggleSecure"
+                  />
+                </div>
+                <p v-else class="py-4 text-center text-xs text-muted-foreground">
+                  No sites in this group yet.
+                </p>
+              </div>
+            </section>
+          </div>
+          <p
+            v-if="groupedNoMatch"
+            class="py-12 text-center text-sm text-muted-foreground"
+          >
+            No sites match “{{ siteFilter }}”.
+          </p>
+        </template>
 
         <!-- Parked folders (demoted: the management surface, below the sites) -->
         <section v-if="folderRows.length" class="mt-8">
@@ -659,6 +909,20 @@ async function shareSitePublicly(s: Site): Promise<void> {
           </div>
           <Switch v-model="editSecure" aria-label="HTTPS" />
         </div>
+
+        <div v-if="hasGroups">
+          <label for="edit-group" class="text-sm font-medium">Group</label>
+          <div class="mt-2">
+            <Select
+              id="edit-group"
+              :model-value="editGroup"
+              :options="groupSelectOptions"
+              class="w-full"
+              aria-label="Group"
+              @update:model-value="(v: string) => (editGroup = v)"
+            />
+          </div>
+        </div>
       </div>
       <template #footer="{ close }">
         <Button variant="ghost" @click="close">Cancel</Button>
@@ -711,6 +975,61 @@ async function shareSitePublicly(s: Site): Promise<void> {
       <template #footer="{ close }">
         <Button variant="ghost" @click="close">Cancel</Button>
         <Button variant="destructive" @click="confirmUnlink(close)">Remove</Button>
+      </template>
+    </Modal>
+
+    <!-- create group -->
+    <Modal v-model:open="createGroupOpen" title="New group">
+      <label class="text-sm font-medium" for="groupname">Group name</label>
+      <Input
+        id="groupname"
+        v-model="createGroupName"
+        placeholder="e.g. Client work"
+        class="mt-2"
+        @keyup.enter="createGroupValid && confirmCreateGroup(() => (createGroupOpen = false))"
+      />
+      <p class="mt-1 text-xs text-muted-foreground">
+        Sites can be assigned to a group when you edit them.
+      </p>
+      <template #footer="{ close }">
+        <Button variant="ghost" @click="close">Cancel</Button>
+        <Button :disabled="!createGroupValid" @click="confirmCreateGroup(close)">Create</Button>
+      </template>
+    </Modal>
+
+    <!-- rename group -->
+    <Modal
+      v-model:open="renameGroupOpen"
+      title="Rename group"
+      @update:open="(v: boolean) => { if (!v) renameGroupTarget = null; }"
+    >
+      <label class="text-sm font-medium" for="renamegroupname">Group name</label>
+      <Input
+        id="renamegroupname"
+        v-model="renameGroupName"
+        placeholder="e.g. Client work"
+        class="mt-2"
+        @keyup.enter="renameGroupValid && confirmRenameGroup(() => (renameGroupOpen = false))"
+      />
+      <template #footer="{ close }">
+        <Button variant="ghost" @click="close">Cancel</Button>
+        <Button :disabled="!renameGroupValid" @click="confirmRenameGroup(close)">Save</Button>
+      </template>
+    </Modal>
+
+    <!-- delete group confirm -->
+    <Modal
+      v-model:open="deleteGroupOpen"
+      title="Delete group"
+      @update:open="(v: boolean) => { if (!v) deleteGroupTarget = null; }"
+    >
+      <p class="text-sm text-muted-foreground">
+        Delete <strong class="text-foreground">{{ deleteGroupTarget }}</strong>? Its
+        sites aren't removed - they move to <strong class="text-foreground">Unallocated</strong>.
+      </p>
+      <template #footer="{ close }">
+        <Button variant="ghost" @click="close">Cancel</Button>
+        <Button variant="destructive" @click="confirmDeleteGroup(close)">Delete group</Button>
       </template>
     </Modal>
   </div>

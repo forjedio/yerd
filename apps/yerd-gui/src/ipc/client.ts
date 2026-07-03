@@ -21,6 +21,7 @@ import type {
   DumpsResponse,
   DumpsStatusResponse,
   ElevateTarget,
+  GroupsState,
   GuiLogs,
   InfoResponse,
   JobProgressResponse,
@@ -112,12 +113,57 @@ export async function listParked(): Promise<string[]> {
   return r.type === "parked" ? r.paths : [];
 }
 
-/** Combined sites + parked roots, the shape backing the shared `"sites"`
- * cached resource. One definition so the Sites view, the Overview, and the
- * command palette all key the same cache and can never drift apart. */
-export async function sitesAndParked(): Promise<{ sites: Site[]; parked: string[] }> {
-  const [sites, parked] = await Promise.all([listSites(), listParked()]);
-  return { sites, parked };
+/** Combined sites + parked roots + groups, the shape backing the shared
+ * `"sites"` cached resource. One definition so the Sites view, the Overview, and
+ * the command palette all key the same cache and can never drift apart. The
+ * `groups` leg is fault-tolerant: a GUI newer than its daemon (an unknown
+ * `list_groups` request before the bundled daemon restarts) must not reject the
+ * whole `Promise.all` and take down the Overview / command palette, which never
+ * needed groups - so it degrades to empty. */
+export async function sitesAndParked(): Promise<{
+  sites: Site[];
+  parked: string[];
+  groups: GroupsState;
+}> {
+  const [sites, parked, groups] = await Promise.all([
+    listSites(),
+    listParked(),
+    listGroups().catch(() => ({ order: [], members: {} }) as GroupsState),
+  ]);
+  return { sites, parked, groups };
+}
+
+// ── site groups ──────────────────────────────────────────────────────────────
+
+/** The user-defined groups (ordered) and per-site membership. */
+export async function listGroups(): Promise<GroupsState> {
+  const r = ensureOk(await call<Response>("list_groups"));
+  return r.type === "groups" ? { order: r.order, members: r.members } : { order: [], members: {} };
+}
+
+/** Create a new group (appended last). Rejects empty/duplicate/reserved names. */
+export async function createGroup(name: string): Promise<void> {
+  ensureOk(await call<Response>("create_group", { name }));
+}
+
+/** Delete a group; its sites fall back to "Unallocated". */
+export async function deleteGroup(name: string): Promise<void> {
+  ensureOk(await call<Response>("delete_group", { name }));
+}
+
+/** Replace the group display order (must be a permutation of existing groups). */
+export async function setGroupOrder(order: string[]): Promise<void> {
+  ensureOk(await call<Response>("set_group_order", { order }));
+}
+
+/** Rename a group, preserving its position and moving its members. */
+export async function renameGroup(from: string, to: string): Promise<void> {
+  ensureOk(await call<Response>("rename_group", { from, to }));
+}
+
+/** Set or clear a site's group (`null` = Unallocated). */
+export async function setSiteGroup(site: string, group: string | null): Promise<void> {
+  ensureOk(await call<Response>("set_site_group", { site, group }));
 }
 
 /**

@@ -70,11 +70,12 @@ All public surface hangs off `Config` plus the re-exported helper types. From
 ```rust
 pub use error::{ConfigError, MigrationErrorReason, ValidateErrorReason};
 pub use schema::{
-    Config, DumpsSection, MailSection, ParkedSection, PhpSection, Ports, ServiceInstance,
-    ServicesSection, SiteOverride, DEFAULT_DNS_PORT, DEFAULT_DUMP_PORT, DEFAULT_MAIL_PORT,
+    Config, DumpsSection, GroupsSection, MailSection, ParkedSection, PhpSection, Ports,
+    ServiceInstance, ServicesSection, SiteOverride, TunnelSection, DEFAULT_DNS_PORT,
+    DEFAULT_DUMP_PORT, DEFAULT_MAIL_PORT, RESERVED_GROUP_NAME,
 };
 
-pub const CURRENT_VERSION: u32 = 5;
+pub const CURRENT_VERSION: u32 = 9;
 ```
 
 `Config` exposes exactly four pure methods and two I/O methods:
@@ -317,7 +318,7 @@ version is the single trigger for forward migrations.
 
 ```rust
 /// The on-disk schema version this crate writes.
-pub const CURRENT_VERSION: u32 = 5;
+pub const CURRENT_VERSION: u32 = 9;
 ```
 
 `CURRENT_VERSION` is **decoupled** from `yerd_ipc::PROTOCOL_VERSION`: the on-disk
@@ -326,7 +327,7 @@ with a new entry in `migrate::STEPS`.
 
 `migrate.rs` holds the steps, indexed so that **`STEPS[N]` walks `vN → v(N+1)`**
 - matching `migrate::up`, which indexes `STEPS[current]` (the version being
-migrated *from*). At v5 there are five (`STEPS.len() == CURRENT_VERSION`, pinned
+migrated *from*). At v9 there are nine (`STEPS.len() == CURRENT_VERSION`, pinned
 by `steps_cover_every_version_below_current`):
 
 ```rust
@@ -339,6 +340,10 @@ pub(crate) const STEPS: &[MigrationStep] = &[
     migrate_v2_to_v3,
     migrate_v3_to_v4,
     migrate_v4_to_v5,
+    migrate_v5_to_v6,
+    migrate_v6_to_v7,
+    migrate_v7_to_v8,
+    migrate_v8_to_v9,
 ];
 ```
 
@@ -348,11 +353,12 @@ was never written to disk - but it must exist so the later indices line up.
 `web_subpath` / `web_root` keys, which default when absent). `v2→v3` is the only
 **structural** step: it rewrites the old flat `services.enabled = [...]` array of
 ids into per-service `[services.<id>]` tables (each previously-enabled id becomes
-an `enabled = true` instance). `v3→v4` and `v4→v5` are again bare version bumps:
-v4 added the optional `[mail]` section and v5 the optional `[dumps]` table, both
-of which default when absent. Each bump still exists so an *older* binary rejects
-a file that uses the newer table cleanly as `UnsupportedVersion` rather than
-failing on an unknown key under `deny_unknown_fields`.
+an `enabled = true` instance). `v3→v4` through `v8→v9` are again bare version
+bumps, each adding an optional section that defaults when absent: `[mail]` (v4),
+`[dumps]` (v5), the `update_channel` scalar (v6), the `[ports]` fallback keys
+(v7), `[tunnel]` (v8), and `[groups]` (v9). Each bump still exists so an *older*
+binary rejects a file that uses the newer table cleanly as `UnsupportedVersion`
+rather than failing on an unknown key under `deny_unknown_fields`.
 
 Each step rewrites the parsed `toml::Value` in place and is responsible for
 leaving the `version` key set to `N + 1`. A step need not produce a *valid*

@@ -54,6 +54,11 @@ struct WireSer<'a> {
     // region, keeping the byte-shape goldens intact.
     #[serde(skip_serializing_if = "Option::is_none")]
     tunnel: Option<TunnelSectionSer<'a>>,
+    // v9: optional `[groups]` table - a trailing sub-table region. `None`
+    // (skipped) when the section is empty, so a default config emits no
+    // `[groups]` region, keeping the byte-shape goldens intact.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    groups: Option<GroupsSectionSer<'a>>,
 }
 
 #[derive(Serialize)]
@@ -62,6 +67,17 @@ struct TunnelSectionSer<'a> {
     named: &'a BTreeMap<String, String>,
     #[serde(skip_serializing_if = "map_is_empty")]
     sites: &'a BTreeMap<String, String>,
+}
+
+#[derive(Serialize)]
+struct GroupsSectionSer<'a> {
+    // Scalar array - must stay above the `members` sub-table (TOML emits scalars
+    // before sub-tables within `[groups]`).
+    order: &'a [String],
+    // Skipped when empty so a membership-free `[groups]` emits no
+    // `[groups.members]` table.
+    #[serde(skip_serializing_if = "map_is_empty")]
+    members: &'a BTreeMap<String, String>,
 }
 
 #[derive(Serialize)]
@@ -215,6 +231,14 @@ pub(crate) fn to_toml(c: &Config) -> Result<String, ConfigError> {
                 sites: &c.tunnel.sites,
             })
         },
+        groups: if c.groups.is_empty() {
+            None
+        } else {
+            Some(GroupsSectionSer {
+                order: &c.groups.order,
+                members: &c.groups.members,
+            })
+        },
     };
     toml::to_string_pretty(&w).map_err(Into::into)
 }
@@ -233,8 +257,8 @@ mod tests {
     fn default_to_toml_starts_with_version_line() {
         let s = to_toml(&Config::default()).unwrap();
         assert!(
-            s.starts_with("version = 8\n"),
-            "expected `version = 8` first line; got: {s}"
+            s.starts_with("version = 9\n"),
+            "expected `version = 9` first line; got: {s}"
         );
     }
 
@@ -288,6 +312,51 @@ mod tests {
         let s = to_toml(&c).unwrap();
         assert!(s.contains("[tunnel.named]"), "must emit named table: {s}");
         assert!(s.contains("[tunnel.sites]"), "must emit sites table: {s}");
+        let back = Config::from_toml(&s).unwrap();
+        assert_eq!(back, c);
+    }
+
+    #[test]
+    fn default_config_emits_no_groups_table() {
+        let s = to_toml(&Config::default()).unwrap();
+        assert!(
+            !s.contains("[groups]"),
+            "default config must omit the groups table; got: {s}"
+        );
+    }
+
+    #[test]
+    #[allow(clippy::field_reassign_with_default)]
+    fn non_default_groups_section_round_trips() {
+        let mut c = Config::default();
+        c.groups = crate::GroupsSection {
+            order: vec!["Blog".to_owned(), "Shop".to_owned()],
+            members: BTreeMap::from([("api".to_owned(), "Blog".to_owned())]),
+        };
+        let s = to_toml(&c).unwrap();
+        assert!(s.contains("[groups]"), "must emit groups table: {s}");
+        assert!(
+            s.contains("[groups.members]"),
+            "must emit members table: {s}"
+        );
+        let back = Config::from_toml(&s).unwrap();
+        assert_eq!(back, c);
+    }
+
+    #[test]
+    #[allow(clippy::field_reassign_with_default)]
+    fn empty_members_groups_omits_members_table() {
+        let mut c = Config::default();
+        c.groups = crate::GroupsSection {
+            order: vec!["Blog".to_owned()],
+            members: BTreeMap::new(),
+        };
+        let s = to_toml(&c).unwrap();
+        assert!(s.contains("[groups]"), "must emit groups table: {s}");
+        assert!(
+            !s.contains("[groups.members]"),
+            "membership-free groups must omit members table; got: {s}"
+        );
         let back = Config::from_toml(&s).unwrap();
         assert_eq!(back, c);
     }

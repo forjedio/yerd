@@ -62,9 +62,10 @@ fn override_key(site: &Site) -> String {
 /// already-canonicalised directory for `Park`/`Link`. `default_php` is the
 /// version assigned to newly linked sites.
 ///
-/// Pure: no filesystem, clock, or environment access. Only the four mutation
-/// variants are handled; anything else is [`MutateError::Invalid`] (the I/O
-/// wrapper never routes `Ping`/`ListSites` here).
+/// Pure: no filesystem, clock, or environment access. Only the site- and
+/// group-mutation variants are handled; anything else is [`MutateError::Invalid`]
+/// (the I/O wrapper never routes `Ping`/`ListSites` here). The group variants
+/// ignore `router`/`canonical`/`default_php` - groups are a config-only overlay.
 pub fn apply(
     cfg: &mut Config,
     router: &SiteRouter,
@@ -79,6 +80,11 @@ pub fn apply(
         Request::Unlink { name } => apply_unlink(cfg, router, name),
         Request::SetPhp { name, version } => apply_set_php(cfg, router, name, *version),
         Request::SetSecure { name, secure } => apply_set_secure(cfg, router, name, *secure),
+        Request::CreateGroup { name } => apply_create_group(cfg, name),
+        Request::DeleteGroup { name } => Ok(apply_delete_group(cfg, name)),
+        Request::SetGroupOrder { order } => apply_set_group_order(cfg, order),
+        Request::SetSiteGroup { site, group } => apply_set_site_group(cfg, site, group.as_deref()),
+        Request::RenameGroup { from, to } => apply_rename_group(cfg, from, to),
         _ => Err(MutateError::Invalid("unsupported request".into())),
     }
 }
@@ -193,6 +199,166 @@ fn apply_set_secure(
     } else {
         Err(MutateError::NotFound(format!("no site named {name_lc}")))
     }
+}
+
+/// Create a site group, appended last in display order. Rejects an empty name,
+/// the reserved `Unallocated` (case-insensitive), and a case-insensitive
+/// duplicate of an existing group. The entered case is preserved. Group names
+/// are display strings (validated cross-field by `Config::validate` too).
+fn apply_create_group(cfg: &mut Config, name: &str) -> Result<Applied, MutateError> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err(MutateError::Invalid("group name must not be empty".into()));
+    }
+    if name.eq_ignore_ascii_case(yerd_config::RESERVED_GROUP_NAME) {
+        return Err(MutateError::Invalid(format!(
+            "\"{}\" is a reserved group name",
+            yerd_config::RESERVED_GROUP_NAME
+        )));
+    }
+    if cfg
+        .groups
+        .order
+        .iter()
+        .any(|g| g.eq_ignore_ascii_case(name))
+    {
+        return Err(MutateError::AlreadyExists(format!(
+            "group already exists: {name}"
+        )));
+    }
+    cfg.groups.order.push(name.to_owned());
+    Ok(Applied {
+        summary: format!("created group {name}"),
+    })
+}
+
+/// Delete a site group (matched ASCII-case-insensitively, like create/assign) and
+/// drop every membership pointing at it, so its sites fall back to the synthetic
+/// "Unallocated" bucket. Idempotent - an absent group is a successful no-op.
+fn apply_delete_group(cfg: &mut Config, name: &str) -> Applied {
+    let existed = cfg
+        .groups
+        .order
+        .iter()
+        .any(|g| g.eq_ignore_ascii_case(name));
+    cfg.groups.order.retain(|g| !g.eq_ignore_ascii_case(name));
+    cfg.groups
+        .members
+        .retain(|_, g| !g.eq_ignore_ascii_case(name));
+    Applied {
+        summary: if existed {
+            format!("deleted group {name}")
+        } else {
+            format!("{name} was not a group")
+        },
+    }
+}
+
+/// Replace the group display order. `order` must be an exact permutation of the
+/// current group names (same multiset), so it can only reorder - never add,
+/// drop, or rename a group.
+fn apply_set_group_order(cfg: &mut Config, order: &[String]) -> Result<Applied, MutateError> {
+    let mut want: Vec<&str> = order.iter().map(String::as_str).collect();
+    let mut have: Vec<&str> = cfg.groups.order.iter().map(String::as_str).collect();
+    want.sort_unstable();
+    have.sort_unstable();
+    if want != have {
+        return Err(MutateError::Invalid(
+            "group order must be a permutation of the existing groups".into(),
+        ));
+    }
+    cfg.groups.order = order.to_vec();
+    Ok(Applied {
+        summary: "reordered groups".into(),
+    })
+}
+
+/// Set or clear a site's group membership (a site belongs to at most one group).
+/// `Some(group)` must name an existing group (matched ASCII-case-insensitively);
+/// the **canonical stored casing** from `order` is what's recorded, so a member
+/// value always exactly equals its `order` entry (the GUI keys sections off that
+/// exact string). `None` moves the site to "Unallocated". The `site` key is
+/// lowercased to match the router's lowercased site identities. Membership is
+/// intentionally not validated against live sites (a transiently-unscanned parked
+/// site keeps its group), mirroring `overrides`.
+fn apply_set_site_group(
+    cfg: &mut Config,
+    site: &str,
+    group: Option<&str>,
+) -> Result<Applied, MutateError> {
+    let site_lc = site.to_ascii_lowercase();
+    if let Some(g) = group {
+        let canonical = match cfg
+            .groups
+            .order
+            .iter()
+            .find(|existing| existing.eq_ignore_ascii_case(g))
+        {
+            Some(c) => c.clone(),
+            None => return Err(MutateError::NotFound(format!("no group named {g}"))),
+        };
+        cfg.groups
+            .members
+            .insert(site_lc.clone(), canonical.clone());
+        Ok(Applied {
+            summary: format!("{site_lc} added to {canonical}"),
+        })
+    } else {
+        cfg.groups.members.remove(&site_lc);
+        Ok(Applied {
+            summary: format!("{site_lc} ungrouped"),
+        })
+    }
+}
+
+/// Rename a site group in place, keeping its display position and moving every
+/// member with it. The new name is validated like `apply_create_group` (trimmed,
+/// non-empty, not the reserved `Unallocated`), except a case-insensitive
+/// collision is only rejected against a *different* group, so a case-only rename
+/// (`blog` -> `Blog`) is allowed. `NotFound` if `from` names no group. The
+/// entered case of `to` becomes the canonical casing in both `order` and every
+/// matching `members` value (so members keep exactly equalling their `order`
+/// entry, as `apply_set_site_group` documents).
+fn apply_rename_group(cfg: &mut Config, from: &str, to: &str) -> Result<Applied, MutateError> {
+    let to = to.trim();
+    if to.is_empty() {
+        return Err(MutateError::Invalid("group name must not be empty".into()));
+    }
+    if to.eq_ignore_ascii_case(yerd_config::RESERVED_GROUP_NAME) {
+        return Err(MutateError::Invalid(format!(
+            "\"{}\" is a reserved group name",
+            yerd_config::RESERVED_GROUP_NAME
+        )));
+    }
+    let idx = cfg
+        .groups
+        .order
+        .iter()
+        .position(|g| g.eq_ignore_ascii_case(from))
+        .ok_or_else(|| MutateError::NotFound(format!("no group named {from}")))?;
+    if cfg
+        .groups
+        .order
+        .iter()
+        .enumerate()
+        .any(|(i, g)| i != idx && g.eq_ignore_ascii_case(to))
+    {
+        return Err(MutateError::AlreadyExists(format!(
+            "group already exists: {to}"
+        )));
+    }
+    let Some(slot) = cfg.groups.order.get_mut(idx) else {
+        return Err(MutateError::NotFound(format!("no group named {from}")));
+    };
+    to.clone_into(slot);
+    for g in cfg.groups.members.values_mut() {
+        if g.eq_ignore_ascii_case(from) {
+            to.clone_into(g);
+        }
+    }
+    Ok(Applied {
+        summary: format!("renamed group {from} to {to}"),
+    })
 }
 
 /// Map a [`MutateError`] to the wire [`ErrorCode`]. `Invalid` collapses to
@@ -601,6 +767,335 @@ mod tests {
         )
         .unwrap();
         assert!(cfg.linked.iter().all(|s| s.name() != "foo"));
+    }
+
+    // ------------------ groups ------------------
+
+    fn create_group(cfg: &mut Config, name: &str) -> Result<Applied, MutateError> {
+        let r = empty_router();
+        apply(
+            cfg,
+            &r,
+            &Request::CreateGroup { name: name.into() },
+            None,
+            v(8, 3),
+        )
+    }
+
+    #[test]
+    fn create_group_appends_in_order() {
+        let mut cfg = Config::default();
+        create_group(&mut cfg, "Blog").unwrap();
+        create_group(&mut cfg, "Shop").unwrap();
+        assert_eq!(
+            cfg.groups.order,
+            vec!["Blog".to_string(), "Shop".to_string()]
+        );
+    }
+
+    #[test]
+    fn create_group_rejects_empty_reserved_and_duplicate() {
+        let mut cfg = Config::default();
+        assert!(matches!(
+            create_group(&mut cfg, "   "),
+            Err(MutateError::Invalid(_))
+        ));
+        assert!(matches!(
+            create_group(&mut cfg, "unallocated"),
+            Err(MutateError::Invalid(_))
+        ));
+        create_group(&mut cfg, "Blog").unwrap();
+        assert!(matches!(
+            create_group(&mut cfg, "blog"),
+            Err(MutateError::AlreadyExists(_))
+        ));
+        assert_eq!(cfg.groups.order, vec!["Blog".to_string()]);
+    }
+
+    #[test]
+    fn create_group_trims_name() {
+        let mut cfg = Config::default();
+        create_group(&mut cfg, "  Blog  ").unwrap();
+        assert_eq!(cfg.groups.order, vec!["Blog".to_string()]);
+    }
+
+    #[test]
+    fn delete_group_moves_members_to_unallocated_and_is_idempotent() {
+        let mut cfg = Config::default();
+        create_group(&mut cfg, "Blog").unwrap();
+        cfg.groups.members.insert("api".into(), "Blog".into());
+        cfg.groups.members.insert("shop".into(), "Blog".into());
+        let r = empty_router();
+        let a = apply(
+            &mut cfg,
+            &r,
+            &Request::DeleteGroup {
+                name: "Blog".into(),
+            },
+            None,
+            v(8, 3),
+        )
+        .unwrap();
+        assert!(a.summary.contains("deleted"));
+        assert!(cfg.groups.order.is_empty());
+        assert!(cfg.groups.members.is_empty());
+        let a2 = apply(
+            &mut cfg,
+            &r,
+            &Request::DeleteGroup {
+                name: "Blog".into(),
+            },
+            None,
+            v(8, 3),
+        )
+        .unwrap();
+        assert!(a2.summary.contains("was not a group"));
+    }
+
+    #[test]
+    fn set_group_order_requires_permutation() {
+        let mut cfg = Config::default();
+        create_group(&mut cfg, "Blog").unwrap();
+        create_group(&mut cfg, "Shop").unwrap();
+        let r = empty_router();
+        apply(
+            &mut cfg,
+            &r,
+            &Request::SetGroupOrder {
+                order: vec!["Shop".into(), "Blog".into()],
+            },
+            None,
+            v(8, 3),
+        )
+        .unwrap();
+        assert_eq!(
+            cfg.groups.order,
+            vec!["Shop".to_string(), "Blog".to_string()]
+        );
+
+        for bad in [
+            vec!["Shop".to_string()],
+            vec!["Blog".to_string(), "Nope".to_string()],
+            vec!["Blog".to_string(), "Shop".to_string(), "Extra".to_string()],
+        ] {
+            assert!(
+                matches!(
+                    apply(
+                        &mut cfg,
+                        &r,
+                        &Request::SetGroupOrder { order: bad.clone() },
+                        None,
+                        v(8, 3),
+                    ),
+                    Err(MutateError::Invalid(_))
+                ),
+                "expected Invalid for {bad:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn set_site_group_assigns_clears_and_lowercases() {
+        let mut cfg = Config::default();
+        create_group(&mut cfg, "Blog").unwrap();
+        let r = empty_router();
+        apply(
+            &mut cfg,
+            &r,
+            &Request::SetSiteGroup {
+                site: "API".into(),
+                group: Some("Blog".into()),
+            },
+            None,
+            v(8, 3),
+        )
+        .unwrap();
+        assert_eq!(
+            cfg.groups.members.get("api").map(String::as_str),
+            Some("Blog")
+        );
+
+        apply(
+            &mut cfg,
+            &r,
+            &Request::SetSiteGroup {
+                site: "api".into(),
+                group: None,
+            },
+            None,
+            v(8, 3),
+        )
+        .unwrap();
+        assert!(cfg.groups.members.is_empty());
+    }
+
+    #[test]
+    fn group_matching_is_case_insensitive_and_canonicalises() {
+        let mut cfg = Config::default();
+        create_group(&mut cfg, "Blog").unwrap();
+        let r = empty_router();
+        // Assign with a different casing: the canonical order casing is stored, so
+        // the member value always matches its order entry exactly.
+        apply(
+            &mut cfg,
+            &r,
+            &Request::SetSiteGroup {
+                site: "api".into(),
+                group: Some("BLOG".into()),
+            },
+            None,
+            v(8, 3),
+        )
+        .unwrap();
+        assert_eq!(
+            cfg.groups.members.get("api").map(String::as_str),
+            Some("Blog")
+        );
+
+        // Delete with yet another casing removes the group and its members.
+        apply(
+            &mut cfg,
+            &r,
+            &Request::DeleteGroup {
+                name: "blog".into(),
+            },
+            None,
+            v(8, 3),
+        )
+        .unwrap();
+        assert!(cfg.groups.order.is_empty());
+        assert!(cfg.groups.members.is_empty());
+    }
+
+    #[test]
+    fn set_site_group_unknown_group_is_not_found() {
+        let mut cfg = Config::default();
+        let r = empty_router();
+        match apply(
+            &mut cfg,
+            &r,
+            &Request::SetSiteGroup {
+                site: "api".into(),
+                group: Some("Ghost".into()),
+            },
+            None,
+            v(8, 3),
+        ) {
+            Err(MutateError::NotFound(_)) => {}
+            other => panic!("expected NotFound, got {other:?}"),
+        }
+    }
+
+    fn rename_group(cfg: &mut Config, from: &str, to: &str) -> Result<Applied, MutateError> {
+        let r = empty_router();
+        apply(
+            cfg,
+            &r,
+            &Request::RenameGroup {
+                from: from.into(),
+                to: to.into(),
+            },
+            None,
+            v(8, 3),
+        )
+    }
+
+    #[test]
+    fn rename_group_keeps_position_and_moves_members() {
+        let mut cfg = Config::default();
+        create_group(&mut cfg, "Blog").unwrap();
+        create_group(&mut cfg, "Shop").unwrap();
+        cfg.groups.members.insert("api".into(), "Blog".into());
+        cfg.groups.members.insert("cart".into(), "Shop".into());
+        let a = rename_group(&mut cfg, "Blog", "Journal").unwrap();
+        assert!(a.summary.contains("renamed group Blog to Journal"));
+        assert_eq!(
+            cfg.groups.order,
+            vec!["Journal".to_string(), "Shop".to_string()]
+        );
+        assert_eq!(
+            cfg.groups.members.get("api").map(String::as_str),
+            Some("Journal")
+        );
+        assert_eq!(
+            cfg.groups.members.get("cart").map(String::as_str),
+            Some("Shop")
+        );
+    }
+
+    #[test]
+    fn rename_group_is_case_insensitive_and_canonicalises_members() {
+        let mut cfg = Config::default();
+        create_group(&mut cfg, "Blog").unwrap();
+        cfg.groups.members.insert("api".into(), "Blog".into());
+        // Match `from` in a different casing; the entered `to` casing becomes
+        // canonical in both order and members.
+        rename_group(&mut cfg, "blog", "jOURNAL").unwrap();
+        assert_eq!(cfg.groups.order, vec!["jOURNAL".to_string()]);
+        assert_eq!(
+            cfg.groups.members.get("api").map(String::as_str),
+            Some("jOURNAL")
+        );
+    }
+
+    #[test]
+    fn rename_group_allows_case_only_change() {
+        let mut cfg = Config::default();
+        create_group(&mut cfg, "blog").unwrap();
+        cfg.groups.members.insert("api".into(), "blog".into());
+        rename_group(&mut cfg, "blog", "Blog").unwrap();
+        assert_eq!(cfg.groups.order, vec!["Blog".to_string()]);
+        assert_eq!(
+            cfg.groups.members.get("api").map(String::as_str),
+            Some("Blog")
+        );
+    }
+
+    #[test]
+    fn rename_group_trims_new_name() {
+        let mut cfg = Config::default();
+        create_group(&mut cfg, "Blog").unwrap();
+        rename_group(&mut cfg, "Blog", "  Journal  ").unwrap();
+        assert_eq!(cfg.groups.order, vec!["Journal".to_string()]);
+    }
+
+    #[test]
+    fn rename_group_rejects_collision_with_other_group() {
+        let mut cfg = Config::default();
+        create_group(&mut cfg, "Blog").unwrap();
+        create_group(&mut cfg, "Shop").unwrap();
+        assert!(matches!(
+            rename_group(&mut cfg, "Blog", "shop"),
+            Err(MutateError::AlreadyExists(_))
+        ));
+        assert_eq!(
+            cfg.groups.order,
+            vec!["Blog".to_string(), "Shop".to_string()]
+        );
+    }
+
+    #[test]
+    fn rename_group_rejects_empty_and_reserved() {
+        let mut cfg = Config::default();
+        create_group(&mut cfg, "Blog").unwrap();
+        assert!(matches!(
+            rename_group(&mut cfg, "Blog", "   "),
+            Err(MutateError::Invalid(_))
+        ));
+        assert!(matches!(
+            rename_group(&mut cfg, "Blog", "unallocated"),
+            Err(MutateError::Invalid(_))
+        ));
+        assert_eq!(cfg.groups.order, vec!["Blog".to_string()]);
+    }
+
+    #[test]
+    fn rename_group_unknown_from_is_not_found() {
+        let mut cfg = Config::default();
+        assert!(matches!(
+            rename_group(&mut cfg, "Ghost", "Journal"),
+            Err(MutateError::NotFound(_))
+        ));
     }
 
     #[test]

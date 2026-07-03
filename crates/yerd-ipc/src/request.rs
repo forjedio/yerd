@@ -484,6 +484,49 @@ pub enum Request {
         /// The tunnel name to delete.
         name: String,
     },
+    /// List the user-defined site groups (ordered) and per-site membership.
+    /// Returns [`super::Response::Groups`]. Groups are a GUI organisational
+    /// overlay and do not affect routing.
+    ListGroups,
+    /// Create a new site group, appended last in display order. Replies
+    /// [`super::Response::Ok`]. Rejected if the name is empty, a duplicate
+    /// (case-insensitive), or the reserved `Unallocated`.
+    CreateGroup {
+        /// The group display name to create.
+        name: String,
+    },
+    /// Delete a site group. Its member sites fall back to the synthetic
+    /// "Unallocated" bucket (their membership entries are dropped). Replies
+    /// [`super::Response::Ok`].
+    DeleteGroup {
+        /// The group name to delete.
+        name: String,
+    },
+    /// Replace the group display order. `order` must be an exact permutation of
+    /// the existing group names. Replies [`super::Response::Ok`].
+    SetGroupOrder {
+        /// The full set of group names in the desired display order.
+        order: Vec<String>,
+    },
+    /// Set or clear a site's group membership (a site belongs to at most one
+    /// group). `Some(group)` must name an existing group; `None` moves the site
+    /// to "Unallocated". Replies [`super::Response::Ok`].
+    SetSiteGroup {
+        /// The site name.
+        site: String,
+        /// The group to assign, or `None` to unassign.
+        group: Option<String>,
+    },
+    /// Rename a site group, preserving its display position and moving every
+    /// member with it. Replies [`super::Response::Ok`]. Rejected if `to` is
+    /// empty, the reserved `Unallocated`, or a case-insensitive duplicate of a
+    /// different group, or if `from` names no group.
+    RenameGroup {
+        /// The current group name.
+        from: String,
+        /// The new group name.
+        to: String,
+    },
 }
 
 #[cfg(test)]
@@ -584,6 +627,12 @@ mod variant_name_pinning {
             Request::StartNamedTunnel => {}
             Request::StopNamedTunnel => {}
             Request::DeleteNamedTunnel { .. } => {}
+            Request::ListGroups => {}
+            Request::CreateGroup { .. } => {}
+            Request::DeleteGroup { .. } => {}
+            Request::SetGroupOrder { .. } => {}
+            Request::SetSiteGroup { .. } => {}
+            Request::RenameGroup { .. } => {}
         }
     }
 
@@ -779,6 +828,24 @@ mod variant_name_pinning {
         pin(Request::StopNamedTunnel);
         pin(Request::DeleteNamedTunnel {
             name: "mysite".into(),
+        });
+        pin(Request::ListGroups);
+        pin(Request::CreateGroup {
+            name: "Blog".into(),
+        });
+        pin(Request::DeleteGroup {
+            name: "Blog".into(),
+        });
+        pin(Request::SetGroupOrder {
+            order: vec!["Blog".into(), "Shop".into()],
+        });
+        pin(Request::SetSiteGroup {
+            site: "app".into(),
+            group: Some("Blog".into()),
+        });
+        pin(Request::RenameGroup {
+            from: "Blog".into(),
+            to: "Journal".into(),
         });
     }
 
