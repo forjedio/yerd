@@ -101,6 +101,13 @@ interface GroupSection {
   isUnallocated: boolean;
 }
 
+/** Whether a site-scoped mutation is in flight for `name`. Matches the exact
+ *  `edit:`/`unlink:` tokens rather than a `:${name}` suffix, so a group op
+ *  (`group:<name>`) can't spuriously spin a same-named site's card. */
+function siteBusy(name: string): boolean {
+  return rowBusy.value === `edit:${name}` || rowBusy.value === `unlink:${name}`;
+}
+
 async function moveGroup(name: string, dir: -1 | 1): Promise<void> {
   const order = [...groups.value.order];
   const i = order.indexOf(name);
@@ -113,10 +120,13 @@ async function moveGroup(name: string, dir: -1 | 1): Promise<void> {
   rowBusy.value = `group:${name}`;
   try {
     await setGroupOrder(order);
-    await load({ force: true });
   } catch (e) {
     toast.error("Couldn't reorder groups", (e as IpcError).message);
   } finally {
+    // Always reconcile with the daemon's actual group set - on a permutation
+    // rejection (a group added/removed in another window) this drops the stale
+    // section instead of leaving it stuck until an unrelated refresh.
+    await load({ force: true });
     rowBusy.value = null;
   }
 }
@@ -552,7 +562,7 @@ async function shareSitePublicly(s: Site): Promise<void> {
       <AsyncState
         :loading="loading"
         :error="error"
-        :empty="sites.length === 0 && parked.length === 0"
+        :empty="sites.length === 0 && parked.length === 0 && !hasGroups"
         pad="py-16"
         @retry="load"
       >
@@ -606,7 +616,7 @@ async function shareSitePublicly(s: Site): Promise<void> {
               :site="s"
               :report="report ?? null"
               :tld="tld"
-              :busy="rowBusy?.endsWith(`:${s.name}`)"
+              :busy="siteBusy(s.name)"
               :sharing="sharing === s.name"
               @edit="openEdit"
               @unlink="openUnlink"
@@ -645,8 +655,13 @@ async function shareSitePublicly(s: Site): Promise<void> {
                   <span class="truncate text-sm font-semibold">{{ sec.name }}</span>
                   <Badge variant="secondary">{{ sec.sites.length }}</Badge>
                 </button>
-                <!-- Reorder + delete controls (named groups only). -->
-                <div v-if="!sec.isUnallocated" class="flex shrink-0 items-center gap-0.5">
+                <!-- Reorder + delete controls (named groups only; hidden while
+                     searching, since a search-hidden neighbour would make a move
+                     look like a no-op). -->
+                <div
+                  v-if="!sec.isUnallocated && !searching"
+                  class="flex shrink-0 items-center gap-0.5"
+                >
                   <Spinner v-if="rowBusy === `group:${sec.name}`" class="size-4" />
                   <template v-else>
                     <Button
@@ -693,7 +708,7 @@ async function shareSitePublicly(s: Site): Promise<void> {
                     :site="s"
                     :report="report ?? null"
                     :tld="tld"
-                    :busy="rowBusy?.endsWith(`:${s.name}`)"
+                    :busy="siteBusy(s.name)"
                     :sharing="sharing === s.name"
                     @edit="openEdit"
                     @unlink="openUnlink"

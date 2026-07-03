@@ -231,13 +231,19 @@ fn apply_create_group(cfg: &mut Config, name: &str) -> Result<Applied, MutateErr
     })
 }
 
-/// Delete a site group by exact name and drop every membership pointing at it,
-/// so its sites fall back to the synthetic "Unallocated" bucket. Idempotent - an
-/// absent group is a successful no-op.
+/// Delete a site group (matched ASCII-case-insensitively, like create/assign) and
+/// drop every membership pointing at it, so its sites fall back to the synthetic
+/// "Unallocated" bucket. Idempotent - an absent group is a successful no-op.
 fn apply_delete_group(cfg: &mut Config, name: &str) -> Applied {
-    let existed = cfg.groups.order.iter().any(|g| g == name);
-    cfg.groups.order.retain(|g| g != name);
-    cfg.groups.members.retain(|_, g| g != name);
+    let existed = cfg
+        .groups
+        .order
+        .iter()
+        .any(|g| g.eq_ignore_ascii_case(name));
+    cfg.groups.order.retain(|g| !g.eq_ignore_ascii_case(name));
+    cfg.groups
+        .members
+        .retain(|_, g| !g.eq_ignore_ascii_case(name));
     Applied {
         summary: if existed {
             format!("deleted group {name}")
@@ -267,10 +273,13 @@ fn apply_set_group_order(cfg: &mut Config, order: &[String]) -> Result<Applied, 
 }
 
 /// Set or clear a site's group membership (a site belongs to at most one group).
-/// `Some(group)` must name an existing group; `None` moves the site to
-/// "Unallocated". The `site` key is lowercased to match the router's lowercased
-/// site identities. Membership is intentionally not validated against live sites
-/// (a transiently-unscanned parked site keeps its group), mirroring `overrides`.
+/// `Some(group)` must name an existing group (matched ASCII-case-insensitively);
+/// the **canonical stored casing** from `order` is what's recorded, so a member
+/// value always exactly equals its `order` entry (the GUI keys sections off that
+/// exact string). `None` moves the site to "Unallocated". The `site` key is
+/// lowercased to match the router's lowercased site identities. Membership is
+/// intentionally not validated against live sites (a transiently-unscanned parked
+/// site keeps its group), mirroring `overrides`.
 fn apply_set_site_group(
     cfg: &mut Config,
     site: &str,
@@ -278,12 +287,20 @@ fn apply_set_site_group(
 ) -> Result<Applied, MutateError> {
     let site_lc = site.to_ascii_lowercase();
     if let Some(g) = group {
-        if !cfg.groups.order.iter().any(|existing| existing == g) {
-            return Err(MutateError::NotFound(format!("no group named {g}")));
-        }
-        cfg.groups.members.insert(site_lc.clone(), g.to_owned());
+        let canonical = match cfg
+            .groups
+            .order
+            .iter()
+            .find(|existing| existing.eq_ignore_ascii_case(g))
+        {
+            Some(c) => c.clone(),
+            None => return Err(MutateError::NotFound(format!("no group named {g}"))),
+        };
+        cfg.groups
+            .members
+            .insert(site_lc.clone(), canonical.clone());
         Ok(Applied {
-            summary: format!("{site_lc} added to {g}"),
+            summary: format!("{site_lc} added to {canonical}"),
         })
     } else {
         cfg.groups.members.remove(&site_lc);
@@ -858,6 +875,44 @@ mod tests {
             v(8, 3),
         )
         .unwrap();
+        assert!(cfg.groups.members.is_empty());
+    }
+
+    #[test]
+    fn group_matching_is_case_insensitive_and_canonicalises() {
+        let mut cfg = Config::default();
+        create_group(&mut cfg, "Blog").unwrap();
+        let r = empty_router();
+        // Assign with a different casing: the canonical order casing is stored, so
+        // the member value always matches its order entry exactly.
+        apply(
+            &mut cfg,
+            &r,
+            &Request::SetSiteGroup {
+                site: "api".into(),
+                group: Some("BLOG".into()),
+            },
+            None,
+            v(8, 3),
+        )
+        .unwrap();
+        assert_eq!(
+            cfg.groups.members.get("api").map(String::as_str),
+            Some("Blog")
+        );
+
+        // Delete with yet another casing removes the group and its members.
+        apply(
+            &mut cfg,
+            &r,
+            &Request::DeleteGroup {
+                name: "blog".into(),
+            },
+            None,
+            v(8, 3),
+        )
+        .unwrap();
+        assert!(cfg.groups.order.is_empty());
         assert!(cfg.groups.members.is_empty());
     }
 

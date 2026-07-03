@@ -102,7 +102,7 @@ impl Default for Config {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct GroupsSection {
     /// Group display names in display order; the index is the ordering. Names
-    /// are arbitrary display strings (deduplicated case-insensitively).
+    /// are arbitrary display strings (deduplicated ASCII-case-insensitively).
     pub order: Vec<String>,
     /// Per-site group membership, by site name → group name. A site maps to at
     /// most one group; an absent key means "Unallocated". `BTreeMap` for stable

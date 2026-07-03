@@ -2411,6 +2411,79 @@ Subject: Captured\r\n\r\nhi\r\n";
     }
 
     #[tokio::test]
+    async fn dispatch_group_mutations_persist_without_router_churn() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_in(tmp.path());
+
+        for name in ["Blog", "Shop"] {
+            assert!(matches!(
+                dispatch(Request::CreateGroup { name: name.into() }, &state).await,
+                Response::Ok
+            ));
+        }
+        assert!(matches!(
+            dispatch(
+                Request::SetSiteGroup {
+                    site: "api".into(),
+                    group: Some("Blog".into()),
+                },
+                &state,
+            )
+            .await,
+            Response::Ok
+        ));
+
+        // ListGroups reflects the mutations in memory...
+        match dispatch(Request::ListGroups, &state).await {
+            Response::Groups { order, members } => {
+                assert_eq!(order, vec!["Blog".to_string(), "Shop".to_string()]);
+                assert_eq!(members.get("api").map(String::as_str), Some("Blog"));
+            }
+            other => panic!("expected Groups, got {other:?}"),
+        }
+        // ...and they persisted to disk.
+        let reloaded = yerd_config::Config::load(&state.config_path).unwrap();
+        assert_eq!(
+            reloaded.groups.order,
+            vec!["Blog".to_string(), "Shop".to_string()]
+        );
+        assert_eq!(
+            reloaded.groups.members.get("api").map(String::as_str),
+            Some("Blog")
+        );
+
+        // Group mutations take the lighter commit path, so they must NOT signal
+        // the parked-dir/router watcher (that would provoke a needless rescan).
+        let not_notified = tokio::time::timeout(
+            std::time::Duration::from_millis(50),
+            state.watch_dirty.notified(),
+        )
+        .await;
+        assert!(
+            not_notified.is_err(),
+            "a group mutation must not notify watch_dirty"
+        );
+
+        // Contrast: a real site mutation DOES notify it - proving the probe works
+        // and that the group path genuinely diverges from handle_mutation.
+        let dir = tmp.path().join("sites");
+        std::fs::create_dir_all(&dir).unwrap();
+        assert!(matches!(
+            dispatch(Request::Park { path: dir }, &state).await,
+            Response::Ok
+        ));
+        let notified = tokio::time::timeout(
+            std::time::Duration::from_millis(50),
+            state.watch_dirty.notified(),
+        )
+        .await;
+        assert!(
+            notified.is_ok(),
+            "a site mutation should notify watch_dirty"
+        );
+    }
+
+    #[tokio::test]
     async fn dispatch_cached_update_status_uncached_reports_running_version() {
         let tmp = tempfile::tempdir().unwrap();
         let state = state_in(tmp.path());

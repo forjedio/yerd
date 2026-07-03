@@ -403,12 +403,16 @@ pub(crate) fn validate(c: &Config) -> Result<(), ConfigError> {
 }
 
 /// `[groups]` invariants: every group name in `order` is non-empty, not the
-/// reserved `Unallocated` (case-insensitive - that name is the GUI's synthetic
-/// ungrouped bucket), and unique case-insensitively; every `members` value
-/// references a name present in `order`. Group names are arbitrary display
-/// strings and never touch the filesystem, so - unlike `[tunnel]` keys - the
-/// charset is intentionally unrestricted beyond non-empty. Whether a keyed site
-/// actually exists is not checked: parked sites are discovered from disk and
+/// reserved `Unallocated` (ASCII-case-insensitive - that name is the GUI's
+/// synthetic ungrouped bucket), and unique ASCII-case-insensitively; every
+/// `members` value references a group present in `order`. Group identity is
+/// ASCII-case-insensitive throughout (matching the daemon's create/delete/assign
+/// mutations), so the membership check folds case too - otherwise a hand-edited
+/// `order = ["Blog"]` with `members.api = "blog"` would fail-closed the whole
+/// config load over a purely cosmetic casing mismatch. Group names are arbitrary
+/// display strings and never touch the filesystem, so - unlike `[tunnel]` keys -
+/// the charset is intentionally unrestricted beyond non-empty. Whether a keyed
+/// site actually exists is not checked: parked sites are discovered from disk and
 /// have no config record.
 fn validate_groups(c: &Config) -> Result<(), ConfigError> {
     let mut seen: BTreeSet<String> = BTreeSet::new();
@@ -424,7 +428,7 @@ fn validate_groups(c: &Config) -> Result<(), ConfigError> {
         }
     }
     for group in c.groups.members.values() {
-        if !c.groups.order.contains(group) {
+        if !seen.contains(&group.to_ascii_lowercase()) {
             return Err(ve(ValidateErrorReason::GroupMemberDangling));
         }
     }
@@ -856,6 +860,18 @@ mod tests {
         c.groups
             .members
             .insert("api".to_string(), "Blog".to_string());
+        c.validate().unwrap();
+    }
+
+    #[test]
+    fn validate_accepts_case_insensitive_group_membership() {
+        // A hand-edited casing mismatch between order and members must not
+        // fail-closed the whole config load; group identity is case-insensitive.
+        let mut c = Config::default();
+        c.groups.order.push("Blog".to_string());
+        c.groups
+            .members
+            .insert("api".to_string(), "blog".to_string());
         c.validate().unwrap();
     }
 
