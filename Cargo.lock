@@ -6183,6 +6183,7 @@ dependencies = [
  "yerd-core",
  "yerd-ipc",
  "yerd-platform",
+ "yerd-update",
 ]
 
 [[package]]

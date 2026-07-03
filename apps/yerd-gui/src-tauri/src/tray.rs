@@ -705,14 +705,41 @@ fn spawn_set_default_php(app: AppHandle, version: String) {
 
 /// Run a live (network) self-update check bounded by a timeout - a `None` channel
 /// resolves the daemon's persisted preference - then refresh the menu.
+async fn run_update_check(app: &AppHandle) {
+    let _ = exchange_timeout(
+        &Request::CheckUpdate { channel: None },
+        Duration::from_secs(20),
+    )
+    .await;
+    refresh_now(app).await;
+}
+
+/// Spawn [`run_update_check`] in the background; used by the tray's "Check for
+/// updates" menu item.
 fn spawn_update_check(app: AppHandle) {
+    tauri::async_runtime::spawn(async move { run_update_check(&app).await });
+}
+
+/// Fire once at GUI launch (and on a subsequent single-instance re-invoke): if
+/// the daemon's last self-update check is already stale (`yerd_update::
+/// CHECK_INTERVAL_SECS`, 4h), kick a live check immediately rather than
+/// waiting for the daemon's own wall-clock-gated poll to catch up. Silent and
+/// non-blocking - an unreachable daemon or fetch failure is swallowed exactly
+/// like the daemon's own failure-tolerant polling.
+pub(crate) fn spawn_launch_update_check(app: AppHandle) {
     tauri::async_runtime::spawn(async move {
-        let _ = exchange_timeout(
-            &Request::CheckUpdate { channel: None },
-            Duration::from_secs(20),
-        )
-        .await;
-        refresh_now(&app).await;
+        let checked_at = match exchange_timeout(&Request::CachedUpdateStatus, PROBE_TIMEOUT).await {
+            Ok(Response::UpdateStatus {
+                checked_at_epoch, ..
+            }) => checked_at_epoch,
+            _ => None,
+        };
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs());
+        if yerd_update::is_check_due(checked_at, now) {
+            run_update_check(&app).await;
+        }
     });
 }
 

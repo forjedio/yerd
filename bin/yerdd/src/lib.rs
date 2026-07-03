@@ -149,17 +149,28 @@ async fn run_until_shutdown(
         let mut rx = shutdown_rx.clone();
         tokio::spawn(async move {
             let dl = crate::php_install::ReqwestDownloader::new();
-            let mut tick = tokio::time::interval(Duration::from_secs(12 * 60 * 60));
+            let mut php_tick = tokio::time::interval(Duration::from_secs(12 * 60 * 60));
+            // Short wake so the wall-clock due-check in `poll_if_due` recovers
+            // quickly after the process was suspended (see self_update::poll_if_due).
+            // Default MissedTickBehavior::Burst means a burst of missed ticks
+            // (e.g. from runtime starvation, not suspend itself - a stalled
+            // monotonic clock accrues no missed ticks) fires back-to-back on
+            // resume. Harmless either way: each is awaited serially, and
+            // `poll_if_due` wall-clock-gates every tick, so only the first
+            // (or, on repeated fetch failures, the first few) actually fetch.
+            let mut self_tick = tokio::time::interval(Duration::from_secs(15 * 60));
             loop {
                 tokio::select! {
-                    _ = tick.tick() => {
+                    _ = php_tick.tick() => {
                         crate::php_updates::poll_and_refresh(
                             &state,
                             &dl,
                             yerd_update::PHP_LISTING_PUBLIC_KEY,
                         )
                         .await;
-                        crate::self_update::poll_and_refresh(&state, &dl).await;
+                    }
+                    _ = self_tick.tick() => {
+                        crate::self_update::poll_if_due(&state, &dl).await;
                     }
                     _ = rx.changed() => break,
                 }

@@ -20,6 +20,10 @@ tauri-build = { version = "2", features = [] }
 yerd-core     = { path = "../../../crates/yerd-core" }
 yerd-ipc      = { path = "../../../crates/yerd-ipc", features = ["transport"] }
 yerd-platform = { path = "../../../crates/yerd-platform" }
+# Pure `is_check_due` due-check for the launch-time auto-update trigger
+# (tray.rs) - reuses the same decision crate the daemon uses rather than
+# reimplementing the cadence in the GUI.
+yerd-update   = { path = "../../../crates/yerd-update" }
 
 # `image-png` enables Image::from_bytes for the macOS template tray icon (the
 # bundled app icon is embedded as RGBA by codegen and needs no runtime decoder).
