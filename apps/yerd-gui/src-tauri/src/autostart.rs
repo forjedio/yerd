@@ -696,10 +696,15 @@ fn repair_log(line: &str) {
 /// version has advanced (in-place or automated upgrade), and refuse an older GUI
 /// reconfiguring a newer daemon. Run from `setup_app` (covers both upgrade kinds)
 /// and `daemon_start`. Serialized by [`DAEMON_REG_LOCK`].
+///
+/// Returns `Ok(true)` when it re-registered and kickstarted the daemon from this
+/// bundle (upgrade / phantom re-register), `Ok(false)` when nothing needed doing.
+/// The daemon-start plan uses that to keep a single-kickstart-per-start invariant
+/// (see [`plan_start`]).
 #[cfg(target_os = "macos")]
-pub(crate) fn ensure_daemon_registration() -> Result<(), GuiError> {
+pub(crate) fn ensure_daemon_registration() -> Result<bool, GuiError> {
     if !use_smappservice() {
-        return Ok(());
+        return Ok(false);
     }
     let _guard = DAEMON_REG_LOCK.lock().unwrap_or_else(|p| p.into_inner());
     let gui = gui_version();
@@ -712,7 +717,7 @@ pub(crate) fn ensure_daemon_registration() -> Result<(), GuiError> {
             s.daemon_version_conflict = None;
             let _ = save_settings(&s);
         }
-        return Ok(());
+        return Ok(false);
     }
 
     let stored = s
@@ -745,7 +750,7 @@ pub(crate) fn ensure_daemon_registration() -> Result<(), GuiError> {
                 s.daemon_version_conflict = None;
                 let _ = save_settings(&s);
             }
-            return Ok(());
+            return Ok(false);
         }
         RegAction::Reregister => {}
     }
@@ -768,7 +773,7 @@ pub(crate) fn ensure_daemon_registration() -> Result<(), GuiError> {
             let _ = save_settings(&s);
             nudge_if_requires_approval();
             repair_log(&format!("self-repair: OK, daemon registered for {gui}"));
-            Ok(())
+            Ok(true)
         }
         Err(e) => {
             repair_log(&format!("self-repair FAILED: {}", e.message));
@@ -1072,6 +1077,14 @@ fn reg_phase() -> StartPhase {
 /// label probes `launchctl`, the Linux label reads the unit file), so
 /// `daemon.rs` calls it inside `spawn_blocking`. Each step keeps the same work
 /// the former one-shot `daemon_start` did; only the timeout is now per-phase.
+///
+/// macOS single-kickstart invariant: on the upgrade / phantom re-register path
+/// [`ensure_daemon_registration`] already kickstarts the daemon from the fresh
+/// bundle, so the Starting step skips its own `kickstart -k` (it reports back via
+/// the register step's return). A second kill inside launchd's minimum-runtime
+/// window would trip the daemon's `ThrottleInterval`, blocking `kickstart` past
+/// `START_BUDGET` and surfacing a false "service manager did not respond" even
+/// though the throttled daemon then comes up on its own.
 pub(crate) fn plan_start(nudge: bool) -> Result<Vec<StartStep>, GuiError> {
     #[cfg(target_os = "linux")]
     {
@@ -1109,19 +1122,28 @@ pub(crate) fn plan_start(nudge: bool) -> Result<Vec<StartStep>, GuiError> {
     #[cfg(target_os = "macos")]
     {
         if use_smappservice() {
+            use std::sync::atomic::{AtomicBool, Ordering};
+            use std::sync::Arc;
+            let restarted = Arc::new(AtomicBool::new(false));
+            let restarted_by_reg = Arc::clone(&restarted);
             Ok(vec![
                 StartStep {
                     phase: reg_phase(),
                     budget: REGISTER_BUDGET,
                     run: Box::new(move || {
-                        ensure_daemon_registration()?;
-                        smapp_enable(nudge)
+                        let did_restart = ensure_daemon_registration()?;
+                        smapp_enable(nudge)?;
+                        restarted_by_reg.store(did_restart, Ordering::SeqCst);
+                        Ok(())
                     }),
                 },
                 StartStep {
                     phase: StartPhase::Starting,
                     budget: START_BUDGET,
-                    run: Box::new(|| {
+                    run: Box::new(move || {
+                        if restarted.load(Ordering::SeqCst) {
+                            return Ok(());
+                        }
                         let _ = run_ok("launchctl", &["kickstart", "-k", &service_target()]);
                         Ok(())
                     }),
