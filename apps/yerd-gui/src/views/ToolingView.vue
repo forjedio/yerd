@@ -54,6 +54,14 @@ function blockedNoComposer(t: ToolStatus): boolean {
   return t.id === "laravel" && !composerInstalled.value;
 }
 
+/** Explains an External tool: it's not a problem, just not Yerd's to manage. */
+function externalHint(t: ToolStatus): string {
+  const found = t.external_path
+    ? `Already on your PATH at ${t.external_path}`
+    : "Already on your PATH from another install";
+  return `${found} - Yerd isn't managing this copy, so there's nothing to install or update.`;
+}
+
 const uninstallOpen = ref(false);
 const uninstallTarget = ref<ToolStatus | null>(null);
 
@@ -187,7 +195,12 @@ onUnmounted(registerViewActions({ refresh: () => void load() }));
                   <Badge v-if="t.installed" variant="secondary">
                     {{ t.version ?? "installed" }}
                   </Badge>
-                  <Badge v-else-if="t.external" variant="outline">
+                  <Badge
+                    v-else-if="t.external"
+                    variant="outline"
+                    class="cursor-help"
+                    :title="externalHint(t)"
+                  >
                     External
                   </Badge>
                   <span v-else class="text-xs text-muted-foreground">
@@ -221,8 +234,13 @@ onUnmounted(registerViewActions({ refresh: () => void load() }));
                         <Trash2 class="size-3.5" />
                       </Button>
                     </template>
-                    <!-- External tools are managed by the user, not Yerd: no actions. -->
-                    <template v-else-if="t.external" />
+                    <span
+                      v-else-if="t.external"
+                      class="text-xs text-muted-foreground"
+                      :title="externalHint(t)"
+                    >
+                      Managed by you
+                    </span>
                     <Button
                       v-else
                       size="sm"

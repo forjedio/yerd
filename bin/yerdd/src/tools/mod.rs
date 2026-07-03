@@ -154,6 +154,7 @@ pub fn status(dirs: &PlatformDirs, tool: Tool) -> ToolStatus {
             .map(|s| (*s).to_owned())
             .collect(),
         external: false,
+        external_path: None,
     }
 }
 

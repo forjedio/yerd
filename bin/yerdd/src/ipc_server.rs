@@ -1111,8 +1111,9 @@ async fn list_tools_with_external(state: &DaemonState) -> Vec<yerd_ipc::ToolStat
             continue;
         }
         if let Some(tool) = crate::tools::Tool::parse(&t.id) {
-            t.external =
-                crate::tools::external::external_tool(&dirs, tool, &data_bin, data_root).is_some();
+            let found = crate::tools::external::external_tool(&dirs, tool, &data_bin, data_root);
+            t.external = found.is_some();
+            t.external_path = found.map(|p| p.display().to_string());
         }
     }
     tools

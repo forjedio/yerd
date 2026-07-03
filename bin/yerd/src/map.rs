@@ -646,12 +646,12 @@ fn format_services(services: &[ServiceStatus]) -> String {
     out
 }
 
-/// Render `yerd tools` as a tab-separated table (tool, status, commands).
+/// Render `yerd tools` as a tab-separated table (tool, status, commands, location).
 fn format_tools(tools: &[ToolStatus]) -> String {
     if tools.is_empty() {
         return "no tools".to_owned();
     }
-    let mut out = String::from("TOOL\tSTATUS\tCOMMANDS");
+    let mut out = String::from("TOOL\tSTATUS\tCOMMANDS\tLOCATION");
     for t in tools {
         let status = if t.installed {
             t.version.as_deref().unwrap_or("installed")
@@ -660,7 +660,15 @@ fn format_tools(tools: &[ToolStatus]) -> String {
         } else {
             "not installed"
         };
-        let _ = write!(out, "\n{}\t{}\t{}", t.id, status, t.binaries.join(","));
+        let location = t.external_path.as_deref().unwrap_or("-");
+        let _ = write!(
+            out,
+            "\n{}\t{}\t{}\t{}",
+            t.id,
+            status,
+            t.binaries.join(","),
+            location
+        );
     }
     out
 }
@@ -1458,20 +1466,34 @@ mod tests {
 
         let tools = render(
             &Response::Tools {
-                tools: vec![ToolStatus {
-                    id: "node".into(),
-                    display_name: "Node.js".into(),
-                    installed: true,
-                    version: Some("v24.17.0".into()),
-                    binaries: vec!["node".into(), "npm".into(), "npx".into()],
-                    external: false,
-                }],
+                tools: vec![
+                    ToolStatus {
+                        id: "node".into(),
+                        display_name: "Node.js".into(),
+                        installed: true,
+                        version: Some("v24.17.0".into()),
+                        binaries: vec!["node".into(), "npm".into(), "npx".into()],
+                        external: false,
+                        external_path: None,
+                    },
+                    ToolStatus {
+                        id: "bun".into(),
+                        display_name: "Bun".into(),
+                        installed: false,
+                        version: None,
+                        binaries: vec!["bun".into(), "bunx".into()],
+                        external: true,
+                        external_path: Some("/opt/homebrew/bin/bun".into()),
+                    },
+                ],
             },
             false,
         );
         assert!(tools.stdout.contains("node"));
         assert!(tools.stdout.contains("v24.17.0"));
         assert!(tools.stdout.contains("npm"));
+        assert!(tools.stdout.contains("external"));
+        assert!(tools.stdout.contains("/opt/homebrew/bin/bun"));
         assert_eq!(tools.code, 0);
 
         let site = Site::linked("foo", "/srv/foo", PhpVersion::new(8, 3)).unwrap();

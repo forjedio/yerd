@@ -26,11 +26,16 @@ yerd tools
 ```
 
 ```text
-TOOL      STATUS          COMMANDS
-composer  2.10.1          composer
-node      v24.17.0        node,npm,npx
-bun       not installed   bun,bunx
+TOOL      STATUS          COMMANDS       LOCATION
+composer  2.10.1          composer       -
+node      external        node,npm,npx   /opt/homebrew/bin/node
+bun       not installed   bun,bunx       -
 ```
+
+`LOCATION` is only populated for `external` tools - ones already on your
+`PATH` from somewhere other than Yerd (Homebrew, `nvm`/`fnm`, a global
+Composer, …). See the [Tooling guide](../../guide/tooling#external-tools) for
+what that means and why there's no install/update action for them.
 
 Add `--json` for machine-readable output.
 
