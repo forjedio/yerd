@@ -97,7 +97,7 @@ The platforms diverge most here.
   The capability lives on the binary file, so replacing that file (a package upgrade) clears it. The Linux packages re-apply it on every upgrade (the `.deb`'s post-install and the Arch package's `.install` scriptlet); other install methods need `sudo yerd elevate ports` again after upgrading. There's no clean reverse, so `sudo yerd unelevate ports` only prints the manual command (`sudo setcap -r <path-to-yerdd>`).
   :::
 
-- **macOS:** no `setcap`. The helper installs a `pf` redirect (`rdr`) mapping `80 -> http_port` and `443 -> https_port`, the rootless ports the daemon already bound. The daemon keeps its high ports; pf forwards the privileged ones. A `LaunchDaemon` re-applies the redirect at boot. It's live immediately (no restart) and fully reversible via `sudo yerd unelevate ports`.
+- **macOS:** no `setcap`. The helper installs a `pf` redirect (`rdr`) mapping `80 -> http_port` and `443 -> https_port`, the rootless ports the daemon already bound. The daemon keeps its high ports; pf forwards the privileged ones. A `LaunchDaemon` re-applies the redirect at boot. It's live immediately (no restart) and fully reversible via `sudo yerd unelevate ports`. The daemon also polls for the redirect every few seconds, so a secure site's `http://` → `https://` redirect drops the `:8443`-style port from the URL shortly after you elevate (and brings it back if you `unelevate`) - no restart needed for that either.
 
 ## The rootless fallback
 

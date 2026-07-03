@@ -196,14 +196,17 @@ pub struct HttpsBinding<C: CertStore> {
     /// and converted via `tokio::net::TcpListener::from_std`).
     pub listener: TcpListener,
     /// Public port the HTTP→HTTPS redirect should target - not
-    /// necessarily what `listener.local_addr()` reports.
-    pub public_port: u16,
+    /// necessarily what `listener.local_addr()` reports. Shared so the
+    /// daemon can flip it live, without restarting the proxy.
+    pub public_port: Arc<AtomicU16>,
     /// Cert lookup. Arc-wrapped so the SNI resolver can clone cheaply.
     pub cert_store: Arc<C>,
 }
 ```
 
 `public_port` is separate from the listener's local port on purpose: in rootless mode the daemon may `bind_pair((80, 443), (8080, 8443))` and end up listening on 8443, but the redirect target must reflect the port clients actually use. The daemon's `bind_pair` atomically binds the desired HTTP/HTTPS pair, falling back to `(8080, 8443)` when `80`/`443` require elevation, then converts each `std` listener with `TcpListener::from_std` before passing it in.
+
+It's an `Arc<AtomicU16>` rather than a plain `u16` because the fallback story doesn't end at startup: on macOS, `yerd elevate ports` installs a `pf` redirect (`80`/`443` → the bound rootless pair) that goes live immediately, with no daemon restart - see [Elevation & Privileges](../../guide/elevation). If the redirect target stayed a fixed `u16` captured once in `ProxyServer::serve`, a browser would keep getting bounced to `https://site.test:8443` even after elevation made the plain `https://site.test` reachable. Instead, the daemon owns a shared cell (`DaemonState::redirect_https_port`, see [`yerdd`](../binaries/yerdd)) that a background prober flips between the rootless and well-known port as `yerd_platform::PortRedirector::is_active` changes, and `dispatch` loads the current value on every redirect it builds. `yerd-proxy` itself has no opinion on *why* the port changes - it just reads whatever the cell holds at request time.
 
 ## The server: `ProxyServer::serve`
 
