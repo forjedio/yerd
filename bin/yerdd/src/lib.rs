@@ -133,35 +133,8 @@ async fn run_until_shutdown(
         None
     };
 
-    // Only needed when the HTTPS listener fell back to a rootless port: that's
-    // the only case where a privileged-port redirect (macOS `pf`, installed by
-    // `yerd elevate ports`) could make the well-known port reachable too,
-    // which `redirect_https_port` needs to learn about without a restart (see
-    // its doc comment on `DaemonState`).
-    let redirect_probe_handle = if proxy_handle.is_some() && daemon.state.https.fell_back {
-        let state = daemon.state.clone();
-        let mut rx = shutdown_rx.clone();
-        Some(tokio::spawn(async move {
-            let mut tick = tokio::time::interval(Duration::from_secs(5));
-            loop {
-                tokio::select! {
-                    _ = tick.tick() => {
-                        let active = tokio::task::spawn_blocking(|| {
-                            use yerd_platform::PortRedirector;
-                            yerd_platform::ActivePortRedirector::new().is_active()
-                        })
-                        .await
-                        .unwrap_or(None);
-                        let port = effective_redirect_port(state.https, active);
-                        state.redirect_https_port.store(port, Ordering::Relaxed);
-                    }
-                    _ = rx.changed() => break,
-                }
-            }
-        }))
-    } else {
-        None
-    };
+    let redirect_probe_handle =
+        spawn_redirect_probe(proxy_handle.is_some(), &daemon.state, shutdown_rx.clone());
 
     let ipc_handle = tokio::spawn(ipc_server::run(
         daemon.ipc_listener,
@@ -278,6 +251,42 @@ async fn run_until_shutdown(
     };
     drop(daemon.lock);
     Ok(outcome)
+}
+
+/// Spawns the background task that keeps
+/// [`crate::state::DaemonState::redirect_https_port`] in sync with a live
+/// privileged-port redirect (macOS `pf`, installed by `yerd elevate ports`) -
+/// the only case where the daemon's own bound HTTPS port can diverge from
+/// what's actually reachable without a restart. Returns `None` (spawning
+/// nothing) when the proxy isn't running or the HTTPS listener bound its
+/// well-known port directly, since neither case has anything to detect.
+fn spawn_redirect_probe(
+    proxy_running: bool,
+    state: &Arc<crate::state::DaemonState>,
+    mut shutdown_rx: watch::Receiver<bool>,
+) -> Option<tokio::task::JoinHandle<()>> {
+    if !proxy_running || !state.https.fell_back {
+        return None;
+    }
+    let state = state.clone();
+    Some(tokio::spawn(async move {
+        let mut tick = tokio::time::interval(Duration::from_secs(5));
+        loop {
+            tokio::select! {
+                _ = tick.tick() => {
+                    let active = tokio::task::spawn_blocking(|| {
+                        use yerd_platform::PortRedirector;
+                        yerd_platform::ActivePortRedirector::new().is_active()
+                    })
+                    .await
+                    .unwrap_or(None);
+                    let port = effective_redirect_port(state.https, active);
+                    state.redirect_https_port.store(port, Ordering::Relaxed);
+                }
+                _ = shutdown_rx.changed() => break,
+            }
+        }
+    }))
 }
 
 /// Port the HTTP→HTTPS redirect `Location` header should advertise, given the
