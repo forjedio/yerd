@@ -741,8 +741,10 @@ async fn symlink_within_document_root_outside_served_root_is_served() {
 }
 
 /// A symlink that escapes the site's `document_root` entirely still gets
-/// rejected - but now with an explicit `403` from yerd-proxy naming the
-/// requested and resolved paths, instead of a silent fallthrough to FastCGI.
+/// rejected - but now with an explicit `403` from yerd-proxy naming only the
+/// requested path (the resolved path and allowed root are logged, not echoed,
+/// to avoid leaking local absolute paths), instead of a silent fallthrough to
+/// FastCGI.
 #[cfg(unix)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn symlink_escaping_document_root_returns_403() {

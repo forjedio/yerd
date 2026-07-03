@@ -27,7 +27,7 @@ const REQUEST_ID: u16 = 1;
 pub async fn forward(
     req: Request<Incoming>,
     backend: Backend,
-    document_root: PathBuf,
+    served_root: PathBuf,
     server_addr: SocketAddr,
     peer_addr: SocketAddr,
     https: bool,
@@ -53,7 +53,7 @@ pub async fn forward(
         parts.method.as_str(),
         path_and_query_of(&parts.uri),
         &parts.headers,
-        &document_root,
+        &served_root,
         https,
         peer_addr,
         server_addr,
