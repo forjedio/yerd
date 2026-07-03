@@ -8,6 +8,7 @@ This page is the way out. Yerd serves **every** site through plain `http://local
 
 - `*.test` not resolving? Open **`http://localhost:8080/~app.test`** - Yerd pins that origin to `app.test` and you're in.
 - No URL in mind? Open **`http://localhost:8080/`** and pick a site from the list.
+- Pinned to the wrong site? Open **`http://localhost:8080/~`** to clear the pin and see the picker again.
 - Scripting against it? Send **`X-Yerd-Site: app.test`** and skip the cookie dance.
 - It's **HTTP-only** and **one site per browser at a time** (see [the caveats](#the-caveats)).
 
@@ -50,6 +51,8 @@ sequenceDiagram
 ```
 
 A **bare label** works too: `http://localhost:8080/~app` pins `app` just like `/~app.test`.
+
+**Back to the picker:** open `http://localhost:8080/~` (no domain) to clear the pin and get redirected to `/`, which shows the picker again.
 
 ### 2. The site picker
 
@@ -94,7 +97,7 @@ The fix is to point those at the localhost origin (e.g. `APP_URL=http://localhos
 :::
 
 ::: warning One site per browser at a time
-The pin is a cookie on the `localhost` origin, so a browser serves **one** pinned site at a time. Switching is one click (another `/~` link or the picker). Different sites simultaneously means different browsers/profiles - or installing the resolver. API clients using `X-Yerd-Site` aren't affected; each request stands alone.
+The pin is a cookie on the `localhost` origin, so a browser serves **one** pinned site at a time. Switching is one click (another `/~` link or the picker); `http://localhost:8080/~` clears the pin outright and sends you back to the picker. Different sites simultaneously means different browsers/profiles - or installing the resolver. API clients using `X-Yerd-Site` aren't affected; each request stands alone.
 :::
 
 ::: info Nothing serving?
