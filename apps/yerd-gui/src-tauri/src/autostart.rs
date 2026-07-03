@@ -697,16 +697,16 @@ fn repair_log(line: &str) {
 /// reconfiguring a newer daemon. Run from `setup_app` (covers both upgrade kinds)
 /// and `daemon_start`. Serialized by [`DAEMON_REG_LOCK`].
 ///
-/// Returns `Ok(true)` when it re-registered the daemon from this bundle (upgrade /
-/// phantom re-register) and therefore already issued a `kickstart -k`; `Ok(false)`
-/// when nothing needed doing. The re-register itself starts the daemon via the
-/// agent's `RunAtLoad`, so the accompanying kickstart is best-effort (its result is
-/// deliberately discarded). The daemon-start plan reads this flag to keep a
-/// single-kickstart-per-start invariant (see [`plan_start`]).
+/// The re-register path uses a **non-killing** `launchctl kickstart` (no `-k`):
+/// `register_repairing` already (re)starts the daemon from the fresh bundle via the
+/// agent's `RunAtLoad`, so a plain kickstart just ensures it is running. A `-k`
+/// here would kill that just-spawned instance inside launchd's `minimum runtime`
+/// window, tripping the daemon's `ThrottleInterval` and blocking the caller on the
+/// throttled respawn (see [`plan_start`]).
 #[cfg(target_os = "macos")]
-pub(crate) fn ensure_daemon_registration() -> Result<bool, GuiError> {
+pub(crate) fn ensure_daemon_registration() -> Result<(), GuiError> {
     if !use_smappservice() {
-        return Ok(false);
+        return Ok(());
     }
     let _guard = DAEMON_REG_LOCK.lock().unwrap_or_else(|p| p.into_inner());
     let gui = gui_version();
@@ -719,7 +719,7 @@ pub(crate) fn ensure_daemon_registration() -> Result<bool, GuiError> {
             s.daemon_version_conflict = None;
             let _ = save_settings(&s);
         }
-        return Ok(false);
+        return Ok(());
     }
 
     let stored = s
@@ -752,7 +752,7 @@ pub(crate) fn ensure_daemon_registration() -> Result<bool, GuiError> {
                 s.daemon_version_conflict = None;
                 let _ = save_settings(&s);
             }
-            return Ok(false);
+            return Ok(());
         }
         RegAction::Reregister => {}
     }
@@ -768,14 +768,14 @@ pub(crate) fn ensure_daemon_registration() -> Result<bool, GuiError> {
     let _ = crate::smappservice::unregister(crate::smappservice::Service::Daemon);
     match crate::smappservice::register_repairing(crate::smappservice::Service::Daemon) {
         Ok(()) => {
-            let _ = run_ok("launchctl", &["kickstart", "-k", &service_target()]);
+            let _ = run_ok("launchctl", &["kickstart", &service_target()]);
             let mut s = load_settings();
             s.daemon_registered_version = Some(gui.to_string());
             s.daemon_version_conflict = None;
             let _ = save_settings(&s);
             nudge_if_requires_approval();
             repair_log(&format!("self-repair: OK, daemon registered for {gui}"));
-            Ok(true)
+            Ok(())
         }
         Err(e) => {
             repair_log(&format!("self-repair FAILED: {}", e.message));
@@ -1080,12 +1080,14 @@ fn reg_phase() -> StartPhase {
 /// `daemon.rs` calls it inside `spawn_blocking`. Each step keeps the same work
 /// the former one-shot `daemon_start` did; only the timeout is now per-phase.
 ///
-/// macOS single-kickstart invariant: on the upgrade / phantom re-register path
-/// [`ensure_daemon_registration`] already kickstarts the daemon from the fresh
-/// bundle, so the Starting step skips its own `kickstart -k` (it reports back via
-/// the register step's return). A second kill inside launchd's minimum-runtime
-/// window would trip the daemon's `ThrottleInterval`, blocking `kickstart` past
-/// `START_BUDGET` and surfacing a false "service manager did not respond" even
+/// macOS non-killing start: the Starting step (and the register step) use a plain
+/// `launchctl kickstart` (no `-k`). The daemon is already (re)started from the
+/// fresh bundle by `register_repairing`'s `RunAtLoad` - on this launch or from a
+/// concurrent `setup_app` re-register after a self-update - so a plain kickstart
+/// only ensures it is running (starting a registered-but-stopped daemon, no-op on
+/// a live one). A `-k` would kill a daemon that has run for less than launchd's
+/// `minimum runtime`, trip the daemon's `ThrottleInterval`, and block `kickstart`
+/// past `START_BUDGET`, surfacing a false "service manager did not respond" even
 /// though the throttled daemon then comes up on its own.
 pub(crate) fn plan_start(nudge: bool) -> Result<Vec<StartStep>, GuiError> {
     #[cfg(target_os = "linux")]
@@ -1124,29 +1126,20 @@ pub(crate) fn plan_start(nudge: bool) -> Result<Vec<StartStep>, GuiError> {
     #[cfg(target_os = "macos")]
     {
         if use_smappservice() {
-            use std::sync::atomic::{AtomicBool, Ordering};
-            use std::sync::Arc;
-            let reg_kickstarted = Arc::new(AtomicBool::new(false));
-            let reg_kickstarted_setter = Arc::clone(&reg_kickstarted);
             Ok(vec![
                 StartStep {
                     phase: reg_phase(),
                     budget: REGISTER_BUDGET,
                     run: Box::new(move || {
-                        let kickstart_issued = ensure_daemon_registration()?;
-                        smapp_enable(nudge)?;
-                        reg_kickstarted_setter.store(kickstart_issued, Ordering::SeqCst);
-                        Ok(())
+                        ensure_daemon_registration()?;
+                        smapp_enable(nudge)
                     }),
                 },
                 StartStep {
                     phase: StartPhase::Starting,
                     budget: START_BUDGET,
-                    run: Box::new(move || {
-                        if reg_kickstarted.load(Ordering::SeqCst) {
-                            return Ok(());
-                        }
-                        let _ = run_ok("launchctl", &["kickstart", "-k", &service_target()]);
+                    run: Box::new(|| {
+                        let _ = run_ok("launchctl", &["kickstart", &service_target()]);
                         Ok(())
                     }),
                 },
@@ -1161,7 +1154,7 @@ pub(crate) fn plan_start(nudge: bool) -> Result<Vec<StartStep>, GuiError> {
                 StartStep {
                     phase: StartPhase::Starting,
                     budget: START_BUDGET,
-                    run: Box::new(|| run_ok("launchctl", &["kickstart", "-k", &service_target()])),
+                    run: Box::new(|| run_ok("launchctl", &["kickstart", &service_target()])),
                 },
             ])
         }
