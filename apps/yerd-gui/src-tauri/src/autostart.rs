@@ -697,10 +697,12 @@ fn repair_log(line: &str) {
 /// reconfiguring a newer daemon. Run from `setup_app` (covers both upgrade kinds)
 /// and `daemon_start`. Serialized by [`DAEMON_REG_LOCK`].
 ///
-/// Returns `Ok(true)` when it re-registered and kickstarted the daemon from this
-/// bundle (upgrade / phantom re-register), `Ok(false)` when nothing needed doing.
-/// The daemon-start plan uses that to keep a single-kickstart-per-start invariant
-/// (see [`plan_start`]).
+/// Returns `Ok(true)` when it re-registered the daemon from this bundle (upgrade /
+/// phantom re-register) and therefore already issued a `kickstart -k`; `Ok(false)`
+/// when nothing needed doing. The re-register itself starts the daemon via the
+/// agent's `RunAtLoad`, so the accompanying kickstart is best-effort (its result is
+/// deliberately discarded). The daemon-start plan reads this flag to keep a
+/// single-kickstart-per-start invariant (see [`plan_start`]).
 #[cfg(target_os = "macos")]
 pub(crate) fn ensure_daemon_registration() -> Result<bool, GuiError> {
     if !use_smappservice() {
@@ -1124,16 +1126,16 @@ pub(crate) fn plan_start(nudge: bool) -> Result<Vec<StartStep>, GuiError> {
         if use_smappservice() {
             use std::sync::atomic::{AtomicBool, Ordering};
             use std::sync::Arc;
-            let restarted = Arc::new(AtomicBool::new(false));
-            let restarted_by_reg = Arc::clone(&restarted);
+            let reg_kickstarted = Arc::new(AtomicBool::new(false));
+            let reg_kickstarted_setter = Arc::clone(&reg_kickstarted);
             Ok(vec![
                 StartStep {
                     phase: reg_phase(),
                     budget: REGISTER_BUDGET,
                     run: Box::new(move || {
-                        let did_restart = ensure_daemon_registration()?;
+                        let kickstart_issued = ensure_daemon_registration()?;
                         smapp_enable(nudge)?;
-                        restarted_by_reg.store(did_restart, Ordering::SeqCst);
+                        reg_kickstarted_setter.store(kickstart_issued, Ordering::SeqCst);
                         Ok(())
                     }),
                 },
@@ -1141,7 +1143,7 @@ pub(crate) fn plan_start(nudge: bool) -> Result<Vec<StartStep>, GuiError> {
                     phase: StartPhase::Starting,
                     budget: START_BUDGET,
                     run: Box::new(move || {
-                        if restarted.load(Ordering::SeqCst) {
+                        if reg_kickstarted.load(Ordering::SeqCst) {
                             return Ok(());
                         }
                         let _ = run_ok("launchctl", &["kickstart", "-k", &service_target()]);
