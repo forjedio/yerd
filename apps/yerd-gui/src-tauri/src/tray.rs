@@ -15,7 +15,10 @@
 //! began its fetch before the action can't overwrite the action's transient menu.
 //! `MENU_LOCK` is only ever taken from spawned worker tasks, never the main
 //! thread (a worker blocks on the main thread while `set_menu` marshals, so a
-//! main-thread lock would cycle-deadlock).
+//! main-thread lock would cycle-deadlock). Callers read `dark_menu_bar()`
+//! themselves *before* taking the lock (on Linux it's a bounded D-Bus round
+//! trip) and pass the result in, so the lock only ever wraps the menu-building
+//! and `set_menu`/`set_icon` marshalling it was meant to serialize.
 
 use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -127,7 +130,7 @@ struct TrayState {
 /// "Open Yerd" item opens the main window. (Windows convention is left-click =
 /// open the app; revisit if/when Windows support lands.)
 pub(crate) fn build_tray(app: &AppHandle) -> tauri::Result<()> {
-    let menu = build_menu(app, &TrayState::default())?;
+    let menu = build_menu(app, &TrayState::default(), dark_menu_bar())?;
     let mut builder = TrayIconBuilder::with_id(TRAY_ID)
         .tooltip("Yerd")
         .menu(&menu)
@@ -168,9 +171,10 @@ pub(crate) fn spawn_tray_poller(app: AppHandle) {
             if last.as_ref() == Some(&state) {
                 continue;
             }
+            let dark = dark_menu_bar();
             let guard = lock_menu();
             if !TRANSITION.load(Ordering::Acquire) {
-                apply(&app, &state);
+                apply(&app, &state, dark);
                 last = Some(state);
             }
             drop(guard);
@@ -221,10 +225,12 @@ impl Badges {
 
 /// Build + install the menu for `state`, and badge the icon for waiting updates
 /// and/or unread mail. No lock / no transition logic - callers hold `MENU_LOCK`
-/// as needed. On macOS a coloured badge can't be a template, so templating is
-/// dropped while any badge shows (and restored when none do).
-fn apply(app: &AppHandle, state: &TrayState) {
-    let Ok(menu) = build_menu(app, state) else {
+/// as needed, and must read `dark_menu_bar()` themselves *before* taking it (see
+/// the module concurrency note) since this only threads `dark` through. On
+/// macOS a coloured badge can't be a template, so templating is dropped while
+/// any badge shows (and restored when none do).
+fn apply(app: &AppHandle, state: &TrayState, dark: bool) {
+    let Ok(menu) = build_menu(app, state, dark) else {
         return;
     };
     if let Some(tray) = app.tray_by_id(TRAY_ID) {
@@ -343,9 +349,10 @@ fn draw_dot(rgba: &mut [u8], width: u32, height: u32, color: (u8, u8, u8), pos: 
     }
 }
 
-/// Whether the system is in Dark mode, so the badged (non-template) icon can
-/// paint its glyph in the matching label colour. Reads the thread-safe
-/// `AppleInterfaceStyle` user default, so it's fine off the main thread.
+/// Whether the system is in Dark mode, so the badged (non-template) icon and
+/// the menu-item glyphs can be painted in the matching colour. Reads the
+/// thread-safe `AppleInterfaceStyle` user default, so it's fine off the main
+/// thread.
 #[cfg(target_os = "macos")]
 fn dark_menu_bar() -> bool {
     use objc2_foundation::{NSString, NSUserDefaults};
@@ -353,6 +360,33 @@ fn dark_menu_bar() -> bool {
     defaults
         .stringForKey(&NSString::from_str("AppleInterfaceStyle"))
         .is_some_and(|s| s.to_string().eq_ignore_ascii_case("dark"))
+}
+
+/// Whether the desktop prefers dark mode, so `menu_icon` can paint the glyph in
+/// a colour that reads against the theme (muda menu icons aren't templates, and
+/// there's no single GTK/Qt API across desktops to ask for the exact label
+/// colour). Reads the xdg-desktop-portal `Settings` `color-scheme` preference
+/// (GNOME, KDE Plasma, and other portal-backed desktops all implement it) via
+/// `dark-light`'s own async-std executor (zbus's async-io backend here, not its
+/// `tokio` feature - see the Cargo.toml comment), so its blocking D-Bus round
+/// trip (typically sub-25ms against a live portal; unbounded only if the
+/// session bus itself is wedged) runs independent of our tokio runtime and is
+/// safe to call from the tray poller's worker thread as well as the main
+/// thread.
+/// Callers take this reading *before* `MENU_LOCK` (see the module concurrency
+/// note) so the probe never runs while the lock is held. Any failure (no
+/// portal, older desktop) reads as light, which just leaves the glyph at its
+/// original black - the current behaviour, so no regression.
+#[cfg(target_os = "linux")]
+fn dark_menu_bar() -> bool {
+    matches!(dark_light::detect(), Ok(dark_light::Mode::Dark))
+}
+
+/// No dark-mode signal on other targets (Windows isn't implemented yet) - the
+/// menu-item glyphs just stay at their original black, today's behaviour.
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+fn dark_menu_bar() -> bool {
+    false
 }
 
 /// Install the transient menu shown while a lifecycle action is in flight.
@@ -371,9 +405,10 @@ fn apply_transient(app: &AppHandle, label: &str) {
 /// the menu. Used by the non-lifecycle actions (set-default-PHP, update check).
 async fn refresh_now(app: &AppHandle) {
     let state = fetch_state().await;
+    let dark = dark_menu_bar();
     let guard = lock_menu();
     if !TRANSITION.load(Ordering::Acquire) {
-        apply(app, &state);
+        apply(app, &state, dark);
     }
     drop(guard);
 }
@@ -401,7 +436,9 @@ fn mail_label(unread: u32) -> String {
     }
 }
 
-/// The full menu for the current daemon state.
+/// The full menu for the current daemon state. `dark` is a single
+/// `dark_menu_bar()` reading the caller took before taking `MENU_LOCK` (see the
+/// module concurrency note), threaded through every icon in this build.
 ///
 /// Layout: a top zone (Open Yerd, plus Update Yerd / Update PHP while an update
 /// waits) before the status header, then the running- or stopped-daemon block,
@@ -409,20 +446,23 @@ fn mail_label(unread: u32) -> String {
 /// "Default PHP:" label, each indented with a tick drawn into the label text
 /// itself (rather than the fixed native checkmark column) so it nests with the
 /// versions; picking one switches the default and the tick moves.
-fn build_menu(app: &AppHandle, state: &TrayState) -> tauri::Result<Menu<Wry>> {
+fn build_menu(app: &AppHandle, state: &TrayState, dark: bool) -> tauri::Result<Menu<Wry>> {
     let mut items: Vec<Box<dyn IsMenuItem<Wry>>> = Vec::new();
 
-    push(&mut items, action(app, "open", "Open Yerd", icons::OPEN)?);
+    push(
+        &mut items,
+        action(app, "open", "Open Yerd", icons::OPEN, dark)?,
+    );
     if state.update_target.is_some() {
         push(
             &mut items,
-            action(app, "update:apply", "Update Yerd", icons::UPDATE)?,
+            action(app, "update:apply", "Update Yerd", icons::UPDATE, dark)?,
         );
     }
     if state.php_update {
         push(
             &mut items,
-            action(app, "update:php", "Update PHP", icons::UPDATE_PHP)?,
+            action(app, "update:php", "Update PHP", icons::UPDATE_PHP, dark)?,
         );
     }
     push(&mut items, PredefinedMenuItem::separator(app)?);
@@ -446,16 +486,23 @@ fn build_menu(app: &AppHandle, state: &TrayState) -> tauri::Result<Menu<Wry>> {
                     "update:check",
                     "Check for updates",
                     icons::CHECK_UPDATES,
+                    dark,
                 )?,
             );
         }
         push(
             &mut items,
-            action(app, "daemon:restart", "Restart daemon", icons::RESTART)?,
+            action(
+                app,
+                "daemon:restart",
+                "Restart daemon",
+                icons::RESTART,
+                dark,
+            )?,
         );
         push(
             &mut items,
-            action(app, "daemon:stop", "Stop daemon", icons::STOP)?,
+            action(app, "daemon:stop", "Stop daemon", icons::STOP, dark)?,
         );
         push(&mut items, PredefinedMenuItem::separator(app)?);
 
@@ -474,25 +521,28 @@ fn build_menu(app: &AppHandle, state: &TrayState) -> tauri::Result<Menu<Wry>> {
 
         push(
             &mut items,
-            action(app, "new-site", "New Laravel site…", icons::NEW_SITE)?,
+            action(app, "new-site", "New Laravel site…", icons::NEW_SITE, dark)?,
         );
         push(
             &mut items,
-            action(app, "sites:link", "Link Site", icons::LINK)?,
+            action(app, "sites:link", "Link Site", icons::LINK, dark)?,
         );
         push(
             &mut items,
-            action(app, "sites:park", "Park Directory", icons::PARK)?,
+            action(app, "sites:park", "Park Directory", icons::PARK, dark)?,
         );
         push(&mut items, PredefinedMenuItem::separator(app)?);
         push(
             &mut items,
-            action(app, "mail", mail_label(state.unread), icons::MAIL)?,
+            action(app, "mail", mail_label(state.unread), icons::MAIL, dark)?,
         );
-        push(&mut items, action(app, "dumps", "Dumps", icons::DUMPS)?);
+        push(
+            &mut items,
+            action(app, "dumps", "Dumps", icons::DUMPS, dark)?,
+        );
         push(&mut items, PredefinedMenuItem::separator(app)?);
         for (id, label, icon) in NAV_ITEMS {
-            push(&mut items, action(app, *id, *label, icon)?);
+            push(&mut items, action(app, *id, *label, icon, dark)?);
         }
         push(&mut items, PredefinedMenuItem::separator(app)?);
     } else {
@@ -502,18 +552,24 @@ fn build_menu(app: &AppHandle, state: &TrayState) -> tauri::Result<Menu<Wry>> {
         );
         push(
             &mut items,
-            action(app, "daemon:start", "Start daemon", icons::START)?,
+            action(app, "daemon:start", "Start daemon", icons::START, dark)?,
         );
         push(&mut items, PredefinedMenuItem::separator(app)?);
         push(
             &mut items,
-            action(app, "mail", mail_label(state.unread), icons::MAIL)?,
+            action(app, "mail", mail_label(state.unread), icons::MAIL, dark)?,
         );
-        push(&mut items, action(app, "dumps", "Dumps", icons::DUMPS)?);
+        push(
+            &mut items,
+            action(app, "dumps", "Dumps", icons::DUMPS, dark)?,
+        );
         push(&mut items, PredefinedMenuItem::separator(app)?);
     }
 
-    push(&mut items, action(app, "quit", "Quit Yerd", icons::QUIT)?);
+    push(
+        &mut items,
+        action(app, "quit", "Quit Yerd", icons::QUIT, dark)?,
+    );
     finish_menu(app, &items)
 }
 
@@ -522,36 +578,48 @@ fn build_menu(app: &AppHandle, state: &TrayState) -> tauri::Result<Menu<Wry>> {
 /// second start/stop/restart can't fire mid-transition and clear `TRANSITION`.
 fn build_transient_menu(app: &AppHandle, label: &str) -> tauri::Result<Menu<Wry>> {
     let mut items: Vec<Box<dyn IsMenuItem<Wry>>> = Vec::new();
+    let dark = dark_menu_bar();
     push(&mut items, disabled(app, "noop:transient", label)?);
     push(&mut items, PredefinedMenuItem::separator(app)?);
-    push(&mut items, action(app, "open", "Open Yerd", icons::OPEN)?);
-    push(&mut items, action(app, "mail", "Mail", icons::MAIL)?);
-    push(&mut items, action(app, "dumps", "Dumps", icons::DUMPS)?);
+    push(
+        &mut items,
+        action(app, "open", "Open Yerd", icons::OPEN, dark)?,
+    );
+    push(&mut items, action(app, "mail", "Mail", icons::MAIL, dark)?);
+    push(
+        &mut items,
+        action(app, "dumps", "Dumps", icons::DUMPS, dark)?,
+    );
     push(&mut items, PredefinedMenuItem::separator(app)?);
-    push(&mut items, action(app, "quit", "Quit Yerd", icons::QUIT)?);
+    push(
+        &mut items,
+        action(app, "quit", "Quit Yerd", icons::QUIT, dark)?,
+    );
     finish_menu(app, &items)
 }
 
-/// A clickable item with a leading icon.
+/// A clickable item with a leading icon, recoloured per `dark` (see
+/// `menu_icon`).
 fn action(
     app: &AppHandle,
     id: impl Into<tauri::menu::MenuId>,
     text: impl AsRef<str>,
     icon: &[u8],
+    dark: bool,
 ) -> tauri::Result<IconMenuItem<Wry>> {
-    IconMenuItem::with_id(app, id, text, true, menu_icon(icon), None::<&str>)
+    IconMenuItem::with_id(app, id, text, true, menu_icon(icon, dark), None::<&str>)
 }
 
-/// Decode a bundled menu-item PNG, recolouring its black glyph to white in dark
-/// mode so it reads on the menu background (muda menu icons aren't templates, so
-/// they don't auto-tint).
-fn menu_icon(png: &[u8]) -> Option<tauri::image::Image<'static>> {
+/// Decode a bundled menu-item PNG, recolouring its black glyph to white when
+/// `dark` (muda menu icons aren't templates, so they don't auto-tint). Callers
+/// pass one `dark_menu_bar()` reading per menu build rather than probing per
+/// icon - on Linux that reading is a D-Bus round trip, so this keeps a rebuild
+/// at one portal query instead of one per item.
+fn menu_icon(png: &[u8], dark: bool) -> Option<tauri::image::Image<'static>> {
     let img = tauri::image::Image::from_bytes(png).ok()?;
     let (w, h) = (img.width(), img.height());
-    #[cfg_attr(not(target_os = "macos"), allow(unused_mut))]
     let mut rgba = img.rgba().to_vec();
-    #[cfg(target_os = "macos")]
-    if dark_menu_bar() {
+    if dark {
         for px in rgba.chunks_exact_mut(4) {
             if let [r, g, b, a] = px {
                 if *a > 0 {
@@ -684,8 +752,9 @@ fn spawn_lifecycle(app: AppHandle, kind: Lifecycle) {
         }
 
         let state = fetch_state().await;
+        let dark = dark_menu_bar();
         let guard = lock_menu();
-        apply(&app, &state);
+        apply(&app, &state, dark);
         TRANSITION.store(false, Ordering::Release);
         drop(guard);
     });
@@ -761,5 +830,39 @@ async fn wait_until_restarted(prev: Option<u64>) {
             },
             _ => saw_down = true,
         }
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod tests {
+    use super::{icons, menu_icon};
+
+    #[test]
+    fn menu_icon_light_leaves_pixels_unchanged() {
+        let raw = tauri::image::Image::from_bytes(icons::OPEN).expect("bundled icon decodes");
+        let light = menu_icon(icons::OPEN, false).expect("bundled icon decodes");
+        assert_eq!(light.rgba(), raw.rgba());
+    }
+
+    #[test]
+    fn menu_icon_dark_recolors_opaque_pixels_white() {
+        let dark = menu_icon(icons::OPEN, true).expect("bundled icon decodes");
+        for px in dark.rgba().chunks_exact(4) {
+            if let [r, g, b, a] = *px {
+                if a > 0 {
+                    assert_eq!((r, g, b), (255, 255, 255));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn menu_icon_dark_preserves_alpha_channel() {
+        let raw = tauri::image::Image::from_bytes(icons::OPEN).expect("bundled icon decodes");
+        let dark = menu_icon(icons::OPEN, true).expect("bundled icon decodes");
+        let raw_alpha: Vec<u8> = raw.rgba().chunks_exact(4).map(|px| px[3]).collect();
+        let dark_alpha: Vec<u8> = dark.rgba().chunks_exact(4).map(|px| px[3]).collect();
+        assert_eq!(raw_alpha, dark_alpha);
     }
 }
