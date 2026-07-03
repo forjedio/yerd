@@ -59,9 +59,11 @@ webkit2gtk = "=2.0.2"
 # Dark-mode probe for the tray menu icons (tray.rs's `dark_menu_bar`), read via
 # the xdg-desktop-portal `Settings` interface so it works across desktop
 # environments (GNOME, KDE Plasma, ...) rather than a GTK/GSettings-only check.
-# Brings in `ashpd` plus its own `async-std` executor as a self-contained stack
-# (not otherwise in the dependency graph); its D-Bus I/O never touches our
-# tokio runtime, so it's safe to call off the main thread.
+# Brings in `ashpd` (its async-std feature) plus its own `async-std` executor as
+# a self-contained stack (not otherwise in the dependency graph). zbus resolves
+# to its async-io backend here, not its `tokio` feature, so the D-Bus I/O runs
+# independent of our tokio runtime - re-check this if a future version bump
+# ever pulls zbus's `tokio` feature in.
 dark-light = "2"
 
 # macOS: re-apply the Dock icon after an activation-policy change (dev builds have
