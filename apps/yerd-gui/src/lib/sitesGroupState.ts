@@ -55,7 +55,17 @@ export function useSitesGroupState() {
     setCollapsed(name, !isCollapsed(name));
   }
 
-  return { collapsed, isCollapsed, setCollapsed, toggle };
+  /** Carry a renamed group's collapsed state across to its new name. */
+  function rename(from: string, to: string): void {
+    if (!collapsed.value.has(from)) return;
+    const next = new Set(collapsed.value);
+    next.delete(from);
+    next.add(to);
+    collapsed.value = next;
+    persist();
+  }
+
+  return { collapsed, isCollapsed, setCollapsed, toggle, rename };
 }
 
 /** Test-only: reset the in-memory set (specs start from a clean slate). */

@@ -129,6 +129,11 @@ pub async fn set_site_group(site: String, group: Option<String>) -> Result<Respo
     finish(exchange(&Request::SetSiteGroup { site, group }).await?)
 }
 
+#[tauri::command]
+pub async fn rename_group(from: String, to: String) -> Result<Response, GuiError> {
+    finish(exchange(&Request::RenameGroup { from, to }).await?)
+}
+
 // ── php versions ───────────────────────────────────────────────────────────
 
 #[tauri::command]

@@ -97,6 +97,10 @@ fn encode_then_decode_request_roundtrip() {
         site: "app".into(),
         group: None,
     });
+    assert_request_roundtrips(Request::RenameGroup {
+        from: "Blog".into(),
+        to: "Journal".into(),
+    });
 }
 
 #[test]

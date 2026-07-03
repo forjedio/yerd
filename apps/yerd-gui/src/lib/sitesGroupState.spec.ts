@@ -51,6 +51,22 @@ describe("sitesGroupState", () => {
     expect(JSON.parse(localStorage.getItem(STORAGE_KEY) ?? "[]")).toEqual(["Shop"]);
   });
 
+  it("carries collapsed state across a rename", () => {
+    const { toggle, rename, isCollapsed } = useSitesGroupState();
+    toggle("Blog");
+    rename("Blog", "Journal");
+    expect(isCollapsed("Blog")).toBe(false);
+    expect(isCollapsed("Journal")).toBe(true);
+    expect(JSON.parse(localStorage.getItem(STORAGE_KEY) ?? "[]")).toEqual(["Journal"]);
+  });
+
+  it("rename is a no-op when the source group wasn't collapsed", () => {
+    const { rename, isCollapsed } = useSitesGroupState();
+    rename("Blog", "Journal");
+    expect(isCollapsed("Journal")).toBe(false);
+    expect(JSON.parse(localStorage.getItem(STORAGE_KEY) ?? "[]")).toEqual([]);
+  });
+
   it("seeds collapsed set from existing localStorage on fresh import", async () => {
     const store = stubLocalStorage();
     store.set(STORAGE_KEY, JSON.stringify(["Blog", "Shop"]));

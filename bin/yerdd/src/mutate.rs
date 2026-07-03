@@ -84,6 +84,7 @@ pub fn apply(
         Request::DeleteGroup { name } => Ok(apply_delete_group(cfg, name)),
         Request::SetGroupOrder { order } => apply_set_group_order(cfg, order),
         Request::SetSiteGroup { site, group } => apply_set_site_group(cfg, site, group.as_deref()),
+        Request::RenameGroup { from, to } => apply_rename_group(cfg, from, to),
         _ => Err(MutateError::Invalid("unsupported request".into())),
     }
 }
@@ -308,6 +309,56 @@ fn apply_set_site_group(
             summary: format!("{site_lc} ungrouped"),
         })
     }
+}
+
+/// Rename a site group in place, keeping its display position and moving every
+/// member with it. The new name is validated like `apply_create_group` (trimmed,
+/// non-empty, not the reserved `Unallocated`), except a case-insensitive
+/// collision is only rejected against a *different* group, so a case-only rename
+/// (`blog` -> `Blog`) is allowed. `NotFound` if `from` names no group. The
+/// entered case of `to` becomes the canonical casing in both `order` and every
+/// matching `members` value (so members keep exactly equalling their `order`
+/// entry, as `apply_set_site_group` documents).
+fn apply_rename_group(cfg: &mut Config, from: &str, to: &str) -> Result<Applied, MutateError> {
+    let to = to.trim();
+    if to.is_empty() {
+        return Err(MutateError::Invalid("group name must not be empty".into()));
+    }
+    if to.eq_ignore_ascii_case(yerd_config::RESERVED_GROUP_NAME) {
+        return Err(MutateError::Invalid(format!(
+            "\"{}\" is a reserved group name",
+            yerd_config::RESERVED_GROUP_NAME
+        )));
+    }
+    let idx = cfg
+        .groups
+        .order
+        .iter()
+        .position(|g| g.eq_ignore_ascii_case(from))
+        .ok_or_else(|| MutateError::NotFound(format!("no group named {from}")))?;
+    if cfg
+        .groups
+        .order
+        .iter()
+        .enumerate()
+        .any(|(i, g)| i != idx && g.eq_ignore_ascii_case(to))
+    {
+        return Err(MutateError::AlreadyExists(format!(
+            "group already exists: {to}"
+        )));
+    }
+    let Some(slot) = cfg.groups.order.get_mut(idx) else {
+        return Err(MutateError::NotFound(format!("no group named {from}")));
+    };
+    to.clone_into(slot);
+    for g in cfg.groups.members.values_mut() {
+        if g.eq_ignore_ascii_case(from) {
+            to.clone_into(g);
+        }
+    }
+    Ok(Applied {
+        summary: format!("renamed group {from} to {to}"),
+    })
 }
 
 /// Map a [`MutateError`] to the wire [`ErrorCode`]. `Invalid` collapses to
@@ -933,6 +984,118 @@ mod tests {
             Err(MutateError::NotFound(_)) => {}
             other => panic!("expected NotFound, got {other:?}"),
         }
+    }
+
+    fn rename_group(cfg: &mut Config, from: &str, to: &str) -> Result<Applied, MutateError> {
+        let r = empty_router();
+        apply(
+            cfg,
+            &r,
+            &Request::RenameGroup {
+                from: from.into(),
+                to: to.into(),
+            },
+            None,
+            v(8, 3),
+        )
+    }
+
+    #[test]
+    fn rename_group_keeps_position_and_moves_members() {
+        let mut cfg = Config::default();
+        create_group(&mut cfg, "Blog").unwrap();
+        create_group(&mut cfg, "Shop").unwrap();
+        cfg.groups.members.insert("api".into(), "Blog".into());
+        cfg.groups.members.insert("cart".into(), "Shop".into());
+        let a = rename_group(&mut cfg, "Blog", "Journal").unwrap();
+        assert!(a.summary.contains("renamed group Blog to Journal"));
+        assert_eq!(
+            cfg.groups.order,
+            vec!["Journal".to_string(), "Shop".to_string()]
+        );
+        assert_eq!(
+            cfg.groups.members.get("api").map(String::as_str),
+            Some("Journal")
+        );
+        assert_eq!(
+            cfg.groups.members.get("cart").map(String::as_str),
+            Some("Shop")
+        );
+    }
+
+    #[test]
+    fn rename_group_is_case_insensitive_and_canonicalises_members() {
+        let mut cfg = Config::default();
+        create_group(&mut cfg, "Blog").unwrap();
+        cfg.groups.members.insert("api".into(), "Blog".into());
+        // Match `from` in a different casing; the entered `to` casing becomes
+        // canonical in both order and members.
+        rename_group(&mut cfg, "blog", "jOURNAL").unwrap();
+        assert_eq!(cfg.groups.order, vec!["jOURNAL".to_string()]);
+        assert_eq!(
+            cfg.groups.members.get("api").map(String::as_str),
+            Some("jOURNAL")
+        );
+    }
+
+    #[test]
+    fn rename_group_allows_case_only_change() {
+        let mut cfg = Config::default();
+        create_group(&mut cfg, "blog").unwrap();
+        cfg.groups.members.insert("api".into(), "blog".into());
+        rename_group(&mut cfg, "blog", "Blog").unwrap();
+        assert_eq!(cfg.groups.order, vec!["Blog".to_string()]);
+        assert_eq!(
+            cfg.groups.members.get("api").map(String::as_str),
+            Some("Blog")
+        );
+    }
+
+    #[test]
+    fn rename_group_trims_new_name() {
+        let mut cfg = Config::default();
+        create_group(&mut cfg, "Blog").unwrap();
+        rename_group(&mut cfg, "Blog", "  Journal  ").unwrap();
+        assert_eq!(cfg.groups.order, vec!["Journal".to_string()]);
+    }
+
+    #[test]
+    fn rename_group_rejects_collision_with_other_group() {
+        let mut cfg = Config::default();
+        create_group(&mut cfg, "Blog").unwrap();
+        create_group(&mut cfg, "Shop").unwrap();
+        assert!(matches!(
+            rename_group(&mut cfg, "Blog", "shop"),
+            Err(MutateError::AlreadyExists(_))
+        ));
+        assert_eq!(
+            cfg.groups.order,
+            vec!["Blog".to_string(), "Shop".to_string()]
+        );
+    }
+
+    #[test]
+    fn rename_group_rejects_empty_and_reserved() {
+        let mut cfg = Config::default();
+        create_group(&mut cfg, "Blog").unwrap();
+        assert!(matches!(
+            rename_group(&mut cfg, "Blog", "   "),
+            Err(MutateError::Invalid(_))
+        ));
+        assert!(matches!(
+            rename_group(&mut cfg, "Blog", "unallocated"),
+            Err(MutateError::Invalid(_))
+        ));
+        assert_eq!(cfg.groups.order, vec!["Blog".to_string()]);
+    }
+
+    #[test]
+    fn rename_group_unknown_from_is_not_found() {
+        let mut cfg = Config::default();
+        assert!(matches!(
+            rename_group(&mut cfg, "Ghost", "Journal"),
+            Err(MutateError::NotFound(_))
+        ));
     }
 
     #[test]

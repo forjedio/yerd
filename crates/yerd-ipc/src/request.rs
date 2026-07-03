@@ -517,6 +517,16 @@ pub enum Request {
         /// The group to assign, or `None` to unassign.
         group: Option<String>,
     },
+    /// Rename a site group, preserving its display position and moving every
+    /// member with it. Replies [`super::Response::Ok`]. Rejected if `to` is
+    /// empty, the reserved `Unallocated`, or a case-insensitive duplicate of a
+    /// different group, or if `from` names no group.
+    RenameGroup {
+        /// The current group name.
+        from: String,
+        /// The new group name.
+        to: String,
+    },
 }
 
 #[cfg(test)]
@@ -622,6 +632,7 @@ mod variant_name_pinning {
             Request::DeleteGroup { .. } => {}
             Request::SetGroupOrder { .. } => {}
             Request::SetSiteGroup { .. } => {}
+            Request::RenameGroup { .. } => {}
         }
     }
 
@@ -831,6 +842,10 @@ mod variant_name_pinning {
         pin(Request::SetSiteGroup {
             site: "app".into(),
             group: Some("Blog".into()),
+        });
+        pin(Request::RenameGroup {
+            from: "Blog".into(),
+            to: "Journal".into(),
         });
     }
 

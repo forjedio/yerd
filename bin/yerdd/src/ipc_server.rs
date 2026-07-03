@@ -140,7 +140,8 @@ async fn dispatch(req: Request, state: &DaemonState) -> Response {
         Request::CreateGroup { .. }
         | Request::DeleteGroup { .. }
         | Request::SetGroupOrder { .. }
-        | Request::SetSiteGroup { .. } => handle_group_mutation(req, state).await,
+        | Request::SetSiteGroup { .. }
+        | Request::RenameGroup { .. } => handle_group_mutation(req, state).await,
         Request::ListPhp => php_versions_response(state).await,
         Request::InstallPhp { version } => install_php(version, state).await,
         Request::SetDefaultPhp { version } => set_default_php(version, state).await,

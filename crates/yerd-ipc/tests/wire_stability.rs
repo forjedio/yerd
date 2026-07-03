@@ -2126,6 +2126,17 @@ fn request_set_site_group_byte_shape() {
 }
 
 #[test]
+fn request_rename_group_byte_shape() {
+    let r = Request::RenameGroup {
+        from: "Blog".into(),
+        to: "Journal".into(),
+    };
+    let s = serde_json::to_string(&r).unwrap();
+    assert_eq!(s, r#"{"type":"rename_group","from":"Blog","to":"Journal"}"#);
+    assert_eq!(serde_json::from_str::<Request>(&s).unwrap(), r);
+}
+
+#[test]
 fn response_groups_byte_shape() {
     let r = Response::Groups {
         order: vec!["Blog".into(), "Shop".into()],

@@ -66,6 +66,7 @@ fn main() {
             commands::delete_group,
             commands::set_group_order,
             commands::set_site_group,
+            commands::rename_group,
             commands::list_php,
             commands::check_php_updates,
             commands::available_php,

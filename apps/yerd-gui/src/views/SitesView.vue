@@ -12,6 +12,7 @@ import {
   Layers,
   Link2,
   Package,
+  Pencil,
   Plus,
   Rocket,
   Search,
@@ -52,6 +53,7 @@ import {
   openPath,
   park,
   pickDirectory,
+  renameGroup,
   setGroupOrder,
   setPhp,
   setSecure,
@@ -90,7 +92,7 @@ const emptyGroups: GroupsState = { order: [], members: {} };
 const groups = computed<GroupsState>(() => data.value?.groups ?? emptyGroups);
 const hasGroups = computed(() => groups.value.order.length > 0);
 const searching = computed(() => siteFilter.value.trim() !== "");
-const { isCollapsed, toggle: toggleCollapse } = useSitesGroupState();
+const { isCollapsed, toggle: toggleCollapse, rename: renameCollapse } = useSitesGroupState();
 
 /** The synthetic bucket for ungrouped sites; never a stored group. */
 const UNALLOCATED = "Unallocated";
@@ -106,6 +108,24 @@ interface GroupSection {
  *  (`group:<name>`) can't spuriously spin a same-named site's card. */
 function siteBusy(name: string): boolean {
   return rowBusy.value === `edit:${name}` || rowBusy.value === `unlink:${name}`;
+}
+
+async function toggleSecure(site: Site): Promise<void> {
+  const next = !site.secure;
+  rowBusy.value = `edit:${site.name}`;
+  try {
+    await setSecure(site.name, next);
+    toast.success(
+      next
+        ? `HTTPS enabled for ${site.name}.${tld.value}`
+        : `HTTPS disabled for ${site.name}.${tld.value}`,
+    );
+    await load({ force: true });
+  } catch (e) {
+    toast.error("Couldn't change HTTPS", (e as IpcError).message);
+  } finally {
+    rowBusy.value = null;
+  }
 }
 
 async function moveGroup(name: string, dir: -1 | 1): Promise<void> {
@@ -158,6 +178,50 @@ async function confirmCreateGroup(close: () => void): Promise<void> {
     await load({ force: true });
   } catch (e) {
     toast.error("Couldn't create group", (e as IpcError).message);
+  } finally {
+    rowBusy.value = null;
+  }
+}
+
+// ── rename group ──
+const renameGroupOpen = ref(false);
+const renameGroupTarget = ref<string | null>(null);
+const renameGroupName = ref("");
+const renameGroupValid = computed(() => {
+  const n = renameGroupName.value.trim().toLowerCase();
+  if (!n || n === UNALLOCATED.toLowerCase()) return false;
+  const from = renameGroupTarget.value?.toLowerCase() ?? "";
+  return !groups.value.order.some((g) => {
+    const gl = g.toLowerCase();
+    return gl === n && gl !== from;
+  });
+});
+
+function openRenameGroup(name: string): void {
+  renameGroupTarget.value = name;
+  renameGroupName.value = name;
+  void nextTick(() => {
+    renameGroupOpen.value = true;
+  });
+}
+
+// Validity is captured before close(): Modal's close emits update:open, whose
+// listener nulls renameGroupTarget synchronously, which would otherwise flip the
+// renameGroupValid computed to false for a case-only rename.
+async function confirmRenameGroup(close: () => void): Promise<void> {
+  const from = renameGroupTarget.value;
+  const to = renameGroupName.value.trim();
+  const wasValid = renameGroupValid.value;
+  close();
+  if (!from || !to || !wasValid || to === from) return;
+  rowBusy.value = `group:${from}`;
+  try {
+    await renameGroup(from, to);
+    renameCollapse(from, to);
+    toast.success(`Renamed group ${from} to ${to}`);
+    await load({ force: true });
+  } catch (e) {
+    toast.error("Couldn't rename group", (e as IpcError).message);
   } finally {
     rowBusy.value = null;
   }
@@ -241,16 +305,14 @@ const folderRows = computed(() =>
   })),
 );
 
-// Live, case-insensitive filter on the full `<name>.<tld>` domain, secured
-// first then alphabetical so the list is stable and scannable.
+// Live, case-insensitive filter on the full `<name>.<tld>` domain, sorted
+// alphabetically by name so the list is stable and scannable.
 const filteredSites = computed(() => {
   const q = siteFilter.value.trim().toLowerCase();
   const list = q
     ? sites.value.filter((s) => `${s.name}.${tld.value}`.toLowerCase().includes(q))
     : [...sites.value];
-  return list.sort(
-    (a, b) => Number(b.secure) - Number(a.secure) || a.name.localeCompare(b.name),
-  );
+  return list.sort((a, b) => a.name.localeCompare(b.name));
 });
 
 // One section per group (in order) plus a trailing synthetic "Unallocated"
@@ -621,6 +683,7 @@ async function shareSitePublicly(s: Site): Promise<void> {
               @edit="openEdit"
               @unlink="openUnlink"
               @share="shareSitePublicly"
+              @toggle-secure="toggleSecure"
             />
           </div>
           <p
@@ -687,6 +750,15 @@ async function shareSitePublicly(s: Site): Promise<void> {
                     <Button
                       variant="ghost"
                       size="icon"
+                      :aria-label="`Rename ${sec.name}`"
+                      title="Rename group"
+                      @click="openRenameGroup(sec.name)"
+                    >
+                      <Pencil class="size-4" />
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="icon"
                       class="text-destructive hover:text-destructive"
                       :aria-label="`Delete ${sec.name}`"
                       title="Delete group"
@@ -713,6 +785,7 @@ async function shareSitePublicly(s: Site): Promise<void> {
                     @edit="openEdit"
                     @unlink="openUnlink"
                     @share="shareSitePublicly"
+                    @toggle-secure="toggleSecure"
                   />
                 </div>
                 <p v-else class="py-4 text-center text-xs text-muted-foreground">
@@ -907,6 +980,26 @@ async function shareSitePublicly(s: Site): Promise<void> {
       <template #footer="{ close }">
         <Button variant="ghost" @click="close">Cancel</Button>
         <Button :disabled="!createGroupValid" @click="confirmCreateGroup(close)">Create</Button>
+      </template>
+    </Modal>
+
+    <!-- rename group -->
+    <Modal
+      v-model:open="renameGroupOpen"
+      title="Rename group"
+      @update:open="(v: boolean) => { if (!v) renameGroupTarget = null; }"
+    >
+      <label class="text-sm font-medium" for="renamegroupname">Group name</label>
+      <Input
+        id="renamegroupname"
+        v-model="renameGroupName"
+        placeholder="e.g. Client work"
+        class="mt-2"
+        @keyup.enter="renameGroupValid && confirmRenameGroup(() => (renameGroupOpen = false))"
+      />
+      <template #footer="{ close }">
+        <Button variant="ghost" @click="close">Cancel</Button>
+        <Button :disabled="!renameGroupValid" @click="confirmRenameGroup(close)">Save</Button>
       </template>
     </Modal>
 

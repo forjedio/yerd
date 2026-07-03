@@ -156,6 +156,11 @@ export async function setGroupOrder(order: string[]): Promise<void> {
   ensureOk(await call<Response>("set_group_order", { order }));
 }
 
+/** Rename a group, preserving its position and moving its members. */
+export async function renameGroup(from: string, to: string): Promise<void> {
+  ensureOk(await call<Response>("rename_group", { from, to }));
+}
+
 /** Set or clear a site's group (`null` = Unallocated). */
 export async function setSiteGroup(site: string, group: string | null): Promise<void> {
   ensureOk(await call<Response>("set_site_group", { site, group }));

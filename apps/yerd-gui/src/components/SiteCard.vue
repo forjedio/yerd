@@ -39,6 +39,7 @@ const emit = defineEmits<{
   edit: [site: Site];
   unlink: [site: Site];
   share: [site: Site];
+  toggleSecure: [site: Site];
 }>();
 
 /** The served sub-directory label ("/" when the project root is served). */
@@ -123,18 +124,19 @@ function servedLabel(s: Site): string {
       >
         PHP {{ site.php }}
       </span>
-      <span
-        v-if="site.secure"
-        class="inline-flex items-center gap-1 rounded-md bg-success/10 px-1.5 py-0.5 text-[11px] font-medium text-success"
+      <button
+        type="button"
+        :disabled="busy"
+        :aria-label="site.secure ? 'Serve over HTTP' : 'Serve over HTTPS'"
+        :title="site.secure ? 'Serving over HTTPS - click to switch to HTTP' : 'Serving over HTTP - click to switch to HTTPS'"
+        class="inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[11px] font-medium transition-opacity hover:opacity-70 disabled:cursor-not-allowed disabled:opacity-50"
+        :class="site.secure ? 'bg-success/10 text-success' : 'bg-muted text-muted-foreground'"
+        @click="emit('toggleSecure', site)"
       >
-        <Lock class="size-3" /> HTTPS
-      </span>
-      <span
-        v-else
-        class="inline-flex items-center gap-1 rounded-md bg-muted px-1.5 py-0.5 text-[11px] font-medium text-muted-foreground"
-      >
-        <LockOpen class="size-3" /> HTTP
-      </span>
+        <Lock v-if="site.secure" class="size-3" />
+        <LockOpen v-else class="size-3" />
+        {{ site.secure ? "HTTPS" : "HTTP" }}
+      </button>
       <span
         v-if="site.web_subpath"
         class="inline-flex items-center rounded-md bg-muted px-1.5 py-0.5 font-mono text-[11px] text-muted-foreground"
