@@ -43,6 +43,7 @@ fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             show_main(app);
+            tray::spawn_launch_update_check(app.clone());
         }))
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
@@ -211,6 +212,7 @@ fn setup_app(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     app.set_menu(build_app_menu(app.handle())?)?;
     tray::build_tray(app.handle())?;
     tray::spawn_tray_poller(app.handle().clone());
+    tray::spawn_launch_update_check(app.handle().clone());
     show_initial_window(app);
     #[cfg(target_os = "macos")]
     std::thread::spawn(|| {

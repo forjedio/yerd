@@ -20,6 +20,10 @@ tauri-build = { version = "2", features = [] }
 yerd-core     = { path = "../../../crates/yerd-core" }
 yerd-ipc      = { path = "../../../crates/yerd-ipc", features = ["transport"] }
 yerd-platform = { path = "../../../crates/yerd-platform" }
+# Pure `is_check_due` due-check for the launch-time auto-update trigger
+# (tray.rs) - reuses the same decision crate the daemon uses rather than
+# reimplementing the cadence in the GUI.
+yerd-update   = { path = "../../../crates/yerd-update" }
 
 # `image-png` enables Image::from_bytes for the macOS template tray icon (the
 # bundled app icon is embedded as RGBA by codegen and needs no runtime decoder).
@@ -56,6 +60,15 @@ sha2 = { workspace = true }
 [target.'cfg(target_os = "linux")'.dependencies]
 glib       = "0.18"
 webkit2gtk = "=2.0.2"
+# Dark-mode probe for the tray menu icons (tray.rs's `dark_menu_bar`), read via
+# the xdg-desktop-portal `Settings` interface so it works across desktop
+# environments (GNOME, KDE Plasma, ...) rather than a GTK/GSettings-only check.
+# Brings in `ashpd` (its async-std feature) plus its own `async-std` executor as
+# a self-contained stack (not otherwise in the dependency graph). zbus resolves
+# to its async-io backend here, not its `tokio` feature, so the D-Bus I/O runs
+# independent of our tokio runtime - re-check this if a future version bump
+# ever pulls zbus's `tokio` feature in.
+dark-light = "2"
 
 # macOS: re-apply the Dock icon after an activation-policy change (dev builds have
 # no .app bundle, so the recreated Dock tile would otherwise show the generic

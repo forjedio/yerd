@@ -207,6 +207,14 @@ are the only categories the frontend's `IpcError` needs to distinguish.
 - **`tauri-plugin-single-instance` is registered first**: a second launch shows
   and focuses the existing `main` window instead of spawning a duplicate (which
   would risk a duplicate daemon connection or tray).
+- **Launch-time update check** (`tray::spawn_launch_update_check`): fired from
+  both `setup_app` and the single-instance callback, so it runs on a cold start
+  and on every re-invoke of an already-running app. It asks the daemon for the
+  cached self-update status and, only if `yerd_update::is_check_due` says the
+  last check is stale (the same 4h threshold the daemon's own background poll
+  uses), kicks a bounded live check. Silent and non-blocking - an unreachable
+  daemon or fetch failure is swallowed exactly like the daemon's own
+  failure-tolerant polling.
 - `tauri-plugin-opener` and `tauri-plugin-dialog` back the host helpers
   (`openInBrowser`, `openPath`, `pickDirectory`).
 - **Close-to-tray**: `WindowEvent::CloseRequested` hides the window and calls

@@ -127,6 +127,20 @@ pub struct UpdateDecision {
     pub ahead_of_stable: bool,
 }
 
+/// How often a self-update check should run.
+pub const CHECK_INTERVAL_SECS: u64 = 4 * 60 * 60;
+
+/// Whether a new check is due, given the last check time and "now" (both Unix
+/// epoch seconds). `None` (never checked) is always due. Uses saturating
+/// subtraction so a `last_checked` that is (implausibly) in the future - e.g.
+/// after a backward clock jump - is treated as "just checked", not due.
+#[must_use]
+pub fn is_check_due(last_checked_epoch: Option<u64>, now_epoch: u64) -> bool {
+    last_checked_epoch.map_or(true, |last| {
+        now_epoch.saturating_sub(last) >= CHECK_INTERVAL_SECS
+    })
+}
+
 /// Strip an optional leading `v`/`V` from a release tag and parse it as semver.
 /// Returns `None` for tags that are not valid semver (the caller skips them).
 #[must_use]
@@ -308,5 +322,25 @@ mod tests {
         let releases = [rel("v2.0.5", false)];
         let d = select_target(&releases, Channel::Stable, &ver("2.0.5+build.7"));
         assert_eq!(d.target, None);
+    }
+
+    #[test]
+    fn never_checked_is_due() {
+        assert!(is_check_due(None, 1_000));
+    }
+
+    #[test]
+    fn due_at_exact_interval_boundary() {
+        assert!(is_check_due(Some(1_000), 1_000 + CHECK_INTERVAL_SECS));
+    }
+
+    #[test]
+    fn not_due_one_second_under_interval() {
+        assert!(!is_check_due(Some(1_000), 1_000 + CHECK_INTERVAL_SECS - 1));
+    }
+
+    #[test]
+    fn future_last_checked_is_not_due() {
+        assert!(!is_check_due(Some(2_000), 1_000));
     }
 }

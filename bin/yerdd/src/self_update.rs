@@ -287,10 +287,27 @@ pub async fn cached_update_status(state: &DaemonState) -> Response {
     }
 }
 
+/// Poll only if the wall-clock interval (`yerd_update::CHECK_INTERVAL_SECS`,
+/// 4h) has elapsed since the last recorded check. Robust across daemon
+/// restarts, since `state.update_snapshot` is seeded from the persisted
+/// snapshot at startup, and across OS sleep, since this compares epoch time
+/// rather than trusting the caller's tick cadence.
+pub async fn poll_if_due(state: &DaemonState, dl: &dyn Downloader) {
+    let last_checked = state
+        .update_snapshot
+        .read()
+        .await
+        .as_ref()
+        .map(|s| s.checked_at);
+    if yerd_update::is_check_due(last_checked, now_epoch()) {
+        poll_and_refresh(state, dl).await;
+    }
+}
+
 /// Poll GitHub once and refresh `state.yerd_update`. **Failure-tolerant**: a
 /// fetch error logs at `debug` and leaves the cache untouched. Notify-only: logs
 /// (does not install) when a newer version is available on the configured
-/// channel. Run at startup and every 12h alongside the PHP checker.
+/// channel. Called by [`poll_if_due`] on its wall-clock-gated cadence.
 pub async fn poll_and_refresh(state: &DaemonState, dl: &dyn Downloader) {
     let Some(releases) = fetch_releases(dl).await else {
         return;
