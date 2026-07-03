@@ -35,6 +35,7 @@ use cli::{Cli, Command};
 /// render the response. Returns the process exit code:
 /// `0` success, `1` daemon error response, `2` usage error, `69` daemon
 /// unreachable, `74` other transport/IO failure.
+#[allow(clippy::too_many_lines)]
 pub async fn run(cli: Cli) -> ExitCode {
     match &cli.command {
         Command::Elevate { target } => return elevate::run_elevate(*target, false).await,
@@ -62,10 +63,15 @@ pub async fn run(cli: Cli) -> ExitCode {
         _ => {}
     }
 
-    let req = match map::to_request(&cli.command)
-        .map(canonicalize_unpark)
-        .and_then(canonicalize_db_paths)
-    {
+    let req = match &cli.command {
+        Command::Link { name_or_path, path } => {
+            resolve_link(name_or_path.as_deref(), path.as_deref())
+        }
+        _ => map::to_request(&cli.command)
+            .map(canonicalize_unpark)
+            .and_then(canonicalize_db_paths),
+    };
+    let req = match req {
         Ok(r) => r,
         Err(e) => {
             eprintln!("yerd: {e}");
@@ -514,6 +520,93 @@ fn absolutise(path: &std::path::Path) -> Result<std::path::PathBuf, ClientError>
     Ok(cwd.join(path))
 }
 
+/// Whether a single positional argument to `yerd link` should be treated as
+/// a directory rather than a bare site name: contains a path separator, or
+/// is `.`/`..`. Bare words (`yerd link project`) are always names, even if a
+/// same-named subdirectory happens to exist.
+fn looks_like_path(s: &str) -> bool {
+    s == "." || s == ".." || s.contains('/') || s.contains(std::path::MAIN_SEPARATOR)
+}
+
+/// Resolve `yerd link`'s optional name/path into a concrete `Request::Link`.
+/// Cwd-dependent (reads `std::env::current_dir()` when path is omitted) and
+/// therefore not part of the pure `map::to_request` pipeline - kept here at
+/// the I/O boundary, mirroring `absolutise`/`canonicalize_db_paths`.
+///
+/// Public so `tests/cli_e2e.rs` can drive the same CLI-side resolution this
+/// crate's `run()` uses, then exchange the result with a real daemon.
+pub fn resolve_link(
+    name_or_path: Option<&str>,
+    path: Option<&std::path::Path>,
+) -> Result<yerd_ipc::Request, ClientError> {
+    let explicit_path = path.or_else(|| {
+        name_or_path
+            .filter(|s| looks_like_path(s))
+            .map(std::path::Path::new)
+    });
+    let explicit_name = if path.is_some() {
+        name_or_path
+    } else {
+        name_or_path.filter(|s| !looks_like_path(s))
+    };
+
+    let resolved_path = match explicit_path {
+        Some(p) => absolutise(p)?,
+        None => std::env::current_dir()
+            .map_err(|e| ClientError::Usage(format!("cannot resolve current directory: {e}")))?,
+    };
+
+    let resolved_name = if let Some(n) = explicit_name {
+        map::validate_name(n)?;
+        n.to_owned()
+    } else {
+        let normalized = normalize_lexically(&resolved_path);
+        let folder = normalized
+            .file_name()
+            .map(|s| s.to_string_lossy())
+            .unwrap_or_default();
+        yerd_core::slugify_site_name(&folder).ok_or_else(|| {
+            ClientError::Usage(format!(
+                "cannot derive a site name from '{}'; run `yerd link <name> {}` to set one explicitly",
+                resolved_path.display(),
+                resolved_path.display(),
+            ))
+        })?
+    };
+
+    Ok(yerd_ipc::Request::Link {
+        name: resolved_name,
+        path: resolved_path,
+    })
+}
+
+/// Lexically resolve `.`/`..` components out of `path` without touching the
+/// filesystem (no `canonicalize` - `resolve_link` deliberately doesn't
+/// require the target to exist), so `Path::file_name()` sees the folder
+/// actually being linked. `Path::file_name()` already normalises a trailing
+/// `.` away on its own, but a trailing `..` survives as-is (it can't tell
+/// what it cancels without looking further back), so e.g. `yerd link ..`
+/// would otherwise fail to derive the parent folder's name even though it's
+/// well-defined.
+fn normalize_lexically(path: &std::path::Path) -> std::path::PathBuf {
+    use std::path::{Component, PathBuf};
+    let mut out = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if matches!(out.components().next_back(), Some(Component::Normal(_))) {
+                    out.pop();
+                } else {
+                    out.push("..");
+                }
+            }
+            other => out.push(other.as_os_str()),
+        }
+    }
+    out
+}
+
 /// A synthetic `daemon_down` FAIL diagnosis, used when `yerd doctor` can't reach
 /// the daemon. Routed through `map::render` so it honours `--json` and exits 1.
 fn daemon_down_response() -> yerd_ipc::Response {
@@ -702,6 +795,138 @@ mod tests {
         assert!(out.is_absolute());
         let cwd = std::env::current_dir().unwrap();
         assert_eq!(out, cwd.join(rel));
+    }
+
+    // ─── looks_like_path ────────────────────────────────────────────
+
+    #[test]
+    fn looks_like_path_classifies_bare_words_vs_paths() {
+        let cases: &[(&str, bool)] = &[
+            ("project", false),
+            ("my-app", false),
+            (".", true),
+            ("..", true),
+            ("./project", true),
+            ("~/sites/example", true),
+            ("/abs/path", true),
+        ];
+        for (input, expected) in cases {
+            assert_eq!(looks_like_path(input), *expected, "input {input:?}");
+        }
+    }
+
+    // ─── resolve_link ───────────────────────────────────────────────
+
+    #[test]
+    fn resolve_link_no_args_uses_cwd_and_derives_name() {
+        let req = resolve_link(None, None).unwrap();
+        let Request::Link { name, path } = req else {
+            panic!("expected Link");
+        };
+        let cwd = std::env::current_dir().unwrap();
+        assert_eq!(path, cwd);
+        let folder = cwd.file_name().and_then(|s| s.to_str()).unwrap_or("");
+        assert_eq!(Some(name), yerd_core::slugify_site_name(folder));
+    }
+
+    #[test]
+    fn resolve_link_bare_word_uses_cwd_as_path() {
+        let req = resolve_link(Some("myapp"), None).unwrap();
+        let Request::Link { name, path } = req else {
+            panic!("expected Link");
+        };
+        assert_eq!(name, "myapp");
+        assert_eq!(path, std::env::current_dir().unwrap());
+    }
+
+    #[test]
+    fn resolve_link_single_path_arg_derives_name() {
+        let req = resolve_link(Some("../my-app"), None).unwrap();
+        let Request::Link { name, path } = req else {
+            panic!("expected Link");
+        };
+        assert_eq!(name, "my-app");
+        assert!(path.is_absolute());
+        assert!(path.ends_with("../my-app"));
+    }
+
+    #[test]
+    fn resolve_link_explicit_name_and_path_unchanged() {
+        let req = resolve_link(Some("blog"), Some(Path::new("rel/blog"))).unwrap();
+        let Request::Link { name, path } = req else {
+            panic!("expected Link");
+        };
+        assert_eq!(name, "blog");
+        assert!(path.is_absolute());
+        assert!(path.ends_with("rel/blog"));
+    }
+
+    /// "weird/???" looks like a path (contains '/'), so the name is derived
+    /// from its final component "???", which slugifies to `None`.
+    #[test]
+    fn resolve_link_undecipherable_name_errors() {
+        let err = resolve_link(Some("weird/???"), None).unwrap_err();
+        assert!(matches!(err, ClientError::Usage(_)), "got: {err:?}");
+    }
+
+    #[test]
+    fn resolve_link_rejects_invalid_explicit_name() {
+        let err = resolve_link(Some("bad name"), Some(Path::new("/x"))).unwrap_err();
+        assert!(matches!(err, ClientError::Usage(_)), "got: {err:?}");
+    }
+
+    /// "" doesn't look like a path, so it's routed to explicit-name
+    /// validation, which rejects an empty name.
+    #[test]
+    fn resolve_link_empty_string_name_errors() {
+        let err = resolve_link(Some(""), None).unwrap_err();
+        assert!(matches!(err, ClientError::Usage(_)), "got: {err:?}");
+    }
+
+    /// "/" normalises to the filesystem root, which has no `Normal`
+    /// component left to derive a name from.
+    #[test]
+    fn resolve_link_root_path_has_no_file_name_errors() {
+        let err = resolve_link(Some("/"), None).unwrap_err();
+        assert!(matches!(err, ClientError::Usage(_)), "got: {err:?}");
+    }
+
+    #[test]
+    fn resolve_link_trailing_curdir_derives_name() {
+        let req = resolve_link(Some("some/dir/."), None).unwrap();
+        let Request::Link { name, .. } = req else {
+            panic!("expected Link");
+        };
+        assert_eq!(name, "dir");
+    }
+
+    #[test]
+    fn resolve_link_trailing_parentdir_derives_name() {
+        let req = resolve_link(Some("some/parent/child/.."), None).unwrap();
+        let Request::Link { name, .. } = req else {
+            panic!("expected Link");
+        };
+        assert_eq!(name, "parent");
+    }
+
+    // ─── normalize_lexically ────────────────────────────────────────
+
+    #[test]
+    fn normalize_lexically_cases() {
+        let cases: &[(&str, &str)] = &[
+            ("/home/user/myapp/.", "/home/user/myapp"),
+            ("/home/user/myapp/..", "/home/user"),
+            ("/a/b/../c", "/a/c"),
+            ("/../../foo", "/../../foo"),
+            ("/", "/"),
+        ];
+        for (input, expected) in cases {
+            assert_eq!(
+                normalize_lexically(Path::new(input)),
+                Path::new(expected),
+                "input {input:?}"
+            );
+        }
     }
 
     // ─── daemon_down_response ───────────────────────────────────────

@@ -220,6 +220,44 @@ fn err(name: &str, reason: SiteNameErrorReason) -> CoreError {
     }
 }
 
+/// Derive a valid site name from an arbitrary string (typically a directory's
+/// last path component), for `yerd link`'s auto-naming: lowercases, replaces
+/// every byte outside `[a-z0-9-]` with `-`, collapses runs of `-`, trims
+/// leading/trailing `-`, and caps at the 63-byte DNS-label limit. Returns
+/// `None` if nothing valid remains.
+///
+/// The output alphabet is always `[a-z0-9-]` with no leading/trailing/doubled
+/// `-`, so unlike [`validate_and_lowercase_name`] it never needs to reject its
+/// own result.
+#[must_use]
+pub fn slugify_site_name(raw: &str) -> Option<String> {
+    let mut out = String::with_capacity(raw.len());
+    for ch in raw.chars() {
+        if ch.is_ascii_alphanumeric() {
+            out.push(ch.to_ascii_lowercase());
+        } else if !out.is_empty() && !out.ends_with('-') {
+            out.push('-');
+        }
+    }
+    while out.ends_with('-') {
+        out.pop();
+    }
+    if out.is_empty() {
+        return None;
+    }
+    if out.chars().count() > 63 {
+        out = out.chars().take(63).collect();
+        while out.ends_with('-') {
+            out.pop();
+        }
+    }
+    if out.is_empty() {
+        None
+    } else {
+        Some(out)
+    }
+}
+
 /// A web subpath is safe to join onto the document root iff it is a plain
 /// relative path: no root, no drive/UNC prefix, and no `..` component. Such a
 /// path can only ever resolve to a descendant of the document root. Used by
@@ -388,6 +426,54 @@ mod tests {
                 ..
             }) => {}
             other => panic!("ContainsDot expected, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn slugify_site_name_cases() {
+        let cases: &[(&str, Option<&str>)] = &[
+            ("My Project", Some("my-project")),
+            ("my_app", Some("my-app")),
+            ("example.com", Some("example-com")),
+            ("a..b", Some("a-b")),
+            ("-leading", Some("leading")),
+            ("trailing-", Some("trailing")),
+            ("already-valid", Some("already-valid")),
+            ("???", None),
+            ("", None),
+        ];
+        for (input, expected) in cases {
+            assert_eq!(
+                slugify_site_name(input).as_deref(),
+                *expected,
+                "input {input:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn slugify_site_name_caps_at_63_bytes_without_trailing_hyphen() {
+        let long = "a".repeat(65);
+        let slug = slugify_site_name(&long).unwrap();
+        assert_eq!(slug.len(), 63);
+        assert!(!slug.ends_with('-'));
+    }
+
+    /// A separator that lands exactly on the 63-byte truncation boundary
+    /// must not leave a dangling trailing hyphen in the result.
+    #[test]
+    fn slugify_site_name_boundary_separator_has_no_trailing_hyphen() {
+        let boundary = format!("{} {}", "a".repeat(62), "b".repeat(5));
+        let slug = slugify_site_name(&boundary).unwrap();
+        assert_eq!(slug.len(), 62);
+        assert!(!slug.ends_with('-'));
+    }
+
+    #[test]
+    fn slugify_site_name_result_is_always_valid() {
+        for input in ["My Project", "my_app", "example.com", "a..b"] {
+            let slug = slugify_site_name(input).unwrap();
+            assert!(Site::parked(&slug, "/x", v83()).is_ok(), "slug {slug:?}");
         }
     }
 

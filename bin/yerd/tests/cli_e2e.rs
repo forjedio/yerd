@@ -54,6 +54,15 @@ mod tests {
         transport::exchange_at(sock, &req).await.expect("exchange")
     }
 
+    /// Drives `Command::Link`'s CLI-side resolution (`resolve_link`) directly
+    /// and exchanges the resulting `Request::Link` with the daemon -
+    /// `Command::Link` never reaches `map::to_request`, so `send()` can't be
+    /// used for it.
+    async fn link(sock: &std::path::Path, name: &str, path: &std::path::Path) -> Response {
+        let req = yerd::resolve_link(Some(name), Some(path)).expect("resolve_link");
+        transport::exchange_at(sock, &req).await.expect("exchange")
+    }
+
     fn site_names(resp: &Response) -> Vec<String> {
         match resp {
             Response::Sites { sites } => sites.iter().map(|s| s.name().to_owned()).collect(),
@@ -109,7 +118,9 @@ mod tests {
         let sites_root = tmp.path().join("Sites");
         std::fs::create_dir_all(sites_root.join("blog")).unwrap();
         let linked_dir = tmp.path().join("standalone");
-        std::fs::create_dir_all(&linked_dir).unwrap();
+        std::fs::create_dir_all(linked_dir.join("public")).unwrap();
+        std::fs::write(linked_dir.join("artisan"), b"").unwrap();
+        std::fs::write(linked_dir.join("public/index.php"), b"").unwrap();
 
         let daemon =
             yerdd::startup::bring_up_with_dirs(dirs.clone(), valid_config(), cfg_path.clone())
@@ -148,17 +159,21 @@ mod tests {
         assert!(site_names(&send(&sock, &Command::Sites).await).contains(&"blog".to_owned()));
 
         assert!(matches!(
-            send(
-                &sock,
-                &Command::Link {
-                    name: "app".into(),
-                    path: linked_dir.clone()
-                }
-            )
-            .await,
+            link(&sock, "app", &linked_dir).await,
             Response::Ok
         ));
         assert!(site_names(&send(&sock, &Command::Sites).await).contains(&"app".to_owned()));
+        match send(&sock, &Command::Sites).await {
+            Response::Sites { sites } => {
+                let app = sites.iter().find(|s| s.name() == "app").unwrap();
+                assert_eq!(
+                    app.web_subpath(),
+                    std::path::Path::new("public"),
+                    "linking a Laravel-shaped dir should auto-detect its web root"
+                );
+            }
+            other => panic!("expected Sites, got {other:?}"),
+        }
 
         assert!(matches!(
             send(

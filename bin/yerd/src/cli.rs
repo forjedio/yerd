@@ -26,12 +26,17 @@ pub enum Command {
         /// Directory to park.
         path: PathBuf,
     },
-    /// Link a single directory as a named site.
+    /// Link a single directory as a named site. With one argument, infers
+    /// whichever of name/path is missing; with none, links the current
+    /// directory under its folder name.
     Link {
-        /// Site name (a single DNS label).
-        name: String,
-        /// Directory to serve.
-        path: PathBuf,
+        /// A site name (bare word), or a directory to link (its folder name
+        /// becomes the site name). Omit entirely to link the current
+        /// directory.
+        name_or_path: Option<String>,
+        /// Directory to serve, when the first argument is a name. Omit to
+        /// use the current directory.
+        path: Option<PathBuf>,
     },
     /// Remove a linked site by name.
     Unlink {

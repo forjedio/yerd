@@ -1547,13 +1547,20 @@ fn php_error_code(e: &yerd_php::PhpError) -> ErrorCode {
 
 /// Apply a mutation: canonicalise paths, run the pure delta, validate, persist,
 /// and swap the live router - **build-then-validate-then-commit** so a failed
-/// mutation leaves disk and the live router untouched.
+/// mutation leaves disk and the live router untouched. A `Link`'s web-root
+/// detection scan runs here, before `state.config` is locked, so a slow or
+/// network-mounted project directory can't stall other mutating requests
+/// that share the lock.
 pub(crate) async fn handle_mutation(req: Request, state: &DaemonState) -> Response {
     let canonical = match &req {
         Request::Park { path } | Request::Link { path, .. } => match canonicalize_dir(path) {
             Ok(p) => Some(p),
             Err(resp) => return resp,
         },
+        _ => None,
+    };
+    let link_web_subpath = match &req {
+        Request::Link { .. } => canonical.as_deref().map(detect_web_subpath),
         _ => None,
     };
 
@@ -1589,6 +1596,13 @@ pub(crate) async fn handle_mutation(req: Request, state: &DaemonState) -> Respon
             }
         },
     };
+
+    if let (Request::Link { name, .. }, Some(subpath)) = (&req, &link_web_subpath) {
+        let name_lc = name.to_ascii_lowercase();
+        if let Some(site) = new.linked.iter_mut().find(|s| s.name() == name_lc) {
+            site.set_web_subpath(subpath);
+        }
+    }
 
     if let Err(e) = new.validate() {
         return internal(format!("config validation failed: {e}"));
@@ -1659,6 +1673,16 @@ async fn handle_group_mutation(req: Request, state: &DaemonState) -> Response {
     Response::Ok
 }
 
+/// Auto-detect the web subpath to serve for a project at `doc_root` (e.g.
+/// `public` for Laravel). Shared by `SetWebRoot`'s auto-detect branch and
+/// `Link`'s creation-time auto-detect.
+fn detect_web_subpath(doc_root: &Path) -> String {
+    yerd_core::detect(&yerd_platform::gather_project_signals(doc_root))
+        .subpath
+        .to_string_lossy()
+        .into_owned()
+}
+
 /// Resolve a `SetWebRoot` request against `new`, doing the filesystem I/O
 /// (containment check, or re-detection) the pure `mutate::apply` can't. A
 /// **linked** site stores the chosen subpath on its `Site`; a **parked** site
@@ -1677,10 +1701,7 @@ fn resolve_web_root_mutation(
         let rel = if let Some(p) = path {
             resolve_web_root_within(&doc_root, p)?
         } else {
-            yerd_core::detect(&yerd_platform::gather_project_signals(&doc_root))
-                .subpath
-                .to_string_lossy()
-                .into_owned()
+            detect_web_subpath(&doc_root)
         };
         site.set_web_subpath(&rel);
         return Ok(mutate::Applied {
@@ -2087,6 +2108,52 @@ Subject: Captured\r\n\r\nhi\r\n";
             Response::Error { code, .. } => assert_eq!(code, ErrorCode::AlreadyExists),
             other => panic!("expected AlreadyExists error, got {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn link_auto_detects_web_root_for_laravel() {
+        let tmp = tempfile::tempdir().unwrap();
+        let docroot = tmp.path().join("app");
+        std::fs::create_dir_all(docroot.join("public")).unwrap();
+        std::fs::write(docroot.join("artisan"), b"").unwrap();
+        std::fs::write(docroot.join("public/index.php"), b"").unwrap();
+        let state = state_in(tmp.path());
+
+        let ok = dispatch(
+            Request::Link {
+                name: "app".into(),
+                path: docroot,
+            },
+            &state,
+        )
+        .await;
+        assert!(matches!(ok, Response::Ok), "got {ok:?}");
+        assert_eq!(
+            web_subpath_of(&state, "app").await,
+            std::path::PathBuf::from("public")
+        );
+    }
+
+    #[tokio::test]
+    async fn link_plain_php_serves_document_root() {
+        let tmp = tempfile::tempdir().unwrap();
+        let docroot = tmp.path().join("plain");
+        std::fs::create_dir_all(&docroot).unwrap();
+        let state = state_in(tmp.path());
+
+        let ok = dispatch(
+            Request::Link {
+                name: "plain".into(),
+                path: docroot,
+            },
+            &state,
+        )
+        .await;
+        assert!(matches!(ok, Response::Ok), "got {ok:?}");
+        assert_eq!(
+            web_subpath_of(&state, "plain").await,
+            std::path::PathBuf::new()
+        );
     }
 
     #[tokio::test]

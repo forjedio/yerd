@@ -7,7 +7,10 @@ A directory tree is served in one of two ways: **park** a parent directory so ea
 | `yerd sites` | List every parked or linked site. | `yerd sites` |
 | `yerd park <PATH>` | Park a directory: each of its child directories becomes a `.test` site. | `yerd park ~/Sites` |
 | `yerd unpark <PATH>` | Un-park a directory so its children stop being served. Linked sites are untouched. | `yerd unpark ~/Sites` |
-| `yerd link <NAME> <PATH>` | Link a single directory as a named site. | `yerd link blog ~/code/blog` |
+| `yerd link` | Link the current directory, named after its folder. | `yerd link` |
+| `yerd link <NAME>` | Link the current directory under an explicit name. | `yerd link blog` |
+| `yerd link <PATH>` | Link a directory, named after its folder. | `yerd link ~/code/blog` |
+| `yerd link <NAME> <PATH>` | Link a directory under an explicit name. | `yerd link blog ~/code/blog` |
 | `yerd unlink <NAME>` | Remove a linked site by name. | `yerd unlink blog` |
 | `yerd root <NAME> <PATH>` | Set the served directory (web root) for a site, relative to its folder. | `yerd root blog public` |
 | `yerd root <NAME> --auto` | Reset a site to automatic web-root detection. | `yerd root blog --auto` |
@@ -19,6 +22,9 @@ yerd park ~/Sites
 # Link one project under a specific name (serves https://blog.test once secured)
 yerd link blog ~/code/blog
 
+# Link the current project, named after its folder
+cd ~/code/blog && yerd link
+
 # See everything yerd is serving
 yerd sites
 ```
@@ -27,10 +33,12 @@ yerd sites
 
 ::: details How site names are validated
 `link`, `unlink`, `secure`, `unsecure`, and `root` validate the name client-side before connecting: a name must be a single valid DNS label. A bad name (e.g. `bad name` or `bad/name`) fails immediately with a usage error and exit code `2`, before any request reaches the daemon.
+
+`link` accepts a single positional argument as either a name or a path: an argument containing a path separator (or `.`/`..`) is treated as a directory, and the site name is derived from its folder name (lowercased, with runs of invalid characters collapsed to a single `-`); a bare word is always treated as a name, even if a same-named subdirectory happens to exist. With no arguments at all, the current directory is linked and named after its own folder.
 :::
 
 ::: tip Web root detection
-Yerd auto-detects the directory each site is served from (e.g. `public/` for Laravel, the project root for WordPress) and re-detects when the project changes. `yerd root <name> <path>` pins it explicitly; `yerd root <name> --auto` (or with no path) returns to auto-detection. The path must resolve to a directory inside the site's folder. See the [Sites guide](../../guide/sites#web-root-the-served-directory).
+Yerd auto-detects the directory each site is served from (e.g. `public/` for Laravel, the project root for WordPress). For a **parked** site it re-detects continuously as the project changes. For a **linked** site detection runs once, when the site is first linked; it isn't re-run automatically afterward. `yerd root <name> <path>` pins it explicitly for either kind. `yerd root <name> --auto` (or with no path) returns to auto-detection: for a linked site this re-runs the one-shot detection immediately and pins the fresh result; for a parked site it clears the pin and hands the site back to the continuous watched detection. The path must resolve to a directory inside the site's folder. See the [Sites guide](../../guide/sites#web-root-the-served-directory).
 :::
 
 ::: warning About `unpark`

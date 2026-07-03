@@ -25,13 +25,6 @@ pub fn to_request(cmd: &Command) -> Result<Request, ClientError> {
         Command::Ping => Request::Ping,
         Command::Sites => Request::ListSites,
         Command::Park { path } => Request::Park { path: path.clone() },
-        Command::Link { name, path } => {
-            validate_name(name)?;
-            Request::Link {
-                name: name.clone(),
-                path: path.clone(),
-            }
-        }
         Command::Unlink { name } => {
             validate_name(name)?;
             Request::Unlink { name: name.clone() }
@@ -189,6 +182,11 @@ pub fn to_request(cmd: &Command) -> Result<Request, ClientError> {
         Command::Path { .. } => {
             return Err(ClientError::Usage(
                 "path is handled locally, not over IPC".to_owned(),
+            ));
+        }
+        Command::Link { .. } => {
+            return Err(ClientError::Usage(
+                "link is handled locally, not over IPC".to_owned(),
             ));
         }
     })
@@ -378,7 +376,7 @@ fn validate_php_setting(setting: &str, value: Option<&str>) -> Result<(), Client
 
 /// Validate a site name client-side by constructing a throwaway `Site` (the
 /// document root is irrelevant - only the name is checked).
-fn validate_name(name: &str) -> Result<(), ClientError> {
+pub(crate) fn validate_name(name: &str) -> Result<(), ClientError> {
     Site::linked(name, "/", PhpVersion::new(8, 3))
         .map(|_| ())
         .map_err(|e| ClientError::Usage(format!("invalid site name {name:?}: {e}")))
@@ -1057,17 +1055,6 @@ mod tests {
             }
         );
         assert_eq!(
-            to_request(&Command::Link {
-                name: "foo".into(),
-                path: PathBuf::from("/srv/foo")
-            })
-            .unwrap(),
-            Request::Link {
-                name: "foo".into(),
-                path: PathBuf::from("/srv/foo")
-            }
-        );
-        assert_eq!(
             to_request(&Command::Unlink { name: "foo".into() }).unwrap(),
             Request::Unlink { name: "foo".into() }
         );
@@ -1367,13 +1354,6 @@ mod tests {
         match to_request(&Command::Use {
             first: "not-a-version".into(),
             version: None,
-        }) {
-            Err(ClientError::Usage(_)) => {}
-            other => panic!("expected Usage error, got {other:?}"),
-        }
-        match to_request(&Command::Link {
-            name: "bad name".into(),
-            path: PathBuf::from("/x"),
         }) {
             Err(ClientError::Usage(_)) => {}
             other => panic!("expected Usage error, got {other:?}"),
@@ -2193,6 +2173,10 @@ mod tests {
             },
             Command::Path {
                 action: crate::cli::PathAction::Install,
+            },
+            Command::Link {
+                name_or_path: None,
+                path: None,
             },
         ] {
             match to_request(&cmd) {

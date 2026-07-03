@@ -105,6 +105,23 @@ yerd link my-app ~/code/my-app
 #   ->  http://my-app.test
 ```
 
+Name and directory are both optional shorthand for the current directory:
+
+```sh
+cd ~/code/my-app
+
+yerd link              # links the cwd, named "my-app" after its folder
+yerd link my-app       # same, with an explicit name
+yerd link ../other-app # links a relative path, named "other-app" after its folder
+```
+
+A single positional argument is treated as a directory (and the name derived from its
+folder) when it contains a path separator or is `.`/`..`; otherwise it's treated as a
+bare name and the current directory is linked. Web-root detection (`public/` for
+Laravel, etc. - see [Web root](#web-root-the-served-directory)) runs automatically the
+first time a site is linked, so a Laravel app's `SERVED` directory is usually already
+correct with no extra `yerd root` step.
+
 To remove it, unlink by name:
 
 ```sh
@@ -156,7 +173,7 @@ yerd sites --json
 |---|---|
 | `yerd park <dir>` | Park a directory; each child folder is served at `<name>.test`. |
 | `yerd unpark <dir>` | Un-park a directory. Linked sites are untouched. |
-| `yerd link <name> <dir>` | Serve a single directory as a named site. |
+| `yerd link [name] [dir]` | Serve a directory as a named site; both args are optional shorthand for the current directory. |
 | `yerd unlink <name>` | Remove a site by name. |
 | `yerd sites` | List every site (name, kind, PHP, secure, served path, doc-root). |
 | `yerd list parked` | List parked roots, including empty ones. |
