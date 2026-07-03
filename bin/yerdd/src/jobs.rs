@@ -74,8 +74,19 @@ impl JobRegistry {
         (id, rx)
     }
 
-    /// Append a log line to a job (no-op if the job is gone).
+    /// Append a log line to a job (no-op if the job is gone or the line is
+    /// blank after stripping). ANSI escapes are stripped first - the log is
+    /// rendered in a plain-text panel, and some subprocesses (npm, git, the
+    /// Laravel installer's spinner) emit them even with
+    /// `NO_COLOR`/`TERM=dumb`/`--no-ansi` set on the child (see
+    /// `crate::create_site::run_scaffold`). A line made up entirely of escapes
+    /// (e.g. a bare cursor-hide/show or OSC title-set) strips to empty and is
+    /// dropped rather than left as a blank entry.
     pub async fn push_log(&self, id: &str, line: String) {
+        let line = crate::ansi::strip(&line);
+        if line.is_empty() {
+            return;
+        }
         let mut map = self.inner.lock().await;
         if let Some(job) = map.get_mut(id) {
             job.log.push(line);
@@ -182,6 +193,36 @@ mod tests {
             } => (*state, log.as_slice(), *next_cursor, error.as_deref()),
             other => panic!("expected JobProgress, got {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn push_log_strips_ansi_escapes() {
+        let reg = JobRegistry::default();
+        let (id, _cancel) = reg.create().await;
+
+        reg.push_log(
+            &id,
+            "\x1b[36mCreating Laravel application...\x1b[39m".into(),
+        )
+        .await;
+
+        let r = reg.poll(&id, 0).await;
+        let (_, log, _, _) = progress(&r);
+        assert_eq!(log, ["Creating Laravel application..."]);
+    }
+
+    #[tokio::test]
+    async fn push_log_drops_lines_that_are_ansi_only() {
+        let reg = JobRegistry::default();
+        let (id, _cancel) = reg.create().await;
+
+        reg.push_log(&id, "\x1b[?25l".into()).await;
+        reg.push_log(&id, "visible".into()).await;
+
+        let r = reg.poll(&id, 0).await;
+        let (_, log, next, _) = progress(&r);
+        assert_eq!(log, ["visible"]);
+        assert_eq!(next, 1);
     }
 
     #[tokio::test]

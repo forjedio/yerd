@@ -10,6 +10,7 @@
 #![forbid(unsafe_code)]
 #![allow(clippy::doc_markdown)]
 
+pub mod ansi;
 pub mod args;
 pub mod backend_resolver;
 pub mod cert_store;
