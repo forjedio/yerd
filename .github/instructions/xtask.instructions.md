@@ -10,8 +10,12 @@ the three manifests) and **`version-check`** (the release gate). Pure helpers
 live in `version.rs`; the I/O glue lives in `main.rs`.
 
 Packaging is **not** an xtask concern: the single GUI bundle (`.dmg` on macOS,
-`.deb` on Linux) is produced by Tauri with the three binaries embedded via
-`externalBin` (per-platform overlays in `apps/yerd-gui/src-tauri/`). The Linux
+`.deb` on Linux) has the three binaries embedded via `externalBin`
+(per-platform overlays in `apps/yerd-gui/src-tauri/`). Tauri builds the `.app`
+(macOS) and `.deb` (Linux) directly; the macOS `.dmg` is packaged as a
+separate headless step (`apps/yerd-gui/scripts/build-macos-dmg.sh`, via
+`appdmg`) rather than by Tauri's own dmg bundler, which drives Finder via
+AppleScript and isn't reliable outside an interactive session. The Linux
 `.deb`'s `setcap`/symlink `postinst` lives in
 `apps/yerd-gui/src-tauri/deb/postinst.sh`, not here. (xtask used to build a
 standalone `.deb`; that subcommand and its `deb.rs`/`pack.rs`/`assets/` were

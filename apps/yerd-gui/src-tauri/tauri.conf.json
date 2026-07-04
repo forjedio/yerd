@@ -60,7 +60,7 @@
   },
   "bundle": {
     "active": true,
-    "targets": ["deb", "dmg", "app"],
+    "targets": ["deb", "app"],
     "macOS": {
       "minimumSystemVersion": "13.0",
       "entitlements": "entitlements.plist"

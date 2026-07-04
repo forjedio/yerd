@@ -1,0 +1,13 @@
+{
+  "title": "Yerd",
+  "icon-size": 96,
+  "background": "background.png",
+  "icon": "../icons/icon.icns",
+  "format": "UDZO",
+  "filesystem": "HFS+",
+  "window": { "size": { "width": 660, "height": 420 } },
+  "contents": [
+    { "x": 175, "y": 205, "type": "file", "path": "__APP__" },
+    { "x": 485, "y": 205, "type": "link", "path": "/Applications" }
+  ]
+}

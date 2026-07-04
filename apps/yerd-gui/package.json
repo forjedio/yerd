@@ -38,5 +38,8 @@
     "vite": "^6.0.3",
     "vitest": "^2.1.8",
     "vue-tsc": "^2.1.10"
+  },
+  "optionalDependencies": {
+    "appdmg": "^0.6.6"
   }
 }

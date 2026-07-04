@@ -58,6 +58,10 @@ won't install over a file it doesn't own — and `pacman -Syu` before installing
 the bundled GUI's WebKit/GTK libraries match your system.
 :::
 
+<ThemedImage light="/images/dmg-install.png" dark="/images/dmg-install.png" alt="macOS .dmg installer window: drag Yerd into the Applications folder" />
+
+The macOS `.dmg` installer window - drag **Yerd** onto **Applications** to install.
+
 On first launch the app greets you with a short [onboarding journey](./welcome-journey)
 that starts the bundled daemon, installs a PHP version, parks your projects, and
 runs a **one-time** elevation (trust the local CA, route `*.test`, bind ports

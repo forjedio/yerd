@@ -90,6 +90,10 @@ done
 #    `--config` is resolved relative to this dir, so the path is src-tauri/-relative.
 npm run tauri build -- --config src-tauri/tauri.bundle-macos.conf.json   # macOS
 # npm run tauri build -- --config src-tauri/tauri.bundle-linux.conf.json # Linux
+
+# 3) macOS only: package the styled .dmg (headless — no Finder/AppleScript).
+#    Set APPLE_SIGNING_IDENTITY to also codesign it; omit for an unsigned test dmg.
+./scripts/build-macos-dmg.sh
 ```
 
 Without step 1 a release build fails (`externalBin` not found). CI does both
