@@ -20,14 +20,14 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 GUI_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 REPO_ROOT="$(cd "$GUI_DIR/../.." && pwd)"
 
-# Same two search roots the CI "Verify macOS signing" step uses.
-ROOTS=()
-for d in "$REPO_ROOT/target" "$GUI_DIR/src-tauri/target"; do
-  [ -d "$d" ] && ROOTS+=("$d")
-done
+# Shared with the CI "Verify macOS signing" / updater-tarball steps in
+# .github/workflows/build.yml — single source of truth for the search roots.
+source "$SCRIPT_DIR/lib/find-app.sh"
+
+build_roots "$REPO_ROOT/target" "$GUI_DIR/src-tauri/target"
 [ "${#ROOTS[@]}" -gt 0 ] || { echo "::error::no build output dir found under $REPO_ROOT/target or $GUI_DIR/src-tauri/target"; exit 1; }
 
-APP=$(find "${ROOTS[@]}" -name 'Yerd.app' -type d 2>/dev/null | head -n1 || true)
+APP=$(find_yerd_app)
 [ -n "$APP" ] || { echo "::error::Yerd.app not found under ${ROOTS[*]} (run \`npm run tauri build\` first)"; exit 1; }
 
 BUNDLE_DIR="$(dirname "$(dirname "$APP")")"   # .../bundle

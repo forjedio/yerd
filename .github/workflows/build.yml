@@ -189,13 +189,12 @@ jobs:
         run: |
           set -euo pipefail
           # Search only dirs that exist — `find` over a missing path exits non-zero
-          # and would abort the step under `set -euo pipefail`.
-          ROOTS=()
-          for d in target apps/yerd-gui/src-tauri/target; do [ -d "$d" ] && ROOTS+=("$d"); done
+          # and would abort the step under `set -euo pipefail`. Shared with
+          # build-macos-dmg.sh and the updater-tarball step below.
+          source apps/yerd-gui/scripts/lib/find-app.sh
+          build_roots target apps/yerd-gui/src-tauri/target
           [ "${#ROOTS[@]}" -gt 0 ] || { echo "::error::no build output dir found"; exit 1; }
-          # `|| true`: with 2+ matches, head closes the pipe and find takes SIGPIPE,
-          # which pipefail would otherwise turn into a step abort.
-          APP=$(find "${ROOTS[@]}" -name 'Yerd.app' -type d 2>/dev/null | head -n1 || true)
+          APP=$(find_yerd_app)
           DMG=$(find "${ROOTS[@]}" -name '*.dmg' -type f 2>/dev/null | head -n1 || true)
           # Explicit fail-fast: under `set -e`, a failure on the LEFT of `&&` does
           # not abort, so `test -n "$APP" && test -n "$DMG"` would sail past an
@@ -323,9 +322,9 @@ jobs:
         working-directory: .
         run: |
           set -euo pipefail
-          ROOTS=()
-          for d in target apps/yerd-gui/src-tauri/target; do [ -d "$d" ] && ROOTS+=("$d"); done
-          APP=$(find "${ROOTS[@]}" -name 'Yerd.app' -type d 2>/dev/null | head -n1 || true)
+          source apps/yerd-gui/scripts/lib/find-app.sh
+          build_roots target apps/yerd-gui/src-tauri/target
+          APP=$(find_yerd_app)
           [ -n "$APP" ] || { echo "::error::Yerd.app not found for tarball packaging"; exit 1; }
           OUT_DIR="apps/yerd-gui/src-tauri/target/release/bundle/updater"
           mkdir -p "$OUT_DIR"
