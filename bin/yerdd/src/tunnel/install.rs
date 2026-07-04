@@ -199,28 +199,53 @@ impl VersionProbe for RealVersionProbe {
 /// [`VersionProbe`]) purely so `resolve()`'s System-adoption branch is
 /// unit-testable end-to-end without mutating the process's real `PATH`
 /// (parallel test execution would make that flaky).
+#[async_trait]
 pub trait PathSearch: Send + Sync + 'static {
     /// Find an executable named `cloudflared` on the host, or `None`.
-    fn find_cloudflared(&self) -> Option<PathBuf>;
+    async fn find_cloudflared(&self) -> Option<PathBuf>;
 }
 
 /// The real `PATH` search.
+///
+/// `yerdd` is normally launched by a `launchd`/`SMAppService` `LaunchAgent`
+/// (macOS) or a `systemd --user` unit (Linux), neither of which sets an
+/// `Environment`/`EnvironmentVariables` override, so the daemon's own
+/// inherited `PATH` is a stripped service-manager default that omits Homebrew
+/// or other user-level install directories - it only looks complete when
+/// developing under `cargo run` from an interactive shell. So this checks the
+/// daemon's own `PATH` first (cheap, catches that dev/test case and anything
+/// already on the restricted default `PATH`), then falls back to
+/// [`crate::tools::external::resolve_user_path`] - the same
+/// interactive-login-shell resolution `tools::external` already uses to find
+/// Homebrew/fnm/global-Composer installs for the exact same reason.
 pub struct RealPathSearch;
 
+#[async_trait]
 impl PathSearch for RealPathSearch {
-    fn find_cloudflared(&self) -> Option<PathBuf> {
-        let path = std::env::var_os("PATH")?;
-        find_in_paths(&path)
+    async fn find_cloudflared(&self) -> Option<PathBuf> {
+        if let Some(path) = std::env::var_os("PATH") {
+            if let Some(found) = find_in_paths(&path) {
+                return Some(found);
+            }
+        }
+        let user_dirs = crate::tools::external::resolve_user_path().await?;
+        find_in_dirs(user_dirs)
     }
+}
+
+/// Search `dirs` in order for an executable file named `cloudflared`; first
+/// match wins.
+fn find_in_dirs(dirs: impl IntoIterator<Item = PathBuf>) -> Option<PathBuf> {
+    dirs.into_iter().find_map(|dir| {
+        let candidate = dir.join("cloudflared");
+        is_executable(&candidate).then_some(candidate)
+    })
 }
 
 /// The `PATH`-search logic, taking the `PATH` value directly so it's testable
 /// without mutating the process environment.
 fn find_in_paths(path_var: &std::ffi::OsStr) -> Option<PathBuf> {
-    std::env::split_paths(path_var).find_map(|dir| {
-        let candidate = dir.join("cloudflared");
-        is_executable(&candidate).then_some(candidate)
-    })
+    find_in_dirs(std::env::split_paths(path_var))
 }
 
 /// Whether `path` is a regular, executable file. `pub(crate)` so
@@ -282,7 +307,7 @@ pub async fn resolve<P: VersionProbe, S: PathSearch>(
         });
     }
 
-    let candidate = path_search.find_cloudflared()?;
+    let candidate = path_search.find_cloudflared().await?;
     let raw_version = probe.probe(&candidate).await?;
     let (version, parsed) = parse_cloudflared_version(&raw_version)?;
     if parsed < MIN_SYSTEM_VERSION {
@@ -679,8 +704,9 @@ mod tests {
         }
     }
 
+    #[async_trait]
     impl PathSearch for PanicsIfCalled {
-        fn find_cloudflared(&self) -> Option<PathBuf> {
+        async fn find_cloudflared(&self) -> Option<PathBuf> {
             panic!("managed binary should short-circuit before any PATH search runs");
         }
     }
@@ -690,8 +716,9 @@ mod tests {
     /// that flaky).
     struct FakePathSearch(Option<PathBuf>);
 
+    #[async_trait]
     impl PathSearch for FakePathSearch {
-        fn find_cloudflared(&self) -> Option<PathBuf> {
+        async fn find_cloudflared(&self) -> Option<PathBuf> {
             self.0.clone()
         }
     }
