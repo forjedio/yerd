@@ -2,14 +2,21 @@
 //!
 //! These names are symlinks in `{data}/bin` pointing at *this* `yerd` binary.
 //! When `yerd` is invoked under such a name (detected from `argv[0]` before clap),
-//! it resolves the matching PHP CLI binary plus that version's `pcov.so` and
-//! `exec`s PHP with coverage enabled - leaving the clean `php`/`php<ver>` shims
-//! untouched. Unix-only: cover shims are never created on other platforms.
+//! it resolves the matching PHP CLI binary plus that version's `pcov.so`, points
+//! `PHPRC` at a pcov-augmented copy of Yerd's CLI ini, and `exec`s PHP with
+//! coverage enabled - leaving the clean `php`/`php<ver>` shims untouched.
+//! `PHPRC` (rather than `-d` flags) is what it is: those flags are process-local,
+//! but this env var is inherited by any PHP process the exec'd one spawns in
+//! turn (e.g. `artisan test`'s child PHPUnit/Pest/paratest run), so coverage
+//! stays enabled across that hop too. Unix-only: cover shims are never created
+//! on other platforms.
 
+use std::io::Write as _;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 
+use yerd_core::php_settings;
 use yerd_platform::{ActivePaths, Paths, PlatformDirs};
 
 use crate::shim::{cli_binary, fail, resolve_default_php};
@@ -60,22 +67,31 @@ fn run(spec: &CoverSpec) -> ExitCode {
         Ok(t) => t,
         Err(msg) => return fail(msg),
     };
-    let pcov = dirs
-        .data
-        .join("php-ext")
-        .join(format!("php-{minor}"))
-        .join("pcov.so");
+    let ext_dir = dirs.data.join("php-ext").join(format!("php-{minor}"));
+    let pcov = ext_dir.join("pcov.so");
     if !pcov.is_file() {
         return fail(format!(
             "pcov not installed for PHP {minor} — reinstall PHP or wait for the background fetch"
         ));
     }
 
+    let base = match std::fs::read_to_string(dirs.data.join("php-cli.ini")) {
+        Ok(s) => s,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => return fail(format!("cannot read Yerd's CLI php.ini: {e}")),
+    };
+    let Some(cover_ini) = php_settings::render_cover_ini(&base, &pcov) else {
+        return fail(
+            "cannot enable pcov: Yerd's data directory path isn't valid in an ini file".to_owned(),
+        );
+    };
+    let cover_ini_path = ext_dir.join("cover.ini");
+    if let Err(e) = atomic_write(&cover_ini_path, cover_ini.as_bytes()) {
+        return fail(format!("cannot write {}: {e}", cover_ini_path.display()));
+    }
+
     let err = Command::new(&php_bin)
-        .arg("-d")
-        .arg(format!("extension={}", pcov.display()))
-        .arg("-d")
-        .arg("pcov.enabled=1")
+        .env("PHPRC", &cover_ini_path)
         .args(std::env::args_os().skip(1))
         .exec();
     if err.kind() == std::io::ErrorKind::NotFound {
@@ -85,6 +101,22 @@ fn run(spec: &CoverSpec) -> ExitCode {
         ));
     }
     fail(format!("failed to exec {}: {err}", php_bin.display()))
+}
+
+/// Write `bytes` to `path` atomically (tempfile in the same directory +
+/// rename). `bin/yerd` doesn't otherwise depend on `yerd-php` (the FPM/
+/// site-pool crate), so this ~15-line helper is duplicated here rather than
+/// pulling in that whole crate for it - the same trade `yerd-php`'s own
+/// `io::atomic_write` already made against `yerd-config`'s equivalent.
+fn atomic_write(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    let parent = path.parent().ok_or_else(|| {
+        std::io::Error::new(std::io::ErrorKind::InvalidInput, "path has no parent")
+    })?;
+    let mut tmp = tempfile::NamedTempFile::new_in(parent)?;
+    tmp.write_all(bytes)?;
+    tmp.flush()?;
+    tmp.persist(path).map_err(|e| e.error)?;
+    Ok(())
 }
 
 /// Resolve `(php_binary, "major.minor")` for the spec.

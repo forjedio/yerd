@@ -134,10 +134,29 @@ if let Some(code) = yerd::cover_shim::dispatch() {
   to the highest installed minor whose CLI binary exists).
 - It then locates that version's `{data}/php-ext/php-<ver>/pcov.so` (the daemon
   bundles it; see [yerdd · cover-shim reconciliation](./yerdd#cover-shim-reconciliation-and-pcov)),
-  and `exec`s PHP with `-d extension=<pcov.so> -d pcov.enabled=1` followed by the
-  caller's own args. `exec` replaces the process, so on success it never returns;
-  a missing binary or `pcov.so` prints a `yerd:` diagnostic and returns
+  reads Yerd's CLI ini (`{data}/php-cli.ini`, treating a missing file as empty),
+  appends pcov's `extension`/`pcov.enabled` directives
+  (`yerd_core::php_settings::render_cover_ini`), and atomically writes the
+  result to `{data}/php-ext/php-<ver>/cover.ini`. This read-render-write happens
+  on **every** invocation - `cover.ini` is never cached or diffed against the
+  last run, so it can't drift out of sync with `php-cli.ini` (whose contents
+  change whenever a PHP setting is edited). It then `exec`s PHP with `PHPRC`
+  set to that path, followed by the caller's own args. `exec` replaces the
+  process, so on success it never returns; a missing binary, missing
+  `pcov.so`, or a write failure prints a `yerd:` diagnostic and returns
   `ExitCode::FAILURE`.
+
+`PHPRC` rather than `-d` flags is deliberate: `-d` only affects the exec'd
+process itself, but `PHPRC` is an environment variable, so it's inherited by
+any PHP process that process spawns in turn (e.g. `php artisan test`'s child
+PHPUnit/Pest/paratest run, launched via `PHP_BINARY` by a Symfony `Process`
+that inherits the parent's environment) - which is what actually needs pcov
+loaded to produce a coverage report. Setting `PHPRC` on the `Command` overrides
+that one key and leaves the rest of the environment inherited (no
+`env_clear()` is called), so if the caller's shell already has its own `PHPRC`
+(for example from the `yerd path install` rc-block, which points the plain
+`php` shim at `{data}/php-cli.ini`), the cover shim's value wins for the
+exec'd process - intentional, not a conflict to resolve.
 
 ::: info Unix-only
 The `dispatch()` call is `#[cfg(unix)]` and the cover symlinks are only ever

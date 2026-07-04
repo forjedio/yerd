@@ -253,9 +253,11 @@ The fetch loop is shared, but the two extensions are gated and loaded differentl
   As an optimization the fetch **skips the network entirely** when every installed
   version already has a `pcov.so` on disk (a warm/offline start does no manifest GET).
   `pcov` is **not** loaded into normal `php` or PHP-FPM; it is consumed only by the CLI
-  **cover shims** (`phpcover` / `php<ver>cover`), which load it at exec time via
-  `-d extension=<pcov.so> -d pcov.enabled=1`. That keeps coverage instrumentation out
-  of day-to-day serving - **zero coverage overhead** unless you invoke a cover shim.
+  **cover shims** (`phpcover` / `php<ver>cover`), which load it at exec time by pointing
+  `PHPRC` at a pcov-augmented copy of Yerd's CLI ini (an environment variable, not a
+  `-d` flag, so it's inherited by any PHP process the exec'd one spawns in turn). That
+  keeps coverage instrumentation out of day-to-day serving - **zero coverage overhead**
+  unless you invoke a cover shim.
 
 ## 6. Out of scope
 - Windows (Yerd's PHP is macOS/Linux today).

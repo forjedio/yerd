@@ -173,6 +173,23 @@ pub fn sanitize_ca_bundle_path(path: &std::path::Path) -> Option<String> {
     Some(s.to_owned())
 }
 
+/// Render the cover-shim ini: `base` (the CLI ini body) plus directives that
+/// load and enable pcov from `pcov_so`. Returns `None` if `pcov_so` isn't safe
+/// to emit as an unquoted ini value: the caller must treat that as a hard
+/// failure, not silently run without coverage.
+#[must_use]
+pub fn render_cover_ini(base: &str, pcov_so: &std::path::Path) -> Option<String> {
+    let path = sanitize_ca_bundle_path(pcov_so)?;
+    let mut out = base.to_owned();
+    if !out.is_empty() && !out.ends_with('\n') {
+        out.push('\n');
+    }
+    out.push_str("extension = ");
+    out.push_str(&path);
+    out.push_str("\npcov.enabled = 1\n");
+    Some(out)
+}
+
 /// The FPM directive a setting renders as: `"php_flag"` for booleans, else
 /// `"php_value"`. `None` if the setting is not supported.
 #[must_use]
@@ -381,6 +398,46 @@ mod tests {
         assert!(sanitize_ca_bundle_path(Path::new("/d/ca\ncert.pem")).is_none());
         assert!(sanitize_ca_bundle_path(Path::new("/d/ca;cert.pem")).is_none());
         assert!(sanitize_ca_bundle_path(Path::new("/d/ca#cert.pem")).is_none());
+    }
+
+    #[test]
+    fn render_cover_ini_appends_pcov_directives() {
+        use std::path::Path;
+        let pcov = Path::new("/d/pcov.so");
+        assert_eq!(
+            render_cover_ini("", pcov).as_deref(),
+            Some("extension = /d/pcov.so\npcov.enabled = 1\n")
+        );
+        assert_eq!(
+            render_cover_ini("memory_limit = 512M\n", pcov).as_deref(),
+            Some("memory_limit = 512M\nextension = /d/pcov.so\npcov.enabled = 1\n")
+        );
+    }
+
+    #[test]
+    fn render_cover_ini_inserts_separator_when_base_lacks_trailing_newline() {
+        use std::path::Path;
+        let pcov = Path::new("/d/pcov.so");
+        assert_eq!(
+            render_cover_ini("memory_limit = 512M", pcov).as_deref(),
+            Some("memory_limit = 512M\nextension = /d/pcov.so\npcov.enabled = 1\n")
+        );
+    }
+
+    #[test]
+    fn render_cover_ini_appends_after_an_existing_pcov_directive() {
+        use std::path::Path;
+        let base = "pcov.enabled = 0\n";
+        let got = render_cover_ini(base, Path::new("/d/pcov.so")).unwrap();
+        assert!(got.starts_with(base));
+        assert!(got.ends_with("extension = /d/pcov.so\npcov.enabled = 1\n"));
+    }
+
+    #[test]
+    fn render_cover_ini_rejects_an_unsafe_pcov_path() {
+        use std::path::Path;
+        assert!(render_cover_ini("", Path::new("/d/pc;ov.so")).is_none());
+        assert!(render_cover_ini("", Path::new("/d/pc\nov.so")).is_none());
     }
 
     #[test]
