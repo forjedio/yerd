@@ -30,9 +30,11 @@ phpcover vendor/bin/phpunit --coverage-text
 php8.4cover vendor/bin/pest --coverage
 ```
 
-Each cover shim runs the matching PHP CLI with pcov enabled
-(`-d extension=<pcov.so> -d pcov.enabled=1`), then hands off to your script. Your
-tooling sees a PHP with a working coverage driver and reports as usual.
+Each cover shim points `PHPRC` at a pcov-enabled copy of Yerd's CLI ini, then
+hands off to your script. Because `PHPRC` is an environment variable rather
+than a CLI flag, it's inherited by any PHP process your script spawns in
+turn - which is what makes `artisan test`'s child PHPUnit/Pest/paratest run
+see a working coverage driver too, not just the top-level `artisan` process.
 
 ::: tip Add the shim dir to your PATH
 The cover shims sit in the same `{data}/bin` directory as `php` (Yerd prints the
@@ -76,9 +78,10 @@ The `yerd` binary is a **multi-call** binary: before it parses any CLI arguments
 it checks the name it was invoked as. The `phpcover` and `php<version>cover`
 entries in `{data}/bin` are symlinks back to `yerd` itself; when `yerd` sees one
 of those names, it resolves the right PHP CLI binary plus that version's
-`pcov.so` and `exec`s PHP with coverage enabled. Invoked under any other name it
-falls through to the normal CLI, so the clean `php`/`php<version>` shims are
-untouched.
+`pcov.so`, writes a copy of Yerd's CLI ini with pcov's `extension`/
+`pcov.enabled` directives appended, and `exec`s PHP with `PHPRC` pointing at
+that copy. Invoked under any other name it falls through to the normal CLI, so
+the clean `php`/`php<version>` shims are untouched.
 
 ## See also
 
