@@ -87,4 +87,3 @@ the clean `php`/`php<version>` shims are untouched.
 
 - [PHP Versions](./php-versions) - installing versions and the `php`/`php<version>` shims.
 - [Laravel Dumps](./laravel-dumps) - the other extension served from `yerd-php-ext`.
-- [yerd-php-ext architecture](../php-ext/architecture) - the native extensions and their download contract.

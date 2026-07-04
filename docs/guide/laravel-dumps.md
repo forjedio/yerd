@@ -152,4 +152,3 @@ subcommands for it. Its settings are stored in your
 - [PHP Versions](./php-versions) - the FPM pools the extension loads into.
 - [The Desktop App](./desktop-app) - where the Dumps view and window live.
 - [Configuration Reference](../reference/configuration) - the `[dumps]` table on disk.
-- [yerd-php-ext architecture](../php-ext/architecture) - the native extension and its integration contract with Yerd.

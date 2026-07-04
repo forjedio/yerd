@@ -1,4 +1,5 @@
 import { withMermaid } from 'vitepress-plugin-mermaid'
+import llmstxt from 'vitepress-plugin-llms'
 
 // Shared SEO strings (reused for the meta description, social cards, and the
 // per-page tags injected by `transformPageData`).
@@ -99,6 +100,18 @@ export default withMermaid({
   mermaid: {
     securityLevel: 'loose',
     flowchart: { htmlLabels: true, useMaxWidth: true },
+  },
+
+  // Emits llms.txt / llms-full.txt and a clean .md copy of every page
+  // (https://llmstxt.org) so agents can consume the docs without HTML noise.
+  vite: {
+    plugins: [
+      llmstxt({
+        domain: 'https://yerd.app',
+        title: SITE_TITLE,
+        description: SITE_DESCRIPTION,
+      }),
+    ],
   },
 
   themeConfig: {
