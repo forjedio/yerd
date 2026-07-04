@@ -1383,6 +1383,7 @@ pub fn set_tray_icon_variant(
     let mut s = load_settings();
     s.tray_icon_variant = variant;
     save_settings(&s)?;
+    crate::tray::set_cached_variant(variant);
     crate::tray::spawn_refresh(app);
     Ok(())
 }

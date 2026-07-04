@@ -138,6 +138,29 @@ pub(crate) enum TrayIconVariant {
     Full,
 }
 
+/// In-memory cache of the persisted tray icon variant, seeded once from disk
+/// at startup (`build_tray`) and kept in sync by [`set_cached_variant`]
+/// (called by `crate::autostart::set_tray_icon_variant` right after it saves
+/// a change). The poller and refresh paths read this instead of hitting disk
+/// (`crate::autostart::tray_icon_variant`, a `std::fs::read` +
+/// `serde_json::from_slice`) on every tick.
+static CACHED_VARIANT: Mutex<TrayIconVariant> = Mutex::new(TrayIconVariant::Auto);
+
+/// The cached tray icon variant (see [`CACHED_VARIANT`]).
+fn cached_variant() -> TrayIconVariant {
+    *CACHED_VARIANT
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// Update the cached tray icon variant; called right after persisting a
+/// change so the next poll tick / repaint picks it up without a disk read.
+pub(crate) fn set_cached_variant(variant: TrayIconVariant) {
+    *CACHED_VARIANT
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = variant;
+}
+
 /// Build the tray and register it; called once from `setup_app`.
 ///
 /// The dynamic menu is the primary surface, so it opens on a plain left-click
@@ -153,11 +176,12 @@ pub(crate) fn build_tray(app: &AppHandle) -> tauri::Result<()> {
         .on_menu_event(on_menu_event);
 
     let variant = crate::autostart::tray_icon_variant();
+    set_cached_variant(variant);
     let no_badges = Badges {
         update: false,
         unread: false,
     };
-    if let Some(icon) = tray_icon(app, no_badges, variant) {
+    if let Some(icon) = tray_icon(app, no_badges, variant, dark_menu_bar()) {
         builder = builder.icon(icon);
     }
     #[cfg(target_os = "macos")]
@@ -189,7 +213,7 @@ pub(crate) fn spawn_tray_poller(app: AppHandle) {
                 continue;
             }
             let dark = dark_menu_bar();
-            let variant = crate::autostart::tray_icon_variant();
+            let variant = cached_variant();
             let guard = lock_menu();
             if !TRANSITION.load(Ordering::Acquire) {
                 apply(&app, &state, dark, variant);
@@ -258,7 +282,7 @@ fn apply(app: &AppHandle, state: &TrayState, dark: bool, variant: TrayIconVarian
             update: state.update_target.is_some() || state.php_update,
             unread: state.unread > 0,
         };
-        if let Some(icon) = tray_icon(app, badges, variant) {
+        if let Some(icon) = tray_icon(app, badges, variant, dark) {
             let _ = tray.set_icon(Some(icon));
             #[cfg(target_os = "macos")]
             {
@@ -294,21 +318,19 @@ enum DotPos {
 /// other OSes the full-colour app icon. `LightY`/`DarkY` force the same
 /// glyph to a fixed colour on every OS, regardless of appearance or badges.
 /// `Full` is the full-colour app icon on every OS, including macOS.
+///
+/// `dark` is the caller's single `dark_menu_bar()` reading (see the module
+/// concurrency note) - only the macOS `Auto`-and-badged case reads it, so it's
+/// unused on other targets.
+#[cfg_attr(not(target_os = "macos"), allow(unused_variables))]
 fn tray_icon(
     app: &AppHandle,
     badges: Badges,
     variant: TrayIconVariant,
+    dark: bool,
 ) -> Option<tauri::image::Image<'static>> {
     match variant {
-        TrayIconVariant::Full => {
-            let base = app.default_window_icon()?;
-            let (w, h) = (base.width(), base.height());
-            let rgba = base.rgba().to_vec();
-            if !badges.any() {
-                return Some(tauri::image::Image::new_owned(rgba, w, h));
-            }
-            Some(draw_badges(rgba, w, h, badges))
-        }
+        TrayIconVariant::Full => full_color_icon(app, badges),
         TrayIconVariant::LightY | TrayIconVariant::DarkY => {
             let (rgba, w, h) = y_glyph_rgba(variant == TrayIconVariant::LightY)?;
             if !badges.any() {
@@ -325,21 +347,27 @@ fn tray_icon(
                 if !badges.any() {
                     return Some(tauri::image::Image::new_owned(rgba, w, h));
                 }
-                recolor_opaque(&mut rgba, dark_menu_bar());
+                recolor_opaque(&mut rgba, dark);
                 Some(draw_badges(rgba, w, h, badges))
             }
             #[cfg(not(target_os = "macos"))]
             {
-                let base = app.default_window_icon()?;
-                let (w, h) = (base.width(), base.height());
-                let rgba = base.rgba().to_vec();
-                if !badges.any() {
-                    return Some(tauri::image::Image::new_owned(rgba, w, h));
-                }
-                Some(draw_badges(rgba, w, h, badges))
+                full_color_icon(app, badges)
             }
         }
     }
+}
+
+/// The full-colour app icon, optionally badged. Shared by `Full` (every OS)
+/// and `Auto` on non-macOS (today's per-OS default there).
+fn full_color_icon(app: &AppHandle, badges: Badges) -> Option<tauri::image::Image<'static>> {
+    let base = app.default_window_icon()?;
+    let (w, h) = (base.width(), base.height());
+    let rgba = base.rgba().to_vec();
+    if !badges.any() {
+        return Some(tauri::image::Image::new_owned(rgba, w, h));
+    }
+    Some(draw_badges(rgba, w, h, badges))
 }
 
 /// Decode the "Y" glyph and force it to solid white (`light`) or solid black.
@@ -472,7 +500,7 @@ fn apply_transient(app: &AppHandle, label: &str) {
 async fn refresh_now(app: &AppHandle) {
     let state = fetch_state().await;
     let dark = dark_menu_bar();
-    let variant = crate::autostart::tray_icon_variant();
+    let variant = cached_variant();
     let guard = lock_menu();
     if !TRANSITION.load(Ordering::Acquire) {
         apply(app, &state, dark, variant);
@@ -820,7 +848,7 @@ fn spawn_lifecycle(app: AppHandle, kind: Lifecycle) {
 
         let state = fetch_state().await;
         let dark = dark_menu_bar();
-        let variant = crate::autostart::tray_icon_variant();
+        let variant = cached_variant();
         let guard = lock_menu();
         apply(&app, &state, dark, variant);
         TRANSITION.store(false, Ordering::Release);
