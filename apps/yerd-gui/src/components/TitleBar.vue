@@ -66,6 +66,7 @@ function toggleMaximize() {
 // existed before - Tauri's window API is queried directly (mirrors how
 // `lib/theme.ts` layers `onThemeChanged` on top of an initial read).
 const focused = ref(true);
+let disposed = false;
 let unlistenFocus: (() => void) | null = null;
 onMounted(() => {
   win.isFocused()
@@ -73,10 +74,22 @@ onMounted(() => {
     .catch(() => {});
   win
     .onFocusChanged(({ payload }) => (focused.value = payload))
-    .then((unlisten) => (unlistenFocus = unlisten))
+    .then((unlisten) => {
+      // The component may have unmounted while this registration was still in
+      // flight (e.g. the Welcome route swapping out for AppShell's titlebar) -
+      // in that case there's no later onUnmounted to call it, so do it now.
+      if (disposed) {
+        unlisten();
+      } else {
+        unlistenFocus = unlisten;
+      }
+    })
     .catch(() => {});
 });
-onUnmounted(() => unlistenFocus?.());
+onUnmounted(() => {
+  disposed = true;
+  unlistenFocus?.();
+});
 
 // Linux/Linux-Reversed/Windows controls, data-driven so the three styles share
 // one button template instead of triplicating the markup.

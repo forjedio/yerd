@@ -24,22 +24,31 @@ const TITLE_BAR_STYLE_EVENT = "yerd:title-bar-style-changed";
 /** The user's preference (reactive, persisted host-side). */
 const style = ref<TitleBarStyle>("auto");
 
+/** Bumped on every `setTitleBarStyle` call; lets a call tell whether a *newer*
+ *  one has since taken over, so two overlapping calls (the user changing the
+ *  selector again before the first IPC round-trip lands) can't have the
+ *  older one's rollback or broadcast clobber the newer one's result. */
+let latestCall = 0;
+
 /** Set + persist the preference, then broadcast to the app's other windows
  *  (mails/dumps) so they switch in lockstep. Optimistic: the ref updates
  *  immediately, but a failed IPC call rolls it back and does NOT broadcast -
  *  other windows must never see a value that wasn't actually persisted. */
 export async function setTitleBarStyle(next: TitleBarStyle): Promise<void> {
+  const call = ++latestCall;
   const previous = style.value;
   style.value = next;
   try {
     await ipcSetTitleBarStyle(next);
   } catch (e) {
-    style.value = previous;
+    if (call === latestCall) style.value = previous;
     throw e;
   }
-  void emit(TITLE_BAR_STYLE_EVENT, next).catch(() => {
-    // Not in Tauri (unit/dev) - nothing to broadcast.
-  });
+  if (call === latestCall) {
+    void emit(TITLE_BAR_STYLE_EVENT, next).catch(() => {
+      // Not in Tauri (unit/dev) - nothing to broadcast.
+    });
+  }
 }
 
 /** Reactive accessor for views/components (the General tab's selector and
@@ -51,17 +60,25 @@ export function useTitleBarStyle() {
 /** Load the persisted preference and wire up cross-window sync. Call once at
  *  boot, alongside `initTheme()`. */
 export function initTitleBarStyle(): void {
-  void getTitleBarStyle()
-    .then((s) => {
-      style.value = s;
-    })
-    .catch(() => {
-      // Keep the "auto" default if the host call fails.
-    });
+  // The initial fetch and the broadcast subscription are two independent
+  // round-trips with no ordering guarantee - if another window changes the
+  // preference while this fetch is still in flight, its broadcast could
+  // otherwise arrive first and then be clobbered by the now-stale fetch
+  // result. Once any broadcast has been seen, the fetch no longer applies.
+  let sawBroadcast = false;
 
   void listen<TitleBarStyle>(TITLE_BAR_STYLE_EVENT, ({ payload }) => {
+    sawBroadcast = true;
     style.value = payload;
   }).catch(() => {
     // Not in Tauri - single context, nothing to sync.
   });
+
+  void getTitleBarStyle()
+    .then((s) => {
+      if (!sawBroadcast) style.value = s;
+    })
+    .catch(() => {
+      // Keep the "auto" default if the host call fails.
+    });
 }
