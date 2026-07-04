@@ -579,6 +579,7 @@ mod variant_name_pinning {
             cloudflared: crate::status::CloudflaredStatus {
                 installed: true,
                 version: Some("2026.6.1".into()),
+                source: Some(crate::status::CloudflaredSource::Managed),
                 logged_in: false,
             },
         });

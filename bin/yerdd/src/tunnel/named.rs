@@ -14,7 +14,7 @@
 //! and runs the single tunnel that serves them all.
 
 use std::ffi::OsString;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
 use std::time::Duration;
@@ -134,13 +134,14 @@ fn internal(message: String) -> Response {
 }
 
 /// Run a `cloudflared` subcommand to completion with `HOME`/origin-cert pinned,
-/// capturing its output. Bounded by [`ONESHOT_TIMEOUT`].
+/// capturing its output. Bounded by [`ONESHOT_TIMEOUT`]. `binary` is the
+/// already-resolved `cloudflared` to spawn (see `super::resolved_cloudflared`).
 async fn run_oneshot(
     dirs: &PlatformDirs,
+    binary: &Path,
     args: Vec<OsString>,
 ) -> Result<std::process::Output, String> {
-    let binary = install::binary_path(dirs);
-    let mut cmd = tokio::process::Command::new(&binary);
+    let mut cmd = tokio::process::Command::new(binary);
     cmd.args(&args)
         .env("HOME", install::tunnel_dir(dirs))
         .env("TUNNEL_ORIGIN_CERT", origincert(dirs))
@@ -167,9 +168,9 @@ fn last_error_line(out: &std::process::Output) -> String {
 /// surfacing the one-time auth URL in the job log for the GUI to open. Succeeds
 /// once the account cert lands on disk.
 pub async fn login_streamed(state: Arc<DaemonState>) -> Response {
-    if !install::is_installed(&state.dirs) {
+    let Some(resolved) = super::resolved_cloudflared(&state).await else {
         return not_installed();
-    }
+    };
     if let Err(e) = ensure_secret_dirs(&state.dirs) {
         return internal(e);
     }
@@ -181,7 +182,7 @@ pub async fn login_streamed(state: Arc<DaemonState>) -> Response {
             .jobs
             .set_phase(&id, "Waiting for Cloudflare login")
             .await;
-        let binary = install::binary_path(&state.dirs);
+        let binary = resolved.binary;
         let args = yerd_tunnel::args::login_args(&origincert(&state.dirs));
         let mut cmd = tokio::process::Command::new(&binary);
         cmd.args(&args)
@@ -276,9 +277,9 @@ where
 /// UUID. v1 supports a single tunnel: creating a second (differently-named) one
 /// is rejected. Re-running with the existing name is left to Cloudflare.
 pub async fn create(name: &str, state: &DaemonState) -> Response {
-    if !install::is_installed(&state.dirs) {
+    let Some(resolved) = super::resolved_cloudflared(state).await else {
         return not_installed();
-    }
+    };
     if !is_logged_in(&state.dirs) {
         return need_login();
     }
@@ -311,7 +312,7 @@ pub async fn create(name: &str, state: &DaemonState) -> Response {
         };
     }
     let args = yerd_tunnel::args::create_args(name, &origincert(&state.dirs), &creds);
-    let out = match run_oneshot(&state.dirs, args).await {
+    let out = match run_oneshot(&state.dirs, &resolved.binary, args).await {
         Ok(o) => o,
         Err(e) => return internal(e),
     };
@@ -386,9 +387,9 @@ pub async fn list(state: &DaemonState) -> Response {
 
 /// `RouteTunnelDns` - create the proxied CNAME routing `hostname` to `tunnel`.
 pub async fn route_dns(tunnel: &str, hostname: &str, state: &DaemonState) -> Response {
-    if !install::is_installed(&state.dirs) {
+    let Some(resolved) = super::resolved_cloudflared(state).await else {
         return not_installed();
-    }
+    };
     if !is_logged_in(&state.dirs) {
         return need_login();
     }
@@ -399,7 +400,7 @@ pub async fn route_dns(tunnel: &str, hostname: &str, state: &DaemonState) -> Res
         };
     }
     let args = yerd_tunnel::args::route_dns_args(tunnel, hostname, &origincert(&state.dirs));
-    match run_oneshot(&state.dirs, args).await {
+    match run_oneshot(&state.dirs, &resolved.binary, args).await {
         Ok(out) if out.status.success() => Response::Ok,
         Ok(out) => internal(format!("route dns failed: {}", last_error_line(&out))),
         Err(e) => internal(e),
@@ -451,9 +452,9 @@ pub async fn set_site_hostname(
 /// site (resolving each site's local origin), stops any running named process so
 /// the new config takes effect, then runs it through the shared tick driver.
 pub async fn start(state: &DaemonState) -> Response {
-    if !install::is_installed(&state.dirs) {
+    let Some(resolved) = super::resolved_cloudflared(state).await else {
         return not_installed();
-    }
+    };
     if !is_logged_in(&state.dirs) {
         return need_login();
     }
@@ -529,7 +530,16 @@ pub async fn start(state: &DaemonState) -> Response {
         "TUNNEL_ORIGIN_CERT".into(),
         origincert(&state.dirs).into_os_string(),
     ));
-    super::run_to_ready(state, NAMED_KEY, args, env, TunnelKind::Named, None).await
+    super::run_to_ready(
+        state,
+        NAMED_KEY,
+        resolved.binary,
+        args,
+        env,
+        TunnelKind::Named,
+        None,
+    )
+    .await
 }
 
 /// `StopNamedTunnel` - tear down the consolidated named tunnel.
@@ -554,9 +564,9 @@ pub async fn stop(state: &DaemonState) -> Response {
 /// and need removing in the Cloudflare dashboard). Best-effort cleanup; a failed
 /// `delete` is surfaced.
 pub async fn delete(name: &str, state: &DaemonState) -> Response {
-    if !install::is_installed(&state.dirs) {
+    let Some(resolved) = super::resolved_cloudflared(state).await else {
         return not_installed();
-    }
+    };
     if !is_logged_in(&state.dirs) {
         return need_login();
     }
@@ -591,8 +601,19 @@ pub async fn delete(name: &str, state: &DaemonState) -> Response {
     }
 
     let cert = origincert(&state.dirs);
-    let _ = run_oneshot(&state.dirs, yerd_tunnel::args::cleanup_args(name, &cert)).await;
-    match run_oneshot(&state.dirs, yerd_tunnel::args::delete_args(name, &cert)).await {
+    let _ = run_oneshot(
+        &state.dirs,
+        &resolved.binary,
+        yerd_tunnel::args::cleanup_args(name, &cert),
+    )
+    .await;
+    match run_oneshot(
+        &state.dirs,
+        &resolved.binary,
+        yerd_tunnel::args::delete_args(name, &cert),
+    )
+    .await
+    {
         Ok(out) if out.status.success() => {}
         Ok(out) => return internal(format!("delete tunnel failed: {}", last_error_line(&out))),
         Err(e) => return internal(e),

@@ -61,6 +61,9 @@ const busy = ref<string | null>(null);
 
 const installed = computed(() => cloudflared.value?.installed ?? false);
 const loggedIn = computed(() => cloudflared.value?.logged_in ?? false);
+// Whether the active cloudflared came from the user's PATH rather than
+// Yerd's own managed download - offers a way to switch to the bundled copy.
+const isSystemCloudflared = computed(() => cloudflared.value?.source === "system");
 
 // Named tunnels (Phase 2). One consolidated tunnel exposes every enabled site.
 const namedTunnels = ref<NamedTunnelMeta[]>([]);
@@ -476,6 +479,7 @@ onUnmounted(registerViewActions({ refresh: () => void reload() }));
               <Badge v-if="installed" variant="secondary" class="gap-1">
                 <CheckCircle2 class="size-3 text-emerald-500" />
                 cloudflared {{ cloudflared?.version ?? "ready" }}
+                <span v-if="isSystemCloudflared" class="text-muted-foreground">(system)</span>
               </Badge>
               <span v-else class="text-muted-foreground">
                 Sharing needs <span class="font-medium text-foreground">cloudflared</span>,
@@ -488,6 +492,15 @@ onUnmounted(registerViewActions({ refresh: () => void reload() }));
               @click="doInstall"
             >
               <Download class="mr-1.5 size-3.5" /> Install cloudflared
+            </Button>
+            <Button
+              v-else-if="isSystemCloudflared"
+              variant="outline"
+              size="sm"
+              :disabled="busy !== null || connected !== true"
+              @click="doInstall"
+            >
+              <Download class="mr-1.5 size-3.5" /> Use Yerd's bundled version instead
             </Button>
           </div>
         </CardContent>

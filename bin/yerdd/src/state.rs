@@ -84,6 +84,11 @@ pub struct DaemonState {
     /// child per shared site; `TunnelStatus` reads live state from it. Quick
     /// tunnels are ephemeral (not persisted) and torn down on daemon shutdown.
     pub tunnel_manager: Arc<Mutex<crate::tunnel::DaemonTunnelManager>>,
+    /// Cache of which `cloudflared` binary to use (Yerd-managed or a
+    /// `PATH`-found system install) and its version, so the `--version` probe
+    /// of a system binary runs once rather than on every tunnel action or
+    /// status poll. See `tunnel::resolved_cloudflared`.
+    pub cloudflared_resolution: RwLock<Option<crate::tunnel::install::Resolved>>,
     /// Captured-mail store (the built-in SMTP sink writes here; IPC reads/clears
     /// it). Always present even when capture is disabled, so stored mail remains
     /// listable/clearable after the server is turned off.

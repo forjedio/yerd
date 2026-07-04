@@ -18,12 +18,12 @@ use std::path::PathBuf;
 
 use yerd_ipc::{
     types::{PhpVersion, Site},
-    CaStatus, Channel, CloudflaredStatus, DatabaseSummary, Diagnosis, DiagnosisCode, DumpCategory,
-    DumpCounts, DumpEvent, DumpExtStatus, ErrorCode, FixReport, FixResult, MailDetail, MailHeader,
-    MailStatus, MailSummary, NamedTunnelMeta, PhpPoolStatus, PoolRunState, PortStatus, Request,
-    Response, ServiceAvailability, ServiceRunState, ServiceStatus, Severity, SiteCounts,
-    SiteHostname, StagedArtifact, StatusReport, ToolStatus, TunnelInfo, TunnelKind, TunnelRunState,
-    UpdateSource,
+    CaStatus, Channel, CloudflaredSource, CloudflaredStatus, DatabaseSummary, Diagnosis,
+    DiagnosisCode, DumpCategory, DumpCounts, DumpEvent, DumpExtStatus, ErrorCode, FixReport,
+    FixResult, MailDetail, MailHeader, MailStatus, MailSummary, NamedTunnelMeta, PhpPoolStatus,
+    PoolRunState, PortStatus, Request, Response, ServiceAvailability, ServiceRunState,
+    ServiceStatus, Severity, SiteCounts, SiteHostname, StagedArtifact, StatusReport, ToolStatus,
+    TunnelInfo, TunnelKind, TunnelRunState, UpdateSource,
 };
 
 // ---------- Request ----------
@@ -1875,11 +1875,12 @@ fn response_tunnels_byte_shape() {
         cloudflared: CloudflaredStatus {
             installed: true,
             version: Some("2026.6.1".into()),
+            source: Some(CloudflaredSource::Managed),
             logged_in: false,
         },
     };
     let s = serde_json::to_string(&r).unwrap();
-    let expected = r#"{"type":"tunnels","tunnels":[{"site":"app","kind":"quick","state":"running","url":"https://calm-river-1234.trycloudflare.com"}],"cloudflared":{"installed":true,"version":"2026.6.1","logged_in":false}}"#;
+    let expected = r#"{"type":"tunnels","tunnels":[{"site":"app","kind":"quick","state":"running","url":"https://calm-river-1234.trycloudflare.com"}],"cloudflared":{"installed":true,"version":"2026.6.1","source":"managed","logged_in":false}}"#;
     assert_eq!(s, expected);
     assert_eq!(serde_json::from_str::<Response>(&s).unwrap(), r);
 }
@@ -1899,6 +1900,7 @@ fn response_tunnels_named_and_empty_byte_shape() {
         cloudflared: CloudflaredStatus {
             installed: true,
             version: None,
+            source: Some(CloudflaredSource::System),
             logged_in: true,
         },
     };
@@ -1906,6 +1908,7 @@ fn response_tunnels_named_and_empty_byte_shape() {
     assert!(s.contains(r#""kind":"named""#), "{s}");
     assert!(s.contains(r#""hostname":"shop.example.com""#), "{s}");
     assert!(!s.contains(r#""url""#), "{s}");
+    assert!(s.contains(r#""source":"system""#), "{s}");
     assert_eq!(serde_json::from_str::<Response>(&s).unwrap(), named);
 
     let empty = Response::Tunnels {
@@ -1913,6 +1916,7 @@ fn response_tunnels_named_and_empty_byte_shape() {
         cloudflared: CloudflaredStatus {
             installed: false,
             version: None,
+            source: None,
             logged_in: false,
         },
     };
@@ -1941,6 +1945,16 @@ fn tunnel_kind_each_variant_byte_shape() {
         (TunnelKind::Named, r#""named""#),
     ] {
         assert_eq!(serde_json::to_string(&k).unwrap(), expected);
+    }
+}
+
+#[test]
+fn cloudflared_source_each_variant_byte_shape() {
+    for (src, expected) in [
+        (CloudflaredSource::Managed, r#""managed""#),
+        (CloudflaredSource::System, r#""system""#),
+    ] {
+        assert_eq!(serde_json::to_string(&src).unwrap(), expected);
     }
 }
 

@@ -48,10 +48,11 @@ pub use message::{decode_message, encode_message};
 pub use request::Request;
 pub use response::{ErrorCode, PhpUpdate, Response};
 pub use status::{
-    CaStatus, CloudflaredStatus, DatabaseSummary, Diagnosis, DiagnosisCode, FixReport, FixResult,
-    MailDetail, MailHeader, MailStatus, MailSummary, NamedTunnelMeta, PhpPoolStatus, PoolRunState,
-    PortStatus, ServiceAvailability, ServiceRunState, ServiceStatus, Severity, SiteCounts,
-    SiteHostname, StatusReport, ToolStatus, TunnelInfo, TunnelKind, TunnelRunState, UnboundWeb,
+    CaStatus, CloudflaredSource, CloudflaredStatus, DatabaseSummary, Diagnosis, DiagnosisCode,
+    FixReport, FixResult, MailDetail, MailHeader, MailStatus, MailSummary, NamedTunnelMeta,
+    PhpPoolStatus, PoolRunState, PortStatus, ServiceAvailability, ServiceRunState, ServiceStatus,
+    Severity, SiteCounts, SiteHostname, StatusReport, ToolStatus, TunnelInfo, TunnelKind,
+    TunnelRunState, UnboundWeb,
 };
 pub use update::{Channel, StagedArtifact, UpdateSource};
 

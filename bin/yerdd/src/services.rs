@@ -635,6 +635,7 @@ mod tests {
             tunnel_manager: std::sync::Arc::new(tokio::sync::Mutex::new(
                 crate::tunnel::new_manager(),
             )),
+            cloudflared_resolution: tokio::sync::RwLock::new(None),
             tool_mutate: tokio::sync::Mutex::new(()),
             tunnel_mutate: tokio::sync::Mutex::new(()),
             php_mutate: tokio::sync::Mutex::new(()),
