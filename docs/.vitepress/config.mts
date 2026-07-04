@@ -106,7 +106,7 @@ export default withMermaid({
 
     nav: [
       { text: 'Guide', link: '/guide/introduction', activeMatch: '/guide/' },
-      { text: 'Reference', link: '/reference/cli/', activeMatch: '/reference/' },
+      { text: 'CLI Reference', link: '/reference/cli/', activeMatch: '/reference/' },
       {
         text: 'Developer',
         link: '/developer/architecture',
@@ -175,6 +175,7 @@ export default withMermaid({
             { text: 'Diagnostics', link: '/reference/cli/diagnostics' },
             { text: 'Elevation', link: '/reference/cli/elevation' },
             { text: 'Daemon control', link: '/reference/cli/daemon' },
+            { text: 'Self-Update', link: '/reference/cli/update' },
             { text: 'Uninstall', link: '/reference/cli/uninstall' },
           ],
         },
@@ -221,6 +222,8 @@ export default withMermaid({
             { text: 'yerd-services', link: '/developer/crates/yerd-services' },
             { text: 'yerd-doctor', link: '/developer/crates/yerd-doctor' },
             { text: 'yerd-platform', link: '/developer/crates/yerd-platform' },
+            { text: 'yerd-service-ctl', link: '/developer/crates/yerd-service-ctl' },
+            { text: 'yerd-update', link: '/developer/crates/yerd-update' },
           ],
         },
         {

@@ -1,8 +1,8 @@
 # Tooling
 
 Yerd can install the **developer tools** a typical PHP/Laravel project reaches
-for — [Composer](https://getcomposer.org), [Node.js](https://nodejs.org) (with
-`npm`/`npx`), [Bun](https://bun.sh), and the **Laravel installer** — the same way
+for - [Composer](https://getcomposer.org), [Node.js](https://nodejs.org) (with
+`npm`/`npx`), [Bun](https://bun.sh), and the **Laravel installer** - the same way
 it installs [PHP versions](./php-versions): self-contained binaries fetched on
 demand (the Laravel installer is built via Composer) and dropped onto your
 `PATH`. No system package manager, no global install, nothing to uninstall by
@@ -34,7 +34,7 @@ lists the developer tools Yerd manages and their install status:
   commands it provides.
 - Click **Install** to fetch the latest release; once installed you get
   **Update** (re-fetch the current latest) and **Uninstall**.
-- A tool you've installed yourself shows an **External** badge with no actions —
+- A tool you've installed yourself shows an **External** badge with no actions -
   see [External tools](#external-tools) below.
 - The Laravel installer is built with Composer, so its **Install** button stays
   disabled until Yerd's own Composer is installed.
@@ -52,19 +52,19 @@ yerd install tool laravel       # build the Laravel installer (needs Composer)
 yerd uninstall tool bun         # remove a tool and its PATH commands
 ```
 
-`yerd install tool <id>` is idempotent — run it again to update to the current
+`yerd install tool <id>` is idempotent - run it again to update to the current
 latest. See the [Tooling CLI reference](../reference/cli/tooling) for the exact
 command surface.
 
 ## External tools
 
 You don't have to let Yerd manage these tools. If you already have `composer`,
-`node`, `bun`, or the `laravel` installer available on your `PATH` — via Homebrew,
-`nvm`/`fnm`, a global `composer require`, etc. — Yerd **detects** it and treats it
+`node`, `bun`, or the `laravel` installer available on your `PATH` - via Homebrew,
+`nvm`/`fnm`, a global `composer require`, etc. - Yerd **detects** it and treats it
 as already available:
 
 - On the **Tooling** page the tool shows an **External** badge (instead of a
-  version) with **no Install / Update / Uninstall actions** — it's yours to manage,
+  version) with **no Install / Update / Uninstall actions** - it's yours to manage,
   not Yerd's.
 - The [Laravel site wizard](./sites#create-a-new-laravel-site) and site scaffolding
   accept external Composer / Node / Bun / Laravel as satisfying their
@@ -78,7 +78,7 @@ A couple of things to know:
   Yerd-managed one takes precedence (its `{data}/bin` shim is earlier on `PATH`).
 - **Building the *managed* Laravel installer needs Yerd's own Composer.** An
   external Composer is fine for *scaffolding*, but it can't build Yerd's managed
-  `laravel` tool — so that **Install** stays disabled until you install Yerd's
+  `laravel` tool - so that **Install** stays disabled until you install Yerd's
   Composer (or you can just keep using your external `laravel`).
 
 ::: tip How detection works
@@ -92,7 +92,7 @@ mistaken for an external install.
 
 The model mirrors [PHP versions](./php-versions) and [services](./services):
 
-- **Self-contained binaries.** Each tool is a relocatable build — Node's tarball
+- **Self-contained binaries.** Each tool is a relocatable build - Node's tarball
   bundles `node` + `npm` + `npx`, Bun is a single binary, Composer is a phar run
   by Yerd's managed PHP. Nothing is compiled and nothing touches system paths.
 - **Verified downloads.** Every artifact is checked against the publisher's
@@ -100,7 +100,7 @@ The model mirrors [PHP versions](./php-versions) and [services](./services):
   is installed.
 - **Installed under Yerd's data dir.** Tools live in `{data}/tools/<id>/`
   (e.g. `~/Library/Application Support/io.yerd.Yerd/tools` on macOS), a sibling of
-  your PHP installs — so a PHP update never disturbs them.
+  your PHP installs - so a PHP update never disturbs them.
 - **Exposed on `PATH`.** Their commands are symlinked into `{data}/bin`, the same
   directory that holds the `php`/`php<ver>` shims. Put that directory on your
   `PATH` once (see below) and `composer`, `node`, `npm`, `bun`, … just work.
@@ -109,7 +109,7 @@ The model mirrors [PHP versions](./php-versions) and [services](./services):
 ### Latest only
 
 Yerd installs the **latest stable** release of each tool (the latest **LTS** for
-Node). There is no per-project version picker — **Update** simply re-fetches the
+Node). There is no per-project version picker - **Update** simply re-fetches the
 current latest and replaces it in place. If you need to pin a specific Node
 version per project, a system version manager like `nvm`/`fnm` is still the right
 tool; Yerd's goal here is a good default that's always there.
@@ -117,7 +117,7 @@ tool; Yerd's goal here is a good default that's always there.
 ## Put Yerd's bin directory on your PATH
 
 The tool commands live in Yerd's `{data}/bin` directory. Installing your first
-tool from the CLI **adds it to your shell automatically** — so usually there's
+tool from the CLI **adds it to your shell automatically** - so usually there's
 nothing to do. If you installed via the desktop app, or want to manage the entry
 yourself, run it once:
 
@@ -147,14 +147,14 @@ installs ever shadows a tool you didn't ask it to manage.
 
 ## Composer needs PHP
 
-Composer is a phar, so it runs under Yerd's managed PHP — `composer` resolves to
+Composer is a phar, so it runs under Yerd's managed PHP - `composer` resolves to
 your [default PHP version](./php-versions). Install at least one PHP version
 first (`yerd install php 8.4`); otherwise `composer` reports that no PHP is
 available. Node and Bun are standalone and have no such dependency.
 
 ::: tip ext-intl and friends
 Yerd's PHP builds ship the **bulk** extension set, including
-`intl`, `sodium`, `mysqli`, and more — so Composer packages that require them
+`intl`, `sodium`, `mysqli`, and more - so Composer packages that require them
 install without extra steps. See [PHP Versions](./php-versions) for the bundled
 extension list.
 :::
@@ -174,7 +174,7 @@ extension list.
 
 ## See also
 
-- [Tooling CLI reference](../reference/cli/tooling) — every command and flag.
-- [PHP Versions](./php-versions) — the version model these tools follow.
-- [Services & Databases](./services) — the same install-on-demand approach for
+- [Tooling CLI reference](../reference/cli/tooling) - every command and flag.
+- [PHP Versions](./php-versions) - the version model these tools follow.
+- [Services & Databases](./services) - the same install-on-demand approach for
   databases and caches.

@@ -116,6 +116,10 @@ If you have no admin rights to route `.test`, those names won't resolve anywhere
 
 Run [`yerd doctor`](./diagnostics) to see which ports are live and what to do.
 
+::: warning If even the fallback can't bind
+Rare, but possible if something else already holds the rootless ports too: the daemon comes up with no web listener at all. `yerd status` reports "not serving" for both ports, and `yerd doctor` raises a hard `WebPortsUnbound` failure. In this state `sudo yerd elevate ports` **refuses** on macOS - a `pf` redirect needs a live bound port to point at, and there isn't one. Free a port, or change the fallback pair in Settings (Yerd ▸ General), then restart the daemon before elevating. See [Diagnostics](./diagnostics).
+:::
+
 ::: info macOS port status
 The macOS daemon always binds its high ports (pf does the 80/443 forwarding), so Yerd probes reachability rather than trusting that a config file exists. The probe also **confirms it reaches Yerd's own proxy** - it speaks HTTP to `127.0.0.1:80` and checks for the proxy's `Server: yerd` marker - so a redirect you've torn down (or a foreign web server squatting the port) is correctly reported as *not* redirected. If something that isn't Yerd holds 80/443, `doctor` raises a [`ForeignWebListener`](./diagnostics) warning.
 :::

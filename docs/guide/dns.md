@@ -54,6 +54,10 @@ UDP and TCP both bind on the same address. Set `dns_port = 0` and the kernel pic
 If `dns_port` changes (or you used `0`), the config written by `yerd elevate resolver` may point at a port nothing listens on. `yerd doctor` catches this by checking the config against the daemon's current DNS address. Fix it by re-running `sudo yerd elevate resolver`.
 :::
 
+::: warning A bind failure is non-fatal
+If another process already holds `dns_port`, the daemon does **not** abort - it comes up degraded, with no `*.test` resolution, while the reverse proxy, PHP pools, and IPC server all still work normally. `yerd status` shows `dns       not resolving - couldn't bind port <port> (run yerd doctor)` in place of the bound address, and `yerd doctor` raises a `DnsPortUnbound` warning. Free the port, or change `dns_port` in Settings (Yerd ▸ General), then restart the daemon. See [Diagnostics](./diagnostics).
+:::
+
 ## Pointing the OS at Yerd
 
 Configuring the OS resolver needs root, so the auditable `yerd-helper` binary does it, once:

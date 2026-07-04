@@ -9,7 +9,7 @@ The fastest way to manage PHP is the **PHP** page (under the **Environment** gro
 <ThemedImage light="/images/php-light.png" dark="/images/php-dark.png" alt="The PHP page in the Yerd desktop app" />
 
 - A table of installed versions shows live FPM pool state, patch level, pool memory (RSS), and whether an update is available.
-- **Install** opens a picker of installable versions (already-installed ones are hidden); the download of a prebuilt static build can take a few minutes with no progress bar.
+- **Install** opens a picker of installable versions (already-installed ones are hidden); progress streams live next to the Install button as the prebuilt static build downloads.
 - **Refresh** re-checks for updates and **Update all** updates every version with one pending - [updates are notify-only](#updates-are-notify-only).
 - Each row's `⋯` menu offers **Restart**, **Set default** (marks it with a star), **Update** (when available), and **Uninstall**; **Restart all** restarts every running pool.
 - A **Default settings** card edits the [global ini defaults](#tuning-php-settings) applied to every version; leave a field blank to use PHP's built-in default, and saving restarts running pools to apply.
@@ -38,12 +38,12 @@ The `php.json` manifest is signed with a dedicated minisign key whose public hal
 
 Yerd's builds ship the **bulk** extension set, so a real-world Laravel app has
 what it needs out of the box. Beyond the common extensions, this includes
-**`intl`** (ICU — required by Laravel's `Number` helper and many localization
+**`intl`** (ICU - required by Laravel's `Number` helper and many localization
 packages), **`sodium`**, **`mysqli`**, **`xsl`**, **`readline`**, and **`apcu`**,
 alongside `bcmath`, `gd`, `gmp`, `curl`, `mbstring`, `openssl`, `pdo_mysql`,
 `pdo_pgsql`, `pdo_sqlite`, `zip`, `redis`, `opcache`, and more. Run `php -m` (via
 the [`php` shim](#the-global-default)) to see the full list for an installed
-version. Coverage is provided separately by `pcov` — see [Code Coverage](./code-coverage).
+version. Coverage is provided separately by `pcov` - see [Code Coverage](./code-coverage).
 
 ### How versions are stored
 

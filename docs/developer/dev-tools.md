@@ -10,7 +10,7 @@ the thin GUI/CLI wiring.
 It follows the same I/O-edge pattern as PHP installs and the
 [cover-shim/pcov work](./binaries/yerdd#cover-shim-reconciliation-and-pcov):
 all logic lives in the daemon and its libraries; the GUI is a
-[thin IPC client](./binaries/yerd). Everything is **Unix-first** — the shim
+[thin IPC client](./binaries/yerd). Everything is **Unix-first** - the shim
 symlinks and the `composer` multi-call exec are `#[cfg(unix)]`.
 
 ::: info Source
@@ -36,7 +36,7 @@ flowchart TD
 
 ## The `Tool` registry (`tools/mod.rs`)
 
-A small `Copy` enum drives everything; there is no per-tool trait — the variants
+A small `Copy` enum drives everything; there is no per-tool trait - the variants
 differ enough (phar vs multi-file tarball vs single-binary zip) that a `match`
 into per-tool modules is clearer than an abstraction.
 
@@ -77,27 +77,27 @@ pub enum ToolError {
 under `{data}/tools/<id>/` and return a `yerd_ipc::ToolStatus` (`id`,
 `display_name`, `installed`, `version`, `binaries`). No marker → `installed:
 false`. There is **no network or lock**, so `ListTools` is cheap and can never
-block — unlike `ListServices`, which probes run-state.
+block - unlike `ListServices`, which probes run-state.
 
 ## Install: download → verify → stage → swap
 
-`install(tool, dirs, dl)` returns `Result<(), ToolError>` — a real Ok/Error so
+`install(tool, dirs, dl)` returns `Result<(), ToolError>` - a real Ok/Error so
 the synchronous dispatch arm can report success or failure (it deliberately does
 **not** reuse Composer's old error-swallowing `ensure_present` wrapper). The
 shared helpers in `mod.rs`:
 
-- **`sha_for_asset(sums_text, exact_filename)`** — Node and Bun publish a
+- **`sha_for_asset(sums_text, exact_filename)`** - Node and Bun publish a
   `SHASUMS256.txt` listing *many* assets (platforms, plus `-baseline`/`-musl`/
   `-profile` decoys). The parser tokenises each `"<hex>  <file>"` line
   (tolerating CRLF, a UTF-8 BOM on line 1, and a `*` binary-mode marker) and
-  matches the filename **exactly** — never a `contains`/`ends_with`, which would
+  matches the filename **exactly** - never a `contains`/`ends_with`, which would
   pick a decoy.
-- **`extract_root_dir(dir)`** — Node and Bun archives wrap their payload in one
+- **`extract_root_dir(dir)`** - Node and Bun archives wrap their payload in one
   top-level, version-named directory (`node-v24.17.0-darwin-arm64/…`,
   `bun-darwin-aarch64/bun`). This resolves the *actual* single child dir (erroring
   unless exactly one), so the install never reconstructs the name from a version
   string that could drift upstream.
-- **`stage_and_swap(dirs, tool, version, unpack)`** — mirrors
+- **`stage_and_swap(dirs, tool, version, unpack)`** - mirrors
   `php_install::install`: unpack into a fresh `.staging-<id>-<pid>` dir, write the
   `.version` marker, remove any existing `{data}/tools/<id>`, then atomic
   `rename`. So a reinstall/update replaces in place and always leaves exactly one
@@ -123,12 +123,12 @@ Each module has a pure host→asset mapper (`current_os_arch()` → `darwin-arm6
 `ToolError::UnsupportedHost` for a platform the publisher doesn't ship, rather
 than building a URL that 404s. Bun's zip is unpacked with the `zip` crate
 (`default-features = false, features = ["deflate"]`, pulling only the pure-Rust
-flate2 backend — pinned to 2.x to stay within the workspace's MSRV-1.77
+flate2 backend - pinned to 2.x to stay within the workspace's MSRV-1.77
 discipline; see the `Cargo.toml` MSRV-pin block).
 
 ## Shims: `reconcile_tool_shims`
 
-The commands a tool provides are symlinks in `{data}/bin` — the same directory as
+The commands a tool provides are symlinks in `{data}/bin` - the same directory as
 the PHP `php`/`php<ver>`/`phpcover` shims. The two reconcilers partition the
 namespace cleanly: the PHP reconcile only prunes `php<X.Y>*` names, and
 `reconcile_tool_shims` owns `composer`/`node`/`npm`/`npx`/`bun`/`bunx`.
@@ -136,7 +136,7 @@ namespace cleanly: the PHP reconcile only prunes `php<X.Y>*` names, and
 For each installed tool it creates `(name → target)` links via the shared
 `php_install::place_symlink` (atomic temp+rename); for each **uninstalled** tool
 it prunes that tool's owned names. Pruning keys on **name-ownership** gated on
-`symlink_metadata().is_symlink()` — never `target.exists()` — so a link left
+`symlink_metadata().is_symlink()` - never `target.exists()` - so a link left
 dangling by an uninstall is still removed. Per-tool targets:
 
 | Tool | Link → target |
@@ -157,7 +157,7 @@ Node's `bin/npm` and `bin/npx` are themselves *relative* symlinks into
 ### Concurrency
 
 `{data}/bin` is written by both the PHP reconcile and the tool reconcile, and the
-daemon serves IPC requests `tokio::spawn`-per-connection — so two clients could
+daemon serves IPC requests `tokio::spawn`-per-connection - so two clients could
 mutate the directory at once. `reconcile_tool_shims_now` takes the **same**
 `state.shim_reconcile` mutex as the PHP reconcile, serialising all `{data}/bin`
 mutation. The slow download runs *before* the lock is taken; only the reconcile
@@ -165,7 +165,7 @@ holds it.
 
 ## The `composer` exec shim (`bin/yerd/src/composer_shim.rs`)
 
-Composer is a phar, so its `composer` command can't be a direct symlink — it
+Composer is a phar, so its `composer` command can't be a direct symlink - it
 needs a PHP interpreter. Like the [cover shims](./binaries/yerd#cover-shims-yerd-as-a-multi-call-binary-cover_shim-rs),
 `{data}/bin/composer` symlinks to the `yerd` binary, which detects `argv[0] ==
 "composer"` *before clap* (in `main.rs`, ahead of `cover_shim::dispatch`) and
@@ -175,7 +175,7 @@ phar is absent it points the user at the Tooling page.
 
 ## IPC contract
 
-Three additive variants (no `PROTOCOL_VERSION` bump — see
+Three additive variants (no `PROTOCOL_VERSION` bump - see
 [IPC Protocol](./ipc-protocol)):
 
 | Request | Response |
@@ -194,15 +194,15 @@ moved between runs).
 ## GUI & CLI wiring
 
 - **Tauri** (`apps/yerd-gui/src-tauri/src/commands.rs`): `list_tools`,
-  `install_tool(tool)`, `uninstall_tool(tool)` — each `finish(exchange(&Request::…))`,
+  `install_tool(tool)`, `uninstall_tool(tool)` - each `finish(exchange(&Request::…))`,
   registered in `main.rs`'s `generate_handler!`. No capabilities edit (our
   `#[tauri::command]`s are permitted by registration).
 - **Frontend**: `ipc/types.ts` (`ToolStatus` + the `tools` response), `ipc/client.ts`
   (`listTools`/`installTool`/`uninstallTool`), `views/ToolingView.vue` (a table
-  copied from the PHP view's pattern — install/update/uninstall with a busy
+  copied from the PHP view's pattern - install/update/uninstall with a busy
   spinner and toasts), plus the `SideNav.vue` + `router.ts` entries that place
   **Tooling** between Sites and Services.
-- **CLI**: `yerd tools`, `yerd install tool <id>`, `yerd uninstall tool <id>` —
+- **CLI**: `yerd tools`, `yerd install tool <id>`, `yerd uninstall tool <id>` -
   a `Tool` variant on the `InstallTarget`/`UninstallTarget` enums and a `Tools`
   command, mapped in `map::to_request` (exhaustive, compile-checked) with an
   explicit `Response::Tools` arm in `map::render` (which has a wildcard, so a
@@ -231,8 +231,8 @@ tool composer`), and its phar moved from `{data}/composer/` to
 
 ## See also
 
-- [Tooling guide](../guide/tooling) — the user-facing view.
-- [yerdd (daemon)](./binaries/yerdd) — the host process and its
+- [Tooling guide](../guide/tooling) - the user-facing view.
+- [yerdd (daemon)](./binaries/yerdd) - the host process and its
   [cover-shim/pcov](./binaries/yerdd#cover-shim-reconciliation-and-pcov) sibling.
-- [yerd (CLI)](./binaries/yerd) — the multi-call binary that backs `composer`.
-- [IPC Protocol](./ipc-protocol) — the additive wire contract.
+- [yerd (CLI)](./binaries/yerd) - the multi-call binary that backs `composer`.
+- [IPC Protocol](./ipc-protocol) - the additive wire contract.

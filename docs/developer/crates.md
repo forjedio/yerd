@@ -43,6 +43,8 @@ set (it wraps macro-heavy generated Tauri code) but still bans
 | `yerd-platform` | OS abstraction layer: paths, trust store, resolver installer, port binder/redirector, metrics - one impl per OS. | owns I/O (pure submodule) | [yerd-platform](./crates/yerd-platform) |
 | `yerd-mail` | Built-in mail-capture SMTP sink plus its on-disk store. Accepts mail on a loopback port (Herd-style) and persists parsed messages for the GUI. Depends on `yerd-ipc` + `mail-parser`. | owns I/O | [yerd-mail](./crates/yerd-mail) |
 | `yerd-tunnel` | Cloudflare Tunnel support: pure `cloudflared` argv / `config.yml` generation and log parsing, plus a supervised `cloudflared` lifecycle. Powers public site sharing. Depends on `yerd-supervise`. | owns I/O (pure submodules) | [yerd-tunnel](./crates/yerd-tunnel) |
+| `yerd-update` | Pure release-channel selection and version-decision logic for self-update: `select_target` (stable/edge resolution), artifact selection by platform, and checksum/minisign verification. | pure | [yerd-update](./crates/yerd-update) |
+| `yerd-service-ctl` | Cross-platform start/stop/restart control for the `yerdd` daemon service (`launchctl`/`systemctl`), used by the self-update applier to restart onto a freshly-swapped binary. | owns I/O | [yerd-service-ctl](./crates/yerd-service-ctl) |
 
 ### Binaries
 
@@ -74,7 +76,7 @@ flowchart TD
     gui["yerd-gui (app)"]
     xtask["xtask (no internal deps)"]
     yerd["yerd (CLI)"]
-    yerdd["yerdd (depends on all thirteen libs)"]
+    yerdd["yerdd (depends on all fourteen libs)"]
     helper["yerd-helper"]
 
     ipc["yerd-ipc"]
@@ -89,15 +91,20 @@ flowchart TD
     platform["yerd-platform"]
     mail["yerd-mail"]
     tunnel["yerd-tunnel"]
+    update["yerd-update"]
+    servicectl["yerd-service-ctl"]
     core["yerd-core (pure, zero internal deps)"]
 
     gui --> core
     gui --> ipc
     gui --> platform
+    gui --> update
 
     yerd --> core
     yerd --> ipc
     yerd --> platform
+    yerd --> update
+    yerd --> servicectl
 
     helper --> core
     helper --> platform
@@ -115,6 +122,7 @@ flowchart TD
     yerdd --> doctor
     yerdd --> mail
     yerdd --> tunnel
+    yerdd --> update
 
     ipc --> core
     config --> core
@@ -147,10 +155,12 @@ crate's `Cargo.toml`):
 - **`yerd-php`** → `yerd-core`, `yerd-platform`, `yerd-supervise`
 - **`yerd-services`** → `yerd-platform`, `yerd-supervise`
 - **`yerd-mail`** → `yerd-ipc`
+- **`yerd-update`** → *(none - workspace leaf)*
+- **`yerd-service-ctl`** → *(none - workspace leaf)*
 - **`yerd-helper`** (bin) → `yerd-core`, `yerd-platform`
-- **`yerd`** (bin) → `yerd-core`, `yerd-ipc` (`transport`), `yerd-platform`
-- **`yerd-gui`** (app) → `yerd-core`, `yerd-ipc` (`transport`), `yerd-platform`
-- **`yerdd`** (bin) → `yerd-core`, `yerd-config`, `yerd-ipc` (`transport`), `yerd-tls`, `yerd-platform`, `yerd-dns`, `yerd-supervise`, `yerd-php`, `yerd-services`, `yerd-proxy`, `yerd-doctor`, `yerd-mail`, `yerd-tunnel` - **all thirteen libraries**
+- **`yerd`** (bin) → `yerd-core`, `yerd-ipc` (`transport`), `yerd-platform`, `yerd-update`, `yerd-service-ctl`
+- **`yerd-gui`** (app) → `yerd-core`, `yerd-ipc` (`transport`), `yerd-platform`, `yerd-update`
+- **`yerdd`** (bin) → `yerd-core`, `yerd-config`, `yerd-ipc` (`transport`), `yerd-tls`, `yerd-platform`, `yerd-dns`, `yerd-supervise`, `yerd-php`, `yerd-services`, `yerd-proxy`, `yerd-doctor`, `yerd-mail`, `yerd-tunnel`, `yerd-update` - **all fourteen libraries**
 - **`xtask`** → *(no internal deps; `anyhow` + `clap` only)*
 
 ::: tip The daemon is the assembly point
@@ -185,6 +195,11 @@ in everything (timestamps, reports) explicitly.
 - **`yerd-ipc`** - the default build is pure: *"no sockets, no async, no I/O."*
   Only the optional `transport` feature pulls in `tokio` for the shared async
   read/write helpers (the daemon and CLI both enable it).
+- **`yerd-update`** - *"This crate does **no I/O**: it operates on already-fetched
+  release metadata and the running version."* `select_target` (channel
+  resolution) and artifact selection/verification are all pure functions over
+  in-memory data; fetching releases and downloading artifacts is the caller's
+  job (`yerdd` and the applier).
 
 ### Pure with a thin I/O seam
 
@@ -220,6 +235,11 @@ in a `pure` module that is unit-tested in-memory.
   `database`, `config_render`, and `release` modules, with I/O in `manager` and
   `health`.
 - **`yerd-dns`** - runs the authoritative responder on `tokio` + `hickory-server`.
+- **`yerd-service-ctl`** - shells out to `launchctl`/`systemctl` (and signals a
+  pid directly as a fallback) to stop/start/restart the `yerdd` service. No
+  `pure` submodule of its own - the crate is small enough that the OS-mechanics
+  functions are the whole surface - but no `unsafe` either: process signalling
+  goes through `nix`'s safe wrappers.
 
 ::: details Where the traits are implemented
 The trait *definitions* live in the library crates (e.g. `yerd-supervise`'s

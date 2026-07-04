@@ -63,6 +63,10 @@ Start `yerdd` (via your service manager or `yerdd serve &`) before using the CLI
 
 How autostart is wired depends on your platform.
 
+::: tip Starting the daemon from the app is bounded
+When the desktop app starts the daemon - at login or via the tray's Start button - it bounds the underlying service call to 15 seconds. A wedged `launchctl` or `systemctl` call can't hang the app indefinitely; past that, the app reports a timeout instead of spinning forever.
+:::
+
 ### Linux: systemd user service
 
 Yerd uses a systemd `--user` unit named `yerd`. The app writes it to `~/.config/systemd/user/yerd.service` when you start the daemon or enable "Run daemon at login" - you don't install it by hand. It looks like:
@@ -107,6 +111,16 @@ The app **bundles the daemon** and registers it as a background **`SMAppService`
 
 ::: tip First-time approval
 The first time the daemon registers, macOS may ask you to enable Yerd in Login Items. The app shows a banner with a button that takes you straight there. A LaunchAgent runs as your user, matching Yerd's rootless model.
+:::
+
+::: info Self-repair after an upgrade
+An in-place or automated app upgrade replaces the whole bundle but doesn't by itself move launchd's registration - left alone, it would keep running the pre-upgrade `yerdd`. So on every launch the app compares its own version against the version that last registered the daemon:
+
+- If the app version has advanced, it forces a fresh `SMAppService` registration pointing at the new bundle (unregister, then re-register), so launchd picks up the upgraded binary.
+- If the registration is already current but launchd has nonetheless dropped the job - `SMAppService` still reports it `.enabled`, but a crash or a manual `bootout` left no live job for it - the app forces the same re-registration even though the version hasn't changed, since a plain kickstart can't recreate a job launchd has lost.
+- If the running app is *older* than the version that registered the daemon, it refuses to reconfigure or unregister it, so a stale or downgraded app build can never regress a newer daemon.
+
+Self-repair attempts and their outcomes are appended to `{cache}/yerd-gui-repair.log`, which the desktop app's diagnostics panel tails and includes in "Copy diagnostics" alongside the daemon's own logs. See [Diagnostics](./diagnostics).
 :::
 
 For a from-source / terminal run without the app, start the daemon directly:
@@ -175,7 +189,7 @@ An old process is still holding the lock. Check `pgrep -x yerdd`, stop it, then 
 
 ## Logging
 
-`yerdd` uses `tracing` and writes a compact log to stderr. Verbosity maps to the `-v` flags:
+`yerdd` uses `tracing` and writes to two sinks at once: a compact stream to stderr, and a durable daily-rolling file at `{cache}/yerdd.<date>.log` (see [Where the daemon keeps its files](#where-the-daemon-keeps-its-files)). The file sink is unconditional - it's written every run, regardless of how the daemon was started or whether anything is capturing stderr. Rotation keeps at most 3 days of files; older ones are pruned automatically. Verbosity maps to the `-v` flags and applies to both sinks:
 
 | Flag | Level |
 |---|---|
@@ -185,7 +199,7 @@ An old process is still holding the lock. Check `pgrep -x yerdd`, stop it, then 
 
 At the default level the DNS server's per-query logging is capped at `WARN`. Otherwise it would log every inbound lookup (including routine `NXDomain` results for non-`.test` names your OS forwards) and flood the log. Raising verbosity lifts that cap so you can watch DNS traffic.
 
-Where the log goes depends on how the daemon was started:
+Where stderr goes depends on how the daemon was started:
 
 - Under systemd (Linux), stderr goes to the journal:
 
@@ -198,6 +212,10 @@ Where the log goes depends on how the daemon was started:
   ```sh
   yerdd serve > ~/yerd.log 2>&1 &
   ```
+
+::: tip The file log survives even when stderr doesn't
+Under launchd or systemd, a start failure can leave nothing useful on stderr. `yerdd.<date>.log` is written regardless, so it's the place to look first - a crash or a startup error (a bad config, a runtime that fails to build) lands there even when nothing was capturing the process's stderr. If the cache directory can't be resolved or created, the daemon degrades to stderr-only rather than failing to start.
+:::
 
 ::: info Diagnostics over raw logs
 For a quick health picture, prefer `yerd status` (daemon, ports, DNS, CA trust, PHP pools with PID/RAM, load) or `yerd doctor` over reading logs. Both query the running daemon over IPC. See [Diagnostics](./diagnostics).
@@ -212,7 +230,7 @@ For a quick health picture, prefer `yerd status` (daemon, ports, DNS, CA trust, 
 | config | `yerd.toml` (the authoritative config) |
 | data | The local CA (`ca.cert.pem`, `ca.key.pem`) and issued leaf certificates |
 | state | Long-lived state |
-| cache | Downloads and other regenerable files |
+| cache | Downloads, other regenerable files, and the rolling `yerdd.<date>.log` |
 | runtime | The IPC socket (`yerd.sock`) and single-instance lock (`yerd.lock`) |
 
 The runtime directory is security-sensitive: it's forced to `0o700` and the IPC socket is restricted to your user, since directory and socket permissions are the only access control on the socket. The CA private key is locked to its owner; the CA certificate is world-readable but never group/world-writable, so the trust helper accepts it.

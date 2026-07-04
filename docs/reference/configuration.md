@@ -63,12 +63,14 @@ If another process holds `dns_port`, the daemon fails to bind and tells you to c
 
 ### `[ports]`
 
-The HTTP and HTTPS listen ports for the proxy.
+The HTTP and HTTPS listen ports for the proxy, plus the rootless ports the daemon falls back to when it can't bind the privileged ones.
 
-| Key     | TOML type     | Meaning             | Default |
-| ------- | ------------- | ------------------- | ------- |
-| `http`  | integer (u16) | HTTP listen port.   | `80`    |
-| `https` | integer (u16) | HTTPS listen port.  | `443`   |
+| Key              | TOML type     | Meaning                                                                          | Default |
+| ---------------- | ------------- | --------------------------------------------------------------------------------- | ------- |
+| `http`           | integer (u16) | HTTP listen port.                                                                | `80`    |
+| `https`          | integer (u16) | HTTPS listen port.                                                               | `443`   |
+| `fallback_http`  | integer (u16) | Rootless HTTP port the daemon drops to when `http` can't bind without elevation. | `8080`  |
+| `fallback_https` | integer (u16) | Rootless HTTPS port the daemon drops to when `https` can't bind without elevation. | `8443`  |
 
 The default is the IANA well-known pair `80 / 443`. Binding these privileged ports may require elevation on macOS and Linux - see [Elevation & Privileges](../guide/elevation). If you would rather avoid elevation, switch to the unprivileged fallback pair `8080 / 8443`:
 
@@ -78,7 +80,9 @@ http = 8080
 https = 8443
 ```
 
-Validation rules (enforced by `Config::validate`): neither port may be `0`, and `http` and `https` must differ. Violations produce `HttpPortZero`, `HttpsPortZero`, or `HttpHttpsPortsEqual`.
+`fallback_http` and `fallback_https` are what the daemon binds instead of `http`/`https` when it starts in degraded mode - unable to acquire the privileged ports without elevation - so the proxy still comes up rather than failing to start. They're editable from the desktop app's Settings > Web ports card as well as by hand.
+
+Validation rules (enforced by `Config::validate`): neither `http` nor `https` may be `0`, and they must differ (`HttpPortZero`, `HttpsPortZero`, `HttpHttpsPortsEqual`). Both fallback ports must be `>= 1024` - the fallback exists specifically to avoid needing elevation, so a privileged fallback is rejected (`FallbackPortPrivileged`) - and `fallback_http`/`fallback_https` must differ from each other (`FallbackPortsEqual`).
 
 ### `[php]`
 
@@ -283,16 +287,37 @@ my-tunnel = "6ff42ae2-765d-4adf-8112-31c55c1551ef"
 app = "app.example.com"
 ```
 
+### `[groups]`
+
+User-defined site groups for the desktop app's Sites view. Purely an organisational overlay - groups do not affect routing. Both fields are **empty by default**, so the whole `[groups]` table is omitted from the file until you create a group.
+
+| Key       | TOML type        | Meaning                                                        |
+| --------- | ----------------- | --------------------------------------------------------------- |
+| `order`   | array of strings  | Group display names, in display order.                        |
+| `members` | table (`site → group`) | Per-site group membership, keyed by site name.           |
+
+Membership is keyed by **site name**, not document-root, so a group applies to parked and linked sites alike without touching either site's own record. A site absent from `members` is "Unallocated" - the GUI's synthetic bucket for ungrouped sites, which is never itself persisted here.
+
+Validation rules (enforced by `Config::validate`): every name in `order` must be non-empty (`GroupNameEmpty`) and unique, ASCII-case-insensitively (`GroupDuplicate`); the name `Unallocated` is reserved in any casing and rejected (`GroupNameReserved`); and every `members` value must reference a group present in `order`, also folding case (`GroupMemberDangling`). Whether a keyed site still exists is not checked - parked sites are discovered from disk on each scan and have no config record to check against.
+
+```toml
+[groups]
+order = ["Blog", "Shop"]
+
+[groups.members]
+api = "Blog"
+```
+
 ## Schema versioning and migration
 
-Every config file **must** carry a top-level `version = N` key - it is the single trigger for forward migration. The current schema version is `8`.
+Every config file **must** carry a top-level `version = N` key - it is the single trigger for forward migration. The current schema version is `9`.
 
 When the daemon loads a file, it routes on the version it finds:
 
 ```text
-found  > CURRENT (8)   →  error (UnsupportedVersion) - a newer Yerd wrote this file
-found == CURRENT (8)   →  parse directly
-found  < CURRENT (8)   →  walk forward migration steps, then parse
+found  > CURRENT (9)   →  error (UnsupportedVersion) - a newer Yerd wrote this file
+found == CURRENT (9)   →  parse directly
+found  < CURRENT (9)   →  walk forward migration steps, then parse
 ```
 
 A file written by a *newer* Yerd than you are running is refused rather than misread. Older files are migrated forward in place, one version at a time, before the normal wire-deserialisation and validation run:
@@ -304,6 +329,7 @@ A file written by a *newer* Yerd than you are running is refused rather than mis
 - **`v5 → v6`** is a bare version bump: v6 only **added** the top-level `update_channel` scalar (defaults to `"stable"` when absent).
 - **`v6 → v7`** is a bare version bump: v7 only **added** the `[ports]` `fallback_http` / `fallback_https` keys (defaulting to `8080` / `8443`).
 - **`v7 → v8`** is a bare version bump: v8 only **added** the optional `[tunnel]` table, which defaults to empty when absent. Same rationale - the bump lets an older binary refuse a `[tunnel]`-bearing file cleanly rather than tripping `deny_unknown_fields`.
+- **`v8 → v9`** is a bare version bump: v9 only **added** the optional `[groups]` table, which defaults to empty when absent. Same rationale - the bump lets an older binary refuse a `[groups]`-bearing file cleanly rather than tripping `deny_unknown_fields`.
 
 The on-disk schema version is deliberately decoupled from the IPC protocol version; the two evolve independently.
 

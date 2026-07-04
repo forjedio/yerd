@@ -32,9 +32,9 @@ The window is something you summon, not keep open.
 - On macOS, left-click the tray icon to open the menu. On Linux (AppIndicator), use the menu's **Open Yerd** to reshow the window.
 - Single-instance: launching again re-focuses the existing window.
 
-The window is borderless with a custom title bar (macOS-style traffic lights for close / minimize / zoom) and looks identical on both platforms. A status pill in the bottom-left of the sidebar shows whether the daemon is connected, unreachable, or connecting.
+The window is borderless with a custom title bar drawn to match a window-control convention: macOS-style traffic lights on the left, or a Linux layout (close on one side, minimize/maximize on the other). By default it follows the host OS - macOS gets traffic lights, Linux gets native button ordering (close on the left, minimize/maximize on the right) - but Settings > Appearance lets you pin a specific style regardless of host (see [Settings](#settings) below). A status pill in the bottom-left of the sidebar shows whether the daemon is connected, unreachable, or connecting.
 
-If the daemon isn't running, every data-backed page shows the same **Yerd isn't running** screen - the page's header plus a **Start Yerd** hero that launches the bundled `yerdd` (through your per-user service) without leaving the app. The button keeps spinning until the daemon actually connects. The **Overview**, **Settings**, and **About** pages stay reachable even when the daemon is down. You can also start it from a terminal with `yerdd serve &`.
+If the daemon isn't running, every data-backed page shows the same **Yerd isn't running** screen - the page's header plus a **Start Yerd** hero that launches the bundled `yerdd` (through your per-user service) without leaving the app. The button keeps spinning until the daemon actually connects. The **Overview**, **Settings**, and **About** pages stay reachable even when the daemon is down. You can also start it from a terminal with `yerdd serve &`. If a start attempt fails, the hero shows a **Daemon Diagnostics** panel: computed hints on the likely cause, an expandable tail of the daemon log and the spawn/repair logs, and a **Copy diagnostics** button to paste into a bug report.
 
 ::: tip First run vs. later starts
 On a **brand-new** install the app opens the [onboarding journey](./welcome-journey), which installs and starts the daemon for you (and walks through PHP, parking, and elevation). Once you've been set up, later launches go straight to the dashboard - or the **Start Yerd** screen if the daemon happens to be stopped. On macOS, registering the background service may prompt you to enable Yerd in System Settings → Login Items - the app shows a button to take you there. It never runs as root to do this.
@@ -56,7 +56,7 @@ The sidebar opens on **Overview** and groups the rest:
 
 <ThemedImage light="/images/overview-light.png" dark="/images/overview-dark.png" alt="Overview dashboard" />
 
-The landing dashboard. With the daemon running it shows a **serving** summary - the number of live `.test` sites (each a clickable chip that opens in your browser), stat tiles for PHP versions, sites, services, and captured mail (each links to its page), and a **system-health** strip (Local CA, `.test` resolver, privileged ports). When the daemon is down, the same surface becomes a **Start Yerd** hero.
+The landing dashboard. With the daemon running it shows a **serving** summary - the number of live `.test` sites (each a clickable chip that opens in your browser), stat tiles for PHP versions, sites, services, and captured mail (each links to its page), and a **system-health** strip (Local CA, `.test` resolver, privileged ports). When the daemon is down, the same surface becomes a **Start Yerd** hero. While the daemon is running, this page polls it every 5 seconds, so a change made from the CLI or another window shows up without a manual refresh.
 
 ### Settings
 
@@ -65,8 +65,10 @@ The landing dashboard. With the daemon running it shows a **serving** summary - 
 App- and daemon-level settings (one of the pages that stays usable when the daemon is down, since it can start or install it):
 
 - **Daemon.** Whether `yerdd` is running (with pid), a Start or Stop button, and a list of the daemon's in-process subsystems - the DNS resolver, the HTTP and HTTPS proxy listeners (with bound ports, including when macOS's `pf` redirect carries `:80`/`:443`), **Mail capture** (by port), and **Dump capture** (by port). The daemon row has a Restart button. Start/Stop/Restart go through your per-user service manager (systemd `--user` on Linux, a launchd LaunchAgent on macOS), with a detached-process fallback where none exists; the same actions are in the tray menu.
+- **Application Ports** (while the daemon is running). Editable HTTP/HTTPS (the rootless fallback ports used when 80/443 need elevation), DNS, mail-capture, and dumps ports. If a port is in use elsewhere the page flags it here (site serving or `.test` resolution shows as unbound) so you can pick a free one. Change a value and **Save & restart** validates it, saves, restarts the daemon, and rechecks. HTTP/HTTPS are locked while ports are elevated - un-elevate them on the Doctor page first.
 - **Start at login.** Three toggles - start the daemon at login, start the app at login, and start the app minimized (hidden to the tray). The daemon-at-login toggle is disabled where no per-user service manager is available.
-- **Appearance.** A System / Light / Dark theme selector, applied live and remembered across launches.
+- **Terminal CLI** (macOS and Linux). Installs `yerd` - and your installed tools (`php`, `composer`, ...) - onto your shell `PATH`. On a packaged Linux install `yerd` itself is already on `PATH`, so this is mainly how Linux users get the PHP/tool shims on `PATH` too.
+- **Appearance.** A System / Light / Dark theme selector; a **Tray icon** selector (Automatic, Light Y, Dark Y, Full icon) for the menu bar / system tray icon; and a **Title bar** selector (Automatic, macOS, Linux, Linux (Reversed), Windows) that forces a window-control style regardless of host platform. All three apply live and are remembered across launches.
 
 ### PHP
 
@@ -75,7 +77,7 @@ App- and daemon-level settings (one of the pages that stays usable when the daem
 Manages your installed [PHP versions](./php-versions):
 
 - A table of installed versions showing live FPM pool state, patch level, pool memory (RSS), and whether an update is available.
-- Install opens a picker of installable versions (already-installed ones are hidden). Installs download a prebuilt static build, which can take a few minutes with no progress bar; the daemon reports only on completion.
+- Install opens a picker of installable versions (already-installed ones are hidden). Installs download a prebuilt static build; progress streams live next to the Install button as it happens.
 - Refresh re-checks for updates. Update all updates every version with a pending update. Updates are notify-only.
 - Each row's `⋯` menu offers Restart (only when the pool is running or failed), Update (only when available), Set default (marks it with a star), and Uninstall. Restart all restarts every running pool.
 - A Default settings card edits the global ini defaults applied to every version: `memory_limit`, `max_execution_time`, `max_input_time`, `max_file_uploads`, `upload_max_filesize`, `post_max_size`, `error_reporting`, and `display_errors`. Leave a field blank to use PHP's built-in default. Saving restarts running pools to apply.
@@ -84,22 +86,15 @@ Manages your installed [PHP versions](./php-versions):
 
 <ThemedImage light="/images/sites-light.png" dark="/images/sites-dark.png" alt="Sites page" />
 
-The home base for [managing sites](./sites). Two cards:
+The home base for [managing sites](./sites). Polls the daemon every 5 seconds while running, so sites added or changed elsewhere show up without a manual refresh. Two cards:
 
 Parked folders. Each parked directory shows a count of the `.test` sites it produces (one per child directory). Park folder opens a native directory picker; each row's menu offers Reveal folder or Un-park (with confirmation).
 
-Sites. Every parked and linked site:
+Sites. Every parked and linked site is a card: the `name.test` URL (click to open in your browser), the document root, and badges for kind (`parked`/`linked`), PHP version, HTTPS/HTTP, and the [served web root](./sites#web-root-the-served-directory) when it isn't the project root.
 
-| Column | What it does |
-|---|---|
-| Site | The `name.test` URL. Click to open in your browser. A badge marks it `parked` or `linked`. |
-| Document root | The project directory. Click to reveal it in your file manager. |
-| Served from | The [web root](./sites#web-root-the-served-directory) actually served (e.g. `public`, or `/` for the project root), auto-detected per framework. Click to change it. |
-| PHP | A per-site PHP picker (dropdown of installed versions), changed inline. |
-| HTTPS | A toggle to flip [HTTPS](./https) on or off for that one site. |
-| Actions | `⋯` menu: Open in browser, Reveal folder, **Set web root…**, **Auto-detect web root**, and (linked sites only) Unlink. |
+Each card's `⋯` menu offers **Edit…**, Open in browser, Reveal folder, **Share publicly…** (jumps to the [Share page](#share)), and (linked sites only) Unlink. **Edit…** opens one dialog covering everything about the site: PHP version, web root (blank means auto-detect), the HTTPS toggle, and its [group](./sites#site-groups). Parked sites have no destructive action here; remove them by un-parking their folder, or they'd reappear.
 
-Link site opens a modal to link one directory under a name you choose (a single DNS label, validated as `[a-z0-9-]+`). **Set web root…** opens a modal to pin the served subdirectory (or pick it with a folder browser); **Auto-detect web root** clears the override and lets Yerd detect it again. Parked sites have no destructive action here; remove them by un-parking their folder, or they'd reappear.
+Sites can also be organized into named, reorderable groups shown as collapsible sections on this page; see [Sites](./sites) for the full walkthrough.
 
 ::: tip Untrusted CA banner
 If your local CA isn't trusted in the system store, the Sites view shows a banner (browsers will warn on HTTPS sites until fixed). It links to the **Doctor** page's Environment panel, where one click runs the fix. See [HTTPS & Certificates](./https).
@@ -129,6 +124,12 @@ The built-in SMTP **mail capture** server - point your app's mailer at `127.0.0.
 
 Laravel telemetry interception - `dump()`/`dd()` plus queries, jobs, views, requests, logs, cache, and outgoing HTTP - streamed to a separate viewer window with no code changes, captured by a per-version PHP extension. Enable interception, pick which signals to record, set the port, and open the viewer with Show Dumps. See [Laravel ▸ Dumps](./laravel-dumps).
 
+### Share
+
+<ThemedImage light="/images/share-light.png" dark="/images/share-dark.png" alt="Share page" />
+
+Publishes a local site to the public internet over Cloudflare Tunnel. A **Cloudflare Tunnel** card shows the detected `cloudflared` version; a **Shared sites** card picks a site and opens a Quick Tunnel with one click, alongside a live table of active tunnels. A separate **Named tunnels** card walks through connecting a Cloudflare account and exposing sites on your own domain. See [Sharing Sites](./sharing).
+
 ### Doctor
 
 <ThemedImage light="/images/doctor-light.png" dark="/images/doctor-dark.png" alt="Doctor page" />
@@ -148,11 +149,22 @@ The Fix buttons run the audited `yerd elevate` helper under an OS prompt; the GU
 
 Shows the app, daemon, and negotiated IPC protocol versions, plus your local environment: the TLD (`.test`), the DNS responder address, and the local CA certificate path and fingerprint (both copyable, with reveal-in-finder). It also links to the project repository.
 
+- **Updates.** A release-channel selector (Stable / Edge pre-releases), a **Check now** button, and the last-checked status (current version, latest stable/edge, and how long ago it checked). When an update is available, an **Apply update** button downloads, verifies, and installs it, restarting the app.
+- **Troubleshooting.** **Logs** opens a dialog tailing the GUI's own session log (`yerd-gui.log`) alongside the daemon log, tab-switchable, with a copy button. **Diagnostics** gathers a shareable text snapshot of app/daemon state with its own copy button - useful when reporting a problem.
+
+<ThemedImage light="/images/yerd-logs-light.png" dark="/images/yerd-logs-dark.png" alt="The Logs dialog, tailing the GUI session log" />
+
+<ThemedImage light="/images/yerd-diagnostics-light.png" dark="/images/yerd-diagnostics-dark.png" alt="The Diagnostics dialog, a copyable JSON snapshot of app/daemon state" />
+
 ## Keyboard shortcuts
 
 The window is fully keyboard-driven. Shortcuts follow each platform's convention: where macOS uses **Cmd** (`⌘`), Linux uses **Ctrl** with the same letter. Two of them are all you need to remember - the **command palette** (`⌘K` / `Ctrl+K`) jumps to any page or runs any action by typing, and the **shortcuts** overlay (`⌘/` / `Ctrl+/`) lists everything below in the app itself.
 
+<ThemedImage light="/images/command-search-light.png" dark="/images/command-search-dark.png" alt="The command palette, listing Go to page actions" />
+
 The command palette also lists your sites at the bottom (grouped by domain): **Open** a site in the browser, or **Secure / Unsecure** it (toggle HTTPS), without leaving the keyboard.
+
+<ThemedImage light="/images/keyboard-shortcuts-light.png" dark="/images/keyboard-shortcuts-dark.png" alt="The keyboard shortcuts overlay" />
 
 | Action | macOS | Linux | What it does |
 |---|---|---|---|

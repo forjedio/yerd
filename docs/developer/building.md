@@ -435,7 +435,7 @@ The shipped artifacts are the **GUI bundle** (`.dmg` on macOS, `.deb` on Linux),
 (per-platform overlays in `apps/yerd-gui/src-tauri/`). Tauri builds the `.app`
 (macOS) and `.deb` (Linux) directly; the macOS `.dmg` is built as a separate
 headless step (`apps/yerd-gui/scripts/build-macos-dmg.sh`, via `appdmg`) after
-the `.app`, not by Tauri's own dmg bundler — see
+the `.app`, not by Tauri's own dmg bundler - see
 [macOS code signing & notarisation](#macos-code-signing-notarisation) below
 for why. The CLI and daemon are never shipped on their own - there is no
 CLI-only artifact (tarball or `.deb`) separate from the GUI bundle and the
@@ -454,17 +454,17 @@ job in [`release.yml`](https://github.com/forjedio/yerd/blob/main/.github/workfl
 runs an `archlinux:base-devel` container, compiles the frontend + all four
 binaries from source, and assembles the package with
 [`packaging/arch/PKGBUILD`](https://github.com/forjedio/yerd/blob/main/packaging/arch).
-The package installs the four binaries as real files in `/usr/bin` — the three
+The package installs the four binaries as real files in `/usr/bin` - the three
 driven binaries (`yerd`/`yerdd`/`yerd-helper`) land at the same paths as the
 upstream `.deb`, so the daemon's sibling-binary lookup is identical (the GUI binary
 is `/usr/bin/yerd-gui`). A `.install` scriptlet `setcap`s `/usr/bin/yerdd` on
 install/upgrade so the daemon can bind ports 80/443.
 
 In-app `yerd update` on Arch runs `pacman -U` on the downloaded, minisign-verified
-`.pkg.tar.zst` — a **partial upgrade**: if the host is behind on `pacman -Syu`, a
+`.pkg.tar.zst` - a **partial upgrade**: if the host is behind on `pacman -Syu`, a
 newer library soname can make it abort (Yerd surfaces pacman's message), so Arch
 users should keep their system current. It also requires the default
-`LocalFileSigLevel = Optional` in `pacman.conf` — the package is not pacman-signed
+`LocalFileSigLevel = Optional` in `pacman.conf` - the package is not pacman-signed
 (Yerd verifies it itself with the embedded update key), so a hardened
 `LocalFileSigLevel = Required` rejects the local install.
 
@@ -476,10 +476,19 @@ with the `pacman` Cargo feature. The `arch` job builds the daemon with
 `--features yerdd/pacman` (→ `yerd-update/pacman`), so its `yerdd` selects the
 `.pkg.tar.zst` and the applier installs it via `pacman -U`; every other build
 defaults to `Deb`/`dpkg -i`. **This only works because the Arch package is built
-in a separate job (its own cargo invocation/target dir)** — within one cargo
+in a separate job (its own cargo invocation/target dir)** - within one cargo
 build, the feature would unify across the whole graph. The release gate proves
 the flag took by running the freshly-built `yerdd --pkg-format` and asserting it
 prints `pacman`. arm64 Arch is not built for v1.
+
+**`tauri/custom-protocol` is required too.** `PKGBUILD`'s `build()` builds the
+GUI binary with a raw `cargo build`, not `tauri build`/`npm run tauri build` -
+so it must pass `--features yerdd/pacman,tauri/custom-protocol` explicitly.
+`tauri build` injects `custom-protocol` automatically; a bare `cargo build`
+doesn't. Without it, Tauri's `generate_context!()` bakes `dev: true` into the
+binary, and at runtime it tries to load `devUrl` (`http://localhost:1420`)
+instead of the embedded frontend `dist` - the GUI fails to load at all, with
+"Could not connect to localhost: Connection refused".
 
 ### macOS code signing & notarisation
 

@@ -43,6 +43,7 @@ yerd [--json] <COMMAND> [ARGS...]
 | [Diagnostics](./diagnostics) | `ping`, `status`, `doctor`, `doctor fix` |
 | [Elevation](./elevation) | `elevate`, `unelevate` |
 | [Daemon control](./daemon) | `restart daemon` |
+| [Self-Update](./update) | `update` (check/apply a Yerd self-update) |
 | [Uninstall](./uninstall) | `uninstall` (full self-uninstall), `uninstall php`, `uninstall tool` |
 
 ## Exit codes

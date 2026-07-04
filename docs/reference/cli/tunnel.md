@@ -6,11 +6,13 @@ The `yerd tunnel` commands publish a local site to the public internet through
 The [Sharing Sites guide](../../guide/sharing) covers the model and the two tiers
 (quick tunnels and named tunnels); this page is the command reference.
 
-::: info cloudflared is downloaded on demand
-The first share needs the `cloudflared` binary. `yerd tunnel install` fetches the
-official static build (checksum-verified) into the daemon's data directory - it
-is not bundled and never touches your system. Quick share needs no Cloudflare
-account; named tunnels need a one-time `yerd tunnel login`.
+::: info cloudflared is detected on PATH, or downloaded on demand
+The first share needs the `cloudflared` binary. Yerd looks for one already on
+your `PATH` first and uses it if it's version 2023.3.0 or newer; otherwise
+`yerd tunnel install` fetches the official static build (checksum-verified) into
+the daemon's data directory - it is not bundled and never touches your system
+unless you already had a compatible `cloudflared` installed. Quick share needs no
+Cloudflare account; named tunnels need a one-time `yerd tunnel login`.
 :::
 
 ## Commands
@@ -42,7 +44,9 @@ yerd tunnel stop app
 ### `yerd tunnel install`
 
 Downloads and installs `cloudflared`. Idempotent; safe to re-run. Needed once
-before any share.
+before any share, unless a compatible `cloudflared` is already on `PATH` (see
+above). Re-running it always switches Yerd back to the managed copy, even if a
+`PATH` binary was previously in use.
 
 ### `yerd tunnel share <SITE>`
 
@@ -58,7 +62,8 @@ Tears down the site's tunnel. No-op if it isn't shared.
 ### `yerd tunnel status`
 
 Lists live tunnels (site, kind, state, URL/hostname) and whether `cloudflared` is
-installed and logged in.
+installed and logged in, plus its version and source: `managed` (Yerd's own
+download) or `system` (found on your `PATH`) in `--json` output.
 
 ## Named tunnels
 

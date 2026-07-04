@@ -148,7 +148,7 @@ install or system package manager. Yerd downloads the latest release (LTS for
 Node), verifies it, and drops the commands alongside its `php` shims.
 
 ```sh
-yerd install tool node     # latest Node LTS — node, npm, npx
+yerd install tool node     # latest Node LTS - node, npm, npx
 yerd install tool composer
 ```
 
