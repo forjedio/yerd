@@ -31,7 +31,6 @@ else if (isMailsWindow) useShortcuts("mails");
 
 // Start the single shared daemon poller for the app's lifetime.
 const { start, stop } = useDaemon();
-const { start: startDaemonFlow } = useDaemonStart();
 const { probing, needsOnboarding, probe } = useOnboarding();
 const router = useRouter();
 const route = useRoute();
@@ -50,8 +49,11 @@ const standalone = computed(() => route.meta.standalone === true);
 // "Start Yerd" button) instead of a raw IPC call, so DaemonDownHero and the
 // SideNav operations indicator reflect "starting" immediately instead of
 // showing a static "not running" screen until a manual click retries it.
+// `useDaemonStart` is acquired here rather than at setup-time: unlike
+// `useDaemon`, merely calling it registers a `daemon-start-phase` listener as a
+// side effect, and this path never runs for the dumps/mails windows.
 async function autoStart(): Promise<void> {
-  await startDaemonFlow();
+  await useDaemonStart().start();
 }
 
 /**
