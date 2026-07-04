@@ -64,6 +64,10 @@ Each installed engine's `⋯` menu offers:
 - **Change version** - upgrade in place, keeping your data.
 - **Uninstall** - remove the engine.
 
+<ThemedImage light="/images/database-configuration-light.png" dark="/images/database-configuration-dark.png" alt="The Configuration dialog for a MySQL database, with copyable .env values" />
+
+<ThemedImage light="/images/manage-databases-light.png" dark="/images/manage-databases-dark.png" alt="The Manage databases dialog, creating and listing MySQL databases" />
+
 ## From the command line
 
 ### Managing services

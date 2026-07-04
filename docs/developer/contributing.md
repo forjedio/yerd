@@ -172,6 +172,25 @@ pub enum TlsError {
 Mark public error enums `#[non_exhaustive]` so adding variants stays
 semver-compatible.
 
+## Comments
+
+Comments are for the next human reading the code, not narration of it. Keep
+them short, in plain English, and accurate - fix or delete a comment that has
+drifted from what the code actually does.
+
+- **No inline comments inside function bodies.** If a line needs a comment to
+  be understood, make the code clearer instead - extract a well-named function,
+  rename a variable, restructure the branch. Two exceptions: a `// SAFETY:`
+  justification on the rare `unsafe` block, and a short field label on an
+  otherwise-opaque byte or magic number in protocol code (`1, // version`).
+- **Prefer item and module docs (`///`, `//!`) over inline narration.** Document
+  the non-obvious *why* - RFC references, gotchas, cross-platform quirks - not
+  the obvious *what*. Don't restate the signature.
+- **Skip docs on self-evident private items** where the name says it all.
+  Public (`pub`) items still get a short doc line even when obvious, since
+  `missing_docs` is `warn` and it feeds the generated API docs.
+- **No em dashes in comments.** Use a plain hyphen, comma, or colon instead.
+
 ## Testing standard
 
 A change is not done until it is tested at the right layer. The four kinds of

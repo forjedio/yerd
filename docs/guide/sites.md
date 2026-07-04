@@ -11,17 +11,31 @@ Both route identically; only the registration differs.
 
 ## In the desktop app
 
-The **Sites** page (under **Environment** in the sidebar) is the home base for managing your sites. It lists every `.test` site in a scannable table you can act on inline, with the registration controls in the header. Most day-to-day site work happens here without touching the terminal.
+The **Sites** page (under **Environment** in the sidebar) is the home base for managing your sites. It lists every `.test` site as a scannable card you can act on, with the registration controls in the header. Most day-to-day site work happens here without touching the terminal.
 
 <ThemedImage light="/images/sites-light.png" dark="/images/sites-dark.png" alt="The Sites page in the Yerd desktop app" />
 
-- Each row is a `name.test` site you can click to open in your browser, with a badge marking it `parked` or `linked`.
-- Change a site's PHP version from a per-site picker, and flip HTTPS on or off with a one-click toggle - no commands.
-- The **Served from** column shows the auto-detected web root; click it (or use the row's `⋯` menu) to set or auto-detect it.
+- Each card is a `name.test` site you can click to open in your browser, with badges for `parked`/`linked`, PHP version, and HTTPS/HTTP.
+- A card's **Edit…** dialog (from its `⋯` menu) covers PHP version, [web root](#web-root-the-served-directory), HTTPS, and [group](#site-groups) in one place - no commands.
 - **Park folder** and **Link site** in the header register new sites: Park folder opens a directory picker, Link site opens a modal to name a single directory.
 - A separate **Parked folders** section lists each parked root with a count of the sites it produces, plus Reveal folder and Un-park.
 
 For the full tour of the app, see [Desktop App](./desktop-app#sites).
+
+### Site groups
+
+Sites can be organised into named groups - a GUI-only, cosmetic layer for scanning a large site list (client work, personal projects, whatever grouping makes sense to you). Groups don't affect routing, PHP, or HTTPS; the CLI has no concept of them.
+
+- **Create a group** from the header's **⋯** menu → **New group…**. The page still shows the classic flat grid until at least one group exists; once it does, sites render as collapsible group sections instead.
+- **Assign a site to a group** from its **Edit…** dialog: a **Group** field lists the groups you've created plus **No group**. A site only shows up in a group once you've set this.
+- **Reorder groups** with the up/down arrows next to a group's name (shown on hover).
+- **Rename or delete a group** from the pencil icon next to it, which opens one **Edit group** dialog: change the name and **Save**, or click **Delete group** for a second confirmation step naming the group. Deleting a group doesn't remove its sites - they fall back to Unallocated.
+- Each group is a **collapsible section** with a site count badge; collapsed/expanded state is remembered per group.
+- Sites with no group assigned - or whose assigned group was deleted - appear in a synthetic **Unallocated** section at the end, with no management controls of its own.
+
+<ThemedImage light="/images/edit-site-light.png" dark="/images/edit-site-dark.png" alt="The Edit site dialog, with PHP version, web root, HTTPS, and Group fields" />
+
+Group names are unique case-insensitively (like site names) and can't be `Unallocated`, which is reserved for the synthetic bucket.
 
 ## Create a new Laravel site
 
@@ -33,7 +47,7 @@ Creating a Laravel site needs a PHP version, **Composer**, and the **Laravel ins
 
 ### Basics
 
-<ThemedImage light="/images/newlaravel1-light.png" dark="/images/newlaravel1-dark.png" alt="The Create-a-new-Laravel-site wizard, Basics step" />
+<ThemedImage light="/images/create-laravel-1-light.png" dark="/images/create-laravel-1-dark.png" alt="The Create-a-new-Laravel-site wizard, Basics step" />
 
 - **Project name** - the site is served at `<name>.test`.
 - **Location** - pick the parent folder. If it's a [parked](#parking-a-directory) root the new site is served automatically; any other folder is [linked](#linking-a-directory) under the project name.
@@ -42,13 +56,13 @@ Creating a Laravel site needs a PHP version, **Composer**, and the **Laravel ins
 
 ### Stack
 
-<ThemedImage light="/images/newlaravel2-light.png" dark="/images/newlaravel2-dark.png" alt="The Create-a-new-Laravel-site wizard, Stack step (starter kit)" />
+<ThemedImage light="/images/create-laravel-2-light.png" dark="/images/create-laravel-2-dark.png" alt="The Create-a-new-Laravel-site wizard, Stack step (starter kit)" />
 
 Choose a **starter kit**: **None** (a plain skeleton, no auth scaffolding), the official **React**, **Vue**, or **Svelte** kits (Inertia + TypeScript), **Livewire** (Blade + PHP), or **Community…** to scaffold from any `--using <package>`.
 
 ### Testing
 
-<ThemedImage light="/images/newlaravel3-light.png" dark="/images/newlaravel3-dark.png" alt="The Create-a-new-Laravel-site wizard, Testing step" />
+<ThemedImage light="/images/create-laravel-3-light.png" dark="/images/create-laravel-3-dark.png" alt="The Create-a-new-Laravel-site wizard, Testing step" />
 
 - **Testing framework** - **Pest** or **PHPUnit**.
 - **Database** - SQLite, MySQL, MariaDB, PostgreSQL, or SQL Server.
@@ -57,7 +71,13 @@ Choose a **starter kit**: **None** (a plain skeleton, no auth scaffolding), the 
 
 ### Review
 
-A final summary of your choices. Click **Create** and Yerd runs the installer, streaming its live output so you can watch the scaffold and dependency install happen. When it finishes, the project is on disk, registered (parked or linked), served at `<name>.test`, and ready to open in your browser - no extra steps.
+<ThemedImage light="/images/create-laravel-4-light.png" dark="/images/create-laravel-4-dark.png" alt="The Create-a-new-Laravel-site wizard, Review step" />
+
+A final summary of your choices - site name, path, PHP version, and HTTPS. Click **Create** and the dialog switches to a live progress view (**Preflight → Scaffolding → Registering → Done**) streaming the installer's output, so you can watch the scaffold and dependency install happen.
+
+<ThemedImage light="/images/create-laravel-5-light.png" dark="/images/create-laravel-5-dark.png" alt="The Create-a-new-Laravel-site wizard, live progress view" />
+
+When it finishes, the project is on disk, registered (parked or linked), served at `<name>.test`, and ready to open in your browser or reveal in your file manager - no extra steps.
 
 ## From the command line
 
@@ -291,7 +311,7 @@ yerd root my-app --auto      # forget the override; go back to auto-detection
 `yerd root <site>` with no path also resets to auto-detection. The path is relative to the site's directory (an absolute path inside it works too); Yerd validates that it resolves to a directory **inside** the project and rejects anything that escapes it. A manual override always wins and is never overwritten by re-detection.
 
 ::: tip In the desktop app
-The [Sites view](./desktop-app#sites) shows the served path per site and offers **Set web root…** and **Auto-detect web root** in each site's `⋯` menu.
+The [Sites view](./desktop-app#sites) shows the served web root as a badge per site, and its **Edit…** dialog sets it directly - leave the field blank to go back to auto-detection.
 :::
 
 ## Related

@@ -28,9 +28,11 @@ choose.
 
 ## Prerequisite: cloudflared
 
-Sharing needs the `cloudflared` binary. Yerd **downloads it on demand** (the
-official Apache-2.0 static build, verified by checksum) and installs it under the
-daemon's data directory - it isn't bundled, and it never touches your system. No
+Sharing needs the `cloudflared` binary. If one is already on your `PATH` (version
+2023.3.0 or newer), Yerd detects and uses it automatically - nothing to install.
+Otherwise Yerd **downloads it on demand** (the official Apache-2.0 static build,
+verified by checksum) and installs it under the daemon's data directory - it
+isn't bundled, and it never touches your system unless you already had one. No
 Cloudflare account is required for quick share.
 
 ```sh
@@ -38,7 +40,9 @@ yerd tunnel install
 ```
 
 In the desktop app, the **Share** page offers an **Install cloudflared** button
-the first time you visit.
+the first time you visit. If Yerd is using a `cloudflared` it found on your
+`PATH`, the badge is annotated `(system)` and a **Use Yerd's bundled version
+instead** button lets you switch to the managed, auto-updating copy.
 
 ## Quick share
 
@@ -122,6 +126,12 @@ shared, the sidebar item shows a count.
 - The **Shared sites** card has a searchable site picker and a **Share** button
   for quick tunnels, plus a live table of active tunnels with copy-URL and stop
   controls.
+- Each site's `⋯` menu on the [Sites page](./sites) also has a **Share
+  publicly…** shortcut that jumps straight to sharing that site, without going
+  to the Share page first:
+
+  <ThemedImage light="/images/share-site-light.png" dark="/images/share-site-dark.png" alt="The Sites page row menu, with a Share publicly… action" />
+
 - The **Named tunnels** card walks you through connecting your Cloudflare account,
   creating the tunnel, and choosing which sites to expose. Each site's hostname
   box is pre-filled with `{site}.{your-domain}`. Exposing a site brings the

@@ -13,3 +13,5 @@ yerd restart daemon
 :::
 
 There is no `yerd start`/`yerd stop` subcommand: the daemon's lifecycle is managed by your OS (and started on demand). See [The Daemon](../../guide/daemon) for how `yerdd` is launched and supervised, and the [yerdd binary page](../../developer/binaries/yerdd) for internals.
+
+`yerd update --yes` (see [Self-Update](./update)) also restarts the daemon, as the final step of installing a new Yerd version - that restart goes through the same OS service mechanics as `restart daemon`, not a fresh `yerdd` process started from scratch.

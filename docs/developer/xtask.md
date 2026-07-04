@@ -103,12 +103,31 @@ On success it prints `OK: all manifests are at <version>`. On mismatch it lists 
 
 ## Release workflow
 
-The version commands exist to make tagged releases safe. The flow is:
+The version commands exist to make tagged releases safe, but cutting a release
+is a single command: [`scripts/release.sh`](https://github.com/forjedio/yerd/blob/main/scripts/release.sh).
 
 ```sh
-cargo xtask bump 2.0.2          # sets Cargo.toml + tauri.conf.json + package.json
-git commit -am "release: v2.0.2" && git tag v2.0.2 && git push --follow-tags
+./scripts/release.sh --version v2.0.3           # final release
+./scripts/release.sh --version 2.0.2-rc.5       # prerelease (leading v optional)
+./scripts/release.sh --version v2.0.3 --dry-run # print the plan, change nothing
+./scripts/release.sh --version v2.0.3 --tag-only # push the tag only, not the branch
 ```
+
+It normalises the version (strips a leading `v`) and validates it against
+`MAJOR.MINOR.PATCH[-prerelease]` - the exact shape the release workflow's tag
+filter accepts (`v2.0.2.rc-5` is rejected; use `v2.0.2-rc.5`). Before touching
+anything it checks the tree is clean (`git diff` / `git diff --cached`), that
+you're on a real branch (not detached `HEAD`), and that the tag doesn't already
+exist locally or on the remote. It then:
+
+1. Runs `cargo xtask bump <version>` to set `Cargo.toml`, `tauri.conf.json`,
+   and `package.json`.
+2. Runs `cargo update --workspace` to refresh `Cargo.lock` to match (a failure
+   here, e.g. offline, is a warning, not fatal).
+3. Runs `cargo xtask version-check <tag>` - the same gate CI runs - to confirm
+   every manifest actually landed on the new version.
+4. Commits the bump as `Release: vX.Y.Z`, tags it (`git tag -a`), and pushes -
+   the branch and the tag by default, or just the tag with `--tag-only`.
 
 The release CI builds the single GUI bundle for macOS (`arm64`) and Linux (`amd64` and `arm64`) - each embedding the three binaries - and a mismatched tag fails fast via `cargo xtask version-check`. Because `version-check` strips the leading `v`, it accepts both the tag form (`v2.0.2`) and the bare version (`2.0.2`). See [Building from Source](./building) and [Contributing](./contributing) for the full developer gate.
 

@@ -8,10 +8,10 @@ non-ongoing places: installing the system `.deb` (standard for any package),
 and a single, optional, **one-time** setup step. Day-to-day use never touches
 root.
 
-::: info Release status — Release Candidate
+::: info Release status - Release Candidate
 Yerd is currently shipping **Release Candidate** builds, available from the
 [releases page](https://github.com/forjedio/yerd/releases). We're tracking a
-**stable v2.0.2** release on **8 July 2026**. The RCs are ready for everyday use —
+**stable v2.0.2** release on **8 July 2026**. The RCs are ready for everyday use -
 if you hit anything, please [report a bug on GitHub](https://github.com/forjedio/yerd/issues).
 :::
 
@@ -27,7 +27,7 @@ so they can't both own them at once. **Stop the other tool first**, then follow
 Yerd ships a single desktop app for **macOS** (Apple Silicon) and **Linux**
 (Debian/Ubuntu `.deb` for x86-64 and arm64, plus an Arch `.pkg.tar.zst` for
 x86-64). The daemon, the `yerd` CLI, and the privileged
-helper are all bundled inside it — there is nothing else to install. PHP itself is
+helper are all bundled inside it - there is nothing else to install. PHP itself is
 **not** bundled - Yerd downloads prebuilt static PHP builds on demand when you run
 `yerd install php`, so the install stays tiny and fast.
 :::
@@ -53,8 +53,8 @@ tracked for **8 July 2026**):
 | Linux · Arch (x86-64) | `Yerd_Linux_x86_64_v<ver>.pkg.tar.zst` | `sudo pacman -U ./Yerd_Linux_x86_64_v<ver>.pkg.tar.zst` |
 
 ::: tip Arch Linux
-Remove any leftover `/usr/bin/yerd` from the old v1 (Go) project first — pacman
-won't install over a file it doesn't own — and `pacman -Syu` before installing so
+Remove any leftover `/usr/bin/yerd` from the old v1 (Go) project first - pacman
+won't install over a file it doesn't own - and `pacman -Syu` before installing so
 the bundled GUI's WebKit/GTK libraries match your system.
 :::
 

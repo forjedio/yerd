@@ -23,6 +23,12 @@ Where a row isn't configured, **Fix (elevate)** runs the privileged action; once
 
 See [Desktop App](./desktop-app#doctor) for the rest of the GUI.
 
+### When the daemon won't start
+
+If the app fails to start the daemon, it shows a diagnostics panel with hints derived from the daemon's own logs plus the last few lines of the macOS self-repair trail (`yerd-gui-repair.log` - see [The Daemon](./daemon#autostart)). One case it recognizes: a running daemon whose config schema is newer than what the daemon build understands (an upgrade that didn't fully take effect) - the panel names it explicitly and suggests toggling the daemon's login item off then on in Settings to force re-registration, or removing any leftover old `Yerd.app` copies.
+
+"Copy diagnostics" in that panel bundles the daemon log tail, the repair log tail, and the detected hints together, so a bug report carries everything in one paste.
+
 ## From the command line
 
 ::: tip
@@ -63,9 +69,9 @@ php
 | `daemon` | pid, uptime, RSS. The reverse proxy and DNS responder run inside the daemon, so one RSS figure covers all three. Omitted when it can't be read (non-Linux or transient failure). |
 | `version` | The running daemon's version. Shows `unknown` for daemons that predate version reporting. |
 | `tld` | The TLD served, e.g. `.test`. |
-| `http` / `https` | The bound port. A privileged-port fallback shows `80 → 8080 (fallback)`; an active macOS redirect shows `80 → 8080 (redirected)`. Reachable on the requested port either way. |
+| `http` / `https` | The bound port. A privileged-port fallback shows `80 → 8080 (fallback)`; an active macOS redirect shows `80 → 8080 (redirected)`. Reachable on the requested port either way. When neither the privileged port nor its fallback could bind, the line instead reads `not serving - couldn't bind 8080 (run yerd doctor)` - the daemon is up but serving no sites. See `doctor`'s `WebPortsUnbound`. |
 | `ports` (conflict) | Only shown when a **non-Yerd** process is holding 80/443. Yerd confirms the redirect actually reaches *its* proxy (via a `Server: yerd` marker), so a foreign web server or a stale `pf` rule is reported as a conflict rather than mistaken for a live redirect. Run `yerd doctor`. |
-| `dns` | The address the embedded DNS responder is bound on. |
+| `dns` | The address the embedded DNS responder is bound on, or `not resolving - couldn't bind port 1053 (run yerd doctor)` when something else already holds that port. This is a soft-fail: the daemon still runs (proxy, PHP pools, IPC), just without `.test` name resolution. See `doctor`'s `DnsPortUnbound`. |
 | `ca` | `trusted: yes / no / unknown`, plus the CA cert path. `unknown` means the probe couldn't tell, and is not treated as untrusted. |
 | `resolver` | Whether the OS resolver routes `*.<tld>` to Yerd. Tri-state (`yes` / `no` / `unknown`). |
 | `load` | 1/5/15-minute load averages. Omitted where unavailable. |
@@ -113,8 +119,10 @@ When nothing is wrong:
 | Code | Severity | Meaning | Remedy |
 |---|---|---|---|
 | `DaemonDown` | `Fail` | The CLI couldn't reach the daemon over IPC. | `yerdd` |
+| `WebPortsUnbound` | `Fail` | Neither the privileged web ports nor their rootless fallback could bind (something else holds both) - the daemon is up but serving no sites. Supersedes `PortFallback`. | Free the ports, or change the fallback ports in Settings (Yerd ▸ General), then restart the daemon |
 | `PortFallback` | `Warn` | A privileged port (below 1024) fell back to rootless and isn't reachable on the requested port. | `sudo yerd elevate ports` |
 | `ForeignWebListener` | `Warn` | A process **other than Yerd** is listening on 80/443 (confirmed via the proxy's `Server` marker, so Yerd is never mistaken for the squatter). Cross-platform. Supersedes `PortFallback` - elevation can't bind a port someone else owns. | Stop the other web server, then `sudo yerd elevate ports` |
+| `DnsPortUnbound` | `Warn` | The DNS port (`dns_port`) is held by another process. The daemon still runs, just without `*.test` resolution - independent of the web-port checks above, so it surfaces even alongside `WebPortsUnbound`. | Free that port, or change it in Settings (Yerd ▸ General), then restart. Re-run `sudo yerd elevate resolver` if the port changed |
 | `CaNotTrusted` | `Warn` | The local CA isn't in the system trust store, so HTTPS shows warnings. | `sudo yerd elevate trust` |
 | `PhpCaNotTrusted` | `Warn` | The bundled PHP's CA bundle (`cacert.pem`) is missing or stale, so PHP HTTPS to `.test` fails with cURL error 60. **Auto-fixable.** | `yerd doctor fix` (rebuilds the bundle; restart Yerd if it persists) |
 | `ResolverNotInstalled` | `Warn` | The OS resolver doesn't route `*.<tld>` to Yerd's DNS. | `sudo yerd elevate resolver` |

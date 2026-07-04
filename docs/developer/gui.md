@@ -142,6 +142,22 @@ Three commands are **host-only helpers** with no daemon IPC:
 
 The Settings page (route `/general`) adds further host-only commands (no daemon IPC) for daemon lifecycle and autostart - `daemon_installed`, `start_daemon`, `stop_daemon`, `cli_path_status`, `install_cli_to_path`, `remove_cli_from_path`, `open_login_items`, `get_autostart`, `set_autostart_daemon`, `set_autostart_gui`, `set_gui_minimized` - implemented in `daemon.rs` (resolve the bundled binaries, start/stop, install the `yerd` CLI on PATH) and `autostart.rs` (per-user service + run-at-login; macOS uses `smappservice.rs`). The daemon is **bundled** in the app, so there's no download/install command.
 
+On macOS, `autostart.rs` also self-repairs the daemon's SMAppService registration
+on every launch (`ensure_daemon_registration`). It folds the GUI/daemon version
+comparison (`decide`) and a phantom-job check into a `RegAction`: `Refuse` when
+the registered daemon is newer than this GUI (a downgrade guard - the running
+daemon is left alone and the version conflict is surfaced on the Overview
+banner); `NoOp` when the registration already matches this GUI and the launchd
+job is healthy; `Reregister` (unregister, `register_repairing`, kickstart)
+either when the version needs to reconcile, or when the version is already
+up to date but SMAppService reports the registration `.enabled` while
+`launchctl print` shows no job for it - a **phantom registration** (a BTM
+hiccup, a crash, or a manual `bootout`) that a plain kickstart can't recover
+from since there's no job to kick. Every branch logs to
+`{cache}/yerd-gui-repair.log`, which `daemon_diagnostics`/"Copy diagnostics"
+surfaces - the first place to check when a daemon doesn't come back after an
+update.
+
 ::: tip No `Request` is ever built in the frontend
 The `Request` enum is intentionally **not** mirrored into TypeScript. The
 frontend never constructs raw requests; it invokes named commands and the
@@ -229,7 +245,15 @@ are the only categories the frontend's `IpcError` needs to distinguish.
   viewers, site actions, and nav shortcuts. A `TRANSITION`/`MENU_LOCK` guard keeps
   a tray-initiated lifecycle action's transient menu from being stomped by a
   late poll tick. The same poll composites status badges onto the tray icon: a red
-  dot for a waiting update and an orange dot for unread mail (`draw_dot`).
+  dot for a waiting update and an orange dot for unread mail (`draw_dot`). Menu
+  item icons are recoloured per-build for the desktop's dark/light state
+  (`menu_icon`/`dark_menu_bar`), since `muda`'s menu icons aren't templates and
+  won't auto-tint themselves: on macOS this reads the `AppleInterfaceStyle` user
+  default (unchanged); on Linux it probes the xdg-desktop-portal `Settings`
+  `color-scheme` preference via the `dark-light` crate, a bounded D-Bus round
+  trip taken by the caller *before* `MENU_LOCK` is acquired (see the module doc
+  comment) so it never runs lock-held. Any read failure (no portal, older
+  desktop) falls back to light, i.e. today's black glyphs.
 - On **Linux**, before GTK initialises, `glib::set_prgname("yerd-gui")` pins the
   Wayland `app_id` so the dock matches `yerd-gui.desktop`, and a `with_webview`
   block clamps WebKitGTK's zoom level (the only place that can intercept
@@ -237,9 +261,19 @@ are the only categories the frontend's `IpcError` needs to distinguish.
 
 The window itself (`tauri.conf.json`) is **decorationless and transparent**
 (`"decorations": false`, `"transparent": true`, `macOSPrivateApi: true`), which
-is why the frontend ships a custom `TitleBar.vue`. The CSP is locked down to
+is why the frontend ships a custom `TitleBar.vue`. Its control layout isn't
+hardcoded to the host OS - it's a user preference. `lib/titleBarStyle.ts` holds
+a `TitleBarStyle` (`"auto" | "macos" | "linux" | "linux-reversed" | "windows"`),
+persisted host-side in `gui-settings.json` via the `get_title_bar_style` /
+`set_title_bar_style` commands (mirroring the tray icon variant setting) and
+broadcast to every open window so the main, mails, and dumps windows switch in
+lockstep. `"auto"` (the default) resolves from `host_platform`; any other value
+forces that layout regardless of the actual host, driving which controls
+`TitleBar.vue` renders on which side (macOS traffic lights; Linux close-left,
+minimize/maximize-right; Linux Reversed the mirror of that; Windows
+minimize/maximize/close all on the right). The CSP is locked down to
 `default-src 'self'` (plus inline styles and `data:` images). Bundle targets are
-`deb` and `app` — the macOS `.dmg` is **not** a Tauri bundle target; it's built
+`deb` and `app` - the macOS `.dmg` is **not** a Tauri bundle target; it's built
 as a separate headless step (`apps/yerd-gui/scripts/build-macos-dmg.sh`, via
 `appdmg`) after the `.app` is signed, since Tauri's own dmg bundler drives
 Finder via AppleScript to style the background/icon layout, which isn't
@@ -248,12 +282,12 @@ reliable outside an interactive session. See
 privileged-port capability is **not**
 baked into the artifact: the `postinst` script grants
 `cap_net_bind_service=+ep` on the installed `yerdd` at configure time (and
-re-applies it on every upgrade, since dpkg wipes file capabilities) — falling
+re-applies it on every upgrade, since dpkg wipes file capabilities) - falling
 back to ports 8080/8443 if `setcap` is missing or the filesystem can't hold
 caps. There's no AppImage target because its ephemeral mount can't host a
 `postinst` step, so the daemon's `setcap` can't be persisted that way. The native
 Arch package (`.pkg.tar.zst`) is **not** a Tauri bundle target (Tauri has no
-pacman bundler) — it's built separately from
+pacman bundler) - it's built separately from
 [`packaging/arch/PKGBUILD`](https://github.com/forjedio/yerd/blob/main/packaging/arch)
 in the release workflow's `arch` job, with a `.install` scriptlet doing the same
 `setcap`. See [Packaging and releasing](./building#the-arch-package-pkg-tar-zst).
