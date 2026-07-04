@@ -11,11 +11,10 @@ import WelcomeView from "@/views/WelcomeView.vue";
 import Toaster from "@/components/ui/Toaster.vue";
 import Spinner from "@/components/ui/Spinner.vue";
 import { useDaemon } from "@/composables/useDaemon";
+import { useDaemonStart } from "@/composables/useDaemonStart";
 import { useOnboarding } from "@/composables/useOnboarding";
-import { useToast } from "@/composables/useToast";
 import { useShortcuts } from "@/lib/shortcuts/useShortcuts";
 import { sitesIntent } from "@/lib/shortcuts/sitesIntent";
-import { IpcError, startDaemon } from "@/ipc/client";
 
 // The auxiliary "dumps" and "mails" windows render standalone viewers with no app
 // shell and must NOT run the daemon poller or the first-run auto-start (the main
@@ -31,11 +30,11 @@ if (isDumpsWindow) useShortcuts("dumps");
 else if (isMailsWindow) useShortcuts("mails");
 
 // Start the single shared daemon poller for the app's lifetime.
-const { start, stop, refresh } = useDaemon();
+const { start, stop } = useDaemon();
+const { start: startDaemonFlow } = useDaemonStart();
 const { probing, needsOnboarding, probe } = useOnboarding();
 const router = useRouter();
 const route = useRoute();
-const toast = useToast();
 let unlistenNav: UnlistenFn | undefined;
 let unlistenSitesIntent: UnlistenFn | undefined;
 
@@ -47,16 +46,12 @@ const standalone = computed(() => route.meta.standalone === true);
 // The daemon is bundled inside the app, so first run just *starts* it (no
 // download). If it's already reachable (e.g. autostarted, or `cargo run -p
 // yerdd`) we leave it alone - starting a second would compete for the socket.
+// Routed through the shared start->poll->diagnose flow (the same one behind the
+// "Start Yerd" button) instead of a raw IPC call, so DaemonDownHero and the
+// SideNav operations indicator reflect "starting" immediately instead of
+// showing a static "not running" screen until a manual click retries it.
 async function autoStart(): Promise<void> {
-  try {
-    await startDaemon();
-  } catch (e) {
-    // Non-fatal: on macOS the daemon may be pending Login-Items approval, or the
-    // user can start it from the General tab - both are surfaced there.
-    toast.error("Couldn't start the Yerd daemon", (e as IpcError).message);
-  } finally {
-    await refresh();
-  }
+  await startDaemonFlow();
 }
 
 /**
