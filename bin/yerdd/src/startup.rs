@@ -280,6 +280,7 @@ pub async fn bring_up_with_dirs(
         php_manager: php_manager.clone(),
         service_manager,
         tunnel_manager,
+        cloudflared_resolution: tokio::sync::RwLock::new(None),
         mail_store,
         mail: crate::state::MailRuntime {
             listening: mail_listening,

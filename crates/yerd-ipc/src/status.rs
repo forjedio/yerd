@@ -550,6 +550,17 @@ pub struct SiteHostname {
     pub hostname: String,
 }
 
+/// Where the `cloudflared` binary Yerd is using came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum CloudflaredSource {
+    /// Downloaded and verified by Yerd into its own managed install dir.
+    Managed,
+    /// A pre-existing binary found on the user's `PATH`.
+    System,
+}
+
 /// `cloudflared` install / account status, reported alongside the live tunnels.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CloudflaredStatus {
@@ -558,6 +569,9 @@ pub struct CloudflaredStatus {
     /// The installed `cloudflared` version, when known.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub version: Option<String>,
+    /// Where `installed`'s binary came from, when installed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<CloudflaredSource>,
     /// Whether a Cloudflare account is logged in (a `cert.pem` is present).
     #[serde(default)]
     pub logged_in: bool,

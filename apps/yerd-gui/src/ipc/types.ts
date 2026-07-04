@@ -524,11 +524,16 @@ export interface TunnelInfo {
   hostname?: string;
 }
 
+/** crates/yerd-ipc/src/status.rs - CloudflaredSource. */
+export type CloudflaredSource = "managed" | "system";
+
 /** crates/yerd-ipc/src/status.rs - CloudflaredStatus. */
 export interface CloudflaredStatus {
   installed: boolean;
   /** Installed cloudflared version when known; absent otherwise. */
   version?: string;
+  /** Where the installed binary came from; absent when not installed. */
+  source?: CloudflaredSource;
   /** Whether a Cloudflare account is logged in (Phase 2). */
   logged_in: boolean;
 }

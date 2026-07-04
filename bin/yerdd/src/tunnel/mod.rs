@@ -45,13 +45,87 @@ pub(super) fn logfile(dirs: &PlatformDirs, site: &str) -> PathBuf {
 }
 
 /// `cloudflared` install + account status for the wire.
-#[must_use]
-pub fn cloudflared_status(dirs: &PlatformDirs) -> CloudflaredStatus {
+pub async fn cloudflared_status(state: &DaemonState) -> CloudflaredStatus {
+    let resolved = resolved_cloudflared(state).await;
     CloudflaredStatus {
-        installed: install::is_installed(dirs),
-        version: install::installed_version(dirs),
-        logged_in: named::is_logged_in(dirs),
+        installed: resolved.is_some(),
+        version: resolved.as_ref().and_then(|r| r.version.clone()),
+        source: resolved.map(|r| source_to_wire(r.source)),
+        logged_in: named::is_logged_in(&state.dirs),
     }
+}
+
+/// Map the daemon-internal source to its wire form.
+fn source_to_wire(source: install::CloudflaredSource) -> yerd_ipc::CloudflaredSource {
+    match source {
+        install::CloudflaredSource::Managed => yerd_ipc::CloudflaredSource::Managed,
+        install::CloudflaredSource::System => yerd_ipc::CloudflaredSource::System,
+    }
+}
+
+/// Resolve which `cloudflared` binary to use, maintaining
+/// `state.cloudflared_resolution` as a cache so a `PATH`-found system
+/// binary's `--version` probe runs at most once per resolution rather than on
+/// every tunnel action or status poll.
+///
+/// A cached `System` entry is re-checked for existence (cheap, no re-spawn)
+/// before use, so a binary removed or replaced out from under a live session
+/// is detected and dropped rather than silently spawned from a dangling path.
+/// A cached `Managed` entry is trusted as-is (it's invalidated explicitly by a
+/// fresh install instead, see `install_cloudflared_streamed`). On a cache
+/// miss this recomputes via `install::resolve` and writes the result back
+/// under a no-downgrade rule: a fresh `Managed` result always overwrites, but
+/// a `System` (or absent) result never overwrites an existing `Managed`
+/// entry, since a concurrent successful install may have raced ahead of a
+/// slow `PATH` probe that started before it committed.
+pub(super) async fn resolved_cloudflared(state: &DaemonState) -> Option<install::Resolved> {
+    if let Some(cached) = cached_cloudflared_if_valid(state).await {
+        return Some(cached);
+    }
+
+    let fresh = install::resolve(
+        &state.dirs,
+        &install::RealVersionProbe,
+        &install::RealPathSearch,
+    )
+    .await;
+
+    let mut guard = state.cloudflared_resolution.write().await;
+    if is_downgrade(guard.as_ref(), fresh.as_ref()) {
+        return guard.clone();
+    }
+    guard.clone_from(&fresh);
+    fresh
+}
+
+/// The cached resolution, if present and (for a `System` entry) still
+/// pointing at an existing executable file.
+async fn cached_cloudflared_if_valid(state: &DaemonState) -> Option<install::Resolved> {
+    let cached = state.cloudflared_resolution.read().await;
+    let resolved = cached.as_ref()?;
+    match resolved.source {
+        install::CloudflaredSource::Managed => Some(resolved.clone()),
+        install::CloudflaredSource::System => {
+            install::is_executable(&resolved.binary).then(|| resolved.clone())
+        }
+    }
+}
+
+/// Whether writing `fresh` over `existing` in the cache would downgrade an
+/// established `Managed` resolution to `System` or to nothing. Pure decision
+/// logic (no locks, no I/O) so it's directly unit-testable; `resolved_cloudflared`
+/// is the only caller, and always calls this under the cache's write lock so
+/// the check and the write it gates are atomic.
+fn is_downgrade(existing: Option<&install::Resolved>, fresh: Option<&install::Resolved>) -> bool {
+    let existing_is_managed = matches!(
+        existing.map(|r| r.source),
+        Some(install::CloudflaredSource::Managed)
+    );
+    let fresh_is_managed = matches!(
+        fresh.map(|r| r.source),
+        Some(install::CloudflaredSource::Managed)
+    );
+    existing_is_managed && !fresh_is_managed
 }
 
 /// `StartQuickTunnel`: publish a site at a random `*.trycloudflare.com` URL.
@@ -61,12 +135,12 @@ pub fn cloudflared_status(dirs: &PlatformDirs) -> CloudflaredStatus {
 /// model) so `StopTunnel`/`TunnelStatus`/shutdown stay responsive and a stuck
 /// connect can be cancelled.
 pub async fn start_quick_tunnel(site: &str, state: &DaemonState) -> Response {
-    if !install::is_installed(&state.dirs) {
+    let Some(resolved) = resolved_cloudflared(state).await else {
         return Response::Error {
             code: ErrorCode::NotFound,
             message: "cloudflared is not installed - install it from Integrations first".into(),
         };
-    }
+    };
 
     let Some((name, secure, tld)) = resolve_site(state, site).await else {
         return Response::Error {
@@ -80,6 +154,7 @@ pub async fn start_quick_tunnel(site: &str, state: &DaemonState) -> Response {
     run_to_ready(
         state,
         &name,
+        resolved.binary,
         args,
         pinned_home_env(state),
         TunnelKind::Quick,
@@ -135,17 +210,19 @@ pub(super) async fn resolve_site(
 
 /// Register + spawn a tunnel for `name` under a brief manager lock, then drive
 /// readiness with the lock released between ticks (see [`yerd_tunnel`]'s tick
-/// model). Shared by the Quick and Named start paths. Returns the live
-/// `Response::Tunnels` on readiness, or a `Response::Error` on failure.
+/// model). Shared by the Quick and Named start paths. `binary` is the
+/// already-resolved `cloudflared` to spawn (see `resolved_cloudflared`).
+/// Returns the live `Response::Tunnels` on readiness, or a `Response::Error`
+/// on failure.
 pub(super) async fn run_to_ready(
     state: &DaemonState,
     name: &str,
+    binary: PathBuf,
     args: Vec<std::ffi::OsString>,
     env: Vec<(std::ffi::OsString, std::ffi::OsString)>,
     kind: TunnelKind,
     hostname: Option<String>,
 ) -> Response {
-    let binary = install::binary_path(&state.dirs);
     let logfile = logfile(&state.dirs, name);
     if let Some(parent) = logfile.parent() {
         if let Err(e) = crate::secure_fs::create_private_dir(parent) {
@@ -250,7 +327,7 @@ pub(super) async fn tunnels_response(state: &DaemonState) -> Response {
     };
     Response::Tunnels {
         tunnels,
-        cloudflared: cloudflared_status(&state.dirs),
+        cloudflared: cloudflared_status(state).await,
     }
 }
 
@@ -269,6 +346,21 @@ fn to_wire(s: TunnelSnapshot) -> TunnelInfo {
         url: s.url,
         hostname: s.hostname,
     }
+}
+
+/// Overwrite the `cloudflared`-resolution cache to the freshly installed
+/// managed binary right after a successful install, so `TunnelStatus` and the
+/// next tunnel action reflect it immediately rather than waiting on a stale
+/// cached `System` entry that hasn't yet failed its existence re-check (see
+/// `resolved_cloudflared`). Writing `Managed` here is never a downgrade, so it
+/// doesn't need the no-downgrade check `resolved_cloudflared` itself applies.
+async fn refresh_cloudflared_cache_after_install(state: &DaemonState) {
+    let resolved = install::Resolved {
+        binary: install::binary_path(&state.dirs),
+        source: install::CloudflaredSource::Managed,
+        version: install::installed_version(&state.dirs),
+    };
+    *state.cloudflared_resolution.write().await = Some(resolved);
 }
 
 /// `InstallCloudflaredStreamed`: download `cloudflared` as a background job,
@@ -313,6 +405,7 @@ pub async fn install_cloudflared_streamed(state: Arc<DaemonState>) -> Response {
 
         match result {
             Some(Ok(())) => {
+                refresh_cloudflared_cache_after_install(&state).await;
                 state
                     .jobs
                     .finish(&id, yerd_ipc::JobState::Succeeded, None)
@@ -333,4 +426,197 @@ pub async fn install_cloudflared_streamed(state: Arc<DaemonState>) -> Response {
         }
     });
     Response::JobStarted { job_id }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::panic)]
+mod tests {
+    use std::sync::atomic::AtomicBool;
+    use std::sync::Arc;
+
+    use tokio::sync::{Mutex, RwLock};
+    use yerd_core::{RouterConfig, SiteRouter, Tld};
+
+    use super::*;
+
+    fn dirs_in(tmp: &std::path::Path) -> PlatformDirs {
+        PlatformDirs {
+            config: tmp.join("c"),
+            data: tmp.join("d"),
+            state: tmp.join("s"),
+            cache: tmp.join("ca"),
+            runtime: tmp.join("r"),
+        }
+    }
+
+    /// A `DaemonState` rooted at `tmp` with no engines installed. Copied
+    /// verbatim from the pattern in `db_admin`/`ipc_server`'s test modules
+    /// (each test module needs its own copy since it's private per-module).
+    fn state_in(tmp: &std::path::Path) -> DaemonState {
+        let dirs = dirs_in(tmp);
+        let router = SiteRouter::new(RouterConfig::with_tld(Tld::new("test").unwrap()));
+        let ca_path = dirs.data.join("ca.cert.pem");
+        let php_manager = Arc::new(Mutex::new(yerd_php::PhpManager::new(
+            yerd_php::TokioProcessSpawner,
+            yerd_php::SystemClock,
+            yerd_php::io::FastCgiProbe,
+            dirs.clone(),
+            yerd_platform::ActivePortBinder::new(),
+            std::process::id(),
+            std::collections::BTreeMap::new(),
+        )));
+        DaemonState {
+            config: Mutex::new(yerd_config::Config::default()),
+            router: Arc::new(RwLock::new(router)),
+            config_path: dirs.config.join("yerd.toml"),
+            dirs: dirs.clone(),
+            dns_addr: "127.0.0.1:1053".parse().unwrap(),
+            ca_path,
+            ca_fingerprint: yerd_platform::CaFingerprint::new([0u8; 32]),
+            php_ca_bundle: None,
+            php_updates: tokio::sync::RwLock::new(std::collections::HashMap::new()),
+            yerd_update: tokio::sync::RwLock::new(Vec::new()),
+            update_snapshot: tokio::sync::RwLock::new(None),
+            php_manager,
+            service_manager: Arc::new(Mutex::new(crate::services::new_manager(dirs.clone()))),
+            mail_store: Arc::new(yerd_mail::Store::open(tmp.join("mail")).unwrap()),
+            mail: crate::state::MailRuntime { listening: false },
+            http: yerd_ipc::PortStatus {
+                requested: 80,
+                bound: 8080,
+                fell_back: true,
+            },
+            https: yerd_ipc::PortStatus {
+                requested: 443,
+                bound: 8443,
+                fell_back: true,
+            },
+            redirect_https_port: std::sync::Arc::new(std::sync::atomic::AtomicU16::new(8443)),
+            web_unbound: None,
+            dns_unbound: None,
+            boot_id: 1,
+            started_at: std::time::Instant::now(),
+            shutdown_tx: tokio::sync::watch::channel(false).0,
+            restart_requested: AtomicBool::new(false),
+            detect_cache: Arc::new(crate::detect_cache::DetectCache::new()),
+            watch_dirty: tokio::sync::Notify::new(),
+            dumps: Arc::new(crate::dump_server::DumpStore::new()),
+            shim_reconcile: tokio::sync::Mutex::new(()),
+            tunnel_manager: Arc::new(Mutex::new(new_manager())),
+            cloudflared_resolution: tokio::sync::RwLock::new(None),
+            tool_mutate: tokio::sync::Mutex::new(()),
+            tunnel_mutate: tokio::sync::Mutex::new(()),
+            php_mutate: tokio::sync::Mutex::new(()),
+            jobs: crate::jobs::JobRegistry::default(),
+            reserved_names: tokio::sync::Mutex::new(std::collections::HashSet::new()),
+        }
+    }
+
+    #[tokio::test]
+    async fn resolved_cloudflared_reflects_a_fresh_install_without_restart() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_in(tmp.path());
+
+        // Nothing installed, and no `cloudflared` on this test's real `PATH`
+        // (near-certain in CI): resolves to `None`.
+        assert!(resolved_cloudflared(&state).await.is_none());
+
+        install::install_binary_for_test(&state.dirs, "2026.6.1", b"#!/bin/sh\n");
+        refresh_cloudflared_cache_after_install(&state).await;
+
+        let resolved = resolved_cloudflared(&state).await.unwrap();
+        assert_eq!(resolved.source, install::CloudflaredSource::Managed);
+        assert_eq!(resolved.version.as_deref(), Some("2026.6.1"));
+    }
+
+    fn managed(version: &str) -> install::Resolved {
+        install::Resolved {
+            binary: PathBuf::from("/managed/cloudflared"),
+            source: install::CloudflaredSource::Managed,
+            version: Some(version.to_owned()),
+        }
+    }
+
+    fn system(version: &str) -> install::Resolved {
+        install::Resolved {
+            binary: PathBuf::from("/usr/local/bin/cloudflared"),
+            source: install::CloudflaredSource::System,
+            version: Some(version.to_owned()),
+        }
+    }
+
+    /// Exhaustive, pure-logic coverage of the write-time no-downgrade guard
+    /// itself, independent of locks/timing - this is the actual regression
+    /// protection for "a stale System/None write must never clobber an
+    /// established Managed cache entry".
+    #[test]
+    fn is_downgrade_covers_every_existing_fresh_combination() {
+        // An established Managed entry must never be replaced by System or by
+        // nothing (a failed re-resolution).
+        assert!(is_downgrade(Some(&managed("1")), Some(&system("2"))));
+        assert!(is_downgrade(Some(&managed("1")), None));
+        // Managed may always be refreshed by a fresh Managed (e.g. a version
+        // bump from a second install).
+        assert!(!is_downgrade(Some(&managed("1")), Some(&managed("2"))));
+        // Nothing else is ever a downgrade: no existing entry, or an existing
+        // System entry, can freely be overwritten by any fresh result.
+        assert!(!is_downgrade(None, Some(&system("1"))));
+        assert!(!is_downgrade(None, Some(&managed("1"))));
+        assert!(!is_downgrade(None, None));
+        assert!(!is_downgrade(Some(&system("1")), Some(&system("2"))));
+        assert!(!is_downgrade(Some(&system("1")), Some(&managed("1"))));
+        assert!(!is_downgrade(Some(&system("1")), None));
+    }
+
+    #[tokio::test]
+    async fn resolved_cloudflared_never_downgrades_a_cached_managed_entry() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_in(tmp.path());
+
+        install::install_binary_for_test(&state.dirs, "2026.6.1", b"#!/bin/sh\n");
+        refresh_cloudflared_cache_after_install(&state).await;
+        assert_eq!(
+            resolved_cloudflared(&state).await.unwrap().source,
+            install::CloudflaredSource::Managed
+        );
+
+        // A cached Managed entry short-circuits in `cached_cloudflared_if_valid`
+        // before any fresh resolution (and thus the no-downgrade write) is even
+        // attempted, so repeated calls keep reporting Managed regardless of
+        // what the real PATH/managed-dir state is.
+        for _ in 0..3 {
+            assert_eq!(
+                resolved_cloudflared(&state).await.unwrap().source,
+                install::CloudflaredSource::Managed
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_removed_system_binary_is_dropped_from_the_cache_on_next_read() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_in(tmp.path());
+        let candidate = tmp.path().join("cloudflared");
+        std::fs::write(&candidate, b"#!/bin/sh\n").unwrap();
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            std::fs::set_permissions(&candidate, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+
+        *state.cloudflared_resolution.write().await = Some(install::Resolved {
+            binary: candidate.clone(),
+            source: install::CloudflaredSource::System,
+            version: Some("2024.6.1".into()),
+        });
+        assert!(
+            cached_cloudflared_if_valid(&state).await.is_some(),
+            "precondition: the cached System entry should still be valid"
+        );
+
+        std::fs::remove_file(&candidate).unwrap();
+        assert!(
+            cached_cloudflared_if_valid(&state).await.is_none(),
+            "a System entry whose binary has disappeared must not be served from cache"
+        );
+    }
 }
