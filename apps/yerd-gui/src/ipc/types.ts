@@ -596,6 +596,14 @@ export interface AutostartState {
 export type TrayIconVariant = "auto" | "light-y" | "dark-y" | "full";
 
 /**
+ * Title bar control style (host commands `get_title_bar_style` /
+ * `set_title_bar_style`). `"auto"` (default) matches the host OS convention,
+ * resolved client-side from `host_platform`. Drawn entirely by the frontend -
+ * the Rust side only persists the preference.
+ */
+export type TitleBarStyle = "auto" | "macos" | "linux" | "linux-reversed" | "windows";
+
+/**
  * Why the daemon isn't up (host command `daemon_diagnostics`). Gathered when a
  * start attempt fails to connect - covers both the ran-and-crashed case
  * (`logTail`) and the never-launched cases (`startError`, `translocated`,

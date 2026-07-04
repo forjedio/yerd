@@ -36,6 +36,7 @@ import type {
   Site,
   NamedTunnelsResponse,
   StatusReport,
+  TitleBarStyle,
   ToolStatus,
   TrayIconVariant,
   TunnelsResponse,
@@ -791,6 +792,14 @@ export async function getTrayIconVariant(): Promise<TrayIconVariant> {
 
 export async function setTrayIconVariant(variant: TrayIconVariant): Promise<void> {
   await call<void>("set_tray_icon_variant", { variant });
+}
+
+export async function getTitleBarStyle(): Promise<TitleBarStyle> {
+  return call<TitleBarStyle>("get_title_bar_style");
+}
+
+export async function setTitleBarStyle(style: TitleBarStyle): Promise<void> {
+  await call<void>("set_title_bar_style", { style });
 }
 
 // ── onboarding / first-run ───────────────────────────────────────────────────
