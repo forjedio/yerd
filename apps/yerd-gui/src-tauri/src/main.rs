@@ -161,6 +161,8 @@ fn main() {
             autostart::set_autostart_daemon,
             autostart::set_autostart_gui,
             autostart::set_gui_minimized,
+            autostart::get_tray_icon_variant,
+            autostart::set_tray_icon_variant,
             autostart::setup_state,
             autostart::mark_onboarded,
             autostart::daemon_version_conflict,
