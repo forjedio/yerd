@@ -81,9 +81,10 @@ fn run(spec: &CoverSpec) -> ExitCode {
         Err(e) => return fail(format!("cannot read Yerd's CLI php.ini: {e}")),
     };
     let Some(cover_ini) = php_settings::render_cover_ini(&base, &pcov) else {
-        return fail(
-            "cannot enable pcov: Yerd's data directory path isn't valid in an ini file".to_owned(),
-        );
+        return fail(format!(
+            "cannot enable pcov: {} isn't safe to use as an ini value (no control characters, `;`, or `#`, and it must be valid UTF-8) - move Yerd's data directory to a path without those",
+            pcov.display()
+        ));
     };
     let cover_ini_path = ext_dir.join("cover.ini");
     if let Err(e) = atomic_write(&cover_ini_path, cover_ini.as_bytes()) {
