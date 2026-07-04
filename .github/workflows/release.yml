@@ -96,7 +96,8 @@ jobs:
           find . -mindepth 1 -type d -exec rm -rf {} +
           # Human-friendly release asset names:
           #   Yerd_<OS>_<Arch>_v<version>.<ext>   (e.g. Yerd_MacOS_AppleSilicon_v2-0-2-rc-3.dmg)
-          # Tauri emits Yerd_<ver>_<arch>.{dmg,deb}; the .app.tar.gz is already
+          # Tauri emits Yerd_<ver>_<arch>.deb (the macOS .dmg is built by
+          # scripts/build-macos-dmg.sh, matching the same naming); the .app.tar.gz is already
           # Yerd_MacOS_AppleSilicon.app.tar.gz; the arch job emits
           # Yerd_<ver>_x86_64.pkg.tar.zst. We relabel OS+arch and dash the version
           # (dots → dashes) so the Releases page reads cleanly.

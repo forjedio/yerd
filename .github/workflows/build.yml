@@ -168,6 +168,18 @@ jobs:
             npm run tauri build -- --config src-tauri/tauri.bundle-linux.conf.json
           fi
 
+      # `dmg` was removed from tauri.conf.json's bundle.targets: Tauri's own dmg
+      # bundler drives Finder via AppleScript to style the background/icon
+      # positions, which is unreliable both locally (TCC "Not authorised to
+      # send Apple events to Finder") and in CI (silently skips styling). This
+      # step packages the same signed `.app` above into a `.dmg` headlessly
+      # with `appdmg` instead — no Finder, no AppleScript.
+      - name: Build styled macOS .dmg (appdmg, no Finder/AppleScript)
+        if: matrix.kind == 'gui' && runner.os == 'macOS'
+        env:
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+        run: bash ./scripts/build-macos-dmg.sh
+
       # Fail-closed: prove the .app is Developer-ID signed with Hardened Runtime,
       # stapled, and Gatekeeper-accepted. The launch test catches entitlement
       # gaps (they crash at runtime, not at notarisation).

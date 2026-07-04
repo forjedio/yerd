@@ -430,11 +430,16 @@ cargo xtask version-check v2.0.2 # release gate: assert a tag matches the manife
 ```
 
 The shipped artifacts are the **GUI bundle** (`.dmg` on macOS, `.deb` on Linux),
-built by Tauri with the three binaries (`yerd`/`yerdd`/`yerd-helper`) embedded via
-`externalBin` (per-platform overlays in `apps/yerd-gui/src-tauri/`), **plus a native
-Arch package** (`.pkg.tar.zst`, x86-64). The CLI and daemon are never shipped on
-their own - there is no CLI-only artifact (tarball or `.deb`) separate from the GUI
-bundle and the Arch package.
+**plus a native Arch package** (`.pkg.tar.zst`, x86-64). The three binaries
+(`yerd`/`yerdd`/`yerd-helper`) are embedded via Tauri `externalBin`
+(per-platform overlays in `apps/yerd-gui/src-tauri/`). Tauri builds the `.app`
+(macOS) and `.deb` (Linux) directly; the macOS `.dmg` is built as a separate
+headless step (`apps/yerd-gui/scripts/build-macos-dmg.sh`, via `appdmg`) after
+the `.app`, not by Tauri's own dmg bundler — see
+[macOS code signing & notarisation](#macos-code-signing-notarisation) below
+for why. The CLI and daemon are never shipped on their own - there is no
+CLI-only artifact (tarball or `.deb`) separate from the GUI bundle and the
+Arch package.
 
 `bump` keeps three files in sync - `Cargo.toml`,
 `apps/yerd-gui/src-tauri/tauri.conf.json`, and `apps/yerd-gui/package.json` - so
@@ -479,9 +484,11 @@ prints `pacman`. arm64 Arch is not built for v1.
 ### macOS code signing & notarisation
 
 The release workflow Developer ID signs **and** notarises the macOS artifact:
-the GUI `.app` (signed, notarised and stapled by Tauri) and its `.dmg` (signed
-and notarised, but only the `.app` staple is enforced - the `.dmg` staple is
-advisory and non-fatal in CI, since the stapled `.app` inside is the gate). The
+the GUI `.app` (signed, notarised and stapled by Tauri) and its `.dmg`
+(codesigned only, by `apps/yerd-gui/scripts/build-macos-dmg.sh` after Tauri
+builds the `.app` - not notarised or stapled, and deliberately so: only the
+`.app` staple is enforced in CI, the `.dmg`'s own notarisation/staple is
+advisory and non-fatal, since the stapled `.app` inside is the gate). The
 three embedded binaries (`yerd`/`yerdd`/`yerd-helper`) are signed by Tauri **as
 part of the bundle** (Hardened Runtime + secure timestamp + the app's Developer ID
 team) and covered by the single `.app` notarisation - so there are no loose,
@@ -513,9 +520,11 @@ The GUI's signing config lives in `apps/yerd-gui/src-tauri/tauri.conf.json`
 Hardened-Runtime entitlements - note it must **not** carry `get-task-allow`).
 
 **Verifying a release.** The `gui` job verifies fail-closed before publishing. To
-check by hand on a Mac: `xcrun stapler validate Yerd.app`,
-`spctl -a -t open --context context:primary-signature -vvv Yerd.dmg`, and
-`codesign -dv --verbose=4 Yerd.app/Contents/MacOS/yerdd` (expect
+check by hand on a Mac: `xcrun stapler validate Yerd.app` (should pass - this is
+the actual gate), `spctl -a -t open --context context:primary-signature -vvv
+Yerd.dmg` (expect `source=Unnotarized Developer ID` - the `.dmg` itself is
+signed-only, not notarised, so this is normal and not a sign of a broken
+release), and `codesign -dv --verbose=4 Yerd.app/Contents/MacOS/yerdd` (expect
 `Authority=Developer ID Application`).
 
 ## See also

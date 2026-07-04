@@ -2,10 +2,16 @@
 
 `background.html` is the source for the macOS `.dmg` installer window art (the
 dark surface, wordmark, drag arrow, caption, and the Forjed credit). The
-Finder draws the `Yerd.app` and `Applications` icons on top, at the positions
-configured under `bundle.macOS.dmg` in `../tauri.bundle-macos.conf.json`
-(`appPosition` / `applicationFolderPosition`), so the arrow in the art sits
-between them.
+`Yerd.app` and `Applications` icons are placed on top by `appdmg` — headless,
+no Finder/AppleScript involved (see `../scripts/build-macos-dmg.sh`) — at the
+positions configured in `appdmg.json` (`contents[].x`/`y`), so the arrow in
+the art sits between them.
+
+`background.html`'s 660×420 canvas and `appdmg.json`'s `window.size` /
+`contents[].x`/`y` must agree (660×420, icons at 175,205 and 485,205) — there
+is no single technical source of truth for this geometry across the two
+files, just this note. If you change one, change the other and regenerate the
+PNGs below.
 
 The wordmarks ("YERD" / "FORJED") use Forjed's "Outage Cut" brand display
 face (loaded from `../../src/assets/fonts/OutageCut.ttf`), so the art is

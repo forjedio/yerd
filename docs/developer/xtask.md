@@ -43,7 +43,7 @@ pub enum Command {
 ```
 
 ::: info Scope
-`xtask` only keeps **versions in sync**. It does *not* build any artifacts - the shipped products are the **GUI bundle** (`.dmg` on macOS, `.deb` on Linux), built by Tauri in the release pipeline with the three binaries (`yerd`/`yerdd`/`yerd-helper`) embedded via `externalBin` (per-platform overlays in `apps/yerd-gui/src-tauri/`), plus a native **Arch package** (`.pkg.tar.zst`, x86-64) built from `packaging/arch/PKGBUILD` in the workflow's `arch` job. There is no standalone CLI tarball/`.deb`. `xtask` also doesn't download or cache PHP - PHP builds are fetched at runtime by the daemon (see [yerd-php](./crates/yerd-php)). Cross-platform release artifacts and checksums are assembled by the GitHub Actions workflows.
+`xtask` only keeps **versions in sync**. It does *not* build any artifacts - the shipped products are the **GUI bundle** (`.dmg` on macOS, `.deb` on Linux) with the three binaries (`yerd`/`yerdd`/`yerd-helper`) embedded via `externalBin` (per-platform overlays in `apps/yerd-gui/src-tauri/`), plus a native **Arch package** (`.pkg.tar.zst`, x86-64) built from `packaging/arch/PKGBUILD` in the workflow's `arch` job. Tauri builds the `.app` (macOS) and `.deb` (Linux) directly; the macOS `.dmg` is packaged as a separate headless step (`apps/yerd-gui/scripts/build-macos-dmg.sh`, via `appdmg`) since Tauri's own dmg bundler drives Finder via AppleScript, which isn't reliable outside an interactive session. There is no standalone CLI tarball/`.deb`. `xtask` also doesn't download or cache PHP - PHP builds are fetched at runtime by the daemon (see [yerd-php](./crates/yerd-php)). Cross-platform release artifacts and checksums are assembled by the GitHub Actions workflows.
 :::
 
 ## Module map

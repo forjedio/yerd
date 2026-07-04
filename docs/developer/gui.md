@@ -239,7 +239,13 @@ The window itself (`tauri.conf.json`) is **decorationless and transparent**
 (`"decorations": false`, `"transparent": true`, `macOSPrivateApi: true`), which
 is why the frontend ships a custom `TitleBar.vue`. The CSP is locked down to
 `default-src 'self'` (plus inline styles and `data:` images). Bundle targets are
-`deb`, `dmg`, and `app`. For `.deb`, the privileged-port capability is **not**
+`deb` and `app` — the macOS `.dmg` is **not** a Tauri bundle target; it's built
+as a separate headless step (`apps/yerd-gui/scripts/build-macos-dmg.sh`, via
+`appdmg`) after the `.app` is signed, since Tauri's own dmg bundler drives
+Finder via AppleScript to style the background/icon layout, which isn't
+reliable outside an interactive session. See
+[Packaging and releasing](./building#packaging-and-releasing). For `.deb`, the
+privileged-port capability is **not**
 baked into the artifact: the `postinst` script grants
 `cap_net_bind_service=+ep` on the installed `yerdd` at configure time (and
 re-applies it on every upgrade, since dpkg wipes file capabilities) — falling
