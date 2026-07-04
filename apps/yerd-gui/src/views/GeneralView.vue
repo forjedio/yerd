@@ -32,12 +32,14 @@ import {
   setAutostartGuiMinimized,
   setTrayIconVariant,
 } from "@/ipc/client";
-import type { AutostartState, CliPathStatus, TrayIconVariant } from "@/ipc/types";
+import type { AutostartState, CliPathStatus, TitleBarStyle, TrayIconVariant } from "@/ipc/types";
 import { useTheme, type ThemePref } from "@/lib/theme";
+import { useTitleBarStyle } from "@/lib/titleBarStyle";
 
 const { connected, report, refresh: refreshStatus } = useDaemon();
 const toast = useToast();
 const { pref, setTheme } = useTheme();
+const { style: titleBarStyle, setTitleBarStyle } = useTitleBarStyle();
 
 const busy = ref<string | null>(null);
 const autostart = ref<AutostartState | null>(null);
@@ -60,6 +62,22 @@ const trayIconOptions = [
   { value: "dark-y", label: "Dark Y" },
   { value: "full", label: "Full icon" },
 ] as const;
+
+const titleBarStyleOptions = [
+  { value: "auto", label: "Automatic" },
+  { value: "macos", label: "macOS" },
+  { value: "linux", label: "Linux" },
+  { value: "linux-reversed", label: "Linux (Reversed)" },
+  { value: "windows", label: "Windows" },
+] as const;
+
+async function setTitleBarStylePref(next: TitleBarStyle): Promise<void> {
+  try {
+    await setTitleBarStyle(next);
+  } catch (e) {
+    toast.error("Couldn't change the title bar style", (e as IpcError).message);
+  }
+}
 
 const running = computed(() => connected.value === true);
 
@@ -631,6 +649,21 @@ async function toggleGuiMinimized(on: boolean): Promise<void> {
               :options="trayIconOptions"
               aria-label="Tray icon"
               @update:model-value="setTrayIconVariantPref"
+            />
+          </div>
+
+          <div class="flex items-center justify-between gap-4">
+            <div>
+              <p class="text-sm font-medium">Title bar</p>
+              <p class="text-xs text-muted-foreground">
+                Window control style used by the Yerd app.
+              </p>
+            </div>
+            <Select
+              :model-value="titleBarStyle"
+              :options="titleBarStyleOptions"
+              aria-label="Title bar"
+              @update:model-value="setTitleBarStylePref"
             />
           </div>
         </CardContent>

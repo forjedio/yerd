@@ -27,6 +27,23 @@ use crate::tray::TrayIconVariant;
 
 // ── GUI settings file (Rust-readable, beside yerd.toml) ──────────────────────
 
+/// User-selectable title bar control style, drawn entirely by the frontend
+/// (every window is decorationless - see `tauri.conf.json`). `Auto` (default)
+/// matches the host OS convention, resolved client-side from `host_platform`.
+/// Persisted in `gui-settings.json` via [`title_bar_style`]. Variant names are
+/// chosen so `#[serde(rename_all = "kebab-case")]` produces wire values that
+/// match `host_platform`'s own strings (`"macos"`, `"linux"`, `"windows"`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) enum TitleBarStyle {
+    #[default]
+    Auto,
+    Macos,
+    Linux,
+    LinuxReversed,
+    Windows,
+}
+
 #[derive(Default, serde::Serialize, serde::Deserialize)]
 struct GuiSettings {
     /// User intent for "start the daemon at login" (the OS mechanism is applied
@@ -67,6 +84,11 @@ struct GuiSettings {
     /// gui-settings.json without this field must still deserialize.
     #[serde(default)]
     tray_icon_variant: TrayIconVariant,
+    /// User-selected title bar control style; `Auto` (default) keeps today's
+    /// per-OS behavior. `#[serde(default)]` is mandatory - an existing
+    /// gui-settings.json without this field must still deserialize.
+    #[serde(default)]
+    title_bar_style: TitleBarStyle,
 }
 
 /// Outcome of comparing the running GUI/daemon version against the version that
@@ -173,6 +195,11 @@ pub(crate) fn gui_minimized() -> bool {
 /// Read the persisted tray icon variant (used by `tray.rs`).
 pub(crate) fn tray_icon_variant() -> TrayIconVariant {
     load_settings().tray_icon_variant
+}
+
+/// Read the persisted title bar style (used by the `get_title_bar_style` command).
+fn title_bar_style() -> TitleBarStyle {
+    load_settings().title_bar_style
 }
 
 // ── onboarding / first-run state ─────────────────────────────────────────────
@@ -1388,10 +1415,28 @@ pub fn set_tray_icon_variant(
     Ok(())
 }
 
+/// Current title bar style, for the Settings screen.
+#[tauri::command]
+pub fn get_title_bar_style() -> TitleBarStyle {
+    title_bar_style()
+}
+
+/// Persist the chosen title bar style. The style is drawn entirely by the
+/// frontend, so unlike the tray icon there's no live host-side repaint to
+/// trigger here - each open window picks up the change via its own broadcast.
+#[tauri::command]
+pub fn set_title_bar_style(style: TitleBarStyle) -> Result<(), GuiError> {
+    let mut s = load_settings();
+    s.title_bar_style = style;
+    save_settings(&s)
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
-    use super::{decide, reg_action, reg_plan, Decision, GuiSettings, RegAction, StartPhase};
+    use super::{
+        decide, reg_action, reg_plan, Decision, GuiSettings, RegAction, StartPhase, TitleBarStyle,
+    };
     use crate::tray::TrayIconVariant;
     use semver::Version;
 
@@ -1403,6 +1448,36 @@ mod tests {
     fn gui_settings_without_tray_icon_variant_field_deserializes_to_auto() {
         let s: GuiSettings = serde_json::from_str("{}").expect("empty object deserializes");
         assert_eq!(s.tray_icon_variant, TrayIconVariant::Auto);
+    }
+
+    #[test]
+    fn gui_settings_without_title_bar_style_field_deserializes_to_auto() {
+        let s: GuiSettings = serde_json::from_str("{}").expect("empty object deserializes");
+        assert_eq!(s.title_bar_style, TitleBarStyle::Auto);
+    }
+
+    #[test]
+    fn title_bar_style_wire_values() {
+        assert_eq!(
+            serde_json::to_string(&TitleBarStyle::Auto).unwrap(),
+            "\"auto\""
+        );
+        assert_eq!(
+            serde_json::to_string(&TitleBarStyle::Macos).unwrap(),
+            "\"macos\""
+        );
+        assert_eq!(
+            serde_json::to_string(&TitleBarStyle::Linux).unwrap(),
+            "\"linux\""
+        );
+        assert_eq!(
+            serde_json::to_string(&TitleBarStyle::LinuxReversed).unwrap(),
+            "\"linux-reversed\""
+        );
+        assert_eq!(
+            serde_json::to_string(&TitleBarStyle::Windows).unwrap(),
+            "\"windows\""
+        );
     }
 
     #[test]

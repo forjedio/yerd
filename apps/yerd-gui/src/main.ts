@@ -5,10 +5,12 @@ import { router } from "./router";
 import { initDesktopChrome } from "./lib/desktop";
 import { log } from "./lib/log";
 import { initTheme } from "./lib/theme";
+import { initTitleBarStyle } from "./lib/titleBarStyle";
 import "./style.css";
 
 // Follow the OS light/dark preference, and behave like a native window.
 initTheme();
+initTitleBarStyle();
 initDesktopChrome();
 
 // Funnel uncaught frontend errors into the GUI session log so they show up in
