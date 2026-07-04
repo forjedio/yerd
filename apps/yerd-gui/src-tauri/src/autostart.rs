@@ -23,6 +23,7 @@ use std::process::Command;
 use tauri_plugin_autostart::ManagerExt as _;
 
 use crate::error::GuiError;
+use crate::tray::TrayIconVariant;
 
 // ── GUI settings file (Rust-readable, beside yerd.toml) ──────────────────────
 
@@ -61,6 +62,11 @@ struct GuiSettings {
     /// Overview banner. Cleared once the versions agree again.
     #[serde(default)]
     daemon_version_conflict: Option<String>,
+    /// User-selected tray icon appearance override; `Auto` (default) keeps
+    /// today's per-OS behavior. `#[serde(default)]` is mandatory - an existing
+    /// gui-settings.json without this field must still deserialize.
+    #[serde(default)]
+    tray_icon_variant: TrayIconVariant,
 }
 
 /// Outcome of comparing the running GUI/daemon version against the version that
@@ -162,6 +168,11 @@ fn save_settings(s: &GuiSettings) -> Result<(), GuiError> {
 /// Read the persisted "start minimized" preference (used by `main`'s setup).
 pub(crate) fn gui_minimized() -> bool {
     load_settings().gui_minimized
+}
+
+/// Read the persisted tray icon variant (used by `tray.rs`).
+pub(crate) fn tray_icon_variant() -> TrayIconVariant {
+    load_settings().tray_icon_variant
 }
 
 // ── onboarding / first-run state ─────────────────────────────────────────────
@@ -1357,14 +1368,41 @@ pub fn set_gui_minimized(on: bool) -> Result<(), GuiError> {
     save_settings(&s)
 }
 
+/// Current tray icon variant, for the Settings screen.
+#[tauri::command]
+pub fn get_tray_icon_variant() -> TrayIconVariant {
+    tray_icon_variant()
+}
+
+/// Persist the chosen tray icon variant and repaint the live tray immediately.
+#[tauri::command]
+pub fn set_tray_icon_variant(
+    app: tauri::AppHandle,
+    variant: TrayIconVariant,
+) -> Result<(), GuiError> {
+    let mut s = load_settings();
+    s.tray_icon_variant = variant;
+    save_settings(&s)?;
+    crate::tray::set_cached_variant(variant);
+    crate::tray::spawn_refresh(app);
+    Ok(())
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
-    use super::{decide, reg_action, reg_plan, Decision, RegAction, StartPhase};
+    use super::{decide, reg_action, reg_plan, Decision, GuiSettings, RegAction, StartPhase};
+    use crate::tray::TrayIconVariant;
     use semver::Version;
 
     fn v(s: &str) -> Version {
         Version::parse(s).unwrap()
+    }
+
+    #[test]
+    fn gui_settings_without_tray_icon_variant_field_deserializes_to_auto() {
+        let s: GuiSettings = serde_json::from_str("{}").expect("empty object deserializes");
+        assert_eq!(s.tray_icon_variant, TrayIconVariant::Auto);
     }
 
     #[test]

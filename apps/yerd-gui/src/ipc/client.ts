@@ -37,6 +37,7 @@ import type {
   NamedTunnelsResponse,
   StatusReport,
   ToolStatus,
+  TrayIconVariant,
   TunnelsResponse,
   UpdateChannel,
   UpdateStatusResponse,
@@ -782,6 +783,14 @@ export async function setAutostartGui(on: boolean, nudge = true): Promise<void> 
 
 export async function setAutostartGuiMinimized(on: boolean): Promise<void> {
   await call<void>("set_gui_minimized", { on });
+}
+
+export async function getTrayIconVariant(): Promise<TrayIconVariant> {
+  return call<TrayIconVariant>("get_tray_icon_variant");
+}
+
+export async function setTrayIconVariant(variant: TrayIconVariant): Promise<void> {
+  await call<void>("set_tray_icon_variant", { variant });
 }
 
 // ── onboarding / first-run ───────────────────────────────────────────────────

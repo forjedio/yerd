@@ -22,6 +22,7 @@ import {
   daemonInfo,
   dumpsStatus,
   getAutostart,
+  getTrayIconVariant,
   installCliToPath,
   IpcError,
   openLoginItems,
@@ -29,8 +30,9 @@ import {
   setAutostartDaemon,
   setAutostartGui,
   setAutostartGuiMinimized,
+  setTrayIconVariant,
 } from "@/ipc/client";
-import type { AutostartState, CliPathStatus } from "@/ipc/types";
+import type { AutostartState, CliPathStatus, TrayIconVariant } from "@/ipc/types";
 import { useTheme, type ThemePref } from "@/lib/theme";
 
 const { connected, report, refresh: refreshStatus } = useDaemon();
@@ -51,6 +53,14 @@ const themeOptions = [
   { value: "dark", label: "Dark" },
 ] as const;
 
+const trayIconVariant = ref<TrayIconVariant>("auto");
+const trayIconOptions = [
+  { value: "auto", label: "Automatic" },
+  { value: "light-y", label: "Light Y" },
+  { value: "dark-y", label: "Dark Y" },
+  { value: "full", label: "Full icon" },
+] as const;
+
 const running = computed(() => connected.value === true);
 
 // ── data loads ──
@@ -59,6 +69,25 @@ async function loadAutostart(): Promise<void> {
     autostart.value = await getAutostart();
   } catch (e) {
     toast.error("Couldn't load startup settings", (e as IpcError).message);
+  }
+}
+
+async function loadTrayIconVariant(): Promise<void> {
+  try {
+    trayIconVariant.value = await getTrayIconVariant();
+  } catch (e) {
+    toast.error("Couldn't load the tray icon setting", (e as IpcError).message);
+  }
+}
+
+async function setTrayIconVariantPref(variant: TrayIconVariant): Promise<void> {
+  const previous = trayIconVariant.value;
+  trayIconVariant.value = variant;
+  try {
+    await setTrayIconVariant(variant);
+  } catch (e) {
+    trayIconVariant.value = previous;
+    toast.error("Couldn't change the tray icon", (e as IpcError).message);
   }
 }
 
@@ -99,6 +128,7 @@ onMounted(() => {
   loadAutostart();
   void loadPlatform();
   loadCli();
+  void loadTrayIconVariant();
   if (running.value) {
     void loadApplicationPorts();
   }
@@ -571,9 +601,9 @@ async function toggleGuiMinimized(on: boolean): Promise<void> {
       <Card>
         <CardHeader>
           <CardTitle>Appearance</CardTitle>
-          <CardDescription>Theme used by the Yerd app.</CardDescription>
+          <CardDescription>Theme and tray icon used by the Yerd app.</CardDescription>
         </CardHeader>
-        <CardContent>
+        <CardContent class="space-y-4">
           <div class="flex items-center justify-between gap-4">
             <div>
               <p class="text-sm font-medium">Theme</p>
@@ -586,6 +616,21 @@ async function toggleGuiMinimized(on: boolean): Promise<void> {
               :options="themeOptions"
               aria-label="Theme"
               @update:model-value="(v: ThemePref) => setTheme(v)"
+            />
+          </div>
+
+          <div class="flex items-center justify-between gap-4">
+            <div>
+              <p class="text-sm font-medium">Tray icon</p>
+              <p class="text-xs text-muted-foreground">
+                Icon shown in the menu bar / system tray.
+              </p>
+            </div>
+            <Select
+              :model-value="trayIconVariant"
+              :options="trayIconOptions"
+              aria-label="Tray icon"
+              @update:model-value="setTrayIconVariantPref"
             />
           </div>
         </CardContent>

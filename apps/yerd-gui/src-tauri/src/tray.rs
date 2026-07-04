@@ -81,8 +81,9 @@ const NAV_ITEMS: &[(&str, &str, &[u8])] = &[
     ("nav:/about", "About", icons::ABOUT),
 ];
 
-/// macOS menu-bar template icon (see `main.rs` for the rationale).
-#[cfg(target_os = "macos")]
+/// The bare "Y" glyph (solid black stroke, transparent ground), source for the
+/// macOS template icon and for the [`TrayIconVariant::LightY`]/`DarkY`
+/// overrides on every OS (see `main.rs` for the macOS template rationale).
 const TRAY_ICON_MAC: &[u8] = include_bytes!("../icons/tray-mac.png");
 
 /// Set while a tray-initiated daemon lifecycle action owns the menu.
@@ -123,6 +124,43 @@ struct TrayState {
     unread: u32,
 }
 
+/// User-selectable tray icon appearance; `Auto` (default) keeps today's
+/// per-OS behavior (macOS auto-tints a template; other OSes show the full
+/// color app icon). Persisted in `gui-settings.json` via
+/// `crate::autostart::tray_icon_variant`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) enum TrayIconVariant {
+    #[default]
+    Auto,
+    LightY,
+    DarkY,
+    Full,
+}
+
+/// In-memory cache of the persisted tray icon variant, seeded once from disk
+/// at startup (`build_tray`) and kept in sync by [`set_cached_variant`]
+/// (called by `crate::autostart::set_tray_icon_variant` right after it saves
+/// a change). The poller and refresh paths read this instead of hitting disk
+/// (`crate::autostart::tray_icon_variant`, a `std::fs::read` +
+/// `serde_json::from_slice`) on every tick.
+static CACHED_VARIANT: Mutex<TrayIconVariant> = Mutex::new(TrayIconVariant::Auto);
+
+/// The cached tray icon variant (see [`CACHED_VARIANT`]).
+fn cached_variant() -> TrayIconVariant {
+    *CACHED_VARIANT
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// Update the cached tray icon variant; called right after persisting a
+/// change so the next poll tick / repaint picks it up without a disk read.
+pub(crate) fn set_cached_variant(variant: TrayIconVariant) {
+    *CACHED_VARIANT
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = variant;
+}
+
 /// Build the tray and register it; called once from `setup_app`.
 ///
 /// The dynamic menu is the primary surface, so it opens on a plain left-click
@@ -137,15 +175,18 @@ pub(crate) fn build_tray(app: &AppHandle) -> tauri::Result<()> {
         .show_menu_on_left_click(true)
         .on_menu_event(on_menu_event);
 
+    let variant = crate::autostart::tray_icon_variant();
+    set_cached_variant(variant);
+    let no_badges = Badges {
+        update: false,
+        unread: false,
+    };
+    if let Some(icon) = tray_icon(app, no_badges, variant, dark_menu_bar()) {
+        builder = builder.icon(icon);
+    }
     #[cfg(target_os = "macos")]
     {
-        builder = builder
-            .icon(tauri::image::Image::from_bytes(TRAY_ICON_MAC)?)
-            .icon_as_template(true);
-    }
-    #[cfg(not(target_os = "macos"))]
-    if let Some(icon) = app.default_window_icon().cloned() {
-        builder = builder.icon(icon);
+        builder = builder.icon_as_template(variant == TrayIconVariant::Auto);
     }
 
     builder.build(app)?;
@@ -172,9 +213,10 @@ pub(crate) fn spawn_tray_poller(app: AppHandle) {
                 continue;
             }
             let dark = dark_menu_bar();
+            let variant = cached_variant();
             let guard = lock_menu();
             if !TRANSITION.load(Ordering::Acquire) {
-                apply(&app, &state, dark);
+                apply(&app, &state, dark, variant);
                 last = Some(state);
             }
             drop(guard);
@@ -224,12 +266,13 @@ impl Badges {
 }
 
 /// Build + install the menu for `state`, and badge the icon for waiting updates
-/// and/or unread mail. No lock / no transition logic - callers hold `MENU_LOCK`
-/// as needed, and must read `dark_menu_bar()` themselves *before* taking it (see
-/// the module concurrency note) since this only threads `dark` through. On
-/// macOS a coloured badge can't be a template, so templating is dropped while
-/// any badge shows (and restored when none do).
-fn apply(app: &AppHandle, state: &TrayState, dark: bool) {
+/// and/or unread mail, in the user's chosen `variant`. No lock / no transition
+/// logic - callers hold `MENU_LOCK` as needed, and must read `dark_menu_bar()`
+/// and the tray icon variant themselves *before* taking it (see the module
+/// concurrency note) since this only threads `dark`/`variant` through. On
+/// macOS a coloured badge (or a non-`Auto` variant) can't be a template, so
+/// templating only ever applies to the plain `Auto` icon.
+fn apply(app: &AppHandle, state: &TrayState, dark: bool, variant: TrayIconVariant) {
     let Ok(menu) = build_menu(app, state, dark) else {
         return;
     };
@@ -239,11 +282,12 @@ fn apply(app: &AppHandle, state: &TrayState, dark: bool) {
             update: state.update_target.is_some() || state.php_update,
             unread: state.unread > 0,
         };
-        if let Some(icon) = tray_icon(app, badges) {
+        if let Some(icon) = tray_icon(app, badges, variant, dark) {
             let _ = tray.set_icon(Some(icon));
             #[cfg(target_os = "macos")]
             {
-                let _ = tray.set_icon_as_template(!badges.any());
+                let _ =
+                    tray.set_icon_as_template(variant == TrayIconVariant::Auto && !badges.any());
             }
         }
     }
@@ -263,41 +307,91 @@ enum DotPos {
     BottomLeft,
 }
 
-/// The tray icon for the current state. Plain icon when nothing's waiting; a copy
-/// with a red dot (bottom-right) for a waiting update and/or an orange dot
-/// (bottom-left) for unread mail. On macOS the plain icon is the monochrome template
-/// (auto-tinted); a colour dot can't be a template, so the badged copy paints the
-/// glyph in the current appearance's label colour (black in light, white in dark)
-/// to stay native-looking, and `apply` flips the template flag to match.
-#[cfg_attr(target_os = "macos", allow(unused_variables))]
-fn tray_icon(app: &AppHandle, badges: Badges) -> Option<tauri::image::Image<'static>> {
-    #[cfg(target_os = "macos")]
-    {
-        let base = tauri::image::Image::from_bytes(TRAY_ICON_MAC).ok()?;
-        let (w, h) = (base.width(), base.height());
-        let mut rgba = base.rgba().to_vec();
-        if !badges.any() {
-            return Some(tauri::image::Image::new_owned(rgba, w, h));
+/// The tray icon for the current state + the user's chosen `variant`. Plain
+/// icon when nothing's waiting; a copy with a red dot (bottom-right) for a
+/// waiting update and/or an orange dot (bottom-left) for unread mail.
+///
+/// `Auto` is today's per-OS default: on macOS the monochrome template
+/// (auto-tinted by the OS when unbadged; a coloured dot can't be a template,
+/// so the badged copy is forced to the current appearance's label colour -
+/// black in light, white in dark - and `apply` drops templating to match), on
+/// other OSes the full-colour app icon. `LightY`/`DarkY` force the same
+/// glyph to a fixed colour on every OS, regardless of appearance or badges.
+/// `Full` is the full-colour app icon on every OS, including macOS.
+///
+/// `dark` is the caller's single `dark_menu_bar()` reading (see the module
+/// concurrency note) - only the macOS `Auto`-and-badged case reads it, so it's
+/// unused on other targets.
+#[cfg_attr(not(target_os = "macos"), allow(unused_variables))]
+fn tray_icon(
+    app: &AppHandle,
+    badges: Badges,
+    variant: TrayIconVariant,
+    dark: bool,
+) -> Option<tauri::image::Image<'static>> {
+    match variant {
+        TrayIconVariant::Full => full_color_icon(app, badges),
+        TrayIconVariant::LightY | TrayIconVariant::DarkY => {
+            let (rgba, w, h) = y_glyph_rgba(variant == TrayIconVariant::LightY)?;
+            if !badges.any() {
+                return Some(tauri::image::Image::new_owned(rgba, w, h));
+            }
+            Some(draw_badges(rgba, w, h, badges))
         }
-        let glyph = if dark_menu_bar() { 255u8 } else { 0u8 };
-        for px in rgba.chunks_exact_mut(4) {
-            if let [r, g, b, a] = px {
-                if *a > 0 {
-                    (*r, *g, *b) = (glyph, glyph, glyph);
+        TrayIconVariant::Auto => {
+            #[cfg(target_os = "macos")]
+            {
+                let base = tauri::image::Image::from_bytes(TRAY_ICON_MAC).ok()?;
+                let (w, h) = (base.width(), base.height());
+                let mut rgba = base.rgba().to_vec();
+                if !badges.any() {
+                    return Some(tauri::image::Image::new_owned(rgba, w, h));
                 }
+                recolor_opaque(&mut rgba, dark);
+                Some(draw_badges(rgba, w, h, badges))
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                full_color_icon(app, badges)
             }
         }
-        Some(draw_badges(rgba, w, h, badges))
     }
-    #[cfg(not(target_os = "macos"))]
-    {
-        let base = app.default_window_icon()?;
-        let (w, h) = (base.width(), base.height());
-        let rgba = base.rgba().to_vec();
-        if !badges.any() {
-            return Some(tauri::image::Image::new_owned(rgba, w, h));
+}
+
+/// The full-colour app icon, optionally badged. Shared by `Full` (every OS)
+/// and `Auto` on non-macOS (today's per-OS default there).
+fn full_color_icon(app: &AppHandle, badges: Badges) -> Option<tauri::image::Image<'static>> {
+    let base = app.default_window_icon()?;
+    let (w, h) = (base.width(), base.height());
+    let rgba = base.rgba().to_vec();
+    if !badges.any() {
+        return Some(tauri::image::Image::new_owned(rgba, w, h));
+    }
+    Some(draw_badges(rgba, w, h, badges))
+}
+
+/// Decode the "Y" glyph and force it to solid white (`light`) or solid black.
+/// Pure (no `AppHandle`), so it's the part of the `LightY`/`DarkY` icon path
+/// that's directly unit-testable.
+fn y_glyph_rgba(light: bool) -> Option<(Vec<u8>, u32, u32)> {
+    let base = tauri::image::Image::from_bytes(TRAY_ICON_MAC).ok()?;
+    let (w, h) = (base.width(), base.height());
+    let mut rgba = base.rgba().to_vec();
+    recolor_opaque(&mut rgba, light);
+    Some((rgba, w, h))
+}
+
+/// Recolour every opaque pixel in `rgba` to solid white (`to_white`) or solid
+/// black, preserving alpha. Shared by [`tray_icon`]'s `LightY`/`DarkY`/badged-
+/// `Auto` paths and [`menu_icon`]'s dark-mode recolor.
+fn recolor_opaque(rgba: &mut [u8], to_white: bool) {
+    let value = if to_white { 255u8 } else { 0u8 };
+    for px in rgba.chunks_exact_mut(4) {
+        if let [r, g, b, a] = px {
+            if *a > 0 {
+                (*r, *g, *b) = (value, value, value);
+            }
         }
-        Some(draw_badges(rgba, w, h, badges))
     }
 }
 
@@ -406,11 +500,18 @@ fn apply_transient(app: &AppHandle, label: &str) {
 async fn refresh_now(app: &AppHandle) {
     let state = fetch_state().await;
     let dark = dark_menu_bar();
+    let variant = cached_variant();
     let guard = lock_menu();
     if !TRANSITION.load(Ordering::Acquire) {
-        apply(app, &state, dark);
+        apply(app, &state, dark, variant);
     }
     drop(guard);
+}
+
+/// Spawn [`refresh_now`] in the background; used to repaint the tray
+/// immediately after the user changes the tray icon variant in Settings.
+pub(crate) fn spawn_refresh(app: AppHandle) {
+    tauri::async_runtime::spawn(async move { refresh_now(&app).await });
 }
 
 /// Push an owned menu item as a boxed trait object (lets the builder mix
@@ -620,13 +721,7 @@ fn menu_icon(png: &[u8], dark: bool) -> Option<tauri::image::Image<'static>> {
     let (w, h) = (img.width(), img.height());
     let mut rgba = img.rgba().to_vec();
     if dark {
-        for px in rgba.chunks_exact_mut(4) {
-            if let [r, g, b, a] = px {
-                if *a > 0 {
-                    (*r, *g, *b) = (255, 255, 255);
-                }
-            }
-        }
+        recolor_opaque(&mut rgba, true);
     }
     Some(tauri::image::Image::new_owned(rgba, w, h))
 }
@@ -753,8 +848,9 @@ fn spawn_lifecycle(app: AppHandle, kind: Lifecycle) {
 
         let state = fetch_state().await;
         let dark = dark_menu_bar();
+        let variant = cached_variant();
         let guard = lock_menu();
-        apply(&app, &state, dark);
+        apply(&app, &state, dark, variant);
         TRANSITION.store(false, Ordering::Release);
         drop(guard);
     });
@@ -863,7 +959,7 @@ async fn wait_until_restarted(prev: Option<u64>) {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
-    use super::{icons, menu_icon};
+    use super::{icons, menu_icon, recolor_opaque, y_glyph_rgba, TrayIconVariant};
 
     #[test]
     fn menu_icon_light_leaves_pixels_unchanged() {
@@ -891,5 +987,61 @@ mod tests {
         let raw_alpha: Vec<u8> = raw.rgba().chunks_exact(4).map(|px| px[3]).collect();
         let dark_alpha: Vec<u8> = dark.rgba().chunks_exact(4).map(|px| px[3]).collect();
         assert_eq!(raw_alpha, dark_alpha);
+    }
+
+    #[test]
+    fn recolor_opaque_to_white_sets_opaque_pixels_white() {
+        let mut rgba = vec![10, 20, 30, 255, 40, 50, 60, 0];
+        recolor_opaque(&mut rgba, true);
+        assert_eq!(&rgba[0..4], &[255, 255, 255, 255]);
+        assert_eq!(&rgba[4..8], &[40, 50, 60, 0]);
+    }
+
+    #[test]
+    fn recolor_opaque_to_black_sets_opaque_pixels_black() {
+        let mut rgba = vec![10, 20, 30, 255, 40, 50, 60, 0];
+        recolor_opaque(&mut rgba, false);
+        assert_eq!(&rgba[0..4], &[0, 0, 0, 255]);
+        assert_eq!(&rgba[4..8], &[40, 50, 60, 0]);
+    }
+
+    #[test]
+    fn y_glyph_rgba_light_is_white() {
+        let (rgba, _, _) = y_glyph_rgba(true).expect("bundled tray glyph decodes");
+        for px in rgba.chunks_exact(4) {
+            if let [r, g, b, a] = *px {
+                if a > 0 {
+                    assert_eq!((r, g, b), (255, 255, 255));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn y_glyph_rgba_dark_is_black() {
+        let (rgba, _, _) = y_glyph_rgba(false).expect("bundled tray glyph decodes");
+        for px in rgba.chunks_exact(4) {
+            if let [r, g, b, a] = *px {
+                if a > 0 {
+                    assert_eq!((r, g, b), (0, 0, 0));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn tray_icon_variant_wire_names_are_kebab_case() {
+        let cases = [
+            (TrayIconVariant::Auto, "\"auto\""),
+            (TrayIconVariant::LightY, "\"light-y\""),
+            (TrayIconVariant::DarkY, "\"dark-y\""),
+            (TrayIconVariant::Full, "\"full\""),
+        ];
+        for (variant, wire) in cases {
+            assert_eq!(
+                serde_json::to_string(&variant).expect("enum serializes"),
+                wire
+            );
+        }
     }
 }

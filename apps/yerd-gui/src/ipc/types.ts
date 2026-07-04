@@ -589,6 +589,13 @@ export interface AutostartState {
 }
 
 /**
+ * Tray icon appearance (host commands `get_tray_icon_variant` /
+ * `set_tray_icon_variant`). `"auto"` (default) keeps the per-OS default: macOS
+ * auto-tints a monochrome template, other OSes show the full color app icon.
+ */
+export type TrayIconVariant = "auto" | "light-y" | "dark-y" | "full";
+
+/**
  * Why the daemon isn't up (host command `daemon_diagnostics`). Gathered when a
  * start attempt fails to connect - covers both the ran-and-crashed case
  * (`logTail`) and the never-launched cases (`startError`, `translocated`,
