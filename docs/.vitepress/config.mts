@@ -113,7 +113,7 @@ export default withMermaid({
         activeMatch: '/developer/',
       },
       {
-        text: 'v2.0.2',
+        text: 'v2.x',
         items: [
           {
             text: 'Changelog',
