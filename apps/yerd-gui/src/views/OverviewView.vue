@@ -25,6 +25,7 @@ import Spinner from "@/components/ui/Spinner.vue";
 import { registerViewActions } from "@/lib/shortcuts/useViewActions";
 import { useDaemon } from "@/composables/useDaemon";
 import { useOnboarding } from "@/composables/useOnboarding";
+import { usePoll } from "@/composables/usePoll";
 import { useResource } from "@/composables/useResource";
 import { daemonVersionConflict, openInBrowser, sitesAndParked } from "@/ipc/client";
 import type { StatusReport } from "@/ipc/types";
@@ -71,6 +72,7 @@ onMounted(() => {
 watch(running, (up) => {
   if (up) void reloadSites();
 });
+usePoll(() => (running.value ? reloadSites() : Promise.resolve()), 5000);
 
 onUnmounted(
   registerViewActions({

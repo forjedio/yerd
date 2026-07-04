@@ -42,6 +42,7 @@ import { registerViewActions } from "@/lib/shortcuts/useViewActions";
 import { sitesIntent } from "@/lib/shortcuts/sitesIntent";
 import { useSitesGroupState } from "@/lib/sitesGroupState";
 import { useDaemon } from "@/composables/useDaemon";
+import { usePoll } from "@/composables/usePoll";
 import { useResource } from "@/composables/useResource";
 import { useToast } from "@/composables/useToast";
 import {
@@ -74,6 +75,7 @@ const { data, loading, error: resourceError, refresh: load } = useResource(
   "sites",
   sitesAndParked,
 );
+usePoll(() => load(), 5000);
 const sites = computed(() => data.value?.sites ?? []);
 const parked = computed(() => data.value?.parked ?? []);
 // Surface a load failure only when nothing is cached to show; a failed
