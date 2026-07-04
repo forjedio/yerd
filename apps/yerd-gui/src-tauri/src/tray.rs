@@ -310,10 +310,7 @@ fn tray_icon(
             Some(draw_badges(rgba, w, h, badges))
         }
         TrayIconVariant::LightY | TrayIconVariant::DarkY => {
-            let base = tauri::image::Image::from_bytes(TRAY_ICON_MAC).ok()?;
-            let (w, h) = (base.width(), base.height());
-            let mut rgba = base.rgba().to_vec();
-            recolor_opaque(&mut rgba, variant == TrayIconVariant::LightY);
+            let (rgba, w, h) = y_glyph_rgba(variant == TrayIconVariant::LightY)?;
             if !badges.any() {
                 return Some(tauri::image::Image::new_owned(rgba, w, h));
             }
@@ -343,6 +340,17 @@ fn tray_icon(
             }
         }
     }
+}
+
+/// Decode the "Y" glyph and force it to solid white (`light`) or solid black.
+/// Pure (no `AppHandle`), so it's the part of the `LightY`/`DarkY` icon path
+/// that's directly unit-testable.
+fn y_glyph_rgba(light: bool) -> Option<(Vec<u8>, u32, u32)> {
+    let base = tauri::image::Image::from_bytes(TRAY_ICON_MAC).ok()?;
+    let (w, h) = (base.width(), base.height());
+    let mut rgba = base.rgba().to_vec();
+    recolor_opaque(&mut rgba, light);
+    Some((rgba, w, h))
 }
 
 /// Recolour every opaque pixel in `rgba` to solid white (`to_white`) or solid
@@ -923,7 +931,7 @@ async fn wait_until_restarted(prev: Option<u64>) {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
-    use super::{icons, menu_icon, recolor_opaque};
+    use super::{icons, menu_icon, recolor_opaque, y_glyph_rgba, TrayIconVariant};
 
     #[test]
     fn menu_icon_light_leaves_pixels_unchanged() {
@@ -967,5 +975,45 @@ mod tests {
         recolor_opaque(&mut rgba, false);
         assert_eq!(&rgba[0..4], &[0, 0, 0, 255]);
         assert_eq!(&rgba[4..8], &[40, 50, 60, 0]);
+    }
+
+    #[test]
+    fn y_glyph_rgba_light_is_white() {
+        let (rgba, _, _) = y_glyph_rgba(true).expect("bundled tray glyph decodes");
+        for px in rgba.chunks_exact(4) {
+            if let [r, g, b, a] = *px {
+                if a > 0 {
+                    assert_eq!((r, g, b), (255, 255, 255));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn y_glyph_rgba_dark_is_black() {
+        let (rgba, _, _) = y_glyph_rgba(false).expect("bundled tray glyph decodes");
+        for px in rgba.chunks_exact(4) {
+            if let [r, g, b, a] = *px {
+                if a > 0 {
+                    assert_eq!((r, g, b), (0, 0, 0));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn tray_icon_variant_wire_names_are_kebab_case() {
+        let cases = [
+            (TrayIconVariant::Auto, "\"auto\""),
+            (TrayIconVariant::LightY, "\"light-y\""),
+            (TrayIconVariant::DarkY, "\"dark-y\""),
+            (TrayIconVariant::Full, "\"full\""),
+        ];
+        for (variant, wire) in cases {
+            assert_eq!(
+                serde_json::to_string(&variant).expect("enum serializes"),
+                wire
+            );
+        }
     }
 }
