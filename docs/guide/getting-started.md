@@ -8,13 +8,6 @@ non-ongoing places: installing the system `.deb` (standard for any package),
 and a single, optional, **one-time** setup step. Day-to-day use never touches
 root.
 
-::: info Release status - Release Candidate
-Yerd is currently shipping **Release Candidate** builds, available from the
-[releases page](https://github.com/forjedio/yerd/releases). We're tracking a
-**stable v2.0.2** release on **8 July 2026**. The RCs are ready for everyday use -
-if you hit anything, please [report a bug on GitHub](https://github.com/forjedio/yerd/issues).
-:::
-
 ::: tip Coming from Herd, Valet, or Lerd?
 Already running another local PHP environment? They claim the same OS hooks Yerd
 needs - ports **80/443**, the `*.test` **resolver**, and a trusted local **CA** -
@@ -41,9 +34,8 @@ Silicon (arm64) only.
 
 Yerd is a **single desktop app** - the daemon, the `yerd` CLI, and the privileged
 helper are all embedded in it (nothing is downloaded at runtime). Grab the latest
-**Release Candidate** build from the
-[releases page](https://github.com/forjedio/yerd/releases) (stable **v2.0.2** is
-tracked for **8 July 2026**):
+**stable release** from the
+[releases page](https://github.com/forjedio/yerd/releases):
 
 | Platform | Download | Install |
 |---|---|---|

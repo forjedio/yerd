@@ -1,6 +1,12 @@
 <div align="center">
-
+  
 <img src="https://yerd.app/images/social-card.png" alt="Yerd - Local PHP, without the friction. A fast, rootless, open-source local PHP development environment for macOS and Linux: serve .test domains over HTTP and HTTPS, run a different PHP version per site, and manage it all from one tiny daemon - no Docker, no sudo for everyday work, no subscription." width="840" />
+
+</div>
+
+---
+
+<div align="center">
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](#license)
 [![Platforms: macOS · Linux](https://img.shields.io/badge/platforms-macOS%20%C2%B7%20Linux-success.svg)](#installation)
@@ -24,10 +30,11 @@ Yerd is a **single desktop app** for macOS and Linux - the daemon, the `yerd`
 CLI, and a privileged one-shot helper are all bundled inside it; nothing is
 downloaded at runtime. The tray-first GUI is a thin client over a tiny (~8 MB)
 background daemon: a live dashboard of what's running, with one-click control of
-PHP versions, `.test` sites, databases, mail capture, dumps, and per-site HTTPS.
-A guided [onboarding journey](https://yerd.app/guide/welcome-journey) gets you
-from install to serving sites in a couple of minutes. Every button maps to the
-same daemon the [CLI](https://yerd.app/reference/cli/) drives, so the app and the
+PHP versions, `.test` sites, databases, mail capture, live Laravel dumps, public
+sharing, and per-site HTTPS. A guided
+[onboarding journey](https://yerd.app/guide/welcome-journey) gets you from
+install to serving sites in a couple of minutes. Every button maps to the same
+daemon the [CLI](https://yerd.app/reference/cli/) drives, so the app and the
 terminal never drift out of sync - and if you prefer the keyboard, `yerd` does
 everything the app does.
 
@@ -35,10 +42,13 @@ everything the app does.
 
 ## Why Yerd?
 
-- 🚀 **Zero-config sites** - drop a project in a parked folder, it's live at `<name>.test`.
+- 🚀 **Zero-config sites** - drop a project in a parked folder, it's live at `<name>.test`, framework web root auto-detected.
 - 🔒 **Trusted HTTPS** per site from a local CA - no `mkcert`, no browser warnings.
 - 🐘 **Multiple PHP versions**, pinned per site.
 - 🗄️ **Native MySQL · MariaDB · PostgreSQL · Redis** - no Docker.
+- 📬 **Mail capture** and a live **Laravel dump / query inspector**, built in.
+- 🌍 **Share any site publicly** in one click via Cloudflare Tunnel - no ngrok account, no open ports.
+- 🧰 **Composer, Node, and Bun** installed on demand as standalone binaries - no system package manager.
 - 🪶 **One ~8 MB daemon** - no containers, no VM, no Electron.
 - 🛡️ **Rootless** - setup elevates once; daily use never does.
 - 🔌 **Works without admin** - can't route `.test`? Reach any site at `http://localhost:8080/~<name>.test`.
@@ -62,8 +72,9 @@ everything the app does.
 | First-class CLI | ✅ | ✅ | ✅ |
 | Menu-bar / tray GUI | ✅ | ✅ | ✅ |
 | Database & cache services (MySQL · MariaDB · PostgreSQL · Redis) | ✅ (Pro) | ✅ | ✅ |
-| Local mail capture (catch outgoing email) | ✅ (Pro) | ❌ | ✅ |
-| Laravel dump / query inspector | ✅ (Pro) | ❌ | ✅ |
+| Local mail capture (catch outgoing email) | ✅ (Pro) | ✅ | ✅ |
+| Laravel dump / query inspector | ✅ (Pro) | ✅ | ✅ |
+| Share a site publicly (tunnel) | ✅ | ❌ | ✅ |
 | Runs rootless day-to-day | ✅ | ✅ † | ✅ |
 | **No** Docker / Podman / containers required | ✅ | ❌ | ✅ |
 | Lightweight (no VM, no container images) | ✅ | ❌ | ✅ |
@@ -85,15 +96,9 @@ its own Rust proxy + DNS. No Valet, no Homebrew.</sub>
 
 ## Installation
 
-> **Release status — Release Candidate.** Yerd is currently shipping **Release
-> Candidate** builds, available from the
-> [releases page](https://github.com/forjedio/yerd/releases). We're tracking a
-> **stable v2.0.2** release on **8 July 2026**. The RCs are ready for everyday use —
-> please [report any bugs on GitHub](https://github.com/forjedio/yerd/issues).
-
 Yerd is a **single desktop app** - the daemon (`yerdd`), the `yerd` CLI, and the
 privileged `yerd-helper` are all embedded inside it (nothing is downloaded at
-runtime). Grab the latest **Release Candidate** build from the
+runtime). Grab the latest **stable release** from the
 [releases page](https://github.com/forjedio/yerd/releases):
 
 | Platform | Download | Install |
@@ -188,40 +193,55 @@ yerd doctor        # diagnose problems
 yerd doctor fix    # apply the safe fixes
 ```
 
+### 4. Share a site publicly
+
+<div align="center">
+<img src="https://yerd.app/images/share-site-dark.png" alt="The Sites page row menu, with a Share publicly… action, in the Yerd desktop app (dark mode)" width="820" />
+</div>
+
+On the **Sites** page, hit **Share** for a one-off `*.trycloudflare.com` URL - or
+connect your own Cloudflare account for a stable hostname on a domain you
+manage. Outbound-only, no open ports, no `sudo`.
+
+Alternative - the CLI:
+
+```bash
+yerd tunnel install     # one-time: fetch cloudflared
+yerd tunnel share app   # -> https://calm-river-1234.trycloudflare.com
+yerd tunnel stop app    # take it back offline
+```
+
 ---
 
 ## CLI command reference
 
-| Command | What it does |
+| Group | Commands |
 |---|---|
-| `yerd park <dir>` | Park a directory; each child folder is served at `<name>.test`. |
-| `yerd unpark <dir>` | Stop serving a previously parked directory. |
-| `yerd link <name> <dir>` | Serve a single directory as a named site. |
-| `yerd unlink <name>` | Remove a linked site. |
-| `yerd sites` | List every known site (kind, PHP version, HTTPS, doc-root). |
-| `yerd root <site> [path]` | Set a site's served web root (or `--auto` to re-detect). |
-| `yerd use <version>` | Set the **global** default PHP version. |
-| `yerd use <site> <version>` | Set one site's PHP version. |
-| `yerd secure <site>` / `unsecure <site>` | Turn HTTPS on / off for a site. |
-| `yerd install php <version>` | Download + install a PHP version. |
-| `yerd list php [--check] [--available]` | List installed PHP versions (and updates), or what's installable. |
-| `yerd update php [<version>]` | Update one (or all) installed PHP versions. |
-| `yerd set php <setting> <value>` / `unset php <setting>` | Set / clear a global PHP ini default (all versions). |
-| `yerd restart php [<version>]` / `restart daemon` | Restart a PHP pool (or all), or the daemon. |
-| `yerd services` | List local database / cache services and their status. |
-| `yerd service available` | List installable service versions for your platform. |
-| `yerd service install <svc> <version>` | Install a service (`redis`/`mysql`/`mariadb`/`postgres`) from a prebuilt build. |
-| `yerd service start\|stop\|restart <svc>` | Start, stop, or restart a service (start also enables auto-start). |
-| `yerd service set-port <svc> <port>` / `logs <svc>` | Set a service's loopback port; tail its log. |
-| `yerd service change-version\|uninstall <svc> …` | Switch a service's version, or remove one (`--purge` deletes its data). |
-| `yerd db list\|create\|drop <svc> [<name>]` | List, create, or drop databases in a running SQL service. |
-| `yerd db backup\|restore <svc> <name> <file>` | Dump a database to / restore it from a plain-SQL file. |
-| `yerd status` | Snapshot: daemon, ports, DNS, CA trust, PHP pools (PID/RAM), load. |
-| `yerd doctor` / `yerd doctor fix` | Diagnose common problems; auto-repair the safe ones. |
-| `yerd elevate [trust\|resolver\|ports]` | One-time privileged setup (run with `sudo`). |
-| `yerd unelevate [...]` | Reverse what `elevate` configured. |
+| **Sites** | `sites`, `park`, `unpark`, `link`, `unlink`, `root` |
+| **HTTPS** | `secure`, `unsecure` |
+| **PHP** | `use`, `install php`, `uninstall php`, `update php`, `restart php`, `list php`, `list parked`, `set php`, `unset php` |
+| **Tooling** | `tools`, `install tool`, `uninstall tool`, `path install\|uninstall\|print` |
+| **Services** | `services`, `service available\|install\|change-version\|uninstall\|start\|stop\|restart\|set-port\|logs` |
+| **Databases** | `db list\|create\|drop\|backup\|restore` |
+| **Mail** | `mail list\|show\|clear` |
+| **Sharing** | `tunnel install\|share\|stop\|status\|login\|create\|delete\|list\|route\|set-host\|publish\|unpublish` |
+| **Diagnostics** | `ping`, `status`, `doctor`, `doctor fix` |
+| **Elevation** | `elevate [trust\|resolver\|ports]`, `unelevate` |
+| **Daemon** | `restart daemon` |
+| **Self-update** | `update [--yes] [--edge\|--stable]` |
+| **Uninstall** | `uninstall [--yes]`, `uninstall php`, `uninstall tool` |
 
-Add `--json` to any command for machine-readable output.
+```bash
+yerd park ~/Sites            # ~/Sites/blog -> http://blog.test
+yerd secure my-app           # -> https://my-app.test
+yerd install php 8.5 && yerd use my-app 8.5
+yerd db create mysql my_app
+yerd tunnel share my-app     # -> https://calm-river-1234.trycloudflare.com
+yerd status                  # what's running
+```
+
+Add `--json` to any command for machine-readable output. Full details, flags,
+and JSON shapes: [CLI reference →](https://yerd.app/reference/cli/)
 
 ---
 
@@ -274,8 +294,9 @@ platforms.
 
 ### 🔕 Local and quiet
 
-Yerd makes no network calls except the ones you explicitly ask for (downloading
-the PHP builds you install). PHP updates are **notify-only** - Yerd tells you when
+Yerd makes no network calls except the ones you explicitly ask for - downloading
+a PHP build, a dev tool, or `cloudflared` for sharing. Nothing is shared
+publicly until you ask, and PHP updates are **notify-only**: Yerd tells you when
 a newer patch exists, but never installs anything behind your back.
 
 ---

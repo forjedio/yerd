@@ -4,7 +4,7 @@ description: A step-by-step guide to switching to Yerd from Laravel Herd, Valet,
 
 # Switching to Yerd
 
-Yerd, [Laravel Herd](https://herd.laravel.com), [Valet](https://laravel.com/docs/valet), and [Lerd](https://github.com/lerdphp/lerd) all do the same OS-level job for local development, which means they all reach for the **same three system resources**:
+Yerd, [Laravel Herd](https://herd.laravel.com), [Valet](https://laravel.com/docs/valet), and [Lerd](https://github.com/geodro/lerd) all do the same OS-level job for local development, which means they all reach for the **same three system resources**:
 
 - **Ports 80 and 443** - only one process can listen on each at a time.
 - **The `*.test` resolver** - one OS resolver config per TLD (`/etc/resolver/test` on macOS, a `systemd-resolved` drop-in on Linux).
