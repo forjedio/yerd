@@ -27,6 +27,14 @@ export default withMermaid({
 
   head: [
     ['link', { rel: 'icon', type: 'image/svg+xml', href: '/favicon.svg' }],
+    [
+      'script',
+      {
+        defer: '',
+        'data-url': 'https://devhunt.org/tool/yerd',
+        src: 'https://cdn.jsdelivr.net/gh/sidiDev/devhunt-banner/indexV0.js',
+      },
+    ],
     ['meta', { name: 'theme-color', content: '#6366f1' }],
     ['meta', { name: 'author', content: 'Forjed' }],
     [
