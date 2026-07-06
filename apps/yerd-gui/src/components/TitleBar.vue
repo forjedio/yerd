@@ -185,7 +185,7 @@ function controlButtonClass(kind: ControlKind): string {
         type="button"
         :aria-label="controlLabel(kind)"
         :class="controlButtonClass(kind)"
-        @click="controlAction(kind)"
+        @click="controlAction(kind)()"
       >
         <component :is="controlIcon(kind)" :class="controlIconClass(kind)" />
       </button>
@@ -209,7 +209,7 @@ function controlButtonClass(kind: ControlKind): string {
         type="button"
         :aria-label="controlLabel(kind)"
         :class="controlButtonClass(kind)"
-        @click="controlAction(kind)"
+        @click="controlAction(kind)()"
       >
         <component :is="controlIcon(kind)" :class="controlIconClass(kind)" />
       </button>
