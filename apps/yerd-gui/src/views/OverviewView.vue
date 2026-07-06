@@ -289,9 +289,15 @@ const emptyEnvironment = computed(
         </div>
 
         <Card class="relative overflow-hidden">
-          <!-- A soft brand wash - the only place indigo gets a hero surface. -->
+          <!-- A soft brand wash - the only place indigo gets a hero surface.
+               A gradient fade rather than a blurred circle: `filter: blur()`
+               forces this element onto its own GPU compositing layer, which on
+               WebKitGTK (Linux) can make the window's software rounded-corner
+               clip (`#app`'s `overflow: hidden`, since the window itself has
+               no native corner mask) briefly fail to reapply on an unrelated
+               repaint elsewhere in the tree, punching a hole to the desktop. -->
           <div
-            class="pointer-events-none absolute -right-20 -top-20 size-56 rounded-full bg-brand/5 blur-2xl"
+            class="pointer-events-none absolute -right-24 -top-24 size-72 rounded-full bg-[radial-gradient(circle,hsl(var(--brand)/0.08)_0%,transparent_70%)]"
             aria-hidden="true"
           />
 
