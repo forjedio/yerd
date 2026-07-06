@@ -19,6 +19,7 @@
 
 use std::path::PathBuf;
 use std::process::Command;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use tauri_plugin_autostart::ManagerExt as _;
 
@@ -639,6 +640,20 @@ fn nudge_if_requires_approval() {
 
 #[cfg(target_os = "macos")]
 static DAEMON_REG_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Set while `setup_app`'s macOS launch-time self-repair thread is actively
+/// inside `ensure_daemon_registration`, so the frontend can show the
+/// Install/Start button as busy instead of idle. Not cfg-gated: it stays
+/// `false` forever on Linux, where nothing ever mutates it - a cheap,
+/// cross-platform-safe getter beats cfg-gating the command itself. Purely a UX
+/// signal; `DAEMON_REG_LOCK` is what actually serializes daemon mutation.
+pub(crate) static DAEMON_SELF_REPAIR_BUSY: AtomicBool = AtomicBool::new(false);
+
+/// Tauri command backing the frontend's `daemonSelfRepairBusy()`.
+#[tauri::command]
+pub fn daemon_self_repair_busy() -> bool {
+    DAEMON_SELF_REPAIR_BUSY.load(Ordering::SeqCst)
+}
 
 /// This GUI's version (= the bundled `yerdd` version; both `version.workspace`).
 #[cfg(target_os = "macos")]
@@ -1435,10 +1450,12 @@ pub fn set_title_bar_style(style: TitleBarStyle) -> Result<(), GuiError> {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::{
-        decide, reg_action, reg_plan, Decision, GuiSettings, RegAction, StartPhase, TitleBarStyle,
+        daemon_self_repair_busy, decide, reg_action, reg_plan, Decision, GuiSettings, RegAction,
+        StartPhase, TitleBarStyle, DAEMON_SELF_REPAIR_BUSY,
     };
     use crate::tray::TrayIconVariant;
     use semver::Version;
+    use std::sync::atomic::Ordering;
 
     fn v(s: &str) -> Version {
         Version::parse(s).unwrap()
@@ -1478,6 +1495,18 @@ mod tests {
             serde_json::to_string(&TitleBarStyle::Windows).unwrap(),
             "\"windows\""
         );
+    }
+
+    /// `daemon_self_repair_busy` round-trips the flag it reads; false by
+    /// default. Restores the shared static to `false` afterwards since it's a
+    /// process-wide static shared across the test binary.
+    #[test]
+    fn daemon_self_repair_busy_round_trips_the_flag() {
+        assert!(!daemon_self_repair_busy());
+        DAEMON_SELF_REPAIR_BUSY.store(true, Ordering::SeqCst);
+        assert!(daemon_self_repair_busy());
+        DAEMON_SELF_REPAIR_BUSY.store(false, Ordering::SeqCst);
+        assert!(!daemon_self_repair_busy());
     }
 
     #[test]

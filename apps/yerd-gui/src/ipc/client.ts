@@ -836,6 +836,15 @@ export async function openLoginItems(): Promise<void> {
   await call<void>("open_login_items");
 }
 
+/**
+ * macOS: whether the launch-time daemon self-repair thread (`setup_app`) is
+ * currently re-registering/kickstarting the daemon. Always false elsewhere -
+ * no such thread runs on other OSes.
+ */
+export async function daemonSelfRepairBusy(): Promise<boolean> {
+  return call<boolean>("daemon_self_repair_busy");
+}
+
 // ── dumps (Laravel telemetry) ────────────────────────────────────────────────
 
 /** Page buffered dump events newer than `since` (0 = all). */

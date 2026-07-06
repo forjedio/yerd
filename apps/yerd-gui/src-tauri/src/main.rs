@@ -168,6 +168,7 @@ fn main() {
             autostart::setup_state,
             autostart::mark_onboarded,
             autostart::daemon_version_conflict,
+            autostart::daemon_self_repair_busy,
             logging::gui_log,
             logging::get_gui_logs,
             logging::get_diagnostics,
@@ -225,10 +226,20 @@ fn setup_app(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     tray::spawn_launch_update_check(app.handle().clone());
     show_initial_window(app);
     #[cfg(target_os = "macos")]
-    std::thread::spawn(|| {
-        autostart::migrate_gui_login_if_needed();
-        let _ = autostart::ensure_daemon_registration();
-    });
+    {
+        let app_handle = app.handle().clone();
+        std::thread::spawn(move || {
+            use std::sync::atomic::Ordering;
+            use tauri::Emitter;
+
+            autostart::migrate_gui_login_if_needed();
+            autostart::DAEMON_SELF_REPAIR_BUSY.store(true, Ordering::SeqCst);
+            let _ = app_handle.emit("daemon-self-repair", true);
+            let _ = autostart::ensure_daemon_registration();
+            autostart::DAEMON_SELF_REPAIR_BUSY.store(false, Ordering::SeqCst);
+            let _ = app_handle.emit("daemon-self-repair", false);
+        });
+    }
     Ok(())
 }
 
