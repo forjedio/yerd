@@ -40,6 +40,15 @@ sudo yerd elevate ports       # allow the daemon to serve on 80/443
 | `resolver` | Routes `*.<tld>` (e.g. `*.test`) queries to Yerd's DNS responder. |
 | `ports` | Lets the daemon serve on the privileged ports 80/443. |
 
+::: tip Or use the GUI
+The desktop app's **Doctor** page mirrors this exactly - a **Fix** button per row
+(CA trust, `.test` resolver, privileged ports) runs the same `yerd elevate`
+helper under an OS prompt, and once a row is configured an **Unelevate** button
+reverts it.
+:::
+
+<ThemedImage light="/images/doctor-light.png" dark="/images/doctor-dark.png" alt="The Doctor page in the desktop app, with Fix and Unelevate buttons per row" />
+
 Reverse any of it with `unelevate`, using the same targets:
 
 ```sh
@@ -111,7 +120,7 @@ If you never run `elevate ports` (or it can't apply), the daemon falls back to h
 So without elevation you can reach sites at `http://my-app.test:8080` - **if** the resolver is installed.
 
 ::: tip Can't install the resolver at all?
-If you have no admin rights to route `.test`, those names won't resolve anywhere. Yerd still serves every site through plain `localhost` - open `http://localhost:8080/~my-app.test`, or just `http://localhost:8080/` and pick from the list. See [Localhost Access (No Resolver)](./localhost-access) for the full story (the `/~` switch, the picker, the `X-Yerd-Site` API header, and the caveats).
+If you have no admin rights to route `.test`, those names won't resolve anywhere. Yerd still serves every site through plain `localhost` - open `http://localhost:8080/~my-app.test`, or just `http://localhost:8080/` and pick from the list. See [Localhost Access](./localhost-access) for the full story (the `/~` switch, the picker, the `X-Yerd-Site` API header, and the caveats).
 :::
 
 Run [`yerd doctor`](./diagnostics) to see which ports are live and what to do.
@@ -138,7 +147,7 @@ flowchart LR
 - **`yerd`** is a thin client. Under `sudo yerd elevate` it runs as root only to orchestrate; it never does the privileged operation itself.
 - **`yerd-helper`** is a strict one-shot binary. Each invocation does exactly one validated operation and exits with a `sysexits.h`-style code.
 
-The desktop app is also just a daemon client and never runs as root; its "Fix" actions shell out to `sudo yerd elevate ...` like you would, and the matching **Unelevate** buttons shell out to `sudo yerd unelevate ...` (behind an in-app confirm and the OS prompt). See [Desktop App](./desktop-app).
+The desktop app is also just a daemon client and never runs as root; its "Fix" actions shell out to `sudo yerd elevate ...` like you would, and the matching **Unelevate** buttons shell out to `sudo yerd unelevate ...` (behind an in-app confirm and the OS prompt). See [Features](./desktop-app).
 
 ### What makes `yerd-helper` safe
 

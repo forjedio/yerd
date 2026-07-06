@@ -1,4 +1,4 @@
-# Localhost Access (No Resolver)
+# Localhost Access
 
 Yerd's "just type `app.test`" experience needs the OS resolver routed to its DNS (`sudo yerd elevate resolver`). On a locked-down machine where you **can't** do that, `*.test` names don't resolve at all - so normally you'd be stuck.
 

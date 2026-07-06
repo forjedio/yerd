@@ -20,7 +20,7 @@ The **Sites** page (under **Environment** in the sidebar) is the home base for m
 - **Park folder** and **Link site** in the header register new sites: Park folder opens a directory picker, Link site opens a modal to name a single directory.
 - A separate **Parked folders** section lists each parked root with a count of the sites it produces, plus Reveal folder and Un-park.
 
-For the full tour of the app, see [Desktop App](./desktop-app#sites).
+For the full tour of the app, see [Features](./desktop-app#sites).
 
 ### Site groups
 

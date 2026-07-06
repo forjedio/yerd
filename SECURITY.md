@@ -35,7 +35,7 @@ is fine.
 - We'll acknowledge your report as soon as we can.
 - We'll investigate, keep you updated on our assessment, and let you know when a
   fix ships.
-- We're happy to credit you in the release notes once the issue is resolved —
+- We're happy to credit you in the release notes once the issue is resolved -
   let us know how you'd like to be named, or if you'd prefer to stay anonymous.
 
 Please give us a reasonable opportunity to release a fix before any public

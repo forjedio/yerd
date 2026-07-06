@@ -44,14 +44,7 @@ After removing v1, reboot or flush DNS so the OS forgets v1's resolver before v2
 
 ### 2. Install Yerd v2
 
-See [Getting Started](./getting-started) for platform-specific instructions. The short version: download the Yerd app from the [releases page](https://github.com/forjedio/yerd/releases/latest) -
-
-| macOS (Apple Silicon) | `Yerd_MacOS_AppleSilicon_v<ver>.dmg` |
-| Linux · Debian/Ubuntu (x86-64) | `Yerd_Linux_x86_64_v<ver>.deb` |
-| Linux · Debian/Ubuntu (arm64) | `Yerd_Linux_Arm64_v<ver>.deb` |
-| Linux · Arch (x86-64) | `Yerd_Linux_x86_64_v<ver>.pkg.tar.zst` |
-
-The daemon (`yerdd`), the `yerd` CLI, and `yerd-helper` are all bundled inside the app; first launch starts the daemon. PHP is not bundled; you install versions in a later step.
+Follow **[Getting Started](./getting-started)** to install the app and go through its first-run onboarding journey - it installs and starts the daemon for you. You can install a PHP version and park a projects folder there too, or hold off and do it explicitly in the migration-specific steps below.
 
 ### 3. Run the one-time privileged setup
 
@@ -181,7 +174,7 @@ Yerd v2 is a ground-up rewrite of our own v1 package ([`LumoSolutions/yerd`](htt
 
 ## Where to go next
 
-- New to the concepts? See the [Introduction](./introduction) and [Features](./features).
+- New to the concepts? See the [Introduction](./introduction) and [Features](./desktop-app).
 - Setting up from scratch: [Getting Started](./getting-started).
 - The full command list: [CLI Reference](../reference/cli/).
 - The new config format and layout: [Configuration Reference](../reference/configuration).

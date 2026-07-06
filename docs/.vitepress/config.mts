@@ -27,6 +27,14 @@ export default withMermaid({
 
   head: [
     ['link', { rel: 'icon', type: 'image/svg+xml', href: '/favicon.svg' }],
+    [
+      'script',
+      {
+        defer: '',
+        'data-url': 'https://devhunt.org/tool/yerd',
+        src: 'https://cdn.jsdelivr.net/gh/sidiDev/devhunt-banner/indexV0.js',
+      },
+    ],
     ['meta', { name: 'theme-color', content: '#6366f1' }],
     ['meta', { name: 'author', content: 'Forjed' }],
     [
@@ -144,10 +152,10 @@ export default withMermaid({
           items: [
             { text: 'What is Yerd?', link: '/guide/introduction' },
             { text: 'Getting Started', link: '/guide/getting-started' },
-            { text: 'Yerd Onboarding', link: '/guide/welcome-journey' },
+            { text: 'Guides', link: '/guide/guides' },
             { text: 'Switching to Yerd', link: '/guide/switching-to-yerd' },
             { text: 'Upgrade Guide', link: '/guide/upgrading-from-v1' },
-            { text: 'Features', link: '/guide/features' },
+            { text: 'Features', link: '/guide/desktop-app' },
           ],
         },
         {
@@ -164,10 +172,9 @@ export default withMermaid({
             { text: 'HTTPS & Certificates', link: '/guide/https' },
             { text: 'DNS & .test Domains', link: '/guide/dns' },
             { text: 'Elevation & Privileges', link: '/guide/elevation' },
-            { text: 'Localhost Access (No Resolver)', link: '/guide/localhost-access' },
+            { text: 'Localhost Access', link: '/guide/localhost-access' },
             { text: 'The Daemon', link: '/guide/daemon' },
             { text: 'Diagnostics', link: '/guide/diagnostics' },
-            { text: 'Desktop App', link: '/guide/desktop-app' },
           ],
         },
       ],

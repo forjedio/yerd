@@ -3,7 +3,7 @@
 The Yerd desktop app: **Tauri v2 + Vue 3 (`<script setup>`) + TypeScript +
 Tailwind**, styled with hand-rolled shadcn-vue-style components.
 
-It is a **thin `yerd-ipc` client of the `yerdd` daemon** — exactly like the CLI.
+It is a **thin `yerd-ipc` client of the `yerdd` daemon** - exactly like the CLI.
 The `src-tauri` Rust layer only maps each Tauri command to one IPC `Request`
 (`src-tauri/src/commands.rs` → `ipc.rs`); all behaviour lives in the daemon and
 its crates. Features that need a daemon IPC which doesn't exist yet (log
@@ -13,10 +13,10 @@ soon"** affordances rather than being faked client-side.
 ## Layout
 
 ```
-src/              Vue app — ipc/ (typed client + wire-JSON types), composables/,
+src/              Vue app - ipc/ (typed client + wire-JSON types), composables/,
                   components/ (ui/ primitives), views/ (PhpView, SitesView,
                   ServicesView, AboutView)
-src-tauri/        Rust bridge — main.rs, commands.rs, ipc.rs, error.rs, elevate.rs,
+src-tauri/        Rust bridge - main.rs, commands.rs, ipc.rs, error.rs, elevate.rs,
                   daemon.rs (resolve/start/stop + install-CLI-on-PATH),
                   autostart.rs (per-user service + run-at-login),
                   smappservice.rs + mac_trust.rs (macOS), mail_window.rs
@@ -73,7 +73,7 @@ runtime download. On macOS the daemon registers as a background
 the Background* shows **Yerd**, not the signing team).
 
 The embedding lives in **per-platform release overlays** applied only to the
-release build (a plain `tauri dev` / `tauri build` skips them — so dev needs no
+release build (a plain `tauri dev` / `tauri build` skips them - so dev needs no
 staged sidecars):
 
 ```sh
@@ -91,7 +91,7 @@ done
 npm run tauri build -- --config src-tauri/tauri.bundle-macos.conf.json   # macOS
 # npm run tauri build -- --config src-tauri/tauri.bundle-linux.conf.json # Linux
 
-# 3) macOS only: package the styled .dmg (headless — no Finder/AppleScript).
+# 3) macOS only: package the styled .dmg (headless - no Finder/AppleScript).
 #    Set APPLE_SIGNING_IDENTITY to also codesign it; omit for an unsigned test dmg.
 ./scripts/build-macos-dmg.sh
 ```

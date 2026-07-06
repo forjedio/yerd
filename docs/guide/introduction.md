@@ -58,5 +58,4 @@ The [Getting Started](./getting-started) guide walks through it from a clean mac
 ## Next steps
 
 - [Getting Started](./getting-started) - install Yerd and serve your first site.
-- [Features](./features) - a tour of everything Yerd can do.
-- [Desktop App](./desktop-app) - the GUI, screen by screen.
+- [Features](./desktop-app) - a tour of everything Yerd can do, screen by screen.

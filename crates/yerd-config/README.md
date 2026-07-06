@@ -14,15 +14,15 @@ layer use string inputs only.
 Every on-disk file MUST carry a top-level `version = N` key. A missing key
 is a hard error (`ConfigError::Migration { MissingVersion }`). The version
 is the single trigger for forward migrations. `CURRENT_VERSION` is bumped
-together with a new entry in `migrate::STEPS` — never silently drop fields.
+together with a new entry in `migrate::STEPS` - never silently drop fields.
 
 ## I/O semantics
 
 `save` writes to a sibling temp file via `NamedTempFile::new_in(parent)`,
 then `persist`s onto the destination. On Unix this is `rename(2)` (atomic
-when src and dst share a filesystem — guaranteed because the temp is
+when src and dst share a filesystem - guaranteed because the temp is
 created in the destination's parent dir). On Windows this is `MoveFileExW`
-with `MOVEFILE_REPLACE_EXISTING` — atomic for the rename itself, but can
+with `MOVEFILE_REPLACE_EXISTING` - atomic for the rename itself, but can
 fail with `ERROR_SHARING_VIOLATION` if another process holds an exclusive
 handle to the destination.
 
@@ -41,7 +41,7 @@ is treated as relative to the process's current working directory.
 `ParkedSection::paths` is `BTreeSet<String>`, not `BTreeSet<PathBuf>`. The
 config layer does not own platform-specific path semantics, and
 `PathBuf::serialize` is lossy for non-UTF-8 paths on Windows. Strings are
-stored verbatim — no canonicalisation. `"/srv/foo"` and `"/srv/foo/"` are
+stored verbatim - no canonicalisation. `"/srv/foo"` and `"/srv/foo/"` are
 distinct entries. Callers convert to `PathBuf` at the point of use.
 
 ## TLD normalisation
@@ -59,7 +59,7 @@ cargo llvm-cov --package yerd-config --lib --tests \
 ```
 
 The `yerd-core` exclusion keeps this gate scoped to `yerd-config`'s own
-source files — `yerd-core` has its own coverage gate.
+source files - `yerd-core` has its own coverage gate.
 
 Requires `cargo-llvm-cov` ≥ 0.5 for `--fail-under-lines`.
 

@@ -1,44 +1,14 @@
-# Desktop App
+---
+description: A tour of the Yerd desktop app, screen by screen - the recommended way to install and run Yerd, a fast, rootless, open-source local PHP environment for macOS and Linux.
+---
 
-Yerd ships a desktop GUI: a small tray-first window over everything the CLI does. Built with Tauri v2, Vue 3, TypeScript, and Tailwind, it's a thin client of the [daemon](./daemon), just like the `yerd` CLI. Every button maps to one IPC request to `yerdd`, so the GUI and CLI can't drift out of sync.
+# Features
 
-It's the recommended way to run Yerd: it installs and verifies the daemon and CLI for you, then walks you through the one-time setup. If you live in the terminal, the [CLI](./getting-started) is a first-class alternative.
+Yerd is a fast, rootless, open-source local PHP environment for macOS and Linux. It serves projects on `.test` domains over HTTP and HTTPS, runs a different PHP version per site, and manages it all from one small daemon. No Docker, no `sudo` for daily work, no subscription.
 
-## Install the bundles
+The **desktop app** is the recommended way to run all of it: a small tray-first window over everything the CLI does. Built with Tauri v2, Vue 3, TypeScript, and Tailwind, it's a thin client of the [daemon](./daemon), just like the `yerd` CLI - every button maps to one IPC request to `yerdd`, so the GUI and CLI can't drift out of sync. This page is a tour of everything it can do, screen by screen; each section links to the full guide for that feature.
 
-The app is the **only** artifact, with the daemon + CLI + helper embedded:
-
-| Platform | Artifact | Install |
-|---|---|---|
-| macOS (Apple Silicon) | `Yerd_MacOS_AppleSilicon_v<ver>.dmg` | Open the DMG, drag Yerd to Applications |
-| Linux · Debian/Ubuntu (x86-64) | `Yerd_Linux_x86_64_v<ver>.deb` | `sudo apt install ./Yerd_Linux_x86_64_v<ver>.deb` |
-| Linux · Debian/Ubuntu (arm64) | `Yerd_Linux_Arm64_v<ver>.deb` | `sudo apt install ./Yerd_Linux_Arm64_v<ver>.deb` |
-| Linux · Arch (x86-64) | `Yerd_Linux_x86_64_v<ver>.pkg.tar.zst` | `sudo pacman -U ./Yerd_Linux_x86_64_v<ver>.pkg.tar.zst` |
-
-The macOS DMG targets Apple Silicon (`aarch64`) only; Intel (x86-64) Macs are not supported at this time. There's no Windows bundle yet: the daemon's named-pipe address isn't client-derivable.
-
-::: tip The GUI sets up the backend for you
-The GUI is a client of the [daemon](./daemon), and the daemon (`yerdd`), the `yerd` CLI, and `yerd-helper` are all **bundled inside the app** - nothing is downloaded at runtime. On first launch the app simply **starts its bundled daemon**, then lands you on the Overview dashboard. On macOS that makes setup essentially **drag-and-drop**: drag Yerd to Applications, launch it, done. On macOS the daemon registers as a background **SMAppService** login item (shown as "Yerd" in System Settings → Login Items); on Linux the package (`.deb`/`.pkg.tar.zst`) puts `yerd` on your `PATH` and grants the daemon its privileged-port capability.
-:::
-
-## Tray-first by design
-
-The window is something you summon, not keep open.
-
-- Closing the window hides it to the tray instead of quitting. The daemon and your sites keep running.
-- The tray menu is a **live dropdown**, not a static list. It shows daemon status (running/stopped, with the bound HTTP/HTTPS ports) and **Restart** / **Stop** (or **Start** when stopped); an inline **Default PHP** switcher over your installed versions (a tick marks the current default, pick another to switch); **Update Yerd** / **Update PHP** when an update is waiting (otherwise **Check for updates**); shortcuts to open the **Mail** and **Dumps** viewer windows; **New Laravel site**, **Link Site**, **Park Directory**; page-navigation shortcuts; **Open Yerd**; and **Quit** (exits the GUI, not the daemon). The menu refreshes from the daemon even while the window is hidden to the tray.
-- The tray icon also carries status badges: a small red dot when a Yerd or PHP update is available, and an orange dot when there's unread captured mail.
-- You don't need to click **Check for updates** for the badge to stay current: the daemon checks for new Yerd releases on its own roughly every 4 hours, and the app also checks immediately on launch (or when you re-open an already-running Yerd) if the last check is more than 4 hours old.
-- On macOS, left-click the tray icon to open the menu. On Linux (AppIndicator), use the menu's **Open Yerd** to reshow the window.
-- Single-instance: launching again re-focuses the existing window.
-
-The window is borderless with a custom title bar drawn to match a window-control convention: macOS-style traffic lights on the left, or a Linux layout (close on one side, minimize/maximize on the other). By default it follows the host OS - macOS gets traffic lights, Linux gets native button ordering (close on the left, minimize/maximize on the right) - but Settings > Appearance lets you pin a specific style regardless of host (see [Settings](#settings) below). A status pill in the bottom-left of the sidebar shows whether the daemon is connected, unreachable, or connecting.
-
-If the daemon isn't running, every data-backed page shows the same **Yerd isn't running** screen - the page's header plus a **Start Yerd** hero that launches the bundled `yerdd` (through your per-user service) without leaving the app. The button keeps spinning until the daemon actually connects. The **Overview**, **Settings**, and **About** pages stay reachable even when the daemon is down. You can also start it from a terminal with `yerdd serve &`. If a start attempt fails, the hero shows a **Daemon Diagnostics** panel: computed hints on the likely cause, an expandable tail of the daemon log and the spawn/repair logs, and a **Copy diagnostics** button to paste into a bug report.
-
-::: tip First run vs. later starts
-On a **brand-new** install the app opens the [onboarding journey](./welcome-journey), which installs and starts the daemon for you (and walks through PHP, parking, and elevation). Once you've been set up, later launches go straight to the dashboard - or the **Start Yerd** screen if the daemon happens to be stopped. On macOS, registering the background service may prompt you to enable Yerd in System Settings → Login Items - the app shows a button to take you there. It never runs as root to do this.
-:::
+If you live in the terminal, the [CLI](../reference/cli/) is a first-class alternative. Not installed yet? See [Getting Started](./getting-started).
 
 ## The window at a glance
 
@@ -191,23 +161,12 @@ The command palette also lists your sites at the bottom (grouped by domain): **O
 There's no Quit shortcut: closing the window (`⌘W` / `Ctrl+W`) hides it to the tray and leaves the daemon running, by design. Quit from the tray menu, or on macOS with the standard `⌘Q`.
 :::
 
-## How it fits together
-
-```mermaid
-flowchart TD
-    App["Desktop App (Tauri + Vue), a client"] -->|IPC| D["yerdd, owns all state"]
-    D --> Svc["proxy · DNS · PHP-FPM"]
-    App -->|"Fix actions"| Elev["yerd elevate"]
-    Elev -->|"OS prompt"| H["privileged helper"]
-```
-
-The daemon owns all state; the window is a view onto it; privileged work goes through the audited helper behind an OS prompt. Both the GUI and CLI are clients of the same daemon, so anything you do in one shows up immediately in the other.
-
 ## Related
 
-- [Getting Started](./getting-started) - install Yerd (the app sets up the daemon and CLI for you) or take the terminal-first path
+- [Getting Started](./getting-started) - install Yerd and walk through the first-run onboarding journey
 - [The Daemon](./daemon) - what `yerdd` is and how it runs
 - [Sites](./sites) · [PHP Versions](./php-versions) · [HTTPS & Certificates](./https) - the features the GUI surfaces
 - [Elevation & Privileges](./elevation) - how "Fix" actions stay root-free
+- [CLI Reference](../reference/cli/) - the `yerd` command line, a first-class alternative
 - [Desktop App Internals](../developer/gui) - the Tauri/Vue architecture for contributors
 - [Source on GitHub](https://github.com/forjedio/yerd) - `apps/yerd-gui`

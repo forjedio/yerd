@@ -31,12 +31,24 @@
 }
 
 /* Hero lockup (logo + "Yerd"), matching the social card. Markup comes from the
- * #home-hero-info slot in Layout.vue. */
+ * #home-hero-info slot in Layout.vue. Hidden below the hero's stacked
+ * breakpoint - the navbar already shows the logo + wordmark there, so
+ * repeating it right below the screenshot is redundant. */
 .VPHero .hero-brand {
   display: flex;
   align-items: center;
   gap: 1.4em;
   margin-bottom: 3rem;
+}
+@media (max-width: 959px) {
+  .VPHero .hero-brand {
+    display: none;
+  }
+  /* Restore the breathing room the lockup used to provide between the
+   * screenshot and the headline, now that it's hidden here. */
+  .VPHero .text {
+    margin-top: 3rem;
+  }
 }
 .VPHero .hero-logo {
   display: block;
@@ -85,11 +97,15 @@
 }
 
 /* The headline reads large in a heavy display face, so pull it below the default
- * hero sizes at each breakpoint. */
+ * hero sizes at each breakpoint. overflow-wrap guards against the fallback font
+ * (rendered briefly before Outage Cut swaps in) measuring a word wider than a
+ * narrow viewport - without it, a single long word can push the hero wider than
+ * the screen instead of wrapping. */
 .VPHero .text {
   display: block;
   font-size: 28px;
   line-height: 1.2;
+  overflow-wrap: break-word;
 }
 @media (min-width: 640px) {
   .VPHero .text {
@@ -424,4 +440,61 @@ html:not(.dark) .themed-img--dark {
   white-space: normal !important;
   overflow: visible !important;
   line-height: 1.35;
+}
+
+/* ---- Video embeds (<YouTubeEmbed>) ---- */
+.yt-embed {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  margin: 1.25rem 0;
+  overflow: hidden;
+  border: 1px solid var(--vp-c-divider);
+  border-radius: 12px;
+  background: var(--vp-c-bg-soft);
+  box-shadow: 0 14px 36px rgba(0, 0, 0, 0.1);
+}
+.dark .yt-embed {
+  box-shadow: 0 14px 36px rgba(0, 0, 0, 0.45);
+}
+.yt-embed__facade {
+  display: block;
+  width: 100%;
+  height: 100%;
+  padding: 0;
+  border: 0;
+  background: none;
+  cursor: pointer;
+}
+.yt-embed__thumb {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  transition: filter 0.18s ease;
+}
+.yt-embed__facade:hover .yt-embed__thumb {
+  filter: brightness(0.85);
+}
+.yt-embed__play {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.yt-embed__play svg {
+  width: 68px;
+  height: 48px;
+  filter: drop-shadow(0 4px 10px rgba(0, 0, 0, 0.45));
+  transition: transform 0.18s ease;
+}
+.yt-embed__facade:hover .yt-embed__play svg {
+  transform: scale(1.08);
+}
+.yt-embed__frame {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border: 0;
 }
