@@ -109,7 +109,7 @@ runtime). Grab the latest **stable release** from the
 | Linux · Arch (x86-64) | `Yerd_Linux_x86_64_v<ver>.pkg.tar.zst` | `sudo pacman -U ./Yerd_Linux_x86_64_v<ver>.pkg.tar.zst` |
 
 > **Arch note.** If you have a leftover `/usr/bin/yerd` from the old v1 (Go)
-> project, remove it first — pacman refuses to install over a file it doesn't
+> project, remove it first - pacman refuses to install over a file it doesn't
 > own. Run `pacman -Syu` before installing/upgrading so the WebKit/GTK libraries
 > the app links match (it's built against current Arch packages).
 

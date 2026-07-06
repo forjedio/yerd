@@ -1,9 +1,9 @@
 # yerd-helper
 
 Privileged one-shot binary for Yerd. The daemon (`yerdd`) runs
-unprivileged; operations that require root — installing the CA into the
+unprivileged; operations that require root - installing the CA into the
 system trust store, writing resolver redirects, applying
-`cap_net_bind_service` — are pushed across this binary as the single
+`cap_net_bind_service` - are pushed across this binary as the single
 security boundary.
 
 ## Subcommands
@@ -42,11 +42,11 @@ Follows `sysexits.h`:
 | 64 | bad argv structure (`EX_USAGE`) |
 | 65 | bad argv data: invalid hex, addr, etc. (`EX_DATAERR`) |
 | 69 | required external tool missing (`EX_UNAVAILABLE`) |
-| 70 | internal contract bug — wire drift (`EX_SOFTWARE`) |
+| 70 | internal contract bug - wire drift (`EX_SOFTWARE`) |
 | 74 | I/O failed (`EX_IOERR`) |
 | 75 | external command failed transiently (`EX_TEMPFAIL`) |
-| 77 | not running privileged (`EX_NOPERM`) — daemon should retry with elevation |
-| 78 | OS / config mismatch — `Unsupported` (`EX_CONFIG`) |
+| 77 | not running privileged (`EX_NOPERM`) - daemon should retry with elevation |
+| 78 | OS / config mismatch - `Unsupported` (`EX_CONFIG`) |
 
 ## Manual privileged-op test recipes
 
@@ -88,5 +88,5 @@ sudo target/debug/yerd-helper uninstall-ca --fingerprint <64hex>
 - macOS Authorization Services entitlements wrapper (Phase 2).
 - Linux distro variants outside Debian/Ubuntu/Alpine/RHEL/Fedora/Arch
   (anchor-dir auto-detect returns `Unsupported` for unknown layouts).
-- `tracing` subscriber — `eprintln!` to stderr is enough for a
+- `tracing` subscriber - `eprintln!` to stderr is enough for a
   millisecond-lifetime one-shot.

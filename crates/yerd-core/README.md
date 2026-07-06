@@ -4,12 +4,12 @@ Pure domain model and host→site routing for [Yerd](../../).
 
 ## What's in it
 
-- `PhpVersion` — strict major.minor with `Display`/`FromStr` and a custom serde impl that wires through TOML/JSON as the canonical string `"8.3"`.
-- `Tld` — validated DNS suffix newtype (ASCII, lowercased, DNS-label rules).
-- `Site` / `SiteKind` — a routable target with a private `name` invariant and typed setters (no `set_name` — renaming is a router operation).
-- `RouterConfig` — typed TLD plus a cached `".{tld}"` suffix for the hot path.
-- `SiteRouter` — `BTreeMap`-backed registry with `new`, `from_sites`, `insert`, `remove`, `get`, `get_mut`, `iter`, `len`, `is_empty`, `config`, and the host→site `resolve` algorithm.
-- `CoreError` (+ `*Reason` enums) — single error type, every variant `#[non_exhaustive]`.
+- `PhpVersion` - strict major.minor with `Display`/`FromStr` and a custom serde impl that wires through TOML/JSON as the canonical string `"8.3"`.
+- `Tld` - validated DNS suffix newtype (ASCII, lowercased, DNS-label rules).
+- `Site` / `SiteKind` - a routable target with a private `name` invariant and typed setters (no `set_name` - renaming is a router operation).
+- `RouterConfig` - typed TLD plus a cached `".{tld}"` suffix for the hot path.
+- `SiteRouter` - `BTreeMap`-backed registry with `new`, `from_sites`, `insert`, `remove`, `get`, `get_mut`, `iter`, `len`, `is_empty`, `config`, and the host→site `resolve` algorithm.
+- `CoreError` (+ `*Reason` enums) - single error type, every variant `#[non_exhaustive]`.
 
 ## Purity rules
 
@@ -20,7 +20,7 @@ This crate is **pure**:
 - No `unwrap`/`expect`/`panic!`/indexing slicing in non-test code (clippy-enforced via the `[lints.clippy]` block).
 - Side effects belong behind traits in `yerd-platform` and similar adapters.
 
-If a future task wants to add I/O here, **stop** — it belongs behind a trait elsewhere.
+If a future task wants to add I/O here, **stop** - it belongs behind a trait elsewhere.
 
 ## `document_root` invariant
 
