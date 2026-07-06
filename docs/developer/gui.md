@@ -140,10 +140,11 @@ Three commands are **host-only helpers** with no daemon IPC:
 | `host_platform` | `&'static str` (`std::env::consts::OS`) | `"linux"` / `"macos"` / `"windows"` to gate platform UI |
 | `elevate` / `unelevate` | `()` | run `yerd elevate <target>` / `yerd unelevate <target>` under OS elevation (see below) |
 
-The Settings page (route `/general`) adds further host-only commands (no daemon IPC) for daemon lifecycle and autostart - `daemon_installed`, `start_daemon`, `stop_daemon`, `cli_path_status`, `install_cli_to_path`, `remove_cli_from_path`, `open_login_items`, `get_autostart`, `set_autostart_daemon`, `set_autostart_gui`, `set_gui_minimized` - implemented in `daemon.rs` (resolve the bundled binaries, start/stop, install the `yerd` CLI on PATH) and `autostart.rs` (per-user service + run-at-login; macOS uses `smappservice.rs`). The daemon is **bundled** in the app, so there's no download/install command.
+The Settings page (route `/general`) adds further host-only commands (no daemon IPC) for daemon lifecycle and autostart - `daemon_installed`, `start_daemon`, `stop_daemon`, `cli_path_status`, `install_cli_to_path`, `remove_cli_from_path`, `open_login_items`, `get_autostart`, `set_autostart_daemon`, `set_autostart_gui`, `set_gui_minimized`, `daemon_self_repair_busy` - implemented in `daemon.rs` (resolve the bundled binaries, start/stop, install the `yerd` CLI on PATH) and `autostart.rs` (per-user service + run-at-login; macOS uses `smappservice.rs`). The daemon is **bundled** in the app, so there's no download/install command.
 
 On macOS, `autostart.rs` also self-repairs the daemon's SMAppService registration
-on every launch (`ensure_daemon_registration`). It folds the GUI/daemon version
+on every launch (`ensure_daemon_registration`, run from a background thread in
+`setup_app`). It folds the GUI/daemon version
 comparison (`decide`) and a phantom-job check into a `RegAction`: `Refuse` when
 the registered daemon is newer than this GUI (a downgrade guard - the running
 daemon is left alone and the version conflict is surfaced on the Overview
@@ -157,6 +158,18 @@ from since there's no job to kick. Every branch logs to
 `{cache}/yerd-gui-repair.log`, which `daemon_diagnostics`/"Copy diagnostics"
 surfaces - the first place to check when a daemon doesn't come back after an
 update.
+
+Because this thread runs unconditionally on every launch - including when
+onboarding is still showing (a prior "Install" click can leave a registration
+behind even if the journey wasn't finished) - it can be doing real,
+multi-second work (or opening Login Items) with no user click involved. The
+thread brackets its call to `ensure_daemon_registration` with a
+`DAEMON_SELF_REPAIR_BUSY` atomic flag and a `daemon-self-repair` Tauri event
+(`true` before, `false` after), which `useDaemonStart.ts`'s `backgroundBusy`
+signal (below) ORs into the Install/Start button's busy state, so the button
+never sits idle while this is happening. `DAEMON_REG_LOCK` is what actually
+serializes registration/kickstart calls against a concurrent manual start; the
+flag/event are purely a UX signal layered on top, not a correctness mechanism.
 
 ::: tip No `Request` is ever built in the frontend
 The `Request` enum is intentionally **not** mirrored into TypeScript. The
@@ -437,6 +450,7 @@ and `elevate` (the `elevate` command above), typed to the
 | Composable | Role |
 | --- | --- |
 | `useDaemon` | **Singleton** daemon store. One poller for the whole app (connection pill, views) so the daemon isn't hit by N independent `status` loops. `status` doubles as the liveness probe; only a genuine **unreachable** error flips `connected` to `false` - a typed daemon error still means the daemon is up. Started/stopped from `App.vue`. |
+| `useDaemonStart` | **Singleton** "start the daemon, wait for it to connect, diagnose on failure" flow shared by onboarding step 1, `DaemonDownHero`, and Doctor. `phase` (click-driven, fed by the Rust `daemon-start-phase` event) and `backgroundBusy` (fed by macOS's launch-time self-repair thread's `daemon-self-repair` event, see above) both OR into `starting`/`activeLabel` so every consumer's button reflects either kind of in-flight work - but `start()`'s own re-entrancy guard reads `phase` alone, so a same-tick self-repair no-op can never suppress `App.vue`'s automatic start. |
 | `usePoll` | Generic mount-scoped poller. Never overlaps in-flight calls, **pauses while the document is hidden** (background tab / tray), refreshes on becoming visible, and clears its timer on unmount. Default cadence 4s; callers should not go below ~3s for `status`. |
 | `useToast` | Module-level toast store rendered by the single `<Toaster>` in `App.vue`. Errors linger (8s), success/info auto-dismiss (4s). |
 

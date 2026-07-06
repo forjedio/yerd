@@ -3,7 +3,7 @@ import { listen } from "@tauri-apps/api/event";
 
 import { useDaemon } from "@/composables/useDaemon";
 import { useOperations } from "@/composables/useOperations";
-import { daemonDiagnostics, IpcError, startDaemon } from "@/ipc/client";
+import { daemonDiagnostics, daemonSelfRepairBusy, IpcError, startDaemon } from "@/ipc/client";
 import type { DaemonDiagnostics } from "@/ipc/types";
 import { log } from "@/lib/log";
 
@@ -75,11 +75,21 @@ function labelFor(p: StartPhase): string | null {
 const { connected, refresh } = useDaemon();
 const operations = useOperations();
 
-// `phase` is the single source of truth; `starting` is derived so the existing
-// `:disabled` / spinner bindings keep working unchanged.
+// `phase` is the single source of truth for the click-driven flow; `starting`
+// is derived so the existing `:disabled` / spinner bindings keep working
+// unchanged. `backgroundBusy` is a second, independent signal for macOS's
+// launch-time self-repair thread (`setup_app`), which can re-register/kickstart
+// the daemon outside any click - see the `daemon-self-repair` listener below.
+// It ORs into `starting` (so the button still shows busy) but deliberately
+// stays out of `start()`'s re-entrancy guard, which must keep reading `phase`
+// alone: `App.vue`'s auto-start calls `start()` once per mount, and it must
+// not be silently swallowed by a same-tick self-repair no-op.
 const phase = ref<StartPhase>("idle");
-const starting = computed(() => phase.value !== "idle");
-const activeLabel = computed(() => labelFor(phase.value));
+const backgroundBusy = ref(false);
+const starting = computed(() => phase.value !== "idle" || backgroundBusy.value);
+const activeLabel = computed(() =>
+  phase.value === "idle" && backgroundBusy.value ? "Preparing Daemon" : labelFor(phase.value),
+);
 const pendingApproval = ref(false);
 const diagnostics = ref<DaemonDiagnostics | null>(null);
 
@@ -176,18 +186,21 @@ function beginPolling(startError?: string): void {
 
 /**
  * Begin the daemon-start flow (singleton). A second call while one is already in
- * flight is a no-op: the in-flight guard stops two callers interleaving and
- * clearing each other's shared state. `phase` goes to "starting" synchronously so
- * the spinner shows on click (the macOS plan can spend seconds probing launchctl
- * before the first phase event). Once `startDaemon` returns, `acceptRustPhases` is
- * dropped so a straggler phase event can't flip the label after the frontend owns
- * running/idle; a launch throw (missing sidecar, translocation refusal, register
- * failure) diagnoses immediately. `nudge` defaults to true (open Login Items on a
- * pending approval); only onboarding passes false. A throwing `beforeProbe` is
- * treated as not-pending-approval.
+ * flight is a no-op: the in-flight guard (on `phase`, not the OR'd `starting` -
+ * see the field comment above) stops two callers interleaving and clearing each
+ * other's shared state, while still letting `App.vue`'s auto-start run through a
+ * same-tick `backgroundBusy` window instead of being silently dropped. `phase`
+ * goes to "starting" synchronously so the spinner shows on click (the macOS plan
+ * can spend seconds probing launchctl before the first phase event). Once
+ * `startDaemon` returns, `acceptRustPhases` is dropped so a straggler phase event
+ * can't flip the label after the frontend owns running/idle; a launch throw
+ * (missing sidecar, translocation refusal, register failure) diagnoses
+ * immediately. `nudge` defaults to true (open Login Items on a pending
+ * approval); only onboarding passes false. A throwing `beforeProbe` is treated
+ * as not-pending-approval.
  */
 async function start(opts: StartOptions = {}): Promise<void> {
-  if (starting.value) return;
+  if (phase.value !== "idle") return;
   reset();
   phase.value = "starting";
   acceptRustPhases = true;
@@ -242,10 +255,20 @@ watch(connected, (c) => {
  * singleton lives for the app's lifetime, so the unlisten handle is intentionally
  * dropped; if events are unavailable (non-Tauri/test context) the listener flag is
  * reset so phases simply won't update.
+ *
+ * Also registers the `daemon-self-repair` listener (macOS launch-time self-repair
+ * thread) and seeds `backgroundBusy` from the current flag right after, in case
+ * the thread was already mid-flight before this listener attached. The seed is
+ * guarded by `backgroundBusySeen`: once any event has arrived, it wins outright -
+ * without that, the seed's IPC round-trip could sample the flag while still
+ * `true`, race with the thread's own terminal `false` event arriving first, and
+ * then overwrite `backgroundBusy` back to `true` with no further event ever
+ * coming to correct it.
  */
 async function ensureListener(): Promise<void> {
   if (listenerStarted) return;
   listenerStarted = true;
+  let backgroundBusySeen = false;
   try {
     await listen<string>("daemon-start-phase", (e) => {
       if (!acceptRustPhases) return;
@@ -255,8 +278,20 @@ async function ensureListener(): Promise<void> {
         log.debug(`daemon start phase: ${p}`);
       }
     });
+    await listen<boolean>("daemon-self-repair", (e) => {
+      backgroundBusySeen = true;
+      backgroundBusy.value = e.payload;
+      log.debug(`daemon self-repair: ${e.payload ? "busy" : "idle"}`);
+    });
   } catch {
     listenerStarted = false;
+    return;
+  }
+  try {
+    const busy = await daemonSelfRepairBusy();
+    if (!backgroundBusySeen) backgroundBusy.value = busy;
+  } catch {
+    /* non-fatal: non-macOS or IPC unavailable - backgroundBusy stays false */
   }
 }
 
