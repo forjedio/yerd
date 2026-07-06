@@ -21,7 +21,7 @@ Where a row isn't configured, **Fix (elevate)** runs the privileged action; once
 
 <ThemedImage light="/images/doctor-light.png" dark="/images/doctor-dark.png" alt="The Doctor page in the Yerd desktop app" />
 
-See [Desktop App](./desktop-app#doctor) for the rest of the GUI.
+See [Features](./desktop-app#doctor) for the rest of the GUI.
 
 ### When the daemon won't start
 

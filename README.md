@@ -32,8 +32,8 @@ downloaded at runtime. The tray-first GUI is a thin client over a tiny (~8 MB)
 background daemon: a live dashboard of what's running, with one-click control of
 PHP versions, `.test` sites, databases, mail capture, live Laravel dumps, public
 sharing, and per-site HTTPS. A guided
-[onboarding journey](https://yerd.app/guide/welcome-journey) gets you from
-install to serving sites in a couple of minutes. Every button maps to the same
+[onboarding journey](https://yerd.app/guide/getting-started#first-launch-the-onboarding-journey)
+gets you from install to serving sites in a couple of minutes. Every button maps to the same
 daemon the [CLI](https://yerd.app/reference/cli/) drives, so the app and the
 terminal never drift out of sync - and if you prefer the keyboard, `yerd` does
 everything the app does.

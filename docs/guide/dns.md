@@ -133,7 +133,7 @@ Detection is conservative. Yerd treats systemd-resolved as in charge only if `/r
 The Linux `is_installed` probe is shape-based: a well-formed drop-in for your TLD counts as wired up. Because resolved manages forwarding internally, the address inside the file isn't re-verified the way macOS does.
 
 ::: warning No safe automatic path without systemd-resolved
-Without systemd-resolved, `yerd elevate resolver` refuses rather than edit `/etc/resolv.conf` directly. On many distros that file is rewritten by NetworkManager, `resolvconf`, or cloud-init, so a hand-edit would be clobbered. Either enable systemd-resolved, or reach sites through plain localhost without `.test` resolution at all - see [Localhost Access (No Resolver)](./localhost-access).
+Without systemd-resolved, `yerd elevate resolver` refuses rather than edit `/etc/resolv.conf` directly. On many distros that file is rewritten by NetworkManager, `resolvconf`, or cloud-init, so a hand-edit would be clobbered. Either enable systemd-resolved, or reach sites through plain localhost without `.test` resolution at all - see [Localhost Access](./localhost-access).
 :::
 
 #### Windows - NRPT (planned)
@@ -174,7 +174,7 @@ To confirm the OS routes `.test` (not just Yerd's port): on macOS, `dscacheutil 
 
 - [HTTPS & Certificates](./https) - trusting the local CA so `.test` sites go green
 - [Sites](./sites) - parking and linking projects onto `.test` names
-- [Localhost Access (No Resolver)](./localhost-access) - reaching sites when `.test` can't be routed
+- [Localhost Access](./localhost-access) - reaching sites when `.test` can't be routed
 - [Elevation & Privileges](./elevation) - the one-time `sudo` and what it touches
 - [The Daemon](./daemon) - how `yerdd` binds and supervises the resolver
 - [Configuration Reference](../reference/configuration) - `dns_port` and the TLD

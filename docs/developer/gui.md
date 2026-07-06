@@ -8,7 +8,7 @@ of its own and **never runs as root**. Everything the app does to your machine
 goes through the daemon over a local socket, or through the audited `yerd` CLI
 under OS elevation.
 
-For the user-facing tour of the app, see the [Desktop App guide](../guide/desktop-app).
+For the user-facing tour of the app, see the [Features guide](../guide/desktop-app).
 This page is the contributor's reference to the two layers and the contract that
 keeps them aligned.
 

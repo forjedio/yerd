@@ -21,7 +21,7 @@ This guide is for switching *machines you already use* for PHP dev. On a clean m
 ## Before you start
 
 - **Your project code is safe.** None of these tools own your source - they just serve folders. Switching changes *what's serving* `*.test`, not your files. You don't need to move or copy any project.
-- **PHP versions don't carry over.** Yerd installs its own [prebuilt PHP builds](./php-versions); it doesn't reuse Herd/Valet/Homebrew PHP. Install the versions you need with `yerd install php <version>` (or the [onboarding journey](./welcome-journey)).
+- **PHP versions don't carry over.** Yerd installs its own [prebuilt PHP builds](./php-versions); it doesn't reuse Herd/Valet/Homebrew PHP. [Getting Started](./getting-started) walks through installing the version(s) you need.
 - **You can keep the old tool installed.** You don't have to uninstall Herd/Valet/Lerd to try Yerd - you just can't have both *serving* at the same time. Keeping it installed makes switching back trivial.
 
 ## Step 1 - Stop the other tool
@@ -74,9 +74,9 @@ sudo lsof -nP -iTCP:80 -sTCP:LISTEN
 sudo lsof -nP -iTCP:443 -sTCP:LISTEN
 ```
 
-## Step 2 - Install Yerd and start the daemon
+## Step 2 - Install Yerd
 
-[Install Yerd](./getting-started#install), launch the app, and let it start its daemon (the [onboarding journey](./welcome-journey) does this for you). Install at least one PHP version and register a site or park a folder - see [Sites](./sites).
+With the other tool stopped, follow **[Getting Started](./getting-started)** to install Yerd and go through its first-run onboarding journey - it installs and starts the daemon, installs a PHP version, and parks a projects folder, all from the app.
 
 You can do all of this **before** elevating: without elevation Yerd serves on the [rootless fallback ports](./elevation#the-rootless-fallback) `8080`/`8443`, so you can sanity-check it (`http://my-app.test:8080`) while the old tool is stopped.
 
