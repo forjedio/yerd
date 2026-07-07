@@ -36,12 +36,12 @@ jobs:
         env:
           PR_TITLE: ${{ github.event.pull_request.title }}
         run: |
-          if [[ "$PR_TITLE" =~ ^\[(Feat|Fix|Docs|Task)\]\ .+ ]]; then
+          if [[ "$PR_TITLE" =~ ^\[(Feat|Fix|Docs|Task|Meta)\]\ .+ ]]; then
             echo "PR title is valid: $PR_TITLE"
             exit 0
           fi
 
           echo "::error::Invalid PR title: \"$PR_TITLE\""
-          echo "::error::PR titles must start with [Feat], [Fix], [Docs] or [Task], followed by a space and a description."
+          echo "::error::PR titles must start with [Feat], [Fix], [Docs], [Task] or [Meta], followed by a space and a description."
           echo "::error::Examples: \"[Feat] Per-site PHP runtime settings\" or \"[Fix] Resolve .test HTTPS handshake\"."
           exit 1

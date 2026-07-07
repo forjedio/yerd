@@ -9,6 +9,7 @@
 #
 #   [Feat] ... -> ### Features
 #   [Fix]  ... -> ### Fixes
+#   [Docs] / [Meta] ... -> dropped (excluded from the notes)
 #   anything else -> ### Others
 #
 # The [Feat]/[Fix] prefix is stripped from each line once it has been sorted
@@ -16,10 +17,11 @@
 # "New Contributors" block, the "Full Changelog" link, etc.) is preserved
 # verbatim and printed after the grouped sections.
 #
-# Note: the release-notes grouping intentionally only elevates [Feat]/[Fix];
-# other Yerd prefixes ([Docs], [Task], ...) fall through to "Others" (their
-# bracket prefix is kept as-is). The stricter set of *allowed* PR-title
-# prefixes is enforced separately by .github/workflows/pr-title.yml.
+# Note: the release-notes grouping only elevates [Feat]/[Fix]; [Docs] and [Meta]
+# are repo housekeeping and dropped entirely, while any other Yerd prefix
+# ([Task], ...) falls through to "Others" (its bracket prefix kept as-is). The
+# stricter set of *allowed* PR-title prefixes is enforced separately by
+# .github/workflows/pr-title.yml.
 #
 # Usage:
 #   group-release-notes.sh < raw-notes.md > grouped-notes.md
@@ -50,6 +52,12 @@ while IFS= read -r line || [[ -n "$line" ]]; do
   # Changelog entries are markdown list items: "* ..." or "- ...".
   if [[ "$in_changelog" == "true" && "$line" =~ ^[*-][[:space:]]+(.*)$ ]]; then
     entry="${BASH_REMATCH[1]}"
+
+    # [Docs] and [Meta] changes are repo housekeeping, not user-facing release
+    # content, so they're dropped from the notes entirely (no section at all).
+    if [[ "$entry" =~ ^\[(Docs|Meta)\]\  ]]; then
+      continue
+    fi
 
     if [[ "$entry" =~ ^\[Feat\]\ (.*)$ ]]; then
       features+="* ${BASH_REMATCH[1]}"$'\n'
