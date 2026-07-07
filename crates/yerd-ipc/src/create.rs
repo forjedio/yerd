@@ -55,11 +55,11 @@ pub enum Framework {
         options: LaravelOptions,
     },
     /// Scaffold via WP-CLI (`wp core download` / `wp config create` /
-    /// `wp core install` or `wp core multisite-install`), provisioning a
-    /// MySQL/MariaDB database along the way. Spelled `Wordpress` (one
-    /// capital) rather than `WordPress` so `rename_all = "snake_case"`
-    /// produces the wire tag `"wordpress"` rather than `"word_press"` -
-    /// same reason [`Database::Mariadb`] avoids `MariaDb`.
+    /// `wp core install`), provisioning a MySQL/MariaDB database along the
+    /// way. Spelled `Wordpress` (one capital) rather than `WordPress` so
+    /// `rename_all = "snake_case"` produces the wire tag `"wordpress"` rather
+    /// than `"word_press"` - same reason [`Database::Mariadb`] avoids
+    /// `MariaDb`.
     Wordpress {
         /// WordPress-specific installer options.
         options: WordPressOptions,
@@ -175,23 +175,8 @@ pub struct WordPressOptions {
     pub site_title: String,
     /// Database table prefix (`wp config create --dbprefix`).
     pub table_prefix: String,
-    /// Multisite network mode, if any.
-    pub multisite: Multisite,
     /// The database engine + name to provision for this site.
     pub database: WordPressDatabase,
-}
-
-/// `WordPress` Multisite network mode (`wp core install` vs.
-/// `wp core multisite-install [--subdomains]`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Multisite {
-    /// A single-site install - no network.
-    Off,
-    /// A multisite network addressed by subdirectory (`/site2/`).
-    Subdirectory,
-    /// A multisite network addressed by subdomain (`site2.<name>.test`).
-    Subdomain,
 }
 
 /// The database engine and name to provision for a new `WordPress` site.

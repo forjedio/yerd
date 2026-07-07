@@ -364,8 +364,8 @@ mod tests {
     use tokio::sync::{Mutex, RwLock};
     use yerd_core::{PhpVersion, RouterConfig, SiteRouter, Tld};
     use yerd_ipc::{
-        AuthProvider, Database, JsRuntime, LaravelOptions, Multisite, StarterKit, Testing,
-        WordPressDatabase, WordPressDbEngine, WordPressOptions,
+        AuthProvider, Database, JsRuntime, LaravelOptions, StarterKit, Testing, WordPressDatabase,
+        WordPressDbEngine, WordPressOptions,
     };
     use yerd_platform::PlatformDirs;
 
@@ -440,6 +440,7 @@ mod tests {
             php_mutate: tokio::sync::Mutex::new(()),
             jobs: crate::jobs::JobRegistry::default(),
             reserved_names: tokio::sync::Mutex::new(std::collections::HashSet::new()),
+            wordpress_versions: tokio::sync::RwLock::new(None),
         }
     }
 
@@ -466,7 +467,6 @@ mod tests {
             admin_password: "hunter2hunter2".to_owned(),
             site_title: "My Blog".to_owned(),
             table_prefix: "wp_".to_owned(),
-            multisite: Multisite::Off,
             database: WordPressDatabase {
                 engine: WordPressDbEngine::Mysql,
                 name: "blog".to_owned(),

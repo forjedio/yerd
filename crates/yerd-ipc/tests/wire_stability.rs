@@ -916,6 +916,16 @@ fn request_available_services_byte_shape() {
 }
 
 #[test]
+fn request_available_wordpress_versions_byte_shape() {
+    let s = serde_json::to_string(&Request::AvailableWordpressVersions).unwrap();
+    assert_eq!(s, r#"{"type":"available_wordpress_versions"}"#);
+    assert_eq!(
+        serde_json::from_str::<Request>(&s).unwrap(),
+        Request::AvailableWordpressVersions
+    );
+}
+
+#[test]
 fn request_install_service_byte_shape() {
     let r = Request::InstallService {
         service: "redis".into(),
@@ -1143,6 +1153,31 @@ fn response_available_services_byte_shape() {
     let s = serde_json::to_string(&r).unwrap();
     let expected = r#"{"type":"available_services","services":[{"service":"redis","available":["7","8"],"installed":["8"]}]}"#;
     assert_eq!(s, expected);
+    assert_eq!(serde_json::from_str::<Response>(&s).unwrap(), r);
+}
+
+#[test]
+fn response_wordpress_versions_byte_shape() {
+    use yerd_ipc::WordPressVersionInfo;
+    let r = Response::WordpressVersions {
+        versions: vec![WordPressVersionInfo {
+            branch: "6.7".into(),
+            latest: "6.7.5".into(),
+            min_php: PhpVersion::new(7, 3),
+            max_php: PhpVersion::new(8, 4),
+        }],
+    };
+    let s = serde_json::to_string(&r).unwrap();
+    let expected = r#"{"type":"wordpress_versions","versions":[{"branch":"6.7","latest":"6.7.5","min_php":"7.3","max_php":"8.4"}]}"#;
+    assert_eq!(s, expected);
+    assert_eq!(serde_json::from_str::<Response>(&s).unwrap(), r);
+}
+
+#[test]
+fn response_wordpress_versions_empty_byte_shape() {
+    let r = Response::WordpressVersions { versions: vec![] };
+    let s = serde_json::to_string(&r).unwrap();
+    assert_eq!(s, r#"{"type":"wordpress_versions","versions":[]}"#);
     assert_eq!(serde_json::from_str::<Response>(&s).unwrap(), r);
 }
 
@@ -1671,8 +1706,7 @@ fn request_create_site_community_kit_byte_shape() {
 #[test]
 fn request_create_site_wordpress_byte_shape() {
     use yerd_ipc::{
-        CreateSiteSpec, Framework, Multisite, WordPressDatabase, WordPressDbEngine,
-        WordPressOptions,
+        CreateSiteSpec, Framework, WordPressDatabase, WordPressDbEngine, WordPressOptions,
     };
     let r = Request::CreateSite {
         spec: CreateSiteSpec {
@@ -1689,7 +1723,6 @@ fn request_create_site_wordpress_byte_shape() {
                     admin_password: "hunter2hunter2".into(),
                     site_title: "My Blog".into(),
                     table_prefix: "wp_".into(),
-                    multisite: Multisite::Off,
                     database: WordPressDatabase {
                         engine: WordPressDbEngine::Mysql,
                         name: "blog".into(),
@@ -1699,7 +1732,7 @@ fn request_create_site_wordpress_byte_shape() {
         },
     };
     let s = serde_json::to_string(&r).unwrap();
-    let expected = r#"{"type":"create_site","spec":{"name":"blog","parent_dir":"/srv","php":"8.3","secure":true,"framework":{"framework":"wordpress","options":{"core_version":null,"locale":"en_GB","admin_user":"admin","admin_email":"admin@blog.test","admin_password":"hunter2hunter2","site_title":"My Blog","table_prefix":"wp_","multisite":"off","database":{"engine":"mysql","name":"blog"}}}}}"#;
+    let expected = r#"{"type":"create_site","spec":{"name":"blog","parent_dir":"/srv","php":"8.3","secure":true,"framework":{"framework":"wordpress","options":{"core_version":null,"locale":"en_GB","admin_user":"admin","admin_email":"admin@blog.test","admin_password":"hunter2hunter2","site_title":"My Blog","table_prefix":"wp_","database":{"engine":"mysql","name":"blog"}}}}}"#;
     assert_eq!(s, expected);
     assert_eq!(serde_json::from_str::<Request>(&s).unwrap(), r);
 }

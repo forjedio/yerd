@@ -509,6 +509,7 @@ mod tests {
             php_mutate: tokio::sync::Mutex::new(()),
             jobs: crate::jobs::JobRegistry::default(),
             reserved_names: tokio::sync::Mutex::new(std::collections::HashSet::new()),
+            wordpress_versions: tokio::sync::RwLock::new(None),
         }
     }
 

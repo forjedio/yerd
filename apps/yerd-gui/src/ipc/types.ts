@@ -98,6 +98,14 @@ export interface ServiceAvailability {
   installed: string[];
 }
 
+/** crates/yerd-ipc/src/status.rs - WordPressVersionInfo. */
+export interface WordPressVersionInfo {
+  branch: string;
+  latest: string;
+  min_php: PhpVersion;
+  max_php: PhpVersion;
+}
+
 export interface PhpPoolStatus {
   version: PhpVersion;
   installed_patch: string | null;
@@ -324,7 +332,6 @@ export interface LaravelOptions {
   boost: boolean;
 }
 
-export type Multisite = "off" | "subdirectory" | "subdomain";
 export type WordPressDbEngine = "mysql" | "mariadb";
 
 /** crates/yerd-ipc/src/create.rs - WordPressDatabase. */
@@ -343,7 +350,6 @@ export interface WordPressOptions {
   admin_password: string;
   site_title: string;
   table_prefix: string;
-  multisite: Multisite;
   database: WordPressDatabase;
 }
 
@@ -432,6 +438,7 @@ export type Response =
   | { type: "doctor_fix"; report: FixReport }
   | { type: "services"; services: ServiceStatus[] }
   | { type: "available_services"; services: ServiceAvailability[] }
+  | { type: "wordpress_versions"; versions: WordPressVersionInfo[] }
   | { type: "service_logs"; lines: string[] }
   | { type: "databases"; databases: DatabaseSummary[] }
   | {

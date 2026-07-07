@@ -42,6 +42,7 @@ import type {
   TunnelsResponse,
   UpdateChannel,
   UpdateStatusResponse,
+  WordPressVersionInfo,
 } from "./types";
 
 /** A normalised IPC/host failure surfaced to the UI (toasts, banners). */
@@ -478,6 +479,14 @@ export async function jobCancel(jobId: string): Promise<void> {
 export async function availableServices(): Promise<ServiceAvailability[]> {
   const r = ensureOk(await call<Response>("available_services"));
   return r.type === "available_services" ? r.services : [];
+}
+
+/** WordPress core version branches with their PHP compatibility range, from
+ *  the yerd repo's hand-maintained meta/wordpress-versions.json. Daemon-cached;
+ *  see `available_services` for the equivalent for services. */
+export async function availableWordPressVersions(): Promise<WordPressVersionInfo[]> {
+  const r = ensureOk(await call<Response>("available_wordpress_versions"));
+  return r.type === "wordpress_versions" ? r.versions : [];
 }
 
 export async function installService(service: string, version: string): Promise<void> {

@@ -2,9 +2,8 @@
 //! create-site job. Preflight ensures WP-CLI is installed; Provisioning
 //! database ensures a MySQL/MariaDB engine is installed+running and creates
 //! the site's database; Downloading/Configuring/Installing run `wp core
-//! download` / `wp config create` / `wp core install` (or
-//! `wp core multisite-install`) with piped, streamed stdio; Registering
-//! reuses the shared [`super::registration`].
+//! download` / `wp config create` / `wp core install` with piped, streamed
+//! stdio; Registering reuses the shared [`super::registration`].
 
 use std::path::Path;
 use std::sync::Arc;
@@ -12,7 +11,7 @@ use std::sync::Arc;
 use tokio::sync::watch;
 use yerd_services::{database, Service, ServiceVersion};
 
-use yerd_ipc::{CreateSiteSpec, Multisite, WordPressDbEngine, WordPressOptions};
+use yerd_ipc::{CreateSiteSpec, WordPressDbEngine, WordPressOptions};
 
 use super::{Outcome, StreamedOutcome};
 use crate::state::DaemonState;
@@ -252,6 +251,20 @@ const QUIET_DEPRECATIONS: [&str; 2] = ["-d", "error_reporting=E_ALL & ~E_DEPRECA
 /// log. No custom `PATH`/`COMPOSER_HOME` needed - WP-CLI's own subcommands
 /// don't shell out to Composer or rely on PATH-resolved tools, unlike the
 /// Laravel installer's nested `composer create-project`.
+///
+/// The child's cwd is `boot_fs`'s own directory and `boot_fs` is invoked by
+/// its bare file name (not `project_dir`, and not `boot_fs`'s full path) -
+/// `--path={project_dir}` points WP-CLI at the site instead. This works
+/// around a real WP-CLI bug: some subcommands (`rewrite structure` among
+/// them) re-invoke themselves via `WP_CLI::launch_self()`, which builds a raw
+/// shell string that escapes the PHP binary and arguments but not
+/// `$GLOBALS['argv'][0]` (the script path WP-CLI itself was launched with).
+/// On macOS that path always runs through `~/Library/Application
+/// Support/...`, which always contains a space, so the re-invocation's shell
+/// command silently splits mid-path and fails with "Could not open input
+/// file". Invoking `boot-fs.php` as a bare relative name keeps that captured
+/// argv[0] space-free; `--path=` decouples "which `WordPress` install" from
+/// "process cwd" so this has no effect on where WP-CLI actually operates.
 async fn run_wp_step(
     id: &str,
     php_cli: &Path,
@@ -261,20 +274,33 @@ async fn run_wp_step(
     state: &Arc<DaemonState>,
     cancel_rx: &mut watch::Receiver<bool>,
 ) -> StreamedOutcome {
+    let Some((boot_dir, boot_name, full_args)) = wp_step_invocation(boot_fs, project_dir, args)
+    else {
+        return StreamedOutcome::Failed(format!("{}: not a valid file path", boot_fs.display()));
+    };
+
     let php_flags: Vec<String> = QUIET_DEPRECATIONS.iter().map(|s| (*s).to_owned()).collect();
     super::run_streamed(
-        id,
-        php_cli,
-        &php_flags,
-        boot_fs,
-        args,
-        project_dir,
-        None,
-        None,
-        state,
-        cancel_rx,
+        id, php_cli, &php_flags, &boot_name, &full_args, &boot_dir, None, None, state, cancel_rx,
     )
     .await
+}
+
+/// Pure - splits `boot_fs` into its own directory and bare file name, and
+/// appends `--path={project_dir}` to `args`. `None` if `boot_fs` has no
+/// parent/file name (never true for a real path, but `Path` doesn't rule it
+/// out statically). See [`run_wp_step`]'s doc comment for why the invocation
+/// is split this way instead of just running `boot_fs` from `project_dir`.
+fn wp_step_invocation(
+    boot_fs: &Path,
+    project_dir: &Path,
+    args: &[String],
+) -> Option<(std::path::PathBuf, std::path::PathBuf, Vec<String>)> {
+    let boot_dir = boot_fs.parent()?.to_path_buf();
+    let boot_name = std::path::PathBuf::from(boot_fs.file_name()?);
+    let mut full_args: Vec<String> = args.to_vec();
+    full_args.push(format!("--path={}", project_dir.display()));
+    Some((boot_dir, boot_name, full_args))
 }
 
 /// Best-effort cleanup on any pre-Registering failure or cancellation: remove
@@ -445,23 +471,11 @@ fn config_create_args(o: &WordPressOptions, db_name: &str, db_port: u16) -> Vec<
     ]
 }
 
-/// `wp core install` or `wp core multisite-install` argument vector. `--url`
-/// sets `siteurl`/`home` directly during install, so no follow-up
-/// `wp option update` is needed. Multisite uses its own subcommand (not an
-/// add-on flag to `core install`) and writes the network's domain-mapping
-/// constants into `wp-config.php` itself; per-subsite URLs for subdomain-mode
-/// networks are WordPress's own concern, not something set here.
+/// `wp core install` argument vector. `--url` sets `siteurl`/`home` directly
+/// during install, so no follow-up `wp option update` is needed.
 fn install_args(name: &str, secure: bool, o: &WordPressOptions) -> Vec<String> {
     let scheme = if secure { "https" } else { "http" };
-    let mut a = match o.multisite {
-        Multisite::Off => vec!["core".to_owned(), "install".to_owned()],
-        Multisite::Subdirectory => vec!["core".to_owned(), "multisite-install".to_owned()],
-        Multisite::Subdomain => vec![
-            "core".to_owned(),
-            "multisite-install".to_owned(),
-            "--subdomains".to_owned(),
-        ],
-    };
+    let mut a = vec!["core".to_owned(), "install".to_owned()];
     a.push(format!("--url={scheme}://{name}.test"));
     a.push(format!("--title={}", o.site_title));
     a.push(format!("--admin_user={}", o.admin_user));
@@ -472,10 +486,10 @@ fn install_args(name: &str, secure: bool, o: &WordPressOptions) -> Vec<String> {
 }
 
 /// `wp rewrite structure` argument vector - enables pretty (postname-based)
-/// permalinks, since `wp core install`/`multisite-install` otherwise leave a
-/// fresh site on WordPress's "Plain" default (`?p=123`), under which pretty
-/// URLs like `/wp-admin/` still work (they're real files) but anything else
-/// silently falls back to the front page instead of routing or 404ing.
+/// permalinks, since `wp core install` otherwise leaves a fresh site on
+/// WordPress's "Plain" default (`?p=123`), under which pretty URLs like
+/// `/wp-admin/` still work (they're real files) but anything else silently
+/// falls back to the front page instead of routing or 404ing.
 fn permalink_structure_args() -> Vec<String> {
     vec![
         "rewrite".to_owned(),
@@ -499,7 +513,6 @@ mod tests {
             admin_password: "hunter2hunter2".to_owned(),
             site_title: "My Blog".to_owned(),
             table_prefix: "wp_".to_owned(),
-            multisite: Multisite::Off,
             database: WordPressDatabase {
                 engine: WordPressDbEngine::Mysql,
                 name: "blog".to_owned(),
@@ -588,28 +601,29 @@ mod tests {
     }
 
     #[test]
-    fn install_args_subdirectory_multisite_uses_multisite_install_without_subdomains_flag() {
-        let mut o = opts();
-        o.multisite = Multisite::Subdirectory;
-        let a = install_args("blog", true, &o);
-        assert_eq!(a[1], "multisite-install");
-        assert!(!a.iter().any(|s| s == "--subdomains"));
-    }
-
-    #[test]
-    fn install_args_subdomain_multisite_adds_subdomains_flag() {
-        let mut o = opts();
-        o.multisite = Multisite::Subdomain;
-        let a = install_args("blog", true, &o);
-        assert_eq!(a[1], "multisite-install");
-        assert!(a.iter().any(|s| s == "--subdomains"));
-    }
-
-    #[test]
     fn permalink_structure_args_sets_postname_structure() {
         assert_eq!(
             permalink_structure_args(),
             vec!["rewrite", "structure", "/%postname%/"]
         );
+    }
+
+    #[test]
+    fn wp_step_invocation_splits_boot_fs_and_appends_path() {
+        let boot_fs = Path::new("/Users/x/Library/Application Support/io.yerd.Yerd/boot-fs.php");
+        let project_dir = Path::new("/Users/x/Yerd/blog");
+        let (boot_dir, boot_name, args) =
+            wp_step_invocation(boot_fs, project_dir, &["core".to_owned()]).unwrap();
+        assert_eq!(
+            boot_dir,
+            Path::new("/Users/x/Library/Application Support/io.yerd.Yerd")
+        );
+        assert_eq!(boot_name, Path::new("boot-fs.php"));
+        assert_eq!(args, vec!["core", "--path=/Users/x/Yerd/blog"]);
+    }
+
+    #[test]
+    fn wp_step_invocation_none_for_rootless_boot_fs() {
+        assert!(wp_step_invocation(Path::new("/"), Path::new("/tmp"), &[]).is_none());
     }
 }

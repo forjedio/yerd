@@ -13,16 +13,20 @@ import {
 } from "lucide-vue-next";
 
 import Button from "@/components/ui/Button.vue";
+import Combobox from "@/components/ui/Combobox.vue";
 import Input from "@/components/ui/Input.vue";
 import Modal from "@/components/ui/Modal.vue";
 import Select from "@/components/ui/Select.vue";
 import Switch from "@/components/ui/Switch.vue";
 import Spinner from "@/components/ui/Spinner.vue";
+import { phpVersionInRange } from "@/lib/phpVersion";
 import { siteUrl, wpAdminUrl } from "@/lib/siteUrl";
+import { WORDPRESS_LOCALES } from "@/lib/wordpressLocales";
 import { useDaemon } from "@/composables/useDaemon";
 import { useToast } from "@/composables/useToast";
 import {
   availablePhp,
+  availableWordPressVersions,
   createSite,
   installPhpWithProgress,
   installToolStreamed,
@@ -39,12 +43,12 @@ import {
 import type {
   CreateSiteSpec,
   JobState,
-  Multisite,
   ServiceStatus,
   StatusReport,
   ToolStatus,
   WordPressDbEngine,
   WordPressOptions,
+  WordPressVersionInfo,
 } from "@/ipc/types";
 
 const props = defineProps<{
@@ -78,13 +82,12 @@ const form = reactive({
   secure: false,
   // WordPress
   coreVersion: "",
-  locale: "en_GB",
+  locale: "en_US",
   adminUser: "admin",
-  adminEmail: "",
-  adminPassword: "",
+  adminEmail: "test@example.com",
+  adminPassword: "password",
   siteTitle: "",
   tablePrefix: "wp_",
-  multisite: "off" as Multisite,
   // database
   dbEngine: "mysql" as WordPressDbEngine,
   dbName: "",
@@ -303,6 +306,46 @@ function selectDbEngine(engine: WordPressDbEngine): void {
   form.dbEngine = engine;
 }
 
+// ── WordPress core version (from meta/wordpress-versions.json in the yerd
+// repo, daemon-fetched and cached - see bin/yerdd/src/wordpress_versions.rs)
+const wordpressVersions = ref<WordPressVersionInfo[]>([]);
+const wordpressVersionsLoading = ref(false);
+
+async function refreshWordpressVersions(): Promise<void> {
+  wordpressVersionsLoading.value = true;
+  try {
+    wordpressVersions.value = await availableWordPressVersions();
+  } catch {
+    wordpressVersions.value = [];
+  } finally {
+    wordpressVersionsLoading.value = false;
+  }
+}
+
+const compatibleVersions = computed(() =>
+  form.php
+    ? wordpressVersions.value.filter((v) => phpVersionInRange(form.php, v.min_php, v.max_php))
+    : wordpressVersions.value,
+);
+
+// The Select's value is the concrete latest patch (`wp core download
+// --version=` needs an exact release - a bare branch like "6.7" resolves to
+// that branch's original, unpatched release), labelled by its friendlier
+// branch name.
+const versionOptions = computed(() => [
+  { value: "", label: "Latest" },
+  ...compatibleVersions.value.map((v) => ({ value: v.latest, label: v.branch })),
+]);
+
+watch(
+  () => form.php,
+  () => {
+    if (form.coreVersion && !compatibleVersions.value.some((v) => v.latest === form.coreVersion)) {
+      form.coreVersion = "";
+    }
+  },
+);
+
 const selectedEngineStatus = computed(() =>
   services.value.find((s) => s.service === form.dbEngine),
 );
@@ -321,13 +364,12 @@ const engineStateText = computed(() => {
 function buildSpec(): CreateSiteSpec {
   const options: WordPressOptions = {
     core_version: form.coreVersion.trim() || null,
-    locale: form.locale.trim() || "en_GB",
+    locale: form.locale.trim() || "en_US",
     admin_user: form.adminUser.trim(),
     admin_email: form.adminEmail.trim(),
     admin_password: form.adminPassword,
     site_title: form.siteTitle.trim(),
     table_prefix: form.tablePrefix.trim() || "wp_",
-    multisite: form.multisite,
     database: {
       engine: form.dbEngine,
       name: form.dbName.trim(),
@@ -352,15 +394,7 @@ const logBox = ref<HTMLElement | null>(null);
 let cursor = 0;
 let pollTimer: number | null = null;
 
-const PHASES = [
-  "Preflight",
-  "Provisioning database",
-  "Downloading WordPress",
-  "Configuring",
-  "Installing",
-  "Registering",
-  "Done",
-];
+const PHASES = ["Preflight", "Installing", "Registering", "Done"];
 function phaseStatus(p: string): "done" | "active" | "todo" {
   const cur = phase.value;
   const ci = PHASES.indexOf(cur);
@@ -450,13 +484,12 @@ function resetForm(): void {
   form.php = props.defaultPhp || props.phpVersions[0] || "";
   form.secure = false;
   form.coreVersion = "";
-  form.locale = "en_GB";
+  form.locale = "en_US";
   form.adminUser = "admin";
-  form.adminEmail = "";
-  form.adminPassword = "";
+  form.adminEmail = "test@example.com";
+  form.adminPassword = "password";
   form.siteTitle = "";
   form.tablePrefix = "wp_";
-  form.multisite = "off";
   form.dbEngine = "mysql";
   form.dbName = "";
   dbNameTouched = false;
@@ -480,6 +513,7 @@ watch(
       resetForm();
       void refreshTools();
       void refreshServices();
+      void refreshWordpressVersions();
     } else {
       stopPolling();
     }
@@ -655,11 +689,27 @@ const busy = computed(() => jobStateRef.value === "running" && step.value === 4)
       <div class="flex gap-4">
         <div class="flex-1">
           <label class="text-sm font-medium" for="wp-cs-version">Core version</label>
-          <Input id="wp-cs-version" v-model="form.coreVersion" placeholder="Latest" class="mt-2" />
+          <Select
+            id="wp-cs-version"
+            :model-value="form.coreVersion"
+            :options="versionOptions"
+            :disabled="wordpressVersionsLoading"
+            class="mt-2 w-full"
+            aria-label="Core version"
+            @update:model-value="(v: string) => (form.coreVersion = v)"
+          />
         </div>
         <div class="flex-1">
           <label class="text-sm font-medium" for="wp-cs-locale">Locale</label>
-          <Input id="wp-cs-locale" v-model="form.locale" placeholder="en_GB" class="mt-2" />
+          <Combobox
+            v-model="form.locale"
+            :options="WORDPRESS_LOCALES"
+            placeholder="en_US"
+            search-placeholder="Search locales…"
+            empty-text="No matching locale."
+            aria-label="Locale"
+            class="mt-2"
+          />
         </div>
       </div>
 
@@ -697,35 +747,6 @@ const busy = computed(() => jobStateRef.value === "running" && step.value === 4)
           </Button>
         </div>
       </div>
-
-      <details class="rounded-lg border p-3">
-        <summary class="cursor-pointer text-sm font-medium">Advanced</summary>
-        <div class="mt-3 space-y-3">
-          <div class="flex items-center justify-between gap-4">
-            <div>
-              <p class="text-sm font-medium">Table prefix</p>
-            </div>
-            <Input v-model="form.tablePrefix" class="w-32 font-mono" />
-          </div>
-          <div class="flex items-center justify-between gap-4">
-            <div>
-              <p class="text-sm font-medium">Multisite</p>
-              <p class="text-xs text-muted-foreground">Run a network of sites.</p>
-            </div>
-            <Select
-              :model-value="form.multisite"
-              :options="[
-                { value: 'off', label: 'Off' },
-                { value: 'subdirectory', label: 'Subdirectory' },
-                { value: 'subdomain', label: 'Subdomain' },
-              ]"
-              class="w-40"
-              aria-label="Multisite"
-              @update:model-value="(v: string) => (form.multisite = v as Multisite)"
-            />
-          </div>
-        </div>
-      </details>
     </div>
 
     <!-- ── Step 3: Database ── -->
@@ -753,17 +774,23 @@ const busy = computed(() => jobStateRef.value === "running" && step.value === 4)
         </div>
       </div>
 
-      <div>
-        <label class="text-sm font-medium" for="wp-cs-dbname">Database name</label>
-        <Input
-          id="wp-cs-dbname"
-          v-model="form.dbName"
-          class="mt-2 font-mono"
-          @update:model-value="dbNameTouched = true"
-        />
-        <p v-if="form.dbName && !dbNameValid" class="mt-1 text-xs text-destructive">
-          Use letters, numbers and underscores, starting with a letter or underscore.
-        </p>
+      <div class="flex gap-4">
+        <div class="flex-1">
+          <label class="text-sm font-medium" for="wp-cs-dbname">Database name</label>
+          <Input
+            id="wp-cs-dbname"
+            v-model="form.dbName"
+            class="mt-2 font-mono"
+            @update:model-value="dbNameTouched = true"
+          />
+          <p v-if="form.dbName && !dbNameValid" class="mt-1 text-xs text-destructive">
+            Use letters, numbers and underscores, starting with a letter or underscore.
+          </p>
+        </div>
+        <div class="w-32 shrink-0">
+          <label class="text-sm font-medium" for="wp-cs-table-prefix">Table prefix</label>
+          <Input id="wp-cs-table-prefix" v-model="form.tablePrefix" class="mt-2 font-mono" />
+        </div>
       </div>
 
       <div v-if="!servicesLoading && engineStateText" class="rounded-lg border bg-muted/30 p-3 text-xs text-muted-foreground">
@@ -791,8 +818,6 @@ const busy = computed(() => jobStateRef.value === "running" && step.value === 4)
           <dd>{{ form.adminUser }} ({{ form.adminEmail }})</dd>
           <dt class="text-muted-foreground">Database</dt>
           <dd>{{ form.dbEngine }} · {{ form.dbName }}</dd>
-          <dt v-if="form.multisite !== 'off'" class="text-muted-foreground">Multisite</dt>
-          <dd v-if="form.multisite !== 'off'">{{ form.multisite }}</dd>
         </dl>
       </div>
       <p v-if="!wordpressValid" class="text-xs text-destructive">
@@ -806,7 +831,7 @@ const busy = computed(() => jobStateRef.value === "running" && step.value === 4)
 
     <!-- ── Step 5: Progress ── -->
     <div v-else class="space-y-4">
-      <div class="flex flex-wrap items-center gap-y-2">
+      <div class="flex items-center">
         <template v-for="(p, i) in PHASES" :key="p">
           <div class="flex shrink-0 items-center gap-2">
             <span
@@ -830,7 +855,7 @@ const busy = computed(() => jobStateRef.value === "running" && step.value === 4)
           </div>
           <span
             v-if="i < PHASES.length - 1"
-            class="mx-2 h-0.5 w-4 shrink-0 rounded-full transition-colors"
+            class="mx-2 h-0.5 flex-1 rounded-full transition-colors"
             :class="phaseStatus(p) === 'done' ? 'bg-success' : 'bg-border'"
           />
         </template>

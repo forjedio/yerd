@@ -354,6 +354,27 @@ pub struct ServiceAvailability {
     pub installed: Vec<String>,
 }
 
+/// One `WordPress` core release line, returned in
+/// [`crate::Response::WordpressVersions`]. Sourced from the hand-maintained
+/// `meta/wordpress-versions.json` in the yerd repo (not wordpress.org - that
+/// API only exposes a minimum PHP floor, with no upper bound, which made very
+/// old `WordPress` branches look compatible with brand-new PHP releases they
+/// were never tested against).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WordPressVersionInfo {
+    /// The major.minor release line (e.g. `"6.7"`), shown in the GUI.
+    pub branch: String,
+    /// The newest patch in this branch (e.g. `"6.7.5"`) - what actually gets
+    /// passed to `wp core download --version=`. Needed because that command
+    /// (and wordpress.org's download URLs) resolve a bare branch like `"6.7"`
+    /// to its original, unpatched release, not its latest patch.
+    pub latest: String,
+    /// Lowest PHP version this branch is compatible with.
+    pub min_php: PhpVersion,
+    /// Highest PHP version this branch has been tested against.
+    pub max_php: PhpVersion,
+}
+
 /// One user database in a SQL service, returned in [`crate::Response::Databases`].
 ///
 /// A struct (not a bare `String`) so future fields (size, owner, encoding) can be

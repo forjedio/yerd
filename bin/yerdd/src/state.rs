@@ -163,4 +163,11 @@ pub struct DaemonState {
     /// Site names held by an in-flight `CreateSite` job, so two concurrent
     /// creates can't both scaffold (then fight over registering) the same name.
     pub reserved_names: Mutex<HashSet<String>>,
+    /// WordPress core-version availability cache (the WordPress wizard's
+    /// version dropdown): the last successful `meta/wordpress-versions.json`
+    /// fetch, plus when it happened so a request can decide whether to
+    /// re-fetch. `None` until the first successful fetch; served (no
+    /// network) when still fresh, or as a stale fallback when a re-fetch
+    /// fails. See [`crate::wordpress_versions`].
+    pub wordpress_versions: RwLock<Option<(Instant, Vec<yerd_ipc::WordPressVersionInfo>)>>,
 }

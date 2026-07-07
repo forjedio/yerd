@@ -39,7 +39,7 @@ pub const PROTOCOL_VERSION: u32 = 1;
 
 pub use create::{
     AuthProvider, CreateSiteSpec, Database, Framework, JobId, JobState, JsRuntime, LaravelOptions,
-    Multisite, StarterKit, Testing, WordPressDatabase, WordPressDbEngine, WordPressOptions,
+    StarterKit, Testing, WordPressDatabase, WordPressDbEngine, WordPressOptions,
 };
 pub use dump::{DumpCategory, DumpCounts, DumpEvent, DumpExtStatus};
 pub use error::{FrameError, IpcError, IpcErrorKind};
@@ -52,7 +52,7 @@ pub use status::{
     FixReport, FixResult, MailDetail, MailHeader, MailStatus, MailSummary, NamedTunnelMeta,
     PhpPoolStatus, PoolRunState, PortStatus, ServiceAvailability, ServiceRunState, ServiceStatus,
     Severity, SiteCounts, SiteHostname, StatusReport, ToolStatus, TunnelInfo, TunnelKind,
-    TunnelRunState, UnboundWeb,
+    TunnelRunState, UnboundWeb, WordPressVersionInfo,
 };
 pub use update::{Channel, StagedArtifact, UpdateSource};
 

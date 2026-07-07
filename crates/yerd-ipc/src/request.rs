@@ -156,6 +156,11 @@ pub enum Request {
     /// List installable vs installed versions per service (the GUI install
     /// dropdown). Fetched on demand from yerd's services distribution.
     AvailableServices,
+    /// List `WordPress` core version branches with their PHP compatibility
+    /// range (the `WordPress` wizard's core-version dropdown). Sourced from
+    /// the hand-maintained `meta/wordpress-versions.json` in the yerd repo,
+    /// daemon-side cached; see [`crate::Response::WordpressVersions`].
+    AvailableWordpressVersions,
     /// Download + install a prebuilt service version into yerd's data dir.
     InstallService {
         /// Service id (`"redis"`, `"mysql"`, `"mariadb"`, `"postgres"`).
@@ -574,6 +579,7 @@ mod variant_name_pinning {
             Request::RestartDaemon => {}
             Request::ListServices => {}
             Request::AvailableServices => {}
+            Request::AvailableWordpressVersions => {}
             Request::InstallService { .. } => {}
             Request::UninstallService { .. } => {}
             Request::StartService { .. } => {}
@@ -692,6 +698,7 @@ mod variant_name_pinning {
         pin(Request::RestartDaemon);
         pin(Request::ListServices);
         pin(Request::AvailableServices);
+        pin(Request::AvailableWordpressVersions);
         pin(Request::InstallService {
             service: "redis".into(),
             version: "8".into(),

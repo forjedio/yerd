@@ -14,7 +14,7 @@ use crate::dump::{DumpCounts, DumpEvent, DumpExtStatus};
 use crate::status::{
     CloudflaredStatus, DatabaseSummary, Diagnosis, FixReport, MailDetail, MailSummary,
     NamedTunnelMeta, ServiceAvailability, ServiceStatus, SiteHostname, StatusReport, ToolStatus,
-    TunnelInfo,
+    TunnelInfo, WordPressVersionInfo,
 };
 
 // Same rule: no per-field serde renames.
@@ -139,6 +139,11 @@ pub enum Response {
     AvailableServices {
         /// Installable vs installed versions, per service.
         services: Vec<ServiceAvailability>,
+    },
+    /// Reply to [`crate::Request::AvailableWordpressVersions`].
+    WordpressVersions {
+        /// One entry per currently-offered `WordPress` core branch.
+        versions: Vec<WordPressVersionInfo>,
     },
     /// Reply to [`crate::Request::ServiceLogs`] - trailing log lines, oldest first.
     ServiceLogs {
@@ -396,6 +401,7 @@ mod variant_name_pinning {
             Response::DoctorFix { .. } => {}
             Response::Services { .. } => {}
             Response::AvailableServices { .. } => {}
+            Response::WordpressVersions { .. } => {}
             Response::ServiceLogs { .. } => {}
             Response::Databases { .. } => {}
             Response::Dumps { .. } => {}
@@ -515,6 +521,14 @@ mod variant_name_pinning {
         });
         pin_response(Response::Services { services: vec![] });
         pin_response(Response::AvailableServices { services: vec![] });
+        pin_response(Response::WordpressVersions {
+            versions: vec![WordPressVersionInfo {
+                branch: "6.7".into(),
+                latest: "6.7.5".into(),
+                min_php: PhpVersion::new(7, 3),
+                max_php: PhpVersion::new(8, 4),
+            }],
+        });
         pin_response(Response::ServiceLogs { lines: vec![] });
         pin_response(Response::Databases {
             databases: vec![DatabaseSummary { name: "app".into() }],

@@ -312,6 +312,11 @@ pub async fn install_service(service: String, version: String) -> Result<Respons
 }
 
 #[tauri::command]
+pub async fn available_wordpress_versions() -> Result<Response, GuiError> {
+    finish(exchange(&Request::AvailableWordpressVersions).await?)
+}
+
+#[tauri::command]
 pub async fn change_service_version(
     service: String,
     version: String,

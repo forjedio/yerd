@@ -86,6 +86,7 @@ fn main() {
             commands::restart_daemon,
             commands::list_services,
             commands::available_services,
+            commands::available_wordpress_versions,
             commands::install_service,
             commands::change_service_version,
             commands::uninstall_service,
