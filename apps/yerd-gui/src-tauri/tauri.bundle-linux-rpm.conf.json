@@ -13,7 +13,8 @@
           "libcap",
           "libxcrypt-compat"
         ],
-        "postInstallScript": "rpm/postinst.sh"
+        "postInstallScript": "rpm/postinst.sh",
+        "postRemoveScript": "rpm/postrm.sh"
       }
     }
   }
