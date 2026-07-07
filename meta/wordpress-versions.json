@@ -1,0 +1,16 @@
+{
+  "source": "https://make.wordpress.org/core/handbook/references/php-compatibility-and-wordpress-versions/",
+  "updated": "2026-07-07",
+  "versions": [
+    { "branch": "7.0", "latest": "7.0", "min_php": "7.4", "max_php": "8.5" },
+    { "branch": "6.9", "latest": "6.9.4", "min_php": "7.3", "max_php": "8.5" },
+    { "branch": "6.8", "latest": "6.8.5", "min_php": "7.3", "max_php": "8.4" },
+    { "branch": "6.7", "latest": "6.7.5", "min_php": "7.3", "max_php": "8.4" },
+    { "branch": "6.6", "latest": "6.6.5", "min_php": "7.2", "max_php": "8.3" },
+    { "branch": "6.5", "latest": "6.5.8", "min_php": "7.0", "max_php": "8.3" },
+    { "branch": "6.4", "latest": "6.4.8", "min_php": "7.0", "max_php": "8.3" },
+    { "branch": "6.3", "latest": "6.3.8", "min_php": "7.0", "max_php": "8.2" },
+    { "branch": "6.2", "latest": "6.2.9", "min_php": "5.6", "max_php": "8.2" },
+    { "branch": "6.1", "latest": "6.1.10", "min_php": "5.6", "max_php": "8.2" }
+  ]
+}
