@@ -54,7 +54,9 @@ pub use schema::{
 /// ([`TunnelSection`]). v9 added the optional `[groups]` table
 /// ([`GroupsSection`]) for the GUI's site grouping overlay. v10 added the
 /// optional `[php.extensions]` registry ([`PhpSection::extensions`]) for
-/// user-registered custom extensions. All default when absent, so the v3→v4,
+/// user-registered custom extensions, plus the `wp_auto_login`/
+/// `wp_auto_login_user` keys inside `[[linked]]` and `[[overrides]]` for
+/// `WordPress` one-click admin login. All default when absent, so the v3→v4,
 /// v4→v5, v5→v6, v6→v7, v7→v8, v8→v9, and v9→v10 migrations are bare version
 /// bumps; each bump exists so an *older* binary rejects a file using the newer
 /// field cleanly as [`ConfigError::UnsupportedVersion`] rather than failing on

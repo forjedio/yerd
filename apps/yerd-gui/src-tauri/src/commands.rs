@@ -230,6 +230,7 @@ pub async fn apply_update(app: tauri::AppHandle, channel: Option<String>) -> Res
         yerd_ipc::StagedArtifact::AppTarGz => "app_tar_gz",
         yerd_ipc::StagedArtifact::Deb => "deb",
         yerd_ipc::StagedArtifact::Pacman => "pacman",
+        yerd_ipc::StagedArtifact::Rpm => "rpm",
         _ => {
             return Err(GuiError::internal(
                 "unknown staged artifact kind from the daemon",
@@ -337,6 +338,37 @@ pub async fn available_services() -> Result<Response, GuiError> {
 #[tauri::command]
 pub async fn install_service(service: String, version: String) -> Result<Response, GuiError> {
     finish(exchange(&Request::InstallService { service, version }).await?)
+}
+
+#[tauri::command]
+pub async fn available_wordpress_versions() -> Result<Response, GuiError> {
+    finish(exchange(&Request::AvailableWordpressVersions).await?)
+}
+
+#[tauri::command]
+pub async fn mint_wordpress_login_token(site: String) -> Result<Response, GuiError> {
+    finish(exchange(&Request::MintWordpressLoginToken { site }).await?)
+}
+
+#[tauri::command]
+pub async fn set_wordpress_auto_login(
+    name: String,
+    enabled: bool,
+    user: Option<String>,
+) -> Result<Response, GuiError> {
+    finish(
+        exchange(&Request::SetWordpressAutoLogin {
+            name,
+            enabled,
+            user,
+        })
+        .await?,
+    )
+}
+
+#[tauri::command]
+pub async fn wordpress_admin_users(site: String) -> Result<Response, GuiError> {
+    finish(exchange(&Request::WordpressAdminUsers { site }).await?)
 }
 
 #[tauri::command]

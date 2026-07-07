@@ -115,8 +115,9 @@ fn migrate_v8_to_v9(value: &mut Value) -> Result<(), ConfigError> {
 }
 
 /// `v9 → v10`: bump the version. v10 added the optional `[php.extensions]`
-/// registry, which defaults (empty) when absent, so an in-place version bump is
-/// the entire migration.
+/// registry and the `wp_auto_login`/`wp_auto_login_user` keys (inside
+/// `[[linked]]` and `[[overrides]]`), all of which default when absent, so an
+/// in-place version bump is the entire migration.
 fn migrate_v9_to_v10(value: &mut Value) -> Result<(), ConfigError> {
     set_version(value, 10)
 }

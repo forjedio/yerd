@@ -54,6 +54,36 @@ export function siteUrl(s: SiteLike, report: StatusReport | null | undefined): s
 }
 
 /**
+ * The plain WP Admin URL for a WordPress site - the site's own URL plus
+ * `/wp-admin/`. Not pre-authenticated: this opens the ordinary WordPress
+ * login screen. Used as the fallback when one-click login isn't available
+ * (unbound/resolver-off mode, or a failed token mint) - see
+ * `wpAdminLoginUrl` for the pre-authenticated variant. `siteUrl` never
+ * returns a trailing slash in either branch, so straight concatenation is
+ * safe here.
+ */
+export function wpAdminUrl(s: SiteLike, report: StatusReport | null | undefined): string {
+  return `${siteUrl(s, report)}/wp-admin/`;
+}
+
+/**
+ * The one-click, pre-authenticated WP Admin URL: `wpAdminUrl` plus the
+ * single-use login token as a query param. `yerd-proxy` recognizes this
+ * param on `/wp-admin` requests, validates + consumes the token, and signs
+ * the browser in as the site's admin before redirecting - see
+ * `bin/yerdd/src/wordpress_login.rs`. Never use this in unbound/resolver-off
+ * mode (the token can never validate there - see that module's docs); callers
+ * should check `isUnbound(report)` first and fall back to `wpAdminUrl`.
+ */
+export function wpAdminLoginUrl(
+  s: SiteLike,
+  report: StatusReport | null | undefined,
+  token: string,
+): string {
+  return `${wpAdminUrl(s, report)}?yerd_login_token=${encodeURIComponent(token)}`;
+}
+
+/**
  * Tooltip / aria text for an "Open" affordance. Appends the http-only caveat
  * when the resolver is off (the site is reached via the localhost `/~`
  * fallback). Shared so every Open affordance shows the same target + caveat.

@@ -19,8 +19,20 @@ env:
 jobs:
   # The exact local gate: fmt + clippy -D warnings + test, over
   # the full workspace (which includes the Tauri GUI crate) on Linux + macOS.
+  #
+  # `[Meta]` changes touch only repo metadata (docs stubs, labels, CI plumbing)
+  # and skip the whole gate: a PR whose title starts with `[Meta]`, or a push
+  # whose head-commit message starts with `[Meta]`. The `if:` guards below are
+  # shared verbatim by every job.
   rust:
     name: rust (${{ matrix.os }})
+    if: >-
+      !(
+        (github.event_name == 'pull_request' &&
+         startsWith(github.event.pull_request.title, '[Meta]')) ||
+        (github.event_name == 'push' &&
+         startsWith(github.event.head_commit.message, '[Meta]'))
+      )
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -73,9 +85,40 @@ jobs:
             --all-targets -- -D warnings
           cargo test -p yerdd -p yerd-update --features yerdd/pacman
 
+      # The Fedora package builds the daemon with `--features yerdd/rpm`, which
+      # default `--workspace` never exercises (the `PkgFormat::Rpm` selection arm +
+      # the cfg-gated stage_update fixtures). Mirrors the pacman step above; both
+      # matrix arches run it, so the aarch64 selection arm is covered too.
+      - name: Clippy + test (rpm feature)
+        if: runner.os == 'Linux'
+        run: |
+          cargo clippy -p yerdd -p yerd-update --features yerdd/rpm \
+            --all-targets -- -D warnings
+          cargo test -p yerdd -p yerd-update --features yerdd/rpm
+
+      # The `pacman` and `rpm` self-update features are mutually exclusive; enabling
+      # both must fail to compile (the `compile_error!` guard in yerd-update). An
+      # explicit guard, not a bare `! cargo build` (which `set -e` ignores unless it
+      # is the block's terminal command).
+      - name: Assert pacman + rpm features are mutually exclusive
+        if: runner.os == 'Linux'
+        run: |
+          if cargo build -p yerdd --features yerdd/pacman,yerdd/rpm 2>/dev/null; then
+            echo "::error::yerdd with both pacman and rpm features must not compile"
+            exit 1
+          fi
+          echo "OK: pacman+rpm correctly refuses to compile"
+
   # Frontend unit/component tests + production build (type-check via vue-tsc).
   frontend:
     name: frontend
+    if: >-
+      !(
+        (github.event_name == 'pull_request' &&
+         startsWith(github.event.pull_request.title, '[Meta]')) ||
+        (github.event_name == 'push' &&
+         startsWith(github.event.head_commit.message, '[Meta]'))
+      )
     runs-on: ubuntu-22.04
     defaults:
       run:
@@ -102,6 +145,13 @@ jobs:
   # rust and frontend jobs (no `needs:`), so a docs break fails the PR on its own.
   docs:
     name: docs
+    if: >-
+      !(
+        (github.event_name == 'pull_request' &&
+         startsWith(github.event.pull_request.title, '[Meta]')) ||
+        (github.event_name == 'push' &&
+         startsWith(github.event.head_commit.message, '[Meta]'))
+      )
     runs-on: ubuntu-22.04
     defaults:
       run:

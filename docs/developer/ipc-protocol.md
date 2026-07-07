@@ -199,8 +199,15 @@ The variant set is the daemon's whole RPC surface - liveness, site management, P
 | `ListTools` | `{"type":"list_tools"}` |
 | `InstallTool { tool }` | `{"type":"install_tool","tool":"node"}` |
 | `UninstallTool { tool }` | `{"type":"uninstall_tool","tool":"bun"}` |
+| `CreateSite { spec }` | `{"type":"create_site","spec":{"name":"blog","parent_dir":"/srv","php":"8.3","secure":false,"framework":{"framework":"wordpress",…}}}` (replies `JobStarted`; poll `JobStatus`) |
+| `AvailableWordpressVersions` | `{"type":"available_wordpress_versions"}` |
+| `MintWordpressLoginToken { site }` | `{"type":"mint_wordpress_login_token","site":"blog"}` |
+| `SetWordpressAutoLogin { name, enabled, user: Option }` | `{"type":"set_wordpress_auto_login","name":"blog","enabled":true,"user":"admin"}` |
+| `WordpressAdminUsers { site }` | `{"type":"wordpress_admin_users","site":"blog"}` |
 
 Note `Unpark { path: String }` deliberately uses a `String`, not `PathBuf`: clients echo a value straight back from `Response::Parked`, and an exact-identity match avoids lossy path normalisation (the daemon does not canonicalise it).
+
+`CreateSite { spec: CreateSiteSpec }` is the wizard's entry point (both Laravel and WordPress): `CreateSiteSpec` carries the shared fields (`name`, `parent_dir`, `php`, `secure`) plus a `framework: Framework` enum internally tagged on `"framework"` (`"laravel"` with `LaravelOptions`, `"wordpress"` with `WordPressOptions` - core version, locale, admin credentials, database engine/name/table-prefix). It replies `JobStarted { job_id }` immediately; the caller polls `Request::JobStatus { job_id }` (streamed via `Response::JobProgress`) the same way `InstallPhpStreamed`/`InstallToolStreamed` do. See [`yerdd`'s WordPress support section](./binaries/yerdd#wordpress-support) for what runs behind the job.
 
 ### Response (daemon → client)
 
@@ -227,6 +234,9 @@ pub enum Response {
     Mails { mails: Vec<MailSummary> },
     Mail { mail: Box<MailDetail> },               // boxed: large payload
     Tools { tools: Vec<ToolStatus> },             // installable dev tools
+    WordpressVersions { versions: Vec<WordPressVersionInfo> },
+    WordpressLoginToken { token: String },
+    WordpressAdminUsers { users: Vec<WordPressAdminUser> },
     Dumps {
         events: Vec<DumpEvent>,
         removed_ids: Vec<u64>,
@@ -252,6 +262,10 @@ pub enum Response {
 
 ::: info The `Site` payload gained a field additively
 `Site` (inside `Response::Sites`) gained an optional `web_subpath` after `document_root`. It is **skipped when empty**, so a root-served site's JSON is byte-identical to before the field existed - the wire-stability goldens for the empty case are unchanged, and only the non-empty case (`"web_subpath":"public"`) added a new pin. Old clients ignore the field; no `PROTOCOL_VERSION` bump was needed.
+:::
+
+::: info WordPress fields on `Site` and `SiteEntry`
+`Site` gained `wp_auto_login: bool` and `wp_auto_login_user: Option<String>`, both skipped on the wire when absent/`false` - same additive, no-bump pattern as `web_subpath`. `Response::Sites`'s per-entry payload (`SiteEntry`, `#[serde(flatten)]` over `Site`) separately gained `is_wordpress: bool`, also skipped when `false` - it's a runtime detection fact (see `wordpress_detect`, [`yerdd`'s WordPress support](./binaries/yerdd#wordpress-support)), not a persisted config field, so it lives on the response wrapper rather than the config-backed `Site` itself.
 :::
 
 ::: info The mail payloads gained read/unread fields additively

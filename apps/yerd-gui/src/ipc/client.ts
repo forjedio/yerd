@@ -34,7 +34,7 @@ import type {
   ServiceAvailability,
   ServiceStatus,
   SetupState,
-  Site,
+  SiteEntry,
   NamedTunnelsResponse,
   StatusReport,
   TitleBarStyle,
@@ -43,6 +43,8 @@ import type {
   TunnelsResponse,
   UpdateChannel,
   UpdateStatusResponse,
+  WordPressAdminUser,
+  WordPressVersionInfo,
 } from "./types";
 
 /** A normalised IPC/host failure surfaced to the UI (toasts, banners). */
@@ -101,7 +103,7 @@ export async function ping(): Promise<boolean> {
 
 // ── sites ──────────────────────────────────────────────────────────────────
 
-export async function listSites(): Promise<Site[]> {
+export async function listSites(): Promise<SiteEntry[]> {
   const r = ensureOk(await call<Response>("list_sites"));
   return r.type === "sites" ? r.sites : [];
 }
@@ -124,7 +126,7 @@ export async function listParked(): Promise<string[]> {
  * whole `Promise.all` and take down the Overview / command palette, which never
  * needed groups - so it degrades to empty. */
 export async function sitesAndParked(): Promise<{
-  sites: Site[];
+  sites: SiteEntry[];
   parked: string[];
   groups: GroupsState;
 }> {
@@ -523,6 +525,43 @@ export async function jobCancel(jobId: string): Promise<void> {
 export async function availableServices(): Promise<ServiceAvailability[]> {
   const r = ensureOk(await call<Response>("available_services"));
   return r.type === "available_services" ? r.services : [];
+}
+
+/** WordPress core version branches with their PHP compatibility range, from
+ *  the yerd repo's hand-maintained meta/wordpress-versions.json. Daemon-cached;
+ *  see `available_services` for the equivalent for services. */
+export async function availableWordPressVersions(): Promise<WordPressVersionInfo[]> {
+  const r = ensureOk(await call<Response>("available_wordpress_versions"));
+  return r.type === "wordpress_versions" ? r.versions : [];
+}
+
+/** Mint a short-TTL, single-use token for one-click, pre-authenticated
+ *  WordPress admin login (the "WP Admin" site action). Rejects if `site`
+ *  doesn't exist or isn't WordPress. */
+export async function mintWordPressLoginToken(site: string): Promise<string> {
+  const r = ensureOk(await call<Response>("mint_wordpress_login_token", { site }));
+  if (r.type !== "wordpress_login_token") {
+    throw new IpcError("unexpected response to mint_wordpress_login_token");
+  }
+  return r.token;
+}
+
+/** Toggle WordPress one-click admin login for a site, and set which admin
+ *  user it signs in as. Pass `user: null` to fall back to the
+ *  earliest-created administrator. */
+export async function setWordpressAutoLogin(
+  name: string,
+  enabled: boolean,
+  user: string | null,
+): Promise<void> {
+  ensureOk(await call<Response>("set_wordpress_auto_login", { name, enabled, user }));
+}
+
+/** List a WordPress site's administrator accounts, for the auto-login user
+ *  picker. Fetched on demand via `wp user list`. */
+export async function wordpressAdminUsers(site: string): Promise<WordPressAdminUser[]> {
+  const r = ensureOk(await call<Response>("wordpress_admin_users", { site }));
+  return r.type === "wordpress_admin_users" ? r.users : [];
 }
 
 export async function installService(service: string, version: string): Promise<void> {

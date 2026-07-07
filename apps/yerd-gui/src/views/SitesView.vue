@@ -20,6 +20,7 @@ import {
 } from "lucide-vue-next";
 
 import CreateLaravelWizard from "@/components/site-create/CreateLaravelWizard.vue";
+import CreateWordPressWizard from "@/components/site-create/CreateWordPressWizard.vue";
 import SiteCard from "@/components/SiteCard.vue";
 import PageHeader from "@/components/PageHeader.vue";
 import Badge from "@/components/ui/Badge.vue";
@@ -59,12 +60,14 @@ import {
   setSecure,
   setSiteGroup,
   setWebRoot,
+  setWordpressAutoLogin,
   sitesAndParked,
   startQuickTunnel,
   unlink,
   unpark,
+  wordpressAdminUsers,
 } from "@/ipc/client";
-import type { GroupsState, Site } from "@/ipc/types";
+import type { GroupsState, Site, SiteEntry } from "@/ipc/types";
 
 const toast = useToast();
 const { report } = useDaemon();
@@ -269,6 +272,7 @@ const groupSelectOptions = computed(() => [
 
 // ── create new site ──
 const createOpen = ref(false);
+const wordpressCreateOpen = ref(false);
 const phpVersionList = computed(() => (report.value?.php ?? []).map((p) => p.version));
 const defaultPhp = computed(() => report.value?.default_php ?? "");
 
@@ -276,6 +280,12 @@ function openCreate(): void {
   // Defer past the dropdown's close so reka-ui's focus-restore doesn't fight the modal.
   void nextTick(() => {
     createOpen.value = true;
+  });
+}
+
+function openCreateWordpress(): void {
+  void nextTick(() => {
+    wordpressCreateOpen.value = true;
   });
 }
 
@@ -361,22 +371,78 @@ function sectionExpanded(sec: GroupSection): boolean {
   return searching.value || !isCollapsed(sec.name);
 }
 
-// ── edit site (PHP + web root + HTTPS + group) ──
+// ── edit site (PHP + web root + HTTPS + group + WordPress auto-login) ──
 const editOpen = ref(false);
-const editTarget = ref<Site | null>(null);
+const editTarget = ref<SiteEntry | null>(null);
 const editPhp = ref<string>("");
 const editWebRoot = ref("");
 const editSecure = ref(false);
 const editGroup = ref<string>("");
+const editWpAutoLogin = ref(false);
+const editWpAutoLoginUser = ref<string>("");
 
-function openEdit(s: Site): void {
+const DEFAULT_ADMIN_OPTION = { value: "", label: "Earliest admin (default)" };
+type WpAdminUsersStatus = "idle" | "loading" | "ready" | "error";
+const wpAdminUsersStatus = ref<WpAdminUsersStatus>("idle");
+const wpAdminUsersError = ref("");
+const wpAdminUsersOptions = ref<{ value: string; label: string }[]>([DEFAULT_ADMIN_OPTION]);
+
+/** The picker's real `:options` while loaded; a single synthetic "Loading…"/
+ *  "Error: …" entry otherwise, paired with the Select's own `disabled` state
+ *  (also gated on `wpAdminUsersStatus`) so an in-flight or failed fetch is
+ *  never mistaken for "no other admins exist". */
+const wpAdminUserSelectOptions = computed(() =>
+  wpAdminUsersStatus.value === "loading"
+    ? [{ value: "", label: "Loading users…" }]
+    : wpAdminUsersStatus.value === "error"
+      ? [{ value: "", label: `Error: ${wpAdminUsersError.value}` }]
+      : wpAdminUsersOptions.value,
+);
+
+/** Bumped on every `loadWpAdminUsers` call so a response for a site the user
+ *  has since navigated away from (closed the dialog, opened another site's)
+ *  can recognize it's stale and skip applying its result. */
+let wpAdminUsersRequestId = 0;
+
+async function loadWpAdminUsers(name: string): Promise<void> {
+  const requestId = ++wpAdminUsersRequestId;
+  wpAdminUsersStatus.value = "loading";
+  try {
+    const users = await wordpressAdminUsers(name);
+    if (requestId !== wpAdminUsersRequestId) return;
+    wpAdminUsersOptions.value = [
+      DEFAULT_ADMIN_OPTION,
+      ...users.map((u) => ({ value: u.login, label: u.display_name || u.login })),
+    ];
+    wpAdminUsersStatus.value = "ready";
+  } catch (e) {
+    if (requestId !== wpAdminUsersRequestId) return;
+    wpAdminUsersError.value = (e as IpcError).message || "couldn't load admin users";
+    wpAdminUsersStatus.value = "error";
+  }
+}
+
+function openEdit(s: SiteEntry): void {
   editTarget.value = s;
   editPhp.value = s.php;
   editWebRoot.value = s.web_subpath ?? "";
   editSecure.value = s.secure;
+  editWpAutoLogin.value = s.wp_auto_login ?? false;
+  editWpAutoLoginUser.value = s.wp_auto_login_user ?? "";
   // Seed from current membership, coercing a stale value (group deleted in
   // another window/CLI) to "" so the Select never sits out of range.
   editGroup.value = currentGroupOf(s.name);
+  // Fetched fresh on every open (not gated on the toggle's own transition -
+  // that missed a re-fetch when a site was *already* auto-login-enabled, so
+  // the picker silently kept showing only the previous dialog's list, or the
+  // placeholder if this is the first time it's ever been opened) so it's
+  // ready by the time the toggle (already on, or about to be turned on) is
+  // visible.
+  if (s.is_wordpress) {
+    wpAdminUsersStatus.value = "idle";
+    wpAdminUsersOptions.value = [DEFAULT_ADMIN_OPTION];
+    void loadWpAdminUsers(s.name);
+  }
   // Defer past the dropdown's close so reka-ui's focus-restore doesn't steal
   // focus from the modal.
   void nextTick(() => {
@@ -409,6 +475,16 @@ async function confirmEdit(close: () => void): Promise<void> {
     }
     if (hasGroups.value && editGroup.value !== currentGroupOf(s.name)) {
       await setSiteGroup(s.name, editGroup.value === "" ? null : editGroup.value);
+    }
+    if (
+      editWpAutoLogin.value !== (s.wp_auto_login ?? false) ||
+      editWpAutoLoginUser.value !== (s.wp_auto_login_user ?? "")
+    ) {
+      await setWordpressAutoLogin(
+        s.name,
+        editWpAutoLogin.value,
+        editWpAutoLoginUser.value || null,
+      );
     }
     toast.success(`Updated ${s.name}`);
     await load({ force: true });
@@ -588,14 +664,8 @@ async function shareSitePublicly(s: Site): Promise<void> {
             <DropdownMenuItem @select="openCreate">
               <Rocket class="size-4" /> New Laravel site…
             </DropdownMenuItem>
-            <!-- Future frameworks slot in here. -->
-            <DropdownMenuItem
-              disabled
-              class="opacity-60"
-              @select.prevent
-            >
-              <Package class="size-4" /> Other frameworks
-              <span class="ml-auto rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium">Soon</span>
+            <DropdownMenuItem @select="openCreateWordpress">
+              <Package class="size-4" /> New WordPress site…
             </DropdownMenuItem>
             <DropdownMenuSeparator />
             <DropdownMenuItem @select="linkOpen = true">
@@ -857,6 +927,17 @@ async function shareSitePublicly(s: Site): Promise<void> {
       @created="onCreated"
     />
 
+    <!-- create new WordPress site wizard -->
+    <CreateWordPressWizard
+      v-model:open="wordpressCreateOpen"
+      :parked-folders="parked"
+      :php-versions="phpVersionList"
+      :default-php="defaultPhp"
+      :tld="tld"
+      :report="report ?? null"
+      @created="onCreated"
+    />
+
     <!-- edit site modal -->
     <Modal v-model:open="editOpen" :title="`Edit ${editTarget?.name ?? ''}`">
       <div class="space-y-4">
@@ -876,7 +957,7 @@ async function shareSitePublicly(s: Site): Promise<void> {
           </div>
         </div>
 
-        <div>
+        <div v-if="!editTarget?.is_wordpress">
           <label class="block text-sm font-medium" for="editwebroot">Web root</label>
           <div class="mt-2 flex gap-2">
             <Input id="editwebroot" v-model="editWebRoot" placeholder="public" />
@@ -894,6 +975,32 @@ async function shareSitePublicly(s: Site): Promise<void> {
             <p class="text-xs text-muted-foreground">Serve this site over TLS.</p>
           </div>
           <Switch v-model="editSecure" aria-label="HTTPS" />
+        </div>
+
+        <div v-if="editTarget?.is_wordpress" class="space-y-2">
+          <div class="flex items-center justify-between gap-4">
+            <div>
+              <p class="text-sm font-medium">WordPress Auto Admin Login</p>
+              <p class="text-xs text-muted-foreground">
+                Sign in automatically when opening WP Admin.
+              </p>
+            </div>
+            <Switch v-model="editWpAutoLogin" aria-label="WordPress Auto Admin Login" />
+          </div>
+          <div v-if="editWpAutoLogin">
+            <label for="edit-wp-admin-user" class="text-sm font-medium">Sign in as</label>
+            <div class="mt-2">
+              <Select
+                id="edit-wp-admin-user"
+                :model-value="wpAdminUsersStatus === 'ready' ? editWpAutoLoginUser : ''"
+                :options="wpAdminUserSelectOptions"
+                :disabled="wpAdminUsersStatus !== 'ready'"
+                class="w-full"
+                aria-label="Sign in as"
+                @update:model-value="(v: string) => (editWpAutoLoginUser = v)"
+              />
+            </div>
+          </div>
         </div>
 
         <div v-if="hasGroups">

@@ -80,6 +80,11 @@ pub fn apply(
         Request::Unlink { name } => apply_unlink(cfg, router, name),
         Request::SetPhp { name, version } => apply_set_php(cfg, router, name, *version),
         Request::SetSecure { name, secure } => apply_set_secure(cfg, router, name, *secure),
+        Request::SetWordpressAutoLogin {
+            name,
+            enabled,
+            user,
+        } => apply_set_wordpress_auto_login(cfg, router, name, *enabled, user.clone()),
         Request::CreateGroup { name } => apply_create_group(cfg, name),
         Request::DeleteGroup { name } => Ok(apply_delete_group(cfg, name)),
         Request::SetGroupOrder { order } => apply_set_group_order(cfg, order),
@@ -195,6 +200,33 @@ fn apply_set_secure(
         cfg.overrides.entry(key).or_default().secure = Some(secure);
         Ok(Applied {
             summary: format!("{name_lc} secure={secure}"),
+        })
+    } else {
+        Err(MutateError::NotFound(format!("no site named {name_lc}")))
+    }
+}
+
+fn apply_set_wordpress_auto_login(
+    cfg: &mut Config,
+    router: &SiteRouter,
+    name: &str,
+    enabled: bool,
+    user: Option<String>,
+) -> Result<Applied, MutateError> {
+    let name_lc = name.to_ascii_lowercase();
+    if let Some(site) = cfg.linked.iter_mut().find(|s| s.name() == name_lc) {
+        site.set_wp_auto_login(enabled);
+        site.set_wp_auto_login_user(user);
+        Ok(Applied {
+            summary: format!("{name_lc} wp_auto_login={enabled}"),
+        })
+    } else if let Some(parked) = router.get(&name_lc) {
+        let key = override_key(parked);
+        let ov = cfg.overrides.entry(key).or_default();
+        ov.wp_auto_login = Some(enabled);
+        ov.wp_auto_login_user = user;
+        Ok(Applied {
+            summary: format!("{name_lc} wp_auto_login={enabled}"),
         })
     } else {
         Err(MutateError::NotFound(format!("no site named {name_lc}")))
@@ -729,6 +761,87 @@ mod tests {
             &Request::SetSecure {
                 name: "ghost".into(),
                 secure: true,
+            },
+            None,
+            v(8, 3),
+        ) {
+            Err(MutateError::NotFound(_)) => {}
+            other => panic!("expected NotFound, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn set_wordpress_auto_login_updates_linked_in_place() {
+        let mut cfg = Config::default();
+        let r = empty_router();
+        cfg.linked
+            .push(Site::linked("blog", "/srv/blog", v(8, 3)).unwrap());
+        apply(
+            &mut cfg,
+            &r,
+            &Request::SetWordpressAutoLogin {
+                name: "blog".into(),
+                enabled: true,
+                user: Some("editor".into()),
+            },
+            None,
+            v(8, 3),
+        )
+        .unwrap();
+        assert_eq!(cfg.linked.len(), 1);
+        assert!(cfg.linked[0].wp_auto_login());
+        assert_eq!(cfg.linked[0].wp_auto_login_user(), Some("editor"));
+
+        apply(
+            &mut cfg,
+            &r,
+            &Request::SetWordpressAutoLogin {
+                name: "blog".into(),
+                enabled: false,
+                user: None,
+            },
+            None,
+            v(8, 3),
+        )
+        .unwrap();
+        assert!(!cfg.linked[0].wp_auto_login());
+        assert_eq!(cfg.linked[0].wp_auto_login_user(), None);
+    }
+
+    #[test]
+    fn set_wordpress_auto_login_records_override_keeping_parked() {
+        let mut cfg = Config::default();
+        let r = router_with_parked("blog", "/srv/blog");
+        let a = apply(
+            &mut cfg,
+            &r,
+            &Request::SetWordpressAutoLogin {
+                name: "blog".into(),
+                enabled: true,
+                user: Some("editor".into()),
+            },
+            None,
+            v(8, 3),
+        )
+        .unwrap();
+        assert!(!a.summary.contains("linked"));
+        assert!(cfg.linked.is_empty());
+        let ov = cfg.overrides.get("/srv/blog").expect("override stored");
+        assert_eq!(ov.wp_auto_login, Some(true));
+        assert_eq!(ov.wp_auto_login_user.as_deref(), Some("editor"));
+    }
+
+    #[test]
+    fn set_wordpress_auto_login_unknown_is_not_found() {
+        let mut cfg = Config::default();
+        let r = empty_router();
+        match apply(
+            &mut cfg,
+            &r,
+            &Request::SetWordpressAutoLogin {
+                name: "ghost".into(),
+                enabled: true,
+                user: None,
             },
             None,
             v(8, 3),

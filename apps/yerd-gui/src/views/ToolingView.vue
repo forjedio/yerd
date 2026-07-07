@@ -38,20 +38,21 @@ const TOOL_HINTS: Record<string, string> = {
   node: "Node.js runtime for building frontend assets (npm, npx).",
   bun: "Fast all-in-one JavaScript runtime and package manager.",
   laravel: "The laravel new installer for scaffolding new Laravel apps. Needs Composer.",
+  "wp-cli": "The wp command for managing WordPress installs from the terminal. Needs Composer.",
 };
 
-// Managed-only: building the managed Laravel installer requires Yerd's own
-// Composer (an external Composer can't build it), so this gate ignores `external`.
+// Managed-only: building these managed installers (the Laravel installer,
+// WP-CLI) requires Yerd's own Composer (an external Composer can't build
+// them), so this gate ignores `external`.
 const composerInstalled = computed(() =>
   tools.value.some((t) => t.id === "composer" && t.installed),
 );
 
-const COMPOSER_REQUIRED_HINT =
-  "Yerd's own Composer is required to build the Laravel installer.";
+const COMPOSER_REQUIRED_HINT = "Yerd's own Composer is required to build this tool.";
 
-/** The Laravel installer is built via Composer, so it can't install without it. */
+/** The Laravel installer and WP-CLI are built via Composer, so they can't install without it. */
 function blockedNoComposer(t: ToolStatus): boolean {
-  return t.id === "laravel" && !composerInstalled.value;
+  return (t.id === "laravel" || t.id === "wp-cli") && !composerInstalled.value;
 }
 
 /** Explains an External tool: it's not a problem, just not Yerd's to manage. */

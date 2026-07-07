@@ -10,6 +10,7 @@ import {
   MoreHorizontal,
   Pencil,
   Trash2,
+  UserRound,
 } from "lucide-vue-next";
 
 import Button from "@/components/ui/Button.vue";
@@ -21,12 +22,12 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import Spinner from "@/components/ui/Spinner.vue";
-import { openTitle, siteUrl } from "@/lib/siteUrl";
-import { openInBrowser, openPath } from "@/ipc/client";
-import type { Site, StatusReport } from "@/ipc/types";
+import { isUnbound, openTitle, siteUrl, wpAdminLoginUrl, wpAdminUrl } from "@/lib/siteUrl";
+import { mintWordPressLoginToken, openInBrowser, openPath } from "@/ipc/client";
+import type { SiteEntry, StatusReport } from "@/ipc/types";
 
-defineProps<{
-  site: Site;
+const props = defineProps<{
+  site: SiteEntry;
   report: StatusReport | null;
   tld: string;
   /** Whether a mutation targeting this site is in flight (shows a spinner). */
@@ -36,15 +37,35 @@ defineProps<{
 }>();
 
 const emit = defineEmits<{
-  edit: [site: Site];
-  unlink: [site: Site];
-  share: [site: Site];
-  toggleSecure: [site: Site];
+  edit: [site: SiteEntry];
+  unlink: [site: SiteEntry];
+  share: [site: SiteEntry];
+  toggleSecure: [site: SiteEntry];
 }>();
 
 /** The served sub-directory label ("/" when the project root is served). */
-function servedLabel(s: Site): string {
+function servedLabel(s: SiteEntry): string {
   return s.web_subpath && s.web_subpath !== "" ? s.web_subpath : "/";
+}
+
+/**
+ * "WP Admin" action: one-click, pre-authenticated login when the site has
+ * auto-login enabled and unbound/resolver-off isn't in the way, falling back
+ * to the plain (not signed-in) link otherwise - including if minting a token
+ * fails for any reason (site disappeared, daemon error). Never blocks or
+ * surfaces an error, just silently degrades.
+ */
+async function openWpAdmin(s: SiteEntry): Promise<void> {
+  if (!isUnbound(props.report) && s.wp_auto_login) {
+    try {
+      const token = await mintWordPressLoginToken(s.name);
+      await openInBrowser(wpAdminLoginUrl(s, props.report, token));
+      return;
+    } catch {
+      /* fall through to the plain link below */
+    }
+  }
+  await openInBrowser(wpAdminUrl(s, props.report));
 }
 </script>
 
@@ -94,6 +115,13 @@ function servedLabel(s: Site): string {
             </DropdownMenuItem>
             <DropdownMenuItem @select="openInBrowser(siteUrl(site, report))">
               <ExternalLink class="size-4" /> Open in browser
+            </DropdownMenuItem>
+            <DropdownMenuItem
+              v-if="site.is_wordpress"
+              title="Signs you in automatically when auto-login is enabled"
+              @select="openWpAdmin(site)"
+            >
+              <UserRound class="size-4" /> WP Admin
             </DropdownMenuItem>
             <DropdownMenuItem @select="openPath(site.document_root)">
               <FolderOpen class="size-4" /> Reveal folder
@@ -145,6 +173,22 @@ function servedLabel(s: Site): string {
       >
         /{{ servedLabel(site) }}
       </span>
+      <span
+        v-if="site.is_wordpress"
+        class="inline-flex items-center rounded-md bg-brand/10 px-1.5 py-0.5 text-[11px] font-medium text-brand"
+        title="WordPress site"
+      >
+        WP
+      </span>
+      <button
+        v-if="site.wp_auto_login"
+        type="button"
+        class="inline-flex items-center rounded-md bg-warning/10 px-1.5 py-0.5 text-[11px] font-medium text-warning transition-opacity hover:opacity-70"
+        :title="`One-click login enabled - signs in as ${site.wp_auto_login_user || 'the site admin'}`"
+        @click="openWpAdmin(site)"
+      >
+        WPA
+      </button>
       <span class="ml-auto inline-flex items-center gap-1 text-[11px] text-muted-foreground">
         <Link2 v-if="site.kind === 'linked'" class="size-3" />
         <FolderTree v-else class="size-3" />

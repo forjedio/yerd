@@ -24,6 +24,10 @@ fn main() -> ExitCode {
     if let Some(code) = yerd::cli_shim::dispatch() {
         return code;
     }
+    #[cfg(unix)]
+    if let Some(code) = yerd::wp_shim::dispatch() {
+        return code;
+    }
     if let Some(code) = yerd::apply::run_from_env() {
         return code;
     }
@@ -31,6 +35,9 @@ fn main() -> ExitCode {
         return code;
     }
     if let Some(code) = yerd::apply::run_install_pacman_from_args() {
+        return code;
+    }
+    if let Some(code) = yerd::apply::run_install_rpm_from_args() {
         return code;
     }
 

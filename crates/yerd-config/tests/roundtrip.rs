@@ -65,6 +65,8 @@ fn populated_expected() -> Config {
             php: Some(PhpVersion::new(8, 4)),
             secure: Some(true),
             web_root: None,
+            wp_auto_login: None,
+            wp_auto_login_user: None,
         },
     );
     c.services

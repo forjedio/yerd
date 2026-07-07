@@ -430,6 +430,7 @@ pub async fn stage_update(
         ArtifactKind::AppTarGz => StagedArtifact::AppTarGz,
         ArtifactKind::Deb => StagedArtifact::Deb,
         ArtifactKind::Pacman => StagedArtifact::Pacman,
+        ArtifactKind::Rpm => StagedArtifact::Rpm,
     };
     tracing::info!(version = %target_ver, path = %path.display(), "staged verified update artifact");
     Response::Staged {

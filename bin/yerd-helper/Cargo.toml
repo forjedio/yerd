@@ -21,13 +21,13 @@ hex           = { workspace = true }
 pem           = { workspace = true }
 
 [dev-dependencies]
-tempfile   = { workspace = true }
-serde_json = { workspace = true }
+tempfile      = { workspace = true }
+yerd-depcheck = { path = "../../crates/yerd-depcheck" }
 # Test-only: mint CAs (and the Validity timestamps they need) to exercise the
 # yerd-ownership guard. Not a runtime dep — keeps rcgen/ring out of the
 # privileged binary.
-yerd-tls   = { path = "../../crates/yerd-tls" }
-time       = { workspace = true }
+yerd-tls      = { path = "../../crates/yerd-tls" }
+time          = { workspace = true }
 
 [lints]
 workspace = true

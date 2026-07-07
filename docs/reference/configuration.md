@@ -348,12 +348,12 @@ A file written by a *newer* Yerd than you are running is refused rather than mis
 - **`v6 → v7`** is a bare version bump: v7 only **added** the `[ports]` `fallback_http` / `fallback_https` keys (defaulting to `8080` / `8443`).
 - **`v7 → v8`** is a bare version bump: v8 only **added** the optional `[tunnel]` table, which defaults to empty when absent. Same rationale - the bump lets an older binary refuse a `[tunnel]`-bearing file cleanly rather than tripping `deny_unknown_fields`.
 - **`v8 → v9`** is a bare version bump: v9 only **added** the optional `[groups]` table, which defaults to empty when absent. Same rationale - the bump lets an older binary refuse a `[groups]`-bearing file cleanly rather than tripping `deny_unknown_fields`.
-- **`v9 → v10`** is a bare version bump: v10 only **added** the optional `[php.extensions]` registry, which defaults to empty when absent. Same rationale - the bump lets an older binary refuse a `[php.extensions]`-bearing file cleanly rather than tripping `deny_unknown_fields`.
+- **`v9 → v10`** is a bare version bump: v10 **added** the optional `[php.extensions]` registry and the `wp_auto_login` / `wp_auto_login_user` keys (inside `[[linked]]` and `[[overrides]]`, for one-click `WordPress` admin login), all of which default when absent. Same rationale - the bump lets an older binary refuse a file using them cleanly rather than tripping `deny_unknown_fields`.
 
 The on-disk schema version is deliberately decoupled from the IPC protocol version; the two evolve independently.
 
 ::: warning Downgrades are refused, not misread
-Because later versions changed shapes the parser checks strictly (keys *inside* `[[linked]]` / `[[overrides]]` in v2, and the whole `[services]` shape in v3), an older daemon reading a newer file would fail. The version routing turns that into a clean `UnsupportedVersion` error instead - downgrading Yerd against a newer config is unsupported, but it fails loudly rather than corrupting state.
+Because later versions changed shapes the parser checks strictly (keys *inside* `[[linked]]` / `[[overrides]]` in v2, and the whole `[services]` shape in v3), an older daemon reading a newer file would fail. The version routing turns that into a clean `UnsupportedVersion` error instead - there is no automatic backward migration, but it fails loudly rather than corrupting state. See [Config Schema History](../developer/config-schema-history#downgrading-in-practice) for the exact manual edits to hand-downgrade a file version by version.
 :::
 
 ::: tip Forward-compatible by design
@@ -372,7 +372,7 @@ Yerd does not `fsync` the file or its parent directory after a save. For a devel
 
 ## A complete annotated example
 
-This is a full, valid `yerd.toml` exercising every field:
+This is a valid `yerd.toml` covering the core fields (see the sections above for the newer optional tables - `update_channel`, `[tunnel]`, `[groups]`, `[php.extensions]`, `wp_auto_login` - omitted here for brevity):
 
 ```toml
 # Schema version - mandatory, always written as 10 by this release.
@@ -400,13 +400,6 @@ default = "8.3"
 memory_limit = "512M"
 upload_max_filesize = "64M"
 post_max_size = "64M"
-
-# Custom extensions, keyed by PHP version and loaded into FPM + CLI.
-# Manage with `yerd php ext` (each .so is load-probed before saving).
-[[php.extensions."8.5"]]
-name = "scrypt"
-path = "/opt/homebrew/lib/php/pecl/20250925/scrypt.so"
-zend = false
 
 # Parked directories: each immediate subdirectory becomes a site.
 # Paths are stored verbatim and are NOT canonicalised.

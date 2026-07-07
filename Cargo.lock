@@ -6321,6 +6321,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "yerd-depcheck"
+version = "2.0.2"
+dependencies = [
+ "serde_json",
+]
+
+[[package]]
 name = "yerd-dns"
 version = "2.0.2"
 dependencies = [
@@ -6389,11 +6396,11 @@ dependencies = [
  "clap",
  "hex",
  "pem",
- "serde_json",
  "tempfile",
  "thiserror 1.0.69",
  "time",
  "yerd-core",
+ "yerd-depcheck",
  "yerd-platform",
  "yerd-tls",
 ]
@@ -6436,6 +6443,7 @@ dependencies = [
  "tokio",
  "tracing",
  "yerd-core",
+ "yerd-depcheck",
  "yerd-platform",
  "yerd-supervise",
 ]
@@ -6455,6 +6463,7 @@ dependencies = [
  "time",
  "x509-parser",
  "yerd-core",
+ "yerd-depcheck",
  "yerd-tls",
 ]
 
@@ -6471,7 +6480,6 @@ dependencies = [
  "hyper-util",
  "rustls",
  "rustls-pki-types",
- "serde_json",
  "tempfile",
  "thiserror 1.0.69",
  "time",
@@ -6479,6 +6487,7 @@ dependencies = [
  "tokio-rustls",
  "tracing",
  "yerd-core",
+ "yerd-depcheck",
  "yerd-tls",
 ]
 
@@ -6521,11 +6530,11 @@ dependencies = [
  "pem",
  "rcgen",
  "rustls-pki-types",
- "serde_json",
  "sha2",
  "thiserror 1.0.69",
  "time",
  "x509-parser",
+ "yerd-depcheck",
 ]
 
 [[package]]
@@ -6562,6 +6571,7 @@ dependencies = [
  "minisign",
  "nix",
  "notify-debouncer-mini",
+ "rand",
  "reqwest 0.12.9",
  "rustls",
  "rustls-pki-types",
@@ -6579,6 +6589,7 @@ dependencies = [
  "tracing-subscriber",
  "yerd-config",
  "yerd-core",
+ "yerd-depcheck",
  "yerd-dns",
  "yerd-doctor",
  "yerd-ipc",

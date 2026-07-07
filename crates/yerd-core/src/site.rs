@@ -54,6 +54,8 @@ pub struct Site {
     php: PhpVersion,
     secure: bool,
     kind: SiteKind,
+    wp_auto_login: bool,
+    wp_auto_login_user: Option<String>,
 }
 
 impl Site {
@@ -72,6 +74,8 @@ impl Site {
             php,
             secure: false,
             kind: SiteKind::Parked,
+            wp_auto_login: false,
+            wp_auto_login_user: None,
         })
     }
 
@@ -90,6 +94,8 @@ impl Site {
             php,
             secure: false,
             kind: SiteKind::Linked,
+            wp_auto_login: false,
+            wp_auto_login_user: None,
         })
     }
 
@@ -151,6 +157,22 @@ impl Site {
         self.kind
     }
 
+    /// Whether one-click `WordPress` admin login ("WP Admin" auto-login) is
+    /// enabled for this site. `false` by default - a derived-vs-setting
+    /// distinction: unlike `is_wordpress` (a detected fact, never stored
+    /// here), this is a genuine per-site setting the user opts into.
+    #[must_use]
+    pub fn wp_auto_login(&self) -> bool {
+        self.wp_auto_login
+    }
+
+    /// The `WordPress` login/username to sign in as when auto-login runs, or
+    /// `None` to fall back to the earliest-created administrator.
+    #[must_use]
+    pub fn wp_auto_login_user(&self) -> Option<&str> {
+        self.wp_auto_login_user.as_deref()
+    }
+
     /// Replaces the document root. Not validated - see type-level docs.
     pub fn set_document_root(&mut self, p: impl Into<PathBuf>) {
         self.document_root = p.into();
@@ -175,6 +197,17 @@ impl Site {
     /// Replaces the kind.
     pub fn set_kind(&mut self, k: SiteKind) {
         self.kind = k;
+    }
+
+    /// Toggles `WordPress` one-click admin login.
+    pub fn set_wp_auto_login(&mut self, enabled: bool) {
+        self.wp_auto_login = enabled;
+    }
+
+    /// Sets the `WordPress` login/username to sign in as, or `None` to fall
+    /// back to the earliest-created administrator.
+    pub fn set_wp_auto_login_user(&mut self, user: Option<String>) {
+        self.wp_auto_login_user = user;
     }
 }
 
@@ -275,7 +308,12 @@ impl serde::Serialize for Site {
     fn serialize<S: serde::Serializer>(&self, ser: S) -> Result<S::Ok, S::Error> {
         use serde::ser::SerializeStruct;
         let emit_subpath = !self.web_subpath.as_os_str().is_empty();
-        let fields = if emit_subpath { 6 } else { 5 };
+        let emit_wp_auto_login = self.wp_auto_login;
+        let emit_wp_auto_login_user = self.wp_auto_login_user.is_some();
+        let fields = 5
+            + usize::from(emit_subpath)
+            + usize::from(emit_wp_auto_login)
+            + usize::from(emit_wp_auto_login_user);
         let mut s = ser.serialize_struct("Site", fields)?;
         s.serialize_field("name", &self.name)?;
         s.serialize_field("document_root", &self.document_root)?;
@@ -285,6 +323,12 @@ impl serde::Serialize for Site {
         s.serialize_field("php", &self.php)?;
         s.serialize_field("secure", &self.secure)?;
         s.serialize_field("kind", &self.kind)?;
+        if emit_wp_auto_login {
+            s.serialize_field("wp_auto_login", &self.wp_auto_login)?;
+        }
+        if emit_wp_auto_login_user {
+            s.serialize_field("wp_auto_login_user", &self.wp_auto_login_user)?;
+        }
         s.end()
     }
 }
@@ -306,6 +350,11 @@ impl<'de> serde::Deserialize<'de> for Site {
             php: PhpVersion,
             secure: bool,
             kind: SiteKind,
+            // Absent in configs/wire payloads written before this field existed.
+            #[serde(default)]
+            wp_auto_login: bool,
+            #[serde(default)]
+            wp_auto_login_user: Option<String>,
         }
         let w = Wire::deserialize(de)?;
         let name = validate_and_lowercase_name(&w.name).map_err(serde::de::Error::custom)?;
@@ -316,6 +365,8 @@ impl<'de> serde::Deserialize<'de> for Site {
             php: w.php,
             secure: w.secure,
             kind: w.kind,
+            wp_auto_login: w.wp_auto_login,
+            wp_auto_login_user: w.wp_auto_login_user,
         })
     }
 }
@@ -505,7 +556,20 @@ mod tests {
         s.set_kind(SiteKind::Linked);
         assert_eq!(s.kind(), SiteKind::Linked);
 
+        s.set_wp_auto_login(true);
+        assert!(s.wp_auto_login());
+
+        s.set_wp_auto_login_user(Some("admin".to_owned()));
+        assert_eq!(s.wp_auto_login_user(), Some("admin"));
+
         assert_eq!(s.name(), "foo");
+    }
+
+    #[test]
+    fn wp_auto_login_defaults_false_and_no_user() {
+        let s = Site::parked("foo", "/srv/foo", v83()).unwrap();
+        assert!(!s.wp_auto_login());
+        assert_eq!(s.wp_auto_login_user(), None);
     }
 
     #[test]
@@ -587,6 +651,36 @@ mod tests {
         );
         let back: Site = serde_json::from_value(v).unwrap();
         assert_eq!(back, s);
+    }
+
+    #[test]
+    fn serde_roundtrip_with_wp_auto_login() {
+        let mut s = Site::linked("foo", "/srv/foo", v83()).unwrap();
+        s.set_wp_auto_login(true);
+        s.set_wp_auto_login_user(Some("admin".to_owned()));
+        let json = serde_json::to_string(&s).unwrap();
+        assert_eq!(
+            json,
+            r#"{"name":"foo","document_root":"/srv/foo","php":"8.3","secure":false,"kind":"linked","wp_auto_login":true,"wp_auto_login_user":"admin"}"#
+        );
+        let back: Site = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, s);
+    }
+
+    #[test]
+    fn serde_full_site_roundtrip_omits_wp_auto_login_fields_by_default() {
+        let s = Site::parked("foo", "/srv/foo", v83()).unwrap();
+        let v = serde_json::to_value(&s).unwrap();
+        assert!(v.get("wp_auto_login").is_none());
+        assert!(v.get("wp_auto_login_user").is_none());
+    }
+
+    #[test]
+    fn deserialize_absent_wp_auto_login_defaults_false_and_no_user() {
+        let json = r#"{"name":"foo","document_root":"/srv/foo","php":"8.3","secure":false,"kind":"parked"}"#;
+        let s: Site = serde_json::from_str(json).unwrap();
+        assert!(!s.wp_auto_login());
+        assert_eq!(s.wp_auto_login_user(), None);
     }
 
     #[test]

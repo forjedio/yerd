@@ -20,7 +20,7 @@ pub mod traits;
 pub use backend::Backend;
 pub use error::ProxyError;
 pub use server::{HttpsBinding, ProxyServer, SharedRouter};
-pub use traits::{BackendResolver, CertStore};
+pub use traits::{BackendResolver, CertStore, LoginTokenConsumer};
 
 // Compile-time guard: ProxyError must stay Send+Sync+'static so it can
 // cross hyper service boundaries and tokio::spawn sites cleanly.

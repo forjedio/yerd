@@ -88,7 +88,7 @@ pub async fn run(state: Arc<DaemonState>, mut shutdown_rx: watch::Receiver<bool>
 /// rebuild failed (the previous router is left in place).
 async fn recompute(state: &DaemonState) -> Option<HashSet<PathBuf>> {
     let guard = state.config.lock().await;
-    let (router, watch_roots) = match startup::build_routing(
+    let (router, wordpress_sites, watch_roots) = match startup::build_routing(
         &guard,
         &state.dirs,
         &state.detect_cache,
@@ -100,6 +100,7 @@ async fn recompute(state: &DaemonState) -> Option<HashSet<PathBuf>> {
         }
     };
     *state.router.write().await = router;
+    *state.wordpress_sites.write().await = wordpress_sites;
 
     let mut desired: HashSet<PathBuf> = watch_roots.into_iter().collect();
     for p in &guard.parked.paths {

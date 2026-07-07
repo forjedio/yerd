@@ -43,8 +43,8 @@ pub struct CreateSiteSpec {
 
 /// The framework to scaffold and its per-framework options.
 ///
-/// Only Laravel is supported today; the enum exists so other site types
-/// (`CakePHP`, …) are additive. Internally tagged on `framework`.
+/// The enum exists so site types are additive (`CakePHP`, …). Internally
+/// tagged on `framework`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "framework", rename_all = "snake_case")]
 #[non_exhaustive]
@@ -53,6 +53,16 @@ pub enum Framework {
     Laravel {
         /// Laravel-specific installer options.
         options: LaravelOptions,
+    },
+    /// Scaffold via WP-CLI (`wp core download` / `wp config create` /
+    /// `wp core install`), provisioning a MySQL/MariaDB database along the
+    /// way. Spelled `Wordpress` (one capital) rather than `WordPress` so
+    /// `rename_all = "snake_case"` produces the wire tag `"wordpress"` rather
+    /// than `"word_press"` - same reason [`Database::Mariadb`] avoids
+    /// `MariaDb`.
+    Wordpress {
+        /// WordPress-specific installer options.
+        options: WordPressOptions,
     },
 }
 
@@ -145,6 +155,57 @@ pub enum JsRuntime {
     /// Skip frontend dependency install/build (no package-manager flag passed,
     /// so the installer does not run install/build).
     Skip,
+}
+
+/// Options mapped onto the WP-CLI scaffolding sequence.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WordPressOptions {
+    /// `WordPress` core version to install (`wp core download --version`).
+    /// `None` installs the latest stable release.
+    pub core_version: Option<String>,
+    /// Locale to install (`wp core download --locale`), e.g. `"en_GB"`.
+    pub locale: String,
+    /// Admin account username (`wp core install --admin_user`).
+    pub admin_user: String,
+    /// Admin account email (`wp core install --admin_email`).
+    pub admin_email: String,
+    /// Admin account password (`wp core install --admin_password`).
+    pub admin_password: String,
+    /// Site title (`wp core install --title`).
+    pub site_title: String,
+    /// Database table prefix (`wp config create --dbprefix`).
+    pub table_prefix: String,
+    /// The database engine + name to provision for this site.
+    pub database: WordPressDatabase,
+}
+
+/// The database engine and name to provision for a new `WordPress` site.
+///
+/// Only the two engines `WordPress` core itself supports without a plugin are
+/// offered - no `Postgres`, no `Sqlite`, unlike [`Database`] (Laravel's much
+/// broader driver list, which only ever writes a `.env` value and never
+/// provisions anything).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WordPressDatabase {
+    /// Which engine to provision.
+    pub engine: WordPressDbEngine,
+    /// The database name to create. Validated by the daemon against the
+    /// same allowlist [`crate::Request::CreateDatabase`] uses.
+    pub name: String,
+}
+
+/// SQL engine offered for a `WordPress` site's database. Variant names are
+/// deliberately spelled so `rename_all = "snake_case"` reproduces the same
+/// wire ids the Services subsystem's `Service::id()` already uses
+/// (`"mysql"`/`"mariadb"`), matching [`Database::Mariadb`]'s naming for the
+/// same reason.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WordPressDbEngine {
+    /// `MySQL`.
+    Mysql,
+    /// `MariaDB`.
+    Mariadb,
 }
 
 /// Lifecycle state of a long-running job.
