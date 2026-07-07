@@ -602,9 +602,12 @@ fn apply_linux_rpm(staged: &Path, relaunch_gui: bool) -> Result<(), String> {
 /// `rpm -U`s that copy - closing the verify→re-read TOCTOU on the user-writable
 /// staged path. The package's `%post` scriptlet reapplies setcap.
 ///
-/// `rpm -U --oldpackage` installs the file regardless of version (so an
-/// edge-to-stable downgrade works, like `dpkg -i`); `rpm` is non-interactive by
-/// default. Unlike `dnf`, `rpm -U` does not *resolve* dependencies, but it does
+/// `rpm -U --oldpackage --replacepkgs` installs the file regardless of version (so
+/// an edge-to-stable downgrade works, like `dpkg -i`); `--replacepkgs` also lets a
+/// same-version reinstall succeed, so a retry after a partial/interrupted attempt
+/// is idempotent (plain `rpm -U` would abort with "already installed"). `rpm` is
+/// non-interactive by default. Unlike `dnf`, `rpm -U` does not *resolve*
+/// dependencies, but it does
 /// *check* them: it aborts on an unmet `Requires`, so the packaged `depends` list
 /// must not gain a new entry between releases (an existing install would have the
 /// old deps only). It also fails if PackageKit/dnf holds the rpmdb lock. rpm's
@@ -636,6 +639,7 @@ fn elevated_install_rpm(staged: &Path) -> Result<(), String> {
         let out = Command::new("rpm")
             .arg("-U")
             .arg("--oldpackage")
+            .arg("--replacepkgs")
             .arg(&pkg)
             .output()
             .map_err(|e| format!("spawning rpm: {e}"))?;

@@ -306,7 +306,7 @@ in the release workflow's `arch` job, with a `.install` scriptlet doing the same
 `setcap`. The Fedora `.rpm`, by contrast, **is** a Tauri bundle target (Tauri v2
 has an rpm bundler): the `fedora` jobs run `tauri build` with the
 `tauri.bundle-linux-rpm.conf.json` overlay and an `rpm/postinst.sh` `%post` doing
-the same `setcap`. See [Packaging and releasing](./building#the-arch-package-pkg-tar-zst).
+the same `setcap`. See [Packaging and releasing](./building#the-fedora-package-rpm).
 
 ::: info Three windows, one bundle
 The app is no longer single-window. `tauri.conf.json` declares **three** windows,

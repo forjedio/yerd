@@ -5,8 +5,10 @@
 # upgrade (the new package's %post recreates them). In the normal layout Tauri
 # ships the real binaries in /usr/bin (rpm removes those itself); %post only
 # creates symlinks in the /usr/lib fallback path. rpm does not track
-# scriptlet-created symlinks, so this is the only cleanup. The -L guard means
-# real, rpm-owned files (and files another package owns) are left alone.
+# scriptlet-created symlinks, so this is the only cleanup. We remove a symlink
+# only if it still points into the /usr/lib fallback dir (the exact target shape
+# %post creates) - so real rpm-owned files and foreign symlinks another package
+# repointed are left alone, mirroring %post's refuse-to-clobber guard.
 #
 # Unlike a deb postrm (which switches on a remove/purge/upgrade verb), an rpm
 # %postun receives $1 = the count of this package's versions remaining after the
@@ -16,7 +18,10 @@ set -e
 
 if [ "$1" = 0 ]; then
   for b in yerd yerdd yerd-helper; do
-    [ -L "/usr/bin/$b" ] && rm -f "/usr/bin/$b"
+    [ -L "/usr/bin/$b" ] || continue
+    case "$(readlink "/usr/bin/$b")" in
+      /usr/lib/*/"$b") rm -f "/usr/bin/$b" ;;
+    esac
   done
 fi
 

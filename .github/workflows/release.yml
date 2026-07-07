@@ -66,7 +66,10 @@ jobs:
     name: fedora-smoke
     needs: build
     runs-on: ubuntu-22.04
-    container: fedora:latest
+    # Pinned to a fixed Fedora release (not the mutable `latest`) so a release run
+    # always validates against the same rpm environment. Bump deliberately; tighten
+    # to an `@sha256:` digest if fully-reproducible smoke runs are needed.
+    container: fedora:42
     steps:
       # findutils isn't in the minimal fedora image; dnf is. Install it before the
       # `find` below (libcap/getcap arrive as an rpm dependency of the package).
