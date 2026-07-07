@@ -146,6 +146,13 @@ pub enum ValidateErrorReason {
     /// A `[groups.members]` value referenced a group name absent from
     /// `[groups.order]`.
     GroupMemberDangling,
+    /// A `[php.extensions]` entry had an invalid name or path (per
+    /// [`yerd_core::php_extensions`]: non-absolute, wrong suffix, or an
+    /// ini/`-d` injection character).
+    InvalidPhpExtension,
+    /// Two `[php.extensions]` entries under the same version shared a `name`,
+    /// which is the handle used to remove one.
+    DuplicateExtensionName,
 }
 
 impl fmt::Display for ValidateErrorReason {
@@ -178,6 +185,12 @@ impl fmt::Display for ValidateErrorReason {
             Self::GroupNameReserved => "\"Unallocated\" is reserved and cannot be a group name",
             Self::GroupDuplicate => "groups.order contains a duplicate group name",
             Self::GroupMemberDangling => "groups.members references an unknown group",
+            Self::InvalidPhpExtension => {
+                "php.extensions contains an entry with an invalid name or path"
+            }
+            Self::DuplicateExtensionName => {
+                "php.extensions contains two entries with the same name for one version"
+            }
         };
         f.write_str(msg)
     }
@@ -252,6 +265,8 @@ mod tests {
             ValidateErrorReason::GroupNameReserved,
             ValidateErrorReason::GroupDuplicate,
             ValidateErrorReason::GroupMemberDangling,
+            ValidateErrorReason::InvalidPhpExtension,
+            ValidateErrorReason::DuplicateExtensionName,
         ] {
             assert!(!r.to_string().is_empty());
             let _ = format!("{r:?}");

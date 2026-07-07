@@ -11,6 +11,8 @@
 pub mod apply;
 pub mod cli;
 #[cfg(unix)]
+pub mod cli_shim;
+#[cfg(unix)]
 pub mod composer_shim;
 #[cfg(unix)]
 pub mod cover_shim;

@@ -22,6 +22,7 @@ fn save_then_load_round_trip() {
     original.php = PhpSection {
         default: PhpVersion::new(8, 2),
         settings: std::collections::BTreeMap::new(),
+        extensions: std::collections::BTreeMap::new(),
     };
     original.parked.paths.insert("/srv/sites".to_string());
     original

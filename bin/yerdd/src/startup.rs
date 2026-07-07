@@ -214,6 +214,23 @@ pub async fn bring_up_with_dirs(
                 .into_owned(),
         )],
     }));
+    php_manager.set_extensions(
+        config
+            .php
+            .extensions
+            .iter()
+            .map(|(v, entries)| {
+                let loads = entries
+                    .iter()
+                    .map(|e| yerd_php::ExtLoad {
+                        path: std::path::PathBuf::from(&e.path),
+                        zend: e.zend,
+                    })
+                    .collect();
+                (*v, loads)
+            })
+            .collect(),
+    );
     php_manager.set_ca_bundle(php_ca_bundle.clone());
     let php_manager = Arc::new(Mutex::new(php_manager));
 

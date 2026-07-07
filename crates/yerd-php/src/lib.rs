@@ -10,6 +10,7 @@ pub mod io;
 pub mod listen;
 pub mod manager;
 pub mod pool;
+pub mod probe;
 pub mod pure;
 pub mod real;
 pub mod release;
@@ -19,7 +20,9 @@ pub mod version;
 pub use error::{DownloadError, ExitReason, PhpError, SpawnFailureReason};
 pub use listen::{AllocatedListen, Listen};
 pub use manager::{DumpExtSettings, PhpManager, PoolRunState, PoolSnapshot};
-pub use pool::{PoolConfig, ProcessManagerMode};
+pub use pool::{ExtLoad, PoolConfig, ProcessManagerMode};
+pub use probe::{probe_extension, CommandRunner, ProbeOutput, TokioCommandRunner};
+pub use pure::ext_probe::{interpret_probe, ExtLoadError};
 pub use real::{SystemClock, TokioChild, TokioProcessSpawner};
 pub use release::{
     available_minors, current_os_arch, display_build, is_newer_build, is_safe_member,

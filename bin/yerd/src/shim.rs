@@ -20,12 +20,50 @@ pub(crate) fn cli_binary(dirs: &PlatformDirs, minor: &str) -> PathBuf {
 
 /// The default PHP `(binary, "major.minor")` via the `php` shim's target, if the
 /// shim is present and the derived binary exists.
+///
+/// Only meaningful when `php` is a *direct symlink* to a version's binary (the
+/// pre-wrapper layout). Once `php` is a Yerd multi-call wrapper, the target has
+/// no `php-<ver>` component and this returns `None`, so [`resolve_default_php`]
+/// falls through to the config default.
 #[must_use]
 pub(crate) fn default_from_shim(dirs: &PlatformDirs) -> Option<(PathBuf, String)> {
     let target = std::fs::read_link(dirs.data.join("bin").join("php")).ok()?;
     let minor = minor_from_php_path(&target)?;
     let php = cli_binary(dirs, &minor);
     php.is_file().then_some((php, minor))
+}
+
+/// The default PHP `(binary, "major.minor")` from the persisted config
+/// (`{config}/yerd.toml`), if it parses and that version's CLI binary exists.
+///
+/// Every error (missing/corrupt/locked config, uninstalled default) is swallowed
+/// to `None` so a `php` launch never fails on config trouble - the caller falls
+/// back to the highest installed version.
+#[must_use]
+pub(crate) fn default_from_config(dirs: &PlatformDirs) -> Option<(PathBuf, String)> {
+    let cfg = yerd_config::Config::load(&dirs.config.join("yerd.toml")).ok()?;
+    let v = cfg.php.default;
+    let minor = format!("{}.{}", v.major, v.minor);
+    let php = cli_binary(dirs, &minor);
+    php.is_file().then_some((php, minor))
+}
+
+/// Path to a version's generated CLI ini (`{data}/php-cli-<minor>.ini`).
+#[must_use]
+pub(crate) fn cli_ini_path(dirs: &PlatformDirs, minor: &str) -> PathBuf {
+    dirs.data.join(format!("php-cli-{minor}.ini"))
+}
+
+/// The `PHPRC` target for a version's CLI: its per-version ini if present, else
+/// the base `php-cli.ini` if present, else `None` (leave `PHPRC` unset).
+#[must_use]
+pub(crate) fn cli_phprc(dirs: &PlatformDirs, minor: &str) -> Option<PathBuf> {
+    let per_version = cli_ini_path(dirs, minor);
+    if per_version.is_file() {
+        return Some(per_version);
+    }
+    let base = dirs.data.join("php-cli.ini");
+    base.is_file().then_some(base)
 }
 
 /// Extract `"major.minor"` from a `…/php/php-<major>.<minor>/…` path.
@@ -71,11 +109,14 @@ pub(crate) fn highest_installed(dirs: &PlatformDirs) -> Option<(PathBuf, String)
     Some((cli_binary(dirs, &minor), minor))
 }
 
-/// Resolve the default PHP `(binary, "major.minor")`: the `php` shim's target if
-/// set, else the highest installed version. `None` when no PHP is installed.
+/// Resolve the default PHP `(binary, "major.minor")`: the config default first
+/// (authoritative), then a legacy direct-symlink `php` shim target, then the
+/// highest installed version. `None` when no PHP is installed.
 #[must_use]
 pub(crate) fn resolve_default_php(dirs: &PlatformDirs) -> Option<(PathBuf, String)> {
-    default_from_shim(dirs).or_else(|| highest_installed(dirs))
+    default_from_config(dirs)
+        .or_else(|| default_from_shim(dirs))
+        .or_else(|| highest_installed(dirs))
 }
 
 /// Print `yerd: <msg>` to stderr and return a failure exit code.

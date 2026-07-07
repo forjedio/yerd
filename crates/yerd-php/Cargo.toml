@@ -13,6 +13,7 @@ yerd-platform  = { path = "../yerd-platform" }
 yerd-supervise = { path = "../yerd-supervise" }
 thiserror      = { workspace = true }
 async-trait    = { workspace = true }
+tracing        = { workspace = true }
 serde          = { workspace = true }
 serde_json     = { workspace = true }
 tempfile       = { workspace = true }

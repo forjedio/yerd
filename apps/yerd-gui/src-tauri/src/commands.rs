@@ -275,6 +275,34 @@ pub async fn set_php_settings(
 }
 
 #[tauri::command]
+pub async fn list_php_extensions() -> Result<Response, GuiError> {
+    finish(exchange(&Request::ListPhpExtensions).await?)
+}
+
+#[tauri::command]
+pub async fn add_php_extension(
+    version: PhpVersion,
+    path: String,
+    name: Option<String>,
+    zend: bool,
+) -> Result<Response, GuiError> {
+    finish(
+        exchange(&Request::AddPhpExtension {
+            version,
+            path,
+            name,
+            zend,
+        })
+        .await?,
+    )
+}
+
+#[tauri::command]
+pub async fn remove_php_extension(version: PhpVersion, name: String) -> Result<Response, GuiError> {
+    finish(exchange(&Request::RemovePhpExtension { version, name }).await?)
+}
+
+#[tauri::command]
 pub async fn restart_php(version: PhpVersion) -> Result<Response, GuiError> {
     finish(exchange(&Request::RestartPhp { version }).await?)
 }

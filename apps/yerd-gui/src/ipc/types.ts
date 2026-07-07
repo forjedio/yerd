@@ -337,6 +337,15 @@ export interface PhpUpdate {
   latest: string;
 }
 
+/** One registered custom PHP extension (see the `php_extensions` response). */
+export interface PhpExtInfo {
+  name: string;
+  path: string;
+  zend: boolean;
+  /** Whether the `.so` currently exists on disk (false = broken registration). */
+  present: boolean;
+}
+
 export type ErrorCode =
   | "not_found"
   | "already_exists"
@@ -386,6 +395,11 @@ export type Response =
       type: "available_php";
       available: PhpVersion[];
       installed: PhpVersion[];
+    }
+  | {
+      type: "php_extensions";
+      /** Registered extensions keyed by version string (e.g. `"8.5"`). */
+      by_version: Record<PhpVersion, PhpExtInfo[]>;
     }
   | { type: "status"; report: StatusReport }
   | { type: "diagnoses"; items: Diagnosis[] }

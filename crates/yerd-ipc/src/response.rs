@@ -112,6 +112,13 @@ pub enum Response {
         /// dropdown) or tag (CLI) them.
         installed: Vec<PhpVersion>,
     },
+    /// Reply to [`crate::Request::ListPhpExtensions`] - registered custom
+    /// extensions keyed by PHP version (ascending), each tagged with whether its
+    /// `.so` currently exists on disk.
+    PhpExtensions {
+        /// Version → its registered extensions.
+        by_version: BTreeMap<PhpVersion, Vec<PhpExtInfo>>,
+    },
     /// Reply to [`crate::Request::Status`] - a runtime health snapshot.
     ///
     /// Boxed so the (large) report does not bloat every `Response` value;
@@ -302,6 +309,20 @@ pub enum Response {
     },
 }
 
+/// One registered custom PHP extension (see [`Response::PhpExtensions`]).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PhpExtInfo {
+    /// The removal/display name.
+    pub name: String,
+    /// Absolute path to the `.so`.
+    pub path: String,
+    /// Whether it loads as a `zend_extension`.
+    pub zend: bool,
+    /// Whether the `.so` currently exists on disk (a `false` here flags a
+    /// broken registration, e.g. after a Homebrew ABI-dir bump).
+    pub present: bool,
+}
+
 /// An available newer patch for an installed PHP minor.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PhpUpdate {
@@ -362,6 +383,7 @@ mod variant_name_pinning {
             Response::Info { .. } => {}
             Response::PhpVersions { .. } => {}
             Response::AvailablePhp { .. } => {}
+            Response::PhpExtensions { .. } => {}
             Response::Status { .. } => {}
             Response::Diagnoses { .. } => {}
             Response::DoctorFix { .. } => {}
@@ -428,6 +450,17 @@ mod variant_name_pinning {
         pin_response(Response::AvailablePhp {
             available: vec![PhpVersion::new(8, 4), PhpVersion::new(8, 5)],
             installed: vec![PhpVersion::new(8, 5)],
+        });
+        pin_response(Response::PhpExtensions {
+            by_version: BTreeMap::from([(
+                PhpVersion::new(8, 5),
+                vec![PhpExtInfo {
+                    name: "scrypt".into(),
+                    path: "/a/scrypt.so".into(),
+                    zend: false,
+                    present: true,
+                }],
+            )]),
         });
         pin_response(Response::Status {
             report: Box::new(crate::status::StatusReport {

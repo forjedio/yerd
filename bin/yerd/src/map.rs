@@ -64,6 +64,9 @@ pub fn to_request(cmd: &Command) -> Result<Request, ClientError> {
                 settings: std::collections::BTreeMap::from([(setting.clone(), String::new())]),
             }
         }
+        Command::Php {
+            action: crate::cli::PhpAction::Ext { action },
+        } => php_ext_to_request(action)?,
         Command::Install {
             target: crate::cli::InstallTarget::Php { version },
         } => Request::InstallPhp {
@@ -303,6 +306,43 @@ fn parse_php(s: &str) -> Result<PhpVersion, ClientError> {
         .map_err(|e| ClientError::Usage(format!("invalid PHP version {s:?}: {e}")))
 }
 
+/// Map a `yerd php ext` action to its wire request, validating the version and
+/// (for `add`) the name/path client-side so a bad argument fails before connect.
+fn php_ext_to_request(action: &crate::cli::PhpExtAction) -> Result<Request, ClientError> {
+    use crate::cli::PhpExtAction;
+    Ok(match action {
+        PhpExtAction::Add {
+            version,
+            path,
+            zend,
+            name,
+        } => {
+            let v = parse_php(version)?;
+            let path_str = path
+                .to_str()
+                .ok_or_else(|| ClientError::Usage("extension path must be valid UTF-8".to_owned()))?
+                .to_owned();
+            let derived = name
+                .clone()
+                .or_else(|| yerd_core::php_extensions::default_name_from_path(&path_str))
+                .unwrap_or_default();
+            yerd_core::php_extensions::validate_entry(&derived, &path_str, *zend)
+                .map_err(|e| ClientError::Usage(e.to_string()))?;
+            Request::AddPhpExtension {
+                version: v,
+                path: path_str,
+                name: name.clone(),
+                zend: *zend,
+            }
+        }
+        PhpExtAction::Remove { version, name } => Request::RemovePhpExtension {
+            version: parse_php(version)?,
+            name: name.clone(),
+        },
+        PhpExtAction::List => Request::ListPhpExtensions,
+    })
+}
+
 /// The channel override for a self-update check, from the `--edge`/`--stable`
 /// flags (mutually exclusive at the clap layer). `None` = use the saved default.
 #[must_use]
@@ -440,6 +480,7 @@ pub fn render(resp: &Response, json: bool) -> Rendered {
             available,
             installed,
         } => Rendered::ok(format_available_php(available, installed)),
+        Response::PhpExtensions { by_version } => Rendered::ok(format_php_extensions(by_version)),
         Response::Error { code: c, message } => Rendered::err(format!("error ({c:?}): {message}")),
         Response::Status { report } => Rendered {
             stdout: format_status(report),
@@ -795,6 +836,31 @@ fn format_available_php(available: &[PhpVersion], installed: &[PhpVersion]) -> S
         })
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+/// Render the custom-extension registry, grouped by version, tagging any entry
+/// whose `.so` is missing on disk.
+fn format_php_extensions(
+    by_version: &std::collections::BTreeMap<PhpVersion, Vec<yerd_ipc::PhpExtInfo>>,
+) -> String {
+    use std::fmt::Write as _;
+    if by_version.is_empty() {
+        return "no custom PHP extensions registered".to_owned();
+    }
+    let mut out = String::new();
+    for (v, exts) in by_version {
+        let _ = writeln!(out, "PHP {v}:");
+        for e in exts {
+            let kind = if e.zend {
+                "zend_extension"
+            } else {
+                "extension"
+            };
+            let missing = if e.present { "" } else { "  (missing!)" };
+            let _ = writeln!(out, "  {} [{kind}] {}{missing}", e.name, e.path);
+        }
+    }
+    out.trim_end().to_owned()
 }
 
 /// Render a [`StatusReport`] as a human-readable block.
@@ -1544,6 +1610,116 @@ mod tests {
             false,
         );
         assert!(empty.stdout.contains("no PHP versions installed"));
+    }
+
+    #[test]
+    fn php_ext_add_maps_and_defaults_name() {
+        let req = to_request(&Command::Php {
+            action: crate::cli::PhpAction::Ext {
+                action: crate::cli::PhpExtAction::Add {
+                    version: "8.5".into(),
+                    path: "/opt/php/pecl/scrypt.so".into(),
+                    zend: false,
+                    name: None,
+                },
+            },
+        })
+        .unwrap();
+        assert_eq!(
+            req,
+            Request::AddPhpExtension {
+                version: PhpVersion::new(8, 5),
+                path: "/opt/php/pecl/scrypt.so".to_string(),
+                name: None,
+                zend: false,
+            }
+        );
+    }
+
+    #[test]
+    fn php_ext_add_rejects_non_absolute_path_client_side() {
+        let err = to_request(&Command::Php {
+            action: crate::cli::PhpAction::Ext {
+                action: crate::cli::PhpExtAction::Add {
+                    version: "8.5".into(),
+                    path: "relative/scrypt.so".into(),
+                    zend: false,
+                    name: None,
+                },
+            },
+        });
+        assert!(matches!(err, Err(ClientError::Usage(_))));
+    }
+
+    #[test]
+    fn php_ext_list_and_remove_map() {
+        assert_eq!(
+            to_request(&Command::Php {
+                action: crate::cli::PhpAction::Ext {
+                    action: crate::cli::PhpExtAction::List
+                }
+            })
+            .unwrap(),
+            Request::ListPhpExtensions
+        );
+        assert_eq!(
+            to_request(&Command::Php {
+                action: crate::cli::PhpAction::Ext {
+                    action: crate::cli::PhpExtAction::Remove {
+                        version: "8.5".into(),
+                        name: "scrypt".into(),
+                    }
+                }
+            })
+            .unwrap(),
+            Request::RemovePhpExtension {
+                version: PhpVersion::new(8, 5),
+                name: "scrypt".into(),
+            }
+        );
+    }
+
+    #[test]
+    fn renders_php_extensions_grouped_with_missing_flag() {
+        let r = render(
+            &Response::PhpExtensions {
+                by_version: std::collections::BTreeMap::from([(
+                    PhpVersion::new(8, 5),
+                    vec![
+                        yerd_ipc::PhpExtInfo {
+                            name: "scrypt".into(),
+                            path: "/a/scrypt.so".into(),
+                            zend: false,
+                            present: true,
+                        },
+                        yerd_ipc::PhpExtInfo {
+                            name: "xdebug".into(),
+                            path: "/a/xdebug.so".into(),
+                            zend: true,
+                            present: false,
+                        },
+                    ],
+                )]),
+            },
+            false,
+        );
+        assert_eq!(r.code, 0);
+        assert!(r.stdout.contains("PHP 8.5:"));
+        assert!(r.stdout.contains("scrypt [extension] /a/scrypt.so"));
+        assert!(r
+            .stdout
+            .contains("xdebug [zend_extension] /a/xdebug.so  (missing!)"));
+    }
+
+    #[test]
+    fn renders_empty_php_extensions() {
+        let r = render(
+            &Response::PhpExtensions {
+                by_version: std::collections::BTreeMap::new(),
+            },
+            false,
+        );
+        assert!(r.stdout.contains("no custom PHP extensions registered"));
     }
 
     #[test]

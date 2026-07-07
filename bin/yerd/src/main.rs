@@ -20,6 +20,10 @@ fn main() -> ExitCode {
     if let Some(code) = yerd::laravel_shim::dispatch() {
         return code;
     }
+    #[cfg(unix)]
+    if let Some(code) = yerd::cli_shim::dispatch() {
+        return code;
+    }
     if let Some(code) = yerd::apply::run_from_env() {
         return code;
     }

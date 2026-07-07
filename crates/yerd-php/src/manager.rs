@@ -40,7 +40,7 @@ use yerd_platform::{ActivePortBinder, PlatformDirs};
 use crate::error::{ExitReason, PhpError, SpawnFailureReason};
 use crate::io::atomic_write;
 use crate::listen::{AllocatedListen, Listen};
-use crate::pool::PoolConfig;
+use crate::pool::{ExtLoad, PoolConfig};
 use crate::pure::supervisor::{
     transition, Action, Elapsed, ErrorTag, Event, KillSignal, PoolState, StopProtocol,
     SupervisorPolicy,
@@ -134,6 +134,7 @@ where
     binaries: BTreeMap<PhpVersion, PathBuf>,
     ini_settings: Vec<(String, String)>,
     dump_ext: Option<DumpExtSettings>,
+    extensions: BTreeMap<PhpVersion, Vec<ExtLoad>>,
     ca_bundle: Option<PathBuf>,
     instance_id: u32,
     /// Timing/restart policy fed to the pure state machine. FPM pools use the
@@ -172,6 +173,7 @@ where
             binaries,
             ini_settings: Vec::new(),
             dump_ext: None,
+            extensions: BTreeMap::new(),
             ca_bundle: None,
             instance_id,
             policy: SupervisorPolicy::fpm(),
@@ -205,6 +207,38 @@ where
     /// restart of a pool. `None` disables extension loading.
     pub fn set_dump_ext(&mut self, settings: Option<DumpExtSettings>) {
         self.dump_ext = settings;
+    }
+
+    /// Replace the user-registered custom extensions applied to each pool, keyed
+    /// by PHP version. Each pool loads its version's entries via
+    /// `-d [zend_]extension=<path>` on the next `ensure` / restart (a running
+    /// pool keeps its current config until restarted). A `.so` missing on disk at
+    /// spawn time is skipped with a warning, so a stale entry never blocks start.
+    pub fn set_extensions(&mut self, extensions: BTreeMap<PhpVersion, Vec<ExtLoad>>) {
+        self.extensions = extensions;
+    }
+
+    /// The user extensions to load for `v`, dropping any whose `.so` is missing
+    /// on disk (a stale path from a Homebrew ABI-dir bump) with a warning, so a
+    /// vanished file never blocks pool start.
+    fn resolve_user_extensions(&self, v: PhpVersion) -> Vec<ExtLoad> {
+        let Some(exts) = self.extensions.get(&v) else {
+            return Vec::new();
+        };
+        exts.iter()
+            .filter(|e| {
+                let present = e.path.is_file();
+                if !present {
+                    tracing::warn!(
+                        version = %v,
+                        path = %e.path.display(),
+                        "skipping registered PHP extension: file not found"
+                    );
+                }
+                present
+            })
+            .cloned()
+            .collect()
     }
 
     /// Set the managed CA bundle every pool points PHP at (`openssl.cafile` /
@@ -250,6 +284,8 @@ where
             }
         }
 
+        cfg.user_extensions = self.resolve_user_extensions(v);
+
         for path in [&cfg.config_path, &cfg.pid_file, &cfg.error_log] {
             if let Some(parent) = path.parent() {
                 fs::create_dir_all(parent).map_err(|source| PhpError::ConfigWrite {
@@ -270,6 +306,7 @@ where
         let env = env_scrub::allowlist(&std::env::vars().collect::<Vec<_>>());
         let extension = cfg.extension.clone();
         let ini_defines = cfg.ini_defines.clone();
+        let user_extensions = cfg.user_extensions.clone();
         let cmd_builder = || {
             build_cmd(
                 &binary,
@@ -277,6 +314,7 @@ where
                 &env,
                 extension.as_deref(),
                 &ini_defines,
+                &user_extensions,
             )
         };
 
@@ -685,6 +723,7 @@ fn build_cmd(
     env: &[(String, String)],
     extension: Option<&std::path::Path>,
     ini_defines: &[(String, String)],
+    user_extensions: &[ExtLoad],
 ) -> StdCommand {
     let mut cmd = StdCommand::new(binary);
     if let Some(so) = extension {
@@ -692,6 +731,15 @@ fn build_cmd(
         for (k, val) in ini_defines {
             cmd.arg("-d").arg(format!("{k}={val}"));
         }
+    }
+    for ext in user_extensions {
+        let directive = if ext.zend {
+            "zend_extension"
+        } else {
+            "extension"
+        };
+        cmd.arg("-d")
+            .arg(format!("{directive}={}", ext.path.display()));
     }
     cmd.arg("--fpm-config").arg(config_path);
     cmd.env_clear();
@@ -746,7 +794,7 @@ mod pure_helper_tests {
         let binary = PathBuf::from("/opt/php/bin/php");
         let config = PathBuf::from("/run/yerd/fpm-8.3.conf");
         let env = vec![("PATH".to_owned(), "/usr/bin".to_owned())];
-        let cmd = build_cmd(&binary, &config, &env, None, &[]);
+        let cmd = build_cmd(&binary, &config, &env, None, &[], &[]);
 
         assert_eq!(cmd.get_program(), OsStr::new("/opt/php/bin/php"));
         let args = args_of(&cmd);
@@ -772,7 +820,7 @@ mod pure_helper_tests {
         let env: Vec<(String, String)> = vec![];
         let so = Path::new("/lib/yerd-dump.so");
         let defines = vec![("yerd_dump.state_path".to_owned(), "/var/state".to_owned())];
-        let cmd = build_cmd(&binary, &config, &env, Some(so), &defines);
+        let cmd = build_cmd(&binary, &config, &env, Some(so), &defines, &[]);
 
         let args = args_of(&cmd);
         assert_eq!(
@@ -792,6 +840,53 @@ mod pure_helper_tests {
             .unwrap();
         let conf_pos = args.iter().position(|a| a == "--fpm-config").unwrap();
         assert!(ext_pos < conf_pos);
+    }
+
+    #[test]
+    fn build_cmd_emits_user_extensions_with_and_without_dump_ext() {
+        let binary = PathBuf::from("/opt/php/bin/php");
+        let config = PathBuf::from("/run/yerd/fpm-8.5.conf");
+        let env: Vec<(String, String)> = vec![];
+        let user = vec![
+            ExtLoad {
+                path: PathBuf::from("/lib/scrypt.so"),
+                zend: false,
+            },
+            ExtLoad {
+                path: PathBuf::from("/lib/xdebug.so"),
+                zend: true,
+            },
+        ];
+        let cmd = build_cmd(&binary, &config, &env, None, &[], &user);
+        let args = args_of(&cmd);
+        assert_eq!(
+            args,
+            vec![
+                "-d",
+                "extension=/lib/scrypt.so",
+                "-d",
+                "zend_extension=/lib/xdebug.so",
+                "--fpm-config",
+                "/run/yerd/fpm-8.5.conf",
+            ]
+        );
+
+        let so = Path::new("/lib/yerd-dump.so");
+        let cmd = build_cmd(&binary, &config, &env, Some(so), &[], &user);
+        let args = args_of(&cmd);
+        assert_eq!(
+            args,
+            vec![
+                "-d",
+                "extension=/lib/yerd-dump.so",
+                "-d",
+                "extension=/lib/scrypt.so",
+                "-d",
+                "zend_extension=/lib/xdebug.so",
+                "--fpm-config",
+                "/run/yerd/fpm-8.5.conf",
+            ]
+        );
     }
 
     #[test]

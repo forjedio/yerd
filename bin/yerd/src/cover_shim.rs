@@ -75,10 +75,13 @@ fn run(spec: &CoverSpec) -> ExitCode {
         ));
     }
 
-    let base = match std::fs::read_to_string(dirs.data.join("php-cli.ini")) {
-        Ok(s) => s,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
-        Err(e) => return fail(format!("cannot read Yerd's CLI php.ini: {e}")),
+    let base = match crate::shim::cli_phprc(&dirs, &minor) {
+        Some(ini) => match std::fs::read_to_string(&ini) {
+            Ok(s) => s,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+            Err(e) => return fail(format!("cannot read Yerd's CLI php.ini: {e}")),
+        },
+        None => String::new(),
     };
     let Some(cover_ini) = php_settings::render_cover_ini(&base, &pcov) else {
         return fail(format!(

@@ -125,6 +125,29 @@ pub enum Request {
         /// Setting name → value (e.g. `"memory_limit" -> "512M"`); `""` removes.
         settings: BTreeMap<String, String>,
     },
+    /// Register a custom PHP extension for a version: the daemon validates and
+    /// load-probes the `.so`, persists it, and loads it into that version's FPM
+    /// pool and CLI ini.
+    AddPhpExtension {
+        /// The PHP version the extension is built for and applies to.
+        version: PhpVersion,
+        /// Absolute path to the `.so`.
+        path: String,
+        /// Optional display/removal handle; defaults to the `.so` basename.
+        name: Option<String>,
+        /// Load as a `zend_extension` rather than a plain `extension`.
+        zend: bool,
+    },
+    /// Remove a registered custom extension by name for a version.
+    RemovePhpExtension {
+        /// The PHP version the extension is registered under.
+        version: PhpVersion,
+        /// The extension's registered name.
+        name: String,
+    },
+    /// List registered custom extensions across all versions, each tagged with
+    /// whether its `.so` currently exists on disk.
+    ListPhpExtensions,
     /// Restart one installed version's FPM pool (stop + ensure).
     RestartPhp {
         /// The version whose pool to restart.
@@ -565,6 +588,9 @@ mod variant_name_pinning {
             Request::CheckPhpUpdates => {}
             Request::AvailablePhp => {}
             Request::SetPhpSettings { .. } => {}
+            Request::AddPhpExtension { .. } => {}
+            Request::RemovePhpExtension { .. } => {}
+            Request::ListPhpExtensions => {}
             Request::RestartPhp { .. } => {}
             Request::RestartAllPhp => {}
             Request::UninstallPhp { .. } => {}
@@ -679,6 +705,17 @@ mod variant_name_pinning {
         pin(Request::SetPhpSettings {
             settings: BTreeMap::new(),
         });
+        pin(Request::AddPhpExtension {
+            version: PhpVersion::new(8, 5),
+            path: "/a/scrypt.so".into(),
+            name: None,
+            zend: false,
+        });
+        pin(Request::RemovePhpExtension {
+            version: PhpVersion::new(8, 5),
+            name: "scrypt".into(),
+        });
+        pin(Request::ListPhpExtensions);
         pin(Request::RestartPhp {
             version: PhpVersion::new(8, 5),
         });

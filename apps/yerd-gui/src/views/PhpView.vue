@@ -32,6 +32,7 @@ import Input from "@/components/ui/Input.vue";
 import Modal from "@/components/ui/Modal.vue";
 import Select from "@/components/ui/Select.vue";
 import Spinner from "@/components/ui/Spinner.vue";
+import Switch from "@/components/ui/Switch.vue";
 import {
   Tooltip,
   TooltipContent,
@@ -44,11 +45,14 @@ import { useOperations } from "@/composables/useOperations";
 import { useResource } from "@/composables/useResource";
 import { useToast } from "@/composables/useToast";
 import {
+  addPhpExtension,
   availablePhp,
   checkPhpUpdates,
   installPhpWithProgress,
   IpcError,
   listPhp,
+  listPhpExtensions,
+  removePhpExtension,
   restartAllPhp,
   restartPhp,
   setDefaultPhp,
@@ -204,6 +208,80 @@ async function saveSettings(): Promise<void> {
     await reloadPhp({ force: true });
   } catch (e) {
     toast.error("Couldn't update PHP settings", (e as IpcError).message);
+  } finally {
+    busy.value = null;
+  }
+}
+
+// ── custom extensions ──────────────────────────────────────────────────────
+const { data: extData, mutate: mutateExts } = useResource(
+  "php-extensions",
+  listPhpExtensions,
+);
+const extAddForm = ref<{
+  version: string;
+  path: string;
+  zend: boolean;
+  name: string;
+}>({ version: "", path: "", zend: false, name: "" });
+
+const extVersionOptions = computed(() =>
+  installed.value.map((v) => ({ value: v, label: `PHP ${v}` })),
+);
+
+/** Registered extensions flattened to rows for the table, version-ordered. */
+const extensionRows = computed(() => {
+  const map = extData.value ?? {};
+  return Object.keys(map)
+    .sort()
+    .flatMap((version) =>
+      (map[version] ?? []).map((ext) => ({ version, ext })),
+    );
+});
+
+// Default the add-form version to the first installed version once known.
+watch(
+  installed,
+  (vs) => {
+    if (!extAddForm.value.version && vs.length) {
+      extAddForm.value.version = vs[0];
+    }
+  },
+  { immediate: true },
+);
+
+async function addExtension(): Promise<void> {
+  const form = extAddForm.value;
+  if (!form.version || !form.path.trim()) {
+    toast.error("Missing details", "Pick a version and enter the .so path.");
+    return;
+  }
+  busy.value = "ext-add";
+  try {
+    const map = await addPhpExtension(
+      form.version,
+      form.path.trim(),
+      form.zend,
+      form.name.trim() || undefined,
+    );
+    mutateExts(() => map);
+    extAddForm.value = { version: form.version, path: "", zend: false, name: "" };
+    toast.success("Extension registered", "Loaded into the FPM pool and CLI.");
+  } catch (e) {
+    toast.error("Couldn't add the extension", (e as IpcError).message);
+  } finally {
+    busy.value = null;
+  }
+}
+
+async function removeExtension(version: PhpVersion, name: string): Promise<void> {
+  busy.value = `ext-remove:${version}:${name}`;
+  try {
+    const map = await removePhpExtension(version, name);
+    mutateExts(() => map);
+    toast.success("Extension removed");
+  } catch (e) {
+    toast.error("Couldn't remove the extension", (e as IpcError).message);
   } finally {
     busy.value = null;
   }
@@ -623,6 +701,108 @@ onUnmounted(
               <Spinner v-if="busy === 'settings'" class="size-4" />
               {{ busy === "settings" ? "Applying…" : "Save" }}
             </Button>
+          </div>
+        </CardContent>
+      </Card>
+
+      <!-- Custom PHP extensions, loaded into both web (FPM) and CLI per version. -->
+      <Card v-if="!loading" class="mt-8">
+        <CardHeader>
+          <CardTitle>Custom extensions</CardTitle>
+          <CardDescription>
+            Load extra PHP extensions (`.so`) into both the web (FPM) and CLI
+            runtimes. An extension is checked against the selected version before
+            it's saved. Extensions are tied to a PHP version.
+          </CardDescription>
+        </CardHeader>
+
+        <CardContent>
+          <div v-if="extensionRows.length" class="flex flex-col gap-2">
+            <div
+              v-for="row in extensionRows"
+              :key="`${row.version}:${row.ext.name}`"
+              class="flex items-center justify-between rounded-md border border-border px-3 py-2"
+            >
+              <div class="min-w-0">
+                <div class="flex items-center gap-2">
+                  <span class="text-sm font-medium">{{ row.ext.name }}</span>
+                  <Badge variant="secondary">PHP {{ row.version }}</Badge>
+                  <Badge v-if="row.ext.zend" variant="secondary">zend</Badge>
+                  <Badge v-if="!row.ext.present" variant="destructive">
+                    <TriangleAlert class="size-3" /> missing
+                  </Badge>
+                </div>
+                <p class="mt-0.5 truncate text-xs text-muted-foreground">
+                  {{ row.ext.path }}
+                </p>
+              </div>
+              <Button
+                variant="ghost"
+                size="sm"
+                :disabled="busy === `ext-remove:${row.version}:${row.ext.name}`"
+                aria-label="Remove extension"
+                @click="removeExtension(row.version, row.ext.name)"
+              >
+                <Spinner
+                  v-if="busy === `ext-remove:${row.version}:${row.ext.name}`"
+                  class="size-4"
+                />
+                <Trash2 v-else class="size-4" />
+              </Button>
+            </div>
+          </div>
+          <p v-else class="text-sm text-muted-foreground">
+            No custom extensions registered yet.
+          </p>
+
+          <div class="mt-5 border-t border-border pt-5">
+            <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
+              <div>
+                <label class="text-xs font-medium" for="ext-version">Version</label>
+                <div class="mt-1">
+                  <Select
+                    id="ext-version"
+                    class="w-full"
+                    :model-value="extAddForm.version"
+                    :options="extVersionOptions"
+                    aria-label="PHP version"
+                    @update:model-value="(v: string) => (extAddForm.version = v)"
+                  />
+                </div>
+              </div>
+              <div>
+                <label class="text-xs font-medium" for="ext-name">Name (optional)</label>
+                <Input
+                  id="ext-name"
+                  v-model="extAddForm.name"
+                  placeholder="defaults to the .so filename"
+                  class="mt-1"
+                />
+              </div>
+              <div class="sm:col-span-2">
+                <label class="text-xs font-medium" for="ext-path">Extension path</label>
+                <Input
+                  id="ext-path"
+                  v-model="extAddForm.path"
+                  placeholder="/opt/homebrew/lib/php/pecl/20250925/scrypt.so"
+                  class="mt-1"
+                />
+              </div>
+            </div>
+            <div class="mt-4 flex items-center justify-between">
+              <label class="flex items-center gap-2 text-sm">
+                <Switch v-model="extAddForm.zend" aria-label="Load as a Zend extension" />
+                Zend extension
+              </label>
+              <Button
+                size="sm"
+                :disabled="busy === 'ext-add' || !extVersionOptions.length"
+                @click="addExtension"
+              >
+                <Spinner v-if="busy === 'ext-add'" class="size-4" />
+                {{ busy === "ext-add" ? "Checking…" : "Add extension" }}
+              </Button>
+            </div>
           </div>
         </CardContent>
       </Card>
