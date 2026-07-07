@@ -33,6 +33,35 @@ const PACKAGE: &str = "wp-cli/wp-cli-bundle";
 /// normally; only this one severity class is dropped.
 pub(crate) const QUIET_DEPRECATIONS: [&str; 2] = ["-d", "error_reporting=E_ALL & ~E_DEPRECATED"];
 
+/// [`QUIET_DEPRECATIONS`] only reaches the `wp` process we spawn directly - it
+/// doesn't reach a PHP process WP-CLI spawns *internally* via
+/// `WP_CLI::launch_self()` (used by several subcommands, `rewrite structure`
+/// among them, to re-invoke themselves), since that re-invocation builds its
+/// own bare `php <script>` command line with none of our flags. This writes a
+/// tiny drop-in ini applying the same suppression, in a directory meant to be
+/// added to `PHP_INI_SCAN_DIR` (see [`quiet_deprecations_scan_dir_env`]) -
+/// unlike a CLI flag, an env var is inherited by any child process, so it
+/// still applies after a `launch_self()` re-exec. Idempotent (safe to call on
+/// every invocation).
+pub(crate) fn ensure_quiet_deprecations_scan_dir(dirs: &PlatformDirs) -> std::io::Result<PathBuf> {
+    let dir = dirs.data.join("wp-cli-quiet.d");
+    std::fs::create_dir_all(&dir)?;
+    std::fs::write(
+        dir.join("quiet-deprecations.ini"),
+        "error_reporting = E_ALL & ~E_DEPRECATED\n",
+    )?;
+    Ok(dir)
+}
+
+/// The `PHP_INI_SCAN_DIR` value for [`ensure_quiet_deprecations_scan_dir`]'s
+/// directory - prefixed with the Unix path-list separator (`:`) so PHP scans
+/// its compiled-in default ini directory first, then this one, rather than
+/// replacing the default scan directory outright (which an unprefixed
+/// `PHP_INI_SCAN_DIR` would do).
+pub(crate) fn quiet_deprecations_scan_dir_env(dir: &Path) -> String {
+    format!(":{}", dir.display())
+}
+
 /// `{data}/tools/wp-cli/vendor/wp-cli/wp-cli/php/boot-fs.php` - the filesystem
 /// entry point the `wp` shim execs under the managed PHP. `wp-cli-bundle`
 /// requires `wp-cli/wp-cli` as a regular dependency, so it lands under
@@ -150,6 +179,34 @@ fn read_wp_cli_version(build: &Path) -> Option<String> {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn quiet_deprecations_scan_dir_env_prefixes_the_default_scan_separator() {
+        let dir = Path::new("/data/wp-cli-quiet.d");
+        assert_eq!(
+            quiet_deprecations_scan_dir_env(dir),
+            ":/data/wp-cli-quiet.d"
+        );
+    }
+
+    #[test]
+    fn ensure_quiet_deprecations_scan_dir_writes_a_suppressing_ini() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dirs = PlatformDirs {
+            config: tmp.path().join("c"),
+            data: tmp.path().join("d"),
+            state: tmp.path().join("s"),
+            cache: tmp.path().join("ca"),
+            runtime: tmp.path().join("r"),
+        };
+        let dir = ensure_quiet_deprecations_scan_dir(&dirs).unwrap();
+        let ini = std::fs::read_to_string(dir.join("quiet-deprecations.ini")).unwrap();
+        assert!(ini.contains("error_reporting"));
+        assert!(ini.contains("~E_DEPRECATED"));
+
+        // Idempotent: calling it again doesn't fail on the already-existing dir/file.
+        assert!(ensure_quiet_deprecations_scan_dir(&dirs).is_ok());
+    }
 
     #[test]
     fn read_wp_cli_version_parses_lock() {

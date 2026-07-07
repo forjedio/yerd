@@ -44,6 +44,36 @@ const SITE_LOOKUP_TIMEOUT: Duration = Duration::from_millis(300);
 /// can't depend on `bin/yerdd` - so it can't just import that one).
 const QUIET_DEPRECATIONS: [&str; 2] = ["-d", "error_reporting=E_ALL & ~E_DEPRECATED"];
 
+/// [`QUIET_DEPRECATIONS`] only reaches the `wp` process we spawn directly - it
+/// doesn't reach a PHP process WP-CLI spawns *internally* via
+/// `WP_CLI::launch_self()` (used by several subcommands, `rewrite structure`
+/// among them, to re-invoke themselves), since that re-invocation builds its
+/// own bare `php <script>` command line with none of our flags. This writes a
+/// tiny drop-in ini applying the same suppression, in a directory added to
+/// `PHP_INI_SCAN_DIR` (see [`quiet_deprecations_scan_dir_env`]) - unlike a CLI
+/// flag, an env var is inherited by any child process, so it still applies
+/// after a `launch_self()` re-exec. Idempotent (safe to call on every
+/// invocation). Kept in sync with the identical function in
+/// `bin/yerdd/src/tools/wp_cli.rs` - see [`QUIET_DEPRECATIONS`]'s doc comment
+/// for why this is duplicated rather than shared.
+fn ensure_quiet_deprecations_scan_dir(dirs: &PlatformDirs) -> std::io::Result<PathBuf> {
+    let dir = dirs.data.join("wp-cli-quiet.d");
+    std::fs::create_dir_all(&dir)?;
+    std::fs::write(
+        dir.join("quiet-deprecations.ini"),
+        "error_reporting = E_ALL & ~E_DEPRECATED\n",
+    )?;
+    Ok(dir)
+}
+
+/// The `PHP_INI_SCAN_DIR` value for [`ensure_quiet_deprecations_scan_dir`]'s
+/// directory - prefixed with the Unix path-list separator (`:`) so PHP scans
+/// its compiled-in default ini directory first, then this one, rather than
+/// replacing the default scan directory outright.
+fn quiet_deprecations_scan_dir_env(dir: &Path) -> String {
+    format!(":{}", dir.display())
+}
+
 /// If `argv[0]` is `wp`, exec WP-CLI and return its exit code (on success
 /// `exec` replaces the process and never returns); otherwise `None`, so
 /// `main` falls through to the next shim / CLI.
@@ -109,6 +139,9 @@ fn run() -> ExitCode {
         .arg(boot_name)
         .args(std::env::args_os().skip(1))
         .current_dir(boot_dir);
+    if let Ok(dir) = ensure_quiet_deprecations_scan_dir(&dirs) {
+        cmd.env("PHP_INI_SCAN_DIR", quiet_deprecations_scan_dir_env(&dir));
+    }
     if let Some(s) = &scope {
         cmd.arg(format!("--path={}", s.served_root.display()));
     }
@@ -250,6 +283,32 @@ fn match_site(cwd: &Path, candidates: &[(PathBuf, PhpVersion)]) -> Option<(PathB
 #[allow(clippy::unwrap_used, clippy::panic)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn quiet_deprecations_scan_dir_env_prefixes_the_default_scan_separator() {
+        let dir = Path::new("/data/wp-cli-quiet.d");
+        assert_eq!(
+            quiet_deprecations_scan_dir_env(dir),
+            ":/data/wp-cli-quiet.d"
+        );
+    }
+
+    #[test]
+    fn ensure_quiet_deprecations_scan_dir_writes_a_suppressing_ini() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dirs = PlatformDirs {
+            config: tmp.path().join("c"),
+            data: tmp.path().join("d"),
+            state: tmp.path().join("s"),
+            cache: tmp.path().join("ca"),
+            runtime: tmp.path().join("r"),
+        };
+        let dir = ensure_quiet_deprecations_scan_dir(&dirs).unwrap();
+        let ini = std::fs::read_to_string(dir.join("quiet-deprecations.ini")).unwrap();
+        assert!(ini.contains("error_reporting"));
+        assert!(ini.contains("~E_DEPRECATED"));
+        assert!(ensure_quiet_deprecations_scan_dir(&dirs).is_ok());
+    }
 
     #[test]
     fn split_boot_fs_splits_absolute_space_containing_path() {

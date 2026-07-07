@@ -47,7 +47,9 @@ pub async fn sync_site_url(site: &Site, state: &DaemonState) {
     let url = target_url(site.name(), &tld, site.secure());
 
     for option in ["siteurl", "home"] {
-        if let Err(e) = run_option_update(&php_cli, &boot_fs, &served_root, option, &url).await {
+        if let Err(e) =
+            run_option_update(&php_cli, &boot_fs, &served_root, option, &url, &state.dirs).await
+        {
             tracing::warn!(
                 site = %site.name(),
                 option,
@@ -102,22 +104,27 @@ async fn run_option_update(
     served_root: &Path,
     option: &str,
     url: &str,
+    dirs: &yerd_platform::PlatformDirs,
 ) -> Result<(), String> {
     let Some((boot_dir, boot_name, args)) =
         option_update_invocation(boot_fs, served_root, option, url)
     else {
         return Err(format!("{}: not a valid file path", boot_fs.display()));
     };
-    let output = tokio::process::Command::new(php_cli)
-        .args(crate::tools::wp_cli::QUIET_DEPRECATIONS)
+    let mut cmd = tokio::process::Command::new(php_cli);
+    cmd.args(crate::tools::wp_cli::QUIET_DEPRECATIONS)
         .arg(&boot_name)
         .args(&args)
         .current_dir(&boot_dir)
         .env("NO_COLOR", "1")
-        .stdin(Stdio::null())
-        .output()
-        .await
-        .map_err(|e| e.to_string())?;
+        .stdin(Stdio::null());
+    if let Ok(dir) = crate::tools::wp_cli::ensure_quiet_deprecations_scan_dir(dirs) {
+        cmd.env(
+            "PHP_INI_SCAN_DIR",
+            crate::tools::wp_cli::quiet_deprecations_scan_dir_env(&dir),
+        );
+    }
+    let output = cmd.output().await.map_err(|e| e.to_string())?;
     if output.status.success() {
         Ok(())
     } else {

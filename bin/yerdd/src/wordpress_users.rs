@@ -59,7 +59,7 @@ pub async fn admin_users(site: &str, state: &DaemonState) -> Response {
         };
     }
 
-    match run_user_list(&php_cli, &boot_fs, &served_root).await {
+    match run_user_list(&php_cli, &boot_fs, &served_root, &state.dirs).await {
         Ok(users) => Response::WordpressAdminUsers { users },
         Err(e) => Response::Error {
             code: ErrorCode::Internal,
@@ -101,20 +101,25 @@ async fn run_user_list(
     php_cli: &Path,
     boot_fs: &Path,
     served_root: &Path,
+    dirs: &yerd_platform::PlatformDirs,
 ) -> Result<Vec<WordPressAdminUser>, String> {
     let Some((boot_dir, boot_name, args)) = user_list_invocation(boot_fs, served_root) else {
         return Err(format!("{}: not a valid file path", boot_fs.display()));
     };
-    let output = tokio::process::Command::new(php_cli)
-        .args(crate::tools::wp_cli::QUIET_DEPRECATIONS)
+    let mut cmd = tokio::process::Command::new(php_cli);
+    cmd.args(crate::tools::wp_cli::QUIET_DEPRECATIONS)
         .arg(&boot_name)
         .args(&args)
         .current_dir(&boot_dir)
         .env("NO_COLOR", "1")
-        .stdin(Stdio::null())
-        .output()
-        .await
-        .map_err(|e| e.to_string())?;
+        .stdin(Stdio::null());
+    if let Ok(dir) = crate::tools::wp_cli::ensure_quiet_deprecations_scan_dir(dirs) {
+        cmd.env(
+            "PHP_INI_SCAN_DIR",
+            crate::tools::wp_cli::quiet_deprecations_scan_dir_env(&dir),
+        );
+    }
+    let output = cmd.output().await.map_err(|e| e.to_string())?;
     if !output.status.success() {
         return Err(String::from_utf8_lossy(&output.stderr).trim().to_owned());
     }

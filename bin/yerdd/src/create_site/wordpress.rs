@@ -322,7 +322,8 @@ async fn run_wp_step(
         .map(|s| (*s).to_owned())
         .collect();
     super::run_streamed(
-        id, php_cli, &php_flags, &boot_name, &full_args, &boot_dir, None, None, state, cancel_rx,
+        id, php_cli, &php_flags, &boot_name, &full_args, &boot_dir, None, None, true, state,
+        cancel_rx,
     )
     .await
 }

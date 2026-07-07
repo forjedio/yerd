@@ -992,7 +992,7 @@ async function shareSitePublicly(s: Site): Promise<void> {
             <div class="mt-2">
               <Select
                 id="edit-wp-admin-user"
-                :model-value="editWpAutoLoginUser"
+                :model-value="wpAdminUsersStatus === 'ready' ? editWpAutoLoginUser : ''"
                 :options="wpAdminUserSelectOptions"
                 :disabled="wpAdminUsersStatus !== 'ready'"
                 class="w-full"

@@ -11,7 +11,7 @@ import SiteCard from "@/components/SiteCard.vue";
 import { resetResourceCache } from "@/composables/useResource";
 import type { SiteEntry } from "@/ipc/types";
 
-function wpSite(name: string): SiteEntry {
+function wpSite(name: string, overrides: Partial<SiteEntry> = {}): SiteEntry {
   return {
     name,
     document_root: `/srv/${name}`,
@@ -20,6 +20,7 @@ function wpSite(name: string): SiteEntry {
     kind: "linked",
     is_wordpress: true,
     wp_auto_login: true,
+    ...overrides,
   };
 }
 
@@ -118,6 +119,35 @@ describe("SitesView WordPress auto-login edit dialog", () => {
     const select = wrapper.find("#edit-wp-admin-user");
     const labels = select.findAll("option").map((o) => o.text());
     expect(labels).toEqual(["Earliest admin (default)", "beta-editor"]);
+  });
+
+  it("shows the loading placeholder as selected instead of a blank control, even when a prior admin was already configured", async () => {
+    const alpha = wpSite("alpha", { wp_auto_login_user: "editor" });
+    const pending = deferred<unknown>();
+    invokeMock.mockImplementation((cmd: string, args?: Record<string, unknown>) => {
+      if (cmd === "list_sites") return Promise.resolve({ type: "sites", sites: [alpha] });
+      if (cmd === "list_parked") return Promise.resolve({ type: "parked", paths: [] });
+      if (cmd === "list_groups")
+        return Promise.resolve({ type: "groups", order: [], members: {} });
+      if (cmd === "wordpress_admin_users" && args?.site === "alpha") return pending.promise;
+      return Promise.reject(new Error(`unexpected invoke ${cmd}`));
+    });
+
+    const wrapper = await mountSites();
+    await openEditFor(wrapper, alpha);
+
+    const select = wrapper.find<HTMLSelectElement>("#edit-wp-admin-user");
+    // The select's bound value must match the "Loading users…" placeholder's
+    // value (""), not the site's already-configured "editor" - a bound value
+    // with no matching <option> renders as a blank control, not the intended
+    // loading text.
+    expect(select.element.value).toBe("");
+    expect(select.element.selectedOptions[0]?.textContent).toBe("Loading users…");
+
+    pending.resolve(usersEnvelope(["editor"]));
+    await flushPromises();
+    const settled = wrapper.find<HTMLSelectElement>("#edit-wp-admin-user");
+    expect(settled.element.value).toBe("editor");
   });
 
   it("shows an error state without touching the picker options when the fetch fails", async () => {
