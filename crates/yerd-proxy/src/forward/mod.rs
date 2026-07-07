@@ -2,6 +2,7 @@
 
 pub mod fcgi;
 pub mod http;
+pub mod script_file;
 pub mod static_file;
 pub mod upgrade;
 

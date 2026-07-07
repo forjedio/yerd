@@ -1,24 +1,43 @@
 //! Build the CGI parameter list for one FastCGI request.
 //!
-//! Policy (MVP): Caddy-style "everything to index.php".
+//! Policy: a `try_files`-style front controller. The caller (`forward::
+//! script_file::resolve_script`) resolves the request path against the real
+//! filesystem first - an exact `.php` match (`/wp-login.php`), or a
+//! directory's own `index.php` (`/wp-admin/` -> `wp-admin/index.php`) - and
+//! passes the result in as `script_rel`. When it finds a real script:
+//!
+//! - `SCRIPT_FILENAME = document_root / <script_rel>`
+//! - `SCRIPT_NAME     = "/" + <script_rel>`
+//!
+//! Otherwise (Caddy-style "everything to index.php", the original MVP
+//! policy and still correct for single-front-controller frameworks like
+//! Laravel):
 //!
 //! - `SCRIPT_FILENAME = document_root / "index.php"`
 //! - `SCRIPT_NAME     = "/index.php"`
-//! - `PATH_INFO       = <original path>`
-//! - `REQUEST_URI     = <original path_and_query>`
+//!
+//! `PATH_INFO` is always `<original path>` either way - WordPress and
+//! Laravel both route on `REQUEST_URI`, not `PATH_INFO`, so leaving it as the
+//! full original path (rather than splitting "extra path after the script",
+//! full CGI/1.1 `PATH_INFO` semantics) keeps this a minimal, low-risk change
+//! on top of already-pinned behavior.
 //!
 //! Plus the standard CGI/1.1 vars and `HTTP_*`-translated headers.
 
 use std::net::SocketAddr;
 use std::path::Path;
 
-/// Build the CGI parameter pairs.
+/// Build the CGI parameter pairs. `script_rel`, if given, is a real,
+/// on-disk `.php` file's path relative to `document_root` (see the module
+/// doc) - `None` falls back to the root `index.php` policy.
 #[must_use]
+#[allow(clippy::too_many_arguments)]
 pub fn build_params(
     method: &str,
     path_and_query: &str,
     headers: &http::HeaderMap,
     document_root: &Path,
+    script_rel: Option<&Path>,
     https: bool,
     remote_addr: SocketAddr,
     server_addr: SocketAddr,
@@ -26,14 +45,20 @@ pub fn build_params(
     let mut out: Vec<(Vec<u8>, Vec<u8>)> = Vec::with_capacity(16 + headers.len());
 
     let (path, query) = split_path_query(path_and_query);
-    let script_filename = document_root.join("index.php");
+    let (script_filename, script_name) = match script_rel {
+        Some(rel) => (
+            document_root.join(rel),
+            format!("/{}", rel.to_string_lossy().replace('\\', "/")),
+        ),
+        None => (document_root.join("index.php"), "/index.php".to_owned()),
+    };
 
     push(&mut out, b"GATEWAY_INTERFACE", b"CGI/1.1");
     push(&mut out, b"SERVER_PROTOCOL", b"HTTP/1.1");
     push(&mut out, b"REQUEST_METHOD", method.as_bytes());
     push(&mut out, b"REQUEST_URI", path_and_query.as_bytes());
     push(&mut out, b"QUERY_STRING", query.as_bytes());
-    push(&mut out, b"SCRIPT_NAME", b"/index.php");
+    push(&mut out, b"SCRIPT_NAME", script_name.as_bytes());
     push(
         &mut out,
         b"SCRIPT_FILENAME",
@@ -65,7 +90,18 @@ pub fn build_params(
         b"SERVER_PORT",
         server_addr.port().to_string().as_bytes(),
     );
-    push(&mut out, b"SERVER_SOFTWARE", b"yerd");
+    // Deliberately contains "nginx", not just "yerd": frameworks (WordPress
+    // in particular - see `got_url_rewrite()`/`$is_nginx` in
+    // wp-admin/includes/misc.php and wp-includes/vars.php) parse this CGI
+    // var for known-good server names to decide whether extension-less
+    // "pretty" URLs are safe to offer, since a plain front-controller
+    // fallback isn't universal. yerd's front controller resolution (see
+    // `script_file::resolve_script`) is exactly nginx's classic
+    // `try_files $uri $uri/ /index.php` policy, so this is an accurate
+    // capability signal, not a spoof - and it's this CGI var PHP sees, not
+    // the client-facing `Server:` HTTP header (see `yerd_core::PROXY_SERVER_ID`),
+    // which still identifies yerd honestly to browsers/tools.
+    push(&mut out, b"SERVER_SOFTWARE", b"yerd (nginx-compatible)");
     if https {
         push(&mut out, b"HTTPS", b"on");
     }
@@ -155,6 +191,7 @@ mod tests {
             "/foo/bar?a=1&b=2",
             &make_headers("app.test"),
             &root,
+            None,
             false,
             "127.0.0.1:54321".parse().unwrap(),
             "127.0.0.1:80".parse().unwrap(),
@@ -184,6 +221,25 @@ mod tests {
     }
 
     #[test]
+    fn server_software_contains_nginx_for_framework_rewrite_detection() {
+        // WordPress (and other frameworks) gate "pretty"/extension-less
+        // permalink options on this CGI var containing a known-good server
+        // name - see the module doc for the full explanation.
+        let pairs = build_params(
+            "GET",
+            "/",
+            &make_headers("app.test"),
+            Path::new("/srv"),
+            None,
+            false,
+            "127.0.0.1:1".parse().unwrap(),
+            "127.0.0.1:80".parse().unwrap(),
+        );
+        let software = String::from_utf8_lossy(lookup(&pairs, b"SERVER_SOFTWARE").unwrap());
+        assert!(software.contains("nginx"), "got {software:?}");
+    }
+
+    #[test]
     fn web_root_subdir_drives_script_filename_and_document_root() {
         let mut site =
             yerd_core::Site::linked("app", "/srv/www/app", yerd_core::PhpVersion::new(8, 3))
@@ -195,6 +251,7 @@ mod tests {
             "/login",
             &make_headers("app.test"),
             &served,
+            None,
             false,
             "127.0.0.1:1".parse().unwrap(),
             "127.0.0.1:80".parse().unwrap(),
@@ -216,6 +273,7 @@ mod tests {
             "/",
             &make_headers("app.test"),
             Path::new("/srv/www/app"),
+            None,
             true,
             "1.2.3.4:1000".parse().unwrap(),
             "127.0.0.1:443".parse().unwrap(),
@@ -233,6 +291,7 @@ mod tests {
             "/",
             &headers,
             Path::new("/srv"),
+            None,
             false,
             "127.0.0.1:1".parse().unwrap(),
             "127.0.0.1:80".parse().unwrap(),
@@ -257,6 +316,7 @@ mod tests {
             "/",
             &headers,
             Path::new("/srv"),
+            None,
             false,
             "127.0.0.1:1".parse().unwrap(),
             "127.0.0.1:80".parse().unwrap(),
@@ -277,11 +337,59 @@ mod tests {
             "/just/path",
             &make_headers("a.test"),
             Path::new("/srv"),
+            None,
             false,
             "127.0.0.1:1".parse().unwrap(),
             "127.0.0.1:80".parse().unwrap(),
         );
         assert_eq!(lookup(&pairs, b"PATH_INFO"), Some(b"/just/path".as_slice()));
         assert_eq!(lookup(&pairs, b"QUERY_STRING"), Some(b"".as_slice()));
+    }
+
+    #[test]
+    fn resolved_script_drives_script_name_and_filename() {
+        let pairs = build_params(
+            "GET",
+            "/wp-admin/?page=1",
+            &make_headers("blog.test"),
+            Path::new("/srv/www/blog"),
+            Some(Path::new("wp-admin/index.php")),
+            false,
+            "127.0.0.1:1".parse().unwrap(),
+            "127.0.0.1:80".parse().unwrap(),
+        );
+        assert_eq!(
+            lookup(&pairs, b"SCRIPT_NAME"),
+            Some(b"/wp-admin/index.php".as_slice())
+        );
+        assert_eq!(
+            lookup(&pairs, b"SCRIPT_FILENAME"),
+            Some("/srv/www/blog/wp-admin/index.php".as_bytes())
+        );
+        // PATH_INFO stays the full original path either way - WordPress and
+        // Laravel both route on REQUEST_URI, not PATH_INFO (see module doc).
+        assert_eq!(lookup(&pairs, b"PATH_INFO"), Some(b"/wp-admin/".as_slice()));
+    }
+
+    #[test]
+    fn resolved_exact_script_match_drives_script_name_and_filename() {
+        let pairs = build_params(
+            "POST",
+            "/wp-login.php",
+            &make_headers("blog.test"),
+            Path::new("/srv/www/blog"),
+            Some(Path::new("wp-login.php")),
+            false,
+            "127.0.0.1:1".parse().unwrap(),
+            "127.0.0.1:80".parse().unwrap(),
+        );
+        assert_eq!(
+            lookup(&pairs, b"SCRIPT_NAME"),
+            Some(b"/wp-login.php".as_slice())
+        );
+        assert_eq!(
+            lookup(&pairs, b"SCRIPT_FILENAME"),
+            Some("/srv/www/blog/wp-login.php".as_bytes())
+        );
     }
 }

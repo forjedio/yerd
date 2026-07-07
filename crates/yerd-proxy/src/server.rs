@@ -21,7 +21,8 @@ use yerd_core::{Site, SiteKind, SiteRouter};
 use crate::backend::Backend;
 use crate::error::ProxyError;
 use crate::forward::{
-    bytes_body, empty_body, fcgi, http as http_fwd, owned_bytes_body, static_file, upgrade, BoxBody,
+    bytes_body, empty_body, fcgi, http as http_fwd, owned_bytes_body, script_file, static_file,
+    upgrade, BoxBody,
 };
 use crate::pure::redirect::build_redirect_uri;
 use crate::pure::unbound::{self, PickerSite};
@@ -365,7 +366,18 @@ async fn dispatch<R: BackendResolver>(
             if let Some(resp) = resolve_static_outcome(outcome) {
                 return Ok(resp);
             }
-            fcgi::forward(req, bk, served_root, server_addr, peer_addr, https).await
+            let script_rel =
+                script_file::resolve_script(req.uri().path(), &served_root, &allowed_root).await;
+            fcgi::forward(
+                req,
+                bk,
+                served_root,
+                script_rel,
+                server_addr,
+                peer_addr,
+                https,
+            )
+            .await
         }
     }
 }

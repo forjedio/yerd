@@ -502,6 +502,78 @@ async fn index_php_present_wins_over_index_html() {
     let _ = fake_task.await;
 }
 
+/// The exact WordPress `/wp-admin/` bug report: a real subdirectory script
+/// (`wp-admin/index.php`) must execute directly, not the site root's own
+/// `index.php` - a request for a specific admin/login/cron entry point must
+/// never silently render the front page instead.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn subdirectory_index_php_wins_over_root_index_php() {
+    let docroot = tempfile::tempdir().unwrap();
+    std::fs::write(docroot.path().join("index.php"), b"<?php /* front page */").unwrap();
+    std::fs::create_dir(docroot.path().join("wp-admin")).unwrap();
+    std::fs::write(
+        docroot.path().join("wp-admin/index.php"),
+        b"<?php /* wp-admin */",
+    )
+    .unwrap();
+
+    let fcgi_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let fcgi_addr = fcgi_listener.local_addr().unwrap();
+    let captured = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+    let captured_for_fake = captured.clone();
+    let stdout_payload = b"Status: 200 OK\r\nContent-Type: text/plain\r\n\r\nfrom fpm".to_vec();
+    let fake_task = tokio::spawn(run_fake_fcgi(
+        fcgi_listener,
+        stdout_payload,
+        captured_for_fake,
+    ));
+
+    let proxy_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let proxy_addr = proxy_listener.local_addr().unwrap();
+
+    let tld = Tld::new("test").unwrap();
+    let cfg = RouterConfig::with_tld(tld);
+    let mut router = SiteRouter::new(cfg);
+    let site = Site::linked("blog", docroot.path().to_path_buf(), PhpVersion::new(8, 3)).unwrap();
+    router.insert(site).unwrap();
+    let router = Arc::new(tokio::sync::RwLock::new(router));
+
+    let resolver = Arc::new(StaticResolver {
+        backend: Backend::PhpFpmTcp { addr: fcgi_addr },
+    });
+
+    let (tx_shutdown, rx_shutdown) = oneshot::channel::<()>();
+    let proxy_task = tokio::spawn(async move {
+        let _ = ProxyServer::serve::<_, StubCertStore, _>(
+            proxy_listener,
+            None,
+            router,
+            resolver,
+            async move {
+                let _ = rx_shutdown.await;
+            },
+        )
+        .await;
+    });
+
+    let body = client_get(proxy_addr, "blog.test", "/wp-admin/").await;
+    assert_eq!(body, b"from fpm");
+
+    let params = captured.lock().await.clone();
+    assert_eq!(
+        params.get("SCRIPT_NAME").map(String::as_str),
+        Some("/wp-admin/index.php")
+    );
+    assert_eq!(
+        params.get("SCRIPT_FILENAME").map(String::as_str),
+        Some(docroot.path().join("wp-admin/index.php").to_str().unwrap())
+    );
+
+    let _ = tx_shutdown.send(());
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(5), proxy_task).await;
+    let _ = fake_task.await;
+}
+
 /// A real directory with none of index.php/html/htm must still reach the
 /// front controller rather than dead-ending in a 404.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

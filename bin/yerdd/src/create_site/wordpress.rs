@@ -183,6 +183,47 @@ pub(super) async fn run(
         }
     }
 
+    // Best-effort: enable pretty permalinks so pages/posts (and yerd-proxy's
+    // try_files-style routing, see `script_file::resolve_script`) resolve
+    // human-readable URLs by default. A fresh `wp core install` otherwise
+    // defaults to "Plain" permalinks (`?p=123`), under which WordPress
+    // doesn't parse pretty paths as routes at all and silently falls back to
+    // the front page. Not fatal - a working WordPress install with the
+    // default permalink structure is still a successful create, so a
+    // failure here is only logged, never rolled back (unlike a genuine
+    // scaffolding failure above).
+    let permalink_args = permalink_structure_args();
+    state
+        .jobs
+        .push_log(id, "$ wp rewrite structure '/%postname%/'".to_owned())
+        .await;
+    match run_wp_step(
+        id,
+        &php_cli,
+        &boot_fs,
+        &permalink_args,
+        &project_dir,
+        state,
+        &mut cancel_rx,
+    )
+    .await
+    {
+        StreamedOutcome::Ok => {}
+        StreamedOutcome::Failed(msg) => {
+            state
+                .jobs
+                .push_log(
+                    id,
+                    format!("warning: couldn't set pretty permalinks: {msg}"),
+                )
+                .await;
+        }
+        StreamedOutcome::Cancelled => {
+            rollback(&project_dir, db_created, service, &db_name, state).await;
+            return Outcome::Cancelled;
+        }
+    }
+
     // ---- Registering ----
     state.jobs.set_phase(id, "Registering").await;
     if let Err(msg) =
@@ -430,6 +471,19 @@ fn install_args(name: &str, secure: bool, o: &WordPressOptions) -> Vec<String> {
     a
 }
 
+/// `wp rewrite structure` argument vector - enables pretty (postname-based)
+/// permalinks, since `wp core install`/`multisite-install` otherwise leave a
+/// fresh site on WordPress's "Plain" default (`?p=123`), under which pretty
+/// URLs like `/wp-admin/` still work (they're real files) but anything else
+/// silently falls back to the front page instead of routing or 404ing.
+fn permalink_structure_args() -> Vec<String> {
+    vec![
+        "rewrite".to_owned(),
+        "structure".to_owned(),
+        "/%postname%/".to_owned(),
+    ]
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::panic, clippy::indexing_slicing)]
 mod tests {
@@ -549,5 +603,13 @@ mod tests {
         let a = install_args("blog", true, &o);
         assert_eq!(a[1], "multisite-install");
         assert!(a.iter().any(|s| s == "--subdomains"));
+    }
+
+    #[test]
+    fn permalink_structure_args_sets_postname_structure() {
+        assert_eq!(
+            permalink_structure_args(),
+            vec!["rewrite", "structure", "/%postname%/"]
+        );
     }
 }

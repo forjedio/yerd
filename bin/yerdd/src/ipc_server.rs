@@ -482,6 +482,40 @@ async fn build_status_report(state: &DaemonState) -> yerd_ipc::StatusReport {
     let updates = crate::php_updates::cached_updates(state).await;
 
     let metrics = yerd_platform::ActiveSystemMetrics::new();
+
+    // `rss_bytes` shells out to `ps` on macOS (fork+exec+wait) - genuinely
+    // blocking I/O, unlike every other field built above. Gather every pid's
+    // RSS in one `spawn_blocking` call rather than synchronously per pid
+    // inline below, which would otherwise tie up a tokio worker thread once
+    // per installed PHP version plus once for the daemon itself, on every
+    // `Request::Status`/`Request::Diagnose` call (the GUI polls this every
+    // 6s) - under load this can starve the whole worker pool.
+    let daemon_pid = std::process::id();
+    let php_pids: Vec<Option<u32>> = installed
+        .iter()
+        .map(|v| {
+            snapshots
+                .iter()
+                .find(|s| s.version == *v)
+                .and_then(|s| s.pid)
+        })
+        .collect();
+    let rss_by_pid: std::collections::HashMap<u32, u64> = tokio::task::spawn_blocking(move || {
+        let mut out = std::collections::HashMap::new();
+        for pid in php_pids
+            .into_iter()
+            .flatten()
+            .chain(std::iter::once(daemon_pid))
+        {
+            if let Some(rss) = metrics.rss_bytes(pid) {
+                out.insert(pid, rss);
+            }
+        }
+        out
+    })
+    .await
+    .unwrap_or_default();
+
     let php: Vec<yerd_ipc::PhpPoolStatus> = installed
         .iter()
         .map(|v| {
@@ -500,7 +534,7 @@ async fn build_status_report(state: &DaemonState) -> yerd_ipc::StatusReport {
                 state: run_state,
                 pid,
                 listen,
-                rss_bytes: pid.and_then(|p| metrics.rss_bytes(p)),
+                rss_bytes: pid.and_then(|p| rss_by_pid.get(&p).copied()),
                 update_available: updates
                     .iter()
                     .find(|u| u.version == *v)
@@ -557,7 +591,7 @@ async fn build_status_report(state: &DaemonState) -> yerd_ipc::StatusReport {
     yerd_ipc::StatusReport {
         daemon_pid: std::process::id(),
         uptime_secs: state.started_at.elapsed().as_secs(),
-        daemon_rss_bytes: metrics.rss_bytes(std::process::id()),
+        daemon_rss_bytes: rss_by_pid.get(&daemon_pid).copied(),
         tld,
         http: state.http,
         https: state.https,

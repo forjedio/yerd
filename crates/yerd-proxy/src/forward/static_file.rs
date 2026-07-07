@@ -202,7 +202,9 @@ pub async fn try_serve_index(
 /// Whether canonicalising a path candidate stayed within `real_root` or
 /// escaped it. Returned by [`canonical_within`] so callers can tell "escaped"
 /// apart from "doesn't exist" (`None`), which they need to treat differently.
-enum Containment {
+/// `pub(crate)` - also used by `forward::script_file` for the same
+/// symlink-containment check on a resolved PHP script.
+pub(crate) enum Containment {
     /// Canonicalised and still within `real_root`.
     Ok(PathBuf),
     /// Canonicalised fine, but resolved outside `real_root`.
@@ -217,8 +219,9 @@ enum Containment {
 /// resolves it once. `None` means `candidate` doesn't exist or otherwise
 /// failed to canonicalise (missing file, broken symlink, permission error) -
 /// distinct from [`Containment::Escaped`], which means it resolved to a real
-/// path that just isn't under `real_root`.
-async fn canonical_within(candidate: &Path, real_root: &Path) -> Option<Containment> {
+/// path that just isn't under `real_root`. `pub(crate)` for the same reason
+/// as [`Containment`].
+pub(crate) async fn canonical_within(candidate: &Path, real_root: &Path) -> Option<Containment> {
     let real = tokio::fs::canonicalize(candidate).await.ok()?;
     if real.starts_with(real_root) {
         Some(Containment::Ok(real))

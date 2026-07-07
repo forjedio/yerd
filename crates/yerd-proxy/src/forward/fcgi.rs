@@ -24,10 +24,17 @@ use crate::pure::fcgi_codec::{
 const REQUEST_ID: u16 = 1;
 
 /// Forward `req` to a FastCGI `backend`. Returns the response, or a `ProxyError`.
+///
+/// `script_rel`, if given, is a real, on-disk `.php` file (relative to
+/// `served_root`) that [`crate::forward::script_file::resolve_script`]
+/// resolved for this request - see `pure::cgi_params`'s module doc for the
+/// front-controller policy this drives.
+#[allow(clippy::too_many_arguments)]
 pub async fn forward(
     req: Request<Incoming>,
     backend: Backend,
     served_root: PathBuf,
+    script_rel: Option<PathBuf>,
     server_addr: SocketAddr,
     peer_addr: SocketAddr,
     https: bool,
@@ -54,6 +61,7 @@ pub async fn forward(
         path_and_query_of(&parts.uri),
         &parts.headers,
         &served_root,
+        script_rel.as_deref(),
         https,
         peer_addr,
         server_addr,
