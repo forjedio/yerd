@@ -158,6 +158,10 @@ struct OverrideSer<'a> {
     secure: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     web_root: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    wp_auto_login: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    wp_auto_login_user: Option<&'a str>,
 }
 
 pub(crate) fn to_toml(c: &Config) -> Result<String, ConfigError> {
@@ -188,6 +192,8 @@ pub(crate) fn to_toml(c: &Config) -> Result<String, ConfigError> {
                 php: ov.php.as_ref(),
                 secure: ov.secure,
                 web_root: ov.web_root.as_deref(),
+                wp_auto_login: ov.wp_auto_login,
+                wp_auto_login_user: ov.wp_auto_login_user.as_deref(),
             })
             .collect(),
         services: c
@@ -257,8 +263,8 @@ mod tests {
     fn default_to_toml_starts_with_version_line() {
         let s = to_toml(&Config::default()).unwrap();
         assert!(
-            s.starts_with("version = 9\n"),
-            "expected `version = 9` first line; got: {s}"
+            s.starts_with("version = 10\n"),
+            "expected `version = 10` first line; got: {s}"
         );
     }
 

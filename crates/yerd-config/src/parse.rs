@@ -234,6 +234,11 @@ struct SiteWire {
     php: String,
     secure: bool,
     kind: yerd_core::SiteKind,
+    // Optional; absent in configs written before this field existed.
+    #[serde(default)]
+    wp_auto_login: bool,
+    #[serde(default)]
+    wp_auto_login_user: Option<String>,
 }
 
 /// One `[[overrides]]` table: a parked site's document-root `path` plus the
@@ -250,6 +255,10 @@ struct OverrideWire {
     secure: Option<bool>,
     #[serde(default)]
     web_root: Option<String>,
+    #[serde(default)]
+    wp_auto_login: Option<bool>,
+    #[serde(default)]
+    wp_auto_login_user: Option<String>,
 }
 
 fn default_tld_str() -> String {
@@ -285,6 +294,7 @@ pub(crate) fn parse_toml(s: &str) -> Result<Config, ConfigError> {
 impl TryFrom<Wire> for Config {
     type Error = ConfigError;
 
+    #[allow(clippy::too_many_lines)]
     fn try_from(w: Wire) -> Result<Self, ConfigError> {
         if w.version != crate::CURRENT_VERSION {
             return Err(ConfigError::UnsupportedVersion {
@@ -318,6 +328,8 @@ impl TryFrom<Wire> for Config {
                     php,
                     secure: o.secure,
                     web_root: o.web_root,
+                    wp_auto_login: o.wp_auto_login,
+                    wp_auto_login_user: o.wp_auto_login_user,
                 },
             );
         }
@@ -350,6 +362,8 @@ impl TryFrom<Wire> for Config {
             };
             s.set_secure(sw.secure);
             s.set_web_subpath(sw.web_subpath);
+            s.set_wp_auto_login(sw.wp_auto_login);
+            s.set_wp_auto_login_user(sw.wp_auto_login_user);
             linked.push(s);
         }
         let mail = MailSection {
@@ -691,7 +705,7 @@ mod tests {
         match Config::from_toml("version = 99\n") {
             Err(ConfigError::UnsupportedVersion {
                 found: 99,
-                current: 9,
+                current: 10,
             }) => {}
             other => panic!("expected UnsupportedVersion, got {other:?}"),
         }
@@ -780,7 +794,7 @@ mod tests {
 
     #[test]
     fn groups_section_parses_and_round_trips() {
-        let s = "version = 9\n[groups]\norder = [\"Blog\", \"Shop\"]\n\
+        let s = "version = 10\n[groups]\norder = [\"Blog\", \"Shop\"]\n\
                  [groups.members]\napi = \"Blog\"\n";
         let c = Config::from_toml(s).unwrap();
         assert_eq!(c.groups.order, vec!["Blog".to_string(), "Shop".to_string()]);

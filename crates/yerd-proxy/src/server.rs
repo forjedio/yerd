@@ -21,12 +21,19 @@ use yerd_core::{Site, SiteKind, SiteRouter};
 use crate::backend::Backend;
 use crate::error::ProxyError;
 use crate::forward::{
-    bytes_body, empty_body, fcgi, http as http_fwd, owned_bytes_body, static_file, upgrade, BoxBody,
+    bytes_body, empty_body, fcgi, http as http_fwd, owned_bytes_body, script_file, static_file,
+    upgrade, BoxBody,
 };
+use crate::pure::cgi_params;
+use crate::pure::query;
 use crate::pure::redirect::build_redirect_uri;
 use crate::pure::unbound::{self, PickerSite};
 use crate::tls::build_server_config;
-use crate::traits::{BackendResolver, CertStore};
+use crate::traits::{BackendResolver, CertStore, LoginTokenConsumer};
+
+/// Query param carrying the one-click `WordPress` login token (see
+/// `dispatch`'s interception branch below).
+const LOGIN_TOKEN_PARAM: &str = "yerd_login_token";
 
 /// Router shared between the proxy's request path (read) and the daemon's
 /// mutation path (write-replace). Reads are brief and uncontended - each
@@ -69,17 +76,21 @@ impl ProxyServer {
     /// Spawns one task per accepted connection; cancels them on shutdown
     /// via an internal `Notify`. In-flight requests run to their (hyper-
     /// default) timeouts.
-    pub async fn serve<R, C, S>(
+    #[allow(clippy::too_many_arguments)]
+    pub async fn serve<R, C, S, L>(
         http_listener: TcpListener,
         https: Option<HttpsBinding<C>>,
         router: SharedRouter,
         backend_resolver: Arc<R>,
+        login_tokens: Arc<L>,
+        login_prepend_script: Option<std::path::PathBuf>,
         shutdown: S,
     ) -> Result<(), ProxyError>
     where
         R: BackendResolver,
         C: CertStore,
         S: Future<Output = ()> + Send + 'static,
+        L: LoginTokenConsumer,
     {
         crate::tls::init_crypto_once();
 
@@ -99,6 +110,8 @@ impl ProxyServer {
 
         let http_router = router.clone();
         let http_resolver = backend_resolver.clone();
+        let http_login_tokens = login_tokens.clone();
+        let http_login_prepend = login_prepend_script.clone();
         let http_notify = notify.clone();
         let http_accept = tokio::spawn(async move {
             let notified = http_notify.notified();
@@ -112,8 +125,10 @@ impl ProxyServer {
                             Ok((stream, peer)) => {
                                 let router = http_router.clone();
                                 let resolver = http_resolver.clone();
+                                let login_tokens = http_login_tokens.clone();
+                                let login_prepend = http_login_prepend.clone();
                                 tokio::spawn(serve_http_connection(
-                                    stream, peer, router, resolver, redirect_port.clone(),
+                                    stream, peer, router, resolver, login_tokens, login_prepend, redirect_port.clone(),
                                 ));
                             }
                             Err(e) => {
@@ -129,43 +144,48 @@ impl ProxyServer {
             }
         });
 
-        let tls_accept =
-            if let (Some(listener), Some(acceptor)) = (https_listener_opt, tls_acceptor) {
-                let router = router.clone();
-                let resolver = backend_resolver.clone();
-                let notify_https = notify.clone();
-                Some(tokio::spawn(async move {
-                    let notified = notify_https.notified();
-                    tokio::pin!(notified);
-                    loop {
-                        tokio::select! {
-                            biased;
-                            () = &mut notified => break,
-                            accepted = listener.accept() => {
-                                match accepted {
-                                    Ok((stream, peer)) => {
-                                        let router = router.clone();
-                                        let resolver = resolver.clone();
-                                        let acceptor = acceptor.clone();
-                                        tokio::spawn(serve_https_connection(
-                                            stream, peer, router, resolver, acceptor,
-                                        ));
-                                    }
-                                    Err(e) => {
-                                        tracing::debug!(
-                                            target: "yerd_proxy::accept",
-                                            error = %e,
-                                            "HTTPS accept failed",
-                                        );
-                                    }
+        let tls_accept = if let (Some(listener), Some(acceptor)) =
+            (https_listener_opt, tls_acceptor)
+        {
+            let router = router.clone();
+            let resolver = backend_resolver.clone();
+            let login_tokens = login_tokens.clone();
+            let login_prepend_script = login_prepend_script.clone();
+            let notify_https = notify.clone();
+            Some(tokio::spawn(async move {
+                let notified = notify_https.notified();
+                tokio::pin!(notified);
+                loop {
+                    tokio::select! {
+                        biased;
+                        () = &mut notified => break,
+                        accepted = listener.accept() => {
+                            match accepted {
+                                Ok((stream, peer)) => {
+                                    let router = router.clone();
+                                    let resolver = resolver.clone();
+                                    let login_tokens = login_tokens.clone();
+                                    let login_prepend = login_prepend_script.clone();
+                                    let acceptor = acceptor.clone();
+                                    tokio::spawn(serve_https_connection(
+                                        stream, peer, router, resolver, login_tokens, login_prepend, acceptor,
+                                    ));
+                                }
+                                Err(e) => {
+                                    tracing::debug!(
+                                        target: "yerd_proxy::accept",
+                                        error = %e,
+                                        "HTTPS accept failed",
+                                    );
                                 }
                             }
                         }
                     }
-                }))
-            } else {
-                None
-            };
+                }
+            }))
+        } else {
+            None
+        };
 
         let _ = http_accept.await;
         if let Some(h) = tls_accept {
@@ -176,11 +196,14 @@ impl ProxyServer {
     }
 }
 
-async fn serve_http_connection<R: BackendResolver>(
+#[allow(clippy::too_many_arguments)]
+async fn serve_http_connection<R: BackendResolver, L: LoginTokenConsumer>(
     stream: tokio::net::TcpStream,
     peer: SocketAddr,
     router: SharedRouter,
     resolver: Arc<R>,
+    login_tokens: Arc<L>,
+    login_prepend_script: Option<std::path::PathBuf>,
     redirect_port: Option<Arc<AtomicU16>>,
 ) {
     let server_addr = stream
@@ -195,6 +218,8 @@ async fn serve_http_connection<R: BackendResolver>(
             Listener::Http,
             router.clone(),
             resolver.clone(),
+            login_tokens.clone(),
+            login_prepend_script.clone(),
             redirect_port.clone(),
         )
     });
@@ -204,11 +229,14 @@ async fn serve_http_connection<R: BackendResolver>(
     let _ = conn.await;
 }
 
-async fn serve_https_connection<R: BackendResolver>(
+#[allow(clippy::too_many_arguments)]
+async fn serve_https_connection<R: BackendResolver, L: LoginTokenConsumer>(
     stream: tokio::net::TcpStream,
     peer: SocketAddr,
     router: SharedRouter,
     resolver: Arc<R>,
+    login_tokens: Arc<L>,
+    login_prepend_script: Option<std::path::PathBuf>,
     acceptor: TlsAcceptor,
 ) {
     let server_addr = stream
@@ -234,6 +262,8 @@ async fn serve_https_connection<R: BackendResolver>(
             Listener::Https,
             router.clone(),
             resolver.clone(),
+            login_tokens.clone(),
+            login_prepend_script.clone(),
             None,
         )
     });
@@ -245,13 +275,16 @@ async fn serve_https_connection<R: BackendResolver>(
 
 /// Service entry point. Infallible - internal errors translate to 5xx
 /// responses so hyper's connection loop keeps going.
-async fn handle_request<R: BackendResolver>(
+#[allow(clippy::too_many_arguments)]
+async fn handle_request<R: BackendResolver, L: LoginTokenConsumer>(
     req: Request<Incoming>,
     peer_addr: SocketAddr,
     server_addr: SocketAddr,
     listener: Listener,
     router: SharedRouter,
     resolver: Arc<R>,
+    login_tokens: Arc<L>,
+    login_prepend_script: Option<std::path::PathBuf>,
     redirect_port: Option<Arc<AtomicU16>>,
 ) -> Result<Response<BoxBody>, std::convert::Infallible> {
     match dispatch(
@@ -261,6 +294,8 @@ async fn handle_request<R: BackendResolver>(
         listener,
         router,
         resolver,
+        login_tokens,
+        login_prepend_script,
         redirect_port,
     )
     .await
@@ -278,13 +313,15 @@ async fn handle_request<R: BackendResolver>(
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn dispatch<R: BackendResolver>(
+async fn dispatch<R: BackendResolver, L: LoginTokenConsumer>(
     req: Request<Incoming>,
     peer_addr: SocketAddr,
     server_addr: SocketAddr,
     listener: Listener,
     router: SharedRouter,
     resolver: Arc<R>,
+    login_tokens: Arc<L>,
+    login_prepend_script: Option<std::path::PathBuf>,
     redirect_port: Option<Arc<AtomicU16>>,
 ) -> Result<Response<BoxBody>, ProxyError> {
     let redirect_port = redirect_port.map(|p| p.load(Ordering::Relaxed));
@@ -349,25 +386,131 @@ async fn dispatch<R: BackendResolver>(
     match backend {
         Backend::FrankenPhp { addr } => http_fwd::forward(req, addr).await,
         bk @ (Backend::PhpFpm { .. } | Backend::PhpFpmTcp { .. }) => {
-            let outcome =
-                static_file::try_serve(req.method(), req.uri().path(), &served_root, &allowed_root)
-                    .await;
-            if let Some(resp) = resolve_static_outcome(outcome) {
-                return Ok(resp);
-            }
-            let outcome = static_file::try_serve_index(
-                req.method(),
-                req.uri().path(),
+            serve_php_fpm(
+                req,
+                bk,
+                resolver.as_ref(),
+                &site,
+                login_tokens.as_ref(),
+                login_prepend_script.as_deref(),
                 &served_root,
                 &allowed_root,
+                server_addr,
+                peer_addr,
+                https,
             )
-            .await;
-            if let Some(resp) = resolve_static_outcome(outcome) {
-                return Ok(resp);
-            }
-            fcgi::forward(req, bk, served_root, server_addr, peer_addr, https).await
+            .await
         }
     }
+}
+
+/// The `Backend::PhpFpm`/`PhpFpmTcp` half of [`dispatch`]: static files,
+/// then a real script (gated by
+/// [`BackendResolver::allows_direct_script_execution`]), then the site
+/// root's `index.php`.
+///
+/// The one-click `WordPress` login token is consumed here via
+/// [`consume_login_token_if_present`] - only ever on `/wp-admin`, only when a
+/// token is both present and valid for *this* site. This runs strictly after
+/// [`dispatch`]'s HTTP->HTTPS redirect check, so a secure site's token is
+/// never burned by the 301 itself. On success the token is stripped from the
+/// forwarded URI (never reaching PHP or logging) and `auto_prepend_file` plus
+/// the resolved target user are added for this one request only.
+#[allow(clippy::too_many_arguments)]
+async fn serve_php_fpm<R: BackendResolver, L: LoginTokenConsumer>(
+    mut req: Request<Incoming>,
+    backend: Backend,
+    resolver: &R,
+    site: &yerd_core::Site,
+    login_tokens: &L,
+    login_prepend_script: Option<&std::path::Path>,
+    served_root: &std::path::Path,
+    allowed_root: &std::path::Path,
+    server_addr: SocketAddr,
+    peer_addr: SocketAddr,
+    https: bool,
+) -> Result<Response<BoxBody>, ProxyError> {
+    let login_target_user = consume_login_token_if_present(&mut req, site.name(), login_tokens);
+    let auto_login = match (&login_target_user, login_prepend_script) {
+        (Some(target_user), Some(prepend_script)) => Some(cgi_params::AutoLoginParams {
+            prepend_script,
+            target_user: target_user.as_str(),
+        }),
+        _ => None,
+    };
+
+    let outcome =
+        static_file::try_serve(req.method(), req.uri().path(), served_root, allowed_root).await;
+    if let Some(resp) = resolve_static_outcome(outcome) {
+        return Ok(resp);
+    }
+    let outcome =
+        static_file::try_serve_index(req.method(), req.uri().path(), served_root, allowed_root)
+            .await;
+    if let Some(resp) = resolve_static_outcome(outcome) {
+        return Ok(resp);
+    }
+    let script_rel =
+        resolve_script_if_allowed(resolver, site, req.uri().path(), served_root, allowed_root)
+            .await;
+    fcgi::forward(
+        req,
+        backend,
+        served_root.to_path_buf(),
+        script_rel,
+        server_addr,
+        peer_addr,
+        https,
+        auto_login,
+    )
+    .await
+}
+
+fn path_and_query_or_root(uri: &http::Uri) -> &str {
+    uri.path_and_query()
+        .map_or("/", http::uri::PathAndQuery::as_str)
+}
+
+/// [`script_file::resolve_script`], gated by
+/// [`BackendResolver::allows_direct_script_execution`] - `None` (fall back to
+/// the site root's `index.php`) for any site the resolver hasn't opted in,
+/// without touching the filesystem to find out.
+async fn resolve_script_if_allowed<R: BackendResolver>(
+    resolver: &R,
+    site: &yerd_core::Site,
+    uri_path: &str,
+    served_root: &std::path::Path,
+    allowed_root: &std::path::Path,
+) -> Option<std::path::PathBuf> {
+    if !resolver.allows_direct_script_execution(site).await {
+        return None;
+    }
+    script_file::resolve_script(uri_path, served_root, allowed_root).await
+}
+
+/// One-click `WordPress` login: only ever considered on `/wp-admin`, only
+/// ever acted on when a token is both present and valid for `site_name`.
+/// Consuming happens here - the caller must only call this strictly after the
+/// HTTP->HTTPS redirect check, so a secure site's token is never burned by
+/// the 301 itself. On success, strips the token from `req`'s URI (so it never
+/// reaches PHP or request logging) and returns `Some(target_user)` (`""` = no
+/// preference); the caller decides what "success" means for its own request
+/// (adding `auto_prepend_file`/`YERD_LOGIN_USER`).
+fn consume_login_token_if_present<B, L: LoginTokenConsumer>(
+    req: &mut Request<B>,
+    site_name: &str,
+    login_tokens: &L,
+) -> Option<String> {
+    if !req.uri().path().starts_with("/wp-admin") {
+        return None;
+    }
+    let token = query::get_param(req.uri().query(), LOGIN_TOKEN_PARAM).map(str::to_owned)?;
+    let target_user = login_tokens.consume(site_name, &token)?;
+    let stripped = query::strip_param(path_and_query_or_root(req.uri()), LOGIN_TOKEN_PARAM);
+    if let Ok(new_uri) = stripped.parse::<http::Uri>() {
+        *req.uri_mut() = new_uri;
+    }
+    Some(target_user)
 }
 
 /// Turn a [`static_file::StaticOutcome`] into a response to return
@@ -1138,6 +1281,118 @@ mod synthetic_response_tests {
     fn switch_response_rejects_invalid_location() {
         let err = switch_response("app", "/bad\nlocation").unwrap_err();
         assert!(matches!(err, ProxyError::BackendProtocol { .. }));
+    }
+}
+
+#[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing
+)]
+mod login_token_tests {
+    use super::*;
+
+    struct FakeConsumer {
+        valid: bool,
+        target_user: &'static str,
+    }
+    impl LoginTokenConsumer for FakeConsumer {
+        fn consume(&self, _site: &str, _token: &str) -> Option<String> {
+            self.valid.then(|| self.target_user.to_owned())
+        }
+    }
+
+    /// A consumer with real single-use semantics: valid exactly once.
+    struct OnceConsumer(std::sync::atomic::AtomicBool);
+    impl LoginTokenConsumer for OnceConsumer {
+        fn consume(&self, _site: &str, _token: &str) -> Option<String> {
+            self.0
+                .swap(false, std::sync::atomic::Ordering::SeqCst)
+                .then(String::new)
+        }
+    }
+
+    fn get_req(uri: &str) -> Request<()> {
+        Request::builder().uri(uri).body(()).unwrap()
+    }
+
+    fn path_and_query(req: &Request<()>) -> &str {
+        req.uri()
+            .path_and_query()
+            .map_or("/", http::uri::PathAndQuery::as_str)
+    }
+
+    #[test]
+    fn valid_token_strips_query_and_returns_target_user() {
+        let mut req = get_req("/wp-admin/?a=1&yerd_login_token=abc&b=2");
+        let consumer = FakeConsumer {
+            valid: true,
+            target_user: "",
+        };
+        assert!(consume_login_token_if_present(&mut req, "blog", &consumer).is_some());
+        assert_eq!(path_and_query(&req), "/wp-admin/?a=1&b=2");
+    }
+
+    #[test]
+    fn valid_token_with_configured_user_returns_that_username() {
+        let mut req = get_req("/wp-admin/?yerd_login_token=abc");
+        let consumer = FakeConsumer {
+            valid: true,
+            target_user: "editor",
+        };
+        assert_eq!(
+            consume_login_token_if_present(&mut req, "blog", &consumer).as_deref(),
+            Some("editor")
+        );
+    }
+
+    #[test]
+    fn path_outside_wp_admin_is_never_considered() {
+        let mut req = get_req("/?yerd_login_token=abc");
+        let consumer = FakeConsumer {
+            valid: true,
+            target_user: "",
+        };
+        assert!(consume_login_token_if_present(&mut req, "blog", &consumer).is_none());
+        assert_eq!(path_and_query(&req), "/?yerd_login_token=abc");
+    }
+
+    #[test]
+    fn missing_token_is_declined() {
+        let mut req = get_req("/wp-admin/");
+        let consumer = FakeConsumer {
+            valid: true,
+            target_user: "",
+        };
+        assert!(consume_login_token_if_present(&mut req, "blog", &consumer).is_none());
+    }
+
+    #[test]
+    fn invalid_token_leaves_query_untouched() {
+        let mut req = get_req("/wp-admin/?yerd_login_token=abc");
+        let consumer = FakeConsumer {
+            valid: false,
+            target_user: "",
+        };
+        assert!(consume_login_token_if_present(&mut req, "blog", &consumer).is_none());
+        assert_eq!(path_and_query(&req), "/wp-admin/?yerd_login_token=abc");
+    }
+
+    /// The same token presented twice must only work once.
+    #[test]
+    fn replayed_token_is_rejected_on_second_presentation() {
+        let consumer = OnceConsumer(std::sync::atomic::AtomicBool::new(true));
+        let mut req1 = get_req("/wp-admin/?yerd_login_token=abc");
+        assert!(consume_login_token_if_present(&mut req1, "blog", &consumer).is_some());
+        let mut req2 = get_req("/wp-admin/?yerd_login_token=abc");
+        assert!(consume_login_token_if_present(&mut req2, "blog", &consumer).is_none());
+        assert_eq!(
+            path_and_query(&req2),
+            "/wp-admin/?yerd_login_token=abc",
+            "a rejected replay must leave the query untouched, not strip it"
+        );
     }
 }
 

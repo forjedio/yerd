@@ -37,6 +37,11 @@ pub mod state;
 pub mod tools;
 pub mod tracing_init;
 pub mod tunnel;
+pub mod wordpress_detect;
+pub mod wordpress_login;
+pub mod wordpress_url_sync;
+pub mod wordpress_users;
+pub mod wordpress_versions;
 
 #[cfg(test)]
 pub mod test_support;
@@ -120,6 +125,7 @@ async fn run_until_shutdown(
         let router = daemon.state.router.clone();
         let resolver = Arc::new(DaemonBackendResolver {
             php_manager: daemon.php_manager.clone(),
+            wordpress_sites: daemon.state.wordpress_sites.clone(),
         });
         let https = yerd_proxy::HttpsBinding {
             listener: tls_listener,
@@ -127,11 +133,15 @@ async fn run_until_shutdown(
             cert_store: daemon.cert_store.clone(),
         };
         let mut rx = shutdown_rx.clone();
+        let login_tokens = daemon.state.wordpress_login_tokens.clone();
+        let login_prepend_script = daemon.state.wordpress_login_prepend_script.clone();
         Some(tokio::spawn(yerd_proxy::ProxyServer::serve(
             http_listener,
             Some(https),
             router,
             resolver,
+            login_tokens,
+            login_prepend_script,
             async move {
                 let _ = rx.changed().await;
             },
@@ -273,6 +283,18 @@ async fn run_until_shutdown(
 /// what's actually reachable without a restart. Returns `None` (spawning
 /// nothing) when the proxy isn't running or the HTTPS listener bound its
 /// well-known port directly, since neither case has anything to detect.
+///
+/// Ticks every [`REDIRECT_PROBE_INTERVAL`] - nothing triggers an immediate
+/// re-check when `yerd elevate`/`unelevate ports` runs, so this poll is the
+/// only way the daemon notices, but that's a rare, deliberate, manual action,
+/// not a hot path: a slower tick just means a slightly longer window where a
+/// freshly-elevated (or torn-down) redirect isn't yet reflected in the
+/// HTTP→HTTPS `Location` header, which is a one-time, low-stakes staleness
+/// worth trading for far fewer self-inflicted `loopback_port_reachable`
+/// probes - each one is a bare TCP connect-and-close against the proxy's own
+/// TLS listener, logged as a (harmless) "TLS handshake failed" at `-v`.
+const REDIRECT_PROBE_INTERVAL: Duration = Duration::from_secs(60);
+
 fn spawn_redirect_probe(
     proxy_running: bool,
     state: &Arc<crate::state::DaemonState>,
@@ -283,7 +305,7 @@ fn spawn_redirect_probe(
     }
     let state = state.clone();
     Some(tokio::spawn(async move {
-        let mut tick = tokio::time::interval(Duration::from_secs(5));
+        let mut tick = tokio::time::interval(REDIRECT_PROBE_INTERVAL);
         loop {
             tokio::select! {
                 _ = tick.tick() => {

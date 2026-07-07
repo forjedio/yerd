@@ -42,6 +42,7 @@ serde          = { workspace = true }
 serde_json     = { workspace = true }
 sha2           = { workspace = true }
 hex            = { workspace = true }
+rand           = { workspace = true }
 async-trait    = { workspace = true }
 clap           = { workspace = true }
 tokio          = { workspace = true, features = ["net", "rt-multi-thread", "macros", "signal", "time", "io-util", "sync", "process"] }
@@ -75,9 +76,9 @@ nix            = { workspace = true, features = ["user"] }
 
 [dev-dependencies]
 tempfile       = { workspace = true }
-serde_json     = { workspace = true }
 minisign       = { workspace = true }
 tokio          = { workspace = true, features = ["macros", "rt-multi-thread", "net", "io-util", "sync", "time"] }
+yerd-depcheck  = { path = "../../crates/yerd-depcheck" }
 
 [lints]
 workspace = true

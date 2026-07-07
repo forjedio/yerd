@@ -163,4 +163,26 @@ pub struct DaemonState {
     /// Site names held by an in-flight `CreateSite` job, so two concurrent
     /// creates can't both scaffold (then fight over registering) the same name.
     pub reserved_names: Mutex<HashSet<String>>,
+    /// WordPress core-version availability cache (the WordPress wizard's
+    /// version dropdown): the last successful `meta/wordpress-versions.json`
+    /// fetch, plus when it happened so a request can decide whether to
+    /// re-fetch. `None` until the first successful fetch; served (no
+    /// network) when still fresh, or as a stale fallback when a re-fetch
+    /// fails. See [`crate::wordpress_versions`].
+    pub wordpress_versions: RwLock<Option<(Instant, Vec<yerd_ipc::WordPressVersionInfo>)>>,
+    /// One-click `WordPress` admin login token store, shared with `yerd-proxy`
+    /// via the [`yerd_proxy::LoginTokenConsumer`] trait. See
+    /// [`crate::wordpress_login`].
+    pub wordpress_login_tokens: Arc<crate::wordpress_login::LoginTokenRegistry>,
+    /// Path the `WordPress` auto-login prepend script was written to at
+    /// startup (see [`crate::wordpress_login::write_prepend_script`]), or
+    /// `None` if writing it failed - one-click login is then unavailable this
+    /// boot, but the ordinary, non-authenticated `/wp-admin/` link still
+    /// works.
+    pub wordpress_login_prepend_script: Option<PathBuf>,
+    /// In-memory cache of which sites are `WordPress` (site name → bool),
+    /// refreshed on every router rebuild (`startup::build_routing`, run on a
+    /// mutation or a filesystem-watcher tick) rather than detected fresh on
+    /// every `ListSites` poll - see [`crate::wordpress_detect`].
+    pub wordpress_sites: Arc<RwLock<HashMap<String, bool>>>,
 }

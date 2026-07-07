@@ -65,7 +65,7 @@ mod tests {
 
     fn site_names(resp: &Response) -> Vec<String> {
         match resp {
-            Response::Sites { sites } => sites.iter().map(|s| s.name().to_owned()).collect(),
+            Response::Sites { sites } => sites.iter().map(|s| s.site.name().to_owned()).collect(),
             other => panic!("expected Sites, got {other:?}"),
         }
     }
@@ -74,8 +74,9 @@ mod tests {
         match send(sock, &Command::Sites).await {
             Response::Sites { sites } => sites
                 .iter()
-                .find(|s| s.name() == "blog")
+                .find(|s| s.site.name() == "blog")
                 .expect("blog present")
+                .site
                 .secure(),
             other => panic!("expected Sites, got {other:?}"),
         }
@@ -165,9 +166,9 @@ mod tests {
         assert!(site_names(&send(&sock, &Command::Sites).await).contains(&"app".to_owned()));
         match send(&sock, &Command::Sites).await {
             Response::Sites { sites } => {
-                let app = sites.iter().find(|s| s.name() == "app").unwrap();
+                let app = sites.iter().find(|s| s.site.name() == "app").unwrap();
                 assert_eq!(
-                    app.web_subpath(),
+                    app.site.web_subpath(),
                     std::path::Path::new("public"),
                     "linking a Laravel-shaped dir should auto-detect its web root"
                 );
@@ -188,9 +189,9 @@ mod tests {
         ));
         match send(&sock, &Command::Sites).await {
             Response::Sites { sites } => {
-                let blog = sites.iter().find(|s| s.name() == "blog").unwrap();
-                assert_eq!(blog.php(), yerd_core::PhpVersion::new(8, 4));
-                assert_eq!(blog.kind(), yerd_core::SiteKind::Parked);
+                let blog = sites.iter().find(|s| s.site.name() == "blog").unwrap();
+                assert_eq!(blog.site.php(), yerd_core::PhpVersion::new(8, 4));
+                assert_eq!(blog.site.kind(), yerd_core::SiteKind::Parked);
             }
             other => panic!("expected Sites, got {other:?}"),
         }

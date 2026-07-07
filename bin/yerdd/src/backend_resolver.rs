@@ -1,9 +1,10 @@
 //! `BackendResolver` impl driving `yerd_php::PhpManager::ensure`.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, RwLock};
 
 use yerd_php::{io::FastCgiProbe, PhpManager, SystemClock, TokioProcessSpawner};
 use yerd_proxy::{Backend, BackendResolver, ProxyError};
@@ -17,6 +18,10 @@ pub struct DaemonBackendResolver {
     /// Mutex-wrapped supervisor; the lock is held only for the duration
     /// of `ensure`, which has a fast-path for already-running pools.
     pub php_manager: Arc<Mutex<DaemonPhpManager>>,
+    /// Mirrors [`crate::state::DaemonState::wordpress_sites`] - consulted to
+    /// scope `resolve_script`'s direct-real-file-execution policy to
+    /// `WordPress` sites only.
+    pub wordpress_sites: Arc<RwLock<HashMap<String, bool>>>,
 }
 
 #[async_trait]
@@ -35,5 +40,14 @@ impl BackendResolver for DaemonBackendResolver {
             yerd_php::Listen::UnixSocket(p) => Ok(Backend::PhpFpm { socket: p }),
             yerd_php::Listen::TcpLoopback(a) => Ok(Backend::PhpFpmTcp { addr: a }),
         }
+    }
+
+    async fn allows_direct_script_execution(&self, site: &yerd_core::Site) -> bool {
+        self.wordpress_sites
+            .read()
+            .await
+            .get(site.name())
+            .copied()
+            .unwrap_or(false)
     }
 }

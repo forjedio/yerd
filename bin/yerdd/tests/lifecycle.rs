@@ -96,7 +96,7 @@ mod tests {
         match resp {
             Response::Sites { sites } => {
                 assert!(
-                    sites.iter().any(|s| s.name() == "blog"),
+                    sites.iter().any(|s| s.site.name() == "blog"),
                     "expected 'blog' in {sites:?}"
                 );
             }
@@ -160,11 +160,11 @@ mod tests {
             Response::Sites { sites } => {
                 let blog = sites
                     .iter()
-                    .find(|s| s.name() == "blog")
+                    .find(|s| s.site.name() == "blog")
                     .expect("blog present");
-                assert!(blog.secure(), "blog should be secure");
+                assert!(blog.site.secure(), "blog should be secure");
                 assert_eq!(
-                    blog.kind(),
+                    blog.site.kind(),
                     yerd_core::SiteKind::Parked,
                     "blog must stay parked"
                 );
@@ -268,6 +268,7 @@ mod tests {
         let proxy_handle = {
             let resolver = Arc::new(yerdd::backend_resolver::DaemonBackendResolver {
                 php_manager: daemon.php_manager.clone(),
+                wordpress_sites: daemon.state.wordpress_sites.clone(),
             });
             let https = yerd_proxy::HttpsBinding {
                 listener: daemon
@@ -277,6 +278,8 @@ mod tests {
                 cert_store: daemon.cert_store.clone(),
             };
             let router = daemon.state.router.clone();
+            let login_tokens = daemon.state.wordpress_login_tokens.clone();
+            let login_prepend_script = daemon.state.wordpress_login_prepend_script.clone();
             let mut rx = shutdown_rx.clone();
             tokio::spawn(yerd_proxy::ProxyServer::serve(
                 daemon
@@ -285,6 +288,8 @@ mod tests {
                 Some(https),
                 router,
                 resolver,
+                login_tokens,
+                login_prepend_script,
                 async move {
                     let _ = rx.changed().await;
                 },

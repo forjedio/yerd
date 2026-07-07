@@ -156,6 +156,37 @@ pub enum Request {
     /// List installable vs installed versions per service (the GUI install
     /// dropdown). Fetched on demand from yerd's services distribution.
     AvailableServices,
+    /// List `WordPress` core version branches with their PHP compatibility
+    /// range (the `WordPress` wizard's core-version dropdown). Sourced from
+    /// the hand-maintained `meta/wordpress-versions.json` in the yerd repo,
+    /// daemon-side cached; see [`crate::Response::WordpressVersions`].
+    AvailableWordpressVersions,
+    /// Mint a short-TTL, single-use token for one-click, pre-authenticated
+    /// `WordPress` admin login (the "WP Admin" site action). The site must
+    /// exist and be detected as `WordPress`; the returned token is consumed by
+    /// `yerd-proxy` the moment it's presented on a `/wp-admin` request for
+    /// that same site. See [`crate::Response::WordpressLoginToken`].
+    MintWordpressLoginToken {
+        /// The site name to mint a login token for.
+        site: String,
+    },
+    /// Toggle `WordPress` one-click admin login for a site, and set which
+    /// admin user it signs in as.
+    SetWordpressAutoLogin {
+        /// The site name.
+        name: String,
+        /// The desired auto-login state.
+        enabled: bool,
+        /// The `WordPress` login/username to sign in as, or `None` to fall
+        /// back to the earliest-created administrator.
+        user: Option<String>,
+    },
+    /// List a `WordPress` site's administrator accounts (the auto-login
+    /// user-picker's dropdown). Fetched on demand via `wp user list`.
+    WordpressAdminUsers {
+        /// The site name.
+        site: String,
+    },
     /// Download + install a prebuilt service version into yerd's data dir.
     InstallService {
         /// Service id (`"redis"`, `"mysql"`, `"mariadb"`, `"postgres"`).
@@ -574,6 +605,10 @@ mod variant_name_pinning {
             Request::RestartDaemon => {}
             Request::ListServices => {}
             Request::AvailableServices => {}
+            Request::AvailableWordpressVersions => {}
+            Request::MintWordpressLoginToken { .. } => {}
+            Request::SetWordpressAutoLogin { .. } => {}
+            Request::WordpressAdminUsers { .. } => {}
             Request::InstallService { .. } => {}
             Request::UninstallService { .. } => {}
             Request::StartService { .. } => {}
@@ -692,6 +727,18 @@ mod variant_name_pinning {
         pin(Request::RestartDaemon);
         pin(Request::ListServices);
         pin(Request::AvailableServices);
+        pin(Request::AvailableWordpressVersions);
+        pin(Request::MintWordpressLoginToken {
+            site: "blog".into(),
+        });
+        pin(Request::SetWordpressAutoLogin {
+            name: "blog".into(),
+            enabled: true,
+            user: Some("admin".into()),
+        });
+        pin(Request::WordpressAdminUsers {
+            site: "blog".into(),
+        });
         pin(Request::InstallService {
             service: "redis".into(),
             version: "8".into(),

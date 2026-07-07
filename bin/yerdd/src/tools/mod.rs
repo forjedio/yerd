@@ -1,17 +1,21 @@
-//! Dev-tool installer subsystem - Composer, Node (node/npm/npx), Bun (bun/bunx).
+//! Dev-tool installer subsystem - Composer, Node (node/npm/npx), Bun (bun/bunx),
+//! the Laravel installer, and WP-CLI.
 //!
-//! Each tool ships as a self-contained, relocatable binary (no global install):
+//! Most tools ship as a self-contained, relocatable binary (no global install):
 //! Node's tarball, Bun's zip, Composer's phar. yerd downloads + sha256-verifies
 //! the latest release into `{data}/tools/<id>/` and symlinks the commands it
 //! provides into `{data}/bin` (on `PATH` via `yerd path`). Same I/O-edge pattern
 //! as `php_install`/`ext_install`: a `Downloader` trait is injected; the pure
-//! resolution bits are inline + unit-tested.
+//! resolution bits are inline + unit-tested. The Laravel installer and WP-CLI
+//! are instead Composer packages, built via the managed Composer (see
+//! `laravel`/`wp_cli`).
 
 pub mod bun;
 pub mod composer;
 pub mod external;
 pub mod laravel;
 pub mod node;
+pub mod wp_cli;
 
 use std::path::{Path, PathBuf};
 
@@ -33,6 +37,10 @@ pub enum Tool {
     /// The Laravel installer (`laravel new`) - a Composer package run via the
     /// managed PHP, exposed as the `laravel` multi-call shim.
     Laravel,
+    /// WP-CLI (`wp`) - the WordPress command-line tool, a Composer package
+    /// (`wp-cli/wp-cli-bundle`) run via the managed PHP, exposed as the `wp`
+    /// multi-call shim.
+    WpCli,
 }
 
 /// Filename of the installed-version marker inside a tool's dir.
@@ -40,7 +48,13 @@ const VERSION_MARKER: &str = ".version";
 
 impl Tool {
     /// Every tool, for `list_status` / reconcile.
-    pub const ALL: [Tool; 4] = [Tool::Composer, Tool::Node, Tool::Bun, Tool::Laravel];
+    pub const ALL: [Tool; 5] = [
+        Tool::Composer,
+        Tool::Node,
+        Tool::Bun,
+        Tool::Laravel,
+        Tool::WpCli,
+    ];
 
     /// Stable id used on the wire and as the on-disk dir name.
     #[must_use]
@@ -50,6 +64,7 @@ impl Tool {
             Tool::Node => "node",
             Tool::Bun => "bun",
             Tool::Laravel => "laravel",
+            Tool::WpCli => "wp-cli",
         }
     }
 
@@ -61,6 +76,7 @@ impl Tool {
             Tool::Node => "Node.js",
             Tool::Bun => "Bun",
             Tool::Laravel => "Laravel Installer",
+            Tool::WpCli => "WP-CLI",
         }
     }
 
@@ -73,6 +89,7 @@ impl Tool {
             Tool::Node => "node",
             Tool::Bun => "bun",
             Tool::Laravel => "laravel",
+            Tool::WpCli => "wp",
         }
     }
 
@@ -84,6 +101,7 @@ impl Tool {
             Tool::Node => &["node", "npm", "npx"],
             Tool::Bun => &["bun", "bunx"],
             Tool::Laravel => &["laravel"],
+            Tool::WpCli => &["wp"],
         }
     }
 
@@ -191,6 +209,7 @@ pub async fn install(
         Tool::Node => node::install(dirs, dl).await,
         Tool::Bun => bun::install(dirs, dl).await,
         Tool::Laravel => laravel::install(dirs, progress).await,
+        Tool::WpCli => wp_cli::install(dirs, progress).await,
     };
     match &result {
         Ok(()) => note(progress, format!("Installed {}", tool.display_name())),
@@ -218,6 +237,7 @@ fn shim_links(dirs: &PlatformDirs, tool: Tool, yerd_bin: &Path) -> Vec<(String, 
         Tool::Node => node::shim_links(dirs),
         Tool::Bun => bun::shim_links(dirs),
         Tool::Laravel => vec![("laravel".to_owned(), yerd_bin.to_path_buf())],
+        Tool::WpCli => vec![("wp".to_owned(), yerd_bin.to_path_buf())],
     }
 }
 
@@ -369,6 +389,37 @@ pub(crate) fn stage_and_swap(
         return Err(ToolError::Io(format!("{}: {e}", final_dir.display())));
     }
     let _ = std::fs::remove_dir_all(&backup);
+    Ok(())
+}
+
+/// Stream a child pipe line-by-line into `progress` (no-op if either is
+/// absent). Used by the Composer-package tools (Laravel installer, WP-CLI) to
+/// forward `composer create-project` output.
+pub(crate) async fn drain<R: tokio::io::AsyncRead + Unpin>(
+    pipe: Option<R>,
+    progress: Option<ProgressTx>,
+) {
+    use tokio::io::{AsyncBufReadExt, BufReader};
+    let Some(pipe) = pipe else { return };
+    let mut lines = BufReader::new(pipe).lines();
+    while let Ok(Some(line)) = lines.next_line().await {
+        if let Some(tx) = &progress {
+            let _ = tx.send(line);
+        }
+    }
+}
+
+/// Move every entry of `from` into `to`. Both live under `{data}/tools`, so the
+/// renames stay on one filesystem and are atomic + instant.
+pub(crate) fn move_dir_contents(from: &Path, to: &Path) -> Result<(), ToolError> {
+    let entries =
+        std::fs::read_dir(from).map_err(|e| ToolError::Io(format!("{}: {e}", from.display())))?;
+    for entry in entries {
+        let entry = entry.map_err(|e| ToolError::Io(e.to_string()))?;
+        let dest = to.join(entry.file_name());
+        std::fs::rename(entry.path(), &dest)
+            .map_err(|e| ToolError::Io(format!("{}: {e}", dest.display())))?;
+    }
     Ok(())
 }
 
@@ -560,5 +611,18 @@ mod tests {
             Some("bun-v1.1.0")
         );
         assert!(extract_root_dir(&tool_dir(&dirs, Tool::Bun)).is_ok());
+    }
+
+    #[test]
+    fn move_dir_contents_moves_all_entries() {
+        let tmp = tempfile::tempdir().unwrap();
+        let from = tmp.path().join("from");
+        let to = tmp.path().join("to");
+        std::fs::create_dir_all(from.join("vendor")).unwrap();
+        std::fs::write(from.join("composer.json"), b"{}").unwrap();
+        std::fs::create_dir_all(&to).unwrap();
+        move_dir_contents(&from, &to).unwrap();
+        assert!(to.join("vendor").is_dir());
+        assert!(to.join("composer.json").is_file());
     }
 }

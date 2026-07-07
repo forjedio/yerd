@@ -310,14 +310,14 @@ api = "Blog"
 
 ## Schema versioning and migration
 
-Every config file **must** carry a top-level `version = N` key - it is the single trigger for forward migration. The current schema version is `9`.
+Every config file **must** carry a top-level `version = N` key - it is the single trigger for forward migration. The current schema version is `10`.
 
 When the daemon loads a file, it routes on the version it finds:
 
 ```text
-found  > CURRENT (9)   →  error (UnsupportedVersion) - a newer Yerd wrote this file
-found == CURRENT (9)   →  parse directly
-found  < CURRENT (9)   →  walk forward migration steps, then parse
+found  > CURRENT (10)   →  error (UnsupportedVersion) - a newer Yerd wrote this file
+found == CURRENT (10)   →  parse directly
+found  < CURRENT (10)   →  walk forward migration steps, then parse
 ```
 
 A file written by a *newer* Yerd than you are running is refused rather than misread. Older files are migrated forward in place, one version at a time, before the normal wire-deserialisation and validation run:
@@ -330,11 +330,12 @@ A file written by a *newer* Yerd than you are running is refused rather than mis
 - **`v6 → v7`** is a bare version bump: v7 only **added** the `[ports]` `fallback_http` / `fallback_https` keys (defaulting to `8080` / `8443`).
 - **`v7 → v8`** is a bare version bump: v8 only **added** the optional `[tunnel]` table, which defaults to empty when absent. Same rationale - the bump lets an older binary refuse a `[tunnel]`-bearing file cleanly rather than tripping `deny_unknown_fields`.
 - **`v8 → v9`** is a bare version bump: v9 only **added** the optional `[groups]` table, which defaults to empty when absent. Same rationale - the bump lets an older binary refuse a `[groups]`-bearing file cleanly rather than tripping `deny_unknown_fields`.
+- **`v9 → v10`** is a bare version bump: v10 only **added** the optional `wp_auto_login` / `wp_auto_login_user` keys (inside `[[linked]]` and `[[overrides]]`) for one-click `WordPress` admin login, which default to absent/`false` when missing.
 
 The on-disk schema version is deliberately decoupled from the IPC protocol version; the two evolve independently.
 
 ::: warning Downgrades are refused, not misread
-Because later versions changed shapes the parser checks strictly (keys *inside* `[[linked]]` / `[[overrides]]` in v2, and the whole `[services]` shape in v3), an older daemon reading a newer file would fail. The version routing turns that into a clean `UnsupportedVersion` error instead - downgrading Yerd against a newer config is unsupported, but it fails loudly rather than corrupting state.
+Because later versions changed shapes the parser checks strictly (keys *inside* `[[linked]]` / `[[overrides]]` in v2, and the whole `[services]` shape in v3), an older daemon reading a newer file would fail. The version routing turns that into a clean `UnsupportedVersion` error instead - there is no automatic backward migration, but it fails loudly rather than corrupting state. See [Config Schema History](../developer/config-schema-history#downgrading-in-practice) for the exact manual edits to hand-downgrade a file version by version.
 :::
 
 ::: tip Forward-compatible by design
@@ -353,11 +354,11 @@ Yerd does not `fsync` the file or its parent directory after a save. For a devel
 
 ## A complete annotated example
 
-This is a full, valid `yerd.toml` exercising every field:
+This is a valid `yerd.toml` covering the core fields (see the sections above for the newer optional tables - `update_channel`, `[tunnel]`, `[groups]`, `wp_auto_login` - omitted here for brevity):
 
 ```toml
-# Schema version - mandatory, always written as 5 by this release.
-version = 5
+# Schema version - mandatory, always written as the current version by this release.
+version = 10
 
 # TLD served by the resolver; sites resolve as <name>.test
 tld = "test"

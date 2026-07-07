@@ -14,7 +14,7 @@ use crate::dump::{DumpCounts, DumpEvent, DumpExtStatus};
 use crate::status::{
     CloudflaredStatus, DatabaseSummary, Diagnosis, FixReport, MailDetail, MailSummary,
     NamedTunnelMeta, ServiceAvailability, ServiceStatus, SiteHostname, StatusReport, ToolStatus,
-    TunnelInfo,
+    TunnelInfo, WordPressVersionInfo,
 };
 
 // Same rule: no per-field serde renames.
@@ -33,7 +33,7 @@ pub enum Response {
     Sites {
         /// The sites currently known to the daemon, in lexicographic
         /// name order.
-        sites: Vec<Site>,
+        sites: Vec<SiteEntry>,
     },
     /// Generic success for mutating requests
     /// ([`crate::Request::Park`], [`crate::Request::Link`],
@@ -139,6 +139,22 @@ pub enum Response {
     AvailableServices {
         /// Installable vs installed versions, per service.
         services: Vec<ServiceAvailability>,
+    },
+    /// Reply to [`crate::Request::AvailableWordpressVersions`].
+    WordpressVersions {
+        /// One entry per currently-offered `WordPress` core branch.
+        versions: Vec<WordPressVersionInfo>,
+    },
+    /// Reply to [`crate::Request::MintWordpressLoginToken`].
+    WordpressLoginToken {
+        /// Single-use, short-TTL token to append as `?yerd_login_token=` on
+        /// the site's `/wp-admin/` URL.
+        token: String,
+    },
+    /// Reply to [`crate::Request::WordpressAdminUsers`].
+    WordpressAdminUsers {
+        /// The site's administrator accounts, for the auto-login user picker.
+        users: Vec<WordPressAdminUser>,
     },
     /// Reply to [`crate::Request::ServiceLogs`] - trailing log lines, oldest first.
     ServiceLogs {
@@ -302,6 +318,45 @@ pub enum Response {
     },
 }
 
+/// One entry in [`Response::Sites`]: the site plus WordPress-detection
+/// metadata.
+///
+/// This is a wire-only wrapper, not a new field on [`Site`] itself - `Site`'s
+/// hand-written `Serialize`/`Deserialize` is shared between the wire and
+/// `yerd.toml` persistence (`Config.linked: Vec<Site>`), and `WordPress`
+/// detection is a runtime fact (it can change the moment the user runs
+/// `wp core update`), not something that belongs baked into persisted config.
+/// `#[serde(flatten)]` keeps the JSON shape identical to "just add fields to
+/// `Site`" from the wire's perspective without touching `Site`'s own shape.
+///
+/// `is_wordpress` is served from an in-memory daemon cache refreshed on every
+/// router rebuild (a mutation or a filesystem-watcher tick) rather than
+/// detected fresh on every request - `ListSites` is polled every few seconds,
+/// and re-statting every site's marker files on each poll doesn't scale with
+/// site count.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SiteEntry {
+    /// The site itself - unchanged shape, still exactly what `Site`'s own
+    /// serde impl produces.
+    #[serde(flatten)]
+    pub site: Site,
+    /// Whether a `WordPress` marker (`wp-config.php`/`wp-load.php`) was found
+    /// at the site's served root.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub is_wordpress: bool,
+}
+
+/// One `WordPress` administrator account, for the auto-login user picker -
+/// see [`Response::WordpressAdminUsers`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WordPressAdminUser {
+    /// The `WordPress` login/username (what `wp_set_auth_cookie` and the
+    /// auto-login prepend script's `get_user_by('login', ...)` key on).
+    pub login: String,
+    /// The account's display name, shown in the picker.
+    pub display_name: String,
+}
+
 /// An available newer patch for an installed PHP minor.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PhpUpdate {
@@ -367,6 +422,9 @@ mod variant_name_pinning {
             Response::DoctorFix { .. } => {}
             Response::Services { .. } => {}
             Response::AvailableServices { .. } => {}
+            Response::WordpressVersions { .. } => {}
+            Response::WordpressLoginToken { .. } => {}
+            Response::WordpressAdminUsers { .. } => {}
             Response::ServiceLogs { .. } => {}
             Response::Databases { .. } => {}
             Response::Dumps { .. } => {}
@@ -486,6 +544,23 @@ mod variant_name_pinning {
         });
         pin_response(Response::Services { services: vec![] });
         pin_response(Response::AvailableServices { services: vec![] });
+        pin_response(Response::WordpressVersions {
+            versions: vec![WordPressVersionInfo {
+                branch: "6.7".into(),
+                latest: "6.7.5".into(),
+                min_php: PhpVersion::new(7, 3),
+                max_php: PhpVersion::new(8, 4),
+            }],
+        });
+        pin_response(Response::WordpressLoginToken {
+            token: "deadbeef".into(),
+        });
+        pin_response(Response::WordpressAdminUsers {
+            users: vec![WordPressAdminUser {
+                login: "admin".into(),
+                display_name: "Admin".into(),
+            }],
+        });
         pin_response(Response::ServiceLogs { lines: vec![] });
         pin_response(Response::Databases {
             databases: vec![DatabaseSummary { name: "app".into() }],

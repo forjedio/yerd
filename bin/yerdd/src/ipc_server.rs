@@ -95,9 +95,23 @@ async fn handle_client(stream: IpcStream, state: Arc<DaemonState>) {
 async fn dispatch(req: Request, state: &DaemonState) -> Response {
     match req {
         Request::Ping => Response::Pong,
-        Request::ListSites => Response::Sites {
-            sites: state.router.read().await.iter().cloned().collect(),
-        },
+        Request::ListSites => {
+            // `is_wordpress` is a cheap lookup into `state.wordpress_sites`,
+            // refreshed on every router rebuild (a mutation or an
+            // fs-watcher tick) rather than detected fresh here - this
+            // handler is polled every few seconds and must not re-stat every
+            // site's marker files on each poll. See `wordpress_detect`.
+            let sites: Vec<yerd_core::Site> = state.router.read().await.iter().cloned().collect();
+            let wordpress_sites = state.wordpress_sites.read().await;
+            let entries = sites
+                .into_iter()
+                .map(|site| {
+                    let is_wordpress = wordpress_sites.get(site.name()).copied().unwrap_or(false);
+                    yerd_ipc::SiteEntry { site, is_wordpress }
+                })
+                .collect();
+            Response::Sites { sites: entries }
+        }
         Request::ListParked => Response::Parked {
             paths: state
                 .config
@@ -129,7 +143,8 @@ async fn dispatch(req: Request, state: &DaemonState) -> Response {
         | Request::Unpark { .. }
         | Request::SetPhp { .. }
         | Request::SetSecure { .. }
-        | Request::SetWebRoot { .. } => handle_mutation(req, state).await,
+        | Request::SetWebRoot { .. }
+        | Request::SetWordpressAutoLogin { .. } => handle_mutation(req, state).await,
         Request::ListGroups => {
             let cfg = state.config.lock().await;
             Response::Groups {
@@ -183,6 +198,16 @@ async fn dispatch(req: Request, state: &DaemonState) -> Response {
         Request::AvailableServices => {
             let dl = crate::php_install::ReqwestDownloader::new();
             crate::services::available_services(state, &dl).await
+        }
+        Request::AvailableWordpressVersions => {
+            let dl = crate::php_install::ReqwestDownloader::new();
+            crate::wordpress_versions::available_versions(state, &dl).await
+        }
+        Request::MintWordpressLoginToken { site } => {
+            crate::wordpress_login::mint_wordpress_login_token(&site, state).await
+        }
+        Request::WordpressAdminUsers { site } => {
+            crate::wordpress_users::admin_users(&site, state).await
         }
         Request::InstallService { service, version } => {
             let dl = crate::php_install::ReqwestDownloader::new();
@@ -419,6 +444,33 @@ fn path_needs_setup(state: &DaemonState) -> Option<bool> {
 /// before the next acquisition - never two at once, never a guard held across an
 /// `.await` that touches another lock. Mirrors the hazard documented in
 /// `handle_mutation`.
+/// Resident-set size for each of `pids`, gathered in a single `spawn_blocking`.
+///
+/// `SystemMetrics::rss_bytes` shells out to `ps` on macOS (fork+exec+wait) -
+/// genuinely blocking I/O, unlike every other field of a `StatusReport`. Doing
+/// it once off-executor, rather than synchronously per pid inline, keeps a
+/// tokio worker thread from being tied up once per installed PHP version plus
+/// once for the daemon itself on every `Request::Status`/`Request::Diagnose`
+/// (the GUI polls this every ~6s), which under load could starve the whole
+/// worker pool. Missing pids are simply absent from the returned map.
+async fn collect_rss_by_pid(
+    metrics: yerd_platform::ActiveSystemMetrics,
+    pids: Vec<u32>,
+) -> std::collections::HashMap<u32, u64> {
+    use yerd_platform::SystemMetrics;
+    tokio::task::spawn_blocking(move || {
+        let mut out = std::collections::HashMap::new();
+        for pid in pids {
+            if let Some(rss) = metrics.rss_bytes(pid) {
+                out.insert(pid, rss);
+            }
+        }
+        out
+    })
+    .await
+    .unwrap_or_default()
+}
+
 #[allow(clippy::too_many_lines)]
 async fn build_status_report(state: &DaemonState) -> yerd_ipc::StatusReport {
     use yerd_platform::SystemMetrics;
@@ -457,6 +509,20 @@ async fn build_status_report(state: &DaemonState) -> yerd_ipc::StatusReport {
     let updates = crate::php_updates::cached_updates(state).await;
 
     let metrics = yerd_platform::ActiveSystemMetrics::new();
+
+    let daemon_pid = std::process::id();
+    let pids: Vec<u32> = installed
+        .iter()
+        .filter_map(|v| {
+            snapshots
+                .iter()
+                .find(|s| s.version == *v)
+                .and_then(|s| s.pid)
+        })
+        .chain(std::iter::once(daemon_pid))
+        .collect();
+    let rss_by_pid = collect_rss_by_pid(metrics, pids).await;
+
     let php: Vec<yerd_ipc::PhpPoolStatus> = installed
         .iter()
         .map(|v| {
@@ -475,7 +541,7 @@ async fn build_status_report(state: &DaemonState) -> yerd_ipc::StatusReport {
                 state: run_state,
                 pid,
                 listen,
-                rss_bytes: pid.and_then(|p| metrics.rss_bytes(p)),
+                rss_bytes: pid.and_then(|p| rss_by_pid.get(&p).copied()),
                 update_available: updates
                     .iter()
                     .find(|u| u.version == *v)
@@ -532,7 +598,7 @@ async fn build_status_report(state: &DaemonState) -> yerd_ipc::StatusReport {
     yerd_ipc::StatusReport {
         daemon_pid: std::process::id(),
         uptime_secs: state.started_at.elapsed().as_secs(),
-        daemon_rss_bytes: metrics.rss_bytes(std::process::id()),
+        daemon_rss_bytes: rss_by_pid.get(&daemon_pid).copied(),
         tld,
         http: state.http,
         https: state.https,
@@ -1608,29 +1674,53 @@ pub(crate) async fn handle_mutation(req: Request, state: &DaemonState) -> Respon
         return internal(format!("config validation failed: {e}"));
     }
 
-    let candidate = match startup::build_router(&new, &state.dirs, &state.detect_cache) {
-        Ok(r) => r,
-        Err(DaemonError::Core(yerd_core::CoreError::DuplicateSite { name })) => {
-            return Response::Error {
-                code: ErrorCode::AlreadyExists,
-                message: format!("duplicate site: {name}"),
+    let (candidate, candidate_wordpress) =
+        match startup::build_router(&new, &state.dirs, &state.detect_cache) {
+            Ok(r) => r,
+            Err(DaemonError::Core(yerd_core::CoreError::DuplicateSite { name })) => {
+                return Response::Error {
+                    code: ErrorCode::AlreadyExists,
+                    message: format!("duplicate site: {name}"),
+                }
             }
-        }
-        Err(e) => return internal(format!("router rebuild failed: {e}")),
-    };
+            Err(e) => return internal(format!("router rebuild failed: {e}")),
+        };
 
     if let Err(e) = new.save(&state.config_path) {
         return internal(format!("config save failed: {e}"));
     }
 
     *cfg_guard = new;
+    let site_after = site_after_secure_toggle(&req, &candidate);
     *state.router.write().await = candidate;
+    *state.wordpress_sites.write().await = candidate_wordpress;
     drop(cfg_guard);
 
     state.watch_dirty.notify_one();
 
+    if let Some(site) = site_after {
+        crate::wordpress_url_sync::sync_site_url(&site, state).await;
+    }
+
     tracing::info!(summary = %applied.summary, "applied mutation");
     Response::Ok
+}
+
+/// The post-mutation site to run [`crate::wordpress_url_sync::sync_site_url`]
+/// against, for a `Request::SetSecure` (`None` for every other request kind).
+/// Looks up `candidate` (the just-rebuilt router) by the *lowercased* site
+/// name, matching every other name-resolution site in `mutate.rs` - the
+/// router is always keyed by the lowercased name (`Site` lowercases at
+/// construction), so looking up an un-lowercased, user-typed name (e.g. from
+/// `yerd secure MyWpSite`) would silently miss and skip the sync.
+fn site_after_secure_toggle(
+    req: &Request,
+    candidate: &yerd_core::SiteRouter,
+) -> Option<yerd_core::Site> {
+    let Request::SetSecure { name, .. } = req else {
+        return None;
+    };
+    candidate.get(&name.to_ascii_lowercase()).cloned()
 }
 
 /// Apply a group mutation (create/delete/reorder/assign). Groups are a
@@ -1817,9 +1907,10 @@ pub(crate) fn internal(message: String) -> Response {
 )]
 mod tests {
     use super::*;
-    use tokio::sync::{Mutex, RwLock};
     use yerd_core::{PhpVersion, RouterConfig, SiteRouter, Tld};
     use yerd_platform::PlatformDirs;
+
+    use crate::test_support::state_in;
 
     #[test]
     fn bundle_contains_ca_matches_embedded_ca() {
@@ -1843,78 +1934,30 @@ mod tests {
         assert!(!bundle_contains_ca("   \n", "anything"));
     }
 
-    fn dirs_in(tmp: &Path) -> PlatformDirs {
-        PlatformDirs {
-            config: tmp.join("c"),
-            data: tmp.join("d"),
-            state: tmp.join("s"),
-            cache: tmp.join("ca"),
-            runtime: tmp.join("r"),
-        }
+    #[test]
+    fn site_after_secure_toggle_finds_mixed_case_name() {
+        let mut router = SiteRouter::new(RouterConfig::with_tld(Tld::new("test").unwrap()));
+        router
+            .insert(
+                yerd_core::Site::linked("myblog", "/srv/myblog", PhpVersion::new(8, 3)).unwrap(),
+            )
+            .unwrap();
+        let req = Request::SetSecure {
+            name: "MyBlog".into(),
+            secure: true,
+        };
+        let site = site_after_secure_toggle(&req, &router);
+        assert_eq!(site.map(|s| s.name().to_owned()), Some("myblog".to_owned()));
     }
 
-    fn state_in(tmp: &Path) -> DaemonState {
-        let dirs = dirs_in(tmp);
+    #[test]
+    fn site_after_secure_toggle_none_for_other_requests() {
         let router = SiteRouter::new(RouterConfig::with_tld(Tld::new("test").unwrap()));
-        let ca_path = dirs.data.join("ca.cert.pem");
-        let php_manager = std::sync::Arc::new(Mutex::new(yerd_php::PhpManager::new(
-            yerd_php::TokioProcessSpawner,
-            yerd_php::SystemClock,
-            yerd_php::io::FastCgiProbe,
-            dirs.clone(),
-            yerd_platform::ActivePortBinder::new(),
-            std::process::id(),
-            std::collections::BTreeMap::new(),
-        )));
-        DaemonState {
-            config: Mutex::new(yerd_config::Config::default()),
-            router: Arc::new(RwLock::new(router)),
-            config_path: dirs.config.join("yerd.toml"),
-            dirs,
-            dns_addr: "127.0.0.1:1053".parse().unwrap(),
-            ca_path,
-            ca_fingerprint: yerd_platform::CaFingerprint::new([0u8; 32]),
-            php_ca_bundle: None,
-            php_updates: tokio::sync::RwLock::new(std::collections::HashMap::new()),
-            yerd_update: tokio::sync::RwLock::new(Vec::new()),
-            update_snapshot: tokio::sync::RwLock::new(None),
-            php_manager,
-            service_manager: std::sync::Arc::new(Mutex::new(crate::services::new_manager(
-                dirs_in(tmp),
-            ))),
-            mail_store: std::sync::Arc::new(yerd_mail::Store::open(tmp.join("mail")).unwrap()),
-            mail: crate::state::MailRuntime { listening: false },
-            http: yerd_ipc::PortStatus {
-                requested: 80,
-                bound: 8080,
-                fell_back: true,
-            },
-            https: yerd_ipc::PortStatus {
-                requested: 443,
-                bound: 8443,
-                fell_back: true,
-            },
-            redirect_https_port: std::sync::Arc::new(std::sync::atomic::AtomicU16::new(8443)),
-            web_unbound: None,
-            dns_unbound: None,
-            boot_id: 1,
-            started_at: std::time::Instant::now(),
-            shutdown_tx: tokio::sync::watch::channel(false).0,
-            restart_requested: std::sync::atomic::AtomicBool::new(false),
-            detect_cache: std::sync::Arc::new(crate::detect_cache::DetectCache::new()),
-            watch_dirty: tokio::sync::Notify::new(),
-            dumps: std::sync::Arc::new(crate::dump_server::DumpStore::new()),
-            shim_reconcile: tokio::sync::Mutex::new(()),
-            tunnel_manager: std::sync::Arc::new(tokio::sync::Mutex::new(
-                crate::tunnel::new_manager(),
-            )),
-            cloudflared_resolution: tokio::sync::RwLock::new(None),
-            tool_mutate: tokio::sync::Mutex::new(()),
-            tunnel_mutate: tokio::sync::Mutex::new(()),
-            php_mutate: tokio::sync::Mutex::new(()),
-            jobs: crate::jobs::JobRegistry::default(),
-            reserved_names: tokio::sync::Mutex::new(std::collections::HashSet::new()),
-        }
+        let req = Request::SetPhp {
+            name: "myblog".into(),
+            version: PhpVersion::new(8, 3),
+        };
+        assert!(site_after_secure_toggle(&req, &router).is_none());
     }
 
     #[tokio::test]
@@ -2071,7 +2114,7 @@ Subject: Captured\r\n\r\nhi\r\n";
 
         match dispatch(Request::ListSites, &state).await {
             Response::Sites { sites } => {
-                let names: Vec<&str> = sites.iter().map(yerd_core::Site::name).collect();
+                let names: Vec<&str> = sites.iter().map(|e| e.site.name()).collect();
                 assert_eq!(names, vec!["blog"]);
             }
             other => panic!("expected Sites, got {other:?}"),
@@ -2255,8 +2298,9 @@ Subject: Captured\r\n\r\nhi\r\n";
         match dispatch(Request::ListSites, state).await {
             Response::Sites { sites } => sites
                 .iter()
-                .find(|s| s.name() == name)
+                .find(|s| s.site.name() == name)
                 .unwrap_or_else(|| panic!("site {name} not found"))
+                .site
                 .web_subpath()
                 .to_path_buf(),
             other => panic!("expected Sites, got {other:?}"),
@@ -2317,9 +2361,9 @@ Subject: Captured\r\n\r\nhi\r\n";
 
         match dispatch(Request::ListSites, &state).await {
             Response::Sites { sites } => {
-                let blog = sites.iter().find(|s| s.name() == "blog").unwrap();
-                assert_eq!(blog.php(), PhpVersion::new(8, 4));
-                assert_eq!(blog.kind(), yerd_core::SiteKind::Parked);
+                let blog = sites.iter().find(|s| s.site.name() == "blog").unwrap();
+                assert_eq!(blog.site.php(), PhpVersion::new(8, 4));
+                assert_eq!(blog.site.kind(), yerd_core::SiteKind::Parked);
             }
             other => panic!("expected Sites, got {other:?}"),
         }
@@ -2369,7 +2413,7 @@ Subject: Captured\r\n\r\nhi\r\n";
         match dispatch(Request::ListSites, &state).await {
             Response::Sites { sites } => {
                 assert!(
-                    sites.iter().all(|s| s.name() != "blog"),
+                    sites.iter().all(|s| s.site.name() != "blog"),
                     "blog should be gone after un-park: {sites:?}"
                 );
             }
@@ -2406,9 +2450,9 @@ Subject: Captured\r\n\r\nhi\r\n";
 
         match dispatch(Request::ListSites, &state).await {
             Response::Sites { sites } => {
-                let blog = sites.iter().find(|s| s.name() == "blog").unwrap();
-                assert!(blog.secure());
-                assert_eq!(blog.kind(), yerd_core::SiteKind::Parked);
+                let blog = sites.iter().find(|s| s.site.name() == "blog").unwrap();
+                assert!(blog.site.secure());
+                assert_eq!(blog.site.kind(), yerd_core::SiteKind::Parked);
             }
             other => panic!("expected Sites, got {other:?}"),
         }
@@ -2424,8 +2468,8 @@ Subject: Captured\r\n\r\nhi\r\n";
         assert!(matches!(resp, Response::Ok), "got {resp:?}");
         match dispatch(Request::ListSites, &state).await {
             Response::Sites { sites } => {
-                let blog = sites.iter().find(|s| s.name() == "blog").unwrap();
-                assert!(!blog.secure());
+                let blog = sites.iter().find(|s| s.site.name() == "blog").unwrap();
+                assert!(!blog.site.secure());
             }
             other => panic!("expected Sites, got {other:?}"),
         }
@@ -2919,8 +2963,8 @@ Subject: Captured\r\n\r\nhi\r\n";
         ));
         match dispatch(Request::ListSites, &state).await {
             Response::Sites { sites } => {
-                let app = sites.iter().find(|s| s.name() == "app").unwrap();
-                assert_eq!(app.php(), PhpVersion::new(8, 4));
+                let app = sites.iter().find(|s| s.site.name() == "app").unwrap();
+                assert_eq!(app.site.php(), PhpVersion::new(8, 4));
             }
             other => panic!("expected Sites, got {other:?}"),
         }

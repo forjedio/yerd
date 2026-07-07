@@ -31,6 +31,8 @@ fn populated() -> Config {
             php: Some(PhpVersion::new(8, 4)),
             secure: Some(true),
             web_root: None,
+            wp_auto_login: None,
+            wp_auto_login_user: None,
         },
     );
     c.services.instances.insert(
@@ -56,8 +58,8 @@ fn populated() -> Config {
 fn default_config_starts_with_version_line() {
     let s = Config::default().to_toml().unwrap();
     assert!(
-        s.starts_with("version = 9\n"),
-        "expected first line `version = 9`; got: {s}"
+        s.starts_with("version = 10\n"),
+        "expected first line `version = 10`; got: {s}"
     );
 }
 
@@ -145,6 +147,8 @@ fn override_with_only_php_omits_secure_key() {
             php: Some(PhpVersion::new(8, 4)),
             secure: None,
             web_root: None,
+            wp_auto_login: None,
+            wp_auto_login_user: None,
         },
     );
     let s = c.to_toml().unwrap();

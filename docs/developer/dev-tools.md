@@ -1,11 +1,13 @@
 # Dev-tool installer subsystem
 
 The **Tooling** feature lets a user install Composer, Node (`node`/`npm`/`npx`),
-and Bun (`bun`/`bunx`) as self-contained binaries on their `PATH`, from the
-[desktop app](./gui) or the [`yerd` CLI](./binaries/yerd). This page documents
-its implementation end-to-end: the daemon subsystem that downloads/verifies/lays
-down the binaries, the `{data}/bin` shim reconciliation, the IPC contract, and
-the thin GUI/CLI wiring.
+Bun (`bun`/`bunx`), the Laravel installer, and WP-CLI as self-contained
+binaries on their `PATH`, from the [desktop app](./gui) or the
+[`yerd` CLI](./binaries/yerd). This page documents its implementation
+end-to-end: the daemon subsystem that downloads/verifies/lays down the
+binaries (or, for the Laravel installer and WP-CLI, builds them via Composer),
+the `{data}/bin` shim reconciliation, the IPC contract, and the thin GUI/CLI
+wiring.
 
 It follows the same I/O-edge pattern as PHP installs and the
 [cover-shim/pcov work](./binaries/yerdd#cover-shim-reconciliation-and-pcov):
@@ -41,11 +43,11 @@ differ enough (phar vs multi-file tarball vs single-binary zip) that a `match`
 into per-tool modules is clearer than an abstraction.
 
 ```rust
-pub enum Tool { Composer, Node, Bun }
+pub enum Tool { Composer, Node, Bun, Laravel, WpCli }
 
 impl Tool {
-    pub const ALL: [Tool; 3];
-    pub const fn id(self) -> &'static str;            // "composer" | "node" | "bun"
+    pub const ALL: [Tool; 5];
+    pub const fn id(self) -> &'static str;            // "composer" | "node" | "bun" | "laravel" | "wp-cli"
     pub const fn display_name(self) -> &'static str;  // for the UI
     pub const fn exposed_bins(self) -> &'static [&'static str]; // commands on PATH
     pub fn parse(id: &str) -> Option<Tool>;           // wire id → Tool
@@ -53,8 +55,8 @@ impl Tool {
 ```
 
 `exposed_bins` is the single source of truth for which `{data}/bin` names a tool
-owns: `composer`; `node`/`npm`/`npx`; `bun`/`bunx`. It drives both shim creation
-and pruning.
+owns: `composer`; `node`/`npm`/`npx`; `bun`/`bunx`; `laravel`; `wp`. It drives
+both shim creation and pruning.
 
 Failures are a binary-local `thiserror` enum (the tools subsystem has no library
 crate of its own, so this mirrors `MutateError`/`DaemonError` rather than the
@@ -125,6 +127,26 @@ than building a URL that 404s. Bun's zip is unpacked with the `zip` crate
 (`default-features = false, features = ["deflate"]`, pulling only the pure-Rust
 flate2 backend - pinned to 2.x to stay within the workspace's MSRV-1.77
 discipline; see the `Cargo.toml` MSRV-pin block).
+
+### Composer-built tools: the Laravel installer and WP-CLI
+
+`laravel.rs` and `wp_cli.rs` don't fit the download-a-release-asset shape above
+- neither project publishes a standalone binary with a checksum sidecar worth
+pinning to. Both instead run the managed **Composer** (`composer.rs`'s phar,
+so Composer itself must already be installed) as a `create-project`:
+
+| Module | Composer package | Entry point | Layout |
+|---|---|---|---|
+| `laravel.rs` | `laravel/installer` | `vendor/laravel/installer/bin/laravel` | `{data}/tools/laravel/` (the create-project root) |
+| `wp_cli.rs` | `wp-cli/wp-cli-bundle` (a root project depending on `wp-cli/wp-cli`, not that package itself) | `vendor/wp-cli/wp-cli/php/boot-fs.php` | `{data}/tools/wp-cli/` |
+
+`install(dirs, progress)` runs `php <composer.phar> create-project --prefer-dist --no-interaction --no-dev <package> <staging-dir>`, streaming output through the same `drain`/`stage_and_swap` helpers the download-based tools use - so a `create-project` failure never leaves a partial install in place. The installed version is read back out of the built `composer.lock` (`wp-cli/wp-cli`'s resolved version for WP-CLI, since `wp-cli-bundle`'s own `composer.lock` has no self-entry for the *root* package the way a dependency does for Laravel's installer). **Integrity is Composer's own** (its `composer.lock` hash pinning and Packagist's TLS), not a yerd-side checksum - consistent with the "Composer needs PHP" trust boundary already described in the [Tooling guide](../guide/tooling#composer-needs-php).
+
+Both shims exec their entry point under `boot_name`'s bare file name with `cwd` set to that file's own directory (not the invocation's cwd) - see [`yerd`'s `wp` shim](./binaries/yerd#cover-shims-yerd-as-a-multi-call-binary-cover_shim-rs) for why (a macOS space-in-path bug in some subcommands' self-re-invocation).
+
+::: tip WP-CLI deprecation suppression
+WP-CLI's bundled dependencies emit PHP deprecation notices on newer PHP that would otherwise flood streamed job logs. See [`yerdd`'s WordPress support section](./binaries/yerdd#wordpress-support) for `QUIET_DEPRECATIONS` and the `PHP_INI_SCAN_DIR`-based fix for subprocesses WP-CLI spawns internally via `launch_self()`.
+:::
 
 ## Shims: `reconcile_tool_shims`
 

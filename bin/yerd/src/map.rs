@@ -10,8 +10,8 @@ use std::fmt::Write as _;
 use yerd_core::{PhpVersion, Site, SiteKind};
 use yerd_ipc::{
     Channel, CloudflaredStatus, Diagnosis, FixReport, PhpPoolStatus, PoolRunState, PortStatus,
-    Request, Response, ServiceAvailability, ServiceRunState, ServiceStatus, Severity, StatusReport,
-    ToolStatus, TunnelInfo, TunnelRunState, UpdateSource,
+    Request, Response, ServiceAvailability, ServiceRunState, ServiceStatus, Severity, SiteEntry,
+    StatusReport, ToolStatus, TunnelInfo, TunnelRunState, UpdateSource,
 };
 
 use crate::cli::{Command, DbAction, MailAction, ServiceAction, TunnelAction};
@@ -526,12 +526,19 @@ pub fn doctor_exit_code(resp: &Response) -> u8 {
     }
 }
 
-fn format_sites(sites: &[Site]) -> String {
+fn format_sites(sites: &[SiteEntry]) -> String {
     if sites.is_empty() {
         return "no sites".to_owned();
     }
+    // Only add the WORDPRESS column when at least one listed site needs it,
+    // so the common (no-WordPress) case's table is unchanged.
+    let show_wordpress = sites.iter().any(|entry| entry.is_wordpress);
     let mut out = String::from("NAME\tKIND\tPHP\tSECURE\tSERVED\tDOCROOT");
-    for s in sites {
+    if show_wordpress {
+        out.push_str("\tWORDPRESS");
+    }
+    for entry in sites {
+        let s = &entry.site;
         let kind = match s.kind() {
             SiteKind::Parked => "parked",
             SiteKind::Linked => "linked",
@@ -551,6 +558,10 @@ fn format_sites(sites: &[Site]) -> String {
             served,
             s.document_root().display()
         );
+        if show_wordpress {
+            let wp = if entry.is_wordpress { "yes" } else { "-" };
+            let _ = write!(out, "\t{wp}");
+        }
     }
     out
 }
@@ -1477,11 +1488,36 @@ mod tests {
         assert_eq!(tools.code, 0);
 
         let site = Site::linked("foo", "/srv/foo", PhpVersion::new(8, 3)).unwrap();
-        let listed = render(&Response::Sites { sites: vec![site] }, false);
+        let listed = render(
+            &Response::Sites {
+                sites: vec![SiteEntry {
+                    site,
+                    is_wordpress: false,
+                }],
+            },
+            false,
+        );
         assert!(listed.stdout.contains("foo"));
         assert!(listed.stdout.contains("linked"));
         assert!(listed.stdout.contains("8.3"));
+        assert!(
+            !listed.stdout.contains("WORDPRESS"),
+            "no WORDPRESS column when nothing listed is WordPress"
+        );
         assert_eq!(listed.code, 0);
+
+        let blog = Site::parked("blog", "/srv/blog", PhpVersion::new(8, 3)).unwrap();
+        let with_wp = render(
+            &Response::Sites {
+                sites: vec![SiteEntry {
+                    site: blog,
+                    is_wordpress: true,
+                }],
+            },
+            false,
+        );
+        assert!(with_wp.stdout.contains("WORDPRESS"));
+        assert!(with_wp.stdout.contains("yes"));
 
         let err = render(
             &Response::Error {

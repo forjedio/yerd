@@ -348,6 +348,15 @@ pub struct SiteOverride {
     /// reason as the override key. Must be a plain relative path (no leading
     /// `/`, no `..`); enforced by [`Config::validate`].
     pub web_root: Option<String>,
+    /// Pinned `WordPress` one-click admin login flag, or `None` to inherit
+    /// (off).
+    pub wp_auto_login: Option<bool>,
+    /// Pinned `WordPress` login/username to sign in as, or `None` to inherit
+    /// (fall back to the earliest-created administrator). Distinct from
+    /// `wp_auto_login` being absent - the two are independent overrides, but
+    /// only meaningful together (a chosen user has no effect while
+    /// `wp_auto_login` is off).
+    pub wp_auto_login_user: Option<String>,
 }
 
 /// Configured services, keyed by service id.
@@ -488,6 +497,8 @@ mod tests {
                 php: None,
                 secure: None,
                 web_root: None,
+                wp_auto_login: None,
+                wp_auto_login_user: None,
             }
         );
     }

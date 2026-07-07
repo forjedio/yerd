@@ -33,6 +33,27 @@ export interface Site {
   php: PhpVersion;
   secure: boolean;
   kind: SiteKind;
+  /** WordPress one-click admin login toggle. Omitted on the wire when false. */
+  wp_auto_login?: boolean;
+  /** WordPress login/username to sign in as, or absent for "earliest admin". */
+  wp_auto_login_user?: string;
+}
+
+/**
+ * One entry in `Response::Sites` - `Site` plus a WordPress-detection flag
+ * served from the daemon's in-memory cache (`SiteEntry` in response.rs,
+ * `#[serde(flatten)]`, so this is a flat object on the wire - no nested
+ * `site` key). Omitted on the wire when absent.
+ */
+export interface SiteEntry extends Site {
+  is_wordpress?: boolean;
+}
+
+/** crates/yerd-ipc/src/response.rs - WordPressAdminUser, for the auto-login
+ *  user picker (`Response::WordpressAdminUsers`). */
+export interface WordPressAdminUser {
+  login: string;
+  display_name: string;
 }
 
 // ── status payloads (status.rs) ────────────────────────────────────────────
@@ -85,6 +106,14 @@ export interface ServiceAvailability {
   service: string;
   available: string[];
   installed: string[];
+}
+
+/** crates/yerd-ipc/src/status.rs - WordPressVersionInfo. */
+export interface WordPressVersionInfo {
+  branch: string;
+  latest: string;
+  min_php: PhpVersion;
+  max_php: PhpVersion;
 }
 
 export interface PhpPoolStatus {
@@ -313,8 +342,35 @@ export interface LaravelOptions {
   boost: boolean;
 }
 
-/** Framework is internally tagged on `framework`. Only Laravel today. */
-export type Framework = { framework: "laravel"; options: LaravelOptions };
+export type WordPressDbEngine = "mysql" | "mariadb";
+
+/** crates/yerd-ipc/src/create.rs - WordPressDatabase. */
+export interface WordPressDatabase {
+  engine: WordPressDbEngine;
+  name: string;
+}
+
+/** crates/yerd-ipc/src/create.rs - WordPressOptions. */
+export interface WordPressOptions {
+  /** `null` installs the latest stable release. */
+  core_version: string | null;
+  locale: string;
+  admin_user: string;
+  admin_email: string;
+  admin_password: string;
+  site_title: string;
+  table_prefix: string;
+  database: WordPressDatabase;
+}
+
+/**
+ * Framework is internally tagged on `framework`. The Rust variant is spelled
+ * `Wordpress` (one capital) so `rename_all = "snake_case"` produces the wire
+ * tag `"wordpress"` rather than `"word_press"` - see create.rs's doc comment.
+ */
+export type Framework =
+  | { framework: "laravel"; options: LaravelOptions }
+  | { framework: "wordpress"; options: WordPressOptions };
 
 /** crates/yerd-ipc/src/create.rs - CreateSiteSpec. */
 export interface CreateSiteSpec {
@@ -351,7 +407,7 @@ export type ErrorCode =
  */
 export type Response =
   | { type: "pong" }
-  | { type: "sites"; sites: Site[] }
+  | { type: "sites"; sites: SiteEntry[] }
   | { type: "ok" }
   | { type: "error"; code: ErrorCode; message: string }
   | { type: "parked"; paths: string[] }
@@ -392,6 +448,9 @@ export type Response =
   | { type: "doctor_fix"; report: FixReport }
   | { type: "services"; services: ServiceStatus[] }
   | { type: "available_services"; services: ServiceAvailability[] }
+  | { type: "wordpress_versions"; versions: WordPressVersionInfo[] }
+  | { type: "wordpress_login_token"; token: string }
+  | { type: "wordpress_admin_users"; users: WordPressAdminUser[] }
   | { type: "service_logs"; lines: string[] }
   | { type: "databases"; databases: DatabaseSummary[] }
   | {

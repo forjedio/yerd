@@ -10,10 +10,9 @@
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
-use tokio::io::{AsyncBufReadExt, BufReader};
 use yerd_platform::PlatformDirs;
 
-use super::{stage_and_swap, tool_dir, ProgressTx, Tool, ToolError};
+use super::{drain, move_dir_contents, stage_and_swap, tool_dir, ProgressTx, Tool, ToolError};
 use crate::ext_install::installed_versions;
 
 /// The Composer package providing `laravel new`.
@@ -115,31 +114,6 @@ pub async fn install(dirs: &PlatformDirs, progress: Option<&ProgressTx>) -> Resu
     Ok(())
 }
 
-/// Stream a child pipe line-by-line into `progress` (no-op if either is absent).
-async fn drain<R: tokio::io::AsyncRead + Unpin>(pipe: Option<R>, progress: Option<ProgressTx>) {
-    let Some(pipe) = pipe else { return };
-    let mut lines = BufReader::new(pipe).lines();
-    while let Ok(Some(line)) = lines.next_line().await {
-        if let Some(tx) = &progress {
-            let _ = tx.send(line);
-        }
-    }
-}
-
-/// Move every entry of `from` into `to`. Both live under `{data}/tools`, so the
-/// renames stay on one filesystem and are atomic + instant.
-fn move_dir_contents(from: &Path, to: &Path) -> Result<(), ToolError> {
-    let entries =
-        std::fs::read_dir(from).map_err(|e| ToolError::Io(format!("{}: {e}", from.display())))?;
-    for entry in entries {
-        let entry = entry.map_err(|e| ToolError::Io(e.to_string()))?;
-        let dest = to.join(entry.file_name());
-        std::fs::rename(entry.path(), &dest)
-            .map_err(|e| ToolError::Io(format!("{}: {e}", dest.display())))?;
-    }
-    Ok(())
-}
-
 /// Pull `laravel/installer`'s resolved version out of the built `composer.lock`.
 fn read_installer_version(build: &Path) -> Option<String> {
     let text = std::fs::read_to_string(build.join("composer.lock")).ok()?;
@@ -178,18 +152,5 @@ mod tests {
     fn read_installer_version_absent_is_none() {
         let tmp = tempfile::tempdir().unwrap();
         assert_eq!(read_installer_version(tmp.path()), None);
-    }
-
-    #[test]
-    fn move_dir_contents_moves_all_entries() {
-        let tmp = tempfile::tempdir().unwrap();
-        let from = tmp.path().join("from");
-        let to = tmp.path().join("to");
-        std::fs::create_dir_all(from.join("vendor")).unwrap();
-        std::fs::write(from.join("composer.json"), b"{}").unwrap();
-        std::fs::create_dir_all(&to).unwrap();
-        move_dir_contents(&from, &to).unwrap();
-        assert!(to.join("vendor").is_dir());
-        assert!(to.join("composer.json").is_file());
     }
 }

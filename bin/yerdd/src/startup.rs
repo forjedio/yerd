@@ -119,16 +119,18 @@ pub async fn bring_up_with_dirs(
             None
         });
     let php_ca_bundle = build_php_ca_bundle(&dirs, ca.cert_pem(), host_roots.as_deref());
+    let wordpress_login_prepend_script = crate::wordpress_login::write_prepend_script(&dirs.data);
 
     let cert_store = Arc::new(DaemonCertStore::new(ca, dirs.data.join("leaves")));
 
     let detect_cache = Arc::new(DetectCache::new());
     let dns_tld = config.tld.clone();
-    let router = build_router(&config, &dirs, &detect_cache)?;
+    let (router, wordpress_sites) = build_router(&config, &dirs, &detect_cache)?;
     if router.is_empty() {
         tracing::info!("no sites configured - every request will 404 until a site is added");
     }
     let router = Arc::new(RwLock::new(router));
+    let wordpress_sites = Arc::new(RwLock::new(wordpress_sites));
 
     let cfg_http = config.ports.http;
     let cfg_https = config.ports.https;
@@ -311,6 +313,10 @@ pub async fn bring_up_with_dirs(
         php_mutate: tokio::sync::Mutex::new(()),
         jobs: crate::jobs::JobRegistry::default(),
         reserved_names: tokio::sync::Mutex::new(std::collections::HashSet::new()),
+        wordpress_versions: tokio::sync::RwLock::new(None),
+        wordpress_login_tokens: Arc::new(crate::wordpress_login::LoginTokenRegistry::new()),
+        wordpress_login_prepend_script,
+        wordpress_sites,
     });
 
     {
@@ -338,30 +344,51 @@ pub async fn bring_up_with_dirs(
     })
 }
 
+/// Site name → `is_wordpress`, refreshed on every router rebuild - see
+/// [`build_routing`] and `DaemonState.wordpress_sites`.
+pub(crate) type WordpressSites = std::collections::HashMap<String, bool>;
+
 /// Build a fresh routing table from the config: scan every parked root for
 /// child-directory sites, then add the explicitly linked sites (linked wins on
 /// name collision). Shared by startup and the IPC mutation path so both
-/// produce identical routing.
+/// produce identical routing. Also returns the `WordPress`-detection cache
+/// (site name → `is_wordpress`) that populates `DaemonState.wordpress_sites` -
+/// see [`build_routing`].
 pub(crate) fn build_router(
     cfg: &yerd_config::Config,
     dirs: &PlatformDirs,
     detect_cache: &DetectCache,
-) -> Result<SiteRouter, DaemonError> {
-    Ok(build_routing(cfg, dirs, detect_cache)?.0)
+) -> Result<(SiteRouter, WordpressSites), DaemonError> {
+    let (router, wordpress_sites, _watch_roots) = build_routing(cfg, dirs, detect_cache)?;
+    Ok((router, wordpress_sites))
 }
 
 /// Like [`build_router`], but also returns the project roots the filesystem
 /// watcher should keep watching: parked sites whose web root could **not** be
 /// resolved yet (no framework/web-dir detected, no manual override). Resolved
 /// sites are deliberately *not* watched - "don't watch what we already know".
+///
+/// The `WordPress`-detection map is computed here, once per rebuild, over the
+/// finished router's sites - not on the `ListSites` poll path - so a marker
+/// file is only ever stat'd on a mutation or a filesystem-watcher tick, no
+/// matter how often the GUI polls. See `crate::wordpress_detect`.
 pub(crate) fn build_routing(
     cfg: &yerd_config::Config,
     dirs: &PlatformDirs,
     detect_cache: &DetectCache,
-) -> Result<(SiteRouter, Vec<PathBuf>), DaemonError> {
+) -> Result<(SiteRouter, WordpressSites, Vec<PathBuf>), DaemonError> {
     let (sites, watch_roots) = scan_sites(cfg, cfg.php.default, dirs, detect_cache)?;
     let router = SiteRouter::from_sites(RouterConfig::with_tld(cfg.tld.clone()), sites)?;
-    Ok((router, watch_roots))
+    let wordpress_sites = router
+        .iter()
+        .map(|site| {
+            (
+                site.name().to_owned(),
+                crate::wordpress_detect::is_wordpress(&site.served_root()),
+            )
+        })
+        .collect();
+    Ok((router, wordpress_sites, watch_roots))
 }
 
 // ──────────────────────────────────────────────────────────────────────
@@ -624,6 +651,12 @@ fn build_parked_site(
         if let Some(secure) = ov.secure {
             site.set_secure(secure);
         }
+        if let Some(wp_auto_login) = ov.wp_auto_login {
+            site.set_wp_auto_login(wp_auto_login);
+        }
+        if ov.wp_auto_login_user.is_some() {
+            site.set_wp_auto_login_user(ov.wp_auto_login_user.clone());
+        }
     }
 
     if let Some(rel) = ov.and_then(|o| o.web_root.as_deref()) {
@@ -795,6 +828,8 @@ mod tests {
                 php: None,
                 secure: None,
                 web_root: Some("public".to_string()),
+                wp_auto_login: None,
+                wp_auto_login_user: None,
             },
         );
         let dirs = make_dirs(tmp.path());
@@ -875,6 +910,8 @@ mod tests {
                 php: Some(PhpVersion::new(8, 5)),
                 secure: None,
                 web_root: None,
+                wp_auto_login: None,
+                wp_auto_login_user: None,
             },
         );
         let dirs = make_dirs(tmp.path());
@@ -895,6 +932,8 @@ mod tests {
                 php: None,
                 secure: Some(true),
                 web_root: None,
+                wp_auto_login: None,
+                wp_auto_login_user: None,
             },
         );
         let dirs = make_dirs(tmp.path());
@@ -921,6 +960,8 @@ mod tests {
                 php: Some(PhpVersion::new(8, 5)),
                 secure: Some(true),
                 web_root: None,
+                wp_auto_login: None,
+                wp_auto_login_user: None,
             },
         );
         let dirs = make_dirs(tmp.path());
@@ -949,6 +990,8 @@ mod tests {
                 php: Some(PhpVersion::new(8, 5)),
                 secure: Some(true),
                 web_root: None,
+                wp_auto_login: None,
+                wp_auto_login_user: None,
             },
         );
         let dirs = make_dirs(tmp.path());
@@ -972,10 +1015,12 @@ mod tests {
         let dirs = make_dirs(tmp.path());
         let cfg = yerd_config::Config::default();
         let cache = DetectCache::new();
-        let router = build_router(&cfg, &dirs, &cache).unwrap();
+        let (router, wordpress_sites) = build_router(&cfg, &dirs, &cache).unwrap();
         assert!(router.is_empty());
-        let (router2, watch_roots) = build_routing(&cfg, &dirs, &cache).unwrap();
+        assert!(wordpress_sites.is_empty());
+        let (router2, wordpress_sites2, watch_roots) = build_routing(&cfg, &dirs, &cache).unwrap();
         assert!(router2.is_empty());
+        assert!(wordpress_sites2.is_empty());
         assert!(watch_roots.is_empty());
     }
 
@@ -989,9 +1034,28 @@ mod tests {
             .paths
             .insert(parked_root.to_string_lossy().into_owned());
         let dirs = make_dirs(tmp.path());
-        let (router, watch_roots) = build_routing(&cfg, &dirs, &DetectCache::new()).unwrap();
+        let (router, wordpress_sites, watch_roots) =
+            build_routing(&cfg, &dirs, &DetectCache::new()).unwrap();
         assert!(!router.is_empty());
+        assert_eq!(wordpress_sites.get("shop"), Some(&false));
         assert_eq!(watch_roots, vec![parked_root.join("shop")]);
+    }
+
+    #[test]
+    fn build_routing_detects_wordpress_site() {
+        let tmp = tempfile::tempdir().unwrap();
+        let parked_root = tmp.path().join("Sites");
+        std::fs::create_dir_all(parked_root.join("blog")).unwrap();
+        std::fs::write(parked_root.join("blog").join("wp-config.php"), b"<?php").unwrap();
+        let mut cfg = yerd_config::Config::default();
+        cfg.parked
+            .paths
+            .insert(parked_root.to_string_lossy().into_owned());
+        let dirs = make_dirs(tmp.path());
+        let (router, wordpress_sites, _watch_roots) =
+            build_routing(&cfg, &dirs, &DetectCache::new()).unwrap();
+        assert!(!router.is_empty());
+        assert_eq!(wordpress_sites.get("blog"), Some(&true));
     }
 
     #[test]

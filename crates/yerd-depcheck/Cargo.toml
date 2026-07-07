@@ -1,0 +1,17 @@
+[package]
+name                   = "yerd-depcheck"
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+publish.workspace      = true
+description            = "Test-only cargo-metadata dependency-graph assertions, shared by every crate/binary's no_runtime_deps guard."
+
+# Test-only: every consumer pulls this in via [dev-dependencies] only, never
+# [dependencies] - see the crate's module doc for why that's load-bearing.
+
+[dependencies]
+serde_json = { workspace = true }
+
+[lints]
+workspace = true

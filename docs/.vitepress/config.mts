@@ -215,6 +215,7 @@ export default withMermaid({
             { text: 'IPC Protocol', link: '/developer/ipc-protocol' },
             { text: 'Dev-Tool Installers', link: '/developer/dev-tools' },
             { text: 'Cross-Platform Model', link: '/developer/cross-platform' },
+            { text: 'Config Schema History', link: '/developer/config-schema-history' },
           ],
         },
         {
@@ -236,6 +237,7 @@ export default withMermaid({
             { text: 'yerd-platform', link: '/developer/crates/yerd-platform' },
             { text: 'yerd-service-ctl', link: '/developer/crates/yerd-service-ctl' },
             { text: 'yerd-update', link: '/developer/crates/yerd-update' },
+            { text: 'yerd-depcheck (test-only)', link: '/developer/crates/yerd-depcheck' },
           ],
         },
         {
