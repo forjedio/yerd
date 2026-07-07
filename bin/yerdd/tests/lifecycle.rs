@@ -268,6 +268,7 @@ mod tests {
         let proxy_handle = {
             let resolver = Arc::new(yerdd::backend_resolver::DaemonBackendResolver {
                 php_manager: daemon.php_manager.clone(),
+                wordpress_sites: daemon.state.wordpress_sites.clone(),
             });
             let https = yerd_proxy::HttpsBinding {
                 listener: daemon

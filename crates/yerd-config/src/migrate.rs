@@ -19,7 +19,7 @@ pub(crate) type MigrationStep = fn(&mut Value) -> Result<(), ConfigError>;
 /// Forward-migration steps, indexed so that **`STEPS[N]` walks `vN → v(N+1)`**.
 /// This matches [`up`], which indexes `STEPS[current]` (== the version being
 /// migrated *from*). Example: a v1 file is migrated by `STEPS[1]`. When
-/// `CURRENT_VERSION == 9`, `STEPS = [v0→v1, …, v7→v8, v8→v9]`, length 9.
+/// `CURRENT_VERSION == 10`, `STEPS = [v0→v1, …, v8→v9, v9→v10]`, length 10.
 ///
 /// `STEPS[0]` (v0→v1) is only reachable via a hand-crafted `version = 0` file -
 /// v0 was never written to disk - but it must exist so that `STEPS[1]` does.
@@ -33,6 +33,7 @@ pub(crate) const STEPS: &[MigrationStep] = &[
     migrate_v6_to_v7,
     migrate_v7_to_v8,
     migrate_v8_to_v9,
+    migrate_v9_to_v10,
 ];
 
 /// `v0 → v1`: bump the version. v0 predates any shipped config, so there is no
@@ -113,6 +114,13 @@ fn migrate_v8_to_v9(value: &mut Value) -> Result<(), ConfigError> {
     set_version(value, 9)
 }
 
+/// `v9 → v10`: bump the version. v10 added the optional `wp_auto_login`/
+/// `wp_auto_login_user` keys (inside `[[linked]]` and `[[overrides]]`), which
+/// default when absent, so an in-place version bump is the entire migration.
+fn migrate_v9_to_v10(value: &mut Value) -> Result<(), ConfigError> {
+    set_version(value, 10)
+}
+
 /// Set the top-level `version` key, erroring if the root is not a table.
 fn set_version(value: &mut Value, n: i64) -> Result<(), ConfigError> {
     let table = value.as_table_mut().ok_or(ConfigError::Migration {
@@ -182,7 +190,7 @@ mod tests {
 
     #[test]
     fn current_version_pinned() {
-        assert_eq!(crate::CURRENT_VERSION, 9);
+        assert_eq!(crate::CURRENT_VERSION, 10);
     }
 
     #[test]
@@ -218,6 +226,13 @@ mod tests {
         let mut v: Value = toml::from_str("version = 8\n").unwrap();
         migrate_v8_to_v9(&mut v).unwrap();
         assert_eq!(read_version(&v).unwrap(), 9);
+    }
+
+    #[test]
+    fn v9_to_v10_is_a_bare_version_bump() {
+        let mut v: Value = toml::from_str("version = 9\n").unwrap();
+        migrate_v9_to_v10(&mut v).unwrap();
+        assert_eq!(read_version(&v).unwrap(), 10);
     }
 
     #[test]

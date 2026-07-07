@@ -86,7 +86,7 @@ const form = reactive({
   locale: "en_US",
   adminUser: "admin",
   adminEmail: "test@example.com",
-  adminPassword: "password",
+  adminPassword: randomPassword(),
   siteTitle: "",
   tablePrefix: "wp_",
   // database
@@ -170,11 +170,15 @@ watch(
   },
 );
 
-function generatePassword(): void {
+function randomPassword(): string {
   const chars = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789!@#$%^&*";
   const bytes = new Uint32Array(20);
   crypto.getRandomValues(bytes);
-  form.adminPassword = Array.from(bytes, (b) => chars[b % chars.length]).join("");
+  return Array.from(bytes, (b) => chars[b % chars.length]).join("");
+}
+
+function generatePassword(): void {
+  form.adminPassword = randomPassword();
 }
 
 // ── prerequisites ────────────────────────────────────────────────────────────
@@ -415,7 +419,17 @@ const logBox = ref<HTMLElement | null>(null);
 let cursor = 0;
 let pollTimer: number | null = null;
 
-const PHASES = ["Preflight", "Installing", "Registering", "Done"];
+// Mirrors the exact `state.jobs.set_phase(id, "...")` strings emitted by
+// `bin/yerdd/src/create_site/wordpress.rs::run`, in order.
+const PHASES = [
+  "Preflight",
+  "Provisioning database",
+  "Downloading WordPress",
+  "Configuring",
+  "Installing",
+  "Registering",
+  "Done",
+];
 function phaseStatus(p: string): "done" | "active" | "todo" {
   const cur = phase.value;
   const ci = PHASES.indexOf(cur);
@@ -508,7 +522,7 @@ function resetForm(): void {
   form.locale = "en_US";
   form.adminUser = "admin";
   form.adminEmail = "test@example.com";
-  form.adminPassword = "password";
+  form.adminPassword = randomPassword();
   form.siteTitle = "";
   form.tablePrefix = "wp_";
   form.dbEngine = "mysql";
@@ -852,11 +866,16 @@ const busy = computed(() => jobStateRef.value === "running" && step.value === 4)
 
     <!-- ── Step 5: Progress ── -->
     <div v-else class="space-y-4">
-      <div class="flex items-center">
-        <template v-for="(p, i) in PHASES" :key="p">
-          <div class="flex shrink-0 items-center gap-2">
+      <div class="grid grid-cols-7">
+        <div v-for="(p, i) in PHASES" :key="p" class="flex flex-col items-center gap-1.5 px-0.5">
+          <div class="relative flex w-full items-center justify-center">
             <span
-              class="flex size-6 items-center justify-center rounded-full transition-colors"
+              v-if="i < PHASES.length - 1"
+              class="absolute left-1/2 top-1/2 z-0 h-0.5 w-full -translate-y-1/2 rounded-full transition-colors"
+              :class="phaseStatus(p) === 'done' ? 'bg-success' : 'bg-border'"
+            />
+            <span
+              class="relative z-10 flex size-6 shrink-0 items-center justify-center rounded-full transition-colors"
               :class="
                 phaseStatus(p) === 'done'
                   ? 'bg-success text-white'
@@ -869,17 +888,12 @@ const busy = computed(() => jobStateRef.value === "running" && step.value === 4)
               <Loader2 v-else-if="phaseStatus(p) === 'active'" class="size-3.5 animate-spin" />
               <Circle v-else class="size-2 fill-current" />
             </span>
-            <span
-              class="text-xs"
-              :class="phaseStatus(p) === 'todo' ? 'text-muted-foreground' : 'font-medium'"
-            >{{ p }}</span>
           </div>
           <span
-            v-if="i < PHASES.length - 1"
-            class="mx-2 h-0.5 flex-1 rounded-full transition-colors"
-            :class="phaseStatus(p) === 'done' ? 'bg-success' : 'bg-border'"
-          />
-        </template>
+            class="text-center text-[11px] leading-tight"
+            :class="phaseStatus(p) === 'todo' ? 'text-muted-foreground' : 'font-medium'"
+          >{{ p }}</span>
+        </div>
       </div>
       <p v-if="phase && !PHASES.includes(phase) && jobStateRef === 'running'" class="text-xs text-muted-foreground">
         {{ phase }}…

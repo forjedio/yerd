@@ -40,6 +40,9 @@ pub(super) async fn run(
             spec.php.major, spec.php.minor
         ));
     }
+    if let Err(e) = validate_admin_credentials(options) {
+        return Outcome::Failed(format!("invalid WordPress admin account: {e}"));
+    }
 
     let user_dirs = crate::tools::external::resolve_user_path()
         .await
@@ -53,15 +56,7 @@ pub(super) async fn run(
     if let Err(msg) = super::probe_writable(&spec.parent_dir) {
         return Outcome::Failed(msg);
     }
-    // The wizard pre-fills and validates this client-side, but an empty name
-    // (a lazy/scripted `Request::CreateSite` caller, not just the GUI) falls
-    // back to the same derivation rather than failing the whole job on
-    // `DbNameError::Empty` when a sensible default is derivable.
-    let db_name = if options.database.name.is_empty() {
-        derive_db_name(name)
-    } else {
-        options.database.name.clone()
-    };
+    let db_name = resolve_db_name(name, options);
     if let Err(e) = database::validate_db_name(&db_name) {
         return Outcome::Failed(format!("invalid database name: {e}"));
     }
@@ -69,7 +64,6 @@ pub(super) async fn run(
         return Outcome::Cancelled;
     }
 
-    // ---- Provisioning database ----
     state.jobs.set_phase(id, "Provisioning database").await;
     let service = engine_service(options.database.engine);
     if let Err(msg) = ensure_database_engine(id, service, state).await {
@@ -90,7 +84,6 @@ pub(super) async fn run(
 
     let db_port = service_port(service, state).await;
 
-    // ---- Downloading WordPress ----
     state.jobs.set_phase(id, "Downloading WordPress").await;
     if let Err(e) = std::fs::create_dir_all(&project_dir) {
         rollback(&project_dir, db_created, service, &db_name, state).await;
@@ -124,7 +117,6 @@ pub(super) async fn run(
         }
     }
 
-    // ---- Configuring ----
     state.jobs.set_phase(id, "Configuring").await;
     let config_args = config_create_args(options, &db_name, db_port);
     state
@@ -153,7 +145,6 @@ pub(super) async fn run(
         }
     }
 
-    // ---- Installing ----
     state.jobs.set_phase(id, "Installing").await;
     let install_args = install_args(name, spec.secure, options);
     state
@@ -182,15 +173,70 @@ pub(super) async fn run(
         }
     }
 
-    // Best-effort: enable pretty permalinks so pages/posts (and yerd-proxy's
-    // try_files-style routing, see `script_file::resolve_script`) resolve
-    // human-readable URLs by default. A fresh `wp core install` otherwise
-    // defaults to "Plain" permalinks (`?p=123`), under which WordPress
-    // doesn't parse pretty paths as routes at all and silently falls back to
-    // the front page. Not fatal - a working WordPress install with the
-    // default permalink structure is still a successful create, so a
-    // failure here is only logged, never rolled back (unlike a genuine
-    // scaffolding failure above).
+    if apply_permalink_structure(id, &php_cli, &boot_fs, &project_dir, state, &mut cancel_rx).await
+        == PermalinkOutcome::Cancelled
+    {
+        rollback(&project_dir, db_created, service, &db_name, state).await;
+        return Outcome::Cancelled;
+    }
+
+    state.jobs.set_phase(id, "Registering").await;
+    if let Err(msg) =
+        super::registration::register(name, &spec.parent_dir, &project_dir, spec, state).await
+    {
+        return Outcome::Failed(format!("scaffolded, but registration failed: {msg}"));
+    }
+    enable_default_admin_login(name, state).await;
+    let scheme = if spec.secure { "https" } else { "http" };
+    state
+        .jobs
+        .push_log(id, format!("serving {scheme}://{name}.test"))
+        .await;
+    Outcome::Succeeded
+}
+
+/// The database name to provision: `options.database.name` if given,
+/// otherwise derived from `name`. The wizard pre-fills and validates this
+/// client-side, but an empty name (a lazy/scripted `Request::CreateSite`
+/// caller, not just the GUI) falls back to the same derivation rather than
+/// failing the whole job on `DbNameError::Empty` when a sensible default is
+/// derivable.
+fn resolve_db_name(name: &str, options: &WordPressOptions) -> String {
+    if options.database.name.is_empty() {
+        derive_db_name(name)
+    } else {
+        options.database.name.clone()
+    }
+}
+
+/// Outcome of [`apply_permalink_structure`]: whether the caller must roll
+/// back and stop (`Cancelled`), or carry on regardless (`Applied` - a
+/// `wp rewrite structure` failure only logs a warning, it never fails the
+/// job; see the function's own doc comment for why).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PermalinkOutcome {
+    Applied,
+    Cancelled,
+}
+
+/// Best-effort: enable pretty (postname-based) permalinks so pages/posts
+/// (and `yerd-proxy`'s try_files-style routing, see
+/// `script_file::resolve_script`) resolve human-readable URLs by default. A
+/// fresh `wp core install` otherwise defaults to "Plain" permalinks
+/// (`?p=123`), under which `WordPress` doesn't parse pretty paths as routes
+/// at all and silently falls back to the front page. Not fatal, a working
+/// `WordPress` install with the default permalink structure is still a
+/// successful create, so a `wp rewrite structure` failure is only logged,
+/// never rolled back (unlike a genuine scaffolding failure).
+#[allow(clippy::too_many_arguments)]
+async fn apply_permalink_structure(
+    id: &str,
+    php_cli: &Path,
+    boot_fs: &Path,
+    project_dir: &Path,
+    state: &Arc<DaemonState>,
+    cancel_rx: &mut watch::Receiver<bool>,
+) -> PermalinkOutcome {
     let permalink_args = permalink_structure_args();
     state
         .jobs
@@ -198,16 +244,16 @@ pub(super) async fn run(
         .await;
     match run_wp_step(
         id,
-        &php_cli,
-        &boot_fs,
+        php_cli,
+        boot_fs,
         &permalink_args,
-        &project_dir,
+        project_dir,
         state,
-        &mut cancel_rx,
+        cancel_rx,
     )
     .await
     {
-        StreamedOutcome::Ok => {}
+        StreamedOutcome::Ok => PermalinkOutcome::Applied,
         StreamedOutcome::Failed(msg) => {
             state
                 .jobs
@@ -216,25 +262,18 @@ pub(super) async fn run(
                     format!("warning: couldn't set pretty permalinks: {msg}"),
                 )
                 .await;
+            PermalinkOutcome::Applied
         }
-        StreamedOutcome::Cancelled => {
-            rollback(&project_dir, db_created, service, &db_name, state).await;
-            return Outcome::Cancelled;
-        }
+        StreamedOutcome::Cancelled => PermalinkOutcome::Cancelled,
     }
+}
 
-    // ---- Registering ----
-    state.jobs.set_phase(id, "Registering").await;
-    if let Err(msg) =
-        super::registration::register(name, &spec.parent_dir, &project_dir, spec, state).await
-    {
-        return Outcome::Failed(format!("scaffolded, but registration failed: {msg}"));
-    }
-    // Best-effort: enable one-click admin login by default for wizard-created
-    // sites - the whole point of the post-creation "WP Admin" button. Never
-    // fails the job. Parked/pre-existing WordPress sites (not created through
-    // this wizard) keep this off by default - yerd has no basis for assuming
-    // that's wanted for an arbitrary directory.
+/// Best-effort: enable one-click admin login by default for a site created
+/// through this wizard - the whole point of the post-creation "WP Admin"
+/// button. Never fails the job. A parked/pre-existing `WordPress` site (not
+/// created through this wizard) keeps this off by default; yerd has no basis
+/// for assuming that's wanted for an arbitrary directory.
+async fn enable_default_admin_login(name: &str, state: &Arc<DaemonState>) {
     let _ = crate::ipc_server::handle_mutation(
         yerd_ipc::Request::SetWordpressAutoLogin {
             name: name.to_owned(),
@@ -244,12 +283,6 @@ pub(super) async fn run(
         state,
     )
     .await;
-    let scheme = if spec.secure { "https" } else { "http" };
-    state
-        .jobs
-        .push_log(id, format!("serving {scheme}://{name}.test"))
-        .await;
-    Outcome::Succeeded
 }
 
 /// Run one `wp <subcommand>` invocation, streaming its output into the job
@@ -479,6 +512,66 @@ fn config_create_args(o: &WordPressOptions, db_name: &str, db_port: u16) -> Vec<
     ]
 }
 
+/// The shortest admin password [`validate_admin_credentials`] accepts,
+/// mirroring the GUI wizard's own client-side minimum
+/// (`CreateWordPressWizard.vue`). The daemon is the authority here, the same
+/// way [`database::validate_db_name`] is for database names, so a scripted
+/// `Request::CreateSite` caller can't bypass the wizard's own floor.
+const MIN_ADMIN_PASSWORD_LEN: usize = 8;
+
+/// Why proposed `WordPress` admin credentials were rejected.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum AdminCredentialsError {
+    /// `admin_user` was empty or whitespace-only.
+    EmptyUser,
+    /// `admin_password` was shorter than [`MIN_ADMIN_PASSWORD_LEN`].
+    PasswordTooShort,
+    /// `admin_email` didn't look like `local@domain.tld`.
+    InvalidEmail,
+}
+
+impl std::fmt::Display for AdminCredentialsError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            AdminCredentialsError::EmptyUser => f.write_str("admin username must not be empty"),
+            AdminCredentialsError::PasswordTooShort => write!(
+                f,
+                "admin password must be at least {MIN_ADMIN_PASSWORD_LEN} characters"
+            ),
+            AdminCredentialsError::InvalidEmail => {
+                f.write_str("admin email is not a valid address")
+            }
+        }
+    }
+}
+
+/// Validate the admin account WP-CLI will create, server-side - a scripted
+/// or malformed `Request::CreateSite` shouldn't be able to hand `wp core
+/// install` an empty username, a trivially short password, or a malformed
+/// email and have it silently create a barely-secured site.
+fn validate_admin_credentials(o: &WordPressOptions) -> Result<(), AdminCredentialsError> {
+    if o.admin_user.trim().is_empty() {
+        return Err(AdminCredentialsError::EmptyUser);
+    }
+    if o.admin_password.chars().count() < MIN_ADMIN_PASSWORD_LEN {
+        return Err(AdminCredentialsError::PasswordTooShort);
+    }
+    if !looks_like_email(&o.admin_email) {
+        return Err(AdminCredentialsError::InvalidEmail);
+    }
+    Ok(())
+}
+
+/// A deliberately loose `local@domain.tld` shape check, not full RFC 5322 -
+/// good enough to catch empty/malformed input from a scripted caller without
+/// rejecting real addresses WP-CLI itself would accept.
+fn looks_like_email(s: &str) -> bool {
+    let Some((local, domain)) = s.split_once('@') else {
+        return false;
+    };
+    !local.is_empty() && domain.contains('.') && !domain.starts_with('.') && !domain.ends_with('.')
+}
+
 /// `wp core install` argument vector. `--url` sets `siteurl`/`home` directly
 /// during install, so no follow-up `wp option update` is needed.
 fn install_args(name: &str, secure: bool, o: &WordPressOptions) -> Vec<String> {
@@ -532,6 +625,71 @@ mod tests {
     fn engine_service_maps_both_variants() {
         assert_eq!(engine_service(WordPressDbEngine::Mysql), Service::MySql);
         assert_eq!(engine_service(WordPressDbEngine::Mariadb), Service::MariaDb);
+    }
+
+    #[test]
+    fn resolve_db_name_uses_explicit_name_when_given() {
+        let mut o = opts();
+        o.database.name = "custom_db".to_owned();
+        assert_eq!(resolve_db_name("blog", &o), "custom_db");
+    }
+
+    #[test]
+    fn resolve_db_name_derives_from_site_name_when_empty() {
+        let mut o = opts();
+        o.database.name = String::new();
+        assert_eq!(resolve_db_name("my-blog", &o), derive_db_name("my-blog"));
+    }
+
+    #[test]
+    fn validate_admin_credentials_accepts_reasonable_input() {
+        assert!(validate_admin_credentials(&opts()).is_ok());
+    }
+
+    #[test]
+    fn validate_admin_credentials_rejects_empty_or_whitespace_user() {
+        let mut o = opts();
+        o.admin_user = "   ".to_owned();
+        assert_eq!(
+            validate_admin_credentials(&o),
+            Err(AdminCredentialsError::EmptyUser)
+        );
+    }
+
+    #[test]
+    fn validate_admin_credentials_rejects_short_password() {
+        let mut o = opts();
+        o.admin_password = "short1".to_owned();
+        assert_eq!(
+            validate_admin_credentials(&o),
+            Err(AdminCredentialsError::PasswordTooShort)
+        );
+    }
+
+    #[test]
+    fn validate_admin_credentials_accepts_password_at_the_minimum_length() {
+        let mut o = opts();
+        o.admin_password = "a".repeat(MIN_ADMIN_PASSWORD_LEN);
+        assert!(validate_admin_credentials(&o).is_ok());
+    }
+
+    #[test]
+    fn validate_admin_credentials_rejects_malformed_email() {
+        for bad in [
+            "not-an-email",
+            "admin@",
+            "@blog.test",
+            "admin@.test",
+            "admin@blog.",
+        ] {
+            let mut o = opts();
+            o.admin_email = bad.to_owned();
+            assert_eq!(
+                validate_admin_credentials(&o),
+                Err(AdminCredentialsError::InvalidEmail),
+                "{bad:?} should be rejected"
+            );
+        }
     }
 
     #[test]

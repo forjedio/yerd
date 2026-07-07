@@ -121,6 +121,12 @@ pub fn write_prepend_script(data_dir: &std::path::Path) -> Option<std::path::Pat
 /// *then* do the blocking filesystem check off the async executor -
 /// `wordpress_detect::detect`'s doc comment requires this, and holding the
 /// read guard across that I/O would block every writer for its duration.
+///
+/// Refuses to mint when [`DaemonState::wordpress_login_prepend_script`] is
+/// `None` (the prepend script failed to write at startup - see
+/// [`write_prepend_script`]): `yerd-proxy` only adds `auto_prepend_file` when
+/// both a consumed token *and* that path are present, so minting anyway
+/// would burn a token on presentation without ever logging the user in.
 pub async fn mint_wordpress_login_token(site: &str, state: &DaemonState) -> Response {
     let (auto_login, target_user) = {
         let guard = state.router.read().await;
@@ -153,6 +159,12 @@ pub async fn mint_wordpress_login_token(site: &str, state: &DaemonState) -> Resp
             message: format!("WordPress auto-login is not enabled for \"{site}\""),
         };
     }
+    if state.wordpress_login_prepend_script.is_none() {
+        return Response::Error {
+            code: ErrorCode::NotFound,
+            message: "WordPress one-click login is unavailable this boot".to_owned(),
+        };
+    }
     Response::WordpressLoginToken {
         token: state
             .wordpress_login_tokens
@@ -161,10 +173,202 @@ pub async fn mint_wordpress_login_token(site: &str, state: &DaemonState) -> Resp
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used)]
+#[allow(clippy::unwrap_used, clippy::panic)]
 mod tests {
     use super::*;
+    use std::path::{Path, PathBuf};
+    use std::sync::Arc;
+
+    use yerd_core::{PhpVersion, RouterConfig, Site, SiteRouter, Tld};
+    use yerd_platform::PlatformDirs;
     use yerd_proxy::LoginTokenConsumer;
+
+    fn dirs_in(tmp: &Path) -> PlatformDirs {
+        PlatformDirs {
+            config: tmp.join("c"),
+            data: tmp.join("d"),
+            state: tmp.join("s"),
+            cache: tmp.join("ca"),
+            runtime: tmp.join("r"),
+        }
+    }
+
+    /// A [`DaemonState`] with an empty router and no `WordPress` sites,
+    /// suitable for exercising [`mint_wordpress_login_token`]'s NotFound
+    /// branches. Tests that need a routable site call
+    /// [`insert_wordpress_site`] on the result.
+    fn state_in(tmp: &Path) -> DaemonState {
+        let dirs = dirs_in(tmp);
+        let router = SiteRouter::new(RouterConfig::with_tld(Tld::new("test").unwrap()));
+        let ca_path = dirs.data.join("ca.cert.pem");
+        let php_manager = Arc::new(tokio::sync::Mutex::new(yerd_php::PhpManager::new(
+            yerd_php::TokioProcessSpawner,
+            yerd_php::SystemClock,
+            yerd_php::io::FastCgiProbe,
+            dirs.clone(),
+            yerd_platform::ActivePortBinder::new(),
+            std::process::id(),
+            std::collections::BTreeMap::new(),
+        )));
+        DaemonState {
+            config: tokio::sync::Mutex::new(yerd_config::Config::default()),
+            router: Arc::new(tokio::sync::RwLock::new(router)),
+            config_path: dirs.config.join("yerd.toml"),
+            dirs,
+            dns_addr: "127.0.0.1:1053".parse().unwrap(),
+            ca_path,
+            ca_fingerprint: yerd_platform::CaFingerprint::new([0u8; 32]),
+            php_ca_bundle: None,
+            php_updates: tokio::sync::RwLock::new(std::collections::HashMap::new()),
+            yerd_update: tokio::sync::RwLock::new(Vec::new()),
+            update_snapshot: tokio::sync::RwLock::new(None),
+            php_manager,
+            service_manager: Arc::new(tokio::sync::Mutex::new(crate::services::new_manager(
+                dirs_in(tmp),
+            ))),
+            mail_store: Arc::new(yerd_mail::Store::open(tmp.join("mail")).unwrap()),
+            mail: crate::state::MailRuntime { listening: false },
+            http: yerd_ipc::PortStatus {
+                requested: 80,
+                bound: 8080,
+                fell_back: true,
+            },
+            https: yerd_ipc::PortStatus {
+                requested: 443,
+                bound: 8443,
+                fell_back: true,
+            },
+            redirect_https_port: Arc::new(std::sync::atomic::AtomicU16::new(8443)),
+            web_unbound: None,
+            dns_unbound: None,
+            boot_id: 1,
+            started_at: std::time::Instant::now(),
+            shutdown_tx: tokio::sync::watch::channel(false).0,
+            restart_requested: std::sync::atomic::AtomicBool::new(false),
+            detect_cache: Arc::new(crate::detect_cache::DetectCache::new()),
+            watch_dirty: tokio::sync::Notify::new(),
+            dumps: Arc::new(crate::dump_server::DumpStore::new()),
+            shim_reconcile: tokio::sync::Mutex::new(()),
+            tunnel_manager: Arc::new(tokio::sync::Mutex::new(crate::tunnel::new_manager())),
+            cloudflared_resolution: tokio::sync::RwLock::new(None),
+            tool_mutate: tokio::sync::Mutex::new(()),
+            tunnel_mutate: tokio::sync::Mutex::new(()),
+            php_mutate: tokio::sync::Mutex::new(()),
+            jobs: crate::jobs::JobRegistry::default(),
+            reserved_names: tokio::sync::Mutex::new(std::collections::HashSet::new()),
+            wordpress_versions: tokio::sync::RwLock::new(None),
+            wordpress_login_tokens: Arc::new(LoginTokenRegistry::new()),
+            wordpress_login_prepend_script: Some(PathBuf::from("/opt/yerd/prepend.php")),
+            wordpress_sites: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
+        }
+    }
+
+    /// Inserts `name` into `state`'s router (auto-login set per
+    /// `auto_login`/`auto_login_user`) and marks it `WordPress` in
+    /// `state.wordpress_sites`, so [`mint_wordpress_login_token`] can resolve
+    /// it past both its site-lookup and `is_wordpress` gates.
+    async fn insert_wordpress_site(
+        state: &DaemonState,
+        name: &str,
+        auto_login: bool,
+        auto_login_user: Option<&str>,
+    ) {
+        let mut site = Site::linked(name, "/srv/www/blog", PhpVersion::new(8, 3)).unwrap();
+        site.set_wp_auto_login(auto_login);
+        site.set_wp_auto_login_user(auto_login_user.map(str::to_owned));
+        state.router.write().await.insert(site).unwrap();
+        state
+            .wordpress_sites
+            .write()
+            .await
+            .insert(name.to_owned(), true);
+    }
+
+    #[tokio::test]
+    async fn mint_login_token_not_found_for_unknown_site() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_in(tmp.path());
+        let resp = mint_wordpress_login_token("blog", &state).await;
+        assert!(matches!(
+            resp,
+            Response::Error {
+                code: ErrorCode::NotFound,
+                ..
+            }
+        ));
+    }
+
+    #[tokio::test]
+    async fn mint_login_token_not_found_when_not_wordpress() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_in(tmp.path());
+        // Routed, but never marked in `wordpress_sites` - the router alone
+        // isn't enough to be treated as a WordPress site.
+        let mut site = Site::linked("blog", "/srv/www/blog", PhpVersion::new(8, 3)).unwrap();
+        site.set_wp_auto_login(true);
+        state.router.write().await.insert(site).unwrap();
+
+        let resp = mint_wordpress_login_token("blog", &state).await;
+        assert!(matches!(
+            resp,
+            Response::Error {
+                code: ErrorCode::NotFound,
+                ..
+            }
+        ));
+    }
+
+    #[tokio::test]
+    async fn mint_login_token_not_found_when_auto_login_disabled() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_in(tmp.path());
+        insert_wordpress_site(&state, "blog", false, None).await;
+
+        let resp = mint_wordpress_login_token("blog", &state).await;
+        assert!(matches!(
+            resp,
+            Response::Error {
+                code: ErrorCode::NotFound,
+                ..
+            }
+        ));
+    }
+
+    #[tokio::test]
+    async fn mint_login_token_not_found_when_prepend_script_unavailable() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut state = state_in(tmp.path());
+        state.wordpress_login_prepend_script = None;
+        insert_wordpress_site(&state, "blog", true, None).await;
+
+        let resp = mint_wordpress_login_token("blog", &state).await;
+        assert!(matches!(
+            resp,
+            Response::Error {
+                code: ErrorCode::NotFound,
+                ..
+            }
+        ));
+    }
+
+    #[tokio::test]
+    async fn mint_login_token_succeeds_and_token_resolves_target_user() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_in(tmp.path());
+        insert_wordpress_site(&state, "blog", true, Some("editor")).await;
+
+        let resp = mint_wordpress_login_token("blog", &state).await;
+        let Response::WordpressLoginToken { token } = resp else {
+            panic!("expected WordpressLoginToken, got {resp:?}");
+        };
+        assert_eq!(
+            state
+                .wordpress_login_tokens
+                .consume("blog", &token)
+                .as_deref(),
+            Some("editor")
+        );
+    }
 
     #[test]
     fn mint_then_consume_succeeds_once() {

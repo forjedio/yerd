@@ -705,7 +705,7 @@ mod tests {
         match Config::from_toml("version = 99\n") {
             Err(ConfigError::UnsupportedVersion {
                 found: 99,
-                current: 9,
+                current: 10,
             }) => {}
             other => panic!("expected UnsupportedVersion, got {other:?}"),
         }
@@ -794,7 +794,7 @@ mod tests {
 
     #[test]
     fn groups_section_parses_and_round_trips() {
-        let s = "version = 9\n[groups]\norder = [\"Blog\", \"Shop\"]\n\
+        let s = "version = 10\n[groups]\norder = [\"Blog\", \"Shop\"]\n\
                  [groups.members]\napi = \"Blog\"\n";
         let c = Config::from_toml(s).unwrap();
         assert_eq!(c.groups.order, vec!["Blog".to_string(), "Shop".to_string()]);

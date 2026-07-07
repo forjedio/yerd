@@ -1684,11 +1684,7 @@ pub(crate) async fn handle_mutation(req: Request, state: &DaemonState) -> Respon
     }
 
     *cfg_guard = new;
-    let site_after = if let Request::SetSecure { name, .. } = &req {
-        candidate.get(name).cloned()
-    } else {
-        None
-    };
+    let site_after = site_after_secure_toggle(&req, &candidate);
     *state.router.write().await = candidate;
     *state.wordpress_sites.write().await = candidate_wordpress;
     drop(cfg_guard);
@@ -1701,6 +1697,23 @@ pub(crate) async fn handle_mutation(req: Request, state: &DaemonState) -> Respon
 
     tracing::info!(summary = %applied.summary, "applied mutation");
     Response::Ok
+}
+
+/// The post-mutation site to run [`crate::wordpress_url_sync::sync_site_url`]
+/// against, for a `Request::SetSecure` (`None` for every other request kind).
+/// Looks up `candidate` (the just-rebuilt router) by the *lowercased* site
+/// name, matching every other name-resolution site in `mutate.rs` - the
+/// router is always keyed by the lowercased name (`Site` lowercases at
+/// construction), so looking up an un-lowercased, user-typed name (e.g. from
+/// `yerd secure MyWpSite`) would silently miss and skip the sync.
+fn site_after_secure_toggle(
+    req: &Request,
+    candidate: &yerd_core::SiteRouter,
+) -> Option<yerd_core::Site> {
+    let Request::SetSecure { name, .. } = req else {
+        return None;
+    };
+    candidate.get(&name.to_ascii_lowercase()).cloned()
 }
 
 /// Apply a group mutation (create/delete/reorder/assign). Groups are a
@@ -1911,6 +1924,32 @@ mod tests {
     fn bundle_contains_ca_empty_ca_is_never_trusted() {
         assert!(!bundle_contains_ca("", "anything"));
         assert!(!bundle_contains_ca("   \n", "anything"));
+    }
+
+    #[test]
+    fn site_after_secure_toggle_finds_mixed_case_name() {
+        let mut router = SiteRouter::new(RouterConfig::with_tld(Tld::new("test").unwrap()));
+        router
+            .insert(
+                yerd_core::Site::linked("myblog", "/srv/myblog", PhpVersion::new(8, 3)).unwrap(),
+            )
+            .unwrap();
+        let req = Request::SetSecure {
+            name: "MyBlog".into(),
+            secure: true,
+        };
+        let site = site_after_secure_toggle(&req, &router);
+        assert_eq!(site.map(|s| s.name().to_owned()), Some("myblog".to_owned()));
+    }
+
+    #[test]
+    fn site_after_secure_toggle_none_for_other_requests() {
+        let router = SiteRouter::new(RouterConfig::with_tld(Tld::new("test").unwrap()));
+        let req = Request::SetPhp {
+            name: "myblog".into(),
+            version: PhpVersion::new(8, 3),
+        };
+        assert!(site_after_secure_toggle(&req, &router).is_none());
     }
 
     fn dirs_in(tmp: &Path) -> PlatformDirs {

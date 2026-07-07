@@ -399,16 +399,24 @@ const wpAdminUserSelectOptions = computed(() =>
       : wpAdminUsersOptions.value,
 );
 
+/** Bumped on every `loadWpAdminUsers` call so a response for a site the user
+ *  has since navigated away from (closed the dialog, opened another site's)
+ *  can recognize it's stale and skip applying its result. */
+let wpAdminUsersRequestId = 0;
+
 async function loadWpAdminUsers(name: string): Promise<void> {
+  const requestId = ++wpAdminUsersRequestId;
   wpAdminUsersStatus.value = "loading";
   try {
     const users = await wordpressAdminUsers(name);
+    if (requestId !== wpAdminUsersRequestId) return;
     wpAdminUsersOptions.value = [
       DEFAULT_ADMIN_OPTION,
       ...users.map((u) => ({ value: u.login, label: u.display_name || u.login })),
     ];
     wpAdminUsersStatus.value = "ready";
   } catch (e) {
+    if (requestId !== wpAdminUsersRequestId) return;
     wpAdminUsersError.value = (e as IpcError).message || "couldn't load admin users";
     wpAdminUsersStatus.value = "error";
   }

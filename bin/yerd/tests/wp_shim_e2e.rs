@@ -75,6 +75,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[allow(clippy::too_many_lines)]
     async fn site_scope_against_a_real_daemon() {
         let tmp = tempfile::tempdir().unwrap();
         let dirs = make_dirs(tmp.path());
@@ -152,7 +153,7 @@ mod tests {
         ));
 
         // cwd inside the scoped site (a subdirectory, not the root itself) ->
-        // Scoped, with the site's own PHP and canonical document root.
+        // Scoped, with the site's own PHP and canonical served root.
         // `site_scope` builds its own ad-hoc tokio runtime internally (the
         // production caller, `run()`, has none of its own); run it on a
         // blocking-pool thread so it isn't nested inside this test's own
@@ -161,10 +162,55 @@ mod tests {
         match scoped_site_scope(dirs.clone(), cwd).await {
             ScopeResolution::Scoped(scope) => {
                 assert_eq!(
-                    scope.document_root,
+                    scope.served_root,
                     std::fs::canonicalize(&scoped_dir).unwrap()
                 );
                 assert!(scope.php_bin.ends_with("php-8.3/bin/php"));
+            }
+            other => panic!("expected Scoped, got {other:?}"),
+        }
+
+        // A site whose WordPress files live under a web_subpath (e.g. via
+        // `yerd root <name> <path>`) -> the served root, not the bare
+        // document root, is what gets resolved and passed to wp-cli.
+        let sub_dir = tmp.path().join("sub");
+        std::fs::create_dir_all(sub_dir.join("public")).unwrap();
+        let req = yerd::resolve_link(Some("sub"), Some(&sub_dir)).expect("resolve_link");
+        assert!(matches!(
+            yerd::transport::exchange_at(&sock, &req).await.unwrap(),
+            yerd_ipc::Response::Ok
+        ));
+        assert!(matches!(
+            yerd::transport::exchange_at(
+                &sock,
+                &Request::SetPhp {
+                    name: "sub".into(),
+                    version: installed_php,
+                },
+            )
+            .await
+            .unwrap(),
+            yerd_ipc::Response::Ok
+        ));
+        assert!(matches!(
+            yerd::transport::exchange_at(
+                &sock,
+                &Request::SetWebRoot {
+                    name: "sub".into(),
+                    path: Some("public".into()),
+                },
+            )
+            .await
+            .unwrap(),
+            yerd_ipc::Response::Ok
+        ));
+        let cwd = std::fs::canonicalize(sub_dir.join("public")).unwrap();
+        match scoped_site_scope(dirs.clone(), cwd).await {
+            ScopeResolution::Scoped(scope) => {
+                assert_eq!(
+                    scope.served_root,
+                    std::fs::canonicalize(sub_dir.join("public")).unwrap()
+                );
             }
             other => panic!("expected Scoped, got {other:?}"),
         }

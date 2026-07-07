@@ -7,10 +7,11 @@
 //! exists only to locate a `php` on `PATH`; we already know which PHP to use.
 //!
 //! If the invocation's current directory is inside a registered site, `wp`
-//! runs under *that site's* pinned PHP version with the site's document root
-//! as its working directory (asking the daemon via a short-timeout
-//! `Request::ListSites`), so `wp option get siteurl` and friends behave the
-//! way the site itself is served. Outside any registered site, or if the
+//! runs under *that site's* pinned PHP version, scoped to the site's served
+//! root (`document_root` joined with `web_subpath`) via `--path=` (asking the
+//! daemon via a short-timeout `Request::ListSites`), so `wp option get
+//! siteurl` and friends behave the way the site itself is served. Outside any
+//! registered site, or if the
 //! daemon is unreachable or slow, this falls back to exactly the old
 //! behavior: the default managed PHP, no working-directory change. If cwd
 //! *is* inside a site but that site's pinned PHP version isn't installed,
@@ -39,8 +40,8 @@ const SITE_LOOKUP_TIMEOUT: Duration = Duration::from_millis(300);
 /// aren't kept current with newer PHP releases and otherwise flood every
 /// invocation with "Deprecated: ..." noise unrelated to whether the command
 /// actually succeeded. Kept in sync with the identical constant in
-/// `bin/yerdd/src/create_site/wordpress.rs` (the daemon-side create-site
-/// job's own WP-CLI invocations).
+/// `bin/yerdd/src/tools/wp_cli.rs` (this is a different binary - `bin/yerd`
+/// can't depend on `bin/yerdd` - so it can't just import that one).
 const QUIET_DEPRECATIONS: [&str; 2] = ["-d", "error_reporting=E_ALL & ~E_DEPRECATED"];
 
 /// If `argv[0]` is `wp`, exec WP-CLI and return its exit code (on success
@@ -99,13 +100,17 @@ fn run() -> ExitCode {
                 .to_owned(),
         );
     }
+    let Some((boot_dir, boot_name)) = split_boot_fs(&boot_fs) else {
+        return fail(format!("{}: not a valid file path", boot_fs.display()));
+    };
 
     let mut cmd = Command::new(&php_bin);
     cmd.args(QUIET_DEPRECATIONS)
-        .arg(&boot_fs)
-        .args(std::env::args_os().skip(1));
+        .arg(boot_name)
+        .args(std::env::args_os().skip(1))
+        .current_dir(boot_dir);
     if let Some(s) = &scope {
-        cmd.current_dir(&s.document_root);
+        cmd.arg(format!("--path={}", s.served_root.display()));
     }
 
     let err = cmd.exec();
@@ -118,6 +123,26 @@ fn run() -> ExitCode {
     fail(format!("failed to exec {}: {err}", php_bin.display()))
 }
 
+/// Split `boot_fs` into its own directory and bare file name, so it can be
+/// invoked as a bare relative name from *its own* directory (with `--path=`
+/// decoupling "which `WordPress` install" from "process cwd") rather than by
+/// its full absolute path with cwd set to the site. WP-CLI's
+/// `WP_CLI::launch_self()` re-invocation (used by several subcommands,
+/// `rewrite structure` among them) builds a raw shell string from the
+/// captured `argv[0]` that escapes the PHP binary and arguments but not that
+/// path itself; on macOS `boot_fs`'s absolute path always runs through
+/// `~/Library/Application Support/...`, which always contains a space, so
+/// passing it as argv[0]-ish input makes the re-invocation's shell command
+/// silently split mid-path and fail with "Could not open input file".
+/// Mirrors `bin/yerdd/src/create_site/wordpress.rs`'s `wp_step_invocation`
+/// (and `wordpress_url_sync.rs`/`wordpress_users.rs`'s analogous helpers),
+/// which this shim must match exactly for the same WP-CLI script. `None` if
+/// `boot_fs` has no parent/file name (never true for a real path). Pure.
+#[must_use]
+fn split_boot_fs(boot_fs: &Path) -> Option<(&Path, &std::ffi::OsStr)> {
+    Some((boot_fs.parent()?, boot_fs.file_name()?))
+}
+
 /// A site the current invocation resolved as "inside," and the PHP binary
 /// pinned to it. `pub` (rather than `pub(crate)`) solely so the end-to-end
 /// integration test in `tests/wp_shim_e2e.rs` (a separate crate) can exercise
@@ -126,8 +151,10 @@ fn run() -> ExitCode {
 pub struct SiteScope {
     /// The PHP CLI binary pinned to the matched site.
     pub php_bin: PathBuf,
-    /// The matched site's (canonicalized) document root.
-    pub document_root: PathBuf,
+    /// The matched site's (canonicalized) served root - `document_root`
+    /// joined with `web_subpath` - i.e. where `WordPress` actually lives, not
+    /// necessarily the site's project root. Passed to `wp` as `--path=`.
+    pub served_root: PathBuf,
 }
 
 /// Outcome of resolving the current invocation against the live site list.
@@ -165,7 +192,7 @@ pub fn site_scope(dirs: &PlatformDirs, cwd: &Path) -> ScopeResolution {
     let candidates: Vec<(PathBuf, PhpVersion)> = sites
         .iter()
         .filter_map(|entry| {
-            let root = std::fs::canonicalize(entry.site.document_root()).ok()?;
+            let root = std::fs::canonicalize(entry.site.served_root()).ok()?;
             Some((root, entry.site.php()))
         })
         .collect();
@@ -177,7 +204,7 @@ pub fn site_scope(dirs: &PlatformDirs, cwd: &Path) -> ScopeResolution {
     if php_bin.is_file() {
         ScopeResolution::Scoped(SiteScope {
             php_bin,
-            document_root: root,
+            served_root: root,
         })
     } else {
         ScopeResolution::MatchedPhpMissing { php_version }
@@ -223,6 +250,22 @@ fn match_site(cwd: &Path, candidates: &[(PathBuf, PhpVersion)]) -> Option<(PathB
 #[allow(clippy::unwrap_used, clippy::panic)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn split_boot_fs_splits_absolute_space_containing_path() {
+        let boot_fs = Path::new("/Users/x/Library/Application Support/io.yerd.Yerd/boot-fs.php");
+        let (boot_dir, boot_name) = split_boot_fs(boot_fs).unwrap();
+        assert_eq!(
+            boot_dir,
+            Path::new("/Users/x/Library/Application Support/io.yerd.Yerd")
+        );
+        assert_eq!(boot_name, "boot-fs.php");
+    }
+
+    #[test]
+    fn split_boot_fs_none_for_rootless_path() {
+        assert!(split_boot_fs(Path::new("/")).is_none());
+    }
 
     #[test]
     fn dispatch_ignores_non_wp_argv0() {

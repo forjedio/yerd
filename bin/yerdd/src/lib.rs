@@ -125,6 +125,7 @@ async fn run_until_shutdown(
         let router = daemon.state.router.clone();
         let resolver = Arc::new(DaemonBackendResolver {
             php_manager: daemon.php_manager.clone(),
+            wordpress_sites: daemon.state.wordpress_sites.clone(),
         });
         let https = yerd_proxy::HttpsBinding {
             listener: tls_listener,

@@ -138,6 +138,155 @@ fn parse_user_list(stdout: &[u8]) -> Result<Vec<WordPressAdminUser>, String> {
 #[allow(clippy::unwrap_used, clippy::indexing_slicing)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
+
+    use yerd_core::{PhpVersion, RouterConfig, Site, SiteRouter, Tld};
+    use yerd_platform::PlatformDirs;
+
+    fn dirs_in(tmp: &Path) -> PlatformDirs {
+        PlatformDirs {
+            config: tmp.join("c"),
+            data: tmp.join("d"),
+            state: tmp.join("s"),
+            cache: tmp.join("ca"),
+            runtime: tmp.join("r"),
+        }
+    }
+
+    /// A [`DaemonState`] with an empty router and no `WordPress` sites,
+    /// suitable for exercising [`admin_users`]'s NotFound branches. Tests
+    /// that need a routable site call [`insert_wordpress_site`] on the
+    /// result.
+    fn state_in(tmp: &Path) -> DaemonState {
+        let dirs = dirs_in(tmp);
+        let router = SiteRouter::new(RouterConfig::with_tld(Tld::new("test").unwrap()));
+        let ca_path = dirs.data.join("ca.cert.pem");
+        let php_manager = Arc::new(tokio::sync::Mutex::new(yerd_php::PhpManager::new(
+            yerd_php::TokioProcessSpawner,
+            yerd_php::SystemClock,
+            yerd_php::io::FastCgiProbe,
+            dirs.clone(),
+            yerd_platform::ActivePortBinder::new(),
+            std::process::id(),
+            std::collections::BTreeMap::new(),
+        )));
+        DaemonState {
+            config: tokio::sync::Mutex::new(yerd_config::Config::default()),
+            router: Arc::new(tokio::sync::RwLock::new(router)),
+            config_path: dirs.config.join("yerd.toml"),
+            dirs,
+            dns_addr: "127.0.0.1:1053".parse().unwrap(),
+            ca_path,
+            ca_fingerprint: yerd_platform::CaFingerprint::new([0u8; 32]),
+            php_ca_bundle: None,
+            php_updates: tokio::sync::RwLock::new(std::collections::HashMap::new()),
+            yerd_update: tokio::sync::RwLock::new(Vec::new()),
+            update_snapshot: tokio::sync::RwLock::new(None),
+            php_manager,
+            service_manager: Arc::new(tokio::sync::Mutex::new(crate::services::new_manager(
+                dirs_in(tmp),
+            ))),
+            mail_store: Arc::new(yerd_mail::Store::open(tmp.join("mail")).unwrap()),
+            mail: crate::state::MailRuntime { listening: false },
+            http: yerd_ipc::PortStatus {
+                requested: 80,
+                bound: 8080,
+                fell_back: true,
+            },
+            https: yerd_ipc::PortStatus {
+                requested: 443,
+                bound: 8443,
+                fell_back: true,
+            },
+            redirect_https_port: Arc::new(std::sync::atomic::AtomicU16::new(8443)),
+            web_unbound: None,
+            dns_unbound: None,
+            boot_id: 1,
+            started_at: std::time::Instant::now(),
+            shutdown_tx: tokio::sync::watch::channel(false).0,
+            restart_requested: std::sync::atomic::AtomicBool::new(false),
+            detect_cache: Arc::new(crate::detect_cache::DetectCache::new()),
+            watch_dirty: tokio::sync::Notify::new(),
+            dumps: Arc::new(crate::dump_server::DumpStore::new()),
+            shim_reconcile: tokio::sync::Mutex::new(()),
+            tunnel_manager: Arc::new(tokio::sync::Mutex::new(crate::tunnel::new_manager())),
+            cloudflared_resolution: tokio::sync::RwLock::new(None),
+            tool_mutate: tokio::sync::Mutex::new(()),
+            tunnel_mutate: tokio::sync::Mutex::new(()),
+            php_mutate: tokio::sync::Mutex::new(()),
+            jobs: crate::jobs::JobRegistry::default(),
+            reserved_names: tokio::sync::Mutex::new(std::collections::HashSet::new()),
+            wordpress_versions: tokio::sync::RwLock::new(None),
+            wordpress_login_tokens: Arc::new(crate::wordpress_login::LoginTokenRegistry::new()),
+            wordpress_login_prepend_script: Some(PathBuf::from("/opt/yerd/prepend.php")),
+            wordpress_sites: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
+        }
+    }
+
+    /// Inserts `name` into `state`'s router and marks it `WordPress` in
+    /// `state.wordpress_sites`, so [`admin_users`] can resolve it past both
+    /// its site-lookup and `is_wordpress` gates.
+    async fn insert_wordpress_site(state: &DaemonState, name: &str) {
+        let site = Site::linked(name, "/srv/www/blog", PhpVersion::new(8, 3)).unwrap();
+        state.router.write().await.insert(site).unwrap();
+        state
+            .wordpress_sites
+            .write()
+            .await
+            .insert(name.to_owned(), true);
+    }
+
+    #[tokio::test]
+    async fn admin_users_not_found_for_unknown_site() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_in(tmp.path());
+        let resp = admin_users("blog", &state).await;
+        assert!(matches!(
+            resp,
+            Response::Error {
+                code: ErrorCode::NotFound,
+                ..
+            }
+        ));
+    }
+
+    #[tokio::test]
+    async fn admin_users_not_found_when_not_wordpress() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_in(tmp.path());
+        // Routed, but never marked in `wordpress_sites`.
+        let site = Site::linked("blog", "/srv/www/blog", PhpVersion::new(8, 3)).unwrap();
+        state.router.write().await.insert(site).unwrap();
+
+        let resp = admin_users("blog", &state).await;
+        assert!(matches!(
+            resp,
+            Response::Error {
+                code: ErrorCode::NotFound,
+                ..
+            }
+        ));
+    }
+
+    #[tokio::test]
+    async fn admin_users_internal_error_when_wp_cli_not_installed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_in(tmp.path());
+        insert_wordpress_site(&state, "blog").await;
+
+        // `state_in`'s `dirs` are a bare tmp dir with nothing installed under
+        // it, so `wp_cli::boot_path` never exists - this exercises the
+        // handler's own "WP-CLI is not installed" branch rather than
+        // actually spawning a WP-CLI/PHP process.
+        let resp = admin_users("blog", &state).await;
+        assert!(matches!(
+            resp,
+            Response::Error {
+                code: ErrorCode::Internal,
+                ..
+            }
+        ));
+    }
 
     #[test]
     fn user_list_invocation_splits_boot_fs_and_builds_args() {

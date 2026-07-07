@@ -43,8 +43,8 @@ pub async fn sync_site_url(site: &Site, state: &DaemonState) {
         return;
     }
 
-    let scheme = if site.secure() { "https" } else { "http" };
-    let url = format!("{scheme}://{}.test", site.name());
+    let tld = state.router.read().await.config().tld().to_owned();
+    let url = target_url(site.name(), &tld, site.secure());
 
     for option in ["siteurl", "home"] {
         if let Err(e) = run_option_update(&php_cli, &boot_fs, &served_root, option, &url).await {
@@ -57,6 +57,17 @@ pub async fn sync_site_url(site: &Site, state: &DaemonState) {
             return;
         }
     }
+}
+
+/// Pure - the target `siteurl`/`home` value for `name` on the daemon's
+/// configured TLD, given the desired secure state. Uses the *configured*
+/// TLD (`state.router`'s `RouterConfig::tld`), not a hardcoded `.test` -
+/// yerd's TLD is user-settable (see `yerd-config`'s `Tld` type), so a
+/// hardcoded suffix would write the wrong domain entirely for anyone who's
+/// changed it.
+fn target_url(name: &str, tld: &str, secure: bool) -> String {
+    let scheme = if secure { "https" } else { "http" };
+    format!("{scheme}://{name}.{tld}")
 }
 
 /// Pure - splits `boot_fs` into its own directory and bare file name, and
@@ -118,6 +129,21 @@ async fn run_option_update(
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn target_url_uses_configured_tld_not_a_hardcoded_one() {
+        assert_eq!(
+            target_url("blog", "dev.local", true),
+            "https://blog.dev.local"
+        );
+        assert_eq!(target_url("blog", "test", true), "https://blog.test");
+    }
+
+    #[test]
+    fn target_url_reflects_secure_flag() {
+        assert_eq!(target_url("blog", "test", false), "http://blog.test");
+        assert_eq!(target_url("blog", "test", true), "https://blog.test");
+    }
 
     #[test]
     fn option_update_invocation_splits_boot_fs_and_builds_args() {

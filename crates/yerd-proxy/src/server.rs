@@ -314,7 +314,7 @@ async fn handle_request<R: BackendResolver, L: LoginTokenConsumer>(
 
 #[allow(clippy::too_many_arguments)]
 async fn dispatch<R: BackendResolver, L: LoginTokenConsumer>(
-    mut req: Request<Incoming>,
+    req: Request<Incoming>,
     peer_addr: SocketAddr,
     server_addr: SocketAddr,
     listener: Listener,
@@ -386,60 +386,106 @@ async fn dispatch<R: BackendResolver, L: LoginTokenConsumer>(
     match backend {
         Backend::FrankenPhp { addr } => http_fwd::forward(req, addr).await,
         bk @ (Backend::PhpFpm { .. } | Backend::PhpFpmTcp { .. }) => {
-            // One-click WordPress login: only ever considered on /wp-admin,
-            // only ever acted on when a token is both present and valid for
-            // *this* site. Consuming happens here, strictly after the
-            // HTTP->HTTPS redirect check above, so a secure site's token is
-            // never burned by the 301 itself. On success the token is
-            // stripped from the forwarded URI (never reaches PHP/logging) and
-            // `auto_prepend_file` + the resolved target user are added for
-            // this one request only.
-            let login_target_user =
-                consume_login_token_if_present(&mut req, site.name(), login_tokens.as_ref());
-            let auto_login = match (&login_target_user, login_prepend_script.as_deref()) {
-                (Some(target_user), Some(prepend_script)) => Some(cgi_params::AutoLoginParams {
-                    prepend_script,
-                    target_user: target_user.as_str(),
-                }),
-                _ => None,
-            };
-
-            let outcome =
-                static_file::try_serve(req.method(), req.uri().path(), &served_root, &allowed_root)
-                    .await;
-            if let Some(resp) = resolve_static_outcome(outcome) {
-                return Ok(resp);
-            }
-            let outcome = static_file::try_serve_index(
-                req.method(),
-                req.uri().path(),
-                &served_root,
-                &allowed_root,
-            )
-            .await;
-            if let Some(resp) = resolve_static_outcome(outcome) {
-                return Ok(resp);
-            }
-            let script_rel =
-                script_file::resolve_script(req.uri().path(), &served_root, &allowed_root).await;
-            fcgi::forward(
+            serve_php_fpm(
                 req,
                 bk,
-                served_root,
-                script_rel,
+                resolver.as_ref(),
+                &site,
+                login_tokens.as_ref(),
+                login_prepend_script.as_deref(),
+                &served_root,
+                &allowed_root,
                 server_addr,
                 peer_addr,
                 https,
-                auto_login,
             )
             .await
         }
     }
 }
 
+/// The `Backend::PhpFpm`/`PhpFpmTcp` half of [`dispatch`]: static files,
+/// then a real script (gated by
+/// [`BackendResolver::allows_direct_script_execution`]), then the site
+/// root's `index.php`, with the one-click `WordPress` login token consumed
+/// along the way.
+#[allow(clippy::too_many_arguments)]
+async fn serve_php_fpm<R: BackendResolver, L: LoginTokenConsumer>(
+    mut req: Request<Incoming>,
+    backend: Backend,
+    resolver: &R,
+    site: &yerd_core::Site,
+    login_tokens: &L,
+    login_prepend_script: Option<&std::path::Path>,
+    served_root: &std::path::Path,
+    allowed_root: &std::path::Path,
+    server_addr: SocketAddr,
+    peer_addr: SocketAddr,
+    https: bool,
+) -> Result<Response<BoxBody>, ProxyError> {
+    // One-click WordPress login: only ever considered on /wp-admin, only
+    // ever acted on when a token is both present and valid for *this* site.
+    // Consuming happens here, strictly after the HTTP->HTTPS redirect check
+    // in `dispatch`, so a secure site's token is never burned by the 301
+    // itself. On success the token is stripped from the forwarded URI
+    // (never reaches PHP/logging) and `auto_prepend_file` + the resolved
+    // target user are added for this one request only.
+    let login_target_user = consume_login_token_if_present(&mut req, site.name(), login_tokens);
+    let auto_login = match (&login_target_user, login_prepend_script) {
+        (Some(target_user), Some(prepend_script)) => Some(cgi_params::AutoLoginParams {
+            prepend_script,
+            target_user: target_user.as_str(),
+        }),
+        _ => None,
+    };
+
+    let outcome =
+        static_file::try_serve(req.method(), req.uri().path(), served_root, allowed_root).await;
+    if let Some(resp) = resolve_static_outcome(outcome) {
+        return Ok(resp);
+    }
+    let outcome =
+        static_file::try_serve_index(req.method(), req.uri().path(), served_root, allowed_root)
+            .await;
+    if let Some(resp) = resolve_static_outcome(outcome) {
+        return Ok(resp);
+    }
+    let script_rel =
+        resolve_script_if_allowed(resolver, site, req.uri().path(), served_root, allowed_root)
+            .await;
+    fcgi::forward(
+        req,
+        backend,
+        served_root.to_path_buf(),
+        script_rel,
+        server_addr,
+        peer_addr,
+        https,
+        auto_login,
+    )
+    .await
+}
+
 fn path_and_query_or_root(uri: &http::Uri) -> &str {
     uri.path_and_query()
         .map_or("/", http::uri::PathAndQuery::as_str)
+}
+
+/// [`script_file::resolve_script`], gated by
+/// [`BackendResolver::allows_direct_script_execution`] - `None` (fall back to
+/// the site root's `index.php`) for any site the resolver hasn't opted in,
+/// without touching the filesystem to find out.
+async fn resolve_script_if_allowed<R: BackendResolver>(
+    resolver: &R,
+    site: &yerd_core::Site,
+    uri_path: &str,
+    served_root: &std::path::Path,
+    allowed_root: &std::path::Path,
+) -> Option<std::path::PathBuf> {
+    if !resolver.allows_direct_script_execution(site).await {
+        return None;
+    }
+    script_file::resolve_script(uri_path, served_root, allowed_root).await
 }
 
 /// One-click `WordPress` login: only ever considered on `/wp-admin`, only
