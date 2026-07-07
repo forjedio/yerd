@@ -45,7 +45,7 @@ use yerd_update::{verify_minisign, UPDATE_PUBLIC_KEY};
 pub const APPLY_ENV: &str = "YERD_APPLY_UPDATE";
 /// Env var carrying the staged artifact path.
 pub const APPLY_PATH_ENV: &str = "YERD_APPLY_PATH";
-/// Env var carrying the artifact kind: `"deb"`, `"pacman"`, or `"app_tar_gz"`.
+/// Env var carrying the artifact kind: `"deb"`, `"pacman"`, `"rpm"`, or `"app_tar_gz"`.
 pub const APPLY_KIND_ENV: &str = "YERD_APPLY_KIND";
 /// Env var: `"1"` to relaunch the GUI after the install.
 pub const APPLY_RELAUNCH_GUI_ENV: &str = "YERD_APPLY_RELAUNCH_GUI";
@@ -57,6 +57,10 @@ pub const INSTALL_DEB_ARG: &str = "__yerd-install-deb";
 /// argv sentinel for the elevated Arch pacman-install re-exec. Mirrors
 /// [`INSTALL_DEB_ARG`] for the `.pkg.tar.zst` install path.
 pub const INSTALL_PACMAN_ARG: &str = "__yerd-install-pacman";
+
+/// argv sentinel for the elevated Fedora rpm-install re-exec. Mirrors
+/// [`INSTALL_DEB_ARG`] for the `.rpm` install path.
+pub const INSTALL_RPM_ARG: &str = "__yerd-install-rpm";
 
 /// If invoked as the elevated deb installer (`yerd __yerd-install-deb <path>`),
 /// run it and return the exit code; otherwise `None` (normal dispatch proceeds).
@@ -88,6 +92,22 @@ pub fn run_install_pacman_from_args() -> Option<ExitCode> {
         return Some(ExitCode::from(2));
     };
     Some(install_pacman_entry(Path::new(&path)))
+}
+
+/// If invoked as the elevated rpm installer (`yerd __yerd-install-rpm <path>`),
+/// run it and return the exit code; otherwise `None`. The rpm counterpart of
+/// [`run_install_deb_from_args`].
+#[must_use]
+pub fn run_install_rpm_from_args() -> Option<ExitCode> {
+    let mut args = std::env::args_os().skip(1);
+    if args.next()?.to_str() != Some(INSTALL_RPM_ARG) {
+        return None;
+    }
+    let Some(path) = args.next() else {
+        eprintln!("yerd: {INSTALL_RPM_ARG} requires a path");
+        return Some(ExitCode::from(2));
+    };
+    Some(install_rpm_entry(Path::new(&path)))
 }
 
 /// Run the elevated deb install (Linux). The cfg split lives in a helper with a
@@ -127,6 +147,24 @@ fn install_pacman_entry(_path: &Path) -> ExitCode {
     ExitCode::from(1)
 }
 
+/// Run the elevated rpm install (Linux). Mirror of [`install_deb_entry`].
+#[cfg(target_os = "linux")]
+fn install_rpm_entry(path: &Path) -> ExitCode {
+    match elevated_install_rpm(path) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("yerd: {e}");
+            ExitCode::from(1)
+        }
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn install_rpm_entry(_path: &Path) -> ExitCode {
+    eprintln!("yerd: elevated rpm install is Linux-only");
+    ExitCode::from(1)
+}
+
 /// If invoked in applier mode (the [`APPLY_ENV`] var is set), run the apply and
 /// return its exit code; otherwise `None` (normal CLI dispatch proceeds). All
 /// inputs travel via env vars so nothing leaks into the argv-driven help.
@@ -140,10 +178,11 @@ pub fn run_from_env() -> Option<ExitCode> {
     let kind = match std::env::var(APPLY_KIND_ENV).as_deref() {
         Ok("deb") => StagedArtifact::Deb,
         Ok("pacman") => StagedArtifact::Pacman,
+        Ok("rpm") => StagedArtifact::Rpm,
         Ok("app_tar_gz") => StagedArtifact::AppTarGz,
         other => {
             eprintln!(
-                "yerd: invalid {APPLY_KIND_ENV}={other:?} (expected \"deb\", \"pacman\" or \"app_tar_gz\")"
+                "yerd: invalid {APPLY_KIND_ENV}={other:?} (expected \"deb\", \"pacman\", \"rpm\" or \"app_tar_gz\")"
             );
             return Some(ExitCode::from(2));
         }
@@ -165,6 +204,7 @@ pub fn run(staged: &Path, kind: StagedArtifact, relaunch_gui: bool) -> ExitCode 
         StagedArtifact::AppTarGz => apply_macos(staged, relaunch_gui),
         StagedArtifact::Deb => apply_linux(staged, relaunch_gui),
         StagedArtifact::Pacman => apply_linux_pacman(staged, relaunch_gui),
+        StagedArtifact::Rpm => apply_linux_rpm(staged, relaunch_gui),
         _ => Err("unknown staged artifact kind from the daemon".to_owned()),
     };
     match result {
@@ -535,6 +575,94 @@ fn elevated_install_pacman(staged: &Path) -> Result<(), String> {
     install
 }
 
+// ── Linux (Fedora): reinstall the .rpm ───────────────────────────────────────
+
+#[cfg(target_os = "linux")]
+fn apply_linux_rpm(staged: &Path, relaunch_gui: bool) -> Result<(), String> {
+    if nix::unistd::geteuid().is_root() {
+        return elevated_install_rpm(staged);
+    }
+    let exe = std::env::current_exe().map_err(|e| format!("current_exe: {e}"))?;
+    let status = Command::new("pkexec")
+        .arg(&exe)
+        .arg(INSTALL_RPM_ARG)
+        .arg(staged)
+        .status()
+        .map_err(|e| format!("spawning pkexec: {e}"))?;
+    if !status.success() {
+        return Err("privileged install (pkexec) failed or was cancelled".to_owned());
+    }
+    restart_services(relaunch_gui);
+    Ok(())
+}
+
+/// Elevated installer (runs as root via the `pkexec` re-exec). Mirror of
+/// [`elevated_install_deb`] for the Fedora package: reads + verifies the staged
+/// `.rpm` **once**, copies the verified bytes into a root-owned 0700 dir, and
+/// `rpm -U`s that copy - closing the verify→re-read TOCTOU on the user-writable
+/// staged path. The package's `%post` scriptlet reapplies setcap.
+///
+/// `rpm -U --oldpackage --replacepkgs` installs the file regardless of version (so
+/// an edge-to-stable downgrade works, like `dpkg -i`); `--replacepkgs` also lets a
+/// same-version reinstall succeed, so a retry after a partial/interrupted attempt
+/// is idempotent (plain `rpm -U` would abort with "already installed"). `rpm` is
+/// non-interactive by default. Unlike `dnf`, `rpm -U` does not *resolve*
+/// dependencies, but it does
+/// *check* them: it aborts on an unmet `Requires`, so the packaged `depends` list
+/// must not gain a new entry between releases (an existing install would have the
+/// old deps only). It also fails if PackageKit/dnf holds the rpmdb lock. rpm's
+/// output (stderr, then stdout) is surfaced in the error so unmet-dep / db-lock
+/// failures are legible rather than a generic "failed". The copy keeps a `.rpm`
+/// suffix for clarity; the package name itself comes from the embedded header.
+#[cfg(target_os = "linux")]
+fn elevated_install_rpm(staged: &Path) -> Result<(), String> {
+    use std::os::unix::fs::{DirBuilderExt as _, PermissionsExt as _};
+
+    if !nix::unistd::geteuid().is_root() {
+        return Err("the elevated installer must run as root".to_owned());
+    }
+    let bytes = std::fs::read(staged).map_err(|e| format!("reading staged .rpm: {e}"))?;
+    let sig_path = sibling_sig(staged);
+    let sig = std::fs::read_to_string(&sig_path)
+        .map_err(|e| format!("reading signature {}: {e}", sig_path.display()))?;
+    verify_minisign(UPDATE_PUBLIC_KEY, &sig, &bytes).map_err(|e| e.to_string())?;
+
+    let dir = std::env::temp_dir().join(format!("yerd-update-{}", unique_suffix()));
+    std::fs::DirBuilder::new()
+        .mode(0o700)
+        .create(&dir)
+        .map_err(|e| format!("creating secure install dir: {e}"))?;
+    let pkg = dir.join("update.rpm");
+    let install = (|| -> Result<(), String> {
+        std::fs::write(&pkg, &bytes).map_err(|e| format!("writing verified .rpm: {e}"))?;
+        let _ = std::fs::set_permissions(&pkg, std::fs::Permissions::from_mode(0o600));
+        let out = Command::new("rpm")
+            .arg("-U")
+            .arg("--oldpackage")
+            .arg("--replacepkgs")
+            .arg(&pkg)
+            .output()
+            .map_err(|e| format!("spawning rpm: {e}"))?;
+        if out.status.success() {
+            Ok(())
+        } else {
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            let detail = if stderr.trim().is_empty() {
+                String::from_utf8_lossy(&out.stdout).trim().to_owned()
+            } else {
+                stderr.trim().to_owned()
+            };
+            if detail.is_empty() {
+                Err("rpm failed to install the new package".to_owned())
+            } else {
+                Err(format!("rpm failed to install the new package: {detail}"))
+            }
+        }
+    })();
+    let _ = std::fs::remove_dir_all(&dir);
+    install
+}
+
 #[cfg(target_os = "linux")]
 fn relaunch_gui_app() {
     use std::os::unix::process::CommandExt as _;
@@ -571,6 +699,11 @@ fn apply_linux(_staged: &Path, _relaunch_gui: bool) -> Result<(), String> {
 #[cfg(not(target_os = "linux"))]
 fn apply_linux_pacman(_staged: &Path, _relaunch_gui: bool) -> Result<(), String> {
     Err("an Arch .pkg.tar.zst cannot be installed on this platform".to_owned())
+}
+
+#[cfg(not(target_os = "linux"))]
+fn apply_linux_rpm(_staged: &Path, _relaunch_gui: bool) -> Result<(), String> {
+    Err("a Fedora .rpm cannot be installed on this platform".to_owned())
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]

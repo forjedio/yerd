@@ -1947,6 +1947,14 @@ fn staged_artifact_each_variant_byte_shape() {
         serde_json::from_str::<StagedArtifact>(r#""pacman""#).unwrap(),
         StagedArtifact::Pacman
     );
+    assert_eq!(
+        serde_json::to_string(&StagedArtifact::Rpm).unwrap(),
+        r#""rpm""#
+    );
+    assert_eq!(
+        serde_json::from_str::<StagedArtifact>(r#""rpm""#).unwrap(),
+        StagedArtifact::Rpm
+    );
 }
 
 #[test]

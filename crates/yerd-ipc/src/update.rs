@@ -46,4 +46,6 @@ pub enum StagedArtifact {
     Deb,
     /// Arch `.pkg.tar.zst` - the applier reinstalls via `pacman -U`.
     Pacman,
+    /// Linux `.rpm` - the applier reinstalls via `rpm -U`.
+    Rpm,
 }

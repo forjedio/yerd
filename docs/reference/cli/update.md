@@ -46,7 +46,7 @@ automated downgrade isn't implemented yet - it currently just says so.
    nothing is available, it reports and exits `0` - no download happens.
 3. Otherwise asks the daemon to download and verify the target release's
    artifact (`Request::StageUpdate`): the daemon fetches the platform-specific
-   asset (macOS `.app.tar.gz`, Linux `.deb`/`.pkg.tar.zst`), checks its
+   asset (macOS `.app.tar.gz`, Linux `.deb`/`.pkg.tar.zst`/`.rpm`), checks its
    SHA-256 against the release's `SHA256SUMS` manifest, and verifies a
    detached minisign signature against an embedded public key.
 4. Re-verifies the signature a second time locally (closing the window
@@ -70,6 +70,7 @@ silently failing.
 | macOS (Apple Silicon) | Extracts the `.app.tar.gz`, swaps it into `/Applications`, restarts the daemon via `launchctl kickstart -k`. |
 | Linux (`.deb` build) | Reinstalls via `dpkg -i`, elevated with `pkexec` if needed; restarts the daemon via `systemctl --user restart` (or a stop/start fallback with no systemd user instance). |
 | Linux (Arch `.pkg.tar.zst` build) | Reinstalls via `pacman -U`, same elevation and restart path as the `.deb` build. |
+| Linux (Fedora `.rpm` build) | Reinstalls via `rpm -U --oldpackage`, same elevation and restart path as the `.deb` build. |
 | Intel macOS, other platforms | No self-update artifact is published; `yerd update` reports nothing available. |
 
 ## See also

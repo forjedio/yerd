@@ -58,12 +58,12 @@ jobs:
       # No authenticated git op in the GUI build (npm ci / cargo / tauri), so
       # don't leave the token in .git/config where third-party build code runs.
       - uses: actions/checkout@v4
-        if: matrix.kind == 'gui'
+        if: matrix.kind == 'gui' || matrix.kind == 'fedora'
         with:
           persist-credentials: false
 
       - name: Install Linux GUI build deps
-        if: matrix.kind == 'gui' && runner.os == 'Linux'
+        if: (matrix.kind == 'gui' || matrix.kind == 'fedora') && runner.os == 'Linux'
         working-directory: .
         run: |
           sudo apt-get update
@@ -73,16 +73,16 @@ jobs:
             libdbus-1-dev libxdo-dev librsvg2-dev
 
       - uses: actions/setup-node@v4
-        if: matrix.kind == 'gui'
+        if: matrix.kind == 'gui' || matrix.kind == 'fedora'
         with:
           node-version: 22
           cache: npm
           cache-dependency-path: apps/yerd-gui/package-lock.json
       - uses: Swatinem/rust-cache@v2
-        if: matrix.kind == 'gui'
+        if: matrix.kind == 'gui' || matrix.kind == 'fedora'
 
       - name: Install frontend deps
-        if: matrix.kind == 'gui'
+        if: matrix.kind == 'gui' || matrix.kind == 'fedora'
         run: npm ci
 
       # macOS: import the Developer ID cert into an ephemeral keychain and stage
@@ -485,11 +485,82 @@ jobs:
           # relabels it to Yerd_Linux_x86_64_v<ver>.pkg.tar.zst.
           cp "$PKG" "$GITHUB_WORKSPACE/arch-out/Yerd_${YERD_PKGVER}_x86_64.pkg.tar.zst"
 
+      # ─────────────────────────────── Fedora target ─────────────────────────────
+      # Native Fedora .rpm via Tauri's built-in (pure-Rust) rpm bundler. Unlike the
+      # Arch leg no container is needed - the bundler runs on Ubuntu. The daemon is
+      # built with the `rpm` self-update feature; the gate below proves it took. The
+      # rpm's real-Fedora validation (deps resolve, %post runs) is the blocking
+      # smoke job in release.yml. These steps keep the GUI leg's default
+      # working-directory (apps/yerd-gui) for the tauri build, and set an explicit
+      # repo-root working-directory for the cargo/staging steps.
+      - name: Stage embedded binaries with the rpm feature (externalBin)
+        if: matrix.kind == 'fedora'
+        working-directory: .
+        run: |
+          set -euo pipefail
+          cargo build --release --features yerdd/rpm -p yerd -p yerdd -p yerd-helper
+          # Symmetric guard to the deb (:137-139) and arch (:473-475) legs: the
+          # bundled daemon MUST be rpm-format, else the .rpm would ship a daemon
+          # that self-updates via the wrong package manager.
+          fmt=$(./target/release/yerdd --pkg-format)
+          [ "$fmt" = "rpm" ] \
+            || { echo "::error::fedora yerdd --pkg-format=$fmt (expected rpm); the rpm feature did not take"; exit 1; }
+          mkdir -p apps/yerd-gui/src-tauri/binaries
+          if [ "$(uname -m)" = "aarch64" ]; then
+            triple=aarch64-unknown-linux-gnu
+          else
+            triple=x86_64-unknown-linux-gnu
+          fi
+          for b in yerd yerdd yerd-helper; do
+            cp "target/release/$b" "apps/yerd-gui/src-tauri/binaries/$b-$triple"
+          done
+
+      - name: Build the Fedora .rpm (Tauri rpm bundler)
+        if: matrix.kind == 'fedora'
+        run: npm run tauri build -- --config src-tauri/tauri.bundle-linux-rpm.conf.json
+
+      - name: Stage the .rpm with a Yerd_* name for the rename step
+        if: matrix.kind == 'fedora'
+        working-directory: .
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          rpms=(target/release/bundle/rpm/*.rpm \
+                apps/yerd-gui/src-tauri/target/release/bundle/rpm/*.rpm)
+          [ "${#rpms[@]}" -gt 0 ] || { echo "::error::no .rpm produced"; exit 1; }
+          rpm="${rpms[0]}"
+          # Tauri names the file Yerd-<ver>-1.<arch>.rpm (hyphen), which the publish
+          # `Yerd_*` rename glob would miss - so stage a `Yerd_*` copy with an
+          # arch token so the rename loop yields Yerd_Linux_x86_64_v<ver>.rpm /
+          # Yerd_Linux_Arm64_v<ver>.rpm (mirrors the arch leg's staging).
+          if [ "$(uname -m)" = "aarch64" ]; then arch=arm64; else arch=x86_64; fi
+          mkdir -p "$GITHUB_WORKSPACE/fedora-out"
+          cp "$rpm" "$GITHUB_WORKSPACE/fedora-out/Yerd_${arch}.rpm"
+
+      - name: Assert .rpm contents + %post scriptlet
+        if: matrix.kind == 'fedora'
+        working-directory: .
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends rpm
+          pkg=$(ls "$GITHUB_WORKSPACE"/fedora-out/*.rpm | head -n1)
+          list=$(rpm -qlp "$pkg")
+          for b in yerd yerdd yerd-helper yerd-gui; do
+            printf '%s\n' "$list" | grep -Eq "^/usr/bin/$b\$" \
+              || { echo "::error::.rpm missing /usr/bin/$b"; exit 1; }
+          done
+          # The %post scriptlet (setcap) must be present.
+          rpm -qp --scripts "$pkg" | grep -qi "postinstall" \
+            || { echo "::error::.rpm has no %post scriptlet"; exit 1; }
+          echo "Fedora .rpm OK: $pkg (pkg-format=rpm)"
+
       # ──────────────────────────────── Upload ──────────────────────────────────
-      # One upload for either kind: on a GUI leg the bundle globs match and
-      # arch-out is absent; on the Arch leg only arch-out matches. `if-no-files-
-      # found: error` fires only if the whole union is empty. Paths are resolved
-      # relative to the workspace (upload-artifact ignores the run default).
+      # One upload for any kind: on a GUI leg the bundle globs match and arch-out /
+      # fedora-out are absent; on the Arch leg only arch-out matches; on the Fedora
+      # leg only fedora-out matches. `if-no-files-found: error` fires only if the
+      # whole union is empty. Paths are resolved relative to the workspace
+      # (upload-artifact ignores the run default).
       - uses: actions/upload-artifact@v4
         with:
           name: build-${{ matrix.id }}
@@ -501,3 +572,4 @@ jobs:
             apps/yerd-gui/src-tauri/target/release/bundle/**/*.dmg
             apps/yerd-gui/src-tauri/target/release/bundle/updater/*.app.tar.gz
             arch-out/*.pkg.tar.zst
+            fedora-out/*.rpm

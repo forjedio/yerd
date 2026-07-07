@@ -10,13 +10,14 @@ GUI-first way to run Yerd.
 
 Yerd runs entirely **as your user**. `sudo` shows up in exactly two
 non-ongoing places: installing the system package (standard for any
-`.deb`/`.pkg.tar.zst`), and a single, optional, **one-time** privileged setup
-step that the app walks you through. Day-to-day use never touches root.
+`.deb`/`.pkg.tar.zst`/`.rpm`), and a single, optional, **one-time** privileged
+setup step that the app walks you through. Day-to-day use never touches root.
 
 ::: info Supported platforms
 Yerd ships a single desktop app for **macOS** (Apple Silicon) and **Linux**
-(Debian/Ubuntu `.deb` for x86-64 and arm64, plus an Arch `.pkg.tar.zst` for
-x86-64). The daemon, the `yerd` CLI, and the privileged
+(Debian/Ubuntu `.deb` for x86-64 and arm64, an Arch `.pkg.tar.zst` for x86-64,
+and a Fedora `.rpm` for x86-64 and arm64). The daemon, the `yerd` CLI, and the
+privileged
 helper are all bundled inside it - there is nothing else to install. PHP itself is
 **not** bundled - Yerd downloads prebuilt static PHP builds on demand once you
 pick a version, so the install stays tiny and fast.
@@ -38,6 +39,8 @@ Grab the latest **stable release** from the
 | Linux · Debian/Ubuntu (x86-64) | `Yerd_Linux_x86_64_v<ver>.deb` | `sudo apt install ./Yerd_Linux_x86_64_v<ver>.deb` |
 | Linux · Debian/Ubuntu (arm64) | `Yerd_Linux_Arm64_v<ver>.deb` | `sudo apt install ./Yerd_Linux_Arm64_v<ver>.deb` |
 | Linux · Arch (x86-64) | `Yerd_Linux_x86_64_v<ver>.pkg.tar.zst` | `sudo pacman -U ./Yerd_Linux_x86_64_v<ver>.pkg.tar.zst` |
+| Linux · Fedora (x86-64) | `Yerd_Linux_x86_64_v<ver>.rpm` | `sudo dnf install ./Yerd_Linux_x86_64_v<ver>.rpm` |
+| Linux · Fedora (arm64) | `Yerd_Linux_Arm64_v<ver>.rpm` | `sudo dnf install ./Yerd_Linux_Arm64_v<ver>.rpm` |
 
 ::: tip Arch Linux
 Remove any leftover `/usr/bin/yerd` from the old v1 (Go) project first - pacman

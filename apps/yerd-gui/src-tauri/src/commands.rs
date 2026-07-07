@@ -230,6 +230,7 @@ pub async fn apply_update(app: tauri::AppHandle, channel: Option<String>) -> Res
         yerd_ipc::StagedArtifact::AppTarGz => "app_tar_gz",
         yerd_ipc::StagedArtifact::Deb => "deb",
         yerd_ipc::StagedArtifact::Pacman => "pacman",
+        yerd_ipc::StagedArtifact::Rpm => "rpm",
         _ => {
             return Err(GuiError::internal(
                 "unknown staged artifact kind from the daemon",

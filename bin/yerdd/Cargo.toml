@@ -12,6 +12,10 @@ description            = "Yerd unprivileged daemon — wires every Phase-1 libra
 # to `Pacman` so self-update selects the `.pkg.tar.zst` and installs via `pacman -U`.
 # Enabled ONLY by the Arch CI build (`--features yerdd/pacman`); default off → `.deb`.
 pacman = ["yerd-update/pacman"]
+# Build the daemon for the Fedora package: flips `PkgFormat::current()` to `Rpm` so
+# self-update selects the `.rpm` and installs via `rpm -U`. Enabled ONLY by the
+# Fedora CI build (`--features yerdd/rpm`); mutually exclusive with `pacman`.
+rpm = ["yerd-update/rpm"]
 
 [[bin]]
 name = "yerdd"

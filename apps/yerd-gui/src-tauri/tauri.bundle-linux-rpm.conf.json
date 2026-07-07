@@ -1,0 +1,21 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "bundle": {
+    "targets": ["rpm"],
+    "externalBin": ["binaries/yerd", "binaries/yerdd", "binaries/yerd-helper"],
+    "linux": {
+      "rpm": {
+        "depends": [
+          "webkit2gtk4.1",
+          "gtk3",
+          "libayatana-appindicator-gtk3",
+          "librsvg2",
+          "libcap",
+          "libxcrypt-compat"
+        ],
+        "postInstallScript": "rpm/postinst.sh",
+        "postRemoveScript": "rpm/postrm.sh"
+      }
+    }
+  }
+}

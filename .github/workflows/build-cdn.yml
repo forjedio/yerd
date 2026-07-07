@@ -23,6 +23,14 @@ on:
         description: "Arch Linux x86_64 — .pkg.tar.zst"
         type: boolean
         default: false
+      fedora_x64:
+        description: "Fedora x86_64 — .rpm"
+        type: boolean
+        default: false
+      fedora_arm64:
+        description: "Fedora arm64 — .rpm"
+        type: boolean
+        default: false
       folder:
         description: "Override the builds/<folder> name (default: UTC YYYY-MM-DD_HH-MM-<run>). Must match ^[A-Za-z0-9][A-Za-z0-9._-]*$."
         type: string
@@ -60,6 +68,8 @@ jobs:
           IN_LINUX_X64: ${{ inputs.linux_x64 }}
           IN_LINUX_ARM64: ${{ inputs.linux_arm64 }}
           IN_ARCH: ${{ inputs.arch }}
+          IN_FEDORA_X64: ${{ inputs.fedora_x64 }}
+          IN_FEDORA_ARM64: ${{ inputs.fedora_arm64 }}
           IN_FOLDER: ${{ inputs.folder }}
         run: |
           set -euo pipefail
@@ -78,6 +88,12 @@ jobs:
           fi
           if [ "$IN_ARCH" = "true" ]; then
             add '{"id":"arch-x86_64","runner":"ubuntu-22.04","container":"archlinux:base-devel","kind":"arch"}'
+          fi
+          if [ "$IN_FEDORA_X64" = "true" ]; then
+            add '{"id":"fedora-x86_64","runner":"ubuntu-22.04","container":"","kind":"fedora"}'
+          fi
+          if [ "$IN_FEDORA_ARM64" = "true" ]; then
+            add '{"id":"fedora-arm64","runner":"ubuntu-22.04-arm","container":"","kind":"fedora"}'
           fi
           [ "$(printf '%s' "$targets" | jq 'length')" -gt 0 ] \
             || { echo "::error::select at least one target"; exit 1; }
@@ -140,7 +156,7 @@ jobs:
         run: |
           set -euo pipefail
           find . -mindepth 2 -type f \
-            \( -name '*.deb' -o -name '*.dmg' -o -name '*.app.tar.gz' -o -name '*.pkg.tar.zst' \) \
+            \( -name '*.deb' -o -name '*.dmg' -o -name '*.app.tar.gz' -o -name '*.pkg.tar.zst' -o -name '*.rpm' \) \
             -exec mv -t . {} +
           find . -mindepth 1 -type d -exec rm -rf {} +
           ver="v${VERSION}"
@@ -151,6 +167,7 @@ jobs:
               *.pkg.tar.zst) ext="pkg.tar.zst"; os="Linux" ;;
               *.dmg)         ext="dmg";         os="MacOS" ;;
               *.deb)         ext="deb";         os="Linux" ;;
+              *.rpm)         ext="rpm";         os="Linux" ;;
               *) continue ;;
             esac
             case "$f" in
@@ -166,7 +183,7 @@ jobs:
         working-directory: dist
         run: |
           find . -maxdepth 1 -type f \
-            \( -name '*.deb' -o -name '*.dmg' -o -name '*.app.tar.gz' -o -name '*.pkg.tar.zst' \) \
+            \( -name '*.deb' -o -name '*.dmg' -o -name '*.app.tar.gz' -o -name '*.pkg.tar.zst' -o -name '*.rpm' \) \
             -printf '%P\n' | sort | xargs -r sha256sum > SHA256SUMS
           cat SHA256SUMS
 

@@ -430,7 +430,8 @@ cargo xtask version-check v2.0.2 # release gate: assert a tag matches the manife
 ```
 
 The shipped artifacts are the **GUI bundle** (`.dmg` on macOS, `.deb` on Linux),
-**plus a native Arch package** (`.pkg.tar.zst`, x86-64). The three binaries
+**plus a native Arch package** (`.pkg.tar.zst`, x86-64) **and a Fedora package**
+(`.rpm`, x86-64 and arm64). The three binaries
 (`yerd`/`yerdd`/`yerd-helper`) are embedded via Tauri `externalBin`
 (per-platform overlays in `apps/yerd-gui/src-tauri/`). Tauri builds the `.app`
 (macOS) and `.deb` (Linux) directly; the macOS `.dmg` is built as a separate
@@ -468,18 +469,40 @@ users should keep their system current. It also requires the default
 (Yerd verifies it itself with the embedded update key), so a hardened
 `LocalFileSigLevel = Required` rejects the local install.
 
-**The `pacman` feature / `PkgFormat` tiebreak.** A release carries *both* a `.deb`
-and a `.pkg.tar.zst` for x86-64, so a running Linux binary can't tell which to
-self-update from `Platform` (OS + arch) alone. The format is fixed at **build
-time**: `yerd_update::PkgFormat::current()` returns `Pacman` only when compiled
-with the `pacman` Cargo feature. The `arch` job builds the daemon with
-`--features yerdd/pacman` (→ `yerd-update/pacman`), so its `yerdd` selects the
-`.pkg.tar.zst` and the applier installs it via `pacman -U`; every other build
-defaults to `Deb`/`dpkg -i`. **This only works because the Arch package is built
-in a separate job (its own cargo invocation/target dir)** - within one cargo
-build, the feature would unify across the whole graph. The release gate proves
-the flag took by running the freshly-built `yerdd --pkg-format` and asserting it
-prints `pacman`. arm64 Arch is not built for v1.
+### The Fedora package (`.rpm`)
+
+Unlike pacman, Tauri v2 **does** have an rpm bundler (pure-Rust, no `rpmbuild`),
+so the `.rpm` reuses the normal Tauri bundle machinery rather than a hand-written
+spec. The `fedora` jobs in
+[`build.yml`](https://github.com/forjedio/yerd/blob/main/.github/workflows/build.yml)
+run on the Ubuntu runners (x86-64 and arm64), build the sidecars with
+`--features yerdd/rpm`, and run `tauri build` with the
+`tauri.bundle-linux-rpm.conf.json` overlay (rpm `depends` + an `rpm/postinst.sh`
+`%post` that `setcap`s `/usr/bin/yerdd`, mirroring the deb postinst). Because the
+bundler runs on Ubuntu, a **blocking** `fedora:latest` smoke job in `release.yml`
+`dnf install`s the produced `.rpm` (proving every `Requires` resolves) and asserts
+`yerdd --pkg-format` before the release can publish.
+
+In-app `yerd update` on Fedora runs `rpm -U --oldpackage` on the downloaded,
+minisign-verified `.rpm`. Like `dpkg -i`/`pacman -U` it does no dependency
+*resolution*, but it does *check* dependencies, so the packaged `depends` list must
+stay stable across releases (a newly-added `Requires` would abort an existing
+user's self-update); Yerd surfaces rpm's message on failure.
+
+**The `pacman`/`rpm` feature / `PkgFormat` tiebreak.** A release carries a `.deb`,
+a `.pkg.tar.zst`, and a `.rpm` for the same arch, so a running Linux binary can't
+tell which to self-update from `Platform` (OS + arch) alone. The format is fixed at
+**build time**: `yerd_update::PkgFormat::current()` returns `Pacman` only when
+compiled with the `pacman` Cargo feature and `Rpm` only with the `rpm` feature
+(the two are mutually exclusive - enabling both is a `compile_error!`). The `arch`
+job builds the daemon with `--features yerdd/pacman`, the `fedora` job with
+`--features yerdd/rpm`, so each `yerdd` selects its own package and the applier
+installs it via `pacman -U` / `rpm -U --oldpackage`; every other build defaults to
+`Deb`/`dpkg -i`. **This only works because each distro package is built in a
+separate job (its own cargo invocation/target dir)** - within one cargo build, the
+feature would unify across the whole graph. The release gate proves the flag took by
+running the freshly-built `yerdd --pkg-format` and asserting it prints
+`pacman`/`rpm`.
 
 **`tauri/custom-protocol` is required too.** `PKGBUILD`'s `build()` builds the
 GUI binary with a raw `cargo build`, not `tauri build`/`npm run tauri build` -
