@@ -79,6 +79,64 @@ A final summary of your choices - site name, path, PHP version, and HTTPS. Click
 
 When it finishes, the project is on disk, registered (parked or linked), served at `<name>.test`, and ready to open in your browser or reveal in your file manager - no extra steps.
 
+## Create a new WordPress site
+
+The same **Create** menu can scaffold a brand-new WordPress install for you. Choose **New WordPress site** to launch a four-step wizard - **Basics → WordPress → Database → Review** - that provisions a database, runs WP-CLI's `core download`/`config create`/`core install`, sets pretty permalinks, and registers the result as a `.test` site automatically.
+
+::: tip Prerequisites
+Creating a WordPress site needs a PHP version, **Composer**, and **WP-CLI**. If any are missing, the wizard offers to install them first (WP-CLI is built via Composer, so Composer installs first if it's missing too) - see [Tooling](./tooling).
+:::
+
+### Basics
+
+<ThemedImage light="/images/create-wordpress-1-light.png" dark="/images/create-wordpress-1-dark.png" alt="The Create-a-new-WordPress-site wizard, Basics step" />
+
+- **Project name** - the site is served at `<name>.test`.
+- **Location** - pick the parent folder. If it's a [parked](#parking-a-directory) root the new site is served automatically; any other folder is [linked](#linking-a-directory) under the project name.
+- **PHP version** - the version the site (and WP-CLI) runs on.
+- **HTTPS** - serve it over TLS from day one (you can toggle this later too).
+
+### WordPress
+
+<ThemedImage light="/images/create-wordpress-2-light.png" dark="/images/create-wordpress-2-dark.png" alt="The Create-a-new-WordPress-site wizard, WordPress step" />
+
+- **Core version** - a specific WordPress release, or **Latest**.
+- **Locale** - the install language (e.g. `en_US`, `en_GB`).
+- **Site title** - WordPress's own site name, set at install time.
+- **Admin username / email / password** - the first administrator account. **Generate** fills in a random password; the daemon re-validates all three server-side regardless of what the wizard sent.
+
+### Database
+
+<ThemedImage light="/images/create-wordpress-3-light.png" dark="/images/create-wordpress-3-dark.png" alt="The Create-a-new-WordPress-site wizard, Database step" />
+
+- **Database engine** - **MySQL** or **MariaDB** (the only two WordPress core itself supports).
+- **Database name** and **table prefix** - defaults are derived from the project name; both can be edited.
+
+Yerd provisions the database as part of creating the site, installing/starting the chosen engine first if it isn't already running - see [Services & Databases](./services).
+
+### Review
+
+<ThemedImage light="/images/create-wordpress-4-light.png" dark="/images/create-wordpress-4-dark.png" alt="The Create-a-new-WordPress-site wizard, Review step" />
+
+A final summary of your choices. Click **Create** and the dialog switches to a live progress view streaming each phase - **Preflight → Provisioning database → Downloading WordPress → Configuring → Installing → Registering → Done**.
+
+<ThemedImage light="/images/create-wordpress-5-light.png" dark="/images/create-wordpress-5-dark.png" alt="The Create-a-new-WordPress-site wizard, live progress view" />
+
+When it finishes, the site is on disk, registered, served at `<name>.test`, and ready to use - **Open folder**, **Open in browser**, or **WP Admin** to sign in as the administrator you just created (see below).
+
+## WordPress one-click admin login
+
+A WordPress site created through the wizard has **one-click admin login** turned on by default: opening **WP Admin** signs you in as the site's administrator instead of showing WordPress's own login screen. Existing or parked WordPress sites can opt in the same way.
+
+<ThemedImage light="/images/edit-site-wordpress-light.png" dark="/images/edit-site-wordpress-dark.png" alt="The Edit site dialog for a WordPress site, with the WordPress Auto Admin Login toggle and Sign in as picker" />
+
+- A WordPress site's card shows a **WP Admin** action in its `⋯` menu, plus a **WPA** badge when one-click login is on - both open the site's `/wp-admin/` pre-authenticated.
+- Turn it on or off, and choose **who** to sign in as, from the site's **Edit…** dialog: the **WordPress Auto Admin Login** toggle and a **Sign in as** picker (defaults to the earliest-created administrator).
+
+::: info How it works
+Opening **WP Admin** mints a short-lived, single-use login token and appends it to the `/wp-admin/` URL. The proxy recognises and consumes the token on the first request, signing you in before redirecting - it's never valid a second time, and it does nothing outside that one request. If the resolver is off ([Localhost Access](./localhost-access)) or minting fails for any reason, **WP Admin** falls back to WordPress's ordinary login screen instead.
+:::
+
 ## From the command line
 
 Everything the Sites page does maps to a `yerd` command. These are the same operations against the same daemon, so anything you do here shows up in the app immediately.

@@ -41,7 +41,8 @@ the `tests/cli_e2e.rs` integration test can drive the same code paths.
 | `src/elevate.rs` | `yerd elevate` / `unelevate`: local privileged orchestration of `yerd-helper`. |
 | `src/cover_shim.rs` | Multi-call dispatch: when `argv[0]` is a `phpcover`/`php<ver>cover` alias, exec PHP with pcov enabled (Unix-only). Runs before clap. |
 | `src/composer_shim.rs` | Multi-call dispatch: when `argv[0]` is `composer`, exec the default PHP against `{data}/tools/composer/composer.phar` (Unix-only). Runs before clap. See [Dev-tool installers](../dev-tools). |
-| `src/shim.rs` | Shared PHP-resolution helpers for the cover and composer multi-call shims (default-version resolution, highest-installed fallback). |
+| `src/wp_shim.rs` | Multi-call dispatch: when `argv[0]` is `wp`, exec WP-CLI - site-aware if cwd is inside a registered site (pins that site's PHP, scopes via `--path=`) (Unix-only). Runs before clap. |
+| `src/shim.rs` | Shared PHP-resolution helpers for the cover, composer, and `wp` multi-call shims (default-version resolution, highest-installed fallback). |
 | `src/path_cmd.rs` | `yerd path install`/`uninstall`/`print`: edit the user's shell startup file to add `{data}/bin` to `PATH` (local, no IPC; Unix-only). |
 | `src/error.rs` | `ClientError` - the client's error type. |
 
@@ -171,6 +172,31 @@ both report the genuine interpreter, not the shim name.
 against `{data}/tools/composer/composer.phar`. Its `dispatch()` runs in `main.rs`
 just before the cover dispatch. See [Dev-tool installers](../dev-tools) for how
 the daemon installs the phar and creates the `composer` symlink.
+
+`wp` is a third multi-call shim (`wp_shim.rs`), for **WP-CLI**. Unlike the cover
+and composer shims it is *site-aware*: when the current directory is inside a
+registered site, it asks the daemon for the live site list (`Request::ListSites`,
+bounded to 300ms so a slow or unreachable daemon never stalls an ordinary `wp`
+invocation) and, on a match, runs WP-CLI under *that site's* pinned PHP version,
+scoped to its served root via `--path=` - so `wp option get siteurl` and friends
+behave the way the site is actually served, with no `--path` flag or `cd`-ing
+into `public/` needed. Outside any registered site, or if the daemon is
+unreachable, slow, or finds no match, it falls back to the default managed PHP
+with no working-directory change, identical to the cover and composer shims. If
+cwd *is* inside a site but that site's pinned PHP version isn't installed, it
+fails loudly rather than silently running under an unrelated version.
+
+WP-CLI re-invokes its own entry point for some subcommands
+(`WP_CLI::launch_self()`, used by `rewrite structure` among others) via a raw
+shell string built from `argv[0]` - on macOS that path always runs through
+`~/Library/Application Support/...`, which always contains a space and would
+silently split the re-invoked shell command. The shim works around this by
+exec'ing WP-CLI's boot script under its bare file name with `cwd` set to the
+script's own directory rather than the site, keeping "which WordPress install"
+and "process cwd" decoupled via `--path=` - see
+[`bin/yerdd/src/create_site/wordpress.rs`](https://github.com/forjedio/yerd/blob/main/bin/yerdd/src/create_site/wordpress.rs)
+for the daemon-side scaffolding path that hits the same bug and works around it
+the same way.
 
 ## Pure mapping and rendering (`map.rs`)
 
