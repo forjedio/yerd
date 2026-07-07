@@ -39,6 +39,7 @@ pub mod tracing_init;
 pub mod tunnel;
 pub mod wordpress_detect;
 pub mod wordpress_login;
+pub mod wordpress_url_sync;
 pub mod wordpress_versions;
 
 #[cfg(test)]

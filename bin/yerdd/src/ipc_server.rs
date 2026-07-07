@@ -1690,10 +1690,19 @@ pub(crate) async fn handle_mutation(req: Request, state: &DaemonState) -> Respon
     }
 
     *cfg_guard = new;
+    let site_after = if let Request::SetSecure { name, .. } = &req {
+        candidate.get(name).cloned()
+    } else {
+        None
+    };
     *state.router.write().await = candidate;
     drop(cfg_guard);
 
     state.watch_dirty.notify_one();
+
+    if let Some(site) = site_after {
+        crate::wordpress_url_sync::sync_site_url(&site, state).await;
+    }
 
     tracing::info!(summary = %applied.summary, "applied mutation");
     Response::Ok
