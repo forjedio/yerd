@@ -39,7 +39,7 @@ pub struct ProbeOutput {
 /// pattern as [`crate::traits::ProcessSpawner`]).
 #[async_trait]
 pub trait CommandRunner: Send + Sync + 'static {
-    /// Run `cmd`, wait for it, and capture its status + stderr.
+    /// Run `cmd`, wait for it, and capture its status, stdout, and stderr.
     async fn run(&self, cmd: Command) -> Result<ProbeOutput, io::Error>;
 }
 

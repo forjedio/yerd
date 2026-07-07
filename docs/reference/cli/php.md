@@ -104,8 +104,9 @@ yerd php ext remove 8.5 scrypt
 ```
 
 - `VERSION` is a `major.minor` (e.g. `8.5`) and must be installed.
-- `PATH` must be an absolute path ending in `.so`. It is validated client-side
-  (absolute, `.so`, no ini/shell-unsafe characters) before connecting.
+- `PATH` must be an absolute path ending in `.so`, with no control characters,
+  NUL, `"`, or `$` (spaces are allowed). It is validated client-side before
+  connecting, so a bad path is a clean usage error rather than a round-trip.
 - `--zend` loads it as a `zend_extension` (xdebug/opcache-style) rather than a
   plain `extension`.
 - `--name` sets the removal/display handle; it defaults to the `.so` basename.

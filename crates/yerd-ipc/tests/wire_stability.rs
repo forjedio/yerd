@@ -588,6 +588,8 @@ fn response_error_each_code_byte_shape() {
         (ErrorCode::NotFound, "not_found"),
         (ErrorCode::AlreadyExists, "already_exists"),
         (ErrorCode::InvalidPath, "invalid_path"),
+        (ErrorCode::PortInUse, "port_in_use"),
+        (ErrorCode::ExtensionLoadFailed, "extension_load_failed"),
         (ErrorCode::Internal, "internal"),
     ] {
         let r = Response::Error {
@@ -905,6 +907,7 @@ fn error_code_each_variant_byte_shape() {
         (ErrorCode::AlreadyExists, r#""already_exists""#),
         (ErrorCode::InvalidPath, r#""invalid_path""#),
         (ErrorCode::PortInUse, r#""port_in_use""#),
+        (ErrorCode::ExtensionLoadFailed, r#""extension_load_failed""#),
         (ErrorCode::Internal, r#""internal""#),
     ];
     for (code, expected) in cases {

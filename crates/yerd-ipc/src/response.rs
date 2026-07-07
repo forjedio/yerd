@@ -353,6 +353,11 @@ pub enum ErrorCode {
     InvalidPath,
     /// A service's configured port is already in use by another listener.
     PortInUse,
+    /// A well-formed extension path was rejected because the `.so` failed its
+    /// load-probe (wrong PHP version / ABI, a missing dependency, or a Zend
+    /// extension registered without the Zend flag). Distinct from [`Self::InvalidPath`],
+    /// which means the path itself was malformed.
+    ExtensionLoadFailed,
     /// Catch-all for daemon-side failures that don't fit a typed code.
     /// Expand this enum rather than overloading `Internal`.
     Internal,
@@ -413,6 +418,7 @@ mod variant_name_pinning {
             ErrorCode::AlreadyExists => {}
             ErrorCode::InvalidPath => {}
             ErrorCode::PortInUse => {}
+            ErrorCode::ExtensionLoadFailed => {}
             ErrorCode::Internal => {}
         }
     }
@@ -636,6 +642,7 @@ mod variant_name_pinning {
             ErrorCode::AlreadyExists,
             ErrorCode::InvalidPath,
             ErrorCode::PortInUse,
+            ErrorCode::ExtensionLoadFailed,
             ErrorCode::Internal,
         ] {
             pin_code(c);

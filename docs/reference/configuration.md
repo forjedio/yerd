@@ -125,7 +125,7 @@ An unknown directive name or a malformed value makes the whole config invalid (`
 | Field  | TOML type | Meaning                                                                 |
 | ------ | --------- | ----------------------------------------------------------------------- |
 | `name` | string    | Removal/display handle (defaults to the `.so` basename when added).     |
-| `path` | string    | Absolute path to the `.so`. Validated: absolute, `.so`, no ini/shell-unsafe characters (control chars, `"`, `$`, `[ ] = ; #`, whitespace-injection). |
+| `path` | string    | Absolute path to the `.so`. Validated as a security boundary: must be absolute, end in `.so`, and contain no control characters, NUL, `"`, or `$` (spaces are allowed - the rendered ini value is double-quoted, and `$` is rejected because PHP would interpolate `${VAR}` inside it). |
 | `zend` | bool      | Load as a `zend_extension` rather than a plain `extension`.             |
 
 ```toml

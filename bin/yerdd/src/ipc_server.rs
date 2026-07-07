@@ -1593,7 +1593,7 @@ async fn add_php_extension(
         yerd_php::probe_extension(&runner, &php_bin, std::path::Path::new(&path), zend).await
     {
         return Response::Error {
-            code: ErrorCode::InvalidPath,
+            code: ErrorCode::ExtensionLoadFailed,
             message: format!("extension failed to load into PHP {version}: {e}"),
         };
     }

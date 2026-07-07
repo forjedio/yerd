@@ -229,11 +229,18 @@ const extVersionOptions = computed(() =>
   installed.value.map((v) => ({ value: v, label: `PHP ${v}` })),
 );
 
+/** Compare `major.minor` version strings numerically (so 8.9 sorts before 8.10). */
+function compareVersions(a: string, b: string): number {
+  const [am, an] = a.split(".").map(Number);
+  const [bm, bn] = b.split(".").map(Number);
+  return am - bm || an - bn;
+}
+
 /** Registered extensions flattened to rows for the table, version-ordered. */
 const extensionRows = computed(() => {
   const map = extData.value ?? {};
   return Object.keys(map)
-    .sort()
+    .sort(compareVersions)
     .flatMap((version) =>
       (map[version] ?? []).map((ext) => ({ version, ext })),
     );

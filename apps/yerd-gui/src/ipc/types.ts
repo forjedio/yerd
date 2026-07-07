@@ -351,6 +351,7 @@ export type ErrorCode =
   | "already_exists"
   | "invalid_path"
   | "port_in_use"
+  | "extension_load_failed"
   | "internal";
 
 /**
