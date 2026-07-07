@@ -96,31 +96,20 @@ async fn dispatch(req: Request, state: &DaemonState) -> Response {
     match req {
         Request::Ping => Response::Pong,
         Request::ListSites => {
-            // Clone the snapshot and release the router lock immediately
-            // (unchanged from before), then run WordPress detection - a
-            // handful of blocking stats/reads - only after the lock is
-            // dropped and off the async executor via `spawn_blocking`.
-            // Holding the router's read lock across that I/O would block
-            // every writer (`Link`/`Park`/`SetPhp`/`SetSecure`, and the
-            // WordPress create-site job's own Registering step) for its
-            // duration, on a request the GUI polls every few seconds.
+            // `is_wordpress` is a cheap lookup into `state.wordpress_sites`,
+            // refreshed on every router rebuild (a mutation or an
+            // fs-watcher tick) rather than detected fresh here - this
+            // handler is polled every few seconds and must not re-stat every
+            // site's marker files on each poll. See `wordpress_detect`.
             let sites: Vec<yerd_core::Site> = state.router.read().await.iter().cloned().collect();
-            let entries = tokio::task::spawn_blocking(move || {
-                sites
-                    .into_iter()
-                    .map(|site| {
-                        let (is_wordpress, wordpress_version) =
-                            crate::wordpress_detect::detect(&site.served_root());
-                        yerd_ipc::SiteEntry {
-                            site,
-                            is_wordpress,
-                            wordpress_version,
-                        }
-                    })
-                    .collect::<Vec<_>>()
-            })
-            .await
-            .unwrap_or_default();
+            let wordpress_sites = state.wordpress_sites.read().await;
+            let entries = sites
+                .into_iter()
+                .map(|site| {
+                    let is_wordpress = wordpress_sites.get(site.name()).copied().unwrap_or(false);
+                    yerd_ipc::SiteEntry { site, is_wordpress }
+                })
+                .collect();
             Response::Sites { sites: entries }
         }
         Request::ListParked => Response::Parked {
@@ -154,7 +143,8 @@ async fn dispatch(req: Request, state: &DaemonState) -> Response {
         | Request::Unpark { .. }
         | Request::SetPhp { .. }
         | Request::SetSecure { .. }
-        | Request::SetWebRoot { .. } => handle_mutation(req, state).await,
+        | Request::SetWebRoot { .. }
+        | Request::SetWordpressAutoLogin { .. } => handle_mutation(req, state).await,
         Request::ListGroups => {
             let cfg = state.config.lock().await;
             Response::Groups {
@@ -215,6 +205,9 @@ async fn dispatch(req: Request, state: &DaemonState) -> Response {
         }
         Request::MintWordpressLoginToken { site } => {
             crate::wordpress_login::mint_wordpress_login_token(&site, state).await
+        }
+        Request::WordpressAdminUsers { site } => {
+            crate::wordpress_users::admin_users(&site, state).await
         }
         Request::InstallService { service, version } => {
             let dl = crate::php_install::ReqwestDownloader::new();
@@ -1674,16 +1667,17 @@ pub(crate) async fn handle_mutation(req: Request, state: &DaemonState) -> Respon
         return internal(format!("config validation failed: {e}"));
     }
 
-    let candidate = match startup::build_router(&new, &state.dirs, &state.detect_cache) {
-        Ok(r) => r,
-        Err(DaemonError::Core(yerd_core::CoreError::DuplicateSite { name })) => {
-            return Response::Error {
-                code: ErrorCode::AlreadyExists,
-                message: format!("duplicate site: {name}"),
+    let (candidate, candidate_wordpress) =
+        match startup::build_router(&new, &state.dirs, &state.detect_cache) {
+            Ok(r) => r,
+            Err(DaemonError::Core(yerd_core::CoreError::DuplicateSite { name })) => {
+                return Response::Error {
+                    code: ErrorCode::AlreadyExists,
+                    message: format!("duplicate site: {name}"),
+                }
             }
-        }
-        Err(e) => return internal(format!("router rebuild failed: {e}")),
-    };
+            Err(e) => return internal(format!("router rebuild failed: {e}")),
+        };
 
     if let Err(e) = new.save(&state.config_path) {
         return internal(format!("config save failed: {e}"));
@@ -1696,6 +1690,7 @@ pub(crate) async fn handle_mutation(req: Request, state: &DaemonState) -> Respon
         None
     };
     *state.router.write().await = candidate;
+    *state.wordpress_sites.write().await = candidate_wordpress;
     drop(cfg_guard);
 
     state.watch_dirty.notify_one();
@@ -1992,6 +1987,9 @@ mod tests {
             wordpress_versions: tokio::sync::RwLock::new(None),
             wordpress_login_tokens: Arc::new(crate::wordpress_login::LoginTokenRegistry::new()),
             wordpress_login_prepend_script: None,
+            wordpress_sites: std::sync::Arc::new(tokio::sync::RwLock::new(
+                std::collections::HashMap::new(),
+            )),
         }
     }
 

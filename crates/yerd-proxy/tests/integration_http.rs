@@ -54,8 +54,8 @@ impl yerd_proxy::CertStore for StubCertStore {
 
 struct NoLoginTokens;
 impl yerd_proxy::LoginTokenConsumer for NoLoginTokens {
-    fn consume(&self, _site: &str, _token: &str) -> bool {
-        false
+    fn consume(&self, _site: &str, _token: &str) -> Option<String> {
+        None
     }
 }
 
@@ -65,17 +65,18 @@ impl yerd_proxy::LoginTokenConsumer for NoLoginTokens {
 struct OneShotLoginToken {
     site: &'static str,
     token: &'static str,
+    target_user: &'static str,
     consumed: std::sync::atomic::AtomicBool,
 }
 impl yerd_proxy::LoginTokenConsumer for OneShotLoginToken {
-    fn consume(&self, site: &str, token: &str) -> bool {
+    fn consume(&self, site: &str, token: &str) -> Option<String> {
         if self
             .consumed
             .swap(true, std::sync::atomic::Ordering::SeqCst)
         {
-            return false;
+            return None;
         }
-        site == self.site && token == self.token
+        (site == self.site && token == self.token).then(|| self.target_user.to_owned())
     }
 }
 
@@ -295,6 +296,7 @@ async fn valid_login_token_adds_auto_prepend_and_strips_token_from_query() {
     let login_tokens = Arc::new(OneShotLoginToken {
         site: "blog",
         token: "sekrit",
+        target_user: "editor",
         consumed: std::sync::atomic::AtomicBool::new(false),
     });
     let prepend_path = PathBuf::from("/opt/yerd/wordpress-autologin-prepend.php");
@@ -327,6 +329,10 @@ async fn valid_login_token_adds_auto_prepend_and_strips_token_from_query() {
     assert_eq!(
         params.get("PHP_VALUE").map(String::as_str),
         Some("auto_prepend_file=/opt/yerd/wordpress-autologin-prepend.php")
+    );
+    assert_eq!(
+        params.get("YERD_LOGIN_USER").map(String::as_str),
+        Some("editor")
     );
     // The token must never reach PHP: stripped from both REQUEST_URI and
     // QUERY_STRING, and no dangling `?` or `&` left behind.

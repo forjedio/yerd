@@ -49,8 +49,8 @@ impl BackendResolver for StaticResolver {
 
 struct NoLoginTokens;
 impl yerd_proxy::LoginTokenConsumer for NoLoginTokens {
-    fn consume(&self, _site: &str, _token: &str) -> bool {
-        false
+    fn consume(&self, _site: &str, _token: &str) -> Option<String> {
+        None
     }
 }
 

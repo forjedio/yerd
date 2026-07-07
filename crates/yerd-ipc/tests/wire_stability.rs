@@ -318,14 +318,12 @@ fn response_sites_zero_byte_shape() {
     assert_eq!(back, r);
 }
 
-/// A non-WordPress `SiteEntry` - `is_wordpress`/`wordpress_version` are both
-/// omitted from the wire (`skip_serializing_if`), so this is what most sites
-/// look like.
+/// A non-WordPress `SiteEntry` - `is_wordpress` is omitted from the wire
+/// (`skip_serializing_if`), so this is what most sites look like.
 fn plain(site: Site) -> yerd_ipc::SiteEntry {
     yerd_ipc::SiteEntry {
         site,
         is_wordpress: false,
-        wordpress_version: None,
     }
 }
 
@@ -378,31 +376,28 @@ fn response_sites_wordpress_byte_shape() {
         sites: vec![yerd_ipc::SiteEntry {
             site: blog,
             is_wordpress: true,
-            wordpress_version: Some("6.4.2".into()),
         }],
     };
     let s = serde_json::to_string(&r).unwrap();
-    let expected = r#"{"type":"sites","sites":[{"name":"blog","document_root":"/srv/blog","php":"8.3","secure":false,"kind":"parked","is_wordpress":true,"wordpress_version":"6.4.2"}]}"#;
+    let expected = r#"{"type":"sites","sites":[{"name":"blog","document_root":"/srv/blog","php":"8.3","secure":false,"kind":"parked","is_wordpress":true}]}"#;
     assert_eq!(s, expected);
     let back: Response = serde_json::from_str(&s).unwrap();
     assert_eq!(back, r);
 }
 
 #[test]
-fn response_sites_wordpress_true_with_unparsed_version_byte_shape() {
-    // A genuinely-WordPress site whose version file didn't parse: `is_wordpress`
-    // is still `true`, `wordpress_version` is omitted (not serialised as
-    // `null`) rather than the two being collapsed into one optional field.
-    let blog = Site::parked("blog", "/srv/blog", PhpVersion::new(8, 3)).unwrap();
+fn response_sites_wp_auto_login_byte_shape() {
+    let mut blog = Site::parked("blog", "/srv/blog", PhpVersion::new(8, 3)).unwrap();
+    blog.set_wp_auto_login(true);
+    blog.set_wp_auto_login_user(Some("admin".into()));
     let r = Response::Sites {
         sites: vec![yerd_ipc::SiteEntry {
             site: blog,
             is_wordpress: true,
-            wordpress_version: None,
         }],
     };
     let s = serde_json::to_string(&r).unwrap();
-    let expected = r#"{"type":"sites","sites":[{"name":"blog","document_root":"/srv/blog","php":"8.3","secure":false,"kind":"parked","is_wordpress":true}]}"#;
+    let expected = r#"{"type":"sites","sites":[{"name":"blog","document_root":"/srv/blog","php":"8.3","secure":false,"kind":"parked","wp_auto_login":true,"wp_auto_login_user":"admin","is_wordpress":true}]}"#;
     assert_eq!(s, expected);
     let back: Response = serde_json::from_str(&s).unwrap();
     assert_eq!(back, r);
@@ -936,6 +931,31 @@ fn request_mint_wordpress_login_token_byte_shape() {
 }
 
 #[test]
+fn request_set_wordpress_auto_login_byte_shape() {
+    let r = Request::SetWordpressAutoLogin {
+        name: "blog".into(),
+        enabled: true,
+        user: Some("admin".into()),
+    };
+    let s = serde_json::to_string(&r).unwrap();
+    assert_eq!(
+        s,
+        r#"{"type":"set_wordpress_auto_login","name":"blog","enabled":true,"user":"admin"}"#
+    );
+    assert_eq!(serde_json::from_str::<Request>(&s).unwrap(), r);
+}
+
+#[test]
+fn request_wordpress_admin_users_byte_shape() {
+    let r = Request::WordpressAdminUsers {
+        site: "blog".into(),
+    };
+    let s = serde_json::to_string(&r).unwrap();
+    assert_eq!(s, r#"{"type":"wordpress_admin_users","site":"blog"}"#);
+    assert_eq!(serde_json::from_str::<Request>(&s).unwrap(), r);
+}
+
+#[test]
 fn request_install_service_byte_shape() {
     let r = Request::InstallService {
         service: "redis".into(),
@@ -1198,6 +1218,29 @@ fn response_wordpress_login_token_byte_shape() {
     };
     let s = serde_json::to_string(&r).unwrap();
     assert_eq!(s, r#"{"type":"wordpress_login_token","token":"deadbeef"}"#);
+    assert_eq!(serde_json::from_str::<Response>(&s).unwrap(), r);
+}
+
+#[test]
+fn response_wordpress_admin_users_byte_shape() {
+    let r = Response::WordpressAdminUsers {
+        users: vec![yerd_ipc::WordPressAdminUser {
+            login: "admin".into(),
+            display_name: "Admin".into(),
+        }],
+    };
+    let s = serde_json::to_string(&r).unwrap();
+    let expected =
+        r#"{"type":"wordpress_admin_users","users":[{"login":"admin","display_name":"Admin"}]}"#;
+    assert_eq!(s, expected);
+    assert_eq!(serde_json::from_str::<Response>(&s).unwrap(), r);
+}
+
+#[test]
+fn response_wordpress_admin_users_empty_byte_shape() {
+    let r = Response::WordpressAdminUsers { users: vec![] };
+    let s = serde_json::to_string(&r).unwrap();
+    assert_eq!(s, r#"{"type":"wordpress_admin_users","users":[]}"#);
     assert_eq!(serde_json::from_str::<Response>(&s).unwrap(), r);
 }
 

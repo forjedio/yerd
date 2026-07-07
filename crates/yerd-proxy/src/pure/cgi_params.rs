@@ -27,13 +27,28 @@
 use std::net::SocketAddr;
 use std::path::Path;
 
+/// The one-click `WordPress` login flow's per-request FastCGI overrides -
+/// present only for the one request that already proved it holds a valid,
+/// now-consumed login token (see `dispatch` in `server.rs`); absent on every
+/// other request. Bundled into one struct (rather than two parameters that
+/// must always travel together) so "a target user with no prepend script" is
+/// unrepresentable.
+#[derive(Debug, Clone, Copy)]
+pub struct AutoLoginParams<'a> {
+    /// Path to the `auto_prepend_file` bootstrap script.
+    pub prepend_script: &'a Path,
+    /// The `WordPress` login/username to sign in as, or `""` for no
+    /// preference (the prepend script falls back to the earliest-created
+    /// administrator).
+    pub target_user: &'a str,
+}
+
 /// Build the CGI parameter pairs. `script_rel`, if given, is a real,
 /// on-disk `.php` file's path relative to `document_root` (see the module
-/// doc) - `None` falls back to the root `index.php` policy. `auto_prepend`,
-/// if given, adds a `PHP_VALUE: auto_prepend_file=<path>` param - used solely
-/// by the one-click `WordPress` login flow, for the one request that already
-/// proved it holds a valid, now-consumed login token (see `dispatch` in
-/// `server.rs`); absent on every other request.
+/// doc) - `None` falls back to the root `index.php` policy. `auto_login`, if
+/// given, adds a `PHP_VALUE: auto_prepend_file=<path>` param plus a custom
+/// `YERD_LOGIN_USER` param carrying the target username - see
+/// [`AutoLoginParams`].
 #[must_use]
 #[allow(clippy::too_many_arguments)]
 pub fn build_params(
@@ -45,7 +60,7 @@ pub fn build_params(
     https: bool,
     remote_addr: SocketAddr,
     server_addr: SocketAddr,
-    auto_prepend: Option<&Path>,
+    auto_login: Option<AutoLoginParams<'_>>,
 ) -> Vec<(Vec<u8>, Vec<u8>)> {
     let mut out: Vec<(Vec<u8>, Vec<u8>)> = Vec::with_capacity(16 + headers.len());
 
@@ -110,12 +125,13 @@ pub fn build_params(
     if https {
         push(&mut out, b"HTTPS", b"on");
     }
-    if let Some(path) = auto_prepend {
+    if let Some(login) = auto_login {
         push(
             &mut out,
             b"PHP_VALUE",
-            format!("auto_prepend_file={}", path.display()).as_bytes(),
+            format!("auto_prepend_file={}", login.prepend_script.display()).as_bytes(),
         );
+        push(&mut out, b"YERD_LOGIN_USER", login.target_user.as_bytes());
     }
 
     if let Some(host) = headers
@@ -389,6 +405,68 @@ mod tests {
         // PATH_INFO stays the full original path either way - WordPress and
         // Laravel both route on REQUEST_URI, not PATH_INFO (see module doc).
         assert_eq!(lookup(&pairs, b"PATH_INFO"), Some(b"/wp-admin/".as_slice()));
+    }
+
+    #[test]
+    fn auto_login_adds_prepend_and_target_user_params() {
+        let pairs = build_params(
+            "GET",
+            "/wp-admin/",
+            &make_headers("blog.test"),
+            Path::new("/srv/www/blog"),
+            None,
+            false,
+            "127.0.0.1:1".parse().unwrap(),
+            "127.0.0.1:80".parse().unwrap(),
+            Some(AutoLoginParams {
+                prepend_script: Path::new("/data/wordpress-autologin-prepend.php"),
+                target_user: "admin",
+            }),
+        );
+        assert_eq!(
+            lookup(&pairs, b"PHP_VALUE"),
+            Some(b"auto_prepend_file=/data/wordpress-autologin-prepend.php".as_slice())
+        );
+        assert_eq!(
+            lookup(&pairs, b"YERD_LOGIN_USER"),
+            Some(b"admin".as_slice())
+        );
+    }
+
+    #[test]
+    fn auto_login_with_no_preference_sends_empty_target_user() {
+        let pairs = build_params(
+            "GET",
+            "/wp-admin/",
+            &make_headers("blog.test"),
+            Path::new("/srv/www/blog"),
+            None,
+            false,
+            "127.0.0.1:1".parse().unwrap(),
+            "127.0.0.1:80".parse().unwrap(),
+            Some(AutoLoginParams {
+                prepend_script: Path::new("/data/wordpress-autologin-prepend.php"),
+                target_user: "",
+            }),
+        );
+        assert_eq!(lookup(&pairs, b"YERD_LOGIN_USER"), Some(b"".as_slice()));
+    }
+
+    #[test]
+    fn no_auto_login_omits_prepend_and_target_user_params() {
+        let pairs = build_params(
+            "GET",
+            "/",
+            &make_headers("app.test"),
+            Path::new("/srv/www/app"),
+            None,
+            false,
+            "127.0.0.1:1".parse().unwrap(),
+            "127.0.0.1:80".parse().unwrap(),
+            None,
+        );
+        assert!(lookup(&pairs, b"PHP_VALUE").is_none());
+        assert!(lookup(&pairs, b"YERD_LOGIN_USER").is_none());
     }
 
     #[test]

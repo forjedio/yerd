@@ -151,6 +151,11 @@ pub enum Response {
         /// the site's `/wp-admin/` URL.
         token: String,
     },
+    /// Reply to [`crate::Request::WordpressAdminUsers`].
+    WordpressAdminUsers {
+        /// The site's administrator accounts, for the auto-login user picker.
+        users: Vec<WordPressAdminUser>,
+    },
     /// Reply to [`crate::Request::ServiceLogs`] - trailing log lines, oldest first.
     ServiceLogs {
         /// The log lines.
@@ -314,7 +319,7 @@ pub enum Response {
 }
 
 /// One entry in [`Response::Sites`]: the site plus WordPress-detection
-/// metadata computed fresh at request time.
+/// metadata.
 ///
 /// This is a wire-only wrapper, not a new field on [`Site`] itself - `Site`'s
 /// hand-written `Serialize`/`Deserialize` is shared between the wire and
@@ -323,6 +328,12 @@ pub enum Response {
 /// `wp core update`), not something that belongs baked into persisted config.
 /// `#[serde(flatten)]` keeps the JSON shape identical to "just add fields to
 /// `Site`" from the wire's perspective without touching `Site`'s own shape.
+///
+/// `is_wordpress` is served from an in-memory daemon cache refreshed on every
+/// router rebuild (a mutation or a filesystem-watcher tick) rather than
+/// detected fresh on every request - `ListSites` is polled every few seconds,
+/// and re-statting every site's marker files on each poll doesn't scale with
+/// site count.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SiteEntry {
     /// The site itself - unchanged shape, still exactly what `Site`'s own
@@ -333,13 +344,17 @@ pub struct SiteEntry {
     /// at the site's served root.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub is_wordpress: bool,
-    /// The installed `WordPress` core version, if `is_wordpress` and
-    /// `wp-includes/version.php` parsed. Kept independent of `is_wordpress`
-    /// rather than collapsed into one `Option<String>`: a genuine `WordPress`
-    /// site whose version file doesn't parse (unusual layouts, a future core
-    /// format change) must still show as `WordPress`, just without a version.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub wordpress_version: Option<String>,
+}
+
+/// One `WordPress` administrator account, for the auto-login user picker -
+/// see [`Response::WordpressAdminUsers`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WordPressAdminUser {
+    /// The `WordPress` login/username (what `wp_set_auth_cookie` and the
+    /// auto-login prepend script's `get_user_by('login', ...)` key on).
+    pub login: String,
+    /// The account's display name, shown in the picker.
+    pub display_name: String,
 }
 
 /// An available newer patch for an installed PHP minor.
@@ -409,6 +424,7 @@ mod variant_name_pinning {
             Response::AvailableServices { .. } => {}
             Response::WordpressVersions { .. } => {}
             Response::WordpressLoginToken { .. } => {}
+            Response::WordpressAdminUsers { .. } => {}
             Response::ServiceLogs { .. } => {}
             Response::Databases { .. } => {}
             Response::Dumps { .. } => {}
@@ -538,6 +554,12 @@ mod variant_name_pinning {
         });
         pin_response(Response::WordpressLoginToken {
             token: "deadbeef".into(),
+        });
+        pin_response(Response::WordpressAdminUsers {
+            users: vec![WordPressAdminUser {
+                login: "admin".into(),
+                display_name: "Admin".into(),
+            }],
         });
         pin_response(Response::ServiceLogs { lines: vec![] });
         pin_response(Response::Databases {

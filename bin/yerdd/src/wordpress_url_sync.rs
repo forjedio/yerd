@@ -23,12 +23,13 @@ use crate::state::DaemonState;
 /// `site.secure()`'s new value.
 pub async fn sync_site_url(site: &Site, state: &DaemonState) {
     let served_root = site.served_root();
-    let is_wordpress = tokio::task::spawn_blocking({
-        let served_root = served_root.clone();
-        move || crate::wordpress_detect::detect(&served_root).0
-    })
-    .await
-    .unwrap_or(false);
+    let is_wordpress = state
+        .wordpress_sites
+        .read()
+        .await
+        .get(site.name())
+        .copied()
+        .unwrap_or(false);
     if !is_wordpress {
         return;
     }
@@ -97,6 +98,7 @@ async fn run_option_update(
         return Err(format!("{}: not a valid file path", boot_fs.display()));
     };
     let output = tokio::process::Command::new(php_cli)
+        .args(crate::tools::wp_cli::QUIET_DEPRECATIONS)
         .arg(&boot_name)
         .args(&args)
         .current_dir(&boot_dir)

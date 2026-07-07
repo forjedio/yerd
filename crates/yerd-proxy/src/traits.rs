@@ -49,9 +49,13 @@ pub trait BackendResolver: Send + Sync + 'static {
 /// single locked remove-and-compare), so a token can never be consumed twice
 /// even under concurrent requests for the same token.
 pub trait LoginTokenConsumer: Send + Sync + 'static {
-    /// `true` if `token` is currently valid for `site` - unexpired, matching,
-    /// and not already consumed. Always consumes the token (removes it from
-    /// the pending set) regardless of whether it matched, so a token is never
-    /// checked more than once.
-    fn consume(&self, site: &str, token: &str) -> bool;
+    /// `Some(target_user)` if `token` is currently valid for `site` -
+    /// unexpired, matching, and not already consumed - where `target_user` is
+    /// the configured admin's `WordPress` login/username to sign in as, or
+    /// `""` if none was configured (resolved at mint time, since the daemon's
+    /// config isn't reachable from here - see `mint_wordpress_login_token`).
+    /// `None` on any invalid/expired/wrong-site presentation. Always consumes
+    /// the token (removes it from the pending set) regardless of outcome, so
+    /// a token is never checked more than once.
+    fn consume(&self, site: &str, token: &str) -> Option<String>;
 }

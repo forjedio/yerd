@@ -24,6 +24,7 @@ use crate::forward::{
     bytes_body, empty_body, fcgi, http as http_fwd, owned_bytes_body, script_file, static_file,
     upgrade, BoxBody,
 };
+use crate::pure::cgi_params;
 use crate::pure::query;
 use crate::pure::redirect::build_redirect_uri;
 use crate::pure::unbound::{self, PickerSite};
@@ -391,13 +392,17 @@ async fn dispatch<R: BackendResolver, L: LoginTokenConsumer>(
             // HTTP->HTTPS redirect check above, so a secure site's token is
             // never burned by the 301 itself. On success the token is
             // stripped from the forwarded URI (never reaches PHP/logging) and
-            // `auto_prepend_file` is added for this one request only.
-            let auto_prepend =
-                if consume_login_token_if_present(&mut req, site.name(), login_tokens.as_ref()) {
-                    login_prepend_script.as_deref()
-                } else {
-                    None
-                };
+            // `auto_prepend_file` + the resolved target user are added for
+            // this one request only.
+            let login_target_user =
+                consume_login_token_if_present(&mut req, site.name(), login_tokens.as_ref());
+            let auto_login = match (&login_target_user, login_prepend_script.as_deref()) {
+                (Some(target_user), Some(prepend_script)) => Some(cgi_params::AutoLoginParams {
+                    prepend_script,
+                    target_user: target_user.as_str(),
+                }),
+                _ => None,
+            };
 
             let outcome =
                 static_file::try_serve(req.method(), req.uri().path(), &served_root, &allowed_root)
@@ -425,7 +430,7 @@ async fn dispatch<R: BackendResolver, L: LoginTokenConsumer>(
                 server_addr,
                 peer_addr,
                 https,
-                auto_prepend,
+                auto_login,
             )
             .await
         }
@@ -442,28 +447,24 @@ fn path_and_query_or_root(uri: &http::Uri) -> &str {
 /// Consuming happens here - the caller must only call this strictly after the
 /// HTTP->HTTPS redirect check, so a secure site's token is never burned by
 /// the 301 itself. On success, strips the token from `req`'s URI (so it never
-/// reaches PHP or request logging) and returns `true`; the caller decides
-/// what "success" means for its own request (adding `auto_prepend_file`).
+/// reaches PHP or request logging) and returns `Some(target_user)` (`""` = no
+/// preference); the caller decides what "success" means for its own request
+/// (adding `auto_prepend_file`/`YERD_LOGIN_USER`).
 fn consume_login_token_if_present<B, L: LoginTokenConsumer>(
     req: &mut Request<B>,
     site_name: &str,
     login_tokens: &L,
-) -> bool {
+) -> Option<String> {
     if !req.uri().path().starts_with("/wp-admin") {
-        return false;
+        return None;
     }
-    let Some(token) = query::get_param(req.uri().query(), LOGIN_TOKEN_PARAM).map(str::to_owned)
-    else {
-        return false;
-    };
-    if !login_tokens.consume(site_name, &token) {
-        return false;
-    }
+    let token = query::get_param(req.uri().query(), LOGIN_TOKEN_PARAM).map(str::to_owned)?;
+    let target_user = login_tokens.consume(site_name, &token)?;
     let stripped = query::strip_param(path_and_query_or_root(req.uri()), LOGIN_TOKEN_PARAM);
     if let Ok(new_uri) = stripped.parse::<http::Uri>() {
         *req.uri_mut() = new_uri;
     }
-    true
+    Some(target_user)
 }
 
 /// Turn a [`static_file::StaticOutcome`] into a response to return
@@ -1249,18 +1250,21 @@ mod login_token_tests {
 
     struct FakeConsumer {
         valid: bool,
+        target_user: &'static str,
     }
     impl LoginTokenConsumer for FakeConsumer {
-        fn consume(&self, _site: &str, _token: &str) -> bool {
-            self.valid
+        fn consume(&self, _site: &str, _token: &str) -> Option<String> {
+            self.valid.then(|| self.target_user.to_owned())
         }
     }
 
     /// A consumer with real single-use semantics: valid exactly once.
     struct OnceConsumer(std::sync::atomic::AtomicBool);
     impl LoginTokenConsumer for OnceConsumer {
-        fn consume(&self, _site: &str, _token: &str) -> bool {
-            self.0.swap(false, std::sync::atomic::Ordering::SeqCst)
+        fn consume(&self, _site: &str, _token: &str) -> Option<String> {
+            self.0
+                .swap(false, std::sync::atomic::Ordering::SeqCst)
+                .then(String::new)
         }
     }
 
@@ -1275,33 +1279,58 @@ mod login_token_tests {
     }
 
     #[test]
-    fn valid_token_strips_query_and_returns_true() {
+    fn valid_token_strips_query_and_returns_target_user() {
         let mut req = get_req("/wp-admin/?a=1&yerd_login_token=abc&b=2");
-        let consumer = FakeConsumer { valid: true };
-        assert!(consume_login_token_if_present(&mut req, "blog", &consumer));
+        let consumer = FakeConsumer {
+            valid: true,
+            target_user: "",
+        };
+        assert!(consume_login_token_if_present(&mut req, "blog", &consumer).is_some());
         assert_eq!(path_and_query(&req), "/wp-admin/?a=1&b=2");
+    }
+
+    #[test]
+    fn valid_token_with_configured_user_returns_that_username() {
+        let mut req = get_req("/wp-admin/?yerd_login_token=abc");
+        let consumer = FakeConsumer {
+            valid: true,
+            target_user: "editor",
+        };
+        assert_eq!(
+            consume_login_token_if_present(&mut req, "blog", &consumer).as_deref(),
+            Some("editor")
+        );
     }
 
     #[test]
     fn path_outside_wp_admin_is_never_considered() {
         let mut req = get_req("/?yerd_login_token=abc");
-        let consumer = FakeConsumer { valid: true };
-        assert!(!consume_login_token_if_present(&mut req, "blog", &consumer));
+        let consumer = FakeConsumer {
+            valid: true,
+            target_user: "",
+        };
+        assert!(consume_login_token_if_present(&mut req, "blog", &consumer).is_none());
         assert_eq!(path_and_query(&req), "/?yerd_login_token=abc");
     }
 
     #[test]
     fn missing_token_is_declined() {
         let mut req = get_req("/wp-admin/");
-        let consumer = FakeConsumer { valid: true };
-        assert!(!consume_login_token_if_present(&mut req, "blog", &consumer));
+        let consumer = FakeConsumer {
+            valid: true,
+            target_user: "",
+        };
+        assert!(consume_login_token_if_present(&mut req, "blog", &consumer).is_none());
     }
 
     #[test]
     fn invalid_token_leaves_query_untouched() {
         let mut req = get_req("/wp-admin/?yerd_login_token=abc");
-        let consumer = FakeConsumer { valid: false };
-        assert!(!consume_login_token_if_present(&mut req, "blog", &consumer));
+        let consumer = FakeConsumer {
+            valid: false,
+            target_user: "",
+        };
+        assert!(consume_login_token_if_present(&mut req, "blog", &consumer).is_none());
         assert_eq!(path_and_query(&req), "/wp-admin/?yerd_login_token=abc");
     }
 
@@ -1310,11 +1339,9 @@ mod login_token_tests {
     fn replayed_token_is_rejected_on_second_presentation() {
         let consumer = OnceConsumer(std::sync::atomic::AtomicBool::new(true));
         let mut req1 = get_req("/wp-admin/?yerd_login_token=abc");
-        assert!(consume_login_token_if_present(&mut req1, "blog", &consumer));
+        assert!(consume_login_token_if_present(&mut req1, "blog", &consumer).is_some());
         let mut req2 = get_req("/wp-admin/?yerd_login_token=abc");
-        assert!(!consume_login_token_if_present(
-            &mut req2, "blog", &consumer
-        ));
+        assert!(consume_login_token_if_present(&mut req2, "blog", &consumer).is_none());
         assert_eq!(
             path_and_query(&req2),
             "/wp-admin/?yerd_login_token=abc",

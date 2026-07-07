@@ -60,12 +60,14 @@ import {
   setSecure,
   setSiteGroup,
   setWebRoot,
+  setWordpressAutoLogin,
   sitesAndParked,
   startQuickTunnel,
   unlink,
   unpark,
+  wordpressAdminUsers,
 } from "@/ipc/client";
-import type { GroupsState, Site } from "@/ipc/types";
+import type { GroupsState, Site, SiteEntry } from "@/ipc/types";
 
 const toast = useToast();
 const { report } = useDaemon();
@@ -369,19 +371,27 @@ function sectionExpanded(sec: GroupSection): boolean {
   return searching.value || !isCollapsed(sec.name);
 }
 
-// ── edit site (PHP + web root + HTTPS + group) ──
+// ── edit site (PHP + web root + HTTPS + group + WordPress auto-login) ──
 const editOpen = ref(false);
-const editTarget = ref<Site | null>(null);
+const editTarget = ref<SiteEntry | null>(null);
 const editPhp = ref<string>("");
 const editWebRoot = ref("");
 const editSecure = ref(false);
 const editGroup = ref<string>("");
+const editWpAutoLogin = ref(false);
+const editWpAutoLoginUser = ref<string>("");
+const wpAdminUsersOptions = ref<{ value: string; label: string }[]>([
+  { value: "", label: "Earliest admin (default)" },
+]);
 
-function openEdit(s: Site): void {
+function openEdit(s: SiteEntry): void {
   editTarget.value = s;
   editPhp.value = s.php;
   editWebRoot.value = s.web_subpath ?? "";
   editSecure.value = s.secure;
+  editWpAutoLogin.value = s.wp_auto_login ?? false;
+  editWpAutoLoginUser.value = s.wp_auto_login_user ?? "";
+  wpAdminUsersOptions.value = [{ value: "", label: "Earliest admin (default)" }];
   // Seed from current membership, coercing a stale value (group deleted in
   // another window/CLI) to "" so the Select never sits out of range.
   editGroup.value = currentGroupOf(s.name);
@@ -391,6 +401,22 @@ function openEdit(s: Site): void {
     editOpen.value = true;
   });
 }
+
+// Fetched once when the toggle turns on (not eagerly on open) - avoids a
+// wp-cli round trip for sites where auto-login is never enabled.
+watch(editWpAutoLogin, async (enabled) => {
+  if (!enabled || !editTarget.value?.is_wordpress) return;
+  try {
+    const users = await wordpressAdminUsers(editTarget.value.name);
+    wpAdminUsersOptions.value = [
+      { value: "", label: "Earliest admin (default)" },
+      ...users.map((u) => ({ value: u.login, label: u.display_name || u.login })),
+    ];
+  } catch {
+    /* leave the default-only option list - the picker still works, just
+       without a specific-user choice */
+  }
+});
 
 async function chooseEditDir(): Promise<void> {
   // The picker only suggests a start dir; the daemon enforces containment.
@@ -417,6 +443,16 @@ async function confirmEdit(close: () => void): Promise<void> {
     }
     if (hasGroups.value && editGroup.value !== currentGroupOf(s.name)) {
       await setSiteGroup(s.name, editGroup.value === "" ? null : editGroup.value);
+    }
+    if (
+      editWpAutoLogin.value !== (s.wp_auto_login ?? false) ||
+      editWpAutoLoginUser.value !== (s.wp_auto_login_user ?? "")
+    ) {
+      await setWordpressAutoLogin(
+        s.name,
+        editWpAutoLogin.value,
+        editWpAutoLoginUser.value || null,
+      );
     }
     toast.success(`Updated ${s.name}`);
     await load({ force: true });
@@ -889,7 +925,7 @@ async function shareSitePublicly(s: Site): Promise<void> {
           </div>
         </div>
 
-        <div>
+        <div v-if="!editTarget?.is_wordpress">
           <label class="block text-sm font-medium" for="editwebroot">Web root</label>
           <div class="mt-2 flex gap-2">
             <Input id="editwebroot" v-model="editWebRoot" placeholder="public" />
@@ -907,6 +943,31 @@ async function shareSitePublicly(s: Site): Promise<void> {
             <p class="text-xs text-muted-foreground">Serve this site over TLS.</p>
           </div>
           <Switch v-model="editSecure" aria-label="HTTPS" />
+        </div>
+
+        <div v-if="editTarget?.is_wordpress" class="space-y-2">
+          <div class="flex items-center justify-between gap-4">
+            <div>
+              <p class="text-sm font-medium">WordPress Auto Admin Login</p>
+              <p class="text-xs text-muted-foreground">
+                Sign in automatically when opening WP Admin.
+              </p>
+            </div>
+            <Switch v-model="editWpAutoLogin" aria-label="WordPress Auto Admin Login" />
+          </div>
+          <div v-if="editWpAutoLogin">
+            <label for="edit-wp-admin-user" class="text-sm font-medium">Sign in as</label>
+            <div class="mt-2">
+              <Select
+                id="edit-wp-admin-user"
+                :model-value="editWpAutoLoginUser"
+                :options="wpAdminUsersOptions"
+                class="w-full"
+                aria-label="Sign in as"
+                @update:model-value="(v: string) => (editWpAutoLoginUser = v)"
+              />
+            </div>
+          </div>
         </div>
 
         <div v-if="hasGroups">

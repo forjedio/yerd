@@ -40,6 +40,7 @@ pub mod tunnel;
 pub mod wordpress_detect;
 pub mod wordpress_login;
 pub mod wordpress_url_sync;
+pub mod wordpress_users;
 pub mod wordpress_versions;
 
 #[cfg(test)]

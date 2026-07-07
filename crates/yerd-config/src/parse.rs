@@ -234,6 +234,11 @@ struct SiteWire {
     php: String,
     secure: bool,
     kind: yerd_core::SiteKind,
+    // Optional; absent in configs written before this field existed.
+    #[serde(default)]
+    wp_auto_login: bool,
+    #[serde(default)]
+    wp_auto_login_user: Option<String>,
 }
 
 /// One `[[overrides]]` table: a parked site's document-root `path` plus the
@@ -250,6 +255,10 @@ struct OverrideWire {
     secure: Option<bool>,
     #[serde(default)]
     web_root: Option<String>,
+    #[serde(default)]
+    wp_auto_login: Option<bool>,
+    #[serde(default)]
+    wp_auto_login_user: Option<String>,
 }
 
 fn default_tld_str() -> String {
@@ -285,6 +294,7 @@ pub(crate) fn parse_toml(s: &str) -> Result<Config, ConfigError> {
 impl TryFrom<Wire> for Config {
     type Error = ConfigError;
 
+    #[allow(clippy::too_many_lines)]
     fn try_from(w: Wire) -> Result<Self, ConfigError> {
         if w.version != crate::CURRENT_VERSION {
             return Err(ConfigError::UnsupportedVersion {
@@ -318,6 +328,8 @@ impl TryFrom<Wire> for Config {
                     php,
                     secure: o.secure,
                     web_root: o.web_root,
+                    wp_auto_login: o.wp_auto_login,
+                    wp_auto_login_user: o.wp_auto_login_user,
                 },
             );
         }
@@ -350,6 +362,8 @@ impl TryFrom<Wire> for Config {
             };
             s.set_secure(sw.secure);
             s.set_web_subpath(sw.web_subpath);
+            s.set_wp_auto_login(sw.wp_auto_login);
+            s.set_wp_auto_login_user(sw.wp_auto_login_user);
             linked.push(s);
         }
         let mail = MailSection {

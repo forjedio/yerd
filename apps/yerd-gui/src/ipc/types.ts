@@ -33,17 +33,27 @@ export interface Site {
   php: PhpVersion;
   secure: boolean;
   kind: SiteKind;
+  /** WordPress one-click admin login toggle. Omitted on the wire when false. */
+  wp_auto_login?: boolean;
+  /** WordPress login/username to sign in as, or absent for "earliest admin". */
+  wp_auto_login_user?: string;
 }
 
 /**
- * One entry in `Response::Sites` - `Site` plus WordPress-detection metadata
- * computed fresh by the daemon at request time (`SiteEntry` in response.rs,
+ * One entry in `Response::Sites` - `Site` plus a WordPress-detection flag
+ * served from the daemon's in-memory cache (`SiteEntry` in response.rs,
  * `#[serde(flatten)]`, so this is a flat object on the wire - no nested
- * `site` key). Both fields are omitted on the wire when absent.
+ * `site` key). Omitted on the wire when absent.
  */
 export interface SiteEntry extends Site {
   is_wordpress?: boolean;
-  wordpress_version?: string;
+}
+
+/** crates/yerd-ipc/src/response.rs - WordPressAdminUser, for the auto-login
+ *  user picker (`Response::WordpressAdminUsers`). */
+export interface WordPressAdminUser {
+  login: string;
+  display_name: string;
 }
 
 // ── status payloads (status.rs) ────────────────────────────────────────────
@@ -440,6 +450,7 @@ export type Response =
   | { type: "available_services"; services: ServiceAvailability[] }
   | { type: "wordpress_versions"; versions: WordPressVersionInfo[] }
   | { type: "wordpress_login_token"; token: string }
+  | { type: "wordpress_admin_users"; users: WordPressAdminUser[] }
   | { type: "service_logs"; lines: string[] }
   | { type: "databases"; databases: DatabaseSummary[] }
   | {

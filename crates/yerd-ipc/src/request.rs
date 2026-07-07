@@ -170,6 +170,23 @@ pub enum Request {
         /// The site name to mint a login token for.
         site: String,
     },
+    /// Toggle `WordPress` one-click admin login for a site, and set which
+    /// admin user it signs in as.
+    SetWordpressAutoLogin {
+        /// The site name.
+        name: String,
+        /// The desired auto-login state.
+        enabled: bool,
+        /// The `WordPress` login/username to sign in as, or `None` to fall
+        /// back to the earliest-created administrator.
+        user: Option<String>,
+    },
+    /// List a `WordPress` site's administrator accounts (the auto-login
+    /// user-picker's dropdown). Fetched on demand via `wp user list`.
+    WordpressAdminUsers {
+        /// The site name.
+        site: String,
+    },
     /// Download + install a prebuilt service version into yerd's data dir.
     InstallService {
         /// Service id (`"redis"`, `"mysql"`, `"mariadb"`, `"postgres"`).
@@ -590,6 +607,8 @@ mod variant_name_pinning {
             Request::AvailableServices => {}
             Request::AvailableWordpressVersions => {}
             Request::MintWordpressLoginToken { .. } => {}
+            Request::SetWordpressAutoLogin { .. } => {}
+            Request::WordpressAdminUsers { .. } => {}
             Request::InstallService { .. } => {}
             Request::UninstallService { .. } => {}
             Request::StartService { .. } => {}
@@ -710,6 +729,14 @@ mod variant_name_pinning {
         pin(Request::AvailableServices);
         pin(Request::AvailableWordpressVersions);
         pin(Request::MintWordpressLoginToken {
+            site: "blog".into(),
+        });
+        pin(Request::SetWordpressAutoLogin {
+            name: "blog".into(),
+            enabled: true,
+            user: Some("admin".into()),
+        });
+        pin(Request::WordpressAdminUsers {
             site: "blog".into(),
         });
         pin(Request::InstallService {

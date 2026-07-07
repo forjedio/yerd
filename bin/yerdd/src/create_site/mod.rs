@@ -443,6 +443,9 @@ mod tests {
             wordpress_versions: tokio::sync::RwLock::new(None),
             wordpress_login_tokens: Arc::new(crate::wordpress_login::LoginTokenRegistry::new()),
             wordpress_login_prepend_script: None,
+            wordpress_sites: std::sync::Arc::new(tokio::sync::RwLock::new(
+                std::collections::HashMap::new(),
+            )),
         }
     }
 

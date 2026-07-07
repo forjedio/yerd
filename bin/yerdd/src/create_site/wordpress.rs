@@ -230,6 +230,20 @@ pub(super) async fn run(
     {
         return Outcome::Failed(format!("scaffolded, but registration failed: {msg}"));
     }
+    // Best-effort: enable one-click admin login by default for wizard-created
+    // sites - the whole point of the post-creation "WP Admin" button. Never
+    // fails the job. Parked/pre-existing WordPress sites (not created through
+    // this wizard) keep this off by default - yerd has no basis for assuming
+    // that's wanted for an arbitrary directory.
+    let _ = crate::ipc_server::handle_mutation(
+        yerd_ipc::Request::SetWordpressAutoLogin {
+            name: name.to_owned(),
+            enabled: true,
+            user: None,
+        },
+        state,
+    )
+    .await;
     let scheme = if spec.secure { "https" } else { "http" };
     state
         .jobs
@@ -237,15 +251,6 @@ pub(super) async fn run(
         .await;
     Outcome::Succeeded
 }
-
-/// Silences PHP-engine `E_DEPRECATED` notices from WP-CLI's own bundled
-/// Composer dependencies (`react/promise`, `wp-cli/php-cli-tools`), which are
-/// not kept current with newer PHP releases and otherwise flood the job log
-/// with dozens of near-duplicate "Deprecated: ..." lines on every step - pure
-/// noise from yerd's PHP, not a failure signal, so it's suppressed at the
-/// engine level rather than filtered after the fact. Real errors/warnings
-/// still surface normally; only this one severity class is dropped.
-const QUIET_DEPRECATIONS: [&str; 2] = ["-d", "error_reporting=E_ALL & ~E_DEPRECATED"];
 
 /// Run one `wp <subcommand>` invocation, streaming its output into the job
 /// log. No custom `PATH`/`COMPOSER_HOME` needed - WP-CLI's own subcommands
@@ -279,7 +284,10 @@ async fn run_wp_step(
         return StreamedOutcome::Failed(format!("{}: not a valid file path", boot_fs.display()));
     };
 
-    let php_flags: Vec<String> = QUIET_DEPRECATIONS.iter().map(|s| (*s).to_owned()).collect();
+    let php_flags: Vec<String> = crate::tools::wp_cli::QUIET_DEPRECATIONS
+        .iter()
+        .map(|s| (*s).to_owned())
+        .collect();
     super::run_streamed(
         id, php_cli, &php_flags, &boot_name, &full_args, &boot_dir, None, None, state, cancel_rx,
     )

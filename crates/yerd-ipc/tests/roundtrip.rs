@@ -145,14 +145,12 @@ fn encode_then_decode_response_roundtrip() {
         sites: vec![yerd_ipc::SiteEntry {
             site: site.clone(),
             is_wordpress: false,
-            wordpress_version: None,
         }],
     });
     assert_response_roundtrips(Response::Sites {
         sites: vec![yerd_ipc::SiteEntry {
             site,
             is_wordpress: true,
-            wordpress_version: Some("6.4.2".into()),
         }],
     });
     for code in [

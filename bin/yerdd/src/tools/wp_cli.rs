@@ -23,6 +23,16 @@ use crate::ext_install::installed_versions;
 /// on `wp-cli/wp-cli`, not a package named `wp-cli/wp-cli` itself).
 const PACKAGE: &str = "wp-cli/wp-cli-bundle";
 
+/// Silences PHP-engine `E_DEPRECATED` notices from WP-CLI's own bundled
+/// Composer dependencies (`react/promise`, `wp-cli/php-cli-tools`), which are
+/// not kept current with newer PHP releases. Pass as leading `php` CLI flags
+/// (before the script argument) on every `wp` invocation - without this, a
+/// deprecation notice printed to stdout ahead of a command's real output
+/// breaks anything parsing that output (e.g. `--format=json`), and floods
+/// streamed job logs with noise otherwise. Real errors/warnings still surface
+/// normally; only this one severity class is dropped.
+pub(crate) const QUIET_DEPRECATIONS: [&str; 2] = ["-d", "error_reporting=E_ALL & ~E_DEPRECATED"];
+
 /// `{data}/tools/wp-cli/vendor/wp-cli/wp-cli/php/boot-fs.php` - the filesystem
 /// entry point the `wp` shim execs under the managed PHP. `wp-cli-bundle`
 /// requires `wp-cli/wp-cli` as a regular dependency, so it lands under

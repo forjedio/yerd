@@ -42,6 +42,7 @@ import type {
   TunnelsResponse,
   UpdateChannel,
   UpdateStatusResponse,
+  WordPressAdminUser,
   WordPressVersionInfo,
 } from "./types";
 
@@ -498,6 +499,24 @@ export async function mintWordPressLoginToken(site: string): Promise<string> {
     throw new IpcError("unexpected response to mint_wordpress_login_token");
   }
   return r.token;
+}
+
+/** Toggle WordPress one-click admin login for a site, and set which admin
+ *  user it signs in as. Pass `user: null` to fall back to the
+ *  earliest-created administrator. */
+export async function setWordpressAutoLogin(
+  name: string,
+  enabled: boolean,
+  user: string | null,
+): Promise<void> {
+  ensureOk(await call<Response>("set_wordpress_auto_login", { name, enabled, user }));
+}
+
+/** List a WordPress site's administrator accounts, for the auto-login user
+ *  picker. Fetched on demand via `wp user list`. */
+export async function wordpressAdminUsers(site: string): Promise<WordPressAdminUser[]> {
+  const r = ensureOk(await call<Response>("wordpress_admin_users", { site }));
+  return r.type === "wordpress_admin_users" ? r.users : [];
 }
 
 export async function installService(service: string, version: string): Promise<void> {

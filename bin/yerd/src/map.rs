@@ -559,10 +559,7 @@ fn format_sites(sites: &[SiteEntry]) -> String {
             s.document_root().display()
         );
         if show_wordpress {
-            let wp = entry
-                .wordpress_version
-                .as_deref()
-                .unwrap_or(if entry.is_wordpress { "yes" } else { "-" });
+            let wp = if entry.is_wordpress { "yes" } else { "-" };
             let _ = write!(out, "\t{wp}");
         }
     }
@@ -1496,7 +1493,6 @@ mod tests {
                 sites: vec![SiteEntry {
                     site,
                     is_wordpress: false,
-                    wordpress_version: None,
                 }],
             },
             false,
@@ -1516,13 +1512,12 @@ mod tests {
                 sites: vec![SiteEntry {
                     site: blog,
                     is_wordpress: true,
-                    wordpress_version: Some("6.4.2".into()),
                 }],
             },
             false,
         );
         assert!(with_wp.stdout.contains("WORDPRESS"));
-        assert!(with_wp.stdout.contains("6.4.2"));
+        assert!(with_wp.stdout.contains("yes"));
 
         let err = render(
             &Response::Error {

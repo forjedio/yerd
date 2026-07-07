@@ -3,7 +3,7 @@
 
 use std::io;
 use std::net::SocketAddr;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use bytes::Bytes;
 use http_body_util::BodyExt;
@@ -15,7 +15,7 @@ use tokio::net::TcpStream;
 use crate::backend::Backend;
 use crate::error::ProxyError;
 use crate::forward::{empty_body, BoxBody};
-use crate::pure::cgi_params::build_params;
+use crate::pure::cgi_params::{build_params, AutoLoginParams};
 use crate::pure::fcgi_codec::{
     encode_begin_request_body, encode_name_value, FcgiError, Header, RecordType, FCGI_MAX_PAYLOAD,
     FCGI_RESPONDER, FCGI_VERSION,
@@ -28,8 +28,9 @@ const REQUEST_ID: u16 = 1;
 /// `script_rel`, if given, is a real, on-disk `.php` file (relative to
 /// `served_root`) that [`crate::forward::script_file::resolve_script`]
 /// resolved for this request - see `pure::cgi_params`'s module doc for the
-/// front-controller policy this drives. `auto_prepend`, if given, is passed
-/// straight through to [`build_params`] - see its own doc for when/why.
+/// front-controller policy this drives. `auto_login`, if given, is passed
+/// straight through to [`build_params`] - see [`AutoLoginParams`] for
+/// when/why.
 #[allow(clippy::too_many_arguments)]
 pub async fn forward(
     req: Request<Incoming>,
@@ -39,7 +40,7 @@ pub async fn forward(
     server_addr: SocketAddr,
     peer_addr: SocketAddr,
     https: bool,
-    auto_prepend: Option<&Path>,
+    auto_login: Option<AutoLoginParams<'_>>,
 ) -> Result<Response<BoxBody>, ProxyError> {
     let backend_label = backend.to_string();
     let (parts, body) = req.into_parts();
@@ -67,7 +68,7 @@ pub async fn forward(
         https,
         peer_addr,
         server_addr,
-        auto_prepend,
+        auto_login,
     );
     let mut param_buf: Vec<u8> = Vec::new();
     for (name, value) in &params {

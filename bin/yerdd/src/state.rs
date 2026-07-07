@@ -180,4 +180,9 @@ pub struct DaemonState {
     /// boot, but the ordinary, non-authenticated `/wp-admin/` link still
     /// works.
     pub wordpress_login_prepend_script: Option<PathBuf>,
+    /// In-memory cache of which sites are `WordPress` (site name → bool),
+    /// refreshed on every router rebuild (`startup::build_routing`, run on a
+    /// mutation or a filesystem-watcher tick) rather than detected fresh on
+    /// every `ListSites` poll - see [`crate::wordpress_detect`].
+    pub wordpress_sites: Arc<RwLock<HashMap<String, bool>>>,
 }
