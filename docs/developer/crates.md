@@ -61,6 +61,19 @@ set (it wraps macro-heavy generated Tauri code) but still bans
 | `yerd-gui` (`apps/yerd-gui`) | Tauri v2 + Vue 3 desktop/tray app - another thin `yerd-ipc` client of `yerdd`, like the CLI. | [Desktop App Internals](./gui) |
 | `xtask` | Build automation invoked as `cargo xtask <cmd>`: `bump`, `version-check`. | [Build Automation (xtask)](./xtask) |
 
+### Test-only infrastructure
+
+| Member | Purpose | Page |
+|---|---|---|
+| `yerd-depcheck` | Shared `cargo metadata` dependency-graph assertions, pulled in via `[dev-dependencies]` only by six crates'/binaries' `tests/no_runtime_deps.rs` guards - never a runtime dependency of anything shipped. | [yerd-depcheck](./crates/yerd-depcheck) |
+
+This member is deliberately excluded from the "library crates" table and the
+dependency graph below: it is never reachable from any shipped binary's
+`[dependencies]`, only from test targets via `[dev-dependencies]` - a
+different kind of workspace member entirely, closer in spirit to `xtask`
+(tooling that helps build/verify the workspace) than to a crate `yerdd`
+assembles at runtime.
+
 ## Internal dependency graph
 
 Dependencies run **downhill**: `yerd-core` is the bedrock at the bottom and has

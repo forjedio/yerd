@@ -237,6 +237,7 @@ export default withMermaid({
             { text: 'yerd-platform', link: '/developer/crates/yerd-platform' },
             { text: 'yerd-service-ctl', link: '/developer/crates/yerd-service-ctl' },
             { text: 'yerd-update', link: '/developer/crates/yerd-update' },
+            { text: 'yerd-depcheck (test-only)', link: '/developer/crates/yerd-depcheck' },
           ],
         },
         {

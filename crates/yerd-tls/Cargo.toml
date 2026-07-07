@@ -20,7 +20,7 @@ time             = { workspace = true }
 x509-parser      = { workspace = true }
 
 [dev-dependencies]
-serde_json = { workspace = true }
+yerd-depcheck = { path = "../yerd-depcheck" }
 
 [lints]
 workspace = true

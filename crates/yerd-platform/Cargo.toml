@@ -23,11 +23,11 @@ serde_json  = { workspace = true }
 security-framework = { workspace = true }
 
 [dev-dependencies]
-tempfile   = { workspace = true }
-serde_json = { workspace = true }
+tempfile      = { workspace = true }
+yerd-depcheck = { path = "../yerd-depcheck" }
 # Minting test CAs (via yerd-tls, already a normal dep) needs a Validity, which
 # is built from `time` timestamps.
-time       = { workspace = true }
+time          = { workspace = true }
 
 [lints]
 workspace = true
