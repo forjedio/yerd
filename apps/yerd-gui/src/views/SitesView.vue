@@ -20,6 +20,7 @@ import {
 } from "lucide-vue-next";
 
 import CreateLaravelWizard from "@/components/site-create/CreateLaravelWizard.vue";
+import CreateWordPressWizard from "@/components/site-create/CreateWordPressWizard.vue";
 import SiteCard from "@/components/SiteCard.vue";
 import PageHeader from "@/components/PageHeader.vue";
 import Badge from "@/components/ui/Badge.vue";
@@ -269,6 +270,7 @@ const groupSelectOptions = computed(() => [
 
 // ── create new site ──
 const createOpen = ref(false);
+const wordpressCreateOpen = ref(false);
 const phpVersionList = computed(() => (report.value?.php ?? []).map((p) => p.version));
 const defaultPhp = computed(() => report.value?.default_php ?? "");
 
@@ -276,6 +278,12 @@ function openCreate(): void {
   // Defer past the dropdown's close so reka-ui's focus-restore doesn't fight the modal.
   void nextTick(() => {
     createOpen.value = true;
+  });
+}
+
+function openCreateWordpress(): void {
+  void nextTick(() => {
+    wordpressCreateOpen.value = true;
   });
 }
 
@@ -588,14 +596,8 @@ async function shareSitePublicly(s: Site): Promise<void> {
             <DropdownMenuItem @select="openCreate">
               <Rocket class="size-4" /> New Laravel site…
             </DropdownMenuItem>
-            <!-- Future frameworks slot in here. -->
-            <DropdownMenuItem
-              disabled
-              class="opacity-60"
-              @select.prevent
-            >
-              <Package class="size-4" /> Other frameworks
-              <span class="ml-auto rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium">Soon</span>
+            <DropdownMenuItem @select="openCreateWordpress">
+              <Package class="size-4" /> New WordPress site…
             </DropdownMenuItem>
             <DropdownMenuSeparator />
             <DropdownMenuItem @select="linkOpen = true">
@@ -849,6 +851,17 @@ async function shareSitePublicly(s: Site): Promise<void> {
     <!-- create new Laravel site wizard -->
     <CreateLaravelWizard
       v-model:open="createOpen"
+      :parked-folders="parked"
+      :php-versions="phpVersionList"
+      :default-php="defaultPhp"
+      :tld="tld"
+      :report="report ?? null"
+      @created="onCreated"
+    />
+
+    <!-- create new WordPress site wizard -->
+    <CreateWordPressWizard
+      v-model:open="wordpressCreateOpen"
       :parked-folders="parked"
       :php-versions="phpVersionList"
       :default-php="defaultPhp"

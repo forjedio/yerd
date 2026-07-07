@@ -95,9 +95,34 @@ async fn handle_client(stream: IpcStream, state: Arc<DaemonState>) {
 async fn dispatch(req: Request, state: &DaemonState) -> Response {
     match req {
         Request::Ping => Response::Pong,
-        Request::ListSites => Response::Sites {
-            sites: state.router.read().await.iter().cloned().collect(),
-        },
+        Request::ListSites => {
+            // Clone the snapshot and release the router lock immediately
+            // (unchanged from before), then run WordPress detection - a
+            // handful of blocking stats/reads - only after the lock is
+            // dropped and off the async executor via `spawn_blocking`.
+            // Holding the router's read lock across that I/O would block
+            // every writer (`Link`/`Park`/`SetPhp`/`SetSecure`, and the
+            // WordPress create-site job's own Registering step) for its
+            // duration, on a request the GUI polls every few seconds.
+            let sites: Vec<yerd_core::Site> = state.router.read().await.iter().cloned().collect();
+            let entries = tokio::task::spawn_blocking(move || {
+                sites
+                    .into_iter()
+                    .map(|site| {
+                        let (is_wordpress, wordpress_version) =
+                            crate::wordpress_detect::detect(&site.served_root());
+                        yerd_ipc::SiteEntry {
+                            site,
+                            is_wordpress,
+                            wordpress_version,
+                        }
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .await
+            .unwrap_or_default();
+            Response::Sites { sites: entries }
+        }
         Request::ListParked => Response::Parked {
             paths: state
                 .config
@@ -2071,7 +2096,7 @@ Subject: Captured\r\n\r\nhi\r\n";
 
         match dispatch(Request::ListSites, &state).await {
             Response::Sites { sites } => {
-                let names: Vec<&str> = sites.iter().map(yerd_core::Site::name).collect();
+                let names: Vec<&str> = sites.iter().map(|e| e.site.name()).collect();
                 assert_eq!(names, vec!["blog"]);
             }
             other => panic!("expected Sites, got {other:?}"),
@@ -2255,8 +2280,9 @@ Subject: Captured\r\n\r\nhi\r\n";
         match dispatch(Request::ListSites, state).await {
             Response::Sites { sites } => sites
                 .iter()
-                .find(|s| s.name() == name)
+                .find(|s| s.site.name() == name)
                 .unwrap_or_else(|| panic!("site {name} not found"))
+                .site
                 .web_subpath()
                 .to_path_buf(),
             other => panic!("expected Sites, got {other:?}"),
@@ -2317,9 +2343,9 @@ Subject: Captured\r\n\r\nhi\r\n";
 
         match dispatch(Request::ListSites, &state).await {
             Response::Sites { sites } => {
-                let blog = sites.iter().find(|s| s.name() == "blog").unwrap();
-                assert_eq!(blog.php(), PhpVersion::new(8, 4));
-                assert_eq!(blog.kind(), yerd_core::SiteKind::Parked);
+                let blog = sites.iter().find(|s| s.site.name() == "blog").unwrap();
+                assert_eq!(blog.site.php(), PhpVersion::new(8, 4));
+                assert_eq!(blog.site.kind(), yerd_core::SiteKind::Parked);
             }
             other => panic!("expected Sites, got {other:?}"),
         }
@@ -2369,7 +2395,7 @@ Subject: Captured\r\n\r\nhi\r\n";
         match dispatch(Request::ListSites, &state).await {
             Response::Sites { sites } => {
                 assert!(
-                    sites.iter().all(|s| s.name() != "blog"),
+                    sites.iter().all(|s| s.site.name() != "blog"),
                     "blog should be gone after un-park: {sites:?}"
                 );
             }
@@ -2406,9 +2432,9 @@ Subject: Captured\r\n\r\nhi\r\n";
 
         match dispatch(Request::ListSites, &state).await {
             Response::Sites { sites } => {
-                let blog = sites.iter().find(|s| s.name() == "blog").unwrap();
-                assert!(blog.secure());
-                assert_eq!(blog.kind(), yerd_core::SiteKind::Parked);
+                let blog = sites.iter().find(|s| s.site.name() == "blog").unwrap();
+                assert!(blog.site.secure());
+                assert_eq!(blog.site.kind(), yerd_core::SiteKind::Parked);
             }
             other => panic!("expected Sites, got {other:?}"),
         }
@@ -2424,8 +2450,8 @@ Subject: Captured\r\n\r\nhi\r\n";
         assert!(matches!(resp, Response::Ok), "got {resp:?}");
         match dispatch(Request::ListSites, &state).await {
             Response::Sites { sites } => {
-                let blog = sites.iter().find(|s| s.name() == "blog").unwrap();
-                assert!(!blog.secure());
+                let blog = sites.iter().find(|s| s.site.name() == "blog").unwrap();
+                assert!(!blog.site.secure());
             }
             other => panic!("expected Sites, got {other:?}"),
         }
@@ -2919,8 +2945,8 @@ Subject: Captured\r\n\r\nhi\r\n";
         ));
         match dispatch(Request::ListSites, &state).await {
             Response::Sites { sites } => {
-                let app = sites.iter().find(|s| s.name() == "app").unwrap();
-                assert_eq!(app.php(), PhpVersion::new(8, 4));
+                let app = sites.iter().find(|s| s.site.name() == "app").unwrap();
+                assert_eq!(app.site.php(), PhpVersion::new(8, 4));
             }
             other => panic!("expected Sites, got {other:?}"),
         }

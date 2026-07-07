@@ -444,9 +444,9 @@ pub enum UninstallTarget {
         /// PHP version, e.g. `8.5`.
         version: String,
     },
-    /// Uninstall a dev tool (`composer`, `node`, `bun`).
+    /// Uninstall a dev tool (`composer`, `node`, `bun`, `laravel`, `wp-cli`).
     Tool {
-        /// Tool id: `composer`, `node`, or `bun`.
+        /// Tool id: `composer`, `node`, `bun`, `laravel`, or `wp-cli`.
         id: String,
     },
 }
@@ -459,9 +459,10 @@ pub enum InstallTarget {
         /// PHP version, e.g. `8.5`.
         version: String,
     },
-    /// Install a dev tool (`composer`, `node`, `bun`) at its latest release.
+    /// Install a dev tool (`composer`, `node`, `bun`, `laravel`, `wp-cli`) at
+    /// its latest release.
     Tool {
-        /// Tool id: `composer`, `node`, or `bun`.
+        /// Tool id: `composer`, `node`, `bun`, `laravel`, or `wp-cli`.
         id: String,
     },
 }

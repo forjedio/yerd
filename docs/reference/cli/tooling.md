@@ -1,8 +1,9 @@
 # Tooling
 
 Yerd installs developer tools - **Composer**, **Node.js** (`node`/`npm`/`npx`),
-and **Bun** (`bun`/`bunx`) - as self-contained binaries on your `PATH`. Each is
-identified by a short `id`: `composer`, `node`, or `bun`. The
+**Bun** (`bun`/`bunx`), the **Laravel installer** (`laravel`), and **WP-CLI**
+(`wp`) - as self-contained binaries on your `PATH`. Each is identified by a
+short `id`: `composer`, `node`, `bun`, `laravel`, or `wp-cli`. The
 [Tooling guide](../../guide/tooling) covers the model in depth; this page is the
 command reference.
 
@@ -50,16 +51,26 @@ Add `--json` for machine-readable output.
 yerd install tool composer    # PHP dependency manager (needs a PHP version)
 yerd install tool node        # latest Node LTS - node, npm, npx
 yerd install tool bun         # bun + bunx
+yerd install tool laravel     # the laravel new installer (needs Composer)
+yerd install tool wp-cli      # the wp command for WordPress (needs Composer)
 yerd install tool node        # run again to update to the newest LTS
 yerd uninstall tool bun       # remove bun and prune its shims
 ```
 
-`<ID>` is one of `composer`, `node`, or `bun`. An unknown id returns a
-`not_found` error.
+`<ID>` is one of `composer`, `node`, `bun`, `laravel`, or `wp-cli`. An unknown
+id returns a `not_found` error.
 
 ::: warning Composer requires PHP
 `composer` runs under Yerd's managed PHP, so install at least one
-[PHP version](./php) first. Node and Bun are standalone.
+[PHP version](./php) first. Node and Bun are standalone. The Laravel installer
+and WP-CLI are Composer packages, so they also need Yerd's own Composer
+installed first.
+:::
+
+::: tip WP-CLI has no phar self-update
+Yerd's `wp-cli` is a Composer install, so WP-CLI's own `wp cli update`
+subcommand isn't applicable and will error - run `yerd install tool wp-cli`
+again instead to update.
 :::
 
 ## PATH setup

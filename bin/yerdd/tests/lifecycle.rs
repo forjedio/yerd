@@ -96,7 +96,7 @@ mod tests {
         match resp {
             Response::Sites { sites } => {
                 assert!(
-                    sites.iter().any(|s| s.name() == "blog"),
+                    sites.iter().any(|s| s.site.name() == "blog"),
                     "expected 'blog' in {sites:?}"
                 );
             }
@@ -160,11 +160,11 @@ mod tests {
             Response::Sites { sites } => {
                 let blog = sites
                     .iter()
-                    .find(|s| s.name() == "blog")
+                    .find(|s| s.site.name() == "blog")
                     .expect("blog present");
-                assert!(blog.secure(), "blog should be secure");
+                assert!(blog.site.secure(), "blog should be secure");
                 assert_eq!(
-                    blog.kind(),
+                    blog.site.kind(),
                     yerd_core::SiteKind::Parked,
                     "blog must stay parked"
                 );

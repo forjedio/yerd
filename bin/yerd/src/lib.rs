@@ -24,6 +24,8 @@ pub mod path_cmd;
 pub mod shim;
 pub mod transport;
 pub mod uninstall;
+#[cfg(unix)]
+pub mod wp_shim;
 
 use std::process::ExitCode;
 

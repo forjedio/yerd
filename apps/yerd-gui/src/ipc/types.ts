@@ -35,6 +35,17 @@ export interface Site {
   kind: SiteKind;
 }
 
+/**
+ * One entry in `Response::Sites` - `Site` plus WordPress-detection metadata
+ * computed fresh by the daemon at request time (`SiteEntry` in response.rs,
+ * `#[serde(flatten)]`, so this is a flat object on the wire - no nested
+ * `site` key). Both fields are omitted on the wire when absent.
+ */
+export interface SiteEntry extends Site {
+  is_wordpress?: boolean;
+  wordpress_version?: string;
+}
+
 // ── status payloads (status.rs) ────────────────────────────────────────────
 
 export interface PortStatus {
@@ -313,8 +324,37 @@ export interface LaravelOptions {
   boost: boolean;
 }
 
-/** Framework is internally tagged on `framework`. Only Laravel today. */
-export type Framework = { framework: "laravel"; options: LaravelOptions };
+export type Multisite = "off" | "subdirectory" | "subdomain";
+export type WordPressDbEngine = "mysql" | "mariadb";
+
+/** crates/yerd-ipc/src/create.rs - WordPressDatabase. */
+export interface WordPressDatabase {
+  engine: WordPressDbEngine;
+  name: string;
+}
+
+/** crates/yerd-ipc/src/create.rs - WordPressOptions. */
+export interface WordPressOptions {
+  /** `null` installs the latest stable release. */
+  core_version: string | null;
+  locale: string;
+  admin_user: string;
+  admin_email: string;
+  admin_password: string;
+  site_title: string;
+  table_prefix: string;
+  multisite: Multisite;
+  database: WordPressDatabase;
+}
+
+/**
+ * Framework is internally tagged on `framework`. The Rust variant is spelled
+ * `Wordpress` (one capital) so `rename_all = "snake_case"` produces the wire
+ * tag `"wordpress"` rather than `"word_press"` - see create.rs's doc comment.
+ */
+export type Framework =
+  | { framework: "laravel"; options: LaravelOptions }
+  | { framework: "wordpress"; options: WordPressOptions };
 
 /** crates/yerd-ipc/src/create.rs - CreateSiteSpec. */
 export interface CreateSiteSpec {
@@ -351,7 +391,7 @@ export type ErrorCode =
  */
 export type Response =
   | { type: "pong" }
-  | { type: "sites"; sites: Site[] }
+  | { type: "sites"; sites: SiteEntry[] }
   | { type: "ok" }
   | { type: "error"; code: ErrorCode; message: string }
   | { type: "parked"; paths: string[] }

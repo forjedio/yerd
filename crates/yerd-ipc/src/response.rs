@@ -33,7 +33,7 @@ pub enum Response {
     Sites {
         /// The sites currently known to the daemon, in lexicographic
         /// name order.
-        sites: Vec<Site>,
+        sites: Vec<SiteEntry>,
     },
     /// Generic success for mutating requests
     /// ([`crate::Request::Park`], [`crate::Request::Link`],
@@ -300,6 +300,35 @@ pub enum Response {
         /// map is ungrouped ("Unallocated").
         members: BTreeMap<String, String>,
     },
+}
+
+/// One entry in [`Response::Sites`]: the site plus WordPress-detection
+/// metadata computed fresh at request time.
+///
+/// This is a wire-only wrapper, not a new field on [`Site`] itself - `Site`'s
+/// hand-written `Serialize`/`Deserialize` is shared between the wire and
+/// `yerd.toml` persistence (`Config.linked: Vec<Site>`), and `WordPress`
+/// detection is a runtime fact (it can change the moment the user runs
+/// `wp core update`), not something that belongs baked into persisted config.
+/// `#[serde(flatten)]` keeps the JSON shape identical to "just add fields to
+/// `Site`" from the wire's perspective without touching `Site`'s own shape.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SiteEntry {
+    /// The site itself - unchanged shape, still exactly what `Site`'s own
+    /// serde impl produces.
+    #[serde(flatten)]
+    pub site: Site,
+    /// Whether a `WordPress` marker (`wp-config.php`/`wp-load.php`) was found
+    /// at the site's served root.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub is_wordpress: bool,
+    /// The installed `WordPress` core version, if `is_wordpress` and
+    /// `wp-includes/version.php` parsed. Kept independent of `is_wordpress`
+    /// rather than collapsed into one `Option<String>`: a genuine `WordPress`
+    /// site whose version file doesn't parse (unusual layouts, a future core
+    /// format change) must still show as `WordPress`, just without a version.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wordpress_version: Option<String>,
 }
 
 /// An available newer patch for an installed PHP minor.

@@ -39,14 +39,14 @@ pub const PROTOCOL_VERSION: u32 = 1;
 
 pub use create::{
     AuthProvider, CreateSiteSpec, Database, Framework, JobId, JobState, JsRuntime, LaravelOptions,
-    StarterKit, Testing,
+    Multisite, StarterKit, Testing, WordPressDatabase, WordPressDbEngine, WordPressOptions,
 };
 pub use dump::{DumpCategory, DumpCounts, DumpEvent, DumpExtStatus};
 pub use error::{FrameError, IpcError, IpcErrorKind};
 pub use frame::{encode_frame, FrameDecoder, DEFAULT_MAX_FRAME};
 pub use message::{decode_message, encode_message};
 pub use request::Request;
-pub use response::{ErrorCode, PhpUpdate, Response};
+pub use response::{ErrorCode, PhpUpdate, Response, SiteEntry};
 pub use status::{
     CaStatus, CloudflaredSource, CloudflaredStatus, DatabaseSummary, Diagnosis, DiagnosisCode,
     FixReport, FixResult, MailDetail, MailHeader, MailStatus, MailSummary, NamedTunnelMeta,

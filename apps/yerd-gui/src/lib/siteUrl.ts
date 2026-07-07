@@ -54,6 +54,17 @@ export function siteUrl(s: SiteLike, report: StatusReport | null | undefined): s
 }
 
 /**
+ * The WP Admin URL for a WordPress site's "WP Admin" action - the site's own
+ * URL plus `/wp-admin/`. Not pre-authenticated: this opens the ordinary
+ * WordPress login screen, the same as the front end otherwise. `siteUrl`
+ * never returns a trailing slash in either branch, so straight concatenation
+ * is safe here.
+ */
+export function wpAdminUrl(s: SiteLike, report: StatusReport | null | undefined): string {
+  return `${siteUrl(s, report)}/wp-admin/`;
+}
+
+/**
  * Tooltip / aria text for an "Open" affordance. Appends the http-only caveat
  * when the resolver is off (the site is reached via the localhost `/~`
  * fallback). Shared so every Open affordance shows the same target + caveat.

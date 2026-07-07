@@ -109,20 +109,39 @@ pub async fn install_service(
             .and_then(|i| i.port)
             .unwrap_or(service.default_port())
     };
-    let outcome = {
-        let mut mgr = state.service_manager.lock().await;
-        mgr.ensure(service, version.clone(), port).await
-    };
-    match outcome {
-        Ok(_) => persist_instance(state, service, |inst| {
-            inst.enabled = true;
-            inst.version = Some(version.to_string());
-            inst.port = Some(port);
-        })
-        .await
-        .unwrap_or_else(|resp| resp),
-        Err(e) => service_error_response(&e),
+    match ensure_and_persist(state, service, version, port).await {
+        Ok(()) => Response::Ok,
+        Err(resp) => resp,
     }
+}
+
+/// Ensure `service` is running at `version`/`port`, then persist it as the
+/// selected instance (`enabled`/`version`/`port`) in config. Shared by
+/// [`install_service`]/[`start_service`]'s own handlers and by any other
+/// in-daemon caller that installs+starts a service inline as part of a larger
+/// job (e.g. the WordPress create-site job's database-provisioning phase) -
+/// callers must go through this rather than only `ServiceManager::ensure`, or
+/// the engine ends up running but unrecorded, and `ListServices`/boot
+/// auto-start disagree with reality.
+pub(crate) async fn ensure_and_persist(
+    state: &DaemonState,
+    service: Service,
+    version: ServiceVersion,
+    port: u16,
+) -> Result<(), Response> {
+    {
+        let mut mgr = state.service_manager.lock().await;
+        mgr.ensure(service, version.clone(), port)
+            .await
+            .map_err(|e| service_error_response(&e))?;
+    }
+    persist_instance(state, service, |inst| {
+        inst.enabled = true;
+        inst.version = Some(version.to_string());
+        inst.port = Some(port);
+    })
+    .await
+    .map(|_| ())
 }
 
 /// `change-version <svc> <new>` - switch the engine's single installed version.
@@ -238,19 +257,9 @@ pub async fn start_service(service_id: &str, state: &DaemonState) -> Response {
         Err(resp) => return resp,
     };
 
-    let outcome = {
-        let mut mgr = state.service_manager.lock().await;
-        mgr.ensure(service, version.clone(), port).await
-    };
-    match outcome {
-        Ok(_) => persist_instance(state, service, |inst| {
-            inst.enabled = true;
-            inst.version = Some(version.to_string());
-            inst.port = Some(port);
-        })
-        .await
-        .unwrap_or_else(|resp| resp),
-        Err(e) => service_error_response(&e),
+    match ensure_and_persist(state, service, version, port).await {
+        Ok(()) => Response::Ok,
+        Err(resp) => resp,
     }
 }
 

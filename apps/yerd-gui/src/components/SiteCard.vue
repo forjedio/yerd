@@ -10,6 +10,7 @@ import {
   MoreHorizontal,
   Pencil,
   Trash2,
+  UserRound,
 } from "lucide-vue-next";
 
 import Button from "@/components/ui/Button.vue";
@@ -21,12 +22,12 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import Spinner from "@/components/ui/Spinner.vue";
-import { openTitle, siteUrl } from "@/lib/siteUrl";
+import { openTitle, siteUrl, wpAdminUrl } from "@/lib/siteUrl";
 import { openInBrowser, openPath } from "@/ipc/client";
-import type { Site, StatusReport } from "@/ipc/types";
+import type { SiteEntry, StatusReport } from "@/ipc/types";
 
 defineProps<{
-  site: Site;
+  site: SiteEntry;
   report: StatusReport | null;
   tld: string;
   /** Whether a mutation targeting this site is in flight (shows a spinner). */
@@ -36,14 +37,14 @@ defineProps<{
 }>();
 
 const emit = defineEmits<{
-  edit: [site: Site];
-  unlink: [site: Site];
-  share: [site: Site];
-  toggleSecure: [site: Site];
+  edit: [site: SiteEntry];
+  unlink: [site: SiteEntry];
+  share: [site: SiteEntry];
+  toggleSecure: [site: SiteEntry];
 }>();
 
 /** The served sub-directory label ("/" when the project root is served). */
-function servedLabel(s: Site): string {
+function servedLabel(s: SiteEntry): string {
   return s.web_subpath && s.web_subpath !== "" ? s.web_subpath : "/";
 }
 </script>
@@ -95,6 +96,13 @@ function servedLabel(s: Site): string {
             <DropdownMenuItem @select="openInBrowser(siteUrl(site, report))">
               <ExternalLink class="size-4" /> Open in browser
             </DropdownMenuItem>
+            <DropdownMenuItem
+              v-if="site.is_wordpress"
+              title="Opens the WordPress login screen - not automatically signed in"
+              @select="openInBrowser(wpAdminUrl(site, report))"
+            >
+              <UserRound class="size-4" /> WP Admin
+            </DropdownMenuItem>
             <DropdownMenuItem @select="openPath(site.document_root)">
               <FolderOpen class="size-4" /> Reveal folder
             </DropdownMenuItem>
@@ -144,6 +152,12 @@ function servedLabel(s: Site): string {
         :title="`Serves ${servedLabel(site)} as the document root`"
       >
         /{{ servedLabel(site) }}
+      </span>
+      <span
+        v-if="site.is_wordpress"
+        class="inline-flex items-center rounded-md bg-brand/10 px-1.5 py-0.5 text-[11px] font-medium text-brand"
+      >
+        WordPress{{ site.wordpress_version ? ` ${site.wordpress_version}` : "" }}
       </span>
       <span class="ml-auto inline-flex items-center gap-1 text-[11px] text-muted-foreground">
         <Link2 v-if="site.kind === 'linked'" class="size-3" />

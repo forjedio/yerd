@@ -318,10 +318,23 @@ fn response_sites_zero_byte_shape() {
     assert_eq!(back, r);
 }
 
+/// A non-WordPress `SiteEntry` - `is_wordpress`/`wordpress_version` are both
+/// omitted from the wire (`skip_serializing_if`), so this is what most sites
+/// look like.
+fn plain(site: Site) -> yerd_ipc::SiteEntry {
+    yerd_ipc::SiteEntry {
+        site,
+        is_wordpress: false,
+        wordpress_version: None,
+    }
+}
+
 #[test]
 fn response_sites_one_byte_shape() {
     let foo = Site::parked("foo", "/srv/foo", PhpVersion::new(8, 3)).unwrap();
-    let r = Response::Sites { sites: vec![foo] };
+    let r = Response::Sites {
+        sites: vec![plain(foo)],
+    };
     let s = serde_json::to_string(&r).unwrap();
     let expected = r#"{"type":"sites","sites":[{"name":"foo","document_root":"/srv/foo","php":"8.3","secure":false,"kind":"parked"}]}"#;
     assert_eq!(s, expected);
@@ -335,7 +348,7 @@ fn response_sites_two_byte_shape() {
     let mut beta = Site::linked("beta", "/srv/beta", PhpVersion::new(7, 4)).unwrap();
     beta.set_secure(true);
     let r = Response::Sites {
-        sites: vec![alpha, beta],
+        sites: vec![plain(alpha), plain(beta)],
     };
     let s = serde_json::to_string(&r).unwrap();
     let expected = r#"{"type":"sites","sites":[{"name":"alpha","document_root":"/srv/alpha","php":"8.3","secure":false,"kind":"parked"},{"name":"beta","document_root":"/srv/beta","php":"7.4","secure":true,"kind":"linked"}]}"#;
@@ -348,9 +361,48 @@ fn response_sites_two_byte_shape() {
 fn response_sites_with_web_subpath_byte_shape() {
     let mut app = Site::linked("app", "/srv/app", PhpVersion::new(8, 3)).unwrap();
     app.set_web_subpath("public");
-    let r = Response::Sites { sites: vec![app] };
+    let r = Response::Sites {
+        sites: vec![plain(app)],
+    };
     let s = serde_json::to_string(&r).unwrap();
     let expected = r#"{"type":"sites","sites":[{"name":"app","document_root":"/srv/app","web_subpath":"public","php":"8.3","secure":false,"kind":"linked"}]}"#;
+    assert_eq!(s, expected);
+    let back: Response = serde_json::from_str(&s).unwrap();
+    assert_eq!(back, r);
+}
+
+#[test]
+fn response_sites_wordpress_byte_shape() {
+    let blog = Site::parked("blog", "/srv/blog", PhpVersion::new(8, 3)).unwrap();
+    let r = Response::Sites {
+        sites: vec![yerd_ipc::SiteEntry {
+            site: blog,
+            is_wordpress: true,
+            wordpress_version: Some("6.4.2".into()),
+        }],
+    };
+    let s = serde_json::to_string(&r).unwrap();
+    let expected = r#"{"type":"sites","sites":[{"name":"blog","document_root":"/srv/blog","php":"8.3","secure":false,"kind":"parked","is_wordpress":true,"wordpress_version":"6.4.2"}]}"#;
+    assert_eq!(s, expected);
+    let back: Response = serde_json::from_str(&s).unwrap();
+    assert_eq!(back, r);
+}
+
+#[test]
+fn response_sites_wordpress_true_with_unparsed_version_byte_shape() {
+    // A genuinely-WordPress site whose version file didn't parse: `is_wordpress`
+    // is still `true`, `wordpress_version` is omitted (not serialised as
+    // `null`) rather than the two being collapsed into one optional field.
+    let blog = Site::parked("blog", "/srv/blog", PhpVersion::new(8, 3)).unwrap();
+    let r = Response::Sites {
+        sites: vec![yerd_ipc::SiteEntry {
+            site: blog,
+            is_wordpress: true,
+            wordpress_version: None,
+        }],
+    };
+    let s = serde_json::to_string(&r).unwrap();
+    let expected = r#"{"type":"sites","sites":[{"name":"blog","document_root":"/srv/blog","php":"8.3","secure":false,"kind":"parked","is_wordpress":true}]}"#;
     assert_eq!(s, expected);
     let back: Response = serde_json::from_str(&s).unwrap();
     assert_eq!(back, r);
@@ -1614,6 +1666,42 @@ fn request_create_site_community_kit_byte_shape() {
         serde_json::from_str::<StarterKit>(&s).unwrap(),
         StarterKit::Community("acme/kit".into())
     );
+}
+
+#[test]
+fn request_create_site_wordpress_byte_shape() {
+    use yerd_ipc::{
+        CreateSiteSpec, Framework, Multisite, WordPressDatabase, WordPressDbEngine,
+        WordPressOptions,
+    };
+    let r = Request::CreateSite {
+        spec: CreateSiteSpec {
+            name: "blog".into(),
+            parent_dir: PathBuf::from("/srv"),
+            php: PhpVersion::new(8, 3),
+            secure: true,
+            framework: Framework::Wordpress {
+                options: WordPressOptions {
+                    core_version: None,
+                    locale: "en_GB".into(),
+                    admin_user: "admin".into(),
+                    admin_email: "admin@blog.test".into(),
+                    admin_password: "hunter2hunter2".into(),
+                    site_title: "My Blog".into(),
+                    table_prefix: "wp_".into(),
+                    multisite: Multisite::Off,
+                    database: WordPressDatabase {
+                        engine: WordPressDbEngine::Mysql,
+                        name: "blog".into(),
+                    },
+                },
+            },
+        },
+    };
+    let s = serde_json::to_string(&r).unwrap();
+    let expected = r#"{"type":"create_site","spec":{"name":"blog","parent_dir":"/srv","php":"8.3","secure":true,"framework":{"framework":"wordpress","options":{"core_version":null,"locale":"en_GB","admin_user":"admin","admin_email":"admin@blog.test","admin_password":"hunter2hunter2","site_title":"My Blog","table_prefix":"wp_","multisite":"off","database":{"engine":"mysql","name":"blog"}}}}}"#;
+    assert_eq!(s, expected);
+    assert_eq!(serde_json::from_str::<Request>(&s).unwrap(), r);
 }
 
 #[test]

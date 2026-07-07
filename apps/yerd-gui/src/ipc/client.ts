@@ -33,7 +33,7 @@ import type {
   ServiceAvailability,
   ServiceStatus,
   SetupState,
-  Site,
+  SiteEntry,
   NamedTunnelsResponse,
   StatusReport,
   TitleBarStyle,
@@ -100,7 +100,7 @@ export async function ping(): Promise<boolean> {
 
 // ── sites ──────────────────────────────────────────────────────────────────
 
-export async function listSites(): Promise<Site[]> {
+export async function listSites(): Promise<SiteEntry[]> {
   const r = ensureOk(await call<Response>("list_sites"));
   return r.type === "sites" ? r.sites : [];
 }
@@ -123,7 +123,7 @@ export async function listParked(): Promise<string[]> {
  * whole `Promise.all` and take down the Overview / command palette, which never
  * needed groups - so it degrades to empty. */
 export async function sitesAndParked(): Promise<{
-  sites: Site[];
+  sites: SiteEntry[];
   parked: string[];
   groups: GroupsState;
 }> {

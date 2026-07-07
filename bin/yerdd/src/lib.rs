@@ -37,6 +37,7 @@ pub mod state;
 pub mod tools;
 pub mod tracing_init;
 pub mod tunnel;
+pub mod wordpress_detect;
 
 #[cfg(test)]
 pub mod test_support;
