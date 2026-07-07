@@ -36,7 +36,7 @@ $wp_load = rtrim($_SERVER['DOCUMENT_ROOT'] ?? '', '/') . '/wp-load.php';
 if (!is_file($wp_load)) {
     return;
 }
-require $wp_load;
+require_once $wp_load;
 
 // The guard that makes this safe for any WordPress install, not just ones
 // yerd itself created: only proceed if this site's own configured URL - host
