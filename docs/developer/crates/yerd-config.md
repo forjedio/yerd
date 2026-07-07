@@ -558,6 +558,7 @@ This crate is deliberately narrow. It does **not**:
 
 ## See also
 
+- [Config Schema History](../config-schema-history) - the version-by-version changelog, including exactly how to hand-edit a file down to an older schema version.
 - [Configuration Reference](../../reference/configuration) - user-facing field guide
 - [yerd-core](./yerd-core) - the domain types this crate validates against
 - [The Daemon](../../guide/daemon) - the primary reader/writer of the config

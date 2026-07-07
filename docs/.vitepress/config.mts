@@ -215,6 +215,7 @@ export default withMermaid({
             { text: 'IPC Protocol', link: '/developer/ipc-protocol' },
             { text: 'Dev-Tool Installers', link: '/developer/dev-tools' },
             { text: 'Cross-Platform Model', link: '/developer/cross-platform' },
+            { text: 'Config Schema History', link: '/developer/config-schema-history' },
           ],
         },
         {
