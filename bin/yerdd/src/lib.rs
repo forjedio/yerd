@@ -38,6 +38,7 @@ pub mod tools;
 pub mod tracing_init;
 pub mod tunnel;
 pub mod wordpress_detect;
+pub mod wordpress_login;
 pub mod wordpress_versions;
 
 #[cfg(test)]
@@ -129,11 +130,15 @@ async fn run_until_shutdown(
             cert_store: daemon.cert_store.clone(),
         };
         let mut rx = shutdown_rx.clone();
+        let login_tokens = daemon.state.wordpress_login_tokens.clone();
+        let login_prepend_script = daemon.state.wordpress_login_prepend_script.clone();
         Some(tokio::spawn(yerd_proxy::ProxyServer::serve(
             http_listener,
             Some(https),
             router,
             resolver,
+            login_tokens,
+            login_prepend_script,
             async move {
                 let _ = rx.changed().await;
             },

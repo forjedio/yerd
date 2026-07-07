@@ -317,6 +317,11 @@ pub async fn available_wordpress_versions() -> Result<Response, GuiError> {
 }
 
 #[tauri::command]
+pub async fn mint_wordpress_login_token(site: String) -> Result<Response, GuiError> {
+    finish(exchange(&Request::MintWordpressLoginToken { site }).await?)
+}
+
+#[tauri::command]
 pub async fn change_service_version(
     service: String,
     version: String,

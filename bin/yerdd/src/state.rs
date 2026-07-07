@@ -170,4 +170,14 @@ pub struct DaemonState {
     /// network) when still fresh, or as a stale fallback when a re-fetch
     /// fails. See [`crate::wordpress_versions`].
     pub wordpress_versions: RwLock<Option<(Instant, Vec<yerd_ipc::WordPressVersionInfo>)>>,
+    /// One-click `WordPress` admin login token store, shared with `yerd-proxy`
+    /// via the [`yerd_proxy::LoginTokenConsumer`] trait. See
+    /// [`crate::wordpress_login`].
+    pub wordpress_login_tokens: Arc<crate::wordpress_login::LoginTokenRegistry>,
+    /// Path the `WordPress` auto-login prepend script was written to at
+    /// startup (see [`crate::wordpress_login::write_prepend_script`]), or
+    /// `None` if writing it failed - one-click login is then unavailable this
+    /// boot, but the ordinary, non-authenticated `/wp-admin/` link still
+    /// works.
+    pub wordpress_login_prepend_script: Option<PathBuf>,
 }

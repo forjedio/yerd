@@ -22,11 +22,11 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import Spinner from "@/components/ui/Spinner.vue";
-import { openTitle, siteUrl, wpAdminUrl } from "@/lib/siteUrl";
-import { openInBrowser, openPath } from "@/ipc/client";
+import { isUnbound, openTitle, siteUrl, wpAdminLoginUrl, wpAdminUrl } from "@/lib/siteUrl";
+import { mintWordPressLoginToken, openInBrowser, openPath } from "@/ipc/client";
 import type { SiteEntry, StatusReport } from "@/ipc/types";
 
-defineProps<{
+const props = defineProps<{
   site: SiteEntry;
   report: StatusReport | null;
   tld: string;
@@ -46,6 +46,26 @@ const emit = defineEmits<{
 /** The served sub-directory label ("/" when the project root is served). */
 function servedLabel(s: SiteEntry): string {
   return s.web_subpath && s.web_subpath !== "" ? s.web_subpath : "/";
+}
+
+/**
+ * "WP Admin" action: one-click, pre-authenticated login when possible,
+ * falling back to the plain (not signed-in) link when unbound/resolver-off,
+ * or if minting a token fails for any reason (site disappeared, daemon
+ * error) - never blocks or surfaces an error, just silently degrades to
+ * today's behaviour.
+ */
+async function openWpAdmin(s: SiteEntry): Promise<void> {
+  if (!isUnbound(props.report)) {
+    try {
+      const token = await mintWordPressLoginToken(s.name);
+      await openInBrowser(wpAdminLoginUrl(s, props.report, token));
+      return;
+    } catch {
+      /* fall through to the plain link below */
+    }
+  }
+  await openInBrowser(wpAdminUrl(s, props.report));
 }
 </script>
 
@@ -98,8 +118,8 @@ function servedLabel(s: SiteEntry): string {
             </DropdownMenuItem>
             <DropdownMenuItem
               v-if="site.is_wordpress"
-              title="Opens the WordPress login screen - not automatically signed in"
-              @select="openInBrowser(wpAdminUrl(site, report))"
+              title="Signs you in as the site's admin when possible"
+              @select="openWpAdmin(site)"
             >
               <UserRound class="size-4" /> WP Admin
             </DropdownMenuItem>

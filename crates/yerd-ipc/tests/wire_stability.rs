@@ -926,6 +926,16 @@ fn request_available_wordpress_versions_byte_shape() {
 }
 
 #[test]
+fn request_mint_wordpress_login_token_byte_shape() {
+    let r = Request::MintWordpressLoginToken {
+        site: "blog".into(),
+    };
+    let s = serde_json::to_string(&r).unwrap();
+    assert_eq!(s, r#"{"type":"mint_wordpress_login_token","site":"blog"}"#);
+    assert_eq!(serde_json::from_str::<Request>(&s).unwrap(), r);
+}
+
+#[test]
 fn request_install_service_byte_shape() {
     let r = Request::InstallService {
         service: "redis".into(),
@@ -1178,6 +1188,16 @@ fn response_wordpress_versions_empty_byte_shape() {
     let r = Response::WordpressVersions { versions: vec![] };
     let s = serde_json::to_string(&r).unwrap();
     assert_eq!(s, r#"{"type":"wordpress_versions","versions":[]}"#);
+    assert_eq!(serde_json::from_str::<Response>(&s).unwrap(), r);
+}
+
+#[test]
+fn response_wordpress_login_token_byte_shape() {
+    let r = Response::WordpressLoginToken {
+        token: "deadbeef".into(),
+    };
+    let s = serde_json::to_string(&r).unwrap();
+    assert_eq!(s, r#"{"type":"wordpress_login_token","token":"deadbeef"}"#);
     assert_eq!(serde_json::from_str::<Response>(&s).unwrap(), r);
 }
 

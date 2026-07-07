@@ -489,6 +489,17 @@ export async function availableWordPressVersions(): Promise<WordPressVersionInfo
   return r.type === "wordpress_versions" ? r.versions : [];
 }
 
+/** Mint a short-TTL, single-use token for one-click, pre-authenticated
+ *  WordPress admin login (the "WP Admin" site action). Rejects if `site`
+ *  doesn't exist or isn't WordPress. */
+export async function mintWordPressLoginToken(site: string): Promise<string> {
+  const r = ensureOk(await call<Response>("mint_wordpress_login_token", { site }));
+  if (r.type !== "wordpress_login_token") {
+    throw new IpcError("unexpected response to mint_wordpress_login_token");
+  }
+  return r.token;
+}
+
 export async function installService(service: string, version: string): Promise<void> {
   ensureOk(await call<Response>("install_service", { service, version }));
 }

@@ -28,7 +28,8 @@ const REQUEST_ID: u16 = 1;
 /// `script_rel`, if given, is a real, on-disk `.php` file (relative to
 /// `served_root`) that [`crate::forward::script_file::resolve_script`]
 /// resolved for this request - see `pure::cgi_params`'s module doc for the
-/// front-controller policy this drives.
+/// front-controller policy this drives. `auto_prepend`, if given, is passed
+/// straight through to [`build_params`] - see its own doc for when/why.
 #[allow(clippy::too_many_arguments)]
 pub async fn forward(
     req: Request<Incoming>,
@@ -38,6 +39,7 @@ pub async fn forward(
     server_addr: SocketAddr,
     peer_addr: SocketAddr,
     https: bool,
+    auto_prepend: Option<&Path>,
 ) -> Result<Response<BoxBody>, ProxyError> {
     let backend_label = backend.to_string();
     let (parts, body) = req.into_parts();
@@ -65,6 +67,7 @@ pub async fn forward(
         https,
         peer_addr,
         server_addr,
+        auto_prepend,
     );
     let mut param_buf: Vec<u8> = Vec::new();
     for (name, value) in &params {
@@ -370,10 +373,6 @@ fn find_header_terminator(stdout: &[u8]) -> (usize, usize) {
     }
     (stdout.len(), 0)
 }
-
-// The `Path` import is referenced via the function signature.
-#[allow(dead_code)]
-fn _path_referenced(_: &Path) {}
 
 #[cfg(test)]
 #[allow(

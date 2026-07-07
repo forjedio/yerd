@@ -20,7 +20,7 @@ import Select from "@/components/ui/Select.vue";
 import Switch from "@/components/ui/Switch.vue";
 import Spinner from "@/components/ui/Spinner.vue";
 import { phpVersionInRange } from "@/lib/phpVersion";
-import { siteUrl, wpAdminUrl } from "@/lib/siteUrl";
+import { isUnbound, siteUrl, wpAdminLoginUrl, wpAdminUrl } from "@/lib/siteUrl";
 import { WORDPRESS_LOCALES } from "@/lib/wordpressLocales";
 import { useDaemon } from "@/composables/useDaemon";
 import { useToast } from "@/composables/useToast";
@@ -35,6 +35,7 @@ import {
   jobStatus,
   listServices,
   listTools,
+  mintWordPressLoginToken,
   openInBrowser,
   openPath,
   pickDirectory,
@@ -116,6 +117,26 @@ const openUrl = computed(() =>
 const adminUrl = computed(() =>
   wpAdminUrl({ name: form.name.trim().toLowerCase() || "name", secure: form.secure }, props.report),
 );
+
+/**
+ * "WP Admin" action on the post-creation success screen: one-click,
+ * pre-authenticated login when possible, falling back to the plain
+ * (not signed-in) link when unbound/resolver-off, or if minting a token
+ * fails for any reason - never blocks or surfaces an error.
+ */
+async function openWpAdmin(): Promise<void> {
+  const site = { name: form.name.trim().toLowerCase(), secure: form.secure };
+  if (!isUnbound(props.report)) {
+    try {
+      const token = await mintWordPressLoginToken(site.name);
+      await openInBrowser(wpAdminLoginUrl(site, props.report, token));
+      return;
+    } catch {
+      /* fall through to the plain link below */
+    }
+  }
+  await openInBrowser(adminUrl.value);
+}
 
 const basicsValid = computed(
   () => nameValid.value && form.location.trim() !== "" && form.php !== "",
@@ -914,8 +935,8 @@ const busy = computed(() => jobStateRef.value === "running" && step.value === 4)
           </Button>
           <Button
             variant="outline"
-            title="Opens the WordPress login screen - not automatically signed in"
-            @click="openInBrowser(adminUrl)"
+            title="Signs you in as the site's admin when possible"
+            @click="openWpAdmin"
           >
             <ExternalLink class="size-4" /> WP Admin
           </Button>

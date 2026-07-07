@@ -213,6 +213,9 @@ async fn dispatch(req: Request, state: &DaemonState) -> Response {
             let dl = crate::php_install::ReqwestDownloader::new();
             crate::wordpress_versions::available_versions(state, &dl).await
         }
+        Request::MintWordpressLoginToken { site } => {
+            crate::wordpress_login::mint_wordpress_login_token(&site, state).await
+        }
         Request::InstallService { service, version } => {
             let dl = crate::php_install::ReqwestDownloader::new();
             crate::services::install_service(&service, &version, state, &dl).await
@@ -1978,6 +1981,8 @@ mod tests {
             jobs: crate::jobs::JobRegistry::default(),
             reserved_names: tokio::sync::Mutex::new(std::collections::HashSet::new()),
             wordpress_versions: tokio::sync::RwLock::new(None),
+            wordpress_login_tokens: Arc::new(crate::wordpress_login::LoginTokenRegistry::new()),
+            wordpress_login_prepend_script: None,
         }
     }
 

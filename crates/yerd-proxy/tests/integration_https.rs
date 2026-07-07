@@ -45,6 +45,15 @@ impl BackendResolver for StaticResolver {
     }
 }
 
+// ─── Login-token stub (one-click WP Admin login isn't exercised here) ──
+
+struct NoLoginTokens;
+impl yerd_proxy::LoginTokenConsumer for NoLoginTokens {
+    fn consume(&self, _site: &str, _token: &str) -> bool {
+        false
+    }
+}
+
 // ─── CertStore ──────────────────────────────────────────────────────
 
 #[derive(Debug)]
@@ -177,9 +186,17 @@ async fn https_handshake_routes_to_backend() {
 
     let (tx_shutdown, rx_shutdown) = oneshot::channel::<()>();
     let proxy_task = tokio::spawn(async move {
-        let _ = ProxyServer::serve(http_listener, Some(https), router, resolver, async move {
-            let _ = rx_shutdown.await;
-        })
+        let _ = ProxyServer::serve(
+            http_listener,
+            Some(https),
+            router,
+            resolver,
+            Arc::new(NoLoginTokens),
+            None,
+            async move {
+                let _ = rx_shutdown.await;
+            },
+        )
         .await;
     });
 
@@ -236,9 +253,17 @@ async fn http_redirect_tracks_live_public_port_updates() {
 
     let (tx_shutdown, rx_shutdown) = oneshot::channel::<()>();
     let proxy_task = tokio::spawn(async move {
-        let _ = ProxyServer::serve(http_listener, Some(https), router, resolver, async move {
-            let _ = rx_shutdown.await;
-        })
+        let _ = ProxyServer::serve(
+            http_listener,
+            Some(https),
+            router,
+            resolver,
+            Arc::new(NoLoginTokens),
+            None,
+            async move {
+                let _ = rx_shutdown.await;
+            },
+        )
         .await;
     });
 

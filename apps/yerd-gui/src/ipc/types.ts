@@ -439,6 +439,7 @@ export type Response =
   | { type: "services"; services: ServiceStatus[] }
   | { type: "available_services"; services: ServiceAvailability[] }
   | { type: "wordpress_versions"; versions: WordPressVersionInfo[] }
+  | { type: "wordpress_login_token"; token: string }
   | { type: "service_logs"; lines: string[] }
   | { type: "databases"; databases: DatabaseSummary[] }
   | {

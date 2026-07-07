@@ -651,6 +651,8 @@ mod tests {
             jobs: crate::jobs::JobRegistry::default(),
             reserved_names: tokio::sync::Mutex::new(std::collections::HashSet::new()),
             wordpress_versions: tokio::sync::RwLock::new(None),
+            wordpress_login_tokens: Arc::new(crate::wordpress_login::LoginTokenRegistry::new()),
+            wordpress_login_prepend_script: None,
         }
     }
 

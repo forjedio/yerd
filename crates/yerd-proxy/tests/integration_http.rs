@@ -50,6 +50,35 @@ impl yerd_proxy::CertStore for StubCertStore {
     }
 }
 
+// ─── Login-token stub (one-click WP Admin login isn't exercised here) ──
+
+struct NoLoginTokens;
+impl yerd_proxy::LoginTokenConsumer for NoLoginTokens {
+    fn consume(&self, _site: &str, _token: &str) -> bool {
+        false
+    }
+}
+
+/// Valid for exactly one (site, token) pair, and only once - mirrors the
+/// real `LoginTokenRegistry`'s single-use semantics closely enough to test
+/// `dispatch`'s interception branch without pulling in the daemon crate.
+struct OneShotLoginToken {
+    site: &'static str,
+    token: &'static str,
+    consumed: std::sync::atomic::AtomicBool,
+}
+impl yerd_proxy::LoginTokenConsumer for OneShotLoginToken {
+    fn consume(&self, site: &str, token: &str) -> bool {
+        if self
+            .consumed
+            .swap(true, std::sync::atomic::Ordering::SeqCst)
+        {
+            return false;
+        }
+        site == self.site && token == self.token
+    }
+}
+
 // ─── Fake FastCGI listener ──────────────────────────────────────────
 
 /// Accept exactly one connection; parse records; respond with the
@@ -180,11 +209,13 @@ async fn proxy_forwards_to_fcgi_backend() {
 
     let (tx_shutdown, rx_shutdown) = oneshot::channel::<()>();
     let proxy_task = tokio::spawn(async move {
-        let _ = ProxyServer::serve::<_, StubCertStore, _>(
+        let _ = ProxyServer::serve::<_, StubCertStore, _, _>(
             proxy_listener,
             None,
             router,
             resolver,
+            Arc::new(NoLoginTokens),
+            None,
             async move {
                 let _ = rx_shutdown.await;
             },
@@ -227,6 +258,89 @@ async fn proxy_forwards_to_fcgi_backend() {
     let _ = fake_task.await;
 }
 
+/// A valid one-click WordPress login token on `/wp-admin/`: the forwarded
+/// request must carry `PHP_VALUE: auto_prepend_file=...`, and the token must
+/// be gone from `QUERY_STRING`/`REQUEST_URI` - never reaching PHP or logging.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn valid_login_token_adds_auto_prepend_and_strips_token_from_query() {
+    let fcgi_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let fcgi_addr = fcgi_listener.local_addr().unwrap();
+    let captured = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+    let captured_for_fake = captured.clone();
+    let stdout_payload = b"Status: 200 OK\r\nContent-Type: text/plain\r\n\r\nadmin".to_vec();
+    let fake_task = tokio::spawn(run_fake_fcgi(
+        fcgi_listener,
+        stdout_payload,
+        captured_for_fake,
+    ));
+
+    let proxy_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let proxy_addr = proxy_listener.local_addr().unwrap();
+
+    let tld = Tld::new("test").unwrap();
+    let cfg = RouterConfig::with_tld(tld);
+    let mut router = SiteRouter::new(cfg);
+    let site = Site::linked(
+        "blog",
+        PathBuf::from("/srv/www/blog"),
+        PhpVersion::new(8, 3),
+    )
+    .unwrap();
+    router.insert(site).unwrap();
+    let router = Arc::new(tokio::sync::RwLock::new(router));
+
+    let resolver = Arc::new(StaticResolver {
+        backend: Backend::PhpFpmTcp { addr: fcgi_addr },
+    });
+    let login_tokens = Arc::new(OneShotLoginToken {
+        site: "blog",
+        token: "sekrit",
+        consumed: std::sync::atomic::AtomicBool::new(false),
+    });
+    let prepend_path = PathBuf::from("/opt/yerd/wordpress-autologin-prepend.php");
+
+    let (tx_shutdown, rx_shutdown) = oneshot::channel::<()>();
+    let proxy_task = tokio::spawn(async move {
+        let _ = ProxyServer::serve::<_, StubCertStore, _, _>(
+            proxy_listener,
+            None,
+            router,
+            resolver,
+            login_tokens,
+            Some(prepend_path),
+            async move {
+                let _ = rx_shutdown.await;
+            },
+        )
+        .await;
+    });
+
+    let response_body = client_get(
+        proxy_addr,
+        "blog.test",
+        "/wp-admin/?yerd_login_token=sekrit",
+    )
+    .await;
+    assert_eq!(response_body, b"admin");
+
+    let params = captured.lock().await.clone();
+    assert_eq!(
+        params.get("PHP_VALUE").map(String::as_str),
+        Some("auto_prepend_file=/opt/yerd/wordpress-autologin-prepend.php")
+    );
+    // The token must never reach PHP: stripped from both REQUEST_URI and
+    // QUERY_STRING, and no dangling `?` or `&` left behind.
+    assert_eq!(
+        params.get("REQUEST_URI").map(String::as_str),
+        Some("/wp-admin/")
+    );
+    assert_eq!(params.get("QUERY_STRING").map(String::as_str), Some(""));
+
+    let _ = tx_shutdown.send(());
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(5), proxy_task).await;
+    let _ = fake_task.await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn unknown_host_returns_404() {
     let proxy_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -243,11 +357,13 @@ async fn unknown_host_returns_404() {
 
     let (tx_shutdown, rx_shutdown) = oneshot::channel::<()>();
     let proxy_task = tokio::spawn(async move {
-        let _ = ProxyServer::serve::<_, StubCertStore, _>(
+        let _ = ProxyServer::serve::<_, StubCertStore, _, _>(
             proxy_listener,
             None,
             router,
             resolver,
+            Arc::new(NoLoginTokens),
+            None,
             async move {
                 let _ = rx_shutdown.await;
             },
@@ -277,11 +393,13 @@ async fn missing_host_header_returns_400() {
 
     let (tx_shutdown, rx_shutdown) = oneshot::channel::<()>();
     let proxy_task = tokio::spawn(async move {
-        let _ = ProxyServer::serve::<_, StubCertStore, _>(
+        let _ = ProxyServer::serve::<_, StubCertStore, _, _>(
             proxy_listener,
             None,
             router,
             resolver,
+            Arc::new(NoLoginTokens),
+            None,
             async move {
                 let _ = rx_shutdown.await;
             },
@@ -324,11 +442,13 @@ async fn static_file_is_served_without_touching_fcgi() {
 
     let (tx_shutdown, rx_shutdown) = oneshot::channel::<()>();
     let proxy_task = tokio::spawn(async move {
-        let _ = ProxyServer::serve::<_, StubCertStore, _>(
+        let _ = ProxyServer::serve::<_, StubCertStore, _, _>(
             proxy_listener,
             None,
             router,
             resolver,
+            Arc::new(NoLoginTokens),
+            None,
             async move {
                 let _ = rx_shutdown.await;
             },
@@ -373,11 +493,13 @@ async fn directory_index_html_served_when_no_index_php() {
 
     let (tx_shutdown, rx_shutdown) = oneshot::channel::<()>();
     let proxy_task = tokio::spawn(async move {
-        let _ = ProxyServer::serve::<_, StubCertStore, _>(
+        let _ = ProxyServer::serve::<_, StubCertStore, _, _>(
             proxy_listener,
             None,
             router,
             resolver,
+            Arc::new(NoLoginTokens),
+            None,
             async move {
                 let _ = rx_shutdown.await;
             },
@@ -418,11 +540,13 @@ async fn directory_index_htm_served_as_fallback() {
 
     let (tx_shutdown, rx_shutdown) = oneshot::channel::<()>();
     let proxy_task = tokio::spawn(async move {
-        let _ = ProxyServer::serve::<_, StubCertStore, _>(
+        let _ = ProxyServer::serve::<_, StubCertStore, _, _>(
             proxy_listener,
             None,
             router,
             resolver,
+            Arc::new(NoLoginTokens),
+            None,
             async move {
                 let _ = rx_shutdown.await;
             },
@@ -476,11 +600,13 @@ async fn index_php_present_wins_over_index_html() {
 
     let (tx_shutdown, rx_shutdown) = oneshot::channel::<()>();
     let proxy_task = tokio::spawn(async move {
-        let _ = ProxyServer::serve::<_, StubCertStore, _>(
+        let _ = ProxyServer::serve::<_, StubCertStore, _, _>(
             proxy_listener,
             None,
             router,
             resolver,
+            Arc::new(NoLoginTokens),
+            None,
             async move {
                 let _ = rx_shutdown.await;
             },
@@ -544,11 +670,13 @@ async fn subdirectory_index_php_wins_over_root_index_php() {
 
     let (tx_shutdown, rx_shutdown) = oneshot::channel::<()>();
     let proxy_task = tokio::spawn(async move {
-        let _ = ProxyServer::serve::<_, StubCertStore, _>(
+        let _ = ProxyServer::serve::<_, StubCertStore, _, _>(
             proxy_listener,
             None,
             router,
             resolver,
+            Arc::new(NoLoginTokens),
+            None,
             async move {
                 let _ = rx_shutdown.await;
             },
@@ -608,11 +736,13 @@ async fn directory_with_no_index_at_all_falls_through_to_fcgi() {
 
     let (tx_shutdown, rx_shutdown) = oneshot::channel::<()>();
     let proxy_task = tokio::spawn(async move {
-        let _ = ProxyServer::serve::<_, StubCertStore, _>(
+        let _ = ProxyServer::serve::<_, StubCertStore, _, _>(
             proxy_listener,
             None,
             router,
             resolver,
+            Arc::new(NoLoginTokens),
+            None,
             async move {
                 let _ = rx_shutdown.await;
             },
@@ -666,11 +796,13 @@ async fn nonexistent_directory_falls_through_to_fcgi() {
 
     let (tx_shutdown, rx_shutdown) = oneshot::channel::<()>();
     let proxy_task = tokio::spawn(async move {
-        let _ = ProxyServer::serve::<_, StubCertStore, _>(
+        let _ = ProxyServer::serve::<_, StubCertStore, _, _>(
             proxy_listener,
             None,
             router,
             resolver,
+            Arc::new(NoLoginTokens),
+            None,
             async move {
                 let _ = rx_shutdown.await;
             },
@@ -713,11 +845,13 @@ async fn head_request_to_directory_index_returns_empty_body() {
 
     let (tx_shutdown, rx_shutdown) = oneshot::channel::<()>();
     let proxy_task = tokio::spawn(async move {
-        let _ = ProxyServer::serve::<_, StubCertStore, _>(
+        let _ = ProxyServer::serve::<_, StubCertStore, _, _>(
             proxy_listener,
             None,
             router,
             resolver,
+            Arc::new(NoLoginTokens),
+            None,
             async move {
                 let _ = rx_shutdown.await;
             },
@@ -791,11 +925,13 @@ async fn symlink_within_document_root_outside_served_root_is_served() {
 
     let (tx_shutdown, rx_shutdown) = oneshot::channel::<()>();
     let proxy_task = tokio::spawn(async move {
-        let _ = ProxyServer::serve::<_, StubCertStore, _>(
+        let _ = ProxyServer::serve::<_, StubCertStore, _, _>(
             proxy_listener,
             None,
             router,
             resolver,
+            Arc::new(NoLoginTokens),
+            None,
             async move {
                 let _ = rx_shutdown.await;
             },
@@ -848,11 +984,13 @@ async fn symlink_escaping_document_root_returns_403() {
 
     let (tx_shutdown, rx_shutdown) = oneshot::channel::<()>();
     let proxy_task = tokio::spawn(async move {
-        let _ = ProxyServer::serve::<_, StubCertStore, _>(
+        let _ = ProxyServer::serve::<_, StubCertStore, _, _>(
             proxy_listener,
             None,
             router,
             resolver,
+            Arc::new(NoLoginTokens),
+            None,
             async move {
                 let _ = rx_shutdown.await;
             },
@@ -909,11 +1047,13 @@ async fn symlinked_index_html_escaping_root_is_not_served() {
 
     let (tx_shutdown, rx_shutdown) = oneshot::channel::<()>();
     let proxy_task = tokio::spawn(async move {
-        let _ = ProxyServer::serve::<_, StubCertStore, _>(
+        let _ = ProxyServer::serve::<_, StubCertStore, _, _>(
             proxy_listener,
             None,
             router,
             resolver,
+            Arc::new(NoLoginTokens),
+            None,
             async move {
                 let _ = rx_shutdown.await;
             },

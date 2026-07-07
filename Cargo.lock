@@ -6561,6 +6561,7 @@ dependencies = [
  "minisign",
  "nix",
  "notify-debouncer-mini",
+ "rand",
  "reqwest 0.12.9",
  "rustls",
  "rustls-pki-types",

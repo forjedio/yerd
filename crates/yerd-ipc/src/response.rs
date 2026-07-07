@@ -145,6 +145,12 @@ pub enum Response {
         /// One entry per currently-offered `WordPress` core branch.
         versions: Vec<WordPressVersionInfo>,
     },
+    /// Reply to [`crate::Request::MintWordpressLoginToken`].
+    WordpressLoginToken {
+        /// Single-use, short-TTL token to append as `?yerd_login_token=` on
+        /// the site's `/wp-admin/` URL.
+        token: String,
+    },
     /// Reply to [`crate::Request::ServiceLogs`] - trailing log lines, oldest first.
     ServiceLogs {
         /// The log lines.
@@ -402,6 +408,7 @@ mod variant_name_pinning {
             Response::Services { .. } => {}
             Response::AvailableServices { .. } => {}
             Response::WordpressVersions { .. } => {}
+            Response::WordpressLoginToken { .. } => {}
             Response::ServiceLogs { .. } => {}
             Response::Databases { .. } => {}
             Response::Dumps { .. } => {}
@@ -528,6 +535,9 @@ mod variant_name_pinning {
                 min_php: PhpVersion::new(7, 3),
                 max_php: PhpVersion::new(8, 4),
             }],
+        });
+        pin_response(Response::WordpressLoginToken {
+            token: "deadbeef".into(),
         });
         pin_response(Response::ServiceLogs { lines: vec![] });
         pin_response(Response::Databases {

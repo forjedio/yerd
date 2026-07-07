@@ -87,6 +87,7 @@ fn main() {
             commands::list_services,
             commands::available_services,
             commands::available_wordpress_versions,
+            commands::mint_wordpress_login_token,
             commands::install_service,
             commands::change_service_version,
             commands::uninstall_service,

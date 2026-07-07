@@ -161,6 +161,15 @@ pub enum Request {
     /// the hand-maintained `meta/wordpress-versions.json` in the yerd repo,
     /// daemon-side cached; see [`crate::Response::WordpressVersions`].
     AvailableWordpressVersions,
+    /// Mint a short-TTL, single-use token for one-click, pre-authenticated
+    /// `WordPress` admin login (the "WP Admin" site action). The site must
+    /// exist and be detected as `WordPress`; the returned token is consumed by
+    /// `yerd-proxy` the moment it's presented on a `/wp-admin` request for
+    /// that same site. See [`crate::Response::WordpressLoginToken`].
+    MintWordpressLoginToken {
+        /// The site name to mint a login token for.
+        site: String,
+    },
     /// Download + install a prebuilt service version into yerd's data dir.
     InstallService {
         /// Service id (`"redis"`, `"mysql"`, `"mariadb"`, `"postgres"`).
@@ -580,6 +589,7 @@ mod variant_name_pinning {
             Request::ListServices => {}
             Request::AvailableServices => {}
             Request::AvailableWordpressVersions => {}
+            Request::MintWordpressLoginToken { .. } => {}
             Request::InstallService { .. } => {}
             Request::UninstallService { .. } => {}
             Request::StartService { .. } => {}
@@ -699,6 +709,9 @@ mod variant_name_pinning {
         pin(Request::ListServices);
         pin(Request::AvailableServices);
         pin(Request::AvailableWordpressVersions);
+        pin(Request::MintWordpressLoginToken {
+            site: "blog".into(),
+        });
         pin(Request::InstallService {
             service: "redis".into(),
             version: "8".into(),

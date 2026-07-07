@@ -277,6 +277,8 @@ mod tests {
                 cert_store: daemon.cert_store.clone(),
             };
             let router = daemon.state.router.clone();
+            let login_tokens = daemon.state.wordpress_login_tokens.clone();
+            let login_prepend_script = daemon.state.wordpress_login_prepend_script.clone();
             let mut rx = shutdown_rx.clone();
             tokio::spawn(yerd_proxy::ProxyServer::serve(
                 daemon
@@ -285,6 +287,8 @@ mod tests {
                 Some(https),
                 router,
                 resolver,
+                login_tokens,
+                login_prepend_script,
                 async move {
                     let _ = rx.changed().await;
                 },

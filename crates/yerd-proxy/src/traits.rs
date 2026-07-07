@@ -2,8 +2,10 @@
 //!
 //! `CertStore` is consulted per TLS handshake (synchronously, as rustls
 //! requires). `BackendResolver` is consulted per request to map a routed
-//! `&Site` to a concrete `Backend`. Both keep `yerd-proxy` free of
-//! direct dependencies on `yerd-tls` and `yerd-php`.
+//! `&Site` to a concrete `Backend`. `LoginTokenConsumer` is consulted per
+//! request to check a one-click `WordPress` login token. All three keep
+//! `yerd-proxy` free of direct dependencies on `yerd-tls`, `yerd-php`, and
+//! `yerdd`'s concrete daemon state.
 
 use std::sync::Arc;
 
@@ -38,4 +40,18 @@ pub trait BackendResolver: Send + Sync + 'static {
     /// recommended one for foreign errors is
     /// [`ProxyError::BackendResolver`].
     async fn backend_for(&self, site: &yerd_core::Site) -> Result<Backend, ProxyError>;
+}
+
+/// Check and invalidate a one-click `WordPress` login token (the "WP Admin"
+/// site action).
+///
+/// Implementer note: `consume` must check and invalidate atomically (e.g. a
+/// single locked remove-and-compare), so a token can never be consumed twice
+/// even under concurrent requests for the same token.
+pub trait LoginTokenConsumer: Send + Sync + 'static {
+    /// `true` if `token` is currently valid for `site` - unexpired, matching,
+    /// and not already consumed. Always consumes the token (removes it from
+    /// the pending set) regardless of whether it matched, so a token is never
+    /// checked more than once.
+    fn consume(&self, site: &str, token: &str) -> bool;
 }

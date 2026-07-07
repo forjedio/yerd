@@ -119,6 +119,7 @@ pub async fn bring_up_with_dirs(
             None
         });
     let php_ca_bundle = build_php_ca_bundle(&dirs, ca.cert_pem(), host_roots.as_deref());
+    let wordpress_login_prepend_script = crate::wordpress_login::write_prepend_script(&dirs.data);
 
     let cert_store = Arc::new(DaemonCertStore::new(ca, dirs.data.join("leaves")));
 
@@ -312,6 +313,8 @@ pub async fn bring_up_with_dirs(
         jobs: crate::jobs::JobRegistry::default(),
         reserved_names: tokio::sync::Mutex::new(std::collections::HashSet::new()),
         wordpress_versions: tokio::sync::RwLock::new(None),
+        wordpress_login_tokens: Arc::new(crate::wordpress_login::LoginTokenRegistry::new()),
+        wordpress_login_prepend_script,
     });
 
     {

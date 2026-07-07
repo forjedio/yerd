@@ -29,7 +29,11 @@ use std::path::Path;
 
 /// Build the CGI parameter pairs. `script_rel`, if given, is a real,
 /// on-disk `.php` file's path relative to `document_root` (see the module
-/// doc) - `None` falls back to the root `index.php` policy.
+/// doc) - `None` falls back to the root `index.php` policy. `auto_prepend`,
+/// if given, adds a `PHP_VALUE: auto_prepend_file=<path>` param - used solely
+/// by the one-click `WordPress` login flow, for the one request that already
+/// proved it holds a valid, now-consumed login token (see `dispatch` in
+/// `server.rs`); absent on every other request.
 #[must_use]
 #[allow(clippy::too_many_arguments)]
 pub fn build_params(
@@ -41,6 +45,7 @@ pub fn build_params(
     https: bool,
     remote_addr: SocketAddr,
     server_addr: SocketAddr,
+    auto_prepend: Option<&Path>,
 ) -> Vec<(Vec<u8>, Vec<u8>)> {
     let mut out: Vec<(Vec<u8>, Vec<u8>)> = Vec::with_capacity(16 + headers.len());
 
@@ -104,6 +109,13 @@ pub fn build_params(
     push(&mut out, b"SERVER_SOFTWARE", b"yerd (nginx-compatible)");
     if https {
         push(&mut out, b"HTTPS", b"on");
+    }
+    if let Some(path) = auto_prepend {
+        push(
+            &mut out,
+            b"PHP_VALUE",
+            format!("auto_prepend_file={}", path.display()).as_bytes(),
+        );
     }
 
     if let Some(host) = headers
@@ -195,6 +207,7 @@ mod tests {
             false,
             "127.0.0.1:54321".parse().unwrap(),
             "127.0.0.1:80".parse().unwrap(),
+            None,
         );
         assert_eq!(
             lookup(&pairs, b"SCRIPT_NAME"),
@@ -234,6 +247,7 @@ mod tests {
             false,
             "127.0.0.1:1".parse().unwrap(),
             "127.0.0.1:80".parse().unwrap(),
+            None,
         );
         let software = String::from_utf8_lossy(lookup(&pairs, b"SERVER_SOFTWARE").unwrap());
         assert!(software.contains("nginx"), "got {software:?}");
@@ -255,6 +269,7 @@ mod tests {
             false,
             "127.0.0.1:1".parse().unwrap(),
             "127.0.0.1:80".parse().unwrap(),
+            None,
         );
         assert_eq!(
             lookup(&pairs, b"DOCUMENT_ROOT"),
@@ -277,6 +292,7 @@ mod tests {
             true,
             "1.2.3.4:1000".parse().unwrap(),
             "127.0.0.1:443".parse().unwrap(),
+            None,
         );
         assert_eq!(lookup(&pairs, b"HTTPS"), Some(b"on".as_slice()));
     }
@@ -295,6 +311,7 @@ mod tests {
             false,
             "127.0.0.1:1".parse().unwrap(),
             "127.0.0.1:80".parse().unwrap(),
+            None,
         );
         assert_eq!(lookup(&pairs, b"HTTP_X_CUSTOM"), Some(b"yes".as_slice()));
         assert_eq!(
@@ -320,6 +337,7 @@ mod tests {
             false,
             "127.0.0.1:1".parse().unwrap(),
             "127.0.0.1:80".parse().unwrap(),
+            None,
         );
         assert_eq!(
             lookup(&pairs, b"CONTENT_TYPE"),
@@ -341,6 +359,7 @@ mod tests {
             false,
             "127.0.0.1:1".parse().unwrap(),
             "127.0.0.1:80".parse().unwrap(),
+            None,
         );
         assert_eq!(lookup(&pairs, b"PATH_INFO"), Some(b"/just/path".as_slice()));
         assert_eq!(lookup(&pairs, b"QUERY_STRING"), Some(b"".as_slice()));
@@ -357,6 +376,7 @@ mod tests {
             false,
             "127.0.0.1:1".parse().unwrap(),
             "127.0.0.1:80".parse().unwrap(),
+            None,
         );
         assert_eq!(
             lookup(&pairs, b"SCRIPT_NAME"),
@@ -382,6 +402,7 @@ mod tests {
             false,
             "127.0.0.1:1".parse().unwrap(),
             "127.0.0.1:80".parse().unwrap(),
+            None,
         );
         assert_eq!(
             lookup(&pairs, b"SCRIPT_NAME"),
