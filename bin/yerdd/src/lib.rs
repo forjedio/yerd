@@ -282,6 +282,18 @@ async fn run_until_shutdown(
 /// what's actually reachable without a restart. Returns `None` (spawning
 /// nothing) when the proxy isn't running or the HTTPS listener bound its
 /// well-known port directly, since neither case has anything to detect.
+///
+/// Ticks every [`REDIRECT_PROBE_INTERVAL`] - nothing triggers an immediate
+/// re-check when `yerd elevate`/`unelevate ports` runs, so this poll is the
+/// only way the daemon notices, but that's a rare, deliberate, manual action,
+/// not a hot path: a slower tick just means a slightly longer window where a
+/// freshly-elevated (or torn-down) redirect isn't yet reflected in the
+/// HTTP→HTTPS `Location` header, which is a one-time, low-stakes staleness
+/// worth trading for far fewer self-inflicted `loopback_port_reachable`
+/// probes - each one is a bare TCP connect-and-close against the proxy's own
+/// TLS listener, logged as a (harmless) "TLS handshake failed" at `-v`.
+const REDIRECT_PROBE_INTERVAL: Duration = Duration::from_secs(60);
+
 fn spawn_redirect_probe(
     proxy_running: bool,
     state: &Arc<crate::state::DaemonState>,
@@ -292,7 +304,7 @@ fn spawn_redirect_probe(
     }
     let state = state.clone();
     Some(tokio::spawn(async move {
-        let mut tick = tokio::time::interval(Duration::from_secs(5));
+        let mut tick = tokio::time::interval(REDIRECT_PROBE_INTERVAL);
         loop {
             tokio::select! {
                 _ = tick.tick() => {
