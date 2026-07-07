@@ -29,9 +29,18 @@ jobs:
     # host URL and fails. Run only when secrets are actually available: pushes to
     # main, and PRs from branches within this repo (maintainers). Fork PRs skip
     # Sonar — they're still covered by the ci.yml gate.
+    #
+    # `[Meta]` changes (repo-metadata-only) skip Sonar too: a PR whose title
+    # starts with `[Meta]`, or a push whose head-commit message starts with it.
     if: >-
-      github.event_name == 'push' ||
-      github.event.pull_request.head.repo.full_name == github.repository
+      (github.event_name == 'push' ||
+       github.event.pull_request.head.repo.full_name == github.repository) &&
+      !(
+        (github.event_name == 'pull_request' &&
+         startsWith(github.event.pull_request.title, '[Meta]')) ||
+        (github.event_name == 'push' &&
+         startsWith(github.event.head_commit.message, '[Meta]'))
+      )
     steps:
       - uses: actions/checkout@v4
         with:

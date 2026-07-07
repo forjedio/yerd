@@ -1,0 +1,11 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+#
+# CodeRabbit configuration. `[Meta]` PRs touch only repo metadata (docs stubs,
+# labels, CI plumbing) and skip automated review, mirroring the ci.yml and
+# sonarqube.yml skips for the same prefix. `ignore_title_keywords` is a
+# case-insensitive substring match on the PR title.
+reviews:
+  auto_review:
+    ignore_title_keywords:
+      - "[Meta]"
+      - "[Docs]"

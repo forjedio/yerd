@@ -19,8 +19,20 @@ env:
 jobs:
   # The exact local gate: fmt + clippy -D warnings + test, over
   # the full workspace (which includes the Tauri GUI crate) on Linux + macOS.
+  #
+  # `[Meta]` changes touch only repo metadata (docs stubs, labels, CI plumbing)
+  # and skip the whole gate: a PR whose title starts with `[Meta]`, or a push
+  # whose head-commit message starts with `[Meta]`. The `if:` guards below are
+  # shared verbatim by every job.
   rust:
     name: rust (${{ matrix.os }})
+    if: >-
+      !(
+        (github.event_name == 'pull_request' &&
+         startsWith(github.event.pull_request.title, '[Meta]')) ||
+        (github.event_name == 'push' &&
+         startsWith(github.event.head_commit.message, '[Meta]'))
+      )
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -76,6 +88,13 @@ jobs:
   # Frontend unit/component tests + production build (type-check via vue-tsc).
   frontend:
     name: frontend
+    if: >-
+      !(
+        (github.event_name == 'pull_request' &&
+         startsWith(github.event.pull_request.title, '[Meta]')) ||
+        (github.event_name == 'push' &&
+         startsWith(github.event.head_commit.message, '[Meta]'))
+      )
     runs-on: ubuntu-22.04
     defaults:
       run:
@@ -102,6 +121,13 @@ jobs:
   # rust and frontend jobs (no `needs:`), so a docs break fails the PR on its own.
   docs:
     name: docs
+    if: >-
+      !(
+        (github.event_name == 'pull_request' &&
+         startsWith(github.event.pull_request.title, '[Meta]')) ||
+        (github.event_name == 'push' &&
+         startsWith(github.event.head_commit.message, '[Meta]'))
+      )
     runs-on: ubuntu-22.04
     defaults:
       run:

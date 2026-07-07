@@ -188,12 +188,47 @@ jobs:
             -printf '%P\n' | sort | xargs -r sha256sum > SHA256SUMS
           echo "Artifacts:" && cat SHA256SUMS
 
+      # A stable release's notes must span the whole cycle since the previous
+      # STABLE release, not just since the last rc. Left to itself, GitHub's
+      # generate-notes picks the nearest preceding tag by semver, which is the
+      # trailing `-rc.N` prerelease, so the stable notes would omit everything
+      # that landed across the rc cycle. Pin `previous_tag_name` to the previous
+      # stable tag (vX.Y.Z with no prerelease suffix). Prereleases keep GitHub's
+      # default baseline (this step is skipped, leaving the output empty).
+      - name: Determine previous stable tag
+        id: prevtag
+        if: ${{ !contains(github.ref_name, '-') }}
+        run: |
+          set -euo pipefail
+          current="${GITHUB_REF_NAME}"
+          # A transient tag-list fetch failure must not abort the publish job:
+          # tolerate it and fall back to GitHub's default baseline (empty output).
+          tags=$(gh api --paginate "repos/${GH_REPO}/tags" --jq '.[].name' || true)
+          prev=$(
+            {
+              printf '%s\n' "$tags"
+              printf '%s\n' "$current"
+            } \
+              | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' \
+              | sort -V -u \
+              | grep -B1 -Fx -- "$current" \
+              | head -n1
+          ) || prev=""
+          if [ -z "$prev" ] || [ "$prev" = "$current" ]; then
+            echo "No previous stable tag before ${current}; using GitHub's default baseline."
+            prev=""
+          else
+            echo "Release notes baseline for ${current}: ${prev}"
+          fi
+          echo "previous_tag=${prev}" >> "$GITHUB_OUTPUT"
+
       - name: Create draft release with all artifacts
         uses: softprops/action-gh-release@v2
         with:
           draft: true
           tag_name: ${{ github.ref_name }}
           generate_release_notes: true
+          previous_tag: ${{ steps.prevtag.outputs.previous_tag }}
           prerelease: ${{ contains(github.ref_name, '-') }}
           fail_on_unmatched_files: true
           files: dist/*
