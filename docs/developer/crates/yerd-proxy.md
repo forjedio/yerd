@@ -31,6 +31,7 @@ crates/yerd-proxy/src/
 └── forward/         # async per-backend forwarding I/O
     ├── mod.rs          # BoxBody + body helpers
     ├── static_file.rs  # serve a real static file, or a directory's index.html/.htm
+    ├── script_file.rs  # resolve a real, on-disk PHP script to execute directly (WordPress-gated)
     ├── fcgi.rs         # FastCGI forwarder (PHP-FPM)
     ├── http.rs         # plain HTTP/1.1 forwarder (FrankenPHP)
     └── upgrade.rs      # Connection: Upgrade tunnel (WebSocket etc.)
@@ -145,9 +146,9 @@ Crucially, **`From<yerd_php::Listen>` is intentionally not implemented**. The da
 The `FrankenPhp` variant and its HTTP/upgrade forwarders are fully implemented in this crate, but the daemon's resolver currently produces PHP-FPM backends. Treat the FrankenPHP path as forward-looking plumbing rather than a user-facing feature today.
 :::
 
-## Trait seams: `CertStore` and `BackendResolver`
+## Trait seams: `CertStore`, `BackendResolver`, `LoginTokenConsumer`
 
-These two traits (`traits.rs`) are how the daemon injects behaviour without `yerd-proxy` depending on `yerd-tls` or `yerd-php`.
+These three traits (`traits.rs`) are how the daemon injects behaviour without `yerd-proxy` depending on `yerd-tls`, `yerd-php`, or any concrete daemon state.
 
 ```rust
 pub trait CertStore: std::fmt::Debug + Send + Sync + 'static {
@@ -157,11 +158,23 @@ pub trait CertStore: std::fmt::Debug + Send + Sync + 'static {
 #[async_trait]
 pub trait BackendResolver: Send + Sync + 'static {
     async fn backend_for(&self, site: &yerd_core::Site) -> Result<Backend, ProxyError>;
+
+    /// Whether `site` allows `script_file::resolve_script`'s direct-real-file-
+    /// execution policy - defaults to `false`.
+    async fn allows_direct_script_execution(&self, site: &yerd_core::Site) -> bool {
+        false
+    }
+}
+
+pub trait LoginTokenConsumer: Send + Sync + 'static {
+    fn consume(&self, site: &str, token: &str) -> Option<String>;
 }
 ```
 
 - **`CertStore` is synchronous** because rustls's `ResolvesServerCert::resolve` is synchronous - it is called inside the TLS handshake. The daemon's impl is expected to hold the active cert material in an in-memory map and refresh it out-of-band. See [HTTPS & Certificates](../../guide/https).
 - **`BackendResolver` is async** and consulted once per request, mapping the routed `&Site` to a concrete `Backend`. The daemon's impl typically calls `yerd_php::PhpManager::ensure(site.php())` and translates the returned `Listen` into a `Backend`. The implementer note in the source is load-bearing: copy out the `Site` fields you need before any `.await`, so the per-request closure doesn't hold a router guard across an await point.
+- **`allows_direct_script_execution` is a default method** (defaulting to `false`) gating [`script_file::resolve_script`](#script_file-direct-script-execution) - a real, on-disk `.php` script under the served root is only directly URL-executable for sites the resolver opts in. WordPress needs this for its multiple front controllers (`wp-login.php`, `wp-admin/index.php`, ...); a framework with a single front controller (Laravel, plain PHP) does not, and leaving it on for those would make any stray script under the document root (a debug `phpinfo.php`, an old admin tool) directly URL-executable where it previously wasn't. The daemon's impl (`DaemonBackendResolver`, see [`yerdd`](../binaries/yerdd#backend-resolver-backend-resolver-rs)) checks its `wordpress_sites` cache.
+- **`LoginTokenConsumer` is synchronous** and backs the one-click WordPress admin login flow - see [One-click WordPress admin login](#one-click-wordpress-admin-login) below. `consume` must check and invalidate atomically, so a token can never be consumed twice even under concurrent requests for the same token.
 
 Foreign errors (e.g. `PhpError`) are boxed into `ProxyError::BackendResolver { host, source }`, so the proxy never names `yerd-php` in its type signatures.
 
@@ -213,18 +226,23 @@ It's an `Arc<AtomicU16>` rather than a plain `u16` because the fallback story do
 `server.rs` is the runtime entry point:
 
 ```rust
-pub async fn serve<R, C, S>(
+pub async fn serve<R, C, S, L>(
     http_listener: TcpListener,
     https: Option<HttpsBinding<C>>,
     router: SharedRouter,
     backend_resolver: Arc<R>,
+    login_tokens: Arc<L>,
+    login_prepend_script: Option<PathBuf>,
     shutdown: S,
 ) -> Result<(), ProxyError>
 where
     R: BackendResolver,
     C: CertStore,
     S: Future<Output = ()> + Send + 'static,
+    L: LoginTokenConsumer,
 ```
+
+`login_tokens` and `login_prepend_script` back the one-click WordPress admin login flow (see [below](#one-click-wordpress-admin-login)) - `login_prepend_script` is `None` when the daemon couldn't write its auto-login bootstrap script at startup, in which case a presented token is simply never consumed and the request falls through unauthenticated.
 
 `SharedRouter` is `Arc<tokio::sync::RwLock<yerd_core::SiteRouter>>`. Reads are brief: each request takes a read guard only long enough to `resolve(&host)` and clone the matched `Site` (cheap - small strings and `PathBuf`s), then drops the guard before any `.await`. The daemon is the only writer and swaps the whole router under a write guard when a site is parked/linked/unlinked or its PHP version changes.
 
@@ -243,15 +261,38 @@ On shutdown, accept loops stop immediately; in-flight requests run to hyper's de
 The hyper service is **infallible** - internal errors are logged and turned into a `500` so hyper's connection loop survives. `dispatch` does the real work, in order:
 
 1. **Host header.** Missing or non-UTF-8 → `400 Bad Request` ("Missing or invalid Host header.").
-2. **Route.** `router.resolve(&host)`; no match → `404 Not Found` ("No site matches this Host."). The matched `Site` is cloned and the guard dropped; the request is served from `site.served_root()` (the site's web root, e.g. `<project>/public`).
-3. **HTTP → HTTPS redirect.** On the HTTP listener, if `site.secure()` is true and a `redirect_port` is set, return `301 Moved Permanently` with `Location` built by `build_redirect_uri`.
+2. **Route** via `resolve_request`, producing a `Routed::Site { site, unbound }` or a ready-made `Routed::Respond`. Normal `Host` resolution (`router.resolve(&host)`) is tried first; on a miss, if the host is loopback, an "unbound" (resolver-off) fallback applies - a pinned-site cookie, an `X-Yerd-Site` header, or a same-origin site picker page, none of which are covered here. Anything else on a miss is `404 Not Found` ("No site matches this Host."). The matched `Site` is cloned and the router guard dropped before any further `.await`; the request is served from `site.served_root()` (the site's web root, e.g. `<project>/public`).
+3. **HTTP → HTTPS redirect.** On the HTTP listener, unless the request resolved via the unbound fallback, if `site.secure()` is true and a `redirect_port` is set, return `301 Moved Permanently` with `Location` built by `build_redirect_uri`. This runs **before** the one-click login token is ever looked at (see below), so a secure site's token is never burned by the 301 itself.
 4. **Resolve backend** via `BackendResolver::backend_for(&site)`. Errors already in the connect/protocol/resolver family pass through; any other variant is wrapped in `ProxyError::BackendResolver { host, source }`.
 5. **Upgrade dispatch.** If `upgrade::is_upgrade(headers)`, forward to `upgrade::forward` for `FrankenPhp`, or return `501 Not Implemented` for FastCGI backends (FastCGI cannot model a duplex byte stream).
-6. **Static-file short-circuit.** For the FastCGI backends (`PhpFpm`/`PhpFpmTcp`), `static_file::try_serve` is attempted first: a GET/HEAD request that resolves to a real, non-PHP file under the served root - allowing symlinks that resolve anywhere within the site's `document_root`, not just the served subdirectory - is returned directly with a guessed `Content-Type`. A candidate that resolves outside `document_root` gets an explicit `403 Forbidden` from yerd-proxy instead of falling through. (`FrankenPhp` serves its own static files, so this step is skipped for it.)
-7. **Directory-index short-circuit.** Still FastCGI-only: if `try_serve` didn't match, `static_file::try_serve_index` is tried next - a GET/HEAD directory-style request (trailing slash, including the site root) with no `index.php` in that directory serves its `index.html`/`index.htm` directly, so plain static sites work with no PHP front controller at all. Same `document_root` containment and `403` behavior as `try_serve`.
-8. **Normal dispatch.** Anything not served as a static file or directory index goes to the front controller: `FrankenPhp` → `http::forward`; `PhpFpm`/`PhpFpmTcp` → `fcgi::forward`.
+6. **Normal dispatch.** `FrankenPhp` → `http::forward` directly. `PhpFpm`/`PhpFpmTcp` → `serve_php_fpm`, which runs four steps in order:
+   1. **One-click login token.** `consume_login_token_if_present` (see [below](#one-click-wordpress-admin-login)).
+   2. **Static-file short-circuit.** `static_file::try_serve`: a GET/HEAD request that resolves to a real, non-PHP file under the served root - allowing symlinks that resolve anywhere within the site's `document_root`, not just the served subdirectory - is returned directly with a guessed `Content-Type`. A candidate that resolves outside `document_root` gets an explicit `403 Forbidden` from yerd-proxy instead of falling through.
+   3. **Directory-index short-circuit.** If the static short-circuit didn't match, `static_file::try_serve_index` is tried next - a GET/HEAD directory-style request (trailing slash, including the site root) with no `index.php` in that directory serves its `index.html`/`index.htm` directly, so plain static sites work with no PHP front controller at all. Same `document_root` containment and `403` behavior as `try_serve`.
+   4. **Real-script resolution**, gated by `allows_direct_script_execution` - see [script_file: direct script execution](#script_file-direct-script-execution) - then `fcgi::forward` regardless of what was resolved (a script path, or `None` to fall back to the site root's `index.php`).
 
-The `Listener::{Http, Https}` discriminator is threaded through so the redirect rule and the `HTTPS=on` CGI var both know which listener the connection arrived on.
+`FrankenPhp` serves its own static files and has no equivalent script-resolution step, so steps 6.2-6.4 only apply to the FastCGI backends. The `Listener::{Http, Https}` discriminator is threaded through so the redirect rule and the `HTTPS=on` CGI var both know which listener the connection arrived on.
+
+## One-click WordPress admin login {#one-click-wordpress-admin-login}
+
+`consume_login_token_if_present` (`server.rs`) checks a request for the one-click WordPress admin login token the daemon minted via `Request::MintWordpressLoginToken` (see [`yerdd`](../binaries/yerdd)'s `wordpress_login` module):
+
+```rust
+const LOGIN_TOKEN_PARAM: &str = "yerd_login_token";
+
+fn consume_login_token_if_present<B, L: LoginTokenConsumer>(
+    req: &mut Request<B>,
+    site_name: &str,
+    login_tokens: &L,
+) -> Option<String>
+```
+
+- Only ever considered on a `/wp-admin` path prefix - every other request skips the check entirely without touching `login_tokens`.
+- Consumes the token via `LoginTokenConsumer::consume(site_name, token)`, which must be atomic (check-and-invalidate in one step) so concurrent requests can't both succeed against the same token.
+- On success, strips `yerd_login_token` from the forwarded URI (via `pure::query::strip_param`) so it never reaches PHP or request logging, and returns `Some(target_user)` (`""` meaning no preference - the caller falls back to the earliest-created administrator).
+- **Ordering is load-bearing**: `serve_php_fpm` calls this *after* `dispatch`'s HTTP→HTTPS redirect check has already run (step 3 above), so a secure site's token is never burned by the 301 itself - a browser presenting the token over plain HTTP gets redirected first, with the token intact in the `Location`, and only consumes it on the follow-up HTTPS request.
+
+On success, `serve_php_fpm` builds a `cgi_params::AutoLoginParams { prepend_script, target_user }` and passes it through to `fcgi::forward`, which adds it as a per-request `auto_prepend_file` FastCGI param (plus a `YERD_LOGIN_USER` param) - so the injected bootstrap script only ever loads for this one already-token-validated request, never for an ordinary one. `auto_login` is only built when `login_prepend_script` is `Some` *and* a token was just consumed - the daemon's own `mint_wordpress_login_token` handler already refuses to mint a token at all when the prepend script is unavailable (see [`yerdd`](../binaries/yerdd)), so in practice the proxy never sees a valid token to consume while `login_prepend_script` is `None`.
 
 ## The `forward/` layer
 
@@ -283,6 +324,24 @@ Both lookup functions return a `StaticOutcome`: `Served(Response)`, `NotFound` (
 5. on a hit, serves the file exactly like `try_serve` (same `Content-Type` lookup, `HEAD` handling, headers).
 
 A `NotFound` result here means no index file exists (or `index.php` won) and the request falls through to `fcgi::forward` exactly as it did before this short-circuit existed.
+
+### `script_file` - direct script execution {#script_file-direct-script-execution}
+
+`script_file::resolve_script` extends `cgi_params`'s "everything to `index.php`" front-controller policy with the `try_files $uri $uri/index.php` half of the classic WordPress/nginx policy: a real, more specific script wins over the site root's `index.php` when one exists.
+
+```rust
+pub async fn resolve_script(
+    uri_path: &str,
+    served_root: &Path,
+    allowed_root: &Path,
+) -> Option<PathBuf>
+```
+
+- Only called at all when `BackendResolver::allows_direct_script_execution(site)` returns `true` (see [`resolve_script_if_allowed`](#per-request-dispatch), which skips the filesystem check entirely otherwise) - a Laravel or plain-PHP site never reaches this function.
+- Checks, in order: an exact non-directory match (`/wp-login.php` → `wp-login.php`), then - for a directory-style request - that directory's own index (`/wp-admin/` → `wp-admin/index.php`).
+- Unlike `static_file`, this applies to **every HTTP method**, not just GET/HEAD - a real script like `wp-login.php` handles POST too. It never reads or serves file *content*, only decides which path FastCGI should be told to execute.
+- Same canonicalise-and-check-containment discipline as `static_file`: a symlinked script that resolves outside `allowed_root` (`document_root`) is treated as not found (falls back to the root `index.php` policy) rather than handed to FastCGI.
+- `None` (fall back to the site root's `index.php`, today's behavior for every framework with only one front controller) whenever there's no real, on-disk, non-directory `.php` file at the resolved path.
 
 ### `fcgi` - the PHP-FPM forwarder
 

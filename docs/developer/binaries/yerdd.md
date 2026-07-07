@@ -109,7 +109,13 @@ The daemon's modules (`src/lib.rs` re-exports each as `pub mod`):
 | `self_update` | Yerd self-update poller: fetches the GitHub Releases API, decides via the pure `yerd-update` crate, and persists a snapshot (`checked_at` + decision) both to disk and in `DaemonState` (notify-only). |
 | `dump_server` | Loopback TCP server reading newline-delimited JSON dump frames from the native `yerd-dump` extension into a bounded ring buffer; serves the ring to the GUI over IPC (`ListDumps`/`DumpsStatus`/…). |
 | `ext_install` | Downloads + SHA-256-verifies native PHP extension `.so`s per installed PHP version (from the `forjedio/yerd-php-ext` releases) into `{data}/php-ext/php-<ver>/`. An `ExtSpec` abstraction drives one fetch loop for **both** `yerd-dump` (`DUMP_SPEC`, gated on dumps) and `pcov` (`PCOV_SPEC`, ungated) - two manifests, one release. |
-| `tools` | Dev-tool installers (Composer, Node, Bun): download + SHA-256-verify self-contained binaries into `{data}/tools/<id>/` and reconcile their `{data}/bin` shims. See [Dev-tool installers](../dev-tools). |
+| `tools` | Dev-tool installers (Composer, Node, Bun, the Laravel installer, WP-CLI): download/build + verify into `{data}/tools/<id>/` and reconcile their `{data}/bin` shims. See [Dev-tool installers](../dev-tools). |
+| `create_site` | Site-scaffolding job bodies for the GUI wizard (`laravel.rs`, `wordpress.rs`) - see [WordPress support](#wordpress-support) below. |
+| `wordpress_detect` | Narrow marker-file check for whether a site is a `WordPress` install (`wp-config.php`/`wp-load.php`). |
+| `wordpress_login` | One-click `WordPress` admin login: token registry + the `auto_prepend_file` bootstrap script. |
+| `wordpress_url_sync` | Keeps a `WordPress` site's own `siteurl`/`home` options in sync with its HTTP/HTTPS toggle. |
+| `wordpress_users` | Lists a `WordPress` site's administrator accounts (`wp user list`) for the login-as-user picker. |
+| `wordpress_versions` | Cached `WordPress` core-version list for the create-site wizard's version dropdown. |
 | `secure_fs` | Filesystem hardening (`0o700` dirs, `0o600` secrets). |
 | `signals` | Unified shutdown future (SIGTERM + Ctrl-C). |
 | `single_instance` | `InstanceLock` - exclusive `flock` so only one daemon runs. |
@@ -177,6 +183,10 @@ A site is dropped from the watch set once it resolves or is manually overridden 
 | `detect_cache: Arc<DetectCache>` | Shared web-root detection cache (mutation path + watcher). |
 | `watch_dirty: Notify` | Pinged after a mutation commits so the watcher reconciles its watch set without waiting for an fs event. |
 | `shim_reconcile: Mutex<()>` | Serializes `php_install::reconcile_shims` runs. IPC dispatch is `tokio::spawn`-per-connection, so two clients could rebuild the `{data}/bin` cover/clean shims at once; this guard keeps the (sync) scan→prune from interleaving. |
+| `wordpress_sites: Arc<RwLock<HashMap<String, bool>>>` | Cache of which sites are `WordPress` (site name → bool), refreshed on every router rebuild. Read by `ListSites` (badge), the login/user-listing handlers, `wordpress_url_sync`, and the proxy's `DaemonBackendResolver::allows_direct_script_execution` (see [Backend resolver](#backend-resolver-backend-resolver-rs)). |
+| `wordpress_login_tokens: Arc<wordpress_login::LoginTokenRegistry>` | One-click admin-login token store, shared with `yerd-proxy` via `LoginTokenConsumer`. See [WordPress support](#wordpress-support). |
+| `wordpress_login_prepend_script: Option<PathBuf>` | Path the auto-login bootstrap script was written to at startup, or `None` if that write failed - one-click login is then unavailable this boot (the ordinary `/wp-admin/` link still works). |
+| `wordpress_versions: RwLock<Option<(Instant, Vec<WordPressVersionInfo>)>>` | Last successful `WordPress` core-version fetch, plus when, so a request can decide whether to re-fetch. Served stale-on-failure. |
 
 ::: warning Lock order
 The mutation path is the only place that holds two locks, and always in the order **config-mutex → router-write**. The proxy and `ListSites` take only a router *read* guard and never touch the config mutex, so there is no cross-lock cycle. The status assembler (`build_status_report`) takes each guard, drains it into owned data, and drops it before the next - never two at once, never a guard held across an `.await` that touches another lock.
@@ -222,6 +232,7 @@ After `run_until_shutdown` returns, the signal task is **aborted** rather than a
 - **Dumps (Laravel telemetry):** `ListDumps` (pages the ring), `ClearDumps`, `DeleteDump`, `DumpsStatus`, `SetDumpsEnabled` (first enable fetches the `.so` and restarts started pools), `SetDumpsPort` (test-binds then triggers a hot rebind), `SetDumpsPersist`, `SetDumpFeature` → `dump_server::*`.
 - **Mail capture:** `ListMails`, `GetMail`, `ClearMails`, `DeleteMails`, `MarkMailsRead` (marks the given mails read in the store), `SetMailPort`, `SetMailEnabled` (port/enabled persist to config and take effect on the next restart - no hot rebind) → the `mail_store` / `set_mail_*` handlers. `Status` reports the store's total and unread counts via `MailStatus`.
 - **Dev tools:** `ListTools` (pure fs status), `InstallTool`/`UninstallTool` → `tools::*` then a `{data}/bin` shim reconcile. See [Dev-tool installers](../dev-tools).
+- **WordPress:** `CreateSite` (WordPress or Laravel spec) → a background job under `create_site::*`, polled via `JobStatus`. `MintWordpressLoginToken`, `SetWordpressAutoLogin` → `handle_mutation`, `WordpressAdminUsers`, `AvailableWordpressVersions` → `wordpress_login::*` / `wordpress_users::*` / `wordpress_versions::*`. See [WordPress support](#wordpress-support) above.
 - **Lifecycle:** `RestartDaemon` (Unix only).
 
 The dispatch also routes the **services / database-admin** families (`ListServices`, `InstallService`, `StartService`/`StopService`/`RestartService`, `CreateDatabase`/`ListDatabases`/`DropDatabase`/`BackupDatabase`/`RestoreDatabase`, …) to `services::*` / `db_admin::*`.
@@ -292,17 +303,56 @@ This is all daemon-internal: **no new IPC `Request`/`Response` variants were add
 
 ## Backend resolver (`backend_resolver.rs`)
 
-`DaemonBackendResolver` implements `yerd_proxy::BackendResolver`. For a routed `&Site` it locks the `PhpManager` only for the duration of `ensure(site.php())` (which has a fast path for already-running pools), then maps the returned `yerd_php::Listen` to a proxy `Backend`:
+`DaemonBackendResolver` implements `yerd_proxy::BackendResolver`:
+
+```rust
+pub struct DaemonBackendResolver {
+    pub php_manager: Arc<Mutex<DaemonPhpManager>>,
+    pub wordpress_sites: Arc<RwLock<HashMap<String, bool>>>,
+}
+```
+
+For a routed `&Site`, `backend_for` locks the `PhpManager` only for the duration of `ensure(site.php())` (which has a fast path for already-running pools), then maps the returned `yerd_php::Listen` to a proxy `Backend`:
 
 ```rust
 match listen {
     yerd_php::Listen::UnixSocket(p) => Ok(Backend::PhpFpm { socket: p }),
     yerd_php::Listen::TcpLoopback(a) => Ok(Backend::PhpFpmTcp { addr: a }),
-    _ => Err(/* unknown Listen variant */),
+}
+```
+
+`allows_direct_script_execution` (the trait's other method - see [`yerd-proxy`'s trait seams](../crates/yerd-proxy#trait-seams-certstore-backendresolver-logintokenconsumer)) mirrors `DaemonState::wordpress_sites` directly:
+
+```rust
+async fn allows_direct_script_execution(&self, site: &yerd_core::Site) -> bool {
+    self.wordpress_sites.read().await.get(site.name()).copied().unwrap_or(false)
 }
 ```
 
 `DaemonPhpManager` is the concrete `PhpManager<TokioProcessSpawner, SystemClock, FastCgiProbe>` used throughout the daemon.
+
+## WordPress support {#wordpress-support}
+
+The `wordpress_*` modules plus `create_site/wordpress.rs` and `tools/wp_cli.rs` back the GUI's "Create a new WordPress site" wizard and one-click admin login (see the user-facing [Sites guide](../../guide/sites#create-a-new-wordpress-site)).
+
+**Detection (`wordpress_detect.rs`).** `detect(document_root)` is a narrow, synchronous marker-file check (`wp-config.php` or `wp-load.php` present) - deliberately not a deep framework probe like `yerd-core`'s web-root detection. `startup::build_routing` runs it for every site on each router rebuild and populates `DaemonState::wordpress_sites`; `ListSites` badges each site from that cache rather than re-checking the filesystem on every poll.
+
+**Scaffolding (`create_site/wordpress.rs`).** `run` is the WordPress counterpart to `laravel.rs`'s `run` (both driven by the shared `create_site::run_streamed`/job-registry plumbing), reporting progress through seven phases in order - **Preflight → Provisioning database → Downloading WordPress → Configuring → Installing → Registering → Done** - mirrored exactly by the wizard's progress stepper. Notable pieces:
+
+- `validate_admin_credentials` (server-side, mirroring `yerd_services::database::validate_db_name`'s "the daemon is the authority" pattern) rejects an empty/whitespace admin username, a password under `MIN_ADMIN_PASSWORD_LEN` (8), or a malformed email - independent of whatever the wizard already validated client-side.
+- `resolve_db_name` derives a database name from the site name when the request left one unset, the same fallback the wizard itself uses.
+- `apply_permalink_structure` runs `wp rewrite structure '/%postname%/'` after install (WordPress otherwise defaults to unfriendly `?p=123` URLs) - best-effort: a failure only logs a warning (`PermalinkOutcome::Applied`) and never fails or rolls back the job, unlike every earlier phase.
+- `enable_default_admin_login` turns on one-click login by default for a wizard-created site (via the same `SetWordpressAutoLogin` mutation the Edit dialog uses) - never for a parked/pre-existing WordPress site, since yerd has no basis for assuming that's wanted for an arbitrary directory.
+
+**One-click login (`wordpress_login.rs`).** `LoginTokenRegistry` mints a short-TTL (30s), single-use, 32-byte random token per `Request::MintWordpressLoginToken`, and implements `yerd_proxy::LoginTokenConsumer` so the proxy can validate/consume one without depending on this crate - see [`yerd-proxy`'s login-token section](../crates/yerd-proxy#one-click-wordpress-admin-login) for the consuming side. `mint_wordpress_login_token` refuses to mint at all (`NotFound`) unless the site exists, is WordPress, has `wp_auto_login` enabled, *and* `DaemonState::wordpress_login_prepend_script` is `Some` - the proxy only ever adds `auto_prepend_file` when both a consumed token and that path are present, so minting despite a missing prepend script would silently burn a token that could never log anyone in. `write_prepend_script` writes the bootstrap script (compiled into the binary via `include_str!`) to `{data}/wordpress-autologin-prepend.php` at every startup, treating a write failure as "one-click login unavailable this boot" rather than fatal.
+
+**URL sync (`wordpress_url_sync.rs`).** After a `SetSecure` mutation commits, `sync_site_url` runs `wp option update siteurl`/`home` against the site's *configured TLD* (not a hardcoded `.test`) if it's a WordPress site with WP-CLI and its pinned PHP both installed - best-effort and silent on failure, so a WP-CLI hiccup never fails the secure toggle it's attached to.
+
+**Admin listing (`wordpress_users.rs`).** `admin_users` runs `wp user list --role=administrator --format=json` and parses the result for the "Sign in as" picker in the Edit dialog - same `NotFound`-if-not-WordPress gate as minting, `Internal` for a WP-CLI/PHP-missing or non-zero-exit/unparseable-JSON failure.
+
+**Version list (`wordpress_versions.rs`).** Caches the wizard's "Core version" dropdown data (a remote `wordpress-versions.json` manifest) with a `(Instant, Vec<WordPressVersionInfo>)` freshness pair on `DaemonState`, served stale-on-fetch-failure rather than blocking the wizard on a flaky network.
+
+**WP-CLI deprecation suppression (`tools/wp_cli.rs`).** WP-CLI's bundled Composer dependencies (`react/promise`, `wp-cli/php-cli-tools`) emit PHP `E_DEPRECATED` notices on newer PHP that would otherwise flood streamed job logs and break anything parsing `--format=json` output. `QUIET_DEPRECATIONS` (`-d error_reporting=E_ALL & ~E_DEPRECATED`) passed as leading `php` flags covers every `wp` invocation the daemon spawns directly - but not a PHP process WP-CLI spawns *internally* via `WP_CLI::launch_self()` (used by `rewrite structure` among other subcommands), since that re-invocation builds its own bare `php <script>` command line with none of the caller's flags. `ensure_quiet_deprecations_scan_dir` writes a tiny drop-in ini to `{data}/wp-cli-quiet.d/` applying the same suppression, and `quiet_deprecations_scan_dir_env` returns a `PHP_INI_SCAN_DIR` value (prefixed with `:` so PHP still scans its compiled-in default directory too) to set as an env var - unlike a CLI flag, an env var *is* inherited by a child process, so it still applies after a `launch_self()` re-exec. Wired into `create_site::run_streamed` (via a `quiet_wp_cli_deprecations: bool` parameter, `true` only for the WordPress scaffolding path, not Laravel's), `wordpress_url_sync.rs`, and `wordpress_users.rs`; duplicated (not shared - different binary) in [`bin/yerd/src/wp_shim.rs`](./yerd#cover-shims-yerd-as-a-multi-call-binary-cover_shim-rs) for the `wp` CLI shim.
 
 ## Signals & single instance
 

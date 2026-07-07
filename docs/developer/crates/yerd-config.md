@@ -75,7 +75,7 @@ pub use schema::{
     DEFAULT_DUMP_PORT, DEFAULT_MAIL_PORT, RESERVED_GROUP_NAME,
 };
 
-pub const CURRENT_VERSION: u32 = 9;
+pub const CURRENT_VERSION: u32 = 10;
 ```
 
 `Config` exposes exactly four pure methods and two I/O methods:
@@ -145,11 +145,14 @@ Notable design decisions, all grounded in the source:
   purely from a directory listing, so it has no persistent record to hold a pinned
   PHP version, HTTPS flag, or web root; the daemon records the override here and
   re-applies it during the scan, leaving the site parked. `SiteOverride` is
-  all-`Option` (`php`, `secure`, `web_root`) so `None` means "inherit" (or, for
-  `web_root`, "auto-detect on every scan") and future per-site settings slot in
-  additively without a wire break. `web_root` is the pinned served subdirectory
-  relative to the document root - the parked-site analogue of a linked `Site`'s
-  `web_subpath`.
+  all-`Option` (`php`, `secure`, `web_root`, `wp_auto_login`, `wp_auto_login_user`,
+  added in schema v10) so `None` means "inherit" (or, for `web_root`,
+  "auto-detect on every scan") and future per-site settings slot in additively
+  without a wire break. `web_root` is the pinned served subdirectory relative to
+  the document root - the parked-site analogue of a linked `Site`'s
+  `web_subpath`. `wp_auto_login`/`wp_auto_login_user` (one-click `WordPress`
+  admin login, opt-in per site) are the same fields a linked `Site` carries
+  directly, mirrored here for a parked site's override record.
 - **`ServicesSection::instances`** is a `BTreeMap<String, ServiceInstance>` keyed
   by the service id (since the v2→v3 migration; v0–v2 stored a flat
   `enabled = [...]` array of ids). Each `ServiceInstance` carries
@@ -318,7 +321,7 @@ version is the single trigger for forward migrations.
 
 ```rust
 /// The on-disk schema version this crate writes.
-pub const CURRENT_VERSION: u32 = 9;
+pub const CURRENT_VERSION: u32 = 10;
 ```
 
 `CURRENT_VERSION` is **decoupled** from `yerd_ipc::PROTOCOL_VERSION`: the on-disk
@@ -327,7 +330,7 @@ with a new entry in `migrate::STEPS`.
 
 `migrate.rs` holds the steps, indexed so that **`STEPS[N]` walks `vN → v(N+1)`**
 - matching `migrate::up`, which indexes `STEPS[current]` (the version being
-migrated *from*). At v9 there are nine (`STEPS.len() == CURRENT_VERSION`, pinned
+migrated *from*). At v10 there are ten (`STEPS.len() == CURRENT_VERSION`, pinned
 by `steps_cover_every_version_below_current`):
 
 ```rust
@@ -344,6 +347,7 @@ pub(crate) const STEPS: &[MigrationStep] = &[
     migrate_v6_to_v7,
     migrate_v7_to_v8,
     migrate_v8_to_v9,
+    migrate_v9_to_v10,
 ];
 ```
 
@@ -353,12 +357,14 @@ was never written to disk - but it must exist so the later indices line up.
 `web_subpath` / `web_root` keys, which default when absent). `v2→v3` is the only
 **structural** step: it rewrites the old flat `services.enabled = [...]` array of
 ids into per-service `[services.<id>]` tables (each previously-enabled id becomes
-an `enabled = true` instance). `v3→v4` through `v8→v9` are again bare version
+an `enabled = true` instance). `v3→v4` through `v9→v10` are again bare version
 bumps, each adding an optional section that defaults when absent: `[mail]` (v4),
 `[dumps]` (v5), the `update_channel` scalar (v6), the `[ports]` fallback keys
-(v7), `[tunnel]` (v8), and `[groups]` (v9). Each bump still exists so an *older*
-binary rejects a file that uses the newer table cleanly as `UnsupportedVersion`
-rather than failing on an unknown key under `deny_unknown_fields`.
+(v7), `[tunnel]` (v8), `[groups]` (v9), and the `wp_auto_login`/`wp_auto_login_user`
+keys inside `[[linked]]` and `[[overrides]]` (v10). Each bump still exists so an
+*older* binary rejects a file that uses the newer table/keys cleanly as
+`UnsupportedVersion` rather than failing on an unknown key under
+`deny_unknown_fields`.
 
 Each step rewrites the parsed `toml::Value` in place and is responsible for
 leaving the `version` key set to `N + 1`. A step need not produce a *valid*
