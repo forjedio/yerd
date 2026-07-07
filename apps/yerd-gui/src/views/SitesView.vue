@@ -380,9 +380,39 @@ const editSecure = ref(false);
 const editGroup = ref<string>("");
 const editWpAutoLogin = ref(false);
 const editWpAutoLoginUser = ref<string>("");
-const wpAdminUsersOptions = ref<{ value: string; label: string }[]>([
-  { value: "", label: "Earliest admin (default)" },
-]);
+
+const DEFAULT_ADMIN_OPTION = { value: "", label: "Earliest admin (default)" };
+type WpAdminUsersStatus = "idle" | "loading" | "ready" | "error";
+const wpAdminUsersStatus = ref<WpAdminUsersStatus>("idle");
+const wpAdminUsersError = ref("");
+const wpAdminUsersOptions = ref<{ value: string; label: string }[]>([DEFAULT_ADMIN_OPTION]);
+
+/** The picker's real `:options` while loaded; a single synthetic "Loading…"/
+ *  "Error: …" entry otherwise, paired with the Select's own `disabled` state
+ *  (also gated on `wpAdminUsersStatus`) so an in-flight or failed fetch is
+ *  never mistaken for "no other admins exist". */
+const wpAdminUserSelectOptions = computed(() =>
+  wpAdminUsersStatus.value === "loading"
+    ? [{ value: "", label: "Loading users…" }]
+    : wpAdminUsersStatus.value === "error"
+      ? [{ value: "", label: `Error: ${wpAdminUsersError.value}` }]
+      : wpAdminUsersOptions.value,
+);
+
+async function loadWpAdminUsers(name: string): Promise<void> {
+  wpAdminUsersStatus.value = "loading";
+  try {
+    const users = await wordpressAdminUsers(name);
+    wpAdminUsersOptions.value = [
+      DEFAULT_ADMIN_OPTION,
+      ...users.map((u) => ({ value: u.login, label: u.display_name || u.login })),
+    ];
+    wpAdminUsersStatus.value = "ready";
+  } catch (e) {
+    wpAdminUsersError.value = (e as IpcError).message || "couldn't load admin users";
+    wpAdminUsersStatus.value = "error";
+  }
+}
 
 function openEdit(s: SiteEntry): void {
   editTarget.value = s;
@@ -391,32 +421,26 @@ function openEdit(s: SiteEntry): void {
   editSecure.value = s.secure;
   editWpAutoLogin.value = s.wp_auto_login ?? false;
   editWpAutoLoginUser.value = s.wp_auto_login_user ?? "";
-  wpAdminUsersOptions.value = [{ value: "", label: "Earliest admin (default)" }];
   // Seed from current membership, coercing a stale value (group deleted in
   // another window/CLI) to "" so the Select never sits out of range.
   editGroup.value = currentGroupOf(s.name);
+  // Fetched fresh on every open (not gated on the toggle's own transition -
+  // that missed a re-fetch when a site was *already* auto-login-enabled, so
+  // the picker silently kept showing only the previous dialog's list, or the
+  // placeholder if this is the first time it's ever been opened) so it's
+  // ready by the time the toggle (already on, or about to be turned on) is
+  // visible.
+  if (s.is_wordpress) {
+    wpAdminUsersStatus.value = "idle";
+    wpAdminUsersOptions.value = [DEFAULT_ADMIN_OPTION];
+    void loadWpAdminUsers(s.name);
+  }
   // Defer past the dropdown's close so reka-ui's focus-restore doesn't steal
   // focus from the modal.
   void nextTick(() => {
     editOpen.value = true;
   });
 }
-
-// Fetched once when the toggle turns on (not eagerly on open) - avoids a
-// wp-cli round trip for sites where auto-login is never enabled.
-watch(editWpAutoLogin, async (enabled) => {
-  if (!enabled || !editTarget.value?.is_wordpress) return;
-  try {
-    const users = await wordpressAdminUsers(editTarget.value.name);
-    wpAdminUsersOptions.value = [
-      { value: "", label: "Earliest admin (default)" },
-      ...users.map((u) => ({ value: u.login, label: u.display_name || u.login })),
-    ];
-  } catch {
-    /* leave the default-only option list - the picker still works, just
-       without a specific-user choice */
-  }
-});
 
 async function chooseEditDir(): Promise<void> {
   // The picker only suggests a start dir; the daemon enforces containment.
@@ -961,7 +985,8 @@ async function shareSitePublicly(s: Site): Promise<void> {
               <Select
                 id="edit-wp-admin-user"
                 :model-value="editWpAutoLoginUser"
-                :options="wpAdminUsersOptions"
+                :options="wpAdminUserSelectOptions"
+                :disabled="wpAdminUsersStatus !== 'ready'"
                 class="w-full"
                 aria-label="Sign in as"
                 @update:model-value="(v: string) => (editWpAutoLoginUser = v)"
