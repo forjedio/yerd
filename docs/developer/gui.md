@@ -303,7 +303,10 @@ Arch package (`.pkg.tar.zst`) is **not** a Tauri bundle target (Tauri has no
 pacman bundler) - it's built separately from
 [`packaging/arch/PKGBUILD`](https://github.com/forjedio/yerd/blob/main/packaging/arch)
 in the release workflow's `arch` job, with a `.install` scriptlet doing the same
-`setcap`. See [Packaging and releasing](./building#the-arch-package-pkg-tar-zst).
+`setcap`. The Fedora `.rpm`, by contrast, **is** a Tauri bundle target (Tauri v2
+has an rpm bundler): the `fedora` jobs run `tauri build` with the
+`tauri.bundle-linux-rpm.conf.json` overlay and an `rpm/postinst.sh` `%post` doing
+the same `setcap`. See [Packaging and releasing](./building#the-arch-package-pkg-tar-zst).
 
 ::: info Three windows, one bundle
 The app is no longer single-window. `tauri.conf.json` declares **three** windows,

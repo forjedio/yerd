@@ -78,35 +78,52 @@ pub enum ArtifactKind {
     Deb,
     /// An Arch package (reinstalled via `pacman -U`).
     Pacman,
+    /// A Red Hat package (reinstalled via `rpm -U`).
+    Rpm,
 }
 
 /// The Linux package format a build self-updates with.
 ///
-/// A release ships BOTH a `.deb` and a `.pkg.tar.zst` for the same arch, so a
-/// running Linux binary cannot tell which to install from [`Platform`] alone
+/// A release ships a `.deb`, a `.pkg.tar.zst`, and a `.rpm` for the same arch, so
+/// a running Linux binary cannot tell which to install from [`Platform`] alone
 /// (that only knows OS + arch, not distro). Instead the format is fixed at build
 /// time: [`PkgFormat::current`] returns [`PkgFormat::Pacman`] when compiled with
-/// the `pacman` feature (the Arch package build) and [`PkgFormat::Deb`] otherwise.
-/// macOS selection ignores it. This is decoupled from `cfg!` in the type so
-/// selection stays testable for either format from any build.
+/// the `pacman` feature (the Arch package build), [`PkgFormat::Rpm`] with the
+/// `rpm` feature (the Fedora package build), and [`PkgFormat::Deb`] otherwise. The
+/// two distro features are mutually exclusive. macOS selection ignores it. This is
+/// decoupled from `cfg!` in the type so selection stays testable for any format
+/// from any build.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PkgFormat {
     /// Debian `.deb` (installed via `dpkg -i`). The default build.
     Deb,
     /// Arch `.pkg.tar.zst` (installed via `pacman -U`).
     Pacman,
+    /// Red Hat `.rpm` (installed via `rpm -U`).
+    Rpm,
 }
 
+// The `pacman` and `rpm` features both fix the self-update format at build time;
+// enabling both is contradictory and would make `current()` ambiguous, so refuse
+// to compile that combination outright.
+#[cfg(all(feature = "pacman", feature = "rpm"))]
+compile_error!("the `pacman` and `rpm` features are mutually exclusive");
+
 impl PkgFormat {
-    /// The package format this binary was built for: [`PkgFormat::Pacman`] when
-    /// compiled with the `pacman` feature, else [`PkgFormat::Deb`].
+    /// The package format this binary was built for: [`PkgFormat::Pacman`] under
+    /// the `pacman` feature, [`PkgFormat::Rpm`] under the `rpm` feature, else
+    /// [`PkgFormat::Deb`].
     #[must_use]
     pub fn current() -> Self {
         #[cfg(feature = "pacman")]
         {
             Self::Pacman
         }
-        #[cfg(not(feature = "pacman"))]
+        #[cfg(feature = "rpm")]
+        {
+            Self::Rpm
+        }
+        #[cfg(not(any(feature = "pacman", feature = "rpm")))]
         {
             Self::Deb
         }
@@ -157,11 +174,12 @@ impl std::error::Error for AssetError {}
 ///
 /// Selection is by filename convention (the names the release workflow emits):
 /// the macOS artifact ends `.app.tar.gz` and is arch-tagged; the Linux artifact
-/// ends `.deb` (Debian) or `.pkg.tar.zst` (Arch) per `format` and is arch-tagged
-/// (`x86_64` or `arm64`); the signature is `<artifact>.sig`; the manifest is named
-/// `SHA256SUMS`. `format` resolves the deb-vs-pacman ambiguity on Linux (a release
-/// carries both) and is ignored on macOS. Intel macOS / unsupported platforms
-/// return [`AssetError::NoArtifactForPlatform`] rather than mis-selecting.
+/// ends `.deb` (Debian), `.pkg.tar.zst` (Arch), or `.rpm` (Fedora) per `format`
+/// and is arch-tagged (`x86_64` or `arm64`); the signature is `<artifact>.sig`;
+/// the manifest is named `SHA256SUMS`. `format` resolves the deb-vs-pacman-vs-rpm
+/// ambiguity on Linux (a release carries all three) and is ignored on macOS. Intel
+/// macOS / unsupported platforms return [`AssetError::NoArtifactForPlatform`]
+/// rather than mis-selecting.
 pub fn select_asset(
     release: &ReleaseMeta,
     platform: Platform,
@@ -177,6 +195,8 @@ pub fn select_asset(
         (Platform::LinuxAarch64, PkgFormat::Pacman) => {
             (ArtifactKind::Pacman, is_linux_aarch64_pacman)
         }
+        (Platform::LinuxX86_64, PkgFormat::Rpm) => (ArtifactKind::Rpm, is_linux_x86_64_rpm),
+        (Platform::LinuxAarch64, PkgFormat::Rpm) => (ArtifactKind::Rpm, is_linux_aarch64_rpm),
         (p @ (Platform::MacOsX86_64 | Platform::Unsupported), _) => {
             return Err(AssetError::NoArtifactForPlatform(p));
         }
@@ -244,6 +264,21 @@ fn is_linux_x86_64_pacman(name: &str) -> bool {
 fn is_linux_aarch64_pacman(name: &str) -> bool {
     let lower = name.to_ascii_lowercase();
     lower.ends_with(".pkg.tar.zst") && (lower.contains("aarch64") || lower.contains("arm64"))
+}
+
+// The Fedora package is named `Yerd_Linux_x86_64_*.rpm`. The `.rpm` suffix is disjoint
+// from `.deb` and `.pkg.tar.zst`, so the rpm matchers never collide with the others.
+#[allow(clippy::case_sensitive_file_extension_comparisons)]
+fn is_linux_x86_64_rpm(name: &str) -> bool {
+    name.ends_with(".rpm") && (name.contains("x86_64") || name.contains("amd64"))
+}
+
+// The arm64 Fedora asset is `Yerd_Linux_Arm64_*.rpm` (capital "Arm64"), so match
+// case-insensitively for the `Arm64`/`aarch64` token, mirroring `is_linux_aarch64_artifact`.
+#[allow(clippy::case_sensitive_file_extension_comparisons)]
+fn is_linux_aarch64_rpm(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    lower.ends_with(".rpm") && (lower.contains("aarch64") || lower.contains("arm64"))
 }
 
 /// Why verification failed.
@@ -422,12 +457,39 @@ mod tests {
     }
 
     #[test]
+    fn selects_linux_x86_64_rpm() {
+        let r = release_with(&[
+            "Yerd_Linux_x86_64_v2-0-2.rpm",
+            "Yerd_Linux_x86_64_v2-0-2.rpm.sig",
+            "SHA256SUMS",
+        ]);
+        let sel = select_asset(&r, Platform::LinuxX86_64, PkgFormat::Rpm).unwrap();
+        assert_eq!(sel.kind, ArtifactKind::Rpm);
+        assert!(sel.artifact.name.ends_with(".rpm"));
+        assert!(sel.signature.name.ends_with(".rpm.sig"));
+    }
+
+    #[test]
+    fn selects_linux_aarch64_rpm() {
+        let r = release_with(&[
+            "Yerd_Linux_Arm64_v2-0-2.rpm",
+            "Yerd_Linux_Arm64_v2-0-2.rpm.sig",
+            "SHA256SUMS",
+        ]);
+        let sel = select_asset(&r, Platform::LinuxAarch64, PkgFormat::Rpm).unwrap();
+        assert_eq!(sel.kind, ArtifactKind::Rpm);
+        assert_eq!(sel.artifact.name, "Yerd_Linux_Arm64_v2-0-2.rpm");
+    }
+
+    #[test]
     fn both_artifacts_present_resolves_per_format() {
         let r = release_with(&[
             "Yerd_Linux_x86_64_v2-0-2.deb",
             "Yerd_Linux_x86_64_v2-0-2.deb.sig",
             "Yerd_Linux_x86_64_v2-0-2.pkg.tar.zst",
             "Yerd_Linux_x86_64_v2-0-2.pkg.tar.zst.sig",
+            "Yerd_Linux_x86_64_v2-0-2.rpm",
+            "Yerd_Linux_x86_64_v2-0-2.rpm.sig",
             "SHA256SUMS",
         ]);
         let deb = select_asset(&r, Platform::LinuxX86_64, PkgFormat::Deb).unwrap();
@@ -436,6 +498,9 @@ mod tests {
         let pac = select_asset(&r, Platform::LinuxX86_64, PkgFormat::Pacman).unwrap();
         assert_eq!(pac.kind, ArtifactKind::Pacman);
         assert!(pac.artifact.name.ends_with(".pkg.tar.zst"));
+        let rpm = select_asset(&r, Platform::LinuxX86_64, PkgFormat::Rpm).unwrap();
+        assert_eq!(rpm.kind, ArtifactKind::Rpm);
+        assert!(rpm.artifact.name.ends_with(".rpm"));
     }
 
     #[test]
@@ -488,6 +553,39 @@ mod tests {
         assert_eq!(
             select_asset(&only_arm_pac, Platform::LinuxX86_64, PkgFormat::Pacman),
             Err(AssetError::NoArtifactForPlatform(Platform::LinuxX86_64))
+        );
+    }
+
+    #[test]
+    fn rpm_matchers_are_disjoint_from_deb_pacman_and_across_arch() {
+        // An rpm-only release resolves under Rpm but not Deb/Pacman.
+        let only_rpm = release_with(&[
+            "Yerd_Linux_x86_64_v2-0-2.rpm",
+            "Yerd_Linux_x86_64_v2-0-2.rpm.sig",
+            "SHA256SUMS",
+        ]);
+        assert_eq!(
+            select_asset(&only_rpm, Platform::LinuxX86_64, PkgFormat::Deb),
+            Err(AssetError::NoArtifactForPlatform(Platform::LinuxX86_64))
+        );
+        assert_eq!(
+            select_asset(&only_rpm, Platform::LinuxX86_64, PkgFormat::Pacman),
+            Err(AssetError::NoArtifactForPlatform(Platform::LinuxX86_64))
+        );
+        // A deb-only release does not resolve under Rpm.
+        let only_deb = release_with(&[
+            "Yerd_Linux_x86_64_v2-0-2.deb",
+            "Yerd_Linux_x86_64_v2-0-2.deb.sig",
+            "SHA256SUMS",
+        ]);
+        assert_eq!(
+            select_asset(&only_deb, Platform::LinuxX86_64, PkgFormat::Rpm),
+            Err(AssetError::NoArtifactForPlatform(Platform::LinuxX86_64))
+        );
+        // rpm matchers are arch-disjoint (an x86_64-only rpm release has no arm64 artifact).
+        assert_eq!(
+            select_asset(&only_rpm, Platform::LinuxAarch64, PkgFormat::Rpm),
+            Err(AssetError::NoArtifactForPlatform(Platform::LinuxAarch64))
         );
     }
 

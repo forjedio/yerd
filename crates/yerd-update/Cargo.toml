@@ -14,11 +14,14 @@ minisign-verify = { workspace = true }
 hex             = { workspace = true }
 
 [features]
-# Build-time package-format tiebreak. A release ships BOTH a `.deb` and a
-# `.pkg.tar.zst` for the same Linux arch; the running binary must pick the one
+# Build-time package-format tiebreak. A release ships a `.deb`, a `.pkg.tar.zst`,
+# and a `.rpm` for the same Linux arch; the running binary must pick the one
 # matching how it was installed. Enabling `pacman` (the Arch package build only)
-# flips `PkgFormat::current()` to `Pacman`. Default off → `Deb`. See `PkgFormat`.
+# flips `PkgFormat::current()` to `Pacman`; `rpm` (the Fedora package build only)
+# flips it to `Rpm`. The two distro features are mutually exclusive. Default off →
+# `Deb`. See `PkgFormat`.
 pacman = []
+rpm = []
 
 [lints]
 workspace = true

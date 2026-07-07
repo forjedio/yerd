@@ -57,11 +57,13 @@ fn main() -> ExitCode {
 }
 
 /// The build's self-update package format as a stable lowercase string
-/// (`"pacman"` when compiled with the `pacman` feature, else `"deb"`). Used by the
-/// hidden `--pkg-format` diagnostic the release pipeline asserts on.
+/// (`"pacman"` under the `pacman` feature, `"rpm"` under the `rpm` feature, else
+/// `"deb"`). Used by the hidden `--pkg-format` diagnostic the release pipeline
+/// asserts on.
 fn pkg_format_str() -> &'static str {
     match yerd_update::PkgFormat::current() {
         yerd_update::PkgFormat::Pacman => "pacman",
+        yerd_update::PkgFormat::Rpm => "rpm",
         yerd_update::PkgFormat::Deb => "deb",
     }
 }

@@ -3377,6 +3377,8 @@ Subject: Captured\r\n\r\nhi\r\n";
         let arm = "Yerd_Linux_Arm64_v99-0-1.deb";
         let pkg = "Yerd_Linux_x86_64_v99-0-1.pkg.tar.zst";
         let pkg_arm = "Yerd_Linux_Arm64_v99-0-1.pkg.tar.zst";
+        let rpm = "Yerd_Linux_x86_64_v99-0-1.rpm";
+        let rpm_arm = "Yerd_Linux_Arm64_v99-0-1.rpm";
         let releases = format!(
             r#"[{{"tag_name":"v99.0.1","prerelease":false,"draft":false,"assets":[
                 {{"name":"{mac}","browser_download_url":"https://h/{mac}","size":4}},
@@ -3389,11 +3391,17 @@ Subject: Captured\r\n\r\nhi\r\n";
                 {{"name":"{pkg}.sig","browser_download_url":"https://h/{pkg}.sig","size":1}},
                 {{"name":"{pkg_arm}","browser_download_url":"https://h/{pkg_arm}","size":4}},
                 {{"name":"{pkg_arm}.sig","browser_download_url":"https://h/{pkg_arm}.sig","size":1}},
+                {{"name":"{rpm}","browser_download_url":"https://h/{rpm}","size":4}},
+                {{"name":"{rpm}.sig","browser_download_url":"https://h/{rpm}.sig","size":1}},
+                {{"name":"{rpm_arm}","browser_download_url":"https://h/{rpm_arm}","size":4}},
+                {{"name":"{rpm_arm}.sig","browser_download_url":"https://h/{rpm_arm}.sig","size":1}},
                 {{"name":"SHA256SUMS","browser_download_url":"https://h/SHA256SUMS","size":1}}
             ]}}]"#
         );
         let h = yerd_update::sha256_hex(b"test");
-        let sums = format!("{h}  {mac}\n{h}  {deb}\n{h}  {arm}\n{h}  {pkg}\n{h}  {pkg_arm}\n");
+        let sums = format!(
+            "{h}  {mac}\n{h}  {deb}\n{h}  {arm}\n{h}  {pkg}\n{h}  {pkg_arm}\n{h}  {rpm}\n{h}  {rpm_arm}\n"
+        );
         let dl = StageDl { releases, sums };
 
         let resp = crate::self_update::stage_update(None, &state, &dl, SIG_PUBKEY).await;
@@ -3425,6 +3433,12 @@ Subject: Captured\r\n\r\nhi\r\n";
                     }
                     (yerd_update::Platform::LinuxAarch64, yerd_update::PkgFormat::Pacman) => {
                         (yerd_ipc::StagedArtifact::Pacman, pkg_arm)
+                    }
+                    (yerd_update::Platform::LinuxX86_64, yerd_update::PkgFormat::Rpm) => {
+                        (yerd_ipc::StagedArtifact::Rpm, rpm)
+                    }
+                    (yerd_update::Platform::LinuxAarch64, yerd_update::PkgFormat::Rpm) => {
+                        (yerd_ipc::StagedArtifact::Rpm, rpm_arm)
                     }
                     (other, _) => panic!("unexpected platform for fixture: {other:?}"),
                 };

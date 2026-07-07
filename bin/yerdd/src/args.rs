@@ -6,13 +6,13 @@ use std::path::PathBuf;
 #[derive(clap::Parser, Debug)]
 #[command(name = "yerdd", version, about = "Yerd daemon")]
 pub struct Cli {
-    /// Print the build's self-update package format (`deb`/`pacman`) and exit.
+    /// Print the build's self-update package format (`deb`/`pacman`/`rpm`) and exit.
     ///
-    /// Hidden diagnostic: the release pipeline runs this on the freshly-built
-    /// Arch `yerdd` to assert it was compiled with the `pacman` feature, so a
-    /// forgotten `--features` flag fails the release instead of shipping a
-    /// `.deb`-format updater inside the `.pkg.tar.zst`. Handled in `main` before
-    /// the daemon starts.
+    /// Hidden diagnostic: the release pipeline runs this on the freshly-built Arch
+    /// and Fedora `yerdd` to assert it was compiled with the matching
+    /// `pacman`/`rpm` feature, so a forgotten `--features` flag fails the release
+    /// instead of shipping a `.deb`-format updater inside the `.pkg.tar.zst` or
+    /// `.rpm`. Handled in `main` before the daemon starts.
     #[arg(long, hide = true)]
     pub pkg_format: bool,
     /// Subcommand to run; defaults to `Serve` with default args when omitted.

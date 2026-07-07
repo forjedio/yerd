@@ -51,16 +51,54 @@ jobs:
           {"id":"linux-x86_64","runner":"ubuntu-22.04","container":"","kind":"gui"},
           {"id":"linux-arm64","runner":"ubuntu-22.04-arm","container":"","kind":"gui"},
           {"id":"macos","runner":"macos-14","container":"","kind":"gui"},
-          {"id":"arch-x86_64","runner":"ubuntu-22.04","container":"archlinux:base-devel","kind":"arch"}
+          {"id":"arch-x86_64","runner":"ubuntu-22.04","container":"archlinux:base-devel","kind":"arch"},
+          {"id":"fedora-x86_64","runner":"ubuntu-22.04","container":"","kind":"fedora"},
+          {"id":"fedora-arm64","runner":"ubuntu-22.04-arm","container":"","kind":"fedora"}
         ]
     secrets: inherit
+
+  # Real-Fedora validation of the freshly-built .rpm — the ONLY place its `depends`
+  # names and %post scriptlet run on an actual rpm stack (the bundler itself runs on
+  # Ubuntu). Blocking: `publish` needs it, so a broken rpm can't ship. x86_64 only;
+  # both arches share one depends list + one %post, so this still catches a typo'd
+  # dependency name or a broken scriptlet.
+  smoke:
+    name: fedora-smoke
+    needs: build
+    runs-on: ubuntu-22.04
+    container: fedora:latest
+    steps:
+      # findutils isn't in the minimal fedora image; dnf is. Install it before the
+      # `find` below (libcap/getcap arrive as an rpm dependency of the package).
+      - name: Install smoke prereqs
+        run: dnf -y install findutils
+      - name: Download the fedora x86_64 build artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: build-fedora-x86_64
+          path: rpm
+      - name: dnf install + assert pkg-format
+        run: |
+          set -euo pipefail
+          pkg=$(find rpm -name '*.rpm' | head -n1)
+          [ -n "$pkg" ] || { echo "::error::no .rpm in the fedora artifact"; exit 1; }
+          # Proves every Requires resolves against Fedora repos, and runs %post.
+          dnf install -y "$pkg"
+          # Blocking: the shipped daemon must self-update via rpm.
+          fmt=$(yerdd --pkg-format)
+          [ "$fmt" = "rpm" ] \
+            || { echo "::error::installed yerdd --pkg-format=$fmt (expected rpm)"; exit 1; }
+          # Advisory: file caps often can't persist on a container's overlayfs.
+          getcap /usr/bin/yerdd | grep -q cap_net_bind_service \
+            || echo "::warning::setcap did not persist in the container (expected on overlayfs)"
+          echo "Fedora smoke OK: $pkg installs, deps resolve, pkg-format=rpm"
 
   # The ONLY job that touches the release. Assemble everything, create it as a
   # hidden draft with all files + checksums attached, then flip it public —
   # so nobody can ever see a release missing its artifacts.
   publish:
     name: publish
-    needs: build
+    needs: [build, smoke]
     runs-on: ubuntu-22.04
     # Checkout is needed so the trust-anchor gate can read the embedded
     # UPDATE_PUBLIC_KEY from source at the tagged commit. GH_REPO is kept explicit
@@ -90,7 +128,7 @@ jobs:
         run: |
           set -euo pipefail
           find . -mindepth 2 -type f \
-            \( -name '*.deb' -o -name '*.dmg' -o -name '*.app.tar.gz' -o -name '*.pkg.tar.zst' \) \
+            \( -name '*.deb' -o -name '*.dmg' -o -name '*.app.tar.gz' -o -name '*.pkg.tar.zst' -o -name '*.rpm' \) \
             -exec mv -t . {} +
           # Drop the now-redundant nested dirs so `dist/*` is files-only.
           find . -mindepth 1 -type d -exec rm -rf {} +
@@ -111,6 +149,7 @@ jobs:
               *.pkg.tar.zst) ext="pkg.tar.zst"; os="Linux" ;;
               *.dmg)         ext="dmg";         os="MacOS" ;;
               *.deb)         ext="deb";         os="Linux" ;;
+              *.rpm)         ext="rpm";         os="Linux" ;;
               *) continue ;;
             esac
             case "$f" in
@@ -151,7 +190,7 @@ jobs:
           trap 'rm -f "$RUNNER_TEMP/minisign.key"' EXIT
           umask 077; printf '%s\n' "$MINISIGN_SECRET_KEY" > "$RUNNER_TEMP/minisign.key"
           shopt -s nullglob
-          for f in *.app.tar.gz *.deb *.pkg.tar.zst; do
+          for f in *.app.tar.gz *.deb *.pkg.tar.zst *.rpm; do
             minisign -S -H -s "$RUNNER_TEMP/minisign.key" -m "$f" -x "$f.sig"
             echo "signed $f -> $f.sig"
           done
@@ -174,7 +213,7 @@ jobs:
             exit 1
           fi
           shopt -s nullglob
-          for f in *.app.tar.gz *.deb *.pkg.tar.zst; do
+          for f in *.app.tar.gz *.deb *.pkg.tar.zst *.rpm; do
             minisign -V -H -P "$KEY" -m "$f" -x "$f.sig" \
               || { echo "::error::embedded UPDATE_PUBLIC_KEY does not verify $f.sig (key/secret mismatch)"; exit 1; }
             echo "verified $f against embedded key"
@@ -184,7 +223,7 @@ jobs:
         working-directory: dist
         run: |
           find . -maxdepth 1 -type f \
-            \( -name '*.deb' -o -name '*.dmg' -o -name '*.app.tar.gz' -o -name '*.pkg.tar.zst' \) \
+            \( -name '*.deb' -o -name '*.dmg' -o -name '*.app.tar.gz' -o -name '*.pkg.tar.zst' -o -name '*.rpm' \) \
             -printf '%P\n' | sort | xargs -r sha256sum > SHA256SUMS
           echo "Artifacts:" && cat SHA256SUMS
 
