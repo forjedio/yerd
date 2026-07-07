@@ -101,6 +101,7 @@ pub(super) async fn run(
         &boot_fs,
         &download_args,
         &project_dir,
+        None,
         state,
         &mut cancel_rx,
     )
@@ -129,6 +130,7 @@ pub(super) async fn run(
         &boot_fs,
         &config_args,
         &project_dir,
+        None,
         state,
         &mut cancel_rx,
     )
@@ -157,6 +159,7 @@ pub(super) async fn run(
         &boot_fs,
         &install_args,
         &project_dir,
+        Some(options.admin_password.as_str()),
         state,
         &mut cancel_rx,
     )
@@ -248,6 +251,7 @@ async fn apply_permalink_structure(
         boot_fs,
         &permalink_args,
         project_dir,
+        None,
         state,
         cancel_rx,
     )
@@ -303,12 +307,14 @@ async fn enable_default_admin_login(name: &str, state: &Arc<DaemonState>) {
 /// file". Invoking `boot-fs.php` as a bare relative name keeps that captured
 /// argv[0] space-free; `--path=` decouples "which `WordPress` install" from
 /// "process cwd" so this has no effect on where WP-CLI actually operates.
+#[allow(clippy::too_many_arguments)]
 async fn run_wp_step(
     id: &str,
     php_cli: &Path,
     boot_fs: &Path,
     args: &[String],
     project_dir: &Path,
+    stdin_data: Option<&str>,
     state: &Arc<DaemonState>,
     cancel_rx: &mut watch::Receiver<bool>,
 ) -> StreamedOutcome {
@@ -322,8 +328,8 @@ async fn run_wp_step(
         .map(|s| (*s).to_owned())
         .collect();
     super::run_streamed(
-        id, php_cli, &php_flags, &boot_name, &full_args, &boot_dir, None, None, true, state,
-        cancel_rx,
+        id, php_cli, &php_flags, &boot_name, &full_args, &boot_dir, None, None, true, stdin_data,
+        state, cancel_rx,
     )
     .await
 }
@@ -575,14 +581,19 @@ fn looks_like_email(s: &str) -> bool {
 
 /// `wp core install` argument vector. `--url` sets `siteurl`/`home` directly
 /// during install, so no follow-up `wp option update` is needed.
+///
+/// The admin password is deliberately **not** an argument: `--prompt=admin_password`
+/// makes WP-CLI read it from stdin instead, so it never lands in the process's
+/// argv (world-readable via `ps` / `/proc/<pid>/cmdline`). The caller pipes the
+/// password in through [`run_wp_step`]'s `stdin_data`.
 fn install_args(name: &str, secure: bool, o: &WordPressOptions) -> Vec<String> {
     let scheme = if secure { "https" } else { "http" };
     let mut a = vec!["core".to_owned(), "install".to_owned()];
     a.push(format!("--url={scheme}://{name}.test"));
     a.push(format!("--title={}", o.site_title));
     a.push(format!("--admin_user={}", o.admin_user));
-    a.push(format!("--admin_password={}", o.admin_password));
     a.push(format!("--admin_email={}", o.admin_email));
+    a.push("--prompt=admin_password".to_owned());
     a.push("--skip-email".to_owned());
     a
 }
@@ -719,9 +730,6 @@ mod tests {
 
     #[test]
     fn derive_db_name_all_hyphen_and_digit_name_is_still_valid() {
-        // Site names may be up to 63 chars of [a-z0-9-] with no leading/trailing
-        // hyphen; an all-digit name is the sparsest case that still needs the
-        // "wp_" prefix.
         let derived = derive_db_name("42");
         assert!(database::validate_db_name(&derived).is_ok());
     }
@@ -759,6 +767,17 @@ mod tests {
         assert_eq!(a[1], "install");
         assert!(a.contains(&"--url=https://blog.test".to_owned()));
         assert!(!a.iter().any(|s| s == "--subdomains"));
+    }
+
+    #[test]
+    fn install_args_never_puts_the_password_in_argv() {
+        let a = install_args("blog", true, &opts());
+        assert!(a.contains(&"--prompt=admin_password".to_owned()));
+        assert!(
+            !a.iter().any(|s| s.contains("hunter2hunter2")),
+            "the admin password must never appear in argv: {a:?}"
+        );
+        assert!(!a.iter().any(|s| s.starts_with("--admin_password")));
     }
 
     #[test]

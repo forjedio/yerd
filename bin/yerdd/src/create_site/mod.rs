@@ -224,6 +224,12 @@ enum StreamedOutcome {
 /// most tools toward undecorated, single-line output, and
 /// `crate::jobs::JobRegistry::push_log` strips whatever colour/cursor escapes
 /// still get through (some spinners write them unconditionally).
+///
+/// `stdin_data`, if given, is written to the child's stdin (with a trailing
+/// newline) and the pipe is then closed. This is how the admin password
+/// reaches `wp core install --prompt=admin_password` without ever appearing
+/// in the process's argv (world-readable via `ps`/`/proc/<pid>/cmdline`); with
+/// `None`, stdin is `/dev/null` as before.
 #[allow(clippy::too_many_arguments)]
 async fn run_streamed(
     id: &str,
@@ -235,6 +241,7 @@ async fn run_streamed(
     path_env: Option<&std::ffi::OsString>,
     composer_home: Option<&Path>,
     quiet_wp_cli_deprecations: bool,
+    stdin_data: Option<&str>,
     state: &Arc<DaemonState>,
     cancel_rx: &mut watch::Receiver<bool>,
 ) -> StreamedOutcome {
@@ -245,7 +252,11 @@ async fn run_streamed(
         .current_dir(cwd)
         .env("NO_COLOR", "1")
         .env("TERM", "dumb")
-        .stdin(Stdio::null())
+        .stdin(if stdin_data.is_some() {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     if let Some(p) = path_env {
@@ -276,6 +287,12 @@ async fn run_streamed(
         }
     };
     let pgid = child.id();
+
+    if let (Some(data), Some(mut stdin)) = (stdin_data, child.stdin.take()) {
+        use tokio::io::AsyncWriteExt as _;
+        let _ = stdin.write_all(data.as_bytes()).await;
+        let _ = stdin.write_all(b"\n").await;
+    }
 
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();

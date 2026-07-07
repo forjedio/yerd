@@ -142,6 +142,15 @@ pub(crate) async fn ensure_and_persist(
     })
     .await
     .map(|_| ())
+    .inspect_err(|_| {
+        tracing::warn!(
+            service = service.id(),
+            %version,
+            port,
+            "started the service but failed to persist it to config; \
+             the running engine and on-disk config now disagree"
+        );
+    })
 }
 
 /// `change-version <svc> <new>` - switch the engine's single installed version.

@@ -115,6 +115,7 @@ pub(super) async fn run(
         Some(&path_env),
         Some(&composer_home),
         false,
+        None,
         state,
         &mut cancel_rx,
     )

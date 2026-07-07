@@ -104,15 +104,11 @@ describe("SitesView WordPress auto-login edit dialog", () => {
 
     const wrapper = await mountSites();
 
-    // Open alpha's dialog (kicks off its fetch, left in flight), then close it
-    // and quickly open beta's dialog before alpha's fetch has resolved.
     await openEditFor(wrapper, alpha);
     await openEditFor(wrapper, beta);
 
-    // beta's fetch resolves first...
     betaUsers.resolve(usersEnvelope(["beta-editor"]));
     await flushPromises();
-    // ...then alpha's stale fetch finally resolves too.
     alphaUsers.resolve(usersEnvelope(["alpha-editor"]));
     await flushPromises();
 

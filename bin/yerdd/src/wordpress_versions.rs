@@ -201,7 +201,6 @@ mod tests {
         let state = state_in(tmp.path());
         *state.wordpress_versions.write().await = Some((Instant::now(), sample_versions()));
 
-        // A downloader that errors proves the fresh cache path never calls it.
         let dl = FakeDl(Err("must not be called"));
         let versions = versions_of(available_versions(&state, &dl).await);
         assert_eq!(versions, sample_versions());

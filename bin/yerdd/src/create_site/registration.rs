@@ -22,8 +22,9 @@ pub(super) async fn register(
     spec: &CreateSiteSpec,
     state: &Arc<DaemonState>,
 ) -> Result<(), String> {
-    let parent_canon =
-        std::fs::canonicalize(parent_dir).unwrap_or_else(|_| parent_dir.to_path_buf());
+    let parent_canon = tokio::fs::canonicalize(parent_dir)
+        .await
+        .unwrap_or_else(|_| parent_dir.to_path_buf());
     let (is_parked, default_php) = {
         let cfg = state.config.lock().await;
         let parked = cfg

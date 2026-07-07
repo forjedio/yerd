@@ -112,14 +112,18 @@ async fn run_user_list(
         .args(&args)
         .current_dir(&boot_dir)
         .env("NO_COLOR", "1")
-        .stdin(Stdio::null());
+        .stdin(Stdio::null())
+        .kill_on_drop(true);
     if let Ok(dir) = crate::tools::wp_cli::ensure_quiet_deprecations_scan_dir(dirs) {
         cmd.env(
             "PHP_INI_SCAN_DIR",
             crate::tools::wp_cli::quiet_deprecations_scan_dir_env(&dir),
         );
     }
-    let output = cmd.output().await.map_err(|e| e.to_string())?;
+    let output = tokio::time::timeout(crate::tools::wp_cli::HELPER_TIMEOUT, cmd.output())
+        .await
+        .map_err(|_| "wp user list timed out".to_owned())?
+        .map_err(|e| e.to_string())?;
     if !output.status.success() {
         return Err(String::from_utf8_lossy(&output.stderr).trim().to_owned());
     }

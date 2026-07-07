@@ -335,7 +335,7 @@ A file written by a *newer* Yerd than you are running is refused rather than mis
 The on-disk schema version is deliberately decoupled from the IPC protocol version; the two evolve independently.
 
 ::: warning Downgrades are refused, not misread
-Because later versions changed shapes the parser checks strictly (keys *inside* `[[linked]]` / `[[overrides]]` in v2, and the whole `[services]` shape in v3), an older daemon reading a newer file would fail. The version routing turns that into a clean `UnsupportedVersion` error instead - downgrading Yerd against a newer config is unsupported *automatically*, but it fails loudly rather than corrupting state. See [Config Schema History](../developer/config-schema-history#downgrading-in-practice) for the exact manual edits to hand-downgrade a file version by version.
+Because later versions changed shapes the parser checks strictly (keys *inside* `[[linked]]` / `[[overrides]]` in v2, and the whole `[services]` shape in v3), an older daemon reading a newer file would fail. The version routing turns that into a clean `UnsupportedVersion` error instead - there is no automatic backward migration, but it fails loudly rather than corrupting state. See [Config Schema History](../developer/config-schema-history#downgrading-in-practice) for the exact manual edits to hand-downgrade a file version by version.
 :::
 
 ::: tip Forward-compatible by design

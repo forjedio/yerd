@@ -23,6 +23,14 @@ use crate::ext_install::installed_versions;
 /// on `wp-cli/wp-cli`, not a package named `wp-cli/wp-cli` itself).
 const PACKAGE: &str = "wp-cli/wp-cli-bundle";
 
+/// Upper bound on a single short, non-streaming `wp` helper invocation (e.g.
+/// `wp option update`, `wp user list`) - each boots WordPress and does one DB
+/// round-trip, so it should finish in well under a second, but a wedged MySQL
+/// socket or a hung PHP process must not block the daemon path that called it
+/// indefinitely. Paired with `kill_on_drop(true)` so the child is reaped when
+/// the timeout fires.
+pub(crate) const HELPER_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
 /// Silences PHP-engine `E_DEPRECATED` notices from WP-CLI's own bundled
 /// Composer dependencies (`react/promise`, `wp-cli/php-cli-tools`), which are
 /// not kept current with newer PHP releases. Pass as leading `php` CLI flags

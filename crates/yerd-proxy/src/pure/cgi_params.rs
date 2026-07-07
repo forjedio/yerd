@@ -23,6 +23,18 @@
 //! on top of already-pinned behavior.
 //!
 //! Plus the standard CGI/1.1 vars and `HTTP_*`-translated headers.
+//!
+//! `SERVER_SOFTWARE` is deliberately `"yerd (nginx-compatible)"`, not just
+//! `"yerd"`: frameworks (WordPress in particular - see `got_url_rewrite()` /
+//! `$is_nginx` in wp-admin/includes/misc.php and wp-includes/vars.php) parse
+//! this CGI var for known-good server names to decide whether extension-less
+//! "pretty" URLs are safe to offer, since a plain front-controller fallback
+//! isn't universal. yerd's front-controller resolution
+//! (`forward::script_file::resolve_script`) is exactly nginx's classic
+//! `try_files $uri $uri/ /index.php` policy, so this is an accurate capability
+//! signal, not a spoof - and it's this CGI var PHP sees, not the client-facing
+//! `Server:` HTTP header ([`yerd_core::PROXY_SERVER_ID`]), which still
+//! identifies yerd honestly to browsers and tools.
 
 use std::net::SocketAddr;
 use std::path::Path;
@@ -110,17 +122,6 @@ pub fn build_params(
         b"SERVER_PORT",
         server_addr.port().to_string().as_bytes(),
     );
-    // Deliberately contains "nginx", not just "yerd": frameworks (WordPress
-    // in particular - see `got_url_rewrite()`/`$is_nginx` in
-    // wp-admin/includes/misc.php and wp-includes/vars.php) parse this CGI
-    // var for known-good server names to decide whether extension-less
-    // "pretty" URLs are safe to offer, since a plain front-controller
-    // fallback isn't universal. yerd's front controller resolution (see
-    // `script_file::resolve_script`) is exactly nginx's classic
-    // `try_files $uri $uri/ /index.php` policy, so this is an accurate
-    // capability signal, not a spoof - and it's this CGI var PHP sees, not
-    // the client-facing `Server:` HTTP header (see `yerd_core::PROXY_SERVER_ID`),
-    // which still identifies yerd honestly to browsers/tools.
     push(&mut out, b"SERVER_SOFTWARE", b"yerd (nginx-compatible)");
     if https {
         push(&mut out, b"HTTPS", b"on");

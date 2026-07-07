@@ -407,8 +407,15 @@ async fn dispatch<R: BackendResolver, L: LoginTokenConsumer>(
 /// The `Backend::PhpFpm`/`PhpFpmTcp` half of [`dispatch`]: static files,
 /// then a real script (gated by
 /// [`BackendResolver::allows_direct_script_execution`]), then the site
-/// root's `index.php`, with the one-click `WordPress` login token consumed
-/// along the way.
+/// root's `index.php`.
+///
+/// The one-click `WordPress` login token is consumed here via
+/// [`consume_login_token_if_present`] - only ever on `/wp-admin`, only when a
+/// token is both present and valid for *this* site. This runs strictly after
+/// [`dispatch`]'s HTTP->HTTPS redirect check, so a secure site's token is
+/// never burned by the 301 itself. On success the token is stripped from the
+/// forwarded URI (never reaching PHP or logging) and `auto_prepend_file` plus
+/// the resolved target user are added for this one request only.
 #[allow(clippy::too_many_arguments)]
 async fn serve_php_fpm<R: BackendResolver, L: LoginTokenConsumer>(
     mut req: Request<Incoming>,
@@ -423,13 +430,6 @@ async fn serve_php_fpm<R: BackendResolver, L: LoginTokenConsumer>(
     peer_addr: SocketAddr,
     https: bool,
 ) -> Result<Response<BoxBody>, ProxyError> {
-    // One-click WordPress login: only ever considered on /wp-admin, only
-    // ever acted on when a token is both present and valid for *this* site.
-    // Consuming happens here, strictly after the HTTP->HTTPS redirect check
-    // in `dispatch`, so a secure site's token is never burned by the 301
-    // itself. On success the token is stripped from the forwarded URI
-    // (never reaches PHP/logging) and `auto_prepend_file` + the resolved
-    // target user are added for this one request only.
     let login_target_user = consume_login_token_if_present(&mut req, site.name(), login_tokens);
     let auto_login = match (&login_target_user, login_prepend_script) {
         (Some(target_user), Some(prepend_script)) => Some(cgi_params::AutoLoginParams {

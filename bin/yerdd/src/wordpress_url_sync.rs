@@ -117,14 +117,18 @@ async fn run_option_update(
         .args(&args)
         .current_dir(&boot_dir)
         .env("NO_COLOR", "1")
-        .stdin(Stdio::null());
+        .stdin(Stdio::null())
+        .kill_on_drop(true);
     if let Ok(dir) = crate::tools::wp_cli::ensure_quiet_deprecations_scan_dir(dirs) {
         cmd.env(
             "PHP_INI_SCAN_DIR",
             crate::tools::wp_cli::quiet_deprecations_scan_dir_env(&dir),
         );
     }
-    let output = cmd.output().await.map_err(|e| e.to_string())?;
+    let output = tokio::time::timeout(crate::tools::wp_cli::HELPER_TIMEOUT, cmd.output())
+        .await
+        .map_err(|_| format!("wp {option} timed out"))?
+        .map_err(|e| e.to_string())?;
     if output.status.success() {
         Ok(())
     } else {

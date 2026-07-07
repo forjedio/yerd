@@ -24,6 +24,7 @@ pub fn strip_param(path_and_query: &str, name: &str) -> String {
     };
     let kept: Vec<&str> = query
         .split('&')
+        .filter(|pair| !pair.is_empty())
         .filter(|pair| {
             let key = match pair.split_once('=') {
                 Some((k, _)) => k,
@@ -101,6 +102,18 @@ mod tests {
                 "yerd_login_token"
             ),
             "/wp-admin/?x=1"
+        );
+    }
+
+    #[test]
+    fn strip_param_drops_empty_fragments_and_trailing_ampersand() {
+        assert_eq!(
+            strip_param("/wp-admin/?yerd_login_token=abc&", "yerd_login_token"),
+            "/wp-admin/"
+        );
+        assert_eq!(
+            strip_param("/wp-admin/?a=1&&yerd_login_token=abc", "yerd_login_token"),
+            "/wp-admin/?a=1"
         );
     }
 

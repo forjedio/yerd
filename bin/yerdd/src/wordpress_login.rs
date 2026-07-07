@@ -82,7 +82,10 @@ impl Default for LoginTokenRegistry {
 
 impl yerd_proxy::LoginTokenConsumer for LoginTokenRegistry {
     fn consume(&self, site: &str, token: &str) -> Option<String> {
-        let mut guard = self.inner.lock().ok()?;
+        let mut guard = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let (stored_site, target_user, expires_at) = guard.remove(token)?;
         (expires_at > Instant::now() && stored_site == site).then_some(target_user)
     }
@@ -230,8 +233,6 @@ mod tests {
     async fn mint_login_token_not_found_when_not_wordpress() {
         let tmp = tempfile::tempdir().unwrap();
         let state = state_in(tmp.path());
-        // Routed, but never marked in `wordpress_sites` - the router alone
-        // isn't enough to be treated as a WordPress site.
         let mut site = Site::linked("blog", "/srv/www/blog", PhpVersion::new(8, 3)).unwrap();
         site.set_wp_auto_login(true);
         state.router.write().await.insert(site).unwrap();

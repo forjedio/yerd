@@ -444,6 +444,33 @@ fn path_needs_setup(state: &DaemonState) -> Option<bool> {
 /// before the next acquisition - never two at once, never a guard held across an
 /// `.await` that touches another lock. Mirrors the hazard documented in
 /// `handle_mutation`.
+/// Resident-set size for each of `pids`, gathered in a single `spawn_blocking`.
+///
+/// `SystemMetrics::rss_bytes` shells out to `ps` on macOS (fork+exec+wait) -
+/// genuinely blocking I/O, unlike every other field of a `StatusReport`. Doing
+/// it once off-executor, rather than synchronously per pid inline, keeps a
+/// tokio worker thread from being tied up once per installed PHP version plus
+/// once for the daemon itself on every `Request::Status`/`Request::Diagnose`
+/// (the GUI polls this every ~6s), which under load could starve the whole
+/// worker pool. Missing pids are simply absent from the returned map.
+async fn collect_rss_by_pid(
+    metrics: yerd_platform::ActiveSystemMetrics,
+    pids: Vec<u32>,
+) -> std::collections::HashMap<u32, u64> {
+    use yerd_platform::SystemMetrics;
+    tokio::task::spawn_blocking(move || {
+        let mut out = std::collections::HashMap::new();
+        for pid in pids {
+            if let Some(rss) = metrics.rss_bytes(pid) {
+                out.insert(pid, rss);
+            }
+        }
+        out
+    })
+    .await
+    .unwrap_or_default()
+}
+
 #[allow(clippy::too_many_lines)]
 async fn build_status_report(state: &DaemonState) -> yerd_ipc::StatusReport {
     use yerd_platform::SystemMetrics;
@@ -483,38 +510,18 @@ async fn build_status_report(state: &DaemonState) -> yerd_ipc::StatusReport {
 
     let metrics = yerd_platform::ActiveSystemMetrics::new();
 
-    // `rss_bytes` shells out to `ps` on macOS (fork+exec+wait) - genuinely
-    // blocking I/O, unlike every other field built above. Gather every pid's
-    // RSS in one `spawn_blocking` call rather than synchronously per pid
-    // inline below, which would otherwise tie up a tokio worker thread once
-    // per installed PHP version plus once for the daemon itself, on every
-    // `Request::Status`/`Request::Diagnose` call (the GUI polls this every
-    // 6s) - under load this can starve the whole worker pool.
     let daemon_pid = std::process::id();
-    let php_pids: Vec<Option<u32>> = installed
+    let pids: Vec<u32> = installed
         .iter()
-        .map(|v| {
+        .filter_map(|v| {
             snapshots
                 .iter()
                 .find(|s| s.version == *v)
                 .and_then(|s| s.pid)
         })
+        .chain(std::iter::once(daemon_pid))
         .collect();
-    let rss_by_pid: std::collections::HashMap<u32, u64> = tokio::task::spawn_blocking(move || {
-        let mut out = std::collections::HashMap::new();
-        for pid in php_pids
-            .into_iter()
-            .flatten()
-            .chain(std::iter::once(daemon_pid))
-        {
-            if let Some(rss) = metrics.rss_bytes(pid) {
-                out.insert(pid, rss);
-            }
-        }
-        out
-    })
-    .await
-    .unwrap_or_default();
+    let rss_by_pid = collect_rss_by_pid(metrics, pids).await;
 
     let php: Vec<yerd_ipc::PhpPoolStatus> = installed
         .iter()

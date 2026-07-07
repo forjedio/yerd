@@ -44,7 +44,7 @@ Add `--json` for machine-readable output.
 
 | Command | Description | Example |
 | --- | --- | --- |
-| `yerd install tool <ID>` | Download, verify, and install the tool's latest release, then expose its commands on `PATH`. **Idempotent** - run again to update to the current latest. | `yerd install tool node` |
+| `yerd install tool <ID>` | Install the tool's latest version, then expose its commands on `PATH` - a **verified release download** for `node` / `bun` / `composer`, or a **Composer build** (`create-project`) for `laravel` / `wp-cli`. **Idempotent** - run again to update to the current latest. | `yerd install tool node` |
 | `yerd uninstall tool <ID>` | Remove the tool's files and its `PATH` commands. | `yerd uninstall tool bun` |
 
 ```sh
