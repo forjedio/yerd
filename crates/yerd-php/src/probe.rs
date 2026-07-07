@@ -17,12 +17,17 @@ use async_trait::async_trait;
 use crate::pure::ext_probe::{interpret_probe, ExtLoadError};
 
 /// The captured result of a one-shot command: whether it exited successfully and
-/// its stderr (UTF-8 lossy). Deliberately small and owned so the trait stays
-/// runtime-free at its boundary, mirroring [`crate::traits::ProcessSpawner`].
+/// both of its output streams (UTF-8 lossy). Both are captured because PHP routes
+/// a failed extension load to **stdout** when `display_errors` sends errors there
+/// (the default under `-n`), not stderr - so the probe must inspect both.
+/// Deliberately small and owned so the trait stays runtime-free at its boundary,
+/// mirroring [`crate::traits::ProcessSpawner`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProbeOutput {
     /// The process exited with a success status.
     pub status_ok: bool,
+    /// The process's stdout, decoded lossily.
+    pub stdout: String,
     /// The process's stderr, decoded lossily.
     pub stderr: String,
 }
@@ -48,15 +53,20 @@ impl CommandRunner for TokioCommandRunner {
         let out = tokio::process::Command::from(cmd).output().await?;
         Ok(ProbeOutput {
             status_ok: out.status.success(),
+            stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
             stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
         })
     }
 }
 
-/// Load-probe `ext_path` against `php_bin`: run `php -n -d [zend_]extension=<path>
-/// -m` and classify the result. `-n` ignores every ini so the probe tests the
-/// `.so` against that PHP build in isolation. Returns `Ok(())` when the extension
-/// loads cleanly.
+/// Load-probe `ext_path` against `php_bin`: run
+/// `php -n -d display_errors=stderr -d [zend_]extension=<path> -m` and classify
+/// the result. `-n` ignores every ini so the probe tests the `.so` against that
+/// PHP build in isolation (a caveat: an extension that depends on *another*
+/// shared extension being loaded first can fail here yet load fine in the real
+/// pool). `-d display_errors=stderr` forces PHP's load-failure warnings onto the
+/// captured stderr rather than stdout; both streams are inspected regardless.
+/// Returns `Ok(())` when the extension loads cleanly.
 ///
 /// # Errors
 /// [`ExtLoadError::SpawnFailed`] if the probe process could not be run; otherwise
@@ -71,15 +81,17 @@ pub async fn probe_extension(
     let mut cmd = Command::new(php_bin);
     cmd.arg("-n")
         .arg("-d")
+        .arg("display_errors=stderr")
+        .arg("-d")
         .arg(format!("{directive}={}", ext_path.display()))
         .arg("-m")
-        .stdin(Stdio::null())
-        .stdout(Stdio::null());
+        .stdin(Stdio::null());
     let out = runner
         .run(cmd)
         .await
         .map_err(|_| ExtLoadError::SpawnFailed)?;
-    interpret_probe(out.status_ok, &out.stderr)
+    let diagnostics = format!("{}{}", out.stdout, out.stderr);
+    interpret_probe(out.status_ok, &diagnostics)
 }
 
 #[cfg(test)]
@@ -94,6 +106,7 @@ mod tests {
 
     struct FakeRunner {
         status_ok: bool,
+        stdout: String,
         stderr: String,
     }
 
@@ -102,6 +115,7 @@ mod tests {
         async fn run(&self, _cmd: Command) -> Result<ProbeOutput, io::Error> {
             Ok(ProbeOutput {
                 status_ok: self.status_ok,
+                stdout: self.stdout.clone(),
                 stderr: self.stderr.clone(),
             })
         }
@@ -120,6 +134,7 @@ mod tests {
     async fn clean_probe_accepts() {
         let runner = FakeRunner {
             status_ok: true,
+            stdout: "[PHP Modules]\nscrypt\nstandard\n".to_owned(),
             stderr: String::new(),
         };
         probe_extension(&runner, Path::new("/php"), Path::new("/a/scrypt.so"), false)
@@ -128,10 +143,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn unable_to_load_rejects() {
+    async fn unable_to_load_on_stdout_rejects() {
+        // Real PHP writes this to stdout (display_errors), not stderr - the probe
+        // must inspect both streams or it green-lights a broken .so.
         let runner = FakeRunner {
             status_ok: true,
-            stderr: "Unable to load dynamic library 'scrypt.so'".to_owned(),
+            stdout: "PHP Warning:  PHP Startup: Unable to load dynamic library 'scrypt.so'"
+                .to_owned(),
+            stderr: String::new(),
         };
         let e = probe_extension(&runner, Path::new("/php"), Path::new("/a/scrypt.so"), false)
             .await
@@ -140,9 +159,25 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn abi_mismatch_on_stdout_rejects() {
+        let runner = FakeRunner {
+            status_ok: true,
+            stdout: "PHP Warning:  PHP Startup: scrypt: Unable to initialize module\n\
+                 Module compiled with module API=20210902\nPHP    module API=20230831"
+                .to_owned(),
+            stderr: String::new(),
+        };
+        let e = probe_extension(&runner, Path::new("/php"), Path::new("/a/scrypt.so"), false)
+            .await
+            .unwrap_err();
+        assert_eq!(e, ExtLoadError::AbiMismatch);
+    }
+
+    #[tokio::test]
     async fn zend_flag_hint_surfaces() {
         let runner = FakeRunner {
             status_ok: true,
+            stdout: String::new(),
             stderr: "doesn't appear to be a valid Zend extension".to_owned(),
         };
         let e = probe_extension(&runner, Path::new("/php"), Path::new("/a/scrypt.so"), true)

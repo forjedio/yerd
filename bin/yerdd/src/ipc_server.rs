@@ -1570,6 +1570,24 @@ async fn add_php_extension(
         };
     }
 
+    // Cheap pre-probe duplicate check so re-adding an existing extension returns
+    // immediately without paying for a PHP spawn. The authoritative check under
+    // the write lock below still guards against a concurrent add.
+    if state
+        .config
+        .lock()
+        .await
+        .php
+        .extensions
+        .get(&version)
+        .is_some_and(|list| list.iter().any(|e| e.name == name))
+    {
+        return Response::Error {
+            code: ErrorCode::AlreadyExists,
+            message: format!("an extension named {name} is already registered for PHP {version}"),
+        };
+    }
+
     let runner = yerd_php::TokioCommandRunner;
     if let Err(e) =
         yerd_php::probe_extension(&runner, &php_bin, std::path::Path::new(&path), zend).await

@@ -642,11 +642,7 @@ pub fn reconcile_shims(dirs: &PlatformDirs, yerd_bin: &Path) -> Result<(), PhpEr
 }
 
 #[cfg(not(unix))]
-pub fn reconcile_shims(
-    _dirs: &PlatformDirs,
-    _yerd_bin: &Path,
-    _default: PhpVersion,
-) -> Result<(), PhpError> {
+pub fn reconcile_shims(_dirs: &PlatformDirs, _yerd_bin: &Path) -> Result<(), PhpError> {
     Ok(())
 }
 

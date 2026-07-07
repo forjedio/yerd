@@ -19,7 +19,7 @@ pub(crate) type MigrationStep = fn(&mut Value) -> Result<(), ConfigError>;
 /// Forward-migration steps, indexed so that **`STEPS[N]` walks `vN → v(N+1)`**.
 /// This matches [`up`], which indexes `STEPS[current]` (== the version being
 /// migrated *from*). Example: a v1 file is migrated by `STEPS[1]`. When
-/// `CURRENT_VERSION == 9`, `STEPS = [v0→v1, …, v7→v8, v8→v9]`, length 9.
+/// `CURRENT_VERSION == 10`, `STEPS = [v0→v1, …, v8→v9, v9→v10]`, length 10.
 ///
 /// `STEPS[0]` (v0→v1) is only reachable via a hand-crafted `version = 0` file -
 /// v0 was never written to disk - but it must exist so that `STEPS[1]` does.

@@ -710,7 +710,7 @@ onUnmounted(
         <CardHeader>
           <CardTitle>Custom extensions</CardTitle>
           <CardDescription>
-            Load extra PHP extensions (`.so`) into both the web (FPM) and CLI
+            Load extra PHP extensions (.so files) into both the web (FPM) and CLI
             runtimes. An extension is checked against the selected version before
             it's saved. Extensions are tied to a PHP version.
           </CardDescription>

@@ -49,9 +49,12 @@ pub fn validate_ext_name(name: &str) -> Result<(), ExtError> {
 
 /// Validate an extension path. Must be an absolute path to a `.so`, free of the
 /// characters that could break out of the double-quoted ini value or corrupt the
-/// `-d` argument: control characters, NUL, newline, and the double-quote itself.
-/// Spaces are allowed (the ini value is quoted and the `-d` value is a single
-/// argv element), so a path under a spaced directory still validates.
+/// `-d` argument: control characters, NUL, newline, the double-quote, and `$`.
+/// (`$` is rejected because PHP interpolates `${VAR}` inside a double-quoted ini
+/// value - and the load-probe passes the raw path as a single `-d` argv, so it
+/// would not catch a path the rendered ini later mangles.) Spaces are allowed
+/// (the ini value is quoted and the `-d` value is a single argv element), so a
+/// path under a spaced directory still validates.
 ///
 /// # Errors
 /// [`ExtError::Path`] with the specific [`PathErrorReason`].
@@ -71,7 +74,7 @@ pub fn validate_ext_path(path: &str) -> Result<(), ExtError> {
     }
     if path
         .chars()
-        .any(|c| c.is_control() || matches!(c, '"' | '\0'))
+        .any(|c| c.is_control() || matches!(c, '"' | '\0' | '$'))
     {
         return err(PathErrorReason::IllegalCharacter);
     }
@@ -247,6 +250,12 @@ mod tests {
         ));
         assert!(matches!(
             validate_ext_path("/a/new\nline.so"),
+            Err(ExtError::Path {
+                reason: PathErrorReason::IllegalCharacter
+            })
+        ));
+        assert!(matches!(
+            validate_ext_path("/a/${HOME}/x.so"),
             Err(ExtError::Path {
                 reason: PathErrorReason::IllegalCharacter
             })

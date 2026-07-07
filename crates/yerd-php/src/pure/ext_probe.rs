@@ -1,11 +1,14 @@
 //! Pure interpretation of a PHP extension load-probe's output.
 //!
 //! The daemon load-probes a candidate extension by running
-//! `php -n -d [zend_]extension=<path> -m` and capturing its stderr. **PHP prints
-//! a load failure as a `PHP Warning: ... Unable to load dynamic library ...` on
-//! stderr but still exits `0`**, so success cannot be judged from the exit code
-//! alone. [`interpret_probe`] keys on specific stderr markers instead, and is a
-//! pure function so the classification is unit-tested without spawning PHP.
+//! `php -n -d [zend_]extension=<path> -m` and capturing its output. **PHP prints
+//! a load failure as a `PHP Warning: ... Unable to load dynamic library ...` and
+//! still exits `0`**, so success cannot be judged from the exit code alone; and
+//! PHP routes that warning to whichever stream `display_errors` selects (stdout
+//! by default under `-n`), so the caller feeds *both* streams here.
+//! [`interpret_probe`] keys on specific failure markers in that combined text,
+//! and is a pure function so the classification is unit-tested without spawning
+//! PHP.
 
 use thiserror::Error;
 
@@ -37,16 +40,16 @@ pub enum ExtLoadError {
     SpawnFailed,
 }
 
-/// Classify a probe result from `(exit-was-success, stderr)`.
+/// Classify a probe result from `(exit-was-success, combined stdout+stderr)`.
 ///
-/// Returns `Ok(())` only when no load-failure marker is present in stderr;
-/// unrelated startup warnings (deprecations, "already loaded") are not treated
-/// as failures. Marker checks are ordered most-specific first.
+/// Returns `Ok(())` only when no load-failure marker is present in the
+/// diagnostics; unrelated startup warnings (deprecations, "already loaded") are
+/// not treated as failures. Marker checks are ordered most-specific first.
 ///
 /// # Errors
 /// An [`ExtLoadError`] classifying the failure.
-pub fn interpret_probe(exit_ok: bool, stderr: &str) -> Result<(), ExtLoadError> {
-    let s = stderr.to_ascii_lowercase();
+pub fn interpret_probe(exit_ok: bool, diagnostics: &str) -> Result<(), ExtLoadError> {
+    let s = diagnostics.to_ascii_lowercase();
     if s.contains("valid zend extension") {
         return Err(ExtLoadError::NotZend);
     }

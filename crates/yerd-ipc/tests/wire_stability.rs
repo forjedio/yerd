@@ -235,6 +235,19 @@ fn request_add_php_extension_byte_shape() {
         r#"{"type":"add_php_extension","version":"8.5","path":"/a/scrypt.so","name":"scrypt","zend":false}"#
     );
     assert_eq!(serde_json::from_str::<Request>(&s).unwrap(), r);
+
+    let none = Request::AddPhpExtension {
+        version: PhpVersion::new(8, 5),
+        path: "/a/scrypt.so".into(),
+        name: None,
+        zend: true,
+    };
+    let s = serde_json::to_string(&none).unwrap();
+    assert_eq!(
+        s,
+        r#"{"type":"add_php_extension","version":"8.5","path":"/a/scrypt.so","name":null,"zend":true}"#
+    );
+    assert_eq!(serde_json::from_str::<Request>(&s).unwrap(), none);
 }
 
 #[test]
