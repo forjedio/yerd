@@ -82,3 +82,38 @@ The setting name (and, for `set`, the value) is validated client-side before con
 ::: tip
 The configured settings are echoed back by `yerd list php` under a `settings:` block, so you can confirm what's currently applied. See the [Configuration Reference](../configuration) for how these are stored and rendered into FPM config.
 :::
+
+## Custom extensions
+
+`yerd php ext` registers extra PHP extensions (`.so`) that Yerd's builds don't
+ship. A registered extension loads into **both** the FPM (web) runtime and the CLI
+for its version. Native extensions are ABI-bound to a PHP minor, so each is
+registered under one version.
+
+| Command | Description | Example |
+| --- | --- | --- |
+| `yerd php ext add <VERSION> <PATH> [--zend] [--name <NAME>]` | Register an extension for a version. | `yerd php ext add 8.5 /opt/php/pecl/scrypt.so` |
+| `yerd php ext remove <VERSION> <NAME>` | Remove a registered extension by name. | `yerd php ext remove 8.5 scrypt` |
+| `yerd php ext list` | List registered extensions, grouped by version. | `yerd php ext list` |
+
+```sh
+yerd php ext add 8.5 /opt/homebrew/lib/php/pecl/20250925/scrypt.so
+yerd php ext add 8.5 /opt/php/xdebug.so --zend --name xdebug
+yerd php ext list
+yerd php ext remove 8.5 scrypt
+```
+
+- `VERSION` is a `major.minor` (e.g. `8.5`) and must be installed.
+- `PATH` must be an absolute path ending in `.so`. It is validated client-side
+  (absolute, `.so`, no ini/shell-unsafe characters) before connecting.
+- `--zend` loads it as a `zend_extension` (xdebug/opcache-style) rather than a
+  plain `extension`.
+- `--name` sets the removal/display handle; it defaults to the `.so` basename.
+
+On `add`, the daemon **load-probes** the `.so` against that version's PHP and
+rejects it if it can't load (wrong-version build, missing dependency, or a Zend
+extension registered without `--zend`), so a bad extension is a clear error rather
+than a broken pool. `add`/`remove` restart that version's running FPM pool.
+`yerd php ext list` tags any extension whose `.so` is missing on disk with
+`(missing!)`. See the [Configuration Reference](../configuration#php) for how the
+registry is stored.

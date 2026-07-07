@@ -42,12 +42,12 @@ Every field below maps one-to-one to a field in `schema.rs`. The on-disk shape a
 | `dumps`     | table                | Laravel ▸ Dumps telemetry settings.                               | off / `2304`   |
 
 ::: warning Unknown keys are rejected
-The parser uses `deny_unknown_fields` at every level. A typo'd or stray key (top-level, or inside `[ports]`, `[php]`, `[parked]`, `[mail]`, `[dumps]`, `[dumps.features]`, a `[services.<id>]` table, a `[[linked]]` entry, or an `[[overrides]]` entry) is a hard parse error - the daemon will refuse to load the file rather than silently ignore it.
+The parser uses `deny_unknown_fields` at every level. A typo'd or stray key (top-level, or inside `[ports]`, `[php]`, `[parked]`, `[mail]`, `[dumps]`, `[dumps.features]`, a `[services.<id>]` table, a `[[linked]]` entry, an `[[overrides]]` entry, or a `[[php.extensions.<version>]]` entry) is a hard parse error - the daemon will refuse to load the file rather than silently ignore it.
 :::
 
 ### `version`
 
-The schema version. This key is **required** - a missing `version` is a hard error (`MissingVersion`), and a non-integer or negative value is rejected (`NonIntegerVersion`). The current schema version is `5`, and Yerd always writes `version = 5`. Older `version = 1` through `version = 4` files are migrated forward automatically on load. See [Schema versioning](#schema-versioning-and-migration) below.
+The schema version. This key is **required** - a missing `version` is a hard error (`MissingVersion`), and a non-integer or negative value is rejected (`NonIntegerVersion`). The current schema version is `10`, and Yerd always writes `version = 10`. Older `version = 1` through `version = 9` files are migrated forward automatically on load. See [Schema versioning](#schema-versioning-and-migration) below.
 
 ### `tld`
 
@@ -88,10 +88,11 @@ Validation rules (enforced by `Config::validate`): neither `http` nor `https` ma
 
 PHP defaults applied across sites.
 
-| Key        | TOML type | Meaning                                                      | Default |
-| ---------- | --------- | ------------------------------------------------------------ | ------- |
-| `default`  | string    | Default PHP version for new sites (e.g. `"8.3"`).            | `"8.3"` |
-| `settings` | table     | Global PHP ini directives applied to every installed version's FPM pool. | empty   |
+| Key          | TOML type | Meaning                                                      | Default |
+| ------------ | --------- | ------------------------------------------------------------ | ------- |
+| `default`    | string    | Default PHP version for new sites (e.g. `"8.3"`).            | `"8.3"` |
+| `settings`   | table     | Global PHP ini directives applied to every installed version's FPM pool. | empty   |
+| `extensions` | table     | Custom `.so` extensions to load, keyed by PHP version.       | empty   |
 
 `default` is a `MAJOR.MINOR` version string validated by `yerd-core`'s `PhpVersion`; an out-of-range minor or a non-numeric value is rejected. See [PHP Versions](../guide/php-versions).
 
@@ -118,6 +119,23 @@ upload_max_filesize = "64M"
 ::: warning Setting an unsupported directive fails the load
 An unknown directive name or a malformed value makes the whole config invalid (`InvalidPhpSetting`). Stick to the table above.
 :::
+
+`[php.extensions]` maps a **PHP version string** to an array of custom extensions to load into both that version's FPM pool and its CLI. It is written as an array-of-tables per version and omitted entirely when empty. Because a native `.so` is ABI-bound to a PHP minor, an entry only applies to the version it is keyed under.
+
+| Field  | TOML type | Meaning                                                                 |
+| ------ | --------- | ----------------------------------------------------------------------- |
+| `name` | string    | Removal/display handle (defaults to the `.so` basename when added).     |
+| `path` | string    | Absolute path to the `.so`. Validated: absolute, `.so`, no ini/shell-unsafe characters (control chars, `"`, `$`, `[ ] = ; #`, whitespace-injection). |
+| `zend` | bool      | Load as a `zend_extension` rather than a plain `extension`.             |
+
+```toml
+[[php.extensions."8.5"]]
+name = "scrypt"
+path = "/opt/homebrew/lib/php/pecl/20250925/scrypt.so"
+zend = false
+```
+
+Manage this with [`yerd php ext`](cli/php#custom-extensions) or the desktop app's **Custom extensions** card rather than editing by hand - the CLI/daemon **load-probe** each `.so` before saving. Names must be unique within a version; a duplicate or an invalid path makes the whole config invalid.
 
 ### `[parked]`
 
@@ -310,14 +328,14 @@ api = "Blog"
 
 ## Schema versioning and migration
 
-Every config file **must** carry a top-level `version = N` key - it is the single trigger for forward migration. The current schema version is `9`.
+Every config file **must** carry a top-level `version = N` key - it is the single trigger for forward migration. The current schema version is `10`.
 
 When the daemon loads a file, it routes on the version it finds:
 
 ```text
-found  > CURRENT (9)   →  error (UnsupportedVersion) - a newer Yerd wrote this file
-found == CURRENT (9)   →  parse directly
-found  < CURRENT (9)   →  walk forward migration steps, then parse
+found  > CURRENT (10)   →  error (UnsupportedVersion) - a newer Yerd wrote this file
+found == CURRENT (10)   →  parse directly
+found  < CURRENT (10)   →  walk forward migration steps, then parse
 ```
 
 A file written by a *newer* Yerd than you are running is refused rather than misread. Older files are migrated forward in place, one version at a time, before the normal wire-deserialisation and validation run:
@@ -330,6 +348,7 @@ A file written by a *newer* Yerd than you are running is refused rather than mis
 - **`v6 → v7`** is a bare version bump: v7 only **added** the `[ports]` `fallback_http` / `fallback_https` keys (defaulting to `8080` / `8443`).
 - **`v7 → v8`** is a bare version bump: v8 only **added** the optional `[tunnel]` table, which defaults to empty when absent. Same rationale - the bump lets an older binary refuse a `[tunnel]`-bearing file cleanly rather than tripping `deny_unknown_fields`.
 - **`v8 → v9`** is a bare version bump: v9 only **added** the optional `[groups]` table, which defaults to empty when absent. Same rationale - the bump lets an older binary refuse a `[groups]`-bearing file cleanly rather than tripping `deny_unknown_fields`.
+- **`v9 → v10`** is a bare version bump: v10 only **added** the optional `[php.extensions]` registry, which defaults to empty when absent. Same rationale - the bump lets an older binary refuse a `[php.extensions]`-bearing file cleanly rather than tripping `deny_unknown_fields`.
 
 The on-disk schema version is deliberately decoupled from the IPC protocol version; the two evolve independently.
 
@@ -356,8 +375,8 @@ Yerd does not `fsync` the file or its parent directory after a save. For a devel
 This is a full, valid `yerd.toml` exercising every field:
 
 ```toml
-# Schema version - mandatory, always written as 5 by this release.
-version = 5
+# Schema version - mandatory, always written as 10 by this release.
+version = 10
 
 # TLD served by the resolver; sites resolve as <name>.test
 tld = "test"
@@ -381,6 +400,13 @@ default = "8.3"
 memory_limit = "512M"
 upload_max_filesize = "64M"
 post_max_size = "64M"
+
+# Custom extensions, keyed by PHP version and loaded into FPM + CLI.
+# Manage with `yerd php ext` (each .so is load-probed before saving).
+[[php.extensions."8.5"]]
+name = "scrypt"
+path = "/opt/homebrew/lib/php/pecl/20250925/scrypt.so"
+zend = false
 
 # Parked directories: each immediate subdirectory becomes a site.
 # Paths are stored verbatim and are NOT canonicalised.
