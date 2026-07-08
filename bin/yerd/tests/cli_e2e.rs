@@ -16,9 +16,9 @@ mod tests {
 
     use tokio::sync::watch;
 
-    use yerd::cli::Command;
+    use yerd::cli::{Command, DomainAction};
     use yerd::{map, transport};
-    use yerd_ipc::Response;
+    use yerd_ipc::{ErrorCode, Response};
 
     fn make_dirs(tmp: &std::path::Path) -> yerd_platform::PlatformDirs {
         yerd_platform::PlatformDirs {
@@ -172,6 +172,65 @@ mod tests {
                     std::path::Path::new("public"),
                     "linking a Laravel-shaped dir should auto-detect its web root"
                 );
+            }
+            other => panic!("expected Sites, got {other:?}"),
+        }
+
+        let add = |site: &str, domain: &str| Command::Domain {
+            action: DomainAction::Add {
+                site: site.into(),
+                domain: domain.into(),
+            },
+        };
+        assert!(matches!(
+            send(&sock, &add("app", "corp.test")).await,
+            Response::Ok
+        ));
+        assert!(matches!(
+            send(&sock, &add("app", "*.app.test")).await,
+            Response::Ok
+        ));
+        assert!(matches!(
+            send(
+                &sock,
+                &Command::Domain {
+                    action: DomainAction::Primary {
+                        site: "app".into(),
+                        domain: "corp.test".into(),
+                    },
+                },
+            )
+            .await,
+            Response::Ok
+        ));
+        match send(&sock, &Command::Sites).await {
+            Response::Sites { sites } => {
+                let app = sites.iter().find(|s| s.site.name() == "app").unwrap();
+                assert_eq!(app.primary_domain.as_deref(), Some("corp.test"));
+                assert!(app.domains.iter().any(|d| d == "corp.test"));
+                assert!(app.domains.iter().any(|d| d == "*.app.test"));
+            }
+            other => panic!("expected Sites, got {other:?}"),
+        }
+        match send(&sock, &add("blog", "corp.test")).await {
+            Response::Error { code, .. } => assert_eq!(code, ErrorCode::AlreadyExists),
+            other => panic!("expected AlreadyExists error, got {other:?}"),
+        }
+        assert!(matches!(
+            send(
+                &sock,
+                &Command::Domain {
+                    action: DomainAction::Reset { site: "app".into() },
+                },
+            )
+            .await,
+            Response::Ok
+        ));
+        match send(&sock, &Command::Sites).await {
+            Response::Sites { sites } => {
+                let app = sites.iter().find(|s| s.site.name() == "app").unwrap();
+                assert!(app.primary_domain.is_none());
+                assert!(app.domains.is_empty());
             }
             other => panic!("expected Sites, got {other:?}"),
         }

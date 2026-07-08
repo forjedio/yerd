@@ -493,9 +493,8 @@ pub async fn start(state: &DaemonState) -> Response {
 
     let mut rules = Vec::new();
     for (site, hostname) in &enabled {
-        if let Some((name, secure, tld)) = super::resolve_site(state, site).await {
-            let origin =
-                OriginTarget::for_site(&name, &tld, secure, state.http.bound, state.https.bound);
+        if let Some((_name, secure, _tld, host)) = super::resolve_site(state, site).await {
+            let origin = OriginTarget::for_site(&host, secure, state.http.bound, state.https.bound);
             rules.push(yerd_tunnel::IngressRule {
                 hostname: hostname.clone(),
                 origin,

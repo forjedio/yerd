@@ -103,7 +103,8 @@ The daemon's modules (`src/lib.rs` re-exports each as `pub mod`):
 | `backend_resolver` | `DaemonBackendResolver` - routes a `Site` to a live FPM pool. |
 | `detect_cache` | `DetectCache` - memoises web-root detection per project, keyed on a freshness stamp. |
 | `fs_watch` | Debounced filesystem watcher that re-scans parked roots as projects appear/change. |
-| `mutate` | Pure, I/O-free config-mutation logic (`Park`/`Link`/`SetPhp`/…). |
+| `mutate` | Pure, I/O-free config-mutation logic (`Park`/`Link`/`SetPhp`/… plus the four domain mutations). |
+| `site_domains` | Infallible, collision-resolving router builder (`build`) plus `collisions`, which reports the losing side of each domain clash (surfaced as `StatusReport.shadows`). |
 | `php_install` | Download + unpack prebuilt PHP builds; `reqwest` downloader. |
 | `php_updates` | PHP update poller + cache (notify-only). |
 | `self_update` | Yerd self-update poller: fetches the GitHub Releases API, decides via the pure `yerd-update` crate, and persists a snapshot (`checked_at` + decision) both to disk and in `DaemonState` (notify-only). |
@@ -226,7 +227,7 @@ After `run_until_shutdown` returns, the signal task is **aborted** rather than a
 `dispatch` is a single `match` over `yerd_ipc::Request` (which is `#[non_exhaustive]`, hence the catch-all arm returning `Internal`). It covers:
 
 - **Read-only:** `Ping`, `ListSites`, `ListParked`, `DaemonInfo`, `Status`, `Diagnose`, `ListPhp`, `AvailablePhp`.
-- **Mutations:** `Park`, `Link`, `Unlink`, `Unpark`, `SetPhp`, `SetSecure`, `SetWebRoot` → `handle_mutation`.
+- **Mutations:** `Park`, `Link`, `Unlink`, `Unpark`, `SetPhp`, `SetSecure`, `SetWebRoot`, `AddDomain`, `RemoveDomain`, `SetPrimaryDomain`, `ResetDomains` → `handle_mutation`.
 - **PHP lifecycle:** `InstallPhp`, `UpdatePhp`, `CheckPhpUpdates`, `SetDefaultPhp`, `SetPhpSettings`, `RestartPhp`, `RestartAllPhp`, `UninstallPhp`.
 - **Doctor:** `Diagnose` (via `yerd_doctor::diagnose`), `DoctorFix` (runs `plan_auto_fixes`, applies FPM restarts, re-diagnoses).
 - **Dumps (Laravel telemetry):** `ListDumps` (pages the ring), `ClearDumps`, `DeleteDump`, `DumpsStatus`, `SetDumpsEnabled` (first enable fetches the `.so` and restarts started pools), `SetDumpsPort` (test-binds then triggers a hot rebind), `SetDumpsPersist`, `SetDumpFeature` → `dump_server::*`.
@@ -346,7 +347,7 @@ The `wordpress_*` modules plus `create_site/wordpress.rs` and `tools/wp_cli.rs` 
 
 **One-click login (`wordpress_login.rs`).** `LoginTokenRegistry` mints a short-TTL (30s), single-use, 32-byte random token per `Request::MintWordpressLoginToken`, and implements `yerd_proxy::LoginTokenConsumer` so the proxy can validate/consume one without depending on this crate - see [`yerd-proxy`'s login-token section](../crates/yerd-proxy#one-click-wordpress-admin-login) for the consuming side. `mint_wordpress_login_token` refuses to mint at all (`NotFound`) unless the site exists, is WordPress, has `wp_auto_login` enabled, *and* `DaemonState::wordpress_login_prepend_script` is `Some` - the proxy only ever adds `auto_prepend_file` when both a consumed token and that path are present, so minting despite a missing prepend script would silently burn a token that could never log anyone in. `write_prepend_script` writes the bootstrap script (compiled into the binary via `include_str!`) to `{data}/wordpress-autologin-prepend.php` at every startup, treating a write failure as "one-click login unavailable this boot" rather than fatal.
 
-**URL sync (`wordpress_url_sync.rs`).** After a `SetSecure` mutation commits, `sync_site_url` runs `wp option update siteurl`/`home` against the site's *configured TLD* (not a hardcoded `.test`) if it's a WordPress site with WP-CLI and its pinned PHP both installed - best-effort and silent on failure, so a WP-CLI hiccup never fails the secure toggle it's attached to.
+**URL sync (`wordpress_url_sync.rs`).** After a mutation commits, `sync_site_url` runs `wp option update siteurl`/`home` against the site's *configured TLD* (not a hardcoded `.test`) if it's a WordPress site with WP-CLI and its pinned PHP both installed - best-effort and silent on failure, so a WP-CLI hiccup never fails the mutation it's attached to. `ipc_server`'s `site_needing_url_sync` decides *which* mutations trigger it: `SetSecure` (the scheme flips) plus all four domain mutations `AddDomain`/`RemoveDomain`/`SetPrimaryDomain`/`ResetDomains` (each can change the primary domain a WordPress install should advertise; `AddDomain` is included because re-adding a suppressed apex can flip the derived primary back). It re-reads the just-rebuilt router's primary, so re-running it when nothing changed is an idempotent no-op.
 
 **Admin listing (`wordpress_users.rs`).** `admin_users` runs `wp user list --role=administrator --format=json` and parses the result for the "Sign in as" picker in the Edit dialog - same `NotFound`-if-not-WordPress gate as minting, `Internal` for a WP-CLI/PHP-missing or non-zero-exit/unparseable-JSON failure.
 

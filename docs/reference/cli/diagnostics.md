@@ -18,6 +18,8 @@ yerd doctor fix      # apply safe automatic fixes, then list what still needs yo
 
 `yerd doctor` prints each finding with a severity mark (`✓` ok, `⚠` warn, `✗` fail), a detail line, and a `→` remedy where one exists. `yerd doctor fix` first lists what it applied, then what still needs manual attention.
 
+One such finding is `DomainShadowed` (a `Warn`): two sites claim the same domain, so one site's apex is shadowed by the other. The remedy is to `yerd domain remove` the duplicate or `yerd domain primary` the shadowed site onto a free domain.
+
 ::: info Exit codes for diagnostics
 `yerd doctor` (and `yerd doctor fix`) exit `1` if any finding is `Fail` severity, otherwise `0`. A `Warn` alone does **not** fail the exit code. This holds in both human and `--json` modes, so doctor is safe to use in CI gates.
 

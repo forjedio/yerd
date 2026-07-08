@@ -145,6 +145,9 @@ fn encode_then_decode_response_roundtrip() {
         sites: vec![yerd_ipc::SiteEntry {
             site: site.clone(),
             is_wordpress: false,
+            primary_domain: None,
+            domains: vec![],
+            apex_shadowed_by: None,
             uses_front_controller: false,
         }],
     });
@@ -152,6 +155,9 @@ fn encode_then_decode_response_roundtrip() {
         sites: vec![yerd_ipc::SiteEntry {
             site,
             is_wordpress: true,
+            primary_domain: Some("corp.test".into()),
+            domains: vec!["corp.test".into(), "*.blog.test".into()],
+            apex_shadowed_by: Some("shop".into()),
             uses_front_controller: true,
         }],
     });
@@ -220,6 +226,10 @@ fn encode_then_decode_response_roundtrip() {
             boot_id: Some(42),
             shared_sites: 3,
             symlink_protection: false,
+            shadows: vec![yerd_ipc::DomainShadow {
+                site: "blog".into(),
+                shadowed_by: "shop".into(),
+            }],
         }),
     });
     assert_response_roundtrips(Response::Diagnoses {

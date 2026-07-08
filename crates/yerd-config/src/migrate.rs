@@ -36,6 +36,7 @@ pub(crate) const STEPS: &[MigrationStep] = &[
     migrate_v9_to_v10,
     migrate_v10_to_v11,
     migrate_v11_to_v12,
+    migrate_v12_to_v13,
 ];
 
 /// `v0 → v1`: bump the version. v0 predates any shipped config, so there is no
@@ -124,18 +125,25 @@ fn migrate_v9_to_v10(value: &mut Value) -> Result<(), ConfigError> {
     set_version(value, 10)
 }
 
-/// `v10 → v11`: bump the version. v11 added the top-level `symlink_protection`
-/// scalar, which defaults to `true` when absent, so an in-place version bump is
-/// the entire migration.
+/// `v10 → v11`: bump the version. v11 added the optional `[domains]` table, which
+/// defaults (empty) when absent, so an in-place version bump is the entire
+/// migration.
 fn migrate_v10_to_v11(value: &mut Value) -> Result<(), ConfigError> {
     set_version(value, 11)
 }
 
-/// `v11 → v12`: bump the version. v12 added the optional per-site
-/// `front_controller` key (`[[linked]]` and `[[overrides]]`), which defaults to
-/// auto when absent, so an in-place version bump is the entire migration.
+/// `v11 → v12`: bump the version. v12 added the top-level `symlink_protection`
+/// scalar, which defaults to `true` when absent, so an in-place version bump is
+/// the entire migration.
 fn migrate_v11_to_v12(value: &mut Value) -> Result<(), ConfigError> {
     set_version(value, 12)
+}
+
+/// `v12 → v13`: bump the version. v13 added the optional per-site
+/// `front_controller` key (`[[linked]]` and `[[overrides]]`), which defaults to
+/// auto when absent, so an in-place version bump is the entire migration.
+fn migrate_v12_to_v13(value: &mut Value) -> Result<(), ConfigError> {
+    set_version(value, 13)
 }
 
 /// Set the top-level `version` key, erroring if the root is not a table.
@@ -207,7 +215,7 @@ mod tests {
 
     #[test]
     fn current_version_pinned() {
-        assert_eq!(crate::CURRENT_VERSION, 12);
+        assert_eq!(crate::CURRENT_VERSION, 13);
     }
 
     #[test]
@@ -264,6 +272,13 @@ mod tests {
         let mut v: Value = toml::from_str("version = 11\n").unwrap();
         migrate_v11_to_v12(&mut v).unwrap();
         assert_eq!(read_version(&v).unwrap(), 12);
+    }
+
+    #[test]
+    fn v12_to_v13_is_a_bare_version_bump() {
+        let mut v: Value = toml::from_str("version = 12\n").unwrap();
+        migrate_v12_to_v13(&mut v).unwrap();
+        assert_eq!(read_version(&v).unwrap(), 13);
     }
 
     #[test]

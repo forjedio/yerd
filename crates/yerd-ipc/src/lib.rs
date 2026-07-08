@@ -49,10 +49,10 @@ pub use request::Request;
 pub use response::{ErrorCode, PhpExtInfo, PhpUpdate, Response, SiteEntry, WordPressAdminUser};
 pub use status::{
     CaStatus, CloudflaredSource, CloudflaredStatus, DatabaseSummary, Diagnosis, DiagnosisCode,
-    FixReport, FixResult, MailDetail, MailHeader, MailStatus, MailSummary, NamedTunnelMeta,
-    PhpPoolStatus, PoolRunState, PortStatus, ServiceAvailability, ServiceRunState, ServiceStatus,
-    Severity, SiteCounts, SiteHostname, StatusReport, ToolStatus, TunnelInfo, TunnelKind,
-    TunnelRunState, UnboundWeb, WordPressVersionInfo,
+    DomainShadow, FixReport, FixResult, MailDetail, MailHeader, MailStatus, MailSummary,
+    NamedTunnelMeta, PhpPoolStatus, PoolRunState, PortStatus, ServiceAvailability, ServiceRunState,
+    ServiceStatus, Severity, SiteCounts, SiteHostname, StatusReport, ToolStatus, TunnelInfo,
+    TunnelKind, TunnelRunState, UnboundWeb, WordPressVersionInfo,
 };
 pub use update::{Channel, StagedArtifact, UpdateSource};
 

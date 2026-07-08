@@ -144,6 +144,7 @@ pub fn to_request(cmd: &Command) -> Result<Request, ClientError> {
         },
         Command::Services => Request::ListServices,
         Command::Service { action } => service_request(action),
+        Command::Domain { action } => domain_request(action)?,
         Command::Tunnel { action } => tunnel_request(action),
         Command::Db { action } => db_request(action),
         Command::Mail { action } => match action {
@@ -242,6 +243,84 @@ fn service_request(action: &ServiceAction) -> Request {
             lines: *lines,
         },
     }
+}
+
+/// Map a `yerd domain <action>` to its wire request, validating the site name
+/// and domain shape client-side. `List` is handled locally (it needs the TLD to
+/// render default domains), so it never reaches here.
+fn domain_request(action: &crate::cli::DomainAction) -> Result<Request, ClientError> {
+    use crate::cli::DomainAction;
+    Ok(match action {
+        DomainAction::List { .. } => {
+            return Err(ClientError::Usage(
+                "domain list is handled locally, not over IPC".to_owned(),
+            ));
+        }
+        DomainAction::Add { site, domain } => {
+            validate_name(site)?;
+            validate_domain(domain)?;
+            Request::AddDomain {
+                name: site.clone(),
+                domain: domain.clone(),
+            }
+        }
+        DomainAction::Remove { site, domain } => {
+            validate_name(site)?;
+            validate_domain(domain)?;
+            Request::RemoveDomain {
+                name: site.clone(),
+                domain: domain.clone(),
+            }
+        }
+        DomainAction::Primary { site, domain } => {
+            validate_name(site)?;
+            validate_domain(domain)?;
+            Request::SetPrimaryDomain {
+                name: site.clone(),
+                domain: domain.clone(),
+            }
+        }
+        DomainAction::Reset { site } => {
+            validate_name(site)?;
+            Request::ResetDomains { name: site.clone() }
+        }
+    })
+}
+
+/// Light client-side shape check for a domain FQDN, for a clean exit-2 error
+/// before connecting. The daemon is authoritative (it strips and validates
+/// against the configured TLD); this only catches obvious typos: ASCII,
+/// `[a-z0-9.*-]`, at least two labels, non-empty labels, and `*` only as the
+/// leftmost label.
+fn validate_domain(domain: &str) -> Result<(), ClientError> {
+    let bad = |msg: &str| ClientError::Usage(format!("invalid domain {domain:?}: {msg}"));
+    if domain.is_empty() {
+        return Err(bad("must not be empty"));
+    }
+    let lowered = domain.to_ascii_lowercase();
+    let trimmed = lowered.strip_suffix('.').unwrap_or(&lowered);
+    let labels: Vec<&str> = trimmed.split('.').collect();
+    if labels.len() < 2 {
+        return Err(bad("must be a full domain including the TLD"));
+    }
+    for (i, label) in labels.iter().enumerate() {
+        if label.is_empty() {
+            return Err(bad("contains an empty label"));
+        }
+        if *label == "*" {
+            if i != 0 {
+                return Err(bad("'*' is only allowed as the leftmost label"));
+            }
+            continue;
+        }
+        if !label
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+        {
+            return Err(bad("labels may only contain [a-z0-9-] (or a leading '*')"));
+        }
+    }
+    Ok(())
 }
 
 /// Map a `yerd tunnel <action>` to its wire request. `Install` and `Login` are
@@ -361,6 +440,95 @@ pub fn channel_from_flags(edge: bool, stable: bool) -> Option<Channel> {
     } else {
         None
     }
+}
+
+/// A site's effective domain set + primary FQDN, derived from a [`SiteEntry`] and
+/// the configured `tld`. For an effectively-default site the daemon omits the
+/// domain fields, so the primary/domains are synthesized as `{name}.{tld}`.
+#[must_use]
+pub fn site_domains(entry: &SiteEntry, tld: &str) -> (String, Vec<String>) {
+    let default = format!("{}.{tld}", entry.site.name());
+    let primary = entry
+        .primary_domain
+        .clone()
+        .unwrap_or_else(|| default.clone());
+    let domains = if entry.domains.is_empty() {
+        vec![default]
+    } else {
+        entry.domains.clone()
+    };
+    (primary, domains)
+}
+
+/// Render `yerd domain list [site]`. `tld` comes from a `DaemonInfo` round-trip
+/// (needed to show default `{name}.{tld}` domains). With `filter`, shows only
+/// that site (exit 1 if absent).
+#[must_use]
+pub fn render_domains(
+    sites: &[SiteEntry],
+    tld: &str,
+    filter: Option<&str>,
+    json: bool,
+) -> Rendered {
+    let selected: Vec<&SiteEntry> = match filter {
+        Some(f) => {
+            let f = f.to_ascii_lowercase();
+            sites.iter().filter(|e| e.site.name() == f).collect()
+        }
+        None => sites.iter().collect(),
+    };
+
+    if let Some(f) = filter {
+        if selected.is_empty() {
+            return Rendered::err(format!("no site named {f:?}"));
+        }
+    }
+
+    if json {
+        let items: Vec<_> = selected
+            .iter()
+            .map(|e| {
+                let (primary, domains) = site_domains(e, tld);
+                serde_json::json!({
+                    "name": e.site.name(),
+                    "primary": primary,
+                    "domains": domains,
+                    "apex_shadowed_by": e.apex_shadowed_by,
+                })
+            })
+            .collect();
+        let body = serde_json::to_string(&serde_json::json!({ "domains": items }))
+            .unwrap_or_else(|_| "{\"domains\":[]}".to_owned());
+        return Rendered::ok(body);
+    }
+
+    if selected.is_empty() {
+        return Rendered::ok("No sites yet.".to_owned());
+    }
+    let mut out = String::new();
+    for e in selected {
+        let (primary, domains) = site_domains(e, tld);
+        let list = domains
+            .iter()
+            .map(|d| {
+                if *d == primary {
+                    format!("{d} (primary)")
+                } else {
+                    d.clone()
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        let _ = write!(out, "{}: {list}", e.site.name());
+        if let Some(by) = &e.apex_shadowed_by {
+            let _ = write!(out, "  [apex shadowed by {by}]");
+        }
+        out.push('\n');
+    }
+    if out.ends_with('\n') {
+        out.pop();
+    }
+    Rendered::ok(out)
 }
 
 /// Lowercase display name for a wire channel.
@@ -574,14 +742,21 @@ pub fn doctor_exit_code(resp: &Response) -> u8 {
     }
 }
 
+/// Renders the `yerd sites` table. The optional WORDPRESS and DOMAIN columns are
+/// added only when at least one listed site needs them, so the common case's
+/// table stays unchanged; full per-site domain lists live in `yerd domain list`.
 fn format_sites(sites: &[SiteEntry]) -> String {
     if sites.is_empty() {
         return "no sites".to_owned();
     }
-    // Only add the WORDPRESS column when at least one listed site needs it,
-    // so the common (no-WordPress) case's table is unchanged.
     let show_wordpress = sites.iter().any(|entry| entry.is_wordpress);
+    let show_domain = sites
+        .iter()
+        .any(|e| e.primary_domain.is_some() || e.apex_shadowed_by.is_some());
     let mut out = String::from("NAME\tKIND\tPHP\tSECURE\tSERVED\tDOCROOT\tFRONT-CTRL");
+    if show_domain {
+        out.push_str("\tDOMAIN");
+    }
     if show_wordpress {
         out.push_str("\tWORDPRESS");
     }
@@ -612,6 +787,14 @@ fn format_sites(sites: &[SiteEntry]) -> String {
             s.document_root().display(),
             front
         );
+        if show_domain {
+            let domain = match (&entry.primary_domain, &entry.apex_shadowed_by) {
+                (_, Some(by)) => format!("apex shadowed by {by}"),
+                (Some(p), None) => p.clone(),
+                (None, None) => "-".to_owned(),
+            };
+            let _ = write!(out, "\t{domain}");
+        }
         if show_wordpress {
             let wp = if entry.is_wordpress { "yes" } else { "-" };
             let _ = write!(out, "\t{wp}");
@@ -1594,6 +1777,9 @@ mod tests {
                 sites: vec![SiteEntry {
                     site,
                     is_wordpress: false,
+                    primary_domain: None,
+                    domains: vec![],
+                    apex_shadowed_by: None,
                     uses_front_controller: true,
                 }],
             },
@@ -1622,6 +1808,9 @@ mod tests {
                 sites: vec![SiteEntry {
                     site: blog,
                     is_wordpress: true,
+                    primary_domain: None,
+                    domains: vec![],
+                    apex_shadowed_by: None,
                     uses_front_controller: false,
                 }],
             },
@@ -1923,7 +2112,104 @@ mod tests {
             boot_id: None,
             shared_sites: 0,
             symlink_protection: true,
+            shadows: vec![],
         }
+    }
+
+    #[test]
+    fn domain_add_remove_primary_reset_map_to_requests() {
+        use crate::cli::DomainAction;
+        assert_eq!(
+            to_request(&Command::Domain {
+                action: DomainAction::Add {
+                    site: "foo".into(),
+                    domain: "api.foo.test".into(),
+                },
+            })
+            .unwrap(),
+            Request::AddDomain {
+                name: "foo".into(),
+                domain: "api.foo.test".into(),
+            }
+        );
+        assert_eq!(
+            to_request(&Command::Domain {
+                action: DomainAction::Primary {
+                    site: "foo".into(),
+                    domain: "corp.test".into(),
+                },
+            })
+            .unwrap(),
+            Request::SetPrimaryDomain {
+                name: "foo".into(),
+                domain: "corp.test".into(),
+            }
+        );
+        assert_eq!(
+            to_request(&Command::Domain {
+                action: DomainAction::Reset { site: "foo".into() },
+            })
+            .unwrap(),
+            Request::ResetDomains { name: "foo".into() }
+        );
+    }
+
+    #[test]
+    fn domain_list_is_handled_locally() {
+        use crate::cli::DomainAction;
+        assert!(matches!(
+            to_request(&Command::Domain {
+                action: DomainAction::List { site: None },
+            }),
+            Err(ClientError::Usage(_))
+        ));
+    }
+
+    #[test]
+    fn validate_domain_accepts_and_rejects() {
+        assert!(validate_domain("api.foo.test").is_ok());
+        assert!(validate_domain("*.foo.test").is_ok());
+        assert!(validate_domain("foo").is_err()); // needs a TLD
+        assert!(validate_domain("foo.*.test").is_err()); // misplaced wildcard
+        assert!(validate_domain("a_b.test").is_err()); // bad char
+        assert!(validate_domain("foo..test").is_err()); // empty label
+    }
+
+    #[test]
+    fn render_domains_marks_primary_and_shadow() {
+        let e = SiteEntry {
+            site: Site::linked("blog", "/srv/blog", PhpVersion::new(8, 3)).unwrap(),
+            is_wordpress: false,
+            primary_domain: Some("corp.test".into()),
+            domains: vec!["corp.test".into(), "*.blog.test".into()],
+            apex_shadowed_by: Some("shop".into()),
+            uses_front_controller: false,
+        };
+        let r = render_domains(&[e], "test", None, false);
+        assert!(r.stdout.contains("corp.test (primary)"));
+        assert!(r.stdout.contains("*.blog.test"));
+        assert!(r.stdout.contains("apex shadowed by shop"));
+    }
+
+    #[test]
+    fn render_domains_synthesizes_default_domain() {
+        let e = SiteEntry {
+            site: Site::linked("foo", "/srv/foo", PhpVersion::new(8, 3)).unwrap(),
+            is_wordpress: false,
+            primary_domain: None,
+            domains: vec![],
+            apex_shadowed_by: None,
+            uses_front_controller: false,
+        };
+        let r = render_domains(&[e], "test", None, false);
+        assert!(r.stdout.contains("foo.test (primary)"));
+    }
+
+    #[test]
+    fn render_domains_unknown_site_filter_errors() {
+        let r = render_domains(&[], "test", Some("ghost"), false);
+        assert_eq!(r.code, 1);
+        assert!(r.stderr.contains("ghost"));
     }
 
     #[test]

@@ -206,6 +206,34 @@ export async function setWebRoot(name: string, path: string | null): Promise<voi
   ensureOk(await call<Response>("set_web_root", { name, path }));
 }
 
+// ── domains ──────────────────────────────────────────────────────────────────
+
+/** Add a routable domain (exact or `*.`-wildcard, a full FQDN) to a site. The
+ *  daemon validates shape + TLD membership and rejects a domain already claimed
+ *  by another site. */
+export async function addDomain(name: string, domain: string): Promise<void> {
+  ensureOk(await call<Response>("add_domain", { name, domain }));
+}
+
+/** Remove a domain from a site. The daemon rejects removing the last exact
+ *  (non-wildcard) domain. */
+export async function removeDomain(name: string, domain: string): Promise<void> {
+  ensureOk(await call<Response>("remove_domain", { name, domain }));
+}
+
+/** Set a site's primary (canonical) domain; auto-adds it if absent. Must be an
+ *  exact domain - the daemon rejects a wildcard. For a WordPress site this also
+ *  rewrites its `siteurl`/`home`. */
+export async function setPrimaryDomain(name: string, domain: string): Promise<void> {
+  ensureOk(await call<Response>("set_primary_domain", { name, domain }));
+}
+
+/** Clear a site's domain customization, returning it to the default apex-only
+ *  `{name}.{tld}`. */
+export async function resetDomains(name: string): Promise<void> {
+  ensureOk(await call<Response>("reset_domains", { name }));
+}
+
 // ── php versions ───────────────────────────────────────────────────────────
 
 export async function listPhp(): Promise<PhpVersionsResponse> {

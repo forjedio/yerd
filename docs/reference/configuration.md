@@ -29,7 +29,7 @@ Every field below maps one-to-one to a field in `schema.rs`. The on-disk shape a
 
 | Key         | TOML type            | Meaning                                                            | Default        |
 | ----------- | -------------------- | ----------------------------------------------------------------- | -------------- |
-| `version`   | integer              | On-disk schema version. **Mandatory.**                            | `5`            |
+| `version`   | integer              | On-disk schema version. **Mandatory.**                            | `11`           |
 | `tld`       | string               | TLD served by Yerd's resolver.                                    | `"test"`       |
 | `dns_port`  | integer (u16)        | Loopback port for the embedded `.test` DNS responder.             | `1053`         |
 | `symlink_protection` | boolean     | Refuse to serve assets/scripts reached via a symlink resolving outside a site's document root. | `true` |
@@ -41,14 +41,15 @@ Every field below maps one-to-one to a field in `schema.rs`. The on-disk shape a
 | `services`  | table                | Per-service `[services.<id>]` tables; every installed engine auto-starts on boot. | empty          |
 | `mail`      | table                | Built-in mail-capture SMTP server.                                | on / `2525`    |
 | `dumps`     | table                | Laravel ▸ Dumps telemetry settings.                               | off / `2304`   |
+| `domains`   | table                | Per-site domain sets (primary, aliases, subdomains, wildcards).   | empty          |
 
 ::: warning Unknown keys are rejected
-The parser uses `deny_unknown_fields` at every level. A typo'd or stray key (top-level, or inside `[ports]`, `[php]`, `[parked]`, `[mail]`, `[dumps]`, `[dumps.features]`, a `[services.<id>]` table, a `[[linked]]` entry, an `[[overrides]]` entry, or a `[[php.extensions.<version>]]` entry) is a hard parse error - the daemon will refuse to load the file rather than silently ignore it.
+The parser uses `deny_unknown_fields` at every level. A typo'd or stray key (top-level, or inside `[ports]`, `[php]`, `[parked]`, `[mail]`, `[dumps]`, `[dumps.features]`, `[domains]`, a `[domains.linked.<name>]` / `[domains.parked."<docroot>"]` entry, a `[services.<id>]` table, a `[[linked]]` entry, an `[[overrides]]` entry, or a `[[php.extensions.<version>]]` entry) is a hard parse error - the daemon will refuse to load the file rather than silently ignore it.
 :::
 
 ### `version`
 
-The schema version. This key is **required** - a missing `version` is a hard error (`MissingVersion`), and a non-integer or negative value is rejected (`NonIntegerVersion`). The current schema version is `12`, and Yerd always writes `version = 12`. Older `version = 1` through `version = 11` files are migrated forward automatically on load. See [Schema versioning](#schema-versioning-and-migration) below.
+The schema version. This key is **required** - a missing `version` is a hard error (`MissingVersion`), and a non-integer or negative value is rejected (`NonIntegerVersion`). The current schema version is `13`, and Yerd always writes `version = 13`. Older `version = 1` through `version = 12` files are migrated forward automatically on load. See [Schema versioning](#schema-versioning-and-migration) below.
 
 ### `tld`
 
@@ -344,16 +345,51 @@ order = ["Blog", "Shop"]
 api = "Blog"
 ```
 
+### `[domains]`
+
+Per-site domain customization: the primary (canonical) domain plus any additional aliases, subdomains, and wildcards a site answers for. **Empty by default** - the whole `[domains]` table is omitted until you customise a site with [`yerd domain`](./cli/domains). An uncustomised site answers only its default apex `<name>.<tld>`; subdomains do **not** resolve implicitly.
+
+The table is split by site class, mirroring `[[overrides]]`:
+
+| Key                | TOML type                 | Meaning                                                         |
+| ------------------ | ------------------------- | --------------------------------------------------------------- |
+| `[domains.linked]` | table (`name → delta`)    | Deltas for **linked** sites, keyed by site name.                |
+| `[domains.parked]` | table (`docroot → delta`) | Deltas for **parked** sites, keyed by byte-exact document-root. |
+
+Keying linked by name and parked by document-root matches `[[overrides]]`, so routing survives a directory rename and a parked site keeps its domains without a config record of its own.
+
+Each entry is a **delta** over the default apex, with three optional fields:
+
+| Field        | TOML type        | Meaning                                                              |
+| ------------ | ---------------- | -------------------------------------------------------------------- |
+| `added`      | array of strings | Extra domains the site answers for (exact or single-label wildcard). |
+| `suppressed` | array of strings | Default domains to drop (only ever the apex).                        |
+| `primary`    | string           | The canonical domain (must be exact, never a wildcard).              |
+
+Values are stored as **sub-parts** - the part left of the TLD, exactly as the router matches - not full FQDNs. Under TLD `test`, `corp.test` is stored as `corp`, `*.blog.test` as `*.blog`, and the apex `blog.test` as `blog`. A leftmost `*` is a single-label wildcard (`*.blog` matches `api.blog.test`, never `x.api.blog.test`).
+
+`Config::validate` enforces only structural rules (no duplicate `added`; `added` and `suppressed` disjoint; `primary` not a wildcard). TLD membership, cross-site uniqueness, and "keep at least one exact domain" are enforced by the daemon, which alone can see parked sites on disk.
+
+```toml
+[domains.linked.blog]
+added = ["corp", "*.blog"]
+suppressed = ["blog"]
+primary = "corp"
+
+[domains.parked."/Users/me/Sites/shop"]
+added = ["shop-staging"]
+```
+
 ## Schema versioning and migration
 
-Every config file **must** carry a top-level `version = N` key - it is the single trigger for forward migration. The current schema version is `12`.
+Every config file **must** carry a top-level `version = N` key - it is the single trigger for forward migration. The current schema version is `13`.
 
 When the daemon loads a file, it routes on the version it finds:
 
 ```text
-found  > CURRENT (12)   →  error (UnsupportedVersion) - a newer Yerd wrote this file
-found == CURRENT (12)   →  parse directly
-found  < CURRENT (12)   →  walk forward migration steps, then parse
+found  > CURRENT (13)   →  error (UnsupportedVersion) - a newer Yerd wrote this file
+found == CURRENT (13)   →  parse directly
+found  < CURRENT (13)   →  walk forward migration steps, then parse
 ```
 
 A file written by a *newer* Yerd than you are running is refused rather than misread. Older files are migrated forward in place, one version at a time, before the normal wire-deserialisation and validation run:
@@ -367,8 +403,9 @@ A file written by a *newer* Yerd than you are running is refused rather than mis
 - **`v7 → v8`** is a bare version bump: v8 only **added** the optional `[tunnel]` table, which defaults to empty when absent. Same rationale - the bump lets an older binary refuse a `[tunnel]`-bearing file cleanly rather than tripping `deny_unknown_fields`.
 - **`v8 → v9`** is a bare version bump: v9 only **added** the optional `[groups]` table, which defaults to empty when absent. Same rationale - the bump lets an older binary refuse a `[groups]`-bearing file cleanly rather than tripping `deny_unknown_fields`.
 - **`v9 → v10`** is a bare version bump: v10 **added** the optional `[php.extensions]` registry and the `wp_auto_login` / `wp_auto_login_user` keys (inside `[[linked]]` and `[[overrides]]`, for one-click `WordPress` admin login), all of which default when absent. Same rationale - the bump lets an older binary refuse a file using them cleanly rather than tripping `deny_unknown_fields`.
-- **`v10 → v11`** is a bare version bump: v11 only **added** the top-level `symlink_protection` scalar (defaults to `true` when absent).
-- **`v11 → v12`** is a bare version bump: v12 only **added** the optional per-site `front_controller` key (inside `[[linked]]` and `[[overrides]]`), which defaults to auto when absent.
+- **`v10 → v11`** is a bare version bump: v11 only **added** the optional `[domains]` table (per-site domain sets), which defaults to empty when absent. Same rationale - the bump lets an older binary refuse a `[domains]`-bearing file cleanly rather than tripping `deny_unknown_fields`. No existing keys change, so a v10 file needs no structural rewrite.
+- **`v11 → v12`** is a bare version bump: v12 only **added** the top-level `symlink_protection` scalar (defaults to `true` when absent).
+- **`v12 → v13`** is a bare version bump: v13 only **added** the optional per-site `front_controller` key (inside `[[linked]]` and `[[overrides]]`), which defaults to auto when absent.
 
 The on-disk schema version is deliberately decoupled from the IPC protocol version; the two evolve independently.
 
@@ -392,11 +429,11 @@ Yerd does not `fsync` the file or its parent directory after a save. For a devel
 
 ## A complete annotated example
 
-This is a valid `yerd.toml` covering the core fields (see the sections above for the newer optional tables - `update_channel`, `[tunnel]`, `[groups]`, `[php.extensions]`, `wp_auto_login` - omitted here for brevity):
+This is a valid `yerd.toml` covering the core fields (see the sections above for the newer optional tables - `update_channel`, `[tunnel]`, `[groups]`, `[php.extensions]`, `[domains]`, `wp_auto_login` - omitted here for brevity):
 
 ```toml
-# Schema version - mandatory, always written as 12 by this release.
-version = 12
+# Schema version - mandatory, always written as 13 by this release.
+version = 13
 
 # TLD served by the resolver; sites resolve as <name>.test
 tld = "test"

@@ -83,6 +83,38 @@ pub enum Request {
         /// auto-detection.
         path: Option<String>,
     },
+    /// Add a routable domain to a site (an exact host or a single-label
+    /// wildcard, e.g. `api.foo.test` or `*.foo.test`). The `domain` is the full
+    /// FQDN under the configured TLD; the daemon strips the TLD and validates.
+    AddDomain {
+        /// The site name to add the domain to.
+        name: String,
+        /// The full domain FQDN (under the configured TLD).
+        domain: String,
+    },
+    /// Remove a routable domain from a site. Removing a site's last exact
+    /// (non-wildcard) domain is refused.
+    RemoveDomain {
+        /// The site name to remove the domain from.
+        name: String,
+        /// The full domain FQDN to remove.
+        domain: String,
+    },
+    /// Set a site's primary (canonical) domain, the address shown/opened and used
+    /// for URL sync. Must be an exact domain; auto-added to the site's set if not
+    /// already present.
+    SetPrimaryDomain {
+        /// The site name.
+        name: String,
+        /// The full domain FQDN to make primary.
+        domain: String,
+    },
+    /// Reset a site's domains to the default (apex only), clearing any added,
+    /// suppressed, or primary customisation.
+    ResetDomains {
+        /// The site name.
+        name: String,
+    },
     /// Fetch read-only daemon runtime facts (DNS address, TLD, CA path +
     /// fingerprint). Used by `yerd elevate` to drive the privileged helper.
     DaemonInfo,
@@ -617,7 +649,7 @@ mod variant_name_pinning {
 
     // Inline (not in tests/) so the #[non_exhaustive] enum matches
     // exhaustively: a renamed Rust variant fails this match at compile time.
-    #[allow(dead_code)]
+    #[allow(dead_code, clippy::too_many_lines)]
     fn pin(r: Request) {
         match r {
             Request::Ping => {}
@@ -630,6 +662,10 @@ mod variant_name_pinning {
             Request::SetPhp { .. } => {}
             Request::SetSecure { .. } => {}
             Request::SetWebRoot { .. } => {}
+            Request::AddDomain { .. } => {}
+            Request::RemoveDomain { .. } => {}
+            Request::SetPrimaryDomain { .. } => {}
+            Request::ResetDomains { .. } => {}
             Request::DaemonInfo => {}
             Request::InstallPhp { .. } => {}
             Request::InstallPhpStreamed { .. } => {}
@@ -746,6 +782,19 @@ mod variant_name_pinning {
             name: "x".into(),
             path: Some("public".into()),
         });
+        pin(Request::AddDomain {
+            name: "foo".into(),
+            domain: "api.foo.test".into(),
+        });
+        pin(Request::RemoveDomain {
+            name: "foo".into(),
+            domain: "api.foo.test".into(),
+        });
+        pin(Request::SetPrimaryDomain {
+            name: "foo".into(),
+            domain: "corp.test".into(),
+        });
+        pin(Request::ResetDomains { name: "foo".into() });
         pin(Request::DaemonInfo);
         pin(Request::InstallPhp {
             version: PhpVersion::new(8, 5),

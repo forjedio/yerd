@@ -70,6 +70,36 @@ struct Wire {
     // v9: optional `[groups]` table; absent in v8 and earlier → default (empty).
     #[serde(default)]
     groups: GroupsSectionWire,
+    // v11: optional `[domains]` table; absent in v10 and earlier → default
+    // (empty). Sub-part strings are kept raw here and validated into
+    // `yerd_core::Domain` in `TryFrom<Wire>`, so a bad domain surfaces as
+    // `ConfigError::Core`.
+    #[serde(default)]
+    domains: DomainsSectionWire,
+}
+
+/// The `[domains]` table. Both maps default to empty, so an absent table parses
+/// to [`crate::schema::DomainsSection::default`].
+#[derive(Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DomainsSectionWire {
+    #[serde(default)]
+    linked: BTreeMap<String, DomainDeltaWire>,
+    #[serde(default)]
+    parked: BTreeMap<String, DomainDeltaWire>,
+}
+
+/// One `[domains.linked.<name>]` / `[domains.parked."<docroot>"]` delta. Domain
+/// sub-parts are raw `String`s here (validated into `Domain` in `TryFrom`).
+#[derive(Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DomainDeltaWire {
+    #[serde(default)]
+    added: Vec<String>,
+    #[serde(default)]
+    suppressed: Vec<String>,
+    #[serde(default)]
+    primary: Option<String>,
 }
 
 /// The `[groups]` table. Both fields default to empty, so an absent table parses
@@ -406,6 +436,10 @@ impl TryFrom<Wire> for Config {
             order: w.groups.order,
             members: w.groups.members,
         };
+        let domains = crate::schema::DomainsSection {
+            linked: convert_domain_deltas(w.domains.linked)?,
+            parked: convert_domain_deltas(w.domains.parked)?,
+        };
         Ok(Config {
             version: crate::CURRENT_VERSION,
             tld,
@@ -422,8 +456,41 @@ impl TryFrom<Wire> for Config {
             dumps,
             tunnel,
             groups,
+            domains,
         })
     }
+}
+
+/// Convert a raw `[domains.*]` delta map into typed [`crate::schema::DomainDelta`]
+/// values, validating each sub-part into a [`yerd_core::Domain`] (a bad sub-part
+/// surfaces as [`ConfigError::Core`]).
+fn convert_domain_deltas(
+    wire: BTreeMap<String, DomainDeltaWire>,
+) -> Result<BTreeMap<String, crate::schema::DomainDelta>, ConfigError> {
+    let mut out = BTreeMap::new();
+    for (key, delta) in wire {
+        let added = parse_domain_list(delta.added)?;
+        let suppressed = parse_domain_list(delta.suppressed)?;
+        let primary = delta
+            .primary
+            .map(|s| yerd_core::Domain::parse_subpart(&s))
+            .transpose()?;
+        out.insert(
+            key,
+            crate::schema::DomainDelta {
+                added,
+                suppressed,
+                primary,
+            },
+        );
+    }
+    Ok(out)
+}
+
+fn parse_domain_list(subs: Vec<String>) -> Result<Vec<yerd_core::Domain>, ConfigError> {
+    subs.into_iter()
+        .map(|s| yerd_core::Domain::parse_subpart(&s).map_err(ConfigError::from))
+        .collect()
 }
 
 /// Rebuild the `linked` site list from its wire mirror, surfacing a bad
@@ -490,6 +557,7 @@ pub(crate) fn validate(c: &Config) -> Result<(), ConfigError> {
     validate_update_channel(c)?;
     validate_tunnel(c)?;
     validate_groups(c)?;
+    validate_domains(c)?;
     Ok(())
 }
 
@@ -506,6 +574,35 @@ fn validate_php_extensions(c: &Config) -> Result<(), ConfigError> {
             }
             if !seen.insert(e.name.as_str()) {
                 return Err(ve(ValidateErrorReason::DuplicateExtensionName));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// `[domains]` **structural** invariants only. Each delta's `added` has no
+/// duplicates, `added ∩ suppressed = ∅`, and any `primary` is exact (not a
+/// wildcard). Domain *shape* is already enforced by `Domain::parse_subpart`
+/// during wire conversion. Default-relative invariants (`suppressed ⊆ default`,
+/// cross-site uniqueness) are **not** checked here: this crate is pure and cannot
+/// see parked sites on disk to derive their names/apex, so those are the daemon's
+/// job (mirroring how docroot-keyed `[[overrides]]` are not name-validated here).
+fn validate_domains(c: &Config) -> Result<(), ConfigError> {
+    for delta in c.domains.linked.values().chain(c.domains.parked.values()) {
+        let mut seen: BTreeSet<&str> = BTreeSet::new();
+        for d in &delta.added {
+            if !seen.insert(d.as_str()) {
+                return Err(ve(ValidateErrorReason::DomainAddedDuplicate));
+            }
+        }
+        for s in &delta.suppressed {
+            if seen.contains(s.as_str()) {
+                return Err(ve(ValidateErrorReason::DomainAddedSuppressedOverlap));
+            }
+        }
+        if let Some(p) = &delta.primary {
+            if p.is_wildcard() {
+                return Err(ve(ValidateErrorReason::DomainPrimaryWildcard));
             }
         }
     }
@@ -801,7 +898,7 @@ mod tests {
         match Config::from_toml("version = 99\n") {
             Err(ConfigError::UnsupportedVersion {
                 found: 99,
-                current: 12,
+                current: 13,
             }) => {}
             other => panic!("expected UnsupportedVersion, got {other:?}"),
         }
@@ -916,9 +1013,28 @@ mod tests {
 
     #[test]
     fn symlink_protection_false_parses_and_round_trips() {
-        let s = "version = 11\nsymlink_protection = false\n";
+        let s = "version = 12\nsymlink_protection = false\n";
         let c = Config::from_toml(s).unwrap();
         assert!(!c.symlink_protection);
+        let back = Config::from_toml(&c.to_toml().unwrap()).unwrap();
+        assert_eq!(back, c);
+    }
+
+    #[test]
+    fn domains_absent_table_is_empty_and_migrates() {
+        let c = Config::from_toml("version = 10\n").unwrap();
+        assert!(c.domains.is_empty());
+    }
+
+    #[test]
+    fn domains_section_parses_subparts_and_round_trips() {
+        let s = "version = 11\n[domains.linked.blog]\n\
+                 added = [\"corp\", \"*.blog\"]\nsuppressed = [\"blog\"]\nprimary = \"corp\"\n";
+        let c = Config::from_toml(s).unwrap();
+        let delta = c.domains.linked.get("blog").unwrap();
+        assert_eq!(delta.added.len(), 2);
+        assert_eq!(delta.suppressed[0].as_str(), "blog");
+        assert_eq!(delta.primary.as_ref().unwrap().as_str(), "corp");
         let back = Config::from_toml(&c.to_toml().unwrap()).unwrap();
         assert_eq!(back, c);
     }
@@ -946,9 +1062,9 @@ mod tests {
     }
 
     #[test]
-    fn v11_override_without_front_controller_migrates_to_none() {
+    fn v12_override_without_front_controller_migrates_to_none() {
         let migrated = Config::from_toml(
-            "version = 11\n\n[[overrides]]\npath = \"/srv/blog\"\nsecure = true\n",
+            "version = 12\n\n[[overrides]]\npath = \"/srv/blog\"\nsecure = true\n",
         )
         .unwrap();
         assert_eq!(
@@ -958,6 +1074,42 @@ mod tests {
                 .and_then(|o| o.front_controller),
             None
         );
+    }
+
+    #[test]
+    fn domains_rejects_bad_subpart_as_core_error() {
+        let s = "version = 11\n[domains.linked.blog]\nadded = [\"*.*.bad\"]\n";
+        assert!(matches!(Config::from_toml(s), Err(ConfigError::Core(_))));
+    }
+
+    #[test]
+    fn domains_rejects_structural_violations() {
+        // Duplicate in added.
+        let dup = "version = 11\n[domains.linked.blog]\nadded = [\"corp\", \"corp\"]\n";
+        assert!(matches!(
+            Config::from_toml(dup),
+            Err(ConfigError::Validate {
+                reason: ValidateErrorReason::DomainAddedDuplicate,
+            })
+        ));
+        // added ∩ suppressed.
+        let overlap =
+            "version = 11\n[domains.linked.blog]\nadded = [\"corp\"]\nsuppressed = [\"corp\"]\n";
+        assert!(matches!(
+            Config::from_toml(overlap),
+            Err(ConfigError::Validate {
+                reason: ValidateErrorReason::DomainAddedSuppressedOverlap,
+            })
+        ));
+        // wildcard primary.
+        let wild =
+            "version = 11\n[domains.linked.blog]\nadded = [\"*.blog\"]\nprimary = \"*.blog\"\n";
+        assert!(matches!(
+            Config::from_toml(wild),
+            Err(ConfigError::Validate {
+                reason: ValidateErrorReason::DomainPrimaryWildcard,
+            })
+        ));
     }
 
     #[test]

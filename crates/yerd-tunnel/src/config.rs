@@ -72,7 +72,7 @@ mod tests {
     fn rule(name: &str, tld: &str, secure: bool, hostname: &str) -> IngressRule {
         IngressRule {
             hostname: hostname.to_owned(),
-            origin: OriginTarget::for_site(name, tld, secure, 8080, 8443),
+            origin: OriginTarget::for_site(&format!("{name}.{tld}"), secure, 8080, 8443),
         }
     }
 

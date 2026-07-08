@@ -102,6 +102,28 @@ pub async fn set_web_root(name: String, path: Option<String>) -> Result<Response
     finish(exchange(&Request::SetWebRoot { name, path }).await?)
 }
 
+// ── domains ────────────────────────────────────────────────────────────────
+
+#[tauri::command]
+pub async fn add_domain(name: String, domain: String) -> Result<Response, GuiError> {
+    finish(exchange(&Request::AddDomain { name, domain }).await?)
+}
+
+#[tauri::command]
+pub async fn remove_domain(name: String, domain: String) -> Result<Response, GuiError> {
+    finish(exchange(&Request::RemoveDomain { name, domain }).await?)
+}
+
+#[tauri::command]
+pub async fn set_primary_domain(name: String, domain: String) -> Result<Response, GuiError> {
+    finish(exchange(&Request::SetPrimaryDomain { name, domain }).await?)
+}
+
+#[tauri::command]
+pub async fn reset_domains(name: String) -> Result<Response, GuiError> {
+    finish(exchange(&Request::ResetDomains { name }).await?)
+}
+
 // ── site groups ────────────────────────────────────────────────────────────
 
 #[tauri::command]

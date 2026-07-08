@@ -136,6 +136,26 @@ pub struct StatusReport {
     /// rather than silently off. The daemon always emits it.
     #[serde(default = "default_true")]
     pub symlink_protection: bool,
+    /// Sites that lost a domain to another site during routing: a domain (the
+    /// apex, or a hand-edited explicit domain) claimed by more than one site is
+    /// dropped from the loser when the router is built. Empty on a healthy
+    /// config. `#[serde(default, skip_serializing_if)]` keeps the wire additive -
+    /// an older daemon emits unchanged bytes, an older client ignores it.
+    /// Surfaced by `yerd doctor`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub shadows: Vec<DomainShadow>,
+}
+
+/// One shadow relationship, surfaced in [`StatusReport::shadows`] and by `yerd
+/// doctor`: a domain `site` wanted is instead routed to `shadowed_by`. The
+/// common case is a shadowed apex; a hand-edited config can also collide two
+/// sites on an explicit domain.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DomainShadow {
+    /// The site that lost the domain.
+    pub site: String,
+    /// The other site that claims it.
+    pub shadowed_by: String,
 }
 
 /// `skip_serializing_if` helper: a `u32` that is zero is omitted from the wire.
@@ -505,6 +525,11 @@ pub enum DiagnosisCode {
     /// The global symlink-escape protection is turned off, so the proxy will serve
     /// files reached through symlinks that resolve outside a site's own folder.
     SymlinkProtectionDisabled,
+    /// Two or more sites claim the same domain. The loser was dropped from
+    /// routing when the router was built, and which site wins can depend on the
+    /// filesystem scan order of parked directories, so the winner may change
+    /// across restarts. See [`StatusReport::shadows`].
+    DomainShadowed,
     /// Everything checks out.
     AllGood,
 }

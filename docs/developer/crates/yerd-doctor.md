@@ -164,8 +164,9 @@ The plain `yerd doctor` path is even simpler - it just renders `diagnose(&build_
 | 8 | `PhpUpdateAvailable` | `Ok` | a pool has `update_available = Some(latest)` | `yerd update php <ver>` |
 | 9 | `ResolverBackupSaved` | `Ok` | `resolver_backup == Some(path)` | informational, **no** remedy |
 | 10 | `NoSites` | `Ok` | `sites.parked == 0 && sites.linked == 0` | `yerd park <dir>` / `yerd link <name> <dir>` |
-| 11 | `BinDirNotOnPath` | `Warn` | `path_needs_setup == Some(true)` (a dev tool is installed but `{data}/bin` isn't on `PATH`) | `yerd path install` |
-| 12 | `AllGood` | `Ok` | no `Warn`/`Fail` finding was produced | appended last |
+| 11 | `DomainShadowed` | `Warn` | one per entry in `report.shadows` (a site whose apex or explicit domain was claimed by another site at router-build time); **not** auto-fixable | `yerd domain remove` / `yerd domain primary` |
+| 12 | `BinDirNotOnPath` | `Warn` | `path_needs_setup == Some(true)` (a dev tool is installed but `{data}/bin` isn't on `PATH`) | `yerd path install` |
+| 13 | `AllGood` | `Ok` | no `Warn`/`Fail` finding was produced | appended last |
 
 A few rules carry subtle logic worth calling out.
 

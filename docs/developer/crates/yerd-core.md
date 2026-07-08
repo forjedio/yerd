@@ -60,6 +60,7 @@ mod site;
 mod tld;
 
 pub use detect::{detect, Detection, ProjectSignals};
+pub use domain::{choose_primary, effective_domains, Domain, DomainErrorReason};
 pub use error::{CoreError, PhpVersionErrorReason, SiteNameErrorReason, TldErrorReason};
 pub use php::PhpVersion;
 pub use php_settings::{PhpSettingError, ValueErrorReason};
@@ -74,6 +75,7 @@ pub use tld::Tld;
 | `php`           | re-exported   | `PhpVersion` `(major, minor)` value type                  |
 | `site`          | re-exported   | `Site` / `SiteKind`                                       |
 | `tld`           | re-exported   | `Tld` validated DNS-suffix newtype                        |
+| `domain`        | re-exported   | `Domain` sub-part + `effective_domains` / `choose_primary` algebra |
 | `router`        | re-exported   | `RouterConfig` + `SiteRouter` (the resolve algorithm)     |
 | `php_settings`  | `pub mod`     | managed PHP ini directives + value validation             |
 | `detect`        | `pub mod`     | pure web-root detection (`ProjectSignals` → `Detection`)  |
@@ -360,6 +362,38 @@ shared `WEB_DIR_CANDIDATES` / `ROOT_MARKERS` consts keep the pure decider and th
 platform gatherer from drifting on what to probe. Every branch is table-tested
 with fixture `ProjectSignals` (precedence, mixed signals, empty-project default).
 
+## `Domain` and the effective-set algebra
+
+A `Domain` is the **sub-part** of a routable host - everything left of the
+configured TLD. For TLD `test`: `foo`, `api.foo`, `*.foo`, `*.api.foo`. Storing
+the sub-part (not the FQDN) is canonical because the router strips the TLD before
+matching, and it keeps the value TLD-agnostic. A leftmost `*` label is a
+**single-label wildcard**. `Domain` deliberately derives no serde - config
+persists it through wire mirrors, and IPC carries FQDN strings.
+
+```rust
+pub struct Domain { /* private: the validated sub-part */ }
+
+impl Domain {
+    #[must_use] pub fn apex(name: &str) -> Self;                 // a site's default exact domain
+    pub fn parse(fqdn: &str, tld: &str) -> Result<Self, CoreError>;   // strips + checks the TLD
+    pub fn parse_subpart(sub: &str) -> Result<Self, CoreError>;       // from stored config
+    #[must_use] pub fn as_str(&self) -> &str;                    // the stored sub-part
+    #[must_use] pub fn is_wildcard(&self) -> bool;              // leftmost label is '*'
+    #[must_use] pub fn to_fqdn(&self, tld: &str) -> String;    // sub-part + '.' + tld
+}
+```
+
+Two free functions own the pure "effective set" algebra a site's routable domains
+are computed with (`implicit_default ± delta`):
+
+- `effective_domains(name, added, suppressed) -> Vec<Domain>` = `({apex} - suppressed) + added`, de-duplicated, apex-first. There is **no** implicit subdomain catch-all; the default set is just the apex. Zero-exact normalization restores the apex if a hand-edited config would otherwise leave only wildcards, so a site is always reachable under one concrete host.
+- `choose_primary(name, effective, stored) -> Domain` picks the canonical, displayed domain: the stored primary if it is exact and still present, else the apex if present, else the first exact. A wildcard is never a primary.
+
+`DomainErrorReason` (on `CoreError::InvalidDomain`) enumerates the shape failures
+(`Empty`, `EmptyLabel`, `MisplacedWildcard`, `BareWildcard`, `NotUnderTld`,
+`TooLong`, `LabelTooLong`, `InvalidCharacter`, `LeadingOrTrailingHyphen`).
+
 ## `SiteRouter` and `RouterConfig`
 
 `RouterConfig` pairs a `Tld` with a **cached** `".{tld}"` suffix used on the hot
@@ -385,9 +419,12 @@ Serde emits exactly one field, `tld` (`{"tld":"test"}`); the `dotted_tld` cache
 is never serialised, and `Deserialize` rebuilds it via `RouterConfig::new` with
 `deny_unknown_fields`.
 
-`SiteRouter` is a `BTreeMap<String, Site>` keyed by `site.name()`, plus the
-config. `Default` is **deliberately not derived** - callers must pass a config
-consciously rather than relying on an implicit `"test"`.
+`SiteRouter` keeps a `BTreeMap<String, Site>` keyed by `site.name()` (for
+identity and ordered iteration), plus - since the multi-domain feature - two
+`HashMap` routing indices built from every site's effective domain set: `exact`
+(sub-part → name) and `wildcards` (`*.rest` → name), and per-site `domains` /
+`primaries` maps. `Default` is **deliberately not derived** - callers must pass a
+config consciously rather than relying on an implicit `"test"`.
 
 ```rust
 impl SiteRouter {
@@ -395,6 +432,10 @@ impl SiteRouter {
     pub fn from_sites(config: RouterConfig, sites: impl IntoIterator<Item = Site>)
         -> Result<Self, CoreError>;                       // first dup aborts
     pub fn insert(&mut self, site: Site) -> Result<(), CoreError>;   // DuplicateSite
+    // Insert a site with an explicit effective domain set + chosen primary; the
+    // colliding-key safety net returns DuplicateSite / DuplicateDomain.
+    pub fn insert_with_domains(&mut self, site: Site, effective: Vec<Domain>, primary: Domain)
+        -> Result<(), CoreError>;
     pub fn remove(&mut self, name: &str) -> Result<Site, CoreError>; // SiteNotFound
     #[must_use] pub fn get(&self, name: &str) -> Option<&Site>;
     pub fn get_mut(&mut self, name: &str) -> Option<&mut Site>;
@@ -403,18 +444,25 @@ impl SiteRouter {
     #[must_use] pub fn is_empty(&self) -> bool;
     #[must_use] pub fn config(&self) -> &RouterConfig;
     #[must_use] pub fn resolve(&self, host: &str) -> Option<&Site>;
+    // Domain accessors used by the daemon's DTO/doctor surfaces:
+    #[must_use] pub fn domain_owner(&self, domain: &Domain) -> Option<&str>;
+    #[must_use] pub fn primary_domain(&self, name: &str) -> Option<&Domain>;
+    #[must_use] pub fn effective_domains(&self, name: &str) -> Option<&[Domain]>;
+    #[must_use] pub fn apex_shadowed_by(&self, name: &str) -> Option<&str>;
 }
 ```
 
 Because the map is a `BTreeMap`, `iter` yields sites in lexicographic name order
 deterministically. `get_mut` is invariant-safe precisely because `Site` has no
-`set_name`.
+`set_name`. The plain `insert` gives a site only its default apex;
+`insert_with_domains` is how the daemon installs a customised domain set.
 
 ### The `resolve` algorithm
 
 `resolve` maps a raw `Host:` header value to at most one site. It first
-normalises the host (via the private `host` module), then applies TLD
-enforcement and a wildcard peel.
+normalises the host (via the private `host` module), then does an exact lookup
+followed by a **single-label wildcard** lookup. There is **no** implicit
+subdomain catch-all: an uncustomised site answers only its exact apex.
 
 **Step 1 - host normalisation** (`host::normalise`), returning either a clean
 hostname or `Unroutable`:
@@ -439,44 +487,42 @@ allocates nothing.
 **Step 2 - routing**, on the normalised hostname:
 
 ```
-let label = host.strip_suffix(".{tld}")?;   // must end with the TLD; None otherwise
+let sub = host.strip_suffix(".{tld}")?;     // must end with the TLD; None otherwise
 if host == tld          → None              // bare TLD has no site label
-if label.is_empty()     → None
-if sites.get(label)     → Some              // exact match beats wildcard
-// wildcard peel: strip leftmost label, walk right toward the parent
-let mut rest = label;
-while let Some((_, parent)) = rest.split_once('.') {
-    if parent.is_empty()      → None
-    if sites.get(parent)      → Some
-    rest = parent;
+if sub.is_empty()       → None
+if exact.get(sub)       → Some              // exact match beats wildcard
+// single-label wildcard: replace the LEFTMOST label with '*', one lookup only
+if let Some((_, rest)) = sub.split_once('.') {
+    if wildcards.get(&format!("*.{rest}"))  → Some
 }
 None
 ```
 
-The wildcard peel is what lets `api.foo.test` and `a.b.c.foo.test` both resolve
-to the site `foo`, while `api-foo.test` resolves to its own exact site (exact
-match is tried first). The loop terminates because site names can never contain
-dots (enforced at construction).
+Exact is always tried before the one wildcard candidate, so exact beats wildcard.
+A wildcard matches exactly one label: `*.foo` (stored for a site) answers
+`api.foo.test` but never `x.api.foo.test` (which needs `*.api.foo`). With only
+`foo` registered, `api.foo.test` is unresolved (404). This lets `foo.test` and
+`*.foo.test` belong to two **different** sites.
 
-The behaviour is pinned by a 27-case `resolve_table` test. Representative rows:
+The behaviour is pinned by the router's table tests. Representative rows (site
+`foo` registered with default apex only, unless a domain is noted):
 
-| Host                | Resolves to | Rule                          |
-| ------------------- | ----------- | ----------------------------- |
-| `foo.test`          | `foo`       | exact                         |
-| `foo.test:8443`     | `foo`       | port stripped                 |
-| `foo.test:abc`      | -           | port junk → unroutable        |
-| `[::1]:8080`        | -           | IPv6 literal                  |
-| `foo.test.`         | `foo`       | trailing FQDN dot stripped    |
-| `FOO.TEST`          | `foo`       | case-insensitive              |
-| `föö.test`          | -           | non-ASCII                     |
-| `foo.example`       | -           | wrong TLD                     |
-| `foo.notthetest`    | -           | TLD-suffix collision guarded  |
-| `test`              | -           | bare TLD                      |
-| `api.foo.test`      | `foo`       | wildcard, one level           |
-| `a.b.c.foo.test`    | `foo`       | wildcard, multi-level         |
-| `api-foo.test`      | `api-foo`   | exact beats wildcard          |
-| `foo..test`         | -           | embedded empty label          |
-| `foo.dev.local`     | `foo`       | multi-label custom TLD        |
+| Host                | Resolves to | Rule                                      |
+| ------------------- | ----------- | ----------------------------------------- |
+| `foo.test`          | `foo`       | exact apex                                |
+| `foo.test:8443`     | `foo`       | port stripped                             |
+| `foo.test:abc`      | -           | port junk → unroutable                    |
+| `[::1]:8080`        | -           | IPv6 literal                              |
+| `foo.test.`         | `foo`       | trailing FQDN dot stripped                |
+| `FOO.TEST`          | `foo`       | case-insensitive                          |
+| `föö.test`          | -           | non-ASCII                                 |
+| `foo.example`       | -           | wrong TLD                                 |
+| `test`              | -           | bare TLD                                  |
+| `api.foo.test`      | -           | no implicit catch-all (apex-only default) |
+| `api.foo.test`      | `foo`       | when `*.foo` is registered on `foo`       |
+| `x.api.foo.test`    | -           | single-label wildcard doesn't nest        |
+| `foo..test`         | -           | embedded empty label                      |
+| `foo.dev.local`     | `foo`       | multi-label custom TLD                    |
 
 ::: info
 `resolve` returns `&Site`, so a hit gives the caller the full record -
@@ -498,11 +544,18 @@ failure modes without parsing message strings. Every error enum is
 pub enum CoreError {
     InvalidPhpVersion { input: String, reason: PhpVersionErrorReason },
     InvalidTld        { input: String, reason: TldErrorReason },
+    InvalidDomain     { input: String, reason: DomainErrorReason },
     DuplicateSite     { name: String },
+    DuplicateDomain   { domain: String },
     SiteNotFound      { name: String },
     InvalidSiteName   { name: String, reason: SiteNameErrorReason },
 }
 ```
+
+`DuplicateDomain` is the router's colliding-key safety net (mirroring
+`DuplicateSite`), returned by `insert_with_domains` when two domains map to the
+same routing key; the daemon feeds a pre-de-conflicted set so it never fires in
+production.
 
 `php_settings` has its own pair, `PhpSettingError` (`Unsupported` /
 `InvalidValue`) with `ValueErrorReason`. All error types are `Send + Sync +

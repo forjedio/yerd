@@ -24,6 +24,10 @@ This guide is for switching *machines you already use* for PHP dev. On a clean m
 - **PHP versions don't carry over.** Yerd installs its own [prebuilt PHP builds](./php-versions); it doesn't reuse Herd/Valet/Homebrew PHP. [Getting Started](./getting-started) walks through installing the version(s) you need.
 - **You can keep the old tool installed.** You don't have to uninstall Herd/Valet/Lerd to try Yerd - you just can't have both *serving* at the same time. Keeping it installed makes switching back trivial.
 
+::: warning Subdomains are apex-only by default
+If you relied on Valet/Herd resolving *any* subdomain of a site (`api.my-app.test`, `admin.my-app.test`, ...) implicitly, note that in Yerd a site answers only its exact apex `my-app.test` by default. Register the ones you need explicitly, or re-add the old catch-all behaviour with `yerd domain add my-app '*.my-app.test'`. See the [domains reference](../reference/cli/domains).
+:::
+
 ## Step 1 - Stop the other tool
 
 Stop whatever currently serves `*.test` so it releases ports 80/443 and stops answering `.test` DNS. Pick your tool:

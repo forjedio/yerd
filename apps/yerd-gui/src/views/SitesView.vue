@@ -22,6 +22,7 @@ import {
 import CreateLaravelWizard from "@/components/site-create/CreateLaravelWizard.vue";
 import CreateWordPressWizard from "@/components/site-create/CreateWordPressWizard.vue";
 import SiteCard from "@/components/SiteCard.vue";
+import ManageDomainsModal from "@/components/ManageDomainsModal.vue";
 import PageHeader from "@/components/PageHeader.vue";
 import Badge from "@/components/ui/Badge.vue";
 import Button from "@/components/ui/Button.vue";
@@ -371,6 +372,27 @@ const groupedNoMatch = computed(() => searching.value && visibleSections.value.l
 function sectionExpanded(sec: GroupSection): boolean {
   return searching.value || !isCollapsed(sec.name);
 }
+
+// ── manage domains ──
+// Stored by name (not the entry) and re-resolved live from the loaded sites, so
+// the modal reflects fresh domains after each mutation reloads the cache. The
+// mount is `v-if`-guarded on `manageSite`, so if the site vanishes (external
+// unlink landing on the background poll) the modal closes cleanly instead of
+// dereferencing an undefined `site`.
+const manageTarget = ref<string | null>(null);
+const manageSite = computed<SiteEntry | null>(() =>
+  manageTarget.value ? (sites.value.find((s) => s.name === manageTarget.value) ?? null) : null,
+);
+function openManageDomains(s: SiteEntry): void {
+  manageTarget.value = s.name;
+}
+// If the open site disappears (e.g. an external unlink lands on the background
+// poll), the `v-if="manageSite"` mount drops the modal without a close event, so
+// clear the stale name here - otherwise re-linking a same-named site later would
+// pop the modal open on its own.
+watch(manageSite, (s) => {
+  if (!s) manageTarget.value = null;
+});
 
 // ── edit site (PHP + web root + HTTPS + group + WordPress auto-login) ──
 const editOpen = ref(false);
@@ -763,6 +785,7 @@ async function shareSitePublicly(s: Site): Promise<void> {
               :busy="siteBusy(s.name)"
               :sharing="sharing === s.name"
               @edit="openEdit"
+              @manage-domains="openManageDomains"
               @unlink="openUnlink"
               @share="shareSitePublicly"
               @toggle-secure="toggleSecure"
@@ -859,6 +882,7 @@ async function shareSitePublicly(s: Site): Promise<void> {
                     :busy="siteBusy(s.name)"
                     :sharing="sharing === s.name"
                     @edit="openEdit"
+                    @manage-domains="openManageDomains"
                     @unlink="openUnlink"
                     @share="shareSitePublicly"
                     @toggle-secure="toggleSecure"
@@ -942,6 +966,16 @@ async function shareSitePublicly(s: Site): Promise<void> {
       :tld="tld"
       :report="report ?? null"
       @created="onCreated"
+    />
+
+    <!-- manage domains modal -->
+    <ManageDomainsModal
+      v-if="manageSite"
+      :open="manageTarget !== null"
+      :site="manageSite"
+      :tld="tld"
+      @update:open="(v: boolean) => { if (!v) manageTarget = null; }"
+      @changed="load({ force: true })"
     />
 
     <!-- edit site modal -->

@@ -70,12 +70,12 @@ All public surface hangs off `Config` plus the re-exported helper types. From
 ```rust
 pub use error::{ConfigError, MigrationErrorReason, ValidateErrorReason};
 pub use schema::{
-    Config, DumpsSection, GroupsSection, MailSection, ParkedSection, PhpSection, Ports,
-    ServiceInstance, ServicesSection, SiteOverride, TunnelSection, DEFAULT_DNS_PORT,
-    DEFAULT_DUMP_PORT, DEFAULT_MAIL_PORT, RESERVED_GROUP_NAME,
+    Config, DomainDelta, DomainsSection, DumpsSection, GroupsSection, MailSection, ParkedSection,
+    PhpSection, Ports, ServiceInstance, ServicesSection, SiteOverride, TunnelSection,
+    DEFAULT_DNS_PORT, DEFAULT_DUMP_PORT, DEFAULT_MAIL_PORT, RESERVED_GROUP_NAME,
 };
 
-pub const CURRENT_VERSION: u32 = 10;
+pub const CURRENT_VERSION: u32 = 11;
 ```
 
 `Config` exposes exactly four pure methods and two I/O methods:
@@ -116,8 +116,19 @@ pub struct Config {
     pub services: ServicesSection,
     pub mail: MailSection,
     pub dumps: DumpsSection,
+    pub domains: DomainsSection,
+    // ... plus the optional tunnel / groups / update_channel state.
 }
 ```
+
+`DomainsSection` (schema v11) carries per-site domain deltas, split by site class
+to mirror `overrides`: `linked: BTreeMap<String, DomainDelta>` keyed by site name
+and `parked: BTreeMap<String, DomainDelta>` keyed by document-root. Each
+`DomainDelta { added, suppressed, primary }` layers over a site's default apex.
+The `Domain` values themselves live in `yerd-core`; this crate only persists them
+(via wire mirrors, since `Domain` is deliberately non-serde). `Config::validate`
+checks the structural invariants (no duplicate `added`; `added`/`suppressed`
+disjoint; `primary` not a wildcard); name/TLD/uniqueness rules are the daemon's.
 
 Notable design decisions, all grounded in the source:
 
@@ -321,7 +332,7 @@ version is the single trigger for forward migrations.
 
 ```rust
 /// The on-disk schema version this crate writes.
-pub const CURRENT_VERSION: u32 = 10;
+pub const CURRENT_VERSION: u32 = 11;
 ```
 
 `CURRENT_VERSION` is **decoupled** from `yerd_ipc::PROTOCOL_VERSION`: the on-disk
@@ -330,7 +341,7 @@ with a new entry in `migrate::STEPS`.
 
 `migrate.rs` holds the steps, indexed so that **`STEPS[N]` walks `vN → v(N+1)`**
 - matching `migrate::up`, which indexes `STEPS[current]` (the version being
-migrated *from*). At v10 there are ten (`STEPS.len() == CURRENT_VERSION`, pinned
+migrated *from*). At v11 there are eleven (`STEPS.len() == CURRENT_VERSION`, pinned
 by `steps_cover_every_version_below_current`):
 
 ```rust
@@ -348,6 +359,7 @@ pub(crate) const STEPS: &[MigrationStep] = &[
     migrate_v7_to_v8,
     migrate_v8_to_v9,
     migrate_v9_to_v10,
+    migrate_v10_to_v11,
 ];
 ```
 

@@ -1,8 +1,16 @@
 import type { Site, StatusReport } from "@/ipc/types";
 
 /** The minimal site shape the URL helpers need - satisfied by a full `Site` and
- *  by the create wizard's in-progress form (which has no real `Site` yet). */
-export type SiteLike = Pick<Site, "name" | "secure">;
+ *  by the create wizard's in-progress form (which has no real `Site` yet).
+ *  `primary_domain` (a full FQDN) is honoured as the site's address when set;
+ *  otherwise the address is synthesized as `{name}.{tld}`. */
+export type SiteLike = Pick<Site, "name" | "secure"> & { primary_domain?: string };
+
+/** The site's address host (no scheme/port): its primary domain FQDN when set,
+ *  else `{name}.{tld}`. */
+function siteHost(s: SiteLike, tld: string): string {
+  return s.primary_domain ?? `${s.name}.${tld}`;
+}
 
 /**
  * True when `.test` resolution is unavailable, so sites must be reached via the
@@ -18,21 +26,24 @@ export function isUnbound(report: StatusReport | null | undefined): boolean {
 
 interface UnboundOpts {
   httpBound: number | undefined;
-  tld: string;
+}
+
+/** The bound HTTP port, or the `8080` rootless fallback. Uses a truthiness check
+ *  rather than `?? 8080` so the daemon's degraded-mode `bound = 0` (couldn't bind
+ *  the web ports) also falls back instead of producing a malformed `:0` URL. */
+function boundHttpPortOr8080(bound: number | undefined): number {
+  return bound && bound > 0 ? bound : 8080;
 }
 
 /**
- * The `http://localhost/~{name}.{tld}` URL used when the resolver is off.
- * Always plain http (there is no localhost cert), and the port is omitted when
- * it is the default 80.
+ * The `http://localhost/~{host}` URL used when the resolver is off, where `host`
+ * is the site's full domain FQDN (its primary domain). Always plain http (there
+ * is no localhost cert), and the port is omitted when it is the default 80.
  */
-export function unboundUrlFor(name: string, opts: UnboundOpts): string {
-  // Guard against a non-positive bound port: the daemon reports `http.bound = 0`
-  // in degraded mode (couldn't bind web ports). `?? 8080` would NOT catch 0, so
-  // use a truthiness check to avoid emitting a malformed `:0` URL.
-  const port = opts.httpBound && opts.httpBound > 0 ? opts.httpBound : 8080;
+export function unboundUrlFor(host: string, opts: UnboundOpts): string {
+  const port = boundHttpPortOr8080(opts.httpBound);
   const portPart = port === 80 ? "" : `:${port}`;
-  return `http://localhost${portPart}/~${name}.${opts.tld}`;
+  return `http://localhost${portPart}/~${host}`;
 }
 
 /**
@@ -42,15 +53,16 @@ export function unboundUrlFor(name: string, opts: UnboundOpts): string {
  */
 export function siteUrl(s: SiteLike, report: StatusReport | null | undefined): string {
   const tld = report?.tld ?? "test";
+  const host = siteHost(s, tld);
   if (isUnbound(report)) {
-    return unboundUrlFor(s.name, { httpBound: report?.http.bound, tld });
+    return unboundUrlFor(host, { httpBound: report?.http.bound });
   }
   const scheme = s.secure ? "https" : "http";
   const bound = s.secure ? report?.https.bound : report?.http.bound;
   const dflt = s.secure ? 443 : 80;
   const redirected = report?.port_redirect === true;
   const port = !redirected && bound && bound !== dflt ? `:${bound}` : "";
-  return `${scheme}://${s.name}.${tld}${port}`;
+  return `${scheme}://${host}${port}`;
 }
 
 /**

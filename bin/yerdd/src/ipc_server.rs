@@ -101,16 +101,23 @@ async fn dispatch(req: Request, state: &DaemonState) -> Response {
             // fs-watcher tick) rather than detected fresh here - this
             // handler is polled every few seconds and must not re-stat every
             // site's marker files on each poll. See `wordpress_detect`.
-            let sites: Vec<yerd_core::Site> = state.router.read().await.iter().cloned().collect();
+            let router = state.router.read().await;
+            let tld = router.config().tld().to_owned();
             let wordpress_sites = state.wordpress_sites.read().await;
-            let entries = sites
-                .into_iter()
+            let entries = router
+                .iter()
                 .map(|site| {
-                    let is_wordpress = wordpress_sites.get(site.name()).copied().unwrap_or(false);
+                    let name = site.name();
+                    let is_wordpress = wordpress_sites.get(name).copied().unwrap_or(false);
                     let uses_front_controller = site.uses_front_controller(is_wordpress);
+                    let (primary_domain, domains) = site_entry_domains(&router, name, &tld);
+                    let apex_shadowed_by = router.apex_shadowed_by(name).map(str::to_owned);
                     yerd_ipc::SiteEntry {
-                        site,
+                        site: site.clone(),
                         is_wordpress,
+                        primary_domain,
+                        domains,
+                        apex_shadowed_by,
                         uses_front_controller,
                     }
                 })
@@ -150,7 +157,11 @@ async fn dispatch(req: Request, state: &DaemonState) -> Response {
         | Request::SetSecure { .. }
         | Request::SetWebRoot { .. }
         | Request::SetWordpressAutoLogin { .. }
-        | Request::SetFrontController { .. } => handle_mutation(req, state).await,
+        | Request::SetFrontController { .. }
+        | Request::AddDomain { .. }
+        | Request::RemoveDomain { .. }
+        | Request::SetPrimaryDomain { .. }
+        | Request::ResetDomains { .. } => handle_mutation(req, state).await,
         Request::ListGroups => {
             let cfg = state.config.lock().await;
             Response::Groups {
@@ -349,6 +360,37 @@ async fn dispatch(req: Request, state: &DaemonState) -> Response {
     }
 }
 
+/// Compute a site's `SiteEntry` domain fields. Returns `(primary_domain,
+/// domains)`, both **omitted** (`None`/empty) for an effectively-default site
+/// (apex only, primary = apex) so the wire shape stays byte-identical to older
+/// clients. For a customized site, `domains` is the full effective set as FQDNs
+/// in router order (apex-first-then-added, so a non-apex primary is *not*
+/// necessarily first) and `primary_domain` is set only when the primary differs
+/// from the default apex. Clients identify the primary by matching
+/// `primary_domain`, not by position.
+fn site_entry_domains(
+    router: &yerd_core::SiteRouter,
+    name: &str,
+    tld: &str,
+) -> (Option<String>, Vec<String>) {
+    let apex = yerd_core::Domain::apex(name);
+    let effective = router.effective_domains(name).unwrap_or(&[]);
+    let primary = router.primary_domain(name);
+
+    let is_default =
+        effective.len() == 1 && effective.first() == Some(&apex) && primary == Some(&apex);
+    if is_default {
+        return (None, Vec::new());
+    }
+
+    let domains = effective.iter().map(|d| d.to_fqdn(tld)).collect();
+    let primary_domain = match primary {
+        Some(p) if *p != apex => Some(p.to_fqdn(tld)),
+        _ => None,
+    };
+    (primary_domain, domains)
+}
+
 /// Installed PHP versions (the bundled installs in yerd's data dir), ascending
 /// and deduped. The single source of "what's installed" for the `PhpVersions`
 /// and `AvailablePhp` replies.
@@ -488,11 +530,40 @@ async fn collect_rss_by_pid(
     .unwrap_or_default()
 }
 
+/// Convert domain collisions (live sites plus persisted `[domains]` deltas) into
+/// per-losing-site shadow records for the status report, de-duplicated on
+/// `(site, winner)` so a site that loses several domains to one winner appears
+/// once. The common entry is a shadowed apex; a hand-edited config can also
+/// collide two sites on an explicit domain.
+fn domain_shadows(
+    cfg: &yerd_config::Config,
+    sites: Vec<yerd_core::Site>,
+) -> Vec<yerd_ipc::DomainShadow> {
+    let mut out: Vec<yerd_ipc::DomainShadow> = Vec::new();
+    for collision in crate::site_domains::collisions(cfg, sites) {
+        for loser in collision.losers {
+            let entry = yerd_ipc::DomainShadow {
+                site: loser,
+                shadowed_by: collision.winner.clone(),
+            };
+            if !out.contains(&entry) {
+                out.push(entry);
+            }
+        }
+    }
+    out
+}
+
+/// Builds the full [`StatusReport`]. The config lock is held across the router
+/// snapshot (config-then-router, the same order `handle_mutation` takes) so
+/// `domain_shadows` sees a consistent (config, router) pair rather than one from
+/// either side of a concurrent mutation.
 #[allow(clippy::too_many_lines)]
 async fn build_status_report(state: &DaemonState) -> yerd_ipc::StatusReport {
     use yerd_platform::SystemMetrics;
 
-    let sites = {
+    let (sites, tld, default_php, mail_enabled, mail_port, symlink_protection, shadows) = {
+        let cfg = state.config.lock().await;
         let router = state.router.read().await;
         let mut counts = yerd_ipc::SiteCounts::default();
         for s in router.iter() {
@@ -504,17 +575,16 @@ async fn build_status_report(state: &DaemonState) -> yerd_ipc::StatusReport {
                 counts.secured += 1;
             }
         }
-        counts
-    };
-
-    let (tld, default_php, mail_enabled, mail_port, symlink_protection) = {
-        let cfg = state.config.lock().await;
+        let site_snapshot: Vec<yerd_core::Site> = router.iter().cloned().collect();
+        let shadows = domain_shadows(&cfg, site_snapshot);
         (
+            counts,
             cfg.tld.as_str().to_owned(),
             cfg.php.default,
             cfg.mail.enabled,
             cfg.mail.port,
             cfg.symlink_protection,
+            shadows,
         )
     };
 
@@ -649,6 +719,7 @@ async fn build_status_report(state: &DaemonState) -> yerd_ipc::StatusReport {
         boot_id: Some(state.boot_id),
         shared_sites,
         symlink_protection,
+        shadows,
     }
 }
 
@@ -1919,7 +1990,7 @@ pub(crate) async fn handle_mutation(req: Request, state: &DaemonState) -> Respon
     }
 
     *cfg_guard = new;
-    let site_after = site_after_secure_toggle(&req, &candidate);
+    let site_after = site_needing_url_sync(&req, &candidate);
     *state.router.write().await = candidate;
     *state.wordpress_sites.write().await = candidate_wordpress;
     drop(cfg_guard);
@@ -1935,17 +2006,29 @@ pub(crate) async fn handle_mutation(req: Request, state: &DaemonState) -> Respon
 }
 
 /// The post-mutation site to run [`crate::wordpress_url_sync::sync_site_url`]
-/// against, for a `Request::SetSecure` (`None` for every other request kind).
-/// Looks up `candidate` (the just-rebuilt router) by the *lowercased* site
-/// name, matching every other name-resolution site in `mutate.rs` - the
-/// router is always keyed by the lowercased name (`Site` lowercases at
-/// construction), so looking up an un-lowercased, user-typed name (e.g. from
-/// `yerd secure MyWpSite`) would silently miss and skip the sync.
-fn site_after_secure_toggle(
+/// against: `SetSecure` (which flips the scheme) plus every domain mutation
+/// (each of which can change the primary domain a WordPress install should
+/// advertise). `AddDomain` is included, not just `SetPrimaryDomain`/`ResetDomains`
+/// /`RemoveDomain`: re-adding a previously-suppressed apex when the delta holds no
+/// stored primary flips the derived primary back to the apex (`choose_primary`
+/// prefers the apex over the first exact), so an add can change the primary too.
+/// `sync_site_url` re-reads the just-rebuilt router's primary, so re-running it
+/// when nothing actually changed is a harmless, idempotent no-op. `None` for
+/// every other request kind. Looks `candidate` (the just-rebuilt router) up by
+/// the *lowercased* site name, matching every other name-resolution site in
+/// `mutate.rs` - the router is always keyed by the lowercased name (`Site`
+/// lowercases at construction), so looking up an un-lowercased, user-typed name
+/// (e.g. from `yerd secure MyWpSite`) would silently miss and skip the sync.
+fn site_needing_url_sync(
     req: &Request,
     candidate: &yerd_core::SiteRouter,
 ) -> Option<yerd_core::Site> {
-    let Request::SetSecure { name, .. } = req else {
+    let (Request::SetSecure { name, .. }
+    | Request::AddDomain { name, .. }
+    | Request::RemoveDomain { name, .. }
+    | Request::SetPrimaryDomain { name, .. }
+    | Request::ResetDomains { name }) = req
+    else {
         return None;
     };
     candidate.get(&name.to_ascii_lowercase()).cloned()
@@ -2163,7 +2246,7 @@ mod tests {
     }
 
     #[test]
-    fn site_after_secure_toggle_finds_mixed_case_name() {
+    fn site_needing_url_sync_finds_mixed_case_name() {
         let mut router = SiteRouter::new(RouterConfig::with_tld(Tld::new("test").unwrap()));
         router
             .insert(
@@ -2174,18 +2257,54 @@ mod tests {
             name: "MyBlog".into(),
             secure: true,
         };
-        let site = site_after_secure_toggle(&req, &router);
+        let site = site_needing_url_sync(&req, &router);
         assert_eq!(site.map(|s| s.name().to_owned()), Some("myblog".to_owned()));
     }
 
     #[test]
-    fn site_after_secure_toggle_none_for_other_requests() {
+    fn site_needing_url_sync_covers_all_domain_mutations() {
+        let mut router = SiteRouter::new(RouterConfig::with_tld(Tld::new("test").unwrap()));
+        router
+            .insert(
+                yerd_core::Site::linked("myblog", "/srv/myblog", PhpVersion::new(8, 3)).unwrap(),
+            )
+            .unwrap();
+        for req in [
+            Request::AddDomain {
+                name: "MyBlog".into(),
+                domain: "api.myblog.test".into(),
+            },
+            Request::RemoveDomain {
+                name: "myblog".into(),
+                domain: "corp.test".into(),
+            },
+            Request::SetPrimaryDomain {
+                name: "MyBlog".into(),
+                domain: "corp.test".into(),
+            },
+            Request::ResetDomains {
+                name: "myblog".into(),
+            },
+        ] {
+            assert_eq!(
+                site_needing_url_sync(&req, &router).map(|s| s.name().to_owned()),
+                Some("myblog".to_owned()),
+                "{req:?} should trigger the WordPress URL sync"
+            );
+        }
+    }
+
+    #[test]
+    fn site_needing_url_sync_none_for_non_domain_requests() {
         let router = SiteRouter::new(RouterConfig::with_tld(Tld::new("test").unwrap()));
-        let req = Request::SetPhp {
-            name: "myblog".into(),
-            version: PhpVersion::new(8, 3),
-        };
-        assert!(site_after_secure_toggle(&req, &router).is_none());
+        assert!(site_needing_url_sync(
+            &Request::SetPhp {
+                name: "myblog".into(),
+                version: PhpVersion::new(8, 3),
+            },
+            &router
+        )
+        .is_none());
     }
 
     #[tokio::test]

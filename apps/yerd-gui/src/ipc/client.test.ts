@@ -7,6 +7,7 @@ vi.mock("@tauri-apps/api/core", () => ({
 }));
 
 import {
+  addDomain,
   clearMails,
   deleteMails,
   getMail,
@@ -14,9 +15,12 @@ import {
   listMails,
   listPhp,
   listSites,
+  removeDomain,
+  resetDomains,
   setFrontController,
   setMailEnabled,
   setMailPort,
+  setPrimaryDomain,
   setSymlinkProtection,
   status,
   unlink,
@@ -138,6 +142,33 @@ describe("client → command mapping", () => {
   it("setFrontController rejects on a non-ok response", async () => {
     invokeMock.mockResolvedValue({ type: "error", code: "internal", message: "boom" });
     await expect(setFrontController("blog", false)).rejects.toThrow("boom");
+  });
+
+  it("addDomain / removeDomain / setPrimaryDomain send name + domain", async () => {
+    invokeMock.mockResolvedValue({ type: "ok" });
+    await addDomain("blog", "corp.test");
+    expect(invokeMock).toHaveBeenCalledWith("add_domain", {
+      name: "blog",
+      domain: "corp.test",
+    });
+    invokeMock.mockResolvedValue({ type: "ok" });
+    await removeDomain("blog", "*.blog.test");
+    expect(invokeMock).toHaveBeenCalledWith("remove_domain", {
+      name: "blog",
+      domain: "*.blog.test",
+    });
+    invokeMock.mockResolvedValue({ type: "ok" });
+    await setPrimaryDomain("blog", "corp.test");
+    expect(invokeMock).toHaveBeenCalledWith("set_primary_domain", {
+      name: "blog",
+      domain: "corp.test",
+    });
+  });
+
+  it("resetDomains sends just the name", async () => {
+    invokeMock.mockResolvedValue({ type: "ok" });
+    await resetDomains("blog");
+    expect(invokeMock).toHaveBeenCalledWith("reset_domains", { name: "blog" });
   });
 });
 

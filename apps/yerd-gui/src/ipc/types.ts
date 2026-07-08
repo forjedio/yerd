@@ -51,6 +51,15 @@ export interface Site {
  */
 export interface SiteEntry extends Site {
   is_wordpress?: boolean;
+  /** Primary (canonical) domain FQDN, present only when it differs from the
+   *  default `{name}.{tld}` apex (omitted otherwise). */
+  primary_domain?: string;
+  /** Full effective routable domain set as FQDNs, in router order (apex-first,
+   *  so the primary is not necessarily first - match `primary_domain` by value).
+   *  Present only for a customised site (omitted for a default apex-only site). */
+  domains?: string[];
+  /** Another site's name that claims this site's apex label, when shadowed. */
+  apex_shadowed_by?: string;
   /** Effective front-controller mode the daemon resolved (stored override or
    *  detected default). `true` funnels through `index.php`; `false` executes
    *  named `.php` directly. Always present; absent only from an older daemon. */
@@ -239,6 +248,15 @@ export interface StatusReport {
    *  the user has opted out. Defaults to `true` (protected) when omitted by a
    *  daemon predating the field. */
   symlink_protection?: boolean;
+  /** Sites whose apex label is shadowed by another site's explicit domain.
+   *  Omitted/empty on a healthy config. */
+  shadows?: DomainShadow[];
+}
+
+/** One apex-shadow relationship: `site`'s apex is claimed by `shadowed_by`. */
+export interface DomainShadow {
+  site: string;
+  shadowed_by: string;
 }
 
 export type Severity = "ok" | "warn" | "fail";

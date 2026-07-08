@@ -7,7 +7,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use yerd_core::{PhpVersion, Site, Tld};
+use yerd_core::{Domain, PhpVersion, Site, Tld};
 
 /// Top-level on-disk config.
 ///
@@ -72,6 +72,9 @@ pub struct Config {
     pub tunnel: TunnelSection,
     /// User-defined site groups and per-site membership. Empty by default.
     pub groups: GroupsSection,
+    /// Per-site routable-domain customisations (added/suppressed domains and a
+    /// chosen primary), split by site class. Empty by default.
+    pub domains: DomainsSection,
 }
 
 impl Default for Config {
@@ -92,7 +95,63 @@ impl Default for Config {
             dumps: DumpsSection::default(),
             tunnel: TunnelSection::default(),
             groups: GroupsSection::default(),
+            domains: DomainsSection::default(),
         }
+    }
+}
+
+/// Per-site routable-domain customisations (see [`Config::domains`]).
+///
+/// A site answers only its **effective** domain set, computed as
+/// `(default apex - suppressed) + added` (see
+/// [`yerd_core::effective_domains`]). Only the *delta* from the default is
+/// stored, so an uncustomised site has no entry and the whole section is omitted
+/// from a default config.
+///
+/// Split by site class to mirror the existing storage idioms: **linked** sites
+/// are name-stable so they key by site name (like [`Config::linked`]); **parked**
+/// sites are directory-derived so they key by document-root string (like
+/// [`Config::overrides`]), which survives a directory rename without
+/// misattributing a routing set.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DomainsSection {
+    /// Linked-site deltas, keyed by site name. `BTreeMap` for stable order.
+    pub linked: BTreeMap<String, DomainDelta>,
+    /// Parked-site deltas, keyed by document-root string (byte-exact, never
+    /// canonicalised - see [`SiteOverride`]). `BTreeMap` for stable order.
+    pub parked: BTreeMap<String, DomainDelta>,
+}
+
+impl DomainsSection {
+    /// True when there are no linked and no parked deltas, letting the serialiser
+    /// omit the `[domains]` table so a default config stays byte-stable.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.linked.is_empty() && self.parked.is_empty()
+    }
+}
+
+/// One site's routable-domain delta from its default (apex-only) set.
+///
+/// Extensible/all-defaultable so future per-site domain settings slot in
+/// additively. An all-empty delta is equivalent to no entry and should be pruned
+/// by the writer (the daemon) rather than persisted.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DomainDelta {
+    /// Domains added on top of the default apex (exact or single-label wildcard).
+    pub added: Vec<Domain>,
+    /// Default domains (only ever the apex) the user suppressed.
+    pub suppressed: Vec<Domain>,
+    /// The chosen primary (canonical) domain, or `None` to derive it. Must be an
+    /// exact (non-wildcard) domain when set.
+    pub primary: Option<Domain>,
+}
+
+impl DomainDelta {
+    /// True when the delta carries no customisation (equivalent to no entry).
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.added.is_empty() && self.suppressed.is_empty() && self.primary.is_none()
     }
 }
 

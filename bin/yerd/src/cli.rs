@@ -202,6 +202,13 @@ pub enum Command {
         /// named `.php` directly.
         state: OnOff,
     },
+    /// Manage a site's routable domains (add/remove domains, subdomains and
+    /// wildcards, and change the primary domain).
+    Domain {
+        /// What to do.
+        #[command(subcommand)]
+        action: DomainAction,
+    },
     /// Grant yerd OS-level privileges (run via `sudo`). No subcommand = all.
     Elevate {
         /// Which privilege to grant; omit to grant all.
@@ -249,6 +256,45 @@ pub enum PathAction {
     Uninstall,
     /// Print the shell snippet without modifying any file (for manual `eval`).
     Print,
+}
+
+/// Action of `yerd domain`.
+#[derive(clap::Subcommand, Debug, Clone)]
+pub enum DomainAction {
+    /// List a site's domains (primary marked), or all sites' domains with no
+    /// argument.
+    List {
+        /// Site name; omit to list every site's domains.
+        site: Option<String>,
+    },
+    /// Add a domain to a site: an exact host (`api.myapp.test`) or a single-label
+    /// wildcard (`*.myapp.test`).
+    Add {
+        /// Site name.
+        site: String,
+        /// Full domain FQDN under the configured TLD.
+        domain: String,
+    },
+    /// Remove a domain from a site. A site must keep at least one exact domain.
+    Remove {
+        /// Site name.
+        site: String,
+        /// Full domain FQDN to remove.
+        domain: String,
+    },
+    /// Set a site's primary (canonical) domain. Must be an exact domain; it is
+    /// added to the site if not already present.
+    Primary {
+        /// Site name.
+        site: String,
+        /// Full domain FQDN to make primary.
+        domain: String,
+    },
+    /// Reset a site's domains to the default (its `{name}.{tld}` apex only).
+    Reset {
+        /// Site name.
+        site: String,
+    },
 }
 
 /// Action of `yerd service`.

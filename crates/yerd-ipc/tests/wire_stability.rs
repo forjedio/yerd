@@ -77,6 +77,60 @@ fn request_unlink_byte_shape() {
 }
 
 #[test]
+fn request_add_domain_byte_shape() {
+    let r = Request::AddDomain {
+        name: "foo".into(),
+        domain: "api.foo.test".into(),
+    };
+    let s = serde_json::to_string(&r).unwrap();
+    assert_eq!(
+        s,
+        r#"{"type":"add_domain","name":"foo","domain":"api.foo.test"}"#
+    );
+    let back: Request = serde_json::from_str(&s).unwrap();
+    assert_eq!(back, r);
+}
+
+#[test]
+fn request_remove_domain_byte_shape() {
+    let r = Request::RemoveDomain {
+        name: "foo".into(),
+        domain: "*.foo.test".into(),
+    };
+    let s = serde_json::to_string(&r).unwrap();
+    assert_eq!(
+        s,
+        r#"{"type":"remove_domain","name":"foo","domain":"*.foo.test"}"#
+    );
+    let back: Request = serde_json::from_str(&s).unwrap();
+    assert_eq!(back, r);
+}
+
+#[test]
+fn request_set_primary_domain_byte_shape() {
+    let r = Request::SetPrimaryDomain {
+        name: "foo".into(),
+        domain: "corp.test".into(),
+    };
+    let s = serde_json::to_string(&r).unwrap();
+    assert_eq!(
+        s,
+        r#"{"type":"set_primary_domain","name":"foo","domain":"corp.test"}"#
+    );
+    let back: Request = serde_json::from_str(&s).unwrap();
+    assert_eq!(back, r);
+}
+
+#[test]
+fn request_reset_domains_byte_shape() {
+    let r = Request::ResetDomains { name: "foo".into() };
+    let s = serde_json::to_string(&r).unwrap();
+    assert_eq!(s, r#"{"type":"reset_domains","name":"foo"}"#);
+    let back: Request = serde_json::from_str(&s).unwrap();
+    assert_eq!(back, r);
+}
+
+#[test]
 fn request_list_parked_byte_shape() {
     let s = serde_json::to_string(&Request::ListParked).unwrap();
     assert_eq!(s, r#"{"type":"list_parked"}"#);
@@ -377,6 +431,9 @@ fn plain(site: Site) -> yerd_ipc::SiteEntry {
     yerd_ipc::SiteEntry {
         site,
         is_wordpress: false,
+        primary_domain: None,
+        domains: vec![],
+        apex_shadowed_by: None,
         uses_front_controller: false,
     }
 }
@@ -430,11 +487,34 @@ fn response_sites_wordpress_byte_shape() {
         sites: vec![yerd_ipc::SiteEntry {
             site: blog,
             is_wordpress: true,
+            primary_domain: None,
+            domains: vec![],
+            apex_shadowed_by: None,
             uses_front_controller: false,
         }],
     };
     let s = serde_json::to_string(&r).unwrap();
     let expected = r#"{"type":"sites","sites":[{"name":"blog","document_root":"/srv/blog","php":"8.3","secure":false,"kind":"parked","is_wordpress":true,"uses_front_controller":false}]}"#;
+    assert_eq!(s, expected);
+    let back: Response = serde_json::from_str(&s).unwrap();
+    assert_eq!(back, r);
+}
+
+#[test]
+fn response_sites_customized_domains_byte_shape() {
+    let blog = Site::parked("blog", "/srv/blog", PhpVersion::new(8, 3)).unwrap();
+    let r = Response::Sites {
+        sites: vec![yerd_ipc::SiteEntry {
+            site: blog,
+            is_wordpress: false,
+            primary_domain: Some("corp.test".into()),
+            domains: vec!["corp.test".into(), "*.blog.test".into()],
+            apex_shadowed_by: Some("shop".into()),
+            uses_front_controller: false,
+        }],
+    };
+    let s = serde_json::to_string(&r).unwrap();
+    let expected = r#"{"type":"sites","sites":[{"name":"blog","document_root":"/srv/blog","php":"8.3","secure":false,"kind":"parked","primary_domain":"corp.test","domains":["corp.test","*.blog.test"],"apex_shadowed_by":"shop","uses_front_controller":false}]}"#;
     assert_eq!(s, expected);
     let back: Response = serde_json::from_str(&s).unwrap();
     assert_eq!(back, r);
@@ -449,6 +529,9 @@ fn response_sites_wp_auto_login_byte_shape() {
         sites: vec![yerd_ipc::SiteEntry {
             site: blog,
             is_wordpress: true,
+            primary_domain: None,
+            domains: vec![],
+            apex_shadowed_by: None,
             uses_front_controller: false,
         }],
     };
@@ -707,6 +790,7 @@ fn response_status_byte_shape() {
             boot_id: None,
             shared_sites: 0,
             symlink_protection: true,
+            shadows: vec![],
         }),
     };
     let s = serde_json::to_string(&r).unwrap();
@@ -807,6 +891,7 @@ fn sample_status_report() -> StatusReport {
         boot_id: None,
         shared_sites: 0,
         symlink_protection: true,
+        shadows: vec![],
     }
 }
 
@@ -947,6 +1032,7 @@ fn diagnosis_code_each_variant_byte_shape() {
             DiagnosisCode::SymlinkProtectionDisabled,
             r#""symlink_protection_disabled""#,
         ),
+        (DiagnosisCode::DomainShadowed, r#""domain_shadowed""#),
         (DiagnosisCode::AllGood, r#""all_good""#),
     ];
     for (code, expected) in cases {

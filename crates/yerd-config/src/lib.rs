@@ -23,9 +23,9 @@ mod serialize;
 
 pub use error::{ConfigError, MigrationErrorReason, ValidateErrorReason};
 pub use schema::{
-    Config, DumpsSection, ExtEntry, GroupsSection, MailSection, ParkedSection, PhpSection, Ports,
-    ServiceInstance, ServicesSection, SiteOverride, TunnelSection, DEFAULT_DNS_PORT,
-    DEFAULT_DUMP_PORT, DEFAULT_MAIL_PORT, RESERVED_GROUP_NAME,
+    Config, DomainDelta, DomainsSection, DumpsSection, ExtEntry, GroupsSection, MailSection,
+    ParkedSection, PhpSection, Ports, ServiceInstance, ServicesSection, SiteOverride,
+    TunnelSection, DEFAULT_DNS_PORT, DEFAULT_DUMP_PORT, DEFAULT_MAIL_PORT, RESERVED_GROUP_NAME,
 };
 
 /// The on-disk schema version this crate writes. Bumped together with a new
@@ -56,13 +56,21 @@ pub use schema::{
 /// optional `[php.extensions]` registry ([`PhpSection::extensions`]) for
 /// user-registered custom extensions, plus the `wp_auto_login`/
 /// `wp_auto_login_user` keys inside `[[linked]]` and `[[overrides]]` for
-/// `WordPress` one-click admin login. v11 added the top-level
-/// `symlink_protection` scalar ([`Config::symlink_protection`]) for the
-/// user-toggleable proxy symlink-escape guard. v12 added the optional
-/// `front_controller` key inside `[[linked]]` and `[[overrides]]` for the
-/// per-site front-controller-vs-direct-execution toggle. All default when
-/// absent, so the v3→v4 … v10→v11 and v11→v12 migrations are bare version bumps;
-/// each bump exists so an *older* binary rejects a file using the newer field
-/// cleanly as [`ConfigError::UnsupportedVersion`] rather than failing on the
-/// unknown key.
-pub const CURRENT_VERSION: u32 = 12;
+/// `WordPress` one-click admin login. All default when absent, so the v3→v4,
+/// v4→v5, v5→v6, v6→v7, v7→v8, v8→v9, and v9→v10 migrations are bare version
+/// bumps; each bump exists so an *older* binary rejects a file using the newer
+/// field cleanly as [`ConfigError::UnsupportedVersion`] rather than failing on
+/// the unknown key.
+///
+/// v11 added the optional `[domains]` table ([`DomainsSection`]) for per-site
+/// routable-domain customisation (multiple domains, subdomains, wildcards, and a
+/// changeable primary). It defaults (empty) when absent, so v10→v11 is a bare
+/// version bump.
+///
+/// v12 added the top-level `symlink_protection` scalar
+/// ([`Config::symlink_protection`]) for the user-toggleable proxy symlink-escape
+/// guard (defaults to on when absent). v13 added the optional `front_controller`
+/// key inside `[[linked]]` and `[[overrides]]` for the per-site
+/// front-controller-vs-direct-execution toggle (defaults to auto when absent).
+/// Both v11→v12 and v12→v13 are bare version bumps.
+pub const CURRENT_VERSION: u32 = 13;
