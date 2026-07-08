@@ -128,22 +128,25 @@ pub struct StatusReport {
     /// ignores it).
     #[serde(default, skip_serializing_if = "is_zero_u32")]
     pub shared_sites: u32,
-    /// Sites whose apex label is shadowed by another site's explicit domain (the
-    /// apex was dropped from routing when the router was built). Empty on a
-    /// healthy config. `#[serde(default, skip_serializing_if)]` keeps the wire
-    /// additive - an older daemon emits unchanged bytes, an older client ignores
-    /// it. Surfaced by `yerd doctor`.
+    /// Sites that lost a domain to another site during routing: a domain (the
+    /// apex, or a hand-edited explicit domain) claimed by more than one site is
+    /// dropped from the loser when the router is built. Empty on a healthy
+    /// config. `#[serde(default, skip_serializing_if)]` keeps the wire additive -
+    /// an older daemon emits unchanged bytes, an older client ignores it.
+    /// Surfaced by `yerd doctor`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub shadows: Vec<DomainShadow>,
 }
 
-/// One apex-shadow relationship, surfaced in [`StatusReport::shadows`] and by
-/// `yerd doctor`: `site`'s default apex is claimed by `shadowed_by`.
+/// One shadow relationship, surfaced in [`StatusReport::shadows`] and by `yerd
+/// doctor`: a domain `site` wanted is instead routed to `shadowed_by`. The
+/// common case is a shadowed apex; a hand-edited config can also collide two
+/// sites on an explicit domain.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DomainShadow {
-    /// The site whose apex is shadowed.
+    /// The site that lost the domain.
     pub site: String,
-    /// The other site that claims the apex label.
+    /// The other site that claims it.
     pub shadowed_by: String,
 }
 
@@ -505,6 +508,11 @@ pub enum DiagnosisCode {
     /// The bundled PHP does not trust the Yerd CA: the managed `{data}/cacert.pem`
     /// is missing or stale, so PHP HTTPS to `.test` fails (`cURL error 60`).
     PhpCaNotTrusted,
+    /// Two or more sites claim the same domain. The loser was dropped from
+    /// routing when the router was built, and which site wins can depend on the
+    /// filesystem scan order of parked directories, so the winner may change
+    /// across restarts. See [`StatusReport::shadows`].
+    DomainShadowed,
     /// Everything checks out.
     AllGood,
 }

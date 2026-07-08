@@ -17,7 +17,7 @@
 //!   `SiteRouter::apex_shadowed_by`), but keeps it in its effective set so its
 //!   primary/address stays concrete.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use yerd_config::{Config, DomainDelta};
 use yerd_core::{choose_primary, effective_domains, Domain, RouterConfig, Site, SiteRouter};
@@ -45,6 +45,58 @@ pub(crate) fn build(cfg: &Config, sites: Vec<Site>) -> SiteRouter {
         }
     }
     router
+}
+
+/// A domain wanted by more than one site. `build` resolves this deterministically
+/// for a given scan order (explicit beats implicit apex, else first site wins),
+/// but the scan order of parked directories under one root is filesystem
+/// dependent, so `winner` can differ across restarts. Surfaced by the doctor so
+/// the user can make the domains unique. `losers` wanted `domain` but were
+/// dropped from routing.
+pub(crate) struct DomainCollision {
+    /// The site that currently owns the contested domain in the router.
+    pub winner: String,
+    /// The other sites that wanted the domain and lost it.
+    pub losers: Vec<String>,
+}
+
+/// Detect domains wanted by more than one site, using the same effective-set and
+/// claim rules as [`build`]. Empty for a well-formed config where every domain
+/// has a single claimant.
+#[must_use]
+pub(crate) fn collisions(cfg: &Config, sites: Vec<Site>) -> Vec<DomainCollision> {
+    let plans = plan_sites(cfg, sites);
+    let claims = build_claims(&plans);
+
+    let mut wanted: BTreeMap<String, Vec<usize>> = BTreeMap::new();
+    for (idx, plan) in plans.iter().enumerate() {
+        for dom in &plan.effective {
+            wanted.entry(dom.as_str().to_owned()).or_default().push(idx);
+        }
+    }
+
+    let mut out = Vec::new();
+    for (domain, idxs) in wanted {
+        if idxs.len() < 2 {
+            continue;
+        }
+        let Some(winner_idx) = claims.get(&domain).copied() else {
+            continue;
+        };
+        let Some(winner) = plans.get(winner_idx).map(|p| p.site.name().to_owned()) else {
+            continue;
+        };
+        let losers: Vec<String> = idxs
+            .iter()
+            .filter(|&&i| i != winner_idx)
+            .filter_map(|&i| plans.get(i).map(|p| p.site.name().to_owned()))
+            .collect();
+        if losers.is_empty() {
+            continue;
+        }
+        out.push(DomainCollision { winner, losers });
+    }
+    out
 }
 
 /// A site plus its computed effective domain set and chosen primary.
@@ -206,6 +258,51 @@ mod tests {
             r.get("foo").unwrap().document_root().to_string_lossy(),
             "/srv/a/foo"
         );
+    }
+
+    #[test]
+    fn collisions_reports_two_sites_claiming_one_explicit_domain() {
+        let mut cfg = cfg_with_tld("test");
+        cfg.domains.parked.insert(
+            "/srv/a".into(),
+            DomainDelta {
+                added: vec![d("corp")],
+                suppressed: vec![],
+                primary: None,
+            },
+        );
+        cfg.domains.parked.insert(
+            "/srv/b".into(),
+            DomainDelta {
+                added: vec![d("corp")],
+                suppressed: vec![],
+                primary: None,
+            },
+        );
+        let sites = vec![
+            Site::parked("a", "/srv/a", v()).unwrap(),
+            Site::parked("b", "/srv/b", v()).unwrap(),
+        ];
+        let cs = collisions(&cfg, sites);
+        assert_eq!(cs.len(), 1, "only `corp` collides; apexes a/b are unique");
+        let corp = cs.first().expect("collision");
+        assert_eq!(corp.winner, "a");
+        assert_eq!(corp.losers, vec!["b".to_owned()]);
+    }
+
+    #[test]
+    fn collisions_empty_for_apex_and_wildcard_on_different_sites() {
+        let mut cfg = cfg_with_tld("test");
+        cfg.domains.linked.insert(
+            "wild".into(),
+            DomainDelta {
+                added: vec![d("*.foo")],
+                suppressed: vec![],
+                primary: None,
+            },
+        );
+        let sites = vec![linked("foo", "/srv/foo"), linked("wild", "/srv/wild")];
+        assert!(collisions(&cfg, sites).is_empty());
     }
 
     #[test]

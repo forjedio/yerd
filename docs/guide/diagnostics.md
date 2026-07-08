@@ -132,6 +132,7 @@ When nothing is wrong:
 | `PhpUpdateAvailable` | `Ok` | A newer patch exists (notify-only; Yerd never updates silently). | `yerd update php <version>` |
 | `ResolverBackupSaved` | `Ok` | Installing the resolver replaced a pre-existing `/etc/resolver/<tld>` (e.g. a Valet/Herd leftover); a timestamped backup was saved. `sudo yerd unelevate resolver` restores it automatically. | _(none)_ |
 | `NoSites` | `Ok` | No sites configured yet. | `yerd park <dir>` or `yerd link <name> <dir>` |
+| `DomainShadowed` | `Warn` | Two sites claim the same domain, so one was dropped from routing. Which site wins can depend on directory scan order, so it may change on restart (usually the result of a hand-edited config). | Make each site's domains unique with `yerd domain remove` or `yerd domain primary` |
 | `AllGood` | `Ok` | Nothing else is wrong. | _(none)_ |
 
 ::: tip No false alarms

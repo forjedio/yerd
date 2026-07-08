@@ -524,14 +524,37 @@ async fn collect_rss_by_pid(
     .unwrap_or_default()
 }
 
+/// Convert domain collisions (live sites plus persisted `[domains]` deltas) into
+/// per-losing-site shadow records for the status report, de-duplicated on
+/// `(site, winner)` so a site that loses several domains to one winner appears
+/// once. The common entry is a shadowed apex; a hand-edited config can also
+/// collide two sites on an explicit domain.
+fn domain_shadows(
+    cfg: &yerd_config::Config,
+    sites: Vec<yerd_core::Site>,
+) -> Vec<yerd_ipc::DomainShadow> {
+    let mut out: Vec<yerd_ipc::DomainShadow> = Vec::new();
+    for collision in crate::site_domains::collisions(cfg, sites) {
+        for loser in collision.losers {
+            let entry = yerd_ipc::DomainShadow {
+                site: loser,
+                shadowed_by: collision.winner.clone(),
+            };
+            if !out.contains(&entry) {
+                out.push(entry);
+            }
+        }
+    }
+    out
+}
+
 #[allow(clippy::too_many_lines)]
 async fn build_status_report(state: &DaemonState) -> yerd_ipc::StatusReport {
     use yerd_platform::SystemMetrics;
 
-    let (sites, shadows) = {
+    let (sites, site_snapshot) = {
         let router = state.router.read().await;
         let mut counts = yerd_ipc::SiteCounts::default();
-        let mut shadows = Vec::new();
         for s in router.iter() {
             match s.kind() {
                 yerd_core::SiteKind::Parked => counts.parked += 1,
@@ -540,23 +563,20 @@ async fn build_status_report(state: &DaemonState) -> yerd_ipc::StatusReport {
             if s.secure() {
                 counts.secured += 1;
             }
-            if let Some(by) = router.apex_shadowed_by(s.name()) {
-                shadows.push(yerd_ipc::DomainShadow {
-                    site: s.name().to_owned(),
-                    shadowed_by: by.to_owned(),
-                });
-            }
         }
-        (counts, shadows)
+        let snapshot: Vec<yerd_core::Site> = router.iter().cloned().collect();
+        (counts, snapshot)
     };
 
-    let (tld, default_php, mail_enabled, mail_port) = {
+    let (tld, default_php, mail_enabled, mail_port, shadows) = {
         let cfg = state.config.lock().await;
+        let shadows = domain_shadows(&cfg, site_snapshot);
         (
             cfg.tld.as_str().to_owned(),
             cfg.php.default,
             cfg.mail.enabled,
             cfg.mail.port,
+            shadows,
         )
     };
 

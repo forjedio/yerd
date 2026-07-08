@@ -179,22 +179,42 @@ fn is_under_root(docroot: &str, root: &str) -> bool {
 
 fn apply_unlink(cfg: &mut Config, router: &SiteRouter, name: &str) -> Result<Applied, MutateError> {
     let name_lc = name.to_ascii_lowercase();
-    if cfg.linked.iter().any(|s| s.name() == name_lc) {
-        cfg.linked.retain(|s| s.name() != name_lc);
-        // Drop the site's linked-side domain delta. The reverse migration
-        // (linked -> parked, when the directory is still parked) is left to the
-        // I/O wrapper, which can check parked-ness; here the delta simply resets.
-        cfg.domains.linked.remove(&name_lc);
-        Ok(Applied {
-            summary: format!("unlinked {name_lc}"),
-        })
-    } else if router.get(&name_lc).is_some() {
-        Err(MutateError::NotFound(format!(
-            "{name_lc} is a parked site, not linked — unpark its directory instead"
-        )))
-    } else {
-        Err(MutateError::NotFound(format!("no site named {name_lc}")))
+    let Some(site) = cfg.linked.iter().find(|s| s.name() == name_lc) else {
+        return if router.get(&name_lc).is_some() {
+            Err(MutateError::NotFound(format!(
+                "{name_lc} is a parked site, not linked — unpark its directory instead"
+            )))
+        } else {
+            Err(MutateError::NotFound(format!("no site named {name_lc}")))
+        };
+    };
+    // If the unlinked directory is an immediate child of a still-parked root it
+    // will re-appear as a parked site, so move its domain delta (keyed by name)
+    // to the parked side (keyed by document-root) to preserve custom domains
+    // across the link -> parked transition. This is the reverse of `apply_link`.
+    // Otherwise the site vanishes and the delta is dropped.
+    let docroot_key = override_key(site);
+    let reparks = parent_is_parked_root(cfg, &docroot_key);
+    cfg.linked.retain(|s| s.name() != name_lc);
+    if let Some(delta) = cfg.domains.linked.remove(&name_lc) {
+        if reparks {
+            cfg.domains.parked.insert(docroot_key, delta);
+        }
     }
+    Ok(Applied {
+        summary: format!("unlinked {name_lc}"),
+    })
+}
+
+/// True when `docroot`'s immediate parent is a parked root, so unlinking the
+/// directory lets `scan_sites` rediscover it as a parked site (whose delta is
+/// keyed by this same `docroot`). Pure string logic over already-canonical
+/// paths, matching `scan_sites`' `<root>/<child>` document-root derivation.
+fn parent_is_parked_root(cfg: &Config, docroot: &str) -> bool {
+    std::path::Path::new(docroot)
+        .parent()
+        .and_then(std::path::Path::to_str)
+        .is_some_and(|parent| cfg.parked.paths.contains(parent))
 }
 
 fn apply_set_php(
@@ -1687,6 +1707,60 @@ mod tests {
         .unwrap();
         assert!(cfg.domains.parked.is_empty());
         assert!(cfg.domains.linked.contains_key("foo"));
+    }
+
+    #[test]
+    fn unlink_reparks_migrates_domain_delta_to_parked() {
+        let mut cfg = Config::default();
+        cfg.parked.paths.insert("/srv".into());
+        cfg.linked
+            .push(Site::linked("foo", "/srv/foo", v(8, 3)).unwrap());
+        cfg.domains.linked.insert(
+            "foo".into(),
+            DomainDelta {
+                added: vec![Domain::parse_subpart("corp").unwrap()],
+                suppressed: vec![],
+                primary: Some(Domain::parse_subpart("corp").unwrap()),
+            },
+        );
+        let r = empty_router();
+        apply(
+            &mut cfg,
+            &r,
+            &Request::Unlink { name: "foo".into() },
+            None,
+            v(8, 3),
+        )
+        .unwrap();
+        assert!(cfg.domains.linked.is_empty());
+        let delta = cfg.domains.parked.get("/srv/foo").unwrap();
+        assert_eq!(delta.added, vec![Domain::parse_subpart("corp").unwrap()]);
+        assert_eq!(delta.primary, Some(Domain::parse_subpart("corp").unwrap()));
+    }
+
+    #[test]
+    fn unlink_without_parked_parent_drops_domain_delta() {
+        let mut cfg = Config::default();
+        cfg.linked
+            .push(Site::linked("foo", "/srv/foo", v(8, 3)).unwrap());
+        cfg.domains.linked.insert(
+            "foo".into(),
+            DomainDelta {
+                added: vec![Domain::parse_subpart("corp").unwrap()],
+                suppressed: vec![],
+                primary: None,
+            },
+        );
+        let r = empty_router();
+        apply(
+            &mut cfg,
+            &r,
+            &Request::Unlink { name: "foo".into() },
+            None,
+            v(8, 3),
+        )
+        .unwrap();
+        assert!(cfg.domains.is_empty());
     }
 
     #[test]
