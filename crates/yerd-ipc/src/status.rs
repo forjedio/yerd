@@ -128,6 +128,14 @@ pub struct StatusReport {
     /// ignores it).
     #[serde(default, skip_serializing_if = "is_zero_u32")]
     pub shared_sites: u32,
+    /// Whether the proxy's symlink-escape protection is on (the global
+    /// `symlink_protection` setting). `true` = protection active (block symlinks
+    /// resolving outside a site's document root); `false` = the user has opted
+    /// out. `#[serde(default = "default_true")]` so a *newer* client decoding an
+    /// *older* daemon's status (which lacks this key) reads it as protected
+    /// rather than silently off. The daemon always emits it.
+    #[serde(default = "default_true")]
+    pub symlink_protection: bool,
 }
 
 /// `skip_serializing_if` helper: a `u32` that is zero is omitted from the wire.
@@ -136,6 +144,12 @@ pub struct StatusReport {
 #[allow(clippy::trivially_copy_pass_by_ref)]
 fn is_zero_u32(n: &u32) -> bool {
     *n == 0
+}
+
+/// `serde` default for [`StatusReport::symlink_protection`]: protection on, so
+/// an older daemon's status (missing the key) reads as protected, not off.
+fn default_true() -> bool {
+    true
 }
 
 /// The rootless fallback ports the daemon failed to bind, surfaced in

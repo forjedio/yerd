@@ -13,6 +13,7 @@
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
+use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -193,6 +194,7 @@ async fn https_handshake_routes_to_backend() {
             resolver,
             Arc::new(NoLoginTokens),
             None,
+            Arc::new(AtomicBool::new(true)),
             async move {
                 let _ = rx_shutdown.await;
             },
@@ -260,6 +262,7 @@ async fn http_redirect_tracks_live_public_port_updates() {
             resolver,
             Arc::new(NoLoginTokens),
             None,
+            Arc::new(AtomicBool::new(true)),
             async move {
                 let _ = rx_shutdown.await;
             },

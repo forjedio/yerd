@@ -34,27 +34,40 @@ pub async fn resolve_script(
     uri_path: &str,
     served_root: &Path,
     allowed_root: &Path,
+    symlink_protection: bool,
 ) -> Option<PathBuf> {
     let real_root = tokio::fs::canonicalize(allowed_root).await.ok()?;
 
     if let Some(rel) = static_candidate(uri_path) {
-        return existing_php_file(served_root, &real_root, &rel).await;
+        return existing_php_file(served_root, &real_root, &rel, symlink_protection).await;
     }
 
     let dir_rel = directory_candidate(uri_path)?;
     let script_rel = dir_rel.join("index.php");
-    existing_php_file(served_root, &real_root, &script_rel).await
+    existing_php_file(served_root, &real_root, &script_rel, symlink_protection).await
 }
 
 /// `rel` (relative to `served_root`) if it's a real, on-disk `.php` file that
 /// canonicalises within `real_root` - `None` otherwise (missing, a
 /// directory, not `.php`, or a symlink escaping `real_root`).
-async fn existing_php_file(served_root: &Path, real_root: &Path, rel: &Path) -> Option<PathBuf> {
+///
+/// When `symlink_protection` is `false`, a symlink escaping `real_root` is
+/// accepted (its canonical path is used only for the `is_file` probe; the
+/// returned value stays the `served_root`-relative `rel` so FastCGI's
+/// `DOCUMENT_ROOT`/`SCRIPT_FILENAME` are unaffected and FPM follows the symlink
+/// itself).
+async fn existing_php_file(
+    served_root: &Path,
+    real_root: &Path,
+    rel: &Path,
+    symlink_protection: bool,
+) -> Option<PathBuf> {
     if !is_php_source(rel) {
         return None;
     }
     let real_file = match canonical_within(&served_root.join(rel), real_root).await {
         Some(Containment::Ok(path)) => path,
+        Some(Containment::Escaped(path)) if !symlink_protection => path,
         Some(Containment::Escaped(_)) | None => return None,
     };
     tokio::fs::metadata(&real_file)
@@ -74,7 +87,7 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         std::fs::write(root.path().join("wp-login.php"), b"<?php").unwrap();
 
-        let rel = resolve_script("/wp-login.php", root.path(), root.path()).await;
+        let rel = resolve_script("/wp-login.php", root.path(), root.path(), true).await;
         assert_eq!(rel, Some(PathBuf::from("wp-login.php")));
     }
 
@@ -84,7 +97,7 @@ mod tests {
         std::fs::create_dir(root.path().join("wp-admin")).unwrap();
         std::fs::write(root.path().join("wp-admin/index.php"), b"<?php").unwrap();
 
-        let rel = resolve_script("/wp-admin/", root.path(), root.path()).await;
+        let rel = resolve_script("/wp-admin/", root.path(), root.path(), true).await;
         assert_eq!(rel, Some(PathBuf::from("wp-admin/index.php")));
     }
 
@@ -94,7 +107,7 @@ mod tests {
         std::fs::create_dir(root.path().join("empty")).unwrap();
 
         assert_eq!(
-            resolve_script("/empty/", root.path(), root.path()).await,
+            resolve_script("/empty/", root.path(), root.path(), true).await,
             None
         );
     }
@@ -103,7 +116,7 @@ mod tests {
     async fn missing_exact_file_falls_back() {
         let root = tempfile::tempdir().unwrap();
         assert_eq!(
-            resolve_script("/wp-login.php", root.path(), root.path()).await,
+            resolve_script("/wp-login.php", root.path(), root.path(), true).await,
             None
         );
     }
@@ -117,7 +130,7 @@ mod tests {
         std::fs::write(root.path().join("app.css"), b"body{}").unwrap();
 
         assert_eq!(
-            resolve_script("/app.css", root.path(), root.path()).await,
+            resolve_script("/app.css", root.path(), root.path(), true).await,
             None
         );
     }
@@ -127,7 +140,7 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         std::fs::write(root.path().join("index.php"), b"<?php").unwrap();
 
-        let rel = resolve_script("/", root.path(), root.path()).await;
+        let rel = resolve_script("/", root.path(), root.path(), true).await;
         assert_eq!(rel, Some(PathBuf::from("index.php")));
     }
 
@@ -144,8 +157,27 @@ mod tests {
         .unwrap();
 
         assert_eq!(
-            resolve_script("/wp-login.php", docroot.path(), docroot.path()).await,
+            resolve_script("/wp-login.php", docroot.path(), docroot.path(), true).await,
             None
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn symlinked_script_escaping_document_root_resolves_when_protection_off() {
+        let docroot = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(outside.path().join("shared.php"), b"<?php").unwrap();
+        std::os::unix::fs::symlink(
+            outside.path().join("shared.php"),
+            docroot.path().join("wp-login.php"),
+        )
+        .unwrap();
+
+        assert_eq!(
+            resolve_script("/wp-login.php", docroot.path(), docroot.path(), false).await,
+            Some(PathBuf::from("wp-login.php")),
+            "protection off resolves the escaping script by its served-root-relative path"
         );
     }
 
@@ -153,7 +185,7 @@ mod tests {
     async fn traversal_attempt_falls_back() {
         let root = tempfile::tempdir().unwrap();
         assert_eq!(
-            resolve_script("/../../etc/passwd", root.path(), root.path()).await,
+            resolve_script("/../../etc/passwd", root.path(), root.path(), true).await,
             None
         );
     }

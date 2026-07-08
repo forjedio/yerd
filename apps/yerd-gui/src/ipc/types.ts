@@ -226,6 +226,11 @@ export interface StatusReport {
   /** Number of sites currently shared publicly (quick tunnels + named-tunnel
    *  exposed sites). Omitted/`0` when nothing is shared. */
   shared_sites?: number;
+  /** Whether the proxy's symlink-escape protection is on. `true` = protection
+   *  active (block symlinks resolving outside a site's document root); `false` =
+   *  the user has opted out. Defaults to `true` (protected) when omitted by a
+   *  daemon predating the field. */
+  symlink_protection?: boolean;
 }
 
 export type Severity = "ok" | "warn" | "fail";

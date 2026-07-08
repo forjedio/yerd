@@ -30,6 +30,7 @@ import {
   setAutostartDaemon,
   setAutostartGui,
   setAutostartGuiMinimized,
+  setSymlinkProtection,
   setTrayIconVariant,
 } from "@/ipc/client";
 import type { AutostartState, CliPathStatus, TitleBarStyle, TrayIconVariant } from "@/ipc/types";
@@ -320,6 +321,36 @@ async function confirmApplicationPorts(close: () => void): Promise<void> {
   }
 }
 
+// ── symlink protection (global proxy setting, from the status report) ──
+// Default to protected (true) when the report hasn't arrived or predates the field.
+const symlinkProtection = ref(true);
+watch(
+  () => report.value?.symlink_protection,
+  (v) => {
+    if (v !== undefined) symlinkProtection.value = v;
+  },
+  { immediate: true },
+);
+
+async function toggleSymlinkProtection(on: boolean): Promise<void> {
+  busy.value = "symlink-protection";
+  try {
+    await setSymlinkProtection(on);
+    symlinkProtection.value = on;
+    toast.success(
+      on ? "Symlink protection enabled" : "Symlink protection disabled",
+      on
+        ? "Symlinks resolving outside a site's root are blocked again."
+        : "Symlinks resolving outside a site's root are now served.",
+    );
+    await refreshStatus();
+  } catch (e) {
+    toast.error("Couldn't change symlink protection", (e as IpcError).message);
+  } finally {
+    busy.value = null;
+  }
+}
+
 // ── autostart toggles ──
 async function toggleDaemonLogin(on: boolean): Promise<void> {
   busy.value = "login:daemon";
@@ -579,6 +610,31 @@ async function toggleGuiMinimized(on: boolean): Promise<void> {
               :disabled="busy === 'login:gui-min' || !autostart?.gui"
               aria-label="Start the Yerd app minimized"
               @update:model-value="toggleGuiMinimized"
+            />
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Security</CardTitle>
+          <CardDescription>Control how the proxy treats symlinks inside your sites.</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <div class="flex items-center justify-between gap-4">
+            <div>
+              <p class="text-sm font-medium">Symlink protection</p>
+              <p class="text-xs text-muted-foreground">
+                {{ symlinkProtection
+                  ? "On - the proxy refuses to serve files reached through a symlink that resolves outside a site's own folder."
+                  : "Off - the proxy will serve files reached through a symlink even when the target is outside a site's folder (e.g. a shared theme). Only turn this off for directories you trust; combined with a public tunnel it can expose files beyond the site root." }}
+              </p>
+            </div>
+            <Switch
+              :model-value="symlinkProtection"
+              :disabled="busy === 'symlink-protection' || !connected"
+              aria-label="Symlink protection"
+              @update:model-value="toggleSymlinkProtection"
             />
           </div>
         </CardContent>

@@ -32,6 +32,7 @@ Every field below maps one-to-one to a field in `schema.rs`. The on-disk shape a
 | `version`   | integer              | On-disk schema version. **Mandatory.**                            | `5`            |
 | `tld`       | string               | TLD served by Yerd's resolver.                                    | `"test"`       |
 | `dns_port`  | integer (u16)        | Loopback port for the embedded `.test` DNS responder.             | `1053`         |
+| `symlink_protection` | boolean     | Refuse to serve assets/scripts reached via a symlink resolving outside a site's document root. | `true` |
 | `ports`     | table                | HTTP / HTTPS listen ports.                                        | `80` / `443`   |
 | `php`       | table                | PHP defaults and global ini settings.                             | see below      |
 | `parked`    | table                | Parked directory paths.                                           | empty          |
@@ -59,6 +60,16 @@ The loopback UDP/TCP port the embedded `.test` DNS responder binds to. The defau
 
 ::: tip Port already in use?
 If another process holds `dns_port`, the daemon fails to bind and tells you to change `dns_port` in `yerd.toml` or free the port.
+:::
+
+### `symlink_protection`
+
+By default (`true`) the proxy refuses to serve a static asset - or resolve a script - reached through a symlink whose target resolves **outside** the requested site's own document root, answering with an explicit `403`. This is a safety guard: a symlink inside a site could otherwise point the server at arbitrary files elsewhere on the host.
+
+Set it to `false` to allow those symlinks. The motivating case is a shared parent/child WordPress theme kept in its own directory beside your sites and symlinked into `wp-content/themes/`: with protection on, its assets 403; with protection off, they are served. The setting is global (all sites) and can be toggled from the desktop app under **Settings › Security**; the change takes effect immediately, without restarting the daemon.
+
+::: warning Off trusts every in-tree symlink
+While off, a symlink is followed wherever it resolves, not only within the parked folder. Combined with a public tunnel (`yerd-tunnel`), that can expose files beyond a site's root. Leave it on unless you specifically need a cross-directory symlink like the shared-theme layout above.
 :::
 
 ### `[ports]`
@@ -349,6 +360,7 @@ A file written by a *newer* Yerd than you are running is refused rather than mis
 - **`v7 → v8`** is a bare version bump: v8 only **added** the optional `[tunnel]` table, which defaults to empty when absent. Same rationale - the bump lets an older binary refuse a `[tunnel]`-bearing file cleanly rather than tripping `deny_unknown_fields`.
 - **`v8 → v9`** is a bare version bump: v9 only **added** the optional `[groups]` table, which defaults to empty when absent. Same rationale - the bump lets an older binary refuse a `[groups]`-bearing file cleanly rather than tripping `deny_unknown_fields`.
 - **`v9 → v10`** is a bare version bump: v10 **added** the optional `[php.extensions]` registry and the `wp_auto_login` / `wp_auto_login_user` keys (inside `[[linked]]` and `[[overrides]]`, for one-click `WordPress` admin login), all of which default when absent. Same rationale - the bump lets an older binary refuse a file using them cleanly rather than tripping `deny_unknown_fields`.
+- **`v10 → v11`** is a bare version bump: v11 only **added** the top-level `symlink_protection` scalar (defaults to `true` when absent).
 
 The on-disk schema version is deliberately decoupled from the IPC protocol version; the two evolve independently.
 

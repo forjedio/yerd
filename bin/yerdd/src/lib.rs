@@ -135,6 +135,7 @@ async fn run_until_shutdown(
         let mut rx = shutdown_rx.clone();
         let login_tokens = daemon.state.wordpress_login_tokens.clone();
         let login_prepend_script = daemon.state.wordpress_login_prepend_script.clone();
+        let symlink_protection = daemon.state.symlink_protection.clone();
         Some(tokio::spawn(yerd_proxy::ProxyServer::serve(
             http_listener,
             Some(https),
@@ -142,6 +143,7 @@ async fn run_until_shutdown(
             resolver,
             login_tokens,
             login_prepend_script,
+            symlink_protection,
             async move {
                 let _ = rx.changed().await;
             },

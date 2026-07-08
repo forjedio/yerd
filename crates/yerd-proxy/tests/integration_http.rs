@@ -13,6 +13,7 @@
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::PathBuf;
+use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -241,6 +242,7 @@ async fn proxy_forwards_to_fcgi_backend() {
             resolver,
             Arc::new(NoLoginTokens),
             None,
+            Arc::new(AtomicBool::new(true)),
             async move {
                 let _ = rx_shutdown.await;
             },
@@ -334,6 +336,7 @@ async fn valid_login_token_adds_auto_prepend_and_strips_token_from_query() {
             resolver,
             login_tokens,
             Some(prepend_path),
+            Arc::new(AtomicBool::new(true)),
             async move {
                 let _ = rx_shutdown.await;
             },
@@ -424,6 +427,7 @@ async fn secure_site_redirect_does_not_consume_login_token() {
             resolver,
             login_tokens,
             None,
+            Arc::new(AtomicBool::new(true)),
             async move {
                 let _ = rx_shutdown.await;
             },
@@ -477,6 +481,7 @@ async fn unknown_host_returns_404() {
             resolver,
             Arc::new(NoLoginTokens),
             None,
+            Arc::new(AtomicBool::new(true)),
             async move {
                 let _ = rx_shutdown.await;
             },
@@ -513,6 +518,7 @@ async fn missing_host_header_returns_400() {
             resolver,
             Arc::new(NoLoginTokens),
             None,
+            Arc::new(AtomicBool::new(true)),
             async move {
                 let _ = rx_shutdown.await;
             },
@@ -562,6 +568,7 @@ async fn static_file_is_served_without_touching_fcgi() {
             resolver,
             Arc::new(NoLoginTokens),
             None,
+            Arc::new(AtomicBool::new(true)),
             async move {
                 let _ = rx_shutdown.await;
             },
@@ -613,6 +620,7 @@ async fn directory_index_html_served_when_no_index_php() {
             resolver,
             Arc::new(NoLoginTokens),
             None,
+            Arc::new(AtomicBool::new(true)),
             async move {
                 let _ = rx_shutdown.await;
             },
@@ -660,6 +668,7 @@ async fn directory_index_htm_served_as_fallback() {
             resolver,
             Arc::new(NoLoginTokens),
             None,
+            Arc::new(AtomicBool::new(true)),
             async move {
                 let _ = rx_shutdown.await;
             },
@@ -720,6 +729,7 @@ async fn index_php_present_wins_over_index_html() {
             resolver,
             Arc::new(NoLoginTokens),
             None,
+            Arc::new(AtomicBool::new(true)),
             async move {
                 let _ = rx_shutdown.await;
             },
@@ -790,6 +800,7 @@ async fn subdirectory_index_php_wins_over_root_index_php() {
             resolver,
             Arc::new(NoLoginTokens),
             None,
+            Arc::new(AtomicBool::new(true)),
             async move {
                 let _ = rx_shutdown.await;
             },
@@ -860,6 +871,7 @@ async fn direct_script_execution_gated_to_wordpress_sites() {
             resolver,
             Arc::new(NoLoginTokens),
             None,
+            Arc::new(AtomicBool::new(true)),
             async move {
                 let _ = rx_shutdown.await;
             },
@@ -926,6 +938,7 @@ async fn directory_with_no_index_at_all_falls_through_to_fcgi() {
             resolver,
             Arc::new(NoLoginTokens),
             None,
+            Arc::new(AtomicBool::new(true)),
             async move {
                 let _ = rx_shutdown.await;
             },
@@ -986,6 +999,7 @@ async fn nonexistent_directory_falls_through_to_fcgi() {
             resolver,
             Arc::new(NoLoginTokens),
             None,
+            Arc::new(AtomicBool::new(true)),
             async move {
                 let _ = rx_shutdown.await;
             },
@@ -1035,6 +1049,7 @@ async fn head_request_to_directory_index_returns_empty_body() {
             resolver,
             Arc::new(NoLoginTokens),
             None,
+            Arc::new(AtomicBool::new(true)),
             async move {
                 let _ = rx_shutdown.await;
             },
@@ -1115,6 +1130,7 @@ async fn symlink_within_document_root_outside_served_root_is_served() {
             resolver,
             Arc::new(NoLoginTokens),
             None,
+            Arc::new(AtomicBool::new(true)),
             async move {
                 let _ = rx_shutdown.await;
             },
@@ -1174,6 +1190,7 @@ async fn symlink_escaping_document_root_returns_403() {
             resolver,
             Arc::new(NoLoginTokens),
             None,
+            Arc::new(AtomicBool::new(true)),
             async move {
                 let _ = rx_shutdown.await;
             },
@@ -1190,6 +1207,65 @@ async fn symlink_escaping_document_root_returns_403() {
     let body_str = String::from_utf8_lossy(&body);
     assert!(body_str.contains("/evil.txt"));
     assert!(!body_str.contains(&docroot.path().to_string_lossy().into_owned()));
+
+    let _ = tx_shutdown.send(());
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(5), proxy_task).await;
+}
+
+/// Issue #112: with `symlink_protection` off, an asset reached through a symlink
+/// that resolves outside the site's document root (e.g. a shared theme kept
+/// beside the site) is served normally instead of the `403` above - the
+/// user-opt-out this setting exists for.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn symlink_escaping_document_root_is_served_when_protection_off() {
+    let outside = tempfile::tempdir().unwrap();
+    std::fs::write(outside.path().join("style.css"), b"shared-theme-css").unwrap();
+
+    let docroot = tempfile::tempdir().unwrap();
+    std::os::unix::fs::symlink(
+        outside.path().join("style.css"),
+        docroot.path().join("style.css"),
+    )
+    .unwrap();
+
+    let proxy_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let proxy_addr = proxy_listener.local_addr().unwrap();
+
+    let tld = Tld::new("test").unwrap();
+    let cfg = RouterConfig::with_tld(tld);
+    let mut router = SiteRouter::new(cfg);
+    let site = Site::linked("app", docroot.path().to_path_buf(), PhpVersion::new(8, 3)).unwrap();
+    router.insert(site).unwrap();
+    let router = Arc::new(tokio::sync::RwLock::new(router));
+
+    let resolver = Arc::new(StaticResolver {
+        backend: Backend::PhpFpmTcp {
+            addr: "127.0.0.1:1".parse().unwrap(),
+        },
+    });
+
+    let (tx_shutdown, rx_shutdown) = oneshot::channel::<()>();
+    let proxy_task = tokio::spawn(async move {
+        let _ = ProxyServer::serve::<_, StubCertStore, _, _>(
+            proxy_listener,
+            None,
+            router,
+            resolver,
+            Arc::new(NoLoginTokens),
+            None,
+            Arc::new(AtomicBool::new(false)),
+            async move {
+                let _ = rx_shutdown.await;
+            },
+        )
+        .await;
+    });
+
+    let (status, _content_type, body) =
+        client_get_response(proxy_addr, "app.test", "/style.css").await;
+    assert_eq!(status, 200);
+    assert_eq!(body, b"shared-theme-css");
 
     let _ = tx_shutdown.send(());
     let _ = tokio::time::timeout(std::time::Duration::from_secs(5), proxy_task).await;
@@ -1237,6 +1313,7 @@ async fn symlinked_index_html_escaping_root_is_not_served() {
             resolver,
             Arc::new(NoLoginTokens),
             None,
+            Arc::new(AtomicBool::new(true)),
             async move {
                 let _ = rx_shutdown.await;
             },

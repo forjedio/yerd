@@ -689,6 +689,11 @@ export async function setMailEnabled(enabled: boolean): Promise<void> {
   ensureOk(await call<Response>("set_mail_enabled", { enabled }));
 }
 
+/** Enable/disable the proxy's symlink-escape protection; takes effect immediately. */
+export async function setSymlinkProtection(enabled: boolean): Promise<void> {
+  ensureOk(await call<Response>("set_symlink_protection", { enabled }));
+}
+
 /** Open (or focus) the separate Mails viewer window. Host command, not daemon IPC. */
 export async function showMailsWindow(): Promise<void> {
   await call<void>("show_mails_window");

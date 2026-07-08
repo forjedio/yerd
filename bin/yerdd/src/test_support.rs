@@ -80,6 +80,7 @@ pub fn state_in(tmp: &Path) -> DaemonState {
             fell_back: true,
         },
         redirect_https_port: Arc::new(std::sync::atomic::AtomicU16::new(8443)),
+        symlink_protection: Arc::new(std::sync::atomic::AtomicBool::new(true)),
         web_unbound: None,
         dns_unbound: None,
         boot_id: 1,

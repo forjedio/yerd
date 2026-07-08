@@ -581,6 +581,15 @@ pub enum Request {
         /// The new group name.
         to: String,
     },
+    /// Enable or disable the proxy's symlink-escape protection (the global
+    /// `symlink_protection` setting). When disabled, the proxy serves assets
+    /// and resolves scripts reached via a symlink that resolves outside a
+    /// site's document root. Takes effect immediately (no daemon restart) and
+    /// is persisted to config.
+    SetSymlinkProtection {
+        /// `true` = protection on (block escapes); `false` = allow escapes.
+        enabled: bool,
+    },
 }
 
 #[cfg(test)]
@@ -694,6 +703,7 @@ mod variant_name_pinning {
             Request::SetGroupOrder { .. } => {}
             Request::SetSiteGroup { .. } => {}
             Request::RenameGroup { .. } => {}
+            Request::SetSymlinkProtection { .. } => {}
         }
     }
 
@@ -931,6 +941,7 @@ mod variant_name_pinning {
             from: "Blog".into(),
             to: "Journal".into(),
         });
+        pin(Request::SetSymlinkProtection { enabled: true });
     }
 
     fn laravel_options_fixture() -> crate::LaravelOptions {

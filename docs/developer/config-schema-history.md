@@ -28,7 +28,20 @@ Each entry below states what changed, whether the daemon's own migration is a ba
 
 ## Version-by-version
 
-### v10 (current)
+### v11 (current)
+
+**Added:** the top-level `symlink_protection` scalar (bool) - the global toggle for the proxy's symlink-escape guard. `true` (the default) blocks assets/scripts reached via a symlink resolving outside a site's document root; `false` serves them.
+
+```toml
+version = 11
+symlink_protection = false
+```
+
+**Migration from v10:** bare version bump - the field defaults to `true` when absent, so a v10 file needs no other change to become a valid v11 file.
+
+**To downgrade to v10:** change `version = 11` to `version = 10`, then delete the `symlink_protection` line (a v10 daemon rejects the unknown key under `deny_unknown_fields`, it doesn't just ignore it).
+
+### v10
 
 **Added (two independent, optional additions):**
 

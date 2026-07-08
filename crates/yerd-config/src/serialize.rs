@@ -22,6 +22,9 @@ struct WireSer<'a> {
     // v6 scalar - also above the sub-tables. Always emitted (like `tld` /
     // `dns_port`) so the channel is visible/editable in the file.
     update_channel: &'a str,
+    // v11 scalar - must stay in the scalar region above the sub-tables. Always
+    // emitted so the toggle is visible/editable in the file.
+    symlink_protection: bool,
     ports: PortsSer<'a>,
     php: PhpSectionSer<'a>,
     parked: ParkedSectionSer<'a>,
@@ -177,12 +180,14 @@ struct OverrideSer<'a> {
     wp_auto_login_user: Option<&'a str>,
 }
 
+#[allow(clippy::too_many_lines)]
 pub(crate) fn to_toml(c: &Config) -> Result<String, ConfigError> {
     let w = WireSer {
         version: CURRENT_VERSION,
         tld: &c.tld,
         dns_port: c.dns_port,
         update_channel: &c.update_channel,
+        symlink_protection: c.symlink_protection,
         ports: PortsSer {
             http: &c.ports.http,
             https: &c.ports.https,
@@ -294,8 +299,8 @@ mod tests {
     fn default_to_toml_starts_with_version_line() {
         let s = to_toml(&Config::default()).unwrap();
         assert!(
-            s.starts_with("version = 10\n"),
-            "expected `version = 10` first line; got: {s}"
+            s.starts_with("version = 11\n"),
+            "expected `version = 11` first line; got: {s}"
         );
     }
 

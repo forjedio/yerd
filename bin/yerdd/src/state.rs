@@ -110,6 +110,12 @@ pub struct DaemonState {
     /// portless `https://site.test` without restarting. Shared with
     /// `yerd_proxy::HttpsBinding::public_port`.
     pub redirect_https_port: Arc<AtomicU16>,
+    /// Live mirror of `config.symlink_protection`, shared with `yerd_proxy`'s
+    /// static-file/script-resolution path so the `SetSymlinkProtection` IPC
+    /// handler can toggle the proxy's symlink-escape guard without a daemon
+    /// restart. The config mutex remains the durable source of truth; this
+    /// atomic is the hot read the proxy consults per request.
+    pub symlink_protection: Arc<AtomicBool>,
     /// Set when the daemon could bind neither the desired nor the fallback web
     /// ports - it runs degraded (no proxy). Carries the fallback ports it failed
     /// on, surfaced in `Status` (`web_unbound`) so the UI/doctor can name them.

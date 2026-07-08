@@ -16,6 +16,7 @@ import {
   listSites,
   setMailEnabled,
   setMailPort,
+  setSymlinkProtection,
   status,
   unlink,
   updatePhp,
@@ -116,6 +117,12 @@ describe("client → command mapping", () => {
     invokeMock.mockResolvedValue({ type: "ok" });
     await setMailEnabled(true);
     expect(invokeMock).toHaveBeenCalledWith("set_mail_enabled", { enabled: true });
+  });
+
+  it("setSymlinkProtection sends the flag", async () => {
+    invokeMock.mockResolvedValue({ type: "ok" });
+    await setSymlinkProtection(false);
+    expect(invokeMock).toHaveBeenCalledWith("set_symlink_protection", { enabled: false });
   });
 });
 

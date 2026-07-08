@@ -115,6 +115,7 @@ fn main() {
             commands::set_fallback_ports,
             commands::set_dns_port,
             commands::set_mail_enabled,
+            commands::set_symlink_protection,
             mail_window::show_mails_window,
             commands::status,
             commands::diagnose,

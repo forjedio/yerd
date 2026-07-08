@@ -406,6 +406,7 @@ mod tests {
             dns_unbound: None,
             boot_id: None,
             shared_sites: 0,
+            symlink_protection: true,
         }
     }
 

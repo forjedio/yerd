@@ -33,6 +33,11 @@ struct Wire {
     // parses, defaulting to "stable".
     #[serde(default = "default_update_channel")]
     update_channel: String,
+    // v11: proxy symlink-escape protection. `default` is mandatory (Wire is
+    // `deny_unknown_fields`) so a v1..v10 file with no `symlink_protection` key
+    // still parses, defaulting to on.
+    #[serde(default = "default_symlink_protection")]
+    symlink_protection: bool,
     #[serde(default)]
     ports: PortsWire,
     #[serde(default)]
@@ -293,6 +298,10 @@ fn default_update_channel() -> String {
     crate::schema::DEFAULT_UPDATE_CHANNEL.to_owned()
 }
 
+fn default_symlink_protection() -> bool {
+    crate::schema::DEFAULT_SYMLINK_PROTECTION
+}
+
 pub(crate) fn parse_toml(s: &str) -> Result<Config, ConfigError> {
     let mut value: toml::Value = toml::from_str(s)?;
     let found = crate::migrate::read_version(&value)?;
@@ -394,6 +403,7 @@ impl TryFrom<Wire> for Config {
             tld,
             dns_port: w.dns_port,
             update_channel: w.update_channel,
+            symlink_protection: w.symlink_protection,
             ports,
             php,
             parked,
@@ -782,7 +792,7 @@ mod tests {
         match Config::from_toml("version = 99\n") {
             Err(ConfigError::UnsupportedVersion {
                 found: 99,
-                current: 10,
+                current: 11,
             }) => {}
             other => panic!("expected UnsupportedVersion, got {other:?}"),
         }
@@ -887,6 +897,21 @@ mod tests {
     fn groups_absent_table_is_empty_and_migrates() {
         let c = Config::from_toml("version = 8\n").unwrap();
         assert!(c.groups.is_empty());
+    }
+
+    #[test]
+    fn symlink_protection_absent_defaults_on_and_migrates() {
+        let c = Config::from_toml("version = 10\n").unwrap();
+        assert!(c.symlink_protection);
+    }
+
+    #[test]
+    fn symlink_protection_false_parses_and_round_trips() {
+        let s = "version = 11\nsymlink_protection = false\n";
+        let c = Config::from_toml(s).unwrap();
+        assert!(!c.symlink_protection);
+        let back = Config::from_toml(&c.to_toml().unwrap()).unwrap();
+        assert_eq!(back, c);
     }
 
     #[test]

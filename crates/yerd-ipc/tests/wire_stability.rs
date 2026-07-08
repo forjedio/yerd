@@ -703,11 +703,12 @@ fn response_status_byte_shape() {
             dns_unbound: None,
             boot_id: None,
             shared_sites: 0,
+            symlink_protection: true,
         }),
     };
     let s = serde_json::to_string(&r).unwrap();
     let expected = format!(
-        r#"{{"type":"status","report":{{"daemon_pid":4242,"uptime_secs":7,"daemon_rss_bytes":2048,"tld":"test","http":{{"requested":80,"bound":8080,"fell_back":true}},"https":{{"requested":443,"bound":8443,"fell_back":true}},"dns_addr":"127.0.0.1:1053","ca":{{"path":"/x/ca.cert.pem","fingerprint":"{}","trusted_system":false}},"resolver_installed":true,"default_php":"8.5","php":[{{"version":"8.5","installed_patch":"8.5.6","state":"running","pid":99,"listen":"/run/fpm.sock","rss_bytes":1024,"update_available":null}}],"sites":{{"parked":1,"linked":2,"secured":1}},"load_avg":[100,50,25],"daemon_version":"2.0.1"}}}}"#,
+        r#"{{"type":"status","report":{{"daemon_pid":4242,"uptime_secs":7,"daemon_rss_bytes":2048,"tld":"test","http":{{"requested":80,"bound":8080,"fell_back":true}},"https":{{"requested":443,"bound":8443,"fell_back":true}},"dns_addr":"127.0.0.1:1053","ca":{{"path":"/x/ca.cert.pem","fingerprint":"{}","trusted_system":false}},"resolver_installed":true,"default_php":"8.5","php":[{{"version":"8.5","installed_patch":"8.5.6","state":"running","pid":99,"listen":"/run/fpm.sock","rss_bytes":1024,"update_available":null}}],"sites":{{"parked":1,"linked":2,"secured":1}},"load_avg":[100,50,25],"daemon_version":"2.0.1","symlink_protection":true}}}}"#,
         "ab".repeat(32)
     );
     assert_eq!(s, expected);
@@ -802,6 +803,7 @@ fn sample_status_report() -> StatusReport {
         dns_unbound: None,
         boot_id: None,
         shared_sites: 0,
+        symlink_protection: true,
     }
 }
 
@@ -1584,6 +1586,14 @@ fn request_set_mail_enabled_byte_shape() {
     let r = Request::SetMailEnabled { enabled: true };
     let s = serde_json::to_string(&r).unwrap();
     assert_eq!(s, r#"{"type":"set_mail_enabled","enabled":true}"#);
+    assert_eq!(serde_json::from_str::<Request>(&s).unwrap(), r);
+}
+
+#[test]
+fn request_set_symlink_protection_byte_shape() {
+    let r = Request::SetSymlinkProtection { enabled: true };
+    let s = serde_json::to_string(&r).unwrap();
+    assert_eq!(s, r#"{"type":"set_symlink_protection","enabled":true}"#);
     assert_eq!(serde_json::from_str::<Request>(&s).unwrap(), r);
 }
 

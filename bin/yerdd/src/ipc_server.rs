@@ -303,6 +303,7 @@ async fn dispatch(req: Request, state: &DaemonState) -> Response {
         Request::SetFallbackPorts { http, https } => set_fallback_ports(http, https, state).await,
         Request::SetDnsPort { port } => set_dns_port(port, state).await,
         Request::SetMailEnabled { enabled } => set_mail_enabled(enabled, state).await,
+        Request::SetSymlinkProtection { enabled } => set_symlink_protection(enabled, state).await,
         Request::ListTools => Response::Tools {
             tools: list_tools_with_external(state).await,
         },
@@ -500,13 +501,14 @@ async fn build_status_report(state: &DaemonState) -> yerd_ipc::StatusReport {
         counts
     };
 
-    let (tld, default_php, mail_enabled, mail_port) = {
+    let (tld, default_php, mail_enabled, mail_port, symlink_protection) = {
         let cfg = state.config.lock().await;
         (
             cfg.tld.as_str().to_owned(),
             cfg.php.default,
             cfg.mail.enabled,
             cfg.mail.port,
+            cfg.symlink_protection,
         )
     };
 
@@ -640,6 +642,7 @@ async fn build_status_report(state: &DaemonState) -> yerd_ipc::StatusReport {
         dns_unbound: state.dns_unbound,
         boot_id: Some(state.boot_id),
         shared_sites,
+        symlink_protection,
     }
 }
 
@@ -1553,6 +1556,24 @@ async fn set_mail_enabled(enabled: bool, state: &DaemonState) -> Response {
     }
     *cfg_guard = new;
     tracing::info!(enabled, "set mail enabled (effective on next restart)");
+    Response::Ok
+}
+
+/// Enable or disable the proxy's symlink-escape protection. Persisted to config
+/// and mirrored into the shared `symlink_protection` atomic, so the proxy picks
+/// it up on the next request without a daemon restart.
+async fn set_symlink_protection(enabled: bool, state: &DaemonState) -> Response {
+    let mut cfg_guard = state.config.lock().await;
+    let mut new = cfg_guard.clone();
+    new.symlink_protection = enabled;
+    if let Err(e) = new.save(&state.config_path) {
+        return internal(format!("config save failed: {e}"));
+    }
+    *cfg_guard = new;
+    state
+        .symlink_protection
+        .store(enabled, std::sync::atomic::Ordering::Relaxed);
+    tracing::info!(enabled, "set symlink protection");
     Response::Ok
 }
 

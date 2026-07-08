@@ -514,6 +514,11 @@ pub async fn set_mail_enabled(enabled: bool) -> Result<Response, GuiError> {
     finish(exchange(&Request::SetMailEnabled { enabled }).await?)
 }
 
+#[tauri::command]
+pub async fn set_symlink_protection(enabled: bool) -> Result<Response, GuiError> {
+    finish(exchange(&Request::SetSymlinkProtection { enabled }).await?)
+}
+
 // ── status / doctor / info ─────────────────────────────────────────────────
 
 #[tauri::command]

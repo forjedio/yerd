@@ -283,6 +283,7 @@ pub async fn bring_up_with_dirs(
         None
     };
     let mail_listening = mail_listener.is_some();
+    let symlink_protection_on = config.symlink_protection;
 
     let state = Arc::new(DaemonState {
         config: Mutex::new(config),
@@ -315,6 +316,7 @@ pub async fn bring_up_with_dirs(
             fell_back: bound_https != cfg_https,
         },
         redirect_https_port: Arc::new(std::sync::atomic::AtomicU16::new(bound_https)),
+        symlink_protection: Arc::new(std::sync::atomic::AtomicBool::new(symlink_protection_on)),
         web_unbound,
         dns_unbound,
         boot_id: rand_boot_id(),

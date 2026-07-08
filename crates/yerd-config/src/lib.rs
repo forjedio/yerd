@@ -56,9 +56,11 @@ pub use schema::{
 /// optional `[php.extensions]` registry ([`PhpSection::extensions`]) for
 /// user-registered custom extensions, plus the `wp_auto_login`/
 /// `wp_auto_login_user` keys inside `[[linked]]` and `[[overrides]]` for
-/// `WordPress` one-click admin login. All default when absent, so the v3→v4,
-/// v4→v5, v5→v6, v6→v7, v7→v8, v8→v9, and v9→v10 migrations are bare version
-/// bumps; each bump exists so an *older* binary rejects a file using the newer
-/// field cleanly as [`ConfigError::UnsupportedVersion`] rather than failing on
-/// the unknown key.
-pub const CURRENT_VERSION: u32 = 10;
+/// `WordPress` one-click admin login. v11 added the top-level
+/// `symlink_protection` scalar ([`Config::symlink_protection`]) for the
+/// user-toggleable proxy symlink-escape guard. All default when absent, so the
+/// v3→v4, v4→v5, v5→v6, v6→v7, v7→v8, v8→v9, v9→v10, and v10→v11 migrations are
+/// bare version bumps; each bump exists so an *older* binary rejects a file
+/// using the newer field cleanly as [`ConfigError::UnsupportedVersion`] rather
+/// than failing on the unknown key.
+pub const CURRENT_VERSION: u32 = 11;
