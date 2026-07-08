@@ -280,11 +280,12 @@ Failures are a `Response::Error { code, message }` where `code` is machine-reada
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum ErrorCode {
-    NotFound,        // "not_found"
-    AlreadyExists,   // "already_exists"
-    InvalidPath,     // "invalid_path"
-    PortInUse,       // "port_in_use"
-    Internal,        // "internal" - catch-all; expand the enum, don't overload this
+    NotFound,             // "not_found"
+    AlreadyExists,        // "already_exists"
+    InvalidPath,          // "invalid_path"
+    PortInUse,            // "port_in_use"
+    ExtensionLoadFailed,  // "extension_load_failed" - a valid path whose .so failed its load-probe
+    Internal,             // "internal" - catch-all; expand the enum, don't overload this
 }
 ```
 

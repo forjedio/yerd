@@ -248,11 +248,17 @@ pub fn write_cli_ini(
     );
     yerd_php::io::atomic_write::write(&dirs.data.join("php-cli.ini"), base.as_bytes())?;
 
-    let installed = yerd_php::discover_bundled(dirs).unwrap_or_default();
+    let installed =
+        yerd_php::discover_bundled(dirs).map_err(|e| std::io::Error::other(e.to_string()))?;
     for (v, _) in installed {
         let refs: Vec<(&str, bool)> = extensions
             .get(&v)
-            .map(|es| es.iter().map(|e| (e.path.as_str(), e.zend)).collect())
+            .map(|es| {
+                es.iter()
+                    .filter(|e| Path::new(&e.path).is_file())
+                    .map(|e| (e.path.as_str(), e.zend))
+                    .collect()
+            })
             .unwrap_or_default();
         let body = yerd_core::php_settings::render_cli_ini_with_ext(settings, &refs);
         let contents = decorate_cli_ini(&body, ca_bundle);

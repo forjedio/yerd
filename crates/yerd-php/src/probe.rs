@@ -142,10 +142,11 @@ mod tests {
             .unwrap();
     }
 
+    /// Real PHP writes the load failure to stdout (via `display_errors`), not
+    /// stderr, so the probe must inspect both streams or it green-lights a
+    /// broken `.so`.
     #[tokio::test]
     async fn unable_to_load_on_stdout_rejects() {
-        // Real PHP writes this to stdout (display_errors), not stderr - the probe
-        // must inspect both streams or it green-lights a broken .so.
         let runner = FakeRunner {
             status_ok: true,
             stdout: "PHP Warning:  PHP Startup: Unable to load dynamic library 'scrypt.so'"

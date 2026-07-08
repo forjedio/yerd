@@ -1044,6 +1044,8 @@ async fn adopt_default_if_unset(version: yerd_core::PhpVersion, state: &DaemonSt
         if let Err(e) = crate::php_install::set_default_shim(&state.dirs, &yerd_bin) {
             tracing::warn!(error = %e, "auto-default shim update failed");
         }
+    } else {
+        tracing::warn!("cannot locate the `yerd` binary; skipping php shim update");
     }
     if let Err(e) = new.save(&state.config_path) {
         tracing::warn!(error = %e, "auto-default config save failed");
@@ -1442,6 +1444,8 @@ async fn set_default_php(version: yerd_core::PhpVersion, state: &DaemonState) ->
             if let Err(e) = crate::php_install::set_default_shim(&state.dirs, &yerd_bin) {
                 return internal(format!("update php shim failed: {e}"));
             }
+        } else {
+            tracing::warn!("cannot locate the `yerd` binary; skipping php shim update");
         }
         if let Err(e) = new.save(&state.config_path) {
             return internal(format!("config save failed: {e}"));
@@ -1612,6 +1616,10 @@ async fn set_php_settings(
 
 /// Register a custom extension for `version`: validate, load-probe, persist, then
 /// load it into that version's FPM pool + CLI ini. Modeled on `set_php_settings`.
+///
+/// A cheap pre-probe duplicate check returns immediately when the extension is
+/// already registered, avoiding a PHP spawn; the authoritative check under the
+/// write lock still guards against a concurrent add.
 async fn add_php_extension(
     version: yerd_core::PhpVersion,
     path: String,
@@ -1636,9 +1644,6 @@ async fn add_php_extension(
         };
     }
 
-    // Cheap pre-probe duplicate check so re-adding an existing extension returns
-    // immediately without paying for a PHP spawn. The authoritative check under
-    // the write lock below still guards against a concurrent add.
     if state
         .config
         .lock()

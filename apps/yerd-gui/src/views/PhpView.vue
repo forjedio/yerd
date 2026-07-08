@@ -214,10 +214,16 @@ async function saveSettings(): Promise<void> {
 }
 
 // ── custom extensions ──────────────────────────────────────────────────────
-const { data: extData, mutate: mutateExts } = useResource(
-  "php-extensions",
-  listPhpExtensions,
-);
+const {
+  data: extData,
+  loading: extLoading,
+  error: extError,
+  mutate: mutateExts,
+} = useResource("php-extensions", listPhpExtensions);
+
+watch(extError, (e) => {
+  if (e && !extData.value) toast.error("Couldn't load extensions", e.message);
+});
 const extAddForm = ref<{
   version: string;
   path: string;
@@ -724,7 +730,10 @@ onUnmounted(
         </CardHeader>
 
         <CardContent>
-          <div v-if="extensionRows.length" class="flex flex-col gap-2">
+          <div v-if="extLoading && !extData" class="flex justify-center py-4">
+            <Spinner class="size-5" />
+          </div>
+          <div v-else-if="extensionRows.length" class="flex flex-col gap-2">
             <div
               v-for="row in extensionRows"
               :key="`${row.version}:${row.ext.name}`"
