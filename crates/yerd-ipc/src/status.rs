@@ -502,6 +502,9 @@ pub enum DiagnosisCode {
     /// The bundled PHP does not trust the Yerd CA: the managed `{data}/cacert.pem`
     /// is missing or stale, so PHP HTTPS to `.test` fails (`cURL error 60`).
     PhpCaNotTrusted,
+    /// The global symlink-escape protection is turned off, so the proxy will serve
+    /// files reached through symlinks that resolve outside a site's own folder.
+    SymlinkProtectionDisabled,
     /// Everything checks out.
     AllGood,
 }

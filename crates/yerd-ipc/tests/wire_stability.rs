@@ -940,6 +940,10 @@ fn diagnosis_code_each_variant_byte_shape() {
         (DiagnosisCode::ServiceFailed, r#""service_failed""#),
         (DiagnosisCode::BinDirNotOnPath, r#""bin_dir_not_on_path""#),
         (DiagnosisCode::PhpCaNotTrusted, r#""php_ca_not_trusted""#),
+        (
+            DiagnosisCode::SymlinkProtectionDisabled,
+            r#""symlink_protection_disabled""#,
+        ),
         (DiagnosisCode::AllGood, r#""all_good""#),
     ];
     for (code, expected) in cases {

@@ -3893,6 +3893,37 @@ Subject: Captured\r\n\r\nhi\r\n";
     }
 
     #[tokio::test]
+    async fn set_symlink_protection_persists_config_and_updates_live_atomic() {
+        use std::sync::atomic::Ordering::Relaxed;
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_in(tmp.path());
+        assert!(state.symlink_protection.load(Relaxed), "seeded protected");
+
+        assert_eq!(
+            dispatch(Request::SetSymlinkProtection { enabled: false }, &state,).await,
+            Response::Ok
+        );
+        assert!(
+            !state.config.lock().await.symlink_protection,
+            "in-memory config off"
+        );
+        assert!(!state.symlink_protection.load(Relaxed), "live atomic off");
+        let reloaded = yerd_config::Config::load(&state.config_path).unwrap();
+        assert!(!reloaded.symlink_protection, "persisted config off");
+
+        assert_eq!(
+            dispatch(Request::SetSymlinkProtection { enabled: true }, &state).await,
+            Response::Ok
+        );
+        assert!(
+            state.symlink_protection.load(Relaxed),
+            "live atomic back on"
+        );
+        let reloaded = yerd_config::Config::load(&state.config_path).unwrap();
+        assert!(reloaded.symlink_protection, "persisted config back on");
+    }
+
+    #[tokio::test]
     async fn available_php_lists_distribution_minors_and_installed() {
         let tmp = tempfile::tempdir().unwrap();
         let state = state_in(tmp.path());

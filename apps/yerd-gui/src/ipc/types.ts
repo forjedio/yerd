@@ -251,6 +251,7 @@ export type DiagnosisCode =
   | "service_failed"
   | "bin_dir_not_on_path"
   | "php_ca_not_trusted"
+  | "symlink_protection_disabled"
   | "all_good";
 
 export interface Diagnosis {
