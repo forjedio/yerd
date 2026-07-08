@@ -550,11 +550,16 @@ fn domain_shadows(
     out
 }
 
+/// Builds the full [`StatusReport`]. The config lock is held across the router
+/// snapshot (config-then-router, the same order `handle_mutation` takes) so
+/// `domain_shadows` sees a consistent (config, router) pair rather than one from
+/// either side of a concurrent mutation.
 #[allow(clippy::too_many_lines)]
 async fn build_status_report(state: &DaemonState) -> yerd_ipc::StatusReport {
     use yerd_platform::SystemMetrics;
 
-    let (sites, site_snapshot) = {
+    let (sites, tld, default_php, mail_enabled, mail_port, shadows) = {
+        let cfg = state.config.lock().await;
         let router = state.router.read().await;
         let mut counts = yerd_ipc::SiteCounts::default();
         for s in router.iter() {
@@ -566,14 +571,10 @@ async fn build_status_report(state: &DaemonState) -> yerd_ipc::StatusReport {
                 counts.secured += 1;
             }
         }
-        let snapshot: Vec<yerd_core::Site> = router.iter().cloned().collect();
-        (counts, snapshot)
-    };
-
-    let (tld, default_php, mail_enabled, mail_port, shadows) = {
-        let cfg = state.config.lock().await;
+        let site_snapshot: Vec<yerd_core::Site> = router.iter().cloned().collect();
         let shadows = domain_shadows(&cfg, site_snapshot);
         (
+            counts,
             cfg.tld.as_str().to_owned(),
             cfg.php.default,
             cfg.mail.enabled,

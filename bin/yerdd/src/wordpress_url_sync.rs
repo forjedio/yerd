@@ -43,13 +43,7 @@ pub async fn sync_site_url(site: &Site, state: &DaemonState) {
         return;
     }
 
-    let host = {
-        let router = state.router.read().await;
-        let tld = router.config().tld();
-        router
-            .primary_domain(site.name())
-            .map_or_else(|| format!("{}.{tld}", site.name()), |d| d.to_fqdn(tld))
-    };
+    let host = state.router.read().await.primary_fqdn(site.name());
     let url = target_url(&host, site.secure());
 
     for option in ["siteurl", "home"] {

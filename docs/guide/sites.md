@@ -296,7 +296,7 @@ Hosts that can't be a `.test` name never match: IPv6 literals (`[::1]`), non-ASC
 
 By default a site answers for **exactly one** host: its apex `<name>.test`. A site can hold more than one domain, and can answer subdomains and wildcards, but each is **explicit** - you register it with [`yerd domain`](../reference/cli/domains). After confirming the host ends in `.test`, Yerd resolves it with one exact lookup, then one single-label wildcard lookup:
 
-```
+```text
 foo.test          ->  foo            (exact apex)
 corp.test         ->  foo            (only if `corp` was added to foo)
 api.foo.test      ->  no match       (404 by default; subdomains are not implicit)

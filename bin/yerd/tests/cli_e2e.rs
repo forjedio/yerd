@@ -176,7 +176,6 @@ mod tests {
             other => panic!("expected Sites, got {other:?}"),
         }
 
-        // --- domains: add, wildcard, change primary, conflict, reset ---
         let add = |site: &str, domain: &str| Command::Domain {
             action: DomainAction::Add {
                 site: site.into(),
@@ -213,12 +212,10 @@ mod tests {
             }
             other => panic!("expected Sites, got {other:?}"),
         }
-        // A duplicate exact domain claimed by another site is rejected.
         match send(&sock, &add("blog", "corp.test")).await {
             Response::Error { code, .. } => assert_eq!(code, ErrorCode::AlreadyExists),
             other => panic!("expected AlreadyExists error, got {other:?}"),
         }
-        // Reset returns the site to its default apex-only domain.
         assert!(matches!(
             send(
                 &sock,

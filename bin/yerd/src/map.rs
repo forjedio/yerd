@@ -735,16 +735,14 @@ pub fn doctor_exit_code(resp: &Response) -> u8 {
     }
 }
 
+/// Renders the `yerd sites` table. The optional WORDPRESS and DOMAIN columns are
+/// added only when at least one listed site needs them, so the common case's
+/// table stays unchanged; full per-site domain lists live in `yerd domain list`.
 fn format_sites(sites: &[SiteEntry]) -> String {
     if sites.is_empty() {
         return "no sites".to_owned();
     }
-    // Only add the WORDPRESS column when at least one listed site needs it,
-    // so the common (no-WordPress) case's table is unchanged.
     let show_wordpress = sites.iter().any(|entry| entry.is_wordpress);
-    // Only add the DOMAIN column when at least one site has a customised primary
-    // or a shadowed apex, so the common (default-domain) case's table is
-    // unchanged. Full per-site domain lists live in `yerd domain list`.
     let show_domain = sites
         .iter()
         .any(|e| e.primary_domain.is_some() || e.apex_shadowed_by.is_some());

@@ -238,6 +238,17 @@ impl SiteRouter {
         self.primaries.get(name)
     }
 
+    /// The site's primary domain as a full FQDN under the router's TLD, falling
+    /// back to `<name>.<tld>` when the site has no stored primary. Centralizes the
+    /// host every `{name}.{tld}` address producer needs (`WordPress` URL sync,
+    /// tunnel origin) so the fallback lives in one place.
+    #[must_use]
+    pub fn primary_fqdn(&self, name: &str) -> String {
+        let tld = self.config.tld();
+        self.primary_domain(name)
+            .map_or_else(|| format!("{name}.{tld}"), |d| d.to_fqdn(tld))
+    }
+
     /// The site's effective routable domain set (primary first), if it exists.
     #[must_use]
     pub fn effective_domains(&self, name: &str) -> Option<&[Domain]> {
@@ -318,8 +329,6 @@ impl SiteRouter {
             return self.sites.get(name);
         }
 
-        // Single-label wildcard: replace the leftmost label with `*`. A host with
-        // only one label below the TLD (the apex) has no wildcard candidate.
         if let Some((_, rest)) = sub.split_once('.') {
             let mut key = String::with_capacity(rest.len() + 2);
             key.push_str("*.");

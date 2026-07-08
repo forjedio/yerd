@@ -412,7 +412,6 @@ mod tests {
         ];
         let html = render_picker(&sites, "/example?x=1");
         assert!(html.contains("href=\"/~app.test/example?x=1\""));
-        // The picker links to the primary domain, not the bare name apex.
         assert!(html.contains("href=\"/~corp.test/example?x=1\""));
         assert!(html.contains(">corp.test<"));
         assert_eq!(html.matches("class=\"badge\"").count(), 1);

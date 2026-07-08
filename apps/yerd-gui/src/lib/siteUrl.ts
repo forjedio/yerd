@@ -28,16 +28,20 @@ interface UnboundOpts {
   httpBound: number | undefined;
 }
 
+/** The bound HTTP port, or the `8080` rootless fallback. Uses a truthiness check
+ *  rather than `?? 8080` so the daemon's degraded-mode `bound = 0` (couldn't bind
+ *  the web ports) also falls back instead of producing a malformed `:0` URL. */
+function boundHttpPortOr8080(bound: number | undefined): number {
+  return bound && bound > 0 ? bound : 8080;
+}
+
 /**
  * The `http://localhost/~{host}` URL used when the resolver is off, where `host`
  * is the site's full domain FQDN (its primary domain). Always plain http (there
  * is no localhost cert), and the port is omitted when it is the default 80.
  */
 export function unboundUrlFor(host: string, opts: UnboundOpts): string {
-  // Guard against a non-positive bound port: the daemon reports `http.bound = 0`
-  // in degraded mode (couldn't bind web ports). `?? 8080` would NOT catch 0, so
-  // use a truthiness check to avoid emitting a malformed `:0` URL.
-  const port = opts.httpBound && opts.httpBound > 0 ? opts.httpBound : 8080;
+  const port = boundHttpPortOr8080(opts.httpBound);
   const portPart = port === 80 ? "" : `:${port}`;
   return `http://localhost${portPart}/~${host}`;
 }

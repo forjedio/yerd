@@ -18,17 +18,15 @@ describe("validateDomainShape", () => {
     expect(validateDomainShape("API.Foo.Test")).toBeNull();
   });
 
-  it("rejects the CLI's reject cases", () => {
+  it("rejects empty, TLD-less, misplaced-wildcard, bad-char, and empty-label inputs", () => {
     expect(validateDomainShape("")).not.toBeNull();
-    expect(validateDomainShape("foo")).not.toBeNull(); // no TLD
-    expect(validateDomainShape("foo.*.test")).not.toBeNull(); // misplaced wildcard
-    expect(validateDomainShape("a_b.test")).not.toBeNull(); // bad char
-    expect(validateDomainShape("foo..test")).not.toBeNull(); // empty label
+    expect(validateDomainShape("foo")).not.toBeNull();
+    expect(validateDomainShape("foo.*.test")).not.toBeNull();
+    expect(validateDomainShape("a_b.test")).not.toBeNull();
+    expect(validateDomainShape("foo..test")).not.toBeNull();
   });
 
-  it("leaves a bare '*' / lone-wildcard for the daemon (shape passes)", () => {
-    // `*.test` is shape-valid here but the daemon rejects it (BareWildcard) -
-    // this is the intended client-lenient / daemon-authoritative split.
+  it("passes a bare '*.test' through (shape-valid; the daemon rejects it)", () => {
     expect(validateDomainShape("*.test")).toBeNull();
   });
 });
@@ -39,6 +37,6 @@ describe("isUnderTld", () => {
     expect(isUnderTld("api.corp.test", "test")).toBe(true);
     expect(isUnderTld("corp.test.", "test")).toBe(true);
     expect(isUnderTld("corp.dev", "test")).toBe(false);
-    expect(isUnderTld("test", "test")).toBe(false); // the TLD alone is not under it
+    expect(isUnderTld("test", "test")).toBe(false);
   });
 });

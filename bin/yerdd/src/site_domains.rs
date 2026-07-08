@@ -24,6 +24,10 @@ use yerd_core::{choose_primary, effective_domains, Domain, RouterConfig, Site, S
 
 /// Build the router from scanned sites plus the config's `[domains]` deltas.
 /// Infallible: collisions are resolved by the rules above, not by erroring.
+/// `build_claims` de-conflicts every routing key before insertion, so the
+/// `insert_with_domains` error arm is unreachable in practice; it logs and drops
+/// the site rather than panicking, so a latent bug degrades gracefully instead of
+/// bricking boot.
 #[must_use]
 pub(crate) fn build(cfg: &Config, sites: Vec<Site>) -> SiteRouter {
     let plans = plan_sites(cfg, sites);
@@ -39,8 +43,6 @@ pub(crate) fn build(cfg: &Config, sites: Vec<Site>) -> SiteRouter {
             .collect();
         let primary = choose_primary(plan.site.name(), &won, Some(&plan.primary));
         if let Err(e) = router.insert_with_domains(plan.site.clone(), won, primary) {
-            // Unreachable given the pre-de-confliction above; logged rather than
-            // panicking so a latent bug degrades gracefully instead of bricking boot.
             tracing::error!(site = plan.site.name(), error = %e, "dropping site: router insert failed");
         }
     }
@@ -258,6 +260,34 @@ mod tests {
             r.get("foo").unwrap().document_root().to_string_lossy(),
             "/srv/a/foo"
         );
+    }
+
+    #[test]
+    fn wildcard_only_site_with_shadowed_apex_has_a_hijacked_primary_fqdn() {
+        // `a` owns only its wildcard `*.a` after `b` explicitly claims exact `a`,
+        // so `a`'s primary FQDN resolves to `b`. This is why `tunnel::resolve_site`
+        // verifies the primary routes back to the site before using it as an origin.
+        let mut cfg = cfg_with_tld("test");
+        cfg.domains.linked.insert(
+            "a".into(),
+            DomainDelta {
+                added: vec![d("*.a")],
+                suppressed: vec![],
+                primary: None,
+            },
+        );
+        cfg.domains.linked.insert(
+            "b".into(),
+            DomainDelta {
+                added: vec![d("a")],
+                suppressed: vec![],
+                primary: None,
+            },
+        );
+        let r = build(&cfg, vec![linked("a", "/srv/a"), linked("b", "/srv/b")]);
+        assert_eq!(r.resolve("x.a.test").map(Site::name), Some("a"));
+        assert_eq!(r.primary_fqdn("a"), "a.test");
+        assert_eq!(r.resolve("a.test").map(Site::name), Some("b"));
     }
 
     #[test]

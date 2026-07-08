@@ -113,6 +113,9 @@ fn apply_park(cfg: &mut Config, canonical: Option<PathBuf>) -> Result<Applied, M
     })
 }
 
+/// Links `name` at `canonical`. A parked-side domain delta for that document
+/// root is promoted to the linked side (keyed by name), so a customised parked
+/// site keeps its domains when linked; `apply_unlink` reverses this.
 fn apply_link(
     cfg: &mut Config,
     name: &str,
@@ -128,9 +131,6 @@ fn apply_link(
             "site already linked: {name_lc}"
         )));
     }
-    // Promote any parked-side domain delta (keyed by document-root) to the linked
-    // side (keyed by name), so a customised parked site keeps its domains when
-    // linked. See NEW-C in the plan.
     let docroot_key = override_key(&site);
     if let Some(delta) = cfg.domains.parked.remove(&docroot_key) {
         cfg.domains.linked.insert(name_lc.clone(), delta);
@@ -145,12 +145,10 @@ fn apply_link(
 /// stored as the canonical String produced at park time, so an exact `remove` is
 /// an identity match. Deliberately *not* canonicalised by the I/O wrapper, so a
 /// root deleted from disk is still removable. Idempotent - an absent path is a
-/// successful no-op, mirroring `Park`'s insert.
+/// successful no-op, mirroring `Park`'s insert. Also drops any parked-side domain
+/// deltas under this root, so a later re-park does not inherit stale domains.
 fn apply_unpark(cfg: &mut Config, path: &str) -> Applied {
     let removed = cfg.parked.paths.remove(path);
-    // Drop parked-side domain deltas for sites under this root (their document
-    // roots are the root itself or a child), so a later re-park of the root does
-    // not inherit stale domains.
     cfg.domains
         .parked
         .retain(|docroot, _| !is_under_root(docroot, path));
@@ -177,6 +175,10 @@ fn is_under_root(docroot: &str, root: &str) -> bool {
         .is_some_and(|rest| rest.starts_with(sep))
 }
 
+/// Unlinks `name`. Its linked-side domain delta is migrated back to the parked
+/// side (keyed by document-root) when the directory is still an immediate child
+/// of a parked root and will thus re-appear as a parked site - the reverse of
+/// `apply_link`'s promotion; otherwise the site vanishes and the delta is dropped.
 fn apply_unlink(cfg: &mut Config, router: &SiteRouter, name: &str) -> Result<Applied, MutateError> {
     let name_lc = name.to_ascii_lowercase();
     let Some(site) = cfg.linked.iter().find(|s| s.name() == name_lc) else {
@@ -188,11 +190,6 @@ fn apply_unlink(cfg: &mut Config, router: &SiteRouter, name: &str) -> Result<App
             Err(MutateError::NotFound(format!("no site named {name_lc}")))
         };
     };
-    // If the unlinked directory is an immediate child of a still-parked root it
-    // will re-appear as a parked site, so move its domain delta (keyed by name)
-    // to the parked side (keyed by document-root) to preserve custom domains
-    // across the link -> parked transition. This is the reverse of `apply_link`.
-    // Otherwise the site vanishes and the delta is dropped.
     let docroot_key = override_key(site);
     let reparks = parent_is_parked_root(cfg, &docroot_key);
     cfg.linked.retain(|s| s.name() != name_lc);
@@ -451,6 +448,9 @@ fn apply_remove_domain(
     })
 }
 
+/// Sets a site's primary domain. Setting it to the apex just un-suppresses the
+/// apex and clears any stored primary, since `choose_primary` already prefers the
+/// apex; any other exact domain is added (if absent) and recorded as the primary.
 fn apply_set_primary_domain(
     cfg: &mut Config,
     router: &SiteRouter,
@@ -472,7 +472,6 @@ fn apply_set_primary_domain(
     let fqdn = dom.to_fqdn(&tld);
     let delta = delta_mut(cfg, &target);
     if dom == apex {
-        // The apex is the natural primary; keep it active and let it derive.
         delta.suppressed.retain(|d| d != &apex);
         delta.primary = None;
     } else {

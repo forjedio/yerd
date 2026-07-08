@@ -85,10 +85,8 @@ describe("ManageDomainsModal — customised site", () => {
     const wrapper = mountModal(customised());
     const rs = rows(wrapper);
     expect(rs).toHaveLength(3);
-    // corp.test is primary (even though it's second in the list).
     const corp = rs.find((r) => r.text().includes("corp.test"))!;
     expect(corp.text()).toContain("primary");
-    // blog.test (exact, non-primary) offers Make primary; the wildcard does not.
     const blog = rs.find((r) => r.text().startsWith("blog.test"))!;
     expect(blog.text()).toContain("Make primary");
     const wild = rs.find((r) => r.text().includes("*.blog.test"))!;
@@ -120,11 +118,9 @@ describe("ManageDomainsModal — add alias", () => {
     const input = wrapper.find("#add-domain");
     const addBtn = wrapper.findAll("button").find((b) => b.text().includes("Add"))!;
 
-    // Invalid shape → disabled.
-    await input.setValue("nope"); // no TLD
+    await input.setValue("nope");
     expect((addBtn.element as HTMLButtonElement).disabled).toBe(true);
 
-    // Valid → enabled → sends.
     await input.setValue("api.blog.test");
     expect((addBtn.element as HTMLButtonElement).disabled).toBe(false);
     await addBtn.trigger("click");
@@ -170,7 +166,7 @@ describe("ManageDomainsModal — reset, clear, hints, shadow", () => {
     const wrapper = mountModal(site());
     const input = wrapper.find("#add-domain");
     const addBtn = wrapper.findAll("button").find((b) => b.text().includes("Add"))!;
-    await input.setValue("corp.dev"); // shape-valid, wrong TLD
+    await input.setValue("corp.dev");
     expect((addBtn.element as HTMLButtonElement).disabled).toBe(false);
     expect(wrapper.text()).toContain(".test");
   });
@@ -187,11 +183,9 @@ describe("ManageDomainsModal — reset, clear, hints, shadow", () => {
     const wrapper = mountModal(
       site({ primary_domain: "corp.test", domains: ["blog.test", "corp.test"] }),
     );
-    // Start an add (leaves busy set on the pending promise).
     await wrapper.find("#add-domain").setValue("api.blog.test");
     await wrapper.findAll("button").find((b) => b.text().includes("Add"))!.trigger("click");
     await Promise.resolve();
-    // While busy, a Make-primary click must be ignored.
     const blog = rows(wrapper).find((r) => r.text().startsWith("blog.test"))!;
     await blog.find("button").trigger("click");
     expect(setPrimaryDomain).not.toHaveBeenCalled();

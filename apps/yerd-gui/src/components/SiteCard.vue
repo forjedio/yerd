@@ -8,6 +8,7 @@ import {
   Lock,
   LockOpen,
   MoreHorizontal,
+  Network,
   Pencil,
   Trash2,
   UserRound,
@@ -137,7 +138,7 @@ async function openWpAdmin(s: SiteEntry): Promise<void> {
               <Pencil class="size-4" /> Edit…
             </DropdownMenuItem>
             <DropdownMenuItem :disabled="busy" @select="emit('manageDomains', site)">
-              <Globe class="size-4" /> Manage domains…
+              <Network class="size-4" /> Manage domains…
             </DropdownMenuItem>
             <DropdownMenuItem @select="openInBrowser(siteUrl(site, report))">
               <ExternalLink class="size-4" /> Open in browser

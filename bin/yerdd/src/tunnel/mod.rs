@@ -194,19 +194,23 @@ pub(super) fn pinned_home_env(
 /// Resolve a site by name or `.test` host to its `(name, secure, tld, host)`,
 /// where `host` is the site's primary domain FQDN (the tunnel origin's rewritten
 /// `Host`). Reads the router under a brief lock released before the caller takes
-/// any other lock.
+/// any other lock. Returns `None` when the site's primary host does not resolve
+/// back to it - a shadowed apex whose exact label is claimed by another site (so
+/// its effective set is wildcard-only) would otherwise point the tunnel at that
+/// other site's backend. Such a site has no concrete host that routes to it and
+/// cannot be tunneled; `yerd doctor` flags the shadow.
 pub(super) async fn resolve_site(
     state: &DaemonState,
     site: &str,
 ) -> Option<(String, bool, String, String)> {
     let router = state.router.read().await;
-    router.resolve(site).or_else(|| router.get(site)).map(|s| {
-        let tld = router.config().tld();
-        let host = router
-            .primary_domain(s.name())
-            .map_or_else(|| format!("{}.{tld}", s.name()), |d| d.to_fqdn(tld));
-        (s.name().to_owned(), s.secure(), tld.to_owned(), host)
-    })
+    let s = router.resolve(site).or_else(|| router.get(site))?;
+    let host = router.primary_fqdn(s.name());
+    if router.resolve(&host).map(yerd_core::Site::name) != Some(s.name()) {
+        return None;
+    }
+    let tld = router.config().tld().to_owned();
+    Some((s.name().to_owned(), s.secure(), tld, host))
 }
 
 /// Register + spawn a tunnel for `name` under a brief manager lock, then drive

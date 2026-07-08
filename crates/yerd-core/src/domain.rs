@@ -13,9 +13,9 @@
 
 use crate::error::{CoreError, DomainErrorReason};
 
-/// Maximum total sub-part length (RFC 1035 name cap, minus the TLD the caller
-/// still appends).
-const MAX_SUBPART_BYTES: usize = 253;
+/// RFC 1035's 253-byte cap on a full domain name. Applied both to a stored
+/// sub-part and, in [`Domain::parse`], to the whole FQDN (sub-part plus TLD).
+const MAX_NAME_BYTES: usize = 253;
 /// Maximum single-label length (RFC 1035).
 const MAX_LABEL_BYTES: usize = 63;
 
@@ -41,7 +41,9 @@ impl Domain {
 
     /// Parse a full FQDN (e.g. `"api.foo.test"`) that must sit under `tld`,
     /// returning the stored sub-part (`"api.foo"`). Lowercases and strips one
-    /// trailing dot first. Rejects the bare TLD and any host not under it.
+    /// trailing dot first. Rejects the bare TLD, any host not under it, and a
+    /// whole name over the RFC 1035 253-byte limit. A shape error is reported
+    /// against the original FQDN, not the stripped sub-part.
     pub fn parse(fqdn: &str, tld: &str) -> Result<Self, CoreError> {
         let lowered = fqdn.to_ascii_lowercase();
         let trimmed = lowered.strip_suffix('.').unwrap_or(&lowered);
@@ -49,6 +51,9 @@ impl Domain {
 
         if trimmed.is_empty() {
             return Err(err(fqdn, DomainErrorReason::Empty));
+        }
+        if trimmed.len() > MAX_NAME_BYTES {
+            return Err(err(fqdn, DomainErrorReason::TooLong));
         }
         if trimmed == tld {
             return Err(err(fqdn, DomainErrorReason::NotUnderTld));
@@ -59,7 +64,6 @@ impl Domain {
             .ok_or_else(|| err(fqdn, DomainErrorReason::NotUnderTld))?;
 
         Self::parse_subpart(sub).map_err(|e| match e {
-            // Re-attach the original FQDN so the message shows what the user typed.
             CoreError::InvalidDomain { reason, .. } => err(fqdn, reason),
             other => other,
         })
@@ -110,7 +114,7 @@ fn validate_steps(raw: &str) -> Result<String, DomainErrorReason> {
     if raw.bytes().any(|b| !b.is_ascii()) {
         return Err(DomainErrorReason::InvalidCharacter);
     }
-    if raw.len() > MAX_SUBPART_BYTES {
+    if raw.len() > MAX_NAME_BYTES {
         return Err(DomainErrorReason::TooLong);
     }
 
@@ -183,9 +187,6 @@ pub fn effective_domains(name: &str, added: &[Domain], suppressed: &[Domain]) ->
     }
 
     if !out.iter().any(|d| !d.is_wildcard()) {
-        // No exact domain survived (a hand-edited config suppressed the apex
-        // without adding another exact). Restore the apex so routing/primary
-        // always have a concrete host.
         out.insert(0, apex);
     }
     out
@@ -318,6 +319,20 @@ mod tests {
                 .as_str(),
             "api.foo"
         );
+    }
+
+    #[test]
+    fn parse_rejects_fqdn_over_name_cap_even_when_subpart_fits() {
+        let label = "a".repeat(63);
+        let sub = format!("{label}.{label}.{label}.{}", "b".repeat(58)); // 250 bytes, valid shape
+        assert!(Domain::parse_subpart(&sub).is_ok());
+        match Domain::parse(&format!("{sub}.test"), "test") {
+            Err(CoreError::InvalidDomain {
+                reason: DomainErrorReason::TooLong,
+                ..
+            }) => {}
+            other => panic!("expected TooLong for an over-253-byte FQDN, got {other:?}"),
+        }
     }
 
     #[test]

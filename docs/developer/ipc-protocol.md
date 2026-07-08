@@ -162,7 +162,7 @@ The variant set is the daemon's whole RPC surface - liveness, site management, P
 | `SetWebRoot { name, path: Option }` | `{"type":"set_web_root","name":"foo","path":"public"}` or `…,"path":null` (reset to auto-detect) |
 | `AddDomain { name, domain }` | `{"type":"add_domain","name":"foo","domain":"api.foo.test"}` (exact host or single-label wildcard `*.foo.test`) |
 | `RemoveDomain { name, domain }` | `{"type":"remove_domain","name":"foo","domain":"api.foo.test"}` (refused for a site's last exact domain) |
-| `SetPrimaryDomain { name, domain }` | `{"type":"set_primary_domain","name":"foo","domain":"api.foo.test"}` (auto-added if absent) |
+| `SetPrimaryDomain { name, domain }` | `{"type":"set_primary_domain","name":"foo","domain":"corp.foo.test"}` (exact host only, never a wildcard; auto-added if absent) |
 | `ResetDomains { name }` | `{"type":"reset_domains","name":"foo"}` (back to apex only) |
 | `InstallPhp { version }` | `{"type":"install_php","version":"8.5"}` |
 | `InstallPhpStreamed { version }` | `{"type":"install_php_streamed","version":"8.5"}` (replies `JobStarted`; poll `JobStatus`) |
