@@ -34,6 +34,7 @@ pub(crate) const STEPS: &[MigrationStep] = &[
     migrate_v7_to_v8,
     migrate_v8_to_v9,
     migrate_v9_to_v10,
+    migrate_v10_to_v11,
 ];
 
 /// `v0 → v1`: bump the version. v0 predates any shipped config, so there is no
@@ -122,6 +123,13 @@ fn migrate_v9_to_v10(value: &mut Value) -> Result<(), ConfigError> {
     set_version(value, 10)
 }
 
+/// `v10 → v11`: bump the version. v11 added the optional `[domains]` table, which
+/// defaults (empty) when absent, so an in-place version bump is the entire
+/// migration.
+fn migrate_v10_to_v11(value: &mut Value) -> Result<(), ConfigError> {
+    set_version(value, 11)
+}
+
 /// Set the top-level `version` key, erroring if the root is not a table.
 fn set_version(value: &mut Value, n: i64) -> Result<(), ConfigError> {
     let table = value.as_table_mut().ok_or(ConfigError::Migration {
@@ -191,7 +199,7 @@ mod tests {
 
     #[test]
     fn current_version_pinned() {
-        assert_eq!(crate::CURRENT_VERSION, 10);
+        assert_eq!(crate::CURRENT_VERSION, 11);
     }
 
     #[test]
@@ -234,6 +242,13 @@ mod tests {
         let mut v: Value = toml::from_str("version = 9\n").unwrap();
         migrate_v9_to_v10(&mut v).unwrap();
         assert_eq!(read_version(&v).unwrap(), 10);
+    }
+
+    #[test]
+    fn v10_to_v11_is_a_bare_version_bump() {
+        let mut v: Value = toml::from_str("version = 10\n").unwrap();
+        migrate_v10_to_v11(&mut v).unwrap();
+        assert_eq!(read_version(&v).unwrap(), 11);
     }
 
     #[test]

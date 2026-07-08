@@ -98,6 +98,7 @@ which keeps room for non-PHP components later (e.g. `install php 8.5`,
 | `doctor [fix]` | optional `DoctorAction::Fix` | Diagnose; `fix` attempts safe repairs. |
 | `secure <name>` / `unsecure <name>` | name | Toggle HTTPS for a site. |
 | `root <name> [path] [--auto]` | name + optional path | Set/reset a site's served web root → `SetWebRoot`. |
+| `domain <action>` | `DomainAction`: `list [site]` / `add <site> <domain>` / `remove <site> <domain>` / `primary <site> <domain>` / `reset <site>` | Manage a site's routable domains, subdomains, and wildcards. All but `list` map to a domain `Request`; `list` is rendered locally (it needs the TLD to synthesize default `{name}.{tld}` domains). |
 | `elevate [target]` / `unelevate [target]` | optional `ElevateTarget` | Privileged setup - handled locally. |
 
 The `ElevateTarget` enum enumerates the three privileges: `Trust` (system CA
@@ -229,6 +230,7 @@ A handful of mappings encode real design decisions worth knowing:
 - **`root <name> [path] [--auto]`** maps to `Request::SetWebRoot { name, path }`,
   where `--auto` (or omitting the path) sends `path: None` to reset the site to
   auto-detection. The name is validated client-side like `secure`/`link`.
+- **`domain`** maps each sub-action through `domain_request`: `add`/`remove`/`primary`/`reset` become `AddDomain`/`RemoveDomain`/`SetPrimaryDomain`/`ResetDomains`, each validating the site name and (for the first three) the domain shape client-side (`validate_domain`) before any socket connect. `domain list` is *not* mapped to a request - it is rendered locally by `render_domains`/`site_domains`, which needs the TLD (from a `DaemonInfo` round-trip) to synthesize a default site's `{name}.{tld}` domains.
 - **`list php`** flag precedence: `--available` wins over `--check`. With
   neither, it sends `Request::ListPhp` (cached); `--check` polls the
   distribution (`CheckPhpUpdates`); `--available` lists installable versions.

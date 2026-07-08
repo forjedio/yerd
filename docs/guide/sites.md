@@ -15,8 +15,8 @@ The **Sites** page (under **Environment** in the sidebar) is the home base for m
 
 <ThemedImage light="/images/sites-light.png" dark="/images/sites-dark.png" alt="The Sites page in the Yerd desktop app" />
 
-- Each card is a `name.test` site you can click to open in your browser, with badges for `parked`/`linked`, PHP version, and HTTPS/HTTP.
-- A card's **Edit…** dialog (from its `⋯` menu) covers PHP version, [web root](#web-root-the-served-directory), HTTPS, and [group](#site-groups) in one place - no commands.
+- Each card is a site you can click to open in your browser (at its primary domain), with badges for `parked`/`linked`, PHP version, HTTPS/HTTP, a `+N` badge when the site has extra domains, and an amber notice if another site has claimed its apex.
+- A card's **Edit…** dialog (from its `⋯` menu) covers PHP version, [web root](#web-root-the-served-directory), HTTPS, and [group](#site-groups) in one place - no commands. The same `⋯` menu has **Manage domains…** for setting the primary domain and adding/removing aliases and wildcards.
 - **Park folder** and **Link site** in the header register new sites: Park folder opens a directory picker, Link site opens a modal to name a single directory.
 - A separate **Parked folders** section lists each parked root with a count of the sites it produces, plus Reveal folder and Un-park.
 
@@ -258,6 +258,7 @@ yerd sites --json
 | `yerd secure <name>` / `yerd unsecure <name>` | Turn HTTPS on / off for a site. |
 | `yerd root <name> <path>` | Set the served directory (web root) for a site. |
 | `yerd root <name> --auto` | Reset a site to automatic web-root detection. |
+| `yerd domain <list\|add\|remove\|primary\|reset>` | Manage a site's domains (primary, aliases, subdomains, wildcards). See [Domains](../reference/cli/domains). |
 
 For per-site PHP, see [PHP Versions](./php-versions). For the full command surface, see the [CLI Reference](../reference/cli/sites).
 
@@ -291,31 +292,34 @@ Matching is case-insensitive and tolerant of cosmetic bits clients send. Before 
 
 Hosts that can't be a `.test` name never match: IPv6 literals (`[::1]`), non-ASCII (`föö.test`), an empty host, a leading dot, or a malformed port (`foo.test:abc`).
 
-### Subdomains and wildcards
+### Domains, subdomains, and wildcards
 
-Every site answers for its subdomains. After confirming the host ends in `.test`, Yerd takes the remaining label and:
+By default a site answers for **exactly one** host: its apex `<name>.test`. A site can hold more than one domain, and can answer subdomains and wildcards, but each is **explicit** - you register it with [`yerd domain`](../reference/cli/domains). After confirming the host ends in `.test`, Yerd resolves it with one exact lookup, then one single-label wildcard lookup:
 
-1. Looks for an **exact** site of that name.
-2. Otherwise peels the leftmost label and tries the parent, walking rightward until it finds a site or runs out of labels.
-
-```
-foo.test          ->  foo            (exact)
-api.foo.test      ->  foo            (wildcard, one level)
-a.b.c.foo.test    ->  foo            (wildcard, multi level)
-api.bar.test      ->  no match       (no site "bar")
+```text
+foo.test          ->  foo            (exact apex)
+corp.test         ->  foo            (only if `corp` was added to foo)
+api.foo.test      ->  no match       (404 by default; subdomains are not implicit)
+api.foo.test      ->  foo            (once `*.foo.test` is added to foo)
+x.api.foo.test    ->  no match       (a wildcard matches one label; needs `*.api.foo.test`)
 ```
 
-So `api.my-app.test` and `assets.my-app.test` work without registering each subdomain; they fall through to `my-app`.
+**This changed in v2.** Earlier builds made every subdomain fall through to its parent site implicitly. That catch-all is gone: `api.foo.test` is a 404 until you register it. Re-enable the old behavior for a site with `yerd domain add foo '*.foo.test'`. The upside is that `foo.test` and `*.foo.test` can now be **two different sites**.
 
-### Exact match beats wildcard
+**Exact beats wildcard.** The exact lookup runs first, so a registered `api.foo.test` (exact) wins over a `*.foo.test` wildcard on another site. A wildcard is never a site's primary (canonical) domain - only exact domains can be primary.
 
-If both an exact site and a wildcard parent match, the exact site wins. With `api-foo` registered alongside `foo`:
+Manage a site's domains from the CLI:
 
+```sh
+yerd domain list blog                  # show blog's domains, primary marked
+yerd domain add blog corp.test         # add an alias
+yerd domain add blog '*.blog.test'     # add a wildcard (quote it for the shell)
+yerd domain primary blog corp.test     # make corp.test the canonical address
+yerd domain remove blog blog.test      # drop a domain (a site keeps >=1 exact)
+yerd domain reset blog                 # back to the default apex only
 ```
-api-foo.test      ->  api-foo        (exact, not foo)
-```
 
-(These are different labels: `api-foo` is one label, while `api.foo` is two and wildcards to `foo`.)
+For a WordPress site, changing the primary domain also rewrites its `siteurl`/`home`. In the desktop app the same lives under a site's **⋯ → Manage domains…**. See the [domains reference](../reference/cli/domains) for the full command surface and rules.
 
 ### Document roots and the served web root
 

@@ -164,7 +164,7 @@ mod tests {
 
     #[test]
     fn quick_secure_includes_host_rewrite_and_tls_flags() {
-        let origin = OriginTarget::for_site("app", "test", true, 8080, 8443);
+        let origin = OriginTarget::for_site("app.test", true, 8080, 8443);
         let args = strings(&quick_tunnel_args(&origin));
         assert_eq!(args[0], "tunnel");
         assert!(args.iter().any(|a| a == "--no-autoupdate"));
@@ -178,7 +178,7 @@ mod tests {
 
     #[test]
     fn quick_non_secure_omits_tls_flags() {
-        let origin = OriginTarget::for_site("blog", "test", false, 8080, 8443);
+        let origin = OriginTarget::for_site("blog.test", false, 8080, 8443);
         let args = strings(&quick_tunnel_args(&origin));
         assert!(args.contains(&"http://127.0.0.1:8080".to_string()));
         assert!(args.iter().any(|a| a == "--no-autoupdate"));

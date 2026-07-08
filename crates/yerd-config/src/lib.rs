@@ -23,9 +23,9 @@ mod serialize;
 
 pub use error::{ConfigError, MigrationErrorReason, ValidateErrorReason};
 pub use schema::{
-    Config, DumpsSection, ExtEntry, GroupsSection, MailSection, ParkedSection, PhpSection, Ports,
-    ServiceInstance, ServicesSection, SiteOverride, TunnelSection, DEFAULT_DNS_PORT,
-    DEFAULT_DUMP_PORT, DEFAULT_MAIL_PORT, RESERVED_GROUP_NAME,
+    Config, DomainDelta, DomainsSection, DumpsSection, ExtEntry, GroupsSection, MailSection,
+    ParkedSection, PhpSection, Ports, ServiceInstance, ServicesSection, SiteOverride,
+    TunnelSection, DEFAULT_DNS_PORT, DEFAULT_DUMP_PORT, DEFAULT_MAIL_PORT, RESERVED_GROUP_NAME,
 };
 
 /// The on-disk schema version this crate writes. Bumped together with a new
@@ -61,4 +61,9 @@ pub use schema::{
 /// bumps; each bump exists so an *older* binary rejects a file using the newer
 /// field cleanly as [`ConfigError::UnsupportedVersion`] rather than failing on
 /// the unknown key.
-pub const CURRENT_VERSION: u32 = 10;
+///
+/// v11 added the optional `[domains]` table ([`DomainsSection`]) for per-site
+/// routable-domain customisation (multiple domains, subdomains, wildcards, and a
+/// changeable primary). It defaults (empty) when absent, so v10→v11 is a bare
+/// version bump.
+pub const CURRENT_VERSION: u32 = 11;

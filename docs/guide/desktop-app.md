@@ -61,9 +61,9 @@ The home base for [managing sites](./sites). Polls the daemon every 5 seconds wh
 
 Parked folders. Each parked directory shows a count of the `.test` sites it produces (one per child directory). Park folder opens a native directory picker; each row's menu offers Reveal folder or Un-park (with confirmation).
 
-Sites. Every parked and linked site is a card: the `name.test` URL (click to open in your browser), the document root, and badges for kind (`parked`/`linked`), PHP version, HTTPS/HTTP, and the [served web root](./sites#web-root-the-served-directory) when it isn't the project root.
+Sites. Every parked and linked site is a card: the `name.test` URL (click to open in your browser), the document root, and badges for kind (`parked`/`linked`), PHP version, HTTPS/HTTP, and the [served web root](./sites#web-root-the-served-directory) when it isn't the project root. A `+N` badge appears when the site answers extra domains beyond its apex, and an amber warning shows when another site claims this site's apex.
 
-Each card's `⋯` menu offers **Edit…**, Open in browser, Reveal folder, **Share publicly…** (jumps to the [Share page](#share)), and (linked sites only) Unlink. **Edit…** opens one dialog covering everything about the site: PHP version, web root (blank means auto-detect), the HTTPS toggle, and its [group](./sites#site-groups). Parked sites have no destructive action here; remove them by un-parking their folder, or they'd reappear.
+Each card's `⋯` menu offers **Edit…**, **Manage domains…** (set the primary domain, add or remove aliases and wildcards), Open in browser, Reveal folder, **Share publicly…** (jumps to the [Share page](#share)), and (linked sites only) Unlink. **Edit…** opens one dialog covering everything about the site: PHP version, web root (blank means auto-detect), the HTTPS toggle, and its [group](./sites#site-groups). Parked sites have no destructive action here; remove them by un-parking their folder, or they'd reappear.
 
 Sites can also be organized into named, reorderable groups shown as collapsible sections on this page; see [Sites](./sites) for the full walkthrough.
 

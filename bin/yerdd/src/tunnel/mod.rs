@@ -142,14 +142,14 @@ pub async fn start_quick_tunnel(site: &str, state: &DaemonState) -> Response {
         };
     };
 
-    let Some((name, secure, tld)) = resolve_site(state, site).await else {
+    let Some((name, secure, _tld, host)) = resolve_site(state, site).await else {
         return Response::Error {
             code: ErrorCode::NotFound,
             message: format!("no site named {site:?}"),
         };
     };
 
-    let origin = OriginTarget::for_site(&name, &tld, secure, state.http.bound, state.https.bound);
+    let origin = OriginTarget::for_site(&host, secure, state.http.bound, state.https.bound);
     let args = yerd_tunnel::args::quick_tunnel_args(&origin);
     run_to_ready(
         state,
@@ -191,21 +191,26 @@ pub(super) fn pinned_home_env(
     env
 }
 
-/// Resolve a site by name or `.test` host to its `(name, secure, tld)`, reading
-/// the router under a brief lock that is released before the caller takes any
-/// other lock.
+/// Resolve a site by name or `.test` host to its `(name, secure, tld, host)`,
+/// where `host` is the site's primary domain FQDN (the tunnel origin's rewritten
+/// `Host`). Reads the router under a brief lock released before the caller takes
+/// any other lock. Returns `None` when the site's primary host does not resolve
+/// back to it - a shadowed apex whose exact label is claimed by another site (so
+/// its effective set is wildcard-only) would otherwise point the tunnel at that
+/// other site's backend. Such a site has no concrete host that routes to it and
+/// cannot be tunneled; `yerd doctor` flags the shadow.
 pub(super) async fn resolve_site(
     state: &DaemonState,
     site: &str,
-) -> Option<(String, bool, String)> {
+) -> Option<(String, bool, String, String)> {
     let router = state.router.read().await;
-    router.resolve(site).or_else(|| router.get(site)).map(|s| {
-        (
-            s.name().to_owned(),
-            s.secure(),
-            router.config().tld().to_owned(),
-        )
-    })
+    let s = router.resolve(site).or_else(|| router.get(site))?;
+    let host = router.primary_fqdn(s.name());
+    if router.resolve(&host).map(yerd_core::Site::name) != Some(s.name()) {
+        return None;
+    }
+    let tld = router.config().tld().to_owned();
+    Some((s.name().to_owned(), s.secure(), tld, host))
 }
 
 /// Register + spawn a tunnel for `name` under a brief manager lock, then drive

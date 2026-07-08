@@ -33,6 +33,7 @@ yerd [--json] <COMMAND> [ARGS...]
 | Group | Commands |
 | --- | --- |
 | [Sites](./sites) | `sites`, `park`, `unpark`, `link`, `unlink`, `root` |
+| [Domains](./domains) | `domain list`, `domain add`, `domain remove`, `domain primary`, `domain reset` |
 | [HTTPS](./https) | `secure`, `unsecure` |
 | [PHP](./php) | `use`, `install php`, `uninstall php`, `update php`, `restart php`, `list php`, `list parked`, `set php`, `unset php`, `php ext add`/`remove`/`list` |
 | [Tooling](./tooling) | `tools`, `install tool`, `uninstall tool`, `path install`, `path uninstall`, `path print` |
@@ -54,7 +55,7 @@ yerd [--json] <COMMAND> [ARGS...]
 | --- | --- |
 | `0` | Success. |
 | `1` | The daemon returned an error response, or a `doctor` run had a `Fail`-severity finding. |
-| `2` | Client-side usage error (bad site name, invalid PHP version, unknown/invalid PHP setting). |
+| `2` | Client-side usage error (bad site name, invalid domain, invalid PHP version, unknown/invalid PHP setting). |
 | `69` | The daemon was unreachable (for non-`doctor` commands). |
 | `74` | Other transport / I/O failure. |
 

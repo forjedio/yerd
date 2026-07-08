@@ -37,7 +37,7 @@ pub struct OriginTarget {
     pub scheme: Scheme,
     /// Bound loopback port of that listener.
     pub port: u16,
-    /// Canonical `{name}.{tld}` to send as the rewritten `Host` header so the
+    /// The site's primary domain FQDN, sent as the rewritten `Host` header so the
     /// proxy routes to this site.
     pub host_header: String,
     /// SNI / expected origin cert name; `Some` only for a secure (HTTPS) origin.
@@ -49,20 +49,15 @@ pub struct OriginTarget {
 }
 
 impl OriginTarget {
-    /// Build the origin for `name`.`tld`, choosing the listener by `secure`.
+    /// Build the origin for a site's primary `host` (its primary domain FQDN,
+    /// e.g. `app.test`), choosing the listener by `secure`.
     ///
     /// `http_bound` / `https_bound` are the *actually bound* proxy ports (which
     /// may be the unprivileged fallbacks 8080/8443).
     #[must_use]
     #[allow(clippy::similar_names)]
-    pub fn for_site(
-        name: &str,
-        tld: &str,
-        secure: bool,
-        http_bound: u16,
-        https_bound: u16,
-    ) -> Self {
-        let host_header = format!("{name}.{tld}");
+    pub fn for_site(host: &str, secure: bool, http_bound: u16, https_bound: u16) -> Self {
+        let host_header = host.to_owned();
         if secure {
             Self {
                 scheme: Scheme::Https,
@@ -96,7 +91,7 @@ mod tests {
 
     #[test]
     fn secure_site_targets_https_listener_with_sni_and_no_verify() {
-        let o = OriginTarget::for_site("app", "test", true, 8080, 8443);
+        let o = OriginTarget::for_site("app.test", true, 8080, 8443);
         assert_eq!(o.scheme, Scheme::Https);
         assert_eq!(o.port, 8443);
         assert_eq!(o.url(), "https://127.0.0.1:8443");
@@ -107,7 +102,7 @@ mod tests {
 
     #[test]
     fn non_secure_site_targets_http_listener_plainly() {
-        let o = OriginTarget::for_site("blog", "test", false, 8080, 8443);
+        let o = OriginTarget::for_site("blog.test", false, 8080, 8443);
         assert_eq!(o.scheme, Scheme::Http);
         assert_eq!(o.port, 8080);
         assert_eq!(o.url(), "http://127.0.0.1:8080");
@@ -117,9 +112,9 @@ mod tests {
     }
 
     #[test]
-    fn honours_custom_tld_and_bound_ports() {
-        let o = OriginTarget::for_site("api", "local", true, 80, 443);
+    fn primary_host_and_bound_ports_used_verbatim() {
+        let o = OriginTarget::for_site("corp.test", true, 80, 443);
         assert_eq!(o.url(), "https://127.0.0.1:443");
-        assert_eq!(o.host_header, "api.local");
+        assert_eq!(o.host_header, "corp.test");
     }
 }

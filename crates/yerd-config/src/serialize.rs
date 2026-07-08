@@ -59,6 +59,29 @@ struct WireSer<'a> {
     // `[groups]` region, keeping the byte-shape goldens intact.
     #[serde(skip_serializing_if = "Option::is_none")]
     groups: Option<GroupsSectionSer<'a>>,
+    // v11: optional `[domains]` table - a trailing sub-table region. `None`
+    // (skipped) when the section is empty, so a default config emits no
+    // `[domains]` region, keeping the byte-shape goldens intact.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    domains: Option<DomainsSectionSer<'a>>,
+}
+
+#[derive(Serialize)]
+struct DomainsSectionSer<'a> {
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    linked: BTreeMap<&'a str, DomainDeltaSer<'a>>,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    parked: BTreeMap<&'a str, DomainDeltaSer<'a>>,
+}
+
+#[derive(Serialize)]
+struct DomainDeltaSer<'a> {
+    #[serde(skip_serializing_if = "<[_]>::is_empty")]
+    added: Vec<&'a str>,
+    #[serde(skip_serializing_if = "<[_]>::is_empty")]
+    suppressed: Vec<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    primary: Option<&'a str>,
 }
 
 #[derive(Serialize)]
@@ -177,6 +200,7 @@ struct OverrideSer<'a> {
     wp_auto_login_user: Option<&'a str>,
 }
 
+#[allow(clippy::too_many_lines)]
 pub(crate) fn to_toml(c: &Config) -> Result<String, ConfigError> {
     let w = WireSer {
         version: CURRENT_VERSION,
@@ -276,8 +300,42 @@ pub(crate) fn to_toml(c: &Config) -> Result<String, ConfigError> {
                 members: &c.groups.members,
             })
         },
+        domains: if c
+            .domains
+            .linked
+            .values()
+            .chain(c.domains.parked.values())
+            .all(crate::schema::DomainDelta::is_empty)
+        {
+            None
+        } else {
+            Some(DomainsSectionSer {
+                linked: domain_delta_map(&c.domains.linked),
+                parked: domain_delta_map(&c.domains.parked),
+            })
+        },
     };
     toml::to_string_pretty(&w).map_err(Into::into)
+}
+
+/// Build a borrowed `[domains.*]` delta map, pruning any all-empty delta (an
+/// all-empty entry is equivalent to no customisation and must not emit a table).
+fn domain_delta_map(
+    src: &BTreeMap<String, crate::schema::DomainDelta>,
+) -> BTreeMap<&str, DomainDeltaSer<'_>> {
+    src.iter()
+        .filter(|(_, d)| !d.is_empty())
+        .map(|(k, d)| {
+            (
+                k.as_str(),
+                DomainDeltaSer {
+                    added: d.added.iter().map(yerd_core::Domain::as_str).collect(),
+                    suppressed: d.suppressed.iter().map(yerd_core::Domain::as_str).collect(),
+                    primary: d.primary.as_ref().map(yerd_core::Domain::as_str),
+                },
+            )
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -294,8 +352,8 @@ mod tests {
     fn default_to_toml_starts_with_version_line() {
         let s = to_toml(&Config::default()).unwrap();
         assert!(
-            s.starts_with("version = 10\n"),
-            "expected `version = 10` first line; got: {s}"
+            s.starts_with("version = 11\n"),
+            "expected `version = 11` first line; got: {s}"
         );
     }
 
@@ -378,6 +436,65 @@ mod tests {
         );
         let back = Config::from_toml(&s).unwrap();
         assert_eq!(back, c);
+    }
+
+    #[test]
+    fn default_config_emits_no_domains_table() {
+        let s = to_toml(&Config::default()).unwrap();
+        assert!(
+            !s.contains("[domains"),
+            "default config must omit the domains table; got: {s}"
+        );
+    }
+
+    #[test]
+    #[allow(clippy::field_reassign_with_default)]
+    fn populated_domains_section_round_trips() {
+        use yerd_core::Domain;
+        let mut c = Config::default();
+        c.domains.linked.insert(
+            "blog".to_owned(),
+            crate::DomainDelta {
+                added: vec![
+                    Domain::parse_subpart("corp").unwrap(),
+                    Domain::parse_subpart("*.blog").unwrap(),
+                ],
+                suppressed: vec![Domain::parse_subpart("blog").unwrap()],
+                primary: Some(Domain::parse_subpart("corp").unwrap()),
+            },
+        );
+        c.domains.parked.insert(
+            "/srv/shop".to_owned(),
+            crate::DomainDelta {
+                added: vec![Domain::parse_subpart("shop-alias").unwrap()],
+                suppressed: vec![],
+                primary: None,
+            },
+        );
+        let s = to_toml(&c).unwrap();
+        assert!(
+            s.contains("[domains.linked.blog]"),
+            "must emit linked delta: {s}"
+        );
+        assert!(
+            s.contains("[domains.parked.\"/srv/shop\"]"),
+            "must emit parked delta keyed by docroot: {s}"
+        );
+        let back = Config::from_toml(&s).unwrap();
+        assert_eq!(back, c);
+    }
+
+    #[test]
+    #[allow(clippy::field_reassign_with_default)]
+    fn all_empty_domain_delta_omits_table_and_is_not_round_tripped() {
+        // An all-empty delta is equivalent to no customisation: the serialiser
+        // prunes it, so the emitted config is byte-identical to the default.
+        let baseline = to_toml(&Config::default()).unwrap();
+        let mut c = Config::default();
+        c.domains
+            .linked
+            .insert("blog".to_owned(), crate::DomainDelta::default());
+        assert_eq!(to_toml(&c).unwrap(), baseline);
     }
 
     #[test]

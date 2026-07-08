@@ -160,6 +160,10 @@ The variant set is the daemon's whole RPC surface - liveness, site management, P
 | `SetPhp { name, version }` | `{"type":"set_php","name":"foo","version":"8.3"}` |
 | `SetSecure { name, secure }` | `{"type":"set_secure","name":"foo","secure":true}` |
 | `SetWebRoot { name, path: Option }` | `{"type":"set_web_root","name":"foo","path":"public"}` or `…,"path":null` (reset to auto-detect) |
+| `AddDomain { name, domain }` | `{"type":"add_domain","name":"foo","domain":"api.foo.test"}` (exact host or single-label wildcard `*.foo.test`) |
+| `RemoveDomain { name, domain }` | `{"type":"remove_domain","name":"foo","domain":"api.foo.test"}` (refused for a site's last exact domain) |
+| `SetPrimaryDomain { name, domain }` | `{"type":"set_primary_domain","name":"foo","domain":"corp.foo.test"}` (exact host only, never a wildcard; auto-added if absent) |
+| `ResetDomains { name }` | `{"type":"reset_domains","name":"foo"}` (back to apex only) |
 | `InstallPhp { version }` | `{"type":"install_php","version":"8.5"}` |
 | `InstallPhpStreamed { version }` | `{"type":"install_php_streamed","version":"8.5"}` (replies `JobStarted`; poll `JobStatus`) |
 | `UpdatePhp { version: Option }` | `{"type":"update_php","version":"8.5"}` or `…,"version":null` |
@@ -266,6 +270,10 @@ pub enum Response {
 
 ::: info WordPress fields on `Site` and `SiteEntry`
 `Site` gained `wp_auto_login: bool` and `wp_auto_login_user: Option<String>`, both skipped on the wire when absent/`false` - same additive, no-bump pattern as `web_subpath`. `Response::Sites`'s per-entry payload (`SiteEntry`, `#[serde(flatten)]` over `Site`) separately gained `is_wordpress: bool`, also skipped when `false` - it's a runtime detection fact (see `wordpress_detect`, [`yerdd`'s WordPress support](./binaries/yerdd#wordpress-support)), not a persisted config field, so it lives on the response wrapper rather than the config-backed `Site` itself.
+:::
+
+::: info Domain fields on `SiteEntry`, and `StatusReport.shadows`
+The multi-domain feature adds three more `SiteEntry` fields alongside `is_wordpress`: `primary_domain: Option<String>` (the canonical FQDN, populated only when it differs from the default `{name}.{tld}` apex), `domains: Vec<String>` (the full routable set, populated only for a customized site), and `apex_shadowed_by: Option<String>` (the other site claiming this apex, if any). All three are skipped when default/empty, so a default site's `Response::Sites` bytes are byte-identical to before - same additive, no-bump pattern as `web_subpath`. Separately, `StatusReport` gained `shadows: Vec<DomainShadow>` (skipped when empty): one `DomainShadow { site, shadowed_by }` per site that lost a domain to another when the router was built, which `yerd doctor` surfaces as a `DomainShadowed` warning. The four domain mutators (`AddDomain` / `RemoveDomain` / `SetPrimaryDomain` / `ResetDomains`) reply with the generic `Ok`.
 :::
 
 ::: info The mail payloads gained read/unread fields additively

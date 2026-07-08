@@ -148,7 +148,8 @@ pub(super) async fn run(
     }
 
     state.jobs.set_phase(id, "Installing").await;
-    let install_args = install_args(name, spec.secure, options);
+    let tld = state.config.lock().await.tld.as_str().to_owned();
+    let install_args = install_args(name, &tld, spec.secure, options);
     state
         .jobs
         .push_log(id, "$ wp core install ...".to_owned())
@@ -193,7 +194,7 @@ pub(super) async fn run(
     let scheme = if spec.secure { "https" } else { "http" };
     state
         .jobs
-        .push_log(id, format!("serving {scheme}://{name}.test"))
+        .push_log(id, format!("serving {scheme}://{name}.{tld}"))
         .await;
     Outcome::Succeeded
 }
@@ -586,10 +587,10 @@ fn looks_like_email(s: &str) -> bool {
 /// makes WP-CLI read it from stdin instead, so it never lands in the process's
 /// argv (world-readable via `ps` / `/proc/<pid>/cmdline`). The caller pipes the
 /// password in through [`run_wp_step`]'s `stdin_data`.
-fn install_args(name: &str, secure: bool, o: &WordPressOptions) -> Vec<String> {
+fn install_args(name: &str, tld: &str, secure: bool, o: &WordPressOptions) -> Vec<String> {
     let scheme = if secure { "https" } else { "http" };
     let mut a = vec!["core".to_owned(), "install".to_owned()];
-    a.push(format!("--url={scheme}://{name}.test"));
+    a.push(format!("--url={scheme}://{name}.{tld}"));
     a.push(format!("--title={}", o.site_title));
     a.push(format!("--admin_user={}", o.admin_user));
     a.push(format!("--admin_email={}", o.admin_email));
@@ -762,7 +763,7 @@ mod tests {
 
     #[test]
     fn install_args_single_site_uses_core_install() {
-        let a = install_args("blog", true, &opts());
+        let a = install_args("blog", "test", true, &opts());
         assert_eq!(a[0], "core");
         assert_eq!(a[1], "install");
         assert!(a.contains(&"--url=https://blog.test".to_owned()));
@@ -770,8 +771,14 @@ mod tests {
     }
 
     #[test]
+    fn install_args_uses_configured_tld() {
+        let a = install_args("blog", "dev.local", true, &opts());
+        assert!(a.contains(&"--url=https://blog.dev.local".to_owned()));
+    }
+
+    #[test]
     fn install_args_never_puts_the_password_in_argv() {
-        let a = install_args("blog", true, &opts());
+        let a = install_args("blog", "test", true, &opts());
         assert!(a.contains(&"--prompt=admin_password".to_owned()));
         assert!(
             !a.iter().any(|s| s.contains("hunter2hunter2")),
@@ -782,7 +789,7 @@ mod tests {
 
     #[test]
     fn install_args_insecure_uses_http_scheme() {
-        let a = install_args("blog", false, &opts());
+        let a = install_args("blog", "test", false, &opts());
         assert!(a.contains(&"--url=http://blog.test".to_owned()));
     }
 

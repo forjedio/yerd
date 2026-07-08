@@ -43,8 +43,8 @@ pub async fn sync_site_url(site: &Site, state: &DaemonState) {
         return;
     }
 
-    let tld = state.router.read().await.config().tld().to_owned();
-    let url = target_url(site.name(), &tld, site.secure());
+    let host = state.router.read().await.primary_fqdn(site.name());
+    let url = target_url(&host, site.secure());
 
     for option in ["siteurl", "home"] {
         if let Err(e) =
@@ -61,15 +61,14 @@ pub async fn sync_site_url(site: &Site, state: &DaemonState) {
     }
 }
 
-/// Pure - the target `siteurl`/`home` value for `name` on the daemon's
-/// configured TLD, given the desired secure state. Uses the *configured*
-/// TLD (`state.router`'s `RouterConfig::tld`), not a hardcoded `.test` -
-/// yerd's TLD is user-settable (see `yerd-config`'s `Tld` type), so a
-/// hardcoded suffix would write the wrong domain entirely for anyone who's
-/// changed it.
-fn target_url(name: &str, tld: &str, secure: bool) -> String {
+/// Pure - the target `siteurl`/`home` value for a site's primary `host` (its
+/// primary domain FQDN, e.g. `corp.test`), given the desired secure state. The
+/// caller resolves the host from the router's primary domain, falling back to
+/// `{name}.{tld}` on the *configured* TLD (yerd's TLD is user-settable), never a
+/// hardcoded `.test`.
+fn target_url(host: &str, secure: bool) -> String {
     let scheme = if secure { "https" } else { "http" };
-    format!("{scheme}://{name}.{tld}")
+    format!("{scheme}://{host}")
 }
 
 /// Pure - splits `boot_fs` into its own directory and bare file name, and
@@ -142,18 +141,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn target_url_uses_configured_tld_not_a_hardcoded_one() {
-        assert_eq!(
-            target_url("blog", "dev.local", true),
-            "https://blog.dev.local"
-        );
-        assert_eq!(target_url("blog", "test", true), "https://blog.test");
+    fn target_url_uses_primary_host() {
+        assert_eq!(target_url("blog.dev.local", true), "https://blog.dev.local");
+        assert_eq!(target_url("corp.test", true), "https://corp.test");
     }
 
     #[test]
     fn target_url_reflects_secure_flag() {
-        assert_eq!(target_url("blog", "test", false), "http://blog.test");
-        assert_eq!(target_url("blog", "test", true), "https://blog.test");
+        assert_eq!(target_url("blog.test", false), "http://blog.test");
+        assert_eq!(target_url("blog.test", true), "https://blog.test");
     }
 
     #[test]

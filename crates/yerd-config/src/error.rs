@@ -153,6 +153,13 @@ pub enum ValidateErrorReason {
     /// Two `[php.extensions]` entries under the same version shared a `name`,
     /// which is the handle used to remove one.
     DuplicateExtensionName,
+    /// A `[domains]` delta listed the same domain twice in `added`.
+    DomainAddedDuplicate,
+    /// A `[domains]` delta had a domain in both `added` and `suppressed`.
+    DomainAddedSuppressedOverlap,
+    /// A `[domains]` delta named a wildcard as its `primary` (a primary must be a
+    /// concrete, exact domain).
+    DomainPrimaryWildcard,
 }
 
 impl fmt::Display for ValidateErrorReason {
@@ -190,6 +197,13 @@ impl fmt::Display for ValidateErrorReason {
             }
             Self::DuplicateExtensionName => {
                 "php.extensions contains two entries with the same name for one version"
+            }
+            Self::DomainAddedDuplicate => "a domains delta lists the same domain twice in `added`",
+            Self::DomainAddedSuppressedOverlap => {
+                "a domains delta has a domain in both `added` and `suppressed`"
+            }
+            Self::DomainPrimaryWildcard => {
+                "a domains primary must be an exact (non-wildcard) domain"
             }
         };
         f.write_str(msg)
@@ -267,6 +281,9 @@ mod tests {
             ValidateErrorReason::GroupMemberDangling,
             ValidateErrorReason::InvalidPhpExtension,
             ValidateErrorReason::DuplicateExtensionName,
+            ValidateErrorReason::DomainAddedDuplicate,
+            ValidateErrorReason::DomainAddedSuppressedOverlap,
+            ValidateErrorReason::DomainPrimaryWildcard,
         ] {
             assert!(!r.to_string().is_empty());
             let _ = format!("{r:?}");

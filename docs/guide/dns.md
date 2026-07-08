@@ -35,7 +35,7 @@ The resolver lives in the `yerd-dns` crate, built on `hickory-dns`. It is author
 
 Worth knowing:
 
-- Any subdomain depth resolves. `a.b.c.app.test` maps to loopback just like `app.test`, and matching is case-insensitive.
+- Any subdomain depth resolves. `a.b.c.app.test` maps to loopback just like `app.test`, and matching is case-insensitive. Resolving a name to loopback is not the same as a site answering it: routing is the reverse proxy's job, and since v2 a site answers only the domains registered for it, so a name that resolves in DNS may still 404 at the proxy until you attach it with `yerd domain add`.
 - Records carry a 60-second TTL (`ANSWER_TTL_SECS`), so resolvers don't cling to stale answers when your setup changes.
 - Out-of-zone queries return `REFUSED` with the `AA` bit cleared. If your OS ever misroutes a non-`.test` query here, the cleared bit tells it to ask elsewhere instead of trusting a bogus answer.
 - No `SOA` is emitted in the authority section of `NXDOMAIN`/`NODATA` replies.

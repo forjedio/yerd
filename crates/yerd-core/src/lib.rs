@@ -8,6 +8,7 @@
 #![forbid(unsafe_code)]
 
 pub mod detect;
+mod domain;
 mod error;
 mod host;
 mod php;
@@ -38,7 +39,10 @@ pub const PROXY_SERVER_ID: &str = "yerd";
 pub const CA_COMMON_NAME: &str = "Yerd Local CA";
 
 pub use detect::{detect, Detection, ProjectSignals};
-pub use error::{CoreError, PhpVersionErrorReason, SiteNameErrorReason, TldErrorReason};
+pub use domain::{choose_primary, effective_domains, Domain};
+pub use error::{
+    CoreError, DomainErrorReason, PhpVersionErrorReason, SiteNameErrorReason, TldErrorReason,
+};
 pub use php::PhpVersion;
 pub use php_extensions::{ExtError, NameErrorReason, PathErrorReason};
 pub use php_settings::{PhpSettingError, ValueErrorReason};

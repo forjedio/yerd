@@ -58,8 +58,8 @@ fn populated() -> Config {
 fn default_config_starts_with_version_line() {
     let s = Config::default().to_toml().unwrap();
     assert!(
-        s.starts_with("version = 10\n"),
-        "expected first line `version = 10`; got: {s}"
+        s.starts_with("version = 11\n"),
+        "expected first line `version = 11`; got: {s}"
     );
 }
 

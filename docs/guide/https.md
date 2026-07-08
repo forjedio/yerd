@@ -103,7 +103,9 @@ The issuance layer accepts **wildcard DNS names** such as `*.my-app.test` as
 Subject Alternative Names, alongside the bare hostname. SAN entries are validated
 as `IA5String` (ASCII) DNS names; non-ASCII names are rejected with a clear
 error pointing at the offending entry. This is what lets a single certificate
-cover a site and its sub-hosts where that's needed.
+cover a site and its sub-hosts where that's needed. A wildcard leaf is issued
+when you register a wildcard domain for a site with
+`yerd domain add <site> '*.<site>.test'`.
 
 ::: tip Why a leaf per host instead of one big cert
 Issuing on demand keeps certificates scoped to exactly the hostnames you

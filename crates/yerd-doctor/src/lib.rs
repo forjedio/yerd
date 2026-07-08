@@ -54,6 +54,7 @@ pub fn diagnose(report: &StatusReport, path_needs_setup: Option<bool>) -> Vec<Di
     out.extend(php_update_findings(report));
     out.extend(resolver_backup_finding(report));
     out.extend(no_sites_finding(report));
+    out.extend(shadow_findings(report));
 
     if path_needs_setup == Some(true) {
         out.push(warn(
@@ -318,6 +319,29 @@ fn port_findings(report: &StatusReport) -> Vec<Diagnosis> {
     out
 }
 
+/// One `Warn` per site that lost a domain to another site (see
+/// [`StatusReport::shadows`]). Empty on a healthy config, so it never fires for
+/// the common single-claimant case.
+fn shadow_findings(report: &StatusReport) -> Vec<Diagnosis> {
+    report
+        .shadows
+        .iter()
+        .map(|s| {
+            warn(
+                DiagnosisCode::DomainShadowed,
+                "Domain claimed by another site",
+                format!(
+                    "{}'s domain is also claimed by {}, so it was dropped from routing. \
+                     Which site wins can depend on directory scan order, so it may change \
+                     when Yerd restarts.",
+                    s.site, s.shadowed_by
+                ),
+                "make each site's domains unique with `yerd domain remove` or `yerd domain primary`",
+            )
+        })
+        .collect()
+}
+
 fn privileged_fallback(report: &StatusReport) -> bool {
     (report.http.requested < PRIVILEGED_PORT_CEILING && report.http.fell_back)
         || (report.https.requested < PRIVILEGED_PORT_CEILING && report.https.fell_back)
@@ -406,6 +430,7 @@ mod tests {
             dns_unbound: None,
             boot_id: None,
             shared_sites: 0,
+            shadows: vec![],
         }
     }
 
@@ -440,6 +465,29 @@ mod tests {
         assert!(finding.detail.contains("resolver-backups/test-1.conf"));
         assert!(codes(&ds).contains(&DiagnosisCode::AllGood));
         assert!(!is_auto_fixable(DiagnosisCode::ResolverBackupSaved));
+    }
+
+    #[test]
+    fn shadowed_domain_warns_once_per_losing_site() {
+        let mut r = healthy();
+        assert!(!codes(&diagnose(&r, None)).contains(&DiagnosisCode::DomainShadowed));
+
+        r.shadows = vec![yerd_ipc::DomainShadow {
+            site: "blog".into(),
+            shadowed_by: "shop".into(),
+        }];
+        let ds = diagnose(&r, None);
+        let finding = ds
+            .iter()
+            .find(|d| d.code == DiagnosisCode::DomainShadowed)
+            .expect("shadow finding present");
+        assert_eq!(finding.severity, Severity::Warn);
+        assert!(finding.detail.contains("blog"));
+        assert!(finding.detail.contains("shop"));
+        assert!(finding.remedy.is_some());
+        // A warning suppresses the AllGood finding.
+        assert!(!codes(&ds).contains(&DiagnosisCode::AllGood));
+        assert!(!is_auto_fixable(DiagnosisCode::DomainShadowed));
     }
 
     #[test]

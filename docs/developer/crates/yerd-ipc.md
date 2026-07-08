@@ -149,6 +149,7 @@ The variants, grouped by area:
 | --- | --- |
 | Liveness / info | `Ping`, `DaemonInfo`, `Status`, `Diagnose`, `DoctorFix`, `RestartDaemon` |
 | Sites | `ListSites`, `Park`, `Link`, `Unlink`, `ListParked`, `Unpark`, `SetPhp`, `SetSecure`, `SetWebRoot` |
+| Domains | `AddDomain`, `RemoveDomain`, `SetPrimaryDomain`, `ResetDomains` |
 | PHP | `InstallPhp`, `InstallPhpStreamed`, `SetDefaultPhp`, `ListPhp`, `UpdatePhp`, `CheckPhpUpdates`, `AvailablePhp`, `SetPhpSettings`, `RestartPhp`, `RestartAllPhp`, `UninstallPhp` |
 | Services | `ListServices`, `AvailableServices`, `InstallService`, `UninstallService`, `StartService`, `StopService`, `RestartService`, `SetServicePort`, `ServiceLogs`, `ChangeServiceVersion` |
 | Databases | `CreateDatabase`, `ListDatabases`, `DropDatabase`, `BackupDatabase`, `RestoreDatabase` |
@@ -175,7 +176,7 @@ Same shape - internally tagged, `snake_case`, `#[non_exhaustive]`:
 | `Pong` | `Ping` | - |
 | `Ok` | mutating requests (`Park`, `Link`, `Unlink`, `SetPhp`, `SetSecure`, `SetWebRoot`, …) | - |
 | `Error` | any failure | `code: ErrorCode`, `message: String` |
-| `Sites` | `ListSites` | `sites: Vec<Site>` (lexicographic) |
+| `Sites` | `ListSites` | `sites: Vec<SiteEntry>` (lexicographic); each `SiteEntry` flattens a `Site` and adds the domain fields `primary_domain: Option<String>`, `domains: Vec<String>`, `apex_shadowed_by: Option<String>` (all skip-when-default, so a default site's bytes are unchanged) |
 | `Parked` | `ListParked` | `paths: Vec<String>` |
 | `Info` | `DaemonInfo` | `dns_addr`, `tld`, `ca_path`, `ca_fingerprint`, `http_port`, `https_port` |
 | `PhpVersions` | `ListPhp` / `CheckPhpUpdates` / `UpdatePhp` | `installed`, `default`, `updates`, `settings` |
@@ -239,15 +240,15 @@ The Laravel ▸ Dumps feature ships per-request telemetry from the `yerd-php-ext
 
 These types ride inside `Response::Status`, `Response::Diagnoses`, `Response::DoctorFix`, and the service/database responses. The headline list:
 
-`StatusReport`, `PortStatus`, `CaStatus`, `SiteCounts`, `PhpPoolStatus`, `PoolRunState`, `ServiceStatus`, `ServiceRunState`, `ServiceAvailability`, `DatabaseSummary`, `Diagnosis`, `Severity`, `DiagnosisCode`, `FixReport`, `FixResult`.
+`StatusReport`, `PortStatus`, `CaStatus`, `SiteCounts`, `PhpPoolStatus`, `PoolRunState`, `ServiceStatus`, `ServiceRunState`, `ServiceAvailability`, `DatabaseSummary`, `DomainShadow`, `Diagnosis`, `Severity`, `DiagnosisCode`, `FixReport`, `FixResult`.
 
 ::: info No `f64` on the status payload {#no-f64-on-the-wire-note}
 `StatusReport` and everything it reaches stays float-free even though `Response` no longer derives `Eq` (the `DumpEvent::payload` `serde_json::Value` forced that to `PartialEq`-only - see [Dump telemetry](#dump-telemetry-dump-rs)). The system load average still crosses as integer hundredths - `StatusReport.load_avg` is `Option<[u32; 3]>` where each value is `load × 100`. The CLI renders it back to `x.xx`. The daemon does the conversion from the platform layer's `f64` reading at assembly time. Keeping the *status* payload integer-only preserves its `Eq`-based golden assertions; the only intentional float on `Response` is the opaque, daemon-uninterpreted dump payload.
 :::
 
-`StatusReport` follows the same additive-and-back-compatible discipline as the envelopes: optional probe fields (`port_redirect` and the cross-platform `foreign_web_listener`, plus macOS-only `resolver_backup`) are `#[serde(default, skip_serializing_if = "Option::is_none")]` so the wire stays additive and older daemons stay decodable; `daemon_version` is `#[serde(default)]` so a newer client decoding an older daemon's status gets `""` (rendered "unknown") instead of failing the whole decode.
+`StatusReport` follows the same additive-and-back-compatible discipline as the envelopes: optional probe fields (`port_redirect` and the cross-platform `foreign_web_listener`, plus macOS-only `resolver_backup`) are `#[serde(default, skip_serializing_if = "Option::is_none")]` so the wire stays additive and older daemons stay decodable; `daemon_version` is `#[serde(default)]` so a newer client decoding an older daemon's status gets `""` (rendered "unknown") instead of failing the whole decode. It also carries `shadows: Vec<DomainShadow>` (`#[serde(default, skip_serializing_if = "Vec::is_empty")]`, empty on a healthy config): one `DomainShadow { site, shadowed_by }` per site that lost a domain (its apex, or a hand-edited explicit domain) to another site when the router was built. `yerd doctor` surfaces these as `DomainShadowed` warnings.
 
-`PoolRunState` is `Running` / `Stopped` / `Failed`; `ServiceRunState` is `Running` / `Stopped` / `Failed`; `Severity` is `Ok` / `Warn` / `Fail`; `DiagnosisCode` enumerates the doctor checks (`DaemonDown`, `PortFallback`, `ForeignWebListener`, `CaNotTrusted`, `ResolverNotInstalled`, `NoPhpInstalled`, `DefaultPhpNotInstalled`, `FpmPoolFailed`, `ServiceFailed`, `PhpUpdateAvailable`, `NoSites`, `ResolverBackupSaved`, `AllGood`). See [Diagnostics](../../guide/diagnostics) for what these mean to a user.
+`PoolRunState` is `Running` / `Stopped` / `Failed`; `ServiceRunState` is `Running` / `Stopped` / `Failed`; `Severity` is `Ok` / `Warn` / `Fail`; `DiagnosisCode` enumerates the doctor checks (`DaemonDown`, `PortFallback`, `ForeignWebListener`, `CaNotTrusted`, `ResolverNotInstalled`, `NoPhpInstalled`, `DefaultPhpNotInstalled`, `FpmPoolFailed`, `ServiceFailed`, `DomainShadowed`, `PhpUpdateAvailable`, `NoSites`, `ResolverBackupSaved`, `AllGood`). See [Diagnostics](../../guide/diagnostics) for what these mean to a user.
 
 ## Errors (`error.rs`)
 
