@@ -178,6 +178,13 @@ pub fn to_request(cmd: &Command) -> Result<Request, ClientError> {
                 path: if *auto { None } else { path.clone() },
             }
         }
+        Command::FrontController { name, state } => {
+            validate_name(name)?;
+            Request::SetFrontController {
+                name: name.clone(),
+                enabled: state.is_on(),
+            }
+        }
         Command::Elevate { .. } | Command::Unelevate { .. } => {
             return Err(ClientError::Usage(
                 "elevate/unelevate are handled locally, not over IPC".to_owned(),
@@ -746,7 +753,7 @@ fn format_sites(sites: &[SiteEntry]) -> String {
     let show_domain = sites
         .iter()
         .any(|e| e.primary_domain.is_some() || e.apex_shadowed_by.is_some());
-    let mut out = String::from("NAME\tKIND\tPHP\tSECURE\tSERVED\tDOCROOT");
+    let mut out = String::from("NAME\tKIND\tPHP\tSECURE\tSERVED\tDOCROOT\tFRONT-CTRL");
     if show_domain {
         out.push_str("\tDOMAIN");
     }
@@ -764,15 +771,21 @@ fn format_sites(sites: &[SiteEntry]) -> String {
         } else {
             s.web_subpath().display().to_string()
         };
+        let front = if entry.uses_front_controller {
+            "index.php"
+        } else {
+            "direct"
+        };
         let _ = write!(
             out,
-            "\n{}\t{}\t{}\t{}\t{}\t{}",
+            "\n{}\t{}\t{}\t{}\t{}\t{}\t{}",
             s.name(),
             kind,
             s.php(),
             s.secure(),
             served,
-            s.document_root().display()
+            s.document_root().display(),
+            front
         );
         if show_domain {
             let domain = match (&entry.primary_domain, &entry.apex_shadowed_by) {
@@ -1565,6 +1578,28 @@ mod tests {
             }
         );
         assert_eq!(
+            to_request(&Command::FrontController {
+                name: "foo".into(),
+                state: crate::cli::OnOff::On,
+            })
+            .unwrap(),
+            Request::SetFrontController {
+                name: "foo".into(),
+                enabled: true
+            }
+        );
+        assert_eq!(
+            to_request(&Command::FrontController {
+                name: "foo".into(),
+                state: crate::cli::OnOff::Off,
+            })
+            .unwrap(),
+            Request::SetFrontController {
+                name: "foo".into(),
+                enabled: false
+            }
+        );
+        assert_eq!(
             to_request(&Command::Root {
                 name: "foo".into(),
                 path: Some("public".into()),
@@ -1745,6 +1780,7 @@ mod tests {
                     primary_domain: None,
                     domains: vec![],
                     apex_shadowed_by: None,
+                    uses_front_controller: true,
                 }],
             },
             false,
@@ -1755,6 +1791,14 @@ mod tests {
         assert!(
             !listed.stdout.contains("WORDPRESS"),
             "no WORDPRESS column when nothing listed is WordPress"
+        );
+        assert!(
+            listed.stdout.contains("FRONT-CTRL"),
+            "front-controller column header"
+        );
+        assert!(
+            listed.stdout.contains("index.php"),
+            "uses_front_controller=true renders as index.php"
         );
         assert_eq!(listed.code, 0);
 
@@ -1767,12 +1811,17 @@ mod tests {
                     primary_domain: None,
                     domains: vec![],
                     apex_shadowed_by: None,
+                    uses_front_controller: false,
                 }],
             },
             false,
         );
         assert!(with_wp.stdout.contains("WORDPRESS"));
         assert!(with_wp.stdout.contains("yes"));
+        assert!(
+            with_wp.stdout.contains("direct"),
+            "uses_front_controller=false renders as direct"
+        );
 
         let err = render(
             &Response::Error {
@@ -2062,6 +2111,7 @@ mod tests {
             dns_unbound: None,
             boot_id: None,
             shared_sites: 0,
+            symlink_protection: true,
             shadows: vec![],
         }
     }
@@ -2133,6 +2183,7 @@ mod tests {
             primary_domain: Some("corp.test".into()),
             domains: vec!["corp.test".into(), "*.blog.test".into()],
             apex_shadowed_by: Some("shop".into()),
+            uses_front_controller: false,
         };
         let r = render_domains(&[e], "test", None, false);
         assert!(r.stdout.contains("corp.test (primary)"));
@@ -2148,6 +2199,7 @@ mod tests {
             primary_domain: None,
             domains: vec![],
             apex_shadowed_by: None,
+            uses_front_controller: false,
         };
         let r = render_domains(&[e], "test", None, false);
         assert!(r.stdout.contains("foo.test (primary)"));

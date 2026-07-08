@@ -62,6 +62,7 @@ import {
   setSiteGroup,
   setWebRoot,
   setWordpressAutoLogin,
+  setFrontController,
   sitesAndParked,
   startQuickTunnel,
   unlink,
@@ -402,6 +403,7 @@ const editSecure = ref(false);
 const editGroup = ref<string>("");
 const editWpAutoLogin = ref(false);
 const editWpAutoLoginUser = ref<string>("");
+const editFrontController = ref(false);
 
 const DEFAULT_ADMIN_OPTION = { value: "", label: "Earliest admin (default)" };
 type WpAdminUsersStatus = "idle" | "loading" | "ready" | "error";
@@ -451,6 +453,7 @@ function openEdit(s: SiteEntry): void {
   editSecure.value = s.secure;
   editWpAutoLogin.value = s.wp_auto_login ?? false;
   editWpAutoLoginUser.value = s.wp_auto_login_user ?? "";
+  editFrontController.value = s.uses_front_controller ?? false;
   // Seed from current membership, coercing a stale value (group deleted in
   // another window/CLI) to "" so the Select never sits out of range.
   editGroup.value = currentGroupOf(s.name);
@@ -507,6 +510,9 @@ async function confirmEdit(close: () => void): Promise<void> {
         editWpAutoLogin.value,
         editWpAutoLoginUser.value || null,
       );
+    }
+    if (editFrontController.value !== (s.uses_front_controller ?? false)) {
+      await setFrontController(s.name, editFrontController.value);
     }
     toast.success(`Updated ${s.name}`);
     await load({ force: true });
@@ -1009,6 +1015,23 @@ async function shareSitePublicly(s: Site): Promise<void> {
             <p class="text-xs text-muted-foreground">Serve this site over TLS.</p>
           </div>
           <Switch v-model="editSecure" aria-label="HTTPS" />
+        </div>
+
+        <!-- Hidden for WordPress: WP needs direct execution (wp-admin scripts,
+             one-click login), so funnelling through index.php would break it. -->
+        <div v-if="!editTarget?.is_wordpress" class="flex items-center justify-between gap-4">
+          <div>
+            <p class="text-sm font-medium">Route through front controller</p>
+            <p id="edit-front-controller-desc" class="text-xs text-muted-foreground">
+              On: every request funnels through the site's <code>index.php</code> (Laravel,
+              Symfony). Off: named <code>.php</code> files are executed directly (plain PHP).
+            </p>
+          </div>
+          <Switch
+            v-model="editFrontController"
+            aria-label="Route through front controller"
+            aria-describedby="edit-front-controller-desc"
+          />
         </div>
 
         <div v-if="editTarget?.is_wordpress" class="space-y-2">

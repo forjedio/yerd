@@ -387,93 +387,11 @@ fn error(code: ErrorCode, message: String) -> Response {
 )]
 mod tests {
     use super::*;
-    use tokio::sync::{Mutex, RwLock};
-    use yerd_core::{PhpVersion, RouterConfig, SiteRouter, Tld};
+    use yerd_core::PhpVersion;
     use yerd_ipc::{
         AuthProvider, Database, JsRuntime, LaravelOptions, StarterKit, Testing, WordPressDatabase,
         WordPressDbEngine, WordPressOptions,
     };
-    use yerd_platform::PlatformDirs;
-
-    fn dirs_in(tmp: &Path) -> PlatformDirs {
-        PlatformDirs {
-            config: tmp.join("c"),
-            data: tmp.join("d"),
-            state: tmp.join("s"),
-            cache: tmp.join("ca"),
-            runtime: tmp.join("r"),
-        }
-    }
-
-    /// Copied verbatim from `ipc_server`'s test module (its `state_in` is private
-    /// to that module). A `DaemonState` rooted at `tmp`.
-    fn state_in(tmp: &Path) -> DaemonState {
-        let dirs = dirs_in(tmp);
-        let router = SiteRouter::new(RouterConfig::with_tld(Tld::new("test").unwrap()));
-        let ca_path = dirs.data.join("ca.cert.pem");
-        let php_manager = Arc::new(Mutex::new(yerd_php::PhpManager::new(
-            yerd_php::TokioProcessSpawner,
-            yerd_php::SystemClock,
-            yerd_php::io::FastCgiProbe,
-            dirs.clone(),
-            yerd_platform::ActivePortBinder::new(),
-            std::process::id(),
-            std::collections::BTreeMap::new(),
-        )));
-        DaemonState {
-            config: Mutex::new(yerd_config::Config::default()),
-            router: Arc::new(RwLock::new(router)),
-            config_path: dirs.config.join("yerd.toml"),
-            dirs,
-            dns_addr: "127.0.0.1:1053".parse().unwrap(),
-            ca_path,
-            ca_fingerprint: yerd_platform::CaFingerprint::new([0u8; 32]),
-            php_ca_bundle: None,
-            php_updates: tokio::sync::RwLock::new(std::collections::HashMap::new()),
-            yerd_update: tokio::sync::RwLock::new(Vec::new()),
-            update_snapshot: tokio::sync::RwLock::new(None),
-            php_manager,
-            service_manager: Arc::new(Mutex::new(crate::services::new_manager(dirs_in(tmp)))),
-            mail_store: Arc::new(yerd_mail::Store::open(tmp.join("mail")).unwrap()),
-            mail: crate::state::MailRuntime { listening: false },
-            http: yerd_ipc::PortStatus {
-                requested: 80,
-                bound: 8080,
-                fell_back: true,
-            },
-            https: yerd_ipc::PortStatus {
-                requested: 443,
-                bound: 8443,
-                fell_back: true,
-            },
-            redirect_https_port: std::sync::Arc::new(std::sync::atomic::AtomicU16::new(8443)),
-            web_unbound: None,
-            dns_unbound: None,
-            boot_id: 1,
-            started_at: std::time::Instant::now(),
-            shutdown_tx: tokio::sync::watch::channel(false).0,
-            restart_requested: std::sync::atomic::AtomicBool::new(false),
-            detect_cache: Arc::new(crate::detect_cache::DetectCache::new()),
-            watch_dirty: tokio::sync::Notify::new(),
-            dumps: Arc::new(crate::dump_server::DumpStore::new()),
-            shim_reconcile: tokio::sync::Mutex::new(()),
-            tunnel_manager: std::sync::Arc::new(tokio::sync::Mutex::new(
-                crate::tunnel::new_manager(),
-            )),
-            cloudflared_resolution: tokio::sync::RwLock::new(None),
-            tool_mutate: tokio::sync::Mutex::new(()),
-            tunnel_mutate: tokio::sync::Mutex::new(()),
-            php_mutate: tokio::sync::Mutex::new(()),
-            jobs: crate::jobs::JobRegistry::default(),
-            reserved_names: tokio::sync::Mutex::new(std::collections::HashSet::new()),
-            wordpress_versions: tokio::sync::RwLock::new(None),
-            wordpress_login_tokens: Arc::new(crate::wordpress_login::LoginTokenRegistry::new()),
-            wordpress_login_prepend_script: None,
-            wordpress_sites: std::sync::Arc::new(tokio::sync::RwLock::new(
-                std::collections::HashMap::new(),
-            )),
-        }
-    }
 
     fn laravel_opts() -> LaravelOptions {
         LaravelOptions {
@@ -588,7 +506,7 @@ mod tests {
     #[tokio::test]
     async fn start_rejects_invalid_site_name() {
         let tmp = tempfile::tempdir().unwrap();
-        let state = Arc::new(state_in(tmp.path()));
+        let state = Arc::new(crate::test_support::state_in(tmp.path()));
         let spec = laravel_spec("Not A Valid Name!", tmp.path());
         match start(spec, state).await {
             Response::Error { code, .. } => assert_eq!(code, ErrorCode::InvalidPath),
@@ -599,7 +517,7 @@ mod tests {
     #[tokio::test]
     async fn start_accepts_wordpress_framework() {
         let tmp = tempfile::tempdir().unwrap();
-        let state = Arc::new(state_in(tmp.path()));
+        let state = Arc::new(crate::test_support::state_in(tmp.path()));
         let spec = wordpress_spec("blog", tmp.path());
         match start(spec, state).await {
             Response::JobStarted { .. } => {}

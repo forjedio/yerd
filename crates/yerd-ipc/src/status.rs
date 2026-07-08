@@ -128,6 +128,14 @@ pub struct StatusReport {
     /// ignores it).
     #[serde(default, skip_serializing_if = "is_zero_u32")]
     pub shared_sites: u32,
+    /// Whether the proxy's symlink-escape protection is on (the global
+    /// `symlink_protection` setting). `true` = protection active (block symlinks
+    /// resolving outside a site's document root); `false` = the user has opted
+    /// out. `#[serde(default = "default_true")]` so a *newer* client decoding an
+    /// *older* daemon's status (which lacks this key) reads it as protected
+    /// rather than silently off. The daemon always emits it.
+    #[serde(default = "default_true")]
+    pub symlink_protection: bool,
     /// Sites that lost a domain to another site during routing: a domain (the
     /// apex, or a hand-edited explicit domain) claimed by more than one site is
     /// dropped from the loser when the router is built. Empty on a healthy
@@ -156,6 +164,12 @@ pub struct DomainShadow {
 #[allow(clippy::trivially_copy_pass_by_ref)]
 fn is_zero_u32(n: &u32) -> bool {
     *n == 0
+}
+
+/// `serde` default for [`StatusReport::symlink_protection`]: protection on, so
+/// an older daemon's status (missing the key) reads as protected, not off.
+fn default_true() -> bool {
+    true
 }
 
 /// The rootless fallback ports the daemon failed to bind, surfaced in
@@ -508,6 +522,9 @@ pub enum DiagnosisCode {
     /// The bundled PHP does not trust the Yerd CA: the managed `{data}/cacert.pem`
     /// is missing or stale, so PHP HTTPS to `.test` fails (`cURL error 60`).
     PhpCaNotTrusted,
+    /// The global symlink-escape protection is turned off, so the proxy will serve
+    /// files reached through symlinks that resolve outside a site's own folder.
+    SymlinkProtectionDisabled,
     /// Two or more sites claim the same domain. The loser was dropped from
     /// routing when the router was built, and which site wins can depend on the
     /// filesystem scan order of parked directories, so the winner may change

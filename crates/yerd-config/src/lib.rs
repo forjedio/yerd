@@ -66,4 +66,11 @@ pub use schema::{
 /// routable-domain customisation (multiple domains, subdomains, wildcards, and a
 /// changeable primary). It defaults (empty) when absent, so v10→v11 is a bare
 /// version bump.
-pub const CURRENT_VERSION: u32 = 11;
+///
+/// v12 added the top-level `symlink_protection` scalar
+/// ([`Config::symlink_protection`]) for the user-toggleable proxy symlink-escape
+/// guard (defaults to on when absent). v13 added the optional `front_controller`
+/// key inside `[[linked]]` and `[[overrides]]` for the per-site
+/// front-controller-vs-direct-execution toggle (defaults to auto when absent).
+/// Both v11→v12 and v12→v13 are bare version bumps.
+pub const CURRENT_VERSION: u32 = 13;

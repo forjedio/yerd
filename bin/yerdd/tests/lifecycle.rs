@@ -290,6 +290,7 @@ mod tests {
                 resolver,
                 login_tokens,
                 login_prepend_script,
+                daemon.state.symlink_protection.clone(),
                 async move {
                     let _ = rx.changed().await;
                 },

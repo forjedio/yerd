@@ -32,6 +32,14 @@ pub struct Config {
     /// [`Config::validate`]. Stored as a `String` (not a typed enum) to avoid a
     /// dependency on the higher-level `yerd-update` crate.
     pub update_channel: String,
+    /// Whether the proxy refuses to serve a static asset or execute a script
+    /// that is reached via a symlink resolving outside the site's own document
+    /// root. Default: `true` (protection on). Set to `false` to allow such
+    /// symlinks - e.g. a shared `WordPress` parent theme kept beside the site and
+    /// symlinked into `wp-content/themes/`. Read live by `yerd-proxy` via a
+    /// shared atomic; toggling it takes effect without a daemon restart. See
+    /// [`DEFAULT_SYMLINK_PROTECTION`].
+    pub symlink_protection: bool,
     /// HTTP / HTTPS listen ports.
     pub ports: Ports,
     /// PHP defaults.
@@ -76,6 +84,7 @@ impl Default for Config {
             tld: Tld::default(),
             dns_port: DEFAULT_DNS_PORT,
             update_channel: DEFAULT_UPDATE_CHANNEL.to_owned(),
+            symlink_protection: DEFAULT_SYMLINK_PROTECTION,
             ports: Ports::default(),
             php: PhpSection::default(),
             parked: ParkedSection::default(),
@@ -284,6 +293,9 @@ pub const DEFAULT_UPDATE_CHANNEL: &str = "stable";
 /// The two accepted [`Config::update_channel`] values.
 pub const UPDATE_CHANNELS: &[&str] = &["stable", "edge"];
 
+/// Default for [`Config::symlink_protection`] - protection on.
+pub const DEFAULT_SYMLINK_PROTECTION: bool = true;
+
 /// The lowest non-privileged port. Ports below this need elevation on
 /// macOS / Linux, which is precisely what the rootless fallback exists to
 /// avoid - so `fallback_http`/`fallback_https` are required to be `>=` this.
@@ -440,6 +452,10 @@ pub struct SiteOverride {
     /// only meaningful together (a chosen user has no effect while
     /// `wp_auto_login` is off).
     pub wp_auto_login_user: Option<String>,
+    /// Pinned front-controller flag (`true` = funnel through `index.php`,
+    /// `false` = execute scripts directly), or `None` to auto-derive each scan
+    /// from detection. See [`yerd_core::Site::uses_front_controller`].
+    pub front_controller: Option<bool>,
 }
 
 /// Configured services, keyed by service id.
@@ -582,6 +598,7 @@ mod tests {
                 web_root: None,
                 wp_auto_login: None,
                 wp_auto_login_user: None,
+                front_controller: None,
             }
         );
     }

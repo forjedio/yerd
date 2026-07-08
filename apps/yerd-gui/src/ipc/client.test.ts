@@ -17,9 +17,11 @@ import {
   listSites,
   removeDomain,
   resetDomains,
+  setFrontController,
   setMailEnabled,
   setMailPort,
   setPrimaryDomain,
+  setSymlinkProtection,
   status,
   unlink,
   updatePhp,
@@ -120,6 +122,26 @@ describe("client → command mapping", () => {
     invokeMock.mockResolvedValue({ type: "ok" });
     await setMailEnabled(true);
     expect(invokeMock).toHaveBeenCalledWith("set_mail_enabled", { enabled: true });
+  });
+
+  it("setSymlinkProtection sends the flag", async () => {
+    invokeMock.mockResolvedValue({ type: "ok" });
+    await setSymlinkProtection(false);
+    expect(invokeMock).toHaveBeenCalledWith("set_symlink_protection", { enabled: false });
+  });
+
+  it("setFrontController sends the site name and flag", async () => {
+    invokeMock.mockResolvedValue({ type: "ok" });
+    await setFrontController("blog", true);
+    expect(invokeMock).toHaveBeenCalledWith("set_front_controller", {
+      name: "blog",
+      enabled: true,
+    });
+  });
+
+  it("setFrontController rejects on a non-ok response", async () => {
+    invokeMock.mockResolvedValue({ type: "error", code: "internal", message: "boom" });
+    await expect(setFrontController("blog", false)).rejects.toThrow("boom");
   });
 
   it("addDomain / removeDomain / setPrimaryDomain send name + domain", async () => {

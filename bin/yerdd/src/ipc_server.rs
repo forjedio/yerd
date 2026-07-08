@@ -109,6 +109,7 @@ async fn dispatch(req: Request, state: &DaemonState) -> Response {
                 .map(|site| {
                     let name = site.name();
                     let is_wordpress = wordpress_sites.get(name).copied().unwrap_or(false);
+                    let uses_front_controller = site.uses_front_controller(is_wordpress);
                     let (primary_domain, domains) = site_entry_domains(&router, name, &tld);
                     let apex_shadowed_by = router.apex_shadowed_by(name).map(str::to_owned);
                     yerd_ipc::SiteEntry {
@@ -117,6 +118,7 @@ async fn dispatch(req: Request, state: &DaemonState) -> Response {
                         primary_domain,
                         domains,
                         apex_shadowed_by,
+                        uses_front_controller,
                     }
                 })
                 .collect();
@@ -155,6 +157,7 @@ async fn dispatch(req: Request, state: &DaemonState) -> Response {
         | Request::SetSecure { .. }
         | Request::SetWebRoot { .. }
         | Request::SetWordpressAutoLogin { .. }
+        | Request::SetFrontController { .. }
         | Request::AddDomain { .. }
         | Request::RemoveDomain { .. }
         | Request::SetPrimaryDomain { .. }
@@ -317,6 +320,7 @@ async fn dispatch(req: Request, state: &DaemonState) -> Response {
         Request::SetFallbackPorts { http, https } => set_fallback_ports(http, https, state).await,
         Request::SetDnsPort { port } => set_dns_port(port, state).await,
         Request::SetMailEnabled { enabled } => set_mail_enabled(enabled, state).await,
+        Request::SetSymlinkProtection { enabled } => set_symlink_protection(enabled, state).await,
         Request::ListTools => Response::Tools {
             tools: list_tools_with_external(state).await,
         },
@@ -558,7 +562,7 @@ fn domain_shadows(
 async fn build_status_report(state: &DaemonState) -> yerd_ipc::StatusReport {
     use yerd_platform::SystemMetrics;
 
-    let (sites, tld, default_php, mail_enabled, mail_port, shadows) = {
+    let (sites, tld, default_php, mail_enabled, mail_port, symlink_protection, shadows) = {
         let cfg = state.config.lock().await;
         let router = state.router.read().await;
         let mut counts = yerd_ipc::SiteCounts::default();
@@ -579,6 +583,7 @@ async fn build_status_report(state: &DaemonState) -> yerd_ipc::StatusReport {
             cfg.php.default,
             cfg.mail.enabled,
             cfg.mail.port,
+            cfg.symlink_protection,
             shadows,
         )
     };
@@ -713,6 +718,7 @@ async fn build_status_report(state: &DaemonState) -> yerd_ipc::StatusReport {
         dns_unbound: state.dns_unbound,
         boot_id: Some(state.boot_id),
         shared_sites,
+        symlink_protection,
         shadows,
     }
 }
@@ -1627,6 +1633,24 @@ async fn set_mail_enabled(enabled: bool, state: &DaemonState) -> Response {
     }
     *cfg_guard = new;
     tracing::info!(enabled, "set mail enabled (effective on next restart)");
+    Response::Ok
+}
+
+/// Enable or disable the proxy's symlink-escape protection. Persisted to config
+/// and mirrored into the shared `symlink_protection` atomic, so the proxy picks
+/// it up on the next request without a daemon restart.
+async fn set_symlink_protection(enabled: bool, state: &DaemonState) -> Response {
+    let mut cfg_guard = state.config.lock().await;
+    let mut new = cfg_guard.clone();
+    new.symlink_protection = enabled;
+    if let Err(e) = new.save(&state.config_path) {
+        return internal(format!("config save failed: {e}"));
+    }
+    *cfg_guard = new;
+    state
+        .symlink_protection
+        .store(enabled, std::sync::atomic::Ordering::Relaxed);
+    tracing::info!(enabled, "set symlink protection");
     Response::Ok
 }
 
@@ -3991,6 +4015,45 @@ Subject: Captured\r\n\r\nhi\r\n";
         assert_eq!(state.config.lock().await.update_channel, "edge");
         let reloaded = yerd_config::Config::load(&state.config_path).unwrap();
         assert_eq!(reloaded.update_channel, "edge");
+    }
+
+    #[tokio::test]
+    async fn set_symlink_protection_persists_config_and_updates_live_atomic() {
+        use std::sync::atomic::Ordering::Relaxed;
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_in(tmp.path());
+        assert!(state.symlink_protection.load(Relaxed), "seeded protected");
+
+        assert_eq!(
+            dispatch(Request::SetSymlinkProtection { enabled: false }, &state,).await,
+            Response::Ok
+        );
+        assert!(
+            !state.config.lock().await.symlink_protection,
+            "in-memory config off"
+        );
+        assert!(!state.symlink_protection.load(Relaxed), "live atomic off");
+        let reloaded = yerd_config::Config::load(&state.config_path).unwrap();
+        assert!(!reloaded.symlink_protection, "persisted config off");
+        assert!(
+            !build_status_report(&state).await.symlink_protection,
+            "status report off"
+        );
+
+        assert_eq!(
+            dispatch(Request::SetSymlinkProtection { enabled: true }, &state).await,
+            Response::Ok
+        );
+        assert!(
+            state.symlink_protection.load(Relaxed),
+            "live atomic back on"
+        );
+        let reloaded = yerd_config::Config::load(&state.config_path).unwrap();
+        assert!(reloaded.symlink_protection, "persisted config back on");
+        assert!(
+            build_status_report(&state).await.symlink_protection,
+            "status report back on"
+        );
     }
 
     #[tokio::test]

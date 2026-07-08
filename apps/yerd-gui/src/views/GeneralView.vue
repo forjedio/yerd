@@ -30,6 +30,7 @@ import {
   setAutostartDaemon,
   setAutostartGui,
   setAutostartGuiMinimized,
+  setSymlinkProtection,
   setTrayIconVariant,
 } from "@/ipc/client";
 import type { AutostartState, CliPathStatus, TitleBarStyle, TrayIconVariant } from "@/ipc/types";
@@ -320,6 +321,60 @@ async function confirmApplicationPorts(close: () => void): Promise<void> {
   }
 }
 
+// ── symlink protection (global proxy setting, from the status report) ──
+// Default to protected (true) when the report hasn't arrived or predates the field.
+const symlinkProtection = ref(true);
+watch(
+  () => report.value?.symlink_protection,
+  (v) => {
+    if (v !== undefined) symlinkProtection.value = v;
+  },
+  { immediate: true },
+);
+
+const symlinkProtectionOffOpen = ref(false);
+
+// Enabling protection is safe and applies immediately; disabling it lowers a
+// security boundary for every site, so route that direction through a confirm.
+function onSymlinkProtectionToggle(on: boolean): void {
+  if (on) {
+    void toggleSymlinkProtection(true);
+    return;
+  }
+  void nextTick(() => {
+    symlinkProtectionOffOpen.value = true;
+  });
+}
+
+async function toggleSymlinkProtection(on: boolean): Promise<void> {
+  busy.value = "symlink-protection";
+  try {
+    await setSymlinkProtection(on);
+    symlinkProtection.value = on;
+    if (on) {
+      toast.success(
+        "Symlink protection enabled",
+        "Symlinks resolving outside a site's root are blocked again.",
+      );
+    } else {
+      toast.info(
+        "Symlink protection disabled",
+        "Symlinks resolving outside a site's root are now served for every site.",
+      );
+    }
+    await refreshStatus();
+  } catch (e) {
+    toast.error("Couldn't change symlink protection", (e as IpcError).message);
+  } finally {
+    busy.value = null;
+  }
+}
+
+async function confirmDisableSymlinkProtection(close: () => void): Promise<void> {
+  close();
+  await toggleSymlinkProtection(false);
+}
+
 // ── autostart toggles ──
 async function toggleDaemonLogin(on: boolean): Promise<void> {
   busy.value = "login:daemon";
@@ -584,6 +639,32 @@ async function toggleGuiMinimized(on: boolean): Promise<void> {
         </CardContent>
       </Card>
 
+      <Card>
+        <CardHeader>
+          <CardTitle>Security</CardTitle>
+          <CardDescription>Control how the proxy treats symlinks inside your sites.</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <div class="flex items-center justify-between gap-4">
+            <div>
+              <p class="text-sm font-medium">Symlink protection</p>
+              <p id="symlink-protection-desc" class="text-xs text-muted-foreground">
+                {{ symlinkProtection
+                  ? "On - the proxy refuses to serve files reached through a symlink that resolves outside a site's own folder."
+                  : "Off - the proxy will serve files reached through a symlink even when the target is outside a site's folder (e.g. a shared theme). Only turn this off for directories you trust; combined with a public tunnel it can expose files beyond the site root." }}
+              </p>
+            </div>
+            <Switch
+              :model-value="symlinkProtection"
+              :disabled="busy === 'symlink-protection' || !connected"
+              aria-label="Symlink protection"
+              aria-describedby="symlink-protection-desc"
+              @update:model-value="onSymlinkProtectionToggle"
+            />
+          </div>
+        </CardContent>
+      </Card>
+
       <!-- Terminal CLI (macOS + Linux). `yerd` itself is already on PATH on a
            packaged Linux install, but this also puts the PHP/tool shims dir on
            PATH, so it's still useful there. -->
@@ -680,6 +761,24 @@ async function toggleGuiMinimized(on: boolean): Promise<void> {
       <template #footer="{ close }">
         <Button variant="ghost" @click="close">Cancel</Button>
         <Button @click="confirmApplicationPorts(close)">Save &amp; restart</Button>
+      </template>
+    </Modal>
+
+    <Modal v-model:open="symlinkProtectionOffOpen" title="Turn off symlink protection?">
+      <p class="text-sm text-muted-foreground">
+        This is a global setting - it lowers protection for
+        <strong class="text-foreground">every</strong> site, not just one. With it
+        off, the proxy will serve any file reached through a symlink whose target
+        sits outside a site's own folder, including symlinks left behind by
+        dependencies or checked-out repos.
+      </p>
+      <p class="mt-2 text-sm text-muted-foreground">
+        If a site is exposed over a public tunnel, those out-of-root files become
+        reachable beyond your machine. Only turn this off for directories you trust.
+      </p>
+      <template #footer="{ close }">
+        <Button variant="ghost" @click="close">Cancel</Button>
+        <Button @click="confirmDisableSymlinkProtection(close)">Turn off protection</Button>
       </template>
     </Modal>
   </div>

@@ -613,6 +613,26 @@ pub enum Request {
         /// The new group name.
         to: String,
     },
+    /// Enable or disable the proxy's symlink-escape protection (the global
+    /// `symlink_protection` setting). When disabled, the proxy serves assets
+    /// and resolves scripts reached via a symlink that resolves outside a
+    /// site's document root. Takes effect immediately (no daemon restart) and
+    /// is persisted to config.
+    SetSymlinkProtection {
+        /// `true` = protection on (block escapes); `false` = allow escapes.
+        enabled: bool,
+    },
+    /// Override a site's front-controller mode. When enabled, every request
+    /// funnels through the site-root `index.php`; when disabled, a named `.php`
+    /// under the served root is executed directly. Persisted per site and
+    /// applied on the next request. See
+    /// [`yerd_core::Site::uses_front_controller`].
+    SetFrontController {
+        /// The site name.
+        name: String,
+        /// `true` = front-controller mode; `false` = direct script execution.
+        enabled: bool,
+    },
 }
 
 #[cfg(test)]
@@ -629,7 +649,7 @@ mod variant_name_pinning {
 
     // Inline (not in tests/) so the #[non_exhaustive] enum matches
     // exhaustively: a renamed Rust variant fails this match at compile time.
-    #[allow(dead_code)]
+    #[allow(dead_code, clippy::too_many_lines)]
     fn pin(r: Request) {
         match r {
             Request::Ping => {}
@@ -730,6 +750,8 @@ mod variant_name_pinning {
             Request::SetGroupOrder { .. } => {}
             Request::SetSiteGroup { .. } => {}
             Request::RenameGroup { .. } => {}
+            Request::SetSymlinkProtection { .. } => {}
+            Request::SetFrontController { .. } => {}
         }
     }
 
@@ -979,6 +1001,11 @@ mod variant_name_pinning {
         pin(Request::RenameGroup {
             from: "Blog".into(),
             to: "Journal".into(),
+        });
+        pin(Request::SetSymlinkProtection { enabled: true });
+        pin(Request::SetFrontController {
+            name: "blog".to_owned(),
+            enabled: true,
         });
     }
 

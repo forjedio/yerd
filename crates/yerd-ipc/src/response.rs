@@ -381,6 +381,13 @@ pub struct SiteEntry {
     /// Omitted (`None`) when the apex is not shadowed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub apex_shadowed_by: Option<String>,
+    /// The effective front-controller mode for this site (the daemon resolves
+    /// the stored `Site::front_controller` override against the detected
+    /// default, which needs the runtime `is_wordpress` fact). Always emitted so
+    /// a client can render the toggle without re-deriving the default; defaults
+    /// to `false` (direct execution) if an older daemon omits it.
+    #[serde(default)]
+    pub uses_front_controller: bool,
 }
 
 /// One `WordPress` administrator account, for the auto-login user picker -
@@ -580,6 +587,7 @@ mod variant_name_pinning {
                 dns_unbound: None,
                 boot_id: None,
                 shared_sites: 0,
+                symlink_protection: true,
                 shadows: vec![],
             }),
         });

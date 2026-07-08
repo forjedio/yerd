@@ -29,9 +29,10 @@ Every field below maps one-to-one to a field in `schema.rs`. The on-disk shape a
 
 | Key         | TOML type            | Meaning                                                            | Default        |
 | ----------- | -------------------- | ----------------------------------------------------------------- | -------------- |
-| `version`   | integer              | On-disk schema version. **Mandatory.**                            | `11`           |
+| `version`   | integer              | On-disk schema version. **Mandatory.**                            | `13`           |
 | `tld`       | string               | TLD served by Yerd's resolver.                                    | `"test"`       |
 | `dns_port`  | integer (u16)        | Loopback port for the embedded `.test` DNS responder.             | `1053`         |
+| `symlink_protection` | boolean     | Refuse to serve assets/scripts reached via a symlink resolving outside a site's document root. | `true` |
 | `ports`     | table                | HTTP / HTTPS listen ports.                                        | `80` / `443`   |
 | `php`       | table                | PHP defaults and global ini settings.                             | see below      |
 | `parked`    | table                | Parked directory paths.                                           | empty          |
@@ -48,7 +49,7 @@ The parser uses `deny_unknown_fields` at every level. A typo'd or stray key (top
 
 ### `version`
 
-The schema version. This key is **required** - a missing `version` is a hard error (`MissingVersion`), and a non-integer or negative value is rejected (`NonIntegerVersion`). The current schema version is `11`, and Yerd always writes `version = 11`. Older `version = 1` through `version = 10` files are migrated forward automatically on load. See [Schema versioning](#schema-versioning-and-migration) below.
+The schema version. This key is **required** - a missing `version` is a hard error (`MissingVersion`), and a non-integer or negative value is rejected (`NonIntegerVersion`). The current schema version is `13`, and Yerd always writes `version = 13`. Older `version = 1` through `version = 12` files are migrated forward automatically on load. See [Schema versioning](#schema-versioning-and-migration) below.
 
 ### `tld`
 
@@ -60,6 +61,16 @@ The loopback UDP/TCP port the embedded `.test` DNS responder binds to. The defau
 
 ::: tip Port already in use?
 If another process holds `dns_port`, the daemon fails to bind and tells you to change `dns_port` in `yerd.toml` or free the port.
+:::
+
+### `symlink_protection`
+
+By default (`true`) the proxy refuses to serve a static asset - or resolve a script - reached through a symlink whose target resolves **outside** the requested site's own document root, answering with an explicit `403`. This is a safety guard: a symlink inside a site could otherwise point the server at arbitrary files elsewhere on the host.
+
+Set it to `false` to allow those symlinks. The motivating case is a shared parent/child WordPress theme kept in its own directory beside your sites and symlinked into `wp-content/themes/`: with protection on, its assets 403; with protection off, they are served. The setting is global (all sites) and can be toggled from the desktop app under **Settings › Security**; the change takes effect immediately, without restarting the daemon.
+
+::: warning Off trusts every in-tree symlink
+While off, a symlink is followed wherever it resolves, not only within the parked folder. Combined with a public tunnel (`yerd-tunnel`), that can expose files beyond a site's root. Leave it on unless you specifically need a cross-directory symlink like the shared-theme layout above.
 :::
 
 ### `[ports]`
@@ -190,8 +201,15 @@ Per-site overrides for **parked** sites, each its own array-of-tables entry. A p
 | `php`      | string    | Pinned PHP version. Omit to inherit the global default.       |
 | `secure`   | boolean   | Pinned HTTPS flag. Omit to inherit (off).                     |
 | `web_root` | string    | Pinned web root, relative to `path`. Omit to auto-detect.     |
+| `front_controller` | boolean | Pinned front-controller mode. Omit to auto-derive from detection. |
 
-`php`, `secure`, and `web_root` are all optional - omitting a key means "inherit" (or, for `web_root`, "auto-detect on every scan"). An entry may pin one, several, or (uselessly) none. The serialiser skips omitted keys, so a partial override stays tidy on disk. Like `web_subpath` on a linked site, `web_root` must be a plain relative path inside the project (`WebRootEscapes` otherwise). Setting it is what `yerd root <parked-site> <path>` does.
+`php`, `secure`, `web_root`, and `front_controller` are all optional - omitting a key means "inherit" (or, for `web_root`/`front_controller`, "auto-derive on every scan"). An entry may pin one, several, or (uselessly) none. The serialiser skips omitted keys, so a partial override stays tidy on disk. Like `web_subpath` on a linked site, `web_root` must be a plain relative path inside the project (`WebRootEscapes` otherwise). Setting `web_root` is what `yerd root <parked-site> <path>` does; setting `front_controller` is what `yerd front-controller <parked-site> on|off` does.
+
+`front_controller = true` funnels every request through the site-root `index.php` (the right behaviour for a single-front-controller framework such as Laravel or Symfony); `false` executes a named `.php` under the served root directly (classic multi-page PHP). When omitted, the mode is auto-derived: a framework served from a subdirectory (non-empty `web_root`/`web_subpath`) defaults to front-controller mode, while WordPress (any layout) and plain root-served sites default to direct execution. The same key is accepted inside a `[[linked]]` entry.
+
+::: warning Direct execution exposes every `.php` in the served root
+With direct execution (the default for a plain root-served site), any real `.php` file under the served root is URL-executable - including a stray `phpinfo.php` or a leftover admin tool. If the site is exposed beyond loopback via a tunnel, those files are remotely reachable. Set `front_controller = true` (or point `web_root` at a clean public directory) to funnel everything through `index.php` instead.
+:::
 
 ```toml
 # Pin PHP, HTTPS, and the served web root for one parked site...
@@ -364,14 +382,14 @@ added = ["shop-staging"]
 
 ## Schema versioning and migration
 
-Every config file **must** carry a top-level `version = N` key - it is the single trigger for forward migration. The current schema version is `11`.
+Every config file **must** carry a top-level `version = N` key - it is the single trigger for forward migration. The current schema version is `13`.
 
 When the daemon loads a file, it routes on the version it finds:
 
 ```text
-found  > CURRENT (11)   →  error (UnsupportedVersion) - a newer Yerd wrote this file
-found == CURRENT (11)   →  parse directly
-found  < CURRENT (11)   →  walk forward migration steps, then parse
+found  > CURRENT (13)   →  error (UnsupportedVersion) - a newer Yerd wrote this file
+found == CURRENT (13)   →  parse directly
+found  < CURRENT (13)   →  walk forward migration steps, then parse
 ```
 
 A file written by a *newer* Yerd than you are running is refused rather than misread. Older files are migrated forward in place, one version at a time, before the normal wire-deserialisation and validation run:
@@ -386,6 +404,8 @@ A file written by a *newer* Yerd than you are running is refused rather than mis
 - **`v8 → v9`** is a bare version bump: v9 only **added** the optional `[groups]` table, which defaults to empty when absent. Same rationale - the bump lets an older binary refuse a `[groups]`-bearing file cleanly rather than tripping `deny_unknown_fields`.
 - **`v9 → v10`** is a bare version bump: v10 **added** the optional `[php.extensions]` registry and the `wp_auto_login` / `wp_auto_login_user` keys (inside `[[linked]]` and `[[overrides]]`, for one-click `WordPress` admin login), all of which default when absent. Same rationale - the bump lets an older binary refuse a file using them cleanly rather than tripping `deny_unknown_fields`.
 - **`v10 → v11`** is a bare version bump: v11 only **added** the optional `[domains]` table (per-site domain sets), which defaults to empty when absent. Same rationale - the bump lets an older binary refuse a `[domains]`-bearing file cleanly rather than tripping `deny_unknown_fields`. No existing keys change, so a v10 file needs no structural rewrite.
+- **`v11 → v12`** is a bare version bump: v12 only **added** the top-level `symlink_protection` scalar (defaults to `true` when absent).
+- **`v12 → v13`** is a bare version bump: v13 only **added** the optional per-site `front_controller` key (inside `[[linked]]` and `[[overrides]]`), which defaults to auto when absent.
 
 The on-disk schema version is deliberately decoupled from the IPC protocol version; the two evolve independently.
 
@@ -412,8 +432,8 @@ Yerd does not `fsync` the file or its parent directory after a save. For a devel
 This is a valid `yerd.toml` covering the core fields (see the sections above for the newer optional tables - `update_channel`, `[tunnel]`, `[groups]`, `[php.extensions]`, `[domains]`, `wp_auto_login` - omitted here for brevity):
 
 ```toml
-# Schema version - mandatory, always written as 11 by this release.
-version = 11
+# Schema version - mandatory, always written as 13 by this release.
+version = 13
 
 # TLD served by the resolver; sites resolve as <name>.test
 tld = "test"

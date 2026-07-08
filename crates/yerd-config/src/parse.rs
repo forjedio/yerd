@@ -33,6 +33,11 @@ struct Wire {
     // parses, defaulting to "stable".
     #[serde(default = "default_update_channel")]
     update_channel: String,
+    // v12: proxy symlink-escape protection. `default` is mandatory (Wire is
+    // `deny_unknown_fields`) so a v1..v11 file with no `symlink_protection` key
+    // still parses, defaulting to on.
+    #[serde(default = "default_symlink_protection")]
+    symlink_protection: bool,
     #[serde(default)]
     ports: PortsWire,
     #[serde(default)]
@@ -289,6 +294,11 @@ struct SiteWire {
     wp_auto_login: bool,
     #[serde(default)]
     wp_auto_login_user: Option<String>,
+    // Optional per-site front-controller override; absent = auto. `default` is
+    // mandatory (Wire is `deny_unknown_fields`): an auto site omits the key, as
+    // does any pre-v12 config, so it must fill `None` rather than error.
+    #[serde(default)]
+    front_controller: Option<bool>,
 }
 
 /// One `[[overrides]]` table: a parked site's document-root `path` plus the
@@ -309,6 +319,8 @@ struct OverrideWire {
     wp_auto_login: Option<bool>,
     #[serde(default)]
     wp_auto_login_user: Option<String>,
+    #[serde(default)]
+    front_controller: Option<bool>,
 }
 
 fn default_tld_str() -> String {
@@ -321,6 +333,10 @@ fn default_dns_port() -> u16 {
 
 fn default_update_channel() -> String {
     crate::schema::DEFAULT_UPDATE_CHANNEL.to_owned()
+}
+
+fn default_symlink_protection() -> bool {
+    crate::schema::DEFAULT_SYMLINK_PROTECTION
 }
 
 pub(crate) fn parse_toml(s: &str) -> Result<Config, ConfigError> {
@@ -381,6 +397,7 @@ impl TryFrom<Wire> for Config {
                     web_root: o.web_root,
                     wp_auto_login: o.wp_auto_login,
                     wp_auto_login_user: o.wp_auto_login_user,
+                    front_controller: o.front_controller,
                 },
             );
         }
@@ -428,6 +445,7 @@ impl TryFrom<Wire> for Config {
             tld,
             dns_port: w.dns_port,
             update_channel: w.update_channel,
+            symlink_protection: w.symlink_protection,
             ports,
             php,
             parked,
@@ -493,6 +511,7 @@ fn convert_linked(wire: Vec<SiteWire>) -> Result<Vec<yerd_core::Site>, ConfigErr
         s.set_web_subpath(sw.web_subpath);
         s.set_wp_auto_login(sw.wp_auto_login);
         s.set_wp_auto_login_user(sw.wp_auto_login_user);
+        s.set_front_controller(sw.front_controller);
         linked.push(s);
     }
     Ok(linked)
@@ -879,7 +898,7 @@ mod tests {
         match Config::from_toml("version = 99\n") {
             Err(ConfigError::UnsupportedVersion {
                 found: 99,
-                current: 11,
+                current: 13,
             }) => {}
             other => panic!("expected UnsupportedVersion, got {other:?}"),
         }
@@ -987,6 +1006,21 @@ mod tests {
     }
 
     #[test]
+    fn symlink_protection_absent_defaults_on_and_migrates() {
+        let c = Config::from_toml("version = 10\n").unwrap();
+        assert!(c.symlink_protection);
+    }
+
+    #[test]
+    fn symlink_protection_false_parses_and_round_trips() {
+        let s = "version = 12\nsymlink_protection = false\n";
+        let c = Config::from_toml(s).unwrap();
+        assert!(!c.symlink_protection);
+        let back = Config::from_toml(&c.to_toml().unwrap()).unwrap();
+        assert_eq!(back, c);
+    }
+
+    #[test]
     fn domains_absent_table_is_empty_and_migrates() {
         let c = Config::from_toml("version = 10\n").unwrap();
         assert!(c.domains.is_empty());
@@ -1003,6 +1037,43 @@ mod tests {
         assert_eq!(delta.primary.as_ref().unwrap().as_str(), "corp");
         let back = Config::from_toml(&c.to_toml().unwrap()).unwrap();
         assert_eq!(back, c);
+    }
+
+    #[test]
+    fn front_controller_override_round_trips_both_values() {
+        for value in [Some(true), Some(false)] {
+            let mut c = Config::default();
+            c.overrides.insert(
+                "/srv/app".to_owned(),
+                crate::schema::SiteOverride {
+                    front_controller: value,
+                    ..Default::default()
+                },
+            );
+            let back = Config::from_toml(&c.to_toml().unwrap()).unwrap();
+            assert_eq!(back, c, "round-trip for {value:?}");
+            assert_eq!(
+                back.overrides
+                    .get("/srv/app")
+                    .and_then(|o| o.front_controller),
+                value
+            );
+        }
+    }
+
+    #[test]
+    fn v12_override_without_front_controller_migrates_to_none() {
+        let migrated = Config::from_toml(
+            "version = 12\n\n[[overrides]]\npath = \"/srv/blog\"\nsecure = true\n",
+        )
+        .unwrap();
+        assert_eq!(
+            migrated
+                .overrides
+                .get("/srv/blog")
+                .and_then(|o| o.front_controller),
+            None
+        );
     }
 
     #[test]

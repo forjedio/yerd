@@ -389,6 +389,11 @@ pub async fn set_wordpress_auto_login(
 }
 
 #[tauri::command]
+pub async fn set_front_controller(name: String, enabled: bool) -> Result<Response, GuiError> {
+    finish(exchange(&Request::SetFrontController { name, enabled }).await?)
+}
+
+#[tauri::command]
 pub async fn wordpress_admin_users(site: String) -> Result<Response, GuiError> {
     finish(exchange(&Request::WordpressAdminUsers { site }).await?)
 }
@@ -534,6 +539,11 @@ pub async fn set_dns_port(port: u16) -> Result<Response, GuiError> {
 #[tauri::command]
 pub async fn set_mail_enabled(enabled: bool) -> Result<Response, GuiError> {
     finish(exchange(&Request::SetMailEnabled { enabled }).await?)
+}
+
+#[tauri::command]
+pub async fn set_symlink_protection(enabled: bool) -> Result<Response, GuiError> {
+    finish(exchange(&Request::SetSymlinkProtection { enabled }).await?)
 }
 
 // ── status / doctor / info ─────────────────────────────────────────────────

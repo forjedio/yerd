@@ -434,6 +434,7 @@ fn plain(site: Site) -> yerd_ipc::SiteEntry {
         primary_domain: None,
         domains: vec![],
         apex_shadowed_by: None,
+        uses_front_controller: false,
     }
 }
 
@@ -444,7 +445,7 @@ fn response_sites_one_byte_shape() {
         sites: vec![plain(foo)],
     };
     let s = serde_json::to_string(&r).unwrap();
-    let expected = r#"{"type":"sites","sites":[{"name":"foo","document_root":"/srv/foo","php":"8.3","secure":false,"kind":"parked"}]}"#;
+    let expected = r#"{"type":"sites","sites":[{"name":"foo","document_root":"/srv/foo","php":"8.3","secure":false,"kind":"parked","uses_front_controller":false}]}"#;
     assert_eq!(s, expected);
     let back: Response = serde_json::from_str(&s).unwrap();
     assert_eq!(back, r);
@@ -459,7 +460,7 @@ fn response_sites_two_byte_shape() {
         sites: vec![plain(alpha), plain(beta)],
     };
     let s = serde_json::to_string(&r).unwrap();
-    let expected = r#"{"type":"sites","sites":[{"name":"alpha","document_root":"/srv/alpha","php":"8.3","secure":false,"kind":"parked"},{"name":"beta","document_root":"/srv/beta","php":"7.4","secure":true,"kind":"linked"}]}"#;
+    let expected = r#"{"type":"sites","sites":[{"name":"alpha","document_root":"/srv/alpha","php":"8.3","secure":false,"kind":"parked","uses_front_controller":false},{"name":"beta","document_root":"/srv/beta","php":"7.4","secure":true,"kind":"linked","uses_front_controller":false}]}"#;
     assert_eq!(s, expected);
     let back: Response = serde_json::from_str(&s).unwrap();
     assert_eq!(back, r);
@@ -473,7 +474,7 @@ fn response_sites_with_web_subpath_byte_shape() {
         sites: vec![plain(app)],
     };
     let s = serde_json::to_string(&r).unwrap();
-    let expected = r#"{"type":"sites","sites":[{"name":"app","document_root":"/srv/app","web_subpath":"public","php":"8.3","secure":false,"kind":"linked"}]}"#;
+    let expected = r#"{"type":"sites","sites":[{"name":"app","document_root":"/srv/app","web_subpath":"public","php":"8.3","secure":false,"kind":"linked","uses_front_controller":false}]}"#;
     assert_eq!(s, expected);
     let back: Response = serde_json::from_str(&s).unwrap();
     assert_eq!(back, r);
@@ -489,10 +490,11 @@ fn response_sites_wordpress_byte_shape() {
             primary_domain: None,
             domains: vec![],
             apex_shadowed_by: None,
+            uses_front_controller: false,
         }],
     };
     let s = serde_json::to_string(&r).unwrap();
-    let expected = r#"{"type":"sites","sites":[{"name":"blog","document_root":"/srv/blog","php":"8.3","secure":false,"kind":"parked","is_wordpress":true}]}"#;
+    let expected = r#"{"type":"sites","sites":[{"name":"blog","document_root":"/srv/blog","php":"8.3","secure":false,"kind":"parked","is_wordpress":true,"uses_front_controller":false}]}"#;
     assert_eq!(s, expected);
     let back: Response = serde_json::from_str(&s).unwrap();
     assert_eq!(back, r);
@@ -508,10 +510,11 @@ fn response_sites_customized_domains_byte_shape() {
             primary_domain: Some("corp.test".into()),
             domains: vec!["corp.test".into(), "*.blog.test".into()],
             apex_shadowed_by: Some("shop".into()),
+            uses_front_controller: false,
         }],
     };
     let s = serde_json::to_string(&r).unwrap();
-    let expected = r#"{"type":"sites","sites":[{"name":"blog","document_root":"/srv/blog","php":"8.3","secure":false,"kind":"parked","primary_domain":"corp.test","domains":["corp.test","*.blog.test"],"apex_shadowed_by":"shop"}]}"#;
+    let expected = r#"{"type":"sites","sites":[{"name":"blog","document_root":"/srv/blog","php":"8.3","secure":false,"kind":"parked","primary_domain":"corp.test","domains":["corp.test","*.blog.test"],"apex_shadowed_by":"shop","uses_front_controller":false}]}"#;
     assert_eq!(s, expected);
     let back: Response = serde_json::from_str(&s).unwrap();
     assert_eq!(back, r);
@@ -529,10 +532,11 @@ fn response_sites_wp_auto_login_byte_shape() {
             primary_domain: None,
             domains: vec![],
             apex_shadowed_by: None,
+            uses_front_controller: false,
         }],
     };
     let s = serde_json::to_string(&r).unwrap();
-    let expected = r#"{"type":"sites","sites":[{"name":"blog","document_root":"/srv/blog","php":"8.3","secure":false,"kind":"parked","wp_auto_login":true,"wp_auto_login_user":"admin","is_wordpress":true}]}"#;
+    let expected = r#"{"type":"sites","sites":[{"name":"blog","document_root":"/srv/blog","php":"8.3","secure":false,"kind":"parked","wp_auto_login":true,"wp_auto_login_user":"admin","is_wordpress":true,"uses_front_controller":false}]}"#;
     assert_eq!(s, expected);
     let back: Response = serde_json::from_str(&s).unwrap();
     assert_eq!(back, r);
@@ -785,12 +789,13 @@ fn response_status_byte_shape() {
             dns_unbound: None,
             boot_id: None,
             shared_sites: 0,
+            symlink_protection: true,
             shadows: vec![],
         }),
     };
     let s = serde_json::to_string(&r).unwrap();
     let expected = format!(
-        r#"{{"type":"status","report":{{"daemon_pid":4242,"uptime_secs":7,"daemon_rss_bytes":2048,"tld":"test","http":{{"requested":80,"bound":8080,"fell_back":true}},"https":{{"requested":443,"bound":8443,"fell_back":true}},"dns_addr":"127.0.0.1:1053","ca":{{"path":"/x/ca.cert.pem","fingerprint":"{}","trusted_system":false}},"resolver_installed":true,"default_php":"8.5","php":[{{"version":"8.5","installed_patch":"8.5.6","state":"running","pid":99,"listen":"/run/fpm.sock","rss_bytes":1024,"update_available":null}}],"sites":{{"parked":1,"linked":2,"secured":1}},"load_avg":[100,50,25],"daemon_version":"2.0.1"}}}}"#,
+        r#"{{"type":"status","report":{{"daemon_pid":4242,"uptime_secs":7,"daemon_rss_bytes":2048,"tld":"test","http":{{"requested":80,"bound":8080,"fell_back":true}},"https":{{"requested":443,"bound":8443,"fell_back":true}},"dns_addr":"127.0.0.1:1053","ca":{{"path":"/x/ca.cert.pem","fingerprint":"{}","trusted_system":false}},"resolver_installed":true,"default_php":"8.5","php":[{{"version":"8.5","installed_patch":"8.5.6","state":"running","pid":99,"listen":"/run/fpm.sock","rss_bytes":1024,"update_available":null}}],"sites":{{"parked":1,"linked":2,"secured":1}},"load_avg":[100,50,25],"daemon_version":"2.0.1","symlink_protection":true}}}}"#,
         "ab".repeat(32)
     );
     assert_eq!(s, expected);
@@ -885,6 +890,7 @@ fn sample_status_report() -> StatusReport {
         dns_unbound: None,
         boot_id: None,
         shared_sites: 0,
+        symlink_protection: true,
         shadows: vec![],
     }
 }
@@ -1022,6 +1028,10 @@ fn diagnosis_code_each_variant_byte_shape() {
         (DiagnosisCode::ServiceFailed, r#""service_failed""#),
         (DiagnosisCode::BinDirNotOnPath, r#""bin_dir_not_on_path""#),
         (DiagnosisCode::PhpCaNotTrusted, r#""php_ca_not_trusted""#),
+        (
+            DiagnosisCode::SymlinkProtectionDisabled,
+            r#""symlink_protection_disabled""#,
+        ),
         (DiagnosisCode::DomainShadowed, r#""domain_shadowed""#),
         (DiagnosisCode::AllGood, r#""all_good""#),
     ];
@@ -1103,6 +1113,20 @@ fn request_set_wordpress_auto_login_byte_shape() {
     assert_eq!(
         s,
         r#"{"type":"set_wordpress_auto_login","name":"blog","enabled":true,"user":"admin"}"#
+    );
+    assert_eq!(serde_json::from_str::<Request>(&s).unwrap(), r);
+}
+
+#[test]
+fn request_set_front_controller_byte_shape() {
+    let r = Request::SetFrontController {
+        name: "blog".into(),
+        enabled: true,
+    };
+    let s = serde_json::to_string(&r).unwrap();
+    assert_eq!(
+        s,
+        r#"{"type":"set_front_controller","name":"blog","enabled":true}"#
     );
     assert_eq!(serde_json::from_str::<Request>(&s).unwrap(), r);
 }
@@ -1669,6 +1693,14 @@ fn request_set_mail_enabled_byte_shape() {
     let r = Request::SetMailEnabled { enabled: true };
     let s = serde_json::to_string(&r).unwrap();
     assert_eq!(s, r#"{"type":"set_mail_enabled","enabled":true}"#);
+    assert_eq!(serde_json::from_str::<Request>(&s).unwrap(), r);
+}
+
+#[test]
+fn request_set_symlink_protection_byte_shape() {
+    let r = Request::SetSymlinkProtection { enabled: true };
+    let s = serde_json::to_string(&r).unwrap();
+    assert_eq!(s, r#"{"type":"set_symlink_protection","enabled":true}"#);
     assert_eq!(serde_json::from_str::<Request>(&s).unwrap(), r);
 }
 

@@ -2,7 +2,7 @@
 
 use std::future::Future;
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicU16, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
 use std::sync::Arc;
 
 use http::header::{
@@ -76,7 +76,7 @@ impl ProxyServer {
     /// Spawns one task per accepted connection; cancels them on shutdown
     /// via an internal `Notify`. In-flight requests run to their (hyper-
     /// default) timeouts.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
     pub async fn serve<R, C, S, L>(
         http_listener: TcpListener,
         https: Option<HttpsBinding<C>>,
@@ -84,6 +84,7 @@ impl ProxyServer {
         backend_resolver: Arc<R>,
         login_tokens: Arc<L>,
         login_prepend_script: Option<std::path::PathBuf>,
+        symlink_protection: Arc<AtomicBool>,
         shutdown: S,
     ) -> Result<(), ProxyError>
     where
@@ -112,6 +113,7 @@ impl ProxyServer {
         let http_resolver = backend_resolver.clone();
         let http_login_tokens = login_tokens.clone();
         let http_login_prepend = login_prepend_script.clone();
+        let http_symlink_protection = symlink_protection.clone();
         let http_notify = notify.clone();
         let http_accept = tokio::spawn(async move {
             let notified = http_notify.notified();
@@ -127,8 +129,9 @@ impl ProxyServer {
                                 let resolver = http_resolver.clone();
                                 let login_tokens = http_login_tokens.clone();
                                 let login_prepend = http_login_prepend.clone();
+                                let symlink_protection = http_symlink_protection.clone();
                                 tokio::spawn(serve_http_connection(
-                                    stream, peer, router, resolver, login_tokens, login_prepend, redirect_port.clone(),
+                                    stream, peer, router, resolver, login_tokens, login_prepend, redirect_port.clone(), symlink_protection,
                                 ));
                             }
                             Err(e) => {
@@ -151,6 +154,7 @@ impl ProxyServer {
             let resolver = backend_resolver.clone();
             let login_tokens = login_tokens.clone();
             let login_prepend_script = login_prepend_script.clone();
+            let symlink_protection = symlink_protection.clone();
             let notify_https = notify.clone();
             Some(tokio::spawn(async move {
                 let notified = notify_https.notified();
@@ -166,9 +170,10 @@ impl ProxyServer {
                                     let resolver = resolver.clone();
                                     let login_tokens = login_tokens.clone();
                                     let login_prepend = login_prepend_script.clone();
+                                    let symlink_protection = symlink_protection.clone();
                                     let acceptor = acceptor.clone();
                                     tokio::spawn(serve_https_connection(
-                                        stream, peer, router, resolver, login_tokens, login_prepend, acceptor,
+                                        stream, peer, router, resolver, login_tokens, login_prepend, acceptor, symlink_protection,
                                     ));
                                 }
                                 Err(e) => {
@@ -205,6 +210,7 @@ async fn serve_http_connection<R: BackendResolver, L: LoginTokenConsumer>(
     login_tokens: Arc<L>,
     login_prepend_script: Option<std::path::PathBuf>,
     redirect_port: Option<Arc<AtomicU16>>,
+    symlink_protection: Arc<AtomicBool>,
 ) {
     let server_addr = stream
         .local_addr()
@@ -221,6 +227,7 @@ async fn serve_http_connection<R: BackendResolver, L: LoginTokenConsumer>(
             login_tokens.clone(),
             login_prepend_script.clone(),
             redirect_port.clone(),
+            symlink_protection.clone(),
         )
     });
     let conn = hyper::server::conn::http1::Builder::new()
@@ -238,6 +245,7 @@ async fn serve_https_connection<R: BackendResolver, L: LoginTokenConsumer>(
     login_tokens: Arc<L>,
     login_prepend_script: Option<std::path::PathBuf>,
     acceptor: TlsAcceptor,
+    symlink_protection: Arc<AtomicBool>,
 ) {
     let server_addr = stream
         .local_addr()
@@ -265,6 +273,7 @@ async fn serve_https_connection<R: BackendResolver, L: LoginTokenConsumer>(
             login_tokens.clone(),
             login_prepend_script.clone(),
             None,
+            symlink_protection.clone(),
         )
     });
     let conn = hyper::server::conn::http1::Builder::new()
@@ -286,6 +295,7 @@ async fn handle_request<R: BackendResolver, L: LoginTokenConsumer>(
     login_tokens: Arc<L>,
     login_prepend_script: Option<std::path::PathBuf>,
     redirect_port: Option<Arc<AtomicU16>>,
+    symlink_protection: Arc<AtomicBool>,
 ) -> Result<Response<BoxBody>, std::convert::Infallible> {
     match dispatch(
         req,
@@ -297,6 +307,7 @@ async fn handle_request<R: BackendResolver, L: LoginTokenConsumer>(
         login_tokens,
         login_prepend_script,
         redirect_port,
+        symlink_protection,
     )
     .await
     {
@@ -323,6 +334,7 @@ async fn dispatch<R: BackendResolver, L: LoginTokenConsumer>(
     login_tokens: Arc<L>,
     login_prepend_script: Option<std::path::PathBuf>,
     redirect_port: Option<Arc<AtomicU16>>,
+    symlink_protection: Arc<AtomicBool>,
 ) -> Result<Response<BoxBody>, ProxyError> {
     let redirect_port = redirect_port.map(|p| p.load(Ordering::Relaxed));
     let Some(host) = req
@@ -398,6 +410,7 @@ async fn dispatch<R: BackendResolver, L: LoginTokenConsumer>(
                 server_addr,
                 peer_addr,
                 https,
+                symlink_protection.load(Ordering::Relaxed),
             )
             .await
         }
@@ -429,6 +442,7 @@ async fn serve_php_fpm<R: BackendResolver, L: LoginTokenConsumer>(
     server_addr: SocketAddr,
     peer_addr: SocketAddr,
     https: bool,
+    symlink_protection: bool,
 ) -> Result<Response<BoxBody>, ProxyError> {
     let login_target_user = consume_login_token_if_present(&mut req, site.name(), login_tokens);
     let auto_login = match (&login_target_user, login_prepend_script) {
@@ -439,20 +453,37 @@ async fn serve_php_fpm<R: BackendResolver, L: LoginTokenConsumer>(
         _ => None,
     };
 
-    let outcome =
-        static_file::try_serve(req.method(), req.uri().path(), served_root, allowed_root).await;
+    let outcome = static_file::try_serve(
+        req.method(),
+        req.uri().path(),
+        served_root,
+        allowed_root,
+        symlink_protection,
+    )
+    .await;
     if let Some(resp) = resolve_static_outcome(outcome) {
         return Ok(resp);
     }
-    let outcome =
-        static_file::try_serve_index(req.method(), req.uri().path(), served_root, allowed_root)
-            .await;
+    let outcome = static_file::try_serve_index(
+        req.method(),
+        req.uri().path(),
+        served_root,
+        allowed_root,
+        symlink_protection,
+    )
+    .await;
     if let Some(resp) = resolve_static_outcome(outcome) {
         return Ok(resp);
     }
-    let script_rel =
-        resolve_script_if_allowed(resolver, site, req.uri().path(), served_root, allowed_root)
-            .await;
+    let script_rel = resolve_script_if_allowed(
+        resolver,
+        site,
+        req.uri().path(),
+        served_root,
+        allowed_root,
+        symlink_protection,
+    )
+    .await;
     fcgi::forward(
         req,
         backend,
@@ -481,11 +512,12 @@ async fn resolve_script_if_allowed<R: BackendResolver>(
     uri_path: &str,
     served_root: &std::path::Path,
     allowed_root: &std::path::Path,
+    symlink_protection: bool,
 ) -> Option<std::path::PathBuf> {
     if !resolver.allows_direct_script_execution(site).await {
         return None;
     }
-    script_file::resolve_script(uri_path, served_root, allowed_root).await
+    script_file::resolve_script(uri_path, served_root, allowed_root, symlink_protection).await
 }
 
 /// One-click `WordPress` login: only ever considered on `/wp-admin`, only

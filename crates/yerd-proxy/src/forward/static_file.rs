@@ -62,11 +62,18 @@ pub enum StaticOutcome {
 /// symlinks that resolve anywhere within `allowed_root` (the site's
 /// `document_root` - a superset of `served_root` when the site is served
 /// from a subdirectory, e.g. Laravel's `public/`).
+///
+/// When `symlink_protection` is `false` (the global setting is off), a symlink
+/// that resolves *outside* `allowed_root` is served from its resolved location
+/// instead of being reported as a [`StaticOutcome::SymlinkEscape`] - the
+/// user-opt-in behaviour behind issue #112 (a shared theme symlinked in from a
+/// sibling directory).
 pub async fn try_serve(
     method: &Method,
     uri_path: &str,
     served_root: &Path,
     allowed_root: &Path,
+    symlink_protection: bool,
 ) -> StaticOutcome {
     if *method != Method::GET && *method != Method::HEAD {
         return StaticOutcome::NotFound;
@@ -81,6 +88,7 @@ pub async fn try_serve(
 
     let real_file = match canonical_within(&served_root.join(&rel), &real_root).await {
         Some(Containment::Ok(path)) => path,
+        Some(Containment::Escaped(resolved)) if !symlink_protection => resolved,
         Some(Containment::Escaped(resolved)) => {
             return StaticOutcome::SymlinkEscape {
                 requested_path: uri_path.to_owned(),
@@ -122,11 +130,16 @@ pub async fn try_serve(
 ///
 /// `allowed_root` is the site's `document_root` - a superset of
 /// `served_root` when the site is served from a subdirectory.
+///
+/// `symlink_protection` behaves as in [`try_serve`]: when `false`, an escaping
+/// directory or index-file symlink is served from its resolved location rather
+/// than reported as an escape.
 pub async fn try_serve_index(
     method: &Method,
     uri_path: &str,
     served_root: &Path,
     allowed_root: &Path,
+    symlink_protection: bool,
 ) -> StaticOutcome {
     if *method != Method::GET && *method != Method::HEAD {
         return StaticOutcome::NotFound;
@@ -141,6 +154,7 @@ pub async fn try_serve_index(
 
     let real_dir = match canonical_within(&served_root.join(&rel), &real_root).await {
         Some(Containment::Ok(path)) => path,
+        Some(Containment::Escaped(resolved)) if !symlink_protection => resolved,
         Some(Containment::Escaped(resolved)) => {
             return StaticOutcome::SymlinkEscape {
                 requested_path: uri_path.to_owned(),
@@ -167,25 +181,31 @@ pub async fn try_serve_index(
     let mut first_escape: Option<PathBuf> = None;
 
     for name in ["index.html", "index.htm"] {
-        match canonical_within(&real_dir.join(name), &real_root).await {
-            Some(Containment::Ok(real_file)) => {
-                if is_php_source(&real_file) {
-                    continue;
+        let probe = canonical_within(&real_dir.join(name), &real_root).await;
+        let candidate = match probe {
+            Some(Containment::Ok(real_file)) => Some(real_file),
+            Some(Containment::Escaped(resolved)) if !symlink_protection => Some(resolved),
+            Some(Containment::Escaped(resolved)) => {
+                if first_escape.is_none() {
+                    first_escape = Some(resolved);
                 }
-                let is_file = tokio::fs::metadata(&real_file)
-                    .await
-                    .is_ok_and(|meta| meta.is_file());
-                if !is_file {
-                    continue;
-                }
-                if let Some(resp) = respond_with_file(method, &real_file).await {
-                    return StaticOutcome::Served(resp);
-                }
+                None
             }
-            Some(Containment::Escaped(resolved)) if first_escape.is_none() => {
-                first_escape = Some(resolved);
+            None => None,
+        };
+        if let Some(real_file) = candidate {
+            if is_php_source(&real_file) {
+                continue;
             }
-            Some(Containment::Escaped(_)) | None => {}
+            let is_file = tokio::fs::metadata(&real_file)
+                .await
+                .is_ok_and(|meta| meta.is_file());
+            if !is_file {
+                continue;
+            }
+            if let Some(resp) = respond_with_file(method, &real_file).await {
+                return StaticOutcome::Served(resp);
+            }
         }
     }
 
@@ -330,7 +350,7 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         std::fs::write(root.path().join("app.css"), b"body{}").unwrap();
 
-        let outcome = try_serve(&Method::GET, "/app.css", root.path(), root.path()).await;
+        let outcome = try_serve(&Method::GET, "/app.css", root.path(), root.path(), true).await;
         match outcome {
             StaticOutcome::Served(resp) => {
                 assert_eq!(resp.status(), StatusCode::OK);
@@ -343,7 +363,7 @@ mod tests {
     #[tokio::test]
     async fn try_serve_missing_file_is_not_found() {
         let root = tempfile::tempdir().unwrap();
-        let outcome = try_serve(&Method::GET, "/nope.css", root.path(), root.path()).await;
+        let outcome = try_serve(&Method::GET, "/nope.css", root.path(), root.path(), true).await;
         assert!(matches!(outcome, StaticOutcome::NotFound));
     }
 
@@ -364,6 +384,7 @@ mod tests {
             "/storage/logo.png",
             &served_root,
             docroot.path(),
+            true,
         )
         .await;
         match outcome {
@@ -386,7 +407,14 @@ mod tests {
         )
         .unwrap();
 
-        let outcome = try_serve(&Method::GET, "/evil.txt", docroot.path(), docroot.path()).await;
+        let outcome = try_serve(
+            &Method::GET,
+            "/evil.txt",
+            docroot.path(),
+            docroot.path(),
+            true,
+        )
+        .await;
         match outcome {
             StaticOutcome::SymlinkEscape {
                 requested_path,
@@ -409,12 +437,40 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn try_serve_serves_escaping_symlink_when_protection_off() {
+        let docroot = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(outside.path().join("shared.css"), b"shared-bytes").unwrap();
+        std::os::unix::fs::symlink(
+            outside.path().join("shared.css"),
+            docroot.path().join("shared.css"),
+        )
+        .unwrap();
+
+        let outcome = try_serve(
+            &Method::GET,
+            "/shared.css",
+            docroot.path(),
+            docroot.path(),
+            false,
+        )
+        .await;
+        match outcome {
+            StaticOutcome::Served(resp) => {
+                assert_eq!(body_bytes(resp).await, b"shared-bytes");
+            }
+            _ => panic!("expected Served with protection off"),
+        }
+    }
+
     #[tokio::test]
     async fn try_serve_index_serves_index_html() {
         let root = tempfile::tempdir().unwrap();
         std::fs::write(root.path().join("index.html"), b"<h1>hi</h1>").unwrap();
 
-        let outcome = try_serve_index(&Method::GET, "/", root.path(), root.path()).await;
+        let outcome = try_serve_index(&Method::GET, "/", root.path(), root.path(), true).await;
         match outcome {
             StaticOutcome::Served(resp) => {
                 assert_eq!(body_bytes(resp).await, b"<h1>hi</h1>");
@@ -436,7 +492,8 @@ mod tests {
         .unwrap();
         std::fs::write(docroot.path().join("index.htm"), b"fallback").unwrap();
 
-        let outcome = try_serve_index(&Method::GET, "/", docroot.path(), docroot.path()).await;
+        let outcome =
+            try_serve_index(&Method::GET, "/", docroot.path(), docroot.path(), true).await;
         match outcome {
             StaticOutcome::Served(resp) => {
                 assert_eq!(body_bytes(resp).await, b"fallback");
@@ -457,7 +514,8 @@ mod tests {
         )
         .unwrap();
 
-        let outcome = try_serve_index(&Method::GET, "/", docroot.path(), docroot.path()).await;
+        let outcome =
+            try_serve_index(&Method::GET, "/", docroot.path(), docroot.path(), true).await;
         assert!(matches!(outcome, StaticOutcome::SymlinkEscape { .. }));
     }
 
@@ -469,9 +527,39 @@ mod tests {
         std::fs::write(outside.path().join("index.html"), b"leaked").unwrap();
         std::os::unix::fs::symlink(outside.path(), docroot.path().join("photos")).unwrap();
 
-        let outcome =
-            try_serve_index(&Method::GET, "/photos/", docroot.path(), docroot.path()).await;
+        let outcome = try_serve_index(
+            &Method::GET,
+            "/photos/",
+            docroot.path(),
+            docroot.path(),
+            true,
+        )
+        .await;
         assert!(matches!(outcome, StaticOutcome::SymlinkEscape { .. }));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn try_serve_index_serves_escaping_directory_symlink_when_protection_off() {
+        let docroot = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(outside.path().join("index.html"), b"shared-index").unwrap();
+        std::os::unix::fs::symlink(outside.path(), docroot.path().join("photos")).unwrap();
+
+        let outcome = try_serve_index(
+            &Method::GET,
+            "/photos/",
+            docroot.path(),
+            docroot.path(),
+            false,
+        )
+        .await;
+        match outcome {
+            StaticOutcome::Served(resp) => {
+                assert_eq!(body_bytes(resp).await, b"shared-index");
+            }
+            _ => panic!("expected Served with protection off"),
+        }
     }
 
     #[tokio::test]

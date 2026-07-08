@@ -37,6 +37,10 @@ export interface Site {
   wp_auto_login?: boolean;
   /** WordPress login/username to sign in as, or absent for "earliest admin". */
   wp_auto_login_user?: string;
+  /** Stored front-controller override: absent = auto (derive from detection),
+   *  otherwise the explicit user choice. Read `SiteEntry.uses_front_controller`
+   *  for the effective value to display. */
+  front_controller?: boolean;
 }
 
 /**
@@ -56,6 +60,10 @@ export interface SiteEntry extends Site {
   domains?: string[];
   /** Another site's name that claims this site's apex label, when shadowed. */
   apex_shadowed_by?: string;
+  /** Effective front-controller mode the daemon resolved (stored override or
+   *  detected default). `true` funnels through `index.php`; `false` executes
+   *  named `.php` directly. Always present; absent only from an older daemon. */
+  uses_front_controller?: boolean;
 }
 
 /** crates/yerd-ipc/src/response.rs - WordPressAdminUser, for the auto-login
@@ -235,6 +243,11 @@ export interface StatusReport {
   /** Number of sites currently shared publicly (quick tunnels + named-tunnel
    *  exposed sites). Omitted/`0` when nothing is shared. */
   shared_sites?: number;
+  /** Whether the proxy's symlink-escape protection is on. `true` = protection
+   *  active (block symlinks resolving outside a site's document root); `false` =
+   *  the user has opted out. Defaults to `true` (protected) when omitted by a
+   *  daemon predating the field. */
+  symlink_protection?: boolean;
   /** Sites whose apex label is shadowed by another site's explicit domain.
    *  Omitted/empty on a healthy config. */
   shadows?: DomainShadow[];
@@ -264,6 +277,7 @@ export type DiagnosisCode =
   | "service_failed"
   | "bin_dir_not_on_path"
   | "php_ca_not_trusted"
+  | "symlink_protection_disabled"
   | "all_good";
 
 export interface Diagnosis {

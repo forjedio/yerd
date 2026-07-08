@@ -28,7 +28,36 @@ Each entry below states what changed, whether the daemon's own migration is a ba
 
 ## Version-by-version
 
-### v11 (current)
+### v13 (current)
+
+**Added:** the optional per-site `front_controller` key (bool) inside `[[linked]]` and `[[overrides]]` - the toggle between single-front-controller mode (every request funnels through the site-root `index.php`) and direct script execution (a named `.php` under the served root runs directly). Absent = auto: a framework served from a subdirectory (non-empty `web_subpath`) defaults to front-controller mode; WordPress (any layout) and plain root-served sites default to direct execution.
+
+```toml
+[[overrides]]
+path = "/home/me/projects/blog"
+front_controller = false
+```
+
+**Migration from v12:** bare version bump - the field defaults to auto when absent, so a v12 file needs no other change to become a valid v13 file.
+
+**Security note (behaviour change on upgrade):** because the default is auto, a plain root-served site (a parked directory that is a whole project, not just its `public/` dir) flips from single-front-controller mode to **direct execution** on upgrade. Any real `.php` under its served root - a stray `phpinfo.php`, `adminer.php`, an old admin tool, a vendored dev script - becomes directly URL-executable where it was previously funnelled to `index.php`. If the site is exposed beyond loopback (a tunnel), those files become remotely reachable. To keep the old behaviour, set `front_controller = true` on the site (`yerd front-controller <name> on`), or point its `web_root` at a clean public directory. Unknown paths still fall back to `index.php`, so custom-router apps are unaffected.
+
+**To downgrade to v12:** change `version = 13` to `version = 12`, then delete any `front_controller` lines (a v12 daemon rejects the unknown key under `deny_unknown_fields`, it doesn't just ignore it).
+
+### v12
+
+**Added:** the top-level `symlink_protection` scalar (bool) - the global toggle for the proxy's symlink-escape guard. `true` (the default) blocks assets/scripts reached via a symlink resolving outside a site's document root; `false` serves them.
+
+```toml
+version = 12
+symlink_protection = false
+```
+
+**Migration from v11:** bare version bump - the field defaults to `true` when absent, so a v11 file needs no other change to become a valid v12 file.
+
+**To downgrade to v11:** change `version = 12` to `version = 11`, then delete the `symlink_protection` line (a v11 daemon rejects the unknown key under `deny_unknown_fields`, it doesn't just ignore it).
+
+### v11
 
 **Added:** the optional top-level `[domains]` table - per-site domain sets (a primary domain plus aliases, subdomains, and single-label wildcards). Split into `[domains.linked.<name>]` (keyed by site name) and `[domains.parked."<docroot>"]` (keyed by byte-exact document-root), each a delta of `added` / `suppressed` / `primary` stored as TLD-relative sub-parts. See the [Configuration Reference](../reference/configuration#domains) for the field-by-field shape.
 

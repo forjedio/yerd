@@ -148,6 +148,7 @@ fn encode_then_decode_response_roundtrip() {
             primary_domain: None,
             domains: vec![],
             apex_shadowed_by: None,
+            uses_front_controller: false,
         }],
     });
     assert_response_roundtrips(Response::Sites {
@@ -157,6 +158,7 @@ fn encode_then_decode_response_roundtrip() {
             primary_domain: Some("corp.test".into()),
             domains: vec!["corp.test".into(), "*.blog.test".into()],
             apex_shadowed_by: Some("shop".into()),
+            uses_front_controller: true,
         }],
     });
     for code in [
@@ -223,6 +225,7 @@ fn encode_then_decode_response_roundtrip() {
             dns_unbound: Some(1053),
             boot_id: Some(42),
             shared_sites: 3,
+            symlink_protection: false,
             shadows: vec![yerd_ipc::DomainShadow {
                 site: "blog".into(),
                 shadowed_by: "shop".into(),

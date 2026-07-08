@@ -283,6 +283,7 @@ pub async fn bring_up_with_dirs(
         None
     };
     let mail_listening = mail_listener.is_some();
+    let symlink_protection_on = config.symlink_protection;
 
     let state = Arc::new(DaemonState {
         config: Mutex::new(config),
@@ -315,6 +316,7 @@ pub async fn bring_up_with_dirs(
             fell_back: bound_https != cfg_https,
         },
         redirect_https_port: Arc::new(std::sync::atomic::AtomicU16::new(bound_https)),
+        symlink_protection: Arc::new(std::sync::atomic::AtomicBool::new(symlink_protection_on)),
         web_unbound,
         dns_unbound,
         boot_id: rand_boot_id(),
@@ -674,6 +676,9 @@ fn build_parked_site(
         if ov.wp_auto_login_user.is_some() {
             site.set_wp_auto_login_user(ov.wp_auto_login_user.clone());
         }
+        if ov.front_controller.is_some() {
+            site.set_front_controller(ov.front_controller);
+        }
     }
 
     if let Some(rel) = ov.and_then(|o| o.web_root.as_deref()) {
@@ -847,6 +852,7 @@ mod tests {
                 web_root: Some("public".to_string()),
                 wp_auto_login: None,
                 wp_auto_login_user: None,
+                front_controller: None,
             },
         );
         let dirs = make_dirs(tmp.path());
@@ -929,6 +935,7 @@ mod tests {
                 web_root: None,
                 wp_auto_login: None,
                 wp_auto_login_user: None,
+                front_controller: None,
             },
         );
         let dirs = make_dirs(tmp.path());
@@ -951,6 +958,7 @@ mod tests {
                 web_root: None,
                 wp_auto_login: None,
                 wp_auto_login_user: None,
+                front_controller: None,
             },
         );
         let dirs = make_dirs(tmp.path());
@@ -979,6 +987,7 @@ mod tests {
                 web_root: None,
                 wp_auto_login: None,
                 wp_auto_login_user: None,
+                front_controller: None,
             },
         );
         let dirs = make_dirs(tmp.path());
@@ -1009,6 +1018,7 @@ mod tests {
                 web_root: None,
                 wp_auto_login: None,
                 wp_auto_login_user: None,
+                front_controller: None,
             },
         );
         let dirs = make_dirs(tmp.path());

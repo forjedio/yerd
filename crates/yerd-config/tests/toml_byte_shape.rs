@@ -33,6 +33,7 @@ fn populated() -> Config {
             web_root: None,
             wp_auto_login: None,
             wp_auto_login_user: None,
+            front_controller: None,
         },
     );
     c.services.instances.insert(
@@ -58,8 +59,8 @@ fn populated() -> Config {
 fn default_config_starts_with_version_line() {
     let s = Config::default().to_toml().unwrap();
     assert!(
-        s.starts_with("version = 11\n"),
-        "expected first line `version = 11`; got: {s}"
+        s.starts_with("version = 13\n"),
+        "expected first line `version = 13`; got: {s}"
     );
 }
 
@@ -83,6 +84,31 @@ fn dns_port_zero_round_trips() {
     c.dns_port = 0;
     let back = Config::from_toml(&c.to_toml().unwrap()).unwrap();
     assert_eq!(back.dns_port, 0);
+}
+
+#[test]
+fn default_config_emits_symlink_protection_scalar_before_tables() {
+    let s = Config::default().to_toml().unwrap();
+    assert!(
+        s.contains("symlink_protection = true\n"),
+        "expected `symlink_protection = true` scalar; got: {s}"
+    );
+    let at = s.find("symlink_protection = ").expect("scalar present");
+    let first_table = s.find("\n[").expect("at least one table");
+    assert!(
+        at < first_table,
+        "symlink_protection must precede tables in: {s}"
+    );
+}
+
+#[test]
+fn symlink_protection_false_round_trips() {
+    let mut c = Config::default();
+    c.symlink_protection = false;
+    let s = c.to_toml().unwrap();
+    assert!(s.contains("symlink_protection = false\n"), "got: {s}");
+    let back = Config::from_toml(&s).unwrap();
+    assert!(!back.symlink_protection);
 }
 
 #[test]
@@ -149,6 +175,7 @@ fn override_with_only_php_omits_secure_key() {
             web_root: None,
             wp_auto_login: None,
             wp_auto_login_user: None,
+            front_controller: None,
         },
     );
     let s = c.to_toml().unwrap();

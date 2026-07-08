@@ -85,6 +85,9 @@ pub fn apply(
             enabled,
             user,
         } => apply_set_wordpress_auto_login(cfg, router, name, *enabled, user.clone()),
+        Request::SetFrontController { name, enabled } => {
+            apply_set_front_controller(cfg, router, name, *enabled)
+        }
         Request::AddDomain { name, domain } => apply_add_domain(cfg, router, name, domain),
         Request::RemoveDomain { name, domain } => apply_remove_domain(cfg, router, name, domain),
         Request::SetPrimaryDomain { name, domain } => {
@@ -281,6 +284,32 @@ fn apply_set_wordpress_auto_login(
         ov.wp_auto_login_user = user;
         Ok(Applied {
             summary: format!("{name_lc} wp_auto_login={enabled}"),
+        })
+    } else {
+        Err(MutateError::NotFound(format!("no site named {name_lc}")))
+    }
+}
+
+/// Override a site's front-controller mode: `true` funnels every request through
+/// the site-root `index.php`, `false` executes named `.php` directly. Stored on
+/// a linked site in place, or as a parked-site override.
+fn apply_set_front_controller(
+    cfg: &mut Config,
+    router: &SiteRouter,
+    name: &str,
+    enabled: bool,
+) -> Result<Applied, MutateError> {
+    let name_lc = name.to_ascii_lowercase();
+    if let Some(site) = cfg.linked.iter_mut().find(|s| s.name() == name_lc) {
+        site.set_front_controller(Some(enabled));
+        Ok(Applied {
+            summary: format!("{name_lc} front_controller={enabled}"),
+        })
+    } else if let Some(parked) = router.get(&name_lc) {
+        let key = override_key(parked);
+        cfg.overrides.entry(key).or_default().front_controller = Some(enabled);
+        Ok(Applied {
+            summary: format!("{name_lc} front_controller={enabled}"),
         })
     } else {
         Err(MutateError::NotFound(format!("no site named {name_lc}")))
@@ -1115,6 +1144,83 @@ mod tests {
                 name: "ghost".into(),
                 enabled: true,
                 user: None,
+            },
+            None,
+            v(8, 3),
+        ) {
+            Err(MutateError::NotFound(_)) => {}
+            other => panic!("expected NotFound, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn set_front_controller_updates_linked_in_place() {
+        let mut cfg = Config::default();
+        let r = empty_router();
+        cfg.linked
+            .push(Site::linked("app", "/srv/app", v(8, 3)).unwrap());
+        apply(
+            &mut cfg,
+            &r,
+            &Request::SetFrontController {
+                name: "app".into(),
+                enabled: true,
+            },
+            None,
+            v(8, 3),
+        )
+        .unwrap();
+        assert_eq!(cfg.linked[0].front_controller(), Some(true));
+
+        apply(
+            &mut cfg,
+            &r,
+            &Request::SetFrontController {
+                name: "app".into(),
+                enabled: false,
+            },
+            None,
+            v(8, 3),
+        )
+        .unwrap();
+        assert_eq!(cfg.linked[0].front_controller(), Some(false));
+    }
+
+    #[test]
+    fn set_front_controller_records_override_keeping_parked() {
+        let mut cfg = Config::default();
+        let r = router_with_parked("app", "/srv/app");
+        let a = apply(
+            &mut cfg,
+            &r,
+            &Request::SetFrontController {
+                name: "app".into(),
+                enabled: false,
+            },
+            None,
+            v(8, 3),
+        )
+        .unwrap();
+        assert!(!a.summary.contains("linked"));
+        assert!(cfg.linked.is_empty());
+        assert_eq!(
+            cfg.overrides
+                .get("/srv/app")
+                .and_then(|o| o.front_controller),
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn set_front_controller_unknown_is_not_found() {
+        let mut cfg = Config::default();
+        let r = empty_router();
+        match apply(
+            &mut cfg,
+            &r,
+            &Request::SetFrontController {
+                name: "ghost".into(),
+                enabled: true,
             },
             None,
             v(8, 3),

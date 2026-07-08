@@ -53,6 +53,7 @@ pub fn diagnose(report: &StatusReport, path_needs_setup: Option<bool>) -> Vec<Di
     out.extend(service_findings(report));
     out.extend(php_update_findings(report));
     out.extend(resolver_backup_finding(report));
+    out.extend(symlink_protection_finding(report));
     out.extend(no_sites_finding(report));
     out.extend(shadow_findings(report));
 
@@ -190,6 +191,23 @@ fn php_update_findings(report: &StatusReport) -> Vec<Diagnosis> {
         }
     }
     out
+}
+
+/// Informational finding when the global symlink-escape protection is off. `Ok`
+/// severity with no remedy - it is a deliberate opt-in (a shared theme symlinked
+/// from a sibling directory), surfaced only so the reduced posture is visible.
+fn symlink_protection_finding(report: &StatusReport) -> Option<Diagnosis> {
+    (!report.symlink_protection).then(|| Diagnosis {
+        code: DiagnosisCode::SymlinkProtectionDisabled,
+        severity: Severity::Ok,
+        title: "Symlink protection is off".to_owned(),
+        detail: "The proxy will serve files reached through symlinks that resolve \
+                 outside a site's own folder, for every site. Combined with a public \
+                 tunnel this can expose files beyond the site root. Re-enable it under \
+                 Settings > Security in the desktop app."
+            .to_owned(),
+        remedy: None,
+    })
 }
 
 /// Informational finding when no sites are configured.
@@ -430,6 +448,7 @@ mod tests {
             dns_unbound: None,
             boot_id: None,
             shared_sites: 0,
+            symlink_protection: true,
             shadows: vec![],
         }
     }
@@ -465,6 +484,29 @@ mod tests {
         assert!(finding.detail.contains("resolver-backups/test-1.conf"));
         assert!(codes(&ds).contains(&DiagnosisCode::AllGood));
         assert!(!is_auto_fixable(DiagnosisCode::ResolverBackupSaved));
+    }
+
+    #[test]
+    fn symlink_protection_off_surfaces_as_ok_finding_with_no_remedy() {
+        let mut r = healthy();
+        assert!(
+            !codes(&diagnose(&r, None)).contains(&DiagnosisCode::SymlinkProtectionDisabled),
+            "on by default surfaces nothing"
+        );
+
+        r.symlink_protection = false;
+        let ds = diagnose(&r, None);
+        let finding = ds
+            .iter()
+            .find(|d| d.code == DiagnosisCode::SymlinkProtectionDisabled)
+            .expect("disabled finding present");
+        assert_eq!(finding.severity, Severity::Ok);
+        assert!(
+            finding.remedy.is_none(),
+            "info finding must not render a command chip"
+        );
+        assert!(codes(&ds).contains(&DiagnosisCode::AllGood));
+        assert!(!is_auto_fixable(DiagnosisCode::SymlinkProtectionDisabled));
     }
 
     #[test]
