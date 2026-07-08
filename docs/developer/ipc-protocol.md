@@ -164,6 +164,9 @@ The variant set is the daemon's whole RPC surface - liveness, site management, P
 | `InstallPhpStreamed { version }` | `{"type":"install_php_streamed","version":"8.5"}` (replies `JobStarted`; poll `JobStatus`) |
 | `UpdatePhp { version: Option }` | `{"type":"update_php","version":"8.5"}` or `…,"version":null` |
 | `SetPhpSettings { settings }` | `{"type":"set_php_settings","settings":{…}}` |
+| `AddPhpExtension { version, path, name: Option, zend }` | `{"type":"add_php_extension","version":"8.5","path":"/a/scrypt.so","name":null,"zend":false}` |
+| `RemovePhpExtension { version, name }` | `{"type":"remove_php_extension","version":"8.5","name":"scrypt"}` |
+| `ListPhpExtensions` | `{"type":"list_php_extensions"}` (replies `PhpExtensions { by_version }`) |
 | `ListServices` / `AvailableServices` | `{"type":"list_services"}` / `{"type":"available_services"}` |
 | `InstallService { service, version }` | `{"type":"install_service","service":"redis","version":"8"}` |
 | `ChangeServiceVersion { service, version }` | `{"type":"change_service_version","service":"redis","version":"8.1"}` |
@@ -220,6 +223,7 @@ pub enum Response {
     Info { dns_addr, tld, ca_path, ca_fingerprint, http_port, https_port },
     PhpVersions { installed, default, updates, settings },
     AvailablePhp { available, installed },
+    PhpExtensions { by_version },                  // version → [PhpExtInfo{name,path,zend,present}]
     Status { report: Box<StatusReport> },         // boxed: large payload
     Diagnoses { items: Vec<Diagnosis> },
     DoctorFix { report: FixReport },
@@ -276,11 +280,12 @@ Failures are a `Response::Error { code, message }` where `code` is machine-reada
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum ErrorCode {
-    NotFound,        // "not_found"
-    AlreadyExists,   // "already_exists"
-    InvalidPath,     // "invalid_path"
-    PortInUse,       // "port_in_use"
-    Internal,        // "internal" - catch-all; expand the enum, don't overload this
+    NotFound,             // "not_found"
+    AlreadyExists,        // "already_exists"
+    InvalidPath,          // "invalid_path"
+    PortInUse,            // "port_in_use"
+    ExtensionLoadFailed,  // "extension_load_failed" - a valid path whose .so failed its load-probe
+    Internal,             // "internal" - catch-all; expand the enum, don't overload this
 }
 ```
 

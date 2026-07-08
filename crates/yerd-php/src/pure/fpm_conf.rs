@@ -97,6 +97,7 @@ mod tests {
             ini: Vec::new(),
             extension: None,
             ini_defines: Vec::new(),
+            user_extensions: Vec::new(),
             ca_bundle: None,
         }
     }
@@ -113,6 +114,7 @@ mod tests {
             ini: Vec::new(),
             extension: None,
             ini_defines: Vec::new(),
+            user_extensions: Vec::new(),
             ca_bundle: None,
         }
     }

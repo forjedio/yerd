@@ -21,6 +21,10 @@ fn main() -> ExitCode {
         return code;
     }
     #[cfg(unix)]
+    if let Some(code) = yerd::cli_shim::dispatch() {
+        return code;
+    }
+    #[cfg(unix)]
     if let Some(code) = yerd::wp_shim::dispatch() {
         return code;
     }

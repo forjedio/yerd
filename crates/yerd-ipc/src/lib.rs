@@ -46,7 +46,7 @@ pub use error::{FrameError, IpcError, IpcErrorKind};
 pub use frame::{encode_frame, FrameDecoder, DEFAULT_MAX_FRAME};
 pub use message::{decode_message, encode_message};
 pub use request::Request;
-pub use response::{ErrorCode, PhpUpdate, Response, SiteEntry, WordPressAdminUser};
+pub use response::{ErrorCode, PhpExtInfo, PhpUpdate, Response, SiteEntry, WordPressAdminUser};
 pub use status::{
     CaStatus, CloudflaredSource, CloudflaredStatus, DatabaseSummary, Diagnosis, DiagnosisCode,
     FixReport, FixResult, MailDetail, MailHeader, MailStatus, MailSummary, NamedTunnelMeta,

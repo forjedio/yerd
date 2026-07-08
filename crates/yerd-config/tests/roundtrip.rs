@@ -52,6 +52,7 @@ fn populated_expected() -> Config {
     c.php = PhpSection {
         default: PhpVersion::new(8, 2),
         settings: std::collections::BTreeMap::new(),
+        extensions: std::collections::BTreeMap::new(),
     };
     c.parked.paths.insert("docroot-a".to_string());
     c.parked.paths.insert("docroot-b".to_string());

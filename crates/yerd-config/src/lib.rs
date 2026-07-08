@@ -23,7 +23,7 @@ mod serialize;
 
 pub use error::{ConfigError, MigrationErrorReason, ValidateErrorReason};
 pub use schema::{
-    Config, DumpsSection, GroupsSection, MailSection, ParkedSection, PhpSection, Ports,
+    Config, DumpsSection, ExtEntry, GroupsSection, MailSection, ParkedSection, PhpSection, Ports,
     ServiceInstance, ServicesSection, SiteOverride, TunnelSection, DEFAULT_DNS_PORT,
     DEFAULT_DUMP_PORT, DEFAULT_MAIL_PORT, RESERVED_GROUP_NAME,
 };
@@ -53,11 +53,12 @@ pub use schema::{
 /// `fallback_https` keys ([`Ports`]). v8 added the optional `[tunnel]` table
 /// ([`TunnelSection`]). v9 added the optional `[groups]` table
 /// ([`GroupsSection`]) for the GUI's site grouping overlay. v10 added the
-/// optional `wp_auto_login`/`wp_auto_login_user` keys inside `[[linked]]` and
-/// `wp_auto_login`/`wp_auto_login_user` inside `[[overrides]]`, for
+/// optional `[php.extensions]` registry ([`PhpSection::extensions`]) for
+/// user-registered custom extensions, plus the `wp_auto_login`/
+/// `wp_auto_login_user` keys inside `[[linked]]` and `[[overrides]]` for
 /// `WordPress` one-click admin login. All default when absent, so the v3→v4,
 /// v4→v5, v5→v6, v6→v7, v7→v8, v8→v9, and v9→v10 migrations are bare version
-/// bumps; each bump exists so an *older* binary rejects a file using the
-/// newer field cleanly as [`ConfigError::UnsupportedVersion`] rather than
-/// failing on the unknown key.
+/// bumps; each bump exists so an *older* binary rejects a file using the newer
+/// field cleanly as [`ConfigError::UnsupportedVersion`] rather than failing on
+/// the unknown key.
 pub const CURRENT_VERSION: u32 = 10;

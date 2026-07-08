@@ -169,6 +169,16 @@ async fn dispatch(req: Request, state: &DaemonState) -> Response {
         Request::UpdatePhp { version } => update_php(version, state).await,
         Request::AvailablePhp => available_php_response(state).await,
         Request::SetPhpSettings { settings } => set_php_settings(settings, state).await,
+        Request::AddPhpExtension {
+            version,
+            path,
+            name,
+            zend,
+        } => add_php_extension(version, path, name, zend, state).await,
+        Request::RemovePhpExtension { version, name } => {
+            remove_php_extension(version, name, state).await
+        }
+        Request::ListPhpExtensions => list_php_extensions(state).await,
         Request::RestartPhp { version } => restart_php(version, state).await,
         Request::RestartAllPhp => restart_all_php(state).await,
         Request::UninstallPhp { version } => uninstall_php(version, state).await,
@@ -1030,9 +1040,12 @@ async fn adopt_default_if_unset(version: yerd_core::PhpVersion, state: &DaemonSt
     }
     let mut new = cfg_guard.clone();
     new.php.default = version;
-    if let Err(e) = crate::php_install::set_default_shim(&state.dirs, version) {
-        tracing::warn!(error = %e, "auto-default shim update failed");
-        return;
+    if let Some(yerd_bin) = yerd_sibling() {
+        if let Err(e) = crate::php_install::set_default_shim(&state.dirs, &yerd_bin) {
+            tracing::warn!(error = %e, "auto-default shim update failed");
+        }
+    } else {
+        tracing::warn!("cannot locate the `yerd` binary; skipping php shim update");
     }
     if let Err(e) = new.save(&state.config_path) {
         tracing::warn!(error = %e, "auto-default config save failed");
@@ -1064,17 +1077,18 @@ fn yerd_sibling() -> Option<std::path::PathBuf> {
     Some(exe.parent()?.join("yerd"))
 }
 
-/// Run `reconcile_shims` for an explicit default, serialized behind the shim
-/// mutex. Best-effort: failures are logged. Callers must **not** hold the config
-/// lock (this takes no config lock; it's given the default directly).
-async fn reconcile_shims_for(state: &DaemonState, default: yerd_core::PhpVersion) {
+/// Reconcile the managed PHP shims (`php`/`php<ver>`/`phpcover`/`php<ver>cover`),
+/// serialized behind the shim mutex. Best-effort: failures are logged. Each shim
+/// is a wrapper that resolves its version (and the default from config) at run
+/// time, so this needs no default argument.
+async fn reconcile_shims_for(state: &DaemonState) {
     let Some(yerd_bin) = yerd_sibling() else {
-        tracing::warn!("cannot locate the `yerd` binary; skipping cover-shim reconcile");
+        tracing::warn!("cannot locate the `yerd` binary; skipping PHP-shim reconcile");
         return;
     };
     let _guard = state.shim_reconcile.lock().await;
-    if let Err(e) = crate::php_install::reconcile_shims(&state.dirs, &yerd_bin, default) {
-        tracing::warn!(error = %e, "cover-shim reconcile failed");
+    if let Err(e) = crate::php_install::reconcile_shims(&state.dirs, &yerd_bin) {
+        tracing::warn!(error = %e, "PHP-shim reconcile failed");
     }
 }
 
@@ -1130,19 +1144,23 @@ fn bundle_contains_ca(ca_pem: &str, bundle_pem: &str) -> bool {
 }
 
 pub(crate) async fn write_cli_ini_now(state: &DaemonState) {
-    let settings = state.config.lock().await.php.settings.clone();
-    if let Err(e) =
-        crate::php_install::write_cli_ini(&state.dirs, &settings, state.php_ca_bundle.as_deref())
-    {
+    let (settings, extensions) = {
+        let cfg = state.config.lock().await;
+        (cfg.php.settings.clone(), cfg.php.extensions.clone())
+    };
+    if let Err(e) = crate::php_install::write_cli_ini(
+        &state.dirs,
+        &settings,
+        state.php_ca_bundle.as_deref(),
+        &extensions,
+    ) {
         tracing::warn!(error = %e, "failed to write CLI php.ini");
     }
 }
 
-/// Reconcile shims using the current config default (reads the config lock
-/// briefly, then releases it before reconciling).
+/// Reconcile the managed PHP shims against the installed set.
 async fn reconcile_shims_now(state: &DaemonState) {
-    let default = state.config.lock().await.php.default;
-    reconcile_shims_for(state, default).await;
+    reconcile_shims_for(state).await;
 }
 
 /// Reconcile the dev-tool shims (`composer`/`node`/`npm`/`npx`/`bun`/`bunx`) under
@@ -1422,15 +1440,19 @@ async fn set_default_php(version: yerd_core::PhpVersion, state: &DaemonState) ->
         let mut cfg_guard = state.config.lock().await;
         let mut new = cfg_guard.clone();
         new.php.default = version;
-        if let Err(e) = crate::php_install::set_default_shim(&state.dirs, version) {
-            return internal(format!("update php shim failed: {e}"));
+        if let Some(yerd_bin) = yerd_sibling() {
+            if let Err(e) = crate::php_install::set_default_shim(&state.dirs, &yerd_bin) {
+                return internal(format!("update php shim failed: {e}"));
+            }
+        } else {
+            tracing::warn!("cannot locate the `yerd` binary; skipping php shim update");
         }
         if let Err(e) = new.save(&state.config_path) {
             return internal(format!("config save failed: {e}"));
         }
         *cfg_guard = new;
     }
-    reconcile_shims_for(state, version).await;
+    reconcile_shims_for(state).await;
     tracing::info!(version = %version, "set default PHP");
     Response::Ok
 }
@@ -1590,6 +1612,185 @@ async fn set_php_settings(
     write_cli_ini_now(state).await;
     tracing::info!("applied global PHP settings");
     php_versions_response(state).await
+}
+
+/// Register a custom extension for `version`: validate, load-probe, persist, then
+/// load it into that version's FPM pool + CLI ini. Modeled on `set_php_settings`.
+///
+/// A cheap pre-probe duplicate check returns immediately when the extension is
+/// already registered, avoiding a PHP spawn; the authoritative check under the
+/// write lock still guards against a concurrent add.
+async fn add_php_extension(
+    version: yerd_core::PhpVersion,
+    path: String,
+    name: Option<String>,
+    zend: bool,
+    state: &DaemonState,
+) -> Response {
+    let php_bin = crate::php_install::cli_binary_path(&state.dirs, version);
+    if !php_bin.exists() {
+        return Response::Error {
+            code: ErrorCode::NotFound,
+            message: format!("PHP {version} is not installed - run `yerd install php {version}`"),
+        };
+    }
+    let name = name
+        .or_else(|| yerd_core::php_extensions::default_name_from_path(&path))
+        .unwrap_or_default();
+    if let Err(e) = yerd_core::php_extensions::validate_entry(&name, &path, zend) {
+        return Response::Error {
+            code: ErrorCode::InvalidPath,
+            message: e.to_string(),
+        };
+    }
+
+    if state
+        .config
+        .lock()
+        .await
+        .php
+        .extensions
+        .get(&version)
+        .is_some_and(|list| list.iter().any(|e| e.name == name))
+    {
+        return Response::Error {
+            code: ErrorCode::AlreadyExists,
+            message: format!("an extension named {name} is already registered for PHP {version}"),
+        };
+    }
+
+    let runner = yerd_php::TokioCommandRunner;
+    if let Err(e) =
+        yerd_php::probe_extension(&runner, &php_bin, std::path::Path::new(&path), zend).await
+    {
+        return Response::Error {
+            code: ErrorCode::ExtensionLoadFailed,
+            message: format!("extension failed to load into PHP {version}: {e}"),
+        };
+    }
+
+    {
+        let mut cfg_guard = state.config.lock().await;
+        let mut new = cfg_guard.clone();
+        let list = new.php.extensions.entry(version).or_default();
+        if list.iter().any(|e| e.name == name) {
+            return Response::Error {
+                code: ErrorCode::AlreadyExists,
+                message: format!(
+                    "an extension named {name} is already registered for PHP {version}"
+                ),
+            };
+        }
+        list.push(yerd_config::ExtEntry { name, path, zend });
+        if let Err(e) = new.validate() {
+            return internal(format!("config validation failed: {e}"));
+        }
+        if let Err(e) = new.save(&state.config_path) {
+            return internal(format!("config save failed: {e}"));
+        }
+        *cfg_guard = new;
+    }
+    apply_extensions(state, version).await;
+    list_php_extensions(state).await
+}
+
+/// Remove a registered extension by name for `version`.
+async fn remove_php_extension(
+    version: yerd_core::PhpVersion,
+    name: String,
+    state: &DaemonState,
+) -> Response {
+    {
+        let mut cfg_guard = state.config.lock().await;
+        let mut new = cfg_guard.clone();
+        let Some(list) = new.php.extensions.get_mut(&version) else {
+            return Response::Error {
+                code: ErrorCode::NotFound,
+                message: format!("no extension named {name} registered for PHP {version}"),
+            };
+        };
+        let before = list.len();
+        list.retain(|e| e.name != name);
+        if list.len() == before {
+            return Response::Error {
+                code: ErrorCode::NotFound,
+                message: format!("no extension named {name} registered for PHP {version}"),
+            };
+        }
+        if list.is_empty() {
+            new.php.extensions.remove(&version);
+        }
+        if let Err(e) = new.save(&state.config_path) {
+            return internal(format!("config save failed: {e}"));
+        }
+        *cfg_guard = new;
+    }
+    apply_extensions(state, version).await;
+    list_php_extensions(state).await
+}
+
+/// List registered extensions across all versions, tagging each with whether its
+/// `.so` currently exists on disk.
+async fn list_php_extensions(state: &DaemonState) -> Response {
+    let cfg = state.config.lock().await;
+    let by_version = cfg
+        .php
+        .extensions
+        .iter()
+        .map(|(v, entries)| {
+            let infos = entries
+                .iter()
+                .map(|e| yerd_ipc::PhpExtInfo {
+                    name: e.name.clone(),
+                    path: e.path.clone(),
+                    zend: e.zend,
+                    present: std::path::Path::new(&e.path).is_file(),
+                })
+                .collect();
+            (*v, infos)
+        })
+        .collect();
+    Response::PhpExtensions { by_version }
+}
+
+/// Push the config's extension registry into the live `PhpManager`, restart the
+/// affected version's pool if it is currently running, and rewrite the per-version
+/// CLI inis. Follows `set_php_settings`'s lock discipline: the config lock is
+/// released before the manager lock is taken.
+async fn apply_extensions(state: &DaemonState, affected: yerd_core::PhpVersion) {
+    let ext_map = extension_load_map(state).await;
+    {
+        let mut mgr = state.php_manager.lock().await;
+        mgr.set_extensions(ext_map);
+        if mgr.snapshots().iter().any(|s| s.version == affected) {
+            if let Err(e) = mgr.restart(affected).await {
+                tracing::warn!(version = %affected, error = %e, "failed to restart FPM pool after extension change");
+            }
+        }
+    }
+    write_cli_ini_now(state).await;
+}
+
+/// Build the `PhpManager`'s extension map (`version -> [ExtLoad]`) from the
+/// persisted config.
+async fn extension_load_map(
+    state: &DaemonState,
+) -> std::collections::BTreeMap<yerd_core::PhpVersion, Vec<yerd_php::ExtLoad>> {
+    let cfg = state.config.lock().await;
+    cfg.php
+        .extensions
+        .iter()
+        .map(|(v, entries)| {
+            let loads = entries
+                .iter()
+                .map(|e| yerd_php::ExtLoad {
+                    path: std::path::PathBuf::from(&e.path),
+                    zend: e.zend,
+                })
+                .collect();
+            (*v, loads)
+        })
+        .collect()
 }
 
 /// A config settings map as sorted `(name, value)` pairs for the pool manager.
@@ -2784,12 +2985,8 @@ Subject: Captured\r\n\r\nhi\r\n";
         assert_eq!(state.config.lock().await.php.default, PhpVersion::new(8, 4));
         let shim = state.dirs.data.join("bin").join("php");
         assert_eq!(
-            std::fs::canonicalize(shim).unwrap(),
-            std::fs::canonicalize(crate::php_install::cli_binary_path(
-                &state.dirs,
-                PhpVersion::new(8, 4)
-            ))
-            .unwrap()
+            std::fs::read_link(shim).unwrap(),
+            yerd_sibling().expect("yerd sibling resolves in tests")
         );
     }
 
@@ -3052,6 +3249,114 @@ Subject: Captured\r\n\r\nhi\r\n";
             }
             other => panic!("expected PhpVersions, got {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn add_php_extension_uninstalled_version_is_not_found() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_in(tmp.path());
+        let resp = dispatch(
+            Request::AddPhpExtension {
+                version: PhpVersion::new(8, 5),
+                path: "/a/scrypt.so".to_string(),
+                name: None,
+                zend: false,
+            },
+            &state,
+        )
+        .await;
+        assert!(matches!(
+            resp,
+            Response::Error {
+                code: ErrorCode::NotFound,
+                ..
+            }
+        ));
+    }
+
+    #[tokio::test]
+    async fn add_php_extension_invalid_path_rejected_before_probe() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_in(tmp.path());
+        fake_install(&state.dirs, PhpVersion::new(8, 5));
+        let resp = dispatch(
+            Request::AddPhpExtension {
+                version: PhpVersion::new(8, 5),
+                path: "relative/scrypt.so".to_string(),
+                name: None,
+                zend: false,
+            },
+            &state,
+        )
+        .await;
+        assert!(matches!(
+            resp,
+            Response::Error {
+                code: ErrorCode::InvalidPath,
+                ..
+            }
+        ));
+        assert!(state.config.lock().await.php.extensions.is_empty());
+    }
+
+    #[tokio::test]
+    async fn remove_and_list_php_extensions() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_in(tmp.path());
+        {
+            let mut cfg = state.config.lock().await;
+            let mut new = cfg.clone();
+            new.php.extensions.insert(
+                PhpVersion::new(8, 5),
+                vec![yerd_config::ExtEntry {
+                    name: "scrypt".to_string(),
+                    path: "/a/scrypt.so".to_string(),
+                    zend: false,
+                }],
+            );
+            new.save(&state.config_path).unwrap();
+            *cfg = new;
+        }
+
+        match dispatch(Request::ListPhpExtensions, &state).await {
+            Response::PhpExtensions { by_version } => {
+                let list = by_version.get(&PhpVersion::new(8, 5)).unwrap();
+                assert_eq!(list.len(), 1);
+                assert_eq!(list[0].name, "scrypt");
+                assert!(!list[0].present, "missing .so should read as not present");
+            }
+            other => panic!("expected PhpExtensions, got {other:?}"),
+        }
+
+        match dispatch(
+            Request::RemovePhpExtension {
+                version: PhpVersion::new(8, 5),
+                name: "nope".to_string(),
+            },
+            &state,
+        )
+        .await
+        {
+            Response::Error {
+                code: ErrorCode::NotFound,
+                ..
+            } => {}
+            other => panic!("expected NotFound, got {other:?}"),
+        }
+
+        match dispatch(
+            Request::RemovePhpExtension {
+                version: PhpVersion::new(8, 5),
+                name: "scrypt".to_string(),
+            },
+            &state,
+        )
+        .await
+        {
+            Response::PhpExtensions { by_version } => assert!(by_version.is_empty()),
+            other => panic!("expected empty PhpExtensions, got {other:?}"),
+        }
+        assert!(state.config.lock().await.php.extensions.is_empty());
     }
 
     /// `ListPhp` annotates an installed minor from the (pre-seeded) update cache,

@@ -157,6 +157,35 @@ pub fn render_cli_ini(settings: &std::collections::BTreeMap<String, String>) -> 
     out
 }
 
+/// Render the CLI `php.ini` body plus one `[zend_]extension = "<path>"` line per
+/// registered extension, in the given order. The base is [`render_cli_ini`];
+/// each extension path is **double-quoted** so a path containing spaces stays a
+/// single ini value (distinct from [`render_cover_ini`]'s unquoted pcov line). A
+/// path containing a `"`, newline, or NUL is skipped defensively - it cannot be
+/// represented safely, and [`crate::php_extensions::validate_ext_path`] already
+/// rejects it upstream.
+#[must_use]
+pub fn render_cli_ini_with_ext(
+    settings: &std::collections::BTreeMap<String, String>,
+    extensions: &[(&str, bool)],
+) -> String {
+    let mut out = render_cli_ini(settings);
+    for (path, zend) in extensions {
+        if path
+            .chars()
+            .any(|c| c.is_control() || matches!(c, '"' | '\0'))
+        {
+            continue;
+        }
+        let directive = if *zend { "zend_extension" } else { "extension" };
+        out.push_str(directive);
+        out.push_str(" = \"");
+        out.push_str(path);
+        out.push_str("\"\n");
+    }
+    out
+}
+
 /// Sanitise a CA-bundle path for use as an unquoted `openssl.cafile` /
 /// `curl.cainfo` value in a php.ini or FPM pool config. An unquoted ini value is
 /// not escaped, so a control character breaks the line and a `;` or `#` starts a
@@ -438,6 +467,31 @@ mod tests {
         use std::path::Path;
         assert!(render_cover_ini("", Path::new("/d/pc;ov.so")).is_none());
         assert!(render_cover_ini("", Path::new("/d/pc\nov.so")).is_none());
+    }
+
+    #[test]
+    fn render_cli_ini_with_ext_double_quotes_paths() {
+        let settings = std::collections::BTreeMap::new();
+        let exts = [
+            ("/opt/php/pecl/scrypt.so", false),
+            ("/space dir/xdebug.so", true),
+        ];
+        assert_eq!(
+            render_cli_ini_with_ext(&settings, &exts),
+            "extension = \"/opt/php/pecl/scrypt.so\"\n\
+             zend_extension = \"/space dir/xdebug.so\"\n"
+        );
+    }
+
+    #[test]
+    fn render_cli_ini_with_ext_appends_after_settings_and_skips_unsafe() {
+        let settings =
+            std::collections::BTreeMap::from([("memory_limit".to_owned(), "512M".to_owned())]);
+        let exts = [("/a/ok.so", false), ("/a/ev\"il.so", false)];
+        let out = render_cli_ini_with_ext(&settings, &exts);
+        assert!(out.starts_with("memory_limit = 512M\n"));
+        assert!(out.contains("extension = \"/a/ok.so\"\n"));
+        assert!(!out.contains("ev\"il"));
     }
 
     #[test]

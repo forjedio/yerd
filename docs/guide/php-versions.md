@@ -13,6 +13,7 @@ The fastest way to manage PHP is the **PHP** page (under the **Environment** gro
 - **Refresh** re-checks for updates and **Update all** updates every version with one pending - [updates are notify-only](#updates-are-notify-only).
 - Each row's `⋯` menu offers **Restart**, **Set default** (marks it with a star), **Update** (when available), and **Uninstall**; **Restart all** restarts every running pool.
 - A **Default settings** card edits the [global ini defaults](#tuning-php-settings) applied to every version; leave a field blank to use PHP's built-in default, and saving restarts running pools to apply.
+- A **Custom extensions** card registers extra `.so` extensions per version (see [Custom extensions](#custom-extensions)); each is load-probed before it's saved, and broken registrations are flagged.
 
 ## From the command line
 
@@ -37,13 +38,130 @@ The `php.json` manifest is signed with a dedicated minisign key whose public hal
 ### Bundled extensions
 
 Yerd's builds ship the **bulk** extension set, so a real-world Laravel app has
-what it needs out of the box. Beyond the common extensions, this includes
-**`intl`** (ICU - required by Laravel's `Number` helper and many localization
-packages), **`sodium`**, **`mysqli`**, **`xsl`**, **`readline`**, and **`apcu`**,
-alongside `bcmath`, `gd`, `gmp`, `curl`, `mbstring`, `openssl`, `pdo_mysql`,
-`pdo_pgsql`, `pdo_sqlite`, `zip`, `redis`, `opcache`, and more. Run `php -m` (via
-the [`php` shim](#the-global-default)) to see the full list for an installed
-version. Coverage is provided separately by `pcov` - see [Code Coverage](./code-coverage).
+what it needs out of the box - highlights include **`intl`** (ICU, required by
+Laravel's `Number` helper), **`sodium`**, **`mysqli`**, **`gd`**, **`imagick`**,
+**`redis`**, **`opcache`**, and **`swoole`**. Database access is covered by
+**`pdo_mysql`** plus PDO's built-in `mysql`, `pgsql`, and `sqlite` drivers (so
+`PDO::getAvailableDrivers()` returns all three) and the native `mysqli`, `pgsql`,
+and `sqlite3` extensions. Coverage is provided separately by `pcov` - see
+[Code Coverage](./code-coverage).
+
+The authoritative list for any install is `php -m` (via the
+[`php` shim](#the-global-default)); the full set for the current builds is below.
+It rarely changes between patch updates.
+
+<details>
+<summary><b>Full bundled extension list</b> (PHP 8.5; 8.4 is identical minus <code>lexbor</code> and <code>uri</code>)</summary>
+
+Entries marked *(core)* are part of every standard PHP build; the rest are the
+extras Yerd's "bulk" build adds. Two extensions are **new in PHP 8.5** and absent
+on 8.4, as noted.
+
+| Extension | What it does |
+| --- | --- |
+| `apcu` | In-process shared-memory cache (APCu) for storing user data across a pool's requests. |
+| `bcmath` | Arbitrary-precision decimal arithmetic for money and other exact-math needs. |
+| `bz2` | bzip2 stream compression and decompression. |
+| `calendar` | Conversions between calendar systems (Julian day count, Gregorian, Jewish, French). |
+| `Core` | *(core)* The PHP engine itself: language constructs and built-in functions. |
+| `ctype` | *(core)* Fast character-class checks such as `ctype_digit()` and `ctype_alpha()`. |
+| `curl` | Network transfers via libcurl (HTTP/S, FTP, and more); the default backend for Guzzle. |
+| `date` | *(core)* Date and time handling, including `DateTime` and timezone data. |
+| `dba` | Key/value database abstraction over dbm-style engines (GDBM and friends). |
+| `dom` | *(core)* Tree-based DOM API for reading and manipulating XML and HTML documents. |
+| `event` | libevent bindings for event-driven, non-blocking I/O loops. |
+| `exif` | Reads EXIF metadata (camera, orientation, GPS) embedded in image files. |
+| `fileinfo` | *(core)* Detects a file's MIME type from its contents rather than its name. |
+| `filter` | *(core)* Validates and sanitizes data with `filter_var()` (emails, URLs, ints, …). |
+| `ftp` | Client-side FTP protocol support. |
+| `gd` | Image creation and manipulation: resize, crop, draw, and convert common formats. |
+| `gmp` | Arbitrary-precision integer arithmetic via GNU MP, faster than `bcmath` for big integers. |
+| `hash` | *(core)* General hashing framework (`hash()`, HMAC) covering many algorithms. |
+| `iconv` | *(core)* Character-set conversion between text encodings. |
+| `imagick` | ImageMagick bindings for advanced image processing and a wide range of formats. |
+| `imap` | Access to IMAP, POP3, and NNTP mailboxes. |
+| `intl` | Unicode/ICU internationalization: number and date formatting, collation, transliteration - required by Laravel's `Number` helper. |
+| `json` | *(core)* JSON encoding and decoding. |
+| `lexbor` | **New in PHP 8.5.** The Lexbor HTML5 engine powering the new `\Dom\HTMLDocument` parser. |
+| `libxml` | *(core)* The shared libxml2 foundation the other XML extensions build on. |
+| `mbstring` | Multibyte-safe string functions for UTF-8 and other encodings. |
+| `mysqli` | The improved, feature-complete MySQL/MariaDB driver. |
+| `mysqlnd` | The native driver backend that `mysqli` and PDO's MySQL driver run on. |
+| `openssl` | TLS, symmetric/asymmetric encryption, signatures, and X.509 certificate handling. |
+| `opentelemetry` | Engine hooks that let OpenTelemetry auto-instrument code for tracing and metrics. |
+| `pcntl` | Unix process control (fork, signals, `waitpid`) for CLI worker processes. |
+| `pcre` | *(core)* Perl-compatible regular expressions, i.e. the `preg_*` functions. |
+| `PDO` | *(core)* The database-access abstraction layer; the bundled drivers cover MySQL, PostgreSQL, and SQLite. |
+| `pdo_mysql` | PDO driver for MySQL/MariaDB. |
+| `pgsql` | Native PostgreSQL client library (also backs PDO's `pgsql` driver). |
+| `Phar` | *(core)* PHP Archive support: bundle a whole application into one distributable file. |
+| `posix` | POSIX system-call bindings (users, groups, process info) on Unix. |
+| `protobuf` | Google Protocol Buffers runtime for compact, fast binary (de)serialization. |
+| `random` | *(core)* The modern randomness API (`Randomizer` engines, `random_int()`). |
+| `readline` | Interactive line editing and history for CLI and REPL programs. |
+| `redis` | Client for the Redis / Valkey in-memory data store (phpredis). |
+| `Reflection` | *(core)* Runtime introspection of classes, functions, and attributes. |
+| `session` | *(core)* Server-side session state management. |
+| `shmop` | Direct read/write access to shared-memory segments. |
+| `SimpleXML` | *(core)* Simple object-oriented access to XML documents. |
+| `soap` | SOAP client and server for XML web services. |
+| `sockets` | Low-level BSD sockets API for building custom network protocols. |
+| `sodium` | *(core)* Modern libsodium cryptography: authenticated encryption, signing, and hashing. |
+| `SPL` | *(core)* Standard PHP Library: data-structure classes, iterators, and interfaces. |
+| `sqlite3` | The self-contained, embedded SQLite database engine. |
+| `standard` | *(core)* PHP's standard function library (strings, arrays, math, files, URLs, …). |
+| `swoole` | Coroutine-based async runtime and high-performance server framework. |
+| `sysvmsg` | System V message-queue inter-process communication. |
+| `sysvsem` | System V semaphores for coordinating processes. |
+| `sysvshm` | System V shared-memory inter-process communication. |
+| `tokenizer` | *(core)* Tokenizes PHP source code; used by linters and static analysis tools. |
+| `uri` | **New in PHP 8.5.** A built-in, spec-compliant URI parser (RFC 3986 and WHATWG). |
+| `xml` | *(core)* Event-based (SAX/Expat) XML parsing. |
+| `xmlreader` | *(core)* Pull-based streaming reader for large XML documents. |
+| `xmlwriter` | *(core)* Streaming writer for generating XML. |
+| `xsl` | XSLT 1.0 stylesheet transformations over the DOM. |
+| `Zend OPcache` | Caches compiled PHP bytecode in shared memory so scripts aren't re-parsed each request (a Zend extension). |
+| `zip` | Reading and writing ZIP archives. |
+| `zlib` | gzip / deflate stream compression. |
+
+</details>
+
+Need something not in this set? Register your own with
+[`yerd php ext`](#custom-extensions).
+
+### Custom extensions
+
+When you need an extension Yerd's builds don't ship (a PECL module like `scrypt`,
+or your own compiled `.so`), register it with `yerd php ext`. Yerd loads it into
+**both** the web (FPM) runtime and the CLI for that version, so `extension_loaded()`
+returns `true` on a `.test` route and `php -m` lists it - the two used to diverge.
+
+```sh
+yerd php ext add 8.5 /opt/homebrew/lib/php/pecl/20250925/scrypt.so
+yerd php ext list
+yerd php ext remove 8.5 scrypt
+```
+
+- **Extensions are tied to a PHP version.** A native `.so` is compiled against one
+  PHP *minor*, so you register it under the version it was built for (`8.5` above);
+  it loads only for that version.
+- **Every add is load-probed.** Before saving, Yerd actually loads the `.so` into
+  that version's PHP and rejects it if it can't load - a wrong-version build, a
+  missing dependency, or a Zend extension registered without `--zend` fails with a
+  clear message instead of silently breaking your pools.
+- **Zend extensions** (xdebug/opcache-style) use `--zend`:
+  `yerd php ext add 8.5 /path/xdebug.so --zend`.
+- **Naming.** The removal handle defaults to the `.so` filename (`scrypt` above);
+  override it with `--name`.
+- **Missing files** are handled gracefully: if a registered `.so` later disappears
+  (e.g. Homebrew bumps its PECL directory on upgrade), Yerd skips it with a warning
+  rather than failing to start the pool, and `yerd php ext list` marks it
+  `(missing!)`.
+
+Adding or removing an extension restarts that version's running FPM pool to apply
+it. In the desktop app, the same registry lives in the **Custom extensions** card
+on the **PHP** page. Registered extensions are stored per version in the config
+file - see the [Configuration Reference](../reference/configuration#php).
 
 ### How versions are stored
 
@@ -53,7 +171,8 @@ Each install lands under the per-user data directory:
 {data}/php/php-8.5/bin/php          # the CLI interpreter
 {data}/php/php-8.5/sbin/php-fpm     # the FastCGI process manager
 {data}/php/php-8.5/.yerd-version    # the exact patch installed, e.g. "8.5.6"
-{data}/bin/php                      # symlink → the default version's CLI
+{data}/bin/php                      # the default-version CLI shim
+{data}/bin/php8.5                   # a per-version CLI shim
 ```
 
 The dir is named for the **major.minor** (`php-8.5`); `.yerd-version` records the exact patch (`8.5.6`). Update checks read that marker to decide whether a newer patch exists. The daemon discovers installed versions by walking this directory and finding each `sbin/php-fpm` at startup.
@@ -70,10 +189,10 @@ yerd use 8.5
 A fresh config defaults to **PHP 8.3**, but you'll usually set your own right after installing.
 
 ::: tip Add the shim dir to your PATH
-Put `{data}/bin` (Yerd prints the exact path) on your `PATH` so a bare `php` matches the version your sites run. The shim is a symlink, atomically re-pointed each time you change the default.
+Put `{data}/bin` (Yerd prints the exact path) on your `PATH` so a bare `php` matches the version your sites run. The bare `php` shim resolves the current default at run time, so `yerd use` takes effect immediately with nothing to re-point.
 :::
 
-Alongside the default `php` shim, Yerd maintains a `php<version>` shim for each installed version (`php8.4`, `php8.3`, ...) so you can reach a specific version directly, plus `phpcover` / `php<version>cover` shims that run PHP with the pcov coverage driver enabled. See [Code Coverage](./code-coverage).
+Alongside the default `php` shim, Yerd maintains a `php<version>` shim for each installed version (`php8.4`, `php8.3`, ...) so you can reach a specific version directly, plus `phpcover` / `php<version>cover` shims that run PHP with the pcov coverage driver enabled. See [Code Coverage](./code-coverage). Each shim runs the right PHP with that version's ini and any [custom extensions](#custom-extensions) you've registered.
 
 ### Per-site versions
 
@@ -171,6 +290,9 @@ and rendered into FPM config.
 | `yerd restart php [<version>]` | Restart one (or all) running FPM pools. |
 | `yerd set php <setting> <value>` | Set a global PHP ini default (all versions). |
 | `yerd unset php <setting>` | Reset a global PHP ini default to PHP's built-in value. |
+| `yerd php ext add <version> <path> [--zend] [--name <name>]` | Register a custom extension (load-probed) for a version. |
+| `yerd php ext remove <version> <name>` | Remove a registered extension. |
+| `yerd php ext list` | List registered custom extensions, grouped by version. |
 
 Add `--json` to any command for machine-readable output.
 

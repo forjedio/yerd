@@ -288,6 +288,29 @@ pub struct PhpSection {
     /// against [`yerd_core::php_settings`]; an empty map means "PHP defaults".
     /// `BTreeMap` for stable serialisation order.
     pub settings: BTreeMap<String, String>,
+    /// User-registered custom extensions to load, keyed by PHP version and
+    /// applied to both that version's FPM pool and its CLI. Empty by default,
+    /// so the `[php.extensions]` table is omitted from a default config.
+    ///
+    /// A native extension's ABI is bound to a PHP *minor*, so an entry only ever
+    /// applies to the version it is keyed under. Each entry's path is validated
+    /// by [`yerd_core::php_extensions`] (the ini/`-d` injection boundary); the
+    /// daemon additionally load-probes it before persisting. `BTreeMap`/`Vec`
+    /// keep serialisation order stable.
+    pub extensions: BTreeMap<PhpVersion, Vec<ExtEntry>>,
+}
+
+/// One registered custom PHP extension (see [`PhpSection::extensions`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExtEntry {
+    /// Stable handle used to remove the entry and to label it in the GUI;
+    /// defaults to the `.so` basename when the user does not supply one.
+    pub name: String,
+    /// Absolute path to the `.so`, stored byte-exact (a `String` for the same
+    /// non-UTF-8/portability reason as [`ParkedSection::paths`]).
+    pub path: String,
+    /// Load as a `zend_extension` (`true`) rather than a plain `extension`.
+    pub zend: bool,
 }
 
 impl Default for PhpSection {
@@ -298,6 +321,7 @@ impl Default for PhpSection {
                 .into_iter()
                 .map(|(k, v)| (k.to_owned(), v.to_owned()))
                 .collect(),
+            extensions: BTreeMap::new(),
         }
     }
 }

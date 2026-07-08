@@ -43,11 +43,26 @@ pub struct PoolConfig {
     /// applied only when an [`Self::extension`] is set (e.g. the extension's
     /// state-file path). Kept off the pool config file deliberately.
     pub ini_defines: Vec<(String, String)>,
+    /// User-registered custom extensions to load, each as a separate
+    /// `-d extension=<path>` / `-d zend_extension=<path>` on the FPM command
+    /// line. Independent of [`Self::extension`] (the daemon dump ext). Applied in
+    /// order; empty by default.
+    pub user_extensions: Vec<ExtLoad>,
     /// Managed CA bundle the bundled PHP verifies TLS against, rendered as
     /// `php_admin_value[openssl.cafile]` / `php_admin_value[curl.cainfo]` so
     /// PHP trusts the Yerd CA on `.test` HTTPS. Daemon-controlled (not a user
     /// setting); `None` leaves PHP's compiled-in default untouched.
     pub ca_bundle: Option<PathBuf>,
+}
+
+/// One user-registered extension to load into a pool (see
+/// [`PoolConfig::user_extensions`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExtLoad {
+    /// Absolute path to the `.so`.
+    pub path: PathBuf,
+    /// Load as a `zend_extension` rather than a plain `extension`.
+    pub zend: bool,
 }
 
 /// FPM process-manager mode.
@@ -90,6 +105,7 @@ impl PoolConfig {
             ini: Vec::new(),
             extension: None,
             ini_defines: Vec::new(),
+            user_extensions: Vec::new(),
             ca_bundle: None,
         }
     }

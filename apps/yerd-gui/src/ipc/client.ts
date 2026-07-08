@@ -27,6 +27,7 @@ import type {
   JobProgressResponse,
   MailDetail,
   MailSummary,
+  PhpExtInfo,
   PhpVersion,
   PhpVersionsResponse,
   Response,
@@ -331,6 +332,50 @@ export async function setPhpSettings(
   return ensureOk(
     await call<Response>("set_php_settings", { settings }),
   ) as PhpVersionsResponse;
+}
+
+// ── php extensions ───────────────────────────────────────────────────────────
+
+/** Registered custom extensions, keyed by version string (e.g. `"8.5"`). */
+export type PhpExtensionsMap = Record<PhpVersion, PhpExtInfo[]>;
+
+function extensionsOf(r: Response): PhpExtensionsMap {
+  return r.type === "php_extensions" ? r.by_version : {};
+}
+
+export async function listPhpExtensions(): Promise<PhpExtensionsMap> {
+  return extensionsOf(ensureOk(await call<Response>("list_php_extensions")));
+}
+
+/**
+ * Register a custom extension for a version. The daemon load-probes the `.so`
+ * first; a failure surfaces as a rejected command. Returns the refreshed map.
+ */
+export async function addPhpExtension(
+  version: PhpVersion,
+  path: string,
+  zend: boolean,
+  name?: string,
+): Promise<PhpExtensionsMap> {
+  return extensionsOf(
+    ensureOk(
+      await call<Response>("add_php_extension", {
+        version,
+        path,
+        name: name ?? null,
+        zend,
+      }),
+    ),
+  );
+}
+
+export async function removePhpExtension(
+  version: PhpVersion,
+  name: string,
+): Promise<PhpExtensionsMap> {
+  return extensionsOf(
+    ensureOk(await call<Response>("remove_php_extension", { version, name })),
+  );
 }
 
 // ── services (databases / caches) ────────────────────────────────────────────

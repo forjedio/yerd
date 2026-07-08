@@ -158,6 +158,12 @@ struct PhpSectionWire {
     default: String,
     #[serde(default)]
     settings: BTreeMap<String, String>,
+    // v10: custom extensions keyed by version string. `default` is mandatory
+    // (`Wire` is `deny_unknown_fields`) so a pre-v10 file with no
+    // `[php.extensions]` still parses. Version keys and entry fields are kept
+    // raw here and validated in `TryFrom<Wire>` / `validate`.
+    #[serde(default)]
+    extensions: BTreeMap<String, Vec<ExtEntryWire>>,
 }
 
 impl Default for PhpSectionWire {
@@ -165,8 +171,22 @@ impl Default for PhpSectionWire {
         Self {
             default: PhpSection::default().default.to_string(),
             settings: BTreeMap::new(),
+            extensions: BTreeMap::new(),
         }
     }
+}
+
+/// One `[[php.extensions."<ver>"]]` table. `name` is optional on the wire and
+/// defaults to the `.so` basename in `TryFrom` when absent (hand-edited configs
+/// may omit it).
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ExtEntryWire {
+    #[serde(default)]
+    name: Option<String>,
+    path: String,
+    #[serde(default)]
+    zend: bool,
 }
 
 #[derive(Deserialize, Default)]
@@ -306,6 +326,7 @@ impl TryFrom<Wire> for Config {
         let php = PhpSection {
             default: yerd_core::PhpVersion::from_str(&w.php.default)?,
             settings: w.php.settings,
+            extensions: convert_extensions(w.php.extensions)?,
         };
         let ports = Ports {
             http: w.ports.http,
@@ -349,23 +370,7 @@ impl TryFrom<Wire> for Config {
                 })
                 .collect(),
         };
-        let mut linked = Vec::with_capacity(w.linked.len());
-        for sw in w.linked {
-            let php_v = yerd_core::PhpVersion::from_str(&sw.php)?;
-            let mut s = match sw.kind {
-                yerd_core::SiteKind::Linked => {
-                    yerd_core::Site::linked(&sw.name, sw.document_root, php_v)?
-                }
-                yerd_core::SiteKind::Parked => {
-                    yerd_core::Site::parked(&sw.name, sw.document_root, php_v)?
-                }
-            };
-            s.set_secure(sw.secure);
-            s.set_web_subpath(sw.web_subpath);
-            s.set_wp_auto_login(sw.wp_auto_login);
-            s.set_wp_auto_login_user(sw.wp_auto_login_user);
-            linked.push(s);
-        }
+        let linked = convert_linked(w.linked)?;
         let mail = MailSection {
             enabled: w.mail.enabled,
             port: w.mail.port,
@@ -403,6 +408,58 @@ impl TryFrom<Wire> for Config {
     }
 }
 
+/// Rebuild the `linked` site list from its wire mirror, surfacing a bad
+/// `PhpVersion` or `Site` name as [`ConfigError::Core`].
+fn convert_linked(wire: Vec<SiteWire>) -> Result<Vec<yerd_core::Site>, ConfigError> {
+    let mut linked = Vec::with_capacity(wire.len());
+    for sw in wire {
+        let php_v = yerd_core::PhpVersion::from_str(&sw.php)?;
+        let mut s = match sw.kind {
+            yerd_core::SiteKind::Linked => {
+                yerd_core::Site::linked(&sw.name, sw.document_root, php_v)?
+            }
+            yerd_core::SiteKind::Parked => {
+                yerd_core::Site::parked(&sw.name, sw.document_root, php_v)?
+            }
+        };
+        s.set_secure(sw.secure);
+        s.set_web_subpath(sw.web_subpath);
+        s.set_wp_auto_login(sw.wp_auto_login);
+        s.set_wp_auto_login_user(sw.wp_auto_login_user);
+        linked.push(s);
+    }
+    Ok(linked)
+}
+
+/// Convert the raw wire extensions map (string version keys, optional names)
+/// into the typed [`PhpSection::extensions`] shape. A bad version key surfaces as
+/// [`ConfigError::Core`] via `PhpVersion::from_str`; an absent name defaults to
+/// the `.so` basename.
+fn convert_extensions(
+    wire: BTreeMap<String, Vec<ExtEntryWire>>,
+) -> Result<BTreeMap<yerd_core::PhpVersion, Vec<crate::schema::ExtEntry>>, ConfigError> {
+    let mut out = BTreeMap::new();
+    for (ver, entries) in wire {
+        let v = yerd_core::PhpVersion::from_str(&ver)?;
+        let converted = entries
+            .into_iter()
+            .map(|e| {
+                let name = e
+                    .name
+                    .or_else(|| yerd_core::php_extensions::default_name_from_path(&e.path))
+                    .unwrap_or_default();
+                crate::schema::ExtEntry {
+                    name,
+                    path: e.path,
+                    zend: e.zend,
+                }
+            })
+            .collect();
+        out.insert(v, converted);
+    }
+    Ok(out)
+}
+
 pub(crate) fn validate(c: &Config) -> Result<(), ConfigError> {
     validate_ports(c)?;
     validate_unique_linked(c)?;
@@ -410,9 +467,29 @@ pub(crate) fn validate(c: &Config) -> Result<(), ConfigError> {
     validate_web_roots(c)?;
     validate_known_services(c)?;
     validate_php_settings(c)?;
+    validate_php_extensions(c)?;
     validate_update_channel(c)?;
     validate_tunnel(c)?;
     validate_groups(c)?;
+    Ok(())
+}
+
+/// Every `[php.extensions]` entry must have a name and path that pass the pure
+/// `yerd_core::php_extensions` boundary (absolute, `.so`, no ini/`-d` injection
+/// characters), and names must be unique within a version (the name is the
+/// remove handle).
+fn validate_php_extensions(c: &Config) -> Result<(), ConfigError> {
+    for entries in c.php.extensions.values() {
+        let mut seen: BTreeSet<&str> = BTreeSet::new();
+        for e in entries {
+            if yerd_core::php_extensions::validate_entry(&e.name, &e.path, e.zend).is_err() {
+                return Err(ve(ValidateErrorReason::InvalidPhpExtension));
+            }
+            if !seen.insert(e.name.as_str()) {
+                return Err(ve(ValidateErrorReason::DuplicateExtensionName));
+            }
+        }
+    }
     Ok(())
 }
 
@@ -1450,6 +1527,68 @@ php = "not-a-version"
     fn v3_config_without_dumps_migrates_to_default_dumps() {
         let c = Config::from_toml("version = 3\n").unwrap();
         assert_eq!(c.dumps, crate::DumpsSection::default());
+    }
+
+    #[test]
+    fn php_extensions_round_trip_and_default_name() {
+        let s = "version = 10\n[php]\ndefault = \"8.3\"\n\
+                 [[php.extensions.\"8.5\"]]\n\
+                 path = \"/opt/php/pecl/scrypt.so\"\nzend = false\n";
+        let c = Config::from_toml(s).unwrap();
+        let v = c
+            .php
+            .extensions
+            .get(&yerd_core::PhpVersion::new(8, 5))
+            .unwrap();
+        assert_eq!(v.len(), 1);
+        assert_eq!(v[0].name, "scrypt");
+        assert_eq!(v[0].path, "/opt/php/pecl/scrypt.so");
+        assert!(!v[0].zend);
+    }
+
+    #[test]
+    fn validate_rejects_invalid_extension_path() {
+        let mut c = Config::default();
+        c.php.extensions.insert(
+            yerd_core::PhpVersion::new(8, 5),
+            vec![crate::ExtEntry {
+                name: "scrypt".to_string(),
+                path: "relative/scrypt.so".to_string(),
+                zend: false,
+            }],
+        );
+        match c.validate() {
+            Err(ConfigError::Validate {
+                reason: ValidateErrorReason::InvalidPhpExtension,
+            }) => {}
+            other => panic!("expected InvalidPhpExtension, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn validate_rejects_duplicate_extension_name_within_version() {
+        let mut c = Config::default();
+        c.php.extensions.insert(
+            yerd_core::PhpVersion::new(8, 5),
+            vec![
+                crate::ExtEntry {
+                    name: "dup".to_string(),
+                    path: "/a/one.so".to_string(),
+                    zend: false,
+                },
+                crate::ExtEntry {
+                    name: "dup".to_string(),
+                    path: "/a/two.so".to_string(),
+                    zend: false,
+                },
+            ],
+        );
+        match c.validate() {
+            Err(ConfigError::Validate {
+                reason: ValidateErrorReason::DuplicateExtensionName,
+            }) => {}
+            other => panic!("expected DuplicateExtensionName, got {other:?}"),
+        }
     }
 
     #[test]

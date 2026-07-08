@@ -58,6 +58,12 @@ pub enum Command {
         /// PHP version for the named site; omit to set the global default.
         version: Option<String>,
     },
+    /// Manage per-version PHP settings (currently: custom extensions).
+    Php {
+        /// What to manage.
+        #[command(subcommand)]
+        action: PhpAction,
+    },
     /// Set a global PHP ini default (e.g. `yerd set php memory_limit 512M`).
     Set {
         /// What to set.
@@ -400,6 +406,47 @@ pub enum MailAction {
 pub enum DoctorAction {
     /// Attempt safe, unprivileged repairs (e.g. restart a crashed FPM pool).
     Fix,
+}
+
+/// Action of `yerd php`.
+#[derive(clap::Subcommand, Debug, Clone)]
+pub enum PhpAction {
+    /// Manage custom PHP extensions (`.so`) loaded in both web (FPM) and CLI.
+    Ext {
+        /// The extension action.
+        #[command(subcommand)]
+        action: PhpExtAction,
+    },
+}
+
+/// Action of `yerd php ext`.
+#[derive(clap::Subcommand, Debug, Clone)]
+pub enum PhpExtAction {
+    /// Register a custom extension for a PHP version. The `.so` is load-probed
+    /// against that version before it is saved.
+    Add {
+        /// PHP version, e.g. `8.5`.
+        version: String,
+        /// Absolute path to the `.so`.
+        path: PathBuf,
+        /// Load as a Zend extension (e.g. xdebug / opcache style) rather than a
+        /// plain extension.
+        #[arg(long)]
+        zend: bool,
+        /// Name used to display and remove the extension; defaults to the `.so`
+        /// basename.
+        #[arg(long)]
+        name: Option<String>,
+    },
+    /// Remove a registered extension by name for a version.
+    Remove {
+        /// PHP version, e.g. `8.5`.
+        version: String,
+        /// The extension's registered name.
+        name: String,
+    },
+    /// List registered custom extensions, grouped by version.
+    List,
 }
 
 /// Target of `yerd set`.

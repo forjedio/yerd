@@ -222,6 +222,59 @@ fn request_available_php_byte_shape() {
 }
 
 #[test]
+fn request_add_php_extension_byte_shape() {
+    let r = Request::AddPhpExtension {
+        version: PhpVersion::new(8, 5),
+        path: "/a/scrypt.so".into(),
+        name: Some("scrypt".into()),
+        zend: false,
+    };
+    let s = serde_json::to_string(&r).unwrap();
+    assert_eq!(
+        s,
+        r#"{"type":"add_php_extension","version":"8.5","path":"/a/scrypt.so","name":"scrypt","zend":false}"#
+    );
+    assert_eq!(serde_json::from_str::<Request>(&s).unwrap(), r);
+
+    let none = Request::AddPhpExtension {
+        version: PhpVersion::new(8, 5),
+        path: "/a/scrypt.so".into(),
+        name: None,
+        zend: true,
+    };
+    let s = serde_json::to_string(&none).unwrap();
+    assert_eq!(
+        s,
+        r#"{"type":"add_php_extension","version":"8.5","path":"/a/scrypt.so","name":null,"zend":true}"#
+    );
+    assert_eq!(serde_json::from_str::<Request>(&s).unwrap(), none);
+}
+
+#[test]
+fn request_remove_php_extension_byte_shape() {
+    let r = Request::RemovePhpExtension {
+        version: PhpVersion::new(8, 5),
+        name: "scrypt".into(),
+    };
+    let s = serde_json::to_string(&r).unwrap();
+    assert_eq!(
+        s,
+        r#"{"type":"remove_php_extension","version":"8.5","name":"scrypt"}"#
+    );
+    assert_eq!(serde_json::from_str::<Request>(&s).unwrap(), r);
+}
+
+#[test]
+fn request_list_php_extensions_byte_shape() {
+    let s = serde_json::to_string(&Request::ListPhpExtensions).unwrap();
+    assert_eq!(s, r#"{"type":"list_php_extensions"}"#);
+    assert_eq!(
+        serde_json::from_str::<Request>(&s).unwrap(),
+        Request::ListPhpExtensions
+    );
+}
+
+#[test]
 fn request_restart_php_byte_shape() {
     let r = Request::RestartPhp {
         version: PhpVersion::new(8, 3),
@@ -480,6 +533,27 @@ fn response_php_versions_byte_shape() {
 }
 
 #[test]
+fn response_php_extensions_byte_shape() {
+    let r = Response::PhpExtensions {
+        by_version: BTreeMap::from([(
+            PhpVersion::new(8, 5),
+            vec![yerd_ipc::PhpExtInfo {
+                name: "scrypt".into(),
+                path: "/a/scrypt.so".into(),
+                zend: false,
+                present: true,
+            }],
+        )]),
+    };
+    let s = serde_json::to_string(&r).unwrap();
+    assert_eq!(
+        s,
+        r#"{"type":"php_extensions","by_version":{"8.5":[{"name":"scrypt","path":"/a/scrypt.so","zend":false,"present":true}]}}"#
+    );
+    assert_eq!(serde_json::from_str::<Response>(&s).unwrap(), r);
+}
+
+#[test]
 fn response_php_versions_with_updates_byte_shape() {
     let r = Response::PhpVersions {
         installed: vec![PhpVersion::new(8, 5)],
@@ -561,6 +635,8 @@ fn response_error_each_code_byte_shape() {
         (ErrorCode::NotFound, "not_found"),
         (ErrorCode::AlreadyExists, "already_exists"),
         (ErrorCode::InvalidPath, "invalid_path"),
+        (ErrorCode::PortInUse, "port_in_use"),
+        (ErrorCode::ExtensionLoadFailed, "extension_load_failed"),
         (ErrorCode::Internal, "internal"),
     ] {
         let r = Response::Error {
@@ -878,6 +954,7 @@ fn error_code_each_variant_byte_shape() {
         (ErrorCode::AlreadyExists, r#""already_exists""#),
         (ErrorCode::InvalidPath, r#""invalid_path""#),
         (ErrorCode::PortInUse, r#""port_in_use""#),
+        (ErrorCode::ExtensionLoadFailed, r#""extension_load_failed""#),
         (ErrorCode::Internal, r#""internal""#),
     ];
     for (code, expected) in cases {

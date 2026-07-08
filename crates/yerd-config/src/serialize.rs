@@ -108,13 +108,26 @@ struct PortsSer<'a> {
 
 #[derive(Serialize)]
 struct PhpSectionSer<'a> {
-    // Scalar - must stay above the `settings` sub-table (TOML emits scalars
-    // before sub-tables within `[php]`).
+    // Scalar - must stay above the `settings`/`extensions` sub-tables (TOML emits
+    // scalars before sub-tables within `[php]`).
     default: &'a yerd_core::PhpVersion,
     // Skipped when empty so a settings-free config has no `[php.settings]`
     // table. `skip_serializing_if` receives `&&BTreeMap`, hence `map_is_empty`.
     #[serde(skip_serializing_if = "map_is_empty")]
     settings: &'a BTreeMap<String, String>,
+    // Array-of-tables keyed by version string (`[[php.extensions."8.5"]]`).
+    // Skipped when empty so a default config emits no `[php.extensions]` region
+    // (byte-shape goldens assume no extra tables). A trailing sub-table region,
+    // so it stays after `settings`.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    extensions: BTreeMap<String, Vec<ExtEntrySer<'a>>>,
+}
+
+#[derive(Serialize)]
+struct ExtEntrySer<'a> {
+    name: &'a str,
+    path: &'a str,
+    zend: bool,
 }
 
 /// `skip_serializing_if` predicate for the borrowed `settings` field. serde
@@ -179,6 +192,24 @@ pub(crate) fn to_toml(c: &Config) -> Result<String, ConfigError> {
         php: PhpSectionSer {
             default: &c.php.default,
             settings: &c.php.settings,
+            extensions: c
+                .php
+                .extensions
+                .iter()
+                .map(|(v, entries)| {
+                    (
+                        v.to_string(),
+                        entries
+                            .iter()
+                            .map(|e| ExtEntrySer {
+                                name: &e.name,
+                                path: &e.path,
+                                zend: e.zend,
+                            })
+                            .collect(),
+                    )
+                })
+                .collect(),
         },
         parked: ParkedSectionSer {
             paths: &c.parked.paths,
@@ -347,6 +378,62 @@ mod tests {
         );
         let back = Config::from_toml(&s).unwrap();
         assert_eq!(back, c);
+    }
+
+    #[test]
+    fn default_config_emits_no_php_extensions_table() {
+        let s = to_toml(&Config::default()).unwrap();
+        assert!(
+            !s.contains("[php.extensions"),
+            "default config must omit the php.extensions table; got: {s}"
+        );
+    }
+
+    #[test]
+    #[allow(clippy::field_reassign_with_default)]
+    fn php_extensions_emit_array_of_tables_and_round_trip() {
+        use yerd_core::PhpVersion;
+        let mut c = Config::default();
+        c.php.extensions.insert(
+            PhpVersion::new(8, 5),
+            vec![
+                crate::ExtEntry {
+                    name: "scrypt".to_owned(),
+                    path: "/opt/homebrew/lib/php/pecl/20250925/scrypt.so".to_owned(),
+                    zend: false,
+                },
+                crate::ExtEntry {
+                    name: "xdebug".to_owned(),
+                    path: "/opt/homebrew/lib/php/pecl/20250925/xdebug.so".to_owned(),
+                    zend: true,
+                },
+            ],
+        );
+        let s = to_toml(&c).unwrap();
+        assert!(
+            s.contains("[[php.extensions.\"8.5\"]]"),
+            "expected array-of-tables under the version key; got: {s}"
+        );
+        let back = Config::from_toml(&s).unwrap();
+        assert_eq!(back, c);
+    }
+
+    #[test]
+    #[allow(clippy::field_reassign_with_default)]
+    fn removing_last_extension_returns_to_byte_identical_default() {
+        use yerd_core::PhpVersion;
+        let baseline = to_toml(&Config::default()).unwrap();
+        let mut c = Config::default();
+        c.php.extensions.insert(
+            PhpVersion::new(8, 5),
+            vec![crate::ExtEntry {
+                name: "scrypt".to_owned(),
+                path: "/a/scrypt.so".to_owned(),
+                zend: false,
+            }],
+        );
+        c.php.extensions.clear();
+        assert_eq!(to_toml(&c).unwrap(), baseline);
     }
 
     #[test]

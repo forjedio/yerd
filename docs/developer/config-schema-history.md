@@ -30,7 +30,10 @@ Each entry below states what changed, whether the daemon's own migration is a ba
 
 ### v10 (current)
 
-**Added:** the optional `wp_auto_login` (bool) and `wp_auto_login_user` (string) keys, inside both `[[linked]]` entries and `[[overrides]]` entries - one-click, pre-authenticated `WordPress` admin login, opt-in per site.
+**Added (two independent, optional additions):**
+
+1. The `wp_auto_login` (bool) and `wp_auto_login_user` (string) keys, inside both `[[linked]]` entries and `[[overrides]]` entries - one-click, pre-authenticated `WordPress` admin login, opt-in per site.
+2. The `[php.extensions]` registry - custom `.so` extensions to load into both FPM and the CLI, keyed by PHP version and written as an array-of-tables per version.
 
 ```toml
 [[linked]]
@@ -41,11 +44,16 @@ secure = true
 kind = "linked"
 wp_auto_login = true
 wp_auto_login_user = "editor"
+
+[[php.extensions."8.5"]]
+name = "scrypt"
+path = "/opt/homebrew/lib/php/pecl/20250925/scrypt.so"
+zend = false
 ```
 
-**Migration from v9:** bare version bump - both keys default to absent/`false` when missing, so a v9 file needs no other change to become a valid v10 file.
+**Migration from v9:** bare version bump - both additions default to absent/empty when missing, so a v9 file needs no other change to become a valid v10 file.
 
-**To downgrade to v9:** change `version = 10` to `version = 9`, then delete every `wp_auto_login`/`wp_auto_login_user` line from `[[linked]]` and `[[overrides]]` entries (a v9 daemon rejects those keys under `deny_unknown_fields`, it doesn't just ignore them). If you don't care about preserving the one-click-login setting, that's the whole edit.
+**To downgrade to v9:** change `version = 10` to `version = 9`, then delete every `wp_auto_login`/`wp_auto_login_user` line from `[[linked]]`/`[[overrides]]` entries and remove any `[[php.extensions.*]]` tables (a v9 daemon rejects those keys under `deny_unknown_fields`, it doesn't just ignore them).
 
 ### v9
 

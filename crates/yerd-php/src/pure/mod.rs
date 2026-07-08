@@ -6,5 +6,6 @@
 //! / the filesystem.
 
 pub mod env_scrub;
+pub mod ext_probe;
 pub mod fpm_conf;
 pub mod supervisor;
