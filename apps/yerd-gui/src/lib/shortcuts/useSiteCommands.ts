@@ -19,7 +19,7 @@ import { useResource } from "@/composables/useResource";
 import { useToast } from "@/composables/useToast";
 import { IpcError, openInBrowser, setSecure, sitesAndParked } from "@/ipc/client";
 import { siteUrl } from "@/lib/siteUrl";
-import type { Site } from "@/ipc/types";
+import type { Site, SiteEntry } from "@/ipc/types";
 import type { Command } from "./registry";
 
 export interface SiteCommandHandlers {
@@ -27,15 +27,17 @@ export interface SiteCommandHandlers {
   onToggleSecure: (site: Site) => void;
 }
 
-/** Pure: build the per-site palette commands. Sorted by name descending. */
+/** Pure: build the per-site palette commands. Sorted by name descending. Labels
+ *  and groups by the site's primary domain (its customised address), falling back
+ *  to the default `{name}.{tld}` apex. */
 export function buildSiteCommands(
-  sites: Site[],
+  sites: SiteEntry[],
   tld: string,
   handlers: SiteCommandHandlers,
 ): Command[] {
   const ordered = [...sites].sort((a, b) => b.name.localeCompare(a.name));
   return ordered.flatMap((s): Command[] => {
-    const domain = `${s.name}.${tld}`;
+    const domain = s.primary_domain ?? `${s.name}.${tld}`;
     return [
       {
         id: `site-open:${s.name}`,

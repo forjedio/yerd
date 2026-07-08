@@ -50,8 +50,9 @@ export interface SiteEntry extends Site {
   /** Primary (canonical) domain FQDN, present only when it differs from the
    *  default `{name}.{tld}` apex (omitted otherwise). */
   primary_domain?: string;
-  /** Full effective routable domain set as FQDNs (primary first), present only
-   *  for a customised site (omitted for a default apex-only site). */
+  /** Full effective routable domain set as FQDNs, in router order (apex-first,
+   *  so the primary is not necessarily first - match `primary_domain` by value).
+   *  Present only for a customised site (omitted for a default apex-only site). */
   domains?: string[];
   /** Another site's name that claims this site's apex label, when shadowed. */
   apex_shadowed_by?: string;

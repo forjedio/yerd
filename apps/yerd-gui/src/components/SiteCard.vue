@@ -38,6 +38,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   edit: [site: SiteEntry];
+  manageDomains: [site: SiteEntry];
   unlink: [site: SiteEntry];
   share: [site: SiteEntry];
   toggleSecure: [site: SiteEntry];
@@ -134,6 +135,9 @@ async function openWpAdmin(s: SiteEntry): Promise<void> {
           <DropdownMenuContent align="end">
             <DropdownMenuItem :disabled="busy" @select="emit('edit', site)">
               <Pencil class="size-4" /> Edit…
+            </DropdownMenuItem>
+            <DropdownMenuItem :disabled="busy" @select="emit('manageDomains', site)">
+              <Globe class="size-4" /> Manage domains…
             </DropdownMenuItem>
             <DropdownMenuItem @select="openInBrowser(siteUrl(site, report))">
               <ExternalLink class="size-4" /> Open in browser

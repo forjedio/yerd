@@ -7,6 +7,7 @@ vi.mock("@tauri-apps/api/core", () => ({
 }));
 
 import {
+  addDomain,
   clearMails,
   deleteMails,
   getMail,
@@ -14,8 +15,11 @@ import {
   listMails,
   listPhp,
   listSites,
+  removeDomain,
+  resetDomains,
   setMailEnabled,
   setMailPort,
+  setPrimaryDomain,
   status,
   unlink,
   updatePhp,
@@ -116,6 +120,33 @@ describe("client → command mapping", () => {
     invokeMock.mockResolvedValue({ type: "ok" });
     await setMailEnabled(true);
     expect(invokeMock).toHaveBeenCalledWith("set_mail_enabled", { enabled: true });
+  });
+
+  it("addDomain / removeDomain / setPrimaryDomain send name + domain", async () => {
+    invokeMock.mockResolvedValue({ type: "ok" });
+    await addDomain("blog", "corp.test");
+    expect(invokeMock).toHaveBeenCalledWith("add_domain", {
+      name: "blog",
+      domain: "corp.test",
+    });
+    invokeMock.mockResolvedValue({ type: "ok" });
+    await removeDomain("blog", "*.blog.test");
+    expect(invokeMock).toHaveBeenCalledWith("remove_domain", {
+      name: "blog",
+      domain: "*.blog.test",
+    });
+    invokeMock.mockResolvedValue({ type: "ok" });
+    await setPrimaryDomain("blog", "corp.test");
+    expect(invokeMock).toHaveBeenCalledWith("set_primary_domain", {
+      name: "blog",
+      domain: "corp.test",
+    });
+  });
+
+  it("resetDomains sends just the name", async () => {
+    invokeMock.mockResolvedValue({ type: "ok" });
+    await resetDomains("blog");
+    expect(invokeMock).toHaveBeenCalledWith("reset_domains", { name: "blog" });
   });
 });
 

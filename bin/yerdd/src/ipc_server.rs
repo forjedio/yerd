@@ -360,8 +360,10 @@ async fn dispatch(req: Request, state: &DaemonState) -> Response {
 /// domains)`, both **omitted** (`None`/empty) for an effectively-default site
 /// (apex only, primary = apex) so the wire shape stays byte-identical to older
 /// clients. For a customized site, `domains` is the full effective set as FQDNs
-/// (primary first is guaranteed by the router order) and `primary_domain` is set
-/// only when the primary differs from the default apex.
+/// in router order (apex-first-then-added, so a non-apex primary is *not*
+/// necessarily first) and `primary_domain` is set only when the primary differs
+/// from the default apex. Clients identify the primary by matching
+/// `primary_domain`, not by position.
 fn site_entry_domains(
     router: &yerd_core::SiteRouter,
     name: &str,
@@ -1963,7 +1965,7 @@ pub(crate) async fn handle_mutation(req: Request, state: &DaemonState) -> Respon
     }
 
     *cfg_guard = new;
-    let site_after = site_after_secure_toggle(&req, &candidate);
+    let site_after = site_needing_url_sync(&req, &candidate);
     *state.router.write().await = candidate;
     *state.wordpress_sites.write().await = candidate_wordpress;
     drop(cfg_guard);
@@ -1979,17 +1981,29 @@ pub(crate) async fn handle_mutation(req: Request, state: &DaemonState) -> Respon
 }
 
 /// The post-mutation site to run [`crate::wordpress_url_sync::sync_site_url`]
-/// against, for a `Request::SetSecure` (`None` for every other request kind).
-/// Looks up `candidate` (the just-rebuilt router) by the *lowercased* site
-/// name, matching every other name-resolution site in `mutate.rs` - the
-/// router is always keyed by the lowercased name (`Site` lowercases at
-/// construction), so looking up an un-lowercased, user-typed name (e.g. from
-/// `yerd secure MyWpSite`) would silently miss and skip the sync.
-fn site_after_secure_toggle(
+/// against: `SetSecure` (which flips the scheme) plus every domain mutation
+/// (each of which can change the primary domain a WordPress install should
+/// advertise). `AddDomain` is included, not just `SetPrimaryDomain`/`ResetDomains`
+/// /`RemoveDomain`: re-adding a previously-suppressed apex when the delta holds no
+/// stored primary flips the derived primary back to the apex (`choose_primary`
+/// prefers the apex over the first exact), so an add can change the primary too.
+/// `sync_site_url` re-reads the just-rebuilt router's primary, so re-running it
+/// when nothing actually changed is a harmless, idempotent no-op. `None` for
+/// every other request kind. Looks `candidate` (the just-rebuilt router) up by
+/// the *lowercased* site name, matching every other name-resolution site in
+/// `mutate.rs` - the router is always keyed by the lowercased name (`Site`
+/// lowercases at construction), so looking up an un-lowercased, user-typed name
+/// (e.g. from `yerd secure MyWpSite`) would silently miss and skip the sync.
+fn site_needing_url_sync(
     req: &Request,
     candidate: &yerd_core::SiteRouter,
 ) -> Option<yerd_core::Site> {
-    let Request::SetSecure { name, .. } = req else {
+    let (Request::SetSecure { name, .. }
+    | Request::AddDomain { name, .. }
+    | Request::RemoveDomain { name, .. }
+    | Request::SetPrimaryDomain { name, .. }
+    | Request::ResetDomains { name }) = req
+    else {
         return None;
     };
     candidate.get(&name.to_ascii_lowercase()).cloned()
@@ -2207,7 +2221,7 @@ mod tests {
     }
 
     #[test]
-    fn site_after_secure_toggle_finds_mixed_case_name() {
+    fn site_needing_url_sync_finds_mixed_case_name() {
         let mut router = SiteRouter::new(RouterConfig::with_tld(Tld::new("test").unwrap()));
         router
             .insert(
@@ -2218,18 +2232,54 @@ mod tests {
             name: "MyBlog".into(),
             secure: true,
         };
-        let site = site_after_secure_toggle(&req, &router);
+        let site = site_needing_url_sync(&req, &router);
         assert_eq!(site.map(|s| s.name().to_owned()), Some("myblog".to_owned()));
     }
 
     #[test]
-    fn site_after_secure_toggle_none_for_other_requests() {
+    fn site_needing_url_sync_covers_all_domain_mutations() {
+        let mut router = SiteRouter::new(RouterConfig::with_tld(Tld::new("test").unwrap()));
+        router
+            .insert(
+                yerd_core::Site::linked("myblog", "/srv/myblog", PhpVersion::new(8, 3)).unwrap(),
+            )
+            .unwrap();
+        for req in [
+            Request::AddDomain {
+                name: "MyBlog".into(),
+                domain: "api.myblog.test".into(),
+            },
+            Request::RemoveDomain {
+                name: "myblog".into(),
+                domain: "corp.test".into(),
+            },
+            Request::SetPrimaryDomain {
+                name: "MyBlog".into(),
+                domain: "corp.test".into(),
+            },
+            Request::ResetDomains {
+                name: "myblog".into(),
+            },
+        ] {
+            assert_eq!(
+                site_needing_url_sync(&req, &router).map(|s| s.name().to_owned()),
+                Some("myblog".to_owned()),
+                "{req:?} should trigger the WordPress URL sync"
+            );
+        }
+    }
+
+    #[test]
+    fn site_needing_url_sync_none_for_non_domain_requests() {
         let router = SiteRouter::new(RouterConfig::with_tld(Tld::new("test").unwrap()));
-        let req = Request::SetPhp {
-            name: "myblog".into(),
-            version: PhpVersion::new(8, 3),
-        };
-        assert!(site_after_secure_toggle(&req, &router).is_none());
+        assert!(site_needing_url_sync(
+            &Request::SetPhp {
+                name: "myblog".into(),
+                version: PhpVersion::new(8, 3),
+            },
+            &router
+        )
+        .is_none());
     }
 
     #[tokio::test]

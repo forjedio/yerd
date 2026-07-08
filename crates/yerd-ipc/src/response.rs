@@ -371,9 +371,10 @@ pub struct SiteEntry {
     /// clients, which synthesize `{name}.{tld}` from the TLD they already hold.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub primary_domain: Option<String>,
-    /// The site's full effective routable domain set as FQDNs (primary first),
-    /// populated **only** for an effectively-customized site (empty and omitted
-    /// otherwise).
+    /// The site's full effective routable domain set as FQDNs, in router order
+    /// (apex-first-then-added, so a non-apex primary is not necessarily first;
+    /// identify the primary via `primary_domain`, not position). Populated
+    /// **only** for an effectively-customized site (empty and omitted otherwise).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub domains: Vec<String>,
     /// If another site claims this site's apex label, that other site's name.

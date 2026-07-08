@@ -2,9 +2,9 @@ import { describe, expect, it, vi } from "vitest";
 
 import { buildSiteCommands, type SiteCommandHandlers } from "./useSiteCommands";
 import type { ShortcutCtx } from "./registry";
-import type { Site } from "@/ipc/types";
+import type { SiteEntry } from "@/ipc/types";
 
-function site(name: string, secure: boolean): Site {
+function site(name: string, secure: boolean): SiteEntry {
   return { name, document_root: `/srv/${name}`, php: "8.4", secure, kind: "linked" };
 }
 
@@ -38,6 +38,14 @@ describe("buildSiteCommands", () => {
     const [open] = buildSiteCommands([site("alpha", false)], "dev", noop);
     expect(open.title).toBe("Open alpha.dev");
     expect(open.group).toBe("alpha.dev");
+  });
+
+  it("labels and groups by the primary domain when the site has one", () => {
+    const s = { ...site("alpha", false), primary_domain: "corp.test" };
+    const [open, secure] = buildSiteCommands([s], "test", noop);
+    expect(open.title).toBe("Open corp.test");
+    expect(open.group).toBe("corp.test");
+    expect(secure.title).toBe("Secure corp.test");
   });
 
   it("delegates run to the injected handlers", () => {
