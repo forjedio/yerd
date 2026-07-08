@@ -44,8 +44,11 @@ pub struct SwitchParse<'a> {
 
 /// One site as presented in the picker page.
 pub struct PickerSite<'a> {
-    /// Site label (no TLD), e.g. `app`.
+    /// Site label (no TLD), e.g. `app`. Used only as the switch-pin identity.
     pub name: &'a str,
+    /// The site's primary domain FQDN, e.g. `app.test` or `corp.test`. The picker
+    /// links to and displays this (the apex may not route once customised).
+    pub primary: &'a str,
     /// Whether the site is configured for HTTPS (shown as a badge; it is still
     /// served over plain http in unbound mode).
     pub secure: bool,
@@ -184,14 +187,12 @@ pub fn html_escape(s: &str) -> Cow<'_, str> {
 /// Render the branded site-picker page.
 ///
 /// `dest` is the originally-requested path+query (escaped before use); each site
-/// links to `/~{name}.{tld}{dest}` so the path is forwarded on select. The page
-/// is fully self-contained (inline CSS + SVG, no JS, no external assets) and
-/// themes itself via `prefers-color-scheme`.
+/// links to `/~{primary}{dest}` (its primary domain FQDN) so the path is
+/// forwarded on select. The page is fully self-contained (inline CSS + SVG, no
+/// JS, no external assets) and themes itself via `prefers-color-scheme`.
 #[must_use]
-pub fn render_picker(tld: &str, sites: &[PickerSite<'_>], dest: &str) -> String {
-    let tld_e = html_escape(tld);
+pub fn render_picker(sites: &[PickerSite<'_>], dest: &str) -> String {
     let dest_e = html_escape(dest);
-    let tld_e = tld_e.as_ref();
     let dest_e = dest_e.as_ref();
 
     let body = if sites.is_empty() {
@@ -200,8 +201,8 @@ pub fn render_picker(tld: &str, sites: &[PickerSite<'_>], dest: &str) -> String 
         use std::fmt::Write as _;
         let mut list = String::from("<div class=\"list\">");
         for s in sites {
-            let name = html_escape(s.name);
-            let name = name.as_ref();
+            let primary = html_escape(s.primary);
+            let primary = primary.as_ref();
             let kind = html_escape(s.kind);
             let kind = kind.as_ref();
             let badge = if s.secure {
@@ -211,8 +212,8 @@ pub fn render_picker(tld: &str, sites: &[PickerSite<'_>], dest: &str) -> String 
             };
             let _ = write!(
                 list,
-                "<a class=\"site\" href=\"/~{name}.{tld_e}{dest_e}\">\
-                   <span class=\"site-name\">{name}.{tld_e}</span>\
+                "<a class=\"site\" href=\"/~{primary}{dest_e}\">\
+                   <span class=\"site-name\">{primary}</span>\
                    <span class=\"site-meta\">{kind}{badge}</span>\
                  </a>",
             );
@@ -394,23 +395,26 @@ mod tests {
     }
 
     #[test]
-    fn picker_lists_sites_and_forwards_dest() {
+    fn picker_lists_sites_by_primary_and_forwards_dest() {
         let sites = [
             PickerSite {
                 name: "app",
+                primary: "app.test",
                 secure: false,
                 kind: "linked",
             },
             PickerSite {
                 name: "blog",
+                primary: "corp.test",
                 secure: true,
                 kind: "parked",
             },
         ];
-        let html = render_picker("test", &sites, "/example?x=1");
+        let html = render_picker(&sites, "/example?x=1");
         assert!(html.contains("href=\"/~app.test/example?x=1\""));
-        assert!(html.contains("href=\"/~blog.test/example?x=1\""));
-        assert!(html.contains(">app.test<"));
+        // The picker links to the primary domain, not the bare name apex.
+        assert!(html.contains("href=\"/~corp.test/example?x=1\""));
+        assert!(html.contains(">corp.test<"));
         assert_eq!(html.matches("class=\"badge\"").count(), 1);
         assert!(html.contains("prefers-color-scheme:dark"));
     }
@@ -419,17 +423,18 @@ mod tests {
     fn picker_escapes_malicious_dest() {
         let sites = [PickerSite {
             name: "app",
+            primary: "app.test",
             secure: false,
             kind: "linked",
         }];
-        let html = render_picker("test", &sites, "/x\"><script>alert(1)</script>");
+        let html = render_picker(&sites, "/x\"><script>alert(1)</script>");
         assert!(!html.contains("\"><script>"));
         assert!(html.contains("&quot;&gt;&lt;script&gt;"));
     }
 
     #[test]
     fn picker_empty_state() {
-        let html = render_picker("test", &[], "/");
+        let html = render_picker(&[], "/");
         assert!(html.contains("No sites yet"));
         assert!(!html.contains("class=\"site\""));
     }

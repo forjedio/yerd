@@ -17,8 +17,8 @@
 
 use std::path::PathBuf;
 
-use yerd_config::Config;
-use yerd_core::{PhpVersion, Site, SiteRouter};
+use yerd_config::{Config, DomainDelta};
+use yerd_core::{Domain, PhpVersion, Site, SiteRouter};
 use yerd_ipc::{ErrorCode, Request};
 
 /// A mutation that could not be applied. The inner string is a
@@ -85,6 +85,12 @@ pub fn apply(
             enabled,
             user,
         } => apply_set_wordpress_auto_login(cfg, router, name, *enabled, user.clone()),
+        Request::AddDomain { name, domain } => apply_add_domain(cfg, router, name, domain),
+        Request::RemoveDomain { name, domain } => apply_remove_domain(cfg, router, name, domain),
+        Request::SetPrimaryDomain { name, domain } => {
+            apply_set_primary_domain(cfg, router, name, domain)
+        }
+        Request::ResetDomains { name } => apply_reset_domains(cfg, router, name),
         Request::CreateGroup { name } => apply_create_group(cfg, name),
         Request::DeleteGroup { name } => Ok(apply_delete_group(cfg, name)),
         Request::SetGroupOrder { order } => apply_set_group_order(cfg, order),
@@ -122,6 +128,13 @@ fn apply_link(
             "site already linked: {name_lc}"
         )));
     }
+    // Promote any parked-side domain delta (keyed by document-root) to the linked
+    // side (keyed by name), so a customised parked site keeps its domains when
+    // linked. See NEW-C in the plan.
+    let docroot_key = override_key(&site);
+    if let Some(delta) = cfg.domains.parked.remove(&docroot_key) {
+        cfg.domains.linked.insert(name_lc.clone(), delta);
+    }
     cfg.linked.push(site);
     Ok(Applied {
         summary: format!("linked {name_lc}"),
@@ -135,6 +148,12 @@ fn apply_link(
 /// successful no-op, mirroring `Park`'s insert.
 fn apply_unpark(cfg: &mut Config, path: &str) -> Applied {
     let removed = cfg.parked.paths.remove(path);
+    // Drop parked-side domain deltas for sites under this root (their document
+    // roots are the root itself or a child), so a later re-park of the root does
+    // not inherit stale domains.
+    cfg.domains
+        .parked
+        .retain(|docroot, _| !is_under_root(docroot, path));
     Applied {
         summary: if removed {
             format!("un-parked {path}")
@@ -144,10 +163,28 @@ fn apply_unpark(cfg: &mut Config, path: &str) -> Applied {
     }
 }
 
+/// True when `docroot` is `root` itself or a path directly beneath it. Pure
+/// string containment (no filesystem): a parked site's document root is
+/// `<root>/<dir>`, so `docroot == root` or `docroot` starts with `root` plus a
+/// path separator.
+fn is_under_root(docroot: &str, root: &str) -> bool {
+    if docroot == root {
+        return true;
+    }
+    let sep = std::path::MAIN_SEPARATOR;
+    docroot
+        .strip_prefix(root)
+        .is_some_and(|rest| rest.starts_with(sep))
+}
+
 fn apply_unlink(cfg: &mut Config, router: &SiteRouter, name: &str) -> Result<Applied, MutateError> {
     let name_lc = name.to_ascii_lowercase();
     if cfg.linked.iter().any(|s| s.name() == name_lc) {
         cfg.linked.retain(|s| s.name() != name_lc);
+        // Drop the site's linked-side domain delta. The reverse migration
+        // (linked -> parked, when the directory is still parked) is left to the
+        // I/O wrapper, which can check parked-ness; here the delta simply resets.
+        cfg.domains.linked.remove(&name_lc);
         Ok(Applied {
             summary: format!("unlinked {name_lc}"),
         })
@@ -231,6 +268,223 @@ fn apply_set_wordpress_auto_login(
     } else {
         Err(MutateError::NotFound(format!("no site named {name_lc}")))
     }
+}
+
+/// Which `[domains]` map (and key) a site's delta lives in: linked sites key by
+/// name, parked sites by document-root (mirroring `overrides`).
+enum DomainTarget {
+    Linked(String),
+    Parked(String),
+}
+
+/// Locate a site (linked first, then parked via the router) and return where its
+/// domain delta is stored. `NotFound` when no such site exists.
+fn resolve_domain_target(
+    cfg: &Config,
+    router: &SiteRouter,
+    name_lc: &str,
+) -> Result<DomainTarget, MutateError> {
+    if cfg.linked.iter().any(|s| s.name() == name_lc) {
+        Ok(DomainTarget::Linked(name_lc.to_owned()))
+    } else if let Some(parked) = router.get(name_lc) {
+        Ok(DomainTarget::Parked(override_key(parked)))
+    } else {
+        Err(MutateError::NotFound(format!("no site named {name_lc}")))
+    }
+}
+
+fn delta_mut<'a>(cfg: &'a mut Config, target: &DomainTarget) -> &'a mut DomainDelta {
+    match target {
+        DomainTarget::Linked(name) => cfg.domains.linked.entry(name.clone()).or_default(),
+        DomainTarget::Parked(key) => cfg.domains.parked.entry(key.clone()).or_default(),
+    }
+}
+
+/// Drop the delta entry entirely if it carries no customisation, so an
+/// effectively-default site leaves no `[domains]` record.
+fn prune_delta(cfg: &mut Config, target: &DomainTarget) {
+    match target {
+        DomainTarget::Linked(name) => {
+            if cfg
+                .domains
+                .linked
+                .get(name)
+                .is_some_and(DomainDelta::is_empty)
+            {
+                cfg.domains.linked.remove(name);
+            }
+        }
+        DomainTarget::Parked(key) => {
+            if cfg
+                .domains
+                .parked
+                .get(key)
+                .is_some_and(DomainDelta::is_empty)
+            {
+                cfg.domains.parked.remove(key);
+            }
+        }
+    }
+}
+
+/// Parse a full-FQDN domain under the config TLD, mapping failures to `Invalid`.
+fn parse_domain(cfg: &Config, domain: &str) -> Result<Domain, MutateError> {
+    Domain::parse(domain, cfg.tld.as_str())
+        .map_err(|e| MutateError::Invalid(format!("invalid domain: {e}")))
+}
+
+/// Reject a domain already routed to a **different** site (the pre-mutation
+/// router is authoritative). Same-site ownership is fine (idempotent).
+fn reject_if_claimed_elsewhere(
+    router: &SiteRouter,
+    name_lc: &str,
+    dom: &Domain,
+    tld: &str,
+) -> Result<(), MutateError> {
+    if let Some(owner) = router.domain_owner(dom) {
+        if owner != name_lc {
+            return Err(MutateError::AlreadyExists(format!(
+                "{} already routes to {owner}",
+                dom.to_fqdn(tld)
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Number of exact (non-wildcard) domains a delta yields, ignoring
+/// zero-exact normalization (used to enforce the "keep >= 1 exact" rule at
+/// mutation time). The apex counts unless suppressed.
+fn exact_count(name_lc: &str, added: &[Domain], suppressed: &[Domain]) -> usize {
+    let apex = Domain::apex(name_lc);
+    let has_apex = usize::from(!suppressed.contains(&apex));
+    has_apex + added.iter().filter(|d| !d.is_wildcard()).count()
+}
+
+fn apply_add_domain(
+    cfg: &mut Config,
+    router: &SiteRouter,
+    name: &str,
+    domain: &str,
+) -> Result<Applied, MutateError> {
+    let name_lc = name.to_ascii_lowercase();
+    let target = resolve_domain_target(cfg, router, &name_lc)?;
+    let dom = parse_domain(cfg, domain)?;
+    let tld = cfg.tld.as_str().to_owned();
+    reject_if_claimed_elsewhere(router, &name_lc, &dom, &tld)?;
+
+    let apex = Domain::apex(&name_lc);
+    let fqdn = dom.to_fqdn(&tld);
+    let delta = delta_mut(cfg, &target);
+    if dom == apex {
+        delta.suppressed.retain(|d| d != &apex);
+    } else if !delta.added.contains(&dom) {
+        delta.added.push(dom);
+    }
+    prune_delta(cfg, &target);
+    Ok(Applied {
+        summary: format!("added {fqdn} to {name_lc}"),
+    })
+}
+
+fn apply_remove_domain(
+    cfg: &mut Config,
+    router: &SiteRouter,
+    name: &str,
+    domain: &str,
+) -> Result<Applied, MutateError> {
+    let name_lc = name.to_ascii_lowercase();
+    let target = resolve_domain_target(cfg, router, &name_lc)?;
+    let dom = parse_domain(cfg, domain)?;
+    let tld = cfg.tld.as_str().to_owned();
+    let apex = Domain::apex(&name_lc);
+    let fqdn = dom.to_fqdn(&tld);
+
+    let delta = delta_mut(cfg, &target);
+    let mut added = delta.added.clone();
+    let mut suppressed = delta.suppressed.clone();
+    if added.contains(&dom) {
+        added.retain(|d| d != &dom);
+    } else if dom == apex {
+        if !suppressed.contains(&apex) {
+            suppressed.push(apex.clone());
+        }
+    } else {
+        return Err(MutateError::Invalid(format!(
+            "{fqdn} is not a domain of {name_lc}"
+        )));
+    }
+    if exact_count(&name_lc, &added, &suppressed) == 0 {
+        return Err(MutateError::Invalid(format!(
+            "{name_lc} must keep at least one exact domain"
+        )));
+    }
+
+    delta.added = added;
+    delta.suppressed = suppressed;
+    if delta.primary.as_ref() == Some(&dom) {
+        delta.primary = None;
+    }
+    prune_delta(cfg, &target);
+    Ok(Applied {
+        summary: format!("removed {fqdn} from {name_lc}"),
+    })
+}
+
+fn apply_set_primary_domain(
+    cfg: &mut Config,
+    router: &SiteRouter,
+    name: &str,
+    domain: &str,
+) -> Result<Applied, MutateError> {
+    let name_lc = name.to_ascii_lowercase();
+    let target = resolve_domain_target(cfg, router, &name_lc)?;
+    let dom = parse_domain(cfg, domain)?;
+    if dom.is_wildcard() {
+        return Err(MutateError::Invalid(
+            "a primary domain must be exact, not a wildcard".into(),
+        ));
+    }
+    let tld = cfg.tld.as_str().to_owned();
+    reject_if_claimed_elsewhere(router, &name_lc, &dom, &tld)?;
+
+    let apex = Domain::apex(&name_lc);
+    let fqdn = dom.to_fqdn(&tld);
+    let delta = delta_mut(cfg, &target);
+    if dom == apex {
+        // The apex is the natural primary; keep it active and let it derive.
+        delta.suppressed.retain(|d| d != &apex);
+        delta.primary = None;
+    } else {
+        if !delta.added.contains(&dom) {
+            delta.added.push(dom.clone());
+        }
+        delta.primary = Some(dom);
+    }
+    prune_delta(cfg, &target);
+    Ok(Applied {
+        summary: format!("{name_lc} primary domain is {fqdn}"),
+    })
+}
+
+fn apply_reset_domains(
+    cfg: &mut Config,
+    router: &SiteRouter,
+    name: &str,
+) -> Result<Applied, MutateError> {
+    let name_lc = name.to_ascii_lowercase();
+    let target = resolve_domain_target(cfg, router, &name_lc)?;
+    match target {
+        DomainTarget::Linked(n) => {
+            cfg.domains.linked.remove(&n);
+        }
+        DomainTarget::Parked(k) => {
+            cfg.domains.parked.remove(&k);
+        }
+    }
+    Ok(Applied {
+        summary: format!("{name_lc} domains reset to default"),
+    })
 }
 
 /// Create a site group, appended last in display order. Rejects an empty name,
@@ -1209,6 +1463,230 @@ mod tests {
             rename_group(&mut cfg, "Ghost", "Journal"),
             Err(MutateError::NotFound(_))
         ));
+    }
+
+    // ------------------ domains ------------------
+
+    fn router_with_domains(sites: &[(&str, &str, &[&str])]) -> SiteRouter {
+        let mut r = empty_router();
+        for (name, root, subs) in sites {
+            let effective: Vec<Domain> = subs
+                .iter()
+                .map(|s| Domain::parse_subpart(s).unwrap())
+                .collect();
+            let primary = effective
+                .iter()
+                .find(|d| !d.is_wildcard())
+                .cloned()
+                .unwrap_or_else(|| Domain::apex(name));
+            r.insert_with_domains(
+                Site::parked(name, root, v(8, 3)).unwrap(),
+                effective,
+                primary,
+            )
+            .unwrap();
+        }
+        r
+    }
+
+    fn add_domain(
+        cfg: &mut Config,
+        r: &SiteRouter,
+        name: &str,
+        domain: &str,
+    ) -> Result<Applied, MutateError> {
+        apply(
+            cfg,
+            r,
+            &Request::AddDomain {
+                name: name.into(),
+                domain: domain.into(),
+            },
+            None,
+            v(8, 3),
+        )
+    }
+
+    #[test]
+    fn add_domain_records_delta_for_linked() {
+        let mut cfg = Config::default();
+        cfg.linked
+            .push(Site::linked("foo", "/srv/foo", v(8, 3)).unwrap());
+        let r = router_with_domains(&[("foo", "/srv/foo", &["foo"])]);
+        add_domain(&mut cfg, &r, "foo", "corp.test").unwrap();
+        add_domain(&mut cfg, &r, "foo", "*.foo.test").unwrap();
+        let delta = cfg.domains.linked.get("foo").unwrap();
+        assert_eq!(delta.added.len(), 2);
+        assert_eq!(delta.added[0].as_str(), "corp");
+        assert_eq!(delta.added[1].as_str(), "*.foo");
+    }
+
+    #[test]
+    fn add_domain_parked_keys_by_docroot() {
+        let mut cfg = Config::default();
+        let r = router_with_domains(&[("blog", "/srv/blog", &["blog"])]);
+        add_domain(&mut cfg, &r, "blog", "corp.test").unwrap();
+        assert!(cfg.domains.linked.is_empty());
+        assert!(cfg.domains.parked.contains_key("/srv/blog"));
+    }
+
+    #[test]
+    fn add_domain_rejects_claim_by_other_site() {
+        let mut cfg = Config::default();
+        let r =
+            router_with_domains(&[("foo", "/srv/foo", &["foo"]), ("bar", "/srv/bar", &["bar"])]);
+        match add_domain(&mut cfg, &r, "bar", "foo.test") {
+            Err(MutateError::AlreadyExists(_)) => {}
+            other => panic!("expected AlreadyExists, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn add_domain_rejects_not_under_tld() {
+        let mut cfg = Config::default();
+        let r = router_with_domains(&[("foo", "/srv/foo", &["foo"])]);
+        match add_domain(&mut cfg, &r, "foo", "foo.example") {
+            Err(MutateError::Invalid(_)) => {}
+            other => panic!("expected Invalid, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn remove_added_domain_and_reject_last_exact() {
+        let mut cfg = Config::default();
+        let r = router_with_domains(&[("foo", "/srv/foo", &["foo"])]);
+        add_domain(&mut cfg, &r, "foo", "corp.test").unwrap();
+        // Remove the added exact: fine, apex remains.
+        apply(
+            &mut cfg,
+            &r,
+            &Request::RemoveDomain {
+                name: "foo".into(),
+                domain: "corp.test".into(),
+            },
+            None,
+            v(8, 3),
+        )
+        .unwrap();
+        assert!(!cfg.domains.parked.contains_key("/srv/foo"));
+        // Removing the apex when it is the only exact is rejected.
+        match apply(
+            &mut cfg,
+            &r,
+            &Request::RemoveDomain {
+                name: "foo".into(),
+                domain: "foo.test".into(),
+            },
+            None,
+            v(8, 3),
+        ) {
+            Err(MutateError::Invalid(_)) => {}
+            other => panic!("expected Invalid keeping an exact, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn change_primary_and_suppress_apex() {
+        let mut cfg = Config::default();
+        let r = router_with_domains(&[("foo", "/srv/foo", &["foo"])]);
+        apply(
+            &mut cfg,
+            &r,
+            &Request::SetPrimaryDomain {
+                name: "foo".into(),
+                domain: "corp.test".into(),
+            },
+            None,
+            v(8, 3),
+        )
+        .unwrap();
+        apply(
+            &mut cfg,
+            &r,
+            &Request::RemoveDomain {
+                name: "foo".into(),
+                domain: "foo.test".into(),
+            },
+            None,
+            v(8, 3),
+        )
+        .unwrap();
+        let delta = cfg.domains.parked.get("/srv/foo").unwrap();
+        assert_eq!(delta.added, vec![Domain::parse_subpart("corp").unwrap()]);
+        assert_eq!(delta.suppressed, vec![Domain::apex("foo")]);
+        assert_eq!(delta.primary, Some(Domain::parse_subpart("corp").unwrap()));
+    }
+
+    #[test]
+    fn set_primary_rejects_wildcard() {
+        let mut cfg = Config::default();
+        let r = router_with_domains(&[("foo", "/srv/foo", &["foo"])]);
+        match apply(
+            &mut cfg,
+            &r,
+            &Request::SetPrimaryDomain {
+                name: "foo".into(),
+                domain: "*.foo.test".into(),
+            },
+            None,
+            v(8, 3),
+        ) {
+            Err(MutateError::Invalid(_)) => {}
+            other => panic!("expected Invalid for wildcard primary, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn reset_domains_clears_delta() {
+        let mut cfg = Config::default();
+        let r = router_with_domains(&[("foo", "/srv/foo", &["foo"])]);
+        add_domain(&mut cfg, &r, "foo", "corp.test").unwrap();
+        apply(
+            &mut cfg,
+            &r,
+            &Request::ResetDomains { name: "foo".into() },
+            None,
+            v(8, 3),
+        )
+        .unwrap();
+        assert!(cfg.domains.is_empty());
+    }
+
+    #[test]
+    fn add_domain_unknown_site_is_not_found() {
+        let mut cfg = Config::default();
+        let r = empty_router();
+        match add_domain(&mut cfg, &r, "ghost", "corp.test") {
+            Err(MutateError::NotFound(_)) => {}
+            other => panic!("expected NotFound, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn link_migrates_parked_domain_delta() {
+        let mut cfg = Config::default();
+        cfg.domains.parked.insert(
+            "/srv/foo".into(),
+            DomainDelta {
+                added: vec![Domain::parse_subpart("corp").unwrap()],
+                suppressed: vec![],
+                primary: None,
+            },
+        );
+        let r = empty_router();
+        apply(
+            &mut cfg,
+            &r,
+            &Request::Link {
+                name: "foo".into(),
+                path: PathBuf::from("/ignored"),
+            },
+            Some(PathBuf::from("/srv/foo")),
+            v(8, 3),
+        )
+        .unwrap();
+        assert!(cfg.domains.parked.is_empty());
+        assert!(cfg.domains.linked.contains_key("foo"));
     }
 
     #[test]

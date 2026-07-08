@@ -45,6 +45,9 @@ pub async fn run(cli: Cli) -> ExitCode {
         Command::Elevate { target } => return elevate::run_elevate(*target, false).await,
         Command::Unelevate { target } => return elevate::run_elevate(*target, true).await,
         Command::Path { action } => return path_cmd::run(*action),
+        Command::Domain {
+            action: crate::cli::DomainAction::List { site },
+        } => return run_domain_list(site.as_deref(), cli.json).await,
         Command::Uninstall { target: None, yes } => return uninstall::run(*yes),
         Command::Install {
             target: crate::cli::InstallTarget::Tool { id },
@@ -135,6 +138,59 @@ pub async fn run(cli: Cli) -> ExitCode {
                 }
                 return ExitCode::from(r.code);
             }
+            eprintln!("yerd: {e}");
+            ExitCode::from(69)
+        }
+        Err(e) => {
+            eprintln!("yerd: {e}");
+            ExitCode::from(74)
+        }
+    }
+}
+
+/// `yerd domain list [site]`: a local two-request flow. Needs the TLD (via
+/// `DaemonInfo`) to render an effectively-default site's `{name}.{tld}` domain,
+/// then lists sites and renders a domain-focused view.
+async fn run_domain_list(site: Option<&str>, json: bool) -> ExitCode {
+    use yerd_ipc::{Request, Response};
+    let tld = match transport::exchange(&Request::DaemonInfo).await {
+        Ok(Response::Info { tld, .. }) => tld,
+        Ok(_) => {
+            eprintln!("yerd: unexpected daemon response");
+            return ExitCode::from(74);
+        }
+        Err(e @ ClientError::DaemonUnreachable(_)) => {
+            eprintln!("yerd: {e}");
+            return ExitCode::from(69);
+        }
+        Err(e) => {
+            eprintln!("yerd: {e}");
+            return ExitCode::from(74);
+        }
+    };
+
+    match transport::exchange(&Request::ListSites).await {
+        Ok(Response::Sites { sites }) => {
+            let r = map::render_domains(&sites, &tld, site, json);
+            if !r.stdout.is_empty() {
+                println!("{}", r.stdout);
+            }
+            if !r.stderr.is_empty() {
+                eprintln!("{}", r.stderr);
+            }
+            ExitCode::from(r.code)
+        }
+        Ok(other) => {
+            let r = map::render(&other, json);
+            if !r.stdout.is_empty() {
+                println!("{}", r.stdout);
+            }
+            if !r.stderr.is_empty() {
+                eprintln!("{}", r.stderr);
+            }
+            ExitCode::from(r.code)
+        }
+        Err(e @ ClientError::DaemonUnreachable(_)) => {
             eprintln!("yerd: {e}");
             ExitCode::from(69)
         }

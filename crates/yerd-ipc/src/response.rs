@@ -365,6 +365,21 @@ pub struct SiteEntry {
     /// at the site's served root.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub is_wordpress: bool,
+    /// The site's primary (canonical) domain FQDN, populated **only** when it
+    /// differs from the default apex (`{name}.{tld}`). Omitted for an
+    /// effectively-default site so the wire shape stays byte-identical to older
+    /// clients, which synthesize `{name}.{tld}` from the TLD they already hold.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub primary_domain: Option<String>,
+    /// The site's full effective routable domain set as FQDNs (primary first),
+    /// populated **only** for an effectively-customized site (empty and omitted
+    /// otherwise).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub domains: Vec<String>,
+    /// If another site claims this site's apex label, that other site's name.
+    /// Omitted (`None`) when the apex is not shadowed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub apex_shadowed_by: Option<String>,
 }
 
 /// One `WordPress` administrator account, for the auto-login user picker -
@@ -564,6 +579,7 @@ mod variant_name_pinning {
                 dns_unbound: None,
                 boot_id: None,
                 shared_sites: 0,
+                shadows: vec![],
             }),
         });
         pin_response(Response::Diagnoses {

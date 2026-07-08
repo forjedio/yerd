@@ -101,13 +101,23 @@ async fn dispatch(req: Request, state: &DaemonState) -> Response {
             // fs-watcher tick) rather than detected fresh here - this
             // handler is polled every few seconds and must not re-stat every
             // site's marker files on each poll. See `wordpress_detect`.
-            let sites: Vec<yerd_core::Site> = state.router.read().await.iter().cloned().collect();
+            let router = state.router.read().await;
+            let tld = router.config().tld().to_owned();
             let wordpress_sites = state.wordpress_sites.read().await;
-            let entries = sites
-                .into_iter()
+            let entries = router
+                .iter()
                 .map(|site| {
-                    let is_wordpress = wordpress_sites.get(site.name()).copied().unwrap_or(false);
-                    yerd_ipc::SiteEntry { site, is_wordpress }
+                    let name = site.name();
+                    let is_wordpress = wordpress_sites.get(name).copied().unwrap_or(false);
+                    let (primary_domain, domains) = site_entry_domains(&router, name, &tld);
+                    let apex_shadowed_by = router.apex_shadowed_by(name).map(str::to_owned);
+                    yerd_ipc::SiteEntry {
+                        site: site.clone(),
+                        is_wordpress,
+                        primary_domain,
+                        domains,
+                        apex_shadowed_by,
+                    }
                 })
                 .collect();
             Response::Sites { sites: entries }
@@ -144,7 +154,11 @@ async fn dispatch(req: Request, state: &DaemonState) -> Response {
         | Request::SetPhp { .. }
         | Request::SetSecure { .. }
         | Request::SetWebRoot { .. }
-        | Request::SetWordpressAutoLogin { .. } => handle_mutation(req, state).await,
+        | Request::SetWordpressAutoLogin { .. }
+        | Request::AddDomain { .. }
+        | Request::RemoveDomain { .. }
+        | Request::SetPrimaryDomain { .. }
+        | Request::ResetDomains { .. } => handle_mutation(req, state).await,
         Request::ListGroups => {
             let cfg = state.config.lock().await;
             Response::Groups {
@@ -342,6 +356,35 @@ async fn dispatch(req: Request, state: &DaemonState) -> Response {
     }
 }
 
+/// Compute a site's `SiteEntry` domain fields. Returns `(primary_domain,
+/// domains)`, both **omitted** (`None`/empty) for an effectively-default site
+/// (apex only, primary = apex) so the wire shape stays byte-identical to older
+/// clients. For a customized site, `domains` is the full effective set as FQDNs
+/// (primary first is guaranteed by the router order) and `primary_domain` is set
+/// only when the primary differs from the default apex.
+fn site_entry_domains(
+    router: &yerd_core::SiteRouter,
+    name: &str,
+    tld: &str,
+) -> (Option<String>, Vec<String>) {
+    let apex = yerd_core::Domain::apex(name);
+    let effective = router.effective_domains(name).unwrap_or(&[]);
+    let primary = router.primary_domain(name);
+
+    let is_default =
+        effective.len() == 1 && effective.first() == Some(&apex) && primary == Some(&apex);
+    if is_default {
+        return (None, Vec::new());
+    }
+
+    let domains = effective.iter().map(|d| d.to_fqdn(tld)).collect();
+    let primary_domain = match primary {
+        Some(p) if *p != apex => Some(p.to_fqdn(tld)),
+        _ => None,
+    };
+    (primary_domain, domains)
+}
+
 /// Installed PHP versions (the bundled installs in yerd's data dir), ascending
 /// and deduped. The single source of "what's installed" for the `PhpVersions`
 /// and `AvailablePhp` replies.
@@ -485,9 +528,10 @@ async fn collect_rss_by_pid(
 async fn build_status_report(state: &DaemonState) -> yerd_ipc::StatusReport {
     use yerd_platform::SystemMetrics;
 
-    let sites = {
+    let (sites, shadows) = {
         let router = state.router.read().await;
         let mut counts = yerd_ipc::SiteCounts::default();
+        let mut shadows = Vec::new();
         for s in router.iter() {
             match s.kind() {
                 yerd_core::SiteKind::Parked => counts.parked += 1,
@@ -496,8 +540,14 @@ async fn build_status_report(state: &DaemonState) -> yerd_ipc::StatusReport {
             if s.secure() {
                 counts.secured += 1;
             }
+            if let Some(by) = router.apex_shadowed_by(s.name()) {
+                shadows.push(yerd_ipc::DomainShadow {
+                    site: s.name().to_owned(),
+                    shadowed_by: by.to_owned(),
+                });
+            }
         }
-        counts
+        (counts, shadows)
     };
 
     let (tld, default_php, mail_enabled, mail_port) = {
@@ -640,6 +690,7 @@ async fn build_status_report(state: &DaemonState) -> yerd_ipc::StatusReport {
         dns_unbound: state.dns_unbound,
         boot_id: Some(state.boot_id),
         shared_sites,
+        shadows,
     }
 }
 

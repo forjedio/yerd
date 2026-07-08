@@ -9,7 +9,7 @@ use interprocess::local_socket::tokio::Listener as IpcListener;
 use interprocess::local_socket::ListenerOptions;
 use tokio::sync::{Mutex, RwLock};
 
-use yerd_core::{PhpVersion, RouterConfig, Site, SiteRouter};
+use yerd_core::{PhpVersion, Site, SiteRouter};
 use yerd_php::{discover_bundled, io::FastCgiProbe, PhpManager, SystemClock, TokioProcessSpawner};
 use yerd_platform::{
     ActivePaths, ActivePortBinder, ActiveTrustStore, Paths, PlatformDirs, PortBinder, TrustStore,
@@ -395,7 +395,7 @@ pub(crate) fn build_routing(
     detect_cache: &DetectCache,
 ) -> Result<(SiteRouter, WordpressSites, Vec<PathBuf>), DaemonError> {
     let (sites, watch_roots) = scan_sites(cfg, cfg.php.default, dirs, detect_cache)?;
-    let router = SiteRouter::from_sites(RouterConfig::with_tld(cfg.tld.clone()), sites)?;
+    let router = crate::site_domains::build(cfg, sites);
     let wordpress_sites = router
         .iter()
         .map(|site| {

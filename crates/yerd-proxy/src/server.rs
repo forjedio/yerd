@@ -582,21 +582,32 @@ async fn resolve_request(
             Ok(Routed::Respond(switch_response(&name, &location)?))
         }
         UnboundDecision::Picker { dest, clear } => {
-            let tld = guard.config().tld().to_owned();
-            let summaries: Vec<(String, bool, &'static str)> = guard
+            let tld = guard.config().tld();
+            let summaries: Vec<(String, String, bool, &'static str)> = guard
                 .iter()
-                .map(|s| (s.name().to_owned(), s.secure(), kind_label(s.kind())))
+                .map(|s| {
+                    let primary = guard
+                        .primary_domain(s.name())
+                        .map_or_else(|| format!("{}.{tld}", s.name()), |d| d.to_fqdn(tld));
+                    (
+                        s.name().to_owned(),
+                        primary,
+                        s.secure(),
+                        kind_label(s.kind()),
+                    )
+                })
                 .collect();
             drop(guard);
             let picker_sites: Vec<PickerSite<'_>> = summaries
                 .iter()
-                .map(|(name, secure, kind)| PickerSite {
+                .map(|(name, primary, secure, kind)| PickerSite {
                     name,
+                    primary,
                     secure: *secure,
                     kind,
                 })
                 .collect();
-            let body = unbound::render_picker(&tld, &picker_sites, &dest);
+            let body = unbound::render_picker(&picker_sites, &dest);
             Ok(Routed::Respond(picker_response(body, clear)?))
         }
         UnboundDecision::NotFound { clear } => Ok(Routed::Respond(unbound_not_found(clear)?)),

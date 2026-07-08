@@ -128,6 +128,23 @@ pub struct StatusReport {
     /// ignores it).
     #[serde(default, skip_serializing_if = "is_zero_u32")]
     pub shared_sites: u32,
+    /// Sites whose apex label is shadowed by another site's explicit domain (the
+    /// apex was dropped from routing when the router was built). Empty on a
+    /// healthy config. `#[serde(default, skip_serializing_if)]` keeps the wire
+    /// additive - an older daemon emits unchanged bytes, an older client ignores
+    /// it. Surfaced by `yerd doctor`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub shadows: Vec<DomainShadow>,
+}
+
+/// One apex-shadow relationship, surfaced in [`StatusReport::shadows`] and by
+/// `yerd doctor`: `site`'s default apex is claimed by `shadowed_by`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DomainShadow {
+    /// The site whose apex is shadowed.
+    pub site: String,
+    /// The other site that claims the apex label.
+    pub shadowed_by: String,
 }
 
 /// `skip_serializing_if` helper: a `u32` that is zero is omitted from the wire.

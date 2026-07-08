@@ -48,6 +48,17 @@ function servedLabel(s: SiteEntry): string {
   return s.web_subpath && s.web_subpath !== "" ? s.web_subpath : "/";
 }
 
+/** The site's primary domain FQDN: its `primary_domain` when set, else the
+ *  default `{name}.{tld}` apex. */
+function displayHost(s: SiteEntry): string {
+  return s.primary_domain ?? `${s.name}.${props.tld}`;
+}
+
+/** Number of additional domains beyond the primary (0 for a default site). */
+function extraDomainCount(s: SiteEntry): number {
+  return s.domains && s.domains.length > 1 ? s.domains.length - 1 : 0;
+}
+
 /**
  * "WP Admin" action: one-click, pre-authenticated login when the site has
  * auto-login enabled and unbound/resolver-off isn't in the way, falling back
@@ -80,8 +91,19 @@ async function openWpAdmin(s: SiteEntry): Promise<void> {
           :title="openTitle(site, report)"
           @click="openInBrowser(siteUrl(site, report))"
         >
-          <span class="truncate">{{ site.name }}.{{ tld }}</span>
+          <span class="truncate">{{ displayHost(site) }}</span>
+          <span
+            v-if="extraDomainCount(site) > 0"
+            class="shrink-0 rounded bg-muted px-1 text-[10px] font-normal text-muted-foreground"
+            :title="site.domains?.join(', ')"
+          >+{{ extraDomainCount(site) }}</span>
         </button>
+        <p
+          v-if="site.apex_shadowed_by"
+          class="mt-0.5 text-[11px] text-amber-600 dark:text-amber-500"
+        >
+          {{ site.name }}.{{ tld }} is served by "{{ site.apex_shadowed_by }}"
+        </p>
         <button
           class="mt-1 flex max-w-full items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
           :title="`Reveal ${site.document_root}`"

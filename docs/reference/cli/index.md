@@ -33,6 +33,7 @@ yerd [--json] <COMMAND> [ARGS...]
 | Group | Commands |
 | --- | --- |
 | [Sites](./sites) | `sites`, `park`, `unpark`, `link`, `unlink`, `root` |
+| [Domains](./domains) | `domain list`, `domain add`, `domain remove`, `domain primary`, `domain reset` |
 | [HTTPS](./https) | `secure`, `unsecure` |
 | [PHP](./php) | `use`, `install php`, `uninstall php`, `update php`, `restart php`, `list php`, `list parked`, `set php`, `unset php`, `php ext add`/`remove`/`list` |
 | [Tooling](./tooling) | `tools`, `install tool`, `uninstall tool`, `path install`, `path uninstall`, `path print` |

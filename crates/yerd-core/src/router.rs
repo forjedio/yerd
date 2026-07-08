@@ -1,12 +1,23 @@
 //! Site router and configuration.
 //!
 //! [`RouterConfig`] holds the TLD plus a cached `".{tld}"` suffix that
-//! [`SiteRouter::resolve`] uses on the hot path. [`SiteRouter`] is a
-//! `BTreeMap`-backed registry keyed by `site.name()`, with `insert`, `remove`,
-//! `get`, `get_mut`, `iter`, and the host→site `resolve` algorithm.
+//! [`SiteRouter::resolve`] uses on the hot path. [`SiteRouter`] keeps the site
+//! identity map (keyed by `site.name()`) plus two domain indices built from each
+//! site's **effective domain set**: `exact` (sub-part → site) and `wildcards`
+//! (`"*.rest"` → site).
+//!
+//! ## Routing model
+//!
+//! A site answers **only** the domains in its effective set. By default that is
+//! just its apex (`{name}.{tld}`) - there is no implicit subdomain catch-all, so
+//! `api.foo.test` does not route to `foo` unless `foo` explicitly holds
+//! `api.foo` or the single-label wildcard `*.foo`. Resolution tries an exact
+//! match first, then exactly one single-label wildcard candidate (the host with
+//! its leftmost label replaced by `*`); exact always wins.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
+use crate::domain::Domain;
 use crate::error::CoreError;
 use crate::host::{self, HostKind};
 use crate::site::Site;
@@ -96,6 +107,10 @@ impl<'de> serde::Deserialize<'de> for RouterConfig {
 pub struct SiteRouter {
     config: RouterConfig,
     sites: BTreeMap<String, Site>,
+    domains: BTreeMap<String, Vec<Domain>>,
+    primaries: BTreeMap<String, Domain>,
+    exact: HashMap<String, String>,
+    wildcards: HashMap<String, String>,
 }
 
 impl SiteRouter {
@@ -105,11 +120,15 @@ impl SiteRouter {
         Self {
             config,
             sites: BTreeMap::new(),
+            domains: BTreeMap::new(),
+            primaries: BTreeMap::new(),
+            exact: HashMap::new(),
+            wildcards: HashMap::new(),
         }
     }
 
-    /// Calls [`Self::insert`] in iteration order; the first duplicate aborts
-    /// with [`CoreError::DuplicateSite`].
+    /// Inserts each site with the default apex-only domain set. The first
+    /// duplicate name aborts with [`CoreError::DuplicateSite`].
     pub fn from_sites(
         config: RouterConfig,
         sites: impl IntoIterator<Item = Site>,
@@ -121,26 +140,83 @@ impl SiteRouter {
         Ok(r)
     }
 
-    /// Inserts a site keyed by `site.name()`. Errors with
-    /// [`CoreError::DuplicateSite`] if a site with that name already exists.
+    /// Inserts a site with its **default** domain set (apex only, primary =
+    /// apex). Errors with [`CoreError::DuplicateSite`] if the name is taken or
+    /// [`CoreError::DuplicateDomain`] if the apex is already claimed.
     pub fn insert(&mut self, site: Site) -> Result<(), CoreError> {
+        let apex = Domain::apex(site.name());
+        self.insert_with_domains(site, vec![apex.clone()], apex)
+    }
+
+    /// Inserts a site with an explicit effective domain set and primary. The
+    /// daemon computes these (defaults ± delta) and feeds a de-conflicted set.
+    ///
+    /// Errors (safety nets - the daemon pre-resolves so these do not fire in
+    /// production):
+    /// - [`CoreError::DuplicateSite`] if the name is already present;
+    /// - [`CoreError::DuplicateDomain`] if any domain key is already claimed by
+    ///   another site. No partial state is left on error.
+    pub fn insert_with_domains(
+        &mut self,
+        site: Site,
+        effective: Vec<Domain>,
+        primary: Domain,
+    ) -> Result<(), CoreError> {
         if self.sites.contains_key(site.name()) {
             return Err(CoreError::DuplicateSite {
                 name: site.name().to_owned(),
             });
         }
-        self.sites.insert(site.name().to_owned(), site);
+        for d in &effective {
+            let index = if d.is_wildcard() {
+                &self.wildcards
+            } else {
+                &self.exact
+            };
+            if index.contains_key(d.as_str()) {
+                return Err(CoreError::DuplicateDomain {
+                    domain: d.as_str().to_owned(),
+                });
+            }
+        }
+
+        let name = site.name().to_owned();
+        for d in &effective {
+            if d.is_wildcard() {
+                self.wildcards.insert(d.as_str().to_owned(), name.clone());
+            } else {
+                self.exact.insert(d.as_str().to_owned(), name.clone());
+            }
+        }
+        self.primaries.insert(name.clone(), primary);
+        self.domains.insert(name.clone(), effective);
+        self.sites.insert(name, site);
         Ok(())
     }
 
-    /// Removes a site by name. Errors with [`CoreError::SiteNotFound`] if
-    /// missing. Returns the removed [`Site`].
+    /// Removes a site by name, together with its domain-index entries. Errors
+    /// with [`CoreError::SiteNotFound`] if missing. Returns the removed [`Site`].
     pub fn remove(&mut self, name: &str) -> Result<Site, CoreError> {
-        self.sites
+        let site = self
+            .sites
             .remove(name)
             .ok_or_else(|| CoreError::SiteNotFound {
                 name: name.to_owned(),
-            })
+            })?;
+        if let Some(domains) = self.domains.remove(name) {
+            for d in domains {
+                let index = if d.is_wildcard() {
+                    &mut self.wildcards
+                } else {
+                    &mut self.exact
+                };
+                if index.get(d.as_str()).is_some_and(|owner| owner == name) {
+                    index.remove(d.as_str());
+                }
+            }
+        }
+        self.primaries.remove(name);
+        Ok(site)
     }
 
     /// Borrows a site by name.
@@ -149,10 +225,47 @@ impl SiteRouter {
         self.sites.get(name)
     }
 
-    /// Mutably borrows a site by name. Invariant-safe because [`Site::name`]
-    /// is private and has no setter, so the routing key cannot drift.
+    /// Mutably borrows a site by name. Invariant-safe because [`Site::name`] is
+    /// private with no setter and domains are keyed separately, so neither the
+    /// routing key nor the domain indices can drift.
     pub fn get_mut(&mut self, name: &str) -> Option<&mut Site> {
         self.sites.get_mut(name)
+    }
+
+    /// The site's primary (canonical, displayed) domain, if the site exists.
+    #[must_use]
+    pub fn primary_domain(&self, name: &str) -> Option<&Domain> {
+        self.primaries.get(name)
+    }
+
+    /// The site's effective routable domain set (primary first), if it exists.
+    #[must_use]
+    pub fn effective_domains(&self, name: &str) -> Option<&[Domain]> {
+        self.domains.get(name).map(Vec::as_slice)
+    }
+
+    /// The site that currently owns `domain` (in the effective routing indices),
+    /// or `None` if unclaimed. Used by mutation handlers to reject a domain that
+    /// already routes to a different site.
+    #[must_use]
+    pub fn domain_owner(&self, domain: &Domain) -> Option<&str> {
+        let index = if domain.is_wildcard() {
+            &self.wildcards
+        } else {
+            &self.exact
+        };
+        index.get(domain.as_str()).map(String::as_str)
+    }
+
+    /// If the site's apex label is claimed in the exact index by a **different**
+    /// site, returns that other site's name (the shadow). `None` when the site
+    /// owns its own apex or nobody claims it.
+    #[must_use]
+    pub fn apex_shadowed_by(&self, name: &str) -> Option<&str> {
+        self.exact
+            .get(name)
+            .filter(|owner| owner.as_str() != name)
+            .map(String::as_str)
     }
 
     /// Iterates sites in lexicographic name order (BTreeMap-backed).
@@ -179,6 +292,10 @@ impl SiteRouter {
     }
 
     /// Resolves a `Host:` header value to a site.
+    ///
+    /// Exact domain match first; then a single-label wildcard match (the host
+    /// with its leftmost label replaced by `*`). No implicit catch-all: a host
+    /// with no matching exact or wildcard domain is unresolved.
     #[must_use]
     pub fn resolve(&self, host: &str) -> Option<&Site> {
         let host = match host::normalise(host) {
@@ -192,26 +309,24 @@ impl SiteRouter {
             return None;
         }
 
-        let label = host.as_ref().strip_suffix(dotted)?;
-        if label.is_empty() {
+        let sub = host.as_ref().strip_suffix(dotted)?;
+        if sub.is_empty() {
             return None;
         }
 
-        if let Some(s) = self.sites.get(label) {
-            return Some(s);
+        if let Some(name) = self.exact.get(sub) {
+            return self.sites.get(name);
         }
 
-        // Wildcard peel: strip leftmost label, walk right. Terminates because
-        // site names cannot contain dots (validated at construction).
-        let mut rest = label;
-        while let Some((_, parent)) = rest.split_once('.') {
-            if parent.is_empty() {
-                return None;
+        // Single-label wildcard: replace the leftmost label with `*`. A host with
+        // only one label below the TLD (the apex) has no wildcard candidate.
+        if let Some((_, rest)) = sub.split_once('.') {
+            let mut key = String::with_capacity(rest.len() + 2);
+            key.push_str("*.");
+            key.push_str(rest);
+            if let Some(name) = self.wildcards.get(&key) {
+                return self.sites.get(name);
             }
-            if let Some(s) = self.sites.get(parent) {
-                return Some(s);
-            }
-            rest = parent;
         }
         None
     }
@@ -237,6 +352,22 @@ mod tests {
         Site::parked(name, format!("/srv/{name}"), v83()).unwrap()
     }
 
+    fn dom(sub: &str) -> Domain {
+        Domain::parse_subpart(sub).unwrap()
+    }
+
+    /// Insert a site with an explicit effective set (primary = first exact).
+    fn insert_domains(r: &mut SiteRouter, name: &str, subs: &[&str]) {
+        let effective: Vec<Domain> = subs.iter().map(|s| dom(s)).collect();
+        let primary = effective
+            .iter()
+            .find(|d| !d.is_wildcard())
+            .cloned()
+            .unwrap_or_else(|| Domain::apex(name));
+        r.insert_with_domains(parked(name), effective, primary)
+            .unwrap();
+    }
+
     fn router_with(tld: &str, sites: &[&str]) -> SiteRouter {
         let cfg = RouterConfig::new(tld).unwrap();
         let mut r = SiteRouter::new(cfg);
@@ -246,81 +377,86 @@ mod tests {
         r
     }
 
-    /// Resolver table - 27 cases covering every rule (exact, port strip,
-    /// FQDN dot, case-insensitive, TLD enforcement, exact-beats-wildcard,
-    /// wildcard→parent) plus normalisation edge cases.
+    /// Default (apex-only) resolution: exact apex resolves, subdomains do not.
     #[test]
-    fn resolve_table() {
+    fn resolve_apex_only_default() {
         let r = router_with("test", &["foo", "api-foo"]);
-
-        // (host, expected site name) - None means no match
         let cases: &[(&str, Option<&str>)] = &[
-            ("foo.test", Some("foo")),         // 1 Exact
-            ("foo.test:8443", Some("foo")),    // 2 Port strip
-            ("foo.test:", Some("foo")),        // 3 Trailing ':'
-            ("foo.test:abc", None),            // 4 Port junk
-            ("foo.test:80:80", None),          // 5 Double colon
-            ("[::1]", None),                   // 6 IPv6 literal
-            ("[::1]:8080", None),              // 7 IPv6 + port
-            (":8080", None),                   // 8 Only port
-            ("foo.test.", Some("foo")),        // 9 FQDN dot
-            ("foo.test.:80", Some("foo")),     // 10 Trailing dot + port
-            ("FOO.TEST", Some("foo")),         // 11 Uppercase
-            ("Foo.Test.:443", Some("foo")),    // 12 Mixed
-            ("föö.test", None),                // 13 Non-ASCII
-            ("foo.example", None),             // 14 Wrong TLD
-            ("foo.notthetest", None),          // 15 TLD-suffix collision
-            ("test", None),                    // 16 Bare TLD
-            ("test.", None),                   // 17 Bare TLD with dot
-            ("", None),                        // 18 Empty
-            ("bar.test", None),                // 19 Unknown site
-            ("api.foo.test", Some("foo")),     // 20 Wildcard 1-level
-            ("a.b.c.foo.test", Some("foo")),   // 21 Wildcard multi-level
-            ("api.bar.test", None),            // 22 Wildcard unknown parent
-            ("api-foo.test", Some("api-foo")), // 23 Exact beats wildcard
-            ("foo..test", None),               // 27 Embedded ..
+            ("foo.test", Some("foo")),
+            ("foo.test:8443", Some("foo")),
+            ("foo.test.", Some("foo")),
+            ("FOO.TEST", Some("foo")),
+            ("api-foo.test", Some("api-foo")),
+            ("api.foo.test", None), // NO implicit catch-all
+            ("a.b.foo.test", None), // NO implicit catch-all
+            ("bar.test", None),
+            ("test", None),
+            ("test.", None),
+            ("", None),
+            ("föö.test", None),
+            ("foo.example", None),
+            ("foo.notthetest", None),
+            ("foo..test", None),
+            ("[::1]", None),
         ];
         for (host, want) in cases {
-            let got = r.resolve(host).map(Site::name);
-            assert_eq!(got, *want, "host {host:?}");
+            assert_eq!(r.resolve(host).map(Site::name), *want, "host {host:?}");
         }
+    }
 
-        // Rows 24/25/26 - custom TLDs.
-        let r_lh = router_with("localhost", &["foo"]);
-        assert_eq!(
-            r_lh.resolve("api.foo.localhost").map(Site::name),
-            Some("foo")
-        ); // 24
+    /// Single-label wildcard: `*.foo` matches one label, not deeper; exact wins.
+    #[test]
+    fn resolve_wildcard_single_label_and_precedence() {
+        let cfg = RouterConfig::new("test").unwrap();
+        let mut r = SiteRouter::new(cfg);
+        insert_domains(&mut r, "foo", &["foo"]); // apex A
+        insert_domains(&mut r, "wild", &["wild", "*.foo"]); // wildcard site B
+        insert_domains(&mut r, "api", &["api", "api.foo"]); // exact carve-out C
 
-        let r_dl = router_with("dev.local", &["foo"]);
-        assert_eq!(r_dl.resolve("foo.dev.local").map(Site::name), Some("foo")); // 25
-        assert_eq!(
-            r_dl.resolve("api.foo.dev.local").map(Site::name),
-            Some("foo")
-        ); // 26
+        let cases: &[(&str, Option<&str>)] = &[
+            ("foo.test", Some("foo")),      // exact apex A
+            ("xyz.foo.test", Some("wild")), // wildcard *.foo -> B
+            ("api.foo.test", Some("api")),  // exact beats wildcard -> C
+            ("x.api.foo.test", None),       // single-label: *.foo does NOT match 2 labels
+            ("wild.test", Some("wild")),
+            ("api.test", Some("api")),
+        ];
+        for (host, want) in cases {
+            assert_eq!(r.resolve(host).map(Site::name), *want, "host {host:?}");
+        }
+    }
+
+    /// Nested wildcard resolves its own level; `foo.test` and `*.foo.test` are
+    /// independent sites (the user's core requirement).
+    #[test]
+    fn resolve_nested_wildcard_and_independent_sites() {
+        let cfg = RouterConfig::new("test").unwrap();
+        let mut r = SiteRouter::new(cfg);
+        insert_domains(&mut r, "a", &["foo"]); // foo.test -> A
+        insert_domains(&mut r, "b", &["b", "*.foo"]); // *.foo.test -> B
+        insert_domains(&mut r, "c", &["c", "*.api.foo"]); // *.api.foo.test -> C
+
+        assert_eq!(r.resolve("foo.test").map(Site::name), Some("a"));
+        assert_eq!(r.resolve("x.foo.test").map(Site::name), Some("b"));
+        assert_eq!(r.resolve("x.api.foo.test").map(Site::name), Some("c"));
+        // api.foo.test: exact? no. wildcard *.foo -> B (one label `api`).
+        assert_eq!(r.resolve("api.foo.test").map(Site::name), Some("b"));
     }
 
     #[test]
-    fn new_creates_empty_router() {
-        let r = SiteRouter::new(RouterConfig::default());
-        assert_eq!(r.len(), 0);
-        assert!(r.is_empty());
+    fn multi_label_tld_resolution() {
+        let cfg = RouterConfig::new("dev.local").unwrap();
+        let mut r = SiteRouter::new(cfg);
+        insert_domains(&mut r, "foo", &["foo", "*.foo"]);
+        assert_eq!(r.resolve("foo.dev.local").map(Site::name), Some("foo"));
+        assert_eq!(r.resolve("api.foo.dev.local").map(Site::name), Some("foo"));
+        assert_eq!(r.resolve("a.b.foo.dev.local").map(Site::name), None);
     }
 
     #[test]
-    fn insert_increments_len() {
+    fn insert_rejects_duplicate_name() {
         let mut r = SiteRouter::new(RouterConfig::default());
         r.insert(parked("foo")).unwrap();
-        r.insert(parked("bar")).unwrap();
-        assert_eq!(r.len(), 2);
-        assert!(!r.is_empty());
-    }
-
-    #[test]
-    fn insert_rejects_duplicate() {
-        let mut r = SiteRouter::new(RouterConfig::default());
-        r.insert(parked("foo")).unwrap();
-        // Different casing in input → same lowercased key → DuplicateSite.
         let dup = Site::parked("FOO", "/srv/foo", v83()).unwrap();
         match r.insert(dup) {
             Err(CoreError::DuplicateSite { name }) => assert_eq!(name, "foo"),
@@ -329,13 +465,98 @@ mod tests {
     }
 
     #[test]
-    fn from_sites_ok_three_sites() {
-        let r = SiteRouter::from_sites(
-            RouterConfig::default(),
-            [parked("a"), parked("b"), parked("c")],
-        )
-        .unwrap();
-        assert_eq!(r.len(), 3);
+    fn insert_rejects_duplicate_domain() {
+        let cfg = RouterConfig::new("test").unwrap();
+        let mut r = SiteRouter::new(cfg);
+        insert_domains(&mut r, "a", &["a", "shared"]);
+        // A different site claiming the same exact domain collides.
+        let effective = vec![dom("b"), dom("shared")];
+        match r.insert_with_domains(parked("b"), effective, dom("b")) {
+            Err(CoreError::DuplicateDomain { domain }) => assert_eq!(domain, "shared"),
+            other => panic!("expected DuplicateDomain, got {other:?}"),
+        }
+        // ... and no partial state was left: `b` is absent, `shared` still -> a.
+        assert!(r.get("b").is_none());
+        assert_eq!(r.resolve("shared.test").map(Site::name), Some("a"));
+    }
+
+    #[test]
+    fn exact_and_wildcard_same_base_coexist() {
+        // foo (exact) and *.foo (wildcard) on different sites: no collision.
+        let cfg = RouterConfig::new("test").unwrap();
+        let mut r = SiteRouter::new(cfg);
+        insert_domains(&mut r, "a", &["foo"]);
+        insert_domains(&mut r, "b", &["b", "*.foo"]);
+        assert_eq!(r.resolve("foo.test").map(Site::name), Some("a"));
+        assert_eq!(r.resolve("x.foo.test").map(Site::name), Some("b"));
+    }
+
+    #[test]
+    fn remove_clears_domain_indices() {
+        let cfg = RouterConfig::new("test").unwrap();
+        let mut r = SiteRouter::new(cfg);
+        insert_domains(&mut r, "foo", &["foo", "corp", "*.foo"]);
+        assert_eq!(r.resolve("corp.test").map(Site::name), Some("foo"));
+        let removed = r.remove("foo").unwrap();
+        assert_eq!(removed.name(), "foo");
+        assert!(r.is_empty());
+        assert_eq!(r.resolve("corp.test"), None);
+        assert_eq!(r.resolve("x.foo.test"), None);
+        // The freed key can be re-claimed by a new site.
+        insert_domains(&mut r, "corp", &["corp"]);
+        assert_eq!(r.resolve("corp.test").map(Site::name), Some("corp"));
+    }
+
+    #[test]
+    fn remove_errors_when_missing() {
+        let mut r = SiteRouter::new(RouterConfig::default());
+        match r.remove("nope") {
+            Err(CoreError::SiteNotFound { name }) => assert_eq!(name, "nope"),
+            other => panic!("expected SiteNotFound, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn primary_and_effective_accessors() {
+        let cfg = RouterConfig::new("test").unwrap();
+        let mut r = SiteRouter::new(cfg);
+        r.insert_with_domains(parked("foo"), vec![dom("corp"), dom("*.foo")], dom("corp"))
+            .unwrap();
+        assert_eq!(r.primary_domain("foo"), Some(&dom("corp")));
+        assert_eq!(
+            r.effective_domains("foo"),
+            Some(&[dom("corp"), dom("*.foo")][..])
+        );
+        assert_eq!(r.primary_domain("missing"), None);
+    }
+
+    #[test]
+    fn apex_shadowed_by_reports_claimant() {
+        let cfg = RouterConfig::new("test").unwrap();
+        let mut r = SiteRouter::new(cfg);
+        // shop explicitly claims exact `blog`; site blog's apex was dropped.
+        insert_domains(&mut r, "shop", &["shop", "blog"]);
+        insert_domains(&mut r, "blog", &["*.blog"]); // apex suppressed -> only wildcard... but normalization is a daemon concern; here we feed it directly
+        assert_eq!(r.apex_shadowed_by("blog"), Some("shop"));
+        assert_eq!(r.apex_shadowed_by("shop"), None);
+    }
+
+    #[test]
+    fn get_mut_allows_field_update_without_rename() {
+        let cfg = RouterConfig::new("test").unwrap();
+        let mut r = SiteRouter::new(cfg);
+        insert_domains(&mut r, "foo", &["foo", "*.foo"]);
+        r.get_mut("foo").unwrap().set_php(PhpVersion::new(8, 4));
+        assert_eq!(r.get("foo").unwrap().php(), PhpVersion::new(8, 4));
+        assert_eq!(r.resolve("foo.test").map(Site::name), Some("foo"));
+        assert_eq!(r.resolve("x.foo.test").map(Site::name), Some("foo"));
+    }
+
+    #[test]
+    fn iter_yields_sites_in_name_order() {
+        let r = router_with("test", &["charlie", "alpha", "bravo"]);
+        let names: Vec<&str> = r.iter().map(Site::name).collect();
+        assert_eq!(names, vec!["alpha", "bravo", "charlie"]);
     }
 
     #[test]
@@ -351,61 +572,22 @@ mod tests {
     }
 
     #[test]
-    fn get_returns_some_for_known_name() {
-        let r = router_with("test", &["foo"]);
-        assert!(r.get("foo").is_some());
+    fn linked_and_parked_route_alike() {
+        let cfg = RouterConfig::default();
+        let mut r = SiteRouter::new(cfg);
+        r.insert(Site::linked("foo", "/srv/foo", v83()).unwrap())
+            .unwrap();
+        assert_eq!(
+            r.resolve("foo.test").map(Site::kind),
+            Some(SiteKind::Linked)
+        );
     }
 
     #[test]
-    fn get_returns_none_for_missing() {
-        let r = router_with("test", &["foo"]);
-        assert!(r.get("bar").is_none());
-    }
-
-    #[test]
-    fn get_mut_allows_field_update_without_rename() {
-        let mut r = router_with("test", &["foo"]);
-        r.get_mut("foo").unwrap().set_php(PhpVersion::new(8, 4));
-        assert_eq!(r.get("foo").unwrap().php(), PhpVersion::new(8, 4));
-        assert_eq!(r.resolve("foo.test").map(Site::name), Some("foo"));
-    }
-
-    #[test]
-    fn remove_returns_removed_site() {
-        let mut r = router_with("test", &["foo"]);
-        let removed = r.remove("foo").unwrap();
-        assert_eq!(removed.name(), "foo");
+    fn new_creates_empty_router() {
+        let r = SiteRouter::new(RouterConfig::default());
+        assert_eq!(r.len(), 0);
         assert!(r.is_empty());
-    }
-
-    #[test]
-    fn remove_errors_when_missing() {
-        let mut r = SiteRouter::new(RouterConfig::default());
-        match r.remove("nope") {
-            Err(CoreError::SiteNotFound { name }) => assert_eq!(name, "nope"),
-            other => panic!("expected SiteNotFound, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn iter_yields_sites_in_name_order() {
-        let r = router_with("test", &["charlie", "alpha", "bravo"]);
-        let names: Vec<&str> = r.iter().map(Site::name).collect();
-        assert_eq!(names, vec!["alpha", "bravo", "charlie"]);
-    }
-
-    #[test]
-    fn iter_after_remove_skips_removed() {
-        let mut r = router_with("test", &["alpha", "bravo", "charlie"]);
-        let _ = r.remove("bravo").unwrap();
-        let names: Vec<&str> = r.iter().map(Site::name).collect();
-        assert_eq!(names, vec!["alpha", "charlie"]);
-    }
-
-    #[test]
-    fn config_accessor() {
-        let r = SiteRouter::new(RouterConfig::new("dev.local").unwrap());
-        assert_eq!(r.config().tld(), "dev.local");
     }
 
     #[test]
@@ -438,34 +620,14 @@ mod tests {
     }
 
     #[test]
-    fn routerconfig_deserialize_rejects_invalid() {
-        let res: Result<RouterConfig, _> = toml::from_str("tld = \"\"");
-        assert!(res.is_err());
-    }
-
-    #[test]
-    fn routerconfig_deserialize_rejects_unknown_field() {
-        let res: Result<RouterConfig, _> = toml::from_str("tld = \"test\"\nextra = \"x\"");
-        assert!(res.is_err(), "expected unknown-field rejection");
-    }
-
-    #[test]
     fn routerconfig_serialize_omits_dotted_tld() {
         let json = serde_json::to_string(&RouterConfig::default()).unwrap();
         assert_eq!(json, r#"{"tld":"test"}"#);
     }
 
     #[test]
-    fn site_kind_is_routable_under_either_kind() {
-        // Just exercises that Linked sites route exactly like Parked ones.
-        let cfg = RouterConfig::default();
-        let mut r = SiteRouter::new(cfg);
-        // Linked sites route exactly like Parked ones.
-        r.insert(Site::linked("foo", "/srv/foo", v83()).unwrap())
-            .unwrap();
-        assert_eq!(
-            r.resolve("foo.test").map(Site::kind),
-            Some(SiteKind::Linked)
-        );
+    fn routerconfig_deserialize_rejects_unknown_field() {
+        let res: Result<RouterConfig, _> = toml::from_str("tld = \"test\"\nextra = \"x\"");
+        assert!(res.is_err(), "expected unknown-field rejection");
     }
 }

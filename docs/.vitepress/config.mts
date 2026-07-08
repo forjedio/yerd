@@ -177,6 +177,7 @@ export default withMermaid({
           items: [
             { text: 'Overview', link: '/reference/cli/' },
             { text: 'Sites', link: '/reference/cli/sites' },
+            { text: 'Domains', link: '/reference/cli/domains' },
             { text: 'HTTPS', link: '/reference/cli/https' },
             { text: 'PHP', link: '/reference/cli/php' },
             { text: 'Tooling', link: '/reference/cli/tooling' },

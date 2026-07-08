@@ -47,6 +47,14 @@ export interface Site {
  */
 export interface SiteEntry extends Site {
   is_wordpress?: boolean;
+  /** Primary (canonical) domain FQDN, present only when it differs from the
+   *  default `{name}.{tld}` apex (omitted otherwise). */
+  primary_domain?: string;
+  /** Full effective routable domain set as FQDNs (primary first), present only
+   *  for a customised site (omitted for a default apex-only site). */
+  domains?: string[];
+  /** Another site's name that claims this site's apex label, when shadowed. */
+  apex_shadowed_by?: string;
 }
 
 /** crates/yerd-ipc/src/response.rs - WordPressAdminUser, for the auto-login
@@ -226,6 +234,15 @@ export interface StatusReport {
   /** Number of sites currently shared publicly (quick tunnels + named-tunnel
    *  exposed sites). Omitted/`0` when nothing is shared. */
   shared_sites?: number;
+  /** Sites whose apex label is shadowed by another site's explicit domain.
+   *  Omitted/empty on a healthy config. */
+  shadows?: DomainShadow[];
+}
+
+/** One apex-shadow relationship: `site`'s apex is claimed by `shadowed_by`. */
+export interface DomainShadow {
+  site: string;
+  shadowed_by: string;
 }
 
 export type Severity = "ok" | "warn" | "fail";

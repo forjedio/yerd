@@ -55,6 +55,25 @@ pub enum CoreError {
         /// Why it failed.
         reason: SiteNameErrorReason,
     },
+
+    /// A string failed to validate as a [`Domain`](crate::Domain).
+    #[error("invalid domain {input:?}: {reason}")]
+    InvalidDomain {
+        /// The raw input that failed validation.
+        input: String,
+        /// Why it failed.
+        reason: DomainErrorReason,
+    },
+
+    /// Two sites in the router claim the same routable domain. A safety net
+    /// mirroring [`Self::DuplicateSite`]: the daemon feeds a de-conflicted set,
+    /// so this only surfaces for a direct [`SiteRouter`](crate::SiteRouter)
+    /// caller (or a test) that inserts colliding domains.
+    #[error("domain {domain:?} already routes to another site")]
+    DuplicateDomain {
+        /// The colliding domain sub-part (e.g. `"api.foo"` or `"*.foo"`).
+        domain: String,
+    },
 }
 
 /// Specific failure modes for [`PhpVersion`](crate::PhpVersion) parsing.
@@ -161,6 +180,48 @@ impl fmt::Display for SiteNameErrorReason {
     }
 }
 
+/// Specific failure modes for [`Domain`](crate::Domain) validation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum DomainErrorReason {
+    /// Input was empty (possibly after stripping the TLD and one trailing dot).
+    Empty,
+    /// A label was empty (leading dot, trailing dot, or consecutive dots).
+    EmptyLabel,
+    /// The FQDN was not a strict subdomain of the configured TLD.
+    NotUnderTld,
+    /// A `*` appeared anywhere but as the leftmost label.
+    MisplacedWildcard,
+    /// A bare `*` with no following labels (a TLD-level catch-all is not allowed).
+    BareWildcard,
+    /// A label contained a character not in `[a-z0-9-]` (and was not the
+    /// leftmost `*`), or the input was non-ASCII.
+    InvalidCharacter,
+    /// A label exceeded 63 bytes.
+    LabelTooLong,
+    /// A label started or ended with `-`.
+    LeadingOrTrailingHyphen,
+    /// The domain sub-part exceeded 253 bytes.
+    TooLong,
+}
+
+impl fmt::Display for DomainErrorReason {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let msg = match self {
+            Self::Empty => "domain must not be empty",
+            Self::EmptyLabel => "domain must not contain an empty label",
+            Self::NotUnderTld => "domain must be a subdomain of the configured TLD",
+            Self::MisplacedWildcard => "'*' is only allowed as the leftmost label",
+            Self::BareWildcard => "a bare '*' wildcard is not allowed",
+            Self::InvalidCharacter => "domain labels may only contain [a-z0-9-]",
+            Self::LabelTooLong => "domain label exceeds 63 bytes",
+            Self::LeadingOrTrailingHyphen => "domain labels must not start or end with '-'",
+            Self::TooLong => "domain exceeds 253 bytes",
+        };
+        f.write_str(msg)
+    }
+}
+
 #[cfg(test)]
 #[allow(
     clippy::unwrap_used,
@@ -201,6 +262,7 @@ mod tests {
         assert_traits::<PhpVersionErrorReason>();
         assert_traits::<TldErrorReason>();
         assert_traits::<SiteNameErrorReason>();
+        assert_traits::<DomainErrorReason>();
     }
 
     /// Construct every variant of `CoreError` and every `*Reason` variant.
@@ -222,6 +284,11 @@ mod tests {
             name: "x".into(),
             reason: SiteNameErrorReason::Empty,
         };
+        let _ = CoreError::InvalidDomain {
+            input: "x".into(),
+            reason: DomainErrorReason::Empty,
+        };
+        let _ = CoreError::DuplicateDomain { domain: "x".into() };
 
         for r in [
             PhpVersionErrorReason::Empty,
@@ -256,6 +323,21 @@ mod tests {
             SiteNameErrorReason::InvalidCharacter,
             SiteNameErrorReason::LabelTooLong,
             SiteNameErrorReason::LeadingOrTrailingHyphen,
+        ] {
+            assert!(!r.to_string().is_empty());
+            let _debug = format!("{r:?}");
+        }
+
+        for r in [
+            DomainErrorReason::Empty,
+            DomainErrorReason::EmptyLabel,
+            DomainErrorReason::NotUnderTld,
+            DomainErrorReason::MisplacedWildcard,
+            DomainErrorReason::BareWildcard,
+            DomainErrorReason::InvalidCharacter,
+            DomainErrorReason::LabelTooLong,
+            DomainErrorReason::LeadingOrTrailingHyphen,
+            DomainErrorReason::TooLong,
         ] {
             assert!(!r.to_string().is_empty());
             let _debug = format!("{r:?}");
