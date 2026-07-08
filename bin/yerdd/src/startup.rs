@@ -676,6 +676,9 @@ fn build_parked_site(
         if ov.wp_auto_login_user.is_some() {
             site.set_wp_auto_login_user(ov.wp_auto_login_user.clone());
         }
+        if ov.front_controller.is_some() {
+            site.set_front_controller(ov.front_controller);
+        }
     }
 
     if let Some(rel) = ov.and_then(|o| o.web_root.as_deref()) {
@@ -849,6 +852,7 @@ mod tests {
                 web_root: Some("public".to_string()),
                 wp_auto_login: None,
                 wp_auto_login_user: None,
+                front_controller: None,
             },
         );
         let dirs = make_dirs(tmp.path());
@@ -931,6 +935,7 @@ mod tests {
                 web_root: None,
                 wp_auto_login: None,
                 wp_auto_login_user: None,
+                front_controller: None,
             },
         );
         let dirs = make_dirs(tmp.path());
@@ -953,6 +958,7 @@ mod tests {
                 web_root: None,
                 wp_auto_login: None,
                 wp_auto_login_user: None,
+                front_controller: None,
             },
         );
         let dirs = make_dirs(tmp.path());
@@ -981,6 +987,7 @@ mod tests {
                 web_root: None,
                 wp_auto_login: None,
                 wp_auto_login_user: None,
+                front_controller: None,
             },
         );
         let dirs = make_dirs(tmp.path());
@@ -1011,6 +1018,7 @@ mod tests {
                 web_root: None,
                 wp_auto_login: None,
                 wp_auto_login_user: None,
+                front_controller: None,
             },
         );
         let dirs = make_dirs(tmp.path());

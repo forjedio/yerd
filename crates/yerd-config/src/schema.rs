@@ -393,6 +393,10 @@ pub struct SiteOverride {
     /// only meaningful together (a chosen user has no effect while
     /// `wp_auto_login` is off).
     pub wp_auto_login_user: Option<String>,
+    /// Pinned front-controller flag (`true` = funnel through `index.php`,
+    /// `false` = execute scripts directly), or `None` to auto-derive each scan
+    /// from detection. See [`yerd_core::Site::uses_front_controller`].
+    pub front_controller: Option<bool>,
 }
 
 /// Configured services, keyed by service id.
@@ -535,6 +539,7 @@ mod tests {
                 web_root: None,
                 wp_auto_login: None,
                 wp_auto_login_user: None,
+                front_controller: None,
             }
         );
     }

@@ -590,6 +590,17 @@ pub enum Request {
         /// `true` = protection on (block escapes); `false` = allow escapes.
         enabled: bool,
     },
+    /// Override a site's front-controller mode. When enabled, every request
+    /// funnels through the site-root `index.php`; when disabled, a named `.php`
+    /// under the served root is executed directly. Persisted per site and
+    /// applied on the next request. See
+    /// [`yerd_core::Site::uses_front_controller`].
+    SetFrontController {
+        /// The site name.
+        name: String,
+        /// `true` = front-controller mode; `false` = direct script execution.
+        enabled: bool,
+    },
 }
 
 #[cfg(test)]
@@ -704,6 +715,7 @@ mod variant_name_pinning {
             Request::SetSiteGroup { .. } => {}
             Request::RenameGroup { .. } => {}
             Request::SetSymlinkProtection { .. } => {}
+            Request::SetFrontController { .. } => {}
         }
     }
 
@@ -942,6 +954,10 @@ mod variant_name_pinning {
             to: "Journal".into(),
         });
         pin(Request::SetSymlinkProtection { enabled: true });
+        pin(Request::SetFrontController {
+            name: "blog".to_owned(),
+            enabled: true,
+        });
     }
 
     fn laravel_options_fixture() -> crate::LaravelOptions {

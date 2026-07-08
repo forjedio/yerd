@@ -107,7 +107,12 @@ async fn dispatch(req: Request, state: &DaemonState) -> Response {
                 .into_iter()
                 .map(|site| {
                     let is_wordpress = wordpress_sites.get(site.name()).copied().unwrap_or(false);
-                    yerd_ipc::SiteEntry { site, is_wordpress }
+                    let uses_front_controller = site.uses_front_controller(is_wordpress);
+                    yerd_ipc::SiteEntry {
+                        site,
+                        is_wordpress,
+                        uses_front_controller,
+                    }
                 })
                 .collect();
             Response::Sites { sites: entries }
@@ -144,7 +149,8 @@ async fn dispatch(req: Request, state: &DaemonState) -> Response {
         | Request::SetPhp { .. }
         | Request::SetSecure { .. }
         | Request::SetWebRoot { .. }
-        | Request::SetWordpressAutoLogin { .. } => handle_mutation(req, state).await,
+        | Request::SetWordpressAutoLogin { .. }
+        | Request::SetFrontController { .. } => handle_mutation(req, state).await,
         Request::ListGroups => {
             let cfg = state.config.lock().await;
             Response::Groups {

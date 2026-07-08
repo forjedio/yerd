@@ -58,9 +58,11 @@ pub use schema::{
 /// `wp_auto_login_user` keys inside `[[linked]]` and `[[overrides]]` for
 /// `WordPress` one-click admin login. v11 added the top-level
 /// `symlink_protection` scalar ([`Config::symlink_protection`]) for the
-/// user-toggleable proxy symlink-escape guard. All default when absent, so the
-/// v3→v4, v4→v5, v5→v6, v6→v7, v7→v8, v8→v9, v9→v10, and v10→v11 migrations are
-/// bare version bumps; each bump exists so an *older* binary rejects a file
-/// using the newer field cleanly as [`ConfigError::UnsupportedVersion`] rather
-/// than failing on the unknown key.
-pub const CURRENT_VERSION: u32 = 11;
+/// user-toggleable proxy symlink-escape guard. v12 added the optional
+/// `front_controller` key inside `[[linked]]` and `[[overrides]]` for the
+/// per-site front-controller-vs-direct-execution toggle. All default when
+/// absent, so the v3→v4 … v10→v11 and v11→v12 migrations are bare version bumps;
+/// each bump exists so an *older* binary rejects a file using the newer field
+/// cleanly as [`ConfigError::UnsupportedVersion`] rather than failing on the
+/// unknown key.
+pub const CURRENT_VERSION: u32 = 12;

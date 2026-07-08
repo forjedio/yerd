@@ -48,7 +48,7 @@ The parser uses `deny_unknown_fields` at every level. A typo'd or stray key (top
 
 ### `version`
 
-The schema version. This key is **required** - a missing `version` is a hard error (`MissingVersion`), and a non-integer or negative value is rejected (`NonIntegerVersion`). The current schema version is `10`, and Yerd always writes `version = 10`. Older `version = 1` through `version = 9` files are migrated forward automatically on load. See [Schema versioning](#schema-versioning-and-migration) below.
+The schema version. This key is **required** - a missing `version` is a hard error (`MissingVersion`), and a non-integer or negative value is rejected (`NonIntegerVersion`). The current schema version is `12`, and Yerd always writes `version = 12`. Older `version = 1` through `version = 11` files are migrated forward automatically on load. See [Schema versioning](#schema-versioning-and-migration) below.
 
 ### `tld`
 
@@ -200,8 +200,15 @@ Per-site overrides for **parked** sites, each its own array-of-tables entry. A p
 | `php`      | string    | Pinned PHP version. Omit to inherit the global default.       |
 | `secure`   | boolean   | Pinned HTTPS flag. Omit to inherit (off).                     |
 | `web_root` | string    | Pinned web root, relative to `path`. Omit to auto-detect.     |
+| `front_controller` | boolean | Pinned front-controller mode. Omit to auto-derive from detection. |
 
-`php`, `secure`, and `web_root` are all optional - omitting a key means "inherit" (or, for `web_root`, "auto-detect on every scan"). An entry may pin one, several, or (uselessly) none. The serialiser skips omitted keys, so a partial override stays tidy on disk. Like `web_subpath` on a linked site, `web_root` must be a plain relative path inside the project (`WebRootEscapes` otherwise). Setting it is what `yerd root <parked-site> <path>` does.
+`php`, `secure`, `web_root`, and `front_controller` are all optional - omitting a key means "inherit" (or, for `web_root`/`front_controller`, "auto-derive on every scan"). An entry may pin one, several, or (uselessly) none. The serialiser skips omitted keys, so a partial override stays tidy on disk. Like `web_subpath` on a linked site, `web_root` must be a plain relative path inside the project (`WebRootEscapes` otherwise). Setting `web_root` is what `yerd root <parked-site> <path>` does; setting `front_controller` is what `yerd front-controller <parked-site> on|off` does.
+
+`front_controller = true` funnels every request through the site-root `index.php` (the right behaviour for a single-front-controller framework such as Laravel or Symfony); `false` executes a named `.php` under the served root directly (classic multi-page PHP). When omitted, the mode is auto-derived: a framework served from a subdirectory (non-empty `web_root`/`web_subpath`) defaults to front-controller mode, while WordPress (any layout) and plain root-served sites default to direct execution. The same key is accepted inside a `[[linked]]` entry.
+
+::: warning Direct execution exposes every `.php` in the served root
+With direct execution (the default for a plain root-served site), any real `.php` file under the served root is URL-executable - including a stray `phpinfo.php` or a leftover admin tool. If the site is exposed beyond loopback via a tunnel, those files are remotely reachable. Set `front_controller = true` (or point `web_root` at a clean public directory) to funnel everything through `index.php` instead.
+:::
 
 ```toml
 # Pin PHP, HTTPS, and the served web root for one parked site...
@@ -339,14 +346,14 @@ api = "Blog"
 
 ## Schema versioning and migration
 
-Every config file **must** carry a top-level `version = N` key - it is the single trigger for forward migration. The current schema version is `10`.
+Every config file **must** carry a top-level `version = N` key - it is the single trigger for forward migration. The current schema version is `12`.
 
 When the daemon loads a file, it routes on the version it finds:
 
 ```text
-found  > CURRENT (10)   →  error (UnsupportedVersion) - a newer Yerd wrote this file
-found == CURRENT (10)   →  parse directly
-found  < CURRENT (10)   →  walk forward migration steps, then parse
+found  > CURRENT (12)   →  error (UnsupportedVersion) - a newer Yerd wrote this file
+found == CURRENT (12)   →  parse directly
+found  < CURRENT (12)   →  walk forward migration steps, then parse
 ```
 
 A file written by a *newer* Yerd than you are running is refused rather than misread. Older files are migrated forward in place, one version at a time, before the normal wire-deserialisation and validation run:
@@ -361,6 +368,7 @@ A file written by a *newer* Yerd than you are running is refused rather than mis
 - **`v8 → v9`** is a bare version bump: v9 only **added** the optional `[groups]` table, which defaults to empty when absent. Same rationale - the bump lets an older binary refuse a `[groups]`-bearing file cleanly rather than tripping `deny_unknown_fields`.
 - **`v9 → v10`** is a bare version bump: v10 **added** the optional `[php.extensions]` registry and the `wp_auto_login` / `wp_auto_login_user` keys (inside `[[linked]]` and `[[overrides]]`, for one-click `WordPress` admin login), all of which default when absent. Same rationale - the bump lets an older binary refuse a file using them cleanly rather than tripping `deny_unknown_fields`.
 - **`v10 → v11`** is a bare version bump: v11 only **added** the top-level `symlink_protection` scalar (defaults to `true` when absent).
+- **`v11 → v12`** is a bare version bump: v12 only **added** the optional per-site `front_controller` key (inside `[[linked]]` and `[[overrides]]`), which defaults to auto when absent.
 
 The on-disk schema version is deliberately decoupled from the IPC protocol version; the two evolve independently.
 
@@ -387,8 +395,8 @@ Yerd does not `fsync` the file or its parent directory after a save. For a devel
 This is a valid `yerd.toml` covering the core fields (see the sections above for the newer optional tables - `update_channel`, `[tunnel]`, `[groups]`, `[php.extensions]`, `wp_auto_login` - omitted here for brevity):
 
 ```toml
-# Schema version - mandatory, always written as 10 by this release.
-version = 10
+# Schema version - mandatory, always written as 12 by this release.
+version = 12
 
 # TLD served by the resolver; sites resolve as <name>.test
 tld = "test"

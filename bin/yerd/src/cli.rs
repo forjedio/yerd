@@ -192,6 +192,16 @@ pub enum Command {
         #[arg(long)]
         auto: bool,
     },
+    /// Route all requests through a site's front controller (`index.php`), or
+    /// execute named `.php` files directly. Frameworks served from a subdir
+    /// (Laravel, ...) default `on`; plain and `WordPress` sites default `off`.
+    FrontController {
+        /// Site name.
+        name: String,
+        /// `on` funnels every request through `index.php`; `off` executes the
+        /// named `.php` directly.
+        state: OnOff,
+    },
     /// Grant yerd OS-level privileges (run via `sudo`). No subcommand = all.
     Elevate {
         /// Which privilege to grant; omit to grant all.
@@ -211,6 +221,23 @@ pub enum Command {
         #[command(subcommand)]
         action: PathAction,
     },
+}
+
+/// A binary on/off toggle argument (e.g. `yerd front-controller <name> on`).
+#[derive(clap::ValueEnum, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OnOff {
+    /// Turn the setting on.
+    On,
+    /// Turn the setting off.
+    Off,
+}
+
+impl OnOff {
+    /// `true` for [`OnOff::On`].
+    #[must_use]
+    pub fn is_on(self) -> bool {
+        matches!(self, OnOff::On)
+    }
 }
 
 /// Action of `yerd path`.

@@ -177,6 +177,13 @@ pub fn to_request(cmd: &Command) -> Result<Request, ClientError> {
                 path: if *auto { None } else { path.clone() },
             }
         }
+        Command::FrontController { name, state } => {
+            validate_name(name)?;
+            Request::SetFrontController {
+                name: name.clone(),
+                enabled: state.is_on(),
+            }
+        }
         Command::Elevate { .. } | Command::Unelevate { .. } => {
             return Err(ClientError::Usage(
                 "elevate/unelevate are handled locally, not over IPC".to_owned(),
@@ -574,7 +581,7 @@ fn format_sites(sites: &[SiteEntry]) -> String {
     // Only add the WORDPRESS column when at least one listed site needs it,
     // so the common (no-WordPress) case's table is unchanged.
     let show_wordpress = sites.iter().any(|entry| entry.is_wordpress);
-    let mut out = String::from("NAME\tKIND\tPHP\tSECURE\tSERVED\tDOCROOT");
+    let mut out = String::from("NAME\tKIND\tPHP\tSECURE\tSERVED\tDOCROOT\tFRONT-CTRL");
     if show_wordpress {
         out.push_str("\tWORDPRESS");
     }
@@ -589,15 +596,21 @@ fn format_sites(sites: &[SiteEntry]) -> String {
         } else {
             s.web_subpath().display().to_string()
         };
+        let front = if entry.uses_front_controller {
+            "index.php"
+        } else {
+            "direct"
+        };
         let _ = write!(
             out,
-            "\n{}\t{}\t{}\t{}\t{}\t{}",
+            "\n{}\t{}\t{}\t{}\t{}\t{}\t{}",
             s.name(),
             kind,
             s.php(),
             s.secure(),
             served,
-            s.document_root().display()
+            s.document_root().display(),
+            front
         );
         if show_wordpress {
             let wp = if entry.is_wordpress { "yes" } else { "-" };
@@ -1382,6 +1395,28 @@ mod tests {
             }
         );
         assert_eq!(
+            to_request(&Command::FrontController {
+                name: "foo".into(),
+                state: crate::cli::OnOff::On,
+            })
+            .unwrap(),
+            Request::SetFrontController {
+                name: "foo".into(),
+                enabled: true
+            }
+        );
+        assert_eq!(
+            to_request(&Command::FrontController {
+                name: "foo".into(),
+                state: crate::cli::OnOff::Off,
+            })
+            .unwrap(),
+            Request::SetFrontController {
+                name: "foo".into(),
+                enabled: false
+            }
+        );
+        assert_eq!(
             to_request(&Command::Root {
                 name: "foo".into(),
                 path: Some("public".into()),
@@ -1559,6 +1594,7 @@ mod tests {
                 sites: vec![SiteEntry {
                     site,
                     is_wordpress: false,
+                    uses_front_controller: true,
                 }],
             },
             false,
@@ -1570,6 +1606,14 @@ mod tests {
             !listed.stdout.contains("WORDPRESS"),
             "no WORDPRESS column when nothing listed is WordPress"
         );
+        assert!(
+            listed.stdout.contains("FRONT-CTRL"),
+            "front-controller column header"
+        );
+        assert!(
+            listed.stdout.contains("index.php"),
+            "uses_front_controller=true renders as index.php"
+        );
         assert_eq!(listed.code, 0);
 
         let blog = Site::parked("blog", "/srv/blog", PhpVersion::new(8, 3)).unwrap();
@@ -1578,12 +1622,17 @@ mod tests {
                 sites: vec![SiteEntry {
                     site: blog,
                     is_wordpress: true,
+                    uses_front_controller: false,
                 }],
             },
             false,
         );
         assert!(with_wp.stdout.contains("WORDPRESS"));
         assert!(with_wp.stdout.contains("yes"));
+        assert!(
+            with_wp.stdout.contains("direct"),
+            "uses_front_controller=false renders as direct"
+        );
 
         let err = render(
             &Response::Error {

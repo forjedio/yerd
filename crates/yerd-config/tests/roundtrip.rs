@@ -30,11 +30,13 @@ document_root = "docroot"
 php = "8.3"
 secure = true
 kind = "linked"
+front_controller = false
 
 [[overrides]]
 path = "docroot-a/blog"
 php = "8.4"
 secure = true
+front_controller = true
 
 [services]
 enabled = ["mysql", "redis"]
@@ -58,6 +60,7 @@ fn populated_expected() -> Config {
     c.parked.paths.insert("docroot-b".to_string());
     let mut site = Site::linked("api", "docroot", PhpVersion::new(8, 3)).unwrap();
     site.set_secure(true);
+    site.set_front_controller(Some(false));
     c.linked.push(site);
     c.overrides.insert(
         "docroot-a/blog".to_string(),
@@ -67,6 +70,7 @@ fn populated_expected() -> Config {
             web_root: None,
             wp_auto_login: None,
             wp_auto_login_user: None,
+            front_controller: Some(true),
         },
     );
     c.services

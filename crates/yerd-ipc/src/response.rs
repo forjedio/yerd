@@ -365,6 +365,13 @@ pub struct SiteEntry {
     /// at the site's served root.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub is_wordpress: bool,
+    /// The effective front-controller mode for this site (the daemon resolves
+    /// the stored `Site::front_controller` override against the detected
+    /// default, which needs the runtime `is_wordpress` fact). Always emitted so
+    /// a client can render the toggle without re-deriving the default; defaults
+    /// to `false` (direct execution) if an older daemon omits it.
+    #[serde(default)]
+    pub uses_front_controller: bool,
 }
 
 /// One `WordPress` administrator account, for the auto-login user picker -

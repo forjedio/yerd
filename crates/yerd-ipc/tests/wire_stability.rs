@@ -377,6 +377,7 @@ fn plain(site: Site) -> yerd_ipc::SiteEntry {
     yerd_ipc::SiteEntry {
         site,
         is_wordpress: false,
+        uses_front_controller: false,
     }
 }
 
@@ -387,7 +388,7 @@ fn response_sites_one_byte_shape() {
         sites: vec![plain(foo)],
     };
     let s = serde_json::to_string(&r).unwrap();
-    let expected = r#"{"type":"sites","sites":[{"name":"foo","document_root":"/srv/foo","php":"8.3","secure":false,"kind":"parked"}]}"#;
+    let expected = r#"{"type":"sites","sites":[{"name":"foo","document_root":"/srv/foo","php":"8.3","secure":false,"kind":"parked","uses_front_controller":false}]}"#;
     assert_eq!(s, expected);
     let back: Response = serde_json::from_str(&s).unwrap();
     assert_eq!(back, r);
@@ -402,7 +403,7 @@ fn response_sites_two_byte_shape() {
         sites: vec![plain(alpha), plain(beta)],
     };
     let s = serde_json::to_string(&r).unwrap();
-    let expected = r#"{"type":"sites","sites":[{"name":"alpha","document_root":"/srv/alpha","php":"8.3","secure":false,"kind":"parked"},{"name":"beta","document_root":"/srv/beta","php":"7.4","secure":true,"kind":"linked"}]}"#;
+    let expected = r#"{"type":"sites","sites":[{"name":"alpha","document_root":"/srv/alpha","php":"8.3","secure":false,"kind":"parked","uses_front_controller":false},{"name":"beta","document_root":"/srv/beta","php":"7.4","secure":true,"kind":"linked","uses_front_controller":false}]}"#;
     assert_eq!(s, expected);
     let back: Response = serde_json::from_str(&s).unwrap();
     assert_eq!(back, r);
@@ -416,7 +417,7 @@ fn response_sites_with_web_subpath_byte_shape() {
         sites: vec![plain(app)],
     };
     let s = serde_json::to_string(&r).unwrap();
-    let expected = r#"{"type":"sites","sites":[{"name":"app","document_root":"/srv/app","web_subpath":"public","php":"8.3","secure":false,"kind":"linked"}]}"#;
+    let expected = r#"{"type":"sites","sites":[{"name":"app","document_root":"/srv/app","web_subpath":"public","php":"8.3","secure":false,"kind":"linked","uses_front_controller":false}]}"#;
     assert_eq!(s, expected);
     let back: Response = serde_json::from_str(&s).unwrap();
     assert_eq!(back, r);
@@ -429,10 +430,11 @@ fn response_sites_wordpress_byte_shape() {
         sites: vec![yerd_ipc::SiteEntry {
             site: blog,
             is_wordpress: true,
+            uses_front_controller: false,
         }],
     };
     let s = serde_json::to_string(&r).unwrap();
-    let expected = r#"{"type":"sites","sites":[{"name":"blog","document_root":"/srv/blog","php":"8.3","secure":false,"kind":"parked","is_wordpress":true}]}"#;
+    let expected = r#"{"type":"sites","sites":[{"name":"blog","document_root":"/srv/blog","php":"8.3","secure":false,"kind":"parked","is_wordpress":true,"uses_front_controller":false}]}"#;
     assert_eq!(s, expected);
     let back: Response = serde_json::from_str(&s).unwrap();
     assert_eq!(back, r);
@@ -447,10 +449,11 @@ fn response_sites_wp_auto_login_byte_shape() {
         sites: vec![yerd_ipc::SiteEntry {
             site: blog,
             is_wordpress: true,
+            uses_front_controller: false,
         }],
     };
     let s = serde_json::to_string(&r).unwrap();
-    let expected = r#"{"type":"sites","sites":[{"name":"blog","document_root":"/srv/blog","php":"8.3","secure":false,"kind":"parked","wp_auto_login":true,"wp_auto_login_user":"admin","is_wordpress":true}]}"#;
+    let expected = r#"{"type":"sites","sites":[{"name":"blog","document_root":"/srv/blog","php":"8.3","secure":false,"kind":"parked","wp_auto_login":true,"wp_auto_login_user":"admin","is_wordpress":true,"uses_front_controller":false}]}"#;
     assert_eq!(s, expected);
     let back: Response = serde_json::from_str(&s).unwrap();
     assert_eq!(back, r);
@@ -1024,6 +1027,20 @@ fn request_set_wordpress_auto_login_byte_shape() {
     assert_eq!(
         s,
         r#"{"type":"set_wordpress_auto_login","name":"blog","enabled":true,"user":"admin"}"#
+    );
+    assert_eq!(serde_json::from_str::<Request>(&s).unwrap(), r);
+}
+
+#[test]
+fn request_set_front_controller_byte_shape() {
+    let r = Request::SetFrontController {
+        name: "blog".into(),
+        enabled: true,
+    };
+    let s = serde_json::to_string(&r).unwrap();
+    assert_eq!(
+        s,
+        r#"{"type":"set_front_controller","name":"blog","enabled":true}"#
     );
     assert_eq!(serde_json::from_str::<Request>(&s).unwrap(), r);
 }

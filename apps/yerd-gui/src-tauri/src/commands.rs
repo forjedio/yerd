@@ -367,6 +367,11 @@ pub async fn set_wordpress_auto_login(
 }
 
 #[tauri::command]
+pub async fn set_front_controller(name: String, enabled: bool) -> Result<Response, GuiError> {
+    finish(exchange(&Request::SetFrontController { name, enabled }).await?)
+}
+
+#[tauri::command]
 pub async fn wordpress_admin_users(site: String) -> Result<Response, GuiError> {
     finish(exchange(&Request::WordpressAdminUsers { site }).await?)
 }

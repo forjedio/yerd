@@ -92,6 +92,7 @@ fn main() {
             commands::available_wordpress_versions,
             commands::mint_wordpress_login_token,
             commands::set_wordpress_auto_login,
+            commands::set_front_controller,
             commands::wordpress_admin_users,
             commands::install_service,
             commands::change_service_version,

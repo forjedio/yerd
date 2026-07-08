@@ -557,6 +557,12 @@ export async function setWordpressAutoLogin(
   ensureOk(await call<Response>("set_wordpress_auto_login", { name, enabled, user }));
 }
 
+/** Override a site's front-controller mode: `true` funnels every request through
+ *  the site-root `index.php`; `false` executes named `.php` files directly. */
+export async function setFrontController(name: string, enabled: boolean): Promise<void> {
+  ensureOk(await call<Response>("set_front_controller", { name, enabled }));
+}
+
 /** List a WordPress site's administrator accounts, for the auto-login user
  *  picker. Fetched on demand via `wp user list`. */
 export async function wordpressAdminUsers(site: string): Promise<WordPressAdminUser[]> {

@@ -37,6 +37,10 @@ export interface Site {
   wp_auto_login?: boolean;
   /** WordPress login/username to sign in as, or absent for "earliest admin". */
   wp_auto_login_user?: string;
+  /** Stored front-controller override: absent = auto (derive from detection),
+   *  otherwise the explicit user choice. Read `SiteEntry.uses_front_controller`
+   *  for the effective value to display. */
+  front_controller?: boolean;
 }
 
 /**
@@ -47,6 +51,10 @@ export interface Site {
  */
 export interface SiteEntry extends Site {
   is_wordpress?: boolean;
+  /** Effective front-controller mode the daemon resolved (stored override or
+   *  detected default). `true` funnels through `index.php`; `false` executes
+   *  named `.php` directly. Always present; absent only from an older daemon. */
+  uses_front_controller?: boolean;
 }
 
 /** crates/yerd-ipc/src/response.rs - WordPressAdminUser, for the auto-login

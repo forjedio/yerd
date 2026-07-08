@@ -56,6 +56,7 @@ pub struct Site {
     kind: SiteKind,
     wp_auto_login: bool,
     wp_auto_login_user: Option<String>,
+    front_controller: Option<bool>,
 }
 
 impl Site {
@@ -76,6 +77,7 @@ impl Site {
             kind: SiteKind::Parked,
             wp_auto_login: false,
             wp_auto_login_user: None,
+            front_controller: None,
         })
     }
 
@@ -96,6 +98,7 @@ impl Site {
             kind: SiteKind::Linked,
             wp_auto_login: false,
             wp_auto_login_user: None,
+            front_controller: None,
         })
     }
 
@@ -173,6 +176,28 @@ impl Site {
         self.wp_auto_login_user.as_deref()
     }
 
+    /// The stored front-controller override: `None` = auto (derive from
+    /// detection), `Some(true)` = force front-controller mode, `Some(false)` =
+    /// force direct script execution. See [`Self::uses_front_controller`].
+    #[must_use]
+    pub fn front_controller(&self) -> Option<bool> {
+        self.front_controller
+    }
+
+    /// Whether requests should funnel through a single front controller
+    /// (`index.php`) rather than executing the named `.php` directly.
+    ///
+    /// The stored override wins; absent it, the default is `!is_wordpress &&
+    /// !web_subpath.is_empty()`: a framework served from a subdirectory
+    /// (`public/`, `web/`, ...) is single-front-controller, while `WordPress`
+    /// (any layout) and plain root-served PHP execute scripts directly.
+    /// `is_wordpress` is a runtime fact the daemon injects, so this stays pure.
+    #[must_use]
+    pub fn uses_front_controller(&self, is_wordpress: bool) -> bool {
+        self.front_controller
+            .unwrap_or(!is_wordpress && !self.web_subpath.as_os_str().is_empty())
+    }
+
     /// Replaces the document root. Not validated - see type-level docs.
     pub fn set_document_root(&mut self, p: impl Into<PathBuf>) {
         self.document_root = p.into();
@@ -208,6 +233,12 @@ impl Site {
     /// back to the earliest-created administrator.
     pub fn set_wp_auto_login_user(&mut self, user: Option<String>) {
         self.wp_auto_login_user = user;
+    }
+
+    /// Sets the front-controller override (`None` = auto). See
+    /// [`Self::uses_front_controller`].
+    pub fn set_front_controller(&mut self, front_controller: Option<bool>) {
+        self.front_controller = front_controller;
     }
 }
 
@@ -310,10 +341,12 @@ impl serde::Serialize for Site {
         let emit_subpath = !self.web_subpath.as_os_str().is_empty();
         let emit_wp_auto_login = self.wp_auto_login;
         let emit_wp_auto_login_user = self.wp_auto_login_user.is_some();
+        let emit_front_controller = self.front_controller.is_some();
         let fields = 5
             + usize::from(emit_subpath)
             + usize::from(emit_wp_auto_login)
-            + usize::from(emit_wp_auto_login_user);
+            + usize::from(emit_wp_auto_login_user)
+            + usize::from(emit_front_controller);
         let mut s = ser.serialize_struct("Site", fields)?;
         s.serialize_field("name", &self.name)?;
         s.serialize_field("document_root", &self.document_root)?;
@@ -328,6 +361,9 @@ impl serde::Serialize for Site {
         }
         if emit_wp_auto_login_user {
             s.serialize_field("wp_auto_login_user", &self.wp_auto_login_user)?;
+        }
+        if emit_front_controller {
+            s.serialize_field("front_controller", &self.front_controller)?;
         }
         s.end()
     }
@@ -355,6 +391,8 @@ impl<'de> serde::Deserialize<'de> for Site {
             wp_auto_login: bool,
             #[serde(default)]
             wp_auto_login_user: Option<String>,
+            #[serde(default)]
+            front_controller: Option<bool>,
         }
         let w = Wire::deserialize(de)?;
         let name = validate_and_lowercase_name(&w.name).map_err(serde::de::Error::custom)?;
@@ -367,6 +405,7 @@ impl<'de> serde::Deserialize<'de> for Site {
             kind: w.kind,
             wp_auto_login: w.wp_auto_login,
             wp_auto_login_user: w.wp_auto_login_user,
+            front_controller: w.front_controller,
         })
     }
 }
@@ -562,6 +601,9 @@ mod tests {
         s.set_wp_auto_login_user(Some("admin".to_owned()));
         assert_eq!(s.wp_auto_login_user(), Some("admin"));
 
+        s.set_front_controller(Some(true));
+        assert_eq!(s.front_controller(), Some(true));
+
         assert_eq!(s.name(), "foo");
     }
 
@@ -570,6 +612,68 @@ mod tests {
         let s = Site::parked("foo", "/srv/foo", v83()).unwrap();
         assert!(!s.wp_auto_login());
         assert_eq!(s.wp_auto_login_user(), None);
+    }
+
+    #[test]
+    fn front_controller_defaults_to_auto() {
+        let s = Site::parked("foo", "/srv/foo", v83()).unwrap();
+        assert_eq!(s.front_controller(), None);
+    }
+
+    /// Columns: `(web_subpath, is_wordpress, stored_override, expected)`. Rows 1-4
+    /// exercise the auto default (a framework served from a subdir funnels; a
+    /// root-served site - plain or `WordPress`, any layout - runs directly); rows
+    /// 5-7 show an explicit override winning over the derived default.
+    #[test]
+    fn uses_front_controller_default_and_override() {
+        let cases: &[(&str, bool, Option<bool>, bool)] = &[
+            ("public", false, None, true),
+            ("", false, None, false),
+            ("", true, None, false),
+            ("web", true, None, false),
+            ("public", false, Some(false), false),
+            ("", false, Some(true), true),
+            ("", true, Some(true), true),
+        ];
+        for (subpath, is_wp, ov, expected) in cases {
+            let mut s = Site::linked("foo", "/srv/foo", v83()).unwrap();
+            s.set_web_subpath(*subpath);
+            s.set_front_controller(*ov);
+            assert_eq!(
+                s.uses_front_controller(*is_wp),
+                *expected,
+                "subpath={subpath:?} is_wp={is_wp} override={ov:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn serde_front_controller_roundtrip_and_omitted_when_auto() {
+        let mut s = Site::parked("foo", "/srv/foo", v83()).unwrap();
+        let auto = serde_json::to_value(&s).unwrap();
+        assert!(
+            auto.get("front_controller").is_none(),
+            "auto (None) must not be serialized"
+        );
+        assert_eq!(
+            serde_json::from_value::<Site>(auto)
+                .unwrap()
+                .front_controller(),
+            None
+        );
+
+        s.set_front_controller(Some(true));
+        let v = serde_json::to_value(&s).unwrap();
+        assert_eq!(v["front_controller"], true);
+        assert_eq!(serde_json::from_value::<Site>(v).unwrap(), s);
+
+        s.set_front_controller(Some(false));
+        let v = serde_json::to_value(&s).unwrap();
+        assert_eq!(
+            v["front_controller"], false,
+            "Some(false) must emit, not drop"
+        );
+        assert_eq!(serde_json::from_value::<Site>(v).unwrap(), s);
     }
 
     #[test]

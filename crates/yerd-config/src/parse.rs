@@ -264,6 +264,11 @@ struct SiteWire {
     wp_auto_login: bool,
     #[serde(default)]
     wp_auto_login_user: Option<String>,
+    // Optional per-site front-controller override; absent = auto. `default` is
+    // mandatory (Wire is `deny_unknown_fields`): an auto site omits the key, as
+    // does any pre-v12 config, so it must fill `None` rather than error.
+    #[serde(default)]
+    front_controller: Option<bool>,
 }
 
 /// One `[[overrides]]` table: a parked site's document-root `path` plus the
@@ -284,6 +289,8 @@ struct OverrideWire {
     wp_auto_login: Option<bool>,
     #[serde(default)]
     wp_auto_login_user: Option<String>,
+    #[serde(default)]
+    front_controller: Option<bool>,
 }
 
 fn default_tld_str() -> String {
@@ -360,6 +367,7 @@ impl TryFrom<Wire> for Config {
                     web_root: o.web_root,
                     wp_auto_login: o.wp_auto_login,
                     wp_auto_login_user: o.wp_auto_login_user,
+                    front_controller: o.front_controller,
                 },
             );
         }
@@ -436,6 +444,7 @@ fn convert_linked(wire: Vec<SiteWire>) -> Result<Vec<yerd_core::Site>, ConfigErr
         s.set_web_subpath(sw.web_subpath);
         s.set_wp_auto_login(sw.wp_auto_login);
         s.set_wp_auto_login_user(sw.wp_auto_login_user);
+        s.set_front_controller(sw.front_controller);
         linked.push(s);
     }
     Ok(linked)
@@ -792,7 +801,7 @@ mod tests {
         match Config::from_toml("version = 99\n") {
             Err(ConfigError::UnsupportedVersion {
                 found: 99,
-                current: 11,
+                current: 12,
             }) => {}
             other => panic!("expected UnsupportedVersion, got {other:?}"),
         }
@@ -912,6 +921,43 @@ mod tests {
         assert!(!c.symlink_protection);
         let back = Config::from_toml(&c.to_toml().unwrap()).unwrap();
         assert_eq!(back, c);
+    }
+
+    #[test]
+    fn front_controller_override_round_trips_both_values() {
+        for value in [Some(true), Some(false)] {
+            let mut c = Config::default();
+            c.overrides.insert(
+                "/srv/app".to_owned(),
+                crate::schema::SiteOverride {
+                    front_controller: value,
+                    ..Default::default()
+                },
+            );
+            let back = Config::from_toml(&c.to_toml().unwrap()).unwrap();
+            assert_eq!(back, c, "round-trip for {value:?}");
+            assert_eq!(
+                back.overrides
+                    .get("/srv/app")
+                    .and_then(|o| o.front_controller),
+                value
+            );
+        }
+    }
+
+    #[test]
+    fn v11_override_without_front_controller_migrates_to_none() {
+        let migrated = Config::from_toml(
+            "version = 11\n\n[[overrides]]\npath = \"/srv/blog\"\nsecure = true\n",
+        )
+        .unwrap();
+        assert_eq!(
+            migrated
+                .overrides
+                .get("/srv/blog")
+                .and_then(|o| o.front_controller),
+            None
+        );
     }
 
     #[test]

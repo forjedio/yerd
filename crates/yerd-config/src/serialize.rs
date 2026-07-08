@@ -178,6 +178,8 @@ struct OverrideSer<'a> {
     wp_auto_login: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     wp_auto_login_user: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    front_controller: Option<bool>,
 }
 
 #[allow(clippy::too_many_lines)]
@@ -230,6 +232,7 @@ pub(crate) fn to_toml(c: &Config) -> Result<String, ConfigError> {
                 web_root: ov.web_root.as_deref(),
                 wp_auto_login: ov.wp_auto_login,
                 wp_auto_login_user: ov.wp_auto_login_user.as_deref(),
+                front_controller: ov.front_controller,
             })
             .collect(),
         services: c
@@ -299,8 +302,8 @@ mod tests {
     fn default_to_toml_starts_with_version_line() {
         let s = to_toml(&Config::default()).unwrap();
         assert!(
-            s.starts_with("version = 11\n"),
-            "expected `version = 11` first line; got: {s}"
+            s.starts_with("version = 12\n"),
+            "expected `version = 12` first line; got: {s}"
         );
     }
 
