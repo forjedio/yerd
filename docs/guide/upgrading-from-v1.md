@@ -164,9 +164,12 @@ Commands you'll use most while migrating. For the rest, see `yerd --help` and th
 | Pin a site's PHP version | `yerd use <site> <version>` |
 | List / update PHP | `yerd list php` · `yerd update php [<version>]` |
 | HTTPS on / off | `yerd secure <site>` · `yerd unsecure <site>` |
+| Manage a site's domains | `yerd domain list\|add\|remove\|primary\|reset <site>` |
 | One-time privileged setup | `sudo yerd elevate [trust\|resolver\|ports]` |
 | Reverse setup | `sudo yerd unelevate [...]` |
 | Health & repair | `yerd status` · `yerd doctor` · `yerd doctor fix` |
+
+v2 lets a site answer multiple domains, subdomains, and wildcards through `yerd domain` (see the [domains reference](../reference/cli/domains)). Unlike some setups, subdomains are explicit: a site answers only its exact apex until you add more.
 
 ::: details Lineage
 Yerd v2 is a ground-up rewrite of our own v1 package ([`LumoSolutions/yerd`](https://github.com/LumoSolutions/yerd)). v1 is reference-only: no command-surface or config-format compatibility. The full project lives at [github.com/forjedio/yerd](https://github.com/forjedio/yerd).

@@ -237,7 +237,7 @@ testable in-memory.
 
 | Crate | Pure layer | I/O / OS edge |
 |---|---|---|
-| `yerd-core` | the whole crate (`host`, `router`, `site`, `php`, `tld`, `php_settings`, `detect`) | - (no I/O at all) |
+| `yerd-core` | the whole crate (`host`, `router`, `site`, `php`, `tld`, `domain`, `php_settings`, `detect`) | - (no I/O at all) |
 | `yerd-ipc` | default build: `frame`, `message`, `request`, `response` | `transport` module, gated behind the `transport` feature (the only part allowed `tokio`) |
 | `yerd-platform` | `pure` module (decision logic, parsing, port planning) | `os` module (`#[cfg(target_os)]` impls), `helper`, `trust_store`, `resolver`, `port_binder`, `port_redirect`, `metrics`, `detect` (project-signal gathering) |
 | `yerd-php` | `pure/` (`fpm_conf`, `supervisor`, `env_scrub`) | `io/` (`atomic_write`, `fastcgi_probe`), `traits.rs`, `real.rs` |

@@ -32,6 +32,11 @@ yerd domain primary blog corp.test
 yerd domain remove blog blog.test
 ```
 
+`domain list` marks each site's primary domain, and appends
+`[apex shadowed by <site>]` to a site whose apex label is claimed by another
+site - the same condition doctor reports as its `DomainShadowed` check. With
+`--json`, each site is `{name, primary, domains, apex_shadowed_by}`.
+
 ## How resolution works
 
 For an incoming host, yerd tries an **exact** domain match first, then a

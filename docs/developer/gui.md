@@ -49,9 +49,9 @@ apps/yerd-gui/
     │   ├── client.ts       typed wrappers around invoke() + IpcError
     │   └── client.test.ts  command-mapping + error-categorisation tests
     ├── composables/        useDaemon (singleton poller), usePoll, useToast
-    ├── components/         AppShell, SideNav, NavLink, TitleBar, StatusPill, ComingSoon, EnvironmentCard, ui/ (incl. AsyncState, EmptyState)
+    ├── components/         AppShell, SideNav, NavLink, TitleBar, StatusPill, ComingSoon, EnvironmentCard, ManageDomainsModal, ui/ (incl. AsyncState, EmptyState)
     ├── views/              OverviewView, GeneralView, PhpView, SitesView, ToolingView, ServicesView, LaravelDumpsView, DumpsWindowView, MailView, MailsViewerView, DoctorView, AboutView
-    └── lib/                utils (cn, humanisers), theme, desktop chrome
+    └── lib/                utils (cn, humanisers), theme, desktop chrome, domainValidation (client-side domain-shape checks)
 ```
 
 ## The Rust bridge (`src-tauri`)
@@ -401,7 +401,9 @@ drift; the file's header names `crates/yerd-ipc/src/{request,response,status}.rs
 and `crates/yerd-core/src/site.rs` as the source of truth, with
 `yerd-ipc`'s `tests/wire_stability.rs` guarding the Rust side. Wire conventions:
 enums are internally tagged on `type`, `snake_case`; `PhpVersion` is the bare
-string `"8.5"`; `Option<T>` is `T | null`.
+string `"8.5"`; `Option<T>` is `T | null`. It mirrors the additive `SiteEntry`
+domain fields (`primary_domain?`, `domains?`, `apex_shadowed_by?`) and the
+`DomainShadow` type carried in `StatusReport.shadows`.
 
 `Response` is the central discriminated union:
 
@@ -422,7 +424,9 @@ export type Response =
 ```
 
 `ipc/client.ts` wraps each Tauri command in a typed function and narrows the
-`Response` for callers. A low-level `call` normalises every rejection into an
+`Response` for callers - including the domain mutators
+`addDomain` / `removeDomain` / `setPrimaryDomain` / `resetDomains` that back
+`ManageDomainsModal.vue`. A low-level `call` normalises every rejection into an
 `IpcError`, and `ensureOk` defensively throws if a `type:"error"` ever slips
 through:
 

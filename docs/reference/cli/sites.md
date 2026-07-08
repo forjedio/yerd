@@ -29,7 +29,7 @@ cd ~/code/blog && yerd link
 yerd sites
 ```
 
-`yerd sites` prints a table with the columns `NAME`, `KIND` (`parked` or `linked`), `PHP`, `SECURE`, `SERVED`, and `DOCROOT`. `SERVED` is the web root relative to the document root (`/` means the project root itself is served). When there are no sites it prints `no sites`. A `DOMAIN` column appears only when at least one site has a customised primary domain or a shadowed apex; use [`yerd domain list`](./domains) to see the full per-site domain set (including subdomains and wildcards).
+`yerd sites` prints a table with the columns `NAME`, `KIND` (`parked` or `linked`), `PHP`, `SECURE`, `SERVED`, and `DOCROOT`. `SERVED` is the web root relative to the document root (`/` means the project root itself is served). When there are no sites it prints `no sites`. A `DOMAIN` column appears only when at least one site has a customised primary domain or a shadowed apex; each cell holds the site's primary FQDN, or `apex shadowed by <site>` when another site claims its apex, or `-`. Use [`yerd domain list`](./domains) to see the full per-site domain set (including subdomains and wildcards).
 
 ::: details How site names are validated
 `link`, `unlink`, `secure`, `unsecure`, and `root` validate the name client-side before connecting: a name must be a single valid DNS label. A bad name (e.g. `bad name` or `bad/name`) fails immediately with a usage error and exit code `2`, before any request reaches the daemon.
