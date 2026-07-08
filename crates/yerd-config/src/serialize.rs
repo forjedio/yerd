@@ -22,7 +22,7 @@ struct WireSer<'a> {
     // v6 scalar - also above the sub-tables. Always emitted (like `tld` /
     // `dns_port`) so the channel is visible/editable in the file.
     update_channel: &'a str,
-    // v11 scalar - must stay in the scalar region above the sub-tables. Always
+    // v12 scalar - must stay in the scalar region above the sub-tables. Always
     // emitted so the toggle is visible/editable in the file.
     symlink_protection: bool,
     ports: PortsSer<'a>,

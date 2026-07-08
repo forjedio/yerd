@@ -78,20 +78,20 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn direct_execution_follows_detection_and_wordpress_fact() {
-        // Framework in a subdir: front controller -> no direct execution.
+    async fn subdir_framework_funnels_but_root_served_executes_directly() {
         let r = resolver(HashMap::new());
         assert!(
             !r.allows_direct_script_execution(&site("app", "public", None))
                 .await
         );
-        // Plain root-served site: direct execution.
         assert!(
             r.allows_direct_script_execution(&site("plain", "", None))
                 .await
         );
+    }
 
-        // WordPress served from a subdir stays direct (is_wordpress wins).
+    #[tokio::test]
+    async fn wordpress_in_subdir_still_executes_directly() {
         let wp = resolver(HashMap::from([("blog".to_owned(), true)]));
         assert!(
             wp.allows_direct_script_execution(&site("blog", "web", None))
@@ -100,14 +100,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn explicit_override_wins() {
+    async fn explicit_override_beats_the_detected_default() {
         let r = resolver(HashMap::new());
-        // Force front-controller on an otherwise-direct plain site.
         assert!(
             !r.allows_direct_script_execution(&site("a", "", Some(true)))
                 .await
         );
-        // Force direct execution on an otherwise-funnelled framework site.
         assert!(
             r.allows_direct_script_execution(&site("b", "public", Some(false)))
                 .await

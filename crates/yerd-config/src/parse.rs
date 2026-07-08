@@ -33,8 +33,8 @@ struct Wire {
     // parses, defaulting to "stable".
     #[serde(default = "default_update_channel")]
     update_channel: String,
-    // v11: proxy symlink-escape protection. `default` is mandatory (Wire is
-    // `deny_unknown_fields`) so a v1..v10 file with no `symlink_protection` key
+    // v12: proxy symlink-escape protection. `default` is mandatory (Wire is
+    // `deny_unknown_fields`) so a v1..v11 file with no `symlink_protection` key
     // still parses, defaulting to on.
     #[serde(default = "default_symlink_protection")]
     symlink_protection: bool,

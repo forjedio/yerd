@@ -4035,6 +4035,10 @@ Subject: Captured\r\n\r\nhi\r\n";
         assert!(!state.symlink_protection.load(Relaxed), "live atomic off");
         let reloaded = yerd_config::Config::load(&state.config_path).unwrap();
         assert!(!reloaded.symlink_protection, "persisted config off");
+        assert!(
+            !build_status_report(&state).await.symlink_protection,
+            "status report off"
+        );
 
         assert_eq!(
             dispatch(Request::SetSymlinkProtection { enabled: true }, &state).await,
@@ -4046,6 +4050,10 @@ Subject: Captured\r\n\r\nhi\r\n";
         );
         let reloaded = yerd_config::Config::load(&state.config_path).unwrap();
         assert!(reloaded.symlink_protection, "persisted config back on");
+        assert!(
+            build_status_report(&state).await.symlink_protection,
+            "status report back on"
+        );
     }
 
     #[tokio::test]

@@ -29,7 +29,7 @@ Every field below maps one-to-one to a field in `schema.rs`. The on-disk shape a
 
 | Key         | TOML type            | Meaning                                                            | Default        |
 | ----------- | -------------------- | ----------------------------------------------------------------- | -------------- |
-| `version`   | integer              | On-disk schema version. **Mandatory.**                            | `11`           |
+| `version`   | integer              | On-disk schema version. **Mandatory.**                            | `13`           |
 | `tld`       | string               | TLD served by Yerd's resolver.                                    | `"test"`       |
 | `dns_port`  | integer (u16)        | Loopback port for the embedded `.test` DNS responder.             | `1053`         |
 | `symlink_protection` | boolean     | Refuse to serve assets/scripts reached via a symlink resolving outside a site's document root. | `true` |
