@@ -477,6 +477,11 @@ where
     /// require a clean `exit 0`. Init output goes to the service log so a
     /// failure is diagnosable via `yerd service logs`. `datadir` is the FINAL
     /// path, used only for error reporting.
+    ///
+    /// Guarded by an [`InitGroupReaper`]: if the owning task is dropped mid-init
+    /// (daemon shutdown), the init tool's whole process group is killed so a
+    /// grandchild it forked (e.g. `mariadb-install-db`'s bootstrap server) can't
+    /// leak - `kill_on_drop` alone only reaps the direct child.
     async fn run_init(
         &self,
         service: Service,
@@ -506,6 +511,7 @@ where
             }
             Service::Redis => return Ok(()),
         }
+        set_own_process_group(&mut cmd);
         if let Ok(f) = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
@@ -525,7 +531,16 @@ where
                 datadir: datadir.to_path_buf(),
                 detail: format!("spawn {}: {source}", init_bin.display()),
             })?;
-        let reason = child.wait().await.map_err(|source| ServiceError::Init {
+        // `child` is declared before `reaper`, so if this task is dropped while
+        // awaiting `wait()` the reaper runs first (reverse-declaration drop) and
+        // SIGKILLs the init group while the PID is still valid, then
+        // `kill_on_drop` reaps the direct child.
+        let mut reaper = InitGroupReaper::arm(child.id());
+        let waited = child.wait().await;
+        if waited.is_ok() {
+            reaper.disarm();
+        }
+        let reason = waited.map_err(|source| ServiceError::Init {
             service,
             datadir: datadir.to_path_buf(),
             detail: format!("wait for init: {source}"),
@@ -805,6 +820,47 @@ async fn wait_after_kill<Ch: ChildHandle>(
     }
 }
 
+/// Put `cmd` in its own process group at spawn time (Unix) so a signal it or any
+/// descendant raises can never reach the daemon, and so the supervisor's
+/// `killpg(pid, ..)` targets exactly this subtree. Both the long-running server
+/// ([`build_cmd`]) and the one-shot datadir init ([`ServiceManager::run_init`])
+/// route through here; the [`yerd_supervise::ChildHandle`] contract requires it.
+fn set_own_process_group(cmd: &mut StdCommand) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        cmd.process_group(0);
+    }
+    #[cfg(not(unix))]
+    let _ = cmd;
+}
+
+/// Drop guard that sends SIGKILL to the process group led by a spawned init tool
+/// unless [`disarm`](Self::disarm)ed. Armed with the child's PID after spawn and
+/// disarmed once `wait()` returns (the group is then gone, and the reaped PID
+/// could otherwise be reused); so it only fires when the task is dropped
+/// mid-init. Relies on the init command being spawned into its own group via
+/// [`set_own_process_group`], so its PID is the group id.
+struct InitGroupReaper(Option<u32>);
+
+impl InitGroupReaper {
+    fn arm(leader_pid: u32) -> Self {
+        Self(Some(leader_pid))
+    }
+
+    fn disarm(&mut self) {
+        self.0 = None;
+    }
+}
+
+impl Drop for InitGroupReaper {
+    fn drop(&mut self) {
+        if let Some(pid) = self.0 {
+            yerd_supervise::kill_process_group(pid);
+        }
+    }
+}
+
 /// Build the server command per engine, forcing foreground operation and (on
 /// Unix) its own process group so the supervisor's `killpg` reaps any children
 /// with it. Fallible because the Postgres arm opens the log file for stderr
@@ -847,11 +903,7 @@ fn build_cmd(
             cmd.stderr(std::process::Stdio::from(f));
         }
     }
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::CommandExt;
-        cmd.process_group(0);
-    }
+    set_own_process_group(&mut cmd);
     Ok(cmd)
 }
 
@@ -1067,6 +1119,57 @@ mod tests {
         assert_eq!(args.len(), 1);
         assert!(args[0].starts_with("--defaults-file="), "got: {args:?}");
         assert!(args[0].contains("my.cnf"));
+    }
+
+    /// The datadir-init tool and the long-running server both spawn through
+    /// [`set_own_process_group`], which must land the child in its **own**
+    /// process group. A regression here (an init tool left in the daemon's
+    /// group) lets a group-directed signal from a shell-script init tool like
+    /// `mariadb-install-db` reach and kill the daemon. `process_group` can't be
+    /// read back off `std::process::Command`, so this asserts the behaviour by
+    /// actually spawning: an isolated child leads its own group (`pid == pgid`),
+    /// an un-isolated one inherits the parent's group and is not the leader.
+    #[cfg(unix)]
+    #[test]
+    fn set_own_process_group_makes_child_its_own_group_leader() {
+        fn own_pid_and_group(isolate: bool) -> (i32, i32) {
+            let mut cmd = StdCommand::new("sh");
+            cmd.arg("-c")
+                .arg("printf '%s %s' \"$$\" \"$(ps -o pgid= -p $$)\"");
+            if isolate {
+                set_own_process_group(&mut cmd);
+            }
+            let out = cmd.output().expect("spawn sh");
+            let text = String::from_utf8_lossy(&out.stdout);
+            let mut fields = text.split_whitespace();
+            let child_pid = fields.next().unwrap().parse().unwrap();
+            let group = fields.next().unwrap().parse().unwrap();
+            (child_pid, group)
+        }
+
+        let (child_pid, group) = own_pid_and_group(true);
+        assert_eq!(
+            child_pid, group,
+            "isolated child must lead its own process group"
+        );
+
+        let (child_pid, group) = own_pid_and_group(false);
+        assert_ne!(
+            child_pid, group,
+            "un-isolated child inherits the daemon's group, so it is not the leader"
+        );
+    }
+
+    #[test]
+    fn init_group_reaper_disarm_clears_the_pid() {
+        let mut reaper = InitGroupReaper::arm(4242);
+        let armed = reaper.0;
+        reaper.disarm();
+        let disarmed = reaper.0;
+        // Assert only after disarming, so a failing assertion can't drop an armed
+        // reaper and fire a real `killpg`.
+        assert_eq!(armed, Some(4242));
+        assert_eq!(disarmed, None);
     }
 
     /// The Postgres arm opens the log file for stderr capture, creating it.

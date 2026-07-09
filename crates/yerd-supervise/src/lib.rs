@@ -27,7 +27,7 @@ pub mod traits;
 
 pub use error::{DownloadError, ExitReason, SpawnFailureReason};
 pub use listen::Listen;
-pub use real::{SystemClock, TokioChild, TokioProcessSpawner};
+pub use real::{kill_process_group, SystemClock, TokioChild, TokioProcessSpawner};
 pub use supervisor::{
     backoff_for, transition, Action, Elapsed, ErrorTag, Event, KillSignal, PoolState, StopProtocol,
     SupervisorPolicy,

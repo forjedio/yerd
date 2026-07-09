@@ -20,6 +20,27 @@ impl Clock for SystemClock {
     }
 }
 
+/// Best-effort SIGKILL to the entire process group led by `leader_pid`.
+///
+/// A spawned leader's `kill_on_drop(true)` only SIGKILLs the **direct** child,
+/// so any grandchild it forked (e.g. the bootstrap server a `mariadb-install-db`
+/// script launches) survives. When a task owning such a leader is dropped before
+/// it can `wait()` - a daemon shutting down mid-init - call this to reap the
+/// whole subtree. Requires the leader to have been spawned into its own process
+/// group (`process_group(0)`), so its PID doubles as the group id. No-op off
+/// Unix (Windows worker teardown is a Phase 2 job-object ticket, as for `kill`).
+#[cfg(unix)]
+pub fn kill_process_group(leader_pid: u32) {
+    use nix::sys::signal::{killpg, Signal};
+    use nix::unistd::Pid;
+    if let Ok(pid) = i32::try_from(leader_pid) {
+        let _ = killpg(Pid::from_raw(pid), Signal::SIGKILL);
+    }
+}
+
+#[cfg(not(unix))]
+pub fn kill_process_group(_leader_pid: u32) {}
+
 /// Spawns commands via `tokio::process::Command`, sets `kill_on_drop(true)` so
 /// unexpected crashes of the daemon take the child down with them.
 pub struct TokioProcessSpawner;
