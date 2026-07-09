@@ -481,7 +481,10 @@ where
     /// Guarded by an [`InitGroupReaper`]: if the owning task is dropped mid-init
     /// (daemon shutdown), the init tool's whole process group is killed so a
     /// grandchild it forked (e.g. `mariadb-install-db`'s bootstrap server) can't
-    /// leak - `kill_on_drop` alone only reaps the direct child.
+    /// leak - `kill_on_drop` alone only reaps the direct child. The reaper is
+    /// bound after `child`, so on a drop mid-`wait()` reverse-declaration order
+    /// runs the reaper's `killpg` while the PID is still valid, then
+    /// `kill_on_drop` reaps the direct child.
     async fn run_init(
         &self,
         service: Service,
@@ -531,10 +534,6 @@ where
                 datadir: datadir.to_path_buf(),
                 detail: format!("spawn {}: {source}", init_bin.display()),
             })?;
-        // `child` is declared before `reaper`, so if this task is dropped while
-        // awaiting `wait()` the reaper runs first (reverse-declaration drop) and
-        // SIGKILLs the init group while the PID is still valid, then
-        // `kill_on_drop` reaps the direct child.
         let mut reaper = InitGroupReaper::arm(child.id());
         let waited = child.wait().await;
         if waited.is_ok() {
@@ -1160,14 +1159,15 @@ mod tests {
         );
     }
 
+    /// `arm` stores the PID and `disarm` clears it. The values are captured
+    /// before asserting so a failing assertion can't drop a still-armed reaper
+    /// and fire a real `killpg`.
     #[test]
     fn init_group_reaper_disarm_clears_the_pid() {
         let mut reaper = InitGroupReaper::arm(4242);
         let armed = reaper.0;
         reaper.disarm();
         let disarmed = reaper.0;
-        // Assert only after disarming, so a failing assertion can't drop an armed
-        // reaper and fire a real `killpg`.
         assert_eq!(armed, Some(4242));
         assert_eq!(disarmed, None);
     }
