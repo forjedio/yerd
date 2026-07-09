@@ -126,6 +126,7 @@ pub(crate) fn fail(msg: String) -> ExitCode {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
 
@@ -136,5 +137,28 @@ mod tests {
             Some("8.4")
         );
         assert_eq!(minor_from_php_path(Path::new("/d/bin/php")), None);
+    }
+
+    #[test]
+    fn cli_phprc_prefers_per_version_then_base_then_none() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dirs = PlatformDirs {
+            config: tmp.path().join("c"),
+            data: tmp.path().join("d"),
+            state: tmp.path().join("s"),
+            cache: tmp.path().join("ca"),
+            runtime: tmp.path().join("r"),
+        };
+        std::fs::create_dir_all(&dirs.data).unwrap();
+
+        assert_eq!(cli_phprc(&dirs, "8.4"), None);
+
+        let base = dirs.data.join("php-cli.ini");
+        std::fs::write(&base, "; base\n").unwrap();
+        assert_eq!(cli_phprc(&dirs, "8.4"), Some(base.clone()));
+
+        let per_version = cli_ini_path(&dirs, "8.4");
+        std::fs::write(&per_version, "; per-version\n").unwrap();
+        assert_eq!(cli_phprc(&dirs, "8.4"), Some(per_version));
     }
 }

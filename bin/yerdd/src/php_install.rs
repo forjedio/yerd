@@ -500,6 +500,26 @@ pub fn cli_binary_path(dirs: &PlatformDirs, version: PhpVersion) -> PathBuf {
     p
 }
 
+/// The `PHPRC` target for a version's CLI: its per-version ini
+/// (`data/php-cli-<major>.<minor>.ini`) if present, else the base
+/// `data/php-cli.ini` if present, else `None` (leave `PHPRC` unset). Mirrors
+/// `bin/yerd/src/shim.rs::cli_phprc` - the two binaries can't share code across
+/// the boundary, so the filename shape here is kept byte-for-byte in step with
+/// what [`write_cli_ini`] emits. Pointing a wp-cli launch at this ini is what
+/// gets the user's global CLI settings (`memory_limit`, ...) applied; without
+/// it, wp-cli runs under PHP's compiled-in defaults.
+#[must_use]
+pub fn cli_phprc(dirs: &PlatformDirs, version: PhpVersion) -> Option<PathBuf> {
+    let per_version = dirs
+        .data
+        .join(format!("php-cli-{}.{}.ini", version.major, version.minor));
+    if per_version.is_file() {
+        return Some(per_version);
+    }
+    let base = dirs.data.join("php-cli.ini");
+    base.is_file().then_some(base)
+}
+
 /// The directory users add to PATH for the managed `php` shim (`data/bin`).
 #[must_use]
 pub fn shim_dir(dirs: &PlatformDirs) -> PathBuf {
@@ -954,6 +974,30 @@ mod tests {
             cli_binary_path(&dirs, PhpVersion::new(8, 5)),
             PathBuf::from("/d/php/php-8.5/bin/php")
         );
+    }
+
+    #[test]
+    fn cli_phprc_prefers_per_version_then_base_then_none() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dirs = PlatformDirs {
+            config: tmp.path().join("c"),
+            data: tmp.path().join("d"),
+            state: tmp.path().join("s"),
+            cache: tmp.path().join("ca"),
+            runtime: tmp.path().join("r"),
+        };
+        std::fs::create_dir_all(&dirs.data).unwrap();
+        let v = PhpVersion::new(8, 5);
+
+        assert_eq!(cli_phprc(&dirs, v), None);
+
+        let base = dirs.data.join("php-cli.ini");
+        std::fs::write(&base, "; base\n").unwrap();
+        assert_eq!(cli_phprc(&dirs, v), Some(base.clone()));
+
+        let per_version = dirs.data.join("php-cli-8.5.ini");
+        std::fs::write(&per_version, "; per-version\n").unwrap();
+        assert_eq!(cli_phprc(&dirs, v), Some(per_version));
     }
 
     #[cfg(unix)]
