@@ -18,14 +18,19 @@ import {
   IpcError,
   listMails,
   markMailsRead,
+  openInBrowser,
 } from "@/ipc/client";
+import { resolveFrameLink } from "@/lib/mailLinks";
 import type { MailDetail, MailSummary } from "@/ipc/types";
 
-// The rendered HTML email is sandboxed: no scripts, no same-origin. The child CSP
-// keeps `default-src 'none'` (so nothing executes), but allows images over
-// data:/http/https so emails render with their inline AND remote images (logos
-// etc.). Note: like any mail client, this means remote images can load when you
-// open a message.
+// The rendered HTML email runs no scripts: the sandbox withholds `allow-scripts`
+// and the child CSP keeps `default-src 'none'`, so nothing in a message executes.
+// `allow-same-origin` is granted only so the host can attach a click listener to
+// the frame and route link clicks to the OS browser (see `interceptFrameLinks`);
+// with scripts still disabled a message can't abuse that same-origin access. The
+// CSP allows images over data:/http/https so emails render their inline AND
+// remote images (logos etc.) - like any mail client, opening a message can load
+// remote images.
 const CHILD_CSP =
   "default-src 'none'; img-src data: http: https:; style-src 'unsafe-inline'";
 
@@ -184,6 +189,33 @@ function frameSrcdoc(html: string): string {
   return `<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="${CHILD_CSP}"></head><body>${html}</body></html>`;
 }
 
+// Frame documents that already have the link-click listener, so a repeated
+// `@load` for the same document can't stack listeners (which would open a link
+// twice). Keyed weakly so entries vanish with their document.
+const linkedDocs = new WeakSet<Document>();
+
+/**
+ * Route link clicks inside the email frame. On each `@load` we attach one click
+ * listener to the frame document; it classifies the click via `resolveFrameLink`
+ * and either hands an openable URL to the opener plugin, leaves a same-document
+ * `#` anchor to scroll, or blocks anything else so a relative/same-origin link
+ * can't navigate the sandboxed frame away from the email onto app content. A
+ * click that isn't on a link is left alone.
+ */
+function interceptFrameLinks(e: Event): void {
+  const doc = (e.target as HTMLIFrameElement).contentDocument;
+  if (!doc || linkedDocs.has(doc)) return;
+  linkedDocs.add(doc);
+  doc.addEventListener("click", (ev) => {
+    const action = resolveFrameLink(ev.target);
+    if (!action || action.kind === "scroll") return;
+    ev.preventDefault();
+    if (action.kind === "open") {
+      void openInBrowser(action.url).catch(() => toast.error("Couldn't open link"));
+    }
+  });
+}
+
 function formatDate(epoch: number): string {
   if (!epoch) return "-";
   return new Date(epoch * 1000).toLocaleString();
@@ -284,9 +316,10 @@ function formatDate(epoch: number): string {
           <iframe
             v-if="detail.html_body"
             :srcdoc="frameSrcdoc(detail.html_body)"
-            sandbox=""
+            sandbox="allow-same-origin"
             class="min-h-0 flex-1 bg-white"
             title="Email body"
+            @load="interceptFrameLinks"
           />
           <pre
             v-else
