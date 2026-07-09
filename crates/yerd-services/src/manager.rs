@@ -1172,6 +1172,56 @@ mod tests {
         assert_eq!(disarmed, None);
     }
 
+    /// End-to-end guard for the actual fix: `run_init` must spawn the datadir-init
+    /// tool into its **own** process group, or a group-directed signal from a
+    /// shell-script init tool (`mariadb-install-db`) reaches and kills the daemon.
+    /// Drives the real `run_init` with a fake init binary that reports its PID and
+    /// process-group id; `run_init` redirects the child's stdout to the log file,
+    /// so we read it back and assert the child leads its own group (`pid == pgid`).
+    /// Deleting the `set_own_process_group` call from `run_init` fails this.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn run_init_spawns_the_init_tool_in_its_own_process_group() {
+        use std::os::unix::fs::PermissionsExt;
+        use yerd_supervise::{SystemClock, TokioProcessSpawner};
+
+        let tmp = tempfile::tempdir().unwrap();
+        let init_bin = tmp.path().join("fake-init.sh");
+        std::fs::write(
+            &init_bin,
+            "#!/bin/sh\nprintf '%s %s' \"$$\" \"$(ps -o pgid= -p $$)\"\nexit 0\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&init_bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let log = tmp.path().join("init.log");
+        let mgr = ServiceManager::new(
+            TokioProcessSpawner,
+            SystemClock,
+            crate::health::ServiceProbes::new(),
+            dirs_in(tmp.path()),
+            ActivePortBinder::new(),
+        );
+        mgr.run_init(
+            Service::MySql,
+            &init_bin,
+            &tmp.path().join("staging"),
+            &tmp.path().join("datadir"),
+            &log,
+        )
+        .await
+        .expect("fake init exits 0");
+
+        let out = std::fs::read_to_string(&log).unwrap();
+        let mut fields = out.split_whitespace();
+        let child_pid: i32 = fields.next().unwrap().parse().unwrap();
+        let group: i32 = fields.next().unwrap().parse().unwrap();
+        assert_eq!(
+            child_pid, group,
+            "run_init must put the init tool in its own group; got pid {child_pid} pgid {group}"
+        );
+    }
+
     /// The Postgres arm opens the log file for stderr capture, creating it.
     #[test]
     fn build_cmd_postgres_opens_log_and_sets_datadir_args() {
