@@ -1,0 +1,99 @@
+import { describe, expect, it } from "vitest";
+
+import { resolveExternalHref, resolveFrameLink } from "./mailLinks";
+
+describe("resolveExternalHref", () => {
+  it("returns absolute http(s) URLs to open", () => {
+    expect(resolveExternalHref("http://example.com")).toBe("http://example.com/");
+    expect(resolveExternalHref("https://example.com/path?q=1#frag")).toBe(
+      "https://example.com/path?q=1#frag",
+    );
+  });
+
+  it("honours mailto and tel links", () => {
+    expect(resolveExternalHref("mailto:hi@example.com")).toBe("mailto:hi@example.com");
+    expect(resolveExternalHref("tel:+15551234567")).toBe("tel:+15551234567");
+  });
+
+  it("normalises scheme case and trims surrounding whitespace", () => {
+    expect(resolveExternalHref("  HTTPS://Example.com  ")).toBe("https://example.com/");
+  });
+
+  it("ignores relative, protocol-relative, and in-page anchor links", () => {
+    expect(resolveExternalHref("/dashboard")).toBeNull();
+    expect(resolveExternalHref("../up")).toBeNull();
+    expect(resolveExternalHref("//example.com")).toBeNull();
+    expect(resolveExternalHref("#section")).toBeNull();
+  });
+
+  it("ignores unsupported and dangerous schemes", () => {
+    expect(resolveExternalHref("javascript:alert(1)")).toBeNull();
+    expect(resolveExternalHref("data:text/html,<h1>hi</h1>")).toBeNull();
+    expect(resolveExternalHref("file:///etc/passwd")).toBeNull();
+  });
+
+  it("ignores empty, whitespace, and nullish input", () => {
+    expect(resolveExternalHref("")).toBeNull();
+    expect(resolveExternalHref("   ")).toBeNull();
+    expect(resolveExternalHref(null)).toBeNull();
+    expect(resolveExternalHref(undefined)).toBeNull();
+  });
+});
+
+describe("resolveFrameLink", () => {
+  // Build the anchor inside a real iframe's document, so `target` comes from a
+  // different realm than this module - exactly the production shape (clicks
+  // originate in the email frame). A same-realm `document.createElement` anchor
+  // would not exercise the cross-realm path where `instanceof Element` fails.
+  function frameDoc(): Document {
+    const iframe = document.createElement("iframe");
+    document.body.append(iframe);
+    const doc = iframe.contentDocument;
+    if (!doc) throw new Error("no iframe contentDocument");
+    return doc;
+  }
+
+  function anchorWith(href: string, child?: string): Element {
+    const doc = frameDoc();
+    const a = doc.createElement("a");
+    a.setAttribute("href", href);
+    if (child) a.innerHTML = child;
+    doc.body.append(a);
+    return a;
+  }
+
+  it("opens an external link when the click lands on the anchor itself", () => {
+    expect(resolveFrameLink(anchorWith("https://example.com"))).toEqual({
+      kind: "open",
+      url: "https://example.com/",
+    });
+  });
+
+  it("walks up from nested content (e.g. an image inside the link)", () => {
+    const a = anchorWith("https://example.com", "<img alt='logo'>");
+    expect(resolveFrameLink(a.querySelector("img"))).toEqual({
+      kind: "open",
+      url: "https://example.com/",
+    });
+  });
+
+  it("lets same-document `#` anchors scroll", () => {
+    expect(resolveFrameLink(anchorWith("#section"))).toEqual({ kind: "scroll" });
+    expect(resolveFrameLink(anchorWith("#"))).toEqual({ kind: "scroll" });
+  });
+
+  it("blocks in-frame navigation for relative and same-origin links", () => {
+    expect(resolveFrameLink(anchorWith("/dashboard"))).toEqual({ kind: "block" });
+    expect(resolveFrameLink(anchorWith("../up"))).toEqual({ kind: "block" });
+    expect(resolveFrameLink(anchorWith(""))).toEqual({ kind: "block" });
+    expect(resolveFrameLink(anchorWith("javascript:alert(1)"))).toEqual({ kind: "block" });
+  });
+
+  it("returns null when the click isn't on a link", () => {
+    const doc = frameDoc();
+    const p = doc.createElement("p");
+    doc.body.append(p);
+    expect(resolveFrameLink(p)).toBeNull();
+    expect(resolveFrameLink(null)).toBeNull();
+  });
+});
