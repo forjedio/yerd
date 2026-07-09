@@ -3,7 +3,7 @@ resolver = "2"
 members  = ["crates/yerd-core", "crates/yerd-ipc", "crates/yerd-config", "crates/yerd-tls", "crates/yerd-platform", "crates/yerd-dns", "crates/yerd-supervise", "crates/yerd-php", "crates/yerd-services", "crates/yerd-tunnel", "crates/yerd-proxy", "crates/yerd-doctor", "crates/yerd-mail", "crates/yerd-update", "crates/yerd-service-ctl", "crates/yerd-depcheck", "bin/yerd-helper", "bin/yerdd", "bin/yerd", "apps/yerd-gui/src-tauri", "xtask"]
 
 [workspace.package]
-version      = "2.0.2"
+version      = "2.0.3-rc.1"
 edition      = "2021"
 rust-version = "1.77"
 license      = "MIT"
