@@ -20,6 +20,44 @@ impl Clock for SystemClock {
     }
 }
 
+/// Best-effort SIGKILL to the entire process group led by `leader_pid`.
+///
+/// A spawned leader's `kill_on_drop(true)` only SIGKILLs the **direct** child,
+/// so any grandchild it forked (e.g. the bootstrap server a `mariadb-install-db`
+/// script launches) survives. When a task owning such a leader is dropped before
+/// it can `wait()` - a daemon shutting down mid-init - call this to reap the
+/// whole subtree. Requires the leader to have been spawned into its own process
+/// group (`process_group(0)`), so its PID doubles as the group id. No-op off
+/// Unix (Windows worker teardown is a Phase 2 job-object ticket, as for `kill`).
+///
+/// A `leader_pid` of 0 is ignored: `killpg(0, ..)` targets the *caller's* own
+/// process group, so it would signal the daemon itself. A real spawned child PID
+/// is never 0; this only guards a future or mistaken caller.
+#[cfg(unix)]
+pub fn kill_process_group(leader_pid: u32) {
+    use nix::sys::signal::{killpg, Signal};
+    use nix::unistd::Pid;
+    if let Some(pid) = group_signal_target(leader_pid) {
+        let _ = killpg(Pid::from_raw(pid), Signal::SIGKILL);
+    }
+}
+
+/// The `i32` PID to hand `killpg`, or `None` when the group must not be signalled:
+/// a `leader_pid` of 0 (`killpg(0, ..)` hits the caller's own group) or one that
+/// overflows `i32`. Pure, so the 0-guard is tested without issuing a real signal.
+#[cfg(unix)]
+fn group_signal_target(leader_pid: u32) -> Option<i32> {
+    if leader_pid == 0 {
+        return None;
+    }
+    i32::try_from(leader_pid).ok()
+}
+
+/// Non-Unix stub: process-group reaping is a Phase 2 job-object ticket, so this
+/// is a no-op (see the Unix impl for the semantics).
+#[cfg(not(unix))]
+pub fn kill_process_group(_leader_pid: u32) {}
+
 /// Spawns commands via `tokio::process::Command`, sets `kill_on_drop(true)` so
 /// unexpected crashes of the daemon take the child down with them.
 pub struct TokioProcessSpawner;
@@ -79,5 +117,21 @@ impl ChildHandle for TokioChild {
             let _ = (signal, protocol);
             self.inner.kill().await
         }
+    }
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::group_signal_target;
+
+    #[test]
+    fn group_signal_target_rejects_zero_and_overflow() {
+        assert_eq!(group_signal_target(0), None);
+        assert_eq!(group_signal_target(1234), Some(1234));
+        assert_eq!(
+            group_signal_target(u32::MAX),
+            None,
+            "a PID that overflows i32 must not be signalled"
+        );
     }
 }
