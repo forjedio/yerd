@@ -53,6 +53,8 @@ fn group_signal_target(leader_pid: u32) -> Option<i32> {
     i32::try_from(leader_pid).ok()
 }
 
+/// Non-Unix stub: process-group reaping is a Phase 2 job-object ticket, so this
+/// is a no-op (see the Unix impl for the semantics).
 #[cfg(not(unix))]
 pub fn kill_process_group(_leader_pid: u32) {}
 
