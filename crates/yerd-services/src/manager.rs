@@ -438,7 +438,14 @@ where
         })?;
 
         if let Err(e) = self
-            .run_init(service, &init_bin, &install_dir, &staging, datadir, log_path)
+            .run_init(
+                service,
+                &init_bin,
+                &install_dir,
+                &staging,
+                datadir,
+                log_path,
+            )
             .await
         {
             let _ = std::fs::remove_dir_all(&staging);
