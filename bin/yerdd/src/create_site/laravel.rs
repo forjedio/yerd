@@ -114,6 +114,7 @@ pub(super) async fn run(
         &spec.parent_dir,
         Some(&path_env),
         Some(&composer_home),
+        None,
         false,
         None,
         state,

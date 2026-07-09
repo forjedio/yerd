@@ -240,6 +240,7 @@ async fn run_streamed(
     cwd: &Path,
     path_env: Option<&std::ffi::OsString>,
     composer_home: Option<&Path>,
+    phprc: Option<&Path>,
     quiet_wp_cli_deprecations: bool,
     stdin_data: Option<&str>,
     state: &Arc<DaemonState>,
@@ -265,6 +266,9 @@ async fn run_streamed(
     if let Some(home) = composer_home {
         cmd.env("COMPOSER_HOME", home)
             .env("COMPOSER_NO_INTERACTION", "1");
+    }
+    if let Some(phprc) = phprc {
+        cmd.env("PHPRC", phprc);
     }
     if quiet_wp_cli_deprecations {
         if let Ok(dir) = crate::tools::wp_cli::ensure_quiet_deprecations_scan_dir(&state.dirs) {

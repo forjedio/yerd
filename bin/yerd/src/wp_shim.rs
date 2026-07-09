@@ -27,7 +27,7 @@ use yerd_core::PhpVersion;
 use yerd_ipc::{Request, Response};
 use yerd_platform::{ActivePaths, Paths, PlatformDirs};
 
-use crate::shim::{cli_binary, fail, resolve_default_php};
+use crate::shim::{cli_binary, cli_phprc, fail, resolve_default_php};
 use crate::transport;
 
 /// How long to wait for the daemon to answer `ListSites` before giving up and
@@ -52,16 +52,22 @@ const QUIET_DEPRECATIONS: [&str; 2] = ["-d", "error_reporting=E_ALL & ~E_DEPRECA
 /// tiny drop-in ini applying the same suppression, in a directory added to
 /// `PHP_INI_SCAN_DIR` (see [`quiet_deprecations_scan_dir_env`]) - unlike a CLI
 /// flag, an env var is inherited by any child process, so it still applies
-/// after a `launch_self()` re-exec. Idempotent (safe to call on every
-/// invocation). Kept in sync with the identical function in
-/// `bin/yerdd/src/tools/wp_cli.rs` - see [`QUIET_DEPRECATIONS`]'s doc comment
+/// after a `launch_self()` re-exec.
+///
+/// It also pins `display_errors = stderr`: this shim now sets `PHPRC` to the
+/// generated CLI ini (so `memory_limit` etc. apply), and that ini carries the
+/// user's `display_errors`, defaulting to `On` - which would route PHP warnings
+/// to *stdout* and corrupt `wp ... --format=json` output. Scanned after the
+/// main ini, this drop-in wins and forces errors back to stderr. Idempotent
+/// (safe to call on every invocation). Kept in sync with the identical function
+/// in `bin/yerdd/src/tools/wp_cli.rs` - see [`QUIET_DEPRECATIONS`]'s doc comment
 /// for why this is duplicated rather than shared.
 fn ensure_quiet_deprecations_scan_dir(dirs: &PlatformDirs) -> std::io::Result<PathBuf> {
     let dir = dirs.data.join("wp-cli-quiet.d");
     std::fs::create_dir_all(&dir)?;
     std::fs::write(
         dir.join("quiet-deprecations.ini"),
-        "error_reporting = E_ALL & ~E_DEPRECATED\n",
+        "error_reporting = E_ALL & ~E_DEPRECATED\ndisplay_errors = stderr\n",
     )?;
     Ok(dir)
 }
@@ -100,8 +106,8 @@ fn run() -> ExitCode {
         Some(cwd) => site_scope(&dirs, cwd),
         None => ScopeResolution::NoScope,
     };
-    let (php_bin, scope) = match resolution {
-        ScopeResolution::Scoped(s) => (s.php_bin.clone(), Some(s)),
+    let (php_bin, minor, scope) = match resolution {
+        ScopeResolution::Scoped(s) => (s.php_bin.clone(), s.php_minor.clone(), Some(s)),
         ScopeResolution::MatchedPhpMissing { php_version } => {
             return fail(format!(
                 "this site is pinned to PHP {php_version}, which is not installed — run \
@@ -109,7 +115,7 @@ fn run() -> ExitCode {
             ));
         }
         ScopeResolution::NoScope => match resolve_default_php(&dirs) {
-            Some((php, _minor)) => (php, None),
+            Some((php, minor)) => (php, minor, None),
             None => return fail("no PHP installed — run `yerd install php <version>`".to_owned()),
         },
     };
@@ -141,6 +147,9 @@ fn run() -> ExitCode {
         .current_dir(boot_dir);
     if let Ok(dir) = ensure_quiet_deprecations_scan_dir(&dirs) {
         cmd.env("PHP_INI_SCAN_DIR", quiet_deprecations_scan_dir_env(&dir));
+    }
+    if let Some(phprc) = cli_phprc(&dirs, &minor) {
+        cmd.env("PHPRC", phprc);
     }
     if let Some(s) = &scope {
         cmd.arg(format!("--path={}", s.served_root.display()));
@@ -184,6 +193,10 @@ fn split_boot_fs(boot_fs: &Path) -> Option<(&Path, &std::ffi::OsStr)> {
 pub struct SiteScope {
     /// The PHP CLI binary pinned to the matched site.
     pub php_bin: PathBuf,
+    /// The matched site's pinned PHP version as `"major.minor"` - the
+    /// [`cli_phprc`] key for pointing `PHPRC` at that version's generated CLI
+    /// ini.
+    pub php_minor: String,
     /// The matched site's (canonicalized) served root - `document_root`
     /// joined with `web_subpath` - i.e. where `WordPress` actually lives, not
     /// necessarily the site's project root. Passed to `wp` as `--path=`.
@@ -233,10 +246,12 @@ pub fn site_scope(dirs: &PlatformDirs, cwd: &Path) -> ScopeResolution {
     let Some((root, php_version)) = match_site(cwd, &candidates) else {
         return ScopeResolution::NoScope;
     };
-    let php_bin = cli_binary(dirs, &php_version.to_string());
+    let minor = php_version.to_string();
+    let php_bin = cli_binary(dirs, &minor);
     if php_bin.is_file() {
         ScopeResolution::Scoped(SiteScope {
             php_bin,
+            php_minor: minor,
             served_root: root,
         })
     } else {
@@ -307,6 +322,7 @@ mod tests {
         let ini = std::fs::read_to_string(dir.join("quiet-deprecations.ini")).unwrap();
         assert!(ini.contains("error_reporting"));
         assert!(ini.contains("~E_DEPRECATED"));
+        assert!(ini.contains("display_errors = stderr"));
         assert!(ensure_quiet_deprecations_scan_dir(&dirs).is_ok());
     }
 

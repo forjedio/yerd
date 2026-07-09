@@ -40,6 +40,7 @@ pub(super) async fn run(
             spec.php.major, spec.php.minor
         ));
     }
+    let phprc = crate::php_install::cli_phprc(dirs, spec.php);
     if let Err(e) = validate_admin_credentials(options) {
         return Outcome::Failed(format!("invalid WordPress admin account: {e}"));
     }
@@ -101,6 +102,7 @@ pub(super) async fn run(
         &boot_fs,
         &download_args,
         &project_dir,
+        phprc.as_deref(),
         None,
         state,
         &mut cancel_rx,
@@ -130,6 +132,7 @@ pub(super) async fn run(
         &boot_fs,
         &config_args,
         &project_dir,
+        phprc.as_deref(),
         None,
         state,
         &mut cancel_rx,
@@ -160,6 +163,7 @@ pub(super) async fn run(
         &boot_fs,
         &install_args,
         &project_dir,
+        phprc.as_deref(),
         Some(options.admin_password.as_str()),
         state,
         &mut cancel_rx,
@@ -177,7 +181,16 @@ pub(super) async fn run(
         }
     }
 
-    if apply_permalink_structure(id, &php_cli, &boot_fs, &project_dir, state, &mut cancel_rx).await
+    if apply_permalink_structure(
+        id,
+        &php_cli,
+        &boot_fs,
+        &project_dir,
+        phprc.as_deref(),
+        state,
+        &mut cancel_rx,
+    )
+    .await
         == PermalinkOutcome::Cancelled
     {
         rollback(&project_dir, db_created, service, &db_name, state).await;
@@ -238,6 +251,7 @@ async fn apply_permalink_structure(
     php_cli: &Path,
     boot_fs: &Path,
     project_dir: &Path,
+    phprc: Option<&Path>,
     state: &Arc<DaemonState>,
     cancel_rx: &mut watch::Receiver<bool>,
 ) -> PermalinkOutcome {
@@ -252,6 +266,7 @@ async fn apply_permalink_structure(
         boot_fs,
         &permalink_args,
         project_dir,
+        phprc,
         None,
         state,
         cancel_rx,
@@ -315,6 +330,7 @@ async fn run_wp_step(
     boot_fs: &Path,
     args: &[String],
     project_dir: &Path,
+    phprc: Option<&Path>,
     stdin_data: Option<&str>,
     state: &Arc<DaemonState>,
     cancel_rx: &mut watch::Receiver<bool>,
@@ -329,8 +345,8 @@ async fn run_wp_step(
         .map(|s| (*s).to_owned())
         .collect();
     super::run_streamed(
-        id, php_cli, &php_flags, &boot_name, &full_args, &boot_dir, None, None, true, stdin_data,
-        state, cancel_rx,
+        id, php_cli, &php_flags, &boot_name, &full_args, &boot_dir, None, None, phprc, true,
+        stdin_data, state, cancel_rx,
     )
     .await
 }

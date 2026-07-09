@@ -7,6 +7,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
+use yerd_core::PhpVersion;
 use yerd_ipc::{ErrorCode, Response, WordPressAdminUser};
 
 use crate::state::DaemonState;
@@ -59,7 +60,7 @@ pub async fn admin_users(site: &str, state: &DaemonState) -> Response {
         };
     }
 
-    match run_user_list(&php_cli, &boot_fs, &served_root, &state.dirs).await {
+    match run_user_list(&php_cli, php, &boot_fs, &served_root, &state.dirs).await {
         Ok(users) => Response::WordpressAdminUsers { users },
         Err(e) => Response::Error {
             code: ErrorCode::Internal,
@@ -99,6 +100,7 @@ struct WpCliUser {
 
 async fn run_user_list(
     php_cli: &Path,
+    php: PhpVersion,
     boot_fs: &Path,
     served_root: &Path,
     dirs: &yerd_platform::PlatformDirs,
@@ -108,12 +110,16 @@ async fn run_user_list(
     };
     let mut cmd = tokio::process::Command::new(php_cli);
     cmd.args(crate::tools::wp_cli::QUIET_DEPRECATIONS)
+        .args(["-d", "display_errors=stderr"])
         .arg(&boot_name)
         .args(&args)
         .current_dir(&boot_dir)
         .env("NO_COLOR", "1")
         .stdin(Stdio::null())
         .kill_on_drop(true);
+    if let Some(phprc) = crate::php_install::cli_phprc(dirs, php) {
+        cmd.env("PHPRC", phprc);
+    }
     if let Ok(dir) = crate::tools::wp_cli::ensure_quiet_deprecations_scan_dir(dirs) {
         cmd.env(
             "PHP_INI_SCAN_DIR",

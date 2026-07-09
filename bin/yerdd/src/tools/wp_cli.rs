@@ -49,14 +49,23 @@ pub(crate) const QUIET_DEPRECATIONS: [&str; 2] = ["-d", "error_reporting=E_ALL &
 /// tiny drop-in ini applying the same suppression, in a directory meant to be
 /// added to `PHP_INI_SCAN_DIR` (see [`quiet_deprecations_scan_dir_env`]) -
 /// unlike a CLI flag, an env var is inherited by any child process, so it
-/// still applies after a `launch_self()` re-exec. Idempotent (safe to call on
+/// still applies after a `launch_self()` re-exec.
+///
+/// It also pins `display_errors = stderr`. Every wp-cli launch now sets `PHPRC`
+/// to the generated CLI ini (so `memory_limit` and friends apply), and that ini
+/// carries the user's `display_errors` setting, defaulting to `On` - which on
+/// the CLI SAPI would route PHP warnings to *stdout* and corrupt machine-read
+/// output (`wp ... --format=json`, and this crate's own `wp user list` JSON
+/// parse). Scanned after the main ini, this drop-in wins, forcing errors back
+/// to stderr where wp-cli expects them; the plain `php` shim never adds this
+/// scan dir, so its `display_errors` is untouched. Idempotent (safe to call on
 /// every invocation).
 pub(crate) fn ensure_quiet_deprecations_scan_dir(dirs: &PlatformDirs) -> std::io::Result<PathBuf> {
     let dir = dirs.data.join("wp-cli-quiet.d");
     std::fs::create_dir_all(&dir)?;
     std::fs::write(
         dir.join("quiet-deprecations.ini"),
-        "error_reporting = E_ALL & ~E_DEPRECATED\n",
+        "error_reporting = E_ALL & ~E_DEPRECATED\ndisplay_errors = stderr\n",
     )?;
     Ok(dir)
 }
@@ -211,6 +220,7 @@ mod tests {
         let ini = std::fs::read_to_string(dir.join("quiet-deprecations.ini")).unwrap();
         assert!(ini.contains("error_reporting"));
         assert!(ini.contains("~E_DEPRECATED"));
+        assert!(ini.contains("display_errors = stderr"));
 
         // Idempotent: calling it again doesn't fail on the already-existing dir/file.
         assert!(ensure_quiet_deprecations_scan_dir(&dirs).is_ok());

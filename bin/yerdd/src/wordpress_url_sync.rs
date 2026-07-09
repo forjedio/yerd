@@ -14,7 +14,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
-use yerd_core::Site;
+use yerd_core::{PhpVersion, Site};
 
 use crate::state::DaemonState;
 
@@ -47,8 +47,16 @@ pub async fn sync_site_url(site: &Site, state: &DaemonState) {
     let url = target_url(&host, site.secure());
 
     for option in ["siteurl", "home"] {
-        if let Err(e) =
-            run_option_update(&php_cli, &boot_fs, &served_root, option, &url, &state.dirs).await
+        if let Err(e) = run_option_update(
+            &php_cli,
+            site.php(),
+            &boot_fs,
+            &served_root,
+            option,
+            &url,
+            &state.dirs,
+        )
+        .await
         {
             tracing::warn!(
                 site = %site.name(),
@@ -99,6 +107,7 @@ fn option_update_invocation(
 
 async fn run_option_update(
     php_cli: &Path,
+    php: PhpVersion,
     boot_fs: &Path,
     served_root: &Path,
     option: &str,
@@ -118,6 +127,9 @@ async fn run_option_update(
         .env("NO_COLOR", "1")
         .stdin(Stdio::null())
         .kill_on_drop(true);
+    if let Some(phprc) = crate::php_install::cli_phprc(dirs, php) {
+        cmd.env("PHPRC", phprc);
+    }
     if let Ok(dir) = crate::tools::wp_cli::ensure_quiet_deprecations_scan_dir(dirs) {
         cmd.env(
             "PHP_INI_SCAN_DIR",
