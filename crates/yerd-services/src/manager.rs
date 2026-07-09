@@ -484,6 +484,10 @@ where
     /// failure is diagnosable via `yerd service logs`. `datadir` is the FINAL
     /// path, used only for error reporting.
     ///
+    /// The tool runs with its cwd set to `basedir` (the install root) so
+    /// `mariadb-install-db`'s `--basedir=.` resolves its helper binaries there;
+    /// see [`init_args`] for why the basedir cannot be an absolute path.
+    ///
     /// Guarded by an [`InitGroupReaper`]: if the owning task is dropped mid-init
     /// (daemon shutdown), the init tool's whole process group is killed so a
     /// grandchild it forked (e.g. `mariadb-install-db`'s bootstrap server) can't
@@ -500,12 +504,13 @@ where
         datadir: &std::path::Path,
         log_path: &std::path::Path,
     ) -> Result<(), ServiceError> {
-        let args = init_args(service, basedir, staging);
+        let args = init_args(service, staging);
         if args.is_empty() {
             return Ok(());
         }
         let mut cmd = StdCommand::new(init_bin);
         cmd.args(&args);
+        cmd.current_dir(basedir);
         set_own_process_group(&mut cmd);
         if let Ok(f) = std::fs::OpenOptions::new()
             .create(true)
@@ -898,21 +903,21 @@ fn build_cmd(
     Ok(cmd)
 }
 
-/// Arguments for an engine's one-shot datadir init tool. `basedir` is the
-/// engine's install root and `staging` is the fresh datadir being populated.
+/// Arguments for an engine's one-shot datadir init tool. `staging` is the fresh
+/// datadir being populated.
 ///
 /// `mariadb-install-db` is a shell script that resolves its helper binaries
 /// (`bin/my_print_defaults`, ...) relative to `--basedir`, defaulting to the
-/// current working directory when the flag is absent. Since the daemon's cwd is
-/// arbitrary, the flag is mandatory - without it the tool dies with "FATAL
-/// ERROR: Could not find `./bin/my_print_defaults`". `mysqld` and `initdb` are
-/// self-locating C binaries and need no basedir. Returns an empty vec for an
-/// engine with no init step (`Redis`).
-fn init_args(
-    service: Service,
-    basedir: &std::path::Path,
-    staging: &std::path::Path,
-) -> Vec<std::ffi::OsString> {
+/// current working directory when the flag is absent. It must receive one, else
+/// the tool dies with "FATAL ERROR: Could not find `my_print_defaults`". The
+/// value is the literal `.`, not the absolute install path, because the script
+/// expands `$basedir/bin` UNQUOTED: an absolute basedir containing a space (on
+/// macOS the install root lives under `~/Library/Application Support/...`) would
+/// word-split and the lookup would still fail. `run_init` pairs this with the
+/// tool's cwd set to the install root, so `.` resolves there. `mysqld` and
+/// `initdb` are self-locating C binaries and need no basedir. Returns an empty
+/// vec for an engine with no init step (`Redis`).
+fn init_args(service: Service, staging: &std::path::Path) -> Vec<std::ffi::OsString> {
     use std::ffi::OsString;
     match service {
         Service::Redis => Vec::new(),
@@ -921,7 +926,7 @@ fn init_args(
             OsString::from(format!("--datadir={}", staging.display())),
         ],
         Service::MariaDb => vec![
-            OsString::from(format!("--basedir={}", basedir.display())),
+            OsString::from("--basedir=."),
             OsString::from(format!("--datadir={}", staging.display())),
             OsString::from("--auth-root-authentication-method=normal"),
         ],
@@ -1254,6 +1259,52 @@ mod tests {
         );
     }
 
+    /// `run_init` must run the init tool with its cwd set to the install root
+    /// (`basedir`), so `mariadb-install-db`'s `--basedir=.` resolves there even
+    /// when the absolute path contains a space. The fake init tool records its
+    /// working directory; we assert it matches `basedir`. Deleting the
+    /// `current_dir` call from `run_init` fails this.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn run_init_runs_the_init_tool_from_the_install_root() {
+        use std::os::unix::fs::PermissionsExt;
+        use yerd_supervise::{SystemClock, TokioProcessSpawner};
+
+        let tmp = tempfile::tempdir().unwrap();
+        let basedir = tmp.path().join("install root");
+        std::fs::create_dir_all(&basedir).unwrap();
+        let init_bin = tmp.path().join("fake-init.sh");
+        std::fs::write(&init_bin, "#!/bin/sh\npwd -P\nexit 0\n").unwrap();
+        std::fs::set_permissions(&init_bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let log = tmp.path().join("init.log");
+        let mgr = ServiceManager::new(
+            TokioProcessSpawner,
+            SystemClock,
+            crate::health::ServiceProbes::new(),
+            dirs_in(tmp.path()),
+            ActivePortBinder::new(),
+        );
+        mgr.run_init(
+            Service::MySql,
+            &init_bin,
+            &basedir,
+            &tmp.path().join("staging"),
+            &tmp.path().join("datadir"),
+            &log,
+        )
+        .await
+        .expect("fake init exits 0");
+
+        let reported = std::fs::read_to_string(&log).unwrap();
+        let want = std::fs::canonicalize(&basedir).unwrap();
+        assert_eq!(
+            reported.trim(),
+            want.to_string_lossy(),
+            "run_init must launch the init tool from the install root"
+        );
+    }
+
     /// The Postgres arm opens the log file for stderr capture, creating it.
     #[test]
     fn build_cmd_postgres_opens_log_and_sets_datadir_args() {
@@ -1295,17 +1346,19 @@ mod tests {
     }
 
     /// Regression for the `mariadb-install-db` "Could not find
-    /// `./bin/my_print_defaults`" failure: it must receive `--basedir` so it
-    /// can locate its helper binaries regardless of the daemon's cwd.
+    /// `my_print_defaults`" failure. The basedir is the literal `.` rather than
+    /// the absolute install path: the script expands `$basedir/bin` unquoted, so a
+    /// space in the path (macOS `Application Support`) would word-split and break
+    /// the helper lookup. `run_init` pairs this with a cwd set to the install
+    /// root, verified by [`run_init_runs_the_init_tool_from_the_install_root`].
     #[test]
-    fn init_args_mariadb_passes_basedir_pointing_at_the_install_root() {
-        let basedir = std::path::Path::new("/x/services/mariadb/11.4");
+    fn init_args_mariadb_basedir_is_dot_to_survive_spaces_in_the_install_path() {
         let staging = std::path::Path::new("/x/services/mariadb/.init-staging-1");
-        let args: Vec<_> = init_args(Service::MariaDb, basedir, staging)
+        let args: Vec<_> = init_args(Service::MariaDb, staging)
             .iter()
             .map(|a| a.to_string_lossy().into_owned())
             .collect();
-        assert_eq!(args[0], "--basedir=/x/services/mariadb/11.4");
+        assert_eq!(args[0], "--basedir=.");
         assert!(args.contains(&"--datadir=/x/services/mariadb/.init-staging-1".to_string()));
         assert!(args.contains(&"--auth-root-authentication-method=normal".to_string()));
     }
@@ -1313,9 +1366,8 @@ mod tests {
     /// `mysqld --initialize-insecure` is self-locating and takes no basedir.
     #[test]
     fn init_args_mysql_initializes_insecurely_without_basedir() {
-        let basedir = std::path::Path::new("/x/services/mysql/8.4");
         let staging = std::path::Path::new("/x/staging");
-        let args: Vec<_> = init_args(Service::MySql, basedir, staging)
+        let args: Vec<_> = init_args(Service::MySql, staging)
             .iter()
             .map(|a| a.to_string_lossy().into_owned())
             .collect();
@@ -1324,9 +1376,8 @@ mod tests {
 
     #[test]
     fn init_args_postgres_targets_the_staging_dir() {
-        let basedir = std::path::Path::new("/x/services/postgres/16");
         let staging = std::path::Path::new("/x/staging");
-        let args: Vec<_> = init_args(Service::Postgres, basedir, staging)
+        let args: Vec<_> = init_args(Service::Postgres, staging)
             .iter()
             .map(|a| a.to_string_lossy().into_owned())
             .collect();
@@ -1338,7 +1389,7 @@ mod tests {
     #[test]
     fn init_args_redis_is_empty() {
         let p = std::path::Path::new("/x");
-        assert!(init_args(Service::Redis, p, p).is_empty());
+        assert!(init_args(Service::Redis, p).is_empty());
     }
 
     /// The version path helpers compose the `install_dir/bin` layout that `init_datadir` relies on.
