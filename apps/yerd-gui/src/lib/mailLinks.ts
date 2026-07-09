@@ -27,19 +27,39 @@ export function resolveExternalHref(rawHref: string | null | undefined): string 
   return OPENABLE_SCHEMES.has(url.protocol) ? url.href : null;
 }
 
+/** What to do with a click on an `<a href>` inside the email frame: `open` it in
+ *  the OS browser, let a same-document `#` anchor `scroll`, or `block` an
+ *  in-frame navigation the preview must never perform (relative/same-origin
+ *  links would otherwise load app content over the email). */
+export type FrameLinkAction =
+  | { kind: "open"; url: string }
+  | { kind: "scroll" }
+  | { kind: "block" };
+
+/** True for an in-page fragment link (`#`, `#section`): activating it only
+ *  scrolls the current document, so the handler must let it proceed. */
+function isInPageFragment(rawHref: string | null): boolean {
+  return (rawHref?.trim() ?? "").startsWith("#");
+}
+
 /**
- * The external URL to open for a click that landed on `target` inside an email
- * body, or `null` when the click isn't on an openable link. Walks up to the
- * nearest `<a href>` so clicks on nested content (e.g. `<a><img></a>`) resolve,
- * then classifies its href via {@link resolveExternalHref}. Returning `null`
- * lets the caller leave the click alone, so same-document `#` anchors still
- * scroll instead of becoming inert.
+ * Classify a click that landed on `target` inside an email body. Returns `null`
+ * when the click isn't on a link (leave it alone); otherwise a
+ * {@link FrameLinkAction}: openable schemes go to the OS browser, same-document
+ * `#` anchors are left to scroll, and everything else (relative, same-origin,
+ * `javascript:`) is blocked so the sandboxed frame can't navigate itself away
+ * from the email. Walks up to the nearest `<a href>` so clicks on nested content
+ * (e.g. `<a><img></a>`) resolve.
  *
  * The target comes from the iframe's own realm, whose `Element` differs from
  * this module's, so `instanceof Element` would always be false. We duck-type on
  * `closest` instead (absent on `document`/`window` targets) to stay realm-safe.
  */
-export function openableHrefForTarget(target: EventTarget | null): string | null {
+export function resolveFrameLink(target: EventTarget | null): FrameLinkAction | null {
   const anchor = (target as Element | null)?.closest?.("a[href]");
-  return anchor ? resolveExternalHref(anchor.getAttribute("href")) : null;
+  if (!anchor) return null;
+  const href = anchor.getAttribute("href");
+  const url = resolveExternalHref(href);
+  if (url) return { kind: "open", url };
+  return isInPageFragment(href) ? { kind: "scroll" } : { kind: "block" };
 }

@@ -20,7 +20,7 @@ import {
   markMailsRead,
   openInBrowser,
 } from "@/ipc/client";
-import { openableHrefForTarget } from "@/lib/mailLinks";
+import { resolveFrameLink } from "@/lib/mailLinks";
 import type { MailDetail, MailSummary } from "@/ipc/types";
 
 // The rendered HTML email runs no scripts: the sandbox withholds `allow-scripts`
@@ -195,23 +195,24 @@ function frameSrcdoc(html: string): string {
 const linkedDocs = new WeakSet<Document>();
 
 /**
- * Route link clicks inside the email frame to the OS browser. The sandbox blocks
- * the frame from navigating itself, so without this an external link is inert
- * (the bug this fixes). On each `@load` we attach a click listener to the frame
- * document; for an openable link it cancels the (blocked) in-frame navigation
- * and hands the URL to the opener plugin. Non-openable clicks (relative, `#`,
- * `javascript:`) fall through untouched, so same-document `#` anchors still
- * scroll.
+ * Route link clicks inside the email frame. On each `@load` we attach one click
+ * listener to the frame document; it classifies the click via `resolveFrameLink`
+ * and either hands an openable URL to the opener plugin, leaves a same-document
+ * `#` anchor to scroll, or blocks anything else so a relative/same-origin link
+ * can't navigate the sandboxed frame away from the email onto app content. A
+ * click that isn't on a link is left alone.
  */
 function interceptFrameLinks(e: Event): void {
   const doc = (e.target as HTMLIFrameElement).contentDocument;
   if (!doc || linkedDocs.has(doc)) return;
   linkedDocs.add(doc);
   doc.addEventListener("click", (ev) => {
-    const url = openableHrefForTarget(ev.target);
-    if (!url) return;
+    const action = resolveFrameLink(ev.target);
+    if (!action || action.kind === "scroll") return;
     ev.preventDefault();
-    void openInBrowser(url).catch(() => toast.error("Couldn't open link"));
+    if (action.kind === "open") {
+      void openInBrowser(action.url).catch(() => toast.error("Couldn't open link"));
+    }
   });
 }
 

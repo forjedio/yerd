@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { openableHrefForTarget, resolveExternalHref } from "./mailLinks";
+import { resolveExternalHref, resolveFrameLink } from "./mailLinks";
 
 describe("resolveExternalHref", () => {
   it("returns absolute http(s) URLs to open", () => {
@@ -40,7 +40,7 @@ describe("resolveExternalHref", () => {
   });
 });
 
-describe("openableHrefForTarget", () => {
+describe("resolveFrameLink", () => {
   // Build the anchor inside a real iframe's document, so `target` comes from a
   // different realm than this module - exactly the production shape (clicks
   // originate in the email frame). A same-realm `document.createElement` anchor
@@ -62,27 +62,38 @@ describe("openableHrefForTarget", () => {
     return a;
   }
 
-  it("resolves the URL when the click lands on the anchor itself", () => {
-    const a = anchorWith("https://example.com");
-    expect(openableHrefForTarget(a)).toBe("https://example.com/");
+  it("opens an external link when the click lands on the anchor itself", () => {
+    expect(resolveFrameLink(anchorWith("https://example.com"))).toEqual({
+      kind: "open",
+      url: "https://example.com/",
+    });
   });
 
   it("walks up from nested content (e.g. an image inside the link)", () => {
     const a = anchorWith("https://example.com", "<img alt='logo'>");
-    const img = a.querySelector("img");
-    expect(openableHrefForTarget(img)).toBe("https://example.com/");
+    expect(resolveFrameLink(a.querySelector("img"))).toEqual({
+      kind: "open",
+      url: "https://example.com/",
+    });
   });
 
-  it("returns null for a non-openable anchor so the click is left alone", () => {
-    expect(openableHrefForTarget(anchorWith("#section"))).toBeNull();
-    expect(openableHrefForTarget(anchorWith("javascript:alert(1)"))).toBeNull();
+  it("lets same-document `#` anchors scroll", () => {
+    expect(resolveFrameLink(anchorWith("#section"))).toEqual({ kind: "scroll" });
+    expect(resolveFrameLink(anchorWith("#"))).toEqual({ kind: "scroll" });
+  });
+
+  it("blocks in-frame navigation for relative and same-origin links", () => {
+    expect(resolveFrameLink(anchorWith("/dashboard"))).toEqual({ kind: "block" });
+    expect(resolveFrameLink(anchorWith("../up"))).toEqual({ kind: "block" });
+    expect(resolveFrameLink(anchorWith(""))).toEqual({ kind: "block" });
+    expect(resolveFrameLink(anchorWith("javascript:alert(1)"))).toEqual({ kind: "block" });
   });
 
   it("returns null when the click isn't on a link", () => {
     const doc = frameDoc();
     const p = doc.createElement("p");
     doc.body.append(p);
-    expect(openableHrefForTarget(p)).toBeNull();
-    expect(openableHrefForTarget(null)).toBeNull();
+    expect(resolveFrameLink(p)).toBeNull();
+    expect(resolveFrameLink(null)).toBeNull();
   });
 });
