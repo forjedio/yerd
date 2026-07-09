@@ -53,7 +53,10 @@ pub fn interpret_probe(exit_ok: bool, diagnostics: &str) -> Result<(), ExtLoadEr
     if s.contains("valid zend extension") {
         return Err(ExtLoadError::NotZend);
     }
-    if s.contains("as it is a zend extension") || s.contains("is a zend extension and") {
+    if s.contains("as it is a zend extension")
+        || s.contains("is a zend extension and")
+        || s.contains("must be loaded as a zend extension")
+    {
         return Err(ExtLoadError::IsZend);
     }
     if s.contains("module api")
@@ -118,6 +121,17 @@ mod tests {
         );
         assert_eq!(
             interpret_probe(true, "Cannot load xdebug - it as it is a Zend extension"),
+            Err(ExtLoadError::IsZend)
+        );
+    }
+
+    #[test]
+    fn zend_extension_custom_guard_is_iszend() {
+        assert_eq!(
+            interpret_probe(
+                true,
+                "PHP Warning: Xdebug MUST be loaded as a Zend extension in Unknown on line 0"
+            ),
             Err(ExtLoadError::IsZend)
         );
     }
