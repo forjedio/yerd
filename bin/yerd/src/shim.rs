@@ -157,7 +157,7 @@ mod tests {
         std::fs::write(&base, "; base\n").unwrap();
         assert_eq!(cli_phprc(&dirs, "8.4"), Some(base.clone()));
 
-        let per_version = cli_ini_path(&dirs, "8.4");
+        let per_version = dirs.data.join("php-cli-8.4.ini");
         std::fs::write(&per_version, "; per-version\n").unwrap();
         assert_eq!(cli_phprc(&dirs, "8.4"), Some(per_version));
     }
