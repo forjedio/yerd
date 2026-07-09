@@ -418,9 +418,8 @@ where
         let Some(init_bin_name) = service.init_binary() else {
             return Ok(());
         };
-        let init_bin = version::install_dir(&self.dirs, service, version)
-            .join("bin")
-            .join(init_bin_name);
+        let install_dir = version::install_dir(&self.dirs, service, version);
+        let init_bin = install_dir.join("bin").join(init_bin_name);
         if !init_bin.is_file() {
             return Err(ServiceError::Init {
                 service,
@@ -439,7 +438,14 @@ where
         })?;
 
         if let Err(e) = self
-            .run_init(service, &init_bin, &staging, datadir, log_path)
+            .run_init(
+                service,
+                &init_bin,
+                &install_dir,
+                &staging,
+                datadir,
+                log_path,
+            )
             .await
         {
             let _ = std::fs::remove_dir_all(&staging);
@@ -489,31 +495,17 @@ where
         &self,
         service: Service,
         init_bin: &std::path::Path,
+        basedir: &std::path::Path,
         staging: &std::path::Path,
         datadir: &std::path::Path,
         log_path: &std::path::Path,
     ) -> Result<(), ServiceError> {
-        let mut cmd = StdCommand::new(init_bin);
-        match service {
-            Service::MySql => {
-                cmd.arg("--initialize-insecure")
-                    .arg(format!("--datadir={}", staging.display()));
-            }
-            Service::MariaDb => {
-                cmd.arg(format!("--datadir={}", staging.display()))
-                    .arg("--auth-root-authentication-method=normal");
-            }
-            Service::Postgres => {
-                cmd.arg("-D")
-                    .arg(staging)
-                    .arg("--auth=trust")
-                    .arg("-U")
-                    .arg("postgres")
-                    .arg("-E")
-                    .arg("UTF8");
-            }
-            Service::Redis => return Ok(()),
+        let args = init_args(service, basedir, staging);
+        if args.is_empty() {
+            return Ok(());
         }
+        let mut cmd = StdCommand::new(init_bin);
+        cmd.args(&args);
         set_own_process_group(&mut cmd);
         if let Ok(f) = std::fs::OpenOptions::new()
             .create(true)
@@ -906,6 +898,45 @@ fn build_cmd(
     Ok(cmd)
 }
 
+/// Arguments for an engine's one-shot datadir init tool. `basedir` is the
+/// engine's install root and `staging` is the fresh datadir being populated.
+///
+/// `mariadb-install-db` is a shell script that resolves its helper binaries
+/// (`bin/my_print_defaults`, ...) relative to `--basedir`, defaulting to the
+/// current working directory when the flag is absent. Since the daemon's cwd is
+/// arbitrary, the flag is mandatory - without it the tool dies with "FATAL
+/// ERROR: Could not find `./bin/my_print_defaults`". `mysqld` and `initdb` are
+/// self-locating C binaries and need no basedir. Returns an empty vec for an
+/// engine with no init step (`Redis`).
+fn init_args(
+    service: Service,
+    basedir: &std::path::Path,
+    staging: &std::path::Path,
+) -> Vec<std::ffi::OsString> {
+    use std::ffi::OsString;
+    match service {
+        Service::Redis => Vec::new(),
+        Service::MySql => vec![
+            OsString::from("--initialize-insecure"),
+            OsString::from(format!("--datadir={}", staging.display())),
+        ],
+        Service::MariaDb => vec![
+            OsString::from(format!("--basedir={}", basedir.display())),
+            OsString::from(format!("--datadir={}", staging.display())),
+            OsString::from("--auth-root-authentication-method=normal"),
+        ],
+        Service::Postgres => vec![
+            OsString::from("-D"),
+            staging.as_os_str().to_os_string(),
+            OsString::from("--auth=trust"),
+            OsString::from("-U"),
+            OsString::from("postgres"),
+            OsString::from("-E"),
+            OsString::from("UTF8"),
+        ],
+    }
+}
+
 /// Whether `datadir` already holds an initialised instance of `service`.
 fn is_initialized(datadir: &std::path::Path, service: Service) -> bool {
     match service {
@@ -1205,6 +1236,7 @@ mod tests {
         mgr.run_init(
             Service::MySql,
             &init_bin,
+            tmp.path(),
             &tmp.path().join("staging"),
             &tmp.path().join("datadir"),
             &log,
@@ -1260,6 +1292,53 @@ mod tests {
             ),
             "got: {err:?}"
         );
+    }
+
+    /// Regression for the `mariadb-install-db` "Could not find
+    /// `./bin/my_print_defaults`" failure: it must receive `--basedir` so it
+    /// can locate its helper binaries regardless of the daemon's cwd.
+    #[test]
+    fn init_args_mariadb_passes_basedir_pointing_at_the_install_root() {
+        let basedir = std::path::Path::new("/x/services/mariadb/11.4");
+        let staging = std::path::Path::new("/x/services/mariadb/.init-staging-1");
+        let args: Vec<_> = init_args(Service::MariaDb, basedir, staging)
+            .iter()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(args[0], "--basedir=/x/services/mariadb/11.4");
+        assert!(args.contains(&"--datadir=/x/services/mariadb/.init-staging-1".to_string()));
+        assert!(args.contains(&"--auth-root-authentication-method=normal".to_string()));
+    }
+
+    /// `mysqld --initialize-insecure` is self-locating and takes no basedir.
+    #[test]
+    fn init_args_mysql_initializes_insecurely_without_basedir() {
+        let basedir = std::path::Path::new("/x/services/mysql/8.4");
+        let staging = std::path::Path::new("/x/staging");
+        let args: Vec<_> = init_args(Service::MySql, basedir, staging)
+            .iter()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(args, vec!["--initialize-insecure", "--datadir=/x/staging"]);
+    }
+
+    #[test]
+    fn init_args_postgres_targets_the_staging_dir() {
+        let basedir = std::path::Path::new("/x/services/postgres/16");
+        let staging = std::path::Path::new("/x/staging");
+        let args: Vec<_> = init_args(Service::Postgres, basedir, staging)
+            .iter()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(args[0], "-D");
+        assert_eq!(args[1], "/x/staging");
+    }
+
+    /// Redis has no init step, so it yields no args (and `run_init` no-ops).
+    #[test]
+    fn init_args_redis_is_empty() {
+        let p = std::path::Path::new("/x");
+        assert!(init_args(Service::Redis, p, p).is_empty());
     }
 
     /// The version path helpers compose the `install_dir/bin` layout that `init_datadir` relies on.
