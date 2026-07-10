@@ -110,11 +110,12 @@ impl ServiceVersion {
         &self.0
     }
 
-    /// The numeric major component: the leading run before the first `.` or `-`,
-    /// used to pin datadirs for engines whose on-disk format is major-incompatible.
-    /// A variant suffix (`<version>-<variant>`, e.g. the `PostGIS` `full` build) is
-    /// ignored, so `"17-full"` / `"17.10-full"` share the numeric major `17` with
-    /// the base `"17"` / `"17.10"` builds - and thus the same datadir.
+    /// The major component: the leading run before the first `.` or `-`, used to
+    /// pin datadirs for engines whose on-disk format is major-incompatible. A
+    /// variant suffix (`<version>-<variant>`, e.g. the `PostGIS` `full` build) is
+    /// ignored, so `"17-full"` / `"17.10-full"` share the major `17` with the base
+    /// `"17"` / `"17.10"` builds - and thus the same datadir. Always non-empty: a
+    /// valid label starts with an ASCII alphanumeric (see [`Self::is_valid`]).
     #[must_use]
     pub fn major(&self) -> &str {
         self.0.split(['.', '-']).next().unwrap_or(&self.0)
@@ -127,10 +128,13 @@ impl ServiceVersion {
         self.0.contains('-')
     }
 
+    /// A label is a safe single path component and yields a non-empty [`major`]:
+    /// it must start with an ASCII alphanumeric (so no leading `.`/`-`/`_`, and no
+    /// `.`/`..`) and contain only ASCII alphanumerics plus `.`, `_`, `-`.
+    ///
+    /// [`major`]: Self::major
     fn is_valid(s: &str) -> bool {
-        !s.is_empty()
-            && s != "."
-            && s != ".."
+        s.chars().next().is_some_and(|c| c.is_ascii_alphanumeric())
             && s.chars()
                 .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
     }
@@ -323,6 +327,8 @@ mod tests {
         assert!(ServiceVersion::from_str("..").is_err());
         assert!(ServiceVersion::from_str("a/b").is_err());
         assert!(ServiceVersion::from_str("a b").is_err());
+        assert!(ServiceVersion::from_str("-full").is_err());
+        assert!(ServiceVersion::from_str(".17").is_err());
     }
 
     #[test]

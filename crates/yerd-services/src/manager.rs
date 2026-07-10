@@ -944,15 +944,23 @@ fn geo_data_env(
     env
 }
 
-/// Depth-first search of `root` for the parent directories of `proj.db` (PROJ) and
-/// `gdalvrt.xsd` (GDAL), short-circuiting once both are found. First match wins if
-/// a name appears more than once (walk order). Unreadable directories and errored
-/// entries are skipped. `DirEntry::file_type()` does not follow symlinks, so a
-/// symlinked directory is not recursed (no loop risk) and a symlinked target file
-/// is skipped - acceptable because yerd controls the published tarball layout.
+/// The directories holding `proj.db` (PROJ) and `gdalvrt.xsd` (GDAL) inside a
+/// variant install. Fast path: the published Unix layout puts them at
+/// `share/proj` / `share/gdal`, so probe those directly first. Otherwise fall back
+/// to a depth-first walk of `root`, short-circuiting once both are found (first
+/// match wins if a name recurs). Unreadable directories and errored entries are
+/// skipped. `DirEntry::file_type()` does not follow symlinks, so a symlinked
+/// directory is not recursed (no loop risk) and a symlinked target file is skipped
+/// - acceptable because yerd controls the published tarball layout.
 fn find_geo_data_dirs(
     root: &std::path::Path,
 ) -> (Option<std::path::PathBuf>, Option<std::path::PathBuf>) {
+    let proj_dir = root.join("share").join("proj");
+    let gdal_dir = root.join("share").join("gdal");
+    if proj_dir.join("proj.db").is_file() && gdal_dir.join("gdalvrt.xsd").is_file() {
+        return (Some(proj_dir), Some(gdal_dir));
+    }
+
     let mut proj = None;
     let mut gdal = None;
     let mut stack = vec![root.to_path_buf()];
@@ -1527,6 +1535,23 @@ mod tests {
         let env = geo_data_env(Service::Postgres, tmp.path(), &v("17-full"));
         assert_eq!(env.len(), 1);
         assert_eq!(env[0].0, std::ffi::OsString::from("PROJ_DATA"));
+    }
+
+    /// When the data lives outside the `share/proj` + `share/gdal` fast-path
+    /// locations, the fallback walk still finds both and returns their real dirs.
+    #[test]
+    fn find_geo_data_dirs_falls_back_to_walk_for_nonstandard_layout() {
+        let tmp = tempfile::tempdir().unwrap();
+        let proj_dir = tmp.path().join("lib").join("proj9");
+        let gdal_dir = tmp.path().join("share").join("contrib").join("gdal");
+        std::fs::create_dir_all(&proj_dir).unwrap();
+        std::fs::create_dir_all(&gdal_dir).unwrap();
+        std::fs::write(proj_dir.join("proj.db"), b"").unwrap();
+        std::fs::write(gdal_dir.join("gdalvrt.xsd"), b"").unwrap();
+        assert_eq!(
+            find_geo_data_dirs(tmp.path()),
+            (Some(proj_dir), Some(gdal_dir))
+        );
     }
 
     /// Regression for the `mariadb-install-db` "Could not find
