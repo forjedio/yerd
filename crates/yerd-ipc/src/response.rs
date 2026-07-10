@@ -40,6 +40,14 @@ pub enum Response {
     /// [`crate::Request::Unlink`], [`crate::Request::SetPhp`],
     /// [`crate::Request::SetSecure`]).
     Ok,
+    /// Reply to [`crate::Request::ListProxies`] - whole-host proxies and
+    /// per-site path-prefix rules.
+    Proxies {
+        /// Whole-host proxies, in config order.
+        proxies: Vec<ProxyEntry>,
+        /// Per-site path-prefix rules.
+        rules: Vec<ProxyRuleEntry>,
+    },
     /// A request failed. `code` is machine-readable; `message` is for
     /// human display.
     Error {
@@ -408,6 +416,30 @@ pub struct SiteEntry {
     pub is_laravel: bool,
 }
 
+/// One whole-host reverse proxy (reply element of [`Response::Proxies`]).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProxyEntry {
+    /// The proxy name (its `{name}.{tld}` host).
+    pub name: String,
+    /// The upstream URL (`http[s]://host:port`).
+    pub target: String,
+    /// Whether the proxy is served over HTTPS.
+    pub secure: bool,
+}
+
+/// One per-site path-prefix reverse-proxy rule (reply element of
+/// [`Response::Proxies`]).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProxyRuleEntry {
+    /// The site the rule attaches to (a linked site name or a parked
+    /// document-root display label).
+    pub site: String,
+    /// The path prefix (e.g. `/app`).
+    pub prefix: String,
+    /// The upstream URL (`http[s]://host:port`).
+    pub target: String,
+}
+
 /// One `WordPress` administrator account, for the auto-login user picker -
 /// see [`Response::WordpressAdminUsers`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -525,6 +557,7 @@ mod variant_name_pinning {
             Response::Tunnels { .. } => {}
             Response::NamedTunnels { .. } => {}
             Response::Groups { .. } => {}
+            Response::Proxies { .. } => {}
         }
     }
 
@@ -777,6 +810,18 @@ mod variant_name_pinning {
         pin_response(Response::Groups {
             order: vec!["Blog".into(), "Shop".into()],
             members: BTreeMap::from([("app".into(), "Blog".into())]),
+        });
+        pin_response(Response::Proxies {
+            proxies: vec![ProxyEntry {
+                name: "reverb".into(),
+                target: "http://127.0.0.1:8080".into(),
+                secure: false,
+            }],
+            rules: vec![ProxyRuleEntry {
+                site: "app".into(),
+                prefix: "/app".into(),
+                target: "http://127.0.0.1:8080".into(),
+            }],
         });
         for c in [
             ErrorCode::NotFound,

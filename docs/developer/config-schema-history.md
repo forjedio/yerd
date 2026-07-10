@@ -28,7 +28,28 @@ Each entry below states what changed, whether the daemon's own migration is a ba
 
 ## Version-by-version
 
-### v13 (current)
+### v14 (current)
+
+**Added:** the optional `[[proxies]]` array (whole-host reverse proxies) and the `[proxy_rules]` table (per-site path-prefix rules). Both default to empty when absent, so an uncustomised file omits them entirely.
+
+```toml
+[[proxies]]
+name = "reverb"
+target = "http://127.0.0.1:8080"
+secure = true
+
+[[proxy_rules.linked.myapp]]
+prefix = "/app"
+target = "http://127.0.0.1:8080"
+```
+
+`[proxy_rules]` is split by site class exactly like `[domains]`: `[proxy_rules.linked.<name>]` keys by site name, `[proxy_rules.parked."<docroot>"]` by byte-exact document-root. Removing a site's last rule drops its key, so the file round-trips byte-identically.
+
+**Migration from v13:** bare version bump - both sections default to empty when absent, so a v13 file needs no other change to become a valid v14 file.
+
+**To downgrade to v13:** change `version = 14` to `version = 13`, then delete any `[[proxies]]` entries and the whole `[proxy_rules]` table (a v13 daemon rejects the unknown tables under `deny_unknown_fields`, it doesn't just ignore them). Those proxies and rules stop being served; the sites they were attached to are otherwise unaffected.
+
+### v13
 
 **Added:** the optional per-site `front_controller` key (bool) inside `[[linked]]` and `[[overrides]]` - the toggle between single-front-controller mode (every request funnels through the site-root `index.php`) and direct script execution (a named `.php` under the served root runs directly). Absent = auto: a framework served from a subdirectory (non-empty `web_subpath`) defaults to front-controller mode; WordPress (any layout) and plain root-served sites default to direct execution.
 

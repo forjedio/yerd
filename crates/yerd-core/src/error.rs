@@ -74,6 +74,90 @@ pub enum CoreError {
         /// The colliding domain sub-part (e.g. `"api.foo"` or `"*.foo"`).
         domain: String,
     },
+
+    /// A string failed to parse as an
+    /// [`UpstreamTarget`](crate::UpstreamTarget).
+    #[error("invalid proxy target {input:?}: {reason}")]
+    InvalidUpstreamTarget {
+        /// The raw input that failed to parse.
+        input: String,
+        /// Why it failed.
+        reason: UpstreamTargetErrorReason,
+    },
+
+    /// A string failed to validate as a [`ProxyRule`](crate::ProxyRule) prefix.
+    #[error("invalid proxy rule prefix {input:?}: {reason}")]
+    InvalidProxyRule {
+        /// The raw prefix that failed validation.
+        input: String,
+        /// Why it failed.
+        reason: ProxyRuleErrorReason,
+    },
+}
+
+/// Specific failure modes for [`UpstreamTarget`](crate::UpstreamTarget) parsing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum UpstreamTargetErrorReason {
+    /// Input was empty.
+    Empty,
+    /// Input had no `scheme://` separator.
+    MissingScheme,
+    /// Scheme was neither `http` nor `https`.
+    UnsupportedScheme,
+    /// Input carried `user:pass@` credentials.
+    HasCredentials,
+    /// Input carried a path, query, or fragment.
+    HasPathOrQuery,
+    /// The host was empty.
+    MissingHost,
+    /// The host was not an IP address or a plain DNS hostname (or an
+    /// unbracketed IPv6 literal).
+    InvalidHost,
+    /// The port was absent-but-colon, non-numeric, zero, or out of `u16` range.
+    InvalidPort,
+}
+
+impl fmt::Display for UpstreamTargetErrorReason {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let msg = match self {
+            Self::Empty => "target must not be empty",
+            Self::MissingScheme => "target must start with http:// or https://",
+            Self::UnsupportedScheme => "target scheme must be http or https",
+            Self::HasCredentials => "target must not contain credentials",
+            Self::HasPathOrQuery => "target must not contain a path, query, or fragment",
+            Self::MissingHost => "target host must not be empty",
+            Self::InvalidHost => "target host is not a valid IP or hostname",
+            Self::InvalidPort => "target port must be a number in 1..=65535",
+        };
+        f.write_str(msg)
+    }
+}
+
+/// Specific failure modes for [`ProxyRule`](crate::ProxyRule) prefix validation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum ProxyRuleErrorReason {
+    /// Prefix was empty.
+    Empty,
+    /// Prefix did not begin with `/`.
+    NotAbsolute,
+    /// Prefix contained a `..` path component.
+    ContainsDotDot,
+    /// Prefix contained an ASCII/Unicode control character.
+    ContainsControl,
+}
+
+impl fmt::Display for ProxyRuleErrorReason {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let msg = match self {
+            Self::Empty => "prefix must not be empty",
+            Self::NotAbsolute => "prefix must begin with '/'",
+            Self::ContainsDotDot => "prefix must not contain a '..' component",
+            Self::ContainsControl => "prefix must not contain control characters",
+        };
+        f.write_str(msg)
+    }
 }
 
 /// Specific failure modes for [`PhpVersion`](crate::PhpVersion) parsing.

@@ -163,7 +163,21 @@ async fn dispatch(req: Request, state: &DaemonState) -> Response {
         | Request::AddDomain { .. }
         | Request::RemoveDomain { .. }
         | Request::SetPrimaryDomain { .. }
-        | Request::ResetDomains { .. } => handle_mutation(req, state).await,
+        | Request::ResetDomains { .. }
+        | Request::RemoveProxy { .. }
+        | Request::RemoveProxyRule { .. } => handle_mutation(req, state).await,
+        Request::AddProxy { ref url, .. } | Request::AddProxyRule { ref url, .. } => {
+            if is_self_forward(url, &[state.http.bound, state.https.bound]) {
+                Response::Error {
+                    code: ErrorCode::InvalidPath,
+                    message: "proxy target points at yerd's own listening port (routing loop)"
+                        .to_owned(),
+                }
+            } else {
+                handle_mutation(req, state).await
+            }
+        }
+        Request::ListProxies => list_proxies(state).await,
         Request::ListGroups => {
             let cfg = state.config.lock().await;
             Response::Groups {
@@ -2068,6 +2082,67 @@ fn site_needing_url_sync(
     candidate.get(&name.to_ascii_lowercase()).cloned()
 }
 
+/// Whether `url` is a loopback target on one of Yerd's **actively bound** proxy
+/// ports - a request to such a proxy would forward straight back into Yerd,
+/// re-resolve, and loop. Checked here rather than in the pure config layer
+/// because the bound port is a runtime fact. A malformed URL returns `false` so
+/// the mutation handler surfaces the precise parse error instead.
+fn is_self_forward(url: &str, bound_ports: &[u16]) -> bool {
+    let Ok(target) = yerd_core::UpstreamTarget::from_url_str(url) else {
+        return false;
+    };
+    let loopback = target.host() == "localhost"
+        || target
+            .host()
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|ip| ip.is_loopback());
+    loopback && bound_ports.contains(&target.port())
+}
+
+/// Reply to [`Request::ListProxies`]: whole-host proxies plus every per-site
+/// path-prefix rule. Linked rules key by site name already; parked rules key by
+/// document-root, which is resolved through the live router to the current site
+/// name (mirroring `ListSites`) so the output round-trips through
+/// `yerd proxy remove <site> <prefix>`. A parked docroot with no current site
+/// falls back to the raw key.
+async fn list_proxies(state: &DaemonState) -> Response {
+    let cfg = state.config.lock().await;
+    let router = state.router.read().await;
+    let proxies = cfg
+        .proxies
+        .iter()
+        .map(|p| yerd_ipc::ProxyEntry {
+            name: p.name().to_owned(),
+            target: p.target().to_string(),
+            secure: p.secure(),
+        })
+        .collect();
+    let mut rules = Vec::new();
+    for (site, site_rules) in &cfg.proxy_rules.linked {
+        for r in site_rules {
+            rules.push(yerd_ipc::ProxyRuleEntry {
+                site: site.clone(),
+                prefix: r.prefix().to_owned(),
+                target: r.target().to_string(),
+            });
+        }
+    }
+    for (docroot, site_rules) in &cfg.proxy_rules.parked {
+        let site_name = router
+            .iter()
+            .find(|s| s.document_root().to_string_lossy().as_ref() == docroot.as_str())
+            .map_or_else(|| docroot.clone(), |s| s.name().to_owned());
+        for r in site_rules {
+            rules.push(yerd_ipc::ProxyRuleEntry {
+                site: site_name.clone(),
+                prefix: r.prefix().to_owned(),
+                target: r.target().to_string(),
+            });
+        }
+    }
+    Response::Proxies { proxies, rules }
+}
+
 /// Apply a group mutation (create/delete/reorder/assign). Groups are a
 /// config-only organisational overlay that never affects routing, so this uses
 /// the lighter clone → apply → validate → save → commit path (like
@@ -2256,6 +2331,18 @@ mod tests {
     use yerd_platform::PlatformDirs;
 
     use crate::test_support::state_in;
+
+    #[test]
+    fn self_forward_matches_only_loopback_on_bound_ports() {
+        let bound = [8080, 8443];
+        assert!(is_self_forward("http://127.0.0.1:8080", &bound));
+        assert!(is_self_forward("https://localhost:8443", &bound));
+        assert!(is_self_forward("http://[::1]:8080", &bound));
+        assert!(!is_self_forward("http://127.0.0.1:3000", &bound));
+        assert!(!is_self_forward("http://192.168.1.5:8080", &bound));
+        assert!(!is_self_forward("http://example.com:8080", &bound));
+        assert!(!is_self_forward("not-a-url", &bound));
+    }
 
     #[test]
     fn bundle_contains_ca_matches_embedded_ca() {

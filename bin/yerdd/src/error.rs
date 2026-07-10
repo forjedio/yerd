@@ -27,6 +27,10 @@ pub enum DaemonError {
     /// Proxy server failure.
     #[error("proxy: {0}")]
     Proxy(#[from] yerd_proxy::ProxyError),
+
+    /// rustls client-config build failure (proxy upstream TLS trust anchors).
+    #[error("client tls: {0}")]
+    ClientTls(#[from] rustls::Error),
     /// PHP-FPM supervisor failure.
     #[error("php: {0}")]
     Php(#[from] yerd_php::PhpError),
@@ -63,7 +67,7 @@ pub fn exit_code(e: &DaemonError) -> u8 {
         DaemonError::AlreadyRunning { .. } => 75,
         DaemonError::Config(_) | DaemonError::Core(_) => 78,
         DaemonError::Io { .. } => 74,
-        DaemonError::Platform(_) | DaemonError::Tls(_) => 71,
+        DaemonError::Platform(_) | DaemonError::Tls(_) | DaemonError::ClientTls(_) => 71,
         _ => 70,
     }
 }

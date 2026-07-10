@@ -26,7 +26,15 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::oneshot;
 
 use yerd_core::{PhpVersion, RouterConfig, Site, SiteRouter, Tld};
-use yerd_proxy::{Backend, BackendResolver, ProxyError, ProxyServer};
+use yerd_proxy::{Backend, BackendResolver, ProxyClientTls, ProxyError, ProxyServer};
+
+/// A client-TLS bundle for tests: both configs accept any certificate (tests
+/// only reach loopback upstreams).
+fn test_client_tls() -> Arc<ProxyClientTls> {
+    let local = ProxyClientTls::no_verify_config().unwrap();
+    let public = ProxyClientTls::no_verify_config().unwrap();
+    Arc::new(ProxyClientTls::new(local, public))
+}
 
 // ─── Test resolver ──────────────────────────────────────────────────
 
@@ -243,6 +251,7 @@ async fn proxy_forwards_to_fcgi_backend() {
             Arc::new(NoLoginTokens),
             None,
             Arc::new(AtomicBool::new(true)),
+            test_client_tls(),
             async move {
                 let _ = rx_shutdown.await;
             },
@@ -337,6 +346,7 @@ async fn valid_login_token_adds_auto_prepend_and_strips_token_from_query() {
             login_tokens,
             Some(prepend_path),
             Arc::new(AtomicBool::new(true)),
+            test_client_tls(),
             async move {
                 let _ = rx_shutdown.await;
             },
@@ -428,6 +438,7 @@ async fn secure_site_redirect_does_not_consume_login_token() {
             login_tokens,
             None,
             Arc::new(AtomicBool::new(true)),
+            test_client_tls(),
             async move {
                 let _ = rx_shutdown.await;
             },
@@ -482,6 +493,7 @@ async fn unknown_host_returns_404() {
             Arc::new(NoLoginTokens),
             None,
             Arc::new(AtomicBool::new(true)),
+            test_client_tls(),
             async move {
                 let _ = rx_shutdown.await;
             },
@@ -519,6 +531,7 @@ async fn missing_host_header_returns_400() {
             Arc::new(NoLoginTokens),
             None,
             Arc::new(AtomicBool::new(true)),
+            test_client_tls(),
             async move {
                 let _ = rx_shutdown.await;
             },
@@ -569,6 +582,7 @@ async fn static_file_is_served_without_touching_fcgi() {
             Arc::new(NoLoginTokens),
             None,
             Arc::new(AtomicBool::new(true)),
+            test_client_tls(),
             async move {
                 let _ = rx_shutdown.await;
             },
@@ -621,6 +635,7 @@ async fn directory_index_html_served_when_no_index_php() {
             Arc::new(NoLoginTokens),
             None,
             Arc::new(AtomicBool::new(true)),
+            test_client_tls(),
             async move {
                 let _ = rx_shutdown.await;
             },
@@ -669,6 +684,7 @@ async fn directory_index_htm_served_as_fallback() {
             Arc::new(NoLoginTokens),
             None,
             Arc::new(AtomicBool::new(true)),
+            test_client_tls(),
             async move {
                 let _ = rx_shutdown.await;
             },
@@ -730,6 +746,7 @@ async fn index_php_present_wins_over_index_html() {
             Arc::new(NoLoginTokens),
             None,
             Arc::new(AtomicBool::new(true)),
+            test_client_tls(),
             async move {
                 let _ = rx_shutdown.await;
             },
@@ -801,6 +818,7 @@ async fn subdirectory_index_php_wins_over_root_index_php() {
             Arc::new(NoLoginTokens),
             None,
             Arc::new(AtomicBool::new(true)),
+            test_client_tls(),
             async move {
                 let _ = rx_shutdown.await;
             },
@@ -872,6 +890,7 @@ async fn direct_script_execution_gated_to_wordpress_sites() {
             Arc::new(NoLoginTokens),
             None,
             Arc::new(AtomicBool::new(true)),
+            test_client_tls(),
             async move {
                 let _ = rx_shutdown.await;
             },
@@ -939,6 +958,7 @@ async fn directory_with_no_index_at_all_falls_through_to_fcgi() {
             Arc::new(NoLoginTokens),
             None,
             Arc::new(AtomicBool::new(true)),
+            test_client_tls(),
             async move {
                 let _ = rx_shutdown.await;
             },
@@ -1000,6 +1020,7 @@ async fn nonexistent_directory_falls_through_to_fcgi() {
             Arc::new(NoLoginTokens),
             None,
             Arc::new(AtomicBool::new(true)),
+            test_client_tls(),
             async move {
                 let _ = rx_shutdown.await;
             },
@@ -1050,6 +1071,7 @@ async fn head_request_to_directory_index_returns_empty_body() {
             Arc::new(NoLoginTokens),
             None,
             Arc::new(AtomicBool::new(true)),
+            test_client_tls(),
             async move {
                 let _ = rx_shutdown.await;
             },
@@ -1131,6 +1153,7 @@ async fn symlink_within_document_root_outside_served_root_is_served() {
             Arc::new(NoLoginTokens),
             None,
             Arc::new(AtomicBool::new(true)),
+            test_client_tls(),
             async move {
                 let _ = rx_shutdown.await;
             },
@@ -1191,6 +1214,7 @@ async fn symlink_escaping_document_root_returns_403() {
             Arc::new(NoLoginTokens),
             None,
             Arc::new(AtomicBool::new(true)),
+            test_client_tls(),
             async move {
                 let _ = rx_shutdown.await;
             },
@@ -1255,6 +1279,7 @@ async fn symlink_escaping_document_root_is_served_when_protection_off() {
             Arc::new(NoLoginTokens),
             None,
             Arc::new(AtomicBool::new(false)),
+            test_client_tls(),
             async move {
                 let _ = rx_shutdown.await;
             },
@@ -1314,6 +1339,7 @@ async fn symlinked_index_html_escaping_root_is_not_served() {
             Arc::new(NoLoginTokens),
             None,
             Arc::new(AtomicBool::new(true)),
+            test_client_tls(),
             async move {
                 let _ = rx_shutdown.await;
             },

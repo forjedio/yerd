@@ -10,6 +10,7 @@
 #![allow(clippy::doc_markdown)]
 
 pub mod backend;
+pub mod client_tls;
 pub mod error;
 pub mod forward;
 pub mod pure;
@@ -18,6 +19,7 @@ pub mod tls;
 pub mod traits;
 
 pub use backend::Backend;
+pub use client_tls::ProxyClientTls;
 pub use error::ProxyError;
 pub use server::{HttpsBinding, ProxyServer, SharedRouter};
 pub use traits::{BackendResolver, CertStore, LoginTokenConsumer};

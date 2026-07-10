@@ -19,7 +19,7 @@ pub(crate) type MigrationStep = fn(&mut Value) -> Result<(), ConfigError>;
 /// Forward-migration steps, indexed so that **`STEPS[N]` walks `vN → v(N+1)`**.
 /// This matches [`up`], which indexes `STEPS[current]` (== the version being
 /// migrated *from*). Example: a v1 file is migrated by `STEPS[1]`. When
-/// `CURRENT_VERSION == 14`, `STEPS = [v0→v1, …, v12→v13, v13→v14]`, length 14.
+/// `CURRENT_VERSION == 15`, `STEPS = [v0→v1, …, v13→v14, v14→v15]`, length 15.
 ///
 /// `STEPS[0]` (v0→v1) is only reachable via a hand-crafted `version = 0` file -
 /// v0 was never written to disk - but it must exist so that `STEPS[1]` does.
@@ -38,6 +38,7 @@ pub(crate) const STEPS: &[MigrationStep] = &[
     migrate_v11_to_v12,
     migrate_v12_to_v13,
     migrate_v13_to_v14,
+    migrate_v14_to_v15,
 ];
 
 /// `v0 → v1`: bump the version. v0 predates any shipped config, so there is no
@@ -143,17 +144,24 @@ fn migrate_v11_to_v12(value: &mut Value) -> Result<(), ConfigError> {
 /// `v12 → v13`: bump the version. v13 added the optional per-site
 /// `front_controller` key (`[[linked]]` and `[[overrides]]`), which defaults to
 /// auto when absent, so an in-place version bump is the entire migration.
-/// `v13 -> v14`: bump the version. v14 added the optional per-instance `site`
-/// field and the multi-instance service wire ids (`"reverb:blog"`); both are
-/// additive on the wire, so no data rewrite is needed. Existing `enabled` values
-/// are preserved as-is (a stopped engine stays stopped at boot under the new
-/// autostart-honouring policy).
+fn migrate_v12_to_v13(value: &mut Value) -> Result<(), ConfigError> {
+    set_version(value, 13)
+}
+
+/// `v13 → v14`: bump the version. v14 added the optional `[[proxies]]` array and
+/// `[proxy_rules]` table, both of which default to empty when absent, so an
+/// in-place version bump is the entire migration.
 fn migrate_v13_to_v14(value: &mut Value) -> Result<(), ConfigError> {
     set_version(value, 14)
 }
 
-fn migrate_v12_to_v13(value: &mut Value) -> Result<(), ConfigError> {
-    set_version(value, 13)
+/// `v14 → v15`: bump the version. v15 added the optional per-instance `site`
+/// field and the multi-instance service wire ids (`"reverb:blog"`); both are
+/// additive on the wire, so no data rewrite is needed. Existing `enabled` values
+/// are preserved as-is (a stopped engine stays stopped at boot under the new
+/// autostart-honouring policy).
+fn migrate_v14_to_v15(value: &mut Value) -> Result<(), ConfigError> {
+    set_version(value, 15)
 }
 
 /// Set the top-level `version` key, erroring if the root is not a table.
@@ -225,7 +233,14 @@ mod tests {
 
     #[test]
     fn current_version_pinned() {
-        assert_eq!(crate::CURRENT_VERSION, 14);
+        assert_eq!(crate::CURRENT_VERSION, 15);
+    }
+
+    #[test]
+    fn v13_to_v14_is_a_bare_version_bump() {
+        let mut v: Value = toml::from_str("version = 13\n").unwrap();
+        migrate_v13_to_v14(&mut v).unwrap();
+        assert_eq!(read_version(&v).unwrap(), 14);
     }
 
     #[test]
@@ -292,10 +307,10 @@ mod tests {
     }
 
     #[test]
-    fn v13_to_v14_is_a_bare_version_bump() {
-        let mut v: Value = toml::from_str("version = 13\n").unwrap();
-        migrate_v13_to_v14(&mut v).unwrap();
-        assert_eq!(read_version(&v).unwrap(), 14);
+    fn v14_to_v15_is_a_bare_version_bump() {
+        let mut v: Value = toml::from_str("version = 14\n").unwrap();
+        migrate_v14_to_v15(&mut v).unwrap();
+        assert_eq!(read_version(&v).unwrap(), 15);
     }
 
     #[test]

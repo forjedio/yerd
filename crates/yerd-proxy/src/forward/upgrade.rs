@@ -16,7 +16,7 @@ use std::net::SocketAddr;
 
 use http::header::{CONNECTION, UPGRADE};
 use http::{HeaderMap, HeaderValue};
-use http_body_util::Empty;
+use http_body_util::{BodyExt, Empty};
 use hyper::body::Incoming;
 use hyper::upgrade::Upgraded;
 use hyper::{Request, Response};
@@ -46,18 +46,38 @@ pub fn is_upgrade(headers: &HeaderMap) -> bool {
 /// Forward an upgrade request to a FrankenPHP backend and run the
 /// bidirectional tunnel.
 pub async fn forward(
-    mut req: Request<Incoming>,
+    req: Request<Incoming>,
     addr: SocketAddr,
 ) -> Result<Response<BoxBody>, ProxyError> {
-    let on_client = hyper::upgrade::on(&mut req);
-
     let tcp = TcpStream::connect(addr)
         .await
         .map_err(|source| ProxyError::BackendConnect {
             backend: format!("franken:{addr}"),
             source,
         })?;
-    let io = TokioIo::new(tcp);
+    tunnel_over(req, TokioIo::new(tcp)).await
+}
+
+/// Run an upgrade (websocket) tunnel over an already-connected `io` (plain TCP
+/// or TLS). Shared by the FrankenPHP path ([`forward`]) and the reverse-proxy
+/// path (`crate::forward::proxy`). The upstream request is sent with an empty
+/// body (an upgrade handshake carries none) and the original `Upgrade` /
+/// `Connection` headers preserved so the peer completes the switch.
+///
+/// If the upstream declines the upgrade (any status other than `101`, e.g.
+/// Reverb's `403` + JSON error body for a bad `wss` handshake), its real
+/// response is returned with the body streamed through and hop-by-hop stripped
+/// without the tunnel's `Connection: upgrade` re-stamp, rather than hijacking a
+/// tunnel that would never carry data.
+pub(crate) async fn tunnel_over<IO>(
+    mut req: Request<Incoming>,
+    io: IO,
+) -> Result<Response<BoxBody>, ProxyError>
+where
+    IO: hyper::rt::Read + hyper::rt::Write + Unpin + Send + 'static,
+{
+    let on_client = hyper::upgrade::on(&mut req);
+
     let (mut sender, conn) = hyper::client::conn::http1::handshake(io)
         .await
         .map_err(|source| ProxyError::Hyper { source })?;
@@ -67,7 +87,7 @@ pub async fn forward(
             tracing::debug!(
                 target: "yerd_proxy::upgrade",
                 error = %e,
-                "FrankenPhp upgrade connection ended"
+                "upgrade connection ended"
             );
         }
     });
@@ -81,7 +101,16 @@ pub async fn forward(
 
     let on_backend = hyper::upgrade::on(&mut backend_resp);
 
-    let (mut parts, _body) = backend_resp.into_parts();
+    let (mut parts, body) = backend_resp.into_parts();
+
+    if parts.status != http::StatusCode::SWITCHING_PROTOCOLS {
+        strip_hop_by_hop_only(&mut parts.headers);
+        let boxed: BoxBody = body
+            .map_err(|e| std::io::Error::other(e.to_string()))
+            .boxed();
+        return Ok(Response::from_parts(parts, boxed));
+    }
+
     strip_hop_by_hop(&mut parts.headers);
     let resp: Response<BoxBody> = Response::from_parts(parts, empty_body());
 
@@ -126,22 +155,56 @@ static HOP_BY_HOP_FIXED: &[&str] = &[
     "trailer",
 ];
 
-/// Strip hop-by-hop headers per RFC 9110 §7.6.1.
-fn strip_hop_by_hop(headers: &mut HeaderMap) {
-    let conn_tokens: Vec<String> = headers
+/// Strip hop-by-hop headers per RFC 9110 §7.6.1 **without** re-stamping
+/// `Connection` (and dropping any `Upgrade`). This is the variant the plain
+/// reverse-proxy path uses on both the request and the response: unlike
+/// [`strip_hop_by_hop`] (which keeps `Upgrade` and re-adds `Connection:
+/// upgrade` for the tunnel), a normal proxied request must not carry
+/// `Connection: upgrade`, and an arbitrary upstream's `Transfer-Encoding` /
+/// `Keep-Alive` response headers must not leak through hyper's re-framing.
+pub(crate) fn strip_hop_by_hop_only(headers: &mut HeaderMap) {
+    let conn_tokens: Vec<&str> = headers
         .get_all(CONNECTION)
         .iter()
         .filter_map(|v| v.to_str().ok())
-        .flat_map(|s| s.split(',').map(|t| t.trim().to_ascii_lowercase()))
+        .flat_map(|s| s.split(',').map(str::trim))
         .collect();
     let to_remove: Vec<http::HeaderName> = headers
         .iter()
         .filter_map(|(name, _)| {
-            let lower = name.as_str().to_ascii_lowercase();
+            let lower = name.as_str();
+            if lower == "upgrade"
+                || HOP_BY_HOP_FIXED.contains(&lower)
+                || conn_tokens.iter().any(|t| t.eq_ignore_ascii_case(lower))
+            {
+                Some(name.clone())
+            } else {
+                None
+            }
+        })
+        .collect();
+    for name in to_remove {
+        headers.remove(&name);
+    }
+}
+
+/// Strip hop-by-hop headers per RFC 9110 §7.6.1.
+fn strip_hop_by_hop(headers: &mut HeaderMap) {
+    let conn_tokens: Vec<&str> = headers
+        .get_all(CONNECTION)
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .flat_map(|s| s.split(',').map(str::trim))
+        .collect();
+    let to_remove: Vec<http::HeaderName> = headers
+        .iter()
+        .filter_map(|(name, _)| {
+            let lower = name.as_str();
             if lower == "upgrade" {
                 return None;
             }
-            if HOP_BY_HOP_FIXED.contains(&lower.as_str()) || conn_tokens.iter().any(|t| t == &lower)
+            if HOP_BY_HOP_FIXED.contains(&lower)
+                || conn_tokens.iter().any(|t| t.eq_ignore_ascii_case(lower))
             {
                 Some(name.clone())
             } else {
@@ -199,6 +262,39 @@ mod tests {
         assert!(h.get(UPGRADE).is_some());
         assert_eq!(h.get(CONNECTION).unwrap(), "upgrade");
         assert!(h.get(http::header::TRANSFER_ENCODING).is_none());
+        assert!(h.get(http::header::CONTENT_TYPE).is_some());
+    }
+
+    /// The strip-only variant (used on normal proxied requests/responses) drops
+    /// `Upgrade`/`Connection`/`Transfer-Encoding` and does NOT re-stamp
+    /// `Connection: upgrade`.
+    #[test]
+    fn strip_hop_by_hop_only_removes_upgrade_and_connection_no_restamp() {
+        let mut h = HeaderMap::new();
+        h.insert(UPGRADE, "websocket".parse().unwrap());
+        h.insert(CONNECTION, "keep-alive, upgrade".parse().unwrap());
+        h.insert(http::header::TRANSFER_ENCODING, "chunked".parse().unwrap());
+        h.insert("keep-alive", "timeout=5".parse().unwrap());
+        h.insert(http::header::CONTENT_TYPE, "text/plain".parse().unwrap());
+        strip_hop_by_hop_only(&mut h);
+        assert!(h.get(UPGRADE).is_none());
+        assert!(h.get(CONNECTION).is_none());
+        assert!(h.get(http::header::TRANSFER_ENCODING).is_none());
+        assert!(h.get("keep-alive").is_none());
+        assert!(h.get(http::header::CONTENT_TYPE).is_some());
+    }
+
+    /// A `Connection`-listed custom token is hop-by-hop and removed, with no
+    /// `Connection` header left behind.
+    #[test]
+    fn strip_hop_by_hop_only_removes_connection_listed_tokens() {
+        let mut h = HeaderMap::new();
+        h.insert(CONNECTION, "x-custom".parse().unwrap());
+        h.insert("x-custom", "drop-me".parse().unwrap());
+        h.insert(http::header::CONTENT_TYPE, "text/plain".parse().unwrap());
+        strip_hop_by_hop_only(&mut h);
+        assert!(h.get("x-custom").is_none());
+        assert!(h.get(CONNECTION).is_none());
         assert!(h.get(http::header::CONTENT_TYPE).is_some());
     }
 

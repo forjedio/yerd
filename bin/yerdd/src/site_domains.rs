@@ -28,6 +28,13 @@ use yerd_core::{choose_primary, effective_domains, Domain, RouterConfig, Site, S
 /// `insert_with_domains` error arm is unreachable in practice; it logs and drops
 /// the site rather than panicking, so a latent bug degrades gracefully instead of
 /// bricking boot.
+///
+/// Whole-host proxies are inserted after sites, so a real site's apex always
+/// wins the exact index: a proxy that collides with a site (or another proxy)
+/// fails `insert_proxy` and is dropped with a log. Each site's path-prefix rules
+/// are then attached (linked keyed by name, parked by document-root); a rule set
+/// for a dropped/absent site is harmless, as it is only ever consulted for a
+/// site the router actually resolved.
 #[must_use]
 pub(crate) fn build(cfg: &Config, sites: Vec<Site>) -> SiteRouter {
     let plans = plan_sites(cfg, sites);
@@ -44,6 +51,25 @@ pub(crate) fn build(cfg: &Config, sites: Vec<Site>) -> SiteRouter {
         let primary = choose_primary(plan.site.name(), &won, Some(&plan.primary));
         if let Err(e) = router.insert_with_domains(plan.site.clone(), won, primary) {
             tracing::error!(site = plan.site.name(), error = %e, "dropping site: router insert failed");
+        }
+    }
+
+    for proxy in &cfg.proxies {
+        if let Err(e) = router.insert_proxy(proxy.clone()) {
+            tracing::error!(proxy = proxy.name(), error = %e, "dropping proxy: router insert failed (name/apex taken)");
+        }
+    }
+
+    for plan in &plans {
+        let rules = match plan.site.kind() {
+            yerd_core::SiteKind::Linked => cfg.proxy_rules.linked.get(plan.site.name()),
+            yerd_core::SiteKind::Parked => cfg
+                .proxy_rules
+                .parked
+                .get(&plan.site.document_root().to_string_lossy().into_owned()),
+        };
+        if let Some(rules) = rules {
+            router.set_proxy_rules(plan.site.name(), rules.clone());
         }
     }
     router
@@ -64,7 +90,9 @@ pub(crate) struct DomainCollision {
 
 /// Detect domains wanted by more than one site, using the same effective-set and
 /// claim rules as [`build`]. Empty for a well-formed config where every domain
-/// has a single claimant.
+/// has a single claimant. A whole-host proxy whose apex is already claimed by a
+/// site is reported too (loser `proxy:<name>`), so the doctor can flag the
+/// shadow.
 #[must_use]
 pub(crate) fn collisions(cfg: &Config, sites: Vec<Site>) -> Vec<DomainCollision> {
     let plans = plan_sites(cfg, sites);
@@ -97,6 +125,17 @@ pub(crate) fn collisions(cfg: &Config, sites: Vec<Site>) -> Vec<DomainCollision>
             continue;
         }
         out.push(DomainCollision { winner, losers });
+    }
+
+    for proxy in &cfg.proxies {
+        if let Some(&winner_idx) = claims.get(proxy.name()) {
+            if let Some(winner) = plans.get(winner_idx).map(|p| p.site.name().to_owned()) {
+                out.push(DomainCollision {
+                    winner,
+                    losers: vec![format!("proxy:{}", proxy.name())],
+                });
+            }
+        }
     }
     out
 }
@@ -208,6 +247,45 @@ mod tests {
         let r = build(&cfg, vec![linked("foo", "/srv/foo")]);
         assert_eq!(r.resolve("foo.test").map(Site::name), Some("foo"));
         assert_eq!(r.resolve("api.foo.test"), None);
+    }
+
+    fn target(url: &str) -> yerd_core::UpstreamTarget {
+        yerd_core::UpstreamTarget::from_url_str(url).unwrap()
+    }
+
+    #[test]
+    fn proxies_and_rules_fold_into_router() {
+        let mut cfg = cfg_with_tld("test");
+        cfg.proxies
+            .push(yerd_core::ProxySite::new("reverb", target("http://127.0.0.1:3000")).unwrap());
+        cfg.proxy_rules.linked.insert(
+            "foo".into(),
+            vec![yerd_core::ProxyRule::new("/ws", target("http://127.0.0.1:3001")).unwrap()],
+        );
+        let r = build(&cfg, vec![linked("foo", "/srv/foo")]);
+        assert!(matches!(
+            r.resolve_route("reverb.test"),
+            Some(yerd_core::Route::Proxy(_))
+        ));
+        assert_eq!(r.resolve("foo.test").map(Site::name), Some("foo"));
+        assert_eq!(r.rules_for("foo").len(), 1);
+        assert!(yerd_core::match_rule(r.rules_for("foo"), "/ws/x").is_some());
+    }
+
+    #[test]
+    fn real_site_beats_a_same_named_proxy() {
+        let mut cfg = cfg_with_tld("test");
+        cfg.proxies
+            .push(yerd_core::ProxySite::new("app", target("http://127.0.0.1:3000")).unwrap());
+        let r = build(&cfg, vec![linked("app", "/srv/app")]);
+        assert!(matches!(
+            r.resolve_route("app.test"),
+            Some(yerd_core::Route::Php(_))
+        ));
+        let cols = collisions(&cfg, vec![linked("app", "/srv/app")]);
+        assert!(cols
+            .iter()
+            .any(|c| c.winner == "app" && c.losers.iter().any(|l| l == "proxy:app")));
     }
 
     #[test]
