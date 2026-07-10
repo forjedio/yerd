@@ -203,6 +203,16 @@ pub trait ServiceDefinition: Send + Sync + 'static {
         StopProtocol::GroupTerm
     }
 
+    /// A reverse-proxy path prefix to auto-manage on the instance's linked site
+    /// (e.g. Reverb's `/app` WebSocket endpoint), or `None` for a type that needs
+    /// no proxy. When `Some`, the daemon adds/moves/removes this path rule in
+    /// lockstep with the instance's add / re-link / removal, so browser traffic
+    /// reaches the service over the site's domain (and TLS) instead of the raw
+    /// loopback port.
+    fn proxy_path(&self) -> Option<&'static str> {
+        None
+    }
+
     /// The SQL dialect if this type hosts databases, else `None`. Gates
     /// `supports_databases` and the "Manage databases" action.
     fn as_database(&self) -> Option<SqlEngine> {
@@ -625,6 +635,9 @@ impl ServiceDefinition for Reverb {
     }
     fn readiness(&self) -> ReadinessKind {
         ReadinessKind::TcpConnect
+    }
+    fn proxy_path(&self) -> Option<&'static str> {
+        Some("/app")
     }
     fn plan_launch(&self, ctx: &LaunchContext<'_>) -> Result<LaunchPlan, ServiceError> {
         let mut command = StdCommand::new(ctx.program);

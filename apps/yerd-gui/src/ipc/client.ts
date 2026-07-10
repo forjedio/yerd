@@ -644,7 +644,8 @@ export async function addableServiceTypes(): Promise<AddableServiceType[]> {
   return r.type === "addable_services" ? r.types : [];
 }
 
-/** Add a new service instance. Returns its wire id. */
+/** Add a new service instance. Returns its wire id. Tauri maps camelCase JS args
+ *  to the command's snake_case Rust params, so `type_id` is sent as `typeId`. */
 export async function addService(args: {
   type_id: string;
   site: string | null;
@@ -652,7 +653,15 @@ export async function addService(args: {
   version: string | null;
   autostart: boolean;
 }): Promise<string> {
-  const r = ensureOk(await call<Response>("add_service", args));
+  const r = ensureOk(
+    await call<Response>("add_service", {
+      typeId: args.type_id,
+      site: args.site,
+      port: args.port,
+      version: args.version,
+      autostart: args.autostart,
+    }),
+  );
   return r.type === "service_instance_id" ? r.id : "";
 }
 

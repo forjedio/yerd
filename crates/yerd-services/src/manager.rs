@@ -149,7 +149,7 @@ where
         }
 
         let id = def.id();
-        let log_path = version::log_path(&self.dirs, id);
+        let log_path = version::instance_log_path(&self.dirs, wire_id);
         let config_path = version::config_path(&self.dirs, id);
         let socket = version::socket_path(&self.dirs, id);
         let init_file = version::init_file_path(&self.dirs, id);

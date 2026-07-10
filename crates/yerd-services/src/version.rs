@@ -247,6 +247,22 @@ pub fn log_path(dirs: &PlatformDirs, service_id: &str) -> PathBuf {
         .join(format!("{service_id}.log"))
 }
 
+/// The per-instance log-file path, keyed by wire id. A single-instance engine
+/// keeps `state/services/<id>/<id>.log`; a per-site instance (`"reverb:blog"`)
+/// uses `state/services/<type>/<site>.log`, so each site's app server writes its
+/// own log (and the daemon reads back the same file the manager wrote).
+#[must_use]
+pub fn instance_log_path(dirs: &PlatformDirs, wire_id: &str) -> PathBuf {
+    match wire_id.split_once(':') {
+        Some((ty, site)) => dirs
+            .state
+            .join("services")
+            .join(ty)
+            .join(format!("{site}.log")),
+        None => log_path(dirs, wire_id),
+    }
+}
+
 /// The Unix-socket path for the `MySQL`/`MariaDB` server (and the client that
 /// connects to it), under the short `runtime` dir to stay within the platform
 /// `sun_path` length limit. Unused for engines that don't use a Unix socket.

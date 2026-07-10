@@ -18,7 +18,8 @@ use std::sync::Arc;
 use tokio::sync::watch;
 use yerd_config::{Config, ServiceInstance};
 use yerd_ipc::{
-    AddableServiceType, ErrorCode, Response, ServiceAvailability, ServiceRunState, ServiceStatus,
+    AddableServiceType, ErrorCode, Request, Response, ServiceAvailability, ServiceRunState,
+    ServiceStatus,
 };
 use yerd_platform::{ActivePortBinder, PlatformDirs, PortBinder};
 use yerd_services::{
@@ -469,7 +470,7 @@ pub async fn add_service(
         return resp;
     }
 
-    match ensure_and_persist(
+    let outcome = ensure_and_persist(
         state,
         &def,
         &wire,
@@ -478,8 +479,16 @@ pub async fn add_service(
         program_override,
         cwd,
     )
-    .await
-    {
+    .await;
+
+    // Auto-manage the type's proxy rule (Reverb's `/app`) on the linked site. The
+    // instance is persisted even if it failed to start, so the proxy is set up
+    // regardless - it points at the port the service will use once running.
+    if let (Some(prefix), Some(site)) = (def.proxy_path(), site_name.as_deref()) {
+        set_service_proxy(state, site, prefix, chosen_port).await;
+    }
+
+    match outcome {
         Ok(()) => Response::ServiceInstanceId { id: wire },
         Err(resp) => resp,
     }
@@ -492,9 +501,19 @@ pub async fn remove_service(service_id: &str, _purge: bool, state: &DaemonState)
         let mut mgr = state.service_manager.lock().await;
         let _ = mgr.stop(service_id).await;
     }
-    let mut cfg = state.config.lock().await;
-    cfg.services.instances.remove(service_id);
-    save_cfg(&cfg, state)
+    let resp = {
+        let mut cfg = state.config.lock().await;
+        cfg.services.instances.remove(service_id);
+        save_cfg(&cfg, state)
+    };
+    // Tear down the auto-managed proxy rule (best-effort, config lock released).
+    let (type_id, site) = parse_wire_id(service_id);
+    if let (Some(def), Some(site)) = (registry().get(&type_id), site) {
+        if let Some(prefix) = def.proxy_path() {
+            clear_service_proxy(state, &site, prefix).await;
+        }
+    }
+    resp
 }
 
 /// `set-autostart <wire-id> <on|off>`.
@@ -562,6 +581,21 @@ pub async fn set_service_site(service_id: &str, new_site: &str, state: &DaemonSt
         if let Response::Error { .. } = save_cfg(&cfg, state) {
             return err(ErrorCode::Internal, "persist config after re-link");
         }
+    }
+    // Move the auto-managed proxy rule from the old site to the new one.
+    if let Some(prefix) = def.proxy_path() {
+        let port = {
+            let cfg = state.config.lock().await;
+            cfg.services
+                .instances
+                .get(&new_wire)
+                .and_then(|i| i.port)
+                .unwrap_or(def.default_port())
+        };
+        if let Some(old) = old_site.as_deref() {
+            clear_service_proxy(state, old, prefix).await;
+        }
+        set_service_proxy(state, new_site, prefix, port).await;
     }
     Response::ServiceInstanceId { id: new_wire }
 }
@@ -695,10 +729,10 @@ pub async fn restart_service(service_id: &str, state: &DaemonState) -> Response 
 
 /// `set-port <wire-id> <port>` - validate against reserved ports, then persist.
 pub async fn set_service_port(service_id: &str, port: u16, state: &DaemonState) -> Response {
-    let (type_id, _) = parse_wire_id(service_id);
-    if registry().get(&type_id).is_none() {
+    let (type_id, site) = parse_wire_id(service_id);
+    let Some(def) = registry().get(&type_id) else {
         return unknown_service(service_id);
-    }
+    };
     {
         let cfg = state.config.lock().await;
         let own = cfg.services.instances.get(service_id).and_then(|i| i.port);
@@ -713,9 +747,16 @@ pub async fn set_service_port(service_id: &str, port: u16, state: &DaemonState) 
             );
         }
     }
-    persist_instance(state, service_id, |inst| inst.port = Some(port))
+    let resp = persist_instance(state, service_id, |inst| inst.port = Some(port))
         .await
-        .unwrap_or_else(|resp| resp)
+        .unwrap_or_else(|resp| resp);
+    // Keep the auto-managed proxy pointing at the new port.
+    if matches!(resp, Response::Ok) {
+        if let (Some(prefix), Some(site)) = (def.proxy_path(), site.as_deref()) {
+            set_service_proxy(state, site, prefix, port).await;
+        }
+    }
+    resp
 }
 
 /// `service logs <wire-id>` - the last `lines` lines of the instance log file.
@@ -724,7 +765,7 @@ pub fn service_logs(service_id: &str, lines: u32, state: &DaemonState) -> Respon
     if registry().get(&type_id).is_none() {
         return unknown_service(service_id);
     }
-    let path = svc_version::log_path(&state.dirs, service_id);
+    let path = svc_version::instance_log_path(&state.dirs, service_id);
     let content = match std::fs::read_to_string(&path) {
         Ok(c) => c,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
@@ -975,6 +1016,48 @@ fn reserved_ports(cfg: &Config) -> BTreeSet<u16> {
 fn pick_free_port(start: u16, reserved: &BTreeSet<u16>) -> Option<u16> {
     let binder = ActivePortBinder::new();
     candidate_ports(start, reserved).find(|p| binder.bind(*p).map(drop).is_ok())
+}
+
+/// Add or re-target the auto-managed reverse-proxy rule for a per-site service
+/// (e.g. Reverb's `/app` -> the instance's loopback port) on `site`. Removes any
+/// existing rule for the same prefix first, so a re-target/move takes effect
+/// cleanly. Best-effort: a proxy failure is logged, never fails the service op.
+/// The caller must NOT hold the config or service-manager lock (this re-enters
+/// the mutation path, which locks config and rebuilds the router).
+async fn set_service_proxy(state: &DaemonState, site: &str, prefix: &str, port: u16) {
+    let _ = crate::ipc_server::handle_mutation(
+        Request::RemoveProxyRule {
+            site: site.to_owned(),
+            prefix: prefix.to_owned(),
+        },
+        state,
+    )
+    .await;
+    let resp = crate::ipc_server::handle_mutation(
+        Request::AddProxyRule {
+            site: site.to_owned(),
+            prefix: prefix.to_owned(),
+            url: format!("http://127.0.0.1:{port}"),
+        },
+        state,
+    )
+    .await;
+    if let Response::Error { message, .. } = resp {
+        tracing::warn!(site, prefix, port, %message, "couldn't set the service's proxy rule");
+    }
+}
+
+/// Remove the auto-managed proxy rule for a per-site service from `site`.
+/// Best-effort; the caller must not hold the config/manager lock.
+async fn clear_service_proxy(state: &DaemonState, site: &str, prefix: &str) {
+    let _ = crate::ipc_server::handle_mutation(
+        Request::RemoveProxyRule {
+            site: site.to_owned(),
+            prefix: prefix.to_owned(),
+        },
+        state,
+    )
+    .await;
 }
 
 /// Installed versions of `type_id`, ascending.

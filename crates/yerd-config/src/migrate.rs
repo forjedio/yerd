@@ -155,12 +155,24 @@ fn migrate_v13_to_v14(value: &mut Value) -> Result<(), ConfigError> {
     set_version(value, 14)
 }
 
-/// `v14 → v15`: bump the version. v15 added the optional per-instance `site`
-/// field and the multi-instance service wire ids (`"reverb:blog"`); both are
-/// additive on the wire, so no data rewrite is needed. Existing `enabled` values
-/// are preserved as-is (a stopped engine stays stopped at boot under the new
-/// autostart-honouring policy).
+/// `v14 → v15`: the multi-instance services rework. v15 added the optional
+/// per-instance `site` field and the `"{type}:{site}"` wire ids (both additive),
+/// and made the `enabled` flag actually gate boot autostart. Before v15 the
+/// daemon auto-started *every installed* engine regardless of `enabled`; to keep
+/// a user's previously-installed engines (redis, the databases) starting with
+/// Yerd across the upgrade, mark every existing single-instance engine
+/// (colon-free key) `enabled = true`. Per-site entries don't exist yet at v14, so
+/// none are affected.
 fn migrate_v14_to_v15(value: &mut Value) -> Result<(), ConfigError> {
+    if let Some(services) = value.get_mut("services").and_then(Value::as_table_mut) {
+        for (key, inst) in services.iter_mut() {
+            if !key.contains(':') {
+                if let Some(table) = inst.as_table_mut() {
+                    table.insert("enabled".to_string(), Value::Boolean(true));
+                }
+            }
+        }
+    }
     set_version(value, 15)
 }
 
@@ -307,10 +319,24 @@ mod tests {
     }
 
     #[test]
-    fn v14_to_v15_is_a_bare_version_bump() {
+    fn v14_to_v15_bumps_version_with_no_services_section() {
         let mut v: Value = toml::from_str("version = 14\n").unwrap();
         migrate_v14_to_v15(&mut v).unwrap();
         assert_eq!(read_version(&v).unwrap(), 15);
+    }
+
+    #[test]
+    fn v14_to_v15_enables_existing_single_instance_engines() {
+        let mut v: Value = toml::from_str(
+            "version = 14\n[services.redis]\nenabled = false\n[services.mysql]\nversion = \"8.4\"\n",
+        )
+        .unwrap();
+        migrate_v14_to_v15(&mut v).unwrap();
+        assert_eq!(read_version(&v).unwrap(), 15);
+        // A stopped-at-upgrade engine and an engine with no explicit flag both
+        // become enabled, so they keep starting with Yerd after the upgrade.
+        assert_eq!(v["services"]["redis"]["enabled"].as_bool(), Some(true));
+        assert_eq!(v["services"]["mysql"]["enabled"].as_bool(), Some(true));
     }
 
     #[test]
