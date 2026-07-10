@@ -322,6 +322,24 @@ pub fn slugify_site_name(raw: &str) -> Option<String> {
     }
 }
 
+/// Normalise a discovered directory name to a site name for the daemon's parked
+/// scan. A name that is already valid is kept as-is (only lowercased), so a
+/// folder that was servable before keeps its exact `.test` hostname across
+/// upgrades; a name the strict validator would reject (`_`, `.`, a leading
+/// hyphen, ...) is [`slugify_site_name`]d instead of being dropped. Returns
+/// `None` only when slugging leaves nothing valid.
+///
+/// This differs from `yerd link`'s auto-naming, which always slugifies: link is
+/// a one-shot suggestion the user sees and can edit, whereas a parked name is a
+/// site's persistent identity that should not change under the user's feet.
+#[must_use]
+pub fn normalize_site_name(raw: &str) -> Option<String> {
+    match validate_and_lowercase_name(raw) {
+        Ok(name) => Some(name),
+        Err(_) => slugify_site_name(raw),
+    }
+}
+
 /// A web subpath is safe to join onto the document root iff it is a plain
 /// relative path: no root, no drive/UNC prefix, and no `..` component. Such a
 /// path can only ever resolve to a descendant of the document root. Used by
@@ -564,6 +582,35 @@ mod tests {
         for input in ["My Project", "my_app", "example.com", "a..b"] {
             let slug = slugify_site_name(input).unwrap();
             assert!(Site::parked(&slug, "/x", v83()).is_ok(), "slug {slug:?}");
+        }
+    }
+
+    #[test]
+    fn normalize_site_name_keeps_valid_names_and_slugifies_the_rest() {
+        let cases: &[(&str, Option<&str>)] = &[
+            ("MyApp", Some("myapp")),
+            ("already-valid", Some("already-valid")),
+            ("foo--bar", Some("foo--bar")),
+            ("foo_bar", Some("foo-bar")),
+            ("example.com", Some("example-com")),
+            ("-leading", Some("leading")),
+            ("???", None),
+            ("", None),
+        ];
+        for (input, expected) in cases {
+            assert_eq!(
+                normalize_site_name(input).as_deref(),
+                *expected,
+                "input {input:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn normalize_site_name_result_is_always_valid() {
+        for input in ["MyApp", "foo--bar", "my_app", "example.com", "-leading"] {
+            let name = normalize_site_name(input).unwrap();
+            assert!(Site::parked(&name, "/x", v83()).is_ok(), "name {name:?}");
         }
     }
 

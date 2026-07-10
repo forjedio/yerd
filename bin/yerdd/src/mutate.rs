@@ -9,8 +9,9 @@
 //! ## Name normalisation
 //!
 //! The router and `cfg.linked` are keyed by the **lowercased** site name
-//! (`scan_sites` lowercases discovered directory names; the `Site`
-//! constructors lowercase too). Unlike the proxy's host path, the IPC mutation
+//! (`scan_sites` slugifies discovered directory names, whose output is
+//! lowercase; the `Site` constructors lowercase too). Unlike the proxy's host
+//! path, the IPC mutation
 //! path has no `host::normalise`, so [`apply`] lowercases the request `name`
 //! itself before every lookup - otherwise `yerd use Blog 8.4` would look up
 //! `"Blog"`, miss the stored `"blog"`, and wrongly report "not found".

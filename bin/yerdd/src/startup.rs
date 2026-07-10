@@ -587,12 +587,12 @@ pub(crate) fn scan_sites(
             }
         };
         for entry in entries.flatten() {
-            let Some(name_lower) = parked_site_name(&entry, &linked_names) else {
+            let Some(slug) = parked_site_name(&entry, &linked_names) else {
                 continue;
             };
             let doc_root = entry.path();
             if let Some(site) = build_parked_site(
-                &name_lower,
+                &slug,
                 &doc_root,
                 default_php,
                 cfg,
@@ -608,9 +608,12 @@ pub(crate) fn scan_sites(
     Ok((parked, watch_roots))
 }
 
-/// Filter one parked-directory entry to its lowercased site name, or `None` to
-/// skip it (non-UTF-8, hidden, not a directory, or shadowed by a linked site -
-/// linked wins on a name collision).
+/// Filter one parked-directory entry to its site name, or `None` to skip it
+/// (non-UTF-8, hidden, not a directory, no valid name after normalising, or
+/// shadowed by a linked site - linked wins on a name collision). The name is run
+/// through [`yerd_core::normalize_site_name`]: an already-valid name is kept, and
+/// one the validator would reject (`_`, `.`, ...) is slugified rather than
+/// dropped.
 fn parked_site_name(
     entry: &std::fs::DirEntry,
     linked_names: &std::collections::HashSet<&str>,
@@ -629,11 +632,14 @@ fn parked_site_name(
     if !entry.metadata().ok()?.is_dir() {
         return None;
     }
-    let name_lower = name.to_ascii_lowercase();
-    if linked_names.contains(name_lower.as_str()) {
+    let Some(slug) = yerd_core::normalize_site_name(name) else {
+        tracing::debug!(name = %name, "skipping parked dir with no valid site name");
+        return None;
+    };
+    if linked_names.contains(slug.as_str()) {
         return None;
     }
-    Some(name_lower)
+    Some(slug)
 }
 
 /// Build a parked [`Site`] for `doc_root`, re-applying any persisted per-site
@@ -642,18 +648,18 @@ fn parked_site_name(
 /// unresolved detection serves the root provisionally and pushes `doc_root` onto
 /// `watch_roots`. Returns `None` (logging) for an invalid site name.
 fn build_parked_site(
-    name_lower: &str,
+    slug: &str,
     doc_root: &std::path::Path,
     default_php: PhpVersion,
     cfg: &yerd_config::Config,
     detect_cache: &DetectCache,
     watch_roots: &mut Vec<PathBuf>,
 ) -> Option<Site> {
-    let mut site = match Site::parked(name_lower, doc_root, default_php) {
+    let mut site = match Site::parked(slug, doc_root, default_php) {
         Ok(site) => site,
         Err(e) => {
             tracing::debug!(
-                name = %name_lower,
+                name = %slug,
                 error = %e,
                 "skipping invalid parked-site name"
             );
@@ -808,6 +814,24 @@ mod tests {
         let mut names: Vec<&str> = sites.iter().map(yerd_core::Site::name).collect();
         names.sort_unstable();
         assert_eq!(names, vec!["app1", "app2"]);
+    }
+
+    #[test]
+    fn scan_sites_slugifies_underscored_parked_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let parked_root = tmp.path().join("Sites");
+        std::fs::create_dir_all(parked_root.join("foo_bar")).unwrap();
+
+        let mut cfg = yerd_config::Config::default();
+        cfg.parked
+            .paths
+            .insert(parked_root.to_string_lossy().into_owned());
+
+        let dirs = make_dirs(tmp.path());
+        let (sites, _) =
+            scan_sites(&cfg, PhpVersion::new(8, 3), &dirs, &DetectCache::new()).unwrap();
+        let names: Vec<&str> = sites.iter().map(yerd_core::Site::name).collect();
+        assert_eq!(names, vec!["foo-bar"]);
     }
 
     #[test]
@@ -1086,10 +1110,13 @@ mod tests {
     }
 
     #[test]
-    fn parked_site_name_filters_and_lowercases() {
+    fn parked_site_name_filters_and_slugifies() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
         std::fs::create_dir_all(root.join("MyApp")).unwrap();
+        std::fs::create_dir_all(root.join("foo_bar")).unwrap();
+        std::fs::create_dir_all(root.join("ex.com")).unwrap();
+        std::fs::create_dir_all(root.join("keep--me")).unwrap();
         std::fs::create_dir_all(root.join(".hidden")).unwrap();
         std::fs::create_dir_all(root.join("linked")).unwrap();
         std::fs::write(root.join("afile"), b"x").unwrap();
@@ -1104,6 +1131,9 @@ mod tests {
             got.insert(key, parked_site_name(&entry, &linked));
         }
         assert_eq!(got.get("MyApp").unwrap().as_deref(), Some("myapp"));
+        assert_eq!(got.get("foo_bar").unwrap().as_deref(), Some("foo-bar"));
+        assert_eq!(got.get("ex.com").unwrap().as_deref(), Some("ex-com"));
+        assert_eq!(got.get("keep--me").unwrap().as_deref(), Some("keep--me"));
         assert_eq!(got.get(".hidden").unwrap().as_deref(), None);
         assert_eq!(got.get("afile").unwrap().as_deref(), None);
         assert_eq!(got.get("linked").unwrap().as_deref(), None);
