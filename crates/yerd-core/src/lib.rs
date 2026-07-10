@@ -50,5 +50,5 @@ pub use php_extensions::{ExtError, NameErrorReason, PathErrorReason};
 pub use php_settings::{PhpSettingError, ValueErrorReason};
 pub use proxy::{match_rule, ProxyRule, ProxySite, UpstreamTarget};
 pub use router::{Route, RouterConfig, SiteRouter};
-pub use site::{slugify_site_name, Site, SiteKind};
+pub use site::{normalize_site_name, slugify_site_name, Site, SiteKind};
 pub use tld::Tld;
