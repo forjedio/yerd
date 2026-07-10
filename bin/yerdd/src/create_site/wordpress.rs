@@ -9,7 +9,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use tokio::sync::watch;
-use yerd_services::{database, Service, ServiceVersion};
+use yerd_services::{database, ServiceDefinition, ServiceRegistry, ServiceVersion};
 
 use yerd_ipc::{CreateSiteSpec, WordPressDbEngine, WordPressOptions};
 
@@ -66,28 +66,30 @@ pub(super) async fn run(
     }
 
     state.jobs.set_phase(id, "Provisioning database").await;
-    let service = engine_service(options.database.engine);
-    if let Err(msg) = ensure_database_engine(id, service, state).await {
+    let Some(def) = ServiceRegistry::builtin().get(engine_type_id(options.database.engine)) else {
+        return Outcome::Failed("unknown database engine".to_owned());
+    };
+    if let Err(msg) = ensure_database_engine(id, &def, state).await {
         return Outcome::Failed(msg);
     }
     if super::is_cancelled(&cancel_rx) {
         return Outcome::Cancelled;
     }
-    let db_created = match crate::db_admin::create(service.id(), &db_name, state).await {
+    let db_created = match crate::db_admin::create(def.id(), &db_name, state).await {
         yerd_ipc::Response::Ok => true,
         yerd_ipc::Response::Error { message, .. } => return Outcome::Failed(message),
         other => return Outcome::Failed(format!("unexpected response: {other:?}")),
     };
     if super::is_cancelled(&cancel_rx) {
-        rollback(&project_dir, db_created, service, &db_name, state).await;
+        rollback(&project_dir, db_created, &def, &db_name, state).await;
         return Outcome::Cancelled;
     }
 
-    let db_port = service_port(service, state).await;
+    let db_port = service_port(&def, state).await;
 
     state.jobs.set_phase(id, "Downloading WordPress").await;
     if let Err(e) = std::fs::create_dir_all(&project_dir) {
-        rollback(&project_dir, db_created, service, &db_name, state).await;
+        rollback(&project_dir, db_created, &def, &db_name, state).await;
         return Outcome::Failed(format!("{}: {e}", project_dir.display()));
     }
     let boot_fs = tools::wp_cli::boot_path(dirs);
@@ -111,11 +113,11 @@ pub(super) async fn run(
     {
         StreamedOutcome::Ok => {}
         StreamedOutcome::Failed(msg) => {
-            rollback(&project_dir, db_created, service, &db_name, state).await;
+            rollback(&project_dir, db_created, &def, &db_name, state).await;
             return Outcome::Failed(msg);
         }
         StreamedOutcome::Cancelled => {
-            rollback(&project_dir, db_created, service, &db_name, state).await;
+            rollback(&project_dir, db_created, &def, &db_name, state).await;
             return Outcome::Cancelled;
         }
     }
@@ -141,11 +143,11 @@ pub(super) async fn run(
     {
         StreamedOutcome::Ok => {}
         StreamedOutcome::Failed(msg) => {
-            rollback(&project_dir, db_created, service, &db_name, state).await;
+            rollback(&project_dir, db_created, &def, &db_name, state).await;
             return Outcome::Failed(msg);
         }
         StreamedOutcome::Cancelled => {
-            rollback(&project_dir, db_created, service, &db_name, state).await;
+            rollback(&project_dir, db_created, &def, &db_name, state).await;
             return Outcome::Cancelled;
         }
     }
@@ -172,11 +174,11 @@ pub(super) async fn run(
     {
         StreamedOutcome::Ok => {}
         StreamedOutcome::Failed(msg) => {
-            rollback(&project_dir, db_created, service, &db_name, state).await;
+            rollback(&project_dir, db_created, &def, &db_name, state).await;
             return Outcome::Failed(msg);
         }
         StreamedOutcome::Cancelled => {
-            rollback(&project_dir, db_created, service, &db_name, state).await;
+            rollback(&project_dir, db_created, &def, &db_name, state).await;
             return Outcome::Cancelled;
         }
     }
@@ -193,7 +195,7 @@ pub(super) async fn run(
     .await
         == PermalinkOutcome::Cancelled
     {
-        rollback(&project_dir, db_created, service, &db_name, state).await;
+        rollback(&project_dir, db_created, &def, &db_name, state).await;
         return Outcome::Cancelled;
     }
 
@@ -375,13 +377,13 @@ fn wp_step_invocation(
 async fn rollback(
     project_dir: &Path,
     db_created: bool,
-    service: Service,
+    def: &Arc<dyn ServiceDefinition>,
     db_name: &str,
     state: &Arc<DaemonState>,
 ) {
     let _ = std::fs::remove_dir_all(project_dir);
     if db_created {
-        let _ = crate::db_admin::drop(service.id(), db_name, state).await;
+        let _ = crate::db_admin::drop(def.id(), db_name, state).await;
     }
 }
 
@@ -395,32 +397,31 @@ async fn rollback(
 /// per-site artifact.
 async fn ensure_database_engine(
     id: &str,
-    service: Service,
+    def: &Arc<dyn ServiceDefinition>,
     state: &Arc<DaemonState>,
 ) -> Result<(), String> {
     let (configured_version, port) = {
         let cfg = state.config.lock().await;
-        let inst = cfg.services.instances.get(service.id());
+        let inst = cfg.services.instances.get(def.id());
         (
             inst.and_then(|i| i.version.clone()),
-            inst.and_then(|i| i.port).unwrap_or(service.default_port()),
+            inst.and_then(|i| i.port).unwrap_or(def.default_port()),
         )
     };
 
     let version =
-        match crate::services::resolve_version(service, configured_version.as_deref(), &state.dirs)
-        {
+        match crate::services::resolve_version(def, configured_version.as_deref(), &state.dirs) {
             Ok(v) => v,
             Err(_not_found) => {
                 state
                     .jobs
-                    .set_phase(id, format!("Installing {}", service.display_name()))
+                    .set_phase(id, format!("Installing {}", def.display_name()))
                     .await;
-                resolve_and_install_latest(service, state).await?
+                resolve_and_install_latest(def, state).await?
             }
         };
 
-    crate::services::ensure_and_persist(state, service, version, port)
+    crate::services::ensure_and_persist(state, def, def.id(), Some(version), port, None, None)
         .await
         .map_err(response_message)
 }
@@ -428,7 +429,7 @@ async fn ensure_database_engine(
 /// Fetch the services listing, pick the newest build available for this
 /// platform, and install it.
 async fn resolve_and_install_latest(
-    service: Service,
+    def: &Arc<dyn ServiceDefinition>,
     state: &Arc<DaemonState>,
 ) -> Result<ServiceVersion, String> {
     use yerd_supervise::Downloader;
@@ -440,30 +441,30 @@ async fn resolve_and_install_latest(
         .await
         .map_err(|e| format!("couldn't reach the services distribution: {e}"))?;
     let listing = String::from_utf8_lossy(&listing_bytes).into_owned();
-    let version = yerd_services::available_versions(&listing, service, os, arch)
+    let version = yerd_services::available_versions(&listing, def.id(), os, arch)
         .into_iter()
         .last()
         .ok_or_else(|| {
             format!(
                 "no {} build is available for this platform",
-                service.display_name()
+                def.display_name()
             )
         })?;
-    crate::service_install::install(service, &version, &state.dirs, &dl)
+    crate::service_install::install(def.id(), def.server_binary(), &version, &state.dirs, &dl)
         .await
         .map_err(|e| e.to_string())?;
     Ok(version)
 }
 
-/// The configured (or default) port for `service` - used to build
+/// The configured (or default) port for `def` - used to build
 /// `wp config create --dbhost`.
-async fn service_port(service: Service, state: &Arc<DaemonState>) -> u16 {
+async fn service_port(def: &Arc<dyn ServiceDefinition>, state: &Arc<DaemonState>) -> u16 {
     let cfg = state.config.lock().await;
     cfg.services
         .instances
-        .get(service.id())
+        .get(def.id())
         .and_then(|i| i.port)
-        .unwrap_or(service.default_port())
+        .unwrap_or(def.default_port())
 }
 
 fn response_message(resp: yerd_ipc::Response) -> String {
@@ -473,10 +474,10 @@ fn response_message(resp: yerd_ipc::Response) -> String {
     }
 }
 
-fn engine_service(engine: WordPressDbEngine) -> Service {
+fn engine_type_id(engine: WordPressDbEngine) -> &'static str {
     match engine {
-        WordPressDbEngine::Mysql => Service::MySql,
-        WordPressDbEngine::Mariadb => Service::MariaDb,
+        WordPressDbEngine::Mysql => "mysql",
+        WordPressDbEngine::Mariadb => "mariadb",
     }
 }
 
@@ -651,9 +652,9 @@ mod tests {
     }
 
     #[test]
-    fn engine_service_maps_both_variants() {
-        assert_eq!(engine_service(WordPressDbEngine::Mysql), Service::MySql);
-        assert_eq!(engine_service(WordPressDbEngine::Mariadb), Service::MariaDb);
+    fn engine_type_id_maps_both_variants() {
+        assert_eq!(engine_type_id(WordPressDbEngine::Mysql), "mysql");
+        assert_eq!(engine_type_id(WordPressDbEngine::Mariadb), "mariadb");
     }
 
     #[test]

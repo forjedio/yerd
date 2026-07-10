@@ -147,7 +147,7 @@ const tiles = computed<Tile[]>(() => {
       label: "Services",
       value: String(up),
       unit: `/ ${x.services.length} up`,
-      sub: x.services.map((s) => s.display_name).join(" · "),
+      sub: x.services.map((s) => (s.site ? `${s.display_name} (${s.site})` : s.display_name)).join(" · "),
     });
   }
   if (x.mail) {

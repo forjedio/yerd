@@ -23,6 +23,7 @@ pub mod ext_install;
 pub mod fs_watch;
 pub mod ipc_server;
 pub mod jobs;
+pub mod laravel_detect;
 pub mod mutate;
 pub mod php_install;
 pub mod php_updates;

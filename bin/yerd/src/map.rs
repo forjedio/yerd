@@ -247,6 +247,31 @@ fn service_request(action: &ServiceAction) -> Request {
             service: service.clone(),
             lines: *lines,
         },
+        ServiceAction::Add {
+            type_id,
+            site,
+            port,
+            version,
+            autostart,
+        } => Request::AddService {
+            type_id: type_id.clone(),
+            site: site.clone(),
+            port: *port,
+            version: version.clone(),
+            autostart: *autostart,
+        },
+        ServiceAction::Remove { service, purge } => Request::RemoveService {
+            service: service.clone(),
+            purge: *purge,
+        },
+        ServiceAction::SetAutostart { service, state } => Request::SetServiceAutostart {
+            service: service.clone(),
+            enabled: state == "on",
+        },
+        ServiceAction::SetSite { service, site } => Request::SetServiceSite {
+            service: service.clone(),
+            site: site.clone(),
+        },
     }
 }
 
@@ -634,6 +659,7 @@ impl Rendered {
 /// Render a daemon [`Response`] to stdout/stderr text + an exit code. With
 /// `json`, prints the response as pretty JSON instead of a human table.
 #[must_use]
+#[allow(clippy::too_many_lines)]
 pub fn render(resp: &Response, json: bool) -> Rendered {
     let code = doctor_exit_code(resp);
     if json {
@@ -681,6 +707,21 @@ pub fn render(resp: &Response, json: bool) -> Rendered {
         Response::AvailableServices { services } => {
             Rendered::ok(format_available_services(services))
         }
+        Response::AddableServices { types } => Rendered::ok(
+            types
+                .iter()
+                .map(|t| {
+                    let installed = if t.already_installed {
+                        " (installed)"
+                    } else {
+                        ""
+                    };
+                    format!("{} - {}{installed}", t.type_id, t.display_name)
+                })
+                .collect::<Vec<_>>()
+                .join("\n"),
+        ),
+        Response::ServiceInstanceId { id } => Rendered::ok(id.clone()),
         Response::ServiceLogs { lines } => Rendered::ok(if lines.is_empty() {
             "no log output".to_owned()
         } else {
@@ -1786,6 +1827,7 @@ mod tests {
                     domains: vec![],
                     apex_shadowed_by: None,
                     uses_front_controller: true,
+                    is_laravel: false,
                 }],
             },
             false,
@@ -1817,6 +1859,7 @@ mod tests {
                     domains: vec![],
                     apex_shadowed_by: None,
                     uses_front_controller: false,
+                    is_laravel: false,
                 }],
             },
             false,
@@ -2189,6 +2232,7 @@ mod tests {
             domains: vec!["corp.test".into(), "*.blog.test".into()],
             apex_shadowed_by: Some("shop".into()),
             uses_front_controller: false,
+            is_laravel: false,
         };
         let r = render_domains(&[e], "test", None, false);
         assert!(r.stdout.contains("corp.test (primary)"));
@@ -2205,6 +2249,7 @@ mod tests {
             domains: vec![],
             apex_shadowed_by: None,
             uses_front_controller: false,
+            is_laravel: false,
         };
         let r = render_domains(&[e], "test", None, false);
         assert!(r.stdout.contains("foo.test (primary)"));
@@ -2760,6 +2805,9 @@ mod tests {
             port: 6379,
             enabled: true,
             supports_databases: false,
+            type_id: String::new(),
+            site: None,
+            error: None,
         }
     }
 

@@ -458,6 +458,46 @@ pub async fn service_logs(service: String, lines: u32) -> Result<Response, GuiEr
 }
 
 #[tauri::command]
+pub async fn addable_service_types() -> Result<Response, GuiError> {
+    finish(exchange(&Request::AddableServiceTypes).await?)
+}
+
+#[tauri::command]
+pub async fn add_service(
+    type_id: String,
+    site: Option<String>,
+    port: Option<u16>,
+    version: Option<String>,
+    autostart: bool,
+) -> Result<Response, GuiError> {
+    finish(
+        exchange(&Request::AddService {
+            type_id,
+            site,
+            port,
+            version,
+            autostart,
+        })
+        .await?,
+    )
+}
+
+#[tauri::command]
+pub async fn remove_service(service: String, purge: bool) -> Result<Response, GuiError> {
+    finish(exchange(&Request::RemoveService { service, purge }).await?)
+}
+
+#[tauri::command]
+pub async fn set_service_autostart(service: String, enabled: bool) -> Result<Response, GuiError> {
+    finish(exchange(&Request::SetServiceAutostart { service, enabled }).await?)
+}
+
+#[tauri::command]
+pub async fn set_service_site(service: String, site: String) -> Result<Response, GuiError> {
+    finish(exchange(&Request::SetServiceSite { service, site }).await?)
+}
+
+#[tauri::command]
 pub async fn create_database(service: String, name: String) -> Result<Response, GuiError> {
     finish(exchange(&Request::CreateDatabase { service, name }).await?)
 }

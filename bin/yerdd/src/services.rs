@@ -2,27 +2,36 @@
 //! handlers for the service requests, the `StatusReport.services` builder, and
 //! background auto-start.
 //!
+//! Instances are keyed by their *wire id*: a bare type id (`"redis"`) for a
+//! single-instance engine, or `"{type}:{site}"` (`"reverb:blog"`) for a per-site
+//! app server. All per-type behaviour is dispatched through the
+//! [`ServiceRegistry`]; the manager never sees a closed enum.
+//!
 //! Lock discipline mirrors the PHP path: the slow `ensure`/download work runs
 //! **without** the config lock held, and the config lock and the
 //! service-manager lock are never held simultaneously across an `.await`.
 
+use std::collections::BTreeSet;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use tokio::sync::watch;
-use yerd_config::ServiceInstance;
-use yerd_ipc::{ErrorCode, Response, ServiceAvailability, ServiceRunState, ServiceStatus};
+use yerd_config::{Config, ServiceInstance};
+use yerd_ipc::{
+    AddableServiceType, ErrorCode, Response, ServiceAvailability, ServiceRunState, ServiceStatus,
+};
+use yerd_platform::{ActivePortBinder, PlatformDirs, PortBinder};
 use yerd_services::{
-    available_versions, current_os_arch, listing_url, version as svc_version, Service,
-    ServiceError, ServiceManager, ServiceProbes, ServiceRunState as MgrRunState, ServiceVersion,
+    available_versions, candidate_ports, current_os_arch, listing_url, version as svc_version,
+    Multiplicity, ServiceDefinition, ServiceError, ServiceManager, ServiceProbes, ServiceRegistry,
+    ServiceRunState as MgrRunState, ServiceVersion,
 };
 use yerd_supervise::{Downloader, SystemClock, TokioProcessSpawner};
 
 use crate::service_install;
 use crate::state::DaemonState;
 
-/// Concrete `ServiceManager` shape the daemon uses. [`ServiceProbes`] dispatches
-/// readiness checks to the right per-engine protocol probe (Redis / MySQL /
-/// MariaDB / Postgres).
+/// Concrete `ServiceManager` shape the daemon uses.
 pub type DaemonServiceManager = ServiceManager<TokioProcessSpawner, SystemClock, ServiceProbes>;
 
 /// Build the daemon's service manager.
@@ -37,17 +46,39 @@ pub fn new_manager(dirs: yerd_platform::PlatformDirs) -> DaemonServiceManager {
     )
 }
 
+/// The built-in service-type registry (cheap - a `Vec` of five `Arc`s).
+fn registry() -> ServiceRegistry {
+    ServiceRegistry::builtin()
+}
+
+/// Split an instance wire id into `(type_id, site)`.
+fn parse_wire_id(id: &str) -> (String, Option<String>) {
+    match id.split_once(':') {
+        Some((ty, site)) => (ty.to_owned(), Some(site.to_owned())),
+        None => (id.to_owned(), None),
+    }
+}
+
+/// Format an instance wire id from a type id and optional site.
+fn wire_id(type_id: &str, site: Option<&str>) -> String {
+    match site {
+        Some(s) => format!("{type_id}:{s}"),
+        None => type_id.to_owned(),
+    }
+}
+
 // ── handlers ────────────────────────────────────────────────────────────────
 
-/// `list services` - every manageable engine with its live status.
+/// `list services` - one row per single-instance type plus one per configured
+/// per-site instance.
 pub async fn list_services(state: &DaemonState) -> Response {
     Response::Services {
         services: service_statuses(state).await,
     }
 }
 
-/// `available services` - installable vs installed versions per engine. Fetches
-/// yerd's services listing on demand; a transport failure is the only error.
+/// `available services` - installable vs installed versions per *versioned*
+/// engine (version-less app servers are excluded; they have no download).
 pub async fn available_services(state: &DaemonState, dl: &dyn Downloader) -> Response {
     let (os, arch) = match current_os_arch() {
         Ok(p) => p,
@@ -62,15 +93,17 @@ pub async fn available_services(state: &DaemonState, dl: &dyn Downloader) -> Res
             }
         }
     };
-    let services = Service::ALL
-        .into_iter()
-        .map(|svc| ServiceAvailability {
-            service: svc.id().to_string(),
-            available: available_versions(&listing, svc, os, arch)
+    let reg = registry();
+    let services = reg
+        .iter()
+        .filter(|d| d.requires_version())
+        .map(|d| ServiceAvailability {
+            service: d.id().to_string(),
+            available: available_versions(&listing, d.id(), os, arch)
                 .iter()
                 .map(ToString::to_string)
                 .collect(),
-            installed: installed_versions(svc, &state.dirs)
+            installed: installed_versions(d.id(), &state.dirs)
                 .iter()
                 .map(ToString::to_string)
                 .collect(),
@@ -79,25 +112,82 @@ pub async fn available_services(state: &DaemonState, dl: &dyn Downloader) -> Res
     Response::AvailableServices { services }
 }
 
+/// `addable-service-types` - the "Add Service" dialog catalog: per-type
+/// multiplicity, install state, versions, and a suggested next-free port.
+pub async fn addable_service_types(state: &DaemonState, dl: &dyn Downloader) -> Response {
+    let listing = match current_os_arch() {
+        Ok(_) => dl
+            .download(&listing_url())
+            .await
+            .map(|b| String::from_utf8_lossy(&b).into_owned())
+            .unwrap_or_default(),
+        Err(_) => String::new(),
+    };
+    let (os, arch) =
+        current_os_arch().unwrap_or((yerd_services::Os::Linux, yerd_services::Arch::X86_64));
+
+    let reserved = {
+        let cfg = state.config.lock().await;
+        reserved_ports(&cfg)
+    };
+
+    let reg = registry();
+    let types = reg
+        .iter()
+        .map(|d| {
+            let available_versions: Vec<String> = if d.requires_version() {
+                available_versions(&listing, d.id(), os, arch)
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect()
+            } else {
+                Vec::new()
+            };
+            let already_installed = matches!(d.multiplicity(), Multiplicity::Single)
+                && !installed_versions(d.id(), &state.dirs).is_empty();
+            let suggested_port =
+                pick_free_port(d.default_port(), &reserved).unwrap_or(d.default_port());
+            AddableServiceType {
+                type_id: d.id().to_string(),
+                display_name: d.display_name().to_string(),
+                multiplicity: match d.multiplicity() {
+                    Multiplicity::Single => "single".to_string(),
+                    Multiplicity::PerSite => "per_site".to_string(),
+                },
+                requires_site: d.requires_site(),
+                requires_version: d.requires_version(),
+                already_installed,
+                available_versions,
+                default_port: d.default_port(),
+                suggested_port,
+            }
+        })
+        .collect();
+    Response::AddableServices { types }
+}
+
 /// `install service <svc> <version>` - download + unpack (no config lock held),
-/// then start it. Installing a service is taken as intent to run it, so a fresh
-/// install comes up immediately and - like every installed engine - survives
-/// daemon restarts (see [`auto_start_installed`]). `enabled` is still set for the
-/// status record, but no longer gates boot auto-start.
+/// then start it. Only valid for a versioned single-instance engine.
 pub async fn install_service(
     service_id: &str,
     version: &str,
     state: &DaemonState,
     dl: &dyn Downloader,
 ) -> Response {
-    let Some(service) = Service::from_id(service_id) else {
+    let reg = registry();
+    let Some(def) = reg.get(service_id) else {
         return unknown_service(service_id);
     };
+    if !def.requires_version() {
+        return service_type_mismatch(service_id, "is not installed by version");
+    }
     let version: ServiceVersion = match version.parse() {
         Ok(v) => v,
         Err(e) => return service_error_response(&e),
     };
-    if let Err(e) = service_install::install(service, &version, &state.dirs, dl).await {
+    if let Err(e) =
+        service_install::install(def.id(), def.server_binary(), &version, &state.dirs, dl).await
+    {
         return service_error_response(&e);
     }
 
@@ -105,78 +195,81 @@ pub async fn install_service(
         let cfg = state.config.lock().await;
         cfg.services
             .instances
-            .get(service.id())
+            .get(def.id())
             .and_then(|i| i.port)
-            .unwrap_or(service.default_port())
+            .unwrap_or(def.default_port())
     };
-    match ensure_and_persist(state, service, version, port).await {
+    match ensure_and_persist(state, &def, def.id(), Some(version), port, None, None).await {
         Ok(()) => Response::Ok,
         Err(resp) => resp,
     }
 }
 
-/// Ensure `service` is running at `version`/`port`, then persist it as the
-/// selected instance (`enabled`/`version`/`port`) in config. Shared by
-/// [`install_service`]/[`start_service`]'s own handlers and by any other
-/// in-daemon caller that installs+starts a service inline as part of a larger
-/// job (e.g. the WordPress create-site job's database-provisioning phase) -
-/// callers must go through this rather than only `ServiceManager::ensure`, or
-/// the engine ends up running but unrecorded, and `ListServices`/boot
-/// auto-start disagree with reality.
+/// Ensure the `wire_id` instance is running, then persist it. Shared by the
+/// install/start handlers and by any in-daemon caller that installs+starts a
+/// service inline (e.g. the WordPress create-site job's DB provisioning).
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn ensure_and_persist(
     state: &DaemonState,
-    service: Service,
-    version: ServiceVersion,
+    def: &Arc<dyn ServiceDefinition>,
+    wire: &str,
+    version: Option<ServiceVersion>,
     port: u16,
+    program_override: Option<PathBuf>,
+    cwd: Option<PathBuf>,
 ) -> Result<(), Response> {
     {
         let mut mgr = state.service_manager.lock().await;
-        mgr.ensure(service, version.clone(), port)
-            .await
-            .map_err(|e| service_error_response(&e))?;
+        mgr.ensure(
+            Arc::clone(def),
+            wire,
+            version.clone(),
+            port,
+            program_override,
+            cwd,
+        )
+        .await
+        .map_err(|e| service_error_response(&e))?;
     }
-    persist_instance(state, service, |inst| {
-        inst.enabled = true;
-        inst.version = Some(version.to_string());
+    let (type_id, site) = parse_wire_id(wire);
+    let vstr = version.as_ref().map(ToString::to_string);
+    persist_instance(state, wire, |inst| {
+        inst.version = vstr;
         inst.port = Some(port);
+        inst.site = site;
+        let _ = &type_id;
     })
     .await
     .map(|_| ())
-    .inspect_err(|_| {
-        tracing::warn!(
-            service = service.id(),
-            %version,
-            port,
-            "started the service but failed to persist it to config; \
-             the running engine and on-disk config now disagree"
-        );
-    })
 }
 
-/// `change-version <svc> <new>` - switch the engine's single installed version.
-/// Installs the new version, restarts the instance onto it, then removes the
-/// previously-installed version(s). The datadir is retained (it's shared per
-/// engine / per major), so this is safe for SQL engines in later phases.
+/// `change-version <svc> <new>` - switch a versioned engine's installed version.
 pub async fn change_service_version(
     service_id: &str,
     version: &str,
     state: &DaemonState,
     dl: &dyn Downloader,
 ) -> Response {
-    let Some(service) = Service::from_id(service_id) else {
+    let reg = registry();
+    let Some(def) = reg.get(service_id) else {
         return unknown_service(service_id);
     };
+    if !def.requires_version() {
+        return service_type_mismatch(service_id, "has no versions to change");
+    }
     let new_version: ServiceVersion = match version.parse() {
         Ok(v) => v,
         Err(e) => return service_error_response(&e),
     };
 
-    let superseded: Vec<ServiceVersion> = installed_versions(service, &state.dirs)
+    let superseded: Vec<ServiceVersion> = installed_versions(def.id(), &state.dirs)
         .into_iter()
         .filter(|v| v != &new_version)
         .collect();
 
-    if let Err(e) = service_install::install(service, &new_version, &state.dirs, dl).await {
+    if let Err(e) =
+        service_install::install(def.id(), def.server_binary(), &new_version, &state.dirs, dl).await
+    {
         return service_error_response(&e);
     }
 
@@ -184,20 +277,27 @@ pub async fn change_service_version(
         let cfg = state.config.lock().await;
         cfg.services
             .instances
-            .get(service.id())
+            .get(def.id())
             .and_then(|i| i.port)
-            .unwrap_or(service.default_port())
+            .unwrap_or(def.default_port())
     };
     let outcome = {
         let mut mgr = state.service_manager.lock().await;
-        mgr.restart(service, new_version.clone(), port).await
+        mgr.restart(
+            Arc::clone(&def),
+            def.id(),
+            Some(new_version.clone()),
+            port,
+            None,
+            None,
+        )
+        .await
     };
     if let Err(e) = outcome {
         return service_error_response(&e);
     }
 
-    if let Err(resp) = persist_instance(state, service, |inst| {
-        inst.enabled = true;
+    if let Err(resp) = persist_instance(state, def.id(), |inst| {
         inst.version = Some(new_version.to_string());
         inst.port = Some(port);
     })
@@ -206,41 +306,47 @@ pub async fn change_service_version(
         return resp;
     }
     for old in superseded {
-        if let Err(e) = service_install::uninstall(service, &old, &state.dirs, false) {
-            tracing::warn!(
-                service = %service,
-                version = %old,
-                error = %e,
-                "couldn't remove superseded service version"
-            );
+        if let Err(e) = service_install::uninstall(
+            def.id(),
+            def.datadir_pinned_to_major(),
+            &old,
+            &state.dirs,
+            false,
+        ) {
+            tracing::warn!(service = def.id(), version = %old, error = %e,
+                "couldn't remove superseded service version");
         }
     }
     Response::Ok
 }
 
-/// `uninstall service <svc> <version> [--purge]`.
+/// `uninstall service <svc> <version> [--purge]` - versioned engines.
 pub async fn uninstall_service(
     service_id: &str,
     version: &str,
     purge: bool,
     state: &DaemonState,
 ) -> Response {
-    let Some(service) = Service::from_id(service_id) else {
+    let reg = registry();
+    let Some(def) = reg.get(service_id) else {
         return unknown_service(service_id);
     };
     let version: ServiceVersion = match version.parse() {
         Ok(v) => v,
         Err(e) => return service_error_response(&e),
     };
-    let _ = state.service_manager.lock().await.stop(service).await;
-    match service_install::uninstall(service, &version, &state.dirs, purge) {
+    let _ = state.service_manager.lock().await.stop(def.id()).await;
+    match service_install::uninstall(
+        def.id(),
+        def.datadir_pinned_to_major(),
+        &version,
+        &state.dirs,
+        purge,
+    ) {
         Ok(retained) => {
             if let Some(path) = retained {
-                tracing::info!(
-                    service = %service,
-                    datadir = %path.display(),
-                    "uninstalled service; datadir retained (use --purge to delete)"
-                );
+                tracing::info!(service = def.id(), datadir = %path.display(),
+                    "uninstalled service; datadir retained (use --purge to delete)");
             }
             Response::Ok
         }
@@ -248,66 +354,338 @@ pub async fn uninstall_service(
     }
 }
 
-/// `start service <svc>` - ensure it's running, enable auto-start, persist config.
+/// `add-service` - add a new instance. For a versioned type this installs the
+/// version; for a per-site type it links a Laravel site. The instance is
+/// persisted *before* the start attempt, so a failed start still renders a row.
+#[allow(clippy::too_many_lines)]
+pub async fn add_service(
+    type_id: &str,
+    site: Option<&str>,
+    port: Option<u16>,
+    version: Option<&str>,
+    autostart: bool,
+    state: &DaemonState,
+    dl: &dyn Downloader,
+) -> Response {
+    let reg = registry();
+    let Some(def) = reg.get(type_id) else {
+        return unknown_service_type(type_id);
+    };
+
+    let (site_name, program_override, cwd) = if def.requires_site() {
+        let Some(site_name) = site else {
+            return err(
+                ErrorCode::SiteNotFound,
+                "this service requires a linked site",
+            );
+        };
+        let (doc_root, php) = {
+            let router = state.router.read().await;
+            match router.get(site_name) {
+                Some(s) => (s.document_root().to_path_buf(), s.php()),
+                None => {
+                    return err(
+                        ErrorCode::SiteNotFound,
+                        &format!("unknown site {site_name:?}"),
+                    )
+                }
+            }
+        };
+        if !crate::laravel_detect::is_laravel(&doc_root) {
+            return err(
+                ErrorCode::SiteNotLaravel,
+                &format!("site {site_name:?} is not a Laravel app (no artisan file)"),
+            );
+        }
+        let php_cli = crate::php_install::cli_binary_path(&state.dirs, php);
+        (Some(site_name.to_owned()), Some(php_cli), Some(doc_root))
+    } else {
+        (None, None, None)
+    };
+
+    let wire = wire_id(def.id(), site_name.as_deref());
+
+    // Reject a duplicate instance.
+    {
+        let cfg = state.config.lock().await;
+        let exists = cfg.services.instances.contains_key(&wire)
+            || (matches!(def.multiplicity(), Multiplicity::Single)
+                && !installed_versions(def.id(), &state.dirs).is_empty());
+        if exists {
+            return err(
+                ErrorCode::InstanceAlreadyExists,
+                &format!("{wire} already exists"),
+            );
+        }
+    }
+
+    // Resolve the port: validate an explicit one, else pick the next free.
+    let reserved = {
+        let cfg = state.config.lock().await;
+        reserved_ports(&cfg)
+    };
+    let chosen_port = match port {
+        Some(p) => {
+            if reserved.contains(&p) {
+                return err(
+                    ErrorCode::PortReserved,
+                    &format!("port {p} is already reserved"),
+                );
+            }
+            p
+        }
+        None => match pick_free_port(def.default_port(), &reserved) {
+            Some(p) => p,
+            None => return err(ErrorCode::Internal, "no free port available"),
+        },
+    };
+
+    // Versioned type: download the version first.
+    let version_obj = if def.requires_version() {
+        let vstr = version.unwrap_or_default();
+        let v: ServiceVersion = match vstr.parse() {
+            Ok(v) => v,
+            Err(e) => return service_error_response(&e),
+        };
+        if let Err(e) =
+            service_install::install(def.id(), def.server_binary(), &v, &state.dirs, dl).await
+        {
+            return service_error_response(&e);
+        }
+        Some(v)
+    } else {
+        None
+    };
+
+    // Persist the instance BEFORE starting, so a failed start still renders it.
+    if let Err(resp) = persist_instance(state, &wire, |inst| {
+        inst.version = version_obj.as_ref().map(ToString::to_string);
+        inst.port = Some(chosen_port);
+        inst.site.clone_from(&site_name);
+        inst.enabled = autostart;
+    })
+    .await
+    {
+        return resp;
+    }
+
+    match ensure_and_persist(
+        state,
+        &def,
+        &wire,
+        version_obj,
+        chosen_port,
+        program_override,
+        cwd,
+    )
+    .await
+    {
+        Ok(()) => Response::ServiceInstanceId { id: wire },
+        Err(resp) => resp,
+    }
+}
+
+/// `remove-service <wire-id> [--purge]` - remove a per-site (or version-less)
+/// instance: stop it and drop its config entry.
+pub async fn remove_service(service_id: &str, _purge: bool, state: &DaemonState) -> Response {
+    {
+        let mut mgr = state.service_manager.lock().await;
+        let _ = mgr.stop(service_id).await;
+    }
+    let mut cfg = state.config.lock().await;
+    cfg.services.instances.remove(service_id);
+    save_cfg(&cfg, state)
+}
+
+/// `set-autostart <wire-id> <on|off>`.
+pub async fn set_service_autostart(
+    service_id: &str,
+    enabled: bool,
+    state: &DaemonState,
+) -> Response {
+    persist_instance(state, service_id, |inst| inst.enabled = enabled)
+        .await
+        .unwrap_or_else(|resp| resp)
+}
+
+/// `set-site <wire-id> <new-site>` - re-link a per-site instance. Stops the
+/// instance, moves its config entry under the new wire id, and returns the new
+/// id so the client can re-target.
+pub async fn set_service_site(service_id: &str, new_site: &str, state: &DaemonState) -> Response {
+    let (type_id, old_site) = parse_wire_id(service_id);
+    let reg = registry();
+    let Some(def) = reg.get(&type_id) else {
+        return unknown_service_type(&type_id);
+    };
+    if old_site.is_none() || !def.requires_site() {
+        return service_type_mismatch(service_id, "is not a per-site service");
+    }
+    // Validate the new site: exists + Laravel.
+    let doc_root = {
+        let router = state.router.read().await;
+        match router.get(new_site) {
+            Some(s) => s.document_root().to_path_buf(),
+            None => {
+                return err(
+                    ErrorCode::SiteNotFound,
+                    &format!("unknown site {new_site:?}"),
+                )
+            }
+        }
+    };
+    if !crate::laravel_detect::is_laravel(&doc_root) {
+        return err(
+            ErrorCode::SiteNotLaravel,
+            &format!("site {new_site:?} is not a Laravel app"),
+        );
+    }
+    let new_wire = wire_id(&type_id, Some(new_site));
+    {
+        let cfg = state.config.lock().await;
+        if cfg.services.instances.contains_key(&new_wire) {
+            return err(
+                ErrorCode::InstanceAlreadyExists,
+                &format!("{new_wire} already exists"),
+            );
+        }
+    }
+    {
+        let mut mgr = state.service_manager.lock().await;
+        let _ = mgr.stop(service_id).await;
+    }
+    {
+        let mut cfg = state.config.lock().await;
+        if let Some(mut inst) = cfg.services.instances.remove(service_id) {
+            inst.site = Some(new_site.to_owned());
+            cfg.services.instances.insert(new_wire.clone(), inst);
+        }
+        if let Response::Error { .. } = save_cfg(&cfg, state) {
+            return err(ErrorCode::Internal, "persist config after re-link");
+        }
+    }
+    Response::ServiceInstanceId { id: new_wire }
+}
+
+/// `start service <wire-id>` - ensure it's running. Does not change autostart.
 pub async fn start_service(service_id: &str, state: &DaemonState) -> Response {
-    let Some(service) = Service::from_id(service_id) else {
+    let (type_id, site) = parse_wire_id(service_id);
+    let reg = registry();
+    let Some(def) = reg.get(&type_id) else {
         return unknown_service(service_id);
     };
+
+    if def.requires_site() {
+        return start_per_site(&def, service_id, site.as_deref(), state).await;
+    }
+
     let (configured_version, port) = {
         let cfg = state.config.lock().await;
-        let inst = cfg.services.instances.get(service.id());
+        let inst = cfg.services.instances.get(service_id);
         (
             inst.and_then(|i| i.version.clone()),
-            inst.and_then(|i| i.port).unwrap_or(service.default_port()),
+            inst.and_then(|i| i.port).unwrap_or(def.default_port()),
         )
     };
-    let version = match resolve_version(service, configured_version.as_deref(), &state.dirs) {
+    let version = match resolve_version(&def, configured_version.as_deref(), &state.dirs) {
         Ok(v) => v,
         Err(resp) => return resp,
     };
-
-    match ensure_and_persist(state, service, version, port).await {
+    match ensure_and_persist(state, &def, service_id, Some(version), port, None, None).await {
         Ok(()) => Response::Ok,
         Err(resp) => resp,
     }
 }
 
-/// `stop service <svc>` - stop it and disable auto-start.
+/// Start a per-site instance (Reverb): resolve its linked site's PHP + docroot.
+async fn start_per_site(
+    def: &Arc<dyn ServiceDefinition>,
+    wire: &str,
+    site: Option<&str>,
+    state: &DaemonState,
+) -> Response {
+    let Some(site_name) = site else {
+        return err(
+            ErrorCode::SiteNotFound,
+            "per-site instance has no linked site",
+        );
+    };
+    let (doc_root, php) = {
+        let router = state.router.read().await;
+        match router.get(site_name) {
+            Some(s) => (s.document_root().to_path_buf(), s.php()),
+            None => {
+                return err(
+                    ErrorCode::SiteNotFound,
+                    &format!("unknown site {site_name:?}"),
+                )
+            }
+        }
+    };
+    let port = {
+        let cfg = state.config.lock().await;
+        cfg.services
+            .instances
+            .get(wire)
+            .and_then(|i| i.port)
+            .unwrap_or(def.default_port())
+    };
+    let php_cli = crate::php_install::cli_binary_path(&state.dirs, php);
+    match ensure_and_persist(state, def, wire, None, port, Some(php_cli), Some(doc_root)).await {
+        Ok(()) => Response::Ok,
+        Err(resp) => resp,
+    }
+}
+
+/// `stop service <wire-id>` - stop it. Does NOT change its autostart preference.
 pub async fn stop_service(service_id: &str, state: &DaemonState) -> Response {
-    let Some(service) = Service::from_id(service_id) else {
+    let (type_id, _) = parse_wire_id(service_id);
+    if registry().get(&type_id).is_none() {
+        return unknown_service(service_id);
+    }
+    let mut mgr = state.service_manager.lock().await;
+    match mgr.stop(service_id).await {
+        Ok(()) => Response::Ok,
+        Err(e) => service_error_response(&e),
+    }
+}
+
+/// `restart service <wire-id>` - stop + ensure with the configured version.
+pub async fn restart_service(service_id: &str, state: &DaemonState) -> Response {
+    let (type_id, site) = parse_wire_id(service_id);
+    let reg = registry();
+    let Some(def) = reg.get(&type_id) else {
         return unknown_service(service_id);
     };
     {
         let mut mgr = state.service_manager.lock().await;
-        if let Err(e) = mgr.stop(service).await {
-            return service_error_response(&e);
-        }
+        let _ = mgr.stop(service_id).await;
     }
-    persist_instance(state, service, |inst| inst.enabled = false)
-        .await
-        .unwrap_or_else(|resp| resp)
-}
-
-/// `restart service <svc>` - stop + ensure with the configured/selected version.
-pub async fn restart_service(service_id: &str, state: &DaemonState) -> Response {
-    let Some(service) = Service::from_id(service_id) else {
-        return unknown_service(service_id);
-    };
+    if def.requires_site() {
+        return start_per_site(&def, service_id, site.as_deref(), state).await;
+    }
     let (configured_version, port) = {
         let cfg = state.config.lock().await;
-        let inst = cfg.services.instances.get(service.id());
+        let inst = cfg.services.instances.get(service_id);
         (
             inst.and_then(|i| i.version.clone()),
-            inst.and_then(|i| i.port).unwrap_or(service.default_port()),
+            inst.and_then(|i| i.port).unwrap_or(def.default_port()),
         )
     };
-    let version = match resolve_version(service, configured_version.as_deref(), &state.dirs) {
+    let version = match resolve_version(&def, configured_version.as_deref(), &state.dirs) {
         Ok(v) => v,
         Err(resp) => return resp,
     };
     let outcome = {
         let mut mgr = state.service_manager.lock().await;
-        mgr.restart(service, version, port).await
+        mgr.ensure(
+            Arc::clone(&def),
+            service_id,
+            Some(version),
+            port,
+            None,
+            None,
+        )
+        .await
     };
     match outcome {
         Ok(_) => Response::Ok,
@@ -315,29 +693,45 @@ pub async fn restart_service(service_id: &str, state: &DaemonState) -> Response 
     }
 }
 
-/// `set-port <svc> <port>` - persist the port (takes effect on next start/restart).
+/// `set-port <wire-id> <port>` - validate against reserved ports, then persist.
 pub async fn set_service_port(service_id: &str, port: u16, state: &DaemonState) -> Response {
-    let Some(service) = Service::from_id(service_id) else {
+    let (type_id, _) = parse_wire_id(service_id);
+    if registry().get(&type_id).is_none() {
         return unknown_service(service_id);
-    };
-    persist_instance(state, service, |inst| inst.port = Some(port))
+    }
+    {
+        let cfg = state.config.lock().await;
+        let own = cfg.services.instances.get(service_id).and_then(|i| i.port);
+        let mut reserved = reserved_ports(&cfg);
+        if let Some(p) = own {
+            reserved.remove(&p);
+        }
+        if reserved.contains(&port) {
+            return err(
+                ErrorCode::PortInUse,
+                &format!("port {port} is already in use"),
+            );
+        }
+    }
+    persist_instance(state, service_id, |inst| inst.port = Some(port))
         .await
         .unwrap_or_else(|resp| resp)
 }
 
-/// `service logs <svc>` - the last `lines` lines of the engine's log file.
+/// `service logs <wire-id>` - the last `lines` lines of the instance log file.
 pub fn service_logs(service_id: &str, lines: u32, state: &DaemonState) -> Response {
-    let Some(service) = Service::from_id(service_id) else {
+    let (type_id, _) = parse_wire_id(service_id);
+    if registry().get(&type_id).is_none() {
         return unknown_service(service_id);
-    };
-    let path = svc_version::log_path(&state.dirs, service);
+    }
+    let path = svc_version::log_path(&state.dirs, service_id);
     let content = match std::fs::read_to_string(&path) {
         Ok(c) => c,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
         Err(e) => {
             return Response::Error {
                 code: ErrorCode::Internal,
-                message: format!("read {} log: {e}", service.id()),
+                message: format!("read {service_id} log: {e}"),
             }
         }
     };
@@ -355,7 +749,9 @@ pub fn service_logs(service_id: &str, lines: u32, state: &DaemonState) -> Respon
 
 // ── status + auto-start ───────────────────────────────────────────────────
 
-/// Build the per-service status list for `ListServices` / `StatusReport`.
+/// Build the per-service status list: one row per single-instance type
+/// (unconditionally, so uninstalled engines still appear) plus one row per
+/// configured per-site instance.
 pub async fn service_statuses(state: &DaemonState) -> Vec<ServiceStatus> {
     let snapshots = {
         let mut mgr = state.service_manager.lock().await;
@@ -365,140 +761,238 @@ pub async fn service_statuses(state: &DaemonState) -> Vec<ServiceStatus> {
         let cfg = state.config.lock().await;
         cfg.services.instances.clone()
     };
+    let reg = registry();
+    let mut out = Vec::new();
 
-    Service::ALL
-        .into_iter()
-        .map(|svc| {
-            let inst = instances.get(svc.id());
-            let snap = snapshots.iter().find(|s| s.service == svc);
-            let (run_state, pid, listen) = match snap {
-                Some(s) => (
-                    map_run_state(s.state),
-                    s.pid,
-                    s.listen.as_ref().map(ToString::to_string),
-                ),
-                None => (ServiceRunState::Stopped, None, None),
-            };
-            ServiceStatus {
-                service: svc.id().to_string(),
-                display_name: svc.display_name().to_string(),
-                installed_versions: installed_versions(svc, &state.dirs)
-                    .iter()
-                    .map(ToString::to_string)
-                    .collect(),
-                selected_version: inst.and_then(|i| i.version.clone()),
-                state: run_state,
-                pid,
-                listen,
-                port: inst.and_then(|i| i.port).unwrap_or(svc.default_port()),
-                enabled: inst.is_some_and(|i| i.enabled),
-                supports_databases: matches!(svc.kind(), yerd_services::ServiceKind::Database),
-            }
-        })
-        .collect()
+    for def in reg.single_instance() {
+        let inst = instances.get(def.id());
+        out.push(build_status(
+            def,
+            def.id(),
+            None,
+            inst,
+            &snapshots,
+            &state.dirs,
+        ));
+    }
+    for (wire, inst) in &instances {
+        let (type_id, site) = parse_wire_id(wire);
+        let Some(def) = reg.get(&type_id) else {
+            continue;
+        };
+        if !matches!(def.multiplicity(), Multiplicity::PerSite) {
+            continue;
+        }
+        out.push(build_status(
+            &def,
+            wire,
+            site,
+            Some(inst),
+            &snapshots,
+            &state.dirs,
+        ));
+    }
+    out
 }
 
-/// Auto-start every *installed* service at daemon startup. Runs as a background
-/// task so a slow/failing DB cold-boot never blocks the proxy/DNS listeners.
+/// Assemble one [`ServiceStatus`] row for `wire`.
+fn build_status(
+    def: &Arc<dyn ServiceDefinition>,
+    wire: &str,
+    site: Option<String>,
+    inst: Option<&ServiceInstance>,
+    snapshots: &[yerd_services::ServiceSnapshot],
+    dirs: &PlatformDirs,
+) -> ServiceStatus {
+    let snap = snapshots.iter().find(|s| s.service == wire);
+    let (run_state, pid, listen) = match snap {
+        Some(s) => (
+            map_run_state(s.state),
+            s.pid,
+            s.listen.as_ref().map(ToString::to_string),
+        ),
+        None => (ServiceRunState::Stopped, None, None),
+    };
+    let error = if run_state == ServiceRunState::Failed {
+        Some("the service exited unexpectedly; view its logs for details".to_string())
+    } else {
+        None
+    };
+    ServiceStatus {
+        service: wire.to_string(),
+        display_name: def.display_name().to_string(),
+        installed_versions: installed_versions(def.id(), dirs)
+            .iter()
+            .map(ToString::to_string)
+            .collect(),
+        selected_version: inst.and_then(|i| i.version.clone()),
+        state: run_state,
+        pid,
+        listen,
+        port: inst.and_then(|i| i.port).unwrap_or(def.default_port()),
+        enabled: inst.is_some_and(|i| i.enabled),
+        supports_databases: def.as_database().is_some(),
+        type_id: def.id().to_string(),
+        site,
+        error,
+    }
+}
+
+/// Auto-start every instance whose `enabled` flag is set. Runs as a background
+/// task so a slow/failing cold-boot never blocks the proxy/DNS listeners.
 ///
-/// Policy: any engine with an installed version is brought up on boot,
-/// regardless of the persisted `enabled` flag - installing a service is taken as
-/// intent to run it. A `Stop` still stops the engine for the current session,
-/// but it returns on the next daemon start; to keep one off for good, uninstall
-/// it.
-///
-/// Shutdown-aware: an instance torn down shortly after booting (the
-/// upgrade-restart thrash) bails before spawning DB engines, so the 10s DB
-/// `stop_grace` never holds the instance lock and serialises the next relaunch.
+/// Boot autostart now **honours `enabled`**: an engine whose last user action
+/// was `Stop` (persisted `enabled=false`) stays stopped; single-instance engines
+/// default `enabled=true`, per-site app servers `false`.
 pub async fn auto_start_installed(state: Arc<DaemonState>) {
-    let installed: Vec<Service> = Service::ALL
-        .into_iter()
-        .filter(|svc| !installed_versions(*svc, &state.dirs).is_empty())
-        .collect();
+    let enabled: Vec<String> = {
+        let cfg = state.config.lock().await;
+        cfg.services
+            .instances
+            .iter()
+            .filter(|(_, inst)| inst.enabled)
+            .map(|(wire, _)| wire.clone())
+            .collect()
+    };
     let mut shutdown = state.shutdown_tx.subscribe();
-    run_auto_start(installed, &mut shutdown, |service| {
+    run_auto_start(enabled, &mut shutdown, |wire| {
         let state = state.clone();
-        async move { list_services_start_one(service, &state).await }
+        async move { start_one(&wire, &state).await }
     })
     .await;
 }
 
-/// Start each installed service in order, stopping the moment `shutdown` trips.
-/// Extracted from [`auto_start_installed`] so both the already-shutting-down and
-/// the mid-loop-abort branches are unit-testable with a fake `start_one`. The
-/// `biased` select checks shutdown first each iteration; a SIGTERM landing
-/// mid-start cancels the in-flight future, whose not-yet-tracked child the
-/// spawner's `kill_on_drop` then reaps.
+/// Start each enabled instance in order, stopping the moment `shutdown` trips.
 async fn run_auto_start<F, Fut>(
-    installed: Vec<Service>,
+    instances: Vec<String>,
     shutdown: &mut watch::Receiver<bool>,
     mut start_one: F,
 ) where
-    F: FnMut(Service) -> Fut,
+    F: FnMut(String) -> Fut,
     Fut: std::future::Future<Output = Result<(), ServiceError>>,
 {
     if *shutdown.borrow() {
         return;
     }
-    for service in installed {
+    for wire in instances {
         tokio::select! {
             biased;
             _ = shutdown.changed() => return,
-            res = start_one(service) => match res {
-                Ok(()) => tracing::info!(service = %service, "auto-started service"),
-                Err(e) => tracing::warn!(service = %service, error = %e, "service auto-start failed"),
+            res = start_one(wire.clone()) => match res {
+                Ok(()) => tracing::info!(service = %wire, "auto-started service"),
+                Err(e) => tracing::warn!(service = %wire, error = %e, "service auto-start failed"),
             },
         }
     }
 }
 
-/// Ensure one installed service is running (used by auto-start). Returns the
-/// supervisor error so the caller can log it.
-async fn list_services_start_one(
-    service: Service,
-    state: &DaemonState,
-) -> Result<(), ServiceError> {
+/// Ensure one enabled instance is running (used by auto-start).
+async fn start_one(wire: &str, state: &DaemonState) -> Result<(), ServiceError> {
+    let (type_id, site) = parse_wire_id(wire);
+    let reg = registry();
+    let Some(def) = reg.get(&type_id) else {
+        return Ok(());
+    };
+
+    if def.requires_site() {
+        let Some(site_name) = site else {
+            return Ok(());
+        };
+        let resolved = {
+            let router = state.router.read().await;
+            router
+                .get(&site_name)
+                .map(|s| (s.document_root().to_path_buf(), s.php()))
+        };
+        let Some((doc_root, php)) = resolved else {
+            return Ok(());
+        };
+        let port = {
+            let cfg = state.config.lock().await;
+            cfg.services
+                .instances
+                .get(wire)
+                .and_then(|i| i.port)
+                .unwrap_or(def.default_port())
+        };
+        let php_cli = crate::php_install::cli_binary_path(&state.dirs, php);
+        let mut mgr = state.service_manager.lock().await;
+        return mgr
+            .ensure(def, wire, None, port, Some(php_cli), Some(doc_root))
+            .await
+            .map(|_| ());
+    }
+
     let (configured_version, port) = {
         let cfg = state.config.lock().await;
-        let inst = cfg.services.instances.get(service.id());
+        let inst = cfg.services.instances.get(wire);
         (
             inst.and_then(|i| i.version.clone()),
-            inst.and_then(|i| i.port).unwrap_or(service.default_port()),
+            inst.and_then(|i| i.port).unwrap_or(def.default_port()),
         )
     };
-    let version = match configured_version {
-        Some(v) => v.parse::<ServiceVersion>()?,
-        None => {
-            installed_versions(service, &state.dirs)
-                .pop()
-                .ok_or(ServiceError::Unsupported {
-                    service,
+    let version =
+        match configured_version {
+            Some(v) => v.parse::<ServiceVersion>()?,
+            None => installed_versions(def.id(), &state.dirs).pop().ok_or(
+                ServiceError::Unsupported {
+                    service: wire.to_owned(),
                     detail: "no installed version to auto-start".to_owned(),
-                })?
-        }
-    };
+                },
+            )?,
+        };
     let mut mgr = state.service_manager.lock().await;
-    mgr.ensure(service, version, port).await.map(|_| ())
+    mgr.ensure(def, wire, Some(version), port, None, None)
+        .await
+        .map(|_| ())
 }
 
 // ── helpers ─────────────────────────────────────────────────────────────────
 
-/// Installed versions of `service`, ascending.
-fn installed_versions(service: Service, dirs: &yerd_platform::PlatformDirs) -> Vec<ServiceVersion> {
-    svc_version::discover_installed(dirs)
+/// Every port already spoken for by config: each service instance's configured
+/// or default port, plus mail / dumps / DNS / HTTP(S) and their fallbacks.
+fn reserved_ports(cfg: &Config) -> BTreeSet<u16> {
+    let reg = registry();
+    let mut r = BTreeSet::new();
+    for (wire, inst) in &cfg.services.instances {
+        let (ty, _) = parse_wire_id(wire);
+        let default = reg.get(&ty).map_or(0, |d| d.default_port());
+        r.insert(inst.port.unwrap_or(default));
+    }
+    r.insert(cfg.mail.port);
+    r.insert(cfg.dumps.port);
+    r.insert(cfg.dns_port);
+    r.insert(cfg.ports.http);
+    r.insert(cfg.ports.https);
+    r.insert(cfg.ports.fallback_http);
+    r.insert(cfg.ports.fallback_https);
+    r.remove(&0);
+    r
+}
+
+/// Walk candidate ports from `start`, skipping `reserved`, returning the first
+/// that binds on loopback.
+fn pick_free_port(start: u16, reserved: &BTreeSet<u16>) -> Option<u16> {
+    let binder = ActivePortBinder::new();
+    candidate_ports(start, reserved).find(|p| binder.bind(*p).map(drop).is_ok())
+}
+
+/// Installed versions of `type_id`, ascending.
+fn installed_versions(type_id: &str, dirs: &PlatformDirs) -> Vec<ServiceVersion> {
+    svc_version::discover_installed(dirs, &registry())
         .ok()
-        .and_then(|mut m| m.remove(&service))
+        .and_then(|mut m| m.remove(type_id))
         .unwrap_or_default()
 }
 
 /// Resolve the version to run: the configured one if installed, else the latest
 /// installed; error if nothing is installed.
 pub(crate) fn resolve_version(
-    service: Service,
+    def: &Arc<dyn ServiceDefinition>,
     configured: Option<&str>,
-    dirs: &yerd_platform::PlatformDirs,
+    dirs: &PlatformDirs,
 ) -> Result<ServiceVersion, Response> {
-    let mut installed = installed_versions(service, dirs);
+    let mut installed = installed_versions(def.id(), dirs);
     if let Some(c) = configured {
         if let Ok(v) = c.parse::<ServiceVersion>() {
             if installed.contains(&v) {
@@ -510,38 +1004,50 @@ pub(crate) fn resolve_version(
         code: ErrorCode::NotFound,
         message: format!(
             "no {} version installed - run `yerd service install {}` first",
-            service.display_name(),
-            service.id()
+            def.display_name(),
+            def.id()
         ),
     })
 }
 
-/// Apply a mutation to a service's config instance, validate, and persist.
+/// Apply a mutation to a service instance's config, validate, and persist.
 async fn persist_instance(
     state: &DaemonState,
-    service: Service,
+    wire: &str,
     f: impl FnOnce(&mut ServiceInstance),
 ) -> Result<Response, Response> {
     let mut cfg = state.config.lock().await;
+    let (_, site) = parse_wire_id(wire);
     let inst = cfg
         .services
         .instances
-        .entry(service.id().to_string())
-        .or_default();
+        .entry(wire.to_string())
+        .or_insert_with(|| ServiceInstance {
+            site: site.clone(),
+            ..ServiceInstance::default()
+        });
     f(inst);
+    match save_cfg(&cfg, state) {
+        Response::Ok => Ok(Response::Ok),
+        other => Err(other),
+    }
+}
+
+/// Validate + save the config, mapping failures to a `Response::Error`.
+fn save_cfg(cfg: &Config, state: &DaemonState) -> Response {
     if let Err(e) = cfg.validate() {
-        return Err(Response::Error {
+        return Response::Error {
             code: ErrorCode::Internal,
             message: format!("config validation failed: {e}"),
-        });
+        };
     }
     if let Err(e) = cfg.save(&state.config_path) {
-        return Err(Response::Error {
+        return Response::Error {
             code: ErrorCode::Internal,
             message: format!("persist config: {e}"),
-        });
+        };
     }
-    Ok(Response::Ok)
+    Response::Ok
 }
 
 fn map_run_state(s: MgrRunState) -> ServiceRunState {
@@ -551,11 +1057,26 @@ fn map_run_state(s: MgrRunState) -> ServiceRunState {
     }
 }
 
-fn unknown_service(id: &str) -> Response {
+fn err(code: ErrorCode, message: &str) -> Response {
     Response::Error {
-        code: ErrorCode::NotFound,
-        message: format!("unknown service {id:?}"),
+        code,
+        message: message.to_string(),
     }
+}
+
+fn unknown_service(id: &str) -> Response {
+    err(ErrorCode::NotFound, &format!("unknown service {id:?}"))
+}
+
+fn unknown_service_type(id: &str) -> Response {
+    err(
+        ErrorCode::UnknownServiceType,
+        &format!("unknown service type {id:?}"),
+    )
+}
+
+fn service_type_mismatch(id: &str, why: &str) -> Response {
+    err(ErrorCode::InvalidPath, &format!("service {id:?} {why}"))
 }
 
 fn service_error_response(e: &ServiceError) -> Response {
@@ -584,8 +1105,6 @@ mod tests {
 
     use crate::test_support::{dirs_in, state_in};
 
-    /// A `Downloader` that always reports a transport failure, or yields a fixed
-    /// listing body - enough to drive `available_services`' two arms without IO.
     struct FakeDownloader {
         body: Option<Vec<u8>>,
     }
@@ -603,17 +1122,38 @@ mod tests {
         }
     }
 
-    /// Fabricate an "installed" service version by laying down its server binary
-    /// at the layout `svc_version::discover_installed` scans for.
-    fn install_fake(dirs: &PlatformDirs, service: Service, version: &str) {
+    fn def_of(id: &str) -> Arc<dyn ServiceDefinition> {
+        registry().get(id).unwrap()
+    }
+
+    fn install_fake(dirs: &PlatformDirs, type_id: &str, version: &str) {
+        let def = def_of(type_id);
         let ver: ServiceVersion = version.parse().unwrap();
-        let bin = svc_version::install_dir(dirs, service, &ver).join("bin");
+        let bin = svc_version::install_dir(dirs, def.id(), &ver).join("bin");
         std::fs::create_dir_all(&bin).unwrap();
-        std::fs::write(bin.join(service.server_binary()), b"#!fake").unwrap();
+        std::fs::write(bin.join(def.server_binary().unwrap()), b"#!fake").unwrap();
     }
 
     fn ver(s: &str) -> ServiceVersion {
         s.parse().unwrap()
+    }
+
+    fn err_parts(r: Response) -> (ErrorCode, String) {
+        match r {
+            Response::Error { code, message } => (code, message),
+            other => panic!("expected Response::Error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn wire_id_round_trips() {
+        assert_eq!(wire_id("redis", None), "redis");
+        assert_eq!(wire_id("reverb", Some("blog")), "reverb:blog");
+        assert_eq!(parse_wire_id("redis"), ("redis".to_owned(), None));
+        assert_eq!(
+            parse_wire_id("reverb:blog"),
+            ("reverb".to_owned(), Some("blog".to_owned()))
+        );
     }
 
     #[test]
@@ -626,98 +1166,19 @@ mod tests {
     }
 
     #[test]
-    fn service_error_code_classifies_variants() {
-        let svc = Service::MySql;
-        assert_eq!(
-            service_error_code(&ServiceError::PortInUse {
-                service: svc,
-                port: 3306
-            }),
-            ErrorCode::PortInUse
-        );
-        assert_eq!(
-            service_error_code(&ServiceError::VersionNotInstalled {
-                service: svc,
-                version: ver("8.4")
-            }),
-            ErrorCode::NotFound
-        );
-        assert_eq!(
-            service_error_code(&ServiceError::VersionUnavailable {
-                service: svc,
-                version: ver("8.4")
-            }),
-            ErrorCode::InvalidPath
-        );
-        assert_eq!(
-            service_error_code(&ServiceError::UnsupportedPlatform {
-                detail: "no builds".to_owned()
-            }),
-            ErrorCode::InvalidPath
-        );
-        assert_eq!(
-            service_error_code(&ServiceError::Unsupported {
-                service: svc,
-                detail: "nope".to_owned()
-            }),
-            ErrorCode::InvalidPath
-        );
-        assert_eq!(
-            service_error_code(&ServiceError::ListingParse {
-                detail: "bad".to_owned()
-            }),
-            ErrorCode::Internal
-        );
-    }
-
-    #[test]
-    fn unknown_service_is_not_found() {
-        match unknown_service("nope") {
-            Response::Error { code, message } => {
-                assert_eq!(code, ErrorCode::NotFound);
-                assert!(message.contains("nope"));
-            }
-            other => panic!("expected error, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn service_error_response_carries_message_and_code() {
-        let e = ServiceError::PortInUse {
-            service: Service::Postgres,
-            port: 5432,
-        };
-        match service_error_response(&e) {
-            Response::Error { code, message } => {
-                assert_eq!(code, ErrorCode::PortInUse);
-                assert_eq!(message, e.to_string());
-            }
-            other => panic!("expected error, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn installed_versions_empty_when_nothing_on_disk() {
-        let tmp = tempfile::tempdir().unwrap();
-        let dirs = dirs_in(tmp.path());
-        assert!(installed_versions(Service::MySql, &dirs).is_empty());
-    }
-
-    #[test]
     fn installed_versions_discovers_laid_down_binary() {
         let tmp = tempfile::tempdir().unwrap();
         let dirs = dirs_in(tmp.path());
-        install_fake(&dirs, Service::MariaDb, "11.4");
-        let found = installed_versions(Service::MariaDb, &dirs);
-        assert_eq!(found, vec![ver("11.4")]);
-        assert!(installed_versions(Service::MySql, &dirs).is_empty());
+        install_fake(&dirs, "mariadb", "11.4");
+        assert_eq!(installed_versions("mariadb", &dirs), vec![ver("11.4")]);
+        assert!(installed_versions("mysql", &dirs).is_empty());
     }
 
     #[test]
     fn resolve_version_errors_when_nothing_installed() {
         let tmp = tempfile::tempdir().unwrap();
         let dirs = dirs_in(tmp.path());
-        match resolve_version(Service::Redis, None, &dirs) {
+        match resolve_version(&def_of("redis"), None, &dirs) {
             Err(Response::Error { code, message }) => {
                 assert_eq!(code, ErrorCode::NotFound);
                 assert!(message.contains("redis"));
@@ -727,164 +1188,145 @@ mod tests {
     }
 
     #[test]
-    fn resolve_version_prefers_configured_when_installed() {
+    fn resolve_version_prefers_configured_then_latest() {
         let tmp = tempfile::tempdir().unwrap();
         let dirs = dirs_in(tmp.path());
-        install_fake(&dirs, Service::Postgres, "16.2");
-        install_fake(&dirs, Service::Postgres, "17.0");
+        install_fake(&dirs, "postgres", "16.2");
+        install_fake(&dirs, "postgres", "17.0");
         assert_eq!(
-            resolve_version(Service::Postgres, Some("16.2"), &dirs).unwrap(),
+            resolve_version(&def_of("postgres"), Some("16.2"), &dirs).unwrap(),
             ver("16.2")
         );
-    }
-
-    #[test]
-    fn resolve_version_falls_back_to_latest_installed() {
-        let tmp = tempfile::tempdir().unwrap();
-        let dirs = dirs_in(tmp.path());
-        install_fake(&dirs, Service::Postgres, "16.2");
-        install_fake(&dirs, Service::Postgres, "17.0");
         assert_eq!(
-            resolve_version(Service::Postgres, Some("99.0"), &dirs).unwrap(),
-            ver("17.0")
-        );
-        assert_eq!(
-            resolve_version(Service::Postgres, None, &dirs).unwrap(),
+            resolve_version(&def_of("postgres"), Some("99.0"), &dirs).unwrap(),
             ver("17.0")
         );
     }
 
     #[test]
-    fn new_manager_constructs_without_io() {
-        let tmp = tempfile::tempdir().unwrap();
-        let dirs = dirs_in(tmp.path());
-        let _mgr = new_manager(dirs);
+    fn reserved_ports_includes_defaults_and_infra() {
+        let mut cfg = Config::default();
+        cfg.services
+            .instances
+            .insert("redis".to_string(), ServiceInstance::default());
+        let r = reserved_ports(&cfg);
+        assert!(r.contains(&6379), "redis default port reserved: {r:?}");
+        assert!(r.contains(&cfg.dns_port));
+        assert!(r.contains(&cfg.ports.http));
     }
 
-    /// Pull `(code, message)` out of a `Response::Error`, panicking otherwise.
-    fn err_parts(r: Response) -> (ErrorCode, String) {
-        match r {
-            Response::Error { code, message } => (code, message),
-            other => panic!("expected Response::Error, got {other:?}"),
-        }
+    #[test]
+    fn pick_free_port_skips_reserved() {
+        let mut reserved = BTreeSet::new();
+        reserved.insert(8080);
+        let p = pick_free_port(8080, &reserved).unwrap();
+        assert_ne!(p, 8080);
+        assert!(p >= 8081);
     }
 
     #[tokio::test]
-    async fn service_statuses_lists_all_engines_stopped_when_none_installed() {
+    async fn service_statuses_lists_single_instance_types_always() {
         let tmp = tempfile::tempdir().unwrap();
         let state = state_in(tmp.path());
         let statuses = service_statuses(&state).await;
-        assert_eq!(statuses.len(), Service::ALL.len());
+        assert_eq!(statuses.len(), registry().single_instance().count());
         for s in &statuses {
             assert_eq!(s.state, ServiceRunState::Stopped);
-            assert!(s.pid.is_none());
-            assert!(s.listen.is_none());
-            assert!(s.installed_versions.is_empty());
-            assert!(s.selected_version.is_none());
             assert!(!s.enabled);
         }
         let mysql = statuses.iter().find(|s| s.service == "mysql").unwrap();
         assert!(mysql.supports_databases);
+        assert_eq!(mysql.type_id, "mysql");
         let redis = statuses.iter().find(|s| s.service == "redis").unwrap();
         assert!(!redis.supports_databases);
     }
 
     #[tokio::test]
-    async fn list_services_wraps_statuses() {
+    async fn service_statuses_includes_configured_per_site_instances() {
         let tmp = tempfile::tempdir().unwrap();
         let state = state_in(tmp.path());
-        match list_services(&state).await {
-            Response::Services { services } => {
-                assert_eq!(services.len(), Service::ALL.len());
-            }
-            other => panic!("expected Services, got {other:?}"),
+        {
+            let mut cfg = state.config.lock().await;
+            cfg.services.instances.insert(
+                "reverb:blog".to_string(),
+                ServiceInstance {
+                    site: Some("blog".to_string()),
+                    port: Some(8081),
+                    enabled: false,
+                    ..ServiceInstance::default()
+                },
+            );
         }
+        let statuses = service_statuses(&state).await;
+        let reverb = statuses
+            .iter()
+            .find(|s| s.service == "reverb:blog")
+            .unwrap();
+        assert_eq!(reverb.type_id, "reverb");
+        assert_eq!(reverb.site.as_deref(), Some("blog"));
+        assert_eq!(reverb.port, 8081);
     }
 
     #[tokio::test]
-    async fn available_services_reports_transport_failure() {
-        let tmp = tempfile::tempdir().unwrap();
-        let state = state_in(tmp.path());
-        let dl = FakeDownloader { body: None };
-        let (code, msg) = err_parts(available_services(&state, &dl).await);
-        assert_eq!(code, ErrorCode::Internal);
-        assert!(msg.contains("services distribution"));
-    }
-
-    #[tokio::test]
-    async fn available_services_success_lists_every_engine_empty() {
+    async fn available_services_excludes_versionless_types() {
         let tmp = tempfile::tempdir().unwrap();
         let state = state_in(tmp.path());
         let dl = FakeDownloader {
-            body: Some(b"{\"services\":{}}".to_vec()),
+            body: Some(b"{\"schema\":1,\"services\":{}}".to_vec()),
         };
         match available_services(&state, &dl).await {
             Response::AvailableServices { services } => {
-                assert_eq!(services.len(), Service::ALL.len());
-                for s in &services {
-                    assert!(s.available.is_empty());
-                    assert!(s.installed.is_empty());
-                }
+                assert!(services.iter().all(|s| s.service != "reverb"));
+                assert_eq!(
+                    services.len(),
+                    registry().iter().filter(|d| d.requires_version()).count()
+                );
             }
             other => panic!("expected AvailableServices, got {other:?}"),
         }
     }
 
     #[tokio::test]
-    async fn unknown_service_id_is_not_found_across_handlers() {
+    async fn stop_service_does_not_change_autostart() {
         let tmp = tempfile::tempdir().unwrap();
         let state = state_in(tmp.path());
-        let dl = FakeDownloader { body: None };
-        let cases = vec![
-            install_service("nope", "1.0", &state, &dl).await,
-            change_service_version("nope", "1.0", &state, &dl).await,
-            uninstall_service("nope", "1.0", false, &state).await,
-            start_service("nope", &state).await,
-            stop_service("nope", &state).await,
-            restart_service("nope", &state).await,
-            set_service_port("nope", 1234, &state).await,
-            service_logs("nope", 10, &state),
-        ];
-        for r in cases {
-            assert_eq!(err_parts(r).0, ErrorCode::NotFound);
+        {
+            let mut cfg = state.config.lock().await;
+            cfg.services.instances.insert(
+                "redis".to_string(),
+                ServiceInstance {
+                    enabled: true,
+                    ..ServiceInstance::default()
+                },
+            );
         }
-    }
-
-    #[tokio::test]
-    async fn install_and_change_reject_bad_version_string() {
-        let tmp = tempfile::tempdir().unwrap();
-        let state = state_in(tmp.path());
-        let dl = FakeDownloader { body: None };
-        let (code, _) = err_parts(install_service("mysql", "not-a-version!!", &state, &dl).await);
-        assert_eq!(code, ErrorCode::InvalidPath);
-        let (code, _) =
-            err_parts(change_service_version("mysql", "not-a-version!!", &state, &dl).await);
-        assert_eq!(code, ErrorCode::InvalidPath);
-        let (code, _) = err_parts(uninstall_service("mysql", "bad!", false, &state).await);
-        assert_eq!(code, ErrorCode::InvalidPath);
-    }
-
-    #[tokio::test]
-    async fn start_and_restart_error_when_nothing_installed() {
-        let tmp = tempfile::tempdir().unwrap();
-        let state = state_in(tmp.path());
-        let (code, msg) = err_parts(start_service("postgres", &state).await);
-        assert_eq!(code, ErrorCode::NotFound);
-        assert!(msg.contains("install"));
-        assert_eq!(
-            err_parts(restart_service("postgres", &state).await).0,
-            ErrorCode::NotFound
+        assert!(matches!(stop_service("redis", &state).await, Response::Ok));
+        let cfg = state.config.lock().await;
+        assert!(
+            cfg.services.instances.get("redis").unwrap().enabled,
+            "stop must not clear the autostart flag"
         );
     }
 
     #[tokio::test]
-    async fn stop_service_succeeds_and_persists_disabled() {
+    async fn set_service_autostart_persists() {
         let tmp = tempfile::tempdir().unwrap();
         let state = state_in(tmp.path());
-        assert!(matches!(stop_service("redis", &state).await, Response::Ok));
+        assert!(matches!(
+            set_service_autostart("redis", false, &state).await,
+            Response::Ok
+        ));
         let cfg = state.config.lock().await;
-        let inst = cfg.services.instances.get("redis").unwrap();
-        assert!(!inst.enabled);
+        assert!(!cfg.services.instances.get("redis").unwrap().enabled);
+    }
+
+    #[tokio::test]
+    async fn unknown_service_type_is_reported() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_in(tmp.path());
+        let dl = FakeDownloader { body: None };
+        let (code, _) = err_parts(add_service("nope", None, None, None, true, &state, &dl).await);
+        assert_eq!(code, ErrorCode::UnknownServiceType);
     }
 
     #[tokio::test]
@@ -903,34 +1345,20 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn service_logs_empty_when_no_log_file() {
-        let tmp = tempfile::tempdir().unwrap();
-        let state = state_in(tmp.path());
-        match service_logs("mysql", 50, &state) {
-            Response::ServiceLogs { lines } => assert!(lines.is_empty()),
-            other => panic!("expected ServiceLogs, got {other:?}"),
-        }
-    }
-
-    #[tokio::test]
     async fn service_logs_tails_last_lines() {
         let tmp = tempfile::tempdir().unwrap();
         let state = state_in(tmp.path());
-        let path = svc_version::log_path(&state.dirs, Service::MySql);
+        let path = svc_version::log_path(&state.dirs, "mysql");
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(&path, b"l1\nl2\nl3\nl4\nl5\n").unwrap();
         match service_logs("mysql", 2, &state) {
             Response::ServiceLogs { lines } => assert_eq!(lines, vec!["l4", "l5"]),
             other => panic!("expected ServiceLogs, got {other:?}"),
         }
-        match service_logs("mysql", 100, &state) {
-            Response::ServiceLogs { lines } => assert_eq!(lines.len(), 5),
-            other => panic!("expected ServiceLogs, got {other:?}"),
-        }
     }
 
     #[tokio::test]
-    async fn auto_start_installed_is_noop_with_nothing_installed() {
+    async fn auto_start_installed_is_noop_with_nothing_enabled() {
         let tmp = tempfile::tempdir().unwrap();
         let state = std::sync::Arc::new(state_in(tmp.path()));
         auto_start_installed(state).await;
@@ -942,24 +1370,24 @@ mod tests {
 mod auto_start_tests {
     use std::sync::Mutex;
 
-    use super::{run_auto_start, watch, Arc, Service, ServiceError};
-
-    fn two_services() -> Vec<Service> {
-        Service::ALL.into_iter().take(2).collect()
-    }
+    use super::{run_auto_start, watch, Arc, ServiceError};
 
     #[tokio::test]
     async fn skips_everything_when_shutdown_already_requested() {
         let (_tx, mut rx) = watch::channel(true);
-        let started: Arc<Mutex<Vec<Service>>> = Arc::new(Mutex::new(Vec::new()));
+        let started: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
         let rec = started.clone();
-        run_auto_start(two_services(), &mut rx, move |svc| {
-            let rec = rec.clone();
-            async move {
-                rec.lock().unwrap().push(svc);
-                Ok::<(), ServiceError>(())
-            }
-        })
+        run_auto_start(
+            vec!["redis".to_string(), "mysql".to_string()],
+            &mut rx,
+            move |w| {
+                let rec = rec.clone();
+                async move {
+                    rec.lock().unwrap().push(w);
+                    Ok::<(), ServiceError>(())
+                }
+            },
+        )
         .await;
         assert!(started.lock().unwrap().is_empty());
     }
@@ -968,76 +1396,24 @@ mod auto_start_tests {
     async fn stops_after_shutdown_trips_mid_loop() {
         let (tx, mut rx) = watch::channel(false);
         let tx = Arc::new(tx);
-        let started: Arc<Mutex<Vec<Service>>> = Arc::new(Mutex::new(Vec::new()));
+        let started: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
         let rec = started.clone();
-        run_auto_start(two_services(), &mut rx, move |svc| {
-            let rec = rec.clone();
-            let tx = tx.clone();
-            async move {
-                rec.lock().unwrap().push(svc);
-                let _ = tx.send(true);
-                Ok::<(), ServiceError>(())
-            }
-        })
-        .await;
-        let started = started.lock().unwrap();
-        assert_eq!(started.len(), 1, "only the first service should start");
-        assert_eq!(started[0], Service::ALL[0]);
-    }
-
-    /// Shutdown landing *while* `start_one` is still pending must cancel that
-    /// in-flight start (and skip the rest) - the load-bearing behaviour of the
-    /// `biased` select. The first start parks on a never-fired gate, so the only
-    /// way the spawned task completes is the shutdown arm cancelling it.
-    #[tokio::test]
-    async fn shutdown_cancels_in_flight_start_one() {
-        use tokio::sync::Notify;
-        use tokio::time::{timeout, Duration};
-
-        let (tx, rx) = watch::channel(false);
-        let entered = Arc::new(Notify::new());
-        let gate = Arc::new(Notify::new());
-        let started: Arc<Mutex<Vec<Service>>> = Arc::new(Mutex::new(Vec::new()));
-        let completed: Arc<Mutex<Vec<Service>>> = Arc::new(Mutex::new(Vec::new()));
-
-        let entered_task = entered.clone();
-        let gate_task = gate.clone();
-        let started_task = started.clone();
-        let completed_task = completed.clone();
-        let handle = tokio::spawn(async move {
-            let mut rx = rx;
-            run_auto_start(two_services(), &mut rx, move |svc| {
-                let entered = entered_task.clone();
-                let gate = gate_task.clone();
-                let started = started_task.clone();
-                let completed = completed_task.clone();
+        run_auto_start(
+            vec!["redis".to_string(), "mysql".to_string()],
+            &mut rx,
+            move |w| {
+                let rec = rec.clone();
+                let tx = tx.clone();
                 async move {
-                    started.lock().unwrap().push(svc);
-                    entered.notify_one();
-                    gate.notified().await;
-                    completed.lock().unwrap().push(svc);
+                    rec.lock().unwrap().push(w);
+                    let _ = tx.send(true);
                     Ok::<(), ServiceError>(())
                 }
-            })
-            .await;
-        });
-
-        timeout(Duration::from_secs(1), entered.notified())
-            .await
-            .expect("first start_one should be entered");
-        let _ = tx.send(true);
-
-        timeout(Duration::from_secs(1), handle)
-            .await
-            .expect("biased shutdown must cancel the in-flight start_one")
-            .unwrap();
-
-        assert!(
-            completed.lock().unwrap().is_empty(),
-            "the cancelled start must not run past its await"
-        );
+            },
+        )
+        .await;
         let started = started.lock().unwrap();
-        assert_eq!(started.len(), 1, "only the first service should start");
-        assert_eq!(started[0], Service::ALL[0]);
+        assert_eq!(started.len(), 1, "only the first instance should start");
+        assert_eq!(started[0], "redis");
     }
 }

@@ -41,6 +41,7 @@ fn populated() -> Config {
         ServiceInstance {
             version: None,
             port: None,
+            site: None,
             enabled: true,
         },
     );
@@ -49,6 +50,7 @@ fn populated() -> Config {
         ServiceInstance {
             version: Some("8".to_string()),
             port: Some(6380),
+            site: None,
             enabled: true,
         },
     );
@@ -59,8 +61,8 @@ fn populated() -> Config {
 fn default_config_starts_with_version_line() {
     let s = Config::default().to_toml().unwrap();
     assert!(
-        s.starts_with("version = 13\n"),
-        "expected first line `version = 13`; got: {s}"
+        s.starts_with("version = 14\n"),
+        "expected first line `version = 14`; got: {s}"
     );
 }
 
@@ -227,6 +229,7 @@ fn service_instance_wire_shape_is_per_service_table() {
         ServiceInstance {
             version: Some("8".to_string()),
             port: Some(6380),
+            site: None,
             enabled: true,
         },
     );

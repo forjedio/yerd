@@ -64,6 +64,9 @@ export interface SiteEntry extends Site {
    *  detected default). `true` funnels through `index.php`; `false` executes
    *  named `.php` directly. Always present; absent only from an older daemon. */
   uses_front_controller?: boolean;
+  /** Whether an `artisan` marker was found at the site's project root, i.e. it
+   *  is a Laravel app (eligible to link a Reverb instance). */
+  is_laravel?: boolean;
 }
 
 /** crates/yerd-ipc/src/response.rs - WordPressAdminUser, for the auto-login
@@ -116,6 +119,14 @@ export interface ServiceStatus {
   port: number;
   enabled: boolean;
   supports_databases: boolean;
+  /** Service type id (`"redis"`, `"reverb"`), distinct from `service` (the
+   *  instance wire id, e.g. `"reverb:blog"`). Falls back to `service` when
+   *  omitted by an older daemon. */
+  type_id?: string;
+  /** Linked site for a per-site instance; absent for single-instance engines. */
+  site?: string | null;
+  /** Last failure message when `state` is `"failed"`. */
+  error?: string | null;
 }
 
 /** crates/yerd-ipc/src/status.rs - ServiceAvailability. */
@@ -123,6 +134,20 @@ export interface ServiceAvailability {
   service: string;
   available: string[];
   installed: string[];
+}
+
+/** crates/yerd-ipc/src/status.rs - AddableServiceType (the "Add Service" dialog
+ *  catalog). */
+export interface AddableServiceType {
+  type_id: string;
+  display_name: string;
+  multiplicity: "single" | "per_site";
+  requires_site: boolean;
+  requires_version: boolean;
+  already_installed: boolean;
+  available_versions: string[];
+  default_port: number;
+  suggested_port: number;
 }
 
 /** crates/yerd-ipc/src/status.rs - WordPressVersionInfo. */
@@ -495,6 +520,8 @@ export type Response =
   | { type: "doctor_fix"; report: FixReport }
   | { type: "services"; services: ServiceStatus[] }
   | { type: "available_services"; services: ServiceAvailability[] }
+  | { type: "addable_services"; types: AddableServiceType[] }
+  | { type: "service_instance_id"; id: string }
   | { type: "wordpress_versions"; versions: WordPressVersionInfo[] }
   | { type: "wordpress_login_token"; token: string }
   | { type: "wordpress_admin_users"; users: WordPressAdminUser[] }

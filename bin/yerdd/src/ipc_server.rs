@@ -112,6 +112,7 @@ async fn dispatch(req: Request, state: &DaemonState) -> Response {
                     let uses_front_controller = site.uses_front_controller(is_wordpress);
                     let (primary_domain, domains) = site_entry_domains(&router, name, &tld);
                     let apex_shadowed_by = router.apex_shadowed_by(name).map(str::to_owned);
+                    let is_laravel = crate::laravel_detect::is_laravel(site.document_root());
                     yerd_ipc::SiteEntry {
                         site: site.clone(),
                         is_wordpress,
@@ -119,6 +120,7 @@ async fn dispatch(req: Request, state: &DaemonState) -> Response {
                         domains,
                         apex_shadowed_by,
                         uses_front_controller,
+                        is_laravel,
                     }
                 })
                 .collect();
@@ -255,6 +257,38 @@ async fn dispatch(req: Request, state: &DaemonState) -> Response {
         }
         Request::ServiceLogs { service, lines } => {
             crate::services::service_logs(&service, lines, state)
+        }
+        Request::AddService {
+            type_id,
+            site,
+            port,
+            version,
+            autostart,
+        } => {
+            let dl = crate::php_install::ReqwestDownloader::new();
+            crate::services::add_service(
+                &type_id,
+                site.as_deref(),
+                port,
+                version.as_deref(),
+                autostart,
+                state,
+                &dl,
+            )
+            .await
+        }
+        Request::RemoveService { service, purge } => {
+            crate::services::remove_service(&service, purge, state).await
+        }
+        Request::SetServiceAutostart { service, enabled } => {
+            crate::services::set_service_autostart(&service, enabled, state).await
+        }
+        Request::SetServiceSite { service, site } => {
+            crate::services::set_service_site(&service, &site, state).await
+        }
+        Request::AddableServiceTypes => {
+            let dl = crate::php_install::ReqwestDownloader::new();
+            crate::services::addable_service_types(state, &dl).await
         }
         Request::CreateDatabase { service, name } => {
             crate::db_admin::create(&service, &name, state).await

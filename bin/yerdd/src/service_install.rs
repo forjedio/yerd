@@ -16,37 +16,46 @@ use yerd_supervise::Downloader;
 use yerd_platform::PlatformDirs;
 use yerd_services::version::{self, VERSION_MARKER};
 use yerd_services::{
-    current_os_arch, listing_url, resolve_from_listing, Service, ServiceError, ServiceVersion,
+    current_os_arch, listing_url, resolve_from_listing, ServiceError, ServiceVersion,
 };
 
-/// Install `service` at `version` into `data/services/<id>/<version>/`.
+/// Install `service_id` at `version` into `data/services/<id>/<version>/`.
 ///
 /// Resolves the artifact from yerd's services listing, downloads the `.tar.gz`,
 /// safely unpacks it into a staging dir, verifies the server binary is present,
 /// then atomically swaps it into place and records the version marker.
 /// Idempotent: reinstalling replaces the dir.
+///
+/// `server_binary` is the expected `bin/<name>` of the type's server; a
+/// versioned type that reaches install always has one, so `None` is rejected.
 pub async fn install(
-    service: Service,
+    service_id: &str,
+    server_binary: Option<&str>,
     version: &ServiceVersion,
     dirs: &PlatformDirs,
     dl: &dyn Downloader,
 ) -> Result<(), ServiceError> {
+    let server_binary = server_binary.ok_or_else(|| ServiceError::Unsupported {
+        service: service_id.to_owned(),
+        detail: "type has no server binary".into(),
+    })?;
+
     let (os, arch) = current_os_arch()?;
     let listing = dl.download(&listing_url()).await?;
     let listing = String::from_utf8_lossy(&listing);
-    let artifact = resolve_from_listing(&listing, service, version, os, arch)?;
+    let artifact = resolve_from_listing(&listing, service_id, version, os, arch)?;
 
-    let svc_root = version::service_root(dirs, service);
+    let svc_root = version::service_root(dirs, service_id);
     fs_ctx(std::fs::create_dir_all(&svc_root), &svc_root)?;
     let staging = svc_root.join(format!(".staging-{version}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&staging);
 
-    if let Err(e) = stage(service, &artifact.url, dl, &staging).await {
+    if let Err(e) = stage(server_binary, &artifact.url, dl, &staging).await {
         let _ = std::fs::remove_dir_all(&staging);
         return Err(e);
     }
 
-    let final_dir = version::install_dir(dirs, service, version);
+    let final_dir = version::install_dir(dirs, service_id, version);
     if final_dir.exists() {
         if let Err(e) = std::fs::remove_dir_all(&final_dir) {
             let _ = std::fs::remove_dir_all(&staging);
@@ -58,17 +67,21 @@ pub async fn install(
 
 /// Remove an installed version's files. With `purge`, also delete the engine's
 /// datadir (destructive). Returns the retained datadir path when it was kept.
+///
+/// `pinned_to_major` selects the datadir layout (per-major for engines whose
+/// on-disk format is major-incompatible, otherwise one shared datadir).
 pub fn uninstall(
-    service: Service,
+    service_id: &str,
+    pinned_to_major: bool,
     version: &ServiceVersion,
     dirs: &PlatformDirs,
     purge: bool,
 ) -> Result<Option<std::path::PathBuf>, ServiceError> {
-    let dir = version::install_dir(dirs, service, version);
+    let dir = version::install_dir(dirs, service_id, version);
     if dir.exists() {
         fs_ctx(std::fs::remove_dir_all(&dir), &dir)?;
     }
-    let datadir = version::datadir(dirs, service, version);
+    let datadir = version::datadir(dirs, service_id, pinned_to_major, version);
     if purge {
         if datadir.exists() {
             fs_ctx(std::fs::remove_dir_all(&datadir), &datadir)?;
@@ -80,7 +93,7 @@ pub fn uninstall(
 }
 
 async fn stage(
-    service: Service,
+    server_binary: &str,
     url: &str,
     dl: &dyn Downloader,
     staging: &Path,
@@ -89,11 +102,11 @@ async fn stage(
     fs_ctx(std::fs::create_dir_all(staging), staging)?;
     extract_all(&bytes, staging, url)?;
 
-    let server = staging.join("bin").join(service.server_binary());
+    let server = staging.join("bin").join(server_binary);
     if !server.is_file() {
         return Err(ServiceError::Extract {
             what: url.to_owned(),
-            detail: format!("archive missing bin/{}", service.server_binary()),
+            detail: format!("archive missing bin/{server_binary}"),
         });
     }
     let marker = staging.join(VERSION_MARKER);

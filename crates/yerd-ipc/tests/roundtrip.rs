@@ -149,6 +149,7 @@ fn encode_then_decode_response_roundtrip() {
             domains: vec![],
             apex_shadowed_by: None,
             uses_front_controller: false,
+            is_laravel: false,
         }],
     });
     assert_response_roundtrips(Response::Sites {
@@ -159,6 +160,7 @@ fn encode_then_decode_response_roundtrip() {
             domains: vec!["corp.test".into(), "*.blog.test".into()],
             apex_shadowed_by: Some("shop".into()),
             uses_front_controller: true,
+            is_laravel: false,
         }],
     });
     for code in [

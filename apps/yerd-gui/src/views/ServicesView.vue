@@ -40,6 +40,8 @@ import { useDaemon } from "@/composables/useDaemon";
 import { useResource } from "@/composables/useResource";
 import { useToast } from "@/composables/useToast";
 import {
+  addableServiceTypes,
+  addService,
   availableServices,
   backupDatabase,
   changeServiceVersion,
@@ -49,17 +51,20 @@ import {
   IpcError,
   listDatabases,
   listServices,
+  listSites,
   pickOpenFile,
   pickSaveFile,
+  removeService,
   restartService,
   restoreDatabase,
   serviceLogs,
+  setServiceAutostart,
   setServicePort,
   startService,
   stopService,
   uninstallService,
 } from "@/ipc/client";
-import type { DatabaseSummary, ServiceStatus } from "@/ipc/types";
+import type { AddableServiceType, DatabaseSummary, ServiceStatus, SiteEntry } from "@/ipc/types";
 import { poolStateLabel, poolStateTone } from "@/lib/utils";
 
 const toast = useToast();
@@ -77,14 +82,21 @@ watch(error, (e) => {
   if (e && !data.value) toast.error("Couldn't load services", e.message);
 });
 
+/** A per-site instance (Reverb) has no installed version, but it is still a
+ *  configured, startable instance identified by its linked site. */
+function isPerSite(s: ServiceStatus): boolean {
+  return !!s.site;
+}
 function canStart(s: ServiceStatus): boolean {
-  return s.installed_versions.length > 0 && s.state !== "running";
+  return (s.installed_versions.length > 0 || isPerSite(s)) && s.state !== "running";
 }
 function canStop(s: ServiceStatus): boolean {
   return s.state === "running" || s.state === "failed";
 }
+/** Whether the row is a configured instance (installed engine, or a per-site
+ *  instance) rather than an uninstalled single-instance engine. */
 function isInstalled(s: ServiceStatus): boolean {
-  return s.installed_versions.length > 0;
+  return s.installed_versions.length > 0 || isPerSite(s);
 }
 /** The version to show: the active/selected one, falling back to what's on disk. */
 function versionLabel(s: ServiceStatus): string {
@@ -125,6 +137,112 @@ async function doRestart(s: ServiceStatus): Promise<void> {
     await Promise.all([load({ force: true }), refresh()]);
   } catch (e) {
     toast.error(`Couldn't restart ${s.display_name}`, (e as IpcError).message);
+  } finally {
+    busy.value = null;
+  }
+}
+
+// ── Add Service dialog ──
+const addOpen = ref(false);
+const addLoading = ref(false);
+const addTypes = ref<AddableServiceType[]>([]);
+const laravelSites = ref<SiteEntry[]>([]);
+const addForm = ref({ typeId: "", site: "", version: "", port: "", autostart: false });
+
+const selectedType = computed(() => addTypes.value.find((t) => t.type_id === addForm.value.typeId));
+const typeOptions = computed(() =>
+  addTypes.value.map((t) => ({
+    value: t.type_id,
+    label: t.already_installed ? `${t.display_name} (installed)` : t.display_name,
+  })),
+);
+const siteOptions = computed(() =>
+  laravelSites.value.map((s) => ({ value: s.name, label: s.name })),
+);
+const versionOptions = computed(() =>
+  (selectedType.value?.available_versions ?? []).map((v) => ({ value: v, label: `v${v}` })),
+);
+
+function syncAddDefaults(): void {
+  const t = selectedType.value;
+  if (!t) return;
+  addForm.value.port = String(t.suggested_port);
+  addForm.value.autostart = !t.requires_site;
+  const vers = t.available_versions;
+  addForm.value.version = vers[vers.length - 1] ?? "";
+  addForm.value.site = t.requires_site ? (laravelSites.value[0]?.name ?? "") : "";
+}
+
+async function openAdd(): Promise<void> {
+  addOpen.value = true;
+  addLoading.value = true;
+  try {
+    const [types, sites] = await Promise.all([addableServiceTypes(), listSites()]);
+    addTypes.value = types;
+    laravelSites.value = sites.filter((s) => s.is_laravel);
+    const first = types.find((t) => !t.already_installed) ?? types[0];
+    addForm.value.typeId = first?.type_id ?? "";
+    syncAddDefaults();
+  } catch (e) {
+    toast.error("Couldn't load service types", (e as IpcError).message);
+  } finally {
+    addLoading.value = false;
+  }
+}
+watch(() => addForm.value.typeId, syncAddDefaults);
+
+const canSubmitAdd = computed(() => {
+  const t = selectedType.value;
+  if (!t || t.already_installed) return false;
+  if (t.requires_site && !addForm.value.site) return false;
+  if (t.requires_version && !addForm.value.version) return false;
+  const p = Number(addForm.value.port);
+  return Number.isInteger(p) && p >= 1 && p <= 65535;
+});
+
+async function confirmAdd(close: () => void): Promise<void> {
+  const t = selectedType.value;
+  if (!t) return;
+  busy.value = `add:${t.type_id}`;
+  try {
+    await addService({
+      type_id: t.type_id,
+      site: t.requires_site ? addForm.value.site : null,
+      port: Number(addForm.value.port),
+      version: t.requires_version ? addForm.value.version : null,
+      autostart: addForm.value.autostart,
+    });
+    toast.success(`Added ${t.display_name}`);
+    close();
+    await Promise.all([load({ force: true }), refresh()]);
+  } catch (e) {
+    toast.error(`Couldn't add ${t.display_name}`, (e as IpcError).message);
+  } finally {
+    busy.value = null;
+  }
+}
+
+async function doRemove(s: ServiceStatus): Promise<void> {
+  busy.value = `remove:${s.service}`;
+  try {
+    await removeService(s.service, false);
+    toast.success(`Removed ${s.display_name}`);
+    await Promise.all([load({ force: true }), refresh()]);
+  } catch (e) {
+    toast.error(`Couldn't remove ${s.display_name}`, (e as IpcError).message);
+  } finally {
+    busy.value = null;
+  }
+}
+
+async function doToggleAutostart(s: ServiceStatus): Promise<void> {
+  busy.value = `autostart:${s.service}`;
+  try {
+    await setServiceAutostart(s.service, !s.enabled);
+    toast.success(s.enabled ? `${s.display_name} won't start with Yerd` : `${s.display_name} starts with Yerd`);
+    await Promise.all([load({ force: true }), refresh()]);
+  } catch (e) {
+    toast.error(`Couldn't update ${s.display_name}`, (e as IpcError).message);
   } finally {
     busy.value = null;
   }
@@ -509,11 +627,18 @@ onUnmounted(registerViewActions({ refresh: () => void load() }));
     <div class="flex-1 overflow-y-auto p-6">
       <Card>
         <CardHeader>
-          <CardTitle>Local services</CardTitle>
-          <CardDescription>
-            Each engine binds to localhost only with no password. Install a version,
-            then start it; changes to the port apply on the next restart.
-          </CardDescription>
+          <div class="flex items-start justify-between gap-4">
+            <div>
+              <CardTitle>Local services</CardTitle>
+              <CardDescription>
+                Databases and caches bind to localhost with no password; app servers
+                like Reverb run per-site. Add an instance, then start it.
+              </CardDescription>
+            </div>
+            <Button size="sm" :disabled="busy?.startsWith('add:')" @click="openAdd">
+              <Plus class="size-4" /> Add Service
+            </Button>
+          </div>
         </CardHeader>
 
         <CardContent>
@@ -526,6 +651,7 @@ onUnmounted(registerViewActions({ refresh: () => void load() }));
                 <th class="py-2 pr-4 font-medium">State</th>
                 <th class="py-2 pr-4 font-medium">Port</th>
                 <th class="py-2 pr-4 font-medium">Version</th>
+                <th class="py-2 pr-4 font-medium">Linked site</th>
                 <th class="py-2 pl-4 text-right font-medium">Actions</th>
               </tr>
             </thead>
@@ -549,13 +675,16 @@ onUnmounted(registerViewActions({ refresh: () => void load() }));
                   {{ isInstalled(s) ? s.port : "-" }}
                 </td>
                 <td class="py-3 pr-4 font-mono text-xs text-muted-foreground">
-                  {{ versionLabel(s) }}
+                  {{ isPerSite(s) ? "-" : versionLabel(s) }}
+                </td>
+                <td class="py-3 pr-4 text-xs text-muted-foreground">
+                  {{ s.site ?? "-" }}
                 </td>
                 <td class="py-3 pl-4">
                   <div class="flex items-center justify-end gap-2">
                     <Spinner v-if="busy?.endsWith(`:${s.service}`)" class="size-4" />
                     <Button
-                      v-if="!s.installed_versions.length"
+                      v-if="!isInstalled(s)"
                       size="sm"
                       :disabled="busy === `install:${s.service}`"
                       @click="openInstall(s)"
@@ -578,8 +707,12 @@ onUnmounted(registerViewActions({ refresh: () => void load() }));
                         <DropdownMenuItem :disabled="!canStop(s)" @select="doRestart(s)">
                           <RotateCw class="size-4" /> Restart
                         </DropdownMenuItem>
+                        <DropdownMenuItem @select="doToggleAutostart(s)">
+                          <Play class="size-4" />
+                          {{ s.enabled ? "Don't start with Yerd" : "Start with Yerd" }}
+                        </DropdownMenuItem>
                         <DropdownMenuSeparator />
-                        <DropdownMenuItem @select="openConfig(s)">
+                        <DropdownMenuItem v-if="!isPerSite(s)" @select="openConfig(s)">
                           <FileCode2 class="size-4" /> Configuration
                         </DropdownMenuItem>
                         <DropdownMenuItem @select="openPort(s)">
@@ -595,11 +728,19 @@ onUnmounted(registerViewActions({ refresh: () => void load() }));
                         >
                           <Database class="size-4" /> Manage databases
                         </DropdownMenuItem>
-                        <DropdownMenuItem @select="openChange(s)">
+                        <DropdownMenuItem v-if="!isPerSite(s)" @select="openChange(s)">
                           <Download class="size-4" /> Change version
                         </DropdownMenuItem>
                         <DropdownMenuSeparator />
                         <DropdownMenuItem
+                          v-if="isPerSite(s)"
+                          class="text-destructive focus:bg-destructive/10 focus:text-destructive"
+                          @select="doRemove(s)"
+                        >
+                          <Trash2 class="size-4" /> Remove
+                        </DropdownMenuItem>
+                        <DropdownMenuItem
+                          v-else
                           class="text-destructive focus:bg-destructive/10 focus:text-destructive"
                           @select="openUninstall(s)"
                         >
@@ -615,6 +756,50 @@ onUnmounted(registerViewActions({ refresh: () => void load() }));
         </CardContent>
       </Card>
     </div>
+
+    <!-- Add Service -->
+    <Modal v-model:open="addOpen" title="Add service">
+      <div v-if="addLoading" class="flex justify-center py-8"><Spinner class="size-6" /></div>
+      <div v-else class="space-y-4">
+        <label class="block space-y-1">
+          <span class="text-sm font-medium">Service type</span>
+          <Select v-model="addForm.typeId" :options="typeOptions" />
+        </label>
+
+        <label v-if="selectedType?.requires_site" class="block space-y-1">
+          <span class="text-sm font-medium">Linked Laravel site</span>
+          <Select
+            v-if="siteOptions.length"
+            v-model="addForm.site"
+            :options="siteOptions"
+          />
+          <p v-else class="text-xs italic text-muted-foreground">
+            No Laravel sites found. Park or link a site with an <code>artisan</code> file first.
+          </p>
+        </label>
+
+        <label v-if="selectedType?.requires_version" class="block space-y-1">
+          <span class="text-sm font-medium">Version</span>
+          <Select v-model="addForm.version" :options="versionOptions" />
+        </label>
+
+        <label class="block space-y-1">
+          <span class="text-sm font-medium">Port</span>
+          <Input v-model="addForm.port" type="number" min="1" max="65535" />
+        </label>
+
+        <label class="flex items-center gap-2 text-sm">
+          <input v-model="addForm.autostart" type="checkbox" class="size-4" />
+          Start with Yerd
+        </label>
+      </div>
+      <template #footer="{ close }">
+        <Button variant="ghost" @click="close">Cancel</Button>
+        <Button :disabled="!canSubmitAdd || busy?.startsWith('add:')" @click="confirmAdd(close)">
+          Add
+        </Button>
+      </template>
+    </Modal>
 
     <!-- Install / Change version -->
     <Modal

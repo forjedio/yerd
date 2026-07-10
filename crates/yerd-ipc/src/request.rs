@@ -264,7 +264,8 @@ pub enum Request {
         /// Service id.
         service: String,
     },
-    /// Stop (and disable auto-start for) a service instance.
+    /// Stop a service instance. Does not change its autostart preference (use
+    /// [`Request::SetServiceAutostart`] for that).
     StopService {
         /// Service id.
         service: String,
@@ -289,6 +290,52 @@ pub enum Request {
         /// How many trailing lines to return.
         lines: u32,
     },
+    /// Add a new service instance. For a versioned type (DB/cache) this downloads
+    /// the version; for a per-site type (Reverb) it links `site`. Runs as a
+    /// background job (reply is [`crate::Response::JobStarted`]) so a slow
+    /// download or a failing first start never blocks the daemon.
+    AddService {
+        /// The service type id (`"redis"`, `"reverb"`, ...).
+        type_id: String,
+        /// The linked site name, for a per-site type; `None` otherwise.
+        site: Option<String>,
+        /// An explicit port, or `None` to take the next free one from the type's
+        /// default.
+        port: Option<u16>,
+        /// The version to install, for a versioned type; `None` otherwise.
+        version: Option<String>,
+        /// Whether the instance starts with Yerd.
+        autostart: bool,
+    },
+    /// Remove a service instance (a per-site instance, or an engine with no
+    /// version tracking). `purge` also deletes any on-disk state. Versioned
+    /// engines are removed per-version via [`Request::UninstallService`].
+    RemoveService {
+        /// Instance wire id.
+        service: String,
+        /// When true, also delete the instance's on-disk state (destructive).
+        purge: bool,
+    },
+    /// Set whether a service instance starts with Yerd (its boot-autostart flag).
+    SetServiceAutostart {
+        /// Instance wire id.
+        service: String,
+        /// The desired autostart state.
+        enabled: bool,
+    },
+    /// Re-link a per-site instance (Reverb) to a different site. Changes the
+    /// instance's identity; the reply is the new wire id in
+    /// [`crate::Response::ServiceInstanceId`].
+    SetServiceSite {
+        /// Current instance wire id.
+        service: String,
+        /// The new site to link to.
+        site: String,
+    },
+    /// List the installable service *types* for the "Add Service" dialog (with
+    /// per-type multiplicity, install state, versions, and a suggested port). See
+    /// [`crate::Response::AddableServices`].
+    AddableServiceTypes,
     /// Create a database in a running SQL service (no-op error for caches).
     CreateDatabase {
         /// Service id (must be a SQL engine).
@@ -698,6 +745,11 @@ mod variant_name_pinning {
             Request::RestartService { .. } => {}
             Request::SetServicePort { .. } => {}
             Request::ServiceLogs { .. } => {}
+            Request::AddService { .. } => {}
+            Request::RemoveService { .. } => {}
+            Request::SetServiceAutostart { .. } => {}
+            Request::SetServiceSite { .. } => {}
+            Request::AddableServiceTypes => {}
             Request::CreateDatabase { .. } => {}
             Request::ListDatabases { .. } => {}
             Request::DropDatabase { .. } => {}

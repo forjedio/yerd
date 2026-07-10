@@ -30,7 +30,6 @@
 use serde::Deserialize;
 
 use crate::error::ServiceError;
-use crate::service::Service;
 use crate::version::ServiceVersion;
 
 /// The `services.json` schema version this build understands. A producer-side
@@ -129,8 +128,8 @@ impl Arch {
 /// A resolved download plan for one service + version + platform.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Artifact {
-    /// The service.
-    pub service: Service,
+    /// The service type id (`"redis"`, `"mysql"`, ...).
+    pub service: String,
     /// The resolved version.
     pub version: ServiceVersion,
     /// URL of the `.tar.gz` archive.
@@ -146,10 +145,10 @@ pub fn platform_token(os: Os, arch: Arch) -> String {
 
 /// The artifact filename for a `(service, version, os, arch)`.
 #[must_use]
-pub fn artifact_filename(service: Service, version: &ServiceVersion, os: Os, arch: Arch) -> String {
+pub fn artifact_filename(service: &str, version: &ServiceVersion, os: Os, arch: Arch) -> String {
     format!(
         "{}-{}-{}-{}.tar.gz",
-        service.id(),
+        service,
         version.as_str(),
         os.as_str(),
         arch.as_str()
@@ -158,7 +157,7 @@ pub fn artifact_filename(service: Service, version: &ServiceVersion, os: Os, arc
 
 /// The full artifact URL for a `(service, version, os, arch)`.
 #[must_use]
-pub fn artifact_url(service: Service, version: &ServiceVersion, os: Os, arch: Arch) -> String {
+pub fn artifact_url(service: &str, version: &ServiceVersion, os: Os, arch: Arch) -> String {
     format!(
         "{SERVICES_BASE_URL}/{}",
         artifact_filename(service, version, os, arch)
@@ -179,7 +178,7 @@ pub fn listing_url() -> String {
 /// [`ServiceError::UnsupportedListingSchema`] on an unknown schema.
 pub fn resolve_from_listing(
     listing: &str,
-    service: Service,
+    service: &str,
     version: &ServiceVersion,
     os: Os,
     arch: Arch,
@@ -189,20 +188,20 @@ pub fn resolve_from_listing(
 
     let present = parsed
         .services
-        .get(service.id())
+        .get(service)
         .into_iter()
         .flat_map(|entry| entry.versions.iter())
         .any(|v| v.version == version.as_str() && v.platforms.iter().any(|p| p == &platform));
 
     if present {
         Ok(Artifact {
-            service,
+            service: service.to_owned(),
             version: version.clone(),
             url: artifact_url(service, version, os, arch),
         })
     } else {
         Err(ServiceError::VersionUnavailable {
-            service,
+            service: service.to_owned(),
             version: version.clone(),
         })
     }
@@ -215,12 +214,7 @@ pub fn resolve_from_listing(
 /// this is infallible by design; use [`resolve_from_listing`] when you need the
 /// parse error surfaced.
 #[must_use]
-pub fn available_versions(
-    listing: &str,
-    service: Service,
-    os: Os,
-    arch: Arch,
-) -> Vec<ServiceVersion> {
+pub fn available_versions(listing: &str, service: &str, os: Os, arch: Arch) -> Vec<ServiceVersion> {
     let Ok(parsed) = parse_listing(listing) else {
         return Vec::new();
     };
@@ -228,7 +222,7 @@ pub fn available_versions(
 
     let mut out: Vec<ServiceVersion> = parsed
         .services
-        .get(service.id())
+        .get(service)
         .into_iter()
         .flat_map(|entry| entry.versions.iter())
         .filter(|v| v.platforms.iter().any(|p| p == &platform))
@@ -298,93 +292,61 @@ mod tests {
 
     #[test]
     fn resolve_present_artifact_builds_url() {
-        let a = resolve_from_listing(
-            LISTING,
-            Service::Redis,
-            &v("9.1.0"),
-            Os::Linux,
-            Arch::X86_64,
-        )
-        .unwrap();
+        let a =
+            resolve_from_listing(LISTING, "redis", &v("9.1.0"), Os::Linux, Arch::X86_64).unwrap();
         assert_eq!(
             a.url,
             format!("{SERVICES_BASE_URL}/redis-9.1.0-linux-x86_64.tar.gz")
         );
-        assert_eq!(a.service, Service::Redis);
+        assert_eq!(a.service, "redis");
     }
 
     #[test]
     fn resolve_missing_artifact_errors() {
         assert!(matches!(
-            resolve_from_listing(
-                LISTING,
-                Service::Redis,
-                &v("8.0.0"),
-                Os::Linux,
-                Arch::X86_64
-            ),
+            resolve_from_listing(LISTING, "redis", &v("8.0.0"), Os::Linux, Arch::X86_64),
             Err(ServiceError::VersionUnavailable { .. })
         ));
         assert!(matches!(
-            resolve_from_listing(
-                LISTING,
-                Service::Redis,
-                &v("7.4.0"),
-                Os::Macos,
-                Arch::Aarch64
-            ),
+            resolve_from_listing(LISTING, "redis", &v("7.4.0"), Os::Macos, Arch::Aarch64),
             Err(ServiceError::VersionUnavailable { .. })
         ));
         assert!(matches!(
-            resolve_from_listing(
-                LISTING,
-                Service::MariaDb,
-                &v("11.4"),
-                Os::Linux,
-                Arch::X86_64
-            ),
+            resolve_from_listing(LISTING, "mariadb", &v("11.4"), Os::Linux, Arch::X86_64),
             Err(ServiceError::VersionUnavailable { .. })
         ));
     }
 
     #[test]
     fn available_versions_filters_by_service_and_platform() {
-        let got = available_versions(LISTING, Service::Redis, Os::Linux, Arch::X86_64);
+        let got = available_versions(LISTING, "redis", Os::Linux, Arch::X86_64);
         assert_eq!(got, vec![v("7.4.0"), v("9.1.0")]);
 
-        let got = available_versions(LISTING, Service::Redis, Os::Macos, Arch::Aarch64);
+        let got = available_versions(LISTING, "redis", Os::Macos, Arch::Aarch64);
         assert_eq!(got, vec![v("9.1.0")]);
 
-        let got = available_versions(LISTING, Service::MySql, Os::Macos, Arch::Aarch64);
+        let got = available_versions(LISTING, "mysql", Os::Macos, Arch::Aarch64);
         assert_eq!(got, vec![v("8.4.9")]);
 
-        assert!(
-            available_versions(LISTING, Service::Postgres, Os::Macos, Arch::Aarch64).is_empty()
-        );
-        assert!(available_versions(LISTING, Service::MariaDb, Os::Linux, Arch::X86_64).is_empty());
+        assert!(available_versions(LISTING, "postgres", Os::Macos, Arch::Aarch64).is_empty());
+        assert!(available_versions(LISTING, "mariadb", Os::Linux, Arch::X86_64).is_empty());
     }
 
     #[test]
     fn available_versions_empty_or_malformed_listing() {
-        assert!(available_versions("", Service::Redis, Os::Linux, Arch::X86_64).is_empty());
-        assert!(available_versions("not json", Service::Redis, Os::Linux, Arch::X86_64).is_empty());
+        assert!(available_versions("", "redis", Os::Linux, Arch::X86_64).is_empty());
+        assert!(available_versions("not json", "redis", Os::Linux, Arch::X86_64).is_empty());
     }
 
     #[test]
     fn resolve_reports_parse_and_schema_errors() {
         assert!(matches!(
-            resolve_from_listing(
-                "}{ bad",
-                Service::Redis,
-                &v("9.1.0"),
-                Os::Linux,
-                Arch::X86_64
-            ),
+            resolve_from_listing("}{ bad", "redis", &v("9.1.0"), Os::Linux, Arch::X86_64),
             Err(ServiceError::ListingParse { .. })
         ));
         let future = r#"{ "schema": 2, "services": {} }"#;
         assert!(matches!(
-            resolve_from_listing(future, Service::Redis, &v("9.1.0"), Os::Linux, Arch::X86_64),
+            resolve_from_listing(future, "redis", &v("9.1.0"), Os::Linux, Arch::X86_64),
             Err(ServiceError::UnsupportedListingSchema {
                 found: 2,
                 supported: 1
@@ -395,14 +357,13 @@ mod tests {
     #[test]
     fn parses_the_real_published_listing_shape() {
         let real = r#"{"schema":1,"services":{"mysql":{"versions":[{"version":"8.4.9","platforms":["linux-aarch64","linux-x86_64","macos-aarch64"]}]},"postgres":{"versions":[{"version":"17.10","platforms":["linux-aarch64","linux-x86_64","macos-aarch64"]}]},"redis":{"versions":[{"version":"9.1.0","platforms":["linux-aarch64","linux-x86_64","macos-aarch64"]}]}}}"#;
-        let a = resolve_from_listing(real, Service::Redis, &v("9.1.0"), Os::Macos, Arch::Aarch64)
-            .unwrap();
+        let a = resolve_from_listing(real, "redis", &v("9.1.0"), Os::Macos, Arch::Aarch64).unwrap();
         assert_eq!(
             a.url,
             format!("{SERVICES_BASE_URL}/redis-9.1.0-macos-aarch64.tar.gz")
         );
         assert_eq!(
-            available_versions(real, Service::Postgres, Os::Linux, Arch::Aarch64),
+            available_versions(real, "postgres", Os::Linux, Arch::Aarch64),
             vec![v("17.10")]
         );
     }
