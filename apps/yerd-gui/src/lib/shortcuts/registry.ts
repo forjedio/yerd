@@ -63,6 +63,7 @@ export const VIEW_TARGETS: { path: string; title: string; digit?: number }[] = [
   { path: "/sites", title: "Sites", digit: 3 },
   { path: "/tooling", title: "Tooling", digit: 4 },
   { path: "/services", title: "Services", digit: 5 },
+  { path: "/proxies", title: "Proxies" },
   { path: "/mail", title: "Mail", digit: 6 },
   { path: "/dumps", title: "Dumps", digit: 7 },
   { path: "/integrations", title: "Share" },

@@ -124,6 +124,37 @@ pub async fn reset_domains(name: String) -> Result<Response, GuiError> {
     finish(exchange(&Request::ResetDomains { name }).await?)
 }
 
+// ── proxies ────────────────────────────────────────────────────────────────
+
+#[tauri::command]
+pub async fn list_proxies() -> Result<Response, GuiError> {
+    finish(exchange(&Request::ListProxies).await?)
+}
+
+#[tauri::command]
+pub async fn add_proxy(name: String, url: String) -> Result<Response, GuiError> {
+    finish(exchange(&Request::AddProxy { name, url }).await?)
+}
+
+#[tauri::command]
+pub async fn remove_proxy(name: String) -> Result<Response, GuiError> {
+    finish(exchange(&Request::RemoveProxy { name }).await?)
+}
+
+#[tauri::command]
+pub async fn add_proxy_rule(
+    site: String,
+    prefix: String,
+    url: String,
+) -> Result<Response, GuiError> {
+    finish(exchange(&Request::AddProxyRule { site, prefix, url }).await?)
+}
+
+#[tauri::command]
+pub async fn remove_proxy_rule(site: String, prefix: String) -> Result<Response, GuiError> {
+    finish(exchange(&Request::RemoveProxyRule { site, prefix }).await?)
+}
+
 // ── site groups ────────────────────────────────────────────────────────────
 
 #[tauri::command]

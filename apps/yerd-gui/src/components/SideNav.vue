@@ -12,6 +12,7 @@ import {
   Share2,
   SquareCode,
   Stethoscope,
+  Waypoints,
   Wrench,
 } from "lucide-vue-next";
 
@@ -61,6 +62,7 @@ const sections = computed<{ title: string; items: Item[] }[]>(() => [
     items: [
       { to: "/tooling", label: "Tooling", icon: Wrench },
       { to: "/services", label: "Services", icon: Database },
+      { to: "/proxies", label: "Proxies", icon: Waypoints },
       {
         to: "/mail",
         label: "Mail",
