@@ -5,10 +5,18 @@ driver, with every PHP version it installs - so you can run your test suite with
 coverage (PHPUnit, Pest, `artisan test --coverage`) without installing or
 configuring an extension yourself.
 
-Coverage is exposed through dedicated **cover shims**: `phpcover` for your
-default PHP version, and `php<version>cover` (for example `php8.4cover`) for a
-specific one. They live in the same `{data}/bin` directory as the regular `php`
-shim.
+The friendliest way in is the **`yerd coverage`** subcommand: it runs your
+**default** PHP version with pcov enabled and forwards everything after the
+`coverage` subcommand straight to PHP - the same coverage mechanism as the
+`phpcover` shim, but discoverable from `yerd --help` without needing the shim
+directory on your `PATH`.
+
+Under the hood, coverage is exposed through dedicated **cover shims**: `phpcover`
+for your default PHP version, and `php<version>cover` (for example `php8.4cover`)
+for a specific one. They live in the same `{data}/bin` directory as the regular
+`php` shim. `yerd coverage` runs the same coverage mechanism as `phpcover`
+(default PHP + pcov); use a `php<version>cover` shim when you need to pin coverage
+to a specific version.
 
 ::: info Zero overhead by default
 The plain `php` and `php<version>` shims **never** load pcov, so normal CLI
@@ -19,16 +27,28 @@ per command.
 
 ## Running tests with coverage
 
-Use a cover shim anywhere you'd normally use `php`:
+Use `yerd coverage` (or a cover shim) anywhere you'd normally use `php`:
 
 ```sh
-# Default PHP version, Pest or PHPUnit
-phpcover artisan test --coverage
-phpcover vendor/bin/phpunit --coverage-text
+# Default PHP version, via the subcommand - args pass straight through to PHP
+yerd coverage artisan test --coverage
+yerd coverage vendor/bin/phpunit --coverage-text
 
-# Pin coverage to a specific PHP version
+# The same coverage mechanism, via the shim
+phpcover artisan test --coverage
+
+# Pin coverage to a specific PHP version with a versioned shim
 php8.4cover vendor/bin/pest --coverage
 ```
+
+::: tip `yerd coverage` is a passthrough
+Everything after the `coverage` subcommand is handed verbatim to PHP, so flags
+like `--coverage` belong to your test runner, not to `yerd`. Two small edges: a
+leading `yerd coverage --help` prints `yerd`'s own help for the command (put
+`--help` after your script to forward it, e.g. `yerd coverage artisan --help`),
+and the global `--json` flag has no effect here - it, like every other flag, is
+passed to PHP rather than producing a JSON response.
+:::
 
 Each cover shim points `PHPRC` at a pcov-enabled copy of Yerd's CLI ini, then
 hands off to your script. Because `PHPRC` is an environment variable rather
@@ -82,6 +102,11 @@ of those names, it resolves the right PHP CLI binary plus that version's
 `pcov.enabled` directives appended, and `exec`s PHP with `PHPRC` pointing at
 that copy. Invoked under any other name it falls through to the normal CLI, so
 the clean `php`/`php<version>` shims are untouched.
+
+`yerd coverage` reaches that **same** code path from the other direction: rather
+than being keyed on the invoked name, the subcommand hands its forwarded
+arguments to the identical cover-shim logic for the default version. So the two
+front doors, subcommand and shim, share one implementation.
 
 ## See also
 

@@ -18,11 +18,11 @@ yerd [--json] <COMMAND> [ARGS...]
 
 | Flag | Description |
 | --- | --- |
-| `--json` | Emit machine-readable JSON instead of human-readable text. Available on every command. |
+| `--json` | Emit machine-readable JSON instead of human-readable text. Available on every command except [`coverage`](./coverage), which forwards everything after it (including `--json`) to PHP. |
 | `--help`, `-h` | Print help for the command. |
 | `--version`, `-V` | Print the `yerd` version. |
 
-`--json` is a global flag, so you can place it before or after the subcommand: `yerd --json status` and `yerd status --json` are equivalent. In JSON mode the entire daemon response is printed as pretty JSON; the process exit code still reflects success or failure (see [Exit codes](#exit-codes)).
+`--json` is a global flag, so you can place it before or after the subcommand: `yerd --json status` and `yerd status --json` are equivalent. In JSON mode the entire daemon response is printed as pretty JSON; the process exit code still reflects success or failure (see [Exit codes](#exit-codes)). The one exception is [`coverage`](./coverage), which is a passthrough to PHP: anything after `coverage` - `--json` included - goes to PHP rather than to `yerd`.
 
 ::: info
 `yerd` is the command-line front end. The daemon (`yerdd`) does the real work: running the proxy, DNS responder, PHP-FPM pools, and certificate authority. See [The Daemon](../../guide/daemon) for how it runs, and the [IPC Protocol](../../developer/ipc-protocol) for the request/response wire format.
@@ -34,8 +34,9 @@ yerd [--json] <COMMAND> [ARGS...]
 | --- | --- |
 | [Sites](./sites) | `sites`, `park`, `unpark`, `link`, `unlink`, `root` |
 | [Domains](./domains) | `domain list`, `domain add`, `domain remove`, `domain primary`, `domain reset` |
+| [Proxies](./proxies) | `proxy add`, `proxy remove`, `proxy list` |
 | [HTTPS](./https) | `secure`, `unsecure` |
-| [PHP](./php) | `use`, `install php`, `uninstall php`, `update php`, `restart php`, `list php`, `list parked`, `set php`, `unset php`, `php ext add`/`remove`/`list` |
+| [PHP](./php) | `use`, `install php`, `uninstall php`, `update php`, `restart php`, `list php`, `list parked`, `set php`, `unset php`, `php ext add`/`remove`/`list`, [`coverage`](./coverage) |
 | [Tooling](./tooling) | `tools`, `install tool`, `uninstall tool`, `path install`, `path uninstall`, `path print` |
 | [Services](./services) | `services`, `service available`, `service install`, `service change-version`, `service uninstall`, `service start`, `service stop`, `service restart`, `service set-port`, `service logs` |
 | [Databases](./db) | `db list`, `db create`, `db drop`, `db backup`, `db restore` |

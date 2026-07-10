@@ -11,6 +11,7 @@
 //! stays enabled across that hop too. Unix-only: cover shims are never created
 //! on other platforms.
 
+use std::ffi::OsString;
 use std::io::Write as _;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
@@ -37,7 +38,16 @@ pub fn dispatch() -> Option<ExitCode> {
     let arg0 = std::env::args_os().next()?;
     let name = Path::new(&arg0).file_name()?.to_str()?;
     let spec = parse_cover_name(name)?;
-    Some(run(&spec))
+    let forward: Vec<OsString> = std::env::args_os().skip(1).collect();
+    Some(run(&spec, &forward))
+}
+
+/// Front door for `yerd coverage <args…>`: run the default PHP version with pcov
+/// enabled, forwarding `args` to PHP (same effect as the `phpcover` shim). On
+/// success `exec` replaces the process and never returns.
+#[must_use]
+pub fn run_coverage(args: &[OsString]) -> ExitCode {
+    run(&CoverSpec::Default, args)
 }
 
 /// Parse a cover-alias basename. Matches `phpcover` and `php<MAJOR>.<MINOR>cover`
@@ -58,7 +68,7 @@ fn parse_cover_name(name: &str) -> Option<CoverSpec> {
     Some(CoverSpec::Version(major, minor))
 }
 
-fn run(spec: &CoverSpec) -> ExitCode {
+fn run(spec: &CoverSpec, forward: &[OsString]) -> ExitCode {
     let dirs = match ActivePaths::new().resolve() {
         Ok(d) => d,
         Err(e) => return fail(format!("cannot resolve yerd directories: {e}")),
@@ -96,7 +106,7 @@ fn run(spec: &CoverSpec) -> ExitCode {
 
     let err = Command::new(&php_bin)
         .env("PHPRC", &cover_ini_path)
-        .args(std::env::args_os().skip(1))
+        .args(forward)
         .exec();
     if err.kind() == std::io::ErrorKind::NotFound {
         return fail(format!(

@@ -138,11 +138,25 @@ checksum sidecar for service builds).
 ## `version.rs` - layout & discovery
 
 `ServiceVersion` is an opaque, validated version label (services don't share PHP's
-major.minor shape). The on-disk layout under `PlatformDirs`:
+major.minor shape). Labels may carry a **variant suffix** after a hyphen -
+Postgres publishes both a lean base (`17`) and a PostGIS `17-full` under the same
+service. The label is treated as opaque end to end: `release.rs` reads each
+`version` string straight from the `services.json` listing (it never splits a
+filename), so a hyphen in the label is safe by construction. Ordering
+compares component-by-component and ranks a **plain** build above a suffixed one
+at the same number (`"17.10" > "17.10-full"`), so `full` is never mistaken for the
+"latest" build when resolving the newest version. `ServiceVersion::major()` ignores
+the variant suffix (it splits on the first `.` or `-`), so a base and any variant of
+the same major **share one datadir** (`data-<major>`) - which is what lets a
+`change-version` between base and `full` preserve databases. For a variant install,
+`manager.rs` also probes the install tree for `proj.db` / `gdalvrt.xsd` and, when
+found, exports `PROJ_DATA` / `GDAL_DATA` into the postmaster environment (base
+installs get neither) - what lets `PostGIS` `ST_Transform` / raster reprojection
+resolve their runtime data. The on-disk layout under `PlatformDirs`:
 
 ```text
-{data}/services/<id>/<version>/bin/<server_binary>   # the install
-{data}/services/<id>/<version>/data        (or data-<major> for Postgres)
+{data}/services/<id>/<version>/bin/<server_binary>   # the install (per version/label)
+{data}/services/<id>/data                  (or data-<major> for Postgres) # shared datadir
 {state}/services/<id>/<id>.conf            # rendered config
 {state}/services/<id>/<id>.log             # captured stdout/stderr
 {runtime}/services/<id>/<id>.sock          # Unix socket (MySQL/MariaDB)
