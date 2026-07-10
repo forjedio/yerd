@@ -155,7 +155,10 @@ async function openVersionModal(s: ServiceStatus, mode: "install" | "change"): P
     installOptions.value = (entry?.available ?? [])
       .filter((v) => !installedSet.has(v))
       .map((v) => ({ value: v, label: `v${v}` }));
-    selectedVersion.value = installOptions.value[0]?.value ?? "";
+    // Pre-select the LATEST (the daemon returns versions ascending, so the last
+    // entry is newest) so the Select (no placeholder) is always valid.
+    const opts = installOptions.value;
+    selectedVersion.value = opts[opts.length - 1]?.value ?? "";
   } catch (e) {
     toast.error("Couldn't load versions", (e as IpcError).message);
   } finally {

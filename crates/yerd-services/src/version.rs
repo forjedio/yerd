@@ -6,6 +6,7 @@
 //! [`discover_installed`] define the on-disk layout under `dirs.data/services`
 //! and `dirs.state/services`.
 
+use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use std::fmt;
 use std::path::PathBuf;
@@ -23,8 +24,84 @@ pub const VERSION_MARKER: &str = ".yerd-version";
 ///
 /// Validation keeps it safe to use as a single path component: non-empty, and
 /// only ASCII alphanumerics plus `.`, `_`, `-` (no separators, no `..`).
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+///
+/// Ordering is numeric per dotted component (see [`compare_version_labels`]) so
+/// `"10.11" > "8.4"` and `"8" < "16"`, unlike byte-wise string order. This makes
+/// the "latest" (`.last()` / `.pop()`) selectors across the daemon and CLI pick
+/// the newest release for engines with multi-digit majors, not the
+/// lexicographically-greatest label.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ServiceVersion(String);
+
+impl Ord for ServiceVersion {
+    fn cmp(&self, other: &Self) -> Ordering {
+        compare_version_labels(&self.0, &other.0).then_with(|| self.0.cmp(&other.0))
+    }
+}
+
+impl PartialOrd for ServiceVersion {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+/// Compare two version labels numerically, component-by-component (split on `.`),
+/// so `"10.11" > "8.4"` and `"8.4" > "8.0"`. Within a component a leading run of
+/// ASCII digits is compared as a number; a missing trailing component counts as
+/// `0`, so `"8" == "8.0"`.
+///
+/// When the numbers tie, a **plain** component (no `-`/`_` suffix) ranks above a
+/// suffixed one, so `"16.10" > "16.10-full"` and the unsuffixed build is chosen
+/// as latest. Two suffixed components fall back to lexical order.
+///
+/// Returns [`Ordering::Equal`] for numerically-equal labels that differ only in
+/// spelling (`"8"` vs `"8.0"`); callers keep a byte-wise tiebreak after this so
+/// the total order stays consistent with `Eq`.
+fn compare_version_labels(a: &str, b: &str) -> Ordering {
+    let mut a_parts = a.split('.');
+    let mut b_parts = b.split('.');
+    loop {
+        match (a_parts.next(), b_parts.next()) {
+            (None, None) => return Ordering::Equal,
+            (a_comp, b_comp) => {
+                let ord = compare_component(a_comp.unwrap_or("0"), b_comp.unwrap_or("0"));
+                if ord != Ordering::Equal {
+                    return ord;
+                }
+            }
+        }
+    }
+}
+
+/// Compare one dotted component by its leading numeric run, then prefer the
+/// suffix-free spelling (so `"10" > "10-full"`), falling back to lexical order
+/// between two suffixed components.
+fn compare_component(a: &str, b: &str) -> Ordering {
+    let (a_num, a_rest) = split_numeric_prefix(a);
+    let (b_num, b_rest) = split_numeric_prefix(b);
+    a_num
+        .cmp(&b_num)
+        .then_with(|| compare_suffix(a_rest, b_rest))
+}
+
+/// Rank an empty suffix (a plain build) above any non-empty suffix; two
+/// non-empty suffixes compare lexically.
+fn compare_suffix(a: &str, b: &str) -> Ordering {
+    match (a.is_empty(), b.is_empty()) {
+        (true, true) => Ordering::Equal,
+        (true, false) => Ordering::Greater,
+        (false, true) => Ordering::Less,
+        (false, false) => a.cmp(b),
+    }
+}
+
+/// Split a leading run of ASCII digits (parsed as a number, `0` if absent or
+/// overflowing) from the remaining suffix.
+fn split_numeric_prefix(s: &str) -> (u64, &str) {
+    let end = s.find(|c: char| !c.is_ascii_digit()).unwrap_or(s.len());
+    let (digits, rest) = s.split_at(end);
+    (digits.parse().unwrap_or(0), rest)
+}
 
 impl ServiceVersion {
     /// Borrow the underlying string.
@@ -236,6 +313,47 @@ mod tests {
         assert!(ServiceVersion::from_str("..").is_err());
         assert!(ServiceVersion::from_str("a/b").is_err());
         assert!(ServiceVersion::from_str("a b").is_err());
+    }
+
+    #[test]
+    fn ordering_is_numeric_not_lexicographic() {
+        let v = |s: &str| ServiceVersion::from_str(s).unwrap();
+
+        assert!(v("10.11") > v("8.4"));
+        assert!(v("16") > v("9"));
+        assert!(v("8.4") > v("8.0"));
+        assert!(v("11.4") > v("10.11"));
+        assert_eq!(v("8").cmp(&v("8.0")), Ordering::Less);
+        assert!(v("8.0") > v("8"));
+    }
+
+    #[test]
+    fn plain_build_outranks_suffixed_at_same_number() {
+        let v = |s: &str| ServiceVersion::from_str(s).unwrap();
+
+        assert!(v("16.10") > v("16.10-full"));
+        assert!(v("16.10") > v("16.10-slim"));
+        assert!(v("16.11") > v("16.10-full"));
+        assert!(v("16.10-full") > v("16.10-alpha"));
+
+        let mut vs: Vec<ServiceVersion> = ["16.10-full", "16.10", "16.9"]
+            .iter()
+            .map(|s| v(s))
+            .collect();
+        vs.sort();
+        assert_eq!(vs.last().map(ServiceVersion::as_str), Some("16.10"));
+    }
+
+    #[test]
+    fn sort_puts_newest_last() {
+        let mut vs: Vec<ServiceVersion> = ["8.4", "10.11", "10.5", "11.4"]
+            .iter()
+            .map(|s| ServiceVersion::from_str(s).unwrap())
+            .collect();
+        vs.sort();
+        let labels: Vec<&str> = vs.iter().map(ServiceVersion::as_str).collect();
+        assert_eq!(labels, ["8.4", "10.5", "10.11", "11.4"]);
+        assert_eq!(vs.last().map(ServiceVersion::as_str), Some("11.4"));
     }
 
     #[test]
