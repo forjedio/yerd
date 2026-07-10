@@ -45,6 +45,17 @@ picks up where you left off. With `--purge` the engine's stored data is deleted 
 there is no undo.
 :::
 
+::: info PostgreSQL has a `full` (PostGIS) variant
+`postgres` publishes two builds per major: the lean base (`17`) and a PostGIS
+build (`17-full`). Install either by its label, e.g.
+`yerd service install postgres 17-full`. The two are separate installs that
+**share one data directory** (pinned to the numeric major), so `change-version`
+between them preserves your databases; see
+[PostgreSQL: base and PostGIS builds](../../guide/services#postgresql-base-and-postgis-full-builds)
+for the extension lists, the shared-datadir behaviour, and the GPL posture of
+`full`.
+:::
+
 ## Lifecycle
 
 | Command | Description |

@@ -40,10 +40,10 @@ The `php.json` manifest is signed with a dedicated minisign key whose public hal
 Yerd's builds ship the **bulk** extension set, so a real-world Laravel app has
 what it needs out of the box - highlights include **`intl`** (ICU, required by
 Laravel's `Number` helper), **`sodium`**, **`mysqli`**, **`gd`**, **`imagick`**,
-**`redis`**, **`opcache`**, and **`swoole`**. Database access is covered by
-**`pdo_mysql`** plus PDO's built-in `mysql`, `pgsql`, and `sqlite` drivers (so
-`PDO::getAvailableDrivers()` returns all three) and the native `mysqli`, `pgsql`,
-and `sqlite3` extensions. Coverage is provided separately by `pcov` - see
+**`redis`**, **`opcache`**, and **`swoole`**. Database access is covered by the
+**`pdo_mysql`**, **`pdo_pgsql`**, and **`pdo_sqlite`** PDO drivers (so
+`PDO::getAvailableDrivers()` returns all three) alongside the native `mysqli`,
+`pgsql`, and `sqlite3` extensions. Coverage is provided separately by `pcov` - see
 [Code Coverage](./code-coverage).
 
 The authoritative list for any install is `php -m` (via the
@@ -93,7 +93,9 @@ on 8.4, as noted.
 | `pcre` | *(core)* Perl-compatible regular expressions, i.e. the `preg_*` functions. |
 | `PDO` | *(core)* The database-access abstraction layer; the bundled drivers cover MySQL, PostgreSQL, and SQLite. |
 | `pdo_mysql` | PDO driver for MySQL/MariaDB. |
-| `pgsql` | Native PostgreSQL client library (also backs PDO's `pgsql` driver). |
+| `pdo_pgsql` | PDO driver for PostgreSQL. |
+| `pdo_sqlite` | PDO driver for SQLite. |
+| `pgsql` | Native PostgreSQL client library (libpq-backed `pg_*` functions). |
 | `Phar` | *(core)* PHP Archive support: bundle a whole application into one distributable file. |
 | `posix` | POSIX system-call bindings (users, groups, process info) on Unix. |
 | `protobuf` | Google Protocol Buffers runtime for compact, fast binary (de)serialization. |
