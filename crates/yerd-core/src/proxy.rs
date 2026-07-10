@@ -109,7 +109,12 @@ impl UpstreamTarget {
         if self.host == "localhost" {
             return true;
         }
-        if self.host == tld || self.host.ends_with(&format!(".{tld}")) {
+        if self.host == tld
+            || self
+                .host
+                .strip_suffix(tld)
+                .is_some_and(|prefix| prefix.ends_with('.'))
+        {
             return true;
         }
         match self.host.parse::<IpAddr>() {
@@ -240,7 +245,10 @@ impl ProxyRule {
         if self.prefix == "/" {
             return path.starts_with('/');
         }
-        path == self.prefix || path.starts_with(&format!("{}/", self.prefix))
+        path == self.prefix
+            || path
+                .strip_prefix(self.prefix.as_str())
+                .is_some_and(|rest| rest.starts_with('/'))
     }
 }
 

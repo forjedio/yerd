@@ -163,19 +163,22 @@ static HOP_BY_HOP_FIXED: &[&str] = &[
 /// `Connection: upgrade`, and an arbitrary upstream's `Transfer-Encoding` /
 /// `Keep-Alive` response headers must not leak through hyper's re-framing.
 pub(crate) fn strip_hop_by_hop_only(headers: &mut HeaderMap) {
-    let conn_tokens: Vec<String> = headers
+    // `HeaderName::as_str()` is always lowercase, so no per-header allocation is
+    // needed; only the `Connection`-value tokens (arbitrary case) are compared
+    // case-insensitively.
+    let conn_tokens: Vec<&str> = headers
         .get_all(CONNECTION)
         .iter()
         .filter_map(|v| v.to_str().ok())
-        .flat_map(|s| s.split(',').map(|t| t.trim().to_ascii_lowercase()))
+        .flat_map(|s| s.split(',').map(str::trim))
         .collect();
     let to_remove: Vec<http::HeaderName> = headers
         .iter()
         .filter_map(|(name, _)| {
-            let lower = name.as_str().to_ascii_lowercase();
+            let lower = name.as_str();
             if lower == "upgrade"
-                || HOP_BY_HOP_FIXED.contains(&lower.as_str())
-                || conn_tokens.iter().any(|t| t == &lower)
+                || HOP_BY_HOP_FIXED.contains(&lower)
+                || conn_tokens.iter().any(|t| t.eq_ignore_ascii_case(lower))
             {
                 Some(name.clone())
             } else {
@@ -190,20 +193,21 @@ pub(crate) fn strip_hop_by_hop_only(headers: &mut HeaderMap) {
 
 /// Strip hop-by-hop headers per RFC 9110 §7.6.1.
 fn strip_hop_by_hop(headers: &mut HeaderMap) {
-    let conn_tokens: Vec<String> = headers
+    let conn_tokens: Vec<&str> = headers
         .get_all(CONNECTION)
         .iter()
         .filter_map(|v| v.to_str().ok())
-        .flat_map(|s| s.split(',').map(|t| t.trim().to_ascii_lowercase()))
+        .flat_map(|s| s.split(',').map(str::trim))
         .collect();
     let to_remove: Vec<http::HeaderName> = headers
         .iter()
         .filter_map(|(name, _)| {
-            let lower = name.as_str().to_ascii_lowercase();
+            let lower = name.as_str();
             if lower == "upgrade" {
                 return None;
             }
-            if HOP_BY_HOP_FIXED.contains(&lower.as_str()) || conn_tokens.iter().any(|t| t == &lower)
+            if HOP_BY_HOP_FIXED.contains(&lower)
+                || conn_tokens.iter().any(|t| t.eq_ignore_ascii_case(lower))
             {
                 Some(name.clone())
             } else {

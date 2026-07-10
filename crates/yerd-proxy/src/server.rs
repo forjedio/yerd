@@ -361,14 +361,14 @@ async fn dispatch<R: BackendResolver, L: LoginTokenConsumer>(
 
     let https = matches!(listener, Listener::Https);
 
-    let (site, unbound, matched_proxy) = match resolve_request(&router, &req, &host).await? {
+    let (site, unbound, matched) = match resolve_request(&router, &req, &host).await? {
         Routed::Site {
             site,
             unbound,
-            matched_proxy,
-        } => (site, unbound, matched_proxy),
+            matched,
+        } => (site, unbound, matched),
         Routed::Proxy {
-            target,
+            forward,
             secure,
             unbound,
         } => {
@@ -377,12 +377,11 @@ async fn dispatch<R: BackendResolver, L: LoginTokenConsumer>(
                     return https_redirect(&host, &req, port);
                 }
             }
-            let tld = router.read().await.config().tld().to_owned();
             return proxy_fwd::forward(
                 req,
-                &target,
+                &forward.target,
                 client_tls.as_ref(),
-                &tld,
+                &forward.tld,
                 peer_addr.ip(),
                 https,
                 &host,
@@ -398,13 +397,12 @@ async fn dispatch<R: BackendResolver, L: LoginTokenConsumer>(
         }
     }
 
-    if let Some(target) = matched_proxy {
-        let tld = router.read().await.config().tld().to_owned();
+    if let Some(forward) = matched {
         return proxy_fwd::forward(
             req,
-            &target,
+            &forward.target,
             client_tls.as_ref(),
-            &tld,
+            &forward.tld,
             peer_addr.ip(),
             https,
             &host,
@@ -627,20 +625,29 @@ fn https_redirect(
         })
 }
 
+/// A resolved reverse-proxy forward: the upstream plus the router's TLD,
+/// both captured while the router read guard is held so the forward path in
+/// [`dispatch`] needs no second lock acquisition. The TLD is allocated only when
+/// a request actually forwards to a proxy, never on the plain-PHP path.
+struct ProxyTarget {
+    target: UpstreamTarget,
+    tld: String,
+}
+
 /// Outcome of resolving a request: a PHP site to serve (optionally intercepted
 /// by a path-prefix proxy rule), a whole-host proxy, or a ready-made response
 /// (404 / 303 switch / picker) to return as-is.
 enum Routed {
     /// A PHP site to forward to. `unbound` skips the HTTP→HTTPS redirect;
-    /// `matched_proxy` is `Some` when a path-prefix rule intercepts this request.
+    /// `matched` is `Some` when a path-prefix rule intercepts this request.
     Site {
         site: Site,
         unbound: bool,
-        matched_proxy: Option<UpstreamTarget>,
+        matched: Option<ProxyTarget>,
     },
     /// A whole-host reverse proxy to forward to.
     Proxy {
-        target: UpstreamTarget,
+        forward: ProxyTarget,
         secure: bool,
         unbound: bool,
     },
@@ -662,17 +669,24 @@ async fn resolve_request(
     match guard.resolve_route(host) {
         Some(Route::Php(site)) => {
             let site = site.clone();
-            let matched_proxy = match_rule(guard.rules_for(site.name()), req.uri().path())
-                .map(|rule| rule.target().clone());
+            let matched = match_rule(guard.rules_for(site.name()), req.uri().path()).map(|rule| {
+                ProxyTarget {
+                    target: rule.target().clone(),
+                    tld: guard.config().tld().to_owned(),
+                }
+            });
             return Ok(Routed::Site {
                 site,
                 unbound: false,
-                matched_proxy,
+                matched,
             });
         }
         Some(Route::Proxy(proxy)) => {
             return Ok(Routed::Proxy {
-                target: proxy.target().clone(),
+                forward: ProxyTarget {
+                    target: proxy.target().clone(),
+                    tld: guard.config().tld().to_owned(),
+                },
                 secure: proxy.secure(),
                 unbound: false,
             });
@@ -699,7 +713,7 @@ async fn resolve_request(
         UnboundDecision::Serve(site) => Ok(Routed::Site {
             site,
             unbound: true,
-            matched_proxy: None,
+            matched: None,
         }),
         UnboundDecision::Switch { name, location } => {
             Ok(Routed::Respond(switch_response(&name, &location)?))
