@@ -248,7 +248,7 @@ fn setup_app(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
             autostart::migrate_gui_login_if_needed();
             autostart::DAEMON_SELF_REPAIR_BUSY.store(true, Ordering::SeqCst);
             let _ = app_handle.emit("daemon-self-repair", true);
-            let _ = autostart::ensure_daemon_registration();
+            autostart::ensure_daemon_registration_retrying();
             autostart::DAEMON_SELF_REPAIR_BUSY.store(false, Ordering::SeqCst);
             let _ = app_handle.emit("daemon-self-repair", false);
         });
