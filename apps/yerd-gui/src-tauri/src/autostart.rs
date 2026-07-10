@@ -542,7 +542,7 @@ fn plist_path() -> Result<PathBuf, GuiError> {
 /// - the embedded agent plist is absent (a plain `tauri build` with no bundle
 ///   overlay → degrade gracefully instead of erroring with `notFound`).
 #[cfg(target_os = "macos")]
-fn use_smappservice() -> bool {
+pub(crate) fn use_smappservice() -> bool {
     if std::env::var_os("YERD_NO_AUTO_DAEMON").is_some() {
         return false;
     }
@@ -834,6 +834,19 @@ pub(crate) fn ensure_daemon_registration() -> Result<(), GuiError> {
             repair_log(&format!("self-repair FAILED: {}", e.message));
             Err(e)
         }
+    }
+}
+
+/// [`ensure_daemon_registration`], retried once after a short pause on error. A
+/// self-update swaps the bundle out from under BTM, so the first re-registration
+/// can hit a transient failure while BTM settles; on that path the GUI is the
+/// daemon's single owner (the applier deliberately does not restart it), so the
+/// retry is what closes the post-swap phantom/EINVAL window.
+#[cfg(target_os = "macos")]
+pub(crate) fn ensure_daemon_registration_retrying() {
+    if ensure_daemon_registration().is_err() {
+        std::thread::sleep(std::time::Duration::from_secs(2));
+        let _ = ensure_daemon_registration();
     }
 }
 

@@ -18,6 +18,20 @@
 //! 2. Stop the daemon, install the new bundle/package, restart the daemon, and
 //!    optionally relaunch the GUI.
 //!
+//! ## Single owner of the daemon restart (macOS)
+//!
+//! After an in-place bundle swap the macOS `SMAppService` registration must be
+//! refreshed to re-point BTM at the new generation, and only the GUI can do that
+//! (`bin/yerd` has no objc bindings). So when the GUI drives the update and
+//! manages the daemon via `SMAppService`, it sets [`APPLY_GUI_OWNS_DAEMON_ENV`]
+//! and the applier **does not** restart the daemon - it stops + swaps + relaunches
+//! the GUI, and the GUI's re-registration is the sole restarter. A second
+//! `launchctl kickstart -k` here would race the GUI's `unregister`/`register` and
+//! trip a phantom/EINVAL restart. If the GUI relaunch fails to launch, the applier
+//! falls back to restarting the daemon itself (nothing else would). Everywhere
+//! else (macOS CLI `yerd update --yes`, the loose-launchd fallback, all Linux) the
+//! applier remains the restart owner.
+//!
 //! ## Verified vs. gated
 //!
 //! The bundle-swap mechanics ([`swap_bundle`]) are unit-tested on temp dirs. The
@@ -49,6 +63,12 @@ pub const APPLY_PATH_ENV: &str = "YERD_APPLY_PATH";
 pub const APPLY_KIND_ENV: &str = "YERD_APPLY_KIND";
 /// Env var: `"1"` to relaunch the GUI after the install.
 pub const APPLY_RELAUNCH_GUI_ENV: &str = "YERD_APPLY_RELAUNCH_GUI";
+/// Env var: `"1"` when the relaunched GUI owns the daemon's launchd
+/// re-registration (macOS `SMAppService` path), so the applier must **not**
+/// restart the daemon itself - a second `launchctl kickstart -k` would race the
+/// GUI's `unregister`/`register` and trip the phantom/EINVAL restart. Set by the
+/// GUI in `apps/yerd-gui/src-tauri/src/commands.rs::spawn_applier`.
+pub const APPLY_GUI_OWNS_DAEMON_ENV: &str = "YERD_APPLY_GUI_OWNS_DAEMON";
 /// argv sentinel for the elevated Linux deb-install re-exec. `pkexec` strips the
 /// environment, so the staged path is passed positionally. Internal; not a clap
 /// subcommand, so it never appears in help/completions.
@@ -188,20 +208,38 @@ pub fn run_from_env() -> Option<ExitCode> {
         }
     };
     let relaunch_gui = std::env::var(APPLY_RELAUNCH_GUI_ENV).as_deref() == Ok("1");
-    Some(run(Path::new(&path), kind, relaunch_gui))
+    let gui_owns_daemon =
+        gui_owns_daemon_flag(std::env::var(APPLY_GUI_OWNS_DAEMON_ENV).ok().as_deref());
+    Some(run(Path::new(&path), kind, relaunch_gui, gui_owns_daemon))
+}
+
+/// Whether the `YERD_APPLY_GUI_OWNS_DAEMON` env value means "the GUI owns the
+/// daemon restart". Pure, so the presence/`"1"` contract is unit-tested.
+fn gui_owns_daemon_flag(val: Option<&str>) -> bool {
+    val == Some("1")
 }
 
 /// Entry point for the applier subprocess. `staged` is the verified artifact the
 /// daemon downloaded; `kind` selects the install method; `relaunch_gui` asks for
-/// the GUI to be reopened after the daemon restarts.
+/// the GUI to be reopened after the daemon restarts. `gui_owns_daemon` (macOS
+/// only) defers the daemon restart to the relaunched GUI's `SMAppService`
+/// re-registration (see [`APPLY_GUI_OWNS_DAEMON_ENV`]). It is threaded as a
+/// parameter (parsed once in [`run_from_env`]) rather than read from the env
+/// here, so the in-process CLI (`yerd update --yes`) path passes `false` and
+/// stays immune to a stray exported `YERD_APPLY_GUI_OWNS_DAEMON`.
 #[must_use]
-pub fn run(staged: &Path, kind: StagedArtifact, relaunch_gui: bool) -> ExitCode {
+pub fn run(
+    staged: &Path,
+    kind: StagedArtifact,
+    relaunch_gui: bool,
+    gui_owns_daemon: bool,
+) -> ExitCode {
     if let Err(e) = reverify(staged) {
         eprintln!("yerd: update verification failed: {e}");
         return ExitCode::from(1);
     }
     let result = match kind {
-        StagedArtifact::AppTarGz => apply_macos(staged, relaunch_gui),
+        StagedArtifact::AppTarGz => apply_macos(staged, relaunch_gui, gui_owns_daemon),
         StagedArtifact::Deb => apply_linux(staged, relaunch_gui),
         StagedArtifact::Pacman => apply_linux_pacman(staged, relaunch_gui),
         StagedArtifact::Rpm => apply_linux_rpm(staged, relaunch_gui),
@@ -215,7 +253,7 @@ pub fn run(staged: &Path, kind: StagedArtifact, relaunch_gui: bool) -> ExitCode 
         Err(e) => {
             eprintln!("yerd: update failed: {e}");
             if relaunch_gui {
-                relaunch_gui_app();
+                let _ = relaunch_gui_app();
             }
             ExitCode::from(1)
         }
@@ -249,21 +287,100 @@ fn sibling_yerdd() -> Option<PathBuf> {
 
 /// Restart the daemon and (optionally) relaunch the GUI after an install.
 fn restart_services(relaunch_gui: bool) {
+    restart_daemon();
+    if relaunch_gui {
+        let _ = relaunch_gui_app();
+    }
+}
+
+/// Restart the daemon so it picks up the freshly-swapped binary. Best-effort: a
+/// failure is logged, and launchd's `KeepAlive`/`RunAtLoad` may still bring it up.
+fn restart_daemon() {
     if let Some(yerdd) = sibling_yerdd() {
         let ctl = yerd_service_ctl::ServiceCtl::new(yerdd);
         if let Err(e) = ctl.restart() {
             eprintln!("yerd: daemon restart reported: {e} (it may auto-start)");
         }
     }
-    if relaunch_gui {
-        relaunch_gui_app();
+}
+
+/// Finish a GUI-owned macOS update: the relaunched GUI re-registers (and
+/// restarts) the daemon via `SMAppService` as the single owner of the launchd
+/// lifecycle, so the applier only relaunches the GUI - a racing `kickstart -k`
+/// here is what trips the phantom/EINVAL restart. A successful `open` only means
+/// the launch was *dispatched*, not that the GUI finished starting and brought
+/// the daemon back, so we then poll the daemon's IPC socket for a bounded window.
+/// Falls back to restarting the daemon itself only when the GUI did not launch or
+/// the daemon never answered in time (then nothing else would, and the job is
+/// still loaded from the earlier `stop_daemon` so the restart works).
+#[cfg(target_os = "macos")]
+fn finish_gui_owned_update() {
+    let daemon_up = relaunch_gui_app()
+        && daemon_ready_within(GUI_DAEMON_READY_ATTEMPTS, GUI_DAEMON_POLL_INTERVAL);
+    if !daemon_up {
+        restart_daemon();
     }
+}
+
+/// Attempts (each followed by [`GUI_DAEMON_POLL_INTERVAL`]) to give the
+/// relaunched GUI to re-register and start the daemon before the applier stops
+/// trusting the single-owner path. 40 × 500 ms ≈ 20 s covers a cold GUI launch
+/// plus first-run Gatekeeper verification of the freshly-swapped bundle.
+#[cfg(target_os = "macos")]
+const GUI_DAEMON_READY_ATTEMPTS: u32 = 40;
+
+/// Delay between daemon-readiness probes in [`finish_gui_owned_update`].
+#[cfg(target_os = "macos")]
+const GUI_DAEMON_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(500);
+
+/// Poll the daemon's IPC socket until a `Ping` round-trips or `attempts` are
+/// exhausted. Confirms the relaunched GUI actually brought the daemon back (as
+/// opposed to `open` merely dispatching the launch) before the single-owner path
+/// is trusted. A failure to build the probe runtime is treated as "not ready" so
+/// the caller falls back to restarting the daemon itself.
+#[cfg(target_os = "macos")]
+fn daemon_ready_within(attempts: u32, interval: std::time::Duration) -> bool {
+    let Ok(rt) = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    else {
+        return false;
+    };
+    poll_until(
+        || {
+            rt.block_on(crate::transport::exchange(&yerd_ipc::Request::Ping))
+                .is_ok()
+        },
+        attempts,
+        interval,
+    )
+}
+
+/// Call `probe` up to `attempts` times, returning `true` as soon as one does and
+/// sleeping `interval` between the remaining tries; `false` if all fail. Pure but
+/// for the injected probe and sleep, so the bounded-retry logic is unit-tested
+/// with a counting fake.
+#[cfg(target_os = "macos")]
+fn poll_until<F: FnMut() -> bool>(
+    mut probe: F,
+    attempts: u32,
+    interval: std::time::Duration,
+) -> bool {
+    for i in 0..attempts {
+        if probe() {
+            return true;
+        }
+        if i + 1 < attempts {
+            std::thread::sleep(interval);
+        }
+    }
+    false
 }
 
 // ── macOS: swap the .app bundle ──────────────────────────────────────────────
 
 #[cfg(target_os = "macos")]
-fn apply_macos(staged: &Path, relaunch_gui: bool) -> Result<(), String> {
+fn apply_macos(staged: &Path, relaunch_gui: bool, gui_owns_daemon: bool) -> Result<(), String> {
     let exe = std::env::current_exe().map_err(|e| format!("current_exe: {e}"))?;
     let bundle = exe
         .ancestors()
@@ -321,7 +438,11 @@ fn apply_macos(staged: &Path, relaunch_gui: bool) -> Result<(), String> {
     let _ = std::fs::remove_dir_all(&stage);
     match result {
         Ok(()) => {
-            restart_services(relaunch_gui);
+            if gui_owns_daemon {
+                finish_gui_owned_update();
+            } else {
+                restart_services(relaunch_gui);
+            }
             Ok(())
         }
         Err(e) => {
@@ -422,10 +543,15 @@ fn same_volume(a: &Path, b: &Path) -> Result<(), String> {
     }
 }
 
-/// Relaunch the Yerd GUI by bundle identifier (survives a path swap).
+/// Relaunch the Yerd GUI by bundle identifier (survives a path swap). Returns
+/// whether `open` reported a successful launch - the GUI-owned daemon path uses
+/// this to decide whether to fall back to restarting the daemon itself.
 #[cfg(target_os = "macos")]
-fn relaunch_gui_app() {
-    let _ = Command::new("open").args(["-b", "dev.yerd.gui"]).status();
+fn relaunch_gui_app() -> bool {
+    Command::new("open")
+        .args(["-b", "dev.yerd.gui"])
+        .status()
+        .is_ok_and(|s| s.success())
 }
 
 // ── Linux: reinstall the .deb ────────────────────────────────────────────────
@@ -664,11 +790,9 @@ fn elevated_install_rpm(staged: &Path) -> Result<(), String> {
 }
 
 #[cfg(target_os = "linux")]
-fn relaunch_gui_app() {
+fn relaunch_gui_app() -> bool {
     use std::os::unix::process::CommandExt as _;
-    if let Some(gui) = sibling_gui() {
-        let _ = Command::new(gui).process_group(0).spawn();
-    }
+    sibling_gui().is_some_and(|gui| Command::new(gui).process_group(0).spawn().is_ok())
 }
 
 #[cfg(target_os = "linux")]
@@ -687,7 +811,7 @@ fn sibling_gui() -> Option<PathBuf> {
 // matching the running platform, so these stubs are defence-in-depth.
 
 #[cfg(not(target_os = "macos"))]
-fn apply_macos(_staged: &Path, _relaunch_gui: bool) -> Result<(), String> {
+fn apply_macos(_staged: &Path, _relaunch_gui: bool, _gui_owns_daemon: bool) -> Result<(), String> {
     Err("a macOS .app bundle cannot be installed on this platform".to_owned())
 }
 
@@ -707,7 +831,9 @@ fn apply_linux_rpm(_staged: &Path, _relaunch_gui: bool) -> Result<(), String> {
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]
-fn relaunch_gui_app() {}
+fn relaunch_gui_app() -> bool {
+    false
+}
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
@@ -717,6 +843,44 @@ mod tests {
     fn write_bundle(dir: &Path, marker: &str) {
         std::fs::create_dir_all(dir.join("Contents/MacOS")).unwrap();
         std::fs::write(dir.join("Contents/Info.plist"), marker).unwrap();
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn poll_until_returns_true_on_first_success() {
+        assert!(poll_until(|| true, 3, std::time::Duration::ZERO));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn poll_until_succeeds_before_exhausting_attempts() {
+        let mut calls = 0;
+        let ready = poll_until(
+            || {
+                calls += 1;
+                calls == 2
+            },
+            5,
+            std::time::Duration::ZERO,
+        );
+        assert!(ready);
+        assert_eq!(calls, 2);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn poll_until_gives_up_after_all_attempts() {
+        let mut calls = 0;
+        let ready = poll_until(
+            || {
+                calls += 1;
+                false
+            },
+            3,
+            std::time::Duration::ZERO,
+        );
+        assert!(!ready);
+        assert_eq!(calls, 3);
     }
 
     #[test]
@@ -797,6 +961,19 @@ mod tests {
         let b = unique_suffix();
         assert_ne!(a, b);
         assert!(a.starts_with(&format!("{}-", std::process::id())));
+    }
+
+    #[test]
+    fn gui_owns_daemon_flag_only_true_for_one() {
+        for (val, expected) in [
+            (None, false),
+            (Some(""), false),
+            (Some("0"), false),
+            (Some("true"), false),
+            (Some("1"), true),
+        ] {
+            assert_eq!(gui_owns_daemon_flag(val), expected, "val={val:?}");
+        }
     }
 
     #[test]

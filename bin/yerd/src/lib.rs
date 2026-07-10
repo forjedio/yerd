@@ -332,7 +332,7 @@ async fn run_self_update_apply(json: bool, edge: bool, stable: bool, force: bool
         }
     };
 
-    tokio::task::spawn_blocking(move || apply::run(std::path::Path::new(&path), kind, false))
+    tokio::task::spawn_blocking(move || apply::run(std::path::Path::new(&path), kind, false, false))
         .await
         .unwrap_or_else(|e| {
             eprintln!("yerd: applier task failed: {e}");

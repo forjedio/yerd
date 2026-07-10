@@ -265,20 +265,30 @@ pub async fn apply_update(app: tauri::AppHandle, channel: Option<String>) -> Res
 }
 
 /// Launch the hidden applier mode of `yerd` detached, via env vars (the contract
-/// mirrors `bin/yerd/src/apply.rs`).
+/// mirrors `bin/yerd/src/apply.rs`; env names are string literals in both crates
+/// since the GUI cannot depend on the `yerd` binary crate).
+///
+/// macOS: when the daemon is managed via `SMAppService`, the relaunched GUI is
+/// the single owner of the launchd re-registration, so `YERD_APPLY_GUI_OWNS_DAEMON`
+/// tells the applier not to restart the daemon itself - a second `kickstart -k`
+/// would race the GUI's unregister/register (the phantom/EINVAL restart).
 #[cfg(unix)]
 fn spawn_applier(yerd: &std::path::Path, path: &str, kind: &str) -> Result<(), GuiError> {
     use std::os::unix::process::CommandExt as _;
-    std::process::Command::new(yerd)
-        .env("YERD_APPLY_UPDATE", "1")
+    let mut cmd = std::process::Command::new(yerd);
+    cmd.env("YERD_APPLY_UPDATE", "1")
         .env("YERD_APPLY_PATH", path)
         .env("YERD_APPLY_KIND", kind)
         .env("YERD_APPLY_RELAUNCH_GUI", "1")
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
-        .process_group(0)
-        .spawn()
+        .process_group(0);
+    #[cfg(target_os = "macos")]
+    if crate::autostart::use_smappservice() {
+        cmd.env("YERD_APPLY_GUI_OWNS_DAEMON", "1");
+    }
+    cmd.spawn()
         .map(|_| ())
         .map_err(|e| GuiError::internal(format!("could not launch the updater: {e}")))
 }
