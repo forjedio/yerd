@@ -79,7 +79,9 @@ fn compare_version_labels(a: &str, b: &str) -> Ordering {
 fn compare_component(a: &str, b: &str) -> Ordering {
     let (a_num, a_rest) = split_numeric_prefix(a);
     let (b_num, b_rest) = split_numeric_prefix(b);
-    a_num.cmp(&b_num).then_with(|| compare_suffix(a_rest, b_rest))
+    a_num
+        .cmp(&b_num)
+        .then_with(|| compare_suffix(a_rest, b_rest))
 }
 
 /// Rank an empty suffix (a plain build) above any non-empty suffix; two
