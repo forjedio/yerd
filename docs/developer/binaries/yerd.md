@@ -160,6 +160,15 @@ that one key and leaves the rest of the environment inherited (no
 `php` shim at `{data}/php-cli.ini`), the cover shim's value wins for the
 exec'd process - intentional, not a conflict to resolve.
 
+The same logic also backs the `yerd coverage <args…>` **subcommand**, which
+reaches it from the other direction. Rather than being keyed on `argv[0]`,
+`lib.rs::run` intercepts `Command::Coverage` locally (like `elevate`/`path`,
+before the daemon round-trip) and calls `cover_shim::run_coverage`, which is just
+`run(&CoverSpec::Default, args)` with the clap-captured passthrough args. So the
+subcommand and the `phpcover` shim share one implementation and one code path;
+the only difference is where the forwarded args come from (`argv[0]` dispatch
+forwards `env::args_os().skip(1)`, the subcommand forwards its `Vec<OsString>`).
+
 ::: info Unix-only
 The `dispatch()` call is `#[cfg(unix)]` and the cover symlinks are only ever
 created on Unix - on other platforms `yerd` is always just the CLI. PHP itself

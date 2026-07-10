@@ -180,6 +180,7 @@ export default withMermaid({
             { text: 'Domains', link: '/reference/cli/domains' },
             { text: 'HTTPS', link: '/reference/cli/https' },
             { text: 'PHP', link: '/reference/cli/php' },
+            { text: 'Coverage', link: '/reference/cli/coverage' },
             { text: 'Tooling', link: '/reference/cli/tooling' },
             { text: 'Services', link: '/reference/cli/services' },
             { text: 'Databases', link: '/reference/cli/db' },

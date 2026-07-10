@@ -228,6 +228,21 @@ pub enum Command {
         #[command(subcommand)]
         action: PathAction,
     },
+    /// Run a script under the default PHP version with pcov coverage enabled -
+    /// the discoverable front door to the `phpcover` shim. Everything after
+    /// `coverage` is passed straight through to PHP. To pin a specific version,
+    /// use the `php<version>cover` shim (e.g. `php8.4cover`) instead. Local -
+    /// execs PHP directly and does not talk to the daemon. (Unix only.)
+    Coverage {
+        /// Arguments forwarded verbatim to PHP, e.g. `artisan test --coverage`.
+        #[arg(
+            trailing_var_arg = true,
+            allow_hyphen_values = true,
+            num_args = 0..,
+            value_name = "ARGS"
+        )]
+        args: Vec<std::ffi::OsString>,
+    },
 }
 
 /// A binary on/off toggle argument (e.g. `yerd front-controller <name> on`).
