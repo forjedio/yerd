@@ -6587,6 +6587,7 @@ dependencies = [
  "tracing",
  "tracing-appender",
  "tracing-subscriber",
+ "webpki-roots 0.26.11",
  "yerd-config",
  "yerd-core",
  "yerd-depcheck",

@@ -57,6 +57,7 @@ interprocess   = { workspace = true }
 fs4            = { workspace = true }
 rustls         = { workspace = true, features = ["ring"] }
 rustls-pki-types = { workspace = true, features = ["alloc", "std"] }
+webpki-roots   = { workspace = true }
 time           = { workspace = true }
 # PHP install path: fetch (rustls, no OpenSSL) + unpack prebuilt builds.
 reqwest        = { workspace = true }

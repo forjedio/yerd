@@ -34,6 +34,7 @@ yerd [--json] <COMMAND> [ARGS...]
 | --- | --- |
 | [Sites](./sites) | `sites`, `park`, `unpark`, `link`, `unlink`, `root` |
 | [Domains](./domains) | `domain list`, `domain add`, `domain remove`, `domain primary`, `domain reset` |
+| [Proxies](./proxies) | `proxy add`, `proxy remove`, `proxy list` |
 | [HTTPS](./https) | `secure`, `unsecure` |
 | [PHP](./php) | `use`, `install php`, `uninstall php`, `update php`, `restart php`, `list php`, `list parked`, `set php`, `unset php`, `php ext add`/`remove`/`list`, [`coverage`](./coverage) |
 | [Tooling](./tooling) | `tools`, `install tool`, `uninstall tool`, `path install`, `path uninstall`, `path print` |

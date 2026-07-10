@@ -243,7 +243,7 @@ impl Site {
 }
 
 /// Validates and lowercases a site name. Checks run in a fixed, pinned order.
-fn validate_and_lowercase_name(raw: &str) -> Result<String, CoreError> {
+pub(crate) fn validate_and_lowercase_name(raw: &str) -> Result<String, CoreError> {
     if raw.is_empty() {
         return Err(err(raw, SiteNameErrorReason::Empty));
     }

@@ -280,6 +280,10 @@ The multi-domain feature adds three more `SiteEntry` fields alongside `is_wordpr
 For read/unread tracking, `MailSummary` gained a `read: bool` (last field) and `MailStatus` gained an `unread: u32` (last field), both `#[serde(default)]`. A missing key decodes to `false`/`0`, so old daemons and old clients interoperate without a `PROTOCOL_VERSION` bump; the goldens grew a `,"read":false` / `,"unread":0` suffix. The matching mutator is the additive `Request::MarkMailsRead { ids }`.
 :::
 
+::: info Reverse proxies are additive requests plus their own response variant
+The proxy feature adds four mutators - `AddProxy { name, url }`, `RemoveProxy { name }`, `AddProxyRule { site, prefix, url }`, `RemoveProxyRule { site, prefix }` (all reply with the generic `Ok`) - and one query, `ListProxies`. Because a whole-host proxy is **not** a `Site`, it can't ride `Response::Sites`/`SiteEntry`; `ListProxies` gets a dedicated `Response::Proxies { proxies: Vec<ProxyEntry>, rules: Vec<ProxyRuleEntry> }` instead, where `ProxyEntry { name, target, secure }` and `ProxyRuleEntry { site, prefix, target }` are all `String`/`bool` so the `Response` `Eq` derive holds. New variants are additive by serde tag, so existing pins are byte-identical and no `PROTOCOL_VERSION` bump is needed. `url` stays a `String` on the wire; the daemon parses and validates it (returning a typed error) rather than the client.
+:::
+
 ### ErrorCode
 
 Failures are a `Response::Error { code, message }` where `code` is machine-readable and `message` is for human display:

@@ -291,6 +291,10 @@ mod tests {
                 login_tokens,
                 login_prepend_script,
                 daemon.state.symlink_protection.clone(),
+                std::sync::Arc::new(yerd_proxy::ProxyClientTls::new(
+                    yerd_proxy::ProxyClientTls::no_verify_config().unwrap(),
+                    yerd_proxy::ProxyClientTls::no_verify_config().unwrap(),
+                )),
                 async move {
                     let _ = rx.changed().await;
                 },
