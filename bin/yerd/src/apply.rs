@@ -307,14 +307,74 @@ fn restart_daemon() {
 /// Finish a GUI-owned macOS update: the relaunched GUI re-registers (and
 /// restarts) the daemon via `SMAppService` as the single owner of the launchd
 /// lifecycle, so the applier only relaunches the GUI - a racing `kickstart -k`
-/// here is what trips the phantom/EINVAL restart. Falls back to restarting the
-/// daemon itself only when the GUI did not launch (then nothing else would, and
-/// the job is still loaded from the earlier `stop_daemon` so the restart works).
+/// here is what trips the phantom/EINVAL restart. A successful `open` only means
+/// the launch was *dispatched*, not that the GUI finished starting and brought
+/// the daemon back, so we then poll the daemon's IPC socket for a bounded window.
+/// Falls back to restarting the daemon itself only when the GUI did not launch or
+/// the daemon never answered in time (then nothing else would, and the job is
+/// still loaded from the earlier `stop_daemon` so the restart works).
 #[cfg(target_os = "macos")]
 fn finish_gui_owned_update() {
-    if !relaunch_gui_app() {
+    let daemon_up = relaunch_gui_app()
+        && daemon_ready_within(GUI_DAEMON_READY_ATTEMPTS, GUI_DAEMON_POLL_INTERVAL);
+    if !daemon_up {
         restart_daemon();
     }
+}
+
+/// Attempts (each followed by [`GUI_DAEMON_POLL_INTERVAL`]) to give the
+/// relaunched GUI to re-register and start the daemon before the applier stops
+/// trusting the single-owner path. 40 × 500 ms ≈ 20 s covers a cold GUI launch
+/// plus first-run Gatekeeper verification of the freshly-swapped bundle.
+#[cfg(target_os = "macos")]
+const GUI_DAEMON_READY_ATTEMPTS: u32 = 40;
+
+/// Delay between daemon-readiness probes in [`finish_gui_owned_update`].
+#[cfg(target_os = "macos")]
+const GUI_DAEMON_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(500);
+
+/// Poll the daemon's IPC socket until a `Ping` round-trips or `attempts` are
+/// exhausted. Confirms the relaunched GUI actually brought the daemon back (as
+/// opposed to `open` merely dispatching the launch) before the single-owner path
+/// is trusted. A failure to build the probe runtime is treated as "not ready" so
+/// the caller falls back to restarting the daemon itself.
+#[cfg(target_os = "macos")]
+fn daemon_ready_within(attempts: u32, interval: std::time::Duration) -> bool {
+    let Ok(rt) = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    else {
+        return false;
+    };
+    poll_until(
+        || {
+            rt.block_on(crate::transport::exchange(&yerd_ipc::Request::Ping))
+                .is_ok()
+        },
+        attempts,
+        interval,
+    )
+}
+
+/// Call `probe` up to `attempts` times, returning `true` as soon as one does and
+/// sleeping `interval` between the remaining tries; `false` if all fail. Pure but
+/// for the injected probe and sleep, so the bounded-retry logic is unit-tested
+/// with a counting fake.
+#[cfg(target_os = "macos")]
+fn poll_until<F: FnMut() -> bool>(
+    mut probe: F,
+    attempts: u32,
+    interval: std::time::Duration,
+) -> bool {
+    for i in 0..attempts {
+        if probe() {
+            return true;
+        }
+        if i + 1 < attempts {
+            std::thread::sleep(interval);
+        }
+    }
+    false
 }
 
 // ── macOS: swap the .app bundle ──────────────────────────────────────────────
@@ -783,6 +843,44 @@ mod tests {
     fn write_bundle(dir: &Path, marker: &str) {
         std::fs::create_dir_all(dir.join("Contents/MacOS")).unwrap();
         std::fs::write(dir.join("Contents/Info.plist"), marker).unwrap();
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn poll_until_returns_true_on_first_success() {
+        assert!(poll_until(|| true, 3, std::time::Duration::ZERO));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn poll_until_succeeds_before_exhausting_attempts() {
+        let mut calls = 0;
+        let ready = poll_until(
+            || {
+                calls += 1;
+                calls == 2
+            },
+            5,
+            std::time::Duration::ZERO,
+        );
+        assert!(ready);
+        assert_eq!(calls, 2);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn poll_until_gives_up_after_all_attempts() {
+        let mut calls = 0;
+        let ready = poll_until(
+            || {
+                calls += 1;
+                false
+            },
+            3,
+            std::time::Duration::ZERO,
+        );
+        assert!(!ready);
+        assert_eq!(calls, 3);
     }
 
     #[test]
