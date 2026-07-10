@@ -167,6 +167,10 @@ pub enum ValidateErrorReason {
     /// A proxy/rule target points back at a `.tld` host (a routing loop into
     /// Yerd itself); targets must address the backing service directly.
     ProxyTargetLoop,
+    /// A `[proxy_rules.linked.<name>]` key names a linked site that does not
+    /// exist (a typo or a casing mismatch against the site's normalized name);
+    /// the rule would silently never apply.
+    ProxyRuleUnknownSite,
 }
 
 impl fmt::Display for ValidateErrorReason {
@@ -214,7 +218,12 @@ impl fmt::Display for ValidateErrorReason {
             }
             Self::ProxyNameCollision => "a proxy name collides with a linked site or another proxy",
             Self::ProxyRuleDuplicatePrefix => "two proxy rules for one site share a path prefix",
-            Self::ProxyTargetLoop => "a proxy target must not point at a .test host",
+            Self::ProxyTargetLoop => {
+                "a proxy target must not point at a host under the configured TLD (routing loop)"
+            }
+            Self::ProxyRuleUnknownSite => {
+                "a proxy rule references a linked site that does not exist"
+            }
         };
         f.write_str(msg)
     }
@@ -297,6 +306,7 @@ mod tests {
             ValidateErrorReason::ProxyNameCollision,
             ValidateErrorReason::ProxyRuleDuplicatePrefix,
             ValidateErrorReason::ProxyTargetLoop,
+            ValidateErrorReason::ProxyRuleUnknownSite,
         ] {
             assert!(!r.to_string().is_empty());
             let _ = format!("{r:?}");

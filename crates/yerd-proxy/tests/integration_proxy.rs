@@ -165,10 +165,24 @@ async fn whole_host_and_path_rules_and_bad_gateway() {
     let upstream = spawn_upstream(up_rx).await;
     let upstream_url = format!("http://127.0.0.1:{}", upstream.port());
 
-    let dead_port = {
-        let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        l.local_addr().unwrap().port()
-    };
+    // A controlled failing upstream: accept each connection and immediately close
+    // it, so a proxied request deterministically fails with 502 - no reliance on
+    // an ephemeral port staying free (which would race the request's connect).
+    let dead_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let dead_port = dead_listener.local_addr().unwrap().port();
+    let (dead_tx, mut dead_rx) = oneshot::channel::<()>();
+    tokio::spawn(async move {
+        loop {
+            tokio::select! {
+                _ = &mut dead_rx => break,
+                accepted = dead_listener.accept() => {
+                    if let Ok((stream, _)) = accepted {
+                        drop(stream);
+                    }
+                }
+            }
+        }
+    });
 
     let proxy_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let proxy_addr = proxy_listener.local_addr().unwrap();
@@ -244,6 +258,7 @@ async fn whole_host_and_path_rules_and_bad_gateway() {
 
     let _ = tx_shutdown.send(());
     let _ = up_tx.send(());
+    let _ = dead_tx.send(());
     let _ = tokio::time::timeout(std::time::Duration::from_secs(5), proxy_task).await;
 }
 

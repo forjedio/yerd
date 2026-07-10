@@ -125,11 +125,16 @@ pub struct ProxyRulesSection {
 }
 
 impl ProxyRulesSection {
-    /// True when there are no linked and no parked rules, letting the serialiser
-    /// omit the `[proxy_rules]` table so a default config stays byte-stable.
+    /// True when neither side holds any non-empty rule list - matching the
+    /// serialiser, which prunes empty-vector entries, so a section whose only
+    /// entries are empty rule lists round-trips as absent (the `[proxy_rules]`
+    /// table is omitted and a default config stays byte-stable).
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.linked.is_empty() && self.parked.is_empty()
+        self.linked
+            .values()
+            .chain(self.parked.values())
+            .all(Vec::is_empty)
     }
 }
 

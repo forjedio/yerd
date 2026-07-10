@@ -163,9 +163,6 @@ static HOP_BY_HOP_FIXED: &[&str] = &[
 /// `Connection: upgrade`, and an arbitrary upstream's `Transfer-Encoding` /
 /// `Keep-Alive` response headers must not leak through hyper's re-framing.
 pub(crate) fn strip_hop_by_hop_only(headers: &mut HeaderMap) {
-    // `HeaderName::as_str()` is always lowercase, so no per-header allocation is
-    // needed; only the `Connection`-value tokens (arbitrary case) are compared
-    // case-insensitively.
     let conn_tokens: Vec<&str> = headers
         .get_all(CONNECTION)
         .iter()

@@ -7,6 +7,7 @@
 //! which `handle_request` would map to a 500.
 
 use std::net::IpAddr;
+use std::time::Duration;
 
 use http::header::{CONTENT_TYPE, SERVER};
 use http::{HeaderMap, HeaderName, HeaderValue, Request, Response, StatusCode};
@@ -22,6 +23,13 @@ use crate::error::ProxyError;
 use crate::forward::upgrade;
 use crate::forward::{bytes_body, empty_body, BoxBody};
 
+/// Cap on establishing the upstream connection (TCP connect, then TLS handshake
+/// for an https upstream), so a black-hole host can't hang the request
+/// indefinitely. Deliberately bounds *connection setup* only, not the
+/// response-header wait or the body stream, so a legitimately slow-first-byte or
+/// long-lived streaming upstream is never cut off.
+const UPSTREAM_CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
+
 /// Forward `req` to `target`. `peer`/`https`/`client_host` seed the
 /// `X-Forwarded-*` headers; `client_tls`/`tld` choose the upstream TLS policy.
 pub async fn forward(
@@ -36,14 +44,24 @@ pub async fn forward(
     add_forwarded_headers(req.headers_mut(), peer, https, client_host);
     let is_upgrade = upgrade::is_upgrade(req.headers());
 
-    let tcp = match TcpStream::connect((target.host(), target.port())).await {
-        Ok(t) => t,
-        Err(e) => {
+    let connect = TcpStream::connect((target.host(), target.port()));
+    let tcp = match tokio::time::timeout(UPSTREAM_CONNECT_TIMEOUT, connect).await {
+        Ok(Ok(t)) => t,
+        Ok(Err(e)) => {
             tracing::debug!(
                 target: "yerd_proxy::proxy",
                 error = %e,
                 upstream = %target,
                 "upstream connect failed"
+            );
+            return Ok(bad_gateway_response());
+        }
+        Err(_) => {
+            tracing::debug!(
+                target: "yerd_proxy::proxy",
+                upstream = %target,
+                timeout_secs = UPSTREAM_CONNECT_TIMEOUT.as_secs(),
+                "upstream connect timed out"
             );
             return Ok(bad_gateway_response());
         }
@@ -65,14 +83,24 @@ pub async fn forward(
                     return Ok(bad_gateway_response());
                 }
             };
-        let tls = match connector.connect(server_name, tcp).await {
-            Ok(t) => t,
-            Err(e) => {
+        let handshake = connector.connect(server_name, tcp);
+        let tls = match tokio::time::timeout(UPSTREAM_CONNECT_TIMEOUT, handshake).await {
+            Ok(Ok(t)) => t,
+            Ok(Err(e)) => {
                 tracing::debug!(
                     target: "yerd_proxy::proxy",
                     error = %e,
                     upstream = %target,
                     "upstream TLS handshake failed"
+                );
+                return Ok(bad_gateway_response());
+            }
+            Err(_) => {
+                tracing::debug!(
+                    target: "yerd_proxy::proxy",
+                    upstream = %target,
+                    timeout_secs = UPSTREAM_CONNECT_TIMEOUT.as_secs(),
+                    "upstream TLS handshake timed out"
                 );
                 return Ok(bad_gateway_response());
             }
@@ -137,9 +165,11 @@ where
     Ok(Response::from_parts(rparts, boxed))
 }
 
-/// Set `X-Forwarded-*` / `X-Real-IP` on the outgoing request. `X-Forwarded-For`
-/// appends to any existing chain; the original `Host` header is left untouched
-/// (upstreams like Reverb key on it).
+/// Set `X-Forwarded-*` / `X-Real-IP` on the outgoing request. The proxy is the
+/// trust boundary for these `.test` requests, so `X-Forwarded-For` is
+/// **overwritten** with the immediate peer rather than appended to a
+/// client-supplied chain (which a client could otherwise spoof). The original
+/// `Host` header is left untouched (upstreams like Reverb key on it).
 fn add_forwarded_headers(headers: &mut HeaderMap, peer: IpAddr, https: bool, client_host: &str) {
     let proto = if https { "https" } else { "http" };
     if let Ok(v) = HeaderValue::from_str(proto) {
@@ -150,15 +180,8 @@ fn add_forwarded_headers(headers: &mut HeaderMap, peer: IpAddr, https: bool, cli
     }
     let peer_str = peer.to_string();
     if let Ok(v) = HeaderValue::from_str(&peer_str) {
-        headers.insert(HeaderName::from_static("x-real-ip"), v);
-    }
-    let xff_name = HeaderName::from_static("x-forwarded-for");
-    let chained = match headers.get(&xff_name).and_then(|v| v.to_str().ok()) {
-        Some(prev) if !prev.is_empty() => format!("{prev}, {peer_str}"),
-        _ => peer_str,
-    };
-    if let Ok(v) = HeaderValue::from_str(&chained) {
-        headers.insert(xff_name, v);
+        headers.insert(HeaderName::from_static("x-real-ip"), v.clone());
+        headers.insert(HeaderName::from_static("x-forwarded-for"), v);
     }
 }
 
@@ -187,11 +210,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn forwarded_for_appends_to_existing_chain() {
+    fn forwarded_for_overwrites_client_supplied_chain() {
         let mut headers = HeaderMap::new();
+        // A client-supplied (spoofable) chain must be replaced, not appended to.
         headers.insert(
             HeaderName::from_static("x-forwarded-for"),
-            HeaderValue::from_static("203.0.113.7"),
+            HeaderValue::from_static("203.0.113.7, 10.0.0.1"),
         );
         add_forwarded_headers(
             &mut headers,
@@ -199,17 +223,14 @@ mod tests {
             true,
             "app.test",
         );
-        assert_eq!(
-            headers.get("x-forwarded-for").unwrap(),
-            "203.0.113.7, 198.51.100.2"
-        );
+        assert_eq!(headers.get("x-forwarded-for").unwrap(), "198.51.100.2");
         assert_eq!(headers.get("x-forwarded-proto").unwrap(), "https");
         assert_eq!(headers.get("x-forwarded-host").unwrap(), "app.test");
         assert_eq!(headers.get("x-real-ip").unwrap(), "198.51.100.2");
     }
 
     #[test]
-    fn forwarded_for_starts_a_fresh_chain() {
+    fn forwarded_for_sets_peer_when_absent() {
         let mut headers = HeaderMap::new();
         add_forwarded_headers(
             &mut headers,

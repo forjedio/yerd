@@ -710,11 +710,19 @@ async fn resolve_request(
         cookie,
         accept,
     ) {
-        UnboundDecision::Serve(site) => Ok(Routed::Site {
-            site,
-            unbound: true,
-            matched: None,
-        }),
+        UnboundDecision::Serve(site) => {
+            let matched = match_rule(guard.rules_for(site.name()), req.uri().path()).map(|rule| {
+                ProxyTarget {
+                    target: rule.target().clone(),
+                    tld: guard.config().tld().to_owned(),
+                }
+            });
+            Ok(Routed::Site {
+                site,
+                unbound: true,
+                matched,
+            })
+        }
         UnboundDecision::Switch { name, location } => {
             Ok(Routed::Respond(switch_response(&name, &location)?))
         }

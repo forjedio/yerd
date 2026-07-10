@@ -186,7 +186,7 @@ impl SiteRouter {
         effective: Vec<Domain>,
         primary: Domain,
     ) -> Result<(), CoreError> {
-        if self.sites.contains_key(site.name()) {
+        if self.sites.contains_key(site.name()) || self.proxy_sites.contains_key(site.name()) {
             return Err(CoreError::DuplicateSite {
                 name: site.name().to_owned(),
             });
@@ -240,6 +240,7 @@ impl SiteRouter {
             }
         }
         self.primaries.remove(name);
+        self.proxy_rules.remove(name);
         Ok(site)
     }
 

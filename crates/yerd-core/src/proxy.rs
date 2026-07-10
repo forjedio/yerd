@@ -254,7 +254,7 @@ impl ProxyRule {
 
 /// Longest-prefix match of `path` against `rules`. Returns the rule with the
 /// longest matching prefix, or `None` if none match. Callers pass the raw,
-/// case-sensitive, percent-encoded `uri.path()` (no normalization) — an
+/// case-sensitive, percent-encoded `uri.path()` (no normalization): an
 /// under-match (an encoded path not matching) is acceptable for a dev tool; the
 /// matcher never over-matches.
 #[must_use]

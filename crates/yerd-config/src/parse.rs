@@ -646,6 +646,11 @@ pub(crate) fn validate(c: &Config) -> Result<(), ConfigError> {
 /// routing loop into Yerd). Name/URL *shape* is already enforced by
 /// `ProxySite::new` / `UpstreamTarget::from_url_str` during wire conversion.
 ///
+/// Every `[proxy_rules.linked.<name>]` key must match a `[[linked]]` site by its
+/// normalized name (so a typo'd or mis-cased key that would silently never apply
+/// is rejected at load). Parked rules key by document-root and can't be checked
+/// here (parked sites are directory-derived), matching `[domains]`.
+///
 /// The `.tld`-host loop guard is enforced here so a hand-edited config can't slip
 /// that self-forwarding target past load. The loopback-on-own-*port* loop is the
 /// daemon's job (it needs the actively bound port, a runtime fact invisible
@@ -667,20 +672,31 @@ fn validate_proxies(c: &Config) -> Result<(), ConfigError> {
         }
     }
 
-    for rules in c
-        .proxy_rules
-        .linked
-        .values()
-        .chain(c.proxy_rules.parked.values())
-    {
-        let mut seen_prefix: BTreeSet<&str> = BTreeSet::new();
-        for r in rules {
-            if !seen_prefix.insert(r.prefix()) {
-                return Err(ve(ValidateErrorReason::ProxyRuleDuplicatePrefix));
-            }
-            if targets_loop(r.target()) {
-                return Err(ve(ValidateErrorReason::ProxyTargetLoop));
-            }
+    for (site, rules) in &c.proxy_rules.linked {
+        if !linked_names.contains(site.as_str()) {
+            return Err(ve(ValidateErrorReason::ProxyRuleUnknownSite));
+        }
+        validate_rule_set(rules, &targets_loop)?;
+    }
+    for rules in c.proxy_rules.parked.values() {
+        validate_rule_set(rules, &targets_loop)?;
+    }
+    Ok(())
+}
+
+/// Per-site rule-list invariants shared by linked and parked rules: prefixes are
+/// unique within the site, and no target loops back into Yerd.
+fn validate_rule_set(
+    rules: &[yerd_core::ProxyRule],
+    targets_loop: &impl Fn(&yerd_core::UpstreamTarget) -> bool,
+) -> Result<(), ConfigError> {
+    let mut seen_prefix: BTreeSet<&str> = BTreeSet::new();
+    for r in rules {
+        if !seen_prefix.insert(r.prefix()) {
+            return Err(ve(ValidateErrorReason::ProxyRuleDuplicatePrefix));
+        }
+        if targets_loop(r.target()) {
+            return Err(ve(ValidateErrorReason::ProxyTargetLoop));
         }
     }
     Ok(())
@@ -1589,9 +1605,14 @@ php = "not-a-version"
         yerd_core::UpstreamTarget::from_url_str(url).unwrap()
     }
 
+    fn linked_site(name: &str, root: &str) -> yerd_core::Site {
+        yerd_core::Site::linked(name, root, yerd_core::PhpVersion::new(8, 3)).unwrap()
+    }
+
     #[test]
     fn proxies_and_rules_round_trip() {
         let mut c = Config::default();
+        c.linked.push(linked_site("app", "/srv/app"));
         let mut p = yerd_core::ProxySite::new("reverb", upstream("http://127.0.0.1:3000")).unwrap();
         p.set_secure(true);
         c.proxies.push(p);
@@ -1643,6 +1664,7 @@ php = "not-a-version"
     #[test]
     fn validate_rejects_duplicate_rule_prefix() {
         let mut c = Config::default();
+        c.linked.push(linked_site("app", "/srv/app"));
         c.proxy_rules.linked.insert(
             "app".to_owned(),
             vec![
@@ -1655,6 +1677,37 @@ php = "not-a-version"
                 reason: ValidateErrorReason::ProxyRuleDuplicatePrefix,
             }) => {}
             other => panic!("expected ProxyRuleDuplicatePrefix, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn validate_rejects_proxy_rule_dangling_linked_site() {
+        let mut c = Config::default();
+        c.proxy_rules.linked.insert(
+            "ghost".to_owned(),
+            vec![yerd_core::ProxyRule::new("/ws", upstream("http://127.0.0.1:3000")).unwrap()],
+        );
+        match c.validate() {
+            Err(ConfigError::Validate {
+                reason: ValidateErrorReason::ProxyRuleUnknownSite,
+            }) => {}
+            other => panic!("expected ProxyRuleUnknownSite, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn validate_rejects_proxy_rule_miscased_linked_site() {
+        let mut c = Config::default();
+        c.linked.push(linked_site("myapp", "/srv/myapp"));
+        c.proxy_rules.linked.insert(
+            "MyApp".to_owned(),
+            vec![yerd_core::ProxyRule::new("/ws", upstream("http://127.0.0.1:3000")).unwrap()],
+        );
+        match c.validate() {
+            Err(ConfigError::Validate {
+                reason: ValidateErrorReason::ProxyRuleUnknownSite,
+            }) => {}
+            other => panic!("expected ProxyRuleUnknownSite, got {other:?}"),
         }
     }
 

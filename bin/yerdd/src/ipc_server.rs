@@ -2066,9 +2066,14 @@ fn is_self_forward(url: &str, bound_ports: &[u16]) -> bool {
 }
 
 /// Reply to [`Request::ListProxies`]: whole-host proxies plus every per-site
-/// path-prefix rule (linked keyed by name, parked by document-root).
+/// path-prefix rule. Linked rules key by site name already; parked rules key by
+/// document-root, which is resolved through the live router to the current site
+/// name (mirroring `ListSites`) so the output round-trips through
+/// `yerd proxy remove <site> <prefix>`. A parked docroot with no current site
+/// falls back to the raw key.
 async fn list_proxies(state: &DaemonState) -> Response {
     let cfg = state.config.lock().await;
+    let router = state.router.read().await;
     let proxies = cfg
         .proxies
         .iter()
@@ -2079,15 +2084,23 @@ async fn list_proxies(state: &DaemonState) -> Response {
         })
         .collect();
     let mut rules = Vec::new();
-    for (site, site_rules) in cfg
-        .proxy_rules
-        .linked
-        .iter()
-        .chain(cfg.proxy_rules.parked.iter())
-    {
+    for (site, site_rules) in &cfg.proxy_rules.linked {
         for r in site_rules {
             rules.push(yerd_ipc::ProxyRuleEntry {
                 site: site.clone(),
+                prefix: r.prefix().to_owned(),
+                target: r.target().to_string(),
+            });
+        }
+    }
+    for (docroot, site_rules) in &cfg.proxy_rules.parked {
+        let site_name = router
+            .iter()
+            .find(|s| s.document_root().to_string_lossy().as_ref() == docroot.as_str())
+            .map_or_else(|| docroot.clone(), |s| s.name().to_owned());
+        for r in site_rules {
+            rules.push(yerd_ipc::ProxyRuleEntry {
+                site: site_name.clone(),
                 prefix: r.prefix().to_owned(),
                 target: r.target().to_string(),
             });
