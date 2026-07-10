@@ -44,12 +44,12 @@ Every field below maps one-to-one to a field in `schema.rs`. The on-disk shape a
 | `domains`   | table                | Per-site domain sets (primary, aliases, subdomains, wildcards).   | empty          |
 
 ::: warning Unknown keys are rejected
-The parser uses `deny_unknown_fields` at every level. A typo'd or stray key (top-level, or inside `[ports]`, `[php]`, `[parked]`, `[mail]`, `[dumps]`, `[dumps.features]`, `[domains]`, a `[domains.linked.<name>]` / `[domains.parked."<docroot>"]` entry, a `[services.<id>]` table, a `[[linked]]` entry, an `[[overrides]]` entry, or a `[[php.extensions.<version>]]` entry) is a hard parse error - the daemon will refuse to load the file rather than silently ignore it.
+The parser uses `deny_unknown_fields` at every level. A typo'd or stray key (top-level, or inside `[ports]`, `[php]`, `[parked]`, `[mail]`, `[dumps]`, `[dumps.features]`, `[domains]`, a `[domains.linked.<name>]` / `[domains.parked."<docroot>"]` entry, `[proxy_rules]`, a `[[proxies]]` entry, a `[services.<id>]` table, a `[[linked]]` entry, an `[[overrides]]` entry, or a `[[php.extensions.<version>]]` entry) is a hard parse error - the daemon will refuse to load the file rather than silently ignore it.
 :::
 
 ### `version`
 
-The schema version. This key is **required** - a missing `version` is a hard error (`MissingVersion`), and a non-integer or negative value is rejected (`NonIntegerVersion`). The current schema version is `13`, and Yerd always writes `version = 13`. Older `version = 1` through `version = 12` files are migrated forward automatically on load. See [Schema versioning](#schema-versioning-and-migration) below.
+The schema version. This key is **required** - a missing `version` is a hard error (`MissingVersion`), and a non-integer or negative value is rejected (`NonIntegerVersion`). The current schema version is `14`, and Yerd always writes `version = 14`. Older `version = 1` through `version = 13` files are migrated forward automatically on load. See [Schema versioning](#schema-versioning-and-migration) below.
 
 ### `tld`
 
@@ -380,16 +380,64 @@ primary = "corp"
 added = ["shop-staging"]
 ```
 
+### `[[proxies]]`
+
+Whole-host reverse proxies - a `<name>.<tld>` host forwarded wholesale to a
+running service, with no PHP or document root. **Empty by default** (the array
+is omitted from the file) until you add one with [`yerd proxy`](./cli/proxies).
+Order is preserved on round-trip.
+
+| Field    | TOML type | Meaning                                                         |
+| -------- | --------- | --------------------------------------------------------------- |
+| `name`   | string    | The proxy's DNS label; it answers on `<name>.<tld>`.            |
+| `target` | string    | The upstream URL, `http://host:port` or `https://host:port`.    |
+| `secure` | bool      | Whether the proxy is served over HTTPS (toggled by `yerd secure`). |
+
+```toml
+[[proxies]]
+name = "reverb"
+target = "http://127.0.0.1:8080"
+secure = true
+```
+
+### `[proxy_rules]`
+
+Per-site path-prefix proxy rules - a path on an existing site forwarded to a
+service while every other path is served by PHP. **Empty by default** (the whole
+table is omitted) until you add a rule. Split by site class exactly like
+`[domains]`: linked rules key by site name, parked rules by byte-exact
+document-root, so routing survives a directory rename.
+
+| Key                    | TOML type                       | Meaning                                       |
+| ---------------------- | ------------------------------- | --------------------------------------------- |
+| `[proxy_rules.linked]` | table (`name → array of rules`) | Rules for **linked** sites, keyed by name.    |
+| `[proxy_rules.parked]` | table (`docroot → array`)       | Rules for **parked** sites, keyed by docroot. |
+
+Each rule is a `{ prefix, target }` table. Removing a site's last rule drops its
+key entirely, so the file round-trips byte-identically.
+
+```toml
+[[proxy_rules.linked.myapp]]
+prefix = "/app"
+target = "http://127.0.0.1:8080"
+```
+
+`Config::validate` enforces the structural rules it can see (proxy names unique
+among proxies and against linked sites; a site's rule prefixes unique; no target
+pointing at a `.<tld>` host). Collisions with parked sites and the
+loopback-on-own-port loop guard are enforced by the daemon, which alone knows
+the actively bound ports and sees parked sites on disk.
+
 ## Schema versioning and migration
 
-Every config file **must** carry a top-level `version = N` key - it is the single trigger for forward migration. The current schema version is `13`.
+Every config file **must** carry a top-level `version = N` key - it is the single trigger for forward migration. The current schema version is `14`.
 
 When the daemon loads a file, it routes on the version it finds:
 
 ```text
-found  > CURRENT (13)   →  error (UnsupportedVersion) - a newer Yerd wrote this file
-found == CURRENT (13)   →  parse directly
-found  < CURRENT (13)   →  walk forward migration steps, then parse
+found  > CURRENT (14)   →  error (UnsupportedVersion) - a newer Yerd wrote this file
+found == CURRENT (14)   →  parse directly
+found  < CURRENT (14)   →  walk forward migration steps, then parse
 ```
 
 A file written by a *newer* Yerd than you are running is refused rather than misread. Older files are migrated forward in place, one version at a time, before the normal wire-deserialisation and validation run:
@@ -406,6 +454,7 @@ A file written by a *newer* Yerd than you are running is refused rather than mis
 - **`v10 → v11`** is a bare version bump: v11 only **added** the optional `[domains]` table (per-site domain sets), which defaults to empty when absent. Same rationale - the bump lets an older binary refuse a `[domains]`-bearing file cleanly rather than tripping `deny_unknown_fields`. No existing keys change, so a v10 file needs no structural rewrite.
 - **`v11 → v12`** is a bare version bump: v12 only **added** the top-level `symlink_protection` scalar (defaults to `true` when absent).
 - **`v12 → v13`** is a bare version bump: v13 only **added** the optional per-site `front_controller` key (inside `[[linked]]` and `[[overrides]]`), which defaults to auto when absent.
+- **`v13 → v14`** is a bare version bump: v14 only **added** the optional `[[proxies]]` array and `[proxy_rules]` table (reverse proxies and per-site path rules), both of which default to empty when absent. Same rationale - the bump lets an older binary refuse a proxy-bearing file cleanly rather than tripping `deny_unknown_fields`.
 
 The on-disk schema version is deliberately decoupled from the IPC protocol version; the two evolve independently.
 
@@ -429,11 +478,11 @@ Yerd does not `fsync` the file or its parent directory after a save. For a devel
 
 ## A complete annotated example
 
-This is a valid `yerd.toml` covering the core fields (see the sections above for the newer optional tables - `update_channel`, `[tunnel]`, `[groups]`, `[php.extensions]`, `[domains]`, `wp_auto_login` - omitted here for brevity):
+This is a valid `yerd.toml` covering the core fields (see the sections above for the newer optional tables - `update_channel`, `[tunnel]`, `[groups]`, `[php.extensions]`, `[domains]`, `[[proxies]]`, `[proxy_rules]`, `wp_auto_login` - omitted here for brevity):
 
 ```toml
-# Schema version - mandatory, always written as 13 by this release.
-version = 13
+# Schema version - mandatory, always written as 14 by this release.
+version = 14
 
 # TLD served by the resolver; sites resolve as <name>.test
 tld = "test"

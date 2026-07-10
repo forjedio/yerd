@@ -16,13 +16,14 @@ use hyper_util::rt::TokioIo;
 use tokio::net::TcpListener;
 use tokio::sync::Notify;
 use tokio_rustls::TlsAcceptor;
-use yerd_core::{Site, SiteKind, SiteRouter};
+use yerd_core::{match_rule, Route, Site, SiteKind, SiteRouter, UpstreamTarget};
 
 use crate::backend::Backend;
+use crate::client_tls::ProxyClientTls;
 use crate::error::ProxyError;
 use crate::forward::{
-    bytes_body, empty_body, fcgi, http as http_fwd, owned_bytes_body, script_file, static_file,
-    upgrade, BoxBody,
+    bytes_body, empty_body, fcgi, http as http_fwd, owned_bytes_body, proxy as proxy_fwd,
+    script_file, static_file, upgrade, BoxBody,
 };
 use crate::pure::cgi_params;
 use crate::pure::query;
@@ -85,6 +86,7 @@ impl ProxyServer {
         login_tokens: Arc<L>,
         login_prepend_script: Option<std::path::PathBuf>,
         symlink_protection: Arc<AtomicBool>,
+        client_tls: Arc<ProxyClientTls>,
         shutdown: S,
     ) -> Result<(), ProxyError>
     where
@@ -114,6 +116,7 @@ impl ProxyServer {
         let http_login_tokens = login_tokens.clone();
         let http_login_prepend = login_prepend_script.clone();
         let http_symlink_protection = symlink_protection.clone();
+        let http_client_tls = client_tls.clone();
         let http_notify = notify.clone();
         let http_accept = tokio::spawn(async move {
             let notified = http_notify.notified();
@@ -130,8 +133,9 @@ impl ProxyServer {
                                 let login_tokens = http_login_tokens.clone();
                                 let login_prepend = http_login_prepend.clone();
                                 let symlink_protection = http_symlink_protection.clone();
+                                let client_tls = http_client_tls.clone();
                                 tokio::spawn(serve_http_connection(
-                                    stream, peer, router, resolver, login_tokens, login_prepend, redirect_port.clone(), symlink_protection,
+                                    stream, peer, router, resolver, login_tokens, login_prepend, redirect_port.clone(), symlink_protection, client_tls,
                                 ));
                             }
                             Err(e) => {
@@ -155,6 +159,7 @@ impl ProxyServer {
             let login_tokens = login_tokens.clone();
             let login_prepend_script = login_prepend_script.clone();
             let symlink_protection = symlink_protection.clone();
+            let secure_client_tls = client_tls.clone();
             let notify_https = notify.clone();
             Some(tokio::spawn(async move {
                 let notified = notify_https.notified();
@@ -172,8 +177,9 @@ impl ProxyServer {
                                     let login_prepend = login_prepend_script.clone();
                                     let symlink_protection = symlink_protection.clone();
                                     let acceptor = acceptor.clone();
+                                    let client_tls = secure_client_tls.clone();
                                     tokio::spawn(serve_https_connection(
-                                        stream, peer, router, resolver, login_tokens, login_prepend, acceptor, symlink_protection,
+                                        stream, peer, router, resolver, login_tokens, login_prepend, acceptor, symlink_protection, client_tls,
                                     ));
                                 }
                                 Err(e) => {
@@ -211,6 +217,7 @@ async fn serve_http_connection<R: BackendResolver, L: LoginTokenConsumer>(
     login_prepend_script: Option<std::path::PathBuf>,
     redirect_port: Option<Arc<AtomicU16>>,
     symlink_protection: Arc<AtomicBool>,
+    client_tls: Arc<ProxyClientTls>,
 ) {
     let server_addr = stream
         .local_addr()
@@ -228,6 +235,7 @@ async fn serve_http_connection<R: BackendResolver, L: LoginTokenConsumer>(
             login_prepend_script.clone(),
             redirect_port.clone(),
             symlink_protection.clone(),
+            client_tls.clone(),
         )
     });
     let conn = hyper::server::conn::http1::Builder::new()
@@ -246,6 +254,7 @@ async fn serve_https_connection<R: BackendResolver, L: LoginTokenConsumer>(
     login_prepend_script: Option<std::path::PathBuf>,
     acceptor: TlsAcceptor,
     symlink_protection: Arc<AtomicBool>,
+    client_tls: Arc<ProxyClientTls>,
 ) {
     let server_addr = stream
         .local_addr()
@@ -274,6 +283,7 @@ async fn serve_https_connection<R: BackendResolver, L: LoginTokenConsumer>(
             login_prepend_script.clone(),
             None,
             symlink_protection.clone(),
+            client_tls.clone(),
         )
     });
     let conn = hyper::server::conn::http1::Builder::new()
@@ -296,6 +306,7 @@ async fn handle_request<R: BackendResolver, L: LoginTokenConsumer>(
     login_prepend_script: Option<std::path::PathBuf>,
     redirect_port: Option<Arc<AtomicU16>>,
     symlink_protection: Arc<AtomicBool>,
+    client_tls: Arc<ProxyClientTls>,
 ) -> Result<Response<BoxBody>, std::convert::Infallible> {
     match dispatch(
         req,
@@ -308,6 +319,7 @@ async fn handle_request<R: BackendResolver, L: LoginTokenConsumer>(
         login_prepend_script,
         redirect_port,
         symlink_protection,
+        client_tls,
     )
     .await
     {
@@ -335,6 +347,7 @@ async fn dispatch<R: BackendResolver, L: LoginTokenConsumer>(
     login_prepend_script: Option<std::path::PathBuf>,
     redirect_port: Option<Arc<AtomicU16>>,
     symlink_protection: Arc<AtomicBool>,
+    client_tls: Arc<ProxyClientTls>,
 ) -> Result<Response<BoxBody>, ProxyError> {
     let redirect_port = redirect_port.map(|p| p.load(Ordering::Relaxed));
     let Some(host) = req
@@ -346,35 +359,59 @@ async fn dispatch<R: BackendResolver, L: LoginTokenConsumer>(
         return Ok(bad_request_response());
     };
 
-    let (site, unbound) = match resolve_request(&router, &req, &host).await? {
-        Routed::Site { site, unbound } => (site, unbound),
+    let https = matches!(listener, Listener::Https);
+
+    let (site, unbound, matched) = match resolve_request(&router, &req, &host).await? {
+        Routed::Site {
+            site,
+            unbound,
+            matched,
+        } => (site, unbound, matched),
+        Routed::Proxy {
+            forward,
+            secure,
+            unbound,
+        } => {
+            if matches!(listener, Listener::Http) && !unbound {
+                if let (true, Some(port)) = (secure, redirect_port) {
+                    return https_redirect(&host, &req, port);
+                }
+            }
+            return proxy_fwd::forward(
+                req,
+                &forward.target,
+                client_tls.as_ref(),
+                &forward.tld,
+                peer_addr.ip(),
+                https,
+                &host,
+            )
+            .await;
+        }
         Routed::Respond(resp) => return Ok(resp),
     };
-    let served_root = site.served_root();
-    let allowed_root = site.document_root().to_path_buf();
 
     if matches!(listener, Listener::Http) && !unbound {
         if let (true, Some(port)) = (site.secure(), redirect_port) {
-            let pq = req
-                .uri()
-                .path_and_query()
-                .map_or("/", http::uri::PathAndQuery::as_str);
-            let loc = build_redirect_uri(&host, pq, port);
-            let resp = Response::builder()
-                .status(StatusCode::MOVED_PERMANENTLY)
-                .header(
-                    LOCATION,
-                    HeaderValue::from_str(&loc).map_err(|_| ProxyError::BackendProtocol {
-                        source: std::io::Error::other("invalid redirect URI"),
-                    })?,
-                )
-                .body(empty_body())
-                .map_err(|_| ProxyError::BackendProtocol {
-                    source: std::io::Error::other("redirect response build failed"),
-                })?;
-            return Ok(resp);
+            return https_redirect(&host, &req, port);
         }
     }
+
+    if let Some(forward) = matched {
+        return proxy_fwd::forward(
+            req,
+            &forward.target,
+            client_tls.as_ref(),
+            &forward.tld,
+            peer_addr.ip(),
+            https,
+            &host,
+        )
+        .await;
+    }
+
+    let served_root = site.served_root();
+    let allowed_root = site.document_root().to_path_buf();
 
     let backend = resolver.backend_for(&site).await.map_err(|e| match e {
         ProxyError::BackendResolver { .. }
@@ -385,8 +422,6 @@ async fn dispatch<R: BackendResolver, L: LoginTokenConsumer>(
             source: Box::new(other),
         },
     })?;
-
-    let https = matches!(listener, Listener::Https);
 
     if upgrade::is_upgrade(req.headers()) {
         return match backend {
@@ -563,11 +598,59 @@ fn resolve_static_outcome(outcome: static_file::StaticOutcome) -> Option<Respons
     }
 }
 
-/// Outcome of resolving a request: either a site to serve, or a ready-made
-/// response (404 / 303 switch / picker) to return as-is.
+/// `301` HTTP→HTTPS redirect to `host` on `port`, preserving the path+query.
+/// Shared by the whole-host-proxy and PHP-site redirect branches in
+/// [`dispatch`].
+fn https_redirect(
+    host: &str,
+    req: &Request<Incoming>,
+    port: u16,
+) -> Result<Response<BoxBody>, ProxyError> {
+    let pq = req
+        .uri()
+        .path_and_query()
+        .map_or("/", http::uri::PathAndQuery::as_str);
+    let loc = build_redirect_uri(host, pq, port);
+    Response::builder()
+        .status(StatusCode::MOVED_PERMANENTLY)
+        .header(
+            LOCATION,
+            HeaderValue::from_str(&loc).map_err(|_| ProxyError::BackendProtocol {
+                source: std::io::Error::other("invalid redirect URI"),
+            })?,
+        )
+        .body(empty_body())
+        .map_err(|_| ProxyError::BackendProtocol {
+            source: std::io::Error::other("redirect response build failed"),
+        })
+}
+
+/// A resolved reverse-proxy forward: the upstream plus the router's TLD,
+/// both captured while the router read guard is held so the forward path in
+/// [`dispatch`] needs no second lock acquisition. The TLD is allocated only when
+/// a request actually forwards to a proxy, never on the plain-PHP path.
+struct ProxyTarget {
+    target: UpstreamTarget,
+    tld: String,
+}
+
+/// Outcome of resolving a request: a PHP site to serve (optionally intercepted
+/// by a path-prefix proxy rule), a whole-host proxy, or a ready-made response
+/// (404 / 303 switch / picker) to return as-is.
 enum Routed {
-    /// A site to forward to. `unbound` skips the HTTP→HTTPS redirect.
-    Site { site: Site, unbound: bool },
+    /// A PHP site to forward to. `unbound` skips the HTTP→HTTPS redirect;
+    /// `matched` is `Some` when a path-prefix rule intercepts this request.
+    Site {
+        site: Site,
+        unbound: bool,
+        matched: Option<ProxyTarget>,
+    },
+    /// A whole-host reverse proxy to forward to.
+    Proxy {
+        forward: ProxyTarget,
+        secure: bool,
+        unbound: bool,
+    },
     /// A synthetic response to return directly.
     Respond(Response<BoxBody>),
 }
@@ -583,11 +666,32 @@ async fn resolve_request(
     host: &str,
 ) -> Result<Routed, ProxyError> {
     let guard = router.read().await;
-    if let Some(site) = guard.resolve(host).cloned() {
-        return Ok(Routed::Site {
-            site,
-            unbound: false,
-        });
+    match guard.resolve_route(host) {
+        Some(Route::Php(site)) => {
+            let site = site.clone();
+            let matched = match_rule(guard.rules_for(site.name()), req.uri().path()).map(|rule| {
+                ProxyTarget {
+                    target: rule.target().clone(),
+                    tld: guard.config().tld().to_owned(),
+                }
+            });
+            return Ok(Routed::Site {
+                site,
+                unbound: false,
+                matched,
+            });
+        }
+        Some(Route::Proxy(proxy)) => {
+            return Ok(Routed::Proxy {
+                forward: ProxyTarget {
+                    target: proxy.target().clone(),
+                    tld: guard.config().tld().to_owned(),
+                },
+                secure: proxy.secure(),
+                unbound: false,
+            });
+        }
+        None => {}
     }
     if !unbound::is_loopback_host(host) {
         return Ok(Routed::Respond(not_found_response()));
@@ -606,10 +710,19 @@ async fn resolve_request(
         cookie,
         accept,
     ) {
-        UnboundDecision::Serve(site) => Ok(Routed::Site {
-            site,
-            unbound: true,
-        }),
+        UnboundDecision::Serve(site) => {
+            let matched = match_rule(guard.rules_for(site.name()), req.uri().path()).map(|rule| {
+                ProxyTarget {
+                    target: rule.target().clone(),
+                    tld: guard.config().tld().to_owned(),
+                }
+            });
+            Ok(Routed::Site {
+                site,
+                unbound: true,
+                matched,
+            })
+        }
         UnboundDecision::Switch { name, location } => {
             Ok(Routed::Respond(switch_response(&name, &location)?))
         }

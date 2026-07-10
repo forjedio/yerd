@@ -68,6 +68,32 @@ pub enum Outcome {
     Restart,
 }
 
+/// Build the reverse-proxy client-TLS bundle injected into the proxy: a
+/// no-verify config for local/`.test` upstreams (self-signed dev backends), and
+/// a public verifier over the bundled Mozilla roots for genuine public hosts.
+///
+/// This crate owns `webpki-roots` (banned in `yerd-proxy`); both configs are
+/// built with an explicit `ring` provider so they don't depend on the
+/// process-default `CryptoProvider` install order.
+fn build_proxy_client_tls() -> Result<Arc<yerd_proxy::ProxyClientTls>, rustls::Error> {
+    use rustls::crypto::ring::default_provider;
+    use rustls::{ClientConfig, RootCertStore};
+
+    let local = yerd_proxy::ProxyClientTls::no_verify_config()?;
+
+    let mut roots = RootCertStore::empty();
+    roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+    let public = ClientConfig::builder_with_provider(Arc::new(default_provider()))
+        .with_safe_default_protocol_versions()?
+        .with_root_certificates(roots)
+        .with_no_client_auth();
+
+    Ok(Arc::new(yerd_proxy::ProxyClientTls::new(
+        local,
+        Arc::new(public),
+    )))
+}
+
 /// Run the daemon to completion (until a shutdown signal or restart request).
 ///
 /// `main` calls this inside a tokio runtime; integration tests call
@@ -137,6 +163,7 @@ async fn run_until_shutdown(
         let login_tokens = daemon.state.wordpress_login_tokens.clone();
         let login_prepend_script = daemon.state.wordpress_login_prepend_script.clone();
         let symlink_protection = daemon.state.symlink_protection.clone();
+        let client_tls = build_proxy_client_tls()?;
         Some(tokio::spawn(yerd_proxy::ProxyServer::serve(
             http_listener,
             Some(https),
@@ -145,6 +172,7 @@ async fn run_until_shutdown(
             login_tokens,
             login_prepend_script,
             symlink_protection,
+            client_tls,
             async move {
                 let _ = rx.changed().await;
             },

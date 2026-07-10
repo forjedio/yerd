@@ -115,6 +115,37 @@ pub enum Request {
         /// The site name.
         name: String,
     },
+    /// Register a whole-host reverse proxy (`name.test` → `url`).
+    AddProxy {
+        /// The proxy name (a single DNS label).
+        name: String,
+        /// The upstream URL, e.g. `http://localhost:8080` (validated by the daemon).
+        url: String,
+    },
+    /// Remove a whole-host reverse proxy by name.
+    RemoveProxy {
+        /// The proxy name to remove.
+        name: String,
+    },
+    /// Add a path-prefix reverse-proxy rule to an existing site
+    /// (`site.test/prefix` → `url`), leaving all other paths served by PHP.
+    AddProxyRule {
+        /// The site the rule attaches to.
+        site: String,
+        /// The path prefix, e.g. `/app` (must begin with `/`).
+        prefix: String,
+        /// The upstream URL (validated by the daemon).
+        url: String,
+    },
+    /// Remove a path-prefix reverse-proxy rule from a site.
+    RemoveProxyRule {
+        /// The site the rule is on.
+        site: String,
+        /// The path prefix to remove.
+        prefix: String,
+    },
+    /// Enumerate whole-host proxies and per-site path-prefix rules.
+    ListProxies,
     /// Fetch read-only daemon runtime facts (DNS address, TLD, CA path +
     /// fingerprint). Used by `yerd elevate` to drive the privileged helper.
     DaemonInfo,
@@ -752,6 +783,11 @@ mod variant_name_pinning {
             Request::RenameGroup { .. } => {}
             Request::SetSymlinkProtection { .. } => {}
             Request::SetFrontController { .. } => {}
+            Request::AddProxy { .. } => {}
+            Request::RemoveProxy { .. } => {}
+            Request::AddProxyRule { .. } => {}
+            Request::RemoveProxyRule { .. } => {}
+            Request::ListProxies => {}
         }
     }
 
@@ -1007,6 +1043,23 @@ mod variant_name_pinning {
             name: "blog".to_owned(),
             enabled: true,
         });
+        pin(Request::AddProxy {
+            name: "reverb".to_owned(),
+            url: "http://localhost:8080".to_owned(),
+        });
+        pin(Request::RemoveProxy {
+            name: "reverb".to_owned(),
+        });
+        pin(Request::AddProxyRule {
+            site: "app".to_owned(),
+            prefix: "/app".to_owned(),
+            url: "http://127.0.0.1:8080".to_owned(),
+        });
+        pin(Request::RemoveProxyRule {
+            site: "app".to_owned(),
+            prefix: "/app".to_owned(),
+        });
+        pin(Request::ListProxies);
     }
 
     fn laravel_options_fixture() -> crate::LaravelOptions {

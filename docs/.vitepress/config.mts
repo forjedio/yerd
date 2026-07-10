@@ -154,6 +154,7 @@ export default withMermaid({
           text: 'Using Yerd',
           items: [
             { text: 'Sites', link: '/guide/sites' },
+            { text: 'Reverse Proxies', link: '/guide/proxies' },
             { text: 'PHP Versions', link: '/guide/php-versions' },
             { text: 'Code Coverage', link: '/guide/code-coverage' },
             { text: 'Tooling', link: '/guide/tooling' },
@@ -178,6 +179,7 @@ export default withMermaid({
             { text: 'Overview', link: '/reference/cli/' },
             { text: 'Sites', link: '/reference/cli/sites' },
             { text: 'Domains', link: '/reference/cli/domains' },
+            { text: 'Proxies', link: '/reference/cli/proxies' },
             { text: 'HTTPS', link: '/reference/cli/https' },
             { text: 'PHP', link: '/reference/cli/php' },
             { text: 'Coverage', link: '/reference/cli/coverage' },

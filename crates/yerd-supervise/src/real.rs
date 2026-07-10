@@ -68,12 +68,51 @@ impl ProcessSpawner for TokioProcessSpawner {
     fn spawn(&self, cmd: StdCommand) -> Result<TokioChild, io::Error> {
         let mut tokio_cmd = tokio::process::Command::from(cmd);
         tokio_cmd.kill_on_drop(true);
-        let child = tokio_cmd.spawn()?;
+        let child = spawn_retrying_text_file_busy(&mut tokio_cmd)?;
         let pid = child
             .id()
             .ok_or_else(|| io::Error::other("child has no pid"))?;
         Ok(TokioChild { inner: child, pid })
     }
+}
+
+/// Spawn `cmd`, retrying on `ETXTBSY` ("text file busy").
+///
+/// A multithreaded program that writes an executable and then execs it can hit
+/// `ETXTBSY` transiently: the kernel refuses to exec a file while any fd still
+/// holds it open for writing, and a sibling thread's not-yet-closed writer fd
+/// (or one snapshotted into a concurrent `fork`) can briefly hold it. Because
+/// Rust opens files `O_CLOEXEC`, that inherited fd is dropped the instant the
+/// racing child execs, so the window is very short. This is a synchronous trait
+/// method that may run on a Tokio worker, so it must not block the worker with a
+/// timed sleep; instead each retry `yield_now()`s (a cooperative hand-off to the
+/// runnable fd-closing thread) before trying again. The first attempt succeeds
+/// in the overwhelmingly common case, so the happy path pays nothing.
+fn spawn_retrying_text_file_busy(
+    cmd: &mut tokio::process::Command,
+) -> io::Result<tokio::process::Child> {
+    const MAX_ATTEMPTS: usize = 20;
+    let mut result = cmd.spawn();
+    let mut attempts = 1;
+    while attempts < MAX_ATTEMPTS && matches!(&result, Err(e) if is_text_file_busy(e)) {
+        std::thread::yield_now();
+        result = cmd.spawn();
+        attempts += 1;
+    }
+    result
+}
+
+/// Whether `e` is `ETXTBSY` (executable busy). Matched on the raw errno rather
+/// than `io::ErrorKind::ExecutableFileBusy` to stay within the crate's 1.77 MSRV
+/// (that variant stabilised in 1.83).
+#[cfg(unix)]
+fn is_text_file_busy(e: &io::Error) -> bool {
+    e.raw_os_error() == Some(nix::libc::ETXTBSY)
+}
+
+#[cfg(not(unix))]
+fn is_text_file_busy(_e: &io::Error) -> bool {
+    false
 }
 
 /// Production [`ChildHandle`] wrapping `tokio::process::Child`.
@@ -122,7 +161,8 @@ impl ChildHandle for TokioChild {
 
 #[cfg(all(test, unix))]
 mod tests {
-    use super::group_signal_target;
+    use super::{group_signal_target, is_text_file_busy};
+    use std::io;
 
     #[test]
     fn group_signal_target_rejects_zero_and_overflow() {
@@ -133,5 +173,16 @@ mod tests {
             None,
             "a PID that overflows i32 must not be signalled"
         );
+    }
+
+    #[test]
+    fn is_text_file_busy_matches_only_etxtbsy() {
+        assert!(is_text_file_busy(&io::Error::from_raw_os_error(
+            nix::libc::ETXTBSY
+        )));
+        assert!(!is_text_file_busy(&io::Error::from_raw_os_error(
+            nix::libc::ENOENT
+        )));
+        assert!(!is_text_file_busy(&io::Error::other("not an os error")));
     }
 }

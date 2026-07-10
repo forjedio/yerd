@@ -67,6 +67,39 @@ struct WireSer<'a> {
     // `[domains]` region, keeping the byte-shape goldens intact.
     #[serde(skip_serializing_if = "Option::is_none")]
     domains: Option<DomainsSectionSer<'a>>,
+    // v14: optional `[[proxies]]` array - a trailing sub-table region. Skipped
+    // when empty so a default config emits no `[[proxies]]`, keeping the
+    // byte-shape goldens intact.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    proxies: Vec<ProxySer<'a>>,
+    // v14: optional `[proxy_rules]` table - a trailing sub-table region. `None`
+    // (skipped) when both maps are empty, so a default config emits no
+    // `[proxy_rules]` region.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    proxy_rules: Option<ProxyRulesSectionSer<'a>>,
+}
+
+#[derive(Serialize)]
+struct ProxySer<'a> {
+    name: &'a str,
+    target: String,
+    // A default (off) `secure` still emits, since every `[[proxies]]` entry
+    // already emits a table; keeping the field present makes the flag visible.
+    secure: bool,
+}
+
+#[derive(Serialize)]
+struct ProxyRulesSectionSer<'a> {
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    linked: BTreeMap<&'a str, Vec<ProxyRuleSer<'a>>>,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    parked: BTreeMap<&'a str, Vec<ProxyRuleSer<'a>>>,
+}
+
+#[derive(Serialize)]
+struct ProxyRuleSer<'a> {
+    prefix: &'a str,
+    target: String,
 }
 
 #[derive(Serialize)]
@@ -321,8 +354,49 @@ pub(crate) fn to_toml(c: &Config) -> Result<String, ConfigError> {
                 parked: domain_delta_map(&c.domains.parked),
             })
         },
+        proxies: c
+            .proxies
+            .iter()
+            .map(|p| ProxySer {
+                name: p.name(),
+                target: p.target().to_string(),
+                secure: p.secure(),
+            })
+            .collect(),
+        proxy_rules: {
+            let linked = proxy_rule_map(&c.proxy_rules.linked);
+            let parked = proxy_rule_map(&c.proxy_rules.parked);
+            if linked.is_empty() && parked.is_empty() {
+                None
+            } else {
+                Some(ProxyRulesSectionSer { linked, parked })
+            }
+        },
     };
     toml::to_string_pretty(&w).map_err(Into::into)
+}
+
+/// Build a borrowed `[proxy_rules.*]` map, pruning any site whose rule list is
+/// empty (an empty list is equivalent to no entry and must not emit `key = []`,
+/// so removing a site's last rule round-trips to a byte-identical config).
+fn proxy_rule_map(
+    src: &BTreeMap<String, Vec<yerd_core::ProxyRule>>,
+) -> BTreeMap<&str, Vec<ProxyRuleSer<'_>>> {
+    src.iter()
+        .filter(|(_, rules)| !rules.is_empty())
+        .map(|(k, rules)| {
+            (
+                k.as_str(),
+                rules
+                    .iter()
+                    .map(|r| ProxyRuleSer {
+                        prefix: r.prefix(),
+                        target: r.target().to_string(),
+                    })
+                    .collect(),
+            )
+        })
+        .collect()
 }
 
 /// Build a borrowed `[domains.*]` delta map, pruning any all-empty delta (an
@@ -359,8 +433,8 @@ mod tests {
     fn default_to_toml_starts_with_version_line() {
         let s = to_toml(&Config::default()).unwrap();
         assert!(
-            s.starts_with("version = 13\n"),
-            "expected `version = 13` first line; got: {s}"
+            s.starts_with("version = 14\n"),
+            "expected `version = 14` first line; got: {s}"
         );
     }
 

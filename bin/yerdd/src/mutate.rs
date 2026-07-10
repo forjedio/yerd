@@ -9,8 +9,9 @@
 //! ## Name normalisation
 //!
 //! The router and `cfg.linked` are keyed by the **lowercased** site name
-//! (`scan_sites` lowercases discovered directory names; the `Site`
-//! constructors lowercase too). Unlike the proxy's host path, the IPC mutation
+//! (`scan_sites` normalises discovered directory names - keeping already-valid
+//! names and slugifying the rest, both lowercase; the `Site` constructors
+//! lowercase too). Unlike the proxy's host path, the IPC mutation
 //! path has no `host::normalise`, so [`apply`] lowercases the request `name`
 //! itself before every lookup - otherwise `yerd use Blog 8.4` would look up
 //! `"Blog"`, miss the stored `"blog"`, and wrongly report "not found".
@@ -18,7 +19,9 @@
 use std::path::PathBuf;
 
 use yerd_config::{Config, DomainDelta};
-use yerd_core::{Domain, PhpVersion, Site, SiteRouter};
+use yerd_core::{
+    Domain, PhpVersion, ProxyRule, ProxySite, Site, SiteKind, SiteRouter, UpstreamTarget,
+};
 use yerd_ipc::{ErrorCode, Request};
 
 /// A mutation that could not be applied. The inner string is a
@@ -94,6 +97,14 @@ pub fn apply(
             apply_set_primary_domain(cfg, router, name, domain)
         }
         Request::ResetDomains { name } => apply_reset_domains(cfg, router, name),
+        Request::AddProxy { name, url } => apply_add_proxy(cfg, router, name, url),
+        Request::RemoveProxy { name } => apply_remove_proxy(cfg, name),
+        Request::AddProxyRule { site, prefix, url } => {
+            apply_add_proxy_rule(cfg, router, site, prefix, url)
+        }
+        Request::RemoveProxyRule { site, prefix } => {
+            apply_remove_proxy_rule(cfg, router, site, prefix)
+        }
         Request::CreateGroup { name } => apply_create_group(cfg, name),
         Request::DeleteGroup { name } => Ok(apply_delete_group(cfg, name)),
         Request::SetGroupOrder { order } => apply_set_group_order(cfg, order),
@@ -138,6 +149,9 @@ fn apply_link(
     if let Some(delta) = cfg.domains.parked.remove(&docroot_key) {
         cfg.domains.linked.insert(name_lc.clone(), delta);
     }
+    if let Some(rules) = cfg.proxy_rules.parked.remove(&docroot_key) {
+        cfg.proxy_rules.linked.insert(name_lc.clone(), rules);
+    }
     cfg.linked.push(site);
     Ok(Applied {
         summary: format!("linked {name_lc}"),
@@ -153,6 +167,9 @@ fn apply_link(
 fn apply_unpark(cfg: &mut Config, path: &str) -> Applied {
     let removed = cfg.parked.paths.remove(path);
     cfg.domains
+        .parked
+        .retain(|docroot, _| !is_under_root(docroot, path));
+    cfg.proxy_rules
         .parked
         .retain(|docroot, _| !is_under_root(docroot, path));
     Applied {
@@ -198,7 +215,12 @@ fn apply_unlink(cfg: &mut Config, router: &SiteRouter, name: &str) -> Result<App
     cfg.linked.retain(|s| s.name() != name_lc);
     if let Some(delta) = cfg.domains.linked.remove(&name_lc) {
         if reparks {
-            cfg.domains.parked.insert(docroot_key, delta);
+            cfg.domains.parked.insert(docroot_key.clone(), delta);
+        }
+    }
+    if let Some(rules) = cfg.proxy_rules.linked.remove(&name_lc) {
+        if reparks {
+            cfg.proxy_rules.parked.insert(docroot_key, rules);
         }
     }
     Ok(Applied {
@@ -258,9 +280,161 @@ fn apply_set_secure(
         Ok(Applied {
             summary: format!("{name_lc} secure={secure}"),
         })
+    } else if let Some(proxy) = cfg.proxies.iter_mut().find(|p| p.name() == name_lc) {
+        proxy.set_secure(secure);
+        Ok(Applied {
+            summary: format!("proxy {name_lc} secure={secure}"),
+        })
     } else {
         Err(MutateError::NotFound(format!("no site named {name_lc}")))
     }
+}
+
+/// Reject a proxy/rule target that would loop back into Yerd via a `.tld` host.
+///
+/// The loopback-on-own-*port* loop (a target like `127.0.0.1:<bound-port>`) is
+/// checked separately in [`crate::ipc_server`], where the *actively bound* proxy
+/// port is known - a runtime fact this pure layer can't see.
+fn reject_loop_target(cfg: &Config, target: &UpstreamTarget) -> Result<(), MutateError> {
+    let host = target.host();
+    let dotted = format!(".{}", cfg.tld.as_str());
+    if host == cfg.tld.as_str() || host.ends_with(&dotted) {
+        return Err(MutateError::Invalid(format!(
+            "proxy target must not be a .{} host (routing loop)",
+            cfg.tld.as_str()
+        )));
+    }
+    Ok(())
+}
+
+/// Normalise a rule prefix's trailing slash the same way
+/// [`yerd_core::ProxyRule::new`] does, so removal matches a stored rule.
+fn normalize_prefix(prefix: &str) -> String {
+    let mut p = prefix.to_owned();
+    while p.len() > 1 && p.ends_with('/') {
+        p.pop();
+    }
+    p
+}
+
+/// Register a whole-host proxy. Rejects a name that collides with a linked site,
+/// a parked site (via the pre-mutation `router`), or an existing proxy, and a
+/// looping target.
+fn apply_add_proxy(
+    cfg: &mut Config,
+    router: &SiteRouter,
+    name: &str,
+    url: &str,
+) -> Result<Applied, MutateError> {
+    let target = UpstreamTarget::from_url_str(url)
+        .map_err(|e| MutateError::Invalid(format!("invalid proxy target: {e}")))?;
+    reject_loop_target(cfg, &target)?;
+    let proxy = ProxySite::new(name, target)
+        .map_err(|e| MutateError::Invalid(format!("invalid proxy name: {e}")))?;
+    let name_lc = proxy.name().to_owned();
+    if router.get(&name_lc).is_some() || cfg.proxies.iter().any(|p| p.name() == name_lc) {
+        return Err(MutateError::AlreadyExists(format!(
+            "a site or proxy named {name_lc} already exists"
+        )));
+    }
+    cfg.proxies.push(proxy);
+    Ok(Applied {
+        summary: format!("added proxy {name_lc} -> {url}"),
+    })
+}
+
+/// Remove a whole-host proxy by name.
+fn apply_remove_proxy(cfg: &mut Config, name: &str) -> Result<Applied, MutateError> {
+    let name_lc = name.to_ascii_lowercase();
+    let before = cfg.proxies.len();
+    cfg.proxies.retain(|p| p.name() != name_lc);
+    if cfg.proxies.len() == before {
+        return Err(MutateError::NotFound(format!("no proxy named {name_lc}")));
+    }
+    Ok(Applied {
+        summary: format!("removed proxy {name_lc}"),
+    })
+}
+
+/// The `proxy_rules` storage key for a site: linked sites key by name, parked
+/// sites by document-root (matching `[[overrides]]`). Returns `None` if the site
+/// is unknown to the pre-mutation router.
+fn proxy_rule_key(router: &SiteRouter, name_lc: &str) -> Option<(bool, String)> {
+    let site = router.get(name_lc)?;
+    match site.kind() {
+        SiteKind::Linked => Some((true, name_lc.to_owned())),
+        SiteKind::Parked => Some((false, override_key(site))),
+    }
+}
+
+/// Add a path-prefix proxy rule to an existing site.
+fn apply_add_proxy_rule(
+    cfg: &mut Config,
+    router: &SiteRouter,
+    site: &str,
+    prefix: &str,
+    url: &str,
+) -> Result<Applied, MutateError> {
+    let name_lc = site.to_ascii_lowercase();
+    let target = UpstreamTarget::from_url_str(url)
+        .map_err(|e| MutateError::Invalid(format!("invalid proxy target: {e}")))?;
+    reject_loop_target(cfg, &target)?;
+    let rule = ProxyRule::new(prefix, target)
+        .map_err(|e| MutateError::Invalid(format!("invalid rule prefix: {e}")))?;
+    let (linked, key) = proxy_rule_key(router, &name_lc)
+        .ok_or_else(|| MutateError::NotFound(format!("no site named {name_lc}")))?;
+    let map = if linked {
+        &mut cfg.proxy_rules.linked
+    } else {
+        &mut cfg.proxy_rules.parked
+    };
+    let rules = map.entry(key).or_default();
+    if rules.iter().any(|r| r.prefix() == rule.prefix()) {
+        return Err(MutateError::AlreadyExists(format!(
+            "site {name_lc} already has a proxy rule for {}",
+            rule.prefix()
+        )));
+    }
+    let summary = format!("added proxy rule {name_lc}{} -> {url}", rule.prefix());
+    rules.push(rule);
+    Ok(Applied { summary })
+}
+
+/// Remove a path-prefix proxy rule from a site, pruning the site's entry when
+/// its last rule goes so the config round-trips to a byte-identical state.
+fn apply_remove_proxy_rule(
+    cfg: &mut Config,
+    router: &SiteRouter,
+    site: &str,
+    prefix: &str,
+) -> Result<Applied, MutateError> {
+    let name_lc = site.to_ascii_lowercase();
+    let wanted = normalize_prefix(prefix);
+    let (linked, key) = proxy_rule_key(router, &name_lc)
+        .ok_or_else(|| MutateError::NotFound(format!("no site named {name_lc}")))?;
+    let map = if linked {
+        &mut cfg.proxy_rules.linked
+    } else {
+        &mut cfg.proxy_rules.parked
+    };
+    let Some(rules) = map.get_mut(&key) else {
+        return Err(MutateError::NotFound(format!(
+            "site {name_lc} has no proxy rule for {wanted}"
+        )));
+    };
+    let before = rules.len();
+    rules.retain(|r| r.prefix() != wanted);
+    if rules.len() == before {
+        return Err(MutateError::NotFound(format!(
+            "site {name_lc} has no proxy rule for {wanted}"
+        )));
+    }
+    if rules.is_empty() {
+        map.remove(&key);
+    }
+    Ok(Applied {
+        summary: format!("removed proxy rule {name_lc}{wanted}"),
+    })
 }
 
 fn apply_set_wordpress_auto_login(
@@ -732,6 +906,239 @@ mod tests {
         r.insert(Site::parked(name, root, v(8, 3)).unwrap())
             .unwrap();
         r
+    }
+
+    #[test]
+    fn add_proxy_registers_rejects_dup_and_loops() {
+        let mut cfg = Config::default();
+        let r = empty_router();
+        apply(
+            &mut cfg,
+            &r,
+            &Request::AddProxy {
+                name: "Reverb".into(),
+                url: "http://localhost:3000".into(),
+            },
+            None,
+            v(8, 3),
+        )
+        .unwrap();
+        assert_eq!(cfg.proxies.len(), 1);
+        assert_eq!(cfg.proxies[0].name(), "reverb");
+
+        let dup = apply(
+            &mut cfg,
+            &r,
+            &Request::AddProxy {
+                name: "reverb".into(),
+                url: "http://localhost:3001".into(),
+            },
+            None,
+            v(8, 3),
+        );
+        assert!(matches!(dup, Err(MutateError::AlreadyExists(_))));
+
+        let tld_loop = apply(
+            &mut cfg,
+            &r,
+            &Request::AddProxy {
+                name: "x".into(),
+                url: "http://foo.test".into(),
+            },
+            None,
+            v(8, 3),
+        );
+        assert!(matches!(tld_loop, Err(MutateError::Invalid(_))));
+    }
+
+    #[test]
+    fn add_proxy_rejects_site_name_collision() {
+        let mut cfg = Config::default();
+        let r = router_with_parked("blog", "/srv/blog");
+        let res = apply(
+            &mut cfg,
+            &r,
+            &Request::AddProxy {
+                name: "blog".into(),
+                url: "http://localhost:3000".into(),
+            },
+            None,
+            v(8, 3),
+        );
+        assert!(matches!(res, Err(MutateError::AlreadyExists(_))));
+    }
+
+    #[test]
+    fn remove_proxy_reports_not_found() {
+        let mut cfg = Config::default();
+        let r = empty_router();
+        assert!(matches!(
+            apply(
+                &mut cfg,
+                &r,
+                &Request::RemoveProxy {
+                    name: "nope".into()
+                },
+                None,
+                v(8, 3),
+            ),
+            Err(MutateError::NotFound(_))
+        ));
+    }
+
+    #[test]
+    fn add_and_remove_parked_proxy_rule_prunes_key() {
+        let mut cfg = Config::default();
+        let r = router_with_parked("blog", "/srv/blog");
+        apply(
+            &mut cfg,
+            &r,
+            &Request::AddProxyRule {
+                site: "blog".into(),
+                prefix: "/ws".into(),
+                url: "http://127.0.0.1:3000".into(),
+            },
+            None,
+            v(8, 3),
+        )
+        .unwrap();
+        assert_eq!(cfg.proxy_rules.parked.get("/srv/blog").unwrap().len(), 1);
+
+        let dup = apply(
+            &mut cfg,
+            &r,
+            &Request::AddProxyRule {
+                site: "blog".into(),
+                prefix: "/ws/".into(),
+                url: "http://127.0.0.1:3001".into(),
+            },
+            None,
+            v(8, 3),
+        );
+        assert!(matches!(dup, Err(MutateError::AlreadyExists(_))));
+
+        apply(
+            &mut cfg,
+            &r,
+            &Request::RemoveProxyRule {
+                site: "blog".into(),
+                prefix: "/ws".into(),
+            },
+            None,
+            v(8, 3),
+        )
+        .unwrap();
+        assert!(!cfg.proxy_rules.parked.contains_key("/srv/blog"));
+
+        let unknown = apply(
+            &mut cfg,
+            &r,
+            &Request::AddProxyRule {
+                site: "nope".into(),
+                prefix: "/x".into(),
+                url: "http://127.0.0.1:3000".into(),
+            },
+            None,
+            v(8, 3),
+        );
+        assert!(matches!(unknown, Err(MutateError::NotFound(_))));
+    }
+
+    #[test]
+    fn link_and_unlink_migrate_proxy_rules() {
+        let mut cfg = Config::default();
+        cfg.parked.paths.insert("/srv".to_string());
+        let rule = yerd_core::ProxyRule::new(
+            "/ws",
+            yerd_core::UpstreamTarget::from_url_str("http://127.0.0.1:3000").unwrap(),
+        )
+        .unwrap();
+        cfg.proxy_rules
+            .parked
+            .insert("/srv/app".to_string(), vec![rule]);
+
+        apply(
+            &mut cfg,
+            &empty_router(),
+            &Request::Link {
+                name: "app".into(),
+                path: PathBuf::from("/ignored"),
+            },
+            Some(PathBuf::from("/srv/app")),
+            v(8, 3),
+        )
+        .unwrap();
+        assert!(cfg.proxy_rules.parked.is_empty());
+        assert_eq!(cfg.proxy_rules.linked.get("app").unwrap().len(), 1);
+
+        let mut router = empty_router();
+        router
+            .insert(Site::linked("app", "/srv/app", v(8, 3)).unwrap())
+            .unwrap();
+        apply(
+            &mut cfg,
+            &router,
+            &Request::Unlink { name: "app".into() },
+            None,
+            v(8, 3),
+        )
+        .unwrap();
+        assert!(cfg.proxy_rules.linked.is_empty());
+        assert_eq!(cfg.proxy_rules.parked.get("/srv/app").unwrap().len(), 1);
+    }
+
+    #[test]
+    fn unpark_drops_proxy_rules_under_root() {
+        let mut cfg = Config::default();
+        let rule = yerd_core::ProxyRule::new(
+            "/ws",
+            yerd_core::UpstreamTarget::from_url_str("http://127.0.0.1:3000").unwrap(),
+        )
+        .unwrap();
+        cfg.parked.paths.insert("/srv".to_string());
+        cfg.proxy_rules
+            .parked
+            .insert("/srv/app".to_string(), vec![rule]);
+        apply(
+            &mut cfg,
+            &empty_router(),
+            &Request::Unpark {
+                path: "/srv".into(),
+            },
+            None,
+            v(8, 3),
+        )
+        .unwrap();
+        assert!(cfg.proxy_rules.parked.is_empty());
+    }
+
+    #[test]
+    fn secure_toggles_whole_host_proxy() {
+        let mut cfg = Config::default();
+        let r = empty_router();
+        apply(
+            &mut cfg,
+            &r,
+            &Request::AddProxy {
+                name: "reverb".into(),
+                url: "http://localhost:3000".into(),
+            },
+            None,
+            v(8, 3),
+        )
+        .unwrap();
+        apply(
+            &mut cfg,
+            &r,
+            &Request::SetSecure {
+                name: "reverb".into(),
+                secure: true,
+            },
+            None,
+            v(8, 3),
+        )
+        .unwrap();
+        assert!(cfg.proxies[0].secure());
     }
 
     #[test]

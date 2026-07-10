@@ -145,6 +145,7 @@ pub fn to_request(cmd: &Command) -> Result<Request, ClientError> {
         Command::Services => Request::ListServices,
         Command::Service { action } => service_request(action),
         Command::Domain { action } => domain_request(action)?,
+        Command::Proxy { action } => proxy_request(action)?,
         Command::Tunnel { action } => tunnel_request(action),
         Command::Db { action } => db_request(action),
         Command::Mail { action } => match action {
@@ -290,6 +291,62 @@ fn domain_request(action: &crate::cli::DomainAction) -> Result<Request, ClientEr
             Request::ResetDomains { name: site.clone() }
         }
     })
+}
+
+/// Map a `yerd proxy <action>` to its wire request. Arity distinguishes a
+/// whole-host proxy from a path rule (see [`crate::cli::ProxyAction`]). The
+/// upstream URL is validated by the daemon (authoritative); the client only
+/// checks the site/proxy name and, for a rule, that the prefix is absolute.
+fn proxy_request(action: &crate::cli::ProxyAction) -> Result<Request, ClientError> {
+    use crate::cli::ProxyAction;
+    Ok(match action {
+        ProxyAction::List => Request::ListProxies,
+        ProxyAction::Add {
+            first,
+            second,
+            third,
+        } => {
+            validate_name(first)?;
+            if let Some(url) = third {
+                validate_prefix(second)?;
+                Request::AddProxyRule {
+                    site: first.clone(),
+                    prefix: second.clone(),
+                    url: url.clone(),
+                }
+            } else {
+                Request::AddProxy {
+                    name: first.clone(),
+                    url: second.clone(),
+                }
+            }
+        }
+        ProxyAction::Remove { target, prefix } => {
+            validate_name(target)?;
+            if let Some(prefix) = prefix {
+                validate_prefix(prefix)?;
+                Request::RemoveProxyRule {
+                    site: target.clone(),
+                    prefix: prefix.clone(),
+                }
+            } else {
+                Request::RemoveProxy {
+                    name: target.clone(),
+                }
+            }
+        }
+    })
+}
+
+/// Client-side check that a proxy rule prefix is an absolute path, for a clean
+/// exit-2 error before connecting. The daemon is authoritative.
+fn validate_prefix(prefix: &str) -> Result<(), ClientError> {
+    if !prefix.starts_with('/') {
+        return Err(ClientError::Usage(format!(
+            "invalid path prefix {prefix:?}: must begin with '/'"
+        )));
+    }
+    Ok(())
 }
 
 /// Light client-side shape check for a domain FQDN, for a clean exit-2 error
@@ -727,8 +784,35 @@ pub fn render(resp: &Response, json: bool) -> Rendered {
             *ahead_of_stable,
             *source,
         )),
+        Response::Proxies { proxies, rules } => Rendered::ok(format_proxies(proxies, rules)),
         _ => Rendered::err("unexpected response from daemon".to_owned()),
     }
+}
+
+/// Render `yerd proxy list`: whole-host proxies then per-site path rules.
+fn format_proxies(proxies: &[yerd_ipc::ProxyEntry], rules: &[yerd_ipc::ProxyRuleEntry]) -> String {
+    use std::fmt::Write as _;
+    if proxies.is_empty() && rules.is_empty() {
+        return "no proxies configured".to_owned();
+    }
+    let mut out = String::new();
+    if !proxies.is_empty() {
+        out.push_str("Whole-host proxies:\n");
+        for p in proxies {
+            let scheme = if p.secure { "https" } else { "http" };
+            let _ = writeln!(out, "  {} ({scheme}) -> {}", p.name, p.target);
+        }
+    }
+    if !rules.is_empty() {
+        if !out.is_empty() {
+            out.push('\n');
+        }
+        out.push_str("Path rules:\n");
+        for r in rules {
+            let _ = writeln!(out, "  {} {} -> {}", r.site, r.prefix, r.target);
+        }
+    }
+    out.trim_end().to_owned()
 }
 
 /// Process exit code for a response: `1` for an error or any `Fail`-severity
@@ -2382,6 +2466,80 @@ mod tests {
         let v: serde_json::Value = serde_json::from_str(&err.stdout).unwrap();
         assert_eq!(v["type"], "error");
         assert_eq!(err.code, 1);
+    }
+
+    #[test]
+    fn maps_proxy_command() {
+        use crate::cli::ProxyAction;
+        assert_eq!(
+            to_request(&Command::Proxy {
+                action: ProxyAction::Add {
+                    first: "reverb".into(),
+                    second: "http://localhost:8080".into(),
+                    third: None,
+                },
+            })
+            .unwrap(),
+            Request::AddProxy {
+                name: "reverb".into(),
+                url: "http://localhost:8080".into(),
+            }
+        );
+        assert_eq!(
+            to_request(&Command::Proxy {
+                action: ProxyAction::Add {
+                    first: "myapp".into(),
+                    second: "/app".into(),
+                    third: Some("http://127.0.0.1:8080".into()),
+                },
+            })
+            .unwrap(),
+            Request::AddProxyRule {
+                site: "myapp".into(),
+                prefix: "/app".into(),
+                url: "http://127.0.0.1:8080".into(),
+            }
+        );
+        assert_eq!(
+            to_request(&Command::Proxy {
+                action: ProxyAction::Remove {
+                    target: "reverb".into(),
+                    prefix: None,
+                },
+            })
+            .unwrap(),
+            Request::RemoveProxy {
+                name: "reverb".into(),
+            }
+        );
+        assert_eq!(
+            to_request(&Command::Proxy {
+                action: ProxyAction::Remove {
+                    target: "myapp".into(),
+                    prefix: Some("/app".into()),
+                },
+            })
+            .unwrap(),
+            Request::RemoveProxyRule {
+                site: "myapp".into(),
+                prefix: "/app".into(),
+            }
+        );
+        assert_eq!(
+            to_request(&Command::Proxy {
+                action: ProxyAction::List,
+            })
+            .unwrap(),
+            Request::ListProxies
+        );
+        assert!(to_request(&Command::Proxy {
+            action: ProxyAction::Add {
+                first: "myapp".into(),
+                second: "app".into(),
+                third: Some("http://127.0.0.1:8080".into()),
+            },
+        })
+        .is_err());
     }
 
     #[test]

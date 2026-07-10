@@ -20,6 +20,7 @@ use std::collections::{BTreeMap, HashMap};
 use crate::domain::Domain;
 use crate::error::CoreError;
 use crate::host::{self, HostKind};
+use crate::proxy::{ProxyRule, ProxySite};
 use crate::site::Site;
 use crate::tld::Tld;
 
@@ -99,6 +100,20 @@ impl<'de> serde::Deserialize<'de> for RouterConfig {
     }
 }
 
+/// What a host resolves to: a PHP [`Site`] or a whole-host [`ProxySite`].
+///
+/// Returned by [`SiteRouter::resolve_route`]. The dispatcher forwards a
+/// `Proxy` host straight to its upstream (never touching PHP-FPM), and serves a
+/// `Php` host as today (subject to any per-site path rule; see
+/// [`SiteRouter::rules_for`]).
+#[derive(Debug)]
+pub enum Route<'a> {
+    /// A PHP-served site.
+    Php(&'a Site),
+    /// A whole-host reverse proxy.
+    Proxy(&'a ProxySite),
+}
+
 /// Host→site router.
 ///
 /// `Default` is deliberately not derived - callers should pass a
@@ -111,6 +126,13 @@ pub struct SiteRouter {
     primaries: BTreeMap<String, Domain>,
     exact: HashMap<String, String>,
     wildcards: HashMap<String, String>,
+    /// Whole-host proxies, keyed by name (like [`Self::sites`]). Their apexes
+    /// are indexed into [`Self::exact`] so [`Self::resolve_route`] finds them and
+    /// insertion detects collisions with PHP sites.
+    proxy_sites: BTreeMap<String, ProxySite>,
+    /// Per-site path-prefix proxy rules, keyed by PHP-site name (like
+    /// [`Self::domains`]). Populated by the daemon at build time from config.
+    proxy_rules: BTreeMap<String, Vec<ProxyRule>>,
 }
 
 impl SiteRouter {
@@ -124,6 +146,8 @@ impl SiteRouter {
             primaries: BTreeMap::new(),
             exact: HashMap::new(),
             wildcards: HashMap::new(),
+            proxy_sites: BTreeMap::new(),
+            proxy_rules: BTreeMap::new(),
         }
     }
 
@@ -162,7 +186,7 @@ impl SiteRouter {
         effective: Vec<Domain>,
         primary: Domain,
     ) -> Result<(), CoreError> {
-        if self.sites.contains_key(site.name()) {
+        if self.sites.contains_key(site.name()) || self.proxy_sites.contains_key(site.name()) {
             return Err(CoreError::DuplicateSite {
                 name: site.name().to_owned(),
             });
@@ -216,6 +240,7 @@ impl SiteRouter {
             }
         }
         self.primaries.remove(name);
+        self.proxy_rules.remove(name);
         Ok(site)
     }
 
@@ -302,13 +327,27 @@ impl SiteRouter {
         &self.config
     }
 
-    /// Resolves a `Host:` header value to a site.
+    /// Resolves a `Host:` header value to a PHP site.
+    ///
+    /// A thin Php-only wrapper over [`Self::resolve_route`]: a host that routes
+    /// to a whole-host proxy returns `None` here. Existing callers that only
+    /// serve PHP (`WordPress` shadow lookups, tunnel origin) keep this shape.
+    #[must_use]
+    pub fn resolve(&self, host: &str) -> Option<&Site> {
+        match self.resolve_route(host)? {
+            Route::Php(site) => Some(site),
+            Route::Proxy(_) => None,
+        }
+    }
+
+    /// Resolves a `Host:` header value to a [`Route`] (PHP site or whole-host
+    /// proxy).
     ///
     /// Exact domain match first; then a single-label wildcard match (the host
     /// with its leftmost label replaced by `*`). No implicit catch-all: a host
     /// with no matching exact or wildcard domain is unresolved.
     #[must_use]
-    pub fn resolve(&self, host: &str) -> Option<&Site> {
+    pub fn resolve_route(&self, host: &str) -> Option<Route<'_>> {
         let host = match host::normalise(host) {
             HostKind::Hostname(c) => c,
             HostKind::Unroutable => return None,
@@ -326,7 +365,7 @@ impl SiteRouter {
         }
 
         if let Some(name) = self.exact.get(sub) {
-            return self.sites.get(name);
+            return self.route_for(name);
         }
 
         if let Some((_, rest)) = sub.split_once('.') {
@@ -334,10 +373,83 @@ impl SiteRouter {
             key.push_str("*.");
             key.push_str(rest);
             if let Some(name) = self.wildcards.get(&key) {
-                return self.sites.get(name);
+                return self.route_for(name);
             }
         }
         None
+    }
+
+    /// Maps an already-resolved routing key to its `Route`. A key indexes at
+    /// most one of `sites`/`proxy_sites` (insertion rejects cross-namespace
+    /// collisions), so PHP is tried first, then proxy.
+    fn route_for(&self, name: &str) -> Option<Route<'_>> {
+        if let Some(site) = self.sites.get(name) {
+            return Some(Route::Php(site));
+        }
+        self.proxy_sites.get(name).map(Route::Proxy)
+    }
+
+    /// Inserts a whole-host proxy, indexing its apex into the exact map.
+    ///
+    /// Errors with [`CoreError::DuplicateSite`] if the name is already taken by a
+    /// site or another proxy, or [`CoreError::DuplicateDomain`] if the apex is
+    /// already claimed. No partial state is left on error. The daemon
+    /// pre-de-conflicts at build time, so these are safety nets.
+    pub fn insert_proxy(&mut self, proxy: ProxySite) -> Result<(), CoreError> {
+        let name = proxy.name().to_owned();
+        if self.sites.contains_key(&name) || self.proxy_sites.contains_key(&name) {
+            return Err(CoreError::DuplicateSite { name });
+        }
+        let apex = Domain::apex(&name);
+        if self.exact.contains_key(apex.as_str()) {
+            return Err(CoreError::DuplicateDomain {
+                domain: apex.as_str().to_owned(),
+            });
+        }
+        self.exact.insert(apex.as_str().to_owned(), name.clone());
+        self.proxy_sites.insert(name, proxy);
+        Ok(())
+    }
+
+    /// Removes a whole-host proxy by name, together with its apex index entry.
+    /// Errors with [`CoreError::SiteNotFound`] if missing.
+    pub fn remove_proxy(&mut self, name: &str) -> Result<ProxySite, CoreError> {
+        let proxy = self
+            .proxy_sites
+            .remove(name)
+            .ok_or_else(|| CoreError::SiteNotFound {
+                name: name.to_owned(),
+            })?;
+        let apex = Domain::apex(name);
+        if self
+            .exact
+            .get(apex.as_str())
+            .is_some_and(|owner| owner == name)
+        {
+            self.exact.remove(apex.as_str());
+        }
+        Ok(proxy)
+    }
+
+    /// Iterates whole-host proxies in lexicographic name order.
+    pub fn proxy_iter(&self) -> impl Iterator<Item = &ProxySite> + '_ {
+        self.proxy_sites.values()
+    }
+
+    /// The path-prefix proxy rules attached to `site` (empty slice if none).
+    #[must_use]
+    pub fn rules_for(&self, site: &str) -> &[ProxyRule] {
+        self.proxy_rules.get(site).map_or(&[], Vec::as_slice)
+    }
+
+    /// Sets (or clears, when `rules` is empty) the path-prefix proxy rules for a
+    /// PHP site. Called by the daemon while building the router from config.
+    pub fn set_proxy_rules(&mut self, site: &str, rules: Vec<ProxyRule>) {
+        if rules.is_empty() {
+            self.proxy_rules.remove(site);
+        } else {
+            self.proxy_rules.insert(site.to_owned(), rules);
+        }
     }
 }
 
@@ -384,6 +496,65 @@ mod tests {
             r.insert(parked(n)).unwrap();
         }
         r
+    }
+
+    fn proxy(name: &str) -> crate::proxy::ProxySite {
+        let target = crate::proxy::UpstreamTarget::from_url_str("http://127.0.0.1:8080").unwrap();
+        crate::proxy::ProxySite::new(name, target).unwrap()
+    }
+
+    #[test]
+    fn resolve_route_distinguishes_php_and_proxy() {
+        let mut r = router_with("test", &["app"]);
+        r.insert_proxy(proxy("reverb")).unwrap();
+        assert!(matches!(r.resolve_route("app.test"), Some(Route::Php(s)) if s.name() == "app"));
+        assert!(
+            matches!(r.resolve_route("reverb.test"), Some(Route::Proxy(p)) if p.name() == "reverb")
+        );
+        assert!(r.resolve("reverb.test").is_none());
+        assert!(r.resolve_route("nope.test").is_none());
+    }
+
+    #[test]
+    fn insert_proxy_rejects_name_and_apex_collisions() {
+        let mut r = router_with("test", &["app"]);
+        assert!(matches!(
+            r.insert_proxy(proxy("app")),
+            Err(CoreError::DuplicateSite { .. })
+        ));
+        r.insert_proxy(proxy("reverb")).unwrap();
+        assert!(matches!(
+            r.insert_proxy(proxy("reverb")),
+            Err(CoreError::DuplicateSite { .. })
+        ));
+    }
+
+    #[test]
+    fn remove_proxy_clears_apex_index() {
+        let mut r = router_with("test", &[]);
+        r.insert_proxy(proxy("reverb")).unwrap();
+        assert!(r.resolve_route("reverb.test").is_some());
+        let removed = r.remove_proxy("reverb").unwrap();
+        assert_eq!(removed.name(), "reverb");
+        assert!(r.resolve_route("reverb.test").is_none());
+        r.insert_proxy(proxy("reverb")).unwrap();
+        assert!(matches!(
+            r.remove_proxy("missing"),
+            Err(CoreError::SiteNotFound { .. })
+        ));
+    }
+
+    #[test]
+    fn proxy_rules_set_get_and_clear() {
+        let mut r = router_with("test", &["app"]);
+        assert!(r.rules_for("app").is_empty());
+        let target = crate::proxy::UpstreamTarget::from_url_str("http://127.0.0.1:8080").unwrap();
+        let rule = crate::proxy::ProxyRule::new("/ws", target).unwrap();
+        r.set_proxy_rules("app", vec![rule]);
+        assert_eq!(r.rules_for("app").len(), 1);
+        assert_eq!(r.rules_for("app")[0].prefix(), "/ws");
+        r.set_proxy_rules("app", vec![]);
+        assert!(r.rules_for("app").is_empty());
     }
 
     /// Default (apex-only) resolution: exact apex resolves, subdomains do not.

@@ -42,6 +42,7 @@ import Spinner from "@/components/ui/Spinner.vue";
 import Switch from "@/components/ui/Switch.vue";
 import { registerViewActions } from "@/lib/shortcuts/useViewActions";
 import { sitesIntent } from "@/lib/shortcuts/sitesIntent";
+import { slugifySiteName } from "@/lib/siteName";
 import { useSitesGroupState } from "@/lib/sitesGroupState";
 import { useDaemon } from "@/composables/useDaemon";
 import { usePoll } from "@/composables/usePoll";
@@ -571,25 +572,46 @@ async function confirmUnpark(close: () => void): Promise<void> {
 const linkOpen = ref(false);
 const linkName = ref("");
 const linkPath = ref("");
+// True once the user types in the name field, so choosing a folder never
+// clobbers a name they entered themselves. Native `input` events fire only on
+// real keystrokes, not on the programmatic prefill in `chooseLinkDir`.
+const linkNameDirty = ref(false);
+// A folder-derived or typed name is converted to a valid slug on submit, so
+// validity is "does it slugify to something", not the raw `[a-z0-9-]` shape.
 const linkValid = computed(
-  () => /^[a-z0-9-]+$/i.test(linkName.value.trim()) && linkPath.value.trim() !== "",
+  () => slugifySiteName(linkName.value) !== null && linkPath.value.trim() !== "",
 );
+
+watch(linkOpen, (open) => {
+  if (!open) {
+    linkName.value = "";
+    linkPath.value = "";
+    linkNameDirty.value = false;
+  }
+});
+
+function baseName(path: string): string {
+  const trimmed = path.replace(/[/\\]+$/, "");
+  const parts = trimmed.split(/[/\\]/);
+  return parts[parts.length - 1] ?? "";
+}
 
 async function chooseLinkDir(): Promise<void> {
   const dir = await pickDirectory();
-  if (dir) linkPath.value = dir;
+  if (!dir) return;
+  linkPath.value = dir;
+  if (!linkNameDirty.value) linkName.value = slugifySiteName(baseName(dir)) ?? "";
 }
 
 async function confirmLink(close: () => void): Promise<void> {
-  const name = linkName.value.trim();
+  const name = slugifySiteName(linkName.value);
   const path = linkPath.value.trim();
+  if (!name) return;
   close();
   rowBusy.value = "link";
   try {
     await link(name, path);
     toast.success(`Linked ${name}`);
-    linkName.value = "";
-    linkPath.value = "";
     await load({ force: true });
   } catch (e) {
     toast.error("Link failed", (e as IpcError).message);
@@ -1083,7 +1105,13 @@ async function shareSitePublicly(s: Site): Promise<void> {
     <!-- link modal -->
     <Modal v-model:open="linkOpen" title="Link a site">
       <label class="text-sm font-medium" for="linkname">Name (single label)</label>
-      <Input id="linkname" v-model="linkName" placeholder="e.g. myapp" class="mt-2" />
+      <Input
+        id="linkname"
+        v-model="linkName"
+        placeholder="e.g. myapp"
+        class="mt-2"
+        @input="linkNameDirty = true"
+      />
       <label class="mt-4 block text-sm font-medium" for="linkpath">Directory</label>
       <div class="mt-2 flex gap-2">
         <Input id="linkpath" v-model="linkPath" placeholder="/path/to/project" />
