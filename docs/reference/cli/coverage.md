@@ -2,9 +2,9 @@
 
 `yerd coverage` runs your **default** PHP version with the bundled
 [pcov](../../guide/code-coverage) line-coverage driver enabled, then forwards
-everything after the first argument verbatim to PHP. It is the discoverable front
-door to the `phpcover` shim - the same coverage mechanism, but reachable from
-`yerd --help` without the shim directory on your `PATH`.
+everything after the `coverage` subcommand verbatim to PHP. It is the discoverable
+front door to the `phpcover` shim - the same coverage mechanism, but reachable
+from `yerd --help` without the shim directory on your `PATH`.
 
 Like `elevate`/`path`, it does **not** map to an IPC request: it `exec`s PHP
 directly in your terminal (inheriting your stdin/stdout/stderr, arguments, and
@@ -41,8 +41,8 @@ php8.5cover artisan test --coverage
 
 ## Passthrough behaviour
 
-Everything after the first argument is handed straight to PHP, so flags belong to
-your script or test runner, not to `yerd`:
+Everything after the `coverage` subcommand is handed straight to PHP, so flags
+belong to your script or test runner, not to `yerd`:
 
 - A **leading** `yerd coverage --help` (or `-h`) prints `yerd`'s own help for the
   command, because `--help` is `yerd`'s built-in flag. To forward `--help` to your

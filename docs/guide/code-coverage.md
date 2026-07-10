@@ -6,10 +6,10 @@ coverage (PHPUnit, Pest, `artisan test --coverage`) without installing or
 configuring an extension yourself.
 
 The friendliest way in is the **`yerd coverage`** subcommand: it runs your
-**default** PHP version with pcov enabled and forwards everything after the first
-argument straight to PHP - the same coverage mechanism as the `phpcover` shim,
-but discoverable from `yerd --help` without needing the shim directory on your
-`PATH`.
+**default** PHP version with pcov enabled and forwards everything after the
+`coverage` subcommand straight to PHP - the same coverage mechanism as the
+`phpcover` shim, but discoverable from `yerd --help` without needing the shim
+directory on your `PATH`.
 
 Under the hood, coverage is exposed through dedicated **cover shims**: `phpcover`
 for your default PHP version, and `php<version>cover` (for example `php8.4cover`)
@@ -42,8 +42,8 @@ php8.4cover vendor/bin/pest --coverage
 ```
 
 ::: tip `yerd coverage` is a passthrough
-Everything after the first argument is handed verbatim to PHP, so flags like
-`--coverage` belong to your test runner, not to `yerd`. Two small edges: a
+Everything after the `coverage` subcommand is handed verbatim to PHP, so flags
+like `--coverage` belong to your test runner, not to `yerd`. Two small edges: a
 leading `yerd coverage --help` prints `yerd`'s own help for the command (put
 `--help` after your script to forward it, e.g. `yerd coverage artisan --help`),
 and the global `--json` flag has no effect here - it, like every other flag, is
