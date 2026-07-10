@@ -76,23 +76,26 @@ impl ProcessSpawner for TokioProcessSpawner {
     }
 }
 
-/// Spawn `cmd`, retrying briefly on `ETXTBSY` ("text file busy").
+/// Spawn `cmd`, retrying on `ETXTBSY` ("text file busy").
 ///
 /// A multithreaded program that writes an executable and then execs it can hit
 /// `ETXTBSY` transiently: the kernel refuses to exec a file while any fd still
 /// holds it open for writing, and a sibling thread's not-yet-closed writer fd
-/// (or one snapshotted into a concurrent `fork`) can briefly hold it. The writer
-/// closes promptly, so a small bounded retry clears the race rather than
-/// surfacing a spurious spawn failure. The first attempt succeeds in the
-/// overwhelmingly common case, so this adds no cost on the happy path.
+/// (or one snapshotted into a concurrent `fork`) can briefly hold it. Because
+/// Rust opens files `O_CLOEXEC`, that inherited fd is dropped the instant the
+/// racing child execs, so the window is very short. This is a synchronous trait
+/// method that may run on a Tokio worker, so it must not block the worker with a
+/// timed sleep; instead each retry `yield_now()`s (a cooperative hand-off to the
+/// runnable fd-closing thread) before trying again. The first attempt succeeds
+/// in the overwhelmingly common case, so the happy path pays nothing.
 fn spawn_retrying_text_file_busy(
     cmd: &mut tokio::process::Command,
 ) -> io::Result<tokio::process::Child> {
-    const MAX_ATTEMPTS: usize = 5;
+    const MAX_ATTEMPTS: usize = 20;
     let mut result = cmd.spawn();
     let mut attempts = 1;
     while attempts < MAX_ATTEMPTS && matches!(&result, Err(e) if is_text_file_busy(e)) {
-        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::thread::yield_now();
         result = cmd.spawn();
         attempts += 1;
     }
