@@ -73,9 +73,10 @@ Each installed engine's `⋯` menu offers:
 ### Managing services
 
 ```sh
-yerd service available          # versions installable for your platform
-yerd service install redis 8    # download, install, and start
-yerd services                   # list everything: version, state, port
+yerd service available            # versions installable for your platform
+yerd service install redis 8      # download, install, and start
+yerd service install postgres 17-full  # PostGIS build (see below)
+yerd services                     # list everything: version, state, port
 
 yerd service start redis        # start it now
 yerd service stop redis         # stop for this session (returns on next daemon start)
@@ -141,6 +142,70 @@ Only one can listen on `3306` at a time. If both are installed, whichever binds
 first wins and the other logs a non-fatal "port in use" and stays down. Run a
 single SQL engine, or give one a different `port`.
 :::
+
+## PostgreSQL: base and PostGIS (`full`) builds
+
+PostgreSQL ships in **two flavours**, and you choose which one you install by its
+version label. `full` is the PostGIS variant, appended to the version as a
+`<version>-full` label:
+
+| Label | What you get | Compressed size | License |
+|---|---|---|---|
+| `17` | The lean base build. | ≈ 6.5 MB | 100% PostgreSQL License (permissive) |
+| `17-full` | The base plus **PostGIS** and its geospatial stack. | ≈ 60-64 MB | GPL-encumbered (see below) |
+
+```sh
+yerd service install postgres 17        # lean base
+yerd service install postgres 17-full   # PostGIS build
+```
+
+Both show up as distinct installable versions in `yerd service available` and in
+the desktop app's version picker. The build is downloaded once per install and
+cached.
+
+### What each build bundles
+
+Both builds ship the standard contrib extensions - `pg_stat_statements`,
+`pg_trgm`, `citext`, `unaccent`, `hstore`, `ltree`, `btree_gin`, `btree_gist`,
+`fuzzystrmatch`, `tablefunc`, `intarray`, `cube`, `earthdistance`,
+`postgres_fdw`, `dblink`, `pageinspect`, `amcheck`, `pgstattuple`,
+`pg_buffercache` - plus **`pgvector`** (Linux and macOS).
+
+The **`full`** build adds the geospatial and crypto stack on top:
+
+- **PostGIS** with raster and topology: `postgis`, `postgis_raster`,
+  `postgis_topology`, `postgis_tiger_geocoder`, `address_standardizer`.
+- `pgcrypto`, `uuid-ossp`, `sslinfo`, and `xml2`.
+
+### Base and `full` share one datadir - switch between them freely
+
+`17` and `17-full` are separate *installs* but **share a single data directory**
+(Postgres datadirs are pinned to the major version, and the `full` variant maps to
+the same major). So you can install the base build, create databases, then switch
+with `yerd service change-version postgres 17-full` (or back) **without losing your
+data** - the databases carry across the switch.
+
+One caveat: PostGIS objects created while running `full` need the PostGIS `.so` to
+be *used*. The base build still starts against the shared datadir and your regular
+tables are fine, but queries that touch PostGIS types or functions only work while
+`full` is running - so enable `full` before you start using PostGIS.
+
+Uninstalling with `--purge` deletes the shared datadir, so `yerd service uninstall
+postgres <label> --purge` removes the databases for **both** flavours of that major.
+
+::: warning `full` is GPL-encumbered
+The base build stays **100% PostgreSQL License** (permissive). The `full` build
+bundles GPL/LGPL components - **PostGIS** is GPLv2 and **GEOS** is LGPL-2.1 (PROJ,
+GDAL, json-c, and protobuf-c are permissive). Install `full` only if that
+licensing suits your project. Each component's notice ships inside the downloaded
+tarball (`LICENSE-postgis`, `LICENSE-geos`, `LICENSE-proj`, `LICENSE-gdal`, and
+friends).
+:::
+
+Backup and restore are unchanged - both builds ship the same `pg_dump` /
+`pg_restore` / `psql` tools, so [`yerd db backup` / `restore`](../reference/cli/db)
+work identically. A dump that uses PostGIS objects only restores into a `full`
+target, because those objects need the PostGIS `.so`.
 
 ## Windows and Redis licensing
 

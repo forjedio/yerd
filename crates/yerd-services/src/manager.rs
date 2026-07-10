@@ -186,7 +186,18 @@ where
             }
         })?;
 
-        let cmd_builder = || build_cmd(service, &binary, &config_path, &datadir, &log_path);
+        let install_dir = version::install_dir(&self.dirs, service, &version);
+        let geo_env = geo_data_env(service, &install_dir, &version);
+        let cmd_builder = || {
+            build_cmd(
+                service,
+                &binary,
+                &config_path,
+                &datadir,
+                &log_path,
+                &geo_env,
+            )
+        };
 
         let initial_since = self.clock.now();
         let result = self
@@ -859,16 +870,22 @@ impl Drop for InitGroupReaper {
 
 /// Build the server command per engine, forcing foreground operation and (on
 /// Unix) its own process group so the supervisor's `killpg` reaps any children
-/// with it. Fallible because the Postgres arm opens the log file for stderr
-/// capture.
+/// with it. `env` is added on top of the inherited environment (services are not
+/// env-scrubbed); it carries `PROJ_DATA` / `GDAL_DATA` for `PostGIS` postgres
+/// variants and is empty otherwise. Fallible because the Postgres arm opens the
+/// log file for stderr capture.
 fn build_cmd(
     service: Service,
     binary: &std::path::Path,
     config_path: &std::path::Path,
     datadir: &std::path::Path,
     log_path: &std::path::Path,
+    env: &[(std::ffi::OsString, std::ffi::OsString)],
 ) -> Result<StdCommand, ServiceError> {
     let mut cmd = StdCommand::new(binary);
+    for (key, value) in env {
+        cmd.env(key, value);
+    }
     match service {
         Service::Redis => {
             cmd.arg(config_path);
@@ -901,6 +918,71 @@ fn build_cmd(
     }
     set_own_process_group(&mut cmd);
     Ok(cmd)
+}
+
+/// Environment to inject into the postmaster for a `PostGIS`-bearing postgres
+/// variant install: `PROJ_DATA` / `GDAL_DATA`, probed from the install tree so
+/// `ST_Transform` and raster reprojection can find their runtime data. Empty for
+/// the base build, any non-variant label, and every non-postgres service - only a
+/// variant install is probed, and each var is set only when its file is found.
+fn geo_data_env(
+    service: Service,
+    install_dir: &std::path::Path,
+    version: &ServiceVersion,
+) -> Vec<(std::ffi::OsString, std::ffi::OsString)> {
+    if service != Service::Postgres || !version.has_variant() {
+        return Vec::new();
+    }
+    let (proj, gdal) = find_geo_data_dirs(install_dir);
+    let mut env = Vec::new();
+    if let Some(dir) = proj {
+        env.push(("PROJ_DATA".into(), dir.into_os_string()));
+    }
+    if let Some(dir) = gdal {
+        env.push(("GDAL_DATA".into(), dir.into_os_string()));
+    }
+    env
+}
+
+/// Depth-first search of `root` for the parent directories of `proj.db` (PROJ) and
+/// `gdalvrt.xsd` (GDAL), short-circuiting once both are found. First match wins if
+/// a name appears more than once (walk order). Unreadable directories and errored
+/// entries are skipped. `DirEntry::file_type()` does not follow symlinks, so a
+/// symlinked directory is not recursed (no loop risk) and a symlinked target file
+/// is skipped - acceptable because yerd controls the published tarball layout.
+fn find_geo_data_dirs(
+    root: &std::path::Path,
+) -> (Option<std::path::PathBuf>, Option<std::path::PathBuf>) {
+    let mut proj = None;
+    let mut gdal = None;
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let Ok(ft) = entry.file_type() else {
+                continue;
+            };
+            if ft.is_dir() {
+                stack.push(entry.path());
+            } else if ft.is_file() {
+                match entry.file_name().to_str() {
+                    Some("proj.db") if proj.is_none() => {
+                        proj = entry.path().parent().map(std::path::Path::to_path_buf);
+                    }
+                    Some("gdalvrt.xsd") if gdal.is_none() => {
+                        gdal = entry.path().parent().map(std::path::Path::to_path_buf);
+                    }
+                    _ => {}
+                }
+            }
+            if proj.is_some() && gdal.is_some() {
+                return (proj, gdal);
+            }
+        }
+    }
+    (proj, gdal)
 }
 
 /// Arguments for an engine's one-shot datadir init tool. `staging` is the fresh
@@ -1069,6 +1151,17 @@ mod tests {
         assert!(check_pg_major(tmp.path(), &v("16.4")).is_ok());
     }
 
+    /// A variant label (`17-full`) shares the base's numeric major, so it must
+    /// open a datadir initialised by the base build - this is what lets a user
+    /// switch base to variant without a cross-major rejection.
+    #[test]
+    fn check_pg_major_accepts_a_variant_of_the_same_major() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("PG_VERSION"), b"17\n").unwrap();
+        assert!(check_pg_major(tmp.path(), &v("17-full")).is_ok());
+        assert!(check_pg_major(tmp.path(), &v("17.10-full")).is_ok());
+    }
+
     #[test]
     fn check_pg_major_rejects_cross_major_datadir() {
         let tmp = tempfile::tempdir().unwrap();
@@ -1133,7 +1226,7 @@ mod tests {
         let config = tmp.path().join("redis.conf");
         let datadir = tmp.path().join("data");
         let log = tmp.path().join("redis.log");
-        let cmd = build_cmd(Service::Redis, &binary, &config, &datadir, &log).unwrap();
+        let cmd = build_cmd(Service::Redis, &binary, &config, &datadir, &log, &[]).unwrap();
         assert_eq!(cmd.get_program(), binary.as_os_str());
         let args: Vec<_> = cmd.get_args().collect();
         assert_eq!(args, vec![config.as_os_str()]);
@@ -1146,7 +1239,7 @@ mod tests {
         let config = tmp.path().join("my.cnf");
         let datadir = tmp.path().join("data");
         let log = tmp.path().join("mysql.log");
-        let cmd = build_cmd(Service::MySql, &binary, &config, &datadir, &log).unwrap();
+        let cmd = build_cmd(Service::MySql, &binary, &config, &datadir, &log, &[]).unwrap();
         let args: Vec<_> = cmd
             .get_args()
             .map(|a| a.to_string_lossy().into_owned())
@@ -1313,7 +1406,7 @@ mod tests {
         let config = tmp.path().join("postgresql.conf");
         let datadir = tmp.path().join("data");
         let log = tmp.path().join("pg.log");
-        let cmd = build_cmd(Service::Postgres, &binary, &config, &datadir, &log).unwrap();
+        let cmd = build_cmd(Service::Postgres, &binary, &config, &datadir, &log, &[]).unwrap();
         let args: Vec<_> = cmd
             .get_args()
             .map(|a| a.to_string_lossy().into_owned())
@@ -1332,7 +1425,7 @@ mod tests {
         let config = tmp.path().join("postgresql.conf");
         let datadir = tmp.path().join("data");
         let log = tmp.path().join("missing").join("pg.log");
-        let err = build_cmd(Service::Postgres, &binary, &config, &datadir, &log).unwrap_err();
+        let err = build_cmd(Service::Postgres, &binary, &config, &datadir, &log, &[]).unwrap_err();
         assert!(
             matches!(
                 err,
@@ -1343,6 +1436,97 @@ mod tests {
             ),
             "got: {err:?}"
         );
+    }
+
+    /// `build_cmd` layers the supplied env pairs onto the command (on top of the
+    /// inherited environment, which the services path never scrubs).
+    #[test]
+    fn build_cmd_sets_supplied_env() {
+        let tmp = tempfile::tempdir().unwrap();
+        let binary = tmp.path().join("postgres");
+        let config = tmp.path().join("postgresql.conf");
+        let datadir = tmp.path().join("data");
+        let log = tmp.path().join("pg.log");
+        let env = vec![
+            (
+                std::ffi::OsString::from("PROJ_DATA"),
+                std::ffi::OsString::from("/i/share/proj"),
+            ),
+            (
+                std::ffi::OsString::from("GDAL_DATA"),
+                std::ffi::OsString::from("/i/share/gdal"),
+            ),
+        ];
+        let cmd = build_cmd(Service::Postgres, &binary, &config, &datadir, &log, &env).unwrap();
+        let got: std::collections::BTreeMap<_, _> = cmd
+            .get_envs()
+            .filter_map(|(k, v)| v.map(|v| (k.to_owned(), v.to_owned())))
+            .collect();
+        assert_eq!(
+            got.get(std::ffi::OsStr::new("PROJ_DATA"))
+                .map(std::ffi::OsString::as_os_str),
+            Some(std::ffi::OsStr::new("/i/share/proj"))
+        );
+        assert_eq!(
+            got.get(std::ffi::OsStr::new("GDAL_DATA"))
+                .map(std::ffi::OsString::as_os_str),
+            Some(std::ffi::OsStr::new("/i/share/gdal"))
+        );
+    }
+
+    /// A staged install tree with the two geo-data files under `share/`.
+    fn stage_geo_install(root: &std::path::Path, proj: bool, gdal: bool) {
+        if proj {
+            let dir = root.join("share").join("proj");
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join("proj.db"), b"").unwrap();
+        }
+        if gdal {
+            let dir = root.join("share").join("gdal");
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(dir.join("gdalvrt.xsd"), b"").unwrap();
+        }
+    }
+
+    #[test]
+    fn geo_data_env_empty_for_base_label() {
+        let tmp = tempfile::tempdir().unwrap();
+        stage_geo_install(tmp.path(), true, true);
+        assert!(geo_data_env(Service::Postgres, tmp.path(), &v("17")).is_empty());
+    }
+
+    #[test]
+    fn geo_data_env_empty_for_non_postgres_variant() {
+        let tmp = tempfile::tempdir().unwrap();
+        stage_geo_install(tmp.path(), true, true);
+        assert!(geo_data_env(Service::MySql, tmp.path(), &v("9.7-full")).is_empty());
+    }
+
+    #[test]
+    fn geo_data_env_sets_both_when_probed() {
+        let tmp = tempfile::tempdir().unwrap();
+        stage_geo_install(tmp.path(), true, true);
+        let env = geo_data_env(Service::Postgres, tmp.path(), &v("17-full"));
+        let map: std::collections::BTreeMap<_, _> = env.into_iter().collect();
+        assert_eq!(
+            map.get(std::ffi::OsStr::new("PROJ_DATA"))
+                .map(std::ffi::OsString::as_os_str),
+            Some(tmp.path().join("share").join("proj").as_os_str())
+        );
+        assert_eq!(
+            map.get(std::ffi::OsStr::new("GDAL_DATA"))
+                .map(std::ffi::OsString::as_os_str),
+            Some(tmp.path().join("share").join("gdal").as_os_str())
+        );
+    }
+
+    #[test]
+    fn geo_data_env_sets_only_the_found_var() {
+        let tmp = tempfile::tempdir().unwrap();
+        stage_geo_install(tmp.path(), true, false);
+        let env = geo_data_env(Service::Postgres, tmp.path(), &v("17-full"));
+        assert_eq!(env.len(), 1);
+        assert_eq!(env[0].0, std::ffi::OsString::from("PROJ_DATA"));
     }
 
     /// Regression for the `mariadb-install-db` "Could not find

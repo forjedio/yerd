@@ -110,11 +110,21 @@ impl ServiceVersion {
         &self.0
     }
 
-    /// The major component (the substring before the first `.`), used to pin
-    /// datadirs for engines whose on-disk format is major-incompatible.
+    /// The numeric major component: the leading run before the first `.` or `-`,
+    /// used to pin datadirs for engines whose on-disk format is major-incompatible.
+    /// A variant suffix (`<version>-<variant>`, e.g. the `PostGIS` `full` build) is
+    /// ignored, so `"17-full"` / `"17.10-full"` share the numeric major `17` with
+    /// the base `"17"` / `"17.10"` builds - and thus the same datadir.
     #[must_use]
     pub fn major(&self) -> &str {
-        self.0.split('.').next().unwrap_or(&self.0)
+        self.0.split(['.', '-']).next().unwrap_or(&self.0)
+    }
+
+    /// Whether this label carries a variant suffix (`"17-full"` yes, `"17.10"` no).
+    /// The numeric version part never contains a hyphen, so a hyphen marks a variant.
+    #[must_use]
+    pub fn has_variant(&self) -> bool {
+        self.0.contains('-')
     }
 
     fn is_valid(s: &str) -> bool {
@@ -363,6 +373,29 @@ mod tests {
         assert_eq!(ServiceVersion::from_str("16").unwrap().major(), "16");
     }
 
+    /// A variant suffix (`-full` or any other) is ignored by `major()`, so a
+    /// variant shares the numeric major - and thus the datadir - of its base.
+    #[test]
+    fn major_ignores_variant_suffix() {
+        assert_eq!(ServiceVersion::from_str("17-full").unwrap().major(), "17");
+        assert_eq!(
+            ServiceVersion::from_str("17.10-full").unwrap().major(),
+            "17"
+        );
+        assert_eq!(ServiceVersion::from_str("17-foo").unwrap().major(), "17");
+    }
+
+    #[test]
+    fn has_variant_keys_on_a_hyphen() {
+        assert!(ServiceVersion::from_str("17-full").unwrap().has_variant());
+        assert!(ServiceVersion::from_str("16.10-full")
+            .unwrap()
+            .has_variant());
+        assert!(!ServiceVersion::from_str("17").unwrap().has_variant());
+        assert!(!ServiceVersion::from_str("8.4").unwrap().has_variant());
+        assert!(!ServiceVersion::from_str("full").unwrap().has_variant());
+    }
+
     #[test]
     fn datadir_pins_postgres_to_major_only() {
         let dirs = dirs_in(std::path::Path::new("/tmp/x"));
@@ -376,6 +409,22 @@ mod tests {
             datadir(&dirs, Service::MySql, &v8),
             PathBuf::from("/tmp/x/d/services/mysql/data")
         );
+    }
+
+    /// Base and any variant of the same major resolve to one shared datadir, so a
+    /// `change-version` between base and variant keeps the databases in place.
+    #[test]
+    fn datadir_is_shared_across_base_and_variant() {
+        let dirs = dirs_in(std::path::Path::new("/tmp/x"));
+        let shared = PathBuf::from("/tmp/x/d/services/postgres/data-17");
+        for label in ["17", "17.10", "17.10-full", "17-full"] {
+            let v = ServiceVersion::from_str(label).unwrap();
+            assert_eq!(
+                datadir(&dirs, Service::Postgres, &v),
+                shared,
+                "label {label}"
+            );
+        }
     }
 
     #[test]
