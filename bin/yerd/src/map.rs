@@ -195,6 +195,11 @@ pub fn to_request(cmd: &Command) -> Result<Request, ClientError> {
                 "path is handled locally, not over IPC".to_owned(),
             ));
         }
+        Command::Coverage { .. } => {
+            return Err(ClientError::Usage(
+                "coverage is handled locally, not over IPC".to_owned(),
+            ));
+        }
         Command::Link { .. } => {
             return Err(ClientError::Usage(
                 "link is handled locally, not over IPC".to_owned(),
@@ -2722,6 +2727,7 @@ mod tests {
             Command::Path {
                 action: crate::cli::PathAction::Install,
             },
+            Command::Coverage { args: vec![] },
             Command::Link {
                 name_or_path: None,
                 path: None,

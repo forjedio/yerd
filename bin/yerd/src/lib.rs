@@ -45,6 +45,18 @@ pub async fn run(cli: Cli) -> ExitCode {
         Command::Elevate { target } => return elevate::run_elevate(*target, false).await,
         Command::Unelevate { target } => return elevate::run_elevate(*target, true).await,
         Command::Path { action } => return path_cmd::run(*action),
+        #[cfg_attr(not(unix), allow(unused_variables))]
+        Command::Coverage { args } => {
+            #[cfg(unix)]
+            {
+                return cover_shim::run_coverage(args);
+            }
+            #[cfg(not(unix))]
+            {
+                eprintln!("yerd: coverage is only available on macOS and Linux");
+                return ExitCode::from(2);
+            }
+        }
         Command::Domain {
             action: crate::cli::DomainAction::List { site },
         } => return run_domain_list(site.as_deref(), cli.json).await,
