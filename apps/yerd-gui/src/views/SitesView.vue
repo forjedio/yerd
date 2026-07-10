@@ -583,7 +583,11 @@ const linkValid = computed(
 );
 
 watch(linkOpen, (open) => {
-  if (open) linkNameDirty.value = linkName.value.trim() !== "";
+  if (!open) {
+    linkName.value = "";
+    linkPath.value = "";
+    linkNameDirty.value = false;
+  }
 });
 
 function baseName(path: string): string {
@@ -608,9 +612,6 @@ async function confirmLink(close: () => void): Promise<void> {
   try {
     await link(name, path);
     toast.success(`Linked ${name}`);
-    linkName.value = "";
-    linkPath.value = "";
-    linkNameDirty.value = false;
     await load({ force: true });
   } catch (e) {
     toast.error("Link failed", (e as IpcError).message);

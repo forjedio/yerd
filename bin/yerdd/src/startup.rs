@@ -587,12 +587,12 @@ pub(crate) fn scan_sites(
             }
         };
         for entry in entries.flatten() {
-            let Some(slug) = parked_site_name(&entry, &linked_names) else {
+            let Some(site_name) = parked_site_name(&entry, &linked_names) else {
                 continue;
             };
             let doc_root = entry.path();
             if let Some(site) = build_parked_site(
-                &slug,
+                &site_name,
                 &doc_root,
                 default_php,
                 cfg,
@@ -632,14 +632,14 @@ fn parked_site_name(
     if !entry.metadata().ok()?.is_dir() {
         return None;
     }
-    let Some(slug) = yerd_core::normalize_site_name(name) else {
+    let Some(site_name) = yerd_core::normalize_site_name(name) else {
         tracing::debug!(name = %name, "skipping parked dir with no valid site name");
         return None;
     };
-    if linked_names.contains(slug.as_str()) {
+    if linked_names.contains(site_name.as_str()) {
         return None;
     }
-    Some(slug)
+    Some(site_name)
 }
 
 /// Build a parked [`Site`] for `doc_root`, re-applying any persisted per-site
@@ -648,18 +648,18 @@ fn parked_site_name(
 /// unresolved detection serves the root provisionally and pushes `doc_root` onto
 /// `watch_roots`. Returns `None` (logging) for an invalid site name.
 fn build_parked_site(
-    slug: &str,
+    site_name: &str,
     doc_root: &std::path::Path,
     default_php: PhpVersion,
     cfg: &yerd_config::Config,
     detect_cache: &DetectCache,
     watch_roots: &mut Vec<PathBuf>,
 ) -> Option<Site> {
-    let mut site = match Site::parked(slug, doc_root, default_php) {
+    let mut site = match Site::parked(site_name, doc_root, default_php) {
         Ok(site) => site,
         Err(e) => {
             tracing::debug!(
-                name = %slug,
+                name = %site_name,
                 error = %e,
                 "skipping invalid parked-site name"
             );
