@@ -7,7 +7,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use yerd_core::{Domain, PhpVersion, Site, Tld};
+use yerd_core::{Domain, PhpVersion, ProxyRule, ProxySite, Site, Tld};
 
 /// Top-level on-disk config.
 ///
@@ -75,6 +75,12 @@ pub struct Config {
     /// Per-site routable-domain customisations (added/suppressed domains and a
     /// chosen primary), split by site class. Empty by default.
     pub domains: DomainsSection,
+    /// Whole-host reverse proxies (`reverb.test` → `http(s)://host:port`). Order
+    /// is preserved on round-trip. Empty by default.
+    pub proxies: Vec<ProxySite>,
+    /// Per-site path-prefix reverse-proxy rules (`app.test/app` → upstream),
+    /// split by site class. Empty by default.
+    pub proxy_rules: ProxyRulesSection,
 }
 
 impl Default for Config {
@@ -96,7 +102,34 @@ impl Default for Config {
             tunnel: TunnelSection::default(),
             groups: GroupsSection::default(),
             domains: DomainsSection::default(),
+            proxies: Vec::new(),
+            proxy_rules: ProxyRulesSection::default(),
         }
+    }
+}
+
+/// Per-site path-prefix reverse-proxy rules (see [`Config::proxy_rules`]).
+///
+/// Split by site class exactly like [`DomainsSection`]: **linked** rules key by
+/// site name; **parked** rules key by document-root string (byte-exact, never
+/// canonicalised - see [`SiteOverride`]). A site with no rules has no entry, so
+/// an uncustomised config omits the whole section. The daemon applies these onto
+/// [`yerd_core::SiteRouter`] at build time.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ProxyRulesSection {
+    /// Linked-site rules, keyed by site name. `BTreeMap` for stable order.
+    pub linked: BTreeMap<String, Vec<ProxyRule>>,
+    /// Parked-site rules, keyed by document-root string. `BTreeMap` for stable
+    /// order.
+    pub parked: BTreeMap<String, Vec<ProxyRule>>,
+}
+
+impl ProxyRulesSection {
+    /// True when there are no linked and no parked rules, letting the serialiser
+    /// omit the `[proxy_rules]` table so a default config stays byte-stable.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.linked.is_empty() && self.parked.is_empty()
     }
 }
 

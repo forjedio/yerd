@@ -73,4 +73,4 @@ pub use schema::{
 /// key inside `[[linked]]` and `[[overrides]]` for the per-site
 /// front-controller-vs-direct-execution toggle (defaults to auto when absent).
 /// Both v11→v12 and v12→v13 are bare version bumps.
-pub const CURRENT_VERSION: u32 = 13;
+pub const CURRENT_VERSION: u32 = 14;

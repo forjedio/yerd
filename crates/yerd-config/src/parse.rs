@@ -76,6 +76,45 @@ struct Wire {
     // `ConfigError::Core`.
     #[serde(default)]
     domains: DomainsSectionWire,
+    // v14: optional `[[proxies]]` array; absent in v13 and earlier → empty.
+    // `target` strings are validated into `yerd_core::UpstreamTarget` in
+    // `TryFrom`, so a bad URL surfaces as `ConfigError::Core`.
+    #[serde(default)]
+    proxies: Vec<ProxyWire>,
+    // v14: optional `[proxy_rules]` table; absent in v13 and earlier → empty.
+    #[serde(default)]
+    proxy_rules: ProxyRulesSectionWire,
+}
+
+/// One `[[proxies]]` table: a whole-host proxy's name, upstream, and HTTPS flag.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ProxyWire {
+    name: String,
+    target: String,
+    #[serde(default)]
+    secure: bool,
+}
+
+/// The `[proxy_rules]` table. Both maps default to empty, so an absent table
+/// parses to [`crate::schema::ProxyRulesSection::default`].
+#[derive(Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ProxyRulesSectionWire {
+    #[serde(default)]
+    linked: BTreeMap<String, Vec<ProxyRuleWire>>,
+    #[serde(default)]
+    parked: BTreeMap<String, Vec<ProxyRuleWire>>,
+}
+
+/// One `[[proxy_rules.linked.<name>]]` / `[[proxy_rules.parked."<docroot>"]]`
+/// rule: a path prefix plus an upstream (validated into `UpstreamTarget` in
+/// `TryFrom`).
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ProxyRuleWire {
+    prefix: String,
+    target: String,
 }
 
 /// The `[domains]` table. Both maps default to empty, so an absent table parses
@@ -440,6 +479,11 @@ impl TryFrom<Wire> for Config {
             linked: convert_domain_deltas(w.domains.linked)?,
             parked: convert_domain_deltas(w.domains.parked)?,
         };
+        let proxies = convert_proxies(w.proxies)?;
+        let proxy_rules = crate::schema::ProxyRulesSection {
+            linked: convert_proxy_rules(w.proxy_rules.linked)?,
+            parked: convert_proxy_rules(w.proxy_rules.parked)?,
+        };
         Ok(Config {
             version: crate::CURRENT_VERSION,
             tld,
@@ -457,8 +501,42 @@ impl TryFrom<Wire> for Config {
             tunnel,
             groups,
             domains,
+            proxies,
+            proxy_rules,
         })
     }
+}
+
+/// Convert `[[proxies]]` wire tables into validated [`yerd_core::ProxySite`]s.
+/// A bad name or URL surfaces as [`ConfigError::Core`].
+fn convert_proxies(wire: Vec<ProxyWire>) -> Result<Vec<yerd_core::ProxySite>, ConfigError> {
+    wire.into_iter()
+        .map(|p| {
+            let target = yerd_core::UpstreamTarget::from_url_str(&p.target)?;
+            let mut proxy = yerd_core::ProxySite::new(&p.name, target)?;
+            proxy.set_secure(p.secure);
+            Ok(proxy)
+        })
+        .collect()
+}
+
+/// Convert a `[proxy_rules.*]` wire map into validated [`yerd_core::ProxyRule`]
+/// lists. A bad prefix or URL surfaces as [`ConfigError::Core`].
+fn convert_proxy_rules(
+    wire: BTreeMap<String, Vec<ProxyRuleWire>>,
+) -> Result<BTreeMap<String, Vec<yerd_core::ProxyRule>>, ConfigError> {
+    wire.into_iter()
+        .map(|(key, rules)| {
+            let rules = rules
+                .into_iter()
+                .map(|r| {
+                    let target = yerd_core::UpstreamTarget::from_url_str(&r.target)?;
+                    Ok(yerd_core::ProxyRule::new(&r.prefix, target)?)
+                })
+                .collect::<Result<Vec<_>, ConfigError>>()?;
+            Ok((key, rules))
+        })
+        .collect()
 }
 
 /// Convert a raw `[domains.*]` delta map into typed [`crate::schema::DomainDelta`]
@@ -558,6 +636,53 @@ pub(crate) fn validate(c: &Config) -> Result<(), ConfigError> {
     validate_tunnel(c)?;
     validate_groups(c)?;
     validate_domains(c)?;
+    validate_proxies(c)?;
+    Ok(())
+}
+
+/// `[[proxies]]` / `[proxy_rules]` invariants visible to this pure crate: proxy
+/// names are unique among proxies and don't collide with a linked site; each
+/// site's rule prefixes are unique; and no target points at a `.tld` host (a
+/// routing loop into Yerd). Name/URL *shape* is already enforced by
+/// `ProxySite::new` / `UpstreamTarget::from_url_str` during wire conversion.
+///
+/// The `.tld`-host loop guard is enforced here so a hand-edited config can't slip
+/// that self-forwarding target past load. The loopback-on-own-*port* loop is the
+/// daemon's job (it needs the actively bound port, a runtime fact invisible
+/// here), as are collisions with **parked** sites - mirroring `[domains]`/`[tunnel]`.
+fn validate_proxies(c: &Config) -> Result<(), ConfigError> {
+    let dotted_tld = format!(".{}", c.tld.as_str());
+    let targets_loop = |t: &yerd_core::UpstreamTarget| {
+        t.host() == c.tld.as_str() || t.host().ends_with(&dotted_tld)
+    };
+
+    let linked_names: BTreeSet<&str> = c.linked.iter().map(yerd_core::Site::name).collect();
+    let mut seen_proxy: BTreeSet<&str> = BTreeSet::new();
+    for p in &c.proxies {
+        if linked_names.contains(p.name()) || !seen_proxy.insert(p.name()) {
+            return Err(ve(ValidateErrorReason::ProxyNameCollision));
+        }
+        if targets_loop(p.target()) {
+            return Err(ve(ValidateErrorReason::ProxyTargetLoop));
+        }
+    }
+
+    for rules in c
+        .proxy_rules
+        .linked
+        .values()
+        .chain(c.proxy_rules.parked.values())
+    {
+        let mut seen_prefix: BTreeSet<&str> = BTreeSet::new();
+        for r in rules {
+            if !seen_prefix.insert(r.prefix()) {
+                return Err(ve(ValidateErrorReason::ProxyRuleDuplicatePrefix));
+            }
+            if targets_loop(r.target()) {
+                return Err(ve(ValidateErrorReason::ProxyTargetLoop));
+            }
+        }
+    }
     Ok(())
 }
 
@@ -898,7 +1023,7 @@ mod tests {
         match Config::from_toml("version = 99\n") {
             Err(ConfigError::UnsupportedVersion {
                 found: 99,
-                current: 13,
+                current: 14,
             }) => {}
             other => panic!("expected UnsupportedVersion, got {other:?}"),
         }
@@ -1458,6 +1583,92 @@ php = "not-a-version"
     #[test]
     fn validate_accepts_default() {
         Config::default().validate().unwrap();
+    }
+
+    fn upstream(url: &str) -> yerd_core::UpstreamTarget {
+        yerd_core::UpstreamTarget::from_url_str(url).unwrap()
+    }
+
+    #[test]
+    fn proxies_and_rules_round_trip() {
+        let mut c = Config::default();
+        let mut p = yerd_core::ProxySite::new("reverb", upstream("http://127.0.0.1:3000")).unwrap();
+        p.set_secure(true);
+        c.proxies.push(p);
+        c.proxy_rules.linked.insert(
+            "app".to_owned(),
+            vec![yerd_core::ProxyRule::new("/ws", upstream("https://127.0.0.1:3443")).unwrap()],
+        );
+        c.proxy_rules.parked.insert(
+            "/srv/blog".to_owned(),
+            vec![yerd_core::ProxyRule::new("/api", upstream("http://127.0.0.1:9000")).unwrap()],
+        );
+        let toml = c.to_toml().unwrap();
+        let back = Config::from_toml(&toml).unwrap();
+        assert_eq!(c, back);
+        assert_eq!(back.to_toml().unwrap(), toml);
+    }
+
+    #[test]
+    fn removing_last_proxy_rule_returns_to_byte_identical_default() {
+        let mut c = Config::default();
+        c.proxy_rules.linked.insert("app".to_owned(), Vec::new());
+        assert_eq!(c.to_toml().unwrap(), Config::default().to_toml().unwrap());
+    }
+
+    #[test]
+    fn default_config_emits_no_proxy_tables() {
+        let s = Config::default().to_toml().unwrap();
+        assert!(!s.contains("[[proxies]]"), "got: {s}");
+        assert!(!s.contains("[proxy_rules"), "got: {s}");
+    }
+
+    #[test]
+    fn validate_rejects_proxy_name_collision_with_linked() {
+        let mut c = Config::default();
+        c.linked.push(
+            yerd_core::Site::linked("reverb", "/srv/reverb", yerd_core::PhpVersion::new(8, 3))
+                .unwrap(),
+        );
+        c.proxies
+            .push(yerd_core::ProxySite::new("reverb", upstream("http://127.0.0.1:3000")).unwrap());
+        match c.validate() {
+            Err(ConfigError::Validate {
+                reason: ValidateErrorReason::ProxyNameCollision,
+            }) => {}
+            other => panic!("expected ProxyNameCollision, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn validate_rejects_duplicate_rule_prefix() {
+        let mut c = Config::default();
+        c.proxy_rules.linked.insert(
+            "app".to_owned(),
+            vec![
+                yerd_core::ProxyRule::new("/ws", upstream("http://127.0.0.1:3000")).unwrap(),
+                yerd_core::ProxyRule::new("/ws/", upstream("http://127.0.0.1:3001")).unwrap(),
+            ],
+        );
+        match c.validate() {
+            Err(ConfigError::Validate {
+                reason: ValidateErrorReason::ProxyRuleDuplicatePrefix,
+            }) => {}
+            other => panic!("expected ProxyRuleDuplicatePrefix, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn validate_rejects_tld_target() {
+        let mut c = Config::default();
+        c.proxies
+            .push(yerd_core::ProxySite::new("loop", upstream("http://other.test")).unwrap());
+        match c.validate() {
+            Err(ConfigError::Validate {
+                reason: ValidateErrorReason::ProxyTargetLoop,
+            }) => {}
+            other => panic!("expected ProxyTargetLoop, got {other:?}"),
+        }
     }
 
     #[test]

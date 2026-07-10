@@ -209,6 +209,13 @@ pub enum Command {
         #[command(subcommand)]
         action: DomainAction,
     },
+    /// Manage reverse proxies: a whole-host proxy (`reverb.test` → a running
+    /// service) or a path rule on an existing site (`app.test/app` → a service).
+    Proxy {
+        /// What to do.
+        #[command(subcommand)]
+        action: ProxyAction,
+    },
     /// Grant yerd OS-level privileges (run via `sudo`). No subcommand = all.
     Elevate {
         /// Which privilege to grant; omit to grant all.
@@ -256,6 +263,33 @@ pub enum PathAction {
     Uninstall,
     /// Print the shell snippet without modifying any file (for manual `eval`).
     Print,
+}
+
+/// Action of `yerd proxy`.
+#[derive(clap::Subcommand, Debug, Clone)]
+pub enum ProxyAction {
+    /// Add a proxy. Two arguments create a whole-host proxy
+    /// (`yerd proxy add reverb http://localhost:8080`); three attach a path rule
+    /// to an existing site (`yerd proxy add myapp /app http://127.0.0.1:8080`).
+    Add {
+        /// A proxy name (whole-host) or a site name (path rule).
+        first: String,
+        /// The upstream URL (whole-host), or the path prefix (path rule).
+        second: String,
+        /// The upstream URL, when the second argument is a path prefix.
+        third: Option<String>,
+    },
+    /// Remove a proxy. One argument removes a whole-host proxy
+    /// (`yerd proxy remove reverb`); two remove a site's path rule
+    /// (`yerd proxy remove myapp /app`).
+    Remove {
+        /// A whole-host proxy name, or a site name (with a path prefix).
+        target: String,
+        /// The path prefix, when removing a site's path rule.
+        prefix: Option<String>,
+    },
+    /// List whole-host proxies and per-site path rules.
+    List,
 }
 
 /// Action of `yerd domain`.

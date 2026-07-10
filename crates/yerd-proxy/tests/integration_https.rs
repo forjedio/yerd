@@ -30,8 +30,18 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::oneshot;
 
 use yerd_core::{PhpVersion, RouterConfig, Site, SiteRouter, Tld};
-use yerd_proxy::{Backend, BackendResolver, CertStore, HttpsBinding, ProxyError, ProxyServer};
+use yerd_proxy::{
+    Backend, BackendResolver, CertStore, HttpsBinding, ProxyClientTls, ProxyError, ProxyServer,
+};
 use yerd_tls::{CertAuthority, Validity};
+
+/// A client-TLS bundle for tests: both configs accept any certificate (tests
+/// only reach loopback upstreams).
+fn test_client_tls() -> Arc<ProxyClientTls> {
+    let local = ProxyClientTls::no_verify_config().unwrap();
+    let public = ProxyClientTls::no_verify_config().unwrap();
+    Arc::new(ProxyClientTls::new(local, public))
+}
 
 // ─── Resolver ───────────────────────────────────────────────────────
 
@@ -195,6 +205,7 @@ async fn https_handshake_routes_to_backend() {
             Arc::new(NoLoginTokens),
             None,
             Arc::new(AtomicBool::new(true)),
+            test_client_tls(),
             async move {
                 let _ = rx_shutdown.await;
             },
@@ -263,6 +274,7 @@ async fn http_redirect_tracks_live_public_port_updates() {
             Arc::new(NoLoginTokens),
             None,
             Arc::new(AtomicBool::new(true)),
+            test_client_tls(),
             async move {
                 let _ = rx_shutdown.await;
             },
