@@ -706,7 +706,7 @@ async function shareSitePublicly(s: Site): Promise<void> {
       <template #actions>
         <DropdownMenu>
           <DropdownMenuTrigger as-child>
-            <Button>
+            <Button size="sm">
               <Plus class="size-4" /> Create <ChevronDown class="size-3.5 opacity-70" />
             </Button>
           </DropdownMenuTrigger>
