@@ -326,7 +326,7 @@ onUnmounted(
       <template #actions>
         <DropdownMenu>
           <DropdownMenuTrigger as-child>
-            <Button>
+            <Button size="sm">
               <Plus class="size-4" /> New <ChevronDown class="size-3.5 opacity-70" />
             </Button>
           </DropdownMenuTrigger>
