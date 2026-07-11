@@ -259,7 +259,7 @@ fn service_request(action: &ServiceAction) -> Request {
             site: site.clone(),
             port: *port,
             version: version.clone(),
-            autostart: autostart.map(|o| o.is_on()),
+            autostart: autostart.map(super::cli::OnOff::is_on),
         },
         ServiceAction::Remove { service, purge } => Request::RemoveService {
             service: service.clone(),
