@@ -32,7 +32,7 @@ import { useDaemon } from "@/composables/useDaemon";
 import { usePoll } from "@/composables/usePoll";
 import { useResource } from "@/composables/useResource";
 import { useToast } from "@/composables/useToast";
-import { openTitle, siteUrl } from "@/lib/siteUrl";
+import { isUnbound, openTitle, siteUrl } from "@/lib/siteUrl";
 import { registerViewActions } from "@/lib/shortcuts/useViewActions";
 import {
   addProxy,
@@ -109,12 +109,29 @@ function proxyAsSite(p: ProxyEntry): { name: string; secure: boolean } {
   return { name: p.name, secure: p.secure };
 }
 
-/** Coerce user upstream input into what the daemon's parser accepts: a scheme is
- *  required (default http), and a bare trailing slash (a path) is rejected. */
+// A whole-host proxy is reachable only via its .test domain: in resolver-off
+// (unbound) mode the daemon's `localhost/~host` fallback resolves PHP sites only,
+// so a proxy has no working URL there. Gate its Open affordance accordingly.
+const unbound = computed(() => isUnbound(report.value));
+
+function openProxy(p: ProxyEntry): void {
+  void openInBrowser(siteUrl(proxyAsSite(p), report.value));
+}
+
+function proxyOpenTitle(p: ProxyEntry): string {
+  return unbound.value
+    ? `${p.name}.${tld.value} is reachable only when .test DNS resolution is active`
+    : openTitle(proxyAsSite(p), report.value);
+}
+
+/** Coerce user upstream input into what the daemon's parser accepts: default the
+ *  scheme to `http://`, then strip a trailing slash so a pasted
+ *  `http://host:port/` isn't rejected as a path. Strips only when a host follows
+ *  the scheme, leaving a bare `http://` intact (rejected honestly as no host). */
 function normalizeUpstream(raw: string): string {
   let u = raw.trim();
   if (u !== "" && !/^https?:\/\//i.test(u)) u = `http://${u}`;
-  return u.replace(/\/+$/, "");
+  return u.replace(/^(https?:\/\/.+?)\/+$/i, "$1");
 }
 
 // ── HTTPS toggle (reuses the daemon's SetSecure, which handles proxies) ──
@@ -162,20 +179,21 @@ async function confirmAddProxy(close: () => void): Promise<void> {
   close();
   if (!name || !url || !wasValid) return;
   rowBusy.value = `proxy:${name}`;
+  let created = false;
   try {
     await addProxy(name, url);
-    await load({ force: true });
+    created = true;
     if (secure) await setSecure(name, true);
-    await load({ force: true });
     toast.success(`Added proxy ${name}.${tld.value}`);
   } catch (e) {
-    // A SetSecure failure after a successful AddProxy leaves the proxy on HTTP;
-    // it's already listed, so point the user at the toggle rather than implying
-    // nothing happened.
     const msg = (e as IpcError).message;
-    toast.error("Couldn't set up proxy", msg);
-    await load({ force: true });
+    if (created) {
+      toast.error(`Added ${name}.${tld.value} on HTTP`, `Couldn't enable HTTPS: ${msg}`);
+    } else {
+      toast.error("Couldn't add proxy", msg);
+    }
   } finally {
+    await load({ force: true });
     rowBusy.value = null;
   }
 }
@@ -352,9 +370,10 @@ onUnmounted(
             >
               <div class="flex items-start justify-between gap-2">
                 <button
-                  class="flex min-w-0 items-center gap-1.5 font-mono text-sm font-medium hover:text-brand"
-                  :title="openTitle(proxyAsSite(p), report)"
-                  @click="openInBrowser(siteUrl(proxyAsSite(p), report))"
+                  class="flex min-w-0 items-center gap-1.5 font-mono text-sm font-medium hover:text-brand disabled:cursor-default disabled:hover:text-foreground"
+                  :disabled="unbound"
+                  :title="proxyOpenTitle(p)"
+                  @click="openProxy(p)"
                 >
                   <span class="truncate">{{ p.name }}.{{ tld }}</span>
                 </button>
@@ -364,9 +383,10 @@ onUnmounted(
                     <Button
                       variant="ghost"
                       size="icon"
-                      :aria-label="openTitle(proxyAsSite(p), report)"
-                      :title="openTitle(proxyAsSite(p), report)"
-                      @click="openInBrowser(siteUrl(proxyAsSite(p), report))"
+                      :disabled="unbound"
+                      :aria-label="proxyOpenTitle(p)"
+                      :title="proxyOpenTitle(p)"
+                      @click="openProxy(p)"
                     >
                       <ExternalLink class="size-4" />
                     </Button>

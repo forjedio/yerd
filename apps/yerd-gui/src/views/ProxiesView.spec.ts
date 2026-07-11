@@ -12,8 +12,9 @@ vi.mock("@tauri-apps/plugin-opener", () => ({
 }));
 
 import ProxiesView from "./ProxiesView.vue";
+import { useDaemon } from "@/composables/useDaemon";
 import { resetResourceCache } from "@/composables/useResource";
-import type { ProxyEntry, ProxyRuleEntry, SiteEntry } from "@/ipc/types";
+import type { ProxyEntry, ProxyRuleEntry, SiteEntry, StatusReport } from "@/ipc/types";
 
 function site(name: string): SiteEntry {
   return {
@@ -24,6 +25,21 @@ function site(name: string): SiteEntry {
     kind: "linked",
     is_wordpress: false,
   };
+}
+
+/** A minimal bound, resolver-installed daemon report - enough for the URL
+ *  helpers, so a proxy's "Open" affordance is enabled (not unbound). */
+function boundReport(overrides: Partial<StatusReport> = {}): StatusReport {
+  return {
+    tld: "test",
+    resolver_installed: true,
+    dns_unbound: null,
+    http: { requested: 80, bound: 80, fell_back: false },
+    https: { requested: 443, bound: 443, fell_back: false },
+    port_redirect: false,
+    ca: { trusted_system: true },
+    ...overrides,
+  } as StatusReport;
 }
 
 /** A default mock: the given proxies/rules/sites, `ok` for every mutation, and a
@@ -86,6 +102,9 @@ describe("ProxiesView", () => {
     invokeMock.mockReset();
     openUrlMock.mockReset();
     resetResourceCache();
+    // The daemon store is a module singleton; reset it so a report set by one
+    // test doesn't leak into the next (which would flip unbound state).
+    useDaemon().report.value = null;
   });
 
   it("renders whole-host proxies and path rules", async () => {
@@ -148,6 +167,10 @@ describe("ProxiesView", () => {
 
     expect(lastCall("add_proxy")).toEqual({ name: "secureproxy", url: "http://localhost:9011" });
     expect(lastCall("set_secure")).toEqual({ name: "secureproxy", secure: true });
+    // set_secure must run after add_proxy: the proxy has to exist before it can
+    // be secured (the daemon starts new proxies on HTTP).
+    const names = invokeMock.mock.calls.map((c) => c[0]);
+    expect(names.indexOf("add_proxy")).toBeLessThan(names.indexOf("set_secure"));
   });
 
   it("adds a path rule to a site", async () => {
@@ -177,6 +200,51 @@ describe("ProxiesView", () => {
     await flushPromises();
 
     expect(lastCall("set_secure")).toEqual({ name: "reverb", secure: true });
+  });
+
+  it("removes a path rule", async () => {
+    stubIpc({ rules: [{ site: "app", prefix: "/app", target: "http://localhost:9011" }] });
+    const wrapper = await mountView();
+
+    const trash = wrapper
+      .findAll("button")
+      .find((b) => b.attributes("aria-label")?.startsWith("Remove rule"));
+    if (!trash) throw new Error("no remove-rule button");
+    await trash.trigger("click");
+    await flushPromises();
+
+    await clickByText(wrapper, "Remove");
+    await flushPromises();
+
+    expect(lastCall("remove_proxy_rule")).toEqual({ site: "app", prefix: "/app" });
+  });
+
+  it("opens a proxy's domain in the browser when DNS is bound", async () => {
+    stubIpc({ proxies: [{ name: "reverb", target: "http://localhost:9011", secure: false }] });
+    useDaemon().report.value = boundReport();
+    const wrapper = await mountView();
+
+    const domain = wrapper.findAll("button").find((b) => b.text() === "reverb.test");
+    if (!domain) throw new Error("no domain button");
+    expect(domain.attributes("disabled")).toBeUndefined();
+    await domain.trigger("click");
+    await flushPromises();
+
+    expect(openUrlMock).toHaveBeenCalledTimes(1);
+    expect(openUrlMock).toHaveBeenCalledWith("http://reverb.test");
+  });
+
+  it("disables the open affordance for a proxy in unbound (resolver-off) mode", async () => {
+    stubIpc({ proxies: [{ name: "reverb", target: "http://localhost:9011", secure: false }] });
+    useDaemon().report.value = boundReport({ resolver_installed: false });
+    const wrapper = await mountView();
+
+    const domain = wrapper.findAll("button").find((b) => b.text() === "reverb.test");
+    if (!domain) throw new Error("no domain button");
+    expect(domain.attributes("disabled")).toBeDefined();
+    await domain.trigger("click");
+    await flushPromises();
+    expect(openUrlMock).not.toHaveBeenCalled();
   });
 
   it("removes a proxy", async () => {
