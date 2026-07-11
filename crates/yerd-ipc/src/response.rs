@@ -683,7 +683,9 @@ mod variant_name_pinning {
         pin_response(Response::Services { services: vec![] });
         pin_response(Response::AvailableServices { services: vec![] });
         pin_response(Response::AddableServices { types: vec![] });
-        pin_response(Response::ServiceInstanceId { id: "reverb:blog".into() });
+        pin_response(Response::ServiceInstanceId {
+            id: "reverb:blog".into(),
+        });
         pin_response(Response::WordpressVersions {
             versions: vec![WordPressVersionInfo {
                 branch: "6.7".into(),

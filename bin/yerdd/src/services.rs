@@ -1423,7 +1423,8 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let state = state_in(tmp.path());
         let dl = FakeDownloader { body: None };
-        let (code, _) = err_parts(add_service("nope", None, None, None, Some(true), &state, &dl).await);
+        let (code, _) =
+            err_parts(add_service("nope", None, None, None, Some(true), &state, &dl).await);
         assert_eq!(code, ErrorCode::UnknownServiceType);
     }
 
