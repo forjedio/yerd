@@ -415,8 +415,13 @@ impl ServiceDefinition for MySql {
     fn as_database(&self) -> Option<SqlEngine> {
         Some(SqlEngine::MySql)
     }
+    /// `--no-defaults` must be the first argument: it stops mysqld reading the
+    /// host's system option files (`/etc/my.cnf`, ...), whose `log-error` and
+    /// `user` directives point at root-owned paths a rootless Yerd can't use and
+    /// would abort init. The normal-run path stays isolated via `--defaults-file`.
     fn init_args(&self, staging: &std::path::Path) -> Vec<OsString> {
         vec![
+            OsString::from("--no-defaults"),
             OsString::from("--initialize-insecure"),
             OsString::from(format!("--datadir={}", staging.display())),
         ]
@@ -484,8 +489,12 @@ impl ServiceDefinition for MariaDb {
     fn as_database(&self) -> Option<SqlEngine> {
         Some(SqlEngine::MariaDb)
     }
+    /// `--no-defaults` must be the first argument, for the same reason as `MySQL`:
+    /// keep `mariadb-install-db` from picking up the host's system option files,
+    /// which under a rootless Yerd would abort init.
     fn init_args(&self, staging: &std::path::Path) -> Vec<OsString> {
         vec![
+            OsString::from("--no-defaults"),
             OsString::from("--basedir=."),
             OsString::from(format!("--datadir={}", staging.display())),
             OsString::from("--auth-root-authentication-method=normal"),
@@ -922,7 +931,11 @@ mod tests {
             .collect();
         assert_eq!(
             m_args,
-            vec!["--initialize-insecure", "--datadir=/x/staging"]
+            vec![
+                "--no-defaults",
+                "--initialize-insecure",
+                "--datadir=/x/staging"
+            ]
         );
 
         let maria = reg().get("mariadb").unwrap();
@@ -931,7 +944,8 @@ mod tests {
             .iter()
             .map(|a| a.to_string_lossy().into_owned())
             .collect();
-        assert_eq!(ma_args[0], "--basedir=.");
+        assert_eq!(ma_args[0], "--no-defaults");
+        assert_eq!(ma_args[1], "--basedir=.");
 
         let pg = reg().get("postgres").unwrap();
         let pg_args: Vec<String> = pg

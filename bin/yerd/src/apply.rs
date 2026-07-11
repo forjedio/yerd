@@ -454,13 +454,19 @@ fn apply_macos(staged: &Path, relaunch_gui: bool, gui_owns_daemon: bool) -> Resu
     }
 }
 
-/// A per-invocation unique suffix (pid + nanoseconds) for staging paths.
+/// A per-invocation unique suffix for staging paths: pid + nanoseconds + a
+/// process-lifetime counter. The pid keeps concurrent processes from colliding;
+/// the counter guarantees successive calls within one process differ even when
+/// the nanosecond clock has coarse resolution and returns the same instant.
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 fn unique_suffix() -> String {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static SEQ: AtomicU64 = AtomicU64::new(0);
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_nanos());
-    format!("{}-{nanos}", std::process::id())
+    let seq = SEQ.fetch_add(1, Ordering::Relaxed);
+    format!("{}-{nanos}-{seq}", std::process::id())
 }
 
 /// Stop the daemon (best-effort) so it releases its executable inode.
@@ -953,8 +959,9 @@ mod tests {
         );
     }
 
-    /// Two reads differ because the nanosecond clock advances, and the value
-    /// carries this process's pid so concurrent stagers can't collide.
+    /// Two reads differ because of the process-lifetime counter (not the clock,
+    /// which may be coarse), and the value carries this process's pid so
+    /// concurrent stagers can't collide.
     #[test]
     fn unique_suffix_is_per_call_distinct() {
         let a = unique_suffix();
