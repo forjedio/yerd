@@ -259,7 +259,7 @@ fn service_request(action: &ServiceAction) -> Request {
             site: site.clone(),
             port: *port,
             version: version.clone(),
-            autostart: *autostart,
+            autostart: autostart.map(|o| o.is_on()),
         },
         ServiceAction::Remove { service, purge } => Request::RemoveService {
             service: service.clone(),
@@ -267,7 +267,7 @@ fn service_request(action: &ServiceAction) -> Request {
         },
         ServiceAction::SetAutostart { service, state } => Request::SetServiceAutostart {
             service: service.clone(),
-            enabled: state == "on",
+            enabled: state.is_on(),
         },
         ServiceAction::SetSite { service, site } => Request::SetServiceSite {
             service: service.clone(),
@@ -2704,6 +2704,64 @@ mod tests {
             Request::ServiceLogs {
                 service: "mysql".into(),
                 lines: 50
+            }
+        );
+        assert_eq!(
+            to_request(&Command::Service {
+                action: ServiceAction::Add {
+                    type_id: "reverb".into(),
+                    site: Some("blog".into()),
+                    port: Some(8081),
+                    version: None,
+                    autostart: Some(crate::cli::OnOff::Off),
+                }
+            })
+            .unwrap(),
+            Request::AddService {
+                type_id: "reverb".into(),
+                site: Some("blog".into()),
+                port: Some(8081),
+                version: None,
+                autostart: Some(false),
+            }
+        );
+        assert_eq!(
+            to_request(&Command::Service {
+                action: ServiceAction::Remove {
+                    service: "reverb:blog".into(),
+                    purge: true,
+                }
+            })
+            .unwrap(),
+            Request::RemoveService {
+                service: "reverb:blog".into(),
+                purge: true,
+            }
+        );
+        assert_eq!(
+            to_request(&Command::Service {
+                action: ServiceAction::SetAutostart {
+                    service: "redis".into(),
+                    state: crate::cli::OnOff::On,
+                }
+            })
+            .unwrap(),
+            Request::SetServiceAutostart {
+                service: "redis".into(),
+                enabled: true,
+            }
+        );
+        assert_eq!(
+            to_request(&Command::Service {
+                action: ServiceAction::SetSite {
+                    service: "reverb:blog".into(),
+                    site: "shop".into(),
+                }
+            })
+            .unwrap(),
+            Request::SetServiceSite {
+                service: "reverb:blog".into(),
+                site: "shop".into(),
             }
         );
     }

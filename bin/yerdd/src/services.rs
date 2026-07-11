@@ -68,6 +68,26 @@ fn wire_id(type_id: &str, site: Option<&str>) -> String {
     }
 }
 
+/// Whether a site suffix is a safe DNS-style label: non-empty, <= 63 bytes, no
+/// leading/trailing `-`, only `[a-z0-9-]`. Guards against a wire id whose site
+/// component carries `..` or a path separator into a derived file path.
+fn valid_site_label(s: &str) -> bool {
+    !s.is_empty()
+        && s.len() <= 63
+        && !s.starts_with('-')
+        && !s.ends_with('-')
+        && s.chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+}
+
+/// Whether `wire_id` is a well-formed instance id: a known type, and (for a
+/// per-site id) a valid site label. Used to reject a malicious or malformed id
+/// before it reaches a filesystem path.
+fn valid_instance_id(wire_id: &str) -> bool {
+    let (type_id, site) = parse_wire_id(wire_id);
+    registry().get(&type_id).is_some() && site.as_deref().map_or(true, valid_site_label)
+}
+
 // ── handlers ────────────────────────────────────────────────────────────────
 
 /// `list services` - one row per single-instance type plus one per configured
@@ -358,13 +378,15 @@ pub async fn uninstall_service(
 /// `add-service` - add a new instance. For a versioned type this installs the
 /// version; for a per-site type it links a Laravel site. The instance is
 /// persisted *before* the start attempt, so a failed start still renders a row.
+/// A type with a [`proxy_path`](yerd_services::ServiceDefinition::proxy_path)
+/// (Reverb) also gets its reverse-proxy rule set up on the linked site.
 #[allow(clippy::too_many_lines)]
 pub async fn add_service(
     type_id: &str,
     site: Option<&str>,
     port: Option<u16>,
     version: Option<&str>,
-    autostart: bool,
+    autostart: Option<bool>,
     state: &DaemonState,
     dl: &dyn Downloader,
 ) -> Response {
@@ -372,6 +394,7 @@ pub async fn add_service(
     let Some(def) = reg.get(type_id) else {
         return unknown_service_type(type_id);
     };
+    let autostart = autostart.unwrap_or(def.default_autostart());
 
     let (site_name, program_override, cwd) = if def.requires_site() {
         let Some(site_name) = site else {
@@ -406,7 +429,6 @@ pub async fn add_service(
 
     let wire = wire_id(def.id(), site_name.as_deref());
 
-    // Reject a duplicate instance.
     {
         let cfg = state.config.lock().await;
         let exists = cfg.services.instances.contains_key(&wire)
@@ -420,7 +442,6 @@ pub async fn add_service(
         }
     }
 
-    // Resolve the port: validate an explicit one, else pick the next free.
     let reserved = {
         let cfg = state.config.lock().await;
         reserved_ports(&cfg)
@@ -441,7 +462,6 @@ pub async fn add_service(
         },
     };
 
-    // Versioned type: download the version first.
     let version_obj = if def.requires_version() {
         let vstr = version.unwrap_or_default();
         let v: ServiceVersion = match vstr.parse() {
@@ -458,7 +478,6 @@ pub async fn add_service(
         None
     };
 
-    // Persist the instance BEFORE starting, so a failed start still renders it.
     if let Err(resp) = persist_instance(state, &wire, |inst| {
         inst.version = version_obj.as_ref().map(ToString::to_string);
         inst.port = Some(chosen_port);
@@ -481,9 +500,6 @@ pub async fn add_service(
     )
     .await;
 
-    // Auto-manage the type's proxy rule (Reverb's `/app`) on the linked site. The
-    // instance is persisted even if it failed to start, so the proxy is set up
-    // regardless - it points at the port the service will use once running.
     if let (Some(prefix), Some(site)) = (def.proxy_path(), site_name.as_deref()) {
         set_service_proxy(state, site, prefix, chosen_port).await;
     }
@@ -761,8 +777,7 @@ pub async fn set_service_port(service_id: &str, port: u16, state: &DaemonState) 
 
 /// `service logs <wire-id>` - the last `lines` lines of the instance log file.
 pub fn service_logs(service_id: &str, lines: u32, state: &DaemonState) -> Response {
-    let (type_id, _) = parse_wire_id(service_id);
-    if registry().get(&type_id).is_none() {
+    if !valid_instance_id(service_id) {
         return unknown_service(service_id);
     }
     let path = svc_version::instance_log_path(&state.dirs, service_id);
@@ -803,6 +818,8 @@ pub async fn service_statuses(state: &DaemonState) -> Vec<ServiceStatus> {
         cfg.services.instances.clone()
     };
     let reg = registry();
+    let installed = svc_version::discover_installed(&state.dirs, &reg).unwrap_or_default();
+    let versions_of = |id: &str| installed.get(id).map_or(&[][..], Vec::as_slice);
     let mut out = Vec::new();
 
     for def in reg.single_instance() {
@@ -813,7 +830,7 @@ pub async fn service_statuses(state: &DaemonState) -> Vec<ServiceStatus> {
             None,
             inst,
             &snapshots,
-            &state.dirs,
+            versions_of(def.id()),
         ));
     }
     for (wire, inst) in &instances {
@@ -830,20 +847,21 @@ pub async fn service_statuses(state: &DaemonState) -> Vec<ServiceStatus> {
             site,
             Some(inst),
             &snapshots,
-            &state.dirs,
+            versions_of(def.id()),
         ));
     }
     out
 }
 
-/// Assemble one [`ServiceStatus`] row for `wire`.
+/// Assemble one [`ServiceStatus`] row for `wire`, given the type's already-scanned
+/// installed versions (the caller scans once for the whole list).
 fn build_status(
     def: &Arc<dyn ServiceDefinition>,
     wire: &str,
     site: Option<String>,
     inst: Option<&ServiceInstance>,
     snapshots: &[yerd_services::ServiceSnapshot],
-    dirs: &PlatformDirs,
+    versions: &[ServiceVersion],
 ) -> ServiceStatus {
     let snap = snapshots.iter().find(|s| s.service == wire);
     let (run_state, pid, listen) = match snap {
@@ -862,10 +880,7 @@ fn build_status(
     ServiceStatus {
         service: wire.to_string(),
         display_name: def.display_name().to_string(),
-        installed_versions: installed_versions(def.id(), dirs)
-            .iter()
-            .map(ToString::to_string)
-            .collect(),
+        installed_versions: versions.iter().map(ToString::to_string).collect(),
         selected_version: inst.and_then(|i| i.version.clone()),
         state: run_state,
         pid,

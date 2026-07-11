@@ -104,6 +104,7 @@ async fn dispatch(req: Request, state: &DaemonState) -> Response {
             let router = state.router.read().await;
             let tld = router.config().tld().to_owned();
             let wordpress_sites = state.wordpress_sites.read().await;
+            let laravel_sites = state.laravel_sites.read().await;
             let entries = router
                 .iter()
                 .map(|site| {
@@ -112,7 +113,7 @@ async fn dispatch(req: Request, state: &DaemonState) -> Response {
                     let uses_front_controller = site.uses_front_controller(is_wordpress);
                     let (primary_domain, domains) = site_entry_domains(&router, name, &tld);
                     let apex_shadowed_by = router.apex_shadowed_by(name).map(str::to_owned);
-                    let is_laravel = crate::laravel_detect::is_laravel(site.document_root());
+                    let is_laravel = laravel_sites.get(name).copied().unwrap_or(false);
                     yerd_ipc::SiteEntry {
                         site: site.clone(),
                         is_wordpress,
@@ -2021,7 +2022,7 @@ pub(crate) async fn handle_mutation(req: Request, state: &DaemonState) -> Respon
         return internal(format!("config validation failed: {e}"));
     }
 
-    let (candidate, candidate_wordpress) =
+    let (candidate, candidate_wordpress, candidate_laravel) =
         match startup::build_router(&new, &state.dirs, &state.detect_cache) {
             Ok(r) => r,
             Err(DaemonError::Core(yerd_core::CoreError::DuplicateSite { name })) => {
@@ -2041,6 +2042,7 @@ pub(crate) async fn handle_mutation(req: Request, state: &DaemonState) -> Respon
     let site_after = site_needing_url_sync(&req, &candidate);
     *state.router.write().await = candidate;
     *state.wordpress_sites.write().await = candidate_wordpress;
+    *state.laravel_sites.write().await = candidate_laravel;
     drop(cfg_guard);
 
     state.watch_dirty.notify_one();

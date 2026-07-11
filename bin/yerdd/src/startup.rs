@@ -125,12 +125,13 @@ pub async fn bring_up_with_dirs(
 
     let detect_cache = Arc::new(DetectCache::new());
     let dns_tld = config.tld.clone();
-    let (router, wordpress_sites) = build_router(&config, &dirs, &detect_cache)?;
+    let (router, wordpress_sites, laravel_sites) = build_router(&config, &dirs, &detect_cache)?;
     if router.is_empty() {
         tracing::info!("no sites configured - every request will 404 until a site is added");
     }
     let router = Arc::new(RwLock::new(router));
     let wordpress_sites = Arc::new(RwLock::new(wordpress_sites));
+    let laravel_sites = Arc::new(RwLock::new(laravel_sites));
 
     let cfg_http = config.ports.http;
     let cfg_https = config.ports.https;
@@ -336,6 +337,7 @@ pub async fn bring_up_with_dirs(
         wordpress_login_tokens: Arc::new(crate::wordpress_login::LoginTokenRegistry::new()),
         wordpress_login_prepend_script,
         wordpress_sites,
+        laravel_sites,
     });
 
     {
@@ -367,6 +369,9 @@ pub async fn bring_up_with_dirs(
 /// [`build_routing`] and `DaemonState.wordpress_sites`.
 pub(crate) type WordpressSites = std::collections::HashMap<String, bool>;
 
+/// Cache of site name -> is-Laravel, built alongside [`WordpressSites`].
+pub(crate) type LaravelSites = std::collections::HashMap<String, bool>;
+
 /// Build a fresh routing table from the config: scan every parked root for
 /// child-directory sites, then add the explicitly linked sites (linked wins on
 /// name collision). Shared by startup and the IPC mutation path so both
@@ -377,9 +382,10 @@ pub(crate) fn build_router(
     cfg: &yerd_config::Config,
     dirs: &PlatformDirs,
     detect_cache: &DetectCache,
-) -> Result<(SiteRouter, WordpressSites), DaemonError> {
-    let (router, wordpress_sites, _watch_roots) = build_routing(cfg, dirs, detect_cache)?;
-    Ok((router, wordpress_sites))
+) -> Result<(SiteRouter, WordpressSites, LaravelSites), DaemonError> {
+    let (router, wordpress_sites, laravel_sites, _watch_roots) =
+        build_routing(cfg, dirs, detect_cache)?;
+    Ok((router, wordpress_sites, laravel_sites))
 }
 
 /// Like [`build_router`], but also returns the project roots the filesystem
@@ -395,7 +401,7 @@ pub(crate) fn build_routing(
     cfg: &yerd_config::Config,
     dirs: &PlatformDirs,
     detect_cache: &DetectCache,
-) -> Result<(SiteRouter, WordpressSites, Vec<PathBuf>), DaemonError> {
+) -> Result<(SiteRouter, WordpressSites, LaravelSites, Vec<PathBuf>), DaemonError> {
     let (sites, watch_roots) = scan_sites(cfg, cfg.php.default, dirs, detect_cache)?;
     let router = crate::site_domains::build(cfg, sites);
     let wordpress_sites = router
@@ -407,7 +413,16 @@ pub(crate) fn build_routing(
             )
         })
         .collect();
-    Ok((router, wordpress_sites, watch_roots))
+    let laravel_sites = router
+        .iter()
+        .map(|site| {
+            (
+                site.name().to_owned(),
+                crate::laravel_detect::is_laravel(site.document_root()),
+            )
+        })
+        .collect();
+    Ok((router, wordpress_sites, laravel_sites, watch_roots))
 }
 
 // ──────────────────────────────────────────────────────────────────────
@@ -1066,12 +1081,15 @@ mod tests {
         let dirs = make_dirs(tmp.path());
         let cfg = yerd_config::Config::default();
         let cache = DetectCache::new();
-        let (router, wordpress_sites) = build_router(&cfg, &dirs, &cache).unwrap();
+        let (router, wordpress_sites, laravel_sites) = build_router(&cfg, &dirs, &cache).unwrap();
         assert!(router.is_empty());
         assert!(wordpress_sites.is_empty());
-        let (router2, wordpress_sites2, watch_roots) = build_routing(&cfg, &dirs, &cache).unwrap();
+        assert!(laravel_sites.is_empty());
+        let (router2, wordpress_sites2, laravel_sites2, watch_roots) =
+            build_routing(&cfg, &dirs, &cache).unwrap();
         assert!(router2.is_empty());
         assert!(wordpress_sites2.is_empty());
+        assert!(laravel_sites2.is_empty());
         assert!(watch_roots.is_empty());
     }
 
@@ -1085,7 +1103,7 @@ mod tests {
             .paths
             .insert(parked_root.to_string_lossy().into_owned());
         let dirs = make_dirs(tmp.path());
-        let (router, wordpress_sites, watch_roots) =
+        let (router, wordpress_sites, _laravel_sites, watch_roots) =
             build_routing(&cfg, &dirs, &DetectCache::new()).unwrap();
         assert!(!router.is_empty());
         assert_eq!(wordpress_sites.get("shop"), Some(&false));
@@ -1103,7 +1121,7 @@ mod tests {
             .paths
             .insert(parked_root.to_string_lossy().into_owned());
         let dirs = make_dirs(tmp.path());
-        let (router, wordpress_sites, _watch_roots) =
+        let (router, wordpress_sites, _laravel_sites, _watch_roots) =
             build_routing(&cfg, &dirs, &DetectCache::new()).unwrap();
         assert!(!router.is_empty());
         assert_eq!(wordpress_sites.get("blog"), Some(&true));

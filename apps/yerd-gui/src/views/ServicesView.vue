@@ -300,11 +300,13 @@ async function doRemove(s: ServiceStatus): Promise<void> {
   }
 }
 
-async function doToggleAutostart(s: ServiceStatus): Promise<void> {
+async function doToggleAutostart(s: ServiceStatus, enabled: boolean): Promise<void> {
   busy.value = `autostart:${s.service}`;
   try {
-    await setServiceAutostart(s.service, !s.enabled);
-    toast.success(s.enabled ? `${s.display_name} won't start with Yerd` : `${s.display_name} starts with Yerd`);
+    await setServiceAutostart(s.service, enabled);
+    toast.success(
+      enabled ? `${s.display_name} starts with Yerd` : `${s.display_name} won't start with Yerd`,
+    );
     await Promise.all([load({ force: true }), refresh()]);
   } catch (e) {
     toast.error(`Couldn't update ${s.display_name}`, (e as IpcError).message);
@@ -813,7 +815,7 @@ onUnmounted(registerViewActions({ refresh: () => void load() }));
                       :model-value="s.enabled"
                       :disabled="busy === `autostart:${s.service}`"
                       :aria-label="`Start ${s.display_name} with Yerd`"
-                      @update:model-value="doToggleAutostart(s)"
+                      @update:model-value="(v: boolean) => doToggleAutostart(s, v)"
                     />
                   </td>
                   <td class="py-3 pl-4">

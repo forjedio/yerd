@@ -45,11 +45,15 @@ fn default_autostart_for_key(key: &str) -> bool {
     !KNOWN_PER_SITE_SERVICES.contains(&ty)
 }
 
-/// Whether `s` is a valid site label (a DNS-style component: non-empty, lowercase
-/// ASCII alphanumerics and `-`). Matches the `yerd-core` site-name rules so the
-/// wire-id suffix can never carry a path separator or shell metacharacter.
+/// Whether `s` is a valid site label, matching the `yerd-core` site-name rules
+/// (a DNS-style label: non-empty, <= 63 bytes, lowercase ASCII alphanumerics and
+/// `-`, no leading/trailing `-`) so the wire-id suffix can only ever name a real
+/// site and never carry a path separator or shell metacharacter.
 fn is_valid_site_label(s: &str) -> bool {
     !s.is_empty()
+        && s.len() <= 63
+        && !s.starts_with('-')
+        && !s.ends_with('-')
         && s.chars()
             .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
 }

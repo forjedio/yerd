@@ -1235,7 +1235,7 @@ fn request_add_service_byte_shape() {
         site: Some("blog".into()),
         port: Some(8081),
         version: None,
-        autostart: false,
+        autostart: Some(false),
     };
     let s = serde_json::to_string(&r).unwrap();
     assert_eq!(

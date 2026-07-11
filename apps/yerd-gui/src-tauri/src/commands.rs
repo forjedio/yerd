@@ -476,7 +476,7 @@ pub async fn add_service(
             site,
             port,
             version,
-            autostart,
+            autostart: Some(autostart),
         })
         .await?,
     )

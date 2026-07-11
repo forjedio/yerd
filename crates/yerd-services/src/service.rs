@@ -276,7 +276,8 @@ pub struct ServiceRegistry {
 }
 
 impl ServiceRegistry {
-    /// The built-in registry of the four database/cache engines.
+    /// The built-in registry: the four database/cache engines plus the Reverb
+    /// per-site app server.
     #[must_use]
     pub fn builtin() -> Self {
         Self {

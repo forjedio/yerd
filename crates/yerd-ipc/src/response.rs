@@ -682,6 +682,8 @@ mod variant_name_pinning {
         });
         pin_response(Response::Services { services: vec![] });
         pin_response(Response::AvailableServices { services: vec![] });
+        pin_response(Response::AddableServices { types: vec![] });
+        pin_response(Response::ServiceInstanceId { id: "reverb:blog".into() });
         pin_response(Response::WordpressVersions {
             versions: vec![WordPressVersionInfo {
                 branch: "6.7".into(),
@@ -829,6 +831,11 @@ mod variant_name_pinning {
             ErrorCode::InvalidPath,
             ErrorCode::PortInUse,
             ErrorCode::ExtensionLoadFailed,
+            ErrorCode::PortReserved,
+            ErrorCode::SiteNotFound,
+            ErrorCode::SiteNotLaravel,
+            ErrorCode::UnknownServiceType,
+            ErrorCode::InstanceAlreadyExists,
             ErrorCode::Internal,
         ] {
             pin_code(c);

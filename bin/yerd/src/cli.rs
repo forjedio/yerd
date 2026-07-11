@@ -421,9 +421,10 @@ pub enum ServiceAction {
         /// Version to install (for a versioned type).
         #[arg(long)]
         version: Option<String>,
-        /// Start this instance with Yerd.
+        /// Start this instance with Yerd. Omit to use the type's default
+        /// (engines start with Yerd; per-site app servers do not).
         #[arg(long)]
-        autostart: bool,
+        autostart: Option<OnOff>,
     },
     /// Remove a per-site service instance (e.g. `reverb:blog`).
     Remove {
@@ -438,8 +439,7 @@ pub enum ServiceAction {
         /// Instance wire id.
         service: String,
         /// `on` to enable, `off` to disable.
-        #[arg(value_parser = ["on", "off"])]
-        state: String,
+        state: OnOff,
     },
     /// Re-link a per-site instance (e.g. `reverb`) to a different site.
     SetSite {

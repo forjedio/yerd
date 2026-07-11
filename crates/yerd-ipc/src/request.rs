@@ -335,8 +335,9 @@ pub enum Request {
         port: Option<u16>,
         /// The version to install, for a versioned type; `None` otherwise.
         version: Option<String>,
-        /// Whether the instance starts with Yerd.
-        autostart: bool,
+        /// Whether the instance starts with Yerd. `None` uses the type's default
+        /// (engines start with Yerd; per-site app servers do not).
+        autostart: Option<bool>,
     },
     /// Remove a service instance (a per-site instance, or an engine with no
     /// version tracking). `purge` also deletes any on-disk state. Versioned
