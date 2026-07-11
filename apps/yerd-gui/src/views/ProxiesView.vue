@@ -77,7 +77,16 @@ const tld = computed(() => report.value?.tld ?? "test");
 const caTrusted = computed(() => report.value?.ca.trusted_system === true);
 const hasSecureProxy = computed(() => proxies.value.some((p) => p.secure));
 
-const rowBusy = ref<string | null>(null);
+// Per-row busy keys (`proxy:<name>` / `rule:<site><prefix>`), so a mutation on
+// one row doesn't clear another's in-flight spinner when they overlap.
+const busyKeys = ref(new Set<string>());
+function setBusy(key: string, busy: boolean): void {
+  if (busy) busyKeys.value.add(key);
+  else busyKeys.value.delete(key);
+}
+function isBusy(key: string): boolean {
+  return busyKeys.value.has(key);
+}
 
 /** Path rules grouped by site, each group's rules sorted by prefix. */
 const ruleGroups = computed(() => {
@@ -137,7 +146,8 @@ function normalizeUpstream(raw: string): string {
 // ── HTTPS toggle (reuses the daemon's SetSecure, which handles proxies) ──
 async function toggleSecure(p: ProxyEntry): Promise<void> {
   const next = !p.secure;
-  rowBusy.value = `proxy:${p.name}`;
+  const key = `proxy:${p.name}`;
+  setBusy(key, true);
   try {
     await setSecure(p.name, next);
     toast.success(
@@ -149,7 +159,7 @@ async function toggleSecure(p: ProxyEntry): Promise<void> {
   } catch (e) {
     toast.error("Couldn't change HTTPS", (e as IpcError).message);
   } finally {
-    rowBusy.value = null;
+    setBusy(key, false);
   }
 }
 
@@ -178,7 +188,8 @@ async function confirmAddProxy(close: () => void): Promise<void> {
   const wasValid = newProxyValid.value;
   close();
   if (!name || !url || !wasValid) return;
-  rowBusy.value = `proxy:${name}`;
+  const key = `proxy:${name}`;
+  setBusy(key, true);
   let created = false;
   try {
     await addProxy(name, url);
@@ -194,7 +205,7 @@ async function confirmAddProxy(close: () => void): Promise<void> {
     }
   } finally {
     await load({ force: true });
-    rowBusy.value = null;
+    setBusy(key, false);
   }
 }
 
@@ -226,7 +237,8 @@ async function confirmAddRule(close: () => void): Promise<void> {
   const wasValid = newRuleValid.value;
   close();
   if (!site || !prefix || !url || !wasValid) return;
-  rowBusy.value = `rule:${site}${prefix}`;
+  const key = `rule:${site}${prefix}`;
+  setBusy(key, true);
   try {
     await addProxyRule(site, prefix, url);
     toast.success(`Added rule ${site}.${tld.value}${prefix}`);
@@ -234,7 +246,7 @@ async function confirmAddRule(close: () => void): Promise<void> {
   } catch (e) {
     toast.error("Couldn't add rule", (e as IpcError).message);
   } finally {
-    rowBusy.value = null;
+    setBusy(key, false);
   }
 }
 
@@ -253,7 +265,8 @@ async function confirmRemoveProxy(close: () => void): Promise<void> {
   const p = removeProxyTarget.value;
   close();
   if (!p) return;
-  rowBusy.value = `proxy:${p.name}`;
+  const key = `proxy:${p.name}`;
+  setBusy(key, true);
   try {
     await removeProxy(p.name);
     toast.success(`Removed proxy ${p.name}.${tld.value}`);
@@ -261,7 +274,7 @@ async function confirmRemoveProxy(close: () => void): Promise<void> {
   } catch (e) {
     toast.error("Couldn't remove proxy", (e as IpcError).message);
   } finally {
-    rowBusy.value = null;
+    setBusy(key, false);
     removeProxyTarget.value = null;
   }
 }
@@ -281,7 +294,8 @@ async function confirmRemoveRule(close: () => void): Promise<void> {
   const r = removeRuleTarget.value;
   close();
   if (!r) return;
-  rowBusy.value = `rule:${r.site}${r.prefix}`;
+  const key = `rule:${r.site}${r.prefix}`;
+  setBusy(key, true);
   try {
     await removeProxyRule(r.site, r.prefix);
     toast.success(`Removed rule ${r.site}.${tld.value}${r.prefix}`);
@@ -289,7 +303,7 @@ async function confirmRemoveRule(close: () => void): Promise<void> {
   } catch (e) {
     toast.error("Couldn't remove rule", (e as IpcError).message);
   } finally {
-    rowBusy.value = null;
+    setBusy(key, false);
     removeRuleTarget.value = null;
   }
 }
@@ -378,7 +392,7 @@ onUnmounted(
                   <span class="truncate">{{ p.name }}.{{ tld }}</span>
                 </button>
                 <div class="flex shrink-0 items-center">
-                  <Spinner v-if="rowBusy === `proxy:${p.name}`" class="size-4" />
+                  <Spinner v-if="isBusy(`proxy:${p.name}`)" class="size-4" />
                   <template v-else>
                     <Button
                       variant="ghost"
@@ -410,7 +424,7 @@ onUnmounted(
               <div class="mt-3 flex items-center gap-1.5">
                 <button
                   type="button"
-                  :disabled="rowBusy === `proxy:${p.name}`"
+                  :disabled="isBusy(`proxy:${p.name}`)"
                   :aria-label="p.secure ? 'Serve over HTTP' : 'Serve over HTTPS'"
                   :title="
                     p.secure
@@ -453,7 +467,7 @@ onUnmounted(
                     <span class="text-foreground">{{ r.prefix }}</span>
                     <span class="text-muted-foreground"> → {{ r.target }}</span>
                   </div>
-                  <Spinner v-if="rowBusy === `rule:${r.site}${r.prefix}`" class="size-4 shrink-0" />
+                  <Spinner v-if="isBusy(`rule:${r.site}${r.prefix}`)" class="size-4 shrink-0" />
                   <Button
                     v-else
                     variant="ghost"

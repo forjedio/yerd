@@ -68,8 +68,12 @@ describe("commandsForScope", () => {
     );
     expect(main).toHaveLength(11);
     expect(main.filter((c) => c.chord)).toHaveLength(9);
-    expect(main.find((c) => c.id === "nav:/integrations")?.chord).toBeUndefined();
-    expect(main.find((c) => c.id === "nav:/proxies")?.chord).toBeUndefined();
+    const integrations = main.find((c) => c.id === "nav:/integrations");
+    const proxies = main.find((c) => c.id === "nav:/proxies");
+    expect(integrations).toBeDefined();
+    expect(proxies).toBeDefined();
+    expect(integrations?.chord).toBeUndefined();
+    expect(proxies?.chord).toBeUndefined();
     expect(commandsForScope(all, "dumps", false).some((c) => c.id.startsWith("nav:"))).toBe(
       false,
     );

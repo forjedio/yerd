@@ -1,5 +1,5 @@
 import { flushPromises, mount } from "@vue/test-utils";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const invokeMock = vi.fn();
 vi.mock("@tauri-apps/api/core", () => ({
@@ -74,10 +74,15 @@ function stubIpc(opts: {
   });
 }
 
+// Tracked so afterEach can unmount them: ProxiesView's usePoll leaves a live
+// timer + visibility listener until the component unmounts.
+const mounted: { unmount: () => void }[] = [];
+
 async function mountView() {
   const wrapper = mount(ProxiesView, {
     global: { stubs: { teleport: true, RouterLink: true } },
   });
+  mounted.push(wrapper);
   await flushPromises();
   return wrapper;
 }
@@ -98,13 +103,18 @@ function lastCall(cmd: string): Record<string, unknown> | undefined {
 }
 
 describe("ProxiesView", () => {
+  // The daemon store is a module singleton; reset it so a report set by one test
+  // doesn't leak into the next (which would flip unbound state).
   beforeEach(() => {
     invokeMock.mockReset();
     openUrlMock.mockReset();
     resetResourceCache();
-    // The daemon store is a module singleton; reset it so a report set by one
-    // test doesn't leak into the next (which would flip unbound state).
     useDaemon().report.value = null;
+  });
+
+  afterEach(() => {
+    mounted.forEach((w) => w.unmount());
+    mounted.length = 0;
   });
 
   it("renders whole-host proxies and path rules", async () => {
@@ -153,6 +163,8 @@ describe("ProxiesView", () => {
     expect(lastCall("add_proxy")).toEqual({ name: "bare", url: "http://localhost:9011" });
   });
 
+  // set_secure must run after add_proxy: the proxy has to exist before it can be
+  // secured (the daemon starts new proxies on HTTP).
   it("enables HTTPS after creating when the switch is on", async () => {
     stubIpc({});
     const wrapper = await mountView();
@@ -167,8 +179,6 @@ describe("ProxiesView", () => {
 
     expect(lastCall("add_proxy")).toEqual({ name: "secureproxy", url: "http://localhost:9011" });
     expect(lastCall("set_secure")).toEqual({ name: "secureproxy", secure: true });
-    // set_secure must run after add_proxy: the proxy has to exist before it can
-    // be secured (the daemon starts new proxies on HTTP).
     const names = invokeMock.mock.calls.map((c) => c[0]);
     expect(names.indexOf("add_proxy")).toBeLessThan(names.indexOf("set_secure"));
   });
