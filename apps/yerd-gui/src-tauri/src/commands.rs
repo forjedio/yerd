@@ -124,6 +124,43 @@ pub async fn reset_domains(name: String) -> Result<Response, GuiError> {
     finish(exchange(&Request::ResetDomains { name }).await?)
 }
 
+// ── proxies ────────────────────────────────────────────────────────────────
+
+/// List every whole-host reverse proxy and per-site path-prefix rule.
+#[tauri::command]
+pub async fn list_proxies() -> Result<Response, GuiError> {
+    finish(exchange(&Request::ListProxies).await?)
+}
+
+/// Register a whole-host reverse proxy (`{name}.{tld}` → `url`).
+#[tauri::command]
+pub async fn add_proxy(name: String, url: String) -> Result<Response, GuiError> {
+    finish(exchange(&Request::AddProxy { name, url }).await?)
+}
+
+/// Remove the whole-host reverse proxy named `name`.
+#[tauri::command]
+pub async fn remove_proxy(name: String) -> Result<Response, GuiError> {
+    finish(exchange(&Request::RemoveProxy { name }).await?)
+}
+
+/// Add a path-prefix rule to `site` (`site/prefix` → `url`), leaving other paths
+/// served by PHP.
+#[tauri::command]
+pub async fn add_proxy_rule(
+    site: String,
+    prefix: String,
+    url: String,
+) -> Result<Response, GuiError> {
+    finish(exchange(&Request::AddProxyRule { site, prefix, url }).await?)
+}
+
+/// Remove the path-prefix rule `prefix` from `site`.
+#[tauri::command]
+pub async fn remove_proxy_rule(site: String, prefix: String) -> Result<Response, GuiError> {
+    finish(exchange(&Request::RemoveProxyRule { site, prefix }).await?)
+}
+
 // ── site groups ────────────────────────────────────────────────────────────
 
 #[tauri::command]

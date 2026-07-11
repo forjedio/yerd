@@ -31,6 +31,8 @@ import type {
   PhpExtInfo,
   PhpVersion,
   PhpVersionsResponse,
+  ProxyEntry,
+  ProxyRuleEntry,
   Response,
   ServiceAvailability,
   ServiceStatus,
@@ -233,6 +235,36 @@ export async function setPrimaryDomain(name: string, domain: string): Promise<vo
  *  `{name}.{tld}`. */
 export async function resetDomains(name: string): Promise<void> {
   ensureOk(await call<Response>("reset_domains", { name }));
+}
+
+// ── proxies ──────────────────────────────────────────────────────────────────
+
+/** Whole-host proxies plus per-site path-prefix rules. HTTPS on a whole-host
+ *  proxy is toggled via {@link setSecure} (the daemon handles proxies there). */
+export async function listProxies(): Promise<{ proxies: ProxyEntry[]; rules: ProxyRuleEntry[] }> {
+  const r = ensureOk(await call<Response>("list_proxies"));
+  return r.type === "proxies" ? { proxies: r.proxies, rules: r.rules } : { proxies: [], rules: [] };
+}
+
+/** Register a whole-host reverse proxy (`{name}.{tld}` → `url`). The daemon
+ *  validates the name + URL and rejects collisions / `.test` loop targets. New
+ *  proxies start over HTTP; enable HTTPS with {@link setSecure}. */
+export async function addProxy(name: string, url: string): Promise<void> {
+  ensureOk(await call<Response>("add_proxy", { name, url }));
+}
+
+export async function removeProxy(name: string): Promise<void> {
+  ensureOk(await call<Response>("remove_proxy", { name }));
+}
+
+/** Add a path-prefix rule to an existing site (`site.test/prefix` → `url`),
+ *  leaving every other path served by PHP. */
+export async function addProxyRule(site: string, prefix: string, url: string): Promise<void> {
+  ensureOk(await call<Response>("add_proxy_rule", { site, prefix, url }));
+}
+
+export async function removeProxyRule(site: string, prefix: string): Promise<void> {
+  ensureOk(await call<Response>("remove_proxy_rule", { site, prefix }));
 }
 
 // ── php versions ───────────────────────────────────────────────────────────

@@ -52,6 +52,15 @@ export const router = createRouter({
       component: () => import("@/views/ServicesView.vue"),
     },
     {
+      path: "/proxies",
+      name: "proxies",
+      meta: {
+        title: "Proxies",
+        subtitle: "Reverse-proxy .test domains and site paths to local upstreams",
+      },
+      component: () => import("@/views/ProxiesView.vue"),
+    },
+    {
       path: "/dumps",
       name: "dumps",
       meta: { title: "Dumps", subtitle: "Intercept dump() calls and Laravel telemetry" },

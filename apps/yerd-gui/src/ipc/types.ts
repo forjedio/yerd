@@ -467,6 +467,22 @@ export type ErrorCode =
   | "extension_load_failed"
   | "internal";
 
+/** One whole-host reverse proxy (`{name}.{tld}` → `target`). Reply element of a
+ *  `"proxies"` response. */
+export interface ProxyEntry {
+  name: string;
+  target: string;
+  secure: boolean;
+}
+
+/** One per-site path-prefix reverse-proxy rule (`{site}{prefix}` → `target`).
+ *  Reply element of a `"proxies"` response. */
+export interface ProxyRuleEntry {
+  site: string;
+  prefix: string;
+  target: string;
+}
+
 /**
  * Response is internally tagged on `type`. The bridge returns the decoded
  * Response directly; helpers below narrow it. A `Response::Error` is converted
@@ -478,6 +494,7 @@ export type Response =
   | { type: "ok" }
   | { type: "error"; code: ErrorCode; message: string }
   | { type: "parked"; paths: string[] }
+  | { type: "proxies"; proxies: ProxyEntry[]; rules: ProxyRuleEntry[] }
   | {
       type: "info";
       dns_addr: string;
@@ -687,6 +704,7 @@ export interface SiteHostname {
 export type InfoResponse = Extract<Response, { type: "info" }>;
 export type SitesResponse = Extract<Response, { type: "sites" }>;
 export type ParkedResponse = Extract<Response, { type: "parked" }>;
+export type ProxiesResponse = Extract<Response, { type: "proxies" }>;
 export type PhpVersionsResponse = Extract<Response, { type: "php_versions" }>;
 export type UpdateStatusResponse = Extract<Response, { type: "update_status" }>;
 export type AvailablePhpResponse = Extract<Response, { type: "available_php" }>;
