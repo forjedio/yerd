@@ -18,19 +18,24 @@ pub mod database;
 pub mod error;
 pub mod health;
 pub mod manager;
+pub mod port;
 pub mod release;
 pub mod service;
 pub mod version;
 
 pub use database::DbNameError;
 pub use error::ServiceError;
-pub use health::{ReadinessProbe, RedisProbe, ServiceProbes};
+pub use health::{ReadinessProbe, RedisProbe, ServiceProbes, TcpConnectProbe};
 pub use manager::{ServiceManager, ServiceRunState, ServiceSnapshot};
+pub use port::candidate_ports;
 pub use release::{
     artifact_url, available_versions, current_os_arch, listing_url, platform_token,
     resolve_from_listing, Arch, Artifact, Os, LISTING_SCHEMA, SERVICES_BASE_URL,
 };
-pub use service::{Service, ServiceKind};
+pub use service::{
+    LaunchContext, LaunchPlan, MariaDb, Multiplicity, MySql, Postgres, ReadinessKind, Redis,
+    Reverb, ServiceDefinition, ServiceKind, ServiceRegistry, SqlEngine,
+};
 pub use version::{discover_installed, ServiceVersion};
 
 // Compile-time `Send + 'static` guard for the production instantiation.

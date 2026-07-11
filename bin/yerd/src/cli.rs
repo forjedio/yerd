@@ -406,6 +406,48 @@ pub enum ServiceAction {
         #[arg(long, default_value_t = 100)]
         lines: u32,
     },
+    /// Add a new service instance (a DB/cache engine, or a per-site app server
+    /// like `reverb`).
+    Add {
+        /// Service type id: `redis`, `mysql`, `mariadb`, `postgres`, or `reverb`.
+        #[arg(long = "type")]
+        type_id: String,
+        /// Linked site name (required for a per-site type like `reverb`).
+        #[arg(long)]
+        site: Option<String>,
+        /// Explicit loopback port (defaults to the next free one).
+        #[arg(long)]
+        port: Option<u16>,
+        /// Version to install (for a versioned type).
+        #[arg(long)]
+        version: Option<String>,
+        /// Start this instance with Yerd. Omit to use the type's default
+        /// (engines start with Yerd; per-site app servers do not).
+        #[arg(long)]
+        autostart: Option<OnOff>,
+    },
+    /// Remove a per-site service instance (e.g. `reverb:blog`).
+    Remove {
+        /// Instance wire id.
+        service: String,
+        /// Also delete the instance's stored state.
+        #[arg(long)]
+        purge: bool,
+    },
+    /// Set whether a service starts with Yerd.
+    SetAutostart {
+        /// Instance wire id.
+        service: String,
+        /// `on` to enable, `off` to disable.
+        state: OnOff,
+    },
+    /// Re-link a per-site instance (e.g. `reverb`) to a different site.
+    SetSite {
+        /// Current instance wire id.
+        service: String,
+        /// The new site to link to.
+        site: String,
+    },
 }
 
 /// Action of `yerd tunnel`.

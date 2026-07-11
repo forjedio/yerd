@@ -27,6 +27,7 @@ import type {
   JobProgressResponse,
   MailDetail,
   MailSummary,
+  AddableServiceType,
   PhpExtInfo,
   PhpVersion,
   PhpVersionsResponse,
@@ -635,6 +636,49 @@ export async function setServicePort(service: string, port: number): Promise<voi
 export async function serviceLogs(service: string, lines: number): Promise<string[]> {
   const r = ensureOk(await call<Response>("service_logs", { service, lines }));
   return r.type === "service_logs" ? r.lines : [];
+}
+
+/** The installable service types for the "Add Service" dialog. */
+export async function addableServiceTypes(): Promise<AddableServiceType[]> {
+  const r = ensureOk(await call<Response>("addable_service_types"));
+  return r.type === "addable_services" ? r.types : [];
+}
+
+/** Add a new service instance. Returns its wire id. Tauri maps camelCase JS args
+ *  to the command's snake_case Rust params, so `type_id` is sent as `typeId`. */
+export async function addService(args: {
+  type_id: string;
+  site: string | null;
+  port: number | null;
+  version: string | null;
+  autostart: boolean;
+}): Promise<string> {
+  const r = ensureOk(
+    await call<Response>("add_service", {
+      typeId: args.type_id,
+      site: args.site,
+      port: args.port,
+      version: args.version,
+      autostart: args.autostart,
+    }),
+  );
+  return r.type === "service_instance_id" ? r.id : "";
+}
+
+/** Remove a per-site service instance. */
+export async function removeService(service: string, purge: boolean): Promise<void> {
+  ensureOk(await call<Response>("remove_service", { service, purge }));
+}
+
+/** Set whether a service starts with Yerd. */
+export async function setServiceAutostart(service: string, enabled: boolean): Promise<void> {
+  ensureOk(await call<Response>("set_service_autostart", { service, enabled }));
+}
+
+/** Re-link a per-site instance to a different site. Returns the new wire id. */
+export async function setServiceSite(service: string, site: string): Promise<string> {
+  const r = ensureOk(await call<Response>("set_service_site", { service, site }));
+  return r.type === "service_instance_id" ? r.id : service;
 }
 
 export async function createDatabase(service: string, name: string): Promise<void> {

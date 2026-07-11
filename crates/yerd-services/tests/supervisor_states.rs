@@ -5,10 +5,9 @@
 //! the port pre-flight.
 //!
 //! Mirrors `yerd_php::tests::supervisor_states`. Stays fakes-only (no real
-//! database binaries, no real sockets) so it passes on every CI target, since the SQL
-//! engines are not installed on the test hosts. Happy-path coverage uses Redis
-//! because it needs no datadir-init binary; the SQL engines' init seam is
-//! covered by the in-file unit tests in `manager.rs`.
+//! database binaries, no real sockets) so it passes on every CI target. Happy-path
+//! coverage uses Redis because it needs no datadir-init binary; the SQL engines'
+//! init seam is covered by the in-file unit tests in `manager.rs`.
 
 #![allow(
     clippy::unwrap_used,
@@ -29,7 +28,8 @@ use tokio::sync::Mutex;
 use yerd_platform::{ActivePortBinder, PlatformDirs};
 use yerd_services::version;
 use yerd_services::{
-    ReadinessProbe, Service, ServiceError, ServiceManager, ServiceRunState, ServiceVersion,
+    ReadinessKind, ReadinessProbe, ServiceDefinition, ServiceError, ServiceManager,
+    ServiceRegistry, ServiceRunState, ServiceVersion,
 };
 use yerd_supervise::supervisor::{KillSignal, StopProtocol, SupervisorPolicy};
 use yerd_supervise::{ChildHandle, Clock, ExitReason, Listen, ProcessSpawner};
@@ -44,7 +44,6 @@ enum ChildBehavior {
     /// `wait()` blocks forever (until killed); `try_wait()` reports alive.
     Lives,
     /// `wait()` blocks forever; `try_wait()` reports the child already exited.
-    /// Used to drive a `Running` instance that `snapshots()` then sees as dead.
     LivesButTryWaitDead,
     /// `wait()` blocks forever, but `kill()` flips it to "exited".
     LivesUntilKilled,
@@ -157,13 +156,10 @@ impl Clock for FakeClock {
     }
 }
 
-/// Programmable readiness probe. Each call pulls the next outcome from the queue;
-/// when the queue empties, returns the `tail` outcome forever.
+/// Programmable readiness probe. Returns the `tail` outcome, optionally after a
+/// delay so a crashing child's immediate `wait()` wins the readiness race.
 struct FakeProbe {
     tail: Result<(), io::ErrorKind>,
-    /// Delay before producing an outcome. Used to make a crashing child's
-    /// immediate `wait()` deterministically win the readiness race (the probe
-    /// only wins for a child that stays alive).
     delay: std::time::Duration,
 }
 
@@ -175,8 +171,6 @@ impl FakeProbe {
         }
     }
 
-    /// Succeeds, but only after `delay`, so an already-crashed child wins the
-    /// `select!` race while a live child is still reported ready.
     fn delayed_ok() -> Self {
         Self {
             tail: Ok(()),
@@ -194,7 +188,7 @@ impl FakeProbe {
 
 #[async_trait]
 impl ReadinessProbe for FakeProbe {
-    async fn probe(&self, _service: Service, _listen: &Listen) -> Result<(), io::Error> {
+    async fn probe(&self, _kind: ReadinessKind, _listen: &Listen) -> Result<(), io::Error> {
         if !self.delay.is_zero() {
             tokio::time::sleep(self.delay).await;
         }
@@ -217,16 +211,21 @@ fn dirs_in(tmp: &std::path::Path) -> PlatformDirs {
     }
 }
 
-/// Place a (dummy) server binary on disk so `ensure`'s `binary.is_file()` gate
+/// The Redis [`ServiceDefinition`] from the built-in registry.
+fn redis_def() -> Arc<dyn ServiceDefinition> {
+    ServiceRegistry::builtin().get("redis").unwrap()
+}
+
+/// Place a (dummy) Redis server binary on disk so `ensure`'s `is_file()` gate
 /// passes. The fake spawner never actually executes it.
-fn install_server_binary(dirs: &PlatformDirs, service: Service, v: &ServiceVersion) {
-    let path = version::server_path(dirs, service, v);
+fn install_redis_binary(dirs: &PlatformDirs, v: &ServiceVersion) {
+    let def = redis_def();
+    let path = version::server_path(dirs, def.id(), def.server_binary().unwrap(), v);
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     std::fs::write(&path, b"#!/bin/sh\n").unwrap();
 }
 
-/// Grab a currently-free loopback port (bind to 0, read it, release it). A small
-/// TOCTOU window remains, acceptable for tests that never re-bind it.
+/// Grab a currently-free loopback port (bind to 0, read it, release it).
 fn free_port() -> u16 {
     let l = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
     l.local_addr().unwrap().port()
@@ -242,6 +241,13 @@ fn make_manager(dirs: PlatformDirs, spawner: FakeSpawner, probe: FakeProbe) -> M
     ServiceManager::new(spawner, FakeClock, probe, dirs, ActivePortBinder::new())
 }
 
+/// Ensure the Redis instance, threading the new `ensure` arguments (wire id
+/// `"redis"`, an explicit version, no program/cwd override).
+async fn ensure_redis(mgr: &mut Mgr, v: ServiceVersion, port: u16) -> Result<Listen, ServiceError> {
+    mgr.ensure(redis_def(), "redis", Some(v), port, None, None)
+        .await
+}
+
 // ─── Tests ──────────────────────────────────────────────────────────
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
@@ -249,7 +255,7 @@ async fn ensure_happy_path_returns_loopback_listen() {
     let tmp = tempfile::tempdir().unwrap();
     let dirs = dirs_in(tmp.path());
     let v = redis_version();
-    install_server_binary(&dirs, Service::Redis, &v);
+    install_redis_binary(&dirs, &v);
     let port = free_port();
 
     let spawner = FakeSpawner::new(vec![SpawnPlan {
@@ -258,7 +264,7 @@ async fn ensure_happy_path_returns_loopback_listen() {
     }]);
     let mut mgr = make_manager(dirs, spawner, FakeProbe::always_ok());
 
-    let listen = mgr.ensure(Service::Redis, v.clone(), port).await.unwrap();
+    let listen = ensure_redis(&mut mgr, v.clone(), port).await.unwrap();
     match listen {
         Listen::TcpLoopback(addr) => {
             assert_eq!(addr, SocketAddr::new(Ipv4Addr::LOCALHOST.into(), port));
@@ -266,7 +272,7 @@ async fn ensure_happy_path_returns_loopback_listen() {
         Listen::UnixSocket(_) => panic!("services always listen on TCP loopback"),
     }
 
-    let again = mgr.ensure(Service::Redis, v, port).await.unwrap();
+    let again = ensure_redis(&mut mgr, v, port).await.unwrap();
     assert!(matches!(again, Listen::TcpLoopback(_)));
 }
 
@@ -278,14 +284,14 @@ async fn ensure_unknown_version_errors() {
     let spawner = FakeSpawner::new(vec![]);
     let mut mgr = make_manager(dirs, spawner, FakeProbe::always_ok());
 
-    let err = mgr
-        .ensure(Service::Redis, v.clone(), free_port())
+    let err = ensure_redis(&mut mgr, v.clone(), free_port())
         .await
         .unwrap_err();
     assert!(
         matches!(
             err,
-            ServiceError::VersionNotInstalled { service: Service::Redis, ref version } if *version == v
+            ServiceError::VersionNotInstalled { ref service, ref version }
+                if service == "redis" && *version == v
         ),
         "got: {err:?}"
     );
@@ -298,7 +304,7 @@ async fn ensure_recovers_after_one_crash() {
     let tmp = tempfile::tempdir().unwrap();
     let dirs = dirs_in(tmp.path());
     let v = redis_version();
-    install_server_binary(&dirs, Service::Redis, &v);
+    install_redis_binary(&dirs, &v);
 
     let spawner = FakeSpawner::new(vec![
         SpawnPlan {
@@ -312,7 +318,7 @@ async fn ensure_recovers_after_one_crash() {
     ]);
     let mut mgr = make_manager(dirs, spawner, FakeProbe::delayed_ok());
 
-    let listen = mgr.ensure(Service::Redis, v, free_port()).await.unwrap();
+    let listen = ensure_redis(&mut mgr, v, free_port()).await.unwrap();
     assert!(matches!(listen, Listen::TcpLoopback(_)));
 
     let snaps = mgr.snapshots();
@@ -322,14 +328,13 @@ async fn ensure_recovers_after_one_crash() {
 }
 
 /// Provides more crashing children than the restart budget so a counting bug
-/// cannot infinite-loop the test, and a refused probe that must not win the race
-/// against the crashing child's exit.
+/// cannot infinite-loop the test, and a refused probe that must not win the race.
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn ensure_surfaces_permanent_failure() {
     let tmp = tempfile::tempdir().unwrap();
     let dirs = dirs_in(tmp.path());
     let v = redis_version();
-    install_server_binary(&dirs, Service::Redis, &v);
+    install_redis_binary(&dirs, &v);
 
     let max = SupervisorPolicy::database().max_restart_attempts;
     let plans: Vec<SpawnPlan> = (0..=max + 2)
@@ -341,17 +346,11 @@ async fn ensure_surfaces_permanent_failure() {
     let spawner = FakeSpawner::new(plans);
     let mut mgr = make_manager(dirs, spawner, FakeProbe::always_refused());
 
-    let err = mgr
-        .ensure(Service::Redis, v, free_port())
-        .await
-        .unwrap_err();
+    let err = ensure_redis(&mut mgr, v, free_port()).await.unwrap_err();
     assert!(
         matches!(
             err,
-            ServiceError::PermanentFailure {
-                service: Service::Redis,
-                ..
-            }
+            ServiceError::PermanentFailure { ref service, .. } if service == "redis"
         ),
         "got: {err:?}"
     );
@@ -362,7 +361,7 @@ async fn stop_kills_running_instance() {
     let tmp = tempfile::tempdir().unwrap();
     let dirs = dirs_in(tmp.path());
     let v = redis_version();
-    install_server_binary(&dirs, Service::Redis, &v);
+    install_redis_binary(&dirs, &v);
 
     let spawner = FakeSpawner::new(vec![SpawnPlan {
         pid: 101,
@@ -371,8 +370,8 @@ async fn stop_kills_running_instance() {
     let kills = spawner.kills_handle();
     let mut mgr = make_manager(dirs, spawner, FakeProbe::always_ok());
 
-    mgr.ensure(Service::Redis, v, free_port()).await.unwrap();
-    mgr.stop(Service::Redis).await.unwrap();
+    ensure_redis(&mut mgr, v, free_port()).await.unwrap();
+    mgr.stop("redis").await.unwrap();
 
     let kills_now = kills.lock().await;
     assert!(
@@ -389,7 +388,7 @@ async fn stop_on_unmanaged_service_is_noop() {
     let dirs = dirs_in(tmp.path());
     let spawner = FakeSpawner::new(vec![]);
     let mut mgr = make_manager(dirs, spawner, FakeProbe::always_ok());
-    mgr.stop(Service::Redis).await.unwrap();
+    mgr.stop("redis").await.unwrap();
     mgr.shutdown().await.unwrap();
     assert!(mgr.snapshots().is_empty());
 }
@@ -399,7 +398,7 @@ async fn shutdown_stops_every_instance() {
     let tmp = tempfile::tempdir().unwrap();
     let dirs = dirs_in(tmp.path());
     let v = redis_version();
-    install_server_binary(&dirs, Service::Redis, &v);
+    install_redis_binary(&dirs, &v);
 
     let spawner = FakeSpawner::new(vec![SpawnPlan {
         pid: 101,
@@ -407,7 +406,7 @@ async fn shutdown_stops_every_instance() {
     }]);
     let kills = spawner.kills_handle();
     let mut mgr = make_manager(dirs, spawner, FakeProbe::always_ok());
-    mgr.ensure(Service::Redis, v, free_port()).await.unwrap();
+    ensure_redis(&mut mgr, v, free_port()).await.unwrap();
 
     mgr.shutdown().await.unwrap();
     assert!(mgr.snapshots().is_empty());
@@ -419,7 +418,7 @@ async fn restart_stops_then_starts_a_fresh_child() {
     let tmp = tempfile::tempdir().unwrap();
     let dirs = dirs_in(tmp.path());
     let v = redis_version();
-    install_server_binary(&dirs, Service::Redis, &v);
+    install_redis_binary(&dirs, &v);
     let port = free_port();
 
     let spawner = FakeSpawner::new(vec![
@@ -434,8 +433,11 @@ async fn restart_stops_then_starts_a_fresh_child() {
     ]);
     let mut mgr = make_manager(dirs, spawner, FakeProbe::always_ok());
 
-    mgr.ensure(Service::Redis, v.clone(), port).await.unwrap();
-    let listen = mgr.restart(Service::Redis, v, port).await.unwrap();
+    ensure_redis(&mut mgr, v.clone(), port).await.unwrap();
+    let listen = mgr
+        .restart(redis_def(), "redis", Some(v), port, None, None)
+        .await
+        .unwrap();
     assert!(matches!(listen, Listen::TcpLoopback(_)));
 
     let snaps = mgr.snapshots();
@@ -458,21 +460,21 @@ async fn snapshots_report_running_with_pid_and_listen() {
     let tmp = tempfile::tempdir().unwrap();
     let dirs = dirs_in(tmp.path());
     let v = redis_version();
-    install_server_binary(&dirs, Service::Redis, &v);
+    install_redis_binary(&dirs, &v);
 
     let spawner = FakeSpawner::new(vec![SpawnPlan {
         pid: 101,
         behavior: ChildBehavior::Lives,
     }]);
     let mut mgr = make_manager(dirs, spawner, FakeProbe::always_ok());
-    mgr.ensure(Service::Redis, v.clone(), free_port())
+    ensure_redis(&mut mgr, v.clone(), free_port())
         .await
         .unwrap();
 
     let snaps = mgr.snapshots();
     assert_eq!(snaps.len(), 1);
-    assert_eq!(snaps[0].service, Service::Redis);
-    assert_eq!(snaps[0].version, v);
+    assert_eq!(snaps[0].service, "redis");
+    assert_eq!(snaps[0].version, Some(v));
     assert_eq!(snaps[0].state, ServiceRunState::Running);
     assert_eq!(snaps[0].pid, Some(101));
     assert!(snaps[0].listen.is_some());
@@ -485,14 +487,14 @@ async fn snapshots_report_failed_when_child_has_died() {
     let tmp = tempfile::tempdir().unwrap();
     let dirs = dirs_in(tmp.path());
     let v = redis_version();
-    install_server_binary(&dirs, Service::Redis, &v);
+    install_redis_binary(&dirs, &v);
 
     let spawner = FakeSpawner::new(vec![SpawnPlan {
         pid: 101,
         behavior: ChildBehavior::LivesButTryWaitDead,
     }]);
     let mut mgr = make_manager(dirs, spawner, FakeProbe::always_ok());
-    mgr.ensure(Service::Redis, v, free_port()).await.unwrap();
+    ensure_redis(&mut mgr, v, free_port()).await.unwrap();
 
     let snaps = mgr.snapshots();
     assert_eq!(snaps.len(), 1);
@@ -506,7 +508,7 @@ async fn ensure_reports_port_conflict_as_port_in_use() {
     let tmp = tempfile::tempdir().unwrap();
     let dirs = dirs_in(tmp.path());
     let v = redis_version();
-    install_server_binary(&dirs, Service::Redis, &v);
+    install_redis_binary(&dirs, &v);
 
     let listener = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
     let port = listener.local_addr().unwrap().port();
@@ -517,9 +519,12 @@ async fn ensure_reports_port_conflict_as_port_in_use() {
     }]);
     let mut mgr = make_manager(dirs, spawner, FakeProbe::always_ok());
 
-    let err = mgr.ensure(Service::Redis, v, port).await.unwrap_err();
+    let err = ensure_redis(&mut mgr, v, port).await.unwrap_err();
     assert!(
-        matches!(err, ServiceError::PortInUse { service: Service::Redis, port: p } if p == port),
+        matches!(
+            err,
+            ServiceError::PortInUse { ref service, port: p } if service == "redis" && p == port
+        ),
         "got: {err:?}"
     );
     drop(listener);

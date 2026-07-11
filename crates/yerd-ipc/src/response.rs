@@ -12,9 +12,9 @@ use yerd_core::{PhpVersion, Site};
 
 use crate::dump::{DumpCounts, DumpEvent, DumpExtStatus};
 use crate::status::{
-    CloudflaredStatus, DatabaseSummary, Diagnosis, FixReport, MailDetail, MailSummary,
-    NamedTunnelMeta, ServiceAvailability, ServiceStatus, SiteHostname, StatusReport, ToolStatus,
-    TunnelInfo, WordPressVersionInfo,
+    AddableServiceType, CloudflaredStatus, DatabaseSummary, Diagnosis, FixReport, MailDetail,
+    MailSummary, NamedTunnelMeta, ServiceAvailability, ServiceStatus, SiteHostname, StatusReport,
+    ToolStatus, TunnelInfo, WordPressVersionInfo,
 };
 
 // Same rule: no per-field serde renames.
@@ -154,6 +154,17 @@ pub enum Response {
     AvailableServices {
         /// Installable vs installed versions, per service.
         services: Vec<ServiceAvailability>,
+    },
+    /// Reply to [`crate::Request::AddableServiceTypes`].
+    AddableServices {
+        /// One entry per installable service type.
+        types: Vec<AddableServiceType>,
+    },
+    /// The (possibly new) instance wire id, e.g. after
+    /// [`crate::Request::SetServiceSite`] re-keys a per-site instance.
+    ServiceInstanceId {
+        /// The instance wire id to target in subsequent requests.
+        id: String,
     },
     /// Reply to [`crate::Request::AvailableWordpressVersions`].
     WordpressVersions {
@@ -396,6 +407,13 @@ pub struct SiteEntry {
     /// to `false` (direct execution) if an older daemon omits it.
     #[serde(default)]
     pub uses_front_controller: bool,
+    /// Whether an `artisan` marker was found at the site's project root
+    /// (`document_root`), i.e. it is a Laravel app - eligible to link a Reverb
+    /// instance. Served from an in-memory daemon cache refreshed on router
+    /// rebuild, exactly like `is_wordpress`. Additive: omitted (false) by older
+    /// daemons and when the site is not Laravel.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub is_laravel: bool,
 }
 
 /// One whole-host reverse proxy (reply element of [`Response::Proxies`]).
@@ -468,6 +486,22 @@ pub enum ErrorCode {
     /// extension registered without the Zend flag). Distinct from [`Self::InvalidPath`],
     /// which means the path itself was malformed.
     ExtensionLoadFailed,
+    /// A requested port is already configured for another service instance
+    /// (reserved, even if that instance is stopped). Distinct from
+    /// [`Self::PortInUse`], which is a live bind conflict. Returned only on new
+    /// requests (`AddService`), never on pre-existing ones, so older clients
+    /// cannot receive it.
+    PortReserved,
+    /// The named site does not exist.
+    SiteNotFound,
+    /// The named site is not a Laravel app (no `artisan` marker), so it cannot
+    /// host a per-site service like Reverb.
+    SiteNotLaravel,
+    /// The requested service type id is not known to the daemon.
+    UnknownServiceType,
+    /// A single-instance service type already has its one instance, or a per-site
+    /// instance already exists for the chosen site.
+    InstanceAlreadyExists,
     /// Catch-all for daemon-side failures that don't fit a typed code.
     /// Expand this enum rather than overloading `Internal`.
     Internal,
@@ -504,6 +538,8 @@ mod variant_name_pinning {
             Response::DoctorFix { .. } => {}
             Response::Services { .. } => {}
             Response::AvailableServices { .. } => {}
+            Response::AddableServices { .. } => {}
+            Response::ServiceInstanceId { .. } => {}
             Response::WordpressVersions { .. } => {}
             Response::WordpressLoginToken { .. } => {}
             Response::WordpressAdminUsers { .. } => {}
@@ -533,6 +569,11 @@ mod variant_name_pinning {
             ErrorCode::InvalidPath => {}
             ErrorCode::PortInUse => {}
             ErrorCode::ExtensionLoadFailed => {}
+            ErrorCode::PortReserved => {}
+            ErrorCode::SiteNotFound => {}
+            ErrorCode::SiteNotLaravel => {}
+            ErrorCode::UnknownServiceType => {}
+            ErrorCode::InstanceAlreadyExists => {}
             ErrorCode::Internal => {}
         }
     }
@@ -641,6 +682,10 @@ mod variant_name_pinning {
         });
         pin_response(Response::Services { services: vec![] });
         pin_response(Response::AvailableServices { services: vec![] });
+        pin_response(Response::AddableServices { types: vec![] });
+        pin_response(Response::ServiceInstanceId {
+            id: "reverb:blog".into(),
+        });
         pin_response(Response::WordpressVersions {
             versions: vec![WordPressVersionInfo {
                 branch: "6.7".into(),
@@ -788,6 +833,11 @@ mod variant_name_pinning {
             ErrorCode::InvalidPath,
             ErrorCode::PortInUse,
             ErrorCode::ExtensionLoadFailed,
+            ErrorCode::PortReserved,
+            ErrorCode::SiteNotFound,
+            ErrorCode::SiteNotLaravel,
+            ErrorCode::UnknownServiceType,
+            ErrorCode::InstanceAlreadyExists,
             ErrorCode::Internal,
         ] {
             pin_code(c);

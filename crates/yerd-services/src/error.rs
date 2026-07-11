@@ -10,7 +10,6 @@ use std::path::PathBuf;
 use thiserror::Error;
 use yerd_supervise::{DownloadError, ExitReason, SpawnFailureReason};
 
-use crate::service::Service;
 use crate::version::ServiceVersion;
 
 /// Errors produced by `yerd-services`.
@@ -22,7 +21,7 @@ pub enum ServiceError {
     #[error("{service} is not supported yet: {detail}")]
     Unsupported {
         /// The service in question.
-        service: Service,
+        service: String,
         /// What specifically is unsupported.
         detail: String,
     },
@@ -31,7 +30,7 @@ pub enum ServiceError {
     #[error("{service} {version} is not installed")]
     VersionNotInstalled {
         /// The service.
-        service: Service,
+        service: String,
         /// The version that was requested.
         version: ServiceVersion,
     },
@@ -51,7 +50,7 @@ pub enum ServiceError {
     #[error("initialise {service} datadir at {}: {detail}", datadir.display())]
     Init {
         /// The service being initialised.
-        service: Service,
+        service: String,
         /// The datadir we were initialising.
         datadir: PathBuf,
         /// Human-readable failure detail.
@@ -62,7 +61,7 @@ pub enum ServiceError {
     #[error("spawn {service} ({reason:?}): {source}")]
     Spawn {
         /// Which service's server we tried to spawn.
-        service: Service,
+        service: String,
         /// Classification of the underlying `io::Error`.
         reason: SpawnFailureReason,
         /// Underlying OS error.
@@ -76,7 +75,7 @@ pub enum ServiceError {
         /// The config path we were trying to write.
         path: PathBuf,
         /// The service.
-        service: Service,
+        service: String,
         /// Underlying OS error.
         #[source]
         source: io::Error,
@@ -87,7 +86,7 @@ pub enum ServiceError {
     #[error("{service} health check timed out after {attempts} attempts")]
     HealthCheckTimedOut {
         /// Which service was being health-checked.
-        service: Service,
+        service: String,
         /// How many `Starting` attempts had accumulated.
         attempts: u32,
     },
@@ -96,7 +95,7 @@ pub enum ServiceError {
     #[error("{service} crashed repeatedly (last exit: {reason})")]
     PermanentFailure {
         /// Which service exhausted its restart budget.
-        service: Service,
+        service: String,
         /// The most recent exit reason recorded by the supervisor.
         reason: ExitReason,
     },
@@ -105,7 +104,7 @@ pub enum ServiceError {
     #[error("{service} port {port} is already in use")]
     PortInUse {
         /// The service.
-        service: Service,
+        service: String,
         /// The port that could not be bound.
         port: u16,
     },
@@ -114,7 +113,7 @@ pub enum ServiceError {
     #[error("bind {service} port {port}: {source}")]
     Bind {
         /// The service.
-        service: Service,
+        service: String,
         /// The port we tried to bind.
         port: u16,
         /// Underlying platform error.
@@ -126,7 +125,7 @@ pub enum ServiceError {
     #[error("kill {service}: {source}")]
     Kill {
         /// Which service's server we tried to signal.
-        service: Service,
+        service: String,
         /// Underlying OS error.
         #[source]
         source: io::Error,
@@ -137,7 +136,7 @@ pub enum ServiceError {
     #[error("no prebuilt {service} {version} found for this platform")]
     VersionUnavailable {
         /// The service.
-        service: Service,
+        service: String,
         /// The version that was requested.
         version: ServiceVersion,
     },

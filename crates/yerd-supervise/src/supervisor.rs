@@ -82,6 +82,23 @@ impl SupervisorPolicy {
         }
     }
 
+    /// Policy for a Laravel Reverb app server: `php artisan reverb:start` boots
+    /// the whole framework (composer autoload, container, config) before opening
+    /// its socket, which on a cold opcache can take several seconds - so the
+    /// readiness window is generous to avoid killing a healthy-but-slow start. It
+    /// is a plain PHP process that drains on SIGTERM, so a short stop grace and a
+    /// couple of restart attempts suffice.
+    #[must_use]
+    pub const fn reverb() -> Self {
+        Self {
+            health_check_window: Duration::from_secs(20),
+            backoff_initial: Duration::from_millis(250),
+            backoff_max: Duration::from_secs(10),
+            max_restart_attempts: 3,
+            stop_grace: Duration::from_secs(3),
+        }
+    }
+
     /// Policy for a `cloudflared` tunnel: a single outbound-only child whose
     /// readiness is the appearance of its public URL / edge-registration line in
     /// the logfile, which can take several seconds over a cold network. A

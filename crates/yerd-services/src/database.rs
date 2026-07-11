@@ -13,7 +13,7 @@
 use std::fmt;
 use std::path::Path;
 
-use crate::service::Service;
+use crate::service::SqlEngine;
 
 /// Why a proposed database name was rejected.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -80,14 +80,13 @@ pub fn validate_db_name(name: &str) -> Result<(), DbNameError> {
 /// Whether `name` is a built-in/system database that must not be listed,
 /// dropped, or renamed. Compared case-insensitively.
 #[must_use]
-pub fn is_system_database(service: Service, name: &str) -> bool {
+pub fn is_system_database(service: SqlEngine, name: &str) -> bool {
     let lower = name.to_ascii_lowercase();
     let systems: &[&str] = match service {
-        Service::MySql | Service::MariaDb => {
+        SqlEngine::MySql | SqlEngine::MariaDb => {
             &["information_schema", "performance_schema", "mysql", "sys"]
         }
-        Service::Postgres => &["postgres", "template0", "template1"],
-        Service::Redis => &[],
+        SqlEngine::Postgres => &["postgres", "template0", "template1"],
     };
     systems.contains(&lower.as_str())
 }
@@ -96,16 +95,16 @@ pub fn is_system_database(service: Service, name: &str) -> bool {
 /// double quotes for `PostgreSQL`, each doubling the quote char. Validated names
 /// contain no quote chars, so this is defence in depth.
 #[must_use]
-pub fn quote_ident(service: Service, name: &str) -> String {
+pub fn quote_ident(service: SqlEngine, name: &str) -> String {
     match service {
-        Service::MySql | Service::MariaDb => format!("`{}`", name.replace('`', "``")),
-        Service::Postgres | Service::Redis => format!("\"{}\"", name.replace('"', "\"\"")),
+        SqlEngine::MySql | SqlEngine::MariaDb => format!("`{}`", name.replace('`', "``")),
+        SqlEngine::Postgres => format!("\"{}\"", name.replace('"', "\"\"")),
     }
 }
 
 /// `CREATE DATABASE` statement for `name` on `service`.
 #[must_use]
-pub fn create_sql(service: Service, name: &str) -> String {
+pub fn create_sql(service: SqlEngine, name: &str) -> String {
     format!("CREATE DATABASE {};", quote_ident(service, name))
 }
 
@@ -113,21 +112,20 @@ pub fn create_sql(service: Service, name: &str) -> String {
 /// `WITH (FORCE)` (PG13+) so an open session doesn't block the drop; `MySQL`/
 /// `MariaDB` have no such clause.
 #[must_use]
-pub fn drop_sql(service: Service, name: &str) -> String {
+pub fn drop_sql(service: SqlEngine, name: &str) -> String {
     let ident = quote_ident(service, name);
     match service {
-        Service::Postgres => format!("DROP DATABASE {ident} WITH (FORCE);"),
-        Service::MySql | Service::MariaDb | Service::Redis => format!("DROP DATABASE {ident};"),
+        SqlEngine::Postgres => format!("DROP DATABASE {ident} WITH (FORCE);"),
+        SqlEngine::MySql | SqlEngine::MariaDb => format!("DROP DATABASE {ident};"),
     }
 }
 
 /// The statement that lists databases for `service` (one name per output row).
 #[must_use]
-pub fn list_sql(service: Service) -> &'static str {
+pub fn list_sql(service: SqlEngine) -> &'static str {
     match service {
-        Service::MySql | Service::MariaDb => "SHOW DATABASES;",
-        Service::Postgres => "SELECT datname FROM pg_database WHERE datistemplate = false;",
-        Service::Redis => "",
+        SqlEngine::MySql | SqlEngine::MariaDb => "SHOW DATABASES;",
+        SqlEngine::Postgres => "SELECT datname FROM pg_database WHERE datistemplate = false;",
     }
 }
 
@@ -138,9 +136,9 @@ pub fn list_sql(service: Service) -> &'static str {
 /// over TCP loopback on `port` (its Unix socket is disabled), authenticated by
 /// the `trust` line `initdb` wrote for `127.0.0.1/32`.
 #[must_use]
-pub fn client_args(service: Service, socket: &Path, port: u16, sql: &str) -> Vec<String> {
+pub fn client_args(service: SqlEngine, socket: &Path, port: u16, sql: &str) -> Vec<String> {
     match service {
-        Service::MySql | Service::MariaDb => vec![
+        SqlEngine::MySql | SqlEngine::MariaDb => vec![
             format!("--socket={}", socket.display()),
             "--user=root".to_owned(),
             "--batch".to_owned(),
@@ -148,7 +146,7 @@ pub fn client_args(service: Service, socket: &Path, port: u16, sql: &str) -> Vec
             "-e".to_owned(),
             sql.to_owned(),
         ],
-        Service::Postgres => vec![
+        SqlEngine::Postgres => vec![
             "--host=127.0.0.1".to_owned(),
             format!("--port={port}"),
             "--username=postgres".to_owned(),
@@ -159,7 +157,6 @@ pub fn client_args(service: Service, socket: &Path, port: u16, sql: &str) -> Vec
             "-c".to_owned(),
             sql.to_owned(),
         ],
-        Service::Redis => Vec::new(),
     }
 }
 
@@ -182,9 +179,9 @@ pub fn client_args(service: Service, socket: &Path, port: u16, sql: &str) -> Vec
 ///
 /// The output file is never named here - the daemon captures stdout and writes it.
 #[must_use]
-pub fn dump_args(service: Service, socket: &Path, port: u16, db: &str) -> Vec<String> {
+pub fn dump_args(service: SqlEngine, socket: &Path, port: u16, db: &str) -> Vec<String> {
     match service {
-        Service::MySql => vec![
+        SqlEngine::MySql => vec![
             format!("--socket={}", socket.display()),
             "--user=root".to_owned(),
             "--routines".to_owned(),
@@ -193,7 +190,7 @@ pub fn dump_args(service: Service, socket: &Path, port: u16, db: &str) -> Vec<St
             "--set-gtid-purged=OFF".to_owned(),
             db.to_owned(),
         ],
-        Service::MariaDb => vec![
+        SqlEngine::MariaDb => vec![
             format!("--socket={}", socket.display()),
             "--user=root".to_owned(),
             "--routines".to_owned(),
@@ -201,7 +198,7 @@ pub fn dump_args(service: Service, socket: &Path, port: u16, db: &str) -> Vec<St
             "--triggers".to_owned(),
             db.to_owned(),
         ],
-        Service::Postgres => vec![
+        SqlEngine::Postgres => vec![
             "--host=127.0.0.1".to_owned(),
             format!("--port={port}"),
             "--username=postgres".to_owned(),
@@ -212,7 +209,6 @@ pub fn dump_args(service: Service, socket: &Path, port: u16, db: &str) -> Vec<St
             "--no-privileges".to_owned(),
             db.to_owned(),
         ],
-        Service::Redis => Vec::new(),
     }
 }
 
@@ -224,14 +220,14 @@ pub fn dump_args(service: Service, socket: &Path, port: u16, db: &str) -> Vec<St
 /// failed statement aborts with a non-zero exit instead of silently partially
 /// restoring. The input file is never named here - the daemon feeds it on stdin.
 #[must_use]
-pub fn restore_args(service: Service, socket: &Path, port: u16, db: &str) -> Vec<String> {
+pub fn restore_args(service: SqlEngine, socket: &Path, port: u16, db: &str) -> Vec<String> {
     match service {
-        Service::MySql | Service::MariaDb => vec![
+        SqlEngine::MySql | SqlEngine::MariaDb => vec![
             format!("--socket={}", socket.display()),
             "--user=root".to_owned(),
             db.to_owned(),
         ],
-        Service::Postgres => vec![
+        SqlEngine::Postgres => vec![
             "--host=127.0.0.1".to_owned(),
             format!("--port={port}"),
             "--username=postgres".to_owned(),
@@ -239,14 +235,13 @@ pub fn restore_args(service: Service, socket: &Path, port: u16, db: &str) -> Vec
             "--set=ON_ERROR_STOP=1".to_owned(),
             format!("--dbname={db}"),
         ],
-        Service::Redis => Vec::new(),
     }
 }
 
 /// Parse a client's database-list stdout into user-visible names: one per line,
 /// trimmed, empties dropped, system databases filtered out, sorted + deduped.
 #[must_use]
-pub fn parse_db_list(service: Service, stdout: &str) -> Vec<String> {
+pub fn parse_db_list(service: SqlEngine, stdout: &str) -> Vec<String> {
     let mut names: Vec<String> = stdout
         .lines()
         .map(str::trim)
@@ -305,25 +300,28 @@ mod tests {
 
     #[test]
     fn system_databases_per_engine() {
-        assert!(is_system_database(Service::MySql, "mysql"));
-        assert!(is_system_database(Service::MySql, "INFORMATION_SCHEMA"));
-        assert!(is_system_database(Service::MariaDb, "sys"));
-        assert!(!is_system_database(Service::MySql, "app"));
-        assert!(is_system_database(Service::Postgres, "template0"));
-        assert!(is_system_database(Service::Postgres, "postgres"));
-        assert!(!is_system_database(Service::Postgres, "app"));
+        assert!(is_system_database(SqlEngine::MySql, "mysql"));
+        assert!(is_system_database(SqlEngine::MySql, "INFORMATION_SCHEMA"));
+        assert!(is_system_database(SqlEngine::MariaDb, "sys"));
+        assert!(!is_system_database(SqlEngine::MySql, "app"));
+        assert!(is_system_database(SqlEngine::Postgres, "template0"));
+        assert!(is_system_database(SqlEngine::Postgres, "postgres"));
+        assert!(!is_system_database(SqlEngine::Postgres, "app"));
     }
 
     #[test]
     fn sql_builders_quote_per_engine() {
-        assert_eq!(create_sql(Service::MySql, "app"), "CREATE DATABASE `app`;");
         assert_eq!(
-            create_sql(Service::Postgres, "app"),
+            create_sql(SqlEngine::MySql, "app"),
+            "CREATE DATABASE `app`;"
+        );
+        assert_eq!(
+            create_sql(SqlEngine::Postgres, "app"),
             "CREATE DATABASE \"app\";"
         );
-        assert_eq!(drop_sql(Service::MySql, "app"), "DROP DATABASE `app`;");
+        assert_eq!(drop_sql(SqlEngine::MySql, "app"), "DROP DATABASE `app`;");
         assert_eq!(
-            drop_sql(Service::Postgres, "app"),
+            drop_sql(SqlEngine::Postgres, "app"),
             "DROP DATABASE \"app\" WITH (FORCE);"
         );
     }
@@ -331,13 +329,13 @@ mod tests {
     #[test]
     fn client_args_socket_for_mysql_tcp_for_postgres() {
         let sock = PathBuf::from("/run/yerd/mysql.sock");
-        let my = client_args(Service::MySql, &sock, 3306, "SHOW DATABASES;");
+        let my = client_args(SqlEngine::MySql, &sock, 3306, "SHOW DATABASES;");
         assert!(my.contains(&"--socket=/run/yerd/mysql.sock".to_owned()));
         assert!(my.contains(&"--user=root".to_owned()));
         assert!(my.iter().all(|a| !a.starts_with("--host")));
         assert_eq!(my.last().unwrap(), "SHOW DATABASES;");
 
-        let pg = client_args(Service::Postgres, &sock, 5432, "SELECT 1;");
+        let pg = client_args(SqlEngine::Postgres, &sock, 5432, "SELECT 1;");
         assert!(pg.contains(&"--host=127.0.0.1".to_owned()));
         assert!(pg.contains(&"--port=5432".to_owned()));
         assert!(pg.contains(&"--username=postgres".to_owned()));
@@ -349,7 +347,7 @@ mod tests {
     fn dump_args_are_complete_and_engine_specific() {
         let sock = PathBuf::from("/run/yerd/mysql.sock");
 
-        let my = dump_args(Service::MySql, &sock, 3306, "app");
+        let my = dump_args(SqlEngine::MySql, &sock, 3306, "app");
         assert!(my.contains(&"--socket=/run/yerd/mysql.sock".to_owned()));
         assert!(my.contains(&"--user=root".to_owned()));
         for flag in ["--routines", "--events", "--triggers"] {
@@ -359,7 +357,7 @@ mod tests {
         assert!(my.iter().all(|a| a != "--databases"));
         assert_eq!(my.last().unwrap(), "app");
 
-        let maria = dump_args(Service::MariaDb, &sock, 3306, "app");
+        let maria = dump_args(SqlEngine::MariaDb, &sock, 3306, "app");
         for flag in ["--routines", "--events", "--triggers"] {
             assert!(
                 maria.contains(&flag.to_owned()),
@@ -369,7 +367,7 @@ mod tests {
         assert!(maria.iter().all(|a| !a.starts_with("--set-gtid-purged")));
         assert_eq!(maria.last().unwrap(), "app");
 
-        let pg = dump_args(Service::Postgres, &sock, 5432, "app");
+        let pg = dump_args(SqlEngine::Postgres, &sock, 5432, "app");
         assert!(pg.contains(&"--host=127.0.0.1".to_owned()));
         assert!(pg.contains(&"--port=5432".to_owned()));
         for flag in ["--clean", "--if-exists", "--no-owner", "--no-privileges"] {
@@ -377,38 +375,34 @@ mod tests {
         }
         assert!(pg.iter().all(|a| !a.starts_with("--socket")));
         assert_eq!(pg.last().unwrap(), "app");
-
-        assert!(dump_args(Service::Redis, &sock, 6379, "app").is_empty());
     }
 
     #[test]
     fn restore_args_target_the_requested_db() {
         let sock = PathBuf::from("/run/yerd/mysql.sock");
 
-        let my = restore_args(Service::MySql, &sock, 3306, "app");
+        let my = restore_args(SqlEngine::MySql, &sock, 3306, "app");
         assert!(my.contains(&"--socket=/run/yerd/mysql.sock".to_owned()));
         assert!(my.contains(&"--user=root".to_owned()));
         assert_eq!(my.last().unwrap(), "app");
 
-        let pg = restore_args(Service::Postgres, &sock, 5432, "app");
+        let pg = restore_args(SqlEngine::Postgres, &sock, 5432, "app");
         assert!(pg.contains(&"--host=127.0.0.1".to_owned()));
         assert!(pg.contains(&"--set=ON_ERROR_STOP=1".to_owned()));
         assert!(pg.contains(&"--dbname=app".to_owned()));
         assert!(pg.iter().all(|a| a != "--dbname=postgres"));
-
-        assert!(restore_args(Service::Redis, &sock, 6379, "app").is_empty());
     }
 
     #[test]
     fn parse_filters_system_and_sorts() {
         let mysql_out = "mysql\ninformation_schema\nzeta\napp\nsys\nperformance_schema\n";
         assert_eq!(
-            parse_db_list(Service::MySql, mysql_out),
+            parse_db_list(SqlEngine::MySql, mysql_out),
             vec!["app".to_owned(), "zeta".to_owned()]
         );
         let pg_out = "  postgres \n app \n template1\nbravo\n\n";
         assert_eq!(
-            parse_db_list(Service::Postgres, pg_out),
+            parse_db_list(SqlEngine::Postgres, pg_out),
             vec!["app".to_owned(), "bravo".to_owned()]
         );
     }

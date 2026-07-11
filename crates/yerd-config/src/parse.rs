@@ -18,7 +18,45 @@ use crate::schema::{
 };
 use crate::ConfigError;
 
-pub(crate) const KNOWN_SERVICES: &[&str] = &["mysql", "mariadb", "postgres", "redis"];
+/// Single-instance service type ids (keyed in `[services]` by the type id alone).
+///
+/// Duplicated here rather than read from the `yerd-services` registry: this crate
+/// sits *below* `yerd-services` in the dependency order and must not depend on it.
+pub(crate) const KNOWN_SINGLE_SERVICES: &[&str] = &["mysql", "mariadb", "postgres", "redis"];
+
+/// Per-site service type ids (keyed by `"{type}:{site}"`). See
+/// [`KNOWN_SINGLE_SERVICES`] for why the list is duplicated here.
+pub(crate) const KNOWN_PER_SITE_SERVICES: &[&str] = &["reverb"];
+
+/// Split an instance wire id into `(type_id, site)` on the first `:`. A
+/// colon-free id (a single-instance engine) yields `site == None`.
+pub(crate) fn split_wire_id(key: &str) -> (&str, Option<&str>) {
+    match key.split_once(':') {
+        Some((ty, site)) => (ty, Some(site)),
+        None => (key, None),
+    }
+}
+
+/// The per-type default for a missing `enabled`: per-site app servers default
+/// off, single-instance (and unknown) types default on. Unknown types are
+/// rejected by [`validate_known_services`], so the `true` fallback there is moot.
+fn default_autostart_for_key(key: &str) -> bool {
+    let (ty, _) = split_wire_id(key);
+    !KNOWN_PER_SITE_SERVICES.contains(&ty)
+}
+
+/// Whether `s` is a valid site label, matching the `yerd-core` site-name rules
+/// (a DNS-style label: non-empty, <= 63 bytes, lowercase ASCII alphanumerics and
+/// `-`, no leading/trailing `-`) so the wire-id suffix can only ever name a real
+/// site and never carry a path separator or shell metacharacter.
+fn is_valid_site_label(s: &str) -> bool {
+    !s.is_empty()
+        && s.len() <= 63
+        && !s.starts_with('-')
+        && !s.ends_with('-')
+        && s.chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+}
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -280,12 +318,14 @@ struct ServiceInstanceWire {
     version: Option<String>,
     #[serde(default)]
     port: Option<u16>,
-    #[serde(default = "default_service_enabled")]
-    enabled: bool,
-}
-
-fn default_service_enabled() -> bool {
-    true
+    #[serde(default)]
+    site: Option<String>,
+    /// `None` when the key is absent: the per-type default is applied during
+    /// `Wire -> Config` conversion (single-instance engines default `true`,
+    /// per-site app servers `false`), so an explicit `enabled` is preserved and
+    /// a hand-edited reverb table without the field does not auto-start.
+    #[serde(default)]
+    enabled: Option<bool>,
 }
 
 /// The `[mail]` table. Both keys default (off / 2525) so a config written before
@@ -445,12 +485,16 @@ impl TryFrom<Wire> for Config {
                 .services
                 .into_iter()
                 .map(|(name, inst)| {
+                    let enabled = inst
+                        .enabled
+                        .unwrap_or_else(|| default_autostart_for_key(&name));
                     (
                         name,
                         ServiceInstance {
                             version: inst.version,
                             port: inst.port,
-                            enabled: inst.enabled,
+                            site: inst.site,
+                            enabled,
                         },
                     )
                 })
@@ -951,10 +995,28 @@ fn validate_web_roots(c: &Config) -> Result<(), ConfigError> {
     Ok(())
 }
 
+/// Validate every `[services.<wire-id>]` key: the type must be known, a per-site
+/// type requires a valid site suffix, a single-instance type forbids one, and the
+/// instance's `site` field (when present) must match the key suffix.
 fn validate_known_services(c: &Config) -> Result<(), ConfigError> {
-    for name in c.services.instances.keys() {
-        if !KNOWN_SERVICES.contains(&name.as_str()) {
+    for (key, inst) in &c.services.instances {
+        let (ty, site) = split_wire_id(key);
+        if KNOWN_SINGLE_SERVICES.contains(&ty) {
+            if site.is_some() {
+                return Err(ve(ValidateErrorReason::UnknownService));
+            }
+        } else if KNOWN_PER_SITE_SERVICES.contains(&ty) {
+            match site {
+                Some(s) if is_valid_site_label(s) => {}
+                _ => return Err(ve(ValidateErrorReason::UnknownService)),
+            }
+        } else {
             return Err(ve(ValidateErrorReason::UnknownService));
+        }
+        if let Some(field) = inst.site.as_deref() {
+            if Some(field) != site {
+                return Err(ve(ValidateErrorReason::UnknownService));
+            }
         }
     }
     Ok(())
@@ -1039,7 +1101,7 @@ mod tests {
         match Config::from_toml("version = 99\n") {
             Err(ConfigError::UnsupportedVersion {
                 found: 99,
-                current: 14,
+                current: 15,
             }) => {}
             other => panic!("expected UnsupportedVersion, got {other:?}"),
         }
@@ -1868,14 +1930,103 @@ php = "not-a-version"
     }
 
     #[test]
-    fn validate_accepts_each_known_service() {
-        for s in KNOWN_SERVICES {
+    fn validate_accepts_each_known_single_service() {
+        for s in KNOWN_SINGLE_SERVICES {
             let mut c = Config::default();
             c.services
                 .instances
                 .insert((*s).to_string(), ServiceInstance::default());
             c.validate().unwrap_or_else(|e| panic!("rejected {s}: {e}"));
         }
+    }
+
+    #[test]
+    fn validate_accepts_per_site_wire_id() {
+        let mut c = Config::default();
+        c.services.instances.insert(
+            "reverb:blog".to_string(),
+            ServiceInstance {
+                site: Some("blog".to_string()),
+                enabled: false,
+                ..ServiceInstance::default()
+            },
+        );
+        c.validate().expect("reverb:blog should validate");
+    }
+
+    #[test]
+    fn validate_rejects_per_site_type_without_suffix() {
+        let mut c = Config::default();
+        c.services
+            .instances
+            .insert("reverb".to_string(), ServiceInstance::default());
+        assert!(matches!(
+            c.validate(),
+            Err(ConfigError::Validate {
+                reason: ValidateErrorReason::UnknownService,
+            })
+        ));
+    }
+
+    #[test]
+    fn validate_rejects_single_type_with_suffix() {
+        let mut c = Config::default();
+        c.services
+            .instances
+            .insert("mysql:x".to_string(), ServiceInstance::default());
+        assert!(matches!(
+            c.validate(),
+            Err(ConfigError::Validate {
+                reason: ValidateErrorReason::UnknownService,
+            })
+        ));
+    }
+
+    #[test]
+    fn validate_rejects_site_field_mismatching_key() {
+        let mut c = Config::default();
+        c.services.instances.insert(
+            "reverb:blog".to_string(),
+            ServiceInstance {
+                site: Some("shop".to_string()),
+                ..ServiceInstance::default()
+            },
+        );
+        assert!(matches!(
+            c.validate(),
+            Err(ConfigError::Validate {
+                reason: ValidateErrorReason::UnknownService,
+            })
+        ));
+    }
+
+    #[test]
+    fn reverb_wire_default_enabled_is_false_when_absent() {
+        let toml = "version = 14\n[services.\"reverb:blog\"]\nsite = \"blog\"\n";
+        let c = Config::from_toml(toml).expect("parses");
+        let inst = c.services.instances.get("reverb:blog").expect("present");
+        assert!(
+            !inst.enabled,
+            "reverb autostart must default off when absent"
+        );
+    }
+
+    #[test]
+    fn engine_wire_default_enabled_is_true_when_absent() {
+        let toml = "version = 14\n[services.redis]\n";
+        let c = Config::from_toml(toml).expect("parses");
+        let inst = c.services.instances.get("redis").expect("present");
+        assert!(inst.enabled, "engine autostart must default on when absent");
+    }
+
+    #[test]
+    fn explicit_enabled_is_preserved_across_roundtrip() {
+        let toml = "version = 14\n[services.\"reverb:blog\"]\nsite = \"blog\"\nenabled = true\n";
+        let c = Config::from_toml(toml).expect("parses");
+        assert!(c.services.instances.get("reverb:blog").unwrap().enabled);
+        let back = c.to_toml().expect("serialises");
+        let c2 = Config::from_toml(&back).expect("reparses");
+        assert!(c2.services.instances.get("reverb:blog").unwrap().enabled);
     }
 
     #[test]

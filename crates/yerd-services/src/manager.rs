@@ -1,26 +1,22 @@
 //! `ServiceManager` - drives the shared supervisor state machine for one
-//! supervised instance per [`Service`], doing the real I/O.
+//! supervised instance per **wire id**, doing the real I/O.
 //!
-//! Mirrors `yerd_php::PhpManager` in shape (it drives the same
-//! `yerd_supervise` state machine) but differs where databases differ:
+//! Instances are keyed by their wire id string (`"redis"` for a single-instance
+//! engine, `"reverb:blog"` for a per-site app server). Each instance carries its
+//! [`ServiceDefinition`], so all per-type behaviour (command, config, datadir
+//! init, readiness protocol, stop protocol, supervisor policy) is dispatched
+//! through the trait rather than a closed enum.
 //!
-//! - **Fixed TCP loopback port** (not an FPM Unix socket), pre-flighted for
-//!   conflicts via [`PortBinder`] so a clash surfaces as
-//!   [`ServiceError::PortInUse`] rather than a mystery crash loop.
-//! - **The database [`SupervisorPolicy`]** (generous readiness window, longer
-//!   stop grace) so a slow cold-boot is not killed mid-startup.
-//! - A **one-time datadir init** seam before first start: no-op for Redis;
-//!   `initdb` (Postgres) / `mysqld --initialize-insecure` (`MySQL`) /
-//!   `mariadb-install-db` (`MariaDB`), run crash-safely into a staging dir.
-//!
-//! Supervises **Redis (Valkey)**, **`MySQL`**, **`MariaDB`**, and
-//! **`PostgreSQL`** - per-engine config rendering, datadir init, and protocol
-//! readiness probes are selected from the [`Service`]. (`MariaDB` shares
-//! `MySQL`'s supervision path; it differs only in its install/init binaries.)
+//! Mirrors `yerd_php::PhpManager` in shape (it drives the same `yerd_supervise`
+//! state machine) but differs where databases differ: a fixed TCP loopback port
+//! pre-flighted for conflicts, a per-type [`SupervisorPolicy`], and a one-time
+//! datadir init seam before first start (no-op for engines that need none).
 
 use std::collections::BTreeMap;
 use std::net::{Ipv4Addr, SocketAddr};
+use std::path::PathBuf;
 use std::process::Command as StdCommand;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use yerd_platform::{ActivePortBinder, PlatformDirs, PlatformError, PortBinder};
@@ -30,10 +26,9 @@ use yerd_supervise::supervisor::{
 };
 use yerd_supervise::{ChildHandle, Clock, ExitReason, Listen, ProcessSpawner, SpawnFailureReason};
 
-use crate::config_render;
 use crate::error::ServiceError;
 use crate::health::ReadinessProbe;
-use crate::service::Service;
+use crate::service::{LaunchContext, ReadinessKind, ServiceDefinition};
 use crate::version::{self, ServiceVersion};
 
 /// Per-attempt readiness-probe timeout.
@@ -57,10 +52,10 @@ pub enum ServiceRunState {
 /// A point-in-time view of one supervised service instance, for status reporting.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ServiceSnapshot {
-    /// Which service.
-    pub service: Service,
-    /// The running version.
-    pub version: ServiceVersion,
+    /// The instance wire id (`"redis"`, `"reverb:blog"`).
+    pub service: String,
+    /// The running version, if the type is versioned.
+    pub version: Option<ServiceVersion>,
     /// Whether the server is alive or has died.
     pub state: ServiceRunState,
     /// The server PID, when running.
@@ -71,9 +66,10 @@ pub struct ServiceSnapshot {
 
 /// One supervised service instance.
 struct Instance<Ch: ChildHandle> {
+    def: Arc<dyn ServiceDefinition>,
     state: PoolState,
     state_since: Instant,
-    version: ServiceVersion,
+    version: Option<ServiceVersion>,
     listen: Listen,
     child: Option<Ch>,
 }
@@ -89,7 +85,7 @@ enum Outcome<Ch: ChildHandle> {
     Stopped,
 }
 
-/// Supervises local database / cache services, one instance per [`Service`].
+/// Supervises local services, one instance per wire id.
 pub struct ServiceManager<S, C, P>
 where
     S: ProcessSpawner,
@@ -101,8 +97,7 @@ where
     probe: P,
     dirs: PlatformDirs,
     binder: ActivePortBinder,
-    policy: SupervisorPolicy,
-    instances: BTreeMap<Service, Instance<S::Child>>,
+    instances: BTreeMap<String, Instance<S::Child>>,
 }
 
 impl<S, C, P> ServiceManager<S, C, P>
@@ -111,8 +106,8 @@ where
     C: Clock,
     P: ReadinessProbe,
 {
-    /// Construct a new manager. The database [`SupervisorPolicy`] is applied to
-    /// every supervised instance.
+    /// Construct a new manager. Each instance's [`SupervisorPolicy`] is sourced
+    /// from its [`ServiceDefinition`].
     pub fn new(
         spawner: S,
         clock: C,
@@ -126,97 +121,162 @@ where
             probe,
             dirs,
             binder,
-            policy: SupervisorPolicy::database(),
             instances: BTreeMap::new(),
         }
     }
 
-    /// Ensure `service` (at `version`, on `port`) is running, returning its
-    /// listen address. Idempotent: if already running and alive, returns the
-    /// cached address. For an engine that needs it, the datadir is initialised
-    /// on first start.
+    /// Ensure the `def` instance identified by `wire_id` is running on `port`,
+    /// returning its listen address. Idempotent: if already running and alive,
+    /// returns the cached address.
+    ///
+    /// For a versioned engine, `version` selects the install (its server binary
+    /// is resolved and its datadir initialised on first start) and
+    /// `program_override`/`cwd` are `None`. For a per-site app server,
+    /// `program_override` is the site's PHP CLI binary, `cwd` its document root,
+    /// and `version` is `None`.
+    #[allow(clippy::too_many_lines)]
     pub async fn ensure(
         &mut self,
-        service: Service,
-        version: ServiceVersion,
+        def: Arc<dyn ServiceDefinition>,
+        wire_id: &str,
+        version: Option<ServiceVersion>,
         port: u16,
+        program_override: Option<PathBuf>,
+        cwd: Option<PathBuf>,
     ) -> Result<Listen, ServiceError> {
-        let binary = version::server_path(&self.dirs, service, &version);
-        if !binary.is_file() {
-            return Err(ServiceError::VersionNotInstalled { service, version });
-        }
-
-        if let Some(listen) = self.running_listen(service)? {
+        if let Some(listen) = self.running_listen(wire_id)? {
             return Ok(listen);
         }
 
-        let datadir = version::datadir(&self.dirs, service, &version);
-        let config_path = version::config_path(&self.dirs, service);
-        let log_path = version::log_path(&self.dirs, service);
-        let socket = version::socket_path(&self.dirs, service);
+        let id = def.id();
+        let log_path = version::instance_log_path(&self.dirs, wire_id);
+        let config_path = version::config_path(&self.dirs, id);
+        let socket = version::socket_path(&self.dirs, id);
+        let init_file = version::init_file_path(&self.dirs, id);
 
-        self.init_datadir_if_needed(service, &version, &datadir, &log_path)
-            .await?;
+        let (program, versioned) = if let Some(program) = program_override {
+            (program, None)
+        } else {
+            let v = version.as_ref().ok_or_else(|| ServiceError::Unsupported {
+                service: wire_id.to_owned(),
+                detail: "a versioned service requires a version".to_owned(),
+            })?;
+            let bin = def
+                .server_binary()
+                .ok_or_else(|| ServiceError::Unsupported {
+                    service: wire_id.to_owned(),
+                    detail: "type has no server binary".to_owned(),
+                })?;
+            let program = version::server_path(&self.dirs, id, bin, v);
+            if !program.is_file() {
+                return Err(ServiceError::VersionNotInstalled {
+                    service: wire_id.to_owned(),
+                    version: v.clone(),
+                });
+            }
+            let datadir = version::datadir(&self.dirs, id, def.datadir_pinned_to_major(), v);
+            (program, Some((v.clone(), datadir)))
+        };
 
-        self.preflight_port(service, port)?;
+        if let Some((v, datadir)) = versioned.as_ref() {
+            self.init_datadir_if_needed(def.as_ref(), wire_id, v, datadir, &log_path)
+                .await?;
+        }
+
+        self.preflight_port(wire_id, port)?;
         let listen = Listen::TcpLoopback(SocketAddr::new(Ipv4Addr::LOCALHOST.into(), port));
 
-        Self::prepare_dirs(service, &datadir, &config_path, &log_path, &socket)?;
-
-        let init_file = version::init_file_path(&self.dirs, service);
-        if matches!(service, Service::MySql | Service::MariaDb) {
-            std::fs::write(
-                &init_file,
-                config_render::render_my_bootstrap_sql().as_bytes(),
-            )
-            .map_err(|source| ServiceError::ConfigWrite {
-                path: init_file.clone(),
-                service,
+        if let Some((_, datadir)) = versioned.as_ref() {
+            Self::prepare_dirs(
+                def.as_ref(),
+                wire_id,
+                datadir,
+                &config_path,
+                &log_path,
+                &socket,
+            )?;
+            if let Some(sql) = def.bootstrap_sql() {
+                std::fs::write(&init_file, sql.as_bytes()).map_err(|source| {
+                    ServiceError::ConfigWrite {
+                        path: init_file.clone(),
+                        service: wire_id.to_owned(),
+                        source,
+                    }
+                })?;
+            }
+            if let Some(rendered) = def.render_config(port, datadir, &socket, &log_path, &init_file)
+            {
+                std::fs::write(&config_path, rendered.as_bytes()).map_err(|source| {
+                    ServiceError::ConfigWrite {
+                        path: config_path.clone(),
+                        service: wire_id.to_owned(),
+                        source,
+                    }
+                })?;
+            }
+        } else if let Some(parent) = log_path.parent() {
+            std::fs::create_dir_all(parent).map_err(|source| ServiceError::ConfigWrite {
+                path: parent.to_path_buf(),
+                service: wire_id.to_owned(),
                 source,
             })?;
         }
 
-        let rendered =
-            render_service_config(service, port, &datadir, &socket, &log_path, &init_file);
-        std::fs::write(&config_path, rendered.as_bytes()).map_err(|source| {
-            ServiceError::ConfigWrite {
-                path: config_path.clone(),
-                service,
-                source,
+        let geo_env = match versioned.as_ref() {
+            Some((v, _)) if def.injects_geo_data() => {
+                let install_dir = version::install_dir(&self.dirs, id, v);
+                geo_data_env(&install_dir, v)
             }
-        })?;
-
-        let install_dir = version::install_dir(&self.dirs, service, &version);
-        let geo_env = geo_data_env(service, &install_dir, &version);
-        let cmd_builder = || {
-            build_cmd(
-                service,
-                &binary,
-                &config_path,
-                &datadir,
-                &log_path,
-                &geo_env,
-            )
+            _ => Vec::new(),
         };
 
+        let datadir_path = versioned
+            .as_ref()
+            .map(|(_, d)| d.clone())
+            .unwrap_or_default();
+        let cmd_builder = || -> Result<StdCommand, ServiceError> {
+            let ctx = LaunchContext {
+                port,
+                program: &program,
+                config_path: &config_path,
+                datadir: &datadir_path,
+                log_path: &log_path,
+                geo_env: &geo_env,
+                cwd: cwd.as_deref(),
+            };
+            let mut plan = def.plan_launch(&ctx)?;
+            set_own_process_group(&mut plan.command);
+            if plan.capture_output_to_log {
+                attach_log(&mut plan.command, &log_path, wire_id)?;
+            }
+            Ok(plan.command)
+        };
+
+        let readiness = def.readiness();
+        let policy = def.supervisor_policy();
+        let stop_protocol = def.stop_protocol();
         let initial_since = self.clock.now();
         let result = self
             .drive(
-                service,
+                wire_id,
                 PoolState::Stopped,
                 initial_since,
                 None,
                 Event::EnsureRequested,
                 &listen,
+                readiness,
                 Some(&cmd_builder),
+                &policy,
+                stop_protocol,
             )
             .await?;
 
         match result.outcome {
             Outcome::Running { child, pid } => {
                 self.instances.insert(
-                    service,
+                    wire_id.to_owned(),
                     Instance {
+                        def: Arc::clone(&def),
                         state: PoolState::Running { pid },
                         state_since: result.state_since,
                         version,
@@ -227,17 +287,17 @@ where
                 Ok(listen)
             }
             Outcome::Stopped => Err(ServiceError::Spawn {
-                service,
+                service: wire_id.to_owned(),
                 reason: SpawnFailureReason::Other,
                 source: std::io::Error::other("ensure: drive returned Stopped"),
             }),
         }
     }
 
-    /// Fast path for [`Self::ensure`]: if `service` is recorded `Running` and its
+    /// Fast path for [`Self::ensure`]: if `wire_id` is recorded `Running` and its
     /// child is still alive, return its listen address; otherwise `None`.
-    fn running_listen(&mut self, service: Service) -> Result<Option<Listen>, ServiceError> {
-        let Some(inst) = self.instances.get_mut(&service) else {
+    fn running_listen(&mut self, wire_id: &str) -> Result<Option<Listen>, ServiceError> {
+        let Some(inst) = self.instances.get_mut(wire_id) else {
             return Ok(None);
         };
         if !matches!(inst.state, PoolState::Running { .. }) {
@@ -247,7 +307,7 @@ where
             Some(ch) => ch
                 .try_wait()
                 .map_err(|source| ServiceError::Spawn {
-                    service,
+                    service: wire_id.to_owned(),
                     reason: SpawnFailureReason::WaitFailed,
                     source,
                 })?
@@ -257,23 +317,24 @@ where
         Ok(alive.then(|| inst.listen.clone()))
     }
 
-    /// One-time datadir initialisation for the SQL engines (no-op for Redis and
-    /// for an already-initialised datadir). MUST run before the
-    /// `create_dir_all(datadir)` in [`Self::prepare_dirs`]: `initdb` /
-    /// `mysqld --initialize-insecure` populate the datadir themselves (via a
-    /// crash-safe staging + rename) and refuse a pre-existing one.
+    /// One-time datadir initialisation for the engines that need it (no-op for
+    /// engines that don't and for an already-initialised datadir). MUST run
+    /// before the `create_dir_all(datadir)` in [`Self::prepare_dirs`]: the init
+    /// tools populate the datadir themselves (via a crash-safe staging + rename)
+    /// and refuse a pre-existing one.
     async fn init_datadir_if_needed(
         &mut self,
-        service: Service,
+        def: &dyn ServiceDefinition,
+        wire_id: &str,
         version: &ServiceVersion,
         datadir: &std::path::Path,
         log_path: &std::path::Path,
     ) -> Result<(), ServiceError> {
-        if !service.needs_init() {
+        if !def.needs_init() {
             return Ok(());
         }
-        if is_initialized(datadir, service) {
-            if service == Service::Postgres {
+        if def.is_initialized(datadir) {
+            if def.datadir_pinned_to_major() {
                 check_pg_major(datadir, version)?;
             }
             return Ok(());
@@ -281,37 +342,39 @@ where
         if let Some(parent) = log_path.parent() {
             std::fs::create_dir_all(parent).map_err(|source| ServiceError::ConfigWrite {
                 path: parent.to_path_buf(),
-                service,
+                service: wire_id.to_owned(),
                 source,
             })?;
         }
-        self.init_datadir(service, version, datadir, log_path).await
+        self.init_datadir(def, wire_id, version, datadir, log_path)
+            .await
     }
 
-    /// Create the datadir plus the config/log (and, for MySQL/MariaDB, the Unix
-    /// socket) parent directories. The datadir create is idempotent - SQL `init`
-    /// already populated it; this is the real creator for Redis (no init).
+    /// Create the datadir plus the config/log (and, for a socket engine, the Unix
+    /// socket) parent directories. The datadir create is idempotent - a SQL
+    /// `init` already populated it; this is the real creator for Redis (no init).
     fn prepare_dirs(
-        service: Service,
+        def: &dyn ServiceDefinition,
+        wire_id: &str,
         datadir: &std::path::Path,
         config_path: &std::path::Path,
         log_path: &std::path::Path,
         socket: &std::path::Path,
     ) -> Result<(), ServiceError> {
         std::fs::create_dir_all(datadir).map_err(|source| ServiceError::Init {
-            service,
+            service: wire_id.to_owned(),
             datadir: datadir.to_path_buf(),
             detail: source.to_string(),
         })?;
         let mut parents = vec![config_path, log_path];
-        if matches!(service, Service::MySql | Service::MariaDb) {
+        if def.uses_unix_socket() {
             parents.push(socket);
         }
         for path in parents {
             if let Some(parent) = path.parent() {
                 std::fs::create_dir_all(parent).map_err(|source| ServiceError::ConfigWrite {
                     path: parent.to_path_buf(),
-                    service,
+                    service: wire_id.to_owned(),
                     source,
                 })?;
             }
@@ -322,29 +385,39 @@ where
     /// Restart the instance: stop it cleanly, then ensure again.
     pub async fn restart(
         &mut self,
-        service: Service,
-        version: ServiceVersion,
+        def: Arc<dyn ServiceDefinition>,
+        wire_id: &str,
+        version: Option<ServiceVersion>,
         port: u16,
+        program_override: Option<PathBuf>,
+        cwd: Option<PathBuf>,
     ) -> Result<Listen, ServiceError> {
-        let _ = self.stop(service).await;
-        self.ensure(service, version, port).await
+        let _ = self.stop(wire_id).await;
+        self.ensure(def, wire_id, version, port, program_override, cwd)
+            .await
     }
 
-    /// Stop the instance for `service`. No-op if there is none.
-    pub async fn stop(&mut self, service: Service) -> Result<(), ServiceError> {
-        let Some(mut inst) = self.instances.remove(&service) else {
+    /// Stop the instance `wire_id`. No-op if there is none.
+    pub async fn stop(&mut self, wire_id: &str) -> Result<(), ServiceError> {
+        let Some(mut inst) = self.instances.remove(wire_id) else {
             return Ok(());
         };
+        let def = Arc::clone(&inst.def);
         let child = inst.child.take();
         let listen = inst.listen.clone();
+        let policy = def.supervisor_policy();
+        let stop_protocol = def.stop_protocol();
         self.drive(
-            service,
+            wire_id,
             inst.state,
             inst.state_since,
             child,
             Event::StopRequested,
             &listen,
+            def.readiness(),
             None,
+            &policy,
+            stop_protocol,
         )
         .await
         .map(|_| ())
@@ -352,10 +425,10 @@ where
 
     /// Stop every supervised instance in deterministic order.
     pub async fn shutdown(&mut self) -> Result<(), ServiceError> {
-        let services: Vec<Service> = self.instances.keys().copied().collect();
+        let ids: Vec<String> = self.instances.keys().cloned().collect();
         let mut first_err: Option<ServiceError> = None;
-        for service in services {
-            if let Err(e) = self.stop(service).await {
+        for id in ids {
+            if let Err(e) = self.stop(&id).await {
                 if first_err.is_none() {
                     first_err = Some(e);
                 }
@@ -370,7 +443,7 @@ where
     /// Report a live snapshot of every supervised instance.
     pub fn snapshots(&mut self) -> Vec<ServiceSnapshot> {
         let mut out = Vec::with_capacity(self.instances.len());
-        for (service, inst) in &mut self.instances {
+        for (wire_id, inst) in &mut self.instances {
             let listen = Some(inst.listen.clone());
             let (state, pid) = match (&inst.state, inst.child.as_mut()) {
                 (PoolState::Running { pid }, Some(child)) => match child.try_wait() {
@@ -380,7 +453,7 @@ where
                 _ => (ServiceRunState::Failed, None),
             };
             out.push(ServiceSnapshot {
-                service: *service,
+                service: wire_id.clone(),
                 version: inst.version.clone(),
                 state,
                 pid,
@@ -392,10 +465,8 @@ where
 
     /// Pre-flight a fixed loopback port: bind it, then drop the listener. A
     /// clash surfaces as [`ServiceError::PortInUse`]; any other failure as
-    /// [`ServiceError::Bind`]. Best-effort (a TOCTOU window remains before the
-    /// server itself binds), but turns the common "something already on 6379"
-    /// case into a clear message instead of a crash loop.
-    fn preflight_port(&self, service: Service, port: u16) -> Result<(), ServiceError> {
+    /// [`ServiceError::Bind`].
+    fn preflight_port(&self, wire_id: &str, port: u16) -> Result<(), ServiceError> {
         match self.binder.bind(port) {
             Ok(bound) => {
                 drop(bound);
@@ -404,10 +475,13 @@ where
             Err(PlatformError::Bind { source, .. })
                 if source.kind() == std::io::ErrorKind::AddrInUse =>
             {
-                Err(ServiceError::PortInUse { service, port })
+                Err(ServiceError::PortInUse {
+                    service: wire_id.to_owned(),
+                    port,
+                })
             }
             Err(source) => Err(ServiceError::Bind {
-                service,
+                service: wire_id.to_owned(),
                 port,
                 source,
             }),
@@ -418,39 +492,41 @@ where
     /// engine's init tool into a fresh **staging** dir, then atomically renames
     /// it onto the final datadir - so an interrupted init never leaves a
     /// half-populated datadir behind (only an orphan `.init-staging-*` the next
-    /// attempt removes). No-op for an engine with no init binary.
+    /// attempt removes).
     async fn init_datadir(
         &self,
-        service: Service,
+        def: &dyn ServiceDefinition,
+        wire_id: &str,
         version: &ServiceVersion,
         datadir: &std::path::Path,
         log_path: &std::path::Path,
     ) -> Result<(), ServiceError> {
-        let Some(init_bin_name) = service.init_binary() else {
+        let Some(init_bin_name) = def.init_binary() else {
             return Ok(());
         };
-        let install_dir = version::install_dir(&self.dirs, service, version);
+        let install_dir = version::install_dir(&self.dirs, def.id(), version);
         let init_bin = install_dir.join("bin").join(init_bin_name);
         if !init_bin.is_file() {
             return Err(ServiceError::Init {
-                service,
+                service: wire_id.to_owned(),
                 datadir: datadir.to_path_buf(),
                 detail: format!("install is missing bin/{init_bin_name}"),
             });
         }
 
-        let staging = version::service_root(&self.dirs, service)
+        let staging = version::service_root(&self.dirs, def.id())
             .join(format!(".init-staging-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&staging);
         std::fs::create_dir_all(&staging).map_err(|e| ServiceError::Init {
-            service,
+            service: wire_id.to_owned(),
             datadir: datadir.to_path_buf(),
             detail: format!("create staging dir: {e}"),
         })?;
 
         if let Err(e) = self
             .run_init(
-                service,
+                def,
+                wire_id,
                 &init_bin,
                 &install_dir,
                 &staging,
@@ -467,7 +543,7 @@ where
             if let Err(e) = std::fs::remove_dir_all(datadir) {
                 let _ = std::fs::remove_dir_all(&staging);
                 return Err(ServiceError::Init {
-                    service,
+                    service: wire_id.to_owned(),
                     datadir: datadir.to_path_buf(),
                     detail: format!("remove prior datadir: {e}"),
                 });
@@ -475,7 +551,7 @@ where
         }
         if let Some(parent) = datadir.parent() {
             std::fs::create_dir_all(parent).map_err(|e| ServiceError::Init {
-                service,
+                service: wire_id.to_owned(),
                 datadir: datadir.to_path_buf(),
                 detail: format!("create datadir parent: {e}"),
             })?;
@@ -483,7 +559,7 @@ where
         std::fs::rename(&staging, datadir).map_err(|e| {
             let _ = std::fs::remove_dir_all(&staging);
             ServiceError::Init {
-                service,
+                service: wire_id.to_owned(),
                 datadir: datadir.to_path_buf(),
                 detail: format!("install datadir: {e}"),
             }
@@ -491,31 +567,26 @@ where
     }
 
     /// Spawn the engine's init tool one-shot (into `staging`), wait for it, and
-    /// require a clean `exit 0`. Init output goes to the service log so a
-    /// failure is diagnosable via `yerd service logs`. `datadir` is the FINAL
-    /// path, used only for error reporting.
-    ///
-    /// The tool runs with its cwd set to `basedir` (the install root) so
-    /// `mariadb-install-db`'s `--basedir=.` resolves its helper binaries there;
-    /// see [`init_args`] for why the basedir cannot be an absolute path.
+    /// require a clean `exit 0`. Init output goes to the service log so a failure
+    /// is diagnosable. The tool runs with its cwd set to `basedir` (the install
+    /// root) so `mariadb-install-db`'s `--basedir=.` resolves its helper binaries
+    /// there.
     ///
     /// Guarded by an [`InitGroupReaper`]: if the owning task is dropped mid-init
     /// (daemon shutdown), the init tool's whole process group is killed so a
-    /// grandchild it forked (e.g. `mariadb-install-db`'s bootstrap server) can't
-    /// leak - `kill_on_drop` alone only reaps the direct child. The reaper is
-    /// bound after `child`, so on a drop mid-`wait()` reverse-declaration order
-    /// runs the reaper's `killpg` while the PID is still valid, then
-    /// `kill_on_drop` reaps the direct child.
+    /// grandchild it forked can't leak.
+    #[allow(clippy::too_many_arguments)]
     async fn run_init(
         &self,
-        service: Service,
+        def: &dyn ServiceDefinition,
+        wire_id: &str,
         init_bin: &std::path::Path,
         basedir: &std::path::Path,
         staging: &std::path::Path,
         datadir: &std::path::Path,
         log_path: &std::path::Path,
     ) -> Result<(), ServiceError> {
-        let args = init_args(service, staging);
+        let args = def.init_args(staging);
         if args.is_empty() {
             return Ok(());
         }
@@ -538,7 +609,7 @@ where
             .spawner
             .spawn(cmd)
             .map_err(|source| ServiceError::Init {
-                service,
+                service: wire_id.to_owned(),
                 datadir: datadir.to_path_buf(),
                 detail: format!("spawn {}: {source}", init_bin.display()),
             })?;
@@ -548,14 +619,14 @@ where
             reaper.disarm();
         }
         let reason = waited.map_err(|source| ServiceError::Init {
-            service,
+            service: wire_id.to_owned(),
             datadir: datadir.to_path_buf(),
             detail: format!("wait for init: {source}"),
         })?;
         match reason {
             ExitReason::Code(0) => Ok(()),
             other => Err(ServiceError::Init {
-                service,
+                service: wire_id.to_owned(),
                 datadir: datadir.to_path_buf(),
                 detail: format!("init process exited with {other}"),
             }),
@@ -567,17 +638,20 @@ where
     #[allow(clippy::too_many_arguments)]
     async fn drive(
         &mut self,
-        service: Service,
+        wire_id: &str,
         mut state: PoolState,
         mut state_since: Instant,
         mut child: Option<S::Child>,
         initial: Event,
         listen: &Listen,
+        readiness: ReadinessKind,
         cmd_builder: Option<&(dyn Fn() -> Result<StdCommand, ServiceError> + Sync)>,
+        policy: &SupervisorPolicy,
+        stop_protocol: StopProtocol,
     ) -> Result<DriveResult<S::Child>, ServiceError> {
         let mut pending = initial;
         loop {
-            let (next, action) = transition(state, pending, &self.policy);
+            let (next, action) = transition(state, pending, policy);
             if next != state {
                 state = next;
                 state_since = self.clock.now();
@@ -585,16 +659,16 @@ where
 
             match action {
                 Action::None => {
-                    return Self::finish_terminal(state, &mut child, service, state_since);
+                    return Self::finish_terminal(state, &mut child, wire_id, state_since);
                 }
 
                 Action::Spawn => {
-                    pending = self.spawn_child(service, cmd_builder, &mut child)?;
+                    pending = self.spawn_child(wire_id, cmd_builder, &mut child)?;
                 }
 
                 Action::HealthCheck => {
                     pending = self
-                        .health_check(service, listen, state_since, &mut child)
+                        .health_check(wire_id, listen, readiness, state_since, &mut child)
                         .await?;
                 }
 
@@ -605,24 +679,27 @@ where
 
                 Action::Kill { signal } => {
                     if let Some(ch) = child.as_mut() {
-                        ch.kill(signal, stop_protocol(service))
-                            .await
-                            .map_err(|source| ServiceError::Kill { service, source })?;
+                        ch.kill(signal, stop_protocol).await.map_err(|source| {
+                            ServiceError::Kill {
+                                service: wire_id.to_owned(),
+                                source,
+                            }
+                        })?;
                     }
                     pending =
-                        wait_after_kill(&mut child, state, signal, service, self.policy.stop_grace)
+                        wait_after_kill(&mut child, state, signal, wire_id, policy.stop_grace)
                             .await?;
                 }
 
                 Action::EmitError(ErrorTag::HealthCheckTimedOut) => {
                     return Err(ServiceError::HealthCheckTimedOut {
-                        service,
+                        service: wire_id.to_owned(),
                         attempts: starting_attempts(state),
                     });
                 }
                 Action::EmitError(ErrorTag::PermanentFailure) => {
                     return Err(ServiceError::PermanentFailure {
-                        service,
+                        service: wire_id.to_owned(),
                         reason: failed_reason(state),
                     });
                 }
@@ -631,18 +708,17 @@ where
     }
 
     /// Handle `Action::None`: a terminal state yields a [`DriveResult`]; any
-    /// other state is a driver-contract violation (the driver never feeds an
-    /// event that produces `Action::None` in a non-terminal state).
+    /// other state is a driver-contract violation.
     fn finish_terminal(
         state: PoolState,
         child: &mut Option<S::Child>,
-        service: Service,
+        wire_id: &str,
         state_since: Instant,
     ) -> Result<DriveResult<S::Child>, ServiceError> {
         match state {
             PoolState::Running { pid } => {
                 let ch = child.take().ok_or_else(|| ServiceError::Spawn {
-                    service,
+                    service: wire_id.to_owned(),
                     reason: SpawnFailureReason::Other,
                     source: std::io::Error::other("drive: Running with no child handle"),
                 })?;
@@ -656,7 +732,7 @@ where
                 state_since,
             }),
             other => Err(ServiceError::Spawn {
-                service,
+                service: wire_id.to_owned(),
                 reason: SpawnFailureReason::Other,
                 source: std::io::Error::other(format!(
                     "drive: Action::None in non-terminal state {other:?}"
@@ -669,12 +745,12 @@ where
     /// return the follow-up event.
     fn spawn_child(
         &mut self,
-        service: Service,
+        wire_id: &str,
         cmd_builder: Option<&(dyn Fn() -> Result<StdCommand, ServiceError> + Sync)>,
         child: &mut Option<S::Child>,
     ) -> Result<Event, ServiceError> {
         let builder = cmd_builder.ok_or_else(|| ServiceError::Spawn {
-            service,
+            service: wire_id.to_owned(),
             reason: SpawnFailureReason::Other,
             source: std::io::Error::other("drive: Spawn without cmd_builder"),
         })?;
@@ -686,7 +762,7 @@ where
                 Ok(Event::SpawnSucceeded { pid })
             }
             Err(source) => Err(ServiceError::Spawn {
-                service,
+                service: wire_id.to_owned(),
                 reason: SpawnFailureReason::from_kind(source.kind()),
                 source,
             }),
@@ -697,8 +773,9 @@ where
     /// and return the follow-up event.
     async fn health_check(
         &mut self,
-        service: Service,
+        wire_id: &str,
         listen: &Listen,
+        readiness: ReadinessKind,
         state_since: Instant,
         child: &mut Option<S::Child>,
     ) -> Result<Event, ServiceError> {
@@ -707,13 +784,13 @@ where
             tokio::time::sleep(HEALTH_PROBE_GAP).await;
         }
         let ch = child.as_mut().ok_or_else(|| ServiceError::Spawn {
-            service,
+            service: wire_id.to_owned(),
             reason: SpawnFailureReason::Other,
             source: std::io::Error::other("HealthCheck with no child handle"),
         })?;
 
         let probe_fut =
-            tokio::time::timeout(HEALTH_PROBE_TIMEOUT, self.probe.probe(service, listen));
+            tokio::time::timeout(HEALTH_PROBE_TIMEOUT, self.probe.probe(readiness, listen));
         let probe_outcome;
         let wait_outcome;
         tokio::select! {
@@ -732,7 +809,7 @@ where
             }
         } else if let Some(exit) = wait_outcome {
             let reason = exit.map_err(|source| ServiceError::Spawn {
-                service,
+                service: wire_id.to_owned(),
                 reason: SpawnFailureReason::WaitFailed,
                 source,
             })?;
@@ -740,7 +817,7 @@ where
             Ok(Event::Crashed { reason })
         } else {
             Err(ServiceError::Spawn {
-                service,
+                service: wire_id.to_owned(),
                 reason: SpawnFailureReason::Other,
                 source: std::io::Error::other("HealthCheck: select resolved neither arm"),
             })
@@ -748,32 +825,40 @@ where
     }
 }
 
-/// Render the per-engine config text, selected by `service`.
-fn render_service_config(
-    service: Service,
-    port: u16,
-    datadir: &std::path::Path,
-    socket: &std::path::Path,
+/// Open the log file and attach it to the command's stdout+stderr. Used by the
+/// manager when a [`crate::service::LaunchPlan`] requests output capture (the
+/// engines that log to their stdio, e.g. Postgres and Reverb).
+fn attach_log(
+    cmd: &mut StdCommand,
     log_path: &std::path::Path,
-    init_file: &std::path::Path,
-) -> String {
-    match service {
-        Service::Redis => config_render::render_redis_conf(port, datadir, log_path),
-        Service::MySql | Service::MariaDb => {
-            config_render::render_my_cnf(port, datadir, socket, log_path, init_file)
-        }
-        Service::Postgres => config_render::render_postgresql_conf(port, datadir),
-    }
+    wire_id: &str,
+) -> Result<(), ServiceError> {
+    let f = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(log_path)
+        .map_err(|source| ServiceError::ConfigWrite {
+            path: log_path.to_path_buf(),
+            service: wire_id.to_owned(),
+            source,
+        })?;
+    let f2 = f.try_clone().map_err(|source| ServiceError::ConfigWrite {
+        path: log_path.to_path_buf(),
+        service: wire_id.to_owned(),
+        source,
+    })?;
+    cmd.stdout(std::process::Stdio::from(f2));
+    cmd.stderr(std::process::Stdio::from(f));
+    Ok(())
 }
 
 /// Post-kill follow-up: wait for the child to exit (with or without a grace
-/// budget) and return the synthetic event the supervisor expects next. Mirrors
-/// `yerd_php`'s helper of the same name.
+/// budget) and return the synthetic event the supervisor expects next.
 async fn wait_after_kill<Ch: ChildHandle>(
     child: &mut Option<Ch>,
     state: PoolState,
     signal: KillSignal,
-    service: Service,
+    wire_id: &str,
     stop_grace: Duration,
 ) -> Result<Event, ServiceError> {
     match (state, signal) {
@@ -784,7 +869,7 @@ async fn wait_after_kill<Ch: ChildHandle>(
             let event = tokio::select! {
                 exit = owned.wait() => {
                     exit.map_err(|source| ServiceError::Spawn {
-                        service,
+                        service: wire_id.to_owned(),
                         reason: SpawnFailureReason::WaitFailed,
                         source,
                     })?;
@@ -802,7 +887,7 @@ async fn wait_after_kill<Ch: ChildHandle>(
         (PoolState::Stopping { sigkilled: true }, _) => {
             if let Some(ch) = child.as_mut() {
                 ch.wait().await.map_err(|source| ServiceError::Spawn {
-                    service,
+                    service: wire_id.to_owned(),
                     reason: SpawnFailureReason::WaitFailed,
                     source,
                 })?;
@@ -813,7 +898,7 @@ async fn wait_after_kill<Ch: ChildHandle>(
         (PoolState::Starting { .. }, KillSignal::Term) => {
             if let Some(ch) = child.as_mut() {
                 ch.wait().await.map_err(|source| ServiceError::Spawn {
-                    service,
+                    service: wire_id.to_owned(),
                     reason: SpawnFailureReason::WaitFailed,
                     source,
                 })?;
@@ -829,9 +914,7 @@ async fn wait_after_kill<Ch: ChildHandle>(
 
 /// Put `cmd` in its own process group at spawn time (Unix) so a signal it or any
 /// descendant raises can never reach the daemon, and so the supervisor's
-/// `killpg(pid, ..)` targets exactly this subtree. Both the long-running server
-/// ([`build_cmd`]) and the one-shot datadir init ([`ServiceManager::run_init`])
-/// route through here; the [`yerd_supervise::ChildHandle`] contract requires it.
+/// `killpg(pid, ..)` targets exactly this subtree.
 fn set_own_process_group(cmd: &mut StdCommand) {
     #[cfg(unix)]
     {
@@ -843,11 +926,7 @@ fn set_own_process_group(cmd: &mut StdCommand) {
 }
 
 /// Drop guard that sends SIGKILL to the process group led by a spawned init tool
-/// unless [`disarm`](Self::disarm)ed. Armed with the child's PID after spawn and
-/// disarmed once `wait()` returns (the group is then gone, and the reaped PID
-/// could otherwise be reused); so it only fires when the task is dropped
-/// mid-init. Relies on the init command being spawned into its own group via
-/// [`set_own_process_group`], so its PID is the group id.
+/// unless [`disarm`](Self::disarm)ed.
 struct InitGroupReaper(Option<u32>);
 
 impl InitGroupReaper {
@@ -868,69 +947,16 @@ impl Drop for InitGroupReaper {
     }
 }
 
-/// Build the server command per engine, forcing foreground operation and (on
-/// Unix) its own process group so the supervisor's `killpg` reaps any children
-/// with it. `env` is added on top of the inherited environment (services are not
-/// env-scrubbed); it carries `PROJ_DATA` / `GDAL_DATA` for `PostGIS` postgres
-/// variants and is empty otherwise. Fallible because the Postgres arm opens the
-/// log file for stderr capture.
-fn build_cmd(
-    service: Service,
-    binary: &std::path::Path,
-    config_path: &std::path::Path,
-    datadir: &std::path::Path,
-    log_path: &std::path::Path,
-    env: &[(std::ffi::OsString, std::ffi::OsString)],
-) -> Result<StdCommand, ServiceError> {
-    let mut cmd = StdCommand::new(binary);
-    for (key, value) in env {
-        cmd.env(key, value);
-    }
-    match service {
-        Service::Redis => {
-            cmd.arg(config_path);
-        }
-        Service::MySql | Service::MariaDb => {
-            cmd.arg(format!("--defaults-file={}", config_path.display()));
-        }
-        Service::Postgres => {
-            cmd.arg("-D")
-                .arg(datadir)
-                .arg("-c")
-                .arg(format!("config_file={}", config_path.display()));
-            let f = std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(log_path)
-                .map_err(|source| ServiceError::ConfigWrite {
-                    path: log_path.to_path_buf(),
-                    service,
-                    source,
-                })?;
-            let f2 = f.try_clone().map_err(|source| ServiceError::ConfigWrite {
-                path: log_path.to_path_buf(),
-                service,
-                source,
-            })?;
-            cmd.stdout(std::process::Stdio::from(f2));
-            cmd.stderr(std::process::Stdio::from(f));
-        }
-    }
-    set_own_process_group(&mut cmd);
-    Ok(cmd)
-}
-
 /// Environment to inject into the postmaster for a `PostGIS`-bearing postgres
-/// variant install: `PROJ_DATA` / `GDAL_DATA`, probed from the install tree so
-/// `ST_Transform` and raster reprojection can find their runtime data. Empty for
-/// the base build, any non-variant label, and every non-postgres service - only a
-/// variant install is probed, and each var is set only when its file is found.
+/// variant install: `PROJ_DATA` / `GDAL_DATA`, probed from the install tree.
+/// Empty for the base build (no variant suffix); each var is set only when its
+/// data file is found. The caller only invokes this for a type that injects geo
+/// data (Postgres).
 fn geo_data_env(
-    service: Service,
     install_dir: &std::path::Path,
     version: &ServiceVersion,
 ) -> Vec<(std::ffi::OsString, std::ffi::OsString)> {
-    if service != Service::Postgres || !version.has_variant() {
+    if !version.has_variant() {
         return Vec::new();
     }
     let (proj, gdal) = find_geo_data_dirs(install_dir);
@@ -945,13 +971,9 @@ fn geo_data_env(
 }
 
 /// The directories holding `proj.db` (PROJ) and `gdalvrt.xsd` (GDAL) inside a
-/// variant install. Fast path: the published Unix layout puts them at
-/// `share/proj` / `share/gdal`, so probe those directly first. Otherwise fall back
-/// to a depth-first walk of `root`, short-circuiting once both are found (first
-/// match wins if a name recurs). Unreadable directories and errored entries are
-/// skipped. `DirEntry::file_type()` does not follow symlinks, so a symlinked
-/// directory is not recursed (no loop risk) and a symlinked target file is skipped
-/// - acceptable because yerd controls the published tarball layout.
+/// variant install. Fast path probes `share/proj` / `share/gdal` directly, then
+/// falls back to a depth-first walk. `DirEntry::file_type()` does not follow
+/// symlinks, so symlinked directories are not recursed (no loop risk).
 fn find_geo_data_dirs(
     root: &std::path::Path,
 ) -> (Option<std::path::PathBuf>, Option<std::path::PathBuf>) {
@@ -993,64 +1015,16 @@ fn find_geo_data_dirs(
     (proj, gdal)
 }
 
-/// Arguments for an engine's one-shot datadir init tool. `staging` is the fresh
-/// datadir being populated.
-///
-/// `mariadb-install-db` is a shell script that resolves its helper binaries
-/// (`bin/my_print_defaults`, ...) relative to `--basedir`, defaulting to the
-/// current working directory when the flag is absent. It must receive one, else
-/// the tool dies with "FATAL ERROR: Could not find `my_print_defaults`". The
-/// value is the literal `.`, not the absolute install path, because the script
-/// expands `$basedir/bin` UNQUOTED: an absolute basedir containing a space (on
-/// macOS the install root lives under `~/Library/Application Support/...`) would
-/// word-split and the lookup would still fail. `run_init` pairs this with the
-/// tool's cwd set to the install root, so `.` resolves there. `mysqld` and
-/// `initdb` are self-locating C binaries and need no basedir. Returns an empty
-/// vec for an engine with no init step (`Redis`).
-fn init_args(service: Service, staging: &std::path::Path) -> Vec<std::ffi::OsString> {
-    use std::ffi::OsString;
-    match service {
-        Service::Redis => Vec::new(),
-        Service::MySql => vec![
-            OsString::from("--initialize-insecure"),
-            OsString::from(format!("--datadir={}", staging.display())),
-        ],
-        Service::MariaDb => vec![
-            OsString::from("--basedir=."),
-            OsString::from(format!("--datadir={}", staging.display())),
-            OsString::from("--auth-root-authentication-method=normal"),
-        ],
-        Service::Postgres => vec![
-            OsString::from("-D"),
-            staging.as_os_str().to_os_string(),
-            OsString::from("--auth=trust"),
-            OsString::from("-U"),
-            OsString::from("postgres"),
-            OsString::from("-E"),
-            OsString::from("UTF8"),
-        ],
-    }
-}
-
-/// Whether `datadir` already holds an initialised instance of `service`.
-fn is_initialized(datadir: &std::path::Path, service: Service) -> bool {
-    match service {
-        Service::Redis => true,
-        Service::Postgres => datadir.join("PG_VERSION").is_file(),
-        Service::MySql | Service::MariaDb => datadir.join("mysql").is_dir(),
-    }
-}
-
 /// Refuse to start Postgres against a datadir initialised by a different major
-/// version (on-disk format is major-incompatible; cross-major migration is out
-/// of scope). A missing/unreadable `PG_VERSION` is treated as "no opinion".
+/// version (on-disk format is major-incompatible). A missing/unreadable
+/// `PG_VERSION` is treated as "no opinion".
 fn check_pg_major(datadir: &std::path::Path, version: &ServiceVersion) -> Result<(), ServiceError> {
     if let Ok(content) = std::fs::read_to_string(datadir.join("PG_VERSION")) {
         let on_disk = content.trim();
         let want = version.major();
         if !on_disk.is_empty() && on_disk != want {
             return Err(ServiceError::Init {
-                service: Service::Postgres,
+                service: "postgres".to_owned(),
                 datadir: datadir.to_path_buf(),
                 detail: format!(
                     "datadir was initialised by PostgreSQL {on_disk}, but {want} was requested; \
@@ -1060,17 +1034,6 @@ fn check_pg_major(datadir: &std::path::Path, version: &ServiceVersion) -> Result
         }
     }
     Ok(())
-}
-
-/// How `service` is gracefully stopped. Postgres needs SIGINT to the postmaster
-/// ("fast shutdown"); SIGTERM to the postmaster is "smart shutdown" and hangs
-/// while a client is connected. Every other engine stops cleanly on a group
-/// SIGTERM.
-fn stop_protocol(service: Service) -> StopProtocol {
-    match service {
-        Service::Postgres => StopProtocol::MasterInterrupt,
-        Service::Redis | Service::MySql | Service::MariaDb => StopProtocol::GroupTerm,
-    }
 }
 
 fn starting_attempts(s: PoolState) -> u32 {
@@ -1114,44 +1077,6 @@ mod tests {
     }
 
     #[test]
-    fn stop_protocol_selects_master_interrupt_for_postgres_only() {
-        assert_eq!(
-            stop_protocol(Service::Postgres),
-            StopProtocol::MasterInterrupt
-        );
-        for service in [Service::Redis, Service::MySql, Service::MariaDb] {
-            assert_eq!(stop_protocol(service), StopProtocol::GroupTerm);
-        }
-    }
-
-    /// Redis has no datadir bootstrap, so it is initialised even with no files present.
-    #[test]
-    fn is_initialized_redis_is_always_true() {
-        let tmp = tempfile::tempdir().unwrap();
-        assert!(is_initialized(tmp.path(), Service::Redis));
-    }
-
-    #[test]
-    fn is_initialized_postgres_keys_on_pg_version_file() {
-        let tmp = tempfile::tempdir().unwrap();
-        assert!(!is_initialized(tmp.path(), Service::Postgres));
-        std::fs::write(tmp.path().join("PG_VERSION"), b"16\n").unwrap();
-        assert!(is_initialized(tmp.path(), Service::Postgres));
-    }
-
-    #[test]
-    fn is_initialized_mysql_family_keys_on_mysql_dir() {
-        let tmp = tempfile::tempdir().unwrap();
-        for service in [Service::MySql, Service::MariaDb] {
-            let datadir = tmp.path().join(service.id());
-            std::fs::create_dir_all(&datadir).unwrap();
-            assert!(!is_initialized(&datadir, service));
-            std::fs::create_dir_all(datadir.join("mysql")).unwrap();
-            assert!(is_initialized(&datadir, service));
-        }
-    }
-
-    #[test]
     fn check_pg_major_accepts_matching_or_missing_marker() {
         let tmp = tempfile::tempdir().unwrap();
         assert!(check_pg_major(tmp.path(), &v("16.2")).is_ok());
@@ -1159,9 +1084,6 @@ mod tests {
         assert!(check_pg_major(tmp.path(), &v("16.4")).is_ok());
     }
 
-    /// A variant label (`17-full`) shares the base's numeric major, so it must
-    /// open a datadir initialised by the base build - this is what lets a user
-    /// switch base to variant without a cross-major rejection.
     #[test]
     fn check_pg_major_accepts_a_variant_of_the_same_major() {
         let tmp = tempfile::tempdir().unwrap();
@@ -1175,16 +1097,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         std::fs::write(tmp.path().join("PG_VERSION"), b"15\n").unwrap();
         let err = check_pg_major(tmp.path(), &v("16")).unwrap_err();
-        assert!(
-            matches!(
-                err,
-                ServiceError::Init {
-                    service: Service::Postgres,
-                    ..
-                }
-            ),
-            "got: {err:?}"
-        );
+        assert!(matches!(err, ServiceError::Init { .. }), "got: {err:?}");
     }
 
     #[test]
@@ -1212,59 +1125,8 @@ mod tests {
         assert_eq!(failed_reason(PoolState::Stopped), ExitReason::Unknown);
     }
 
-    #[test]
-    fn render_service_config_embeds_the_port_per_engine() {
-        let datadir = std::path::Path::new("/d");
-        let socket = std::path::Path::new("/s/x.sock");
-        let log = std::path::Path::new("/l/x.log");
-        let init = std::path::Path::new("/i/x-init.sql");
-        for service in Service::ALL {
-            let rendered = render_service_config(service, 6543, datadir, socket, log, init);
-            assert!(
-                rendered.contains("6543"),
-                "{service} config should mention the port:\n{rendered}"
-            );
-        }
-    }
-
-    #[test]
-    fn build_cmd_redis_passes_only_the_config_path() {
-        let tmp = tempfile::tempdir().unwrap();
-        let binary = tmp.path().join("valkey-server");
-        let config = tmp.path().join("redis.conf");
-        let datadir = tmp.path().join("data");
-        let log = tmp.path().join("redis.log");
-        let cmd = build_cmd(Service::Redis, &binary, &config, &datadir, &log, &[]).unwrap();
-        assert_eq!(cmd.get_program(), binary.as_os_str());
-        let args: Vec<_> = cmd.get_args().collect();
-        assert_eq!(args, vec![config.as_os_str()]);
-    }
-
-    #[test]
-    fn build_cmd_mysql_passes_defaults_file_first() {
-        let tmp = tempfile::tempdir().unwrap();
-        let binary = tmp.path().join("mysqld");
-        let config = tmp.path().join("my.cnf");
-        let datadir = tmp.path().join("data");
-        let log = tmp.path().join("mysql.log");
-        let cmd = build_cmd(Service::MySql, &binary, &config, &datadir, &log, &[]).unwrap();
-        let args: Vec<_> = cmd
-            .get_args()
-            .map(|a| a.to_string_lossy().into_owned())
-            .collect();
-        assert_eq!(args.len(), 1);
-        assert!(args[0].starts_with("--defaults-file="), "got: {args:?}");
-        assert!(args[0].contains("my.cnf"));
-    }
-
-    /// The datadir-init tool and the long-running server both spawn through
-    /// [`set_own_process_group`], which must land the child in its **own**
-    /// process group. A regression here (an init tool left in the daemon's
-    /// group) lets a group-directed signal from a shell-script init tool like
-    /// `mariadb-install-db` reach and kill the daemon. `process_group` can't be
-    /// read back off `std::process::Command`, so this asserts the behaviour by
-    /// actually spawning: an isolated child leads its own group (`pid == pgid`),
-    /// an un-isolated one inherits the parent's group and is not the leader.
+    /// An isolated child leads its own process group (`pid == pgid`); an
+    /// un-isolated one inherits the parent's group and is not the leader.
     #[cfg(unix)]
     #[test]
     fn set_own_process_group_makes_child_its_own_group_leader() {
@@ -1284,21 +1146,12 @@ mod tests {
         }
 
         let (child_pid, group) = own_pid_and_group(true);
-        assert_eq!(
-            child_pid, group,
-            "isolated child must lead its own process group"
-        );
+        assert_eq!(child_pid, group, "isolated child must lead its own group");
 
         let (child_pid, group) = own_pid_and_group(false);
-        assert_ne!(
-            child_pid, group,
-            "un-isolated child inherits the daemon's group, so it is not the leader"
-        );
+        assert_ne!(child_pid, group, "un-isolated child is not the leader");
     }
 
-    /// `arm` stores the PID and `disarm` clears it. The values are captured
-    /// before asserting so a failing assertion can't drop a still-armed reaper
-    /// and fire a real `killpg`.
     #[test]
     fn init_group_reaper_disarm_clears_the_pid() {
         let mut reaper = InitGroupReaper::arm(4242);
@@ -1309,13 +1162,8 @@ mod tests {
         assert_eq!(disarmed, None);
     }
 
-    /// End-to-end guard for the actual fix: `run_init` must spawn the datadir-init
-    /// tool into its **own** process group, or a group-directed signal from a
-    /// shell-script init tool (`mariadb-install-db`) reaches and kills the daemon.
-    /// Drives the real `run_init` with a fake init binary that reports its PID and
-    /// process-group id; `run_init` redirects the child's stdout to the log file,
-    /// so we read it back and assert the child leads its own group (`pid == pgid`).
-    /// Deleting the `set_own_process_group` call from `run_init` fails this.
+    /// `run_init` must spawn the datadir-init tool into its **own** process group,
+    /// or a group-directed signal from a shell-script init tool reaches the daemon.
     #[cfg(unix)]
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn run_init_spawns_the_init_tool_in_its_own_process_group() {
@@ -1340,7 +1188,8 @@ mod tests {
             ActivePortBinder::new(),
         );
         mgr.run_init(
-            Service::MySql,
+            &crate::service::MySql,
+            "mysql",
             &init_bin,
             tmp.path(),
             &tmp.path().join("staging"),
@@ -1356,15 +1205,12 @@ mod tests {
         let group: i32 = fields.next().unwrap().parse().unwrap();
         assert_eq!(
             child_pid, group,
-            "run_init must put the init tool in its own group; got pid {child_pid} pgid {group}"
+            "run_init must put the init tool in its own group"
         );
     }
 
     /// `run_init` must run the init tool with its cwd set to the install root
-    /// (`basedir`), so `mariadb-install-db`'s `--basedir=.` resolves there even
-    /// when the absolute path contains a space. The fake init tool records its
-    /// working directory; we assert it matches `basedir`. Deleting the
-    /// `current_dir` call from `run_init` fails this.
+    /// (`basedir`), so `mariadb-install-db`'s `--basedir=.` resolves there.
     #[cfg(unix)]
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn run_init_runs_the_init_tool_from_the_install_root() {
@@ -1387,7 +1233,8 @@ mod tests {
             ActivePortBinder::new(),
         );
         mgr.run_init(
-            Service::MySql,
+            &crate::service::MySql,
+            "mysql",
             &init_bin,
             &basedir,
             &tmp.path().join("staging"),
@@ -1399,87 +1246,7 @@ mod tests {
 
         let reported = std::fs::read_to_string(&log).unwrap();
         let want = std::fs::canonicalize(&basedir).unwrap();
-        assert_eq!(
-            reported.trim(),
-            want.to_string_lossy(),
-            "run_init must launch the init tool from the install root"
-        );
-    }
-
-    /// The Postgres arm opens the log file for stderr capture, creating it.
-    #[test]
-    fn build_cmd_postgres_opens_log_and_sets_datadir_args() {
-        let tmp = tempfile::tempdir().unwrap();
-        let binary = tmp.path().join("postgres");
-        let config = tmp.path().join("postgresql.conf");
-        let datadir = tmp.path().join("data");
-        let log = tmp.path().join("pg.log");
-        let cmd = build_cmd(Service::Postgres, &binary, &config, &datadir, &log, &[]).unwrap();
-        let args: Vec<_> = cmd
-            .get_args()
-            .map(|a| a.to_string_lossy().into_owned())
-            .collect();
-        assert_eq!(args[0], "-D");
-        assert_eq!(args[1], datadir.to_string_lossy());
-        assert_eq!(args[2], "-c");
-        assert!(args[3].starts_with("config_file="));
-        assert!(log.is_file());
-    }
-
-    #[test]
-    fn build_cmd_postgres_errors_when_log_parent_is_missing() {
-        let tmp = tempfile::tempdir().unwrap();
-        let binary = tmp.path().join("postgres");
-        let config = tmp.path().join("postgresql.conf");
-        let datadir = tmp.path().join("data");
-        let log = tmp.path().join("missing").join("pg.log");
-        let err = build_cmd(Service::Postgres, &binary, &config, &datadir, &log, &[]).unwrap_err();
-        assert!(
-            matches!(
-                err,
-                ServiceError::ConfigWrite {
-                    service: Service::Postgres,
-                    ..
-                }
-            ),
-            "got: {err:?}"
-        );
-    }
-
-    /// `build_cmd` layers the supplied env pairs onto the command (on top of the
-    /// inherited environment, which the services path never scrubs).
-    #[test]
-    fn build_cmd_sets_supplied_env() {
-        let tmp = tempfile::tempdir().unwrap();
-        let binary = tmp.path().join("postgres");
-        let config = tmp.path().join("postgresql.conf");
-        let datadir = tmp.path().join("data");
-        let log = tmp.path().join("pg.log");
-        let env = vec![
-            (
-                std::ffi::OsString::from("PROJ_DATA"),
-                std::ffi::OsString::from("/i/share/proj"),
-            ),
-            (
-                std::ffi::OsString::from("GDAL_DATA"),
-                std::ffi::OsString::from("/i/share/gdal"),
-            ),
-        ];
-        let cmd = build_cmd(Service::Postgres, &binary, &config, &datadir, &log, &env).unwrap();
-        let got: std::collections::BTreeMap<_, _> = cmd
-            .get_envs()
-            .filter_map(|(k, v)| v.map(|v| (k.to_owned(), v.to_owned())))
-            .collect();
-        assert_eq!(
-            got.get(std::ffi::OsStr::new("PROJ_DATA"))
-                .map(std::ffi::OsString::as_os_str),
-            Some(std::ffi::OsStr::new("/i/share/proj"))
-        );
-        assert_eq!(
-            got.get(std::ffi::OsStr::new("GDAL_DATA"))
-                .map(std::ffi::OsString::as_os_str),
-            Some(std::ffi::OsStr::new("/i/share/gdal"))
-        );
+        assert_eq!(reported.trim(), want.to_string_lossy());
     }
 
     /// A staged install tree with the two geo-data files under `share/`.
@@ -1500,21 +1267,14 @@ mod tests {
     fn geo_data_env_empty_for_base_label() {
         let tmp = tempfile::tempdir().unwrap();
         stage_geo_install(tmp.path(), true, true);
-        assert!(geo_data_env(Service::Postgres, tmp.path(), &v("17")).is_empty());
-    }
-
-    #[test]
-    fn geo_data_env_empty_for_non_postgres_variant() {
-        let tmp = tempfile::tempdir().unwrap();
-        stage_geo_install(tmp.path(), true, true);
-        assert!(geo_data_env(Service::MySql, tmp.path(), &v("9.7-full")).is_empty());
+        assert!(geo_data_env(tmp.path(), &v("17")).is_empty());
     }
 
     #[test]
     fn geo_data_env_sets_both_when_probed() {
         let tmp = tempfile::tempdir().unwrap();
         stage_geo_install(tmp.path(), true, true);
-        let env = geo_data_env(Service::Postgres, tmp.path(), &v("17-full"));
+        let env = geo_data_env(tmp.path(), &v("17-full"));
         let map: std::collections::BTreeMap<_, _> = env.into_iter().collect();
         assert_eq!(
             map.get(std::ffi::OsStr::new("PROJ_DATA"))
@@ -1532,13 +1292,11 @@ mod tests {
     fn geo_data_env_sets_only_the_found_var() {
         let tmp = tempfile::tempdir().unwrap();
         stage_geo_install(tmp.path(), true, false);
-        let env = geo_data_env(Service::Postgres, tmp.path(), &v("17-full"));
+        let env = geo_data_env(tmp.path(), &v("17-full"));
         assert_eq!(env.len(), 1);
         assert_eq!(env[0].0, std::ffi::OsString::from("PROJ_DATA"));
     }
 
-    /// When the data lives outside the `share/proj` + `share/gdal` fast-path
-    /// locations, the fallback walk still finds both and returns their real dirs.
     #[test]
     fn find_geo_data_dirs_falls_back_to_walk_for_nonstandard_layout() {
         let tmp = tempfile::tempdir().unwrap();
@@ -1554,58 +1312,10 @@ mod tests {
         );
     }
 
-    /// Regression for the `mariadb-install-db` "Could not find
-    /// `my_print_defaults`" failure. The basedir is the literal `.` rather than
-    /// the absolute install path: the script expands `$basedir/bin` unquoted, so a
-    /// space in the path (macOS `Application Support`) would word-split and break
-    /// the helper lookup. `run_init` pairs this with a cwd set to the install
-    /// root, verified by [`run_init_runs_the_init_tool_from_the_install_root`].
-    #[test]
-    fn init_args_mariadb_basedir_is_dot_to_survive_spaces_in_the_install_path() {
-        let staging = std::path::Path::new("/x/services/mariadb/.init-staging-1");
-        let args: Vec<_> = init_args(Service::MariaDb, staging)
-            .iter()
-            .map(|a| a.to_string_lossy().into_owned())
-            .collect();
-        assert_eq!(args[0], "--basedir=.");
-        assert!(args.contains(&"--datadir=/x/services/mariadb/.init-staging-1".to_string()));
-        assert!(args.contains(&"--auth-root-authentication-method=normal".to_string()));
-    }
-
-    /// `mysqld --initialize-insecure` is self-locating and takes no basedir.
-    #[test]
-    fn init_args_mysql_initializes_insecurely_without_basedir() {
-        let staging = std::path::Path::new("/x/staging");
-        let args: Vec<_> = init_args(Service::MySql, staging)
-            .iter()
-            .map(|a| a.to_string_lossy().into_owned())
-            .collect();
-        assert_eq!(args, vec!["--initialize-insecure", "--datadir=/x/staging"]);
-    }
-
-    #[test]
-    fn init_args_postgres_targets_the_staging_dir() {
-        let staging = std::path::Path::new("/x/staging");
-        let args: Vec<_> = init_args(Service::Postgres, staging)
-            .iter()
-            .map(|a| a.to_string_lossy().into_owned())
-            .collect();
-        assert_eq!(args[0], "-D");
-        assert_eq!(args[1], "/x/staging");
-    }
-
-    /// Redis has no init step, so it yields no args (and `run_init` no-ops).
-    #[test]
-    fn init_args_redis_is_empty() {
-        let p = std::path::Path::new("/x");
-        assert!(init_args(Service::Redis, p).is_empty());
-    }
-
-    /// The version path helpers compose the `install_dir/bin` layout that `init_datadir` relies on.
     #[test]
     fn init_datadir_paths_resolve_under_service_root() {
         let dirs = dirs_in(std::path::Path::new("/x"));
-        let bin = version::install_dir(&dirs, Service::Postgres, &v("16"))
+        let bin = version::install_dir(&dirs, "postgres", &v("16"))
             .join("bin")
             .join("initdb");
         assert!(bin.ends_with("services/postgres/16/bin/initdb"));

@@ -504,32 +504,41 @@ pub struct SiteOverride {
 /// `crate::migrate` rewrites the old array into the new tables.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ServicesSection {
-    /// Per-service configuration, keyed by the service id (`"redis"`, `"mysql"`,
-    /// `"mariadb"`, `"postgres"`). Keys are validated against `KNOWN_SERVICES`
-    /// (private const in `parse.rs`). One instance per engine.
+    /// Per-instance configuration, keyed by the instance *wire id*: a type id
+    /// (`"redis"`, `"mysql"`, ...) for a single-instance engine, or
+    /// `"{type}:{site}"` (`"reverb:blog"`) for a per-site instance. Keys are
+    /// validated in `parse.rs` (`validate_known_services`): the type must be
+    /// known, a per-site type requires a site suffix, and a single-instance type
+    /// forbids one.
     ///
     /// `BTreeMap` so the serialiser yields stable lexicographic table order.
     /// Strings as keys (rather than a typed enum) keep the canonical typed
-    /// `Service` in `yerd-services` (downstream of this crate) and allow
+    /// registry in `yerd-services` (downstream of this crate) and allow
     /// forward-compatibility with experimental services without a release.
     pub instances: BTreeMap<String, ServiceInstance>,
 }
 
-/// Per-service configuration (one supervised instance of an engine).
+/// Per-service configuration (one supervised instance).
 ///
-/// Every settable field is `Option` (so the table stays forward-extensible and
-/// omits unset keys on the wire) except `enabled`, which always has a value.
+/// Keyed in [`ServicesSection::instances`] by the instance *wire id*: the type id
+/// for a single-instance engine (`"redis"`) or `"{type}:{site}"` for a per-site
+/// instance (`"reverb:blog"`). Every settable field is `Option` (so the table
+/// stays forward-extensible and omits unset keys on the wire) except `enabled`,
+/// which always has a value.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ServiceInstance {
     /// The selected installed version (e.g. `"8"` for Valkey). `None` =
     /// "use whatever is installed" (the daemon resolves a concrete version).
+    /// Always `None` for a version-less type (app servers like Reverb).
     pub version: Option<String>,
-    /// Port override. `None` = the engine's default (6379 / 3306 / 5432).
+    /// Port override. `None` = the type's default port.
     pub port: Option<u16>,
-    /// Records the last start/stop intent (true after install/start, false after
-    /// stop) and is surfaced as `enabled` in status. It no longer gates boot
-    /// auto-start: the daemon auto-starts *every installed* engine regardless of
-    /// this flag (see `yerdd::services::auto_start_installed`).
+    /// The linked site name, for a per-site instance (`Some("blog")` for a
+    /// `"reverb:blog"` key); `None` for a single-instance engine.
+    pub site: Option<String>,
+    /// Whether this instance starts with Yerd. The daemon honours this at boot
+    /// (see `yerdd::services::auto_start_installed`): single-instance engines
+    /// default `true`, per-site app servers default `false`.
     pub enabled: bool,
 }
 
@@ -538,6 +547,7 @@ impl Default for ServiceInstance {
         Self {
             version: None,
             port: None,
+            site: None,
             enabled: true,
         }
     }

@@ -8,7 +8,7 @@
 //! [`ReadinessProbe`] is the service-aware dispatch the manager drives:
 //! `HealthProbe` (from `yerd-supervise`, shared with PHP) only sees the listen
 //! address, which cannot tell the protocols apart, so [`ServiceProbes`] selects
-//! the right per-protocol probe from the [`Service`].
+//! the right per-protocol probe from the type's [`ReadinessKind`].
 
 use std::io;
 use std::net::SocketAddr;
@@ -18,24 +18,23 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use yerd_supervise::{HealthProbe, Listen};
 
-use crate::service::Service;
+use crate::service::ReadinessKind;
 
 /// A service-aware readiness probe.
 ///
-/// The manager calls this with the [`Service`] it is supervising; the
-/// implementation picks the protocol probe to run against `listen`. Kept
-/// separate from `yerd_supervise::HealthProbe` (which is address-only and shared
-/// with the PHP supervisor) so that trait is untouched.
+/// The manager calls this with the [`ReadinessKind`] of the type it is
+/// supervising; the implementation picks the protocol probe to run against
+/// `listen`. Kept separate from `yerd_supervise::HealthProbe` (which is
+/// address-only and shared with the PHP supervisor) so that trait is untouched.
 #[async_trait]
 pub trait ReadinessProbe: Send + Sync + 'static {
-    /// Probe `service` at `listen`, returning `Ok(())` once it answers its
-    /// protocol.
-    async fn probe(&self, service: Service, listen: &Listen) -> Result<(), io::Error>;
+    /// Probe `kind` at `listen`, returning `Ok(())` once it answers its protocol.
+    async fn probe(&self, kind: ReadinessKind, listen: &Listen) -> Result<(), io::Error>;
 }
 
-/// The production [`ReadinessProbe`]: dispatches by [`Service`] to the matching
-/// protocol probe. A unit struct - the per-protocol probes are themselves unit
-/// structs.
+/// The production [`ReadinessProbe`]: dispatches by [`ReadinessKind`] to the
+/// matching protocol probe. A unit struct - the per-protocol probes are
+/// themselves unit structs.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct ServiceProbes;
 
@@ -49,11 +48,12 @@ impl ServiceProbes {
 
 #[async_trait]
 impl ReadinessProbe for ServiceProbes {
-    async fn probe(&self, service: Service, listen: &Listen) -> Result<(), io::Error> {
-        match service {
-            Service::Redis => RedisProbe.probe(listen).await,
-            Service::MySql | Service::MariaDb => MySqlProbe.probe(listen).await,
-            Service::Postgres => PostgresProbe.probe(listen).await,
+    async fn probe(&self, kind: ReadinessKind, listen: &Listen) -> Result<(), io::Error> {
+        match kind {
+            ReadinessKind::RedisPing => RedisProbe.probe(listen).await,
+            ReadinessKind::MySqlHandshake => MySqlProbe.probe(listen).await,
+            ReadinessKind::PostgresStartup => PostgresProbe.probe(listen).await,
+            ReadinessKind::TcpConnect => TcpConnectProbe.probe(listen).await,
         }
     }
 }
@@ -97,6 +97,21 @@ impl HealthProbe for RedisProbe {
                 "unexpected reply to PING",
             ))
         }
+    }
+}
+
+/// App-server readiness probe (Reverb): a bare TCP connect succeeding means the
+/// listener is open and accepting connections. Reverb opens its socket only once
+/// its event loop is ready to serve, so a successful connect is a sound readiness
+/// signal without speaking the WebSocket protocol.
+pub struct TcpConnectProbe;
+
+#[async_trait]
+impl HealthProbe for TcpConnectProbe {
+    async fn probe(&self, listen: &Listen) -> Result<(), io::Error> {
+        let addr = tcp_addr(listen)?;
+        let _stream = TcpStream::connect(addr).await?;
+        Ok(())
     }
 }
 
@@ -274,29 +289,43 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn service_probes_dispatches_by_service() {
+    async fn service_probes_dispatches_by_kind() {
         let redis = fake_server(b"+PONG\r\n").await;
         let probes = ServiceProbes::new();
         assert!(probes
-            .probe(Service::Redis, &Listen::TcpLoopback(redis))
+            .probe(ReadinessKind::RedisPing, &Listen::TcpLoopback(redis))
             .await
             .is_ok());
 
         let mysql = fake_server(&[0x20, 0x00, 0x00, 0x00, 0x0a]).await;
         assert!(probes
-            .probe(Service::MySql, &Listen::TcpLoopback(mysql))
-            .await
-            .is_ok());
-        let maria = fake_server(&[0x20, 0x00, 0x00, 0x00, 0x0a]).await;
-        assert!(probes
-            .probe(Service::MariaDb, &Listen::TcpLoopback(maria))
+            .probe(ReadinessKind::MySqlHandshake, &Listen::TcpLoopback(mysql))
             .await
             .is_ok());
 
         let pg = fake_server(b"R\x00\x00\x00\x08\x00\x00\x00\x00").await;
         assert!(probes
-            .probe(Service::Postgres, &Listen::TcpLoopback(pg))
+            .probe(ReadinessKind::PostgresStartup, &Listen::TcpLoopback(pg))
             .await
             .is_ok());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn tcp_connect_probe_succeeds_when_listener_open() {
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        assert!(TcpConnectProbe
+            .probe(&Listen::TcpLoopback(addr))
+            .await
+            .is_ok());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn tcp_connect_probe_fails_when_nothing_listening() {
+        let dead: SocketAddr = (Ipv4Addr::LOCALHOST, 1).into();
+        assert!(TcpConnectProbe
+            .probe(&Listen::TcpLoopback(dead))
+            .await
+            .is_err());
     }
 }

@@ -16,7 +16,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::process::Command;
 
 use yerd_ipc::{DatabaseSummary, ErrorCode, Response};
-use yerd_services::{database, version, Service, ServiceRunState};
+use yerd_services::{database, version, ServiceRegistry, ServiceRunState, SqlEngine};
 
 use crate::services::resolve_version;
 use crate::state::DaemonState;
@@ -27,9 +27,9 @@ pub async fn list(service_id: &str, state: &DaemonState) -> Response {
         Ok(c) => c,
         Err(r) => return r,
     };
-    match run_client(&ctx, database::list_sql(ctx.service)).await {
+    match run_client(&ctx, database::list_sql(ctx.engine)).await {
         Ok(stdout) => Response::Databases {
-            databases: database::parse_db_list(ctx.service, &stdout)
+            databases: database::parse_db_list(ctx.engine, &stdout)
                 .into_iter()
                 .map(|name| DatabaseSummary { name })
                 .collect(),
@@ -47,7 +47,7 @@ pub async fn create(service_id: &str, name: &str, state: &DaemonState) -> Respon
     if let Err(e) = database::validate_db_name(name) {
         return invalid_name(&e.to_string());
     }
-    match run_client(&ctx, &database::create_sql(ctx.service, name)).await {
+    match run_client(&ctx, &database::create_sql(ctx.engine, name)).await {
         Ok(_) => Response::Ok,
         Err(r) => r,
     }
@@ -62,13 +62,13 @@ pub async fn drop(service_id: &str, name: &str, state: &DaemonState) -> Response
     if let Err(e) = database::validate_db_name(name) {
         return invalid_name(&e.to_string());
     }
-    if database::is_system_database(ctx.service, name) {
+    if database::is_system_database(ctx.engine, name) {
         return Response::Error {
             code: ErrorCode::InvalidPath,
             message: format!("refusing to drop the system database {name:?}"),
         };
     }
-    match run_client(&ctx, &database::drop_sql(ctx.service, name)).await {
+    match run_client(&ctx, &database::drop_sql(ctx.engine, name)).await {
         Ok(_) => Response::Ok,
         Err(r) => r,
     }
@@ -88,20 +88,15 @@ pub async fn backup(service_id: &str, name: &str, path: &Path, state: &DaemonSta
     if let Err(e) = database::validate_db_name(name) {
         return invalid_name(&e.to_string());
     }
-    let Some(dump_bin) = ctx.service.dump_binary() else {
-        return invalid_path(format!(
-            "{} does not support backups",
-            ctx.service.display_name()
-        ));
-    };
+    let dump_bin = ctx.engine.dump_binary();
     let dump_path = ctx.bin_dir.join(dump_bin);
     if !dump_path.is_file() {
         return internal(format!(
             "this {} build does not include {dump_bin}",
-            ctx.service.display_name()
+            ctx.display_name
         ));
     }
-    let args = database::dump_args(ctx.service, &ctx.socket, ctx.port, name);
+    let args = database::dump_args(ctx.engine, &ctx.socket, ctx.port, name);
 
     let tmp = tmp_sibling(path);
     let mut file = match tokio::fs::File::create(&tmp).await {
@@ -169,7 +164,7 @@ pub async fn restore(service_id: &str, name: &str, path: &Path, state: &DaemonSt
     if let Err(e) = database::validate_db_name(name) {
         return invalid_name(&e.to_string());
     }
-    if database::is_system_database(ctx.service, name) {
+    if database::is_system_database(ctx.engine, name) {
         return invalid_path(format!(
             "refusing to restore over the system database {name:?}"
         ));
@@ -178,7 +173,7 @@ pub async fn restore(service_id: &str, name: &str, path: &Path, state: &DaemonSt
         Ok(f) => f,
         Err(e) => return invalid_path(format!("open {}: {e}", path.display())),
     };
-    let args = database::restore_args(ctx.service, &ctx.socket, ctx.port, name);
+    let args = database::restore_args(ctx.engine, &ctx.socket, ctx.port, name);
 
     let mut child = match Command::new(&ctx.client_path)
         .args(&args)
@@ -218,7 +213,9 @@ pub async fn restore(service_id: &str, name: &str, path: &Path, state: &DaemonSt
 
 /// Everything `run_client` needs, resolved once per request.
 struct DbCtx {
-    service: Service,
+    engine: SqlEngine,
+    /// The service's human-facing label, for error messages.
+    display_name: String,
     /// The install's `bin/` dir, so backup can also resolve the dump binary.
     bin_dir: PathBuf,
     client_path: PathBuf,
@@ -230,35 +227,36 @@ struct DbCtx {
 /// binary, and gather the connection details. Holds the config / service-manager
 /// locks only briefly and never across the (later) client spawn.
 async fn prepare(service_id: &str, state: &DaemonState) -> Result<DbCtx, Response> {
-    let Some(service) = Service::from_id(service_id) else {
+    let Some(def) = ServiceRegistry::builtin().get(service_id) else {
         return Err(Response::Error {
             code: ErrorCode::NotFound,
             message: format!("unknown service {service_id:?}"),
         });
     };
-    let Some(client) = service.client_binary() else {
+    let Some(engine) = def.as_database() else {
         return Err(Response::Error {
             code: ErrorCode::InvalidPath,
-            message: format!("{} does not host SQL databases", service.display_name()),
+            message: format!("{} does not host SQL databases", def.display_name()),
         });
     };
+    let client = engine.client_binary();
 
     let configured = {
         let cfg = state.config.lock().await;
         cfg.services
             .instances
-            .get(service.id())
+            .get(def.id())
             .and_then(|i| i.version.clone())
     };
-    let ver = resolve_version(service, configured.as_deref(), &state.dirs)?;
-    let bin_dir = version::install_dir(&state.dirs, service, &ver).join("bin");
+    let ver = resolve_version(&def, configured.as_deref(), &state.dirs)?;
+    let bin_dir = version::install_dir(&state.dirs, def.id(), &ver).join("bin");
     let client_path = bin_dir.join(client);
     if !client_path.is_file() {
         return Err(Response::Error {
             code: ErrorCode::Internal,
             message: format!(
                 "this {} build does not include {client}",
-                service.display_name()
+                def.display_name()
             ),
         });
     }
@@ -267,14 +265,14 @@ async fn prepare(service_id: &str, state: &DaemonState) -> Result<DbCtx, Respons
         let mut mgr = state.service_manager.lock().await;
         mgr.snapshots()
             .into_iter()
-            .any(|s| s.service == service && s.state == ServiceRunState::Running)
+            .any(|s| s.service == def.id() && s.state == ServiceRunState::Running)
     };
     if !running {
         return Err(Response::Error {
             code: ErrorCode::Internal,
             message: format!(
                 "start {} first - managing databases needs a running server",
-                service.id()
+                def.id()
             ),
         });
     }
@@ -283,15 +281,16 @@ async fn prepare(service_id: &str, state: &DaemonState) -> Result<DbCtx, Respons
         let cfg = state.config.lock().await;
         cfg.services
             .instances
-            .get(service.id())
+            .get(def.id())
             .and_then(|i| i.port)
-            .unwrap_or(service.default_port())
+            .unwrap_or(def.default_port())
     };
     Ok(DbCtx {
-        service,
+        engine,
+        display_name: def.display_name().to_owned(),
         bin_dir,
         client_path,
-        socket: version::socket_path(&state.dirs, service),
+        socket: version::socket_path(&state.dirs, def.id()),
         port,
     })
 }
@@ -299,7 +298,7 @@ async fn prepare(service_id: &str, state: &DaemonState) -> Result<DbCtx, Respons
 /// Run one SQL statement through the bundled client, returning stdout on a clean
 /// exit or a mapped [`Response::Error`] otherwise.
 async fn run_client(ctx: &DbCtx, sql: &str) -> Result<String, Response> {
-    let args = database::client_args(ctx.service, &ctx.socket, ctx.port, sql);
+    let args = database::client_args(ctx.engine, &ctx.socket, ctx.port, sql);
     let output = Command::new(&ctx.client_path)
         .args(&args)
         .output()

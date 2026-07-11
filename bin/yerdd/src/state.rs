@@ -191,4 +191,8 @@ pub struct DaemonState {
     /// mutation or a filesystem-watcher tick) rather than detected fresh on
     /// every `ListSites` poll - see [`crate::wordpress_detect`].
     pub wordpress_sites: Arc<RwLock<HashMap<String, bool>>>,
+    /// In-memory cache of which sites are Laravel (site name → bool), refreshed
+    /// on the same router-rebuild hook as `wordpress_sites` rather than detected
+    /// on every `ListSites` poll - see [`crate::laravel_detect`].
+    pub laravel_sites: Arc<RwLock<HashMap<String, bool>>>,
 }

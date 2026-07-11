@@ -11,6 +11,7 @@ import {
   Play,
   Plus,
   RotateCw,
+  Search,
   Square,
   Trash2,
 } from "lucide-vue-next";
@@ -35,11 +36,14 @@ import Input from "@/components/ui/Input.vue";
 import Modal from "@/components/ui/Modal.vue";
 import Select from "@/components/ui/Select.vue";
 import Spinner from "@/components/ui/Spinner.vue";
+import Switch from "@/components/ui/Switch.vue";
 import { registerViewActions } from "@/lib/shortcuts/useViewActions";
 import { useDaemon } from "@/composables/useDaemon";
 import { useResource } from "@/composables/useResource";
 import { useToast } from "@/composables/useToast";
 import {
+  addableServiceTypes,
+  addService,
   availableServices,
   backupDatabase,
   changeServiceVersion,
@@ -49,27 +53,48 @@ import {
   IpcError,
   listDatabases,
   listServices,
+  listSites,
   pickOpenFile,
   pickSaveFile,
+  removeService,
   restartService,
   restoreDatabase,
   serviceLogs,
+  setServiceAutostart,
   setServicePort,
   startService,
   stopService,
   uninstallService,
 } from "@/ipc/client";
-import type { DatabaseSummary, ServiceStatus } from "@/ipc/types";
+import type { AddableServiceType, DatabaseSummary, ServiceStatus, SiteEntry } from "@/ipc/types";
 import { poolStateLabel, poolStateTone } from "@/lib/utils";
 
 const toast = useToast();
-const { refresh } = useDaemon();
+const { refresh, report } = useDaemon();
 
 // Cached SWR resource: a revisit renders the last service list instantly and
 // revalidates underneath, so the table no longer flashes a spinner each time.
 const { data, loading, error, refresh: load } = useResource("services", listServices);
 const services = computed(() => data.value ?? []);
 const busy = ref<string | null>(null); // a key naming the in-flight op (e.g. "start:redis")
+const search = ref("");
+
+/** The "Managed services" list: only configured instances (installed engines or
+ *  per-site instances) - uninstalled engines live in the Add Service dialog, not
+ *  here - optionally narrowed by the search box (name / port / linked site). */
+const managed = computed(() => {
+  const q = search.value.trim().toLowerCase();
+  return services.value.filter((s) => {
+    if (!isInstalled(s)) return false;
+    if (!q) return true;
+    return (
+      s.display_name.toLowerCase().includes(q) ||
+      s.service.toLowerCase().includes(q) ||
+      (s.site ?? "").toLowerCase().includes(q) ||
+      String(s.port).includes(q)
+    );
+  });
+});
 
 // No AsyncState here, so surface a load failure as a toast - but only on a cold
 // load (no cached data), so a transient background revalidation stays silent.
@@ -77,19 +102,41 @@ watch(error, (e) => {
   if (e && !data.value) toast.error("Couldn't load services", e.message);
 });
 
+/** A per-site instance (Reverb) has no installed version, but it is still a
+ *  configured, startable instance identified by its linked site. */
+function isPerSite(s: ServiceStatus): boolean {
+  return !!s.site;
+}
 function canStart(s: ServiceStatus): boolean {
-  return s.installed_versions.length > 0 && s.state !== "running";
+  return (s.installed_versions.length > 0 || isPerSite(s)) && s.state !== "running";
 }
 function canStop(s: ServiceStatus): boolean {
   return s.state === "running" || s.state === "failed";
 }
+/** Whether the row is a configured instance (installed engine, or a per-site
+ *  instance) rather than an uninstalled single-instance engine. */
 function isInstalled(s: ServiceStatus): boolean {
-  return s.installed_versions.length > 0;
+  return s.installed_versions.length > 0 || isPerSite(s);
 }
 /** The version to show: the active/selected one, falling back to what's on disk. */
 function versionLabel(s: ServiceStatus): string {
   return s.selected_version ?? s.installed_versions[s.installed_versions.length - 1] ?? "-";
 }
+/** Whether this instance carries a version to badge (engines do; app servers like
+ *  Reverb run against a site's PHP and have none). */
+function hasVersion(s: ServiceStatus): boolean {
+  return !isPerSite(s) && (!!s.selected_version || s.installed_versions.length > 0);
+}
+/** The linked site's full `.test` domain (`reverb.test`), or "" for a
+ *  single-instance engine with no site. */
+function siteDomain(s: ServiceStatus): string {
+  return s.site ? `${s.site}.${report.value?.tld ?? "test"}` : "";
+}
+
+// Keep the managed list fresh while the page is open (state/port/site can change
+// out from under us - a service crashing, a background start finishing).
+const refreshTimer = globalThis.setInterval(() => void load(), 5000);
+onUnmounted(() => globalThis.clearInterval(refreshTimer));
 
 async function doStart(s: ServiceStatus): Promise<void> {
   busy.value = `start:${s.service}`;
@@ -130,6 +177,144 @@ async function doRestart(s: ServiceStatus): Promise<void> {
   }
 }
 
+// ── Add Service dialog (two stages: pick type+version, then configure) ──
+const addOpen = ref(false);
+const addLoading = ref(false);
+const addStep = ref<1 | 2>(1);
+const addTypes = ref<AddableServiceType[]>([]);
+const laravelSites = ref<SiteEntry[]>([]);
+const addForm = ref({ typeId: "", site: "", version: "", port: "", autostart: false });
+
+// Only offer types that can actually be added: an engine not yet installed, or a
+// multi-instance type (Reverb) that can always take another instance. A
+// single-instance engine already installed is excluded entirely.
+const addableTypes = computed(() => addTypes.value.filter((t) => !t.already_installed));
+const selectedType = computed(() =>
+  addableTypes.value.find((t) => t.type_id === addForm.value.typeId),
+);
+// Leads with an empty placeholder so nothing is pre-selected - the user must
+// actively pick a service (Continue stays disabled until they do).
+const typeOptions = computed(() => [
+  { value: "", label: "Select a service…" },
+  ...addableTypes.value.map((t) => ({ value: t.type_id, label: t.display_name })),
+]);
+// Sites that already have an instance of the selected per-site type - a site can
+// host at most one (e.g. one Reverb per site), so they're excluded from the picker.
+const usedSites = computed(() => {
+  const t = selectedType.value;
+  if (!t) return new Set<string>();
+  return new Set(
+    services.value
+      .filter((s) => (s.type_id ?? "") === t.type_id && s.site)
+      .map((s) => s.site as string),
+  );
+});
+const siteOptions = computed(() =>
+  laravelSites.value
+    .filter((s) => !usedSites.value.has(s.name))
+    .map((s) => ({ value: s.name, label: s.name })),
+);
+const versionOptions = computed(() =>
+  (selectedType.value?.available_versions ?? []).map((v) => ({ value: v, label: `v${v}` })),
+);
+
+function syncAddDefaults(): void {
+  const t = selectedType.value;
+  if (!t) return;
+  addForm.value.port = String(t.suggested_port);
+  addForm.value.autostart = !t.requires_site;
+  const vers = t.available_versions;
+  addForm.value.version = vers[vers.length - 1] ?? "";
+  addForm.value.site = t.requires_site ? (siteOptions.value[0]?.value ?? "") : "";
+}
+
+async function openAdd(): Promise<void> {
+  addOpen.value = true;
+  addStep.value = 1;
+  addLoading.value = true;
+  // Start blank - the user picks the service; nothing is pre-selected.
+  addForm.value = { typeId: "", site: "", version: "", port: "", autostart: false };
+  try {
+    const [types, sites] = await Promise.all([addableServiceTypes(), listSites()]);
+    addTypes.value = types;
+    laravelSites.value = sites.filter((s) => s.is_laravel);
+  } catch (e) {
+    toast.error("Couldn't load service types", (e as IpcError).message);
+  } finally {
+    addLoading.value = false;
+  }
+}
+watch(() => addForm.value.typeId, syncAddDefaults);
+
+/** Step 1 is valid once a type (and a version, when the type needs one) is chosen. */
+const canContinue = computed(() => {
+  const t = selectedType.value;
+  if (!t) return false;
+  return !t.requires_version || !!addForm.value.version;
+});
+
+const canSubmitAdd = computed(() => {
+  const t = selectedType.value;
+  if (!t) return false;
+  if (t.requires_site && !addForm.value.site) return false;
+  if (t.requires_version && !addForm.value.version) return false;
+  const p = Number(addForm.value.port);
+  return Number.isInteger(p) && p >= 1 && p <= 65535;
+});
+
+async function confirmAdd(close: () => void): Promise<void> {
+  const t = selectedType.value;
+  if (!t) return;
+  busy.value = `add:${t.type_id}`;
+  try {
+    await addService({
+      type_id: t.type_id,
+      site: t.requires_site ? addForm.value.site : null,
+      port: Number(addForm.value.port),
+      version: t.requires_version ? addForm.value.version : null,
+      autostart: addForm.value.autostart,
+    });
+    toast.success(`Added ${t.display_name}`);
+  } catch (e) {
+    // The daemon persists the instance *before* starting it, so a failed start
+    // still leaves it added (as a Failed row). Report the failure, but close the
+    // dialog either way - the add is done - and refresh so the row appears.
+    toast.error(`${t.display_name} added, but couldn't start`, (e as IpcError).message);
+  } finally {
+    busy.value = null;
+  }
+  close();
+  await Promise.all([load({ force: true }), refresh()]);
+}
+
+async function doRemove(s: ServiceStatus): Promise<void> {
+  busy.value = `remove:${s.service}`;
+  try {
+    await removeService(s.service, false);
+    toast.success(`Removed ${s.display_name}`);
+    await Promise.all([load({ force: true }), refresh()]);
+  } catch (e) {
+    toast.error(`Couldn't remove ${s.display_name}`, (e as IpcError).message);
+  } finally {
+    busy.value = null;
+  }
+}
+
+async function doToggleAutostart(s: ServiceStatus, enabled: boolean): Promise<void> {
+  busy.value = `autostart:${s.service}`;
+  try {
+    await setServiceAutostart(s.service, enabled);
+    toast.success(
+      enabled ? `${s.display_name} starts with Yerd` : `${s.display_name} won't start with Yerd`,
+    );
+    await Promise.all([load({ force: true }), refresh()]);
+  } catch (e) {
+    toast.error(`Couldn't update ${s.display_name}`, (e as IpcError).message);
+  } finally {
+    busy.value = null;
+  }
+}
+
 // ── version modal (shared by "Install" and "Change version") ──
 // A service holds one installed version; both flows pick from the versions you
 // don't currently have, so the option list is identical - only the action,
@@ -165,7 +350,6 @@ async function openVersionModal(s: ServiceStatus, mode: "install" | "change"): P
     installLoading.value = false;
   }
 }
-const openInstall = (s: ServiceStatus) => openVersionModal(s, "install");
 const openChange = (s: ServiceStatus) => openVersionModal(s, "change");
 
 async function confirmInstall(close: () => void): Promise<void> {
@@ -417,6 +601,8 @@ const configTarget = ref<ServiceStatus | null>(null);
 const configDbs = ref<DatabaseSummary[]>([]);
 const configDbName = ref<string>("");
 const configDbLoading = ref(false);
+// The linked site for a per-site instance (Reverb), resolved for host + TLS.
+const configSite = ref<SiteEntry | null>(null);
 // Bumped on each open so a slow listDatabases can't overwrite a newer modal.
 const configReqSeq = ref(0);
 
@@ -429,7 +615,20 @@ async function openConfig(s: ServiceStatus): Promise<void> {
   configTarget.value = s;
   configDbName.value = "";
   configDbs.value = [];
+  configSite.value = null;
   configOpen.value = true;
+  // Per-site app server (Reverb): resolve its linked site for the host + whether
+  // it's served over HTTPS, so the client (Echo) values are the right scheme/port.
+  if (s.site) {
+    try {
+      const sites = await listSites();
+      if (reqSeq !== configReqSeq.value) return;
+      configSite.value = sites.find((x) => x.name === s.site) ?? null;
+    } catch {
+      /* best-effort - fall back to defaults in the snippet */
+    }
+    return;
+  }
   // Only SQL engines have databases to choose, and only a running one can list them.
   if (s.supports_databases && s.state === "running") {
     configDbLoading.value = true;
@@ -458,9 +657,49 @@ function dbEnv(connection: string, port: number, database: string, user: string)
   ].join("\n");
 }
 
+/** The site's full public domain (`reverb.test`), scheme, and the port the
+ *  browser actually uses - the same logic as `siteUrl`: with an elevated-port
+ *  redirect active (`port_redirect`), traffic reaches the default 443/80 even
+ *  though the daemon internally bound 8443/8080; only a genuine rootless bind
+ *  (no redirect) exposes the fallback port. */
+function sitePublic(s: ServiceStatus): { host: string; scheme: string; port: number } {
+  const r = report.value;
+  const tld = r?.tld ?? "test";
+  const host = configSite.value?.primary_domain ?? `${s.site}.${tld}`;
+  const secure = configSite.value?.secure ?? false;
+  const dflt = secure ? 443 : 80;
+  const bound = secure ? r?.https.bound : r?.http.bound;
+  const redirected = r?.port_redirect === true;
+  const port = !redirected && bound && bound > 0 ? bound : dflt;
+  return { host, scheme: secure ? "https" : "http", port };
+}
+
+/** The Laravel `.env` block for a Reverb instance: the server side (localhost)
+ *  plus the client/Echo side reached over the site's `/app` proxy - with the
+ *  scheme/port reflecting whether the site is served over HTTPS. */
+function reverbEnv(s: ServiceStatus): string {
+  const { host, scheme, port } = sitePublic(s);
+  return [
+    "# Reverb server - Yerd supervises this on localhost",
+    "REVERB_APP_ID=my-app-id",
+    "REVERB_APP_KEY=my-app-key",
+    "REVERB_APP_SECRET=my-app-secret",
+    "REVERB_HOST=127.0.0.1",
+    `REVERB_PORT=${s.port}`,
+    "REVERB_SCHEME=http",
+    "",
+    `# Laravel Echo (browser) - reaches Reverb over ${host} via Yerd's /app proxy`,
+    'VITE_REVERB_APP_KEY="${REVERB_APP_KEY}"',
+    `VITE_REVERB_HOST=${host}`,
+    `VITE_REVERB_PORT=${port}`,
+    `VITE_REVERB_SCHEME=${scheme}`,
+  ].join("\n");
+}
+
 const configSnippet = computed(() => {
   const s = configTarget.value;
   if (!s) return "";
+  if (s.site) return reverbEnv(s); // per-site app server (Reverb)
   const db = configDbName.value.trim() || "your_database";
   switch (s.service) {
     case "redis":
@@ -502,67 +741,87 @@ onUnmounted(registerViewActions({ refresh: () => void load() }));
   <div class="flex h-full flex-col">
     <PageHeader
       title="Services"
-      subtitle="Databases and caches Yerd supervises"
+      subtitle="Databases, caches, and per-site app servers Yerd supervises"
       docs="/guide/services"
-    />
+    >
+      <template #actions>
+        <Button size="sm" :disabled="busy?.startsWith('add:')" @click="openAdd">
+          <Plus class="size-4" /> Add Service
+        </Button>
+      </template>
+    </PageHeader>
 
     <div class="flex-1 overflow-y-auto p-6">
       <Card>
         <CardHeader>
-          <CardTitle>Local services</CardTitle>
+          <CardTitle>Managed services</CardTitle>
           <CardDescription>
-            Each engine binds to localhost only with no password. Install a version,
-            then start it; changes to the port apply on the next restart.
+            Services Yerd runs for you - database and cache engines, plus per-site
+            app servers like Reverb. Each binds to localhost; start or stop them
+            here, or add another with <span class="font-medium">Add Service</span>.
           </CardDescription>
         </CardHeader>
 
         <CardContent>
           <div v-if="loading" class="flex justify-center py-12"><Spinner class="size-6" /></div>
 
-          <table v-else class="w-full text-sm">
-            <thead>
-              <tr class="border-b text-left text-xs uppercase text-muted-foreground">
-                <th class="py-2 pr-4 font-medium">Service</th>
-                <th class="py-2 pr-4 font-medium">State</th>
-                <th class="py-2 pr-4 font-medium">Port</th>
-                <th class="py-2 pr-4 font-medium">Version</th>
-                <th class="py-2 pl-4 text-right font-medium">Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr v-for="s in services" :key="s.service" class="border-b last:border-0">
-                <td class="py-3 pr-4">
-                  <div class="flex items-center gap-2">
-                    <span class="font-medium">{{ s.display_name }}</span>
-                    <Badge v-if="s.supports_databases" variant="secondary">SQL</Badge>
-                  </div>
-                </td>
-                <td class="py-3 pr-4">
-                  <StatusPill
-                    v-if="isInstalled(s)"
-                    :tone="poolStateTone(s.state)"
-                    :label="poolStateLabel(s.state)"
-                  />
-                  <span v-else class="text-xs italic text-muted-foreground">not installed</span>
-                </td>
-                <td class="py-3 pr-4 font-mono text-xs text-muted-foreground">
-                  {{ isInstalled(s) ? s.port : "-" }}
-                </td>
-                <td class="py-3 pr-4 font-mono text-xs text-muted-foreground">
-                  {{ versionLabel(s) }}
-                </td>
-                <td class="py-3 pl-4">
-                  <div class="flex items-center justify-end gap-2">
-                    <Spinner v-if="busy?.endsWith(`:${s.service}`)" class="size-4" />
-                    <Button
-                      v-if="!s.installed_versions.length"
-                      size="sm"
-                      :disabled="busy === `install:${s.service}`"
-                      @click="openInstall(s)"
-                    >
-                      <Download class="size-4" /> Install
-                    </Button>
-                    <DropdownMenu v-else>
+          <template v-else>
+            <div class="relative mb-3 max-w-xs">
+              <Search
+                class="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground"
+              />
+              <Input v-model="search" placeholder="Search name, port, or site" class="pl-8" />
+            </div>
+
+            <div
+              v-if="!managed.length"
+              class="rounded-md border border-dashed py-10 text-center text-sm text-muted-foreground"
+            >
+              <template v-if="search">No services match "{{ search }}".</template>
+              <template v-else>
+                No services yet. Add one with <span class="font-medium">Add Service</span>.
+              </template>
+            </div>
+
+            <table v-else class="w-full text-sm">
+              <thead>
+                <tr class="border-b text-left text-xs uppercase text-muted-foreground">
+                  <th class="py-2 pr-4 font-medium">Service</th>
+                  <th class="py-2 pr-4 font-medium">State</th>
+                  <th class="py-2 pr-4 font-medium">Port</th>
+                  <th class="py-2 pr-4 font-medium">Linked site</th>
+                  <th class="py-2 pr-4 font-medium">Auto-start</th>
+                  <th class="py-2 pl-4 text-right font-medium">Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="s in managed" :key="s.service" class="border-b last:border-0">
+                  <td class="py-3 pr-4">
+                    <div class="flex items-center gap-2">
+                      <span class="font-medium">{{ s.display_name }}</span>
+                      <Badge v-if="hasVersion(s)" variant="secondary">v{{ versionLabel(s) }}</Badge>
+                    </div>
+                  </td>
+                  <td class="py-3 pr-4">
+                    <StatusPill :tone="poolStateTone(s.state)" :label="poolStateLabel(s.state)" />
+                  </td>
+                  <td class="py-3 pr-4 font-mono text-xs text-muted-foreground">{{ s.port }}</td>
+                  <td class="py-3 pr-4">
+                    <Badge v-if="s.site" variant="secondary">{{ siteDomain(s) }}</Badge>
+                    <span v-else class="text-xs text-muted-foreground">-</span>
+                  </td>
+                  <td class="py-3 pr-4">
+                    <Switch
+                      :model-value="s.enabled"
+                      :disabled="busy === `autostart:${s.service}`"
+                      :aria-label="`Start ${s.display_name} with Yerd`"
+                      @update:model-value="(v: boolean) => doToggleAutostart(s, v)"
+                    />
+                  </td>
+                  <td class="py-3 pl-4">
+                    <div class="flex items-center justify-end gap-2">
+                      <Spinner v-if="busy?.endsWith(`:${s.service}`)" class="size-4" />
+                      <DropdownMenu>
                       <DropdownMenuTrigger as-child>
                         <Button variant="ghost" size="icon" :aria-label="`Actions for ${s.display_name}`">
                           <MoreHorizontal class="size-4" />
@@ -595,11 +854,19 @@ onUnmounted(registerViewActions({ refresh: () => void load() }));
                         >
                           <Database class="size-4" /> Manage databases
                         </DropdownMenuItem>
-                        <DropdownMenuItem @select="openChange(s)">
+                        <DropdownMenuItem v-if="!isPerSite(s)" @select="openChange(s)">
                           <Download class="size-4" /> Change version
                         </DropdownMenuItem>
                         <DropdownMenuSeparator />
                         <DropdownMenuItem
+                          v-if="isPerSite(s)"
+                          class="text-destructive focus:bg-destructive/10 focus:text-destructive"
+                          @select="doRemove(s)"
+                        >
+                          <Trash2 class="size-4" /> Remove
+                        </DropdownMenuItem>
+                        <DropdownMenuItem
+                          v-else
                           class="text-destructive focus:bg-destructive/10 focus:text-destructive"
                           @select="openUninstall(s)"
                         >
@@ -608,13 +875,119 @@ onUnmounted(registerViewActions({ refresh: () => void load() }));
                       </DropdownMenuContent>
                     </DropdownMenu>
                   </div>
-                </td>
-              </tr>
-            </tbody>
-          </table>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </template>
         </CardContent>
       </Card>
     </div>
+
+    <!-- Add Service (two stages: choose, then configure) -->
+    <Modal v-model:open="addOpen" title="Add service">
+      <div v-if="addLoading" class="flex justify-center py-8"><Spinner class="size-6" /></div>
+
+      <div v-else-if="!addableTypes.length" class="py-6 text-center text-sm text-muted-foreground">
+        Every service is already installed. Multi-instance services (like Reverb)
+        will appear here once a Laravel site is available.
+      </div>
+
+      <div v-else class="space-y-5">
+        <!-- Stepper -->
+        <ol class="flex items-center gap-2 text-xs font-medium text-muted-foreground">
+          <li :class="addStep === 1 ? 'text-foreground' : ''">1. Choose</li>
+          <li class="text-muted-foreground/40">→</li>
+          <li :class="addStep === 2 ? 'text-foreground' : ''">2. Configure</li>
+        </ol>
+
+        <!-- Step 1: type + version -->
+        <div v-if="addStep === 1" class="space-y-4">
+          <div>
+            <label class="text-sm font-medium">Service</label>
+            <Select
+              v-model="addForm.typeId"
+              :options="typeOptions"
+              class="mt-2 w-full"
+              aria-label="Service type"
+            />
+          </div>
+          <div v-if="selectedType?.requires_version">
+            <label class="text-sm font-medium">Version</label>
+            <Select
+              v-model="addForm.version"
+              :options="versionOptions"
+              class="mt-2 w-full"
+              aria-label="Version"
+            />
+            <p class="mt-1.5 text-xs text-muted-foreground">
+              The latest build is selected by default.
+            </p>
+          </div>
+          <p v-else class="text-xs text-muted-foreground">
+            {{ selectedType?.display_name }} runs against a linked site's PHP - there's no
+            version to install.
+          </p>
+        </div>
+
+        <!-- Step 2: site / port / autostart -->
+        <div v-else class="space-y-4">
+          <div class="rounded-md bg-muted/50 px-3 py-2 text-sm">
+            <span class="font-medium">{{ selectedType?.display_name }}</span>
+            <span v-if="addForm.version" class="text-muted-foreground"> · v{{ addForm.version }}</span>
+          </div>
+
+          <div v-if="selectedType?.requires_site">
+            <label class="text-sm font-medium">Linked Laravel site</label>
+            <Select
+              v-if="siteOptions.length"
+              v-model="addForm.site"
+              :options="siteOptions"
+              class="mt-2 w-full"
+              aria-label="Linked site"
+            />
+            <p v-else-if="laravelSites.length" class="mt-2 text-xs italic text-muted-foreground">
+              Every Laravel site already has a {{ selectedType?.display_name }} instance.
+            </p>
+            <p v-else class="mt-2 text-xs italic text-muted-foreground">
+              No Laravel sites found. Park or link a site with an <code>artisan</code> file first.
+            </p>
+          </div>
+
+          <div>
+            <label class="text-sm font-medium">Port</label>
+            <Input v-model="addForm.port" type="number" min="1" max="65535" class="mt-2" />
+            <p class="mt-1.5 text-xs text-muted-foreground">Suggested from the next free port.</p>
+          </div>
+
+          <div class="flex items-center justify-between gap-4 rounded-lg border p-3">
+            <div>
+              <p class="text-sm font-medium">Start with Yerd</p>
+              <p class="text-xs text-muted-foreground">Launch this service when Yerd starts.</p>
+            </div>
+            <Switch v-model="addForm.autostart" aria-label="Start with Yerd" />
+          </div>
+        </div>
+      </div>
+
+      <template #footer="{ close }">
+        <template v-if="!addLoading && addableTypes.length">
+          <Button v-if="addStep === 2" variant="ghost" @click="addStep = 1">Back</Button>
+          <Button variant="ghost" @click="close">Cancel</Button>
+          <Button v-if="addStep === 1" :disabled="!canContinue" @click="addStep = 2">
+            Continue
+          </Button>
+          <Button
+            v-else
+            :disabled="!canSubmitAdd || busy?.startsWith('add:')"
+            @click="confirmAdd(close)"
+          >
+            Add
+          </Button>
+        </template>
+        <Button v-else variant="ghost" @click="close">Close</Button>
+      </template>
+    </Modal>
 
     <!-- Install / Change version -->
     <Modal

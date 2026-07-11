@@ -19,7 +19,7 @@ pub(crate) type MigrationStep = fn(&mut Value) -> Result<(), ConfigError>;
 /// Forward-migration steps, indexed so that **`STEPS[N]` walks `vN → v(N+1)`**.
 /// This matches [`up`], which indexes `STEPS[current]` (== the version being
 /// migrated *from*). Example: a v1 file is migrated by `STEPS[1]`. When
-/// `CURRENT_VERSION == 14`, `STEPS = [v0→v1, …, v12→v13, v13→v14]`, length 14.
+/// `CURRENT_VERSION == 15`, `STEPS = [v0→v1, …, v13→v14, v14→v15]`, length 15.
 ///
 /// `STEPS[0]` (v0→v1) is only reachable via a hand-crafted `version = 0` file -
 /// v0 was never written to disk - but it must exist so that `STEPS[1]` does.
@@ -38,6 +38,7 @@ pub(crate) const STEPS: &[MigrationStep] = &[
     migrate_v11_to_v12,
     migrate_v12_to_v13,
     migrate_v13_to_v14,
+    migrate_v14_to_v15,
 ];
 
 /// `v0 → v1`: bump the version. v0 predates any shipped config, so there is no
@@ -154,6 +155,27 @@ fn migrate_v13_to_v14(value: &mut Value) -> Result<(), ConfigError> {
     set_version(value, 14)
 }
 
+/// `v14 → v15`: the multi-instance services rework. v15 added the optional
+/// per-instance `site` field and the `"{type}:{site}"` wire ids (both additive),
+/// and made the `enabled` flag actually gate boot autostart. Before v15 the
+/// daemon auto-started *every installed* engine regardless of `enabled`; to keep
+/// a user's previously-installed engines (redis, the databases) starting with
+/// Yerd across the upgrade, mark every existing single-instance engine
+/// (colon-free key) `enabled = true`. Per-site entries don't exist yet at v14, so
+/// none are affected.
+fn migrate_v14_to_v15(value: &mut Value) -> Result<(), ConfigError> {
+    if let Some(services) = value.get_mut("services").and_then(Value::as_table_mut) {
+        for (key, inst) in services.iter_mut() {
+            if !key.contains(':') {
+                if let Some(table) = inst.as_table_mut() {
+                    table.insert("enabled".to_string(), Value::Boolean(true));
+                }
+            }
+        }
+    }
+    set_version(value, 15)
+}
+
 /// Set the top-level `version` key, erroring if the root is not a table.
 fn set_version(value: &mut Value, n: i64) -> Result<(), ConfigError> {
     let table = value.as_table_mut().ok_or(ConfigError::Migration {
@@ -223,7 +245,7 @@ mod tests {
 
     #[test]
     fn current_version_pinned() {
-        assert_eq!(crate::CURRENT_VERSION, 14);
+        assert_eq!(crate::CURRENT_VERSION, 15);
     }
 
     #[test]
@@ -294,6 +316,27 @@ mod tests {
         let mut v: Value = toml::from_str("version = 12\n").unwrap();
         migrate_v12_to_v13(&mut v).unwrap();
         assert_eq!(read_version(&v).unwrap(), 13);
+    }
+
+    #[test]
+    fn v14_to_v15_bumps_version_with_no_services_section() {
+        let mut v: Value = toml::from_str("version = 14\n").unwrap();
+        migrate_v14_to_v15(&mut v).unwrap();
+        assert_eq!(read_version(&v).unwrap(), 15);
+    }
+
+    #[test]
+    fn v14_to_v15_enables_existing_single_instance_engines() {
+        let mut v: Value = toml::from_str(
+            "version = 14\n[services.redis]\nenabled = false\n[services.mysql]\nversion = \"8.4\"\n",
+        )
+        .unwrap();
+        migrate_v14_to_v15(&mut v).unwrap();
+        assert_eq!(read_version(&v).unwrap(), 15);
+        // A stopped-at-upgrade engine and an engine with no explicit flag both
+        // become enabled, so they keep starting with Yerd after the upgrade.
+        assert_eq!(v["services"]["redis"]["enabled"].as_bool(), Some(true));
+        assert_eq!(v["services"]["mysql"]["enabled"].as_bool(), Some(true));
     }
 
     #[test]

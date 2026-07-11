@@ -5,6 +5,12 @@
 //! `major.minor` structure, so it stays a string. The path helpers and
 //! [`discover_installed`] define the on-disk layout under `dirs.data/services`
 //! and `dirs.state/services`.
+//!
+//! Paths are keyed by a service *type id* string (`"redis"`, `"postgres"`, ...)
+//! plus the few per-type facts a path depends on (server-binary name,
+//! datadir-pinned-to-major), which the caller reads from the type's
+//! [`crate::service::ServiceDefinition`]. This keeps `version` free of the trait
+//! object while the manager and daemon supply the facts.
 
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
@@ -15,7 +21,7 @@ use std::str::FromStr;
 use yerd_platform::PlatformDirs;
 
 use crate::error::ServiceError;
-use crate::service::Service;
+use crate::service::ServiceRegistry;
 
 /// Filename of the installed-version marker inside a per-version install dir.
 pub const VERSION_MARKER: &str = ".yerd-version";
@@ -168,32 +174,42 @@ pub fn services_root(dirs: &PlatformDirs) -> PathBuf {
 
 /// Per-service install root: `data/services/<id>`.
 #[must_use]
-pub fn service_root(dirs: &PlatformDirs, service: Service) -> PathBuf {
-    services_root(dirs).join(service.id())
+pub fn service_root(dirs: &PlatformDirs, service_id: &str) -> PathBuf {
+    services_root(dirs).join(service_id)
 }
 
 /// A specific version's install dir: `data/services/<id>/<version>`.
 #[must_use]
-pub fn install_dir(dirs: &PlatformDirs, service: Service, version: &ServiceVersion) -> PathBuf {
-    service_root(dirs, service).join(version.as_str())
+pub fn install_dir(dirs: &PlatformDirs, service_id: &str, version: &ServiceVersion) -> PathBuf {
+    service_root(dirs, service_id).join(version.as_str())
 }
 
 /// Absolute path to a version's server binary:
 /// `data/services/<id>/<version>/bin/<server_binary>`.
 #[must_use]
-pub fn server_path(dirs: &PlatformDirs, service: Service, version: &ServiceVersion) -> PathBuf {
-    install_dir(dirs, service, version)
+pub fn server_path(
+    dirs: &PlatformDirs,
+    service_id: &str,
+    server_binary: &str,
+    version: &ServiceVersion,
+) -> PathBuf {
+    install_dir(dirs, service_id, version)
         .join("bin")
-        .join(service.server_binary())
+        .join(server_binary)
 }
 
-/// The datadir for a service+version. Pinned per *major* for engines whose
-/// on-disk format is major-incompatible (Postgres); otherwise a single shared
-/// datadir per engine.
+/// The datadir for a service+version. Pinned per *major* when `pinned_to_major`
+/// (engines whose on-disk format is major-incompatible, i.e. Postgres);
+/// otherwise a single shared datadir per engine.
 #[must_use]
-pub fn datadir(dirs: &PlatformDirs, service: Service, version: &ServiceVersion) -> PathBuf {
-    let root = service_root(dirs, service);
-    if service.datadir_pinned_to_major() {
+pub fn datadir(
+    dirs: &PlatformDirs,
+    service_id: &str,
+    pinned_to_major: bool,
+    version: &ServiceVersion,
+) -> PathBuf {
+    let root = service_root(dirs, service_id);
+    if pinned_to_major {
         root.join(format!("data-{}", version.major()))
     } else {
         root.join("data")
@@ -202,11 +218,11 @@ pub fn datadir(dirs: &PlatformDirs, service: Service, version: &ServiceVersion) 
 
 /// The rendered config-file path: `state/services/<id>/<id>.conf`.
 #[must_use]
-pub fn config_path(dirs: &PlatformDirs, service: Service) -> PathBuf {
+pub fn config_path(dirs: &PlatformDirs, service_id: &str) -> PathBuf {
     dirs.state
         .join("services")
-        .join(service.id())
-        .join(format!("{}.conf", service.id()))
+        .join(service_id)
+        .join(format!("{service_id}.conf"))
 }
 
 /// The `MySQL`/`MariaDB` bootstrap-SQL path: `state/services/<id>/<id>-init.sql`.
@@ -215,43 +231,68 @@ pub fn config_path(dirs: &PlatformDirs, service: Service) -> PathBuf {
 /// runs it on every start. Lives beside the config (rewritten each start), not in
 /// the datadir, so it persists independently of re-initialisation.
 #[must_use]
-pub fn init_file_path(dirs: &PlatformDirs, service: Service) -> PathBuf {
+pub fn init_file_path(dirs: &PlatformDirs, service_id: &str) -> PathBuf {
     dirs.state
         .join("services")
-        .join(service.id())
-        .join(format!("{}-init.sql", service.id()))
+        .join(service_id)
+        .join(format!("{service_id}-init.sql"))
 }
 
 /// The server log-file path: `state/services/<id>/<id>.log`.
 #[must_use]
-pub fn log_path(dirs: &PlatformDirs, service: Service) -> PathBuf {
+pub fn log_path(dirs: &PlatformDirs, service_id: &str) -> PathBuf {
     dirs.state
         .join("services")
-        .join(service.id())
-        .join(format!("{}.log", service.id()))
+        .join(service_id)
+        .join(format!("{service_id}.log"))
+}
+
+/// The per-instance log-file path, keyed by wire id. A single-instance engine
+/// keeps `state/services/<id>/<id>.log`; a per-site instance (`"reverb:blog"`)
+/// uses `state/services/<type>/<site>.log`, so each site's app server writes its
+/// own log (and the daemon reads back the same file the manager wrote).
+#[must_use]
+pub fn instance_log_path(dirs: &PlatformDirs, wire_id: &str) -> PathBuf {
+    match wire_id.split_once(':') {
+        Some((ty, site)) => dirs
+            .state
+            .join("services")
+            .join(ty)
+            .join(format!("{site}.log")),
+        None => log_path(dirs, wire_id),
+    }
 }
 
 /// The Unix-socket path for the `MySQL`/`MariaDB` server (and the client that
 /// connects to it), under the short `runtime` dir to stay within the platform
 /// `sun_path` length limit. Unused for engines that don't use a Unix socket.
 #[must_use]
-pub fn socket_path(dirs: &PlatformDirs, service: Service) -> PathBuf {
+pub fn socket_path(dirs: &PlatformDirs, service_id: &str) -> PathBuf {
     dirs.runtime
         .join("services")
-        .join(service.id())
-        .join(format!("{}.sock", service.id()))
+        .join(service_id)
+        .join(format!("{service_id}.sock"))
 }
 
-/// Discover every installed `(service, version)` by scanning
+/// Discover every installed `(service id, version)` by scanning
 /// `data/services/<id>/` for version dirs that actually contain the server
-/// binary. A missing services root yields an empty map (not an error); other
-/// I/O errors propagate as [`ServiceError::DiscoveryIo`].
+/// binary. Only versioned types in `registry` are scanned. A missing services
+/// root yields an empty map (not an error); other I/O errors propagate as
+/// [`ServiceError::DiscoveryIo`].
 pub fn discover_installed(
     dirs: &PlatformDirs,
-) -> Result<BTreeMap<Service, Vec<ServiceVersion>>, ServiceError> {
-    let mut out: BTreeMap<Service, Vec<ServiceVersion>> = BTreeMap::new();
-    for service in Service::ALL {
-        let root = service_root(dirs, service);
+    registry: &ServiceRegistry,
+) -> Result<BTreeMap<String, Vec<ServiceVersion>>, ServiceError> {
+    let mut out: BTreeMap<String, Vec<ServiceVersion>> = BTreeMap::new();
+    for def in registry.iter() {
+        if !def.requires_version() {
+            continue;
+        }
+        let Some(server_binary) = def.server_binary() else {
+            continue;
+        };
+        let id = def.id();
+        let root = service_root(dirs, id);
         let entries = match std::fs::read_dir(&root) {
             Ok(e) => e,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
@@ -269,13 +310,13 @@ pub fn discover_installed(
             let Ok(version) = ServiceVersion::from_str(&name) else {
                 continue;
             };
-            if server_path(dirs, service, &version).is_file() {
+            if server_path(dirs, id, server_binary, &version).is_file() {
                 versions.push(version);
             }
         }
         if !versions.is_empty() {
             versions.sort();
-            out.insert(service, versions);
+            out.insert(id.to_owned(), versions);
         }
     }
     Ok(out)
@@ -285,10 +326,10 @@ pub fn discover_installed(
 #[must_use]
 pub fn installed_marker(
     dirs: &PlatformDirs,
-    service: Service,
+    service_id: &str,
     version: &ServiceVersion,
 ) -> Option<String> {
-    let marker = install_dir(dirs, service, version).join(VERSION_MARKER);
+    let marker = install_dir(dirs, service_id, version).join(VERSION_MARKER);
     let v = std::fs::read_to_string(marker).ok()?;
     let v = v.trim().to_owned();
     if v.is_empty() {
@@ -407,12 +448,12 @@ mod tests {
         let dirs = dirs_in(std::path::Path::new("/tmp/x"));
         let v = ServiceVersion::from_str("16.2").unwrap();
         assert_eq!(
-            datadir(&dirs, Service::Postgres, &v),
+            datadir(&dirs, "postgres", true, &v),
             PathBuf::from("/tmp/x/d/services/postgres/data-16")
         );
         let v8 = ServiceVersion::from_str("8.4").unwrap();
         assert_eq!(
-            datadir(&dirs, Service::MySql, &v8),
+            datadir(&dirs, "mysql", false, &v8),
             PathBuf::from("/tmp/x/d/services/mysql/data")
         );
     }
@@ -426,7 +467,7 @@ mod tests {
         for label in ["17", "17.10", "17.10-full", "17-full"] {
             let v = ServiceVersion::from_str(label).unwrap();
             assert_eq!(
-                datadir(&dirs, Service::Postgres, &v),
+                datadir(&dirs, "postgres", true, &v),
                 shared,
                 "label {label}"
             );
@@ -438,7 +479,7 @@ mod tests {
         let dirs = dirs_in(std::path::Path::new("/tmp/x"));
         let v = ServiceVersion::from_str("8").unwrap();
         assert_eq!(
-            server_path(&dirs, Service::Redis, &v),
+            server_path(&dirs, "redis", "valkey-server", &v),
             PathBuf::from("/tmp/x/d/services/redis/8/bin/valkey-server")
         );
     }
@@ -447,15 +488,20 @@ mod tests {
     fn discover_finds_installed_versions_only() {
         let tmp = tempfile::tempdir().unwrap();
         let dirs = dirs_in(tmp.path());
+        let reg = ServiceRegistry::builtin();
         let v = ServiceVersion::from_str("8").unwrap();
 
-        assert!(discover_installed(&dirs).unwrap().is_empty());
+        assert!(discover_installed(&dirs, &reg).unwrap().is_empty());
 
-        std::fs::create_dir_all(install_dir(&dirs, Service::Redis, &v).join("bin")).unwrap();
-        assert!(discover_installed(&dirs).unwrap().is_empty());
+        std::fs::create_dir_all(install_dir(&dirs, "redis", &v).join("bin")).unwrap();
+        assert!(discover_installed(&dirs, &reg).unwrap().is_empty());
 
-        std::fs::write(server_path(&dirs, Service::Redis, &v), b"#!/bin/sh\n").unwrap();
-        let found = discover_installed(&dirs).unwrap();
-        assert_eq!(found.get(&Service::Redis), Some(&vec![v]));
+        std::fs::write(
+            server_path(&dirs, "redis", "valkey-server", &v),
+            b"#!/bin/sh\n",
+        )
+        .unwrap();
+        let found = discover_installed(&dirs, &reg).unwrap();
+        assert_eq!(found.get("redis"), Some(&vec![v]));
     }
 }

@@ -102,6 +102,7 @@ pub fn state_in(tmp: &Path) -> DaemonState {
         wordpress_login_tokens: Arc::new(crate::wordpress_login::LoginTokenRegistry::new()),
         wordpress_login_prepend_script: None,
         wordpress_sites: Arc::new(RwLock::new(std::collections::HashMap::new())),
+        laravel_sites: Arc::new(RwLock::new(std::collections::HashMap::new())),
     }
 }
 

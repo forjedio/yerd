@@ -208,6 +208,10 @@ struct ServiceInstanceSer<'a> {
     version: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     port: Option<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    site: Option<&'a str>,
+    // Emitted unconditionally so the persisted autostart intent round-trips
+    // exactly (an omitted key would re-default by type on the next load).
     enabled: bool,
 }
 
@@ -301,6 +305,7 @@ pub(crate) fn to_toml(c: &Config) -> Result<String, ConfigError> {
                     ServiceInstanceSer {
                         version: inst.version.as_deref(),
                         port: inst.port,
+                        site: inst.site.as_deref(),
                         enabled: inst.enabled,
                     },
                 )
@@ -433,8 +438,8 @@ mod tests {
     fn default_to_toml_starts_with_version_line() {
         let s = to_toml(&Config::default()).unwrap();
         assert!(
-            s.starts_with("version = 14\n"),
-            "expected `version = 14` first line; got: {s}"
+            s.starts_with("version = 15\n"),
+            "expected `version = 15` first line; got: {s}"
         );
     }
 

@@ -104,6 +104,7 @@ async fn dispatch(req: Request, state: &DaemonState) -> Response {
             let router = state.router.read().await;
             let tld = router.config().tld().to_owned();
             let wordpress_sites = state.wordpress_sites.read().await;
+            let laravel_sites = state.laravel_sites.read().await;
             let entries = router
                 .iter()
                 .map(|site| {
@@ -112,6 +113,7 @@ async fn dispatch(req: Request, state: &DaemonState) -> Response {
                     let uses_front_controller = site.uses_front_controller(is_wordpress);
                     let (primary_domain, domains) = site_entry_domains(&router, name, &tld);
                     let apex_shadowed_by = router.apex_shadowed_by(name).map(str::to_owned);
+                    let is_laravel = laravel_sites.get(name).copied().unwrap_or(false);
                     yerd_ipc::SiteEntry {
                         site: site.clone(),
                         is_wordpress,
@@ -119,6 +121,7 @@ async fn dispatch(req: Request, state: &DaemonState) -> Response {
                         domains,
                         apex_shadowed_by,
                         uses_front_controller,
+                        is_laravel,
                     }
                 })
                 .collect();
@@ -269,6 +272,38 @@ async fn dispatch(req: Request, state: &DaemonState) -> Response {
         }
         Request::ServiceLogs { service, lines } => {
             crate::services::service_logs(&service, lines, state)
+        }
+        Request::AddService {
+            type_id,
+            site,
+            port,
+            version,
+            autostart,
+        } => {
+            let dl = crate::php_install::ReqwestDownloader::new();
+            crate::services::add_service(
+                &type_id,
+                site.as_deref(),
+                port,
+                version.as_deref(),
+                autostart,
+                state,
+                &dl,
+            )
+            .await
+        }
+        Request::RemoveService { service, purge } => {
+            crate::services::remove_service(&service, purge, state).await
+        }
+        Request::SetServiceAutostart { service, enabled } => {
+            crate::services::set_service_autostart(&service, enabled, state).await
+        }
+        Request::SetServiceSite { service, site } => {
+            crate::services::set_service_site(&service, &site, state).await
+        }
+        Request::AddableServiceTypes => {
+            let dl = crate::php_install::ReqwestDownloader::new();
+            crate::services::addable_service_types(state, &dl).await
         }
         Request::CreateDatabase { service, name } => {
             crate::db_admin::create(&service, &name, state).await
@@ -1987,7 +2022,7 @@ pub(crate) async fn handle_mutation(req: Request, state: &DaemonState) -> Respon
         return internal(format!("config validation failed: {e}"));
     }
 
-    let (candidate, candidate_wordpress) =
+    let (candidate, candidate_wordpress, candidate_laravel) =
         match startup::build_router(&new, &state.dirs, &state.detect_cache) {
             Ok(r) => r,
             Err(DaemonError::Core(yerd_core::CoreError::DuplicateSite { name })) => {
@@ -2007,6 +2042,7 @@ pub(crate) async fn handle_mutation(req: Request, state: &DaemonState) -> Respon
     let site_after = site_needing_url_sync(&req, &candidate);
     *state.router.write().await = candidate;
     *state.wordpress_sites.write().await = candidate_wordpress;
+    *state.laravel_sites.write().await = candidate_laravel;
     drop(cfg_guard);
 
     state.watch_dirty.notify_one();

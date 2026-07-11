@@ -374,6 +374,46 @@ pub struct ServiceStatus {
     pub enabled: bool,
     /// Whether the engine hosts SQL databases (gates "Create Database" in the GUI).
     pub supports_databases: bool,
+    /// The service *type* id (`"redis"`, `"reverb"`), distinct from `service`
+    /// (the instance wire id, e.g. `"reverb:blog"`). Additive: older daemons omit
+    /// it, so a client falls back to `service` when this is empty.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub type_id: String,
+    /// The linked site name for a per-site instance (`Some("blog")`); `None` for
+    /// a single-instance engine. Additive.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub site: Option<String>,
+    /// The last failure message when `state` is `Failed`, for display in the UI;
+    /// `None` otherwise. Additive.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+/// One installable service *type* for the "Add Service" dialog, returned in
+/// [`crate::Response::AddableServices`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AddableServiceType {
+    /// Stable type id (`"redis"`, `"reverb"`, ...).
+    pub type_id: String,
+    /// Human-facing label.
+    pub display_name: String,
+    /// `"single"` (at most one instance) or `"per_site"` (one per linked site).
+    pub multiplicity: String,
+    /// Whether adding an instance requires choosing a linked site.
+    pub requires_site: bool,
+    /// Whether adding an instance installs a downloadable version.
+    pub requires_version: bool,
+    /// True for a single-instance type that is already installed - the GUI
+    /// disables its picker row.
+    pub already_installed: bool,
+    /// Installable versions for this platform, ascending (empty for a
+    /// version-less type).
+    pub available_versions: Vec<String>,
+    /// The type's default loopback port.
+    pub default_port: u16,
+    /// The daemon's suggested next-free port for a new instance (validated again
+    /// on submit).
+    pub suggested_port: u16,
 }
 
 /// What versions of a service are installed vs installable, returned in

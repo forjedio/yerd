@@ -18,12 +18,12 @@ use std::path::PathBuf;
 
 use yerd_ipc::{
     types::{PhpVersion, Site},
-    CaStatus, Channel, CloudflaredSource, CloudflaredStatus, DatabaseSummary, Diagnosis,
-    DiagnosisCode, DumpCategory, DumpCounts, DumpEvent, DumpExtStatus, ErrorCode, FixReport,
-    FixResult, MailDetail, MailHeader, MailStatus, MailSummary, NamedTunnelMeta, PhpPoolStatus,
-    PoolRunState, PortStatus, Request, Response, ServiceAvailability, ServiceRunState,
-    ServiceStatus, Severity, SiteCounts, SiteHostname, StagedArtifact, StatusReport, ToolStatus,
-    TunnelInfo, TunnelKind, TunnelRunState, UpdateSource,
+    AddableServiceType, CaStatus, Channel, CloudflaredSource, CloudflaredStatus, DatabaseSummary,
+    Diagnosis, DiagnosisCode, DumpCategory, DumpCounts, DumpEvent, DumpExtStatus, ErrorCode,
+    FixReport, FixResult, MailDetail, MailHeader, MailStatus, MailSummary, NamedTunnelMeta,
+    PhpPoolStatus, PoolRunState, PortStatus, Request, Response, ServiceAvailability,
+    ServiceRunState, ServiceStatus, Severity, SiteCounts, SiteHostname, StagedArtifact,
+    StatusReport, ToolStatus, TunnelInfo, TunnelKind, TunnelRunState, UpdateSource,
 };
 
 // ---------- Request ----------
@@ -435,6 +435,7 @@ fn plain(site: Site) -> yerd_ipc::SiteEntry {
         domains: vec![],
         apex_shadowed_by: None,
         uses_front_controller: false,
+        is_laravel: false,
     }
 }
 
@@ -491,6 +492,7 @@ fn response_sites_wordpress_byte_shape() {
             domains: vec![],
             apex_shadowed_by: None,
             uses_front_controller: false,
+            is_laravel: false,
         }],
     };
     let s = serde_json::to_string(&r).unwrap();
@@ -511,6 +513,7 @@ fn response_sites_customized_domains_byte_shape() {
             domains: vec!["corp.test".into(), "*.blog.test".into()],
             apex_shadowed_by: Some("shop".into()),
             uses_front_controller: false,
+            is_laravel: false,
         }],
     };
     let s = serde_json::to_string(&r).unwrap();
@@ -533,6 +536,7 @@ fn response_sites_wp_auto_login_byte_shape() {
             domains: vec![],
             apex_shadowed_by: None,
             uses_front_controller: false,
+            is_laravel: false,
         }],
     };
     let s = serde_json::to_string(&r).unwrap();
@@ -915,6 +919,9 @@ fn status_services_appear_only_when_non_empty() {
         port: 6379,
         enabled: true,
         supports_databases: false,
+        type_id: String::new(),
+        site: None,
+        error: None,
     }];
     let s = serde_json::to_string(&report).unwrap();
     assert!(
@@ -1050,6 +1057,14 @@ fn error_code_each_variant_byte_shape() {
         (ErrorCode::InvalidPath, r#""invalid_path""#),
         (ErrorCode::PortInUse, r#""port_in_use""#),
         (ErrorCode::ExtensionLoadFailed, r#""extension_load_failed""#),
+        (ErrorCode::PortReserved, r#""port_reserved""#),
+        (ErrorCode::SiteNotFound, r#""site_not_found""#),
+        (ErrorCode::SiteNotLaravel, r#""site_not_laravel""#),
+        (ErrorCode::UnknownServiceType, r#""unknown_service_type""#),
+        (
+            ErrorCode::InstanceAlreadyExists,
+            r#""instance_already_exists""#,
+        ),
         (ErrorCode::Internal, r#""internal""#),
     ];
     for (code, expected) in cases {
@@ -1214,6 +1229,135 @@ fn request_set_service_port_byte_shape() {
 }
 
 #[test]
+fn request_add_service_byte_shape() {
+    let r = Request::AddService {
+        type_id: "reverb".into(),
+        site: Some("blog".into()),
+        port: Some(8081),
+        version: None,
+        autostart: Some(false),
+    };
+    let s = serde_json::to_string(&r).unwrap();
+    assert_eq!(
+        s,
+        r#"{"type":"add_service","type_id":"reverb","site":"blog","port":8081,"version":null,"autostart":false}"#
+    );
+    assert_eq!(serde_json::from_str::<Request>(&s).unwrap(), r);
+}
+
+#[test]
+fn request_remove_service_byte_shape() {
+    let r = Request::RemoveService {
+        service: "reverb:blog".into(),
+        purge: true,
+    };
+    let s = serde_json::to_string(&r).unwrap();
+    assert_eq!(
+        s,
+        r#"{"type":"remove_service","service":"reverb:blog","purge":true}"#
+    );
+    assert_eq!(serde_json::from_str::<Request>(&s).unwrap(), r);
+}
+
+#[test]
+fn request_set_service_autostart_byte_shape() {
+    let r = Request::SetServiceAutostart {
+        service: "redis".into(),
+        enabled: false,
+    };
+    let s = serde_json::to_string(&r).unwrap();
+    assert_eq!(
+        s,
+        r#"{"type":"set_service_autostart","service":"redis","enabled":false}"#
+    );
+    assert_eq!(serde_json::from_str::<Request>(&s).unwrap(), r);
+}
+
+#[test]
+fn request_set_service_site_byte_shape() {
+    let r = Request::SetServiceSite {
+        service: "reverb:blog".into(),
+        site: "shop".into(),
+    };
+    let s = serde_json::to_string(&r).unwrap();
+    assert_eq!(
+        s,
+        r#"{"type":"set_service_site","service":"reverb:blog","site":"shop"}"#
+    );
+    assert_eq!(serde_json::from_str::<Request>(&s).unwrap(), r);
+}
+
+#[test]
+fn request_addable_service_types_byte_shape() {
+    let r = Request::AddableServiceTypes;
+    let s = serde_json::to_string(&r).unwrap();
+    assert_eq!(s, r#"{"type":"addable_service_types"}"#);
+    assert_eq!(serde_json::from_str::<Request>(&s).unwrap(), r);
+}
+
+#[test]
+fn response_addable_services_byte_shape() {
+    let r = Response::AddableServices {
+        types: vec![AddableServiceType {
+            type_id: "reverb".into(),
+            display_name: "Reverb".into(),
+            multiplicity: "per_site".into(),
+            requires_site: true,
+            requires_version: false,
+            already_installed: false,
+            available_versions: vec![],
+            default_port: 8080,
+            suggested_port: 8081,
+        }],
+    };
+    let s = serde_json::to_string(&r).unwrap();
+    assert_eq!(
+        s,
+        r#"{"type":"addable_services","types":[{"type_id":"reverb","display_name":"Reverb","multiplicity":"per_site","requires_site":true,"requires_version":false,"already_installed":false,"available_versions":[],"default_port":8080,"suggested_port":8081}]}"#
+    );
+    assert_eq!(serde_json::from_str::<Response>(&s).unwrap(), r);
+}
+
+#[test]
+fn response_service_instance_id_byte_shape() {
+    let r = Response::ServiceInstanceId {
+        id: "reverb:shop".into(),
+    };
+    let s = serde_json::to_string(&r).unwrap();
+    assert_eq!(s, r#"{"type":"service_instance_id","id":"reverb:shop"}"#);
+    assert_eq!(serde_json::from_str::<Response>(&s).unwrap(), r);
+}
+
+/// A per-site instance status with the additive fields populated: `type_id`,
+/// `site`, and `error` appear after `supports_databases`, in that order.
+#[test]
+fn response_services_per_site_instance_byte_shape() {
+    let r = Response::Services {
+        services: vec![ServiceStatus {
+            service: "reverb:blog".into(),
+            display_name: "Reverb".into(),
+            installed_versions: vec![],
+            selected_version: None,
+            state: ServiceRunState::Failed,
+            pid: None,
+            listen: None,
+            port: 8081,
+            enabled: false,
+            supports_databases: false,
+            type_id: "reverb".into(),
+            site: Some("blog".into()),
+            error: Some("artisan reverb:start exited with code 1".into()),
+        }],
+    };
+    let s = serde_json::to_string(&r).unwrap();
+    assert_eq!(
+        s,
+        r#"{"type":"services","services":[{"service":"reverb:blog","display_name":"Reverb","installed_versions":[],"selected_version":null,"state":"failed","pid":null,"listen":null,"port":8081,"enabled":false,"supports_databases":false,"type_id":"reverb","site":"blog","error":"artisan reverb:start exited with code 1"}]}"#
+    );
+    assert_eq!(serde_json::from_str::<Response>(&s).unwrap(), r);
+}
+
+#[test]
 fn request_service_logs_byte_shape() {
     let r = Request::ServiceLogs {
         service: "redis".into(),
@@ -1341,6 +1485,9 @@ fn response_services_byte_shape() {
             port: 6379,
             enabled: true,
             supports_databases: false,
+            type_id: String::new(),
+            site: None,
+            error: None,
         }],
     };
     let s = serde_json::to_string(&r).unwrap();
