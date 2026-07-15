@@ -171,8 +171,9 @@ fn probe_writable(parent: &Path) -> Result<(), String> {
 
 /// Install `tool` inline if it's neither managed nor available externally on
 /// the user's PATH, streaming an `Installing {display_name}` phase update
-/// into this job's log. Shared by both frameworks' Preflight steps (Laravel's
-/// optional Node/Bun, WordPress's required WP-CLI).
+/// into this job's log. Only for tools the job actually resolves via PATH
+/// (Laravel's optional Node/Bun); a tool the job runs by its managed
+/// filesystem entry point must use [`ensure_managed_tool`] instead.
 async fn ensure_tool(
     id: &str,
     tool: Tool,
@@ -187,6 +188,26 @@ async fn ensure_tool(
     {
         return Ok(());
     }
+    install_tool_inline(id, tool, state).await
+}
+
+/// Like [`ensure_tool`], but an external copy on the user's PATH does not
+/// count: only a managed install satisfies it. WordPress's Preflight needs
+/// this for WP-CLI, because every `wp` step runs the managed `boot-fs.php`
+/// entry point directly (see `wordpress::run_wp_step`), never a
+/// PATH-resolved `wp`, so accepting an external install would let the job
+/// proceed and then fail spawning a path that doesn't exist.
+async fn ensure_managed_tool(id: &str, tool: Tool, state: &Arc<DaemonState>) -> Result<(), String> {
+    if tools::installed_version(&state.dirs, tool).is_some() {
+        return Ok(());
+    }
+    install_tool_inline(id, tool, state).await
+}
+
+/// Download + install `tool` under the tool-mutation lock, streaming an
+/// `Installing {display_name}` phase update into this job's log, then
+/// reconcile the `{data}/bin` shims.
+async fn install_tool_inline(id: &str, tool: Tool, state: &Arc<DaemonState>) -> Result<(), String> {
     state
         .jobs
         .set_phase(id, format!("Installing {}", tool.display_name()))
@@ -527,5 +548,45 @@ mod tests {
             Response::JobStarted { .. } => {}
             other => panic!("expected JobStarted, got {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn ensure_managed_tool_short_circuits_on_managed_marker() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = Arc::new(crate::test_support::state_in(tmp.path()));
+        let tool_dir = state.dirs.data.join("tools").join("wp-cli");
+        std::fs::create_dir_all(&tool_dir).unwrap();
+        std::fs::write(tool_dir.join(".version"), "v2.12.0\n").unwrap();
+        let result = ensure_managed_tool("job", Tool::WpCli, &state).await;
+        assert!(result.is_ok());
+    }
+
+    /// The regression behind issue #150: an external `wp` on the user's PATH
+    /// satisfies [`ensure_tool`] but must not satisfy [`ensure_managed_tool`],
+    /// because the WordPress job only ever runs the managed `boot-fs.php`.
+    /// With nothing managed, the managed variant proceeds to a real install,
+    /// which fails fast here because these dirs contain no PHP to run
+    /// Composer with - no network is touched.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn external_wp_satisfies_ensure_tool_but_not_ensure_managed_tool() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let state = Arc::new(crate::test_support::state_in(tmp.path()));
+        let ext = tmp.path().join("extbin");
+        std::fs::create_dir_all(&ext).unwrap();
+        let wp = ext.join("wp");
+        std::fs::write(&wp, b"#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(&wp, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let user_dirs = vec![ext];
+        let external_ok = ensure_tool("job", Tool::WpCli, &user_dirs, &state).await;
+        assert!(external_ok.is_ok());
+
+        let err = ensure_managed_tool("job", Tool::WpCli, &state)
+            .await
+            .unwrap_err();
+        assert!(err.contains("failed to install WP-CLI"), "{err}");
     }
 }

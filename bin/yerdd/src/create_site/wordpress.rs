@@ -1,5 +1,7 @@
 //! WordPress scaffolding via WP-CLI - the WordPress-specific body of the
-//! create-site job. Preflight ensures WP-CLI is installed; Provisioning
+//! create-site job. Preflight ensures the *managed* WP-CLI is installed (an
+//! external `wp` on PATH doesn't count, since every step runs the managed
+//! `boot-fs.php` entry point directly); Provisioning
 //! database ensures a MySQL/MariaDB engine is installed+running and creates
 //! the site's database; Downloading/Configuring/Installing run `wp core
 //! download` / `wp config create` / `wp core install` with piped, streamed
@@ -45,11 +47,16 @@ pub(super) async fn run(
         return Outcome::Failed(format!("invalid WordPress admin account: {e}"));
     }
 
-    let user_dirs = crate::tools::external::resolve_user_path()
-        .await
-        .unwrap_or_default();
-    if let Err(msg) = super::ensure_tool(id, Tool::WpCli, &user_dirs, state).await {
+    if let Err(msg) = ensure_wp_cli(id, state).await {
         return Outcome::Failed(msg);
+    }
+    let boot_fs = tools::wp_cli::boot_path(dirs);
+    if !boot_fs.is_file() {
+        return Outcome::Failed(format!(
+            "WP-CLI is installed but {} is missing - reinstall WP-CLI from the Tooling page \
+             (or run `yerd install tool wp-cli`)",
+            boot_fs.display()
+        ));
     }
     if let Err(msg) = super::check_target_dir(&project_dir) {
         return Outcome::Failed(msg);
@@ -92,7 +99,6 @@ pub(super) async fn run(
         rollback(&project_dir, db_created, &def, &db_name, state).await;
         return Outcome::Failed(format!("{}: {e}", project_dir.display()));
     }
-    let boot_fs = tools::wp_cli::boot_path(dirs);
     let download_args = download_args(options);
     state
         .jobs
@@ -212,6 +218,20 @@ pub(super) async fn run(
         .push_log(id, format!("serving {scheme}://{name}.{tld}"))
         .await;
     Outcome::Succeeded
+}
+
+/// Ensure the managed WP-CLI, installing the managed Composer first when it's
+/// missing: [`tools::wp_cli::install`] builds the bundle by running yerd's own
+/// Composer phar and refuses outright without it, and an external Composer
+/// can't stand in. Only reached when WP-CLI itself has to be built - once it
+/// is installed, scaffolding never touches Composer, so a user running only
+/// their own Composer is never made to take yerd's copy for no reason.
+async fn ensure_wp_cli(id: &str, state: &Arc<DaemonState>) -> Result<(), String> {
+    if tools::installed_version(&state.dirs, Tool::WpCli).is_some() {
+        return Ok(());
+    }
+    super::ensure_managed_tool(id, Tool::Composer, state).await?;
+    super::ensure_managed_tool(id, Tool::WpCli, state).await
 }
 
 /// The database name to provision: `options.database.name` if given,

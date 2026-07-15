@@ -48,19 +48,22 @@ const composerInstalled = computed(() =>
   tools.value.some((t) => t.id === "composer" && t.installed),
 );
 
-const COMPOSER_REQUIRED_HINT = "Yerd's own Composer is required to build this tool.";
+const COMPOSER_REQUIRED_HINT =
+  "Yerd's own Composer is required to build this tool - install Yerd's Composer first.";
 
 /** The Laravel installer and WP-CLI are built via Composer, so they can't install without it. */
 function blockedNoComposer(t: ToolStatus): boolean {
   return (t.id === "laravel" || t.id === "wp-cli") && !composerInstalled.value;
 }
 
-/** Explains an External tool: it's not a problem, just not Yerd's to manage. */
+/** Explains an External tool: your copy is fine, but Yerd's own is still
+ *  installable - some managed tools are built with Yerd's Composer, so hiding
+ *  Install here used to leave no way to get it. */
 function externalHint(t: ToolStatus): string {
   const found = t.external_path
     ? `Already on your PATH at ${t.external_path}`
     : "Already on your PATH from another install";
-  return `${found} - Yerd isn't managing this copy, so there's nothing to install or update.`;
+  return `${found} - Yerd isn't managing that copy. You can still install Yerd's own alongside it.`;
 }
 
 const uninstallOpen = ref(false);
@@ -235,22 +238,23 @@ onUnmounted(registerViewActions({ refresh: () => void load() }));
                         <Trash2 class="size-3.5" />
                       </Button>
                     </template>
-                    <span
-                      v-else-if="t.external"
-                      class="text-xs text-muted-foreground"
-                      :title="externalHint(t)"
-                    >
-                      Managed by you
-                    </span>
-                    <Button
-                      v-else
-                      size="sm"
-                      :disabled="busy !== null || blockedNoComposer(t)"
-                      :title="blockedNoComposer(t) ? COMPOSER_REQUIRED_HINT : ''"
-                      @click="doInstall(t)"
-                    >
-                      <Download class="mr-1.5 size-3.5" /> Install
-                    </Button>
+                    <template v-else>
+                      <span
+                        v-if="t.external"
+                        class="cursor-help text-xs text-muted-foreground"
+                        :title="externalHint(t)"
+                      >
+                        Managed by you
+                      </span>
+                      <Button
+                        size="sm"
+                        :disabled="busy !== null || blockedNoComposer(t)"
+                        :title="blockedNoComposer(t) ? COMPOSER_REQUIRED_HINT : ''"
+                        @click="doInstall(t)"
+                      >
+                        <Download class="mr-1.5 size-3.5" /> Install
+                      </Button>
+                    </template>
                   </div>
                 </td>
               </tr>
