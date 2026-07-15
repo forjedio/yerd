@@ -61,8 +61,8 @@ fn populated() -> Config {
 fn default_config_starts_with_version_line() {
     let s = Config::default().to_toml().unwrap();
     assert!(
-        s.starts_with("version = 15\n"),
-        "expected first line `version = 15`; got: {s}"
+        s.starts_with("version = 16\n"),
+        "expected first line `version = 16`; got: {s}"
     );
 }
 
@@ -111,6 +111,28 @@ fn symlink_protection_false_round_trips() {
     assert!(s.contains("symlink_protection = false\n"), "got: {s}");
     let back = Config::from_toml(&s).unwrap();
     assert!(!back.symlink_protection);
+}
+
+#[test]
+fn default_config_emits_mcp_enabled_scalar_before_tables() {
+    let s = Config::default().to_toml().unwrap();
+    assert!(
+        s.contains("mcp_enabled = false\n"),
+        "expected `mcp_enabled = false` scalar; got: {s}"
+    );
+    let at = s.find("mcp_enabled = ").expect("scalar present");
+    let first_table = s.find("\n[").expect("at least one table");
+    assert!(at < first_table, "mcp_enabled must precede tables in: {s}");
+}
+
+#[test]
+fn mcp_enabled_true_round_trips() {
+    let mut c = Config::default();
+    c.mcp_enabled = true;
+    let s = c.to_toml().unwrap();
+    assert!(s.contains("mcp_enabled = true\n"), "got: {s}");
+    let back = Config::from_toml(&s).unwrap();
+    assert!(back.mcp_enabled);
 }
 
 #[test]

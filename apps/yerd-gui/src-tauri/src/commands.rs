@@ -633,6 +633,11 @@ pub async fn set_symlink_protection(enabled: bool) -> Result<Response, GuiError>
     finish(exchange(&Request::SetSymlinkProtection { enabled }).await?)
 }
 
+#[tauri::command]
+pub async fn set_mcp_enabled(enabled: bool) -> Result<Response, GuiError> {
+    finish(exchange(&Request::SetMcpEnabled { enabled }).await?)
+}
+
 // ── status / doctor / info ─────────────────────────────────────────────────
 
 #[tauri::command]

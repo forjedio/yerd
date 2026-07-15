@@ -71,6 +71,7 @@ fn encode_then_decode_request_roundtrip() {
     assert_request_roundtrips(Request::Status);
     assert_request_roundtrips(Request::Diagnose);
     assert_request_roundtrips(Request::DoctorFix);
+    assert_request_roundtrips(Request::SetMcpEnabled { enabled: true });
     assert_request_roundtrips(Request::CheckUpdate {
         channel: Some(yerd_ipc::Channel::Edge),
     });
@@ -228,6 +229,7 @@ fn encode_then_decode_response_roundtrip() {
             boot_id: Some(42),
             shared_sites: 3,
             symlink_protection: false,
+            mcp_enabled: true,
             shadows: vec![yerd_ipc::DomainShadow {
                 site: "blog".into(),
                 shadowed_by: "shop".into(),

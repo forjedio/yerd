@@ -28,7 +28,29 @@ Each entry below states what changed, whether the daemon's own migration is a ba
 
 ## Version-by-version
 
-### v14 (current)
+### v16 (current)
+
+**Added:** the top-level `mcp_enabled` scalar (bool) - whether `yerd mcp` serves Yerd's tools to local AI agents. Defaults to `false`, so exposing Yerd to agents is an explicit opt-in, and is always emitted.
+
+```toml
+mcp_enabled = false
+```
+
+The daemon runs no MCP server of its own: it stores this flag and reports it in the status report, and each `yerd mcp` session reads it to decide whether to serve. See [AI Agents](../guide/ai-agents).
+
+**Migration from v15:** bare version bump - the key defaults to `false` when absent, so a v15 file needs no other change.
+
+**To downgrade to v15:** change `version = 16` to `version = 15` and delete the `mcp_enabled` line (a v15 daemon rejects the unknown key under `deny_unknown_fields` rather than ignoring it). Agents lose access to Yerd's tools; nothing else is affected.
+
+### v15
+
+**Added:** the multi-instance services rework - the optional per-instance `site` field and the `"{type}:{site}"` wire ids under `[services]`, both additive. It also made the per-service `enabled` flag actually gate boot autostart; before v15 the daemon auto-started every installed engine regardless.
+
+**Migration from v14:** structural, but small - every existing single-instance engine (a `[services.<name>]` key with no colon) is marked `enabled = true`, so engines that started with Yerd before the upgrade keep doing so. Per-site instances don't exist at v14, so none are affected.
+
+**To downgrade to v14:** change `version = 15` to `version = 14`, then delete any per-site instance tables (keys containing a colon, e.g. `[services."reverb:blog"]`). The `enabled` keys themselves are valid at v14 - it simply ignores them for autostart and starts every installed engine.
+
+### v14
 
 **Added:** the optional `[[proxies]]` array (whole-host reverse proxies) and the `[proxy_rules]` table (per-site path-prefix rules). Both default to empty when absent, so an uncustomised file omits them entirely.
 

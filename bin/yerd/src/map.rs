@@ -201,6 +201,11 @@ pub fn to_request(cmd: &Command) -> Result<Request, ClientError> {
                 "coverage is handled locally, not over IPC".to_owned(),
             ));
         }
+        Command::Mcp => {
+            return Err(ClientError::Usage(
+                "mcp runs its own protocol loop, not a single IPC exchange".to_owned(),
+            ));
+        }
         Command::Link { .. } => {
             return Err(ClientError::Usage(
                 "link is handled locally, not over IPC".to_owned(),
@@ -2245,6 +2250,7 @@ mod tests {
             shared_sites: 0,
             symlink_protection: true,
             shadows: vec![],
+            mcp_enabled: false,
         }
     }
 

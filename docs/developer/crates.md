@@ -42,6 +42,7 @@ set (it wraps macro-heavy generated Tauri code) but still bans
 | `yerd-doctor` | Pure diagnosis and fix-planning for `yerd doctor`. Turns a `StatusReport` into findings and safe auto-fixes. | pure | [yerd-doctor](./crates/yerd-doctor) |
 | `yerd-platform` | OS abstraction layer: paths, trust store, resolver installer, port binder/redirector, metrics - one impl per OS. | owns I/O (pure submodule) | [yerd-platform](./crates/yerd-platform) |
 | `yerd-mail` | Built-in mail-capture SMTP sink plus its on-disk store. Accepts mail on a loopback port (Herd-style) and persists parsed messages for the GUI. Depends on `yerd-ipc` + `mail-parser`. | owns I/O | [yerd-mail](./crates/yerd-mail) |
+| `yerd-mcp` | Model Context Protocol server logic: the curated tool catalog agents call, the sans-io JSON-RPC state machine, and tool-result rendering. Consumed by `yerd mcp`, which owns the stdio loop and the daemon exchange. Depends on `yerd-ipc`. | pure | [yerd-mcp](./crates/yerd-mcp) |
 | `yerd-tunnel` | Cloudflare Tunnel support: pure `cloudflared` argv / `config.yml` generation and log parsing, plus a supervised `cloudflared` lifecycle. Powers public site sharing. Depends on `yerd-supervise`. | owns I/O (pure submodules) | [yerd-tunnel](./crates/yerd-tunnel) |
 | `yerd-update` | Pure release-channel selection and version-decision logic for self-update: `select_target` (stable/edge resolution), artifact selection by platform, and checksum/minisign verification. | pure | [yerd-update](./crates/yerd-update) |
 | `yerd-service-ctl` | Cross-platform start/stop/restart control for the `yerdd` daemon service (`launchctl`/`systemctl`), used by the self-update applier to restart onto a freshly-swapped binary. | owns I/O | [yerd-service-ctl](./crates/yerd-service-ctl) |
@@ -103,6 +104,7 @@ flowchart TD
     tls["yerd-tls"]
     platform["yerd-platform"]
     mail["yerd-mail"]
+    mcp["yerd-mcp"]
     tunnel["yerd-tunnel"]
     update["yerd-update"]
     servicectl["yerd-service-ctl"]
@@ -118,6 +120,7 @@ flowchart TD
     yerd --> platform
     yerd --> update
     yerd --> servicectl
+    yerd --> mcp
 
     helper --> core
     helper --> platform
@@ -138,6 +141,8 @@ flowchart TD
     yerdd --> update
 
     ipc --> core
+    mcp --> ipc
+    mcp --> core
     config --> core
     dns --> core
     proxy --> core
@@ -168,6 +173,7 @@ crate's `Cargo.toml`):
 - **`yerd-php`** → `yerd-core`, `yerd-platform`, `yerd-supervise`
 - **`yerd-services`** → `yerd-platform`, `yerd-supervise`
 - **`yerd-mail`** → `yerd-ipc`
+- **`yerd-mcp`** → `yerd-core`, `yerd-ipc`
 - **`yerd-update`** → *(none - workspace leaf)*
 - **`yerd-service-ctl`** → *(none - workspace leaf)*
 - **`yerd-helper`** (bin) → `yerd-core`, `yerd-platform`

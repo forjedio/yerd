@@ -804,6 +804,13 @@ export async function setSymlinkProtection(enabled: boolean): Promise<void> {
   ensureOk(await call<Response>("set_symlink_protection", { enabled }));
 }
 
+/** Enable/disable serving Yerd's tools to AI agents over MCP. Enabling reaches
+ *  running agent sessions on their next tool call; disabling applies to sessions
+ *  started afterwards. */
+export async function setMcpEnabled(enabled: boolean): Promise<void> {
+  ensureOk(await call<Response>("set_mcp_enabled", { enabled }));
+}
+
 /** Open (or focus) the separate Mails viewer window. Host command, not daemon IPC. */
 export async function showMailsWindow(): Promise<void> {
   await call<void>("show_mails_window");

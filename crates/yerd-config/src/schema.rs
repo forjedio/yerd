@@ -40,6 +40,12 @@ pub struct Config {
     /// shared atomic; toggling it takes effect without a daemon restart. See
     /// [`DEFAULT_SYMLINK_PROTECTION`].
     pub symlink_protection: bool,
+    /// Whether `yerd mcp` serves Yerd's tools to local AI agents over MCP.
+    /// Default: `false` (opt in from the GUI's General settings). The daemon
+    /// runs no MCP server itself: it only persists this flag and reports it in
+    /// [`yerd_ipc::StatusReport`], which each `yerd mcp` session reads to decide
+    /// whether to serve. See [`DEFAULT_MCP_ENABLED`].
+    pub mcp_enabled: bool,
     /// HTTP / HTTPS listen ports.
     pub ports: Ports,
     /// PHP defaults.
@@ -91,6 +97,7 @@ impl Default for Config {
             dns_port: DEFAULT_DNS_PORT,
             update_channel: DEFAULT_UPDATE_CHANNEL.to_owned(),
             symlink_protection: DEFAULT_SYMLINK_PROTECTION,
+            mcp_enabled: DEFAULT_MCP_ENABLED,
             ports: Ports::default(),
             php: PhpSection::default(),
             parked: ParkedSection::default(),
@@ -333,6 +340,10 @@ pub const UPDATE_CHANNELS: &[&str] = &["stable", "edge"];
 
 /// Default for [`Config::symlink_protection`] - protection on.
 pub const DEFAULT_SYMLINK_PROTECTION: bool = true;
+
+/// Default for [`Config::mcp_enabled`] - off, so exposing Yerd to AI agents is
+/// an explicit opt-in.
+pub const DEFAULT_MCP_ENABLED: bool = false;
 
 /// The lowest non-privileged port. Ports below this need elevation on
 /// macOS / Linux, which is precisely what the rootless fallback exists to

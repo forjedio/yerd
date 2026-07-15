@@ -192,6 +192,7 @@ The variant set is the daemon's whole RPC surface - liveness, site management, P
 | `MarkMailsRead { ids }` | `{"type":"mark_mails_read","ids":["000001"]}` |
 | `SetMailPort { port }` | `{"type":"set_mail_port","port":2525}` |
 | `SetMailEnabled { enabled }` | `{"type":"set_mail_enabled","enabled":true}` |
+| `SetMcpEnabled { enabled }` | `{"type":"set_mcp_enabled","enabled":true}` |
 | `ListDumps { since_id }` | `{"type":"list_dumps","since_id":0}` |
 | `ClearDumps` | `{"type":"clear_dumps"}` |
 | `DeleteDump { id }` | `{"type":"delete_dump","id":1}` |
@@ -306,6 +307,8 @@ There is deliberately **no `#[serde(other)]` catch-all**. An unknown code from a
 ### Status & doctor payloads
 
 `status.rs` holds the nested payloads carried inside the status/doctor, service/database, and mail responses: `StatusReport`, `PortStatus`, `CaStatus`, `SiteCounts`, `PhpPoolStatus`, `PoolRunState`, `ServiceStatus`, `ServiceRunState`, `ServiceAvailability`, `DatabaseSummary`, `Diagnosis`, `Severity`, `DiagnosisCode`, `FixReport`, `FixResult`, and the mail-capture types `MailStatus`, `MailSummary`, `MailHeader`, and `MailDetail`. Same contract rules apply. `StatusReport` also carries an additive `services: Vec<ServiceStatus>` field alongside the PHP pools, plus an additive `mail: Option<MailStatus>`.
+
+`StatusReport` is also how the MCP gate is read back: `mcp_enabled: bool` (additive, `#[serde(default)]`, always emitted) reports whether `SetMcpEnabled` has been turned on. The daemon runs no MCP server itself - it persists the flag and reports it here, and each `yerd mcp` session reads it to decide whether to serve tools. See [yerd-mcp](./crates/yerd-mcp).
 
 `dump.rs` holds the dump-telemetry payloads carried inside the `Dumps` / `DumpsStatus` responses: `DumpCategory` (the per-tab category enum), `DumpEvent` (one buffered event; its `payload` is an opaque `serde_json::Value`), `DumpCounts` (per-category buffered counts), and `DumpExtStatus` (per-PHP-version extension presence). Same contract rules apply.
 

@@ -712,6 +712,14 @@ pub enum Request {
         /// `true` = front-controller mode; `false` = direct script execution.
         enabled: bool,
     },
+    /// Enable or disable the MCP server gate (whether `yerd mcp` serves tools
+    /// to local AI agents). Persisted to config and reported back through
+    /// [`crate::StatusReport::mcp_enabled`]; the daemon itself runs no MCP
+    /// server, so this only gates `yerd mcp` sessions.
+    SetMcpEnabled {
+        /// `true` = agents may call Yerd's MCP tools; `false` = gated off.
+        enabled: bool,
+    },
 }
 
 #[cfg(test)]
@@ -841,6 +849,7 @@ mod variant_name_pinning {
             Request::AddProxyRule { .. } => {}
             Request::RemoveProxyRule { .. } => {}
             Request::ListProxies => {}
+            Request::SetMcpEnabled { .. } => {}
         }
     }
 
@@ -1113,6 +1122,7 @@ mod variant_name_pinning {
             prefix: "/app".to_owned(),
         });
         pin(Request::ListProxies);
+        pin(Request::SetMcpEnabled { enabled: true });
     }
 
     fn laravel_options_fixture() -> crate::LaravelOptions {

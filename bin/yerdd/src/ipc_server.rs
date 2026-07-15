@@ -370,6 +370,7 @@ async fn dispatch(req: Request, state: &DaemonState) -> Response {
         Request::SetDnsPort { port } => set_dns_port(port, state).await,
         Request::SetMailEnabled { enabled } => set_mail_enabled(enabled, state).await,
         Request::SetSymlinkProtection { enabled } => set_symlink_protection(enabled, state).await,
+        Request::SetMcpEnabled { enabled } => set_mcp_enabled(enabled, state).await,
         Request::ListTools => Response::Tools {
             tools: list_tools_with_external(state).await,
         },
@@ -611,7 +612,16 @@ fn domain_shadows(
 async fn build_status_report(state: &DaemonState) -> yerd_ipc::StatusReport {
     use yerd_platform::SystemMetrics;
 
-    let (sites, tld, default_php, mail_enabled, mail_port, symlink_protection, shadows) = {
+    let (
+        sites,
+        tld,
+        default_php,
+        mail_enabled,
+        mail_port,
+        symlink_protection,
+        mcp_enabled,
+        shadows,
+    ) = {
         let cfg = state.config.lock().await;
         let router = state.router.read().await;
         let mut counts = yerd_ipc::SiteCounts::default();
@@ -633,6 +643,7 @@ async fn build_status_report(state: &DaemonState) -> yerd_ipc::StatusReport {
             cfg.mail.enabled,
             cfg.mail.port,
             cfg.symlink_protection,
+            cfg.mcp_enabled,
             shadows,
         )
     };
@@ -769,6 +780,7 @@ async fn build_status_report(state: &DaemonState) -> yerd_ipc::StatusReport {
         shared_sites,
         symlink_protection,
         shadows,
+        mcp_enabled,
     }
 }
 
@@ -1700,6 +1712,22 @@ async fn set_symlink_protection(enabled: bool, state: &DaemonState) -> Response 
         .symlink_protection
         .store(enabled, std::sync::atomic::Ordering::Relaxed);
     tracing::info!(enabled, "set symlink protection");
+    Response::Ok
+}
+
+/// Enable or disable the MCP server gate. Persist-only: the daemon runs no MCP
+/// server, so there is nothing live to update. Each `yerd mcp` session reads the
+/// flag back from [`Request::Status`], so enabling reaches running agent
+/// sessions on their next tool call.
+async fn set_mcp_enabled(enabled: bool, state: &DaemonState) -> Response {
+    let mut cfg_guard = state.config.lock().await;
+    let mut new = cfg_guard.clone();
+    new.mcp_enabled = enabled;
+    if let Err(e) = new.save(&state.config_path) {
+        return internal(format!("config save failed: {e}"));
+    }
+    *cfg_guard = new;
+    tracing::info!(enabled, "set mcp enabled");
     Response::Ok
 }
 
@@ -4176,6 +4204,43 @@ Subject: Captured\r\n\r\nhi\r\n";
         assert!(
             build_status_report(&state).await.symlink_protection,
             "status report back on"
+        );
+    }
+
+    #[tokio::test]
+    async fn set_mcp_enabled_persists_config_and_appears_in_status() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_in(tmp.path());
+        assert!(
+            !state.config.lock().await.mcp_enabled,
+            "seeded opt-in default off"
+        );
+        assert!(
+            !build_status_report(&state).await.mcp_enabled,
+            "status report starts off"
+        );
+
+        assert_eq!(
+            dispatch(Request::SetMcpEnabled { enabled: true }, &state).await,
+            Response::Ok
+        );
+        assert!(state.config.lock().await.mcp_enabled, "in-memory config on");
+        let reloaded = yerd_config::Config::load(&state.config_path).unwrap();
+        assert!(reloaded.mcp_enabled, "persisted config on");
+        assert!(
+            build_status_report(&state).await.mcp_enabled,
+            "status report on"
+        );
+
+        assert_eq!(
+            dispatch(Request::SetMcpEnabled { enabled: false }, &state).await,
+            Response::Ok
+        );
+        let reloaded = yerd_config::Config::load(&state.config_path).unwrap();
+        assert!(!reloaded.mcp_enabled, "persisted config back off");
+        assert!(
+            !build_status_report(&state).await.mcp_enabled,
+            "status report back off"
         );
     }
 

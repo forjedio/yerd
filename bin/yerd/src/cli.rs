@@ -250,6 +250,11 @@ pub enum Command {
         )]
         args: Vec<std::ffi::OsString>,
     },
+    /// Serve Yerd's tools to AI agents over MCP on stdin/stdout. Not meant to be
+    /// run by hand: an agent spawns it. Register it once, e.g.
+    /// `claude mcp add --scope user yerd -- yerd mcp`. Tools are served only
+    /// when AI Agents is enabled in Yerd's General settings.
+    Mcp,
 }
 
 /// A binary on/off toggle argument (e.g. `yerd front-controller <name> on`).
