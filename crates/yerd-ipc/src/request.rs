@@ -188,6 +188,16 @@ pub enum Request {
         /// Setting name → value (e.g. `"memory_limit" -> "512M"`); `""` removes.
         settings: BTreeMap<String, String>,
     },
+    /// Merge per-version overrides of the allowlisted PHP ini settings into the
+    /// config and apply them to that version's FPM pool and CLI ini. An
+    /// empty-string value removes the override (the global value applies again).
+    SetPhpVersionSettings {
+        /// The installed PHP version the overrides apply to.
+        version: PhpVersion,
+        /// Setting name → value (e.g. `"memory_limit" -> "1G"`); `""` removes
+        /// the per-version override so the global default falls through.
+        settings: BTreeMap<String, String>,
+    },
     /// Register a custom PHP extension for a version: the daemon validates and
     /// load-probes the `.so`, persists it, and loads it into that version's FPM
     /// pool and CLI ini.
@@ -754,6 +764,7 @@ mod variant_name_pinning {
             Request::CheckPhpUpdates => {}
             Request::AvailablePhp => {}
             Request::SetPhpSettings { .. } => {}
+            Request::SetPhpVersionSettings { .. } => {}
             Request::AddPhpExtension { .. } => {}
             Request::RemovePhpExtension { .. } => {}
             Request::ListPhpExtensions => {}

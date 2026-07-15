@@ -132,7 +132,8 @@ where
     binder: ActivePortBinder,
     pools: BTreeMap<PhpVersion, Pool<S::Child>>,
     binaries: BTreeMap<PhpVersion, PathBuf>,
-    ini_settings: Vec<(String, String)>,
+    ini_settings: BTreeMap<String, String>,
+    ini_overrides: BTreeMap<PhpVersion, BTreeMap<String, String>>,
     dump_ext: Option<DumpExtSettings>,
     extensions: BTreeMap<PhpVersion, Vec<ExtLoad>>,
     ca_bundle: Option<PathBuf>,
@@ -171,7 +172,8 @@ where
             binder,
             pools: BTreeMap::new(),
             binaries,
-            ini_settings: Vec::new(),
+            ini_settings: BTreeMap::new(),
+            ini_overrides: BTreeMap::new(),
             dump_ext: None,
             extensions: BTreeMap::new(),
             ca_bundle: None,
@@ -193,11 +195,20 @@ where
 
     /// Replace the global PHP ini settings applied to every pool.
     ///
-    /// Stored as `(name, value)` pairs and injected into each pool's rendered
-    /// FPM config on the next `ensure` (a running pool keeps its current config
-    /// until restarted - the daemon restarts live pools after calling this).
-    pub fn set_ini_settings(&mut self, settings: Vec<(String, String)>) {
+    /// Injected into each pool's rendered FPM config on the next `ensure` (a
+    /// running pool keeps its current config until restarted - the daemon
+    /// restarts live pools after calling this).
+    pub fn set_ini_settings(&mut self, settings: BTreeMap<String, String>) {
         self.ini_settings = settings;
+    }
+
+    /// Replace the sparse per-version overrides of the global ini settings,
+    /// keyed by PHP version. Merged over [`Self::set_ini_settings`]'s map via
+    /// [`yerd_core::php_settings::merge_effective`] when a pool's config is
+    /// rendered. Takes effect on the next `ensure` / restart of a pool, like
+    /// `set_extensions`.
+    pub fn set_ini_overrides(&mut self, overrides: BTreeMap<PhpVersion, BTreeMap<String, String>>) {
+        self.ini_overrides = overrides;
     }
 
     /// Configure daemon-managed dump-extension loading. When set, each pool that
@@ -273,7 +284,11 @@ where
         }
 
         let mut cfg = PoolConfig::dev_defaults(v, listen, &self.dirs, self.instance_id);
-        cfg.ini = self.ini_settings.clone();
+        let no_overrides = BTreeMap::new();
+        let overrides = self.ini_overrides.get(&v).unwrap_or(&no_overrides);
+        cfg.ini = yerd_core::php_settings::merge_effective(&self.ini_settings, overrides)
+            .into_iter()
+            .collect();
         cfg.ca_bundle = self.ca_bundle.clone();
 
         if let Some(ext) = &self.dump_ext {

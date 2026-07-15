@@ -73,4 +73,9 @@ pub use schema::{
 /// key inside `[[linked]]` and `[[overrides]]` for the per-site
 /// front-controller-vs-direct-execution toggle (defaults to auto when absent).
 /// Both v11→v12 and v12→v13 are bare version bumps.
-pub const CURRENT_VERSION: u32 = 15;
+///
+/// v16 added the optional `[php.version_settings]` table
+/// ([`PhpSection::version_settings`]) for per-version overrides of the global
+/// PHP settings. It defaults (empty) when absent, so v15→v16 is a bare
+/// version bump.
+pub const CURRENT_VERSION: u32 = 16;

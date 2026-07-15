@@ -198,14 +198,8 @@ pub async fn bring_up_with_dirs(
         std::process::id(),
         binaries,
     );
-    php_manager.set_ini_settings(
-        config
-            .php
-            .settings
-            .iter()
-            .map(|(k, v)| (k.clone(), v.clone()))
-            .collect(),
-    );
+    php_manager.set_ini_settings(config.php.settings.clone());
+    php_manager.set_ini_overrides(config.php.version_settings.clone());
     php_manager.set_dump_ext(Some(yerd_php::DumpExtSettings {
         so_dir: dirs.data.join("php-ext"),
         ini_defines: vec![(

@@ -61,8 +61,8 @@ fn populated() -> Config {
 fn default_config_starts_with_version_line() {
     let s = Config::default().to_toml().unwrap();
     assert!(
-        s.starts_with("version = 15\n"),
-        "expected first line `version = 15`; got: {s}"
+        s.starts_with("version = 16\n"),
+        "expected first line `version = 16`; got: {s}"
     );
 }
 
@@ -347,6 +347,53 @@ fn populated_php_settings_emit_subtable_after_default_and_round_trip() {
         back.php.settings.get("memory_limit").map(String::as_str),
         Some("512M")
     );
+}
+
+#[test]
+fn default_config_emits_no_version_settings_table() {
+    let s = Config::default().to_toml().unwrap();
+    assert!(
+        !s.contains("[php.version_settings"),
+        "default config must omit version_settings; got: {s}"
+    );
+}
+
+#[test]
+fn populated_version_settings_emit_between_settings_and_extensions() {
+    let mut c = Config::default();
+    let v83 = PhpVersion::new(8, 3);
+    c.php.version_settings.insert(
+        v83,
+        std::collections::BTreeMap::from([("memory_limit".to_string(), "1G".to_string())]),
+    );
+    c.php.extensions.insert(
+        v83,
+        vec![yerd_config::ExtEntry {
+            name: "xdebug".to_string(),
+            path: "/a/xdebug.so".to_string(),
+            zend: true,
+        }],
+    );
+    let s = c.to_toml().unwrap();
+
+    assert!(
+        s.contains("[php.version_settings.\"8.3\"]"),
+        "missing version_settings table; got: {s}"
+    );
+    assert!(s.contains("memory_limit = \"1G\""), "got: {s}");
+
+    let settings_at = s.find("[php.settings]").expect("[php.settings] present");
+    let vs_at = s
+        .find("[php.version_settings.")
+        .expect("version_settings present");
+    let ext_at = s.find("[[php.extensions.").expect("extensions present");
+    assert!(
+        settings_at < vs_at && vs_at < ext_at,
+        "expected settings < version_settings < extensions; got: {s}"
+    );
+
+    let back = Config::from_toml(&s).unwrap();
+    assert_eq!(back, c);
 }
 
 #[test]

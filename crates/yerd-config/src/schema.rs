@@ -407,6 +407,14 @@ pub struct PhpSection {
     /// daemon additionally load-probes it before persisting. `BTreeMap`/`Vec`
     /// keep serialisation order stable.
     pub extensions: BTreeMap<PhpVersion, Vec<ExtEntry>>,
+    /// Sparse per-version overrides of the allowlisted [`Self::settings`],
+    /// keyed by PHP version then directive name. The effective value for a
+    /// version is its override when present, else the global value (see
+    /// [`yerd_core::php_settings::merge_effective`]). Empty by default, so
+    /// `[php.version_settings.*]` tables are omitted from a default config.
+    /// Entries are validated leniently at load time: an invalid or
+    /// unsupported entry is dropped rather than failing the load.
+    pub version_settings: BTreeMap<PhpVersion, BTreeMap<String, String>>,
 }
 
 /// One registered custom PHP extension (see [`PhpSection::extensions`]).
@@ -431,6 +439,7 @@ impl Default for PhpSection {
                 .map(|(k, v)| (k.to_owned(), v.to_owned()))
                 .collect(),
             extensions: BTreeMap::new(),
+            version_settings: BTreeMap::new(),
         }
     }
 }

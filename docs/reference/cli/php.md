@@ -57,14 +57,21 @@ Installed versions are printed one per line; the current default is marked `(def
 
 | Command | Description | Example |
 | --- | --- | --- |
-| `yerd set php <SETTING> <VALUE>` | Set a global PHP ini default applied to every installed version. | `yerd set php memory_limit 512M` |
-| `yerd unset php <SETTING>` | Reset a global PHP ini default to PHP's built-in value. | `yerd unset php memory_limit` |
+| `yerd set php <SETTING> <VALUE> [--php <VERSION>]` | Set a PHP ini default. With `--php`, only that installed version is affected (a per-version override). | `yerd set php memory_limit 512M` |
+| `yerd unset php <SETTING> [--php <VERSION>]` | Reset a setting to PHP's built-in value. With `--php`, only that version's override is removed (the global default applies again). | `yerd unset php memory_limit` |
 
 ```sh
 yerd set php memory_limit 512M
 yerd set php display_errors On
 yerd unset php memory_limit
+yerd set php memory_limit 1G --php 8.3    # only PHP 8.3 gets 1G
+yerd unset php memory_limit --php 8.3     # 8.3 inherits the global value again
 ```
+
+**Precedence:** a version's effective value is its `--php` override when set, else
+the global value, else PHP's built-in default. Changing a per-version value
+restarts **only** that version's pool; a global change restarts every running
+pool. Per-version values survive uninstalling and reinstalling the version.
 
 The setting name (and, for `set`, the value) is validated client-side before connecting, so a typo or an out-of-shape value is a clean usage error rather than a round-trip. The supported settings are:
 
