@@ -84,7 +84,7 @@ When it finishes, the project is on disk, registered (parked or linked), served 
 The same **Create** menu can scaffold a brand-new WordPress install for you. Choose **New WordPress site** to launch a four-step wizard - **Basics → WordPress → Database → Review** - that provisions a database, runs WP-CLI's `core download`/`config create`/`core install`, sets pretty permalinks, and registers the result as a `.test` site automatically.
 
 ::: tip Prerequisites
-Creating a WordPress site needs a PHP version, **Composer**, and **WP-CLI**. If any are missing, the wizard offers to install them first (WP-CLI is built via Composer, so Composer installs first if it's missing too) - see [Tooling](./tooling).
+Creating a WordPress site needs a PHP version and **WP-CLI**, and the wizard offers to install whatever's missing. WP-CLI must be Yerd's own build - Yerd runs it directly rather than through a `wp` on your `PATH`, so an [externally installed](./tooling#external-tools) `wp` doesn't count and your own copy is left alone. Yerd's **Composer** builds WP-CLI, so it's offered as a prerequisite too when WP-CLI still needs installing - see [Tooling](./tooling).
 :::
 
 ### Basics

@@ -170,10 +170,11 @@ fn probe_writable(parent: &Path) -> Result<(), String> {
 }
 
 /// Install `tool` inline if it's neither managed nor available externally on
-/// the user's PATH, streaming an `Installing {display_name}` phase update
-/// into this job's log. Only for tools the job actually resolves via PATH
+/// the user's PATH, streaming the install into this job's log (see
+/// [`install_tool_inline`]). Only for tools the job actually resolves via PATH
 /// (Laravel's optional Node/Bun); a tool the job runs by its managed
-/// filesystem entry point must use [`ensure_managed_tool`] instead.
+/// filesystem entry point must use [`ensure_managed_tool`] instead - see
+/// [`Tool::accepts_external`] for which is which.
 async fn ensure_tool(
     id: &str,
     tool: Tool,

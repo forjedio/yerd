@@ -7,7 +7,8 @@ reaches for - [Composer](https://getcomposer.org), [Node.js](https://nodejs.org)
 self-contained binaries fetched on demand (the Laravel installer and WP-CLI are
 built via Composer) and dropped onto your `PATH`. No system package manager, no
 global install, nothing to uninstall by hand. Already have one installed
-elsewhere? Yerd [detects it](#external-tools) and uses it instead.
+elsewhere? Yerd [detects it](#external-tools) and, for most tools, uses it
+instead.
 
 | Tool | `id` | Provides | Source |
 |---|---|---|---|
@@ -35,8 +36,9 @@ lists the developer tools Yerd manages and their install status:
   each showing the commands it provides.
 - Click **Install** to fetch the latest release; once installed you get
   **Update** (re-fetch the current latest) and **Uninstall**.
-- A tool you've installed yourself shows an **External** badge with no actions -
-  see [External tools](#external-tools) below.
+- A tool you've installed yourself shows an **External** badge and a *Managed by
+  you* note. **Install** is still offered, so you can take Yerd's own copy as
+  well - see [External tools](#external-tools) below.
 - The Laravel installer and WP-CLI are built with Composer, so their **Install**
   button stays disabled until Yerd's own Composer is installed.
 - Each tool is placed on your `PATH` alongside PHP and managed entirely by Yerd,
@@ -68,14 +70,15 @@ Composer.
 
 ## External tools
 
-You don't have to let Yerd manage these tools. If you already have `composer`,
-`node`, `bun`, the `laravel` installer, or `wp` available on your `PATH` - via
-Homebrew, `nvm`/`fnm`, a global `composer require`, etc. - Yerd **detects** it
-and treats it as already available:
+You don't have to let Yerd manage most of these tools. If you already have
+`composer`, `node`, `bun`, or the `laravel` installer available on your `PATH` -
+via Homebrew, `nvm`/`fnm`, a global `composer require`, etc. - Yerd **detects**
+it and treats it as already available:
 
 - On the **Tooling** page the tool shows an **External** badge (instead of a
-  version) with **no Install / Update / Uninstall actions** - it's yours to manage,
-  not Yerd's.
+  version) and a *Managed by you* note - it's yours to manage, not Yerd's. You
+  can still press **Install** to take Yerd's own copy alongside it, which you'll
+  need if you want Yerd to build the Laravel installer or WP-CLI.
 - The [Laravel site wizard](./sites#create-a-new-laravel-site) and site scaffolding
   accept external Composer / Node / Bun / Laravel as satisfying their
   prerequisites, so you won't be asked to install a second copy. Externally
@@ -84,13 +87,22 @@ and treats it as already available:
 
 A couple of things to know:
 
+- **WP-CLI is the exception: an external `wp` doesn't count.** Yerd runs WP-CLI
+  by executing its own build directly rather than by calling `wp` on your `PATH`,
+  so it always needs its own copy and never reports one you installed yourself as
+  *External*. Your `wp` keeps working exactly as before; the
+  [WordPress site wizard](./sites#create-a-new-wordpress-site) will simply offer
+  to install Yerd's WP-CLI as a prerequisite.
 - **Managed tools win.** If a tool is both Yerd-installed and on your `PATH`, the
   Yerd-managed one takes precedence (its `{data}/bin` shim is earlier on `PATH`).
+  That includes `composer`, so installing Yerd's copy changes which `composer`
+  your other projects get.
 - **Building the *managed* Laravel installer or WP-CLI needs Yerd's own
   Composer.** An external Composer is fine for *scaffolding*, but it can't build
   Yerd's managed `laravel`/`wp-cli` tools - so their **Install** stays disabled
-  until you install Yerd's Composer (or you can just keep using your external
-  copy).
+  until you install Yerd's Composer. For the Laravel installer you can skip that
+  entirely and keep using your external copy; WP-CLI has no such fallback, per
+  the exception above.
 
 ::: tip How detection works
 Because the daemon runs with a minimal environment, Yerd reads your login shell's
