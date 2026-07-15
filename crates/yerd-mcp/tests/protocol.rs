@@ -192,11 +192,53 @@ fn notifications_are_never_answered() {
     }
 }
 
+/// This server issues no requests, so it should never receive a response. If one
+/// arrives it is ignored: replying to a reply is a protocol violation, and the
+/// `id` belongs to the *sender's* numbering, not ours.
 #[test]
-fn stray_response_without_method_is_ignored() {
+fn stray_response_is_ignored() {
     let mut s = ready(Availability::Enabled);
-    let line = json!({ "jsonrpc": "2.0", "id": 9, "result": { "anything": true } }).to_string();
-    assert_eq!(s.handle_line(&line), Outgoing::None);
+    for line in [
+        json!({ "jsonrpc": "2.0", "id": 9, "result": { "anything": true } }).to_string(),
+        json!({ "jsonrpc": "2.0", "id": 9, "error": { "code": -1, "message": "x" } }).to_string(),
+    ] {
+        assert_eq!(s.handle_line(&line), Outgoing::None, "for {line}");
+    }
+}
+
+/// A message that carries an `id` but no usable `method` is a malformed request,
+/// not a notification. The distinction matters: treating it as a notification
+/// answers nothing, and the client blocks forever on an id it will never see
+/// again.
+#[test]
+fn a_waiting_client_is_never_left_without_a_reply() {
+    let mut s = ready(Availability::Enabled);
+    for line in [
+        json!({ "jsonrpc": "2.0", "id": 10, "method": 123 }).to_string(),
+        json!({ "jsonrpc": "2.0", "id": 11, "method": null }).to_string(),
+        json!({ "jsonrpc": "2.0", "id": 12, "method": ["ping"] }).to_string(),
+        json!({ "jsonrpc": "2.0", "id": 13 }).to_string(),
+    ] {
+        let out = s.handle_line(&line);
+        assert_eq!(error_code(out.clone()), -32600, "for {line}");
+        let v = reply(out);
+        assert!(
+            !v["id"].is_null(),
+            "the reply must carry the caller's id so it can retire the call: {v}"
+        );
+    }
+}
+
+/// The same shapes without an `id`: nobody is waiting, so silence is correct.
+#[test]
+fn malformed_notifications_are_still_not_answered() {
+    let mut s = ready(Availability::Enabled);
+    for line in [
+        json!({ "jsonrpc": "2.0", "method": 123 }).to_string(),
+        json!({ "jsonrpc": "2.0" }).to_string(),
+    ] {
+        assert_eq!(s.handle_line(&line), Outgoing::None, "for {line}");
+    }
 }
 
 #[test]

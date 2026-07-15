@@ -23,6 +23,8 @@
 //! availability shows up in `initialize`'s `instructions` and, per call, as an
 //! [`Outgoing::PolicyBlocked`] the caller answers with [`Server::gate_reply`].
 
+#![forbid(unsafe_code)]
+
 mod error;
 mod protocol;
 mod render;

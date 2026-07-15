@@ -78,7 +78,16 @@ pub async fn run() -> ExitCode {
 /// running yet, and reporting "disabled" would send the user to a toggle that is
 /// probably already on.
 async fn probe_availability() -> Availability {
-    match exchange(Request::Status, PROBE_TIMEOUT).await {
+    availability_from(exchange(Request::Status, PROBE_TIMEOUT).await)
+}
+
+/// Read the gate out of a `Status` answer. Anything else - a transport failure,
+/// a timeout, an unexpected variant - is [`Availability::Unknown`]: the setting
+/// was not read, and guessing "disabled" would send the user to a toggle that is
+/// probably already on. Shared by the startup probe and the per-call gate
+/// re-poll so the two cannot drift.
+fn availability_from(result: Result<Response, String>) -> Availability {
+    match result {
         Ok(Response::Status { report }) => {
             if report.mcp_enabled {
                 Availability::Enabled
@@ -202,13 +211,9 @@ where
     F: FnMut(Request, Duration) -> Fut,
     Fut: Future<Output = Result<Response, String>>,
 {
-    match exchange(Request::Status, PROBE_TIMEOUT).await {
-        Ok(Response::Status { report }) => Some(if report.mcp_enabled {
-            Availability::Enabled
-        } else {
-            Availability::Disabled
-        }),
-        _ => None,
+    match availability_from(exchange(Request::Status, PROBE_TIMEOUT).await) {
+        Availability::Unknown => None,
+        known => Some(known),
     }
 }
 
@@ -224,6 +229,11 @@ enum Input {
 /// Invalid UTF-8 is replaced rather than rejected: the lossy text then fails
 /// JSON parsing and the client gets a parse error, which is the same outcome by
 /// a less abrupt route than tearing down the session over one bad byte.
+///
+/// The cap counts the message, not its terminator, so a full read that ends in a
+/// newline is a [`MAX_LINE_BYTES`]-byte message and is allowed. Only a full read
+/// with no newline in it is genuinely over-long - and the rest of that line still
+/// has to be drained to find the next message boundary.
 fn read_line<R: BufRead>(reader: &mut R) -> std::io::Result<Input> {
     let mut buf = Vec::new();
     let mut limited = std::io::Read::take(&mut *reader, MAX_LINE_BYTES as u64 + 1);
@@ -231,10 +241,8 @@ fn read_line<R: BufRead>(reader: &mut R) -> std::io::Result<Input> {
     if read == 0 {
         return Ok(Input::Eof);
     }
-    if read > MAX_LINE_BYTES {
-        if !buf.ends_with(b"\n") {
-            discard_to_newline(reader)?;
-        }
+    if read > MAX_LINE_BYTES && !buf.ends_with(b"\n") {
+        discard_to_newline(reader)?;
         return Ok(Input::TooLong);
     }
     Ok(Input::Line(String::from_utf8_lossy(&buf).into_owned()))
@@ -289,10 +297,11 @@ mod tests {
 
     use super::*;
 
-    /// Records every request the loop makes, and answers from a script.
+    /// Records every request the loop makes and the deadline it was given, and
+    /// answers from a script.
     #[derive(Default)]
     struct FakeDaemon {
-        calls: Rc<RefCell<Vec<Request>>>,
+        calls: Rc<RefCell<Vec<(Request, Duration)>>>,
         status_enabled: Rc<RefCell<Vec<bool>>>,
     }
 
@@ -306,8 +315,8 @@ mod tests {
         {
             let calls = Rc::clone(&self.calls);
             let status = Rc::clone(&self.status_enabled);
-            move |request, _timeout| {
-                calls.borrow_mut().push(request.clone());
+            move |request, timeout| {
+                calls.borrow_mut().push((request.clone(), timeout));
                 let response = match request {
                     Request::Status => {
                         let mut queue = status.borrow_mut();
@@ -327,6 +336,11 @@ mod tests {
         }
 
         fn requests(&self) -> Vec<Request> {
+            self.calls.borrow().iter().map(|(r, _)| r.clone()).collect()
+        }
+
+        /// Every `(request, deadline)` pair, in order.
+        fn deadlines(&self) -> Vec<(Request, Duration)> {
             self.calls.borrow().clone()
         }
 
@@ -334,7 +348,7 @@ mod tests {
             self.calls
                 .borrow()
                 .iter()
-                .filter(|r| matches!(r, Request::Status))
+                .filter(|(r, _)| matches!(r, Request::Status))
                 .count()
         }
     }
@@ -407,17 +421,13 @@ mod tests {
     ) -> Vec<Value> {
         let stdin = format!("{}\n", input.join("\n"));
         let mut stdout: Vec<u8> = Vec::new();
-        let code = run_loop(
+        let _code = run_loop(
             std::io::Cursor::new(stdin.into_bytes()),
             &mut stdout,
             Server::new(availability, "9.9.9"),
             fake.exchanger(),
         )
         .await;
-        assert!(
-            format!("{code:?}").contains("ExitCode"),
-            "loop returns an exit code"
-        );
         String::from_utf8(stdout)
             .expect("stdout is UTF-8")
             .lines()
@@ -666,6 +676,137 @@ mod tests {
         assert_eq!(out.len(), 3);
         assert_eq!(out[1].pointer("/error/code"), Some(&json!(-32700)));
         assert_eq!(out[2]["id"], json!(3));
+    }
+
+    /// The exchanger takes a deadline per call rather than closing over one
+    /// solely so these two can differ - a tool call is the user's actual work
+    /// and gets room, a gate re-poll fails safe and must not stall the session.
+    /// Without this the seam's whole rationale is untested and the constants
+    /// could be swapped unnoticed.
+    #[tokio::test]
+    async fn tool_calls_and_gate_repolls_get_different_deadlines() {
+        let fake = FakeDaemon::default();
+        *fake.status_enabled.borrow_mut() = vec![true];
+        let _ = session(
+            Availability::Disabled,
+            &[initialize(), call(2, "list_sites")],
+            &fake,
+        )
+        .await;
+
+        assert_eq!(
+            fake.deadlines(),
+            vec![
+                (Request::Status, PROBE_TIMEOUT),
+                (Request::ListSites, TOOL_EXCHANGE_TIMEOUT),
+            ]
+        );
+        assert!(
+            PROBE_TIMEOUT < TOOL_EXCHANGE_TIMEOUT,
+            "a re-poll must not be given longer than the call it is gating"
+        );
+    }
+
+    #[test]
+    fn availability_is_only_known_from_a_real_status_answer() {
+        assert_eq!(
+            availability_from(Ok(Response::Status {
+                report: Box::new(report_with(true))
+            })),
+            Availability::Enabled
+        );
+        assert_eq!(
+            availability_from(Ok(Response::Status {
+                report: Box::new(report_with(false))
+            })),
+            Availability::Disabled
+        );
+        assert_eq!(
+            availability_from(Err(NOT_RUNNING.to_owned())),
+            Availability::Unknown,
+            "an unreachable daemon is not a disabled toggle"
+        );
+        assert_eq!(
+            availability_from(Err(TIMED_OUT.to_owned())),
+            Availability::Unknown
+        );
+        assert_eq!(
+            availability_from(Ok(Response::Ok)),
+            Availability::Unknown,
+            "an answer that is not a status tells us nothing about the gate"
+        );
+    }
+
+    /// The oversized-line resync must work on a reader that refills in chunks,
+    /// which is the real one: stdin arrives in pipe-sized reads, not all at
+    /// once. `Cursor` hands over the whole buffer in one `fill_buf`, so every
+    /// other test skips the loop that matters here.
+    #[tokio::test]
+    async fn resync_works_on_a_chunked_reader() {
+        let fake = FakeDaemon::default();
+        let long = "x".repeat(MAX_LINE_BYTES + 4096);
+        let stdin = format!("{}\n{}\n{}\n", initialize(), long, call(3, "list_sites"));
+        let mut stdout: Vec<u8> = Vec::new();
+        let _ = run_loop(
+            std::io::BufReader::with_capacity(64, std::io::Cursor::new(stdin.into_bytes())),
+            &mut stdout,
+            Server::new(Availability::Enabled, "9.9.9"),
+            fake.exchanger(),
+        )
+        .await;
+
+        let out: Vec<Value> = String::from_utf8(stdout)
+            .unwrap()
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect();
+        assert_eq!(out.len(), 3);
+        assert_eq!(out[1].pointer("/error/code"), Some(&json!(-32700)));
+        assert_eq!(
+            out[2]["id"],
+            json!(3),
+            "the message after an oversized one must still be answered"
+        );
+    }
+
+    /// Build a `job_status` call whose serialised line is exactly `target`
+    /// bytes, by padding the job id.
+    fn call_of_length(target: usize) -> String {
+        let line = |id: &str| {
+            json!({
+                "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+                "params": { "name": "job_status", "arguments": { "job_id": id } },
+            })
+            .to_string()
+        };
+        let overhead = line("").len();
+        let padded = line(&"j".repeat(target - overhead));
+        assert_eq!(padded.len(), target, "fixture is the length it claims");
+        padded
+    }
+
+    /// A line of exactly the cap is legal; one byte more is not. Guards the
+    /// `read > MAX_LINE_BYTES` comparison against an off-by-one in either
+    /// direction.
+    #[tokio::test]
+    async fn the_line_cap_is_inclusive() {
+        for (length, expect_ok) in [(MAX_LINE_BYTES, true), (MAX_LINE_BYTES + 1, false)] {
+            let fake = FakeDaemon::default();
+            let out = session(
+                Availability::Enabled,
+                &[initialize(), call_of_length(length)],
+                &fake,
+            )
+            .await;
+            let rejected = out[1]
+                .pointer("/error/message")
+                .and_then(Value::as_str)
+                .is_some_and(|m| m.contains("maximum line length"));
+            assert_eq!(
+                !rejected, expect_ok,
+                "a {length}-byte line (cap is {MAX_LINE_BYTES})"
+            );
+        }
     }
 
     #[test]

@@ -76,10 +76,10 @@ struct Wire {
     // still parses, defaulting to on.
     #[serde(default = "default_symlink_protection")]
     symlink_protection: bool,
-    // v16: the MCP server gate. Bare `default` (i.e. `false`) is mandatory
-    // (Wire is `deny_unknown_fields`) so a v1..v15 file with no `mcp_enabled`
-    // key still parses, defaulting to the opt-in-off state.
-    #[serde(default)]
+    // v16: the MCP server gate. `default` is mandatory (Wire is
+    // `deny_unknown_fields`) so a v1..v15 file with no `mcp_enabled` key still
+    // parses, defaulting to the opt-in-off state.
+    #[serde(default = "default_mcp_enabled")]
     mcp_enabled: bool,
     #[serde(default)]
     ports: PortsWire,
@@ -421,6 +421,10 @@ fn default_update_channel() -> String {
 
 fn default_symlink_protection() -> bool {
     crate::schema::DEFAULT_SYMLINK_PROTECTION
+}
+
+fn default_mcp_enabled() -> bool {
+    crate::schema::DEFAULT_MCP_ENABLED
 }
 
 pub(crate) fn parse_toml(s: &str) -> Result<Config, ConfigError> {

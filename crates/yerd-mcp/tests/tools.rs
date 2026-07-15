@@ -196,6 +196,121 @@ fn required_arguments_are_declared_in_the_schema() {
     }
 }
 
+/// The advertised schema and the builder must name arguments identically.
+///
+/// Nothing else pins this, and a divergence fails *silently* in the worst
+/// direction: optional arguments default rather than error, so an agent that
+/// obeys the published schema would have its value dropped without a word. A
+/// renamed `since_id`, for instance, would silently page the entire dump buffer
+/// on every call.
+#[test]
+fn schema_property_names_match_the_builder() {
+    let expected: BTreeMap<&str, Vec<&str>> = [
+        (
+            "create_site",
+            vec![
+                "database",
+                "git",
+                "js",
+                "name",
+                "parent_dir",
+                "php",
+                "secure",
+                "starter_kit",
+                "testing",
+            ],
+        ),
+        ("link_site", vec!["name", "path"]),
+        ("park_directory", vec!["path"]),
+        ("set_site_php", vec!["name", "version"]),
+        ("set_site_secure", vec!["name", "secure"]),
+        ("add_domain", vec!["domain", "name"]),
+        ("remove_domain", vec!["domain", "name"]),
+        ("add_proxy", vec!["name", "url"]),
+        ("remove_proxy", vec!["name"]),
+        ("add_proxy_rule", vec!["prefix", "site", "url"]),
+        ("remove_proxy_rule", vec!["prefix", "site"]),
+        ("install_php", vec!["version"]),
+        ("set_default_php", vec!["version"]),
+        ("set_php_setting", vec!["name", "value"]),
+        ("list_databases", vec!["service"]),
+        ("create_database", vec!["name", "service"]),
+        ("set_mail_enabled", vec!["enabled"]),
+        ("get_mail", vec!["id"]),
+        ("set_dumps_enabled", vec!["enabled"]),
+        ("list_dumps", vec!["since_id"]),
+        ("job_status", vec!["cursor", "job_id"]),
+    ]
+    .into_iter()
+    .collect();
+
+    for tool in tools_list() {
+        let name = tool["name"].as_str().unwrap();
+        let properties: Vec<&str> = tool
+            .pointer("/inputSchema/properties")
+            .and_then(Value::as_object)
+            .map(|o| o.keys().map(String::as_str).collect())
+            .unwrap_or_default();
+        assert_eq!(
+            properties,
+            expected.get(name).cloned().unwrap_or_default(),
+            "{name}'s schema properties"
+        );
+
+        let required: Vec<&str> = tool
+            .pointer("/inputSchema/required")
+            .and_then(Value::as_array)
+            .map(|a| a.iter().filter_map(Value::as_str).collect())
+            .unwrap_or_default();
+        for arg in required {
+            assert!(
+                properties.contains(&arg),
+                "{name} requires `{arg}` but never declares it"
+            );
+        }
+    }
+}
+
+/// Every optional argument, when supplied, must actually change the request the
+/// daemon receives. A property the builder does not read would otherwise sit in
+/// the schema looking functional while being silently ignored.
+#[test]
+fn optional_arguments_reach_the_request() {
+    let base = json!({ "name": "app", "parent_dir": "/srv", "php": "8.4" });
+    let with = |key: &str, value: Value| {
+        let mut args = base.clone();
+        args[key] = value;
+        built("create_site", args)
+    };
+    let default = built("create_site", base.clone());
+
+    for (key, value) in [
+        ("secure", json!(false)),
+        ("starter_kit", json!("react")),
+        ("testing", json!("phpunit")),
+        ("database", json!("mysql")),
+        ("js", json!("bun")),
+        ("git", json!(true)),
+    ] {
+        assert_ne!(
+            with(key, value.clone()),
+            default,
+            "create_site ignored `{key}` = {value}"
+        );
+    }
+
+    assert_ne!(
+        built("list_dumps", json!({ "since_id": 99 })),
+        built("list_dumps", json!({})),
+        "list_dumps ignored `since_id`"
+    );
+    assert_ne!(
+        built("job_status", json!({ "job_id": "j", "cursor": 5 })),
+        built("job_status", json!({ "job_id": "j" })),
+        "job_status ignored `cursor`"
+    );
+}
+
 /// Guards the catalog against an entry with no builder arm. `build` resolves the
 /// name against the table first, so a missing arm is not a compile error - it
 /// would surface as a mystery `unknown tool` at runtime, for a tool the server
@@ -362,13 +477,58 @@ fn proxy_tools_map_to_their_requests() {
     );
 }
 
+/// Reject one proxy upstream and return the error message, failing if the call
+/// was accepted. Asserts on the *message*, not just `-32602`: `UpstreamTarget`
+/// rejects malformed URLs with the same code, so a code-only assertion would
+/// pass even if the loopback gate were removed entirely.
+fn rejected_upstream(tool: &str, args: Value) -> String {
+    let line = json!({
+        "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+        "params": { "name": tool, "arguments": args },
+    })
+    .to_string();
+    let Outgoing::Reply(reply) = ready().handle_line(&line) else {
+        panic!("{tool} accepted upstream {args}");
+    };
+    let v: Value = serde_json::from_str(&reply).unwrap();
+    assert_eq!(
+        v.pointer("/error/code"),
+        Some(&json!(-32602)),
+        "{tool} with {args}"
+    );
+    v.pointer("/error/message")
+        .and_then(Value::as_str)
+        .expect("error message")
+        .to_owned()
+}
+
 /// Proxy upstreams are the only tool arguments whose effect leaves the machine:
 /// a rule pointing a trusted `.test` origin at a remote host exfiltrates the
 /// developer's cookies and tokens there. An agent can be talked into that by
 /// injected content, so the catalog refuses non-local upstreams even though the
 /// CLI allows them.
+///
+/// The `localhost`-lookalike hosts are the point of the exercise. They are why
+/// the gate matches the host exactly instead of by substring or suffix: every
+/// one of them is a host an attacker controls, and every one of them contains a
+/// string that looks reassuring.
 #[test]
 fn proxy_upstreams_must_be_local() {
+    let lookalikes = [
+        "http://localhost.attacker.example",
+        "http://127.0.0.1.attacker.example",
+        "http://notlocalhost",
+        "http://localhost.example.com:8080",
+        "https://attacker.example/#localhost",
+    ];
+    for url in lookalikes {
+        let message = rejected_upstream("add_proxy", json!({ "name": "rev", "url": url }));
+        assert!(
+            message.contains("not a loopback address") || message.contains("is invalid"),
+            "{url} must not be mistaken for local: {message}"
+        );
+    }
+
     for (tool, args) in [
         (
             "add_proxy",
@@ -376,7 +536,7 @@ fn proxy_upstreams_must_be_local() {
         ),
         (
             "add_proxy_rule",
-            json!({ "site": "app", "prefix": "/api", "url": "https://attacker.example/" }),
+            json!({ "site": "app", "prefix": "/api", "url": "http://attacker.example:8080" }),
         ),
         (
             "add_proxy_rule",
@@ -387,19 +547,30 @@ fn proxy_upstreams_must_be_local() {
             json!({ "name": "rev", "url": "http://[2001:db8::1]:80" }),
         ),
     ] {
-        let line = json!({
-            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
-            "params": { "name": tool, "arguments": args },
-        })
-        .to_string();
-        let Outgoing::Reply(reply) = ready().handle_line(&line) else {
-            panic!("{tool} accepted a remote upstream: {args}");
-        };
-        let v: Value = serde_json::from_str(&reply).unwrap();
-        assert_eq!(
-            v.pointer("/error/code"),
-            Some(&json!(-32602)),
-            "{tool} with {args}"
+        let message = rejected_upstream(tool, args);
+        assert!(
+            message.contains("not a loopback address"),
+            "the gate, not the URL parser, should refuse this: {message}"
+        );
+    }
+}
+
+/// Spellings that do resolve locally but that the gate refuses anyway, because
+/// it will not out-guess the resolver. Pinned so the safe-fail direction is a
+/// decision rather than an accident: each must be refused, and the message must
+/// point at the spelling that works.
+#[test]
+fn ambiguous_local_spellings_fail_safe() {
+    for url in [
+        "http://0.0.0.0:8000",
+        "http://[::ffff:127.0.0.1]:80",
+        "http://127.1",
+        "http://2130706433",
+    ] {
+        let message = rejected_upstream("add_proxy", json!({ "name": "rev", "url": url }));
+        assert!(
+            message.contains("127.0.0.1"),
+            "{url} was refused without naming the spelling that works: {message}"
         );
     }
 }

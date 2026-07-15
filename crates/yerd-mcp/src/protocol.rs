@@ -38,12 +38,24 @@ const ENCODE_FAILURE: &str =
 
 /// Handle one input line.
 ///
-/// The two early returns are the protocol's silent paths, and both are
-/// load-bearing. A message with no `method` is a stray *response*, which must be
-/// ignored rather than errored. A message with no `id` is a *notification*: the
-/// only one this server understands (`notifications/initialized`) is
-/// informational, and answering one it does not understand would itself be a
-/// violation - so every notification is consumed silently.
+/// Sorting a message into request / notification / ignore is fiddlier than it
+/// looks, and each branch is load-bearing:
+///
+/// - No `method` **and** a `result` or `error`: a stray *response*. Ignored -
+///   this server sends no requests, so it should not receive responses, and
+///   answering one would be a violation.
+/// - No `method`, no `result`/`error`: junk with nothing to dispatch on. If it
+///   carries an `id` the sender is waiting, so it gets `-32600` rather than
+///   silence.
+/// - A `method` that is not a string: a malformed *request*, not a
+///   notification. Same rule - `id` present means someone is waiting.
+/// - A string `method` and no `id`: a notification. The only one this server
+///   understands (`notifications/initialized`) is informational, and answering
+///   an unknown one would itself be a violation, so all are consumed silently.
+///
+/// The subtlety is that "no usable method" must not be mistaken for "is a
+/// notification": doing so leaves a client blocked forever on an id that will
+/// never be answered.
 pub(crate) fn handle_line(server: &mut Server, line: &str) -> Outgoing {
     let value: Value = match serde_json::from_str(line) {
         Ok(v) => v,
@@ -72,8 +84,20 @@ pub(crate) fn handle_line(server: &mut Server, line: &str) -> Outgoing {
         ));
     };
 
-    let Some(method) = object.get("method").and_then(Value::as_str) else {
+    let method = object.get("method");
+    if method.is_none() && (object.contains_key("result") || object.contains_key("error")) {
         return Outgoing::None;
+    }
+
+    let Some(method) = method.and_then(Value::as_str) else {
+        return match object.get("id") {
+            Some(id) => Outgoing::Reply(error_reply(
+                id,
+                INVALID_REQUEST,
+                "`method` is missing or not a string",
+            )),
+            None => Outgoing::None,
+        };
     };
 
     let Some(id) = object.get("id") else {

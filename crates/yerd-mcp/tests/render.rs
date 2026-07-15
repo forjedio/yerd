@@ -241,6 +241,28 @@ fn unknown_job_explains_that_jobs_are_ephemeral() {
     );
 }
 
+/// The ephemeral-job hint is keyed on the *code* as well as the tool: a
+/// `job_status` failure that is not `NotFound` is a real failure and must not be
+/// explained away as an expired job.
+#[test]
+fn job_status_errors_other_than_not_found_keep_the_plain_rendering() {
+    let reply = complete(
+        "job_status",
+        json!({ "job_id": "job-1" }),
+        Ok(Response::Error {
+            code: ErrorCode::Internal,
+            message: "job runner exploded".into(),
+        }),
+    );
+    assert!(is_error(&reply));
+    let body = text(&reply);
+    assert!(body.contains("job runner exploded"), "{body}");
+    assert!(
+        !body.contains("restarted") && !body.contains("expired"),
+        "a real failure must not be dressed up as an expired job: {body}"
+    );
+}
+
 #[test]
 fn not_found_from_other_tools_keeps_the_plain_rendering() {
     let reply = complete(
