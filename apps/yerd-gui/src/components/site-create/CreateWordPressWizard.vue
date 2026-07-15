@@ -636,7 +636,7 @@ const busy = computed(() => jobStateRef.value === "running" && step.value === 4)
                 variant="outline"
                 :disabled="installBusy || (row.id === 'wp-cli' && !managedComposer)"
                 :title="row.id === 'wp-cli' && !managedComposer ? 'Yerd\'s own Composer is required to build WP-CLI' : ''"
-                @click="row.id === 'php' ? installFirstPhp() : installPrereq(row.id as 'composer' | 'wp-cli')"
+                @click="row.id === 'php' ? installFirstPhp() : installPrereq(row.id)"
               >
                 Install
               </Button>

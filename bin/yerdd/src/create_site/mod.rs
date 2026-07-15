@@ -204,20 +204,39 @@ async fn ensure_managed_tool(id: &str, tool: Tool, state: &Arc<DaemonState>) -> 
     install_tool_inline(id, tool, state).await
 }
 
-/// Download + install `tool` under the tool-mutation lock, streaming an
-/// `Installing {display_name}` phase update into this job's log, then
-/// reconcile the `{data}/bin` shims.
+/// Download + install `tool` under the tool-mutation lock, streaming both an
+/// `Installing {display_name}` phase update and the installer's own output
+/// into this job's log, then reconcile the `{data}/bin` shims.
+///
+/// The output stream matters: WP-CLI is built by a `composer create-project`
+/// that routinely runs for minutes (its own timeout is 10), so without it the
+/// wizard sits on a bare phase label long enough to read as hung. Mirrors
+/// `ipc_server::install_tool_streamed`'s drain - `tx` must be dropped before
+/// awaiting it, or the reader never sees the channel close.
 async fn install_tool_inline(id: &str, tool: Tool, state: &Arc<DaemonState>) -> Result<(), String> {
     state
         .jobs
         .set_phase(id, format!("Installing {}", tool.display_name()))
         .await;
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+    let drain = {
+        let state = state.clone();
+        let id = id.to_owned();
+        tokio::spawn(async move {
+            while let Some(line) = rx.recv().await {
+                state.jobs.push_log(&id, line).await;
+            }
+        })
+    };
+
     let dl = crate::php_install::ReqwestDownloader::new();
     let guard = state.tool_mutate.lock().await;
-    tools::install(tool, &state.dirs, &dl, None)
-        .await
-        .map_err(|e| format!("failed to install {}: {e}", tool.display_name()))?;
+    let result = tools::install(tool, &state.dirs, &dl, Some(&tx)).await;
     drop(guard);
+    drop(tx);
+    let _ = drain.await;
+
+    result.map_err(|e| format!("failed to install {}: {e}", tool.display_name()))?;
     crate::ipc_server::reconcile_tool_shims_now(state).await;
     Ok(())
 }

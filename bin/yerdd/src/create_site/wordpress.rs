@@ -220,17 +220,31 @@ pub(super) async fn run(
     Outcome::Succeeded
 }
 
-/// Ensure the managed WP-CLI, installing the managed Composer first when it's
-/// missing: [`tools::wp_cli::install`] builds the bundle by running yerd's own
-/// Composer phar and refuses outright without it, and an external Composer
-/// can't stand in. Only reached when WP-CLI itself has to be built - once it
-/// is installed, scaffolding never touches Composer, so a user running only
-/// their own Composer is never made to take yerd's copy for no reason.
+/// Ensure the managed WP-CLI, which [`tools::wp_cli::install`] builds by
+/// running yerd's own Composer phar - it refuses outright without one, and an
+/// external Composer can't stand in.
+///
+/// WP-CLI is installed inline because it *is* what was asked for: no managed
+/// build, no WordPress site. Composer is only its builder, so a missing one is
+/// reported rather than installed: yerd's tools are symlinked into `{data}/bin`,
+/// which the shell profile *prepends* to `PATH`, so quietly installing it would
+/// take over the `composer` command in every one of the user's unrelated
+/// projects and run it under yerd's PHP. That's the user's call to make, not a
+/// side effect of creating a site - the wizard offers it as an explicit prereq,
+/// and this mirrors the Laravel flow, which likewise refuses rather than
+/// installing a Composer nobody asked for. Only reached when WP-CLI has to be
+/// built; once installed, scaffolding never touches Composer at all.
 async fn ensure_wp_cli(id: &str, state: &Arc<DaemonState>) -> Result<(), String> {
     if tools::installed_version(&state.dirs, Tool::WpCli).is_some() {
         return Ok(());
     }
-    super::ensure_managed_tool(id, Tool::Composer, state).await?;
+    if tools::installed_version(&state.dirs, Tool::Composer).is_none() {
+        return Err(
+            "Yerd's own Composer is required to build WP-CLI (an external one can't) - \
+                    install it from the Tooling page, or run `yerd install tool composer`"
+                .to_owned(),
+        );
+    }
     super::ensure_managed_tool(id, Tool::WpCli, state).await
 }
 
@@ -654,6 +668,39 @@ fn permalink_structure_args() -> Vec<String> {
 mod tests {
     use super::*;
     use yerd_ipc::WordPressDatabase;
+
+    /// Writes `tool`'s `.version` marker, the sole signal
+    /// [`tools::installed_version`] reads to call a tool managed-installed.
+    fn mark_installed(state: &DaemonState, tool: Tool) {
+        let dir = state.dirs.data.join("tools").join(tool.id());
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(".version"), "v1.2.3\n").unwrap();
+    }
+
+    #[tokio::test]
+    async fn ensure_wp_cli_is_satisfied_by_a_managed_wp_cli_alone() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = Arc::new(crate::test_support::state_in(tmp.path()));
+        mark_installed(&state, Tool::WpCli);
+        assert!(ensure_wp_cli("job", &state).await.is_ok());
+    }
+
+    /// Yerd's tools are symlinked into `{data}/bin`, which the shell profile
+    /// prepends to `PATH` - so installing Composer here would silently take
+    /// over the user's `composer` in unrelated projects. Creating a site must
+    /// report it instead, never install it.
+    #[tokio::test]
+    async fn ensure_wp_cli_reports_a_missing_composer_rather_than_installing_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = Arc::new(crate::test_support::state_in(tmp.path()));
+        let err = ensure_wp_cli("job", &state).await.unwrap_err();
+        assert!(err.contains("Composer"), "{err}");
+        assert!(err.contains("yerd install tool composer"), "{err}");
+        assert!(
+            tools::installed_version(&state.dirs, Tool::Composer).is_none(),
+            "a create-site job must never install Composer behind the user's back"
+        );
+    }
 
     fn opts() -> WordPressOptions {
         WordPressOptions {

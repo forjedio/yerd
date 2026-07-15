@@ -58,12 +58,14 @@ function blockedNoComposer(t: ToolStatus): boolean {
 
 /** Explains an External tool: your copy is fine, but Yerd's own is still
  *  installable - some managed tools are built with Yerd's Composer, so hiding
- *  Install here used to leave no way to get it. */
+ *  Install here used to leave no way to get it. Yerd's {data}/bin is prepended
+ *  to PATH, so its copy wins once installed - say so rather than implying the
+ *  two sit side by side. */
 function externalHint(t: ToolStatus): string {
   const found = t.external_path
     ? `Already on your PATH at ${t.external_path}`
     : "Already on your PATH from another install";
-  return `${found} - Yerd isn't managing that copy. You can still install Yerd's own alongside it.`;
+  return `${found} - Yerd isn't managing that copy. Installing Yerd's own will take precedence over it on your PATH.`;
 }
 
 const uninstallOpen = ref(false);
