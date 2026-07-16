@@ -105,17 +105,18 @@ impl Tool {
         }
     }
 
-    /// Whether a copy of [`Self::primary_bin`] already on the user's PATH can
-    /// stand in for a managed install, so Tooling reports it as `external`
-    /// (nothing for yerd to install) rather than missing.
+    /// Whether a copy of [`Self::primary_bin`] already on the user's PATH
+    /// satisfies this tool's prerequisite, so a site-create job can use it and
+    /// Tooling tags it `external`. This only decides whether a *managed* copy is
+    /// required: Tooling still offers **Install** either way, so yerd's own copy
+    /// can always be added alongside an external one.
     ///
     /// False for WP-CLI: every yerd path that runs `wp` (WordPress site
     /// creation, the admin-user list, URL sync) execs the *managed*
     /// `boot-fs.php` entry point directly rather than a PATH-resolved `wp`, so
-    /// an external copy satisfies none of them. Reporting one as external hid
-    /// Tooling's Install action for a tool yerd genuinely needs its own copy
-    /// of, and let the WordPress wizard call the toolchain ready - which is
-    /// how a site create reached `wp core download` and failed spawning a
+    /// an external copy satisfies none of them and must not pass preflight. When
+    /// one wrongly did, the WordPress wizard called the toolchain ready and a
+    /// site create reached `wp core download`, then failed spawning a
     /// `boot-fs.php` that was never installed (issue #150).
     #[must_use]
     pub const fn accepts_external(self) -> bool {

@@ -1307,10 +1307,11 @@ pub(crate) async fn reconcile_tool_shims_now(state: &DaemonState) {
 }
 
 /// Build the tool list and tag any *not* Yerd-managed tool that's available on
-/// the user's PATH as `external` (Tooling shows "External", no actions). Tools
-/// that [don't accept an external copy](crate::tools::Tool::accepts_external)
-/// are never tagged - yerd needs its own build, so Tooling must keep offering
-/// Install. Skips the (login-shell) PATH resolution entirely when no remaining
+/// the user's PATH as `external` (Tooling shows an "External" badge but still
+/// offers **Install**, to add yerd's own copy alongside it). Tools that
+/// [don't accept an external copy](crate::tools::Tool::accepts_external) are
+/// never tagged - yerd needs its own build, so Tooling shows them as simply not
+/// installed. Skips the (login-shell) PATH resolution entirely when no remaining
 /// tool could be tagged.
 async fn list_tools_with_external(state: &DaemonState) -> Vec<yerd_ipc::ToolStatus> {
     let mut tools = crate::tools::list_status(&state.dirs);

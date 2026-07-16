@@ -47,6 +47,17 @@ pub(super) async fn run(
         return Outcome::Failed(format!("invalid WordPress admin account: {e}"));
     }
 
+    if let Err(msg) = super::check_target_dir(&project_dir) {
+        return Outcome::Failed(msg);
+    }
+    if let Err(msg) = super::probe_writable(&spec.parent_dir) {
+        return Outcome::Failed(msg);
+    }
+    let db_name = resolve_db_name(name, options);
+    if let Err(e) = database::validate_db_name(&db_name) {
+        return Outcome::Failed(format!("invalid database name: {e}"));
+    }
+
     if let Err(msg) = ensure_wp_cli(id, state).await {
         return Outcome::Failed(msg);
     }
@@ -57,16 +68,6 @@ pub(super) async fn run(
              (or run `yerd install tool wp-cli`)",
             boot_fs.display()
         ));
-    }
-    if let Err(msg) = super::check_target_dir(&project_dir) {
-        return Outcome::Failed(msg);
-    }
-    if let Err(msg) = super::probe_writable(&spec.parent_dir) {
-        return Outcome::Failed(msg);
-    }
-    let db_name = resolve_db_name(name, options);
-    if let Err(e) = database::validate_db_name(&db_name) {
-        return Outcome::Failed(format!("invalid database name: {e}"));
     }
     if super::is_cancelled(&cancel_rx) {
         return Outcome::Cancelled;
