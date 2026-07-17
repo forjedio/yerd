@@ -140,8 +140,9 @@ browser / handler).
 
 <ThemedImage light="/images/mails-light.png" dark="/images/mails-dark.png" alt="A captured email open in the Yerd Mails viewer" />
 
-The HTML body is sanitized and rendered in a **sandboxed iframe** (no scripts,
-strict child CSP). Inline images referenced by `cid:` are embedded as `data:` URLs,
+The HTML body is sanitized and rendered in a **sandboxed iframe** (no message
+scripts; strict child CSP). A trusted in-frame click bridge forwards openable
+links to the host via `postMessage`. Inline images referenced by `cid:` are embedded as `data:` URLs,
 and remote images (e.g. a logo served over `https://`) load as well - just like a
 normal mail client, so opening a message can fetch its remote images. Non-inline
 attachments appear in a bar under the body and open with the OS default app.

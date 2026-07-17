@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  buildMailFrameDocument,
   eventTargetElement,
   linkifyText,
   prepareHtmlBody,
@@ -125,6 +126,30 @@ describe("resolveFrameLink", () => {
       kind: "open",
       url: "https://msi-portal.test/materials/share/abc",
     });
+  });
+});
+
+describe("buildMailFrameDocument", () => {
+  it("preserves head styles and stylesheet links", () => {
+    const { head, body } = buildMailFrameDocument(`<!doctype html><html><head>
+<style>.title { color: red; }</style>
+<link rel="stylesheet" href="https://cdn.example.com/mail.css">
+<meta http-equiv="refresh" content="0;url=https://evil.example">
+</head><body><p class="title">Hi</p></body></html>`);
+    expect(head).toContain(".title { color: red; }");
+    expect(head).toContain('href="https://cdn.example.com/mail.css"');
+    expect(head).not.toContain("refresh");
+    expect(body).toContain('class="title"');
+  });
+
+  it("stamps openable anchors and strips image maps from the body", () => {
+    const { body } = buildMailFrameDocument(
+      `<map name="m"><area href="https://evil.example" shape="rect" coords="0,0,1,1"></map>
+       <a href="https://ok.example">Ok</a>`,
+    );
+    expect(body).not.toContain("<map");
+    expect(body).not.toContain("<area");
+    expect(body).toContain('data-yerd-url="https://ok.example/"');
   });
 });
 

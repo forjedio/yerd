@@ -133,58 +133,125 @@ export function resolveFrameLink(target: EventTarget | null): FrameLinkAction | 
   return isInPageFragment(href) ? { kind: "scroll" } : { kind: "block" };
 }
 
+/** Child-document CSP for the sandboxed mail iframe (paired with `buildMailFrameDocument`). */
+export const MAIL_FRAME_CSP =
+  "default-src 'none'; script-src 'unsafe-inline'; img-src data: http: https:; style-src 'unsafe-inline' http: https:";
+
+const STRIP_TAGS = new Set([
+  "script",
+  "iframe",
+  "object",
+  "embed",
+  "base",
+  "form",
+  "map",
+  "area",
+]);
+
 /**
- * Strip executable / navigable hazards from captured HTML before it enters the
- * sandboxed iframe. Keeps inline styles and images; removes scripts, frames,
- * image maps, forms, and inline handlers. Primary isolation is still the iframe
- * sandbox + child CSP; this is defense in depth.
+ * Trusted bootstrap script injected into the iframe `head` (not from email).
+ * Forwards openable link clicks to the host via `postMessage` so link routing
+ * works on WKWebView where parent `contentDocument` listeners are unreliable.
+ * Email scripts remain blocked by sanitization + CSP `default-src 'none'`.
  */
-export function sanitizeMailHtml(html: string): string {
-  const doc = new DOMParser().parseFromString(html, "text/html");
-  const strip = new Set([
-    "script",
-    "iframe",
-    "object",
-    "embed",
-    "link",
-    "meta",
-    "base",
-    "form",
-    "map",
-    "area",
-  ]);
-  for (const el of [...doc.body.querySelectorAll("*")]) {
-    if (strip.has(el.tagName.toLowerCase())) {
-      el.remove();
-      continue;
+export const MAIL_FRAME_CLICK_BRIDGE = `<script>
+document.addEventListener("click",function(e){
+  var el=e.target;
+  if(el&&el.nodeType===3)el=el.parentElement;
+  while(el){
+    var a=el.closest&&el.closest("a[href],a[data-yerd-url]");
+    if(a){
+      var stamped=a.getAttribute("data-yerd-url");
+      var href=a.getAttribute("href")||"";
+      var raw=(stamped||href).trim();
+      if(/^(https?:|mailto:|tel:)/i.test(raw)){
+        e.preventDefault();
+        parent.postMessage({type:"yerd-mail-link",url:raw},"*");
+        return;
+      }
+      if(href.trim().charAt(0)==="#")return;
+      e.preventDefault();
+      return;
     }
-    for (const attr of [...el.attributes]) {
-      const name = attr.name.toLowerCase();
-      if (name.startsWith("on") || name === "srcdoc") {
-        el.removeAttribute(attr.name);
+    el=el.parentElement;
+  }
+},true);
+</script>`;
+
+function sanitizeMailDocument(doc: Document): void {
+  const roots: Element[] = [];
+  if (doc.head) roots.push(doc.head);
+  if (doc.body) roots.push(doc.body);
+  for (const root of roots) {
+    for (const el of [...root.querySelectorAll("*")]) {
+      const tag = el.tagName.toLowerCase();
+      if (tag === "link") {
+        const rel = el.getAttribute("rel")?.toLowerCase() ?? "";
+        if (!rel.includes("stylesheet")) el.remove();
         continue;
       }
-      if (
-        (name === "href" || name === "src" || name === "xlink:href") &&
-        /^\s*javascript:/i.test(attr.value)
-      ) {
-        el.removeAttribute(attr.name);
+      if (tag === "meta") {
+        const equiv = el.getAttribute("http-equiv")?.toLowerCase() ?? "";
+        if (equiv === "refresh" || equiv === "set-cookie") el.remove();
+        continue;
+      }
+      if (STRIP_TAGS.has(tag)) {
+        el.remove();
+        continue;
+      }
+      for (const attr of [...el.attributes]) {
+        const name = attr.name.toLowerCase();
+        if (name.startsWith("on") || name === "srcdoc") {
+          el.removeAttribute(attr.name);
+          continue;
+        }
+        if (
+          (name === "href" || name === "src" || name === "xlink:href") &&
+          /^\s*javascript:/i.test(attr.value)
+        ) {
+          el.removeAttribute(attr.name);
+        }
       }
     }
   }
-  return doc.body.innerHTML;
 }
 
 /**
- * Stamp openable `<a href>` tags with `data-yerd-url` before the iframe srcdoc.
- * The frame click listener reads that attribute to open links in the OS browser.
+ * Sanitize a captured HTML email and stamp openable anchors with `data-yerd-url`.
+ * Preserves `<head>` styles / stylesheet links so marketing emails keep their CSS.
+ */
+export function buildMailFrameDocument(html: string): { head: string; body: string } {
+  const doc = new DOMParser().parseFromString(html, "text/html");
+  sanitizeMailDocument(doc);
+  for (const a of doc.querySelectorAll("a[href]")) {
+    const url = resolveExternalHref(a.getAttribute("href"));
+    if (url) a.setAttribute("data-yerd-url", url);
+  }
+  return {
+    head: doc.head?.innerHTML ?? "",
+    body: doc.body?.innerHTML ?? "",
+  };
+}
+
+/**
+ * Strip executable / navigable hazards from captured HTML (body fragment).
+ * Prefer {@link buildMailFrameDocument} for iframe rendering so `<head>` styles survive.
+ */
+export function sanitizeMailHtml(html: string): string {
+  const doc = new DOMParser().parseFromString(html, "text/html");
+  sanitizeMailDocument(doc);
+  return doc.body?.innerHTML ?? html;
+}
+
+/**
+ * Stamp openable `<a href>` tags with `data-yerd-url` (body HTML only).
+ * @deprecated Prefer {@link buildMailFrameDocument} for the mail iframe.
  */
 export function prepareHtmlBody(html: string): string {
   const doc = new DOMParser().parseFromString(sanitizeMailHtml(html), "text/html");
   for (const a of doc.querySelectorAll("a[href]")) {
     const url = resolveExternalHref(a.getAttribute("href"));
-    if (!url) continue;
-    a.setAttribute("data-yerd-url", url);
+    if (url) a.setAttribute("data-yerd-url", url);
   }
   return doc.body?.innerHTML ?? html;
 }

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { FileDown, Inbox, Paperclip, Trash2 } from "lucide-vue-next";
-import { computed, onUnmounted, ref, watch } from "vue";
+import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 
 import TitleBar from "@/components/TitleBar.vue";
 import Button from "@/components/ui/Button.vue";
@@ -22,26 +22,28 @@ import {
   openInBrowser,
   saveMailAttachment,
 } from "@/ipc/client";
-import { linkifyText, prepareHtmlBody, resolveFrameLink } from "@/lib/mailLinks";
+import {
+  buildMailFrameDocument,
+  linkifyText,
+  MAIL_FRAME_CLICK_BRIDGE,
+  MAIL_FRAME_CSP,
+  resolveExternalHref,
+  resolveFrameLink,
+} from "@/lib/mailLinks";
 import { humaniseBytes } from "@/lib/utils";
 import type { MailAttachment, MailDetail, MailSummary } from "@/ipc/types";
 
-// HTML emails run in a sandboxed srcdoc iframe: no `allow-scripts`, child CSP
-// `default-src 'none'`. `allow-same-origin` lets the host attach a click
-// listener on the frame document (`interceptFrameLinks`) and route openable links
-// to the OS browser; scripts stay disabled so message content can't abuse that
-// access. CSP allows images over data:/http/https (inline cid: and remote logos).
-const CHILD_CSP =
-  "default-src 'none'; img-src data: http: https:; style-src 'unsafe-inline'";
+// Sandboxed srcdoc iframe + child CSP. `allow-scripts` is only for our trusted
+// click-bridge script in the frame head; email scripts are stripped and CSP
+// `default-src 'none'` blocks message content from running script. Link opens
+// are delivered to the host via `postMessage` (WKWebView is unreliable with
+// parent `contentDocument` listeners).
 
 const toast = useToast();
 
 const { data: mails, refresh } = usePoll<MailSummary[]>(listMails, 4000);
 
 const unregisterViewActions = registerViewActions({ refresh: () => void refresh() });
-onUnmounted(() => {
-  unregisterViewActions();
-});
 
 const selectedId = ref<string | null>(null);
 const detail = ref<MailDetail | null>(null);
@@ -163,35 +165,33 @@ async function confirmDelete(close: () => void): Promise<void> {
 }
 
 function frameSrcdoc(html: string): string {
-  const body = prepareHtmlBody(html);
-  return `<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="${CHILD_CSP}"></head><body>${body}</body></html>`;
+  const { head, body } = buildMailFrameDocument(html);
+  return `<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="${MAIL_FRAME_CSP}">${MAIL_FRAME_CLICK_BRIDGE}${head}</head><body>${body}</body></html>`;
 }
 
-const linkedDocs = new WeakSet<Document>();
-
-/**
- * Route link clicks inside the sandboxed email frame. On each `@load` attach one
- * listener to `contentDocument`; classify via {@link resolveFrameLink} and
- * either open in the OS browser, let `#` anchors scroll, or block navigation.
- */
-function interceptFrameLinks(e: Event): void {
-  const doc = (e.target as HTMLIFrameElement).contentDocument;
-  if (!doc || linkedDocs.has(doc)) return;
-  linkedDocs.add(doc);
-  doc.addEventListener("click", (ev) => {
-    const action = resolveFrameLink(ev.target);
-    if (!action || action.kind === "scroll") return;
-    ev.preventDefault();
-    if (action.kind !== "open") return;
-    const now = Date.now();
-    if (action.url === lastOpenedLink && now - lastOpenedAt < 750) return;
-    lastOpenedLink = action.url;
-    lastOpenedAt = now;
-    void openInBrowser(action.url).catch((err) => {
-      toast.error("Couldn't open link", (err as IpcError).message || action.url);
-    });
+function openMailLink(url: string): void {
+  const resolved = resolveExternalHref(url);
+  if (!resolved) return;
+  const now = Date.now();
+  if (resolved === lastOpenedLink && now - lastOpenedAt < 750) return;
+  lastOpenedLink = resolved;
+  lastOpenedAt = now;
+  void openInBrowser(resolved).catch((err) => {
+    toast.error("Couldn't open link", (err as IpcError).message || resolved);
   });
 }
+
+function onMailFrameMessage(ev: MessageEvent): void {
+  const data = ev.data as { type?: string; url?: string } | null;
+  if (!data || data.type !== "yerd-mail-link" || typeof data.url !== "string") return;
+  openMailLink(data.url);
+}
+
+onMounted(() => window.addEventListener("message", onMailFrameMessage));
+onUnmounted(() => {
+  unregisterViewActions();
+  window.removeEventListener("message", onMailFrameMessage);
+});
 
 function handleTextLinkClick(ev: MouseEvent): void {
   const action = resolveFrameLink(ev.target);
@@ -322,10 +322,9 @@ function formatDate(epoch: number): string {
           <iframe
             v-if="detail.html_body"
             :srcdoc="frameSrcdoc(detail.html_body)"
-            sandbox="allow-same-origin"
+            sandbox="allow-scripts allow-same-origin"
             class="min-h-0 flex-1 bg-white"
             title="Email body"
-            @load="interceptFrameLinks"
           />
 
           <!-- Plain-text body with linkified URLs -->
