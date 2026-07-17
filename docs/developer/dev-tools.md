@@ -49,7 +49,9 @@ impl Tool {
     pub const ALL: [Tool; 5];
     pub const fn id(self) -> &'static str;            // "composer" | "node" | "bun" | "laravel" | "wp-cli"
     pub const fn display_name(self) -> &'static str;  // for the UI
+    pub const fn primary_bin(self) -> &'static str;   // the command external detection looks for
     pub const fn exposed_bins(self) -> &'static [&'static str]; // commands on PATH
+    pub const fn accepts_external(self) -> bool;      // may a PATH copy stand in?
     pub fn parse(id: &str) -> Option<Tool>;           // wire id → Tool
 }
 ```
@@ -57,6 +59,18 @@ impl Tool {
 `exposed_bins` is the single source of truth for which `{data}/bin` names a tool
 owns: `composer`; `node`/`npm`/`npx`; `bun`/`bunx`; `laravel`; `wp`. It drives
 both shim creation and pruning.
+
+`accepts_external` is the source of truth for whether a copy already on the
+user's `PATH` can substitute for a managed install. It is `false` only for
+`WpCli`, and that asymmetry is load-bearing: the Laravel flow resolves and execs
+whatever `laravel`/`composer` it finds, whereas every WP-CLI caller (WordPress
+scaffolding, the admin-user list, URL sync, the `wp` shim) execs the *managed*
+`vendor/wp-cli/wp-cli/php/boot-fs.php` by path and can never use an external
+`wp`. Reporting one as external is what caused
+[#150](https://github.com/RichardAnderson/yerd/issues/150) - preflight passed,
+then scaffolding failed spawning a `boot-fs.php` that was never installed. Keep
+`ListTools` and any new preflight honest to this flag rather than re-deriving
+the rule.
 
 Failures are a binary-local `thiserror` enum (the tools subsystem has no library
 crate of its own, so this mirrors `MutateError`/`DaemonError` rather than the
