@@ -954,16 +954,18 @@ fn base64_decode(input: &str) -> Result<Vec<u8>, GuiError> {
         return Err(GuiError::internal("attachment data is not valid base64"));
     }
     let mut out = Vec::with_capacity(raw.len() / 4 * 3);
-    for chunk in raw.chunks_exact(4) {
-        let (c0, c1, c2, c3) = (
-            chunk.first().copied().unwrap_or(0),
-            chunk.get(1).copied().unwrap_or(0),
-            chunk.get(2).copied().unwrap_or(0),
-            chunk.get(3).copied().unwrap_or(0),
-        );
+    let quartets = raw.len() / 4;
+    for (i, chunk) in raw.chunks_exact(4).enumerate() {
+        let [c0, c1, c2, c3] = <[u8; 4]>::try_from(chunk).map_err(|_| {
+            GuiError::internal("attachment data is not valid base64")
+        })?;
         let pad2 = c2 == b'=';
         let pad3 = c3 == b'=';
         if pad2 && !pad3 {
+            return Err(GuiError::internal("attachment data is not valid base64"));
+        }
+        let is_last = i + 1 == quartets;
+        if (pad2 || pad3) && !is_last {
             return Err(GuiError::internal("attachment data is not valid base64"));
         }
         let s0 = sextet(c0).ok_or_else(|| {
@@ -1088,5 +1090,9 @@ mod tests {
         assert!(base64_decode("Zg").is_err());
         assert!(base64_decode("!!!!").is_err());
         assert!(base64_decode("Zm9v====").is_err());
+        assert!(
+            base64_decode("Zg==Zm8=").is_err(),
+            "padding must only appear on the final quartet"
+        );
     }
 }
