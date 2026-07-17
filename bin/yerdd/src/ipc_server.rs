@@ -1785,7 +1785,7 @@ async fn set_php_settings(
     php_versions_response(state).await
 }
 
-/// `set/unset php --php <version>` - merge per-version overrides of the
+/// `set/unset php --only <version>` - merge per-version overrides of the
 /// allowlisted settings into the config and apply them to that version's FPM
 /// pool and CLI ini. An empty-string value removes the override (the global
 /// value applies again). Same lock order and `php_settings_mutate` discipline

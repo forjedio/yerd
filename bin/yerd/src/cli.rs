@@ -624,8 +624,8 @@ pub enum SetTarget {
         value: String,
         /// Apply only to this installed PHP version (overrides the global
         /// default for that version).
-        #[arg(long = "php", value_name = "VERSION")]
-        php: Option<String>,
+        #[arg(long = "only", value_name = "VERSION")]
+        only: Option<String>,
     },
 }
 
@@ -638,8 +638,8 @@ pub enum UnsetTarget {
         setting: String,
         /// Reset only this version's override; the global default applies
         /// again.
-        #[arg(long = "php", value_name = "VERSION")]
-        php: Option<String>,
+        #[arg(long = "only", value_name = "VERSION")]
+        only: Option<String>,
     },
 }
 

@@ -53,12 +53,12 @@ pub fn to_request(cmd: &Command) -> Result<Request, ClientError> {
                 crate::cli::SetTarget::Php {
                     setting,
                     value,
-                    php,
+                    only,
                 },
         } => {
             validate_php_setting(setting, Some(value))?;
             let settings = std::collections::BTreeMap::from([(setting.clone(), value.clone())]);
-            match php {
+            match only {
                 Some(v) => Request::SetPhpVersionSettings {
                     version: parse_php(v)?,
                     settings,
@@ -67,11 +67,11 @@ pub fn to_request(cmd: &Command) -> Result<Request, ClientError> {
             }
         }
         Command::Unset {
-            target: crate::cli::UnsetTarget::Php { setting, php },
+            target: crate::cli::UnsetTarget::Php { setting, only },
         } => {
             validate_php_setting(setting, None)?;
             let settings = std::collections::BTreeMap::from([(setting.clone(), String::new())]);
-            match php {
+            match only {
                 Some(v) => Request::SetPhpVersionSettings {
                     version: parse_php(v)?,
                     settings,
@@ -1549,7 +1549,7 @@ mod tests {
                 target: crate::cli::SetTarget::Php {
                     setting: "memory_limit".into(),
                     value: "512M".into(),
-                    php: None
+                    only: None
                 }
             })
             .unwrap(),
@@ -1565,7 +1565,7 @@ mod tests {
                 target: crate::cli::SetTarget::Php {
                     setting: "memory_limit".into(),
                     value: "1G".into(),
-                    php: Some("8.3".into())
+                    only: Some("8.3".into())
                 }
             })
             .unwrap(),
@@ -1581,7 +1581,7 @@ mod tests {
             to_request(&Command::Unset {
                 target: crate::cli::UnsetTarget::Php {
                     setting: "memory_limit".into(),
-                    php: None
+                    only: None
                 }
             })
             .unwrap(),
@@ -1596,7 +1596,7 @@ mod tests {
             to_request(&Command::Unset {
                 target: crate::cli::UnsetTarget::Php {
                     setting: "memory_limit".into(),
-                    php: Some("8.3".into())
+                    only: Some("8.3".into())
                 }
             })
             .unwrap(),
@@ -1880,7 +1880,7 @@ mod tests {
             target: crate::cli::SetTarget::Php {
                 setting: "not_a_setting".into(),
                 value: "1".into(),
-                php: None,
+                only: None,
             },
         }) {
             Err(ClientError::Usage(_)) => {}
@@ -1890,7 +1890,7 @@ mod tests {
             target: crate::cli::SetTarget::Php {
                 setting: "memory_limit".into(),
                 value: "bogus".into(),
-                php: None,
+                only: None,
             },
         }) {
             Err(ClientError::Usage(_)) => {}
@@ -1900,7 +1900,7 @@ mod tests {
             target: crate::cli::SetTarget::Php {
                 setting: "memory_limit".into(),
                 value: "1G".into(),
-                php: Some("bogus".into()),
+                only: Some("bogus".into()),
             },
         }) {
             Err(ClientError::Usage(_)) => {}
@@ -3045,7 +3045,7 @@ mod tests {
         match to_request(&Command::Unset {
             target: crate::cli::UnsetTarget::Php {
                 setting: "not_a_setting".into(),
-                php: None,
+                only: None,
             },
         }) {
             Err(ClientError::Usage(_)) => {}

@@ -374,7 +374,7 @@ mod tests {
         drop(keep_alive);
     }
 
-    /// Per-version PHP config over the socket: `yerd set php ... --php 8.3`
+    /// Per-version PHP config over the socket: `yerd set php ... --only 8.3`
     /// and the `NotFound` guard for an uninstalled version. PHP 8.3 is faked
     /// on disk (binaries only; no pool is running).
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -417,7 +417,7 @@ mod tests {
             target: yerd::cli::SetTarget::Php {
                 setting: "memory_limit".into(),
                 value: "1G".into(),
-                php: Some("8.3".into()),
+                only: Some("8.3".into()),
             },
         };
         match send(&sock, &set_override).await {
@@ -441,7 +441,7 @@ mod tests {
                 target: yerd::cli::SetTarget::Php {
                     setting: "memory_limit".into(),
                     value: "1G".into(),
-                    php: Some("8.4".into()),
+                    only: Some("8.4".into()),
                 },
             },
         )
@@ -467,7 +467,7 @@ mod tests {
             &Command::Unset {
                 target: yerd::cli::UnsetTarget::Php {
                     setting: "memory_limit".into(),
-                    php: Some("8.3".into()),
+                    only: Some("8.3".into()),
                 },
             },
         )

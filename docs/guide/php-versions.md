@@ -282,12 +282,12 @@ and rendered into FPM config.
 ### Per-version configuration
 
 Every setting can also be pinned for a **single** installed version with the
-`--php` flag - the override wins over the global default for that version only,
+`--only` flag - the override wins over the global default for that version only,
 and applies to both its FPM pool and its CLI:
 
 ```sh
-yerd set php memory_limit 1G --php 8.3   # only PHP 8.3 gets 1G
-yerd unset php memory_limit --php 8.3    # 8.3 inherits the global value again
+yerd set php memory_limit 1G --only 8.3   # only PHP 8.3 gets 1G
+yerd unset php memory_limit --only 8.3    # 8.3 inherits the global value again
 ```
 
 A per-version change restarts only that version's pool, and per-version
@@ -308,8 +308,8 @@ PHP page: one expandable panel per installed version with the settings form
 | `yerd update php [<version>]` | Update one (or all) versions to the latest patch. |
 | `yerd uninstall php <version>` | Remove a version's files (blocked if a site uses it). |
 | `yerd restart php [<version>]` | Restart one (or all) running FPM pools. |
-| `yerd set php <setting> <value> [--php <version>]` | Set a global PHP ini default, or a per-version override with `--php`. |
-| `yerd unset php <setting> [--php <version>]` | Reset a global setting to PHP's built-in value. With `--php`, remove one version's override so the global value applies again. |
+| `yerd set php <setting> <value> [--only <version>]` | Set a global PHP ini default, or a per-version override with `--only`. |
+| `yerd unset php <setting> [--only <version>]` | Reset a global setting to PHP's built-in value. With `--only`, remove one version's override so the global value applies again. |
 | `yerd php ext add <version> <path> [--zend] [--name <name>]` | Register a custom extension (load-probed) for a version. |
 | `yerd php ext remove <version> <name>` | Remove a registered extension. |
 | `yerd php ext list` | List registered custom extensions, grouped by version. |

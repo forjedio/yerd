@@ -152,7 +152,7 @@ validates strictly. A malformed *version key* (e.g. `"eight"`) is still a hard
 error.
 :::
 
-Manage this with [`yerd set php --php <version>`](cli/php#global-php-ini-settings) or the desktop app's **Per-version configuration** card.
+Manage this with [`yerd set php --only <version>`](cli/php#global-php-ini-settings) or the desktop app's **Per-version configuration** card.
 
 `[php.extensions]` maps a **PHP version string** to an array of custom extensions to load into both that version's FPM pool and its CLI. It is written as an array-of-tables per version and omitted entirely when empty. Because a native `.so` is ABI-bound to a PHP minor, an entry only applies to the version it is keyed under.
 
