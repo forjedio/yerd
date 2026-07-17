@@ -87,7 +87,6 @@ const displayErrorsOptions = computed(() => {
 async function saveSettings(): Promise<void> {
   busy.value = true;
   try {
-    // Send every field; blank values remove the override (inherit again).
     const r = await setPhpVersionSettings(props.version, { ...form.value });
     seed(r.version_settings?.[props.version] ?? {});
     toast.success(
