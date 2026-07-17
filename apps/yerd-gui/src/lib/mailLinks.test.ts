@@ -150,6 +150,15 @@ describe("prepareHtmlBody", () => {
     expect(out).not.toContain("onclick");
     expect(out).toContain('data-yerd-url="https://ok.example/"');
   });
+
+  it("strips image maps so area hrefs cannot navigate the frame", () => {
+    const out = prepareHtmlBody(
+      `<img usemap="#m" src="https://example.com/x.png"><map name="m"><area href="https://evil.example" shape="rect" coords="0,0,10,10"></map>`,
+    );
+    expect(out).not.toContain("<map");
+    expect(out).not.toContain("<area");
+    expect(out).toContain('usemap="#m"');
+  });
 });
 
 describe("linkifyText", () => {

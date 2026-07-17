@@ -123,7 +123,8 @@ export function eventTargetElement(target: EventTarget | null): Element | null {
  */
 export function resolveFrameLink(target: EventTarget | null): FrameLinkAction | null {
   const el = eventTargetElement(target);
-  const anchor = el?.closest?.("a[href], a[data-yerd-url]") ?? null;
+  const anchor =
+    el?.closest?.("a[href], a[data-yerd-url], area[href]") ?? null;
   if (!anchor) return null;
   const stamped = anchor.getAttribute("data-yerd-url");
   const href = anchor.getAttribute("href");
@@ -133,13 +134,25 @@ export function resolveFrameLink(target: EventTarget | null): FrameLinkAction | 
 }
 
 /**
- * Strip executable / navigable hazards from a captured HTML email before it is
- * rendered in the host (Shadow DOM). Keeps inline styles and images so the
- * message still looks like email; removes scripts, frames, and inline handlers.
+ * Strip executable / navigable hazards from captured HTML before it enters the
+ * sandboxed iframe. Keeps inline styles and images; removes scripts, frames,
+ * image maps, forms, and inline handlers. Primary isolation is still the iframe
+ * sandbox + child CSP; this is defense in depth.
  */
 export function sanitizeMailHtml(html: string): string {
   const doc = new DOMParser().parseFromString(html, "text/html");
-  const strip = new Set(["script", "iframe", "object", "embed", "link", "meta", "base", "form"]);
+  const strip = new Set([
+    "script",
+    "iframe",
+    "object",
+    "embed",
+    "link",
+    "meta",
+    "base",
+    "form",
+    "map",
+    "area",
+  ]);
   for (const el of [...doc.body.querySelectorAll("*")]) {
     if (strip.has(el.tagName.toLowerCase())) {
       el.remove();
@@ -163,8 +176,8 @@ export function sanitizeMailHtml(html: string): string {
 }
 
 /**
- * Stamp openable `<a href>` tags with `data-yerd-url` before rendering.
- * The host click listener reads that attribute to open links in the OS browser.
+ * Stamp openable `<a href>` tags with `data-yerd-url` before the iframe srcdoc.
+ * The frame click listener reads that attribute to open links in the OS browser.
  */
 export function prepareHtmlBody(html: string): string {
   const doc = new DOMParser().parseFromString(sanitizeMailHtml(html), "text/html");

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { FileDown, Inbox, Paperclip, Trash2 } from "lucide-vue-next";
-import { computed, nextTick, onUnmounted, ref, watch } from "vue";
+import { computed, onUnmounted, ref, watch } from "vue";
 
 import TitleBar from "@/components/TitleBar.vue";
 import Button from "@/components/ui/Button.vue";
@@ -26,9 +26,13 @@ import { linkifyText, prepareHtmlBody, resolveFrameLink } from "@/lib/mailLinks"
 import { humaniseBytes } from "@/lib/utils";
 import type { MailAttachment, MailDetail, MailSummary } from "@/ipc/types";
 
-// HTML emails are rendered in a Shadow DOM (style isolation, no email scripts).
-// WKWebView never delivered click events from a sandboxed srcdoc iframe to
-// parent-attached listeners, so the host Shadow root owns the click path.
+// HTML emails run in a sandboxed srcdoc iframe: no `allow-scripts`, child CSP
+// `default-src 'none'`. `allow-same-origin` lets the host attach a click
+// listener on the frame document (`interceptFrameLinks`) and route openable links
+// to the OS browser; scripts stay disabled so message content can't abuse that
+// access. CSP allows images over data:/http/https (inline cid: and remote logos).
+const CHILD_CSP =
+  "default-src 'none'; img-src data: http: https:; style-src 'unsafe-inline'";
 
 const toast = useToast();
 
@@ -47,7 +51,6 @@ const clearOpen = ref(false);
 const clearing = ref(false);
 const selectedApp = ref<string>("");
 
-const htmlHost = ref<HTMLElement | null>(null);
 let lastOpenedLink = "";
 let lastOpenedAt = 0;
 
@@ -159,56 +162,36 @@ async function confirmDelete(close: () => void): Promise<void> {
   }
 }
 
-function onHtmlLinkClick(ev: Event): void {
-  const action = resolveFrameLink(ev.target);
-  if (!action || action.kind === "scroll") return;
-  ev.preventDefault();
-  ev.stopPropagation();
-  if (action.kind !== "open") return;
-  const now = Date.now();
-  if (action.url === lastOpenedLink && now - lastOpenedAt < 750) return;
-  lastOpenedLink = action.url;
-  lastOpenedAt = now;
-  void openInBrowser(action.url).catch((e) => {
-    toast.error("Couldn't open link", (e as IpcError).message || action.url);
+function frameSrcdoc(html: string): string {
+  const body = prepareHtmlBody(html);
+  return `<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="${CHILD_CSP}"></head><body>${body}</body></html>`;
+}
+
+const linkedDocs = new WeakSet<Document>();
+
+/**
+ * Route link clicks inside the sandboxed email frame. On each `@load` attach one
+ * listener to `contentDocument`; classify via {@link resolveFrameLink} and
+ * either open in the OS browser, let `#` anchors scroll, or block navigation.
+ */
+function interceptFrameLinks(e: Event): void {
+  const doc = (e.target as HTMLIFrameElement).contentDocument;
+  if (!doc || linkedDocs.has(doc)) return;
+  linkedDocs.add(doc);
+  doc.addEventListener("click", (ev) => {
+    const action = resolveFrameLink(ev.target);
+    if (!action || action.kind === "scroll") return;
+    ev.preventDefault();
+    if (action.kind !== "open") return;
+    const now = Date.now();
+    if (action.url === lastOpenedLink && now - lastOpenedAt < 750) return;
+    lastOpenedLink = action.url;
+    lastOpenedAt = now;
+    void openInBrowser(action.url).catch((err) => {
+      toast.error("Couldn't open link", (err as IpcError).message || action.url);
+    });
   });
 }
-
-function renderHtmlBody(html: string): void {
-  const host = htmlHost.value;
-  if (!host) return;
-  const root = host.shadowRoot ?? host.attachShadow({ mode: "open" });
-  root.innerHTML = `<style>
-:host { display: block; }
-.yerd-mail-body {
-  padding: 1.25rem;
-  box-sizing: border-box;
-  color: #111;
-  font: 14px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-}
-.yerd-mail-body img, .yerd-mail-body table { max-width: 100%; }
-.yerd-mail-body a { cursor: pointer; }
-</style><div class="yerd-mail-body">${prepareHtmlBody(html)}</div>`;
-  root.addEventListener("click", onHtmlLinkClick, true);
-}
-
-function clearHtmlBody(): void {
-  const host = htmlHost.value;
-  if (!host?.shadowRoot) return;
-  host.shadowRoot.innerHTML = "";
-}
-
-watch(
-  [() => detail.value?.html_body, loadingDetail, htmlHost],
-  ([html, loading]) => {
-    if (loading) return;
-    if (!html) {
-      clearHtmlBody();
-      return;
-    }
-    void nextTick(() => renderHtmlBody(html));
-  },
-);
 
 function handleTextLinkClick(ev: MouseEvent): void {
   const action = resolveFrameLink(ev.target);
@@ -336,13 +319,13 @@ function formatDate(epoch: number): string {
             </p>
           </div>
 
-          <!-- HTML body in Shadow DOM (WKWebView iframe clicks never fired) -->
-          <div
+          <iframe
             v-if="detail.html_body"
-            ref="htmlHost"
-            class="min-h-0 flex-1 overflow-y-auto bg-white"
-            role="article"
-            aria-label="Email body"
+            :srcdoc="frameSrcdoc(detail.html_body)"
+            sandbox="allow-same-origin"
+            class="min-h-0 flex-1 bg-white"
+            title="Email body"
+            @load="interceptFrameLinks"
           />
 
           <!-- Plain-text body with linkified URLs -->
