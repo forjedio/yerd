@@ -867,6 +867,7 @@ mod variant_name_pinning {
             ErrorCode::SiteNotLaravel,
             ErrorCode::UnknownServiceType,
             ErrorCode::InstanceAlreadyExists,
+            ErrorCode::LegacyRestricted,
             ErrorCode::Internal,
         ] {
             pin_code(c);

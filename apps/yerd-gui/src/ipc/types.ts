@@ -470,6 +470,7 @@ export type ErrorCode =
   | "invalid_path"
   | "port_in_use"
   | "extension_load_failed"
+  | "legacy_restricted"
   | "internal";
 
 /** One whole-host reverse proxy (`{name}.{tld}` → `target`). Reply element of a

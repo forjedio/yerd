@@ -644,7 +644,12 @@ pub fn reconcile_shims(dirs: &PlatformDirs, yerd_bin: &Path) -> Result<(), PhpEr
 
     for &v in &installed {
         place_symlink(&bin.join(versioned_shim_name(v, false)), yerd_bin)?;
-        place_symlink(&bin.join(versioned_shim_name(v, true)), yerd_bin)?;
+        // No cover shim for legacy (< 8.2): pcov is never built for it, so
+        // `php<ver>cover` could only error. The gate in `cover_shim` still
+        // rejects it, but not creating the shim keeps `{data}/bin` honest.
+        if !v.is_legacy() {
+            place_symlink(&bin.join(versioned_shim_name(v, true)), yerd_bin)?;
+        }
     }
     place_symlink(&bin.join("phpcover"), yerd_bin)?;
 
@@ -669,7 +674,11 @@ pub fn reconcile_shims(dirs: &PlatformDirs, yerd_bin: &Path) -> Result<(), PhpEr
         let Some(v) = managed_shim_version(name) else {
             continue;
         };
-        if installed.contains(&v) {
+        // Keep a shim only if its version is installed - except a legacy cover
+        // shim (`php7.4cover`), which must be pruned even when 7.4 is installed,
+        // since pcov is never built for legacy.
+        let stale_legacy_cover = name.ends_with("cover") && v.is_legacy();
+        if installed.contains(&v) && !stale_legacy_cover {
             continue;
         }
         let path = entry.path();
@@ -1130,6 +1139,46 @@ mod tests {
         assert_eq!(std::fs::read_link(bin.join("php")).unwrap(), yerd_bin);
         assert!(!bin.join("php8.2cover").exists());
         assert!(bin.join("keep.txt").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn reconcile_gives_legacy_a_version_shim_but_no_cover_shim() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dirs = dirs_in(tmp.path());
+        let yerd_bin = tmp.path().join("yerd");
+        std::fs::write(&yerd_bin, b"#!fake").unwrap();
+
+        let mk = |v: PhpVersion| {
+            let base = dirs
+                .data
+                .join("php")
+                .join(format!("php-{}.{}", v.major, v.minor));
+            std::fs::create_dir_all(base.join("bin")).unwrap();
+            std::fs::create_dir_all(base.join("sbin")).unwrap();
+            std::fs::write(base.join("bin").join("php"), b"cli").unwrap();
+            std::fs::write(base.join("sbin").join("php-fpm"), b"fpm").unwrap();
+        };
+        mk(PhpVersion::new(7, 4));
+        mk(PhpVersion::new(8, 4));
+
+        let bin = shim_dir(&dirs);
+        std::fs::create_dir_all(&bin).unwrap();
+        // A stale legacy cover shim (from an older yerd) must be pruned even
+        // though 7.4 is installed.
+        std::os::unix::fs::symlink(&yerd_bin, bin.join("php7.4cover")).unwrap();
+
+        reconcile_shims(&dirs, &yerd_bin).unwrap();
+
+        assert!(
+            bin.join("php7.4").exists(),
+            "legacy version shim is created"
+        );
+        assert!(
+            !bin.join("php7.4cover").exists(),
+            "no cover shim for a legacy version, and a stale one is pruned"
+        );
+        assert!(bin.join("php8.4cover").exists(), "stable cover shim stays");
     }
 
     #[cfg(unix)]

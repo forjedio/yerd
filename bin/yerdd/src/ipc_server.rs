@@ -4132,6 +4132,66 @@ Subject: Captured\r\n\r\nhi\r\n";
     }
 
     #[tokio::test]
+    async fn poll_and_refresh_is_channel_aware_for_legacy() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_in(tmp.path());
+        fake_install_build(&state.dirs, PhpVersion::new(8, 5), "8.5.6", 1);
+        fake_install_build(&state.dirs, PhpVersion::new(7, 4), "7.4.20", 1);
+        let (stable, legacy) = crate::test_support::sign_manifest_pair(
+            &listing_body(&[("8.5.9", "8.5", 1)]),
+            &listing_body(&[("7.4.33", "7.4", 1)]),
+        );
+        let dl = TwoChannelDl {
+            stable: ListingDl::new(&stable),
+            legacy: ListingDl::new(&legacy),
+        };
+
+        crate::php_updates::poll_and_refresh(&state, &dl, &stable.public_key).await;
+
+        let cache = state.php_updates.read().await;
+        assert_eq!(
+            cache.get(&PhpVersion::new(8, 5)).cloned(),
+            Some(("8.5.9".to_owned(), 1)),
+            "stable minor resolved from php.json"
+        );
+        assert_eq!(
+            cache.get(&PhpVersion::new(7, 4)).cloned(),
+            Some(("7.4.33".to_owned(), 1)),
+            "legacy minor resolved from php-legacy.json"
+        );
+    }
+
+    #[tokio::test]
+    async fn poll_and_refresh_tolerates_untrusted_legacy_manifest() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_in(tmp.path());
+        fake_install_build(&state.dirs, PhpVersion::new(8, 5), "8.5.6", 1);
+        fake_install_build(&state.dirs, PhpVersion::new(7, 4), "7.4.20", 1);
+        // The legacy manifest is signed with a DIFFERENT key, so its signature
+        // fails verification against the stable key the poll is given - the
+        // legacy fetch degrades to `None` and 7.4 is skipped, not errored.
+        let stable = signed_listing(&[("8.5.9", "8.5", 1)]);
+        let legacy = signed_listing(&[("7.4.33", "7.4", 1)]);
+        let dl = TwoChannelDl {
+            stable: ListingDl::new(&stable),
+            legacy: ListingDl::new(&legacy),
+        };
+
+        crate::php_updates::poll_and_refresh(&state, &dl, &stable.public_key).await;
+
+        let cache = state.php_updates.read().await;
+        assert_eq!(
+            cache.get(&PhpVersion::new(8, 5)).cloned(),
+            Some(("8.5.9".to_owned(), 1)),
+            "stable minor still refreshed when the legacy manifest is unreachable"
+        );
+        assert!(
+            !cache.contains_key(&PhpVersion::new(7, 4)),
+            "legacy minor is skipped, not errored"
+        );
+    }
+
+    #[tokio::test]
     async fn poll_and_refresh_is_failure_tolerant() {
         let tmp = tempfile::tempdir().unwrap();
         let state = state_in(tmp.path());
