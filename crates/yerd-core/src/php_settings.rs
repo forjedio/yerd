@@ -219,6 +219,25 @@ pub fn render_cover_ini(base: &str, pcov_so: &std::path::Path) -> Option<String>
     Some(out)
 }
 
+/// Merge a version's sparse per-version overrides onto the global settings:
+/// the union of both maps with the override value winning per key. Unsupported
+/// keys are dropped defensively from either side, so the result only ever
+/// contains allowlisted settings. This is the single home of the
+/// global-vs-per-version precedence rule; `yerd-php` and the daemon both call
+/// it rather than re-deriving effective values.
+#[must_use]
+pub fn merge_effective(
+    global: &std::collections::BTreeMap<String, String>,
+    overrides: &std::collections::BTreeMap<String, String>,
+) -> std::collections::BTreeMap<String, String> {
+    global
+        .iter()
+        .chain(overrides.iter())
+        .filter(|(k, _)| is_supported(k))
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect()
+}
+
 /// The FPM directive a setting renders as: `"php_flag"` for booleans, else
 /// `"php_value"`. `None` if the setting is not supported.
 #[must_use]
@@ -510,6 +529,40 @@ mod tests {
         assert!(ini.contains("display_errors = On\n"));
         assert!(!ini.contains("upload_max_filesize"));
         assert!(!ini.contains("post_max_size"));
+    }
+
+    #[test]
+    fn merge_effective_override_precedence_and_filtering() {
+        use std::collections::BTreeMap;
+        let map = |pairs: &[(&str, &str)]| -> BTreeMap<String, String> {
+            pairs
+                .iter()
+                .map(|(k, v)| ((*k).to_owned(), (*v).to_owned()))
+                .collect()
+        };
+
+        let global = map(&[("memory_limit", "512M"), ("max_execution_time", "60")]);
+        let overrides = map(&[("memory_limit", "1G")]);
+        let merged = merge_effective(&global, &overrides);
+        assert_eq!(merged.get("memory_limit").map(String::as_str), Some("1G"));
+        assert_eq!(
+            merged.get("max_execution_time").map(String::as_str),
+            Some("60")
+        );
+
+        let override_only = merge_effective(&BTreeMap::new(), &map(&[("display_errors", "Off")]));
+        assert_eq!(
+            override_only.get("display_errors").map(String::as_str),
+            Some("Off")
+        );
+
+        let dropped = merge_effective(
+            &map(&[("allow_url_fopen", "1")]),
+            &map(&[("not_a_setting", "x")]),
+        );
+        assert!(dropped.is_empty());
+
+        assert!(merge_effective(&BTreeMap::new(), &BTreeMap::new()).is_empty());
     }
 
     #[test]

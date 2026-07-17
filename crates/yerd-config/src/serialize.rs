@@ -174,6 +174,11 @@ struct PhpSectionSer<'a> {
     // table. `skip_serializing_if` receives `&&BTreeMap`, hence `map_is_empty`.
     #[serde(skip_serializing_if = "map_is_empty")]
     settings: &'a BTreeMap<String, String>,
+    // Sub-tables keyed by version string (`[php.version_settings."8.3"]`).
+    // Skipped when empty so a default config stays byte-identical to pre-v16.
+    // Placed after `settings`, before `extensions`.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    version_settings: BTreeMap<String, &'a BTreeMap<String, String>>,
     // Array-of-tables keyed by version string (`[[php.extensions."8.5"]]`).
     // Skipped when empty so a default config emits no `[php.extensions]` region
     // (byte-shape goldens assume no extra tables). A trailing sub-table region,
@@ -259,6 +264,12 @@ pub(crate) fn to_toml(c: &Config) -> Result<String, ConfigError> {
         php: PhpSectionSer {
             default: &c.php.default,
             settings: &c.php.settings,
+            version_settings: c
+                .php
+                .version_settings
+                .iter()
+                .map(|(v, m)| (v.to_string(), m))
+                .collect(),
             extensions: c
                 .php
                 .extensions
@@ -438,8 +449,8 @@ mod tests {
     fn default_to_toml_starts_with_version_line() {
         let s = to_toml(&Config::default()).unwrap();
         assert!(
-            s.starts_with("version = 15\n"),
-            "expected `version = 15` first line; got: {s}"
+            s.starts_with("version = 16\n"),
+            "expected `version = 16` first line; got: {s}"
         );
     }
 

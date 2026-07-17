@@ -111,6 +111,14 @@ pub enum Response {
         /// (`"memory_limit" -> "512M"`). Empty when none are set.
         #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
         settings: BTreeMap<String, String>,
+        /// Sparse per-version overrides of `settings`, keyed by version. A
+        /// version's effective value is its override when present, else the
+        /// global value. Empty when no overrides are set; `#[serde(default)]`
+        /// keeps older daemons (which omit it) decodable. Boxed so the nested
+        /// maps don't bloat every `Response` value (same reason as
+        /// [`Self::Status`]); `Box<T>` serializes transparently.
+        #[serde(default, skip_serializing_if = "boxed_version_map_is_empty")]
+        version_settings: Box<BTreeMap<PhpVersion, BTreeMap<String, String>>>,
     },
     /// Reply to [`crate::Request::AvailablePhp`].
     AvailablePhp {
@@ -451,6 +459,12 @@ pub struct WordPressAdminUser {
     pub display_name: String,
 }
 
+/// `skip_serializing_if` predicate for [`Response::PhpVersions`]'s boxed
+/// per-version maps (the `&Box<_>` field reference deref-coerces here).
+fn boxed_version_map_is_empty(m: &BTreeMap<PhpVersion, BTreeMap<String, String>>) -> bool {
+    m.is_empty()
+}
+
 /// An available newer patch for an installed PHP minor.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PhpUpdate {
@@ -607,6 +621,7 @@ mod variant_name_pinning {
             default: PhpVersion::new(8, 5),
             updates: vec![],
             settings: BTreeMap::new(),
+            version_settings: Box::new(BTreeMap::new()),
         });
         pin_response(Response::AvailablePhp {
             available: vec![PhpVersion::new(8, 4), PhpVersion::new(8, 5)],

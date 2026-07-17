@@ -96,6 +96,7 @@ pub fn state_in(tmp: &Path) -> DaemonState {
         tool_mutate: Mutex::new(()),
         tunnel_mutate: Mutex::new(()),
         php_mutate: Mutex::new(()),
+        php_settings_mutate: Mutex::new(()),
         jobs: crate::jobs::JobRegistry::default(),
         reserved_names: Mutex::new(std::collections::HashSet::new()),
         wordpress_versions: RwLock::new(None),

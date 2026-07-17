@@ -521,6 +521,9 @@ export type Response =
       default: PhpVersion;
       updates?: PhpUpdate[];
       settings?: Record<string, string>;
+      /** Sparse per-version overrides of `settings`, keyed by version string
+       *  (e.g. `"8.3"`). Absent when no overrides are set / older daemon. */
+      version_settings?: Record<PhpVersion, Record<string, string>>;
     }
   | {
       type: "available_php";

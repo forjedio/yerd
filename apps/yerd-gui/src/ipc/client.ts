@@ -395,6 +395,21 @@ export async function setPhpSettings(
   ) as PhpVersionsResponse;
 }
 
+/**
+ * Merge per-version overrides of the allowlisted settings for one installed
+ * version and apply them to that version's FPM pool + CLI ini. An empty-string
+ * value removes the override (the global default applies again). Returns the
+ * refreshed version list.
+ */
+export async function setPhpVersionSettings(
+  version: PhpVersion,
+  settings: Record<string, string>,
+): Promise<PhpVersionsResponse> {
+  return ensureOk(
+    await call<Response>("set_php_version_settings", { version, settings }),
+  ) as PhpVersionsResponse;
+}
+
 // ── php extensions ───────────────────────────────────────────────────────────
 
 /** Registered custom extensions, keyed by version string (e.g. `"8.5"`). */

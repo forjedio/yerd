@@ -29,7 +29,7 @@ Every field below maps one-to-one to a field in `schema.rs`. The on-disk shape a
 
 | Key         | TOML type            | Meaning                                                            | Default        |
 | ----------- | -------------------- | ----------------------------------------------------------------- | -------------- |
-| `version`   | integer              | On-disk schema version. **Mandatory.**                            | `13`           |
+| `version`   | integer              | On-disk schema version. **Mandatory.**                            | `16`           |
 | `tld`       | string               | TLD served by Yerd's resolver.                                    | `"test"`       |
 | `dns_port`  | integer (u16)        | Loopback port for the embedded `.test` DNS responder.             | `1053`         |
 | `symlink_protection` | boolean     | Refuse to serve assets/scripts reached via a symlink resolving outside a site's document root. | `true` |
@@ -49,7 +49,7 @@ The parser uses `deny_unknown_fields` at every level. A typo'd or stray key (top
 
 ### `version`
 
-The schema version. This key is **required** - a missing `version` is a hard error (`MissingVersion`), and a non-integer or negative value is rejected (`NonIntegerVersion`). The current schema version is `14`, and Yerd always writes `version = 14`. Older `version = 1` through `version = 13` files are migrated forward automatically on load. See [Schema versioning](#schema-versioning-and-migration) below.
+The schema version. This key is **required** - a missing `version` is a hard error (`MissingVersion`), and a non-integer or negative value is rejected (`NonIntegerVersion`). The current schema version is `16`, and Yerd always writes `version = 16`. Older `version = 1` through `version = 15` files are migrated forward automatically on load. See [Schema versioning](#schema-versioning-and-migration) below.
 
 ### `tld`
 
@@ -100,11 +100,12 @@ Validation rules (enforced by `Config::validate`): neither `http` nor `https` ma
 
 PHP defaults applied across sites.
 
-| Key          | TOML type | Meaning                                                      | Default |
-| ------------ | --------- | ------------------------------------------------------------ | ------- |
-| `default`    | string    | Default PHP version for new sites (e.g. `"8.3"`).            | `"8.3"` |
-| `settings`   | table     | Global PHP ini directives applied to every installed version's FPM pool. | empty   |
-| `extensions` | table     | Custom `.so` extensions to load, keyed by PHP version.       | empty   |
+| Key                | TOML type | Meaning                                                      | Default |
+| ------------------ | --------- | ------------------------------------------------------------ | ------- |
+| `default`          | string    | Default PHP version for new sites (e.g. `"8.3"`).            | `"8.3"` |
+| `settings`         | table     | Global PHP ini directives applied to every installed version's FPM pool. | empty   |
+| `version_settings` | table     | Sparse per-version overrides of `settings`, keyed by PHP version. | empty   |
+| `extensions`       | table     | Custom `.so` extensions to load, keyed by PHP version.       | empty   |
 
 `default` is a `MAJOR.MINOR` version string validated by `yerd-core`'s `PhpVersion`; an out-of-range minor or a non-numeric value is rejected. See [PHP Versions](../guide/php-versions).
 
@@ -131,6 +132,27 @@ upload_max_filesize = "64M"
 ::: warning Setting an unsupported directive fails the load
 An unknown directive name or a malformed value makes the whole config invalid (`InvalidPhpSetting`). Stick to the table above.
 :::
+
+`[php.version_settings."<version>"]` (schema v16) holds **per-version
+overrides** of the same allowlisted settings, keyed by PHP version string. A
+version's effective value is its override when present, else the global
+`[php.settings]` value, else PHP's built-in default. Omitted entirely when no
+overrides are set.
+
+```toml
+[php.version_settings."8.3"]
+memory_limit = "1G"
+```
+
+::: tip This table loads leniently
+Unlike `[php.settings]`, a hand-edited invalid entry in `version_settings`
+never fails the load - it is silently dropped while valid siblings survive, so
+a bad edit can't stop the daemon. Setting values through the CLI/GUI still
+validates strictly. A malformed *version key* (e.g. `"eight"`) is still a hard
+error.
+:::
+
+Manage this with [`yerd set php --only <version>`](cli/php#global-php-ini-settings) or the desktop app's **Per-version configuration** card.
 
 `[php.extensions]` maps a **PHP version string** to an array of custom extensions to load into both that version's FPM pool and its CLI. It is written as an array-of-tables per version and omitted entirely when empty. Because a native `.so` is ABI-bound to a PHP minor, an entry only applies to the version it is keyed under.
 
@@ -430,14 +452,14 @@ the actively bound ports and sees parked sites on disk.
 
 ## Schema versioning and migration
 
-Every config file **must** carry a top-level `version = N` key - it is the single trigger for forward migration. The current schema version is `14`.
+Every config file **must** carry a top-level `version = N` key - it is the single trigger for forward migration. The current schema version is `16`.
 
 When the daemon loads a file, it routes on the version it finds:
 
 ```text
-found  > CURRENT (14)   →  error (UnsupportedVersion) - a newer Yerd wrote this file
-found == CURRENT (14)   →  parse directly
-found  < CURRENT (14)   →  walk forward migration steps, then parse
+found  > CURRENT (16)   →  error (UnsupportedVersion) - a newer Yerd wrote this file
+found == CURRENT (16)   →  parse directly
+found  < CURRENT (16)   →  walk forward migration steps, then parse
 ```
 
 A file written by a *newer* Yerd than you are running is refused rather than misread. Older files are migrated forward in place, one version at a time, before the normal wire-deserialisation and validation run:
@@ -455,6 +477,8 @@ A file written by a *newer* Yerd than you are running is refused rather than mis
 - **`v11 → v12`** is a bare version bump: v12 only **added** the top-level `symlink_protection` scalar (defaults to `true` when absent).
 - **`v12 → v13`** is a bare version bump: v13 only **added** the optional per-site `front_controller` key (inside `[[linked]]` and `[[overrides]]`), which defaults to auto when absent.
 - **`v13 → v14`** is a bare version bump: v14 only **added** the optional `[[proxies]]` array and `[proxy_rules]` table (reverse proxies and per-site path rules), both of which default to empty when absent. Same rationale - the bump lets an older binary refuse a proxy-bearing file cleanly rather than tripping `deny_unknown_fields`.
+- **`v14 → v15`** is the multi-instance services rework: v15 **added** the optional per-instance `site` field and the `"{type}:{site}"` wire ids (both additive), and made the `enabled` flag actually gate boot autostart. The migration marks every existing single-instance engine `enabled = true` so previously-installed engines keep starting with Yerd across the upgrade.
+- **`v15 → v16`** is a bare version bump: v16 only **added** the optional `[php.version_settings]` table (per-version overrides of the global PHP settings), which defaults to empty when absent.
 
 The on-disk schema version is deliberately decoupled from the IPC protocol version; the two evolve independently.
 
@@ -481,8 +505,8 @@ Yerd does not `fsync` the file or its parent directory after a save. For a devel
 This is a valid `yerd.toml` covering the core fields (see the sections above for the newer optional tables - `update_channel`, `[tunnel]`, `[groups]`, `[php.extensions]`, `[domains]`, `[[proxies]]`, `[proxy_rules]`, `wp_auto_login` - omitted here for brevity):
 
 ```toml
-# Schema version - mandatory, always written as 14 by this release.
-version = 14
+# Schema version - mandatory, always written as 16 by this release.
+version = 16
 
 # TLD served by the resolver; sites resolve as <name>.test
 tld = "test"

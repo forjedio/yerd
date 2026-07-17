@@ -622,6 +622,10 @@ pub enum SetTarget {
         setting: String,
         /// Setting value, e.g. `512M`.
         value: String,
+        /// Apply only to this installed PHP version (overrides the global
+        /// default for that version).
+        #[arg(long = "only", value_name = "VERSION")]
+        only: Option<String>,
     },
 }
 
@@ -632,6 +636,10 @@ pub enum UnsetTarget {
     Php {
         /// Setting name, e.g. `memory_limit`.
         setting: String,
+        /// Reset only this version's override; the global default applies
+        /// again.
+        #[arg(long = "only", value_name = "VERSION")]
+        only: Option<String>,
     },
 }
 

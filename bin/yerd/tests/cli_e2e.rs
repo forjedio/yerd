@@ -373,4 +373,116 @@ mod tests {
         let _ = tokio::time::timeout(Duration::from_secs(5), ipc_task).await;
         drop(keep_alive);
     }
+
+    /// Per-version PHP config over the socket: `yerd set php ... --only 8.3`
+    /// and the `NotFound` guard for an uninstalled version. PHP 8.3 is faked
+    /// on disk (binaries only; no pool is running).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[allow(clippy::too_many_lines)]
+    async fn php_version_config_round_trips_against_daemon() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dirs = make_dirs(tmp.path());
+        let cfg_path = dirs.config.join("yerd.toml");
+
+        let base = dirs.data.join("php").join("php-8.3");
+        std::fs::create_dir_all(base.join("sbin")).unwrap();
+        std::fs::create_dir_all(base.join("bin")).unwrap();
+        std::fs::write(base.join("sbin").join("php-fpm"), b"x").unwrap();
+        std::fs::write(base.join("bin").join("php"), b"x").unwrap();
+
+        let daemon =
+            yerdd::startup::bring_up_with_dirs(dirs.clone(), valid_config(), cfg_path.clone())
+                .await
+                .expect("bring_up_with_dirs");
+        let sock = dirs.runtime.join("yerd.sock");
+
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let state = daemon.state.clone();
+        let ipc_task = tokio::spawn(yerdd::ipc_server::run(
+            daemon.ipc_listener,
+            state,
+            shutdown_rx,
+        ));
+        let keep_alive = (
+            daemon.lock,
+            daemon.dns_bound,
+            daemon.http_listener,
+            daemon.https_listener,
+            daemon.php_manager,
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        let v83 = yerd_core::PhpVersion::new(8, 3);
+        let set_override = Command::Set {
+            target: yerd::cli::SetTarget::Php {
+                setting: "memory_limit".into(),
+                value: "1G".into(),
+                only: Some("8.3".into()),
+            },
+        };
+        match send(&sock, &set_override).await {
+            Response::PhpVersions {
+                version_settings, ..
+            } => {
+                assert_eq!(
+                    version_settings
+                        .get(&v83)
+                        .and_then(|m| m.get("memory_limit"))
+                        .map(String::as_str),
+                    Some("1G")
+                );
+            }
+            other => panic!("expected PhpVersions, got {other:?}"),
+        }
+
+        match send(
+            &sock,
+            &Command::Set {
+                target: yerd::cli::SetTarget::Php {
+                    setting: "memory_limit".into(),
+                    value: "1G".into(),
+                    only: Some("8.4".into()),
+                },
+            },
+        )
+        .await
+        {
+            Response::Error { code, .. } => assert_eq!(code, ErrorCode::NotFound),
+            other => panic!("expected NotFound, got {other:?}"),
+        }
+
+        let per_version_ini =
+            std::fs::read_to_string(dirs.data.join("php-cli-8.3.ini")).expect("per-version ini");
+        assert!(per_version_ini.contains("memory_limit = 1G\n"));
+        let base_ini = std::fs::read_to_string(dirs.data.join("php-cli.ini")).expect("base ini");
+        assert!(!base_ini.contains("1G"));
+
+        let on_disk = std::fs::read_to_string(&cfg_path).expect("config written");
+        assert!(
+            on_disk.contains("[php.version_settings.\"8.3\"]"),
+            "{on_disk}"
+        );
+        match send(
+            &sock,
+            &Command::Unset {
+                target: yerd::cli::UnsetTarget::Php {
+                    setting: "memory_limit".into(),
+                    only: Some("8.3".into()),
+                },
+            },
+        )
+        .await
+        {
+            Response::PhpVersions {
+                version_settings, ..
+            } => {
+                assert!(!version_settings.contains_key(&v83));
+            }
+            other => panic!("expected PhpVersions, got {other:?}"),
+        }
+
+        shutdown_tx.send_replace(true);
+        let _ = tokio::time::timeout(Duration::from_secs(5), ipc_task).await;
+        drop(keep_alive);
+    }
 }

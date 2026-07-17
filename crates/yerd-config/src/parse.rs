@@ -276,6 +276,10 @@ struct PhpSectionWire {
     // raw here and validated in `TryFrom<Wire>` / `validate`.
     #[serde(default)]
     extensions: BTreeMap<String, Vec<ExtEntryWire>>,
+    // v16: sparse per-version overrides of the allowlisted settings, keyed by
+    // version string like `extensions`. Additive: pre-v16 files omit it.
+    #[serde(default)]
+    version_settings: BTreeMap<String, BTreeMap<String, String>>,
 }
 
 impl Default for PhpSectionWire {
@@ -284,6 +288,7 @@ impl Default for PhpSectionWire {
             default: PhpSection::default().default.to_string(),
             settings: BTreeMap::new(),
             extensions: BTreeMap::new(),
+            version_settings: BTreeMap::new(),
         }
     }
 }
@@ -452,6 +457,7 @@ impl TryFrom<Wire> for Config {
             default: yerd_core::PhpVersion::from_str(&w.php.default)?,
             settings: w.php.settings,
             extensions: convert_extensions(w.php.extensions)?,
+            version_settings: convert_version_settings(w.php.version_settings)?,
         };
         let ports = Ports {
             http: w.ports.http,
@@ -664,6 +670,29 @@ fn convert_extensions(
             })
             .collect();
         out.insert(v, converted);
+    }
+    Ok(out)
+}
+
+/// Convert the raw wire per-version settings map into the typed
+/// [`PhpSection::version_settings`] shape. A bad version key surfaces as
+/// [`ConfigError::Core`] (matching `convert_extensions`), but individual
+/// entries are filtered **leniently**: an unsupported name or invalid value -
+/// e.g. from a hand-edit - is dropped rather than failing the load, so a bad
+/// entry can never stop the daemon. Strictness lives at set time (CLI/daemon).
+fn convert_version_settings(
+    wire: BTreeMap<String, BTreeMap<String, String>>,
+) -> Result<BTreeMap<yerd_core::PhpVersion, BTreeMap<String, String>>, ConfigError> {
+    let mut out = BTreeMap::new();
+    for (ver, entries) in wire {
+        let v = yerd_core::PhpVersion::from_str(&ver)?;
+        let kept: BTreeMap<String, String> = entries
+            .into_iter()
+            .filter(|(k, val)| yerd_core::php_settings::validate_value(k, val).is_ok())
+            .collect();
+        if !kept.is_empty() {
+            out.insert(v, kept);
+        }
     }
     Ok(out)
 }
@@ -1101,7 +1130,7 @@ mod tests {
         match Config::from_toml("version = 99\n") {
             Err(ConfigError::UnsupportedVersion {
                 found: 99,
-                current: 15,
+                current: 16,
             }) => {}
             other => panic!("expected UnsupportedVersion, got {other:?}"),
         }
@@ -2182,6 +2211,56 @@ php = "not-a-version"
         assert_eq!(v[0].name, "scrypt");
         assert_eq!(v[0].path, "/opt/php/pecl/scrypt.so");
         assert!(!v[0].zend);
+    }
+
+    #[test]
+    fn version_settings_round_trip() {
+        let s = "version = 16\n[php]\ndefault = \"8.3\"\n\
+                 [php.version_settings.\"8.3\"]\nmemory_limit = \"1G\"\n";
+        let c = Config::from_toml(s).unwrap();
+        let v83 = yerd_core::PhpVersion::new(8, 3);
+        assert_eq!(
+            c.php
+                .version_settings
+                .get(&v83)
+                .and_then(|m| m.get("memory_limit"))
+                .map(String::as_str),
+            Some("1G")
+        );
+        let back = Config::from_toml(&c.to_toml().unwrap()).unwrap();
+        assert_eq!(back, c);
+    }
+
+    /// Load-time leniency: invalid entries inside the v16 table are dropped
+    /// without failing the load, while valid siblings survive. Strictness
+    /// lives at set time (CLI/daemon), not here - a bad hand-edit must never
+    /// stop the daemon.
+    #[test]
+    fn invalid_version_settings_entries_are_dropped_leniently() {
+        let s = "version = 16\n[php]\ndefault = \"8.3\"\n\
+                 [php.version_settings.\"8.3\"]\n\
+                 memory_limit = \"1G\"\n\
+                 allow_url_fopen = \"1\"\n\
+                 max_execution_time = \"bogus\"\n";
+        let c = Config::from_toml(s).unwrap();
+        let v83 = yerd_core::PhpVersion::new(8, 3);
+        let vs = c.php.version_settings.get(&v83).unwrap();
+        assert_eq!(vs.len(), 1);
+        assert_eq!(vs.get("memory_limit").map(String::as_str), Some("1G"));
+    }
+
+    /// A table whose entries are all dropped disappears entirely, and a bad
+    /// version key still errors (matching `convert_extensions`).
+    #[test]
+    fn fully_invalid_version_settings_table_vanishes_and_bad_version_key_errors() {
+        let s = "version = 16\n[php]\ndefault = \"8.3\"\n\
+                 [php.version_settings.\"8.3\"]\nallow_url_fopen = \"1\"\n";
+        let c = Config::from_toml(s).unwrap();
+        assert!(c.php.version_settings.is_empty());
+
+        let bad = "version = 16\n[php]\ndefault = \"8.3\"\n\
+                   [php.version_settings.\"eight\"]\nmemory_limit = \"1G\"\n";
+        assert!(Config::from_toml(bad).is_err());
     }
 
     #[test]
