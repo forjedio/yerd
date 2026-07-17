@@ -110,4 +110,9 @@ pub struct DumpExtStatus {
     pub version: yerd_core::PhpVersion,
     /// Whether a matching extension artifact is present for it.
     pub present: bool,
+    /// True for legacy (< 8.2) versions, for which `yerd-dump` is never built
+    /// and dumps are never captured. Additive: omitted (false) for supported
+    /// versions and older daemons.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub legacy: bool,
 }

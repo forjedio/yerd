@@ -204,6 +204,7 @@ fn request_daemon_info_byte_shape() {
 fn request_install_php_byte_shape() {
     let r = Request::InstallPhp {
         version: PhpVersion::new(8, 5),
+        confirm_legacy: false,
     };
     let s = serde_json::to_string(&r).unwrap();
     assert_eq!(s, r#"{"type":"install_php","version":"8.5"}"#);
@@ -211,12 +212,53 @@ fn request_install_php_byte_shape() {
 }
 
 #[test]
+fn request_install_php_legacy_byte_shape() {
+    let r = Request::InstallPhp {
+        version: PhpVersion::new(7, 4),
+        confirm_legacy: true,
+    };
+    let s = serde_json::to_string(&r).unwrap();
+    assert_eq!(
+        s,
+        r#"{"type":"install_php","version":"7.4","confirm_legacy":true}"#
+    );
+    assert_eq!(serde_json::from_str::<Request>(&s).unwrap(), r);
+}
+
+#[test]
+fn request_install_php_old_payload_decodes_without_confirm_legacy() {
+    let back: Request = serde_json::from_str(r#"{"type":"install_php","version":"8.5"}"#).unwrap();
+    assert_eq!(
+        back,
+        Request::InstallPhp {
+            version: PhpVersion::new(8, 5),
+            confirm_legacy: false,
+        }
+    );
+}
+
+#[test]
 fn request_install_php_streamed_byte_shape() {
     let r = Request::InstallPhpStreamed {
         version: PhpVersion::new(8, 5),
+        confirm_legacy: false,
     };
     let s = serde_json::to_string(&r).unwrap();
     assert_eq!(s, r#"{"type":"install_php_streamed","version":"8.5"}"#);
+    assert_eq!(serde_json::from_str::<Request>(&s).unwrap(), r);
+}
+
+#[test]
+fn request_install_php_streamed_legacy_byte_shape() {
+    let r = Request::InstallPhpStreamed {
+        version: PhpVersion::new(8, 1),
+        confirm_legacy: true,
+    };
+    let s = serde_json::to_string(&r).unwrap();
+    assert_eq!(
+        s,
+        r#"{"type":"install_php_streamed","version":"8.1","confirm_legacy":true}"#
+    );
     assert_eq!(serde_json::from_str::<Request>(&s).unwrap(), r);
 }
 
@@ -757,11 +799,27 @@ fn response_available_php_byte_shape() {
     let r = Response::AvailablePhp {
         available: vec![PhpVersion::new(8, 4), PhpVersion::new(8, 5)],
         installed: vec![PhpVersion::new(8, 5)],
+        legacy: vec![],
     };
     let s = serde_json::to_string(&r).unwrap();
     assert_eq!(
         s,
         r#"{"type":"available_php","available":["8.4","8.5"],"installed":["8.5"]}"#
+    );
+    assert_eq!(serde_json::from_str::<Response>(&s).unwrap(), r);
+}
+
+#[test]
+fn response_available_php_with_legacy_byte_shape() {
+    let r = Response::AvailablePhp {
+        available: vec![PhpVersion::new(8, 4), PhpVersion::new(8, 5)],
+        installed: vec![PhpVersion::new(8, 5)],
+        legacy: vec![PhpVersion::new(7, 4), PhpVersion::new(8, 1)],
+    };
+    let s = serde_json::to_string(&r).unwrap();
+    assert_eq!(
+        s,
+        r#"{"type":"available_php","available":["8.4","8.5"],"installed":["8.5"],"legacy":["7.4","8.1"]}"#
     );
     assert_eq!(serde_json::from_str::<Response>(&s).unwrap(), r);
 }
@@ -774,6 +832,7 @@ fn response_error_each_code_byte_shape() {
         (ErrorCode::InvalidPath, "invalid_path"),
         (ErrorCode::PortInUse, "port_in_use"),
         (ErrorCode::ExtensionLoadFailed, "extension_load_failed"),
+        (ErrorCode::LegacyRestricted, "legacy_restricted"),
         (ErrorCode::Internal, "internal"),
     ] {
         let r = Response::Error {
@@ -1114,6 +1173,7 @@ fn error_code_each_variant_byte_shape() {
             ErrorCode::InstanceAlreadyExists,
             r#""instance_already_exists""#,
         ),
+        (ErrorCode::LegacyRestricted, r#""legacy_restricted""#),
         (ErrorCode::Internal, r#""internal""#),
     ];
     for (code, expected) in cases {
@@ -1771,9 +1831,22 @@ fn dump_ext_status_byte_shape() {
     let x = DumpExtStatus {
         version: PhpVersion::new(8, 3),
         present: true,
+        legacy: false,
     };
     let s = serde_json::to_string(&x).unwrap();
     assert_eq!(s, r#"{"version":"8.3","present":true}"#);
+    assert_eq!(serde_json::from_str::<DumpExtStatus>(&s).unwrap(), x);
+}
+
+#[test]
+fn dump_ext_status_legacy_byte_shape() {
+    let x = DumpExtStatus {
+        version: PhpVersion::new(7, 4),
+        present: false,
+        legacy: true,
+    };
+    let s = serde_json::to_string(&x).unwrap();
+    assert_eq!(s, r#"{"version":"7.4","present":false,"legacy":true}"#);
     assert_eq!(serde_json::from_str::<DumpExtStatus>(&s).unwrap(), x);
 }
 
@@ -1957,6 +2030,7 @@ fn response_dumps_status_byte_shape() {
         extensions: vec![DumpExtStatus {
             version: PhpVersion::new(8, 3),
             present: false,
+            legacy: false,
         }],
         counts: DumpCounts::default(),
         features,

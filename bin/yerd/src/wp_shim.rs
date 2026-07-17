@@ -116,7 +116,7 @@ fn run() -> ExitCode {
         }
         ScopeResolution::NoScope => match resolve_default_php(&dirs) {
             Some((php, minor)) => (php, minor, None),
-            None => return fail("no PHP installed — run `yerd install php <version>`".to_owned()),
+            None => return fail(crate::shim::no_default_php_message(&dirs)),
         },
     };
 

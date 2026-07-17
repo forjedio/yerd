@@ -68,9 +68,10 @@ async fn handle_client(stream: IpcStream, state: Arc<DaemonState>) {
                 crate::tunnel::install_cloudflared_streamed(state.clone()).await
             }
             Request::CloudflaredLogin => crate::tunnel::named::login_streamed(state.clone()).await,
-            Request::InstallPhpStreamed { version } => {
-                install_php_streamed(version, state.clone()).await
-            }
+            Request::InstallPhpStreamed {
+                version,
+                confirm_legacy,
+            } => install_php_streamed(version, confirm_legacy, state.clone()).await,
             Request::JobStatus { job_id, cursor } => state.jobs.poll(&job_id, cursor).await,
             Request::JobCancel { job_id } => state.jobs.cancel(&job_id).await,
             other => dispatch(other, &state).await,
@@ -192,7 +193,10 @@ async fn dispatch(req: Request, state: &DaemonState) -> Response {
         | Request::SetSiteGroup { .. }
         | Request::RenameGroup { .. } => handle_group_mutation(req, state).await,
         Request::ListPhp => php_versions_response(state).await,
-        Request::InstallPhp { version } => install_php(version, state).await,
+        Request::InstallPhp {
+            version,
+            confirm_legacy,
+        } => install_php(version, confirm_legacy, state).await,
         Request::SetDefaultPhp { version } => set_default_php(version, state).await,
         Request::CheckPhpUpdates => {
             let dl = crate::php_install::ReqwestDownloader::new();
@@ -503,13 +507,23 @@ async fn available_php_with(
             }
         }
     };
-    let listing = match crate::php_install::fetch_verified_listing(dl, public_key).await {
-        Ok(body) => body,
-        Err(e) => return internal(format!("couldn't load the PHP listing: {e}")),
-    };
+    let listing =
+        match crate::php_install::fetch_verified_listing(dl, public_key, yerd_php::Channel::Stable)
+            .await
+        {
+            Ok(body) => body,
+            Err(e) => return internal(format!("couldn't load the PHP listing: {e}")),
+        };
+    let legacy =
+        crate::php_install::fetch_verified_listing(dl, public_key, yerd_php::Channel::Legacy)
+            .await
+            .ok()
+            .map(|body| yerd_php::available_minors(&body, os, arch, yerd_php::Channel::Legacy))
+            .unwrap_or_default();
     Response::AvailablePhp {
-        available: yerd_php::available_minors(&listing, os, arch),
+        available: yerd_php::available_minors(&listing, os, arch, yerd_php::Channel::Stable),
         installed: installed_versions(state),
+        legacy,
     }
 }
 
@@ -918,6 +932,7 @@ async fn run_doctor_fix(state: &DaemonState) -> Response {
 /// Holds `php_mutate` across the install loop so it can't race
 /// `install_php`/`install_php_streamed` over the same per-version staging dir.
 /// Not re-entrant: dispatched directly, never while `php_mutate` is already held.
+#[allow(clippy::too_many_lines)]
 async fn update_php(version: Option<yerd_core::PhpVersion>, state: &DaemonState) -> Response {
     let dl = crate::php_install::ReqwestDownloader::new();
     let (os, arch) = match yerd_php::current_os_arch() {
@@ -941,13 +956,25 @@ async fn update_php(version: Option<yerd_core::PhpVersion>, state: &DaemonState)
         }
         None => crate::php_updates::installed_minors(state),
     };
-    let listing =
-        match crate::php_install::fetch_verified_listing(&dl, yerd_update::PHP_LISTING_PUBLIC_KEY)
-            .await
+    let key = yerd_update::PHP_LISTING_PUBLIC_KEY;
+    let has_stable = targets.iter().any(|v| !v.is_legacy());
+    let has_legacy = targets.iter().any(|v| v.is_legacy());
+    let stable = if has_stable {
+        match crate::php_install::fetch_verified_listing(&dl, key, yerd_php::Channel::Stable).await
         {
-            Ok(body) => body,
+            Ok(body) => Some(body),
             Err(e) => return internal(format!("listing fetch/verify failed: {e}")),
-        };
+        }
+    } else {
+        None
+    };
+    let legacy = if has_legacy {
+        crate::php_install::fetch_verified_listing(&dl, key, yerd_php::Channel::Legacy)
+            .await
+            .ok()
+    } else {
+        None
+    };
     let _guard = state.php_mutate.lock().await;
     let mut updated: Vec<yerd_core::PhpVersion> = Vec::new();
     let mut pending_error: Option<yerd_php::PhpError> = None;
@@ -956,7 +983,20 @@ async fn update_php(version: Option<yerd_core::PhpVersion>, state: &DaemonState)
             continue;
         };
         let installed_rev = crate::php_install::installed_revision(&state.dirs, minor);
-        let artifact = match yerd_php::resolve_from_listing(&listing, minor, os, arch) {
+        let channel = yerd_php::Channel::of(minor);
+        let listing = match channel {
+            yerd_php::Channel::Stable => stable.as_deref().unwrap_or_default(),
+            yerd_php::Channel::Legacy => match legacy.as_deref() {
+                Some(body) => body,
+                None if version.is_some() => {
+                    return internal(
+                        "couldn't load the legacy PHP listing; try again later".to_owned(),
+                    )
+                }
+                None => continue,
+            },
+        };
+        let artifact = match yerd_php::resolve_from_listing(listing, minor, os, arch, channel) {
             Ok(a) => a,
             Err(yerd_php::PhpError::VersionUnavailable { .. }) if version.is_none() => continue,
             Err(e) => {
@@ -1044,7 +1084,33 @@ fn pools_needing_restart(
 /// version + pid, so concurrent installs of the same version would clobber each
 /// other). A failure is logged as the only durable record of it (the line the
 /// GUI diagnostics / About > Logs panel tails).
-async fn install_php(version: yerd_core::PhpVersion, state: &DaemonState) -> Response {
+/// Reject an install of an out-of-support legacy minor (< 8.2) that did not
+/// carry the explicit `confirm_legacy` opt-in. Defence-in-depth behind the CLI
+/// `--legacy` flag / GUI confirmation checkbox: the daemon never installs a
+/// legacy version "by accident". `None` means the install may proceed.
+fn legacy_install_gate(version: yerd_core::PhpVersion, confirm_legacy: bool) -> Option<Response> {
+    if version.is_legacy() && !confirm_legacy {
+        return Some(Response::Error {
+            code: ErrorCode::LegacyRestricted,
+            message: format!(
+                "PHP {version} is an out-of-support legacy version. Re-run with explicit \
+                 confirmation (CLI `--legacy`, or tick the confirmation box in the GUI). \
+                 Legacy versions get no security support, no code coverage (phpcover), and \
+                 no yerd-dumps, and cannot be set as the default."
+            ),
+        });
+    }
+    None
+}
+
+async fn install_php(
+    version: yerd_core::PhpVersion,
+    confirm_legacy: bool,
+    state: &DaemonState,
+) -> Response {
+    if let Some(rejection) = legacy_install_gate(version, confirm_legacy) {
+        return rejection;
+    }
     let dl = crate::php_install::ReqwestDownloader::new();
     let _guard = state.php_mutate.lock().await;
     match crate::php_install::install(
@@ -1100,8 +1166,12 @@ async fn finalize_php_install(version: yerd_core::PhpVersion, state: &DaemonStat
 /// line is lost.
 pub(crate) async fn install_php_streamed(
     version: yerd_core::PhpVersion,
+    confirm_legacy: bool,
     state: Arc<DaemonState>,
 ) -> Response {
+    if let Some(rejection) = legacy_install_gate(version, confirm_legacy) {
+        return rejection;
+    }
     let (job_id, mut cancel) = state.jobs.create().await;
     let id = job_id.clone();
     tokio::spawn(async move {
@@ -1183,6 +1253,9 @@ pub(crate) async fn install_php_streamed(
 /// Best-effort (the install already succeeded) and does NOT reconcile shims -
 /// the caller's `refresh_pcov_and_shims` reconciles against the updated default.
 async fn adopt_default_if_unset(version: yerd_core::PhpVersion, state: &DaemonState) {
+    if version.is_legacy() {
+        return;
+    }
     let mut cfg_guard = state.config.lock().await;
     if crate::php_install::cli_binary_path(&state.dirs, cfg_guard.php.default).exists() {
         return;
@@ -1592,6 +1665,15 @@ async fn uninstall_php(version: yerd_core::PhpVersion, state: &DaemonState) -> R
 /// `use <ver>` (global) - require the version installed, set the live default +
 /// site fallback (`config.php.default`), persist, and repoint the `php` shim.
 async fn set_default_php(version: yerd_core::PhpVersion, state: &DaemonState) -> Response {
+    if version.is_legacy() {
+        return Response::Error {
+            code: ErrorCode::LegacyRestricted,
+            message: format!(
+                "PHP {version} is an out-of-support legacy version and cannot be the global \
+                 default. It can still serve individual sites and run via `php{version}`."
+            ),
+        };
+    }
     if !crate::php_install::cli_binary_path(&state.dirs, version).exists() {
         return Response::Error {
             code: ErrorCode::NotFound,
@@ -3954,7 +4036,7 @@ Subject: Captured\r\n\r\nhi\r\n";
         async fn download(&self, url: &str) -> Result<Vec<u8>, yerd_php::DownloadError> {
             if url.ends_with(".minisig") {
                 Ok(self.minisig.clone().into_bytes())
-            } else if url.ends_with("php.json") {
+            } else if url.contains(".json") {
                 Ok(self.manifest.clone().into_bytes())
             } else {
                 Err(yerd_php::DownloadError::Transport {
@@ -3965,10 +4047,10 @@ Subject: Captured\r\n\r\nhi\r\n";
         }
     }
 
-    /// Build + sign a `php.json` with the given `(php, minor, revision)` builds
-    /// for the host platform. Tarball shas are placeholders (`"00"`) - the poll /
+    /// A `php.json` body with the given `(php, minor, revision)` builds for the
+    /// host platform. Tarball shas are placeholders (`"00"`) - the poll /
     /// available paths never download tarballs.
-    fn signed_listing(builds: &[(&str, &str, u32)]) -> crate::test_support::SignedManifest {
+    fn listing_body(builds: &[(&str, &str, u32)]) -> String {
         let (os, arch) = yerd_php::current_os_arch().unwrap();
         let entries: Vec<String> = builds
             .iter()
@@ -3982,8 +4064,29 @@ Subject: Captured\r\n\r\nhi\r\n";
                 )
             })
             .collect();
-        let manifest = format!("{{ \"schema\": 1, \"builds\": [{}] }}", entries.join(","));
-        crate::test_support::sign_manifest(&manifest)
+        format!("{{ \"schema\": 1, \"builds\": [{}] }}", entries.join(","))
+    }
+
+    /// Build + sign a `php.json` for the host platform (see [`listing_body`]).
+    fn signed_listing(builds: &[(&str, &str, u32)]) -> crate::test_support::SignedManifest {
+        crate::test_support::sign_manifest(&listing_body(builds))
+    }
+
+    /// Routes stable `php.json` to `stable` and legacy `php-legacy.json` to
+    /// `legacy`, so `available_php_with` sees a distinct manifest per channel.
+    struct TwoChannelDl {
+        stable: ListingDl,
+        legacy: ListingDl,
+    }
+    #[async_trait::async_trait]
+    impl yerd_php::Downloader for TwoChannelDl {
+        async fn download(&self, url: &str) -> Result<Vec<u8>, yerd_php::DownloadError> {
+            if url.contains("php-legacy.json") {
+                self.legacy.download(url).await
+            } else {
+                self.stable.download(url).await
+            }
+        }
     }
 
     /// Like `fake_install_patch` but also writes the `.yerd-revision` marker.
@@ -4538,12 +4641,44 @@ Subject: Captured\r\n\r\nhi\r\n";
             Response::AvailablePhp {
                 available,
                 installed,
+                legacy,
             } => {
                 assert_eq!(
                     available,
                     vec![PhpVersion::new(8, 3), PhpVersion::new(8, 5)]
                 );
                 assert_eq!(installed, vec![PhpVersion::new(8, 5)]);
+                assert!(
+                    legacy.is_empty(),
+                    "legacy manifest unreachable via ListingDl → empty"
+                );
+            }
+            other => panic!("expected AvailablePhp, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn available_php_lists_legacy_from_second_manifest() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_in(tmp.path());
+        let (stable, legacy) = crate::test_support::sign_manifest_pair(
+            &listing_body(&[("8.4.21", "8.4", 1), ("8.5.9", "8.5", 1)]),
+            &listing_body(&[("7.4.33", "7.4", 1), ("8.1.33", "8.1", 1)]),
+        );
+        let dl = TwoChannelDl {
+            stable: ListingDl::new(&stable),
+            legacy: ListingDl::new(&legacy),
+        };
+
+        match available_php_with(&state, &dl, &stable.public_key).await {
+            Response::AvailablePhp {
+                available, legacy, ..
+            } => {
+                assert_eq!(
+                    available,
+                    vec![PhpVersion::new(8, 4), PhpVersion::new(8, 5)]
+                );
+                assert_eq!(legacy, vec![PhpVersion::new(7, 4), PhpVersion::new(8, 1)]);
             }
             other => panic!("expected AvailablePhp, got {other:?}"),
         }
@@ -4558,6 +4693,57 @@ Subject: Captured\r\n\r\nhi\r\n";
             Response::Error { code, .. } => assert_eq!(code, ErrorCode::Internal),
             other => panic!("expected Error, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn legacy_install_gate_blocks_only_unconfirmed_legacy() {
+        assert!(legacy_install_gate(PhpVersion::new(8, 5), false).is_none());
+        assert!(legacy_install_gate(PhpVersion::new(7, 4), true).is_none());
+        match legacy_install_gate(PhpVersion::new(7, 4), false) {
+            Some(Response::Error { code, .. }) => assert_eq!(code, ErrorCode::LegacyRestricted),
+            other => panic!("expected LegacyRestricted, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn install_php_legacy_without_confirm_is_rejected() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_in(tmp.path());
+        match install_php(PhpVersion::new(7, 4), false, &state).await {
+            Response::Error { code, .. } => assert_eq!(code, ErrorCode::LegacyRestricted),
+            other => panic!("expected LegacyRestricted, got {other:?}"),
+        }
+        assert!(!state.dirs.data.join("php").join("php-7.4").exists());
+    }
+
+    #[tokio::test]
+    async fn install_php_streamed_legacy_without_confirm_creates_no_job() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = Arc::new(state_in(tmp.path()));
+        match install_php_streamed(PhpVersion::new(8, 0), false, state.clone()).await {
+            Response::Error { code, .. } => assert_eq!(code, ErrorCode::LegacyRestricted),
+            other => panic!("expected synchronous LegacyRestricted, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn set_default_php_rejects_legacy_even_when_installed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_in(tmp.path());
+        fake_install_patch(&state.dirs, PhpVersion::new(7, 4), "7.4.33");
+        match set_default_php(PhpVersion::new(7, 4), &state).await {
+            Response::Error { code, .. } => assert_eq!(code, ErrorCode::LegacyRestricted),
+            other => panic!("expected LegacyRestricted, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn adopt_default_if_unset_never_adopts_legacy() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_in(tmp.path());
+        let before = state.config.lock().await.php.default;
+        adopt_default_if_unset(PhpVersion::new(7, 4), &state).await;
+        assert_eq!(state.config.lock().await.php.default, before);
     }
 
     // ---------- pure helpers ----------

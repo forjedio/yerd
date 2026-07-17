@@ -211,16 +211,31 @@ pub async fn available_php() -> Result<Response, GuiError> {
 }
 
 #[tauri::command]
-pub async fn install_php(version: PhpVersion) -> Result<Response, GuiError> {
-    finish(exchange(&Request::InstallPhp { version }).await?)
+pub async fn install_php(version: PhpVersion, confirm_legacy: bool) -> Result<Response, GuiError> {
+    finish(
+        exchange(&Request::InstallPhp {
+            version,
+            confirm_legacy,
+        })
+        .await?,
+    )
 }
 
 /// Start a streamed PHP install; replies `JobStarted` for the client to poll via
 /// `job_status`. The non-blocking sibling of `install_php`, used by the GUI so a
 /// multi-minute download streams progress instead of spinning a single request.
 #[tauri::command]
-pub async fn install_php_streamed(version: PhpVersion) -> Result<Response, GuiError> {
-    finish(exchange(&Request::InstallPhpStreamed { version }).await?)
+pub async fn install_php_streamed(
+    version: PhpVersion,
+    confirm_legacy: bool,
+) -> Result<Response, GuiError> {
+    finish(
+        exchange(&Request::InstallPhpStreamed {
+            version,
+            confirm_legacy,
+        })
+        .await?,
+    )
 }
 
 #[tauri::command]

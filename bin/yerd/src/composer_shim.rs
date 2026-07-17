@@ -33,7 +33,7 @@ fn run() -> ExitCode {
     };
 
     let Some((php_bin, _minor)) = resolve_default_php(&dirs) else {
-        return fail("no PHP installed — run `yerd install php <version>`".to_owned());
+        return fail(crate::shim::no_default_php_message(&dirs));
     };
 
     let phar = dirs

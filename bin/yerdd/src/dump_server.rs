@@ -552,6 +552,7 @@ fn extension_presence(dirs: &PlatformDirs) -> Vec<DumpExtStatus> {
         .map(|version| DumpExtStatus {
             version,
             present: crate::ext_install::so_path(dirs, version).is_file(),
+            legacy: version.is_legacy(),
         })
         .collect();
     out.sort_by_key(|s| (s.version.major, s.version.minor));

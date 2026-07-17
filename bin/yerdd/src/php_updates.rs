@@ -13,7 +13,7 @@ use yerd_core::PhpVersion;
 use yerd_ipc::PhpUpdate;
 use yerd_php::{
     current_os_arch, discover_bundled, display_build, is_newer_build, resolve_from_listing,
-    Downloader,
+    Channel, Downloader,
 };
 
 use crate::php_install::{fetch_verified_listing, installed_patch, installed_revision};
@@ -45,17 +45,32 @@ pub async fn poll_and_refresh(state: &DaemonState, dl: &dyn Downloader, public_k
             return;
         }
     };
-    let listing = match fetch_verified_listing(dl, public_key).await {
+    let stable = match fetch_verified_listing(dl, public_key, Channel::Stable).await {
         Ok(body) => body,
         Err(e) => {
             tracing::debug!(error = %e, "php update poll skipped: listing fetch/verify failed");
             return;
         }
     };
+    let legacy = if minors.iter().any(|v| v.is_legacy()) {
+        fetch_verified_listing(dl, public_key, Channel::Legacy)
+            .await
+            .ok()
+    } else {
+        None
+    };
 
     let mut latest: HashMap<PhpVersion, (String, u32)> = HashMap::new();
     for minor in minors {
-        let artifact = match resolve_from_listing(&listing, minor, os, arch) {
+        let channel = Channel::of(minor);
+        let listing = match channel {
+            Channel::Stable => stable.as_str(),
+            Channel::Legacy => match legacy.as_deref() {
+                Some(body) => body,
+                None => continue,
+            },
+        };
+        let artifact = match resolve_from_listing(listing, minor, os, arch, channel) {
             Ok(a) => a,
             Err(yerd_php::PhpError::VersionUnavailable { .. }) => continue,
             Err(e) => {

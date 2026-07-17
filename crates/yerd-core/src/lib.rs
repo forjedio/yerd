@@ -45,7 +45,7 @@ pub use error::{
     CoreError, DomainErrorReason, PhpVersionErrorReason, ProxyRuleErrorReason, SiteNameErrorReason,
     TldErrorReason, UpstreamTargetErrorReason,
 };
-pub use php::PhpVersion;
+pub use php::{PhpVersion, FIRST_SUPPORTED_MINOR};
 pub use php_extensions::{ExtError, NameErrorReason, PathErrorReason};
 pub use php_settings::{PhpSettingError, ValueErrorReason};
 pub use proxy::{match_rule, ProxyRule, ProxySite, UpstreamTarget};

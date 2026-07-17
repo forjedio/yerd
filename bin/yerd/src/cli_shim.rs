@@ -100,8 +100,9 @@ fn resolve_target(
                 ))
             }
         }
-        CliSpec::Default => resolve_default_php(dirs)
-            .ok_or_else(|| "no PHP installed — run `yerd install php <version>`".to_owned()),
+        CliSpec::Default => {
+            resolve_default_php(dirs).ok_or_else(|| crate::shim::no_default_php_message(dirs))
+        }
     }
 }
 

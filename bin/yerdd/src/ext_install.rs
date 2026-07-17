@@ -115,7 +115,10 @@ pub async fn ensure_for_installed(dirs: &PlatformDirs, dl: &dyn Downloader) {
 /// which is fine: pcov is ABI-stable per PHP minor and any *missing* `.so` still
 /// forces a full manifest fetch + re-verify.)
 pub async fn ensure_pcov_for_installed(dirs: &PlatformDirs, dl: &dyn Downloader) {
-    let versions = installed_versions(dirs);
+    let versions: Vec<PhpVersion> = installed_versions(dirs)
+        .into_iter()
+        .filter(|v| !v.is_legacy())
+        .collect();
     if versions.is_empty() || versions.iter().all(|v| pcov_so_path(dirs, *v).is_file()) {
         return;
     }
@@ -124,12 +127,17 @@ pub async fn ensure_pcov_for_installed(dirs: &PlatformDirs, dl: &dyn Downloader)
 
 /// Shared fetch loop: resolve the host triple in `spec`'s manifest for each
 /// installed PHP minor, sha-verify, and atomically place the `.so`. Best-effort.
+/// Legacy minors (< 8.2) are skipped: `forjedio/yerd-php-ext` builds neither
+/// `pcov` nor `yerd-dump` for EOL PHP, so a fetch would only 404-log per poll.
 async fn ensure_for_installed_spec(dirs: &PlatformDirs, dl: &dyn Downloader, spec: &ExtSpec) {
     let Some(manifest) = fetch_manifest(dl, spec.manifest_name, spec.label).await else {
         return;
     };
     let (os, arch) = host_os_arch();
-    for v in installed_versions(dirs) {
+    for v in installed_versions(dirs)
+        .into_iter()
+        .filter(|v| !v.is_legacy())
+    {
         let minor = v.to_string();
         let Some(file) = manifest
             .files
@@ -374,6 +382,30 @@ mod tests {
             dl.call_count(),
             0,
             "no PHP installed: must not hit the network"
+        );
+    }
+
+    fn fake_install(dirs: &PlatformDirs, v: PhpVersion) {
+        let base = dirs.data.join("php").join(format!("php-{v}")).join("sbin");
+        std::fs::create_dir_all(&base).unwrap();
+        std::fs::write(base.join("php-fpm"), b"x").unwrap();
+    }
+
+    #[tokio::test]
+    async fn ensure_pcov_skips_network_when_only_missing_is_legacy() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dirs = dirs_in(tmp.path());
+        fake_install(&dirs, PhpVersion::new(8, 4));
+        fake_install(&dirs, PhpVersion::new(7, 4));
+        let pcov = pcov_so_path(&dirs, PhpVersion::new(8, 4));
+        std::fs::create_dir_all(pcov.parent().unwrap()).unwrap();
+        std::fs::write(&pcov, b"so").unwrap();
+        let dl = FakeDownloader::new(std::collections::HashMap::new());
+        ensure_pcov_for_installed(&dirs, &dl).await;
+        assert_eq!(
+            dl.call_count(),
+            0,
+            "the only version without pcov is legacy (7.4), which is skipped — no fetch"
         );
     }
 
