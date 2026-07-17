@@ -325,6 +325,7 @@ pub async fn bring_up_with_dirs(
         tool_mutate: tokio::sync::Mutex::new(()),
         tunnel_mutate: tokio::sync::Mutex::new(()),
         php_mutate: tokio::sync::Mutex::new(()),
+        php_settings_mutate: tokio::sync::Mutex::new(()),
         jobs: crate::jobs::JobRegistry::default(),
         reserved_names: tokio::sync::Mutex::new(std::collections::HashSet::new()),
         wordpress_versions: tokio::sync::RwLock::new(None),

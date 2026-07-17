@@ -1731,11 +1731,14 @@ async fn set_symlink_protection(enabled: bool, state: &DaemonState) -> Response 
 /// Order (build → validate → save → commit → drop config guard → restart
 /// pools): the config write is fail-closed; the per-pool restart is best-effort
 /// and runs *after* the config guard is released, under a single `php_manager`
-/// lock so no request can `ensure` a stale-config pool mid-update.
+/// lock so no request can `ensure` a stale-config pool mid-update. The whole
+/// sequence holds `php_settings_mutate`, so an overlapping settings request
+/// can't push a stale snapshot into the manager after a newer one applied.
 async fn set_php_settings(
     settings: std::collections::BTreeMap<String, String>,
     state: &DaemonState,
 ) -> Response {
+    let _mutate_guard = state.php_settings_mutate.lock().await;
     let mut cfg_guard = state.config.lock().await;
     let mut new = cfg_guard.clone();
     for (key, value) in settings {
@@ -1785,8 +1788,8 @@ async fn set_php_settings(
 /// `set/unset php --php <version>` - merge per-version overrides of the
 /// allowlisted settings into the config and apply them to that version's FPM
 /// pool and CLI ini. An empty-string value removes the override (the global
-/// value applies again). Same lock order as [`set_php_settings`], but only the
-/// affected version's pool restarts.
+/// value applies again). Same lock order and `php_settings_mutate` discipline
+/// as [`set_php_settings`], but only the affected version's pool restarts.
 async fn set_php_version_settings(
     version: yerd_core::PhpVersion,
     settings: std::collections::BTreeMap<String, String>,
@@ -1795,6 +1798,7 @@ async fn set_php_version_settings(
     if let Some(resp) = require_installed(version, state) {
         return resp;
     }
+    let _mutate_guard = state.php_settings_mutate.lock().await;
     let mut cfg_guard = state.config.lock().await;
     let mut new = cfg_guard.clone();
     for (key, value) in settings {
@@ -1863,7 +1867,8 @@ fn require_installed(version: yerd_core::PhpVersion, state: &DaemonState) -> Opt
 /// live `PhpManager`, restart the affected version's pool if it is currently
 /// running, and rewrite the per-version CLI inis. Follows `set_php_settings`'s
 /// lock discipline: the config lock is released before the manager lock is
-/// taken.
+/// taken. Runs under the caller's `php_settings_mutate` guard, which is what
+/// keeps the config re-read here from racing a concurrent settings mutation.
 async fn apply_version_php_config(state: &DaemonState, affected: yerd_core::PhpVersion) {
     let version_settings = {
         let cfg = state.config.lock().await;

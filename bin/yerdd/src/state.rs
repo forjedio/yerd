@@ -163,6 +163,12 @@ pub struct DaemonState {
     /// version (+ this daemon's pid), so two installs of the *same* version would
     /// otherwise clobber each other's staging + race the final rename.
     pub php_mutate: Mutex<()>,
+    /// Serializes PHP ini-settings mutations (`set/unset php`, global and
+    /// per-version). The config read-modify-save and the follow-up apply to the
+    /// live `PhpManager` release the config lock in between, so without this
+    /// guard an overlapping request could replay a stale settings snapshot into
+    /// the manager after a newer one was already applied.
+    pub php_settings_mutate: Mutex<()>,
     /// Background-job registry. Long-running operations (site creation) run as
     /// jobs whose streamed progress the client polls via `JobStatus`.
     pub jobs: crate::jobs::JobRegistry,
