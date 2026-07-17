@@ -902,14 +902,17 @@ pub async fn job_cancel(job_id: String) -> Result<Response, GuiError> {
 
 /// Persist a mail attachment into the app cache and return its absolute path.
 ///
-/// The OS opener cannot open a `data:` URL as a document, so the frontend writes
-/// the decoded attachment bytes here first and then opens the returned path.
+/// The OS opener cannot open a `data:` URL as a document, so the frontend sends
+/// the attachment as standard base64; we decode and write the file here, then
+/// the GUI opens the returned path. Keeping base64 until this boundary avoids
+/// shipping a large `number[]` through the webview IPC JSON path.
 #[tauri::command]
 pub async fn save_mail_attachment(
     app: tauri::AppHandle,
     filename: String,
-    bytes: Vec<u8>,
+    data: String,
 ) -> Result<String, GuiError> {
+    let bytes = base64_decode(&data)?;
     let mut dir = app
         .path()
         .app_cache_dir()
@@ -928,6 +931,74 @@ pub async fn save_mail_attachment(
     std::fs::write(&dir, bytes)
         .map_err(|e| GuiError::internal(format!("could not write attachment: {e}")))?;
     Ok(dir.to_string_lossy().into_owned())
+}
+
+/// Standard (padded) base64 decode for attachment payloads.
+///
+/// Kept local to avoid a new dependency for this one host helper (mirrors the
+/// encoder in `yerd-mail`'s MIME path).
+fn base64_decode(input: &str) -> Result<Vec<u8>, GuiError> {
+    fn sextet(c: u8) -> Option<u8> {
+        match c {
+            b'A'..=b'Z' => Some(c - b'A'),
+            b'a'..=b'z' => Some(c - b'a' + 26),
+            b'0'..=b'9' => Some(c - b'0' + 52),
+            b'+' => Some(62),
+            b'/' => Some(63),
+            _ => None,
+        }
+    }
+
+    let raw = input.as_bytes();
+    if raw.len() % 4 != 0 {
+        return Err(GuiError::internal("attachment data is not valid base64"));
+    }
+    let mut out = Vec::with_capacity(raw.len() / 4 * 3);
+    for chunk in raw.chunks_exact(4) {
+        let (c0, c1, c2, c3) = (
+            chunk.first().copied().unwrap_or(0),
+            chunk.get(1).copied().unwrap_or(0),
+            chunk.get(2).copied().unwrap_or(0),
+            chunk.get(3).copied().unwrap_or(0),
+        );
+        let pad2 = c2 == b'=';
+        let pad3 = c3 == b'=';
+        if pad2 && !pad3 {
+            return Err(GuiError::internal("attachment data is not valid base64"));
+        }
+        let s0 = sextet(c0).ok_or_else(|| {
+            GuiError::internal("attachment data is not valid base64")
+        })?;
+        let s1 = sextet(c1).ok_or_else(|| {
+            GuiError::internal("attachment data is not valid base64")
+        })?;
+        let s2 = if pad2 {
+            0
+        } else {
+            sextet(c2).ok_or_else(|| {
+                GuiError::internal("attachment data is not valid base64")
+            })?
+        };
+        let s3 = if pad3 {
+            0
+        } else {
+            sextet(c3).ok_or_else(|| {
+                GuiError::internal("attachment data is not valid base64")
+            })?
+        };
+        let n = (u32::from(s0) << 18)
+            | (u32::from(s1) << 12)
+            | (u32::from(s2) << 6)
+            | u32::from(s3);
+        out.push(((n >> 16) & 0xff) as u8);
+        if !pad2 {
+            out.push(((n >> 8) & 0xff) as u8);
+        }
+        if !pad3 {
+            out.push((n & 0xff) as u8);
+        }
+    }
+    Ok(out)
 }
 
 fn safe_attachment_filename(name: &str) -> String {
@@ -1001,5 +1072,21 @@ mod tests {
         for (input, expected) in cases {
             assert_eq!(safe_attachment_filename(input), expected, "input={input:?}");
         }
+    }
+
+    #[test]
+    fn base64_decode_matches_known_vectors() {
+        assert_eq!(base64_decode("").unwrap(), b"");
+        assert_eq!(base64_decode("Zg==").unwrap(), b"f");
+        assert_eq!(base64_decode("Zm8=").unwrap(), b"fo");
+        assert_eq!(base64_decode("Zm9v").unwrap(), b"foo");
+        assert_eq!(base64_decode("Zm9vYmFy").unwrap(), b"foobar");
+    }
+
+    #[test]
+    fn base64_decode_rejects_invalid_input() {
+        assert!(base64_decode("Zg").is_err());
+        assert!(base64_decode("!!!!").is_err());
+        assert!(base64_decode("Zm9v====").is_err());
     }
 }

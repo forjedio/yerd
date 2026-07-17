@@ -15,28 +15,42 @@ const URL_PATTERN =
   /(?:https?:\/\/|mailto:|tel:)[^\s"'<>)\]]+(?<![.,)])/g;
 
 /**
- * Convert URLs in a plain-text email body into clickable `<a>` tags. The
- * output is intended for use with `v-html` so the text is HTML-escaped first
- * to prevent any message content from injecting markup; only the synthesised
- * `<a>` tags are trusted HTML.
+ * Convert URLs in a plain-text email body into clickable `<a>` tags for
+ * `v-html`. Anchors are built with DOM APIs (`textContent` / `.href` /
+ * `dataset`) so message content cannot inject attributes via entity decoding
+ * (e.g. `&quot;` inside a matched URL). Non-URL text is appended as text
+ * nodes and therefore HTML-escaped by the browser when serialised.
  *
- * Each anchor carries a `data-url` attribute containing the validated URL so
- * the click handler can read it via event delegation without re-parsing.
+ * Only URLs that pass {@link resolveExternalHref} become links. Each anchor
+ * carries `data-url` with the validated URL for event-delegation click
+ * handling.
  */
 export function linkifyText(text: string): string {
-  // Escape HTML special characters so raw message content can't inject tags.
-  const escaped = text
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
-  // Replace URL matches with anchor tags. `resolveExternalHref` validates the
-  // scheme so only safe, openable URLs become links.
-  return escaped.replace(URL_PATTERN, (raw) => {
+  const container = document.createElement("div");
+  let offset = 0;
+  for (const match of text.matchAll(URL_PATTERN)) {
+    const raw = match[0];
+    const index = match.index ?? 0;
+    if (index > offset) {
+      container.append(document.createTextNode(text.slice(offset, index)));
+    }
     const url = resolveExternalHref(raw);
-    if (!url) return raw;
-    return `<a href="${url}" class="text-brand underline cursor-pointer" data-url="${url}">${raw}</a>`;
-  });
+    if (url) {
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.dataset.url = url;
+      anchor.className = "text-brand underline cursor-pointer";
+      anchor.textContent = raw;
+      container.append(anchor);
+    } else {
+      container.append(document.createTextNode(raw));
+    }
+    offset = index + raw.length;
+  }
+  if (offset < text.length) {
+    container.append(document.createTextNode(text.slice(offset)));
+  }
+  return container.innerHTML;
 }
 
 /**
@@ -77,16 +91,18 @@ function isInPageFragment(rawHref: string | null): boolean {
   return (rawHref?.trim() ?? "").startsWith("#");
 }
 
+const NODE_TEXT = 3;
+
 /**
  * Coerce an event target to an Element. Clicks on link text yield a Text node
- * (no `closest`); climb to `parentElement` so we can still find the `<a>`.
- * Duck-typed for cross-realm iframe targets where `instanceof` is unreliable.
+ * (`NODE_TEXT`, no `closest`); climb to `parentElement` so we can still find
+ * the `<a>`. Duck-typed for cross-realm targets where `instanceof` is
+ * unreliable.
  */
 export function eventTargetElement(target: EventTarget | null): Element | null {
   if (!target || typeof target !== "object") return null;
   const node = target as { nodeType?: number; parentElement?: Element | null; closest?: unknown };
-  // Node.ELEMENT_NODE === 1, Node.TEXT_NODE === 3
-  if (node.nodeType === 3) return node.parentElement ?? null;
+  if (node.nodeType === NODE_TEXT) return node.parentElement ?? null;
   if (typeof node.closest === "function") return target as Element;
   return node.parentElement ?? null;
 }
@@ -96,17 +112,16 @@ export function eventTargetElement(target: EventTarget | null): Element | null {
  * when the click isn't on a link (leave it alone); otherwise a
  * {@link FrameLinkAction}: openable schemes go to the OS browser, same-document
  * `#` anchors are left to scroll, and everything else (relative, same-origin,
- * `javascript:`) is blocked so the sandboxed frame can't navigate itself away
- * from the email. Walks up to the nearest `<a href>` so clicks on nested content
- * (e.g. `<a><img></a>` or link text) resolve.
+ * `javascript:`) is blocked so the preview can't navigate away from the email.
+ * Walks up to the nearest `<a href>` / `a[data-yerd-url]` so clicks on nested
+ * content (e.g. `<a><img></a>` or link text) resolve.
  *
- * The target comes from the iframe's own realm, whose `Element` differs from
- * this module's, so `instanceof Element` would always be false. We duck-type on
- * `closest` instead (absent on `document`/`window` targets) to stay realm-safe.
+ * Prefers `data-yerd-url` (stamped by {@link prepareHtmlBody}) over the visible
+ * `href` so openable links still work when the displayed href is a fragment
+ * placeholder or was rewritten. Duck-types on `closest` for cross-realm
+ * targets where `instanceof Element` would fail.
  */
 export function resolveFrameLink(target: EventTarget | null): FrameLinkAction | null {
-  // Prefer data-yerd-url (stamped by prepareHtmlBody) so we still open even if
-  // the visible href was rewritten or is a same-document fragment placeholder.
   const el = eventTargetElement(target);
   const anchor = el?.closest?.("a[href], a[data-yerd-url]") ?? null;
   if (!anchor) return null;

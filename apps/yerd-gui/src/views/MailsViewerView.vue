@@ -223,14 +223,9 @@ const attachments = computed<MailAttachment[]>(
   () => detail.value?.attachments ?? [],
 );
 
-function decodeBase64(data: string): number[] {
-  const binary = atob(data);
-  return Array.from(binary, (char) => char.charCodeAt(0));
-}
-
 async function openAttachment(att: MailAttachment): Promise<void> {
   try {
-    const path = await saveMailAttachment(att.filename, decodeBase64(att.data));
+    const path = await saveMailAttachment(att.filename, att.data);
     await openInEditor(path);
   } catch (e) {
     toast.error("Couldn't open attachment", (e as IpcError).message || att.filename);

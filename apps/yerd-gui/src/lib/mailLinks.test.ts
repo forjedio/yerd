@@ -180,8 +180,7 @@ describe("linkifyText", () => {
 
   it("strips trailing punctuation from URLs", () => {
     const out = linkifyText("See https://example.com/path.");
-    // The trailing period must not be part of the href.
-    expect(out).not.toContain('data-url="https://example.com/path."');
+    expect(out.includes('data-url="https://example.com/path."')).toBe(false);
     expect(out).toContain('data-url="https://example.com/path"');
   });
 
@@ -193,5 +192,16 @@ describe("linkifyText", () => {
 
   it("handles an empty string", () => {
     expect(linkifyText("")).toBe("");
+  });
+
+  it("does not let quote entities in a URL inject attributes", () => {
+    const out = linkifyText(
+      'Click https://example.test/x&quot;onmouseover=&quot;alert(1) here',
+    );
+    const doc = new DOMParser().parseFromString(out, "text/html");
+    expect(doc.querySelector("[onmouseover]")).toBeNull();
+    expect(doc.body.querySelectorAll("a")).toHaveLength(1);
+    const anchor = doc.body.querySelector("a");
+    expect(anchor?.getAttributeNames().sort()).toEqual(["class", "data-url", "href"]);
   });
 });

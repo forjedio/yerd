@@ -864,12 +864,12 @@ export async function openInBrowser(url: string): Promise<void> {
   await openUrl(url);
 }
 
-/** Save decoded attachment bytes in the app cache and return the file path. */
+/** Save attachment bytes (standard base64) in the app cache; return the path. */
 export async function saveMailAttachment(
   filename: string,
-  bytes: number[],
+  data: string,
 ): Promise<string> {
-  return call<string>("save_mail_attachment", { filename, bytes });
+  return call<string>("save_mail_attachment", { filename, data });
 }
 
 /** Reveal a file or directory in the OS file manager. */
