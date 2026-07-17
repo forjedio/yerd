@@ -159,7 +159,11 @@ where
 {
     loop {
         let line = match read_line(&mut reader) {
-            Ok(Input::Eof) | Err(_) => break,
+            Ok(Input::Eof) => break,
+            Err(error) => {
+                eprintln!("yerd mcp: reading stdin failed: {error}");
+                return ExitCode::FAILURE;
+            }
             Ok(Input::TooLong) => {
                 if write_line(
                     &mut writer,

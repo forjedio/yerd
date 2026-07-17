@@ -29,7 +29,7 @@ Every field below maps one-to-one to a field in `schema.rs`. The on-disk shape a
 
 | Key         | TOML type            | Meaning                                                            | Default        |
 | ----------- | -------------------- | ----------------------------------------------------------------- | -------------- |
-| `version`   | integer              | On-disk schema version. **Mandatory.**                            | `16`           |
+| `version`   | integer              | On-disk schema version. **Mandatory**; written as `16` by this release. | `n/a (required)` |
 | `tld`       | string               | TLD served by Yerd's resolver.                                    | `"test"`       |
 | `dns_port`  | integer (u16)        | Loopback port for the embedded `.test` DNS responder.             | `1053`         |
 | `symlink_protection` | boolean     | Refuse to serve assets/scripts reached via a symlink resolving outside a site's document root. | `true` |
@@ -446,9 +446,9 @@ Every config file **must** carry a top-level `version = N` key - it is the singl
 When the daemon loads a file, it routes on the version it finds:
 
 ```text
-found  > CURRENT (14)   →  error (UnsupportedVersion) - a newer Yerd wrote this file
-found == CURRENT (14)   →  parse directly
-found  < CURRENT (14)   →  walk forward migration steps, then parse
+found  > CURRENT (16)   →  error (UnsupportedVersion) - a newer Yerd wrote this file
+found == CURRENT (16)   →  parse directly
+found  < CURRENT (16)   →  walk forward migration steps, then parse
 ```
 
 A file written by a *newer* Yerd than you are running is refused rather than misread. Older files are migrated forward in place, one version at a time, before the normal wire-deserialisation and validation run:
@@ -494,7 +494,7 @@ Yerd does not `fsync` the file or its parent directory after a save. For a devel
 This is a valid `yerd.toml` covering the core fields (see the sections above for the newer optional tables - `update_channel`, `[tunnel]`, `[groups]`, `[php.extensions]`, `[domains]`, `[[proxies]]`, `[proxy_rules]`, `wp_auto_login` - omitted here for brevity):
 
 ```toml
-# Schema version - mandatory, always written as 14 by this release.
+# Schema version - mandatory, always written as 16 by this release.
 version = 16
 
 # TLD served by the resolver; sites resolve as <name>.test

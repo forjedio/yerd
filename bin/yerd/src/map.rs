@@ -2995,6 +2995,7 @@ mod tests {
                 action: crate::cli::PathAction::Install,
             },
             Command::Coverage { args: vec![] },
+            Command::Mcp,
             Command::Link {
                 name_or_path: None,
                 path: None,
