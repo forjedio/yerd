@@ -186,7 +186,7 @@ where
         self.preflight_port(wire_id, port)?;
         let listen = Listen::TcpLoopback(SocketAddr::new(Ipv4Addr::LOCALHOST.into(), port));
 
-        if let Some((_, datadir)) = versioned.as_ref() {
+        if let Some((v, datadir)) = versioned.as_ref() {
             Self::prepare_dirs(
                 def.as_ref(),
                 wire_id,
@@ -204,7 +204,14 @@ where
                     }
                 })?;
             }
-            if let Some(rendered) = def.render_config(port, datadir, &socket, &log_path, &init_file)
+            let preload = if def.preloads_bundled_extensions() {
+                let install_dir = version::install_dir(&self.dirs, id, v);
+                postgres_preload_libraries(&install_dir)
+            } else {
+                Vec::new()
+            };
+            if let Some(rendered) =
+                def.render_config(port, datadir, &socket, &log_path, &init_file, &preload)
             {
                 std::fs::write(&config_path, rendered.as_bytes()).map_err(|source| {
                     ServiceError::ConfigWrite {
@@ -970,6 +977,71 @@ fn geo_data_env(
     env
 }
 
+/// The extensions a postgres install needs listed in `shared_preload_libraries`,
+/// probed from the install tree. `TimescaleDB` FATAL-errors on `CREATE EXTENSION`
+/// unless it is preloaded at postmaster start (a reload is too late), so when the
+/// install ships it the library must be named here, with `timescaledb` first per
+/// upstream guidance. Only the Linux/macOS `full` build bundles it (the Windows
+/// `full` build ships `PostGIS` but not `TimescaleDB`), so this probes the tree
+/// rather than keying off the `-full` label. Empty when absent, so a base install
+/// never gets a preload line (naming a missing library stops the postmaster
+/// starting).
+fn postgres_preload_libraries(install_dir: &std::path::Path) -> Vec<&'static str> {
+    if timescaledb_present(install_dir) {
+        vec!["timescaledb"]
+    } else {
+        Vec::new()
+    }
+}
+
+/// Whether a postgres install ships `TimescaleDB`: its `timescaledb.control` file
+/// under `share/` or a `timescaledb*.so`/`.dylib` under `lib/`. Fast path checks
+/// the standard `share/postgresql/extension/` location, then falls back to a
+/// symlink-safe depth-first walk (mirroring [`find_geo_data_dirs`]).
+fn timescaledb_present(install_dir: &std::path::Path) -> bool {
+    let standard = install_dir
+        .join("share")
+        .join("postgresql")
+        .join("extension")
+        .join("timescaledb.control");
+    if standard.is_file() {
+        return true;
+    }
+    let mut stack = vec![install_dir.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let Ok(ft) = entry.file_type() else {
+                continue;
+            };
+            if ft.is_dir() {
+                stack.push(entry.path());
+            } else if ft.is_file() && is_timescaledb_file(&entry.file_name()) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Whether a file name marks a bundled `TimescaleDB`: the extension control file,
+/// or a versioned shared object (`timescaledb-2.17.so`, `timescaledb.dylib`, …).
+fn is_timescaledb_file(name: &std::ffi::OsStr) -> bool {
+    let Some(name) = name.to_str() else {
+        return false;
+    };
+    if name == "timescaledb.control" {
+        return true;
+    }
+    name.starts_with("timescaledb")
+        && std::path::Path::new(name)
+            .extension()
+            .and_then(std::ffi::OsStr::to_str)
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("so") || ext.eq_ignore_ascii_case("dylib"))
+}
+
 /// The directories holding `proj.db` (PROJ) and `gdalvrt.xsd` (GDAL) inside a
 /// variant install. Fast path probes `share/proj` / `share/gdal` directly, then
 /// falls back to a depth-first walk. `DirEntry::file_type()` does not follow
@@ -1310,6 +1382,54 @@ mod tests {
             find_geo_data_dirs(tmp.path()),
             (Some(proj_dir), Some(gdal_dir))
         );
+    }
+
+    /// Stage the standard extension dir and drop `timescaledb.control` into it.
+    fn stage_timescaledb_control(root: &std::path::Path) {
+        let dir = root.join("share").join("postgresql").join("extension");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("timescaledb.control"), b"").unwrap();
+    }
+
+    #[test]
+    fn preload_libraries_empty_without_timescaledb() {
+        let tmp = tempfile::tempdir().unwrap();
+        stage_geo_install(tmp.path(), true, true);
+        assert!(postgres_preload_libraries(tmp.path()).is_empty());
+    }
+
+    #[test]
+    fn preload_libraries_lists_timescaledb_when_control_present() {
+        let tmp = tempfile::tempdir().unwrap();
+        stage_timescaledb_control(tmp.path());
+        assert_eq!(postgres_preload_libraries(tmp.path()), vec!["timescaledb"]);
+    }
+
+    #[test]
+    fn timescaledb_present_detects_a_versioned_shared_object() {
+        let tmp = tempfile::tempdir().unwrap();
+        let lib = tmp.path().join("lib").join("postgresql");
+        std::fs::create_dir_all(&lib).unwrap();
+        std::fs::write(lib.join("timescaledb-2.17.so"), b"").unwrap();
+        assert!(timescaledb_present(tmp.path()));
+    }
+
+    #[test]
+    fn timescaledb_present_detects_a_dylib() {
+        let tmp = tempfile::tempdir().unwrap();
+        let lib = tmp.path().join("lib");
+        std::fs::create_dir_all(&lib).unwrap();
+        std::fs::write(lib.join("timescaledb.dylib"), b"").unwrap();
+        assert!(timescaledb_present(tmp.path()));
+    }
+
+    #[test]
+    fn timescaledb_present_false_for_bare_install() {
+        let tmp = tempfile::tempdir().unwrap();
+        let lib = tmp.path().join("lib");
+        std::fs::create_dir_all(&lib).unwrap();
+        std::fs::write(lib.join("postgis.so"), b"").unwrap();
+        assert!(!timescaledb_present(tmp.path()));
     }
 
     #[test]
