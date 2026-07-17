@@ -184,6 +184,8 @@ jobs:
         working-directory: dist
         env:
           MINISIGN_SECRET_KEY: ${{ secrets.MINISIGN_SECRET_KEY }}
+          # Repo variable to close the legacy `.sig` transition window (see below).
+          RETIRE_LEGACY_SIG: ${{ vars.RETIRE_LEGACY_SIG }}
         run: |
           set -euo pipefail
           if [ -z "${MINISIGN_SECRET_KEY:-}" ]; then
@@ -209,10 +211,17 @@ jobs:
           done
           # Legacy `.sig` copies for the non-pacman kinds only (bounded transition
           # window). NEVER copy for *.pkg.tar.zst: a pacman `.sig` re-creates #157.
-          for f in *.app.tar.gz *.deb *.rpm; do
-            cp -- "$f.minisig" "$f.sig"
-            echo "legacy copy $f.minisig -> $f.sig"
-          done
+          # Closing the window is a deliberate, CI-controlled cutoff: set the repo
+          # variable RETIRE_LEGACY_SIG=true and no `.sig` is published thereafter.
+          # Default (unset) keeps the copies shipping through the transition.
+          if [ "${RETIRE_LEGACY_SIG:-}" = "true" ]; then
+            echo "RETIRE_LEGACY_SIG=true: transition window closed, publishing no legacy .sig copies"
+          else
+            for f in *.app.tar.gz *.deb *.rpm; do
+              cp -- "$f.minisig" "$f.sig"
+              echo "legacy copy $f.minisig -> $f.sig"
+            done
+          fi
 
       # Trust-anchor gate: prove the public key the daemon EMBEDS
       # (`yerd_update::UPDATE_PUBLIC_KEY`) actually verifies these signatures — so

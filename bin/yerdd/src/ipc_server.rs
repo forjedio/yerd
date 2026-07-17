@@ -4163,6 +4163,8 @@ Subject: Captured\r\n\r\nhi\r\n";
         let arm = "Yerd_Linux_Arm64_v99-0-1.deb";
         let pkg = "Yerd_Linux_x86_64_v99-0-1.pkg.tar.zst";
         let pkg_arm = "Yerd_Linux_Arm64_v99-0-1.pkg.tar.zst";
+        let rpm = "Yerd_Linux_x86_64_v99-0-1.rpm";
+        let rpm_arm = "Yerd_Linux_Arm64_v99-0-1.rpm";
         let releases = format!(
             r#"[{{"tag_name":"v99.0.1","prerelease":false,"draft":false,"assets":[
                 {{"name":"{mac}","browser_download_url":"https://h/{mac}","size":4}},
@@ -4175,15 +4177,23 @@ Subject: Captured\r\n\r\nhi\r\n";
                 {{"name":"{pkg}.minisig","browser_download_url":"https://h/{pkg}.minisig","size":1}},
                 {{"name":"{pkg_arm}","browser_download_url":"https://h/{pkg_arm}","size":4}},
                 {{"name":"{pkg_arm}.minisig","browser_download_url":"https://h/{pkg_arm}.minisig","size":1}},
+                {{"name":"{rpm}","browser_download_url":"https://h/{rpm}","size":4}},
+                {{"name":"{rpm}.minisig","browser_download_url":"https://h/{rpm}.minisig","size":1}},
+                {{"name":"{rpm_arm}","browser_download_url":"https://h/{rpm_arm}","size":4}},
+                {{"name":"{rpm_arm}.minisig","browser_download_url":"https://h/{rpm_arm}.minisig","size":1}},
                 {{"name":"SHA256SUMS","browser_download_url":"https://h/SHA256SUMS","size":1}}
             ]}}]"#
         );
         let bad = "0".repeat(64);
-        let sums =
-            format!("{bad}  {mac}\n{bad}  {deb}\n{bad}  {arm}\n{bad}  {pkg}\n{bad}  {pkg_arm}\n");
+        let sums = format!(
+            "{bad}  {mac}\n{bad}  {deb}\n{bad}  {arm}\n{bad}  {pkg}\n{bad}  {pkg_arm}\n{bad}  {rpm}\n{bad}  {rpm_arm}\n"
+        );
         let dl = StageDl { releases, sums };
         match crate::self_update::stage_update(None, &state, &dl, SIG_PUBKEY).await {
-            Response::Error { .. } => {}
+            Response::Error { message, .. } => assert!(
+                message.contains("checksum verification failed"),
+                "expected a checksum verification failure, got: {message}"
+            ),
             other => panic!("expected Error on checksum mismatch, got {other:?}"),
         }
         assert!(
@@ -4191,7 +4201,9 @@ Subject: Captured\r\n\r\nhi\r\n";
                 && !state.dirs.cache.join("update").join(deb).exists()
                 && !state.dirs.cache.join("update").join(arm).exists()
                 && !state.dirs.cache.join("update").join(pkg).exists()
-                && !state.dirs.cache.join("update").join(pkg_arm).exists(),
+                && !state.dirs.cache.join("update").join(pkg_arm).exists()
+                && !state.dirs.cache.join("update").join(rpm).exists()
+                && !state.dirs.cache.join("update").join(rpm_arm).exists(),
             "must not write an artifact when verification fails"
         );
     }
