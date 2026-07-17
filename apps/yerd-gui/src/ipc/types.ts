@@ -276,6 +276,9 @@ export interface StatusReport {
   /** Sites whose apex label is shadowed by another site's explicit domain.
    *  Omitted/empty on a healthy config. */
   shadows?: DomainShadow[];
+  /** Whether `yerd mcp` serves Yerd's tools to local AI agents. Defaults to
+   *  `false` (opt-in) when omitted by a daemon predating the field. */
+  mcp_enabled?: boolean;
 }
 
 /** One apex-shadow relationship: `site`'s apex is claimed by `shadowed_by`. */

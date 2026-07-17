@@ -374,6 +374,138 @@ mod tests {
         drop(keep_alive);
     }
 
+    /// Drives the real `yerd mcp` session loop against a real daemon over the
+    /// real socket: an agent's tool call must come back as live daemon data, and
+    /// the GUI's toggle must be what gates it.
+    ///
+    /// The session starts `Disabled` and the toggle is flipped on before the
+    /// first call, so this also covers the mid-session enable: the gate re-polls
+    /// the daemon on each blocked call, reaching an already-running agent.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[allow(clippy::too_many_lines)]
+    async fn mcp_session_serves_tools_gated_by_the_daemons_toggle() {
+        use yerd_mcp::{Availability, Server};
+
+        let tmp = tempfile::tempdir().unwrap();
+        let dirs = make_dirs(tmp.path());
+        let cfg_path = dirs.config.join("yerd.toml");
+        let sites_root = tmp.path().join("Sites");
+        std::fs::create_dir_all(sites_root.join("blog")).unwrap();
+
+        let daemon =
+            yerdd::startup::bring_up_with_dirs(dirs.clone(), valid_config(), cfg_path.clone())
+                .await
+                .expect("bring_up_with_dirs");
+        let sock = dirs.runtime.join("yerd.sock");
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let state = daemon.state.clone();
+        let ipc_task = tokio::spawn(yerdd::ipc_server::run(
+            daemon.ipc_listener,
+            state,
+            shutdown_rx,
+        ));
+        let keep_alive = (
+            daemon.lock,
+            daemon.dns_bound,
+            daemon.http_listener,
+            daemon.https_listener,
+            daemon.php_manager,
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        assert!(matches!(
+            send(
+                &sock,
+                &Command::Park {
+                    path: sites_root.clone()
+                }
+            )
+            .await,
+            Response::Ok
+        ));
+
+        assert!(matches!(
+            transport::exchange_at(&sock, &yerd_ipc::Request::SetMcpEnabled { enabled: true })
+                .await
+                .unwrap(),
+            Response::Ok
+        ));
+
+        let stdin = format!(
+            "{}\n{}\n{}\n",
+            serde_json::json!({
+                "jsonrpc": "2.0", "id": 1, "method": "initialize",
+                "params": { "protocolVersion": yerd_mcp::LATEST_PROTOCOL_VERSION, "capabilities": {} },
+            }),
+            serde_json::json!({
+                "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+                "params": { "name": "list_sites", "arguments": {} },
+            }),
+            serde_json::json!({
+                "jsonrpc": "2.0", "id": 3, "method": "tools/call",
+                "params": { "name": "status", "arguments": {} },
+            }),
+        );
+        let mut stdout: Vec<u8> = Vec::new();
+        let sock_for_exchange = sock.clone();
+        let _ = yerd::mcp_cmd::run_loop(
+            std::io::Cursor::new(stdin.into_bytes()),
+            &mut stdout,
+            Server::new(Availability::Disabled, "9.9.9"),
+            move |request, _timeout| {
+                let sock = sock_for_exchange.clone();
+                async move {
+                    transport::exchange_at(&sock, &request)
+                        .await
+                        .map_err(|e| e.to_string())
+                }
+            },
+        )
+        .await;
+
+        let replies: Vec<serde_json::Value> = String::from_utf8(stdout)
+            .unwrap()
+            .lines()
+            .map(|l| serde_json::from_str(l).expect("each line is one JSON message"))
+            .collect();
+        assert_eq!(replies.len(), 3);
+
+        let sites_text = replies[1]
+            .pointer("/result/content/0/text")
+            .and_then(serde_json::Value::as_str)
+            .expect("list_sites text");
+        assert_eq!(
+            replies[1].pointer("/result/isError"),
+            Some(&serde_json::json!(false)),
+            "enabling the toggle unblocked the running session: {sites_text}"
+        );
+        assert!(
+            sites_text.contains("blog"),
+            "the tool returned live daemon data: {sites_text}"
+        );
+
+        let status: serde_json::Value = serde_json::from_str(
+            replies[2]
+                .pointer("/result/content/0/text")
+                .and_then(serde_json::Value::as_str)
+                .expect("status text"),
+        )
+        .unwrap();
+        assert_eq!(
+            status["mcp_enabled"],
+            serde_json::json!(true),
+            "the status tool round-trips the setting the GUI writes"
+        );
+        assert!(
+            status.get("daemon_pid").is_none(),
+            "status is trimmed for agents"
+        );
+
+        shutdown_tx.send_replace(true);
+        let _ = tokio::time::timeout(Duration::from_secs(5), ipc_task).await;
+        drop(keep_alive);
+    }
+
     /// Per-version PHP config over the socket: `yerd set php ... --only 8.3`
     /// and the `NotFound` guard for an uninstalled version. PHP 8.3 is faked
     /// on disk (binaries only; no pool is running).

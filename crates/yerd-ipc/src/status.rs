@@ -144,6 +144,12 @@ pub struct StatusReport {
     /// Surfaced by `yerd doctor`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub shadows: Vec<DomainShadow>,
+    /// Whether the MCP server gate is on, i.e. whether `yerd mcp` serves tools
+    /// to local AI agents. `#[serde(default)]` so a newer client decoding an
+    /// *older* daemon's status (which lacks this key) reads the opt-in default
+    /// of off rather than failing the decode. The daemon always emits it.
+    #[serde(default)]
+    pub mcp_enabled: bool,
 }
 
 /// One shadow relationship, surfaced in [`StatusReport::shadows`] and by `yerd

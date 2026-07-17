@@ -30,6 +30,7 @@ import {
   setAutostartDaemon,
   setAutostartGui,
   setAutostartGuiMinimized,
+  setMcpEnabled,
   setSymlinkProtection,
   setTrayIconVariant,
 } from "@/ipc/client";
@@ -331,6 +332,61 @@ watch(
   },
   { immediate: true },
 );
+
+// ── MCP server (AI agents) ────────────────────────────────────────────────
+// Opt-in, so default to off when the report hasn't arrived or predates the field.
+const mcpEnabled = ref(false);
+watch(
+  () => report.value?.mcp_enabled,
+  (v) => {
+    if (v !== undefined) mcpEnabled.value = v;
+  },
+  { immediate: true },
+);
+
+// `yerd` reaches the shell PATH via the Terminal CLI shim on macOS; a packaged
+// Linux install already puts it there, so only macOS gates on `cli.installed`.
+const mcpNeedsCliPath = computed(() => isMac.value && !cli.value?.installed);
+
+const MCP_CLAUDE_SNIPPET = "claude mcp add --scope user yerd -- yerd mcp";
+const MCP_JSON_SNIPPET = JSON.stringify(
+  { mcpServers: { yerd: { command: "yerd", args: ["mcp"] } } },
+  null,
+  2,
+);
+
+async function toggleMcp(on: boolean): Promise<void> {
+  busy.value = "mcp";
+  try {
+    await setMcpEnabled(on);
+    mcpEnabled.value = on;
+    if (on) {
+      toast.success(
+        "AI agents enabled",
+        "Register Yerd with your agent using the command below.",
+      );
+    } else {
+      toast.info(
+        "AI agents disabled",
+        "Agent sessions started from now on can't use Yerd's tools.",
+      );
+    }
+    await refreshStatus();
+  } catch (e) {
+    toast.error("Couldn't change AI agent access", (e as IpcError).message);
+  } finally {
+    busy.value = null;
+  }
+}
+
+async function copyMcpSnippet(snippet: string, label: string): Promise<void> {
+  try {
+    await navigator.clipboard.writeText(snippet);
+    toast.success(`${label} copied`);
+  } catch {
+    toast.error("Couldn't copy to the clipboard");
+  }
+}
 
 const symlinkProtectionOffOpen = ref(false);
 
@@ -661,6 +717,73 @@ async function toggleGuiMinimized(on: boolean): Promise<void> {
               aria-describedby="symlink-protection-desc"
               @update:model-value="onSymlinkProtectionToggle"
             />
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>AI Agents (MCP)</CardTitle>
+          <CardDescription>
+            Let local AI agents manage Yerd through the Model Context Protocol.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <div class="flex items-center justify-between gap-4">
+            <div>
+              <p class="text-sm font-medium">Enable Yerd's MCP server</p>
+              <p id="mcp-enabled-desc" class="text-xs text-muted-foreground">
+                {{ mcpEnabled
+                  ? "On - agents can list and create sites, manage PHP versions and proxies, and read captured mail and dumps. No tool deletes data. Turning this off applies to agent sessions started afterwards."
+                  : "Off - agents can't use Yerd's tools. Turning it on takes effect on a running agent's next tool call." }}
+              </p>
+            </div>
+            <Switch
+              :model-value="mcpEnabled"
+              :disabled="busy === 'mcp' || !connected"
+              aria-label="Enable Yerd's MCP server"
+              aria-describedby="mcp-enabled-desc"
+              @update:model-value="toggleMcp"
+            />
+          </div>
+
+          <div v-if="mcpEnabled" class="mt-4 border-t pt-4">
+            <!-- Registering points the agent at the `yerd` binary by name, so
+                 don't offer a command that can't resolve: on macOS that needs
+                 the Terminal CLI shim below. -->
+            <p v-if="mcpNeedsCliPath" class="text-xs text-muted-foreground">
+              Install <code>yerd</code> on your PATH first (see Terminal CLI below), then come back
+              here for the registration command.
+            </p>
+            <template v-else>
+              <p class="text-sm font-medium">Register Yerd with your agent</p>
+              <p class="mt-1 text-xs text-muted-foreground">
+                Run this once for Claude Code:
+              </p>
+              <div class="mt-2 flex items-center gap-2">
+                <code class="flex-1 truncate rounded bg-muted px-2 py-1 text-xs">{{ MCP_CLAUDE_SNIPPET }}</code>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  @click="copyMcpSnippet(MCP_CLAUDE_SNIPPET, 'Command')"
+                >
+                  Copy
+                </Button>
+              </div>
+              <p class="mt-3 text-xs text-muted-foreground">
+                For other agents, add this to their MCP config:
+              </p>
+              <div class="mt-2 flex items-start gap-2">
+                <pre class="flex-1 overflow-x-auto rounded bg-muted px-2 py-1 text-xs"><code>{{ MCP_JSON_SNIPPET }}</code></pre>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  @click="copyMcpSnippet(MCP_JSON_SNIPPET, 'Config')"
+                >
+                  Copy
+                </Button>
+              </div>
+            </template>
           </div>
         </CardContent>
       </Card>

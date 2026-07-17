@@ -29,10 +29,11 @@ Every field below maps one-to-one to a field in `schema.rs`. The on-disk shape a
 
 | Key         | TOML type            | Meaning                                                            | Default        |
 | ----------- | -------------------- | ----------------------------------------------------------------- | -------------- |
-| `version`   | integer              | On-disk schema version. **Mandatory.**                            | `16`           |
+| `version`   | integer              | On-disk schema version. **Mandatory**; written as `17` by this release. | `n/a (required)` |
 | `tld`       | string               | TLD served by Yerd's resolver.                                    | `"test"`       |
 | `dns_port`  | integer (u16)        | Loopback port for the embedded `.test` DNS responder.             | `1053`         |
 | `symlink_protection` | boolean     | Refuse to serve assets/scripts reached via a symlink resolving outside a site's document root. | `true` |
+| `mcp_enabled` | boolean            | Serve Yerd's tools to local AI agents over MCP (`yerd mcp`).       | `false`        |
 | `ports`     | table                | HTTP / HTTPS listen ports.                                        | `80` / `443`   |
 | `php`       | table                | PHP defaults and global ini settings.                             | see below      |
 | `parked`    | table                | Parked directory paths.                                           | empty          |
@@ -49,7 +50,7 @@ The parser uses `deny_unknown_fields` at every level. A typo'd or stray key (top
 
 ### `version`
 
-The schema version. This key is **required** - a missing `version` is a hard error (`MissingVersion`), and a non-integer or negative value is rejected (`NonIntegerVersion`). The current schema version is `16`, and Yerd always writes `version = 16`. Older `version = 1` through `version = 15` files are migrated forward automatically on load. See [Schema versioning](#schema-versioning-and-migration) below.
+The schema version. This key is **required** - a missing `version` is a hard error (`MissingVersion`), and a non-integer or negative value is rejected (`NonIntegerVersion`). The current schema version is `17`, and Yerd always writes `version = 17`. Older `version = 1` through `version = 16` files are migrated forward automatically on load. See [Schema versioning](#schema-versioning-and-migration) below.
 
 ### `tld`
 
@@ -71,6 +72,16 @@ Set it to `false` to allow those symlinks. The motivating case is a shared paren
 
 ::: warning Off trusts every in-tree symlink
 While off, a symlink is followed wherever it resolves, not only within the parked folder. Combined with a public tunnel (`yerd-tunnel`), that can expose files beyond a site's root. Leave it on unless you specifically need a cross-directory symlink like the shared-theme layout above.
+:::
+
+### `mcp_enabled`
+
+Whether `yerd mcp` serves Yerd's tools to local AI agents over the Model Context Protocol. Defaults to `false`: exposing Yerd to agents is an explicit opt-in, toggled from the desktop app under **Settings › General › AI Agents**.
+
+The daemon runs no MCP server of its own - it stores this flag and reports it in its status. Each agent session runs a short-lived `yerd mcp` process that reads it, so turning it **on** reaches agent sessions already running (on their next tool call), while turning it **off** applies to sessions started afterwards. See the [AI Agents guide](../guide/ai-agents).
+
+::: warning Not a security boundary
+The flag gates tool *discovery*, not access. Any process running as your user can already talk to Yerd's daemon through its socket - that is how the `yerd` CLI works - so turning this off does not isolate Yerd from local software.
 :::
 
 ### `[ports]`
@@ -452,14 +463,14 @@ the actively bound ports and sees parked sites on disk.
 
 ## Schema versioning and migration
 
-Every config file **must** carry a top-level `version = N` key - it is the single trigger for forward migration. The current schema version is `16`.
+Every config file **must** carry a top-level `version = N` key - it is the single trigger for forward migration. The current schema version is `17`.
 
 When the daemon loads a file, it routes on the version it finds:
 
 ```text
-found  > CURRENT (16)   →  error (UnsupportedVersion) - a newer Yerd wrote this file
-found == CURRENT (16)   →  parse directly
-found  < CURRENT (16)   →  walk forward migration steps, then parse
+found  > CURRENT (17)   →  error (UnsupportedVersion) - a newer Yerd wrote this file
+found == CURRENT (17)   →  parse directly
+found  < CURRENT (17)   →  walk forward migration steps, then parse
 ```
 
 A file written by a *newer* Yerd than you are running is refused rather than misread. Older files are migrated forward in place, one version at a time, before the normal wire-deserialisation and validation run:
@@ -479,6 +490,7 @@ A file written by a *newer* Yerd than you are running is refused rather than mis
 - **`v13 → v14`** is a bare version bump: v14 only **added** the optional `[[proxies]]` array and `[proxy_rules]` table (reverse proxies and per-site path rules), both of which default to empty when absent. Same rationale - the bump lets an older binary refuse a proxy-bearing file cleanly rather than tripping `deny_unknown_fields`.
 - **`v14 → v15`** is the multi-instance services rework: v15 **added** the optional per-instance `site` field and the `"{type}:{site}"` wire ids (both additive), and made the `enabled` flag actually gate boot autostart. The migration marks every existing single-instance engine `enabled = true` so previously-installed engines keep starting with Yerd across the upgrade.
 - **`v15 → v16`** is a bare version bump: v16 only **added** the optional `[php.version_settings]` table (per-version overrides of the global PHP settings), which defaults to empty when absent.
+- **`v16 → v17`** is a bare version bump: v17 only **added** the top-level `mcp_enabled` scalar (defaults to `false` when absent).
 
 The on-disk schema version is deliberately decoupled from the IPC protocol version; the two evolve independently.
 
@@ -505,8 +517,8 @@ Yerd does not `fsync` the file or its parent directory after a save. For a devel
 This is a valid `yerd.toml` covering the core fields (see the sections above for the newer optional tables - `update_channel`, `[tunnel]`, `[groups]`, `[php.extensions]`, `[domains]`, `[[proxies]]`, `[proxy_rules]`, `wp_auto_login` - omitted here for brevity):
 
 ```toml
-# Schema version - mandatory, always written as 16 by this release.
-version = 16
+# Schema version - mandatory, always written as 17 by this release.
+version = 17
 
 # TLD served by the resolver; sites resolve as <name>.test
 tld = "test"

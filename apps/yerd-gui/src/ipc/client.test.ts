@@ -23,6 +23,7 @@ import {
   setPhpVersionSettings,
   setPrimaryDomain,
   setSymlinkProtection,
+  setMcpEnabled,
   status,
   unlink,
   updatePhp,
@@ -129,6 +130,12 @@ describe("client → command mapping", () => {
     invokeMock.mockResolvedValue({ type: "ok" });
     await setSymlinkProtection(false);
     expect(invokeMock).toHaveBeenCalledWith("set_symlink_protection", { enabled: false });
+  });
+
+  it("setMcpEnabled sends the flag", async () => {
+    invokeMock.mockResolvedValue({ type: "ok" });
+    await setMcpEnabled(true);
+    expect(invokeMock).toHaveBeenCalledWith("set_mcp_enabled", { enabled: true });
   });
 
   it("setFrontController sends the site name and flag", async () => {

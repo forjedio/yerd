@@ -6292,6 +6292,7 @@ dependencies = [
  "yerd-config",
  "yerd-core",
  "yerd-ipc",
+ "yerd-mcp",
  "yerd-platform",
  "yerd-service-ctl",
  "yerd-update",
@@ -6427,6 +6428,17 @@ dependencies = [
  "thiserror 1.0.69",
  "tokio",
  "tracing",
+ "yerd-ipc",
+]
+
+[[package]]
+name = "yerd-mcp"
+version = "2.0.3"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+ "yerd-core",
  "yerd-ipc",
 ]
 

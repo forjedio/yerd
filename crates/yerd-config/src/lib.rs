@@ -74,8 +74,20 @@ pub use schema::{
 /// front-controller-vs-direct-execution toggle (defaults to auto when absent).
 /// Both v11→v12 and v12→v13 are bare version bumps.
 ///
+/// v14 added the optional `[[proxies]]` array and `[proxy_rules]` table (both
+/// default to empty), so v13→v14 is a bare bump. v15 reworked services for
+/// multiple instances - the optional per-instance `site` field and `"{type}:{site}"`
+/// ids - and made `enabled` gate boot autostart, so its migration marks every
+/// pre-existing single-instance engine `enabled = true` rather than silently
+/// stopping engines that used to start.
+///
 /// v16 added the optional `[php.version_settings]` table
 /// ([`PhpSection::version_settings`]) for per-version overrides of the global
 /// PHP settings. It defaults (empty) when absent, so v15→v16 is a bare
-/// version bump.
-pub const CURRENT_VERSION: u32 = 16;
+/// version bump. v17 added the top-level `mcp_enabled` scalar
+/// ([`Config::mcp_enabled`]) gating the MCP server for AI agents (defaults to off
+/// when absent), also a bare bump.
+///
+/// The per-version detail, including how to hand-edit a file back down for an
+/// older binary, lives in `docs/developer/config-schema-history.md`.
+pub const CURRENT_VERSION: u32 = 17;

@@ -21,6 +21,7 @@ pub mod error;
 #[cfg(unix)]
 pub mod laravel_shim;
 pub mod map;
+pub mod mcp_cmd;
 pub mod path_cmd;
 #[cfg(unix)]
 pub mod shim;
@@ -45,6 +46,7 @@ pub async fn run(cli: Cli) -> ExitCode {
         Command::Elevate { target } => return elevate::run_elevate(*target, false).await,
         Command::Unelevate { target } => return elevate::run_elevate(*target, true).await,
         Command::Path { action } => return path_cmd::run(*action),
+        Command::Mcp => return mcp_cmd::run().await,
         #[cfg_attr(not(unix), allow(unused_variables))]
         Command::Coverage { args } => {
             #[cfg(unix)]
@@ -141,7 +143,7 @@ pub async fn run(cli: Cli) -> ExitCode {
             }
             ExitCode::from(r.code)
         }
-        Err(e @ ClientError::DaemonUnreachable(_)) => {
+        Err(e) if e.is_daemon_down() => {
             if matches!(cli.command, Command::Doctor { .. }) {
                 let resp = daemon_down_response();
                 let r = map::render(&resp, cli.json);
@@ -171,7 +173,7 @@ async fn run_domain_list(site: Option<&str>, json: bool) -> ExitCode {
             eprintln!("yerd: unexpected daemon response");
             return ExitCode::from(74);
         }
-        Err(e @ ClientError::DaemonUnreachable(_)) => {
+        Err(e) if e.is_daemon_down() => {
             eprintln!("yerd: {e}");
             return ExitCode::from(69);
         }
@@ -202,7 +204,7 @@ async fn run_domain_list(site: Option<&str>, json: bool) -> ExitCode {
             }
             ExitCode::from(r.code)
         }
-        Err(e @ ClientError::DaemonUnreachable(_)) => {
+        Err(e) if e.is_daemon_down() => {
             eprintln!("yerd: {e}");
             ExitCode::from(69)
         }
@@ -252,7 +254,7 @@ async fn run_self_update_apply(json: bool, edge: bool, stable: bool, force: bool
                 eprintln!("yerd: unexpected response setting update channel");
                 return ExitCode::from(74);
             }
-            Err(e @ ClientError::DaemonUnreachable(_)) => {
+            Err(e) if e.is_daemon_down() => {
                 eprintln!("yerd: {e}");
                 return ExitCode::from(69);
             }
@@ -284,7 +286,7 @@ async fn run_self_update_apply(json: bool, edge: bool, stable: bool, force: bool
             eprintln!("yerd: unexpected response checking for updates");
             return ExitCode::from(74);
         }
-        Err(e @ ClientError::DaemonUnreachable(_)) => {
+        Err(e) if e.is_daemon_down() => {
             eprintln!("yerd: {e}");
             return ExitCode::from(69);
         }
@@ -334,7 +336,7 @@ async fn run_self_update_apply(json: bool, edge: bool, stable: bool, force: bool
             eprintln!("yerd: unexpected response staging the update");
             return ExitCode::from(74);
         }
-        Err(e @ ClientError::DaemonUnreachable(_)) => {
+        Err(e) if e.is_daemon_down() => {
             eprintln!("yerd: {e}");
             return ExitCode::from(69);
         }
@@ -372,7 +374,7 @@ async fn stream_install_tool(id: &str, json: bool) -> ExitCode {
             eprintln!("yerd: unexpected response starting install");
             return ExitCode::from(74);
         }
-        Err(e @ ClientError::DaemonUnreachable(_)) => {
+        Err(e) if e.is_daemon_down() => {
             eprintln!("yerd: {e}");
             return ExitCode::from(69);
         }
@@ -427,7 +429,7 @@ async fn stream_install_tool(id: &str, json: bool) -> ExitCode {
                 eprintln!("yerd: unexpected response polling install");
                 return ExitCode::from(74);
             }
-            Err(e @ ClientError::DaemonUnreachable(_)) => {
+            Err(e) if e.is_daemon_down() => {
                 eprintln!("yerd: {e}");
                 return ExitCode::from(69);
             }
@@ -462,7 +464,7 @@ async fn stream_tunnel_job(req: yerd_ipc::Request) -> ExitCode {
             eprintln!("yerd: unexpected response starting {noun}");
             return ExitCode::from(74);
         }
-        Err(e @ ClientError::DaemonUnreachable(_)) => {
+        Err(e) if e.is_daemon_down() => {
             eprintln!("yerd: {e}");
             return ExitCode::from(69);
         }
@@ -514,7 +516,7 @@ async fn stream_tunnel_job(req: yerd_ipc::Request) -> ExitCode {
                 eprintln!("yerd: unexpected response polling {noun}");
                 return ExitCode::from(74);
             }
-            Err(e @ ClientError::DaemonUnreachable(_)) => {
+            Err(e) if e.is_daemon_down() => {
                 eprintln!("yerd: {e}");
                 return ExitCode::from(69);
             }

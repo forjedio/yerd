@@ -44,7 +44,7 @@ pub async fn exchange_at(sock: &std::path::Path, req: &Request) -> Result<Respon
     let mut decoder = FrameDecoder::new();
     match read_message::<_, Response>(&mut reader, &mut decoder).await? {
         Some(resp) => Ok(resp),
-        None => Err(ClientError::DaemonUnreachable(
+        None => Err(ClientError::ConnectionClosed(
             "daemon closed the connection without responding".to_owned(),
         )),
     }

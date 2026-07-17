@@ -450,6 +450,7 @@ mod tests {
             shared_sites: 0,
             symlink_protection: true,
             shadows: vec![],
+            mcp_enabled: false,
         }
     }
 

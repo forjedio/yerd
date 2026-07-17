@@ -28,7 +28,21 @@ Each entry below states what changed, whether the daemon's own migration is a ba
 
 ## Version-by-version
 
-### v16 (current)
+### v17 (current)
+
+**Added:** the top-level `mcp_enabled` scalar (bool) - whether `yerd mcp` serves Yerd's tools to local AI agents. Defaults to `false`, so exposing Yerd to agents is an explicit opt-in, and is always emitted.
+
+```toml
+mcp_enabled = false
+```
+
+The daemon runs no MCP server of its own: it stores this flag and reports it in the status report, and each `yerd mcp` session reads it to decide whether to serve. See [AI Agents](../guide/ai-agents).
+
+**Migration from v16:** bare version bump - the key defaults to `false` when absent, so a v16 file needs no other change.
+
+**To downgrade to v16:** change `version = 17` to `version = 16` and delete the `mcp_enabled` line (a v16 daemon rejects the unknown key under `deny_unknown_fields` rather than ignoring it). Agents lose access to Yerd's tools; nothing else is affected.
+
+### v16
 
 **Added:** the optional `[php.version_settings]` table - per-version overrides of the global PHP settings. `[php.version_settings."<version>"]` holds sparse overrides of the allowlisted `[php.settings]` directives for one installed version. It defaults to empty when absent, so an uncustomised file omits it entirely.
 

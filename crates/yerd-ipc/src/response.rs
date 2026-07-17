@@ -678,6 +678,7 @@ mod variant_name_pinning {
                 shared_sites: 0,
                 symlink_protection: true,
                 shadows: vec![],
+                mcp_enabled: false,
             }),
         });
         pin_response(Response::Diagnoses {
