@@ -37,6 +37,7 @@ nix            = { workspace = true, features = ["user"] }
 
 [dev-dependencies]
 yerdd          = { path = "../yerdd" }
+minisign       = { workspace = true }
 tokio          = { workspace = true, features = ["rt-multi-thread", "macros", "net", "io-util", "sync", "time"] }
 
 [lints]

@@ -2,8 +2,14 @@
 //!
 //! Given a resolved [`crate::ReleaseMeta`] and the running [`Platform`], pick the
 //! right downloadable artifact (the macOS `.app.tar.gz` or the Linux `.deb`),
-//! its detached minisign `.sig`, and the `SHA256SUMS` manifest. Verification is
+//! its detached minisign signature (`<artifact>.minisig`, with a legacy
+//! `<artifact>.sig` fallback), and the `SHA256SUMS` manifest. Verification is
 //! pure: it operates on already-downloaded bytes.
+//!
+//! The signature is named `.minisig` rather than `.sig` because pacman reserves
+//! `<pkg>.sig` for a detached `OpenPGP` signature and hard-fails `pacman -U` when a
+//! minisign file sits there (issue #157). The `.sig` fallback keeps clients built
+//! after that change able to consume older release layouts.
 
 use sha2::{Digest, Sha256};
 
@@ -136,7 +142,8 @@ impl PkgFormat {
 pub struct ArtifactSelection<'a> {
     /// The primary artifact (`.app.tar.gz` / `.deb`).
     pub artifact: &'a Asset,
-    /// The detached minisign signature (`<artifact>.sig`).
+    /// The detached minisign signature (`<artifact>.minisig`, with a legacy
+    /// `<artifact>.sig` fallback).
     pub signature: &'a Asset,
     /// The `SHA256SUMS` manifest covering the artifact.
     pub checksums: &'a Asset,
@@ -149,7 +156,8 @@ pub struct ArtifactSelection<'a> {
 pub enum AssetError {
     /// No artifact is published for this platform (e.g. Intel macOS, Windows).
     NoArtifactForPlatform(Platform),
-    /// The artifact is present but its `.sig` is missing.
+    /// The artifact is present but neither its `.minisig` nor its legacy `.sig`
+    /// is attached.
     MissingSignature(String),
     /// No `SHA256SUMS` manifest is attached to the release.
     MissingChecksums,
@@ -175,11 +183,16 @@ impl std::error::Error for AssetError {}
 /// Selection is by filename convention (the names the release workflow emits):
 /// the macOS artifact ends `.app.tar.gz` and is arch-tagged; the Linux artifact
 /// ends `.deb` (Debian), `.pkg.tar.zst` (Arch), or `.rpm` (Fedora) per `format`
-/// and is arch-tagged (`x86_64` or `arm64`); the signature is `<artifact>.sig`;
-/// the manifest is named `SHA256SUMS`. `format` resolves the deb-vs-pacman-vs-rpm
-/// ambiguity on Linux (a release carries all three) and is ignored on macOS. Intel
-/// macOS / unsupported platforms return [`AssetError::NoArtifactForPlatform`]
-/// rather than mis-selecting.
+/// and is arch-tagged (`x86_64` or `arm64`); the signature is `<artifact>.minisig`
+/// (with a legacy `<artifact>.sig` fallback); the manifest is named `SHA256SUMS`.
+/// `format` resolves the deb-vs-pacman-vs-rpm ambiguity on Linux (a release
+/// carries all three) and is ignored on macOS. Intel macOS / unsupported platforms
+/// return [`AssetError::NoArtifactForPlatform`] rather than mis-selecting.
+///
+/// The signature is `.minisig` (not `.sig`) because pacman reserves `<pkg>.sig` for
+/// a detached `OpenPGP` signature, which breaks `pacman -U` when a minisign file is
+/// there (issue #157). Transition releases carry both; `.minisig` is preferred so
+/// selection is identical before and after the legacy `.sig` copies are retired.
 pub fn select_asset(
     release: &ReleaseMeta,
     platform: Platform,
@@ -208,11 +221,13 @@ pub fn select_asset(
         .find(|a| matches(&a.name))
         .ok_or(AssetError::NoArtifactForPlatform(platform))?;
 
+    let minisig_name = format!("{}.minisig", artifact.name);
     let sig_name = format!("{}.sig", artifact.name);
     let signature = release
         .assets
         .iter()
-        .find(|a| a.name == sig_name)
+        .find(|a| a.name == minisig_name)
+        .or_else(|| release.assets.iter().find(|a| a.name == sig_name))
         .ok_or_else(|| AssetError::MissingSignature(artifact.name.clone()))?;
 
     let checksums = release
@@ -290,7 +305,7 @@ pub enum VerifyError {
     ChecksumMissing,
     /// The embedded public key string was not a valid minisign key.
     BadPublicKey,
-    /// The `.sig` content was not a valid minisign signature.
+    /// The signature content was not a valid minisign signature.
     BadSignature,
     /// The signature did not verify against the public key + bytes.
     SignatureMismatch,
@@ -397,14 +412,14 @@ mod tests {
     fn selects_macos_aarch64_app_tarball() {
         let r = release_with(&[
             "Yerd_MacOS_AppleSilicon_v2-0-2.app.tar.gz",
-            "Yerd_MacOS_AppleSilicon_v2-0-2.app.tar.gz.sig",
+            "Yerd_MacOS_AppleSilicon_v2-0-2.app.tar.gz.minisig",
             "Yerd_MacOS_AppleSilicon_v2-0-2.dmg",
             "SHA256SUMS",
         ]);
         let sel = select_asset(&r, Platform::MacOsAarch64, PkgFormat::Deb).unwrap();
         assert_eq!(sel.kind, ArtifactKind::AppTarGz);
         assert!(sel.artifact.name.ends_with(".app.tar.gz"));
-        assert!(sel.signature.name.ends_with(".app.tar.gz.sig"));
+        assert!(sel.signature.name.ends_with(".app.tar.gz.minisig"));
         assert_eq!(sel.checksums.name, "SHA256SUMS");
     }
 
@@ -412,7 +427,7 @@ mod tests {
     fn macos_selection_ignores_pkg_format() {
         let r = release_with(&[
             "Yerd_MacOS_AppleSilicon_v2-0-2.app.tar.gz",
-            "Yerd_MacOS_AppleSilicon_v2-0-2.app.tar.gz.sig",
+            "Yerd_MacOS_AppleSilicon_v2-0-2.app.tar.gz.minisig",
             "SHA256SUMS",
         ]);
         let sel = select_asset(&r, Platform::MacOsAarch64, PkgFormat::Pacman).unwrap();
@@ -423,7 +438,7 @@ mod tests {
     fn selects_linux_x86_64_deb() {
         let r = release_with(&[
             "Yerd_Linux_x86_64_v2-0-2.deb",
-            "Yerd_Linux_x86_64_v2-0-2.deb.sig",
+            "Yerd_Linux_x86_64_v2-0-2.deb.minisig",
             "SHA256SUMS",
         ]);
         let sel = select_asset(&r, Platform::LinuxX86_64, PkgFormat::Deb).unwrap();
@@ -435,7 +450,7 @@ mod tests {
     fn selects_linux_aarch64_deb() {
         let r = release_with(&[
             "Yerd_Linux_Arm64_v2-0-2.deb",
-            "Yerd_Linux_Arm64_v2-0-2.deb.sig",
+            "Yerd_Linux_Arm64_v2-0-2.deb.minisig",
             "SHA256SUMS",
         ]);
         let sel = select_asset(&r, Platform::LinuxAarch64, PkgFormat::Deb).unwrap();
@@ -447,33 +462,33 @@ mod tests {
     fn selects_linux_x86_64_pacman() {
         let r = release_with(&[
             "Yerd_Linux_x86_64_v2-0-2.pkg.tar.zst",
-            "Yerd_Linux_x86_64_v2-0-2.pkg.tar.zst.sig",
+            "Yerd_Linux_x86_64_v2-0-2.pkg.tar.zst.minisig",
             "SHA256SUMS",
         ]);
         let sel = select_asset(&r, Platform::LinuxX86_64, PkgFormat::Pacman).unwrap();
         assert_eq!(sel.kind, ArtifactKind::Pacman);
         assert!(sel.artifact.name.ends_with(".pkg.tar.zst"));
-        assert!(sel.signature.name.ends_with(".pkg.tar.zst.sig"));
+        assert!(sel.signature.name.ends_with(".pkg.tar.zst.minisig"));
     }
 
     #[test]
     fn selects_linux_x86_64_rpm() {
         let r = release_with(&[
             "Yerd_Linux_x86_64_v2-0-2.rpm",
-            "Yerd_Linux_x86_64_v2-0-2.rpm.sig",
+            "Yerd_Linux_x86_64_v2-0-2.rpm.minisig",
             "SHA256SUMS",
         ]);
         let sel = select_asset(&r, Platform::LinuxX86_64, PkgFormat::Rpm).unwrap();
         assert_eq!(sel.kind, ArtifactKind::Rpm);
         assert!(sel.artifact.name.ends_with(".rpm"));
-        assert!(sel.signature.name.ends_with(".rpm.sig"));
+        assert!(sel.signature.name.ends_with(".rpm.minisig"));
     }
 
     #[test]
     fn selects_linux_aarch64_rpm() {
         let r = release_with(&[
             "Yerd_Linux_Arm64_v2-0-2.rpm",
-            "Yerd_Linux_Arm64_v2-0-2.rpm.sig",
+            "Yerd_Linux_Arm64_v2-0-2.rpm.minisig",
             "SHA256SUMS",
         ]);
         let sel = select_asset(&r, Platform::LinuxAarch64, PkgFormat::Rpm).unwrap();
@@ -485,11 +500,11 @@ mod tests {
     fn both_artifacts_present_resolves_per_format() {
         let r = release_with(&[
             "Yerd_Linux_x86_64_v2-0-2.deb",
-            "Yerd_Linux_x86_64_v2-0-2.deb.sig",
+            "Yerd_Linux_x86_64_v2-0-2.deb.minisig",
             "Yerd_Linux_x86_64_v2-0-2.pkg.tar.zst",
-            "Yerd_Linux_x86_64_v2-0-2.pkg.tar.zst.sig",
+            "Yerd_Linux_x86_64_v2-0-2.pkg.tar.zst.minisig",
             "Yerd_Linux_x86_64_v2-0-2.rpm",
-            "Yerd_Linux_x86_64_v2-0-2.rpm.sig",
+            "Yerd_Linux_x86_64_v2-0-2.rpm.minisig",
             "SHA256SUMS",
         ]);
         let deb = select_asset(&r, Platform::LinuxX86_64, PkgFormat::Deb).unwrap();
@@ -507,7 +522,7 @@ mod tests {
     fn linux_arch_matchers_are_disjoint() {
         let only_x86 = release_with(&[
             "Yerd_Linux_x86_64_v2-0-2.deb",
-            "Yerd_Linux_x86_64_v2-0-2.deb.sig",
+            "Yerd_Linux_x86_64_v2-0-2.deb.minisig",
             "SHA256SUMS",
         ]);
         assert_eq!(
@@ -516,7 +531,7 @@ mod tests {
         );
         let only_arm = release_with(&[
             "Yerd_Linux_Arm64_v2-0-2.deb",
-            "Yerd_Linux_Arm64_v2-0-2.deb.sig",
+            "Yerd_Linux_Arm64_v2-0-2.deb.minisig",
             "SHA256SUMS",
         ]);
         assert_eq!(
@@ -529,7 +544,7 @@ mod tests {
     fn pacman_matchers_are_disjoint_from_deb_and_across_arch() {
         let only_deb = release_with(&[
             "Yerd_Linux_x86_64_v2-0-2.deb",
-            "Yerd_Linux_x86_64_v2-0-2.deb.sig",
+            "Yerd_Linux_x86_64_v2-0-2.deb.minisig",
             "SHA256SUMS",
         ]);
         assert_eq!(
@@ -538,7 +553,7 @@ mod tests {
         );
         let only_pac = release_with(&[
             "Yerd_Linux_x86_64_v2-0-2.pkg.tar.zst",
-            "Yerd_Linux_x86_64_v2-0-2.pkg.tar.zst.sig",
+            "Yerd_Linux_x86_64_v2-0-2.pkg.tar.zst.minisig",
             "SHA256SUMS",
         ]);
         assert_eq!(
@@ -547,7 +562,7 @@ mod tests {
         );
         let only_arm_pac = release_with(&[
             "Yerd_Linux_Arm64_v2-0-2.pkg.tar.zst",
-            "Yerd_Linux_Arm64_v2-0-2.pkg.tar.zst.sig",
+            "Yerd_Linux_Arm64_v2-0-2.pkg.tar.zst.minisig",
             "SHA256SUMS",
         ]);
         assert_eq!(
@@ -561,7 +576,7 @@ mod tests {
         // An rpm-only release resolves under Rpm but not Deb/Pacman.
         let only_rpm = release_with(&[
             "Yerd_Linux_x86_64_v2-0-2.rpm",
-            "Yerd_Linux_x86_64_v2-0-2.rpm.sig",
+            "Yerd_Linux_x86_64_v2-0-2.rpm.minisig",
             "SHA256SUMS",
         ]);
         assert_eq!(
@@ -575,7 +590,7 @@ mod tests {
         // A deb-only release does not resolve under Rpm.
         let only_deb = release_with(&[
             "Yerd_Linux_x86_64_v2-0-2.deb",
-            "Yerd_Linux_x86_64_v2-0-2.deb.sig",
+            "Yerd_Linux_x86_64_v2-0-2.deb.minisig",
             "SHA256SUMS",
         ]);
         assert_eq!(
@@ -607,11 +622,94 @@ mod tests {
         ));
     }
 
+    /// The signature-extension dimension: `.minisig` primary, legacy `.sig`
+    /// fallback, `.minisig` preferred when both are present, and an error when
+    /// neither is attached, exercised across every artifact kind.
+    #[test]
+    fn signature_extension_selection() {
+        struct Case {
+            artifact: &'static str,
+            platform: Platform,
+            format: PkgFormat,
+        }
+        let cases = [
+            Case {
+                artifact: "Yerd_MacOS_AppleSilicon_v2-0-2.app.tar.gz",
+                platform: Platform::MacOsAarch64,
+                format: PkgFormat::Deb,
+            },
+            Case {
+                artifact: "Yerd_Linux_x86_64_v2-0-2.deb",
+                platform: Platform::LinuxX86_64,
+                format: PkgFormat::Deb,
+            },
+            Case {
+                artifact: "Yerd_Linux_x86_64_v2-0-2.pkg.tar.zst",
+                platform: Platform::LinuxX86_64,
+                format: PkgFormat::Pacman,
+            },
+            Case {
+                artifact: "Yerd_Linux_x86_64_v2-0-2.rpm",
+                platform: Platform::LinuxX86_64,
+                format: PkgFormat::Rpm,
+            },
+        ];
+        for c in cases {
+            let minisig = format!("{}.minisig", c.artifact);
+            let sig = format!("{}.sig", c.artifact);
+
+            let minisig_only = release_with(&[c.artifact, &minisig, "SHA256SUMS"]);
+            let sel = select_asset(&minisig_only, c.platform, c.format).unwrap();
+            assert_eq!(sel.signature.name, minisig, "minisig-only: {}", c.artifact);
+
+            let sig_only = release_with(&[c.artifact, &sig, "SHA256SUMS"]);
+            let sel = select_asset(&sig_only, c.platform, c.format).unwrap();
+            assert_eq!(
+                sel.signature.name, sig,
+                "legacy sig fallback: {}",
+                c.artifact
+            );
+
+            let both = release_with(&[c.artifact, &sig, &minisig, "SHA256SUMS"]);
+            let sel = select_asset(&both, c.platform, c.format).unwrap();
+            assert_eq!(
+                sel.signature.name, minisig,
+                "both prefers minisig: {}",
+                c.artifact
+            );
+
+            let neither = release_with(&[c.artifact, "SHA256SUMS"]);
+            assert_eq!(
+                select_asset(&neither, c.platform, c.format),
+                Err(AssetError::MissingSignature(c.artifact.to_string())),
+                "neither present: {}",
+                c.artifact
+            );
+        }
+    }
+
+    /// A `.minisig` for a *different* artifact must not satisfy this one: matching
+    /// is by exact name, with no suffix sloppiness.
+    #[test]
+    fn foreign_minisig_does_not_satisfy() {
+        let r = release_with(&[
+            "Yerd_Linux_x86_64_v2-0-2.deb",
+            "Yerd_Linux_Arm64_v2-0-2.deb.minisig",
+            "SHA256SUMS",
+        ]);
+        assert_eq!(
+            select_asset(&r, Platform::LinuxX86_64, PkgFormat::Deb),
+            Err(AssetError::MissingSignature(
+                "Yerd_Linux_x86_64_v2-0-2.deb".to_string()
+            ))
+        );
+    }
+
     #[test]
     fn missing_checksums_is_an_error() {
         let r = release_with(&[
             "Yerd_Linux_x86_64_v2-0-2.deb",
-            "Yerd_Linux_x86_64_v2-0-2.deb.sig",
+            "Yerd_Linux_x86_64_v2-0-2.deb.minisig",
         ]);
         assert_eq!(
             select_asset(&r, Platform::LinuxX86_64, PkgFormat::Deb),
