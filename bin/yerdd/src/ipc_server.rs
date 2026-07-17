@@ -140,6 +140,15 @@ async fn dispatch(req: Request, state: &DaemonState) -> Response {
         },
         Request::DaemonInfo => {
             let cfg = state.config.lock().await;
+            // Discover the LAN IP only when LAN mode is on (best-effort - the
+            // macOS `elevate lan` flow needs it, and the sudo-side helper can't
+            // discover it itself).
+            let lan_ip = if cfg.lan_enabled {
+                use yerd_platform::LanIpProvider as _;
+                yerd_platform::ActiveLanIpProvider::new().lan_ipv4().ok()
+            } else {
+                None
+            };
             Response::Info {
                 dns_addr: state.dns_addr,
                 tld: cfg.tld.as_str().to_owned(),
@@ -150,6 +159,7 @@ async fn dispatch(req: Request, state: &DaemonState) -> Response {
                 fallback_http: cfg.ports.fallback_http,
                 fallback_https: cfg.ports.fallback_https,
                 dns_port: cfg.dns_port,
+                lan_ip,
             }
         }
         Request::Park { .. }
@@ -374,6 +384,8 @@ async fn dispatch(req: Request, state: &DaemonState) -> Response {
         Request::SetMailEnabled { enabled } => set_mail_enabled(enabled, state).await,
         Request::SetSymlinkProtection { enabled } => set_symlink_protection(enabled, state).await,
         Request::SetMcpEnabled { enabled } => set_mcp_enabled(enabled, state).await,
+        Request::SetLanEnabled { enabled } => set_lan_enabled(enabled, state).await,
+        Request::MintRemoteSetupCode => mint_remote_setup_code(state).await,
         Request::ListTools => Response::Tools {
             tools: list_tools_with_external(state).await,
         },
@@ -628,6 +640,7 @@ async fn build_status_report(state: &DaemonState) -> yerd_ipc::StatusReport {
         mail_port,
         symlink_protection,
         mcp_enabled,
+        lan_enabled,
         shadows,
     ) = {
         let cfg = state.config.lock().await;
@@ -652,8 +665,22 @@ async fn build_status_report(state: &DaemonState) -> yerd_ipc::StatusReport {
             cfg.mail.port,
             cfg.symlink_protection,
             cfg.mcp_enabled,
+            cfg.lan_enabled,
             shadows,
         )
+    };
+
+    // LAN effective signals: discover the IP (gated on LAN being on) and read
+    // whether the bootstrap listener actually bound. `None` when LAN is off.
+    let (lan_ip, lan_setup_bound) = if lan_enabled {
+        use yerd_platform::LanIpProvider as _;
+        let ip = yerd_platform::ActiveLanIpProvider::new().lan_ipv4().ok();
+        let bound = state
+            .lan_setup_bound
+            .load(std::sync::atomic::Ordering::Relaxed);
+        (ip, Some(bound))
+    } else {
+        (None, None)
     };
 
     let snapshots = {
@@ -789,6 +816,9 @@ async fn build_status_report(state: &DaemonState) -> yerd_ipc::StatusReport {
         symlink_protection,
         shadows,
         mcp_enabled,
+        lan_enabled,
+        lan_ip,
+        lan_setup_bound,
     }
 }
 
@@ -1752,6 +1782,75 @@ async fn set_mcp_enabled(enabled: bool, state: &DaemonState) -> Response {
     Response::Ok
 }
 
+/// Persist the `lan_enabled` flag. Persist-only: the actual re-bind happens on
+/// the daemon restart the CLI triggers next (a listen socket's bind address is
+/// fixed at bind time), so there is no live atomic to flip here.
+async fn set_lan_enabled(enabled: bool, state: &DaemonState) -> Response {
+    let mut cfg_guard = state.config.lock().await;
+    let mut new = cfg_guard.clone();
+    new.lan_enabled = enabled;
+    if let Err(e) = new.save(&state.config_path) {
+        return internal(format!("config save failed: {e}"));
+    }
+    *cfg_guard = new;
+    tracing::info!(enabled, "set lan enabled");
+    Response::Ok
+}
+
+/// TTL for a minted remote-setup code.
+const REMOTE_SETUP_CODE_TTL: std::time::Duration = std::time::Duration::from_secs(900);
+
+/// Mint a one-time bootstrap code. Guarded on LAN actually being up (config on
+/// *and* the bootstrap listener bound), so a code is never handed out when
+/// nothing would serve it.
+async fn mint_remote_setup_code(state: &DaemonState) -> Response {
+    let (lan_enabled, lan_setup_port) = {
+        let cfg = state.config.lock().await;
+        (cfg.lan_enabled, cfg.lan_setup_port)
+    };
+    if !lan_enabled {
+        return lan_not_ready("LAN mode is off - run `yerd lan enable` first".to_owned());
+    }
+    if !state
+        .lan_setup_bound
+        .load(std::sync::atomic::Ordering::Relaxed)
+    {
+        return lan_not_ready(
+            "the remote-setup listener isn't bound (restart the daemon after enabling LAN)"
+                .to_owned(),
+        );
+    }
+    let lan_ip = {
+        use yerd_platform::LanIpProvider as _;
+        match yerd_platform::ActiveLanIpProvider::new().lan_ipv4() {
+            Ok(ip) => ip,
+            Err(e) => return internal(format!("LAN IP discovery failed: {e}")),
+        }
+    };
+
+    // 128-bit code from the CSPRNG, hex-encoded (URL-safe).
+    let mut bytes = [0u8; 16];
+    {
+        use rand::RngCore as _;
+        rand::thread_rng().fill_bytes(&mut bytes);
+    }
+    let code = hex::encode(bytes);
+
+    *state.remote_setup_code.lock().await = Some(crate::state::RemoteSetupCode {
+        value: code.clone(),
+        expires_at: std::time::Instant::now() + REMOTE_SETUP_CODE_TTL,
+        used: false,
+    });
+
+    let url = format!("http://{lan_ip}:{lan_setup_port}/remote-setup?code={code}");
+    Response::RemoteSetup {
+        code,
+        url,
+        ca_fingerprint: state.ca_fingerprint.to_hex(),
+        expires_in_secs: REMOTE_SETUP_CODE_TTL.as_secs(),
+    }
+}
+
 /// `set/unset php` - merge global PHP ini settings into the config and apply
 /// them to every live FPM pool. An empty-string value removes a key (reset to
 /// PHP's default).
@@ -2464,6 +2563,13 @@ pub(crate) fn internal(message: String) -> Response {
     }
 }
 
+fn lan_not_ready(message: String) -> Response {
+    Response::Error {
+        code: ErrorCode::LanNotReady,
+        message,
+    }
+}
+
 #[cfg(test)]
 #[allow(
     clippy::unwrap_used,
@@ -3105,6 +3211,7 @@ Subject: Captured\r\n\r\nhi\r\n";
                 fallback_http,
                 fallback_https,
                 dns_port,
+                lan_ip,
             } => {
                 assert_eq!(dns_addr, state.dns_addr);
                 assert_eq!(tld, "test");
@@ -3116,6 +3223,7 @@ Subject: Captured\r\n\r\nhi\r\n";
                 assert_eq!(fallback_http, 8080);
                 assert_eq!(fallback_https, 8443);
                 assert_eq!(dns_port, state.config.lock().await.dns_port);
+                assert_eq!(lan_ip, None, "LAN off by default -> no LAN IP");
             }
             other => panic!("expected Info, got {other:?}"),
         }
@@ -4438,6 +4546,42 @@ Subject: Captured\r\n\r\nhi\r\n";
             !build_status_report(&state).await.mcp_enabled,
             "status report back off"
         );
+    }
+
+    #[tokio::test]
+    async fn set_lan_enabled_persists_config_and_appears_in_status() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_in(tmp.path());
+        assert!(!state.config.lock().await.lan_enabled, "seeded off");
+        assert!(!build_status_report(&state).await.lan_enabled);
+
+        assert_eq!(
+            dispatch(Request::SetLanEnabled { enabled: true }, &state).await,
+            Response::Ok
+        );
+        assert!(state.config.lock().await.lan_enabled, "in-memory config on");
+        let reloaded = yerd_config::Config::load(&state.config_path).unwrap();
+        assert!(reloaded.lan_enabled, "persisted config on");
+        assert!(build_status_report(&state).await.lan_enabled);
+
+        assert_eq!(
+            dispatch(Request::SetLanEnabled { enabled: false }, &state).await,
+            Response::Ok
+        );
+        assert!(!state.config.lock().await.lan_enabled, "back off");
+    }
+
+    #[tokio::test]
+    async fn mint_remote_setup_code_rejects_when_lan_off() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_in(tmp.path());
+        // LAN off by default → guarded.
+        match dispatch(Request::MintRemoteSetupCode, &state).await {
+            Response::Error { code, .. } => {
+                assert_eq!(code, yerd_ipc::ErrorCode::LanNotReady);
+            }
+            other => panic!("expected LanNotReady error, got {other:?}"),
+        }
     }
 
     #[tokio::test]

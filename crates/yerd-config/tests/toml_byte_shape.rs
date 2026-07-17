@@ -61,8 +61,8 @@ fn populated() -> Config {
 fn default_config_starts_with_version_line() {
     let s = Config::default().to_toml().unwrap();
     assert!(
-        s.starts_with("version = 17\n"),
-        "expected first line `version = 17`; got: {s}"
+        s.starts_with("version = 18\n"),
+        "expected first line `version = 18`; got: {s}"
     );
 }
 
@@ -133,6 +133,43 @@ fn mcp_enabled_true_round_trips() {
     assert!(s.contains("mcp_enabled = true\n"), "got: {s}");
     let back = Config::from_toml(&s).unwrap();
     assert!(back.mcp_enabled);
+}
+
+#[test]
+fn default_config_emits_lan_enabled_scalar_before_tables() {
+    let s = Config::default().to_toml().unwrap();
+    assert!(
+        s.contains("lan_enabled = false\n"),
+        "expected `lan_enabled = false` scalar; got: {s}"
+    );
+    let at = s.find("lan_enabled = ").expect("scalar present");
+    let first_table = s.find("\n[").expect("at least one table");
+    assert!(at < first_table, "lan_enabled must precede tables in: {s}");
+}
+
+#[test]
+fn default_config_emits_lan_setup_port_scalar_before_tables() {
+    let s = Config::default().to_toml().unwrap();
+    assert!(
+        s.contains("lan_setup_port = 7073\n"),
+        "expected `lan_setup_port = 7073` scalar; got: {s}"
+    );
+    let at = s.find("lan_setup_port = ").expect("scalar present");
+    let first_table = s.find("\n[").expect("at least one table");
+    assert!(
+        at < first_table,
+        "lan_setup_port must precede tables in: {s}"
+    );
+}
+
+#[test]
+fn lan_enabled_true_round_trips() {
+    let mut c = Config::default();
+    c.lan_enabled = true;
+    let s = c.to_toml().unwrap();
+    assert!(s.contains("lan_enabled = true\n"), "got: {s}");
+    let back = Config::from_toml(&s).unwrap();
+    assert!(back.lan_enabled);
 }
 
 #[test]

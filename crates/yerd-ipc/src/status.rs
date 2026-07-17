@@ -150,6 +150,22 @@ pub struct StatusReport {
     /// of off rather than failing the decode. The daemon always emits it.
     #[serde(default)]
     pub mcp_enabled: bool,
+    /// Whether LAN exposure is enabled in the daemon's *config* (the configured
+    /// state). Compare with the effective signals ([`Self::lan_ip`],
+    /// [`Self::lan_setup_bound`]) to detect "enabled but not yet applied".
+    /// `#[serde(default)]` keeps the wire additive; the daemon always emits it.
+    #[serde(default)]
+    pub lan_enabled: bool,
+    /// The host's discovered LAN IPv4 when LAN mode is on and discovery
+    /// succeeded; `None` otherwise. `skip_serializing_if` keeps the absent bytes
+    /// unchanged for older daemons/clients.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lan_ip: Option<std::net::Ipv4Addr>,
+    /// Whether the remote-setup bootstrap listener actually bound (effective
+    /// state). `None` when LAN is off (nothing to report); `Some(false)` when LAN
+    /// is on but the listener couldn't bind (degraded).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lan_setup_bound: Option<bool>,
 }
 
 /// One shadow relationship, surfaced in [`StatusReport::shadows`] and by `yerd

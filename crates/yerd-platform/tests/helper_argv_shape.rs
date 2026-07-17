@@ -135,6 +135,61 @@ fn uninstall_port_redirect_argv_frozen() {
 }
 
 #[test]
+fn install_lan_port_redirect_argv_frozen() {
+    let inv = HelperInvocation::InstallLanPortRedirect {
+        lan_ip: "192.168.1.42".parse().unwrap(),
+        http_from: 80,
+        http_to: 8080,
+        https_from: 443,
+        https_to: 8443,
+    };
+    assert_eq!(
+        argv_strs(&inv),
+        vec![
+            "install-lan-port-redirect".to_string(),
+            "--lan-ip".to_string(),
+            "192.168.1.42".to_string(),
+            "--http-from".to_string(),
+            "80".to_string(),
+            "--http-to".to_string(),
+            "8080".to_string(),
+            "--https-from".to_string(),
+            "443".to_string(),
+            "--https-to".to_string(),
+            "8443".to_string(),
+        ]
+    );
+}
+
+#[test]
+fn uninstall_lan_port_redirect_argv_frozen() {
+    let inv = HelperInvocation::UninstallLanPortRedirect;
+    assert_eq!(
+        argv_strs(&inv),
+        vec!["uninstall-lan-port-redirect".to_string()]
+    );
+}
+
+#[test]
+fn lan_port_redirect_round_trips_through_argv() {
+    for inv in [
+        HelperInvocation::InstallLanPortRedirect {
+            lan_ip: "10.1.2.3".parse().unwrap(),
+            http_from: 80,
+            http_to: 8080,
+            https_from: 443,
+            https_to: 8443,
+        },
+        HelperInvocation::UninstallLanPortRedirect,
+    ] {
+        let argv = inv.to_argv();
+        // Re-serialising the parsed invocation reproduces the argv byte-for-byte.
+        let reparsed = HelperInvocation::from_argv(&argv).unwrap();
+        assert_eq!(reparsed.to_argv(), argv);
+    }
+}
+
+#[test]
 fn fingerprint_in_argv_is_64_lowercase_hex() {
     let inv = HelperInvocation::UninstallCa {
         fp: CaFingerprint::new([0xFF; 32]),

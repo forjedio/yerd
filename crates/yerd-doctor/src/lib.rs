@@ -451,6 +451,9 @@ mod tests {
             symlink_protection: true,
             shadows: vec![],
             mcp_enabled: false,
+            lan_enabled: false,
+            lan_ip: None,
+            lan_setup_bound: None,
         }
     }
 

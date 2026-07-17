@@ -10,7 +10,7 @@ mod server;
 pub use answer::Answer;
 pub use error::{BindProto, DnsError};
 pub use responder::Responder;
-pub use server::Bound;
+pub use server::{AnswerAddrs, Bound};
 
 /// TTL on every A/AAAA record we hand out.
 pub const ANSWER_TTL_SECS: u32 = 60;

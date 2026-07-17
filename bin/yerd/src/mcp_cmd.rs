@@ -398,6 +398,9 @@ mod tests {
             symlink_protection: true,
             shadows: vec![],
             mcp_enabled,
+            lan_enabled: false,
+            lan_ip: None,
+            lan_setup_bound: None,
         }
     }
 

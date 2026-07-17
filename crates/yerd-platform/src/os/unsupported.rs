@@ -115,7 +115,7 @@ impl PortBinder for UnsupportedPortBinder {
         })
     }
 
-    fn bind_pair(&self, _: (u16, u16), _: (u16, u16)) -> Result<PortPair, PlatformError> {
+    fn bind_pair(&self, _: bool, _: (u16, u16), _: (u16, u16)) -> Result<PortPair, PlatformError> {
         Err(PlatformError::Unsupported {
             operation: ops::BIND_PAIR,
         })

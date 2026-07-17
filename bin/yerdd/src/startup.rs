@@ -12,7 +12,8 @@ use tokio::sync::{Mutex, RwLock};
 use yerd_core::{PhpVersion, Site, SiteRouter};
 use yerd_php::{discover_bundled, io::FastCgiProbe, PhpManager, SystemClock, TokioProcessSpawner};
 use yerd_platform::{
-    ActivePaths, ActivePortBinder, ActiveTrustStore, Paths, PlatformDirs, PortBinder, TrustStore,
+    ActivePaths, ActivePortBinder, ActiveTrustStore, LanIpProvider, Paths, PlatformDirs,
+    PortBinder, TrustStore,
 };
 use yerd_tls::{CertAuthority, Validity};
 
@@ -70,6 +71,13 @@ pub struct Daemon {
     /// the DNS port couldn't bind this stays the *wanted* address (so the
     /// resolver-install probe still has a target to report against).
     pub dns_addr: SocketAddr,
+    /// The addresses the DNS responder answers `.test` with. Loopback-only
+    /// unless LAN mode is on, in which case it split-horizons (see
+    /// [`yerd_dns::AnswerAddrs`]). Consumed when the DNS task is spawned.
+    pub dns_answer: yerd_dns::AnswerAddrs,
+    /// The host's discovered LAN IPv4, when LAN mode is on and discovery
+    /// succeeded. `None` otherwise (LAN off, or discovery failed - fail-closed).
+    pub lan_ip: Option<Ipv4Addr>,
     /// Bound mail-capture SMTP listener, when capture is enabled and the port was
     /// free. `None` = disabled, or the bind failed (non-fatal). Consumed when the
     /// mail task is spawned.
@@ -139,8 +147,11 @@ pub async fn bring_up_with_dirs(
     let fb_https = config.ports.fallback_https;
     let binder = ActivePortBinder::new();
     let (http_listener, tls_listener, bound_http, bound_https, web_unbound) = match binder
-        .bind_pair((cfg_http, cfg_https), (fb_http, fb_https))
-    {
+        .bind_pair(
+            config.lan_enabled,
+            (cfg_http, cfg_https),
+            (fb_http, fb_https),
+        ) {
         Ok(pair) => {
             let bound_http = pair.http.port().map_err(|source| DaemonError::Io {
                 path: PathBuf::from("<http listener>"),
@@ -236,8 +247,34 @@ pub async fn bring_up_with_dirs(
 
     let ipc_listener = build_ipc_listener(&dirs)?;
 
+    // LAN mode: discover the host's routable IPv4 (fail-closed - a discovery
+    // error leaves `lan_ip = None`, so DNS answers fall back to loopback while
+    // the daemon still serves locally), bind the responder on `0.0.0.0` so other
+    // devices can reach it, and answer `.test` with split-horizon.
+    let lan_ip: Option<Ipv4Addr> = if config.lan_enabled {
+        match yerd_platform::ActiveLanIpProvider::new().lan_ipv4() {
+            Ok(ip) => Some(ip),
+            Err(e) => {
+                tracing::warn!(error = %e, "LAN IP discovery failed; .test answers fall back to loopback");
+                None
+            }
+        }
+    } else {
+        None
+    };
+    let dns_answer = if config.lan_enabled {
+        yerd_dns::AnswerAddrs::lan(lan_ip)
+    } else {
+        yerd_dns::AnswerAddrs::loopback()
+    };
+
     let cfg_dns = config.dns_port;
-    let dns_want = SocketAddr::new(DNS_IP, cfg_dns);
+    let dns_ip = if config.lan_enabled {
+        IpAddr::V4(Ipv4Addr::UNSPECIFIED)
+    } else {
+        DNS_IP
+    };
+    let dns_want = SocketAddr::new(dns_ip, cfg_dns);
     let (dns_bound, dns_addr, dns_unbound) = match yerd_dns::Bound::bind(dns_want).await {
         Ok(bound) => {
             let addr = bound.local_addr();
@@ -333,6 +370,8 @@ pub async fn bring_up_with_dirs(
         wordpress_login_prepend_script,
         wordpress_sites,
         laravel_sites,
+        lan_setup_bound: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        remote_setup_code: Mutex::new(None),
     });
 
     {
@@ -356,6 +395,8 @@ pub async fn bring_up_with_dirs(
         ipc_listener,
         dns_bound,
         dns_addr,
+        dns_answer,
+        lan_ip,
         mail_listener,
     })
 }

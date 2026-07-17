@@ -53,6 +53,11 @@ mod unix_impl {
         http_port: u16,
         #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
         https_port: u16,
+        /// The host's LAN IPv4 when LAN mode is on (the M2 `rdr` dest). Read
+        /// only in the macOS `elevate lan` arm; unused on Linux (setcap covers
+        /// the wildcard privileged bind directly).
+        #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+        lan_ip: Option<std::net::Ipv4Addr>,
     }
 
     /// Expand an optional target into the concrete list (None = all, in
@@ -115,8 +120,8 @@ mod unix_impl {
         undo: bool,
     ) -> Result<(), ClientError> {
         #[cfg(not(target_os = "macos"))]
-        if target == ElevateTarget::Ports && undo {
-            println!("==> ports: capabilities can't be dropped automatically.");
+        if (target == ElevateTarget::Ports || target == ElevateTarget::Lan) && undo {
+            println!("==> {target:?}: capabilities can't be dropped automatically.");
             println!(
                 "    run manually if desired: sudo setcap -r {}",
                 yerdd.display()
@@ -231,6 +236,45 @@ mod unix_impl {
             }
             #[cfg(target_os = "macos")]
             (ElevateTarget::Ports, true) => HelperInvocation::UninstallPortRedirect,
+            // LAN: Linux reuses the same `setcap` grant (a wildcard privileged
+            // bind needs the same capability); macOS installs/removes the M2 pf
+            // rule targeting the discovered LAN IP.
+            #[cfg(not(target_os = "macos"))]
+            (ElevateTarget::Lan, false) => HelperInvocation::Setcap {
+                daemon_binary: yerdd.to_path_buf(),
+            },
+            #[cfg(not(target_os = "macos"))]
+            (ElevateTarget::Lan, true) => {
+                return Err(ClientError::Usage(
+                    "lan needs no revert on Linux (setcap stays; run `yerd lan disable`)"
+                        .to_owned(),
+                ))
+            }
+            #[cfg(target_os = "macos")]
+            (ElevateTarget::Lan, false) => {
+                if facts.http_port == 0 || facts.https_port == 0 {
+                    return Err(ClientError::Usage(
+                        "Yerd isn't serving any web ports yet — set working ports and restart \
+                         before elevating"
+                            .to_owned(),
+                    ));
+                }
+                let lan_ip = facts.lan_ip.ok_or_else(|| {
+                    ClientError::Usage(
+                        "LAN IP unknown — run `yerd lan enable` (and check `yerd lan status`) first"
+                            .to_owned(),
+                    )
+                })?;
+                HelperInvocation::InstallLanPortRedirect {
+                    lan_ip,
+                    http_from: 80,
+                    http_to: facts.http_port,
+                    https_from: 443,
+                    https_to: facts.https_port,
+                }
+            }
+            #[cfg(target_os = "macos")]
+            (ElevateTarget::Lan, true) => HelperInvocation::UninstallLanPortRedirect,
         })
     }
 
@@ -265,6 +309,23 @@ mod unix_impl {
             ),
             #[cfg(target_os = "macos")]
             (ElevateTarget::Ports, true) => "ports: removing the pf redirect".into(),
+            #[cfg(not(target_os = "macos"))]
+            (ElevateTarget::Lan, false) => {
+                "lan: granting cap_net_bind_service to yerdd (same as ports)".into()
+            }
+            #[cfg(not(target_os = "macos"))]
+            (ElevateTarget::Lan, true) => "lan: (no-op)".into(),
+            #[cfg(target_os = "macos")]
+            (ElevateTarget::Lan, false) => format!(
+                "lan: installing a pf LAN redirect on {} (80→{}, 443→{})",
+                facts
+                    .lan_ip
+                    .map_or_else(|| "<unknown>".to_owned(), |ip| ip.to_string()),
+                facts.http_port,
+                facts.https_port
+            ),
+            #[cfg(target_os = "macos")]
+            (ElevateTarget::Lan, true) => "lan: removing the pf LAN redirect".into(),
         }
     }
 
@@ -280,6 +341,7 @@ mod unix_impl {
                     ca_fingerprint,
                     http_port,
                     https_port,
+                    lan_ip,
                     ..
                 }) => {
                     return Ok(Facts {
@@ -289,6 +351,7 @@ mod unix_impl {
                         ca_fingerprint,
                         http_port,
                         https_port,
+                        lan_ip,
                     })
                 }
                 Ok(other) => {
@@ -419,6 +482,7 @@ mod unix_impl {
                 ca_fingerprint: "ab".repeat(32),
                 http_port: 8080,
                 https_port: 8443,
+                lan_ip: Some("192.168.1.42".parse().unwrap()),
             }
         }
 

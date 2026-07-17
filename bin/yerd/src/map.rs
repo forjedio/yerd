@@ -168,7 +168,12 @@ pub fn to_request(cmd: &Command) -> Result<Request, ClientError> {
             MailAction::Show { id } => Request::GetMail { id: id.clone() },
             MailAction::Clear => Request::ClearMails,
         },
-        Command::Status => Request::Status,
+        // `lan status` is normally intercepted in `run()` for a LAN-focused
+        // view; this arm keeps the mapping total and shares `Status`.
+        Command::Status
+        | Command::Lan {
+            action: crate::cli::LanAction::Status,
+        } => Request::Status,
         Command::Doctor { action: None } => Request::Diagnose,
         Command::Doctor {
             action: Some(crate::cli::DoctorAction::Fix),
@@ -226,6 +231,13 @@ pub fn to_request(cmd: &Command) -> Result<Request, ClientError> {
                 "link is handled locally, not over IPC".to_owned(),
             ));
         }
+        Command::Lan {
+            action: crate::cli::LanAction::Enable,
+        } => Request::SetLanEnabled { enabled: true },
+        Command::Lan {
+            action: crate::cli::LanAction::Disable,
+        } => Request::SetLanEnabled { enabled: false },
+        Command::RemoteSetup => Request::MintRemoteSetupCode,
     })
 }
 
@@ -772,6 +784,12 @@ pub fn render(resp: &Response, json: bool) -> Rendered {
         } => Rendered::ok(format_available_php(available, installed)),
         Response::PhpExtensions { by_version } => Rendered::ok(format_php_extensions(by_version)),
         Response::Error { code: c, message } => Rendered::err(format!("error ({c:?}): {message}")),
+        Response::RemoteSetup {
+            code: _,
+            url,
+            ca_fingerprint,
+            expires_in_secs,
+        } => Rendered::ok(format_remote_setup(url, ca_fingerprint, *expires_in_secs)),
         Response::Status { report } => Rendered {
             stdout: format_status(report),
             stderr: String::new(),
@@ -965,6 +983,25 @@ fn format_parked(paths: &[String]) -> String {
         return "no parked folders".to_owned();
     }
     paths.join("\n")
+}
+
+/// The remote-device bootstrap instructions. The device must verify the CA
+/// against the out-of-band fingerprint (printed here, travels by copy-paste, NOT
+/// over the wire) before trusting it - plain HTTP + a code is not sufficient to
+/// distribute a root CA.
+fn format_remote_setup(url: &str, ca_fingerprint: &str, expires_in_secs: u64) -> String {
+    let mins = expires_in_secs / 60;
+    format!(
+        "Run this on the OTHER device (needs sudo + curl + openssl):\n\
+         \n\
+         \x20   curl -sS '{url}' -o yerd-setup.sh \\\n\
+         \x20     && sudo bash yerd-setup.sh {ca_fingerprint}\n\
+         \n\
+         The fingerprint above is the trust anchor: the script downloads Yerd's CA,\n\
+         verifies its SHA-256 equals it, and only then installs it and configures the\n\
+         .test resolver. The code expires in {mins} minutes and is single-use.\n\
+         Do NOT skip the fingerprint - a wrong or missing one aborts the install."
+    )
 }
 
 fn format_service_state(s: ServiceRunState) -> &'static str {
@@ -1493,6 +1530,49 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
     use yerd_ipc::ErrorCode;
+
+    #[test]
+    fn maps_lan_and_remote_setup_commands() {
+        use crate::cli::LanAction;
+        assert_eq!(
+            to_request(&Command::Lan {
+                action: LanAction::Enable
+            })
+            .unwrap(),
+            Request::SetLanEnabled { enabled: true }
+        );
+        assert_eq!(
+            to_request(&Command::Lan {
+                action: LanAction::Disable
+            })
+            .unwrap(),
+            Request::SetLanEnabled { enabled: false }
+        );
+        assert_eq!(
+            to_request(&Command::Lan {
+                action: LanAction::Status
+            })
+            .unwrap(),
+            Request::Status
+        );
+        assert_eq!(
+            to_request(&Command::RemoteSetup).unwrap(),
+            Request::MintRemoteSetupCode
+        );
+    }
+
+    #[test]
+    fn remote_setup_render_shows_fingerprint_and_verify_step() {
+        let out = format_remote_setup(
+            "http://192.168.1.42:7073/remote-setup?code=abc",
+            &"ab".repeat(32),
+            900,
+        );
+        assert!(out.contains(&"ab".repeat(32)), "fingerprint present");
+        assert!(out.contains("yerd-setup.sh"));
+        assert!(out.contains("openssl"));
+        assert!(!out.contains("| sudo bash"), "must not pipe-to-bash");
+    }
 
     #[test]
     #[allow(clippy::too_many_lines)]
@@ -2386,6 +2466,9 @@ mod tests {
             symlink_protection: true,
             shadows: vec![],
             mcp_enabled: false,
+            lan_enabled: false,
+            lan_ip: None,
+            lan_setup_bound: None,
         }
     }
 

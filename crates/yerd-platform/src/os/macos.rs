@@ -344,8 +344,12 @@ impl MacosPortBinder {
     }
 }
 
+fn bind_at(ip: Ipv4Addr, port: u16) -> std::io::Result<TcpListener> {
+    TcpListener::bind(SocketAddr::from((ip, port)))
+}
+
 fn bind_loopback(port: u16) -> std::io::Result<TcpListener> {
-    TcpListener::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, port)))
+    bind_at(Ipv4Addr::LOCALHOST, port)
 }
 
 impl PortBinder for MacosPortBinder {
@@ -357,16 +361,30 @@ impl PortBinder for MacosPortBinder {
 
     fn bind_pair(
         &self,
+        lan: bool,
         desired: (u16, u16),
         fallback: (u16, u16),
     ) -> Result<PortPair, PlatformError> {
-        bind_pair_impl(desired, fallback)
+        bind_pair_impl(lan, desired, fallback)
     }
 }
 
-fn bind_pair_impl(desired: (u16, u16), fallback: (u16, u16)) -> Result<PortPair, PlatformError> {
-    let http_attempt = bind_loopback(desired.0);
-    let https_attempt = bind_loopback(desired.1);
+// macOS uses the M2 LAN strategy: even in LAN mode the daemon binds the rootless
+// ports on `0.0.0.0`, and a privileged `pf rdr` (installed by `yerd elevate lan`)
+// carries inbound 80/443 to `<lan_ip>:<rootless>`. So `lan` here only widens the
+// bind address; the privileged-port redirect is a separate concern.
+fn bind_pair_impl(
+    lan: bool,
+    desired: (u16, u16),
+    fallback: (u16, u16),
+) -> Result<PortPair, PlatformError> {
+    let ip = if lan {
+        Ipv4Addr::UNSPECIFIED
+    } else {
+        Ipv4Addr::LOCALHOST
+    };
+    let http_attempt = bind_at(ip, desired.0);
+    let https_attempt = bind_at(ip, desired.1);
 
     let http_outcome = http_attempt
         .as_ref()
@@ -416,8 +434,8 @@ fn bind_pair_impl(desired: (u16, u16), fallback: (u16, u16)) -> Result<PortPair,
             drop(http_attempt);
             drop(https_attempt);
 
-            let fb_http = bind_loopback(fallback.0);
-            let fb_https = bind_loopback(fallback.1);
+            let fb_http = bind_at(ip, fallback.0);
+            let fb_https = bind_at(ip, fallback.1);
 
             let fb_http_outcome = fb_http.as_ref().map(|_| ()).map_err(std::io::Error::kind);
             let fb_https_outcome = fb_https.as_ref().map(|_| ()).map_err(std::io::Error::kind);
@@ -655,12 +673,27 @@ mod tests {
     /// (0, 0) makes both ephemeral binds succeed, exercising the `KeepDesired` arm.
     #[test]
     fn bind_pair_impl_keeps_desired_when_both_free() {
-        let pair = bind_pair_impl((0, 0), (0, 0)).unwrap();
+        let pair = bind_pair_impl(false, (0, 0), (0, 0)).unwrap();
         let http = pair.http.port().unwrap();
         let https = pair.https.port().unwrap();
         assert_ne!(http, 0);
         assert_ne!(https, 0);
         assert_ne!(http, https);
+    }
+
+    /// In LAN mode the pair binds the wildcard address, so the resolved local
+    /// address is `0.0.0.0` rather than loopback.
+    #[test]
+    fn bind_pair_impl_lan_binds_wildcard() {
+        let pair = bind_pair_impl(true, (0, 0), (0, 0)).unwrap();
+        assert_eq!(
+            pair.http.listener.local_addr().unwrap().ip(),
+            std::net::IpAddr::V4(Ipv4Addr::UNSPECIFIED)
+        );
+        assert_eq!(
+            pair.https.listener.local_addr().unwrap().ip(),
+            std::net::IpAddr::V4(Ipv4Addr::UNSPECIFIED)
+        );
     }
 
     /// Occupy a real loopback port so the desired-HTTP bind fails with
@@ -671,7 +704,7 @@ mod tests {
         let occupied = bind_loopback(0).unwrap();
         let taken = occupied.local_addr().unwrap().port();
 
-        let pair = bind_pair_impl((taken, 0), (0, 0)).unwrap();
+        let pair = bind_pair_impl(false, (taken, 0), (0, 0)).unwrap();
         assert_ne!(pair.http.port().unwrap(), 0);
         assert_ne!(pair.https.port().unwrap(), 0);
     }
@@ -685,7 +718,7 @@ mod tests {
         let occ_fallback = bind_loopback(0).unwrap();
         let fallback_http = occ_fallback.local_addr().unwrap().port();
 
-        let err = bind_pair_impl((desired_http, 0), (fallback_http, 0)).unwrap_err();
+        let err = bind_pair_impl(false, (desired_http, 0), (fallback_http, 0)).unwrap_err();
         assert!(matches!(
             err,
             PlatformError::BindPair {

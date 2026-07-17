@@ -78,7 +78,7 @@ fn port_binder_unsupported() {
         PlatformError::Unsupported { .. }
     ));
     assert!(matches!(
-        b.bind_pair((0, 0), (0, 0)).unwrap_err(),
+        b.bind_pair(false, (0, 0), (0, 0)).unwrap_err(),
         PlatformError::Unsupported { .. }
     ));
 }

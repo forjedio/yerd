@@ -81,6 +81,15 @@ pub async fn run(cli: Cli) -> ExitCode {
             stable,
             force,
         } => return run_self_update_apply(cli.json, *edge, *stable, *force).await,
+        Command::Lan {
+            action: crate::cli::LanAction::Enable,
+        } => return run_lan_toggle(true, cli.json).await,
+        Command::Lan {
+            action: crate::cli::LanAction::Disable,
+        } => return run_lan_toggle(false, cli.json).await,
+        Command::Lan {
+            action: crate::cli::LanAction::Status,
+        } => return run_lan_status(cli.json).await,
         _ => {}
     }
 
@@ -158,6 +167,193 @@ pub async fn run(cli: Cli) -> ExitCode {
         Err(e) => {
             eprintln!("yerd: {e}");
             ExitCode::from(74)
+        }
+    }
+}
+
+/// `yerd lan enable|disable`: a two-request flow that persists the flag then
+/// **enforces** the daemon restart that re-binds the listeners (a listen
+/// socket's bind address is fixed at bind time, so a hint is not enough for a
+/// security-toggling command). Captures `boot_id` before, sends `RestartDaemon`,
+/// and polls `Status` across the re-exec socket gap until `boot_id` changes.
+async fn run_lan_toggle(enabled: bool, json: bool) -> ExitCode {
+    use yerd_ipc::{Request, Response};
+
+    let before = match fetch_boot_id().await {
+        Ok(id) => id,
+        Err(e) => {
+            eprintln!("yerd: {e}");
+            return ExitCode::from(69);
+        }
+    };
+
+    match transport::exchange(&Request::SetLanEnabled { enabled }).await {
+        Ok(Response::Ok) => {}
+        Ok(Response::Error { message, .. }) => {
+            eprintln!("yerd: {message}");
+            return ExitCode::from(1);
+        }
+        Ok(other) => {
+            eprintln!("yerd: unexpected response: {other:?}");
+            return ExitCode::from(1);
+        }
+        Err(e) => {
+            eprintln!("yerd: {e}");
+            return ExitCode::from(69);
+        }
+    }
+
+    if let Err(e) = restart_and_await_boot_change(before).await {
+        eprintln!(
+            "yerd: LAN {} was saved, but the daemon restart could not be confirmed: {e}",
+            if enabled { "enable" } else { "disable" }
+        );
+        eprintln!("      restart it manually so the change takes effect.");
+        return ExitCode::from(74);
+    }
+
+    if json {
+        println!("{{\"lan_enabled\":{enabled},\"restarted\":true}}");
+        return ExitCode::SUCCESS;
+    }
+
+    if enabled {
+        println!("LAN exposure enabled and the daemon restarted.");
+        println!();
+        if cfg!(target_os = "macos") {
+            println!("Next: install the LAN redirect (one-time, needs root):");
+            println!("    sudo yerd elevate lan");
+            println!(
+                "(this also requires `sudo yerd elevate ports` — run it first if you haven't)."
+            );
+        } else {
+            println!("Ensure `sudo yerd elevate ports` has been run so 80/443 bind, and open");
+            println!("80/443/1053 to your LAN in the host firewall (see `yerd lan status`).");
+        }
+        println!();
+        println!("Then provision a device with:  yerd remote-setup");
+        println!("Check exposure at any time with:  yerd lan status");
+    } else {
+        println!(
+            "LAN exposure disabled and the daemon restarted (listeners are back on loopback)."
+        );
+        if cfg!(target_os = "macos") {
+            println!();
+            println!("The macOS pf LAN redirect is separate privileged state — remove it with:");
+            println!("    sudo yerd unelevate lan");
+            println!("Until you do, `yerd lan status` will flag it as residual.");
+        }
+    }
+    ExitCode::SUCCESS
+}
+
+/// `yerd lan status`: a LAN-focused view of the daemon's `Status`, showing
+/// configured-vs-effective state so "enabled but not exposed" (and, on macOS,
+/// "disabled but pf still redirecting") are both visible.
+async fn run_lan_status(json: bool) -> ExitCode {
+    use yerd_ipc::{Request, Response};
+    let report = match transport::exchange(&Request::Status).await {
+        Ok(Response::Status { report }) => report,
+        Ok(other) => {
+            eprintln!("yerd: unexpected response: {other:?}");
+            return ExitCode::from(1);
+        }
+        Err(e) => {
+            eprintln!("yerd: {e}");
+            return ExitCode::from(69);
+        }
+    };
+
+    if json {
+        let ip = report
+            .lan_ip
+            .map_or_else(|| "null".to_owned(), |i| format!("\"{i}\""));
+        let bound = report
+            .lan_setup_bound
+            .map_or_else(|| "null".to_owned(), |b| b.to_string());
+        println!(
+            "{{\"lan_enabled\":{},\"lan_ip\":{ip},\"lan_setup_bound\":{bound}}}",
+            report.lan_enabled
+        );
+        return ExitCode::SUCCESS;
+    }
+
+    if !report.lan_enabled {
+        println!("LAN exposure: OFF (sites are served on loopback only).");
+        println!("Enable it with:  yerd lan enable");
+        #[cfg(target_os = "macos")]
+        println!(
+            "Note: if you previously ran `sudo yerd elevate lan`, remove the residual pf rule \
+             with `sudo yerd unelevate lan`."
+        );
+        return ExitCode::SUCCESS;
+    }
+
+    println!("LAN exposure: ON (configured).");
+    match report.lan_ip {
+        Some(ip) => println!("  LAN address:      {ip}"),
+        None => println!("  LAN address:      <discovery failed — answers fall back to loopback>"),
+    }
+    match report.lan_setup_bound {
+        Some(true) => println!(
+            "  Bootstrap:        listening (run `yerd remote-setup` to provision a device)"
+        ),
+        Some(false) => {
+            println!("  Bootstrap:        NOT bound (port busy? check `lan_setup_port`)");
+        }
+        None => {}
+    }
+    if cfg!(target_os = "macos") {
+        println!(
+            "  macOS redirect:   run `sudo yerd elevate lan` (and `elevate ports`) if 80/443 \
+             aren't reachable from the LAN yet."
+        );
+    } else {
+        println!(
+            "  Linux:            ensure `sudo yerd elevate ports` is applied and the host \
+             firewall allows 80/443/1053 from your LAN."
+        );
+    }
+    ExitCode::SUCCESS
+}
+
+/// Read the running daemon's `boot_id` (a per-process random id used to detect a
+/// completed restart across the pid-preserving re-exec).
+async fn fetch_boot_id() -> Result<Option<u64>, ClientError> {
+    use yerd_ipc::{Request, Response};
+    match transport::exchange(&Request::Status).await? {
+        Response::Status { report } => Ok(report.boot_id),
+        other => Err(ClientError::Usage(format!(
+            "unexpected response to Status: {other:?}"
+        ))),
+    }
+}
+
+/// Send `RestartDaemon`, then poll `Status` (tolerating the transient
+/// connection failure while the daemon re-execs) until `boot_id` differs from
+/// `before` or a bounded timeout elapses.
+async fn restart_and_await_boot_change(before: Option<u64>) -> Result<(), ClientError> {
+    use yerd_ipc::Request;
+    // The daemon writes `Ok` and flushes *before* it re-execs, so this returns
+    // normally; a transient error is tolerated too (the socket may already be
+    // tearing down).
+    let _ = transport::exchange(&Request::RestartDaemon).await;
+
+    let deadline = std::time::Duration::from_secs(15);
+    let step = std::time::Duration::from_millis(200);
+    let mut waited = std::time::Duration::ZERO;
+    loop {
+        tokio::time::sleep(step).await;
+        waited += step;
+        if let Ok(now) = fetch_boot_id().await {
+            if now != before && now.is_some() {
+                return Ok(());
+            }
+        }
+        if waited >= deadline {
+            return Err(ClientError::Usage(
+                "timed out waiting for the daemon to come back up".to_owned(),
+            ));
         }
     }
 }

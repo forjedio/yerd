@@ -65,6 +65,14 @@ pub(crate) fn leaf_params(
 
     let mut sans = Vec::with_capacity(names.len());
     for (index, name) in names.iter().enumerate() {
+        // A name that parses as an IP literal becomes an `iPAddress` SAN: TLS
+        // clients connecting to a raw IP (e.g. the LAN bootstrap endpoint, which
+        // the device reaches before it can resolve `.test`) match only
+        // iPAddress SANs, never a dNSName carrying the address text.
+        if let Ok(ip) = name.parse::<std::net::IpAddr>() {
+            sans.push(SanType::IpAddress(ip));
+            continue;
+        }
         let ia5 = Ia5String::try_from(name.as_str()).map_err(|_| TlsError::Generate {
             reason: GenerateErrorReason::InvalidDnsName { index },
         })?;
@@ -216,5 +224,25 @@ mod tests {
             p.use_authority_key_identifier_extension,
             "AKI toggle must be true on leaves; without it rcgen does not emit the extension"
         );
+    }
+
+    #[test]
+    fn leaf_params_emits_ip_san_for_ip_literal() {
+        let names = vec!["192.168.1.42".to_string()];
+        let p = leaf_params(&names, v()).unwrap();
+        assert_eq!(p.subject_alt_names.len(), 1);
+        match &p.subject_alt_names[0] {
+            SanType::IpAddress(ip) => {
+                assert_eq!(*ip, "192.168.1.42".parse::<std::net::IpAddr>().unwrap());
+            }
+            other => panic!("expected IpAddress SAN, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn leaf_params_keeps_dns_san_for_hostname() {
+        let names = vec!["app.test".to_string()];
+        let p = leaf_params(&names, v()).unwrap();
+        assert!(matches!(p.subject_alt_names[0], SanType::DnsName(_)));
     }
 }

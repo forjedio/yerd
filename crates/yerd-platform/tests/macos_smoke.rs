@@ -129,7 +129,7 @@ fn port_binder_bind_zero_yields_nonzero_port() {
 #[test]
 fn port_binder_bind_pair_zero_pair_returns_two_distinct_ports() {
     let b = ActivePortBinder;
-    let pair = b.bind_pair((0, 0), (0, 0)).unwrap();
+    let pair = b.bind_pair(false, (0, 0), (0, 0)).unwrap();
     let http_port = pair.http.port().unwrap();
     let https_port = pair.https.port().unwrap();
     assert_ne!(http_port, https_port);

@@ -259,7 +259,7 @@ mod tests {
             let mut rx = shutdown_rx.clone();
             tokio::spawn(async move {
                 bound
-                    .serve(responder, async move {
+                    .serve(responder, yerd_dns::AnswerAddrs::loopback(), async move {
                         let _ = rx.changed().await;
                     })
                     .await

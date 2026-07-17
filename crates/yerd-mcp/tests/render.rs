@@ -131,6 +131,9 @@ fn sample_report() -> yerd_ipc::StatusReport {
         symlink_protection: true,
         shadows: vec![],
         mcp_enabled: true,
+        lan_enabled: false,
+        lan_ip: None,
+        lan_setup_bound: None,
     }
 }
 

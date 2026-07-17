@@ -730,6 +730,18 @@ pub enum Request {
         /// `true` = agents may call Yerd's MCP tools; `false` = gated off.
         enabled: bool,
     },
+    /// Enable or disable LAN exposure (serving `.test` sites to other devices on
+    /// the network). Persisted to config; the actual re-bind happens on the
+    /// daemon restart the CLI triggers next, so this is persist-only here.
+    /// Reported back via [`crate::StatusReport::lan_enabled`].
+    SetLanEnabled {
+        /// `true` = expose to the LAN; `false` = loopback-only.
+        enabled: bool,
+    },
+    /// Mint a one-time, expiring code for the remote-device bootstrap and return
+    /// the setup URL + the CA fingerprint (for out-of-band verification). Only
+    /// valid while LAN mode is up; otherwise the daemon returns an error.
+    MintRemoteSetupCode,
 }
 
 #[cfg(test)]
@@ -861,6 +873,8 @@ mod variant_name_pinning {
             Request::RemoveProxyRule { .. } => {}
             Request::ListProxies => {}
             Request::SetMcpEnabled { .. } => {}
+            Request::SetLanEnabled { .. } => {}
+            Request::MintRemoteSetupCode => {}
         }
     }
 
@@ -1134,6 +1148,8 @@ mod variant_name_pinning {
         });
         pin(Request::ListProxies);
         pin(Request::SetMcpEnabled { enabled: true });
+        pin(Request::SetLanEnabled { enabled: true });
+        pin(Request::MintRemoteSetupCode);
     }
 
     fn laravel_options_fixture() -> crate::LaravelOptions {

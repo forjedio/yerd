@@ -121,6 +121,7 @@ impl PortBinder for MockPortBinder {
 
     fn bind_pair(
         &self,
+        _lan: bool,
         desired: (u16, u16),
         _fallback: (u16, u16),
     ) -> Result<PortPair, PlatformError> {

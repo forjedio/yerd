@@ -11,6 +11,7 @@ pub mod detect;
 mod domain;
 mod error;
 mod host;
+mod net;
 mod php;
 pub mod php_extensions;
 pub mod php_settings;
@@ -45,6 +46,7 @@ pub use error::{
     CoreError, DomainErrorReason, PhpVersionErrorReason, ProxyRuleErrorReason, SiteNameErrorReason,
     TldErrorReason, UpstreamTargetErrorReason,
 };
+pub use net::is_lan_source;
 pub use php::PhpVersion;
 pub use php_extensions::{ExtError, NameErrorReason, PathErrorReason};
 pub use php_settings::{PhpSettingError, ValueErrorReason};

@@ -81,6 +81,14 @@ struct Wire {
     // parses, defaulting to the opt-in-off state.
     #[serde(default = "default_mcp_enabled")]
     mcp_enabled: bool,
+    // v18: the LAN-exposure gate. `default` is mandatory (Wire is
+    // `deny_unknown_fields`) so a v1..v17 file with no `lan_enabled` key still
+    // parses, defaulting to the opt-in-off state.
+    #[serde(default = "default_lan_enabled")]
+    lan_enabled: bool,
+    // v18: bootstrap endpoint port. `default` is mandatory for the same reason.
+    #[serde(default = "default_lan_setup_port")]
+    lan_setup_port: u16,
     #[serde(default)]
     ports: PortsWire,
     #[serde(default)]
@@ -432,6 +440,14 @@ fn default_mcp_enabled() -> bool {
     crate::schema::DEFAULT_MCP_ENABLED
 }
 
+fn default_lan_enabled() -> bool {
+    crate::schema::DEFAULT_LAN_ENABLED
+}
+
+fn default_lan_setup_port() -> u16 {
+    crate::schema::DEFAULT_LAN_SETUP_PORT
+}
+
 pub(crate) fn parse_toml(s: &str) -> Result<Config, ConfigError> {
     let mut value: toml::Value = toml::from_str(s)?;
     let found = crate::migrate::read_version(&value)?;
@@ -550,6 +566,8 @@ impl TryFrom<Wire> for Config {
             update_channel: w.update_channel,
             symlink_protection: w.symlink_protection,
             mcp_enabled: w.mcp_enabled,
+            lan_enabled: w.lan_enabled,
+            lan_setup_port: w.lan_setup_port,
             ports,
             php,
             parked,
@@ -985,6 +1003,9 @@ fn validate_ports(c: &Config) -> Result<(), ConfigError> {
     if c.dumps.port == 0 {
         return Err(ve(ValidateErrorReason::DumpsPortZero));
     }
+    if c.lan_setup_port < crate::schema::FIRST_UNPRIVILEGED_PORT {
+        return Err(ve(ValidateErrorReason::LanSetupPortPrivileged));
+    }
     // dns_port == 0 is allowed: 0 means ephemeral and must round-trip
     // (toml_byte_shape::dns_port_zero_round_trips); the zero-port guard
     // lives in the daemon's set_dns_port handler.
@@ -1140,7 +1161,7 @@ mod tests {
         match Config::from_toml("version = 99\n") {
             Err(ConfigError::UnsupportedVersion {
                 found: 99,
-                current: 17,
+                current: 18,
             }) => {}
             other => panic!("expected UnsupportedVersion, got {other:?}"),
         }
@@ -1275,6 +1296,29 @@ mod tests {
         assert!(c.mcp_enabled);
         let back = Config::from_toml(&c.to_toml().unwrap()).unwrap();
         assert_eq!(back, c);
+    }
+
+    #[test]
+    fn lan_enabled_absent_defaults_off_and_migrates() {
+        let c = Config::from_toml("version = 17\n").unwrap();
+        assert!(!c.lan_enabled);
+        assert_eq!(c.lan_setup_port, crate::schema::DEFAULT_LAN_SETUP_PORT);
+    }
+
+    #[test]
+    fn lan_enabled_true_parses_and_round_trips() {
+        let s = "version = 17\nlan_enabled = true\nlan_setup_port = 9099\n";
+        let c = Config::from_toml(s).unwrap();
+        assert!(c.lan_enabled);
+        assert_eq!(c.lan_setup_port, 9099);
+        let back = Config::from_toml(&c.to_toml().unwrap()).unwrap();
+        assert_eq!(back, c);
+    }
+
+    #[test]
+    fn lan_setup_port_privileged_is_rejected() {
+        let s = "version = 17\nlan_setup_port = 80\n";
+        assert!(Config::from_toml(s).is_err());
     }
 
     #[test]

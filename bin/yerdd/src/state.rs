@@ -36,6 +36,18 @@ pub struct MailRuntime {
     pub listening: bool,
 }
 
+/// A minted one-time remote-setup bootstrap code, held in memory only (a daemon
+/// restart clears it - fail-closed). See `crate::lan_setup` and the
+/// `MintRemoteSetupCode` IPC handler.
+pub struct RemoteSetupCode {
+    /// The URL-safe code value (compared in constant time by the endpoint).
+    pub value: String,
+    /// When the code expires.
+    pub expires_at: Instant,
+    /// Whether the terminal (script) fetch has consumed it (single-use).
+    pub used: bool,
+}
+
 /// Everything the IPC dispatch and proxy share at runtime.
 pub struct DaemonState {
     /// Authoritative on-disk config, mirrored in memory. The mutex serializes
@@ -201,4 +213,11 @@ pub struct DaemonState {
     /// on the same router-rebuild hook as `wordpress_sites` rather than detected
     /// on every `ListSites` poll - see [`crate::laravel_detect`].
     pub laravel_sites: Arc<RwLock<HashMap<String, bool>>>,
+    /// Whether the LAN remote-setup bootstrap listener actually bound this boot.
+    /// Read into `StatusReport::lan_setup_bound` for effective-vs-configured
+    /// reporting. Only meaningful when LAN mode is on.
+    pub lan_setup_bound: Arc<AtomicBool>,
+    /// The current minted one-time remote-setup code, if any (in-memory only, so
+    /// a restart invalidates it - fail-closed).
+    pub remote_setup_code: Mutex<Option<RemoteSetupCode>>,
 }

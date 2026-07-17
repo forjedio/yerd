@@ -69,6 +69,15 @@ pub enum PlatformError {
         reason: BindPairErrorReason,
     },
 
+    /// The host's own LAN IPv4 could not be determined (see
+    /// [`crate::LanIpProvider`]). LAN mode fails closed when this happens.
+    #[error("LAN IP discovery failed: {source}")]
+    LanIpDiscovery {
+        /// Underlying OS error from the discovery probe.
+        #[source]
+        source: std::io::Error,
+    },
+
     /// Generic I/O error against a known path.
     #[error("I/O at {path}: {source}", path = path.display())]
     Io {
@@ -199,6 +208,10 @@ pub mod ops {
     pub const INSTALL_PORT_REDIRECT: &str = "install-port-redirect";
     /// Remove the macOS pf redirect.
     pub const UNINSTALL_PORT_REDIRECT: &str = "uninstall-port-redirect";
+    /// Install the macOS **LAN** pf redirect (80/443 → rootless on the LAN IP).
+    pub const INSTALL_LAN_PORT_REDIRECT: &str = "install-lan-port-redirect";
+    /// Remove the macOS LAN pf redirect.
+    pub const UNINSTALL_LAN_PORT_REDIRECT: &str = "uninstall-lan-port-redirect";
 }
 
 #[cfg(test)]
@@ -375,6 +388,9 @@ mod tests {
             path: PathBuf::new(),
             source: std::io::Error::from(std::io::ErrorKind::Other),
         };
+        let _ = PlatformError::LanIpDiscovery {
+            source: std::io::Error::from(std::io::ErrorKind::Other),
+        };
         let _ = PlatformError::MissingTool {
             tool: "x",
             install_hint: None,
@@ -403,6 +419,8 @@ mod tests {
             ops::SETCAP,
             ops::INSTALL_PORT_REDIRECT,
             ops::UNINSTALL_PORT_REDIRECT,
+            ops::INSTALL_LAN_PORT_REDIRECT,
+            ops::UNINSTALL_LAN_PORT_REDIRECT,
         ] {
             assert!(!op.is_empty());
         }

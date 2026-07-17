@@ -26,6 +26,7 @@
 pub mod detect;
 pub mod error;
 pub mod helper;
+pub mod lan_ip;
 pub mod metrics;
 pub mod paths;
 pub mod port_binder;
@@ -39,6 +40,7 @@ mod os;
 pub use detect::{gather_project_signals, FsSignalSource, ProjectSignalSource};
 pub use error::{BindPairErrorReason, PlatformError, ResolverErrorReason, TrustStoreErrorReason};
 pub use helper::{ArgvParseError, HelperInvocation};
+pub use lan_ip::{ActiveLanIpProvider, FakeLanIpProvider, LanIpProvider};
 pub use metrics::SystemMetrics;
 pub use paths::{Paths, PlatformDirs};
 pub use port_binder::{BoundPort, PortBinder, PortPair};

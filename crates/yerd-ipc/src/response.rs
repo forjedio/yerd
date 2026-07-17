@@ -96,6 +96,27 @@ pub enum Response {
         /// defaults to 0.
         #[serde(default)]
         dns_port: u16,
+        /// The host's LAN IPv4, present only when LAN mode is on and discovery
+        /// succeeded. The macOS `yerd elevate lan` flow reads it (the sudo-side
+        /// helper cannot discover it itself). `skip_serializing_if` keeps the
+        /// absent-when-`None` bytes unchanged for older daemons/clients.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        lan_ip: Option<std::net::Ipv4Addr>,
+    },
+    /// Reply to [`crate::Request::MintRemoteSetupCode`]: a freshly minted
+    /// one-time bootstrap code and everything the CLI prints for the device.
+    RemoteSetup {
+        /// The one-time code (URL-safe), embedded in `url`.
+        code: String,
+        /// The bootstrap URL the remote device fetches (`http://<lan_ip>:<port>/
+        /// remote-setup?code=<code>`).
+        url: String,
+        /// The CA's SHA-256 fingerprint (64 lowercase hex), which the user
+        /// copy-pastes to the device so the installer can verify the CA
+        /// out-of-band before trusting it.
+        ca_fingerprint: String,
+        /// Seconds until the code expires.
+        expires_in_secs: u64,
     },
     /// Reply to [`crate::Request::ListPhp`] / `CheckPhpUpdates` / `UpdatePhp`.
     PhpVersions {
@@ -516,6 +537,10 @@ pub enum ErrorCode {
     /// A single-instance service type already has its one instance, or a per-site
     /// instance already exists for the chosen site.
     InstanceAlreadyExists,
+    /// A LAN-only operation (e.g. `remote-setup`) was requested while LAN mode is
+    /// off or its bootstrap listener isn't up. Returned only on LAN requests, so
+    /// older clients never receive it.
+    LanNotReady,
     /// Catch-all for daemon-side failures that don't fit a typed code.
     /// Expand this enum rather than overloading `Internal`.
     Internal,
@@ -544,6 +569,7 @@ mod variant_name_pinning {
             Response::Error { .. } => {}
             Response::Parked { .. } => {}
             Response::Info { .. } => {}
+            Response::RemoteSetup { .. } => {}
             Response::PhpVersions { .. } => {}
             Response::AvailablePhp { .. } => {}
             Response::PhpExtensions { .. } => {}
@@ -588,6 +614,7 @@ mod variant_name_pinning {
             ErrorCode::SiteNotLaravel => {}
             ErrorCode::UnknownServiceType => {}
             ErrorCode::InstanceAlreadyExists => {}
+            ErrorCode::LanNotReady => {}
             ErrorCode::Internal => {}
         }
     }
@@ -615,6 +642,13 @@ mod variant_name_pinning {
             fallback_http: 8080,
             fallback_https: 8443,
             dns_port: 1053,
+            lan_ip: None,
+        });
+        pin_response(Response::RemoteSetup {
+            code: "abc123".into(),
+            url: "http://192.168.1.42:7073/remote-setup?code=abc123".into(),
+            ca_fingerprint: "ab".repeat(32),
+            expires_in_secs: 900,
         });
         pin_response(Response::PhpVersions {
             installed: vec![PhpVersion::new(8, 5)],
@@ -679,6 +713,9 @@ mod variant_name_pinning {
                 symlink_protection: true,
                 shadows: vec![],
                 mcp_enabled: false,
+                lan_enabled: false,
+                lan_ip: None,
+                lan_setup_bound: None,
             }),
         });
         pin_response(Response::Diagnoses {
@@ -854,6 +891,7 @@ mod variant_name_pinning {
             ErrorCode::SiteNotLaravel,
             ErrorCode::UnknownServiceType,
             ErrorCode::InstanceAlreadyExists,
+            ErrorCode::LanNotReady,
             ErrorCode::Internal,
         ] {
             pin_code(c);

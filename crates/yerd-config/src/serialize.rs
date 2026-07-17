@@ -28,6 +28,10 @@ struct WireSer<'a> {
     // v16 scalar - must stay in the scalar region above the sub-tables. Always
     // emitted so the toggle is visible/editable in the file.
     mcp_enabled: bool,
+    // v18 scalars - must stay in the scalar region above the sub-tables. Always
+    // emitted so the LAN toggle and its port are visible/editable in the file.
+    lan_enabled: bool,
+    lan_setup_port: u16,
     ports: PortsSer<'a>,
     php: PhpSectionSer<'a>,
     parked: ParkedSectionSer<'a>,
@@ -259,6 +263,8 @@ pub(crate) fn to_toml(c: &Config) -> Result<String, ConfigError> {
         update_channel: &c.update_channel,
         symlink_protection: c.symlink_protection,
         mcp_enabled: c.mcp_enabled,
+        lan_enabled: c.lan_enabled,
+        lan_setup_port: c.lan_setup_port,
         ports: PortsSer {
             http: &c.ports.http,
             https: &c.ports.https,
@@ -453,8 +459,8 @@ mod tests {
     fn default_to_toml_starts_with_version_line() {
         let s = to_toml(&Config::default()).unwrap();
         assert!(
-            s.starts_with("version = 17\n"),
-            "expected `version = 17` first line; got: {s}"
+            s.starts_with("version = 18\n"),
+            "expected `version = 18` first line; got: {s}"
         );
     }
 

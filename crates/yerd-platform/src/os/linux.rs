@@ -269,8 +269,12 @@ impl LinuxPortBinder {
     }
 }
 
+fn bind_at(ip: Ipv4Addr, port: u16) -> std::io::Result<TcpListener> {
+    TcpListener::bind(SocketAddr::from((ip, port)))
+}
+
 fn bind_loopback(port: u16) -> std::io::Result<TcpListener> {
-    TcpListener::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, port)))
+    bind_at(Ipv4Addr::LOCALHOST, port)
 }
 
 impl PortBinder for LinuxPortBinder {
@@ -282,19 +286,26 @@ impl PortBinder for LinuxPortBinder {
 
     fn bind_pair(
         &self,
+        lan: bool,
         desired: (u16, u16),
         fallback: (u16, u16),
     ) -> Result<PortPair, PlatformError> {
-        bind_pair_impl(desired, fallback)
+        bind_pair_impl(lan, desired, fallback)
     }
 }
 
 pub(crate) fn bind_pair_impl(
+    lan: bool,
     desired: (u16, u16),
     fallback: (u16, u16),
 ) -> Result<PortPair, PlatformError> {
-    let http_attempt = bind_loopback(desired.0);
-    let https_attempt = bind_loopback(desired.1);
+    let ip = if lan {
+        Ipv4Addr::UNSPECIFIED
+    } else {
+        Ipv4Addr::LOCALHOST
+    };
+    let http_attempt = bind_at(ip, desired.0);
+    let https_attempt = bind_at(ip, desired.1);
 
     let http_outcome = http_attempt
         .as_ref()
@@ -344,8 +355,8 @@ pub(crate) fn bind_pair_impl(
             drop(http_attempt);
             drop(https_attempt);
 
-            let fb_http = bind_loopback(fallback.0);
-            let fb_https = bind_loopback(fallback.1);
+            let fb_http = bind_at(ip, fallback.0);
+            let fb_https = bind_at(ip, fallback.1);
 
             let fb_http_outcome = fb_http.as_ref().map(|_| ()).map_err(std::io::Error::kind);
             let fb_https_outcome = fb_https.as_ref().map(|_| ()).map_err(std::io::Error::kind);

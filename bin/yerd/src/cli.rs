@@ -255,6 +255,28 @@ pub enum Command {
     /// `claude mcp add --scope user yerd -- yerd mcp`. Tools are served only
     /// when AI Agents is enabled in Yerd's General settings.
     Mcp,
+    /// Expose your `.test` sites to other devices on the LAN, or check/disable
+    /// that exposure. See `yerd remote-setup` to provision a device.
+    Lan {
+        /// What to do.
+        #[command(subcommand)]
+        action: LanAction,
+    },
+    /// Mint a one-time bootstrap command to provision another device (installs
+    /// Yerd's CA and points its `.test` resolver here). Requires LAN mode on.
+    RemoteSetup,
+}
+
+/// `yerd lan <action>`.
+#[derive(clap::Subcommand, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LanAction {
+    /// Turn LAN exposure on (persists + restarts the daemon to re-bind).
+    Enable,
+    /// Turn LAN exposure off (persists + restarts the daemon to re-bind).
+    Disable,
+    /// Show LAN exposure state: configured vs effective, the LAN IP, and the
+    /// next privileged step if any.
+    Status,
 }
 
 /// A binary on/off toggle argument (e.g. `yerd front-controller <name> on`).
@@ -729,4 +751,8 @@ pub enum ElevateTarget {
     Resolver,
     /// Allow the daemon to bind privileged ports 80/443 (setcap).
     Ports,
+    /// Install the macOS LAN pf redirect so other devices reach 80/443 (macOS
+    /// only; on Linux this reuses the `ports` setcap grant). Run after
+    /// `yerd lan enable`.
+    Lan,
 }

@@ -43,6 +43,13 @@ pub trait PortBinder {
 
     /// Bind 80 and 443 (or the rootless equivalent) atomically.
     ///
+    /// When `lan` is `false` the listeners bind loopback (`127.0.0.1`); when
+    /// `true` they bind the wildcard address (`0.0.0.0`) so the ports are
+    /// reachable from other devices on the LAN. Binding `0.0.0.0` still accepts
+    /// loopback traffic, so on-host access keeps working. Privilege for a
+    /// sub-1024 wildcard bind is the OS's concern (Linux `setcap`; on macOS the
+    /// daemon binds the rootless fallback and a `pf` redirect carries 80/443).
+    ///
     /// Internally: attempt `desired.0` then `desired.1`. If either fails
     /// with one of the retry-trigger kinds - `PermissionDenied`,
     /// `AddrInUse`, or `AddrNotAvailable` - drop any successful partial
@@ -53,6 +60,7 @@ pub trait PortBinder {
     /// [`PlatformError::BindPair`] carrying all four `ErrorKind`s.
     fn bind_pair(
         &self,
+        lan: bool,
         desired: (u16, u16),
         fallback: (u16, u16),
     ) -> Result<PortPair, PlatformError>;
