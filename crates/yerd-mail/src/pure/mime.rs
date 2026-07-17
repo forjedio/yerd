@@ -8,7 +8,7 @@
 //! URLs so a sandboxed viewer can render embedded images without network access.
 
 use mail_parser::{Addr, Address, Message, MessageParser, MessagePart, MimeHeaders};
-use yerd_ipc::{MailDetail, MailHeader, MailSummary};
+use yerd_ipc::{MailAttachment, MailDetail, MailHeader, MailSummary};
 
 /// Decode just the metadata of a captured message.
 #[must_use]
@@ -48,6 +48,8 @@ pub fn detail(id: &str, raw: &[u8]) -> MailDetail {
         None
     };
 
+    let attachments = collect_attachments(&msg);
+
     MailDetail {
         id: id.to_string(),
         from: render_from(&msg),
@@ -57,7 +59,51 @@ pub fn detail(id: &str, raw: &[u8]) -> MailDetail {
         headers,
         html_body,
         text_body,
+        attachments,
     }
+}
+
+/// Collect non-inline attachments from a parsed message.
+///
+/// A part is treated as a non-inline attachment when it appears in the
+/// `mail-parser` attachment list **and** does not carry a `Content-ID` header.
+/// Parts with a `Content-ID` are inline resources (images embedded via `cid:`
+/// references in the HTML body) and are already handled by [`rewrite_cids`];
+/// surfacing them again as downloadable attachments would be confusing.
+///
+/// The attachment bytes are base64-encoded here so the GUI can construct a
+/// `data:` URL and hand it straight to the OS opener without writing a
+/// temporary file.
+fn collect_attachments(msg: &Message<'_>) -> Vec<MailAttachment> {
+    msg.attachments()
+        .filter(|part| {
+            // Skip inline parts (cid: images embedded in the HTML body).
+            part.content_id().is_none()
+        })
+        .map(|part| {
+            let content_type = part.content_type().map_or_else(
+                || "application/octet-stream".to_string(),
+                |c| match c.subtype() {
+                    Some(sub) => format!("{}/{}", c.ctype(), sub),
+                    None => c.ctype().to_string(),
+                },
+            );
+            // Prefer the filename from Content-Disposition, then Content-Type name=,
+            // then fall back to a generic label.
+            let filename = part
+                .attachment_name()
+                .filter(|n| !n.is_empty())
+                .unwrap_or("attachment")
+                .to_string();
+            let bytes = part.contents();
+            MailAttachment {
+                filename,
+                content_type,
+                size: bytes.len(),
+                data: base64_encode(bytes),
+            }
+        })
+        .collect()
 }
 
 /// Whether a part is a genuine `text/html` body (not a text part we'd synthesise
@@ -194,6 +240,7 @@ Your OTP is 416063.\r\n";
             .headers
             .iter()
             .any(|h| h.name.eq_ignore_ascii_case("subject")));
+        assert!(d.attachments.is_empty(), "plain message has no attachments");
     }
 
     #[test]
@@ -239,11 +286,75 @@ Content-ID: <img1>\r\n\
 Zm9v\r\n\
 --BB--\r\n";
         let d = detail("000003", raw);
+        // The inline image has a Content-ID so it must NOT appear as a
+        // downloadable attachment.
+        assert!(
+            d.attachments.is_empty(),
+            "cid-only inline image must not appear as attachment: {d:?}"
+        );
         let html = d.html_body.expect("html body");
         assert!(
             html.contains("data:image/png;base64,"),
             "cid should become a data URL: {html}"
         );
         assert!(!html.contains("cid:img1"), "cid ref should be gone: {html}");
+    }
+
+    #[test]
+    fn multipart_mixed_attachment_is_collected() {
+        // A minimal multipart/mixed message with a text body and a PDF attachment.
+        // The PDF bytes are "fake-pdf" base64-encoded = "ZmFrZS1wZGY=".
+        let raw = b"From: sender@example.com\r\n\
+To: recipient@example.com\r\n\
+Subject: Invoice\r\n\
+MIME-Version: 1.0\r\n\
+Content-Type: multipart/mixed; boundary=\"BOUND\"\r\n\
+\r\n\
+--BOUND\r\n\
+Content-Type: text/plain\r\n\
+\r\n\
+Please find the invoice attached.\r\n\
+--BOUND\r\n\
+Content-Type: application/pdf\r\n\
+Content-Disposition: attachment; filename=\"invoice.pdf\"\r\n\
+Content-Transfer-Encoding: base64\r\n\
+\r\n\
+ZmFrZS1wZGY=\r\n\
+--BOUND--\r\n";
+        let d = detail("000004", raw);
+        assert_eq!(d.attachments.len(), 1, "expected one attachment");
+        let att = &d.attachments[0];
+        assert_eq!(att.filename, "invoice.pdf");
+        assert_eq!(att.content_type, "application/pdf");
+        assert!(att.size > 0, "size should be non-zero");
+        // The data field must be valid base64 that decodes to the original bytes.
+        assert!(!att.data.is_empty(), "data must not be empty");
+    }
+
+    #[test]
+    fn attachment_without_filename_falls_back_to_generic_label() {
+        let raw = b"From: a@b.c\r\n\
+To: d@e.f\r\n\
+Subject: No name\r\n\
+MIME-Version: 1.0\r\n\
+Content-Type: multipart/mixed; boundary=\"X\"\r\n\
+\r\n\
+--X\r\n\
+Content-Type: text/plain\r\n\
+\r\n\
+body\r\n\
+--X\r\n\
+Content-Type: application/octet-stream\r\n\
+Content-Disposition: attachment\r\n\
+Content-Transfer-Encoding: base64\r\n\
+\r\n\
+AAAA\r\n\
+--X--\r\n";
+        let d = detail("000005", raw);
+        assert_eq!(d.attachments.len(), 1);
+        assert_eq!(
+            d.attachments[0].filename, "attachment",
+            "missing filename should fall back to \"attachment\""
+        );
     }
 }

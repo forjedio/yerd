@@ -197,6 +197,16 @@ export interface MailHeader {
   value: string;
 }
 
+/** crates/yerd-ipc/src/status.rs - MailAttachment. */
+export interface MailAttachment {
+  filename: string;
+  content_type: string;
+  /** Decoded byte count (before base64 encoding). */
+  size: number;
+  /** Standard (padded) base64-encoded attachment bytes. */
+  data: string;
+}
+
 /** crates/yerd-ipc/src/status.rs - MailDetail. */
 export interface MailDetail {
   id: string;
@@ -208,6 +218,9 @@ export interface MailDetail {
   /** Decoded text/html body (cid: images already rewritten to data: URLs). */
   html_body: string | null;
   text_body: string | null;
+  /** Non-inline attachments. Omitted on the wire (and therefore undefined here)
+   *  when the message has none, or when talking to an older daemon. */
+  attachments?: MailAttachment[];
 }
 
 export interface StatusReport {

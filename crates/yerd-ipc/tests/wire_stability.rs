@@ -20,10 +20,10 @@ use yerd_ipc::{
     types::{PhpVersion, Site},
     AddableServiceType, CaStatus, Channel, CloudflaredSource, CloudflaredStatus, DatabaseSummary,
     Diagnosis, DiagnosisCode, DumpCategory, DumpCounts, DumpEvent, DumpExtStatus, ErrorCode,
-    FixReport, FixResult, MailDetail, MailHeader, MailStatus, MailSummary, NamedTunnelMeta,
-    PhpPoolStatus, PoolRunState, PortStatus, Request, Response, ServiceAvailability,
-    ServiceRunState, ServiceStatus, Severity, SiteCounts, SiteHostname, StagedArtifact,
-    StatusReport, ToolStatus, TunnelInfo, TunnelKind, TunnelRunState, UpdateSource,
+    FixReport, FixResult, MailAttachment, MailDetail, MailHeader, MailStatus, MailSummary,
+    NamedTunnelMeta, PhpPoolStatus, PoolRunState, PortStatus, Request, Response,
+    ServiceAvailability, ServiceRunState, ServiceStatus, Severity, SiteCounts, SiteHostname,
+    StagedArtifact, StatusReport, ToolStatus, TunnelInfo, TunnelKind, TunnelRunState, UpdateSource,
 };
 
 // ---------- Request ----------
@@ -1972,12 +1972,57 @@ fn response_mail_byte_shape() {
             }],
             html_body: Some("<p>Hi</p>".into()),
             text_body: None,
+            attachments: vec![],
         }),
     };
     let s = serde_json::to_string(&r).unwrap();
+    // `attachments` is omitted from the wire when empty (`skip_serializing_if`).
     let expected = r#"{"type":"mail","mail":{"id":"000001","from":"Example <hello@example.com>","to":["test@test.com"],"subject":"Hi","date_epoch":1700000000,"headers":[{"name":"Subject","value":"Hi"}],"html_body":"<p>Hi</p>","text_body":null}}"#;
     assert_eq!(s, expected);
     assert_eq!(serde_json::from_str::<Response>(&s).unwrap(), r);
+}
+
+#[test]
+fn response_mail_with_attachment_byte_shape() {
+    let r = Response::Mail {
+        mail: Box::new(MailDetail {
+            id: "000002".into(),
+            from: "a@b.c".into(),
+            to: vec!["d@e.f".into()],
+            subject: "Invoice".into(),
+            date_epoch: 1_700_000_000,
+            headers: vec![],
+            html_body: None,
+            text_body: Some("See attached.".into()),
+            attachments: vec![MailAttachment {
+                filename: "invoice.pdf".into(),
+                content_type: "application/pdf".into(),
+                size: 8,
+                data: "ZmFrZS1wZGY=".into(),
+            }],
+        }),
+    };
+    let s = serde_json::to_string(&r).unwrap();
+    assert!(
+        s.contains(r#""attachments":[{"filename":"invoice.pdf","content_type":"application/pdf","size":8,"data":"ZmFrZS1wZGY="}]"#),
+        "attachment must appear on the wire: {s}"
+    );
+    assert_eq!(serde_json::from_str::<Response>(&s).unwrap(), r);
+}
+
+#[test]
+fn response_mail_legacy_without_attachments_decodes_default() {
+    // An older daemon that does not emit `attachments` must decode to an empty vec.
+    let legacy = r#"{"type":"mail","mail":{"id":"000001","from":"Example <hello@example.com>","to":["test@test.com"],"subject":"Hi","date_epoch":1700000000,"headers":[],"html_body":null,"text_body":null}}"#;
+    match serde_json::from_str::<Response>(legacy).unwrap() {
+        Response::Mail { mail } => {
+            assert!(
+                mail.attachments.is_empty(),
+                "legacy mail without attachments field must decode as empty"
+            );
+        }
+        other => panic!("expected Mail, got {other:?}"),
+    }
 }
 
 #[test]

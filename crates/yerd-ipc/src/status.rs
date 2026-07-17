@@ -234,10 +234,31 @@ pub struct MailHeader {
     pub value: String,
 }
 
+/// One non-inline attachment extracted from a captured email, for
+/// [`MailDetail::attachments`].
+///
+/// The `data` field carries the raw bytes as standard (padded) base64 so a
+/// client can write a temporary file (or construct a `data:` URL) and hand it
+/// to the OS opener. Inline `cid:` parts are excluded; those stay in the HTML
+/// body via the existing rewrite to `data:` URLs.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MailAttachment {
+    /// Display filename (from `Content-Disposition: attachment; filename=...`
+    /// or `Content-Type; name=...`). Falls back to `"attachment"` when absent.
+    pub filename: String,
+    /// MIME type, e.g. `"application/pdf"` or `"image/png"`.
+    pub content_type: String,
+    /// Decoded byte count (before base64 encoding).
+    pub size: usize,
+    /// Standard (padded) base64-encoded attachment bytes.
+    pub data: String,
+}
+
 /// One captured email's full decoded content, returned in
 /// [`crate::Response::Mail`]. The bodies are already MIME-decoded (charset +
 /// transfer-encoding) and the HTML body has had `cid:` images rewritten to
-/// `data:` URLs, so a client can render it directly in a sandboxed frame.
+/// `data:` URLs, so a client can render it directly (for example in a
+/// sandboxed frame or an isolated host Shadow DOM).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MailDetail {
     /// Opaque stable id (matches the [`MailSummary::id`]).
@@ -256,6 +277,11 @@ pub struct MailDetail {
     pub html_body: Option<String>,
     /// Decoded `text/plain` body, when the message has one.
     pub text_body: Option<String>,
+    /// Non-inline attachments (files the sender attached). Omitted on the
+    /// wire when empty (`#[serde(default, skip_serializing_if)]`) so an older
+    /// client that does not know about this field decodes cleanly.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attachments: Vec<MailAttachment>,
 }
 
 /// A listener's requested vs actually-bound port.

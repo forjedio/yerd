@@ -158,6 +158,11 @@ Two decoding subtleties, both grounded in the source:
   viewer renders embedded images **without any network access**. A small local
   standard-alphabet `base64_encode` is inlined here rather than pulling a base64
   dependency for this one use.
+- **Downloadable attachments.** `collect_attachments` walks `mail-parser`'s
+  attachment list and keeps parts **without** a `Content-ID` (inline `cid:`
+  images stay out of that list). Each part becomes a `MailAttachment` on
+  `MailDetail` with filename, MIME type, size, and base64 `data`. The field is
+  omitted on the wire when empty so older clients keep decoding.
 
 ### `retention` - bounding the store
 

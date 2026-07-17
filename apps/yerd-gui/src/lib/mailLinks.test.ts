@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 
-import { resolveExternalHref, resolveFrameLink } from "./mailLinks";
+import {
+  eventTargetElement,
+  linkifyText,
+  prepareHtmlBody,
+  resolveExternalHref,
+  resolveFrameLink,
+} from "./mailLinks";
 
 describe("resolveExternalHref", () => {
   it("returns absolute http(s) URLs to open", () => {
@@ -77,6 +83,18 @@ describe("resolveFrameLink", () => {
     });
   });
 
+  it("walks up from a Text node inside the link (the common click target)", () => {
+    const a = anchorWith("https://msi-portal.test/materials");
+    a.appendChild(a.ownerDocument.createTextNode("View all materials"));
+    const text = a.firstChild;
+    expect(text?.nodeType).toBe(Node.TEXT_NODE);
+    expect(eventTargetElement(text)).toBe(a);
+    expect(resolveFrameLink(text)).toEqual({
+      kind: "open",
+      url: "https://msi-portal.test/materials",
+    });
+  });
+
   it("lets same-document `#` anchors scroll", () => {
     expect(resolveFrameLink(anchorWith("#section"))).toEqual({ kind: "scroll" });
     expect(resolveFrameLink(anchorWith("#"))).toEqual({ kind: "scroll" });
@@ -95,5 +113,85 @@ describe("resolveFrameLink", () => {
     doc.body.append(p);
     expect(resolveFrameLink(p)).toBeNull();
     expect(resolveFrameLink(null)).toBeNull();
+  });
+
+  it("opens via data-yerd-url when present", () => {
+    const doc = frameDoc();
+    const a = doc.createElement("a");
+    a.setAttribute("href", "#");
+    a.setAttribute("data-yerd-url", "https://msi-portal.test/materials/share/abc");
+    doc.body.append(a);
+    expect(resolveFrameLink(a)).toEqual({
+      kind: "open",
+      url: "https://msi-portal.test/materials/share/abc",
+    });
+  });
+});
+
+describe("prepareHtmlBody", () => {
+  it("stamps openable anchors with data-yerd-url", () => {
+    const out = prepareHtmlBody(
+      `<p><a href="https://msi-portal.test/download">Download</a></p>`,
+    );
+    expect(out).toContain('data-yerd-url="https://msi-portal.test/download"');
+    expect(out).toContain('href="https://msi-portal.test/download"');
+  });
+
+  it("leaves non-openable anchors alone", () => {
+    const out = prepareHtmlBody(`<a href="#section">Jump</a>`);
+    expect(out).not.toContain("data-yerd-url");
+  });
+
+  it("strips scripts and inline handlers before stamping", () => {
+    const out = prepareHtmlBody(
+      `<p onclick="alert(1)"><script>alert(1)</script><a href="https://ok.example">Ok</a></p>`,
+    );
+    expect(out).not.toContain("<script");
+    expect(out).not.toContain("onclick");
+    expect(out).toContain('data-yerd-url="https://ok.example/"');
+  });
+});
+
+describe("linkifyText", () => {
+  it("wraps http/https URLs in anchor tags", () => {
+    const out = linkifyText("Visit https://example.com for details.");
+    expect(out).toContain("<a ");
+    expect(out).toContain('data-url="https://example.com/"');
+    expect(out).toContain("Visit");
+    expect(out).toContain("for details.");
+  });
+
+  it("wraps mailto links in anchor tags", () => {
+    const out = linkifyText("Email us at mailto:hi@example.com please.");
+    expect(out).toContain('data-url="mailto:hi@example.com"');
+  });
+
+  it("HTML-escapes message content before linkifying", () => {
+    const out = linkifyText("<script>alert(1)</script> https://safe.example.com");
+    expect(out).toContain("&lt;script&gt;");
+    expect(out).not.toContain("<script>");
+    expect(out).toContain('data-url="https://safe.example.com/"');
+  });
+
+  it("does not linkify javascript: or data: URLs", () => {
+    const out = linkifyText("Bad: javascript:alert(1) and data:text/html,hi");
+    expect(out).not.toContain("<a ");
+  });
+
+  it("strips trailing punctuation from URLs", () => {
+    const out = linkifyText("See https://example.com/path.");
+    // The trailing period must not be part of the href.
+    expect(out).not.toContain('data-url="https://example.com/path."');
+    expect(out).toContain('data-url="https://example.com/path"');
+  });
+
+  it("returns plain escaped text when there are no URLs", () => {
+    const out = linkifyText("Hello & goodbye.");
+    expect(out).toBe("Hello &amp; goodbye.");
+    expect(out).not.toContain("<a ");
+  });
+
+  it("handles an empty string", () => {
+    expect(linkifyText("")).toBe("");
   });
 });

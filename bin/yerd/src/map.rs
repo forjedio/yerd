@@ -3319,6 +3319,7 @@ mod tests {
             headers: vec![],
             html_body: None,
             text_body: Some("plain body".into()),
+            attachments: vec![],
         };
         let text = render(
             &Response::Mail {

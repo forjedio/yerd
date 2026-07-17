@@ -6,7 +6,9 @@
 //! here - that lives in the daemon and its crates (the thin-client rule).
 
 use std::path::PathBuf;
+use std::time::{SystemTime, UNIX_EPOCH};
 
+use tauri::Manager;
 use yerd_core::PhpVersion;
 use yerd_ipc::{ErrorCode, Request, Response};
 
@@ -896,6 +898,59 @@ pub async fn job_cancel(job_id: String) -> Result<Response, GuiError> {
     finish(exchange(&Request::JobCancel { job_id }).await?)
 }
 
+// ── host helpers ───────────────────────────────────────────────────────────
+
+/// Persist a mail attachment into the app cache and return its absolute path.
+///
+/// The OS opener cannot open a `data:` URL as a document, so the frontend writes
+/// the decoded attachment bytes here first and then opens the returned path.
+#[tauri::command]
+pub async fn save_mail_attachment(
+    app: tauri::AppHandle,
+    filename: String,
+    bytes: Vec<u8>,
+) -> Result<String, GuiError> {
+    let mut dir = app
+        .path()
+        .app_cache_dir()
+        .map_err(|e| GuiError::internal(format!("could not locate cache directory: {e}")))?;
+    dir.push("mail-attachments");
+    std::fs::create_dir_all(&dir)
+        .map_err(|e| GuiError::internal(format!("could not create attachment cache: {e}")))?;
+
+    let safe_name = safe_attachment_filename(&filename);
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|e| GuiError::internal(format!("system clock error: {e}")))?
+        .as_millis();
+    dir.push(format!("{stamp}-{safe_name}"));
+
+    std::fs::write(&dir, bytes)
+        .map_err(|e| GuiError::internal(format!("could not write attachment: {e}")))?;
+    Ok(dir.to_string_lossy().into_owned())
+}
+
+fn safe_attachment_filename(name: &str) -> String {
+    let candidate = name
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or("attachment")
+        .trim();
+    let filtered: String = candidate
+        .chars()
+        .map(|c| match c {
+            ':' | '*' | '?' | '"' | '<' | '>' | '|' => '_',
+            c if c.is_control() => '_',
+            c => c,
+        })
+        .collect();
+    if filtered.is_empty() {
+        "attachment".to_owned()
+    } else {
+        filtered
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::panic)]
 mod tests {
@@ -930,5 +985,21 @@ mod tests {
         assert_eq!(code_str(&ErrorCode::AlreadyExists), "already_exists");
         assert_eq!(code_str(&ErrorCode::InvalidPath), "invalid_path");
         assert_eq!(code_str(&ErrorCode::Internal), "internal");
+    }
+
+    #[test]
+    fn safe_attachment_filename_strips_path_and_unsafe_chars() {
+        let cases = [
+            ("invoice.pdf", "invoice.pdf"),
+            ("../../etc/passwd", "passwd"),
+            (r"C:\Temp\report.pdf", "report.pdf"),
+            ("bad:name*.pdf", "bad_name_.pdf"),
+            ("   ", "attachment"),
+            ("", "attachment"),
+            ("ok name.docx", "ok name.docx"),
+        ];
+        for (input, expected) in cases {
+            assert_eq!(safe_attachment_filename(input), expected, "input={input:?}");
+        }
     }
 }

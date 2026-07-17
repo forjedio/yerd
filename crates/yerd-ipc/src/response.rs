@@ -761,6 +761,7 @@ mod variant_name_pinning {
                 }],
                 html_body: Some("<p>Hi</p>".into()),
                 text_body: Some("Hi".into()),
+                attachments: vec![],
             }),
         });
         pin_response(Response::Tools {
