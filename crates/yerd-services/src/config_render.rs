@@ -131,10 +131,19 @@ pub fn render_my_bootstrap_sql() -> &'static str {
 ///   populated with `--auth=trust`, so passwordless loopback auth holds even
 ///   though this config file lives outside the datadir (`-c config_file=`).
 ///   `data_directory` itself comes from the `-D` command-line flag.
+///
+/// `preload_libraries` become a single `shared_preload_libraries` line, in the
+/// given order (the caller lists `TimescaleDB` first, per upstream guidance), and
+/// only when the slice is non-empty - a preload entry naming a library the
+/// install does not ship makes the postmaster fail to start. The manager probes
+/// the install tree and passes the resolved list; this file is regenerated in
+/// full on every start (the whole config is Yerd-owned via `-c config_file=`),
+/// so the line never duplicates or accumulates.
 #[must_use]
-pub fn render_postgresql_conf(port: u16, datadir: &Path) -> String {
+pub fn render_postgresql_conf(port: u16, datadir: &Path, preload_libraries: &[&str]) -> String {
     let hba = quote_pg_string(&datadir.join("pg_hba.conf").display().to_string());
     let ident = quote_pg_string(&datadir.join("pg_ident.conf").display().to_string());
+    let preload = render_preload_line(preload_libraries);
     format!(
         "# Managed by Yerd — do not edit by hand.\n\
          # Local development database (PostgreSQL).\n\
@@ -142,9 +151,21 @@ pub fn render_postgresql_conf(port: u16, datadir: &Path) -> String {
          port = {port}\n\
          unix_socket_directories = ''\n\
          logging_collector = off\n\
+         {preload}\
          hba_file = {hba}\n\
          ident_file = {ident}\n"
     )
+}
+
+/// The `shared_preload_libraries` line for the given libraries (comma-joined,
+/// order preserved), or the empty string when there are none so no line is
+/// emitted at all.
+fn render_preload_line(libraries: &[&str]) -> String {
+    if libraries.is_empty() {
+        return String::new();
+    }
+    let value = quote_pg_string(&libraries.join(","));
+    format!("shared_preload_libraries = {value}\n")
 }
 
 /// Single-quote a string for a `postgresql.conf` value, escaping embedded single
@@ -270,7 +291,7 @@ mod tests {
 
     #[test]
     fn postgresql_conf_is_loopback_tcp_only() {
-        let conf = render_postgresql_conf(5432, &PathBuf::from("/data/pg/data-17"));
+        let conf = render_postgresql_conf(5432, &PathBuf::from("/data/pg/data-17"), &[]);
         assert!(conf.contains("listen_addresses = '127.0.0.1'"));
         assert!(!conf.contains("0.0.0.0"));
         assert!(conf.contains("port = 5432"));
@@ -282,10 +303,42 @@ mod tests {
 
     #[test]
     fn postgresql_conf_escapes_single_quotes_in_paths() {
-        let conf = render_postgresql_conf(5432, &PathBuf::from("/data/o'brien/data-17"));
+        let conf = render_postgresql_conf(5432, &PathBuf::from("/data/o'brien/data-17"), &[]);
         assert!(
             conf.contains("hba_file = '/data/o''brien/data-17/pg_hba.conf'"),
             "single quote must be doubled: {conf}"
+        );
+    }
+
+    #[test]
+    fn postgresql_conf_omits_preload_line_when_no_libraries() {
+        let conf = render_postgresql_conf(5432, &PathBuf::from("/data/pg/data-17"), &[]);
+        assert!(
+            !conf.contains("shared_preload_libraries"),
+            "base install must get no preload line: {conf}"
+        );
+    }
+
+    #[test]
+    fn postgresql_conf_emits_preload_line_when_libraries_present() {
+        let conf =
+            render_postgresql_conf(5432, &PathBuf::from("/data/pg/data-17"), &["timescaledb"]);
+        assert!(
+            conf.contains("shared_preload_libraries = 'timescaledb'"),
+            "preload line must be present and quoted: {conf}"
+        );
+    }
+
+    #[test]
+    fn postgresql_conf_joins_preload_libraries_in_order() {
+        let conf = render_postgresql_conf(
+            5432,
+            &PathBuf::from("/data/pg/data-17"),
+            &["timescaledb", "pg_stat_statements"],
+        );
+        assert!(
+            conf.contains("shared_preload_libraries = 'timescaledb,pg_stat_statements'"),
+            "libraries must be comma-joined in order: {conf}"
         );
     }
 }

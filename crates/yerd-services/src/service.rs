@@ -225,6 +225,14 @@ pub trait ServiceDefinition: Send + Sync + 'static {
         false
     }
 
+    /// Whether the manager should probe the install tree for bundled extensions
+    /// that must appear in `shared_preload_libraries` at postmaster start
+    /// (`TimescaleDB`). True only for Postgres; the probe (not the label) decides
+    /// whether any entry is actually written.
+    fn preloads_bundled_extensions(&self) -> bool {
+        false
+    }
+
     /// One-time init-tool arguments populating the fresh `staging` datadir.
     /// Empty for a type with no init step.
     fn init_args(&self, staging: &std::path::Path) -> Vec<OsString> {
@@ -246,7 +254,9 @@ pub trait ServiceDefinition: Send + Sync + 'static {
     }
 
     /// Render this type's server config text, or `None` for a type with no config
-    /// file (app servers).
+    /// file (app servers). `preload_libraries` is the manager-resolved
+    /// `shared_preload_libraries` list (empty except for a Postgres install that
+    /// ships a preload-required extension).
     fn render_config(
         &self,
         port: u16,
@@ -254,8 +264,16 @@ pub trait ServiceDefinition: Send + Sync + 'static {
         socket: &std::path::Path,
         log_path: &std::path::Path,
         init_file: &std::path::Path,
+        preload_libraries: &[&str],
     ) -> Option<String> {
-        let _ = (port, datadir, socket, log_path, init_file);
+        let _ = (
+            port,
+            datadir,
+            socket,
+            log_path,
+            init_file,
+            preload_libraries,
+        );
         None
     }
 
@@ -365,6 +383,7 @@ impl ServiceDefinition for Redis {
         _socket: &std::path::Path,
         log_path: &std::path::Path,
         _init_file: &std::path::Path,
+        _preload_libraries: &[&str],
     ) -> Option<String> {
         Some(config_render::render_redis_conf(port, datadir, log_path))
     }
@@ -442,6 +461,7 @@ impl ServiceDefinition for MySql {
         socket: &std::path::Path,
         log_path: &std::path::Path,
         init_file: &std::path::Path,
+        _preload_libraries: &[&str],
     ) -> Option<String> {
         Some(config_render::render_my_cnf(
             port, datadir, socket, log_path, init_file,
@@ -516,6 +536,7 @@ impl ServiceDefinition for MariaDb {
         socket: &std::path::Path,
         log_path: &std::path::Path,
         init_file: &std::path::Path,
+        _preload_libraries: &[&str],
     ) -> Option<String> {
         Some(config_render::render_my_cnf(
             port, datadir, socket, log_path, init_file,
@@ -572,6 +593,9 @@ impl ServiceDefinition for Postgres {
     fn injects_geo_data(&self) -> bool {
         true
     }
+    fn preloads_bundled_extensions(&self) -> bool {
+        true
+    }
     fn init_args(&self, staging: &std::path::Path) -> Vec<OsString> {
         vec![
             OsString::from("-D"),
@@ -593,8 +617,13 @@ impl ServiceDefinition for Postgres {
         _socket: &std::path::Path,
         _log_path: &std::path::Path,
         _init_file: &std::path::Path,
+        preload_libraries: &[&str],
     ) -> Option<String> {
-        Some(config_render::render_postgresql_conf(port, datadir))
+        Some(config_render::render_postgresql_conf(
+            port,
+            datadir,
+            preload_libraries,
+        ))
     }
     fn plan_launch(&self, ctx: &LaunchContext<'_>) -> Result<LaunchPlan, ServiceError> {
         let mut command = base_command(ctx);
@@ -823,6 +852,14 @@ mod tests {
     }
 
     #[test]
+    fn only_postgres_preloads_bundled_extensions() {
+        assert!(reg().get("postgres").unwrap().preloads_bundled_extensions());
+        for id in ["redis", "mysql", "mariadb"] {
+            assert!(!reg().get(id).unwrap().preloads_bundled_extensions());
+        }
+    }
+
+    #[test]
     fn plan_launch_redis_passes_only_the_config_path() {
         let program = std::path::Path::new("/b/valkey-server");
         let config = std::path::Path::new("/c/redis.conf");
@@ -967,7 +1004,9 @@ mod tests {
         let init = std::path::Path::new("/i/x-init.sql");
         for id in ["redis", "mysql", "mariadb", "postgres"] {
             let d = reg().get(id).unwrap();
-            let rendered = d.render_config(6543, datadir, socket, log, init).unwrap();
+            let rendered = d
+                .render_config(6543, datadir, socket, log, init, &[])
+                .unwrap();
             assert!(rendered.contains("6543"), "{id} config missing port");
         }
     }
