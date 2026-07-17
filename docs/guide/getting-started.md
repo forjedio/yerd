@@ -46,6 +46,13 @@ Grab the latest **stable release** from the
 Remove any leftover `/usr/bin/yerd` from the old v1 (Go) project first - pacman
 won't install over a file it doesn't own - and `pacman -Syu` before installing so
 the bundled GUI's WebKit/GTK libraries match your system.
+
+If you are upgrading from Yerd v2.0.3 or earlier, in-app update cannot see this
+release, so reinstall once by hand with the same
+`sudo pacman -U ./Yerd_Linux_x86_64_v<ver>.pkg.tar.zst` command from the
+[releases page](https://github.com/forjedio/yerd/releases); your settings and
+sites are preserved, since it is a normal package upgrade, and in-app updates
+work again from this version on.
 :::
 
 <ThemedImage light="/images/dmg-install.png" dark="/images/dmg-install.png" alt="macOS .dmg installer window: drag Yerd into the Applications folder" />

@@ -421,7 +421,7 @@ pub async fn stage_update(
     if let Err(e) = tokio::fs::write(&path, &artifact).await {
         return internal(format!("could not write staged artifact: {e}"));
     }
-    let sig_path = dir.join(format!("{}.sig", sel.artifact.name));
+    let sig_path = dir.join(format!("{}.minisig", sel.artifact.name));
     if let Err(e) = tokio::fs::write(&sig_path, sig.as_bytes()).await {
         return internal(format!("could not write staged signature: {e}"));
     }

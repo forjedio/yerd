@@ -469,6 +469,18 @@ users should keep their system current. It also requires the default
 (Yerd verifies it itself with the embedded update key), so a hardened
 `LocalFileSigLevel = Required` rejects the local install.
 
+The Arch package's minisign signature is published as `<pkg>.pkg.tar.zst.minisig`,
+not `.sig`. pacman reserves `<pkg>.sig` for a detached OpenPGP signature and feeds
+any such sibling to GPGME, so a minisign file under that name hard-fails
+`pacman -U` even at `LocalFileSigLevel = Optional` (a missing signature is
+tolerated, a present-but-unparseable one is fatal) - this was
+[#157](https://github.com/forjedio/yerd/issues/157). The other artifact kinds
+(`.app.tar.gz`, `.deb`, `.rpm`) publish a byte-identical legacy `<artifact>.sig`
+copy alongside the `.minisig` for a bounded transition window, so self-updaters
+built at v2.0.3 or earlier keep resolving a signature; that copy is retired once
+those clients have moved on, and the pacman `.sig` is never re-published (the
+release workflow fails the publish if a `*.pkg.tar.zst.sig` is present).
+
 ### The Fedora package (`.rpm`)
 
 Unlike pacman, Tauri v2 **does** have an rpm bundler (pure-Rust, no `rpmbuild`),

@@ -260,19 +260,28 @@ pub fn run(
     }
 }
 
-/// Re-verify the staged artifact against its sibling `.sig` and the embedded key.
+/// Re-verify the staged artifact against its sibling `.minisig` and the embedded
+/// key.
 fn reverify(staged: &Path) -> Result<(), String> {
-    let bytes = std::fs::read(staged).map_err(|e| format!("reading staged artifact: {e}"))?;
-    let sig_path = sibling_sig(staged);
-    let sig = std::fs::read_to_string(&sig_path)
-        .map_err(|e| format!("reading signature {}: {e}", sig_path.display()))?;
-    verify_minisign(UPDATE_PUBLIC_KEY, &sig, &bytes).map_err(|e| e.to_string())
+    reverify_with_key(staged, UPDATE_PUBLIC_KEY)
 }
 
-/// `<artifact>.sig` beside the staged artifact.
-fn sibling_sig(staged: &Path) -> PathBuf {
+/// [`reverify`] against an explicit public key, so tests can exercise the sibling
+/// path + verification against a throwaway keypair (production passes
+/// [`UPDATE_PUBLIC_KEY`]).
+fn reverify_with_key(staged: &Path, public_key: &str) -> Result<(), String> {
+    let bytes = std::fs::read(staged).map_err(|e| format!("reading staged artifact: {e}"))?;
+    let sig_path = sibling_minisig(staged);
+    let sig = std::fs::read_to_string(&sig_path)
+        .map_err(|e| format!("reading signature {}: {e}", sig_path.display()))?;
+    verify_minisign(public_key, &sig, &bytes).map_err(|e| e.to_string())
+}
+
+/// `<artifact>.minisig` beside the staged artifact. `.minisig` (not `.sig`)
+/// because pacman reserves `<pkg>.sig` for `OpenPGP`; see issue #157.
+fn sibling_minisig(staged: &Path) -> PathBuf {
     let mut name = staged.file_name().unwrap_or_default().to_os_string();
-    name.push(".sig");
+    name.push(".minisig");
     staged.with_file_name(name)
 }
 
@@ -594,7 +603,7 @@ fn elevated_install_deb(staged: &Path) -> Result<(), String> {
         return Err("the elevated installer must run as root".to_owned());
     }
     let bytes = std::fs::read(staged).map_err(|e| format!("reading staged .deb: {e}"))?;
-    let sig_path = sibling_sig(staged);
+    let sig_path = sibling_minisig(staged);
     let sig = std::fs::read_to_string(&sig_path)
         .map_err(|e| format!("reading signature {}: {e}", sig_path.display()))?;
     verify_minisign(UPDATE_PUBLIC_KEY, &sig, &bytes).map_err(|e| e.to_string())?;
@@ -665,7 +674,7 @@ fn elevated_install_pacman(staged: &Path) -> Result<(), String> {
         return Err("the elevated installer must run as root".to_owned());
     }
     let bytes = std::fs::read(staged).map_err(|e| format!("reading staged .pkg.tar.zst: {e}"))?;
-    let sig_path = sibling_sig(staged);
+    let sig_path = sibling_minisig(staged);
     let sig = std::fs::read_to_string(&sig_path)
         .map_err(|e| format!("reading signature {}: {e}", sig_path.display()))?;
     verify_minisign(UPDATE_PUBLIC_KEY, &sig, &bytes).map_err(|e| e.to_string())?;
@@ -754,7 +763,7 @@ fn elevated_install_rpm(staged: &Path) -> Result<(), String> {
         return Err("the elevated installer must run as root".to_owned());
     }
     let bytes = std::fs::read(staged).map_err(|e| format!("reading staged .rpm: {e}"))?;
-    let sig_path = sibling_sig(staged);
+    let sig_path = sibling_minisig(staged);
     let sig = std::fs::read_to_string(&sig_path)
         .map_err(|e| format!("reading signature {}: {e}", sig_path.display()))?;
     verify_minisign(UPDATE_PUBLIC_KEY, &sig, &bytes).map_err(|e| e.to_string())?;
@@ -943,19 +952,19 @@ mod tests {
     }
 
     #[test]
-    fn sibling_sig_appends_sig_extension() {
+    fn sibling_minisig_appends_minisig_extension() {
         let p = Path::new("/cache/update/Yerd_MacOS_AppleSilicon_v2.app.tar.gz");
         assert_eq!(
-            sibling_sig(p),
-            Path::new("/cache/update/Yerd_MacOS_AppleSilicon_v2.app.tar.gz.sig")
+            sibling_minisig(p),
+            Path::new("/cache/update/Yerd_MacOS_AppleSilicon_v2.app.tar.gz.minisig")
         );
     }
 
     #[test]
-    fn sibling_sig_handles_bare_filename() {
+    fn sibling_minisig_handles_bare_filename() {
         assert_eq!(
-            sibling_sig(Path::new("update.deb")),
-            Path::new("update.deb.sig")
+            sibling_minisig(Path::new("update.deb")),
+            Path::new("update.deb.minisig")
         );
     }
 
@@ -998,5 +1007,35 @@ mod tests {
         std::fs::write(&staged, b"payload").unwrap();
         let err = reverify(&staged).unwrap_err();
         assert!(err.contains("reading signature"), "{err}");
+    }
+
+    /// Locks the reader side of the `.minisig` contract: a valid `.minisig`
+    /// sibling (named as `self_update::stage_update` writes it) reverifies against
+    /// the signing key, so a change to the reader's `.minisig` literal fails here.
+    /// The writer's literal is guarded by the ipc-server stage test, which asserts
+    /// the sibling the real `stage_update` writes is named `<artifact>.minisig`.
+    #[test]
+    fn reverify_succeeds_with_valid_minisig_sibling() {
+        let tmp = tempfile::tempdir().unwrap();
+        let staged = tmp.path().join("Yerd_Linux_x86_64_v9.pkg.tar.zst");
+        let bytes: &[u8] = b"verified artifact bytes";
+        std::fs::write(&staged, bytes).unwrap();
+
+        let kp = minisign::KeyPair::generate_unencrypted_keypair().unwrap();
+        let sig = minisign::sign(
+            Some(&kp.pk),
+            &kp.sk,
+            std::io::Cursor::new(bytes),
+            Some("test artifact"),
+            Some("yerd test"),
+        )
+        .unwrap()
+        .into_string();
+
+        let name = staged.file_name().unwrap().to_string_lossy().into_owned();
+        let sibling = staged.with_file_name(format!("{name}.minisig"));
+        std::fs::write(&sibling, sig.as_bytes()).unwrap();
+
+        reverify_with_key(&staged, &kp.pk.to_base64()).unwrap();
     }
 }
