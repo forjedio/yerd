@@ -956,9 +956,8 @@ fn base64_decode(input: &str) -> Result<Vec<u8>, GuiError> {
     let mut out = Vec::with_capacity(raw.len() / 4 * 3);
     let quartets = raw.len() / 4;
     for (i, chunk) in raw.chunks_exact(4).enumerate() {
-        let [c0, c1, c2, c3] = <[u8; 4]>::try_from(chunk).map_err(|_| {
-            GuiError::internal("attachment data is not valid base64")
-        })?;
+        let [c0, c1, c2, c3] = <[u8; 4]>::try_from(chunk)
+            .map_err(|_| GuiError::internal("attachment data is not valid base64"))?;
         let pad2 = c2 == b'=';
         let pad3 = c3 == b'=';
         if pad2 && !pad3 {
@@ -968,30 +967,22 @@ fn base64_decode(input: &str) -> Result<Vec<u8>, GuiError> {
         if (pad2 || pad3) && !is_last {
             return Err(GuiError::internal("attachment data is not valid base64"));
         }
-        let s0 = sextet(c0).ok_or_else(|| {
-            GuiError::internal("attachment data is not valid base64")
-        })?;
-        let s1 = sextet(c1).ok_or_else(|| {
-            GuiError::internal("attachment data is not valid base64")
-        })?;
+        let s0 =
+            sextet(c0).ok_or_else(|| GuiError::internal("attachment data is not valid base64"))?;
+        let s1 =
+            sextet(c1).ok_or_else(|| GuiError::internal("attachment data is not valid base64"))?;
         let s2 = if pad2 {
             0
         } else {
-            sextet(c2).ok_or_else(|| {
-                GuiError::internal("attachment data is not valid base64")
-            })?
+            sextet(c2).ok_or_else(|| GuiError::internal("attachment data is not valid base64"))?
         };
         let s3 = if pad3 {
             0
         } else {
-            sextet(c3).ok_or_else(|| {
-                GuiError::internal("attachment data is not valid base64")
-            })?
+            sextet(c3).ok_or_else(|| GuiError::internal("attachment data is not valid base64"))?
         };
-        let n = (u32::from(s0) << 18)
-            | (u32::from(s1) << 12)
-            | (u32::from(s2) << 6)
-            | u32::from(s3);
+        let n =
+            (u32::from(s0) << 18) | (u32::from(s1) << 12) | (u32::from(s2) << 6) | u32::from(s3);
         out.push(((n >> 16) & 0xff) as u8);
         if !pad2 {
             out.push(((n >> 8) & 0xff) as u8);
