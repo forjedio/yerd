@@ -309,7 +309,7 @@ PHP page: one expandable panel per installed version with the settings form
 | `yerd uninstall php <version>` | Remove a version's files (blocked if a site uses it). |
 | `yerd restart php [<version>]` | Restart one (or all) running FPM pools. |
 | `yerd set php <setting> <value> [--php <version>]` | Set a global PHP ini default, or a per-version override with `--php`. |
-| `yerd unset php <setting> [--php <version>]` | Reset a setting to PHP's built-in value (or drop one version's override). |
+| `yerd unset php <setting> [--php <version>]` | Reset a global setting to PHP's built-in value. With `--php`, remove one version's override so the global value applies again. |
 | `yerd php ext add <version> <path> [--zend] [--name <name>]` | Register a custom extension (load-probed) for a version. |
 | `yerd php ext remove <version> <name>` | Remove a registered extension. |
 | `yerd php ext list` | List registered custom extensions, grouped by version. |
