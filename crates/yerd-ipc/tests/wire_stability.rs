@@ -613,6 +613,7 @@ fn response_php_versions_byte_shape() {
         default: PhpVersion::new(8, 5),
         updates: vec![],
         settings: BTreeMap::new(),
+        version_settings: Box::new(BTreeMap::new()),
     };
     let s = serde_json::to_string(&r).unwrap();
     assert_eq!(
@@ -654,6 +655,7 @@ fn response_php_versions_with_updates_byte_shape() {
             latest: "8.5.7".into(),
         }],
         settings: BTreeMap::new(),
+        version_settings: Box::new(BTreeMap::new()),
     };
     let s = serde_json::to_string(&r).unwrap();
     assert_eq!(
@@ -673,6 +675,7 @@ fn response_php_versions_with_settings_byte_shape() {
             ("memory_limit".to_string(), "512M".to_string()),
             ("display_errors".to_string(), "On".to_string()),
         ]),
+        version_settings: Box::new(BTreeMap::new()),
     };
     let s = serde_json::to_string(&r).unwrap();
     assert_eq!(
@@ -680,6 +683,36 @@ fn response_php_versions_with_settings_byte_shape() {
         r#"{"type":"php_versions","installed":["8.5"],"default":"8.5","settings":{"display_errors":"On","memory_limit":"512M"}}"#
     );
     assert_eq!(serde_json::from_str::<Response>(&s).unwrap(), r);
+}
+
+#[test]
+fn response_php_versions_with_version_settings_byte_shape() {
+    let r = Response::PhpVersions {
+        installed: vec![PhpVersion::new(8, 3)],
+        default: PhpVersion::new(8, 3),
+        updates: vec![],
+        settings: BTreeMap::new(),
+        version_settings: Box::new(BTreeMap::from([(
+            PhpVersion::new(8, 3),
+            BTreeMap::from([("memory_limit".to_string(), "1G".to_string())]),
+        )])),
+    };
+    let s = serde_json::to_string(&r).unwrap();
+    assert_eq!(
+        s,
+        r#"{"type":"php_versions","installed":["8.3"],"default":"8.3","version_settings":{"8.3":{"memory_limit":"1G"}}}"#
+    );
+    assert_eq!(serde_json::from_str::<Response>(&s).unwrap(), r);
+
+    let legacy = r#"{"type":"php_versions","installed":["8.3"],"default":"8.3"}"#;
+    let decoded: Response = serde_json::from_str(legacy).unwrap();
+    assert!(matches!(
+        decoded,
+        Response::PhpVersions {
+            ref version_settings,
+            ..
+        } if version_settings.is_empty()
+    ));
 }
 
 #[test]
@@ -703,6 +736,20 @@ fn request_set_php_settings_byte_shape() {
         r#"{"type":"set_php_settings","settings":{"max_execution_time":"30","memory_limit":"512M"}}"#
     );
     assert_eq!(serde_json::from_str::<Request>(&s).unwrap(), populated);
+}
+
+#[test]
+fn request_set_php_version_settings_byte_shape() {
+    let r = Request::SetPhpVersionSettings {
+        version: PhpVersion::new(8, 3),
+        settings: BTreeMap::from([("memory_limit".to_string(), "1G".to_string())]),
+    };
+    let s = serde_json::to_string(&r).unwrap();
+    assert_eq!(
+        s,
+        r#"{"type":"set_php_version_settings","version":"8.3","settings":{"memory_limit":"1G"}}"#
+    );
+    assert_eq!(serde_json::from_str::<Request>(&s).unwrap(), r);
 }
 
 #[test]

@@ -49,19 +49,34 @@ pub fn to_request(cmd: &Command) -> Result<Request, ClientError> {
             }
         }
         Command::Set {
-            target: crate::cli::SetTarget::Php { setting, value },
+            target:
+                crate::cli::SetTarget::Php {
+                    setting,
+                    value,
+                    only,
+                },
         } => {
             validate_php_setting(setting, Some(value))?;
-            Request::SetPhpSettings {
-                settings: std::collections::BTreeMap::from([(setting.clone(), value.clone())]),
+            let settings = std::collections::BTreeMap::from([(setting.clone(), value.clone())]);
+            match only {
+                Some(v) => Request::SetPhpVersionSettings {
+                    version: parse_php(v)?,
+                    settings,
+                },
+                None => Request::SetPhpSettings { settings },
             }
         }
         Command::Unset {
-            target: crate::cli::UnsetTarget::Php { setting },
+            target: crate::cli::UnsetTarget::Php { setting, only },
         } => {
             validate_php_setting(setting, None)?;
-            Request::SetPhpSettings {
-                settings: std::collections::BTreeMap::from([(setting.clone(), String::new())]),
+            let settings = std::collections::BTreeMap::from([(setting.clone(), String::new())]);
+            match only {
+                Some(v) => Request::SetPhpVersionSettings {
+                    version: parse_php(v)?,
+                    settings,
+                },
+                None => Request::SetPhpSettings { settings },
             }
         }
         Command::Php {
@@ -743,7 +758,14 @@ pub fn render(resp: &Response, json: bool) -> Rendered {
             default,
             updates,
             settings,
-        } => Rendered::ok(format_php_versions(installed, *default, updates, settings)),
+            version_settings,
+        } => Rendered::ok(format_php_versions(
+            installed,
+            *default,
+            updates,
+            settings,
+            version_settings,
+        )),
         Response::AvailablePhp {
             available,
             installed,
@@ -1131,6 +1153,10 @@ fn format_php_versions(
     default: PhpVersion,
     updates: &[yerd_ipc::PhpUpdate],
     settings: &std::collections::BTreeMap<String, String>,
+    version_settings: &std::collections::BTreeMap<
+        PhpVersion,
+        std::collections::BTreeMap<String, String>,
+    >,
 ) -> String {
     let versions = if installed.is_empty() {
         format!("no PHP versions installed (default: {default}) - `yerd install php {default}`")
@@ -1151,15 +1177,35 @@ fn format_php_versions(
             .collect::<Vec<_>>()
             .join("\n")
     };
-    if settings.is_empty() {
-        return versions;
-    }
     let mut out = versions;
-    out.push_str("\n\nsettings:");
-    for (k, v) in settings {
-        let _ = write!(out, "\n  {k} = {v}");
+    if !settings.is_empty() {
+        out.push_str("\n\nsettings:");
+        for (k, v) in settings {
+            let _ = write!(out, "\n  {k} = {v}");
+        }
+    }
+    for v in installed {
+        let Some(map) = version_settings.get(v) else {
+            continue;
+        };
+        let _ = write!(out, "\n\nPHP {v}:");
+        for (k, val) in map {
+            let _ = write!(
+                out,
+                "\n  {k} = {val}  (overrides {})",
+                global_of(settings, k)
+            );
+        }
     }
     out
+}
+
+/// The global value a per-version override shadows, for display; "PHP default"
+/// when the setting isn't set globally.
+fn global_of(settings: &std::collections::BTreeMap<String, String>, key: &str) -> String {
+    settings
+        .get(key)
+        .map_or_else(|| "PHP default".to_owned(), |v| format!("global {v}"))
 }
 
 /// Render the installable versions, tagging the ones already installed.
@@ -1507,7 +1553,8 @@ mod tests {
             to_request(&Command::Set {
                 target: crate::cli::SetTarget::Php {
                     setting: "memory_limit".into(),
-                    value: "512M".into()
+                    value: "512M".into(),
+                    only: None
                 }
             })
             .unwrap(),
@@ -1519,13 +1566,47 @@ mod tests {
             }
         );
         assert_eq!(
+            to_request(&Command::Set {
+                target: crate::cli::SetTarget::Php {
+                    setting: "memory_limit".into(),
+                    value: "1G".into(),
+                    only: Some("8.3".into())
+                }
+            })
+            .unwrap(),
+            Request::SetPhpVersionSettings {
+                version: PhpVersion::new(8, 3),
+                settings: std::collections::BTreeMap::from([(
+                    "memory_limit".to_string(),
+                    "1G".to_string()
+                )])
+            }
+        );
+        assert_eq!(
             to_request(&Command::Unset {
                 target: crate::cli::UnsetTarget::Php {
-                    setting: "memory_limit".into()
+                    setting: "memory_limit".into(),
+                    only: None
                 }
             })
             .unwrap(),
             Request::SetPhpSettings {
+                settings: std::collections::BTreeMap::from([(
+                    "memory_limit".to_string(),
+                    String::new()
+                )])
+            }
+        );
+        assert_eq!(
+            to_request(&Command::Unset {
+                target: crate::cli::UnsetTarget::Php {
+                    setting: "memory_limit".into(),
+                    only: Some("8.3".into())
+                }
+            })
+            .unwrap(),
+            Request::SetPhpVersionSettings {
+                version: PhpVersion::new(8, 3),
                 settings: std::collections::BTreeMap::from([(
                     "memory_limit".to_string(),
                     String::new()
@@ -1804,6 +1885,7 @@ mod tests {
             target: crate::cli::SetTarget::Php {
                 setting: "not_a_setting".into(),
                 value: "1".into(),
+                only: None,
             },
         }) {
             Err(ClientError::Usage(_)) => {}
@@ -1813,6 +1895,17 @@ mod tests {
             target: crate::cli::SetTarget::Php {
                 setting: "memory_limit".into(),
                 value: "bogus".into(),
+                only: None,
+            },
+        }) {
+            Err(ClientError::Usage(_)) => {}
+            other => panic!("expected Usage error, got {other:?}"),
+        }
+        match to_request(&Command::Set {
+            target: crate::cli::SetTarget::Php {
+                setting: "memory_limit".into(),
+                value: "1G".into(),
+                only: Some("bogus".into()),
             },
         }) {
             Err(ClientError::Usage(_)) => {}
@@ -2001,6 +2094,7 @@ mod tests {
                     latest: "8.3.31".into(),
                 }],
                 settings: std::collections::BTreeMap::new(),
+                version_settings: Box::new(std::collections::BTreeMap::new()),
             },
             false,
         );
@@ -2017,10 +2111,50 @@ mod tests {
                 default: PhpVersion::new(8, 3),
                 updates: vec![],
                 settings: std::collections::BTreeMap::new(),
+                version_settings: Box::new(std::collections::BTreeMap::new()),
             },
             false,
         );
         assert!(empty.stdout.contains("no PHP versions installed"));
+    }
+
+    #[test]
+    fn renders_php_versions_with_per_version_overrides() {
+        let v83 = PhpVersion::new(8, 3);
+        let r = render(
+            &Response::PhpVersions {
+                installed: vec![v83, PhpVersion::new(8, 5)],
+                default: PhpVersion::new(8, 5),
+                updates: vec![],
+                settings: std::collections::BTreeMap::from([(
+                    "memory_limit".to_string(),
+                    "512M".to_string(),
+                )]),
+                version_settings: Box::new(std::collections::BTreeMap::from([(
+                    v83,
+                    std::collections::BTreeMap::from([
+                        ("memory_limit".to_string(), "1G".to_string()),
+                        ("display_errors".to_string(), "Off".to_string()),
+                    ]),
+                )])),
+            },
+            false,
+        );
+        assert_eq!(r.code, 0);
+        assert!(r.stdout.contains("PHP 8.3:"), "got: {}", r.stdout);
+        assert!(
+            r.stdout
+                .contains("memory_limit = 1G  (overrides global 512M)"),
+            "got: {}",
+            r.stdout
+        );
+        assert!(
+            r.stdout
+                .contains("display_errors = Off  (overrides PHP default)"),
+            "got: {}",
+            r.stdout
+        );
+        assert!(!r.stdout.contains("PHP 8.5:"), "got: {}", r.stdout);
     }
 
     #[test]
@@ -2144,6 +2278,7 @@ mod tests {
                     ("memory_limit".to_string(), "512M".to_string()),
                     ("display_errors".to_string(), "On".to_string()),
                 ]),
+                version_settings: Box::new(std::collections::BTreeMap::new()),
             },
             false,
         );
@@ -2916,6 +3051,7 @@ mod tests {
         match to_request(&Command::Unset {
             target: crate::cli::UnsetTarget::Php {
                 setting: "not_a_setting".into(),
+                only: None,
             },
         }) {
             Err(ClientError::Usage(_)) => {}

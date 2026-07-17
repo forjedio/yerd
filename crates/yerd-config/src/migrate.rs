@@ -19,7 +19,7 @@ pub(crate) type MigrationStep = fn(&mut Value) -> Result<(), ConfigError>;
 /// Forward-migration steps, indexed so that **`STEPS[N]` walks `vN → v(N+1)`**.
 /// This matches [`up`], which indexes `STEPS[current]` (== the version being
 /// migrated *from*). Example: a v1 file is migrated by `STEPS[1]`. When
-/// `CURRENT_VERSION == 16`, `STEPS = [v0→v1, …, v14→v15, v15→v16]`, length 16.
+/// `CURRENT_VERSION == 17`, `STEPS = [v0→v1, …, v15→v16, v16→v17]`, length 17.
 ///
 /// `STEPS[0]` (v0→v1) is only reachable via a hand-crafted `version = 0` file -
 /// v0 was never written to disk - but it must exist so that `STEPS[1]` does.
@@ -40,6 +40,7 @@ pub(crate) const STEPS: &[MigrationStep] = &[
     migrate_v13_to_v14,
     migrate_v14_to_v15,
     migrate_v15_to_v16,
+    migrate_v16_to_v17,
 ];
 
 /// `v0 → v1`: bump the version. v0 predates any shipped config, so there is no
@@ -177,11 +178,20 @@ fn migrate_v14_to_v15(value: &mut Value) -> Result<(), ConfigError> {
     set_version(value, 15)
 }
 
-/// `v15 → v16`: bump the version. v16 added the top-level `mcp_enabled` scalar,
-/// which defaults to `false` when absent, so an in-place version bump is the
-/// entire migration.
+/// `v15 → v16`: bump the version. v16 added the optional
+/// `[php.version_settings]` table, which defaults (empty) when absent, so an
+/// in-place version bump is the entire migration. Installed versions are
+/// discovered from disk, invisible to this pure step, so per-version tables
+/// cannot (and need not) be seeded here.
 fn migrate_v15_to_v16(value: &mut Value) -> Result<(), ConfigError> {
     set_version(value, 16)
+}
+
+/// `v16 → v17`: bump the version. v17 added the top-level `mcp_enabled` scalar,
+/// which defaults to `false` when absent, so an in-place version bump is the
+/// entire migration.
+fn migrate_v16_to_v17(value: &mut Value) -> Result<(), ConfigError> {
+    set_version(value, 17)
 }
 
 /// Set the top-level `version` key, erroring if the root is not a table.
@@ -253,7 +263,14 @@ mod tests {
 
     #[test]
     fn current_version_pinned() {
-        assert_eq!(crate::CURRENT_VERSION, 16);
+        assert_eq!(crate::CURRENT_VERSION, 17);
+    }
+
+    #[test]
+    fn v16_to_v17_is_a_bare_version_bump() {
+        let mut v: Value = toml::from_str("version = 16\n").unwrap();
+        migrate_v16_to_v17(&mut v).unwrap();
+        assert_eq!(read_version(&v).unwrap(), 17);
     }
 
     #[test]

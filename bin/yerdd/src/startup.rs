@@ -198,14 +198,8 @@ pub async fn bring_up_with_dirs(
         std::process::id(),
         binaries,
     );
-    php_manager.set_ini_settings(
-        config
-            .php
-            .settings
-            .iter()
-            .map(|(k, v)| (k.clone(), v.clone()))
-            .collect(),
-    );
+    php_manager.set_ini_settings(config.php.settings.clone());
+    php_manager.set_ini_overrides(config.php.version_settings.clone());
     php_manager.set_dump_ext(Some(yerd_php::DumpExtSettings {
         so_dir: dirs.data.join("php-ext"),
         ini_defines: vec![(
@@ -331,6 +325,7 @@ pub async fn bring_up_with_dirs(
         tool_mutate: tokio::sync::Mutex::new(()),
         tunnel_mutate: tokio::sync::Mutex::new(()),
         php_mutate: tokio::sync::Mutex::new(()),
+        php_settings_mutate: tokio::sync::Mutex::new(()),
         jobs: crate::jobs::JobRegistry::default(),
         reserved_names: tokio::sync::Mutex::new(std::collections::HashSet::new()),
         wordpress_versions: tokio::sync::RwLock::new(None),

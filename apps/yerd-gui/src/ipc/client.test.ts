@@ -20,6 +20,7 @@ import {
   setFrontController,
   setMailEnabled,
   setMailPort,
+  setPhpVersionSettings,
   setPrimaryDomain,
   setSymlinkProtection,
   setMcpEnabled,
@@ -170,6 +171,21 @@ describe("client → command mapping", () => {
       name: "blog",
       domain: "corp.test",
     });
+  });
+
+  it("setPhpVersionSettings sends the version and settings map", async () => {
+    invokeMock.mockResolvedValue({
+      type: "php_versions",
+      installed: ["8.3"],
+      default: "8.3",
+      version_settings: { "8.3": { memory_limit: "1G" } },
+    });
+    const r = await setPhpVersionSettings("8.3", { memory_limit: "1G" });
+    expect(invokeMock).toHaveBeenCalledWith("set_php_version_settings", {
+      version: "8.3",
+      settings: { memory_limit: "1G" },
+    });
+    expect(r.version_settings?.["8.3"]?.memory_limit).toBe("1G");
   });
 
   it("resetDomains sends just the name", async () => {

@@ -105,6 +105,27 @@ impl Tool {
         }
     }
 
+    /// Whether a copy of [`Self::primary_bin`] already on the user's PATH
+    /// satisfies this tool's prerequisite, so a site-create job can use it and
+    /// Tooling tags it `external`. This only decides whether a *managed* copy is
+    /// required: Tooling still offers **Install** either way, so yerd's own copy
+    /// can always be added alongside an external one.
+    ///
+    /// False for WP-CLI: every yerd path that runs `wp` (WordPress site
+    /// creation, the admin-user list, URL sync) execs the *managed*
+    /// `boot-fs.php` entry point directly rather than a PATH-resolved `wp`, so
+    /// an external copy satisfies none of them and must not pass preflight. When
+    /// one wrongly did, the WordPress wizard called the toolchain ready and a
+    /// site create reached `wp core download`, then failed spawning a
+    /// `boot-fs.php` that was never installed (issue #150).
+    #[must_use]
+    pub const fn accepts_external(self) -> bool {
+        match self {
+            Tool::Composer | Tool::Node | Tool::Bun | Tool::Laravel => true,
+            Tool::WpCli => false,
+        }
+    }
+
     /// Parse a wire id back to a `Tool`.
     #[must_use]
     pub fn parse(id: &str) -> Option<Tool> {
@@ -450,6 +471,18 @@ mod tests {
         assert_eq!(Tool::Bun.exposed_bins(), &["bun", "bunx"]);
         assert_eq!(Tool::Composer.primary_bin(), "composer");
         assert_eq!(Tool::Laravel.display_name(), "Laravel Installer");
+    }
+
+    /// Issue #150: an external `wp` can't stand in for the managed build, so
+    /// Tooling must keep offering Install rather than reporting it external.
+    #[test]
+    fn wp_cli_never_accepts_an_external_copy() {
+        assert!(!Tool::WpCli.accepts_external());
+        for t in Tool::ALL {
+            if t != Tool::WpCli {
+                assert!(t.accepts_external(), "{t:?} should accept an external copy");
+            }
+        }
     }
 
     #[test]

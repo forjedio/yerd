@@ -168,6 +168,7 @@ The variant set is the daemon's whole RPC surface - liveness, site management, P
 | `InstallPhpStreamed { version }` | `{"type":"install_php_streamed","version":"8.5"}` (replies `JobStarted`; poll `JobStatus`) |
 | `UpdatePhp { version: Option }` | `{"type":"update_php","version":"8.5"}` or `…,"version":null` |
 | `SetPhpSettings { settings }` | `{"type":"set_php_settings","settings":{…}}` |
+| `SetPhpVersionSettings { version, settings }` | `{"type":"set_php_version_settings","version":"8.3","settings":{…}}` (per-version overrides; `""` removes → falls back to global) |
 | `AddPhpExtension { version, path, name: Option, zend }` | `{"type":"add_php_extension","version":"8.5","path":"/a/scrypt.so","name":null,"zend":false}` |
 | `RemovePhpExtension { version, name }` | `{"type":"remove_php_extension","version":"8.5","name":"scrypt"}` |
 | `ListPhpExtensions` | `{"type":"list_php_extensions"}` (replies `PhpExtensions { by_version }`) |
@@ -368,7 +369,7 @@ The JSON shapes are the **published contract**, pinned three ways so a rename or
    }).unwrap(), r#"{"type":"set_php","name":"foo","version":"8.3"}"#);
    ```
 
-   It also pins additive back-compat: `Response::Info` decodes legacy daemons that omit `http_port`/`https_port` (they default to 0), and `Response::PhpVersions` skips an empty `updates`/`settings` on the wire so the bytes match the pre-field shape.
+   It also pins additive back-compat: `Response::Info` decodes legacy daemons that omit `http_port`/`https_port` (they default to 0), and `Response::PhpVersions` skips an empty `updates`/`settings`/`version_settings` on the wire so the bytes match the pre-field shape.
 
 2. **Inline `variant_name_pinning` modules** in `request.rs` and `response.rs` contain exhaustive `match` arms over the (in-crate, so matchable despite `#[non_exhaustive]`) enums. A renamed Rust variant fails to compile there - integration tests can't catch this across the crate boundary.
 

@@ -89,6 +89,7 @@ fn main() {
             commands::set_update_channel,
             commands::apply_update,
             commands::set_php_settings,
+            commands::set_php_version_settings,
             commands::list_php_extensions,
             commands::add_php_extension,
             commands::remove_php_extension,

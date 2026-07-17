@@ -200,15 +200,45 @@ function toolAvailable(id: string): boolean {
   return tools.value.some((t) => t.id === id && (t.installed || t.external));
 }
 // Managed-only: building WP-CLI requires Yerd's own Composer (an external
-// Composer can't build it) - same asymmetry as the Laravel installer.
+// Composer can't build it) - same asymmetry as the Laravel installer. The
+// daemon never reports WP-CLI itself as `external`, since scaffolding execs
+// Yerd's own boot-fs.php rather than a PATH-resolved `wp`.
 const managedComposer = computed(() =>
   tools.value.some((t) => t.id === "composer" && t.installed),
 );
-const needsComposer = computed(() => !toolAvailable("composer"));
 const needsWpCli = computed(() => !toolAvailable("wp-cli"));
+// Composer's only role here is building WP-CLI, so it's a prerequisite exactly
+// when WP-CLI still has to be built - scaffolding an installed WP-CLI never
+// shells out to Composer.
+const needsComposer = computed(() => needsWpCli.value && !managedComposer.value);
 const noPhp = computed(() => props.phpVersions.length === 0);
 
 const ready = computed(() => !noPhp.value && !needsComposer.value && !needsWpCli.value);
+
+interface PrereqRow {
+  id: "php" | "composer" | "wp-cli";
+  label: string;
+  sub: string;
+  ok: boolean;
+}
+
+// Composer is listed only while it's actually required: its role here is
+// building WP-CLI, so once WP-CLI is installed it isn't a prerequisite and
+// showing it as "Installed" would claim something we haven't checked.
+const prereqRows = computed<PrereqRow[]>(() => [
+  { id: "php", label: "PHP", sub: "Runtime", ok: !noPhp.value },
+  ...(needsWpCli.value
+    ? [
+        {
+          id: "composer" as const,
+          label: "Composer",
+          sub: "Builds WP-CLI",
+          ok: !needsComposer.value,
+        },
+      ]
+    : []),
+  { id: "wp-cli", label: "WP-CLI", sub: "wp command", ok: !needsWpCli.value },
+]);
 const installBusy = computed(() => installingAll.value || installingTool.value !== null);
 
 async function refreshTools(): Promise<void> {
@@ -275,16 +305,7 @@ async function installAllMissing(): Promise<void> {
   try {
     if (noPhp.value && !(await installFirstPhp())) return;
     if (needsComposer.value && !(await installPrereq("composer"))) return;
-    if (needsWpCli.value) {
-      if (!managedComposer.value) {
-        toast.error(
-          "Can't install WP-CLI",
-          "Yerd needs its own Composer to build it - install Yerd's Composer first.",
-        );
-        return;
-      }
-      if (!(await installPrereq("wp-cli"))) return;
-    }
+    if (needsWpCli.value && !(await installPrereq("wp-cli"))) return;
     await nextTick();
     toast.success("Toolchain ready");
   } finally {
@@ -587,19 +608,15 @@ const busy = computed(() => jobStateRef.value === "running" && step.value === 4)
         <div>
           <p class="text-sm font-medium">A few tools are needed first</p>
           <p class="text-xs text-muted-foreground">
-            Creating a WordPress site needs PHP, Composer and WP-CLI. Install the missing ones to
-            continue.
+            Creating a WordPress site needs PHP and WP-CLI (which Yerd's own Composer builds).
+            Install the missing ones to continue.
           </p>
         </div>
       </div>
 
       <div class="divide-y rounded-lg border">
         <div
-          v-for="row in [
-            { id: 'php', label: 'PHP', sub: 'Runtime', ok: !noPhp },
-            { id: 'composer', label: 'Composer', sub: 'Dependency manager', ok: !needsComposer },
-            { id: 'wp-cli', label: 'WP-CLI', sub: 'wp command', ok: !needsWpCli },
-          ]"
+          v-for="row in prereqRows"
           :key="row.id"
           class="flex items-center justify-between gap-3 px-3 py-2.5"
         >
@@ -619,7 +636,7 @@ const busy = computed(() => jobStateRef.value === "running" && step.value === 4)
                 variant="outline"
                 :disabled="installBusy || (row.id === 'wp-cli' && !managedComposer)"
                 :title="row.id === 'wp-cli' && !managedComposer ? 'Yerd\'s own Composer is required to build WP-CLI' : ''"
-                @click="row.id === 'php' ? installFirstPhp() : installPrereq(row.id as 'composer' | 'wp-cli')"
+                @click="row.id === 'php' ? installFirstPhp() : installPrereq(row.id)"
               >
                 Install
               </Button>

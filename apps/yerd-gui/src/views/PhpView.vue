@@ -60,7 +60,13 @@ import {
   uninstallPhp,
   updatePhp,
 } from "@/ipc/client";
-import type { PhpPoolStatus, PhpUpdate, PhpVersion } from "@/ipc/types";
+import type { PhpPoolStatus, PhpUpdate, PhpVersion, PhpVersionsResponse } from "@/ipc/types";
+import PhpVersionConfig from "@/components/PhpVersionConfig.vue";
+import {
+  DISPLAY_ERRORS_HINT,
+  DISPLAY_ERRORS_OPTIONS,
+  TEXT_SETTINGS,
+} from "@/lib/phpSettings";
 import { humaniseBytes, poolStateLabel, poolStateTone } from "@/lib/utils";
 
 const toast = useToast();
@@ -104,62 +110,9 @@ const updateByVersion = computed<Record<string, PhpUpdate>>(() => {
 const hasUpdates = computed(() => updates.value.length > 0);
 
 // ── global PHP ini settings ──
-// Text fields plus an On/Off select for display_errors. A blank field means
-// "use PHP's default" (the daemon removes the key).
-const TEXT_SETTINGS = [
-  {
-    key: "memory_limit",
-    label: "Memory limit",
-    placeholder: "512M",
-    hint: "Most memory one script may use. Size like 256M, 512M or 2G (use G, not GB). -1 means unlimited.",
-  },
-  {
-    key: "max_execution_time",
-    label: "Max execution time (s)",
-    placeholder: "60",
-    hint: "How long a script may run before it's stopped. Whole seconds, e.g. 60. 0 means no limit.",
-  },
-  {
-    key: "max_input_time",
-    label: "Max input time (s)",
-    placeholder: "60",
-    hint: "How long a script may spend reading request data (POST and uploads). Whole seconds, e.g. 60.",
-  },
-  {
-    key: "max_file_uploads",
-    label: "Max file uploads",
-    placeholder: "20",
-    hint: "How many files may be uploaded in one request. Whole number, e.g. 20.",
-  },
-  {
-    key: "upload_max_filesize",
-    label: "Upload max filesize",
-    placeholder: "100M",
-    hint: "Largest single uploaded file. Size like 8M, 100M or 1G (use G, not GB).",
-  },
-  {
-    key: "post_max_size",
-    label: "Post max size",
-    placeholder: "100M",
-    hint: "Largest POST body; set this at or above the upload size. Size like 8M, 100M or 1G (use G, not GB).",
-  },
-  {
-    key: "error_reporting",
-    label: "Error reporting",
-    placeholder: "E_ALL",
-    hint: "Which error levels PHP reports. An integer or a constant expression, e.g. E_ALL or E_ALL & ~E_DEPRECATED.",
-  },
-] as const;
-
-const DISPLAY_ERRORS_HINT =
-  "Whether PHP shows errors in the page output. On is handy in development; Off is safer in production.";
-
-const DISPLAY_ERRORS_OPTIONS = [
-  { value: "", label: "- default -" },
-  { value: "On", label: "On" },
-  { value: "Off", label: "Off" },
-] as const;
-
+// Text fields plus an On/Off select for display_errors (field metadata shared
+// with the per-version panels via lib/phpSettings). A blank field means "use
+// PHP's default" (the daemon removes the key).
 const settingsForm = ref<Record<string, string>>({});
 // Snapshot of the values last seeded from the server, so we can tell whether the
 // user has edited the form since (and thus whether a fresh server value may
@@ -211,6 +164,15 @@ async function saveSettings(): Promise<void> {
   } finally {
     busy.value = null;
   }
+}
+
+// ── per-version configuration ──
+// Each installed version gets a collapsible panel (PhpVersionConfig) holding
+// its setting overrides. The panel does its own saves and hands back the
+// daemon's refreshed version list.
+function onVersionConfigUpdated(r: PhpVersionsResponse): void {
+  mutate(() => r);
+  void reloadPhp({ force: true });
 }
 
 // ── custom extensions ──────────────────────────────────────────────────────
@@ -715,6 +677,28 @@ onUnmounted(
               {{ busy === "settings" ? "Applying…" : "Save" }}
             </Button>
           </div>
+        </CardContent>
+      </Card>
+
+      <!-- Per-version setting overrides. -->
+      <Card v-if="!loading && installed.length" class="mt-8">
+        <CardHeader>
+          <CardTitle>Per-version configuration</CardTitle>
+          <CardDescription>
+            Override the default settings for a single version; empty fields
+            inherit the defaults above. Saving restarts only that version's
+            pool.
+          </CardDescription>
+        </CardHeader>
+        <CardContent class="flex flex-col gap-3">
+          <PhpVersionConfig
+            v-for="v in installed"
+            :key="v"
+            :version="v"
+            :global-settings="data?.settings ?? {}"
+            :overrides="data?.version_settings?.[v] ?? {}"
+            @updated="onVersionConfigUpdated"
+          />
         </CardContent>
       </Card>
 

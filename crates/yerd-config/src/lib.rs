@@ -79,10 +79,15 @@ pub use schema::{
 /// multiple instances - the optional per-instance `site` field and `"{type}:{site}"`
 /// ids - and made `enabled` gate boot autostart, so its migration marks every
 /// pre-existing single-instance engine `enabled = true` rather than silently
-/// stopping engines that used to start. v16 added the top-level `mcp_enabled`
-/// scalar ([`Config::mcp_enabled`]) gating the MCP server for AI agents
-/// (defaults to off when absent), a bare bump.
+/// stopping engines that used to start.
+///
+/// v16 added the optional `[php.version_settings]` table
+/// ([`PhpSection::version_settings`]) for per-version overrides of the global
+/// PHP settings. It defaults (empty) when absent, so v15→v16 is a bare
+/// version bump. v17 added the top-level `mcp_enabled` scalar
+/// ([`Config::mcp_enabled`]) gating the MCP server for AI agents (defaults to off
+/// when absent), also a bare bump.
 ///
 /// The per-version detail, including how to hand-edit a file back down for an
 /// older binary, lives in `docs/developer/config-schema-history.md`.
-pub const CURRENT_VERSION: u32 = 16;
+pub const CURRENT_VERSION: u32 = 17;
