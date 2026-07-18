@@ -994,8 +994,13 @@ fn write_mail_attachment_file(
         let path = dir.join(&file_name);
         match OpenOptions::new().write(true).create_new(true).open(&path) {
             Ok(mut file) => {
-                file.write_all(bytes)
-                    .map_err(|e| GuiError::internal(format!("could not write attachment: {e}")))?;
+                if let Err(e) = file.write_all(bytes) {
+                    drop(file);
+                    let _ = std::fs::remove_file(&path);
+                    return Err(GuiError::internal(format!(
+                        "could not write attachment: {e}"
+                    )));
+                }
                 return Ok(path);
             }
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,

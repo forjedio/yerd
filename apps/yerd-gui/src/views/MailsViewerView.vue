@@ -102,9 +102,7 @@ watch(
   filteredList,
   (items) => {
     if (items.length === 0) {
-      selectedId.value = null;
-      detail.value = null;
-      loadRemoteContent.value = false;
+      clearSelection();
       return;
     }
     if (!selectedId.value || !items.some((m) => m.id === selectedId.value)) {
@@ -113,6 +111,15 @@ watch(
   },
   { immediate: true },
 );
+
+/** Drop selection and invalidate any in-flight getMail for a prior id. */
+function clearSelection(): void {
+  selectSeq += 1;
+  selectedId.value = null;
+  detail.value = null;
+  loadingDetail.value = false;
+  loadRemoteContent.value = false;
+}
 
 async function select(id: string, fromUser: boolean): Promise<void> {
   const seq = ++selectSeq;
@@ -178,18 +185,14 @@ async function confirmDelete(close: () => void): Promise<void> {
       const id = selectedId.value;
       if (!id) return;
       await deleteMails([id]);
-      selectedId.value = null;
-      detail.value = null;
-      loadRemoteContent.value = false;
+      clearSelection();
       close();
       await refresh();
       toast.success("Message deleted");
       return;
     }
     await clearMails();
-    selectedId.value = null;
-    detail.value = null;
-    loadRemoteContent.value = false;
+    clearSelection();
     close();
     await refresh();
     toast.success("Mailbox cleared");

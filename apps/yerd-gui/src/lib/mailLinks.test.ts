@@ -225,6 +225,24 @@ describe("buildMailFrameDocument", () => {
     expect(body).not.toContain("cdn.example.com");
   });
 
+  it("strips string-form @import without opt-in", () => {
+    const { head } = buildMailFrameDocument(`<!doctype html><html><head>
+<style>@import "https://cdn.example.com/mail.css"; .ok { color: red; }</style>
+</head><body></body></html>`);
+    expect(head).not.toContain("cdn.example.com");
+    expect(head).toContain(".ok { color: red; }");
+  });
+
+  it("keeps string-form @import when loadRemoteContent is true", () => {
+    const { head } = buildMailFrameDocument(
+      `<!doctype html><html><head>
+<style>@import "https://cdn.example.com/mail.css";</style>
+</head><body></body></html>`,
+      { loadRemoteContent: true },
+    );
+    expect(head).toContain('@import "https://cdn.example.com/mail.css"');
+  });
+
   it("drops non-stylesheet link tags", () => {
     const { head } = buildMailFrameDocument(`<!doctype html><html><head>
 <link rel="prefetch" href="https://evil.example/x">
@@ -239,7 +257,7 @@ describe("listRemoteContentUrls", () => {
   it("lists remote stylesheets, images, and CSS urls without loading them", () => {
     const refs = listRemoteContentUrls(`<!doctype html><html><head>
 <link rel="stylesheet" href="https://cdn.example.com/mail.css">
-<style>.bg { background: url(https://cdn.example.com/bg.png); }</style>
+<style>@import "https://cdn.example.com/imported.css"; .bg { background: url(https://cdn.example.com/bg.png); }</style>
 </head><body>
 <img src="https://cdn.example.com/logo.png" alt="logo">
 <img src="cid:inline@local" alt="inline">
@@ -249,6 +267,7 @@ describe("listRemoteContentUrls", () => {
       { url: "https://cdn.example.com/mail.css", kind: "stylesheet" },
       { url: "https://cdn.example.com/logo.png", kind: "image" },
       { url: "https://cdn.example.com/x.png", kind: "css-url" },
+      { url: "https://cdn.example.com/imported.css", kind: "stylesheet" },
       { url: "https://cdn.example.com/bg.png", kind: "css-url" },
     ]);
   });

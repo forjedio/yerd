@@ -249,15 +249,26 @@ function normalizeRemoteUrl(raw: string): string {
 }
 
 const CSS_URL_PATTERN = /url\s*\(\s*(['"]?)([^)'"]+)\1\s*\)/gi;
+/** String or url() form: `@import "https://…"` / `@import url(https://…)`. */
+const CSS_IMPORT_PATTERN =
+  /@import\s+(?:url\s*\(\s*)?(['"]?)([^)'";\s]+)\1[^;]*;?/gi;
 
-/** Blank remote `url(...)` references inside CSS text (stylesheets / attributes). */
-function neutralizeRemoteCssUrls(css: string): string {
-  return css.replace(CSS_URL_PATTERN, (full, _q, raw: string) => {
+/** Blank remote `url(...)` / `@import` references inside CSS text. */
+function neutralizeRemoteCss(css: string): string {
+  let out = css.replace(CSS_IMPORT_PATTERN, (full, _q, raw: string) => {
+    return isRemoteHttpUrl(raw) ? "" : full;
+  });
+  out = out.replace(CSS_URL_PATTERN, (full, _q, raw: string) => {
     return isRemoteHttpUrl(raw) ? "none" : full;
   });
+  return out;
 }
 
 function collectCssRemoteUrls(css: string, add: (url: string, kind: RemoteContentKind) => void): void {
+  for (const match of css.matchAll(CSS_IMPORT_PATTERN)) {
+    const raw = match[2];
+    if (isRemoteHttpUrl(raw)) add(raw, "stylesheet");
+  }
   for (const match of css.matchAll(CSS_URL_PATTERN)) {
     const raw = match[2];
     if (isRemoteHttpUrl(raw)) add(raw, "css-url");
@@ -324,12 +335,12 @@ function stripRemoteResources(doc: Document): void {
   for (const el of [...doc.querySelectorAll("[style]")]) {
     const style = el.getAttribute("style");
     if (!style) continue;
-    el.setAttribute("style", neutralizeRemoteCssUrls(style));
+    el.setAttribute("style", neutralizeRemoteCss(style));
   }
   for (const styleEl of [...doc.querySelectorAll("style")]) {
     const css = styleEl.textContent;
     if (!css) continue;
-    styleEl.textContent = neutralizeRemoteCssUrls(css);
+    styleEl.textContent = neutralizeRemoteCss(css);
   }
 }
 
