@@ -392,12 +392,9 @@ const legacyOptions = ref<{ value: PhpVersion; label: string }[]>([]);
 const selectedLegacy = ref<PhpVersion>("");
 const showLegacy = ref(false);
 const confirmLegacy = ref(false);
-// Whether the install button acts on a legacy version (the disclosure is open).
-const legacyMode = computed(() => showLegacy.value);
-const canInstall = computed(() =>
-  legacyMode.value
-    ? !!selectedLegacy.value && confirmLegacy.value
-    : !!selectedVersion.value,
+const canInstallStable = computed(() => !!selectedVersion.value);
+const canInstallLegacy = computed(
+  () => !!selectedLegacy.value && confirmLegacy.value,
 );
 
 // ── install-progress dialog ──
@@ -449,8 +446,7 @@ async function openInstall(): Promise<void> {
  * version list AND the status poll so the new row shows its patch + "idle" state
  * immediately rather than on the next 4s tick.
  */
-async function confirmInstall(closePicker: () => void): Promise<void> {
-  const legacy = legacyMode.value;
+async function confirmInstall(legacy: boolean): Promise<void> {
   const v = legacy ? selectedLegacy.value : selectedVersion.value;
   if (!v || installing.value) return;
   if (legacy && !confirmLegacy.value) return;
@@ -459,7 +455,7 @@ async function confirmInstall(closePicker: () => void): Promise<void> {
   installPhase.value = "running";
   installError.value = "";
   operations.begin({ id: opId, kind: "php-install", label: `Installing PHP ${v}` });
-  closePicker();
+  installOpen.value = false;
   installProgressOpen.value = true;
   try {
     await installPhpWithProgress(
@@ -895,6 +891,13 @@ onUnmounted(
               <Switch v-model="confirmLegacy" aria-label="Confirm legacy install" />
               I understand and want to install this legacy version anyway.
             </label>
+            <Button
+              class="w-full"
+              :disabled="!canInstallLegacy || installing"
+              @click="confirmInstall(true)"
+            >
+              Install legacy version
+            </Button>
           </div>
         </div>
       </template>
@@ -904,8 +907,13 @@ onUnmounted(
       </p>
       <template #footer="{ close }">
         <Button variant="ghost" @click="close">Cancel</Button>
-        <Button :disabled="!canInstall || installing" @click="confirmInstall(close)">
-          {{ legacyMode ? "Install legacy version" : "Install" }}
+        <Button
+          v-if="installOptions.length"
+          :disabled="!canInstallStable || installing"
+          data-testid="install-stable"
+          @click="confirmInstall(false)"
+        >
+          Install
         </Button>
       </template>
     </Modal>

@@ -616,12 +616,16 @@ fn managed_shim_version(name: &str) -> Option<PhpVersion> {
 /// `yerd_bin`): the wrapper reads `argv[0]`, resolves the target PHP + minor, and
 /// points `PHPRC` at that version's generated ini before `exec`ing PHP. So:
 ///
-/// * for each installed `v`: `php<v>` → `yerd_bin`, `php<v>cover` → `yerd_bin`;
+/// * for each installed `v`: `php<v>` → `yerd_bin`, and `php<v>cover` → `yerd_bin`
+///   except for legacy (`< 8.2`) versions, which get no cover shim because pcov is
+///   never built for them (`cover_shim` rejects them regardless, so the shim keeps
+///   `{data}/bin` honest);
 /// * `phpcover` → `yerd_bin`;
 /// * `php` → `yerd_bin` when at least one version is installed (the wrapper
 ///   resolves the default from `config.php.default` at run time);
 /// * prune managed `php<X.Y>`/`php<X.Y>cover` symlinks whose version is no longer
-///   installed.
+///   installed, plus any legacy cover shim (e.g. `php7.4cover`) left by an older
+///   Yerd, which must go even when that legacy version is still installed.
 ///
 /// A **single** `discover_bundled` snapshot drives both create and prune. Callers
 /// must serialize invocations (the daemon holds a dedicated mutex) so the
@@ -644,9 +648,6 @@ pub fn reconcile_shims(dirs: &PlatformDirs, yerd_bin: &Path) -> Result<(), PhpEr
 
     for &v in &installed {
         place_symlink(&bin.join(versioned_shim_name(v, false)), yerd_bin)?;
-        // No cover shim for legacy (< 8.2): pcov is never built for it, so
-        // `php<ver>cover` could only error. The gate in `cover_shim` still
-        // rejects it, but not creating the shim keeps `{data}/bin` honest.
         if !v.is_legacy() {
             place_symlink(&bin.join(versioned_shim_name(v, true)), yerd_bin)?;
         }
@@ -674,9 +675,6 @@ pub fn reconcile_shims(dirs: &PlatformDirs, yerd_bin: &Path) -> Result<(), PhpEr
         let Some(v) = managed_shim_version(name) else {
             continue;
         };
-        // Keep a shim only if its version is installed - except a legacy cover
-        // shim (`php7.4cover`), which must be pruned even when 7.4 is installed,
-        // since pcov is never built for legacy.
         let stale_legacy_cover = name.ends_with("cover") && v.is_legacy();
         if installed.contains(&v) && !stale_legacy_cover {
             continue;
@@ -1164,8 +1162,6 @@ mod tests {
 
         let bin = shim_dir(&dirs);
         std::fs::create_dir_all(&bin).unwrap();
-        // A stale legacy cover shim (from an older yerd) must be pruned even
-        // though 7.4 is installed.
         std::os::unix::fs::symlink(&yerd_bin, bin.join("php7.4cover")).unwrap();
 
         reconcile_shims(&dirs, &yerd_bin).unwrap();

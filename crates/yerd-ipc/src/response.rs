@@ -524,8 +524,10 @@ pub enum ErrorCode {
     InstanceAlreadyExists,
     /// A legacy (< 8.2) PHP version was used where it is not allowed: as the
     /// global default, or installed without the explicit `confirm_legacy`
-    /// opt-in. Returned only for the new legacy flows, so older clients (which
-    /// never install legacy) cannot receive it.
+    /// opt-in. Reachable from the pre-existing `InstallPhp` / `SetDefaultPhp`
+    /// requests, so a pre-legacy client that names a legacy version can still
+    /// provoke it and, lacking the variant, will surface it as an
+    /// `IpcError::Decode` rather than a typed error.
     LegacyRestricted,
     /// Catch-all for daemon-side failures that don't fit a typed code.
     /// Expand this enum rather than overloading `Internal`.

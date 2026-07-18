@@ -4110,6 +4110,26 @@ Subject: Captured\r\n\r\nhi\r\n";
         }
     }
 
+    /// Serves a valid legacy `php-legacy.json` but errors on every stable
+    /// `php.json` request, modelling a reachable legacy manifest behind an
+    /// unreachable stable one.
+    struct LegacyOnlyDl {
+        legacy: ListingDl,
+    }
+    #[async_trait::async_trait]
+    impl yerd_php::Downloader for LegacyOnlyDl {
+        async fn download(&self, url: &str) -> Result<Vec<u8>, yerd_php::DownloadError> {
+            if url.contains("php-legacy.json") {
+                self.legacy.download(url).await
+            } else {
+                Err(yerd_php::DownloadError::Transport {
+                    url: url.to_owned(),
+                    reason: "stable unreachable".into(),
+                })
+            }
+        }
+    }
+
     #[tokio::test]
     async fn poll_and_refresh_populates_cache_from_listing() {
         let tmp = tempfile::tempdir().unwrap();
@@ -4188,6 +4208,61 @@ Subject: Captured\r\n\r\nhi\r\n";
         assert!(
             !cache.contains_key(&PhpVersion::new(7, 4)),
             "legacy minor is skipped, not errored"
+        );
+    }
+
+    #[tokio::test]
+    async fn poll_and_refresh_preserves_cached_legacy_update_when_legacy_fetch_fails() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_in(tmp.path());
+        fake_install_build(&state.dirs, PhpVersion::new(8, 5), "8.5.6", 1);
+        fake_install_build(&state.dirs, PhpVersion::new(7, 4), "7.4.20", 1);
+        state
+            .php_updates
+            .write()
+            .await
+            .insert(PhpVersion::new(7, 4), ("7.4.33".to_owned(), 1));
+        // Legacy is signed with a different key than the poll is given, so its
+        // fetch degrades to `None`; the stable manifest is valid.
+        let stable = signed_listing(&[("8.5.9", "8.5", 1)]);
+        let legacy = signed_listing(&[("7.4.40", "7.4", 1)]);
+        let dl = TwoChannelDl {
+            stable: ListingDl::new(&stable),
+            legacy: ListingDl::new(&legacy),
+        };
+
+        crate::php_updates::poll_and_refresh(&state, &dl, &stable.public_key).await;
+
+        let cache = state.php_updates.read().await;
+        assert_eq!(
+            cache.get(&PhpVersion::new(8, 5)).cloned(),
+            Some(("8.5.9".to_owned(), 1)),
+            "stable minor is refreshed"
+        );
+        assert_eq!(
+            cache.get(&PhpVersion::new(7, 4)).cloned(),
+            Some(("7.4.33".to_owned(), 1)),
+            "a legacy fetch failure preserves the previously-cached legacy update"
+        );
+    }
+
+    #[tokio::test]
+    async fn poll_and_refresh_checks_legacy_when_stable_is_unreachable() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_in(tmp.path());
+        fake_install_build(&state.dirs, PhpVersion::new(7, 4), "7.4.20", 1);
+        let legacy = signed_listing(&[("7.4.33", "7.4", 1)]);
+        let dl = LegacyOnlyDl {
+            legacy: ListingDl::new(&legacy),
+        };
+
+        crate::php_updates::poll_and_refresh(&state, &dl, &legacy.public_key).await;
+
+        let cache = state.php_updates.read().await;
+        assert_eq!(
+            cache.get(&PhpVersion::new(7, 4)).cloned(),
+            Some(("7.4.33".to_owned(), 1)),
+            "a legacy-only install still gets update checks when stable is unreachable"
         );
     }
 

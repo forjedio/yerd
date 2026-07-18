@@ -376,9 +376,9 @@ for the user-facing restrictions this backs.
 
 | Function | Purpose |
 | --- | --- |
-| `resolve_from_listing(listing, version, os, arch)` | Selects the single `(minor, os, arch)` build and returns an `Artifact` with `cli_url`/`fpm_url`, their `sha256`s, and the `revision`. Errors `VersionUnavailable` if none match, or `UnsupportedListingSchema` / `ListingParse` on a bad manifest. |
-| `available_minors(listing, os, arch)` | Every distinct major.minor with a build for the platform, sorted + deduped. Feeds the GUI dropdown / `yerd list php`. |
-| `listing_url()` / `listing_sig_url()` | URLs of the `php.json` manifest and its detached signature. |
+| `resolve_from_listing(listing, version, os, arch, channel)` | Selects the single `(minor, os, arch)` build and returns an `Artifact` with `cli_url`/`fpm_url`, their `sha256`s, and the `revision`. Errors `VersionUnavailable` if none match (including when `Channel::of(version) != channel`), or `UnsupportedListingSchema` / `ListingParse` on a bad manifest. |
+| `available_minors(listing, os, arch, channel)` | Every distinct major.minor with a build for the platform whose channel matches, sorted + deduped. Feeds the GUI dropdown / `yerd list php`. |
+| `listing_url(channel)` / `listing_sig_url(channel)` | URLs of the channel's manifest (`Channel::Stable` → `php.json`, `Channel::Legacy` → `php-legacy.json`) and its detached signature. |
 | `is_safe_member(name)` | Zip-slip guard: a tar member is trusted only if relative with no `..`, root, or prefix components. |
 | `is_newer_build` / `patch_of` / `display_build` | Build-level `(patch, revision)` comparison for update checks, and the `<patch>-<revision>` display string. |
 

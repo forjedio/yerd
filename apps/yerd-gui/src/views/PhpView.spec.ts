@@ -108,4 +108,27 @@ describe("PhpView legacy handling", () => {
     const streamed = invokeMock.mock.calls.find((c) => c[0] === "install_php_streamed");
     expect(streamed?.[1]).toMatchObject({ confirmLegacy: true });
   });
+
+  it("keeps the stable install available while the legacy disclosure is open", async () => {
+    stubIpc({});
+    const wrapper = await mountView();
+
+    const openBtn = wrapper
+      .findAll("button")
+      .find((b) => b.text().includes("Install") && b.attributes("disabled") === undefined);
+    await openBtn!.trigger("click");
+    await flushPromises();
+
+    await wrapper.find('[data-testid="toggle-legacy"]').trigger("click");
+    await flushPromises();
+
+    const stableBtn = wrapper.find('[data-testid="install-stable"]');
+    expect(stableBtn.exists()).toBe(true);
+    expect(stableBtn.attributes("disabled")).toBeUndefined();
+
+    await stableBtn.trigger("click");
+    await flushPromises();
+    const streamed = invokeMock.mock.calls.find((c) => c[0] === "install_php_streamed");
+    expect(streamed?.[1]).toMatchObject({ confirmLegacy: false });
+  });
 });
