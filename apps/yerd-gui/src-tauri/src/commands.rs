@@ -5,8 +5,10 @@
 //! ever sees a success variant or a typed failure. There is no business logic
 //! here - that lives in the daemon and its crates (the thin-client rule).
 
-use std::path::PathBuf;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::fs::OpenOptions;
+use std::io::Write;
+use std::path::{Path, PathBuf};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use tauri::Manager;
 use yerd_core::PhpVersion;
@@ -21,6 +23,9 @@ use crate::ipc::{exchange, exchange_timeout};
 /// trips for a wedged/crash-looping daemon - letting the poller advance instead
 /// of hanging. Heavy/mutating commands deliberately stay unbounded.
 const PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Cached mail attachment files older than this are removed on the next save.
+const MAIL_ATTACHMENT_MAX_AGE: Duration = Duration::from_secs(24 * 60 * 60);
 
 /// Convert a daemon `Response::Error` into a `GuiError`; pass success through.
 fn finish(resp: Response) -> Result<Response, GuiError> {
@@ -604,13 +609,19 @@ pub async fn get_mail(id: String) -> Result<Response, GuiError> {
 }
 
 #[tauri::command]
-pub async fn clear_mails() -> Result<Response, GuiError> {
-    finish(exchange(&Request::ClearMails).await?)
+pub async fn clear_mails(app: tauri::AppHandle) -> Result<Response, GuiError> {
+    let resp = finish(exchange(&Request::ClearMails).await?)?;
+    clear_mail_attachment_cache(&app);
+    Ok(resp)
 }
 
+/// Delete selected messages and drop the host attachment cache (files are not
+/// keyed by mail id, so they follow the mailbox lifecycle as a whole).
 #[tauri::command]
-pub async fn delete_mails(ids: Vec<String>) -> Result<Response, GuiError> {
-    finish(exchange(&Request::DeleteMails { ids }).await?)
+pub async fn delete_mails(app: tauri::AppHandle, ids: Vec<String>) -> Result<Response, GuiError> {
+    let resp = finish(exchange(&Request::DeleteMails { ids }).await?)?;
+    clear_mail_attachment_cache(&app);
+    Ok(resp)
 }
 
 #[tauri::command]
@@ -913,24 +924,89 @@ pub async fn save_mail_attachment(
     data: String,
 ) -> Result<String, GuiError> {
     let bytes = base64_decode(&data)?;
+    let dir = mail_attachments_dir(&app)?;
+    std::fs::create_dir_all(&dir)
+        .map_err(|e| GuiError::internal(format!("could not create attachment cache: {e}")))?;
+    purge_stale_mail_attachments(&dir);
+
+    let path = write_mail_attachment_file(&dir, &safe_attachment_filename(&filename), &bytes)?;
+    Ok(path.to_string_lossy().into_owned())
+}
+
+fn mail_attachments_dir(app: &tauri::AppHandle) -> Result<PathBuf, GuiError> {
     let mut dir = app
         .path()
         .app_cache_dir()
         .map_err(|e| GuiError::internal(format!("could not locate cache directory: {e}")))?;
     dir.push("mail-attachments");
-    std::fs::create_dir_all(&dir)
-        .map_err(|e| GuiError::internal(format!("could not create attachment cache: {e}")))?;
+    Ok(dir)
+}
 
-    let safe_name = safe_attachment_filename(&filename);
+fn clear_mail_attachment_cache(app: &tauri::AppHandle) {
+    if let Ok(dir) = mail_attachments_dir(app) {
+        let _ = std::fs::remove_dir_all(dir);
+    }
+}
+
+fn purge_stale_mail_attachments(dir: &Path) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    let now = SystemTime::now();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        let Ok(meta) = entry.metadata() else {
+            continue;
+        };
+        let Ok(modified) = meta.modified() else {
+            continue;
+        };
+        let Ok(age) = now.duration_since(modified) else {
+            continue;
+        };
+        if age > MAIL_ATTACHMENT_MAX_AGE {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+}
+
+/// Create `{stamp}-{name}` (or `{stamp}-{n}-{name}` on collision) with
+/// `create_new` so two saves in the same millisecond cannot truncate each other.
+fn write_mail_attachment_file(
+    dir: &Path,
+    safe_name: &str,
+    bytes: &[u8],
+) -> Result<PathBuf, GuiError> {
     let stamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_err(|e| GuiError::internal(format!("system clock error: {e}")))?
         .as_millis();
-    dir.push(format!("{stamp}-{safe_name}"));
 
-    std::fs::write(&dir, bytes)
-        .map_err(|e| GuiError::internal(format!("could not write attachment: {e}")))?;
-    Ok(dir.to_string_lossy().into_owned())
+    for attempt in 0u32..1000 {
+        let file_name = if attempt == 0 {
+            format!("{stamp}-{safe_name}")
+        } else {
+            format!("{stamp}-{attempt}-{safe_name}")
+        };
+        let path = dir.join(&file_name);
+        match OpenOptions::new().write(true).create_new(true).open(&path) {
+            Ok(mut file) => {
+                file.write_all(bytes)
+                    .map_err(|e| GuiError::internal(format!("could not write attachment: {e}")))?;
+                return Ok(path);
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => {
+                return Err(GuiError::internal(format!("could not write attachment: {e}")));
+            }
+        }
+    }
+    Err(GuiError::internal(
+        "could not write attachment: too many name collisions",
+    ))
 }
 
 /// Standard (padded) base64 decode for attachment payloads.
@@ -1085,5 +1161,15 @@ mod tests {
             base64_decode("Zg==Zm8=").is_err(),
             "padding must only appear on the final quartet"
         );
+    }
+
+    #[test]
+    fn write_mail_attachment_file_uses_unique_names_on_collision() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let first = write_mail_attachment_file(dir.path(), "a.txt", b"one").expect("first write");
+        let second = write_mail_attachment_file(dir.path(), "a.txt", b"two").expect("second write");
+        assert_ne!(first, second);
+        assert_eq!(std::fs::read(&first).expect("read first"), b"one");
+        assert_eq!(std::fs::read(&second).expect("read second"), b"two");
     }
 }

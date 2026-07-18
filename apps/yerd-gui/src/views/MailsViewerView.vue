@@ -1,9 +1,16 @@
 <script setup lang="ts">
-import { FileDown, Inbox, Paperclip, Trash2 } from "lucide-vue-next";
+import { FileDown, Globe, Inbox, Paperclip, Trash2 } from "lucide-vue-next";
 import { computed, nextTick, onUnmounted, ref, watch } from "vue";
 
 import TitleBar from "@/components/TitleBar.vue";
 import Button from "@/components/ui/Button.vue";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import Modal from "@/components/ui/Modal.vue";
 import Select from "@/components/ui/Select.vue";
 import Spinner from "@/components/ui/Spinner.vue";
@@ -25,8 +32,10 @@ import {
 import {
   buildMailFrameDocument,
   linkifyText,
+  listRemoteContentUrls,
   resolveExternalHref,
   resolveFrameLink,
+  type RemoteContentKind,
 } from "@/lib/mailLinks";
 import { humaniseBytes } from "@/lib/utils";
 import type { MailAttachment, MailDetail, MailSummary } from "@/ipc/types";
@@ -45,9 +54,12 @@ const selectedId = ref<string | null>(null);
 const detail = ref<MailDetail | null>(null);
 const loadingDetail = ref(false);
 let selectSeq = 0;
-const clearOpen = ref(false);
+const deleteOpen = ref(false);
+const deleteMode = ref<"selected" | "all">("selected");
 const clearing = ref(false);
 const selectedApp = ref<string>("");
+/** Opt-in: remote images / stylesheets phone home; off until the user asks. */
+const loadRemoteContent = ref(false);
 
 let lastOpenedLink = "";
 let lastOpenedAt = 0;
@@ -92,6 +104,7 @@ watch(
     if (items.length === 0) {
       selectedId.value = null;
       detail.value = null;
+      loadRemoteContent.value = false;
       return;
     }
     if (!selectedId.value || !items.some((m) => m.id === selectedId.value)) {
@@ -104,6 +117,7 @@ watch(
 async function select(id: string, fromUser: boolean): Promise<void> {
   const seq = ++selectSeq;
   selectedId.value = id;
+  loadRemoteContent.value = false;
   loadingDetail.value = true;
   try {
     const mail = await getMail(id);
@@ -134,25 +148,51 @@ async function markRead(id: string): Promise<void> {
   }
 }
 
-const deleteScopeLabel = computed(() =>
-  selectedApp.value
-    ? `all ${filteredList.value.length} email(s) from "${selectedApp.value}"`
-    : "every captured email",
+function openDelete(mode: "selected" | "all"): void {
+  if (mode === "selected" && !selectedId.value) return;
+  if (mode === "all" && list.value.length === 0) return;
+  deleteMode.value = mode;
+  deleteOpen.value = true;
+}
+
+const deleteTitle = computed(() =>
+  deleteMode.value === "selected" ? "Delete this message?" : "Clear all mails?",
+);
+
+const deleteBody = computed(() => {
+  if (deleteMode.value === "selected") {
+    const subject = detail.value?.subject?.trim() || "(no subject)";
+    return `This permanently deletes "${subject}". This cannot be undone.`;
+  }
+  return `This permanently deletes every captured email (${list.value.length}). This cannot be undone.`;
+});
+
+const deleteConfirmLabel = computed(() =>
+  deleteMode.value === "selected" ? "Delete message" : "Delete all",
 );
 
 async function confirmDelete(close: () => void): Promise<void> {
   clearing.value = true;
   try {
-    if (selectedApp.value) {
-      await deleteMails(filteredList.value.map((m) => m.id));
-    } else {
-      await clearMails();
+    if (deleteMode.value === "selected") {
+      const id = selectedId.value;
+      if (!id) return;
+      await deleteMails([id]);
+      selectedId.value = null;
+      detail.value = null;
+      loadRemoteContent.value = false;
+      close();
+      await refresh();
+      toast.success("Message deleted");
+      return;
     }
+    await clearMails();
     selectedId.value = null;
     detail.value = null;
+    loadRemoteContent.value = false;
     close();
     await refresh();
-    toast.success(selectedApp.value ? "Emails deleted" : "Mailbox cleared");
+    toast.success("Mailbox cleared");
   } catch (e) {
     toast.error("Couldn't delete emails", (e as IpcError).message);
   } finally {
@@ -186,7 +226,9 @@ function onHtmlLinkClick(ev: Event): void {
 function renderHtmlBody(html: string): void {
   const host = htmlHost.value;
   if (!host) return;
-  const { head, body } = buildMailFrameDocument(html);
+  const { head, body } = buildMailFrameDocument(html, {
+    loadRemoteContent: loadRemoteContent.value,
+  });
   let root = host.shadowRoot;
   if (!root) {
     root = host.attachShadow({ mode: "open" });
@@ -211,7 +253,7 @@ function clearHtmlBody(): void {
 }
 
 watch(
-  [() => detail.value?.html_body, loadingDetail, htmlHost],
+  [() => detail.value?.html_body, loadingDetail, htmlHost, loadRemoteContent],
   ([html, loading]) => {
     if (loading) return;
     if (!html) {
@@ -236,6 +278,17 @@ function handleTextLinkClick(ev: MouseEvent): void {
 const attachments = computed<MailAttachment[]>(
   () => detail.value?.attachments ?? [],
 );
+
+const remoteContent = computed(() => {
+  const html = detail.value?.html_body;
+  return html ? listRemoteContentUrls(html) : [];
+});
+
+function remoteKindLabel(kind: RemoteContentKind): string {
+  if (kind === "stylesheet") return "Stylesheet";
+  if (kind === "css-url") return "CSS image";
+  return "Image";
+}
 
 async function openAttachment(att: MailAttachment): Promise<void> {
   try {
@@ -271,17 +324,33 @@ function formatDate(epoch: number): string {
           aria-label="Filter by application"
           class="!h-6 max-w-44 text-xs"
         />
-        <!-- Plain button (not the icon-variant Button) so it sits cleanly in the
-             32px titlebar without overflowing it. -->
-        <button
-          type="button"
-          class="inline-flex size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:pointer-events-none disabled:opacity-40"
-          :disabled="filteredList.length === 0"
-          :aria-label="selectedApp ? 'Delete emails for this application' : 'Delete all emails'"
-          @click="clearOpen = true"
-        >
-          <Trash2 class="size-3.5" />
-        </button>
+        <DropdownMenu>
+          <DropdownMenuTrigger as-child>
+            <button
+              type="button"
+              class="inline-flex size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:pointer-events-none disabled:opacity-40"
+              :disabled="list.length === 0"
+              aria-label="Delete emails"
+            >
+              <Trash2 class="size-3.5" />
+            </button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end">
+            <DropdownMenuItem
+              :disabled="!selectedId"
+              @select="openDelete('selected')"
+            >
+              Delete selected message
+            </DropdownMenuItem>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem
+              class="text-destructive focus:bg-destructive/10 focus:text-destructive"
+              @select="openDelete('all')"
+            >
+              Clear all mails
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
       </template>
     </TitleBar>
 
@@ -400,15 +469,75 @@ function formatDate(epoch: number): string {
             <dd class="break-words text-muted-foreground">{{ h.value }}</dd>
           </div>
         </dl>
+
+        <section v-if="detail.html_body" class="mt-6">
+          <h3 class="mb-2 text-xs font-semibold uppercase text-muted-foreground">
+            Remote content
+          </h3>
+          <p class="mb-2 text-[11px] leading-snug text-muted-foreground">
+            External images and stylesheets are blocked until you load them.
+          </p>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            class="mb-3 w-full"
+            :disabled="remoteContent.length === 0"
+            :aria-pressed="loadRemoteContent"
+            :title="
+              remoteContent.length === 0
+                ? 'This message has no remote images or stylesheets'
+                : loadRemoteContent
+                  ? 'Remote images and stylesheets are loading for this message'
+                  : 'Load remote images and stylesheets for this message'
+            "
+            @click="loadRemoteContent = !loadRemoteContent"
+          >
+            <Globe class="size-3.5" />
+            {{
+              remoteContent.length === 0
+                ? "No remote content"
+                : loadRemoteContent
+                  ? "Hide remote content"
+                  : "Load remote content"
+            }}
+          </Button>
+          <ul
+            v-if="remoteContent.length > 0"
+            class="space-y-2"
+          >
+            <li
+              v-for="item in remoteContent"
+              :key="`${item.kind}:${item.url}`"
+              class="min-w-0"
+            >
+              <p
+                class="break-all text-xs text-foreground"
+                :title="item.url"
+              >
+                {{ item.url }}
+              </p>
+              <span class="text-[10px] uppercase tracking-wide text-muted-foreground">
+                {{ remoteKindLabel(item.kind) }}
+              </span>
+            </li>
+          </ul>
+          <p
+            v-else
+            class="text-xs text-muted-foreground"
+          >
+            None detected
+          </p>
+        </section>
       </aside>
     </div>
 
     <Modal
-      v-model:open="clearOpen"
-      :title="selectedApp ? 'Delete these emails?' : 'Clear all mails?'"
+      v-model:open="deleteOpen"
+      :title="deleteTitle"
     >
       <p class="text-sm text-muted-foreground">
-        This permanently deletes {{ deleteScopeLabel }}. This cannot be undone.
+        {{ deleteBody }}
       </p>
       <template #footer="{ close }">
         <Button variant="ghost" @click="close">Cancel</Button>
@@ -418,7 +547,7 @@ function formatDate(epoch: number): string {
           @click="confirmDelete(close)"
         >
           <Spinner v-if="clearing" class="size-4" />
-          {{ selectedApp ? "Delete" : "Delete all" }}
+          {{ deleteConfirmLabel }}
         </Button>
       </template>
     </Modal>

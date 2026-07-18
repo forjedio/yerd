@@ -4,6 +4,7 @@ import {
   buildMailFrameDocument,
   eventTargetElement,
   linkifyText,
+  listRemoteContentUrls,
   prepareHtmlBody,
   resolveExternalHref,
   resolveFrameLink,
@@ -48,10 +49,7 @@ describe("resolveExternalHref", () => {
 });
 
 describe("resolveFrameLink", () => {
-  // Build the anchor inside a real iframe's document, so `target` comes from a
-  // different realm than this module - exactly the production shape for
-  // cross-realm duck-typing where `instanceof Element` fails.
-  function frameDoc(): Document {
+  function crossRealmDocument(): Document {
     const iframe = document.createElement("iframe");
     document.body.append(iframe);
     const doc = iframe.contentDocument;
@@ -60,7 +58,7 @@ describe("resolveFrameLink", () => {
   }
 
   function anchorWith(href: string, child?: string): Element {
-    const doc = frameDoc();
+    const doc = crossRealmDocument();
     const a = doc.createElement("a");
     a.setAttribute("href", href);
     if (child) a.innerHTML = child;
@@ -108,7 +106,7 @@ describe("resolveFrameLink", () => {
   });
 
   it("returns null when the click isn't on a link", () => {
-    const doc = frameDoc();
+    const doc = crossRealmDocument();
     const p = doc.createElement("p");
     doc.body.append(p);
     expect(resolveFrameLink(p)).toBeNull();
@@ -116,7 +114,7 @@ describe("resolveFrameLink", () => {
   });
 
   it("opens via data-url from legacy plain-text linkify", () => {
-    const doc = frameDoc();
+    const doc = crossRealmDocument();
     const a = doc.createElement("a");
     a.setAttribute("href", "#");
     a.setAttribute("data-url", "https://example.com/");
@@ -128,7 +126,7 @@ describe("resolveFrameLink", () => {
   });
 
   it("opens via data-yerd-url when present", () => {
-    const doc = frameDoc();
+    const doc = crossRealmDocument();
     const a = doc.createElement("a");
     a.setAttribute("href", "#");
     a.setAttribute("data-yerd-url", "https://msi-portal.test/materials/share/abc");
@@ -141,7 +139,7 @@ describe("resolveFrameLink", () => {
 });
 
 describe("buildMailFrameDocument", () => {
-  it("preserves head styles and remote stylesheet links", () => {
+  it("preserves inline head styles and strips remote stylesheet links by default", () => {
     const { head, body } = buildMailFrameDocument(`<!doctype html><html><head>
 <style>.title { color: red; }</style>
 <link rel="stylesheet" href="https://cdn.example.com/mail.css">
@@ -149,10 +147,20 @@ describe("buildMailFrameDocument", () => {
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'">
 </head><body><p class="title">Hi</p></body></html>`);
     expect(head).toContain(".title { color: red; }");
-    expect(head).toContain('href="https://cdn.example.com/mail.css"');
+    expect(head).not.toContain("cdn.example.com/mail.css");
     expect(head).not.toContain("refresh");
     expect(head).not.toContain("Content-Security-Policy");
     expect(body).toContain('class="title"');
+  });
+
+  it("keeps remote stylesheet links when loadRemoteContent is true", () => {
+    const { head } = buildMailFrameDocument(
+      `<!doctype html><html><head>
+<link rel="stylesheet" href="https://cdn.example.com/mail.css">
+</head><body></body></html>`,
+      { loadRemoteContent: true },
+    );
+    expect(head).toContain('href="https://cdn.example.com/mail.css"');
   });
 
   it("stamps openable anchors, neutralizes href, and strips image maps", () => {
@@ -186,11 +194,35 @@ describe("buildMailFrameDocument", () => {
     expect(body).toContain("Hi");
   });
 
-  it("keeps remote images", () => {
+  it("strips remote images by default", () => {
     const { body } = buildMailFrameDocument(
       `<img src="https://cdn.example.com/logo.png" alt="logo">`,
     );
+    expect(body).not.toContain("cdn.example.com/logo.png");
+  });
+
+  it("keeps remote images when loadRemoteContent is true", () => {
+    const { body } = buildMailFrameDocument(
+      `<img src="https://cdn.example.com/logo.png" alt="logo">`,
+      { loadRemoteContent: true },
+    );
     expect(body).toContain('src="https://cdn.example.com/logo.png"');
+  });
+
+  it("keeps cid and data images without opt-in", () => {
+    const { body } = buildMailFrameDocument(
+      `<img src="cid:logo@local" alt="cid"><img src="data:image/png;base64,abc" alt="data">`,
+    );
+    expect(body).toContain('src="cid:logo@local"');
+    expect(body).toContain('src="data:image/png;base64,abc"');
+  });
+
+  it("neutralizes remote CSS url() without opt-in", () => {
+    const { head, body } = buildMailFrameDocument(`<!doctype html><html><head>
+<style>.bg { background: url(https://cdn.example.com/bg.png); }</style>
+</head><body><div style="background-image: url('https://cdn.example.com/x.png')"></div></body></html>`);
+    expect(head).not.toContain("cdn.example.com");
+    expect(body).not.toContain("cdn.example.com");
   });
 
   it("drops non-stylesheet link tags", () => {
@@ -199,7 +231,39 @@ describe("buildMailFrameDocument", () => {
 <link rel="stylesheet" href="https://cdn.example.com/ok.css">
 </head><body></body></html>`);
     expect(head).not.toContain("prefetch");
-    expect(head).toContain("ok.css");
+    expect(head).not.toContain("ok.css");
+  });
+});
+
+describe("listRemoteContentUrls", () => {
+  it("lists remote stylesheets, images, and CSS urls without loading them", () => {
+    const refs = listRemoteContentUrls(`<!doctype html><html><head>
+<link rel="stylesheet" href="https://cdn.example.com/mail.css">
+<style>.bg { background: url(https://cdn.example.com/bg.png); }</style>
+</head><body>
+<img src="https://cdn.example.com/logo.png" alt="logo">
+<img src="cid:inline@local" alt="inline">
+<div style="background-image: url('//cdn.example.com/x.png')"></div>
+</body></html>`);
+    expect(refs).toEqual([
+      { url: "https://cdn.example.com/mail.css", kind: "stylesheet" },
+      { url: "https://cdn.example.com/logo.png", kind: "image" },
+      { url: "https://cdn.example.com/x.png", kind: "css-url" },
+      { url: "https://cdn.example.com/bg.png", kind: "css-url" },
+    ]);
+  });
+
+  it("dedupes the same URL used in multiple places", () => {
+    const refs = listRemoteContentUrls(
+      `<img src="https://cdn.example.com/logo.png"><img src="https://cdn.example.com/logo.png">`,
+    );
+    expect(refs).toEqual([
+      { url: "https://cdn.example.com/logo.png", kind: "image" },
+    ]);
+  });
+
+  it("returns an empty list when there is no remote content", () => {
+    expect(listRemoteContentUrls(`<p>Hi <img src="cid:x"></p>`)).toEqual([]);
   });
 });
 
@@ -234,7 +298,7 @@ describe("prepareHtmlBody", () => {
     );
     expect(out).not.toContain("<map");
     expect(out).not.toContain("<area");
-    expect(out).toContain('src="https://example.com/x.png"');
+    expect(out).not.toContain("example.com/x.png");
   });
 });
 

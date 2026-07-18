@@ -199,14 +199,153 @@ function stampOpenableAnchors(root: ParentNode): void {
   }
 }
 
+/** Options for {@link buildMailFrameDocument}. */
+export type BuildMailFrameOptions = {
+  /**
+   * When true, keep remote (`http`/`https`/`//`) stylesheets, images, and CSS
+   * `url(...)` references. Default `false` so merely opening a message cannot
+   * phone home (IP / read-receipt style tracking).
+   */
+  loadRemoteContent?: boolean;
+};
+
+export type RemoteContentKind = "stylesheet" | "image" | "css-url";
+
+/** A remote resource referenced by a captured HTML message. */
+export type RemoteContentRef = {
+  url: string;
+  kind: RemoteContentKind;
+};
+
+function isRemoteHttpUrl(value: string | null | undefined): boolean {
+  if (!value) return false;
+  const trimmed = value.trim();
+  if (!trimmed || trimmed.startsWith("data:") || trimmed.startsWith("cid:")) {
+    return false;
+  }
+  if (trimmed.startsWith("//")) return true;
+  try {
+    const url = new URL(trimmed);
+    return url.protocol === "http:" || url.protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
+function normalizeRemoteUrl(raw: string): string {
+  const trimmed = raw.trim();
+  if (trimmed.startsWith("//")) {
+    try {
+      return new URL(`https:${trimmed}`).href;
+    } catch {
+      return trimmed;
+    }
+  }
+  try {
+    return new URL(trimmed).href;
+  } catch {
+    return trimmed;
+  }
+}
+
+const CSS_URL_PATTERN = /url\s*\(\s*(['"]?)([^)'"]+)\1\s*\)/gi;
+
+/** Blank remote `url(...)` references inside CSS text (stylesheets / attributes). */
+function neutralizeRemoteCssUrls(css: string): string {
+  return css.replace(CSS_URL_PATTERN, (full, _q, raw: string) => {
+    return isRemoteHttpUrl(raw) ? "none" : full;
+  });
+}
+
+function collectCssRemoteUrls(css: string, add: (url: string, kind: RemoteContentKind) => void): void {
+  for (const match of css.matchAll(CSS_URL_PATTERN)) {
+    const raw = match[2];
+    if (isRemoteHttpUrl(raw)) add(raw, "css-url");
+  }
+}
+
 /**
- * Sanitize a captured HTML email with DOMPurify and stamp openable anchors.
- * Preserves `<style>` and remote stylesheet `<link>` so marketing emails keep CSS.
+ * List remote (`http`/`https`/`//`) resources in captured HTML without loading them.
+ * Dedupes by normalized URL. Used by the Mails sidebar so the user can inspect
+ * what would be fetched before opting in.
  */
-export function buildMailFrameDocument(html: string): { head: string; body: string } {
+export function listRemoteContentUrls(html: string): RemoteContentRef[] {
   const cleaned = DOMPurify.sanitize(html, MAIL_PURIFY_CONFIG);
   const doc = new DOMParser().parseFromString(cleaned, "text/html");
   filterHeadHazards(doc);
+  const seen = new Set<string>();
+  const out: RemoteContentRef[] = [];
+
+  const add = (raw: string, kind: RemoteContentKind): void => {
+    const url = normalizeRemoteUrl(raw);
+    if (seen.has(url)) return;
+    seen.add(url);
+    out.push({ url, kind });
+  };
+
+  for (const link of doc.querySelectorAll("link[href]")) {
+    const href = link.getAttribute("href");
+    if (isRemoteHttpUrl(href)) add(href!, "stylesheet");
+  }
+  for (const img of doc.querySelectorAll("img")) {
+    const src = img.getAttribute("src");
+    if (isRemoteHttpUrl(src)) add(src!, "image");
+    const srcset = img.getAttribute("srcset");
+    if (srcset) {
+      for (const part of srcset.split(",")) {
+        const candidate = part.trim().split(/\s+/)[0];
+        if (isRemoteHttpUrl(candidate)) add(candidate, "image");
+      }
+    }
+  }
+  for (const el of doc.querySelectorAll("[style]")) {
+    collectCssRemoteUrls(el.getAttribute("style") ?? "", add);
+  }
+  for (const styleEl of doc.querySelectorAll("style")) {
+    collectCssRemoteUrls(styleEl.textContent ?? "", add);
+  }
+  return out;
+}
+
+/**
+ * Remove sender-controlled remote resources so viewing mail does not fetch
+ * them until the user opts in via {@link BuildMailFrameOptions.loadRemoteContent}.
+ */
+function stripRemoteResources(doc: Document): void {
+  for (const link of [...doc.querySelectorAll("link[href]")]) {
+    if (isRemoteHttpUrl(link.getAttribute("href"))) link.remove();
+  }
+  for (const img of [...doc.querySelectorAll("img")]) {
+    if (isRemoteHttpUrl(img.getAttribute("src"))) {
+      img.removeAttribute("src");
+    }
+    if (img.hasAttribute("srcset")) img.removeAttribute("srcset");
+  }
+  for (const el of [...doc.querySelectorAll("[style]")]) {
+    const style = el.getAttribute("style");
+    if (!style) continue;
+    el.setAttribute("style", neutralizeRemoteCssUrls(style));
+  }
+  for (const styleEl of [...doc.querySelectorAll("style")]) {
+    const css = styleEl.textContent;
+    if (!css) continue;
+    styleEl.textContent = neutralizeRemoteCssUrls(css);
+  }
+}
+
+/**
+ * Sanitize a captured HTML email with DOMPurify and stamp openable anchors.
+ * Preserves inline `<style>` blocks. Remote stylesheets, images, and CSS URLs
+ * are stripped unless `loadRemoteContent` is true.
+ */
+export function buildMailFrameDocument(
+  html: string,
+  options: BuildMailFrameOptions = {},
+): { head: string; body: string } {
+  const cleaned = DOMPurify.sanitize(html, MAIL_PURIFY_CONFIG);
+  const doc = new DOMParser().parseFromString(cleaned, "text/html");
+  filterHeadHazards(doc);
+  if (!options.loadRemoteContent) stripRemoteResources(doc);
   stampOpenableAnchors(doc);
   return {
     head: doc.head?.innerHTML ?? "",

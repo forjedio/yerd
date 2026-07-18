@@ -143,10 +143,12 @@ browser / handler).
 The HTML body is sanitized with **DOMPurify** and rendered in a **Shadow DOM**
 in the Mails window (so link clicks work reliably on macOS WKWebView). Openable
 `http(s)` / `mailto` / `tel` links are stamped and opened via the OS browser /
-handler. Inline images referenced by `cid:` are embedded as `data:` URLs, and
-remote images (e.g. a logo served over `https://`) load as well - just like a
-normal mail client, so opening a message can fetch its remote images. Non-inline
-attachments appear in a bar under the body and open with the OS default app.
+handler. Inline images referenced by `cid:` are embedded as `data:` URLs.
+Remote images and stylesheets (e.g. a logo served over `https://`) are **blocked
+by default** so merely opening a message cannot phone home. The right sidebar
+lists those URLs under **Remote content**; use **Load remote content** when you
+want them. Non-inline attachments appear in a bar under the body and open with
+the OS default app.
 
 ## Configuration
 
