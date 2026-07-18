@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { FileDown, Inbox, Paperclip, Trash2 } from "lucide-vue-next";
-import { computed, onMounted, onUnmounted, ref, watch } from "vue";
+import { computed, nextTick, onUnmounted, ref, watch } from "vue";
 
 import TitleBar from "@/components/TitleBar.vue";
 import Button from "@/components/ui/Button.vue";
@@ -25,19 +25,15 @@ import {
 import {
   buildMailFrameDocument,
   linkifyText,
-  MAIL_FRAME_CLICK_BRIDGE,
-  MAIL_FRAME_CSP,
   resolveExternalHref,
   resolveFrameLink,
 } from "@/lib/mailLinks";
 import { humaniseBytes } from "@/lib/utils";
 import type { MailAttachment, MailDetail, MailSummary } from "@/ipc/types";
 
-// Sandboxed srcdoc iframe + child CSP. `allow-scripts` is only for our trusted
-// click-bridge script in the frame head; email scripts are stripped and CSP
-// `default-src 'none'` blocks message content from running script. Link opens
-// are delivered to the host via `postMessage` (WKWebView is unreliable with
-// parent `contentDocument` listeners).
+// HTML mail is sanitized with DOMPurify, then rendered in a host Shadow DOM so
+// link clicks are handled in-process (WKWebView does not reliably deliver
+// sandboxed iframe clicks / postMessage). Opens are scheme-allowlisted.
 
 const toast = useToast();
 
@@ -164,10 +160,7 @@ async function confirmDelete(close: () => void): Promise<void> {
   }
 }
 
-function frameSrcdoc(html: string): string {
-  const { head, body } = buildMailFrameDocument(html);
-  return `<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="${MAIL_FRAME_CSP}">${MAIL_FRAME_CLICK_BRIDGE}${head}</head><body>${body}</body></html>`;
-}
+const htmlHost = ref<HTMLElement | null>(null);
 
 function openMailLink(url: string): void {
   const resolved = resolveExternalHref(url);
@@ -181,25 +174,63 @@ function openMailLink(url: string): void {
   });
 }
 
-function onMailFrameMessage(ev: MessageEvent): void {
-  const data = ev.data as { type?: string; url?: string } | null;
-  if (!data || data.type !== "yerd-mail-link" || typeof data.url !== "string") return;
-  openMailLink(data.url);
+function onHtmlLinkClick(ev: Event): void {
+  const action = resolveFrameLink(ev.target);
+  if (!action || action.kind === "scroll") return;
+  ev.preventDefault();
+  ev.stopPropagation();
+  if (action.kind !== "open") return;
+  openMailLink(action.url);
 }
 
-onMounted(() => window.addEventListener("message", onMailFrameMessage));
+function renderHtmlBody(html: string): void {
+  const host = htmlHost.value;
+  if (!host) return;
+  const { head, body } = buildMailFrameDocument(html);
+  let root = host.shadowRoot;
+  if (!root) {
+    root = host.attachShadow({ mode: "open" });
+    root.addEventListener("click", onHtmlLinkClick, true);
+  }
+  root.innerHTML = `<style>
+:host { display: block; }
+.yerd-mail-body {
+  padding: 1.25rem;
+  box-sizing: border-box;
+  color: #111;
+  font: 14px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+.yerd-mail-body img, .yerd-mail-body table { max-width: 100%; }
+.yerd-mail-body a { cursor: pointer; }
+</style>${head}<div class="yerd-mail-body">${body}</div>`;
+}
+
+function clearHtmlBody(): void {
+  const root = htmlHost.value?.shadowRoot;
+  if (root) root.innerHTML = "";
+}
+
+watch(
+  [() => detail.value?.html_body, loadingDetail, htmlHost],
+  ([html, loading]) => {
+    if (loading) return;
+    if (!html) {
+      clearHtmlBody();
+      return;
+    }
+    void nextTick(() => renderHtmlBody(html));
+  },
+);
+
 onUnmounted(() => {
   unregisterViewActions();
-  window.removeEventListener("message", onMailFrameMessage);
 });
 
 function handleTextLinkClick(ev: MouseEvent): void {
   const action = resolveFrameLink(ev.target);
   if (!action || action.kind !== "open") return;
   ev.preventDefault();
-  void openInBrowser(action.url).catch((e) =>
-    toast.error("Couldn't open link", (e as IpcError).message || action.url),
-  );
+  openMailLink(action.url);
 }
 
 const attachments = computed<MailAttachment[]>(
@@ -303,28 +334,10 @@ function formatDate(epoch: number): string {
           <Spinner class="size-6" />
         </div>
         <template v-else-if="detail">
-          <!-- Message header strip -->
-          <div class="shrink-0 border-b px-5 py-3">
-            <h2 class="text-base font-semibold">
-              {{ detail.subject || "(no subject)" }}
-            </h2>
-            <p class="mt-1 text-xs text-muted-foreground">
-              <strong>From:</strong> {{ detail.from }}
-            </p>
-            <p class="text-xs text-muted-foreground">
-              <strong>To:</strong> {{ detail.to.join(", ") }}
-            </p>
-            <p class="text-xs text-muted-foreground">
-              {{ formatDate(detail.date_epoch) }}
-            </p>
-          </div>
-
-          <iframe
+          <div
             v-if="detail.html_body"
-            :srcdoc="frameSrcdoc(detail.html_body)"
-            sandbox="allow-scripts allow-same-origin"
-            class="min-h-0 flex-1 bg-white"
-            title="Email body"
+            ref="htmlHost"
+            class="min-h-0 flex-1 overflow-auto bg-white"
           />
 
           <!-- Plain-text body with linkified URLs -->

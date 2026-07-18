@@ -49,9 +49,8 @@ describe("resolveExternalHref", () => {
 
 describe("resolveFrameLink", () => {
   // Build the anchor inside a real iframe's document, so `target` comes from a
-  // different realm than this module - exactly the production shape (clicks
-  // originate in the email frame). A same-realm `document.createElement` anchor
-  // would not exercise the cross-realm path where `instanceof Element` fails.
+  // different realm than this module - exactly the production shape for
+  // cross-realm duck-typing where `instanceof Element` fails.
   function frameDoc(): Document {
     const iframe = document.createElement("iframe");
     document.body.append(iframe);
@@ -84,7 +83,7 @@ describe("resolveFrameLink", () => {
     });
   });
 
-  it("walks up from a Text node inside the link (the common click target)", () => {
+  it("walks up from a text node inside the link (the common click target)", () => {
     const a = anchorWith("https://msi-portal.test/materials");
     a.appendChild(a.ownerDocument.createTextNode("View all materials"));
     const text = a.firstChild;
@@ -116,6 +115,18 @@ describe("resolveFrameLink", () => {
     expect(resolveFrameLink(null)).toBeNull();
   });
 
+  it("opens via data-url from legacy plain-text linkify", () => {
+    const doc = frameDoc();
+    const a = doc.createElement("a");
+    a.setAttribute("href", "#");
+    a.setAttribute("data-url", "https://example.com/");
+    doc.body.append(a);
+    expect(resolveFrameLink(a)).toEqual({
+      kind: "open",
+      url: "https://example.com/",
+    });
+  });
+
   it("opens via data-yerd-url when present", () => {
     const doc = frameDoc();
     const a = doc.createElement("a");
@@ -130,19 +141,21 @@ describe("resolveFrameLink", () => {
 });
 
 describe("buildMailFrameDocument", () => {
-  it("preserves head styles and stylesheet links", () => {
+  it("preserves head styles and remote stylesheet links", () => {
     const { head, body } = buildMailFrameDocument(`<!doctype html><html><head>
 <style>.title { color: red; }</style>
 <link rel="stylesheet" href="https://cdn.example.com/mail.css">
 <meta http-equiv="refresh" content="0;url=https://evil.example">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'">
 </head><body><p class="title">Hi</p></body></html>`);
     expect(head).toContain(".title { color: red; }");
     expect(head).toContain('href="https://cdn.example.com/mail.css"');
     expect(head).not.toContain("refresh");
+    expect(head).not.toContain("Content-Security-Policy");
     expect(body).toContain('class="title"');
   });
 
-  it("stamps openable anchors and strips image maps from the body", () => {
+  it("stamps openable anchors, neutralizes href, and strips image maps", () => {
     const { body } = buildMailFrameDocument(
       `<map name="m"><area href="https://evil.example" shape="rect" coords="0,0,1,1"></map>
        <a href="https://ok.example">Ok</a>`,
@@ -150,21 +163,60 @@ describe("buildMailFrameDocument", () => {
     expect(body).not.toContain("<map");
     expect(body).not.toContain("<area");
     expect(body).toContain('data-yerd-url="https://ok.example/"');
+    expect(body).toMatch(/href="#"/);
+    expect(body).not.toContain('href="https://ok.example');
+  });
+
+  it("strips scripts, inline handlers, and javascript: URLs", () => {
+    const { body } = buildMailFrameDocument(
+      `<p onclick="alert(1)"><script>alert(1)</script><a href="javascript:alert(1)">x</a><a href="https://ok.example">Ok</a></p>`,
+    );
+    expect(body).not.toContain("<script");
+    expect(body).not.toContain("onclick");
+    expect(body).not.toContain("javascript:");
+    expect(body).toContain('data-yerd-url="https://ok.example/"');
+  });
+
+  it("strips svg and math markup", () => {
+    const { body } = buildMailFrameDocument(
+      `<svg onload="alert(1)"><text>x</text></svg><math><mi>x</mi></math><p>Hi</p>`,
+    );
+    expect(body).not.toContain("<svg");
+    expect(body).not.toContain("<math");
+    expect(body).toContain("Hi");
+  });
+
+  it("keeps remote images", () => {
+    const { body } = buildMailFrameDocument(
+      `<img src="https://cdn.example.com/logo.png" alt="logo">`,
+    );
+    expect(body).toContain('src="https://cdn.example.com/logo.png"');
+  });
+
+  it("drops non-stylesheet link tags", () => {
+    const { head } = buildMailFrameDocument(`<!doctype html><html><head>
+<link rel="prefetch" href="https://evil.example/x">
+<link rel="stylesheet" href="https://cdn.example.com/ok.css">
+</head><body></body></html>`);
+    expect(head).not.toContain("prefetch");
+    expect(head).toContain("ok.css");
   });
 });
 
 describe("prepareHtmlBody", () => {
-  it("stamps openable anchors with data-yerd-url", () => {
+  it("stamps openable anchors with data-yerd-url and neutralizes href", () => {
     const out = prepareHtmlBody(
       `<p><a href="https://msi-portal.test/download">Download</a></p>`,
     );
     expect(out).toContain('data-yerd-url="https://msi-portal.test/download"');
-    expect(out).toContain('href="https://msi-portal.test/download"');
+    expect(out).toMatch(/href="#"/);
+    expect(out).not.toContain('href="https://msi-portal.test/download"');
   });
 
   it("leaves non-openable anchors alone", () => {
     const out = prepareHtmlBody(`<a href="#section">Jump</a>`);
     expect(out).not.toContain("data-yerd-url");
+    expect(out).toContain('href="#section"');
   });
 
   it("strips scripts and inline handlers before stamping", () => {
@@ -176,13 +228,13 @@ describe("prepareHtmlBody", () => {
     expect(out).toContain('data-yerd-url="https://ok.example/"');
   });
 
-  it("strips image maps so area hrefs cannot navigate the frame", () => {
+  it("strips image maps so area hrefs cannot navigate", () => {
     const out = prepareHtmlBody(
       `<img usemap="#m" src="https://example.com/x.png"><map name="m"><area href="https://evil.example" shape="rect" coords="0,0,10,10"></map>`,
     );
     expect(out).not.toContain("<map");
     expect(out).not.toContain("<area");
-    expect(out).toContain('usemap="#m"');
+    expect(out).toContain('src="https://example.com/x.png"');
   });
 });
 
@@ -190,21 +242,21 @@ describe("linkifyText", () => {
   it("wraps http/https URLs in anchor tags", () => {
     const out = linkifyText("Visit https://example.com for details.");
     expect(out).toContain("<a ");
-    expect(out).toContain('data-url="https://example.com/"');
+    expect(out).toContain('data-yerd-url="https://example.com/"');
     expect(out).toContain("Visit");
     expect(out).toContain("for details.");
   });
 
   it("wraps mailto links in anchor tags", () => {
     const out = linkifyText("Email us at mailto:hi@example.com please.");
-    expect(out).toContain('data-url="mailto:hi@example.com"');
+    expect(out).toContain('data-yerd-url="mailto:hi@example.com"');
   });
 
   it("HTML-escapes message content before linkifying", () => {
     const out = linkifyText("<script>alert(1)</script> https://safe.example.com");
     expect(out).toContain("&lt;script&gt;");
     expect(out).not.toContain("<script>");
-    expect(out).toContain('data-url="https://safe.example.com/"');
+    expect(out).toContain('data-yerd-url="https://safe.example.com/"');
   });
 
   it("does not linkify javascript: or data: URLs", () => {
@@ -214,8 +266,8 @@ describe("linkifyText", () => {
 
   it("strips trailing punctuation from URLs", () => {
     const out = linkifyText("See https://example.com/path.");
-    expect(out.includes('data-url="https://example.com/path."')).toBe(false);
-    expect(out).toContain('data-url="https://example.com/path"');
+    expect(out.includes('data-yerd-url="https://example.com/path."')).toBe(false);
+    expect(out).toContain('data-yerd-url="https://example.com/path"');
   });
 
   it("returns plain escaped text when there are no URLs", () => {
@@ -236,6 +288,7 @@ describe("linkifyText", () => {
     expect(doc.querySelector("[onmouseover]")).toBeNull();
     expect(doc.body.querySelectorAll("a")).toHaveLength(1);
     const anchor = doc.body.querySelector("a");
-    expect(anchor?.getAttributeNames().sort()).toEqual(["class", "data-url", "href"]);
+    expect(anchor?.getAttributeNames().sort()).toEqual(["class", "data-yerd-url", "href"]);
+    expect(anchor?.getAttribute("href")).toBe("#");
   });
 });

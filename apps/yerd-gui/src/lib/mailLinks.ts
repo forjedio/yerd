@@ -1,3 +1,6 @@
+import DOMPurify from "isomorphic-dompurify";
+import type { Config } from "dompurify";
+
 /** Schemes a captured email may link to that we route to the OS browser (or the
  *  OS handler, for mailto/tel). Everything else - relative paths, in-page `#`
  *  anchors, `javascript:`, `data:`, `file:` - is ignored so a message can never
@@ -22,8 +25,8 @@ const URL_PATTERN =
  * nodes and therefore HTML-escaped by the browser when serialised.
  *
  * Only URLs that pass {@link resolveExternalHref} become links. Each anchor
- * carries `data-url` with the validated URL for event-delegation click
- * handling.
+ * carries `data-yerd-url` with the validated URL; `href` is `#` so navigation
+ * cannot bypass the click handler.
  */
 export function linkifyText(text: string): string {
   const container = document.createElement("div");
@@ -37,8 +40,8 @@ export function linkifyText(text: string): string {
     const url = resolveExternalHref(raw);
     if (url) {
       const anchor = document.createElement("a");
-      anchor.href = url;
-      anchor.dataset.url = url;
+      anchor.href = "#";
+      anchor.dataset.yerdUrl = url;
       anchor.className = "text-brand underline cursor-pointer";
       anchor.textContent = raw;
       container.append(anchor);
@@ -76,10 +79,9 @@ export function resolveExternalHref(rawHref: string | null | undefined): string 
   return OPENABLE_SCHEMES.has(url.protocol) ? url.href : null;
 }
 
-/** What to do with a click on an `<a href>` inside the email frame: `open` it in
+/** What to do with a click on an `<a href>` inside the email body: `open` it in
  *  the OS browser, let a same-document `#` anchor `scroll`, or `block` an
- *  in-frame navigation the preview must never perform (relative/same-origin
- *  links would otherwise load app content over the email). */
+ *  in-document navigation the preview must never perform. */
 export type FrameLinkAction =
   | { kind: "open"; url: string }
   | { kind: "scroll" }
@@ -111,122 +113,101 @@ export function eventTargetElement(target: EventTarget | null): Element | null {
  * Classify a click that landed on `target` inside an email body. Returns `null`
  * when the click isn't on a link (leave it alone); otherwise a
  * {@link FrameLinkAction}: openable schemes go to the OS browser, same-document
- * `#` anchors are left to scroll, and everything else (relative, same-origin,
- * `javascript:`) is blocked so the preview can't navigate away from the email.
- * Walks up to the nearest `<a href>` / `a[data-yerd-url]` so clicks on nested
- * content (e.g. `<a><img></a>` or link text) resolve.
- *
- * Prefers `data-yerd-url` (stamped by {@link prepareHtmlBody}) over the visible
- * `href` so openable links still work when the displayed href is a fragment
- * placeholder or was rewritten. Duck-types on `closest` for cross-realm
- * targets where `instanceof Element` would fail.
+ * `#` anchors are left to scroll, and everything else is blocked.
+ * Prefers `data-yerd-url` (stamped by {@link buildMailFrameDocument}) over the
+ * visible `href`.
  */
 export function resolveFrameLink(target: EventTarget | null): FrameLinkAction | null {
   const el = eventTargetElement(target);
   const anchor =
-    el?.closest?.("a[href], a[data-yerd-url], area[href]") ?? null;
+    el?.closest?.("a[href], a[data-yerd-url], a[data-url], area[href]") ?? null;
   if (!anchor) return null;
-  const stamped = anchor.getAttribute("data-yerd-url");
+  const stamped =
+    anchor.getAttribute("data-yerd-url") ?? anchor.getAttribute("data-url");
   const href = anchor.getAttribute("href");
   const url = resolveExternalHref(stamped) ?? resolveExternalHref(href);
   if (url) return { kind: "open", url };
   return isInPageFragment(href) ? { kind: "scroll" } : { kind: "block" };
 }
 
-/** Child-document CSP for the sandboxed mail iframe (paired with `buildMailFrameDocument`). */
-export const MAIL_FRAME_CSP =
-  "default-src 'none'; script-src 'unsafe-inline'; img-src data: http: https:; style-src 'unsafe-inline' http: https:";
-
-const STRIP_TAGS = new Set([
-  "script",
-  "iframe",
-  "object",
-  "embed",
-  "base",
-  "form",
-  "map",
-  "area",
-]);
+/** DOMPurify config for captured HTML email (head + body). */
+const MAIL_PURIFY_CONFIG: Config = {
+  WHOLE_DOCUMENT: true,
+  ADD_TAGS: ["link", "style", "meta", "head", "body", "html"],
+  ADD_ATTR: ["target", "rel", "media", "type", "as", "crossorigin", "http-equiv", "content", "name", "charset"],
+  FORBID_TAGS: [
+    "script",
+    "iframe",
+    "object",
+    "embed",
+    "form",
+    "input",
+    "button",
+    "textarea",
+    "select",
+    "option",
+    "map",
+    "area",
+    "svg",
+    "math",
+    "base",
+    "noscript",
+    "template",
+    "foreignObject",
+    "video",
+    "audio",
+    "source",
+    "track",
+  ],
+  // Allow data-* so we can stamp data-yerd-url after purify (and keep benign
+  // email data attributes). Event handlers are still stripped by DOMPurify.
+  ALLOW_DATA_ATTR: true,
+};
 
 /**
- * Trusted bootstrap script injected into the iframe `head` (not from email).
- * Forwards openable link clicks to the host via `postMessage` so link routing
- * works on WKWebView where parent `contentDocument` listeners are unreliable.
- * Email scripts remain blocked by sanitization + CSP `default-src 'none'`.
+ * Drop non-stylesheet `<link>` nodes and dangerous `<meta http-equiv>` values
+ * that DOMPurify may still allow when `meta` / `link` are on the allowlist.
  */
-export const MAIL_FRAME_CLICK_BRIDGE = `<script>
-document.addEventListener("click",function(e){
-  var el=e.target;
-  if(el&&el.nodeType===3)el=el.parentElement;
-  while(el){
-    var a=el.closest&&el.closest("a[href],a[data-yerd-url]");
-    if(a){
-      var stamped=a.getAttribute("data-yerd-url");
-      var href=a.getAttribute("href")||"";
-      var raw=(stamped||href).trim();
-      if(/^(https?:|mailto:|tel:)/i.test(raw)){
-        e.preventDefault();
-        parent.postMessage({type:"yerd-mail-link",url:raw},"*");
-        return;
-      }
-      if(href.trim().charAt(0)==="#")return;
-      e.preventDefault();
-      return;
-    }
-    el=el.parentElement;
+function filterHeadHazards(doc: Document): void {
+  for (const link of [...doc.querySelectorAll("link")]) {
+    const rel = link.getAttribute("rel")?.toLowerCase() ?? "";
+    if (!rel.includes("stylesheet")) link.remove();
   }
-},true);
-</script>`;
-
-function sanitizeMailDocument(doc: Document): void {
-  const roots: Element[] = [];
-  if (doc.head) roots.push(doc.head);
-  if (doc.body) roots.push(doc.body);
-  for (const root of roots) {
-    for (const el of [...root.querySelectorAll("*")]) {
-      const tag = el.tagName.toLowerCase();
-      if (tag === "link") {
-        const rel = el.getAttribute("rel")?.toLowerCase() ?? "";
-        if (!rel.includes("stylesheet")) el.remove();
-        continue;
-      }
-      if (tag === "meta") {
-        const equiv = el.getAttribute("http-equiv")?.toLowerCase() ?? "";
-        if (equiv === "refresh" || equiv === "set-cookie") el.remove();
-        continue;
-      }
-      if (STRIP_TAGS.has(tag)) {
-        el.remove();
-        continue;
-      }
-      for (const attr of [...el.attributes]) {
-        const name = attr.name.toLowerCase();
-        if (name.startsWith("on") || name === "srcdoc") {
-          el.removeAttribute(attr.name);
-          continue;
-        }
-        if (
-          (name === "href" || name === "src" || name === "xlink:href") &&
-          /^\s*javascript:/i.test(attr.value)
-        ) {
-          el.removeAttribute(attr.name);
-        }
-      }
+  for (const meta of [...doc.querySelectorAll("meta")]) {
+    const equiv = meta.getAttribute("http-equiv")?.toLowerCase() ?? "";
+    if (
+      equiv === "refresh" ||
+      equiv === "set-cookie" ||
+      equiv === "content-security-policy"
+    ) {
+      meta.remove();
     }
   }
 }
 
 /**
- * Sanitize a captured HTML email and stamp openable anchors with `data-yerd-url`.
- * Preserves `<head>` styles / stylesheet links so marketing emails keep their CSS.
+ * Stamp openable anchors with `data-yerd-url` and neutralize `href` to `#` so
+ * default navigation cannot bypass the host click handler.
+ */
+function stampOpenableAnchors(root: ParentNode): void {
+  for (const a of root.querySelectorAll("a[href]")) {
+    const url = resolveExternalHref(a.getAttribute("href"));
+    if (url) {
+      a.setAttribute("data-yerd-url", url);
+      a.setAttribute("href", "#");
+    }
+  }
+}
+
+/**
+ * Sanitize a captured HTML email with DOMPurify and stamp openable anchors.
+ * Preserves `<style>` and remote stylesheet `<link>` so marketing emails keep CSS.
  */
 export function buildMailFrameDocument(html: string): { head: string; body: string } {
-  const doc = new DOMParser().parseFromString(html, "text/html");
-  sanitizeMailDocument(doc);
-  for (const a of doc.querySelectorAll("a[href]")) {
-    const url = resolveExternalHref(a.getAttribute("href"));
-    if (url) a.setAttribute("data-yerd-url", url);
-  }
+  const cleaned = DOMPurify.sanitize(html, MAIL_PURIFY_CONFIG);
+  const doc = new DOMParser().parseFromString(cleaned, "text/html");
+  filterHeadHazards(doc);
+  stampOpenableAnchors(doc);
   return {
     head: doc.head?.innerHTML ?? "",
     body: doc.body?.innerHTML ?? "",
@@ -235,23 +216,16 @@ export function buildMailFrameDocument(html: string): { head: string; body: stri
 
 /**
  * Strip executable / navigable hazards from captured HTML (body fragment).
- * Prefer {@link buildMailFrameDocument} for iframe rendering so `<head>` styles survive.
+ * Prefer {@link buildMailFrameDocument} when head styles must survive.
  */
 export function sanitizeMailHtml(html: string): string {
-  const doc = new DOMParser().parseFromString(html, "text/html");
-  sanitizeMailDocument(doc);
-  return doc.body?.innerHTML ?? html;
+  return buildMailFrameDocument(html).body;
 }
 
 /**
  * Stamp openable `<a href>` tags with `data-yerd-url` (body HTML only).
- * @deprecated Prefer {@link buildMailFrameDocument} for the mail iframe.
+ * @deprecated Prefer {@link buildMailFrameDocument} for the mail viewer.
  */
 export function prepareHtmlBody(html: string): string {
-  const doc = new DOMParser().parseFromString(sanitizeMailHtml(html), "text/html");
-  for (const a of doc.querySelectorAll("a[href]")) {
-    const url = resolveExternalHref(a.getAttribute("href"));
-    if (url) a.setAttribute("data-yerd-url", url);
-  }
-  return doc.body?.innerHTML ?? html;
+  return buildMailFrameDocument(`<body>${html}</body>`).body;
 }
