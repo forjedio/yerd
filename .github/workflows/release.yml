@@ -170,10 +170,22 @@ jobs:
       # requires. PRECONDITION: provision `MINISIGN_SECRET_KEY` (generate an
       # *unencrypted* key with `minisign -G -W` to avoid a CI password prompt) and
       # set `UPDATE_PUBLIC_KEY` to its public half before this is load-bearing.
+      #
+      # The published signature is named `<artifact>.minisig`, not `<artifact>.sig`:
+      # pacman reserves `<pkg>.sig` for a detached OpenPGP signature, so a minisign
+      # file under that name makes `pacman -U` hard-fail even at the default
+      # `LocalFileSigLevel = Optional` (#157). For the NON-pacman kinds we also
+      # publish a byte-identical legacy `<artifact>.sig` copy so self-updaters
+      # shipped at v2.0.3 or earlier keep working; a detached minisign signature
+      # verifies the artifact bytes regardless of the sibling filename. That legacy
+      # copy is a bounded transition measure, to be retired once those clients have
+      # moved on; the pacman `.sig` is never re-published (see the guard below).
       - name: Sign update artifacts (minisign)
         working-directory: dist
         env:
           MINISIGN_SECRET_KEY: ${{ secrets.MINISIGN_SECRET_KEY }}
+          # Repo variable to close the legacy `.sig` transition window (see below).
+          RETIRE_LEGACY_SIG: ${{ vars.RETIRE_LEGACY_SIG }}
         run: |
           set -euo pipefail
           if [ -z "${MINISIGN_SECRET_KEY:-}" ]; then
@@ -194,9 +206,22 @@ jobs:
           umask 077; printf '%s\n' "$MINISIGN_SECRET_KEY" > "$RUNNER_TEMP/minisign.key"
           shopt -s nullglob
           for f in *.app.tar.gz *.deb *.pkg.tar.zst *.rpm; do
-            minisign -S -H -s "$RUNNER_TEMP/minisign.key" -m "$f" -x "$f.sig"
-            echo "signed $f -> $f.sig"
+            minisign -S -H -s "$RUNNER_TEMP/minisign.key" -m "$f" -x "$f.minisig"
+            echo "signed $f -> $f.minisig"
           done
+          # Legacy `.sig` copies for the non-pacman kinds only (bounded transition
+          # window). NEVER copy for *.pkg.tar.zst: a pacman `.sig` re-creates #157.
+          # Closing the window is a deliberate, CI-controlled cutoff: set the repo
+          # variable RETIRE_LEGACY_SIG=true and no `.sig` is published thereafter.
+          # Default (unset) keeps the copies shipping through the transition.
+          if [ "${RETIRE_LEGACY_SIG:-}" = "true" ]; then
+            echo "RETIRE_LEGACY_SIG=true: transition window closed, publishing no legacy .sig copies"
+          else
+            for f in *.app.tar.gz *.deb *.rpm; do
+              cp -- "$f.minisig" "$f.sig"
+              echo "legacy copy $f.minisig -> $f.sig"
+            done
+          fi
 
       # Trust-anchor gate: prove the public key the daemon EMBEDS
       # (`yerd_update::UPDATE_PUBLIC_KEY`) actually verifies these signatures — so
@@ -217,10 +242,23 @@ jobs:
           fi
           shopt -s nullglob
           for f in *.app.tar.gz *.deb *.pkg.tar.zst *.rpm; do
-            minisign -V -H -P "$KEY" -m "$f" -x "$f.sig" \
-              || { echo "::error::embedded UPDATE_PUBLIC_KEY does not verify $f.sig (key/secret mismatch)"; exit 1; }
+            minisign -V -H -P "$KEY" -m "$f" -x "$f.minisig" \
+              || { echo "::error::embedded UPDATE_PUBLIC_KEY does not verify $f.minisig (key/secret mismatch)"; exit 1; }
             echo "verified $f against embedded key"
           done
+          # Also verify every legacy `.sig` copy against the same key, so a botched
+          # transition-window byte copy can't ship unverified.
+          for s in *.sig; do
+            minisign -V -H -P "$KEY" -m "${s%.sig}" -x "$s" \
+              || { echo "::error::embedded UPDATE_PUBLIC_KEY does not verify legacy $s (key/secret mismatch)"; exit 1; }
+            echo "verified legacy $s against embedded key"
+          done
+          # Regression guard for #157: a pacman `.sig` must never ship. pacman would
+          # mistake it for an OpenPGP signature and hard-fail `pacman -U`.
+          if compgen -G '*.pkg.tar.zst.sig' > /dev/null; then
+            echo "::error::refusing to publish: a *.pkg.tar.zst.sig exists in dist/ (re-creates #157)"
+            exit 1
+          fi
 
       - name: Generate SHA256SUMS
         working-directory: dist

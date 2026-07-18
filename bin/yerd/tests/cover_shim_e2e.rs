@@ -120,6 +120,63 @@ mod tests {
         assert!(expected_phprc.is_file(), "cover.ini must have been written");
     }
 
+    /// Build a faked layout whose ONLY installed PHP is legacy 7.4 (stub CLI at
+    /// `php-7.4/bin/php`). Returns `(tempdir, home)`.
+    fn faked_legacy_only_layout() -> (tempfile::TempDir, std::path::PathBuf) {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let home = tmp.path().join("home");
+        fs::create_dir_all(&home).expect("mkdir home");
+        let dirs = PlatformDirs::for_user(&home, 0);
+        let php_bin_dir = dirs.data.join("php").join("php-7.4").join("bin");
+        fs::create_dir_all(&php_bin_dir).expect("mkdir php bin");
+        let php_bin = php_bin_dir.join("php");
+        fs::write(&php_bin, STUB_PHP).expect("write stub php");
+        fs::set_permissions(&php_bin, fs::Permissions::from_mode(0o755)).expect("chmod +x");
+        (tmp, home)
+    }
+
+    #[test]
+    fn php74cover_errors_on_legacy() {
+        let (tmp, home) = faked_legacy_only_layout();
+        let cover_shim_bin = tmp.path().join("php7.4cover");
+        symlink(env!("CARGO_BIN_EXE_yerd"), &cover_shim_bin).expect("symlink cover shim");
+
+        let output = run_in_home(&cover_shim_bin, &["artisan", "test"], &home);
+        assert!(!output.status.success(), "php7.4cover must fail on legacy");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains("pcov") && stderr.contains("legacy"),
+            "stderr should explain pcov/legacy, got: {stderr}"
+        );
+    }
+
+    #[test]
+    fn bare_php_errors_when_only_legacy_installed_but_versioned_shim_runs() {
+        let (tmp, home) = faked_legacy_only_layout();
+
+        let php_shim = tmp.path().join("php");
+        symlink(env!("CARGO_BIN_EXE_yerd"), &php_shim).expect("symlink php shim");
+        let bare = run_in_home(&php_shim, &["--version"], &home);
+        assert!(
+            !bare.status.success(),
+            "bare php must not run a legacy interpreter"
+        );
+        let stderr = String::from_utf8_lossy(&bare.stderr);
+        assert!(
+            stderr.contains("supported") && stderr.contains("php7.4"),
+            "stderr should steer to a supported version, got: {stderr}"
+        );
+
+        let php74_shim = tmp.path().join("php7.4");
+        symlink(env!("CARGO_BIN_EXE_yerd"), &php74_shim).expect("symlink php7.4 shim");
+        let versioned = run_in_home(&php74_shim, &["--version"], &home);
+        assert!(
+            versioned.status.success(),
+            "php7.4 must still run the legacy interpreter: {}",
+            String::from_utf8_lossy(&versioned.stderr)
+        );
+    }
+
     #[test]
     fn phprc_survives_a_re_exec_grandchild_hop() {
         let (tmp, home, expected_phprc) = faked_php_8_4_layout();

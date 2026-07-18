@@ -48,7 +48,8 @@ automated downgrade isn't implemented yet - it currently just says so.
    artifact (`Request::StageUpdate`): the daemon fetches the platform-specific
    asset (macOS `.app.tar.gz`, Linux `.deb`/`.pkg.tar.zst`/`.rpm`), checks its
    SHA-256 against the release's `SHA256SUMS` manifest, and verifies a
-   detached minisign signature against an embedded public key.
+   detached minisign signature (the `<artifact>.minisig` asset, with a legacy
+   `<artifact>.sig` accepted as a fallback) against an embedded public key.
 4. Re-verifies the signature a second time locally (closing the window
    between the daemon's verify and the install), then installs the artifact
    and restarts the daemon so it comes back up on the new version.

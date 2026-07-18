@@ -143,11 +143,17 @@ pub enum Response {
     },
     /// Reply to [`crate::Request::AvailablePhp`].
     AvailablePhp {
-        /// Installable major.minor versions from the distribution, ascending.
+        /// Installable **stable** major.minor versions from `php.json`, ascending.
         available: Vec<PhpVersion>,
         /// Currently installed versions, ascending, so clients can hide (GUI
         /// dropdown) or tag (CLI) them.
         installed: Vec<PhpVersion>,
+        /// Installable **legacy** minors (< 8.2) from the separately-signed
+        /// `php-legacy.json`, ascending. Empty (and omitted on the wire) when the
+        /// legacy manifest is unreachable or a client is talking to an older
+        /// daemon, so the wire stays byte-identical for the stable-only case.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        legacy: Vec<PhpVersion>,
     },
     /// Reply to [`crate::Request::ListPhpExtensions`] - registered custom
     /// extensions keyed by PHP version (ascending), each tagged with whether its
@@ -541,6 +547,13 @@ pub enum ErrorCode {
     /// off or its bootstrap listener isn't up. Returned only on LAN requests, so
     /// older clients never receive it.
     LanNotReady,
+    /// A legacy (< 8.2) PHP version was used where it is not allowed: as the
+    /// global default, or installed without the explicit `confirm_legacy`
+    /// opt-in. Reachable from the pre-existing `InstallPhp` / `SetDefaultPhp`
+    /// requests, so a pre-legacy client that names a legacy version can still
+    /// provoke it and, lacking the variant, will surface it as an
+    /// `IpcError::Decode` rather than a typed error.
+    LegacyRestricted,
     /// Catch-all for daemon-side failures that don't fit a typed code.
     /// Expand this enum rather than overloading `Internal`.
     Internal,
@@ -615,6 +628,7 @@ mod variant_name_pinning {
             ErrorCode::UnknownServiceType => {}
             ErrorCode::InstanceAlreadyExists => {}
             ErrorCode::LanNotReady => {}
+            ErrorCode::LegacyRestricted => {}
             ErrorCode::Internal => {}
         }
     }
@@ -660,6 +674,7 @@ mod variant_name_pinning {
         pin_response(Response::AvailablePhp {
             available: vec![PhpVersion::new(8, 4), PhpVersion::new(8, 5)],
             installed: vec![PhpVersion::new(8, 5)],
+            legacy: vec![],
         });
         pin_response(Response::PhpExtensions {
             by_version: BTreeMap::from([(
@@ -892,6 +907,7 @@ mod variant_name_pinning {
             ErrorCode::UnknownServiceType,
             ErrorCode::InstanceAlreadyExists,
             ErrorCode::LanNotReady,
+            ErrorCode::LegacyRestricted,
             ErrorCode::Internal,
         ] {
             pin_code(c);

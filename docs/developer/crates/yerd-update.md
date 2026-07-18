@@ -66,6 +66,15 @@ ends `.deb` or `.pkg.tar.zst` depending on [`PkgFormat`]. Intel macOS and any
 other [`Platform::Unsupported`] host get `AssetError::NoArtifactForPlatform`
 rather than a mis-selected file.
 
+The detached signature is named `<artifact>.minisig` (minisign's own default),
+with a legacy `<artifact>.sig` accepted as a fallback for releases published
+before the rename. When both names are present `select_asset` prefers
+`.minisig`, so behaviour is identical during and after the transition window;
+if neither is attached the artifact is treated as unsigned and
+`AssetError::MissingSignature` is returned. The rename exists because pacman
+reserves `<pkg>.sig` for a detached OpenPGP signature, so publishing a minisign
+`.sig` beside the Arch package broke `pacman -U` (#157).
+
 Verification is two independent checks, both pure functions over
 already-downloaded bytes:
 

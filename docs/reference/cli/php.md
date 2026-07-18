@@ -18,11 +18,17 @@ yerd use blog 8.3     # pin one site to 8.3
 
 After a successful global `yerd use <version>` (human output only), `yerd` prints a hint telling you which directory holds the managed `php` shim and warns if a different `php` is found earlier on your `PATH` and would shadow it.
 
+::: warning `yerd use` refuses a legacy version as the default
+`yerd use <VERSION>` is refused for an out-of-support [legacy version](../../guide/php-versions#legacy-php-versions)
+(7.4 / 8.0 / 8.1) - legacy versions can't be the global default. `yerd use <SITE> <VERSION>`
+still accepts one, pinning it to that site only.
+:::
+
 ## Managing installed versions
 
 | Command | Description | Example |
 | --- | --- | --- |
-| `yerd install php <VERSION>` | Install a PHP version (downloads a prebuilt static build). | `yerd install php 8.5` |
+| `yerd install php <VERSION> [--legacy]` | Install a PHP version (downloads a prebuilt static build). | `yerd install php 8.5` |
 | `yerd uninstall php <VERSION>` | Uninstall a PHP version (removes its files; blocked if in use). | `yerd uninstall php 8.3` |
 | `yerd update php [VERSION]` | Update a PHP version to the latest release. Omit the version to update every installed version. | `yerd update php` |
 | `yerd restart php [VERSION]` | Restart a PHP FPM pool. Omit the version to restart every running pool. | `yerd restart php 8.5` |
@@ -35,6 +41,19 @@ yerd update php 8.5       # update just 8.5
 yerd restart php          # restart every running pool
 yerd uninstall php 8.3    # remove 8.3 (refused if a site still uses it)
 ```
+
+### The `--legacy` flag
+
+`7.4`, `8.0`, and `8.1` are out-of-support [legacy versions](../../guide/php-versions#legacy-php-versions)
+served from a separate manifest. Installing one requires the explicit `--legacy` flag:
+
+```sh
+yerd install php 7.4 --legacy
+```
+
+Without `--legacy`, `yerd install php 7.4` prints an out-of-support warning and
+refuses to install. `--legacy` is a no-op (accepted but unnecessary) for a
+supported version.
 
 ### `yerd list php` flags
 
@@ -50,6 +69,11 @@ yerd list php --available     # everything installable, tagging what you have
 ```
 
 Installed versions are printed one per line; the current default is marked `(default)`, and any version with a newer release shows `update available: <installed> -> <latest>`. If nothing is installed, `yerd list php` suggests `yerd install php <default>`.
+
+`yerd list php --available` also prints a trailing **Legacy (out of support - no
+coverage, no dumps, cannot be default)** section listing the installable
+[legacy versions](../../guide/php-versions#legacy-php-versions), tagging any
+already installed - the section is omitted when there are none.
 
 ## Global PHP ini settings
 

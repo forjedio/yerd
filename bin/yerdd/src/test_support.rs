@@ -150,6 +150,35 @@ pub fn sign_manifest(manifest: &str) -> SignedManifest {
     out
 }
 
+/// Sign two manifest bodies with a **single** freshly generated keypair, so both
+/// share one public key - mirroring production, where `php.json` and
+/// `php-legacy.json` are signed with the same embedded key. Returns the two
+/// [`SignedManifest`]s (their `public_key` fields are identical).
+#[must_use]
+pub fn sign_manifest_pair(first: &str, second: &str) -> (SignedManifest, SignedManifest) {
+    let kp = minisign::KeyPair::generate_unencrypted_keypair().unwrap();
+    let public_key = kp.pk.to_base64();
+    let sign_one = |body: &str| {
+        let sig_box = minisign::sign(
+            Some(&kp.pk),
+            &kp.sk,
+            std::io::Cursor::new(body.as_bytes()),
+            Some("test manifest"),
+            Some("yerd test"),
+        )
+        .unwrap();
+        let out = SignedManifest {
+            public_key: public_key.clone(),
+            manifest: body.to_owned(),
+            minisig: sig_box.into_string(),
+        };
+        yerd_update::verify_minisign(&out.public_key, &out.minisig, out.manifest.as_bytes())
+            .expect("freshly signed manifest must verify with the production verifier");
+        out
+    };
+    (sign_one(first), sign_one(second))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

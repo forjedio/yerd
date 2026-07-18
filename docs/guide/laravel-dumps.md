@@ -84,6 +84,13 @@ The download is **best-effort**: a network or verification failure is logged and
 leaves your sites running normally, just without capture.
 :::
 
+::: warning No dumps on legacy PHP
+[Legacy PHP versions](./php-versions#legacy-php-versions) (7.4 / 8.0 / 8.1) never
+capture dumps - the `yerd-dump` extension isn't built for out-of-support PHP. The
+Dumps view flags legacy rows as **"Unsupported (no dumps)"** and shows a warning
+banner when a legacy version is installed.
+:::
+
 ::: tip Toggling is cheap after the first enable
 The extension reads a small state file at the start of every request and
 self-disables when capture is off, so turning capture (or an individual category)

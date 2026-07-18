@@ -58,6 +58,10 @@ belong to your script or test runner, not to `yerd`:
   architecture yet, `yerd coverage` reports that pcov isn't installed for that
   version rather than running without coverage. The background fetch is
   best-effort and never blocks a PHP install.
+- **No legacy support.** pcov is not built for [legacy PHP versions](../../guide/php-versions#legacy-php-versions)
+  (7.4 / 8.0 / 8.1, PHP < 8.2). `yerd coverage`, `phpcover`, and the versioned
+  `php7.4cover` / `php8.0cover` / `php8.1cover` shims all error on a legacy
+  version rather than run.
 - **Unix only.** Coverage is available on macOS and Linux; it is not generated on
   other platforms.
 

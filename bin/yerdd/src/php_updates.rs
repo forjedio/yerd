@@ -13,7 +13,7 @@ use yerd_core::PhpVersion;
 use yerd_ipc::PhpUpdate;
 use yerd_php::{
     current_os_arch, discover_bundled, display_build, is_newer_build, resolve_from_listing,
-    Downloader,
+    Channel, Downloader,
 };
 
 use crate::php_install::{fetch_verified_listing, installed_patch, installed_revision};
@@ -28,11 +28,28 @@ pub(crate) fn installed_minors(state: &DaemonState) -> Vec<PhpVersion> {
         .collect()
 }
 
+/// Fetch and verify one channel's listing, degrading a fetch/verify failure to
+/// `None` with a `debug` log. Returning `None` (rather than aborting the whole
+/// poll) lets one unreachable channel be skipped while the other still refreshes,
+/// and lets the caller preserve the failed channel's previously-cached updates.
+async fn fetch_channel(dl: &dyn Downloader, public_key: &str, channel: Channel) -> Option<String> {
+    match fetch_verified_listing(dl, public_key, channel).await {
+        Ok(body) => Some(body),
+        Err(e) => {
+            tracing::debug!(error = %e, ?channel, "php update poll: listing fetch/verify failed, keeping cached updates for this channel");
+            None
+        }
+    }
+}
+
 /// Poll the manifest once, refresh `state.php_updates`, and log (notify-only)
-/// any installed minor with a newer build. **Failure-tolerant**: network,
-/// signature, and platform errors are logged at `debug` and leave the cache
-/// untouched. `public_key` is the minisign key the manifest is verified against
-/// (prod passes [`yerd_update::PHP_LISTING_PUBLIC_KEY`]).
+/// any installed minor with a newer build. **Failure-tolerant**: platform errors
+/// and a manifest that parses but is unusable leave the cache untouched, and a
+/// fetch/verify failure for one channel is logged at `debug` and carries that
+/// channel's previously-cached updates forward while the other channel still
+/// refreshes. Only channels with an installed minor are fetched. `public_key` is
+/// the minisign key the manifest is verified against (prod passes
+/// [`yerd_update::PHP_LISTING_PUBLIC_KEY`]).
 pub async fn poll_and_refresh(state: &DaemonState, dl: &dyn Downloader, public_key: &str) {
     let minors = installed_minors(state);
     if minors.is_empty() {
@@ -45,17 +62,32 @@ pub async fn poll_and_refresh(state: &DaemonState, dl: &dyn Downloader, public_k
             return;
         }
     };
-    let listing = match fetch_verified_listing(dl, public_key).await {
-        Ok(body) => body,
-        Err(e) => {
-            tracing::debug!(error = %e, "php update poll skipped: listing fetch/verify failed");
-            return;
-        }
+    let stable = if minors.iter().any(|v| !v.is_legacy()) {
+        fetch_channel(dl, public_key, Channel::Stable).await
+    } else {
+        None
+    };
+    let legacy = if minors.iter().any(|v| v.is_legacy()) {
+        fetch_channel(dl, public_key, Channel::Legacy).await
+    } else {
+        None
     };
 
+    let previous = state.php_updates.read().await.clone();
     let mut latest: HashMap<PhpVersion, (String, u32)> = HashMap::new();
     for minor in minors {
-        let artifact = match resolve_from_listing(&listing, minor, os, arch) {
+        let channel = Channel::of(minor);
+        let listing = match channel {
+            Channel::Stable => stable.as_deref(),
+            Channel::Legacy => legacy.as_deref(),
+        };
+        let Some(listing) = listing else {
+            if let Some(prev) = previous.get(&minor) {
+                latest.insert(minor, prev.clone());
+            }
+            continue;
+        };
+        let artifact = match resolve_from_listing(listing, minor, os, arch, channel) {
             Ok(a) => a,
             Err(yerd_php::PhpError::VersionUnavailable { .. }) => continue,
             Err(e) => {

@@ -47,7 +47,7 @@ pub use error::{
     TldErrorReason, UpstreamTargetErrorReason,
 };
 pub use net::is_lan_source;
-pub use php::PhpVersion;
+pub use php::{PhpVersion, FIRST_SUPPORTED_MINOR};
 pub use php_extensions::{ExtError, NameErrorReason, PathErrorReason};
 pub use php_settings::{PhpSettingError, ValueErrorReason};
 pub use proxy::{match_rule, ProxyRule, ProxySite, UpstreamTarget};

@@ -704,6 +704,11 @@ pub enum InstallTarget {
     Php {
         /// PHP version, e.g. `8.5`.
         version: String,
+        /// Confirm you want an out-of-support legacy version (7.4 / 8.0 / 8.1).
+        /// Required for legacy minors: they get no security support, no code
+        /// coverage (phpcover), and no yerd-dumps, and cannot be the default.
+        #[arg(long)]
+        legacy: bool,
     },
     /// Install a dev tool (`composer`, `node`, `bun`, `laravel`, `wp-cli`) at
     /// its latest release.

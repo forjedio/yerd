@@ -600,6 +600,7 @@ fn php_tools_map_to_their_requests() {
         built("install_php", json!({ "version": "8.5" })),
         Request::InstallPhpStreamed {
             version: PhpVersion::new(8, 5),
+            confirm_legacy: false,
         },
         "install_php uses the streamed (job) variant so the call returns at once"
     );

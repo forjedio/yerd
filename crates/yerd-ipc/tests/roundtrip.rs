@@ -58,6 +58,7 @@ fn encode_then_decode_request_roundtrip() {
     assert_request_roundtrips(Request::DaemonInfo);
     assert_request_roundtrips(Request::InstallPhp {
         version: PhpVersion::new(8, 5),
+        confirm_legacy: false,
     });
     assert_request_roundtrips(Request::SetDefaultPhp {
         version: PhpVersion::new(8, 4),

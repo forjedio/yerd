@@ -373,6 +373,8 @@ export interface DumpCounts {
 export interface DumpExtStatus {
   version: PhpVersion;
   present: boolean;
+  /** True for legacy (< 8.2) versions, which never capture dumps. */
+  legacy?: boolean;
 }
 
 // ── site creation (create.rs) ───────────────────────────────────────────────
@@ -468,6 +470,7 @@ export type ErrorCode =
   | "invalid_path"
   | "port_in_use"
   | "extension_load_failed"
+  | "legacy_restricted"
   | "internal";
 
 /** One whole-host reverse proxy (`{name}.{tld}` → `target`). Reply element of a
@@ -532,6 +535,8 @@ export type Response =
       type: "available_php";
       available: PhpVersion[];
       installed: PhpVersion[];
+      /** Installable legacy (< 8.2) minors from php-legacy.json; omitted when none. */
+      legacy?: PhpVersion[];
     }
   | {
       type: "php_extensions";
