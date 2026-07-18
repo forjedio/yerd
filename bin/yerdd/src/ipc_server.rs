@@ -1840,9 +1840,12 @@ async fn mint_remote_setup_code(state: &DaemonState) -> Response {
         value: code.clone(),
         expires_at: std::time::Instant::now() + REMOTE_SETUP_CODE_TTL,
         used: false,
+        attempts: 0,
     });
 
-    let url = format!("http://{lan_ip}:{lan_setup_port}/remote-setup?code={code}");
+    // The script is fetched over fingerprint-anchored HTTPS; the CLI derives the
+    // plain-HTTP CA URL (the only plaintext step) from this base.
+    let url = format!("https://{lan_ip}:{lan_setup_port}/remote-setup?code={code}");
     Response::RemoteSetup {
         code,
         url,

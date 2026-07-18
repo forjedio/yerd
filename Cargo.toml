@@ -32,6 +32,7 @@ rustls-pki-types = "1"
 directories        = "5"
 hex                = { version = "0.4", default-features = false, features = ["alloc"] }
 rand               = "0.8"
+subtle             = { version = "2", default-features = false }
 security-framework = "2"
 clap               = { version = "=4.5.20", default-features = false, features = ["std", "derive", "help", "usage", "error-context"] }
 anyhow             = "1"

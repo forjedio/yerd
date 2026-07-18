@@ -189,6 +189,7 @@ export default withMermaid({
             { text: 'Databases', link: '/reference/cli/db' },
             { text: 'Mail', link: '/reference/cli/mail' },
             { text: 'MCP', link: '/reference/cli/mcp' },
+            { text: 'LAN sharing', link: '/reference/cli/lan' },
             { text: 'Tunnel', link: '/reference/cli/tunnel' },
             { text: 'Diagnostics', link: '/reference/cli/diagnostics' },
             { text: 'Elevation', link: '/reference/cli/elevation' },

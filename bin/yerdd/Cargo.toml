@@ -57,7 +57,13 @@ interprocess   = { workspace = true }
 fs4            = { workspace = true }
 rustls         = { workspace = true, features = ["ring"] }
 rustls-pki-types = { workspace = true, features = ["alloc", "std"] }
+tokio-rustls   = { workspace = true }
 webpki-roots   = { workspace = true }
+# LAN remote-setup bootstrap endpoint (hyper service + constant-time code compare).
+hyper          = { workspace = true }
+hyper-util     = { workspace = true }
+http-body-util = { workspace = true }
+subtle         = { workspace = true }
 time           = { workspace = true }
 # PHP install path: fetch (rustls, no OpenSSL) + unpack prebuilt builds.
 reqwest        = { workspace = true }

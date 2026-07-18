@@ -44,8 +44,12 @@ pub struct RemoteSetupCode {
     pub value: String,
     /// When the code expires.
     pub expires_at: Instant,
-    /// Whether the terminal (script) fetch has consumed it (single-use).
+    /// Whether the terminal (script) fetch has consumed it (single-use), or a
+    /// lockout invalidated it.
     pub used: bool,
+    /// Failed match attempts against this code; a lockout invalidates it past a
+    /// threshold so a private-IP peer can't brute-force within the TTL.
+    pub attempts: u32,
 }
 
 /// Everything the IPC dispatch and proxy share at runtime.

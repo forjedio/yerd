@@ -321,6 +321,14 @@ fn port_findings(report: &StatusReport) -> Vec<Diagnosis> {
         return out;
     }
     if privileged_fallback(report) && report.port_redirect != Some(true) && !foreign_listener {
+        // The loopback probe measures `elevate ports`, so that is the fix even in
+        // LAN mode (it is a documented prerequisite). In LAN mode, add a note that
+        // `elevate lan` is also needed for other devices to reach 80/443.
+        let remediation = if report.lan_enabled {
+            "sudo yerd elevate ports  (then, for LAN devices: sudo yerd elevate lan)".to_owned()
+        } else {
+            "sudo yerd elevate ports".to_owned()
+        };
         out.push(warn(
             DiagnosisCode::PortFallback,
             "Privileged ports not bound",
@@ -331,7 +339,7 @@ fn port_findings(report: &StatusReport) -> Vec<Diagnosis> {
                 report.https.requested,
                 report.https.bound
             ),
-            "sudo yerd elevate ports",
+            &remediation,
         ));
     }
     out
@@ -549,6 +557,34 @@ mod tests {
         r2.http.bound = 8081;
         r2.http.fell_back = true;
         assert!(!codes(&diagnose(&r2, None)).contains(&DiagnosisCode::PortFallback));
+    }
+
+    #[test]
+    fn port_fallback_remedy_mentions_elevate_lan_in_lan_mode() {
+        let mut r = healthy();
+        r.http.requested = 80;
+        r.http.bound = 8080;
+        r.http.fell_back = true;
+
+        // Not in LAN mode: plain `elevate ports`, no LAN note.
+        let plain = diagnose(&r, None)
+            .into_iter()
+            .find(|d| d.code == DiagnosisCode::PortFallback)
+            .and_then(|d| d.remedy)
+            .expect("port fallback warning with remedy");
+        assert!(plain.contains("sudo yerd elevate ports"));
+        assert!(!plain.contains("elevate lan"));
+
+        // In LAN mode: still `elevate ports` (the prerequisite the probe
+        // measures) plus a note about `elevate lan` for off-host reach.
+        r.lan_enabled = true;
+        let lan = diagnose(&r, None)
+            .into_iter()
+            .find(|d| d.code == DiagnosisCode::PortFallback)
+            .and_then(|d| d.remedy)
+            .expect("port fallback warning with remedy");
+        assert!(lan.contains("sudo yerd elevate ports"));
+        assert!(lan.contains("elevate lan"));
     }
 
     #[test]

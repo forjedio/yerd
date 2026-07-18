@@ -23,6 +23,7 @@ pub mod ext_install;
 pub mod fs_watch;
 pub mod ipc_server;
 pub mod jobs;
+pub mod lan_setup;
 pub mod laravel_detect;
 pub mod mutate;
 pub mod php_install;
@@ -148,6 +149,16 @@ async fn run_until_shutdown(
         None
     };
 
+    let (lan_enabled, lan_tld, lan_dns_port, lan_setup_port) = {
+        let cfg = daemon.state.config.lock().await;
+        (
+            cfg.lan_enabled,
+            cfg.tld.as_str().to_owned(),
+            cfg.dns_port,
+            cfg.lan_setup_port,
+        )
+    };
+
     let proxy_handle = if let (Some(http_listener), Some(tls_listener)) =
         (daemon.http_listener, daemon.https_listener)
     {
@@ -175,6 +186,7 @@ async fn run_until_shutdown(
             login_prepend_script,
             symlink_protection,
             client_tls,
+            lan_enabled,
             async move {
                 let _ = rx.changed().await;
             },
@@ -186,13 +198,27 @@ async fn run_until_shutdown(
         None
     };
 
-    let lan_enabled = daemon.state.config.lock().await.lan_enabled;
     let redirect_probe_handle = spawn_redirect_probe(
         proxy_handle.is_some(),
         &daemon.state,
         shutdown_rx.clone(),
         lan_enabled,
     );
+
+    // LAN remote-setup bootstrap endpoint: only when LAN is on AND a LAN IP was
+    // discovered (the TLS leaf needs it in an iPAddress SAN). Degrades quietly -
+    // `lan_setup_bound` stays false - on any failure, matching web/DNS degrade.
+    let lan_setup_handle = spawn_lan_setup(
+        lan_enabled,
+        daemon.lan_ip,
+        lan_tld,
+        lan_dns_port,
+        lan_setup_port,
+        &daemon.state,
+        &daemon.cert_store,
+        shutdown_rx.clone(),
+    )
+    .await;
 
     let ipc_handle = tokio::spawn(ipc_server::run(
         daemon.ipc_listener,
@@ -284,6 +310,9 @@ async fn run_until_shutdown(
     if let Some(redirect_probe_handle) = redirect_probe_handle {
         let _ = tokio::time::timeout(Duration::from_secs(5), redirect_probe_handle).await;
     }
+    if let Some(lan_setup_handle) = lan_setup_handle {
+        let _ = tokio::time::timeout(Duration::from_secs(5), lan_setup_handle).await;
+    }
     let _ = tokio::time::timeout(Duration::from_secs(5), ipc_handle).await;
     let _ = tokio::time::timeout(Duration::from_secs(5), dump_handle).await;
     let _ = tokio::time::timeout(Duration::from_secs(5), update_check_handle).await;
@@ -332,6 +361,79 @@ async fn run_until_shutdown(
 /// probes - each one is a bare TCP connect-and-close against the proxy's own
 /// TLS listener, logged as a (harmless) "TLS handshake failed" at `-v`.
 const REDIRECT_PROBE_INTERVAL: Duration = Duration::from_secs(60);
+
+/// Spawn the LAN remote-setup bootstrap endpoint, or return `None` (leaving
+/// `state.lan_setup_bound` false) when LAN is off, no LAN IP was discovered, the
+/// CA can't be read, the TLS leaf can't be minted, or the port won't bind.
+#[allow(clippy::too_many_arguments)]
+async fn spawn_lan_setup(
+    lan_enabled: bool,
+    lan_ip: Option<std::net::Ipv4Addr>,
+    tld: String,
+    dns_port: u16,
+    setup_port: u16,
+    state: &Arc<crate::state::DaemonState>,
+    cert_store: &Arc<crate::cert_store::DaemonCertStore>,
+    shutdown_rx: watch::Receiver<bool>,
+) -> Option<tokio::task::JoinHandle<()>> {
+    if !lan_enabled {
+        return None;
+    }
+    let Some(lan_ip) = lan_ip else {
+        tracing::warn!(
+            "LAN on but no LAN IP discovered - remote-setup bootstrap disabled this boot"
+        );
+        return None;
+    };
+
+    // Read the PUBLIC CA into memory, from a path whose basename is asserted to
+    // be exactly `ca.cert.pem` - never the private key, never request input.
+    let ca_path = &state.ca_path;
+    if ca_path.file_name().and_then(|s| s.to_str()) != Some("ca.cert.pem") {
+        tracing::error!(path = %ca_path.display(), "refusing to serve a non-`ca.cert.pem` file");
+        return None;
+    }
+    let ca_pem = match std::fs::read(ca_path) {
+        Ok(b) => b,
+        Err(e) => {
+            tracing::warn!(error = %e, "LAN setup: could not read CA - bootstrap disabled");
+            return None;
+        }
+    };
+
+    let Some(tls_config) = cert_store.lan_setup_server_config(lan_ip) else {
+        tracing::warn!("LAN setup: could not mint the IP-SAN TLS leaf - bootstrap disabled");
+        return None;
+    };
+
+    let bind = std::net::SocketAddr::from((std::net::Ipv4Addr::UNSPECIFIED, setup_port));
+    let listener = match tokio::net::TcpListener::bind(bind).await {
+        Ok(l) => l,
+        Err(e) => {
+            tracing::warn!(error = %e, port = setup_port, "LAN setup: bootstrap port busy - bootstrap disabled");
+            return None;
+        }
+    };
+
+    state
+        .lan_setup_bound
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+    tracing::info!(port = setup_port, lan_ip = %lan_ip, "LAN remote-setup endpoint bound");
+
+    let ctx = Arc::new(crate::lan_setup::SetupContext {
+        ca_pem,
+        tld,
+        dns_port,
+        server_ip: lan_ip,
+        state: state.clone(),
+    });
+    Some(tokio::spawn(crate::lan_setup::serve(
+        listener,
+        tls_config,
+        ctx,
+        shutdown_rx,
+    )))
+}
 
 fn spawn_redirect_probe(
     proxy_running: bool,

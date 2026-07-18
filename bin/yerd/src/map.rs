@@ -985,22 +985,36 @@ fn format_parked(paths: &[String]) -> String {
     paths.join("\n")
 }
 
-/// The remote-device bootstrap instructions. The device must verify the CA
-/// against the out-of-band fingerprint (printed here, travels by copy-paste, NOT
-/// over the wire) before trusting it - plain HTTP + a code is not sufficient to
-/// distribute a root CA.
-fn format_remote_setup(url: &str, ca_fingerprint: &str, expires_in_secs: u64) -> String {
+/// The remote-device bootstrap instructions (the R2-C1 fingerprint-anchored
+/// flow). The fingerprint printed here is the trust anchor - it travels by
+/// copy-paste, NOT over the wire. The device fetches the CA over plain HTTP,
+/// verifies its **DER** SHA-256 equals the fingerprint, then fetches the
+/// installer script over HTTPS validated against that just-verified CA. Plain
+/// HTTP + a code is not sufficient to distribute a root CA.
+///
+/// `script_url` is the HTTPS script URL (`https://<ip>:<port>/remote-setup?code=…`);
+/// the CA URL is the same host/port over plain HTTP at `/remote-setup/ca`.
+fn format_remote_setup(script_url: &str, ca_fingerprint: &str, expires_in_secs: u64) -> String {
+    let ca_url = script_url.replacen("https://", "http://", 1).replacen(
+        "/remote-setup?",
+        "/remote-setup/ca?",
+        1,
+    );
     let mins = expires_in_secs / 60;
     format!(
-        "Run this on the OTHER device (needs sudo + curl + openssl):\n\
+        "Run this on the OTHER device (needs sudo, curl, and openssl):\n\
          \n\
-         \x20   curl -sS '{url}' -o yerd-setup.sh \\\n\
-         \x20     && sudo bash yerd-setup.sh {ca_fingerprint}\n\
+         \x20 curl -fsS '{ca_url}' -o yerd-ca.pem \\\n\
+         \x20   && test \"$(openssl x509 -in yerd-ca.pem -noout -fingerprint -sha256 \\\n\
+         \x20               | sed 's/.*=//;s/://g' | tr A-Z a-z)\" = \"{ca_fingerprint}\" \\\n\
+         \x20   && curl -fsS --cacert yerd-ca.pem '{script_url}' -o yerd-setup.sh \\\n\
+         \x20   && sudo bash yerd-setup.sh {ca_fingerprint}\n\
          \n\
-         The fingerprint above is the trust anchor: the script downloads Yerd's CA,\n\
-         verifies its SHA-256 equals it, and only then installs it and configures the\n\
-         .test resolver. The code expires in {mins} minutes and is single-use.\n\
-         Do NOT skip the fingerprint - a wrong or missing one aborts the install."
+         How it works: it downloads Yerd's CA over HTTP, verifies its fingerprint\n\
+         matches the one ON THIS SCREEN (the trust anchor), then fetches the installer\n\
+         over HTTPS validated against that CA and runs it. The code expires in {mins}\n\
+         minutes and is single-use. The fingerprint is what makes this safe - do not\n\
+         skip it. To undo on the device later:  sudo bash yerd-setup.sh {ca_fingerprint} uninstall"
     )
 }
 

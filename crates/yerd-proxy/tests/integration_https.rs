@@ -206,6 +206,7 @@ async fn https_handshake_routes_to_backend() {
             None,
             Arc::new(AtomicBool::new(true)),
             test_client_tls(),
+            false,
             async move {
                 let _ = rx_shutdown.await;
             },
@@ -275,6 +276,7 @@ async fn http_redirect_tracks_live_public_port_updates() {
             None,
             Arc::new(AtomicBool::new(true)),
             test_client_tls(),
+            false,
             async move {
                 let _ = rx_shutdown.await;
             },

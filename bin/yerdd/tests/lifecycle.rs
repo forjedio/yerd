@@ -295,6 +295,7 @@ mod tests {
                     yerd_proxy::ProxyClientTls::no_verify_config().unwrap(),
                     yerd_proxy::ProxyClientTls::no_verify_config().unwrap(),
                 )),
+                false,
                 async move {
                     let _ = rx.changed().await;
                 },
