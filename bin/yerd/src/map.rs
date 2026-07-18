@@ -1577,8 +1577,10 @@ mod tests {
 
     #[test]
     fn remote_setup_render_shows_fingerprint_and_verify_step() {
+        // The mint always emits an https:// script URL; the render derives the
+        // plain-HTTP CA URL from it.
         let out = format_remote_setup(
-            "http://192.168.1.42:7073/remote-setup?code=abc",
+            "https://192.168.1.42:7073/remote-setup?code=abc",
             &"ab".repeat(32),
             900,
         );
@@ -1586,6 +1588,17 @@ mod tests {
         assert!(out.contains("yerd-setup.sh"));
         assert!(out.contains("openssl"));
         assert!(!out.contains("| sudo bash"), "must not pipe-to-bash");
+        // CA fetched over plain HTTP at /remote-setup/ca; script fetched over
+        // fingerprint-anchored HTTPS with --cacert. This is the load-bearing
+        // R2-C1 property.
+        assert!(
+            out.contains("http://192.168.1.42:7073/remote-setup/ca?code=abc"),
+            "CA over plain HTTP: {out}"
+        );
+        assert!(
+            out.contains("--cacert yerd-ca.pem 'https://192.168.1.42:7073/remote-setup?code=abc'"),
+            "script over --cacert HTTPS: {out}"
+        );
     }
 
     #[test]

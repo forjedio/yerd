@@ -31,6 +31,14 @@ pub fn install_lan_port_redirect(
     https_from: u16,
     https_to: u16,
 ) -> Result<(), HelperError> {
+    // Defence in depth: the helper validates its own inputs, independent of the
+    // caller. A redirect target must be a real routable address - never loopback
+    // or unspecified - so a forged/mistaken invocation can't install a bogus rule.
+    if lan_ip.is_loopback() || lan_ip.is_unspecified() {
+        return Err(HelperError::Validation {
+            reason: ValidationReason::LanIpInvalid,
+        });
+    }
     require_nonzero(http_from, "--http-from")?;
     require_nonzero(http_to, "--http-to")?;
     require_nonzero(https_from, "--https-from")?;
@@ -173,4 +181,28 @@ pub fn uninstall_lan_port_redirect() -> Result<(), HelperError> {
     Err(HelperError::Unsupported {
         operation: yerd_platform::error::ops::UNINSTALL_LAN_PORT_REDIRECT,
     })
+}
+
+#[cfg(all(test, target_os = "macos"))]
+#[allow(clippy::unwrap_used, clippy::panic)]
+mod tests {
+    use super::*;
+
+    /// A loopback/unspecified `--lan-ip` is rejected up front, before any pf I/O
+    /// (defence in depth on the privileged runtime path, not just `from_argv`).
+    #[test]
+    fn rejects_loopback_and_unspecified_lan_ip() {
+        for ip in [
+            std::net::Ipv4Addr::LOCALHOST,
+            std::net::Ipv4Addr::UNSPECIFIED,
+        ] {
+            let err = install_lan_port_redirect(ip, 80, 8080, 443, 8443).unwrap_err();
+            assert!(matches!(
+                err,
+                HelperError::Validation {
+                    reason: ValidationReason::LanIpInvalid
+                }
+            ));
+        }
+    }
 }

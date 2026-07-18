@@ -1173,6 +1173,7 @@ fn error_code_each_variant_byte_shape() {
             ErrorCode::InstanceAlreadyExists,
             r#""instance_already_exists""#,
         ),
+        (ErrorCode::LanNotReady, r#""lan_not_ready""#),
         (ErrorCode::Internal, r#""internal""#),
     ];
     for (code, expected) in cases {

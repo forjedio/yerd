@@ -141,6 +141,12 @@ pub enum ValidationReason {
     #[cfg(target_os = "macos")]
     #[error("port must be non-zero (flag {0})")]
     PortInvalid(&'static str),
+    /// The `--lan-ip` for the LAN pf redirect was loopback or unspecified - a
+    /// redirect target must be a real routable address. macOS-only (the LAN
+    /// redirect op is `#[cfg(target_os = "macos")]`).
+    #[cfg(target_os = "macos")]
+    #[error("--lan-ip must be a routable address, not loopback/unspecified")]
+    LanIpInvalid,
 }
 
 /// Specific failure modes for [`HelperError::Command`].

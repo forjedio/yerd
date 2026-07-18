@@ -171,8 +171,10 @@ pub fn remove_lan_anchor_refs(pf_conf: &str) -> String {
 /// Compose the LAN anchor rules file (`/etc/pf.anchors/dev.yerd.lan`), the M2
 /// redirect. Ends in a newline.
 ///
-/// Redirects inbound 80/443 to `<lan_ip>:<rootless>`, **source-scoped to
-/// private/link-local ranges** (mirroring [`yerd_core::is_lan_source`]) and
+/// Redirects inbound 80/443 to `<lan_ip>:<rootless>`, **source-scoped to the
+/// RFC1918 + link-local ranges** (the LAN subset of [`yerd_core::is_lan_source`];
+/// loopback is deliberately excluded here - loopback traffic is served by the
+/// separate `dev.yerd` anchor and never has `<lan_ip>` as its destination) and
 /// dest-scoped to `<lan_ip>`. No `on <iface>` qualifier: the destination is a
 /// real routable local address, so no martian/loopback drop applies and no
 /// interface name is needed.
