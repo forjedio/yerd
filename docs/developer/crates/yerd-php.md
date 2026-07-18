@@ -359,11 +359,26 @@ Yerd does not ship PHP. It downloads prebuilt, statically-linked PHP builds that
 
 Supported versions come from Yerd's signed `php.json` manifest. The daemon fetches `php.json` + its detached `php.json.minisig`, **verifies the minisign signature** (at the I/O edge, against the embedded `PHP_LISTING_PUBLIC_KEY`), then hands the trusted JSON body to the pure functions here. Each build also carries a per-tarball SHA-256 (verified after download) and a `revision` (`-N`) counter:
 
+::: info Legacy channel: a second, independently-signed manifest
+A `Channel { Stable, Legacy }` enum picks which manifest a version is sourced
+from: `Channel::of(version)` derives it from `PhpVersion::is_legacy` (the same
+`< 8.2` cutoff as `MIN_SUPPORTED` / `yerd_core::FIRST_SUPPORTED_MINOR`), so there
+is exactly one boundary in the codebase. `Channel::Stable` maps to `php.json`;
+`Channel::Legacy` maps to a second manifest, `php-legacy.json`, hosted alongside
+it on the same rolling release with the **same schema**, the **same** embedded
+minisign key, and the **same** per-tarball SHA-256 verification - only the
+listing URL differs (`listing_url` / `listing_sig_url` now take a `Channel`).
+`resolve_from_listing` and `available_minors` filter their input listing by
+`Channel::of(version) == channel`, so a legacy minor never resolves off the
+stable manifest and vice versa. See the [PHP Versions guide](../../guide/php-versions#legacy-php-versions)
+for the user-facing restrictions this backs.
+:::
+
 | Function | Purpose |
 | --- | --- |
-| `resolve_from_listing(listing, version, os, arch)` | Selects the single `(minor, os, arch)` build and returns an `Artifact` with `cli_url`/`fpm_url`, their `sha256`s, and the `revision`. Errors `VersionUnavailable` if none match, or `UnsupportedListingSchema` / `ListingParse` on a bad manifest. |
-| `available_minors(listing, os, arch)` | Every distinct major.minor with a build for the platform, sorted + deduped. Feeds the GUI dropdown / `yerd list php`. |
-| `listing_url()` / `listing_sig_url()` | URLs of the `php.json` manifest and its detached signature. |
+| `resolve_from_listing(listing, version, os, arch, channel)` | Selects the single `(minor, os, arch)` build and returns an `Artifact` with `cli_url`/`fpm_url`, their `sha256`s, and the `revision`. Errors `VersionUnavailable` if none match (including when `Channel::of(version) != channel`), or `UnsupportedListingSchema` / `ListingParse` on a bad manifest. |
+| `available_minors(listing, os, arch, channel)` | Every distinct major.minor with a build for the platform whose channel matches, sorted + deduped. Feeds the GUI dropdown / `yerd list php`. |
+| `listing_url(channel)` / `listing_sig_url(channel)` | URLs of the channel's manifest (`Channel::Stable` → `php.json`, `Channel::Legacy` → `php-legacy.json`) and its detached signature. |
 | `is_safe_member(name)` | Zip-slip guard: a tar member is trusted only if relative with no `..`, root, or prefix components. |
 | `is_newer_build` / `patch_of` / `display_build` | Build-level `(patch, revision)` comparison for update checks, and the `<patch>-<revision>` display string. |
 

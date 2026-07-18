@@ -9,9 +9,9 @@ The fastest way to manage PHP is the **PHP** page (under the **Environment** gro
 <ThemedImage light="/images/php-light.png" dark="/images/php-dark.png" alt="The PHP page in the Yerd desktop app" />
 
 - A table of installed versions shows live FPM pool state, patch level, pool memory (RSS), and whether an update is available.
-- **Install** opens a picker of installable versions (already-installed ones are hidden); progress streams live next to the Install button as the prebuilt static build downloads.
+- **Install** opens a picker of installable versions (already-installed ones are hidden); progress streams live next to the Install button as the prebuilt static build downloads. A **Show legacy versions** disclosure reveals [legacy minors](#legacy-php-versions) (7.4 / 8.0 / 8.1) behind a warning block and a mandatory confirmation checkbox.
 - **Refresh** re-checks for updates and **Update all** updates every version with one pending - [updates are notify-only](#updates-are-notify-only).
-- Each row's `⋯` menu offers **Restart**, **Set default** (marks it with a star), **Update** (when available), and **Uninstall**; **Restart all** restarts every running pool.
+- Each row's `⋯` menu offers **Restart**, **Set default** (marks it with a star; disabled for legacy rows, which are tagged with a `legacy` badge), **Update** (when available), and **Uninstall**; **Restart all** restarts every running pool.
 - A **Default settings** card edits the [global ini defaults](#tuning-php-settings) applied to every version; leave a field blank to use PHP's built-in default, and saving restarts running pools to apply.
 - A **Per-version configuration** card holds one expandable panel per installed version: the same settings form scoped to that version (empty fields inherit the defaults; see [Per-version configuration](#per-version-configuration)). Saving restarts only that version's pool.
 - A **Custom extensions** card registers extra `.so` extensions per version (see [Custom extensions](#custom-extensions)); each is load-probed before it's saved, and broken registrations are flagged.
@@ -35,6 +35,41 @@ A "PHP version" means a `major.minor` pair like `8.5`, never a full patch like `
 ::: info Downloads are signed and hash-verified
 The `php.json` manifest is signed with a dedicated minisign key whose public half is embedded in Yerd; the daemon verifies that signature before trusting the manifest, then verifies each downloaded tarball against the SHA-256 the manifest lists. Because PHP runs as you, this verification is on the install critical path, not just updates.
 :::
+
+### Legacy PHP versions
+
+Yerd also serves three **out-of-support** minors - **7.4**, **8.0**, and **8.1** -
+from a separate, independently-signed `php-legacy.json` manifest. It's the same
+minisign key and the same per-tarball SHA-256 verification as `php.json`, just a
+different listing.
+
+These versions are past their upstream end of life and may contain **unpatched
+security vulnerabilities**, so installing one requires an explicit opt-in:
+
+```sh
+yerd install php 7.4 --legacy
+```
+
+Running `yerd install php 7.4` without `--legacy` refuses and prints an
+out-of-support warning instead of installing. In the desktop app, the Install
+picker's **Show legacy versions** disclosure opens a warning block and a
+mandatory confirmation checkbox ("I understand and want to install this legacy
+version anyway.") before the Install button is enabled.
+
+A legacy version carries hard restrictions once installed:
+
+- **Cannot be the global default.** `yerd use 7.4` is refused; the desktop app
+  disables **Set default** for legacy rows.
+- **No code coverage.** `phpcover`, `php7.4cover` / `php8.0cover` / `php8.1cover`,
+  and `yerd coverage` all error rather than run - see [Code Coverage](./code-coverage).
+- **No yerd-dumps capture.** The Dumps view flags legacy rows as unsupported -
+  see [Laravel Dumps](./laravel-dumps).
+- **No `pcov` or `yerd-dump` `.so` builds.** Neither extension is built for EOL
+  PHP, which is why coverage and dumps don't work on legacy versions.
+
+A legacy version **can** still be assigned to an individual site
+(`yerd use my-app 7.4`), just not as the global default. See
+[Per-site versions](#per-site-versions).
 
 ### Bundled extensions
 
@@ -132,6 +167,83 @@ on 8.4, as noted.
 Need something not in this set? Register your own with
 [`yerd php ext`](#custom-extensions).
 
+[Legacy versions](#legacy-php-versions) (7.4 / 8.0 / 8.1) ship a smaller, uniform
+extension set built once across all three EOL minors, dropping a few extensions
+that need PHP 8.0+ or a newer `swoole` than 7.4 can run.
+
+<details>
+<summary><b>Legacy build extension list</b> (7.4 / 8.0 / 8.1 - identical across all three)</summary>
+
+| Extension | What it does |
+| --- | --- |
+| `apcu` | In-process shared-memory cache (APCu) for storing user data across a pool's requests. |
+| `bcmath` | Arbitrary-precision decimal arithmetic for money and other exact-math needs. |
+| `bz2` | bzip2 stream compression and decompression. |
+| `calendar` | Conversions between calendar systems (Julian day count, Gregorian, Jewish, French). |
+| `ctype` | Fast character-class checks such as `ctype_digit()` and `ctype_alpha()`. |
+| `curl` | Network transfers via libcurl (HTTP/S, FTP, and more); the default backend for Guzzle. |
+| `dba` | Key/value database abstraction over dbm-style engines (GDBM and friends). |
+| `dom` | Tree-based DOM API for reading and manipulating XML and HTML documents. |
+| `event` | libevent bindings for event-driven, non-blocking I/O loops. |
+| `exif` | Reads EXIF metadata (camera, orientation, GPS) embedded in image files. |
+| `fileinfo` | Detects a file's MIME type from its contents rather than its name. |
+| `filter` | Validates and sanitizes data with `filter_var()` (emails, URLs, ints, …). |
+| `ftp` | Client-side FTP protocol support. |
+| `gd` | Image creation and manipulation: resize, crop, draw, and convert common formats. |
+| `gmp` | Arbitrary-precision integer arithmetic via GNU MP, faster than `bcmath` for big integers. |
+| `iconv` | Character-set conversion between text encodings. |
+| `imagick` | ImageMagick bindings for advanced image processing and a wide range of formats. |
+| `imap` | Access to IMAP, POP3, and NNTP mailboxes. |
+| `intl` | Unicode/ICU internationalization: number and date formatting, collation, transliteration. |
+| `mbregex` | Multibyte-aware regular expressions (the `mb_ereg*` functions). |
+| `mbstring` | Multibyte-safe string functions for UTF-8 and other encodings. |
+| `mysqli` | The improved, feature-complete MySQL/MariaDB driver. |
+| `mysqlnd` | The native driver backend that `mysqli` and PDO's MySQL driver run on. |
+| `opcache` | Caches compiled PHP bytecode in shared memory so scripts aren't re-parsed each request. |
+| `openssl` | TLS, symmetric/asymmetric encryption, signatures, and X.509 certificate handling. |
+| `pcntl` | Unix process control (fork, signals, `waitpid`) for CLI worker processes. |
+| `pdo` | The database-access abstraction layer. |
+| `pdo_mysql` | PDO driver for MySQL/MariaDB. |
+| `pdo_pgsql` | PDO driver for PostgreSQL. |
+| `pdo_sqlite` | PDO driver for SQLite. |
+| `pgsql` | Native PostgreSQL client library (libpq-backed `pg_*` functions). |
+| `phar` | PHP Archive support: bundle a whole application into one distributable file. |
+| `posix` | POSIX system-call bindings (users, groups, process info) on Unix. |
+| `protobuf` | Google Protocol Buffers runtime for compact, fast binary (de)serialization. |
+| `readline` | Interactive line editing and history for CLI and REPL programs. |
+| `redis` | Client for the Redis / Valkey in-memory data store (phpredis). |
+| `session` | Server-side session state management. |
+| `shmop` | Direct read/write access to shared-memory segments. |
+| `simplexml` | Simple object-oriented access to XML documents. |
+| `soap` | SOAP client and server for XML web services. |
+| `sockets` | Low-level BSD sockets API for building custom network protocols. |
+| `sodium` | Modern libsodium cryptography: authenticated encryption, signing, and hashing. |
+| `sqlite3` | The self-contained, embedded SQLite database engine. |
+| `sysvmsg` | System V message-queue inter-process communication. |
+| `sysvsem` | System V semaphores for coordinating processes. |
+| `sysvshm` | System V shared-memory inter-process communication. |
+| `tokenizer` | Tokenizes PHP source code; used by linters and static analysis tools. |
+| `xml` | Event-based (SAX/Expat) XML parsing. |
+| `xmlreader` | Pull-based streaming reader for large XML documents. |
+| `xmlwriter` | Streaming writer for generating XML. |
+| `xsl` | XSLT 1.0 stylesheet transformations over the DOM. |
+| `zip` | Reading and writing ZIP archives. |
+| `zlib` | gzip / deflate stream compression. |
+
+Dropped versus the stable builds:
+
+- **`opentelemetry`** - requires PHP 8.0+, which breaks the 7.4 build outright.
+- **`swoole`** - the pinned `swoole` build needs a newer PHP than 7.4 and would
+  fragment across the three EOL minors, so it's dropped to keep one uniform
+  legacy set.
+- **`swoole-hook-mysql`** - depends on `swoole`.
+- **`pcov` and `yerd-dump`** - the external `.so` partners from
+  [`forjedio/yerd-php-ext`](https://github.com/forjedio/yerd-php-ext) aren't
+  built for EOL PHP, which is why [coverage](./code-coverage) and
+  [dumps](./laravel-dumps) don't work on legacy versions.
+
+</details>
+
 ### Custom extensions
 
 When you need an extension Yerd's builds don't ship (a PECL module like `scrypt`,
@@ -190,6 +302,13 @@ yerd use 8.5
 ```
 
 A fresh config defaults to **PHP 8.3**, but you'll usually set your own right after installing.
+
+::: warning Legacy versions can't be the default
+A [legacy version](#legacy-php-versions) (7.4 / 8.0 / 8.1) is ineligible as the
+global default - `yerd use 7.4` is refused client-side, and the desktop app
+disables **Set default** for legacy rows. It can still be pinned to an
+individual site.
+:::
 
 ::: tip Add the shim dir to your PATH
 Put `{data}/bin` (Yerd prints the exact path) on your `PATH` so a bare `php` matches the version your sites run. The bare `php` shim resolves the current default at run time, so `yerd use` takes effect immediately with nothing to re-point.

@@ -164,8 +164,8 @@ The variant set is the daemon's whole RPC surface - liveness, site management, P
 | `RemoveDomain { name, domain }` | `{"type":"remove_domain","name":"foo","domain":"api.foo.test"}` (refused for a site's last exact domain) |
 | `SetPrimaryDomain { name, domain }` | `{"type":"set_primary_domain","name":"foo","domain":"corp.foo.test"}` (exact host only, never a wildcard; auto-added if absent) |
 | `ResetDomains { name }` | `{"type":"reset_domains","name":"foo"}` (back to apex only) |
-| `InstallPhp { version }` | `{"type":"install_php","version":"8.5"}` |
-| `InstallPhpStreamed { version }` | `{"type":"install_php_streamed","version":"8.5"}` (replies `JobStarted`; poll `JobStatus`) |
+| `InstallPhp { version, confirm_legacy }` | `{"type":"install_php","version":"8.5"}` (`confirm_legacy` defaults `false` and is skipped on the wire; `{"type":"install_php","version":"7.4","confirm_legacy":true}` to install a legacy minor) |
+| `InstallPhpStreamed { version, confirm_legacy }` | `{"type":"install_php_streamed","version":"8.5"}` (same `confirm_legacy` convention; replies `JobStarted`; poll `JobStatus`) |
 | `UpdatePhp { version: Option }` | `{"type":"update_php","version":"8.5"}` or `…,"version":null` |
 | `SetPhpSettings { settings }` | `{"type":"set_php_settings","settings":{…}}` |
 | `SetPhpVersionSettings { version, settings }` | `{"type":"set_php_version_settings","version":"8.3","settings":{…}}` (per-version overrides; `""` removes → falls back to global) |
@@ -213,6 +213,17 @@ The variant set is the daemon's whole RPC surface - liveness, site management, P
 
 Note `Unpark { path: String }` deliberately uses a `String`, not `PathBuf`: clients echo a value straight back from `Response::Parked`, and an exact-identity match avoids lossy path normalisation (the daemon does not canonicalise it).
 
+::: info Legacy PHP support: an additive `confirm_legacy` field
+`InstallPhp` and `InstallPhpStreamed` both gained `confirm_legacy: bool`
+(`#[serde(default, skip_serializing_if = "std::ops::Not::not")]`, last field):
+`false` is the default and is skipped on the wire, so an install of a supported
+version is byte-identical to before the field existed, and an old client's
+payload (missing the field entirely) decodes with `confirm_legacy: false`. The
+daemon requires `confirm_legacy: true` to install an out-of-support [legacy
+version](../guide/php-versions#legacy-php-versions) (7.4 / 8.0 / 8.1) and
+otherwise replies `Response::Error { code: ErrorCode::LegacyRestricted, .. }`.
+:::
+
 `CreateSite { spec: CreateSiteSpec }` is the wizard's entry point (both Laravel and WordPress): `CreateSiteSpec` carries the shared fields (`name`, `parent_dir`, `php`, `secure`) plus a `framework: Framework` enum internally tagged on `"framework"` (`"laravel"` with `LaravelOptions`, `"wordpress"` with `WordPressOptions` - core version, locale, admin credentials, database engine/name/table-prefix). It replies `JobStarted { job_id }` immediately; the caller polls `Request::JobStatus { job_id }` (streamed via `Response::JobProgress`) the same way `InstallPhpStreamed`/`InstallToolStreamed` do. See [`yerdd`'s WordPress support section](./binaries/yerdd#wordpress-support) for what runs behind the job.
 
 ### Response (daemon → client)
@@ -228,7 +239,7 @@ pub enum Response {
     Parked { paths: Vec<String> },
     Info { dns_addr, tld, ca_path, ca_fingerprint, http_port, https_port },
     PhpVersions { installed, default, updates, settings },
-    AvailablePhp { available, installed },
+    AvailablePhp { available, installed, legacy },
     PhpExtensions { by_version },                  // version → [PhpExtInfo{name,path,zend,present}]
     Status { report: Box<StatusReport> },         // boxed: large payload
     Diagnoses { items: Vec<Diagnosis> },
@@ -282,6 +293,17 @@ The multi-domain feature adds three more `SiteEntry` fields alongside `is_wordpr
 For read/unread tracking, `MailSummary` gained a `read: bool` (last field) and `MailStatus` gained an `unread: u32` (last field), both `#[serde(default)]`. A missing key decodes to `false`/`0`, so old daemons and old clients interoperate without a `PROTOCOL_VERSION` bump; the goldens grew a `,"read":false` / `,"unread":0` suffix. The matching mutator is the additive `Request::MarkMailsRead { ids }`.
 :::
 
+::: info `AvailablePhp` and `DumpExtStatus` gained a `legacy` field additively
+`Response::AvailablePhp` gained `legacy: Vec<PhpVersion>` (last field,
+`#[serde(default)]`, skipped when empty) - the installable [legacy](../guide/php-versions#legacy-php-versions)
+minors from `php-legacy.json`, ascending. Separately, `dump.rs`'s `DumpExtStatus`
+gained `legacy: bool` (same `#[serde(default, skip_serializing_if = "std::ops::Not::not")]`
+convention, `false`/omitted for supported versions and older daemons) marking
+whether a PHP version's extension-presence row is a legacy version, so the Dumps
+view can flag it as unsupported without a second round-trip. Same additive,
+no-`PROTOCOL_VERSION`-bump pattern as `web_subpath`.
+:::
+
 ::: info Reverse proxies are additive requests plus their own response variant
 The proxy feature adds four mutators - `AddProxy { name, url }`, `RemoveProxy { name }`, `AddProxyRule { site, prefix, url }`, `RemoveProxyRule { site, prefix }` (all reply with the generic `Ok`) - and one query, `ListProxies`. Because a whole-host proxy is **not** a `Site`, it can't ride `Response::Sites`/`SiteEntry`; `ListProxies` gets a dedicated `Response::Proxies { proxies: Vec<ProxyEntry>, rules: Vec<ProxyRuleEntry> }` instead, where `ProxyEntry { name, target, secure }` and `ProxyRuleEntry { site, prefix, target }` are all `String`/`bool` so the `Response` `Eq` derive holds. New variants are additive by serde tag, so existing pins are byte-identical and no `PROTOCOL_VERSION` bump is needed. `url` stays a `String` on the wire; the daemon parses and validates it (returning a typed error) rather than the client.
 :::
@@ -299,9 +321,14 @@ pub enum ErrorCode {
     InvalidPath,          // "invalid_path"
     PortInUse,            // "port_in_use"
     ExtensionLoadFailed,  // "extension_load_failed" - a valid path whose .so failed its load-probe
+    LegacyRestricted,     // "legacy_restricted" - a legacy version used somewhere it's disallowed
     Internal,             // "internal" - catch-all; expand the enum, don't overload this
 }
 ```
+
+`LegacyRestricted` is returned when a request tries to do something an [out-of-support legacy version](../guide/php-versions#legacy-php-versions)
+(7.4 / 8.0 / 8.1) can't: setting it as the global default, or installing it
+without `confirm_legacy: true`.
 
 There is deliberately **no `#[serde(other)]` catch-all**. An unknown code from a newer daemon fails closed as `IpcError::Decode` rather than silently downgrading - the same signal as an unknown `type` tag, and the placeholder for a real version mismatch until a handshake lands.
 

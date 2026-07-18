@@ -43,6 +43,7 @@ const FEATURES: { key: string; label: string }[] = [
 const running = computed(() => status.value?.running ?? false);
 const enabled = computed(() => status.value?.enabled ?? false);
 const extensions = computed(() => status.value?.extensions ?? []);
+const hasLegacy = computed(() => extensions.value.some((e) => e.legacy));
 
 // The dump server *port* is now edited centrally on Settings ▸ Application Ports;
 // this page shows it read-only via `status.port`.
@@ -175,13 +176,24 @@ async function openViewer(): Promise<void> {
         </CardContent>
       </Card>
 
+      <!-- Legacy PHP warning -->
+      <div
+        v-if="hasLegacy"
+        data-testid="dumps-legacy-banner"
+        class="rounded-md border border-warning/40 bg-warning/10 px-4 py-3 text-sm text-warning-foreground"
+      >
+        One or more installed PHP versions are legacy (&lt; 8.2). Dumps are never captured for
+        legacy versions - the <code>yerd-dump</code> extension isn't built for out-of-support PHP.
+      </div>
+
       <!-- Extension presence -->
       <Card>
         <CardHeader>
           <CardTitle>PHP extension</CardTitle>
           <CardDescription>
             Telemetry is captured by the <code>yerd-dump</code> extension, installed per PHP
-            version. Versions without it simply produce no dumps.
+            version. Versions without it simply produce no dumps. Legacy PHP versions (&lt; 8.2)
+            never capture dumps - the extension isn't built for them.
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -197,7 +209,8 @@ async function openViewer(): Promise<void> {
               >
                 <td class="py-2 font-mono">PHP {{ ext.version }}</td>
                 <td class="py-2 text-right">
-                  <Badge :variant="ext.present ? 'success' : 'warning'">
+                  <Badge v-if="ext.legacy" variant="warning">Unsupported (no dumps)</Badge>
+                  <Badge v-else :variant="ext.present ? 'success' : 'warning'">
                     {{ ext.present ? "Installed" : "Not installed" }}
                   </Badge>
                 </td>

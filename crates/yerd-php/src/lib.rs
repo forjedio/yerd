@@ -26,8 +26,8 @@ pub use pure::ext_probe::{interpret_probe, ExtLoadError};
 pub use real::{SystemClock, TokioChild, TokioProcessSpawner};
 pub use release::{
     available_minors, current_os_arch, display_build, is_newer_build, is_safe_member,
-    listing_sig_url, listing_url, patch_of, resolve_from_listing, Arch, Artifact, BinaryKind, Os,
-    PHP_LISTING_BASE_URL, PHP_LISTING_SCHEMA,
+    listing_sig_url, listing_url, patch_of, resolve_from_listing, Arch, Artifact, BinaryKind,
+    Channel, Os, MIN_SUPPORTED, PHP_LISTING_BASE_URL, PHP_LISTING_SCHEMA,
 };
 pub use traits::{ChildHandle, Clock, Downloader, HealthProbe, ProcessSpawner};
 pub use version::discover_bundled;

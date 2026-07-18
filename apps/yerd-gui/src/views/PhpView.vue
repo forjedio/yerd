@@ -67,6 +67,7 @@ import {
   DISPLAY_ERRORS_OPTIONS,
   TEXT_SETTINGS,
 } from "@/lib/phpSettings";
+import { isLegacyVersion } from "@/lib/phpVersion";
 import { humaniseBytes, poolStateLabel, poolStateTone } from "@/lib/utils";
 
 const toast = useToast();
@@ -386,6 +387,15 @@ const installOpen = ref(false);
 const installLoading = ref(false);
 const installOptions = ref<{ value: PhpVersion; label: string }[]>([]);
 const selectedVersion = ref<PhpVersion>("");
+// Legacy (< 8.2) versions are offered behind an explicit, warned opt-in.
+const legacyOptions = ref<{ value: PhpVersion; label: string }[]>([]);
+const selectedLegacy = ref<PhpVersion>("");
+const showLegacy = ref(false);
+const confirmLegacy = ref(false);
+const canInstallStable = computed(() => !!selectedVersion.value);
+const canInstallLegacy = computed(
+  () => !!selectedLegacy.value && confirmLegacy.value,
+);
 
 // ── install-progress dialog ──
 // A blocking, non-dismissible dialog owns the install's status (spinner + the
@@ -403,15 +413,24 @@ async function openInstall(): Promise<void> {
   installOpen.value = true;
   installLoading.value = true;
   installOptions.value = [];
+  legacyOptions.value = [];
   selectedVersion.value = "";
+  selectedLegacy.value = "";
+  showLegacy.value = false;
+  confirmLegacy.value = false;
   try {
     const r = await availablePhp();
     const installedSet = new Set(r.installed);
     installOptions.value = r.available
       .filter((v) => !installedSet.has(v))
       .map((v) => ({ value: v, label: `PHP ${v}` }));
+    legacyOptions.value = (r.legacy ?? [])
+      .filter((v) => !installedSet.has(v))
+      .map((v) => ({ value: v, label: `PHP ${v}` }));
     const opts = installOptions.value;
     selectedVersion.value = opts[opts.length - 1]?.value ?? "";
+    const legacyOpts = legacyOptions.value;
+    selectedLegacy.value = legacyOpts[legacyOpts.length - 1]?.value ?? "";
   } catch (e) {
     toast.error("Couldn't load installable versions", (e as IpcError).message);
   } finally {
@@ -427,21 +446,26 @@ async function openInstall(): Promise<void> {
  * version list AND the status poll so the new row shows its patch + "idle" state
  * immediately rather than on the next 4s tick.
  */
-async function confirmInstall(closePicker: () => void): Promise<void> {
-  const v = selectedVersion.value;
+async function confirmInstall(legacy: boolean): Promise<void> {
+  const v = legacy ? selectedLegacy.value : selectedVersion.value;
   if (!v || installing.value) return;
+  if (legacy && !confirmLegacy.value) return;
   const opId = `php-install:${v}`;
   installTarget.value = v;
   installPhase.value = "running";
   installError.value = "";
   operations.begin({ id: opId, kind: "php-install", label: `Installing PHP ${v}` });
-  closePicker();
+  installOpen.value = false;
   installProgressOpen.value = true;
   try {
-    await installPhpWithProgress(v, (lines) => {
-      const latest = lines[lines.length - 1];
-      if (latest) operations.update(opId, { detail: latest });
-    });
+    await installPhpWithProgress(
+      v,
+      (lines) => {
+        const latest = lines[lines.length - 1];
+        if (latest) operations.update(opId, { detail: latest });
+      },
+      legacy,
+    );
     installPhase.value = "done";
     toast.success(`Installed PHP ${v}`);
     await Promise.all([reloadPhp({ force: true }), refresh()]);
@@ -542,6 +566,7 @@ onUnmounted(
                 <Badge v-if="v === defaultVersion" variant="secondary">
                   <Star class="size-3" /> default
                 </Badge>
+                <Badge v-if="isLegacyVersion(v)" variant="warning">legacy</Badge>
               </div>
             </td>
             <td class="py-3 pr-4">
@@ -578,7 +603,10 @@ onUnmounted(
                     <DropdownMenuItem :disabled="!updateByVersion[v]" @select="doUpdate(v)">
                       <Download class="size-4" /> Update
                     </DropdownMenuItem>
-                    <DropdownMenuItem :disabled="v === defaultVersion" @select="makeDefault(v)">
+                    <DropdownMenuItem
+                      :disabled="v === defaultVersion || isLegacyVersion(v)"
+                      @select="makeDefault(v)"
+                    >
                       <Star class="size-4" /> Set default
                     </DropdownMenuItem>
                     <DropdownMenuSeparator />
@@ -812,21 +840,66 @@ onUnmounted(
       <div v-if="installLoading" class="flex justify-center py-6">
         <Spinner class="size-5" />
       </div>
-      <template v-else-if="installOptions.length">
-        <span class="text-sm font-medium">Version</span>
-        <div class="mt-2">
-          <Select
-            class="w-full"
-            :model-value="selectedVersion"
-            :options="installOptions"
-            aria-label="PHP version to install"
-            @update:model-value="(v: PhpVersion) => (selectedVersion = v)"
-          />
+      <template v-else-if="installOptions.length || legacyOptions.length">
+        <template v-if="installOptions.length">
+          <span class="text-sm font-medium">Version</span>
+          <div class="mt-2">
+            <Select
+              class="w-full"
+              :model-value="selectedVersion"
+              :options="installOptions"
+              aria-label="PHP version to install"
+              @update:model-value="(v: PhpVersion) => (selectedVersion = v)"
+            />
+          </div>
+          <p class="mt-2 text-xs text-muted-foreground">
+            Downloads a prebuilt static build; this can take a few minutes. A
+            dialog shows live progress and can be closed once it finishes.
+          </p>
+        </template>
+
+        <div v-if="legacyOptions.length" class="mt-4 border-t pt-3">
+          <button
+            type="button"
+            class="text-sm text-muted-foreground underline-offset-2 hover:underline"
+            data-testid="toggle-legacy"
+            @click="showLegacy = !showLegacy"
+          >
+            {{ showLegacy ? "Hide" : "Show" }} legacy versions (7.4 / 8.0 / 8.1)
+          </button>
+
+          <div v-if="showLegacy" class="mt-3 space-y-3">
+            <div
+              class="flex gap-2 rounded-md border border-warning/40 bg-warning/10 p-3 text-xs text-warning-foreground"
+              data-testid="legacy-warning"
+            >
+              <TriangleAlert class="mt-0.5 size-4 shrink-0" />
+              <span>
+                Legacy PHP versions are out of support and may contain unpatched security
+                vulnerabilities. They have no code coverage (phpcover), no yerd-dumps capture, and
+                cannot be set as the default PHP version. Use only for maintaining old projects.
+              </span>
+            </div>
+            <Select
+              class="w-full"
+              :model-value="selectedLegacy"
+              :options="legacyOptions"
+              aria-label="Legacy PHP version to install"
+              @update:model-value="(v: PhpVersion) => (selectedLegacy = v)"
+            />
+            <label class="flex items-center gap-2 text-sm">
+              <Switch v-model="confirmLegacy" aria-label="Confirm legacy install" />
+              I understand and want to install this legacy version anyway.
+            </label>
+            <Button
+              class="w-full"
+              :disabled="!canInstallLegacy || installing"
+              @click="confirmInstall(true)"
+            >
+              Install legacy version
+            </Button>
+          </div>
         </div>
-        <p class="mt-2 text-xs text-muted-foreground">
-          Downloads a prebuilt static build; this can take a few minutes. A
-          dialog shows live progress and can be closed once it finishes.
-        </p>
       </template>
       <p v-else class="py-2 text-sm text-muted-foreground">
         No installable versions to add - every version offered by the
@@ -835,8 +908,10 @@ onUnmounted(
       <template #footer="{ close }">
         <Button variant="ghost" @click="close">Cancel</Button>
         <Button
-          :disabled="!installOptions.length || !selectedVersion || installing"
-          @click="confirmInstall(close)"
+          v-if="installOptions.length"
+          :disabled="!canInstallStable || installing"
+          data-testid="install-stable"
+          @click="confirmInstall(false)"
         >
           Install
         </Button>

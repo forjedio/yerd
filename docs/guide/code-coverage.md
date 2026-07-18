@@ -87,6 +87,12 @@ installed for that version rather than running without coverage. The fetch is
 best-effort and never blocks a PHP install.
 :::
 
+::: warning No coverage on legacy PHP
+pcov isn't built for [legacy versions](./php-versions#legacy-php-versions) (7.4 /
+8.0 / 8.1, PHP < 8.2). `phpcover`, `php7.4cover` / `php8.0cover` / `php8.1cover`,
+and `yerd coverage` all **error** on a legacy version rather than run.
+:::
+
 ::: warning Unix only
 Cover shims are created on macOS and Linux only. They are not generated on other
 platforms.

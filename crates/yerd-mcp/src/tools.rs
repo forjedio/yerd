@@ -249,6 +249,7 @@ fn build_request(name: &'static str, args: &Value) -> Result<Request, ArgError> 
         "list_available_php" => Request::AvailablePhp,
         "install_php" => Request::InstallPhpStreamed {
             version: req_php(args, "version")?,
+            confirm_legacy: false,
         },
         "set_default_php" => Request::SetDefaultPhp {
             version: req_php(args, "version")?,

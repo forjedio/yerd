@@ -155,12 +155,13 @@ fn note(progress: Option<&ProgressTx>, msg: impl Into<String>) {
 pub(crate) async fn fetch_verified_listing(
     dl: &dyn Downloader,
     public_key: &str,
+    channel: yerd_php::Channel,
 ) -> Result<String, PhpError> {
-    let body = dl.download(&listing_url()).await?;
-    let sig = dl.download(&listing_sig_url()).await?;
+    let body = dl.download(&listing_url(channel)).await?;
+    let sig = dl.download(&listing_sig_url(channel)).await?;
     let sig = String::from_utf8_lossy(&sig);
     yerd_update::verify_minisign(public_key, &sig, &body).map_err(|e| {
-        tracing::warn!(error = %e, "php.json signature verification failed");
+        tracing::warn!(error = %e, "php listing signature verification failed");
         PhpError::ListingUntrusted
     })?;
     String::from_utf8(body).map_err(|e| PhpError::ListingParse {
@@ -187,9 +188,10 @@ pub async fn install(
     progress: Option<&ProgressTx>,
 ) -> Result<(), PhpError> {
     let (os, arch) = current_os_arch()?;
+    let channel = yerd_php::Channel::of(version);
     note(progress, format!("Resolving PHP {version}…"));
-    let listing = fetch_verified_listing(dl, public_key).await?;
-    let artifact = yerd_php::resolve_from_listing(&listing, version, os, arch)?;
+    let listing = fetch_verified_listing(dl, public_key, channel).await?;
+    let artifact = yerd_php::resolve_from_listing(&listing, version, os, arch, channel)?;
     tracing::info!(%version, patch = %artifact.full_version, revision = artifact.revision, "resolved PHP build; downloading");
     note(
         progress,
@@ -614,12 +616,16 @@ fn managed_shim_version(name: &str) -> Option<PhpVersion> {
 /// `yerd_bin`): the wrapper reads `argv[0]`, resolves the target PHP + minor, and
 /// points `PHPRC` at that version's generated ini before `exec`ing PHP. So:
 ///
-/// * for each installed `v`: `php<v>` → `yerd_bin`, `php<v>cover` → `yerd_bin`;
+/// * for each installed `v`: `php<v>` → `yerd_bin`, and `php<v>cover` → `yerd_bin`
+///   except for legacy (`< 8.2`) versions, which get no cover shim because pcov is
+///   never built for them (`cover_shim` rejects them regardless, so the shim keeps
+///   `{data}/bin` honest);
 /// * `phpcover` → `yerd_bin`;
 /// * `php` → `yerd_bin` when at least one version is installed (the wrapper
 ///   resolves the default from `config.php.default` at run time);
 /// * prune managed `php<X.Y>`/`php<X.Y>cover` symlinks whose version is no longer
-///   installed.
+///   installed, plus any legacy cover shim (e.g. `php7.4cover`) left by an older
+///   Yerd, which must go even when that legacy version is still installed.
 ///
 /// A **single** `discover_bundled` snapshot drives both create and prune. Callers
 /// must serialize invocations (the daemon holds a dedicated mutex) so the
@@ -642,7 +648,9 @@ pub fn reconcile_shims(dirs: &PlatformDirs, yerd_bin: &Path) -> Result<(), PhpEr
 
     for &v in &installed {
         place_symlink(&bin.join(versioned_shim_name(v, false)), yerd_bin)?;
-        place_symlink(&bin.join(versioned_shim_name(v, true)), yerd_bin)?;
+        if !v.is_legacy() {
+            place_symlink(&bin.join(versioned_shim_name(v, true)), yerd_bin)?;
+        }
     }
     place_symlink(&bin.join("phpcover"), yerd_bin)?;
 
@@ -667,7 +675,8 @@ pub fn reconcile_shims(dirs: &PlatformDirs, yerd_bin: &Path) -> Result<(), PhpEr
         let Some(v) = managed_shim_version(name) else {
             continue;
         };
-        if installed.contains(&v) {
+        let stale_legacy_cover = name.ends_with("cover") && v.is_legacy();
+        if installed.contains(&v) && !stale_legacy_cover {
             continue;
         }
         let path = entry.path();
@@ -812,9 +821,10 @@ mod tests {
         }
     }
 
-    /// URL-keyed fake: `php.json.minisig` → signature; `php.json` → manifest;
-    /// `-cli-`/`-fpm-` → the respective tarball. Missing tarballs (empty) still
-    /// answer so a resolve-then-download path can run.
+    /// URL-keyed fake: any `*.json.minisig` → signature; any `*.json` (stable
+    /// `php.json` or legacy `php-legacy.json`) → the single `manifest`;
+    /// `-cli-`/`-fpm-` → the respective tarball. Each test drives one channel, so
+    /// serving the same manifest for whichever `.json` is requested is enough.
     struct FakeDownloader {
         manifest: String,
         minisig: String,
@@ -827,7 +837,7 @@ mod tests {
         async fn download(&self, url: &str) -> Result<Vec<u8>, DownloadError> {
             if url.ends_with(".minisig") {
                 Ok(self.minisig.clone().into_bytes())
-            } else if url.ends_with("php.json") {
+            } else if url.contains(".json") {
                 Ok(self.manifest.clone().into_bytes())
             } else if url.contains("-cli-") {
                 Ok(self.cli.clone())
@@ -973,10 +983,37 @@ mod tests {
             cli,
             fpm,
         };
-        let err = fetch_verified_listing(&dl, &signed.public_key)
+        let err = fetch_verified_listing(&dl, &signed.public_key, yerd_php::Channel::Stable)
             .await
             .unwrap_err();
         assert!(matches!(err, PhpError::ListingUntrusted), "got {err:?}");
+    }
+
+    /// A legacy (7.4) build installs from the `php-legacy.json` channel into
+    /// `php-7.4/bin/php`, exercising the channel-aware `install` path.
+    #[tokio::test]
+    async fn install_legacy_version_lands_in_versioned_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dirs = dirs_in(tmp.path());
+        let cli = gzip_tar_single("php", b"LEGACY-CLI", 0o755);
+        let fpm = gzip_tar_single("php-fpm", b"LEGACY-FPM", 0o755);
+        let signed = signed_manifest_for("7.4.33", "7.4", 1, &cli, &fpm);
+        let dl = FakeDownloader {
+            manifest: signed.manifest.clone(),
+            minisig: signed.minisig.clone(),
+            cli,
+            fpm,
+        };
+        install(PhpVersion::new(7, 4), &dirs, &dl, &signed.public_key, None)
+            .await
+            .unwrap();
+        assert!(dirs
+            .data
+            .join("php")
+            .join("php-7.4")
+            .join("bin")
+            .join("php")
+            .exists());
     }
 
     #[tokio::test]
@@ -1100,6 +1137,44 @@ mod tests {
         assert_eq!(std::fs::read_link(bin.join("php")).unwrap(), yerd_bin);
         assert!(!bin.join("php8.2cover").exists());
         assert!(bin.join("keep.txt").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn reconcile_gives_legacy_a_version_shim_but_no_cover_shim() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dirs = dirs_in(tmp.path());
+        let yerd_bin = tmp.path().join("yerd");
+        std::fs::write(&yerd_bin, b"#!fake").unwrap();
+
+        let mk = |v: PhpVersion| {
+            let base = dirs
+                .data
+                .join("php")
+                .join(format!("php-{}.{}", v.major, v.minor));
+            std::fs::create_dir_all(base.join("bin")).unwrap();
+            std::fs::create_dir_all(base.join("sbin")).unwrap();
+            std::fs::write(base.join("bin").join("php"), b"cli").unwrap();
+            std::fs::write(base.join("sbin").join("php-fpm"), b"fpm").unwrap();
+        };
+        mk(PhpVersion::new(7, 4));
+        mk(PhpVersion::new(8, 4));
+
+        let bin = shim_dir(&dirs);
+        std::fs::create_dir_all(&bin).unwrap();
+        std::os::unix::fs::symlink(&yerd_bin, bin.join("php7.4cover")).unwrap();
+
+        reconcile_shims(&dirs, &yerd_bin).unwrap();
+
+        assert!(
+            bin.join("php7.4").exists(),
+            "legacy version shim is created"
+        );
+        assert!(
+            !bin.join("php7.4cover").exists(),
+            "no cover shim for a legacy version, and a stale one is pruned"
+        );
+        assert!(bin.join("php8.4cover").exists(), "stable cover shim stays");
     }
 
     #[cfg(unix)]

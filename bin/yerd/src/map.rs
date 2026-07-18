@@ -35,9 +35,17 @@ pub fn to_request(cmd: &Command) -> Result<Request, ClientError> {
         Command::Use {
             first,
             version: None,
-        } => Request::SetDefaultPhp {
-            version: parse_php(first)?,
-        },
+        } => {
+            let version = parse_php(first)?;
+            if version.is_legacy() {
+                return Err(ClientError::Usage(format!(
+                    "PHP {version} is an out-of-support legacy version and cannot be the global \
+                     default (`yerd use`). It can still serve individual sites (`yerd use <site> \
+                     {version}`) and run via `php{version}`."
+                )));
+            }
+            Request::SetDefaultPhp { version }
+        }
         Command::Use {
             first,
             version: Some(version),
@@ -83,10 +91,22 @@ pub fn to_request(cmd: &Command) -> Result<Request, ClientError> {
             action: crate::cli::PhpAction::Ext { action },
         } => php_ext_to_request(action)?,
         Command::Install {
-            target: crate::cli::InstallTarget::Php { version },
-        } => Request::InstallPhp {
-            version: parse_php(version)?,
-        },
+            target: crate::cli::InstallTarget::Php { version, legacy },
+        } => {
+            let parsed = parse_php(version)?;
+            if parsed.is_legacy() && !*legacy {
+                return Err(ClientError::Usage(format!(
+                    "PHP {parsed} is an out-of-support legacy version. It may contain unpatched \
+                     security vulnerabilities, has no code coverage (phpcover) and no yerd-dumps, \
+                     and cannot be set as the default. Re-run with `--legacy` to install it \
+                     anyway: `yerd install php {parsed} --legacy`."
+                )));
+            }
+            Request::InstallPhp {
+                version: parsed,
+                confirm_legacy: *legacy,
+            }
+        }
         Command::Install {
             target: crate::cli::InstallTarget::Tool { id },
         } => Request::InstallTool { tool: id.clone() },
@@ -769,7 +789,8 @@ pub fn render(resp: &Response, json: bool) -> Rendered {
         Response::AvailablePhp {
             available,
             installed,
-        } => Rendered::ok(format_available_php(available, installed)),
+            legacy,
+        } => Rendered::ok(format_available_php(available, installed, legacy)),
         Response::PhpExtensions { by_version } => Rendered::ok(format_php_extensions(by_version)),
         Response::Error { code: c, message } => Rendered::err(format!("error ({c:?}): {message}")),
         Response::Status { report } => Rendered {
@@ -1208,22 +1229,33 @@ fn global_of(settings: &std::collections::BTreeMap<String, String>, key: &str) -
         .map_or_else(|| "PHP default".to_owned(), |v| format!("global {v}"))
 }
 
-/// Render the installable versions, tagging the ones already installed.
-fn format_available_php(available: &[PhpVersion], installed: &[PhpVersion]) -> String {
-    if available.is_empty() {
+/// Render the installable versions, tagging the ones already installed. Legacy
+/// (< 8.2) versions, when offered, are listed in a separate, clearly-warned
+/// section below the supported ones.
+fn format_available_php(
+    available: &[PhpVersion],
+    installed: &[PhpVersion],
+    legacy: &[PhpVersion],
+) -> String {
+    if available.is_empty() && legacy.is_empty() {
         return "no installable PHP versions found for this platform".to_owned();
     }
-    available
-        .iter()
-        .map(|v| {
-            if installed.contains(v) {
-                format!("{v} (installed)")
-            } else {
-                v.to_string()
-            }
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
+    let tag = |v: &PhpVersion| {
+        if installed.contains(v) {
+            format!("{v} (installed)")
+        } else {
+            v.to_string()
+        }
+    };
+    let mut out = available.iter().map(&tag).collect::<Vec<_>>().join("\n");
+    if !legacy.is_empty() {
+        if !out.is_empty() {
+            out.push_str("\n\n");
+        }
+        out.push_str("Legacy (out of support - no coverage, no dumps, cannot be default):\n");
+        out.push_str(&legacy.iter().map(&tag).collect::<Vec<_>>().join("\n"));
+    }
+    out
 }
 
 /// Render the custom-extension registry, grouped by version, tagging any entry
@@ -1616,12 +1648,14 @@ mod tests {
         assert_eq!(
             to_request(&Command::Install {
                 target: crate::cli::InstallTarget::Php {
-                    version: "8.5".into()
+                    version: "8.5".into(),
+                    legacy: false,
                 }
             })
             .unwrap(),
             Request::InstallPhp {
-                version: PhpVersion::new(8, 5)
+                version: PhpVersion::new(8, 5),
+                confirm_legacy: false,
             }
         );
         assert_eq!(
@@ -2298,6 +2332,7 @@ mod tests {
                     PhpVersion::new(8, 5),
                 ],
                 installed: vec![PhpVersion::new(8, 4)],
+                legacy: vec![],
             },
             false,
         );
@@ -2306,15 +2341,70 @@ mod tests {
         assert!(r.stdout.contains("\n8.3") || r.stdout.starts_with("8.3"));
         assert!(!r.stdout.contains("8.3 (installed)"));
         assert!(!r.stdout.contains("8.5 (installed)"));
+        assert!(!r.stdout.contains("Legacy"), "no legacy section when empty");
 
         let empty = render(
             &Response::AvailablePhp {
                 available: vec![],
                 installed: vec![],
+                legacy: vec![],
             },
             false,
         );
         assert!(empty.stdout.contains("no installable PHP versions"));
+    }
+
+    #[test]
+    fn renders_available_php_legacy_section() {
+        let r = render(
+            &Response::AvailablePhp {
+                available: vec![PhpVersion::new(8, 4), PhpVersion::new(8, 5)],
+                installed: vec![PhpVersion::new(8, 1)],
+                legacy: vec![PhpVersion::new(7, 4), PhpVersion::new(8, 1)],
+            },
+            false,
+        );
+        assert_eq!(r.code, 0);
+        assert!(r.stdout.contains("Legacy (out of support"));
+        assert!(r.stdout.contains("7.4"));
+        assert!(r.stdout.contains("8.1 (installed)"));
+    }
+
+    #[test]
+    fn use_rejects_legacy_default() {
+        match to_request(&Command::Use {
+            first: "7.4".into(),
+            version: None,
+        }) {
+            Err(ClientError::Usage(msg)) => assert!(msg.contains("legacy")),
+            other => panic!("expected Usage error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn install_legacy_requires_flag() {
+        match to_request(&Command::Install {
+            target: crate::cli::InstallTarget::Php {
+                version: "7.4".into(),
+                legacy: false,
+            },
+        }) {
+            Err(ClientError::Usage(msg)) => assert!(msg.contains("--legacy")),
+            other => panic!("expected Usage error, got {other:?}"),
+        }
+        assert_eq!(
+            to_request(&Command::Install {
+                target: crate::cli::InstallTarget::Php {
+                    version: "7.4".into(),
+                    legacy: true,
+                },
+            })
+            .unwrap(),
+            Request::InstallPhp {
+                version: PhpVersion::new(7, 4),
+                confirm_legacy: true,
+            }
+        );
     }
 
     #[test]
@@ -3010,6 +3100,7 @@ mod tests {
         match to_request(&Command::Install {
             target: crate::cli::InstallTarget::Php {
                 version: "not-a-version".into(),
+                legacy: false,
             },
         }) {
             Err(ClientError::Usage(_)) => {}

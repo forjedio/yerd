@@ -6,7 +6,14 @@
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
+use yerd_core::PhpVersion;
 use yerd_platform::PlatformDirs;
+
+/// Whether a `"major.minor"` minor string names a legacy version (< 8.2). A
+/// minor that doesn't parse is treated as non-legacy (it will fail elsewhere).
+fn minor_is_legacy(minor: &str) -> bool {
+    minor.parse::<PhpVersion>().is_ok_and(PhpVersion::is_legacy)
+}
 
 /// `{data}/php/php-<minor>/bin/php`.
 #[must_use]
@@ -29,6 +36,9 @@ pub(crate) fn cli_binary(dirs: &PlatformDirs, minor: &str) -> PathBuf {
 pub(crate) fn default_from_shim(dirs: &PlatformDirs) -> Option<(PathBuf, String)> {
     let target = std::fs::read_link(dirs.data.join("bin").join("php")).ok()?;
     let minor = minor_from_php_path(&target)?;
+    if minor_is_legacy(&minor) {
+        return None;
+    }
     let php = cli_binary(dirs, &minor);
     php.is_file().then_some((php, minor))
 }
@@ -43,6 +53,9 @@ pub(crate) fn default_from_shim(dirs: &PlatformDirs) -> Option<(PathBuf, String)
 pub(crate) fn default_from_config(dirs: &PlatformDirs) -> Option<(PathBuf, String)> {
     let cfg = yerd_config::Config::load(&dirs.config.join("yerd.toml")).ok()?;
     let v = cfg.php.default;
+    if v.is_legacy() {
+        return None;
+    }
     let minor = format!("{}.{}", v.major, v.minor);
     let php = cli_binary(dirs, &minor);
     php.is_file().then_some((php, minor))
@@ -80,7 +93,47 @@ pub(crate) fn minor_from_php_path(p: &Path) -> Option<String> {
     })
 }
 
-/// Highest installed minor under `{data}/php` whose CLI binary exists.
+/// Whether any PHP version is installed under `{data}/php` (legacy included) -
+/// used to distinguish "nothing installed" from "only legacy installed" in the
+/// no-default message.
+#[must_use]
+pub(crate) fn any_installed(dirs: &PlatformDirs) -> bool {
+    let root = dirs.data.join("php");
+    let Ok(entries) = std::fs::read_dir(&root) else {
+        return false;
+    };
+    for entry in entries.flatten() {
+        let fname = entry.file_name();
+        let Some(name) = fname.to_str() else { continue };
+        let Some(rest) = name.strip_prefix("php-") else {
+            continue;
+        };
+        if cli_binary(dirs, rest).is_file() {
+            return true;
+        }
+    }
+    false
+}
+
+/// Message for when [`resolve_default_php`] returns `None`: distinguishes
+/// "nothing installed" from "only legacy installed" so the guidance is accurate.
+/// Shared by every shim that resolves the default PHP (`php`, `phpcover`,
+/// `composer`, `laravel`, `wp`).
+#[must_use]
+pub(crate) fn no_default_php_message(dirs: &PlatformDirs) -> String {
+    if any_installed(dirs) {
+        "No supported default PHP version. Legacy versions (7.4 / 8.0 / 8.1) can't be the \
+         default - install a supported version (e.g. `yerd install php 8.4`), or invoke a \
+         legacy version explicitly, e.g. `php7.4`."
+            .to_owned()
+    } else {
+        "no PHP installed - run `yerd install php <version>`".to_owned()
+    }
+}
+
+/// Highest installed **non-legacy** minor under `{data}/php` whose CLI binary
+/// exists. Legacy minors (< 8.2) are skipped so bare `php` never resolves to a
+/// legacy interpreter.
 #[must_use]
 pub(crate) fn highest_installed(dirs: &PlatformDirs) -> Option<(PathBuf, String)> {
     let root = dirs.data.join("php");
@@ -97,6 +150,9 @@ pub(crate) fn highest_installed(dirs: &PlatformDirs) -> Option<(PathBuf, String)
         let (Ok(maj), Ok(min)) = (maj.parse::<u8>(), min.parse::<u8>()) else {
             continue;
         };
+        if PhpVersion::new(maj, min).is_legacy() {
+            continue;
+        }
         if !cli_binary(dirs, rest).is_file() {
             continue;
         }
@@ -111,7 +167,10 @@ pub(crate) fn highest_installed(dirs: &PlatformDirs) -> Option<(PathBuf, String)
 
 /// Resolve the default PHP `(binary, "major.minor")`: the config default first
 /// (authoritative), then a legacy direct-symlink `php` shim target, then the
-/// highest installed version. `None` when no PHP is installed.
+/// highest installed version. Every fallback excludes legacy (< 8.2) versions,
+/// so bare `php` never runs a legacy interpreter. `None` when no *supported* PHP
+/// is installed (even if a legacy version is) - callers render
+/// [`no_default_php_message`] to explain.
 #[must_use]
 pub(crate) fn resolve_default_php(dirs: &PlatformDirs) -> Option<(PathBuf, String)> {
     default_from_config(dirs)
@@ -129,6 +188,69 @@ pub(crate) fn fail(msg: String) -> ExitCode {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+
+    fn dirs_at(tmp: &Path) -> PlatformDirs {
+        PlatformDirs {
+            config: tmp.join("c"),
+            data: tmp.join("d"),
+            state: tmp.join("s"),
+            cache: tmp.join("ca"),
+            runtime: tmp.join("r"),
+        }
+    }
+
+    fn fake_cli(dirs: &PlatformDirs, minor: &str) {
+        let base = dirs
+            .data
+            .join("php")
+            .join(format!("php-{minor}"))
+            .join("bin");
+        std::fs::create_dir_all(&base).unwrap();
+        std::fs::write(base.join("php"), b"x").unwrap();
+    }
+
+    #[test]
+    fn highest_installed_skips_legacy_versions() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dirs = dirs_at(tmp.path());
+        fake_cli(&dirs, "8.0");
+        fake_cli(&dirs, "8.2");
+        assert_eq!(
+            highest_installed(&dirs).map(|(_, m)| m),
+            Some("8.2".to_owned()),
+            "legacy 8.0 is skipped; 8.2 wins"
+        );
+    }
+
+    #[test]
+    fn highest_installed_none_when_only_legacy() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dirs = dirs_at(tmp.path());
+        fake_cli(&dirs, "7.4");
+        assert_eq!(highest_installed(&dirs), None);
+        assert!(any_installed(&dirs), "7.4 is still installed");
+    }
+
+    #[test]
+    fn no_default_message_distinguishes_legacy_only_from_empty() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dirs = dirs_at(tmp.path());
+        std::fs::create_dir_all(dirs.data.join("php")).unwrap();
+        assert!(no_default_php_message(&dirs).contains("no PHP installed"));
+        fake_cli(&dirs, "7.4");
+        let msg = no_default_php_message(&dirs);
+        assert!(msg.contains("supported"));
+        assert!(msg.contains("php7.4"));
+    }
+
+    #[test]
+    fn minor_is_legacy_splits_at_floor() {
+        assert!(minor_is_legacy("7.4"));
+        assert!(minor_is_legacy("8.1"));
+        assert!(!minor_is_legacy("8.2"));
+        assert!(!minor_is_legacy("8.5"));
+        assert!(!minor_is_legacy("garbage"));
+    }
 
     #[test]
     fn minor_from_php_path_extracts_dotted_minor() {

@@ -153,6 +153,13 @@ pub enum Request {
     InstallPhp {
         /// The major.minor version to install (resolved to a pinned patch).
         version: PhpVersion,
+        /// Explicit opt-in to install an out-of-support legacy minor (< 8.2).
+        /// The daemon refuses a legacy install unless this is `true`. Defaults
+        /// to `false` so older clients (which omit it) can never trigger a
+        /// legacy install; skipped-when-false so the existing stable wire
+        /// literal stays byte-identical.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        confirm_legacy: bool,
     },
     /// Install a PHP version as a streamed background job. The daemon replies
     /// [`super::Response::JobStarted`] immediately; phase + byte-count progress is
@@ -161,6 +168,10 @@ pub enum Request {
     InstallPhpStreamed {
         /// The major.minor version to install (resolved to a pinned patch).
         version: PhpVersion,
+        /// Explicit opt-in to install a legacy minor; see the `InstallPhp`
+        /// variant's `confirm_legacy` for the full contract.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        confirm_legacy: bool,
     },
     /// Set the global default PHP version (terminal `php` shim + site fallback).
     SetDefaultPhp {
@@ -907,6 +918,7 @@ mod variant_name_pinning {
         pin(Request::DaemonInfo);
         pin(Request::InstallPhp {
             version: PhpVersion::new(8, 5),
+            confirm_legacy: false,
         });
         pin(Request::SetDefaultPhp {
             version: PhpVersion::new(8, 5),

@@ -17,7 +17,7 @@ use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 
-use yerd_core::php_settings;
+use yerd_core::{php_settings, PhpVersion};
 use yerd_platform::{ActivePaths, Paths, PlatformDirs};
 
 use crate::shim::{cli_binary, fail, resolve_default_php};
@@ -137,6 +137,12 @@ fn atomic_write(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
 fn resolve_target(dirs: &PlatformDirs, spec: &CoverSpec) -> Result<(PathBuf, String), String> {
     match spec {
         CoverSpec::Version(maj, min) => {
+            if PhpVersion::new(*maj, *min).is_legacy() {
+                return Err(format!(
+                    "code coverage is not available for PHP {maj}.{min}: pcov is not built for \
+                     out-of-support legacy versions (< 8.2). Use a supported PHP version."
+                ));
+            }
             let minor = format!("{maj}.{min}");
             let php = cli_binary(dirs, &minor);
             if php.is_file() {
@@ -147,12 +153,14 @@ fn resolve_target(dirs: &PlatformDirs, spec: &CoverSpec) -> Result<(PathBuf, Str
                 ))
             }
         }
-        CoverSpec::Default => resolve_default_php(dirs)
-            .ok_or_else(|| "no PHP installed — run `yerd install php <version>`".to_owned()),
+        CoverSpec::Default => {
+            resolve_default_php(dirs).ok_or_else(|| crate::shim::no_default_php_message(dirs))
+        }
     }
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::panic)]
 mod tests {
     use super::*;
 
@@ -175,5 +183,26 @@ mod tests {
         assert!(parse_cover_name("phpunit").is_none());
         assert!(parse_cover_name("php8.cover").is_none());
         assert!(parse_cover_name("phpx.4cover").is_none());
+    }
+
+    #[test]
+    fn resolve_target_rejects_legacy_before_checking_install() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dirs = PlatformDirs {
+            config: tmp.path().join("c"),
+            data: tmp.path().join("d"),
+            state: tmp.path().join("s"),
+            cache: tmp.path().join("ca"),
+            runtime: tmp.path().join("r"),
+        };
+        // No 7.4 installed, yet the legacy gate fires first with a pcov message,
+        // not "not installed".
+        match resolve_target(&dirs, &CoverSpec::Version(7, 4)) {
+            Err(msg) => {
+                assert!(msg.contains("pcov"), "got {msg}");
+                assert!(msg.contains("legacy"), "got {msg}");
+            }
+            Ok(_) => panic!("expected legacy rejection"),
+        }
     }
 }

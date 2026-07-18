@@ -23,12 +23,30 @@ pub struct PhpVersion {
     pub minor: u8,
 }
 
+/// The lowest PHP minor Yerd considers "supported". The bundled `pcov` and
+/// `yerd-dump` extensions are only built for 8.2+, so anything below this is a
+/// legacy version: installable, but with no coverage, no dumps, and never
+/// eligible as the global default. This is the single authority every legacy
+/// guardrail keys on; see [`PhpVersion::is_legacy`].
+pub const FIRST_SUPPORTED_MINOR: PhpVersion = PhpVersion::new(8, 2);
+
 impl PhpVersion {
     /// Constructs without validation. Use [`PhpVersion::from_str`] for input
     /// from users or config files.
     #[must_use]
     pub const fn new(major: u8, minor: u8) -> Self {
         Self { major, minor }
+    }
+
+    /// True for out-of-support legacy minors (below [`FIRST_SUPPORTED_MINOR`]):
+    /// no pcov/coverage, no yerd-dump capture, and rejected as the global
+    /// default. The single authority every guardrail keys on (cover shim,
+    /// set-default, dumps warning, GUI).
+    #[must_use]
+    pub const fn is_legacy(self) -> bool {
+        self.major < FIRST_SUPPORTED_MINOR.major
+            || (self.major == FIRST_SUPPORTED_MINOR.major
+                && self.minor < FIRST_SUPPORTED_MINOR.minor)
     }
 }
 
@@ -318,6 +336,23 @@ mod tests {
             "(8,9) < (8,10) — guards numeric (not lex) ordering"
         );
         assert!(php8_dot_10 < php899);
+    }
+
+    #[test]
+    fn is_legacy_splits_at_first_supported_minor() {
+        for (m, n) in [(5, 6), (7, 0), (7, 4), (8, 0), (8, 1)] {
+            assert!(
+                PhpVersion::new(m, n).is_legacy(),
+                "{m}.{n} should be legacy"
+            );
+        }
+        for (m, n) in [(8, 2), (8, 3), (8, 4), (8, 5), (9, 0)] {
+            assert!(
+                !PhpVersion::new(m, n).is_legacy(),
+                "{m}.{n} should not be legacy"
+            );
+        }
+        assert!(!FIRST_SUPPORTED_MINOR.is_legacy());
     }
 
     #[test]

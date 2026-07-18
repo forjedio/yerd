@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { comparePhpVersions, phpVersionInRange } from "./phpVersion";
+import { comparePhpVersions, isLegacyVersion, phpVersionInRange } from "./phpVersion";
 
 describe("comparePhpVersions", () => {
   it.each([
@@ -17,6 +17,20 @@ describe("comparePhpVersions", () => {
   ])("comparePhpVersions(%s, %s) has the sign of %i", (a, b, expectedSign) => {
     const result = comparePhpVersions(a, b);
     expect(Math.sign(result)).toBe(expectedSign);
+  });
+});
+
+describe("isLegacyVersion", () => {
+  it.each([
+    ["7.4", true],
+    ["8.0", true],
+    ["8.1", true],
+    ["8.2", false],
+    ["8.3", false],
+    ["8.5", false],
+    ["8.10", false],
+  ] as const)("isLegacyVersion(%s) === %s", (php, expected) => {
+    expect(isLegacyVersion(php)).toBe(expected);
   });
 });
 
