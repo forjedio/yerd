@@ -68,41 +68,6 @@ impl DaemonCertStore {
     }
 }
 
-impl DaemonCertStore {
-    /// Mint a fixed single-cert `rustls::ServerConfig` for the LAN bootstrap
-    /// endpoint, whose leaf carries `lan_ip` as an **iPAddress SAN** (an
-    /// IP-literal TLS client sends no SNI and matches only iPAddress SANs, so the
-    /// SNI-driven store can't serve it - this is a dedicated fixed cert).
-    ///
-    /// Built with an **explicit** `ring` provider (`builder_with_provider`,
-    /// mirroring `crate::build_proxy_client_tls`): the bare `ServerConfig::builder()`
-    /// panics unless a process-default provider was installed, which only happens
-    /// inside `ProxyServer::serve` - absent in degraded mode.
-    #[must_use]
-    pub fn lan_setup_server_config(
-        &self,
-        lan_ip: std::net::Ipv4Addr,
-    ) -> Option<Arc<rustls::ServerConfig>> {
-        let validity = leaf_validity().ok()?;
-        let leaf = self
-            .ca
-            .issue_leaf(&[lan_ip.to_string()], validity)
-            .map_err(|e| tracing::warn!(error = %e, "LAN setup: CA refused IP-SAN leaf"))
-            .ok()?;
-        let (chain, key) = parse_chain_and_key(leaf.cert_pem(), leaf.key_pem())?;
-        let cfg = rustls::ServerConfig::builder_with_provider(std::sync::Arc::new(
-            rustls::crypto::ring::default_provider(),
-        ))
-        .with_safe_default_protocol_versions()
-        .ok()?
-        .with_no_client_auth()
-        .with_single_cert(chain, key)
-        .map_err(|e| tracing::warn!(error = %e, "LAN setup: ServerConfig build failed"))
-        .ok()?;
-        Some(Arc::new(cfg))
-    }
-}
-
 impl yerd_proxy::CertStore for DaemonCertStore {
     fn certified_key(&self, sni_host: &str) -> Option<Arc<rustls::sign::CertifiedKey>> {
         let normalised = sni_host.trim_end_matches('.').to_ascii_lowercase();
@@ -185,18 +150,6 @@ mod tests {
         )
         .unwrap();
         yerd_tls::CertAuthority::generate("Test CA", validity).unwrap()
-    }
-
-    #[test]
-    fn lan_setup_server_config_mints_ip_san_leaf() {
-        let _ = rustls::crypto::ring::default_provider().install_default();
-        let tmp = tempfile::tempdir().unwrap();
-        let store = DaemonCertStore::new(ca(), tmp.path().to_path_buf());
-        // Builds a fixed single-cert ServerConfig for the LAN IP (the leaf
-        // carries it as an iPAddress SAN, per yerd-tls params). Must not panic
-        // (explicit ring provider) and must produce a config.
-        let cfg = store.lan_setup_server_config(std::net::Ipv4Addr::new(192, 168, 1, 42));
-        assert!(cfg.is_some(), "IP-SAN ServerConfig should build");
     }
 
     #[test]

@@ -389,6 +389,7 @@ pub async fn bring_up_with_dirs(
         lan_ip,
         lan_setup_bound: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         remote_setup_code: Mutex::new(None),
+        lan_setup_script_sha256: Mutex::new(None),
     });
 
     {

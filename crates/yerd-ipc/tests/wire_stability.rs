@@ -64,13 +64,13 @@ fn request_mint_remote_setup_code_byte_shape() {
 fn response_remote_setup_byte_shape() {
     let r = Response::RemoteSetup {
         code: "deadbeef".into(),
-        url: "https://192.168.1.42:7073/remote-setup?code=deadbeef".into(),
-        ca_fingerprint: "ab".repeat(32),
+        url: "http://192.168.1.42:7073/remote-setup?code=deadbeef".into(),
+        script_sha256: "ab".repeat(32),
         expires_in_secs: 900,
     };
     let s = serde_json::to_string(&r).unwrap();
     let expected = format!(
-        r#"{{"type":"remote_setup","code":"deadbeef","url":"https://192.168.1.42:7073/remote-setup?code=deadbeef","ca_fingerprint":"{}","expires_in_secs":900}}"#,
+        r#"{{"type":"remote_setup","code":"deadbeef","url":"http://192.168.1.42:7073/remote-setup?code=deadbeef","script_sha256":"{}","expires_in_secs":900}}"#,
         "ab".repeat(32)
     );
     assert_eq!(s, expected);

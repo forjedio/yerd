@@ -108,14 +108,16 @@ pub enum Response {
     RemoteSetup {
         /// The one-time code (URL-safe), embedded in `url`.
         code: String,
-        /// The HTTPS script URL the remote device fetches
-        /// (`https://<lan_ip>:<port>/remote-setup?code=<code>`); the CLI derives
-        /// the plain-HTTP, code-less CA URL from it.
+        /// The plain-HTTP installer URL the remote device fetches
+        /// (`http://<lan_ip>:<port>/remote-setup?code=<code>`). The installer is
+        /// self-contained (it embeds the CA), and its integrity comes from
+        /// `script_sha256`, not the transport.
         url: String,
-        /// The CA's SHA-256 fingerprint (64 lowercase hex), which the user
-        /// copy-pastes to the device so the installer can verify the CA
-        /// out-of-band before trusting it.
-        ca_fingerprint: String,
+        /// SHA-256 (64 lowercase hex) of the installer script served at `url`,
+        /// which the user copy-pastes to the device so the pasted command can
+        /// verify the script out-of-band before running it. This is the trust
+        /// anchor.
+        script_sha256: String,
         /// Seconds until the code expires.
         expires_in_secs: u64,
     },
@@ -667,8 +669,8 @@ mod variant_name_pinning {
         });
         pin_response(Response::RemoteSetup {
             code: "abc123".into(),
-            url: "https://192.168.1.42:7073/remote-setup?code=abc123".into(),
-            ca_fingerprint: "ab".repeat(32),
+            url: "http://192.168.1.42:7073/remote-setup?code=abc123".into(),
+            script_sha256: "ab".repeat(32),
             expires_in_secs: 900,
         });
         pin_response(Response::PhpVersions {
