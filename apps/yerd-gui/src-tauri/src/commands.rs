@@ -761,7 +761,14 @@ pub async fn unelevate(target: String) -> Result<(), GuiError> {
 pub async fn trust_ca() -> Result<(), GuiError> {
     #[cfg(target_os = "macos")]
     {
-        crate::mac_trust::trust_ca().await
+        crate::mac_trust::trust_ca().await?;
+        // The keychain trust above covers Safari and the Chromium-family
+        // browsers (Brave/Chrome/Edge). Firefox on macOS keeps its own NSS
+        // store, so also populate it via the daemon (which runs as the user).
+        // Best-effort: a missing certutil / no Firefox profile is surfaced by
+        // `doctor` (CaNotTrustedByBrowsers), not treated as a trust failure.
+        let _ = exchange(&Request::TrustBrowsers { uninstall: false }).await;
+        Ok(())
     }
     #[cfg(not(target_os = "macos"))]
     {
@@ -778,6 +785,8 @@ pub async fn trust_ca() -> Result<(), GuiError> {
 pub async fn untrust_ca() -> Result<bool, GuiError> {
     #[cfg(target_os = "macos")]
     {
+        // Mirror trust_ca: also remove the CA from the browser NSS store.
+        let _ = exchange(&Request::TrustBrowsers { uninstall: true }).await;
         crate::mac_trust::untrust_ca().await
     }
     #[cfg(not(target_os = "macos"))]
