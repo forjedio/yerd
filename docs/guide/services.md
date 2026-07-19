@@ -6,7 +6,7 @@ the same [`yerdd` daemon](./daemon) that already runs your sites, PHP, HTTPS, an
 DNS. No Docker, no containers, no VM. A single `yerd status` shows the whole
 stack.
 
-The four engines:
+The five engines:
 
 | Service | `id` | Kind | Default port |
 |---|---|---|---|
@@ -14,6 +14,7 @@ The four engines:
 | MySQL | `mysql` | SQL database | 3306 |
 | MariaDB | `mariadb` | SQL database | 3306 |
 | PostgreSQL | `postgres` | SQL database | 5432 |
+| Meilisearch | `meilisearch` | Search index | 7700 |
 
 ::: info Redis is served by Valkey
 The `redis` slot is filled by **Valkey**, the BSD-licensed fork, because recent
@@ -22,7 +23,7 @@ your Redis clients work unchanged. Yerd shows it as `Redis (Valkey)`.
 :::
 
 ::: tip Engine availability
-All four engines are implemented end-to-end. Whether a specific engine/version
+All five engines are implemented end-to-end. Whether a specific engine/version
 installs depends on whether a prebuilt build is published for your platform in
 Yerd's hosted distribution - run `yerd service available` to see what you can
 install right now. MySQL/MariaDB share port 3306, so only one can be enabled on it

@@ -63,6 +63,8 @@ impl ReadinessProbe for ServiceProbes {
 /// documented available status, rather than treating an open HTTP port as ready.
 pub struct MeilisearchProbe;
 
+const MEILISEARCH_HEALTH_RESPONSE_LIMIT: u64 = 8 * 1024;
+
 #[async_trait]
 impl HealthProbe for MeilisearchProbe {
     async fn probe(&self, listen: &Listen) -> Result<(), io::Error> {
@@ -72,12 +74,15 @@ impl HealthProbe for MeilisearchProbe {
             .write_all(b"GET /health HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n")
             .await?;
         let mut response = Vec::new();
-        stream.read_to_end(&mut response).await?;
+        stream
+            .take(MEILISEARCH_HEALTH_RESPONSE_LIMIT)
+            .read_to_end(&mut response)
+            .await?;
         let split = response
             .windows(4)
             .position(|w| w == b"\r\n\r\n")
             .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "malformed HTTP response"))?;
-        let headers = std::str::from_utf8(&response[..split])
+        let headers = std::str::from_utf8(response.get(..split).unwrap_or_default())
             .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "non-UTF-8 HTTP headers"))?;
         let status = headers.lines().next().unwrap_or_default();
         if !status.starts_with("HTTP/1.1 200 ") && !status.starts_with("HTTP/1.0 200 ") {

@@ -327,9 +327,14 @@ pub async fn change_service_version(
         return resp;
     }
     for old in superseded {
-        if let Err(e) =
-            service_install::uninstall(def.id(), def.datadir_scope(), &old, &state.dirs, false)
-        {
+        if let Err(e) = service_install::uninstall(
+            def.id(),
+            def.server_binary(),
+            def.datadir_scope(),
+            &old,
+            &state.dirs,
+            false,
+        ) {
             tracing::warn!(service = def.id(), version = %old, error = %e,
                 "couldn't remove superseded service version");
         }
@@ -353,7 +358,14 @@ pub async fn uninstall_service(
         Err(e) => return service_error_response(&e),
     };
     let _ = state.service_manager.lock().await.stop(def.id()).await;
-    match service_install::uninstall(def.id(), def.datadir_scope(), &version, &state.dirs, purge) {
+    match service_install::uninstall(
+        def.id(),
+        def.server_binary(),
+        def.datadir_scope(),
+        &version,
+        &state.dirs,
+        purge,
+    ) {
         Ok(retained) => {
             if let Some(path) = retained {
                 tracing::info!(service = def.id(), datadir = %path.display(),
