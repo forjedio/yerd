@@ -90,6 +90,7 @@ fn main() {
             commands::apply_update,
             commands::set_php_settings,
             commands::set_php_version_settings,
+            commands::set_php_directives,
             commands::list_php_extensions,
             commands::add_php_extension,
             commands::remove_php_extension,

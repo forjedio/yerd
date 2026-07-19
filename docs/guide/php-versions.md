@@ -13,7 +13,7 @@ The fastest way to manage PHP is the **PHP** page (under the **Environment** gro
 - **Refresh** re-checks for updates and **Update all** updates every version with one pending - [updates are notify-only](#updates-are-notify-only).
 - Each row's `⋯` menu offers **Restart**, **Set default** (marks it with a star; disabled for legacy rows, which are tagged with a `legacy` badge), **Update** (when available), and **Uninstall**; **Restart all** restarts every running pool.
 - A **Default settings** card edits the [global ini defaults](#tuning-php-settings) applied to every version; leave a field blank to use PHP's built-in default, and saving restarts running pools to apply.
-- A **Per-version configuration** card holds one expandable panel per installed version: the same settings form scoped to that version (empty fields inherit the defaults; see [Per-version configuration](#per-version-configuration)). Saving restarts only that version's pool.
+- A **Per-version configuration** card holds one expandable panel per installed version: the same settings form scoped to that version (empty fields inherit the defaults; see [Per-version configuration](#per-version-configuration)) plus a free-form ini-directive editor (e.g. `xdebug.mode = debug`). Saving restarts only that version's pool.
 - A **Custom extensions** card registers extra `.so` extensions per version (see [Custom extensions](#custom-extensions)); each is load-probed before it's saved, and broken registrations are flagged.
 
 ## From the command line
@@ -409,11 +409,25 @@ yerd set php memory_limit 1G --only 8.3   # only PHP 8.3 gets 1G
 yerd unset php memory_limit --only 8.3    # 8.3 inherits the global value again
 ```
 
-A per-version change restarts only that version's pool, and per-version
-configuration survives uninstalling and reinstalling the version. In the
-desktop app the same lives in the **Per-version configuration** card on the
-PHP page: one expandable panel per installed version with the settings form
-(empty fields inherit the defaults).
+Beyond the allowlist, `yerd php ini` sets **free-form ini directives** per
+version - typically the settings of a custom extension. The classic xdebug
+setup is two commands:
+
+```sh
+yerd php ext add 8.3 /opt/php/xdebug.so --zend   # load the extension
+yerd php ini set 8.3 xdebug.mode debug           # configure it
+```
+
+Directive names and values are shape-checked so they can never corrupt the
+generated config, but Yerd doesn't second-guess their meaning - a directive PHP
+doesn't recognise is simply ignored by PHP. A per-version change restarts only
+that version's pool, and per-version configuration survives uninstalling and
+reinstalling the version. In the desktop app the same lives in the
+**Per-version configuration** card on the PHP page: one expandable panel per
+installed version with the settings form (empty fields inherit the defaults)
+and a directive editor. See the
+[PHP CLI reference](../reference/cli/php#custom-ini-directives) for the rules
+and the denylist of directives Yerd manages elsewhere.
 
 ### Command summary
 
@@ -429,6 +443,9 @@ PHP page: one expandable panel per installed version with the settings form
 | `yerd restart php [<version>]` | Restart one (or all) running FPM pools. |
 | `yerd set php <setting> <value> [--only <version>]` | Set a global PHP ini default, or a per-version override with `--only`. |
 | `yerd unset php <setting> [--only <version>]` | Reset a global setting to PHP's built-in value. With `--only`, remove one version's override so the global value applies again. |
+| `yerd php ini set <version> <name> <value>` | Set a free-form ini directive (e.g. `xdebug.mode`) for one version. |
+| `yerd php ini unset <version> <name>` | Remove a free-form ini directive. |
+| `yerd php ini list` | Show per-version overrides and directives. |
 | `yerd php ext add <version> <path> [--zend] [--name <name>]` | Register a custom extension (load-probed) for a version. |
 | `yerd php ext remove <version> <name>` | Remove a registered extension. |
 | `yerd php ext list` | List registered custom extensions, grouped by version. |

@@ -134,6 +134,7 @@ where
     binaries: BTreeMap<PhpVersion, PathBuf>,
     ini_settings: BTreeMap<String, String>,
     ini_overrides: BTreeMap<PhpVersion, BTreeMap<String, String>>,
+    directives: BTreeMap<PhpVersion, BTreeMap<String, String>>,
     dump_ext: Option<DumpExtSettings>,
     extensions: BTreeMap<PhpVersion, Vec<ExtLoad>>,
     ca_bundle: Option<PathBuf>,
@@ -174,6 +175,7 @@ where
             binaries,
             ini_settings: BTreeMap::new(),
             ini_overrides: BTreeMap::new(),
+            directives: BTreeMap::new(),
             dump_ext: None,
             extensions: BTreeMap::new(),
             ca_bundle: None,
@@ -209,6 +211,14 @@ where
     /// `set_extensions`.
     pub fn set_ini_overrides(&mut self, overrides: BTreeMap<PhpVersion, BTreeMap<String, String>>) {
         self.ini_overrides = overrides;
+    }
+
+    /// Replace the free-form per-version ini directives applied to each pool,
+    /// keyed by PHP version. Rendered as `php_value[...]` lines after the
+    /// typed settings. Takes effect on the next `ensure` / restart of a pool,
+    /// like `set_extensions`.
+    pub fn set_directives(&mut self, directives: BTreeMap<PhpVersion, BTreeMap<String, String>>) {
+        self.directives = directives;
     }
 
     /// Configure daemon-managed dump-extension loading. When set, each pool that
@@ -289,6 +299,11 @@ where
         cfg.ini = yerd_core::php_settings::merge_effective(&self.ini_settings, overrides)
             .into_iter()
             .collect();
+        cfg.directives = self
+            .directives
+            .get(&v)
+            .map(|m| m.iter().map(|(k, val)| (k.clone(), val.clone())).collect())
+            .unwrap_or_default();
         cfg.ca_bundle = self.ca_bundle.clone();
 
         if let Some(ext) = &self.dump_ext {

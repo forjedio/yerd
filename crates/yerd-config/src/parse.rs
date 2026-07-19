@@ -285,6 +285,9 @@ struct PhpSectionWire {
     // version string like `extensions`. Additive: pre-v16 files omit it.
     #[serde(default)]
     version_settings: BTreeMap<String, BTreeMap<String, String>>,
+    // v16: free-form per-version ini directives, keyed by version string.
+    #[serde(default)]
+    directives: BTreeMap<String, BTreeMap<String, String>>,
 }
 
 impl Default for PhpSectionWire {
@@ -294,6 +297,7 @@ impl Default for PhpSectionWire {
             settings: BTreeMap::new(),
             extensions: BTreeMap::new(),
             version_settings: BTreeMap::new(),
+            directives: BTreeMap::new(),
         }
     }
 }
@@ -467,6 +471,7 @@ impl TryFrom<Wire> for Config {
             settings: w.php.settings,
             extensions: convert_extensions(w.php.extensions)?,
             version_settings: convert_version_settings(w.php.version_settings)?,
+            directives: convert_directives(w.php.directives)?,
         };
         let ports = Ports {
             http: w.ports.http,
@@ -699,6 +704,32 @@ fn convert_version_settings(
         let kept: BTreeMap<String, String> = entries
             .into_iter()
             .filter(|(k, val)| yerd_core::php_settings::validate_value(k, val).is_ok())
+            .collect();
+        if !kept.is_empty() {
+            out.insert(v, kept);
+        }
+    }
+    Ok(out)
+}
+
+/// Convert the raw wire per-version directives map into the typed
+/// [`PhpSection::directives`] shape. Same policy as
+/// [`convert_version_settings`]: a bad version key errors, while an entry with
+/// an invalid or reserved name, or an invalid value, is dropped leniently.
+fn convert_directives(
+    wire: BTreeMap<String, BTreeMap<String, String>>,
+) -> Result<BTreeMap<yerd_core::PhpVersion, BTreeMap<String, String>>, ConfigError> {
+    use yerd_core::php_directives;
+    let mut out = BTreeMap::new();
+    for (ver, entries) in wire {
+        let v = yerd_core::PhpVersion::from_str(&ver)?;
+        let kept: BTreeMap<String, String> = entries
+            .into_iter()
+            .filter(|(k, val)| {
+                php_directives::validate_name(k).is_ok()
+                    && php_directives::validate_value(val).is_ok()
+                    && php_directives::reserved(k).is_none()
+            })
             .collect();
         if !kept.is_empty() {
             out.insert(v, kept);
@@ -1140,7 +1171,7 @@ mod tests {
         match Config::from_toml("version = 99\n") {
             Err(ConfigError::UnsupportedVersion {
                 found: 99,
-                current: 17,
+                current: 18,
             }) => {}
             other => panic!("expected UnsupportedVersion, got {other:?}"),
         }
@@ -2239,9 +2270,10 @@ php = "not-a-version"
     }
 
     #[test]
-    fn version_settings_round_trip() {
-        let s = "version = 16\n[php]\ndefault = \"8.3\"\n\
-                 [php.version_settings.\"8.3\"]\nmemory_limit = \"1G\"\n";
+    fn version_settings_and_directives_round_trip() {
+        let s = "version = 18\n[php]\ndefault = \"8.3\"\n\
+                 [php.version_settings.\"8.3\"]\nmemory_limit = \"1G\"\n\
+                 [php.directives.\"8.3\"]\n\"xdebug.mode\" = \"debug\"\n";
         let c = Config::from_toml(s).unwrap();
         let v83 = yerd_core::PhpVersion::new(8, 3);
         assert_eq!(
@@ -2252,40 +2284,62 @@ php = "not-a-version"
                 .map(String::as_str),
             Some("1G")
         );
+        assert_eq!(
+            c.php
+                .directives
+                .get(&v83)
+                .and_then(|m| m.get("xdebug.mode"))
+                .map(String::as_str),
+            Some("debug")
+        );
         let back = Config::from_toml(&c.to_toml().unwrap()).unwrap();
         assert_eq!(back, c);
     }
 
-    /// Load-time leniency: invalid entries inside the v16 table are dropped
-    /// without failing the load, while valid siblings survive. Strictness
-    /// lives at set time (CLI/daemon), not here - a bad hand-edit must never
-    /// stop the daemon.
+    /// Load-time leniency: invalid or reserved entries inside the per-version
+    /// tables are dropped without failing the load, while valid siblings
+    /// survive. Strictness lives at set time (CLI/daemon), not here - a bad
+    /// hand-edit must never stop the daemon.
     #[test]
-    fn invalid_version_settings_entries_are_dropped_leniently() {
+    fn invalid_version_settings_and_directives_entries_are_dropped_leniently() {
         let s = "version = 16\n[php]\ndefault = \"8.3\"\n\
                  [php.version_settings.\"8.3\"]\n\
                  memory_limit = \"1G\"\n\
                  allow_url_fopen = \"1\"\n\
-                 max_execution_time = \"bogus\"\n";
+                 max_execution_time = \"bogus\"\n\
+                 [php.directives.\"8.3\"]\n\
+                 \"xdebug.mode\" = \"debug\"\n\
+                 \"1bad\" = \"x\"\n\
+                 \"opcache.bad\" = \"a;b\"\n\
+                 extension = \"/evil.so\"\n\
+                 memory_limit = \"2G\"\n";
         let c = Config::from_toml(s).unwrap();
         let v83 = yerd_core::PhpVersion::new(8, 3);
         let vs = c.php.version_settings.get(&v83).unwrap();
         assert_eq!(vs.len(), 1);
         assert_eq!(vs.get("memory_limit").map(String::as_str), Some("1G"));
+        let dirs = c.php.directives.get(&v83).unwrap();
+        assert_eq!(dirs.len(), 1);
+        assert_eq!(dirs.get("xdebug.mode").map(String::as_str), Some("debug"));
     }
 
     /// A table whose entries are all dropped disappears entirely, and a bad
     /// version key still errors (matching `convert_extensions`).
     #[test]
-    fn fully_invalid_version_settings_table_vanishes_and_bad_version_key_errors() {
+    fn fully_invalid_version_tables_vanish_and_bad_version_key_errors() {
         let s = "version = 16\n[php]\ndefault = \"8.3\"\n\
-                 [php.version_settings.\"8.3\"]\nallow_url_fopen = \"1\"\n";
+                 [php.version_settings.\"8.3\"]\nallow_url_fopen = \"1\"\n\
+                 [php.directives.\"8.3\"]\nextension = \"/evil.so\"\n";
         let c = Config::from_toml(s).unwrap();
         assert!(c.php.version_settings.is_empty());
+        assert!(c.php.directives.is_empty());
 
         let bad = "version = 16\n[php]\ndefault = \"8.3\"\n\
                    [php.version_settings.\"eight\"]\nmemory_limit = \"1G\"\n";
         assert!(Config::from_toml(bad).is_err());
+        let bad2 = "version = 16\n[php]\ndefault = \"8.3\"\n\
+                    [php.directives.\"eight\"]\n\"xdebug.mode\" = \"debug\"\n";
+        assert!(Config::from_toml(bad2).is_err());
     }
 
     #[test]

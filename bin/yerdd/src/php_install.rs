@@ -233,11 +233,11 @@ pub async fn install(
 ///   per-version entries), kept for the shell-profile `PHPRC` export and any
 ///   non-shim `php`;
 /// - one `{data}/php-cli-<minor>.ini` per **installed** version, rendering that
-///   version's *effective* settings (global merged with its sparse overrides)
-///   and its registered extensions. Writing per *installed* version (not per
-///   config key) is load-bearing: a version whose last extension/override was
-///   just removed still gets its file rewritten back to base-only, rather than
-///   left stale.
+///   version's *effective* settings (global merged with its sparse overrides),
+///   its registered extensions, and its free-form directives. Writing per
+///   *installed* version (not per config key) is load-bearing: a version whose
+///   last extension/override was just removed still gets its file rewritten back
+///   to base-only, rather than left stale.
 ///
 /// Always rewrites (idempotent).
 pub fn write_cli_ini(
@@ -249,6 +249,7 @@ pub fn write_cli_ini(
         PhpVersion,
         std::collections::BTreeMap<String, String>,
     >,
+    directives: &std::collections::BTreeMap<PhpVersion, std::collections::BTreeMap<String, String>>,
 ) -> std::io::Result<()> {
     std::fs::create_dir_all(&dirs.data)?;
     let base = decorate_cli_ini(
@@ -274,7 +275,10 @@ pub fn write_cli_ini(
             settings,
             version_settings.get(&v).unwrap_or(&no_overrides),
         );
-        let body = yerd_core::php_settings::render_cli_ini_with_ext(&effective, &refs);
+        let mut body = yerd_core::php_settings::render_cli_ini_with_ext(&effective, &refs);
+        if let Some(dirs_for_v) = directives.get(&v) {
+            body.push_str(&yerd_core::php_directives::render_ini_lines(dirs_for_v));
+        }
         let contents = decorate_cli_ini(&body, ca_bundle);
         let name = format!("php-cli-{}.{}.ini", v.major, v.minor);
         yerd_php::io::atomic_write::write(&dirs.data.join(name), contents.as_bytes())?;
@@ -741,19 +745,28 @@ mod tests {
 
         let exts = std::collections::BTreeMap::new();
         let no_vs = std::collections::BTreeMap::new();
-        write_cli_ini(&dirs, &settings, None, &exts, &no_vs).unwrap();
+        let no_dirs = std::collections::BTreeMap::new();
+        write_cli_ini(&dirs, &settings, None, &exts, &no_vs, &no_dirs).unwrap();
         let without = std::fs::read_to_string(dirs.data.join("php-cli.ini")).unwrap();
         assert!(!without.contains("openssl.cafile"));
         assert!(!without.contains("curl.cainfo"));
 
         let bundle = dirs.data.join("cacert.pem");
-        write_cli_ini(&dirs, &settings, Some(&bundle), &exts, &no_vs).unwrap();
+        write_cli_ini(&dirs, &settings, Some(&bundle), &exts, &no_vs, &no_dirs).unwrap();
         let with = std::fs::read_to_string(dirs.data.join("php-cli.ini")).unwrap();
         assert!(with.contains(&format!("openssl.cafile = {}\n", bundle.display())));
         assert!(with.contains(&format!("curl.cainfo = {}\n", bundle.display())));
 
         for bad in ["/d/ca\ncert.pem", "/d/ca;cert.pem", "/d/ca#cert.pem"] {
-            write_cli_ini(&dirs, &settings, Some(Path::new(bad)), &exts, &no_vs).unwrap();
+            write_cli_ini(
+                &dirs,
+                &settings,
+                Some(Path::new(bad)),
+                &exts,
+                &no_vs,
+                &no_dirs,
+            )
+            .unwrap();
             let injected = std::fs::read_to_string(dirs.data.join("php-cli.ini")).unwrap();
             assert!(
                 !injected.contains("openssl.cafile"),
@@ -765,7 +778,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn write_cli_ini_scopes_overrides_to_the_version_file() {
+    fn write_cli_ini_scopes_overrides_and_directives_to_the_version_file() {
         let tmp = tempfile::tempdir().unwrap();
         let dirs = dirs_in(tmp.path());
         let fpm_dir = dirs.data.join("php").join("php-8.3").join("sbin");
@@ -780,15 +793,32 @@ mod tests {
             v83,
             std::collections::BTreeMap::from([("memory_limit".to_string(), "1G".to_string())]),
         )]);
-        write_cli_ini(&dirs, &settings, None, &exts, &version_settings).unwrap();
+        let directives = std::collections::BTreeMap::from([(
+            v83,
+            std::collections::BTreeMap::from([("xdebug.mode".to_string(), "debug".to_string())]),
+        )]);
+        write_cli_ini(
+            &dirs,
+            &settings,
+            None,
+            &exts,
+            &version_settings,
+            &directives,
+        )
+        .unwrap();
 
         let base = std::fs::read_to_string(dirs.data.join("php-cli.ini")).unwrap();
         assert!(base.contains("memory_limit = 512M\n"), "got: {base}");
         assert!(!base.contains("1G"), "override leaked into base: {base}");
+        assert!(
+            !base.contains("xdebug.mode"),
+            "directive leaked into base: {base}"
+        );
 
         let per = std::fs::read_to_string(dirs.data.join("php-cli-8.3.ini")).unwrap();
         assert!(per.contains("memory_limit = 1G\n"), "got: {per}");
         assert!(!per.contains("512M"), "global shadowed override: {per}");
+        assert!(per.contains("xdebug.mode = debug\n"), "got: {per}");
     }
 
     #[test]

@@ -12,6 +12,7 @@ mod domain;
 mod error;
 mod host;
 mod php;
+pub mod php_directives;
 pub mod php_extensions;
 pub mod php_settings;
 mod proxy;
@@ -46,6 +47,7 @@ pub use error::{
     TldErrorReason, UpstreamTargetErrorReason,
 };
 pub use php::{PhpVersion, FIRST_SUPPORTED_MINOR};
+pub use php_directives::{DirectiveError, DirectiveNameErrorReason};
 pub use php_extensions::{ExtError, NameErrorReason, PathErrorReason};
 pub use php_settings::{PhpSettingError, ValueErrorReason};
 pub use proxy::{match_rule, ProxyRule, ProxySite, UpstreamTarget};

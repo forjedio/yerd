@@ -45,7 +45,7 @@ catch_workers_output = yes
 }
 
 #[test]
-fn ini_settings_render_exact() {
+fn settings_and_directives_render_exact() {
     let dirs = PlatformDirs {
         config: PathBuf::from("/yerd/cfg"),
         data: PathBuf::from("/yerd/data"),
@@ -59,6 +59,12 @@ fn ini_settings_render_exact() {
     cfg.ini = vec![
         ("display_errors".to_string(), "On".to_string()),
         ("memory_limit".to_string(), "1G".to_string()),
+    ];
+    cfg.directives = vec![
+        ("opcache.enable".to_string(), "1".to_string()),
+        ("xdebug.mode".to_string(), "debug".to_string()),
+        ("extension".to_string(), "/evil.so".to_string()),
+        ("bad name".to_string(), "x".to_string()),
     ];
 
     let want = "\
@@ -75,6 +81,8 @@ clear_env = no
 catch_workers_output = yes
 php_flag[display_errors] = On
 php_value[memory_limit] = 1G
+php_value[opcache.enable] = 1
+php_value[xdebug.mode] = debug
 ";
     assert_eq!(render_fpm_conf(&cfg), want);
 }

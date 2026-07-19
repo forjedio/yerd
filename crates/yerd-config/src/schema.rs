@@ -426,6 +426,13 @@ pub struct PhpSection {
     /// Entries are validated leniently at load time: an invalid or
     /// unsupported entry is dropped rather than failing the load.
     pub version_settings: BTreeMap<PhpVersion, BTreeMap<String, String>>,
+    /// Free-form per-version ini directives (e.g. `"xdebug.mode" -> "debug"`),
+    /// applied to that version's FPM pool and CLI ini alongside the typed
+    /// settings. Shape-validated by [`yerd_core::php_directives`] (the
+    /// injection boundary); reserved names are refused at set time and
+    /// dropped leniently at load time. Empty by default, so
+    /// `[php.directives.*]` tables are omitted from a default config.
+    pub directives: BTreeMap<PhpVersion, BTreeMap<String, String>>,
 }
 
 /// One registered custom PHP extension (see [`PhpSection::extensions`]).
@@ -451,6 +458,7 @@ impl Default for PhpSection {
                 .collect(),
             extensions: BTreeMap::new(),
             version_settings: BTreeMap::new(),
+            directives: BTreeMap::new(),
         }
     }
 }
