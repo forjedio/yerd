@@ -61,13 +61,19 @@ fn empty_outcome() -> NssOutcome {
     }
 }
 
-/// Discover every existing sql NSS database: the shared `~/.pki/nssdb`
-/// (native + Snap + Flatpak) plus every Firefox profile containing a
-/// `cert9.db`. Read-only; does not create anything.
-fn discover(fs: &impl NssFs, home: &Path) -> Vec<NssDb> {
-    let snap_apps = fs.list_subdirs(&home.join("snap"));
-    let flatpak_apps = fs.list_subdirs(&home.join(".var/app"));
+/// The platforms whose per-user NSS layout differs. On Linux, Chromium-family
+/// browsers use `~/.pki/nssdb`; on macOS they use the system keychain, so only
+/// Firefox has an NSS store there - under a different profile root.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Os {
+    /// Linux/other Unix: `~/.pki/nssdb` + `~/.mozilla/firefox` + Snap/Flatpak.
+    Linux,
+    /// macOS: Firefox only, under `~/Library/Application Support/Firefox`.
+    Macos,
+}
 
+/// Discover every existing sql NSS database for `os`. Read-only; creates nothing.
+fn discover(fs: &impl NssFs, home: &Path, os: Os) -> Vec<NssDb> {
     let mut dbs: Vec<NssDb> = Vec::new();
     let push = |db: NssDb, dbs: &mut Vec<NssDb>| {
         if !dbs.contains(&db) {
@@ -75,12 +81,20 @@ fn discover(fs: &impl NssFs, home: &Path) -> Vec<NssDb> {
         }
     };
 
-    for dir in nss::pki_nssdb_candidates(home, &snap_apps, &flatpak_apps) {
-        if fs.dir_exists(&dir) {
-            push(NssDb::Sql(dir), &mut dbs);
+    let firefox_roots = match os {
+        Os::Linux => {
+            let snap_apps = fs.list_subdirs(&home.join("snap"));
+            let flatpak_apps = fs.list_subdirs(&home.join(".var/app"));
+            for dir in nss::pki_nssdb_candidates(home, &snap_apps, &flatpak_apps) {
+                if fs.dir_exists(&dir) {
+                    push(NssDb::Sql(dir), &mut dbs);
+                }
+            }
+            nss::firefox_root_candidates(home, &snap_apps, &flatpak_apps)
         }
-    }
-    for root in nss::firefox_root_candidates(home, &snap_apps, &flatpak_apps) {
+        Os::Macos => vec![nss::macos_firefox_root(home)],
+    };
+    for root in firefox_roots {
         let Some(ini) = fs.read_to_string(&root.join("profiles.ini")) else {
             continue;
         };
@@ -93,10 +107,16 @@ fn discover(fs: &impl NssFs, home: &Path) -> Vec<NssDb> {
     dbs
 }
 
-/// Install the CA (PEM at `ca_path`) into every browser NSS database,
-/// creating and initialising `~/.pki/nssdb` first if it is absent (so a
-/// browser installed-but-never-launched still trusts the CA on first run).
-pub fn install(fs: &impl NssFs, runner: &impl CertutilRunner, ca_path: &Path) -> NssOutcome {
+/// Install the CA (PEM at `ca_path`) into every browser NSS database. On Linux,
+/// the shared Chromium store `~/.pki/nssdb` is created and initialised first if
+/// absent (so a browser installed-but-never-launched still trusts the CA on
+/// first run); macOS has no such shared store.
+pub fn install(
+    fs: &impl NssFs,
+    runner: &impl CertutilRunner,
+    ca_path: &Path,
+    os: Os,
+) -> NssOutcome {
     if !runner.available() {
         return NssOutcome {
             certutil_missing: true,
@@ -107,13 +127,15 @@ pub fn install(fs: &impl NssFs, runner: &impl CertutilRunner, ca_path: &Path) ->
         return empty_outcome();
     };
 
-    let pki = nss::pki_nssdb_dir(&home);
-    if !fs.dir_exists(&pki) && fs.create_dir_all(&pki).is_ok() {
-        let _ = runner.run(&nss::init_args(&pki));
+    if os == Os::Linux {
+        let pki = nss::pki_nssdb_dir(&home);
+        if !fs.dir_exists(&pki) && fs.create_dir_all(&pki).is_ok() {
+            let _ = runner.run(&nss::init_args(&pki));
+        }
     }
 
     let mut out = empty_outcome();
-    for db in discover(fs, &home) {
+    for db in discover(fs, &home, os) {
         let _ = runner.run(&nss::delete_args(&db));
         let res = runner.run(&nss::add_args(&db, ca_path));
         out.profiles_attempted += 1;
@@ -128,7 +150,7 @@ pub fn install(fs: &impl NssFs, runner: &impl CertutilRunner, ca_path: &Path) ->
 }
 
 /// Remove the Yerd CA from every discovered browser NSS database.
-pub fn uninstall(fs: &impl NssFs, runner: &impl CertutilRunner) -> NssOutcome {
+pub fn uninstall(fs: &impl NssFs, runner: &impl CertutilRunner, os: Os) -> NssOutcome {
     if !runner.available() {
         return NssOutcome {
             certutil_missing: true,
@@ -140,27 +162,50 @@ pub fn uninstall(fs: &impl NssFs, runner: &impl CertutilRunner) -> NssOutcome {
     };
 
     let mut out = empty_outcome();
-    for db in discover(fs, &home) {
+    for db in discover(fs, &home, os) {
         let res = runner.run(&nss::delete_args(&db));
         out.profiles_attempted += 1;
-        // A missing entry (nothing to delete) exits non-zero but is success
-        // for our purposes; treat any non-crash exit as removed.
-        out.profiles_succeeded += 1;
-        let _ = res;
+        // Deleting a missing entry exits non-zero (nothing to remove) - still a
+        // success for us. Only a spawn failure (code -1) counts as a failure.
+        if res.code == -1 {
+            out.failures
+                .push((db.dir().to_path_buf(), NssFailure::CertutilExit(res.code)));
+        } else {
+            out.profiles_succeeded += 1;
+        }
     }
     out
 }
 
+/// Whether a single NSS database `db` trusts the CA with fingerprint `fp`:
+/// reads back the cert stored under our nickname and compares fingerprints.
+fn db_trusts(runner: &impl CertutilRunner, db: &NssDb, fp: &CaFingerprint) -> bool {
+    let res = runner.run(&nss::list_pem_args(db));
+    if !res.ok() {
+        return false;
+    }
+    let Ok(pem) = String::from_utf8(res.stdout) else {
+        return false;
+    };
+    CaFingerprint::from_pem(&pem).as_ref() == Some(fp)
+}
+
 /// Whether the browser NSS stores trust the CA with fingerprint `fp`.
+///
+/// Requires **every** discovered store to trust it: a single untrusted store
+/// (e.g. a Firefox profile created after the last trust run) yields `Untrusted`
+/// so the doctor warning fires rather than being masked by another store that
+/// happens to trust the CA.
 pub fn browser_trust(
     fs: &impl NssFs,
     runner: &impl CertutilRunner,
     fp: &CaFingerprint,
+    os: Os,
 ) -> BrowserCaTrust {
     let Some(home) = fs.home() else {
         return BrowserCaTrust::Trusted;
     };
-    let dbs = discover(fs, &home);
+    let dbs = discover(fs, &home, os);
     if dbs.is_empty() {
         // No browser NSS store exists - nothing to trust, so don't nag.
         return BrowserCaTrust::Trusted;
@@ -168,19 +213,11 @@ pub fn browser_trust(
     if !runner.available() {
         return BrowserCaTrust::ToolMissing;
     }
-    for db in &dbs {
-        let res = runner.run(&nss::list_pem_args(db));
-        if !res.ok() {
-            continue;
-        }
-        let Ok(pem) = String::from_utf8(res.stdout) else {
-            continue;
-        };
-        if CaFingerprint::from_pem(&pem).as_ref() == Some(fp) {
-            return BrowserCaTrust::Trusted;
-        }
+    if dbs.iter().all(|db| db_trusts(runner, db, fp)) {
+        BrowserCaTrust::Trusted
+    } else {
+        BrowserCaTrust::Untrusted
     }
-    BrowserCaTrust::Untrusted
 }
 
 // ---- real (edge) impls ----------------------------------------------------
@@ -193,8 +230,20 @@ mod real {
     use std::path::{Path, PathBuf};
     use std::process::Command;
 
-    use super::{CertutilRunner, NssFs, RunResult};
+    use super::{CertutilRunner, NssFs, Os, RunResult};
     use crate::trust_store::{BrowserCaTrust, CaFingerprint, NssOutcome};
+
+    /// The layout of the host we are running on.
+    const fn current_os() -> Os {
+        #[cfg(target_os = "macos")]
+        {
+            Os::Macos
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            Os::Linux
+        }
+    }
 
     /// `certutil` located at an absolute path (resolved once). Absolute-path
     /// resolution mirrors the `/usr/bin/id` / `/bin/ps` precedent - a stripped
@@ -289,19 +338,19 @@ mod real {
     /// Install the CA at `ca_path` into every per-user browser NSS store.
     #[must_use]
     pub fn real_install(ca_path: &Path) -> NssOutcome {
-        super::install(&RealNssFs, &RealCertutil::resolve(), ca_path)
+        super::install(&RealNssFs, &RealCertutil::resolve(), ca_path, current_os())
     }
 
     /// Remove the Yerd CA from every per-user browser NSS store.
     #[must_use]
     pub fn real_uninstall() -> NssOutcome {
-        super::uninstall(&RealNssFs, &RealCertutil::resolve())
+        super::uninstall(&RealNssFs, &RealCertutil::resolve(), current_os())
     }
 
     /// Probe whether browsers trust the CA with fingerprint `fp`.
     #[must_use]
     pub fn real_browser_trust(fp: &CaFingerprint) -> BrowserCaTrust {
-        super::browser_trust(&RealNssFs, &RealCertutil::resolve(), fp)
+        super::browser_trust(&RealNssFs, &RealCertutil::resolve(), fp, current_os())
     }
 }
 
@@ -420,6 +469,7 @@ mod tests {
             &fs_with_pki(),
             &FakeRunner::new(false),
             Path::new("/ca.pem"),
+            Os::Linux,
         );
         assert!(out.certutil_missing);
         assert_eq!(out.profiles_attempted, 0);
@@ -429,7 +479,7 @@ mod tests {
     fn install_adds_to_existing_pki_with_delete_then_add() {
         let fs = fs_with_pki();
         let runner = FakeRunner::new(true);
-        let out = install(&fs, &runner, Path::new("/ca.pem"));
+        let out = install(&fs, &runner, Path::new("/ca.pem"), Os::Linux);
         assert_eq!(out.profiles_attempted, 1);
         assert_eq!(out.profiles_succeeded, 1);
         let calls = runner.calls.borrow();
@@ -446,7 +496,7 @@ mod tests {
             ..FakeFs::default()
         };
         let runner = FakeRunner::new(true);
-        let _ = install(&fs, &runner, Path::new("/ca.pem"));
+        let _ = install(&fs, &runner, Path::new("/ca.pem"), Os::Linux);
         assert_eq!(fs.created.borrow().as_slice(), &[home().join(".pki/nssdb")]);
         assert!(runner
             .calls
@@ -460,7 +510,7 @@ mod tests {
         let fs = fs_with_pki();
         let mut runner = FakeRunner::new(true);
         runner.add_fails = true;
-        let out = install(&fs, &runner, Path::new("/ca.pem"));
+        let out = install(&fs, &runner, Path::new("/ca.pem"), Os::Linux);
         assert_eq!(out.profiles_succeeded, 0);
         assert_eq!(out.failures.len(), 1);
     }
@@ -479,7 +529,7 @@ mod tests {
         fs.files
             .insert(ff_root.join("abc.default/cert9.db"), String::new());
         let runner = FakeRunner::new(true);
-        let out = install(&fs, &runner, Path::new("/ca.pem"));
+        let out = install(&fs, &runner, Path::new("/ca.pem"), Os::Linux);
         assert_eq!(out.profiles_attempted, 1);
     }
 
@@ -491,7 +541,7 @@ mod tests {
         };
         let fp = CaFingerprint::new([7u8; 32]);
         assert_eq!(
-            browser_trust(&fs, &FakeRunner::new(true), &fp),
+            browser_trust(&fs, &FakeRunner::new(true), &fp, Os::Linux),
             BrowserCaTrust::Trusted
         );
     }
@@ -500,7 +550,7 @@ mod tests {
     fn browser_trust_tool_missing_when_db_exists_but_no_certutil() {
         let fp = CaFingerprint::new([7u8; 32]);
         assert_eq!(
-            browser_trust(&fs_with_pki(), &FakeRunner::new(false), &fp),
+            browser_trust(&fs_with_pki(), &FakeRunner::new(false), &fp, Os::Linux),
             BrowserCaTrust::ToolMissing
         );
     }
@@ -509,7 +559,7 @@ mod tests {
     fn browser_trust_untrusted_when_absent() {
         let fp = CaFingerprint::new([7u8; 32]);
         assert_eq!(
-            browser_trust(&fs_with_pki(), &FakeRunner::new(true), &fp),
+            browser_trust(&fs_with_pki(), &FakeRunner::new(true), &fp, Os::Linux),
             BrowserCaTrust::Untrusted
         );
     }
@@ -522,9 +572,97 @@ mod tests {
         let mut runner = FakeRunner::new(true);
         runner.list_pem = Some(pem);
         assert_eq!(
-            browser_trust(&fs_with_pki(), &runner, &fp),
+            browser_trust(&fs_with_pki(), &runner, &fp, Os::Linux),
             BrowserCaTrust::Trusted
         );
+    }
+
+    #[test]
+    fn macos_uses_library_firefox_and_no_pki() {
+        // macOS discovery must find the Library Firefox profile and must NOT
+        // create or touch ~/.pki/nssdb (no macOS browser reads it).
+        let mut fs = FakeFs {
+            home: Some(home()),
+            ..FakeFs::default()
+        };
+        let ff_root = home().join("Library/Application Support/Firefox");
+        fs.files.insert(
+            ff_root.join("profiles.ini"),
+            "[Profile0]\nIsRelative=1\nPath=abc.default\n".to_owned(),
+        );
+        fs.files
+            .insert(ff_root.join("abc.default/cert9.db"), String::new());
+        let runner = FakeRunner::new(true);
+        let out = install(&fs, &runner, Path::new("/ca.pem"), Os::Macos);
+        assert_eq!(out.profiles_attempted, 1);
+        assert!(
+            fs.created.borrow().is_empty(),
+            "must not create ~/.pki/nssdb on macOS"
+        );
+        assert!(!runner
+            .calls
+            .borrow()
+            .iter()
+            .any(|c| c.iter().any(|a| a.contains(".pki/nssdb"))));
+    }
+
+    #[test]
+    fn browser_trust_untrusted_when_any_store_untrusted() {
+        // Two stores exist; only ~/.pki/nssdb trusts the CA (list_pem set), the
+        // Firefox profile does not (its -L is answered the same way by the fake,
+        // so instead use a runner that only trusts when the db is the pki one).
+        let pem = sample_ca_pem();
+        let fp = CaFingerprint::from_pem(&pem).unwrap();
+        let mut fs = fs_with_pki();
+        let ff_root = home().join(".mozilla/firefox");
+        fs.files.insert(
+            ff_root.join("profiles.ini"),
+            "[Profile0]\nIsRelative=1\nPath=abc.default\n".to_owned(),
+        );
+        fs.files
+            .insert(ff_root.join("abc.default/cert9.db"), String::new());
+        // Fake trusts only the pki store: -L returns the PEM only for that dir.
+        let runner = SelectiveRunner {
+            trusted_dir: home().join(".pki/nssdb").display().to_string(),
+            pem,
+        };
+        assert_eq!(
+            browser_trust(&fs, &runner, &fp, Os::Linux),
+            BrowserCaTrust::Untrusted
+        );
+    }
+
+    /// A runner whose `-L` returns the CA PEM only for the one db dir it trusts.
+    struct SelectiveRunner {
+        trusted_dir: String,
+        pem: String,
+    }
+
+    impl CertutilRunner for SelectiveRunner {
+        fn available(&self) -> bool {
+            true
+        }
+        fn run(&self, args: &[String]) -> RunResult {
+            if args.iter().any(|a| a == "-L") {
+                let for_trusted = args
+                    .iter()
+                    .any(|a| a == &format!("sql:{}", self.trusted_dir));
+                if for_trusted {
+                    return RunResult {
+                        code: 0,
+                        stdout: self.pem.clone().into_bytes(),
+                    };
+                }
+                return RunResult {
+                    code: 255,
+                    stdout: vec![],
+                };
+            }
+            RunResult {
+                code: 0,
+                stdout: vec![],
+            }
+        }
     }
 
     fn sample_ca_pem() -> String {

@@ -165,6 +165,15 @@ pub fn firefox_root_candidates(
     out
 }
 
+/// The macOS Firefox profiles-root directory
+/// (`<home>/Library/Application Support/Firefox`). macOS Firefox does not use
+/// `~/.mozilla/firefox`, and macOS Chromium-family browsers use the system
+/// keychain (not NSS), so this is the only NSS store to manage on macOS.
+#[must_use]
+pub fn macos_firefox_root(home: &Path) -> PathBuf {
+    home.join("Library/Application Support/Firefox")
+}
+
 /// Resolve the per-profile directories under a Firefox `profiles_root` from the
 /// text of its `profiles.ini`. Relative `Path=` entries are joined against
 /// `profiles_root`; absolute entries are used as-is. The edge then keeps only
