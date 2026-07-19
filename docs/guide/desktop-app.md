@@ -51,7 +51,8 @@ Manages your installed [PHP versions](./php-versions):
 - Refresh re-checks for updates. Update all updates every version with a pending update. Updates are notify-only.
 - Each row's `⋯` menu offers Restart (only when the pool is running or failed), Update (only when available), Set default (marks it with a star), and Uninstall. Restart all restarts every running pool.
 - A Default settings card edits the global ini defaults applied to every version: `memory_limit`, `max_execution_time`, `max_input_time`, `max_file_uploads`, `upload_max_filesize`, `post_max_size`, `error_reporting`, and `display_errors`. Leave a field blank to use PHP's built-in default. Saving restarts running pools to apply.
-- A Custom extensions card registers extra `.so` extensions per version (loaded into both FPM and the CLI): pick a version, enter the extension path, optionally toggle Zend extension, and add. Each is load-probed before saving, and any whose file has gone missing is flagged. See [Custom extensions](./php-versions#custom-extensions).
+- A Per-version configuration card lists your versions down the side, newest first. Picking one scopes everything to that version: a settings form overriding the defaults above (empty fields inherit), its custom extensions, and free-form ini directives. See [Per-version configuration](./php-versions#per-version-configuration).
+- The Extensions section of that card registers extra `.so` extensions for the selected version (loaded into both FPM and the CLI): Add… browses for the file, optionally names it and toggles Zend extension. Each is load-probed before saving, and any whose file has gone missing is flagged. See [Custom extensions](./php-versions#custom-extensions).
 
 ### Sites
 

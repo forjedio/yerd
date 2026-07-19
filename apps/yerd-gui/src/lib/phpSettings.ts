@@ -88,8 +88,8 @@ export function overrideCount(overrides: Record<string, string>): number {
 
 /** Directive names Yerd manages elsewhere, with a hint pointing at that path. */
 const RESERVED_DIRECTIVES: Record<string, string> = {
-  extension: "extensions are managed in the Custom extensions panel",
-  zend_extension: "extensions are managed in the Custom extensions panel",
+  extension: "load extensions in the Extensions section above",
+  zend_extension: "load extensions in the Extensions section above",
   "openssl.cafile": "Yerd manages the CA bundle for this",
   "curl.cainfo": "Yerd manages the CA bundle for this",
 };

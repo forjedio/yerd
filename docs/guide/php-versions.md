@@ -13,8 +13,7 @@ The fastest way to manage PHP is the **PHP** page (under the **Environment** gro
 - **Refresh** re-checks for updates and **Update all** updates every version with one pending - [updates are notify-only](#updates-are-notify-only).
 - Each row's `⋯` menu offers **Restart**, **Set default** (marks it with a star; disabled for legacy rows, which are tagged with a `legacy` badge), **Update** (when available), and **Uninstall**; **Restart all** restarts every running pool.
 - A **Default settings** card edits the [global ini defaults](#tuning-php-settings) applied to every version; leave a field blank to use PHP's built-in default, and saving restarts running pools to apply.
-- A **Per-version configuration** card holds one expandable panel per installed version: the same settings form scoped to that version (empty fields inherit the defaults; see [Per-version configuration](#per-version-configuration)) plus a free-form ini-directive editor (e.g. `xdebug.mode = debug`). Saving restarts only that version's pool.
-- A **Custom extensions** card registers extra `.so` extensions per version (see [Custom extensions](#custom-extensions)); each is load-probed before it's saved, and broken registrations are flagged.
+- A **Per-version configuration** card lists your versions down the side, newest first; picking one shows everything scoped to it: the settings form (empty fields inherit the defaults; see [Per-version configuration](#per-version-configuration)), its [custom extensions](#custom-extensions), and a free-form ini-directive editor (e.g. `xdebug.mode = debug`). Each row badges how much that version has configured and marks unsaved edits, so switching versions never loses work. Saving restarts only that version's pool.
 
 ## From the command line
 
@@ -274,9 +273,12 @@ yerd php ext remove 8.5 scrypt
   `(missing!)`.
 
 Adding or removing an extension restarts that version's running FPM pool to apply
-it. In the desktop app, the same registry lives in the **Custom extensions** card
-on the **PHP** page. Registered extensions are stored per version in the config
-file - see the [Configuration Reference](../reference/configuration#php).
+it. In the desktop app, the same registry lives in the **Extensions** section of
+the **Per-version configuration** card on the **PHP** page: pick the version's
+tab, then **Add…** to browse for a `.so`. An extension whose file has gone
+missing is flagged, and its `⋯` menu can seed a matching ini directive. Registered
+extensions are stored per version in the config file - see the
+[Configuration Reference](../reference/configuration#php).
 
 ### How versions are stored
 
@@ -423,9 +425,11 @@ generated config, but Yerd doesn't second-guess their meaning - a directive PHP
 doesn't recognise is simply ignored by PHP. A per-version change restarts only
 that version's pool, and per-version configuration survives uninstalling and
 reinstalling the version. In the desktop app the same lives in the
-**Per-version configuration** card on the PHP page: one expandable panel per
-installed version with the settings form (empty fields inherit the defaults)
-and a directive editor. See the
+**Per-version configuration** card on the PHP page: pick a version from the list
+to get the settings form (empty fields inherit the defaults), that version's
+extensions, and a directive editor. A version that still has extensions
+registered after being uninstalled stays in the list, so those registrations can
+be removed. See the
 [PHP CLI reference](../reference/cli/php#custom-ini-directives) for the rules
 and the denylist of directives Yerd manages elsewhere.
 
