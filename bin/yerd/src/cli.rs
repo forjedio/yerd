@@ -433,8 +433,8 @@ pub enum ServiceAction {
         #[arg(long, default_value_t = 100)]
         lines: u32,
     },
-    /// Add a new service instance (a DB/cache engine, or a per-site app server
-    /// like `reverb`).
+    /// Add a new service instance (a DB/cache/search engine, or a per-site app
+    /// server like `reverb`).
     Add {
         /// Service type id: `redis`, `mysql`, `mariadb`, `postgres`, `meilisearch`, or `reverb`.
         #[arg(long = "type")]

@@ -631,7 +631,7 @@ async function openConfig(s: ServiceStatus): Promise<void> {
       configLaravelSites.value = sites.filter((site) => site.is_laravel);
       configScoutSite.value = configLaravelSites.value[0]?.name ?? "your_app";
     } catch {
-      configScoutSite.value = "your_app";
+      if (reqSeq === configReqSeq.value) configScoutSite.value = "your_app";
     }
     return;
   }
