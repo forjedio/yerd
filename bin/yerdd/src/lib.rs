@@ -208,7 +208,6 @@ async fn run_until_shutdown(
         lan_dns_port,
         lan_setup_port,
         &daemon.state,
-        &daemon.cert_store,
         shutdown_rx.clone(),
     )
     .await;
@@ -357,13 +356,14 @@ const REDIRECT_PROBE_INTERVAL: Duration = Duration::from_secs(60);
 
 /// Spawn the LAN remote-setup bootstrap endpoint, or return `None` (leaving
 /// `state.lan_setup_bound` false) when LAN is off, no LAN IP was discovered, the
-/// CA can't be read, the TLS leaf can't be minted, or the port won't bind.
+/// CA can't be read, or the port won't bind.
 ///
-/// The served CA bytes are read once from `state.ca_path`, whose basename is
-/// asserted to be exactly `ca.cert.pem` first - the endpoint only ever serves
-/// the public CA, never the private key, and never a path derived from request
-/// input.
-#[allow(clippy::too_many_arguments)]
+/// The public CA bytes are read once from `state.ca_path`, whose basename is
+/// asserted to be exactly `ca.cert.pem` first, then embedded into the installer
+/// script. The endpoint only ever serves that script (which carries the public
+/// CA, never the private key), and its SHA-256 is recorded in
+/// `state.lan_setup_script_sha256` so `yerd remote-setup` prints the exact hash
+/// the device will verify.
 async fn spawn_lan_setup(
     lan_enabled: bool,
     lan_ip: Option<std::net::Ipv4Addr>,
@@ -371,7 +371,6 @@ async fn spawn_lan_setup(
     dns_port: u16,
     setup_port: u16,
     state: &Arc<crate::state::DaemonState>,
-    cert_store: &Arc<crate::cert_store::DaemonCertStore>,
     shutdown_rx: watch::Receiver<bool>,
 ) -> Option<tokio::task::JoinHandle<()>> {
     if !lan_enabled {
@@ -396,11 +395,12 @@ async fn spawn_lan_setup(
             return None;
         }
     };
-
-    let Some(tls_config) = cert_store.lan_setup_server_config(lan_ip) else {
-        tracing::warn!("LAN setup: could not mint the IP-SAN TLS leaf - bootstrap disabled");
+    let Ok(ca_str) = std::str::from_utf8(&ca_pem) else {
+        tracing::warn!("LAN setup: CA is not valid UTF-8 PEM - bootstrap disabled");
         return None;
     };
+    let script = crate::lan_setup::pure::installer_script(lan_ip, &tld, dns_port, ca_str);
+    let script_sha256 = crate::ext_install::sha256_hex(script.as_bytes());
 
     let bind = std::net::SocketAddr::from((std::net::Ipv4Addr::UNSPECIFIED, setup_port));
     let listener = match tokio::net::TcpListener::bind(bind).await {
@@ -411,21 +411,18 @@ async fn spawn_lan_setup(
         }
     };
 
+    *state.lan_setup_script_sha256.lock().await = Some(script_sha256);
     state
         .lan_setup_bound
         .store(true, std::sync::atomic::Ordering::Relaxed);
     tracing::info!(port = setup_port, lan_ip = %lan_ip, "LAN remote-setup endpoint bound");
 
     let ctx = Arc::new(crate::lan_setup::SetupContext {
-        ca_pem,
-        tld,
-        dns_port,
-        server_ip: lan_ip,
+        script: script.into_bytes(),
         state: state.clone(),
     });
     Some(tokio::spawn(crate::lan_setup::serve(
         listener,
-        tls_config,
         ctx,
         shutdown_rx,
     )))

@@ -226,4 +226,9 @@ pub struct DaemonState {
     /// The current minted one-time remote-setup code, if any (in-memory only, so
     /// a restart invalidates it - fail-closed).
     pub remote_setup_code: Mutex<Option<RemoteSetupCode>>,
+    /// SHA-256 (64 lowercase hex) of the exact installer script the bootstrap
+    /// endpoint serves, computed once when that endpoint binds. This is the trust
+    /// anchor `yerd remote-setup` prints for the operator to verify on the device
+    /// before running the script. `None` until the endpoint binds this boot.
+    pub lan_setup_script_sha256: Mutex<Option<String>>,
 }

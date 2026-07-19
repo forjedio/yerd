@@ -107,6 +107,7 @@ pub fn state_in(tmp: &Path) -> DaemonState {
         lan_ip: None,
         lan_setup_bound: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         remote_setup_code: tokio::sync::Mutex::new(None),
+        lan_setup_script_sha256: tokio::sync::Mutex::new(None),
     }
 }
 

@@ -1,25 +1,24 @@
 //! LAN remote-device bootstrap endpoint.
 //!
 //! A small hyper service on `0.0.0.0:<lan_setup_port>`, spawned only while LAN
-//! mode is on and a LAN IP was discovered. It implements the R2-C1
-//! fingerprint-anchored trust flow:
+//! mode is on and a LAN IP was discovered. It implements a **hash-anchored**
+//! trust flow:
 //!
-//! 1. The device fetches the **public CA** over plain HTTP (`GET
-//!    /remote-setup/ca?code=…`) - the only plaintext step, because the device has
-//!    no trust yet.
-//! 2. It verifies the CA's DER SHA-256 against the fingerprint the operator
-//!    copy-pasted from `yerd remote-setup` (out of band, never over the wire).
-//! 3. It fetches the **installer script** over HTTPS (`GET /remote-setup?code=…`)
-//!    validated against that just-verified CA. The script route is HTTPS-only.
+//! 1. The device fetches one **self-contained installer script** over plain HTTP
+//!    (`GET /remote-setup?code=…`). The script embeds the public CA PEM inline,
+//!    so there is nothing else to download and no live trust needed yet.
+//! 2. Before running it, the operator's pasted command verifies the script's
+//!    **SHA-256** equals the hash printed by `yerd remote-setup` (copied out of
+//!    band, never trusted from the wire). That hash covers the embedded CA and
+//!    the resolver config, so a tampered script is rejected.
+//! 3. The verified script installs the embedded CA into the device trust store
+//!    and points the `.test` resolver at the host.
 //!
-//! One TCP port serves both by peeking the first byte (TLS `0x16` handshake vs an
-//! ASCII HTTP verb). The TLS side uses a fixed single-cert config whose leaf
-//! carries the LAN IP as an iPAddress SAN (an IP-literal client sends no SNI).
-//! The CA **private key never leaves the daemon**; only the public cert and the
-//! daemon-held IP-SAN leaf are involved.
+//! The endpoint is HTTP-only: content integrity comes from the pasted hash, not
+//! from transport security, so no TLS leaf is minted here. The CA **private key
+//! never leaves the daemon**; only the public CA cert is embedded in the script.
 
 use std::convert::Infallible;
-use std::net::Ipv4Addr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -30,21 +29,14 @@ use hyper::{Method, Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{watch, Semaphore};
-use tokio_rustls::TlsAcceptor;
 
 use crate::state::DaemonState;
 
 /// Immutable context the endpoint serves from, built once at spawn.
 pub struct SetupContext {
-    /// The public CA PEM, read into memory once (never a live filesystem path,
-    /// and never the private key).
-    pub ca_pem: Vec<u8>,
-    /// The served TLD (e.g. `"test"`), interpolated into the installer script.
-    pub tld: String,
-    /// The DNS responder port the device points at.
-    pub dns_port: u16,
-    /// The host's LAN IPv4 - the DNS target the device configures.
-    pub server_ip: Ipv4Addr,
+    /// The fully rendered installer script bytes, hashed once at spawn so the
+    /// SHA-256 printed by `yerd remote-setup` always matches what is served.
+    pub script: Vec<u8>,
     /// Shared daemon state, for the one-time code store.
     pub state: Arc<DaemonState>,
 }
@@ -54,18 +46,16 @@ pub struct SetupContext {
 /// short-lived fetches.
 const MAX_CONNS: usize = 32;
 
-/// End-to-end deadline for one connection (peek + TLS handshake + one request),
-/// so a stalled/slow-loris connection is dropped rather than held open.
+/// End-to-end deadline for one connection (one request), so a stalled/slow-loris
+/// connection is dropped rather than held open.
 const CONN_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// Serve until `shutdown` resolves. Non-LAN peers are dropped at accept.
 pub async fn serve(
     listener: TcpListener,
-    tls_config: Arc<rustls::ServerConfig>,
     ctx: Arc<SetupContext>,
     mut shutdown: watch::Receiver<bool>,
 ) {
-    let acceptor = TlsAcceptor::from(tls_config);
     let limit = Arc::new(Semaphore::new(MAX_CONNS));
     loop {
         tokio::select! {
@@ -84,12 +74,10 @@ pub async fn serve(
                     tracing::debug!("lan setup: connection cap reached, dropping");
                     continue;
                 };
-                let acceptor = acceptor.clone();
                 let ctx = Arc::clone(&ctx);
                 tokio::spawn(async move {
                     let _permit = permit;
-                    let _ = tokio::time::timeout(CONN_TIMEOUT, handle_conn(stream, acceptor, ctx))
-                        .await;
+                    let _ = tokio::time::timeout(CONN_TIMEOUT, serve_conn(stream, ctx)).await;
                 });
             }
             _ = shutdown.changed() => break,
@@ -97,32 +85,13 @@ pub async fn serve(
     }
 }
 
-async fn handle_conn(stream: TcpStream, acceptor: TlsAcceptor, ctx: Arc<SetupContext>) {
-    let mut first = [0u8; 1];
-    let is_tls = match stream.peek(&mut first).await {
-        Ok(n) if n >= 1 => first.first() == Some(&0x16),
-        _ => return,
-    };
-    if is_tls {
-        match acceptor.accept(stream).await {
-            Ok(tls) => serve_conn(TokioIo::new(tls), ctx, true).await,
-            Err(e) => tracing::debug!(error = %e, "lan setup: TLS handshake failed"),
-        }
-    } else {
-        serve_conn(TokioIo::new(stream), ctx, false).await;
-    }
-}
-
-async fn serve_conn<I>(io: I, ctx: Arc<SetupContext>, tls: bool)
-where
-    I: hyper::rt::Read + hyper::rt::Write + Unpin + 'static,
-{
+async fn serve_conn(stream: TcpStream, ctx: Arc<SetupContext>) {
     let service = service_fn(move |req| {
         let ctx = Arc::clone(&ctx);
-        async move { Ok::<_, Infallible>(handle_request(&req, &ctx, tls).await) }
+        async move { Ok::<_, Infallible>(handle_request(&req, &ctx).await) }
     });
     if let Err(e) = hyper::server::conn::http1::Builder::new()
-        .serve_connection(io, service)
+        .serve_connection(TokioIo::new(stream), service)
         .await
     {
         tracing::debug!(error = %e, "lan setup: connection error");
@@ -133,37 +102,22 @@ where
 /// can be unit-tested against a seeded [`DaemonState`].
 #[derive(Debug, PartialEq, Eq)]
 enum Decision {
-    /// Serve the public CA PEM.
-    Ca,
     /// Serve the installer script.
     Script,
     /// A plain-text status reply (error / not-found).
     Text(StatusCode, &'static str),
 }
 
-/// Route the request. The CA route needs **no** code - the CA is public and this
-/// is the only plaintext step, so requiring a code here would just leak it over
-/// HTTP. The code is required (and single-use-consumed) only on the terminal,
-/// HTTPS-only script route, so it never travels in cleartext.
-async fn decide(
-    ctx: &SetupContext,
-    is_get: bool,
-    path: &str,
-    query: Option<&str>,
-    tls: bool,
-) -> Decision {
+/// Route the request. The single script route requires the one-time code
+/// (single-use-consumed). Content integrity is guaranteed by the SHA-256 the
+/// operator verifies before running, not by the code or the transport, so the
+/// code is only an authorization gate on who may fetch the installer.
+async fn decide(ctx: &SetupContext, is_get: bool, path: &str, query: Option<&str>) -> Decision {
     if !is_get {
         return Decision::Text(StatusCode::METHOD_NOT_ALLOWED, "GET only");
     }
     match pure::classify(path) {
-        pure::Route::Ca => Decision::Ca,
         pure::Route::Script => {
-            if !tls {
-                return Decision::Text(
-                    StatusCode::FORBIDDEN,
-                    "the installer must be fetched over HTTPS - use the command from `yerd remote-setup`",
-                );
-            }
             let Some(code) = pure::extract_code(query) else {
                 return Decision::Text(StatusCode::FORBIDDEN, "missing code");
             };
@@ -180,22 +134,16 @@ async fn decide(
 async fn handle_request(
     req: &Request<hyper::body::Incoming>,
     ctx: &SetupContext,
-    tls: bool,
 ) -> Response<Full<Bytes>> {
     let decision = decide(
         ctx,
         req.method() == Method::GET,
         req.uri().path(),
         req.uri().query(),
-        tls,
     )
     .await;
     match decision {
-        Decision::Ca => bytes(StatusCode::OK, "application/x-pem-file", ctx.ca_pem.clone()),
-        Decision::Script => {
-            let script = pure::installer_script(ctx.server_ip, &ctx.tld, ctx.dns_port);
-            bytes(StatusCode::OK, "text/x-shellscript", script.into_bytes())
-        }
+        Decision::Script => bytes(StatusCode::OK, "text/x-shellscript", ctx.script.clone()),
         Decision::Text(status, msg) => text(status, msg),
     }
 }
@@ -235,12 +183,10 @@ fn bytes(status: StatusCode, content_type: &str, body: Vec<u8>) -> Response<Full
 pub mod pure {
     use std::net::Ipv4Addr;
 
-    /// The two served routes (plus a catch-all).
+    /// The served route (plus a catch-all).
     #[derive(Debug, PartialEq, Eq, Clone, Copy)]
     pub enum Route {
-        /// `GET /remote-setup/ca` - the public CA PEM (HTTP + HTTPS).
-        Ca,
-        /// `GET /remote-setup` - the installer script (HTTPS only).
+        /// `GET /remote-setup` - the self-contained installer script.
         Script,
         /// Anything else.
         NotFound,
@@ -251,7 +197,6 @@ pub mod pure {
     #[must_use]
     pub fn classify(path: &str) -> Route {
         match path {
-            "/remote-setup/ca" => Route::Ca,
             "/remote-setup" => Route::Script,
             _ => Route::NotFound,
         }
@@ -283,56 +228,104 @@ pub mod pure {
         a.ct_eq(b).into()
     }
 
-    /// The device-side installer script (served over fingerprint-anchored
-    /// HTTPS). It requires the CA fingerprint as `$1` (the trust anchor,
-    /// copy-pasted), re-verifies the already-downloaded `yerd-ca.pem` against it
-    /// (DER SHA-256, never a PEM-file hash), then installs the CA into the
-    /// device trust store and points the `.test` resolver at the host. `$2 ==
-    /// uninstall` reverses it. Values are numeric/validated, so no shell
-    /// injection surface.
+    /// The self-contained device installer script. The public CA PEM is embedded
+    /// inline (`@CA_PEM@`), so the device downloads nothing else and trust comes
+    /// entirely from the caller having verified this script's SHA-256 before
+    /// running it. It installs the embedded CA into the OS trust store **and**,
+    /// on Linux, the desktop user's NSS databases (so Firefox / Chromium / Brave
+    /// trust it), then points the `.test` resolver at the host. `$1 == uninstall`
+    /// reverses it. Interpolated values are numeric/validated, so there is no
+    /// shell-injection surface.
     #[must_use]
-    pub fn installer_script(server_ip: Ipv4Addr, tld: &str, dns_port: u16) -> String {
+    pub fn installer_script(server_ip: Ipv4Addr, tld: &str, dns_port: u16, ca_pem: &str) -> String {
         INSTALLER_TEMPLATE
             .replace("@TLD@", tld)
             .replace("@SERVER_IP@", &server_ip.to_string())
             .replace("@DNS_PORT@", &dns_port.to_string())
+            .replace("@CA_PEM@", ca_pem.trim_end())
     }
 
     const INSTALLER_TEMPLATE: &str = r#"#!/usr/bin/env bash
 set -euo pipefail
 
-FP="${1:-}"
-MODE="${2:-install}"
+MODE="${1:-install}"
 TLD="@TLD@"
 SERVER_IP="@SERVER_IP@"
 DNS_PORT="@DNS_PORT@"
-CA="yerd-ca.pem"
+NSS_NICK="Yerd Local CA ($TLD)"
 
-if [ -z "$FP" ]; then
-  echo "usage: sudo bash yerd-setup.sh <ca-fingerprint> [uninstall]" >&2
-  exit 2
-fi
+# The Yerd CA is embedded below and authenticated by the SHA-256 you verified
+# before running this script, so there is nothing else to download or trust.
+read_ca() {
+  cat <<'YERD_CA_PEM_EOF'
+@CA_PEM@
+YERD_CA_PEM_EOF
+}
 
-verify_ca() {
-  if [ ! -f "$CA" ]; then
-    echo "error: $CA not found next to this script (re-run the full command from 'yerd remote-setup')" >&2
-    exit 1
+# Resolve the desktop user (this runs under sudo, so $HOME is root's - the
+# browser NSS stores live in the invoking user's home instead).
+desktop_home() {
+  [ -n "${SUDO_USER:-}" ] || return 1
+  getent passwd "$SUDO_USER" 2>/dev/null | cut -d: -f6
+}
+
+# Add/refresh the CA in the desktop user's NSS databases so Firefox, Chromium
+# and Brave trust it. Best-effort: skipped silently when certutil or the DBs are
+# absent, and never fatal to the system-store install.
+nss_install() {
+  command -v certutil >/dev/null 2>&1 || return 0
+  local ca="$1" user="${SUDO_USER:-}" home
+  [ -n "$user" ] || return 0
+  home="$(desktop_home)" || return 0
+  [ -n "$home" ] || return 0
+
+  local shared="$home/.pki/nssdb"
+  if [ ! -d "$shared" ]; then
+    sudo -u "$user" mkdir -p "$shared" >/dev/null 2>&1 || true
+    sudo -u "$user" certutil -d "sql:$shared" -N --empty-password >/dev/null 2>&1 || true
   fi
-  got="$(openssl x509 -in "$CA" -noout -fingerprint -sha256 | sed 's/.*=//;s/://g' | tr 'A-Z' 'a-z')"
-  if [ "$got" != "$FP" ]; then
-    echo "error: CA fingerprint mismatch - refusing to install (expected $FP, got $got)" >&2
-    exit 1
-  fi
+  for db in "$shared" \
+            "$home"/.mozilla/firefox/*/ \
+            "$home"/snap/firefox/common/.mozilla/firefox/*/ \
+            "$home"/.var/app/org.mozilla.firefox/.mozilla/firefox/*/; do
+    [ -d "$db" ] || continue
+    [ "$db" = "$shared" ] || [ -f "$db/cert9.db" ] || [ -f "$db/cert8.db" ] || continue
+    sudo -u "$user" certutil -d "sql:$db" -D -n "$NSS_NICK" >/dev/null 2>&1 || true
+    sudo -u "$user" certutil -d "sql:$db" -A -t C,, -n "$NSS_NICK" -i "$ca" >/dev/null 2>&1 || true
+  done
+}
+
+nss_uninstall() {
+  command -v certutil >/dev/null 2>&1 || return 0
+  local user="${SUDO_USER:-}" home
+  [ -n "$user" ] || return 0
+  home="$(desktop_home)" || return 0
+  [ -n "$home" ] || return 0
+  for db in "$home/.pki/nssdb" \
+            "$home"/.mozilla/firefox/*/ \
+            "$home"/snap/firefox/common/.mozilla/firefox/*/ \
+            "$home"/.var/app/org.mozilla.firefox/.mozilla/firefox/*/; do
+    [ -d "$db" ] || continue
+    sudo -u "$user" certutil -d "sql:$db" -D -n "$NSS_NICK" >/dev/null 2>&1 || true
+  done
 }
 
 os="$(uname -s)"
+CA_TMP=""
+cleanup_tmp() { [ -n "$CA_TMP" ] && rm -f "$CA_TMP"; }
 
 case "$MODE" in
 install)
-  verify_ca
+  CA_TMP="$(mktemp)"
+  trap cleanup_tmp EXIT
+  read_ca > "$CA_TMP"
+  # World-readable so certutil, run as the desktop user via `sudo -u`, can read
+  # it for the NSS import - mktemp makes it 0600/root by default. The CA is
+  # public, and the file is deleted on exit.
+  chmod 0644 "$CA_TMP"
   case "$os" in
   Darwin)
-    security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain "$CA"
+    security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain "$CA_TMP"
     mkdir -p /etc/resolver
     printf 'nameserver %s\nport %s\n' "$SERVER_IP" "$DNS_PORT" > "/etc/resolver/$TLD"
     echo "Installed. .$TLD now resolves via $SERVER_IP (DNS $DNS_PORT)."
@@ -351,22 +344,28 @@ install)
       echo "       (systemd-resolved alone cannot forward a single domain to a custom port.)" >&2
       exit 1
     fi
-    if command -v update-ca-certificates >/dev/null 2>&1; then
+    # Pick by anchor *directory*, not by tool name: Arch ships update-ca-trust
+    # as a compat shim while its anchors live elsewhere, so probing the tool
+    # first picks a destination directory that does not exist.
+    if [ -d /usr/local/share/ca-certificates ] && command -v update-ca-certificates >/dev/null 2>&1; then
       CA_DEST="/usr/local/share/ca-certificates/yerd-$TLD.crt"; CA_REFRESH="update-ca-certificates"
-    elif command -v update-ca-trust >/dev/null 2>&1; then
-      CA_DEST="/etc/pki/ca-trust/source/anchors/yerd-$TLD.pem"; CA_REFRESH="update-ca-trust"
+    elif [ -d /etc/pki/ca-trust/source/anchors ] && command -v update-ca-trust >/dev/null 2>&1; then
+      CA_DEST="/etc/pki/ca-trust/source/anchors/yerd-$TLD.pem"; CA_REFRESH="update-ca-trust extract"
+    elif [ -d /etc/ca-certificates/trust-source/anchors ] && command -v trust >/dev/null 2>&1; then
+      CA_DEST="/etc/ca-certificates/trust-source/anchors/yerd-$TLD.crt"; CA_REFRESH="trust extract-compat"
     else
-      echo "error: no CA trust tool found (update-ca-certificates / update-ca-trust)" >&2
+      echo "error: no usable CA anchor directory found (expected Debian/Ubuntu, RHEL/Fedora or Arch layout)" >&2
       exit 1
     fi
     # Roll the CA back if the resolver step below fails, so we don't leave the
     # device trusting a CA whose .test names it can't resolve.
-    cp "$CA" "$CA_DEST"
-    trap 'rm -f "$CA_DEST"; $CA_REFRESH >/dev/null 2>&1 || true' EXIT
+    cp "$CA_TMP" "$CA_DEST"
+    trap 'rm -f "$CA_DEST"; $CA_REFRESH >/dev/null 2>&1 || true; cleanup_tmp' EXIT
     $CA_REFRESH >/dev/null
     printf 'server=/%s/%s#%s\n' "$TLD" "$SERVER_IP" "$DNS_PORT" > "$RESOLVER_CONF"
     $RESOLVER_RELOAD 2>/dev/null || true
-    trap - EXIT
+    trap cleanup_tmp EXIT
+    nss_install "$CA_TMP"
     echo "Installed. .$TLD now resolves via $SERVER_IP (DNS $DNS_PORT)."
     ;;
   *)
@@ -390,16 +389,20 @@ uninstall)
         done
     ;;
   Linux)
-    rm -f "/usr/local/share/ca-certificates/yerd-$TLD.crt" "/etc/pki/ca-trust/source/anchors/yerd-$TLD.pem"
+    rm -f "/usr/local/share/ca-certificates/yerd-$TLD.crt" \
+          "/etc/pki/ca-trust/source/anchors/yerd-$TLD.pem" \
+          "/etc/ca-certificates/trust-source/anchors/yerd-$TLD.crt"
     rm -f "/etc/NetworkManager/dnsmasq.d/yerd-$TLD.conf" "/etc/dnsmasq.d/yerd-$TLD.conf"
     if command -v update-ca-certificates >/dev/null 2>&1; then update-ca-certificates --fresh >/dev/null 2>&1 || true; fi
-    if command -v update-ca-trust >/dev/null 2>&1; then update-ca-trust 2>/dev/null || true; fi
+    if command -v update-ca-trust >/dev/null 2>&1; then update-ca-trust extract >/dev/null 2>&1 || true; fi
+    if command -v trust >/dev/null 2>&1; then trust extract-compat >/dev/null 2>&1 || true; fi
+    nss_uninstall
     ;;
   esac
   echo "Uninstalled Yerd LAN setup for .$TLD."
   ;;
 *)
-  echo "usage: sudo bash yerd-setup.sh <ca-fingerprint> [uninstall]" >&2
+  echo "usage: sudo bash yerd-setup.sh [uninstall]" >&2
   exit 2
   ;;
 esac
@@ -413,10 +416,13 @@ esac
         #[test]
         fn classify_fixed_routes() {
             assert_eq!(classify("/remote-setup"), Route::Script);
-            assert_eq!(classify("/remote-setup/ca"), Route::Ca);
+            assert_eq!(classify("/remote-setup/ca"), Route::NotFound);
             assert_eq!(classify("/"), Route::NotFound);
             assert_eq!(classify("/remote-setup/../etc"), Route::NotFound);
         }
+
+        const SAMPLE_CA: &str =
+            "-----BEGIN CERTIFICATE-----\nMIIByerdSAMPLE\n-----END CERTIFICATE-----\n";
 
         #[test]
         fn extract_code_parses_param() {
@@ -435,16 +441,19 @@ esac
         }
 
         #[test]
-        fn installer_script_interpolates_and_verifies_der_fingerprint() {
-            let s = installer_script(Ipv4Addr::new(192, 168, 1, 42), "test", 1053);
+        fn installer_script_interpolates_and_embeds_the_ca() {
+            let s = installer_script(Ipv4Addr::new(192, 168, 1, 42), "test", 1053, SAMPLE_CA);
             assert!(s.contains("SERVER_IP=\"192.168.1.42\""));
             assert!(s.contains("TLD=\"test\""));
             assert!(s.contains("DNS_PORT=\"1053\""));
             assert!(
-                s.contains("openssl x509 -in \"$CA\" -noout -fingerprint -sha256"),
-                "verifies the DER fingerprint, not a PEM-file hash (R3-M1)"
+                s.contains("MIIByerdSAMPLE"),
+                "the CA is embedded inline, not downloaded separately"
             );
-            assert!(!s.contains("shasum"), "must not hash the PEM file");
+            assert!(
+                !s.contains("yerd-ca.pem") && !s.contains("openssl x509"),
+                "there is no separate CA file to fetch or fingerprint - the outer hash covers it"
+            );
             assert!(s.contains("Darwin)"));
             assert!(s.contains("/etc/resolver/$TLD"));
             assert!(s.contains("server=/%s/%s#%s"));
@@ -453,12 +462,30 @@ esac
         }
 
         #[test]
+        fn installer_script_installs_the_ca_into_nss_for_browsers() {
+            let s = installer_script(Ipv4Addr::new(10, 0, 0, 5), "test", 1053, SAMPLE_CA);
+            assert!(s.contains("certutil"), "NSS install uses certutil");
+            assert!(
+                s.contains(".mozilla/firefox") && s.contains(".pki/nssdb"),
+                "covers both Firefox profiles and the Chromium/Brave shared NSS DB"
+            );
+            assert!(
+                s.contains("sudo -u \"$user\""),
+                "NSS DBs belong to the desktop user, not root"
+            );
+            assert!(
+                s.contains("nss_uninstall"),
+                "uninstall removes the CA from NSS too"
+            );
+        }
+
+        #[test]
         fn installer_script_linux_checks_resolver_before_installing_ca_and_rolls_back() {
-            let s = installer_script(Ipv4Addr::new(10, 0, 0, 5), "test", 1053);
+            let s = installer_script(Ipv4Addr::new(10, 0, 0, 5), "test", 1053, SAMPLE_CA);
             let resolver_check = s
                 .find("unsupported resolver setup")
                 .expect("resolver support is validated");
-            let ca_copy = s.find("cp \"$CA\"").expect("CA is installed");
+            let ca_copy = s.find("cp \"$CA_TMP\"").expect("CA is installed");
             assert!(
                 resolver_check < ca_copy,
                 "resolver support must be checked before the CA is installed"
@@ -470,8 +497,35 @@ esac
         }
 
         #[test]
+        fn installer_script_picks_the_linux_anchor_dir_by_directory_not_by_tool() {
+            let s = installer_script(Ipv4Addr::new(10, 0, 0, 5), "test", 1053, SAMPLE_CA);
+            for dir in [
+                "/usr/local/share/ca-certificates",
+                "/etc/pki/ca-trust/source/anchors",
+                "/etc/ca-certificates/trust-source/anchors",
+            ] {
+                assert!(
+                    s.contains(&format!("[ -d {dir} ]")),
+                    "{dir} is probed before it is written to"
+                );
+            }
+            assert!(
+                s.contains("trust extract-compat"),
+                "Arch refreshes via p11-kit, not update-ca-trust"
+            );
+            let probe = s
+                .find("[ -d /usr/local/share/ca-certificates ]")
+                .expect("anchor dirs are probed");
+            let copy = s.find("cp \"$CA_TMP\"").expect("CA is installed");
+            assert!(
+                probe < copy,
+                "the destination dir is probed before the copy"
+            );
+        }
+
+        #[test]
         fn installer_script_uninstall_deletes_the_ca_by_hash_not_common_name() {
-            let s = installer_script(Ipv4Addr::new(10, 0, 0, 5), "test", 1053);
+            let s = installer_script(Ipv4Addr::new(10, 0, 0, 5), "test", 1053, SAMPLE_CA);
             assert!(s.contains("SHA-1 hash:"), "identifies the cert by its hash");
             assert!(
                 s.contains("security delete-certificate -Z"),
@@ -492,10 +546,7 @@ mod endpoint_tests {
 
     fn ctx_with_code(state: Arc<DaemonState>) -> SetupContext {
         SetupContext {
-            ca_pem: b"-----BEGIN CERTIFICATE-----\nX\n-----END CERTIFICATE-----\n".to_vec(),
-            tld: "test".into(),
-            dns_port: 1053,
-            server_ip: Ipv4Addr::new(192, 168, 1, 42),
+            script: b"#!/usr/bin/env bash\n".to_vec(),
             state,
         }
     }
@@ -509,24 +560,7 @@ mod endpoint_tests {
     }
 
     #[tokio::test]
-    async fn ca_route_serves_without_a_code_so_the_code_never_rides_http() {
-        let tmp = tempfile::tempdir().unwrap();
-        let state = Arc::new(state_in(tmp.path()));
-        seed(&state, "good").await;
-        let ctx = ctx_with_code(Arc::clone(&state));
-
-        assert_eq!(
-            decide(&ctx, true, "/remote-setup/ca", None, false).await,
-            Decision::Ca
-        );
-        assert_eq!(
-            decide(&ctx, true, "/remote-setup/ca", Some("code=anything"), false).await,
-            Decision::Ca
-        );
-    }
-
-    #[tokio::test]
-    async fn script_route_requires_https_and_a_code_and_is_single_use() {
+    async fn script_route_requires_a_code_and_is_single_use() {
         let tmp = tempfile::tempdir().unwrap();
         let state = Arc::new(state_in(tmp.path()));
         seed(&state, "good").await;
@@ -534,25 +568,18 @@ mod endpoint_tests {
 
         assert!(
             matches!(
-                decide(&ctx, true, "/remote-setup", Some("code=good"), false).await,
+                decide(&ctx, true, "/remote-setup", None).await,
                 Decision::Text(StatusCode::FORBIDDEN, _)
             ),
-            "plaintext script fetch must be refused"
-        );
-        assert!(
-            matches!(
-                decide(&ctx, true, "/remote-setup", None, true).await,
-                Decision::Text(StatusCode::FORBIDDEN, _)
-            ),
-            "HTTPS script fetch without a code is refused"
+            "a script fetch without a code is refused"
         );
         assert_eq!(
-            decide(&ctx, true, "/remote-setup", Some("code=good"), true).await,
+            decide(&ctx, true, "/remote-setup", Some("code=good")).await,
             Decision::Script
         );
         assert!(
             matches!(
-                decide(&ctx, true, "/remote-setup", Some("code=good"), true).await,
+                decide(&ctx, true, "/remote-setup", Some("code=good")).await,
                 Decision::Text(StatusCode::FORBIDDEN, _)
             ),
             "replay is rejected (single-use)"
@@ -567,11 +594,11 @@ mod endpoint_tests {
         let ctx = ctx_with_code(Arc::clone(&state));
 
         assert!(matches!(
-            decide(&ctx, false, "/remote-setup/ca", None, false).await,
+            decide(&ctx, false, "/remote-setup", Some("code=good")).await,
             Decision::Text(StatusCode::METHOD_NOT_ALLOWED, _)
         ));
         assert!(matches!(
-            decide(&ctx, true, "/nope", Some("code=good"), true).await,
+            decide(&ctx, true, "/nope", Some("code=good")).await,
             Decision::Text(StatusCode::NOT_FOUND, _)
         ));
     }
@@ -584,10 +611,10 @@ mod endpoint_tests {
         let ctx = ctx_with_code(Arc::clone(&state));
 
         for _ in 0..50 {
-            let _ = decide(&ctx, true, "/remote-setup", Some("code=bad"), true).await;
+            let _ = decide(&ctx, true, "/remote-setup", Some("code=bad")).await;
         }
         assert_eq!(
-            decide(&ctx, true, "/remote-setup", Some("code=good"), true).await,
+            decide(&ctx, true, "/remote-setup", Some("code=good")).await,
             Decision::Script,
             "an unauthenticated peer's wrong guesses must not lock out the legit device"
         );

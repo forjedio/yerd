@@ -83,33 +83,44 @@ up.
 $ yerd remote-setup
 Run this on the OTHER device (needs sudo, curl, and openssl):
 
-  curl -fsS 'http://192.168.1.42:7073/remote-setup/ca?code=…' -o yerd-ca.pem \
-    && test "$(openssl x509 -in yerd-ca.pem -noout -fingerprint -sha256 \
-                | sed 's/.*=//;s/://g' | tr A-Z a-z)" = "<fingerprint>" \
-    && curl -fsS --cacert yerd-ca.pem 'https://192.168.1.42:7073/remote-setup?code=…' -o yerd-setup.sh \
-    && sudo bash yerd-setup.sh <fingerprint>
+  curl -fsS --retry 3 -o yerd-setup.sh 'http://192.168.1.42:7073/remote-setup?code=…' && [ "$(openssl dgst -sha256 -r yerd-setup.sh | cut -d' ' -f1)" = "<sha256>" ] && sudo bash yerd-setup.sh
 ```
 
-::: danger The fingerprint is the trust anchor - verify it
-The command downloads Yerd's CA over plain HTTP, then **verifies its fingerprint
-matches the one printed on your screen** before trusting it, and only then
-fetches the installer over HTTPS validated against that CA. The fingerprint
-travels by your eyes, not the wire - that's what makes this safe. Do not edit it
-out. A wrong or missing fingerprint aborts the install. The code is single-use
-and expires in 15 minutes.
+It is a single line: download the self-contained installer, check its SHA-256
+matches, then run it. The installer embeds Yerd's CA, so there is nothing else to
+fetch.
+
+::: danger The hash is the trust anchor - verify it
+The installer is served over plain HTTP, so its integrity comes entirely from the
+**SHA-256 printed on your screen**. The pasted command checks the download
+against that hash and, on any mismatch, the `&&` chain stops before `sudo` runs.
+The hash travels by your eyes, not the wire - that's what makes this safe. Do not
+edit it out. The code is single-use and expires in 15 minutes.
 :::
 
 Supported devices: **macOS** and **Linux with dnsmasq or NetworkManager**. A
 Linux box using **systemd-resolved alone** is not supported (it can't forward a
-single domain to a custom port) - install dnsmasq or use NetworkManager.
+single domain to a custom port) - install dnsmasq or use NetworkManager. On
+Linux the CA is installed into whichever trust anchor directory the distro
+provides (Debian/Ubuntu, RHEL/Fedora or Arch) **and** into the desktop user's NSS
+databases, so Firefox, Chromium and Brave trust it too (best-effort, when
+`certutil` from `nss` / `libnss3-tools` is present).
+
+**Windows devices are not supported.** Windows has no built-in way to forward a
+single domain to a nameserver on a non-standard port - its NRPT rules
+(`Add-DnsClientNrptRule`) take a server address but no port, and the `hosts`
+file can't express a wildcard. Pointing a Windows box at Yerd needs a local DNS
+proxy (such as Acrylic) configured by hand, so there is no bootstrap script for
+it.
 
 ### Undoing it on a device
 
 Yerd can't revert a device it doesn't control. On each provisioned device, run
-the installer's uninstall mode to remove the CA and the resolver entry:
+the installer's uninstall mode to remove the CA (system store and browser NSS
+databases) and the resolver entry:
 
 ```sh
-sudo bash yerd-setup.sh <fingerprint> uninstall
+sudo bash yerd-setup.sh uninstall
 ```
 
 ## Headless / always-on hosts

@@ -857,9 +857,9 @@ pub fn render(resp: &Response, json: bool) -> Rendered {
         Response::RemoteSetup {
             code: _,
             url,
-            ca_fingerprint,
+            script_sha256,
             expires_in_secs,
-        } => Rendered::ok(format_remote_setup(url, ca_fingerprint, *expires_in_secs)),
+        } => Rendered::ok(format_remote_setup(url, script_sha256, *expires_in_secs)),
         Response::Status { report } => Rendered {
             stdout: format_status(report),
             stderr: String::new(),
@@ -1055,39 +1055,28 @@ fn format_parked(paths: &[String]) -> String {
     paths.join("\n")
 }
 
-/// The remote-device bootstrap instructions (the R2-C1 fingerprint-anchored
-/// flow). The fingerprint printed here is the trust anchor - it travels by
-/// copy-paste, NOT over the wire. The device fetches the CA over plain HTTP,
-/// verifies its **DER** SHA-256 equals the fingerprint, then fetches the
-/// installer script over HTTPS validated against that just-verified CA. Plain
-/// HTTP + a code is not sufficient to distribute a root CA.
+/// The remote-device bootstrap instructions (hash-anchored flow). The SHA-256
+/// printed here is the trust anchor - it travels by copy-paste, NOT over the
+/// wire. The device fetches one self-contained installer (which embeds the CA)
+/// over plain HTTP, the pasted command verifies its SHA-256 equals this value,
+/// and only then runs it. Content integrity comes from the hash, so the plain
+/// transport is safe.
 ///
-/// `script_url` is the HTTPS script URL (`https://<ip>:<port>/remote-setup?code=…`);
-/// the CA URL is the same host/port over plain HTTP at `/remote-setup/ca`, and
-/// carries **no** code (the CA is public, so the code never leaves HTTPS).
-fn format_remote_setup(script_url: &str, ca_fingerprint: &str, expires_in_secs: u64) -> String {
-    let ca_url = script_url
-        .replacen("https://", "http://", 1)
-        .split_once("/remote-setup")
-        .map_or_else(
-            || script_url.replacen("https://", "http://", 1),
-            |(base, _)| format!("{base}/remote-setup/ca"),
-        );
+/// `url` is the plain-HTTP installer URL (`http://<ip>:<port>/remote-setup?code=…`).
+fn format_remote_setup(url: &str, script_sha256: &str, expires_in_secs: u64) -> String {
     let mins = expires_in_secs / 60;
     format!(
         "Run this on the OTHER device (needs sudo, curl, and openssl):\n\
          \n\
-         \x20 curl -fsS '{ca_url}' -o yerd-ca.pem \\\n\
-         \x20   && test \"$(openssl x509 -in yerd-ca.pem -noout -fingerprint -sha256 \\\n\
-         \x20               | sed 's/.*=//;s/://g' | tr A-Z a-z)\" = \"{ca_fingerprint}\" \\\n\
-         \x20   && curl -fsS --cacert yerd-ca.pem '{script_url}' -o yerd-setup.sh \\\n\
-         \x20   && sudo bash yerd-setup.sh {ca_fingerprint}\n\
+         \x20 curl -fsS --retry 3 -o yerd-setup.sh '{url}' && [ \"$(openssl dgst -sha256 -r yerd-setup.sh | cut -d' ' -f1)\" = \"{script_sha256}\" ] && sudo bash yerd-setup.sh\n\
          \n\
-         How it works: it downloads Yerd's CA over HTTP, verifies its fingerprint\n\
-         matches the one ON THIS SCREEN (the trust anchor), then fetches the installer\n\
-         over HTTPS validated against that CA and runs it. The code expires in {mins}\n\
-         minutes and is single-use. The fingerprint is what makes this safe - do not\n\
-         skip it. To undo on the device later:  sudo bash yerd-setup.sh {ca_fingerprint} uninstall"
+         How it works: it downloads Yerd's self-contained installer over HTTP, checks\n\
+         its SHA-256 matches the one ON THIS SCREEN (the trust anchor), then runs it -\n\
+         installing the embedded CA (system store plus Firefox/Chromium/Brave on Linux)\n\
+         and pointing .test at this host. If the hash does not match, the '&&' chain\n\
+         stops before sudo runs. The code expires in {mins} minutes and is single-use.\n\
+         The hash is what makes this safe - do not skip it. To undo on the device\n\
+         later:  sudo bash yerd-setup.sh uninstall"
     )
 }
 
@@ -1670,27 +1659,37 @@ mod tests {
     }
 
     #[test]
-    fn remote_setup_render_verifies_der_fingerprint_and_uses_codeless_http_ca_then_https_script() {
+    fn remote_setup_render_pins_the_script_hash_in_one_line() {
         let out = format_remote_setup(
-            "https://192.168.1.42:7073/remote-setup?code=abc",
+            "http://192.168.1.42:7073/remote-setup?code=abc",
             &"ab".repeat(32),
             900,
         );
-        assert!(out.contains(&"ab".repeat(32)), "fingerprint present: {out}");
-        assert!(out.contains("yerd-setup.sh"), "{out}");
-        assert!(out.contains("openssl"), "DER fingerprint verify: {out}");
-        assert!(!out.contains("| sudo bash"), "must not pipe-to-bash: {out}");
+        assert!(out.contains(&"ab".repeat(32)), "script hash present: {out}");
         assert!(
-            out.contains("http://192.168.1.42:7073/remote-setup/ca'"),
-            "CA over plain HTTP with NO code query: {out}"
+            out.contains("openssl dgst -sha256 -r yerd-setup.sh"),
+            "hashes the downloaded script: {out}"
         );
         assert!(
-            !out.contains("/remote-setup/ca?code"),
-            "the code must not travel over plain HTTP: {out}"
+            out.contains("http://192.168.1.42:7073/remote-setup?code=abc"),
+            "installer fetched over the plain-HTTP url: {out}"
         );
         assert!(
-            out.contains("--cacert yerd-ca.pem 'https://192.168.1.42:7073/remote-setup?code=abc'"),
-            "script over --cacert HTTPS carries the code: {out}"
+            !out.contains("https://") && !out.contains("--cacert"),
+            "no HTTPS / CA-file hop remains: {out}"
+        );
+        let cmd = out
+            .lines()
+            .find(|l| l.trim_start().starts_with("curl "))
+            .expect("has a curl command line");
+        assert_eq!(
+            cmd.matches("&&").count(),
+            2,
+            "the whole flow is one chained line (fetch && verify && run): {cmd}"
+        );
+        assert!(
+            cmd.contains("sudo bash yerd-setup.sh"),
+            "runs the verified script: {cmd}"
         );
     }
 
