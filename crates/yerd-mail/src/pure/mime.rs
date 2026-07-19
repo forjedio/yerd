@@ -76,10 +76,7 @@ pub fn detail(id: &str, raw: &[u8]) -> MailDetail {
 /// is not openable through the opener plugin).
 fn collect_attachments(msg: &Message<'_>) -> Vec<MailAttachment> {
     msg.attachments()
-        .filter(|part| {
-            // Skip inline parts (cid: images embedded in the HTML body).
-            part.content_id().is_none()
-        })
+        .filter(|part| part.content_id().is_none())
         .map(|part| {
             let content_type = part.content_type().map_or_else(
                 || "application/octet-stream".to_string(),
@@ -88,8 +85,6 @@ fn collect_attachments(msg: &Message<'_>) -> Vec<MailAttachment> {
                     None => c.ctype().to_string(),
                 },
             );
-            // Prefer the filename from Content-Disposition, then Content-Type name=,
-            // then fall back to a generic label.
             let filename = part
                 .attachment_name()
                 .filter(|n| !n.is_empty())

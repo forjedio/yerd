@@ -282,6 +282,12 @@ const attachments = computed<MailAttachment[]>(
   () => detail.value?.attachments ?? [],
 );
 
+/** Linkified plain-text body. Computed (not called inline in the template) so
+ *  it only re-runs when the body changes, not on every 4s poll re-render. */
+const linkedTextBody = computed(() =>
+  linkifyText(detail.value?.text_body || "(empty message)"),
+);
+
 const remoteContent = computed(() => {
   const html = detail.value?.html_body;
   return html ? listRemoteContentUrls(html) : [];
@@ -432,7 +438,7 @@ function formatDate(epoch: number): string {
             v-else
             class="min-h-0 flex-1 overflow-auto whitespace-pre-wrap p-5 text-sm"
             @click="handleTextLinkClick"
-            v-html="linkifyText(detail.text_body ?? '(empty message)')"
+            v-html="linkedTextBody"
           />
 
           <!-- Attachment bar - shown only when the message has attachments -->
