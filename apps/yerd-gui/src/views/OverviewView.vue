@@ -64,8 +64,10 @@ const daemonPid = computed(() => report.value?.daemon_pid ?? null);
 // ── daemon lifecycle (Stop / Restart; Start lives in the daemon-down hero) ──
 const busy = ref<string | null>(null);
 
-async function onStop(): Promise<void> {
+const stopDaemonOpen = ref(false);
+async function confirmStopDaemon(close: () => void): Promise<void> {
   busy.value = "daemon";
+  close();
   try {
     await stopDaemon();
     toast.success("Stopping daemon…");
@@ -78,17 +80,18 @@ async function onStop(): Promise<void> {
 }
 
 const restartDaemonOpen = ref(false);
+/**
+ * Restart is fire-and-forget: the daemon acknowledges before it re-execs, so a
+ * resolved call means the restart was accepted (the status poll handles the
+ * connection drop), while a rejection is a genuine failure worth surfacing.
+ */
 async function confirmRestartDaemon(close: () => void): Promise<void> {
   busy.value = "restart:daemon";
   close();
   try {
     await restartDaemon();
-    // The daemon replies before it re-execs, so a resolved call means the
-    // restart was accepted; the connection drop is handled by the status poll.
     toast.info("Restarting daemon…", "It returns in a few seconds.");
   } catch (e) {
-    // Reaching here is a genuine failure (the reply arrives ahead of the drop),
-    // so don't imply the restart started.
     toast.error("Couldn't restart the daemon", (e as IpcError).message);
   } finally {
     busy.value = null;
@@ -479,7 +482,7 @@ const emptyEnvironment = computed(
             <code>.test</code> sites, answers DNS, and runs databases.
           </p>
           <div class="mt-4 flex justify-end gap-2">
-            <Button variant="outline" :disabled="busy !== null" @click="onStop">
+            <Button variant="outline" :disabled="busy !== null" @click="stopDaemonOpen = true">
               <Spinner v-if="busy === 'daemon'" class="size-4" />
               <Square v-else class="size-4" /> Stop
             </Button>
@@ -525,6 +528,17 @@ const emptyEnvironment = computed(
         </Card>
       </template>
     </div>
+
+    <Modal v-model:open="stopDaemonOpen" title="Stop daemon">
+      <p class="text-sm text-muted-foreground">
+        This stops all <strong class="text-foreground">.test</strong> sites, DNS,
+        and databases until you start Yerd again.
+      </p>
+      <template #footer="{ close }">
+        <Button variant="ghost" @click="close">Cancel</Button>
+        <Button @click="confirmStopDaemon(close)">Stop</Button>
+      </template>
+    </Modal>
 
     <Modal v-model:open="restartDaemonOpen" title="Restart daemon">
       <p class="text-sm text-muted-foreground">

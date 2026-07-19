@@ -72,9 +72,9 @@ function handleBadge(e: MouseEvent): void {
         v-else-if="warn"
         class="ml-auto flex size-4 shrink-0 items-center justify-center rounded-full bg-warning/15 text-[10px] font-bold leading-none text-warning ring-1 ring-warning/40"
         :title="warnTitle"
-        aria-hidden="true"
       >
-        !
+        <span aria-hidden="true">!</span>
+        <span class="sr-only">{{ warnTitle ?? "Needs attention" }}</span>
       </span>
     </a>
   </RouterLink>

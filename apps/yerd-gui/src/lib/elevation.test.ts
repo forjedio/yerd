@@ -4,7 +4,8 @@ import type { StatusReport } from "@/ipc/types";
 import { needsElevation, portsElevated, privilegedFallback } from "./elevation";
 
 // Only the fields the predicates read matter; the rest of StatusReport is filled
-// with inert defaults so the tests stay focused on privilege state.
+// with inert defaults so the tests stay focused on privilege state. `in` checks
+// (not `??`) preserve an explicit `null` tri-state rather than defaulting it.
 function mk(over: {
   httpReq?: number;
   httpFell?: boolean;
@@ -15,8 +16,6 @@ function mk(over: {
   resolver?: boolean | null;
   webUnbound?: { http: number; https: number } | null;
 }): StatusReport {
-  // `in` checks, not `??`: an explicit `null` (tri-state "undeterminable") must
-  // survive rather than fall through to the `true` default.
   return {
     http: { requested: over.httpReq ?? 80, bound: 80, fell_back: over.httpFell ?? false },
     https: { requested: over.httpsReq ?? 443, bound: 443, fell_back: over.httpsFell ?? false },
