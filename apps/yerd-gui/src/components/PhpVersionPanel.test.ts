@@ -138,13 +138,11 @@ describe("PhpVersionPanel dirty state", () => {
     expect(lastDirty(w)).toEqual([true]);
   });
 
-  it("counts a typed-but-unadded directive as unsaved work", async () => {
+  it("counts a typed-but-unadded directive as unsaved work, enabling only Discard since the settings grid is unchanged", async () => {
     const w = mountPanel();
     await w.find('input[aria-label="Directive name for PHP 8.3"]').setValue("xdebug.");
 
     expect(lastDirty(w)).toEqual([true]);
-    // Only the settings grid is savable, so Save stays disabled while Discard
-    // (which clears the pending directive too) becomes available.
     expect(byText(w, "Save changes")!.attributes("disabled")).toBeDefined();
     expect(byText(w, "Discard")!.attributes("disabled")).toBeUndefined();
   });
@@ -169,6 +167,55 @@ describe("PhpVersionPanel dirty state", () => {
   });
 });
 
+// Every mutation here rewrites the same version's config and reseeds the form
+// from the daemon's reply, so a second one landing mid-flight could clobber the
+// first's result or discard edits made while it was away.
+describe("PhpVersionPanel concurrent mutations", () => {
+  beforeEach(() => {
+    setPhpDirectives.mockReset();
+    removePhpExtension.mockReset();
+  });
+
+  it("locks the whole panel while a request is in flight, not just the control that started it", async () => {
+    let release: (v: unknown) => void = () => {};
+    setPhpDirectives.mockReturnValue(new Promise((r) => (release = r)));
+
+    const w = mountPanel({ extensions: [XDEBUG] });
+    await button(w, "Remove xdebug.mode").trigger("click");
+    await vi.waitFor(() => expect(setPhpDirectives).toHaveBeenCalled());
+
+    expect(byText(w, "Add…")!.attributes("disabled")).toBeDefined();
+    expect(button(w, "Actions for xdebug").attributes("disabled")).toBeDefined();
+    expect(
+      w.find('input[aria-label="Directive name for PHP 8.3"]').attributes("disabled"),
+    ).toBeDefined();
+    expect(w.find('input[id="set-8.3-memory_limit"]').attributes("disabled")).toBeDefined();
+
+    release(refreshed);
+    await vi.waitFor(() =>
+      expect(byText(w, "Add…")!.attributes("disabled")).toBeUndefined(),
+    );
+  });
+
+  it("rejects a second mutation issued while one is already running", async () => {
+    let release: (v: unknown) => void = () => {};
+    setPhpDirectives.mockReturnValue(new Promise((r) => (release = r)));
+    removePhpExtension.mockResolvedValue({ "8.3": [] });
+
+    const w = mountPanel({ extensions: [XDEBUG] });
+    await button(w, "Remove xdebug.mode").trigger("click");
+    await vi.waitFor(() => expect(setPhpDirectives).toHaveBeenCalledTimes(1));
+
+    const remove = w
+      .findAll(".dropdown-item-stub")
+      .find((i) => i.text().includes("Remove"));
+    await remove!.trigger("click");
+
+    expect(removePhpExtension).not.toHaveBeenCalled();
+    release(refreshed);
+  });
+});
+
 describe("PhpVersionPanel extensions", () => {
   beforeEach(() => {
     removePhpExtension.mockReset();
@@ -190,7 +237,7 @@ describe("PhpVersionPanel extensions", () => {
     expect(w.emitted("extensionsUpdated")?.[0]).toEqual([{ "8.3": [] }]);
   });
 
-  it("prefills and focuses the directive name from an extension", async () => {
+  it("prefills and focuses the directive name from an extension without flagging the untouched value", async () => {
     const w = mountPanel({ extensions: [XDEBUG] }, { attachTo: document.body });
     const addDirective = w
       .findAll(".dropdown-item-stub")
@@ -201,7 +248,6 @@ describe("PhpVersionPanel extensions", () => {
     const field = w.find('input[aria-label="Directive name for PHP 8.3"]');
     expect((field.element as HTMLInputElement).value).toBe("xdebug.");
     expect(document.activeElement).toBe(field.element);
-    // Seeding only the name must not immediately flag the untouched value.
     expect(w.text()).not.toContain("enter a value");
   });
 

@@ -80,7 +80,14 @@ const emit = defineEmits<{
 }>();
 
 const toast = useToast();
+
+// Names the single in-flight mutation, so the control that started it can show
+// its own spinner. Every other control keys off `isBusy` instead: this panel's
+// requests all rewrite the same version's config, and each success reseeds the
+// form from the daemon's reply, so a second mutation landing mid-flight could
+// clobber the first's result or discard edits made while it was away.
 const busy = ref<string | null>(null);
+const isBusy = computed(() => busy.value !== null);
 
 // ── per-version settings form ──
 // Fields hold only the override value; an empty field means "inherit" (the
@@ -138,6 +145,7 @@ const savedOverrides = computed(() => overrideCount(props.overrides));
  * ones: a blank value removes the override so the version inherits again.
  */
 async function saveSettings(): Promise<void> {
+  if (isBusy.value) return;
   busy.value = "settings";
   try {
     const r = await setPhpVersionSettings(props.version, { ...form.value });
@@ -170,6 +178,7 @@ const dirProblem = computed(() => {
 });
 
 async function addDirective(): Promise<void> {
+  if (isBusy.value) return;
   const name = dirName.value.trim();
   const value = dirValue.value.trim();
   if (directiveNameProblem(name) || directiveValueProblem(value)) {
@@ -212,6 +221,7 @@ function cancelEdit(): void {
 }
 
 async function saveEdit(): Promise<void> {
+  if (isBusy.value) return;
   const name = editName.value;
   if (name === null) return;
   const value = editValue.value.trim();
@@ -230,6 +240,7 @@ async function saveEdit(): Promise<void> {
 }
 
 async function removeDirective(name: string): Promise<void> {
+  if (isBusy.value) return;
   busy.value = `dir-remove:${name}`;
   try {
     const r = await setPhpDirectives(props.version, { [name]: "" });
@@ -258,6 +269,7 @@ function directiveFor(ext: PhpExtInfo): void {
 }
 
 async function removeExtension(name: string): Promise<void> {
+  if (isBusy.value) return;
   busy.value = `ext-remove:${name}`;
   try {
     const map = await removePhpExtension(props.version, name);
@@ -316,6 +328,7 @@ function discard(): void {
               :id="`set-${version}-${s.key}`"
               v-model="form[s.key]"
               :placeholder="inheritedLabel(s.key, s.placeholder)"
+              :disabled="isBusy"
               class="mt-1"
             />
           </div>
@@ -336,6 +349,7 @@ function discard(): void {
                 class="w-full"
                 :model-value="form.display_errors ?? ''"
                 :options="displayErrorsOptions"
+                :disabled="isBusy"
                 :aria-label="`display_errors for PHP ${version}`"
                 @update:model-value="(v: string) => (form.display_errors = v)"
               />
@@ -350,14 +364,15 @@ function discard(): void {
           empty fields inherit
         </span>
         <span class="flex items-center gap-2">
-          <Button variant="ghost" size="sm" :disabled="!panelDirty" @click="discard">
+          <Button
+            variant="ghost"
+            size="sm"
+            :disabled="!panelDirty || isBusy"
+            @click="discard"
+          >
             Discard
           </Button>
-          <Button
-            size="sm"
-            :disabled="!settingsDirty || busy === 'settings'"
-            @click="saveSettings"
-          >
+          <Button size="sm" :disabled="!settingsDirty || isBusy" @click="saveSettings">
             <Spinner v-if="busy === 'settings'" class="size-4" />
             {{ busy === "settings" ? "Applying…" : "Save changes" }}
           </Button>
@@ -374,7 +389,11 @@ function discard(): void {
     <div :class="installedVersion ? 'mt-5 border-t border-border pt-4' : 'mt-3'">
       <div class="flex items-center justify-between gap-2">
         <span class="text-xs font-medium">Extensions</span>
-        <Button v-if="installedVersion" @click="emit('requestAddExtension')">
+        <Button
+          v-if="installedVersion"
+          :disabled="isBusy"
+          @click="emit('requestAddExtension')"
+        >
           <Plus class="size-4" />
           Add…
         </Button>
@@ -408,7 +427,7 @@ function discard(): void {
               <Button
                 variant="ghost"
                 size="sm"
-                :disabled="busy === `ext-remove:${ext.name}`"
+                :disabled="isBusy"
                 :aria-label="`Actions for ${ext.name}`"
               >
                 <Spinner v-if="busy === `ext-remove:${ext.name}`" class="size-4" />
@@ -464,6 +483,7 @@ function discard(): void {
               <Input
                 v-model="editValue"
                 class="flex-1"
+                :disabled="isBusy"
                 :aria-label="`New value for ${name}`"
                 @keydown.enter="saveEdit"
                 @keydown.esc="cancelEdit"
@@ -471,7 +491,7 @@ function discard(): void {
               <Button
                 variant="ghost"
                 size="sm"
-                :disabled="busy === `dir-edit:${name}` || !!editProblem || !editValue"
+                :disabled="isBusy || !!editProblem || !editValue"
                 :aria-label="`Save ${name}`"
                 @click="saveEdit"
               >
@@ -481,6 +501,7 @@ function discard(): void {
               <Button
                 variant="ghost"
                 size="sm"
+                :disabled="isBusy"
                 :aria-label="`Cancel editing ${name}`"
                 @click="cancelEdit"
               >
@@ -493,6 +514,7 @@ function discard(): void {
                 <Button
                   variant="ghost"
                   size="sm"
+                  :disabled="isBusy"
                   :aria-label="`Edit ${name}`"
                   @click="startEdit(name, value)"
                 >
@@ -501,7 +523,7 @@ function discard(): void {
                 <Button
                   variant="ghost"
                   size="sm"
-                  :disabled="busy === `dir-remove:${name}`"
+                  :disabled="isBusy"
                   :aria-label="`Remove ${name}`"
                   @click="removeDirective(name)"
                 >
@@ -526,16 +548,18 @@ function discard(): void {
           v-model="dirName"
           placeholder="Directive name"
           class="flex-1"
+          :disabled="isBusy"
           :aria-label="`Directive name for PHP ${version}`"
         />
         <Input
           v-model="dirValue"
           placeholder="Value"
           class="flex-1"
+          :disabled="isBusy"
           :aria-label="`Directive value for PHP ${version}`"
         />
         <Button
-          :disabled="busy === 'dir-add' || !!dirProblem || !dirName || !dirValue"
+          :disabled="isBusy || !!dirProblem || !dirName || !dirValue"
           @click="addDirective"
         >
           <Spinner v-if="busy === 'dir-add'" class="size-4" />

@@ -49,9 +49,7 @@ describe("ui/tabs", () => {
     expect(w.findAll('[role="tab"]')[1].attributes("aria-selected")).toBe("true");
   });
 
-  // The whole per-version design rests on this: panels stay mounted so their
-  // form state survives a tab switch, but only the active one is visible.
-  it("keeps inactive panels mounted but hidden when unmountOnHide is false", () => {
+  it("keeps inactive panels mounted but hidden when unmountOnHide is false, so their form state survives a switch", () => {
     const w = mount(harness({ unmountOnHide: false }));
     expect(w.find("#in-a").exists()).toBe(true);
     expect(w.find("#in-b").exists()).toBe(true);
@@ -61,17 +59,13 @@ describe("ui/tabs", () => {
     expect(panels[1].attributes("hidden")).toBeDefined();
   });
 
-  // Passing nothing, so this pins reka's own default surviving the wrapper's
-  // prop forwarding rather than a value the harness supplied.
-  it("unmounts inactive panels by default", () => {
+  it("unmounts inactive panels by default, pinning reka's own default through the wrapper", () => {
     const w = mount(harness());
     expect(w.find("#in-a").exists()).toBe(true);
     expect(w.find("#in-b").exists()).toBe(false);
   });
 
-  // Both the trigger's aria-controls and the list's tab stop settle a tick after
-  // mount, once reka's item collection has registered.
-  it("wires each trigger to its panel", async () => {
+  it("wires each trigger to its panel once reka's item collection has registered", async () => {
     const w = mount(harness({ unmountOnHide: false }));
     await nextTick();
 
