@@ -41,7 +41,9 @@ src/
     port_plan.rs        classify_desired / classify_fallback
     proc_metrics.rs     parse_vmrss_bytes / parse_loadavg (Linux /proc)
     ps_metrics.rs       parse_ps_rss_bytes (macOS `ps`)
-    resolv_conf.rs      detect_systemd_resolved
+    resolv_conf.rs      select supported Linux resolver backend
+    networkmanager_dnsmasq.rs compose/match NetworkManager snippets
+    dns_probe.rs        compose/validate the loopback DNS probe
     resolved_drop_in.rs compose/parse systemd-resolved drop-in
     resolver_file.rs    compose/parse macOS /etc/resolver/<tld>
 ```
@@ -232,9 +234,11 @@ pub fn is_retry_kind(kind: ErrorKind) -> bool; // PermissionDenied | AddrInUse |
 
 The precedence is pinned by tests: a hard (non-retry) kind always beats a retry kind, and on the desired pair, `http` is inspected before `https`.
 
-### resolv_conf, resolved_drop_in, resolver_file (DNS)
+### resolv_conf, networkmanager_dnsmasq, dns_probe, resolved_drop_in, resolver_file (DNS)
 
-- `resolv_conf::detect_systemd_resolved(resolv_conf_text, run_systemd_resolve_exists) -> bool` - conservative detection: true if `/run/systemd/resolve` exists, or the marker string appears in the first 8 lines of `/etc/resolv.conf`.
+- `resolv_conf` prefers systemd-resolved, selects NetworkManager only from its positive `/etc/resolv.conf` generator marker, and otherwise returns unsupported. It also validates NetworkManager's post-reload `127.0.0.1` dnsmasq nameserver.
+- `networkmanager_dnsmasq` composes and strictly matches the `[main] dns=dnsmasq` override and per-TLD `server=/test/127.0.0.1#1053` rule.
+- `dns_probe::compose_query(tld)` builds the A query for `yerd-resolver-probe.<tld>` that the helper sends to `127.0.0.1:53` after a NetworkManager reload; `response_has_loopback_a` checks the reply carries our transaction ID, `NOERROR`, and an `A 127.0.0.1` record. Keeping the packet bytes pure means the post-condition is table-testable without a socket.
 - `resolved_drop_in::compose(tld, addr)` emits the Linux drop-in `[Resolve]\nDNS=<addr>\nDomains=~<tld>\n` (`/etc/systemd/resolved.conf.d/yerd-<tld>.conf`); `parse` / `matches` tolerate comments and extra keys so the `is_installed` probe is robust against operator edits.
 - `resolver_file::compose(addr)` emits the macOS `/etc/resolver/<tld>` body `nameserver <ip>\nport <port>\n`; `parse` / `matches` ignore comments and ordering, defaulting a missing `port` to `53` per `resolver(5)`. `restorable(text)` (= `parse(text).is_some()`) is the pure guard the helper uses before writing a backup back over `/etc/resolver/<tld>` on `unelevate resolver`, so an empty/garbage backup is never restored. `backup_filename` / `parse_backup_secs` / `latest_backup` are the path-logic for the timestamped backups (`<tld>-<unixsecs>.conf`); the macOS helper restores the newest and clears the rest, the daemon reads the newest to report `ResolverBackupSaved`.
 

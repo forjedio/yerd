@@ -19,7 +19,7 @@ use crate::paths::{Paths, PlatformDirs};
 use crate::port_binder::{BoundPort, PortBinder, PortPair};
 use crate::port_redirect::PortRedirector;
 use crate::pure::{
-    pem_match, port_plan, proc_metrics, resolv_conf, resolved_drop_in, system_roots,
+    networkmanager_dnsmasq, pem_match, port_plan, proc_metrics, resolved_drop_in, system_roots,
 };
 use crate::resolver::ResolverInstaller;
 use crate::trust_store::{CaFingerprint, NssOutcome, TrustStore};
@@ -223,38 +223,36 @@ impl ResolverInstaller for LinuxResolverInstaller {
         })
     }
 
-    fn is_installed(&self, tld: &str, _addr: SocketAddr) -> Result<bool, PlatformError> {
+    fn is_installed(&self, tld: &str, addr: SocketAddr) -> Result<bool, PlatformError> {
         if tld.is_empty() {
             return Err(PlatformError::Resolver {
                 reason: ResolverErrorReason::TldEmpty,
             });
         }
 
-        // Backend probe: prefer the systemd-resolved drop-in if its
-        // content parses to a matching shape; otherwise check
-        // /etc/resolv.conf for the Yerd marker. We do not require
-        // detect_systemd_resolved() to short-circuit - the drop-in
-        // can be present on systems where resolved is also active.
         let drop_in = drop_in_path(tld);
         if let Ok(text) = fs::read_to_string(drop_in) {
-            // Shape-only probe: a well-formed drop-in for `tld` is evidence the
-            // resolver is wired up. resolved manages forwarding internally, so
-            // (unlike macOS) `_addr` need not be re-verified against the file.
-            if let Some(parsed) = resolved_drop_in::parse(&text) {
-                return Ok(parsed.domain == tld);
+            if resolved_drop_in::parse(&text).is_some_and(|parsed| parsed.domain == tld) {
+                return Ok(true);
             }
         }
-
-        let resolv = fs::read_to_string("/etc/resolv.conf").unwrap_or_default();
-        if !resolv.is_empty() {
-            let _ = resolv_conf::detect_systemd_resolved(&resolv, false);
-        }
-        Ok(false)
+        let nm = fs::read_to_string(networkmanager_path()).unwrap_or_default();
+        let dnsmasq = fs::read_to_string(dnsmasq_path(tld)).unwrap_or_default();
+        Ok(networkmanager_dnsmasq::matches_networkmanager(&nm)
+            && networkmanager_dnsmasq::matches_dnsmasq(&dnsmasq, tld, addr))
     }
 }
 
 fn drop_in_path(tld: &str) -> PathBuf {
     PathBuf::from(format!("/etc/systemd/resolved.conf.d/yerd-{tld}.conf"))
+}
+
+fn networkmanager_path() -> PathBuf {
+    PathBuf::from("/etc/NetworkManager/conf.d/yerd-dnsmasq.conf")
+}
+
+fn dnsmasq_path(tld: &str) -> PathBuf {
+    PathBuf::from(format!("/etc/NetworkManager/dnsmasq.d/yerd-{tld}.conf"))
 }
 
 /// Linux `PortBinder` implementation.

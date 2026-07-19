@@ -7,7 +7,7 @@ description: A step-by-step guide to switching to Yerd from Laravel Herd, Valet,
 Yerd, [Laravel Herd](https://herd.laravel.com), [Valet](https://laravel.com/docs/valet), and [Lerd](https://github.com/geodro/lerd) all do the same OS-level job for local development, which means they all reach for the **same three system resources**:
 
 - **Ports 80 and 443** - only one process can listen on each at a time.
-- **The `*.test` resolver** - one OS resolver config per TLD (`/etc/resolver/test` on macOS, a `systemd-resolved` drop-in on Linux).
+- **The `*.test` resolver** - one OS resolver route per TLD (`/etc/resolver/test` on macOS, or systemd-resolved/NetworkManager snippets on Linux).
 - **A trusted local CA** - each tool installs its own into the system trust store.
 
 Because those are single-owner, **two tools can't run at once** without fighting over ports and DNS. Switching is therefore mostly about handing those three things over cleanly: stop the old tool, let Yerd take the ports/resolver, and (if you ever go back) hand them back.
@@ -120,7 +120,7 @@ After the resolver changes, your OS or browser may still cache the old answer (o
 sudo dscacheutil -flushcache; sudo killall -HUP mDNSResponder
 ```
 
-On Linux, `systemd-resolved` picks up the drop-in on reload (Yerd does this for you). Restart the browser if a site is stuck on the old CA or an HTTPS redirect.
+On Linux, Yerd reloads the detected supported resolver manager for you. Restart the browser if a site is stuck on the old CA or an HTTPS redirect.
 :::
 
 ## Running side by side (without switching)
@@ -140,7 +140,7 @@ Switching back is the reverse: hand the three hooks back to the other tool.
    sudo yerd unelevate        # revert all three
    ```
    - On **macOS**, `unelevate resolver` **restores the resolver backup** taken in Step 3 (returning DNS to its pre-Yerd state), and `unelevate ports` removes the `pf` redirect.
-   - On **Linux**, it removes the `systemd-resolved` drop-in. `setcap` has no clean reverse, so `unelevate ports` just prints the manual command (`sudo setcap -r <path-to-yerdd>`) - harmless to leave, but run it if you want it gone.
+   - On **Linux**, it removes all Yerd-owned systemd-resolved and NetworkManager resolver snippets. `setcap` has no clean reverse, so `unelevate ports` just prints the manual command (`sudo setcap -r <path-to-yerdd>`) - harmless to leave, but run it if you want it gone.
 
 2. **Stop Yerd's daemon** so it isn't holding ports when the other tool starts:
    ```sh

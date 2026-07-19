@@ -43,6 +43,12 @@ mod unix_impl {
     /// Read-only daemon facts needed to drive the helper.
     struct Facts {
         dns_addr: SocketAddr,
+        /// Configured DNS port when the daemon is running without a bound DNS
+        /// responder.
+        dns_unbound: Option<u16>,
+        /// Status lookup failure, scoped to resolver installation so unrelated
+        /// elevation targets can still proceed.
+        dns_health_error: Option<String>,
         tld: String,
         ca_path: PathBuf,
         ca_fingerprint: String,
@@ -80,7 +86,9 @@ mod unix_impl {
             return ExitCode::from(77);
         }
 
-        let facts = match fetch_facts().await {
+        let concrete_targets = targets(target);
+        let needs_dns_health = !undo && concrete_targets.contains(&ElevateTarget::Resolver);
+        let facts = match fetch_facts(needs_dns_health).await {
             Ok(f) => f,
             Err(e) => {
                 eprintln!("yerd: {e}");
@@ -97,7 +105,7 @@ mod unix_impl {
         };
 
         let mut any_failed = false;
-        for t in targets(target) {
+        for t in concrete_targets {
             if let Err(e) = run_one(t, &facts, &helper, &yerdd, undo) {
                 eprintln!("    failed: {e}");
                 any_failed = true;
@@ -170,10 +178,7 @@ mod unix_impl {
             Some(78) => {
                 println!("    skipped (unsupported on this host)");
                 if target == ElevateTarget::Resolver {
-                    println!(
-                        "    no systemd-resolved — configure /etc/resolv.conf for {} manually.",
-                        facts.dns_addr
-                    );
+                    println!("    Linux resolver setup requires systemd-resolved, or NetworkManager with dnsmasq and nmcli installed.");
                 }
                 Ok(())
             }
@@ -210,10 +215,22 @@ mod unix_impl {
                 fp: fp()?,
             },
             (ElevateTarget::Trust, true) => HelperInvocation::UninstallCa { fp: fp()? },
-            (ElevateTarget::Resolver, false) => HelperInvocation::InstallResolver {
-                tld: facts.tld.clone(),
-                addr: facts.dns_addr,
-            },
+            (ElevateTarget::Resolver, false) => {
+                if let Some(error) = &facts.dns_health_error {
+                    return Err(ClientError::Usage(format!(
+                        "could not verify Yerd's DNS health before resolver elevation: {error}"
+                    )));
+                }
+                if let Some(port) = facts.dns_unbound {
+                    return Err(ClientError::Usage(format!(
+                        "Yerd isn't serving DNS because it couldn't bind port {port} — free that port or change dns_port, then restart Yerd before elevating the resolver"
+                    )));
+                }
+                HelperInvocation::InstallResolver {
+                    tld: facts.tld.clone(),
+                    addr: facts.dns_addr,
+                }
+            }
             (ElevateTarget::Resolver, true) => HelperInvocation::UninstallResolver {
                 tld: facts.tld.clone(),
             },
@@ -337,7 +354,7 @@ mod unix_impl {
     }
 
     /// Connect to the invoking user's daemon socket and fetch `DaemonInfo`.
-    async fn fetch_facts() -> Result<Facts, ClientError> {
+    async fn fetch_facts(needs_dns_health: bool) -> Result<Facts, ClientError> {
         let mut last_err: Option<ClientError> = None;
         for sock in socket_candidates() {
             match transport::exchange_at(&sock, &Request::DaemonInfo).await {
@@ -351,15 +368,28 @@ mod unix_impl {
                     lan_ip,
                     ..
                 }) => {
+                    let (dns_unbound, dns_health_error) = if needs_dns_health {
+                        match transport::exchange_at(&sock, &Request::Status).await {
+                            Ok(Response::Status { report }) => (report.dns_unbound, None),
+                            Ok(other) => {
+                                (None, Some(format!("unexpected Status response: {other:?}")))
+                            }
+                            Err(error) => (None, Some(error.to_string())),
+                        }
+                    } else {
+                        (None, None)
+                    };
                     return Ok(Facts {
                         dns_addr,
+                        dns_unbound,
+                        dns_health_error,
                         tld,
                         ca_path,
                         ca_fingerprint,
                         http_port,
                         https_port,
                         lan_ip,
-                    })
+                    });
                 }
                 Ok(other) => {
                     return Err(ClientError::Usage(format!(
@@ -484,6 +514,8 @@ mod unix_impl {
         fn facts() -> Facts {
             Facts {
                 dns_addr: "127.0.0.1:1053".parse().unwrap(),
+                dns_unbound: None,
+                dns_health_error: None,
                 tld: "test".into(),
                 ca_path: PathBuf::from("/home/u/.local/share/yerd/ca.cert.pem"),
                 ca_fingerprint: "ab".repeat(32),
@@ -540,6 +572,30 @@ mod unix_impl {
             assert_eq!(a[0], "install-resolver");
             assert!(a.contains(&"test".to_string()));
             assert!(a.contains(&"127.0.0.1:1053".to_string()));
+        }
+
+        #[test]
+        fn resolver_install_rejects_unbound_dns_with_actionable_port() {
+            let mut f = facts();
+            f.dns_unbound = Some(1053);
+            let error = plan_invocation(ElevateTarget::Resolver, &f, Path::new("/x/yerdd"), false)
+                .unwrap_err();
+            let message = error.to_string();
+            assert!(message.contains("couldn't bind port 1053"));
+            assert!(message.contains("restart Yerd"));
+        }
+
+        #[test]
+        fn resolver_status_failure_is_scoped_to_resolver_install() {
+            let mut f = facts();
+            f.dns_health_error = Some("status timed out".to_owned());
+            assert!(
+                plan_invocation(ElevateTarget::Resolver, &f, Path::new("/x/yerdd"), false,)
+                    .is_err()
+            );
+            assert!(
+                plan_invocation(ElevateTarget::Trust, &f, Path::new("/x/yerdd"), false,).is_ok()
+            );
         }
 
         #[cfg(not(target_os = "macos"))]

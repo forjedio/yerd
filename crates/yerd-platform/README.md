@@ -36,7 +36,9 @@ owns the spawn; this crate owns the typed contract.
 Decision logic that does not need OS interaction lives in `src/pure/*`:
 
 - `firefox` - parse `profiles.ini`.
-- `resolv_conf` - detect whether `systemd-resolved` is in charge.
+- `resolv_conf` - conservatively select systemd-resolved, NetworkManager, or unsupported.
+- `networkmanager_dnsmasq` - compose and match NetworkManager dnsmasq snippets.
+- `dns_probe` - compose the loopback DNS probe and validate its answer.
 - `resolver_file` - compose and parse `/etc/resolver/<tld>` (macOS).
 - `resolved_drop_in` - compose and match `systemd-resolved` drop-ins.
 - `port_plan` - decide rootless fallback for a port pair.

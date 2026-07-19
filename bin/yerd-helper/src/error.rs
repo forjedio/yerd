@@ -75,6 +75,15 @@ pub enum HelperError {
         reason: CommandReason,
     },
 
+    /// A resolver manager reported success but did not apply the requested
+    /// configuration.
+    #[cfg(target_os = "linux")]
+    #[error("resolver post-condition failed: {reason}")]
+    ResolverPostcondition {
+        /// Observable state that was missing after reload.
+        reason: &'static str,
+    },
+
     /// `from_argv` round-trip cross-check failed in a debug build. This
     /// is a wire-contract drift bug and surfaces as `EX_SOFTWARE` (70).
     #[error(
@@ -185,6 +194,8 @@ pub fn exit_code(err: &HelperError) -> u8 {
         HelperError::WireDrift { .. } => 70,
         HelperError::Io { .. } => 74,
         HelperError::Command { .. } => 75,
+        #[cfg(target_os = "linux")]
+        HelperError::ResolverPostcondition { .. } => 75,
         HelperError::NotPrivileged => 77,
         HelperError::Unsupported { .. } => 78,
     }

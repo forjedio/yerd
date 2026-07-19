@@ -51,7 +51,7 @@ The daemon binds the resolver on `127.0.0.1` at [`dns_port`](../reference/config
 UDP and TCP both bind on the same address. Set `dns_port = 0` and the kernel picks an ephemeral port, retrying until UDP and TCP match. A fixed port is better, though, since the resolver config your OS stores hard-codes `127.0.0.1:<port>` and a stable port keeps that file valid across restarts.
 
 ::: warning Keep the port stable
-If `dns_port` changes (or you used `0`), the config written by `yerd elevate resolver` may point at a port nothing listens on. `yerd doctor` catches this by checking the config against the daemon's current DNS address. Fix it by re-running `sudo yerd elevate resolver`.
+If `dns_port` changes (or you used `0`), the config written by `yerd elevate resolver` may point at a port nothing listens on. `yerd doctor` catches this by checking the config against the daemon's current DNS address. Restart Yerd so it binds the configured port, then re-run `sudo yerd elevate resolver`.
 :::
 
 ::: warning A bind failure is non-fatal
@@ -78,7 +78,7 @@ Daily use never touches root again. To undo it:
 sudo yerd unelevate resolver
 ```
 
-On macOS, undo is a **restore**: if a previous resolver was backed up when Yerd took over (see below), `unelevate resolver` puts it back and clears the saved backups; with no backup it removes Yerd's file. On Linux it removes the `systemd-resolved` drop-in.
+On macOS, undo is a **restore**: if a previous resolver was backed up when Yerd took over (see below), `unelevate resolver` puts it back and clears the saved backups; with no backup it removes Yerd's file. On Linux it removes every Yerd-owned resolver snippet, including artifacts from a previously active backend.
 
 Install and uninstall are idempotent: re-installing an already-correct config changes nothing (and writes no backup), and uninstalling something absent succeeds quietly.
 
@@ -90,7 +90,8 @@ See [Elevation & Privileges](./elevation) for the privilege model and the [CLI R
 |---|---|---|---|
 | **macOS** | `resolver(5)` per-TLD file | `/etc/resolver/<tld>` | None (read at next query) |
 | **Linux** (systemd-resolved) | drop-in config | `/etc/systemd/resolved.conf.d/yerd-<tld>.conf` | `systemctl reload-or-restart systemd-resolved` |
-| **Linux** (no systemd-resolved) | refused (see below) | - | - |
+| **Linux** (NetworkManager) | dnsmasq plugin and per-domain route | `/etc/NetworkManager/conf.d/yerd-dnsmasq.conf`, `/etc/NetworkManager/dnsmasq.d/yerd-<tld>.conf` | `nmcli general reload conf dns-full` |
+| **Linux** (other resolver) | refused | - | - |
 | **Windows** | NRPT rule | - | *planned* |
 
 #### macOS
@@ -130,11 +131,13 @@ systemctl reload-or-restart systemd-resolved
 
 Detection is conservative. Yerd treats systemd-resolved as in charge only if `/run/systemd/resolve` exists, or `/etc/resolv.conf` carries the `systemd-resolved` marker in its first few lines.
 
-The Linux `is_installed` probe is shape-based: a well-formed drop-in for your TLD counts as wired up. Because resolved manages forwarding internally, the address inside the file isn't re-verified the way macOS does.
+The resolved probe preserves its established shape-based contract: a well-formed route for the configured TLD counts as installed. The NetworkManager probe strictly verifies its TLD, address, and port snippets.
 
-::: warning No safe automatic path without systemd-resolved
-Without systemd-resolved, `yerd elevate resolver` refuses rather than edit `/etc/resolv.conf` directly. On many distros that file is rewritten by NetworkManager, `resolvconf`, or cloud-init, so a hand-edit would be clobbered. Either enable systemd-resolved, or reach sites through plain localhost without `.test` resolution at all - see [Localhost Access](./localhost-access).
-:::
+#### Linux - NetworkManager with dnsmasq
+
+When resolved is absent and NetworkManager is detected, Yerd writes a `[main] dns=dnsmasq` override and a narrow rule such as `server=/test/127.0.0.1#1053`. The `dnsmasq` and `nmcli` executables must already be installed; Yerd does not install system packages. After the DNS-only reload, Yerd polls for up to five seconds until NetworkManager's local resolver answers a `.test` probe, while ordinary and VPN upstream DNS continue through NetworkManager.
+
+If reload fails, the helper restores both previous snippets and attempts to reload the prior configuration. Unelevation removes both Yerd-owned files, restoring NetworkManager's prior DNS mode. Other resolver managers remain unsupported; Yerd never edits `/etc/resolv.conf` directly because it is commonly regenerated.
 
 #### Windows - NRPT (planned)
 

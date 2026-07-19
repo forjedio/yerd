@@ -25,7 +25,7 @@ Source: [`bin/yerd-helper`](https://github.com/forjedio/yerd/tree/main/bin/yerd-
 These are not aspirational - they are enforced by code structure, lints, and tests.
 
 1. **Strict typed args; never shell out.** Every external command goes through `ops::run_command`, which builds a `std::process::Command` with arguments pushed one at a time. There is no `sh -c`, no string interpolation, no glob expansion. The child's environment is wiped with `env_clear()` and given a single pinned `PATH`.
-2. **Never take network input.** The helper reads only its argv and a few well-known files on disk (the PEM the daemon wrote, `/etc/resolv.conf`, `/etc/pf.conf`, anchor directories). It opens no sockets and performs no DNS.
+2. **Never take remote network input.** The helper reads only its argv and known local files. The resolver installer performs one bounded loopback DNS probe against `127.0.0.1:53`; it opens no remote connection.
 3. **One operation, then exit.** No event loop, no daemonization, no persisted state. `main` parses one invocation, dispatches it once, and returns an `ExitCode`.
 4. **Minimal, auditable dependencies.** The runtime crate graph is tiny: `clap`, `thiserror`, `hex`, `pem`, plus the workspace's own `yerd-core` and `yerd-platform`. A test (`tests/no_runtime_deps.rs`) walks `cargo metadata` and **fails the build** if `tokio`, `reqwest`, `openssl`, `openssl-sys`, or `native-tls` ever appear in the normal-dependency graph.
 5. **Effective-UID check, debug-only bypass.** Before any side effect the helper confirms its effective UID is 0. The only way to skip the check is a hidden `--skip-priv-check` flag that **does not exist in release builds** (it is compiled out by `cfg(debug_assertions)`).
@@ -44,7 +44,7 @@ These are not aspirational - they are enforced by code structure, lints, and tes
 | `src/exec.rs` | `dispatch(HelperInvocation)` → the right `ops::*` function |
 | `src/ops/mod.rs` | `run_command` (pinned-`PATH` subprocess) and `atomic_write` |
 | `src/ops/ca.rs` | `install-ca` / `uninstall-ca` (Linux trust anchors, macOS System keychain) |
-| `src/ops/resolver.rs` | `install-resolver` / `uninstall-resolver` (systemd-resolved drop-in, `/etc/resolver/<tld>`) |
+| `src/ops/resolver.rs` | `install-resolver` / `uninstall-resolver` (systemd-resolved, NetworkManager dnsmasq, `/etc/resolver/<tld>`) |
 | `src/ops/setcap.rs` | `setcap` (Linux only) |
 | `src/ops/port_redirect.rs` | `install-port-redirect` / `uninstall-port-redirect` (macOS pf, only) |
 | `src/error.rs` | `HelperError`, `ValidationReason`, `CommandReason`, and the exhaustive `exit_code` mapping |
@@ -233,7 +233,7 @@ Each op lives in one file with its per-OS branches behind `#[cfg(target_os = ...
 
 ### install-resolver / uninstall-resolver
 
-**Linux.** Only systemd-resolved is supported in Phase 1. The helper reads `/etc/resolv.conf` and checks for the `/run/systemd/resolve` runtime dir; if resolved is not in charge it returns `Unsupported` rather than risk editing an `/etc/resolv.conf` that NetworkManager / resolvconf / cloud-init may rewrite. Otherwise it writes `/etc/systemd/resolved.conf.d/yerd-<tld>.conf` and runs `systemctl reload-or-restart systemd-resolved`. `uninstall-resolver` removes the drop-in and reloads (no backup mechanism on Linux).
+**Linux.** The helper prefers systemd-resolved, detected from `/etc/resolv.conf` or `/run/systemd/resolve`; it writes `/etc/systemd/resolved.conf.d/yerd-<tld>.conf` and reloads resolved. Otherwise it supports NetworkManager only when `/etc/resolv.conf` positively identifies NetworkManager as its generator. It requires `dnsmasq` and `nmcli`, then atomically writes `/etc/NetworkManager/conf.d/yerd-dnsmasq.conf` plus `/etc/NetworkManager/dnsmasq.d/yerd-<tld>.conf`. After `nmcli general reload conf dns-full`, the helper polls for up to five seconds until resolv.conf points to `127.0.0.1` and a loopback DNS query for Yerd's TLD returns `127.0.0.1`; command success without that post-condition triggers rollback. Rollback failures are reported. Uninstall removes all Yerd-owned artifacts regardless of which manager is currently active and reloads only managers whose files changed.
 
 **macOS.** Writes `/etc/resolver/<tld>`. If a foreign file already exists there (Valet/Herd/an older Yerd) and does not already point at our responder, it is backed up best-effort into the system backups dir as `<tld>-<unixsecs>.conf` before being overwritten; a backup failure is logged and swallowed, never fatal. No reload is needed - macOS picks up the new file on the next query.
 

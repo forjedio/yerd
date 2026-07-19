@@ -133,7 +133,9 @@ The OS impls read a file or attempt a bind, then hand the bytes/outcome to a pur
 | `port_plan` | Should a failed port-pair bind fall back to rootless ports, hard-fail, or be kept? | both `bind_pair` impls |
 | `resolver_file` | Compose/parse/match macOS `/etc/resolver/<tld>`; pick latest backup; `restorable` guard for restoring one. | macOS `ResolverInstaller` |
 | `resolved_drop_in` | Compose/parse/match a `systemd-resolved` drop-in. | Linux `ResolverInstaller` |
-| `resolv_conf` | Is `systemd-resolved` in charge of `/etc/resolv.conf`? | Linux `ResolverInstaller` |
+| `resolv_conf` | Select systemd-resolved, positively marked NetworkManager, or unsupported; validate the NetworkManager reload post-condition. | Linux `ResolverInstaller` |
+| `networkmanager_dnsmasq` | Compose and match NetworkManager dnsmasq plugin and per-TLD rules. | Linux `ResolverInstaller` |
+| `dns_probe` | Compose the loopback A probe and validate a `127.0.0.1` answer. | Linux resolver post-condition (helper) |
 | `pem_match` | Match a SHA-256 fingerprint against a list of PEM blobs. | Linux `TrustStore` |
 | `pf_anchor` | Compose the macOS pf `rdr` ruleset, anchor refs, and LaunchDaemon plist. | macOS pf redirect (helper) |
 | `firefox` | Parse `profiles.ini` to discover NSS databases. | NSS install (planned) |
@@ -206,11 +208,11 @@ The same five-field `PlatformDirs` is produced by both OSes, but with different 
 
 | Aspect | Linux | macOS | Windows (stub) |
 | --- | --- | --- | --- |
-| Backend | `systemd-resolved` drop-in, else `/etc/resolv.conf` | `/etc/resolver/<tld>` | - |
-| File path | `/etc/systemd/resolved.conf.d/yerd-<tld>.conf` | `/etc/resolver/<tld>` | - |
-| File body | `[Resolve]` `DNS=<addr>` `Domains=~<tld>` (`resolved_drop_in::compose`) | `nameserver <ip>` `port <n>` (`resolver_file::compose`) | - |
+| Backend | `systemd-resolved` drop-in (preferred), else NetworkManager dnsmasq plugin | `/etc/resolver/<tld>` | - |
+| File path | resolved drop-in, or `/etc/NetworkManager/{conf.d,dnsmasq.d}/yerd-*.conf` | `/etc/resolver/<tld>` | - |
+| File body | `[Resolve]` route, or `[main] dns=dnsmasq` plus `server=/<tld>/<ip>#<port>` | `nameserver <ip>` `port <n>` (`resolver_file::compose`) | - |
 | `install` / `uninstall` | `NeedsHelper` (`install-resolver` / `uninstall-resolver`) | `NeedsHelper` (same tags) | `Unsupported` |
-| `is_installed` probe | parse drop-in; `addr` not re-verified (resolved manages forwarding) | parse file; **requires** matching nameserver **and** port | `Unsupported` |
+| `is_installed` probe | resolved drop-in is shape/TLD-only; NetworkManager requires matching plugin, TLD, address, and port snippets | parse file; **requires** matching nameserver **and** port | `Unsupported` |
 | Empty TLD | `Err(Resolver { TldEmpty })` | `Err(Resolver { TldEmpty })` | `Unsupported` |
 
 The macOS probe is deliberately strict about the port: a bare `nameserver 127.0.0.1` left by Valet/Herd defaults to port 53 (where nothing listens), so it must read as *not installed* and get rewritten with the daemon's real DNS port. The helper backs up any replaced `/etc/resolver/<tld>` under `/Library/Application Support/io.yerd.Yerd/resolver-backups` (path logic in `resolver_file`, I/O in the helper). `uninstall-resolver` (i.e. `unelevate resolver`) is the inverse: it restores the newest backup over `/etc/resolver/<tld>` then clears the rest - but only after confirming the backup is root-owned, not a symlink, and `resolver_file::restorable` (parses as a real resolver file); otherwise it falls back to a plain removal.
