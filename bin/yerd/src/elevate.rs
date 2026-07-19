@@ -105,17 +105,72 @@ mod unix_impl {
         };
 
         let mut any_failed = false;
+        let mut trust_applied = false;
         for t in concrete_targets {
-            if let Err(e) = run_one(t, &facts, &helper, &yerdd, undo) {
-                eprintln!("    failed: {e}");
-                any_failed = true;
+            match run_one(t, &facts, &helper, &yerdd, undo) {
+                Ok(()) => {
+                    if t == ElevateTarget::Trust {
+                        trust_applied = true;
+                    }
+                }
+                Err(e) => {
+                    eprintln!("    failed: {e}");
+                    any_failed = true;
+                }
             }
+        }
+        // The system-store install above does not reach browsers on Linux
+        // (Brave/Chrome/Firefox use their own per-user NSS store); ask the
+        // daemon - which runs as the user - to update it. Non-fatal.
+        if trust_applied {
+            report_browser_trust(undo).await;
         }
         if any_failed {
             ExitCode::from(1)
         } else {
             ExitCode::SUCCESS
         }
+    }
+
+    /// Ask the user's daemon to add (or remove) the CA in the per-user browser
+    /// NSS stores and print the outcome. The daemon runs unprivileged as the
+    /// user, so the NSS databases stay user-owned even though this CLI is root.
+    async fn report_browser_trust(undo: bool) {
+        println!("==> Browser trust (Brave / Chrome / Firefox)");
+        let req = Request::TrustBrowsers { uninstall: undo };
+        for sock in socket_candidates() {
+            match transport::exchange_at(&sock, &req).await {
+                Ok(Response::BrowserTrust {
+                    attempted,
+                    succeeded,
+                    certutil_missing,
+                }) => {
+                    if certutil_missing {
+                        println!("    certutil not found - browsers were not updated.");
+                        println!("    install it, then re-run `sudo yerd elevate trust`:");
+                        println!("      Debian/Ubuntu/Zorin:  sudo apt install libnss3-tools");
+                        println!("      Fedora:               sudo dnf install nss-tools");
+                        println!("      Arch:                 sudo pacman -S nss");
+                    } else if undo {
+                        println!("    removed from {succeeded}/{attempted} browser store(s).");
+                    } else if attempted == 0 {
+                        println!(
+                            "    no browser certificate store found yet - launch your browser \
+                             once, then re-run `sudo yerd elevate trust`."
+                        );
+                    } else {
+                        println!("    trusted in {succeeded}/{attempted} browser store(s).");
+                    }
+                    return;
+                }
+                Ok(other) => {
+                    eprintln!("    unexpected response updating browser trust: {other:?}");
+                    return;
+                }
+                Err(_) => {}
+            }
+        }
+        eprintln!("    could not reach the daemon to update browser trust (is it running?).");
     }
 
     /// Run a single target: build the invocation, spawn the helper (or print

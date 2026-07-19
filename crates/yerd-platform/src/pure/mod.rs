@@ -8,6 +8,7 @@ pub mod cert_identity;
 pub mod dns_probe;
 pub mod firefox;
 pub mod networkmanager_dnsmasq;
+pub mod nss;
 pub mod pem_match;
 pub mod pf_anchor;
 pub mod port_plan;

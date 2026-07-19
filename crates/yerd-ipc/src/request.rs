@@ -762,6 +762,14 @@ pub enum Request {
     /// the setup URL + the CA fingerprint (for out-of-band verification). Only
     /// valid while LAN mode is up; otherwise the daemon returns an error.
     MintRemoteSetupCode,
+    /// Install (or remove) the Yerd CA into the per-user **browser** NSS stores
+    /// (`~/.pki/nssdb`, Firefox profiles, Snap/Flatpak). Runs unprivileged as
+    /// the daemon's user; the CA PEM is read from disk daemon-side, so it is
+    /// **not** carried on the wire. Reported back via [`crate::Response::BrowserTrust`].
+    TrustBrowsers {
+        /// `true` removes the CA from the NSS stores; `false` installs it.
+        uninstall: bool,
+    },
 }
 
 #[cfg(test)]
@@ -896,6 +904,7 @@ mod variant_name_pinning {
             Request::SetMcpEnabled { .. } => {}
             Request::SetLanEnabled { .. } => {}
             Request::MintRemoteSetupCode => {}
+            Request::TrustBrowsers { .. } => {}
         }
     }
 

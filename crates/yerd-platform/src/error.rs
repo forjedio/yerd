@@ -186,8 +186,12 @@ pub mod ops {
     pub const INSTALL_CA: &str = "install-ca";
     /// System trust-store uninstall.
     pub const UNINSTALL_CA: &str = "uninstall-ca";
-    /// Per-user Firefox/NSS trust-store install.
+    /// Per-user browser (Chromium/Firefox) NSS trust-store install.
     pub const INSTALL_FIREFOX_NSS: &str = "install-firefox-nss";
+    /// Per-user browser (Chromium/Firefox) NSS trust-store uninstall.
+    pub const UNINSTALL_FIREFOX_NSS: &str = "uninstall-firefox-nss";
+    /// Per-user browser NSS effective-trust probe.
+    pub const BROWSER_CA_TRUST: &str = "browser-ca-trust";
     /// System trust-store presence probe.
     pub const IS_PRESENT_SYSTEM: &str = "is-present-system";
     /// Effective-trust probe (trusted, not merely present).

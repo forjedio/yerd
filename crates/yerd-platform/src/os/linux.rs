@@ -22,7 +22,7 @@ use crate::pure::{
     networkmanager_dnsmasq, pem_match, port_plan, proc_metrics, resolved_drop_in, system_roots,
 };
 use crate::resolver::ResolverInstaller;
-use crate::trust_store::{CaFingerprint, NssOutcome, TrustStore};
+use crate::trust_store::{BrowserCaTrust, CaFingerprint, NssOutcome, TrustStore};
 use crate::{BindPairErrorReason, PlatformError, ResolverErrorReason, TrustStoreErrorReason};
 
 /// Linux `Paths` implementation.
@@ -171,13 +171,16 @@ impl TrustStore for LinuxTrustStore {
         self.is_present_system(fp)
     }
 
-    fn install_firefox_nss(&self, _: &str) -> Result<NssOutcome, PlatformError> {
-        Ok(NssOutcome {
-            profiles_attempted: 0,
-            profiles_succeeded: 0,
-            failures: vec![],
-            certutil_missing: false,
-        })
+    fn install_firefox_nss(&self, ca_path: &Path) -> Result<NssOutcome, PlatformError> {
+        Ok(crate::nss_exec::real_install(ca_path))
+    }
+
+    fn uninstall_firefox_nss(&self) -> Result<NssOutcome, PlatformError> {
+        Ok(crate::nss_exec::real_uninstall())
+    }
+
+    fn browser_ca_trust(&self, fp: &CaFingerprint) -> Result<BrowserCaTrust, PlatformError> {
+        Ok(crate::nss_exec::real_browser_trust(fp))
     }
 
     fn system_root_bundle(&self) -> Result<Option<String>, PlatformError> {

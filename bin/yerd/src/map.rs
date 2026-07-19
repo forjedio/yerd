@@ -2698,6 +2698,7 @@ mod tests {
                 fingerprint: "ab".repeat(32),
                 trusted_system: Some(false),
                 php_trusts_ca: None,
+                browser_trust: None,
             },
             resolver_installed: None,
             port_redirect: None,

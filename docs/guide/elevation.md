@@ -91,6 +91,27 @@ The CA cert is added to the system store, then the store is refreshed:
   - `/etc/pki/ca-trust/source/anchors` then `update-ca-trust extract` (RHEL/Fedora)
   - `/etc/ca-certificates/trust-source/anchors` then `trust extract-compat` (Arch)
 
+`elevate trust` then also updates your **browsers**. On Linux (and for Firefox
+on macOS), Chromium-family browsers - Brave, Chrome, Chromium, Edge - and
+Firefox keep their **own** per-user certificate store (NSS) and ignore the
+system store above, so the system-store step alone is not enough for them. Yerd
+adds the CA to `~/.pki/nssdb` (shared by Chromium-family) and to each Firefox
+profile, including Snap and Flatpak copies. This runs unprivileged as your user,
+so the browser stores stay user-owned.
+
+::: warning Browsers need `certutil`
+Updating the browser stores requires `certutil`, which is **not installed by
+default** on many distros. If Yerd reports it missing (and `yerd doctor` warns
+`CaNotTrustedByBrowsers`), install it and re-run `sudo yerd elevate trust`:
+
+- Debian/Ubuntu/Zorin: `sudo apt install libnss3-tools`
+- Fedora: `sudo dnf install nss-tools`
+- Arch: `sudo pacman -S nss`
+
+A newly-installed browser that has never been launched has no store yet; launch
+it once, then re-run `sudo yerd elevate trust`.
+:::
+
 See [HTTPS & Certificates](./https) for how the CA and leaf certs are generated.
 
 ### Resolver

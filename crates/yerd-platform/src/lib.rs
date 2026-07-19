@@ -28,6 +28,7 @@ pub mod error;
 pub mod helper;
 pub mod lan_ip;
 pub mod metrics;
+pub mod nss_exec;
 pub mod paths;
 pub mod port_binder;
 pub mod port_redirect;
@@ -46,7 +47,9 @@ pub use paths::{Paths, PlatformDirs};
 pub use port_binder::{BoundPort, PortBinder, PortPair};
 pub use port_redirect::PortRedirector;
 pub use resolver::ResolverInstaller;
-pub use trust_store::{CaFingerprint, FingerprintParseError, NssFailure, NssOutcome, TrustStore};
+pub use trust_store::{
+    BrowserCaTrust, CaFingerprint, FingerprintParseError, NssFailure, NssOutcome, TrustStore,
+};
 
 pub use os::active::{
     ActivePaths, ActivePortBinder, ActivePortRedirector, ActiveResolverInstaller,

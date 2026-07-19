@@ -337,6 +337,30 @@ pub struct CaStatus {
     /// older clients/daemons.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub php_trusts_ca: Option<bool>,
+    /// Whether the per-user **browser** NSS stores (Brave/Chrome/Chromium/Edge
+    /// and Firefox) trust the Yerd CA. On Linux these are independent of the
+    /// system store, so a CA can be `trusted_system` yet not trusted here.
+    /// `None` = probe not applicable/not run. `#[serde(default, skip_serializing_if)]`
+    /// keeps the wire additive.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub browser_trust: Option<BrowserTrust>,
+}
+
+/// Whether the per-user browser NSS stores trust the Yerd CA
+/// ([`CaStatus::browser_trust`]). Mirrors `yerd_platform::BrowserCaTrust`
+/// (this crate does not depend on `yerd-platform`); the daemon maps between
+/// them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum BrowserTrust {
+    /// The CA is trusted (or there are no browser NSS stores to worry about).
+    Trusted,
+    /// Browser NSS stores exist but do not trust the CA - run the trust flow.
+    Untrusted,
+    /// `certutil` (`libnss3-tools`) is not installed, so browser trust can
+    /// neither be verified nor established.
+    ToolMissing,
 }
 
 /// Site counts by kind, for [`StatusReport`].
@@ -588,6 +612,11 @@ pub enum DiagnosisCode {
     DnsPortUnbound,
     /// The local CA is not trusted in the system store.
     CaNotTrusted,
+    /// The local CA is not trusted by the per-user **browser** NSS stores
+    /// (Brave/Chrome/Chromium/Edge/Firefox on Linux use these instead of the
+    /// system store), or `certutil` (`libnss3-tools`) is missing so browser
+    /// trust cannot be established. See [`CaStatus::browser_trust`].
+    CaNotTrustedByBrowsers,
     /// The OS resolver does not route `*.<tld>` to Yerd.
     ResolverNotInstalled,
     /// No PHP versions are installed.
