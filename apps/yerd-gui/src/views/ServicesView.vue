@@ -79,6 +79,11 @@ const services = computed(() => data.value ?? []);
 const busy = ref<string | null>(null); // a key naming the in-flight op (e.g. "start:redis")
 const search = ref("");
 
+/** An add is in flight. The service has no row to show a spinner on until it is
+ *  installed, so the Add dialog itself has to carry the progress: it stays open,
+ *  locked, and non-dismissible until the download finishes. */
+const adding = computed(() => busy.value?.startsWith("add:") ?? false);
+
 /** The "Managed services" list: only configured instances (installed engines or
  *  per-site instances) - uninstalled engines live in the Add Service dialog, not
  *  here - optionally narrowed by the search box (name / port / linked site). */
@@ -281,9 +286,9 @@ async function confirmAdd(close: () => void): Promise<void> {
     // dialog either way - the add is done - and refresh so the row appears.
     toast.error(`${t.display_name} added, but couldn't start`, (e as IpcError).message);
   } finally {
+    close();
     busy.value = null;
   }
-  close();
   await Promise.all([load({ force: true }), refresh()]);
 }
 
@@ -910,7 +915,7 @@ onUnmounted(registerViewActions({ refresh: () => void load() }));
     </div>
 
     <!-- Add Service (two stages: choose, then configure) -->
-    <Modal v-model:open="addOpen" title="Add service">
+    <Modal v-model:open="addOpen" title="Add service" :dismissible="!adding">
       <div v-if="addLoading" class="flex justify-center py-8"><Spinner class="size-6" /></div>
 
       <div v-else-if="!addableTypes.length" class="py-6 text-center text-sm text-muted-foreground">
@@ -933,6 +938,7 @@ onUnmounted(registerViewActions({ refresh: () => void load() }));
             <Select
               v-model="addForm.typeId"
               :options="typeOptions"
+              :disabled="adding"
               class="mt-2 w-full"
               aria-label="Service type"
             />
@@ -942,6 +948,7 @@ onUnmounted(registerViewActions({ refresh: () => void load() }));
             <Select
               v-model="addForm.version"
               :options="versionOptions"
+              :disabled="adding"
               class="mt-2 w-full"
               aria-label="Version"
             />
@@ -968,6 +975,7 @@ onUnmounted(registerViewActions({ refresh: () => void load() }));
               v-if="siteOptions.length"
               v-model="addForm.site"
               :options="siteOptions"
+              :disabled="adding"
               class="mt-2 w-full"
               aria-label="Linked site"
             />
@@ -981,7 +989,14 @@ onUnmounted(registerViewActions({ refresh: () => void load() }));
 
           <div>
             <label class="text-sm font-medium">Port</label>
-            <Input v-model="addForm.port" type="number" min="1" max="65535" class="mt-2" />
+            <Input
+              v-model="addForm.port"
+              type="number"
+              min="1"
+              max="65535"
+              :disabled="adding"
+              class="mt-2"
+            />
             <p class="mt-1.5 text-xs text-muted-foreground">Suggested from the next free port.</p>
           </div>
 
@@ -990,24 +1005,28 @@ onUnmounted(registerViewActions({ refresh: () => void load() }));
               <p class="text-sm font-medium">Start with Yerd</p>
               <p class="text-xs text-muted-foreground">Launch this service when Yerd starts.</p>
             </div>
-            <Switch v-model="addForm.autostart" aria-label="Start with Yerd" />
+            <Switch v-model="addForm.autostart" :disabled="adding" aria-label="Start with Yerd" />
           </div>
+
+          <p v-if="adding" class="text-xs text-muted-foreground">
+            Downloading a prebuilt build and starting it - this can take a few minutes.
+            The daemon reports only on completion, so there's no percentage to show.
+          </p>
         </div>
       </div>
 
       <template #footer="{ close }">
         <template v-if="!addLoading && addableTypes.length">
-          <Button v-if="addStep === 2" variant="ghost" @click="addStep = 1">Back</Button>
-          <Button variant="ghost" @click="close">Cancel</Button>
+          <Button v-if="addStep === 2" variant="ghost" :disabled="adding" @click="addStep = 1">
+            Back
+          </Button>
+          <Button variant="ghost" :disabled="adding" @click="close">Cancel</Button>
           <Button v-if="addStep === 1" :disabled="!canContinue" @click="addStep = 2">
             Continue
           </Button>
-          <Button
-            v-else
-            :disabled="!canSubmitAdd || busy?.startsWith('add:')"
-            @click="confirmAdd(close)"
-          >
-            Add
+          <Button v-else :disabled="!canSubmitAdd || adding" @click="confirmAdd(close)">
+            <Spinner v-if="adding" class="size-4" />
+            {{ adding ? "Installing…" : "Add" }}
           </Button>
         </template>
         <Button v-else variant="ghost" @click="close">Close</Button>
