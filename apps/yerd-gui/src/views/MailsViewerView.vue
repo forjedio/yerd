@@ -1,9 +1,16 @@
 <script setup lang="ts">
-import { Inbox, Trash2 } from "lucide-vue-next";
-import { computed, onUnmounted, ref, watch } from "vue";
+import { FileDown, Globe, Inbox, Paperclip, Trash2 } from "lucide-vue-next";
+import { computed, nextTick, onUnmounted, ref, watch } from "vue";
 
 import TitleBar from "@/components/TitleBar.vue";
 import Button from "@/components/ui/Button.vue";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import Modal from "@/components/ui/Modal.vue";
 import Select from "@/components/ui/Select.vue";
 import Spinner from "@/components/ui/Spinner.vue";
@@ -18,46 +25,47 @@ import {
   IpcError,
   listMails,
   markMailsRead,
+  openInEditor,
   openInBrowser,
+  saveMailAttachment,
 } from "@/ipc/client";
-import { resolveFrameLink } from "@/lib/mailLinks";
-import type { MailDetail, MailSummary } from "@/ipc/types";
+import {
+  buildMailFrameDocument,
+  linkifyText,
+  listRemoteContentUrls,
+  resolveExternalHref,
+  resolveFrameLink,
+  type RemoteContentKind,
+} from "@/lib/mailLinks";
+import { humaniseBytes } from "@/lib/utils";
+import type { MailAttachment, MailDetail, MailSummary } from "@/ipc/types";
 
-// The rendered HTML email runs no scripts: the sandbox withholds `allow-scripts`
-// and the child CSP keeps `default-src 'none'`, so nothing in a message executes.
-// `allow-same-origin` is granted only so the host can attach a click listener to
-// the frame and route link clicks to the OS browser (see `interceptFrameLinks`);
-// with scripts still disabled a message can't abuse that same-origin access. The
-// CSP allows images over data:/http/https so emails render their inline AND
-// remote images (logos etc.) - like any mail client, opening a message can load
-// remote images.
-const CHILD_CSP =
-  "default-src 'none'; img-src data: http: https:; style-src 'unsafe-inline'";
+// HTML mail is sanitized with DOMPurify, then rendered in a host Shadow DOM so
+// link clicks are handled in-process (WKWebView does not reliably deliver
+// sandboxed iframe clicks / postMessage). Opens are scheme-allowlisted.
 
 const toast = useToast();
 
-// Live list of captured mail (newest first).
 const { data: mails, refresh } = usePoll<MailSummary[]>(listMails, 4000);
 
-onUnmounted(registerViewActions({ refresh: () => void refresh() }));
+const unregisterViewActions = registerViewActions({ refresh: () => void refresh() });
 
 const selectedId = ref<string | null>(null);
 const detail = ref<MailDetail | null>(null);
 const loadingDetail = ref(false);
-// Monotonic guard so an out-of-order getMail() response from a superseded
-// select() can't overwrite the body of a newer selection.
 let selectSeq = 0;
-const clearOpen = ref(false);
+const deleteOpen = ref(false);
+const deleteMode = ref<"selected" | "all">("selected");
 const clearing = ref(false);
-// Filter the list to a single application (or "" = all). Laravel sends the app
-// name as the From display name (MAIL_FROM_NAME = config('app.name')); we group
-// by that, falling back to the From email when there's no display name.
 const selectedApp = ref<string>("");
+/** Opt-in: remote images / stylesheets phone home; off until the user asks. */
+const loadRemoteContent = ref(false);
+
+let lastOpenedLink = "";
+let lastOpenedAt = 0;
 
 const list = computed<MailSummary[]>(() => mails.value ?? []);
 
-/** The "application" an email belongs to: its From display name, or - when the
- *  From has no name - the bare email address. */
 function applicationOf(from: string): string {
   const named = from.match(/^\s*(.*?)\s*<([^>]+)>\s*$/);
   if (named) {
@@ -67,7 +75,6 @@ function applicationOf(from: string): string {
   return from.trim();
 }
 
-// Distinct applications present, for the filter dropdown.
 const applications = computed<string[]>(() => {
   const set = new Set<string>();
   for (const m of list.value) set.add(applicationOf(m.from));
@@ -79,29 +86,23 @@ const appOptions = computed(() => [
   ...applications.value.map((a) => ({ value: a, label: a })),
 ]);
 
-// The list narrowed to the selected application.
 const filteredList = computed<MailSummary[]>(() =>
   selectedApp.value
     ? list.value.filter((m) => applicationOf(m.from) === selectedApp.value)
     : list.value,
 );
 
-// If the selected application disappears (e.g. its mail was cleared), fall back
-// to showing everything.
 watch(applications, (apps) => {
   if (selectedApp.value && !apps.includes(selectedApp.value)) {
     selectedApp.value = "";
   }
 });
 
-// Auto-select the first visible message; keep the selection valid as the
-// (filtered) list changes.
 watch(
   filteredList,
   (items) => {
     if (items.length === 0) {
-      selectedId.value = null;
-      detail.value = null;
+      clearSelection();
       return;
     }
     if (!selectedId.value || !items.some((m) => m.id === selectedId.value)) {
@@ -111,15 +112,19 @@ watch(
   { immediate: true },
 );
 
-/**
- * Open a message in the reading pane. `fromUser` distinguishes a genuine row click
- * (which marks the mail read) from the watcher's auto-selection (which must not).
- * A monotonic `selectSeq` suppresses a superseded in-flight `getMail`, so an
- * out-of-order response can't overwrite a newer selection.
- */
+/** Drop selection and invalidate any in-flight getMail for a prior id. */
+function clearSelection(): void {
+  selectSeq += 1;
+  selectedId.value = null;
+  detail.value = null;
+  loadingDetail.value = false;
+  loadRemoteContent.value = false;
+}
+
 async function select(id: string, fromUser: boolean): Promise<void> {
   const seq = ++selectSeq;
   selectedId.value = id;
+  loadRemoteContent.value = false;
   loadingDetail.value = true;
   try {
     const mail = await getMail(id);
@@ -135,14 +140,6 @@ async function select(id: string, fromUser: boolean): Promise<void> {
   }
 }
 
-/**
- * Mark one email read on a genuine open: persist via the daemon, then replace the
- * list array (usePoll's data is a shallowRef, so an in-place mutation wouldn't be
- * reactive) so the unread styling/badges clear immediately. Best-effort: a failure
- * just leaves it unread and the next poll reconciles. Only acts when the daemon
- * explicitly reported the mail unread (`read === false`); an older daemon omits
- * `read` (and the `MarkMailsRead` request), so we must not call it there.
- */
 async function markRead(id: string): Promise<void> {
   const current = mails.value?.find((m) => m.id === id);
   if (!current || current.read !== false) return;
@@ -158,26 +155,47 @@ async function markRead(id: string): Promise<void> {
   }
 }
 
-// The delete button is scoped to the current filter: with no application
-// selected it clears everything; with one selected it deletes only that
-// application's currently-shown emails.
-const deleteScopeLabel = computed(() =>
-  selectedApp.value ? `all ${filteredList.value.length} email(s) from “${selectedApp.value}”` : "every captured email",
+function openDelete(mode: "selected" | "all"): void {
+  if (mode === "selected" && !selectedId.value) return;
+  if (mode === "all" && list.value.length === 0) return;
+  deleteMode.value = mode;
+  deleteOpen.value = true;
+}
+
+const deleteTitle = computed(() =>
+  deleteMode.value === "selected" ? "Delete this message?" : "Clear all mails?",
+);
+
+const deleteBody = computed(() => {
+  if (deleteMode.value === "selected") {
+    const subject = detail.value?.subject?.trim() || "(no subject)";
+    return `This permanently deletes "${subject}". This cannot be undone.`;
+  }
+  return `This permanently deletes every captured email (${list.value.length}). This cannot be undone.`;
+});
+
+const deleteConfirmLabel = computed(() =>
+  deleteMode.value === "selected" ? "Delete message" : "Delete all",
 );
 
 async function confirmDelete(close: () => void): Promise<void> {
   clearing.value = true;
   try {
-    if (selectedApp.value) {
-      await deleteMails(filteredList.value.map((m) => m.id));
-    } else {
-      await clearMails();
+    if (deleteMode.value === "selected") {
+      const id = selectedId.value;
+      if (!id) return;
+      await deleteMails([id]);
+      clearSelection();
+      close();
+      await refresh();
+      toast.success("Message deleted");
+      return;
     }
-    selectedId.value = null;
-    detail.value = null;
+    await clearMails();
+    clearSelection();
     close();
     await refresh();
-    toast.success(selectedApp.value ? "Emails deleted" : "Mailbox cleared");
+    toast.success("Mailbox cleared");
   } catch (e) {
     toast.error("Couldn't delete emails", (e as IpcError).message);
   } finally {
@@ -185,35 +203,114 @@ async function confirmDelete(close: () => void): Promise<void> {
   }
 }
 
-function frameSrcdoc(html: string): string {
-  return `<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="${CHILD_CSP}"></head><body>${html}</body></html>`;
+const htmlHost = ref<HTMLElement | null>(null);
+
+function openMailLink(url: string): void {
+  const resolved = resolveExternalHref(url);
+  if (!resolved) return;
+  const now = Date.now();
+  if (resolved === lastOpenedLink && now - lastOpenedAt < 750) return;
+  lastOpenedLink = resolved;
+  lastOpenedAt = now;
+  void openInBrowser(resolved).catch((err) => {
+    toast.error("Couldn't open link", (err as IpcError).message || resolved);
+  });
 }
 
-// Frame documents that already have the link-click listener, so a repeated
-// `@load` for the same document can't stack listeners (which would open a link
-// twice). Keyed weakly so entries vanish with their document.
-const linkedDocs = new WeakSet<Document>();
+function onHtmlLinkClick(ev: Event): void {
+  const action = resolveFrameLink(ev.target);
+  if (!action || action.kind === "scroll") return;
+  ev.preventDefault();
+  ev.stopPropagation();
+  if (action.kind !== "open") return;
+  openMailLink(action.url);
+}
 
-/**
- * Route link clicks inside the email frame. On each `@load` we attach one click
- * listener to the frame document; it classifies the click via `resolveFrameLink`
- * and either hands an openable URL to the opener plugin, leaves a same-document
- * `#` anchor to scroll, or blocks anything else so a relative/same-origin link
- * can't navigate the sandboxed frame away from the email onto app content. A
- * click that isn't on a link is left alone.
- */
-function interceptFrameLinks(e: Event): void {
-  const doc = (e.target as HTMLIFrameElement).contentDocument;
-  if (!doc || linkedDocs.has(doc)) return;
-  linkedDocs.add(doc);
-  doc.addEventListener("click", (ev) => {
-    const action = resolveFrameLink(ev.target);
-    if (!action || action.kind === "scroll") return;
-    ev.preventDefault();
-    if (action.kind === "open") {
-      void openInBrowser(action.url).catch(() => toast.error("Couldn't open link"));
-    }
+function renderHtmlBody(html: string): void {
+  const host = htmlHost.value;
+  if (!host) return;
+  const { head, body } = buildMailFrameDocument(html, {
+    loadRemoteContent: loadRemoteContent.value,
   });
+  let root = host.shadowRoot;
+  if (!root) {
+    root = host.attachShadow({ mode: "open" });
+    root.addEventListener("click", onHtmlLinkClick, true);
+  }
+  root.innerHTML = `<style>
+:host { display: block; }
+.yerd-mail-body {
+  padding: 1.25rem;
+  box-sizing: border-box;
+  color: #111;
+  font: 14px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+.yerd-mail-body img, .yerd-mail-body table { max-width: 100%; }
+.yerd-mail-body a { cursor: pointer; }
+</style>${head}<div class="yerd-mail-body">${body}</div>`;
+}
+
+function clearHtmlBody(): void {
+  const root = htmlHost.value?.shadowRoot;
+  if (root) root.innerHTML = "";
+}
+
+watch(
+  [() => detail.value?.html_body, loadingDetail, htmlHost, loadRemoteContent],
+  ([html, loading]) => {
+    if (loading) return;
+    if (!html) {
+      clearHtmlBody();
+      return;
+    }
+    void nextTick(() => renderHtmlBody(html));
+  },
+);
+
+onUnmounted(() => {
+  unregisterViewActions();
+});
+
+function handleTextLinkClick(ev: MouseEvent): void {
+  const action = resolveFrameLink(ev.target);
+  if (!action || action.kind !== "open") return;
+  ev.preventDefault();
+  openMailLink(action.url);
+}
+
+const attachments = computed<MailAttachment[]>(
+  () => detail.value?.attachments ?? [],
+);
+
+/** Linkified plain-text body. Computed (not called inline in the template) so
+ *  it only re-runs when the body changes, not on every 4s poll re-render. */
+const linkedTextBody = computed(() =>
+  linkifyText(detail.value?.text_body || "(empty message)"),
+);
+
+const remoteContent = computed(() => {
+  const html = detail.value?.html_body;
+  return html ? listRemoteContentUrls(html) : [];
+});
+
+function remoteKindLabel(kind: RemoteContentKind): string {
+  if (kind === "stylesheet") return "Stylesheet";
+  if (kind === "css-url") return "CSS image";
+  return "Image";
+}
+
+async function openAttachment(att: MailAttachment): Promise<void> {
+  try {
+    const path = await saveMailAttachment(att.filename, att.data);
+    await openInEditor(path);
+  } catch (e) {
+    toast.error("Couldn't open attachment", (e as IpcError).message || att.filename);
+  }
+}
+
+function mimeLabel(contentType: string): string {
+  const sub = contentType.split("/")[1] ?? contentType;
+  return sub.replace(/^x-/, "").toUpperCase();
 }
 
 function formatDate(epoch: number): string {
@@ -236,17 +333,33 @@ function formatDate(epoch: number): string {
           aria-label="Filter by application"
           class="!h-6 max-w-44 text-xs"
         />
-        <!-- Plain button (not the icon-variant Button) so it sits cleanly in the
-             32px titlebar without overflowing it. -->
-        <button
-          type="button"
-          class="inline-flex size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:pointer-events-none disabled:opacity-40"
-          :disabled="filteredList.length === 0"
-          :aria-label="selectedApp ? 'Delete emails for this application' : 'Delete all emails'"
-          @click="clearOpen = true"
-        >
-          <Trash2 class="size-3.5" />
-        </button>
+        <DropdownMenu>
+          <DropdownMenuTrigger as-child>
+            <button
+              type="button"
+              class="inline-flex size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:pointer-events-none disabled:opacity-40"
+              :disabled="list.length === 0"
+              aria-label="Delete emails"
+            >
+              <Trash2 class="size-3.5" />
+            </button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end">
+            <DropdownMenuItem
+              :disabled="!selectedId"
+              @select="openDelete('selected')"
+            >
+              Delete selected message
+            </DropdownMenuItem>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem
+              class="text-destructive focus:bg-destructive/10 focus:text-destructive"
+              @select="openDelete('all')"
+            >
+              Clear all mails
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
       </template>
     </TitleBar>
 
@@ -313,18 +426,49 @@ function formatDate(epoch: number): string {
               {{ formatDate(detail.date_epoch) }}
             </p>
           </div>
-          <iframe
+          <div
             v-if="detail.html_body"
-            :srcdoc="frameSrcdoc(detail.html_body)"
-            sandbox="allow-same-origin"
-            class="min-h-0 flex-1 bg-white"
-            title="Email body"
-            @load="interceptFrameLinks"
+            ref="htmlHost"
+            class="min-h-0 flex-1 overflow-auto bg-white"
           />
+
+          <!-- Plain-text body with linkified URLs -->
+          <!-- eslint-disable-next-line vue/no-v-html -->
           <pre
             v-else
             class="min-h-0 flex-1 overflow-auto whitespace-pre-wrap p-5 text-sm"
-          >{{ detail.text_body || "(empty message)" }}</pre>
+            @click="handleTextLinkClick"
+            v-html="linkedTextBody"
+          />
+
+          <!-- Attachment bar - shown only when the message has attachments -->
+          <div
+            v-if="attachments.length > 0"
+            class="shrink-0 border-t bg-muted/20 px-5 py-2"
+          >
+            <div class="mb-1.5 flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+              <Paperclip class="size-3.5" />
+              {{ attachments.length === 1 ? "1 attachment" : `${attachments.length} attachments` }}
+            </div>
+            <div class="flex flex-wrap gap-2">
+              <button
+                v-for="(att, i) in attachments"
+                :key="`${i}:${att.filename}`"
+                type="button"
+                class="flex items-center gap-2 rounded-md border bg-background px-3 py-1.5 text-left text-xs transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                :title="`Open ${att.filename} (${humaniseBytes(att.size)})`"
+                @click="void openAttachment(att)"
+              >
+                <FileDown class="size-3.5 shrink-0 text-muted-foreground" />
+                <span class="flex flex-col leading-tight">
+                  <span class="max-w-[14rem] truncate font-medium">{{ att.filename }}</span>
+                  <span class="text-[10px] text-muted-foreground">
+                    {{ mimeLabel(att.content_type) }} · {{ humaniseBytes(att.size) }}
+                  </span>
+                </span>
+              </button>
+            </div>
+          </div>
         </template>
         <div
           v-else
@@ -348,15 +492,75 @@ function formatDate(epoch: number): string {
             <dd class="break-words text-muted-foreground">{{ h.value }}</dd>
           </div>
         </dl>
+
+        <section v-if="detail.html_body" class="mt-6">
+          <h3 class="mb-2 text-xs font-semibold uppercase text-muted-foreground">
+            Remote content
+          </h3>
+          <p class="mb-2 text-[11px] leading-snug text-muted-foreground">
+            External images and stylesheets are blocked until you load them.
+          </p>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            class="mb-3 w-full"
+            :disabled="remoteContent.length === 0"
+            :aria-pressed="loadRemoteContent"
+            :title="
+              remoteContent.length === 0
+                ? 'This message has no remote images or stylesheets'
+                : loadRemoteContent
+                  ? 'Remote images and stylesheets are loading for this message'
+                  : 'Load remote images and stylesheets for this message'
+            "
+            @click="loadRemoteContent = !loadRemoteContent"
+          >
+            <Globe class="size-3.5" />
+            {{
+              remoteContent.length === 0
+                ? "No remote content"
+                : loadRemoteContent
+                  ? "Hide remote content"
+                  : "Load remote content"
+            }}
+          </Button>
+          <ul
+            v-if="remoteContent.length > 0"
+            class="space-y-2"
+          >
+            <li
+              v-for="item in remoteContent"
+              :key="`${item.kind}:${item.url}`"
+              class="min-w-0"
+            >
+              <p
+                class="break-all text-xs text-foreground"
+                :title="item.url"
+              >
+                {{ item.url }}
+              </p>
+              <span class="text-[10px] uppercase tracking-wide text-muted-foreground">
+                {{ remoteKindLabel(item.kind) }}
+              </span>
+            </li>
+          </ul>
+          <p
+            v-else
+            class="text-xs text-muted-foreground"
+          >
+            None detected
+          </p>
+        </section>
       </aside>
     </div>
 
     <Modal
-      v-model:open="clearOpen"
-      :title="selectedApp ? 'Delete these emails?' : 'Clear all mails?'"
+      v-model:open="deleteOpen"
+      :title="deleteTitle"
     >
       <p class="text-sm text-muted-foreground">
-        This permanently deletes {{ deleteScopeLabel }}. This cannot be undone.
+        {{ deleteBody }}
       </p>
       <template #footer="{ close }">
         <Button variant="ghost" @click="close">Cancel</Button>
@@ -366,7 +570,7 @@ function formatDate(epoch: number): string {
           @click="confirmDelete(close)"
         >
           <Spinner v-if="clearing" class="size-4" />
-          {{ selectedApp ? "Delete" : "Delete all" }}
+          {{ deleteConfirmLabel }}
         </Button>
       </template>
     </Modal>

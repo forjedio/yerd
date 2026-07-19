@@ -174,6 +174,7 @@ fn main() {
             commands::create_site,
             commands::job_status,
             commands::job_cancel,
+            commands::save_mail_attachment,
             show_dumps_window,
             daemon::daemon_installed,
             daemon::daemon_diagnostics,

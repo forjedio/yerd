@@ -891,6 +891,14 @@ export async function openInBrowser(url: string): Promise<void> {
   await openUrl(url);
 }
 
+/** Save attachment bytes (standard base64) in the app cache; return the path. */
+export async function saveMailAttachment(
+  filename: string,
+  data: string,
+): Promise<string> {
+  return call<string>("save_mail_attachment", { filename, data });
+}
+
 /** Reveal a file or directory in the OS file manager. */
 export async function openPath(path: string): Promise<void> {
   const { revealItemInDir } = await import("@tauri-apps/plugin-opener");

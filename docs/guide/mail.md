@@ -134,14 +134,21 @@ bodies).
 The standalone **Mails** viewer window - opened from the [desktop app](./desktop-app)
 with **Show Mails** - decodes each message for you: headers, the plain-text body,
 and a rendered **HTML** body. From the GUI you can read, delete individual
-messages, and clear everything.
+messages, clear everything, open **file attachments**, and follow **http(s) /
+mailto / tel** links in both HTML and plain-text bodies (they open in your OS
+browser / handler).
 
 <ThemedImage light="/images/mails-light.png" dark="/images/mails-dark.png" alt="A captured email open in the Yerd Mails viewer" />
 
-The HTML body renders in a **sandboxed frame that can't run scripts**. Inline
-images referenced by `cid:` are embedded as `data:` URLs, and remote images
-(e.g. a logo served over `https://`) load as well - just like a normal mail
-client, so opening a message can fetch its remote images.
+The HTML body is sanitized with **DOMPurify** and rendered in a **Shadow DOM**
+in the Mails window (so link clicks work reliably on macOS WKWebView). Openable
+`http(s)` / `mailto` / `tel` links are stamped and opened via the OS browser /
+handler. Inline images referenced by `cid:` are embedded as `data:` URLs.
+Remote images and stylesheets (e.g. a logo served over `https://`) are **blocked
+by default** so merely opening a message cannot phone home. The right sidebar
+lists those URLs under **Remote content**; use **Load remote content** when you
+want them. Non-inline attachments appear in a bar under the body and open with
+the OS default app.
 
 ## Configuration
 

@@ -19,6 +19,7 @@
     "@tauri-apps/plugin-opener": "^2.2.5",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
+    "isomorphic-dompurify": "^3.19.0",
     "lucide-vue-next": "^0.460.0",
     "reka-ui": "^2.9.8",
     "tailwind-merge": "^2.5.5",
