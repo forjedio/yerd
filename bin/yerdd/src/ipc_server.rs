@@ -1882,6 +1882,11 @@ const REMOTE_SETUP_CODE_TTL: std::time::Duration = std::time::Duration::from_sec
 /// Mint a one-time bootstrap code. Guarded on LAN actually being up (config on
 /// *and* the bootstrap listener bound), so a code is never handed out when
 /// nothing would serve it.
+///
+/// The URL reuses the startup-discovered `lan_ip` so the printed host always
+/// matches what is actually served, and the returned `script_sha256` is the hash
+/// recorded when the endpoint bound - its absence means the endpoint isn't
+/// serving, so minting fails closed rather than hand out a useless code.
 async fn mint_remote_setup_code(state: &DaemonState) -> Response {
     let (lan_enabled, lan_setup_port) = {
         let cfg = state.config.lock().await;
@@ -1899,15 +1904,10 @@ async fn mint_remote_setup_code(state: &DaemonState) -> Response {
                 .to_owned(),
         );
     }
-    // Use the SAME startup-discovered IP the bootstrap endpoint bound to, so the
-    // printed URL always matches what is actually served.
     let Some(lan_ip) = state.lan_ip else {
         return lan_not_ready("the LAN IP isn't known (restart the daemon)".to_owned());
     };
 
-    // The hash the operator verifies is of the exact script the endpoint serves,
-    // recorded when it bound. Absent means the endpoint isn't serving, so a code
-    // would be useless.
     let Some(script_sha256) = state.lan_setup_script_sha256.lock().await.clone() else {
         return lan_not_ready(
             "the installer hash isn't ready (restart the daemon after enabling LAN)".to_owned(),
