@@ -183,10 +183,10 @@ const managedComposer = computed(() =>
 // PHP, Composer and the Laravel installer are *required* and gated up front.
 const needsComposer = computed(() => !toolAvailable("composer"));
 const needsInstaller = computed(() => !toolAvailable("laravel"));
-const noPhp = computed(() => supportedPhpVersions.value.length === 0);
+const noSupportedPhp = computed(() => supportedPhpVersions.value.length === 0);
 // Distinguishes "no PHP at all" from "PHP installed, none of it supported" so
 // the prerequisites row can say which, rather than implying PHP is missing.
-const phpUnsupported = computed(() => noPhp.value && props.phpVersions.length > 0);
+const phpUnsupported = computed(() => noSupportedPhp.value && props.phpVersions.length > 0);
 // Node/Bun are only conditionally needed and the daemon installs them inline
 // during the job (shown as a phase), so they don't block the wizard.
 const needsNode = computed(() => form.js === "npm" && !toolAvailable("node"));
@@ -194,7 +194,7 @@ const needsBun = computed(() => form.js === "bun" && !toolAvailable("bun"));
 
 /** Whether the required toolchain is present (the wizard is unlocked). */
 const ready = computed(
-  () => !noPhp.value && !needsComposer.value && !needsInstaller.value,
+  () => !noSupportedPhp.value && !needsComposer.value && !needsInstaller.value,
 );
 /** Any prerequisite install in flight (per-item or install-all). */
 const installBusy = computed(() => installingAll.value || installingTool.value !== null);
@@ -236,12 +236,13 @@ async function installPrereq(id: "composer" | "laravel" | "node" | "bun"): Promi
   }
 }
 
+/**
+ * Install the newest available minor within the supported window (the
+ * distribution returns them ascending), rather than pinning a version that rots
+ * each release. The daemon resolves the patch and makes it the global default;
+ * the live status poll then surfaces it, which unlocks the wizard automatically.
+ */
 async function installFirstPhp(): Promise<boolean> {
-  // The user has no PHP Laravel can run on: install the newest available minor
-  // within the supported window (the distribution returns them ascending), rather
-  // than pinning a version that rots each release. The daemon resolves the patch
-  // and makes it the global default; the live status poll then surfaces it, which
-  // unlocks the wizard automatically.
   installingTool.value = "php";
   installLog.value = [];
   try {
@@ -274,7 +275,7 @@ async function installFirstPhp(): Promise<boolean> {
 async function installAllMissing(): Promise<void> {
   installingAll.value = true;
   try {
-    if (noPhp.value && !(await installFirstPhp())) return;
+    if (noSupportedPhp.value && !(await installFirstPhp())) return;
     if (needsComposer.value && !(await installPrereq("composer"))) return;
     // The managed Laravel installer is BUILT via Yerd's own Composer, so it can
     // only be auto-installed when managed Composer is present. If Composer is only
@@ -510,7 +511,7 @@ const busy = computed(() => jobStateRef.value === "running" && step.value === 4)
       <div class="divide-y rounded-lg border">
         <div
           v-for="row in [
-            { id: 'php', label: 'PHP', sub: phpUnsupported ? `Installed, but not ${LARAVEL_MIN_PHP}-${LARAVEL_MAX_PHP}` : `Runtime ${LARAVEL_MIN_PHP}-${LARAVEL_MAX_PHP}`, ok: !noPhp, busyKey: 'php' },
+            { id: 'php', label: 'PHP', sub: phpUnsupported ? `Installed, but not ${LARAVEL_MIN_PHP}-${LARAVEL_MAX_PHP}` : `Runtime ${LARAVEL_MIN_PHP}-${LARAVEL_MAX_PHP}`, ok: !noSupportedPhp, busyKey: 'php' },
             { id: 'composer', label: 'Composer', sub: 'Dependency manager', ok: !needsComposer, busyKey: 'composer' },
             { id: 'laravel', label: 'Laravel installer', sub: 'laravel new', ok: !needsInstaller, busyKey: 'laravel' },
           ]"

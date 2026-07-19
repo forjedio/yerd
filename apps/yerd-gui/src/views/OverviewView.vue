@@ -484,7 +484,7 @@ const emptyEnvironment = computed(
               </div>
               <p class="mt-1 text-xs text-muted-foreground">
                 <code>yerdd</code> supervises PHP-FPM, serves your
-                <code>.test</code> sites, answers DNS, and runs databases.
+                <code>.{{ tld }}</code> sites, answers DNS, and runs databases.
               </p>
             </div>
             <div class="flex shrink-0 gap-2">
