@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { X } from "lucide-vue-next";
-import { useId, watch } from "vue";
+import { onUnmounted, useId, watch } from "vue";
 
 import { cn } from "@/lib/utils";
 
@@ -45,6 +45,9 @@ watch(
     else document.removeEventListener("keydown", onKey);
   },
 );
+
+// Being torn down while open would otherwise strand the listener for good.
+onUnmounted(() => document.removeEventListener("keydown", onKey));
 </script>
 
 <template>

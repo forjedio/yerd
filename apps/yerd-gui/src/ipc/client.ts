@@ -933,6 +933,24 @@ export async function pickOpenFile(): Promise<string | null> {
 }
 
 /**
+ * Open-file dialog for a PHP extension. Returns the chosen path, or null if
+ * cancelled.
+ *
+ * The filter is `.so` only: the daemon rejects any other extension outright, so
+ * offering `.dylib` on macOS would only produce a guaranteed failure. There is
+ * no `defaultPath` because nothing reports a version's `extension_dir`.
+ */
+export async function pickExtensionFile(): Promise<string | null> {
+  const { open } = await import("@tauri-apps/plugin-dialog");
+  const picked = await open({
+    directory: false,
+    multiple: false,
+    filters: [{ name: "PHP extension", extensions: ["so"] }],
+  });
+  return typeof picked === "string" ? picked : null;
+}
+
+/**
  * Run `yerd elevate <target>` under OS elevation (pkexec / osascript). Returns
  * when the elevated process exits; rejects with the helper's message on failure.
  */

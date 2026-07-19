@@ -56,6 +56,12 @@ describe("directiveNameProblem", () => {
     expect(directiveNameProblem("openssl.cafile")).toMatch(/CA bundle/);
   });
 
+  it("treats Object.prototype member names as ordinary directives, not inherited hints", () => {
+    for (const name of ["constructor", "toString", "valueOf", "hasOwnProperty"]) {
+      expect(directiveNameProblem(name)).toBeNull();
+    }
+  });
+
   it("flags malformed names", () => {
     for (const name of ["", "1st", ".dot", "has space", "semi;colon"]) {
       expect(directiveNameProblem(name)).not.toBeNull();

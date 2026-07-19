@@ -192,7 +192,7 @@ path = "/opt/homebrew/lib/php/pecl/20250925/scrypt.so"
 zend = false
 ```
 
-Manage this with [`yerd php ext`](cli/php#custom-extensions) or the desktop app's **Custom extensions** card rather than editing by hand - the CLI/daemon **load-probe** each `.so` before saving. Names must be unique within a version; a duplicate or an invalid path makes the whole config invalid.
+Manage this with [`yerd php ext`](cli/php#custom-extensions) or the Extensions section of the desktop app's **Per-version configuration** card rather than editing by hand - the CLI/daemon **load-probe** each `.so` before saving. Names must be unique within a version; a duplicate or an invalid path makes the whole config invalid.
 
 ### `[parked]`
 

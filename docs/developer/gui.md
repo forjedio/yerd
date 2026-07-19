@@ -495,8 +495,8 @@ also hosts the OS-privileges **EnvironmentCard** - CA trust / resolver / ports),
 Components are split into app components (`AppShell`, `SideNav`, `TitleBar`,
 `StatusPill`, `PageHeader`, `ComingSoon`) and hand-rolled
 **shadcn-vue-style `ui/` primitives** (`Button`, `Card`, `Input`, `Select`,
-`Switch`, `Modal`, `Spinner`, `Toaster`, `Badge`, plus `dropdown-menu/` and
-`tooltip/` built on `reka-ui`). `lib/utils.ts` holds the shadcn `cn` helper and
+`Switch`, `Modal`, `Spinner`, `Toaster`, `Badge`, plus `dropdown-menu/`,
+`tabs/` and `tooltip/` built on `reka-ui`). `lib/utils.ts` holds the shadcn `cn` helper and
 the display humanisers - note `poolStateLabel`/`poolStateTone`, which render an
 installed-but-not-serving FPM pool as **"idle"** (neutral) rather than the
 alarming wire value `stopped`, reserving red **"failed"** for an actual crash.

@@ -45,14 +45,13 @@ import { useOperations } from "@/composables/useOperations";
 import { useResource } from "@/composables/useResource";
 import { useToast } from "@/composables/useToast";
 import {
-  addPhpExtension,
   availablePhp,
   checkPhpUpdates,
   installPhpWithProgress,
   IpcError,
   listPhp,
   listPhpExtensions,
-  removePhpExtension,
+  type PhpExtensionsMap,
   restartAllPhp,
   restartPhp,
   setDefaultPhp,
@@ -61,10 +60,13 @@ import {
   updatePhp,
 } from "@/ipc/client";
 import type { PhpPoolStatus, PhpUpdate, PhpVersion, PhpVersionsResponse } from "@/ipc/types";
-import PhpVersionConfig from "@/components/PhpVersionConfig.vue";
+import AddExtensionModal from "@/components/AddExtensionModal.vue";
+import PhpVersionPanel from "@/components/PhpVersionPanel.vue";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   DISPLAY_ERRORS_HINT,
   DISPLAY_ERRORS_OPTIONS,
+  overrideCount,
   TEXT_SETTINGS,
 } from "@/lib/phpSettings";
 import { isLegacyVersion } from "@/lib/phpVersion";
@@ -167,16 +169,15 @@ async function saveSettings(): Promise<void> {
   }
 }
 
-// ── per-version configuration ──
-// Each installed version gets a collapsible panel (PhpVersionConfig) holding
-// its setting overrides and free-form ini directives. The panel does its own
-// saves and hands back the daemon's refreshed version list.
+// ── per-version configuration ──────────────────────────────────────────────
+// One tab per version, each holding that version's setting overrides, custom
+// extensions and free-form ini directives. Panels do their own saves and hand
+// back the daemon's refreshed state.
 function onVersionConfigUpdated(r: PhpVersionsResponse): void {
   mutate(() => r);
   void reloadPhp({ force: true });
 }
 
-// ── custom extensions ──────────────────────────────────────────────────────
 const {
   data: extData,
   loading: extLoading,
@@ -187,16 +188,6 @@ const {
 watch(extError, (e) => {
   if (e && !extData.value) toast.error("Couldn't load extensions", e.message);
 });
-const extAddForm = ref<{
-  version: string;
-  path: string;
-  zend: boolean;
-  name: string;
-}>({ version: "", path: "", zend: false, name: "" });
-
-const extVersionOptions = computed(() =>
-  installed.value.map((v) => ({ value: v, label: `PHP ${v}` })),
-);
 
 /** Compare `major.minor` version strings numerically (so 8.9 sorts before 8.10). */
 function compareVersions(a: string, b: string): number {
@@ -205,62 +196,57 @@ function compareVersions(a: string, b: string): number {
   return am - bm || an - bn;
 }
 
-/** Registered extensions flattened to rows for the table, version-ordered. */
-const extensionRows = computed(() => {
-  const map = extData.value ?? {};
-  return Object.keys(map)
-    .sort(compareVersions)
-    .flatMap((version) =>
-      (map[version] ?? []).map((ext) => ({ version, ext })),
-    );
+// Newest first: the current version is what you reach for, and it stays put at
+// the top of the rail as older ones accumulate below.
+//
+// Uninstalling leaves a version's registrations in place, so a version can hold
+// extensions without being installed. Those get a row too - the daemon still
+// allows removing them, which would otherwise be unreachable from the GUI.
+const tabVersions = computed<PhpVersion[]>(() => {
+  const seen = new Set<PhpVersion>(installed.value);
+  for (const v of Object.keys(extData.value ?? {})) seen.add(v);
+  return [...seen].sort((a, b) => compareVersions(b, a));
 });
 
-// Default the add-form version to the first installed version once known.
+const activeVersion = ref<PhpVersion>("");
+const dirtyByVersion = ref<Record<string, boolean>>({});
+const addExtOpen = ref(false);
+
+// Seed once and re-point only if the active tab disappears; anything wider
+// would yank the user's tab away when an unrelated refresh lands.
 watch(
-  installed,
+  tabVersions,
   (vs) => {
-    if (!extAddForm.value.version && vs.length) {
-      extAddForm.value.version = vs[0];
-    }
+    if (vs.includes(activeVersion.value)) return;
+    const preferred = defaultVersion.value;
+    activeVersion.value = preferred && vs.includes(preferred) ? preferred : (vs[0] ?? "");
   },
   { immediate: true },
 );
 
-async function addExtension(): Promise<void> {
-  const form = extAddForm.value;
-  if (!form.version || !form.path.trim()) {
-    toast.error("Missing details", "Pick a version and enter the .so path.");
-    return;
-  }
-  busy.value = "ext-add";
-  try {
-    const map = await addPhpExtension(
-      form.version,
-      form.path.trim(),
-      form.zend,
-      form.name.trim() || undefined,
-    );
-    mutateExts(() => map);
-    extAddForm.value = { version: form.version, path: "", zend: false, name: "" };
-    toast.success("Extension registered", "Loaded into the FPM pool and CLI.");
-  } catch (e) {
-    toast.error("Couldn't add the extension", (e as IpcError).message);
-  } finally {
-    busy.value = null;
-  }
+function extensionsFor(v: PhpVersion) {
+  return extData.value?.[v] ?? [];
 }
 
-async function removeExtension(version: PhpVersion, name: string): Promise<void> {
-  busy.value = `ext-remove:${version}:${name}`;
-  try {
-    const map = await removePhpExtension(version, name);
-    mutateExts(() => map);
-    toast.success("Extension removed");
-  } catch (e) {
-    toast.error("Couldn't remove the extension", (e as IpcError).message);
-  } finally {
-    busy.value = null;
-  }
+/**
+ * How much this version has configured, for the tab's count badge.
+ *
+ * An uninstalled version counts only its extensions: the daemon refuses to
+ * change its overrides and directives, so the panel hides them, and the badge
+ * must not advertise what the panel won't show.
+ */
+function tabCount(v: PhpVersion): number {
+  const exts = extensionsFor(v).length;
+  if (!installed.value.includes(v)) return exts;
+  return (
+    overrideCount(data.value?.version_settings?.[v] ?? {}) +
+    Object.keys(data.value?.directives?.[v] ?? {}).length +
+    exts
+  );
+}
+
+function onExtensionsUpdated(map: PhpExtensionsMap): void {
+  mutateExts(() => map);
 }
 
 async function refreshUpdates(): Promise<void> {
@@ -728,134 +714,82 @@ onUnmounted(
         </CardContent>
       </Card>
 
-      <!-- Per-version setting overrides + free-form ini directives. -->
-      <Card v-if="!loading && installed.length" class="mt-8">
+      <!-- Per-version overrides, custom extensions and free-form ini directives. -->
+      <Card v-if="!loading && tabVersions.length" class="mt-8">
         <CardHeader>
           <CardTitle>Per-version configuration</CardTitle>
           <CardDescription>
-            Override the default settings for a single version, or add custom
-            ini directives (e.g. xdebug.mode) for extensions registered below.
-            Saving restarts only that version's pool.
+            Configure a single PHP version: override the defaults above, load
+            extra extensions (.so files, into both the web and CLI runtimes),
+            and add custom ini directives. Saving restarts only that version's
+            pool.
           </CardDescription>
         </CardHeader>
-        <CardContent class="flex flex-col gap-3">
-          <PhpVersionConfig
-            v-for="v in installed"
-            :key="v"
-            :version="v"
-            :global-settings="data?.settings ?? {}"
-            :overrides="data?.version_settings?.[v] ?? {}"
-            :directives="data?.directives?.[v] ?? {}"
-            @updated="onVersionConfigUpdated"
-          />
-        </CardContent>
-      </Card>
-
-      <!-- Custom PHP extensions, loaded into both web (FPM) and CLI per version. -->
-      <Card v-if="!loading" class="mt-8">
-        <CardHeader>
-          <CardTitle>Custom extensions</CardTitle>
-          <CardDescription>
-            Load extra PHP extensions (.so files) into both the web (FPM) and CLI
-            runtimes. An extension is checked against the selected version before
-            it's saved. Extensions are tied to a PHP version.
-          </CardDescription>
-        </CardHeader>
-
         <CardContent>
-          <div v-if="extLoading && !extData" class="flex justify-center py-4">
-            <Spinner class="size-5" />
-          </div>
-          <div v-else-if="extensionRows.length" class="flex flex-col gap-2">
-            <div
-              v-for="row in extensionRows"
-              :key="`${row.version}:${row.ext.name}`"
-              class="flex items-center justify-between rounded-md border border-border px-3 py-2"
-            >
-              <div class="min-w-0">
-                <div class="flex items-center gap-2">
-                  <span class="text-sm font-medium">{{ row.ext.name }}</span>
-                  <Badge variant="secondary">PHP {{ row.version }}</Badge>
-                  <Badge v-if="row.ext.zend" variant="secondary">zend</Badge>
-                  <Badge v-if="!row.ext.present" variant="destructive">
-                    <TriangleAlert class="size-3" /> missing
-                  </Badge>
-                </div>
-                <p class="mt-0.5 truncate text-xs text-muted-foreground">
-                  {{ row.ext.path }}
-                </p>
-              </div>
-              <Button
-                variant="ghost"
-                size="sm"
-                :disabled="busy === `ext-remove:${row.version}:${row.ext.name}`"
-                aria-label="Remove extension"
-                @click="removeExtension(row.version, row.ext.name)"
-              >
-                <Spinner
-                  v-if="busy === `ext-remove:${row.version}:${row.ext.name}`"
-                  class="size-4"
-                />
-                <Trash2 v-else class="size-4" />
-              </Button>
-            </div>
-          </div>
-          <p v-else class="text-sm text-muted-foreground">
-            No custom extensions registered yet.
-          </p>
+          <!-- A rail rather than a tab strip: the version list grows by one
+               every release (plus the legacy versions), and a horizontal strip
+               reflows as soon as the active row's markers change its width. -->
+          <Tabs
+            :model-value="activeVersion"
+            orientation="vertical"
+            :unmount-on-hide="false"
+            @update:model-value="(v: string | number) => (activeVersion = String(v))"
+          >
+            <div class="flex gap-5">
+              <TabsList aria-label="PHP version" class="w-32 shrink-0 pr-1">
+                <TabsTrigger v-for="v in tabVersions" :key="v" :value="v">
+                  <span class="font-mono">{{ v }}</span>
+                  <span class="ml-auto flex items-center gap-1.5">
+                    <span v-if="dirtyByVersion[v]" class="flex items-center">
+                      <span class="size-1.5 rounded-full bg-primary" />
+                      <span class="sr-only">unsaved changes</span>
+                    </span>
+                    <Badge v-if="tabCount(v)" variant="secondary">
+                      {{ tabCount(v) }}
+                      <span class="sr-only">
+                        configured item{{ tabCount(v) === 1 ? "" : "s" }}
+                      </span>
+                    </Badge>
+                    <TriangleAlert
+                      v-if="!installed.includes(v)"
+                      class="size-3.5 text-destructive"
+                    />
+                    <span v-if="!installed.includes(v)" class="sr-only">
+                      not installed
+                    </span>
+                  </span>
+                </TabsTrigger>
+              </TabsList>
 
-          <div class="mt-5 border-t border-border pt-5">
-            <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
-              <div>
-                <label class="text-xs font-medium" for="ext-version">Version</label>
-                <div class="mt-1">
-                  <Select
-                    id="ext-version"
-                    class="w-full"
-                    :model-value="extAddForm.version"
-                    :options="extVersionOptions"
-                    aria-label="PHP version"
-                    @update:model-value="(v: string) => (extAddForm.version = v)"
+              <div class="min-w-0 flex-1">
+                <TabsContent v-for="v in tabVersions" :key="v" :value="v">
+                  <PhpVersionPanel
+                    :version="v"
+                    :global-settings="data?.settings ?? {}"
+                    :overrides="data?.version_settings?.[v] ?? {}"
+                    :directives="data?.directives?.[v] ?? {}"
+                    :extensions="extensionsFor(v)"
+                    :installed-version="installed.includes(v)"
+                    :extensions-loading="extLoading"
+                    @updated="onVersionConfigUpdated"
+                    @extensions-updated="onExtensionsUpdated"
+                    @request-add-extension="addExtOpen = true"
+                    @dirty="(d: boolean) => (dirtyByVersion[v] = d)"
                   />
-                </div>
-              </div>
-              <div>
-                <label class="text-xs font-medium" for="ext-name">Name (optional)</label>
-                <Input
-                  id="ext-name"
-                  v-model="extAddForm.name"
-                  placeholder="defaults to the .so filename"
-                  class="mt-1"
-                />
-              </div>
-              <div class="sm:col-span-2">
-                <label class="text-xs font-medium" for="ext-path">Extension path</label>
-                <Input
-                  id="ext-path"
-                  v-model="extAddForm.path"
-                  placeholder="/opt/homebrew/lib/php/pecl/20250925/scrypt.so"
-                  class="mt-1"
-                />
+                </TabsContent>
               </div>
             </div>
-            <div class="mt-4 flex items-center justify-between">
-              <label class="flex items-center gap-2 text-sm">
-                <Switch v-model="extAddForm.zend" aria-label="Load as a Zend extension" />
-                Zend extension
-              </label>
-              <Button
-                size="sm"
-                :disabled="busy === 'ext-add' || !extVersionOptions.length"
-                @click="addExtension"
-              >
-                <Spinner v-if="busy === 'ext-add'" class="size-4" />
-                {{ busy === "ext-add" ? "Checking…" : "Add extension" }}
-              </Button>
-            </div>
-          </div>
+          </Tabs>
         </CardContent>
       </Card>
+
     </div>
+
+    <AddExtensionModal
+      v-model:open="addExtOpen"
+      :version="activeVersion"
+      @added="onExtensionsUpdated"
+    />
 
     <Modal v-model:open="installOpen" title="Install a PHP version">
       <div v-if="installLoading" class="flex justify-center py-6">
