@@ -358,18 +358,25 @@ load anchor \"com.apple\" from \"/etc/pf.anchors/com.apple\"
         assert!(is_installed(&both));
         assert!(is_lan_installed(&both));
 
-        // Removing the LAN anchor leaves the loopback one.
         let lan_gone = remove_lan_anchor_refs(&both);
-        assert!(is_installed(&lan_gone), "loopback anchor must survive");
+        assert!(
+            is_installed(&lan_gone),
+            "removing LAN leaves loopback anchor"
+        );
         assert!(!is_lan_installed(&lan_gone));
 
-        // Symmetrically, removing the loopback anchor leaves the LAN one.
         let loop_gone = remove_anchor_refs(&both);
         assert!(!is_installed(&loop_gone));
-        assert!(is_lan_installed(&loop_gone), "LAN anchor must survive");
+        assert!(
+            is_lan_installed(&loop_gone),
+            "removing loopback leaves LAN anchor"
+        );
 
-        // Removing both returns the original.
-        assert_eq!(remove_anchor_refs(&lan_gone), APPLE_DEFAULT);
+        assert_eq!(
+            remove_anchor_refs(&lan_gone),
+            APPLE_DEFAULT,
+            "removing both returns the original"
+        );
     }
 
     #[test]

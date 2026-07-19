@@ -1014,13 +1014,16 @@ fn format_parked(paths: &[String]) -> String {
 /// HTTP + a code is not sufficient to distribute a root CA.
 ///
 /// `script_url` is the HTTPS script URL (`https://<ip>:<port>/remote-setup?code=…`);
-/// the CA URL is the same host/port over plain HTTP at `/remote-setup/ca`.
+/// the CA URL is the same host/port over plain HTTP at `/remote-setup/ca`, and
+/// carries **no** code (the CA is public, so the code never leaves HTTPS).
 fn format_remote_setup(script_url: &str, ca_fingerprint: &str, expires_in_secs: u64) -> String {
-    let ca_url = script_url.replacen("https://", "http://", 1).replacen(
-        "/remote-setup?",
-        "/remote-setup/ca?",
-        1,
-    );
+    let ca_url = script_url
+        .replacen("https://", "http://", 1)
+        .split_once("/remote-setup")
+        .map_or_else(
+            || script_url.replacen("https://", "http://", 1),
+            |(base, _)| format!("{base}/remote-setup/ca"),
+        );
     let mins = expires_in_secs / 60;
     format!(
         "Run this on the OTHER device (needs sudo, curl, and openssl):\n\
@@ -1608,28 +1611,27 @@ mod tests {
     }
 
     #[test]
-    fn remote_setup_render_shows_fingerprint_and_verify_step() {
-        // The mint always emits an https:// script URL; the render derives the
-        // plain-HTTP CA URL from it.
+    fn remote_setup_render_verifies_der_fingerprint_and_uses_codeless_http_ca_then_https_script() {
         let out = format_remote_setup(
             "https://192.168.1.42:7073/remote-setup?code=abc",
             &"ab".repeat(32),
             900,
         );
-        assert!(out.contains(&"ab".repeat(32)), "fingerprint present");
-        assert!(out.contains("yerd-setup.sh"));
-        assert!(out.contains("openssl"));
-        assert!(!out.contains("| sudo bash"), "must not pipe-to-bash");
-        // CA fetched over plain HTTP at /remote-setup/ca; script fetched over
-        // fingerprint-anchored HTTPS with --cacert. This is the load-bearing
-        // R2-C1 property.
+        assert!(out.contains(&"ab".repeat(32)), "fingerprint present: {out}");
+        assert!(out.contains("yerd-setup.sh"), "{out}");
+        assert!(out.contains("openssl"), "DER fingerprint verify: {out}");
+        assert!(!out.contains("| sudo bash"), "must not pipe-to-bash: {out}");
         assert!(
-            out.contains("http://192.168.1.42:7073/remote-setup/ca?code=abc"),
-            "CA over plain HTTP: {out}"
+            out.contains("http://192.168.1.42:7073/remote-setup/ca'"),
+            "CA over plain HTTP with NO code query: {out}"
+        );
+        assert!(
+            !out.contains("/remote-setup/ca?code"),
+            "the code must not travel over plain HTTP: {out}"
         );
         assert!(
             out.contains("--cacert yerd-ca.pem 'https://192.168.1.42:7073/remote-setup?code=abc'"),
-            "script over --cacert HTTPS: {out}"
+            "script over --cacert HTTPS carries the code: {out}"
         );
     }
 

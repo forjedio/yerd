@@ -369,10 +369,10 @@ impl PortBinder for MacosPortBinder {
     }
 }
 
-// macOS uses the M2 LAN strategy: even in LAN mode the daemon binds the rootless
-// ports on `0.0.0.0`, and a privileged `pf rdr` (installed by `yerd elevate lan`)
-// carries inbound 80/443 to `<lan_ip>:<rootless>`. So `lan` here only widens the
-// bind address; the privileged-port redirect is a separate concern.
+/// macOS uses the M2 LAN strategy: even in LAN mode the daemon binds the rootless
+/// ports on `0.0.0.0`, and a privileged `pf rdr` (installed by `yerd elevate lan`)
+/// carries inbound 80/443 to `<lan_ip>:<rootless>`. So `lan` here only widens the
+/// bind address; the privileged-port redirect is a separate concern.
 fn bind_pair_impl(
     lan: bool,
     desired: (u16, u16),
@@ -694,6 +694,24 @@ mod tests {
             pair.https.listener.local_addr().unwrap().ip(),
             std::net::IpAddr::V4(Ipv4Addr::UNSPECIFIED)
         );
+    }
+
+    /// Even when the desired pair is taken and it falls back, LAN mode still
+    /// binds the wildcard address for both listeners.
+    #[test]
+    fn bind_pair_impl_lan_fallback_still_binds_wildcard() {
+        let occupied = bind_at(Ipv4Addr::UNSPECIFIED, 0).unwrap();
+        let taken = occupied.local_addr().unwrap().port();
+        let pair = bind_pair_impl(true, (taken, 0), (0, 0)).unwrap();
+        assert_eq!(
+            pair.http.listener.local_addr().unwrap().ip(),
+            std::net::IpAddr::V4(Ipv4Addr::UNSPECIFIED)
+        );
+        assert_eq!(
+            pair.https.listener.local_addr().unwrap().ip(),
+            std::net::IpAddr::V4(Ipv4Addr::UNSPECIFIED)
+        );
+        assert_ne!(pair.http.port().unwrap(), taken);
     }
 
     /// Occupy a real loopback port so the desired-HTTP bind fails with

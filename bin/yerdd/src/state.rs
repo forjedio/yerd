@@ -44,12 +44,8 @@ pub struct RemoteSetupCode {
     pub value: String,
     /// When the code expires.
     pub expires_at: Instant,
-    /// Whether the terminal (script) fetch has consumed it (single-use), or a
-    /// lockout invalidated it.
+    /// Whether the terminal (script) fetch has consumed it (single-use).
     pub used: bool,
-    /// Failed match attempts against this code; a lockout invalidates it past a
-    /// threshold so a private-IP peer can't brute-force within the TTL.
-    pub attempts: u32,
 }
 
 /// Everything the IPC dispatch and proxy share at runtime.
@@ -217,6 +213,12 @@ pub struct DaemonState {
     /// on the same router-rebuild hook as `wordpress_sites` rather than detected
     /// on every `ListSites` poll - see [`crate::laravel_detect`].
     pub laravel_sites: Arc<RwLock<HashMap<String, bool>>>,
+    /// The host's LAN IPv4 discovered **once at startup** when LAN mode is on
+    /// (the same value baked into the bootstrap TLS cert's iPAddress SAN). All
+    /// runtime consumers (`DaemonInfo`, status, `remote-setup` URL) read this
+    /// rather than re-discovering, so they never disagree with the cert on a
+    /// multi-homed host. `None` when LAN is off or discovery failed.
+    pub lan_ip: Option<std::net::Ipv4Addr>,
     /// Whether the LAN remote-setup bootstrap listener actually bound this boot.
     /// Read into `StatusReport::lan_setup_bound` for effective-vs-configured
     /// reporting. Only meaningful when LAN mode is on.

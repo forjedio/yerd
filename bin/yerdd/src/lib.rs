@@ -198,16 +198,9 @@ async fn run_until_shutdown(
         None
     };
 
-    let redirect_probe_handle = spawn_redirect_probe(
-        proxy_handle.is_some(),
-        &daemon.state,
-        shutdown_rx.clone(),
-        lan_enabled,
-    );
+    let redirect_probe_handle =
+        spawn_redirect_probe(proxy_handle.is_some(), &daemon.state, shutdown_rx.clone());
 
-    // LAN remote-setup bootstrap endpoint: only when LAN is on AND a LAN IP was
-    // discovered (the TLS leaf needs it in an iPAddress SAN). Degrades quietly -
-    // `lan_setup_bound` stays false - on any failure, matching web/DNS degrade.
     let lan_setup_handle = spawn_lan_setup(
         lan_enabled,
         daemon.lan_ip,
@@ -365,6 +358,11 @@ const REDIRECT_PROBE_INTERVAL: Duration = Duration::from_secs(60);
 /// Spawn the LAN remote-setup bootstrap endpoint, or return `None` (leaving
 /// `state.lan_setup_bound` false) when LAN is off, no LAN IP was discovered, the
 /// CA can't be read, the TLS leaf can't be minted, or the port won't bind.
+///
+/// The served CA bytes are read once from `state.ca_path`, whose basename is
+/// asserted to be exactly `ca.cert.pem` first - the endpoint only ever serves
+/// the public CA, never the private key, and never a path derived from request
+/// input.
 #[allow(clippy::too_many_arguments)]
 async fn spawn_lan_setup(
     lan_enabled: bool,
@@ -386,8 +384,6 @@ async fn spawn_lan_setup(
         return None;
     };
 
-    // Read the PUBLIC CA into memory, from a path whose basename is asserted to
-    // be exactly `ca.cert.pem` - never the private key, never request input.
     let ca_path = &state.ca_path;
     if ca_path.file_name().and_then(|s| s.to_str()) != Some("ca.cert.pem") {
         tracing::error!(path = %ca_path.display(), "refusing to serve a non-`ca.cert.pem` file");
@@ -439,17 +435,8 @@ fn spawn_redirect_probe(
     proxy_running: bool,
     state: &Arc<crate::state::DaemonState>,
     mut shutdown_rx: watch::Receiver<bool>,
-    lan_enabled: bool,
 ) -> Option<tokio::task::JoinHandle<()>> {
     if !proxy_running || !state.https.fell_back {
-        return None;
-    }
-    // In LAN mode the advertised port is fixed (the well-known port, via the M2
-    // pf rule + the `elevate ports` prerequisite), so set it once and skip the
-    // loopback probe entirely - it would false-negative under M2 anyway.
-    if lan_enabled {
-        let port = effective_redirect_port(state.https, None, true);
-        state.redirect_https_port.store(port, Ordering::Relaxed);
         return None;
     }
     let state = state.clone();
@@ -464,7 +451,7 @@ fn spawn_redirect_probe(
                     })
                     .await
                     .unwrap_or(None);
-                    let port = effective_redirect_port(state.https, active, false);
+                    let port = effective_redirect_port(state.https, active);
                     state.redirect_https_port.store(port, Ordering::Relaxed);
                 }
                 _ = shutdown_rx.changed() => break,
@@ -481,18 +468,12 @@ fn spawn_redirect_probe(
 /// correct. When it fell back to a rootless port, a live privileged-port
 /// redirect (macOS `pf`, installed by `yerd elevate ports`) makes the
 /// well-known port reachable too, so the redirect should advertise it instead
-/// of leaking the internal fallback port into the browser's address bar.
-///
-/// In LAN mode (`lan_enabled`) the macOS loopback probe false-negatives under
-/// the M2 rule (it only detects the loopback `dev.yerd` redirect, not the LAN
-/// one), so we advertise the well-known port directly. `yerd elevate ports` is a
-/// documented macOS prerequisite for LAN, so `:443` is reachable on-host too.
-fn effective_redirect_port(
-    https: yerd_ipc::PortStatus,
-    redirect_active: Option<bool>,
-    lan_enabled: bool,
-) -> u16 {
-    if !https.fell_back || redirect_active == Some(true) || lan_enabled {
+/// of leaking the internal fallback port into the browser's address bar. This
+/// holds in LAN mode too: the loopback probe measures exactly whether `:443` is
+/// reachable on-host (via the `elevate ports` redirect), so a LAN-enabled host
+/// that hasn't elevated still advertises the reachable fallback port.
+fn effective_redirect_port(https: yerd_ipc::PortStatus, redirect_active: Option<bool>) -> u16 {
+    if !https.fell_back || redirect_active == Some(true) {
         https.requested
     } else {
         https.bound
@@ -513,45 +494,22 @@ mod redirect_port_tests {
 
     #[test]
     fn bound_on_well_known_port_ignores_the_probe() {
-        assert_eq!(effective_redirect_port(status(443, 443), None, false), 443);
-        assert_eq!(
-            effective_redirect_port(status(443, 443), Some(false), false),
-            443
-        );
-        assert_eq!(
-            effective_redirect_port(status(443, 443), Some(true), false),
-            443
-        );
+        assert_eq!(effective_redirect_port(status(443, 443), None), 443);
+        assert_eq!(effective_redirect_port(status(443, 443), Some(false)), 443);
+        assert_eq!(effective_redirect_port(status(443, 443), Some(true)), 443);
     }
 
     #[test]
     fn fallback_with_a_live_redirect_advertises_the_well_known_port() {
-        assert_eq!(
-            effective_redirect_port(status(443, 8443), Some(true), false),
-            443
-        );
+        assert_eq!(effective_redirect_port(status(443, 8443), Some(true)), 443);
     }
 
     #[test]
     fn fallback_without_a_live_redirect_advertises_the_bound_port() {
         assert_eq!(
-            effective_redirect_port(status(443, 8443), Some(false), false),
+            effective_redirect_port(status(443, 8443), Some(false)),
             8443
         );
-        assert_eq!(
-            effective_redirect_port(status(443, 8443), None, false),
-            8443
-        );
-    }
-
-    #[test]
-    fn lan_mode_advertises_the_well_known_port_despite_loopback_probe() {
-        // Under M2 the loopback probe false-negatives, but LAN mode still
-        // advertises 443 (the pf LAN rule + `elevate ports` make it reachable).
-        assert_eq!(effective_redirect_port(status(443, 8443), None, true), 443);
-        assert_eq!(
-            effective_redirect_port(status(443, 8443), Some(false), true),
-            443
-        );
+        assert_eq!(effective_redirect_port(status(443, 8443), None), 8443);
     }
 }

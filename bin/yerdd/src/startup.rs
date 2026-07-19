@@ -36,6 +36,21 @@ use crate::state::DaemonState;
 /// [`yerd_dns::Bound::local_addr`] and stored on [`Daemon::dns_addr`].
 pub const DNS_IP: IpAddr = IpAddr::V4(Ipv4Addr::LOCALHOST);
 
+/// The address to advertise for the DNS responder (reported by `DaemonInfo` and
+/// baked into `/etc/resolver/<tld>` by `yerd elevate resolver`). In LAN mode the
+/// responder binds the wildcard `0.0.0.0`, but the resolver config and the
+/// host's own queries must target a concrete loopback address - so a wildcard
+/// bound address is republished as `127.0.0.1` with the actual bound port.
+/// Non-wildcard addresses pass through unchanged.
+fn normalize_dns_advertise_addr(addr: SocketAddr) -> SocketAddr {
+    match addr.ip() {
+        IpAddr::V4(v4) if v4.is_unspecified() => {
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), addr.port())
+        }
+        _ => addr,
+    }
+}
+
 /// Everything `run()` needs to start the daemon's tasks.
 pub struct Daemon {
     /// Shared runtime state: authoritative config + live router (the proxy and
@@ -277,7 +292,7 @@ pub async fn bring_up_with_dirs(
     let dns_want = SocketAddr::new(dns_ip, cfg_dns);
     let (dns_bound, dns_addr, dns_unbound) = match yerd_dns::Bound::bind(dns_want).await {
         Ok(bound) => {
-            let addr = bound.local_addr();
+            let addr = normalize_dns_advertise_addr(bound.local_addr());
             tracing::info!(dns = %addr, "DNS responder bound");
             (Some(bound), addr, None)
         }
@@ -370,6 +385,7 @@ pub async fn bring_up_with_dirs(
         wordpress_login_prepend_script,
         wordpress_sites,
         laravel_sites,
+        lan_ip,
         lan_setup_bound: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         remote_setup_code: Mutex::new(None),
     });

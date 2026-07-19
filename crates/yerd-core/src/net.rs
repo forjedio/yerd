@@ -12,12 +12,13 @@ use std::net::{IpAddr, Ipv4Addr};
 /// a multi-homed or internet-facing host does not serve sites to arbitrary
 /// public peers. It is the single predicate the proxy accept loops, the DNS
 /// handler, and the bootstrap endpoint all share, so their scoping agrees.
+///
+/// IPv6 LAN exposure is out of scope (Yerd binds no v6 listener today), so only
+/// loopback (`::1`) and IPv4-mapped private addresses qualify on the v6 side.
 #[must_use]
 pub fn is_lan_source(ip: IpAddr) -> bool {
     match ip {
         IpAddr::V4(v4) => is_lan_source_v4(v4),
-        // IPv6 LAN exposure is out of scope; only loopback (`::1`) and IPv4-mapped
-        // private addresses are accepted. Yerd binds no v6 listener today.
         IpAddr::V6(v6) => v6.is_loopback() || v6.to_ipv4_mapped().is_some_and(is_lan_source_v4),
     }
 }
@@ -46,11 +47,10 @@ mod tests {
     }
 
     #[test]
-    fn rejects_public_and_cgnat() {
+    fn rejects_public_and_cgnat_100_64_slash_10() {
         assert!(!is_lan_source(v4(8, 8, 8, 8)));
         assert!(!is_lan_source(v4(1, 1, 1, 1)));
         assert!(!is_lan_source(v4(172, 32, 0, 1)));
-        // CGNAT 100.64/10 is deliberately excluded.
         assert!(!is_lan_source(v4(100, 64, 0, 1)));
         assert!(!is_lan_source(v4(100, 127, 255, 254)));
     }

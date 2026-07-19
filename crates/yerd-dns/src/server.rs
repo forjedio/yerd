@@ -174,14 +174,29 @@ impl AnswerAddrs {
     }
 
     /// LAN mode. `lan_v4 = Some(ip)` answers non-loopback LAN queriers with that
-    /// routable address; `None` (discovery failed) falls back to loopback
-    /// answers but keeps the source filter and AAAA-NoData behaviour.
+    /// routable address; `None` (discovery failed) yields `NoData` for those
+    /// queriers - a loopback address would be actively wrong for a remote device
+    /// (it would try to reach itself) - while keeping the source filter and
+    /// AAAA-NoData behaviour. Loopback-sourced queries are unaffected.
     #[must_use]
     pub const fn lan(lan_v4: Option<std::net::Ipv4Addr>) -> Self {
         Self {
             loopback_v4: std::net::Ipv4Addr::LOCALHOST,
             lan_v4,
             lan_mode: true,
+        }
+    }
+
+    /// The A-record address for a `.test` query from `src`, or `None` for a
+    /// `NoData` reply. Split-horizon: loopback sources (incl. the host's own)
+    /// always get `127.0.0.1`; other LAN devices in LAN mode get the routable
+    /// [`Self::lan_v4`], or `None` when discovery yielded no LAN address.
+    #[must_use]
+    fn a_record_for(&self, src: std::net::IpAddr) -> Option<std::net::Ipv4Addr> {
+        if self.lan_mode && !src.is_loopback() {
+            self.lan_v4
+        } else {
+            Some(self.loopback_v4)
         }
     }
 }
@@ -215,8 +230,6 @@ impl RequestHandler for LoopbackHandler {
         let name = raw.trim_end_matches('.');
 
         let src_ip = request.src().ip();
-        // In LAN mode, refuse queriers outside the private/local scope before
-        // answering - the DNS analogue of the proxy/bootstrap peer filter.
         let decision = if self.answer.lan_mode && !yerd_core::is_lan_source(src_ip) {
             Answer::Refused
         } else {
@@ -230,23 +243,14 @@ impl RequestHandler for LoopbackHandler {
         let owner: hickory_proto::rr::Name = q.name().into();
 
         let answers: Vec<Record> = match decision {
-            Answer::Loopback4 => {
-                // Split-horizon: loopback-sourced queries (incl. the host's own)
-                // keep resolving to loopback; other LAN devices get the routable
-                // LAN IPv4 (falling back to loopback if discovery yielded none).
-                let ip = if self.answer.lan_mode && !src_ip.is_loopback() {
-                    self.answer.lan_v4.unwrap_or(self.answer.loopback_v4)
-                } else {
-                    self.answer.loopback_v4
-                };
-                vec![Record::from_rdata(
+            Answer::Loopback4 => match self.answer.a_record_for(src_ip) {
+                Some(ip) => vec![Record::from_rdata(
                     owner,
                     crate::ANSWER_TTL_SECS,
                     RData::A(rdata::A(ip)),
-                )]
-            }
-            // In LAN mode AAAA `.test` degrades to NoData (empty, NoError) - LAN
-            // over IPv6/link-local is out of scope.
+                )],
+                None => vec![],
+            },
             Answer::Loopback6 if self.answer.lan_mode => vec![],
             Answer::Loopback6 => vec![Record::from_rdata(
                 owner,
@@ -441,13 +445,31 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn lan_mode_without_discovered_ip_falls_back_to_loopback() {
+    async fn lan_mode_remote_source_without_discovered_ip_yields_nodata() {
         let resp = handle_with(
             "test",
             "app.test.",
             RecordType::A,
             AnswerAddrs::lan(None),
             "192.168.1.9:5353",
+        )
+        .await;
+        assert_eq!(resp.response_code(), ResponseCode::NoError);
+        assert_eq!(
+            resp.answers().len(),
+            0,
+            "a remote device must get NoData, never a loopback address"
+        );
+    }
+
+    #[tokio::test]
+    async fn lan_mode_loopback_source_without_discovered_ip_still_gets_loopback() {
+        let resp = handle_with(
+            "test",
+            "app.test.",
+            RecordType::A,
+            AnswerAddrs::lan(None),
+            "127.0.0.1:5353",
         )
         .await;
         assert_eq!(only_a(&resp), std::net::Ipv4Addr::LOCALHOST);

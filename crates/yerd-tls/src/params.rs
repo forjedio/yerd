@@ -53,6 +53,11 @@ pub(crate) fn ca_params(
 }
 
 /// Build `CertificateParams` for a leaf signed by a CA.
+///
+/// Each name that parses as an IP literal becomes an `iPAddress` SAN; everything
+/// else becomes a `dNSName`. A TLS client connecting to a raw IP (e.g. the LAN
+/// bootstrap endpoint, which the device reaches before it can resolve `.test`)
+/// matches only `iPAddress` SANs, never a `dNSName` carrying the address text.
 pub(crate) fn leaf_params(
     names: &[String],
     validity: Validity,
@@ -65,10 +70,6 @@ pub(crate) fn leaf_params(
 
     let mut sans = Vec::with_capacity(names.len());
     for (index, name) in names.iter().enumerate() {
-        // A name that parses as an IP literal becomes an `iPAddress` SAN: TLS
-        // clients connecting to a raw IP (e.g. the LAN bootstrap endpoint, which
-        // the device reaches before it can resolve `.test`) match only
-        // iPAddress SANs, never a dNSName carrying the address text.
         if let Ok(ip) = name.parse::<std::net::IpAddr>() {
             sans.push(SanType::IpAddress(ip));
             continue;

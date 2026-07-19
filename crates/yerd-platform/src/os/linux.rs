@@ -464,4 +464,35 @@ mod tests {
             assert!(read_real_uid().is_some());
         }
     }
+
+    #[test]
+    #[allow(clippy::unwrap_used)]
+    fn bind_pair_impl_lan_binds_wildcard() {
+        let pair = bind_pair_impl(true, (0, 0), (0, 0)).unwrap();
+        assert_eq!(
+            pair.http.listener.local_addr().unwrap().ip(),
+            std::net::IpAddr::V4(Ipv4Addr::UNSPECIFIED)
+        );
+        assert_eq!(
+            pair.https.listener.local_addr().unwrap().ip(),
+            std::net::IpAddr::V4(Ipv4Addr::UNSPECIFIED)
+        );
+    }
+
+    #[test]
+    #[allow(clippy::unwrap_used)]
+    fn bind_pair_impl_lan_fallback_still_binds_wildcard() {
+        let occupied = bind_at(Ipv4Addr::UNSPECIFIED, 0).unwrap();
+        let taken = occupied.local_addr().unwrap().port();
+        let pair = bind_pair_impl(true, (taken, 0), (0, 0)).unwrap();
+        assert_eq!(
+            pair.http.listener.local_addr().unwrap().ip(),
+            std::net::IpAddr::V4(Ipv4Addr::UNSPECIFIED)
+        );
+        assert_eq!(
+            pair.https.listener.local_addr().unwrap().ip(),
+            std::net::IpAddr::V4(Ipv4Addr::UNSPECIFIED)
+        );
+        assert_ne!(pair.http.port().unwrap(), taken);
+    }
 }

@@ -64,13 +64,13 @@ fn request_mint_remote_setup_code_byte_shape() {
 fn response_remote_setup_byte_shape() {
     let r = Response::RemoteSetup {
         code: "deadbeef".into(),
-        url: "http://192.168.1.42:7073/remote-setup?code=deadbeef".into(),
+        url: "https://192.168.1.42:7073/remote-setup?code=deadbeef".into(),
         ca_fingerprint: "ab".repeat(32),
         expires_in_secs: 900,
     };
     let s = serde_json::to_string(&r).unwrap();
     let expected = format!(
-        r#"{{"type":"remote_setup","code":"deadbeef","url":"http://192.168.1.42:7073/remote-setup?code=deadbeef","ca_fingerprint":"{}","expires_in_secs":900}}"#,
+        r#"{{"type":"remote_setup","code":"deadbeef","url":"https://192.168.1.42:7073/remote-setup?code=deadbeef","ca_fingerprint":"{}","expires_in_secs":900}}"#,
         "ab".repeat(32)
     );
     assert_eq!(s, expected);
@@ -680,7 +680,11 @@ fn response_info_byte_shape() {
         lan_ip: Some("192.168.1.42".parse().unwrap()),
     };
     let s2 = serde_json::to_string(&with_lan).unwrap();
-    assert!(s2.contains(r#""lan_ip":"192.168.1.42""#), "got {s2}");
+    let expected_lan = format!(
+        r#"{{"type":"info","dns_addr":"127.0.0.1:1053","tld":"test","ca_path":"/x","ca_fingerprint":"{}","http_port":8080,"https_port":8443,"fallback_http":8080,"fallback_https":8443,"dns_port":1053,"lan_ip":"192.168.1.42"}}"#,
+        "ab".repeat(32)
+    );
+    assert_eq!(s2, expected_lan);
     assert_eq!(serde_json::from_str::<Response>(&s2).unwrap(), with_lan);
 
     let legacy = format!(

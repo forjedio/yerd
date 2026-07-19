@@ -23,6 +23,13 @@ use crate::ops::{atomic_write, run_command};
 
 // ---- install -------------------------------------------------------------
 
+/// Install the macOS M2 LAN pf redirect: inbound `http_from`/`https_from` on the
+/// host's `lan_ip` are carried to the daemon's rootless `http_to`/`https_to` on
+/// that same address, in the separate `dev.yerd.lan` anchor.
+///
+/// Validates its own inputs (defence in depth): `lan_ip` must be a real routable
+/// address - never loopback or unspecified - and the ports must be non-zero, so a
+/// forged or mistaken invocation cannot install a bogus rule.
 #[cfg(target_os = "macos")]
 pub fn install_lan_port_redirect(
     lan_ip: std::net::Ipv4Addr,
@@ -31,9 +38,6 @@ pub fn install_lan_port_redirect(
     https_from: u16,
     https_to: u16,
 ) -> Result<(), HelperError> {
-    // Defence in depth: the helper validates its own inputs, independent of the
-    // caller. A redirect target must be a real routable address - never loopback
-    // or unspecified - so a forged/mistaken invocation can't install a bogus rule.
     if lan_ip.is_loopback() || lan_ip.is_unspecified() {
         return Err(HelperError::Validation {
             reason: ValidationReason::LanIpInvalid,
@@ -97,6 +101,9 @@ pub fn install_lan_port_redirect(
 
 // ---- uninstall -----------------------------------------------------------
 
+/// Remove the macOS LAN pf redirect: tear down the boot `LaunchDaemon`, strip the
+/// `dev.yerd.lan` refs from `/etc/pf.conf` and reload, then delete the anchor and
+/// plist files. Idempotent; the loopback `dev.yerd` anchor is untouched.
 #[cfg(target_os = "macos")]
 pub fn uninstall_lan_port_redirect() -> Result<(), HelperError> {
     ignore_command_failure(run_command(
@@ -163,6 +170,8 @@ fn remove_if_present(path: &str) -> Result<(), HelperError> {
 
 // ---- non-macOS -----------------------------------------------------------
 
+/// The LAN pf redirect is macOS-only (Linux binds `0.0.0.0` directly after
+/// `setcap`), so this is unsupported off macOS.
 #[cfg(not(target_os = "macos"))]
 pub fn install_lan_port_redirect(
     _: std::net::Ipv4Addr,
@@ -176,6 +185,7 @@ pub fn install_lan_port_redirect(
     })
 }
 
+/// Unsupported off macOS (see [`install_lan_port_redirect`]).
 #[cfg(not(target_os = "macos"))]
 pub fn uninstall_lan_port_redirect() -> Result<(), HelperError> {
     Err(HelperError::Unsupported {

@@ -108,8 +108,9 @@ pub enum Response {
     RemoteSetup {
         /// The one-time code (URL-safe), embedded in `url`.
         code: String,
-        /// The bootstrap URL the remote device fetches (`http://<lan_ip>:<port>/
-        /// remote-setup?code=<code>`).
+        /// The HTTPS script URL the remote device fetches
+        /// (`https://<lan_ip>:<port>/remote-setup?code=<code>`); the CLI derives
+        /// the plain-HTTP, code-less CA URL from it.
         url: String,
         /// The CA's SHA-256 fingerprint (64 lowercase hex), which the user
         /// copy-pastes to the device so the installer can verify the CA
@@ -660,7 +661,7 @@ mod variant_name_pinning {
         });
         pin_response(Response::RemoteSetup {
             code: "abc123".into(),
-            url: "http://192.168.1.42:7073/remote-setup?code=abc123".into(),
+            url: "https://192.168.1.42:7073/remote-setup?code=abc123".into(),
             ca_fingerprint: "ab".repeat(32),
             expires_in_secs: 900,
         });

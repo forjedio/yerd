@@ -334,6 +334,9 @@ fn status_is_trimmed_to_what_an_agent_can_act_on() {
         "resolver_backup",
         "port_redirect",
         "shared_sites",
+        "lan_enabled",
+        "lan_ip",
+        "lan_setup_bound",
     ] {
         assert!(
             s.get(dropped).is_none(),

@@ -21,7 +21,7 @@
 use std::convert::Infallible;
 use std::net::Ipv4Addr;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use http_body_util::Full;
 use hyper::body::Bytes;
@@ -29,7 +29,7 @@ use hyper::service::service_fn;
 use hyper::{Method, Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::watch;
+use tokio::sync::{watch, Semaphore};
 use tokio_rustls::TlsAcceptor;
 
 use crate::state::DaemonState;
@@ -49,10 +49,14 @@ pub struct SetupContext {
     pub state: Arc<DaemonState>,
 }
 
-/// A private-IP peer gets this many wrong-code tries before the code is
-/// invalidated (lockout). The code is 128-bit, so brute-force is already
-/// infeasible; this is defence in depth.
-const MAX_CODE_ATTEMPTS: u32 = 20;
+/// Cap on concurrent bootstrap connections, so a peer can't exhaust the daemon
+/// by opening many slow connections. Small: a real bootstrap is a couple of
+/// short-lived fetches.
+const MAX_CONNS: usize = 32;
+
+/// End-to-end deadline for one connection (peek + TLS handshake + one request),
+/// so a stalled/slow-loris connection is dropped rather than held open.
+const CONN_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// Serve until `shutdown` resolves. Non-LAN peers are dropped at accept.
 pub async fn serve(
@@ -62,6 +66,7 @@ pub async fn serve(
     mut shutdown: watch::Receiver<bool>,
 ) {
     let acceptor = TlsAcceptor::from(tls_config);
+    let limit = Arc::new(Semaphore::new(MAX_CONNS));
     loop {
         tokio::select! {
             accepted = listener.accept() => {
@@ -72,14 +77,19 @@ pub async fn serve(
                         continue;
                     }
                 };
-                // Blast-radius reduction (not auth): only private/link-local peers.
                 if !yerd_core::is_lan_source(peer.ip()) {
                     continue;
                 }
+                let Ok(permit) = Arc::clone(&limit).try_acquire_owned() else {
+                    tracing::debug!("lan setup: connection cap reached, dropping");
+                    continue;
+                };
                 let acceptor = acceptor.clone();
                 let ctx = Arc::clone(&ctx);
                 tokio::spawn(async move {
-                    handle_conn(stream, acceptor, ctx).await;
+                    let _permit = permit;
+                    let _ = tokio::time::timeout(CONN_TIMEOUT, handle_conn(stream, acceptor, ctx))
+                        .await;
                 });
             }
             _ = shutdown.changed() => break,
@@ -89,11 +99,11 @@ pub async fn serve(
 
 async fn handle_conn(stream: TcpStream, acceptor: TlsAcceptor, ctx: Arc<SetupContext>) {
     let mut first = [0u8; 1];
-    match stream.peek(&mut first).await {
-        Ok(n) if n >= 1 => {}
+    let is_tls = match stream.peek(&mut first).await {
+        Ok(n) if n >= 1 => first.first() == Some(&0x16),
         _ => return,
-    }
-    if first[0] == 0x16 {
+    };
+    if is_tls {
         match acceptor.accept(stream).await {
             Ok(tls) => serve_conn(TokioIo::new(tls), ctx, true).await,
             Err(e) => tracing::debug!(error = %e, "lan setup: TLS handshake failed"),
@@ -131,6 +141,10 @@ enum Decision {
     Text(StatusCode, &'static str),
 }
 
+/// Route the request. The CA route needs **no** code - the CA is public and this
+/// is the only plaintext step, so requiring a code here would just leak it over
+/// HTTP. The code is required (and single-use-consumed) only on the terminal,
+/// HTTPS-only script route, so it never travels in cleartext.
 async fn decide(
     ctx: &SetupContext,
     is_get: bool,
@@ -141,19 +155,8 @@ async fn decide(
     if !is_get {
         return Decision::Text(StatusCode::METHOD_NOT_ALLOWED, "GET only");
     }
-    let Some(code) = pure::extract_code(query) else {
-        return Decision::Text(StatusCode::FORBIDDEN, "missing code");
-    };
     match pure::classify(path) {
-        pure::Route::Ca => {
-            // Validate but do NOT consume - the CA is public and gets verified
-            // out of band; consuming here would 403 the terminal script fetch.
-            if check_code(&ctx.state, &code, false).await {
-                Decision::Ca
-            } else {
-                Decision::Text(StatusCode::FORBIDDEN, "invalid code")
-            }
-        }
+        pure::Route::Ca => Decision::Ca,
         pure::Route::Script => {
             if !tls {
                 return Decision::Text(
@@ -161,8 +164,10 @@ async fn decide(
                     "the installer must be fetched over HTTPS - use the command from `yerd remote-setup`",
                 );
             }
-            // Terminal step: consume the code (single-use).
-            if check_code(&ctx.state, &code, true).await {
+            let Some(code) = pure::extract_code(query) else {
+                return Decision::Text(StatusCode::FORBIDDEN, "missing code");
+            };
+            if consume_code(&ctx.state, &code).await {
                 Decision::Script
             } else {
                 Decision::Text(StatusCode::FORBIDDEN, "invalid code")
@@ -195,28 +200,21 @@ async fn handle_request(
     }
 }
 
-/// Check `candidate` against the live one-time code. `consume` marks it used on a
-/// match (the terminal script fetch). A wrong guess increments the attempt
-/// counter and invalidates the code past [`MAX_CODE_ATTEMPTS`].
-async fn check_code(state: &DaemonState, candidate: &str, consume: bool) -> bool {
+/// Constant-time-compare `candidate` against the live one-time code and, on a
+/// match, mark it used (single-use). A mismatch is a plain rejection with **no**
+/// mutation, so an unauthenticated peer's wrong guesses cannot revoke the
+/// freshly minted code (the 128-bit code makes brute-force infeasible without a
+/// lockout).
+async fn consume_code(state: &DaemonState, candidate: &str) -> bool {
     let now = Instant::now();
     let mut guard = state.remote_setup_code.lock().await;
     let Some(code) = guard.as_mut() else {
         return false;
     };
-    if code.used || code.expires_at <= now {
+    if code.used || code.expires_at <= now || !pure::ct_eq(&code.value, candidate) {
         return false;
     }
-    if !pure::ct_eq(&code.value, candidate) {
-        code.attempts = code.attempts.saturating_add(1);
-        if code.attempts >= MAX_CODE_ATTEMPTS {
-            code.used = true;
-        }
-        return false;
-    }
-    if consume {
-        code.used = true;
-    }
+    code.used = true;
     true
 }
 
@@ -340,27 +338,35 @@ install)
     echo "Installed. .$TLD now resolves via $SERVER_IP (DNS $DNS_PORT)."
     ;;
   Linux)
-    if command -v update-ca-certificates >/dev/null 2>&1; then
-      cp "$CA" "/usr/local/share/ca-certificates/yerd-$TLD.crt"
-      update-ca-certificates >/dev/null
-    elif command -v update-ca-trust >/dev/null 2>&1; then
-      cp "$CA" "/etc/pki/ca-trust/source/anchors/yerd-$TLD.pem"
-      update-ca-trust
-    else
-      echo "error: no CA trust tool found (update-ca-certificates / update-ca-trust)" >&2
-      exit 1
-    fi
+    # Decide the resolver target BEFORE touching the trust store, so an
+    # unsupported host fails without leaving a stranded CA behind.
     if [ -d /etc/NetworkManager/dnsmasq.d ]; then
-      printf 'server=/%s/%s#%s\n' "$TLD" "$SERVER_IP" "$DNS_PORT" > "/etc/NetworkManager/dnsmasq.d/yerd-$TLD.conf"
-      systemctl reload NetworkManager 2>/dev/null || true
+      RESOLVER_CONF="/etc/NetworkManager/dnsmasq.d/yerd-$TLD.conf"
+      RESOLVER_RELOAD="systemctl reload NetworkManager"
     elif [ -d /etc/dnsmasq.d ]; then
-      printf 'server=/%s/%s#%s\n' "$TLD" "$SERVER_IP" "$DNS_PORT" > "/etc/dnsmasq.d/yerd-$TLD.conf"
-      systemctl restart dnsmasq 2>/dev/null || true
+      RESOLVER_CONF="/etc/dnsmasq.d/yerd-$TLD.conf"
+      RESOLVER_RELOAD="systemctl restart dnsmasq"
     else
       echo "error: unsupported resolver setup - install dnsmasq or use NetworkManager." >&2
       echo "       (systemd-resolved alone cannot forward a single domain to a custom port.)" >&2
       exit 1
     fi
+    if command -v update-ca-certificates >/dev/null 2>&1; then
+      CA_DEST="/usr/local/share/ca-certificates/yerd-$TLD.crt"; CA_REFRESH="update-ca-certificates"
+    elif command -v update-ca-trust >/dev/null 2>&1; then
+      CA_DEST="/etc/pki/ca-trust/source/anchors/yerd-$TLD.pem"; CA_REFRESH="update-ca-trust"
+    else
+      echo "error: no CA trust tool found (update-ca-certificates / update-ca-trust)" >&2
+      exit 1
+    fi
+    # Roll the CA back if the resolver step below fails, so we don't leave the
+    # device trusting a CA whose .test names it can't resolve.
+    cp "$CA" "$CA_DEST"
+    trap 'rm -f "$CA_DEST"; $CA_REFRESH >/dev/null 2>&1 || true' EXIT
+    $CA_REFRESH >/dev/null
+    printf 'server=/%s/%s#%s\n' "$TLD" "$SERVER_IP" "$DNS_PORT" > "$RESOLVER_CONF"
+    $RESOLVER_RELOAD 2>/dev/null || true
+    trap - EXIT
     echo "Installed. .$TLD now resolves via $SERVER_IP (DNS $DNS_PORT)."
     ;;
   *)
@@ -373,7 +379,15 @@ uninstall)
   case "$os" in
   Darwin)
     rm -f "/etc/resolver/$TLD"
-    security delete-certificate -c "Yerd Local CA" /Library/Keychains/System.keychain 2>/dev/null || true
+    # Delete each matching Yerd CA by its exact SHA-1 hash (not just the common
+    # name), clearing that certificate's trust settings too.
+    security find-certificate -a -Z -c "Yerd Local CA" /Library/Keychains/System.keychain 2>/dev/null \
+      | awk '/SHA-1 hash:/ {print $NF}' \
+      | while read -r h; do
+          [ -n "$h" ] || continue
+          security remove-trusted-cert -d -Z "$h" 2>/dev/null || true
+          security delete-certificate -Z "$h" /Library/Keychains/System.keychain 2>/dev/null || true
+        done
     ;;
   Linux)
     rm -f "/usr/local/share/ca-certificates/yerd-$TLD.crt" "/etc/pki/ca-trust/source/anchors/yerd-$TLD.pem"
@@ -426,16 +440,43 @@ esac
             assert!(s.contains("SERVER_IP=\"192.168.1.42\""));
             assert!(s.contains("TLD=\"test\""));
             assert!(s.contains("DNS_PORT=\"1053\""));
-            // DER fingerprint verify, not a PEM-file hash (R3-M1).
-            assert!(s.contains("openssl x509 -in \"$CA\" -noout -fingerprint -sha256"));
+            assert!(
+                s.contains("openssl x509 -in \"$CA\" -noout -fingerprint -sha256"),
+                "verifies the DER fingerprint, not a PEM-file hash (R3-M1)"
+            );
             assert!(!s.contains("shasum"), "must not hash the PEM file");
-            // Per-OS branches + systemd-resolved-alone refusal.
             assert!(s.contains("Darwin)"));
             assert!(s.contains("/etc/resolver/$TLD"));
             assert!(s.contains("server=/%s/%s#%s"));
             assert!(s.contains("systemd-resolved alone cannot forward"));
-            // Uninstall mode.
             assert!(s.contains("uninstall)"));
+        }
+
+        #[test]
+        fn installer_script_linux_checks_resolver_before_installing_ca_and_rolls_back() {
+            let s = installer_script(Ipv4Addr::new(10, 0, 0, 5), "test", 1053);
+            let resolver_check = s
+                .find("unsupported resolver setup")
+                .expect("resolver support is validated");
+            let ca_copy = s.find("cp \"$CA\"").expect("CA is installed");
+            assert!(
+                resolver_check < ca_copy,
+                "resolver support must be checked before the CA is installed"
+            );
+            assert!(
+                s.contains("trap 'rm -f \"$CA_DEST\""),
+                "the CA is rolled back if the resolver step fails"
+            );
+        }
+
+        #[test]
+        fn installer_script_uninstall_deletes_the_ca_by_hash_not_common_name() {
+            let s = installer_script(Ipv4Addr::new(10, 0, 0, 5), "test", 1053);
+            assert!(s.contains("SHA-1 hash:"), "identifies the cert by its hash");
+            assert!(
+                s.contains("security delete-certificate -Z"),
+                "deletes by hash, not `-c <common-name>`"
+            );
         }
     }
 }
@@ -464,55 +505,58 @@ mod endpoint_tests {
             value: value.to_owned(),
             expires_at: Instant::now() + Duration::from_secs(60),
             used: false,
-            attempts: 0,
         });
     }
 
     #[tokio::test]
-    async fn ca_route_needs_valid_code_but_does_not_consume() {
+    async fn ca_route_serves_without_a_code_so_the_code_never_rides_http() {
         let tmp = tempfile::tempdir().unwrap();
         let state = Arc::new(state_in(tmp.path()));
         seed(&state, "good").await;
         let ctx = ctx_with_code(Arc::clone(&state));
 
-        // Bad code → 403.
-        assert!(matches!(
-            decide(&ctx, true, "/remote-setup/ca", Some("code=bad"), false).await,
-            Decision::Text(StatusCode::FORBIDDEN, _)
-        ));
-        // Good code → CA, and it stays usable (not consumed).
         assert_eq!(
-            decide(&ctx, true, "/remote-setup/ca", Some("code=good"), false).await,
+            decide(&ctx, true, "/remote-setup/ca", None, false).await,
             Decision::Ca
         );
         assert_eq!(
-            decide(&ctx, true, "/remote-setup/ca", Some("code=good"), false).await,
+            decide(&ctx, true, "/remote-setup/ca", Some("code=anything"), false).await,
             Decision::Ca
         );
     }
 
     #[tokio::test]
-    async fn script_route_requires_https_and_is_single_use() {
+    async fn script_route_requires_https_and_a_code_and_is_single_use() {
         let tmp = tempfile::tempdir().unwrap();
         let state = Arc::new(state_in(tmp.path()));
         seed(&state, "good").await;
         let ctx = ctx_with_code(Arc::clone(&state));
 
-        // Plaintext script fetch is refused.
-        assert!(matches!(
-            decide(&ctx, true, "/remote-setup", Some("code=good"), false).await,
-            Decision::Text(StatusCode::FORBIDDEN, _)
-        ));
-        // Over TLS with the right code → script, and it consumes the code.
+        assert!(
+            matches!(
+                decide(&ctx, true, "/remote-setup", Some("code=good"), false).await,
+                Decision::Text(StatusCode::FORBIDDEN, _)
+            ),
+            "plaintext script fetch must be refused"
+        );
+        assert!(
+            matches!(
+                decide(&ctx, true, "/remote-setup", None, true).await,
+                Decision::Text(StatusCode::FORBIDDEN, _)
+            ),
+            "HTTPS script fetch without a code is refused"
+        );
         assert_eq!(
             decide(&ctx, true, "/remote-setup", Some("code=good"), true).await,
             Decision::Script
         );
-        // Replay is rejected (single-use).
-        assert!(matches!(
-            decide(&ctx, true, "/remote-setup", Some("code=good"), true).await,
-            Decision::Text(StatusCode::FORBIDDEN, _)
-        ));
+        assert!(
+            matches!(
+                decide(&ctx, true, "/remote-setup", Some("code=good"), true).await,
+                Decision::Text(StatusCode::FORBIDDEN, _)
+            ),
+            "replay is rejected (single-use)"
+        );
     }
 
     #[tokio::test]
@@ -523,33 +567,29 @@ mod endpoint_tests {
         let ctx = ctx_with_code(Arc::clone(&state));
 
         assert!(matches!(
-            decide(&ctx, false, "/remote-setup/ca", Some("code=good"), false).await,
+            decide(&ctx, false, "/remote-setup/ca", None, false).await,
             Decision::Text(StatusCode::METHOD_NOT_ALLOWED, _)
         ));
         assert!(matches!(
             decide(&ctx, true, "/nope", Some("code=good"), true).await,
             Decision::Text(StatusCode::NOT_FOUND, _)
         ));
-        assert!(matches!(
-            decide(&ctx, true, "/remote-setup/ca", None, false).await,
-            Decision::Text(StatusCode::FORBIDDEN, _)
-        ));
     }
 
     #[tokio::test]
-    async fn wrong_code_lockout_invalidates() {
+    async fn wrong_guesses_do_not_revoke_the_minted_code() {
         let tmp = tempfile::tempdir().unwrap();
         let state = Arc::new(state_in(tmp.path()));
         seed(&state, "good").await;
         let ctx = ctx_with_code(Arc::clone(&state));
 
-        for _ in 0..MAX_CODE_ATTEMPTS {
-            let _ = decide(&ctx, true, "/remote-setup/ca", Some("code=bad"), false).await;
+        for _ in 0..50 {
+            let _ = decide(&ctx, true, "/remote-setup", Some("code=bad"), true).await;
         }
-        // After the lockout the correct code no longer works.
-        assert!(matches!(
-            decide(&ctx, true, "/remote-setup/ca", Some("code=good"), false).await,
-            Decision::Text(StatusCode::FORBIDDEN, _)
-        ));
+        assert_eq!(
+            decide(&ctx, true, "/remote-setup", Some("code=good"), true).await,
+            Decision::Script,
+            "an unauthenticated peer's wrong guesses must not lock out the legit device"
+        );
     }
 }

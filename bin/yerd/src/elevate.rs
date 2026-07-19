@@ -139,7 +139,7 @@ mod unix_impl {
         match spawn_helper(helper, &inv)? {
             Some(0) => {
                 println!("    ok");
-                if target == ElevateTarget::Ports && !undo {
+                if !undo && (target == ElevateTarget::Ports || target == ElevateTarget::Lan) {
                     #[cfg(not(target_os = "macos"))]
                     {
                         println!(
@@ -150,11 +150,18 @@ mod unix_impl {
                         );
                     }
                     #[cfg(target_os = "macos")]
-                    {
+                    if target == ElevateTarget::Ports {
                         println!("    the pf redirect is live now; no daemon restart needed.");
                         println!(
                             "    secure sites' HTTP→HTTPS redirects will drop the :{} port within a few seconds.",
                             facts.https_port
+                        );
+                    } else {
+                        println!(
+                            "    the LAN pf redirect is live now; other devices can reach 80/443 on {}.",
+                            facts
+                                .lan_ip
+                                .map_or_else(|| "your LAN IP".to_owned(), |ip| ip.to_string())
                         );
                     }
                 }

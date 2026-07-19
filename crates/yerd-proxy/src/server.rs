@@ -77,10 +77,13 @@ impl ProxyServer {
     /// Spawns one task per accepted connection; cancels them on shutdown
     /// via an internal `Notify`. In-flight requests run to their (hyper-
     /// default) timeouts.
-    /// `peer_filter` (set from `config.lan_enabled`) drops connections whose peer
-    /// is not [`yerd_core::is_lan_source`] on **both** the HTTP and HTTPS accept
-    /// loops before serving - a blast-radius reducer for the `0.0.0.0` bind in
-    /// LAN mode, so a public/VPN peer is never served. It is not authentication.
+    /// `peer_filter` (set from `config.lan_enabled`) filters connections on
+    /// **both** the HTTP and HTTPS accept loops by [`yerd_core::is_lan_source`]
+    /// before serving: a peer whose source address is not RFC1918 / link-local /
+    /// loopback is dropped. It is a blast-radius reducer for the `0.0.0.0` bind in
+    /// LAN mode - a source-address check only, not authentication, and it does not
+    /// enforce a particular subnet or interface (a private-range VPN peer, for
+    /// example, still passes).
     #[allow(
         clippy::too_many_arguments,
         clippy::too_many_lines,

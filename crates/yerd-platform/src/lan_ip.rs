@@ -115,11 +115,11 @@ mod tests {
         ));
     }
 
+    /// On a netless CI host discovery errors; on a networked host it yields a
+    /// routable IPv4. Both are acceptable - this only asserts it never reports
+    /// loopback/unspecified as a "success".
     #[test]
     fn active_returns_non_loopback_or_fails_closed() {
-        // On a CI host with no route this errors; on a networked host it yields a
-        // routable IPv4. Both are acceptable - we only assert it never returns
-        // loopback/unspecified as a "success".
         match ActiveLanIpProvider::new().lan_ipv4() {
             Ok(ip) => {
                 assert!(!ip.is_loopback());

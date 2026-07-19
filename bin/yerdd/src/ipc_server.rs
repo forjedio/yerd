@@ -141,15 +141,6 @@ async fn dispatch(req: Request, state: &DaemonState) -> Response {
         },
         Request::DaemonInfo => {
             let cfg = state.config.lock().await;
-            // Discover the LAN IP only when LAN mode is on (best-effort - the
-            // macOS `elevate lan` flow needs it, and the sudo-side helper can't
-            // discover it itself).
-            let lan_ip = if cfg.lan_enabled {
-                use yerd_platform::LanIpProvider as _;
-                yerd_platform::ActiveLanIpProvider::new().lan_ipv4().ok()
-            } else {
-                None
-            };
             Response::Info {
                 dns_addr: state.dns_addr,
                 tld: cfg.tld.as_str().to_owned(),
@@ -160,7 +151,7 @@ async fn dispatch(req: Request, state: &DaemonState) -> Response {
                 fallback_http: cfg.ports.fallback_http,
                 fallback_https: cfg.ports.fallback_https,
                 dns_port: cfg.dns_port,
-                lan_ip,
+                lan_ip: state.lan_ip,
             }
         }
         Request::Park { .. }
@@ -687,12 +678,10 @@ async fn build_status_report(state: &DaemonState) -> yerd_ipc::StatusReport {
     // LAN effective signals: discover the IP (gated on LAN being on) and read
     // whether the bootstrap listener actually bound. `None` when LAN is off.
     let (lan_ip, lan_setup_bound) = if lan_enabled {
-        use yerd_platform::LanIpProvider as _;
-        let ip = yerd_platform::ActiveLanIpProvider::new().lan_ipv4().ok();
         let bound = state
             .lan_setup_bound
             .load(std::sync::atomic::Ordering::Relaxed);
-        (ip, Some(bound))
+        (state.lan_ip, Some(bound))
     } else {
         (None, None)
     };
@@ -1902,15 +1891,12 @@ async fn mint_remote_setup_code(state: &DaemonState) -> Response {
                 .to_owned(),
         );
     }
-    let lan_ip = {
-        use yerd_platform::LanIpProvider as _;
-        match yerd_platform::ActiveLanIpProvider::new().lan_ipv4() {
-            Ok(ip) => ip,
-            Err(e) => return internal(format!("LAN IP discovery failed: {e}")),
-        }
+    // Use the SAME startup-discovered IP that the bootstrap TLS cert's SAN was
+    // minted from, so the printed URL and the cert never disagree.
+    let Some(lan_ip) = state.lan_ip else {
+        return lan_not_ready("the LAN IP isn't known (restart the daemon)".to_owned());
     };
 
-    // 128-bit code from the CSPRNG, hex-encoded (URL-safe).
     let mut bytes = [0u8; 16];
     {
         use rand::RngCore as _;
@@ -1922,11 +1908,8 @@ async fn mint_remote_setup_code(state: &DaemonState) -> Response {
         value: code.clone(),
         expires_at: std::time::Instant::now() + REMOTE_SETUP_CODE_TTL,
         used: false,
-        attempts: 0,
     });
 
-    // The script is fetched over fingerprint-anchored HTTPS; the CLI derives the
-    // plain-HTTP CA URL (the only plaintext step) from this base.
     let url = format!("https://{lan_ip}:{lan_setup_port}/remote-setup?code={code}");
     Response::RemoteSetup {
         code,

@@ -27,7 +27,7 @@ sudo yerd unelevate trust    # just untrust the CA
 sudo yerd unelevate lan      # remove the LAN redirect (macOS)
 ```
 
-With no target, `elevate`/`unelevate` apply the core three in the order `trust -> resolver -> ports`. `lan` is separate and opt-in - it is not part of "all", and you run it only after `yerd lan enable`.
+With no target, `elevate`/`unelevate` apply **only** the core three in the order `trust -> resolver -> ports`. `lan` is separate and opt-in - it is **not** part of the no-target "all", and you run it only after `yerd lan enable`, so `unelevate` with no target does not remove the LAN redirect. A full [`yerd uninstall`](./uninstall) does additionally tear down the LAN pf redirect and its state, so nothing is left behind after a complete uninstall.
 
 ::: warning Platform differences
 - **Linux:** `ports` is a one-time `setcap cap_net_bind_service` grant on `yerdd`. After granting it, restart the daemon for 80/443 to take effect. There's no clean reverse operation, so `unelevate ports` only prints the manual `setcap -r` command rather than running it. Package upgrades reset `setcap`, so re-run `elevate ports` afterwards. `lan` reuses the same `setcap` grant (a wildcard bind needs the same capability), so on Linux `elevate lan` is equivalent to `elevate ports`.

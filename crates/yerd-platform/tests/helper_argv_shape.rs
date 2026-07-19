@@ -183,9 +183,12 @@ fn lan_port_redirect_round_trips_through_argv() {
         HelperInvocation::UninstallLanPortRedirect,
     ] {
         let argv = inv.to_argv();
-        // Re-serialising the parsed invocation reproduces the argv byte-for-byte.
         let reparsed = HelperInvocation::from_argv(&argv).unwrap();
-        assert_eq!(reparsed.to_argv(), argv);
+        assert_eq!(
+            reparsed.to_argv(),
+            argv,
+            "re-serialising the parsed invocation reproduces the argv byte-for-byte"
+        );
     }
 }
 
