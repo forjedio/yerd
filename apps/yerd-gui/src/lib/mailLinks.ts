@@ -356,6 +356,54 @@ function stripRemoteResources(doc: Document): void {
 }
 
 /**
+ * Presentation-only declarations carried over from `<body>`. Deliberately
+ * excludes positioning and sizing so a captured message cannot lay itself over
+ * the surrounding app chrome.
+ */
+const BODY_STYLE_ALLOWLIST = [
+  "background",
+  "color",
+  "font",
+  "margin",
+  "padding",
+  "line-height",
+  "text-align",
+  "letter-spacing",
+  "word-spacing",
+  "direction",
+];
+
+/**
+ * Read the sanitized `<body>` presentation so a Shadow DOM host can stand in
+ * for the document canvas. Mail templates put their page background and reset
+ * (`margin: 0`) on `<body>`; without this the wrapper ignores both and the
+ * message ends up framed in the host's own background.
+ */
+function bodyPresentationStyle(doc: Document): string {
+  const body = doc.body;
+  if (!body) return "";
+  const decl = body.style;
+  const bgcolor = body.getAttribute("bgcolor")?.trim();
+  if (bgcolor && !decl.getPropertyValue("background-color")) {
+    decl.setProperty("background-color", bgcolor);
+  }
+  const parts: string[] = [];
+  for (let index = 0; index < decl.length; index += 1) {
+    const name = decl.item(index);
+    if (!name) continue;
+    const allowed = BODY_STYLE_ALLOWLIST.some(
+      (prop) => name === prop || name.startsWith(`${prop}-`),
+    );
+    if (!allowed) continue;
+    const value = decl.getPropertyValue(name);
+    if (!value) continue;
+    const priority = decl.getPropertyPriority(name);
+    parts.push(`${name}: ${value}${priority ? ` !${priority}` : ""}`);
+  }
+  return parts.join("; ");
+}
+
+/**
  * Sanitize a captured HTML email with DOMPurify and stamp openable anchors.
  * Preserves inline `<style>` blocks. Remote stylesheets, images, and CSS URLs
  * are stripped unless `loadRemoteContent` is true.
@@ -363,7 +411,7 @@ function stripRemoteResources(doc: Document): void {
 export function buildMailFrameDocument(
   html: string,
   options: BuildMailFrameOptions = {},
-): { head: string; body: string } {
+): { head: string; body: string; bodyStyle: string } {
   const cleaned = DOMPurify.sanitize(html, MAIL_PURIFY_CONFIG);
   const doc = new DOMParser().parseFromString(cleaned, "text/html");
   filterHeadHazards(doc);
@@ -372,6 +420,7 @@ export function buildMailFrameDocument(
   return {
     head: doc.head?.innerHTML ?? "",
     body: doc.body?.innerHTML ?? "",
+    bodyStyle: bodyPresentationStyle(doc),
   };
 }
 
