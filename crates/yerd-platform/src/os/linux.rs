@@ -230,7 +230,6 @@ impl ResolverInstaller for LinuxResolverInstaller {
             });
         }
 
-        // Prefer a matching resolved route, then check NetworkManager files.
         let drop_in = drop_in_path(tld);
         if let Ok(text) = fs::read_to_string(drop_in) {
             if resolved_drop_in::parse(&text).is_some_and(|parsed| parsed.domain == tld) {

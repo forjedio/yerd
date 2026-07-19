@@ -5,6 +5,7 @@
 //! table-style.
 
 pub mod cert_identity;
+pub mod dns_probe;
 pub mod firefox;
 pub mod networkmanager_dnsmasq;
 pub mod pem_match;

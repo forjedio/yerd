@@ -135,6 +135,7 @@ The OS impls read a file or attempt a bind, then hand the bytes/outcome to a pur
 | `resolved_drop_in` | Compose/parse/match a `systemd-resolved` drop-in. | Linux `ResolverInstaller` |
 | `resolv_conf` | Select systemd-resolved, positively marked NetworkManager, or unsupported; validate the NetworkManager reload post-condition. | Linux `ResolverInstaller` |
 | `networkmanager_dnsmasq` | Compose and match NetworkManager dnsmasq plugin and per-TLD rules. | Linux `ResolverInstaller` |
+| `dns_probe` | Compose the loopback A probe and validate a `127.0.0.1` answer. | Linux resolver post-condition (helper) |
 | `pem_match` | Match a SHA-256 fingerprint against a list of PEM blobs. | Linux `TrustStore` |
 | `pf_anchor` | Compose the macOS pf `rdr` ruleset, anchor refs, and LaunchDaemon plist. | macOS pf redirect (helper) |
 | `firefox` | Parse `profiles.ini` to discover NSS databases. | NSS install (planned) |

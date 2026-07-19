@@ -6,7 +6,7 @@ use std::path::PathBuf;
 #[cfg(target_os = "macos")]
 use yerd_platform::pure::resolver_file;
 #[cfg(target_os = "linux")]
-use yerd_platform::pure::{networkmanager_dnsmasq, resolv_conf, resolved_drop_in};
+use yerd_platform::pure::{dns_probe, networkmanager_dnsmasq, resolv_conf, resolved_drop_in};
 
 use crate::error::HelperError;
 #[cfg(target_os = "macos")]
@@ -138,18 +138,7 @@ fn probe_dnsmasq(tld: &str) -> bool {
     use std::net::UdpSocket;
     use std::time::Duration;
 
-    fn query(tld: &str) -> Option<Vec<u8>> {
-        let mut packet = vec![0x59, 0x44, 0x01, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0];
-        for label in ["yerd-resolver-probe", tld] {
-            let len = u8::try_from(label.len()).ok()?;
-            packet.push(len);
-            packet.extend_from_slice(label.as_bytes());
-        }
-        packet.extend_from_slice(&[0, 0, 1, 0, 1]);
-        Some(packet)
-    }
-
-    let Some(query) = query(tld) else {
+    let Some(query) = dns_probe::compose_query(tld) else {
         return false;
     };
     let Ok(socket) = UdpSocket::bind("127.0.0.1:0") else {
@@ -170,20 +159,7 @@ fn probe_dnsmasq(tld: &str) -> bool {
     let Some(answer) = response.get(..size) else {
         return false;
     };
-    dns_response_has_loopback_a(answer)
-}
-
-#[cfg(target_os = "linux")]
-fn dns_response_has_loopback_a(packet: &[u8]) -> bool {
-    packet.len() >= 12
-        && packet.starts_with(&[0x59, 0x44])
-        && packet.get(2).is_some_and(|flags| flags & 0x80 != 0)
-        && packet.get(3).map(|flags| flags & 0x0f) == Some(0)
-        && packet.windows(14).any(|window| {
-            window.starts_with(&[0, 1, 0, 1])
-                && window.get(8..10) == Some([0, 4].as_slice())
-                && window.ends_with(&[127, 0, 0, 1])
-        })
+    dns_probe::response_has_loopback_a(answer)
 }
 
 #[cfg(target_os = "linux")]
@@ -402,16 +378,6 @@ mod tests {
             dnsmasq_path("test"),
             PathBuf::from("/etc/NetworkManager/dnsmasq.d/yerd-test.conf")
         );
-    }
-
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn dns_probe_response_requires_successful_loopback_a_answer() {
-        let mut response = vec![0x59, 0x44, 0x81, 0x80, 0, 1, 0, 1, 0, 0, 0, 0];
-        response.extend_from_slice(&[0xc0, 0x0c, 0, 1, 0, 1, 0, 0, 0, 60, 0, 4, 127, 0, 0, 1]);
-        assert!(dns_response_has_loopback_a(&response));
-        response[3] = 0x83;
-        assert!(!dns_response_has_loopback_a(&response));
     }
 
     #[cfg(target_os = "macos")]
