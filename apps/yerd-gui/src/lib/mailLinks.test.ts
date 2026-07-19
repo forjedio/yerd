@@ -258,6 +258,42 @@ describe("buildMailFrameDocument", () => {
     expect(head).not.toContain("prefetch");
     expect(head).not.toContain("ok.css");
   });
+
+  it("carries body background and spacing resets into bodyStyle", () => {
+    const { bodyStyle } = buildMailFrameDocument(
+      `<!doctype html><html><body style="background-color: #f4f4f7; margin: 0; padding: 0; color: #52525b;"><p>Hi</p></body></html>`,
+    );
+    expect(bodyStyle).toContain("background-color: rgb(244, 244, 247)");
+    expect(bodyStyle).toContain("margin: 0");
+    expect(bodyStyle).toContain("padding: 0");
+    expect(bodyStyle).toContain("color: rgb(82, 82, 91)");
+  });
+
+  it("falls back to the bgcolor attribute when body has no inline background", () => {
+    const { bodyStyle } = buildMailFrameDocument(
+      `<!doctype html><html><body bgcolor="#eeeeee"><p>Hi</p></body></html>`,
+    );
+    expect(bodyStyle).toContain("background-color: rgb(238, 238, 238)");
+  });
+
+  it("drops body declarations that could escape the viewer pane", () => {
+    const { bodyStyle } = buildMailFrameDocument(
+      `<!doctype html><html><body style="position: fixed; top: 0; z-index: 9999; width: 100%; height: 100%; background: #fff;"><p>Hi</p></body></html>`,
+    );
+    expect(bodyStyle).not.toContain("position");
+    expect(bodyStyle).not.toContain("z-index");
+    expect(bodyStyle).not.toContain("top");
+    expect(bodyStyle).not.toContain("width");
+    expect(bodyStyle).not.toContain("height");
+    expect(bodyStyle).toContain("background");
+  });
+
+  it("returns an empty bodyStyle when the message styles nothing", () => {
+    const { bodyStyle } = buildMailFrameDocument(
+      `<!doctype html><html><body><p>Hi</p></body></html>`,
+    );
+    expect(bodyStyle).toBe("");
+  });
 });
 
 describe("listRemoteContentUrls", () => {

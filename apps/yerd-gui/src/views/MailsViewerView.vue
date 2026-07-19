@@ -226,10 +226,20 @@ function onHtmlLinkClick(ev: Event): void {
   openMailLink(action.url);
 }
 
+/**
+ * Render sanitized mail HTML into the host's shadow root.
+ *
+ * A shadow root scopes style *rules* but not inheritance, so the message would
+ * otherwise pick up the app shell's typography through the host. The wrapper
+ * resets what the old sandboxed iframe used to get for free as a separate
+ * document: grayscale font smoothing and `optimizeLegibility` (see
+ * `body` in style.css) render mail text noticeably lighter than the sender
+ * intended, and the global `user-select: none` would make it uncopyable.
+ */
 function renderHtmlBody(html: string): void {
   const host = htmlHost.value;
   if (!host) return;
-  const { head, body } = buildMailFrameDocument(html, {
+  const { head, body, bodyStyle } = buildMailFrameDocument(html, {
     loadRemoteContent: loadRemoteContent.value,
   });
   let root = host.shadowRoot;
@@ -240,17 +250,45 @@ function renderHtmlBody(html: string): void {
   root.innerHTML = `<style>
 :host { display: block; }
 .yerd-mail-body {
-  padding: 1.25rem;
+  min-height: 100%;
+  padding: 8px;
   box-sizing: border-box;
   color: #111;
   font: 14px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  -webkit-font-smoothing: auto;
+  text-rendering: auto;
+  font-feature-settings: normal;
+  font-variant-ligatures: normal;
+  -webkit-user-select: text;
+  user-select: text;
 }
 .yerd-mail-body img, .yerd-mail-body table { max-width: 100%; }
 .yerd-mail-body a { cursor: pointer; }
 </style>${head}<div class="yerd-mail-body">${body}</div>`;
+  const wrapper = root.querySelector<HTMLElement>(".yerd-mail-body");
+  if (wrapper && bodyStyle) wrapper.setAttribute("style", bodyStyle);
+  propagateMailBackground(host, wrapper);
+}
+
+/**
+ * Mirror CSS background propagation: a document's `<body>` background paints
+ * the whole canvas, so the mail's background must reach the scroll container
+ * rather than stopping at the end of its content.
+ */
+function propagateMailBackground(
+  host: HTMLElement,
+  wrapper: HTMLElement | null,
+): void {
+  host.style.removeProperty("background-color");
+  if (!wrapper) return;
+  const background = getComputedStyle(wrapper).backgroundColor;
+  if (!background || background === "transparent") return;
+  if (/^rgba\(.*,\s*0\)$/.test(background)) return;
+  host.style.backgroundColor = background;
 }
 
 function clearHtmlBody(): void {
+  htmlHost.value?.style.removeProperty("background-color");
   const root = htmlHost.value?.shadowRoot;
   if (root) root.innerHTML = "";
 }
