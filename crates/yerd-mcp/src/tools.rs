@@ -115,7 +115,7 @@ const TOOLS: &[ToolDef] = &[
     },
     ToolDef {
         name: "list_services",
-        description: "List Yerd's managed services (databases, caches) with run state and ports.",
+        description: "List Yerd's managed services (databases, caches, search, app servers) with run state and ports.",
     },
     ToolDef {
         name: "list_databases",

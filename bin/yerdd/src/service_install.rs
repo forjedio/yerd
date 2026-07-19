@@ -16,7 +16,7 @@ use yerd_supervise::Downloader;
 use yerd_platform::PlatformDirs;
 use yerd_services::version::{self, VERSION_MARKER};
 use yerd_services::{
-    current_os_arch, listing_url, resolve_from_listing, ServiceError, ServiceVersion,
+    current_os_arch, listing_url, resolve_from_listing, DatadirScope, ServiceError, ServiceVersion,
 };
 
 /// Install `service_id` at `version` into `data/services/<id>/<version>/`.
@@ -68,11 +68,10 @@ pub async fn install(
 /// Remove an installed version's files. With `purge`, also delete the engine's
 /// datadir (destructive). Returns the retained datadir path when it was kept.
 ///
-/// `pinned_to_major` selects the datadir layout (per-major for engines whose
-/// on-disk format is major-incompatible, otherwise one shared datadir).
+/// `datadir_scope` selects the engine's compatibility layout.
 pub fn uninstall(
     service_id: &str,
-    pinned_to_major: bool,
+    datadir_scope: DatadirScope,
     version: &ServiceVersion,
     dirs: &PlatformDirs,
     purge: bool,
@@ -81,7 +80,7 @@ pub fn uninstall(
     if dir.exists() {
         fs_ctx(std::fs::remove_dir_all(&dir), &dir)?;
     }
-    let datadir = version::datadir(dirs, service_id, pinned_to_major, version);
+    let datadir = version::datadir(dirs, service_id, datadir_scope, version);
     if purge {
         if datadir.exists() {
             fs_ctx(std::fs::remove_dir_all(&datadir), &datadir)?;

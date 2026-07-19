@@ -172,7 +172,7 @@ Notable design decisions, all grounded in the source:
   downstream in [`yerd-services`](./yerd-services), and a string key allows
   forward-compatibility with experimental services without a `yerd-config`
   release. Keys are validated against the private `KNOWN_SERVICES` const in
-  `parse.rs`: `["mysql", "mariadb", "postgres", "redis"]`.
+  `parse.rs`: `["mysql", "mariadb", "meilisearch", "postgres", "redis"]`.
 - **`MailSection`** (the `[mail]` table, added in schema v4) configures the
   built-in mail-capture SMTP sink. It carries `enabled: bool` (**default
   `true`**) and `port: u16` (the loopback port, default `DEFAULT_MAIL_PORT` =

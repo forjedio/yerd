@@ -22,7 +22,8 @@ use crate::ConfigError;
 ///
 /// Duplicated here rather than read from the `yerd-services` registry: this crate
 /// sits *below* `yerd-services` in the dependency order and must not depend on it.
-pub(crate) const KNOWN_SINGLE_SERVICES: &[&str] = &["mysql", "mariadb", "postgres", "redis"];
+pub(crate) const KNOWN_SINGLE_SERVICES: &[&str] =
+    &["mysql", "mariadb", "meilisearch", "postgres", "redis"];
 
 /// Per-site service type ids (keyed by `"{type}:{site}"`). See
 /// [`KNOWN_SINGLE_SERVICES`] for why the list is duplicated here.

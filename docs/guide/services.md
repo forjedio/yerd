@@ -1,6 +1,6 @@
 # Services & Databases
 
-Yerd installs and supervises local **database and cache** engines as native,
+Yerd installs and supervises local **database, cache, and search** engines as native,
 per-user processes - the way [DBngin](https://dbngin.com) does, but folded into
 the same [`yerdd` daemon](./daemon) that already runs your sites, PHP, HTTPS, and
 DNS. No Docker, no containers, no VM. A single `yerd status` shows the whole

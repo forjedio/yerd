@@ -30,9 +30,22 @@ pub enum ServiceKind {
     Cache,
     /// SQL database server (supports `CREATE DATABASE`).
     Database,
+    /// Search/index server (no SQL databases).
+    Search,
     /// A supervised application server (e.g. Laravel Reverb) - no databases, no
     /// downloadable version; runs against a linked site's PHP.
     AppServer,
+}
+
+/// How a service's mutable data is isolated from installed binary versions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DatadirScope {
+    /// One datadir shared by every installed version.
+    Shared,
+    /// One datadir per major version.
+    Major,
+    /// One datadir per exact version.
+    Version,
 }
 
 /// How many instances of a service type may exist at once.
@@ -55,6 +68,8 @@ pub enum ReadinessKind {
     MySqlHandshake,
     /// `PostgreSQL` startup-message reply.
     PostgresStartup,
+    /// Meilisearch `GET /health` returning 200 and `{ "status": "available" }`.
+    MeilisearchHealth,
     /// A bare TCP connect succeeds (the listener is open). Used by app servers
     /// (Reverb) whose readiness is "the socket accepts connections".
     TcpConnect,
@@ -172,10 +187,9 @@ pub trait ServiceDefinition: Send + Sync + 'static {
     /// `None` for a type with no installed server binary (app servers).
     fn server_binary(&self) -> Option<&'static str>;
 
-    /// Whether on-disk datadirs are incompatible across *major* versions (so the
-    /// datadir path is pinned per major). True only for Postgres.
-    fn datadir_pinned_to_major(&self) -> bool {
-        false
+    /// Compatibility scope used to select the service's mutable datadir.
+    fn datadir_scope(&self) -> DatadirScope {
+        DatadirScope::Shared
     }
 
     /// The `bin/` tool performing one-time datadir init, or `None` for a type
@@ -304,6 +318,7 @@ impl ServiceRegistry {
                 Arc::new(MySql),
                 Arc::new(MariaDb),
                 Arc::new(Postgres),
+                Arc::new(Meilisearch),
                 Arc::new(Reverb),
             ],
         }
@@ -344,6 +359,8 @@ pub struct MySql;
 pub struct MariaDb;
 /// `PostgreSQL`.
 pub struct Postgres;
+/// Meilisearch Community Edition: shared local search infrastructure.
+pub struct Meilisearch;
 
 impl ServiceDefinition for Redis {
     fn id(&self) -> &'static str {
@@ -572,8 +589,8 @@ impl ServiceDefinition for Postgres {
     fn server_binary(&self) -> Option<&'static str> {
         Some("postgres")
     }
-    fn datadir_pinned_to_major(&self) -> bool {
-        true
+    fn datadir_scope(&self) -> DatadirScope {
+        DatadirScope::Major
     }
     fn init_binary(&self) -> Option<&'static str> {
         Some("initdb")
@@ -632,6 +649,57 @@ impl ServiceDefinition for Postgres {
             .arg(ctx.datadir)
             .arg("-c")
             .arg(format!("config_file={}", ctx.config_path.display()));
+        Ok(LaunchPlan {
+            command,
+            capture_output_to_log: true,
+        })
+    }
+}
+
+impl ServiceDefinition for Meilisearch {
+    fn id(&self) -> &'static str {
+        "meilisearch"
+    }
+    fn display_name(&self) -> &'static str {
+        "Meilisearch"
+    }
+    fn kind(&self) -> ServiceKind {
+        ServiceKind::Search
+    }
+    fn multiplicity(&self) -> Multiplicity {
+        Multiplicity::Single
+    }
+    fn default_autostart(&self) -> bool {
+        true
+    }
+    fn default_port(&self) -> u16 {
+        7700
+    }
+    fn requires_version(&self) -> bool {
+        true
+    }
+    fn server_binary(&self) -> Option<&'static str> {
+        Some("meilisearch")
+    }
+    fn datadir_scope(&self) -> DatadirScope {
+        DatadirScope::Version
+    }
+    fn supervisor_policy(&self) -> SupervisorPolicy {
+        SupervisorPolicy::database()
+    }
+    fn readiness(&self) -> ReadinessKind {
+        ReadinessKind::MeilisearchHealth
+    }
+    fn plan_launch(&self, ctx: &LaunchContext<'_>) -> Result<LaunchPlan, ServiceError> {
+        let mut command = base_command(ctx);
+        command
+            .arg("--http-addr")
+            .arg(format!("127.0.0.1:{}", ctx.port))
+            .arg("--db-path")
+            .arg(ctx.datadir)
+            .arg("--env")
+            .arg("development")
+            .arg("--no-analytics");
         Ok(LaunchPlan {
             command,
             capture_output_to_log: true,
@@ -733,18 +801,18 @@ mod tests {
     #[test]
     fn registry_lookup_round_trips_every_type() {
         let r = reg();
-        for id in ["redis", "mysql", "mariadb", "postgres"] {
+        for id in ["redis", "mysql", "mariadb", "postgres", "meilisearch"] {
             assert_eq!(r.get(id).map(|d| d.id()), Some(id));
         }
         assert!(r.get("nope").is_none());
     }
 
     #[test]
-    fn registry_has_four_single_and_one_per_site() {
+    fn registry_has_five_single_and_one_per_site() {
         let r = reg();
-        assert_eq!(r.iter().count(), 5);
-        assert_eq!(r.single_instance().count(), 4);
-        for id in ["redis", "mysql", "mariadb", "postgres"] {
+        assert_eq!(r.iter().count(), 6);
+        assert_eq!(r.single_instance().count(), 5);
+        for id in ["redis", "mysql", "mariadb", "postgres", "meilisearch"] {
             assert!(matches!(
                 r.get(id).unwrap().multiplicity(),
                 Multiplicity::Single
@@ -812,6 +880,43 @@ mod tests {
     }
 
     #[test]
+    fn meilisearch_metadata_and_launch_are_safe_for_local_development() {
+        let d = reg().get("meilisearch").unwrap();
+        assert_eq!(d.kind(), ServiceKind::Search);
+        assert_eq!(d.default_port(), 7700);
+        assert!(d.default_autostart());
+        assert_eq!(d.readiness(), ReadinessKind::MeilisearchHealth);
+        let ctx = LaunchContext {
+            port: 7701,
+            program: std::path::Path::new("/bin/meilisearch"),
+            config_path: std::path::Path::new(""),
+            datadir: std::path::Path::new("/data/meili"),
+            log_path: std::path::Path::new("/logs/meili.log"),
+            geo_env: &[],
+            cwd: None,
+        };
+        let plan = d.plan_launch(&ctx).unwrap();
+        let args: Vec<_> = plan
+            .command
+            .get_args()
+            .map(|a| a.to_string_lossy())
+            .collect();
+        assert_eq!(
+            args,
+            [
+                "--http-addr",
+                "127.0.0.1:7701",
+                "--db-path",
+                "/data/meili",
+                "--env",
+                "development",
+                "--no-analytics"
+            ]
+        );
+        assert!(plan.capture_output_to_log);
+    }
+
+    #[test]
     fn sql_engines_are_databases_and_need_init() {
         for id in ["mysql", "mariadb", "postgres"] {
             let d = reg().get(id).unwrap();
@@ -837,9 +942,16 @@ mod tests {
 
     #[test]
     fn only_postgres_pins_datadir_to_major() {
-        assert!(reg().get("postgres").unwrap().datadir_pinned_to_major());
+        assert_eq!(
+            reg().get("postgres").unwrap().datadir_scope(),
+            DatadirScope::Major
+        );
+        assert_eq!(
+            reg().get("meilisearch").unwrap().datadir_scope(),
+            DatadirScope::Version
+        );
         for id in ["redis", "mysql", "mariadb"] {
-            assert!(!reg().get(id).unwrap().datadir_pinned_to_major());
+            assert_eq!(reg().get(id).unwrap().datadir_scope(), DatadirScope::Shared);
         }
     }
 
