@@ -30,7 +30,7 @@ use crate::port_redirect::{
 };
 use crate::pure::{pem_match, port_plan, ps_metrics, resolver_file};
 use crate::resolver::ResolverInstaller;
-use crate::trust_store::{CaFingerprint, NssOutcome, TrustStore};
+use crate::trust_store::{BrowserCaTrust, CaFingerprint, NssOutcome, TrustStore};
 use crate::{BindPairErrorReason, PlatformError, ResolverErrorReason, TrustStoreErrorReason};
 
 /// macOS `Paths` implementation.
@@ -210,13 +210,16 @@ impl TrustStore for MacosTrustStore {
         Ok(trusted_in(Domain::User)? || trusted_in(Domain::Admin)?)
     }
 
-    fn install_firefox_nss(&self, _: &str) -> Result<NssOutcome, PlatformError> {
-        Ok(NssOutcome {
-            profiles_attempted: 0,
-            profiles_succeeded: 0,
-            failures: vec![],
-            certutil_missing: true,
-        })
+    fn install_firefox_nss(&self, ca_path: &Path) -> Result<NssOutcome, PlatformError> {
+        Ok(crate::nss_exec::real_install(ca_path))
+    }
+
+    fn uninstall_firefox_nss(&self) -> Result<NssOutcome, PlatformError> {
+        Ok(crate::nss_exec::real_uninstall())
+    }
+
+    fn browser_ca_trust(&self, fp: &CaFingerprint) -> Result<BrowserCaTrust, PlatformError> {
+        Ok(crate::nss_exec::real_browser_trust(fp))
     }
 
     /// Enumerates the system root keychains **in-process** via
@@ -652,15 +655,10 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn install_firefox_nss_reports_certutil_missing() {
-        let ts = MacosTrustStore::new();
-        let outcome = ts.install_firefox_nss("pem").unwrap();
-        assert!(outcome.certutil_missing);
-        assert_eq!(outcome.profiles_attempted, 0);
-        assert_eq!(outcome.profiles_succeeded, 0);
-        assert!(outcome.failures.is_empty());
-    }
+    // Browser NSS install/uninstall/probe orchestration is tested in-memory
+    // with fakes in `crate::nss_exec`; exercising the real delegation here
+    // would spawn `certutil` and mutate the host's `~/.pki/nssdb` during
+    // `cargo test`, so it is deliberately not tested at this edge.
 
     // ---- bind_loopback / bind_pair_impl integration -------------------
 

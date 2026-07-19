@@ -80,6 +80,7 @@ fn sample_report() -> yerd_ipc::StatusReport {
             fingerprint: "ab".repeat(32),
             trusted_system: Some(true),
             php_trusts_ca: None,
+            browser_trust: None,
         },
         resolver_installed: Some(true),
         port_redirect: None,

@@ -61,6 +61,44 @@ fn request_mint_remote_setup_code_byte_shape() {
 }
 
 #[test]
+fn request_trust_browsers_byte_shape() {
+    let s = serde_json::to_string(&Request::TrustBrowsers { uninstall: false }).unwrap();
+    assert_eq!(s, r#"{"type":"trust_browsers","uninstall":false}"#);
+    let back: Request = serde_json::from_str(&s).unwrap();
+    assert_eq!(back, Request::TrustBrowsers { uninstall: false });
+}
+
+#[test]
+fn response_browser_trust_byte_shape() {
+    let r = Response::BrowserTrust {
+        attempted: 3,
+        succeeded: 2,
+        certutil_missing: false,
+    };
+    let s = serde_json::to_string(&r).unwrap();
+    assert_eq!(
+        s,
+        r#"{"type":"browser_trust","attempted":3,"succeeded":2,"certutil_missing":false}"#
+    );
+    let back: Response = serde_json::from_str(&s).unwrap();
+    assert_eq!(back, r);
+}
+
+#[test]
+fn browser_trust_enum_byte_shape() {
+    for (v, tag) in [
+        (yerd_ipc::BrowserTrust::Trusted, "trusted"),
+        (yerd_ipc::BrowserTrust::Untrusted, "untrusted"),
+        (yerd_ipc::BrowserTrust::ToolMissing, "tool_missing"),
+    ] {
+        let s = serde_json::to_string(&v).unwrap();
+        assert_eq!(s, format!("\"{tag}\""));
+        let back: yerd_ipc::BrowserTrust = serde_json::from_str(&s).unwrap();
+        assert_eq!(back, v);
+    }
+}
+
+#[test]
 fn response_remote_setup_byte_shape() {
     let r = Response::RemoteSetup {
         code: "deadbeef".into(),
@@ -950,6 +988,7 @@ fn response_status_byte_shape() {
                 fingerprint: "ab".repeat(32),
                 trusted_system: Some(false),
                 php_trusts_ca: None,
+                browser_trust: None,
             },
             resolver_installed: Some(true),
             port_redirect: None,
@@ -1067,6 +1106,7 @@ fn sample_status_report() -> StatusReport {
             fingerprint: "ab".repeat(32),
             trusted_system: Some(true),
             php_trusts_ca: None,
+            browser_trust: None,
         },
         resolver_installed: Some(true),
         port_redirect: None,

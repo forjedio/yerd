@@ -386,6 +386,18 @@ pub enum Response {
         /// map is ungrouped ("Unallocated").
         members: BTreeMap<String, String>,
     },
+    /// Reply to [`crate::Request::TrustBrowsers`] - the per-user browser NSS
+    /// trust outcome.
+    BrowserTrust {
+        /// Number of NSS databases attempted (0 when nothing was found or
+        /// `certutil` is missing).
+        attempted: usize,
+        /// Of those attempted, how many succeeded.
+        succeeded: usize,
+        /// `certutil` (`libnss3-tools`) was not installed, so nothing was
+        /// changed - the client should tell the user to install it.
+        certutil_missing: bool,
+    },
 }
 
 /// One registered custom PHP extension (see [`Response::PhpExtensions`]).
@@ -619,6 +631,7 @@ mod variant_name_pinning {
             Response::Tunnels { .. } => {}
             Response::NamedTunnels { .. } => {}
             Response::Groups { .. } => {}
+            Response::BrowserTrust { .. } => {}
             Response::Proxies { .. } => {}
         }
     }
@@ -719,6 +732,7 @@ mod variant_name_pinning {
                     fingerprint: "ab".repeat(32),
                     trusted_system: Some(false),
                     php_trusts_ca: None,
+                    browser_trust: None,
                 },
                 resolver_installed: None,
                 port_redirect: None,

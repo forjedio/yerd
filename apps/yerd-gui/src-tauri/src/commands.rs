@@ -757,11 +757,18 @@ pub async fn unelevate(target: String) -> Result<(), GuiError> {
 
 /// Trust the local CA for the current user, in-process (macOS only). Unlike
 /// `elevate("trust")` this needs no root and prompts as "Yerd"; see `mac_trust`.
+///
+/// The keychain trust covers Safari and the Chromium-family browsers; Firefox
+/// on macOS keeps its own NSS store, so this also asks the daemon to populate
+/// it (best-effort - a missing `certutil` or Firefox profile is surfaced by
+/// `doctor`, not treated as a trust failure).
 #[tauri::command]
 pub async fn trust_ca() -> Result<(), GuiError> {
     #[cfg(target_os = "macos")]
     {
-        crate::mac_trust::trust_ca().await
+        crate::mac_trust::trust_ca().await?;
+        let _ = exchange(&Request::TrustBrowsers { uninstall: false }).await;
+        Ok(())
     }
     #[cfg(not(target_os = "macos"))]
     {
@@ -773,11 +780,13 @@ pub async fn trust_ca() -> Result<(), GuiError> {
 
 /// Remove the current user's trust of the local CA (macOS only). Returns `true`
 /// if a system-wide trust set via the terminal still remains (the GUI can't
-/// remove that without root).
+/// remove that without root). Also removes the CA from the browser NSS store
+/// (the mirror of [`trust_ca`]).
 #[tauri::command]
 pub async fn untrust_ca() -> Result<bool, GuiError> {
     #[cfg(target_os = "macos")]
     {
+        let _ = exchange(&Request::TrustBrowsers { uninstall: true }).await;
         crate::mac_trust::untrust_ca().await
     }
     #[cfg(not(target_os = "macos"))]

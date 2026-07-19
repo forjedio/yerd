@@ -5,6 +5,7 @@
 //! macOS + Linux impls are the only ones with behaviour.
 
 use std::net::SocketAddr;
+use std::path::Path;
 
 use crate::error::ops;
 use crate::metrics::SystemMetrics;
@@ -58,9 +59,15 @@ impl TrustStore for UnsupportedTrustStore {
         })
     }
 
-    fn install_firefox_nss(&self, _: &str) -> Result<NssOutcome, PlatformError> {
+    fn install_firefox_nss(&self, _: &Path) -> Result<NssOutcome, PlatformError> {
         Err(PlatformError::Unsupported {
             operation: ops::INSTALL_FIREFOX_NSS,
+        })
+    }
+
+    fn uninstall_firefox_nss(&self) -> Result<NssOutcome, PlatformError> {
+        Err(PlatformError::Unsupported {
+            operation: ops::UNINSTALL_FIREFOX_NSS,
         })
     }
 

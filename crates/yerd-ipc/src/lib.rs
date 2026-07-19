@@ -51,11 +51,11 @@ pub use response::{
     WordPressAdminUser,
 };
 pub use status::{
-    AddableServiceType, CaStatus, CloudflaredSource, CloudflaredStatus, DatabaseSummary, Diagnosis,
-    DiagnosisCode, DomainShadow, FixReport, FixResult, MailAttachment, MailDetail, MailHeader,
-    MailStatus, MailSummary, NamedTunnelMeta, PhpPoolStatus, PoolRunState, PortStatus,
-    ServiceAvailability, ServiceRunState, ServiceStatus, Severity, SiteCounts, SiteHostname,
-    StatusReport, ToolStatus, TunnelInfo, TunnelKind, TunnelRunState, UnboundWeb,
+    AddableServiceType, BrowserTrust, CaStatus, CloudflaredSource, CloudflaredStatus,
+    DatabaseSummary, Diagnosis, DiagnosisCode, DomainShadow, FixReport, FixResult, MailAttachment,
+    MailDetail, MailHeader, MailStatus, MailSummary, NamedTunnelMeta, PhpPoolStatus, PoolRunState,
+    PortStatus, ServiceAvailability, ServiceRunState, ServiceStatus, Severity, SiteCounts,
+    SiteHostname, StatusReport, ToolStatus, TunnelInfo, TunnelKind, TunnelRunState, UnboundWeb,
     WordPressVersionInfo,
 };
 pub use update::{Channel, StagedArtifact, UpdateSource};

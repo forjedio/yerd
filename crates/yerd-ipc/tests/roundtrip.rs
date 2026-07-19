@@ -209,6 +209,7 @@ fn encode_then_decode_response_roundtrip() {
                 fingerprint: "ab".repeat(32),
                 trusted_system: None,
                 php_trusts_ca: Some(true),
+                browser_trust: Some(yerd_ipc::BrowserTrust::Untrusted),
             },
             resolver_installed: Some(false),
             port_redirect: Some(true),

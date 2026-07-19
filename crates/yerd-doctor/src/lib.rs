@@ -16,7 +16,9 @@
 #![forbid(unsafe_code)]
 
 use yerd_core::PhpVersion;
-use yerd_ipc::{Diagnosis, DiagnosisCode, PoolRunState, ServiceRunState, Severity, StatusReport};
+use yerd_ipc::{
+    BrowserTrust, Diagnosis, DiagnosisCode, PoolRunState, ServiceRunState, Severity, StatusReport,
+};
 
 /// Ports below this are privileged (need elevation to bind).
 const PRIVILEGED_PORT_CEILING: u16 = 1024;
@@ -94,6 +96,27 @@ fn trust_findings(report: &StatusReport) -> Vec<Diagnosis> {
             "HTTPS sites will show certificate warnings until the CA is trusted.".to_owned(),
             "sudo yerd elevate trust",
         ));
+    }
+    match report.ca.browser_trust {
+        Some(BrowserTrust::Untrusted) => out.push(warn(
+            DiagnosisCode::CaNotTrustedByBrowsers,
+            "Browsers don't trust the local CA",
+            "Brave, Chrome and Firefox keep their own certificate store, separate \
+             from the system store, so they show HTTPS warnings on .test sites \
+             until the CA is added there."
+                .to_owned(),
+            "yerd elevate trust",
+        )),
+        Some(BrowserTrust::ToolMissing) => out.push(warn(
+            DiagnosisCode::CaNotTrustedByBrowsers,
+            "Can't establish browser trust (certutil missing)",
+            "Browsers won't trust the local CA until certutil is installed: \
+             libnss3-tools (Debian/Ubuntu/Zorin), nss-tools (Fedora), nss (Arch), \
+             or `brew install nss` (macOS). Install it, then run trust again."
+                .to_owned(),
+            "yerd elevate trust",
+        )),
+        _ => {}
     }
     if report.ca.php_trusts_ca == Some(false) {
         out.push(warn(
@@ -434,6 +457,7 @@ mod tests {
                 fingerprint: "ab".repeat(32),
                 trusted_system: Some(true),
                 php_trusts_ca: Some(true),
+                browser_trust: Some(BrowserTrust::Trusted),
             },
             resolver_installed: Some(true),
             port_redirect: None,
@@ -710,6 +734,40 @@ mod tests {
         let cs = codes(&diagnose(&r, None));
         assert!(cs.contains(&DiagnosisCode::CaNotTrusted));
         assert!(cs.contains(&DiagnosisCode::ResolverNotInstalled));
+    }
+
+    #[test]
+    fn browser_untrusted_warns() {
+        let mut r = healthy();
+        r.ca.browser_trust = Some(BrowserTrust::Untrusted);
+        let ds = diagnose(&r, None);
+        assert!(ds.iter().any(
+            |d| d.code == DiagnosisCode::CaNotTrustedByBrowsers && d.severity == Severity::Warn
+        ));
+        assert!(!is_auto_fixable(DiagnosisCode::CaNotTrustedByBrowsers));
+    }
+
+    #[test]
+    fn browser_tool_missing_warns_with_install_hint() {
+        let mut r = healthy();
+        r.ca.browser_trust = Some(BrowserTrust::ToolMissing);
+        let d = diagnose(&r, None)
+            .into_iter()
+            .find(|d| d.code == DiagnosisCode::CaNotTrustedByBrowsers)
+            .expect("tool-missing warns");
+        // The doctor is pure and cannot detect the host OS, so the hint is
+        // distro/OS-neutral: it names the tool and covers Linux and macOS.
+        assert!(d.detail.contains("certutil"));
+        assert!(d.detail.contains("brew install nss"));
+    }
+
+    #[test]
+    fn browser_trusted_or_unknown_is_silent() {
+        let mut r = healthy();
+        r.ca.browser_trust = Some(BrowserTrust::Trusted);
+        assert!(!codes(&diagnose(&r, None)).contains(&DiagnosisCode::CaNotTrustedByBrowsers));
+        r.ca.browser_trust = None;
+        assert!(!codes(&diagnose(&r, None)).contains(&DiagnosisCode::CaNotTrustedByBrowsers));
     }
 
     #[test]

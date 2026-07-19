@@ -385,6 +385,7 @@ async fn dispatch(req: Request, state: &DaemonState) -> Response {
         Request::SetMcpEnabled { enabled } => set_mcp_enabled(enabled, state).await,
         Request::SetLanEnabled { enabled } => set_lan_enabled(enabled, state).await,
         Request::MintRemoteSetupCode => mint_remote_setup_code(state).await,
+        Request::TrustBrowsers { uninstall } => trust_browsers(uninstall, state).await,
         Request::ListTools => Response::Tools {
             tools: list_tools_with_external(state).await,
         },
@@ -754,6 +755,18 @@ async fn build_status_report(state: &DaemonState) -> yerd_ipc::StatusReport {
     .ok()
     .flatten();
 
+    let browser_fp = state.ca_fingerprint;
+    let browser_trust = tokio::task::spawn_blocking(move || {
+        use yerd_platform::TrustStore;
+        yerd_platform::ActiveTrustStore::new()
+            .browser_ca_trust(&browser_fp)
+            .ok()
+            .map(map_browser_trust)
+    })
+    .await
+    .ok()
+    .flatten();
+
     let tld_probe = tld.clone();
     let dns_addr = state.dns_addr;
     let resolver_installed = tokio::task::spawn_blocking(move || {
@@ -800,6 +813,7 @@ async fn build_status_report(state: &DaemonState) -> yerd_ipc::StatusReport {
             fingerprint: state.ca_fingerprint.to_hex(),
             trusted_system,
             php_trusts_ca: php_trusts_ca(state).await,
+            browser_trust,
         },
         resolver_installed,
         port_redirect,
@@ -1359,6 +1373,48 @@ async fn rebuild_php_ca_bundle(state: &DaemonState) -> bool {
     })
     .await
     .unwrap_or(false)
+}
+
+/// Map the platform browser-trust probe to the wire enum.
+fn map_browser_trust(t: yerd_platform::BrowserCaTrust) -> yerd_ipc::BrowserTrust {
+    match t {
+        yerd_platform::BrowserCaTrust::Trusted => yerd_ipc::BrowserTrust::Trusted,
+        yerd_platform::BrowserCaTrust::Untrusted => yerd_ipc::BrowserTrust::Untrusted,
+        yerd_platform::BrowserCaTrust::ToolMissing => yerd_ipc::BrowserTrust::ToolMissing,
+    }
+}
+
+/// Install (or remove) the Yerd CA into the per-user **browser** NSS stores.
+/// Runs unprivileged as the daemon's user; the CA PEM is read from the daemon's
+/// on-disk `ca_path`, so no cert material crosses the IPC boundary.
+async fn trust_browsers(uninstall: bool, state: &DaemonState) -> Response {
+    let ca_path = state.ca_path.clone();
+    let joined = tokio::task::spawn_blocking(move || {
+        use yerd_platform::TrustStore;
+        let ts = yerd_platform::ActiveTrustStore::new();
+        if uninstall {
+            ts.uninstall_firefox_nss()
+        } else {
+            ts.install_firefox_nss(&ca_path)
+        }
+    })
+    .await;
+
+    match joined {
+        Ok(Ok(o)) => Response::BrowserTrust {
+            attempted: o.profiles_attempted,
+            succeeded: o.profiles_succeeded,
+            certutil_missing: o.certutil_missing,
+        },
+        Ok(Err(e)) => Response::Error {
+            code: yerd_ipc::ErrorCode::Internal,
+            message: format!("browser NSS trust failed: {e}"),
+        },
+        Err(e) => Response::Error {
+            code: yerd_ipc::ErrorCode::Internal,
+            message: format!("browser NSS trust task panicked: {e}"),
+        },
+    }
 }
 
 /// Probe whether the bundled PHP trusts the Yerd CA: `None` when the feature is

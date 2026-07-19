@@ -13,8 +13,8 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 
 use yerd_platform::{
-    BoundPort, CaFingerprint, NssOutcome, Paths, PlatformDirs, PlatformError, PortBinder, PortPair,
-    ResolverInstaller, TrustStore,
+    BoundPort, BrowserCaTrust, CaFingerprint, NssOutcome, Paths, PlatformDirs, PlatformError,
+    PortBinder, PortPair, ResolverInstaller, TrustStore,
 };
 
 /// In-memory `Paths` fixture. Returns the directories it was constructed
@@ -48,6 +48,9 @@ impl Paths for MockPaths {
 pub struct MockTrustStore {
     pub installed: RefCell<Vec<CaFingerprint>>,
     pub nss_calls: RefCell<usize>,
+    pub nss_uninstall_calls: RefCell<usize>,
+    /// Tunable browser-trust result the fake returns (default `Untrusted`).
+    pub browser_trust: Option<BrowserCaTrust>,
 }
 
 impl TrustStore for MockTrustStore {
@@ -65,7 +68,7 @@ impl TrustStore for MockTrustStore {
         Ok(self.installed.borrow().contains(fp))
     }
 
-    fn install_firefox_nss(&self, _: &str) -> Result<NssOutcome, PlatformError> {
+    fn install_firefox_nss(&self, _: &std::path::Path) -> Result<NssOutcome, PlatformError> {
         *self.nss_calls.borrow_mut() += 1;
         Ok(NssOutcome {
             profiles_attempted: 0,
@@ -73,6 +76,20 @@ impl TrustStore for MockTrustStore {
             failures: vec![],
             certutil_missing: true,
         })
+    }
+
+    fn uninstall_firefox_nss(&self) -> Result<NssOutcome, PlatformError> {
+        *self.nss_uninstall_calls.borrow_mut() += 1;
+        Ok(NssOutcome {
+            profiles_attempted: 0,
+            profiles_succeeded: 0,
+            failures: vec![],
+            certutil_missing: true,
+        })
+    }
+
+    fn browser_ca_trust(&self, _: &CaFingerprint) -> Result<BrowserCaTrust, PlatformError> {
+        Ok(self.browser_trust.unwrap_or(BrowserCaTrust::Untrusted))
     }
 
     fn system_root_bundle(&self) -> Result<Option<String>, PlatformError> {

@@ -47,7 +47,16 @@ fn trust_store_unsupported() {
         PlatformError::Unsupported { .. }
     ));
     assert!(matches!(
-        ts.install_firefox_nss("p").unwrap_err(),
+        ts.install_firefox_nss(std::path::Path::new("/ca.pem"))
+            .unwrap_err(),
+        PlatformError::Unsupported { .. }
+    ));
+    assert!(matches!(
+        ts.uninstall_firefox_nss().unwrap_err(),
+        PlatformError::Unsupported { .. }
+    ));
+    assert!(matches!(
+        ts.browser_ca_trust(&fp).unwrap_err(),
         PlatformError::Unsupported { .. }
     ));
 }

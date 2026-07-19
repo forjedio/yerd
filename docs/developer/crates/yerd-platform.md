@@ -89,7 +89,11 @@ pub trait TrustStore {
     // `Unsupported` (the only defaulted method); macOS uses `security
     // verify-cert`, Linux delegates to `is_present_system`.
     fn is_trusted(&self, ca_path: &Path, fp: &CaFingerprint) -> Result<bool, PlatformError>;
-    fn install_firefox_nss(&self, ca_pem: &str) -> Result<NssOutcome, PlatformError>;
+    fn install_firefox_nss(&self, ca_path: &Path) -> Result<NssOutcome, PlatformError>;
+    fn uninstall_firefox_nss(&self) -> Result<NssOutcome, PlatformError>;
+    // Whether the per-user *browser* NSS stores trust the CA. Defaulted to
+    // `Unsupported`; macOS + Linux override.
+    fn browser_ca_trust(&self, fp: &CaFingerprint) -> Result<BrowserCaTrust, PlatformError>;
 }
 ```
 
@@ -97,7 +101,7 @@ The CA is identified by a `CaFingerprint` - a newtype around `[u8; 32]` (SHA-256
 
 - `install_system` / `uninstall_system` always return `Err(PlatformError::NeedsHelper { .. })` in Phase 1. They are write operations against a root-owned store, so the daemon materialises the matching `HelperInvocation` and runs `yerd-helper`.
 - `is_present_system` is a **read-only, unprivileged presence probe**. It reports whether a CA matching the fingerprint is *in* the store - not whether it is trusted for SSL by every consumer. On macOS it enumerates `/Library/Keychains/System.keychain` via `security-framework` and hashes each cert's DER; on Linux it iterates the distro's anchor directory and hashes each PEM block (the candidate directories are `/usr/local/share/ca-certificates`, `/etc/pki/ca-trust/source/anchors`, and `/etc/ca-certificates/trust-source/anchors`).
-- `install_firefox_nss` is the one trust operation that runs **per-user and unprivileged** - Firefox keeps its own NSS database. It is best-effort and returns `Ok(NssOutcome)` even on partial failure:
+- `install_firefox_nss` / `uninstall_firefox_nss` / `browser_ca_trust` are the trust operations that run **per-user and unprivileged**. On Linux, Chromium-family browsers (Brave/Chrome/Chromium/Edge) and Firefox ignore the system store and read their own per-user NSS database - `~/.pki/nssdb` (shared by Chromium-family) and one `cert9.db` per Firefox profile, including Snap (`~/snap/<app>/{common,current}/...`) and Flatpak (`~/.var/app/<id>/...`) copies. Path derivation and the `certutil` argv are pure (`pure::nss`); the discover→run→aggregate orchestration is behind injected seams (`nss_exec`) so it is unit-tested in-memory. `certutil` (from `libnss3-tools`) missing is a first-class outcome (`certutil_missing` / `BrowserCaTrust::ToolMissing`), not an error. `install_firefox_nss` takes the CA **path** (read `-i` by `certutil`), creating and initialising `~/.pki/nssdb` if absent. It is best-effort and returns `Ok(NssOutcome)` even on partial failure:
 
 ```rust
 pub struct NssOutcome {

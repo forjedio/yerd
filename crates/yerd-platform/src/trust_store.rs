@@ -103,6 +103,23 @@ pub enum NssFailure {
     DbMissing,
 }
 
+/// Whether the per-user browser (Chromium/Firefox) NSS stores trust the Yerd CA.
+///
+/// Three states rather than a `bool` so the daemon and doctor can distinguish
+/// "not trusted, run trust" from "can't manage NSS at all - install the tool".
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BrowserCaTrust {
+    /// The CA is present and fingerprint-matches in a browser NSS store (or
+    /// there are no browser NSS stores to worry about).
+    Trusted,
+    /// Browser NSS stores exist but none trust the Yerd CA - the user should
+    /// run the trust flow.
+    Untrusted,
+    /// `certutil` (`libnss3-tools`) is not installed, so browser trust can
+    /// neither be verified nor established.
+    ToolMissing,
+}
+
 /// Trust-store abstraction.
 ///
 /// `install_system` / `uninstall_system` always return `NeedsHelper` in
@@ -143,8 +160,8 @@ pub trait TrustStore {
     /// [`Self::is_present_system`].
     ///
     /// This method has a default `Unsupported` body so non-macOS/Linux
-    /// impls (and test fakes) need not override it - the only deliberate
-    /// defaulted method on this trait.
+    /// impls (and test fakes) need not override it. [`Self::browser_ca_trust`]
+    /// is defaulted for the same reason.
     fn is_trusted(&self, ca_path: &Path, fp: &CaFingerprint) -> Result<bool, PlatformError> {
         let _ = (ca_path, fp);
         Err(PlatformError::Unsupported {
@@ -152,13 +169,39 @@ pub trait TrustStore {
         })
     }
 
-    /// Install `ca_pem` into every discovered NSS database (Firefox
-    /// profiles + `~/.pki/nssdb`).
+    /// Install the CA (PEM file at `ca_path`) into every discovered per-user
+    /// NSS database: the shared Chromium-family store `~/.pki/nssdb` (created
+    /// and initialised if absent) plus every Firefox profile, including
+    /// Snap/Flatpak-sandboxed copies. Fixes browsers that ignore the system
+    /// trust store (Brave/Chrome/Chromium/Edge/Firefox on Linux).
     ///
-    /// Best-effort: returns `Ok(NssOutcome)` even when `certutil` is
-    /// missing or some profiles fail. The caller decides whether to
-    /// surface the degraded outcome to the user.
-    fn install_firefox_nss(&self, ca_pem: &str) -> Result<NssOutcome, PlatformError>;
+    /// Best-effort: returns `Ok(NssOutcome)` even when `certutil` is missing
+    /// (`certutil_missing`) or some databases fail. The caller decides whether
+    /// to surface the degraded outcome to the user.
+    fn install_firefox_nss(&self, ca_path: &Path) -> Result<NssOutcome, PlatformError>;
+
+    /// Remove the Yerd CA from every discovered per-user NSS database (the
+    /// inverse of [`Self::install_firefox_nss`]). Best-effort; delete-by-
+    /// nickname, so it also clears a stale CA left by a prior rotation.
+    fn uninstall_firefox_nss(&self) -> Result<NssOutcome, PlatformError>;
+
+    /// Report whether the CA matching `fp` is trusted by the per-user
+    /// **browser** NSS stores. Read-only, unprivileged.
+    ///
+    /// Distinct from [`Self::is_trusted`], which covers the *system* store
+    /// (curl/PHP/OS): on Linux those are unrelated to what browsers trust.
+    /// [`BrowserCaTrust::ToolMissing`] is a first-class outcome so the daemon
+    /// can tell the user to install `libnss3-tools` rather than silently
+    /// reporting healthy.
+    ///
+    /// Default `Unsupported` body so non-macOS/Linux impls and fakes need not
+    /// override it.
+    fn browser_ca_trust(&self, fp: &CaFingerprint) -> Result<BrowserCaTrust, PlatformError> {
+        let _ = fp;
+        Err(PlatformError::Unsupported {
+            operation: crate::error::ops::BROWSER_CA_TRUST,
+        })
+    }
 
     /// Return the host's public CA roots as a PEM string, for composing the
     /// bundle the bundled PHP verifies against (see `yerd_tls::compose_ca_bundle`).
