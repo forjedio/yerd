@@ -86,13 +86,19 @@ export function overrideCount(overrides: Record<string, string>): number {
   return SETTING_KEYS.filter((k) => (overrides[k] ?? "") !== "").length;
 }
 
-/** Directive names Yerd manages elsewhere, with a hint pointing at that path. */
-const RESERVED_DIRECTIVES: Record<string, string> = {
-  extension: "load extensions in the Extensions section above",
-  zend_extension: "load extensions in the Extensions section above",
-  "openssl.cafile": "Yerd manages the CA bundle for this",
-  "curl.cainfo": "Yerd manages the CA bundle for this",
-};
+/**
+ * Directive names Yerd manages elsewhere, with a hint pointing at that path.
+ *
+ * A `Map` rather than an object literal so a directive named after something on
+ * `Object.prototype` (`constructor`, `toString`, …) can't resolve up the
+ * prototype chain and return a function where a hint string is expected.
+ */
+const RESERVED_DIRECTIVES = new Map<string, string>([
+  ["extension", "load extensions in the Extensions section above"],
+  ["zend_extension", "load extensions in the Extensions section above"],
+  ["openssl.cafile", "Yerd manages the CA bundle for this"],
+  ["curl.cainfo", "Yerd manages the CA bundle for this"],
+]);
 
 /**
  * Client-side hint for an invalid or reserved custom-directive name; `null`
@@ -104,7 +110,7 @@ export function directiveNameProblem(name: string): string | null {
   if (SETTING_KEYS.includes(name)) {
     return "this setting has its own field in the settings form above";
   }
-  const reserved = RESERVED_DIRECTIVES[name];
+  const reserved = RESERVED_DIRECTIVES.get(name);
   if (reserved) return reserved;
   if (!/^[A-Za-z_][A-Za-z0-9._-]*$/.test(name) || name.length > 128) {
     return "names start with a letter or _ and use letters, digits, '.', '_' or '-'";

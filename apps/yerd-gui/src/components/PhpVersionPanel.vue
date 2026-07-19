@@ -133,10 +133,13 @@ const displayErrorsOptions = computed(() => {
 
 const savedOverrides = computed(() => overrideCount(props.overrides));
 
+/**
+ * Persist this version's overrides. Every field is sent, including the blank
+ * ones: a blank value removes the override so the version inherits again.
+ */
 async function saveSettings(): Promise<void> {
   busy.value = "settings";
   try {
-    // Send every field; blank values remove the override (inherit again).
     const r = await setPhpVersionSettings(props.version, { ...form.value });
     seed(r.version_settings?.[props.version] ?? {});
     toast.success(
