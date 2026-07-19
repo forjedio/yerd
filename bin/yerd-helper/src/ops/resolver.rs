@@ -6,7 +6,7 @@ use std::path::PathBuf;
 #[cfg(target_os = "macos")]
 use yerd_platform::pure::resolver_file;
 #[cfg(target_os = "linux")]
-use yerd_platform::pure::{resolv_conf, resolved_drop_in};
+use yerd_platform::pure::{networkmanager_dnsmasq, resolv_conf, resolved_drop_in};
 
 use crate::error::HelperError;
 #[cfg(target_os = "macos")]
@@ -20,6 +20,16 @@ fn drop_in_path(tld: &str) -> PathBuf {
     PathBuf::from(format!("/etc/systemd/resolved.conf.d/yerd-{tld}.conf"))
 }
 
+#[cfg(target_os = "linux")]
+fn networkmanager_path() -> PathBuf {
+    PathBuf::from("/etc/NetworkManager/conf.d/yerd-dnsmasq.conf")
+}
+
+#[cfg(target_os = "linux")]
+fn dnsmasq_path(tld: &str) -> PathBuf {
+    PathBuf::from(format!("/etc/NetworkManager/dnsmasq.d/yerd-{tld}.conf"))
+}
+
 #[cfg(target_os = "macos")]
 fn resolver_file_path(tld: &str) -> PathBuf {
     PathBuf::from(format!("/etc/resolver/{tld}"))
@@ -31,21 +41,167 @@ fn resolver_file_path(tld: &str) -> PathBuf {
 pub fn install_resolver(tld: &str, addr: SocketAddr) -> Result<(), HelperError> {
     let tld_obj = validate::require_valid_tld(tld)?;
     let resolv = std::fs::read_to_string("/etc/resolv.conf").unwrap_or_default();
-    let runtime_dir_exists = std::fs::metadata("/run/systemd/resolve").is_ok_and(|m| m.is_dir());
-    if !resolv_conf::detect_systemd_resolved(&resolv, runtime_dir_exists) {
-        return Err(HelperError::Unsupported {
+    let resolved_runtime = std::fs::metadata("/run/systemd/resolve").is_ok_and(|m| m.is_dir());
+    match resolv_conf::detect_linux_backend(&resolv, resolved_runtime) {
+        resolv_conf::LinuxResolverBackend::SystemdResolved => {
+            let dest = drop_in_path(tld_obj.as_str());
+            let body = resolved_drop_in::compose(tld_obj.as_str(), addr);
+            if std::fs::read_to_string(&dest).is_ok_and(|text| text == body) {
+                return Ok(());
+            }
+            atomic_write(&dest, body.as_bytes(), true)?;
+            run_command(
+                "systemctl",
+                "systemctl",
+                ["reload-or-restart", "systemd-resolved"],
+            )?;
+            Ok(())
+        }
+        resolv_conf::LinuxResolverBackend::NetworkManager => {
+            install_networkmanager(tld_obj.as_str(), addr)
+        }
+        resolv_conf::LinuxResolverBackend::Unsupported => Err(HelperError::Unsupported {
             operation: yerd_platform::error::ops::INSTALL_RESOLVER,
-        });
+        }),
     }
-    let dest = drop_in_path(tld_obj.as_str());
-    let body = resolved_drop_in::compose(tld_obj.as_str(), addr);
-    atomic_write(&dest, body.as_bytes(), true)?;
-    run_command(
-        "systemctl",
-        "systemctl",
-        ["reload-or-restart", "systemd-resolved"],
-    )
-    .map(|_| ())
+}
+
+/// Install through `NetworkManager`, preflighting dependencies before any
+/// write, then polling until its dnsmasq listener answers a Yerd-domain query.
+#[cfg(target_os = "linux")]
+fn install_networkmanager(tld: &str, addr: SocketAddr) -> Result<(), HelperError> {
+    run_command("dnsmasq", "dnsmasq", ["--version"])?;
+    run_command("nmcli", "nmcli", ["--version"])?;
+
+    let nm_path = networkmanager_path();
+    let dns_path = dnsmasq_path(tld);
+    let nm_body = networkmanager_dnsmasq::compose_networkmanager();
+    let dns_body = networkmanager_dnsmasq::compose_dnsmasq(tld, addr);
+    let files_match = std::fs::read_to_string(&nm_path)
+        .is_ok_and(|text| networkmanager_dnsmasq::matches_networkmanager(&text))
+        && std::fs::read_to_string(&dns_path)
+            .is_ok_and(|text| networkmanager_dnsmasq::matches_dnsmasq(&text, tld, addr));
+    if files_match && networkmanager_ready(tld) {
+        return Ok(());
+    }
+
+    let old_nm = std::fs::read(&nm_path).ok();
+    let old_dns = std::fs::read(&dns_path).ok();
+    if let Err(error) = atomic_write(&nm_path, nm_body.as_bytes(), true)
+        .and_then(|()| atomic_write(&dns_path, dns_body.as_bytes(), true))
+    {
+        restore_file(&nm_path, old_nm.as_deref());
+        restore_file(&dns_path, old_dns.as_deref());
+        return Err(error);
+    }
+
+    let applied = reload_networkmanager().and_then(|()| {
+        if wait_for_networkmanager(tld) {
+            Ok(())
+        } else {
+            Err(HelperError::ResolverPostcondition {
+                reason:
+                    "NetworkManager dnsmasq did not answer through the active 127.0.0.1 resolver",
+            })
+        }
+    });
+    if let Err(error) = applied {
+        restore_file(&nm_path, old_nm.as_deref());
+        restore_file(&dns_path, old_dns.as_deref());
+        if let Err(rollback_error) = reload_networkmanager() {
+            eprintln!("    warning: resolver rollback reload failed: {rollback_error}");
+        }
+        return Err(error);
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn wait_for_networkmanager(tld: &str) -> bool {
+    for _ in 0..20 {
+        if networkmanager_ready(tld) {
+            return true;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    false
+}
+
+#[cfg(target_os = "linux")]
+fn networkmanager_ready(tld: &str) -> bool {
+    let resolv = std::fs::read_to_string("/etc/resolv.conf").unwrap_or_default();
+    resolv_conf::networkmanager_dnsmasq_is_active(&resolv) && probe_dnsmasq(tld)
+}
+
+#[cfg(target_os = "linux")]
+fn probe_dnsmasq(tld: &str) -> bool {
+    use std::net::UdpSocket;
+    use std::time::Duration;
+
+    fn query(tld: &str) -> Option<Vec<u8>> {
+        let mut packet = vec![0x59, 0x44, 0x01, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0];
+        for label in ["yerd-resolver-probe", tld] {
+            let len = u8::try_from(label.len()).ok()?;
+            packet.push(len);
+            packet.extend_from_slice(label.as_bytes());
+        }
+        packet.extend_from_slice(&[0, 0, 1, 0, 1]);
+        Some(packet)
+    }
+
+    let Some(query) = query(tld) else {
+        return false;
+    };
+    let socket = match UdpSocket::bind("127.0.0.1:0") {
+        Ok(socket) => socket,
+        Err(_) => return false,
+    };
+    if socket
+        .set_read_timeout(Some(Duration::from_millis(150)))
+        .is_err()
+        || socket.connect("127.0.0.1:53").is_err()
+        || socket.send(&query).is_err()
+    {
+        return false;
+    }
+    let mut response = [0_u8; 512];
+    let size = match socket.recv(&mut response) {
+        Ok(size) => size,
+        Err(_) => return false,
+    };
+    dns_response_has_loopback_a(&response[..size])
+}
+
+#[cfg(target_os = "linux")]
+fn dns_response_has_loopback_a(packet: &[u8]) -> bool {
+    packet.len() >= 12
+        && packet.starts_with(&[0x59, 0x44])
+        && packet.get(2).is_some_and(|flags| flags & 0x80 != 0)
+        && packet.get(3).is_some_and(|flags| flags & 0x0f == 0)
+        && packet.windows(14).any(|window| {
+            window.starts_with(&[0, 1, 0, 1])
+                && window.get(8..10) == Some([0, 4].as_slice())
+                && window.ends_with(&[127, 0, 0, 1])
+        })
+}
+
+#[cfg(target_os = "linux")]
+fn reload_networkmanager() -> Result<(), HelperError> {
+    run_command("nmcli", "nmcli", ["general", "reload", "conf", "dns-full"]).map(|_| ())
+}
+
+#[cfg(target_os = "linux")]
+fn restore_file(path: &std::path::Path, previous: Option<&[u8]>) {
+    let result = match previous {
+        Some(bytes) => atomic_write(path, bytes, true),
+        None => remove_if_present(path).map(|_| ()),
+    };
+    if let Err(error) = result {
+        eprintln!(
+            "    warning: could not restore resolver file {}: {error}",
+            path.display()
+        );
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -107,18 +263,31 @@ fn macos_back_up_existing(tld: &str, dest: &std::path::Path, content: &[u8]) {
 #[cfg(target_os = "linux")]
 pub fn uninstall_resolver(tld: &str) -> Result<(), HelperError> {
     let tld_obj = validate::require_valid_tld(tld)?;
-    let path = drop_in_path(tld_obj.as_str());
-    match std::fs::remove_file(&path) {
-        Ok(()) => {
-            let _ = run_command(
-                "systemctl",
-                "systemctl",
-                ["reload-or-restart", "systemd-resolved"],
-            );
-            Ok(())
-        }
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(source) => Err(HelperError::Io { path, source }),
+    let resolved_removed = remove_if_present(&drop_in_path(tld_obj.as_str()))?;
+    let nm_removed = remove_if_present(&networkmanager_path())?
+        | remove_if_present(&dnsmasq_path(tld_obj.as_str()))?;
+    if resolved_removed {
+        let _ = run_command(
+            "systemctl",
+            "systemctl",
+            ["reload-or-restart", "systemd-resolved"],
+        );
+    }
+    if nm_removed {
+        let _ = reload_networkmanager();
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn remove_if_present(path: &std::path::Path) -> Result<bool, HelperError> {
+    match std::fs::remove_file(path) {
+        Ok(()) => Ok(true),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(source) => Err(HelperError::Io {
+            path: path.to_path_buf(),
+            source,
+        }),
     }
 }
 
@@ -219,6 +388,29 @@ mod tests {
             drop_in_path("test"),
             PathBuf::from("/etc/systemd/resolved.conf.d/yerd-test.conf")
         );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn networkmanager_paths_have_expected_shape() {
+        assert_eq!(
+            networkmanager_path(),
+            PathBuf::from("/etc/NetworkManager/conf.d/yerd-dnsmasq.conf")
+        );
+        assert_eq!(
+            dnsmasq_path("test"),
+            PathBuf::from("/etc/NetworkManager/dnsmasq.d/yerd-test.conf")
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn dns_probe_response_requires_successful_loopback_a_answer() {
+        let mut response = vec![0x59, 0x44, 0x81, 0x80, 0, 1, 0, 1, 0, 0, 0, 0];
+        response.extend_from_slice(&[0xc0, 0x0c, 0, 1, 0, 1, 0, 0, 0, 60, 0, 4, 127, 0, 0, 1]);
+        assert!(dns_response_has_loopback_a(&response));
+        response[3] = 0x83;
+        assert!(!dns_response_has_loopback_a(&response));
     }
 
     #[cfg(target_os = "macos")]

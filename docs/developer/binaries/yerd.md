@@ -379,7 +379,7 @@ single IPC request. Its design follows a strict trust model (see
 
 Helper exit codes are classified: `0` is success, `78` (`EX_CONFIG`) is treated
 as a *skip* ("unsupported on this host", e.g. resolver without
-`systemd-resolved`), and anything else is a failure that flips the run's exit
+a supported Linux resolver manager), and anything else is a failure that flips the run's exit
 code to `1`.
 
 ## Tests and invariants

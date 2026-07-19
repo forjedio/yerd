@@ -7,7 +7,7 @@ Yerd is rootless by design. The daemon (`yerdd`), the CLI (`yerd`), and the desk
 Three things can't be done as an unprivileged user, on any OS:
 
 1. **Trusting the local CA.** Yerd issues per-site certificates from a local CA. For the browser to show a padlock, that CA must go into the root-owned system trust store.
-2. **Configuring the system resolver.** Routing `*.test` to Yerd's DNS responder means editing the OS resolver config under `/etc` (`/etc/resolver/<tld>` on macOS, a `systemd-resolved` drop-in on Linux).
+2. **Configuring the system resolver.** Routing `*.test` to Yerd's DNS responder means editing the OS resolver config under `/etc` (`/etc/resolver/<tld>` on macOS, or Yerd-owned systemd-resolved/NetworkManager snippets on Linux).
 3. **Binding ports 80 and 443.** These are privileged ports; an unprivileged process can't bind them without help.
 
 Herd and Valet require the same admin steps for the same reasons.
@@ -34,6 +34,10 @@ sudo yerd elevate resolver    # route *.test to yerd's DNS responder
 sudo yerd elevate ports       # allow the daemon to serve on 80/443
 ```
 
+Resolver elevation first checks the daemon's DNS health. If Yerd could not bind
+its configured DNS port, the command stops before changing OS resolver files and
+names the port to free (or change); restart Yerd after correcting it, then retry.
+
 | Target | What it configures |
 |---|---|
 | `trust` | Adds Yerd's local CA to the OS system trust store. |
@@ -58,7 +62,7 @@ sudo yerd unelevate resolver  # restore the prior resolver (macOS) / remove the 
 ```
 
 ::: tip Unelevate restores your previous resolver
-On macOS, if `elevate resolver` replaced a pre-existing `/etc/resolver/<tld>` (a Valet/Herd leftover), it saved a backup. `unelevate resolver` **restores that backup** - returning DNS to its pre-Yerd state - and then clears the saved backups; with no backup it just removes Yerd's file. On Linux it removes the `systemd-resolved` drop-in (no backup mechanism). `unelevate ports` is reversible on macOS only (see [Ports](#ports)).
+On macOS, if `elevate resolver` replaced a pre-existing `/etc/resolver/<tld>` (a Valet/Herd leftover), it saved a backup. `unelevate resolver` **restores that backup** - returning DNS to its pre-Yerd state - and then clears the saved backups; with no backup it just removes Yerd's file. On Linux it removes all Yerd-owned systemd-resolved and NetworkManager snippets. `unelevate ports` is reversible on macOS only (see [Ports](#ports)).
 :::
 
 ::: tip Removing yerd entirely
@@ -92,7 +96,7 @@ See [HTTPS & Certificates](./https) for how the CA and leaf certs are generated.
 ### Resolver
 
 - **macOS:** writes `/etc/resolver/<tld>` pointing at Yerd's DNS address, picked up at the next query (no restart). An existing file is backed up first, and `unelevate resolver` restores that backup.
-- **Linux:** writes a `systemd-resolved` drop-in at `/etc/systemd/resolved.conf.d/yerd-<tld>.conf` and runs `systemctl reload-or-restart systemd-resolved`. Without `systemd-resolved`, this target is **skipped** (not failed): you'll be told to point `/etc/resolv.conf` at the DNS address yourself, since Yerd won't rewrite a file that `NetworkManager`, `resolvconf`, or cloud-init may own.
+- **Linux:** prefers a `systemd-resolved` drop-in. When `/etc/resolv.conf` positively identifies NetworkManager as its generator, Yerd can instead enable NetworkManager's dnsmasq plugin and add a per-TLD forwarding rule; this requires `dnsmasq` and `nmcli`. Other resolver arrangements are skipped, and Yerd never edits `/etc/resolv.conf` directly.
 
 See [DNS & .test Domains](./dns) for the resolution model.
 
@@ -186,7 +190,7 @@ See [`bin/yerd/src/elevate.rs`](https://github.com/forjedio/yerd/blob/main/bin/y
 Outcomes:
 
 - **`ok`** - succeeded (operations are idempotent, so re-running is safe).
-- **`skipped (unsupported on this host)`** - the target doesn't apply here (e.g. `resolver` on Linux without `systemd-resolved`). The run continues.
+- **`skipped (unsupported on this host)`** - the target doesn't apply here (e.g. `resolver` on Linux without a positively detected supported manager). The run continues.
 - **`failed: ...`** - a real error; that target's exit status is reported and the command exits non-zero, but the other targets still run.
 
 ## See also
