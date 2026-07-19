@@ -360,6 +360,20 @@ pub struct MariaDb;
 /// `PostgreSQL`.
 pub struct Postgres;
 /// Meilisearch Community Edition: shared local search infrastructure.
+///
+/// Its dump and snapshot dirs default to `dumps/` and `snapshots/` *relative to
+/// the working directory*, and it creates the dump dir eagerly at startup, so
+/// both are pinned under the datadir. Neither unit sets a working directory, and
+/// the inherited default differs by OS: launchd gives `/`, the read-only system
+/// volume on macOS, so startup died with EROFS before ever binding a port; the
+/// systemd *user* manager gives `$HOME`, which is writable, so Linux instead
+/// quietly littered `~/dumps`. Pinning fixes both.
+///
+/// Anchoring under the datadir (rather than beside it) keeps these version-scoped
+/// with the store they belong to, so `uninstall --purge` reclaims them with the
+/// data. The trade-off is that dumps taken before a version change stay behind
+/// with the old version's data, which matches how Yerd already retains the rest
+/// of that version's state.
 pub struct Meilisearch;
 
 impl ServiceDefinition for Redis {
@@ -697,6 +711,10 @@ impl ServiceDefinition for Meilisearch {
             .arg(format!("127.0.0.1:{}", ctx.port))
             .arg("--db-path")
             .arg(ctx.datadir)
+            .arg("--dump-dir")
+            .arg(ctx.datadir.join("dumps"))
+            .arg("--snapshot-dir")
+            .arg(ctx.datadir.join("snapshots"))
             .arg("--env")
             .arg("development")
             .arg("--no-analytics");
@@ -908,12 +926,47 @@ mod tests {
                 "127.0.0.1:7701",
                 "--db-path",
                 "/data/meili",
+                "--dump-dir",
+                "/data/meili/dumps",
+                "--snapshot-dir",
+                "/data/meili/snapshots",
                 "--env",
                 "development",
                 "--no-analytics"
             ]
         );
         assert!(plan.capture_output_to_log);
+    }
+
+    /// Regression: both dirs default to cwd-relative, and the daemon's cwd is the
+    /// read-only `/` on macOS, so neither may be left to Meilisearch's default.
+    #[test]
+    fn meilisearch_pins_dump_and_snapshot_dirs_under_the_datadir() {
+        let ctx = LaunchContext {
+            port: 7700,
+            program: std::path::Path::new("/bin/meilisearch"),
+            config_path: std::path::Path::new(""),
+            datadir: std::path::Path::new("/data/meili"),
+            log_path: std::path::Path::new("/logs/meili.log"),
+            geo_env: &[],
+            cwd: None,
+        };
+        let plan = reg().get("meilisearch").unwrap().plan_launch(&ctx).unwrap();
+        let args: Vec<_> = plan
+            .command
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+
+        for (flag, expected) in [
+            ("--dump-dir", "/data/meili/dumps"),
+            ("--snapshot-dir", "/data/meili/snapshots"),
+        ] {
+            let Some(at) = args.iter().position(|a| a == flag) else {
+                panic!("{flag} must be passed explicitly")
+            };
+            assert_eq!(args.get(at + 1).map(String::as_str), Some(expected));
+        }
     }
 
     #[test]
