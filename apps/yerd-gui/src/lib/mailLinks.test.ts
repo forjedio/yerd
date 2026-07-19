@@ -225,6 +225,13 @@ describe("buildMailFrameDocument", () => {
     expect(body).not.toContain("cdn.example.com");
   });
 
+  it("neutralizes remote CSS url() smuggled behind a comment", () => {
+    const { head } = buildMailFrameDocument(`<!doctype html><html><head>
+<style>.bg { background: url(/* */"https://cdn.example.com/track.png"); }</style>
+</head><body></body></html>`);
+    expect(head).not.toContain("cdn.example.com");
+  });
+
   it("strips string-form @import without opt-in", () => {
     const { head } = buildMailFrameDocument(`<!doctype html><html><head>
 <style>@import "https://cdn.example.com/mail.css"; .ok { color: red; }</style>

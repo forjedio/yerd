@@ -406,6 +406,20 @@ function formatDate(epoch: number): string {
           <Spinner class="size-6" />
         </div>
         <template v-else-if="detail">
+          <div class="shrink-0 border-b px-5 py-3">
+            <h2 class="text-base font-semibold">
+              {{ detail.subject || "(no subject)" }}
+            </h2>
+            <p class="mt-1 text-xs text-muted-foreground">
+              <strong>From:</strong> {{ detail.from }}
+            </p>
+            <p class="text-xs text-muted-foreground">
+              <strong>To:</strong> {{ detail.to.join(", ") }}
+            </p>
+            <p class="text-xs text-muted-foreground">
+              {{ formatDate(detail.date_epoch) }}
+            </p>
+          </div>
           <div
             v-if="detail.html_body"
             ref="htmlHost"
@@ -432,8 +446,8 @@ function formatDate(epoch: number): string {
             </div>
             <div class="flex flex-wrap gap-2">
               <button
-                v-for="att in attachments"
-                :key="att.filename"
+                v-for="(att, i) in attachments"
+                :key="`${i}:${att.filename}`"
                 type="button"
                 class="flex items-center gap-2 rounded-md border bg-background px-3 py-1.5 text-left text-xs transition-colors hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                 :title="`Open ${att.filename} (${humaniseBytes(att.size)})`"

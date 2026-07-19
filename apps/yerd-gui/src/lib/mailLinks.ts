@@ -253,9 +253,19 @@ const CSS_URL_PATTERN = /url\s*\(\s*(['"]?)([^)'"]+)\1\s*\)/gi;
 const CSS_IMPORT_PATTERN =
   /@import\s+(?:url\s*\(\s*)?(['"]?)([^)'";\s]+)\1[^;]*;?/gi;
 
+/**
+ * Strip CSS block comments before scanning for remote references. A comment
+ * embedded inside a `url(...)` or `@import` token otherwise splits it so the
+ * regexes below skip it, letting a remote fetch slip past the opt-out. This
+ * closes the common case; regex CSS handling stays best-effort.
+ */
+function stripCssComments(css: string): string {
+  return css.replace(/\/\*[\s\S]*?\*\//g, "");
+}
+
 /** Blank remote `url(...)` / `@import` references inside CSS text. */
 function neutralizeRemoteCss(css: string): string {
-  let out = css.replace(CSS_IMPORT_PATTERN, (full, _q, raw: string) => {
+  let out = stripCssComments(css).replace(CSS_IMPORT_PATTERN, (full, _q, raw: string) => {
     return isRemoteHttpUrl(raw) ? "" : full;
   });
   out = out.replace(CSS_URL_PATTERN, (full, _q, raw: string) => {
@@ -265,11 +275,12 @@ function neutralizeRemoteCss(css: string): string {
 }
 
 function collectCssRemoteUrls(css: string, add: (url: string, kind: RemoteContentKind) => void): void {
-  for (const match of css.matchAll(CSS_IMPORT_PATTERN)) {
+  const cleaned = stripCssComments(css);
+  for (const match of cleaned.matchAll(CSS_IMPORT_PATTERN)) {
     const raw = match[2];
     if (isRemoteHttpUrl(raw)) add(raw, "stylesheet");
   }
-  for (const match of css.matchAll(CSS_URL_PATTERN)) {
+  for (const match of cleaned.matchAll(CSS_URL_PATTERN)) {
     const raw = match[2];
     if (isRemoteHttpUrl(raw)) add(raw, "css-url");
   }

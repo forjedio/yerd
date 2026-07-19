@@ -71,9 +71,9 @@ pub fn detail(id: &str, raw: &[u8]) -> MailDetail {
 /// references in the HTML body) and are already handled by [`rewrite_cids`];
 /// surfacing them again as downloadable attachments would be confusing.
 ///
-/// The attachment bytes are base64-encoded here so the GUI can construct a
-/// `data:` URL and hand it straight to the OS opener without writing a
-/// temporary file.
+/// The attachment bytes are base64-encoded here so the GUI can decode them at
+/// the Tauri boundary and write a cache file for the OS opener (a `data:` URL
+/// is not openable through the opener plugin).
 fn collect_attachments(msg: &Message<'_>) -> Vec<MailAttachment> {
     msg.attachments()
         .filter(|part| {

@@ -1005,7 +1005,9 @@ fn write_mail_attachment_file(
             }
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
             Err(e) => {
-                return Err(GuiError::internal(format!("could not write attachment: {e}")));
+                return Err(GuiError::internal(format!(
+                    "could not write attachment: {e}"
+                )));
             }
         }
     }
@@ -1097,7 +1099,7 @@ fn safe_attachment_filename(name: &str) -> String {
 }
 
 #[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::panic)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
 
