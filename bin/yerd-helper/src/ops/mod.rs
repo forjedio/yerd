@@ -3,6 +3,7 @@
 //! in a single file.
 
 pub mod ca;
+pub mod lan_port_redirect;
 pub mod port_redirect;
 pub mod resolver;
 pub mod setcap;

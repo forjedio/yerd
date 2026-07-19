@@ -212,6 +212,16 @@ mod unix_impl {
             "remove the pf port redirect",
             residue,
         );
+
+        // The LAN pf redirect is a separate anchor (`dev.yerd.lan`); tear it down
+        // too so a full uninstall leaves no dangling `/etc/pf.conf` reference.
+        #[cfg(target_os = "macos")]
+        run_helper(
+            &helper,
+            &HelperInvocation::UninstallLanPortRedirect,
+            "remove the pf LAN redirect",
+            residue,
+        );
     }
 
     /// Spawn the helper for one operation and classify the outcome.

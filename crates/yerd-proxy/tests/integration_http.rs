@@ -252,6 +252,7 @@ async fn proxy_forwards_to_fcgi_backend() {
             None,
             Arc::new(AtomicBool::new(true)),
             test_client_tls(),
+            false,
             async move {
                 let _ = rx_shutdown.await;
             },
@@ -347,6 +348,7 @@ async fn valid_login_token_adds_auto_prepend_and_strips_token_from_query() {
             Some(prepend_path),
             Arc::new(AtomicBool::new(true)),
             test_client_tls(),
+            false,
             async move {
                 let _ = rx_shutdown.await;
             },
@@ -439,6 +441,7 @@ async fn secure_site_redirect_does_not_consume_login_token() {
             None,
             Arc::new(AtomicBool::new(true)),
             test_client_tls(),
+            false,
             async move {
                 let _ = rx_shutdown.await;
             },
@@ -494,6 +497,7 @@ async fn unknown_host_returns_404() {
             None,
             Arc::new(AtomicBool::new(true)),
             test_client_tls(),
+            false,
             async move {
                 let _ = rx_shutdown.await;
             },
@@ -532,6 +536,7 @@ async fn missing_host_header_returns_400() {
             None,
             Arc::new(AtomicBool::new(true)),
             test_client_tls(),
+            false,
             async move {
                 let _ = rx_shutdown.await;
             },
@@ -583,6 +588,7 @@ async fn static_file_is_served_without_touching_fcgi() {
             None,
             Arc::new(AtomicBool::new(true)),
             test_client_tls(),
+            false,
             async move {
                 let _ = rx_shutdown.await;
             },
@@ -636,6 +642,7 @@ async fn directory_index_html_served_when_no_index_php() {
             None,
             Arc::new(AtomicBool::new(true)),
             test_client_tls(),
+            false,
             async move {
                 let _ = rx_shutdown.await;
             },
@@ -685,6 +692,7 @@ async fn directory_index_htm_served_as_fallback() {
             None,
             Arc::new(AtomicBool::new(true)),
             test_client_tls(),
+            false,
             async move {
                 let _ = rx_shutdown.await;
             },
@@ -747,6 +755,7 @@ async fn index_php_present_wins_over_index_html() {
             None,
             Arc::new(AtomicBool::new(true)),
             test_client_tls(),
+            false,
             async move {
                 let _ = rx_shutdown.await;
             },
@@ -819,6 +828,7 @@ async fn subdirectory_index_php_wins_over_root_index_php() {
             None,
             Arc::new(AtomicBool::new(true)),
             test_client_tls(),
+            false,
             async move {
                 let _ = rx_shutdown.await;
             },
@@ -891,6 +901,7 @@ async fn direct_script_execution_gated_to_wordpress_sites() {
             None,
             Arc::new(AtomicBool::new(true)),
             test_client_tls(),
+            false,
             async move {
                 let _ = rx_shutdown.await;
             },
@@ -959,6 +970,7 @@ async fn directory_with_no_index_at_all_falls_through_to_fcgi() {
             None,
             Arc::new(AtomicBool::new(true)),
             test_client_tls(),
+            false,
             async move {
                 let _ = rx_shutdown.await;
             },
@@ -1021,6 +1033,7 @@ async fn nonexistent_directory_falls_through_to_fcgi() {
             None,
             Arc::new(AtomicBool::new(true)),
             test_client_tls(),
+            false,
             async move {
                 let _ = rx_shutdown.await;
             },
@@ -1072,6 +1085,7 @@ async fn head_request_to_directory_index_returns_empty_body() {
             None,
             Arc::new(AtomicBool::new(true)),
             test_client_tls(),
+            false,
             async move {
                 let _ = rx_shutdown.await;
             },
@@ -1154,6 +1168,7 @@ async fn symlink_within_document_root_outside_served_root_is_served() {
             None,
             Arc::new(AtomicBool::new(true)),
             test_client_tls(),
+            false,
             async move {
                 let _ = rx_shutdown.await;
             },
@@ -1215,6 +1230,7 @@ async fn symlink_escaping_document_root_returns_403() {
             None,
             Arc::new(AtomicBool::new(true)),
             test_client_tls(),
+            false,
             async move {
                 let _ = rx_shutdown.await;
             },
@@ -1280,6 +1296,7 @@ async fn symlink_escaping_document_root_is_served_when_protection_off() {
             None,
             Arc::new(AtomicBool::new(false)),
             test_client_tls(),
+            false,
             async move {
                 let _ = rx_shutdown.await;
             },
@@ -1340,6 +1357,7 @@ async fn symlinked_index_html_escaping_root_is_not_served() {
             None,
             Arc::new(AtomicBool::new(true)),
             test_client_tls(),
+            false,
             async move {
                 let _ = rx_shutdown.await;
             },

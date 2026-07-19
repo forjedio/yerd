@@ -23,6 +23,7 @@ pub mod ext_install;
 pub mod fs_watch;
 pub mod ipc_server;
 pub mod jobs;
+pub mod lan_setup;
 pub mod laravel_detect;
 pub mod mutate;
 pub mod php_install;
@@ -132,10 +133,11 @@ async fn run_until_shutdown(
 ) -> Result<Outcome, DaemonError> {
     let dns_handle = if let Some(bound) = daemon.dns_bound {
         let responder = yerd_dns::Responder::new(daemon.dns_tld.clone());
+        let dns_answer = daemon.dns_answer;
         let mut rx = shutdown_rx.clone();
         Some(tokio::spawn(async move {
             bound
-                .serve(responder, async move {
+                .serve(responder, dns_answer, async move {
                     let _ = rx.changed().await;
                 })
                 .await
@@ -145,6 +147,16 @@ async fn run_until_shutdown(
             "DNS responder disabled (degraded): dns_port couldn't bind - .test names won't resolve until the port is fixed and the daemon restarts"
         );
         None
+    };
+
+    let (lan_enabled, lan_tld, lan_dns_port, lan_setup_port) = {
+        let cfg = daemon.state.config.lock().await;
+        (
+            cfg.lan_enabled,
+            cfg.tld.as_str().to_owned(),
+            cfg.dns_port,
+            cfg.lan_setup_port,
+        )
     };
 
     let proxy_handle = if let (Some(http_listener), Some(tls_listener)) =
@@ -174,6 +186,7 @@ async fn run_until_shutdown(
             login_prepend_script,
             symlink_protection,
             client_tls,
+            lan_enabled,
             async move {
                 let _ = rx.changed().await;
             },
@@ -187,6 +200,18 @@ async fn run_until_shutdown(
 
     let redirect_probe_handle =
         spawn_redirect_probe(proxy_handle.is_some(), &daemon.state, shutdown_rx.clone());
+
+    let lan_setup_handle = spawn_lan_setup(
+        lan_enabled,
+        daemon.lan_ip,
+        lan_tld,
+        lan_dns_port,
+        lan_setup_port,
+        &daemon.state,
+        &daemon.cert_store,
+        shutdown_rx.clone(),
+    )
+    .await;
 
     let ipc_handle = tokio::spawn(ipc_server::run(
         daemon.ipc_listener,
@@ -278,6 +303,9 @@ async fn run_until_shutdown(
     if let Some(redirect_probe_handle) = redirect_probe_handle {
         let _ = tokio::time::timeout(Duration::from_secs(5), redirect_probe_handle).await;
     }
+    if let Some(lan_setup_handle) = lan_setup_handle {
+        let _ = tokio::time::timeout(Duration::from_secs(5), lan_setup_handle).await;
+    }
     let _ = tokio::time::timeout(Duration::from_secs(5), ipc_handle).await;
     let _ = tokio::time::timeout(Duration::from_secs(5), dump_handle).await;
     let _ = tokio::time::timeout(Duration::from_secs(5), update_check_handle).await;
@@ -327,6 +355,82 @@ async fn run_until_shutdown(
 /// TLS listener, logged as a (harmless) "TLS handshake failed" at `-v`.
 const REDIRECT_PROBE_INTERVAL: Duration = Duration::from_secs(60);
 
+/// Spawn the LAN remote-setup bootstrap endpoint, or return `None` (leaving
+/// `state.lan_setup_bound` false) when LAN is off, no LAN IP was discovered, the
+/// CA can't be read, the TLS leaf can't be minted, or the port won't bind.
+///
+/// The served CA bytes are read once from `state.ca_path`, whose basename is
+/// asserted to be exactly `ca.cert.pem` first - the endpoint only ever serves
+/// the public CA, never the private key, and never a path derived from request
+/// input.
+#[allow(clippy::too_many_arguments)]
+async fn spawn_lan_setup(
+    lan_enabled: bool,
+    lan_ip: Option<std::net::Ipv4Addr>,
+    tld: String,
+    dns_port: u16,
+    setup_port: u16,
+    state: &Arc<crate::state::DaemonState>,
+    cert_store: &Arc<crate::cert_store::DaemonCertStore>,
+    shutdown_rx: watch::Receiver<bool>,
+) -> Option<tokio::task::JoinHandle<()>> {
+    if !lan_enabled {
+        return None;
+    }
+    let Some(lan_ip) = lan_ip else {
+        tracing::warn!(
+            "LAN on but no LAN IP discovered - remote-setup bootstrap disabled this boot"
+        );
+        return None;
+    };
+
+    let ca_path = &state.ca_path;
+    if ca_path.file_name().and_then(|s| s.to_str()) != Some("ca.cert.pem") {
+        tracing::error!(path = %ca_path.display(), "refusing to serve a non-`ca.cert.pem` file");
+        return None;
+    }
+    let ca_pem = match std::fs::read(ca_path) {
+        Ok(b) => b,
+        Err(e) => {
+            tracing::warn!(error = %e, "LAN setup: could not read CA - bootstrap disabled");
+            return None;
+        }
+    };
+
+    let Some(tls_config) = cert_store.lan_setup_server_config(lan_ip) else {
+        tracing::warn!("LAN setup: could not mint the IP-SAN TLS leaf - bootstrap disabled");
+        return None;
+    };
+
+    let bind = std::net::SocketAddr::from((std::net::Ipv4Addr::UNSPECIFIED, setup_port));
+    let listener = match tokio::net::TcpListener::bind(bind).await {
+        Ok(l) => l,
+        Err(e) => {
+            tracing::warn!(error = %e, port = setup_port, "LAN setup: bootstrap port busy - bootstrap disabled");
+            return None;
+        }
+    };
+
+    state
+        .lan_setup_bound
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+    tracing::info!(port = setup_port, lan_ip = %lan_ip, "LAN remote-setup endpoint bound");
+
+    let ctx = Arc::new(crate::lan_setup::SetupContext {
+        ca_pem,
+        tld,
+        dns_port,
+        server_ip: lan_ip,
+        state: state.clone(),
+    });
+    Some(tokio::spawn(crate::lan_setup::serve(
+        listener,
+        tls_config,
+        ctx,
+        shutdown_rx,
+    )))
+}
+
 fn spawn_redirect_probe(
     proxy_running: bool,
     state: &Arc<crate::state::DaemonState>,
@@ -364,7 +468,10 @@ fn spawn_redirect_probe(
 /// correct. When it fell back to a rootless port, a live privileged-port
 /// redirect (macOS `pf`, installed by `yerd elevate ports`) makes the
 /// well-known port reachable too, so the redirect should advertise it instead
-/// of leaking the internal fallback port into the browser's address bar.
+/// of leaking the internal fallback port into the browser's address bar. This
+/// holds in LAN mode too: the loopback probe measures exactly whether `:443` is
+/// reachable on-host (via the `elevate ports` redirect), so a LAN-enabled host
+/// that hasn't elevated still advertises the reachable fallback port.
 fn effective_redirect_port(https: yerd_ipc::PortStatus, redirect_active: Option<bool>) -> u16 {
     if !https.fell_back || redirect_active == Some(true) {
         https.requested

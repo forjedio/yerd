@@ -145,7 +145,7 @@ fn port_binder_bind_zero_yields_nonzero_port() {
 fn port_binder_bind_pair_zero_pair_returns_two_distinct_ports() {
     let b = ActivePortBinder;
     let pair = b
-        .bind_pair((0, 0), (0, 0))
+        .bind_pair(false, (0, 0), (0, 0))
         .expect("bind_pair on (0,0)/(0,0) should succeed");
     let http_port = pair.http.port().unwrap();
     let https_port = pair.https.port().unwrap();
@@ -162,7 +162,7 @@ fn port_binder_bind_pair_falls_back_when_desired_is_occupied() {
     let occupied = sacrifice.local_addr().unwrap().port();
 
     let pair = b
-        .bind_pair((occupied, 0), (0, 0))
+        .bind_pair(false, (occupied, 0), (0, 0))
         .expect("bind_pair must fall back when desired http is in use");
 
     let http_port = pair.http.port().unwrap();

@@ -46,6 +46,16 @@ pub struct Config {
     /// [`yerd_ipc::StatusReport`], which each `yerd mcp` session reads to decide
     /// whether to serve. See [`DEFAULT_MCP_ENABLED`].
     pub mcp_enabled: bool,
+    /// Whether Yerd exposes `.test` sites to other devices on the LAN (binds the
+    /// web/DNS listeners off loopback and answers `.test` with the host's LAN IP).
+    /// Default: `false` - an explicit, security-sensitive opt-in via `yerd lan
+    /// enable`. Persisted only; the bind change takes effect on daemon restart.
+    /// See [`DEFAULT_LAN_ENABLED`].
+    pub lan_enabled: bool,
+    /// Port for the LAN remote-device bootstrap endpoint (serves the public CA
+    /// and the device installer script; see `yerd remote-setup`). Config-derived
+    /// so isolated dev instances don't collide. Default: [`DEFAULT_LAN_SETUP_PORT`].
+    pub lan_setup_port: u16,
     /// HTTP / HTTPS listen ports.
     pub ports: Ports,
     /// PHP defaults.
@@ -98,6 +108,8 @@ impl Default for Config {
             update_channel: DEFAULT_UPDATE_CHANNEL.to_owned(),
             symlink_protection: DEFAULT_SYMLINK_PROTECTION,
             mcp_enabled: DEFAULT_MCP_ENABLED,
+            lan_enabled: DEFAULT_LAN_ENABLED,
+            lan_setup_port: DEFAULT_LAN_SETUP_PORT,
             ports: Ports::default(),
             php: PhpSection::default(),
             parked: ParkedSection::default(),
@@ -344,6 +356,14 @@ pub const DEFAULT_SYMLINK_PROTECTION: bool = true;
 /// Default for [`Config::mcp_enabled`] - off, so exposing Yerd to AI agents is
 /// an explicit opt-in.
 pub const DEFAULT_MCP_ENABLED: bool = false;
+
+/// Default for [`Config::lan_enabled`] - off, so exposing sites to the LAN is an
+/// explicit opt-in.
+pub const DEFAULT_LAN_ENABLED: bool = false;
+
+/// Default port for the LAN remote-device bootstrap endpoint (see
+/// [`Config::lan_setup_port`]). `7073` matches Lerd's remote-setup port.
+pub const DEFAULT_LAN_SETUP_PORT: u16 = 7073;
 
 /// The lowest non-privileged port. Ports below this need elevation on
 /// macOS / Linux, which is precisely what the rootless fallback exists to

@@ -191,7 +191,12 @@ pub fn to_request(cmd: &Command) -> Result<Request, ClientError> {
             MailAction::Show { id } => Request::GetMail { id: id.clone() },
             MailAction::Clear => Request::ClearMails,
         },
-        Command::Status => Request::Status,
+        // `lan status` is normally intercepted in `run()` for a LAN-focused
+        // view; this arm keeps the mapping total and shares `Status`.
+        Command::Status
+        | Command::Lan {
+            action: crate::cli::LanAction::Status,
+        } => Request::Status,
         Command::Doctor { action: None } => Request::Diagnose,
         Command::Doctor {
             action: Some(crate::cli::DoctorAction::Fix),
@@ -249,6 +254,13 @@ pub fn to_request(cmd: &Command) -> Result<Request, ClientError> {
                 "link is handled locally, not over IPC".to_owned(),
             ));
         }
+        Command::Lan {
+            action: crate::cli::LanAction::Enable,
+        } => Request::SetLanEnabled { enabled: true },
+        Command::Lan {
+            action: crate::cli::LanAction::Disable,
+        } => Request::SetLanEnabled { enabled: false },
+        Command::RemoteSetup => Request::MintRemoteSetupCode,
     })
 }
 
@@ -842,6 +854,12 @@ pub fn render(resp: &Response, json: bool) -> Rendered {
         } => Rendered::ok(format_available_php(available, installed, legacy)),
         Response::PhpExtensions { by_version } => Rendered::ok(format_php_extensions(by_version)),
         Response::Error { code: c, message } => Rendered::err(format!("error ({c:?}): {message}")),
+        Response::RemoteSetup {
+            code: _,
+            url,
+            ca_fingerprint,
+            expires_in_secs,
+        } => Rendered::ok(format_remote_setup(url, ca_fingerprint, *expires_in_secs)),
         Response::Status { report } => Rendered {
             stdout: format_status(report),
             stderr: String::new(),
@@ -1035,6 +1053,42 @@ fn format_parked(paths: &[String]) -> String {
         return "no parked folders".to_owned();
     }
     paths.join("\n")
+}
+
+/// The remote-device bootstrap instructions (the R2-C1 fingerprint-anchored
+/// flow). The fingerprint printed here is the trust anchor - it travels by
+/// copy-paste, NOT over the wire. The device fetches the CA over plain HTTP,
+/// verifies its **DER** SHA-256 equals the fingerprint, then fetches the
+/// installer script over HTTPS validated against that just-verified CA. Plain
+/// HTTP + a code is not sufficient to distribute a root CA.
+///
+/// `script_url` is the HTTPS script URL (`https://<ip>:<port>/remote-setup?code=…`);
+/// the CA URL is the same host/port over plain HTTP at `/remote-setup/ca`, and
+/// carries **no** code (the CA is public, so the code never leaves HTTPS).
+fn format_remote_setup(script_url: &str, ca_fingerprint: &str, expires_in_secs: u64) -> String {
+    let ca_url = script_url
+        .replacen("https://", "http://", 1)
+        .split_once("/remote-setup")
+        .map_or_else(
+            || script_url.replacen("https://", "http://", 1),
+            |(base, _)| format!("{base}/remote-setup/ca"),
+        );
+    let mins = expires_in_secs / 60;
+    format!(
+        "Run this on the OTHER device (needs sudo, curl, and openssl):\n\
+         \n\
+         \x20 curl -fsS '{ca_url}' -o yerd-ca.pem \\\n\
+         \x20   && test \"$(openssl x509 -in yerd-ca.pem -noout -fingerprint -sha256 \\\n\
+         \x20               | sed 's/.*=//;s/://g' | tr A-Z a-z)\" = \"{ca_fingerprint}\" \\\n\
+         \x20   && curl -fsS --cacert yerd-ca.pem '{script_url}' -o yerd-setup.sh \\\n\
+         \x20   && sudo bash yerd-setup.sh {ca_fingerprint}\n\
+         \n\
+         How it works: it downloads Yerd's CA over HTTP, verifies its fingerprint\n\
+         matches the one ON THIS SCREEN (the trust anchor), then fetches the installer\n\
+         over HTTPS validated against that CA and runs it. The code expires in {mins}\n\
+         minutes and is single-use. The fingerprint is what makes this safe - do not\n\
+         skip it. To undo on the device later:  sudo bash yerd-setup.sh {ca_fingerprint} uninstall"
+    )
 }
 
 fn format_service_state(s: ServiceRunState) -> &'static str {
@@ -1584,6 +1638,61 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
     use yerd_ipc::ErrorCode;
+
+    #[test]
+    fn maps_lan_and_remote_setup_commands() {
+        use crate::cli::LanAction;
+        assert_eq!(
+            to_request(&Command::Lan {
+                action: LanAction::Enable
+            })
+            .unwrap(),
+            Request::SetLanEnabled { enabled: true }
+        );
+        assert_eq!(
+            to_request(&Command::Lan {
+                action: LanAction::Disable
+            })
+            .unwrap(),
+            Request::SetLanEnabled { enabled: false }
+        );
+        assert_eq!(
+            to_request(&Command::Lan {
+                action: LanAction::Status
+            })
+            .unwrap(),
+            Request::Status
+        );
+        assert_eq!(
+            to_request(&Command::RemoteSetup).unwrap(),
+            Request::MintRemoteSetupCode
+        );
+    }
+
+    #[test]
+    fn remote_setup_render_verifies_der_fingerprint_and_uses_codeless_http_ca_then_https_script() {
+        let out = format_remote_setup(
+            "https://192.168.1.42:7073/remote-setup?code=abc",
+            &"ab".repeat(32),
+            900,
+        );
+        assert!(out.contains(&"ab".repeat(32)), "fingerprint present: {out}");
+        assert!(out.contains("yerd-setup.sh"), "{out}");
+        assert!(out.contains("openssl"), "DER fingerprint verify: {out}");
+        assert!(!out.contains("| sudo bash"), "must not pipe-to-bash: {out}");
+        assert!(
+            out.contains("http://192.168.1.42:7073/remote-setup/ca'"),
+            "CA over plain HTTP with NO code query: {out}"
+        );
+        assert!(
+            !out.contains("/remote-setup/ca?code"),
+            "the code must not travel over plain HTTP: {out}"
+        );
+        assert!(
+            out.contains("--cacert yerd-ca.pem 'https://192.168.1.42:7073/remote-setup?code=abc'"),
+            "script over --cacert HTTPS carries the code: {out}"
+        );
+    }
 
     #[test]
     #[allow(clippy::too_many_lines)]
@@ -2620,6 +2729,9 @@ mod tests {
             symlink_protection: true,
             shadows: vec![],
             mcp_enabled: false,
+            lan_enabled: false,
+            lan_ip: None,
+            lan_setup_bound: None,
         }
     }
 

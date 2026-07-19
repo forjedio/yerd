@@ -41,6 +41,7 @@ yerd [--json] <COMMAND> [ARGS...]
 | [Services](./services) | `services`, `service available`, `service install`, `service change-version`, `service uninstall`, `service start`, `service stop`, `service restart`, `service set-port`, `service logs` |
 | [Databases](./db) | `db list`, `db create`, `db drop`, `db backup`, `db restore` |
 | [Mail](./mail) | `mail list`, `mail show`, `mail clear` |
+| [LAN sharing](./lan) | `lan enable`, `lan disable`, `lan status`, `remote-setup` |
 | [Tunnel](./tunnel) | `tunnel install`, `tunnel share`, `tunnel stop`, `tunnel status`, `tunnel login`, `tunnel create`, `tunnel delete`, `tunnel list`, `tunnel route`, `tunnel set-host`, `tunnel publish`, `tunnel unpublish` |
 | [Diagnostics](./diagnostics) | `ping`, `status`, `doctor`, `doctor fix` |
 | [Elevation](./elevation) | `elevate`, `unelevate` |

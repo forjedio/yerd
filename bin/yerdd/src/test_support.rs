@@ -104,6 +104,9 @@ pub fn state_in(tmp: &Path) -> DaemonState {
         wordpress_login_prepend_script: None,
         wordpress_sites: Arc::new(RwLock::new(std::collections::HashMap::new())),
         laravel_sites: Arc::new(RwLock::new(std::collections::HashMap::new())),
+        lan_ip: None,
+        lan_setup_bound: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        remote_setup_code: tokio::sync::Mutex::new(None),
     }
 }
 

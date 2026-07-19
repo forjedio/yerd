@@ -37,6 +37,22 @@ pub const PF_CONF_PATH: &str = "/etc/pf.conf";
 /// is idempotent and removal is unambiguous.
 const MARKER: &str = "# yerd-managed";
 
+/// LAN pf anchor name - a **separate** anchor from the loopback `dev.yerd` one
+/// (installed by `yerd elevate ports`) so teardown of one never disturbs the
+/// other. It carries the M2 `rdr` that redirects inbound LAN 80/443 to the
+/// daemon's rootless ports on the host's LAN IP.
+pub const LAN_ANCHOR_NAME: &str = "dev.yerd.lan";
+/// Absolute path of the LAN anchor rules file.
+pub const LAN_ANCHOR_PATH: &str = "/etc/pf.anchors/dev.yerd.lan";
+/// Absolute path of the LAN boot-persistence `LaunchDaemon` plist.
+pub const LAN_PLIST_PATH: &str = "/Library/LaunchDaemons/dev.yerd.lan.pf.plist";
+
+/// Distinct marker on LAN-managed `/etc/pf.conf` lines. Deliberately different
+/// from [`MARKER`] and non-overlapping (`"# yerd-managed"` is not a substring of
+/// `"# yerd-lan-managed"`), so removing one anchor's refs never strips the
+/// other's.
+const LAN_MARKER: &str = "# yerd-lan-managed";
+
 /// Compose the contents of `/etc/pf.anchors/dev.yerd`. Ends in a newline.
 #[must_use]
 pub fn compose_anchor_rules(
@@ -51,34 +67,27 @@ pub fn compose_anchor_rules(
     )
 }
 
-/// The `rdr-anchor` line we insert into the translation section.
-fn rdr_anchor_line() -> String {
-    format!("rdr-anchor \"{ANCHOR_NAME}\" {MARKER}")
+/// The `rdr-anchor` line for `name`, tagged with `marker`.
+fn rdr_anchor_line_for(name: &str, marker: &str) -> String {
+    format!("rdr-anchor \"{name}\" {marker}")
 }
 
-/// The `load anchor` line we append.
-fn load_anchor_line() -> String {
-    format!("load anchor \"{ANCHOR_NAME}\" from \"{ANCHOR_PATH}\" {MARKER}")
+/// The `load anchor` line for `name`/`path`, tagged with `marker`.
+fn load_anchor_line_for(name: &str, path: &str, marker: &str) -> String {
+    format!("load anchor \"{name}\" from \"{path}\" {marker}")
 }
 
-/// True if `pf_conf` already carries our managed lines.
-#[must_use]
-pub fn is_installed(pf_conf: &str) -> bool {
+/// True if `pf_conf` already carries the refs for `name`/`marker`.
+fn is_installed_for(pf_conf: &str, name: &str, marker: &str) -> bool {
+    let quoted = format!("\"{name}\"");
     pf_conf
         .lines()
-        .any(|l| l.contains(MARKER) && l.contains(&format!("\"{ANCHOR_NAME}\"")))
+        .any(|l| l.contains(marker) && l.contains(&quoted))
 }
 
-/// Insert our `rdr-anchor` + `load anchor` lines into `pf_conf`, returning the
-/// new file text. Idempotent: if already present, returns `pf_conf` unchanged.
-///
-/// The `rdr-anchor` line is placed immediately after the last existing
-/// `rdr-anchor`/`nat-anchor` declaration (the translation section, which pf
-/// requires to precede filter rules); if the file has neither, it is prepended.
-/// The `load anchor` line is appended (load statements may appear anywhere).
-#[must_use]
-pub fn insert_anchor_refs(pf_conf: &str) -> String {
-    if is_installed(pf_conf) {
+/// Insert an anchor's `rdr-anchor` + `load anchor` refs into `pf_conf`.
+fn insert_refs_for(pf_conf: &str, name: &str, path: &str, marker: &str) -> String {
+    if is_installed_for(pf_conf, name, marker) {
         return pf_conf.to_owned();
     }
 
@@ -94,26 +103,94 @@ pub fn insert_anchor_refs(pf_conf: &str) -> String {
         .map(|(i, _)| i)
         .next_back();
     let insert_at = after.map_or(0, |i| i + 1);
-    lines.insert(insert_at, rdr_anchor_line());
+    lines.insert(insert_at, rdr_anchor_line_for(name, marker));
 
-    lines.push(load_anchor_line());
+    lines.push(load_anchor_line_for(name, path, marker));
 
     let mut out = lines.join("\n");
     out.push('\n');
     out
 }
 
-/// Remove our managed lines from `pf_conf`, returning the new file text.
-/// Idempotent: a file without our lines is returned (re-normalised) unchanged
-/// in content.
-#[must_use]
-pub fn remove_anchor_refs(pf_conf: &str) -> String {
-    let kept: Vec<&str> = pf_conf.lines().filter(|l| !l.contains(MARKER)).collect();
+/// Remove the lines tagged with `marker` from `pf_conf`.
+fn remove_refs_for(pf_conf: &str, marker: &str) -> String {
+    let kept: Vec<&str> = pf_conf.lines().filter(|l| !l.contains(marker)).collect();
     let mut out = kept.join("\n");
     if !out.is_empty() {
         out.push('\n');
     }
     out
+}
+
+/// True if `pf_conf` already carries the loopback (`dev.yerd`) managed lines.
+#[must_use]
+pub fn is_installed(pf_conf: &str) -> bool {
+    is_installed_for(pf_conf, ANCHOR_NAME, MARKER)
+}
+
+/// Insert the loopback `rdr-anchor` + `load anchor` lines into `pf_conf`,
+/// returning the new file text. Idempotent.
+///
+/// The `rdr-anchor` line is placed immediately after the last existing
+/// `rdr-anchor`/`nat-anchor` declaration (the translation section, which pf
+/// requires to precede filter rules); if the file has neither, it is prepended.
+/// The `load anchor` line is appended (load statements may appear anywhere).
+#[must_use]
+pub fn insert_anchor_refs(pf_conf: &str) -> String {
+    insert_refs_for(pf_conf, ANCHOR_NAME, ANCHOR_PATH, MARKER)
+}
+
+/// Remove the loopback managed lines from `pf_conf` (scoped to [`MARKER`], so it
+/// never strips the LAN anchor's refs). Idempotent.
+#[must_use]
+pub fn remove_anchor_refs(pf_conf: &str) -> String {
+    remove_refs_for(pf_conf, MARKER)
+}
+
+/// True if `pf_conf` already carries the LAN (`dev.yerd.lan`) managed lines.
+#[must_use]
+pub fn is_lan_installed(pf_conf: &str) -> bool {
+    is_installed_for(pf_conf, LAN_ANCHOR_NAME, LAN_MARKER)
+}
+
+/// Insert the LAN anchor refs into `pf_conf`. Idempotent; same placement rules
+/// as [`insert_anchor_refs`], but tagged with [`LAN_MARKER`] so the two anchors
+/// coexist independently.
+#[must_use]
+pub fn insert_lan_anchor_refs(pf_conf: &str) -> String {
+    insert_refs_for(pf_conf, LAN_ANCHOR_NAME, LAN_ANCHOR_PATH, LAN_MARKER)
+}
+
+/// Remove the LAN managed lines from `pf_conf` (scoped to [`LAN_MARKER`], so it
+/// never strips the loopback anchor's refs). Idempotent.
+#[must_use]
+pub fn remove_lan_anchor_refs(pf_conf: &str) -> String {
+    remove_refs_for(pf_conf, LAN_MARKER)
+}
+
+/// Compose the LAN anchor rules file (`/etc/pf.anchors/dev.yerd.lan`), the M2
+/// redirect. Ends in a newline.
+///
+/// Redirects inbound 80/443 to `<lan_ip>:<rootless>`, **source-scoped to the
+/// RFC1918 + link-local ranges** (the LAN subset of [`yerd_core::is_lan_source`];
+/// loopback is deliberately excluded here - loopback traffic is served by the
+/// separate `dev.yerd` anchor and never has `<lan_ip>` as its destination) and
+/// dest-scoped to `<lan_ip>`. No `on <iface>` qualifier: the destination is a
+/// real routable local address, so no martian/loopback drop applies and no
+/// interface name is needed.
+#[must_use]
+pub fn compose_lan_anchor_rules(
+    lan_ip: std::net::Ipv4Addr,
+    http_from: u16,
+    http_to: u16,
+    https_from: u16,
+    https_to: u16,
+) -> String {
+    let src = "{ 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16 }";
+    format!(
+        "rdr pass inet proto tcp from {src} to {lan_ip} port {http_from} -> {lan_ip} port {http_to}\n\
+         rdr pass inet proto tcp from {src} to {lan_ip} port {https_from} -> {lan_ip} port {https_to}\n"
+    )
 }
 
 /// Compose the `LaunchDaemon` plist that re-applies the redirect at boot by
@@ -122,13 +199,24 @@ pub fn remove_anchor_refs(pf_conf: &str) -> String {
 /// that exits 0 in a tight loop).
 #[must_use]
 pub fn compose_launchdaemon_plist() -> String {
+    compose_launchdaemon_plist_labelled(ANCHOR_NAME)
+}
+
+/// LAN variant of [`compose_launchdaemon_plist`], labelled `dev.yerd.lan.pf`.
+/// Reloads the same canonical `/etc/pf.conf` (which loads both anchors) at boot.
+#[must_use]
+pub fn compose_lan_launchdaemon_plist() -> String {
+    compose_launchdaemon_plist_labelled(LAN_ANCHOR_NAME)
+}
+
+fn compose_launchdaemon_plist_labelled(label_stem: &str) -> String {
     format!(
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
          <!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n\
          <plist version=\"1.0\">\n\
          <dict>\n\
          \t<key>Label</key>\n\
-         \t<string>{ANCHOR_NAME}.pf</string>\n\
+         \t<string>{label_stem}.pf</string>\n\
          \t<key>RunAtLoad</key>\n\
          \t<true/>\n\
          \t<key>ProgramArguments</key>\n\
@@ -237,5 +325,64 @@ load anchor \"com.apple\" from \"/etc/pf.anchors/com.apple\"
         assert!(!p.contains("KeepAlive"));
         assert!(p.contains("/sbin/pfctl"));
         assert!(p.contains(PF_CONF_PATH));
+    }
+
+    #[test]
+    fn lan_rules_are_source_scoped_and_dest_scoped_no_iface() {
+        let ip = std::net::Ipv4Addr::new(192, 168, 1, 42);
+        let r = compose_lan_anchor_rules(ip, 80, 8080, 443, 8443);
+        assert!(r.contains("to 192.168.1.42 port 80 -> 192.168.1.42 port 8080"));
+        assert!(r.contains("to 192.168.1.42 port 443 -> 192.168.1.42 port 8443"));
+        assert!(r.contains("10.0.0.0/8"));
+        assert!(r.contains("192.168.0.0/16"));
+        assert!(r.contains("169.254.0.0/16"));
+        assert!(!r.contains("on lo0"));
+        assert!(
+            !r.contains(" on "),
+            "M2 rule must carry no interface qualifier"
+        );
+        assert!(!r.contains("from any to any"));
+    }
+
+    #[test]
+    fn lan_plist_uses_distinct_label() {
+        let p = compose_lan_launchdaemon_plist();
+        assert!(p.contains("<string>dev.yerd.lan.pf</string>"));
+    }
+
+    /// The two anchors coexist: installing both then removing one leaves the
+    /// other's refs intact (distinct, non-overlapping markers).
+    #[test]
+    fn loopback_and_lan_anchors_coexist_and_remove_independently() {
+        let both = insert_lan_anchor_refs(&insert_anchor_refs(APPLE_DEFAULT));
+        assert!(is_installed(&both));
+        assert!(is_lan_installed(&both));
+
+        let lan_gone = remove_lan_anchor_refs(&both);
+        assert!(
+            is_installed(&lan_gone),
+            "removing LAN leaves loopback anchor"
+        );
+        assert!(!is_lan_installed(&lan_gone));
+
+        let loop_gone = remove_anchor_refs(&both);
+        assert!(!is_installed(&loop_gone));
+        assert!(
+            is_lan_installed(&loop_gone),
+            "removing loopback leaves LAN anchor"
+        );
+
+        assert_eq!(
+            remove_anchor_refs(&lan_gone),
+            APPLE_DEFAULT,
+            "removing both returns the original"
+        );
+    }
+
+    #[test]
+    fn lan_insert_is_idempotent() {
+        let once = insert_lan_anchor_refs(APPLE_DEFAULT);
+        let twice = insert_lan_anchor_refs(&once);
+        assert_eq!(once, twice);
     }
 }

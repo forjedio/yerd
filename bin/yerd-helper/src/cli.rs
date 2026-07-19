@@ -99,6 +99,27 @@ pub enum Op {
     },
     /// Remove the pf redirect (macOS only).
     UninstallPortRedirect,
+    /// Install the LAN pf redirect 80/443 → rootless ports on the LAN IP
+    /// (macOS only).
+    InstallLanPortRedirect {
+        /// The host's LAN IPv4 (redirect destination + source-scope match).
+        #[arg(long, value_name = "IP")]
+        lan_ip: std::net::Ipv4Addr,
+        /// Privileged HTTP port to redirect from (80).
+        #[arg(long, value_name = "PORT")]
+        http_from: u16,
+        /// Rootless HTTP port the daemon listens on.
+        #[arg(long, value_name = "PORT")]
+        http_to: u16,
+        /// Privileged HTTPS port to redirect from (443).
+        #[arg(long, value_name = "PORT")]
+        https_from: u16,
+        /// Rootless HTTPS port the daemon listens on.
+        #[arg(long, value_name = "PORT")]
+        https_to: u16,
+    },
+    /// Remove the LAN pf redirect (macOS only).
+    UninstallLanPortRedirect,
 }
 
 /// Parse argv into a typed [`HelperInvocation`] (plus the
@@ -186,6 +207,20 @@ impl Op {
                 https_to,
             }),
             Self::UninstallPortRedirect => Ok(HelperInvocation::UninstallPortRedirect),
+            Self::InstallLanPortRedirect {
+                lan_ip,
+                http_from,
+                http_to,
+                https_from,
+                https_to,
+            } => Ok(HelperInvocation::InstallLanPortRedirect {
+                lan_ip,
+                http_from,
+                http_to,
+                https_from,
+                https_to,
+            }),
+            Self::UninstallLanPortRedirect => Ok(HelperInvocation::UninstallLanPortRedirect),
         }
     }
 }
@@ -217,6 +252,8 @@ fn invocation_tag(inv: &HelperInvocation) -> &'static str {
         HelperInvocation::Setcap { .. } => ops::SETCAP,
         HelperInvocation::InstallPortRedirect { .. } => ops::INSTALL_PORT_REDIRECT,
         HelperInvocation::UninstallPortRedirect => ops::UNINSTALL_PORT_REDIRECT,
+        HelperInvocation::InstallLanPortRedirect { .. } => ops::INSTALL_LAN_PORT_REDIRECT,
+        HelperInvocation::UninstallLanPortRedirect => ops::UNINSTALL_LAN_PORT_REDIRECT,
         _ => "unknown",
     }
 }

@@ -41,9 +41,13 @@ async fn serve_and_query(tld: Tld, site_fqdn: &str, apex_fqdn: &str) {
     let bound = Bound::bind("127.0.0.1:0".parse().unwrap()).await.unwrap();
     let addr = bound.local_addr();
     let (tx, rx) = tokio::sync::oneshot::channel::<()>();
-    let handle = tokio::spawn(bound.serve(Responder::new(tld), async move {
-        let _ = rx.await;
-    }));
+    let handle = tokio::spawn(bound.serve(
+        Responder::new(tld),
+        yerd_dns::AnswerAddrs::loopback(),
+        async move {
+            let _ = rx.await;
+        },
+    ));
 
     let conn = hickory_client::udp::UdpClientStream::<tokio::net::UdpSocket>::new(addr);
     let (mut udp_client, bg) = AsyncClient::connect(conn).await.unwrap();

@@ -89,7 +89,10 @@ pub use schema::{
 /// when absent), also a bare bump. v18 added the optional `[php.directives]`
 /// table ([`PhpSection::directives`]) for free-form per-version ini
 /// directives; it defaults (empty) when absent, so v17→v18 is a bare bump.
+/// v19 added the top-level `lan_enabled` and `lan_setup_port` scalars
+/// ([`Config::lan_enabled`], [`Config::lan_setup_port`]) for LAN exposure (both
+/// default when absent), also a bare bump.
 ///
 /// The per-version detail, including how to hand-edit a file back down for an
 /// older binary, lives in `docs/developer/config-schema-history.md`.
-pub const CURRENT_VERSION: u32 = 18;
+pub const CURRENT_VERSION: u32 = 19;

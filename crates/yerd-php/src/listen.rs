@@ -105,6 +105,7 @@ mod tests {
             }
             fn bind_pair(
                 &self,
+                _: bool,
                 _: (u16, u16),
                 _: (u16, u16),
             ) -> Result<yerd_platform::PortPair, yerd_platform::PlatformError> {

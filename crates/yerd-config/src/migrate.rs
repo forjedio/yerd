@@ -42,6 +42,7 @@ pub(crate) const STEPS: &[MigrationStep] = &[
     migrate_v15_to_v16,
     migrate_v16_to_v17,
     migrate_v17_to_v18,
+    migrate_v18_to_v19,
 ];
 
 /// `v0 → v1`: bump the version. v0 predates any shipped config, so there is no
@@ -204,6 +205,13 @@ fn migrate_v17_to_v18(value: &mut Value) -> Result<(), ConfigError> {
     set_version(value, 18)
 }
 
+/// `v18 → v19`: bump the version. v19 added the top-level `lan_enabled` and
+/// `lan_setup_port` scalars, which default when absent, so an in-place version
+/// bump is the entire migration.
+fn migrate_v18_to_v19(value: &mut Value) -> Result<(), ConfigError> {
+    set_version(value, 19)
+}
+
 /// Set the top-level `version` key, erroring if the root is not a table.
 fn set_version(value: &mut Value, n: i64) -> Result<(), ConfigError> {
     let table = value.as_table_mut().ok_or(ConfigError::Migration {
@@ -273,7 +281,7 @@ mod tests {
 
     #[test]
     fn current_version_pinned() {
-        assert_eq!(crate::CURRENT_VERSION, 18);
+        assert_eq!(crate::CURRENT_VERSION, 19);
     }
 
     #[test]
@@ -288,6 +296,13 @@ mod tests {
         let mut v: Value = toml::from_str("version = 17\n").unwrap();
         migrate_v17_to_v18(&mut v).unwrap();
         assert_eq!(read_version(&v).unwrap(), 18);
+    }
+
+    #[test]
+    fn v18_to_v19_is_a_bare_version_bump() {
+        let mut v: Value = toml::from_str("version = 18\n").unwrap();
+        migrate_v18_to_v19(&mut v).unwrap();
+        assert_eq!(read_version(&v).unwrap(), 19);
     }
 
     #[test]

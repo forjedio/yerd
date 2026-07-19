@@ -77,7 +77,18 @@ impl ProxyServer {
     /// Spawns one task per accepted connection; cancels them on shutdown
     /// via an internal `Notify`. In-flight requests run to their (hyper-
     /// default) timeouts.
-    #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+    /// `peer_filter` (set from `config.lan_enabled`) filters connections on
+    /// **both** the HTTP and HTTPS accept loops by [`yerd_core::is_lan_source`]
+    /// before serving: a peer whose source address is not RFC1918 / link-local /
+    /// loopback is dropped. It is a blast-radius reducer for the `0.0.0.0` bind in
+    /// LAN mode - a source-address check only, not authentication, and it does not
+    /// enforce a particular subnet or interface (a private-range VPN peer, for
+    /// example, still passes).
+    #[allow(
+        clippy::too_many_arguments,
+        clippy::too_many_lines,
+        clippy::fn_params_excessive_bools
+    )]
     pub async fn serve<R, C, S, L>(
         http_listener: TcpListener,
         https: Option<HttpsBinding<C>>,
@@ -87,6 +98,7 @@ impl ProxyServer {
         login_prepend_script: Option<std::path::PathBuf>,
         symlink_protection: Arc<AtomicBool>,
         client_tls: Arc<ProxyClientTls>,
+        peer_filter: bool,
         shutdown: S,
     ) -> Result<(), ProxyError>
     where
@@ -128,6 +140,9 @@ impl ProxyServer {
                     accepted = http_listener.accept() => {
                         match accepted {
                             Ok((stream, peer)) => {
+                                if peer_filter && !yerd_core::is_lan_source(peer.ip()) {
+                                    continue;
+                                }
                                 let router = http_router.clone();
                                 let resolver = http_resolver.clone();
                                 let login_tokens = http_login_tokens.clone();
@@ -171,6 +186,9 @@ impl ProxyServer {
                         accepted = listener.accept() => {
                             match accepted {
                                 Ok((stream, peer)) => {
+                                    if peer_filter && !yerd_core::is_lan_source(peer.ip()) {
+                                        continue;
+                                    }
                                     let router = router.clone();
                                     let resolver = resolver.clone();
                                     let login_tokens = login_tokens.clone();

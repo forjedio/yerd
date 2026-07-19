@@ -45,6 +45,40 @@ fn request_list_sites_byte_shape() {
 }
 
 #[test]
+fn request_set_lan_enabled_byte_shape() {
+    let s = serde_json::to_string(&Request::SetLanEnabled { enabled: true }).unwrap();
+    assert_eq!(s, r#"{"type":"set_lan_enabled","enabled":true}"#);
+    let back: Request = serde_json::from_str(&s).unwrap();
+    assert_eq!(back, Request::SetLanEnabled { enabled: true });
+}
+
+#[test]
+fn request_mint_remote_setup_code_byte_shape() {
+    let s = serde_json::to_string(&Request::MintRemoteSetupCode).unwrap();
+    assert_eq!(s, r#"{"type":"mint_remote_setup_code"}"#);
+    let back: Request = serde_json::from_str(&s).unwrap();
+    assert_eq!(back, Request::MintRemoteSetupCode);
+}
+
+#[test]
+fn response_remote_setup_byte_shape() {
+    let r = Response::RemoteSetup {
+        code: "deadbeef".into(),
+        url: "https://192.168.1.42:7073/remote-setup?code=deadbeef".into(),
+        ca_fingerprint: "ab".repeat(32),
+        expires_in_secs: 900,
+    };
+    let s = serde_json::to_string(&r).unwrap();
+    let expected = format!(
+        r#"{{"type":"remote_setup","code":"deadbeef","url":"https://192.168.1.42:7073/remote-setup?code=deadbeef","ca_fingerprint":"{}","expires_in_secs":900}}"#,
+        "ab".repeat(32)
+    );
+    assert_eq!(s, expected);
+    let back: Response = serde_json::from_str(&s).unwrap();
+    assert_eq!(back, r);
+}
+
+#[test]
 fn request_park_byte_shape() {
     let r = Request::Park {
         path: PathBuf::from("/srv/foo"),
@@ -620,8 +654,10 @@ fn response_info_byte_shape() {
         fallback_http: 8080,
         fallback_https: 8443,
         dns_port: 1053,
+        lan_ip: None,
     };
     let s = serde_json::to_string(&r).unwrap();
+    // `lan_ip: None` is skipped, so the byte shape is unchanged from before v18.
     let expected = format!(
         r#"{{"type":"info","dns_addr":"127.0.0.1:1053","tld":"test","ca_path":"/home/u/.local/share/yerd/ca.cert.pem","ca_fingerprint":"{}","http_port":8080,"https_port":8443,"fallback_http":8080,"fallback_https":8443,"dns_port":1053}}"#,
         "ab".repeat(32)
@@ -629,6 +665,27 @@ fn response_info_byte_shape() {
     assert_eq!(s, expected);
     let back: Response = serde_json::from_str(&s).unwrap();
     assert_eq!(back, r);
+
+    // With a LAN IP present it appears as a trailing field.
+    let with_lan = Response::Info {
+        dns_addr: "127.0.0.1:1053".parse().unwrap(),
+        tld: "test".into(),
+        ca_path: std::path::PathBuf::from("/x"),
+        ca_fingerprint: "ab".repeat(32),
+        http_port: 8080,
+        https_port: 8443,
+        fallback_http: 8080,
+        fallback_https: 8443,
+        dns_port: 1053,
+        lan_ip: Some("192.168.1.42".parse().unwrap()),
+    };
+    let s2 = serde_json::to_string(&with_lan).unwrap();
+    let expected_lan = format!(
+        r#"{{"type":"info","dns_addr":"127.0.0.1:1053","tld":"test","ca_path":"/x","ca_fingerprint":"{}","http_port":8080,"https_port":8443,"fallback_http":8080,"fallback_https":8443,"dns_port":1053,"lan_ip":"192.168.1.42"}}"#,
+        "ab".repeat(32)
+    );
+    assert_eq!(s2, expected_lan);
+    assert_eq!(serde_json::from_str::<Response>(&s2).unwrap(), with_lan);
 
     let legacy = format!(
         r#"{{"type":"info","dns_addr":"127.0.0.1:1053","tld":"test","ca_path":"/x","ca_fingerprint":"{}"}}"#,
@@ -924,11 +981,14 @@ fn response_status_byte_shape() {
             symlink_protection: true,
             shadows: vec![],
             mcp_enabled: false,
+            lan_enabled: false,
+            lan_ip: None,
+            lan_setup_bound: None,
         }),
     };
     let s = serde_json::to_string(&r).unwrap();
     let expected = format!(
-        r#"{{"type":"status","report":{{"daemon_pid":4242,"uptime_secs":7,"daemon_rss_bytes":2048,"tld":"test","http":{{"requested":80,"bound":8080,"fell_back":true}},"https":{{"requested":443,"bound":8443,"fell_back":true}},"dns_addr":"127.0.0.1:1053","ca":{{"path":"/x/ca.cert.pem","fingerprint":"{}","trusted_system":false}},"resolver_installed":true,"default_php":"8.5","php":[{{"version":"8.5","installed_patch":"8.5.6","state":"running","pid":99,"listen":"/run/fpm.sock","rss_bytes":1024,"update_available":null}}],"sites":{{"parked":1,"linked":2,"secured":1}},"load_avg":[100,50,25],"daemon_version":"2.0.1","symlink_protection":true,"mcp_enabled":false}}}}"#,
+        r#"{{"type":"status","report":{{"daemon_pid":4242,"uptime_secs":7,"daemon_rss_bytes":2048,"tld":"test","http":{{"requested":80,"bound":8080,"fell_back":true}},"https":{{"requested":443,"bound":8443,"fell_back":true}},"dns_addr":"127.0.0.1:1053","ca":{{"path":"/x/ca.cert.pem","fingerprint":"{}","trusted_system":false}},"resolver_installed":true,"default_php":"8.5","php":[{{"version":"8.5","installed_patch":"8.5.6","state":"running","pid":99,"listen":"/run/fpm.sock","rss_bytes":1024,"update_available":null}}],"sites":{{"parked":1,"linked":2,"secured":1}},"load_avg":[100,50,25],"daemon_version":"2.0.1","symlink_protection":true,"mcp_enabled":false,"lan_enabled":false}}}}"#,
         "ab".repeat(32)
     );
     assert_eq!(s, expected);
@@ -1026,6 +1086,9 @@ fn sample_status_report() -> StatusReport {
         symlink_protection: true,
         shadows: vec![],
         mcp_enabled: false,
+        lan_enabled: false,
+        lan_ip: None,
+        lan_setup_bound: None,
     }
 }
 
@@ -1195,6 +1258,7 @@ fn error_code_each_variant_byte_shape() {
             ErrorCode::InstanceAlreadyExists,
             r#""instance_already_exists""#,
         ),
+        (ErrorCode::LanNotReady, r#""lan_not_ready""#),
         (ErrorCode::LegacyRestricted, r#""legacy_restricted""#),
         (ErrorCode::Internal, r#""internal""#),
     ];

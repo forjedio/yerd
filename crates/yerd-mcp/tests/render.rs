@@ -131,6 +131,9 @@ fn sample_report() -> yerd_ipc::StatusReport {
         symlink_protection: true,
         shadows: vec![],
         mcp_enabled: true,
+        lan_enabled: false,
+        lan_ip: None,
+        lan_setup_bound: None,
     }
 }
 
@@ -331,6 +334,9 @@ fn status_is_trimmed_to_what_an_agent_can_act_on() {
         "resolver_backup",
         "port_redirect",
         "shared_sites",
+        "lan_enabled",
+        "lan_ip",
+        "lan_setup_bound",
     ] {
         assert!(
             s.get(dropped).is_none(),

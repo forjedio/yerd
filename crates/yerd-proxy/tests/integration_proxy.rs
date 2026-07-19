@@ -230,6 +230,7 @@ async fn whole_host_and_path_rules_and_bad_gateway() {
             None,
             Arc::new(AtomicBool::new(true)),
             test_client_tls(),
+            false,
             async move {
                 let _ = rx_shutdown.await;
             },

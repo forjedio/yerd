@@ -331,10 +331,24 @@ fn port_findings(report: &StatusReport) -> Vec<Diagnosis> {
                 report.https.requested,
                 report.https.bound
             ),
-            "sudo yerd elevate ports",
+            port_fallback_remedy(report.lan_enabled),
         ));
     }
     out
+}
+
+/// Remediation for the privileged-ports-not-bound warning. The loopback probe
+/// this warning is gated on measures `elevate ports`, so that is always the fix.
+/// On macOS with LAN mode on, other devices additionally need the separate
+/// `elevate lan` pf rule; on Linux `elevate lan` reuses the same `setcap` grant,
+/// so `elevate ports` alone already covers LAN and mentioning both would be
+/// redundant.
+fn port_fallback_remedy(lan_enabled: bool) -> &'static str {
+    if cfg!(target_os = "macos") && lan_enabled {
+        "sudo yerd elevate ports  (then, for LAN devices: sudo yerd elevate lan)"
+    } else {
+        "sudo yerd elevate ports"
+    }
 }
 
 /// One `Warn` per site that lost a domain to another site (see
@@ -451,6 +465,9 @@ mod tests {
             symlink_protection: true,
             shadows: vec![],
             mcp_enabled: false,
+            lan_enabled: false,
+            lan_ip: None,
+            lan_setup_bound: None,
         }
     }
 
@@ -546,6 +563,37 @@ mod tests {
         r2.http.bound = 8081;
         r2.http.fell_back = true;
         assert!(!codes(&diagnose(&r2, None)).contains(&DiagnosisCode::PortFallback));
+    }
+
+    #[test]
+    fn port_fallback_warning_uses_elevate_ports_remedy() {
+        let mut r = healthy();
+        r.http.requested = 80;
+        r.http.bound = 8080;
+        r.http.fell_back = true;
+        let remedy = diagnose(&r, None)
+            .into_iter()
+            .find(|d| d.code == DiagnosisCode::PortFallback)
+            .and_then(|d| d.remedy)
+            .expect("port fallback warning with remedy");
+        assert!(remedy.contains("sudo yerd elevate ports"));
+    }
+
+    #[test]
+    fn port_fallback_remedy_is_platform_aware_in_lan_mode() {
+        assert_eq!(port_fallback_remedy(false), "sudo yerd elevate ports");
+        let lan = port_fallback_remedy(true);
+        assert!(lan.contains("sudo yerd elevate ports"));
+        #[cfg(target_os = "macos")]
+        assert!(
+            lan.contains("elevate lan"),
+            "macOS LAN needs the separate pf rule"
+        );
+        #[cfg(not(target_os = "macos"))]
+        assert!(
+            !lan.contains("elevate lan"),
+            "on Linux `elevate lan` == `elevate ports`; don't tell users to run both"
+        );
     }
 
     #[test]

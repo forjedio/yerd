@@ -120,6 +120,7 @@ fn encode_then_decode_response_roundtrip() {
         fallback_http: 8080,
         fallback_https: 8443,
         dns_port: 1053,
+        lan_ip: Some("192.168.1.42".parse().unwrap()),
     });
     assert_response_roundtrips(Response::PhpVersions {
         installed: vec![PhpVersion::new(8, 3), PhpVersion::new(8, 5)],
@@ -245,6 +246,9 @@ fn encode_then_decode_response_roundtrip() {
                 site: "blog".into(),
                 shadowed_by: "shop".into(),
             }],
+            lan_enabled: true,
+            lan_ip: Some("192.168.1.42".parse().unwrap()),
+            lan_setup_bound: Some(true),
         }),
     });
     assert_response_roundtrips(Response::Diagnoses {
