@@ -19,7 +19,7 @@ import Modal from "@/components/ui/Modal.vue";
 import Select from "@/components/ui/Select.vue";
 import Switch from "@/components/ui/Switch.vue";
 import Spinner from "@/components/ui/Spinner.vue";
-import { phpVersionInRange } from "@/lib/phpVersion";
+import { isLegacyVersion, phpVersionInRange } from "@/lib/phpVersion";
 import { isUnbound, siteUrl, wpAdminLoginUrl, wpAdminUrl } from "@/lib/siteUrl";
 import { WORDPRESS_LOCALES } from "@/lib/wordpressLocales";
 import { useDaemon } from "@/composables/useDaemon";
@@ -95,9 +95,15 @@ const form = reactive({
 });
 let dbNameTouched = false;
 
+// A native <select> can't host a Badge, so legacy is called out in the option
+// label itself and expanded on by the hint below the picker.
 const phpOptions = computed(() =>
-  props.phpVersions.map((v) => ({ value: v, label: `PHP ${v}` })),
+  props.phpVersions.map((v) => ({
+    value: v,
+    label: isLegacyVersion(v) ? `PHP ${v} (legacy)` : `PHP ${v}`,
+  })),
 );
+const phpIsLegacy = computed(() => !!form.php && isLegacyVersion(form.php));
 const locationOptions = computed(() => {
   const opts = props.parkedFolders.map((f) => ({ value: f, label: `${f}  (parked)` }));
   if (form.location && !props.parkedFolders.includes(form.location)) {
@@ -713,7 +719,12 @@ const busy = computed(() => jobStateRef.value === "running" && step.value === 4)
       <div class="flex items-center justify-between gap-4 rounded-lg border p-3">
         <div>
           <p class="text-sm font-medium">PHP version</p>
-          <p class="text-xs text-muted-foreground">The version this site runs on.</p>
+          <p class="text-xs text-muted-foreground">
+            <template v-if="phpIsLegacy">
+              Out of support: no dumps or coverage, and it can't be your default.
+            </template>
+            <template v-else>The version this site runs on.</template>
+          </p>
         </div>
         <Select
           v-if="phpOptions.length"
