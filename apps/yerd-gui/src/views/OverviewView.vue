@@ -345,6 +345,41 @@ const emptyEnvironment = computed(
           </Button>
         </div>
 
+        <!-- Stat tiles → each links to its page. -->
+        <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+          <RouterLink
+            v-for="tile in tiles"
+            :key="tile.to"
+            :to="tile.to"
+            class="group relative overflow-hidden rounded-lg border bg-card pl-5 pr-4 py-3.5 shadow-sm transition-colors hover:border-brand/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          >
+            <span
+              class="pointer-events-none absolute inset-y-0 left-0 w-[3px] bg-brand/50 transition-colors group-hover:bg-brand"
+            />
+            <div class="flex items-center gap-1.5">
+              <component :is="tile.icon" class="size-3.5 text-muted-foreground" />
+              <span class="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
+                {{ tile.label }}
+              </span>
+              <ArrowUpRight
+                class="ml-auto size-3.5 text-muted-foreground/40 transition-colors group-hover:text-brand"
+              />
+            </div>
+            <p class="mt-2.5 flex items-baseline gap-1.5 leading-none">
+              <span class="text-[2rem] font-semibold tabular-nums tracking-tight">
+                {{ tile.value }}
+              </span>
+              <span class="text-xs text-muted-foreground">{{ tile.unit }}</span>
+            </p>
+            <p
+              class="mt-3 truncate border-t pt-2 font-mono text-[11px] text-muted-foreground"
+              :title="tile.sub"
+            >
+              {{ tile.sub }}
+            </p>
+          </RouterLink>
+        </div>
+
         <Card class="relative overflow-hidden">
           <!-- A soft brand wash - the only place indigo gets a hero surface.
                A gradient fade rather than a blurred circle: `filter: blur()`
@@ -407,7 +442,7 @@ const emptyEnvironment = computed(
               </button>
               <RouterLink
                 to="/sites"
-                class="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-brand hover:underline"
+                class="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-brand transition-colors hover:text-brand/70"
               >
                 {{ moreCount ? `+${moreCount} more` : "Manage" }}
                 <ArrowRight class="size-3" />
@@ -428,76 +463,48 @@ const emptyEnvironment = computed(
           </div>
         </Card>
 
-        <!-- Stat tiles → each links to its page. -->
-        <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-          <RouterLink
-            v-for="tile in tiles"
-            :key="tile.to"
-            :to="tile.to"
-            class="group rounded-lg border bg-card p-4 shadow-sm transition-colors hover:border-brand/40"
-          >
-            <div class="flex items-center justify-between">
-              <component
-                :is="tile.icon"
-                class="size-4 text-muted-foreground transition-colors group-hover:text-brand"
-              />
-              <ArrowUpRight
-                class="size-3.5 text-transparent transition-colors group-hover:text-muted-foreground"
-              />
-            </div>
-            <p class="mt-3 text-2xl font-semibold tracking-tight">
-              {{ tile.value }}
-              <span class="ml-0.5 text-sm font-normal text-muted-foreground">
-                {{ tile.unit }}
-              </span>
-            </p>
-            <p class="mt-0.5 text-xs font-medium">{{ tile.label }}</p>
-            <p class="mt-1 truncate text-xs text-muted-foreground" :title="tile.sub">
-              {{ tile.sub }}
-            </p>
-          </RouterLink>
-        </div>
-
         <!-- Daemon control - Stop/Restart. Start is owned by the daemon-down
              hero above (this branch only renders while the daemon is up). -->
-        <Card>
-          <div class="flex items-center justify-between">
-            <div class="flex items-center gap-1.5">
-              <h3 class="text-sm font-semibold">Daemon</h3>
-              <TooltipProvider v-if="daemonPid" :delay-duration="0">
-                <Tooltip>
-                  <TooltipTrigger as-child>
-                    <span class="inline-flex cursor-help text-muted-foreground">
-                      <Info class="size-3.5" />
-                    </span>
-                  </TooltipTrigger>
-                  <TooltipContent side="top">running as pid {{ daemonPid }}</TooltipContent>
-                </Tooltip>
-              </TooltipProvider>
+        <Card class="p-4">
+          <div class="flex flex-wrap items-center justify-between gap-x-8 gap-y-3">
+            <div class="min-w-0 flex-1 basis-64">
+              <div class="flex items-center gap-1.5">
+                <h3 class="text-sm font-semibold">Daemon</h3>
+                <TooltipProvider v-if="daemonPid" :delay-duration="0">
+                  <Tooltip>
+                    <TooltipTrigger as-child>
+                      <span class="inline-flex cursor-help text-muted-foreground">
+                        <Info class="size-3.5" />
+                      </span>
+                    </TooltipTrigger>
+                    <TooltipContent side="top">running as pid {{ daemonPid }}</TooltipContent>
+                  </Tooltip>
+                </TooltipProvider>
+                <StatusPill tone="ok" label="Running" />
+              </div>
+              <p class="mt-1 text-xs text-muted-foreground">
+                <code>yerdd</code> supervises PHP-FPM, serves your
+                <code>.test</code> sites, answers DNS, and runs databases.
+              </p>
             </div>
-            <StatusPill tone="ok" label="Running" />
-          </div>
-          <p class="mt-3 text-sm text-muted-foreground">
-            <code>yerdd</code> supervises PHP-FPM, serves your
-            <code>.test</code> sites, answers DNS, and runs databases.
-          </p>
-          <div class="mt-4 flex justify-end gap-2">
-            <Button variant="outline" :disabled="busy !== null" @click="stopDaemonOpen = true">
-              <Spinner v-if="busy === 'daemon'" class="size-4" />
-              <Square v-else class="size-4" /> Stop
-            </Button>
-            <Button
-              variant="outline"
-              :disabled="busy !== null"
-              @click="restartDaemonOpen = true"
-            >
-              <Spinner v-if="busy === 'restart:daemon'" class="size-4" />
-              <RotateCw v-else class="size-4" /> Restart
-            </Button>
+            <div class="flex shrink-0 gap-2">
+              <Button variant="outline" :disabled="busy !== null" @click="stopDaemonOpen = true">
+                <Spinner v-if="busy === 'daemon'" class="size-4" />
+                <Square v-else class="size-4" /> Stop
+              </Button>
+              <Button
+                variant="outline"
+                :disabled="busy !== null"
+                @click="restartDaemonOpen = true"
+              >
+                <Spinner v-if="busy === 'restart:daemon'" class="size-4" />
+                <RotateCw v-else class="size-4" /> Restart
+              </Button>
+            </div>
           </div>
         </Card>
 
-        <!-- System health summary → Settings. -->
+        <!-- System health summary → Doctor, which owns the fixes for these checks. -->
         <Card>
           <div class="flex items-center justify-between">
             <div class="flex items-center gap-2">
@@ -506,10 +513,10 @@ const emptyEnvironment = computed(
               <h3 class="text-sm font-semibold">System health</h3>
             </div>
             <RouterLink
-              to="/general"
-              class="text-xs font-medium text-brand hover:underline"
+              to="/doctor"
+              class="text-xs font-medium text-brand transition-colors hover:text-brand/70"
             >
-              Open Settings
+              Open Doctor
             </RouterLink>
           </div>
           <div class="mt-3 grid gap-2 sm:grid-cols-3">

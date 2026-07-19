@@ -9,7 +9,7 @@ The fastest way to manage PHP is the **PHP** page (under the **Environment** gro
 <ThemedImage light="/images/php-light.png" dark="/images/php-dark.png" alt="The PHP page in the Yerd desktop app" />
 
 - A table of installed versions shows live FPM pool state, patch level, pool memory (RSS), and whether an update is available.
-- **Install** opens a picker of installable versions (already-installed ones are hidden); progress streams live next to the Install button as the prebuilt static build downloads. A **Show legacy versions** disclosure reveals [legacy minors](#legacy-php-versions) (7.4 / 8.0 / 8.1) behind a warning block and a mandatory confirmation checkbox.
+- **Install** opens a picker of installable versions (already-installed ones are hidden); progress streams live next to the Install button as the prebuilt static build downloads. An **Install a legacy version** toggle (off by default) swaps the picker over to the [legacy minors](#legacy-php-versions) (7.4 / 8.0 / 8.1) behind a warning block and a mandatory confirmation checkbox; when every current version is already installed the toggle starts on and locks there, since legacy is all that's left to add.
 - **Refresh** re-checks for updates and **Update all** updates every version with one pending - [updates are notify-only](#updates-are-notify-only).
 - Each row's `⋯` menu offers **Restart**, **Set default** (marks it with a star; disabled for legacy rows, which are tagged with a `legacy` badge), **Update** (when available), and **Uninstall**; **Restart all** restarts every running pool.
 - A **Default settings** card edits the [global ini defaults](#tuning-php-settings) applied to every version; leave a field blank to use PHP's built-in default, and saving restarts running pools to apply.
@@ -52,9 +52,10 @@ yerd install php 7.4 --legacy
 
 Running `yerd install php 7.4` without `--legacy` refuses and prints an
 out-of-support warning instead of installing. In the desktop app, the Install
-picker's **Show legacy versions** disclosure opens a warning block and a
-mandatory confirmation checkbox ("I understand and want to install this legacy
-version anyway.") before the Install button is enabled.
+picker's **Install a legacy version** toggle replaces the version list with the
+legacy minors and opens a warning block and a mandatory confirmation checkbox
+("I understand and want to install this legacy version anyway.") before the
+Install button is enabled.
 
 A legacy version carries hard restrictions once installed:
 

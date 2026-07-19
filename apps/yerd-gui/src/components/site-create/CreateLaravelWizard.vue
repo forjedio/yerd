@@ -17,6 +17,7 @@ import Modal from "@/components/ui/Modal.vue";
 import Select from "@/components/ui/Select.vue";
 import Switch from "@/components/ui/Switch.vue";
 import Spinner from "@/components/ui/Spinner.vue";
+import { phpVersionInRange } from "@/lib/phpVersion";
 import { siteUrl } from "@/lib/siteUrl";
 import { useDaemon } from "@/composables/useDaemon";
 import { useToast } from "@/composables/useToast";
@@ -107,9 +108,24 @@ const isJsKit = computed(() =>
 const isLivewire = computed(() => kitChoice.value === "livewire");
 const hasAuthKit = computed(() => kitChoice.value !== "none");
 
-const phpOptions = computed(() =>
-  props.phpVersions.map((v) => ({ value: v, label: `PHP ${v}` })),
+// The Laravel installer only supports this window; anything outside it is hidden
+// from the picker rather than offered and then failing mid-create.
+const LARAVEL_MIN_PHP = "8.3";
+const LARAVEL_MAX_PHP = "8.5";
+const supportedPhpVersions = computed(() =>
+  props.phpVersions.filter((v) => phpVersionInRange(v, LARAVEL_MIN_PHP, LARAVEL_MAX_PHP)),
 );
+const phpOptions = computed(() =>
+  supportedPhpVersions.value.map((v) => ({ value: v, label: `PHP ${v}` })),
+);
+
+// The default only applies when it falls in the supported window; otherwise the
+// newest supported version wins so the Basics step always opens on a valid pick.
+function preferredPhp(): string {
+  const supported = supportedPhpVersions.value;
+  if (props.defaultPhp && supported.includes(props.defaultPhp)) return props.defaultPhp;
+  return supported[supported.length - 1] ?? "";
+}
 const locationOptions = computed(() => {
   const opts = props.parkedFolders.map((f) => ({ value: f, label: `${f}  (parked)` }));
   // Include a custom-picked location that isn't a parked root.
@@ -167,7 +183,7 @@ const managedComposer = computed(() =>
 // PHP, Composer and the Laravel installer are *required* and gated up front.
 const needsComposer = computed(() => !toolAvailable("composer"));
 const needsInstaller = computed(() => !toolAvailable("laravel"));
-const noPhp = computed(() => props.phpVersions.length === 0);
+const noPhp = computed(() => supportedPhpVersions.value.length === 0);
 // Node/Bun are only conditionally needed and the daemon installs them inline
 // during the job (shown as a phase), so they don't block the wizard.
 const needsNode = computed(() => form.js === "npm" && !toolAvailable("node"));
@@ -218,18 +234,24 @@ async function installPrereq(id: "composer" | "laravel" | "node" | "bun"): Promi
 }
 
 async function installFirstPhp(): Promise<boolean> {
-  // The user has no PHP: install the latest available minor (the distribution
-  // returns them ascending, so the last entry is newest), matching the onboarding
-  // flow rather than pinning a version that rots each release. The daemon resolves
-  // the patch and makes it the global default; the live status poll then surfaces
-  // it, which unlocks the wizard automatically.
+  // The user has no PHP Laravel can run on: install the newest available minor
+  // within the supported window (the distribution returns them ascending), rather
+  // than pinning a version that rots each release. The daemon resolves the patch
+  // and makes it the global default; the live status poll then surfaces it, which
+  // unlocks the wizard automatically.
   installingTool.value = "php";
   installLog.value = [];
   try {
     const { available } = await availablePhp();
-    const version = available[available.length - 1];
+    const supported = available.filter((v) =>
+      phpVersionInRange(v, LARAVEL_MIN_PHP, LARAVEL_MAX_PHP),
+    );
+    const version = supported[supported.length - 1];
     if (!version) {
-      toast.error("Couldn't install PHP", "No installable PHP versions were found.");
+      toast.error(
+        "Couldn't install PHP",
+        `No installable PHP between ${LARAVEL_MIN_PHP} and ${LARAVEL_MAX_PHP} was found.`,
+      );
       return false;
     }
     void appendInstallLog([`Installing PHP ${version}…`]);
@@ -399,7 +421,7 @@ function resetForm(): void {
   step.value = 0;
   form.name = "";
   form.location = props.parkedFolders[0] ?? "";
-  form.php = props.defaultPhp || props.phpVersions[0] || "";
+  form.php = preferredPhp();
   form.secure = false;
   kitChoice.value = "none";
   form.communityPackage = "";
@@ -440,10 +462,8 @@ watch(
 // default so the Basics step has a valid selection once the wizard unlocks.
 watch(
   () => props.phpVersions,
-  (versions) => {
-    if (!form.php && versions.length) {
-      form.php = props.defaultPhp || versions[0];
-    }
+  () => {
+    if (!form.php) form.php = preferredPhp();
   },
 );
 
@@ -483,7 +503,7 @@ const busy = computed(() => jobStateRef.value === "running" && step.value === 4)
       <div class="divide-y rounded-lg border">
         <div
           v-for="row in [
-            { id: 'php', label: 'PHP', sub: 'Runtime', ok: !noPhp, busyKey: 'php' },
+            { id: 'php', label: 'PHP', sub: `Runtime ${LARAVEL_MIN_PHP}-${LARAVEL_MAX_PHP}`, ok: !noPhp, busyKey: 'php' },
             { id: 'composer', label: 'Composer', sub: 'Dependency manager', ok: !needsComposer, busyKey: 'composer' },
             { id: 'laravel', label: 'Laravel installer', sub: 'laravel new', ok: !needsInstaller, busyKey: 'laravel' },
           ]"
@@ -585,7 +605,10 @@ const busy = computed(() => jobStateRef.value === "running" && step.value === 4)
       <div class="flex items-center justify-between gap-4 rounded-lg border p-3">
         <div>
           <p class="text-sm font-medium">PHP version</p>
-          <p class="text-xs text-muted-foreground">The version this site runs on.</p>
+          <p class="text-xs text-muted-foreground">
+            The version this site runs on. Laravel needs PHP {{ LARAVEL_MIN_PHP }} to
+            {{ LARAVEL_MAX_PHP }}.
+          </p>
         </div>
         <Select
           v-if="phpOptions.length"
@@ -596,7 +619,9 @@ const busy = computed(() => jobStateRef.value === "running" && step.value === 4)
           aria-label="PHP version"
           @update:model-value="(v: string) => (form.php = v)"
         />
-        <span v-else class="shrink-0 text-xs text-destructive">No PHP installed.</span>
+        <span v-else class="shrink-0 text-xs text-destructive">
+          No supported PHP installed.
+        </span>
       </div>
 
       <div class="flex items-center justify-between gap-4 rounded-lg border p-3">

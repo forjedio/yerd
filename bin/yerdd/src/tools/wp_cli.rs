@@ -11,6 +11,7 @@
 //! directly - bypassing upstream's `bin/wp` shell wrapper (which only exists to
 //! locate a `php` on `PATH`; we already know which PHP to use).
 
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
@@ -22,6 +23,20 @@ use crate::ext_install::installed_versions;
 /// The Composer package providing the `wp` command (a root project depending
 /// on `wp-cli/wp-cli`, not a package named `wp-cli/wp-cli` itself).
 const PACKAGE: &str = "wp-cli/wp-cli-bundle";
+
+/// The oldest PHP a site can run: the floor of the legacy download channel
+/// (7.4 / 8.0 / 8.1).
+///
+/// WP-CLI is built once under whichever PHP is newest, but the `wp` shim execs
+/// the built tree under the *site's* PHP, which may be any installed version.
+/// Left to itself Composer resolves against the building PHP, so a tree built on
+/// 8.4 can pull dependencies requiring 8.0+ and then fatal when a 7.4 site runs
+/// `wp core download`. Pinning `platform.php` decouples resolution from the
+/// building PHP and yields one tree that runs everywhere Yerd can install.
+///
+/// The older dependency versions this selects emit `E_DEPRECATED` under newer
+/// PHP, which [`QUIET_DEPRECATIONS`] and the scan-dir drop-in already suppress.
+const PLATFORM_PHP_FLOOR: &str = "7.4";
 
 /// Upper bound on a single short, non-streaming `wp` helper invocation (e.g.
 /// `wp option update`, `wp user list`) - each boots WordPress and does one DB
@@ -123,15 +138,82 @@ pub async fn install(dirs: &PlatformDirs, progress: Option<&ProgressTx>) -> Resu
     let build = tools_root.join(format!(".wp-cli-build-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&build);
 
-    let mut child = tokio::process::Command::new(&php)
-        .arg(&phar)
-        .arg("create-project")
-        .arg("--prefer-dist")
-        .arg("--no-interaction")
-        .arg("--no-dev")
-        .arg(PACKAGE)
-        .arg(&build)
-        .env("COMPOSER_HOME", &home)
+    for (label, args) in build_steps(&build) {
+        if let Err(e) = composer_step(&php, &phar, &home, &args, progress, label).await {
+            let _ = std::fs::remove_dir_all(&build);
+            return Err(e);
+        }
+    }
+
+    let version = read_wp_cli_version(&build).unwrap_or_else(|| "installed".to_owned());
+    let swapped = stage_and_swap(dirs, Tool::WpCli, &version, |staging| {
+        move_dir_contents(&build, staging)
+    });
+    let _ = std::fs::remove_dir_all(&build);
+    swapped?;
+    tracing::info!(version = %version, "installed WP-CLI");
+    Ok(())
+}
+
+/// The Composer invocations that build WP-CLI into `build`, in order.
+///
+/// `create-project --no-install` fetches only the root package, leaving a
+/// `composer.json` to configure; `config platform.php` then pins resolution to
+/// [`PLATFORM_PHP_FLOOR`]; `install` resolves and downloads against that pin
+/// rather than against the PHP running Composer.
+fn build_steps(build: &Path) -> Vec<(&'static str, Vec<OsString>)> {
+    let dir = build.as_os_str().to_owned();
+    vec![
+        (
+            "create-project",
+            vec![
+                OsString::from("create-project"),
+                OsString::from("--prefer-dist"),
+                OsString::from("--no-interaction"),
+                OsString::from("--no-dev"),
+                OsString::from("--no-install"),
+                OsString::from(PACKAGE),
+                dir.clone(),
+            ],
+        ),
+        (
+            "config platform.php",
+            vec![
+                OsString::from("config"),
+                OsString::from("platform.php"),
+                OsString::from(PLATFORM_PHP_FLOOR),
+                OsString::from("--working-dir"),
+                dir.clone(),
+            ],
+        ),
+        (
+            "install",
+            vec![
+                OsString::from("install"),
+                OsString::from("--prefer-dist"),
+                OsString::from("--no-interaction"),
+                OsString::from("--no-dev"),
+                OsString::from("--working-dir"),
+                dir,
+            ],
+        ),
+    ]
+}
+
+/// Run one managed-Composer invocation, streaming its output to `progress`.
+/// `label` names the step in timeout/failure errors.
+async fn composer_step(
+    php: &Path,
+    phar: &Path,
+    home: &Path,
+    args: &[OsString],
+    progress: Option<&ProgressTx>,
+    label: &str,
+) -> Result<(), ToolError> {
+    let mut child = tokio::process::Command::new(php)
+        .arg(phar)
+        .args(args)
+        .env("COMPOSER_HOME", home)
         .env("COMPOSER_NO_INTERACTION", "1")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -151,26 +233,16 @@ pub async fn install(dirs: &PlatformDirs, progress: Option<&ProgressTx>) -> Resu
     })
     .await;
     let Ok(((), (), status)) = joined else {
-        let _ = std::fs::remove_dir_all(&build);
         return Err(ToolError::Download(format!(
-            "composer create-project {PACKAGE} timed out"
+            "composer {label} {PACKAGE} timed out"
         )));
     };
     let status = status.map_err(|e| ToolError::Io(format!("await composer: {e}")))?;
     if !status.success() {
-        let _ = std::fs::remove_dir_all(&build);
         return Err(ToolError::Download(format!(
-            "composer create-project {PACKAGE} failed (exit {status})"
+            "composer {label} {PACKAGE} failed (exit {status})"
         )));
     }
-
-    let version = read_wp_cli_version(&build).unwrap_or_else(|| "installed".to_owned());
-    let swapped = stage_and_swap(dirs, Tool::WpCli, &version, |staging| {
-        move_dir_contents(&build, staging)
-    });
-    let _ = std::fs::remove_dir_all(&build);
-    swapped?;
-    tracing::info!(version = %version, "installed WP-CLI");
     Ok(())
 }
 
@@ -244,5 +316,58 @@ mod tests {
     fn read_wp_cli_version_absent_is_none() {
         let tmp = tempfile::tempdir().unwrap();
         assert_eq!(read_wp_cli_version(tmp.path()), None);
+    }
+
+    fn step_args(build: &Path, label: &str) -> Vec<String> {
+        build_steps(build)
+            .into_iter()
+            .find(|(l, _)| *l == label)
+            .map(|(_, args)| {
+                args.iter()
+                    .map(|a| a.to_string_lossy().into_owned())
+                    .collect()
+            })
+            .unwrap()
+    }
+
+    #[test]
+    fn create_project_defers_dependency_resolution() {
+        let args = step_args(Path::new("/data/tools/.build"), "create-project");
+        assert!(args.contains(&"--no-install".to_owned()));
+        assert!(args.contains(&PACKAGE.to_owned()));
+        assert_eq!(args.last().map(String::as_str), Some("/data/tools/.build"));
+    }
+
+    #[test]
+    fn platform_is_pinned_to_the_legacy_floor_before_install() {
+        let build = Path::new("/data/tools/.build");
+        let steps = build_steps(build);
+        let labels: Vec<&str> = steps.iter().map(|(l, _)| *l).collect();
+        assert_eq!(labels, ["create-project", "config platform.php", "install"]);
+
+        let args = step_args(build, "config platform.php");
+        assert_eq!(args.first().map(String::as_str), Some("config"));
+        assert!(args.contains(&"platform.php".to_owned()));
+        assert!(args.contains(&PLATFORM_PHP_FLOOR.to_owned()));
+    }
+
+    #[test]
+    fn install_resolves_in_the_configured_build_dir() {
+        let args = step_args(Path::new("/data/tools/.build"), "install");
+        assert_eq!(args.first().map(String::as_str), Some("install"));
+        assert!(args.contains(&"--no-dev".to_owned()));
+        let dir_at = args.iter().position(|a| a == "--working-dir").unwrap();
+        assert_eq!(
+            args.get(dir_at + 1).map(String::as_str),
+            Some("/data/tools/.build")
+        );
+    }
+
+    #[test]
+    fn platform_floor_covers_every_installable_php() {
+        let floor: yerd_core::PhpVersion = PLATFORM_PHP_FLOOR.parse().unwrap();
+        for (major, minor) in [(7, 4), (8, 0), (8, 1), (8, 2), (8, 5)] {
+            assert!(floor <= yerd_core::PhpVersion::new(major, minor));
+        }
     }
 }

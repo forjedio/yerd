@@ -180,7 +180,7 @@ async function openViewer(): Promise<void> {
       <div
         v-if="hasLegacy"
         data-testid="dumps-legacy-banner"
-        class="rounded-md border border-warning/40 bg-warning/10 px-4 py-3 text-sm text-warning-foreground"
+        class="rounded-md border border-warning/40 bg-warning/10 px-4 py-3 text-sm"
       >
         One or more installed PHP versions are legacy (&lt; 8.2). Dumps are never captured for
         legacy versions - the <code>yerd-dump</code> extension isn't built for out-of-support PHP.

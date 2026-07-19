@@ -81,35 +81,27 @@ describe("PhpView legacy handling", () => {
     await openBtn!.trigger("click");
     await flushPromises();
 
-    // The legacy disclosure is present; reveal it.
+    expect(wrapper.find('[data-testid="legacy-warning"]').exists()).toBe(false);
     const toggle = wrapper.find('[data-testid="toggle-legacy"]');
     expect(toggle.exists()).toBe(true);
     await toggle.trigger("click");
     await flushPromises();
     expect(wrapper.find('[data-testid="legacy-warning"]').exists()).toBe(true);
 
-    // The footer "Install legacy version" button is disabled until confirmed.
-    const installBtn = wrapper
-      .findAll("button")
-      .find((b) => b.text().includes("Install legacy version"));
-    expect(installBtn).toBeTruthy();
-    expect(installBtn!.attributes("disabled")).toBeDefined();
+    const installBtn = wrapper.find('[data-testid="install-submit"]');
+    expect(installBtn.attributes("disabled")).toBeDefined();
 
-    // Tick the confirmation switch → enabled, and installing streams the flag.
     await wrapper.find('button[aria-label="Confirm legacy install"]').trigger("click");
     await flushPromises();
-    const enabled = wrapper
-      .findAll("button")
-      .find((b) => b.text().includes("Install legacy version"));
-    expect(enabled!.attributes("disabled")).toBeUndefined();
+    expect(wrapper.find('[data-testid="install-submit"]').attributes("disabled")).toBeUndefined();
 
-    await enabled!.trigger("click");
+    await wrapper.find('[data-testid="install-submit"]').trigger("click");
     await flushPromises();
     const streamed = invokeMock.mock.calls.find((c) => c[0] === "install_php_streamed");
-    expect(streamed?.[1]).toMatchObject({ confirmLegacy: true });
+    expect(streamed?.[1]).toMatchObject({ version: "8.0", confirmLegacy: true });
   });
 
-  it("keeps the stable install available while the legacy disclosure is open", async () => {
+  it("installs the stable version while the legacy toggle is off", async () => {
     stubIpc({});
     const wrapper = await mountView();
 
@@ -119,10 +111,7 @@ describe("PhpView legacy handling", () => {
     await openBtn!.trigger("click");
     await flushPromises();
 
-    await wrapper.find('[data-testid="toggle-legacy"]').trigger("click");
-    await flushPromises();
-
-    const stableBtn = wrapper.find('[data-testid="install-stable"]');
+    const stableBtn = wrapper.find('[data-testid="install-submit"]');
     expect(stableBtn.exists()).toBe(true);
     expect(stableBtn.attributes("disabled")).toBeUndefined();
 
@@ -130,5 +119,54 @@ describe("PhpView legacy handling", () => {
     await flushPromises();
     const streamed = invokeMock.mock.calls.find((c) => c[0] === "install_php_streamed");
     expect(streamed?.[1]).toMatchObject({ confirmLegacy: false });
+  });
+
+  it("re-arms the opt-in when the legacy toggle is switched back off", async () => {
+    stubIpc({});
+    const wrapper = await mountView();
+
+    const openBtn = wrapper
+      .findAll("button")
+      .find((b) => b.text().includes("Install") && b.attributes("disabled") === undefined);
+    await openBtn!.trigger("click");
+    await flushPromises();
+
+    await wrapper.find('[data-testid="toggle-legacy-label"]').trigger("click");
+    await flushPromises();
+    expect(wrapper.find('[data-testid="legacy-warning"]').exists()).toBe(true);
+
+    await wrapper.find('button[aria-label="Confirm legacy install"]').trigger("click");
+    await flushPromises();
+
+    await wrapper.find('[data-testid="toggle-legacy"]').trigger("click");
+    await wrapper.find('[data-testid="toggle-legacy"]').trigger("click");
+    await flushPromises();
+
+    expect(wrapper.find('[data-testid="install-submit"]').attributes("disabled")).toBeDefined();
+  });
+
+  it("starts in legacy mode, locked, when no stable version is left to install", async () => {
+    stubIpc({ available: [] });
+    const wrapper = await mountView();
+
+    const openBtn = wrapper
+      .findAll("button")
+      .find((b) => b.text().includes("Install") && b.attributes("disabled") === undefined);
+    await openBtn!.trigger("click");
+    await flushPromises();
+
+    expect(wrapper.find('[data-testid="legacy-warning"]').exists()).toBe(true);
+    expect(wrapper.find('[data-testid="toggle-legacy"]').attributes("disabled")).toBeDefined();
+
+    await wrapper.find('[data-testid="toggle-legacy-label"]').trigger("click");
+    await flushPromises();
+    expect(wrapper.find('[data-testid="legacy-warning"]').exists()).toBe(true);
+
+    await wrapper.find('button[aria-label="Confirm legacy install"]').trigger("click");
+    await flushPromises();
+    await wrapper.find('[data-testid="install-submit"]').trigger("click");
+    await flushPromises();
+    const streamed = invokeMock.mock.calls.find((c) => c[0] === "install_php_streamed");
+    expect(streamed?.[1]).toMatchObject({ version: "8.0", confirmLegacy: true });
   });
 });
