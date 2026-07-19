@@ -61,8 +61,8 @@ fn populated() -> Config {
 fn default_config_starts_with_version_line() {
     let s = Config::default().to_toml().unwrap();
     assert!(
-        s.starts_with("version = 18\n"),
-        "expected first line `version = 18`; got: {s}"
+        s.starts_with("version = 19\n"),
+        "expected first line `version = 19`; got: {s}"
     );
 }
 
@@ -409,21 +409,29 @@ fn populated_php_settings_emit_subtable_after_default_and_round_trip() {
 }
 
 #[test]
-fn default_config_emits_no_version_settings_table() {
+fn default_config_emits_no_version_settings_or_directives_tables() {
     let s = Config::default().to_toml().unwrap();
     assert!(
         !s.contains("[php.version_settings"),
         "default config must omit version_settings; got: {s}"
     );
+    assert!(
+        !s.contains("[php.directives"),
+        "default config must omit directives; got: {s}"
+    );
 }
 
 #[test]
-fn populated_version_settings_emit_between_settings_and_extensions() {
+fn populated_version_settings_and_directives_emit_between_settings_and_extensions() {
     let mut c = Config::default();
     let v83 = PhpVersion::new(8, 3);
     c.php.version_settings.insert(
         v83,
         std::collections::BTreeMap::from([("memory_limit".to_string(), "1G".to_string())]),
+    );
+    c.php.directives.insert(
+        v83,
+        std::collections::BTreeMap::from([("xdebug.mode".to_string(), "debug".to_string())]),
     );
     c.php.extensions.insert(
         v83,
@@ -439,16 +447,22 @@ fn populated_version_settings_emit_between_settings_and_extensions() {
         s.contains("[php.version_settings.\"8.3\"]"),
         "missing version_settings table; got: {s}"
     );
+    assert!(
+        s.contains("[php.directives.\"8.3\"]"),
+        "missing directives table; got: {s}"
+    );
     assert!(s.contains("memory_limit = \"1G\""), "got: {s}");
+    assert!(s.contains("\"xdebug.mode\" = \"debug\""), "got: {s}");
 
     let settings_at = s.find("[php.settings]").expect("[php.settings] present");
     let vs_at = s
         .find("[php.version_settings.")
         .expect("version_settings present");
+    let dir_at = s.find("[php.directives.").expect("directives present");
     let ext_at = s.find("[[php.extensions.").expect("extensions present");
     assert!(
-        settings_at < vs_at && vs_at < ext_at,
-        "expected settings < version_settings < extensions; got: {s}"
+        settings_at < vs_at && vs_at < dir_at && dir_at < ext_at,
+        "expected settings < version_settings < directives < extensions; got: {s}"
     );
 
     let back = Config::from_toml(&s).unwrap();

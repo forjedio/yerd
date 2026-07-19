@@ -149,3 +149,37 @@ than a broken pool. `add`/`remove` restart that version's running FPM pool.
 `yerd php ext list` tags any extension whose `.so` is missing on disk with
 `(missing!)`. See the [Configuration Reference](../configuration#php) for how the
 registry is stored.
+
+## Custom ini directives
+
+`yerd php ini` sets free-form ini directives for **one** installed version - the
+directives Yerd's typed allowlist doesn't cover, typically extension settings
+like `xdebug.mode` or `opcache.jit_buffer_size`. They apply to that version's
+FPM (web) pool and its CLI.
+
+| Command | Description | Example |
+| --- | --- | --- |
+| `yerd php ini set <VERSION> <NAME> <VALUE>` | Set a directive for one installed version. | `yerd php ini set 8.3 xdebug.mode debug` |
+| `yerd php ini unset <VERSION> <NAME>` | Remove a directive. | `yerd php ini unset 8.3 xdebug.mode` |
+| `yerd php ini list` | List per-version overrides and directives (same output as `yerd list php`). | `yerd php ini list` |
+
+```sh
+yerd php ext add 8.3 /opt/php/xdebug.so --zend   # 1. load the extension
+yerd php ini set 8.3 xdebug.mode debug           # 2. configure it
+yerd php ini list
+yerd php ini unset 8.3 xdebug.mode
+```
+
+Names and values are **shape-validated** (no control characters or the ini
+metacharacters `[ ] = ; #`), but not semantically: a well-formed directive PHP
+doesn't recognise is simply ignored by PHP. Directives Yerd manages through
+typed paths are refused with a pointer to the right command: the eight
+[allowlisted settings](#global-php-ini-settings) (use `yerd set php`,
+optionally with `--only`), `extension`/`zend_extension` (use `yerd php ext`),
+and `openssl.cafile`/`curl.cainfo` (Yerd manages the CA bundle).
+
+In the FPM pool config a directive renders as `php_value[name] = value`
+(FPM coerces boolean-valued directives); in the version's CLI ini it renders as
+a plain `name = value` line. Setting or removing a directive restarts only that
+version's pool, and directives survive uninstalling and reinstalling the
+version.

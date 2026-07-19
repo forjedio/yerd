@@ -85,3 +85,44 @@ export function effectiveValue(
 export function overrideCount(overrides: Record<string, string>): number {
   return SETTING_KEYS.filter((k) => (overrides[k] ?? "") !== "").length;
 }
+
+/** Directive names Yerd manages elsewhere, with a hint pointing at that path. */
+const RESERVED_DIRECTIVES: Record<string, string> = {
+  extension: "extensions are managed in the Custom extensions panel",
+  zend_extension: "extensions are managed in the Custom extensions panel",
+  "openssl.cafile": "Yerd manages the CA bundle for this",
+  "curl.cainfo": "Yerd manages the CA bundle for this",
+};
+
+/**
+ * Client-side hint for an invalid or reserved custom-directive name; `null`
+ * when it looks fine. Mirrors the daemon's `yerd-core` rules loosely - the
+ * daemon remains the authority.
+ */
+export function directiveNameProblem(name: string): string | null {
+  if (name === "") return "enter a directive name";
+  if (SETTING_KEYS.includes(name)) {
+    return "this setting has its own field in the settings form above";
+  }
+  const reserved = RESERVED_DIRECTIVES[name];
+  if (reserved) return reserved;
+  if (!/^[A-Za-z_][A-Za-z0-9._-]*$/.test(name) || name.length > 128) {
+    return "names start with a letter or _ and use letters, digits, '.', '_' or '-'";
+  }
+  return null;
+}
+
+/**
+ * Client-side hint for an invalid custom-directive value; `null` when it looks
+ * fine. Rejects the ini/FPM metacharacters and control characters the daemon
+ * refuses.
+ */
+export function directiveValueProblem(value: string): string | null {
+  if (value.trim() === "") return "enter a value";
+  if (value.length > 256) return "value is too long";
+  // eslint-disable-next-line no-control-regex
+  if (/[\u0000-\u001f\u007f[\]=;#]/.test(value)) {
+    return "values can't contain [ ] = ; # or control characters";
+  }
+  return null;
+}

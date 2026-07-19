@@ -415,6 +415,21 @@ export async function setPhpVersionSettings(
   ) as PhpVersionsResponse;
 }
 
+/**
+ * Merge free-form ini directives (e.g. `xdebug.mode`) for one installed
+ * version. An empty-string value removes the directive. The daemon validates
+ * names/values and rejects directives Yerd manages elsewhere. Returns the
+ * refreshed version list.
+ */
+export async function setPhpDirectives(
+  version: PhpVersion,
+  directives: Record<string, string>,
+): Promise<PhpVersionsResponse> {
+  return ensureOk(
+    await call<Response>("set_php_directives", { version, directives }),
+  ) as PhpVersionsResponse;
+}
+
 // ── php extensions ───────────────────────────────────────────────────────────
 
 /** Registered custom extensions, keyed by version string (e.g. `"8.5"`). */

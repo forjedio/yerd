@@ -713,6 +713,7 @@ fn response_php_versions_byte_shape() {
         updates: vec![],
         settings: BTreeMap::new(),
         version_settings: Box::new(BTreeMap::new()),
+        directives: Box::new(BTreeMap::new()),
     };
     let s = serde_json::to_string(&r).unwrap();
     assert_eq!(
@@ -755,6 +756,7 @@ fn response_php_versions_with_updates_byte_shape() {
         }],
         settings: BTreeMap::new(),
         version_settings: Box::new(BTreeMap::new()),
+        directives: Box::new(BTreeMap::new()),
     };
     let s = serde_json::to_string(&r).unwrap();
     assert_eq!(
@@ -775,6 +777,7 @@ fn response_php_versions_with_settings_byte_shape() {
             ("display_errors".to_string(), "On".to_string()),
         ]),
         version_settings: Box::new(BTreeMap::new()),
+        directives: Box::new(BTreeMap::new()),
     };
     let s = serde_json::to_string(&r).unwrap();
     assert_eq!(
@@ -785,7 +788,7 @@ fn response_php_versions_with_settings_byte_shape() {
 }
 
 #[test]
-fn response_php_versions_with_version_settings_byte_shape() {
+fn response_php_versions_with_version_settings_and_directives_byte_shape() {
     let r = Response::PhpVersions {
         installed: vec![PhpVersion::new(8, 3)],
         default: PhpVersion::new(8, 3),
@@ -795,11 +798,15 @@ fn response_php_versions_with_version_settings_byte_shape() {
             PhpVersion::new(8, 3),
             BTreeMap::from([("memory_limit".to_string(), "1G".to_string())]),
         )])),
+        directives: Box::new(BTreeMap::from([(
+            PhpVersion::new(8, 3),
+            BTreeMap::from([("xdebug.mode".to_string(), "debug".to_string())]),
+        )])),
     };
     let s = serde_json::to_string(&r).unwrap();
     assert_eq!(
         s,
-        r#"{"type":"php_versions","installed":["8.3"],"default":"8.3","version_settings":{"8.3":{"memory_limit":"1G"}}}"#
+        r#"{"type":"php_versions","installed":["8.3"],"default":"8.3","version_settings":{"8.3":{"memory_limit":"1G"}},"directives":{"8.3":{"xdebug.mode":"debug"}}}"#
     );
     assert_eq!(serde_json::from_str::<Response>(&s).unwrap(), r);
 
@@ -809,8 +816,9 @@ fn response_php_versions_with_version_settings_byte_shape() {
         decoded,
         Response::PhpVersions {
             ref version_settings,
+            ref directives,
             ..
-        } if version_settings.is_empty()
+        } if version_settings.is_empty() && directives.is_empty()
     ));
 }
 
@@ -847,6 +855,20 @@ fn request_set_php_version_settings_byte_shape() {
     assert_eq!(
         s,
         r#"{"type":"set_php_version_settings","version":"8.3","settings":{"memory_limit":"1G"}}"#
+    );
+    assert_eq!(serde_json::from_str::<Request>(&s).unwrap(), r);
+}
+
+#[test]
+fn request_set_php_directives_byte_shape() {
+    let r = Request::SetPhpDirectives {
+        version: PhpVersion::new(8, 3),
+        directives: BTreeMap::from([("xdebug.mode".to_string(), "debug".to_string())]),
+    };
+    let s = serde_json::to_string(&r).unwrap();
+    assert_eq!(
+        s,
+        r#"{"type":"set_php_directives","version":"8.3","directives":{"xdebug.mode":"debug"}}"#
     );
     assert_eq!(serde_json::from_str::<Request>(&s).unwrap(), r);
 }

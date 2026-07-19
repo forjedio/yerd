@@ -28,7 +28,22 @@ Each entry below states what changed, whether the daemon's own migration is a ba
 
 ## Version-by-version
 
-### v17 (current)
+### v18 (current)
+
+**Added:** the optional `[php.directives]` table - free-form (shape-validated) per-version ini directives such as `xdebug.mode`. `[php.directives."<version>"]` holds the directives for one installed version. It defaults to empty when absent, so an uncustomised file omits it entirely.
+
+```toml
+[php.directives."8.3"]
+"xdebug.mode" = "debug"
+```
+
+The table loads **leniently**: an invalid or reserved entry (e.g. from a hand-edit) is dropped during parsing rather than failing the load, so a bad entry can never stop the daemon. A malformed version key is still a hard error, and the strict validation lives at set time (CLI/GUI/IPC).
+
+**Migration from v17:** bare version bump - the table defaults to empty when absent, so a v17 file needs no other change.
+
+**To downgrade to v17:** change `version = 18` to `version = 17` and delete any `[php.directives.*]` tables (a v17 daemon rejects the unknown tables under `deny_unknown_fields`, it doesn't just ignore them). Every version falls back to the `[php.settings]` and `[php.version_settings]` values.
+
+### v17
 
 **Added:** the top-level `mcp_enabled` scalar (bool) - whether `yerd mcp` serves Yerd's tools to local AI agents. Defaults to `false`, so exposing Yerd to agents is an explicit opt-in, and is always emitted.
 

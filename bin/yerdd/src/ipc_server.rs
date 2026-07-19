@@ -211,6 +211,10 @@ async fn dispatch(req: Request, state: &DaemonState) -> Response {
         Request::SetPhpVersionSettings { version, settings } => {
             set_php_version_settings(version, settings, state).await
         }
+        Request::SetPhpDirectives {
+            version,
+            directives,
+        } => set_php_directives(version, directives, state).await,
         Request::AddPhpExtension {
             version,
             path,
@@ -467,12 +471,13 @@ fn installed_versions(state: &DaemonState) -> Vec<yerd_core::PhpVersion> {
 /// Build the `PhpVersions` reply: installed versions, the live global default,
 /// cached update annotations, and the global ini settings. Read-only; no network.
 async fn php_versions_response(state: &DaemonState) -> Response {
-    let (default, settings, version_settings) = {
+    let (default, settings, version_settings, directives) = {
         let cfg = state.config.lock().await;
         (
             cfg.php.default,
             cfg.php.settings.clone(),
             cfg.php.version_settings.clone(),
+            cfg.php.directives.clone(),
         )
     };
     Response::PhpVersions {
@@ -481,6 +486,7 @@ async fn php_versions_response(state: &DaemonState) -> Response {
         updates: crate::php_updates::cached_updates(state).await,
         settings,
         version_settings: Box::new(version_settings),
+        directives: Box::new(directives),
     }
 }
 
@@ -1385,12 +1391,13 @@ fn bundle_contains_ca(ca_pem: &str, bundle_pem: &str) -> bool {
 }
 
 pub(crate) async fn write_cli_ini_now(state: &DaemonState) {
-    let (settings, extensions, version_settings) = {
+    let (settings, extensions, version_settings, directives) = {
         let cfg = state.config.lock().await;
         (
             cfg.php.settings.clone(),
             cfg.php.extensions.clone(),
             cfg.php.version_settings.clone(),
+            cfg.php.directives.clone(),
         )
     };
     if let Err(e) = crate::php_install::write_cli_ini(
@@ -1399,6 +1406,7 @@ pub(crate) async fn write_cli_ini_now(state: &DaemonState) {
         state.php_ca_bundle.as_deref(),
         &extensions,
         &version_settings,
+        &directives,
     ) {
         tracing::warn!(error = %e, "failed to write CLI php.ini");
     }
@@ -2044,6 +2052,82 @@ async fn set_php_version_settings(
     php_versions_response(state).await
 }
 
+/// `yerd php ini set/unset` - merge free-form per-version ini directives into
+/// the config and apply them to that version's FPM pool and CLI ini. An
+/// empty-string value removes the directive. Reserved names (allowlisted
+/// settings, extension loading, the CA bundle) are refused with a pointer to
+/// the typed path. Same lock order and `php_settings_mutate` discipline as
+/// [`set_php_settings`], but only the affected version's pool restarts.
+async fn set_php_directives(
+    version: yerd_core::PhpVersion,
+    directives: std::collections::BTreeMap<String, String>,
+    state: &DaemonState,
+) -> Response {
+    if let Some(resp) = require_installed(version, state) {
+        return resp;
+    }
+    let _mutate_guard = state.php_settings_mutate.lock().await;
+    let mut cfg_guard = state.config.lock().await;
+    let mut new = cfg_guard.clone();
+    for (key, value) in directives {
+        if let Err(e) = yerd_core::php_directives::validate_name(&key) {
+            return Response::Error {
+                code: ErrorCode::InvalidPath,
+                message: e.to_string(),
+            };
+        }
+        if let Some(hint) = yerd_core::php_directives::reserved(&key) {
+            return Response::Error {
+                code: ErrorCode::InvalidPath,
+                message: format!("{key} is managed by Yerd: {hint}"),
+            };
+        }
+        if value.is_empty() {
+            if let Some(map) = new.php.directives.get_mut(&version) {
+                map.remove(&key);
+            }
+            continue;
+        }
+        if let Err(e) = yerd_core::php_directives::validate_value(&value) {
+            return Response::Error {
+                code: ErrorCode::InvalidPath,
+                message: e.to_string(),
+            };
+        }
+        new.php
+            .directives
+            .entry(version)
+            .or_default()
+            .insert(key, value.trim().to_owned());
+    }
+    if new
+        .php
+        .directives
+        .get(&version)
+        .is_some_and(std::collections::BTreeMap::is_empty)
+    {
+        new.php.directives.remove(&version);
+    }
+
+    if new.php.directives == cfg_guard.php.directives {
+        drop(cfg_guard);
+        return php_versions_response(state).await;
+    }
+
+    if let Err(e) = new.validate() {
+        return internal(format!("config validation failed: {e}"));
+    }
+    if let Err(e) = new.save(&state.config_path) {
+        return internal(format!("config save failed: {e}"));
+    }
+    *cfg_guard = new;
+    drop(cfg_guard);
+
+    apply_version_php_config(state, version).await;
+    tracing::info!(version = %version, "applied per-version PHP ini directives");
+    php_versions_response(state).await
+}
+
 /// `NotFound` error when `version` has no installed CLI binary, else `None`.
 /// Per-version config only makes sense for an installed version (mirrors
 /// `add_php_extension`).
@@ -2058,20 +2142,21 @@ fn require_installed(version: yerd_core::PhpVersion, state: &DaemonState) -> Opt
     })
 }
 
-/// Push the config's per-version settings overrides into the
+/// Push the config's per-version settings overrides and directives into the
 /// live `PhpManager`, restart the affected version's pool if it is currently
 /// running, and rewrite the per-version CLI inis. Follows `set_php_settings`'s
 /// lock discipline: the config lock is released before the manager lock is
 /// taken. Runs under the caller's `php_settings_mutate` guard, which is what
 /// keeps the config re-read here from racing a concurrent settings mutation.
 async fn apply_version_php_config(state: &DaemonState, affected: yerd_core::PhpVersion) {
-    let version_settings = {
+    let (version_settings, directives) = {
         let cfg = state.config.lock().await;
-        cfg.php.version_settings.clone()
+        (cfg.php.version_settings.clone(), cfg.php.directives.clone())
     };
     {
         let mut mgr = state.php_manager.lock().await;
         mgr.set_ini_overrides(version_settings);
+        mgr.set_directives(directives);
         if mgr.snapshots().iter().any(|s| s.version == affected) {
             if let Err(e) = mgr.restart(affected).await {
                 tracing::warn!(version = %affected, error = %e, "failed to restart FPM pool after per-version PHP config change");
@@ -3858,6 +3943,26 @@ Subject: Captured\r\n\r\nhi\r\n";
         .await
     }
 
+    /// Dispatch a single-entry `SetPhpDirectives` request.
+    async fn set_directive(
+        state: &DaemonState,
+        version: PhpVersion,
+        name: &str,
+        value: &str,
+    ) -> Response {
+        dispatch(
+            Request::SetPhpDirectives {
+                version,
+                directives: std::collections::BTreeMap::from([(
+                    name.to_string(),
+                    value.to_string(),
+                )]),
+            },
+            state,
+        )
+        .await
+    }
+
     #[tokio::test]
     async fn set_php_version_settings_persists_canonicalises_and_falls_back() {
         let tmp = tempfile::tempdir().unwrap();
@@ -3914,6 +4019,77 @@ Subject: Captured\r\n\r\nhi\r\n";
                 assert!(
                     !version_settings.contains_key(&v83),
                     "emptied override map must drop the version key"
+                );
+            }
+            other => panic!("expected PhpVersions, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn set_php_directives_persists_rejects_reserved_and_removes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_in(tmp.path());
+        let v83 = PhpVersion::new(8, 3);
+        fake_install(&state.dirs, v83);
+
+        assert!(matches!(
+            set_directive(&state, PhpVersion::new(8, 5), "xdebug.mode", "debug").await,
+            Response::Error {
+                code: ErrorCode::NotFound,
+                ..
+            }
+        ));
+
+        match set_directive(&state, v83, "xdebug.mode", "debug").await {
+            Response::PhpVersions { directives, .. } => {
+                assert_eq!(
+                    directives
+                        .get(&v83)
+                        .and_then(|m| m.get("xdebug.mode"))
+                        .map(String::as_str),
+                    Some("debug")
+                );
+            }
+            other => panic!("expected PhpVersions, got {other:?}"),
+        }
+
+        for (name, value) in [
+            ("memory_limit", "1G"),
+            ("extension", "/evil.so"),
+            ("zend_extension", "/evil.so"),
+            ("openssl.cafile", "/evil.pem"),
+            ("1bad", "x"),
+            ("bad name", "x"),
+            ("xdebug.mode", "debug; evil"),
+        ] {
+            assert!(
+                matches!(
+                    set_directive(&state, v83, name, value).await,
+                    Response::Error {
+                        code: ErrorCode::InvalidPath,
+                        ..
+                    }
+                ),
+                "{name}={value} should be rejected"
+            );
+        }
+        assert_eq!(
+            state
+                .config
+                .lock()
+                .await
+                .php
+                .directives
+                .get(&v83)
+                .map(std::collections::BTreeMap::len),
+            Some(1)
+        );
+
+        match set_directive(&state, v83, "xdebug.mode", "").await {
+            Response::PhpVersions { directives, .. } => {
+                assert!(
+                    !directives.contains_key(&v83),
+                    "emptied directive map must drop the version key"
                 );
             }
             other => panic!("expected PhpVersions, got {other:?}"),

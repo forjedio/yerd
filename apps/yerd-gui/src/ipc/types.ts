@@ -530,6 +530,9 @@ export type Response =
       /** Sparse per-version overrides of `settings`, keyed by version string
        *  (e.g. `"8.3"`). Absent when no overrides are set / older daemon. */
       version_settings?: Record<PhpVersion, Record<string, string>>;
+      /** Free-form per-version ini directives keyed by version string. Absent
+       *  when none are set / older daemon. */
+      directives?: Record<PhpVersion, Record<string, string>>;
     }
   | {
       type: "available_php";

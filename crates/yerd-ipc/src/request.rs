@@ -209,6 +209,15 @@ pub enum Request {
         /// the per-version override so the global default falls through.
         settings: BTreeMap<String, String>,
     },
+    /// Merge free-form per-version ini directives (e.g. `"xdebug.mode" ->
+    /// "debug"`) into the config and apply them to that version's FPM pool and
+    /// CLI ini. An empty-string value removes the directive.
+    SetPhpDirectives {
+        /// The installed PHP version the directives apply to.
+        version: PhpVersion,
+        /// Directive name → value; `""` removes the directive.
+        directives: BTreeMap<String, String>,
+    },
     /// Register a custom PHP extension for a version: the daemon validates and
     /// load-probes the `.so`, persists it, and loads it into that version's FPM
     /// pool and CLI ini.
@@ -796,6 +805,7 @@ mod variant_name_pinning {
             Request::AvailablePhp => {}
             Request::SetPhpSettings { .. } => {}
             Request::SetPhpVersionSettings { .. } => {}
+            Request::SetPhpDirectives { .. } => {}
             Request::AddPhpExtension { .. } => {}
             Request::RemovePhpExtension { .. } => {}
             Request::ListPhpExtensions => {}

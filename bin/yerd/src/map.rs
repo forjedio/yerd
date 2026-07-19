@@ -90,6 +90,9 @@ pub fn to_request(cmd: &Command) -> Result<Request, ClientError> {
         Command::Php {
             action: crate::cli::PhpAction::Ext { action },
         } => php_ext_to_request(action)?,
+        Command::Php {
+            action: crate::cli::PhpAction::Ini { action },
+        } => php_ini_to_request(action)?,
         Command::Install {
             target: crate::cli::InstallTarget::Php { version, legacy },
         } => {
@@ -568,6 +571,50 @@ fn php_ext_to_request(action: &crate::cli::PhpExtAction) -> Result<Request, Clie
     })
 }
 
+/// Map a `yerd php ini` action to its wire request, validating the version,
+/// directive name, and value client-side so a bad argument fails before
+/// connect. The daemon re-validates (it is the authority).
+fn php_ini_to_request(action: &crate::cli::PhpIniAction) -> Result<Request, ClientError> {
+    use crate::cli::PhpIniAction;
+    let validate_directive = |name: &str, value: Option<&str>| -> Result<(), ClientError> {
+        yerd_core::php_directives::validate_name(name)
+            .map_err(|e| ClientError::Usage(e.to_string()))?;
+        if let Some(hint) = yerd_core::php_directives::reserved(name) {
+            return Err(ClientError::Usage(format!(
+                "{name} is managed by Yerd: {hint}"
+            )));
+        }
+        if let Some(v) = value {
+            yerd_core::php_directives::validate_value(v)
+                .map_err(|e| ClientError::Usage(e.to_string()))?;
+        }
+        Ok(())
+    };
+    Ok(match action {
+        PhpIniAction::Set {
+            version,
+            name,
+            value,
+        } => {
+            let v = parse_php(version)?;
+            validate_directive(name, Some(value))?;
+            Request::SetPhpDirectives {
+                version: v,
+                directives: std::collections::BTreeMap::from([(name.clone(), value.clone())]),
+            }
+        }
+        PhpIniAction::Unset { version, name } => {
+            let v = parse_php(version)?;
+            validate_directive(name, None)?;
+            Request::SetPhpDirectives {
+                version: v,
+                directives: std::collections::BTreeMap::from([(name.clone(), String::new())]),
+            }
+        }
+        PhpIniAction::List => Request::ListPhp,
+    })
+}
+
 /// The channel override for a self-update check, from the `--edge`/`--stable`
 /// flags (mutually exclusive at the clap layer). `None` = use the saved default.
 #[must_use]
@@ -791,12 +838,14 @@ pub fn render(resp: &Response, json: bool) -> Rendered {
             updates,
             settings,
             version_settings,
+            directives,
         } => Rendered::ok(format_php_versions(
             installed,
             *default,
             updates,
             settings,
             version_settings,
+            directives,
         )),
         Response::AvailablePhp {
             available,
@@ -1232,6 +1281,7 @@ fn format_php_versions(
         PhpVersion,
         std::collections::BTreeMap<String, String>,
     >,
+    directives: &std::collections::BTreeMap<PhpVersion, std::collections::BTreeMap<String, String>>,
 ) -> String {
     let versions = if installed.is_empty() {
         format!("no PHP versions installed (default: {default}) - `yerd install php {default}`")
@@ -1260,16 +1310,25 @@ fn format_php_versions(
         }
     }
     for v in installed {
-        let Some(map) = version_settings.get(v) else {
+        let overrides = version_settings.get(v);
+        let dirs = directives.get(v);
+        if overrides.is_none() && dirs.is_none() {
             continue;
-        };
+        }
         let _ = write!(out, "\n\nPHP {v}:");
-        for (k, val) in map {
-            let _ = write!(
-                out,
-                "\n  {k} = {val}  (overrides {})",
-                global_of(settings, k)
-            );
+        if let Some(map) = overrides {
+            for (k, val) in map {
+                let _ = write!(
+                    out,
+                    "\n  {k} = {val}  (overrides {})",
+                    global_of(settings, k)
+                );
+            }
+        }
+        if let Some(map) = dirs {
+            for (k, val) in map {
+                let _ = write!(out, "\n  {k} = {val}");
+            }
         }
     }
     out
@@ -2057,6 +2116,76 @@ mod tests {
     }
 
     #[test]
+    fn php_ini_actions_map_and_validate() {
+        assert_eq!(
+            to_request(&Command::Php {
+                action: crate::cli::PhpAction::Ini {
+                    action: crate::cli::PhpIniAction::Set {
+                        version: "8.3".into(),
+                        name: "xdebug.mode".into(),
+                        value: "debug".into(),
+                    }
+                }
+            })
+            .unwrap(),
+            Request::SetPhpDirectives {
+                version: PhpVersion::new(8, 3),
+                directives: std::collections::BTreeMap::from([(
+                    "xdebug.mode".to_string(),
+                    "debug".to_string()
+                )])
+            }
+        );
+        assert_eq!(
+            to_request(&Command::Php {
+                action: crate::cli::PhpAction::Ini {
+                    action: crate::cli::PhpIniAction::Unset {
+                        version: "8.3".into(),
+                        name: "xdebug.mode".into(),
+                    }
+                }
+            })
+            .unwrap(),
+            Request::SetPhpDirectives {
+                version: PhpVersion::new(8, 3),
+                directives: std::collections::BTreeMap::from([(
+                    "xdebug.mode".to_string(),
+                    String::new()
+                )])
+            }
+        );
+        assert_eq!(
+            to_request(&Command::Php {
+                action: crate::cli::PhpAction::Ini {
+                    action: crate::cli::PhpIniAction::List
+                }
+            })
+            .unwrap(),
+            Request::ListPhp
+        );
+
+        for (name, value) in [
+            ("memory_limit", "1G"),
+            ("extension", "/evil.so"),
+            ("1bad", "x"),
+            ("xdebug.mode", "debug; evil"),
+        ] {
+            match to_request(&Command::Php {
+                action: crate::cli::PhpAction::Ini {
+                    action: crate::cli::PhpIniAction::Set {
+                        version: "8.3".into(),
+                        name: name.into(),
+                        value: value.into(),
+                    },
+                },
+            }) {
+                Err(ClientError::Usage(_)) => {}
+                other => panic!("expected Usage error for {name}={value}, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
     fn renders_update_status_with_all_rows() {
         let resp = Response::UpdateStatus {
             current: "2.0.0".into(),
@@ -2238,6 +2367,7 @@ mod tests {
                 }],
                 settings: std::collections::BTreeMap::new(),
                 version_settings: Box::new(std::collections::BTreeMap::new()),
+                directives: Box::new(std::collections::BTreeMap::new()),
             },
             false,
         );
@@ -2255,6 +2385,7 @@ mod tests {
                 updates: vec![],
                 settings: std::collections::BTreeMap::new(),
                 version_settings: Box::new(std::collections::BTreeMap::new()),
+                directives: Box::new(std::collections::BTreeMap::new()),
             },
             false,
         );
@@ -2262,7 +2393,7 @@ mod tests {
     }
 
     #[test]
-    fn renders_php_versions_with_per_version_overrides() {
+    fn renders_php_versions_with_per_version_overrides_and_directives() {
         let v83 = PhpVersion::new(8, 3);
         let r = render(
             &Response::PhpVersions {
@@ -2280,6 +2411,13 @@ mod tests {
                         ("display_errors".to_string(), "Off".to_string()),
                     ]),
                 )])),
+                directives: Box::new(std::collections::BTreeMap::from([(
+                    v83,
+                    std::collections::BTreeMap::from([(
+                        "xdebug.mode".to_string(),
+                        "debug".to_string(),
+                    )]),
+                )])),
             },
             false,
         );
@@ -2294,6 +2432,11 @@ mod tests {
         assert!(
             r.stdout
                 .contains("display_errors = Off  (overrides PHP default)"),
+            "got: {}",
+            r.stdout
+        );
+        assert!(
+            r.stdout.contains("xdebug.mode = debug"),
             "got: {}",
             r.stdout
         );
@@ -2422,6 +2565,7 @@ mod tests {
                     ("display_errors".to_string(), "On".to_string()),
                 ]),
                 version_settings: Box::new(std::collections::BTreeMap::new()),
+                directives: Box::new(std::collections::BTreeMap::new()),
             },
             false,
         );

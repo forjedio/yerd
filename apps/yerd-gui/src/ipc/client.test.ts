@@ -20,6 +20,7 @@ import {
   setFrontController,
   setMailEnabled,
   setMailPort,
+  setPhpDirectives,
   setPhpVersionSettings,
   setPrimaryDomain,
   setSymlinkProtection,
@@ -186,6 +187,21 @@ describe("client → command mapping", () => {
       settings: { memory_limit: "1G" },
     });
     expect(r.version_settings?.["8.3"]?.memory_limit).toBe("1G");
+  });
+
+  it("setPhpDirectives sends the version and directives map", async () => {
+    invokeMock.mockResolvedValue({
+      type: "php_versions",
+      installed: ["8.3"],
+      default: "8.3",
+      directives: { "8.3": { "xdebug.mode": "debug" } },
+    });
+    const r = await setPhpDirectives("8.3", { "xdebug.mode": "debug" });
+    expect(invokeMock).toHaveBeenCalledWith("set_php_directives", {
+      version: "8.3",
+      directives: { "xdebug.mode": "debug" },
+    });
+    expect(r.directives?.["8.3"]?.["xdebug.mode"]).toBe("debug");
   });
 
   it("resetDomains sends just the name", async () => {
