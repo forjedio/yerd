@@ -35,6 +35,12 @@ pub struct PoolConfig {
     /// name. Rendered as `php_value[name] = value` / `php_flag[name] = value`
     /// (per [`yerd_core::php_settings::directive`]). Empty by default.
     pub ini: Vec<(String, String)>,
+    /// Free-form per-version ini directives (e.g. `xdebug.mode`), as
+    /// `(name, value)` pairs sorted by name. Rendered uniformly as
+    /// `php_value[name] = value` (FPM coerces boolean-valued directives);
+    /// entries are re-validated against [`yerd_core::php_directives`] at
+    /// render time and skipped when invalid or reserved. Empty by default.
+    pub directives: Vec<(String, String)>,
     /// Optional PHP extension to load via the FPM command line
     /// (`-d extension=<path>`). Loaded at PHP startup (MINIT); used for the
     /// daemon-managed dump-telemetry extension. `None` = none.
@@ -103,6 +109,7 @@ impl PoolConfig {
             pm: ProcessManagerMode::OnDemand,
             max_children: 16,
             ini: Vec::new(),
+            directives: Vec::new(),
             extension: None,
             ini_defines: Vec::new(),
             user_extensions: Vec::new(),

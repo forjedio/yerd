@@ -86,8 +86,10 @@ pub use schema::{
 /// PHP settings. It defaults (empty) when absent, so v15→v16 is a bare
 /// version bump. v17 added the top-level `mcp_enabled` scalar
 /// ([`Config::mcp_enabled`]) gating the MCP server for AI agents (defaults to off
-/// when absent), also a bare bump.
+/// when absent), also a bare bump. v18 added the optional `[php.directives]`
+/// table ([`PhpSection::directives`]) for free-form per-version ini
+/// directives; it defaults (empty) when absent, so v17→v18 is a bare bump.
 ///
 /// The per-version detail, including how to hand-edit a file back down for an
 /// older binary, lives in `docs/developer/config-schema-history.md`.
-pub const CURRENT_VERSION: u32 = 17;
+pub const CURRENT_VERSION: u32 = 18;

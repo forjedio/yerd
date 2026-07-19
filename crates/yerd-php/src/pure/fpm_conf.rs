@@ -55,6 +55,15 @@ pub fn render_fpm_conf(cfg: &PoolConfig) -> String {
         }
     }
 
+    for (key, value) in &cfg.directives {
+        if yerd_core::php_directives::validate_name(key).is_ok()
+            && yerd_core::php_directives::validate_value(value).is_ok()
+            && yerd_core::php_directives::reserved(key).is_none()
+        {
+            let _ = writeln!(out, "php_value[{key}] = {value}");
+        }
+    }
+
     out
 }
 
@@ -95,6 +104,7 @@ mod tests {
             pm,
             max_children: 16,
             ini: Vec::new(),
+            directives: Vec::new(),
             extension: None,
             ini_defines: Vec::new(),
             user_extensions: Vec::new(),
@@ -112,6 +122,7 @@ mod tests {
             pm: ProcessManagerMode::OnDemand,
             max_children: 16,
             ini: Vec::new(),
+            directives: Vec::new(),
             extension: None,
             ini_defines: Vec::new(),
             user_extensions: Vec::new(),
@@ -189,6 +200,43 @@ catch_workers_output = yes
         let s = render_fpm_conf(&cfg);
         assert!(!s.contains("not_a_setting"), "unsupported key leaked: {s}");
         assert!(!s.contains("evil"), "unsafe value leaked: {s}");
+    }
+
+    #[test]
+    fn free_form_directives_render_as_php_value_after_settings() {
+        let mut cfg = cfg_unix(ProcessManagerMode::OnDemand);
+        cfg.ini = vec![("memory_limit".to_string(), "512M".to_string())];
+        cfg.directives = vec![
+            ("opcache.enable".to_string(), "1".to_string()),
+            ("xdebug.mode".to_string(), "debug".to_string()),
+        ];
+        let s = render_fpm_conf(&cfg);
+        assert!(s.contains("php_value[opcache.enable] = 1\n"), "got: {s}");
+        assert!(s.contains("php_value[xdebug.mode] = debug\n"), "got: {s}");
+        assert!(
+            s.find("php_value[memory_limit]").unwrap()
+                < s.find("php_value[opcache.enable]").unwrap(),
+            "settings must precede free-form directives: {s}"
+        );
+    }
+
+    #[test]
+    fn free_form_directives_skip_invalid_and_reserved_entries() {
+        let mut cfg = cfg_unix(ProcessManagerMode::OnDemand);
+        cfg.directives = vec![
+            ("bad name".to_string(), "x".to_string()),
+            ("xdebug.mode".to_string(), "debug; evil".to_string()),
+            ("extension".to_string(), "/evil.so".to_string()),
+            ("memory_limit".to_string(), "1G".to_string()),
+            ("openssl.cafile".to_string(), "/evil.pem".to_string()),
+        ];
+        let s = render_fpm_conf(&cfg);
+        assert!(!s.contains("bad name"), "invalid name leaked: {s}");
+        assert!(!s.contains("evil"), "unsafe or reserved entry leaked: {s}");
+        assert!(
+            !s.contains("php_value[memory_limit]"),
+            "allowlisted name must not render via the free-form path: {s}"
+        );
     }
 
     #[test]

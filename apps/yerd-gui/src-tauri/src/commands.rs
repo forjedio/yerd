@@ -368,6 +368,20 @@ pub async fn set_php_version_settings(
 }
 
 #[tauri::command]
+pub async fn set_php_directives(
+    version: PhpVersion,
+    directives: std::collections::BTreeMap<String, String>,
+) -> Result<Response, GuiError> {
+    finish(
+        exchange(&Request::SetPhpDirectives {
+            version,
+            directives,
+        })
+        .await?,
+    )
+}
+
+#[tauri::command]
 pub async fn list_php_extensions() -> Result<Response, GuiError> {
     finish(exchange(&Request::ListPhpExtensions).await?)
 }

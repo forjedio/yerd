@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 
-import { effectiveValue, overrideCount, SETTING_KEYS } from "./phpSettings";
+import {
+  directiveNameProblem,
+  directiveValueProblem,
+  effectiveValue,
+  overrideCount,
+  SETTING_KEYS,
+} from "./phpSettings";
 
 describe("effectiveValue", () => {
   const global = { memory_limit: "512M", max_execution_time: "60" };
@@ -34,5 +40,39 @@ describe("overrideCount", () => {
   it("SETTING_KEYS covers the 8 allowlisted settings", () => {
     expect(SETTING_KEYS).toHaveLength(8);
     expect(SETTING_KEYS).toContain("display_errors");
+  });
+});
+
+describe("directiveNameProblem", () => {
+  it("accepts real extension directive names", () => {
+    for (const name of ["xdebug.mode", "opcache.enable", "zend.assertions", "_x"]) {
+      expect(directiveNameProblem(name)).toBeNull();
+    }
+  });
+
+  it("flags allowlisted settings and reserved names", () => {
+    expect(directiveNameProblem("memory_limit")).toMatch(/settings form/);
+    expect(directiveNameProblem("extension")).toMatch(/extensions/);
+    expect(directiveNameProblem("openssl.cafile")).toMatch(/CA bundle/);
+  });
+
+  it("flags malformed names", () => {
+    for (const name of ["", "1st", ".dot", "has space", "semi;colon"]) {
+      expect(directiveNameProblem(name)).not.toBeNull();
+    }
+  });
+});
+
+describe("directiveValueProblem", () => {
+  it("accepts ordinary values", () => {
+    for (const value of ["debug", "develop,debug", "1", "256M", "/a/b c.log"]) {
+      expect(directiveValueProblem(value)).toBeNull();
+    }
+  });
+
+  it("flags empty values and injection metacharacters", () => {
+    for (const value of ["", "  ", "a;b", "a#b", "a=b", "a[b", "a]b", "a\nb"]) {
+      expect(directiveValueProblem(value)).not.toBeNull();
+    }
   });
 });

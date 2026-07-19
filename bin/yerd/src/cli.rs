@@ -586,6 +586,37 @@ pub enum PhpAction {
         #[command(subcommand)]
         action: PhpExtAction,
     },
+    /// Manage free-form per-version ini directives (e.g. `xdebug.mode`),
+    /// applied to that version's web (FPM) pool and CLI.
+    Ini {
+        /// The ini directive action.
+        #[command(subcommand)]
+        action: PhpIniAction,
+    },
+}
+
+/// Action of `yerd php ini`.
+#[derive(clap::Subcommand, Debug, Clone)]
+pub enum PhpIniAction {
+    /// Set an ini directive for one installed PHP version. The name and value
+    /// are shape-validated; whether the directive means anything is up to PHP.
+    Set {
+        /// PHP version, e.g. `8.3`.
+        version: String,
+        /// Directive name, e.g. `xdebug.mode`.
+        name: String,
+        /// Directive value, e.g. `debug`.
+        value: String,
+    },
+    /// Remove an ini directive for one installed PHP version.
+    Unset {
+        /// PHP version, e.g. `8.3`.
+        version: String,
+        /// Directive name, e.g. `xdebug.mode`.
+        name: String,
+    },
+    /// List per-version settings overrides and custom ini directives.
+    List,
 }
 
 /// Action of `yerd php ext`.

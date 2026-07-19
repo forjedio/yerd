@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
-import { ChevronDown, Info } from "lucide-vue-next";
+import { ChevronDown, Info, Plus, Trash2 } from "lucide-vue-next";
 
 import Badge from "@/components/ui/Badge.vue";
 import Button from "@/components/ui/Button.vue";
@@ -14,10 +14,12 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { useToast } from "@/composables/useToast";
-import { IpcError, setPhpVersionSettings } from "@/ipc/client";
+import { IpcError, setPhpDirectives, setPhpVersionSettings } from "@/ipc/client";
 import type { PhpVersion, PhpVersionsResponse } from "@/ipc/types";
 import {
   DISPLAY_ERRORS_HINT,
+  directiveNameProblem,
+  directiveValueProblem,
   effectiveValue,
   overrideCount,
   SETTING_KEYS,
@@ -30,16 +32,18 @@ const props = defineProps<{
   globalSettings: Record<string, string>;
   /** This version's sparse setting overrides (may be empty). */
   overrides: Record<string, string>;
+  /** This version's free-form ini directives (may be empty). */
+  directives: Record<string, string>;
 }>();
 
 const emit = defineEmits<{
-  /** Fired with the daemon's refreshed version list after a successful save. */
+  /** Fired with the daemon's refreshed version list after any successful save. */
   (e: "updated", r: PhpVersionsResponse): void;
 }>();
 
 const toast = useToast();
 const open = ref(false);
-const busy = ref(false);
+const busy = ref<string | null>(null);
 
 // ── per-version settings form ──
 // Fields hold only the override value; an empty field means "inherit" (the
@@ -69,6 +73,9 @@ watch(
 );
 
 const badgeCount = computed(() => overrideCount(props.overrides));
+const directiveEntries = computed(() =>
+  Object.entries(props.directives).sort(([a], [b]) => a.localeCompare(b)),
+);
 
 function inheritedLabel(key: string, fallback: string): string {
   const inherited = effectiveValue(props.globalSettings, {}, key);
@@ -85,8 +92,9 @@ const displayErrorsOptions = computed(() => {
 });
 
 async function saveSettings(): Promise<void> {
-  busy.value = true;
+  busy.value = "settings";
   try {
+    // Send every field; blank values remove the override (inherit again).
     const r = await setPhpVersionSettings(props.version, { ...form.value });
     seed(r.version_settings?.[props.version] ?? {});
     toast.success(
@@ -97,7 +105,51 @@ async function saveSettings(): Promise<void> {
   } catch (e) {
     toast.error(`Couldn't update PHP ${props.version} settings`, (e as IpcError).message);
   } finally {
-    busy.value = false;
+    busy.value = null;
+  }
+}
+
+// ── custom ini directives ──
+const dirName = ref("");
+const dirValue = ref("");
+
+// Inline hint while typing; the daemon remains the authority on save.
+const dirProblem = computed(() => {
+  if (!dirName.value && !dirValue.value) return null;
+  return directiveNameProblem(dirName.value) ?? directiveValueProblem(dirValue.value);
+});
+
+async function addDirective(): Promise<void> {
+  const name = dirName.value.trim();
+  const value = dirValue.value.trim();
+  if (directiveNameProblem(name) || directiveValueProblem(value)) {
+    toast.error("Invalid directive", dirProblem.value ?? "check the name and value");
+    return;
+  }
+  busy.value = "dir-add";
+  try {
+    const r = await setPhpDirectives(props.version, { [name]: value });
+    dirName.value = "";
+    dirValue.value = "";
+    toast.success(`Set ${name} for PHP ${props.version}`);
+    emit("updated", r);
+  } catch (e) {
+    toast.error("Couldn't set the directive", (e as IpcError).message);
+  } finally {
+    busy.value = null;
+  }
+}
+
+async function removeDirective(name: string): Promise<void> {
+  busy.value = `dir-remove:${name}`;
+  try {
+    const r = await setPhpDirectives(props.version, { [name]: "" });
+    toast.success(`Removed ${name} for PHP ${props.version}`);
+    emit("updated", r);
+  } catch (e) {
+    toast.error("Couldn't remove the directive", (e as IpcError).message);
+  } finally {
+    busy.value = null;
   }
 }
 </script>
@@ -114,6 +166,9 @@ async function saveSettings(): Promise<void> {
         <span class="font-mono text-sm font-medium">PHP {{ version }}</span>
         <Badge v-if="badgeCount" variant="secondary">
           {{ badgeCount }} override{{ badgeCount === 1 ? "" : "s" }}
+        </Badge>
+        <Badge v-if="directiveEntries.length" variant="secondary">
+          {{ directiveEntries.length }} directive{{ directiveEntries.length === 1 ? "" : "s" }}
         </Badge>
       </span>
       <ChevronDown class="size-4 transition-transform" :class="{ 'rotate-180': open }" />
@@ -172,10 +227,76 @@ async function saveSettings(): Promise<void> {
         <span class="text-xs text-muted-foreground">
           Empty fields inherit the default settings above.
         </span>
-        <Button size="sm" :disabled="busy" @click="saveSettings">
-          <Spinner v-if="busy" class="size-4" />
-          {{ busy ? "Applying…" : "Save" }}
+        <Button size="sm" :disabled="busy === 'settings'" @click="saveSettings">
+          <Spinner v-if="busy === 'settings'" class="size-4" />
+          {{ busy === "settings" ? "Applying…" : "Save" }}
         </Button>
+      </div>
+
+      <div class="mt-5 border-t border-border pt-4">
+        <div class="flex items-center gap-1">
+          <span class="text-xs font-medium">Custom ini directives</span>
+          <Tooltip>
+            <TooltipTrigger as-child>
+              <span class="inline-flex cursor-help text-muted-foreground">
+                <Info class="size-3.5" />
+              </span>
+            </TooltipTrigger>
+            <TooltipContent side="top">
+              Free-form directives for this version, e.g. xdebug.mode = debug.
+              Names and values are checked for safety; whether a directive means
+              anything is up to PHP and its extensions.
+            </TooltipContent>
+          </Tooltip>
+        </div>
+
+        <div v-if="directiveEntries.length" class="mt-2 flex flex-col gap-2">
+          <div
+            v-for="[name, value] in directiveEntries"
+            :key="name"
+            class="flex items-center justify-between rounded-md border border-border px-3 py-1.5"
+          >
+            <code class="truncate text-xs">{{ name }} = {{ value }}</code>
+            <Button
+              variant="ghost"
+              size="sm"
+              :disabled="busy === `dir-remove:${name}`"
+              :aria-label="`Remove ${name}`"
+              @click="removeDirective(name)"
+            >
+              <Spinner v-if="busy === `dir-remove:${name}`" class="size-4" />
+              <Trash2 v-else class="size-4" />
+            </Button>
+          </div>
+        </div>
+        <p v-else class="mt-2 text-xs text-muted-foreground">
+          No custom directives for this version yet.
+        </p>
+
+        <div class="mt-3 flex items-start gap-2">
+          <Input
+            v-model="dirName"
+            placeholder="xdebug.mode"
+            class="flex-1"
+            :aria-label="`Directive name for PHP ${version}`"
+          />
+          <Input
+            v-model="dirValue"
+            placeholder="debug"
+            class="flex-1"
+            :aria-label="`Directive value for PHP ${version}`"
+          />
+          <Button
+            size="sm"
+            :disabled="busy === 'dir-add' || !!dirProblem || !dirName || !dirValue"
+            @click="addDirective"
+          >
+            <Spinner v-if="busy === 'dir-add'" class="size-4" />
+            <Plus v-else class="size-4" />
+            Add
+          </Button>
+        </div>
+        <p v-if="dirProblem" class="mt-1 text-xs text-destructive">{{ dirProblem }}</p>
       </div>
     </div>
   </div>

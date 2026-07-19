@@ -169,8 +169,8 @@ async function saveSettings(): Promise<void> {
 
 // ── per-version configuration ──
 // Each installed version gets a collapsible panel (PhpVersionConfig) holding
-// its setting overrides. The panel does its own saves and hands back the
-// daemon's refreshed version list.
+// its setting overrides and free-form ini directives. The panel does its own
+// saves and hands back the daemon's refreshed version list.
 function onVersionConfigUpdated(r: PhpVersionsResponse): void {
   mutate(() => r);
   void reloadPhp({ force: true });
@@ -708,14 +708,14 @@ onUnmounted(
         </CardContent>
       </Card>
 
-      <!-- Per-version setting overrides. -->
+      <!-- Per-version setting overrides + free-form ini directives. -->
       <Card v-if="!loading && installed.length" class="mt-8">
         <CardHeader>
           <CardTitle>Per-version configuration</CardTitle>
           <CardDescription>
-            Override the default settings for a single version; empty fields
-            inherit the defaults above. Saving restarts only that version's
-            pool.
+            Override the default settings for a single version, or add custom
+            ini directives (e.g. xdebug.mode) for extensions registered below.
+            Saving restarts only that version's pool.
           </CardDescription>
         </CardHeader>
         <CardContent class="flex flex-col gap-3">
@@ -725,6 +725,7 @@ onUnmounted(
             :version="v"
             :global-settings="data?.settings ?? {}"
             :overrides="data?.version_settings?.[v] ?? {}"
+            :directives="data?.directives?.[v] ?? {}"
             @updated="onVersionConfigUpdated"
           />
         </CardContent>

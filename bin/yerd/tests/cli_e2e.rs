@@ -506,9 +506,9 @@ mod tests {
         drop(keep_alive);
     }
 
-    /// Per-version PHP config over the socket: `yerd set php ... --only 8.3`
-    /// and the `NotFound` guard for an uninstalled version. PHP 8.3 is faked
-    /// on disk (binaries only; no pool is running).
+    /// Per-version PHP config over the socket: `yerd set php ... --only 8.3`,
+    /// `yerd php ini set/unset`, and the `NotFound` guard for an uninstalled
+    /// version. PHP 8.3 is faked on disk (binaries only; no pool is running).
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     #[allow(clippy::too_many_lines)]
     async fn php_version_config_round_trips_against_daemon() {
@@ -583,17 +583,58 @@ mod tests {
             other => panic!("expected NotFound, got {other:?}"),
         }
 
+        let ini_set = Command::Php {
+            action: yerd::cli::PhpAction::Ini {
+                action: yerd::cli::PhpIniAction::Set {
+                    version: "8.3".into(),
+                    name: "xdebug.mode".into(),
+                    value: "debug".into(),
+                },
+            },
+        };
+        match send(&sock, &ini_set).await {
+            Response::PhpVersions { directives, .. } => {
+                assert_eq!(
+                    directives
+                        .get(&v83)
+                        .and_then(|m| m.get("xdebug.mode"))
+                        .map(String::as_str),
+                    Some("debug")
+                );
+            }
+            other => panic!("expected PhpVersions, got {other:?}"),
+        }
+
         let per_version_ini =
             std::fs::read_to_string(dirs.data.join("php-cli-8.3.ini")).expect("per-version ini");
         assert!(per_version_ini.contains("memory_limit = 1G\n"));
+        assert!(per_version_ini.contains("xdebug.mode = debug\n"));
         let base_ini = std::fs::read_to_string(dirs.data.join("php-cli.ini")).expect("base ini");
         assert!(!base_ini.contains("1G"));
+        assert!(!base_ini.contains("xdebug.mode"));
 
         let on_disk = std::fs::read_to_string(&cfg_path).expect("config written");
         assert!(
             on_disk.contains("[php.version_settings.\"8.3\"]"),
             "{on_disk}"
         );
+        assert!(on_disk.contains("[php.directives.\"8.3\"]"), "{on_disk}");
+
+        let ini_unset = Command::Php {
+            action: yerd::cli::PhpAction::Ini {
+                action: yerd::cli::PhpIniAction::Unset {
+                    version: "8.3".into(),
+                    name: "xdebug.mode".into(),
+                },
+            },
+        };
+        match send(&sock, &ini_unset).await {
+            Response::PhpVersions { directives, .. } => {
+                assert!(!directives.contains_key(&v83));
+            }
+            other => panic!("expected PhpVersions, got {other:?}"),
+        }
+
         match send(
             &sock,
             &Command::Unset {

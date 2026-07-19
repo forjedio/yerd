@@ -119,6 +119,12 @@ pub enum Response {
         /// [`Self::Status`]); `Box<T>` serializes transparently.
         #[serde(default, skip_serializing_if = "boxed_version_map_is_empty")]
         version_settings: Box<BTreeMap<PhpVersion, BTreeMap<String, String>>>,
+        /// Free-form per-version ini directives (`"xdebug.mode" -> "debug"`),
+        /// keyed by version. Empty when none are set; `#[serde(default)]`
+        /// keeps older daemons (which omit it) decodable. Boxed like
+        /// `version_settings`.
+        #[serde(default, skip_serializing_if = "boxed_version_map_is_empty")]
+        directives: Box<BTreeMap<PhpVersion, BTreeMap<String, String>>>,
     },
     /// Reply to [`crate::Request::AvailablePhp`].
     AvailablePhp {
@@ -636,6 +642,7 @@ mod variant_name_pinning {
             updates: vec![],
             settings: BTreeMap::new(),
             version_settings: Box::new(BTreeMap::new()),
+            directives: Box::new(BTreeMap::new()),
         });
         pin_response(Response::AvailablePhp {
             available: vec![PhpVersion::new(8, 4), PhpVersion::new(8, 5)],

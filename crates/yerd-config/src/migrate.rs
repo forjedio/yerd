@@ -19,7 +19,7 @@ pub(crate) type MigrationStep = fn(&mut Value) -> Result<(), ConfigError>;
 /// Forward-migration steps, indexed so that **`STEPS[N]` walks `vN → v(N+1)`**.
 /// This matches [`up`], which indexes `STEPS[current]` (== the version being
 /// migrated *from*). Example: a v1 file is migrated by `STEPS[1]`. When
-/// `CURRENT_VERSION == 17`, `STEPS = [v0→v1, …, v15→v16, v16→v17]`, length 17.
+/// `CURRENT_VERSION == 18`, `STEPS = [v0→v1, …, v16→v17, v17→v18]`, length 18.
 ///
 /// `STEPS[0]` (v0→v1) is only reachable via a hand-crafted `version = 0` file -
 /// v0 was never written to disk - but it must exist so that `STEPS[1]` does.
@@ -41,6 +41,7 @@ pub(crate) const STEPS: &[MigrationStep] = &[
     migrate_v14_to_v15,
     migrate_v15_to_v16,
     migrate_v16_to_v17,
+    migrate_v17_to_v18,
 ];
 
 /// `v0 → v1`: bump the version. v0 predates any shipped config, so there is no
@@ -194,6 +195,15 @@ fn migrate_v16_to_v17(value: &mut Value) -> Result<(), ConfigError> {
     set_version(value, 17)
 }
 
+/// `v17 → v18`: bump the version. v18 added the optional `[php.directives]`
+/// table, which defaults (empty) when absent, so an in-place version bump is
+/// the entire migration. Installed versions are discovered from disk,
+/// invisible to this pure step, so per-version tables cannot (and need not)
+/// be seeded here.
+fn migrate_v17_to_v18(value: &mut Value) -> Result<(), ConfigError> {
+    set_version(value, 18)
+}
+
 /// Set the top-level `version` key, erroring if the root is not a table.
 fn set_version(value: &mut Value, n: i64) -> Result<(), ConfigError> {
     let table = value.as_table_mut().ok_or(ConfigError::Migration {
@@ -263,7 +273,7 @@ mod tests {
 
     #[test]
     fn current_version_pinned() {
-        assert_eq!(crate::CURRENT_VERSION, 17);
+        assert_eq!(crate::CURRENT_VERSION, 18);
     }
 
     #[test]
@@ -271,6 +281,13 @@ mod tests {
         let mut v: Value = toml::from_str("version = 16\n").unwrap();
         migrate_v16_to_v17(&mut v).unwrap();
         assert_eq!(read_version(&v).unwrap(), 17);
+    }
+
+    #[test]
+    fn v17_to_v18_is_a_bare_version_bump() {
+        let mut v: Value = toml::from_str("version = 17\n").unwrap();
+        migrate_v17_to_v18(&mut v).unwrap();
+        assert_eq!(read_version(&v).unwrap(), 18);
     }
 
     #[test]
