@@ -152,9 +152,8 @@ fn probe_dnsmasq(tld: &str) -> bool {
     let Some(query) = query(tld) else {
         return false;
     };
-    let socket = match UdpSocket::bind("127.0.0.1:0") {
-        Ok(socket) => socket,
-        Err(_) => return false,
+    let Ok(socket) = UdpSocket::bind("127.0.0.1:0") else {
+        return false;
     };
     if socket
         .set_read_timeout(Some(Duration::from_millis(150)))
@@ -165,11 +164,13 @@ fn probe_dnsmasq(tld: &str) -> bool {
         return false;
     }
     let mut response = [0_u8; 512];
-    let size = match socket.recv(&mut response) {
-        Ok(size) => size,
-        Err(_) => return false,
+    let Ok(size) = socket.recv(&mut response) else {
+        return false;
     };
-    dns_response_has_loopback_a(&response[..size])
+    let Some(answer) = response.get(..size) else {
+        return false;
+    };
+    dns_response_has_loopback_a(answer)
 }
 
 #[cfg(target_os = "linux")]
@@ -177,7 +178,7 @@ fn dns_response_has_loopback_a(packet: &[u8]) -> bool {
     packet.len() >= 12
         && packet.starts_with(&[0x59, 0x44])
         && packet.get(2).is_some_and(|flags| flags & 0x80 != 0)
-        && packet.get(3).is_some_and(|flags| flags & 0x0f == 0)
+        && packet.get(3).map(|flags| flags & 0x0f) == Some(0)
         && packet.windows(14).any(|window| {
             window.starts_with(&[0, 1, 0, 1])
                 && window.get(8..10) == Some([0, 4].as_slice())
