@@ -107,8 +107,9 @@ default** on many distros. If Yerd reports it missing (and `yerd doctor` warns
 - Debian/Ubuntu/Zorin: `sudo apt install libnss3-tools`
 - Fedora: `sudo dnf install nss-tools`
 - Arch: `sudo pacman -S nss`
+- macOS (only needed for Firefox; Safari/Chrome/Brave use the keychain): `brew install nss`
 
-A newly-installed browser that has never been launched has no store yet; launch
+A newly installed browser that has never been launched has no store yet; launch
 it once, then re-run `sudo yerd elevate trust`.
 :::
 

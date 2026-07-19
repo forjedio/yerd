@@ -149,7 +149,9 @@ pub fn install(
     out
 }
 
-/// Remove the Yerd CA from every discovered browser NSS database.
+/// Remove the Yerd CA from every discovered browser NSS database. Deleting a
+/// missing entry exits non-zero (nothing to remove) and still counts as a
+/// success; only a spawn failure (code `-1`) counts as a failure.
 pub fn uninstall(fs: &impl NssFs, runner: &impl CertutilRunner, os: Os) -> NssOutcome {
     if !runner.available() {
         return NssOutcome {
@@ -165,8 +167,6 @@ pub fn uninstall(fs: &impl NssFs, runner: &impl CertutilRunner, os: Os) -> NssOu
     for db in discover(fs, &home, os) {
         let res = runner.run(&nss::delete_args(&db));
         out.profiles_attempted += 1;
-        // Deleting a missing entry exits non-zero (nothing to remove) - still a
-        // success for us. Only a spawn failure (code -1) counts as a failure.
         if res.code == -1 {
             out.failures
                 .push((db.dir().to_path_buf(), NssFailure::CertutilExit(res.code)));
@@ -195,7 +195,8 @@ fn db_trusts(runner: &impl CertutilRunner, db: &NssDb, fp: &CaFingerprint) -> bo
 /// Requires **every** discovered store to trust it: a single untrusted store
 /// (e.g. a Firefox profile created after the last trust run) yields `Untrusted`
 /// so the doctor warning fires rather than being masked by another store that
-/// happens to trust the CA.
+/// happens to trust the CA. When no browser NSS store exists there is nothing
+/// to trust, so it reports `Trusted` (no false-alarm nag).
 pub fn browser_trust(
     fs: &impl NssFs,
     runner: &impl CertutilRunner,
@@ -207,7 +208,6 @@ pub fn browser_trust(
     };
     let dbs = discover(fs, &home, os);
     if dbs.is_empty() {
-        // No browser NSS store exists - nothing to trust, so don't nag.
         return BrowserCaTrust::Trusted;
     }
     if !runner.available() {

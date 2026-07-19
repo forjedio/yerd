@@ -308,6 +308,7 @@ export type DiagnosisCode =
   | "web_ports_unbound"
   | "foreign_web_listener"
   | "ca_not_trusted"
+  | "ca_not_trusted_by_browsers"
   | "resolver_not_installed"
   | "no_php_installed"
   | "default_php_not_installed"

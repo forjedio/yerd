@@ -101,20 +101,20 @@ fn trust_findings(report: &StatusReport) -> Vec<Diagnosis> {
         Some(BrowserTrust::Untrusted) => out.push(warn(
             DiagnosisCode::CaNotTrustedByBrowsers,
             "Browsers don't trust the local CA",
-            "Brave, Chrome and Firefox keep their own certificate store on Linux \
-             (separate from the system store), so they show HTTPS warnings on \
-             .test sites until the CA is added there."
+            "Brave, Chrome and Firefox keep their own certificate store, separate \
+             from the system store, so they show HTTPS warnings on .test sites \
+             until the CA is added there."
                 .to_owned(),
             "yerd elevate trust",
         )),
         Some(BrowserTrust::ToolMissing) => out.push(warn(
             DiagnosisCode::CaNotTrustedByBrowsers,
             "Can't establish browser trust (certutil missing)",
-            "Browsers won't trust the local CA until certutil is available. Install \
-             libnss3-tools (Debian/Ubuntu/Zorin), nss-tools (Fedora) or nss (Arch), \
-             then run trust again."
+            "Browsers won't trust the local CA until certutil is installed: \
+             libnss3-tools (Debian/Ubuntu/Zorin), nss-tools (Fedora), nss (Arch), \
+             or `brew install nss` (macOS). Install it, then run trust again."
                 .to_owned(),
-            "sudo apt install libnss3-tools",
+            "yerd elevate trust",
         )),
         _ => {}
     }
@@ -755,11 +755,10 @@ mod tests {
             .into_iter()
             .find(|d| d.code == DiagnosisCode::CaNotTrustedByBrowsers)
             .expect("tool-missing warns");
-        assert!(d
-            .remedy
-            .as_deref()
-            .unwrap_or_default()
-            .contains("libnss3-tools"));
+        // The doctor is pure and cannot detect the host OS, so the hint is
+        // distro/OS-neutral: it names the tool and covers Linux and macOS.
+        assert!(d.detail.contains("certutil"));
+        assert!(d.detail.contains("brew install nss"));
     }
 
     #[test]

@@ -119,9 +119,6 @@ mod unix_impl {
                 }
             }
         }
-        // The system-store install above does not reach browsers on Linux
-        // (Brave/Chrome/Firefox use their own per-user NSS store); ask the
-        // daemon - which runs as the user - to update it. Non-fatal.
         if trust_applied {
             report_browser_trust(undo).await;
         }

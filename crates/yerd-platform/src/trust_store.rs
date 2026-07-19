@@ -160,8 +160,8 @@ pub trait TrustStore {
     /// [`Self::is_present_system`].
     ///
     /// This method has a default `Unsupported` body so non-macOS/Linux
-    /// impls (and test fakes) need not override it - the only deliberate
-    /// defaulted method on this trait.
+    /// impls (and test fakes) need not override it. [`Self::browser_ca_trust`]
+    /// is defaulted for the same reason.
     fn is_trusted(&self, ca_path: &Path, fp: &CaFingerprint) -> Result<bool, PlatformError> {
         let _ = (ca_path, fp);
         Err(PlatformError::Unsupported {
