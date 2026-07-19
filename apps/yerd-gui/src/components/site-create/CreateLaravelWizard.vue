@@ -184,6 +184,9 @@ const managedComposer = computed(() =>
 const needsComposer = computed(() => !toolAvailable("composer"));
 const needsInstaller = computed(() => !toolAvailable("laravel"));
 const noPhp = computed(() => supportedPhpVersions.value.length === 0);
+// Distinguishes "no PHP at all" from "PHP installed, none of it supported" so
+// the prerequisites row can say which, rather than implying PHP is missing.
+const phpUnsupported = computed(() => noPhp.value && props.phpVersions.length > 0);
 // Node/Bun are only conditionally needed and the daemon installs them inline
 // during the job (shown as a phase), so they don't block the wizard.
 const needsNode = computed(() => form.js === "npm" && !toolAvailable("node"));
@@ -458,12 +461,16 @@ watch(
   },
 );
 
-// When PHP appears (e.g. installed from the prerequisites screen), pick the
-// default so the Basics step has a valid selection once the wizard unlocks.
+// Keep the selection honest as the installed set changes underneath the wizard
+// (PHP installed from the prerequisites screen, or the selected version
+// uninstalled elsewhere): anything no longer supported falls back to the
+// preferred version rather than being submitted for a version that isn't there.
 watch(
   () => props.phpVersions,
   () => {
-    if (!form.php) form.php = preferredPhp();
+    if (!form.php || !supportedPhpVersions.value.includes(form.php)) {
+      form.php = preferredPhp();
+    }
   },
 );
 
@@ -503,7 +510,7 @@ const busy = computed(() => jobStateRef.value === "running" && step.value === 4)
       <div class="divide-y rounded-lg border">
         <div
           v-for="row in [
-            { id: 'php', label: 'PHP', sub: `Runtime ${LARAVEL_MIN_PHP}-${LARAVEL_MAX_PHP}`, ok: !noPhp, busyKey: 'php' },
+            { id: 'php', label: 'PHP', sub: phpUnsupported ? `Installed, but not ${LARAVEL_MIN_PHP}-${LARAVEL_MAX_PHP}` : `Runtime ${LARAVEL_MIN_PHP}-${LARAVEL_MAX_PHP}`, ok: !noPhp, busyKey: 'php' },
             { id: 'composer', label: 'Composer', sub: 'Dependency manager', ok: !needsComposer, busyKey: 'composer' },
             { id: 'laravel', label: 'Laravel installer', sub: 'laravel new', ok: !needsInstaller, busyKey: 'laravel' },
           ]"
