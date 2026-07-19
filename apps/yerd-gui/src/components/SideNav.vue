@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import type { Component } from "vue";
-import { computed } from "vue";
+import { computed, onMounted, ref } from "vue";
 import {
   ClipboardList,
   Database,
@@ -20,14 +20,19 @@ import NavLink from "@/components/NavLink.vue";
 import OperationsIndicator from "@/components/OperationsIndicator.vue";
 import StatusPill from "@/components/StatusPill.vue";
 import { useDaemon } from "@/composables/useDaemon";
-import { showMailsWindow } from "@/ipc/client";
+import { loadPlatform, usePlatform } from "@/composables/usePlatform";
+import { useResource } from "@/composables/useResource";
+import { cachedUpdateStatus, listPhp, showMailsWindow } from "@/ipc/client";
+import { needsElevation } from "@/lib/elevation";
 import logoUrl from "@/assets/logo.svg";
 
-// Grouped left nav. Sections name the app's three real concerns: the runtime you
-// configure (Environment), what the daemon supervises (Services), and the system
-// itself (System). Overview sits above them as the home/dashboard. Icons are
-// monochrome - see NavLink; status colour is reserved for the pill below. The
-// Mail item carries an optional unread-count badge whose click opens the viewer.
+// Grouped left nav. Sections name the app's concerns: the runtime you configure
+// (Environment: sites, PHP, services), the developer tooling around it
+// (Developer), and the system itself (System). Overview sits above them as the
+// home/dashboard. Icons are monochrome - see NavLink; status colour is reserved
+// for the pill below. The Mail item carries an optional unread-count badge whose
+// click opens the viewer. PHP/About carry passive update-count badges; Doctor
+// carries an amber warn marker when an OS privilege is unelevated.
 type Item = {
   to: string;
   label: string;
@@ -35,11 +40,35 @@ type Item = {
   badge?: number;
   onBadgeClick?: () => void;
   badgeTitle?: string;
+  warn?: boolean;
+  warnTitle?: string;
 };
 
 const { connected, report } = useDaemon();
+const { isMac } = usePlatform();
 const unread = computed(() => report.value?.mail?.unread ?? 0);
 const sharedSites = computed(() => report.value?.shared_sites ?? 0);
+
+// Same shared "php" cache the PHP view uses, so the badge count matches what
+// that page shows. `updates` is populated on the list_php response.
+const { data: phpData } = useResource("php", listPhp);
+const phpUpdates = computed(() => phpData.value?.updates?.length ?? 0);
+
+// Yerd self-update: the daemon's last stored check (no network). Shows a 1 when
+// an update is available on the current track, nothing when up to date.
+const yerdUpdate = ref(0);
+
+// Unelevated OS privileges (CA trust, .test resolver, ports) → amber ! on Doctor.
+const unelevated = computed(() =>
+  report.value ? needsElevation(report.value, isMac.value) : false,
+);
+
+onMounted(() => {
+  void loadPlatform();
+  cachedUpdateStatus()
+    .then((s) => (yerdUpdate.value = s.available ? 1 : 0))
+    .catch(() => {});
+});
 
 // A computed (not a const) so the Mail item's unread badge stays reactive.
 const sections = computed<{ title: string; items: Item[] }[]>(() => [
@@ -47,21 +76,21 @@ const sections = computed<{ title: string; items: Item[] }[]>(() => [
     title: "General",
     items: [
       { to: "/overview", label: "Overview", icon: LayoutDashboard },
-      { to: "/about", label: "About", icon: Info },
+      { to: "/about", label: "About", icon: Info, badge: yerdUpdate.value },
     ],
   },
   {
     title: "Environment",
     items: [
-      { to: "/php", label: "PHP", icon: SquareCode },
       { to: "/sites", label: "Sites", icon: LayoutGrid },
+      { to: "/php", label: "PHP", icon: SquareCode, badge: phpUpdates.value },
+      { to: "/services", label: "Services", icon: Database },
     ],
   },
   {
     title: "Developer",
     items: [
       { to: "/tooling", label: "Tooling", icon: Wrench },
-      { to: "/services", label: "Services", icon: Database },
       { to: "/proxies", label: "Proxies", icon: Waypoints },
       {
         to: "/mail",
@@ -89,7 +118,13 @@ const sections = computed<{ title: string; items: Item[] }[]>(() => [
     title: "System",
     items: [
       { to: "/general", label: "Settings", icon: Settings },
-      { to: "/doctor", label: "Doctor", icon: Stethoscope },
+      {
+        to: "/doctor",
+        label: "Doctor",
+        icon: Stethoscope,
+        warn: unelevated.value,
+        warnTitle: "Something needs elevated permissions",
+      },
     ],
   },
 ]);

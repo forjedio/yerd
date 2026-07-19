@@ -3,13 +3,16 @@ import {
   ArrowRight,
   ArrowUpRight,
   Database,
+  Info,
   LayoutGrid,
   Lock,
   LockOpen,
   Mail,
   Rocket,
+  RotateCw,
   ShieldAlert,
   ShieldCheck,
+  Square,
   SquareCode,
 } from "lucide-vue-next";
 import type { Component } from "vue";
@@ -21,13 +24,28 @@ import PageHeader from "@/components/PageHeader.vue";
 import StatusPill, { type Tone } from "@/components/StatusPill.vue";
 import Button from "@/components/ui/Button.vue";
 import Card from "@/components/ui/Card.vue";
+import Modal from "@/components/ui/Modal.vue";
 import Spinner from "@/components/ui/Spinner.vue";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { registerViewActions } from "@/lib/shortcuts/useViewActions";
 import { useDaemon } from "@/composables/useDaemon";
 import { useOnboarding } from "@/composables/useOnboarding";
 import { usePoll } from "@/composables/usePoll";
 import { useResource } from "@/composables/useResource";
-import { daemonVersionConflict, openInBrowser, sitesAndParked } from "@/ipc/client";
+import {
+  daemonVersionConflict,
+  IpcError,
+  openInBrowser,
+  restartDaemon,
+  sitesAndParked,
+  stopDaemon,
+} from "@/ipc/client";
+import { useToast } from "@/composables/useToast";
 import type { StatusReport } from "@/ipc/types";
 import { openTitle, siteUrl } from "@/lib/siteUrl";
 import { humaniseUptime } from "@/lib/utils";
@@ -35,11 +53,50 @@ import { humaniseUptime } from "@/lib/utils";
 // The home/dashboard. It reads the shared daemon report (no poller of its own)
 // and shows the shared daemon-down hero, so it stays useful when the socket is
 // gone - the same surface that celebrates "serving N sites" becomes the start button.
-const { report, connected } = useDaemon();
+const { report, connected, refresh } = useDaemon();
 const { relaunch } = useOnboarding();
+const toast = useToast();
 
 const r = computed(() => report.value);
 const running = computed(() => connected.value === true);
+const daemonPid = computed(() => report.value?.daemon_pid ?? null);
+
+// ── daemon lifecycle (Stop / Restart; Start lives in the daemon-down hero) ──
+const busy = ref<string | null>(null);
+
+const stopDaemonOpen = ref(false);
+async function confirmStopDaemon(close: () => void): Promise<void> {
+  busy.value = "daemon";
+  close();
+  try {
+    await stopDaemon();
+    toast.success("Stopping daemon…");
+  } catch (e) {
+    toast.error("Couldn't stop the daemon", (e as IpcError).message);
+  } finally {
+    busy.value = null;
+    await refresh();
+  }
+}
+
+const restartDaemonOpen = ref(false);
+/**
+ * Restart is fire-and-forget: the daemon acknowledges before it re-execs, so a
+ * resolved call means the restart was accepted (the status poll handles the
+ * connection drop), while a rejection is a genuine failure worth surfacing.
+ */
+async function confirmRestartDaemon(close: () => void): Promise<void> {
+  busy.value = "restart:daemon";
+  close();
+  try {
+    await restartDaemon();
+    toast.info("Restarting daemon…", "It returns in a few seconds.");
+  } catch (e) {
+    toast.error("Couldn't restart the daemon", (e as IpcError).message);
+  } finally {
+    busy.value = null;
+  }
+}
 // First paint, before the poll has resolved either way.
 const connecting = computed(() => connected.value === null && !report.value);
 const tld = computed(() => r.value?.tld ?? "test");
@@ -401,6 +458,45 @@ const emptyEnvironment = computed(
           </RouterLink>
         </div>
 
+        <!-- Daemon control - Stop/Restart. Start is owned by the daemon-down
+             hero above (this branch only renders while the daemon is up). -->
+        <Card>
+          <div class="flex items-center justify-between">
+            <div class="flex items-center gap-1.5">
+              <h3 class="text-sm font-semibold">Daemon</h3>
+              <TooltipProvider v-if="daemonPid" :delay-duration="0">
+                <Tooltip>
+                  <TooltipTrigger as-child>
+                    <span class="inline-flex cursor-help text-muted-foreground">
+                      <Info class="size-3.5" />
+                    </span>
+                  </TooltipTrigger>
+                  <TooltipContent side="top">running as pid {{ daemonPid }}</TooltipContent>
+                </Tooltip>
+              </TooltipProvider>
+            </div>
+            <StatusPill tone="ok" label="Running" />
+          </div>
+          <p class="mt-3 text-sm text-muted-foreground">
+            <code>yerdd</code> supervises PHP-FPM, serves your
+            <code>.test</code> sites, answers DNS, and runs databases.
+          </p>
+          <div class="mt-4 flex justify-end gap-2">
+            <Button variant="outline" :disabled="busy !== null" @click="stopDaemonOpen = true">
+              <Spinner v-if="busy === 'daemon'" class="size-4" />
+              <Square v-else class="size-4" /> Stop
+            </Button>
+            <Button
+              variant="outline"
+              :disabled="busy !== null"
+              @click="restartDaemonOpen = true"
+            >
+              <Spinner v-if="busy === 'restart:daemon'" class="size-4" />
+              <RotateCw v-else class="size-4" /> Restart
+            </Button>
+          </div>
+        </Card>
+
         <!-- System health summary → Settings. -->
         <Card>
           <div class="flex items-center justify-between">
@@ -432,5 +528,28 @@ const emptyEnvironment = computed(
         </Card>
       </template>
     </div>
+
+    <Modal v-model:open="stopDaemonOpen" title="Stop daemon">
+      <p class="text-sm text-muted-foreground">
+        This stops all <strong class="text-foreground">.test</strong> sites, DNS,
+        and databases until you start Yerd again.
+      </p>
+      <template #footer="{ close }">
+        <Button variant="ghost" @click="close">Cancel</Button>
+        <Button @click="confirmStopDaemon(close)">Stop</Button>
+      </template>
+    </Modal>
+
+    <Modal v-model:open="restartDaemonOpen" title="Restart daemon">
+      <p class="text-sm text-muted-foreground">
+        This briefly stops all <strong class="text-foreground">.test</strong> sites,
+        DNS, and this connection while the daemon restarts. It returns in a few
+        seconds.
+      </p>
+      <template #footer="{ close }">
+        <Button variant="ghost" @click="close">Cancel</Button>
+        <Button @click="confirmRestartDaemon(close)">Restart</Button>
+      </template>
+    </Modal>
   </div>
 </template>

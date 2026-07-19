@@ -12,6 +12,10 @@ import { RouterLink } from "vue-router";
  * the pill runs it instead of navigating the row (a mouse shortcut - keyboard
  * users still reach the same place via the row itself), and `badgeTitle` gives
  * the pill its tooltip.
+ *
+ * `warn` shows an amber `!` marker in the same right-hand slot - used to flag a
+ * row that needs attention (e.g. Doctor when an OS privilege is unelevated).
+ * Rows use either a count or the warn marker, never both.
  */
 const props = defineProps<{
   to: string;
@@ -20,6 +24,8 @@ const props = defineProps<{
   badge?: number;
   onBadgeClick?: () => void;
   badgeTitle?: string;
+  warn?: boolean;
+  warnTitle?: string;
 }>();
 
 function handleBadge(e: MouseEvent): void {
@@ -61,6 +67,14 @@ function handleBadge(e: MouseEvent): void {
         @click="handleBadge"
       >
         {{ badge > 99 ? "99+" : badge }}
+      </span>
+      <span
+        v-else-if="warn"
+        class="ml-auto flex size-4 shrink-0 items-center justify-center rounded-full bg-warning/15 text-[10px] font-bold leading-none text-warning ring-1 ring-warning/40"
+        :title="warnTitle"
+      >
+        <span aria-hidden="true">!</span>
+        <span class="sr-only">{{ warnTitle ?? "Needs attention" }}</span>
       </span>
     </a>
   </RouterLink>

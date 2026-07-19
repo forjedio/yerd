@@ -14,6 +14,7 @@ import Modal from "@/components/ui/Modal.vue";
 import Spinner from "@/components/ui/Spinner.vue";
 import { useDaemon } from "@/composables/useDaemon";
 import { useToast } from "@/composables/useToast";
+import { privilegedFallback, portsElevated } from "@/lib/elevation";
 import {
   elevate,
   elevateAll,
@@ -24,7 +25,7 @@ import {
   unelevate,
   untrustCa,
 } from "@/ipc/client";
-import type { ElevateTarget, StatusReport } from "@/ipc/types";
+import type { ElevateTarget } from "@/ipc/types";
 
 // Self-contained OS-privileges panel (CA trust, .test resolver, privileged
 // ports). Lives on the Doctor page alongside the health checks - it's the same
@@ -59,17 +60,6 @@ function triLabel(v: Tri, yes: string, no: string): string {
   if (v === true) return yes;
   if (v === false) return no;
   return "unknown";
-}
-
-const PRIVILEGED_PORT_CEILING = 1024;
-function privilegedFallback(r: StatusReport): boolean {
-  return (
-    (r.http.requested < PRIVILEGED_PORT_CEILING && r.http.fell_back) ||
-    (r.https.requested < PRIVILEGED_PORT_CEILING && r.https.fell_back)
-  );
-}
-function portsElevated(r: StatusReport): boolean {
-  return !privilegedFallback(r) || r.port_redirect === true;
 }
 
 interface EnvItem {
