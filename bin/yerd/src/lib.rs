@@ -118,6 +118,21 @@ pub async fn run(cli: Cli) -> ExitCode {
             if !r.stderr.is_empty() {
                 eprintln!("{}", r.stderr);
             }
+            if !cli.json
+                && r.code == 0
+                && matches!(
+                    &cli.command,
+                    Command::Service {
+                        action: crate::cli::ServiceAction::ChangeVersion { service, .. }
+                    } if service == "meilisearch"
+                )
+            {
+                eprintln!(
+                    "warning: Meilisearch indexes do not transfer between versions; \
+                     rebuild them with Laravel Scout (scout:sync-index-settings and scout:import). \
+                     The previous version's data is retained until uninstall --purge."
+                );
+            }
             if !cli.json && r.code == 0 && matches!(cli.command, Command::Use { version: None, .. })
             {
                 print_php_path_hint();

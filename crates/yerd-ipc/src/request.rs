@@ -305,7 +305,7 @@ pub enum Request {
     },
     /// Download + install a prebuilt service version into yerd's data dir.
     InstallService {
-        /// Service id (`"redis"`, `"mysql"`, `"mariadb"`, `"postgres"`).
+        /// Service id (`"redis"`, `"mysql"`, `"mariadb"`, `"postgres"`, `"meilisearch"`).
         service: String,
         /// The version to install.
         version: String,

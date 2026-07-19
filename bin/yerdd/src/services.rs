@@ -329,7 +329,8 @@ pub async fn change_service_version(
     for old in superseded {
         if let Err(e) = service_install::uninstall(
             def.id(),
-            def.datadir_pinned_to_major(),
+            def.server_binary(),
+            def.datadir_scope(),
             &old,
             &state.dirs,
             false,
@@ -359,7 +360,8 @@ pub async fn uninstall_service(
     let _ = state.service_manager.lock().await.stop(def.id()).await;
     match service_install::uninstall(
         def.id(),
-        def.datadir_pinned_to_major(),
+        def.server_binary(),
+        def.datadir_scope(),
         &version,
         &state.dirs,
         purge,

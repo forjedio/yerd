@@ -1,8 +1,8 @@
 # Services
 
-Yerd installs and supervises local database and cache engines as native,
+Yerd installs and supervises local database, cache, and search engines as native,
 per-user processes - no Docker. Each engine is identified by a short `id`:
-`redis`, `mysql`, `mariadb`, or `postgres`. The [Services & Databases
+`redis`, `mysql`, `mariadb`, `postgres`, or `meilisearch`. The [Services & Databases
 guide](../../guide/services) covers the model in depth; this page is the command
 reference. For creating and managing the databases *inside* a SQL engine, see
 [Databases](./db).
@@ -84,7 +84,7 @@ yerd service logs mysql --lines 50
 ```
 
 Default ports: Redis `6379`, MySQL / MariaDB `3306` (they share the port, so only
-one can be enabled on it at a time), PostgreSQL `5432`.
+one can be enabled on it at a time), PostgreSQL `5432`, Meilisearch `7700`.
 
 ## See also
 

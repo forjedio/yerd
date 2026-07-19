@@ -375,7 +375,7 @@ pub enum ServiceRunState {
 /// the enclosing `Response` keeps its `Eq` derive (no floats on the wire).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ServiceStatus {
-    /// Stable service id (`"redis"`, `"mysql"`, `"mariadb"`, `"postgres"`).
+    /// Stable service id (`"redis"`, `"mysql"`, `"mariadb"`, `"postgres"`, `"meilisearch"`).
     pub service: String,
     /// Human-facing label (`"Redis (Valkey)"`, `"PostgreSQL"`, …).
     pub display_name: String,

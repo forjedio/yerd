@@ -601,6 +601,8 @@ const configTarget = ref<ServiceStatus | null>(null);
 const configDbs = ref<DatabaseSummary[]>([]);
 const configDbName = ref<string>("");
 const configDbLoading = ref(false);
+const configLaravelSites = ref<SiteEntry[]>([]);
+const configScoutSite = ref("");
 // The linked site for a per-site instance (Reverb), resolved for host + TLS.
 const configSite = ref<SiteEntry | null>(null);
 // Bumped on each open so a slow listDatabases can't overwrite a newer modal.
@@ -609,6 +611,9 @@ const configReqSeq = ref(0);
 const configDbOptions = computed(() =>
   configDbs.value.map((d) => ({ value: d.name, label: d.name })),
 );
+const configSiteOptions = computed(() =>
+  configLaravelSites.value.map((s) => ({ value: s.name, label: s.name })),
+);
 
 async function openConfig(s: ServiceStatus): Promise<void> {
   const reqSeq = ++configReqSeq.value;
@@ -616,7 +621,20 @@ async function openConfig(s: ServiceStatus): Promise<void> {
   configDbName.value = "";
   configDbs.value = [];
   configSite.value = null;
+  configLaravelSites.value = [];
+  configScoutSite.value = "";
   configOpen.value = true;
+  if (s.service === "meilisearch") {
+    try {
+      const sites = await listSites();
+      if (reqSeq !== configReqSeq.value) return;
+      configLaravelSites.value = sites.filter((site) => site.is_laravel);
+      configScoutSite.value = configLaravelSites.value[0]?.name ?? "your_app";
+    } catch {
+      if (reqSeq === configReqSeq.value) configScoutSite.value = "your_app";
+    }
+    return;
+  }
   // Per-site app server (Reverb): resolve its linked site for the host + whether
   // it's served over HTTPS, so the client (Echo) values are the right scheme/port.
   if (s.site) {
@@ -719,6 +737,13 @@ const configSnippet = computed(() => {
       return dbEnv("mariadb", s.port, db, "root");
     case "postgres":
       return dbEnv("pgsql", s.port, db, "postgres");
+    case "meilisearch":
+      return [
+        "SCOUT_DRIVER=meilisearch",
+        `SCOUT_PREFIX=${configScoutSite.value.trim() || "your_app"}_`,
+        `MEILISEARCH_HOST=http://127.0.0.1:${s.port}`,
+        "MEILISEARCH_KEY=",
+      ].join("\n");
     default:
       return "";
   }
@@ -741,7 +766,7 @@ onUnmounted(registerViewActions({ refresh: () => void load() }));
   <div class="flex h-full flex-col">
     <PageHeader
       title="Services"
-      subtitle="Databases, caches, and per-site app servers Yerd supervises"
+      subtitle="Databases, caches, search, and per-site app servers Yerd supervises"
       docs="/guide/services"
     >
       <template #actions>
@@ -756,8 +781,8 @@ onUnmounted(registerViewActions({ refresh: () => void load() }));
         <CardHeader>
           <CardTitle>Managed services</CardTitle>
           <CardDescription>
-            Services Yerd runs for you - database and cache engines, plus per-site
-            app servers like Reverb. Each binds to localhost; start or stop them
+            Services Yerd runs for you - database, cache, and search engines, plus
+            per-site app servers like Reverb. Each binds to localhost; start or stop them
             here, or add another with <span class="font-medium">Add Service</span>.
           </CardDescription>
         </CardHeader>
@@ -1012,8 +1037,14 @@ onUnmounted(registerViewActions({ refresh: () => void load() }));
         </div>
         <p class="mt-2 text-xs text-muted-foreground">
           <template v-if="installMode === 'change'">
-            Installs the selected version, restarts the service onto it, and removes
-            the current version. Your stored data is kept.
+            <template v-if="installTarget?.service === 'meilisearch'">
+              Meilisearch indexes do not transfer between versions automatically.
+              The previous version's data is retained; rebuild indexes with Laravel Scout.
+            </template>
+            <template v-else>
+              Installs the selected version, restarts the service onto it, and removes
+              the current version. Your stored data is kept.
+            </template>
           </template>
           <template v-else>
             Downloads a prebuilt build; this can take a few minutes with no progress
@@ -1218,6 +1249,25 @@ onUnmounted(registerViewActions({ refresh: () => void load() }));
                 ? "No databases yet - create one under \"Manage databases\". Using a placeholder below."
                 : "Start the service to list databases. Using a placeholder below."
             }}
+          </p>
+        </div>
+
+        <div v-if="configTarget?.service === 'meilisearch'">
+          <span class="text-sm font-medium">Laravel site / index prefix</span>
+          <Select
+            v-if="configSiteOptions.length"
+            class="mt-2 w-full"
+            :model-value="configScoutSite"
+            :options="configSiteOptions"
+            aria-label="Laravel site"
+            @update:model-value="(v: string) => (configScoutSite = v)"
+          />
+          <Input v-else v-model="configScoutSite" class="mt-2" aria-label="Scout prefix" />
+          <p class="mt-2 text-xs text-muted-foreground">
+            Install <code>laravel/scout</code> and <code>meilisearch/meilisearch-php</code>,
+            then run <code>php artisan scout:sync-index-settings</code> and
+            <code>php artisan scout:import "App\\Models\\YourModel"</code>. Yerd does not
+            change project files or run Composer or Artisan for you.
           </p>
         </div>
 

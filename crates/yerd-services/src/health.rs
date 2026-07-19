@@ -53,7 +53,50 @@ impl ReadinessProbe for ServiceProbes {
             ReadinessKind::RedisPing => RedisProbe.probe(listen).await,
             ReadinessKind::MySqlHandshake => MySqlProbe.probe(listen).await,
             ReadinessKind::PostgresStartup => PostgresProbe.probe(listen).await,
+            ReadinessKind::MeilisearchHealth => MeilisearchProbe.probe(listen).await,
             ReadinessKind::TcpConnect => TcpConnectProbe.probe(listen).await,
+        }
+    }
+}
+
+/// Meilisearch readiness probe: require a successful health endpoint and the
+/// documented available status, rather than treating an open HTTP port as ready.
+pub struct MeilisearchProbe;
+
+const MEILISEARCH_HEALTH_RESPONSE_LIMIT: u64 = 8 * 1024;
+
+#[async_trait]
+impl HealthProbe for MeilisearchProbe {
+    async fn probe(&self, listen: &Listen) -> Result<(), io::Error> {
+        let addr = tcp_addr(listen)?;
+        let mut stream = TcpStream::connect(addr).await?;
+        stream
+            .write_all(b"GET /health HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n")
+            .await?;
+        let mut response = Vec::new();
+        stream
+            .take(MEILISEARCH_HEALTH_RESPONSE_LIMIT)
+            .read_to_end(&mut response)
+            .await?;
+        let split = response
+            .windows(4)
+            .position(|w| w == b"\r\n\r\n")
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "malformed HTTP response"))?;
+        let headers = std::str::from_utf8(response.get(..split).unwrap_or_default())
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "non-UTF-8 HTTP headers"))?;
+        let status = headers.lines().next().unwrap_or_default();
+        if !status.starts_with("HTTP/1.1 200 ") && !status.starts_with("HTTP/1.0 200 ") {
+            return Err(io::Error::other(
+                "Meilisearch health returned non-200 status",
+            ));
+        }
+        let body = response.get(split + 4..).unwrap_or_default();
+        let value: serde_json::Value = serde_json::from_slice(body)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        if value.get("status").and_then(serde_json::Value::as_str) == Some("available") {
+            Ok(())
+        } else {
+            Err(io::Error::other("Meilisearch is not available"))
         }
     }
 }
@@ -308,6 +351,43 @@ mod tests {
             .probe(ReadinessKind::PostgresStartup, &Listen::TcpLoopback(pg))
             .await
             .is_ok());
+    }
+
+    async fn fake_http(status: &'static str, body: &'static str) -> SocketAddr {
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            if let Ok((mut sock, _)) = listener.accept().await {
+                let mut request = [0u8; 256];
+                let _ = sock.read(&mut request).await;
+                let reply = format!(
+                    "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = sock.write_all(reply.as_bytes()).await;
+            }
+        });
+        addr
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn meilisearch_probe_requires_healthy_200_response() {
+        let healthy = fake_http("200 OK", r#"{"status":"available"}"#).await;
+        assert!(MeilisearchProbe
+            .probe(&Listen::TcpLoopback(healthy))
+            .await
+            .is_ok());
+        for (status, body) in [
+            ("503 Service Unavailable", r#"{"status":"available"}"#),
+            ("200 OK", r#"{"status":"unavailable"}"#),
+            ("200 OK", "not json"),
+        ] {
+            let addr = fake_http(status, body).await;
+            assert!(MeilisearchProbe
+                .probe(&Listen::TcpLoopback(addr))
+                .await
+                .is_err());
+        }
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

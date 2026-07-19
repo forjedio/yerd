@@ -21,7 +21,7 @@ use std::str::FromStr;
 use yerd_platform::PlatformDirs;
 
 use crate::error::ServiceError;
-use crate::service::ServiceRegistry;
+use crate::service::{DatadirScope, ServiceRegistry};
 
 /// Filename of the installed-version marker inside a per-version install dir.
 pub const VERSION_MARKER: &str = ".yerd-version";
@@ -198,21 +198,19 @@ pub fn server_path(
         .join(server_binary)
 }
 
-/// The datadir for a service+version. Pinned per *major* when `pinned_to_major`
-/// (engines whose on-disk format is major-incompatible, i.e. Postgres);
-/// otherwise a single shared datadir per engine.
+/// The datadir for a service+version, according to its compatibility scope.
 #[must_use]
 pub fn datadir(
     dirs: &PlatformDirs,
     service_id: &str,
-    pinned_to_major: bool,
+    scope: DatadirScope,
     version: &ServiceVersion,
 ) -> PathBuf {
     let root = service_root(dirs, service_id);
-    if pinned_to_major {
-        root.join(format!("data-{}", version.major()))
-    } else {
-        root.join("data")
+    match scope {
+        DatadirScope::Shared => root.join("data"),
+        DatadirScope::Major => root.join(format!("data-{}", version.major())),
+        DatadirScope::Version => root.join(format!("data-{}", version.as_str())),
     }
 }
 
@@ -448,13 +446,17 @@ mod tests {
         let dirs = dirs_in(std::path::Path::new("/tmp/x"));
         let v = ServiceVersion::from_str("16.2").unwrap();
         assert_eq!(
-            datadir(&dirs, "postgres", true, &v),
+            datadir(&dirs, "postgres", DatadirScope::Major, &v),
             PathBuf::from("/tmp/x/d/services/postgres/data-16")
         );
         let v8 = ServiceVersion::from_str("8.4").unwrap();
         assert_eq!(
-            datadir(&dirs, "mysql", false, &v8),
+            datadir(&dirs, "mysql", DatadirScope::Shared, &v8),
             PathBuf::from("/tmp/x/d/services/mysql/data")
+        );
+        assert_eq!(
+            datadir(&dirs, "meilisearch", DatadirScope::Version, &v),
+            PathBuf::from("/tmp/x/d/services/meilisearch/data-16.2")
         );
     }
 
@@ -467,7 +469,7 @@ mod tests {
         for label in ["17", "17.10", "17.10-full", "17-full"] {
             let v = ServiceVersion::from_str(label).unwrap();
             assert_eq!(
-                datadir(&dirs, "postgres", true, &v),
+                datadir(&dirs, "postgres", DatadirScope::Major, &v),
                 shared,
                 "label {label}"
             );

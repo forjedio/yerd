@@ -276,8 +276,8 @@ The `path` key is the parked site's document-root string, stored **byte-exact an
 
 ### `[services.<id>]`
 
-Installed database / cache services, one table per engine, keyed by its `id`
-(`mysql`, `mariadb`, `postgres`, or `redis`). An unknown service id fails
+Installed services, one table per engine, keyed by its `id`
+(`mysql`, `mariadb`, `postgres`, `redis`, or `meilisearch`). An unknown service id fails
 validation (`UnknownService`). See [Services & Databases](../guide/services).
 
 | Key       | TOML type      | Meaning                                            | Default |
@@ -580,8 +580,8 @@ php = "8.4"
 secure = true
 web_root = "public"
 
-# Installed database / cache services, one table per engine.
-# Known ids: mysql, mariadb, postgres, redis. Usually managed via `yerd service`.
+# Installed services, one table per engine.
+# Known ids: mysql, mariadb, postgres, redis, meilisearch. Usually managed via `yerd service`.
 [services.redis]
 version = "8"
 port = 6379

@@ -16,7 +16,7 @@ use yerd_supervise::Downloader;
 use yerd_platform::PlatformDirs;
 use yerd_services::version::{self, VERSION_MARKER};
 use yerd_services::{
-    current_os_arch, listing_url, resolve_from_listing, ServiceError, ServiceVersion,
+    current_os_arch, listing_url, resolve_from_listing, DatadirScope, ServiceError, ServiceVersion,
 };
 
 /// Install `service_id` at `version` into `data/services/<id>/<version>/`.
@@ -66,13 +66,16 @@ pub async fn install(
 }
 
 /// Remove an installed version's files. With `purge`, also delete the engine's
-/// datadir (destructive). Returns the retained datadir path when it was kept.
+/// stored data (destructive). For exact-version-scoped services this removes
+/// the target store plus orphaned `data-*` stores, while preserving stores
+/// owned by other versions whose expected server binary is still installed.
+/// Returns the selected version's retained datadir path when data was kept.
 ///
-/// `pinned_to_major` selects the datadir layout (per-major for engines whose
-/// on-disk format is major-incompatible, otherwise one shared datadir).
+/// `datadir_scope` selects the engine's compatibility layout.
 pub fn uninstall(
     service_id: &str,
-    pinned_to_major: bool,
+    server_binary: Option<&str>,
+    datadir_scope: DatadirScope,
     version: &ServiceVersion,
     dirs: &PlatformDirs,
     purge: bool,
@@ -81,15 +84,60 @@ pub fn uninstall(
     if dir.exists() {
         fs_ctx(std::fs::remove_dir_all(&dir), &dir)?;
     }
-    let datadir = version::datadir(dirs, service_id, pinned_to_major, version);
+    let datadir = version::datadir(dirs, service_id, datadir_scope, version);
     if purge {
-        if datadir.exists() {
+        if matches!(datadir_scope, DatadirScope::Version) {
+            purge_version_datadirs(dirs, service_id, server_binary, version)?;
+        } else if datadir.exists() {
             fs_ctx(std::fs::remove_dir_all(&datadir), &datadir)?;
         }
         Ok(None)
     } else {
         Ok(datadir.exists().then_some(datadir))
     }
+}
+
+/// Delete only exact-version datadirs under this service root. Install dirs,
+/// staging dirs, notices, and unrelated entries are deliberately untouched.
+fn purge_version_datadirs(
+    dirs: &PlatformDirs,
+    service_id: &str,
+    server_binary: Option<&str>,
+    target_version: &ServiceVersion,
+) -> Result<(), ServiceError> {
+    let root = version::service_root(dirs, service_id);
+    let entries = match std::fs::read_dir(&root) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(fs_err(&root, &e)),
+    };
+    for entry in entries {
+        let entry = entry.map_err(|e| fs_err(&root, &e))?;
+        let name = entry.file_name();
+        let Some(suffix) = name.to_str().and_then(|name| name.strip_prefix("data-")) else {
+            continue;
+        };
+        if !entry
+            .file_type()
+            .map_err(|e| fs_err(&entry.path(), &e))?
+            .is_dir()
+        {
+            continue;
+        }
+        let owned_by_other_install = suffix != target_version.as_str()
+            && server_binary.is_some_and(|binary| {
+                suffix
+                    .parse::<ServiceVersion>()
+                    .is_ok_and(|installed_version| {
+                        version::server_path(dirs, service_id, binary, &installed_version).is_file()
+                    })
+            });
+        if !owned_by_other_install {
+            let path = entry.path();
+            fs_ctx(std::fs::remove_dir_all(&path), &path)?;
+        }
+    }
+    Ok(())
 }
 
 async fn stage(
@@ -157,5 +205,107 @@ fn extract_msg(url: &str, detail: String) -> ServiceError {
     ServiceError::Extract {
         what: url.to_owned(),
         detail,
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+
+    fn dirs_in(root: &Path) -> PlatformDirs {
+        PlatformDirs {
+            config: root.join("config"),
+            data: root.join("data"),
+            state: root.join("state"),
+            cache: root.join("cache"),
+            runtime: root.join("runtime"),
+        }
+    }
+
+    #[test]
+    fn version_scoped_purge_removes_all_retained_datadirs_only() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dirs = dirs_in(tmp.path());
+        let root = version::service_root(&dirs, "meilisearch");
+        for name in ["data-1.10", "data-1.11", "data-1.12", "1.12", ".staging-x"] {
+            std::fs::create_dir_all(root.join(name)).unwrap();
+        }
+        std::fs::write(root.join("data-not-a-directory"), b"keep").unwrap();
+
+        uninstall(
+            "meilisearch",
+            Some("meilisearch"),
+            DatadirScope::Version,
+            &"1.12".parse().unwrap(),
+            &dirs,
+            true,
+        )
+        .unwrap();
+
+        for name in ["data-1.10", "data-1.11", "data-1.12", "1.12"] {
+            assert!(!root.join(name).exists(), "{name} should be removed");
+        }
+        assert!(root.join(".staging-x").is_dir());
+        assert!(root.join("data-not-a-directory").is_file());
+    }
+
+    #[test]
+    fn version_scoped_uninstall_without_purge_retains_every_datadir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dirs = dirs_in(tmp.path());
+        let root = version::service_root(&dirs, "meilisearch");
+        for name in ["data-1.11", "data-1.12", "1.12"] {
+            std::fs::create_dir_all(root.join(name)).unwrap();
+        }
+
+        let retained = uninstall(
+            "meilisearch",
+            Some("meilisearch"),
+            DatadirScope::Version,
+            &"1.12".parse().unwrap(),
+            &dirs,
+            false,
+        )
+        .unwrap();
+
+        assert_eq!(retained, Some(root.join("data-1.12")));
+        assert!(root.join("data-1.11").is_dir());
+        assert!(root.join("data-1.12").is_dir());
+    }
+
+    #[test]
+    fn version_scoped_purge_preserves_datadir_owned_by_another_install() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dirs = dirs_in(tmp.path());
+        let root = version::service_root(&dirs, "meilisearch");
+        for version in ["1.11", "1.12"] {
+            std::fs::create_dir_all(root.join(version).join("bin")).unwrap();
+            std::fs::write(root.join(version).join("bin/meilisearch"), b"binary").unwrap();
+            std::fs::create_dir_all(root.join(format!("data-{version}"))).unwrap();
+        }
+        std::fs::create_dir_all(root.join("data-1.10")).unwrap();
+
+        uninstall(
+            "meilisearch",
+            Some("meilisearch"),
+            DatadirScope::Version,
+            &"1.11".parse().unwrap(),
+            &dirs,
+            true,
+        )
+        .unwrap();
+
+        assert!(!root.join("1.11").exists());
+        assert!(!root.join("data-1.11").exists());
+        assert!(
+            !root.join("data-1.10").exists(),
+            "orphan should be reclaimed"
+        );
+        assert!(root.join("1.12/bin/meilisearch").is_file());
+        assert!(
+            root.join("data-1.12").is_dir(),
+            "live version data must survive"
+        );
     }
 }

@@ -174,7 +174,7 @@ where
                     version: v.clone(),
                 });
             }
-            let datadir = version::datadir(&self.dirs, id, def.datadir_pinned_to_major(), v);
+            let datadir = version::datadir(&self.dirs, id, def.datadir_scope(), v);
             (program, Some((v.clone(), datadir)))
         };
 
@@ -341,7 +341,7 @@ where
             return Ok(());
         }
         if def.is_initialized(datadir) {
-            if def.datadir_pinned_to_major() {
+            if matches!(def.datadir_scope(), crate::service::DatadirScope::Major) {
                 check_pg_major(datadir, version)?;
             }
             return Ok(());
