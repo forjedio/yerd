@@ -104,7 +104,7 @@ describe("trayServiceRows", () => {
     expect(rows[0]?.phpVersion).toBe("8.4");
   });
 
-  it("returns empty when no PHP pool is running or failed", () => {
+  it("returns empty when no PHP pool is running or failed and no managed services", () => {
     const rows = trayServiceRows(
       baseReport({
         php: [
@@ -122,13 +122,13 @@ describe("trayServiceRows", () => {
           {
             service: "redis",
             display_name: "Redis",
-            installed_versions: ["7"],
-            selected_version: "7",
+            installed_versions: [],
+            selected_version: null,
             state: "stopped",
             pid: null,
             listen: null,
             port: 6379,
-            enabled: true,
+            enabled: false,
             supports_databases: false,
           },
         ],
@@ -137,7 +137,7 @@ describe("trayServiceRows", () => {
     expect(rows).toEqual([]);
   });
 
-  it("omits managed services such as Redis (Herd-style: PHP pools only)", () => {
+  it("includes installed managed services such as Postgres", () => {
     const rows = trayServiceRows(
       baseReport({
         services: [
@@ -153,12 +153,52 @@ describe("trayServiceRows", () => {
             enabled: true,
             supports_databases: false,
           },
+          {
+            service: "postgres",
+            display_name: "PostgreSQL",
+            installed_versions: ["17"],
+            selected_version: "17",
+            state: "running",
+            pid: 100,
+            listen: "127.0.0.1:5432",
+            port: 5432,
+            enabled: true,
+            supports_databases: true,
+          },
         ],
       }),
     );
-    expect(rows.find((r) => r.id === "redis")).toBeUndefined();
-    expect(rows).toHaveLength(1);
+    expect(rows).toHaveLength(3);
     expect(rows[0]?.id).toBe("php:8.4");
+    const pg = rows.find((r) => r.id === "postgres");
+    expect(pg?.label).toBe("PostgreSQL");
+    expect(pg?.kind).toBe("managed");
+    expect(pg?.canStop).toBe(true);
+    expect(pg?.canRestart).toBe(true);
+  });
+
+  it("shows start controls for installed but stopped managed services", () => {
+    const rows = trayServiceRows(
+      baseReport({
+        services: [
+          {
+            service: "postgres",
+            display_name: "PostgreSQL",
+            installed_versions: ["17"],
+            selected_version: "17",
+            state: "stopped",
+            pid: null,
+            listen: null,
+            port: 5432,
+            enabled: true,
+            supports_databases: true,
+          },
+        ],
+      }),
+    );
+    const pg = rows.find((r) => r.id === "postgres");
+    expect(pg?.canStart).toBe(true);
+    expect(pg?.health).toBe("warn");
   });
 
   it("allows restart on failed php pool", () => {

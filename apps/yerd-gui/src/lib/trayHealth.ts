@@ -3,12 +3,14 @@
  *
  * `deriveTrayHealth` mirrors `apps/yerd-gui/src-tauri/src/tray_health.rs`.
  *
- * Service rows are **not** shared with the native menu: `trayServiceRows` here
- * lists only **PHP pools** that are running or failed (Herd-style tray panel).
- * `tray_health::service_rows` in Rust lists Proxy + every pool + every managed
- * instance for the read-only native menu.
+ * `trayServiceRows` lists running/failed PHP pools plus every installed managed
+ * service (Redis, Postgres, …). Mirrors `tray_health::tray_dropdown_service_rows`.
+ *
+ * `tray_health::service_rows` is the fuller diagnostic list (Proxy + every pool +
+ * every managed instance, including stopped) used elsewhere.
  */
-import type { PhpVersion, StatusReport, PhpPoolStatus } from "@/ipc/types";
+import type { PhpVersion, StatusReport, PhpPoolStatus, ServiceStatus } from "@/ipc/types";
+import { canStartService, canStopService, isInstalledService } from "./serviceActions";
 
 export type TrayHealth = "ok" | "warn" | "bad";
 
@@ -85,7 +87,32 @@ export function trayServiceRows(report: StatusReport): TrayServiceRow[] {
     });
   }
 
+  for (const s of report.services ?? []) {
+    if (!isInstalledService(s)) continue;
+    rows.push(managedServiceRow(s));
+  }
+
   return rows;
+}
+
+function managedServiceRow(s: ServiceStatus): TrayServiceRow {
+  let health: TrayHealth = "warn";
+  if (s.state === "running") health = "ok";
+  else if (s.state === "failed") health = "bad";
+  else if (s.state === "stopped" && !s.enabled) health = "ok";
+
+  const label = s.site ? `${s.display_name} (${s.site})` : s.display_name;
+
+  return {
+    id: s.service,
+    label,
+    health,
+    kind: "managed",
+    state: s.state,
+    canStart: canStartService(s),
+    canStop: canStopService(s),
+    canRestart: isInstalledService(s),
+  };
 }
 
 function isActiveRunState(state: TrayServiceRunState): boolean {

@@ -258,8 +258,8 @@ are the only categories the frontend's `IpcError` needs to distinguish.
 - **Hybrid tray** (`tray.rs` + `tray_panel.rs` + `tray_health.rs`): **left-click**
   toggles a frameless Vue **tray panel** (`#/tray-panel`) with CommandPalette-style
   site autocomplete (favorites / recent / typeahead), per-site Open / IDE /
-  Terminal / PHP-pool recycle actions, collapsible Services (**PHP pools only**,
-  Herd-style — see `lib/trayHealth.ts`), daemon Stop/Restart in the
+  Terminal / PHP-pool recycle actions, collapsible Services (running/failed PHP
+  pools plus installed managed services — see `lib/trayHealth.ts`), daemon Stop/Restart in the
   panel header, and an
   activity feed. **Right-click** (or the attached menu on platforms that don't
   deliver left-clicks) shows the **native** menu: status header with health

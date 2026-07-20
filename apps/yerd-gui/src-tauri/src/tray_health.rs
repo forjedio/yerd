@@ -2,9 +2,9 @@
 //!
 //! `derive_health` is mirrored in `apps/yerd-gui/src/lib/trayHealth.ts`.
 //!
-//! [`tray_dropdown_service_rows`] builds the Herd-style PHP-only list for the
-//! Vue tray panel and the menu-bar Services block. [`service_rows`] is the full
-//! diagnostic list (Proxy + every pool + every managed instance) for other uses.
+//! [`tray_dropdown_service_rows`] builds the tray panel / menu-bar Services list
+//! (running/failed PHP pools + installed managed services). [`service_rows`] is
+//! the fuller diagnostic list (Proxy + every pool + every managed instance).
 
 use yerd_ipc::{PoolRunState, ServiceRunState, StatusReport};
 
@@ -118,47 +118,74 @@ pub fn service_rows(report: &StatusReport) -> Vec<ServiceRow> {
     }
 
     for s in &report.services {
-        let health = match s.state {
-            ServiceRunState::Running => TrayHealth::Ok,
-            ServiceRunState::Failed => TrayHealth::Bad,
-            ServiceRunState::Stopped if s.enabled => TrayHealth::Warn,
-            ServiceRunState::Stopped => TrayHealth::Ok,
-            _ => TrayHealth::Warn,
-        };
-        let label = if let Some(site) = &s.site {
-            format!("{} ({site})", s.display_name)
-        } else {
-            s.display_name.clone()
-        };
-        rows.push(ServiceRow {
-            id: s.service.clone(),
-            label,
-            health,
-        });
+        rows.push(managed_service_row(s));
     }
 
     rows
 }
 
-/// Running or failed PHP pools only — Herd-style list for the tray panel and the
+/// Running/failed PHP pools plus installed managed services — tray panel and the
 /// menu-bar **Services** block (mirrors `trayHealth.ts::trayServiceRows`).
 pub fn tray_dropdown_service_rows(report: &StatusReport) -> Vec<ServiceRow> {
-    report
+    let php_count = report
         .php
         .iter()
         .filter(|p| matches!(p.state, PoolRunState::Running | PoolRunState::Failed))
-        .map(|pool| {
-            let health = match pool.state {
-                PoolRunState::Failed => TrayHealth::Bad,
-                _ => TrayHealth::Ok,
-            };
-            ServiceRow {
-                id: format!("php:{}", pool.version),
-                label: format!("PHP {}", pool.version),
-                health,
-            }
-        })
-        .collect()
+        .count();
+    let managed_count = report
+        .services
+        .iter()
+        .filter(|s| is_installed_service(s))
+        .count();
+    let mut rows = Vec::with_capacity(php_count + managed_count);
+
+    for pool in &report.php {
+        if !matches!(pool.state, PoolRunState::Running | PoolRunState::Failed) {
+            continue;
+        }
+        let health = match pool.state {
+            PoolRunState::Failed => TrayHealth::Bad,
+            _ => TrayHealth::Ok,
+        };
+        rows.push(ServiceRow {
+            id: format!("php:{}", pool.version),
+            label: format!("PHP {}", pool.version),
+            health,
+        });
+    }
+
+    for s in &report.services {
+        if !is_installed_service(s) {
+            continue;
+        }
+        rows.push(managed_service_row(s));
+    }
+
+    rows
+}
+
+fn is_installed_service(s: &yerd_ipc::ServiceStatus) -> bool {
+    !s.installed_versions.is_empty() || s.site.is_some()
+}
+
+fn managed_service_row(s: &yerd_ipc::ServiceStatus) -> ServiceRow {
+    let health = match s.state {
+        ServiceRunState::Running => TrayHealth::Ok,
+        ServiceRunState::Failed => TrayHealth::Bad,
+        ServiceRunState::Stopped if s.enabled => TrayHealth::Warn,
+        ServiceRunState::Stopped => TrayHealth::Ok,
+        _ => TrayHealth::Warn,
+    };
+    let label = if let Some(site) = &s.site {
+        format!("{} ({site})", s.display_name)
+    } else {
+        s.display_name.clone()
+    };
+    ServiceRow {
+        id: s.service.clone(),
+        label,
+        health,
+    }
 }
 
 #[cfg(test)]
@@ -290,7 +317,7 @@ mod tests {
     }
 
     #[test]
-    fn tray_dropdown_service_rows_are_php_pools_only() {
+    fn tray_dropdown_service_rows_include_php_and_installed_managed() {
         let mut r = base_report();
         r.services.push(ServiceStatus {
             service: "redis".into(),
@@ -307,10 +334,50 @@ mod tests {
             site: None,
             error: None,
         });
+        r.services.push(ServiceStatus {
+            service: "postgres".into(),
+            display_name: "PostgreSQL".into(),
+            installed_versions: vec!["17".into()],
+            selected_version: Some("17".into()),
+            state: ServiceRunState::Running,
+            pid: Some(10),
+            listen: None,
+            port: 5432,
+            enabled: true,
+            supports_databases: true,
+            type_id: "postgres".into(),
+            site: None,
+            error: None,
+        });
+        let rows = tray_dropdown_service_rows(&r);
+        assert_eq!(rows.len(), 3);
+        assert_eq!(rows[0].id, "php:8.4");
+        assert_eq!(rows[1].id, "redis");
+        assert_eq!(rows[2].id, "postgres");
+        assert_eq!(rows[2].label, "PostgreSQL");
+    }
+
+    #[test]
+    fn tray_dropdown_service_rows_skip_uninstalled_engines() {
+        let mut r = base_report();
+        r.services.push(ServiceStatus {
+            service: "postgres".into(),
+            display_name: "PostgreSQL".into(),
+            installed_versions: vec![],
+            selected_version: None,
+            state: ServiceRunState::Stopped,
+            pid: None,
+            listen: None,
+            port: 5432,
+            enabled: false,
+            supports_databases: true,
+            type_id: "postgres".into(),
+            site: None,
+            error: None,
+        });
         let rows = tray_dropdown_service_rows(&r);
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].id, "php:8.4");
-        assert!(rows.iter().all(|row| row.id.starts_with("php:")));
     }
 
     #[test]
