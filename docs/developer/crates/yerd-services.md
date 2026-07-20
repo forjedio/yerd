@@ -86,7 +86,10 @@ never through a shell.
 - **`validate_db_name(name)`** - strict allowlist: non-empty, ≤ 63 chars (the
   lowest engine cap), first char an ASCII letter or `_`, the rest
   `[A-Za-z0-9_]`. Returns `DbNameError` (`Empty`, `TooLong`, `BadStart`,
-  `BadChar(char)`). This makes injection impossible by construction.
+  `BadChar(char)`). This policy applies only to databases Yerd creates.
+- **`validate_existing_db_name(name)`** - accepts engine-created names selected
+  for drop, backup, or restore, including whitespace, punctuation, Unicode, and
+  quoting characters. It rejects only empty strings and embedded NUL characters.
 - **`is_system_database(service, name)`** - case-insensitive guard. MySQL/MariaDB:
   `information_schema`, `performance_schema`, `mysql`, `sys`; Postgres: `postgres`,
   `template0`, `template1`. System databases cannot be dropped or restored over.
@@ -94,14 +97,15 @@ never through a shell.
   for Postgres (each doubling the quote char).
 - **`create_sql` / `drop_sql` / `list_sql`** - per-engine statements. Postgres
   drop uses `DROP DATABASE <ident> WITH (FORCE);` (PG13+); Postgres list queries
-  `pg_database WHERE datistemplate = false`; MySQL/MariaDB use `SHOW DATABASES;`.
+  `pg_database WHERE datistemplate = false`. List queries return hexadecimal
+  UTF-8 so line breaks and surrounding whitespace in names survive client output.
 - **`client_args` / `dump_args` / `restore_args`** - build the argv for the
   interactive client / dump tool. MySQL & MariaDB connect over the local **Unix
   socket** as a passwordless `root`; Postgres connects over **TCP loopback** as
   `postgres`. Restore reuses the *client* binary (replaying SQL on stdin), not the
   dump binary.
-- **`parse_db_list(service, stdout)`** - trims, drops empties, filters system DBs,
-  sorts, and dedups the client's output.
+- **`parse_db_list(service, stdout)`** - decodes hexadecimal names, filters system
+  DBs, sorts, and deduplicates without altering database names.
 
 ## `config_render.rs` - pure config rendering
 
@@ -216,7 +220,9 @@ crate over IPC:
   requires a *running* SQL engine with a client binary present, passes the pure
   SQL as a single argv element (no shell), streams `BackupDatabase` to a temp
   sibling and atomically renames it (never truncating the target), and streams
-  `RestoreDatabase` into the client's stdin. Engine errors are classified into
+  `RestoreDatabase` into the client's stdin. Create uses the portable name
+  allowlist; drop/backup/restore use exact existing names after empty/NUL checks.
+  Engine errors are classified into
   typed `ErrorCode`s (`AlreadyExists` / `NotFound` / `Internal`).
 
 See [IPC Protocol](../ipc-protocol) for the full service/database message set.

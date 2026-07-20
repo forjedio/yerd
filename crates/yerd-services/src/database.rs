@@ -4,9 +4,10 @@
 //! validation result, a SQL string, an argv vector, a parsed list). The daemon's
 //! `db_admin` glue spawns the bundled client with these and captures the output.
 //!
-//! This module is the **security boundary** for "Manage DBs": [`validate_db_name`]
-//! is a strict allowlist so a database name can never carry SQL/shell payload,
-//! and [`quote_ident`] quotes the (already-validated) identifier belt-and-braces.
+//! This module is the **security boundary** for database administration.
+//! [`validate_db_name`] is the strict policy for names Yerd creates, while
+//! [`validate_existing_db_name`] accepts engine-created names used by Manage DBs.
+//! SQL identifiers are always quoted and process arguments never pass through a shell.
 //! Because the daemon passes each SQL string as a single `argv` element to the
 //! client (never a shell), there is no shell-injection surface either.
 
@@ -28,6 +29,26 @@ pub enum DbNameError {
     /// The name contained a character outside `[A-Za-z0-9_]`.
     BadChar(char),
 }
+
+/// Why the name of an existing, engine-created database was rejected.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ExistingDbNameError {
+    /// The name was empty.
+    Empty,
+    /// The name contained a NUL, which cannot be represented in process arguments.
+    Nul,
+}
+
+impl fmt::Display for ExistingDbNameError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Empty => f.write_str("database name must not be empty"),
+            Self::Nul => f.write_str("database name must not contain a NUL character"),
+        }
+    }
+}
+
+impl std::error::Error for ExistingDbNameError {}
 
 impl fmt::Display for DbNameError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -77,6 +98,21 @@ pub fn validate_db_name(name: &str) -> Result<(), DbNameError> {
     Ok(())
 }
 
+/// Validate a name selected from an engine's existing databases.
+///
+/// Engines permit substantially more names than Yerd's portable creation policy.
+/// Preserve those names exactly; only values that cannot identify a database or be
+/// represented in an OS process argument are rejected.
+pub fn validate_existing_db_name(name: &str) -> Result<(), ExistingDbNameError> {
+    if name.is_empty() {
+        return Err(ExistingDbNameError::Empty);
+    }
+    if name.contains('\0') {
+        return Err(ExistingDbNameError::Nul);
+    }
+    Ok(())
+}
+
 /// Whether `name` is a built-in/system database that must not be listed,
 /// dropped, or renamed. Compared case-insensitively.
 #[must_use]
@@ -91,9 +127,8 @@ pub fn is_system_database(service: SqlEngine, name: &str) -> bool {
     systems.contains(&lower.as_str())
 }
 
-/// Quote a (validated) identifier for `service`: backticks for `MySQL`/`MariaDB`,
-/// double quotes for `PostgreSQL`, each doubling the quote char. Validated names
-/// contain no quote chars, so this is defence in depth.
+/// Quote an identifier for `service`: backticks for `MySQL`/`MariaDB`, double
+/// quotes for `PostgreSQL`, each doubling an embedded delimiter.
 #[must_use]
 pub fn quote_ident(service: SqlEngine, name: &str) -> String {
     match service {
@@ -120,12 +155,18 @@ pub fn drop_sql(service: SqlEngine, name: &str) -> String {
     }
 }
 
-/// The statement that lists databases for `service` (one name per output row).
+/// The statement that lists databases as one hexadecimal UTF-8 name per row.
+/// Encoding makes the line-oriented client output reversible even when names
+/// contain whitespace or line breaks.
 #[must_use]
 pub fn list_sql(service: SqlEngine) -> &'static str {
     match service {
-        SqlEngine::MySql | SqlEngine::MariaDb => "SHOW DATABASES;",
-        SqlEngine::Postgres => "SELECT datname FROM pg_database WHERE datistemplate = false;",
+        SqlEngine::MySql | SqlEngine::MariaDb => {
+            "SELECT HEX(SCHEMA_NAME) FROM INFORMATION_SCHEMA.SCHEMATA;"
+        }
+        SqlEngine::Postgres => {
+            "SELECT encode(convert_to(datname, 'UTF8'), 'hex') FROM pg_database WHERE datistemplate = false;"
+        }
     }
 }
 
@@ -160,6 +201,18 @@ pub fn client_args(service: SqlEngine, socket: &Path, port: u16, sql: &str) -> V
     }
 }
 
+/// Wrap `db` as a libpq conninfo `dbname` value for `psql`/`pg_dump`.
+///
+/// `psql`/`pg_dump` treat a `--dbname` value containing `=` or a `postgresql://`
+/// prefix as a full conninfo string, so a bare name like `a=b` would be misread
+/// as connection keywords. Emitting the name as an explicit, single-quoted
+/// `dbname='...'` conninfo (backslash-escaping `\` and `'`) forces it to be taken
+/// as a literal database name for every engine-valid name.
+fn pg_dbname_conninfo(db: &str) -> String {
+    let escaped = db.replace('\\', "\\\\").replace('\'', "\\'");
+    format!("dbname='{escaped}'")
+}
+
 /// Build the dump-tool argv to write a complete plain-SQL dump of `db` to **stdout**.
 ///
 /// Same connection model as [`client_args`] (`MySQL`/`MariaDB` over the Unix
@@ -188,6 +241,7 @@ pub fn dump_args(service: SqlEngine, socket: &Path, port: u16, db: &str) -> Vec<
             "--events".to_owned(),
             "--triggers".to_owned(),
             "--set-gtid-purged=OFF".to_owned(),
+            "--".to_owned(),
             db.to_owned(),
         ],
         SqlEngine::MariaDb => vec![
@@ -196,6 +250,7 @@ pub fn dump_args(service: SqlEngine, socket: &Path, port: u16, db: &str) -> Vec<
             "--routines".to_owned(),
             "--events".to_owned(),
             "--triggers".to_owned(),
+            "--".to_owned(),
             db.to_owned(),
         ],
         SqlEngine::Postgres => vec![
@@ -207,7 +262,7 @@ pub fn dump_args(service: SqlEngine, socket: &Path, port: u16, db: &str) -> Vec<
             "--if-exists".to_owned(),
             "--no-owner".to_owned(),
             "--no-privileges".to_owned(),
-            db.to_owned(),
+            format!("--dbname={}", pg_dbname_conninfo(db)),
         ],
     }
 }
@@ -215,16 +270,19 @@ pub fn dump_args(service: SqlEngine, socket: &Path, port: u16, db: &str) -> Vec<
 /// Build the restore-client argv to replay a plain-SQL stream from **stdin** into `db`.
 ///
 /// Same connection model as [`client_args`], but targets the **requested** `db`:
-/// `MySQL`/`MariaDB` take `db` positionally; `PostgreSQL` connects with
-/// `--dbname=db` (not the `postgres` maintenance db) and `--set=ON_ERROR_STOP=1` so a
-/// failed statement aborts with a non-zero exit instead of silently partially
-/// restoring. The input file is never named here - the daemon feeds it on stdin.
+/// `MySQL`/`MariaDB` take `db` positionally after a `--` end-of-options guard;
+/// `PostgreSQL` connects with the db as a quoted `--dbname` conninfo (see
+/// [`pg_dbname_conninfo`], not the `postgres` maintenance db) and
+/// `--set=ON_ERROR_STOP=1` so a failed statement aborts with a non-zero exit instead
+/// of silently partially restoring. The input file is never named here - the daemon
+/// feeds it on stdin.
 #[must_use]
 pub fn restore_args(service: SqlEngine, socket: &Path, port: u16, db: &str) -> Vec<String> {
     match service {
         SqlEngine::MySql | SqlEngine::MariaDb => vec![
             format!("--socket={}", socket.display()),
             "--user=root".to_owned(),
+            "--".to_owned(),
             db.to_owned(),
         ],
         SqlEngine::Postgres => vec![
@@ -233,25 +291,55 @@ pub fn restore_args(service: SqlEngine, socket: &Path, port: u16, db: &str) -> V
             "--username=postgres".to_owned(),
             "--no-password".to_owned(),
             "--set=ON_ERROR_STOP=1".to_owned(),
-            format!("--dbname={db}"),
+            format!("--dbname={}", pg_dbname_conninfo(db)),
         ],
     }
 }
 
-/// Parse a client's database-list stdout into user-visible names: one per line,
-/// trimmed, empties dropped, system databases filtered out, sorted + deduped.
-#[must_use]
-pub fn parse_db_list(service: SqlEngine, stdout: &str) -> Vec<String> {
+/// Parse hexadecimal database-list stdout into exact user-visible names.
+/// Invalid hexadecimal or UTF-8 indicates a broken client/query contract.
+pub fn parse_db_list(service: SqlEngine, stdout: &str) -> Result<Vec<String>, String> {
     let mut names: Vec<String> = stdout
         .lines()
         .map(str::trim)
         .filter(|l| !l.is_empty())
-        .filter(|l| !is_system_database(service, l))
-        .map(str::to_owned)
-        .collect();
+        .map(decode_hex_name)
+        .collect::<Result<_, _>>()?;
+    names.retain(|name| !is_system_database(service, name));
     names.sort();
     names.dedup();
-    names
+    Ok(names)
+}
+
+fn decode_hex_name(encoded: &str) -> Result<String, String> {
+    if encoded.len() % 2 != 0 {
+        return Err(format!(
+            "database list contained odd-length hexadecimal: {encoded:?}"
+        ));
+    }
+    let bytes = encoded
+        .as_bytes()
+        .chunks_exact(2)
+        .map(|pair| match pair {
+            [high, low] => match (hex_nibble(*high), hex_nibble(*low)) {
+                (Some(high), Some(low)) => Ok((high << 4) | low),
+                _ => Err(format!(
+                    "database list contained invalid hexadecimal: {encoded:?}"
+                )),
+            },
+            _ => Err("database list decoder received an incomplete pair".to_owned()),
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    String::from_utf8(bytes).map_err(|_| "database list contained invalid UTF-8".to_owned())
+}
+
+fn hex_nibble(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
 }
 
 #[cfg(test)]
@@ -299,6 +387,32 @@ mod tests {
     }
 
     #[test]
+    fn existing_name_validation_only_rejects_empty_and_nul() {
+        for ok in [
+            "-leading",
+            "has spaces",
+            "naïve 日本語",
+            "quote\"",
+            "back`tick",
+            "a.b",
+            " line\n break ",
+        ] {
+            assert!(
+                validate_existing_db_name(ok).is_ok(),
+                "{ok:?} should be valid"
+            );
+        }
+        assert_eq!(
+            validate_existing_db_name(""),
+            Err(ExistingDbNameError::Empty)
+        );
+        assert_eq!(
+            validate_existing_db_name("bad\0name"),
+            Err(ExistingDbNameError::Nul)
+        );
+    }
+
+    #[test]
     fn system_databases_per_engine() {
         assert!(is_system_database(SqlEngine::MySql, "mysql"));
         assert!(is_system_database(SqlEngine::MySql, "INFORMATION_SCHEMA"));
@@ -323,6 +437,11 @@ mod tests {
         assert_eq!(
             drop_sql(SqlEngine::Postgres, "app"),
             "DROP DATABASE \"app\" WITH (FORCE);"
+        );
+        assert_eq!(drop_sql(SqlEngine::MySql, "a`b"), "DROP DATABASE `a``b`;");
+        assert_eq!(
+            drop_sql(SqlEngine::Postgres, "a\"b"),
+            "DROP DATABASE \"a\"\"b\" WITH (FORCE);"
         );
     }
 
@@ -374,7 +493,7 @@ mod tests {
             assert!(pg.contains(&flag.to_owned()), "pg dump missing {flag}");
         }
         assert!(pg.iter().all(|a| !a.starts_with("--socket")));
-        assert_eq!(pg.last().unwrap(), "app");
+        assert_eq!(pg.last().unwrap(), "--dbname=dbname='app'");
     }
 
     #[test]
@@ -384,26 +503,71 @@ mod tests {
         let my = restore_args(SqlEngine::MySql, &sock, 3306, "app");
         assert!(my.contains(&"--socket=/run/yerd/mysql.sock".to_owned()));
         assert!(my.contains(&"--user=root".to_owned()));
+        assert_eq!(my[my.len() - 2], "--");
         assert_eq!(my.last().unwrap(), "app");
 
         let pg = restore_args(SqlEngine::Postgres, &sock, 5432, "app");
         assert!(pg.contains(&"--host=127.0.0.1".to_owned()));
         assert!(pg.contains(&"--set=ON_ERROR_STOP=1".to_owned()));
-        assert!(pg.contains(&"--dbname=app".to_owned()));
+        assert!(pg.contains(&"--dbname=dbname='app'".to_owned()));
         assert!(pg.iter().all(|a| a != "--dbname=postgres"));
     }
 
     #[test]
-    fn parse_filters_system_and_sorts() {
-        let mysql_out = "mysql\ninformation_schema\nzeta\napp\nsys\nperformance_schema\n";
+    fn parse_decodes_losslessly_filters_system_and_sorts() {
+        let mysql_out = "6d7973716c\n7a657461\n206c696e650a627265616b20\n617070\n";
         assert_eq!(
-            parse_db_list(SqlEngine::MySql, mysql_out),
-            vec!["app".to_owned(), "zeta".to_owned()]
+            parse_db_list(SqlEngine::MySql, mysql_out).unwrap(),
+            vec![
+                " line\nbreak ".to_owned(),
+                "app".to_owned(),
+                "zeta".to_owned()
+            ]
         );
-        let pg_out = "  postgres \n app \n template1\nbravo\n\n";
+        let pg_out = "  706f737467726573  \n617070\ne697a5e69cace8aa9e\n6122626063\n";
         assert_eq!(
-            parse_db_list(SqlEngine::Postgres, pg_out),
-            vec!["app".to_owned(), "bravo".to_owned()]
+            parse_db_list(SqlEngine::Postgres, pg_out).unwrap(),
+            vec!["a\"b`c".to_owned(), "app".to_owned(), "日本語".to_owned()]
         );
+    }
+
+    #[test]
+    fn parse_rejects_malformed_encoded_output() {
+        assert!(parse_db_list(SqlEngine::Postgres, "abc\n").is_err());
+        assert!(parse_db_list(SqlEngine::MySql, "zz\n").is_err());
+        assert!(parse_db_list(SqlEngine::MySql, "ff\n").is_err());
+    }
+
+    #[test]
+    fn argv_preserves_unusual_names_as_one_argument() {
+        let sock = PathBuf::from("/run/yerd/mysql.sock");
+        let name = "- odd ` \" 日本語";
+        for engine in [SqlEngine::MySql, SqlEngine::MariaDb] {
+            let dump = dump_args(engine, &sock, 3306, name);
+            assert_eq!(&dump[dump.len() - 2..], &["--", name]);
+            let restore = restore_args(engine, &sock, 3306, name);
+            assert_eq!(&restore[restore.len() - 2..], &["--", name]);
+        }
+        assert_eq!(
+            dump_args(SqlEngine::Postgres, &sock, 5432, name).last(),
+            Some(&format!("--dbname=dbname='{name}'"))
+        );
+        assert_eq!(
+            restore_args(SqlEngine::Postgres, &sock, 5432, name).last(),
+            Some(&format!("--dbname=dbname='{name}'"))
+        );
+    }
+
+    #[test]
+    fn pg_dbname_conninfo_forces_literal_names() {
+        assert_eq!(pg_dbname_conninfo("app"), "dbname='app'");
+        assert_eq!(pg_dbname_conninfo("a=b"), "dbname='a=b'");
+        assert_eq!(
+            pg_dbname_conninfo("postgresql://evil"),
+            "dbname='postgresql://evil'"
+        );
+        assert_eq!(pg_dbname_conninfo("a'b"), "dbname='a\\'b'");
+        assert_eq!(pg_dbname_conninfo("a\\b"), "dbname='a\\\\b'");
+        assert_eq!(pg_dbname_conninfo("a\\'b"), "dbname='a\\\\\\'b'");
     }
 }
