@@ -1010,19 +1010,15 @@ mod tests {
 
     #[test]
     fn canonicalize_park_path_resolves_dot_against_cwd() {
-        let tmp = tempfile::tempdir().unwrap();
-        let prev = std::env::current_dir().unwrap();
-        std::env::set_current_dir(tmp.path()).unwrap();
         let out = canonicalize_park_path(Request::Park {
             path: PathBuf::from("."),
         })
         .unwrap();
-        std::env::set_current_dir(&prev).unwrap();
 
         let Request::Park { path } = out else {
             panic!("expected Park");
         };
-        assert_eq!(path, std::fs::canonicalize(tmp.path()).unwrap());
+        assert_eq!(path, std::fs::canonicalize(".").unwrap());
     }
 
     #[test]
