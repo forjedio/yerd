@@ -99,7 +99,8 @@ pub async fn run(cli: Cli) -> ExitCode {
         }
         _ => map::to_request(&cli.command)
             .map(canonicalize_unpark)
-            .and_then(canonicalize_db_paths),
+            .and_then(canonicalize_db_paths)
+            .and_then(canonicalize_park_path),
     };
     let req = match req {
         Ok(r) => r,
@@ -794,6 +795,23 @@ fn canonicalize_db_paths(req: yerd_ipc::Request) -> Result<yerd_ipc::Request, Cl
     }
 }
 
+/// Absolutise and canonicalise a `Park` request against the user's current
+/// directory before it reaches the daemon. The daemon's cwd differs from the
+/// user's shell, so a relative path like `.` would otherwise resolve there.
+fn canonicalize_park_path(req: yerd_ipc::Request) -> Result<yerd_ipc::Request, ClientError> {
+    use yerd_ipc::Request;
+    match req {
+        Request::Park { path } => {
+            let abs = absolutise(&path)?;
+            let canon = std::fs::canonicalize(&abs).map_err(|e| {
+                ClientError::Usage(format!("cannot resolve {}: {e}", path.display()))
+            })?;
+            Ok(Request::Park { path: canon })
+        }
+        other => Ok(other),
+    }
+}
+
 /// Make a (possibly relative) path absolute by joining it onto the current directory.
 /// Does not require the path to exist (used for a backup destination).
 fn absolutise(path: &std::path::Path) -> Result<std::path::PathBuf, ClientError> {
@@ -986,6 +1004,55 @@ mod tests {
         assert_eq!(canonicalize_unpark(Request::Ping), Request::Ping);
         let listed = canonicalize_unpark(Request::ListSites);
         assert_eq!(listed, Request::ListSites);
+    }
+
+    // ─── canonicalize_park_path ─────────────────────────────────────
+
+    #[test]
+    fn canonicalize_park_path_resolves_dot_against_cwd() {
+        let tmp = tempfile::tempdir().unwrap();
+        let prev = std::env::current_dir().unwrap();
+        std::env::set_current_dir(tmp.path()).unwrap();
+        let out = canonicalize_park_path(Request::Park {
+            path: PathBuf::from("."),
+        })
+        .unwrap();
+        std::env::set_current_dir(&prev).unwrap();
+
+        let Request::Park { path } = out else {
+            panic!("expected Park");
+        };
+        assert_eq!(path, std::fs::canonicalize(tmp.path()).unwrap());
+    }
+
+    #[test]
+    fn canonicalize_park_path_canonicalises_absolute_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        let out = canonicalize_park_path(Request::Park {
+            path: tmp.path().to_path_buf(),
+        })
+        .unwrap();
+        let Request::Park { path } = out else {
+            panic!("expected Park");
+        };
+        assert_eq!(path, std::fs::canonicalize(tmp.path()).unwrap());
+    }
+
+    #[test]
+    fn canonicalize_park_path_missing_dir_is_usage_error() {
+        let err = canonicalize_park_path(Request::Park {
+            path: PathBuf::from("/no/such/park/root-xyz"),
+        })
+        .unwrap_err();
+        assert!(matches!(err, ClientError::Usage(_)));
+    }
+
+    #[test]
+    fn canonicalize_park_path_passes_through_other_requests() {
+        assert_eq!(
+            canonicalize_park_path(Request::Ping).unwrap(),
+            Request::Ping
+        );
     }
 
     // ─── canonicalize_db_paths ──────────────────────────────────────
