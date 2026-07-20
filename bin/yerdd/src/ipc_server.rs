@@ -393,7 +393,8 @@ async fn dispatch(req: Request, state: &DaemonState) -> Response {
         Request::UninstallTool { tool } => uninstall_tool(&tool, state).await,
         Request::CheckUpdate { channel } => {
             let dl = crate::php_install::ReqwestDownloader::new();
-            crate::self_update::check_update(channel, state, &dl).await
+            crate::self_update::check_update(channel, state, &dl, yerd_update::UPDATE_PUBLIC_KEY)
+                .await
         }
         Request::CachedUpdateStatus => crate::self_update::cached_update_status(state).await,
         Request::SetUpdateChannel { channel } => {
@@ -4659,32 +4660,44 @@ Subject: Captured\r\n\r\nhi\r\n";
         );
     }
 
-    /// Fake GitHub Releases downloader: returns the canned JSON for the first
-    /// page (the only page fetched, since the body has < 100 entries). The poll
-    /// loop stops after a short page.
-    struct ReleasesDl(&'static str);
-    #[async_trait::async_trait]
-    impl yerd_php::Downloader for ReleasesDl {
-        async fn download(&self, _url: &str) -> Result<Vec<u8>, yerd_php::DownloadError> {
-            Ok(self.0.as_bytes().to_vec())
+    // A tiny `latest.json` payload. Far-future versions so the target is always
+    // newer than the daemon's compiled `current` version, regardless of the
+    // build.
+    const LATEST_MANIFEST: &str = r#"{
+        "schema": 1,
+        "stable": {"tag_name":"v99.0.1","prerelease":false,"draft":false,"assets":[]},
+        "rc": {"tag_name":"v99.1.0-rc.1","prerelease":true,"draft":false,"assets":[]}
+    }"#;
+
+    /// Fake CDN downloader: serves a signed `latest.json` for the manifest URL
+    /// and its detached signature for the `.minisig` URL. Feed `key()` to the
+    /// self-update entry points as the verifying public key.
+    struct ManifestDl(crate::test_support::SignedManifest);
+    impl ManifestDl {
+        fn new(manifest: &str) -> Self {
+            Self(crate::test_support::sign_manifest(manifest))
+        }
+        fn key(&self) -> &str {
+            &self.0.public_key
         }
     }
-
-    // A tiny releases payload. Far-future versions so the target is always newer
-    // than the daemon's compiled `current` version, regardless of the build. The
-    // unparsable `nightly-garbage` tag must be skipped.
-    const RELEASES_JSON: &str = r#"[
-        {"tag_name":"v99.1.0-rc.1","prerelease":true,"draft":false,"assets":[]},
-        {"tag_name":"v99.0.1","prerelease":false,"draft":false,"assets":[]},
-        {"tag_name":"v99.0.0","prerelease":false,"draft":false,"assets":[]},
-        {"tag_name":"nightly-garbage","prerelease":true,"draft":false,"assets":[]}
-    ]"#;
+    #[async_trait::async_trait]
+    impl yerd_php::Downloader for ManifestDl {
+        async fn download(&self, url: &str) -> Result<Vec<u8>, yerd_php::DownloadError> {
+            if url.ends_with(".minisig") {
+                Ok(self.0.minisig.clone().into_bytes())
+            } else {
+                Ok(self.0.manifest.clone().into_bytes())
+            }
+        }
+    }
 
     #[tokio::test]
     async fn check_update_reports_both_channel_latests_live() {
         let tmp = tempfile::tempdir().unwrap();
         let state = state_in(tmp.path());
-        let resp = crate::self_update::check_update(None, &state, &ReleasesDl(RELEASES_JSON)).await;
+        let dl = ManifestDl::new(LATEST_MANIFEST);
+        let resp = crate::self_update::check_update(None, &state, &dl, dl.key()).await;
         match resp {
             Response::UpdateStatus {
                 latest_stable,
@@ -4700,19 +4713,17 @@ Subject: Captured\r\n\r\nhi\r\n";
             }
             other => panic!("expected UpdateStatus, got {other:?}"),
         }
-        assert_eq!(state.yerd_update.read().await.len(), 3);
+        assert_eq!(state.yerd_update.read().await.len(), 2);
     }
 
     #[tokio::test]
     async fn check_update_edge_override_selects_prerelease_target() {
         let tmp = tempfile::tempdir().unwrap();
         let state = state_in(tmp.path());
-        let resp = crate::self_update::check_update(
-            Some(yerd_ipc::Channel::Edge),
-            &state,
-            &ReleasesDl(RELEASES_JSON),
-        )
-        .await;
+        let dl = ManifestDl::new(LATEST_MANIFEST);
+        let resp =
+            crate::self_update::check_update(Some(yerd_ipc::Channel::Edge), &state, &dl, dl.key())
+                .await;
         match resp {
             Response::UpdateStatus {
                 channel,
@@ -4729,11 +4740,38 @@ Subject: Captured\r\n\r\nhi\r\n";
     }
 
     #[tokio::test]
+    async fn check_update_rejects_tampered_manifest_signature() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_in(tmp.path());
+        // Sign the manifest with one key, but verify against a *different* key:
+        // the signature must fail and the live fetch must yield nothing.
+        let dl = ManifestDl::new(LATEST_MANIFEST);
+        let other = crate::test_support::sign_manifest(LATEST_MANIFEST);
+        let resp = crate::self_update::check_update(None, &state, &dl, &other.public_key).await;
+        match resp {
+            Response::UpdateStatus {
+                latest_stable,
+                source,
+                ..
+            } => {
+                assert_eq!(source, yerd_ipc::UpdateSource::Cached);
+                assert_eq!(
+                    latest_stable, None,
+                    "a bad-signature manifest must not be trusted"
+                );
+            }
+            other => panic!("expected UpdateStatus, got {other:?}"),
+        }
+        assert!(state.yerd_update.read().await.is_empty());
+    }
+
+    #[tokio::test]
     async fn check_update_falls_back_to_cache_when_offline() {
         let tmp = tempfile::tempdir().unwrap();
         let state = state_in(tmp.path());
-        crate::self_update::poll_and_refresh(&state, &ReleasesDl(RELEASES_JSON)).await;
-        let resp = crate::self_update::check_update(None, &state, &FailingDl).await;
+        let dl = ManifestDl::new(LATEST_MANIFEST);
+        crate::self_update::poll_and_refresh(&state, &dl, dl.key()).await;
+        let resp = crate::self_update::check_update(None, &state, &FailingDl, dl.key()).await;
         match resp {
             Response::UpdateStatus {
                 latest_stable,
@@ -4747,28 +4785,45 @@ Subject: Captured\r\n\r\nhi\r\n";
         }
     }
 
-    // Known-good minisign fixture (the `minisign-verify` crate's published test
-    // vector: a prehashed signature of the bytes `b"test"`).
-    const SIG_PUBKEY: &str = "RWQf6LRCGA9i53mlYecO4IzT51TGPpvWucNSCh1CBM0QTaLn73Y7GFO3";
-    const SIG_FIXTURE: &str = "untrusted comment: signature from minisign secret key\nRUQf6LRCGA9i559r3g7V1qNyJDApGip8MfqcadIgT9CuhV3EMhHoN1mGTkUidF/z7SrlQgXdy8ofjb7bNJJylDOocrCo8KLzZwo=\ntrusted comment: timestamp:1556193335\tfile:test\ny/rUw2y8/hOUYjZU71eHp/Wo1KZ40fGy2VJEDl34XMJM+TX48Ss/17u3IvIfbVR1FkZZSNCisQbuQY+bHwhEBg==";
-
-    /// Fake downloader for the full stage flow. Serves the releases JSON for the
-    /// API URL; the signed fixture bytes (`b"test"`) for any artifact URL; the
-    /// fixture signature for any `.sig`/`.minisig` URL; and a matching
-    /// `SHA256SUMS`.
+    /// Fake downloader for the full stage flow. Serves the signed `latest.json`
+    /// (and its `.minisig`) for the manifest URLs; the signed bytes (`b"test"`)
+    /// for any artifact URL; the matching artifact signature for any `.sig` /
+    /// `.minisig` URL; and a `SHA256SUMS`. The manifest and the artifact bytes
+    /// are signed with a single key ([`StageDl::key`]), which is fed to
+    /// `stage_update` to verify both the manifest and the artifact.
     struct StageDl {
-        releases: String,
+        manifest: crate::test_support::SignedManifest,
+        artifact_sig: String,
         sums: String,
+    }
+    impl StageDl {
+        /// Build from a `stable` release object body and a `SHA256SUMS`. The
+        /// manifest wraps `stable` as `latest.json`; the artifact bytes `b"test"`
+        /// are signed with the same key so one public key verifies both.
+        fn new(stable: &str, sums: String) -> Self {
+            let manifest = format!(r#"{{"schema":1,"stable":{stable},"rc":null}}"#);
+            let (manifest, artifact) = crate::test_support::sign_manifest_pair(&manifest, "test");
+            Self {
+                manifest,
+                artifact_sig: artifact.minisig,
+                sums,
+            }
+        }
+        fn key(&self) -> &str {
+            &self.manifest.public_key
+        }
     }
     #[async_trait::async_trait]
     impl yerd_php::Downloader for StageDl {
         async fn download(&self, url: &str) -> Result<Vec<u8>, yerd_php::DownloadError> {
-            if url.contains("api.github.com") {
-                Ok(self.releases.clone().into_bytes())
+            if url.contains("latest.json.minisig") {
+                Ok(self.manifest.minisig.clone().into_bytes())
+            } else if url.contains("latest.json") {
+                Ok(self.manifest.manifest.clone().into_bytes())
             } else if url.ends_with("SHA256SUMS") {
                 Ok(self.sums.clone().into_bytes())
             } else if url.ends_with(".minisig") || url.ends_with(".sig") {
-                Ok(SIG_FIXTURE.as_bytes().to_vec())
+                Ok(self.artifact_sig.clone().into_bytes())
             } else {
                 Ok(b"test".to_vec())
             }
@@ -4795,8 +4850,8 @@ Subject: Captured\r\n\r\nhi\r\n";
         let pkg_arm = "Yerd_Linux_Arm64_v99-0-1.pkg.tar.zst";
         let rpm = "Yerd_Linux_x86_64_v99-0-1.rpm";
         let rpm_arm = "Yerd_Linux_Arm64_v99-0-1.rpm";
-        let releases = format!(
-            r#"[{{"tag_name":"v99.0.1","prerelease":false,"draft":false,"assets":[
+        let stable = format!(
+            r#"{{"tag_name":"v99.0.1","prerelease":false,"draft":false,"assets":[
                 {{"name":"{mac}","browser_download_url":"https://h/{mac}","size":4}},
                 {{"name":"{mac}.minisig","browser_download_url":"https://h/{mac}.minisig","size":1}},
                 {{"name":"{deb}","browser_download_url":"https://h/{deb}","size":4}},
@@ -4812,15 +4867,15 @@ Subject: Captured\r\n\r\nhi\r\n";
                 {{"name":"{rpm_arm}","browser_download_url":"https://h/{rpm_arm}","size":4}},
                 {{"name":"{rpm_arm}.minisig","browser_download_url":"https://h/{rpm_arm}.minisig","size":1}},
                 {{"name":"SHA256SUMS","browser_download_url":"https://h/SHA256SUMS","size":1}}
-            ]}}]"#
+            ]}}"#
         );
         let h = yerd_update::sha256_hex(b"test");
         let sums = format!(
             "{h}  {mac}\n{h}  {deb}\n{h}  {arm}\n{h}  {pkg}\n{h}  {pkg_arm}\n{h}  {rpm}\n{h}  {rpm_arm}\n"
         );
-        let dl = StageDl { releases, sums };
+        let dl = StageDl::new(&stable, sums);
 
-        let resp = crate::self_update::stage_update(None, &state, &dl, SIG_PUBKEY).await;
+        let resp = crate::self_update::stage_update(None, &state, &dl, dl.key()).await;
         match resp {
             Response::Staged {
                 path,
@@ -4901,8 +4956,8 @@ Subject: Captured\r\n\r\nhi\r\n";
         let pkg_arm = "Yerd_Linux_Arm64_v99-0-1.pkg.tar.zst";
         let rpm = "Yerd_Linux_x86_64_v99-0-1.rpm";
         let rpm_arm = "Yerd_Linux_Arm64_v99-0-1.rpm";
-        let releases = format!(
-            r#"[{{"tag_name":"v99.0.1","prerelease":false,"draft":false,"assets":[
+        let stable = format!(
+            r#"{{"tag_name":"v99.0.1","prerelease":false,"draft":false,"assets":[
                 {{"name":"{mac}","browser_download_url":"https://h/{mac}","size":4}},
                 {{"name":"{mac}.sig","browser_download_url":"https://h/{mac}.sig","size":1}},
                 {{"name":"{deb}","browser_download_url":"https://h/{deb}","size":4}},
@@ -4918,15 +4973,15 @@ Subject: Captured\r\n\r\nhi\r\n";
                 {{"name":"{rpm_arm}","browser_download_url":"https://h/{rpm_arm}","size":4}},
                 {{"name":"{rpm_arm}.sig","browser_download_url":"https://h/{rpm_arm}.sig","size":1}},
                 {{"name":"SHA256SUMS","browser_download_url":"https://h/SHA256SUMS","size":1}}
-            ]}}]"#
+            ]}}"#
         );
         let h = yerd_update::sha256_hex(b"test");
         let sums = format!(
             "{h}  {mac}\n{h}  {deb}\n{h}  {arm}\n{h}  {pkg}\n{h}  {pkg_arm}\n{h}  {rpm}\n{h}  {rpm_arm}\n"
         );
-        let dl = StageDl { releases, sums };
+        let dl = StageDl::new(&stable, sums);
 
-        match crate::self_update::stage_update(None, &state, &dl, SIG_PUBKEY).await {
+        match crate::self_update::stage_update(None, &state, &dl, dl.key()).await {
             Response::Staged { path, .. } => {
                 let p = std::path::Path::new(&path);
                 assert!(p.exists(), "staged file should exist at {path}");
@@ -4962,8 +5017,8 @@ Subject: Captured\r\n\r\nhi\r\n";
         let pkg_arm = "Yerd_Linux_Arm64_v99-0-1.pkg.tar.zst";
         let rpm = "Yerd_Linux_x86_64_v99-0-1.rpm";
         let rpm_arm = "Yerd_Linux_Arm64_v99-0-1.rpm";
-        let releases = format!(
-            r#"[{{"tag_name":"v99.0.1","prerelease":false,"draft":false,"assets":[
+        let stable = format!(
+            r#"{{"tag_name":"v99.0.1","prerelease":false,"draft":false,"assets":[
                 {{"name":"{mac}","browser_download_url":"https://h/{mac}","size":4}},
                 {{"name":"{mac}.minisig","browser_download_url":"https://h/{mac}.minisig","size":1}},
                 {{"name":"{deb}","browser_download_url":"https://h/{deb}","size":4}},
@@ -4979,14 +5034,14 @@ Subject: Captured\r\n\r\nhi\r\n";
                 {{"name":"{rpm_arm}","browser_download_url":"https://h/{rpm_arm}","size":4}},
                 {{"name":"{rpm_arm}.minisig","browser_download_url":"https://h/{rpm_arm}.minisig","size":1}},
                 {{"name":"SHA256SUMS","browser_download_url":"https://h/SHA256SUMS","size":1}}
-            ]}}]"#
+            ]}}"#
         );
         let bad = "0".repeat(64);
         let sums = format!(
             "{bad}  {mac}\n{bad}  {deb}\n{bad}  {arm}\n{bad}  {pkg}\n{bad}  {pkg_arm}\n{bad}  {rpm}\n{bad}  {rpm_arm}\n"
         );
-        let dl = StageDl { releases, sums };
-        match crate::self_update::stage_update(None, &state, &dl, SIG_PUBKEY).await {
+        let dl = StageDl::new(&stable, sums);
+        match crate::self_update::stage_update(None, &state, &dl, dl.key()).await {
             Response::Error { message, .. } => assert!(
                 message.contains("checksum verification failed"),
                 "expected a checksum verification failure, got: {message}"

@@ -1,19 +1,27 @@
 //! Yerd self-update version checking (notify-only, Phase A).
 //!
-//! The daemon polls the GitHub Releases API for `forjedio/yerd`, caches the
-//! parsed releases (`DaemonState::yerd_update`), and answers `CheckUpdate` by
-//! running the pure [`yerd_update::select_target`] decision over them. Like the
-//! PHP checker this is **notify-only**: it never installs anything (apply is a
-//! CLI/GUI-initiated, interactively-elevated path - see the feature plan).
+//! The daemon reads a signed release manifest from the Yerd CDN
+//! (`https://files.yerd.app/latest.json`), caches the parsed releases
+//! (`DaemonState::yerd_update`), and answers `CheckUpdate` by running the pure
+//! [`yerd_update::select_target`] decision over them. Like the PHP checker this
+//! is **notify-only**: it never installs anything (apply is a CLI/GUI-initiated,
+//! interactively-elevated path - see the feature plan).
+//!
+//! The manifest's detached minisign signature is verified against
+//! [`yerd_update::UPDATE_PUBLIC_KEY`] before it is trusted, so an attacker
+//! cannot advertise a version we did not sign. (A minisign signature binds
+//! content, not freshness, so it does not by itself defeat a replay of an older
+//! *validly-signed* manifest; but the check is notify-only and artifacts are
+//! still independently SHA-256 + minisign verified at stage time, so the bounded
+//! worst case is a suppressed notification, never a bad install.)
 //!
 //! Network failure is tolerated: the periodic poll leaves the cache untouched,
 //! and `CheckUpdate` falls back to the cache with [`UpdateSource::Cached`].
 
-use serde::Deserialize;
-
 use yerd_ipc::{Response, StagedArtifact, UpdateSource};
 use yerd_php::Downloader;
 use yerd_platform::PlatformDirs;
+use yerd_release_manifest::LatestManifest;
 use yerd_update::{
     select_asset, select_target, verify_minisign, verify_sha256, ArtifactKind, Asset, Channel,
     PkgFormat, Platform, ReleaseMeta,
@@ -22,14 +30,12 @@ use yerd_update::{
 use crate::ipc_server::internal;
 use crate::state::DaemonState;
 
-/// GitHub repository the release artifacts are published under.
-const GITHUB_OWNER: &str = "forjedio";
-const GITHUB_REPO: &str = "yerd";
-/// Releases per page (GitHub max is 100). One page covers stable + edge for any
-/// realistic release history; [`MAX_PAGES`] bounds the walk defensively.
-const PER_PAGE: usize = 100;
-/// Hard cap on pages walked, so a misbehaving API can never loop unbounded.
-const MAX_PAGES: u32 = 3;
+/// The signed release manifest the daemon reads to learn about releases. Its
+/// body is a [`LatestManifest`] (latest stable + RC); it is verified against
+/// [`yerd_update::UPDATE_PUBLIC_KEY`] before it is trusted.
+const LATEST_MANIFEST_URL: &str = "https://files.yerd.app/latest.json";
+/// The detached minisign signature over [`LATEST_MANIFEST_URL`].
+const LATEST_MANIFEST_SIG_URL: &str = "https://files.yerd.app/latest.json.minisig";
 
 /// The running daemon version (compile-time). Falls back to `0.0.0` if the
 /// crate version is ever not valid semver (it always is - the workspace pins it).
@@ -38,88 +44,83 @@ fn current_version() -> semver::Version {
         .unwrap_or_else(|_| semver::Version::new(0, 0, 0))
 }
 
-/// One GitHub release, as far as we parse it.
-#[derive(Deserialize)]
-struct GhRelease {
-    tag_name: String,
-    #[serde(default)]
-    prerelease: bool,
-    #[serde(default)]
-    draft: bool,
-    #[serde(default)]
-    body: Option<String>,
-    #[serde(default)]
-    assets: Vec<GhAsset>,
-}
-
-/// One asset attached to a GitHub release.
-#[derive(Deserialize)]
-struct GhAsset {
-    name: String,
-    browser_download_url: String,
-    #[serde(default)]
-    size: u64,
-}
-
-/// Fetch and parse the release list from GitHub. Returns `None` on any network
-/// or decode failure (caller falls back to the cache). Drafts and releases whose
-/// tag is not valid semver are skipped.
-async fn fetch_releases(dl: &dyn Downloader) -> Option<Vec<ReleaseMeta>> {
-    let mut out: Vec<ReleaseMeta> = Vec::new();
-    for page in 1..=MAX_PAGES {
-        let url = format!(
-            "https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}/releases?per_page={PER_PAGE}&page={page}"
-        );
-        let bytes = match dl.download(&url).await {
-            Ok(b) => b,
-            Err(e) => {
-                if page == 1 {
-                    tracing::debug!(error = %e, "yerd self-update: releases fetch failed");
-                    return None;
-                }
-                tracing::debug!(error = %e, page, "yerd self-update: stopping pagination early");
-                break;
-            }
-        };
-        let releases: Vec<GhRelease> = match serde_json::from_slice(&bytes) {
-            Ok(r) => r,
-            Err(e) => {
-                if page == 1 {
-                    tracing::debug!(error = %e, "yerd self-update: releases decode failed");
-                    return None;
-                }
-                break;
-            }
-        };
-        let count = releases.len();
-        for r in releases {
-            if r.draft {
-                continue;
-            }
-            let Some(version) = yerd_update::parse_tag(&r.tag_name) else {
-                continue;
-            };
-            out.push(ReleaseMeta {
-                version,
-                tag: r.tag_name,
-                prerelease: r.prerelease,
-                assets: r
-                    .assets
-                    .into_iter()
-                    .map(|a| Asset {
-                        name: a.name,
-                        url: a.browser_download_url,
-                        size: a.size,
-                    })
-                    .collect(),
-                notes: r.body,
-            });
+/// Fetch, verify, and parse the signed release manifest from the CDN. Returns
+/// `None` on any network, signature, or decode failure (caller falls back to the
+/// cache).
+///
+/// The detached minisign signature is verified against `public_key` (production
+/// passes [`yerd_update::UPDATE_PUBLIC_KEY`]) **before** the body is parsed,
+/// mirroring the PHP listing's `fetch_verified_listing`, so a forged or tampered
+/// manifest advertising a version we did not publish is rejected. The manifest
+/// carries only the latest stable and RC releases - all the self-update decision
+/// needs - which are flattened into a `Vec<ReleaseMeta>` for [`select_target`];
+/// releases whose tag is not valid semver are dropped.
+async fn fetch_releases(dl: &dyn Downloader, public_key: &str) -> Option<Vec<ReleaseMeta>> {
+    let body = match dl.download(LATEST_MANIFEST_URL).await {
+        Ok(b) => b,
+        Err(e) => {
+            tracing::debug!(error = %e, "yerd self-update: manifest fetch failed");
+            return None;
         }
-        if count < PER_PAGE {
-            break;
+    };
+    let sig = match dl.download(LATEST_MANIFEST_SIG_URL).await {
+        Ok(b) => b,
+        Err(e) => {
+            tracing::debug!(error = %e, "yerd self-update: manifest signature fetch failed");
+            return None;
         }
+    };
+    let sig = String::from_utf8_lossy(&sig);
+    if let Err(e) = verify_minisign(public_key, &sig, &body) {
+        tracing::warn!(error = %e, "yerd self-update: manifest signature verification failed");
+        return None;
     }
-    Some(out)
+    let manifest: LatestManifest = match serde_json::from_slice(&body) {
+        Ok(m) => m,
+        Err(e) => {
+            tracing::debug!(error = %e, "yerd self-update: manifest decode failed");
+            return None;
+        }
+    };
+    Some(manifest_to_releases(manifest))
+}
+
+/// Flatten the manifest's `stable` + `rc` entries into the daemon's release
+/// model, dropping any whose tag is not valid semver. The two are distinct by
+/// construction (the generator only surfaces an `rc` strictly newer than
+/// `stable`), so no de-duplication is needed.
+fn manifest_to_releases(manifest: LatestManifest) -> Vec<ReleaseMeta> {
+    [manifest.stable, manifest.rc]
+        .into_iter()
+        .flatten()
+        .filter_map(entry_to_meta)
+        .collect()
+}
+
+/// Convert one manifest release entry into a [`ReleaseMeta`], or `None` if its
+/// tag is not valid semver or it is a draft. The trusted producer never emits a
+/// draft into `latest.json`; the draft skip is defensive parity with the old
+/// GitHub-API path.
+fn entry_to_meta(entry: yerd_release_manifest::ReleaseEntry) -> Option<ReleaseMeta> {
+    if entry.draft {
+        return None;
+    }
+    let version = yerd_update::parse_tag(&entry.tag_name)?;
+    Some(ReleaseMeta {
+        version,
+        tag: entry.tag_name,
+        prerelease: entry.prerelease,
+        assets: entry
+            .assets
+            .into_iter()
+            .map(|a| Asset {
+                name: a.name,
+                url: a.browser_download_url,
+                size: a.size,
+            })
+            .collect(),
+        notes: entry.body,
+    })
 }
 
 /// The effective channel from persisted config (defaulting to stable).
@@ -292,7 +293,7 @@ pub async fn cached_update_status(state: &DaemonState) -> Response {
 /// restarts, since `state.update_snapshot` is seeded from the persisted
 /// snapshot at startup, and across OS sleep, since this compares epoch time
 /// rather than trusting the caller's tick cadence.
-pub async fn poll_if_due(state: &DaemonState, dl: &dyn Downloader) {
+pub async fn poll_if_due(state: &DaemonState, dl: &dyn Downloader, public_key: &str) {
     let last_checked = state
         .update_snapshot
         .read()
@@ -300,7 +301,7 @@ pub async fn poll_if_due(state: &DaemonState, dl: &dyn Downloader) {
         .as_ref()
         .map(|s| s.checked_at);
     if yerd_update::is_check_due(last_checked, now_epoch()) {
-        poll_and_refresh(state, dl).await;
+        poll_and_refresh(state, dl, public_key).await;
     }
 }
 
@@ -308,8 +309,8 @@ pub async fn poll_if_due(state: &DaemonState, dl: &dyn Downloader) {
 /// fetch error logs at `debug` and leaves the cache untouched. Notify-only: logs
 /// (does not install) when a newer version is available on the configured
 /// channel. Called by [`poll_if_due`] on its wall-clock-gated cadence.
-pub async fn poll_and_refresh(state: &DaemonState, dl: &dyn Downloader) {
-    let Some(releases) = fetch_releases(dl).await else {
+pub async fn poll_and_refresh(state: &DaemonState, dl: &dyn Downloader, public_key: &str) {
+    let Some(releases) = fetch_releases(dl, public_key).await else {
         return;
     };
     let channel = configured_channel(state).await;
@@ -333,13 +334,14 @@ pub async fn check_update(
     channel_override: Option<yerd_ipc::Channel>,
     state: &DaemonState,
     dl: &dyn Downloader,
+    public_key: &str,
 ) -> Response {
     let current = current_version();
     let channel = match channel_override {
         Some(c) => from_ipc(c),
         None => configured_channel(state).await,
     };
-    if let Some(releases) = fetch_releases(dl).await {
+    if let Some(releases) = fetch_releases(dl, public_key).await {
         let decision = select_target(&releases, channel, &current);
         *state.yerd_update.write().await = releases;
         let snap = snapshot_from(&decision, now_epoch());
@@ -360,8 +362,10 @@ pub async fn check_update(
 /// into the cache dir. Returns [`Response::Staged`] with the on-disk path.
 ///
 /// `public_key` is [`yerd_update::UPDATE_PUBLIC_KEY`] in production and a test
-/// key in unit tests. The privileged install/swap is the applier's job, not the
-/// daemon's - this only produces a verified local file.
+/// key in unit tests; it verifies both the release manifest (in
+/// [`fetch_releases`]) and the artifact signature here. The privileged
+/// install/swap is the applier's job, not the daemon's - this only produces a
+/// verified local file.
 pub async fn stage_update(
     channel_override: Option<yerd_ipc::Channel>,
     state: &DaemonState,
@@ -374,7 +378,7 @@ pub async fn stage_update(
         None => configured_channel(state).await,
     };
 
-    let Some(releases) = fetch_releases(dl).await else {
+    let Some(releases) = fetch_releases(dl, public_key).await else {
         return internal("could not fetch releases (offline or rate-limited)".to_owned());
     };
     let decision = select_target(&releases, channel, &current);
@@ -485,6 +489,44 @@ mod tests {
     #[test]
     fn current_version_parses() {
         assert_ne!(current_version(), semver::Version::new(0, 0, 0));
+    }
+
+    #[test]
+    fn manifest_to_releases_maps_and_drops_bad_entries() {
+        use yerd_release_manifest::{AssetEntry, ReleaseEntry};
+        let entry = |tag: &str, prerelease: bool, draft: bool| ReleaseEntry {
+            tag_name: tag.to_owned(),
+            prerelease,
+            draft,
+            body: Some("notes".to_owned()),
+            assets: vec![AssetEntry {
+                name: "a.deb".to_owned(),
+                browser_download_url: "https://cdn.test/a.deb".to_owned(),
+                size: 4,
+            }],
+        };
+
+        // Valid stable is kept and mapped; an unparseable-tag rc is dropped.
+        let out = manifest_to_releases(LatestManifest {
+            schema: 1,
+            stable: Some(entry("v2.0.5", false, false)),
+            rc: Some(entry("not-semver", true, false)),
+        });
+        assert_eq!(out.len(), 1);
+        let kept = out.first().unwrap();
+        assert_eq!(kept.tag, "v2.0.5");
+        assert_eq!(kept.version, semver::Version::parse("2.0.5").unwrap());
+        assert!(!kept.prerelease);
+        assert_eq!(kept.assets.len(), 1);
+        assert_eq!(kept.notes.as_deref(), Some("notes"));
+
+        // A draft entry (never emitted by the trusted producer) is dropped.
+        let out = manifest_to_releases(LatestManifest {
+            schema: 1,
+            stable: Some(entry("v2.0.5", false, true)),
+            rc: None,
+        });
+        assert!(out.is_empty());
     }
 
     #[test]
