@@ -32,17 +32,19 @@ yerd db drop mysql my_app
 
 ## Database names
 
-`create` and the other commands validate the database name client-side before
-connecting, and the daemon validates it again before building any SQL. A name
-must:
+`create` uses Yerd's portable naming policy. The daemon validates the name before
+building SQL. A newly created name must:
 
 - be non-empty and at most **63 characters** (the lowest limit across the engines);
 - start with an ASCII letter or underscore (`_`);
 - contain only letters, digits, and underscores.
 
-This strict allowlist is a deliberate security boundary: because the name can
-never contain quoting or statement separators, the generated SQL is injection-proof
-by construction.
+For `drop`, `backup`, and `restore`, the name identifies a database that already
+exists. Those operations accept engine-valid names exactly as listed, including
+whitespace, punctuation, Unicode, quotes, backticks, periods, and leading hyphens.
+Only empty names and names containing NUL are rejected. SQL identifiers are quoted
+and escaped per engine, and backup/restore names are passed directly as one process
+argument without a shell.
 
 ::: warning System databases are protected
 Engine-internal databases (`mysql`, `information_schema`, `performance_schema`,

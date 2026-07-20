@@ -5,9 +5,10 @@
 //! engine (`mysql`/`mariadb` over the Unix socket; `psql` over TCP loopback) and
 //! captures its output. All the decision logic - name validation, SQL and `argv`
 //! construction, output parsing - is pure and unit-tested in
-//! `yerd_services::database`. The SQL is passed as a single `argv` element (never
-//! a shell), so combined with the validating allowlist there is no injection
-//! surface.
+//! `yerd_services::database`. SQL is passed as a single `argv` element and existing
+//! identifiers are quoted for their engine (never a shell), so there is no injection
+//! surface. Existing names use the engine-compatible validator; the strict creation
+//! allowlist is only applied when Yerd creates a database.
 
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -28,11 +29,14 @@ pub async fn list(service_id: &str, state: &DaemonState) -> Response {
         Err(r) => return r,
     };
     match run_client(&ctx, database::list_sql(ctx.engine)).await {
-        Ok(stdout) => Response::Databases {
-            databases: database::parse_db_list(ctx.engine, &stdout)
-                .into_iter()
-                .map(|name| DatabaseSummary { name })
-                .collect(),
+        Ok(stdout) => match database::parse_db_list(ctx.engine, &stdout) {
+            Ok(names) => Response::Databases {
+                databases: names
+                    .into_iter()
+                    .map(|name| DatabaseSummary { name })
+                    .collect(),
+            },
+            Err(e) => internal(e),
         },
         Err(r) => r,
     }
@@ -59,7 +63,7 @@ pub async fn drop(service_id: &str, name: &str, state: &DaemonState) -> Response
         Ok(c) => c,
         Err(r) => return r,
     };
-    if let Err(e) = database::validate_db_name(name) {
+    if let Err(e) = database::validate_existing_db_name(name) {
         return invalid_name(&e.to_string());
     }
     if database::is_system_database(ctx.engine, name) {
@@ -85,7 +89,7 @@ pub async fn backup(service_id: &str, name: &str, path: &Path, state: &DaemonSta
         Ok(c) => c,
         Err(r) => return r,
     };
-    if let Err(e) = database::validate_db_name(name) {
+    if let Err(e) = database::validate_existing_db_name(name) {
         return invalid_name(&e.to_string());
     }
     let dump_bin = ctx.engine.dump_binary();
@@ -161,7 +165,7 @@ pub async fn restore(service_id: &str, name: &str, path: &Path, state: &DaemonSt
         Ok(c) => c,
         Err(r) => return r,
     };
-    if let Err(e) = database::validate_db_name(name) {
+    if let Err(e) = database::validate_existing_db_name(name) {
         return invalid_name(&e.to_string());
     }
     if database::is_system_database(ctx.engine, name) {
@@ -376,7 +380,7 @@ fn classify(detail: &str) -> ErrorCode {
     }
 }
 
-/// A name that failed [`database::validate_db_name`].
+/// A name that failed the validator appropriate to its operation.
 fn invalid_name(detail: &str) -> Response {
     Response::Error {
         code: ErrorCode::InvalidPath,

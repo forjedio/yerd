@@ -67,6 +67,7 @@ import {
   uninstallService,
 } from "@/ipc/client";
 import type { AddableServiceType, DatabaseSummary, ServiceStatus, SiteEntry } from "@/ipc/types";
+import { databaseExportFilename } from "@/lib/databaseFilename";
 import { poolStateLabel, poolStateTone } from "@/lib/utils";
 
 const toast = useToast();
@@ -492,8 +493,9 @@ const confirmDrop = ref<string | null>(null);
 // A restore awaiting confirmation: the chosen file is picked first, then confirmed.
 const confirmRestore = ref<{ name: string; path: string } | null>(null);
 
-/** Mirror of the daemon's `validate_db_name` for instant feedback (the daemon
- *  re-validates authoritatively). */
+/** Mirror of the daemon's `validate_db_name` for instant feedback when *creating*
+ *  a database (the daemon re-validates authoritatively). Drop, backup, and restore
+ *  act on names that already exist and are not gated by this. */
 function dbNameValid(name: string): boolean {
   return /^[A-Za-z_]\w{0,62}$/.test(name);
 }
@@ -559,7 +561,7 @@ async function doDropDb(name: string): Promise<void> {
 async function doBackupDb(name: string): Promise<void> {
   const s = dbTarget.value;
   if (!s) return;
-  const path = await pickSaveFile(`${name}.sql`);
+  const path = await pickSaveFile(databaseExportFilename(name));
   if (!path) return; // user cancelled
   dbActionBusy.value = true;
   try {

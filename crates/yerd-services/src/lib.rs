@@ -24,7 +24,7 @@ pub mod release;
 pub mod service;
 pub mod version;
 
-pub use database::DbNameError;
+pub use database::{DbNameError, ExistingDbNameError};
 pub use error::ServiceError;
 pub use health::{MeilisearchProbe, ReadinessProbe, RedisProbe, ServiceProbes, TcpConnectProbe};
 pub use manager::{ServiceManager, ServiceRunState, ServiceSnapshot};

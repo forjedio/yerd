@@ -212,6 +212,13 @@ The variant set is the daemon's whole RPC surface - liveness, site management, P
 | `SetWordpressAutoLogin { name, enabled, user: Option }` | `{"type":"set_wordpress_auto_login","name":"blog","enabled":true,"user":"admin"}` |
 | `WordpressAdminUsers { site }` | `{"type":"wordpress_admin_users","site":"blog"}` |
 
+Database `name` has operation-specific validation. `CreateDatabase` uses Yerd's
+portable creation allowlist. `DropDatabase`, `BackupDatabase`, and
+`RestoreDatabase` address an existing engine database and preserve the supplied
+name exactly; only an empty name or embedded NUL is rejected. Drop and restore
+continue to protect engine system databases. `ListDatabases` returns exact decoded
+names in `DatabaseSummary`, including surrounding whitespace and line breaks.
+
 Note `Unpark { path: String }` deliberately uses a `String`, not `PathBuf`: clients echo a value straight back from `Response::Parked`, and an exact-identity match avoids lossy path normalisation (the daemon does not canonicalise it).
 
 ::: info Legacy PHP support: an additive `confirm_legacy` field
