@@ -23,6 +23,7 @@ import type {
   ElevateTarget,
   GroupsState,
   GuiLogs,
+  IdeInfo,
   InfoResponse,
   JobProgressResponse,
   MailDetail,
@@ -911,6 +912,45 @@ export async function openInEditor(path: string): Promise<void> {
   await openPath(path);
 }
 
+/** Open a terminal with cwd at `path` (tray panel). */
+export async function openTerminalAt(path: string): Promise<void> {
+  await call<void>("open_terminal_at", { path });
+}
+
+/** Open a site path in the OS default editor / IDE (tray panel). */
+export async function openSiteInIde(path: string): Promise<void> {
+  await call<void>("open_site_in_ide", { path });
+}
+
+export interface TrayPreferences {
+  favorites: string[];
+  recent: string[];
+  trayUnavailable: boolean;
+}
+
+export async function getTrayPreferences(): Promise<TrayPreferences> {
+  return call<TrayPreferences>("get_tray_preferences");
+}
+
+export async function setTrayFavorite(
+  name: string,
+  favorite: boolean,
+): Promise<TrayPreferences> {
+  return call<TrayPreferences>("set_tray_favorite", { name, favorite });
+}
+
+export async function recordTrayRecent(name: string): Promise<TrayPreferences> {
+  return call<TrayPreferences>("record_tray_recent", { name });
+}
+
+export async function hideTrayPanel(): Promise<void> {
+  await call<void>("hide_tray_panel_cmd");
+}
+
+export async function toggleTrayPanel(): Promise<void> {
+  await call<void>("toggle_tray_panel_cmd");
+}
+
 /** Returns the chosen directory, or null if the user cancelled. */
 export async function pickDirectory(defaultPath?: string): Promise<string | null> {
   const { open } = await import("@tauri-apps/plugin-dialog");
@@ -1067,6 +1107,21 @@ export async function getTitleBarStyle(): Promise<TitleBarStyle> {
 
 export async function setTitleBarStyle(style: TitleBarStyle): Promise<void> {
   await call<void>("set_title_bar_style", { style });
+}
+
+/** Stored preferred IDE id (`""` = Automatic). */
+export async function getPreferredIde(): Promise<string> {
+  return call<string>("get_preferred_ide");
+}
+
+/** Persist preferred IDE id (`""` = Automatic). */
+export async function setPreferredIde(ide: string): Promise<void> {
+  await call<void>("set_preferred_ide", { ide });
+}
+
+/** Known IDEs with install flags (includes System default). */
+export async function listInstalledIdes(): Promise<IdeInfo[]> {
+  return call<IdeInfo[]>("list_installed_ides");
 }
 
 // ── onboarding / first-run ───────────────────────────────────────────────────

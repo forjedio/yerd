@@ -29,11 +29,16 @@ apps/yerd-gui/
 ├── tsconfig.json           "@/*" -> src/*
 ├── src-tauri/              Rust BRIDGE
 │   ├── Cargo.toml          crate yerd-gui (bin yerd-gui), edition 2024, rustc ≥ 1.85
-│   ├── tauri.conf.json     windows (main + dumps + mails), CSP, bundle targets
+│   ├── tauri.conf.json     windows (main + dumps + mails + tray-panel), CSP, bundle targets
+│   ├── build.rs            rasterises tray-mac.svg → OUT_DIR for the menu-bar icon
 │   ├── capabilities/default.json   permission allowlist
 │   └── src/
 │       ├── main.rs         Builder, plugins, invoke_handler, tray, window events; show_dumps window helper
 │       ├── mail_window.rs  show_mails_window command (show+focus the static `mails` window)
+│       ├── tray.rs         system tray icon + native dropdown menu + Rust-side status poll
+│       ├── tray_panel.rs   frameless tray-panel window show/hide/position
+│       ├── tray_health.rs  derive_health + native-menu service rows (Rust)
+│       ├── ide.rs          preferred IDE detection + open_path_in_ide
 │       ├── commands.rs     one #[tauri::command] per Request; finish() error mapping
 │       ├── ipc.rs          exchange() - socket transport, mirrors the CLI's
 │       ├── elevate.rs      OS-elevated `yerd <verb> <target>` (pkexec / osascript)
@@ -43,15 +48,15 @@ apps/yerd-gui/
 └── src/                    Vue FRONTEND
     ├── main.ts             createApp + router; initTheme(); initDesktopChrome()
     ├── App.vue             AppShell + Toaster; shared daemon poller; first-run daemon start
-    ├── router.ts           hash router: /overview (default) /general /php /sites /tooling /services /dumps /mail /doctor /about (+ /dumps-window, /mails-viewer standalone routes)
+    ├── router.ts           hash router: /overview (default) /general /php /sites /tooling /services /dumps /mail /doctor /about (+ /dumps-window, /mails-viewer, /tray-panel standalone routes)
     ├── ipc/
     │   ├── types.ts        TypeScript mirror of the yerd-ipc wire JSON
     │   ├── client.ts       typed wrappers around invoke() + IpcError
     │   └── client.test.ts  command-mapping + error-categorisation tests
     ├── composables/        useDaemon (singleton poller), usePoll, useToast
     ├── components/         AppShell, SideNav, NavLink, TitleBar, StatusPill, ComingSoon, EnvironmentCard, ManageDomainsModal, ui/ (incl. AsyncState, EmptyState)
-    ├── views/              OverviewView, GeneralView, PhpView, SitesView, ToolingView, ServicesView, LaravelDumpsView, DumpsWindowView, MailView, MailsViewerView, DoctorView, AboutView
-    └── lib/                utils (cn, humanisers), theme, desktop chrome, domainValidation (client-side domain-shape checks)
+    ├── views/              OverviewView, GeneralView, PhpView, SitesView, ToolingView, ServicesView, TrayPanelView, LaravelDumpsView, DumpsWindowView, MailView, MailsViewerView, DoctorView, AboutView
+    └── lib/                utils, theme, desktop chrome, serviceActions, trayHealth, traySiteAutocomplete, domainValidation
 ```
 
 ## The Rust bridge (`src-tauri`)
@@ -247,26 +252,30 @@ are the only categories the frontend's `IpcError` needs to distinguish.
 - `tauri-plugin-opener` and `tauri-plugin-dialog` back the host helpers
   (`openInBrowser`, `openPath`, `pickDirectory`).
 - **Close-to-tray**: `WindowEvent::CloseRequested` hides the window and calls
-  `api.prevent_close()`. The tray's **Quit** item is the real exit; **Open Yerd**
-  reshows the window. (On Linux AppIndicator, clicks aren't delivered, so the
-  menu item is the only way in.)
-- **Dynamic tray menu** (`tray.rs`): the menu is rebuilt from live daemon state,
-  not static. A Rust-side poll over the same `yerd-ipc` socket the commands use
-  (the frontend poller pauses when the window is hidden to tray) diffs a snapshot
-  and `set_menu`s a fresh menu only on change - showing daemon status + ports,
-  Start/Restart/Stop, an inline default-PHP switcher, update items, the Mail/Dumps
-  viewers, site actions, and nav shortcuts. A `TRANSITION`/`MENU_LOCK` guard keeps
-  a tray-initiated lifecycle action's transient menu from being stomped by a
-  late poll tick. The same poll composites status badges onto the tray icon: a red
-  dot for a waiting update and an orange dot for unread mail (`draw_dot`). Menu
-  item icons are recoloured per-build for the desktop's dark/light state
-  (`menu_icon`/`dark_menu_bar`), since `muda`'s menu icons aren't templates and
-  won't auto-tint themselves: on macOS this reads the `AppleInterfaceStyle` user
-  default (unchanged); on Linux it probes the xdg-desktop-portal `Settings`
-  `color-scheme` preference via the `dark-light` crate, a bounded D-Bus round
-  trip taken by the caller *before* `MENU_LOCK` is acquired (see the module doc
-  comment) so it never runs lock-held. Any read failure (no portal, older
-  desktop) falls back to light, i.e. today's black glyphs.
+  `api.prevent_close()`. The tray's **Quit** item is the real exit; **Open
+  Dashboard** reshows the window. (On Linux AppIndicator, clicks aren't
+  delivered, so the menu item — including **Jump to site…** — is the way in.)
+- **Hybrid tray** (`tray.rs` + `tray_panel.rs` + `tray_health.rs`): **left-click**
+  toggles a frameless Vue **tray panel** (`#/tray-panel`) with CommandPalette-style
+  site autocomplete (favorites / recent / typeahead), per-site Open / IDE /
+  Terminal / PHP-pool recycle actions, collapsible Services (**PHP pools only**,
+  Herd-style — see `lib/trayHealth.ts`), daemon Stop/Restart in the
+  panel header, and an
+  activity feed. **Right-click** (or the attached menu on platforms that don't
+  deliver left-clicks) shows the **native** menu: status header with health
+  glyphs, Start All / Stop All / Restart PHP, read-only service rows (Proxy +
+  every PHP pool + every managed instance — see `tray_health::service_rows`),
+  Mail/Dumps, Open Logs, Doctor, Quit. The menu-bar **glyph** is a clean
+  monochrome Y with a health-coloured dot at the bottom-right (green / amber /
+  red); updates / mail surface in the menu header and tray panel instead. A Rust-side poll over `yerd-ipc` diffs
+  a snapshot and `set_menu`s only on change. `TRANSITION`/`MENU_LOCK` still guard
+  lifecycle actions. The tray icon SVG is rasterised at build time (`build.rs`,
+  22 pt @4x) from `icons/tray-mac.svg`.
+- **Linux tray fallback**: if AppIndicator registration fails, the GUI sets
+  `tray_unavailable` in `gui-settings.json`, enables `tray_panel` fallback mode
+  (always-on-top edge panel), and documents that vanilla GNOME often needs an
+  AppIndicator extension. When tray clicks aren't delivered, **Jump to site…**
+  in the native menu (or the fallback panel) still opens the Vue panel.
 - On **Linux**, before GTK initialises, `glib::set_prgname("yerd-gui")` pins the
   Wayland `app_id` so the dock matches `yerd-gui.desktop`, and a `with_webview`
   block clamps WebKitGTK's zoom level (the only place that can intercept
@@ -279,8 +288,8 @@ hardcoded to the host OS - it's a user preference. `lib/titleBarStyle.ts` holds
 a `TitleBarStyle` (`"auto" | "macos" | "linux" | "linux-reversed" | "windows"`),
 persisted host-side in `gui-settings.json` via the `get_title_bar_style` /
 `set_title_bar_style` commands (mirroring the tray icon variant setting) and
-broadcast to every open window so the main, mails, and dumps windows switch in
-lockstep. `"auto"` (the default) resolves from `host_platform`; any other value
+broadcast to every open window so the main, mails, dumps, and tray-panel windows
+switch in lockstep. `"auto"` (the default) resolves from `host_platform`; any other value
 forces that layout regardless of the actual host, driving which controls
 `TitleBar.vue` renders on which side (macOS traffic lights; Linux close-left,
 minimize/maximize-right; Linux Reversed the mirror of that; Windows
@@ -308,8 +317,8 @@ has an rpm bundler): the `fedora` jobs run `tauri build` with the
 `tauri.bundle-linux-rpm.conf.json` overlay and an `rpm/postinst.sh` `%post` doing
 the same `setcap`. See [Packaging and releasing](./building#the-fedora-package-rpm).
 
-::: info Three windows, one bundle
-The app is no longer single-window. `tauri.conf.json` declares **three** windows,
+::: info Four windows, one bundle
+The app is no longer single-window. `tauri.conf.json` declares **four** windows,
 all loading the same SPA bundle at different hash routes and all hidden until
 shown:
 
@@ -319,9 +328,16 @@ shown:
 - **`dumps`** - the live Laravel Dumps viewer (`#/dumps-window`). It is also
   declared statically, but `main.rs`'s `show_dumps` helper *lazily (re)creates* it
   if it has been destroyed, so the "Show Dumps" path is robust either way.
+- **`tray-panel`** - frameless menu-bar popup (`#/tray-panel`) for site
+  autocomplete and quick actions; toggled by left-clicking the tray icon (or
+  **Jump to site…** in the native menu). Owns a lightweight `status` poll that
+  **pauses while the window is hidden** (same discipline as `usePoll`). Shown
+  under the tray click on the active monitor (`tray_panel::position_panel`),
+  left-aligned with the icon when it fits; shifted left at the screen edge.
 
-The auxiliary windows are **shown, not spawned**: `mail_window::show_mails_window`
-and `show_dumps_window` just `get_webview_window(label)` then `show()` + focus.
+The auxiliary windows are **shown, not spawned**: `mail_window::show_mails_window`,
+`show_dumps_window`, and `tray_panel::toggle_tray_panel` just `get_webview_window(label)`
+then `show()` + focus.
 When a window isn't already open, the shared `reveal_aux_window` helper first
 centres it on the monitor under the cursor (the active screen), so it appears
 where the user is looking rather than on whatever display it last lived on.
@@ -330,11 +346,12 @@ rather than closes each one, so the windows persist across opens. Crucially it
 gates the close-to-tray + Dock-accessory behaviour on `window.label() == "main"`:
 closing an auxiliary window must not yank the main app's Dock presence or
 minimise the whole app to the tray. On the frontend side, `App.vue` detects the
-auxiliary windows (`getCurrentWindow().label === "dumps"`, or a route with
-`meta.standalone`) and renders the bare viewer with **no SideNav/TitleBar shell
-and no daemon poller**, so an auxiliary window never runs a second `status` loop.
-The dynamic tray menu opens both auxiliary windows directly (its **Mail** and
-**Dumps** items call the same reveal helpers).
+auxiliary windows (`getCurrentWindow().label` is `dumps` / `mails` /
+`tray-panel`, or a route with `meta.standalone`) and renders the bare viewer with
+**no SideNav/TitleBar shell and no daemon poller**, so an auxiliary window never
+runs a second `status` loop. The dynamic tray menu opens both auxiliary windows
+directly (its **Mail** and **Dumps** items call the same reveal helpers; **Jump
+to site…** / left-click opens the tray panel).
 :::
 
 ### Capabilities

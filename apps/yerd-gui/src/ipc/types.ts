@@ -788,6 +788,17 @@ export type TrayIconVariant = "auto" | "light-y" | "dark-y" | "full";
 export type TitleBarStyle = "auto" | "macos" | "linux" | "linux-reversed" | "windows";
 
 /**
+ * One IDE option from host command `list_installed_ides`. `id` is stored in
+ * `preferred_ide` (`""` for Automatic is a separate Settings value, not listed
+ * here; `system` is always included).
+ */
+export interface IdeInfo {
+  id: string;
+  label: string;
+  installed: boolean;
+}
+
+/**
  * Why the daemon isn't up (host command `daemon_diagnostics`). Gathered when a
  * start attempt fails to connect - covers both the ran-and-crashed case
  * (`logTail`) and the never-launched cases (`startError`, `translocated`,

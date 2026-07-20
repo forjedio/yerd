@@ -1141,6 +1141,92 @@ fn safe_attachment_filename(name: &str) -> String {
     }
 }
 
+/// Open a terminal with cwd = `path` (tray panel "Terminal" action).
+#[tauri::command]
+pub fn open_terminal_at(path: String) -> Result<(), GuiError> {
+    let dir = PathBuf::from(&path);
+    if !dir.is_dir() {
+        return Err(GuiError::internal(format!(
+            "not a directory: {}",
+            dir.display()
+        )));
+    }
+    open_terminal_impl(&dir)
+}
+
+/// Open `path` in the user's preferred IDE (tray panel "IDE" action).
+/// Preference comes from `gui-settings.json` (`preferred_ide`); empty means
+/// automatic (first installed catalog IDE, else system file handler).
+#[tauri::command]
+pub fn open_site_in_ide(path: String) -> Result<(), GuiError> {
+    let p = PathBuf::from(&path);
+    let preferred = crate::autostart::preferred_ide();
+    crate::ide::open_path_in_ide(&p, &preferred)
+}
+
+fn open_terminal_impl(dir: &Path) -> Result<(), GuiError> {
+    #[cfg(target_os = "macos")]
+    {
+        let script = format!(
+            "tell application \"Terminal\" to do script \"cd \" & quoted form of \"{}\" & \" && clear\"",
+            dir.display()
+        );
+        let status = std::process::Command::new("osascript")
+            .args(["-e", &script])
+            .status()
+            .map_err(|e| GuiError::internal(format!("osascript failed: {e}")))?;
+        if status.success() {
+            return Ok(());
+        }
+        let status = std::process::Command::new("open")
+            .args(["-a", "Terminal"])
+            .arg(dir)
+            .status()
+            .map_err(|e| GuiError::internal(format!("open Terminal failed: {e}")))?;
+        if status.success() {
+            Ok(())
+        } else {
+            Err(GuiError::internal(format!(
+                "open Terminal exited with {status}"
+            )))
+        }
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let dir_s = dir.to_string_lossy();
+        let candidates: &[(&str, &[&str])] = &[
+            ("ghostty", &["--working-directory"]),
+            ("kitty", &["--directory"]),
+            ("alacritty", &["--working-directory"]),
+            ("wezterm", &["start", "--cwd"]),
+            ("gnome-terminal", &["--working-directory"]),
+            ("konsole", &["--workdir"]),
+            ("xfce4-terminal", &["--working-directory"]),
+            ("xterm", &["-e"]),
+        ];
+        for (bin, args_prefix) in candidates {
+            let mut cmd = std::process::Command::new(bin);
+            if *bin == "xterm" {
+                cmd.args(args_prefix)
+                    .arg(format!("cd {dir_s} && exec $SHELL"));
+            } else {
+                cmd.args(args_prefix).arg(dir.as_os_str());
+            }
+            if cmd.spawn().is_ok() {
+                return Ok(());
+            }
+        }
+        Err(GuiError::internal("no supported terminal emulator found"))
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    {
+        let _ = dir;
+        Err(GuiError::internal(
+            "open_terminal_at is unsupported on this OS",
+        ))
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
