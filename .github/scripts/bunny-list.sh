@@ -31,7 +31,7 @@ base="https://${BUNNY_STORAGE_ENDPOINT}/${BUNNY_STORAGE_ZONE}"
 # (prefix does not exist yet) is treated as empty.
 list_dir() {
   local dir=$1 resp code body
-  resp=$(curl -sS -w $'\n%{http_code}' \
+  resp=$(curl -sS -w $'\n%{http_code}' --connect-timeout 30 --max-time 120 \
     -H "AccessKey: ${BUNNY_STORAGE_ACCESS_KEY}" "${base}/${dir}")
   code=${resp##*$'\n'}
   body=${resp%$'\n'*}

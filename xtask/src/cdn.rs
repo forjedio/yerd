@@ -94,17 +94,13 @@ pub fn run_reconcile_plan(
     let releases = read_releases(releases_json)?;
     let listing = read_listing(cdn_listing)?;
 
-    // Every GitHub tag, drafts included, protects known folders from deletion.
     let known_tags: BTreeSet<String> = releases.iter().map(|r| r.tag_name.clone()).collect();
-    // Published (non-draft) tags: their stale CDN objects are eligible for
-    // pruning even when the release attaches no assets.
     let public_tags: BTreeSet<String> = releases
         .iter()
         .filter(|r| !r.draft)
         .map(|r| r.tag_name.clone())
         .collect();
 
-    // Cache each tag's SHA256SUMS body so we parse it once per tag.
     let mut sums_cache: std::collections::BTreeMap<String, Option<String>> =
         std::collections::BTreeMap::new();
 
@@ -143,8 +139,6 @@ pub fn run_reconcile_plan(
 
     let plan = reconcile(&expected, &cdn, &known_tags, &public_tags);
 
-    // Serialize the plan as plain JSON the workflow can drive with jq. The pure
-    // types aren't serde, so map to a small local shape here.
     let out = PlanJson {
         to_upload: plan.to_upload.iter().map(action_json).collect(),
         to_update: plan.to_update.iter().map(action_json).collect(),

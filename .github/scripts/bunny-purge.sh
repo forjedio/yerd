@@ -17,6 +17,7 @@ set -euo pipefail
 for u in "$@"; do
   encoded=$(jq -rn --arg u "$u" '$u | @uri')
   curl -fsS --retry 3 --retry-connrefused --retry-delay 2 \
+    --connect-timeout 30 --max-time 120 \
     -X POST -H "AccessKey: ${BUNNY_PURGE_API_KEY}" \
     "https://api.bunny.net/purge?url=${encoded}&async=false"
   echo "PURGE $u"

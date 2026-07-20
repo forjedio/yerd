@@ -24,7 +24,11 @@ url="https://${BUNNY_STORAGE_ENDPOINT}/${BUNNY_STORAGE_ZONE}/${remote}"
 
 # -T streams the file (implies PUT, sets Content-Length; no chunked, which Bunny
 # rejects). -f makes any non-2xx a hard failure.
+# --max-time is generous here: release artifacts (.dmg/.app.tar.gz) run to
+# hundreds of MB, so the upload budget is far larger than the small requests in
+# the sibling scripts. --connect-timeout bounds a hung connect either way.
 curl -fsS --retry 3 --retry-connrefused --retry-delay 2 \
+  --connect-timeout 30 --max-time 1800 \
   -T "$local_file" \
   -H "AccessKey: ${BUNNY_STORAGE_ACCESS_KEY}" \
   -H "Content-Type: application/octet-stream" \
@@ -32,7 +36,8 @@ curl -fsS --retry 3 --retry-connrefused --retry-delay 2 \
 
 # Bunny Storage has no HEAD method; a ranged GET with the AccessKey is the
 # documented existence check.
-curl -fsS -o /dev/null -r 0-0 -H "AccessKey: ${BUNNY_STORAGE_ACCESS_KEY}" "$url" \
+curl -fsS -o /dev/null -r 0-0 --connect-timeout 30 --max-time 120 \
+  -H "AccessKey: ${BUNNY_STORAGE_ACCESS_KEY}" "$url" \
   || { echo "::error::bunny-put: post-upload verify failed for $remote" >&2; exit 1; }
 
 echo "PUT $remote"

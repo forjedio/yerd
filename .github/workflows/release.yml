@@ -420,6 +420,7 @@ jobs:
       # runner, and re-signing here would drag MINISIGN_SECRET_KEY into this job).
       # `gh release download` yields byte-identical mirrors with no signing secret.
       - name: Mirror release assets to releases/<tag>/
+        id: mirror
         run: |
           set -euo pipefail
           : "${PULLZONE:?BUNNY_PULLZONE_HOST is not set}"
@@ -438,6 +439,7 @@ jobs:
       # mirrored (CDN URLs) while any un-mirrored historical file keeps its working
       # GitHub URL (per-asset gating - never a dead CDN link).
       - name: Regenerate root manifests
+        id: regen
         run: |
           set -euo pipefail
           gh api --paginate "repos/${GH_REPO}/releases" > api.json
@@ -451,6 +453,7 @@ jobs:
       # 3. Upload releases.json BEFORE latest.json (latest.json must never
       # reference a release absent from releases.json).
       - name: Upload root manifests
+        id: upload
         run: |
           set -euo pipefail
           put="${GITHUB_WORKSPACE}/.github/scripts/bunny-put.sh"
@@ -459,18 +462,35 @@ jobs:
 
       # 4. Purge the edge cache so the overwritten manifests are visible at once.
       - name: Purge manifest cache
+        id: purge
         run: |
           set -euo pipefail
           bash .github/scripts/bunny-purge.sh \
             "https://${PULLZONE}/releases.json" \
             "https://${PULLZONE}/latest.json"
 
+      # Report the ACTUAL outcome of the steps above (any of which can fail while
+      # the job stays green via continue-on-error). Mirrors build-cdn.yml's
+      # branch-on-step-outcome summary rather than always claiming success.
       - name: Summarize
         if: always()
+        env:
+          MIRROR: ${{ steps.mirror.outcome }}
+          REGEN: ${{ steps.regen.outcome }}
+          UPLOAD: ${{ steps.upload.outcome }}
+          PURGE: ${{ steps.purge.outcome }}
         run: |
           {
-            echo "### CDN mirror"
-            echo ""
-            echo "- Release folder: \`releases/${TAG}/\`"
-            echo "- Root manifests regenerated: \`releases.json\`, \`latest.json\`"
+            if [ "$UPLOAD" = "success" ]; then
+              echo "### CDN mirror uploaded"
+              echo ""
+              echo "- Release folder: \`releases/${TAG}/\` (mirror: ${MIRROR})"
+              echo "- Root manifests regenerated + uploaded: \`releases.json\`, \`latest.json\`"
+              echo "- Edge cache purge: ${PURGE}"
+            else
+              echo "### CDN mirror did not complete"
+              echo ""
+              echo "- mirror: ${MIRROR} / regenerate: ${REGEN} / upload: ${UPLOAD} / purge: ${PURGE}"
+              echo "- GitHub Releases remains the source of truth; rerun \`cdn-sync.yml\` to reconcile."
+            fi
           } >> "$GITHUB_STEP_SUMMARY"

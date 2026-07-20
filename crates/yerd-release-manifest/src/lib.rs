@@ -158,7 +158,6 @@ pub fn build_manifests(
         })
         .collect();
 
-    // Newest-first. `sort_by` with a reversed comparison keeps it stable.
     kept.sort_by(|a, b| b.0.cmp(&a.0));
 
     let mut stable: Option<&(semver::Version, ReleaseEntry)> = None;
@@ -174,7 +173,6 @@ pub fn build_manifests(
         }
     }
 
-    // Expose the RC only when it is strictly newer than the latest stable.
     let rc = highest_pre.filter(|pre| stable.map_or(true, |s| pre.0 > s.0));
 
     let latest = LatestManifest {
@@ -306,8 +304,6 @@ pub fn reconcile(
         }
     }
 
-    // An empty expected set means we have nothing authoritative to compare
-    // against; never delete in that case.
     if expected.is_empty() {
         return plan;
     }
