@@ -6267,6 +6267,10 @@ version = "2.0.4-rc.1"
 dependencies = [
  "anyhow",
  "clap",
+ "serde",
+ "serde_json",
+ "yerd-release-manifest",
+ "yerd-update",
 ]
 
 [[package]]
@@ -6502,6 +6506,16 @@ dependencies = [
  "yerd-core",
  "yerd-depcheck",
  "yerd-tls",
+]
+
+[[package]]
+name = "yerd-release-manifest"
+version = "2.0.4-rc.1"
+dependencies = [
+ "semver",
+ "serde",
+ "serde_json",
+ "yerd-update",
 ]
 
 [[package]]

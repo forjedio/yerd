@@ -385,3 +385,92 @@ jobs:
             -X POST -d "$PAYLOAD" "$DISCORD_WEBHOOK_URL"; then
             echo "Discord notification failed; release succeeded regardless"
           fi
+
+  # Mirror the just-published release to BunnyCDN and regenerate the root
+  # manifests (latest.json / releases.json). ADDITIVE: never deletes (pruning is
+  # the manual cdn-sync.yml's job). NON-FATAL: GitHub Releases stays the source of
+  # truth during the transition, so a CDN hiccup must not fail the release.
+  cdn-mirror:
+    name: cdn-mirror
+    needs: publish
+    runs-on: ubuntu-22.04
+    continue-on-error: true
+    # Serialize ALL root-manifest writers (rapid rc tags + a manual cdn-sync) so
+    # latest.json/releases.json can't be clobbered out of order. release.yml's
+    # top-level group is per-tag and does NOT serialize distinct tags.
+    concurrency:
+      group: yerd-cdn-writes
+      cancel-in-progress: false
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_REPO: ${{ github.repository }}
+      BUNNY_STORAGE_ACCESS_KEY: ${{ secrets.BUNNY_STORAGE_ACCESS_KEY }}
+      BUNNY_STORAGE_ZONE: ${{ vars.BUNNY_STORAGE_ZONE }}
+      BUNNY_STORAGE_ENDPOINT: ${{ vars.BUNNY_STORAGE_ENDPOINT }}
+      BUNNY_PURGE_API_KEY: ${{ secrets.BUNNY_PURGE_API_KEY }}
+      PULLZONE: ${{ vars.BUNNY_PULLZONE_HOST }}
+      TAG: ${{ github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      # 1. Fetch THIS tag's PUBLISHED assets from the source of truth (not a
+      # rebuild - the signed .minisig/.sig and SHA256SUMS live only in the publish
+      # runner, and re-signing here would drag MINISIGN_SECRET_KEY into this job).
+      # `gh release download` yields byte-identical mirrors with no signing secret.
+      - name: Mirror release assets to releases/<tag>/
+        run: |
+          set -euo pipefail
+          : "${PULLZONE:?BUNNY_PULLZONE_HOST is not set}"
+          mkdir -p rel
+          gh release download "$TAG" --dir rel --clobber
+          put="${GITHUB_WORKSPACE}/.github/scripts/bunny-put.sh"
+          shopt -s nullglob
+          assets=(rel/*)
+          [ ${#assets[@]} -gt 0 ] || { echo "::error::release $TAG has no downloadable assets"; exit 1; }
+          for f in "${assets[@]}"; do
+            bash "$put" "$f" "releases/${TAG}/$(basename "$f")"
+          done
+
+      # 2. Regenerate the root manifests from the FULL GitHub release list against
+      # a POST-upload CDN listing, so this tag's freshly-uploaded assets count as
+      # mirrored (CDN URLs) while any un-mirrored historical file keeps its working
+      # GitHub URL (per-asset gating - never a dead CDN link).
+      - name: Regenerate root manifests
+        run: |
+          set -euo pipefail
+          gh api --paginate "repos/${GH_REPO}/releases" > api.json
+          bash .github/scripts/bunny-list.sh releases/ > listing.json
+          cargo run -q -p xtask -- cdn-manifests \
+            --releases-json api.json \
+            --cdn-listing listing.json \
+            --cdn-base "https://${PULLZONE}" \
+            --out-dir cdn
+
+      # 3. Upload releases.json BEFORE latest.json (latest.json must never
+      # reference a release absent from releases.json).
+      - name: Upload root manifests
+        run: |
+          set -euo pipefail
+          put="${GITHUB_WORKSPACE}/.github/scripts/bunny-put.sh"
+          bash "$put" cdn/releases.json releases.json
+          bash "$put" cdn/latest.json latest.json
+
+      # 4. Purge the edge cache so the overwritten manifests are visible at once.
+      - name: Purge manifest cache
+        run: |
+          set -euo pipefail
+          bash .github/scripts/bunny-purge.sh \
+            "https://${PULLZONE}/releases.json" \
+            "https://${PULLZONE}/latest.json"
+
+      - name: Summarize
+        if: always()
+        run: |
+          {
+            echo "### CDN mirror"
+            echo ""
+            echo "- Release folder: \`releases/${TAG}/\`"
+            echo "- Root manifests regenerated: \`releases.json\`, \`latest.json\`"
+          } >> "$GITHUB_STEP_SUMMARY"

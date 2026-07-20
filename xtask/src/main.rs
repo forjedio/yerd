@@ -8,6 +8,7 @@
 
 #![forbid(unsafe_code)]
 
+mod cdn;
 mod version;
 
 use std::fs;
@@ -40,6 +41,38 @@ pub enum Command {
     },
     /// Print the workspace version (bare, one line) for scripts/CI to consume.
     PrintVersion,
+    /// Build `latest.json` + `releases.json` from the GitHub Releases API and a
+    /// CDN listing (asset URLs are pointed at the CDN only for mirrored files).
+    CdnManifests {
+        /// Path to the `gh api .../releases` JSON response.
+        #[arg(long)]
+        releases_json: PathBuf,
+        /// Path to the CDN listing JSON (`bunny-list.sh` output).
+        #[arg(long)]
+        cdn_listing: PathBuf,
+        /// Public CDN base URL, e.g. `https://cdn.yerd.app`.
+        #[arg(long)]
+        cdn_base: String,
+        /// Directory to write `latest.json` / `releases.json` into.
+        #[arg(long)]
+        out_dir: PathBuf,
+    },
+    /// Compute the CDN<->GitHub reconcile plan (`plan.json`): files to upload,
+    /// re-upload, and delete so the CDN matches GitHub.
+    CdnReconcilePlan {
+        /// Path to the `gh api .../releases` JSON response.
+        #[arg(long)]
+        releases_json: PathBuf,
+        /// Path to the CDN listing JSON (`bunny-list.sh` output).
+        #[arg(long)]
+        cdn_listing: PathBuf,
+        /// Directory holding one `<tag>/SHA256SUMS` per downloaded release.
+        #[arg(long)]
+        sha256sums_dir: PathBuf,
+        /// Directory to write `plan.json` into.
+        #[arg(long)]
+        out_dir: PathBuf,
+    },
 }
 
 fn main() -> Result<()> {
@@ -48,6 +81,18 @@ fn main() -> Result<()> {
         Command::Bump { version } => run_bump(version),
         Command::VersionCheck { version } => run_version_check(version),
         Command::PrintVersion => run_print_version(),
+        Command::CdnManifests {
+            releases_json,
+            cdn_listing,
+            cdn_base,
+            out_dir,
+        } => cdn::run_manifests(releases_json, cdn_listing, cdn_base, out_dir),
+        Command::CdnReconcilePlan {
+            releases_json,
+            cdn_listing,
+            sha256sums_dir,
+            out_dir,
+        } => cdn::run_reconcile_plan(releases_json, cdn_listing, sha256sums_dir, out_dir),
     }
 }
 

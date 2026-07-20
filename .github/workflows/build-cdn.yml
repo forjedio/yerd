@@ -140,6 +140,12 @@ jobs:
     needs: [setup, build]
     runs-on: ubuntu-22.04
     steps:
+      # Needed so the Bunny helper scripts (.github/scripts/bunny-*.sh) are
+      # present; no authenticated git op follows, so don't persist the token.
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
       - name: Download build artifacts
         uses: actions/download-artifact@v4
         with:
@@ -191,45 +197,21 @@ jobs:
         id: bunny
         working-directory: dist
         env:
-          BUNNY_KEY: ${{ secrets.BUNNY_STORAGE_ACCESS_KEY }}
-          BUNNY_ZONE: ${{ vars.BUNNY_STORAGE_ZONE }}
-          BUNNY_ENDPOINT: ${{ vars.BUNNY_STORAGE_ENDPOINT }}
+          BUNNY_STORAGE_ACCESS_KEY: ${{ secrets.BUNNY_STORAGE_ACCESS_KEY }}
+          BUNNY_STORAGE_ZONE: ${{ vars.BUNNY_STORAGE_ZONE }}
+          BUNNY_STORAGE_ENDPOINT: ${{ vars.BUNNY_STORAGE_ENDPOINT }}
           DEST: ${{ needs.setup.outputs.dest }}
         run: |
           set -euo pipefail
-          [ -n "${BUNNY_KEY:-}" ] \
-            || { echo "::error::secret BUNNY_STORAGE_ACCESS_KEY is not set"; exit 1; }
-          [ -n "${BUNNY_ZONE:-}" ] \
-            || { echo "::error::variable BUNNY_STORAGE_ZONE is not set"; exit 1; }
-          # Mandatory: a wrong/absent region host hard-401s (indistinguishable from
-          # a bad key), so never silently default to the DE region.
-          [ -n "${BUNNY_ENDPOINT:-}" ] \
-            || { echo "::error::variable BUNNY_STORAGE_ENDPOINT is not set (region host, e.g. ny.storage.bunnycdn.com — must match the zone's region)"; exit 1; }
-
-          url() { printf 'https://%s/%s/builds/%s/%s' "$BUNNY_ENDPOINT" "$BUNNY_ZONE" "$DEST" "$1"; }
-          put() {
-            # -T streams the file (implies PUT, sets Content-Length; no chunked,
-            # which Bunny rejects). -f makes any non-2xx a hard failure.
-            curl -fsS --retry 3 --retry-connrefused --retry-delay 2 \
-              -T "$1" -H "AccessKey: ${BUNNY_KEY}" \
-              -H "Content-Type: application/octet-stream" \
-              "$(url "$(basename "$1")")"
-          }
-
+          put="${GITHUB_WORKSPACE}/.github/scripts/bunny-put.sh"
           shopt -s nullglob
           arts=(Yerd_*)
           [ ${#arts[@]} -gt 0 ] || { echo "::error::no artifacts to upload"; exit 1; }
-          for f in "${arts[@]}"; do echo "PUT $f"; put "$f"; done
+          # bunny-put.sh PUTs then verifies each object with a ranged GET.
+          for f in "${arts[@]}"; do bash "$put" "$f" "builds/${DEST}/$f"; done
           # Manifest strictly last, so its presence signals a complete upload
           # (Yerd_* sorts AFTER SHA256SUMS, so it must not ride the loop).
-          echo "PUT SHA256SUMS"; put SHA256SUMS
-
-          # Verify each object landed with a cheap ranged GET (Bunny Storage has no
-          # HEAD method; a GET with AccessKey is the documented existence check).
-          for f in "${arts[@]}" SHA256SUMS; do
-            curl -fsS -o /dev/null -r 0-0 -H "AccessKey: ${BUNNY_KEY}" "$(url "$f")" \
-              || { echo "::error::post-upload verify failed for $f"; exit 1; }
-          done
+          bash "$put" SHA256SUMS "builds/${DEST}/SHA256SUMS"
           echo "Uploaded + verified ${#arts[@]} artifact(s) + SHA256SUMS."
 
       # Runs even on failure, but only claims success (and prints download URLs)

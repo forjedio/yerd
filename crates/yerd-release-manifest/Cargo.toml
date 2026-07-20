@@ -1,0 +1,19 @@
+[package]
+name                   = "yerd-release-manifest"
+version.workspace      = true
+edition.workspace      = true
+rust-version.workspace = true
+license.workspace      = true
+publish.workspace      = true
+description            = "Pure schema + transforms for the CDN release manifests (latest.json / releases.json) and CDN<->GitHub reconciliation."
+
+[dependencies]
+serde       = { workspace = true }
+semver      = { workspace = true }
+yerd-update = { path = "../yerd-update" }
+
+[dev-dependencies]
+serde_json = { workspace = true }
+
+[lints]
+workspace = true
