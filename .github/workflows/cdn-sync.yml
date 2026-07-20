@@ -1,0 +1,190 @@
+name: CDN sync
+
+# Manually drive the BunnyCDN release area into exact sync with GitHub Releases:
+# upload missing/old release files, re-upload changed ones, and (optionally)
+# delete CDN objects that no longer correspond to any GitHub release. Running
+# once with apply=true also performs the historical BACKFILL (uploads every past
+# release). DELETE is destructive, so this defaults to a DRY RUN: it prints the
+# full plan and mutates nothing until you re-run with apply=true.
+on:
+  workflow_dispatch:
+    inputs:
+      apply:
+        description: "Actually upload/update/delete (unchecked = dry run: print the plan only)."
+        type: boolean
+        default: false
+      include_deletes:
+        description: "Include deletions of orphaned CDN objects (uncheck for an additive-only sync)."
+        type: boolean
+        default: true
+      max_deletes:
+        description: "Refuse to apply if the plan would delete more than this many objects (guards a partial GitHub read)."
+        type: string
+        default: "20"
+
+permissions:
+  contents: read
+
+# Share the writers' lock with release.yml's cdn-mirror job so a manual sync and
+# an automatic release mirror can never interleave root-manifest writes.
+concurrency:
+  group: yerd-cdn-writes
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-22.04
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_REPO: ${{ github.repository }}
+      BUNNY_STORAGE_ACCESS_KEY: ${{ secrets.BUNNY_STORAGE_ACCESS_KEY }}
+      BUNNY_STORAGE_ZONE: ${{ vars.BUNNY_STORAGE_ZONE }}
+      BUNNY_STORAGE_ENDPOINT: ${{ vars.BUNNY_STORAGE_ENDPOINT }}
+      BUNNY_PURGE_API_KEY: ${{ secrets.BUNNY_PURGE_API_KEY }}
+      PULLZONE: ${{ vars.BUNNY_PULLZONE_HOST }}
+      APPLY: ${{ inputs.apply }}
+      INCLUDE_DELETES: ${{ inputs.include_deletes }}
+      MAX_DELETES: ${{ inputs.max_deletes }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      # Fetch the source of truth. A partial/rate-limited paginated read yields
+      # invalid concatenated JSON that fails the jq parse below (set -e) - never a
+      # silent truncation. Require >=1 release before anything can be deleted.
+      - name: Fetch GitHub releases
+        run: |
+          set -euo pipefail
+          : "${PULLZONE:?BUNNY_PULLZONE_HOST is not set}"
+          gh api --paginate "repos/${GH_REPO}/releases" > api.json
+          count=$(jq 'length' api.json)
+          [ "$count" -ge 1 ] \
+            || { echo "::error::GitHub returned 0 releases - refusing to reconcile"; exit 1; }
+          echo "GitHub releases: $count"
+
+      - name: List CDN releases/ (recursive)
+        run: |
+          set -euo pipefail
+          bash .github/scripts/bunny-list.sh releases/ > listing.json
+          echo "CDN objects under releases/: $(jq 'length' listing.json)"
+
+      # Pull just each non-draft tag's SHA256SUMS so the reconcile can compare
+      # hashes (not only sizes). Full assets are fetched later, only for the files
+      # the plan will actually upload.
+      - name: Fetch per-tag SHA256SUMS
+        run: |
+          set -euo pipefail
+          mkdir -p sums
+          for tag in $(jq -r '.[] | select(.draft | not) | .tag_name' api.json); do
+            mkdir -p "sums/${tag}"
+            gh release download "$tag" --dir "sums/${tag}" \
+              --pattern SHA256SUMS --clobber || true
+          done
+
+      - name: Compute reconcile plan
+        run: |
+          set -euo pipefail
+          cargo run -q -p xtask -- cdn-reconcile-plan \
+            --releases-json api.json \
+            --cdn-listing listing.json \
+            --sha256sums-dir sums \
+            --out-dir plan
+
+      # Blank the delete set when additive-only was requested, then enforce the
+      # cap. Always print the (possibly-adjusted) plan to the summary - this is
+      # the human review gate for a dry run.
+      - name: Review plan + guard deletes
+        id: guard
+        run: |
+          set -euo pipefail
+          if [ "$INCLUDE_DELETES" != "true" ]; then
+            jq '.to_delete = []' plan/plan.json > plan/plan.adj.json
+            mv plan/plan.adj.json plan/plan.json
+          fi
+          n_up=$(jq '.to_upload | length' plan/plan.json)
+          n_ch=$(jq '.to_update | length' plan/plan.json)
+          n_del=$(jq '.to_delete | length' plan/plan.json)
+          {
+            echo "### CDN sync plan ($([ "$APPLY" = "true" ] && echo APPLY || echo 'dry run'))"
+            echo ""
+            echo "- upload: **$n_up**"
+            echo "- update: **$n_ch**"
+            echo "- delete: **$n_del**"
+            if [ "$n_del" -gt 0 ]; then
+              echo ""
+              echo "<details><summary>Deletions</summary>"
+              echo ""
+              jq -r '.to_delete[] | "- `" + . + "`"' plan/plan.json
+              echo ""
+              echo "</details>"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ "$n_del" -gt "$MAX_DELETES" ]; then
+            echo "::error::plan would delete $n_del objects (> max_deletes=$MAX_DELETES); raise max_deletes to proceed"
+            exit 1
+          fi
+          echo "n_del=$n_del" >> "$GITHUB_OUTPUT"
+
+      - name: Dry run notice
+        if: ${{ inputs.apply != true }}
+        run: echo "Dry run only. Re-run with apply=true to execute this plan."
+
+      # Upload every file the plan flagged (missing or changed). Fetch each file
+      # individually by name from its release, then PUT.
+      - name: Apply uploads + updates
+        if: ${{ inputs.apply == true }}
+        run: |
+          set -euo pipefail
+          put="${GITHUB_WORKSPACE}/.github/scripts/bunny-put.sh"
+          jq -r '(.to_upload + .to_update)[] | [.tag, .name, .path] | @tsv' plan/plan.json \
+          | while IFS=$'\t' read -r tag name path; do
+              [ -n "$tag" ] || continue
+              gh release download "$tag" --dir "dl/${tag}" --pattern "$name" --clobber
+              bash "$put" "dl/${tag}/${name}" "$path"
+            done
+
+      # Delete orphans. The plan was computed this same run from a fresh
+      # gh api, so it already protects known (incl. draft) folders. This step
+      # additionally guards the small TOCTOU window since then: re-fetch the
+      # current DRAFT tags and skip any delete whose tag is now a draft, so a
+      # release reverted to draft mid-run can't be pruned. Orphan-tag and
+      # stale-asset-in-a-public-tag deletes still proceed. bunny-delete.sh
+      # independently refuses anything outside releases/.
+      - name: Apply deletes
+        if: ${{ inputs.apply == true && inputs.include_deletes == true && steps.guard.outputs.n_del != '0' }}
+        run: |
+          set -euo pipefail
+          gh api --paginate "repos/${GH_REPO}/releases" \
+            --jq '.[] | select(.draft) | .tag_name' | sort -u > draft_tags.txt
+          del="${GITHUB_WORKSPACE}/.github/scripts/bunny-delete.sh"
+          jq -r '.to_delete[]' plan/plan.json | while IFS= read -r path; do
+            [ -n "$path" ] || continue
+            # tag = second component of releases/<tag>/<name>
+            tag=$(printf '%s' "$path" | cut -d/ -f2)
+            if grep -Fxq "$tag" draft_tags.txt; then
+              echo "skip (tag $tag is now a draft on GitHub): $path"
+              continue
+            fi
+            bash "$del" "$path"
+          done
+
+      # Regenerate the manifests from a POST-upload listing (reusing the same
+      # api.json), so a first full backfill yields CDN URLs in a single run
+      # instead of self-healing only on a second pass.
+      - name: Regenerate + upload root manifests
+        if: ${{ inputs.apply == true }}
+        run: |
+          set -euo pipefail
+          bash .github/scripts/bunny-list.sh releases/ > listing.post.json
+          cargo run -q -p xtask -- cdn-manifests \
+            --releases-json api.json \
+            --cdn-listing listing.post.json \
+            --cdn-base "https://${PULLZONE}" \
+            --out-dir cdn
+          put="${GITHUB_WORKSPACE}/.github/scripts/bunny-put.sh"
+          bash "$put" cdn/releases.json releases.json
+          bash "$put" cdn/latest.json latest.json
+          bash .github/scripts/bunny-purge.sh \
+            "https://${PULLZONE}/releases.json" \
+            "https://${PULLZONE}/latest.json"

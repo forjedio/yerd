@@ -8,8 +8,12 @@ publish.workspace      = true
 description            = "Build automation for Yerd (cargo xtask <cmd>)."
 
 [dependencies]
-anyhow = { workspace = true }
-clap   = { workspace = true }
+anyhow                = { workspace = true }
+clap                  = { workspace = true }
+serde                 = { workspace = true }
+serde_json            = { workspace = true }
+yerd-release-manifest = { path = "../crates/yerd-release-manifest" }
+yerd-update           = { path = "../crates/yerd-update" }
 
 [lints]
 workspace = true
