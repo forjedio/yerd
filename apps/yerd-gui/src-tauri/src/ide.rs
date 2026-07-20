@@ -83,6 +83,7 @@ pub fn list_ides() -> Vec<IdeInfo> {
 }
 
 /// Resolve a stored preference (`""` = auto) to a concrete IDE id to launch.
+/// Uninstalled or unknown preferences fall back to the first installed IDE, then system.
 pub fn resolve_ide_id(preferred: &str) -> String {
     let pref = preferred.trim();
     if pref.is_empty() {
@@ -96,7 +97,6 @@ pub fn resolve_ide_id(preferred: &str) -> String {
             return spec.id.to_string();
         }
     }
-    // Missing / uninstalled preference → auto, then system.
     first_installed_or_system()
 }
 
@@ -176,6 +176,7 @@ fn which_bin(bin: &str) -> Option<PathBuf> {
 }
 
 /// Open `path` in the resolved IDE (or system file handler).
+/// Falls back to the system file handler when the preferred IDE cannot be launched.
 pub fn open_path_in_ide(path: &Path, preferred: &str) -> Result<(), GuiError> {
     if !path.exists() {
         return Err(GuiError::internal(format!(
@@ -187,7 +188,6 @@ pub fn open_path_in_ide(path: &Path, preferred: &str) -> Result<(), GuiError> {
     match open_with_id(path, &id) {
         Ok(()) => Ok(()),
         Err(e) if id != SYSTEM_ID => {
-            // Preferred missing at launch time — fall back to system.
             let _ = e;
             open_with_id(path, SYSTEM_ID)
         }
@@ -203,7 +203,6 @@ fn open_with_id(path: &Path, id: &str) -> Result<(), GuiError> {
     {
         let app = macos_app_name_for(id)
             .ok_or_else(|| GuiError::internal(format!("unknown IDE id: {id}")))?;
-        // Prefer exact /Applications path when present (Toolbox versioned names).
         let mut cmd = Command::new("open");
         if id == "phpstorm" {
             if let Some(bundle) = find_phpstorm_bundle() {
@@ -229,7 +228,6 @@ fn open_with_id(path: &Path, id: &str) -> Result<(), GuiError> {
     {
         let bin =
             linux_bin_for(id).ok_or_else(|| GuiError::internal(format!("unknown IDE id: {id}")))?;
-        // Editors typically daemonize; don't wait on exit status.
         Command::new(bin)
             .arg(path)
             .spawn()

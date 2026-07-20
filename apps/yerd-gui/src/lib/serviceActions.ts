@@ -9,7 +9,7 @@ export function isPerSiteService(s: ServiceStatus): boolean {
   return !!s.site;
 }
 
-/** Installed engine on disk, or a configured per-site instance — matches ServicesView. */
+/** Installed engine on disk, or a configured per-site instance (matches ServicesView). */
 export function isInstalledService(s: ServiceStatus): boolean {
   return s.installed_versions.length > 0 || isPerSiteService(s);
 }

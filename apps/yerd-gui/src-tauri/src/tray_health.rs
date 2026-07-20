@@ -124,7 +124,7 @@ pub fn service_rows(report: &StatusReport) -> Vec<ServiceRow> {
     rows
 }
 
-/// Running/failed PHP pools plus installed managed services — tray panel and the
+/// Running/failed PHP pools plus installed managed services: tray panel and the
 /// menu-bar **Services** block (mirrors `trayHealth.ts::trayServiceRows`).
 pub fn tray_dropdown_service_rows(report: &StatusReport) -> Vec<ServiceRow> {
     let php_count = report

@@ -176,7 +176,7 @@ pub(crate) fn set_cached_variant(variant: TrayIconVariant) {
 ///
 /// Hybrid UX: left-click toggles the Vue tray panel; right-click (and the
 /// attached menu) shows the native menu. On Linux AppIndicator, clicks often
-/// aren't delivered — the native menu's "Jump to site…" item opens the panel.
+/// aren't delivered; the native menu's "Jump to site…" item opens the panel.
 pub(crate) fn build_tray(app: &AppHandle) -> tauri::Result<()> {
     let menu = build_menu(app, &TrayState::default(), dark_menu_bar())?;
     let mut builder = TrayIconBuilder::with_id(TRAY_ID)
@@ -319,7 +319,7 @@ fn apply(app: &AppHandle, state: &TrayState, dark: bool, variant: TrayIconVarian
             let _ = tray.set_icon(Some(icon));
             #[cfg(target_os = "macos")]
             {
-                // Coloured status dot — template mode would flatten it to monochrome.
+                // Coloured status dot: template mode would flatten it to monochrome.
                 let _ = tray.set_icon_as_template(false);
             }
         }
@@ -337,7 +337,7 @@ fn tray_icon(
     app: &AppHandle,
     variant: TrayIconVariant,
     health: TrayHealth,
-    dark: bool,
+    _dark: bool,
 ) -> Option<tauri::image::Image<'static>> {
     match variant {
         TrayIconVariant::Full => full_color_icon(app, health),
@@ -351,9 +351,9 @@ fn tray_icon(
                 let base = tauri::image::Image::from_bytes(TRAY_ICON_MAC).ok()?;
                 let (w, h) = (base.width(), base.height());
                 let mut rgba = base.rgba().to_vec();
-                // Template mode can't preserve the coloured dot — paint the Y for
+                // Template mode can't preserve the coloured dot; paint the Y for
                 // the current menu-bar appearance instead.
-                recolor_opaque(&mut rgba, !dark);
+                recolor_opaque(&mut rgba, !_dark);
                 overlay_health_dot(&mut rgba, w, h, health);
                 Some(tauri::image::Image::new_owned(rgba, w, h))
             }
@@ -427,7 +427,7 @@ fn y_glyph_rgba(light: bool, health: TrayHealth) -> Option<(Vec<u8>, u32, u32)> 
     Some((rgba, w, h))
 }
 
-/// Y glyph only (no health dot) — shared by [`y_glyph_rgba`] and unit tests.
+/// Y glyph only (no health dot), shared by [`y_glyph_rgba`] and unit tests.
 fn y_glyph_base_rgba(light: bool) -> Option<(Vec<u8>, u32, u32)> {
     let base = tauri::image::Image::from_bytes(TRAY_ICON_MAC).ok()?;
     let (w, h) = (base.width(), base.height());

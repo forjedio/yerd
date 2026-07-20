@@ -2,7 +2,7 @@
 /**
  * Frameless tray popup: site autocomplete + per-site actions + service controls.
  * Standalone window (label `tray-panel`); owns its own lightweight poll (4s,
- * paused while hidden — same discipline as `usePoll`).
+ * paused while hidden, same discipline as `usePoll`).
  *
  * Window chrome: Minimize hides the panel; Expand opens the main dashboard.
  */

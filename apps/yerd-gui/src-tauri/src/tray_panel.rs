@@ -203,16 +203,19 @@ fn compute_panel_layout(
     PanelLayout { x, y }
 }
 
+/// Toggle the tray panel window (show if hidden, hide if visible).
 #[tauri::command]
 pub fn toggle_tray_panel_cmd(app: tauri::AppHandle) -> Result<(), GuiError> {
     toggle_tray_panel(&app)
 }
 
+/// Hide the tray panel window without quitting the app.
 #[tauri::command]
 pub fn hide_tray_panel_cmd(app: tauri::AppHandle) -> Result<(), GuiError> {
     hide_tray_panel(&app)
 }
 
+/// Whether the GUI is using the tray-panel fallback (native tray unavailable).
 #[tauri::command]
 pub fn tray_fallback_active() -> bool {
     tray_fallback()

@@ -1167,9 +1167,9 @@ pub fn open_site_in_ide(path: String) -> Result<(), GuiError> {
 fn open_terminal_impl(dir: &Path) -> Result<(), GuiError> {
     #[cfg(target_os = "macos")]
     {
+        let dir_escaped = applescript_string_escape(&dir.to_string_lossy());
         let script = format!(
-            "tell application \"Terminal\" to do script \"cd \" & quoted form of \"{}\" & \" && clear\"",
-            dir.display()
+            "tell application \"Terminal\" to do script \"cd \" & quoted form of \"{dir_escaped}\" & \" && clear\""
         );
         let status = std::process::Command::new("osascript")
             .args(["-e", &script])
@@ -1207,10 +1207,10 @@ fn open_terminal_impl(dir: &Path) -> Result<(), GuiError> {
         for (bin, args_prefix) in candidates {
             let mut cmd = std::process::Command::new(bin);
             if *bin == "xterm" {
-                cmd.args(args_prefix)
-                    .arg(format!("cd {dir_s} && exec $SHELL"));
+                let shell_cmd = format!("cd {} && exec \"$SHELL\"", shell_single_quote(&dir_s));
+                cmd.args(*args_prefix).arg("sh").arg("-c").arg(shell_cmd);
             } else {
-                cmd.args(args_prefix).arg(dir.as_os_str());
+                cmd.args(*args_prefix).arg(dir.as_os_str());
             }
             if cmd.spawn().is_ok() {
                 return Ok(());
@@ -1227,10 +1227,36 @@ fn open_terminal_impl(dir: &Path) -> Result<(), GuiError> {
     }
 }
 
+/// Escape `s` for interpolation into an AppleScript double-quoted string literal.
+#[cfg(target_os = "macos")]
+fn applescript_string_escape(s: &str) -> String {
+    s.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
+/// Wrap `s` in single quotes for safe use in `/bin/sh -c`.
+#[cfg(target_os = "linux")]
+fn shell_single_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\"'\"'"))
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn applescript_string_escape_handles_quotes_and_backslashes() {
+        assert_eq!(applescript_string_escape(r#"a"b"#), r#"a\"b"#);
+        assert_eq!(applescript_string_escape(r"a\b"), r"a\\b");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn shell_single_quote_escapes_embedded_single_quotes() {
+        assert_eq!(shell_single_quote("/tmp/site"), "'/tmp/site'");
+        assert_eq!(shell_single_quote("/tmp/o'brien"), "'/tmp/o'\"'\"'brien'");
+    }
 
     #[test]
     fn finish_passes_success_through() {

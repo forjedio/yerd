@@ -24,7 +24,9 @@ export interface TrayAutocompletePrefs {
   emptyCap?: number;
 }
 
-/** Build grouped, ranked suggestions for the tray site autocomplete. */
+/** Build grouped, ranked suggestions for the tray site autocomplete.
+ *  With a query: favorites first, then recent (MRU), then alpha.
+ *  Empty query: favorites, then recent, then remaining sites. */
 export function buildTraySiteSuggestions(
   sites: readonly SiteEntry[],
   query: string,
@@ -67,7 +69,6 @@ export function buildTraySiteSuggestions(
     return [...out, ...rest].slice(0, limit);
   }
 
-  // Rank: favorites first, then recent (MRU), then alpha.
   const recentIdx = new Map(recentOrder.map((n, i) => [n, i]));
   matched.sort((a, b) => {
     const af = favSet.has(a.name) ? 0 : 1;
@@ -89,6 +90,7 @@ export function buildTraySiteSuggestions(
   });
 }
 
+/** True when `site` matches `queryLower` by name, domain, or path segments. */
 export function siteMatches(site: SiteEntry, queryLower: string, tld: string): boolean {
   if (site.name.toLowerCase().includes(queryLower)) return true;
   const domain = displayHost(site, tld).toLowerCase();
@@ -98,7 +100,6 @@ export function siteMatches(site: SiteEntry, queryLower: string, tld: string): b
   }
   const path = site.document_root.toLowerCase();
   if (path.includes(queryLower)) return true;
-  // Path segment match (last few segments).
   for (const seg of site.document_root.split(/[/\\]/).filter(Boolean)) {
     if (seg.toLowerCase().includes(queryLower)) return true;
   }
