@@ -41,6 +41,7 @@ jobs:
       BUNNY_STORAGE_ZONE: ${{ vars.BUNNY_STORAGE_ZONE }}
       BUNNY_STORAGE_ENDPOINT: ${{ vars.BUNNY_STORAGE_ENDPOINT }}
       BUNNY_PURGE_API_KEY: ${{ secrets.BUNNY_PURGE_API_KEY }}
+      MINISIGN_SECRET_KEY: ${{ secrets.MINISIGN_SECRET_KEY }}
       PULLZONE: ${{ vars.BUNNY_PULLZONE_HOST }}
       APPLY: ${{ inputs.apply }}
       INCLUDE_DELETES: ${{ inputs.include_deletes }}
@@ -182,9 +183,16 @@ jobs:
             --cdn-listing listing.post.json \
             --cdn-base "https://${PULLZONE}" \
             --out-dir cdn
+          # Sign the manifests with the release key; the daemon verifies
+          # latest.json against the embedded UPDATE_PUBLIC_KEY before trusting it.
+          bash .github/scripts/sign-manifests.sh cdn/releases.json cdn/latest.json
           put="${GITHUB_WORKSPACE}/.github/scripts/bunny-put.sh"
           bash "$put" cdn/releases.json releases.json
+          bash "$put" cdn/releases.json.minisig releases.json.minisig
           bash "$put" cdn/latest.json latest.json
+          bash "$put" cdn/latest.json.minisig latest.json.minisig
           bash .github/scripts/bunny-purge.sh \
             "https://${PULLZONE}/releases.json" \
-            "https://${PULLZONE}/latest.json"
+            "https://${PULLZONE}/releases.json.minisig" \
+            "https://${PULLZONE}/latest.json" \
+            "https://${PULLZONE}/latest.json.minisig"

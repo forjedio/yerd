@@ -6630,6 +6630,7 @@ dependencies = [
  "yerd-php",
  "yerd-platform",
  "yerd-proxy",
+ "yerd-release-manifest",
  "yerd-services",
  "yerd-supervise",
  "yerd-tls",

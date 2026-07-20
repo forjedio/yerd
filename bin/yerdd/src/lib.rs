@@ -241,7 +241,8 @@ async fn run_until_shutdown(
                         .await;
                     }
                     _ = self_tick.tick() => {
-                        crate::self_update::poll_if_due(&state, &dl).await;
+                        crate::self_update::poll_if_due(&state, &dl, yerd_update::UPDATE_PUBLIC_KEY)
+                            .await;
                     }
                     _ = rx.changed() => break,
                 }
