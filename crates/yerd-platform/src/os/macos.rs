@@ -28,7 +28,7 @@ use crate::port_binder::{BoundPort, PortBinder, PortPair};
 use crate::port_redirect::{
     loopback_port_reachable, loopback_redirect_reaches_proxy, PortRedirector,
 };
-use crate::pure::{pem_match, port_plan, ps_metrics, resolver_file};
+use crate::pure::{pem_match, pf_anchor, port_plan, ps_metrics, resolver_file};
 use crate::resolver::ResolverInstaller;
 use crate::trust_store::{BrowserCaTrust, CaFingerprint, NssOutcome, TrustStore};
 use crate::{BindPairErrorReason, PlatformError, ResolverErrorReason, TrustStoreErrorReason};
@@ -376,11 +376,18 @@ impl PortBinder for MacosPortBinder {
 /// ports on `0.0.0.0`, and a privileged `pf rdr` (installed by `yerd elevate lan`)
 /// carries inbound 80/443 to `<lan_ip>:<rootless>`. So `lan` here only widens the
 /// bind address; the privileged-port redirect is a separate concern.
+///
+/// The daemon must never hold a privileged port directly, so a privileged
+/// `desired` pair is replaced by `fallback` before any bind is attempted (see
+/// [`port_plan::strip_privileged_desired`]). This keeps the daemon deterministically
+/// on the rootless ports the `pf rdr` targets, regardless of whether a privileged
+/// bind would have been permitted.
 fn bind_pair_impl(
     lan: bool,
     desired: (u16, u16),
     fallback: (u16, u16),
 ) -> Result<PortPair, PlatformError> {
+    let desired = port_plan::strip_privileged_desired(desired, fallback);
     let ip = if lan {
         Ipv4Addr::UNSPECIFIED
     } else {
@@ -534,6 +541,23 @@ impl PortRedirector for MacosPortRedirector {
         // redirect is live and ours.
         Some(loopback_redirect_reaches_proxy(80) && loopback_port_reachable(443))
     }
+
+    fn redirect_targets(&self) -> Option<(u16, u16)> {
+        anchor_targets_at(Path::new(pf_anchor::ANCHOR_PATH))
+    }
+
+    fn lan_redirect_targets(&self) -> Option<(u16, u16)> {
+        anchor_targets_at(Path::new(pf_anchor::LAN_ANCHOR_PATH))
+    }
+}
+
+/// Read and parse the destination ports of an installed pf anchor file. The
+/// helper writes both anchors world-readable, so the unprivileged daemon can
+/// read them; any read or parse failure collapses to `None` (never a false
+/// finding).
+fn anchor_targets_at(path: &Path) -> Option<(u16, u16)> {
+    let text = fs::read_to_string(path).ok()?;
+    pf_anchor::parse_anchor_targets(&text)
 }
 
 #[cfg(test)]
@@ -749,6 +773,42 @@ mod tests {
         let taken = occupied.local_addr().unwrap().port();
         let err = MacosPortBinder::new().bind(taken).unwrap_err();
         assert!(matches!(err, PlatformError::Bind { port, .. } if port == taken));
+    }
+
+    /// A privileged desired pair is never attempted: it is replaced by the
+    /// rootless fallback first, so the bind succeeds without root and lands on
+    /// non-privileged ports even though 80/443 were requested.
+    #[test]
+    fn bind_pair_impl_never_attempts_privileged_desired() {
+        let pair = bind_pair_impl(false, (80, 443), (0, 0)).unwrap();
+        let http = pair.http.port().unwrap();
+        let https = pair.https.port().unwrap();
+        assert!(http != 80 && http != 443 && http != 0);
+        assert!(https != 80 && https != 443 && https != 0);
+    }
+
+    // ---- PortRedirector anchor target reads ---------------------------
+
+    /// A composed anchor file parses to its rootless target ports.
+    #[test]
+    fn anchor_targets_at_reads_composed_rules() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("dev.yerd");
+        std::fs::write(&path, pf_anchor::compose_anchor_rules(80, 8080, 443, 8443)).unwrap();
+        assert_eq!(anchor_targets_at(&path), Some((8080, 8443)));
+    }
+
+    /// A missing or garbage anchor file collapses to `None`, never a false read.
+    #[test]
+    fn anchor_targets_at_missing_or_garbage_is_none() {
+        assert_eq!(
+            anchor_targets_at(Path::new("/etc/pf.anchors/yerd-absent-zzz")),
+            None
+        );
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("garbage");
+        std::fs::write(&path, "not a pf rule\n").unwrap();
+        assert_eq!(anchor_targets_at(&path), None);
     }
 
     // ---- SystemMetrics ------------------------------------------------

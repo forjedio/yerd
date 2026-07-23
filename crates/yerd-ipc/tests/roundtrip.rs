@@ -250,6 +250,8 @@ fn encode_then_decode_response_roundtrip() {
             lan_enabled: true,
             lan_ip: Some("192.168.1.42".parse().unwrap()),
             lan_setup_bound: Some(true),
+            port_redirect_targets: None,
+            lan_redirect_targets: None,
         }),
     });
     assert_response_roundtrips(Response::Diagnoses {

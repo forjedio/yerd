@@ -292,6 +292,14 @@ export interface StatusReport {
   /** Whether `yerd mcp` serves Yerd's tools to local AI agents. Defaults to
    *  `false` (opt-in) when omitted by a daemon predating the field. */
   mcp_enabled?: boolean;
+  /** macOS: destination ports the installed loopback (`dev.yerd`) pf anchor
+   *  carries 80/443 to. Compare with `http.bound`/`https.bound` to detect a
+   *  stale redirect that black-holes on-host access. Omitted when not installed,
+   *  unreadable, or not macOS. */
+  port_redirect_targets?: { http: number; https: number } | null;
+  /** macOS: same as `port_redirect_targets` for the LAN (`dev.yerd.lan`) anchor.
+   *  A stale target here black-holes other devices while LAN mode is on. */
+  lan_redirect_targets?: { http: number; https: number } | null;
 }
 
 /** One apex-shadow relationship: `site`'s apex is claimed by `shadowed_by`. */
@@ -307,6 +315,7 @@ export type DiagnosisCode =
   | "port_fallback"
   | "web_ports_unbound"
   | "foreign_web_listener"
+  | "dns_port_unbound"
   | "ca_not_trusted"
   | "ca_not_trusted_by_browsers"
   | "resolver_not_installed"
@@ -320,6 +329,9 @@ export type DiagnosisCode =
   | "bin_dir_not_on_path"
   | "php_ca_not_trusted"
   | "symlink_protection_disabled"
+  | "domain_shadowed"
+  | "port_redirect_stale"
+  | "lan_redirect_stale"
   | "all_good";
 
 export interface Diagnosis {

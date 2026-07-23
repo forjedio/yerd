@@ -1425,6 +1425,9 @@ fn format_status(r: &StatusReport) -> String {
             "ports     conflict: another process is using 80/443 (run `yerd doctor`)"
         );
     }
+    if let Some(line) = redirect_stale_line(r) {
+        let _ = writeln!(s, "{line}");
+    }
     if let Some(port) = r.dns_unbound {
         let _ = writeln!(
             s,
@@ -1583,6 +1586,30 @@ fn fmt_tristate(b: Option<bool>) -> &'static str {
         Some(false) => "no",
         None => "unknown",
     }
+}
+
+/// A `ports` status line when an installed macOS pf redirect targets a port the
+/// daemon is no longer serving. The host (loopback) case takes precedence and
+/// names both elevate commands; a LAN-only mismatch (host fine) names the LAN
+/// step. `None` when nothing is stale. Mirrors the doctor's stale findings.
+fn redirect_stale_line(r: &StatusReport) -> Option<String> {
+    let mismatched =
+        |t: yerd_ipc::PortRedirectTargets| t.http != r.http.bound || t.https != r.https.bound;
+    if r.port_redirect_targets.is_some_and(mismatched) {
+        return Some(
+            "ports     stale redirect: pf targets a dead port (run `sudo yerd elevate ports`, \
+             then `sudo yerd elevate lan` if LAN is on; see `yerd doctor`)"
+                .to_owned(),
+        );
+    }
+    if r.lan_enabled && r.lan_redirect_targets.is_some_and(mismatched) {
+        return Some(
+            "ports     stale LAN redirect: other devices reach a dead port (run \
+             `sudo yerd elevate lan`; see `yerd doctor`)"
+                .to_owned(),
+        );
+    }
+    None
 }
 
 /// Render integer hundredths (e.g. `152`) as a decimal (`1.52`).
@@ -2732,6 +2759,8 @@ mod tests {
             lan_enabled: false,
             lan_ip: None,
             lan_setup_bound: None,
+            port_redirect_targets: None,
+            lan_redirect_targets: None,
         }
     }
 
@@ -2848,6 +2877,40 @@ mod tests {
             fell_back: false,
         };
         assert_eq!(fmt_port(bound, true), "80");
+    }
+
+    #[test]
+    fn status_shows_stale_redirect_lines() {
+        let mut r = sample_report();
+        r.http.bound = 8080;
+        r.https.bound = 8443;
+
+        r.port_redirect_targets = Some(yerd_ipc::PortRedirectTargets {
+            http: 9090,
+            https: 9443,
+        });
+        let out = format_status(&r);
+        assert!(out.contains("stale redirect"), "{out}");
+        assert!(out.contains("elevate ports"), "{out}");
+
+        r.port_redirect_targets = Some(yerd_ipc::PortRedirectTargets {
+            http: 8080,
+            https: 8443,
+        });
+        r.lan_enabled = true;
+        r.lan_redirect_targets = Some(yerd_ipc::PortRedirectTargets {
+            http: 80,
+            https: 443,
+        });
+        let out = format_status(&r);
+        assert!(out.contains("stale LAN redirect"), "{out}");
+
+        r.lan_redirect_targets = Some(yerd_ipc::PortRedirectTargets {
+            http: 8080,
+            https: 8443,
+        });
+        let out = format_status(&r);
+        assert!(!out.contains("stale"), "{out}");
     }
 
     #[test]

@@ -78,6 +78,42 @@ pub fn is_retry_kind(kind: ErrorKind) -> bool {
     )
 }
 
+/// Ports below this are privileged: binding one needs elevation on every
+/// supported OS.
+pub const PRIVILEGED_PORT_CEILING: u16 = 1024;
+
+/// Replace a privileged desired pair with the rootless fallback pair.
+///
+/// On macOS the daemon must never hold a privileged port directly: the
+/// invariant is that it binds its rootless pair and a privileged `pf rdr`
+/// (installed by `yerd elevate ports` / `yerd elevate lan`) carries 80/443 to
+/// it. A privileged desired bind normally fails with `PermissionDenied`, which
+/// [`is_retry_kind`] already routes to the fallback, so for most daemons this
+/// only formalizes the fallback that already happens. It additionally closes
+/// the path where a privileged bind occasionally succeeds and leaves the daemon
+/// squatting 80/443 in conflict with the redirect design, regardless of how
+/// that bind came to be permitted.
+///
+/// The substitution is pair-level, mirroring `bind_pair`'s pair-level fallback:
+/// if either side of `desired` is privileged, the whole `fallback` pair is
+/// returned. Port `0` (ephemeral, used by tests) is not privileged and passes
+/// through. For the default config the returned pair equals `fallback`, so
+/// `bind_pair_impl`'s two-stage desired/fallback retry collapses to a single
+/// effective attempt on macOS.
+#[must_use]
+pub fn strip_privileged_desired(desired: (u16, u16), fallback: (u16, u16)) -> (u16, u16) {
+    if is_privileged(desired.0) || is_privileged(desired.1) {
+        fallback
+    } else {
+        desired
+    }
+}
+
+/// True if `port` is non-zero and below [`PRIVILEGED_PORT_CEILING`].
+fn is_privileged(port: u16) -> bool {
+    port != 0 && port < PRIVILEGED_PORT_CEILING
+}
+
 #[cfg(test)]
 #[allow(
     clippy::unwrap_used,
@@ -188,5 +224,50 @@ mod tests {
         assert!(!is_retry_kind(ErrorKind::Unsupported));
         assert!(!is_retry_kind(ErrorKind::NotFound));
         assert!(!is_retry_kind(ErrorKind::Other));
+    }
+
+    #[test]
+    fn default_privileged_pair_collapses_to_fallback() {
+        assert_eq!(
+            strip_privileged_desired((80, 443), (8080, 8443)),
+            (8080, 8443)
+        );
+    }
+
+    #[test]
+    fn rootless_desired_passes_through() {
+        assert_eq!(
+            strip_privileged_desired((8080, 8443), (9080, 9443)),
+            (8080, 8443)
+        );
+    }
+
+    #[test]
+    fn either_privileged_side_collapses_whole_pair() {
+        assert_eq!(
+            strip_privileged_desired((80, 8443), (8080, 8443)),
+            (8080, 8443)
+        );
+        assert_eq!(
+            strip_privileged_desired((8080, 443), (8080, 8443)),
+            (8080, 8443)
+        );
+    }
+
+    #[test]
+    fn ephemeral_zero_is_not_privileged() {
+        assert_eq!(strip_privileged_desired((0, 0), (8080, 8443)), (0, 0));
+    }
+
+    #[test]
+    fn privileged_ceiling_is_exclusive() {
+        assert_eq!(
+            strip_privileged_desired((1023, 1023), (8080, 8443)),
+            (8080, 8443)
+        );
+        assert_eq!(
+            strip_privileged_desired((1024, 1024), (8080, 8443)),
+            (1024, 1024)
+        );
     }
 }

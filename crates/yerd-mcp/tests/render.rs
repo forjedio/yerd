@@ -135,6 +135,14 @@ fn sample_report() -> yerd_ipc::StatusReport {
         lan_enabled: false,
         lan_ip: None,
         lan_setup_bound: None,
+        port_redirect_targets: Some(yerd_ipc::PortRedirectTargets {
+            http: 8080,
+            https: 8443,
+        }),
+        lan_redirect_targets: Some(yerd_ipc::PortRedirectTargets {
+            http: 8080,
+            https: 8443,
+        }),
     }
 }
 
@@ -334,6 +342,8 @@ fn status_is_trimmed_to_what_an_agent_can_act_on() {
         "ca",
         "resolver_backup",
         "port_redirect",
+        "port_redirect_targets",
+        "lan_redirect_targets",
         "shared_sites",
         "lan_enabled",
         "lan_ip",

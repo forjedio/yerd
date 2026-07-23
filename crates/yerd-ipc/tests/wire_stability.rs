@@ -21,9 +21,10 @@ use yerd_ipc::{
     AddableServiceType, CaStatus, Channel, CloudflaredSource, CloudflaredStatus, DatabaseSummary,
     Diagnosis, DiagnosisCode, DumpCategory, DumpCounts, DumpEvent, DumpExtStatus, ErrorCode,
     FixReport, FixResult, MailAttachment, MailDetail, MailHeader, MailStatus, MailSummary,
-    NamedTunnelMeta, PhpPoolStatus, PoolRunState, PortStatus, Request, Response,
-    ServiceAvailability, ServiceRunState, ServiceStatus, Severity, SiteCounts, SiteHostname,
-    StagedArtifact, StatusReport, ToolStatus, TunnelInfo, TunnelKind, TunnelRunState, UpdateSource,
+    NamedTunnelMeta, PhpPoolStatus, PoolRunState, PortRedirectTargets, PortStatus, Request,
+    Response, ServiceAvailability, ServiceRunState, ServiceStatus, Severity, SiteCounts,
+    SiteHostname, StagedArtifact, StatusReport, ToolStatus, TunnelInfo, TunnelKind, TunnelRunState,
+    UpdateSource,
 };
 
 // ---------- Request ----------
@@ -1023,6 +1024,8 @@ fn response_status_byte_shape() {
             lan_enabled: false,
             lan_ip: None,
             lan_setup_bound: None,
+            port_redirect_targets: None,
+            lan_redirect_targets: None,
         }),
     };
     let s = serde_json::to_string(&r).unwrap();
@@ -1048,6 +1051,33 @@ fn status_port_redirect_appears_only_when_some() {
     report.port_redirect = None;
     let s = serde_json::to_string(&report).unwrap();
     assert!(!s.contains("port_redirect"), "{s}");
+}
+
+#[test]
+fn status_redirect_targets_appear_only_when_some() {
+    let mut report = sample_status_report();
+    report.port_redirect_targets = Some(PortRedirectTargets {
+        http: 8080,
+        https: 8443,
+    });
+    report.lan_redirect_targets = Some(PortRedirectTargets {
+        http: 8081,
+        https: 8444,
+    });
+    let s = serde_json::to_string(&report).unwrap();
+    assert!(
+        s.contains(r#""port_redirect_targets":{"http":8080,"https":8443}"#),
+        "{s}"
+    );
+    assert!(
+        s.contains(r#""lan_redirect_targets":{"http":8081,"https":8444}"#),
+        "{s}"
+    );
+
+    report.port_redirect_targets = None;
+    report.lan_redirect_targets = None;
+    let s = serde_json::to_string(&report).unwrap();
+    assert!(!s.contains("redirect_targets"), "{s}");
 }
 
 #[test]
@@ -1129,6 +1159,8 @@ fn sample_status_report() -> StatusReport {
         lan_enabled: false,
         lan_ip: None,
         lan_setup_bound: None,
+        port_redirect_targets: None,
+        lan_redirect_targets: None,
     }
 }
 
@@ -1273,6 +1305,8 @@ fn diagnosis_code_each_variant_byte_shape() {
             r#""symlink_protection_disabled""#,
         ),
         (DiagnosisCode::DomainShadowed, r#""domain_shadowed""#),
+        (DiagnosisCode::PortRedirectStale, r#""port_redirect_stale""#),
+        (DiagnosisCode::LanRedirectStale, r#""lan_redirect_stale""#),
         (DiagnosisCode::AllGood, r#""all_good""#),
     ];
     for (code, expected) in cases {

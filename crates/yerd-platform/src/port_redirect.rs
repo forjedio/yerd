@@ -51,6 +51,19 @@ pub trait PortRedirector {
         }
         Some(loopback_port_reachable(80) || loopback_port_reachable(443))
     }
+
+    /// Destination ports `(http_to, https_to)` of the installed loopback
+    /// (`dev.yerd`) pf anchor, read from disk. Compared against the daemon's
+    /// live bound ports to detect a stale redirect. `None` = not installed,
+    /// unreadable, or not applicable on this OS (only macOS uses a pf anchor).
+    fn redirect_targets(&self) -> Option<(u16, u16)> {
+        None
+    }
+
+    /// Same as [`Self::redirect_targets`] for the LAN (`dev.yerd.lan`) anchor.
+    fn lan_redirect_targets(&self) -> Option<(u16, u16)> {
+        None
+    }
 }
 
 /// Returns `true` iff a TCP connection to `127.0.0.1:port` succeeds within

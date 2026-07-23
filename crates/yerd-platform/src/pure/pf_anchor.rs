@@ -67,6 +67,52 @@ pub fn compose_anchor_rules(
     )
 }
 
+/// Parse the destination ports of an installed `dev.yerd` or `dev.yerd.lan`
+/// anchor file, returning `(http_to, https_to)`.
+///
+/// Handles both the loopback shape (`... to any port 80 -> 127.0.0.1 port 8080`)
+/// and the LAN shape (`... to <lan_ip> port 80 -> <lan_ip> port 8080`). For each
+/// `rdr` line the from-port is the number after the last `port` before `->` and
+/// the to-port the number after the last `port` after `->`; the line whose
+/// from-port is 80 gives `http_to` and 443 gives `https_to`. Returns `None`
+/// unless both are found (a partial or hand-edited file is treated as unknown).
+#[must_use]
+pub fn parse_anchor_targets(rules: &str) -> Option<(u16, u16)> {
+    let mut http_to: Option<u16> = None;
+    let mut https_to: Option<u16> = None;
+    for line in rules.lines() {
+        let Some((lhs, rhs)) = line.split_once("->") else {
+            continue;
+        };
+        let Some(from) = last_port_token(lhs) else {
+            continue;
+        };
+        let Some(to) = last_port_token(rhs) else {
+            continue;
+        };
+        match from {
+            80 => http_to = Some(to),
+            443 => https_to = Some(to),
+            _ => {}
+        }
+    }
+    Some((http_to?, https_to?))
+}
+
+/// The last `port <N>` value in `segment`, if any.
+fn last_port_token(segment: &str) -> Option<u16> {
+    let mut tokens = segment.split_whitespace().peekable();
+    let mut found: Option<u16> = None;
+    while let Some(tok) = tokens.next() {
+        if tok == "port" {
+            if let Some(value) = tokens.peek().and_then(|v| v.parse::<u16>().ok()) {
+                found = Some(value);
+            }
+        }
+    }
+    found
+}
+
 /// The `rdr-anchor` line for `name`, tagged with `marker`.
 fn rdr_anchor_line_for(name: &str, marker: &str) -> String {
     format!("rdr-anchor \"{name}\" {marker}")
@@ -384,5 +430,44 @@ load anchor \"com.apple\" from \"/etc/pf.anchors/com.apple\"
         let once = insert_lan_anchor_refs(APPLE_DEFAULT);
         let twice = insert_lan_anchor_refs(&once);
         assert_eq!(once, twice);
+    }
+
+    #[test]
+    fn parse_roundtrips_loopback_anchor() {
+        let text = compose_anchor_rules(80, 8080, 443, 8443);
+        assert_eq!(parse_anchor_targets(&text), Some((8080, 8443)));
+    }
+
+    #[test]
+    fn parse_roundtrips_non_default_rootless_pair() {
+        let text = compose_anchor_rules(80, 9080, 443, 9443);
+        assert_eq!(parse_anchor_targets(&text), Some((9080, 9443)));
+    }
+
+    #[test]
+    fn parse_roundtrips_lan_anchor() {
+        let ip = std::net::Ipv4Addr::new(192, 168, 1, 42);
+        let text = compose_lan_anchor_rules(ip, 80, 8080, 443, 8443);
+        assert_eq!(parse_anchor_targets(&text), Some((8080, 8443)));
+    }
+
+    #[test]
+    fn parse_reads_identity_lan_rule() {
+        let ip = std::net::Ipv4Addr::new(192, 168, 0, 201);
+        let text = compose_lan_anchor_rules(ip, 80, 80, 443, 443);
+        assert_eq!(parse_anchor_targets(&text), Some((80, 443)));
+    }
+
+    #[test]
+    fn parse_none_when_https_rule_missing() {
+        let text =
+            "rdr pass on lo0 inet proto tcp from any to any port 80 -> 127.0.0.1 port 8080\n";
+        assert_eq!(parse_anchor_targets(text), None);
+    }
+
+    #[test]
+    fn parse_none_on_empty_or_garbage() {
+        assert_eq!(parse_anchor_targets(""), None);
+        assert_eq!(parse_anchor_targets("not a rule at all\n# comment\n"), None);
     }
 }

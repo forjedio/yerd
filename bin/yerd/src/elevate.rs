@@ -303,6 +303,7 @@ mod unix_impl {
                             .to_owned(),
                     ));
                 }
+                require_rootless_web_facts(facts, PORTS_RESTART_REMEDY)?;
                 HelperInvocation::InstallPortRedirect {
                     http_from: 80,
                     http_to: facts.http_port,
@@ -335,6 +336,7 @@ mod unix_impl {
                             .to_owned(),
                     ));
                 }
+                require_rootless_web_facts(facts, LAN_RESTART_REMEDY)?;
                 let lan_ip = facts.lan_ip.ok_or_else(|| {
                     ClientError::Usage(
                         "LAN IP unknown — run `yerd lan enable` (and check `yerd lan status`) first"
@@ -352,6 +354,41 @@ mod unix_impl {
             #[cfg(target_os = "macos")]
             (ElevateTarget::Lan, true) => HelperInvocation::UninstallLanPortRedirect,
         })
+    }
+
+    /// Ports below this are privileged on every supported OS.
+    #[cfg(target_os = "macos")]
+    const PRIVILEGED_PORT_CEILING: u16 = 1024;
+
+    /// Recovery guidance for the `elevate ports` arm when the daemon still holds
+    /// a privileged port directly.
+    #[cfg(target_os = "macos")]
+    const PORTS_RESTART_REMEDY: &str =
+        "restart it (`yerd restart daemon`) so it binds its rootless ports, then re-run \
+         `sudo yerd elevate ports`; if LAN mode is on, also re-run `sudo yerd elevate lan`";
+
+    /// Recovery guidance for the `elevate lan` arm.
+    #[cfg(target_os = "macos")]
+    const LAN_RESTART_REMEDY: &str =
+        "restart it (`yerd restart daemon`) so it binds its rootless ports, then re-run \
+         `sudo yerd elevate lan` (and `sudo yerd elevate ports` if the host redirect has not \
+         been refreshed since the restart)";
+
+    /// Refuse to install a macOS pf redirect while the daemon is holding a
+    /// privileged web port directly. `facts.http_port`/`https_port` are the
+    /// daemon's *bound* ports; a redirect whose target is the privileged port
+    /// itself produces an identity rule (`80 -> 80`) that black-holes traffic
+    /// once the daemon moves to its rootless ports. Only reachable while a
+    /// pre-fix daemon still squats 80/443; `remedy` names the arm's own recovery.
+    #[cfg(target_os = "macos")]
+    fn require_rootless_web_facts(facts: &Facts, remedy: &str) -> Result<(), ClientError> {
+        if facts.http_port < PRIVILEGED_PORT_CEILING || facts.https_port < PRIVILEGED_PORT_CEILING {
+            return Err(ClientError::Usage(format!(
+                "the daemon is holding a privileged port directly (http {}, https {}); {remedy}",
+                facts.http_port, facts.https_port
+            )));
+        }
+        Ok(())
     }
 
     fn describe(target: ElevateTarget, undo: bool, facts: &Facts) -> String {
@@ -675,6 +712,26 @@ mod unix_impl {
             let undo = plan_invocation(ElevateTarget::Ports, &facts(), Path::new("/x/yerdd"), true)
                 .unwrap();
             assert_eq!(argv(&undo)[0], "uninstall-port-redirect");
+        }
+
+        #[cfg(target_os = "macos")]
+        #[test]
+        fn macos_elevate_rejects_privileged_bound_ports() {
+            let mut f = facts();
+            f.http_port = 80;
+            f.https_port = 443;
+
+            let ports_err = plan_invocation(ElevateTarget::Ports, &f, Path::new("/x/yerdd"), false)
+                .unwrap_err();
+            let ports_msg = ports_err.to_string();
+            assert!(ports_msg.contains("privileged port"), "{ports_msg}");
+            assert!(ports_msg.contains("elevate ports"), "{ports_msg}");
+
+            let lan_err =
+                plan_invocation(ElevateTarget::Lan, &f, Path::new("/x/yerdd"), false).unwrap_err();
+            let lan_msg = lan_err.to_string();
+            assert!(lan_msg.contains("privileged port"), "{lan_msg}");
+            assert!(lan_msg.contains("elevate lan"), "{lan_msg}");
         }
 
         #[test]

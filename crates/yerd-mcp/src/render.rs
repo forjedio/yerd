@@ -62,7 +62,9 @@ fn render_error(tool: &str, code: ErrorCode, message: &str) -> Value {
 }
 
 /// Keep what an agent can act on; drop host/process detail (pid, RSS, load
-/// average, boot id, CA path and fingerprint, resolver backup, port redirect).
+/// average, boot id, CA path and fingerprint, resolver backup, port redirect and
+/// its anchor target ports). This is an allowlist projection, so new host-only
+/// `StatusReport` fields are excluded by default.
 fn trim_status(report: &StatusReport) -> Value {
     let php: Vec<Value> = report
         .php
