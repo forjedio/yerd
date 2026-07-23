@@ -343,7 +343,19 @@ fn port_findings(report: &StatusReport) -> Vec<Diagnosis> {
         ));
         return out;
     }
-    if privileged_fallback(report) && report.port_redirect != Some(true) && !foreign_listener {
+    let host_stale = redirect_stale_finding(report);
+    let host_stale_present = host_stale.is_some();
+    if let Some(finding) = host_stale {
+        out.push(finding);
+    }
+    if let Some(finding) = lan_redirect_stale_finding(report) {
+        out.push(finding);
+    }
+    if privileged_fallback(report)
+        && report.port_redirect != Some(true)
+        && !foreign_listener
+        && !host_stale_present
+    {
         out.push(warn(
             DiagnosisCode::PortFallback,
             "Privileged ports not bound",
@@ -358,6 +370,55 @@ fn port_findings(report: &StatusReport) -> Vec<Diagnosis> {
         ));
     }
     out
+}
+
+/// Warn when the installed macOS loopback (`dev.yerd`) pf redirect targets a
+/// port the daemon is no longer serving, so on-host 80/443 are black-holed even
+/// though the daemon is up. Not gated on `lan_enabled`: the loopback anchor
+/// governs host access regardless of LAN mode. `None` targets emit nothing (the
+/// anchor is not installed, unreadable, or this is not macOS).
+fn redirect_stale_finding(report: &StatusReport) -> Option<Diagnosis> {
+    let t = report.port_redirect_targets?;
+    if t.http == report.http.bound && t.https == report.https.bound {
+        return None;
+    }
+    Some(warn(
+        DiagnosisCode::PortRedirectStale,
+        "Port redirect is stale",
+        format!(
+            "The pf redirect sends 80→{} and 443→{}, but Yerd is listening on {} and {}, so \
+             http/https on this Mac fail even though the daemon is running.",
+            t.http, t.https, report.http.bound, report.https.bound
+        ),
+        "restart the daemon if it recently changed ports, then sudo yerd elevate ports; \
+         if LAN mode is on, also sudo yerd elevate lan",
+    ))
+}
+
+/// Warn when LAN mode is on and the installed macOS LAN (`dev.yerd.lan`) pf
+/// redirect targets a port the daemon is no longer serving, so other devices
+/// reach a dead port. Gated on `lan_enabled`: `yerd lan disable` leaves the
+/// anchor in place (only `yerd unelevate lan` removes it), and a deliberately
+/// disabled machine has no remote path left to break.
+fn lan_redirect_stale_finding(report: &StatusReport) -> Option<Diagnosis> {
+    if !report.lan_enabled {
+        return None;
+    }
+    let t = report.lan_redirect_targets?;
+    if t.http == report.http.bound && t.https == report.https.bound {
+        return None;
+    }
+    Some(warn(
+        DiagnosisCode::LanRedirectStale,
+        "LAN redirect is stale",
+        format!(
+            "The LAN pf redirect sends 80→{} and 443→{}, but Yerd is listening on {} and {}, so \
+             other devices on your network reach a dead port.",
+            t.http, t.https, report.http.bound, report.https.bound
+        ),
+        "sudo yerd elevate lan (and sudo yerd elevate ports if host 80/443 are also stale); \
+         if the daemon still holds a privileged port, restart it first",
+    ))
 }
 
 /// Remediation for the privileged-ports-not-bound warning. The loopback probe
@@ -431,7 +492,9 @@ fn fail(code: DiagnosisCode, title: &str, detail: String, remedy: Option<String>
 )]
 mod tests {
     use super::*;
-    use yerd_ipc::{CaStatus, PhpPoolStatus, PortStatus, SiteCounts, StatusReport};
+    use yerd_ipc::{
+        CaStatus, PhpPoolStatus, PortRedirectTargets, PortStatus, SiteCounts, StatusReport,
+    };
 
     /// A fully-healthy baseline report: privileged ports bound, CA trusted,
     /// resolver installed, default PHP running, one site.
@@ -492,6 +555,8 @@ mod tests {
             lan_enabled: false,
             lan_ip: None,
             lan_setup_bound: None,
+            port_redirect_targets: None,
+            lan_redirect_targets: None,
         }
     }
 
@@ -637,6 +702,102 @@ mod tests {
         assert!(cs.contains(&DiagnosisCode::WebPortsUnbound));
         assert!(!cs.contains(&DiagnosisCode::PortFallback));
         assert!(!cs.contains(&DiagnosisCode::AllGood));
+    }
+
+    /// Build the rootless-serving fallback state: the daemon requested 80/443 but
+    /// bound the rootless pair, with the pf redirect live.
+    fn rootless_fallback() -> StatusReport {
+        let mut r = healthy();
+        r.http = PortStatus {
+            requested: 80,
+            bound: 8080,
+            fell_back: true,
+        };
+        r.https = PortStatus {
+            requested: 443,
+            bound: 8443,
+            fell_back: true,
+        };
+        r.port_redirect = Some(true);
+        r
+    }
+
+    #[test]
+    fn matching_redirect_targets_stay_silent() {
+        let mut r = rootless_fallback();
+        r.port_redirect_targets = Some(PortRedirectTargets {
+            http: 8080,
+            https: 8443,
+        });
+        let cs = codes(&diagnose(&r, None));
+        assert!(!cs.contains(&DiagnosisCode::PortRedirectStale));
+        assert!(!cs.contains(&DiagnosisCode::LanRedirectStale));
+    }
+
+    #[test]
+    fn stale_loopback_target_warns_and_suppresses_port_fallback() {
+        let mut r = rootless_fallback();
+        r.port_redirect = Some(false);
+        r.port_redirect_targets = Some(PortRedirectTargets {
+            http: 9090,
+            https: 9443,
+        });
+        let ds = diagnose(&r, None);
+        let cs = codes(&ds);
+        assert!(cs.contains(&DiagnosisCode::PortRedirectStale));
+        assert!(!cs.contains(&DiagnosisCode::PortFallback));
+        assert!(!cs.contains(&DiagnosisCode::AllGood));
+        let remedy = ds
+            .iter()
+            .find(|d| d.code == DiagnosisCode::PortRedirectStale)
+            .and_then(|d| d.remedy.as_deref())
+            .expect("stale finding has a remedy");
+        assert!(remedy.contains("elevate ports"));
+        assert!(remedy.contains("elevate lan"));
+    }
+
+    /// The exact M2 transition state: host loopback anchor already matches the
+    /// bound rootless ports (so PortRedirectStale/PortFallback stay silent), but
+    /// the LAN identity anchor still points 80/443 at themselves.
+    #[test]
+    fn lan_identity_anchor_warns_only_lan_stale() {
+        let mut r = rootless_fallback();
+        r.lan_enabled = true;
+        r.port_redirect_targets = Some(PortRedirectTargets {
+            http: 8080,
+            https: 8443,
+        });
+        r.lan_redirect_targets = Some(PortRedirectTargets {
+            http: 80,
+            https: 443,
+        });
+        let ds = diagnose(&r, None);
+        let cs = codes(&ds);
+        assert!(cs.contains(&DiagnosisCode::LanRedirectStale));
+        assert!(!cs.contains(&DiagnosisCode::PortRedirectStale));
+        assert!(!cs.contains(&DiagnosisCode::PortFallback));
+        let remedy = ds
+            .iter()
+            .find(|d| d.code == DiagnosisCode::LanRedirectStale)
+            .and_then(|d| d.remedy.as_deref())
+            .expect("lan stale finding has a remedy");
+        assert!(remedy.contains("elevate lan"));
+    }
+
+    #[test]
+    fn lan_stale_is_gated_on_lan_enabled() {
+        let mut r = rootless_fallback();
+        r.lan_enabled = false;
+        r.port_redirect_targets = Some(PortRedirectTargets {
+            http: 8080,
+            https: 8443,
+        });
+        r.lan_redirect_targets = Some(PortRedirectTargets {
+            http: 80,
+            https: 443,
+        });
+        let cs = codes(&diagnose(&r, None));
+        assert!(!cs.contains(&DiagnosisCode::LanRedirectStale));
     }
 
     #[test]

@@ -780,13 +780,19 @@ async fn build_status_report(state: &DaemonState) -> yerd_ipc::StatusReport {
     .ok()
     .flatten();
 
-    let (port_redirect, foreign_web_listener) = tokio::task::spawn_blocking(|| {
-        use yerd_platform::PortRedirector;
-        let r = yerd_platform::ActivePortRedirector::new();
-        (r.is_active(), r.foreign_web_listener())
-    })
-    .await
-    .unwrap_or((None, None));
+    let (port_redirect, foreign_web_listener, port_redirect_targets, lan_redirect_targets) =
+        tokio::task::spawn_blocking(|| {
+            use yerd_platform::PortRedirector;
+            let r = yerd_platform::ActivePortRedirector::new();
+            (
+                r.is_active(),
+                r.foreign_web_listener(),
+                r.redirect_targets().map(redirect_targets_to_wire),
+                r.lan_redirect_targets().map(redirect_targets_to_wire),
+            )
+        })
+        .await
+        .unwrap_or((None, None, None, None));
 
     let backup_tld = tld.clone();
     let resolver_backup = tokio::task::spawn_blocking(move || latest_resolver_backup(&backup_tld))
@@ -819,6 +825,8 @@ async fn build_status_report(state: &DaemonState) -> yerd_ipc::StatusReport {
         resolver_installed,
         port_redirect,
         foreign_web_listener,
+        port_redirect_targets,
+        lan_redirect_targets,
         resolver_backup,
         default_php,
         php,
@@ -844,6 +852,12 @@ async fn build_status_report(state: &DaemonState) -> yerd_ipc::StatusReport {
         lan_ip,
         lan_setup_bound,
     }
+}
+
+/// Map the platform layer's parsed anchor targets `(http, https)` to the wire
+/// type.
+fn redirect_targets_to_wire((http, https): (u16, u16)) -> yerd_ipc::PortRedirectTargets {
+    yerd_ipc::PortRedirectTargets { http, https }
 }
 
 /// The path of the most recent replaced-resolver backup for `tld`, if one was

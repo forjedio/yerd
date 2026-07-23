@@ -58,6 +58,10 @@ pub trait PortBinder {
     /// [`PlatformError::Bind`] without trying the fallback. If both
     /// pairs fail, the error is
     /// [`PlatformError::BindPair`] carrying all four `ErrorKind`s.
+    ///
+    /// On macOS a privileged `desired` side is never attempted: the pair is
+    /// replaced by `fallback` first, so the daemon deterministically owns the
+    /// rootless ports the `pf` redirect targets and never squats 80/443.
     fn bind_pair(
         &self,
         lan: bool,
