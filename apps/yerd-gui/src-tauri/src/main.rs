@@ -6,6 +6,7 @@ mod commands;
 mod daemon;
 mod elevate;
 mod error;
+mod ide;
 mod ipc;
 #[cfg(target_os = "macos")]
 mod launch_probe;
@@ -16,6 +17,8 @@ mod mail_window;
 #[cfg(target_os = "macos")]
 mod smappservice;
 mod tray;
+mod tray_health;
+mod tray_panel;
 
 #[cfg(target_os = "macos")]
 use tauri::menu::{AboutMetadata, Menu, MenuItem, PredefinedMenuItem, Submenu};
@@ -176,6 +179,7 @@ fn main() {
             commands::job_cancel,
             commands::save_mail_attachment,
             show_dumps_window,
+            show_main_window,
             daemon::daemon_installed,
             daemon::daemon_diagnostics,
             daemon::start_daemon,
@@ -192,10 +196,21 @@ fn main() {
             autostart::set_tray_icon_variant,
             autostart::get_title_bar_style,
             autostart::set_title_bar_style,
+            autostart::get_preferred_ide,
+            autostart::set_preferred_ide,
+            autostart::list_installed_ides,
+            autostart::get_tray_preferences,
+            autostart::set_tray_favorite,
+            autostart::record_tray_recent,
             autostart::setup_state,
             autostart::mark_onboarded,
             autostart::daemon_version_conflict,
             autostart::daemon_self_repair_busy,
+            commands::open_terminal_at,
+            commands::open_site_in_ide,
+            tray_panel::toggle_tray_panel_cmd,
+            tray_panel::hide_tray_panel_cmd,
+            tray_panel::tray_fallback_active,
             logging::gui_log,
             logging::get_gui_logs,
             logging::get_diagnostics,
@@ -224,6 +239,7 @@ fn main() {
             }
         })
         // Close-to-tray: hide instead of quitting; the tray's Quit item exits.
+        // The tray-panel hides without affecting Dock visibility.
         .on_window_event(|window, event| {
             if let WindowEvent::CloseRequested { api, .. } = event {
                 let _ = window.hide();
@@ -231,6 +247,10 @@ fn main() {
                     set_dock_visible(window.app_handle(), false);
                 }
                 api.prevent_close();
+            } else if let WindowEvent::Focused(false) = event {
+                if window.label() == "tray-panel" && !crate::tray_panel::tray_fallback() {
+                    let _ = window.hide();
+                }
             }
         })
         .run(tauri::generate_context!())
@@ -251,6 +271,9 @@ fn setup_app(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     tray::build_tray(app.handle())?;
     tray::spawn_tray_poller(app.handle().clone());
     tray::spawn_launch_update_check(app.handle().clone());
+    if tray_panel::tray_fallback() {
+        let _ = tray_panel::show_tray_panel(app.handle());
+    }
     show_initial_window(app);
     #[cfg(target_os = "macos")]
     {
@@ -448,9 +471,32 @@ fn focused_webview_window(app: &tauri::AppHandle) -> Option<tauri::WebviewWindow
         .find(|w| w.is_focused().unwrap_or(false))
 }
 
+/// Tauri command wrapper so the tray panel Vue can show the main window.
+#[tauri::command]
+fn show_main_window(app: tauri::AppHandle) {
+    show_main(&app);
+}
+
 /// Reveal and focus the main window (from the tray or a window-control handler),
 /// restoring the dock icon. On macOS it first moves to the active Space.
+///
+/// Safe to call from any thread: AppKit mutation (`setCollectionBehavior`, Dock
+/// policy) is always hopped onto the main queue. The single-instance plugin
+/// callback runs on a Tokio worker and would otherwise SIGTRAP with
+/// "Must only be used from the main thread".
 pub(crate) fn show_main(app: &tauri::AppHandle) {
+    let app = app.clone();
+    #[cfg(target_os = "macos")]
+    {
+        dispatch2::DispatchQueue::main().exec_async(move || show_main_on_main(&app));
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        show_main_on_main(&app);
+    }
+}
+
+fn show_main_on_main(app: &tauri::AppHandle) {
     set_dock_visible(app, true);
     if let Some(win) = app.get_webview_window("main") {
         // Must run before show()/set_focus() so the window lands on the active
@@ -479,9 +525,9 @@ fn move_window_to_active_space(win: &tauri::WebviewWindow) {
     if ptr.is_null() {
         return;
     }
-    // SAFETY: ns_window() returns the window's live NSWindow pointer, and the only
-    // show_main callers (tray/window-event handlers) run on the main thread, where
-    // AppKit window mutation must happen.
+    // SAFETY: ns_window() returns the window's live NSWindow pointer. Callers
+    // must be on the main thread (see `show_main` / `reveal_aux_window`); AppKit
+    // window mutation is main-thread-only.
     let ns_window: &NSWindow = unsafe { &*ptr.cast::<NSWindow>() };
     let behavior = ns_window.collectionBehavior() | NSWindowCollectionBehavior::MoveToActiveSpace;
     ns_window.setCollectionBehavior(behavior);

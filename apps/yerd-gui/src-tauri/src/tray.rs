@@ -30,9 +30,10 @@ use tauri::tray::TrayIconBuilder;
 use tauri::{AppHandle, Emitter, Wry};
 
 use yerd_core::PhpVersion;
-use yerd_ipc::{Request, Response};
+use yerd_ipc::{Request, Response, ServiceRunState, StatusReport};
 
 use crate::ipc::{exchange, exchange_timeout};
+use crate::tray_health::{derive_health, tray_dropdown_service_rows, ServiceRow, TrayHealth};
 
 const TRAY_ID: &str = "yerd-tray";
 /// Background poll cadence. Modest because the tray is rarely open; diff-gating
@@ -70,21 +71,24 @@ mod icons {
     pub const SITES: &[u8] = include_bytes!("../icons/menu/layout-grid.png");
     pub const SERVICES: &[u8] = include_bytes!("../icons/menu/database.png");
     pub const ABOUT: &[u8] = include_bytes!("../icons/menu/info.png");
+    pub const DOCTOR: &[u8] = include_bytes!("../icons/menu/stethoscope.png");
     pub const QUIT: &[u8] = include_bytes!("../icons/menu/power.png");
 }
 
-/// The navigable pages the tray links to (demoted below the direct actions). PHP
-/// is listed inline and Mail/Dumps have their own openers, so they aren't here.
+/// The navigable pages the tray used to link; retained for possible reuse.
+#[allow(dead_code)]
 const NAV_ITEMS: &[(&str, &str, &[u8])] = &[
     ("nav:/sites", "Sites", icons::SITES),
     ("nav:/services", "Services", icons::SERVICES),
     ("nav:/about", "About", icons::ABOUT),
 ];
 
-/// The bare "Y" glyph (solid black stroke, transparent ground), source for the
-/// macOS template icon and for the [`TrayIconVariant::LightY`]/`DarkY`
-/// overrides on every OS (see `main.rs` for the macOS template rationale).
-const TRAY_ICON_MAC: &[u8] = include_bytes!("../icons/tray-mac.png");
+/// The menu-bar glyph: rounded squircle with Y cut out (template source:
+/// `icons/tray-mac.svg`), rasterised at build time (22pt @4x = 88px) for crisp
+/// Retina menu bars. Used for the macOS template icon and for the
+/// [`TrayIconVariant::LightY`]/`DarkY` overrides on every OS (see `main.rs` for
+/// the macOS template rationale).
+const TRAY_ICON_MAC: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/tray-mac.png"));
 
 /// Set while a tray-initiated daemon lifecycle action owns the menu.
 static TRANSITION: AtomicBool = AtomicBool::new(false);
@@ -122,6 +126,13 @@ struct TrayState {
     php_update: bool,
     /// Captured emails not yet marked read.
     unread: u32,
+    /// Aggregate health for the icon badge + status header.
+    health: TrayHealth,
+    /// Running / total managed services (excluding synthetic Proxy/PHP rows).
+    services_running: usize,
+    services_total: usize,
+    /// Color-coded service rows for the menu (Proxy, PHP, Redis, …).
+    service_rows: Vec<ServiceRow>,
 }
 
 /// User-selectable tray icon appearance; `Auto` (default) keeps today's
@@ -163,34 +174,55 @@ pub(crate) fn set_cached_variant(variant: TrayIconVariant) {
 
 /// Build the tray and register it; called once from `setup_app`.
 ///
-/// The dynamic menu is the primary surface, so it opens on a plain left-click
-/// (the native macOS/Linux menu-bar convention) as well as right-click; the
-/// "Open Yerd" item opens the main window. (Windows convention is left-click =
-/// open the app; revisit if/when Windows support lands.)
+/// Hybrid UX: left-click toggles the Vue tray panel; right-click (and the
+/// attached menu) shows the native menu. On Linux AppIndicator, clicks often
+/// aren't delivered; the native menu's "Jump to site…" item opens the panel.
 pub(crate) fn build_tray(app: &AppHandle) -> tauri::Result<()> {
     let menu = build_menu(app, &TrayState::default(), dark_menu_bar())?;
     let mut builder = TrayIconBuilder::with_id(TRAY_ID)
         .tooltip("Yerd")
         .menu(&menu)
-        .show_menu_on_left_click(true)
-        .on_menu_event(on_menu_event);
+        .show_menu_on_left_click(false)
+        .on_menu_event(on_menu_event)
+        .on_tray_icon_event(|tray, event| {
+            use tauri::tray::{MouseButton, MouseButtonState, TrayIconEvent};
+            if let TrayIconEvent::Click {
+                button: MouseButton::Left,
+                button_state: MouseButtonState::Up,
+                rect,
+                ..
+            } = event
+            {
+                crate::tray_panel::note_tray_icon_rect(&rect);
+                let _ = crate::tray_panel::toggle_tray_panel(tray.app_handle());
+            }
+        });
 
     let variant = crate::autostart::tray_icon_variant();
     set_cached_variant(variant);
-    let no_badges = Badges {
-        update: false,
-        unread: false,
-    };
-    if let Some(icon) = tray_icon(app, no_badges, variant, dark_menu_bar()) {
+    if let Some(icon) = tray_icon(app, variant, TrayHealth::Bad, dark_menu_bar()) {
         builder = builder.icon(icon);
     }
     #[cfg(target_os = "macos")]
     {
-        builder = builder.icon_as_template(variant == TrayIconVariant::Auto);
+        // Initial icon before the first poll; coloured dot needs non-template mode.
+        builder = builder.icon_as_template(false);
     }
 
-    builder.build(app)?;
-    Ok(())
+    match builder.build(app) {
+        Ok(_) => {
+            let _ = crate::autostart::set_tray_unavailable(false);
+            crate::tray_panel::set_tray_fallback(false);
+            Ok(())
+        }
+        Err(e) => {
+            eprintln!("yerd-gui: tray unavailable ({e}); enabling panel fallback");
+            let _ = crate::autostart::set_tray_unavailable(true);
+            crate::tray_panel::set_tray_fallback(true);
+            // Non-fatal: Linux without AppIndicator still runs with the panel.
+            Ok(())
+        }
+    }
 }
 
 /// Spawn the background poll loop; called from `setup_app` after `build_tray`.
@@ -229,7 +261,12 @@ pub(crate) fn spawn_tray_poller(app: AppHandle) {
 async fn fetch_state() -> TrayState {
     let report = match exchange_timeout(&Request::Status, PROBE_TIMEOUT).await {
         Ok(Response::Status { report }) => report,
-        _ => return TrayState::default(),
+        _ => {
+            return TrayState {
+                health: TrayHealth::Bad,
+                ..TrayState::default()
+            };
+        }
     };
     let update_target = match exchange_timeout(&Request::CachedUpdateStatus, PROBE_TIMEOUT).await {
         Ok(Response::UpdateStatus {
@@ -239,6 +276,17 @@ async fn fetch_state() -> TrayState {
         }) => target,
         _ => None,
     };
+    tray_state_from_report(*report, update_target)
+}
+
+fn tray_state_from_report(report: StatusReport, update_target: Option<String>) -> TrayState {
+    let services_total = report.services.len();
+    let services_running = report
+        .services
+        .iter()
+        .filter(|s| s.state == ServiceRunState::Running)
+        .count();
+    let rows = tray_dropdown_service_rows(&report);
     TrayState {
         running: true,
         default_php: Some(report.default_php.to_string()),
@@ -248,95 +296,54 @@ async fn fetch_state() -> TrayState {
         update_target,
         php_update: report.php.iter().any(|p| p.update_available.is_some()),
         unread: report.mail.as_ref().map_or(0, |m| m.unread),
+        health: derive_health(&report),
+        services_running,
+        services_total,
+        service_rows: rows,
     }
 }
 
-/// Which badges the icon needs: a red dot bottom-right for a waiting update (app
-/// or PHP), an orange dot bottom-left for unread mail. They can coexist.
-#[derive(Clone, Copy)]
-struct Badges {
-    update: bool,
-    unread: bool,
-}
-
-impl Badges {
-    fn any(self) -> bool {
-        self.update || self.unread
-    }
-}
-
-/// Build + install the menu for `state`, and badge the icon for waiting updates
-/// and/or unread mail, in the user's chosen `variant`. No lock / no transition
-/// logic - callers hold `MENU_LOCK` as needed, and must read `dark_menu_bar()`
-/// and the tray icon variant themselves *before* taking it (see the module
-/// concurrency note) since this only threads `dark`/`variant` through. On
-/// macOS a coloured badge (or a non-`Auto` variant) can't be a template, so
-/// templating only ever applies to the plain `Auto` icon.
+/// Build + install the menu for `state`, and refresh the tray glyph for the
+/// user's chosen `variant`. No lock / no transition logic - callers hold
+/// `MENU_LOCK` as needed, and must read `dark_menu_bar()` and the tray icon
+/// variant themselves *before* taking it (see the module concurrency note).
+/// Status (health / updates / mail) lives in the menu and tray panel; the glyph
+/// carries a small health dot at the bottom-right (green / amber / red).
 fn apply(app: &AppHandle, state: &TrayState, dark: bool, variant: TrayIconVariant) {
     let Ok(menu) = build_menu(app, state, dark) else {
         return;
     };
     if let Some(tray) = app.tray_by_id(TRAY_ID) {
         let _ = tray.set_menu(Some(menu));
-        let badges = Badges {
-            update: state.update_target.is_some() || state.php_update,
-            unread: state.unread > 0,
-        };
-        if let Some(icon) = tray_icon(app, badges, variant, dark) {
+        if let Some(icon) = tray_icon(app, variant, state.health, dark) {
             let _ = tray.set_icon(Some(icon));
             #[cfg(target_os = "macos")]
             {
-                let _ =
-                    tray.set_icon_as_template(variant == TrayIconVariant::Auto && !badges.any());
+                // Coloured status dot: template mode would flatten it to monochrome.
+                let _ = tray.set_icon_as_template(false);
             }
         }
     }
 }
 
-/// Red update dot, drawn bottom-right.
-const BADGE_UPDATE: (u8, u8, u8) = (235, 64, 52);
-/// Orange unread-mail dot, drawn bottom-left (opposite the update dot).
-const BADGE_UNREAD: (u8, u8, u8) = (255, 149, 0);
-
-/// Which bottom corner a badge dot sits in.
-#[derive(Clone, Copy)]
-enum DotPos {
-    /// Bottom-right corner (the update dot).
-    BottomRight,
-    /// Bottom-left corner (the unread-mail dot).
-    BottomLeft,
-}
-
-/// The tray icon for the current state + the user's chosen `variant`. Plain
-/// icon when nothing's waiting; a copy with a red dot (bottom-right) for a
-/// waiting update and/or an orange dot (bottom-left) for unread mail.
+/// The tray icon for the user's chosen `variant`.
 ///
 /// `Auto` is today's per-OS default: on macOS the monochrome template
-/// (auto-tinted by the OS when unbadged; a coloured dot can't be a template,
-/// so the badged copy is forced to the current appearance's label colour -
-/// black in light, white in dark - and `apply` drops templating to match), on
-/// other OSes the full-colour app icon. `LightY`/`DarkY` force the same
-/// glyph to a fixed colour on every OS, regardless of appearance or badges.
+/// (auto-tinted by the OS), on other OSes the full-colour app icon.
+/// `LightY`/`DarkY` force the same glyph to a fixed colour on every OS.
 /// `Full` is the full-colour app icon on every OS, including macOS.
-///
-/// `dark` is the caller's single `dark_menu_bar()` reading (see the module
-/// concurrency note) - only the macOS `Auto`-and-badged case reads it, so it's
-/// unused on other targets.
-#[cfg_attr(not(target_os = "macos"), allow(unused_variables))]
+/// Every variant gets a small health-coloured dot at the bottom-right.
 fn tray_icon(
     app: &AppHandle,
-    badges: Badges,
     variant: TrayIconVariant,
-    dark: bool,
+    health: TrayHealth,
+    _dark: bool,
 ) -> Option<tauri::image::Image<'static>> {
     match variant {
-        TrayIconVariant::Full => full_color_icon(app, badges),
+        TrayIconVariant::Full => full_color_icon(app, health),
         TrayIconVariant::LightY | TrayIconVariant::DarkY => {
-            let (rgba, w, h) = y_glyph_rgba(variant == TrayIconVariant::LightY)?;
-            if !badges.any() {
-                return Some(tauri::image::Image::new_owned(rgba, w, h));
-            }
-            Some(draw_badges(rgba, w, h, badges))
+            let (rgba, w, h) = y_glyph_rgba(variant == TrayIconVariant::LightY, health)?;
+            Some(tauri::image::Image::new_owned(rgba, w, h))
         }
         TrayIconVariant::Auto => {
             #[cfg(target_os = "macos")]
@@ -344,36 +351,84 @@ fn tray_icon(
                 let base = tauri::image::Image::from_bytes(TRAY_ICON_MAC).ok()?;
                 let (w, h) = (base.width(), base.height());
                 let mut rgba = base.rgba().to_vec();
-                if !badges.any() {
-                    return Some(tauri::image::Image::new_owned(rgba, w, h));
-                }
-                recolor_opaque(&mut rgba, dark);
-                Some(draw_badges(rgba, w, h, badges))
+                // Template mode can't preserve the coloured dot; paint the Y for
+                // the current menu-bar appearance instead.
+                recolor_opaque(&mut rgba, !_dark);
+                overlay_health_dot(&mut rgba, w, h, health);
+                Some(tauri::image::Image::new_owned(rgba, w, h))
             }
             #[cfg(not(target_os = "macos"))]
             {
-                full_color_icon(app, badges)
+                full_color_icon(app, health)
             }
         }
     }
 }
 
-/// The full-colour app icon, optionally badged. Shared by `Full` (every OS)
-/// and `Auto` on non-macOS (today's per-OS default there).
-fn full_color_icon(app: &AppHandle, badges: Badges) -> Option<tauri::image::Image<'static>> {
+/// The full-colour app icon. Shared by `Full` (every OS) and `Auto` on non-macOS.
+fn full_color_icon(app: &AppHandle, health: TrayHealth) -> Option<tauri::image::Image<'static>> {
     let base = app.default_window_icon()?;
     let (w, h) = (base.width(), base.height());
-    let rgba = base.rgba().to_vec();
-    if !badges.any() {
-        return Some(tauri::image::Image::new_owned(rgba, w, h));
+    let mut rgba = base.rgba().to_vec();
+    overlay_health_dot(&mut rgba, w, h, health);
+    Some(tauri::image::Image::new_owned(rgba, w, h))
+}
+
+/// Draw a small health-coloured circle at the bottom-right of a tray icon.
+fn overlay_health_dot(rgba: &mut [u8], width: u32, height: u32, health: TrayHealth) {
+    if width == 0 || height == 0 {
+        return;
     }
-    Some(draw_badges(rgba, w, h, badges))
+    let size = width.min(height);
+    let outer_r = ((size as f32) * 0.13).max(4.0).round() as i32;
+    let ring = 2i32;
+    let inner_r = (outer_r - ring).max(1);
+    let cx = width as i32 - outer_r - 2;
+    let cy = height as i32 - outer_r - 2;
+    let (hr, hg, hb) = health.rgb();
+    let outer_r2 = outer_r * outer_r;
+    let inner_r2 = inner_r * inner_r;
+
+    let y0 = (cy - outer_r).max(0);
+    let y1 = (cy + outer_r).min(height as i32 - 1);
+    let x0 = (cx - outer_r).max(0);
+    let x1 = (cx + outer_r).min(width as i32 - 1);
+
+    for y in y0..=y1 {
+        let dy = y - cy;
+        for x in x0..=x1 {
+            let dx = x - cx;
+            let d2 = dx * dx + dy * dy;
+            if d2 > outer_r2 {
+                continue;
+            }
+            let idx = ((y as u32 * width + x as u32) * 4) as usize;
+            if d2 <= inner_r2 {
+                rgba[idx] = hr;
+                rgba[idx + 1] = hg;
+                rgba[idx + 2] = hb;
+                rgba[idx + 3] = 255;
+            } else {
+                rgba[idx] = 255;
+                rgba[idx + 1] = 255;
+                rgba[idx + 2] = 255;
+                rgba[idx + 3] = 255;
+            }
+        }
+    }
 }
 
 /// Decode the "Y" glyph and force it to solid white (`light`) or solid black.
 /// Pure (no `AppHandle`), so it's the part of the `LightY`/`DarkY` icon path
 /// that's directly unit-testable.
-fn y_glyph_rgba(light: bool) -> Option<(Vec<u8>, u32, u32)> {
+fn y_glyph_rgba(light: bool, health: TrayHealth) -> Option<(Vec<u8>, u32, u32)> {
+    let (mut rgba, w, h) = y_glyph_base_rgba(light)?;
+    overlay_health_dot(&mut rgba, w, h, health);
+    Some((rgba, w, h))
+}
+
+/// Y glyph only (no health dot), shared by [`y_glyph_rgba`] and unit tests.
+fn y_glyph_base_rgba(light: bool) -> Option<(Vec<u8>, u32, u32)> {
     let base = tauri::image::Image::from_bytes(TRAY_ICON_MAC).ok()?;
     let (w, h) = (base.width(), base.height());
     let mut rgba = base.rgba().to_vec();
@@ -382,8 +437,8 @@ fn y_glyph_rgba(light: bool) -> Option<(Vec<u8>, u32, u32)> {
 }
 
 /// Recolour every opaque pixel in `rgba` to solid white (`to_white`) or solid
-/// black, preserving alpha. Shared by [`tray_icon`]'s `LightY`/`DarkY`/badged-
-/// `Auto` paths and [`menu_icon`]'s dark-mode recolor.
+/// black, preserving alpha. Shared by [`tray_icon`]'s `LightY`/`DarkY` paths
+/// and [`menu_icon`]'s dark-mode recolor.
 fn recolor_opaque(rgba: &mut [u8], to_white: bool) {
     let value = if to_white { 255u8 } else { 0u8 };
     for px in rgba.chunks_exact_mut(4) {
@@ -395,58 +450,9 @@ fn recolor_opaque(rgba: &mut [u8], to_white: bool) {
     }
 }
 
-/// Composite the requested dots onto an RGBA buffer: red bottom-right for an
-/// update, orange bottom-left for unread mail.
-fn draw_badges(
-    mut rgba: Vec<u8>,
-    width: u32,
-    height: u32,
-    badges: Badges,
-) -> tauri::image::Image<'static> {
-    if badges.update {
-        draw_dot(&mut rgba, width, height, BADGE_UPDATE, DotPos::BottomRight);
-    }
-    if badges.unread {
-        draw_dot(&mut rgba, width, height, BADGE_UNREAD, DotPos::BottomLeft);
-    }
-    tauri::image::Image::new_owned(rgba, width, height)
-}
-
-/// Paint a small anti-aliased solid dot of `color` onto `rgba`, in the requested
-/// bottom corner. (`as` casts and the per-pixel math are inherent to image work.)
-#[allow(
-    clippy::cast_precision_loss,
-    clippy::cast_possible_truncation,
-    clippy::cast_sign_loss
-)]
-fn draw_dot(rgba: &mut [u8], width: u32, height: u32, color: (u8, u8, u8), pos: DotPos) {
-    let radius = ((width.min(height) as f32) * 0.16).max(3.0);
-    let cy = height as f32 - radius * 1.3;
-    let cx = match pos {
-        DotPos::BottomRight => width as f32 - radius,
-        DotPos::BottomLeft => radius,
-    };
-    for (i, px) in rgba.chunks_exact_mut(4).enumerate() {
-        let dx = (i as u32 % width) as f32 + 0.5 - cx;
-        let dy = (i as u32 / width) as f32 + 0.5 - cy;
-        let coverage = (radius - dx.hypot(dy) + 0.5).clamp(0.0, 1.0);
-        if coverage <= 0.0 {
-            continue;
-        }
-        if let [r, g, b, a] = px {
-            let inv = 1.0 - coverage;
-            *r = (f32::from(color.0) * coverage + f32::from(*r) * inv) as u8;
-            *g = (f32::from(color.1) * coverage + f32::from(*g) * inv) as u8;
-            *b = (f32::from(color.2) * coverage + f32::from(*b) * inv) as u8;
-            *a = (255.0 * coverage + f32::from(*a) * inv) as u8;
-        }
-    }
-}
-
-/// Whether the system is in Dark mode, so the badged (non-template) icon and
-/// the menu-item glyphs can be painted in the matching colour. Reads the
-/// thread-safe `AppleInterfaceStyle` user default, so it's fine off the main
-/// thread.
+/// Whether the system is in Dark mode, so the menu-item glyphs can be painted
+/// in the matching colour. Reads the thread-safe `AppleInterfaceStyle` user
+/// default, so it's fine off the main thread.
 #[cfg(target_os = "macos")]
 fn dark_menu_bar() -> bool {
     use objc2_foundation::{NSString, NSUserDefaults};
@@ -541,19 +547,98 @@ fn mail_label(unread: u32) -> String {
 /// `dark_menu_bar()` reading the caller took before taking `MENU_LOCK` (see the
 /// module concurrency note), threaded through every icon in this build.
 ///
-/// Layout: a top zone (Open Yerd, plus Update Yerd / Update PHP while an update
-/// waits) before the status header, then the running- or stopped-daemon block,
-/// then Quit. In the running block the installed PHP versions sit under a
-/// "Default PHP:" label, each indented with a tick drawn into the label text
-/// itself (rather than the fixed native checkmark column) so it nests with the
-/// versions; picking one switches the default and the tick moves.
+/// Layout (v1 hybrid): status header → global actions → Jump to site →
+/// services → Mail/Dumps/PHP → footer (Logs / Doctor / Quit).
 fn build_menu(app: &AppHandle, state: &TrayState, dark: bool) -> tauri::Result<Menu<Wry>> {
     let mut items: Vec<Box<dyn IsMenuItem<Wry>>> = Vec::new();
 
+    // ── Header ──
+    let status_label = if state.running {
+        match state.health {
+            TrayHealth::Ok => "● Yerd — Running",
+            TrayHealth::Warn => "◐ Yerd — Running (degraded)",
+            TrayHealth::Bad => "○ Yerd — Running (issues)",
+        }
+    } else {
+        "○ Yerd — Stopped"
+    };
+    push(&mut items, disabled(app, "noop:header", status_label)?);
+    if let Some(php) = &state.default_php {
+        push(
+            &mut items,
+            disabled(app, "noop:phpbadge", format!("PHP {php}"))?,
+        );
+    }
+    if state.running && state.services_total > 0 {
+        push(
+            &mut items,
+            disabled(
+                app,
+                "noop:svccount",
+                format!(
+                    "Services {}/{} up",
+                    state.services_running, state.services_total
+                ),
+            )?,
+        );
+    }
+    if let (Some(http), Some(https)) = (state.http, state.https) {
+        push(
+            &mut items,
+            disabled(app, "noop:ports", format!("HTTP :{http} · HTTPS :{https}"))?,
+        );
+    }
+    push(&mut items, PredefinedMenuItem::separator(app)?);
+
+    // ── Global actions ──
     push(
         &mut items,
-        action(app, "open", "Open Yerd", icons::OPEN, dark)?,
+        action(app, "open", "Open Dashboard", icons::OPEN, dark)?,
     );
+    if state.running {
+        push(
+            &mut items,
+            action(app, "services:start-all", "Start All", icons::START, dark)?,
+        );
+        push(
+            &mut items,
+            action(app, "services:stop-all", "Stop All", icons::STOP, dark)?,
+        );
+        push(
+            &mut items,
+            action(app, "php:restart-all", "Restart PHP", icons::RESTART, dark)?,
+        );
+    } else {
+        push(
+            &mut items,
+            action(app, "daemon:start", "Start daemon", icons::START, dark)?,
+        );
+    }
+    push(&mut items, PredefinedMenuItem::separator(app)?);
+
+    // ── Sites entry (opens Vue autocomplete panel) ──
+    if state.running {
+        push(
+            &mut items,
+            action(app, "jump-site", "Jump to site…", icons::SITES, dark)?,
+        );
+        push(&mut items, PredefinedMenuItem::separator(app)?);
+    }
+
+    // ── Services ──
+    if state.running && !state.service_rows.is_empty() {
+        push(&mut items, disabled(app, "noop:svclabel", "Services:")?);
+        for row in &state.service_rows {
+            let label = format!("{} {}", row.health.glyph(), row.label);
+            push(
+                &mut items,
+                MenuItem::with_id(app, format!("svc:{}", row.id), label, true, None::<&str>)?,
+            );
+        }
+        push(&mut items, PredefinedMenuItem::separator(app)?);
+    }
+
+    // ── Updates / mail / dumps / site create (preserved) ──
     if state.update_target.is_some() {
         push(
             &mut items,
@@ -566,47 +651,29 @@ fn build_menu(app: &AppHandle, state: &TrayState, dark: bool) -> tauri::Result<M
             action(app, "update:php", "Update PHP", icons::UPDATE_PHP, dark)?,
         );
     }
-    push(&mut items, PredefinedMenuItem::separator(app)?);
-
-    if state.running {
-        push(
-            &mut items,
-            disabled(app, "noop:header", "● Daemon running")?,
-        );
-        if let (Some(http), Some(https)) = (state.http, state.https) {
-            push(
-                &mut items,
-                disabled(app, "noop:ports", format!("HTTP :{http} · HTTPS :{https}"))?,
-            );
-        }
-        if state.update_target.is_none() {
-            push(
-                &mut items,
-                action(
-                    app,
-                    "update:check",
-                    "Check for updates",
-                    icons::CHECK_UPDATES,
-                    dark,
-                )?,
-            );
-        }
+    if state.running && state.update_target.is_none() {
         push(
             &mut items,
             action(
                 app,
-                "daemon:restart",
-                "Restart daemon",
-                icons::RESTART,
+                "update:check",
+                "Check for updates",
+                icons::CHECK_UPDATES,
                 dark,
             )?,
         );
-        push(
-            &mut items,
-            action(app, "daemon:stop", "Stop daemon", icons::STOP, dark)?,
-        );
-        push(&mut items, PredefinedMenuItem::separator(app)?);
+    }
+    push(
+        &mut items,
+        action(app, "mail", mail_label(state.unread), icons::MAIL, dark)?,
+    );
+    push(
+        &mut items,
+        action(app, "dumps", "Dumps", icons::DUMPS, dark)?,
+    );
 
+    if state.running {
+        push(&mut items, PredefinedMenuItem::separator(app)?);
         if !state.installed.is_empty() {
             push(&mut items, disabled(app, "noop:phplabel", "Default PHP:")?);
             for v in &state.installed {
@@ -619,7 +686,6 @@ fn build_menu(app: &AppHandle, state: &TrayState, dark: bool) -> tauri::Result<M
             }
             push(&mut items, PredefinedMenuItem::separator(app)?);
         }
-
         push(
             &mut items,
             action(app, "new-site", "New Laravel site…", icons::NEW_SITE, dark)?,
@@ -635,38 +701,30 @@ fn build_menu(app: &AppHandle, state: &TrayState, dark: bool) -> tauri::Result<M
         push(&mut items, PredefinedMenuItem::separator(app)?);
         push(
             &mut items,
-            action(app, "mail", mail_label(state.unread), icons::MAIL, dark)?,
+            action(
+                app,
+                "daemon:restart",
+                "Restart daemon",
+                icons::RESTART,
+                dark,
+            )?,
         );
         push(
             &mut items,
-            action(app, "dumps", "Dumps", icons::DUMPS, dark)?,
-        );
-        push(&mut items, PredefinedMenuItem::separator(app)?);
-        for (id, label, icon) in NAV_ITEMS {
-            push(&mut items, action(app, *id, *label, icon, dark)?);
-        }
-        push(&mut items, PredefinedMenuItem::separator(app)?);
-    } else {
-        push(
-            &mut items,
-            disabled(app, "noop:header", "○ Daemon stopped")?,
-        );
-        push(
-            &mut items,
-            action(app, "daemon:start", "Start daemon", icons::START, dark)?,
-        );
-        push(&mut items, PredefinedMenuItem::separator(app)?);
-        push(
-            &mut items,
-            action(app, "mail", mail_label(state.unread), icons::MAIL, dark)?,
-        );
-        push(
-            &mut items,
-            action(app, "dumps", "Dumps", icons::DUMPS, dark)?,
+            action(app, "daemon:stop", "Stop daemon", icons::STOP, dark)?,
         );
         push(&mut items, PredefinedMenuItem::separator(app)?);
     }
 
+    // ── Footer ──
+    push(
+        &mut items,
+        action(app, "open-logs", "Open Logs", icons::ABOUT, dark)?,
+    );
+    push(
+        &mut items,
+        action(app, "nav:/doctor", "Doctor", icons::DOCTOR, dark)?,
+    );
     push(
         &mut items,
         action(app, "quit", "Quit Yerd", icons::QUIT, dark)?,
@@ -745,13 +803,24 @@ fn disabled(
 fn on_menu_event(app: &AppHandle, event: MenuEvent) {
     let id = event.id.as_ref();
     match id {
-        "open" => crate::show_main(app),
+        "open" => {
+            crate::show_main(app);
+            let _ = app.emit("navigate", "/overview");
+        }
         "quit" => app.exit(0),
         "dumps" => {
             let _ = crate::show_dumps(app);
         }
         "mail" => {
             let _ = crate::mail_window::show_mails(app);
+        }
+        "jump-site" => {
+            let _ = crate::tray_panel::show_tray_panel(app);
+        }
+        "open-logs" => {
+            crate::show_main(app);
+            let _ = app.emit("navigate", "/about");
+            let _ = app.emit("open-logs", ());
         }
         "new-site" => {
             crate::show_main(app);
@@ -777,12 +846,18 @@ fn on_menu_event(app: &AppHandle, event: MenuEvent) {
         "daemon:start" => spawn_lifecycle(app.clone(), Lifecycle::Start),
         "daemon:restart" => spawn_lifecycle(app.clone(), Lifecycle::Restart),
         "daemon:stop" => spawn_lifecycle(app.clone(), Lifecycle::Stop),
+        "php:restart-all" => spawn_restart_all_php(app.clone()),
+        "services:start-all" => spawn_services_all(app.clone(), true),
+        "services:stop-all" => spawn_services_all(app.clone(), false),
         _ => {
             if let Some(version) = id.strip_prefix("php:set:") {
                 spawn_set_default_php(app.clone(), version.to_string());
             } else if let Some(route) = id.strip_prefix("nav:") {
                 crate::show_main(app);
                 let _ = app.emit("navigate", route.to_string());
+            } else if id.starts_with("svc:") {
+                crate::show_main(app);
+                let _ = app.emit("navigate", "/services");
             }
         }
     }
@@ -864,6 +939,45 @@ fn spawn_set_default_php(app: AppHandle, version: String) {
     };
     tauri::async_runtime::spawn(async move {
         let _ = exchange(&Request::SetDefaultPhp { version }).await;
+        refresh_now(&app).await;
+    });
+}
+
+fn spawn_restart_all_php(app: AppHandle) {
+    tauri::async_runtime::spawn(async move {
+        let _ = exchange(&Request::RestartAllPhp).await;
+        refresh_now(&app).await;
+    });
+}
+
+/// Start or stop every managed service instance that is stopped+enabled (start)
+/// or running (stop). Proxy/PHP synthetic rows are not in `ListServices`.
+fn spawn_services_all(app: AppHandle, start: bool) {
+    tauri::async_runtime::spawn(async move {
+        let services = match exchange(&Request::ListServices).await {
+            Ok(Response::Services { services }) => services,
+            _ => return,
+        };
+        for s in services {
+            let should = if start {
+                s.enabled && s.state == ServiceRunState::Stopped
+            } else {
+                s.state == ServiceRunState::Running
+            };
+            if !should {
+                continue;
+            }
+            let req = if start {
+                Request::StartService {
+                    service: s.service.clone(),
+                }
+            } else {
+                Request::StopService {
+                    service: s.service.clone(),
+                }
+            };
+            let _ = exchange(&req).await;
+        }
         refresh_now(&app).await;
     });
 }
@@ -959,7 +1073,10 @@ async fn wait_until_restarted(prev: Option<u64>) {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
-    use super::{icons, menu_icon, recolor_opaque, y_glyph_rgba, TrayIconVariant};
+    use super::{
+        icons, menu_icon, overlay_health_dot, recolor_opaque, y_glyph_base_rgba, TrayHealth,
+        TrayIconVariant,
+    };
 
     #[test]
     fn menu_icon_light_leaves_pixels_unchanged() {
@@ -1007,7 +1124,7 @@ mod tests {
 
     #[test]
     fn y_glyph_rgba_light_is_white() {
-        let (rgba, _, _) = y_glyph_rgba(true).expect("bundled tray glyph decodes");
+        let (rgba, _, _) = y_glyph_base_rgba(true).expect("bundled tray glyph decodes");
         for px in rgba.chunks_exact(4) {
             if let [r, g, b, a] = *px {
                 if a > 0 {
@@ -1019,7 +1136,7 @@ mod tests {
 
     #[test]
     fn y_glyph_rgba_dark_is_black() {
-        let (rgba, _, _) = y_glyph_rgba(false).expect("bundled tray glyph decodes");
+        let (rgba, _, _) = y_glyph_base_rgba(false).expect("bundled tray glyph decodes");
         for px in rgba.chunks_exact(4) {
             if let [r, g, b, a] = *px {
                 if a > 0 {
@@ -1027,6 +1144,19 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn overlay_health_dot_paints_green_at_bottom_right() {
+        let mut rgba = vec![0u8; 32 * 32 * 4];
+        overlay_health_dot(&mut rgba, 32, 32, TrayHealth::Ok);
+        let (r, g, b, a) = pixel_at(&rgba, 32, 26, 26);
+        assert_eq!((r, g, b, a), (52, 199, 89, 255));
+    }
+
+    fn pixel_at(rgba: &[u8], width: u32, x: u32, y: u32) -> (u8, u8, u8, u8) {
+        let i = ((y * width + x) * 4) as usize;
+        (rgba[i], rgba[i + 1], rgba[i + 2], rgba[i + 3])
     }
 
     #[test]
