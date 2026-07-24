@@ -81,7 +81,11 @@ pub fn parse_anchor_targets(rules: &str) -> Option<(u16, u16)> {
     let mut http_to: Option<u16> = None;
     let mut https_to: Option<u16> = None;
     for line in rules.lines() {
-        let Some((lhs, rhs)) = line.split_once("->") else {
+        let trimmed = line.trim_start();
+        if !trimmed.starts_with("rdr ") {
+            continue;
+        }
+        let Some((lhs, rhs)) = trimmed.split_once("->") else {
             continue;
         };
         let Some(from) = last_port_token(lhs) else {
@@ -469,5 +473,17 @@ load anchor \"com.apple\" from \"/etc/pf.anchors/com.apple\"
     fn parse_none_on_empty_or_garbage() {
         assert_eq!(parse_anchor_targets(""), None);
         assert_eq!(parse_anchor_targets("not a rule at all\n# comment\n"), None);
+    }
+
+    #[test]
+    fn parse_ignores_comments_and_unrelated_rules() {
+        let text = "\
+# rdr pass on lo0 inet proto tcp from any to any port 80 -> 127.0.0.1 port 9999
+rdr pass on lo0 inet proto tcp from any to any port 80 -> 127.0.0.1 port 8080
+rdr pass on lo0 inet proto tcp from any to any port 443 -> 127.0.0.1 port 8443
+# rdr pass on lo0 inet proto tcp from any to any port 443 -> 127.0.0.1 port 1234
+pass in quick proto tcp from any to any port 80 -> 127.0.0.1 port 5555
+";
+        assert_eq!(parse_anchor_targets(text), Some((8080, 8443)));
     }
 }
