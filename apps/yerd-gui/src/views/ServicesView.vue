@@ -68,6 +68,7 @@ import {
 } from "@/ipc/client";
 import type { AddableServiceType, DatabaseSummary, ServiceStatus, SiteEntry } from "@/ipc/types";
 import { databaseExportFilename } from "@/lib/databaseFilename";
+import { canStartService, canStopService, isInstalledService, isPerSiteService } from "@/lib/serviceActions";
 import { poolStateLabel, poolStateTone } from "@/lib/utils";
 
 const toast = useToast();
@@ -91,7 +92,7 @@ const adding = computed(() => busy.value?.startsWith("add:") ?? false);
 const managed = computed(() => {
   const q = search.value.trim().toLowerCase();
   return services.value.filter((s) => {
-    if (!isInstalled(s)) return false;
+    if (!isInstalledService(s)) return false;
     if (!q) return true;
     return (
       s.display_name.toLowerCase().includes(q) ||
@@ -111,18 +112,13 @@ watch(error, (e) => {
 /** A per-site instance (Reverb) has no installed version, but it is still a
  *  configured, startable instance identified by its linked site. */
 function isPerSite(s: ServiceStatus): boolean {
-  return !!s.site;
+  return isPerSiteService(s);
 }
 function canStart(s: ServiceStatus): boolean {
-  return (s.installed_versions.length > 0 || isPerSite(s)) && s.state !== "running";
+  return canStartService(s);
 }
 function canStop(s: ServiceStatus): boolean {
-  return s.state === "running" || s.state === "failed";
-}
-/** Whether the row is a configured instance (installed engine, or a per-site
- *  instance) rather than an uninstalled single-instance engine. */
-function isInstalled(s: ServiceStatus): boolean {
-  return s.installed_versions.length > 0 || isPerSite(s);
+  return canStopService(s);
 }
 /** The version to show: the active/selected one, falling back to what's on disk. */
 function versionLabel(s: ServiceStatus): string {

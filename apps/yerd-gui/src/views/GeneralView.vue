@@ -22,19 +22,28 @@ import {
   daemonInfo,
   dumpsStatus,
   getAutostart,
+  getPreferredIde,
   getTrayIconVariant,
   installCliToPath,
   IpcError,
+  listInstalledIdes,
   openLoginItems,
   removeCliFromPath,
   setAutostartDaemon,
   setAutostartGui,
   setAutostartGuiMinimized,
   setMcpEnabled,
+  setPreferredIde,
   setSymlinkProtection,
   setTrayIconVariant,
 } from "@/ipc/client";
-import type { AutostartState, CliPathStatus, TitleBarStyle, TrayIconVariant } from "@/ipc/types";
+import type {
+  AutostartState,
+  CliPathStatus,
+  IdeInfo,
+  TitleBarStyle,
+  TrayIconVariant,
+} from "@/ipc/types";
 import { useTheme, type ThemePref } from "@/lib/theme";
 import { useTitleBarStyle } from "@/lib/titleBarStyle";
 
@@ -73,6 +82,32 @@ const titleBarStyleOptions = [
   { value: "windows", label: "Windows" },
 ] as const;
 
+/** `""` = Automatic (first installed IDE). */
+const preferredIde = ref("");
+const preferredIdeSaving = ref(false);
+/** Bumps on each save so stale failures cannot roll back a newer selection. */
+let preferredIdeSaveGen = 0;
+const ideCatalog = ref<IdeInfo[]>([]);
+const ideOptions = computed(() => {
+  const installed = ideCatalog.value.filter((i) => i.installed);
+  const options = [
+    { value: "", label: "Automatic" },
+    ...installed.map((i) => ({
+      value: i.id,
+      label: i.id === "system" ? "System default" : i.label,
+    })),
+  ];
+  const current = preferredIde.value;
+  if (current && !options.some((o) => o.value === current)) {
+    const fromCatalog = ideCatalog.value.find((i) => i.id === current);
+    options.push({
+      value: current,
+      label: fromCatalog?.label ?? current,
+    });
+  }
+  return options;
+});
+
 async function setTitleBarStylePref(next: TitleBarStyle): Promise<void> {
   try {
     await setTitleBarStyle(next);
@@ -108,6 +143,35 @@ async function setTrayIconVariantPref(variant: TrayIconVariant): Promise<void> {
   } catch (e) {
     trayIconVariant.value = previous;
     toast.error("Couldn't change the tray icon", (e as IpcError).message);
+  }
+}
+
+async function loadPreferredIde(): Promise<void> {
+  try {
+    const [ides, ide] = await Promise.all([listInstalledIdes(), getPreferredIde()]);
+    ideCatalog.value = ides;
+    preferredIde.value = ide;
+  } catch (e) {
+    toast.error("Couldn't load the preferred IDE setting", (e as IpcError).message);
+  }
+}
+
+async function setPreferredIdePref(ide: string): Promise<void> {
+  const gen = ++preferredIdeSaveGen;
+  const previous = preferredIde.value;
+  preferredIde.value = ide;
+  preferredIdeSaving.value = true;
+  try {
+    await setPreferredIde(ide);
+  } catch (e) {
+    if (gen === preferredIdeSaveGen) {
+      preferredIde.value = previous;
+      toast.error("Couldn't change the preferred IDE", (e as IpcError).message);
+    }
+  } finally {
+    if (gen === preferredIdeSaveGen) {
+      preferredIdeSaving.value = false;
+    }
   }
 }
 
@@ -149,6 +213,7 @@ onMounted(() => {
   void loadPlatform();
   loadCli();
   void loadTrayIconVariant();
+  void loadPreferredIde();
   if (running.value) {
     void loadApplicationPorts();
   }
@@ -845,7 +910,9 @@ async function toggleGuiMinimized(on: boolean): Promise<void> {
             <div>
               <p class="text-sm font-medium">Tray icon</p>
               <p class="text-xs text-muted-foreground">
-                Icon shown in the menu bar / system tray.
+                Icon shown in the menu bar / system tray. On Linux, vanilla GNOME
+                often needs an AppIndicator extension; without a tray, Yerd shows
+                a floating panel instead.
               </p>
             </div>
             <Select
@@ -853,6 +920,23 @@ async function toggleGuiMinimized(on: boolean): Promise<void> {
               :options="trayIconOptions"
               aria-label="Tray icon"
               @update:model-value="setTrayIconVariantPref"
+            />
+          </div>
+
+          <div class="flex items-center justify-between gap-4">
+            <div>
+              <p class="text-sm font-medium">Preferred IDE</p>
+              <p class="text-xs text-muted-foreground">
+                App used when opening a site from the tray or elsewhere. Automatic
+                picks the first installed editor (Cursor, VS Code, PhpStorm, …).
+              </p>
+            </div>
+            <Select
+              :model-value="preferredIde"
+              :options="ideOptions"
+              :disabled="preferredIdeSaving"
+              aria-label="Preferred IDE"
+              @update:model-value="setPreferredIdePref"
             />
           </div>
 

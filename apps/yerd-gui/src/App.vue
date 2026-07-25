@@ -7,6 +7,7 @@ import { useRoute, useRouter } from "vue-router";
 import AppShell from "@/components/AppShell.vue";
 import DumpsWindowView from "@/views/DumpsWindowView.vue";
 import MailsViewerView from "@/views/MailsViewerView.vue";
+import TrayPanelView from "@/views/TrayPanelView.vue";
 import WelcomeView from "@/views/WelcomeView.vue";
 import Toaster from "@/components/ui/Toaster.vue";
 import Spinner from "@/components/ui/Spinner.vue";
@@ -16,15 +17,16 @@ import { useOnboarding } from "@/composables/useOnboarding";
 import { useShortcuts } from "@/lib/shortcuts/useShortcuts";
 import { sitesIntent } from "@/lib/shortcuts/sitesIntent";
 
-// The auxiliary "dumps" and "mails" windows render standalone viewers with no app
-// shell and must NOT run the daemon poller or the first-run auto-start (the main
-// window owns both). Branch on the window label, not the route (which is racy at
-// first paint: Vue Router's initial navigation is async, so `route.meta` is still
-// empty on first render and a route-based check would briefly fall through to the
-// main AppShell).
+// The auxiliary "dumps", "mails", and "tray-panel" windows render standalone
+// viewers with no app shell and must NOT run the daemon poller or the first-run
+// auto-start (the main window owns both). Branch on the window label, not the
+// route (which is racy at first paint: Vue Router's initial navigation is async,
+// so `route.meta` is still empty on first render and a route-based check would
+// briefly fall through to the main AppShell).
 const windowLabel = getCurrentWindow().label;
 const isDumpsWindow = windowLabel === "dumps";
 const isMailsWindow = windowLabel === "mails";
+const isTrayPanel = windowLabel === "tray-panel";
 
 if (isDumpsWindow) useShortcuts("dumps");
 else if (isMailsWindow) useShortcuts("mails");
@@ -86,7 +88,7 @@ async function registerTrayNav(): Promise<void> {
 }
 
 onMounted(async () => {
-  if (isDumpsWindow || isMailsWindow || standalone.value) return;
+  if (isDumpsWindow || isMailsWindow || isTrayPanel || standalone.value) return;
   start(4000);
   await registerTrayNav();
   const { reachable } = await probe();
@@ -95,7 +97,7 @@ onMounted(async () => {
 });
 
 onUnmounted(() => {
-  if (isDumpsWindow || isMailsWindow || standalone.value) return;
+  if (isDumpsWindow || isMailsWindow || isTrayPanel || standalone.value) return;
   stop();
   unlistenNav?.();
   unlistenSitesIntent?.();
@@ -108,6 +110,7 @@ onUnmounted(() => {
   <!-- The standalone mails window renders its viewer directly (no SideNav).
        Branch on the window label, not the route, to avoid the first-paint race. -->
   <MailsViewerView v-else-if="isMailsWindow" />
+  <TrayPanelView v-else-if="isTrayPanel" />
   <!-- Other standalone routes render bare - no shell. -->
   <RouterView v-else-if="standalone" />
   <!-- First-run probe in flight: a brief splash so we never flash the wrong

@@ -96,6 +96,13 @@ export const router = createRouter({
       component: () => import("@/views/MailsViewerView.vue"),
     },
     {
+      // Frameless tray popup (site autocomplete). Also standalone.
+      path: "/tray-panel",
+      name: "tray-panel",
+      meta: { standalone: true },
+      component: () => import("@/views/TrayPanelView.vue"),
+    },
+    {
       path: "/doctor",
       name: "doctor",
       meta: { title: "Doctor", subtitle: "Health checks and safe one-click fixes" },

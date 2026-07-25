@@ -52,6 +52,17 @@
         "decorations": false,
         "transparent": true,
         "visible": false
+      },
+      {
+        "label": "tray-panel",
+        "title": "Yerd",
+        "url": "index.html#/tray-panel",
+        "width": 380,
+        "height": 560,
+        "resizable": false,
+        "decorations": false,
+        "transparent": true,
+        "visible": false
       }
     ],
     "security": {

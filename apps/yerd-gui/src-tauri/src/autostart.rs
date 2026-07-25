@@ -90,6 +90,19 @@ struct GuiSettings {
     /// gui-settings.json without this field must still deserialize.
     #[serde(default)]
     title_bar_style: TitleBarStyle,
+    /// Favorited site names for the tray panel autocomplete. Additive.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    tray_favorites: Vec<String>,
+    /// Most-recently-used site names (MRU, newest first) for the tray panel.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    tray_recent: Vec<String>,
+    /// True when the last launch detected no usable system tray (Linux).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    tray_unavailable: bool,
+    /// Preferred IDE id for "Open in IDE" (`""` = automatic: first installed,
+    /// else system). See `crate::ide`. Additive; absent in older settings files.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    preferred_ide: String,
 }
 
 /// Outcome of comparing the running GUI/daemon version against the version that
@@ -1459,6 +1472,94 @@ pub fn set_title_bar_style(style: TitleBarStyle) -> Result<(), GuiError> {
     save_settings(&s)
 }
 
+/// Stored preferred IDE id (`""` = automatic). Used by Settings and
+/// `open_site_in_ide`.
+pub(crate) fn preferred_ide() -> String {
+    load_settings().preferred_ide
+}
+
+/// Current preferred IDE id for the Settings screen (`""` = Automatic).
+#[tauri::command]
+pub fn get_preferred_ide() -> String {
+    preferred_ide()
+}
+
+/// Persist the preferred IDE id. Empty string means automatic.
+#[tauri::command]
+pub fn set_preferred_ide(ide: String) -> Result<(), GuiError> {
+    let ide = ide.trim().to_string();
+    if !crate::ide::is_valid_preference(&ide) {
+        return Err(GuiError::internal(format!("unknown IDE preference: {ide}")));
+    }
+    let mut s = load_settings();
+    s.preferred_ide = ide;
+    save_settings(&s)
+}
+
+/// Installed / known IDEs for the Settings picker.
+#[tauri::command]
+pub fn list_installed_ides() -> Vec<crate::ide::IdeInfo> {
+    crate::ide::list_ides()
+}
+
+/// Tray panel favorites + recent site names (gui-settings.json).
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TrayPreferences {
+    pub favorites: Vec<String>,
+    pub recent: Vec<String>,
+    pub tray_unavailable: bool,
+}
+
+#[tauri::command]
+pub fn get_tray_preferences() -> TrayPreferences {
+    let s = load_settings();
+    TrayPreferences {
+        favorites: s.tray_favorites,
+        recent: s.tray_recent,
+        tray_unavailable: s.tray_unavailable,
+    }
+}
+
+#[tauri::command]
+pub fn set_tray_favorite(name: String, favorite: bool) -> Result<TrayPreferences, GuiError> {
+    let mut s = load_settings();
+    if favorite {
+        if !s.tray_favorites.iter().any(|n| n == &name) {
+            s.tray_favorites.push(name);
+        }
+    } else {
+        s.tray_favorites.retain(|n| n != &name);
+    }
+    save_settings(&s)?;
+    Ok(TrayPreferences {
+        favorites: s.tray_favorites,
+        recent: s.tray_recent,
+        tray_unavailable: s.tray_unavailable,
+    })
+}
+
+#[tauri::command]
+pub fn record_tray_recent(name: String) -> Result<TrayPreferences, GuiError> {
+    let mut s = load_settings();
+    s.tray_recent.retain(|n| n != &name);
+    s.tray_recent.insert(0, name);
+    s.tray_recent.truncate(8);
+    save_settings(&s)?;
+    Ok(TrayPreferences {
+        favorites: s.tray_favorites,
+        recent: s.tray_recent,
+        tray_unavailable: s.tray_unavailable,
+    })
+}
+
+/// Mark whether the system tray was unavailable at last launch (Linux fallback).
+pub(crate) fn set_tray_unavailable(on: bool) -> Result<(), GuiError> {
+    let mut s = load_settings();
+    s.tray_unavailable = on;
+    save_settings(&s)
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
@@ -1472,6 +1573,12 @@ mod tests {
 
     fn v(s: &str) -> Version {
         Version::parse(s).unwrap()
+    }
+
+    #[test]
+    fn gui_settings_without_preferred_ide_field_deserializes_to_empty() {
+        let s: GuiSettings = serde_json::from_str("{}").expect("empty object deserializes");
+        assert_eq!(s.preferred_ide, "");
     }
 
     #[test]

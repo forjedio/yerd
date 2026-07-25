@@ -14,6 +14,9 @@ path = "src/main.rs"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
+# Rasterise tray-mac.svg → OUT_DIR/tray-mac.png at macOS menu-bar @4x (88px).
+resvg = "0.45"
+usvg  = "0.45"
 
 [dependencies]
 # Internal crates — the GUI is a client of the same contract the CLI uses.

@@ -2,6 +2,7 @@
 import { getVersion } from "@tauri-apps/api/app";
 import { ArrowUpRight, Download, FileText, RefreshCw, Stethoscope } from "lucide-vue-next";
 import { computed, onMounted, onUnmounted, ref } from "vue";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
 import logoUrl from "@/assets/logo.svg";
 import PageHeader from "@/components/PageHeader.vue";
@@ -150,31 +151,14 @@ async function onUpdateChannelChange(value: UpdateChannel): Promise<void> {
   }
 }
 
-onMounted(async () => {
-  try {
-    appVersion.value = await getVersion();
-  } catch {
-    /* not in a Tauri context (e.g. tests) - leave blank */
-  }
-  try {
-    const [p, report] = await Promise.all([protocolVersion(), status()]);
-    protocol.value = p;
-    daemonVersion.value = report.daemon_version;
-  } catch (e) {
-    // The page degrades gracefully (daemon fields read "unknown"/"-"), so a
-    // down daemon needs no alarm here - only surface a real, unexpected error.
-    const err = e as IpcError;
-    if (!err.unreachable) toast.error("Couldn't load daemon info", err.message);
-  }
-  void loadCachedUpdate();
-});
-
 // ── GUI Logs dialog ─────────────────────────────────────────────────────────
 
 const logsOpen = ref(false);
 const logs = ref<GuiLogs | null>(null);
 const activeTab = ref<"gui" | "daemon">("gui");
 let logsTimer: ReturnType<typeof setInterval> | undefined;
+let unlistenOpenLogs: UnlistenFn | undefined;
+let openLogsListenerDisposed = false;
 
 const activeLines = computed(() =>
   activeTab.value === "gui" ? (logs.value?.guiLog ?? []) : (logs.value?.daemonLog ?? []),
@@ -217,7 +201,41 @@ async function copyActive(): Promise<void> {
   }
 }
 
-onUnmounted(stopLogPolling);
+onMounted(async () => {
+  void listen("open-logs", () => {
+    void openLogs();
+  })
+    .then((unlisten) => {
+      if (openLogsListenerDisposed) unlisten();
+      else unlistenOpenLogs = unlisten;
+    })
+    .catch(() => {
+      /* ignore outside Tauri */
+    });
+
+  try {
+    appVersion.value = await getVersion();
+  } catch {
+    /* not in a Tauri context (e.g. tests) - leave blank */
+  }
+  try {
+    const [p, report] = await Promise.all([protocolVersion(), status()]);
+    protocol.value = p;
+    daemonVersion.value = report.daemon_version;
+  } catch (e) {
+    // The page degrades gracefully (daemon fields read "unknown"/"-"), so a
+    // down daemon needs no alarm here - only surface a real, unexpected error.
+    const err = e as IpcError;
+    if (!err.unreachable) toast.error("Couldn't load daemon info", err.message);
+  }
+  void loadCachedUpdate();
+});
+
+onUnmounted(() => {
+  openLogsListenerDisposed = true;
+  unlistenOpenLogs?.();
+  stopLogPolling();
+});
 
 // ── Diagnostics dialog ──────────────────────────────────────────────────────
 
