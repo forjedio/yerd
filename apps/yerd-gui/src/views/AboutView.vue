@@ -308,23 +308,44 @@ async function copyDiagnostics(): Promise<void> {
         </div>
       </Card>
 
-      <!-- Maker: developed by Forjed, with a call to action to the studio site. -->
-      <Card
-        class="flex flex-col gap-5 border-brand/30 bg-brand/5 sm:flex-row sm:items-center sm:justify-between sm:gap-6 dark:bg-brand/10"
-      >
-        <div>
-          <p class="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
-            Created by
-          </p>
-          <p class="font-display text-2xl font-normal leading-tight tracking-wide">FORJED</p>
-          <p class="text-sm text-muted-foreground">
-            The independent studio behind Yerd.
-          </p>
+      <!-- Maker: developed by Forjed, with a call to action to the studio site,
+           plus a short cross-promo for another free Forjed tool. -->
+      <Card class="space-y-5 border-brand/30 bg-brand/5 dark:bg-brand/10">
+        <div
+          class="flex flex-col gap-5 sm:flex-row sm:items-center sm:justify-between sm:gap-6"
+        >
+          <div>
+            <p class="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+              Created by
+            </p>
+            <p class="font-display text-2xl font-normal leading-tight tracking-wide">FORJED</p>
+            <p class="text-sm text-muted-foreground">
+              The independent studio behind Yerd.
+            </p>
+          </div>
+          <Button class="shrink-0" @click="openInBrowser('https://forjed.io')">
+            Visit forjed.io
+            <ArrowUpRight class="opacity-80" />
+          </Button>
         </div>
-        <Button class="shrink-0" @click="openInBrowser('https://forjed.io')">
-          Visit forjed.io
-          <ArrowUpRight class="opacity-80" />
-        </Button>
+
+        <div
+          class="flex flex-col gap-3 border-t border-brand/20 pt-5 sm:flex-row sm:items-center sm:justify-between sm:gap-6"
+        >
+          <p class="text-sm text-muted-foreground">
+            Why not check out other free tools by Forjed, such as
+            <span class="font-medium text-foreground">MDBIN</span> - share Markdown
+            with a link, no account needed.
+          </p>
+          <Button
+            variant="outline"
+            class="shrink-0"
+            @click="openInBrowser('https://mdbin.app/?utm=yerdapp')"
+          >
+            Try MDBIN
+            <ArrowUpRight class="opacity-80" />
+          </Button>
+        </div>
       </Card>
 
       <!-- Updates -->
