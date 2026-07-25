@@ -1,4 +1,10 @@
-# LAN sharing
+# LAN sharing <Badge type="warning" text="Beta" />
+
+::: info Beta feature
+LAN sharing is new and still settling. If you hit a problem, please
+[report it on GitHub](https://github.com/forjedio/yerd/issues/new) - include your
+OS, `yerd lan status` output, and what you expected.
+:::
 
 By default Yerd serves your `.test` sites only to the machine they run on -
 every listener binds `127.0.0.1`. `yerd lan` opts into exposing them to **other

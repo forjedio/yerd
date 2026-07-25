@@ -60,9 +60,45 @@ fs.writeFileSync(process.env.RESOLVED_OUT, JSON.stringify(spec, null, 2));
 "
 
 rm -f "$OUT"
+
 # Absolute path, not bare \`npx\` — npx resolves node_modules relative to the
 # invocation cwd, which would break when this script isn't run from $GUI_DIR.
-"$GUI_DIR/node_modules/.bin/appdmg" "$RESOLVED_JSON" "$OUT"
+APPDMG="$GUI_DIR/node_modules/.bin/appdmg"
+
+# appdmg's "Unmounting temporary image" step runs \`hdiutil detach\` on the
+# volume it mounted ten steps earlier, but on macOS CI runners
+# diskarbitrationd/Spotlight often auto-unmounts the image in that window, so
+# the detach fails with ENOENT ("No such file or directory"). appdmg only
+# retries detach on EBUSY (exit code 16), not ENOENT, so it aborts and removes
+# the half-built dmg. Each run starts clean, so a whole-command retry clears
+# the transient failure. Read the volume title from the resolved spec (env, not
+# spliced into JS) so our own failed mount can be force-detached before each
+# retry, keeping the next attempt from being bumped onto "/Volumes/<title> 1".
+# Only detached on retry, never before the first run, so a developer's mounted
+# Yerd installer volume is left alone on the happy path.
+VOL_TITLE=$(RESOLVED_JSON="$RESOLVED_JSON" node -p "require(process.env.RESOLVED_JSON).title")
+
+detach_stale_volumes() {
+  local vol
+  for vol in "/Volumes/$VOL_TITLE" "/Volumes/$VOL_TITLE "*; do
+    [ -d "$vol" ] || continue
+    hdiutil detach -force "$vol" >/dev/null 2>&1 || true
+  done
+}
+
+attempt=0
+max_attempts=4
+until "$APPDMG" "$RESOLVED_JSON" "$OUT"; do
+  attempt=$((attempt + 1))
+  if [ "$attempt" -ge "$max_attempts" ]; then
+    echo "::error::appdmg failed after $max_attempts attempts (last exit non-zero)"
+    exit 1
+  fi
+  echo "::warning::appdmg attempt $attempt failed; cleaning up and retrying"
+  rm -f "$OUT"
+  detach_stale_volumes
+  sleep $((attempt * 3))
+done
 
 if [ -n "${APPLE_SIGNING_IDENTITY:-}" ]; then
   codesign --force --sign "$APPLE_SIGNING_IDENTITY" --timestamp "$OUT"
