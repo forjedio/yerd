@@ -1932,9 +1932,16 @@ async fn set_mcp_enabled(enabled: bool, state: &DaemonState) -> Response {
     Response::Ok
 }
 
-/// Persist the `lan_enabled` flag. Persist-only: the actual re-bind happens on
-/// the daemon restart the CLI triggers next (a listen socket's bind address is
-/// fixed at bind time), so there is no live atomic to flip here.
+/// Persist the `lan_enabled` flag. Persist-only: the bootstrap listener only
+/// re-binds on the daemon restart the CLI triggers next (a listen socket's bind
+/// address is fixed at bind time), so there is no live atomic to flip here.
+///
+/// Disabling also revokes any pending one-time remote-setup code, since the
+/// listener lingers until that restart and an already-minted code would
+/// otherwise stay redeemable. The revocation happens while the `config` lock is
+/// held so it and [`mint_remote_setup_code`]'s check-and-publish cannot
+/// interleave - otherwise a mint that had already passed its `lan_enabled` check
+/// could store a live code *after* disablement completed.
 async fn set_lan_enabled(enabled: bool, state: &DaemonState) -> Response {
     let mut cfg_guard = state.config.lock().await;
     let mut new = cfg_guard.clone();
@@ -1943,13 +1950,10 @@ async fn set_lan_enabled(enabled: bool, state: &DaemonState) -> Response {
         return internal(format!("config save failed: {e}"));
     }
     *cfg_guard = new;
-    drop(cfg_guard);
     if !enabled {
-        // The bootstrap listener only unbinds on the restart the CLI triggers,
-        // so revoke any pending one-time code now - otherwise an already-minted
-        // code could still be redeemed against the lingering endpoint.
         *state.remote_setup_code.lock().await = None;
     }
+    drop(cfg_guard);
     tracing::info!(enabled, "set lan enabled");
     Response::Ok
 }
@@ -1961,18 +1965,19 @@ const REMOTE_SETUP_CODE_TTL: std::time::Duration = std::time::Duration::from_sec
 /// *and* the bootstrap listener bound), so a code is never handed out when
 /// nothing would serve it.
 ///
-/// The URL reuses the startup-discovered `lan_ip` so the printed host always
-/// matches what is actually served, and the returned `script_sha256` is the hash
-/// recorded when the endpoint bound - its absence means the endpoint isn't
-/// serving, so minting fails closed rather than hand out a useless code.
+/// The `config` lock is held across the whole check-and-publish so a concurrent
+/// [`set_lan_enabled`]`(false)` cannot slip between the `lan_enabled` check and
+/// storing the code (which would leave a live code after disablement). The URL
+/// reuses the startup-discovered `lan_ip` so the printed host always matches what
+/// is actually served, and the returned `script_sha256` is the hash recorded when
+/// the endpoint bound - its absence means the endpoint isn't serving, so minting
+/// fails closed rather than hand out a useless code.
 async fn mint_remote_setup_code(state: &DaemonState) -> Response {
-    let (lan_enabled, lan_setup_port) = {
-        let cfg = state.config.lock().await;
-        (cfg.lan_enabled, cfg.lan_setup_port)
-    };
-    if !lan_enabled {
+    let cfg_guard = state.config.lock().await;
+    if !cfg_guard.lan_enabled {
         return lan_not_ready("LAN mode is off - run `yerd lan enable` first".to_owned());
     }
+    let lan_setup_port = cfg_guard.lan_setup_port;
     if !state
         .lan_setup_bound
         .load(std::sync::atomic::Ordering::Relaxed)
@@ -2004,6 +2009,7 @@ async fn mint_remote_setup_code(state: &DaemonState) -> Response {
         expires_at: std::time::Instant::now() + REMOTE_SETUP_CODE_TTL,
         used: false,
     });
+    drop(cfg_guard);
 
     let url = format!("http://{lan_ip}:{lan_setup_port}/remote-setup?code={code}");
     Response::RemoteSetup {
@@ -5197,6 +5203,25 @@ Subject: Captured\r\n\r\nhi\r\n";
             Response::Ok
         );
         assert!(!state.config.lock().await.lan_enabled, "back off");
+    }
+
+    #[tokio::test]
+    async fn disabling_lan_revokes_a_pending_remote_setup_code() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_in(tmp.path());
+        *state.remote_setup_code.lock().await = Some(crate::state::RemoteSetupCode {
+            value: "abc".to_owned(),
+            expires_at: std::time::Instant::now() + std::time::Duration::from_secs(60),
+            used: false,
+        });
+        assert_eq!(
+            dispatch(Request::SetLanEnabled { enabled: false }, &state).await,
+            Response::Ok
+        );
+        assert!(
+            state.remote_setup_code.lock().await.is_none(),
+            "disabling LAN clears any pending one-time code"
+        );
     }
 
     #[tokio::test]

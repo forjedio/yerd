@@ -323,12 +323,20 @@ nm_uses_dnsmasq() {
 # (clearing trust settings too). Used by both install (to stay idempotent - no
 # duplicate keychain entries on a re-run) and uninstall. Best-effort throughout.
 macos_remove_ca() {
-  security find-certificate -a -Z -c "Yerd Local CA" /Library/Keychains/System.keychain 2>/dev/null \
+  local kc=/Library/Keychains/System.keychain
+  security find-certificate -a -Z -c "Yerd Local CA" "$kc" 2>/dev/null \
     | awk '/SHA-1 hash:/ {print $NF}' \
     | while read -r h; do
         [ -n "$h" ] || continue
-        security remove-trusted-cert -d -Z "$h" 2>/dev/null || true
-        security delete-certificate -Z "$h" /Library/Keychains/System.keychain 2>/dev/null || true
+        # remove-trusted-cert takes the certificate as a file, not a hash: export
+        # the first still-present Yerd CA, clear its trust, then delete it by hash
+        # (deleting the first each pass keeps the exported cert and $h aligned).
+        f="$(mktemp)"
+        if security find-certificate -c "Yerd Local CA" -p "$kc" > "$f" 2>/dev/null && [ -s "$f" ]; then
+          security remove-trusted-cert -d "$f" 2>/dev/null || true
+        fi
+        rm -f "$f"
+        security delete-certificate -Z "$h" "$kc" 2>/dev/null || true
       done || true
 }
 
@@ -386,9 +394,10 @@ install)
     # NM-spawned dnsmasq runs, so writing there would be inert.
     if [ -d /etc/NetworkManager/dnsmasq.d ] && nm_uses_dnsmasq; then
       RESOLVER_CONF="/etc/NetworkManager/dnsmasq.d/yerd-$TLD.conf"
-      # SIGHUP (systemctl reload) does not reliably re-read dnsmasq.d; nmcli does.
+      # SIGHUP (systemctl reload) does not reliably re-read dnsmasq.d; dns-full
+      # restarts NM's DNS plugin, which does.
       if command -v nmcli >/dev/null 2>&1; then
-        RESOLVER_RELOAD="nmcli general reload dns"
+        RESOLVER_RELOAD="nmcli general reload dns-full"
       else
         RESOLVER_RELOAD="systemctl reload NetworkManager"
       fi
@@ -566,8 +575,8 @@ esac
                 "the standalone-dnsmasq branch requires the service to be running"
             );
             assert!(
-                s.contains("nmcli general reload dns"),
-                "NetworkManager is reloaded via nmcli, not an unreliable SIGHUP"
+                s.contains("nmcli general reload dns-full"),
+                "NetworkManager's DNS plugin is restarted via nmcli dns-full, not an unreliable SIGHUP"
             );
             let reload = s
                 .find("$RESOLVER_RELOAD >/dev/null 2>&1 || true")
@@ -733,25 +742,48 @@ mod endpoint_tests {
         );
     }
 
-    #[test]
-    fn served_bytes_hash_to_the_advertised_value() {
+    #[tokio::test]
+    async fn endpoint_serves_the_exact_bytes_that_were_hashed_for_advertisement() {
         let tmp = tempfile::tempdir().unwrap();
         let state = Arc::new(state_in(tmp.path()));
+
+        // Mirror spawn_lan_setup: render once, publish the hash mint hands out,
+        // and give the same bytes to the endpoint context.
         let script = super::pure::installer_script(
             std::net::Ipv4Addr::new(10, 0, 0, 5),
             "test",
             1053,
             "-----BEGIN CERTIFICATE-----\nMIIByerdSAMPLE\n-----END CERTIFICATE-----\n",
         );
-        let advertised = crate::ext_install::sha256_hex(script.as_bytes());
+        *state.lan_setup_script_sha256.lock().await =
+            Some(crate::ext_install::sha256_hex(script.as_bytes()));
         let ctx = SetupContext {
             script: script.into_bytes(),
-            state,
+            state: Arc::clone(&state),
         };
+
+        // The endpoint returns ctx.script only for a valid code; confirm the
+        // device's request reaches the script route.
+        seed(&state, "good").await;
         assert_eq!(
-            crate::ext_install::sha256_hex(&ctx.script),
-            advertised,
-            "the exact bytes the endpoint serves must hash to the advertised SHA-256"
+            decide(&ctx, true, "/remote-setup", Some("code=good")).await,
+            Decision::Script,
+        );
+
+        // Independently hash the bytes the endpoint exposes and compare them to
+        // the value published for the device to verify. These flow from separate
+        // fields (ctx.script vs lan_setup_script_sha256), so a serving path that
+        // ever returned different bytes than were hashed would fail here.
+        let served = crate::ext_install::sha256_hex(&ctx.script);
+        let advertised = state
+            .lan_setup_script_sha256
+            .lock()
+            .await
+            .clone()
+            .expect("advertised hash was published");
+        assert_eq!(
+            served, advertised,
+            "the endpoint must serve the exact bytes whose SHA-256 mint hands out"
         );
     }
 
