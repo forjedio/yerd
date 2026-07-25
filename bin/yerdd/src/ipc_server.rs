@@ -1943,6 +1943,13 @@ async fn set_lan_enabled(enabled: bool, state: &DaemonState) -> Response {
         return internal(format!("config save failed: {e}"));
     }
     *cfg_guard = new;
+    drop(cfg_guard);
+    if !enabled {
+        // The bootstrap listener only unbinds on the restart the CLI triggers,
+        // so revoke any pending one-time code now - otherwise an already-minted
+        // code could still be redeemed against the lingering endpoint.
+        *state.remote_setup_code.lock().await = None;
+    }
     tracing::info!(enabled, "set lan enabled");
     Response::Ok
 }

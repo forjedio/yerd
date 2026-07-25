@@ -310,6 +310,45 @@ nss_uninstall() {
   done
 }
 
+# True if NetworkManager is present and configured to run its own dnsmasq - the
+# only mode in which a dnsmasq.d snippet takes effect. A directory existing is
+# not proof the plugin is active (systemd-resolved hosts ship the dir unused).
+nm_uses_dnsmasq() {
+  command -v NetworkManager >/dev/null 2>&1 || return 1
+  NetworkManager --print-config 2>/dev/null \
+    | grep -Eq '^[[:space:]]*dns[[:space:]]*=[[:space:]]*dnsmasq([[:space:]]|$)'
+}
+
+# Remove every Yerd CA from the macOS System keychain by its exact SHA-1 hash
+# (clearing trust settings too). Used by both install (to stay idempotent - no
+# duplicate keychain entries on a re-run) and uninstall. Best-effort throughout.
+macos_remove_ca() {
+  security find-certificate -a -Z -c "Yerd Local CA" /Library/Keychains/System.keychain 2>/dev/null \
+    | awk '/SHA-1 hash:/ {print $NF}' \
+    | while read -r h; do
+        [ -n "$h" ] || continue
+        security remove-trusted-cert -d -Z "$h" 2>/dev/null || true
+        security delete-certificate -Z "$h" /Library/Keychains/System.keychain 2>/dev/null || true
+      done || true
+}
+
+# True once a probe name under the given TLD resolves through the system
+# resolver, retried briefly to let an async reload settle. The Yerd responder
+# answers any single-label name under the TLD, so this confirms the resolver
+# path we configured is actually live before reporting success. Skipped (treated
+# as success) when getent is unavailable.
+resolves() {
+  command -v getent >/dev/null 2>&1 || return 0
+  local probe="yerd-remote-probe.$1" i
+  for i in 1 2 3 4 5; do
+    if getent hosts "$probe" >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 1
+  done
+  return 1
+}
+
 os="$(uname -s)"
 CA_TMP=""
 cleanup_tmp() { [ -n "$CA_TMP" ] && rm -f "$CA_TMP"; }
@@ -325,22 +364,42 @@ install)
   chmod 0644 "$CA_TMP"
   case "$os" in
   Darwin)
-    security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain "$CA_TMP"
+    # Write the resolver first (cheap, reversible), then add trust under a
+    # rollback trap so a keychain failure never leaves .test pointed here with
+    # no matching CA. macos_remove_ca first keeps a re-run idempotent.
     mkdir -p /etc/resolver
     printf 'nameserver %s\nport %s\n' "$SERVER_IP" "$DNS_PORT" > "/etc/resolver/$TLD"
+    trap 'rm -f "/etc/resolver/$TLD"; cleanup_tmp' EXIT
+    macos_remove_ca
+    security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain "$CA_TMP"
+    trap cleanup_tmp EXIT
+    # Flush any stale negative cache for a .test name queried before setup.
+    dscacheutil -flushcache 2>/dev/null || true
+    killall -HUP mDNSResponder 2>/dev/null || true
     echo "Installed. .$TLD now resolves via $SERVER_IP (DNS $DNS_PORT)."
     ;;
   Linux)
     # Decide the resolver target BEFORE touching the trust store, so an
-    # unsupported host fails without leaving a stranded CA behind.
-    if [ -d /etc/NetworkManager/dnsmasq.d ]; then
+    # unsupported host fails without leaving a stranded CA behind. Require the
+    # resolver to actually be ACTIVE, not merely have its drop-in directory: on a
+    # systemd-resolved host the NetworkManager dnsmasq.d dir often exists while no
+    # NM-spawned dnsmasq runs, so writing there would be inert.
+    if [ -d /etc/NetworkManager/dnsmasq.d ] && nm_uses_dnsmasq; then
       RESOLVER_CONF="/etc/NetworkManager/dnsmasq.d/yerd-$TLD.conf"
-      RESOLVER_RELOAD="systemctl reload NetworkManager"
-    elif [ -d /etc/dnsmasq.d ]; then
+      # SIGHUP (systemctl reload) does not reliably re-read dnsmasq.d; nmcli does.
+      if command -v nmcli >/dev/null 2>&1; then
+        RESOLVER_RELOAD="nmcli general reload dns"
+      else
+        RESOLVER_RELOAD="systemctl reload NetworkManager"
+      fi
+    elif [ -d /etc/dnsmasq.d ] && command -v systemctl >/dev/null 2>&1 \
+         && systemctl is-active --quiet dnsmasq; then
       RESOLVER_CONF="/etc/dnsmasq.d/yerd-$TLD.conf"
       RESOLVER_RELOAD="systemctl restart dnsmasq"
     else
-      echo "error: unsupported resolver setup - install dnsmasq or use NetworkManager." >&2
+      echo "error: no active resolver that can forward .$TLD to a custom port." >&2
+      echo "       Enable NetworkManager's dnsmasq plugin (set dns=dnsmasq), or" >&2
+      echo "       install and start dnsmasq (e.g. systemctl enable --now dnsmasq)." >&2
       echo "       (systemd-resolved alone cannot forward a single domain to a custom port.)" >&2
       exit 1
     fi
@@ -357,13 +416,20 @@ install)
       echo "error: no usable CA anchor directory found (expected Debian/Ubuntu, RHEL/Fedora or Arch layout)" >&2
       exit 1
     fi
-    # Roll the CA back if the resolver step below fails, so we don't leave the
-    # device trusting a CA whose .test names it can't resolve.
+    # Roll the CA and the resolver snippet back if any step below fails, so we
+    # never leave the device trusting a CA whose .test names it can't resolve.
     cp "$CA_TMP" "$CA_DEST"
-    trap 'rm -f "$CA_DEST"; $CA_REFRESH >/dev/null 2>&1 || true; cleanup_tmp' EXIT
+    trap 'rm -f "$CA_DEST" "$RESOLVER_CONF"; $CA_REFRESH >/dev/null 2>&1 || true; $RESOLVER_RELOAD >/dev/null 2>&1 || true; cleanup_tmp' EXIT
     $CA_REFRESH >/dev/null
     printf 'server=/%s/%s#%s\n' "$TLD" "$SERVER_IP" "$DNS_PORT" > "$RESOLVER_CONF"
-    $RESOLVER_RELOAD 2>/dev/null || true
+    $RESOLVER_RELOAD >/dev/null 2>&1 || true
+    # Confirm .test actually resolves through the resolver we picked before
+    # claiming success; if it does not, the trap above rolls everything back.
+    if ! resolves "$TLD"; then
+      echo "error: .$TLD still does not resolve after configuring $RESOLVER_CONF." >&2
+      echo "       The detected resolver may not be active; rolling back." >&2
+      exit 1
+    fi
     trap cleanup_tmp EXIT
     nss_install "$CA_TMP"
     echo "Installed. .$TLD now resolves via $SERVER_IP (DNS $DNS_PORT)."
@@ -378,15 +444,7 @@ uninstall)
   case "$os" in
   Darwin)
     rm -f "/etc/resolver/$TLD"
-    # Delete each matching Yerd CA by its exact SHA-1 hash (not just the common
-    # name), clearing that certificate's trust settings too.
-    security find-certificate -a -Z -c "Yerd Local CA" /Library/Keychains/System.keychain 2>/dev/null \
-      | awk '/SHA-1 hash:/ {print $NF}' \
-      | while read -r h; do
-          [ -n "$h" ] || continue
-          security remove-trusted-cert -d -Z "$h" 2>/dev/null || true
-          security delete-certificate -Z "$h" /Library/Keychains/System.keychain 2>/dev/null || true
-        done
+    macos_remove_ca
     ;;
   Linux)
     rm -f "/usr/local/share/ca-certificates/yerd-$TLD.crt" \
@@ -483,7 +541,7 @@ esac
         fn installer_script_linux_checks_resolver_before_installing_ca_and_rolls_back() {
             let s = installer_script(Ipv4Addr::new(10, 0, 0, 5), "test", 1053, SAMPLE_CA);
             let resolver_check = s
-                .find("unsupported resolver setup")
+                .find("no active resolver")
                 .expect("resolver support is validated");
             let ca_copy = s.find("cp \"$CA_TMP\"").expect("CA is installed");
             assert!(
@@ -491,8 +549,61 @@ esac
                 "resolver support must be checked before the CA is installed"
             );
             assert!(
-                s.contains("trap 'rm -f \"$CA_DEST\""),
-                "the CA is rolled back if the resolver step fails"
+                s.contains("trap 'rm -f \"$CA_DEST\" \"$RESOLVER_CONF\""),
+                "both the CA and the resolver snippet are rolled back on failure"
+            );
+        }
+
+        #[test]
+        fn installer_script_gates_on_an_active_resolver_and_verifies_resolution() {
+            let s = installer_script(Ipv4Addr::new(10, 0, 0, 5), "test", 1053, SAMPLE_CA);
+            assert!(
+                s.contains("nm_uses_dnsmasq"),
+                "the NetworkManager branch requires the dnsmasq plugin to be active"
+            );
+            assert!(
+                s.contains("systemctl is-active --quiet dnsmasq"),
+                "the standalone-dnsmasq branch requires the service to be running"
+            );
+            assert!(
+                s.contains("nmcli general reload dns"),
+                "NetworkManager is reloaded via nmcli, not an unreliable SIGHUP"
+            );
+            let reload = s
+                .find("$RESOLVER_RELOAD >/dev/null 2>&1 || true")
+                .expect("the resolver is reloaded");
+            let verify = s
+                .find("if ! resolves \"$TLD\"")
+                .expect("resolution is verified");
+            assert!(
+                reload < verify,
+                "resolution is smoke-tested after the reload, before reporting success"
+            );
+        }
+
+        #[test]
+        fn installer_script_macos_writes_resolver_before_trust_and_is_idempotent() {
+            let s = installer_script(Ipv4Addr::new(10, 0, 0, 5), "test", 1053, SAMPLE_CA);
+            let resolver = s
+                .find("printf 'nameserver %s\\nport %s\\n'")
+                .expect("the macOS resolver is written");
+            let add_trust = s
+                .find("security add-trusted-cert")
+                .expect("the CA is added to the keychain");
+            assert!(
+                resolver < add_trust,
+                "the reversible resolver write precedes the keychain change"
+            );
+            assert!(
+                s.contains("trap 'rm -f \"/etc/resolver/$TLD\"; cleanup_tmp' EXIT"),
+                "a keychain failure rolls the resolver file back"
+            );
+            let clean = s
+                .find("macos_remove_ca")
+                .expect("macos_remove_ca is defined");
+            assert!(
+                clean < add_trust,
+                "existing Yerd CAs are cleared before adding, keeping re-runs idempotent"
             );
         }
 
@@ -601,6 +712,47 @@ mod endpoint_tests {
             decide(&ctx, true, "/nope", Some("code=good")).await,
             Decision::Text(StatusCode::NOT_FOUND, _)
         ));
+    }
+
+    #[tokio::test]
+    async fn expired_code_is_rejected() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = Arc::new(state_in(tmp.path()));
+        *state.remote_setup_code.lock().await = Some(RemoteSetupCode {
+            value: "good".to_owned(),
+            expires_at: Instant::now(),
+            used: false,
+        });
+        let ctx = ctx_with_code(Arc::clone(&state));
+        assert!(
+            matches!(
+                decide(&ctx, true, "/remote-setup", Some("code=good")).await,
+                Decision::Text(StatusCode::FORBIDDEN, _)
+            ),
+            "a code past its expiry must be refused even with the right value"
+        );
+    }
+
+    #[test]
+    fn served_bytes_hash_to_the_advertised_value() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = Arc::new(state_in(tmp.path()));
+        let script = super::pure::installer_script(
+            std::net::Ipv4Addr::new(10, 0, 0, 5),
+            "test",
+            1053,
+            "-----BEGIN CERTIFICATE-----\nMIIByerdSAMPLE\n-----END CERTIFICATE-----\n",
+        );
+        let advertised = crate::ext_install::sha256_hex(script.as_bytes());
+        let ctx = SetupContext {
+            script: script.into_bytes(),
+            state,
+        };
+        assert_eq!(
+            crate::ext_install::sha256_hex(&ctx.script),
+            advertised,
+            "the exact bytes the endpoint serves must hash to the advertised SHA-256"
+        );
     }
 
     #[tokio::test]
