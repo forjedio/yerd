@@ -44,6 +44,7 @@ watch(
     if (isOpen) document.addEventListener("keydown", onKey);
     else document.removeEventListener("keydown", onKey);
   },
+  { immediate: true },
 );
 
 // Being torn down while open would otherwise strand the listener for good.
@@ -58,6 +59,7 @@ onUnmounted(() => document.removeEventListener("keydown", onKey));
     >
       <div
         class="absolute inset-0 bg-black/50 rounded-[10px] animate-fade-in"
+        aria-hidden="true"
         @click="requestDismiss"
       />
       <div

@@ -165,7 +165,7 @@ async function openWpAdmin(s: SiteEntry): Promise<void> {
                 class="text-destructive focus:bg-destructive/10 focus:text-destructive"
                 @select="emit('unlink', site)"
               >
-                <Trash2 class="size-4" /> Unlink
+                <Trash2 class="size-4" /> Delete Site
               </DropdownMenuItem>
             </template>
           </DropdownMenuContent>

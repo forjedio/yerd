@@ -98,7 +98,7 @@ function onKey(e: KeyboardEvent): void {
       v-if="open"
       class="fixed inset-0 z-50 flex items-start justify-center p-4 pt-[12vh]"
     >
-      <div class="absolute inset-0 bg-black/50 rounded-[10px] animate-fade-in" @click="close" />
+      <div class="absolute inset-0 bg-black/50 rounded-[10px] animate-fade-in" aria-hidden="true" @click="close" />
       <div
         role="dialog"
         aria-modal="true"
@@ -120,10 +120,12 @@ function onKey(e: KeyboardEvent): void {
             >
               {{ group.title }}
             </p>
-            <ul>
+            <ul role="listbox">
               <li
                 v-for="cmd in group.items"
                 :key="cmd.id"
+                role="option"
+                :aria-selected="cmd === flat[selected]"
                 :class="
                   cmd === flat[selected]
                     ? 'flex cursor-pointer items-center justify-between rounded-md bg-muted px-3 py-2 text-sm'

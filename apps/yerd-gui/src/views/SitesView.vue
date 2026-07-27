@@ -1143,16 +1143,16 @@ async function shareSitePublicly(s: Site): Promise<void> {
     <!-- remove (unlink) confirm -->
     <Modal
       v-model:open="unlinkOpen"
-      title="Remove site"
+      title="Delete site"
       @update:open="(v: boolean) => { if (!v) unlinkTarget = null; }"
     >
       <p class="text-sm text-muted-foreground">
-        Remove <strong>{{ unlinkTarget?.name }}.{{ tld }}</strong>? Parked sites
+        Delete <strong>{{ unlinkTarget?.name }}.{{ tld }}</strong>? Parked sites
         re-appear if their folder is still under a parked directory.
       </p>
       <template #footer="{ close }">
         <Button variant="ghost" @click="close">Cancel</Button>
-        <Button variant="destructive" @click="confirmUnlink(close)">Remove</Button>
+        <Button variant="destructive" @click="confirmUnlink(close)">Delete site</Button>
       </template>
     </Modal>
 

@@ -144,6 +144,7 @@ MANIFESTS=(
   "apps/yerd-gui/src-tauri/tauri.conf.json"
   "apps/yerd-gui/package.json"
 )
+[ -f "apps/yerd-gui/package-lock.json" ] && MANIFESTS+=("apps/yerd-gui/package-lock.json")
 git add -- "${MANIFESTS[@]}"
 
 if git diff --cached --quiet; then
