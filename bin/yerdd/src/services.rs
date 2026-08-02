@@ -1087,6 +1087,7 @@ fn installed_versions(type_id: &str, dirs: &PlatformDirs) -> Vec<ServiceVersion>
 
 /// Resolve the version to run: the configured one if installed, else the latest
 /// installed; error if nothing is installed.
+#[cfg_attr(windows, allow(clippy::result_large_err))]
 pub(crate) fn resolve_version(
     def: &Arc<dyn ServiceDefinition>,
     configured: Option<&str>,
@@ -1315,6 +1316,10 @@ mod tests {
         assert!(r.contains(&cfg.ports.http));
     }
 
+    /// `pick_free_port` probes ports through the real `ActivePortBinder`, which
+    /// is the `Unsupported` stub on Windows (a real `WindowsPortBinder` is a
+    /// later phase), so it can only find a free port on Unix today.
+    #[cfg(unix)]
     #[test]
     fn pick_free_port_skips_reserved() {
         let mut reserved = BTreeSet::new();

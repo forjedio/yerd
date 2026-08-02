@@ -143,7 +143,10 @@ async fn capture_path_string() -> Option<String> {
     Some(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
+/// No login-shell PATH capture off Unix. Kept `async` to mirror the Unix
+/// signature so callers stay platform-agnostic.
 #[cfg(not(unix))]
+#[allow(clippy::unused_async)]
 async fn capture_path_string() -> Option<String> {
     None
 }

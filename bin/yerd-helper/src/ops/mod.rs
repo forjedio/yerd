@@ -134,6 +134,7 @@ mod tests {
         ));
     }
 
+    #[cfg(unix)]
     #[test]
     fn run_command_propagates_nonzero_exit() {
         let err = run_command("false", "/usr/bin/false", Vec::<&str>::new()).unwrap_err();
@@ -146,6 +147,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     #[test]
     fn run_command_succeeds_for_true() {
         let out = run_command("true", "/usr/bin/true", Vec::<&str>::new()).unwrap();

@@ -105,9 +105,11 @@ fix or delete a comment that has drifted from what the code does.
 ## Cross-platform discipline
 
 - Per-OS code is selected with `#[cfg(target_os = ...)]`; exactly one of
-  `linux` / `macos` / `unsupported` is active per build. When you touch one OS
-  path, make the equivalent change (or a deliberate, commented no-op) in the
-  others — a change that compiles only on the host OS will break CI on the other.
+  `linux` / `macos` / `windows` / `unsupported` is active per build (Windows has
+  a real `Paths` impl and aliases the rest to the `unsupported` stub). When you
+  touch one OS path, make the equivalent change (or a deliberate, commented
+  no-op) in the others — a change that compiles only on the host OS will break
+  CI on the others.
 - Keep OS-specific *decisions* in pure helper functions (e.g. parsing
   `profiles.ini`, planning ports, matching PEM) so they are unit-testable
   without the OS effect.

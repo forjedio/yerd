@@ -142,6 +142,9 @@ pub enum Os {
     Linux,
     /// macOS.
     Macos,
+    /// Windows (repackaged `windows.php.net` bundle: `php.exe` + `php-cgi.exe`,
+    /// `x86_64` only).
+    Windows,
 }
 
 impl Os {
@@ -151,6 +154,7 @@ impl Os {
         match self {
             Os::Linux => "linux",
             Os::Macos => "macos",
+            Os::Windows => "windows",
         }
     }
 }
@@ -338,12 +342,16 @@ fn parse_minor(s: &str) -> Option<PhpVersion> {
     Some(PhpVersion::new(major.parse().ok()?, minor.parse().ok()?))
 }
 
-/// Detect the running platform, erroring on anything yerd can't install for
-/// (e.g. Windows, 32-bit). Call this **before** any download.
+/// Detect the running platform, erroring on anything yerd has no prebuilt PHP
+/// for (e.g. a 32-bit or unknown OS). Windows resolves to `Os::Windows`
+/// (`x86_64` only); a `windows-aarch64` host resolves fine here but later fails
+/// resolution with `VersionUnavailable`, which is accurate. Call this
+/// **before** any download.
 pub fn current_os_arch() -> Result<(Os, Arch), PhpError> {
     let os = match std::env::consts::OS {
         "linux" => Os::Linux,
         "macos" => Os::Macos,
+        "windows" => Os::Windows,
         other => {
             return Err(PhpError::UnsupportedPlatform {
                 detail: format!("no prebuilt PHP for OS {other:?}"),
@@ -439,7 +447,10 @@ mod tests {
               "fpm": { "file": "php-8.5.7-2-fpm-linux-aarch64.tar.gz", "sha256": "22", "size": 1 } },
             { "php": "8.5.7", "minor": "8.5", "os": "macos", "arch": "aarch64", "revision": 2,
               "cli": { "file": "php-8.5.7-2-cli-macos-aarch64.tar.gz", "sha256": "33", "size": 1 },
-              "fpm": { "file": "php-8.5.7-2-fpm-macos-aarch64.tar.gz", "sha256": "44", "size": 1 } }
+              "fpm": { "file": "php-8.5.7-2-fpm-macos-aarch64.tar.gz", "sha256": "44", "size": 1 } },
+            { "php": "8.5.7", "minor": "8.5", "os": "windows", "arch": "x86_64", "revision": 2,
+              "cli": { "file": "php-8.5.7-2-cli-windows-x86_64.tar.gz", "sha256": "55", "size": 1 },
+              "fpm": { "file": "php-8.5.7-2-fpm-windows-x86_64.tar.gz", "sha256": "66", "size": 1 } }
         ]
     }"#;
 
@@ -487,6 +498,47 @@ mod tests {
             "https://github.com/forjedio/yerd-php/releases/download/php/php-8.5.7-2-fpm-linux-x86_64.tar.gz"
         );
         assert_eq!(a.fpm_sha256, "ff");
+    }
+
+    #[test]
+    fn resolve_from_listing_selects_windows_entry_and_builds_urls() {
+        let a = resolve_from_listing(
+            LISTING,
+            PhpVersion::new(8, 5),
+            Os::Windows,
+            Arch::X86_64,
+            Channel::Stable,
+        )
+        .unwrap();
+        assert_eq!(a.full_version, "8.5.7");
+        assert_eq!(a.revision, 2);
+        assert_eq!(
+            a.cli_url,
+            "https://github.com/forjedio/yerd-php/releases/download/php/php-8.5.7-2-cli-windows-x86_64.tar.gz"
+        );
+        assert_eq!(a.cli_sha256, "55");
+        assert_eq!(
+            a.fpm_url,
+            "https://github.com/forjedio/yerd-php/releases/download/php/php-8.5.7-2-fpm-windows-x86_64.tar.gz"
+        );
+        assert_eq!(a.fpm_sha256, "66");
+    }
+
+    #[test]
+    fn available_minors_anchors_windows() {
+        assert_eq!(
+            available_minors(LISTING, Os::Windows, Arch::X86_64, Channel::Stable),
+            vec![PhpVersion::new(8, 5)]
+        );
+        assert!(available_minors(LISTING, Os::Windows, Arch::Aarch64, Channel::Stable).is_empty());
+    }
+
+    /// Only meaningful on the Windows CI leg: asserts the host resolves to the
+    /// `Windows`/`x86_64` token pair the manifest keys off.
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+    #[test]
+    fn current_os_arch_is_windows_x86_64() {
+        assert_eq!(current_os_arch().unwrap(), (Os::Windows, Arch::X86_64));
     }
 
     #[test]

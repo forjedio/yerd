@@ -48,7 +48,10 @@ fn set_mode(path: &Path, mode: u32) -> io::Result<()> {
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))
 }
 
+/// No-op on non-Unix: POSIX mode bits do not apply. Kept fallible to mirror the
+/// Unix signature so callers stay platform-agnostic.
 #[cfg(not(unix))]
+#[allow(clippy::unnecessary_wraps)]
 fn set_mode(_path: &Path, _mode: u32) -> io::Result<()> {
     Ok(())
 }

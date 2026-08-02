@@ -3,9 +3,10 @@
 //! The core traits live here - [`Paths`], [`TrustStore`], [`ResolverInstaller`],
 //! [`PortBinder`], [`PortRedirector`], and [`TerminalLauncher`] - each with a single thin
 //! implementation per OS selected by `#[cfg(target_os = ...)]`. macOS and Linux
-//! ship in Phase 1;
-//! Windows compiles against the [`os::unsupported`] stub that returns
-//! [`PlatformError::Unsupported`] for every method.
+//! have full implementations. Windows has a real [`Paths`] impl (`os::windows`)
+//! and aliases every other trait to the [`os::unsupported`] stub, which returns
+//! [`PlatformError::Unsupported`] for every method until later phases replace
+//! each alias with a real `Windows*` type.
 //!
 //! ## Privilege boundary
 //!
@@ -60,3 +61,8 @@ pub use os::active::{
     ActivePaths, ActivePortBinder, ActivePortRedirector, ActiveResolverInstaller,
     ActiveSystemMetrics, ActiveTerminalLauncher, ActiveTrustStore,
 };
+
+/// Windows IPC identity helpers: the current user's SID and the derived daemon
+/// pipe name, shared by the daemon listener and every client.
+#[cfg(target_os = "windows")]
+pub use os::active::{current_user_sid, daemon_pipe_name};

@@ -7,6 +7,15 @@
 //! the daemon can interpret.
 
 #![forbid(unsafe_code)]
+// On Windows the helper is a compile-only stub: `main` returns exit-78 before
+// touching the dispatch/validate/ops machinery, so all of it is legitimately
+// unreachable until the Phase 4 Windows privilege model wires it up. Keep the
+// modules total (they carry per-OS `Unsupported` stubs) but silence the
+// unavoidable dead-code warnings the unused-on-Windows internals produce.
+#![cfg_attr(
+    not(any(target_os = "linux", target_os = "macos")),
+    allow(dead_code, unused_imports)
+)]
 
 mod cli;
 mod error;
@@ -17,17 +26,15 @@ mod validate;
 
 use std::process::ExitCode;
 
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 fn main() -> ExitCode {
-    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-    {
-        eprintln!("yerd-helper: not supported on this OS");
-        return ExitCode::from(78);
-    }
+    eprintln!("yerd-helper: not supported on this OS");
+    ExitCode::from(78)
+}
 
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
-    {
-        run()
-    }
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn main() -> ExitCode {
+    run()
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]

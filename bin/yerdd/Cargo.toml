@@ -86,6 +86,11 @@ notify-debouncer-mini = "0.4"
 # when `$SHELL` is absent (launchd/systemd service env) for external-tool detection.
 nix            = { workspace = true, features = ["user"] }
 
+[target.'cfg(windows)'.dependencies]
+# UTF-16 wrapper for the named-pipe SDDL security descriptor passed to
+# `interprocess`'s `SecurityDescriptor::deserialize`.
+widestring     = { workspace = true }
+
 [dev-dependencies]
 tempfile       = { workspace = true }
 minisign       = { workspace = true }

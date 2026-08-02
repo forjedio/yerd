@@ -279,6 +279,7 @@ async fn proxy_forwards_to_fcgi_backend() {
     assert!(params
         .get("SCRIPT_FILENAME")
         .unwrap()
+        .replace('\\', "/")
         .ends_with("/index.php"));
     assert_eq!(params.get("PATH_INFO").map(String::as_str), Some("/foo"));
     assert_eq!(
@@ -845,8 +846,14 @@ async fn subdirectory_index_php_wins_over_root_index_php() {
         Some("/wp-admin/index.php")
     );
     assert_eq!(
-        params.get("SCRIPT_FILENAME").map(String::as_str),
-        Some(docroot.path().join("wp-admin/index.php").to_str().unwrap())
+        params.get("SCRIPT_FILENAME").map(|s| s.replace('\\', "/")),
+        Some(
+            docroot
+                .path()
+                .join("wp-admin/index.php")
+                .to_string_lossy()
+                .replace('\\', "/")
+        )
     );
 
     let _ = tx_shutdown.send(());

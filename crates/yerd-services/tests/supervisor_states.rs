@@ -4,11 +4,15 @@
 //! crash + recovery, permanent failure, clean stop / shutdown, snapshots, and
 //! the port pre-flight.
 //!
-//! Mirrors `yerd_php::tests::supervisor_states`. Stays fakes-only (no real
-//! database binaries, no real sockets) so it passes on every CI target. Happy-path
+//! Mirrors `yerd_php::tests::supervisor_states`. Stays fakes-only for the
+//! process/clock/probe edges, but drives `ServiceManager` with the *real*
+//! `ActivePortBinder`: `ensure`'s port pre-flight binds a loopback port, which
+//! the Windows `Unsupported` stub rejects. Windows coverage waits on the real
+//! `WindowsPortBinder` (a later phase), so this file is Unix-scoped. Happy-path
 //! coverage uses Redis because it needs no datadir-init binary; the SQL engines'
 //! init seam is covered by the in-file unit tests in `manager.rs`.
 
+#![cfg(unix)]
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,

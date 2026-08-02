@@ -88,6 +88,7 @@ impl AllocatedListen {
     clippy::indexing_slicing
 )]
 mod tests {
+    #[cfg(unix)]
     use super::*;
     #[cfg(unix)]
     use std::path::PathBuf;

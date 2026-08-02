@@ -1,16 +1,25 @@
 //! `install-ca` and `uninstall-ca` for Linux + macOS.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+use std::path::PathBuf;
 
-use yerd_platform::pure::{cert_identity, pem_match};
+#[cfg(any(target_os = "linux", target_os = "macos", test))]
+use yerd_platform::pure::cert_identity;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+use yerd_platform::pure::pem_match;
 use yerd_platform::CaFingerprint;
 
 #[cfg(target_os = "macos")]
 use crate::error::CommandReason;
-use crate::error::{HelperError, ValidationReason};
+use crate::error::HelperError;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+use crate::error::ValidationReason;
 #[cfg(target_os = "linux")]
 use crate::ops::atomic_write;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use crate::ops::run_command;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use crate::validate;
 
 /// True iff `cert_der` is yerd's own CA - its Subject CN equals
@@ -19,6 +28,7 @@ use crate::validate;
 /// store, so a fingerprint that happens to match some *other* trusted root can
 /// never cause its deletion. An unparseable or CN-less cert is treated as
 /// not-yerd (refuse to delete).
+#[cfg(any(target_os = "linux", target_os = "macos", test))]
 fn cert_is_yerd_owned(cert_der: &[u8]) -> bool {
     cert_identity::subject_common_name(cert_der).as_deref() == Some(yerd_core::CA_COMMON_NAME)
 }
@@ -221,6 +231,22 @@ pub fn uninstall_ca(fp: &CaFingerprint) -> Result<(), HelperError> {
         ],
     )
     .map(|_| ())
+}
+
+// ---- unsupported OSes ----------------------------------------------
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+pub fn install_ca(_pem_path: &Path, _fp: &CaFingerprint) -> Result<(), HelperError> {
+    Err(HelperError::Unsupported {
+        operation: yerd_platform::error::ops::INSTALL_CA,
+    })
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+pub fn uninstall_ca(_fp: &CaFingerprint) -> Result<(), HelperError> {
+    Err(HelperError::Unsupported {
+        operation: yerd_platform::error::ops::UNINSTALL_CA,
+    })
 }
 
 /// Is the CA with fingerprint `fp` present in the System keychain?

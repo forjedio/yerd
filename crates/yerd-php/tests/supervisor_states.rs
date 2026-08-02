@@ -3,9 +3,14 @@
 //! drives the supervisor through the happy path, crash + recovery,
 //! permanent failure, and clean stop.
 //!
-//! Live FPM coverage lands in `bin/yerdd`'s integration suite; this
-//! test stays fakes-only so it passes on every CI target.
+//! Live FPM coverage lands in `bin/yerdd`'s integration suite; this test stays
+//! fakes-only for the process/clock/probe edges. It still uses the *real*
+//! `ActivePortBinder`, which is harmless on Unix (the planner takes the
+//! Unix-socket path and ignores the binder) but returns `Unsupported` on the
+//! Windows stub (Windows would take the TCP-bind path). Windows coverage waits
+//! on the real `WindowsPortBinder` (a later phase), so this file is Unix-scoped.
 
+#![cfg(unix)]
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,

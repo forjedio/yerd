@@ -819,16 +819,22 @@ fn build_ipc_listener(dirs: &PlatformDirs) -> Result<IpcListener, DaemonError> {
             })?
     };
     #[cfg(windows)]
-    let name = {
+    let (name, sddl) = {
         use interprocess::local_socket::{GenericNamespaced, ToNsName};
-        let pipe = format!("yerd-{}", std::process::id());
-        pipe.clone()
+        let sid = yerd_platform::current_user_sid()?;
+        let pipe = yerd_platform::pure::win_pipe::pipe_name(&sid, &dirs.runtime);
+        let sddl = yerd_platform::pure::win_pipe::pipe_sddl(&sid);
+        let name = pipe
+            .clone()
             .to_ns_name::<GenericNamespaced>()
             .map_err(|source| DaemonError::Io {
                 path: PathBuf::from(&pipe),
                 source,
-            })?
+            })?;
+        (name, sddl)
     };
+
+    #[cfg(unix)]
     let listener = ListenerOptions::new()
         .name(name)
         .create_tokio()
@@ -836,6 +842,28 @@ fn build_ipc_listener(dirs: &PlatformDirs) -> Result<IpcListener, DaemonError> {
             path: dirs.runtime.clone(),
             source,
         })?;
+    #[cfg(windows)]
+    let listener = {
+        use interprocess::os::windows::local_socket::ListenerOptionsExt as _;
+        use interprocess::os::windows::security_descriptor::SecurityDescriptor;
+        let wide = widestring::U16CString::from_str(&sddl).map_err(|e| DaemonError::Io {
+            path: dirs.runtime.clone(),
+            source: std::io::Error::new(std::io::ErrorKind::InvalidInput, e.to_string()),
+        })?;
+        let sd = SecurityDescriptor::deserialize(&wide).map_err(|source| DaemonError::Io {
+            path: dirs.runtime.clone(),
+            source,
+        })?;
+        ListenerOptions::new()
+            .name(name)
+            .security_descriptor(sd)
+            .create_tokio()
+            .map_err(|source| DaemonError::Io {
+                path: dirs.runtime.clone(),
+                source,
+            })?
+    };
+
     #[cfg(unix)]
     crate::secure_fs::restrict_to_owner(&socket_path).map_err(|source| DaemonError::Io {
         path: socket_path,
@@ -1337,6 +1365,55 @@ mod tests {
         assert!(
             build_php_ca_bundle(&dirs, ca.cert_pem(), None).is_none(),
             "a bundle missing the current CA must not be reused"
+        );
+    }
+
+    /// `build_ipc_listener` binds on a tempdir `PlatformDirs`, and a second
+    /// listener on the same dirs fails (the pipe name is already taken) - proof
+    /// the SID + runtime-dir hash yields a stable, unique name.
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn build_ipc_listener_binds_and_is_unique_per_dirs() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dirs = make_dirs(tmp.path());
+        let _listener = build_ipc_listener(&dirs).expect("first listener binds");
+        assert!(
+            build_ipc_listener(&dirs).is_err(),
+            "a second listener on the same dirs must fail (name already in use)"
+        );
+    }
+
+    /// §10 contingency probe: prove `interprocess`'s `security_descriptor` is
+    /// actually applied to the pipe by binding one with a DACL that DENIES the
+    /// current user, then asserting a client connect is refused. If the SD were
+    /// ignored, the default (owner-allowed) DACL would let the connect succeed.
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn deny_sddl_is_applied_to_the_pipe() {
+        use interprocess::local_socket::tokio::Stream as IpcStream;
+        use interprocess::local_socket::traits::tokio::Stream as _;
+        use interprocess::local_socket::{GenericNamespaced, ToNsName};
+        use interprocess::os::windows::local_socket::ListenerOptionsExt as _;
+        use interprocess::os::windows::security_descriptor::SecurityDescriptor;
+
+        let sid = yerd_platform::current_user_sid().expect("resolve SID");
+        let pipe = format!("yerd-denyprobe-{}", std::process::id());
+        let deny_sddl = format!("D:P(D;;GA;;;{sid})");
+        let wide = widestring::U16CString::from_str(&deny_sddl).unwrap();
+        let sd = SecurityDescriptor::deserialize(&wide).expect("parse deny SDDL");
+        let name = pipe.clone().to_ns_name::<GenericNamespaced>().unwrap();
+        let _listener = ListenerOptions::new()
+            .name(name)
+            .security_descriptor(sd)
+            .create_tokio()
+            .expect("bind deny-SDDL listener");
+
+        let connect_name = pipe.to_ns_name::<GenericNamespaced>().unwrap();
+        let result = IpcStream::connect(connect_name).await;
+        assert!(
+            result.is_err(),
+            "the deny-everyone DACL must refuse the connect; if this passes, the \
+             security descriptor was NOT applied (escalate per plan §10)"
         );
     }
 }

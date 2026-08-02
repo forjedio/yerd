@@ -320,21 +320,23 @@ pub async fn resolve<P: VersionProbe, S: PathSearch>(
     })
 }
 
-/// The `(asset_filename, is_tgz)` for the host.
+/// The `(asset_filename, is_tgz)` for the host, or `None` when Yerd doesn't
+/// install cloudflared for the OS yet.
 ///
 /// macOS ships a `.tgz` wrapping a single `cloudflared`; Linux ships a bare
 /// ungzipped executable. Cloudflare uses `amd64`/`arm64` arch tokens (not the
 /// `x86_64`/`aarch64` that `yerd-php`'s `Arch::as_str` renders), so the mapping
-/// is explicit here.
-fn host_asset(os: Os, arch: Arch) -> (String, bool) {
+/// is explicit here. Windows (`cloudflared-windows-amd64.exe`) is Phase 5.
+fn host_asset(os: Os, arch: Arch) -> Option<(String, bool)> {
     let token = match arch {
         Arch::X86_64 => "amd64",
         Arch::Aarch64 => "arm64",
     };
-    match os {
+    Some(match os {
         Os::Macos => (format!("cloudflared-darwin-{token}.tgz"), true),
         Os::Linux => (format!("cloudflared-linux-{token}"), false),
-    }
+        Os::Windows => return None,
+    })
 }
 
 /// Emit one progress line if a sink is attached.
@@ -352,7 +354,8 @@ pub async fn install(
     progress: Option<&ProgressTx>,
 ) -> Result<(), CloudflaredInstallError> {
     let (os, arch) = current_os_arch().map_err(|_| CloudflaredInstallError::UnsupportedHost)?;
-    let (asset_name, is_tgz) = host_asset(os, arch);
+    let (asset_name, is_tgz) =
+        host_asset(os, arch).ok_or(CloudflaredInstallError::UnsupportedHost)?;
 
     note(progress, "Fetching cloudflared release info…");
     let meta = dl
@@ -510,7 +513,10 @@ fn set_executable(path: &Path) -> Result<(), CloudflaredInstallError> {
         .map_err(|e| CloudflaredInstallError::Io(format!("chmod {}: {e}", path.display())))
 }
 
+/// No-op on non-Unix. Kept fallible to mirror the Unix signature so callers stay
+/// platform-agnostic.
 #[cfg(not(unix))]
+#[allow(clippy::unnecessary_wraps)]
 fn set_executable(_path: &Path) -> Result<(), CloudflaredInstallError> {
     Ok(())
 }
@@ -543,20 +549,25 @@ mod tests {
     fn host_asset_tokens_are_cloudflares_not_phps() {
         assert_eq!(
             host_asset(Os::Linux, Arch::X86_64),
-            ("cloudflared-linux-amd64".to_owned(), false)
+            Some(("cloudflared-linux-amd64".to_owned(), false))
         );
         assert_eq!(
             host_asset(Os::Linux, Arch::Aarch64),
-            ("cloudflared-linux-arm64".to_owned(), false)
+            Some(("cloudflared-linux-arm64".to_owned(), false))
         );
         assert_eq!(
             host_asset(Os::Macos, Arch::Aarch64),
-            ("cloudflared-darwin-arm64.tgz".to_owned(), true)
+            Some(("cloudflared-darwin-arm64.tgz".to_owned(), true))
         );
         assert_eq!(
             host_asset(Os::Macos, Arch::X86_64),
-            ("cloudflared-darwin-amd64.tgz".to_owned(), true)
+            Some(("cloudflared-darwin-amd64.tgz".to_owned(), true))
         );
+    }
+
+    #[test]
+    fn host_asset_is_none_for_windows() {
+        assert_eq!(host_asset(Os::Windows, Arch::X86_64), None);
     }
 
     #[test]
@@ -688,6 +699,10 @@ mod tests {
         assert_eq!(find_in_paths(&path_var), Some(second.join("cloudflared")));
     }
 
+    /// "executable" here means the Unix exec bit; Windows has no such bit (and
+    /// cloudflared-on-Windows is a later phase), so a non-`.exe` file is not
+    /// filtered out there. Unix-scoped.
+    #[cfg(unix)]
     #[test]
     fn find_in_paths_ignores_non_executable_file() {
         let tmp = tempfile::tempdir().unwrap();

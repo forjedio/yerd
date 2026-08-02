@@ -303,6 +303,7 @@ async fn running_pid() -> Option<u32> {
 }
 
 /// Send SIGTERM to `pid` (best-effort; an already-dead pid is fine).
+#[cfg(unix)]
 fn sigterm(pid: u32) {
     if let Ok(pid) = i32::try_from(pid) {
         // SAFETY: `kill` is a libc syscall with no memory effects; sending
@@ -311,6 +312,29 @@ fn sigterm(pid: u32) {
             libc::kill(pid, libc::SIGTERM);
         }
     }
+}
+
+/// No-op on Windows: graceful daemon stop by signal is not available here.
+///
+/// `stop()` already tries the IPC `Shutdown` path first (unaffected by this),
+/// and a real Windows process-teardown path arrives with the Phase 5 service
+/// work. Phase 1 deliberately does not shell out to `taskkill`.
+#[cfg(windows)]
+fn sigterm(_pid: u32) {}
+
+/// Display-only: the daemon's transport address for diagnostics - the Unix
+/// socket path, or the Windows named pipe name.
+#[cfg(unix)]
+fn transport_display(dirs: &yerd_platform::PlatformDirs) -> String {
+    dirs.runtime.join("yerd.sock").display().to_string()
+}
+
+/// Display-only: the daemon's Windows pipe name (or a short reason it couldn't
+/// be derived).
+#[cfg(windows)]
+fn transport_display(dirs: &yerd_platform::PlatformDirs) -> String {
+    yerd_platform::daemon_pipe_name(dirs)
+        .unwrap_or_else(|e| format!("<pipe name unavailable: {e}>"))
 }
 
 /// Build the detached daemon's stdout/stderr targets: a truncate-on-start
@@ -454,8 +478,7 @@ fn build_diagnostics(
     let dirs = ActivePaths::new().resolve().ok();
     let socket_path = dirs
         .as_ref()
-        .map(|d| d.runtime.join("yerd.sock").display().to_string())
-        .unwrap_or_else(|| "<unresolved>".to_owned());
+        .map_or_else(|| "<unresolved>".to_owned(), transport_display);
     let cache = dirs.as_ref().map(|d| d.cache.clone());
 
     let translocated = diag_translocated();

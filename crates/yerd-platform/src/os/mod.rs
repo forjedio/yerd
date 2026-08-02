@@ -1,7 +1,10 @@
 //! Per-OS implementations selected by `#[cfg(target_os = ...)]`.
 //!
-//! Exactly one of `linux`, `macos`, or `unsupported` is active per build.
-//! The `active` re-export below is the entry point used by `lib.rs`.
+//! Exactly one of `linux`, `macos`, `windows`, or `unsupported` is active per
+//! build. Windows has a real `Paths` impl (`os::windows`) and delegates every
+//! other trait to the `unsupported` stub, so `unsupported` stays compiled on
+//! Windows too. The `active` re-export below is the entry point used by
+//! `lib.rs`.
 
 #[cfg(target_os = "linux")]
 mod linux;
@@ -9,6 +12,8 @@ mod linux;
 mod macos;
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
 mod unsupported;
+#[cfg(target_os = "windows")]
+mod windows;
 
 pub(crate) mod active {
     //! Type aliases for the currently-active OS implementation.
@@ -31,7 +36,16 @@ pub(crate) mod active {
         MacosTrustStore as ActiveTrustStore,
     };
 
-    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    #[cfg(target_os = "windows")]
+    pub use super::windows::{
+        current_user_sid, daemon_pipe_name, WindowsPaths as ActivePaths,
+        WindowsPortBinder as ActivePortBinder, WindowsPortRedirector as ActivePortRedirector,
+        WindowsResolverInstaller as ActiveResolverInstaller,
+        WindowsSystemMetrics as ActiveSystemMetrics,
+        WindowsTerminalLauncher as ActiveTerminalLauncher, WindowsTrustStore as ActiveTrustStore,
+    };
+
+    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
     pub use super::unsupported::{
         UnsupportedPaths as ActivePaths, UnsupportedPortBinder as ActivePortBinder,
         UnsupportedPortRedirector as ActivePortRedirector,

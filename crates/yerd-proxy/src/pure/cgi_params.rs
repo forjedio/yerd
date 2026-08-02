@@ -197,6 +197,7 @@ fn split_path_query(path_and_query: &str) -> (&str, &str) {
 mod tests {
     use super::*;
     use http::HeaderMap;
+    #[cfg(unix)]
     use std::path::PathBuf;
 
     fn lookup<'a>(pairs: &'a [(Vec<u8>, Vec<u8>)], key: &[u8]) -> Option<&'a [u8]> {
@@ -212,6 +213,11 @@ mod tests {
         h
     }
 
+    /// SCRIPT_FILENAME/DOCUMENT_ROOT come from `document_root.join(...)`, whose
+    /// `to_string_lossy()` emits `\` on Windows for these Unix-style roots. The
+    /// correct Windows CGI path form is a Phase 2 decision (real Windows document
+    /// roots), so pin the exact byte output on Unix only for now.
+    #[cfg(unix)]
     #[test]
     fn caddy_style_everything_to_index_php() {
         let root = PathBuf::from("/srv/www/app");
@@ -270,6 +276,8 @@ mod tests {
         assert!(software.contains("nginx"), "got {software:?}");
     }
 
+    /// Unix-scoped for the same reason as [`caddy_style_everything_to_index_php`].
+    #[cfg(unix)]
     #[test]
     fn web_root_subdir_drives_script_filename_and_document_root() {
         let mut site =
@@ -382,6 +390,8 @@ mod tests {
         assert_eq!(lookup(&pairs, b"QUERY_STRING"), Some(b"".as_slice()));
     }
 
+    /// Unix-scoped for the same reason as [`caddy_style_everything_to_index_php`].
+    #[cfg(unix)]
     #[test]
     fn resolved_script_drives_script_name_and_filename() {
         let pairs = build_params(
@@ -470,6 +480,8 @@ mod tests {
         assert!(lookup(&pairs, b"YERD_LOGIN_USER").is_none());
     }
 
+    /// Unix-scoped for the same reason as [`caddy_style_everything_to_index_php`].
+    #[cfg(unix)]
     #[test]
     fn resolved_exact_script_match_drives_script_name_and_filename() {
         let pairs = build_params(

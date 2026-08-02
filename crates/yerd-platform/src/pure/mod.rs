@@ -20,3 +20,4 @@ pub mod resolver_file;
 pub mod shell_profile;
 pub mod system_roots;
 pub mod terminal_spec;
+pub mod win_pipe;

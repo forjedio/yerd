@@ -1107,9 +1107,21 @@ mod tests {
         assert!(path.ends_with("rel/app.sql"));
     }
 
+    /// A host-absolute path, so `is_absolute()` holds on Windows too (where a
+    /// leading `/` is drive-relative, not absolute).
+    #[cfg(windows)]
+    fn absolute_sql_path() -> PathBuf {
+        PathBuf::from(r"C:\var\tmp\app.sql")
+    }
+
+    #[cfg(not(windows))]
+    fn absolute_sql_path() -> PathBuf {
+        PathBuf::from("/var/tmp/app.sql")
+    }
+
     #[test]
     fn canonicalize_db_paths_backup_absolute_is_unchanged() {
-        let abs = PathBuf::from("/var/tmp/app.sql");
+        let abs = absolute_sql_path();
         let req = Request::BackupDatabase {
             service: "mysql".into(),
             name: "app".into(),
@@ -1132,8 +1144,8 @@ mod tests {
 
     #[test]
     fn absolutise_returns_absolute_path_unchanged() {
-        let abs = Path::new("/etc/hosts");
-        assert_eq!(absolutise(abs).unwrap(), abs.to_path_buf());
+        let abs = absolute_sql_path();
+        assert_eq!(absolutise(&abs).unwrap(), abs.clone());
     }
 
     #[test]

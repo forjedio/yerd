@@ -897,6 +897,10 @@ mod tests {
         assert!(d.as_database().is_none());
     }
 
+    /// The launch args pin `--dump-dir`/`--snapshot-dir` via `datadir.join(...)`,
+    /// which emits `\` on Windows; these goldens pin Unix separators. Windows
+    /// service packaging is a later phase, so this is Unix-scoped for now.
+    #[cfg(unix)]
     #[test]
     fn meilisearch_metadata_and_launch_are_safe_for_local_development() {
         let d = reg().get("meilisearch").unwrap();
@@ -940,6 +944,9 @@ mod tests {
 
     /// Regression: both dirs default to cwd-relative, and the daemon's cwd is the
     /// read-only `/` on macOS, so neither may be left to Meilisearch's default.
+    /// Unix-scoped for the same `datadir.join` separator reason as
+    /// [`meilisearch_metadata_and_launch_are_safe_for_local_development`].
+    #[cfg(unix)]
     #[test]
     fn meilisearch_pins_dump_and_snapshot_dirs_under_the_datadir() {
         let ctx = LaunchContext {

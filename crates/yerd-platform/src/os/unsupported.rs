@@ -1,14 +1,17 @@
-//! Stub implementations for unsupported OSes (Phase 1: Windows).
+//! Stub implementations for OSes without a real impl.
 //!
 //! Every trait method returns `Err(PlatformError::Unsupported { operation })`.
 //! This lets `cargo check --workspace` stay green on every host while the
-//! macOS + Linux impls are the only ones with behaviour.
+//! macOS + Linux impls are the only ones with full behaviour. Windows reuses
+//! these stubs for every trait except `Paths` (`os::windows` aliases them),
+//! replacing one at a time as later phases implement real `Windows*` types.
 
 use std::net::SocketAddr;
 use std::path::Path;
 
 use crate::error::ops;
 use crate::metrics::SystemMetrics;
+#[cfg(not(target_os = "windows"))]
 use crate::paths::{Paths, PlatformDirs};
 use crate::port_binder::{BoundPort, PortBinder, PortPair};
 use crate::port_redirect::PortRedirector;
@@ -37,10 +40,23 @@ impl TerminalLauncher for UnsupportedTerminalLauncher {
     }
 }
 
-/// Stub `Paths` for unsupported OSes.
+/// Stub `Paths` for OSes with no real path resolution. Windows has a real
+/// `Paths` impl (`os::windows::WindowsPaths`), so this stub is not compiled
+/// there.
+#[cfg(not(target_os = "windows"))]
 #[derive(Debug, Default, Clone, Copy)]
 pub struct UnsupportedPaths;
 
+#[cfg(not(target_os = "windows"))]
+impl UnsupportedPaths {
+    /// Construct.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
 impl Paths for UnsupportedPaths {
     fn resolve(&self) -> Result<PlatformDirs, PlatformError> {
         Err(PlatformError::Unsupported {
@@ -135,6 +151,14 @@ impl ResolverInstaller for UnsupportedResolverInstaller {
 /// Stub `PortBinder` for unsupported OSes.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct UnsupportedPortBinder;
+
+impl UnsupportedPortBinder {
+    /// Construct.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self
+    }
+}
 
 impl PortBinder for UnsupportedPortBinder {
     fn bind(&self, _: u16) -> Result<BoundPort, PlatformError> {

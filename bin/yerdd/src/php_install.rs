@@ -478,7 +478,10 @@ fn make_executable(path: &Path) -> Result<(), PhpError> {
     )
 }
 
+/// No-op on non-Unix: the executable bit is a Unix concept. Kept fallible to
+/// mirror the Unix signature so callers stay platform-agnostic.
 #[cfg(not(unix))]
+#[allow(clippy::unnecessary_wraps)]
 fn make_executable(_path: &Path) -> Result<(), PhpError> {
     Ok(())
 }
@@ -579,6 +582,8 @@ pub fn set_default_shim(dirs: &PlatformDirs, yerd_bin: &Path) -> Result<PathBuf,
     Ok(bin)
 }
 
+/// No symlink shims off Unix yet; return the shim dir for PATH hints. Kept
+/// fallible to mirror the Unix signature.
 #[cfg(not(unix))]
 pub fn set_default_shim(dirs: &PlatformDirs, _yerd_bin: &Path) -> Result<PathBuf, PhpError> {
     Ok(shim_dir(dirs))
@@ -692,6 +697,8 @@ pub fn reconcile_shims(dirs: &PlatformDirs, yerd_bin: &Path) -> Result<(), PhpEr
     Ok(())
 }
 
+/// No-op off Unix: PHP shims are symlinks, not managed on Windows yet. Kept
+/// fallible to mirror the Unix signature.
 #[cfg(not(unix))]
 pub fn reconcile_shims(_dirs: &PlatformDirs, _yerd_bin: &Path) -> Result<(), PhpError> {
     Ok(())

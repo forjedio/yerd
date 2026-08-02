@@ -8,7 +8,11 @@
 //! `current_exe` sibling - never from the daemon - and (b) owner-checks the CA
 //! path before trusting it. The daemon itself is never restarted as root.
 
+/// Non-Unix stub: privileged setup is Unix-only until the Phase 4 Windows
+/// elevation model lands. Kept `async` to match the Unix entry point the CLI
+/// dispatch awaits.
 #[cfg(not(unix))]
+#[allow(clippy::unused_async)]
 pub async fn run_elevate(
     _target: Option<crate::cli::ElevateTarget>,
     _undo: bool,

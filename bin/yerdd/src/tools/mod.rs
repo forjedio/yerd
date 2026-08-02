@@ -293,6 +293,8 @@ pub fn reconcile_tool_shims(dirs: &PlatformDirs, yerd_bin: &Path) -> Result<(), 
     Ok(())
 }
 
+/// No-op off Unix: tool shims are symlinks, which Yerd does not manage on
+/// Windows yet. Kept fallible to mirror the Unix signature.
 #[cfg(not(unix))]
 pub fn reconcile_tool_shims(_dirs: &PlatformDirs, _yerd_bin: &Path) -> Result<(), ToolError> {
     Ok(())
@@ -334,6 +336,7 @@ pub(crate) fn verify_sha256(bytes: &[u8], want_sha: &str, label: &str) -> Result
 /// The single child **directory** of `dir` (Node/Bun archives wrap their payload
 /// in one top-level dir whose name encodes the version). Errors unless exactly
 /// one directory entry exists - never reconstructed from a version string.
+#[cfg(any(unix, test))]
 pub(crate) fn extract_root_dir(dir: &Path) -> Result<PathBuf, ToolError> {
     let mut found: Option<PathBuf> = None;
     let entries =

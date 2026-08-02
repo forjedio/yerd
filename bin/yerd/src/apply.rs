@@ -48,7 +48,9 @@
 //! (move the swap into a small unsafe-permitting module or `yerd-helper`).
 
 use std::path::{Path, PathBuf};
-use std::process::{Command, ExitCode};
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+use std::process::Command;
+use std::process::ExitCode;
 
 use yerd_ipc::StagedArtifact;
 use yerd_update::{verify_minisign, UPDATE_PUBLIC_KEY};
@@ -287,6 +289,7 @@ fn sibling_minisig(staged: &Path) -> PathBuf {
 
 /// The `yerdd` binary beside the running `yerd` (same bundle / install dir),
 /// used by the restart step.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn sibling_yerdd() -> Option<PathBuf> {
     let exe = std::env::current_exe().ok()?;
     let dir = exe.parent()?;
@@ -295,6 +298,7 @@ fn sibling_yerdd() -> Option<PathBuf> {
 }
 
 /// Restart the daemon and (optionally) relaunch the GUI after an install.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn restart_services(relaunch_gui: bool) {
     restart_daemon();
     if relaunch_gui {
@@ -304,6 +308,7 @@ fn restart_services(relaunch_gui: bool) {
 
 /// Restart the daemon so it picks up the freshly-swapped binary. Best-effort: a
 /// failure is logged, and launchd's `KeepAlive`/`RunAtLoad` may still bring it up.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn restart_daemon() {
     if let Some(yerdd) = sibling_yerdd() {
         let ctl = yerd_service_ctl::ServiceCtl::new(yerdd);
@@ -971,6 +976,7 @@ mod tests {
     /// Two reads differ because of the process-lifetime counter (not the clock,
     /// which may be coarse), and the value carries this process's pid so
     /// concurrent stagers can't collide.
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     #[test]
     fn unique_suffix_is_per_call_distinct() {
         let a = unique_suffix();

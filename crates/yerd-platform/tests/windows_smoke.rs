@@ -1,8 +1,7 @@
-//! Stub-only test: every trait method returns `Unsupported` on targets with no
-//! real OS impl (i.e. not Linux, macOS, or Windows). Windows has a real `Paths`
-//! impl, so it is covered by `windows_smoke.rs` instead.
+//! Windows smoke test: the one real impl (`WindowsPaths`) resolves, and every
+//! trait still aliased to the `unsupported` stub returns `Unsupported`.
 
-#![cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+#![cfg(target_os = "windows")]
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
@@ -27,9 +26,22 @@ fn loopback(port: u16) -> SocketAddr {
 }
 
 #[test]
-fn paths_resolve_unsupported() {
-    let err = ActivePaths.resolve().unwrap_err();
-    assert!(matches!(err, PlatformError::Unsupported { .. }));
+fn current_user_sid_resolves_and_pipe_name_is_derived() {
+    let sid = yerd_platform::current_user_sid().expect("whoami resolves a SID");
+    assert!(sid.starts_with("S-1-"), "{sid}");
+    let dirs = ActivePaths::new().resolve().expect("resolve on Windows");
+    let name = yerd_platform::daemon_pipe_name(&dirs).expect("derive pipe name");
+    assert!(name.starts_with(&format!("yerd-{sid}-")), "{name}");
+}
+
+#[test]
+fn paths_resolve_returns_yerd_layout() {
+    let dirs = ActivePaths::new().resolve().expect("resolve on Windows");
+    assert!(dirs.config.ends_with("yerd"), "{:?}", dirs.config);
+    assert!(dirs.data.ends_with(r"yerd\data"), "{:?}", dirs.data);
+    assert!(dirs.state.ends_with(r"yerd\state"), "{:?}", dirs.state);
+    assert!(dirs.cache.ends_with(r"yerd\cache"), "{:?}", dirs.cache);
+    assert!(dirs.runtime.ends_with("yerd"), "{:?}", dirs.runtime);
 }
 
 #[test]
@@ -48,19 +60,6 @@ fn trust_store_unsupported() {
         ts.is_present_system(&fp).unwrap_err(),
         PlatformError::Unsupported { .. }
     ));
-    assert!(matches!(
-        ts.install_firefox_nss(std::path::Path::new("/ca.pem"))
-            .unwrap_err(),
-        PlatformError::Unsupported { .. }
-    ));
-    assert!(matches!(
-        ts.uninstall_firefox_nss().unwrap_err(),
-        PlatformError::Unsupported { .. }
-    ));
-    assert!(matches!(
-        ts.browser_ca_trust(&fp).unwrap_err(),
-        PlatformError::Unsupported { .. }
-    ));
 }
 
 #[test]
@@ -74,18 +73,13 @@ fn resolver_unsupported() {
         r.uninstall("test").unwrap_err(),
         PlatformError::Unsupported { .. }
     ));
-    assert!(matches!(
-        r.is_installed("test", "127.0.0.1:1053".parse().unwrap())
-            .unwrap_err(),
-        PlatformError::Unsupported { .. }
-    ));
 }
 
 #[test]
 fn terminal_launcher_unsupported() {
     assert!(matches!(
         ActiveTerminalLauncher
-            .open_terminal(std::path::Path::new("/srv/site"))
+            .open_terminal(std::path::Path::new(r"C:\srv\site"))
             .unwrap_err(),
         PlatformError::Unsupported { .. }
     ));

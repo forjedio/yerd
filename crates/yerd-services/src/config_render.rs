@@ -221,6 +221,10 @@ mod tests {
         assert!(conf.contains("port 6380"));
     }
 
+    /// The rendered config pins paths via `datadir.join(...).display()`, which
+    /// emits `\` on Windows; the goldens here pin Unix separators. Windows DB
+    /// packaging is a later phase, so these renderers are Unix-scoped for now.
+    #[cfg(unix)]
     #[test]
     fn my_cnf_is_loopback_only_no_password() {
         let conf = render_my_cnf(
@@ -289,6 +293,8 @@ mod tests {
         }
     }
 
+    /// Unix-scoped for the same reason as [`my_cnf_is_loopback_only_no_password`].
+    #[cfg(unix)]
     #[test]
     fn postgresql_conf_is_loopback_tcp_only() {
         let conf = render_postgresql_conf(5432, &PathBuf::from("/data/pg/data-17"), &[]);
@@ -301,6 +307,8 @@ mod tests {
         assert!(conf.contains("ident_file = '/data/pg/data-17/pg_ident.conf'"));
     }
 
+    /// Unix-scoped for the same reason as [`my_cnf_is_loopback_only_no_password`].
+    #[cfg(unix)]
     #[test]
     fn postgresql_conf_escapes_single_quotes_in_paths() {
         let conf = render_postgresql_conf(5432, &PathBuf::from("/data/o'brien/data-17"), &[]);

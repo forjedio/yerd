@@ -1,11 +1,17 @@
 //! The daemon transport - a near-verbatim mirror of `bin/yerd/src/transport.rs`.
 //!
-//! The socket path is derived identically to the daemon and the CLI
-//! (`<runtime>/yerd.sock`, where `<runtime>` comes from
-//! `yerd_platform::Paths::resolve`) so client and server always agree. This is
-//! the thin-client rule in practice: the bridge owns the transport, nothing else.
+//! The transport address is derived identically to the daemon and the CLI so
+//! all three agree:
+//! - Unix: `<runtime>/yerd.sock`, where `<runtime>` comes from
+//!   `yerd_platform::Paths::resolve`.
+//! - Windows: the named pipe `yerd_platform::daemon_pipe_name(&dirs)` derived
+//!   from the current user's SID and `dirs.runtime`.
+//!
+//! This is the thin-client rule in practice: the bridge owns the transport,
+//! nothing else.
 
 use crate::error::GuiError;
+use interprocess::local_socket::tokio::Stream as IpcStream;
 use yerd_ipc::{Request, Response};
 
 /// Resolve the daemon socket and exchange one request/response.
@@ -18,11 +24,23 @@ pub async fn exchange(req: &Request) -> Result<Response, GuiError> {
     exchange_at(&dirs.runtime.join("yerd.sock"), req).await
 }
 
+/// Resolve the daemon pipe name and exchange one request/response (Windows).
+#[cfg(windows)]
+pub async fn exchange(req: &Request) -> Result<Response, GuiError> {
+    use yerd_platform::{ActivePaths, Paths};
+    let dirs = ActivePaths::new()
+        .resolve()
+        .map_err(|e| GuiError::unreachable(format!("cannot resolve runtime dir: {e}")))?;
+    let name = yerd_platform::daemon_pipe_name(&dirs)
+        .map_err(|e| GuiError::unreachable(format!("cannot derive daemon pipe name: {e}")))?;
+    exchange_at_name(&name, req).await
+}
+
 /// [`exchange`] bounded by a timeout. Used by the liveness/probe commands
 /// (`status`/`ping`/`daemon_info`) so a daemon that accepts the socket but never
 /// replies (crash-looping, wedged, mid-startup) can't make the `invoke` promise
-/// hang forever - the unbounded `read_message` in [`exchange_at`] otherwise never
-/// resolves, freezing the start spinner and the poller. On elapse this returns an
+/// hang forever - the unbounded `read_message` otherwise never resolves,
+/// freezing the start spinner and the poller. On elapse this returns an
 /// `unreachable` error so the poller treats it as "Stopped" and the start flow
 /// advances to its diagnostics ceiling. NOT used for long-running ops (installs/
 /// updates legitimately block for minutes).
@@ -43,10 +61,8 @@ pub async fn exchange_timeout(
 /// Factored out so tests can target a tempdir socket. Unix only.
 #[cfg(unix)]
 pub async fn exchange_at(sock: &std::path::Path, req: &Request) -> Result<Response, GuiError> {
-    use interprocess::local_socket::tokio::Stream as IpcStream;
     use interprocess::local_socket::traits::tokio::Stream as _;
     use interprocess::local_socket::{GenericFilePath, ToFsName};
-    use yerd_ipc::{read_message, write_message, FrameDecoder, DEFAULT_MAX_FRAME};
 
     let name = sock
         .to_fs_name::<GenericFilePath>()
@@ -54,6 +70,30 @@ pub async fn exchange_at(sock: &std::path::Path, req: &Request) -> Result<Respon
     let stream = IpcStream::connect(name)
         .await
         .map_err(|e| GuiError::unreachable(format!("{}: {e}", sock.display())))?;
+    post_connect_exchange(stream, req).await
+}
+
+/// Connect at an explicit named pipe and exchange one request/response
+/// (Windows mirror of [`exchange_at`]).
+#[cfg(windows)]
+pub async fn exchange_at_name(name: &str, req: &Request) -> Result<Response, GuiError> {
+    use interprocess::local_socket::traits::tokio::Stream as _;
+    use interprocess::local_socket::{GenericNamespaced, ToNsName};
+
+    let ns = name
+        .to_ns_name::<GenericNamespaced>()
+        .map_err(|e| GuiError::unreachable(format!("{name}: {e}")))?;
+    let stream = IpcStream::connect(ns)
+        .await
+        .map_err(|e| GuiError::unreachable(format!("{name}: {e}")))?;
+    post_connect_exchange(stream, req).await
+}
+
+/// The transport-agnostic half of an exchange, shared by every cfg arm so the
+/// framing never diverges between Unix and Windows.
+async fn post_connect_exchange(stream: IpcStream, req: &Request) -> Result<Response, GuiError> {
+    use interprocess::local_socket::traits::tokio::Stream as _;
+    use yerd_ipc::{read_message, write_message, FrameDecoder, DEFAULT_MAX_FRAME};
 
     let (reader, writer) = stream.split();
     let mut reader = reader;
@@ -71,14 +111,4 @@ pub async fn exchange_at(sock: &std::path::Path, req: &Request) -> Result<Respon
             "daemon closed the connection without responding",
         )),
     }
-}
-
-/// The Windows named-pipe name is non-deterministic for clients today (a tracked
-/// Phase-2 follow-up), so the GUI is macOS/Linux-only for now - exactly as the
-/// CLI's transport is.
-#[cfg(not(unix))]
-pub async fn exchange(_req: &Request) -> Result<Response, GuiError> {
-    Err(GuiError::unreachable(
-        "the Windows IPC client is not yet supported (daemon pipe name is non-deterministic)",
-    ))
 }

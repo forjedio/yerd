@@ -525,6 +525,7 @@ mod tests {
         let state = state_in(tmp.path());
         let candidate = tmp.path().join("cloudflared");
         std::fs::write(&candidate, b"#!/bin/sh\n").unwrap();
+        #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt as _;
             std::fs::set_permissions(&candidate, std::fs::Permissions::from_mode(0o755)).unwrap();

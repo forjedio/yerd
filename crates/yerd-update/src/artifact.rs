@@ -38,13 +38,19 @@ pub enum Platform {
     LinuxX86_64,
     /// `aarch64` Linux - the arm64 `.deb` package.
     LinuxAarch64,
+    /// `x86_64` Windows - no self-update artifact is published yet (Windows
+    /// packaging is still an open decision).
+    WindowsX86_64,
+    /// `aarch64` Windows - no self-update artifact is published yet.
+    WindowsAarch64,
     /// Any platform without a published self-update artifact.
     Unsupported,
 }
 
 impl Platform {
-    /// The platform this binary was built for. `Unsupported` for anything we
-    /// don't publish a self-update artifact for (incl. Windows and other arches).
+    /// The platform this binary was built for. Windows resolves to
+    /// `Windows{X86_64,Aarch64}` (no self-update artifact is published for them
+    /// yet); `Unsupported` covers any other arch we don't build for.
     #[must_use]
     pub fn current() -> Self {
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
@@ -63,11 +69,21 @@ impl Platform {
         {
             Self::LinuxAarch64
         }
+        #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+        {
+            Self::WindowsX86_64
+        }
+        #[cfg(all(target_os = "windows", target_arch = "aarch64"))]
+        {
+            Self::WindowsAarch64
+        }
         #[cfg(not(any(
             all(target_os = "macos", target_arch = "aarch64"),
             all(target_os = "macos", target_arch = "x86_64"),
             all(target_os = "linux", target_arch = "x86_64"),
             all(target_os = "linux", target_arch = "aarch64"),
+            all(target_os = "windows", target_arch = "x86_64"),
+            all(target_os = "windows", target_arch = "aarch64"),
         )))]
         {
             Self::Unsupported
@@ -210,7 +226,13 @@ pub fn select_asset(
         }
         (Platform::LinuxX86_64, PkgFormat::Rpm) => (ArtifactKind::Rpm, is_linux_x86_64_rpm),
         (Platform::LinuxAarch64, PkgFormat::Rpm) => (ArtifactKind::Rpm, is_linux_aarch64_rpm),
-        (p @ (Platform::MacOsX86_64 | Platform::Unsupported), _) => {
+        (
+            p @ (Platform::MacOsX86_64
+            | Platform::Unsupported
+            | Platform::WindowsX86_64
+            | Platform::WindowsAarch64),
+            _,
+        ) => {
             return Err(AssetError::NoArtifactForPlatform(p));
         }
     };
@@ -781,8 +803,23 @@ mod tests {
             all(target_os = "macos", target_arch = "aarch64"),
             all(target_os = "linux", target_arch = "x86_64"),
             all(target_os = "linux", target_arch = "aarch64"),
+            all(target_os = "windows", target_arch = "x86_64"),
+            all(target_os = "windows", target_arch = "aarch64"),
         ))]
         assert_ne!(p, Platform::Unsupported);
         let _ = p;
+    }
+
+    #[test]
+    fn windows_has_no_selfupdate_artifact_yet() {
+        let release = release_with(&[]);
+        assert!(matches!(
+            select_asset(&release, Platform::WindowsX86_64, PkgFormat::Deb),
+            Err(AssetError::NoArtifactForPlatform(Platform::WindowsX86_64))
+        ));
+        assert!(matches!(
+            select_asset(&release, Platform::WindowsAarch64, PkgFormat::Deb),
+            Err(AssetError::NoArtifactForPlatform(Platform::WindowsAarch64))
+        ));
     }
 }

@@ -2690,6 +2690,7 @@ fn detect_web_subpath(doc_root: &Path) -> String {
 /// **linked** site stores the chosen subpath on its `Site`; a **parked** site
 /// stores it in `overrides[doc_root].web_root`. `path = None` resets to
 /// auto-detect: re-detect now for linked, clear the override for parked.
+#[cfg_attr(windows, allow(clippy::result_large_err))]
 fn resolve_web_root_mutation(
     new: &mut yerd_config::Config,
     router: &yerd_core::SiteRouter,
@@ -2753,6 +2754,7 @@ fn web_root_summary(name: &str, rel: &str) -> String {
 /// before comparison so a `\\?\` verbatim prefix from `fs::canonicalize` on
 /// Windows doesn't spuriously fail the containment check against the
 /// non-verbatim stored `document_root`.
+#[cfg_attr(windows, allow(clippy::result_large_err))]
 fn resolve_web_root_within(doc_root: &Path, input: &str) -> Result<String, Response> {
     let candidate = {
         let p = Path::new(input);
@@ -2783,6 +2785,7 @@ fn resolve_web_root_within(doc_root: &Path, input: &str) -> Result<String, Respo
 
 /// Canonicalise `path` and require it to be an existing directory, or return a
 /// ready-made `InvalidPath` error response.
+#[cfg_attr(windows, allow(clippy::result_large_err))]
 fn canonicalize_dir(path: &Path) -> Result<PathBuf, Response> {
     match std::fs::canonicalize(path) {
         Ok(p) if p.is_dir() => Ok(p),
@@ -3686,6 +3689,12 @@ Subject: Captured\r\n\r\nhi\r\n";
         std::fs::write(base.join(".yerd-version"), full).unwrap();
     }
 
+    // The PHP install/discovery tests below use `fake_install`, which lays down
+    // the Unix bundle layout (`bin/php`, `sbin/php-fpm`). On Windows
+    // `discover_bundled` looks for `php-fpm.exe` instead (a different layout that
+    // Phase 2 implements), so these are Unix-scoped until the Windows PHP
+    // packaging lands.
+    #[cfg(unix)]
     #[tokio::test]
     async fn dispatch_list_php_reports_installed_and_default() {
         let tmp = tempfile::tempdir().unwrap();
@@ -3737,6 +3746,7 @@ Subject: Captured\r\n\r\nhi\r\n";
         }
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn dispatch_set_default_php_sets_config_and_shim() {
         let tmp = tempfile::tempdir().unwrap();
@@ -3792,6 +3802,7 @@ Subject: Captured\r\n\r\nhi\r\n";
         }
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn uninstall_php_blocked_when_in_use_by_site() {
         let tmp = tempfile::tempdir().unwrap();
@@ -3833,6 +3844,7 @@ Subject: Captured\r\n\r\nhi\r\n";
         }
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn uninstall_php_blocked_when_default_with_others() {
         let tmp = tempfile::tempdir().unwrap();
@@ -3862,6 +3874,7 @@ Subject: Captured\r\n\r\nhi\r\n";
         }
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn uninstall_php_succeeds_and_removes_dir() {
         let tmp = tempfile::tempdir().unwrap();
@@ -4299,6 +4312,7 @@ Subject: Captured\r\n\r\nhi\r\n";
 
     /// `ListPhp` annotates an installed minor from the (pre-seeded) update cache,
     /// with no network.
+    #[cfg(unix)]
     #[tokio::test]
     async fn dispatch_list_php_surfaces_cached_update() {
         let tmp = tempfile::tempdir().unwrap();
@@ -4323,6 +4337,7 @@ Subject: Captured\r\n\r\nhi\r\n";
 
     /// A legacy install (no `.yerd-revision`, so revision 0) is offered the
     /// c-ares-cutover rebuild of the *same* patch - the auto-heal contract.
+    #[cfg(unix)]
     #[tokio::test]
     async fn dispatch_list_php_surfaces_revision_autoheal() {
         let tmp = tempfile::tempdir().unwrap();
@@ -4431,6 +4446,8 @@ Subject: Captured\r\n\r\nhi\r\n";
     }
 
     /// Build + sign a `php.json` for the host platform (see [`listing_body`]).
+    /// Only used by the Unix-scoped install/discovery tests below.
+    #[cfg(unix)]
     fn signed_listing(builds: &[(&str, &str, u32)]) -> crate::test_support::SignedManifest {
         crate::test_support::sign_manifest(&listing_body(builds))
     }
@@ -4475,10 +4492,12 @@ Subject: Captured\r\n\r\nhi\r\n";
 
     /// Serves a valid legacy `php-legacy.json` but errors on every stable
     /// `php.json` request, modelling a reachable legacy manifest behind an
-    /// unreachable stable one.
+    /// unreachable stable one. Only used by the Unix-scoped poll tests below.
+    #[cfg(unix)]
     struct LegacyOnlyDl {
         legacy: ListingDl,
     }
+    #[cfg(unix)]
     #[async_trait::async_trait]
     impl yerd_php::Downloader for LegacyOnlyDl {
         async fn download(&self, url: &str) -> Result<Vec<u8>, yerd_php::DownloadError> {
@@ -4493,6 +4512,7 @@ Subject: Captured\r\n\r\nhi\r\n";
         }
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn poll_and_refresh_populates_cache_from_listing() {
         let tmp = tempfile::tempdir().unwrap();
@@ -4514,6 +4534,7 @@ Subject: Captured\r\n\r\nhi\r\n";
         );
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn poll_and_refresh_is_channel_aware_for_legacy() {
         let tmp = tempfile::tempdir().unwrap();
@@ -4544,6 +4565,7 @@ Subject: Captured\r\n\r\nhi\r\n";
         );
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn poll_and_refresh_tolerates_untrusted_legacy_manifest() {
         let tmp = tempfile::tempdir().unwrap();
@@ -4574,6 +4596,7 @@ Subject: Captured\r\n\r\nhi\r\n";
         );
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn poll_and_refresh_preserves_cached_legacy_update_when_legacy_fetch_fails() {
         let tmp = tempfile::tempdir().unwrap();
@@ -4609,6 +4632,7 @@ Subject: Captured\r\n\r\nhi\r\n";
         );
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn poll_and_refresh_checks_legacy_when_stable_is_unreachable() {
         let tmp = tempfile::tempdir().unwrap();
@@ -5237,6 +5261,7 @@ Subject: Captured\r\n\r\nhi\r\n";
         }
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn available_php_lists_distribution_minors_and_installed() {
         let tmp = tempfile::tempdir().unwrap();
@@ -5390,6 +5415,7 @@ Subject: Captured\r\n\r\nhi\r\n";
         assert_eq!(load_to_centi(f64::from(u32::MAX)), u32::MAX, "saturates");
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn installed_versions_empty_then_lists_fake_install() {
         let tmp = tempfile::tempdir().unwrap();

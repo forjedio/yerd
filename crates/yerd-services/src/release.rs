@@ -92,6 +92,8 @@ pub enum Os {
     Linux,
     /// macOS.
     Macos,
+    /// Windows (`x86_64` only, per the `yerd-services` artifact contract).
+    Windows,
 }
 
 impl Os {
@@ -101,6 +103,7 @@ impl Os {
         match self {
             Os::Linux => "linux",
             Os::Macos => "macos",
+            Os::Windows => "windows",
         }
     }
 }
@@ -233,12 +236,14 @@ pub fn available_versions(listing: &str, service: &str, os: Os, arch: Arch) -> V
     out
 }
 
-/// Detect the running platform, erroring on anything yerd can't install for
-/// (Windows, 32-bit). Call this **before** any download.
+/// Detect the running platform, erroring on anything yerd has no prebuilt
+/// services for (a 32-bit or unknown OS). Windows resolves to `Os::Windows`
+/// (`x86_64` only). Call this **before** any download.
 pub fn current_os_arch() -> Result<(Os, Arch), ServiceError> {
     let os = match std::env::consts::OS {
         "linux" => Os::Linux,
         "macos" => Os::Macos,
+        "windows" => Os::Windows,
         other => {
             return Err(ServiceError::UnsupportedPlatform {
                 detail: format!("no prebuilt services for OS {other:?}"),
@@ -281,7 +286,7 @@ mod tests {
           { "version": "17.10", "platforms": ["linux-x86_64"] }
         ] },
         "mysql": { "versions": [
-          { "version": "8.4.9", "platforms": ["linux-x86_64", "macos-aarch64"] }
+          { "version": "8.4.9", "platforms": ["linux-x86_64", "macos-aarch64", "windows-x86_64"] }
         ] }
       }
     }"#;
@@ -299,6 +304,41 @@ mod tests {
             format!("{SERVICES_BASE_URL}/redis-9.1.0-linux-x86_64.tar.gz")
         );
         assert_eq!(a.service, "redis");
+    }
+
+    #[test]
+    fn artifact_filename_pins_the_windows_contract_string() {
+        assert_eq!(
+            artifact_filename("mysql", &v("8.4.9"), Os::Windows, Arch::X86_64),
+            "mysql-8.4.9-windows-x86_64.tar.gz"
+        );
+    }
+
+    #[test]
+    fn resolve_present_windows_artifact_builds_url() {
+        let a =
+            resolve_from_listing(LISTING, "mysql", &v("8.4.9"), Os::Windows, Arch::X86_64).unwrap();
+        assert_eq!(
+            a.url,
+            format!("{SERVICES_BASE_URL}/mysql-8.4.9-windows-x86_64.tar.gz")
+        );
+        assert_eq!(a.service, "mysql");
+    }
+
+    #[test]
+    fn available_versions_anchors_windows() {
+        assert_eq!(
+            available_versions(LISTING, "mysql", Os::Windows, Arch::X86_64),
+            vec![v("8.4.9")]
+        );
+        assert!(available_versions(LISTING, "redis", Os::Windows, Arch::X86_64).is_empty());
+    }
+
+    /// Only meaningful on the Windows CI leg.
+    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+    #[test]
+    fn current_os_arch_is_windows_x86_64() {
+        assert_eq!(current_os_arch().unwrap(), (Os::Windows, Arch::X86_64));
     }
 
     #[test]

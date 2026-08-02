@@ -1,6 +1,7 @@
 //! `install-resolver` and `uninstall-resolver` for Linux + macOS.
 
 use std::net::SocketAddr;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use std::path::PathBuf;
 
 #[cfg(target_os = "macos")]
@@ -13,6 +14,7 @@ use crate::error::HelperError;
 use crate::ops::atomic_write;
 #[cfg(target_os = "linux")]
 use crate::ops::{atomic_write, run_command};
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use crate::validate;
 
 #[cfg(target_os = "linux")]
@@ -346,6 +348,22 @@ fn macos_try_restore_backup(tld: &str, dest: &std::path::Path) -> Result<bool, H
         dest.display()
     );
     Ok(true)
+}
+
+// ---- unsupported OSes ----------------------------------------------
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+pub fn install_resolver(_tld: &str, _addr: SocketAddr) -> Result<(), HelperError> {
+    Err(HelperError::Unsupported {
+        operation: yerd_platform::error::ops::INSTALL_RESOLVER,
+    })
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+pub fn uninstall_resolver(_tld: &str) -> Result<(), HelperError> {
+    Err(HelperError::Unsupported {
+        operation: yerd_platform::error::ops::UNINSTALL_RESOLVER,
+    })
 }
 
 #[cfg(test)]

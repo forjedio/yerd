@@ -1,6 +1,10 @@
 //! Byte-exact golden test for the rendered FPM config. Pins the
 //! template format - future edits flip this test deliberately.
+//!
+//! Unix-scoped: FPM with a Unix domain socket is a Unix deployment shape and the
+//! goldens pin Unix path separators. Windows PHP uses php-cgi (Phase 2).
 
+#![cfg(unix)]
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,

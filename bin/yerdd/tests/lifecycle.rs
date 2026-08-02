@@ -9,19 +9,40 @@
     clippy::indexing_slicing
 )]
 
-#[cfg(unix)]
 mod tests {
     use std::sync::Arc;
     use std::time::Duration;
 
     use interprocess::local_socket::tokio::Stream as IpcStream;
-    use interprocess::local_socket::traits::tokio::Stream as _;
-    use interprocess::local_socket::{GenericFilePath, ToFsName};
     use tokio::sync::watch;
 
     use yerd_ipc::{
         read_message, write_message, FrameDecoder, Request, Response, DEFAULT_MAX_FRAME,
     };
+    use yerd_platform::PlatformDirs;
+
+    /// Connect to the daemon over its platform-native transport, derived from the
+    /// same `PlatformDirs` the daemon bound on: the Unix socket path, or the
+    /// Windows named pipe (`yerd_platform::daemon_pipe_name`, which the daemon's
+    /// listener also derives). The runtime-dir hash in the pipe name keeps each
+    /// tempdir test's pipe distinct, so the three tests run in parallel.
+    async fn connect_ipc(dirs: &PlatformDirs) -> IpcStream {
+        use interprocess::local_socket::traits::tokio::Stream as _;
+        #[cfg(unix)]
+        {
+            use interprocess::local_socket::{GenericFilePath, ToFsName};
+            let sock = dirs.runtime.join("yerd.sock");
+            let name = sock.to_fs_name::<GenericFilePath>().unwrap();
+            IpcStream::connect(name).await.expect("connect IPC socket")
+        }
+        #[cfg(windows)]
+        {
+            use interprocess::local_socket::{GenericNamespaced, ToNsName};
+            let pipe = yerd_platform::daemon_pipe_name(dirs).expect("derive pipe name");
+            let name = pipe.to_ns_name::<GenericNamespaced>().unwrap();
+            IpcStream::connect(name).await.expect("connect IPC pipe")
+        }
+    }
 
     fn make_dirs(tmp: &std::path::Path) -> yerd_platform::PlatformDirs {
         yerd_platform::PlatformDirs {
@@ -84,15 +105,14 @@ mod tests {
         let daemon_task = tokio::spawn(async move { drive_subsystems(daemon, shutdown_rx).await });
 
         tokio::time::sleep(Duration::from_millis(100)).await;
-        let ipc_sock = dirs.runtime.join("yerd.sock");
 
         let park = Request::Park {
             path: sites_root.clone(),
         };
-        let resp = round_trip(&ipc_sock, &park).await;
+        let resp = round_trip(&dirs, &park).await;
         assert!(matches!(resp, Response::Ok), "park got {resp:?}");
 
-        let resp = round_trip(&ipc_sock, &Request::ListSites).await;
+        let resp = round_trip(&dirs, &Request::ListSites).await;
         match resp {
             Response::Sites { sites } => {
                 assert!(
@@ -105,9 +125,10 @@ mod tests {
 
         let on_disk = std::fs::read_to_string(&cfg_path).expect("config file written");
         let canonical = std::fs::canonicalize(&sites_root).unwrap();
+        let needle = strip_verbatim(&canonical.to_string_lossy());
         assert!(
-            on_disk.contains(&canonical.to_string_lossy().into_owned()),
-            "parked path missing from {on_disk}"
+            strip_verbatim(&on_disk).contains(&needle),
+            "parked path {needle} missing from {on_disk}"
         );
 
         shutdown_tx.send_replace(true);
@@ -135,10 +156,9 @@ mod tests {
         let daemon_task = tokio::spawn(async move { drive_subsystems(daemon, shutdown_rx).await });
 
         tokio::time::sleep(Duration::from_millis(100)).await;
-        let ipc_sock = dirs.runtime.join("yerd.sock");
 
         let resp = round_trip(
-            &ipc_sock,
+            &dirs,
             &Request::Park {
                 path: sites_root.clone(),
             },
@@ -147,7 +167,7 @@ mod tests {
         assert!(matches!(resp, Response::Ok), "park got {resp:?}");
 
         let resp = round_trip(
-            &ipc_sock,
+            &dirs,
             &Request::SetSecure {
                 name: "blog".into(),
                 secure: true,
@@ -156,7 +176,7 @@ mod tests {
         .await;
         assert!(matches!(resp, Response::Ok), "set_secure got {resp:?}");
 
-        match round_trip(&ipc_sock, &Request::ListSites).await {
+        match round_trip(&dirs, &Request::ListSites).await {
             Response::Sites { sites } => {
                 let blog = sites
                     .iter()
@@ -190,10 +210,19 @@ mod tests {
         let _ = tokio::time::timeout(Duration::from_secs(10), daemon_task).await;
     }
 
+    /// Normalise away the Windows extended-length `\\?\` verbatim prefix that
+    /// `std::fs::canonicalize` adds, so the disk-vs-canonicalize path comparison
+    /// holds regardless of whether the Park handler recorded a verbatim path.
+    /// A no-op on Unix (no such prefix). Test-only: daemon behaviour is
+    /// unchanged.
+    fn strip_verbatim(s: &str) -> String {
+        s.replace(r"\\?\", "")
+    }
+
     /// Open a fresh connection, send one request, read one response.
-    async fn round_trip(sock: &std::path::Path, req: &Request) -> Response {
-        let name = sock.to_fs_name::<GenericFilePath>().unwrap();
-        let stream = IpcStream::connect(name).await.expect("connect");
+    async fn round_trip(dirs: &PlatformDirs, req: &Request) -> Response {
+        use interprocess::local_socket::traits::tokio::Stream as _;
+        let stream = connect_ipc(dirs).await;
         let (reader, writer) = stream.split();
         let mut reader = reader;
         let mut writer = writer;
@@ -209,6 +238,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn boot_ping_shutdown_round_trip() {
+        use interprocess::local_socket::traits::tokio::Stream as _;
         let tmp = tempfile::tempdir().unwrap();
         let dirs = make_dirs(tmp.path());
         let cfg = default_config();
@@ -218,8 +248,15 @@ mod tests {
             .await
             .expect("bring_up_with_dirs");
 
-        let ipc_sock = dirs.runtime.join("yerd.sock");
-        assert!(ipc_sock.exists(), "IPC socket should be bound");
+        // On Unix the bound socket is filesystem-visible; on Windows the named
+        // pipe is not, so its bind success plus the connect below is the
+        // assertion (the daemon errors out of `bring_up_with_dirs` if it can't
+        // bind, so reaching here means the listener is up).
+        #[cfg(unix)]
+        assert!(
+            dirs.runtime.join("yerd.sock").exists(),
+            "IPC socket should be bound"
+        );
 
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         let daemon_for_task = daemon;
@@ -228,8 +265,7 @@ mod tests {
 
         tokio::time::sleep(Duration::from_millis(100)).await;
 
-        let name = ipc_sock.as_path().to_fs_name::<GenericFilePath>().unwrap();
-        let stream = IpcStream::connect(name).await.expect("connect IPC socket");
+        let stream = connect_ipc(&dirs).await;
         let (reader, writer) = stream.split();
         let mut reader = reader;
         let mut writer = writer;
@@ -253,8 +289,13 @@ mod tests {
         daemon: yerdd::startup::Daemon,
         shutdown_rx: watch::Receiver<bool>,
     ) -> Result<(), yerdd::error::DaemonError> {
-        let dns_handle = {
-            let bound = daemon.dns_bound.expect("test daemon binds its DNS sockets");
+        // The DNS and web listeners are bound via `ActivePortBinder`, which is
+        // the `Unsupported` stub on Windows, so `bring_up_with_dirs` leaves them
+        // `None` there (a real `WindowsPortBinder` is a later phase). Drive each
+        // subsystem only when present; the IPC listener (the one these tests
+        // exercise) is always up. On Unix all three are `Some`, so behaviour is
+        // unchanged.
+        let dns_handle = daemon.dns_bound.map(|bound| {
             let responder = yerd_dns::Responder::new(daemon.dns_tld.clone());
             let mut rx = shutdown_rx.clone();
             tokio::spawn(async move {
@@ -264,28 +305,26 @@ mod tests {
                     })
                     .await
             })
-        };
-        let proxy_handle = {
+        });
+        let proxy_handle = daemon.http_listener.map(|http_listener| {
             let resolver = Arc::new(yerdd::backend_resolver::DaemonBackendResolver {
                 php_manager: daemon.php_manager.clone(),
                 wordpress_sites: daemon.state.wordpress_sites.clone(),
             });
-            let https = yerd_proxy::HttpsBinding {
-                listener: daemon
-                    .https_listener
-                    .expect("test daemon binds its https listener"),
-                public_port: daemon.state.redirect_https_port.clone(),
-                cert_store: daemon.cert_store.clone(),
-            };
+            let https = daemon
+                .https_listener
+                .map(|listener| yerd_proxy::HttpsBinding {
+                    listener,
+                    public_port: daemon.state.redirect_https_port.clone(),
+                    cert_store: daemon.cert_store.clone(),
+                });
             let router = daemon.state.router.clone();
             let login_tokens = daemon.state.wordpress_login_tokens.clone();
             let login_prepend_script = daemon.state.wordpress_login_prepend_script.clone();
             let mut rx = shutdown_rx.clone();
             tokio::spawn(yerd_proxy::ProxyServer::serve(
-                daemon
-                    .http_listener
-                    .expect("test daemon binds its http listener"),
-                Some(https),
+                http_listener,
+                https,
                 router,
                 resolver,
                 login_tokens,
@@ -300,15 +339,19 @@ mod tests {
                     let _ = rx.changed().await;
                 },
             ))
-        };
+        });
         let ipc_handle = tokio::spawn(yerdd::ipc_server::run(
             daemon.ipc_listener,
             daemon.state.clone(),
             shutdown_rx.clone(),
         ));
 
-        let _ = tokio::time::timeout(Duration::from_secs(10), dns_handle).await;
-        let _ = tokio::time::timeout(Duration::from_secs(10), proxy_handle).await;
+        if let Some(dns_handle) = dns_handle {
+            let _ = tokio::time::timeout(Duration::from_secs(10), dns_handle).await;
+        }
+        if let Some(proxy_handle) = proxy_handle {
+            let _ = tokio::time::timeout(Duration::from_secs(10), proxy_handle).await;
+        }
         let _ = tokio::time::timeout(Duration::from_secs(5), ipc_handle).await;
 
         {

@@ -281,6 +281,10 @@ mod tests {
         assert!(fish[0].ends_with("config.fish"));
     }
 
+    /// `render_body` writes Unix shell rc content (its only caller,
+    /// `yerd path`, is Unix-only) and joins `php-cli.ini` with `Path::join`,
+    /// which emits `\` on Windows. Assert the exact Unix rendering on Unix only.
+    #[cfg(unix)]
     #[test]
     fn body_is_guarded_and_quotes_the_space() {
         let posix = render_body(Shell::Zsh, &bin());
@@ -305,6 +309,8 @@ mod tests {
         ));
     }
 
+    /// Unix-scoped for the same reason as [`body_is_guarded_and_quotes_the_space`].
+    #[cfg(unix)]
     #[test]
     fn body_escapes_shell_metacharacters_in_the_path() {
         let dir = PathBuf::from(r#"/home/b$x/a`b/c\d/e"f/bin"#);

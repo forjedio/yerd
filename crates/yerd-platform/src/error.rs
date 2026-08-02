@@ -38,6 +38,14 @@ pub enum PlatformError {
     #[error("HOME directory could not be resolved")]
     MissingHomeDir,
 
+    /// The current user's SID could not be determined (Windows). Carries a short
+    /// reason: the `whoami` spawn/exit failure or an unparseable output.
+    #[error("could not determine the current user SID: {detail}")]
+    SidLookup {
+        /// Human-readable reason (spawn error, non-zero exit, or parse failure).
+        detail: String,
+    },
+
     /// Trust-store failure with typed reason.
     #[error("trust store: {reason}")]
     TrustStore {
@@ -400,6 +408,9 @@ mod tests {
         let _ = PlatformError::NeedsHelper { operation: "x" };
         let _ = PlatformError::Unsupported { operation: "x" };
         let _ = PlatformError::MissingHomeDir;
+        let _ = PlatformError::SidLookup {
+            detail: String::new(),
+        };
         let _ = PlatformError::TrustStore {
             reason: TrustStoreErrorReason::NssCertutilFailed(1),
         };

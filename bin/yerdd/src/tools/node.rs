@@ -4,16 +4,18 @@
 //! Node's `.tar.gz` bundles `node` plus npm/npx (relative symlinks into
 //! `lib/node_modules/npm`). Integrity uses the per-release `SHASUMS256.txt`.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
+#[cfg(unix)]
+use std::path::PathBuf;
 
 use serde::Deserialize;
 
 use yerd_php::{current_os_arch, is_safe_member, Arch, Downloader, Os};
 use yerd_platform::PlatformDirs;
 
-use super::{
-    extract_root_dir, sha_for_asset, stage_and_swap, tool_dir, verify_sha256, Tool, ToolError,
-};
+#[cfg(unix)]
+use super::{extract_root_dir, tool_dir};
+use super::{sha_for_asset, stage_and_swap, verify_sha256, Tool, ToolError};
 
 const DIST_INDEX: &str = "https://nodejs.org/dist/index.json";
 const DIST_BASE: &str = "https://nodejs.org/dist";
@@ -35,6 +37,7 @@ fn host_platform() -> Option<&'static str> {
         (Os::Macos, Arch::X86_64) => "darwin-x64",
         (Os::Linux, Arch::X86_64) => "linux-x64",
         (Os::Linux, Arch::Aarch64) => "linux-arm64",
+        (Os::Windows, _) => return None,
     })
 }
 
@@ -149,8 +152,17 @@ mod tests {
         assert_eq!(latest_lts(json), None);
     }
 
+    #[cfg(not(target_os = "windows"))]
     #[test]
     fn host_platform_known() {
         assert!(host_platform().is_some());
+    }
+
+    /// Node publishes no build Yerd installs for Windows yet (Phase 5), so the
+    /// host token is deliberately `None` there.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn host_platform_none_on_windows() {
+        assert!(host_platform().is_none());
     }
 }

@@ -18,6 +18,7 @@
 //! Everything is host-side and threads failures through [`GuiError`].
 
 use std::path::PathBuf;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -281,6 +282,7 @@ pub fn mark_onboarded() -> Result<(), GuiError> {
 
 // ── command helpers ──────────────────────────────────────────────────────────
 
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 fn run_ok(program: &str, args: &[&str]) -> Result<(), GuiError> {
     let out = Command::new(program)
         .args(args)
@@ -1097,6 +1099,7 @@ pub(crate) struct StartStep {
 }
 
 /// Writing a unit/plist + service-manager start.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 const INSTALL_BUDGET: std::time::Duration = std::time::Duration::from_secs(12);
 /// The macOS SMAppService ensure/register step: unregister + register_repairing +
 /// kickstart is the slowest single action (XPC), so it gets the largest slice
@@ -1105,6 +1108,7 @@ const INSTALL_BUDGET: std::time::Duration = std::time::Duration::from_secs(12);
 #[cfg(target_os = "macos")]
 const REGISTER_BUDGET: std::time::Duration = std::time::Duration::from_secs(20);
 /// A plain service-manager start/kickstart.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 const START_BUDGET: std::time::Duration = std::time::Duration::from_secs(8);
 
 /// Map the macOS daemon-registration state to the phase *label* to show. Pure +
