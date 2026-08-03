@@ -184,8 +184,29 @@ pub fn install_dir(dirs: &PlatformDirs, service_id: &str, version: &ServiceVersi
     service_root(dirs, service_id).join(version.as_str())
 }
 
+/// The host executable file name for base binary `base`: `<base>.exe` on
+/// Windows, `base` unchanged elsewhere. The pure form [`binary_name`] takes the
+/// platform as a flag so it is table-testable on every OS.
+#[must_use]
+pub fn host_binary_name(base: &str) -> String {
+    binary_name(base, cfg!(windows))
+}
+
+/// Pure: `<base>.exe` when `windows`, else `base` unchanged.
+#[must_use]
+pub fn binary_name(base: &str, windows: bool) -> String {
+    if windows {
+        format!("{base}.exe")
+    } else {
+        base.to_owned()
+    }
+}
+
 /// Absolute path to a version's server binary:
-/// `data/services/<id>/<version>/bin/<server_binary>`.
+/// `data/services/<id>/<version>/bin/<server_binary>` (with the host `.exe`
+/// suffix on Windows). `server_binary` is the base name; callers pass the
+/// host-appropriate base (see `service::server_binary_for_host`) for engines
+/// whose name diverges on Windows (Redis).
 #[must_use]
 pub fn server_path(
     dirs: &PlatformDirs,
@@ -195,7 +216,7 @@ pub fn server_path(
 ) -> PathBuf {
     install_dir(dirs, service_id, version)
         .join("bin")
-        .join(server_binary)
+        .join(host_binary_name(server_binary))
 }
 
 /// The datadir for a service+version, according to its compatibility scope.
@@ -286,7 +307,7 @@ pub fn discover_installed(
         if !def.requires_version() {
             continue;
         }
-        let Some(server_binary) = def.server_binary() else {
+        let Some(server_binary) = crate::service::server_binary_for_host(def.as_ref()) else {
             continue;
         };
         let id = def.id();
@@ -477,12 +498,25 @@ mod tests {
     }
 
     #[test]
+    fn binary_name_appends_exe_only_on_windows() {
+        assert_eq!(binary_name("mysqld", false), "mysqld");
+        assert_eq!(binary_name("mysqld", true), "mysqld.exe");
+        assert_eq!(binary_name("redis-server", true), "redis-server.exe");
+    }
+
+    #[test]
     fn server_path_layout() {
         let dirs = dirs_in(std::path::Path::new("/tmp/x"));
         let v = ServiceVersion::from_str("8").unwrap();
+        #[cfg(not(windows))]
         assert_eq!(
             server_path(&dirs, "redis", "valkey-server", &v),
             PathBuf::from("/tmp/x/d/services/redis/8/bin/valkey-server")
+        );
+        #[cfg(windows)]
+        assert_eq!(
+            server_path(&dirs, "redis", "valkey-server", &v),
+            PathBuf::from("/tmp/x/d/services/redis/8/bin/valkey-server.exe")
         );
     }
 
@@ -492,17 +526,17 @@ mod tests {
         let dirs = dirs_in(tmp.path());
         let reg = ServiceRegistry::builtin();
         let v = ServiceVersion::from_str("8").unwrap();
+        let redis = reg.get("redis").unwrap();
+        // On Windows the server binary diverges (redis-server), so write the file
+        // at the host-appropriate path discovery looks for.
+        let server_base = crate::service::server_binary_for_host(redis.as_ref()).unwrap();
 
         assert!(discover_installed(&dirs, &reg).unwrap().is_empty());
 
         std::fs::create_dir_all(install_dir(&dirs, "redis", &v).join("bin")).unwrap();
         assert!(discover_installed(&dirs, &reg).unwrap().is_empty());
 
-        std::fs::write(
-            server_path(&dirs, "redis", "valkey-server", &v),
-            b"#!/bin/sh\n",
-        )
-        .unwrap();
+        std::fs::write(server_path(&dirs, "redis", server_base, &v), b"#!/bin/sh\n").unwrap();
         let found = discover_installed(&dirs, &reg).unwrap();
         assert_eq!(found.get("redis"), Some(&vec![v]));
     }

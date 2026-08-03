@@ -52,6 +52,14 @@ use crate::traits::{ChildHandle, Clock, HealthProbe, ProcessSpawner};
 /// TCP port is briefly claimed by another process. On Unix this is a
 /// no-op (no binding happens), so the planner runs at most once.
 const MAX_BIND_ATTEMPTS: usize = 5;
+/// On-disk dump-extension file name for the host OS. Must match what
+/// `bin/yerdd`'s `ext_install` writes (`yerd-dump.dll` on Windows, `.so`
+/// elsewhere); a filename-pinning test on each side keeps them in lockstep, as
+/// the two live in different crates and can't share a constant.
+#[cfg(windows)]
+const DUMP_EXT_FILE: &str = "yerd-dump.dll";
+#[cfg(not(windows))]
+const DUMP_EXT_FILE: &str = "yerd-dump.so";
 /// Per-attempt `FastCGI` probe timeout.
 const HEALTH_PROBE_TIMEOUT: Duration = Duration::from_millis(500);
 /// Floor between probe attempts - prevents hot-spin when the listener
@@ -276,6 +284,7 @@ where
     /// still alive, returns the cached listen address immediately. Else
     /// plans an address, renders the config, spawns FPM, and waits for
     /// a healthy probe before returning.
+    #[allow(clippy::too_many_lines)]
     pub async fn ensure(&mut self, v: PhpVersion) -> Result<Listen, PhpError> {
         let binary = self
             .binaries
@@ -307,7 +316,7 @@ where
         cfg.ca_bundle = self.ca_bundle.clone();
 
         if let Some(ext) = &self.dump_ext {
-            let so = ext.so_dir.join(format!("php-{v}")).join("yerd-dump.so");
+            let so = ext.so_dir.join(format!("php-{v}")).join(DUMP_EXT_FILE);
             if so.is_file() {
                 cfg.extension = Some(so);
                 cfg.ini_defines = ext.ini_defines.clone();
@@ -325,7 +334,12 @@ where
             }
         }
 
+        // Unix renders the FPM pool config; Windows has no FPM, so it renders the
+        // supplemental php-cgi ini (loaded via `PHP_INI_SCAN_DIR`) instead.
+        #[cfg(not(windows))]
         let rendered = fpm_conf::render_fpm_conf(&cfg);
+        #[cfg(windows)]
+        let rendered = fpm_conf::render_win_ini(&cfg);
         atomic_write::write(&cfg.config_path, rendered.as_bytes()).map_err(|source| {
             PhpError::ConfigWrite {
                 path: cfg.config_path.clone(),
@@ -337,10 +351,12 @@ where
         let extension = cfg.extension.clone();
         let ini_defines = cfg.ini_defines.clone();
         let user_extensions = cfg.user_extensions.clone();
+        let listen = cfg.listen.clone();
         let cmd_builder = || {
             build_cmd(
                 &binary,
                 &cfg.config_path,
+                &listen,
                 &env,
                 extension.as_deref(),
                 &ini_defines,
@@ -408,14 +424,24 @@ where
     }
 
     /// Plan a listen address, retrying up to `MAX_BIND_ATTEMPTS` to absorb the
-    /// Windows port-pair race.
+    /// Windows port-pair race. On Windows a short, per-daemon-varying backoff
+    /// between attempts de-synchronises two planners colliding on the same
+    /// ephemeral port instead of retrying hot.
     fn plan_listen(&self, v: PhpVersion) -> Result<Listen, PhpError> {
         let mut last_err: Option<PhpError> = None;
-        for _ in 0..MAX_BIND_ATTEMPTS {
+        for attempt in 0..MAX_BIND_ATTEMPTS {
             match AllocatedListen::plan(v, &self.dirs, self.instance_id, &self.binder) {
                 Ok(p) => return Ok(p.listen),
                 Err(e) => last_err = Some(e),
             }
+            #[cfg(windows)]
+            if attempt + 1 < MAX_BIND_ATTEMPTS {
+                let jitter =
+                    10 + (u64::from(self.instance_id).wrapping_mul(attempt as u64 + 1) % 40);
+                std::thread::sleep(Duration::from_millis(jitter));
+            }
+            #[cfg(not(windows))]
+            let _ = attempt;
         }
         Err(last_err.unwrap_or(PhpError::Bind {
             source: yerd_platform::PlatformError::Unsupported {
@@ -747,9 +773,22 @@ async fn wait_after_kill<Ch: ChildHandle>(
     }
 }
 
+/// Build the pool's server command.
+///
+/// Unix runs `php-fpm --fpm-config <conf>` in its own process group. Windows has
+/// no FPM SAPI: it runs `php-cgi.exe -b <host:port>` (the `FastCGI` server),
+/// pointing `PHP_INI_SCAN_DIR` at the supplemental ini's directory (`config_path`
+/// is that ini file). `-c` is deliberately **not** passed on Windows: it would
+/// drop the bundle's own `php.ini` (which carries `extension_dir`, the enabled
+/// extension set, and the install-time CA lines). `PHP_FCGI_MAX_REQUESTS=0`
+/// stops php-cgi from exiting after N requests (the supervisor would count that
+/// as a crash), and `PHP_FCGI_CHILDREN` is cleared (fork-based, unsupported on
+/// Windows).
+#[allow(clippy::too_many_lines)]
 fn build_cmd(
-    binary: &PathBuf,
-    config_path: &PathBuf,
+    binary: &std::path::Path,
+    config_path: &std::path::Path,
+    listen: &Listen,
     env: &[(String, String)],
     extension: Option<&std::path::Path>,
     ini_defines: &[(String, String)],
@@ -771,15 +810,34 @@ fn build_cmd(
         cmd.arg("-d")
             .arg(format!("{directive}={}", ext.path.display()));
     }
-    cmd.arg("--fpm-config").arg(config_path);
-    cmd.env_clear();
-    for (k, val) in env {
-        cmd.env(k, val);
-    }
-    #[cfg(unix)]
+
+    #[cfg(not(windows))]
     {
+        let _ = listen;
+        cmd.arg("--fpm-config").arg(config_path);
+        cmd.env_clear();
+        for (k, val) in env {
+            cmd.env(k, val);
+        }
         use std::os::unix::process::CommandExt;
         cmd.process_group(0);
+    }
+    #[cfg(windows)]
+    {
+        let addr = match listen {
+            Listen::TcpLoopback(a) => a.to_string(),
+            Listen::UnixSocket(_) => format!("{}:0", std::net::Ipv4Addr::LOCALHOST),
+        };
+        cmd.arg("-b").arg(addr);
+        cmd.env_clear();
+        for (k, val) in env {
+            cmd.env(k, val);
+        }
+        cmd.env("PHP_FCGI_MAX_REQUESTS", "0");
+        cmd.env_remove("PHP_FCGI_CHILDREN");
+        if let Some(scan_dir) = config_path.parent() {
+            cmd.env("PHP_INI_SCAN_DIR", scan_dir);
+        }
     }
     cmd
 }
@@ -819,16 +877,35 @@ mod pure_helper_tests {
             .collect()
     }
 
+    /// The trailing args after the shared `-d ...` block: `--fpm-config <conf>`
+    /// on Unix, `-b <addr>` on Windows (php-cgi has no `--fpm-config`).
+    fn tail(config: &str, addr: &str) -> Vec<String> {
+        #[cfg(not(windows))]
+        {
+            let _ = addr;
+            vec!["--fpm-config".to_owned(), config.to_owned()]
+        }
+        #[cfg(windows)]
+        {
+            let _ = config;
+            vec!["-b".to_owned(), addr.to_owned()]
+        }
+    }
+
+    fn tcp_listen() -> Listen {
+        Listen::TcpLoopback("127.0.0.1:9000".parse().unwrap())
+    }
+
     #[test]
-    fn build_cmd_without_extension_only_passes_fpm_config() {
+    fn build_cmd_without_extension_passes_no_defines() {
         let binary = PathBuf::from("/opt/php/bin/php");
         let config = PathBuf::from("/run/yerd/fpm-8.3.conf");
         let env = vec![("PATH".to_owned(), "/usr/bin".to_owned())];
-        let cmd = build_cmd(&binary, &config, &env, None, &[], &[]);
+        let cmd = build_cmd(&binary, &config, &tcp_listen(), &env, None, &[], &[]);
 
         assert_eq!(cmd.get_program(), OsStr::new("/opt/php/bin/php"));
         let args = args_of(&cmd);
-        assert_eq!(args, vec!["--fpm-config", "/run/yerd/fpm-8.3.conf"]);
+        assert_eq!(args, tail("/run/yerd/fpm-8.3.conf", "127.0.0.1:9000"));
         assert!(!args.iter().any(|a| a == "-d"));
 
         let envs: Vec<_> = cmd
@@ -841,35 +918,50 @@ mod pure_helper_tests {
             })
             .collect();
         assert!(envs.contains(&("PATH".to_owned(), Some("/usr/bin".to_owned()))));
+        #[cfg(windows)]
+        {
+            assert!(
+                envs.contains(&("PHP_FCGI_MAX_REQUESTS".to_owned(), Some("0".to_owned()))),
+                "{envs:?}"
+            );
+            assert!(
+                envs.iter().any(|(k, _)| k == "PHP_INI_SCAN_DIR"),
+                "{envs:?}"
+            );
+        }
     }
 
     #[test]
-    fn build_cmd_with_extension_emits_defines_before_fpm_config() {
+    fn build_cmd_with_extension_emits_defines_first() {
         let binary = PathBuf::from("/opt/php/bin/php");
         let config = PathBuf::from("/run/yerd/fpm-8.3.conf");
         let env: Vec<(String, String)> = vec![];
         let so = Path::new("/lib/yerd-dump.so");
         let defines = vec![("yerd_dump.state_path".to_owned(), "/var/state".to_owned())];
-        let cmd = build_cmd(&binary, &config, &env, Some(so), &defines, &[]);
+        let cmd = build_cmd(
+            &binary,
+            &config,
+            &tcp_listen(),
+            &env,
+            Some(so),
+            &defines,
+            &[],
+        );
 
         let args = args_of(&cmd);
-        assert_eq!(
-            args,
-            vec![
-                "-d",
-                "extension=/lib/yerd-dump.so",
-                "-d",
-                "yerd_dump.state_path=/var/state",
-                "--fpm-config",
-                "/run/yerd/fpm-8.3.conf",
-            ]
-        );
+        let mut want = vec![
+            "-d".to_owned(),
+            "extension=/lib/yerd-dump.so".to_owned(),
+            "-d".to_owned(),
+            "yerd_dump.state_path=/var/state".to_owned(),
+        ];
+        want.extend(tail("/run/yerd/fpm-8.3.conf", "127.0.0.1:9000"));
+        assert_eq!(args, want);
         let ext_pos = args
             .iter()
             .position(|a| a.starts_with("extension="))
             .unwrap();
-        let conf_pos = args.iter().position(|a| a == "--fpm-config").unwrap();
-        assert!(ext_pos < conf_pos);
+        assert!(ext_pos < args.len() - 1, "defines come before the tail");
     }
 
     #[test]
@@ -887,36 +979,30 @@ mod pure_helper_tests {
                 zend: true,
             },
         ];
-        let cmd = build_cmd(&binary, &config, &env, None, &[], &user);
+        let cmd = build_cmd(&binary, &config, &tcp_listen(), &env, None, &[], &user);
         let args = args_of(&cmd);
-        assert_eq!(
-            args,
-            vec![
-                "-d",
-                "extension=/lib/scrypt.so",
-                "-d",
-                "zend_extension=/lib/xdebug.so",
-                "--fpm-config",
-                "/run/yerd/fpm-8.5.conf",
-            ]
-        );
+        let mut want = vec![
+            "-d".to_owned(),
+            "extension=/lib/scrypt.so".to_owned(),
+            "-d".to_owned(),
+            "zend_extension=/lib/xdebug.so".to_owned(),
+        ];
+        want.extend(tail("/run/yerd/fpm-8.5.conf", "127.0.0.1:9000"));
+        assert_eq!(args, want);
 
         let so = Path::new("/lib/yerd-dump.so");
-        let cmd = build_cmd(&binary, &config, &env, Some(so), &[], &user);
+        let cmd = build_cmd(&binary, &config, &tcp_listen(), &env, Some(so), &[], &user);
         let args = args_of(&cmd);
-        assert_eq!(
-            args,
-            vec![
-                "-d",
-                "extension=/lib/yerd-dump.so",
-                "-d",
-                "extension=/lib/scrypt.so",
-                "-d",
-                "zend_extension=/lib/xdebug.so",
-                "--fpm-config",
-                "/run/yerd/fpm-8.5.conf",
-            ]
-        );
+        let mut want = vec![
+            "-d".to_owned(),
+            "extension=/lib/yerd-dump.so".to_owned(),
+            "-d".to_owned(),
+            "extension=/lib/scrypt.so".to_owned(),
+            "-d".to_owned(),
+            "zend_extension=/lib/xdebug.so".to_owned(),
+        ];
+        want.extend(tail("/run/yerd/fpm-8.5.conf", "127.0.0.1:9000"));
+        assert_eq!(args, want);
     }
 
     #[test]

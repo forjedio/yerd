@@ -183,9 +183,18 @@ pub trait ServiceDefinition: Send + Sync + 'static {
         matches!(self.multiplicity(), Multiplicity::PerSite)
     }
 
-    /// The server executable's file name inside the install's `bin/` dir, or
-    /// `None` for a type with no installed server binary (app servers).
+    /// The server executable's base file name inside the install's `bin/` dir, or
+    /// `None` for a type with no installed server binary (app servers). The host
+    /// `.exe` suffix is applied at the path layer (`version::host_binary_name`).
     fn server_binary(&self) -> Option<&'static str>;
+
+    /// The server executable's base name on Windows, when it diverges from the
+    /// Unix name. Defaults to [`server_binary`](Self::server_binary); Redis
+    /// overrides it because the native MSVC port ships `redis-server`, not
+    /// `valkey-server`. The `.exe` suffix is still applied at the path layer.
+    fn windows_server_binary(&self) -> Option<&'static str> {
+        self.server_binary()
+    }
 
     /// Compatibility scope used to select the service's mutable datadir.
     fn datadir_scope(&self) -> DatadirScope {
@@ -215,6 +224,20 @@ pub trait ServiceDefinition: Send + Sync + 'static {
     /// Postgres overrides to `MasterInterrupt` (SIGINT "fast shutdown").
     fn stop_protocol(&self) -> StopProtocol {
         StopProtocol::GroupTerm
+    }
+
+    /// A Windows-only graceful-stop command to run **before** forced termination,
+    /// since Windows has no SIGINT. Postgres returns `pg_ctl stop -D <datadir> -m
+    /// fast`; other engines return `None` and go straight to the job-object kill.
+    /// Pure: this returns the command spec only; the manager spawns it (through
+    /// the injected `ProcessSpawner`) and the child inherits the daemon env.
+    fn graceful_stop_plan(
+        &self,
+        install_dir: &std::path::Path,
+        datadir: &std::path::Path,
+    ) -> Option<StdCommand> {
+        let _ = (install_dir, datadir);
+        None
     }
 
     /// A reverse-proxy path prefix to auto-manage on the instance's linked site
@@ -401,6 +424,9 @@ impl ServiceDefinition for Redis {
     fn server_binary(&self) -> Option<&'static str> {
         Some("valkey-server")
     }
+    fn windows_server_binary(&self) -> Option<&'static str> {
+        Some("redis-server")
+    }
     fn supervisor_policy(&self) -> SupervisorPolicy {
         SupervisorPolicy::database()
     }
@@ -495,7 +521,11 @@ impl ServiceDefinition for MySql {
         _preload_libraries: &[&str],
     ) -> Option<String> {
         Some(config_render::render_my_cnf(
-            port, datadir, socket, log_path, init_file,
+            port,
+            datadir,
+            cfg!(unix).then_some(socket),
+            log_path,
+            init_file,
         ))
     }
     fn plan_launch(&self, ctx: &LaunchContext<'_>) -> Result<LaunchPlan, ServiceError> {
@@ -570,7 +600,11 @@ impl ServiceDefinition for MariaDb {
         _preload_libraries: &[&str],
     ) -> Option<String> {
         Some(config_render::render_my_cnf(
-            port, datadir, socket, log_path, init_file,
+            port,
+            datadir,
+            cfg!(unix).then_some(socket),
+            log_path,
+            init_file,
         ))
     }
     fn plan_launch(&self, ctx: &LaunchContext<'_>) -> Result<LaunchPlan, ServiceError> {
@@ -617,6 +651,27 @@ impl ServiceDefinition for Postgres {
     }
     fn stop_protocol(&self) -> StopProtocol {
         StopProtocol::MasterInterrupt
+    }
+    /// `pg_ctl stop -D <datadir> -m fast` - the Windows analogue of the Unix
+    /// SIGINT fast shutdown, run before the forced job-object kill so the
+    /// postmaster flushes cleanly. `-t` bounds `pg_ctl`'s own wait.
+    fn graceful_stop_plan(
+        &self,
+        install_dir: &std::path::Path,
+        datadir: &std::path::Path,
+    ) -> Option<StdCommand> {
+        let pg_ctl = install_dir
+            .join("bin")
+            .join(crate::version::host_binary_name("pg_ctl"));
+        let mut cmd = StdCommand::new(pg_ctl);
+        cmd.arg("stop")
+            .arg("-D")
+            .arg(datadir)
+            .arg("-m")
+            .arg("fast")
+            .arg("-t")
+            .arg("10");
+        Some(cmd)
     }
     fn as_database(&self) -> Option<SqlEngine> {
         Some(SqlEngine::Postgres)
@@ -778,6 +833,19 @@ impl ServiceDefinition for Reverb {
             command,
             capture_output_to_log: true,
         })
+    }
+}
+
+/// The server-binary base name to use on the host OS: the Windows override on
+/// Windows, otherwise the Unix name. The `.exe` suffix is applied separately by
+/// `version::host_binary_name` at the path layer. On Unix this is exactly
+/// [`ServiceDefinition::server_binary`], so Unix behaviour is unchanged.
+#[must_use]
+pub fn server_binary_for_host(def: &dyn ServiceDefinition) -> Option<&'static str> {
+    if cfg!(windows) {
+        def.windows_server_binary()
+    } else {
+        def.server_binary()
     }
 }
 
@@ -1181,5 +1249,29 @@ mod tests {
                 .unwrap();
             assert!(rendered.contains("6543"), "{id} config missing port");
         }
+    }
+
+    #[test]
+    fn postgres_graceful_stop_plan_is_pg_ctl_fast_and_others_none() {
+        let install = std::path::Path::new("/i/pg");
+        let datadir = std::path::Path::new("/d/data-17");
+        let cmd = Postgres
+            .graceful_stop_plan(install, datadir)
+            .expect("postgres has a graceful stop plan");
+
+        let program = std::path::Path::new(cmd.get_program());
+        assert_eq!(
+            program.file_name().and_then(|s| s.to_str()),
+            Some(crate::version::host_binary_name("pg_ctl").as_str())
+        );
+        let args: Vec<String> = cmd
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(args, ["stop", "-D", "/d/data-17", "-m", "fast", "-t", "10"]);
+
+        assert!(MySql.graceful_stop_plan(install, datadir).is_none());
+        assert!(MariaDb.graceful_stop_plan(install, datadir).is_none());
+        assert!(Redis.graceful_stop_plan(install, datadir).is_none());
     }
 }

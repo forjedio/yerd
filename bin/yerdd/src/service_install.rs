@@ -150,7 +150,9 @@ async fn stage(
     fs_ctx(std::fs::create_dir_all(staging), staging)?;
     extract_all(&bytes, staging, url)?;
 
-    let server = staging.join("bin").join(server_binary);
+    let server = staging
+        .join("bin")
+        .join(version::host_binary_name(server_binary));
     if !server.is_file() {
         return Err(ServiceError::Extract {
             what: url.to_owned(),
@@ -181,9 +183,49 @@ fn extract_all(gz_bytes: &[u8], dest: &Path, url: &str) -> Result<(), ServiceErr
         if let Some(parent) = out.parent() {
             fs_ctx(std::fs::create_dir_all(parent), parent)?;
         }
-        entry.unpack(&out).map_err(|e| extract_err(url, &e))?;
+        unpack_with_retry(&mut entry, &out, url)?;
     }
     Ok(())
+}
+
+/// Unpack one tar entry to `out`, retrying briefly on a Windows sharing/lock
+/// violation (Defender or another AV can transiently hold a just-created file
+/// open). A no-op wrapper on Unix (the first attempt returns). Bounded so a
+/// genuine failure still surfaces promptly.
+fn unpack_with_retry<R: std::io::Read>(
+    entry: &mut tar::Entry<'_, R>,
+    out: &Path,
+    url: &str,
+) -> Result<(), ServiceError> {
+    #[cfg(windows)]
+    {
+        const MAX_ATTEMPTS: u64 = 3;
+        const ERROR_SHARING_VIOLATION: i32 = 32;
+        const ERROR_LOCK_VIOLATION: i32 = 33;
+        let mut attempt: u64 = 1;
+        loop {
+            match entry.unpack(out) {
+                Ok(_) => return Ok(()),
+                Err(e) => {
+                    let sharing = matches!(
+                        e.raw_os_error(),
+                        Some(ERROR_SHARING_VIOLATION | ERROR_LOCK_VIOLATION)
+                    );
+                    if sharing && attempt < MAX_ATTEMPTS {
+                        std::thread::sleep(std::time::Duration::from_millis(50 * attempt));
+                        attempt += 1;
+                        continue;
+                    }
+                    return Err(extract_err(url, &e));
+                }
+            }
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        entry.unpack(out).map_err(|e| extract_err(url, &e))?;
+        Ok(())
+    }
 }
 
 fn fs_ctx<T>(r: std::io::Result<T>, path: &Path) -> Result<T, ServiceError> {
@@ -279,9 +321,10 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let dirs = dirs_in(tmp.path());
         let root = version::service_root(&dirs, "meilisearch");
+        let server = version::host_binary_name("meilisearch");
         for version in ["1.11", "1.12"] {
             std::fs::create_dir_all(root.join(version).join("bin")).unwrap();
-            std::fs::write(root.join(version).join("bin/meilisearch"), b"binary").unwrap();
+            std::fs::write(root.join(version).join("bin").join(&server), b"binary").unwrap();
             std::fs::create_dir_all(root.join(format!("data-{version}"))).unwrap();
         }
         std::fs::create_dir_all(root.join("data-1.10")).unwrap();
@@ -302,7 +345,7 @@ mod tests {
             !root.join("data-1.10").exists(),
             "orphan should be reclaimed"
         );
-        assert!(root.join("1.12/bin/meilisearch").is_file());
+        assert!(root.join("1.12").join("bin").join(&server).is_file());
         assert!(
             root.join("data-1.12").is_dir(),
             "live version data must survive"

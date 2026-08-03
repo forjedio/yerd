@@ -35,10 +35,12 @@ pub trait ProcessSpawner: Send + Sync + 'static {
 /// (Postgres fast shutdown), which deliberately signals only the master PID,
 /// because the postmaster reaps its own backends and a group signal would
 /// mis-deliver to them. A forced [`KillSignal::Kill`] always SIGKILLs the group
-/// regardless of protocol. On Windows, signals collapse to
-/// `tokio::process::Child::kill`; workers are taken down by tokio's
-/// `kill_on_drop(true)`. A Phase 2 ticket adds job-object semantics via the
-/// helper.
+/// regardless of protocol. On Windows there are no signals: every `kill`
+/// combination drops the child's kill-on-close Job Object, terminating the whole
+/// process tree (workers + init-tool grandchildren), then reaps the direct child
+/// handle. So `GroupTerm` reaping is provided by the job, and `MasterInterrupt`
+/// graceful stops are handled a layer up (in the service manager) before `kill`
+/// forces termination.
 #[async_trait]
 pub trait ChildHandle: Send + 'static {
     /// PID captured once at spawn time. `tokio::process::Child::id()` returns

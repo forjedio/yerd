@@ -1,5 +1,6 @@
-//! Windows smoke test: the one real impl (`WindowsPaths`) resolves, and every
-//! trait still aliased to the `unsupported` stub returns `Unsupported`.
+//! Windows smoke test: the real impls (`WindowsPaths`, `WindowsPortBinder`)
+//! resolve/bind, and every trait still aliased to the `unsupported` stub returns
+//! `Unsupported`.
 
 #![cfg(target_os = "windows")]
 #![allow(
@@ -86,14 +87,29 @@ fn terminal_launcher_unsupported() {
 }
 
 #[test]
-fn port_binder_unsupported() {
-    let b = ActivePortBinder;
-    assert!(matches!(
-        b.bind(0).unwrap_err(),
-        PlatformError::Unsupported { .. }
-    ));
-    assert!(matches!(
-        b.bind_pair(false, (0, 0), (0, 0)).unwrap_err(),
-        PlatformError::Unsupported { .. }
-    ));
+fn port_binder_binds_ephemeral_and_reports_port() {
+    let bound = ActivePortBinder.bind(0).expect("ephemeral loopback bind");
+    let port = bound.port().expect("port readback");
+    assert_ne!(port, 0, "an ephemeral bind must resolve a concrete port");
+}
+
+#[test]
+fn port_binder_reports_addr_in_use_on_double_bind() {
+    let first = ActivePortBinder.bind(0).expect("first bind");
+    let port = first.port().expect("port readback");
+    match ActivePortBinder.bind(port) {
+        Err(PlatformError::Bind { source, .. }) => {
+            assert_eq!(source.kind(), std::io::ErrorKind::AddrInUse, "{source:?}");
+        }
+        other => panic!("expected AddrInUse Bind error, got {other:?}"),
+    }
+}
+
+#[test]
+fn port_binder_bind_pair_keeps_desired_when_both_free() {
+    let pair = ActivePortBinder
+        .bind_pair(false, (0, 0), (0, 0))
+        .expect("ephemeral pair binds");
+    assert_ne!(pair.http.port().unwrap(), 0);
+    assert_ne!(pair.https.port().unwrap(), 0);
 }

@@ -485,9 +485,15 @@ async fn resolve_and_install_latest(
                 def.display_name()
             )
         })?;
-    crate::service_install::install(def.id(), def.server_binary(), &version, &state.dirs, &dl)
-        .await
-        .map_err(|e| e.to_string())?;
+    crate::service_install::install(
+        def.id(),
+        yerd_services::server_binary_for_host(def.as_ref()),
+        &version,
+        &state.dirs,
+        &dl,
+    )
+    .await
+    .map_err(|e| e.to_string())?;
     Ok(version)
 }
 

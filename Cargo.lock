@@ -5580,6 +5580,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "72069c3113ab32ab29e5584db3c6ec55d416895e60715417b5b883a357c3e471"
 
 [[package]]
+name = "win32job"
+version = "2.0.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8c6a6724ccfbf34154a8691bd868b0fcd2be2ca3f7b47b32614654f1a01b191c"
+dependencies = [
+ "thiserror 1.0.69",
+ "windows",
+]
+
+[[package]]
 name = "winapi"
 version = "0.3.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6536,6 +6546,7 @@ dependencies = [
  "tempfile",
  "thiserror 1.0.69",
  "tokio",
+ "tracing",
  "yerd-platform",
  "yerd-supervise",
 ]
@@ -6546,8 +6557,10 @@ version = "2.0.4"
 dependencies = [
  "async-trait",
  "nix",
+ "tempfile",
  "thiserror 1.0.69",
  "tokio",
+ "win32job",
 ]
 
 [[package]]

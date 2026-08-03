@@ -92,8 +92,12 @@ choose between signalling the **process group** (the default - reaps workers
 along with the master) and signalling the master process only. `TokioProcessSpawner`
 sets `process_group(0)` at spawn time, so the child's PID is also the
 process-group ID. `real::TokioChild::kill` then uses `nix` `killpg` for a group
-signal. On Windows both signals collapse to `tokio::process::Child::kill`, and
-children are taken down by tokio's `kill_on_drop(true)`.
+signal. On **Windows** there are no signals: `TokioProcessSpawner` assigns each
+child to a kill-on-close **Job Object** (via the safe `win32job` crate), so every
+`kill` combination — and even a `yerdd` crash, which closes the job handle —
+terminates the whole process tree (workers plus init-tool grandchildren). This is
+the Windows equivalent of Unix process-group reaping, so `kill_process_group` is a
+no-op there; `kill_on_drop(true)` remains as belt-and-braces for the direct child.
 :::
 
 ::: tip The `Downloader` seam keeps `reqwest` out of the libraries

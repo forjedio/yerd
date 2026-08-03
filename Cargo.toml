@@ -41,6 +41,10 @@ hickory-server     = { version = "=0.24.4", default-features = false }
 hickory-client     = "=0.24.4"
 async-trait        = "0.1"
 nix                = { version = "0.29", default-features = false, features = ["process", "signal"] }
+# Safe wrapper over Windows Job Objects (no `unsafe` in our code); used only by
+# yerd-supervise on Windows to kill a whole process tree on drop/kill. Transitive
+# deps (`windows 0.61`, `thiserror 1`) already resolve in Cargo.lock.
+win32job            = "2"
 reqwest            = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 hyper              = { version = "1", default-features = false, features = ["http1", "server", "client"] }
 hyper-util         = { version = "0.1", default-features = false, features = ["http1", "server", "client", "tokio"] }

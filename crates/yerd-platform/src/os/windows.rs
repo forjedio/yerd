@@ -6,15 +6,19 @@
 //! `Windows*` type in the same change that adds its full trait impl (the
 //! "never half-flip" rule).
 
+#![allow(clippy::similar_names)]
+
+use std::net::{Ipv4Addr, SocketAddr, TcpListener};
 use std::path::PathBuf;
 use std::sync::OnceLock;
 
 use crate::paths::{Paths, PlatformDirs};
-use crate::pure::win_pipe;
-use crate::PlatformError;
+use crate::port_binder::{BoundPort, PortBinder, PortPair};
+use crate::pure::{port_plan, win_pipe};
+use crate::{BindPairErrorReason, PlatformError};
 
 pub use super::unsupported::{
-    UnsupportedPortBinder as WindowsPortBinder, UnsupportedPortRedirector as WindowsPortRedirector,
+    UnsupportedPortRedirector as WindowsPortRedirector,
     UnsupportedResolverInstaller as WindowsResolverInstaller,
     UnsupportedSystemMetrics as WindowsSystemMetrics,
     UnsupportedTerminalLauncher as WindowsTerminalLauncher,
@@ -69,6 +73,146 @@ impl Paths for WindowsPaths {
             cache: local.join("cache"),
             runtime: std::env::temp_dir().join("yerd"),
         })
+    }
+}
+
+/// Windows `PortBinder` implementation.
+///
+/// Sub-1024 binds are unprivileged on Windows, so unlike Linux/macOS there is no
+/// `setcap`/`pf` special-casing: `bind_pair` uses the same generic desired →
+/// fallback retry as Linux, attempting the desired ports directly. Pulled forward
+/// from Phase 3 (Phase 2's FPM pool needs an ephemeral loopback bind; Phase 3
+/// adds the 80/443 conflict validation and doctor check on top).
+#[derive(Debug, Default, Clone, Copy)]
+pub struct WindowsPortBinder;
+
+impl WindowsPortBinder {
+    /// Construct.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self
+    }
+}
+
+fn bind_at(ip: Ipv4Addr, port: u16) -> std::io::Result<TcpListener> {
+    TcpListener::bind(SocketAddr::from((ip, port)))
+}
+
+impl PortBinder for WindowsPortBinder {
+    fn bind(&self, port: u16) -> Result<BoundPort, PlatformError> {
+        bind_at(Ipv4Addr::LOCALHOST, port)
+            .map(|listener| BoundPort { listener })
+            .map_err(|source| PlatformError::Bind { port, source })
+    }
+
+    fn bind_pair(
+        &self,
+        lan: bool,
+        desired: (u16, u16),
+        fallback: (u16, u16),
+    ) -> Result<PortPair, PlatformError> {
+        bind_pair_impl(lan, desired, fallback)
+    }
+}
+
+/// The generic desired → fallback bind-pair retry (Linux shape, no privilege
+/// special-casing). Attempt `desired`; on a retry-trigger kind
+/// (`PermissionDenied`/`AddrInUse`/`AddrNotAvailable`) drop any partial listener
+/// and retry `fallback`; any other error on the desired pair surfaces
+/// immediately; if both pairs fail, a [`PlatformError::BindPair`] carries all
+/// four `ErrorKind`s.
+fn bind_pair_impl(
+    lan: bool,
+    desired: (u16, u16),
+    fallback: (u16, u16),
+) -> Result<PortPair, PlatformError> {
+    let ip = if lan {
+        Ipv4Addr::UNSPECIFIED
+    } else {
+        Ipv4Addr::LOCALHOST
+    };
+    let http_attempt = bind_at(ip, desired.0);
+    let https_attempt = bind_at(ip, desired.1);
+
+    let http_outcome = http_attempt
+        .as_ref()
+        .map(|_| ())
+        .map_err(std::io::Error::kind);
+    let https_outcome = https_attempt
+        .as_ref()
+        .map(|_| ())
+        .map_err(std::io::Error::kind);
+
+    match port_plan::classify_desired(http_outcome, https_outcome) {
+        port_plan::DesiredPairAction::KeepDesired => Ok(PortPair {
+            http: BoundPort {
+                listener: http_attempt.map_err(|e| PlatformError::Bind {
+                    port: desired.0,
+                    source: e,
+                })?,
+            },
+            https: BoundPort {
+                listener: https_attempt.map_err(|e| PlatformError::Bind {
+                    port: desired.1,
+                    source: e,
+                })?,
+            },
+        }),
+        port_plan::DesiredPairAction::HardFail(_) => {
+            if let Err(e) = http_attempt {
+                return Err(PlatformError::Bind {
+                    port: desired.0,
+                    source: e,
+                });
+            }
+            if let Err(e) = https_attempt {
+                return Err(PlatformError::Bind {
+                    port: desired.1,
+                    source: e,
+                });
+            }
+            Err(PlatformError::Bind {
+                port: desired.0,
+                source: std::io::Error::from(std::io::ErrorKind::Other),
+            })
+        }
+        port_plan::DesiredPairAction::UseFallback => {
+            let desired_http_kind = http_outcome.err().unwrap_or(std::io::ErrorKind::Other);
+            let desired_https_kind = https_outcome.err().unwrap_or(std::io::ErrorKind::Other);
+            drop(http_attempt);
+            drop(https_attempt);
+
+            let fb_http = bind_at(ip, fallback.0);
+            let fb_https = bind_at(ip, fallback.1);
+
+            let fb_http_outcome = fb_http.as_ref().map(|_| ()).map_err(std::io::Error::kind);
+            let fb_https_outcome = fb_https.as_ref().map(|_| ()).map_err(std::io::Error::kind);
+
+            match port_plan::classify_fallback(fb_http_outcome, fb_https_outcome) {
+                port_plan::FallbackPairAction::KeepFallback => Ok(PortPair {
+                    http: BoundPort {
+                        listener: fb_http.map_err(|e| PlatformError::Bind {
+                            port: fallback.0,
+                            source: e,
+                        })?,
+                    },
+                    https: BoundPort {
+                        listener: fb_https.map_err(|e| PlatformError::Bind {
+                            port: fallback.1,
+                            source: e,
+                        })?,
+                    },
+                }),
+                port_plan::FallbackPairAction::BothFailed => Err(PlatformError::BindPair {
+                    reason: BindPairErrorReason::BothPairsFailed {
+                        desired_http: desired_http_kind,
+                        desired_https: desired_https_kind,
+                        fallback_http: fb_http_outcome.err().unwrap_or(std::io::ErrorKind::Other),
+                        fallback_https: fb_https_outcome.err().unwrap_or(std::io::ErrorKind::Other),
+                    },
+                }),
+            }
+        }
     }
 }
 

@@ -318,6 +318,8 @@ const _: () = {
 
 The spawned command is assembled by `build_cmd`: `php-fpm --fpm-config <path>`, with `env_clear()` followed by the scrubbed allowlist, and `process_group(0)` on Unix. When dump-extension loading is active for the version, `build_cmd` prepends `-d extension=<so>` plus one `-d key=value` per ini define **before** `--fpm-config` (startup-INI overrides must precede it so they apply at PHP `MINIT`, which the extension needs to register its observers).
 
+On **Windows** there is no FPM binary: `build_cmd` instead spawns `php-cgi.exe -b 127.0.0.1:<port>` (the FastCGI server) with `PHP_FCGI_MAX_REQUESTS=0` (php-cgi otherwise exits after N requests, which the supervisor would treat as a crash) and `PHP_INI_SCAN_DIR` pointing at a per-pool directory holding the supplemental ini (settings, directives, CA lines). `-c` is deliberately not passed, so the bundle's own `php.ini` (with `extension_dir`, the enabled extensions, and the install-time CA lines) stays active. The `-d extension=…` prefix is identical on both platforms; the containment of workers is via the Job Object from `yerd-supervise`, not a Unix process group. One `php-cgi.exe` per version means one concurrent PHP request per version — a documented MVP limitation.
+
 ### Dump-extension loading
 
 `PhpManager::set_dump_ext(Option<DumpExtSettings>)` wires the Laravel ▸ Dumps extension into FPM pools. `DumpExtSettings` is:

@@ -93,7 +93,7 @@ pub async fn backup(service_id: &str, name: &str, path: &Path, state: &DaemonSta
         return invalid_name(&e.to_string());
     }
     let dump_bin = ctx.engine.dump_binary();
-    let dump_path = ctx.bin_dir.join(dump_bin);
+    let dump_path = ctx.bin_dir.join(yerd_services::host_binary_name(dump_bin));
     if !dump_path.is_file() {
         return internal(format!(
             "this {} build does not include {dump_bin}",
@@ -254,7 +254,7 @@ async fn prepare(service_id: &str, state: &DaemonState) -> Result<DbCtx, Respons
     };
     let ver = resolve_version(&def, configured.as_deref(), &state.dirs)?;
     let bin_dir = version::install_dir(&state.dirs, def.id(), &ver).join("bin");
-    let client_path = bin_dir.join(client);
+    let client_path = bin_dir.join(yerd_services::host_binary_name(client));
     if !client_path.is_file() {
         return Err(Response::Error {
             code: ErrorCode::Internal,

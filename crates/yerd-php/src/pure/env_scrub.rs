@@ -9,6 +9,9 @@
 /// Retained:
 ///   - Exact: `PATH`, `HOME`, `USER`, `LANG`
 ///   - Prefix: `LC_`, `XDEBUG_`, `PHP_`
+///   - Windows only: the system variables `php-cgi.exe` needs to start at all
+///     (`SystemRoot`, `WINDIR`, `TEMP`, `PATHEXT`, ...), which have no Unix
+///     equivalent - without them the Windows loader can't resolve core DLLs.
 ///
 /// Order of returned pairs matches the order of `snapshot`.
 #[must_use]
@@ -21,6 +24,40 @@ fn keep(key: &str) -> bool {
         || key.starts_with("LC_")
         || key.starts_with("XDEBUG_")
         || key.starts_with("PHP_")
+        || keep_windows_system(key)
+}
+
+/// Windows system variables required for a native process to launch. Matched
+/// case-insensitively (Windows env keys are case-insensitive). No-op on Unix.
+#[cfg(windows)]
+fn keep_windows_system(key: &str) -> bool {
+    const WINDOWS_SYSTEM: &[&str] = &[
+        "SYSTEMROOT",
+        "SYSTEMDRIVE",
+        "WINDIR",
+        "TEMP",
+        "TMP",
+        "COMSPEC",
+        "PATHEXT",
+        "NUMBER_OF_PROCESSORS",
+        "PROCESSOR_ARCHITECTURE",
+        "USERPROFILE",
+        "USERNAME",
+        "COMPUTERNAME",
+        "APPDATA",
+        "LOCALAPPDATA",
+        "PROGRAMDATA",
+        "PROGRAMFILES",
+        "PROGRAMFILES(X86)",
+        "COMMONPROGRAMFILES",
+    ];
+    let upper = key.to_ascii_uppercase();
+    WINDOWS_SYSTEM.contains(&upper.as_str())
+}
+
+#[cfg(not(windows))]
+fn keep_windows_system(_key: &str) -> bool {
+    false
 }
 
 #[cfg(test)]
@@ -92,5 +129,20 @@ mod tests {
         ];
         let out = allowlist(&input);
         assert!(out.is_empty());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn keeps_windows_system_vars_case_insensitively() {
+        let input = vec![
+            s("SystemRoot", r"C:\Windows"),
+            s("windir", r"C:\Windows"),
+            s("TEMP", r"C:\Temp"),
+            s("PATHEXT", ".EXE;.BAT"),
+            s("SECRET", "no"),
+        ];
+        let out = allowlist(&input);
+        let keys: Vec<&str> = out.iter().map(|(k, _)| k.as_str()).collect();
+        assert_eq!(keys, vec!["SystemRoot", "windir", "TEMP", "PATHEXT"]);
     }
 }

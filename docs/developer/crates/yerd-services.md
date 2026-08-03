@@ -169,6 +169,16 @@ resolve their runtime data. The on-disk layout under `PlatformDirs`:
 `discover_installed(&PlatformDirs)` scans for version directories that contain a
 real server binary; the daemon calls it at startup.
 
+On **Windows** the binary names differ: `version::host_binary_name` appends
+`.exe` at the path layer, and `service::server_binary_for_host` picks the
+Windows-specific base name where it diverges (Redis ships as `redis-server`, not
+`valkey-server`, from the native MSVC port). MariaDB's datadir-init tool is probed
+(`mariadb-install-db.exe` then `mysql_install_db.exe`) since the producer's name
+varies. My.cnf omits the `socket` line on Windows (named-pipe semantics). Because
+Windows has no SIGINT, Postgres stops via `ServiceDefinition::graceful_stop_plan`
+(`pg_ctl stop -m fast`) run before the forced Job-Object kill; a failed `pg_ctl`
+logs a warning to the service log and falls through to forced termination.
+
 ## `health.rs` - readiness probes
 
 `ReadinessProbe` (service-aware) and `ServiceProbes` (the production dispatcher)

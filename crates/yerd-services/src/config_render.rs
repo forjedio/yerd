@@ -58,16 +58,23 @@ fn quote_conf_path(p: &Path) -> String {
 /// - The server runs in the foreground (no `--daemonize`); see [`crate::manager`].
 /// - `pid-file` lives inside the datadir, whose parent `--initialize` creates,
 ///   so its directory always exists at start.
+///
+/// `socket` is `None` on Windows: `mysqld`/`mariadbd` there treat `socket` as a
+/// named-pipe name, not a filesystem path, so the line is omitted rather than
+/// relying on it being ignored. On Unix it is always `Some`.
 #[must_use]
 pub fn render_my_cnf(
     port: u16,
     datadir: &Path,
-    socket: &Path,
+    socket: Option<&Path>,
     log_path: &Path,
     init_file: &Path,
 ) -> String {
     let dir = quote_conf_path(datadir);
-    let sock = quote_conf_path(socket);
+    let socket_line = match socket {
+        Some(s) => format!("socket = {}\n", quote_conf_path(s)),
+        None => String::new(),
+    };
     let log = quote_conf_path(log_path);
     let pid = quote_conf_path(&datadir.join("mysqld.pid"));
     let init = quote_conf_path(init_file);
@@ -79,7 +86,7 @@ pub fn render_my_cnf(
          skip-name-resolve\n\
          port = {port}\n\
          datadir = {dir}\n\
-         socket = {sock}\n\
+         {socket_line}\
          pid-file = {pid}\n\
          log-error = {log}\n\
          init-file = {init}\n"
@@ -221,16 +228,16 @@ mod tests {
         assert!(conf.contains("port 6380"));
     }
 
-    /// The rendered config pins paths via `datadir.join(...).display()`, which
-    /// emits `\` on Windows; the goldens here pin Unix separators. Windows DB
-    /// packaging is a later phase, so these renderers are Unix-scoped for now.
-    #[cfg(unix)]
+    /// Runs on every OS: the exact Unix-separator goldens are asserted on Unix;
+    /// on Windows the socket line is omitted (named-pipe semantics) and only
+    /// structural directives are checked, since `datadir.join(...)` emits `\`.
     #[test]
     fn my_cnf_is_loopback_only_no_password() {
+        let socket = PathBuf::from("/run/mysql.sock");
         let conf = render_my_cnf(
             3306,
             &PathBuf::from("/data/mysql"),
-            &PathBuf::from("/run/mysql.sock"),
+            cfg!(unix).then_some(socket.as_path()),
             &PathBuf::from("/log/mysql.log"),
             &PathBuf::from("/cfg/mysql-init.sql"),
         );
@@ -238,20 +245,34 @@ mod tests {
         assert!(conf.contains("bind-address = 127.0.0.1"));
         assert!(!conf.contains("0.0.0.0"));
         assert!(conf.contains("port = 3306"));
-        assert!(conf.contains("datadir = \"/data/mysql\""));
-        assert!(conf.contains("socket = \"/run/mysql.sock\""));
-        assert!(conf.contains("log-error = \"/log/mysql.log\""));
-        assert!(conf.contains("pid-file = \"/data/mysql/mysqld.pid\""));
-        assert!(conf.contains("init-file = \"/cfg/mysql-init.sql\""));
         assert!(!conf.to_lowercase().contains("password"));
+        #[cfg(unix)]
+        {
+            assert!(conf.contains("datadir = \"/data/mysql\""));
+            assert!(conf.contains("socket = \"/run/mysql.sock\""));
+            assert!(conf.contains("log-error = \"/log/mysql.log\""));
+            assert!(conf.contains("pid-file = \"/data/mysql/mysqld.pid\""));
+            assert!(conf.contains("init-file = \"/cfg/mysql-init.sql\""));
+        }
+        #[cfg(windows)]
+        {
+            assert!(
+                !conf.contains("socket = "),
+                "no socket line on Windows (named-pipe semantics): {conf}"
+            );
+            assert!(conf.contains("datadir = "));
+            assert!(conf.contains("pid-file = "));
+            assert!(conf.contains("init-file = "));
+        }
     }
 
     #[test]
     fn my_cnf_quotes_paths_with_spaces() {
+        let socket = PathBuf::from("/run/u/mysql.sock");
         let conf = render_my_cnf(
             3306,
             &PathBuf::from("/Users/a b/Library/Application Support/yerd/data"),
-            &PathBuf::from("/run/u/mysql.sock"),
+            cfg!(unix).then_some(socket.as_path()),
             &PathBuf::from("/Users/a b/log.log"),
             &PathBuf::from("/Users/a b/mysql-init.sql"),
         );
@@ -293,27 +314,39 @@ mod tests {
         }
     }
 
-    /// Unix-scoped for the same reason as [`my_cnf_is_loopback_only_no_password`].
-    #[cfg(unix)]
     #[test]
     fn postgresql_conf_is_loopback_tcp_only() {
-        let conf = render_postgresql_conf(5432, &PathBuf::from("/data/pg/data-17"), &[]);
+        let datadir = PathBuf::from("/data/pg/data-17");
+        let conf = render_postgresql_conf(5432, &datadir, &[]);
         assert!(conf.contains("listen_addresses = '127.0.0.1'"));
         assert!(!conf.contains("0.0.0.0"));
         assert!(conf.contains("port = 5432"));
         assert!(conf.contains("unix_socket_directories = ''"));
         assert!(conf.contains("logging_collector = off"));
-        assert!(conf.contains("hba_file = '/data/pg/data-17/pg_hba.conf'"));
-        assert!(conf.contains("ident_file = '/data/pg/data-17/pg_ident.conf'"));
+        assert!(conf.contains(&format!(
+            "hba_file = '{}'",
+            datadir.join("pg_hba.conf").display()
+        )));
+        assert!(conf.contains(&format!(
+            "ident_file = '{}'",
+            datadir.join("pg_ident.conf").display()
+        )));
     }
 
-    /// Unix-scoped for the same reason as [`my_cnf_is_loopback_only_no_password`].
-    #[cfg(unix)]
     #[test]
     fn postgresql_conf_escapes_single_quotes_in_paths() {
-        let conf = render_postgresql_conf(5432, &PathBuf::from("/data/o'brien/data-17"), &[]);
+        let datadir = PathBuf::from("/data/o'brien/data-17");
+        let conf = render_postgresql_conf(5432, &datadir, &[]);
+        let expected = format!(
+            "hba_file = '{}'",
+            datadir
+                .join("pg_hba.conf")
+                .display()
+                .to_string()
+                .replace('\'', "''")
+        );
         assert!(
-            conf.contains("hba_file = '/data/o''brien/data-17/pg_hba.conf'"),
+            conf.contains(&expected),
             "single quote must be doubled: {conf}"
         );
     }

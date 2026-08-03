@@ -88,10 +88,56 @@ impl AllocatedListen {
     clippy::indexing_slicing
 )]
 mod tests {
-    #[cfg(unix)]
     use super::*;
-    #[cfg(unix)]
     use std::path::PathBuf;
+
+    #[cfg(windows)]
+    fn dirs_at(root: &str) -> PlatformDirs {
+        PlatformDirs {
+            config: PathBuf::from(format!("{root}/c")),
+            data: PathBuf::from(format!("{root}/d")),
+            state: PathBuf::from(format!("{root}/s")),
+            cache: PathBuf::from(format!("{root}/cache")),
+            runtime: PathBuf::from(format!("{root}/run")),
+        }
+    }
+
+    /// Windows binds a real ephemeral loopback port through the injected binder.
+    #[cfg(windows)]
+    #[test]
+    fn plan_windows_returns_tcp_loopback_port() {
+        struct RealLoopbackBinder;
+        impl PortBinder for RealLoopbackBinder {
+            fn bind(
+                &self,
+                port: u16,
+            ) -> Result<yerd_platform::BoundPort, yerd_platform::PlatformError> {
+                let listener =
+                    std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, port))
+                        .map_err(|source| yerd_platform::PlatformError::Bind { port, source })?;
+                Ok(yerd_platform::BoundPort { listener })
+            }
+            fn bind_pair(
+                &self,
+                _: bool,
+                _: (u16, u16),
+                _: (u16, u16),
+            ) -> Result<yerd_platform::PortPair, yerd_platform::PlatformError> {
+                panic!("plan() must not call bind_pair()")
+            }
+        }
+
+        let dirs = dirs_at("/w");
+        let plan =
+            AllocatedListen::plan(PhpVersion::new(8, 3), &dirs, 7, &RealLoopbackBinder).unwrap();
+        match plan.listen {
+            Listen::TcpLoopback(addr) => {
+                assert_eq!(addr.ip(), std::net::Ipv4Addr::LOCALHOST);
+                assert_ne!(addr.port(), 0, "plan must resolve a concrete port");
+            }
+            other @ Listen::UnixSocket(_) => panic!("expected TcpLoopback, got {other:?}"),
+        }
+    }
 
     #[cfg(unix)]
     #[test]

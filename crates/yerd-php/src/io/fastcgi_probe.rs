@@ -122,4 +122,34 @@ mod tests {
         let err = read_one_record_header(&mut a).await.unwrap_err();
         assert_eq!(err.kind(), io::ErrorKind::UnexpectedEof);
     }
+
+    /// End-to-end over a real `TcpListener`, exercising the `TcpLoopback` branch
+    /// of `probe` (the one Windows uses, since there is no Unix socket there). A
+    /// tiny server answers one `FCGI_GET_VALUES` with a valid version-1 header.
+    #[tokio::test]
+    async fn probe_over_tcp_loopback_accepts_a_fcgi_v1_reply() {
+        use tokio::io::AsyncWriteExt as _;
+
+        let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+            .await
+            .unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut sock, _) = listener.accept().await.unwrap();
+            let mut req = [0u8; 8];
+            sock.read_exact(&mut req).await.unwrap();
+            assert_eq!(req[0], FCGI_VERSION_1);
+            assert_eq!(req[1], FCGI_GET_VALUES);
+            sock.write_all(&[FCGI_VERSION_1, 10, 0, 0, 0, 0, 0, 0])
+                .await
+                .unwrap();
+            sock.flush().await.unwrap();
+        });
+
+        FastCgiProbe
+            .probe(&Listen::TcpLoopback(addr))
+            .await
+            .unwrap();
+        server.await.unwrap();
+    }
 }

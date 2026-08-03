@@ -206,8 +206,14 @@ pub async fn install_service(
         Ok(v) => v,
         Err(e) => return service_error_response(&e),
     };
-    if let Err(e) =
-        service_install::install(def.id(), def.server_binary(), &version, &state.dirs, dl).await
+    if let Err(e) = service_install::install(
+        def.id(),
+        yerd_services::server_binary_for_host(&*def),
+        &version,
+        &state.dirs,
+        dl,
+    )
+    .await
     {
         return service_error_response(&e);
     }
@@ -288,8 +294,14 @@ pub async fn change_service_version(
         .filter(|v| v != &new_version)
         .collect();
 
-    if let Err(e) =
-        service_install::install(def.id(), def.server_binary(), &new_version, &state.dirs, dl).await
+    if let Err(e) = service_install::install(
+        def.id(),
+        yerd_services::server_binary_for_host(&*def),
+        &new_version,
+        &state.dirs,
+        dl,
+    )
+    .await
     {
         return service_error_response(&e);
     }
@@ -329,7 +341,7 @@ pub async fn change_service_version(
     for old in superseded {
         if let Err(e) = service_install::uninstall(
             def.id(),
-            def.server_binary(),
+            yerd_services::server_binary_for_host(&*def),
             def.datadir_scope(),
             &old,
             &state.dirs,
@@ -360,7 +372,7 @@ pub async fn uninstall_service(
     let _ = state.service_manager.lock().await.stop(def.id()).await;
     match service_install::uninstall(
         def.id(),
-        def.server_binary(),
+        yerd_services::server_binary_for_host(&*def),
         def.datadir_scope(),
         &version,
         &state.dirs,
@@ -470,8 +482,14 @@ pub async fn add_service(
             Ok(v) => v,
             Err(e) => return service_error_response(&e),
         };
-        if let Err(e) =
-            service_install::install(def.id(), def.server_binary(), &v, &state.dirs, dl).await
+        if let Err(e) = service_install::install(
+            def.id(),
+            yerd_services::server_binary_for_host(&*def),
+            &v,
+            &state.dirs,
+            dl,
+        )
+        .await
         {
             return service_error_response(&e);
         }
@@ -1232,7 +1250,8 @@ mod tests {
         let ver: ServiceVersion = version.parse().unwrap();
         let bin = svc_version::install_dir(dirs, def.id(), &ver).join("bin");
         std::fs::create_dir_all(&bin).unwrap();
-        std::fs::write(bin.join(def.server_binary().unwrap()), b"#!fake").unwrap();
+        let server = yerd_services::server_binary_for_host(&*def).unwrap();
+        std::fs::write(bin.join(yerd_services::host_binary_name(server)), b"#!fake").unwrap();
     }
 
     fn ver(s: &str) -> ServiceVersion {
@@ -1316,10 +1335,6 @@ mod tests {
         assert!(r.contains(&cfg.ports.http));
     }
 
-    /// `pick_free_port` probes ports through the real `ActivePortBinder`, which
-    /// is the `Unsupported` stub on Windows (a real `WindowsPortBinder` is a
-    /// later phase), so it can only find a free port on Unix today.
-    #[cfg(unix)]
     #[test]
     fn pick_free_port_skips_reserved() {
         let mut reserved = BTreeSet::new();

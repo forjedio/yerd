@@ -518,15 +518,19 @@ async fn available_php_with(
             }
         }
     };
-    let listing =
-        match crate::php_install::fetch_verified_listing(dl, public_key, yerd_php::Channel::Stable)
-            .await
-        {
-            Ok(body) => body,
-            Err(e) => return internal(format!("couldn't load the PHP listing: {e}")),
-        };
+    let listing = match crate::php_install::fetch_verified_listing(
+        dl,
+        public_key,
+        yerd_php::Channel::Stable,
+        os,
+    )
+    .await
+    {
+        Ok(body) => body,
+        Err(e) => return internal(format!("couldn't load the PHP listing: {e}")),
+    };
     let legacy =
-        crate::php_install::fetch_verified_listing(dl, public_key, yerd_php::Channel::Legacy)
+        crate::php_install::fetch_verified_listing(dl, public_key, yerd_php::Channel::Legacy, os)
             .await
             .ok()
             .map(|body| yerd_php::available_minors(&body, os, arch, yerd_php::Channel::Legacy))
@@ -1014,7 +1018,8 @@ async fn update_php(version: Option<yerd_core::PhpVersion>, state: &DaemonState)
     let has_stable = targets.iter().any(|v| !v.is_legacy());
     let has_legacy = targets.iter().any(|v| v.is_legacy());
     let stable = if has_stable {
-        match crate::php_install::fetch_verified_listing(&dl, key, yerd_php::Channel::Stable).await
+        match crate::php_install::fetch_verified_listing(&dl, key, yerd_php::Channel::Stable, os)
+            .await
         {
             Ok(body) => Some(body),
             Err(e) => return internal(format!("listing fetch/verify failed: {e}")),
@@ -1023,7 +1028,7 @@ async fn update_php(version: Option<yerd_core::PhpVersion>, state: &DaemonState)
         None
     };
     let legacy = if has_legacy {
-        crate::php_install::fetch_verified_listing(&dl, key, yerd_php::Channel::Legacy)
+        crate::php_install::fetch_verified_listing(&dl, key, yerd_php::Channel::Legacy, os)
             .await
             .ok()
     } else {
@@ -1050,20 +1055,16 @@ async fn update_php(version: Option<yerd_core::PhpVersion>, state: &DaemonState)
                 None => continue,
             },
         };
-        let artifact = match yerd_php::resolve_from_listing(listing, minor, os, arch, channel) {
-            Ok(a) => a,
-            Err(yerd_php::PhpError::VersionUnavailable { .. }) if version.is_none() => continue,
-            Err(e) => {
-                pending_error = Some(e);
-                break;
-            }
-        };
-        if yerd_php::is_newer_build(
-            &installed,
-            installed_rev,
-            &artifact.full_version,
-            artifact.revision,
-        ) {
+        let (full_version, revision) =
+            match yerd_php::resolve_build(listing, minor, os, arch, channel) {
+                Ok(b) => b,
+                Err(yerd_php::PhpError::VersionUnavailable { .. }) if version.is_none() => continue,
+                Err(e) => {
+                    pending_error = Some(e);
+                    break;
+                }
+            };
+        if yerd_php::is_newer_build(&installed, installed_rev, &full_version, revision) {
             if let Err(e) = crate::php_install::install(
                 minor,
                 &state.dirs,
@@ -1077,7 +1078,7 @@ async fn update_php(version: Option<yerd_core::PhpVersion>, state: &DaemonState)
                 pending_error = Some(e);
                 break;
             }
-            tracing::info!(version = %minor, from = %installed, to = %artifact.full_version, "updated PHP");
+            tracing::info!(version = %minor, from = %installed, to = %full_version, "updated PHP");
             updated.push(minor);
         }
     }
@@ -3677,6 +3678,9 @@ Subject: Captured\r\n\r\nhi\r\n";
     }
 
     /// Like `fake_install` but records a specific installed patch in the marker.
+    /// Lays down the per-OS server binary `discover_bundled` keys off (`sbin/
+    /// php-fpm` on Unix, `php-cgi.exe` in the version root on Windows) plus the
+    /// CLI binary, so discovery finds the version on every platform.
     fn fake_install_patch(dirs: &PlatformDirs, v: PhpVersion, full: &str) {
         let base = dirs
             .data
@@ -3686,15 +3690,14 @@ Subject: Captured\r\n\r\nhi\r\n";
         std::fs::create_dir_all(base.join("bin")).unwrap();
         std::fs::write(base.join("sbin").join("php-fpm"), b"x").unwrap();
         std::fs::write(base.join("bin").join("php"), b"x").unwrap();
+        #[cfg(windows)]
+        {
+            std::fs::write(base.join("php.exe"), b"x").unwrap();
+            std::fs::write(base.join("php-cgi.exe"), b"x").unwrap();
+        }
         std::fs::write(base.join(".yerd-version"), full).unwrap();
     }
 
-    // The PHP install/discovery tests below use `fake_install`, which lays down
-    // the Unix bundle layout (`bin/php`, `sbin/php-fpm`). On Windows
-    // `discover_bundled` looks for `php-fpm.exe` instead (a different layout that
-    // Phase 2 implements), so these are Unix-scoped until the Windows PHP
-    // packaging lands.
-    #[cfg(unix)]
     #[tokio::test]
     async fn dispatch_list_php_reports_installed_and_default() {
         let tmp = tempfile::tempdir().unwrap();
@@ -3746,7 +3749,6 @@ Subject: Captured\r\n\r\nhi\r\n";
         }
     }
 
-    #[cfg(unix)]
     #[tokio::test]
     async fn dispatch_set_default_php_sets_config_and_shim() {
         let tmp = tempfile::tempdir().unwrap();
@@ -3761,11 +3763,16 @@ Subject: Captured\r\n\r\nhi\r\n";
         .await;
         assert!(matches!(resp, Response::Ok), "got {resp:?}");
         assert_eq!(state.config.lock().await.php.default, PhpVersion::new(8, 4));
-        let shim = state.dirs.data.join("bin").join("php");
-        assert_eq!(
-            std::fs::read_link(shim).unwrap(),
-            yerd_sibling().expect("yerd sibling resolves in tests")
-        );
+        // The managed `php` shim is a symlink, which is Unix-only for now
+        // (`set_default_shim` is a no-op off Unix - Phase 5).
+        #[cfg(unix)]
+        {
+            let shim = state.dirs.data.join("bin").join("php");
+            assert_eq!(
+                std::fs::read_link(shim).unwrap(),
+                yerd_sibling().expect("yerd sibling resolves in tests")
+            );
+        }
     }
 
     #[tokio::test]
@@ -3802,7 +3809,6 @@ Subject: Captured\r\n\r\nhi\r\n";
         }
     }
 
-    #[cfg(unix)]
     #[tokio::test]
     async fn uninstall_php_blocked_when_in_use_by_site() {
         let tmp = tempfile::tempdir().unwrap();
@@ -3844,7 +3850,6 @@ Subject: Captured\r\n\r\nhi\r\n";
         }
     }
 
-    #[cfg(unix)]
     #[tokio::test]
     async fn uninstall_php_blocked_when_default_with_others() {
         let tmp = tempfile::tempdir().unwrap();
@@ -3874,7 +3879,6 @@ Subject: Captured\r\n\r\nhi\r\n";
         }
     }
 
-    #[cfg(unix)]
     #[tokio::test]
     async fn uninstall_php_succeeds_and_removes_dir() {
         let tmp = tempfile::tempdir().unwrap();
@@ -4312,7 +4316,6 @@ Subject: Captured\r\n\r\nhi\r\n";
 
     /// `ListPhp` annotates an installed minor from the (pre-seeded) update cache,
     /// with no network.
-    #[cfg(unix)]
     #[tokio::test]
     async fn dispatch_list_php_surfaces_cached_update() {
         let tmp = tempfile::tempdir().unwrap();
@@ -4337,7 +4340,6 @@ Subject: Captured\r\n\r\nhi\r\n";
 
     /// A legacy install (no `.yerd-revision`, so revision 0) is offered the
     /// c-ares-cutover rebuild of the *same* patch - the auto-heal contract.
-    #[cfg(unix)]
     #[tokio::test]
     async fn dispatch_list_php_surfaces_revision_autoheal() {
         let tmp = tempfile::tempdir().unwrap();
@@ -4425,18 +4427,30 @@ Subject: Captured\r\n\r\nhi\r\n";
         }
     }
 
-    /// A `php.json` body with the given `(php, minor, revision)` builds for the
-    /// host platform. Tarball shas are placeholders (`"00"`) - the poll /
-    /// available paths never download tarballs.
+    /// A signed-listing body with the given `(php, minor, revision)` builds for
+    /// the host platform: cli/fpm rows on Unix, bundle rows on Windows (matching
+    /// the per-OS manifest families). Payload shas are placeholders (`"00"`) -
+    /// the poll / available paths never download tarballs.
     fn listing_body(builds: &[(&str, &str, u32)]) -> String {
         let (os, arch) = yerd_php::current_os_arch().unwrap();
         let entries: Vec<String> = builds
             .iter()
             .map(|(php, minor, rev)| {
+                #[cfg(not(windows))]
+                let payload = format!(
+                    r#""cli": {{ "file": "php-{php}-{rev}-cli-{os}-{arch}.tar.gz", "sha256": "00", "size": 1 }},
+                       "fpm": {{ "file": "php-{php}-{rev}-fpm-{os}-{arch}.tar.gz", "sha256": "00", "size": 1 }}"#,
+                    os = os.as_str(),
+                    arch = arch.as_str(),
+                );
+                #[cfg(windows)]
+                let payload = format!(
+                    r#""bundle": {{ "file": "php-{php}-{rev}-bundle-{os}-{arch}.tar.gz", "sha256": "00", "size": 1 }}"#,
+                    os = os.as_str(),
+                    arch = arch.as_str(),
+                );
                 format!(
-                    r#"{{ "php": "{php}", "minor": "{minor}", "os": "{os}", "arch": "{arch}", "revision": {rev},
-                       "cli": {{ "file": "php-{php}-{rev}-cli-{os}-{arch}.tar.gz", "sha256": "00", "size": 1 }},
-                       "fpm": {{ "file": "php-{php}-{rev}-fpm-{os}-{arch}.tar.gz", "sha256": "00", "size": 1 }} }}"#,
+                    r#"{{ "php": "{php}", "minor": "{minor}", "os": "{os}", "arch": "{arch}", "revision": {rev}, {payload} }}"#,
                     os = os.as_str(),
                     arch = arch.as_str(),
                 )
@@ -4445,9 +4459,7 @@ Subject: Captured\r\n\r\nhi\r\n";
         format!("{{ \"schema\": 1, \"builds\": [{}] }}", entries.join(","))
     }
 
-    /// Build + sign a `php.json` for the host platform (see [`listing_body`]).
-    /// Only used by the Unix-scoped install/discovery tests below.
-    #[cfg(unix)]
+    /// Build + sign a listing for the host platform (see [`listing_body`]).
     fn signed_listing(builds: &[(&str, &str, u32)]) -> crate::test_support::SignedManifest {
         crate::test_support::sign_manifest(&listing_body(builds))
     }
@@ -4461,7 +4473,7 @@ Subject: Captured\r\n\r\nhi\r\n";
     #[async_trait::async_trait]
     impl yerd_php::Downloader for TwoChannelDl {
         async fn download(&self, url: &str) -> Result<Vec<u8>, yerd_php::DownloadError> {
-            if url.contains("php-legacy.json") {
+            if url.contains("legacy") {
                 self.legacy.download(url).await
             } else {
                 self.stable.download(url).await
@@ -4490,18 +4502,16 @@ Subject: Captured\r\n\r\nhi\r\n";
         }
     }
 
-    /// Serves a valid legacy `php-legacy.json` but errors on every stable
-    /// `php.json` request, modelling a reachable legacy manifest behind an
-    /// unreachable stable one. Only used by the Unix-scoped poll tests below.
-    #[cfg(unix)]
+    /// Serves a valid legacy manifest but errors on every stable-channel
+    /// request, modelling a reachable legacy manifest behind an unreachable
+    /// stable one.
     struct LegacyOnlyDl {
         legacy: ListingDl,
     }
-    #[cfg(unix)]
     #[async_trait::async_trait]
     impl yerd_php::Downloader for LegacyOnlyDl {
         async fn download(&self, url: &str) -> Result<Vec<u8>, yerd_php::DownloadError> {
-            if url.contains("php-legacy.json") {
+            if url.contains("legacy") {
                 self.legacy.download(url).await
             } else {
                 Err(yerd_php::DownloadError::Transport {
@@ -4512,7 +4522,6 @@ Subject: Captured\r\n\r\nhi\r\n";
         }
     }
 
-    #[cfg(unix)]
     #[tokio::test]
     async fn poll_and_refresh_populates_cache_from_listing() {
         let tmp = tempfile::tempdir().unwrap();
@@ -4534,7 +4543,6 @@ Subject: Captured\r\n\r\nhi\r\n";
         );
     }
 
-    #[cfg(unix)]
     #[tokio::test]
     async fn poll_and_refresh_is_channel_aware_for_legacy() {
         let tmp = tempfile::tempdir().unwrap();
@@ -4565,7 +4573,6 @@ Subject: Captured\r\n\r\nhi\r\n";
         );
     }
 
-    #[cfg(unix)]
     #[tokio::test]
     async fn poll_and_refresh_tolerates_untrusted_legacy_manifest() {
         let tmp = tempfile::tempdir().unwrap();
@@ -4596,7 +4603,6 @@ Subject: Captured\r\n\r\nhi\r\n";
         );
     }
 
-    #[cfg(unix)]
     #[tokio::test]
     async fn poll_and_refresh_preserves_cached_legacy_update_when_legacy_fetch_fails() {
         let tmp = tempfile::tempdir().unwrap();
@@ -4632,7 +4638,6 @@ Subject: Captured\r\n\r\nhi\r\n";
         );
     }
 
-    #[cfg(unix)]
     #[tokio::test]
     async fn poll_and_refresh_checks_legacy_when_stable_is_unreachable() {
         let tmp = tempfile::tempdir().unwrap();
@@ -5261,7 +5266,6 @@ Subject: Captured\r\n\r\nhi\r\n";
         }
     }
 
-    #[cfg(unix)]
     #[tokio::test]
     async fn available_php_lists_distribution_minors_and_installed() {
         let tmp = tempfile::tempdir().unwrap();
@@ -5415,7 +5419,6 @@ Subject: Captured\r\n\r\nhi\r\n";
         assert_eq!(load_to_centi(f64::from(u32::MAX)), u32::MAX, "saturates");
     }
 
-    #[cfg(unix)]
     #[tokio::test]
     async fn installed_versions_empty_then_lists_fake_install() {
         let tmp = tempfile::tempdir().unwrap();

@@ -148,10 +148,14 @@ impl ResolverInstaller for UnsupportedResolverInstaller {
     }
 }
 
-/// Stub `PortBinder` for unsupported OSes.
+/// Stub `PortBinder` for unsupported OSes. Windows now has a real
+/// [`super::windows::WindowsPortBinder`], so this stub is unused there (but the
+/// module stays compiled on Windows for the other still-stubbed traits).
+#[cfg_attr(windows, allow(dead_code))]
 #[derive(Debug, Default, Clone, Copy)]
 pub struct UnsupportedPortBinder;
 
+#[cfg_attr(windows, allow(dead_code))]
 impl UnsupportedPortBinder {
     /// Construct.
     #[must_use]
