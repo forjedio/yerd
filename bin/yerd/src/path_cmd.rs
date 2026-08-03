@@ -623,6 +623,7 @@ mod windows {
         let Some(dir) = programs_bin() else {
             return Err("%LOCALAPPDATA% is not set; cannot locate the install dir".to_owned());
         };
+        finish_pending_swap(&dir);
         let src = std::env::current_exe().map_err(|e| format!("cannot find yerd.exe: {e}"))?;
         let dest = dir.join("yerd.exe");
         if same_file(&src, &dest) || contents_match(&src, &dest) {
@@ -641,6 +642,30 @@ mod windows {
                 ))
             }
             Err(e) => Err(format!("{}: {e}", dest.display())),
+        }
+    }
+
+    /// Complete a swap staged by a prior locked [`copy_self_into_programs`]: if
+    /// `yerd.exe.new` exists, move the live `yerd.exe` aside to `yerd.exe.old`
+    /// and promote `.new` into place, then clear the stale `.old`. Best-effort
+    /// and idempotent: no `.new` means nothing to do. Called at the start of any
+    /// `path install` / `ensure_installed_after_tool` so the "restart yerd to
+    /// finish" note from the locked-copy path actually resolves.
+    fn finish_pending_swap(dir: &Path) {
+        let new = dir.join("yerd.exe.new");
+        if !new.exists() {
+            return;
+        }
+        let live = dir.join("yerd.exe");
+        let old = dir.join("yerd.exe.old");
+        let _ = std::fs::remove_file(&old);
+        if live.exists() && std::fs::rename(&live, &old).is_err() {
+            return;
+        }
+        if std::fs::rename(&new, &live).is_ok() {
+            let _ = std::fs::remove_file(&old);
+        } else {
+            let _ = std::fs::rename(&old, &live);
         }
     }
 
@@ -664,6 +689,45 @@ mod windows {
         match (std::fs::read(a), std::fs::read(b)) {
             (Ok(a), Ok(b)) => a == b,
             _ => false,
+        }
+    }
+
+    #[cfg(test)]
+    #[allow(clippy::unwrap_used)]
+    mod tests {
+        use super::finish_pending_swap;
+
+        #[test]
+        fn finish_pending_swap_promotes_new_over_live() {
+            let tmp = tempfile::tempdir().unwrap();
+            let dir = tmp.path();
+            std::fs::write(dir.join("yerd.exe"), b"old").unwrap();
+            std::fs::write(dir.join("yerd.exe.new"), b"new").unwrap();
+
+            finish_pending_swap(dir);
+
+            assert_eq!(std::fs::read(dir.join("yerd.exe")).unwrap(), b"new");
+            assert!(!dir.join("yerd.exe.new").exists());
+            assert!(!dir.join("yerd.exe.old").exists());
+        }
+
+        #[test]
+        fn finish_pending_swap_is_noop_without_new() {
+            let tmp = tempfile::tempdir().unwrap();
+            let dir = tmp.path();
+            std::fs::write(dir.join("yerd.exe"), b"live").unwrap();
+            finish_pending_swap(dir);
+            assert_eq!(std::fs::read(dir.join("yerd.exe")).unwrap(), b"live");
+        }
+
+        #[test]
+        fn finish_pending_swap_promotes_when_live_absent() {
+            let tmp = tempfile::tempdir().unwrap();
+            let dir = tmp.path();
+            std::fs::write(dir.join("yerd.exe.new"), b"new").unwrap();
+            finish_pending_swap(dir);
+            assert_eq!(std::fs::read(dir.join("yerd.exe")).unwrap(), b"new");
+            assert!(!dir.join("yerd.exe.new").exists());
         }
     }
 }

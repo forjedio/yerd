@@ -313,6 +313,7 @@ pub async fn apply_update(app: tauri::AppHandle, channel: Option<String>) -> Res
         yerd_ipc::StagedArtifact::Deb => "deb",
         yerd_ipc::StagedArtifact::Pacman => "pacman",
         yerd_ipc::StagedArtifact::Rpm => "rpm",
+        yerd_ipc::StagedArtifact::NsisExe => "nsis_exe",
         _ => {
             return Err(GuiError::internal(
                 "unknown staged artifact kind from the daemon",
@@ -353,7 +354,33 @@ fn spawn_applier(yerd: &std::path::Path, path: &str, kind: &str) -> Result<(), G
         .map_err(|e| GuiError::internal(format!("could not launch the updater: {e}")))
 }
 
-#[cfg(not(unix))]
+/// Windows applier launch: detached, hidden, no console. Never sets
+/// `YERD_APPLY_GUI_OWNS_DAEMON` (that is a macOS `SMAppService` concern); the
+/// applier restarts the daemon itself via `yerd-service-ctl`.
+#[cfg(windows)]
+fn spawn_applier(yerd: &std::path::Path, path: &str, kind: &str) -> Result<(), GuiError> {
+    use std::os::windows::process::CommandExt as _;
+
+    /// A hidden console that still receives shutdown control events.
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    /// A fresh process group so the exiting GUI's console signals don't reach it.
+    const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+
+    std::process::Command::new(yerd)
+        .env("YERD_APPLY_UPDATE", "1")
+        .env("YERD_APPLY_PATH", path)
+        .env("YERD_APPLY_KIND", kind)
+        .env("YERD_APPLY_RELAUNCH_GUI", "1")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .creation_flags(CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP)
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| GuiError::internal(format!("could not launch the updater: {e}")))
+}
+
+#[cfg(not(any(unix, windows)))]
 fn spawn_applier(_yerd: &std::path::Path, _path: &str, _kind: &str) -> Result<(), GuiError> {
     Err(GuiError::internal(
         "self-update is not supported on this platform",

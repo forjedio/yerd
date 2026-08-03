@@ -48,4 +48,6 @@ pub enum StagedArtifact {
     Pacman,
     /// Linux `.rpm` - the applier reinstalls via `rpm -U`.
     Rpm,
+    /// Windows NSIS installer - the applier runs it silently (`/S /UPDATE`).
+    NsisExe,
 }

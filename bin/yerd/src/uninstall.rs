@@ -113,16 +113,44 @@ mod windows_impl {
             }
         }
 
-        residue.push(
-            "the yerd.exe / yerdd.exe / yerd-helper.exe binaries, including the copy under \
-             %LOCALAPPDATA%\\Programs\\yerd\\bin - a running program can't delete itself on \
-             Windows, so remove them manually (the Phase 6 installer's uninstaller will \
-             handle this)"
-                .to_owned(),
-        );
+        if running_from_installed_layout() {
+            residue.push(
+                "the copy of yerd.exe under %LOCALAPPDATA%\\Programs\\yerd\\bin - a running \
+                 program can't delete itself on Windows, so remove it manually (the install-dir \
+                 binaries are removed by the installer's own uninstaller in Add/Remove Programs)"
+                    .to_owned(),
+            );
+        } else {
+            residue.push(
+                "the yerd.exe / yerdd.exe / yerd-helper.exe binaries, including the copy under \
+                 %LOCALAPPDATA%\\Programs\\yerd\\bin - a running program can't delete itself on \
+                 Windows, so remove them manually"
+                    .to_owned(),
+            );
+        }
 
         print_summary(&residue);
         ExitCode::SUCCESS
+    }
+
+    /// Whether the running `yerd.exe` sits in the NSIS install layout
+    /// (`%LOCALAPPDATA%\Yerd`, which also holds `yerdd.exe`), rather than a
+    /// cargo/dev tree. When true the installer's own uninstaller removes the
+    /// install-dir binaries, so the residue note only mentions the PATH copy.
+    fn running_from_installed_layout() -> bool {
+        let Ok(exe) = std::env::current_exe() else {
+            return false;
+        };
+        let Some(dir) = exe.parent() else {
+            return false;
+        };
+        if !dir.join("yerdd.exe").is_file() {
+            return false;
+        }
+        std::env::var_os("LOCALAPPDATA")
+            .filter(|v| !v.is_empty())
+            .map(|l| std::path::PathBuf::from(l).join("Yerd"))
+            .is_some_and(|installed| dir == installed)
     }
 
     /// Revert the privileged/system changes: the NRPT rule (elevated, via the

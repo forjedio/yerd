@@ -1,0 +1,20 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "bundle": {
+    "targets": ["nsis"],
+    "externalBin": ["binaries/yerd", "binaries/yerdd", "binaries/yerd-helper"],
+    "windows": {
+      "webviewInstallMode": { "type": "downloadBootstrapper", "silent": true },
+      "nsis": {
+        "installMode": "currentUser",
+        "installerHooks": "nsis/hooks.nsh"
+      }
+      // SIGNING SEAM (dormant - early access ships UNSIGNED, decision #5). To sign
+      // later, add a "signCommand" here (Tauri bundle.windows.signCommand) or a
+      // "certificateThumbprint"; e.g.
+      //   "signCommand": "trusted-signing-cli -e <endpoint> -a <account> -c <cert> %1"
+      // Self-update integrity does NOT depend on Authenticode (SHA-256 + minisign),
+      // so leaving this off only affects the first manual download's SmartScreen.
+    }
+  }
+}

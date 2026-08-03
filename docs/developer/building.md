@@ -86,6 +86,31 @@ On macOS the GUI uses system frameworks, so there are **no** extra packages to
 install for the full workspace.
 :::
 
+### Windows toolchain
+
+On Windows you need the **MSVC** Rust toolchain (`x86_64-pc-windows-msvc`, the
+`rustup` default there - install the "Desktop development with C++" workload or
+the VS Build Tools it comes from) plus Node 22 + npm. There are **no** GTK/WebKit
+packages: the GUI uses the system WebView2 runtime, and Tauri's NSIS bundler
+**downloads NSIS itself** at bundle time (no `choco` prerequisite). Build the
+Windows installer with the Windows bundle overlay:
+
+```sh
+# stage the three binaries as Tauri externalBin sidecars, then bundle:
+cargo build --release -p yerd -p yerdd -p yerd-helper
+# copy target/release/{yerd,yerdd,yerd-helper}.exe into
+# apps/yerd-gui/src-tauri/binaries/<name>-x86_64-pc-windows-msvc.exe
+cd apps/yerd-gui
+npm ci
+npm run tauri build -- --config src-tauri/tauri.bundle-windows.conf.json
+```
+
+The overlay (`src-tauri/tauri.bundle-windows.conf.json`) sets `targets: ["nsis"]`,
+`installMode: currentUser` (per-user, no admin), `webviewInstallMode:
+downloadBootstrapper`, and the `nsis/hooks.nsh` install hooks. The installer is
+shipped **unsigned** for early access; a dormant `signCommand` seam is left in
+the overlay as a commented TODO (decision #5).
+
 ### Node 22 + npm (for the frontend and docs)
 
 The desktop app's frontend and this documentation site are built with Node. CI

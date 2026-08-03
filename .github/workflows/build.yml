@@ -58,7 +58,7 @@ jobs:
       # No authenticated git op in the GUI build (npm ci / cargo / tauri), so
       # don't leave the token in .git/config where third-party build code runs.
       - uses: actions/checkout@v4
-        if: matrix.kind == 'gui' || matrix.kind == 'fedora'
+        if: matrix.kind == 'gui' || matrix.kind == 'fedora' || matrix.kind == 'windows'
         with:
           persist-credentials: false
 
@@ -67,16 +67,19 @@ jobs:
         uses: ./.github/actions/install-gui-deps
 
       - uses: actions/setup-node@v4
-        if: matrix.kind == 'gui' || matrix.kind == 'fedora'
+        if: matrix.kind == 'gui' || matrix.kind == 'fedora' || matrix.kind == 'windows'
         with:
           node-version: 22
           cache: npm
           cache-dependency-path: apps/yerd-gui/package-lock.json
       - uses: Swatinem/rust-cache@v2
-        if: matrix.kind == 'gui' || matrix.kind == 'fedora'
+        if: matrix.kind == 'gui' || matrix.kind == 'fedora' || matrix.kind == 'windows'
 
       - name: Install frontend deps
-        if: matrix.kind == 'gui' || matrix.kind == 'fedora'
+        if: matrix.kind == 'gui' || matrix.kind == 'fedora' || matrix.kind == 'windows'
+        # windows-latest defaults to pwsh; force bash for parity with the repo's
+        # step style (also a no-op on the Linux/macOS legs where bash is default).
+        shell: bash
         run: npm ci
 
       # macOS: import the Developer ID cert into an ephemeral keychain and stage
@@ -549,12 +552,83 @@ jobs:
             || { echo "::error::.rpm has no %post scriptlet"; exit 1; }
           echo "Fedora .rpm OK: $pkg (pkg-format=rpm)"
 
+      # ─────────────────────────────── Windows target ────────────────────────────
+      # Native Windows NSIS installer via Tauri's built-in bundler (downloads NSIS
+      # itself - no choco prereq; no cross-compilation). The three binaries are
+      # built natively and staged as externalBin sidecars, then the bundle is built
+      # with the Windows overlay. Every `run:` step is explicit `shell: bash`
+      # because windows-latest defaults to pwsh. x86_64 only (no arm64 runner).
+      - name: Stage embedded binaries (externalBin)
+        if: matrix.kind == 'windows'
+        working-directory: .
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo build --release -p yerd -p yerdd -p yerd-helper
+          # Symmetric guard to the other legs: the bundled daemon MUST be deb-format
+          # (the default). A pacman/rpm leak here would be a matrix bug.
+          fmt=$(./target/release/yerdd.exe --pkg-format)
+          [ "$fmt" = "deb" ] \
+            || { echo "::error::bundle yerdd --pkg-format=$fmt (expected deb); a distro self-update feature leaked into the Windows build"; exit 1; }
+          mkdir -p apps/yerd-gui/src-tauri/binaries
+          for b in yerd yerdd yerd-helper; do
+            cp "target/release/$b.exe" "apps/yerd-gui/src-tauri/binaries/$b-x86_64-pc-windows-msvc.exe"
+          done
+
+      - name: Build the Windows NSIS installer
+        if: matrix.kind == 'windows'
+        shell: bash
+        run: npm run tauri build -- --config src-tauri/tauri.bundle-windows.conf.json
+
+      # Silent-install smoke: the Windows analogue of the deb-contents assert. Runs
+      # the installer with /S, waits for the NSIS child to finish, then asserts the
+      # install dir holds the binaries, the CLI runs, and the postinstall PATH hook
+      # took. The uninstaller run is advisory (UAC-dependent NRPT is expected
+      # residue on a runner).
+      - name: Silent-install smoke + assert
+        if: matrix.kind == 'windows'
+        working-directory: .
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          setups=(apps/yerd-gui/src-tauri/target/release/bundle/nsis/*-setup.exe \
+                  target/release/bundle/nsis/*-setup.exe)
+          [ "${#setups[@]}" -gt 0 ] || { echo "::error::no NSIS -setup.exe produced"; exit 1; }
+          setup="${setups[0]}"
+          echo "Installing $setup silently"
+          # /S is silent; the installer may return before its work completes, so
+          # bounded-wait on the install dir appearing.
+          "$setup" //S || { echo "::error::silent install exited non-zero"; exit 1; }
+          INSTDIR="$LOCALAPPDATA/Yerd"
+          for _ in $(seq 1 60); do
+            [ -f "$INSTDIR/yerdd.exe" ] && break
+            sleep 1
+          done
+          for b in yerd yerdd yerd-helper; do
+            [ -f "$INSTDIR/$b.exe" ] || { echo "::error::install dir missing $b.exe"; exit 1; }
+          done
+          # The main app exe: assert Yerd.exe, fall back to yerd-gui.exe (the Cargo
+          # bin name) - pin whichever the bundler emits once observed on the first run.
+          [ -f "$INSTDIR/Yerd.exe" ] || [ -f "$INSTDIR/yerd-gui.exe" ] \
+            || { echo "::error::install dir has neither Yerd.exe nor yerd-gui.exe"; exit 1; }
+          # CLI runs (a normal non-zero exit is fine; a crash is >=128).
+          code=0; "$INSTDIR/yerd.exe" --version >/dev/null 2>&1 || code=$?
+          [ "$code" -lt 128 ] || { echo "::error::yerd.exe --version was killed (exit $code)"; exit 1; }
+          # The postinstall hook ran `yerd path install`: the programs-bin copy exists.
+          [ -f "$LOCALAPPDATA/Programs/yerd/bin/yerd.exe" ] \
+            || { echo "::error::postinstall PATH hook did not run (no Programs\\yerd\\bin\\yerd.exe)"; exit 1; }
+          echo "Windows NSIS install smoke OK: $setup"
+          # Advisory: silent uninstall + check the Run values are gone. NRPT/CA are
+          # UAC-dependent and expected to remain on a headless runner.
+          "$INSTDIR/uninstall.exe" //S || echo "::warning::silent uninstall exited non-zero (advisory)"
+
       # ──────────────────────────────── Upload ──────────────────────────────────
       # One upload for any kind: on a GUI leg the bundle globs match and arch-out /
-      # fedora-out are absent; on the Arch leg only arch-out matches; on the Fedora
-      # leg only fedora-out matches. `if-no-files-found: error` fires only if the
-      # whole union is empty. Paths are resolved relative to the workspace
-      # (upload-artifact ignores the run default).
+      # fedora-out / nsis are absent; on the Arch leg only arch-out matches; on the
+      # Fedora leg only fedora-out matches; on the Windows leg only the nsis globs.
+      # `if-no-files-found: error` fires only if the whole union is empty. Paths are
+      # resolved relative to the workspace (upload-artifact ignores the run default).
       - uses: actions/upload-artifact@v4
         with:
           name: build-${{ matrix.id }}
@@ -565,5 +639,7 @@ jobs:
             apps/yerd-gui/src-tauri/target/release/bundle/**/*.deb
             apps/yerd-gui/src-tauri/target/release/bundle/**/*.dmg
             apps/yerd-gui/src-tauri/target/release/bundle/updater/*.app.tar.gz
+            apps/yerd-gui/src-tauri/target/release/bundle/nsis/*.exe
+            target/release/bundle/nsis/*.exe
             arch-out/*.pkg.tar.zst
             fedora-out/*.rpm

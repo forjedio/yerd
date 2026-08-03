@@ -96,6 +96,26 @@ impl ServiceCtl {
         service_start(&self.yerdd_path)
     }
 
+    /// Stop the daemon and block (bounded) until its process has exited, so the
+    /// caller can safely replace the on-disk binary before starting it again.
+    /// The self-update applier uses this between rename-aside and running the
+    /// installer. Returns `true` once the daemon has exited, `false` on the ~5s
+    /// timeout (Linux + Windows); platforms without a wait primitive (macOS,
+    /// where the service manager owns the lifecycle) return `true` after the
+    /// best-effort stop.
+    #[must_use]
+    pub fn stop_and_wait(&self) -> bool {
+        self.stop();
+        #[cfg(any(target_os = "linux", windows))]
+        {
+            wait_for_exit()
+        }
+        #[cfg(not(any(target_os = "linux", windows)))]
+        {
+            true
+        }
+    }
+
     /// Restart the daemon so it picks up a freshly-swapped binary.
     ///
     /// macOS uses `launchctl kickstart -k` (kill-then-restart of the registered

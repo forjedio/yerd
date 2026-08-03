@@ -41,6 +41,15 @@ Grab the latest **stable release** from the
 | Linux · Arch (x86-64) | `Yerd_Linux_x86_64_v<ver>.pkg.tar.zst` | `sudo pacman -U ./Yerd_Linux_x86_64_v<ver>.pkg.tar.zst` |
 | Linux · Fedora (x86-64) | `Yerd_Linux_x86_64_v<ver>.rpm` | `sudo dnf install ./Yerd_Linux_x86_64_v<ver>.rpm` |
 | Linux · Fedora (arm64) | `Yerd_Linux_Arm64_v<ver>.rpm` | `sudo dnf install ./Yerd_Linux_Arm64_v<ver>.rpm` |
+| Windows (x86-64, early access) | `Yerd_Windows_x86_64_v<ver>.exe` | run the installer (per-user, no admin) |
+
+::: tip Windows (early access)
+Windows is an early-access build. The installer is currently **unsigned**, so
+SmartScreen shows "Windows protected your PC" on first run - click **More info →
+Run anyway**. Install is per-user (no admin) into `%LOCALAPPDATA%\Yerd`. See the
+[Windows notes](./windows) for the full first-run flow and the known MVP limits
+(Firefox needs manual CA trust, no system metrics, unsigned installer).
+:::
 
 ::: tip Arch Linux
 Remove any leftover `/usr/bin/yerd` from the old v1 (Go) project first - pacman

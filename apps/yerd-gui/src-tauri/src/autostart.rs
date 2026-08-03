@@ -248,7 +248,11 @@ fn service_registered() -> bool {
     {
         unit_path().map(|p| p.exists()).unwrap_or(false)
     }
-    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    #[cfg(windows)]
+    {
+        yerd_service_ctl::autostart_enabled()
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
     {
         false
     }
@@ -444,7 +448,11 @@ pub(crate) fn manager_available() -> bool {
     {
         true
     }
-    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    #[cfg(windows)]
+    {
+        true
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
     {
         false
     }
@@ -1107,8 +1115,8 @@ const INSTALL_BUDGET: std::time::Duration = std::time::Duration::from_secs(12);
 /// start plan never uses it.
 #[cfg(target_os = "macos")]
 const REGISTER_BUDGET: std::time::Duration = std::time::Duration::from_secs(20);
-/// A plain service-manager start/kickstart.
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+/// A plain service-manager start/kickstart (Windows: a detached `yerdd serve`).
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 const START_BUDGET: std::time::Duration = std::time::Duration::from_secs(8);
 
 /// Map the macOS daemon-registration state to the phase *label* to show. Pure +
@@ -1229,7 +1237,22 @@ pub(crate) fn plan_start(nudge: bool) -> Result<Vec<StartStep>, GuiError> {
             ])
         }
     }
-    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    #[cfg(windows)]
+    {
+        let _ = nudge;
+        let yerdd = crate::daemon::resolve_yerdd()
+            .ok_or_else(|| GuiError::internal("yerdd is not installed"))?;
+        Ok(vec![StartStep {
+            phase: StartPhase::Starting,
+            budget: START_BUDGET,
+            run: Box::new(move || {
+                yerd_service_ctl::ServiceCtl::new(yerdd)
+                    .start()
+                    .map_err(|e| GuiError::internal(format!("could not start the daemon: {e}")))
+            }),
+        }])
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
     {
         let _ = nudge;
         Err(GuiError::internal(
@@ -1250,6 +1273,11 @@ pub(crate) fn daemon_stop() {
     #[cfg(target_os = "macos")]
     {
         let _ = run_ok("launchctl", &["kill", "SIGTERM", &service_target()]);
+    }
+    #[cfg(windows)]
+    {
+        yerd_service_ctl::ServiceCtl::new(crate::daemon::resolve_yerdd().unwrap_or_default())
+            .stop();
     }
 }
 
@@ -1305,7 +1333,20 @@ fn daemon_set_login(on: bool, nudge: bool) -> Result<(), GuiError> {
             )
         }
     }
-    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    #[cfg(windows)]
+    {
+        let _ = nudge;
+        if on {
+            let yerdd = crate::daemon::resolve_yerdd()
+                .ok_or_else(|| GuiError::internal("yerdd is not installed"))?;
+            yerd_service_ctl::enable_at_login(&yerdd)
+                .map_err(|e| GuiError::internal(format!("could not enable daemon autostart: {e}")))
+        } else {
+            yerd_service_ctl::disable_at_login()
+                .map_err(|e| GuiError::internal(format!("could not disable daemon autostart: {e}")))
+        }
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
     {
         let _ = (on, nudge);
         Err(GuiError::internal(
@@ -1351,7 +1392,15 @@ fn daemon_enabled(settings: &GuiSettings, supported: bool) -> bool {
         let legacy = plist_path().map(|p| p.exists()).unwrap_or(false);
         return smapp_registered() || legacy;
     }
-    supported && settings.daemon_autostart
+    #[cfg(windows)]
+    {
+        let _ = settings;
+        supported && yerd_service_ctl::autostart_enabled()
+    }
+    #[cfg(not(windows))]
+    {
+        supported && settings.daemon_autostart
+    }
 }
 
 /// macOS SMAppService `requiresApproval` - registered but pending the user's

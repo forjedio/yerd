@@ -53,7 +53,8 @@ jobs:
           {"id":"macos","runner":"macos-14","container":"","kind":"gui"},
           {"id":"arch-x86_64","runner":"ubuntu-22.04","container":"archlinux:base-devel","kind":"arch"},
           {"id":"fedora-x86_64","runner":"ubuntu-22.04","container":"","kind":"fedora"},
-          {"id":"fedora-arm64","runner":"ubuntu-22.04-arm","container":"","kind":"fedora"}
+          {"id":"fedora-arm64","runner":"ubuntu-22.04-arm","container":"","kind":"fedora"},
+          {"id":"windows-x86_64","runner":"windows-latest","container":"","kind":"windows"}
         ]
     secrets: inherit
 
@@ -131,7 +132,7 @@ jobs:
         run: |
           set -euo pipefail
           find . -mindepth 2 -type f \
-            \( -name '*.deb' -o -name '*.dmg' -o -name '*.app.tar.gz' -o -name '*.pkg.tar.zst' -o -name '*.rpm' \) \
+            \( -name '*.deb' -o -name '*.dmg' -o -name '*.app.tar.gz' -o -name '*.pkg.tar.zst' -o -name '*.rpm' -o -name '*.exe' \) \
             -exec mv -t . {} +
           # Drop the now-redundant nested dirs so `dist/*` is files-only.
           find . -mindepth 1 -type d -exec rm -rf {} +
@@ -153,11 +154,13 @@ jobs:
               *.dmg)         ext="dmg";         os="MacOS" ;;
               *.deb)         ext="deb";         os="Linux" ;;
               *.rpm)         ext="rpm";         os="Linux" ;;
+              *.exe)         ext="exe";         os="Windows" ;;
               *) continue ;;
             esac
             case "$f" in
               *AppleSilicon*|*aarch64*|*arm64*) [ "$os" = "MacOS" ] && arch="AppleSilicon" || arch="Arm64" ;;
-              *x86_64*|*amd64*)  arch="x86_64" ;;
+              # Tauri names the NSIS installer `..._x64-setup.exe`.
+              *x86_64*|*amd64*|*x64*)  arch="x86_64" ;;
               *) arch="unknown" ;;
             esac
             mv -- "$f" "Yerd_${os}_${arch}_${ver}.${ext}"
@@ -205,7 +208,7 @@ jobs:
           trap 'rm -f "$RUNNER_TEMP/minisign.key"' EXIT
           umask 077; printf '%s\n' "$MINISIGN_SECRET_KEY" > "$RUNNER_TEMP/minisign.key"
           shopt -s nullglob
-          for f in *.app.tar.gz *.deb *.pkg.tar.zst *.rpm; do
+          for f in *.app.tar.gz *.deb *.pkg.tar.zst *.rpm *.exe; do
             minisign -S -H -s "$RUNNER_TEMP/minisign.key" -m "$f" -x "$f.minisig"
             echo "signed $f -> $f.minisig"
           done
@@ -241,7 +244,7 @@ jobs:
             exit 1
           fi
           shopt -s nullglob
-          for f in *.app.tar.gz *.deb *.pkg.tar.zst *.rpm; do
+          for f in *.app.tar.gz *.deb *.pkg.tar.zst *.rpm *.exe; do
             minisign -V -H -P "$KEY" -m "$f" -x "$f.minisig" \
               || { echo "::error::embedded UPDATE_PUBLIC_KEY does not verify $f.minisig (key/secret mismatch)"; exit 1; }
             echo "verified $f against embedded key"
@@ -264,7 +267,7 @@ jobs:
         working-directory: dist
         run: |
           find . -maxdepth 1 -type f \
-            \( -name '*.deb' -o -name '*.dmg' -o -name '*.app.tar.gz' -o -name '*.pkg.tar.zst' -o -name '*.rpm' \) \
+            \( -name '*.deb' -o -name '*.dmg' -o -name '*.app.tar.gz' -o -name '*.pkg.tar.zst' -o -name '*.rpm' -o -name '*.exe' \) \
             -printf '%P\n' | sort | xargs -r sha256sum > SHA256SUMS
           echo "Artifacts:" && cat SHA256SUMS
 

@@ -6451,6 +6451,7 @@ dependencies = [
  "yerd-core",
  "yerd-ipc",
  "yerd-platform",
+ "yerd-service-ctl",
  "yerd-update",
 ]
 

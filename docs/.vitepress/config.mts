@@ -144,6 +144,7 @@ export default withMermaid({
           items: [
             { text: 'What is Yerd?', link: '/guide/introduction' },
             { text: 'Getting Started', link: '/guide/getting-started' },
+            { text: 'Windows (early access)', link: '/guide/windows' },
             { text: 'Guides', link: '/guide/guides' },
             { text: 'Switching to Yerd', link: '/guide/switching-to-yerd' },
             { text: 'Upgrade Guide', link: '/guide/upgrading-from-v1' },

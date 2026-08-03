@@ -46,7 +46,10 @@ const platform = ref<string>("");
 // Cleared once the CA actually reads not-trusted again - see the watcher below.
 const systemTrustRemains = ref(false);
 const canElevate = computed(
-  () => platform.value === "linux" || platform.value === "macos",
+  () =>
+    platform.value === "linux" ||
+    platform.value === "macos" ||
+    platform.value === "windows",
 );
 
 // ── tri-state OS privileges ──
@@ -240,9 +243,20 @@ const UNELEVATE_COPY: Record<ElevateTarget, { title: string; body: string }> = {
     body: "Removes the 80/443 → Yerd redirect. Sites stay reachable on Yerd's high ports until you re-enable it.",
   },
 };
-const unelevateCopy = computed(() =>
-  pendingUnelevate.value ? UNELEVATE_COPY[pendingUnelevate.value] : null,
-);
+const unelevateCopy = computed(() => {
+  const t = pendingUnelevate.value;
+  if (!t) return null;
+  const base = UNELEVATE_COPY[t];
+  // Windows has no system-wide trust: the CA lives only in the CurrentUser
+  // store, so drop the residual system-wide caveat from the untrust body.
+  if (t === "trust" && platform.value === "windows") {
+    return {
+      title: base.title,
+      body: "Removes Yerd's local CA trust from your Windows user certificate store. HTTPS .test sites will show certificate warnings until you trust it again.",
+    };
+  }
+  return base;
+});
 function openUnelevate(target: ElevateTarget): void {
   pendingUnelevate.value = target;
   unelevateOpen.value = true;

@@ -57,6 +57,12 @@ sha2 = { workspace = true }
 # underlying WebKitGTK view to clamp its zoom level (disable pinch/Ctrl zoom,
 # which WebKit handles below the DOM where JS can't intercept it). Versions
 # track what tao/wry already pull in.
+# Windows: daemon start/stop + per-user logon autostart (HKCU Run) go through the
+# in-workspace yerd-service-ctl, the same backend the CLI applier uses. Cfg-gated
+# so the dep only enters the graph on Windows (mirrors bin/yerdd's cfg-gated dep).
+[target.'cfg(windows)'.dependencies]
+yerd-service-ctl = { path = "../../../crates/yerd-service-ctl" }
+
 [target.'cfg(target_os = "linux")'.dependencies]
 glib       = "0.18"
 webkit2gtk = "=2.0.2"

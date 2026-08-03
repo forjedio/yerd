@@ -270,11 +270,12 @@ async function doInstallPhp(): Promise<void> {
   }
 }
 
-// ── step 2: install yerd on PATH. macOS and Linux (not yet wired up on
-// Windows - see `supportsPathInstall`). `yerd` itself is already on PATH on a
-// packaged Linux install, but the PHP/tool shims it manages live in the same
-// `{data}/bin` dir this installs onto PATH, so it's still useful there.
-// Optional and recommended; it never blocks "Next". ──
+// ── step 2: install yerd on PATH. macOS, Linux, and Windows (see
+// `supportsPathInstall`). `yerd` itself is already on PATH on a packaged Linux
+// install, but the PHP/tool shims it manages live in the same `{data}/bin` dir
+// this installs onto PATH, so it's still useful there. On Windows the CLI copy
+// plus the shim dir are added to the user PATH. Optional and recommended; it
+// never blocks "Next". ──
 const { supportsPathInstall } = usePlatform();
 const cli = ref<CliPathStatus | null>(null);
 const cliBusy = ref(false);

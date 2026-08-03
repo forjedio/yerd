@@ -14,8 +14,10 @@ supervises databases and caches as native child processes. The product runs
 **without root** in normal operation; setup may elevate once.
 
 It is a Rust workspace plus a Tauri v2 + Vue 3 desktop app. macOS and Linux are
-the supported platforms today; Windows support is planned and its OS adapters
-are not yet implemented — do not assume Windows code paths exist.
+fully supported; Windows ships an early-access subset (real `Windows*` adapters
+for paths, ports, TLS trust, DNS/NRPT, PATH, autostart, self-update via the NSIS
+installer). The remaining pieces alias the `unsupported` stub — check for a real
+`Windows*` impl before assuming a code path exists.
 
 ## The single organising rule
 

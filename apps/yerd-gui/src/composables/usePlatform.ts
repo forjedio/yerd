@@ -30,7 +30,8 @@ export interface PlatformInfo {
   isMac: ComputedRef<boolean>;
   isLinux: ComputedRef<boolean>;
   isWindows: ComputedRef<boolean>;
-  /** macOS and Linux only - PATH management isn't wired up for Windows yet. */
+  /** macOS, Linux, and Windows: each wires `yerd path install` (a copy/symlink
+   *  plus a PATH edit) through the CLI. */
   supportsPathInstall: ComputedRef<boolean>;
 }
 
@@ -40,6 +41,9 @@ export function usePlatform(): PlatformInfo {
     isMac: computed(() => platform.value === "macos"),
     isLinux: computed(() => platform.value === "linux"),
     isWindows: computed(() => platform.value === "windows"),
-    supportsPathInstall: computed(() => platform.value === "macos" || platform.value === "linux"),
+    supportsPathInstall: computed(
+      () =>
+        platform.value === "macos" || platform.value === "linux" || platform.value === "windows",
+    ),
   };
 }

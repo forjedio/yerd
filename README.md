@@ -9,7 +9,7 @@
 <div align="center">
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](#license)
-[![Platforms: macOS · Linux](https://img.shields.io/badge/platforms-macOS%20%C2%B7%20Linux-success.svg)](#installation)
+[![Platforms: macOS · Linux · Windows (early access)](https://img.shields.io/badge/platforms-macOS%20%C2%B7%20Linux%20%C2%B7%20Windows%20(early%20access)-success.svg)](#installation)
 [![Built with Rust](https://img.shields.io/badge/built%20with-Rust-orange.svg)](https://www.rust-lang.org)
 [![Docs](https://img.shields.io/badge/docs-yerd.app-6366f1.svg)](https://yerd.app)
 [![Docs deploy](https://github.com/forjedio/yerd/actions/workflows/docs.yml/badge.svg)](https://github.com/forjedio/yerd/actions/workflows/docs.yml)
@@ -64,7 +64,7 @@ everything the app does.
 | Open source | ❌ | ✅ | ✅ |
 | Linux support | ❌ | ✅ | ✅ |
 | macOS support | ✅ | ✅ | ✅ |
-| Windows support | ✅ | ❌ | ❌ * |
+| Windows support | ✅ | ❌ | ✅ * |
 | Automatic `.test` domains | ✅ | ✅ | ✅ |
 | HTTPS with a trusted local CA | ✅ | ✅ | ✅ |
 | Multiple PHP versions | ✅ | ✅ | ✅ |
@@ -81,7 +81,7 @@ everything the app does.
 | Built-in health checks (`doctor`) | ❌ | ❌ | ✅ |
 | Under the hood | Native app (nginx + dnsmasq) | Containers (rootless Podman) | Native Rust (`rustls` proxy + embedded DNS) |
 
-<sub>❌\* = Windows isn't supported yet - it's planned (coming soon). Yerd runs today on macOS and Linux.</sub>
+<sub>✅\* = Windows is **early access**: it installs and runs (per-user, no admin), serves `.test` over HTTP/HTTPS with a per-user trusted CA, and self-updates. Known MVP limits: Firefox needs manual CA trust, no system metrics in the GUI, and the installer is unsigned (a one-time SmartScreen "More info → Run anyway"). See the [Windows notes](docs/guide/windows.md).</sub>
 <br><sub>**Lerd** runs your stack in containers via **rootless Podman** (Linux +
 macOS; no Docker) - so it trivially adds database/cache services, but it pulls and
 runs container images rather than native processes. † Rootless by design on
@@ -109,6 +109,13 @@ runtime). Grab the latest **stable release** from the
 | Linux · Arch (x86-64) | `Yerd_Linux_x86_64_v<ver>.pkg.tar.zst` | `sudo pacman -U ./Yerd_Linux_x86_64_v<ver>.pkg.tar.zst` |
 | Linux · Fedora (x86-64) | `Yerd_Linux_x86_64_v<ver>.rpm` | `sudo dnf install ./Yerd_Linux_x86_64_v<ver>.rpm` |
 | Linux · Fedora (arm64) | `Yerd_Linux_Arm64_v<ver>.rpm` | `sudo dnf install ./Yerd_Linux_Arm64_v<ver>.rpm` |
+| Windows (x86-64, early access) | `Yerd_Windows_x86_64_v<ver>.exe` | run the installer (per-user, no admin) |
+
+> **Windows note.** The installer is currently **unsigned**, so on first run
+> Windows SmartScreen shows "Windows protected your PC" - click **More info →
+> Run anyway**. Install is per-user (no admin prompt) into
+> `%LOCALAPPDATA%\Yerd`. See the [Windows notes](docs/guide/windows.md) for the
+> early-access limitations.
 
 > **Arch note.** If you have a leftover `/usr/bin/yerd` from the old v1 (Go)
 > project, remove it first - pacman refuses to install over a file it doesn't
@@ -123,7 +130,9 @@ Everything after runs as your user - never as root.
 ### Terminal CLI
 
 The `yerd` command ships with the app: on **Linux** the `.deb`/`.pkg.tar.zst`
-puts it on your `PATH`; on **macOS** open *Settings → Terminal CLI → Install*.
+puts it on your `PATH`; on **macOS** and **Windows** open *Settings → Terminal
+CLI → Install* (Windows adds `yerd` and the tool shims to your user `PATH` -
+open a new terminal afterward).
 Then the one-time
 setup is available from the terminal too:
 

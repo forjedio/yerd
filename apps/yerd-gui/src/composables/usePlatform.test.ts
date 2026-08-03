@@ -26,7 +26,7 @@ describe("usePlatform", () => {
     vi.restoreAllMocks();
   });
 
-  it("flags windows and leaves mac/linux/path-install false", async () => {
+  it("flags windows with path-install support and leaves mac/linux false", async () => {
     mocks.hostPlatform.mockResolvedValue("windows");
     const { loadPlatform, usePlatform } = await freshModule();
     await loadPlatform();
@@ -36,7 +36,7 @@ describe("usePlatform", () => {
     expect(p.isWindows.value).toBe(true);
     expect(p.isMac.value).toBe(false);
     expect(p.isLinux.value).toBe(false);
-    expect(p.supportsPathInstall.value).toBe(false);
+    expect(p.supportsPathInstall.value).toBe(true);
   });
 
   it("flags macos with path-install support", async () => {

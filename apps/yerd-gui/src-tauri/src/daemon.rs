@@ -6,9 +6,9 @@
 //! `unwrap`/`expect`/`panic` under clippy). The OS service mechanism
 //! (systemd/launchd/SMAppService) lives in [`crate::autostart`]; this module owns
 //! binary resolution, the start/stop orchestration, and the optional
-//! "install the bundled CLI on PATH" helper (macOS and Linux; PATH management
-//! isn't wired up for Windows yet). The daemon binary is **bundled** inside the
-//! app (Tauri `externalBin`) - there is no runtime download.
+//! "install the bundled CLI on PATH" helper (macOS, Linux, and Windows). The
+//! daemon binary is **bundled** inside the app (Tauri `externalBin`) - there is
+//! no runtime download.
 
 use std::path::PathBuf;
 
@@ -35,6 +35,21 @@ fn search_dirs() -> Vec<PathBuf> {
     dirs
 }
 
+/// The on-disk file name for a bundled binary: `<name>.exe` on Windows, the
+/// bare `name` elsewhere. Without the suffix `is_file()` never matches on
+/// Windows, so daemon start / apply-update / elevate / cli-path all fail to
+/// locate the sidecars. Pure, so the mapping is unit-tested.
+fn exe_name(name: &str) -> String {
+    #[cfg(windows)]
+    {
+        format!("{name}.exe")
+    }
+    #[cfg(not(windows))]
+    {
+        name.to_owned()
+    }
+}
+
 /// Resolve a bundled binary: first beside our own executable (macOS
 /// `Contents/MacOS/`; Linux `.deb` symlinks `yerd`/`yerdd`/`yerd-helper` into
 /// `/usr/bin` beside `yerd-gui`), then the usual dirs. Mirrors
@@ -48,9 +63,10 @@ fn search_dirs() -> Vec<PathBuf> {
 /// [`lib_sidecar`]; otherwise a postinst hiccup would leave `yerdd` on disk but
 /// unfindable and the daemon "won't start".
 pub(crate) fn resolve_binary(name: &str) -> Option<PathBuf> {
+    let file = exe_name(name);
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
-            let cand = dir.join(name);
+            let cand = dir.join(&file);
             if cand.is_file() {
                 return Some(cand);
             }
@@ -58,7 +74,7 @@ pub(crate) fn resolve_binary(name: &str) -> Option<PathBuf> {
     }
     if let Some(found) = search_dirs()
         .into_iter()
-        .map(|d| d.join(name))
+        .map(|d| d.join(&file))
         .find(|c| c.is_file())
     {
         return Some(found);
@@ -130,12 +146,29 @@ pub fn daemon_installed() -> bool {
 // that would violate the dep-flow rule).
 
 /// `{data}/bin/yerd` - where the CLI symlink lives (matches `yerd path`).
+#[cfg(not(windows))]
 fn cli_symlink_path() -> Result<PathBuf, GuiError> {
     use yerd_platform::{ActivePaths, Paths};
     let dirs = ActivePaths::new()
         .resolve()
         .map_err(|e| GuiError::internal(format!("cannot resolve yerd directories: {e}")))?;
     Ok(dirs.data.join("bin").join("yerd"))
+}
+
+/// `%LOCALAPPDATA%\Programs\yerd\bin\yerd.exe` - where `yerd path install` copies
+/// the CLI on Windows (there is no symlink; the copy + PATH edit is the CLI's
+/// own `path_cmd`). `None` when `%LOCALAPPDATA%` is unset.
+#[cfg(windows)]
+fn programs_bin_yerd() -> Option<PathBuf> {
+    std::env::var_os("LOCALAPPDATA")
+        .filter(|v| !v.is_empty())
+        .map(|l| {
+            PathBuf::from(l)
+                .join("Programs")
+                .join("yerd")
+                .join("bin")
+                .join("yerd.exe")
+        })
 }
 
 /// Whether the bundled `yerd` CLI is linked onto PATH.
@@ -150,16 +183,29 @@ pub struct CliPathStatus {
 
 #[tauri::command]
 pub fn cli_path_status() -> Result<CliPathStatus, GuiError> {
-    let link = cli_symlink_path()?;
-    let installed = link.symlink_metadata().is_ok() && link.exists();
-    Ok(CliPathStatus {
-        installed,
-        target: link.display().to_string(),
-    })
+    #[cfg(windows)]
+    {
+        let path =
+            programs_bin_yerd().ok_or_else(|| GuiError::internal("%LOCALAPPDATA% is not set"))?;
+        Ok(CliPathStatus {
+            installed: path.is_file(),
+            target: path.display().to_string(),
+        })
+    }
+    #[cfg(not(windows))]
+    {
+        let link = cli_symlink_path()?;
+        let installed = link.symlink_metadata().is_ok() && link.exists();
+        Ok(CliPathStatus {
+            installed,
+            target: link.display().to_string(),
+        })
+    }
 }
 
-/// Symlink the bundled `yerd` into `{data}/bin` and ensure that dir is on PATH.
-/// macOS and Linux; PATH management isn't wired up for Windows yet.
+/// Put the bundled `yerd` CLI on PATH. macOS/Linux symlink it into `{data}/bin`
+/// and shell to `yerd path install`; Windows shells to `yerd path install` (a
+/// copy into `%LOCALAPPDATA%\Programs\yerd\bin` + a user-PATH edit).
 #[tauri::command]
 pub async fn install_cli_to_path() -> Result<(), GuiError> {
     #[cfg(any(target_os = "macos", target_os = "linux"))]
@@ -200,7 +246,15 @@ pub async fn install_cli_to_path() -> Result<(), GuiError> {
         .await
         .map_err(|e| GuiError::internal(format!("install task failed: {e}")))?
     }
-    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    #[cfg(windows)]
+    {
+        let yerd = resolve_binary("yerd")
+            .ok_or_else(|| GuiError::internal("the bundled yerd CLI was not found in the app"))?;
+        tokio::task::spawn_blocking(move || run_yerd_path(&yerd, "install"))
+            .await
+            .map_err(|e| GuiError::internal(format!("install task failed: {e}")))?
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
     {
         Err(GuiError::internal(
             "PATH installation is not supported on this platform yet.",
@@ -208,18 +262,52 @@ pub async fn install_cli_to_path() -> Result<(), GuiError> {
     }
 }
 
+/// Spawn `yerd path <action>` (Windows) with no console window and map the
+/// outcome to a [`GuiError`]. `action` is `"install"` or `"uninstall"`; the CLI
+/// does the copy + PATH edit + broadcast (the GUI stays a thin client of it).
+#[cfg(windows)]
+fn run_yerd_path(yerd: &std::path::Path, action: &str) -> Result<(), GuiError> {
+    use std::os::windows::process::CommandExt as _;
+
+    /// Keep the console-subsystem CLI from flashing a window under the GUI.
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+    let out = std::process::Command::new(yerd)
+        .args(["path", action])
+        .creation_flags(CREATE_NO_WINDOW)
+        .output()
+        .map_err(|e| GuiError::internal(format!("could not run `yerd path {action}`: {e}")))?;
+    if out.status.success() {
+        Ok(())
+    } else {
+        Err(GuiError::internal(format!(
+            "`yerd path {action}` failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        )))
+    }
+}
+
 /// Remove the `{data}/bin/yerd` symlink. (Leaves the `yerd path` rc block alone -
 /// other yerd shims, e.g. `php`/`composer`, also live in `{data}/bin`.)
 #[tauri::command]
 pub fn remove_cli_from_path() -> Result<(), GuiError> {
-    let link = cli_symlink_path()?;
-    match std::fs::remove_file(&link) {
-        Ok(()) => Ok(()),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(e) => Err(GuiError::internal(format!(
-            "cannot remove {}: {e}",
-            link.display()
-        ))),
+    #[cfg(windows)]
+    {
+        let yerd = resolve_binary("yerd")
+            .ok_or_else(|| GuiError::internal("the bundled yerd CLI was not found in the app"))?;
+        run_yerd_path(&yerd, "uninstall")
+    }
+    #[cfg(not(windows))]
+    {
+        let link = cli_symlink_path()?;
+        match std::fs::remove_file(&link) {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(GuiError::internal(format!(
+                "cannot remove {}: {e}",
+                link.display()
+            ))),
+        }
     }
 }
 
@@ -663,7 +751,15 @@ fn compute_hints(
 
 #[cfg(test)]
 mod tests {
-    use super::compute_hints;
+    use super::{compute_hints, exe_name};
+
+    #[test]
+    fn exe_name_appends_exe_on_windows_only() {
+        #[cfg(windows)]
+        assert_eq!(exe_name("yerdd"), "yerdd.exe");
+        #[cfg(not(windows))]
+        assert_eq!(exe_name("yerdd"), "yerdd");
+    }
 
     #[test]
     fn version_skew_log_yields_reregister_hint() {
