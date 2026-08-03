@@ -13,14 +13,22 @@
 
 use std::ffi::OsString;
 use std::io::Write as _;
-use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 
 use yerd_core::{php_settings, PhpVersion};
 use yerd_platform::{ActivePaths, Paths, PlatformDirs};
 
-use crate::shim::{cli_binary, fail, resolve_default_php};
+use crate::shim::{cli_binary, fail, resolve_default_php, run_php};
+
+/// On-disk pcov extension filename for the host: `pcov.dll` on Windows, `pcov.so`
+/// elsewhere. Mirrors `bin/yerdd`'s `ext_install::PCOV_SPEC.so_name` cfg split
+/// (the two binaries can't share code across the boundary, so this is kept
+/// byte-in-step, exactly as `cli_phprc` is).
+#[cfg(windows)]
+const PCOV_SO_NAME: &str = "pcov.dll";
+#[cfg(not(windows))]
+const PCOV_SO_NAME: &str = "pcov.so";
 
 /// Which PHP a cover alias targets.
 enum CoverSpec {
@@ -35,10 +43,8 @@ enum CoverSpec {
 /// otherwise `None`, so `main` falls through to the normal CLI.
 #[must_use]
 pub fn dispatch() -> Option<ExitCode> {
-    let arg0 = std::env::args_os().next()?;
-    let name = Path::new(&arg0).file_name()?.to_str()?;
-    let spec = parse_cover_name(name)?;
-    let forward: Vec<OsString> = std::env::args_os().skip(1).collect();
+    let (name, forward) = crate::shim::shim_invocation()?;
+    let spec = parse_cover_name(&name)?;
     Some(run(&spec, &forward))
 }
 
@@ -78,7 +84,7 @@ fn run(spec: &CoverSpec, forward: &[OsString]) -> ExitCode {
         Err(msg) => return fail(msg),
     };
     let ext_dir = dirs.data.join("php-ext").join(format!("php-{minor}"));
-    let pcov = ext_dir.join("pcov.so");
+    let pcov = ext_dir.join(PCOV_SO_NAME);
     if !pcov.is_file() {
         return fail(format!(
             "pcov not installed for PHP {minor} — reinstall PHP or wait for the background fetch"
@@ -104,17 +110,16 @@ fn run(spec: &CoverSpec, forward: &[OsString]) -> ExitCode {
         return fail(format!("cannot write {}: {e}", cover_ini_path.display()));
     }
 
-    let err = Command::new(&php_bin)
-        .env("PHPRC", &cover_ini_path)
-        .args(forward)
-        .exec();
-    if err.kind() == std::io::ErrorKind::NotFound {
-        return fail(format!(
+    let mut cmd = Command::new(&php_bin);
+    cmd.env("PHPRC", &cover_ini_path).args(forward);
+    match run_php(cmd) {
+        Ok(code) => code,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => fail(format!(
             "PHP binary not found at {} ({err}) — reinstall with `yerd install php {minor}`",
             php_bin.display()
-        ));
+        )),
+        Err(err) => fail(format!("failed to exec {}: {err}", php_bin.display())),
     }
-    fail(format!("failed to exec {}: {err}", php_bin.display()))
 }
 
 /// Write `bytes` to `path` atomically (tempfile in the same directory +
@@ -163,6 +168,14 @@ fn resolve_target(dirs: &PlatformDirs, spec: &CoverSpec) -> Result<(PathBuf, Str
 #[allow(clippy::unwrap_used, clippy::panic)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pcov_so_name_is_dll_on_windows_so_elsewhere() {
+        #[cfg(windows)]
+        assert_eq!(PCOV_SO_NAME, "pcov.dll");
+        #[cfg(not(windows))]
+        assert_eq!(PCOV_SO_NAME, "pcov.so");
+    }
 
     #[test]
     fn parses_default_and_versioned_cover_names() {

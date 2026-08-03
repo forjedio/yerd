@@ -20,10 +20,14 @@ use crate::terminal::TerminalLauncher;
 use crate::trust_store::{CaFingerprint, NssOutcome, TrustStore};
 use crate::PlatformError;
 
-/// Stub terminal launcher for unsupported OSes.
+/// Stub terminal launcher for unsupported OSes. Windows now has a real
+/// [`super::windows::WindowsTerminalLauncher`], so this stub is unused there (but
+/// the module stays compiled on Windows for the other still-stubbed traits).
+#[cfg_attr(windows, allow(dead_code))]
 #[derive(Debug, Default, Clone, Copy)]
 pub struct UnsupportedTerminalLauncher;
 
+#[cfg_attr(windows, allow(dead_code))]
 impl UnsupportedTerminalLauncher {
     /// Construct.
     #[must_use]

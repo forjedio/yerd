@@ -159,14 +159,23 @@ fn nrpt_guids_for_tld_reads_registry_without_panicking() {
     let _ = yerd_platform::nrpt_guids_for_tld("test");
 }
 
+/// `user_path` is a read-only HKCU probe: it must never panic, whether or not
+/// the value is present. (`set_user_path` mutates the real `HKCU\Environment\Path`
+/// and so is exercised manually, never in CI.)
 #[test]
-fn terminal_launcher_unsupported() {
-    assert!(matches!(
-        ActiveTerminalLauncher
-            .open_terminal(std::path::Path::new(r"C:\srv\site"))
-            .unwrap_err(),
-        PlatformError::Unsupported { .. }
-    ));
+fn user_path_reads_without_panicking() {
+    let _ = yerd_platform::user_path();
+}
+
+/// The Windows terminal launcher is now a real impl (Phase 5). Its spawn path
+/// opens a real console window, so it is exercised manually via the GUI, not in
+/// CI; here we only pin that the active type is constructible and implements the
+/// trait (the pure probe shapes are unit-tested in `pure::win_terminal`).
+#[test]
+fn terminal_launcher_is_constructible_and_implements_the_trait() {
+    fn assert_impl<T: TerminalLauncher>(_: &T) {}
+    let launcher = ActiveTerminalLauncher::new();
+    assert_impl(&launcher);
 }
 
 #[test]

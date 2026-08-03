@@ -6585,6 +6585,7 @@ version = "2.0.4"
 dependencies = [
  "nix",
  "thiserror 1.0.69",
+ "winreg 0.55.0",
 ]
 
 [[package]]
@@ -6696,6 +6697,7 @@ dependencies = [
  "yerd-platform",
  "yerd-proxy",
  "yerd-release-manifest",
+ "yerd-service-ctl",
  "yerd-services",
  "yerd-supervise",
  "yerd-tls",

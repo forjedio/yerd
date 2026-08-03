@@ -98,7 +98,12 @@ mod windows_impl {
         let mut residue: Vec<String> = Vec::new();
 
         revert_system_changes(&facts, &mut residue);
+        remove_autostart_entry(&mut residue);
         stop_daemon();
+
+        for entry in crate::path_cmd::remove_from_path() {
+            println!("  removed {} from your PATH", entry.display());
+        }
 
         for dir in dirs_to_delete(&dirs) {
             match remove_dir_all_retry(&dir) {
@@ -109,9 +114,10 @@ mod windows_impl {
         }
 
         residue.push(
-            "the yerd.exe / yerdd.exe / yerd-helper.exe binaries - a running program can't \
-             delete itself on Windows, so remove them manually (the Phase 6 installer's \
-             uninstaller will handle this)"
+            "the yerd.exe / yerdd.exe / yerd-helper.exe binaries, including the copy under \
+             %LOCALAPPDATA%\\Programs\\yerd\\bin - a running program can't delete itself on \
+             Windows, so remove them manually (the Phase 6 installer's uninstaller will \
+             handle this)"
                 .to_owned(),
         );
 
@@ -171,6 +177,20 @@ mod windows_impl {
                 "a yerd CA may remain in the user Root store (its cert was not on disk to \
                  identify it) - {}",
                 ca_manual_remedy()
+            )),
+        }
+    }
+
+    /// Remove the `Yerd Daemon` HKCU `Run` autostart entry, so the daemon does
+    /// not relaunch at the next logon. Mirrors the Unix "disable the service"
+    /// step; unprivileged (the user's own hive). Best-effort: a failure is
+    /// recorded in `residue`, never fatal.
+    fn remove_autostart_entry(residue: &mut Vec<String>) {
+        match yerd_service_ctl::disable_at_login() {
+            Ok(()) => println!("  removed the daemon autostart entry"),
+            Err(e) => residue.push(format!(
+                "the 'Yerd Daemon' autostart entry may remain under \
+                 HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run ({e})"
             )),
         }
     }
@@ -277,7 +297,10 @@ mod windows_impl {
         );
         println!("  • cache:   {}", dirs.cache.display());
         println!("  • system changes from `yerd elevate` (CA trust, the .test DNS rule)");
-        println!("  • the yerd daemon (yerdd.exe is stopped; the binaries need manual removal)");
+        println!(
+            "  • the yerd daemon (its logon autostart entry is removed and yerdd.exe is \
+             stopped; the binaries need manual removal)"
+        );
     }
 
     fn print_summary(residue: &[String]) {

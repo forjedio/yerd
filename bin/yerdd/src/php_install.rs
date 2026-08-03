@@ -772,16 +772,61 @@ pub fn set_default_shim(dirs: &PlatformDirs, yerd_bin: &Path) -> Result<PathBuf,
     Ok(bin)
 }
 
-/// No symlink shims off Unix yet; return the shim dir for PATH hints. Kept
-/// fallible to mirror the Unix signature.
-#[cfg(not(unix))]
+/// Ensure the managed `php.cmd` wrapper points at `yerd_bin` (Windows). The
+/// wrapper re-invokes `yerd.exe __shim php`, which resolves the default version
+/// at run time. Returns the shim dir for PATH hints. Idempotent: an unchanged
+/// wrapper is left untouched.
+#[cfg(windows)]
+pub fn set_default_shim(dirs: &PlatformDirs, yerd_bin: &Path) -> Result<PathBuf, PhpError> {
+    let bin = shim_dir(dirs);
+    fs_ctx(std::fs::create_dir_all(&bin), &bin)?;
+    place_wrapper(&bin, yerd_bin, "php")?;
+    Ok(bin)
+}
+
+/// No managed shims on this platform; return the shim dir for PATH hints. Kept
+/// fallible to mirror the Unix/Windows signature.
+#[cfg(not(any(unix, windows)))]
 pub fn set_default_shim(dirs: &PlatformDirs, _yerd_bin: &Path) -> Result<PathBuf, PhpError> {
     Ok(shim_dir(dirs))
 }
 
-/// The shim filename for `v`: `php<major>.<minor>` (clean) or `…cover` (pcov).
-/// Dotted form matches the `PhpVersion` parser.
-#[cfg(unix)]
+/// Atomically write the Yerd `.cmd` wrapper for `shim_name` into `bin_dir`
+/// (Windows). Skips the write when the on-disk content already matches (idempotent
+/// and antivirus-friendly: no needless rewrite of an unchanged executable-ish
+/// file). Mirrors [`place_symlink`]'s temp-sibling + rename atomicity.
+#[cfg(windows)]
+pub(crate) fn place_wrapper(
+    bin_dir: &Path,
+    yerd_bin: &Path,
+    shim_name: &str,
+) -> Result<(), PhpError> {
+    use yerd_platform::pure::win_shim;
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+
+    let body = win_shim::wrapper_body(yerd_bin, shim_name);
+    let path = bin_dir.join(win_shim::wrapper_file_name(shim_name));
+    if std::fs::read_to_string(&path).is_ok_and(|existing| existing == body) {
+        return Ok(());
+    }
+
+    let name = path
+        .file_name()
+        .and_then(|s| s.to_str())
+        .ok_or_else(|| fs_err(&path, &std::io::Error::other("wrapper has no file name")))?;
+    let seq = SEQ.fetch_add(1, Ordering::Relaxed);
+    let tmp = bin_dir.join(format!(".{name}.tmp-{}-{seq}", std::process::id()));
+    let _ = std::fs::remove_file(&tmp);
+    fs_ctx(std::fs::write(&tmp, body.as_bytes()), &tmp)?;
+    fs_ctx(std::fs::rename(&tmp, &path), &path)?;
+    Ok(())
+}
+
+/// The bare shim name for `v`: `php<major>.<minor>` (clean) or `…cover` (pcov).
+/// Dotted form matches the `PhpVersion` parser. On Windows this is the `__shim`
+/// tool name inside the wrapper; the wrapper file is `<name>.cmd`
+/// (`win_shim::wrapper_file_name`).
+#[cfg(any(unix, windows))]
 fn versioned_shim_name(v: PhpVersion, cover: bool) -> String {
     if cover {
         format!("php{}.{}cover", v.major, v.minor)
@@ -792,9 +837,12 @@ fn versioned_shim_name(v: PhpVersion, cover: bool) -> String {
 
 /// Parse a yerd-managed shim filename back to its PHP version. Matches **exactly**
 /// `php<MAJOR>.<MINOR>` or `php<MAJOR>.<MINOR>cover`; returns `None` for `php`,
-/// `phpcover`, and any other name - so the pruner never touches foreign files.
-#[cfg(unix)]
+/// `phpcover`, and any other name - so the pruner never touches foreign files. A
+/// trailing `.cmd` (the Windows wrapper extension) is stripped first, so the same
+/// parser drives both the Unix symlink pruner and the Windows `.cmd` pruner.
+#[cfg(any(unix, windows))]
 fn managed_shim_version(name: &str) -> Option<PhpVersion> {
+    let name = name.strip_suffix(".cmd").unwrap_or(name);
     let rest = name.strip_prefix("php")?;
     let rest = rest.strip_suffix("cover").unwrap_or(rest);
     let (maj, min) = rest.split_once('.')?;
@@ -887,9 +935,75 @@ pub fn reconcile_shims(dirs: &PlatformDirs, yerd_bin: &Path) -> Result<(), PhpEr
     Ok(())
 }
 
-/// No-op off Unix: PHP shims are symlinks, not managed on Windows yet. Kept
-/// fallible to mirror the Unix signature.
-#[cfg(not(unix))]
+/// Reconcile the per-version CLI shims in `{data}/bin` against what's installed
+/// (Windows). Mirrors the Unix algorithm 1:1 - one `discover_bundled` snapshot
+/// drives both create and prune - but the shims are `.cmd` wrappers
+/// ([`place_wrapper`]) instead of symlinks, and pruning is gated on
+/// [`yerd_platform::pure::win_shim::is_yerd_wrapper`] (never `is_symlink`) so a
+/// user's own `php.cmd` is never deleted. Callers hold the daemon's shim mutex.
+#[cfg(windows)]
+pub fn reconcile_shims(dirs: &PlatformDirs, yerd_bin: &Path) -> Result<(), PhpError> {
+    use yerd_platform::pure::win_shim;
+
+    let bin = shim_dir(dirs);
+    fs_ctx(std::fs::create_dir_all(&bin), &bin)?;
+
+    let installed: Vec<PhpVersion> = yerd_php::discover_bundled(dirs)
+        .map_err(|e| {
+            fs_err(
+                &dirs.data.join("php"),
+                &std::io::Error::other(e.to_string()),
+            )
+        })?
+        .into_iter()
+        .map(|(v, _)| v)
+        .collect();
+
+    for &v in &installed {
+        place_wrapper(&bin, yerd_bin, &versioned_shim_name(v, false))?;
+        if !v.is_legacy() {
+            place_wrapper(&bin, yerd_bin, &versioned_shim_name(v, true))?;
+        }
+    }
+    place_wrapper(&bin, yerd_bin, "phpcover")?;
+
+    if !installed.is_empty() {
+        place_wrapper(&bin, yerd_bin, "php")?;
+    }
+
+    let entries = match std::fs::read_dir(&bin) {
+        Ok(e) => e,
+        Err(ref e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(fs_err(&bin, &e)),
+    };
+    for entry in entries.flatten() {
+        let fname = entry.file_name();
+        let Some(name) = fname.to_str() else { continue };
+        let Some(base) = name.strip_suffix(".cmd") else {
+            continue;
+        };
+        if base == "php" || base == "phpcover" {
+            continue;
+        }
+        let Some(v) = managed_shim_version(base) else {
+            continue;
+        };
+        let stale_legacy_cover = base.ends_with("cover") && v.is_legacy();
+        if installed.contains(&v) && !stale_legacy_cover {
+            continue;
+        }
+        let path = entry.path();
+        let owned = std::fs::read_to_string(&path).is_ok_and(|c| win_shim::is_yerd_wrapper(&c));
+        if owned {
+            let _ = std::fs::remove_file(&path);
+        }
+    }
+    Ok(())
+}
+
+/// No-op on platforms with no managed shims. Kept fallible to mirror the
+/// Unix/Windows signature.
+#[cfg(not(any(unix, windows)))]
 pub fn reconcile_shims(_dirs: &PlatformDirs, _yerd_bin: &Path) -> Result<(), PhpError> {
     Ok(())
 }
@@ -1459,7 +1573,7 @@ mod tests {
         assert_eq!(cli_phprc(&dirs, v), Some(per_version));
     }
 
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     #[test]
     fn managed_shim_version_matches_only_canonical_names() {
         assert_eq!(managed_shim_version("php8.4"), Some(PhpVersion::new(8, 4)));
@@ -1477,12 +1591,27 @@ mod tests {
         assert_eq!(managed_shim_version("php8.04"), None);
     }
 
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     #[test]
     fn versioned_shim_name_is_dotted() {
         let v = PhpVersion::new(8, 4);
         assert_eq!(versioned_shim_name(v, false), "php8.4");
         assert_eq!(versioned_shim_name(v, true), "php8.4cover");
+    }
+
+    #[cfg(any(unix, windows))]
+    #[test]
+    fn managed_shim_version_strips_cmd_suffix() {
+        assert_eq!(
+            managed_shim_version("php8.4.cmd"),
+            Some(PhpVersion::new(8, 4))
+        );
+        assert_eq!(
+            managed_shim_version("php8.4cover.cmd"),
+            Some(PhpVersion::new(8, 4))
+        );
+        assert_eq!(managed_shim_version("php.cmd"), None);
+        assert_eq!(managed_shim_version("phpcover.cmd"), None);
     }
 
     #[cfg(unix)]
@@ -1578,5 +1707,130 @@ mod tests {
             yerd_bin
         );
         assert!(shim_dir(&dirs).join("php8.4cover").exists());
+    }
+
+    /// Lay down the Windows bundle layout `discover_bundled` keys off:
+    /// `{data}/php/php-<X.Y>/php-cgi.exe`.
+    #[cfg(windows)]
+    fn mk_windows_php(dirs: &PlatformDirs, v: PhpVersion) {
+        let base = dirs
+            .data
+            .join("php")
+            .join(format!("php-{}.{}", v.major, v.minor));
+        std::fs::create_dir_all(&base).unwrap();
+        std::fs::write(base.join("php-cgi.exe"), b"cgi").unwrap();
+        std::fs::write(base.join("php.exe"), b"cli").unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn reconcile_writes_cmd_wrappers_and_prunes_stale_owned_ones() {
+        use yerd_platform::pure::win_shim;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let dirs = dirs_in(tmp.path());
+        let yerd_bin = tmp.path().join("yerd.exe");
+        std::fs::write(&yerd_bin, b"exe").unwrap();
+        mk_windows_php(&dirs, PhpVersion::new(8, 4));
+
+        let bin = shim_dir(&dirs);
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::write(
+            bin.join("php8.2cover.cmd"),
+            win_shim::wrapper_body(&yerd_bin, "php8.2cover"),
+        )
+        .unwrap();
+        std::fs::write(bin.join("keep.txt"), b"user file").unwrap();
+        std::fs::write(bin.join("php.cmd.bak"), b"user backup").unwrap();
+
+        reconcile_shims(&dirs, &yerd_bin).unwrap();
+
+        let php_cmd = std::fs::read_to_string(bin.join("php.cmd")).unwrap();
+        assert!(win_shim::is_yerd_wrapper(&php_cmd));
+        assert!(php_cmd.contains("__shim php %*"));
+        assert!(bin.join("php8.4.cmd").exists());
+        assert!(bin.join("php8.4cover.cmd").exists());
+        assert!(bin.join("phpcover.cmd").exists());
+        assert!(
+            !bin.join("php8.2cover.cmd").exists(),
+            "stale managed wrapper pruned"
+        );
+        assert!(bin.join("keep.txt").exists(), "foreign file untouched");
+        assert!(bin.join("php.cmd.bak").exists(), "foreign backup untouched");
+    }
+
+    /// Pruning is gated on wrapper-content ownership: a user-authored
+    /// `php8.9.cmd` that Yerd did not write is never deleted, even though its
+    /// name parses as a managed (uninstalled) version.
+    #[cfg(windows)]
+    #[test]
+    fn reconcile_never_prunes_a_foreign_cmd() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dirs = dirs_in(tmp.path());
+        let yerd_bin = tmp.path().join("yerd.exe");
+        std::fs::write(&yerd_bin, b"exe").unwrap();
+        mk_windows_php(&dirs, PhpVersion::new(8, 4));
+
+        let bin = shim_dir(&dirs);
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::write(bin.join("php8.9.cmd"), "@echo off\r\nphp.exe %*\r\n").unwrap();
+
+        reconcile_shims(&dirs, &yerd_bin).unwrap();
+
+        assert!(
+            bin.join("php8.9.cmd").exists(),
+            "a foreign php8.9.cmd must never be pruned"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn reconcile_gives_legacy_a_wrapper_but_no_cover_wrapper() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dirs = dirs_in(tmp.path());
+        let yerd_bin = tmp.path().join("yerd.exe");
+        std::fs::write(&yerd_bin, b"exe").unwrap();
+        mk_windows_php(&dirs, PhpVersion::new(7, 4));
+        mk_windows_php(&dirs, PhpVersion::new(8, 4));
+
+        let bin = shim_dir(&dirs);
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::write(
+            bin.join("php7.4cover.cmd"),
+            yerd_platform::pure::win_shim::wrapper_body(&yerd_bin, "php7.4cover"),
+        )
+        .unwrap();
+
+        reconcile_shims(&dirs, &yerd_bin).unwrap();
+
+        assert!(bin.join("php7.4.cmd").exists(), "legacy version wrapper");
+        assert!(
+            !bin.join("php7.4cover.cmd").exists(),
+            "no cover wrapper for legacy, stale one pruned"
+        );
+        assert!(bin.join("php8.4cover.cmd").exists());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn place_wrapper_is_idempotent_and_skips_unchanged() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dirs = dirs_in(tmp.path());
+        let yerd_bin = tmp.path().join("yerd.exe");
+        std::fs::write(&yerd_bin, b"exe").unwrap();
+        let bin = shim_dir(&dirs);
+        std::fs::create_dir_all(&bin).unwrap();
+
+        place_wrapper(&bin, &yerd_bin, "php").unwrap();
+        let first = std::fs::metadata(bin.join("php.cmd"))
+            .unwrap()
+            .modified()
+            .unwrap();
+        place_wrapper(&bin, &yerd_bin, "php").unwrap();
+        let second = std::fs::metadata(bin.join("php.cmd"))
+            .unwrap()
+            .modified()
+            .unwrap();
+        assert_eq!(first, second, "unchanged wrapper is not rewritten");
     }
 }

@@ -16,19 +16,58 @@ use std::sync::OnceLock;
 use schannel::cert_context::CertContext;
 use schannel::cert_store::{CertAdd, CertStore};
 
-use crate::error::{ops, TrustStoreErrorReason};
+use crate::error::{ops, TerminalErrorReason, TrustStoreErrorReason};
 use crate::paths::{Paths, PlatformDirs};
 use crate::port_binder::{BoundPort, PortBinder, PortPair};
 use crate::port_redirect::PortRedirector;
-use crate::pure::{nrpt, pem_match, port_plan, win_pipe, win_token};
+use crate::pure::{nrpt, pem_match, port_plan, win_pipe, win_terminal, win_token};
 use crate::resolver::ResolverInstaller;
+use crate::terminal::TerminalLauncher;
 use crate::trust_store::{CaFingerprint, NssOutcome, TrustStore};
 use crate::{BindPairErrorReason, PlatformError};
 
-pub use super::unsupported::{
-    UnsupportedSystemMetrics as WindowsSystemMetrics,
-    UnsupportedTerminalLauncher as WindowsTerminalLauncher,
-};
+pub use super::unsupported::UnsupportedSystemMetrics as WindowsSystemMetrics;
+
+/// `CREATE_NEW_CONSOLE` process-creation flag: the spawned shell gets its own
+/// console window instead of inheriting the caller's (the daemon/GUI has none
+/// worth sharing). Safe std `creation_flags`, no FFI.
+const CREATE_NEW_CONSOLE: u32 = 0x0000_0010;
+
+/// Real `TerminalLauncher` for Windows.
+///
+/// Tries Windows Terminal (`wt.exe -d <dir>`), then PowerShell, then `cmd.exe`,
+/// first success wins - the same probe-list shape as the Linux impl. The pure
+/// per-terminal command shapes live in [`win_terminal`]; this type owns only the
+/// spawn loop.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct WindowsTerminalLauncher;
+
+impl WindowsTerminalLauncher {
+    /// Construct.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self
+    }
+}
+
+impl TerminalLauncher for WindowsTerminalLauncher {
+    fn open_terminal(&self, path: &Path) -> Result<(), PlatformError> {
+        use std::os::windows::process::CommandExt as _;
+        for term in win_terminal::WIN_TERMINAL_PROBES {
+            let mut cmd = std::process::Command::new(term.program());
+            cmd.args(term.args(path)).current_dir(path);
+            if term.needs_new_console() {
+                cmd.creation_flags(CREATE_NEW_CONSOLE);
+            }
+            if cmd.spawn().is_ok() {
+                return Ok(());
+            }
+        }
+        Err(PlatformError::Terminal {
+            reason: TerminalErrorReason::NoSupportedTerminal,
+        })
+    }
+}
 
 /// Read `%VAR%` as a non-empty directory path, or `MissingHomeDir` when unset or
 /// empty. Windows has no single `HOME`; the known-folder env vars are the
@@ -579,6 +618,111 @@ fn spawn_whoami_sid() -> Result<String, PlatformError> {
 /// shared derivation used by the daemon listener and every client.
 pub fn daemon_pipe_name(dirs: &PlatformDirs) -> Result<String, PlatformError> {
     Ok(win_pipe::pipe_name(&current_user_sid()?, &dirs.runtime))
+}
+
+/// The registry sub-path (under `HKEY_CURRENT_USER`) holding the user's own
+/// environment variables, including `Path`. The invoking user's own hive, so
+/// reads and writes here cross no privilege boundary (the same trust level as
+/// editing `~/.zshrc` on Unix).
+const HKCU_ENVIRONMENT: &str = "Environment";
+
+/// A synthetic path label for `HKCU\Environment` [`PlatformError::Io`] errors
+/// (the registry has no filesystem path).
+fn hkcu_env_label() -> PathBuf {
+    PathBuf::from(r"HKCU\Environment")
+}
+
+/// The current user's `HKCU\Environment\Path` value as a plain string, or `None`
+/// when the value (or the `Environment` key) is absent. Read-only, unprivileged.
+/// Consumed by the CLI's PATH management and the daemon's shim-dir-on-PATH doctor
+/// probe (so `winreg` stays a single-crate dependency).
+#[must_use]
+pub fn user_path() -> Option<String> {
+    user_path_raw().map(|(value, _)| value)
+}
+
+/// Read `HKCU\Environment\Path` as `(value, is_expand)`, where `is_expand` is
+/// whether it is stored as `REG_EXPAND_SZ` (the conventional type, which must be
+/// preserved on write so `%VAR%` references keep expanding). `None` when absent.
+fn user_path_raw() -> Option<(String, bool)> {
+    use winreg::enums::{HKEY_CURRENT_USER, KEY_READ, REG_EXPAND_SZ};
+    use winreg::types::FromRegValue;
+    use winreg::RegKey;
+
+    let env = RegKey::predef(HKEY_CURRENT_USER)
+        .open_subkey_with_flags(HKCU_ENVIRONMENT, KEY_READ)
+        .ok()?;
+    let raw = env.get_raw_value("Path").ok()?;
+    let is_expand = raw.vtype == REG_EXPAND_SZ;
+    let value = String::from_reg_value(&raw).ok()?;
+    Some((value, is_expand))
+}
+
+/// Write `HKCU\Environment\Path`, preserving the existing value type
+/// (`REG_EXPAND_SZ` vs `REG_SZ`), or creating it as `REG_EXPAND_SZ` when absent.
+///
+/// Written through `winreg`'s raw value API rather than `setx.exe`, whose 1024-
+/// character truncation of long `PATH`s is a data-loss bug. Unprivileged (the
+/// user's own hive). Callers derive the new value from [`user_path`] and the pure
+/// [`crate::pure::win_path_env`] editor.
+pub fn set_user_path(value: &str) -> Result<(), PlatformError> {
+    use winreg::enums::{HKEY_CURRENT_USER, KEY_WRITE, REG_EXPAND_SZ, REG_SZ};
+    use winreg::{RegKey, RegValue};
+
+    let expand = user_path_raw().map_or(true, |(_, is_expand)| is_expand);
+    let env = RegKey::predef(HKEY_CURRENT_USER)
+        .open_subkey_with_flags(HKCU_ENVIRONMENT, KEY_WRITE)
+        .map_err(|source| PlatformError::Io {
+            path: hkcu_env_label(),
+            source,
+        })?;
+    let mut bytes: Vec<u8> = value.encode_utf16().flat_map(u16::to_le_bytes).collect();
+    bytes.extend_from_slice(&[0, 0]);
+    let vtype = if expand { REG_EXPAND_SZ } else { REG_SZ };
+    env.set_raw_value("Path", &RegValue { bytes, vtype })
+        .map_err(|source| PlatformError::Io {
+            path: hkcu_env_label(),
+            source,
+        })
+}
+
+/// Broadcast an environment change to already-running processes (Explorer, and
+/// so every terminal it launches) by setting a marker `HKCU\Environment` variable
+/// `YERD_BIN` via `%SystemRoot%\System32\setx.exe`.
+///
+/// `setx` is used purely for its documented side effect: it always broadcasts
+/// `WM_SETTINGCHANGE`, which is what makes a fresh shell pick up the new `PATH`
+/// without a logoff. `PATH` itself is never written through `setx` (see
+/// [`set_user_path`] for why); only this incidental, independently-useful marker
+/// is. Best-effort: a non-zero exit is surfaced as [`PlatformError::Io`].
+pub fn broadcast_user_env_marker(dir: &Path) -> Result<(), PlatformError> {
+    let setx = win_system32("setx.exe");
+    let status = std::process::Command::new(setx)
+        .arg("YERD_BIN")
+        .arg(dir)
+        .output()
+        .map_err(|source| PlatformError::Io {
+            path: hkcu_env_label(),
+            source,
+        })?;
+    if status.status.success() {
+        Ok(())
+    } else {
+        Err(PlatformError::Io {
+            path: hkcu_env_label(),
+            source: std::io::Error::other(format!("setx exited with {}", status.status)),
+        })
+    }
+}
+
+/// Absolute path to a `System32` executable, from `%SystemRoot%` (falling back to
+/// the conventional location), so a lookup never resolves an attacker-planted
+/// binary on `PATH`.
+fn win_system32(exe: &str) -> PathBuf {
+    std::env::var_os("SystemRoot")
+        .map_or_else(|| PathBuf::from(r"C:\Windows"), PathBuf::from)
+        .join("System32")
+        .join(exe)
 }
 
 #[cfg(test)]

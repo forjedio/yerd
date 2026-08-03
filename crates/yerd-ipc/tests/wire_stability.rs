@@ -1307,6 +1307,10 @@ fn diagnosis_code_each_variant_byte_shape() {
         (DiagnosisCode::DomainShadowed, r#""domain_shadowed""#),
         (DiagnosisCode::PortRedirectStale, r#""port_redirect_stale""#),
         (DiagnosisCode::LanRedirectStale, r#""lan_redirect_stale""#),
+        (
+            DiagnosisCode::DaemonAutostartDisabled,
+            r#""daemon_autostart_disabled""#,
+        ),
         (DiagnosisCode::AllGood, r#""all_good""#),
     ];
     for (code, expected) in cases {

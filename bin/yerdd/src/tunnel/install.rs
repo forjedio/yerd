@@ -118,9 +118,14 @@ pub(crate) fn tunnel_dir(dirs: &PlatformDirs) -> PathBuf {
     dirs.data.join("tunnel")
 }
 
-/// `{data}/tunnel/bin/cloudflared`.
+/// `{data}/tunnel/bin/cloudflared` (`cloudflared.exe` on Windows).
 pub(crate) fn binary_path(dirs: &PlatformDirs) -> PathBuf {
-    tunnel_dir(dirs).join("bin").join("cloudflared")
+    let name = if cfg!(windows) {
+        "cloudflared.exe"
+    } else {
+        "cloudflared"
+    };
+    tunnel_dir(dirs).join("bin").join(name)
 }
 
 /// `{data}/tunnel/.cloudflared-version`.
@@ -323,10 +328,12 @@ pub async fn resolve<P: VersionProbe, S: PathSearch>(
 /// The `(asset_filename, is_tgz)` for the host, or `None` when Yerd doesn't
 /// install cloudflared for the OS yet.
 ///
-/// macOS ships a `.tgz` wrapping a single `cloudflared`; Linux ships a bare
-/// ungzipped executable. Cloudflare uses `amd64`/`arm64` arch tokens (not the
-/// `x86_64`/`aarch64` that `yerd-php`'s `Arch::as_str` renders), so the mapping
-/// is explicit here. Windows (`cloudflared-windows-amd64.exe`) is Phase 5.
+/// macOS ships a `.tgz` wrapping a single `cloudflared`; Linux and Windows ship a
+/// bare ungzipped executable (`.exe` on Windows). Cloudflare uses `amd64`/`arm64`
+/// arch tokens (not the `x86_64`/`aarch64` that `yerd-php`'s `Arch::as_str`
+/// renders), so the mapping is explicit here. Cloudflare publishes **no** Windows
+/// arm64 asset, so that combination stays `None` (an honest unsupported-host
+/// error) rather than pointing at a nonexistent download.
 fn host_asset(os: Os, arch: Arch) -> Option<(String, bool)> {
     let token = match arch {
         Arch::X86_64 => "amd64",
@@ -335,7 +342,10 @@ fn host_asset(os: Os, arch: Arch) -> Option<(String, bool)> {
     Some(match os {
         Os::Macos => (format!("cloudflared-darwin-{token}.tgz"), true),
         Os::Linux => (format!("cloudflared-linux-{token}"), false),
-        Os::Windows => return None,
+        Os::Windows => match arch {
+            Arch::X86_64 => ("cloudflared-windows-amd64.exe".to_owned(), false),
+            Arch::Aarch64 => return None,
+        },
     })
 }
 
@@ -566,8 +576,16 @@ mod tests {
     }
 
     #[test]
-    fn host_asset_is_none_for_windows() {
-        assert_eq!(host_asset(Os::Windows, Arch::X86_64), None);
+    fn host_asset_windows_x86_64_is_the_bare_exe() {
+        assert_eq!(
+            host_asset(Os::Windows, Arch::X86_64),
+            Some(("cloudflared-windows-amd64.exe".to_owned(), false))
+        );
+    }
+
+    #[test]
+    fn host_asset_is_none_for_windows_arm64() {
+        assert_eq!(host_asset(Os::Windows, Arch::Aarch64), None);
     }
 
     #[test]

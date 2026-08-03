@@ -8,23 +8,18 @@ use clap::Parser;
 use yerd::cli::Cli;
 
 fn main() -> ExitCode {
-    #[cfg(unix)]
     if let Some(code) = yerd::composer_shim::dispatch() {
         return code;
     }
-    #[cfg(unix)]
     if let Some(code) = yerd::cover_shim::dispatch() {
         return code;
     }
-    #[cfg(unix)]
     if let Some(code) = yerd::laravel_shim::dispatch() {
         return code;
     }
-    #[cfg(unix)]
     if let Some(code) = yerd::cli_shim::dispatch() {
         return code;
     }
-    #[cfg(unix)]
     if let Some(code) = yerd::wp_shim::dispatch() {
         return code;
     }

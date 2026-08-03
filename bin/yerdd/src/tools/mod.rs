@@ -293,9 +293,44 @@ pub fn reconcile_tool_shims(dirs: &PlatformDirs, yerd_bin: &Path) -> Result<(), 
     Ok(())
 }
 
-/// No-op off Unix: tool shims are symlinks, which Yerd does not manage on
-/// Windows yet. Kept fallible to mirror the Unix signature.
-#[cfg(not(unix))]
+/// Reconcile `{data}/bin` tool shims against what's installed (Windows). Only
+/// the yerd-multicall tools get `.cmd` wrappers here - `composer`, `laravel`,
+/// `wp` - since Node/Bun expose real foreign binaries whose Windows install
+/// pipeline isn't wired yet (tracked TODO). Prunes by wrapper-content ownership
+/// (never a user's own `composer.cmd`). Callers hold the shared `shim_reconcile`
+/// mutex (this writes the same dir as `php_install::reconcile_shims`).
+#[cfg(windows)]
+pub fn reconcile_tool_shims(dirs: &PlatformDirs, yerd_bin: &Path) -> Result<(), ToolError> {
+    use yerd_platform::pure::win_shim;
+
+    let bin = bin_dir(dirs);
+    std::fs::create_dir_all(&bin).map_err(|e| ToolError::Io(format!("{}: {e}", bin.display())))?;
+
+    for &tool in &Tool::ALL {
+        if matches!(tool, Tool::Node | Tool::Bun) {
+            continue;
+        }
+        let installed = installed_version(dirs, tool).is_some();
+        for &name in tool.exposed_bins() {
+            let path = bin.join(win_shim::wrapper_file_name(name));
+            if installed {
+                crate::php_install::place_wrapper(&bin, yerd_bin, name)
+                    .map_err(|e| ToolError::Io(e.to_string()))?;
+            } else {
+                let owned =
+                    std::fs::read_to_string(&path).is_ok_and(|c| win_shim::is_yerd_wrapper(&c));
+                if owned {
+                    let _ = std::fs::remove_file(&path);
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// No-op on platforms with no managed tool shims. Kept fallible to mirror the
+/// Unix/Windows signature.
+#[cfg(not(any(unix, windows)))]
 pub fn reconcile_tool_shims(_dirs: &PlatformDirs, _yerd_bin: &Path) -> Result<(), ToolError> {
     Ok(())
 }
@@ -620,6 +655,45 @@ mod tests {
         assert!(bin.join("npx").exists());
         assert_eq!(std::fs::read_link(bin.join("composer")).unwrap(), yerd_bin);
         assert!(!bin.join("bun").exists());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn reconcile_writes_tool_cmd_wrappers_prunes_owned_and_skips_node_bun() {
+        use yerd_platform::pure::win_shim;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let dirs = dirs_in(tmp.path());
+        let yerd_bin = tmp.path().join("yerd.exe");
+        std::fs::write(&yerd_bin, b"exe").unwrap();
+        let bin = bin_dir(&dirs);
+        std::fs::create_dir_all(&bin).unwrap();
+
+        let composer_dir = tool_dir(&dirs, Tool::Composer);
+        std::fs::create_dir_all(&composer_dir).unwrap();
+        std::fs::write(composer_dir.join(VERSION_MARKER), "2.10.1").unwrap();
+
+        let node_dir = tool_dir(&dirs, Tool::Node);
+        std::fs::create_dir_all(&node_dir).unwrap();
+        std::fs::write(node_dir.join(VERSION_MARKER), "v24.17.0").unwrap();
+
+        std::fs::write(bin.join("wp.cmd"), win_shim::wrapper_body(&yerd_bin, "wp")).unwrap();
+        std::fs::write(bin.join("composer.bat"), b"echo foreign").unwrap();
+
+        reconcile_tool_shims(&dirs, &yerd_bin).unwrap();
+
+        let composer_cmd = std::fs::read_to_string(bin.join("composer.cmd")).unwrap();
+        assert!(composer_cmd.contains("__shim composer %*"));
+        assert!(
+            !bin.join("wp.cmd").exists(),
+            "uninstalled tool's owned wrapper pruned"
+        );
+        assert!(
+            !bin.join("node.cmd").exists(),
+            "Node is skipped on Windows (no wrapper)"
+        );
+        assert!(!bin.join("npm.cmd").exists());
+        assert!(bin.join("composer.bat").exists(), "foreign file untouched");
     }
 
     #[test]

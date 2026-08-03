@@ -10,24 +10,18 @@
 
 pub mod apply;
 pub mod cli;
-#[cfg(unix)]
 pub mod cli_shim;
-#[cfg(unix)]
 pub mod composer_shim;
-#[cfg(unix)]
 pub mod cover_shim;
 pub mod elevate;
 pub mod error;
-#[cfg(unix)]
 pub mod laravel_shim;
 pub mod map;
 pub mod mcp_cmd;
 pub mod path_cmd;
-#[cfg(unix)]
 pub mod shim;
 pub mod transport;
 pub mod uninstall;
-#[cfg(unix)]
 pub mod wp_shim;
 
 use std::process::ExitCode;
@@ -47,18 +41,7 @@ pub async fn run(cli: Cli) -> ExitCode {
         Command::Unelevate { target } => return elevate::run_elevate(*target, true).await,
         Command::Path { action } => return path_cmd::run(*action),
         Command::Mcp => return mcp_cmd::run().await,
-        #[cfg_attr(not(unix), allow(unused_variables))]
-        Command::Coverage { args } => {
-            #[cfg(unix)]
-            {
-                return cover_shim::run_coverage(args);
-            }
-            #[cfg(not(unix))]
-            {
-                eprintln!("yerd: coverage is only available on macOS and Linux");
-                return ExitCode::from(2);
-            }
-        }
+        Command::Coverage { args } => return cover_shim::run_coverage(args),
         Command::Domain {
             action: crate::cli::DomainAction::List { site },
         } => return run_domain_list(site.as_deref(), cli.json).await,

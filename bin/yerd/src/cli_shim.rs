@@ -7,15 +7,15 @@
 //! settings **and** that version's registered extensions), and `exec`s PHP.
 //! Pointing `PHPRC` per version is what lets a custom extension load in the CLI,
 //! and `PHPRC` (rather than `-d`) is inherited by any child PHP the exec'd one
-//! spawns. Unix-only: these wrappers are never created on other platforms.
+//! spawns. On Unix these shims are symlinks read from `argv[0]`; on Windows they
+//! are `.cmd` wrappers that re-invoke `yerd.exe __shim <name>`.
 
-use std::os::unix::process::CommandExt as _;
-use std::path::Path;
+use std::ffi::OsString;
 use std::process::ExitCode;
 
 use yerd_platform::{ActivePaths, Paths, PlatformDirs};
 
-use crate::shim::{cli_binary, cli_phprc, fail, resolve_default_php};
+use crate::shim::{cli_binary, cli_phprc, fail, resolve_default_php, run_php};
 
 /// Which PHP a clean CLI shim targets.
 enum CliSpec {
@@ -32,10 +32,9 @@ enum CliSpec {
 /// never routed here.
 #[must_use]
 pub fn dispatch() -> Option<ExitCode> {
-    let arg0 = std::env::args_os().next()?;
-    let name = Path::new(&arg0).file_name()?.to_str()?;
-    let spec = parse_cli_name(name)?;
-    Some(run(&spec))
+    let (name, forward) = crate::shim::shim_invocation()?;
+    let spec = parse_cli_name(&name)?;
+    Some(run(&spec, &forward))
 }
 
 /// Parse a clean CLI shim basename. Matches `php` and `php<MAJOR>.<MINOR>`
@@ -59,7 +58,7 @@ fn parse_cli_name(name: &str) -> Option<CliSpec> {
     Some(CliSpec::Version(major, minor))
 }
 
-fn run(spec: &CliSpec) -> ExitCode {
+fn run(spec: &CliSpec, forward: &[OsString]) -> ExitCode {
     let dirs = match ActivePaths::new().resolve() {
         Ok(d) => d,
         Err(e) => return fail(format!("cannot resolve yerd directories: {e}")),
@@ -73,14 +72,15 @@ fn run(spec: &CliSpec) -> ExitCode {
     if let Some(phprc) = cli_phprc(&dirs, &minor) {
         cmd.env("PHPRC", phprc);
     }
-    let err = cmd.args(std::env::args_os().skip(1)).exec();
-    if err.kind() == std::io::ErrorKind::NotFound {
-        return fail(format!(
+    cmd.args(forward);
+    match run_php(cmd) {
+        Ok(code) => code,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => fail(format!(
             "PHP binary not found at {} ({err}) — reinstall with `yerd install php {minor}`",
             php_bin.display()
-        ));
+        )),
+        Err(err) => fail(format!("failed to exec {}: {err}", php_bin.display())),
     }
-    fail(format!("failed to exec {}: {err}", php_bin.display()))
 }
 
 /// Resolve `(php_binary, "major.minor")` for the spec.

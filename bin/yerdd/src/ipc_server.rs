@@ -235,17 +235,18 @@ async fn dispatch(req: Request, state: &DaemonState) -> Response {
             items: yerd_doctor::diagnose(
                 &build_status_report(state).await,
                 path_needs_setup(state),
+                daemon_autostart_enabled(),
             ),
         },
         Request::DoctorFix => run_doctor_fix(state).await,
-        #[cfg(unix)]
+        #[cfg(any(unix, windows))]
         Request::RestartDaemon => {
             state
                 .restart_requested
                 .store(true, std::sync::atomic::Ordering::Release);
             Response::Ok
         }
-        #[cfg(not(unix))]
+        #[cfg(not(any(unix, windows)))]
         Request::RestartDaemon => Response::Error {
             code: ErrorCode::Internal,
             message: "daemon restart is not supported on this platform".into(),
@@ -542,6 +543,27 @@ async fn available_php_with(
     }
 }
 
+/// Whether the daemon is registered to start at login, for the doctor's
+/// [`yerd_ipc::DiagnosisCode::DaemonAutostartDisabled`] finding. Windows-only:
+/// `Some(true|false)` from the HKCU `Run` entry probe; `None` off-Windows, so
+/// macOS/Linux doctor output stays byte-identical (their login registration is
+/// the GUI's business, surfaced there rather than here). Computed on demand from
+/// the `Diagnose` handler, not on the per-poll status path.
+///
+/// The `Option` is the shared `diagnose` probe contract (`None` = off-Windows);
+/// on the Windows build the body is always `Some`, hence the local allow.
+#[allow(clippy::unnecessary_wraps)]
+fn daemon_autostart_enabled() -> Option<bool> {
+    #[cfg(windows)]
+    {
+        Some(yerd_service_ctl::autostart_enabled())
+    }
+    #[cfg(not(windows))]
+    {
+        None
+    }
+}
+
 /// Whether a dev tool is installed but Yerd's `{data}/bin` isn't on the user's
 /// PATH yet (no managed block in any known shell rc) - drives the doctor's
 /// [`yerd_ipc::DiagnosisCode::BinDirNotOnPath`] warning. `Some(false)` when no
@@ -550,7 +572,24 @@ async fn available_php_with(
 /// not on the per-poll status path. The cover/pcov shims alone don't count - the
 /// gate is an actual installed dev tool.
 fn path_needs_setup(state: &DaemonState) -> Option<bool> {
-    #[cfg(not(unix))]
+    #[cfg(windows)]
+    {
+        use yerd_platform::pure::win_path_env;
+
+        let any_tool = crate::tools::list_status(&state.dirs)
+            .iter()
+            .any(|t| t.installed);
+        let any_php = yerd_php::discover_bundled(&state.dirs).is_ok_and(|v| !v.is_empty());
+        if !any_tool && !any_php {
+            Some(false)
+        } else {
+            let shim = crate::php_install::shim_dir(&state.dirs);
+            let current = yerd_platform::user_path().unwrap_or_default();
+            shim.to_str()
+                .map(|s| win_path_env::upsert_entries(&current, &[s]).is_some())
+        }
+    }
+    #[cfg(not(any(unix, windows)))]
     {
         let _ = state;
         None
@@ -961,7 +1000,7 @@ async fn run_doctor_fix(state: &DaemonState) -> Response {
     }
 
     let after = build_status_report(state).await;
-    let manual = yerd_doctor::diagnose(&after, path_needs_setup(state))
+    let manual = yerd_doctor::diagnose(&after, path_needs_setup(state), daemon_autostart_enabled())
         .into_iter()
         .filter(|d| {
             matches!(
@@ -5434,10 +5473,27 @@ Subject: Captured\r\n\r\nhi\r\n";
     fn path_needs_setup_no_tools_is_some_false() {
         let tmp = tempfile::tempdir().unwrap();
         let state = state_in(tmp.path());
-        #[cfg(unix)]
-        assert_eq!(path_needs_setup(&state), Some(false));
-        #[cfg(not(unix))]
+        #[cfg(any(unix, windows))]
+        assert_eq!(
+            path_needs_setup(&state),
+            Some(false),
+            "no tool and no PHP installed: nothing needs a PATH entry"
+        );
+        #[cfg(not(any(unix, windows)))]
         assert_eq!(path_needs_setup(&state), None);
+    }
+
+    /// With PHP installed but the (tempdir) shim dir absent from the real user
+    /// `HKCU\Environment\Path`, the Windows probe reports setup needed. The
+    /// tempdir path can never coincide with a real PATH entry, so this is
+    /// deterministic despite reading the live user PATH.
+    #[cfg(windows)]
+    #[test]
+    fn path_needs_setup_true_when_php_installed_and_shim_absent() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_in(tmp.path());
+        fake_install(&state.dirs, PhpVersion::new(8, 4));
+        assert_eq!(path_needs_setup(&state), Some(true));
     }
 
     // ---------- additional `dispatch` arms ----------

@@ -10,7 +10,6 @@
     clippy::indexing_slicing
 )]
 
-#[cfg(unix)]
 mod tests {
     use std::time::Duration;
 
@@ -18,7 +17,8 @@ mod tests {
 
     use yerd::cli::{Command, DomainAction};
     use yerd::{map, transport};
-    use yerd_ipc::{ErrorCode, Response};
+    use yerd_ipc::{ErrorCode, Request, Response};
+    use yerd_platform::PlatformDirs;
 
     fn make_dirs(tmp: &std::path::Path) -> yerd_platform::PlatformDirs {
         yerd_platform::PlatformDirs {
@@ -27,6 +27,48 @@ mod tests {
             state: tmp.join("s"),
             cache: tmp.join("ca"),
             runtime: tmp.join("r"),
+        }
+    }
+
+    /// Exchange one request over the daemon's platform-native transport, derived
+    /// from `dirs` exactly as the client's own `transport::exchange` does: the
+    /// Unix socket, or the SID-derived named pipe on Windows.
+    async fn exchange_raw(
+        dirs: &PlatformDirs,
+        req: &Request,
+    ) -> Result<Response, yerd::ClientError> {
+        #[cfg(unix)]
+        {
+            transport::exchange_at(&dirs.runtime.join("yerd.sock"), req).await
+        }
+        #[cfg(windows)]
+        {
+            let name = yerd_platform::daemon_pipe_name(dirs).expect("derive pipe name");
+            transport::exchange_at_name(&name, req).await
+        }
+    }
+
+    async fn exchange(dirs: &PlatformDirs, req: &Request) -> Response {
+        exchange_raw(dirs, req).await.expect("exchange")
+    }
+
+    /// Lay down a fake per-version PHP install that `discover_bundled` finds:
+    /// `sbin/php-fpm` + `bin/php` on Unix, `php-cgi.exe` + `php.exe` in the flat
+    /// version root on Windows. Binaries only - no pool is ever started.
+    fn fake_php_version(dirs: &PlatformDirs, minor: &str) {
+        let base = dirs.data.join("php").join(format!("php-{minor}"));
+        #[cfg(unix)]
+        {
+            std::fs::create_dir_all(base.join("sbin")).unwrap();
+            std::fs::create_dir_all(base.join("bin")).unwrap();
+            std::fs::write(base.join("sbin").join("php-fpm"), b"x").unwrap();
+            std::fs::write(base.join("bin").join("php"), b"x").unwrap();
+        }
+        #[cfg(windows)]
+        {
+            std::fs::create_dir_all(&base).unwrap();
+            std::fs::write(base.join("php-cgi.exe"), b"x").unwrap();
+            std::fs::write(base.join("php.exe"), b"x").unwrap();
         }
     }
 
@@ -49,18 +91,18 @@ mod tests {
         cfg
     }
 
-    async fn send(sock: &std::path::Path, cmd: &Command) -> Response {
+    async fn send(dirs: &PlatformDirs, cmd: &Command) -> Response {
         let req = map::to_request(cmd).expect("map command");
-        transport::exchange_at(sock, &req).await.expect("exchange")
+        exchange(dirs, &req).await
     }
 
     /// Drives `Command::Link`'s CLI-side resolution (`resolve_link`) directly
     /// and exchanges the resulting `Request::Link` with the daemon -
     /// `Command::Link` never reaches `map::to_request`, so `send()` can't be
     /// used for it.
-    async fn link(sock: &std::path::Path, name: &str, path: &std::path::Path) -> Response {
+    async fn link(dirs: &PlatformDirs, name: &str, path: &std::path::Path) -> Response {
         let req = yerd::resolve_link(Some(name), Some(path)).expect("resolve_link");
-        transport::exchange_at(sock, &req).await.expect("exchange")
+        exchange(dirs, &req).await
     }
 
     fn site_names(resp: &Response) -> Vec<String> {
@@ -70,8 +112,8 @@ mod tests {
         }
     }
 
-    async fn blog_is_secure(sock: &std::path::Path) -> bool {
-        match send(sock, &Command::Sites).await {
+    async fn blog_is_secure(dirs: &PlatformDirs) -> bool {
+        match send(dirs, &Command::Sites).await {
             Response::Sites { sites } => sites
                 .iter()
                 .find(|s| s.site.name() == "blog")
@@ -84,10 +126,10 @@ mod tests {
 
     /// `secure` then `unsecure` the already-promoted `blog` site, asserting the
     /// flag flips on and back off.
-    async fn exercise_secure_toggle(sock: &std::path::Path) {
+    async fn exercise_secure_toggle(dirs: &PlatformDirs) {
         assert!(matches!(
             send(
-                sock,
+                dirs,
                 &Command::Secure {
                     name: "blog".into()
                 }
@@ -95,10 +137,10 @@ mod tests {
             .await,
             Response::Ok
         ));
-        assert!(blog_is_secure(sock).await);
+        assert!(blog_is_secure(dirs).await);
         assert!(matches!(
             send(
-                sock,
+                dirs,
                 &Command::Unsecure {
                     name: "blog".into()
                 }
@@ -106,7 +148,7 @@ mod tests {
             .await,
             Response::Ok
         ));
-        assert!(!blog_is_secure(sock).await);
+        assert!(!blog_is_secure(dirs).await);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -127,7 +169,6 @@ mod tests {
             yerdd::startup::bring_up_with_dirs(dirs.clone(), valid_config(), cfg_path.clone())
                 .await
                 .expect("bring_up_with_dirs");
-        let sock = dirs.runtime.join("yerd.sock");
 
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         let state = daemon.state.clone();
@@ -145,11 +186,11 @@ mod tests {
         );
         tokio::time::sleep(Duration::from_millis(100)).await;
 
-        assert!(matches!(send(&sock, &Command::Ping).await, Response::Pong));
+        assert!(matches!(send(&dirs, &Command::Ping).await, Response::Pong));
 
         assert!(matches!(
             send(
-                &sock,
+                &dirs,
                 &Command::Park {
                     path: sites_root.clone()
                 }
@@ -157,14 +198,14 @@ mod tests {
             .await,
             Response::Ok
         ));
-        assert!(site_names(&send(&sock, &Command::Sites).await).contains(&"blog".to_owned()));
+        assert!(site_names(&send(&dirs, &Command::Sites).await).contains(&"blog".to_owned()));
 
         assert!(matches!(
-            link(&sock, "app", &linked_dir).await,
+            link(&dirs, "app", &linked_dir).await,
             Response::Ok
         ));
-        assert!(site_names(&send(&sock, &Command::Sites).await).contains(&"app".to_owned()));
-        match send(&sock, &Command::Sites).await {
+        assert!(site_names(&send(&dirs, &Command::Sites).await).contains(&"app".to_owned()));
+        match send(&dirs, &Command::Sites).await {
             Response::Sites { sites } => {
                 let app = sites.iter().find(|s| s.site.name() == "app").unwrap();
                 assert_eq!(
@@ -183,16 +224,16 @@ mod tests {
             },
         };
         assert!(matches!(
-            send(&sock, &add("app", "corp.test")).await,
+            send(&dirs, &add("app", "corp.test")).await,
             Response::Ok
         ));
         assert!(matches!(
-            send(&sock, &add("app", "*.app.test")).await,
+            send(&dirs, &add("app", "*.app.test")).await,
             Response::Ok
         ));
         assert!(matches!(
             send(
-                &sock,
+                &dirs,
                 &Command::Domain {
                     action: DomainAction::Primary {
                         site: "app".into(),
@@ -203,7 +244,7 @@ mod tests {
             .await,
             Response::Ok
         ));
-        match send(&sock, &Command::Sites).await {
+        match send(&dirs, &Command::Sites).await {
             Response::Sites { sites } => {
                 let app = sites.iter().find(|s| s.site.name() == "app").unwrap();
                 assert_eq!(app.primary_domain.as_deref(), Some("corp.test"));
@@ -212,13 +253,13 @@ mod tests {
             }
             other => panic!("expected Sites, got {other:?}"),
         }
-        match send(&sock, &add("blog", "corp.test")).await {
+        match send(&dirs, &add("blog", "corp.test")).await {
             Response::Error { code, .. } => assert_eq!(code, ErrorCode::AlreadyExists),
             other => panic!("expected AlreadyExists error, got {other:?}"),
         }
         assert!(matches!(
             send(
-                &sock,
+                &dirs,
                 &Command::Domain {
                     action: DomainAction::Reset { site: "app".into() },
                 },
@@ -226,7 +267,7 @@ mod tests {
             .await,
             Response::Ok
         ));
-        match send(&sock, &Command::Sites).await {
+        match send(&dirs, &Command::Sites).await {
             Response::Sites { sites } => {
                 let app = sites.iter().find(|s| s.site.name() == "app").unwrap();
                 assert!(app.primary_domain.is_none());
@@ -237,7 +278,7 @@ mod tests {
 
         assert!(matches!(
             send(
-                &sock,
+                &dirs,
                 &Command::Use {
                     first: "blog".into(),
                     version: Some("8.4".into())
@@ -246,7 +287,7 @@ mod tests {
             .await,
             Response::Ok
         ));
-        match send(&sock, &Command::Sites).await {
+        match send(&dirs, &Command::Sites).await {
             Response::Sites { sites } => {
                 let blog = sites.iter().find(|s| s.site.name() == "blog").unwrap();
                 assert_eq!(blog.site.php(), yerd_core::PhpVersion::new(8, 4));
@@ -255,9 +296,9 @@ mod tests {
             other => panic!("expected Sites, got {other:?}"),
         }
 
-        exercise_secure_toggle(&sock).await;
+        exercise_secure_toggle(&dirs).await;
 
-        match send(&sock, &Command::Status).await {
+        match send(&dirs, &Command::Status).await {
             Response::Status { report } => {
                 assert_eq!(report.tld, "test");
                 assert_eq!(report.daemon_pid, std::process::id());
@@ -267,7 +308,7 @@ mod tests {
             other => panic!("expected Status, got {other:?}"),
         }
 
-        let diag = send(&sock, &Command::Doctor { action: None }).await;
+        let diag = send(&dirs, &Command::Doctor { action: None }).await;
         match &diag {
             Response::Diagnoses { items } => {
                 assert!(items
@@ -284,7 +325,7 @@ mod tests {
         );
 
         match send(
-            &sock,
+            &dirs,
             &Command::Doctor {
                 action: Some(yerd::cli::DoctorAction::Fix),
             },
@@ -302,13 +343,13 @@ mod tests {
         }
 
         assert!(matches!(
-            send(&sock, &Command::Unlink { name: "app".into() }).await,
+            send(&dirs, &Command::Unlink { name: "app".into() }).await,
             Response::Ok
         ));
-        assert!(!site_names(&send(&sock, &Command::Sites).await).contains(&"app".to_owned()));
+        assert!(!site_names(&send(&dirs, &Command::Sites).await).contains(&"app".to_owned()));
 
         match send(
-            &sock,
+            &dirs,
             &Command::Unlink {
                 name: "ghost".into(),
             },
@@ -327,7 +368,7 @@ mod tests {
         assert!(on_disk.contains(&canonical_str));
 
         match send(
-            &sock,
+            &dirs,
             &Command::List {
                 target: yerd::cli::ListTarget::Parked,
             },
@@ -342,7 +383,7 @@ mod tests {
 
         assert!(matches!(
             send(
-                &sock,
+                &dirs,
                 &Command::Unpark {
                     path: canonical.clone()
                 }
@@ -351,7 +392,7 @@ mod tests {
             Response::Ok
         ));
         match send(
-            &sock,
+            &dirs,
             &Command::List {
                 target: yerd::cli::ListTarget::Parked,
             },
@@ -365,7 +406,7 @@ mod tests {
         }
 
         assert!(matches!(
-            send(&sock, &Command::Unpark { path: canonical }).await,
+            send(&dirs, &Command::Unpark { path: canonical }).await,
             Response::Ok
         ));
 
@@ -396,7 +437,6 @@ mod tests {
             yerdd::startup::bring_up_with_dirs(dirs.clone(), valid_config(), cfg_path.clone())
                 .await
                 .expect("bring_up_with_dirs");
-        let sock = dirs.runtime.join("yerd.sock");
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         let state = daemon.state.clone();
         let ipc_task = tokio::spawn(yerdd::ipc_server::run(
@@ -415,7 +455,7 @@ mod tests {
 
         assert!(matches!(
             send(
-                &sock,
+                &dirs,
                 &Command::Park {
                     path: sites_root.clone()
                 }
@@ -425,7 +465,7 @@ mod tests {
         ));
 
         assert!(matches!(
-            transport::exchange_at(&sock, &yerd_ipc::Request::SetMcpEnabled { enabled: true })
+            exchange_raw(&dirs, &Request::SetMcpEnabled { enabled: true })
                 .await
                 .unwrap(),
             Response::Ok
@@ -447,15 +487,15 @@ mod tests {
             }),
         );
         let mut stdout: Vec<u8> = Vec::new();
-        let sock_for_exchange = sock.clone();
+        let dirs_for_exchange = dirs.clone();
         let _ = yerd::mcp_cmd::run_loop(
             std::io::Cursor::new(stdin.into_bytes()),
             &mut stdout,
             Server::new(Availability::Disabled, "9.9.9"),
             move |request, _timeout| {
-                let sock = sock_for_exchange.clone();
+                let dirs = dirs_for_exchange.clone();
                 async move {
-                    transport::exchange_at(&sock, &request)
+                    exchange_raw(&dirs, &request)
                         .await
                         .map_err(|e| e.to_string())
                 }
@@ -516,17 +556,12 @@ mod tests {
         let dirs = make_dirs(tmp.path());
         let cfg_path = dirs.config.join("yerd.toml");
 
-        let base = dirs.data.join("php").join("php-8.3");
-        std::fs::create_dir_all(base.join("sbin")).unwrap();
-        std::fs::create_dir_all(base.join("bin")).unwrap();
-        std::fs::write(base.join("sbin").join("php-fpm"), b"x").unwrap();
-        std::fs::write(base.join("bin").join("php"), b"x").unwrap();
+        fake_php_version(&dirs, "8.3");
 
         let daemon =
             yerdd::startup::bring_up_with_dirs(dirs.clone(), valid_config(), cfg_path.clone())
                 .await
                 .expect("bring_up_with_dirs");
-        let sock = dirs.runtime.join("yerd.sock");
 
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         let state = daemon.state.clone();
@@ -552,7 +587,7 @@ mod tests {
                 only: Some("8.3".into()),
             },
         };
-        match send(&sock, &set_override).await {
+        match send(&dirs, &set_override).await {
             Response::PhpVersions {
                 version_settings, ..
             } => {
@@ -568,7 +603,7 @@ mod tests {
         }
 
         match send(
-            &sock,
+            &dirs,
             &Command::Set {
                 target: yerd::cli::SetTarget::Php {
                     setting: "memory_limit".into(),
@@ -592,7 +627,7 @@ mod tests {
                 },
             },
         };
-        match send(&sock, &ini_set).await {
+        match send(&dirs, &ini_set).await {
             Response::PhpVersions { directives, .. } => {
                 assert_eq!(
                     directives
@@ -628,7 +663,7 @@ mod tests {
                 },
             },
         };
-        match send(&sock, &ini_unset).await {
+        match send(&dirs, &ini_unset).await {
             Response::PhpVersions { directives, .. } => {
                 assert!(!directives.contains_key(&v83));
             }
@@ -636,7 +671,7 @@ mod tests {
         }
 
         match send(
-            &sock,
+            &dirs,
             &Command::Unset {
                 target: yerd::cli::UnsetTarget::Php {
                     setting: "memory_limit".into(),

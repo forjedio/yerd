@@ -90,6 +90,10 @@ nix            = { workspace = true, features = ["user"] }
 # UTF-16 wrapper for the named-pipe SDDL security descriptor passed to
 # `interprocess`'s `SecurityDescriptor::deserialize`.
 widestring     = { workspace = true }
+# Windows-only: the doctor autostart probe reads the daemon's HKCU `Run` entry
+# via `yerd_service_ctl::autostart_enabled()`. lib <- bin is downhill (the crate
+# depends on no `yerd-*` crate), so there is no dependency cycle.
+yerd-service-ctl = { path = "../../crates/yerd-service-ctl" }
 
 [dev-dependencies]
 tempfile       = { workspace = true }

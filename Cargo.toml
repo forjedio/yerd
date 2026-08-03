@@ -51,11 +51,15 @@ win32job            = "2"
 # and yerd-platform's no_runtime_deps guard stay intact. Sole transitive dep
 # (`windows-sys 0.61`) already resolves in Cargo.lock. No `unsafe` in our code.
 schannel            = "0.1"
-# Read-only HKLM registry access for the Windows NRPT probe (the DnsPolicyConfig
-# key backing ResolverInstaller::is_installed, and the helper's `.test` rule-GUID
-# discovery for removal). Read-only only, never a write path. Already resolved in
-# Cargo.lock via the tauri chain (0.55.0); unsafe lives inside the crate, none in
-# ours (win32job/schannel precedent).
+# HKCU/HKLM registry access on Windows (yerd-platform and yerd-service-ctl).
+# Read-only for the NRPT probe (the DnsPolicyConfig key backing
+# ResolverInstaller::is_installed and the helper's `.test` rule-GUID discovery).
+# Read+write for HKCU only, never a write outside the user's own hive (no
+# privilege boundary, same trust level as editing ~/.zshrc): yerd-platform's
+# user_path / set_user_path manage the CLI's PATH entries under HKCU\Environment,
+# and yerd-service-ctl manages the daemon's HKCU\...\Run autostart entry plus its
+# StartupApproved override. Already resolved in Cargo.lock via the tauri chain
+# (0.55.0); unsafe lives inside the crate, none in ours (win32job/schannel precedent).
 winreg              = "0.55"
 reqwest            = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 hyper              = { version = "1", default-features = false, features = ["http1", "server", "client"] }

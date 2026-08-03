@@ -11,7 +11,6 @@
     clippy::indexing_slicing
 )]
 
-#[cfg(unix)]
 mod tests {
     use std::time::Duration;
 
@@ -19,7 +18,8 @@ mod tests {
 
     use yerd::wp_shim::{site_scope, ScopeResolution};
     use yerd_core::PhpVersion;
-    use yerd_ipc::Request;
+    use yerd_ipc::{Request, Response};
+    use yerd_platform::PlatformDirs;
 
     fn make_dirs(tmp: &std::path::Path) -> yerd_platform::PlatformDirs {
         yerd_platform::PlatformDirs {
@@ -29,6 +29,25 @@ mod tests {
             cache: tmp.join("ca"),
             runtime: tmp.join("r"),
         }
+    }
+
+    /// Exchange one request over the daemon's platform-native transport (Unix
+    /// socket, or the SID-derived named pipe on Windows), asserting `Ok`.
+    async fn exchange_ok(dirs: &PlatformDirs, req: &Request) {
+        let resp = {
+            #[cfg(unix)]
+            {
+                yerd::transport::exchange_at(&dirs.runtime.join("yerd.sock"), req)
+                    .await
+                    .unwrap()
+            }
+            #[cfg(windows)]
+            {
+                let name = yerd_platform::daemon_pipe_name(dirs).expect("derive pipe name");
+                yerd::transport::exchange_at_name(&name, req).await.unwrap()
+            }
+        };
+        assert!(matches!(resp, Response::Ok), "expected Ok, got {resp:?}");
     }
 
     /// Two distinct, currently-free, non-zero ports (see `cli_e2e.rs`'s
@@ -53,13 +72,21 @@ mod tests {
     /// `shim::cli_binary` expects, so `site_scope` sees the pinned version as
     /// "installed" without needing a real PHP build.
     fn fake_php_cli(dirs: &yerd_platform::PlatformDirs, version: PhpVersion) {
-        let bin = dirs
+        let ver_root = dirs
             .data
             .join("php")
-            .join(format!("php-{}.{}", version.major, version.minor))
-            .join("bin");
-        std::fs::create_dir_all(&bin).unwrap();
-        std::fs::write(bin.join("php"), b"#!/bin/sh\n").unwrap();
+            .join(format!("php-{}.{}", version.major, version.minor));
+        #[cfg(unix)]
+        {
+            let bin = ver_root.join("bin");
+            std::fs::create_dir_all(&bin).unwrap();
+            std::fs::write(bin.join("php"), b"#!/bin/sh\n").unwrap();
+        }
+        #[cfg(windows)]
+        {
+            std::fs::create_dir_all(&ver_root).unwrap();
+            std::fs::write(ver_root.join("php.exe"), b"x").unwrap();
+        }
     }
 
     /// Run `site_scope` on a blocking-pool thread - it builds its own ad-hoc
@@ -96,8 +123,6 @@ mod tests {
             yerdd::startup::bring_up_with_dirs(dirs.clone(), valid_config(), cfg_path.clone())
                 .await
                 .expect("bring_up_with_dirs");
-        let sock = dirs.runtime.join("yerd.sock");
-
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         let state = daemon.state.clone();
         let ipc_task = tokio::spawn(yerdd::ipc_server::run(
@@ -116,41 +141,27 @@ mod tests {
 
         // Link "blog" and pin it to the installed PHP version.
         let req = yerd::resolve_link(Some("blog"), Some(&scoped_dir)).expect("resolve_link");
-        assert!(matches!(
-            yerd::transport::exchange_at(&sock, &req).await.unwrap(),
-            yerd_ipc::Response::Ok
-        ));
-        assert!(matches!(
-            yerd::transport::exchange_at(
-                &sock,
-                &Request::SetPhp {
-                    name: "blog".into(),
-                    version: installed_php,
-                },
-            )
-            .await
-            .unwrap(),
-            yerd_ipc::Response::Ok
-        ));
+        exchange_ok(&dirs, &req).await;
+        exchange_ok(
+            &dirs,
+            &Request::SetPhp {
+                name: "blog".into(),
+                version: installed_php,
+            },
+        )
+        .await;
 
         // Link "legacy" and pin it to a version with no fake binary laid down.
         let req = yerd::resolve_link(Some("legacy"), Some(&missing_php_dir)).expect("resolve_link");
-        assert!(matches!(
-            yerd::transport::exchange_at(&sock, &req).await.unwrap(),
-            yerd_ipc::Response::Ok
-        ));
-        assert!(matches!(
-            yerd::transport::exchange_at(
-                &sock,
-                &Request::SetPhp {
-                    name: "legacy".into(),
-                    version: missing_php,
-                },
-            )
-            .await
-            .unwrap(),
-            yerd_ipc::Response::Ok
-        ));
+        exchange_ok(&dirs, &req).await;
+        exchange_ok(
+            &dirs,
+            &Request::SetPhp {
+                name: "legacy".into(),
+                version: missing_php,
+            },
+        )
+        .await;
 
         // cwd inside the scoped site (a subdirectory, not the root itself) ->
         // Scoped, with the site's own PHP and canonical served root.
@@ -165,7 +176,10 @@ mod tests {
                     scope.served_root,
                     std::fs::canonicalize(&scoped_dir).unwrap()
                 );
+                #[cfg(unix)]
                 assert!(scope.php_bin.ends_with("php-8.3/bin/php"));
+                #[cfg(windows)]
+                assert!(scope.php_bin.ends_with("php-8.3/php.exe"));
             }
             other => panic!("expected Scoped, got {other:?}"),
         }
@@ -176,34 +190,23 @@ mod tests {
         let sub_dir = tmp.path().join("sub");
         std::fs::create_dir_all(sub_dir.join("public")).unwrap();
         let req = yerd::resolve_link(Some("sub"), Some(&sub_dir)).expect("resolve_link");
-        assert!(matches!(
-            yerd::transport::exchange_at(&sock, &req).await.unwrap(),
-            yerd_ipc::Response::Ok
-        ));
-        assert!(matches!(
-            yerd::transport::exchange_at(
-                &sock,
-                &Request::SetPhp {
-                    name: "sub".into(),
-                    version: installed_php,
-                },
-            )
-            .await
-            .unwrap(),
-            yerd_ipc::Response::Ok
-        ));
-        assert!(matches!(
-            yerd::transport::exchange_at(
-                &sock,
-                &Request::SetWebRoot {
-                    name: "sub".into(),
-                    path: Some("public".into()),
-                },
-            )
-            .await
-            .unwrap(),
-            yerd_ipc::Response::Ok
-        ));
+        exchange_ok(&dirs, &req).await;
+        exchange_ok(
+            &dirs,
+            &Request::SetPhp {
+                name: "sub".into(),
+                version: installed_php,
+            },
+        )
+        .await;
+        exchange_ok(
+            &dirs,
+            &Request::SetWebRoot {
+                name: "sub".into(),
+                path: Some("public".into()),
+            },
+        )
+        .await;
         let cwd = std::fs::canonicalize(sub_dir.join("public")).unwrap();
         match scoped_site_scope(dirs.clone(), cwd).await {
             ScopeResolution::Scoped(scope) => {

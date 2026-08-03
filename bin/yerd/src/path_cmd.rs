@@ -1,10 +1,12 @@
-//! `yerd path install|uninstall|print` - manage the yerd-owned PATH block in the
-//! user's shell rc file(s), so a bare `php`/`composer` resolves to `{data}/bin`.
+//! `yerd path install|uninstall|print` - put yerd's shim dir on PATH so a bare
+//! `php`/`composer` resolves to the managed shims.
 //!
-//! Local, daemon-free, unprivileged: it only edits files the user owns. The pure
-//! string logic lives in `yerd_platform::pure::shell_profile`; this module is the
-//! I/O edge - it reads `$SHELL`/`$HOME`, picks the rc file(s), reads/writes them
-//! atomically (preserving dotfiles symlinks), and reports what changed.
+//! Local, daemon-free, unprivileged: it edits only state the user owns. On Unix
+//! that is the yerd-owned block in the shell rc file(s) (pure string logic in
+//! `yerd_platform::pure::shell_profile`); on Windows it is the user's
+//! `HKCU\Environment\Path` (pure list editing in
+//! `yerd_platform::pure::win_path_env`, registry I/O in `yerd_platform`), plus a
+//! copy of `yerd.exe` into `%LOCALAPPDATA%\Programs\yerd\bin`.
 
 use std::process::ExitCode;
 
@@ -17,8 +19,15 @@ pub fn run(action: PathAction) -> ExitCode {
     unix::run(action)
 }
 
-/// Non-Unix stub: PATH management isn't wired for this platform yet.
-#[cfg(not(unix))]
+/// Run `yerd path <action>` on Windows: edit the user's `HKCU\Environment\Path`
+/// to add/remove yerd's program + shim dirs, or print them.
+#[cfg(windows)]
+pub fn run(action: PathAction) -> ExitCode {
+    windows::run(action)
+}
+
+/// Stub for platforms with no PATH management wired.
+#[cfg(not(any(unix, windows)))]
 pub fn run(_action: PathAction) -> ExitCode {
     use yerd_platform::{ActivePaths, Paths};
     let hint = ActivePaths::new().resolve().map_or_else(
@@ -42,8 +51,16 @@ pub fn ensure_installed_after_tool(quiet: bool) {
     unix::ensure_installed_after_tool(quiet);
 }
 
-/// Non-Unix: no-op (PATH management isn't wired here yet; doctor warns instead).
-#[cfg(not(unix))]
+/// Windows counterpart: idempotently add the program + shim dirs to the user PATH
+/// after a tool install (best-effort, quiet). The `BinDirNotOnPath` doctor
+/// warning is the backstop when this can't run.
+#[cfg(windows)]
+pub fn ensure_installed_after_tool(quiet: bool) {
+    windows::ensure_installed_after_tool(quiet);
+}
+
+/// No PATH management wired here: no-op (doctor warns instead).
+#[cfg(not(any(unix, windows)))]
 pub fn ensure_installed_after_tool(_quiet: bool) {}
 
 /// Remove the yerd PATH block from an explicit user's shell rc file(s), given
@@ -58,6 +75,14 @@ pub fn remove_block_for_user(
     shell_basename: &str,
 ) -> Vec<std::path::PathBuf> {
     unix::remove_block_for_user(home, shell_basename)
+}
+
+/// Remove yerd's program + shim dirs from the user `HKCU\Environment\Path`
+/// (Windows uninstall). Returns the dirs it removed, or empty if none were
+/// present. Best-effort: a registry failure yields an empty list.
+#[cfg(windows)]
+pub fn remove_from_path() -> Vec<std::path::PathBuf> {
+    windows::remove_from_path()
 }
 
 #[cfg(unix)]
@@ -435,6 +460,210 @@ mod unix {
             let after = fs::read_to_string(&real).unwrap();
             assert!(!shell_profile::contains_block(&after));
             assert!(after.contains("export KEEP=1"));
+        }
+    }
+}
+
+#[cfg(windows)]
+mod windows {
+    use std::path::{Path, PathBuf};
+    use std::process::ExitCode;
+
+    use yerd_platform::pure::win_path_env;
+    use yerd_platform::{ActivePaths, Paths};
+
+    use crate::cli::PathAction;
+
+    /// `%LOCALAPPDATA%\Programs\yerd\bin` - where the installed `yerd.exe` lives
+    /// (the NSIS installer will use the same location in Phase 6). `None` when
+    /// `%LOCALAPPDATA%` is unset.
+    fn programs_bin() -> Option<PathBuf> {
+        std::env::var_os("LOCALAPPDATA")
+            .filter(|v| !v.is_empty())
+            .map(|l| PathBuf::from(l).join("Programs").join("yerd").join("bin"))
+    }
+
+    /// `{data}\bin` - the managed `.cmd` shim directory.
+    fn shim_dir() -> Option<PathBuf> {
+        ActivePaths::new()
+            .resolve()
+            .ok()
+            .map(|d| d.data.join("bin"))
+    }
+
+    /// The two dirs Yerd puts on the user PATH: the program dir (holding
+    /// `yerd.exe`) and the shim dir (holding `php.cmd` and friends).
+    fn path_entries() -> Vec<PathBuf> {
+        let mut out = Vec::new();
+        if let Some(p) = programs_bin() {
+            out.push(p);
+        }
+        if let Some(s) = shim_dir() {
+            out.push(s);
+        }
+        out
+    }
+
+    pub fn run(action: PathAction) -> ExitCode {
+        match action {
+            PathAction::Install => install(false),
+            PathAction::Uninstall => uninstall(),
+            PathAction::Print => print(),
+        }
+    }
+
+    /// Copy `yerd.exe` into the program dir and add both dirs to the user PATH.
+    fn install(quiet: bool) -> ExitCode {
+        if let Err(msg) = copy_self_into_programs() {
+            eprintln!("yerd: {msg}");
+        }
+        match upsert_path() {
+            Ok(changed) => {
+                if !quiet {
+                    if changed {
+                        for e in path_entries() {
+                            println!("Added to PATH: {}", e.display());
+                        }
+                        println!(
+                            "\nOpen a new terminal (or log off and back on) to pick up the change."
+                        );
+                    } else {
+                        println!("yerd: PATH already configured - nothing to do.");
+                    }
+                }
+                ExitCode::SUCCESS
+            }
+            Err(msg) => {
+                eprintln!("yerd: {msg}");
+                ExitCode::FAILURE
+            }
+        }
+    }
+
+    /// Idempotent, quiet variant used after a tool install.
+    pub fn ensure_installed_after_tool(quiet: bool) {
+        let _ = copy_self_into_programs();
+        if let Ok(true) = upsert_path() {
+            if !quiet {
+                if let Some(s) = shim_dir() {
+                    println!(
+                        "\nyerd: added {} to your PATH. Open a new terminal to use installed tools.",
+                        s.display()
+                    );
+                }
+            }
+        }
+    }
+
+    fn uninstall() -> ExitCode {
+        let removed = remove_from_path();
+        if removed.is_empty() {
+            println!("yerd: no yerd PATH entries found - nothing to remove.");
+        } else {
+            for e in &removed {
+                println!("Removed from PATH: {}", e.display());
+            }
+            println!("\nOpen a new terminal for the change to take effect.");
+        }
+        delete_programs_copy();
+        ExitCode::SUCCESS
+    }
+
+    fn print() -> ExitCode {
+        for e in path_entries() {
+            println!("{}", e.display());
+        }
+        println!("\nAdd both directories above to your user PATH (Settings > Edit environment");
+        println!("variables for your account), or run `yerd path install`.");
+        ExitCode::SUCCESS
+    }
+
+    /// Add both dirs to the user PATH (idempotent) and broadcast the change.
+    /// Returns whether the stored PATH value actually changed.
+    fn upsert_path() -> Result<bool, String> {
+        let entries = path_entries();
+        let refs: Vec<&str> = entries.iter().filter_map(|p| p.to_str()).collect();
+        let current = yerd_platform::user_path().unwrap_or_default();
+        let changed = if let Some(updated) = win_path_env::upsert_entries(&current, &refs) {
+            yerd_platform::set_user_path(&updated).map_err(|e| e.to_string())?;
+            true
+        } else {
+            false
+        };
+        if let Some(s) = shim_dir() {
+            let _ = yerd_platform::broadcast_user_env_marker(&s);
+        }
+        Ok(changed)
+    }
+
+    /// Remove both dirs from the user PATH; returns the dirs that were present.
+    pub fn remove_from_path() -> Vec<PathBuf> {
+        let entries = path_entries();
+        let refs: Vec<&str> = entries.iter().filter_map(|p| p.to_str()).collect();
+        let Some(current) = yerd_platform::user_path() else {
+            return Vec::new();
+        };
+        let Some(updated) = win_path_env::remove_entries(&current, &refs) else {
+            return Vec::new();
+        };
+        if yerd_platform::set_user_path(&updated).is_err() {
+            return Vec::new();
+        }
+        if let Some(s) = shim_dir() {
+            let _ = yerd_platform::broadcast_user_env_marker(&s);
+        }
+        entries
+    }
+
+    /// Copy the running `yerd.exe` into the program dir. Skips when the source is
+    /// already the destination or the bytes are current. A locked destination
+    /// (`ERROR_SHARING_VIOLATION`, code 32) is staged beside it as `yerd.exe.new`
+    /// with a note; the full staged-swap is Phase 6.
+    fn copy_self_into_programs() -> Result<(), String> {
+        let Some(dir) = programs_bin() else {
+            return Err("%LOCALAPPDATA% is not set; cannot locate the install dir".to_owned());
+        };
+        let src = std::env::current_exe().map_err(|e| format!("cannot find yerd.exe: {e}"))?;
+        let dest = dir.join("yerd.exe");
+        if same_file(&src, &dest) || contents_match(&src, &dest) {
+            return Ok(());
+        }
+        std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+        match std::fs::copy(&src, &dest) {
+            Ok(_) => Ok(()),
+            Err(e) if e.raw_os_error() == Some(32) => {
+                let staged = dir.join("yerd.exe.new");
+                std::fs::copy(&src, &staged).map_err(|e| format!("{}: {e}", staged.display()))?;
+                Err(format!(
+                    "{} is in use; staged the update as {} - restart yerd to finish",
+                    dest.display(),
+                    staged.display()
+                ))
+            }
+            Err(e) => Err(format!("{}: {e}", dest.display())),
+        }
+    }
+
+    /// Best-effort deletion of the installed `yerd.exe` copy on uninstall. A
+    /// running program can't delete its own image, so a failure is tolerated.
+    fn delete_programs_copy() {
+        if let Some(dir) = programs_bin() {
+            let _ = std::fs::remove_file(dir.join("yerd.exe"));
+            let _ = std::fs::remove_file(dir.join("yerd.exe.new"));
+        }
+    }
+
+    fn same_file(a: &Path, b: &Path) -> bool {
+        match (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
+            (Ok(a), Ok(b)) => a == b,
+            _ => false,
+        }
+    }
+
+    fn contents_match(a: &Path, b: &Path) -> bool {
+        match (std::fs::read(a), std::fs::read(b)) {
+            (Ok(a), Ok(b)) => a == b,
+            _ => false,
         }
     }
 }

@@ -70,6 +70,12 @@ pub enum Outcome {
     Restart,
 }
 
+/// Env var marking a console-mode restart handoff (Windows). `main` sets it on
+/// the freshly spawned successor daemon so [`startup`] knows to bounded-retry the
+/// instance-lock/pipe bind while the outgoing process finishes releasing them.
+/// Unix restarts `exec` in place and never use it.
+pub const RESTART_HANDOFF_ENV: &str = "YERD_RESTART_HANDOFF";
+
 /// Build the reverse-proxy client-TLS bundle injected into the proxy: a
 /// no-verify config for local/`.test` upstreams (self-signed dev backends), and
 /// a public verifier over the bundled Mozilla roots for genuine public hosts.

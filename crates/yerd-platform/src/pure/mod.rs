@@ -22,5 +22,8 @@ pub mod resolver_file;
 pub mod shell_profile;
 pub mod system_roots;
 pub mod terminal_spec;
+pub mod win_path_env;
 pub mod win_pipe;
+pub mod win_shim;
+pub mod win_terminal;
 pub mod win_token;

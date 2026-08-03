@@ -681,6 +681,10 @@ pub enum DiagnosisCode {
     /// mode is on. Remedy: `sudo yerd elevate lan` (restart the daemon first if it
     /// still holds a privileged port). See [`StatusReport::lan_redirect_targets`].
     LanRedirectStale,
+    /// The daemon is not registered to start at login (Windows: no `Yerd Daemon`
+    /// HKCU `Run` entry, or it is disabled in Task Manager), so sites stop being
+    /// served after a reboot until it is started manually.
+    DaemonAutostartDisabled,
     /// Everything checks out.
     AllGood,
 }

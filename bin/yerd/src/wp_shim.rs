@@ -1,7 +1,8 @@
 //! `wp` multi-call shim.
 //!
-//! `{data}/bin/wp` is a symlink to *this* `yerd` binary. When invoked under
-//! that name (detected from `argv[0]` before clap), yerd execs WP-CLI's
+//! `{data}/bin/wp` invokes *this* `yerd` binary (a symlink on Unix read from
+//! `argv[0]`, a `.cmd` wrapper passing `__shim wp` on Windows). When invoked
+//! under that name, yerd execs WP-CLI's
 //! filesystem entry point - `php …/tools/wp-cli/vendor/wp-cli/wp-cli/php/
 //! boot-fs.php <args…>` - rather than upstream's `bin/wp` shell wrapper, which
 //! exists only to locate a `php` on `PATH`; we already know which PHP to use.
@@ -16,9 +17,9 @@
 //! behavior: the default managed PHP, no working-directory change. If cwd
 //! *is* inside a site but that site's pinned PHP version isn't installed,
 //! this fails with a clear error rather than silently running under an
-//! unrelated default PHP. Unix-only.
+//! unrelated default PHP.
 
-use std::os::unix::process::CommandExt;
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode};
 use std::time::Duration;
@@ -27,8 +28,16 @@ use yerd_core::PhpVersion;
 use yerd_ipc::{Request, Response};
 use yerd_platform::{ActivePaths, Paths, PlatformDirs};
 
-use crate::shim::{cli_binary, cli_phprc, fail, resolve_default_php};
+use crate::shim::{cli_binary, cli_phprc, fail, resolve_default_php, run_php};
 use crate::transport;
+
+/// The `PHP_INI_SCAN_DIR` list separator: `;` on Windows, `:` on Unix. Prefixing
+/// the drop-in directory with it makes PHP scan its compiled-in default ini
+/// directory first, then ours, rather than replacing the default scan directory.
+#[cfg(windows)]
+const INI_SCAN_SEP: char = ';';
+#[cfg(not(windows))]
+const INI_SCAN_SEP: char = ':';
 
 /// How long to wait for the daemon to answer `ListSites` before giving up and
 /// falling back to the default PHP - this must stay short since it's on the
@@ -73,27 +82,25 @@ fn ensure_quiet_deprecations_scan_dir(dirs: &PlatformDirs) -> std::io::Result<Pa
 }
 
 /// The `PHP_INI_SCAN_DIR` value for [`ensure_quiet_deprecations_scan_dir`]'s
-/// directory - prefixed with the Unix path-list separator (`:`) so PHP scans
-/// its compiled-in default ini directory first, then this one, rather than
-/// replacing the default scan directory outright.
+/// directory - prefixed with the host path-list separator (see [`INI_SCAN_SEP`])
+/// so PHP scans its compiled-in default ini directory first, then this one,
+/// rather than replacing the default scan directory outright.
 fn quiet_deprecations_scan_dir_env(dir: &Path) -> String {
-    format!(":{}", dir.display())
+    format!("{INI_SCAN_SEP}{}", dir.display())
 }
 
-/// If `argv[0]` is `wp`, exec WP-CLI and return its exit code (on success
-/// `exec` replaces the process and never returns); otherwise `None`, so
-/// `main` falls through to the next shim / CLI.
+/// If the shim name is `wp`, exec WP-CLI and return its exit code; otherwise
+/// `None`, so `main` falls through to the next shim / CLI.
 #[must_use]
 pub fn dispatch() -> Option<ExitCode> {
-    let arg0 = std::env::args_os().next()?;
-    let name = Path::new(&arg0).file_name()?.to_str()?;
+    let (name, forward) = crate::shim::shim_invocation()?;
     if name != "wp" {
         return None;
     }
-    Some(run())
+    Some(run(&forward))
 }
 
-fn run() -> ExitCode {
+fn run(forward: &[OsString]) -> ExitCode {
     let dirs = match ActivePaths::new().resolve() {
         Ok(d) => d,
         Err(e) => return fail(format!("cannot resolve yerd directories: {e}")),
@@ -143,7 +150,7 @@ fn run() -> ExitCode {
     let mut cmd = Command::new(&php_bin);
     cmd.args(QUIET_DEPRECATIONS)
         .arg(boot_name)
-        .args(std::env::args_os().skip(1))
+        .args(forward)
         .current_dir(boot_dir);
     if let Ok(dir) = ensure_quiet_deprecations_scan_dir(&dirs) {
         cmd.env("PHP_INI_SCAN_DIR", quiet_deprecations_scan_dir_env(&dir));
@@ -155,14 +162,14 @@ fn run() -> ExitCode {
         cmd.arg(format!("--path={}", s.served_root.display()));
     }
 
-    let err = cmd.exec();
-    if err.kind() == std::io::ErrorKind::NotFound {
-        return fail(format!(
+    match run_php(cmd) {
+        Ok(code) => code,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => fail(format!(
             "PHP binary not found at {} ({err}) — reinstall with `yerd install php`",
             php_bin.display()
-        ));
+        )),
+        Err(err) => fail(format!("failed to exec {}: {err}", php_bin.display())),
     }
-    fail(format!("failed to exec {}: {err}", php_bin.display()))
 }
 
 /// Split `boot_fs` into its own directory and bare file name, so it can be
@@ -231,8 +238,7 @@ pub enum ScopeResolution {
 /// available." `pub` for the same testability reason as [`SiteScope`].
 #[must_use]
 pub fn site_scope(dirs: &PlatformDirs, cwd: &Path) -> ScopeResolution {
-    let sock = dirs.runtime.join("yerd.sock");
-    let Some(sites) = list_sites_with_timeout(&sock) else {
+    let Some(sites) = list_sites_with_timeout(dirs) else {
         return ScopeResolution::NoScope;
     };
     let candidates: Vec<(PathBuf, PhpVersion)> = sites
@@ -261,25 +267,34 @@ pub fn site_scope(dirs: &PlatformDirs, cwd: &Path) -> ScopeResolution {
 
 /// Spin up a one-shot, single-threaded tokio runtime (this shim otherwise
 /// has none) to make a single timeout-bounded `ListSites` call against the
-/// daemon socket at `sock` (matching [`transport::exchange`]'s own derivation
-/// of `<runtime>/yerd.sock` - passed explicitly here so tests can point at an
-/// isolated socket instead of the real, active one).
-fn list_sites_with_timeout(sock: &Path) -> Option<Vec<yerd_ipc::SiteEntry>> {
+/// daemon, deriving the transport address from `dirs` exactly as
+/// [`transport::exchange`] does: the `<runtime>/yerd.sock` Unix socket, or the
+/// SID-derived named pipe on Windows. Any error, timeout, or unexpected response
+/// yields `None` (treated by callers as "no site-scoping available").
+fn list_sites_with_timeout(dirs: &PlatformDirs) -> Option<Vec<yerd_ipc::SiteEntry>> {
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .ok()?;
-    let outcome = rt.block_on(async {
-        tokio::time::timeout(
-            SITE_LOOKUP_TIMEOUT,
-            transport::exchange_at(sock, &Request::ListSites),
-        )
-        .await
-    });
+    let outcome =
+        rt.block_on(async { tokio::time::timeout(SITE_LOOKUP_TIMEOUT, list_sites(dirs)).await });
     match outcome {
         Ok(Ok(Response::Sites { sites })) => Some(sites),
         _ => None,
     }
+}
+
+/// One `ListSites` exchange over the OS-appropriate transport.
+#[cfg(unix)]
+async fn list_sites(dirs: &PlatformDirs) -> Result<Response, crate::error::ClientError> {
+    transport::exchange_at(&dirs.runtime.join("yerd.sock"), &Request::ListSites).await
+}
+
+/// One `ListSites` exchange over the daemon's named pipe (Windows).
+#[cfg(windows)]
+async fn list_sites(dirs: &PlatformDirs) -> Result<Response, crate::error::ClientError> {
+    let name = yerd_platform::daemon_pipe_name(dirs)?;
+    transport::exchange_at_name(&name, &Request::ListSites).await
 }
 
 /// Pick the site whose (already-canonicalized) document root is `cwd` or an
@@ -302,10 +317,11 @@ mod tests {
     #[test]
     fn quiet_deprecations_scan_dir_env_prefixes_the_default_scan_separator() {
         let dir = Path::new("/data/wp-cli-quiet.d");
-        assert_eq!(
-            quiet_deprecations_scan_dir_env(dir),
-            ":/data/wp-cli-quiet.d"
-        );
+        let out = quiet_deprecations_scan_dir_env(dir);
+        assert_eq!(out.chars().next(), Some(INI_SCAN_SEP));
+        assert!(out.ends_with("wp-cli-quiet.d"));
+        #[cfg(not(windows))]
+        assert_eq!(out, ":/data/wp-cli-quiet.d");
     }
 
     #[test]
@@ -401,13 +417,13 @@ mod tests {
         assert!(matches!(site_scope(&dirs, &cwd), ScopeResolution::NoScope));
     }
 
+    #[cfg(unix)]
     #[test]
     fn match_site_resolves_symlinked_cwd_once_canonicalized() {
         let tmp = tempfile::tempdir().unwrap();
         let real_root = tmp.path().join("real-site");
         std::fs::create_dir(&real_root).unwrap();
         let link = tmp.path().join("link-to-site");
-        #[cfg(unix)]
         std::os::unix::fs::symlink(&real_root, &link).unwrap();
 
         let canonical_root = std::fs::canonicalize(&real_root).unwrap();

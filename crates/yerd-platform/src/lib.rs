@@ -72,3 +72,11 @@ pub use os::active::{current_user_sid, daemon_pipe_name};
 /// through this crate so `winreg` stays out of its own dependency graph).
 #[cfg(target_os = "windows")]
 pub use os::active::{is_token_elevated, nrpt_guids_for_tld};
+
+/// Windows user-`PATH` (`HKCU\Environment`) helpers: read the current value,
+/// write a new one (preserving the `REG_EXPAND_SZ` type), and broadcast the
+/// change so fresh shells see it. Used by the CLI's `yerd path`/tool-install PATH
+/// wiring and the daemon's shim-dir-on-PATH doctor probe. Keeps `winreg` a
+/// single-crate dependency (this crate), off the binaries' own graphs.
+#[cfg(target_os = "windows")]
+pub use os::active::{broadcast_user_env_marker, set_user_path, user_path};
