@@ -17,6 +17,9 @@ use crate::error::{HelperError, ValidationReason};
 /// Reject relative paths and missing files. We do NOT canonicalise -
 /// canonicalisation against a path an attacker controls introduces
 /// TOCTOU (the path could be swapped between canonicalize and open).
+///
+/// Unused on Windows: the sole Windows helper op (NRPT resolver) takes no path.
+#[cfg_attr(windows, allow(dead_code))]
 pub fn require_existing_file(path: &Path) -> Result<(), HelperError> {
     if !path.is_absolute() {
         return Err(HelperError::Validation {
@@ -64,6 +67,9 @@ pub fn require_valid_tld(raw: &str) -> Result<Tld, HelperError> {
 /// This closes the "drop a different PEM into runtime dir" attack
 /// vector: the helper provably installs the certificate whose
 /// fingerprint the daemon chose.
+///
+/// Unused on Windows: CA trust there is unelevated and takes no PEM path.
+#[cfg_attr(windows, allow(dead_code))]
 pub fn require_pem_matches_fingerprint(
     pem_path: &Path,
     expected: &CaFingerprint,

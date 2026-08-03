@@ -120,10 +120,14 @@ impl TrustStore for UnsupportedTrustStore {
     }
 }
 
-/// Stub `ResolverInstaller` for unsupported OSes.
+/// Stub `ResolverInstaller` for unsupported OSes. Windows now has a real
+/// [`super::windows::WindowsResolverInstaller`], so this stub is unused there
+/// (but the module stays compiled on Windows for the other still-stubbed traits).
+#[cfg_attr(windows, allow(dead_code))]
 #[derive(Debug, Default, Clone, Copy)]
 pub struct UnsupportedResolverInstaller;
 
+#[cfg_attr(windows, allow(dead_code))]
 impl UnsupportedResolverInstaller {
     /// Construct.
     #[must_use]

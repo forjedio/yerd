@@ -7,7 +7,9 @@
 pub mod cert_identity;
 pub mod dns_probe;
 pub mod firefox;
+pub mod helper_result;
 pub mod networkmanager_dnsmasq;
+pub mod nrpt;
 pub mod nss;
 pub mod pem_match;
 pub mod pf_anchor;
@@ -21,3 +23,4 @@ pub mod shell_profile;
 pub mod system_roots;
 pub mod terminal_spec;
 pub mod win_pipe;
+pub mod win_token;

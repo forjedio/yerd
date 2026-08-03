@@ -1,20 +1,26 @@
 //! `install-resolver` and `uninstall-resolver` for Linux + macOS.
 
 use std::net::SocketAddr;
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 use std::path::PathBuf;
 
+#[cfg(windows)]
+use yerd_platform::pure::nrpt;
 #[cfg(target_os = "macos")]
 use yerd_platform::pure::resolver_file;
 #[cfg(target_os = "linux")]
 use yerd_platform::pure::{dns_probe, networkmanager_dnsmasq, resolv_conf, resolved_drop_in};
 
 use crate::error::HelperError;
+#[cfg(windows)]
+use crate::error::ValidationReason;
 #[cfg(target_os = "macos")]
 use crate::ops::atomic_write;
+#[cfg(windows)]
+use crate::ops::run_command_abs;
 #[cfg(target_os = "linux")]
 use crate::ops::{atomic_write, run_command};
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 use crate::validate;
 
 #[cfg(target_os = "linux")]
@@ -350,16 +356,115 @@ fn macos_try_restore_backup(tld: &str, dest: &std::path::Path) -> Result<bool, H
     Ok(true)
 }
 
+// ---- Windows: NRPT wildcard rule -----------------------------------
+
+/// Absolute path to `powershell.exe`, from `%SystemRoot%` (falling back to the
+/// conventional location), so the elevated helper never resolves an
+/// attacker-planted `powershell` on `PATH`.
+#[cfg(windows)]
+fn powershell_path() -> PathBuf {
+    let root =
+        std::env::var_os("SystemRoot").map_or_else(|| PathBuf::from(r"C:\Windows"), PathBuf::from);
+    root.join("System32")
+        .join("WindowsPowerShell")
+        .join("v1.0")
+        .join("powershell.exe")
+}
+
+/// The fixed PowerShell flags wrapping one discrete cmdlet body: no profile, no
+/// interaction, execution-policy bypass, and a single `-Command`. Exactly one
+/// cmdlet per spawn, never a composed script.
+#[cfg(windows)]
+fn powershell_argv(cmd_body: &str) -> [&str; 6] {
+    [
+        "-NoProfile",
+        "-NonInteractive",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-Command",
+        cmd_body,
+    ]
+}
+
+/// Require `addr` to be loopback IPv4 on port 53. An NRPT rule carries no port
+/// and Yerd's Windows resolver listens only on `127.0.0.1:53`, so anything else
+/// would silently blackhole `.test`. An unspecified `0.0.0.0` (LAN-mode facts)
+/// is accepted and normalised to loopback by the caller.
+#[cfg(windows)]
+fn require_loopback_53(addr: SocketAddr) -> Result<(), HelperError> {
+    use std::net::IpAddr;
+
+    let ip_ok = match addr.ip() {
+        IpAddr::V4(v4) => v4.is_loopback() || v4.is_unspecified(),
+        IpAddr::V6(_) => false,
+    };
+    if ip_ok && addr.port() == 53 {
+        Ok(())
+    } else {
+        Err(HelperError::Validation {
+            reason: ValidationReason::ResolverAddrUnsupported,
+        })
+    }
+}
+
+/// Install (or repair) the `.tld` NRPT wildcard rule pointing at `127.0.0.1`.
+///
+/// Discrete, one-cmdlet-per-spawn sequence (no composed script): winreg-discover
+/// existing `.tld` rule GUIDs (through `yerd-platform`) -> `Remove-` each ->
+/// `Add-` the fresh rule -> `Clear-DnsClientCache`. Remove-then-add makes it
+/// idempotent: a stale or wrong-server rule is replaced, and re-running
+/// converges.
+#[cfg(windows)]
+pub fn install_resolver(tld: &str, addr: SocketAddr) -> Result<(), HelperError> {
+    use std::net::Ipv4Addr;
+
+    let tld_obj = validate::require_valid_tld(tld)?;
+    require_loopback_53(addr)?;
+
+    let ps = powershell_path();
+    for guid in yerd_platform::nrpt_guids_for_tld(tld_obj.as_str()) {
+        run_command_abs(
+            "powershell",
+            &ps,
+            powershell_argv(&nrpt::remove_rule_cmd(&guid)),
+        )?;
+    }
+    run_command_abs(
+        "powershell",
+        &ps,
+        powershell_argv(&nrpt::add_rule_cmd(&tld_obj, Ipv4Addr::LOCALHOST)),
+    )?;
+    run_command_abs("powershell", &ps, powershell_argv(nrpt::flush_cmd()))?;
+    Ok(())
+}
+
+/// Remove every `.tld` NRPT rule, then flush. Idempotent by construction: no
+/// rules found means the removal loop is a no-op and the op still succeeds.
+#[cfg(windows)]
+pub fn uninstall_resolver(tld: &str) -> Result<(), HelperError> {
+    let tld_obj = validate::require_valid_tld(tld)?;
+    let ps = powershell_path();
+    for guid in yerd_platform::nrpt_guids_for_tld(tld_obj.as_str()) {
+        run_command_abs(
+            "powershell",
+            &ps,
+            powershell_argv(&nrpt::remove_rule_cmd(&guid)),
+        )?;
+    }
+    run_command_abs("powershell", &ps, powershell_argv(nrpt::flush_cmd()))?;
+    Ok(())
+}
+
 // ---- unsupported OSes ----------------------------------------------
 
-#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
 pub fn install_resolver(_tld: &str, _addr: SocketAddr) -> Result<(), HelperError> {
     Err(HelperError::Unsupported {
         operation: yerd_platform::error::ops::INSTALL_RESOLVER,
     })
 }
 
-#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
 pub fn uninstall_resolver(_tld: &str) -> Result<(), HelperError> {
     Err(HelperError::Unsupported {
         operation: yerd_platform::error::ops::UNINSTALL_RESOLVER,
@@ -403,5 +508,84 @@ mod tests {
     fn resolver_file_path_shape() {
         use std::path::Path;
         assert_eq!(resolver_file_path("test"), Path::new("/etc/resolver/test"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn require_loopback_53_accepts_loopback_and_unspecified() {
+        assert!(require_loopback_53("127.0.0.1:53".parse().unwrap()).is_ok());
+        assert!(require_loopback_53("0.0.0.0:53".parse().unwrap()).is_ok());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn install_resolver_rejects_non_53_port_before_any_spawn() {
+        let err = install_resolver("test", "127.0.0.1:1053".parse().unwrap()).unwrap_err();
+        assert!(matches!(
+            err,
+            HelperError::Validation {
+                reason: ValidationReason::ResolverAddrUnsupported
+            }
+        ));
+        assert_eq!(crate::error::exit_code(&err), 65);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn install_resolver_rejects_non_loopback_before_any_spawn() {
+        let err = install_resolver("test", "10.0.0.5:53".parse().unwrap()).unwrap_err();
+        assert!(matches!(
+            err,
+            HelperError::Validation {
+                reason: ValidationReason::ResolverAddrUnsupported
+            }
+        ));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn install_resolver_rejects_ipv6_before_any_spawn() {
+        let err = install_resolver("test", "[::1]:53".parse().unwrap()).unwrap_err();
+        assert!(matches!(
+            err,
+            HelperError::Validation {
+                reason: ValidationReason::ResolverAddrUnsupported
+            }
+        ));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn install_resolver_rejects_bad_tld_before_addr_check() {
+        let err = install_resolver("../etc", "127.0.0.1:53".parse().unwrap()).unwrap_err();
+        assert!(matches!(
+            err,
+            HelperError::Validation {
+                reason: ValidationReason::TldInvalid(_)
+            }
+        ));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn powershell_path_ends_with_powershell_exe() {
+        assert!(powershell_path().ends_with(r"System32\WindowsPowerShell\v1.0\powershell.exe"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn powershell_argv_is_single_command() {
+        let argv = powershell_argv("Clear-DnsClientCache");
+        assert_eq!(
+            argv,
+            [
+                "-NoProfile",
+                "-NonInteractive",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-Command",
+                "Clear-DnsClientCache"
+            ]
+        );
     }
 }

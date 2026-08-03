@@ -51,6 +51,12 @@ win32job            = "2"
 # and yerd-platform's no_runtime_deps guard stay intact. Sole transitive dep
 # (`windows-sys 0.61`) already resolves in Cargo.lock. No `unsafe` in our code.
 schannel            = "0.1"
+# Read-only HKLM registry access for the Windows NRPT probe (the DnsPolicyConfig
+# key backing ResolverInstaller::is_installed, and the helper's `.test` rule-GUID
+# discovery for removal). Read-only only, never a write path. Already resolved in
+# Cargo.lock via the tauri chain (0.55.0); unsafe lives inside the crate, none in
+# ours (win32job/schannel precedent).
+winreg              = "0.55"
 reqwest            = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 hyper              = { version = "1", default-features = false, features = ["http1", "server", "client"] }
 hyper-util         = { version = "0.1", default-features = false, features = ["http1", "server", "client", "tokio"] }
@@ -76,6 +82,15 @@ fs4                = { version = "0.13", default-features = false, features = ["
 # Pure-Rust MIME parser for the mail-capture viewer. `full_encoding` pulls
 # `encoding_rs` for non-UTF-8 charsets; the `serde` feature is deliberately off.
 mail-parser        = { version = "0.11", default-features = false, features = ["full_encoding"] }
+# Windows-only: UAC-elevated one-shot launch of yerd-helper (ShellExecuteExW +
+# "runas" verb). EXACT-pinned: a bump MUST re-audit src/impl_windows.rs, whose
+# arg-quoting doubles backslashes inside quoted args - which is exactly why every
+# helper argv element must stay free of space/tab/quote/backslash (enforced by a
+# guard unit test in bin/yerd). A declined prompt or launch failure surfaces as
+# exit code -1, not Err. unsafe lives inside the crate; none in ours. Brings
+# `which 4.3` (unconditional transitive dep, accepted) and windows-sys 0.48
+# (already resolves in Cargo.lock).
+runas              = "=1.2.0"
 
 [workspace.lints.rust]
 unsafe_code  = "forbid"

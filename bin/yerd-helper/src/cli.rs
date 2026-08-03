@@ -38,6 +38,16 @@ pub struct Cli {
     #[arg(long, global = true, hide = true)]
     pub skip_priv_check: bool,
 
+    /// **Windows only, transport-level.** Hex token naming the advisory
+    /// result file the helper writes after the op (the elevated
+    /// `ShellExecuteEx` launch yields no stdio). Deliberately NOT part of
+    /// `HelperInvocation`/`from_argv`: it does not describe the operation, so it
+    /// is appended by the caller after `to_argv()` and stripped from the
+    /// debug wire cross-check.
+    #[cfg(windows)]
+    #[arg(long, global = true, hide = true, value_name = "HEX")]
+    pub result_token: Option<String>,
+
     #[command(subcommand)]
     pub op: Op,
 }
@@ -132,16 +142,14 @@ where
     let argv: Vec<OsString> = args.into_iter().map(Into::into).collect();
     let cli = Cli::try_parse_from(&argv).map_err(|e| HelperError::ArgvUsage(e.to_string()))?;
     let skip_priv_check = skip_priv_check_value(&cli);
+    #[cfg(windows)]
+    let result_token = validated_result_token(&cli)?;
     let invocation = cli.op.into_invocation()?;
 
     #[cfg(debug_assertions)]
     {
         if argv.len() > 1 {
-            let tail: Vec<OsString> = argv.iter().skip(1).cloned().collect();
-            let filtered: Vec<OsString> = tail
-                .into_iter()
-                .filter(|a| a != "--skip-priv-check")
-                .collect();
+            let filtered = filter_transport_flags(argv.iter().skip(1).cloned());
             if let Ok(parsed) = HelperInvocation::from_argv(&filtered) {
                 if invocation_tag(&parsed) != invocation_tag(&invocation) {
                     return Err(HelperError::WireDrift {
@@ -156,7 +164,52 @@ where
     Ok(ParsedCli {
         invocation,
         skip_priv_check,
+        #[cfg(windows)]
+        result_token,
     })
+}
+
+/// Drop the transport-level flags that are not part of the `HelperInvocation`
+/// argv contract before the debug cross-check hands the tail to `from_argv`:
+/// the bare `--skip-priv-check`, and (Windows) `--result-token` **with its
+/// value** in both `--flag value` and `--flag=value` forms. A naive equality
+/// filter would leave the stray hex value and trip `WireDrift`.
+#[cfg(debug_assertions)]
+fn filter_transport_flags<I: Iterator<Item = OsString>>(tail: I) -> Vec<OsString> {
+    let mut filtered = Vec::new();
+    let mut iter = tail;
+    while let Some(arg) = iter.next() {
+        if arg == "--skip-priv-check" {
+            continue;
+        }
+        #[cfg(windows)]
+        {
+            if arg == "--result-token" {
+                let _ = iter.next();
+                continue;
+            }
+            if arg
+                .to_str()
+                .is_some_and(|s| s.starts_with("--result-token="))
+            {
+                continue;
+            }
+        }
+        filtered.push(arg);
+    }
+    filtered
+}
+
+/// Validate the Windows-only `--result-token` (32 lowercase hex chars), if
+/// present. A malformed token is a usage error (64) before any side effect.
+#[cfg(windows)]
+fn validated_result_token(cli: &Cli) -> Result<Option<String>, HelperError> {
+    match &cli.result_token {
+        Some(token) if !yerd_platform::pure::helper_result::valid_token(token) => Err(
+            HelperError::ArgvUsage("--result-token must be 32 lowercase hex chars".to_owned()),
+        ),
+        other => Ok(other.clone()),
+    }
 }
 
 #[cfg(debug_assertions)]
@@ -176,6 +229,9 @@ pub struct ParsedCli {
     pub invocation: HelperInvocation,
     /// Whether the debug-only `--skip-priv-check` flag was passed.
     pub skip_priv_check: bool,
+    /// The validated Windows result-file token, if the caller passed one.
+    #[cfg(windows)]
+    pub result_token: Option<String>,
 }
 
 impl Op {
@@ -364,5 +420,60 @@ mod tests {
     fn skip_priv_check_defaults_false() {
         let p = parse_ok(&["uninstall-resolver", "--tld", "test"]);
         assert!(!p.skip_priv_check);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn result_token_parses_when_valid() {
+        let token = "a1".repeat(16);
+        let p = parse_ok(&[
+            "uninstall-resolver",
+            "--tld",
+            "test",
+            "--result-token",
+            &token,
+        ]);
+        assert_eq!(p.result_token.as_deref(), Some(token.as_str()));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn result_token_absent_is_none() {
+        let p = parse_ok(&["uninstall-resolver", "--tld", "test"]);
+        assert_eq!(p.result_token, None);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn result_token_bad_rejected_as_usage_64() {
+        let err = parse_err(&[
+            "uninstall-resolver",
+            "--tld",
+            "test",
+            "--result-token",
+            "NOT-HEX",
+        ]);
+        assert!(matches!(err, HelperError::ArgvUsage(_)));
+        assert_eq!(crate::error::exit_code(&err), 64);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn result_token_does_not_trip_wire_drift_cross_check() {
+        let token = "ab".repeat(16);
+        let p = parse_ok(&[
+            "install-resolver",
+            "--tld",
+            "test",
+            "--addr",
+            "127.0.0.1:53",
+            "--result-token",
+            &token,
+        ]);
+        assert!(matches!(
+            p.invocation,
+            HelperInvocation::InstallResolver { .. }
+        ));
+        assert_eq!(p.result_token.as_deref(), Some(token.as_str()));
     }
 }

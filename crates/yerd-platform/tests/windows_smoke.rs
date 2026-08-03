@@ -111,16 +111,52 @@ fn port_redirector_is_na_but_probes_foreign_listener() {
 }
 
 #[test]
-fn resolver_unsupported() {
-    let r = ActiveResolverInstaller;
+fn resolver_install_uninstall_need_helper() {
+    let r = ActiveResolverInstaller::new();
     assert!(matches!(
         r.install("test", loopback(53)).unwrap_err(),
-        PlatformError::Unsupported { .. }
+        PlatformError::NeedsHelper { .. }
     ));
     assert!(matches!(
         r.uninstall("test").unwrap_err(),
-        PlatformError::Unsupported { .. }
+        PlatformError::NeedsHelper { .. }
     ));
+}
+
+#[test]
+fn resolver_is_installed_reads_registry_without_error() {
+    let r = ActiveResolverInstaller::new();
+    assert!(
+        r.is_installed("test", loopback(53)).is_ok(),
+        "the read-only NRPT probe must never error (key-absent is Ok(false))"
+    );
+}
+
+#[test]
+fn resolver_is_installed_false_for_non_53_port() {
+    let r = ActiveResolverInstaller::new();
+    assert!(
+        !r.is_installed("test", loopback(1053)).unwrap(),
+        "an NRPT rule carries no port, so a non-53 addr can never be installed"
+    );
+    assert!(!r.is_installed("test", loopback(5353)).unwrap());
+}
+
+#[test]
+fn resolver_is_installed_false_for_ipv6_addr() {
+    let r = ActiveResolverInstaller::new();
+    let v6 = SocketAddr::new(std::net::IpAddr::V6(std::net::Ipv6Addr::LOCALHOST), 53);
+    assert!(!r.is_installed("test", v6).unwrap());
+}
+
+#[test]
+fn is_token_elevated_returns_a_bool() {
+    let _ = yerd_platform::is_token_elevated();
+}
+
+#[test]
+fn nrpt_guids_for_tld_reads_registry_without_panicking() {
+    let _ = yerd_platform::nrpt_guids_for_tld("test");
 }
 
 #[test]

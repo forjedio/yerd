@@ -25,12 +25,331 @@ pub fn run(yes: bool) -> ExitCode {
     unix_impl::run(yes)
 }
 
-/// Non-Unix: the daemon service, sudo model, and shell rc handling are all
+/// Windows full self-uninstall (see [`windows_impl`]).
+#[cfg(windows)]
+pub fn run(yes: bool) -> ExitCode {
+    windows_impl::run(yes)
+}
+
+/// Other OSes: the daemon service, sudo model, and shell rc handling are all
 /// Unix-shaped; mirror `elevate`/`path` and decline here.
-#[cfg(not(unix))]
+#[cfg(not(any(unix, windows)))]
 pub fn run(_yes: bool) -> ExitCode {
-    eprintln!("yerd: `yerd uninstall` (full) is only supported on Unix (macOS/Linux)");
+    eprintln!("yerd: `yerd uninstall` (full) is only supported on Unix (macOS/Linux) and Windows");
     ExitCode::from(78)
+}
+
+/// Windows full self-uninstall. Mirrors the Unix flow's order without the
+/// sudo/actor machinery (on Windows the CLI runs as the invoking user, so
+/// `ActivePaths::resolve()` reads the right profile - no `SUDO_UID`
+/// reconstruction and no `for_user`). Small shared shapes (`confirm`, `dedup`,
+/// `CapturedFacts`) are duplicated here rather than moved, so the Unix
+/// `unix_impl` stays byte-identical.
+#[cfg(windows)]
+mod windows_impl {
+    use std::path::{Path, PathBuf};
+    use std::process::{Command, ExitCode};
+    use std::time::Duration;
+
+    use yerd_platform::{
+        ActivePaths, ActiveTrustStore, CaFingerprint, HelperInvocation, Paths, PlatformDirs,
+        TrustStore,
+    };
+
+    use crate::elevate;
+
+    /// Facts captured from disk before deletion, used to revert (or print the
+    /// manual steps to revert) the system changes made by `yerd elevate`.
+    struct CapturedFacts {
+        tld: Option<String>,
+        ca_fp: Option<CaFingerprint>,
+    }
+
+    impl CapturedFacts {
+        fn capture(dirs: &PlatformDirs) -> Self {
+            let tld = yerd_config::Config::load(&dirs.config.join("yerd.toml"))
+                .ok()
+                .map(|c| c.tld.as_str().to_owned());
+            let ca_fp = std::fs::read_to_string(dirs.data.join("ca.cert.pem"))
+                .ok()
+                .and_then(|pem| CaFingerprint::from_pem(&pem));
+            Self { tld, ca_fp }
+        }
+    }
+
+    pub fn run(yes: bool) -> ExitCode {
+        let dirs = match ActivePaths::new().resolve() {
+            Ok(d) => d,
+            Err(e) => {
+                eprintln!("yerd: cannot resolve yerd's directories: {e}");
+                return ExitCode::from(74);
+            }
+        };
+
+        let facts = CapturedFacts::capture(&dirs);
+
+        print_header(&dirs);
+
+        if !yes && !confirm() {
+            println!("yerd: aborted — nothing was changed.");
+            return ExitCode::from(1);
+        }
+
+        let mut residue: Vec<String> = Vec::new();
+
+        revert_system_changes(&facts, &mut residue);
+        stop_daemon();
+
+        for dir in dirs_to_delete(&dirs) {
+            match remove_dir_all_retry(&dir) {
+                Ok(()) => println!("  removed {}", dir.display()),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => residue.push(format!("{} ({e})", dir.display())),
+            }
+        }
+
+        residue.push(
+            "the yerd.exe / yerdd.exe / yerd-helper.exe binaries - a running program can't \
+             delete itself on Windows, so remove them manually (the Phase 6 installer's \
+             uninstaller will handle this)"
+                .to_owned(),
+        );
+
+        print_summary(&residue);
+        ExitCode::SUCCESS
+    }
+
+    /// Revert the privileged/system changes: the NRPT rule (elevated, via the
+    /// helper) and the CA trust (unelevated, directly). Best-effort; every
+    /// failure is recorded in `residue`, never fatal.
+    fn revert_system_changes(facts: &CapturedFacts, residue: &mut Vec<String>) {
+        if let Some(tld) = &facts.tld {
+            revert_nrpt(tld, residue);
+        }
+        revert_ca(facts.ca_fp, residue);
+    }
+
+    /// Remove the `.tld` NRPT rule through the elevated helper (one UAC prompt).
+    fn revert_nrpt(tld: &str, residue: &mut Vec<String>) {
+        let helper = match elevate::sibling_binaries() {
+            Ok((helper, _yerdd)) => helper,
+            Err(e) => {
+                residue.push(format!(
+                    "could not locate yerd-helper.exe to remove the .{tld} NRPT rule: {e}"
+                ));
+                return;
+            }
+        };
+        let inv = HelperInvocation::UninstallResolver {
+            tld: tld.to_owned(),
+        };
+        println!(
+            "==> removing the .{tld} DNS rule (Windows will ask for administrator approval) …"
+        );
+        match elevate::spawn_helper_elevated_blocking(&helper, &inv.to_argv()) {
+            Some(0) => println!("  ok"),
+            _ => residue.push(nrpt_manual_remedy(tld)),
+        }
+    }
+
+    /// Remove the local CA from the `CurrentUser` Root store directly (Phase 3;
+    /// per-cert confirmation dialog, no admin). Missing fingerprint on disk means
+    /// we can't identify the cert - point the user at `certmgr.msc`.
+    fn revert_ca(ca_fp: Option<CaFingerprint>, residue: &mut Vec<String>) {
+        match ca_fp {
+            Some(fp) => {
+                println!("==> removing the local CA from the Windows user Root store …");
+                match ActiveTrustStore::new().uninstall_system(&fp) {
+                    Ok(()) => println!("  ok"),
+                    Err(e) => residue.push(format!(
+                        "the local CA may remain in the user Root store ({e}) - {}",
+                        ca_manual_remedy()
+                    )),
+                }
+            }
+            None => residue.push(format!(
+                "a yerd CA may remain in the user Root store (its cert was not on disk to \
+                 identify it) - {}",
+                ca_manual_remedy()
+            )),
+        }
+    }
+
+    /// Kill any running `yerdd.exe` for this user via absolute-path `taskkill`
+    /// (an unelevated taskkill only reaps same-user processes, which is the
+    /// intent). Phase 2's `KILL_ON_JOB_CLOSE` job objects reap the
+    /// php-cgi/DB children when the daemon dies. Best-effort.
+    fn stop_daemon() {
+        let taskkill = system32_exe("taskkill.exe");
+        let _ = Command::new(&taskkill)
+            .args(["/F", "/IM", "yerdd.exe"])
+            .output();
+    }
+
+    /// The user dirs to delete, de-duplicated (`config` is a separate `%APPDATA%`
+    /// tree; `data`/`state`/`cache` share a `%LOCALAPPDATA%` root; `runtime` is
+    /// under `%TEMP%`).
+    fn dirs_to_delete(dirs: &PlatformDirs) -> Vec<PathBuf> {
+        dedup(vec![
+            dirs.config.clone(),
+            dirs.data.clone(),
+            dirs.state.clone(),
+            dirs.cache.clone(),
+            dirs.runtime.clone(),
+        ])
+    }
+
+    /// Remove a directory tree, retrying once after a short pause on a non
+    /// not-found error (Defender/indexer file-lock flakiness, a Phase 2
+    /// precedent).
+    fn remove_dir_all_retry(dir: &Path) -> std::io::Result<()> {
+        let first = std::fs::remove_dir_all(dir);
+        if first.is_ok()
+            || first
+                .as_ref()
+                .err()
+                .is_some_and(|e| e.kind() == std::io::ErrorKind::NotFound)
+        {
+            return first;
+        }
+        std::thread::sleep(Duration::from_millis(200));
+        std::fs::remove_dir_all(dir)
+    }
+
+    /// Absolute path to a `System32` executable, from `%SystemRoot%` (falling
+    /// back to the conventional location), so the lookup never trusts `PATH`.
+    fn system32_exe(name: &str) -> PathBuf {
+        let root = std::env::var_os("SystemRoot")
+            .map_or_else(|| PathBuf::from(r"C:\Windows"), PathBuf::from);
+        root.join("System32").join(name)
+    }
+
+    // ── pure helpers (unit-tested) ───────────────────────────────────────────
+
+    fn dedup(paths: Vec<PathBuf>) -> Vec<PathBuf> {
+        let mut seen = std::collections::HashSet::new();
+        paths
+            .into_iter()
+            .filter(|p| seen.insert(p.clone()))
+            .collect()
+    }
+
+    /// Admin PowerShell one-liner to remove the `.tld` NRPT rule manually.
+    fn nrpt_manual_remedy(tld: &str) -> String {
+        format!(
+            "the .{tld} DNS rule may remain - remove it in an admin PowerShell: \
+             Get-DnsClientNrptRule | Where-Object {{ $_.Namespace -contains '.{tld}' }} | \
+             Remove-DnsClientNrptRule -Force"
+        )
+    }
+
+    fn ca_manual_remedy() -> &'static str {
+        "remove 'Yerd Local CA' via certmgr.msc -> Trusted Root Certification Authorities \
+         (Current User)"
+    }
+
+    // ── interaction / output ─────────────────────────────────────────────────
+
+    fn confirm() -> bool {
+        use std::io::{IsTerminal, Write};
+        if !std::io::stdin().is_terminal() {
+            eprintln!(
+                "yerd: refusing to uninstall without confirmation — \
+                 re-run with --yes to proceed non-interactively."
+            );
+            return false;
+        }
+        print!("\nProceed with uninstalling yerd? Type 'yes' to confirm: ");
+        let _ = std::io::stdout().flush();
+        let mut line = String::new();
+        if std::io::stdin().read_line(&mut line).is_err() {
+            return false;
+        }
+        matches!(line.trim(), "y" | "Y" | "yes" | "Yes" | "YES")
+    }
+
+    fn print_header(dirs: &PlatformDirs) {
+        println!("This will uninstall yerd for the current user. It removes:");
+        println!("  • config:  {}", dirs.config.display());
+        println!(
+            "  • data:    {}  (certs, installed PHP versions, tools, downloads)",
+            dirs.data.display()
+        );
+        println!("  • cache:   {}", dirs.cache.display());
+        println!("  • system changes from `yerd elevate` (CA trust, the .test DNS rule)");
+        println!("  • the yerd daemon (yerdd.exe is stopped; the binaries need manual removal)");
+    }
+
+    fn print_summary(residue: &[String]) {
+        println!();
+        if residue.is_empty() {
+            println!("yerd has been uninstalled.");
+        } else {
+            println!("yerd has been uninstalled, with some leftovers to handle manually:");
+            for r in residue {
+                println!("  • {r}");
+            }
+        }
+    }
+
+    #[cfg(test)]
+    #[allow(clippy::unwrap_used, clippy::panic, clippy::indexing_slicing)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn dedup_preserves_order_and_drops_repeats() {
+            let v = dedup(vec![
+                PathBuf::from(r"C:\a"),
+                PathBuf::from(r"C:\b"),
+                PathBuf::from(r"C:\a"),
+                PathBuf::from(r"C:\c"),
+            ]);
+            assert_eq!(
+                v,
+                vec![
+                    PathBuf::from(r"C:\a"),
+                    PathBuf::from(r"C:\b"),
+                    PathBuf::from(r"C:\c")
+                ]
+            );
+        }
+
+        #[test]
+        fn dirs_to_delete_dedups_the_five_dirs() {
+            let dirs = PlatformDirs {
+                config: PathBuf::from(r"C:\cfg\yerd"),
+                data: PathBuf::from(r"C:\local\yerd\data"),
+                state: PathBuf::from(r"C:\local\yerd\state"),
+                cache: PathBuf::from(r"C:\local\yerd\cache"),
+                runtime: PathBuf::from(r"C:\temp\yerd"),
+            };
+            let out = dirs_to_delete(&dirs);
+            let unique: std::collections::HashSet<_> = out.iter().collect();
+            assert_eq!(unique.len(), out.len());
+            assert!(out.contains(&dirs.config));
+            assert!(out.contains(&dirs.runtime));
+        }
+
+        #[test]
+        fn nrpt_remedy_names_the_tld_and_removal_cmdlet() {
+            let r = nrpt_manual_remedy("test");
+            assert!(r.contains(".test"), "{r}");
+            assert!(r.contains("Remove-DnsClientNrptRule -Force"), "{r}");
+        }
+
+        #[test]
+        fn ca_remedy_points_at_certmgr() {
+            assert!(ca_manual_remedy().contains("certmgr.msc"));
+        }
+
+        #[test]
+        fn system32_exe_is_absolute_under_system32() {
+            let p = system32_exe("taskkill.exe");
+            assert!(p.ends_with(r"System32\taskkill.exe"), "{p:?}");
+            assert!(p.is_absolute(), "{p:?}");
+        }
+    }
 }
 
 #[cfg(unix)]

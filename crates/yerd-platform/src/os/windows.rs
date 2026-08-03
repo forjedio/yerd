@@ -9,7 +9,7 @@
 
 #![allow(clippy::similar_names)]
 
-use std::net::{Ipv4Addr, SocketAddr, TcpListener};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener};
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
@@ -20,12 +20,12 @@ use crate::error::{ops, TrustStoreErrorReason};
 use crate::paths::{Paths, PlatformDirs};
 use crate::port_binder::{BoundPort, PortBinder, PortPair};
 use crate::port_redirect::PortRedirector;
-use crate::pure::{pem_match, port_plan, win_pipe};
+use crate::pure::{nrpt, pem_match, port_plan, win_pipe, win_token};
+use crate::resolver::ResolverInstaller;
 use crate::trust_store::{CaFingerprint, NssOutcome, TrustStore};
 use crate::{BindPairErrorReason, PlatformError};
 
 pub use super::unsupported::{
-    UnsupportedResolverInstaller as WindowsResolverInstaller,
     UnsupportedSystemMetrics as WindowsSystemMetrics,
     UnsupportedTerminalLauncher as WindowsTerminalLauncher,
 };
@@ -245,6 +245,137 @@ impl PortRedirector for WindowsPortRedirector {
     fn is_active(&self) -> Option<bool> {
         None
     }
+}
+
+/// The HKLM subkey (relative to `HKEY_LOCAL_MACHINE`) holding NRPT rules. Each
+/// child key is one rule, named with a braced GUID.
+const DNS_POLICY_CONFIG_KEY: &str =
+    r"SYSTEM\CurrentControlSet\Services\Dnscache\Parameters\DnsPolicyConfig";
+
+/// One NRPT rule's decoded values, read read-only from the registry.
+struct NrptRuleValues {
+    /// Braced GUID subkey name, usable verbatim as `Remove-DnsClientNrptRule -Name`.
+    guid: String,
+    /// The `Name` multi-sz (the namespaces, e.g. `[".test"]`).
+    name: Vec<String>,
+    /// The `GenericDNSServers` `REG_SZ` (the forward targets).
+    servers: String,
+}
+
+/// Read every NRPT rule from `DnsPolicyConfig`, read-only. A missing key (no
+/// rules ever created) yields an empty vec, not an error, matching the
+/// idempotent-probe contract. Read-only HKLM access needs no elevation.
+fn read_nrpt_rules() -> Vec<NrptRuleValues> {
+    use winreg::enums::{HKEY_LOCAL_MACHINE, KEY_READ};
+    use winreg::RegKey;
+
+    let hklm = RegKey::predef(HKEY_LOCAL_MACHINE);
+    let Ok(root) = hklm.open_subkey_with_flags(DNS_POLICY_CONFIG_KEY, KEY_READ) else {
+        return Vec::new();
+    };
+    let mut rules = Vec::new();
+    for guid in root.enum_keys().flatten() {
+        let Ok(sub) = root.open_subkey_with_flags(&guid, KEY_READ) else {
+            continue;
+        };
+        let name: Vec<String> = sub.get_value("Name").unwrap_or_default();
+        let servers: String = sub.get_value("GenericDNSServers").unwrap_or_default();
+        rules.push(NrptRuleValues {
+            guid,
+            name,
+            servers,
+        });
+    }
+    rules
+}
+
+/// Braced GUIDs of every NRPT rule whose namespace is `.tld`, regardless of the
+/// server it forwards to.
+///
+/// The Windows helper calls this (through `yerd-platform`, so `winreg` stays out
+/// of the helper's own dependency graph) to discover the rules it must remove
+/// before adding a fresh one - so a stale or wrong-server `.tld` rule is always
+/// replaced. Read-only, unprivileged.
+#[must_use]
+pub fn nrpt_guids_for_tld(tld: &str) -> Vec<String> {
+    read_nrpt_rules()
+        .into_iter()
+        .filter(|rule| nrpt::name_matches_tld(&rule.name, tld))
+        .map(|rule| rule.guid)
+        .collect()
+}
+
+/// Real `ResolverInstaller` for Windows, backed by an NRPT wildcard rule.
+///
+/// `install`/`uninstall` return `NeedsHelper` (the elevated write goes through
+/// `yerd-helper`, like Linux/macOS - the OS impl never spawns the helper).
+/// `is_installed` reads the registry directly and needs no elevation.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct WindowsResolverInstaller;
+
+impl WindowsResolverInstaller {
+    /// Construct.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self
+    }
+}
+
+impl ResolverInstaller for WindowsResolverInstaller {
+    fn install(&self, _tld: &str, _addr: SocketAddr) -> Result<(), PlatformError> {
+        Err(PlatformError::NeedsHelper {
+            operation: ops::INSTALL_RESOLVER,
+        })
+    }
+
+    fn uninstall(&self, _tld: &str) -> Result<(), PlatformError> {
+        Err(PlatformError::NeedsHelper {
+            operation: ops::UNINSTALL_RESOLVER,
+        })
+    }
+
+    /// Whether an NRPT rule routes `.tld` to `addr`. An NRPT rule carries no
+    /// port and always resolves to `<ip>:53`, so a non-53 `addr` can never be
+    /// served by a rule and reports `false` (keeping doctor's "resolver
+    /// installed" honest). An unspecified IPv4 (LAN mode) normalises to
+    /// loopback, the address the rule actually holds; IPv6 never matches.
+    fn is_installed(&self, tld: &str, addr: SocketAddr) -> Result<bool, PlatformError> {
+        if addr.port() != 53 {
+            return Ok(false);
+        }
+        let ip = match addr.ip() {
+            IpAddr::V4(v4) if v4.is_unspecified() => Ipv4Addr::LOCALHOST.to_string(),
+            IpAddr::V4(v4) => v4.to_string(),
+            IpAddr::V6(_) => return Ok(false),
+        };
+        let present = read_nrpt_rules()
+            .iter()
+            .any(|rule| nrpt::rule_matches(&rule.name, &rule.servers, tld, &ip));
+        Ok(present)
+    }
+}
+
+/// Whether this process holds an elevated (High or System integrity) token.
+///
+/// Spawns `%SystemRoot%\System32\whoami.exe /groups /fo csv /nh` (absolute path,
+/// never `PATH`) and parses the mandatory-integrity SID via the table-tested
+/// [`win_token`] parser. Any spawn/exit failure reports `false` (conservative,
+/// mirroring the Linux `/proc` fallback). No `unsafe`, no new crates - the
+/// `GetTokenInformation(TokenElevation)` alternative is `unsafe` FFI this crate's
+/// `#![forbid(unsafe_code)]` rules out.
+#[must_use]
+pub fn is_token_elevated() -> bool {
+    let Ok(output) = std::process::Command::new(whoami_path())
+        .args(["/groups", "/fo", "csv", "/nh"])
+        .output()
+    else {
+        return false;
+    };
+    if !output.status.success() {
+        return false;
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    win_token::csv_has_elevated_integrity(&stdout)
 }
 
 /// Map a schannel/`std::io` cert-store failure to the shared typed reason. Every

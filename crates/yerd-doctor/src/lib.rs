@@ -136,10 +136,23 @@ fn trust_findings(report: &StatusReport) -> Vec<Diagnosis> {
                 "*.{} is not routed to Yerd's DNS responder ({}).",
                 report.tld, report.dns_addr
             ),
-            "sudo yerd elevate resolver",
+            resolver_remedy(),
         ));
     }
     out
+}
+
+/// The command that installs the OS resolver redirect. Windows raises UAC from
+/// the helper itself (no `sudo`); Unix runs the elevation under `sudo`.
+#[cfg(windows)]
+fn resolver_remedy() -> &'static str {
+    "yerd elevate resolver"
+}
+
+/// See [`resolver_remedy`] (Windows variant).
+#[cfg(not(windows))]
+fn resolver_remedy() -> &'static str {
+    "sudo yerd elevate resolver"
 }
 
 /// PHP install-state findings: a missing install (which suppresses the
@@ -969,6 +982,26 @@ mod tests {
         let cs = codes(&diagnose(&r, None));
         assert!(cs.contains(&DiagnosisCode::CaNotTrusted));
         assert!(cs.contains(&DiagnosisCode::ResolverNotInstalled));
+    }
+
+    #[test]
+    fn resolver_remedy_is_os_appropriate() {
+        let mut r = healthy();
+        r.resolver_installed = Some(false);
+        let ds = diagnose(&r, None);
+        let remedy = ds
+            .iter()
+            .find(|d| d.code == DiagnosisCode::ResolverNotInstalled)
+            .and_then(|d| d.remedy.as_deref())
+            .expect("resolver finding carries a remedy");
+        assert!(remedy.contains("yerd elevate resolver"), "{remedy}");
+        #[cfg(windows)]
+        assert!(
+            !remedy.contains("sudo"),
+            "Windows raises UAC, not sudo: {remedy}"
+        );
+        #[cfg(not(windows))]
+        assert!(remedy.contains("sudo"), "{remedy}");
     }
 
     #[test]

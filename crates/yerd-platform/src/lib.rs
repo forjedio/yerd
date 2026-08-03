@@ -66,3 +66,9 @@ pub use os::active::{
 /// pipe name, shared by the daemon listener and every client.
 #[cfg(target_os = "windows")]
 pub use os::active::{current_user_sid, daemon_pipe_name};
+
+/// Windows privilege + NRPT helpers: the elevated-token probe (shared by the CLI
+/// and the helper) and the `.test` NRPT rule-GUID discovery (used by the helper
+/// through this crate so `winreg` stays out of its own dependency graph).
+#[cfg(target_os = "windows")]
+pub use os::active::{is_token_elevated, nrpt_guids_for_tld};

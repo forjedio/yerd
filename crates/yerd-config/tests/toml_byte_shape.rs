@@ -68,16 +68,21 @@ fn default_config_starts_with_version_line() {
 
 #[test]
 fn default_config_emits_dns_port_scalar_before_tables() {
+    // Windows defaults dns_port to 53 (NRPT carries no port); other OSes use 1053.
+    #[cfg(windows)]
+    let default_port = 53;
+    #[cfg(not(windows))]
+    let default_port = 1053;
     let s = Config::default().to_toml().unwrap();
     assert!(
-        s.contains("dns_port = 1053\n"),
-        "expected `dns_port = 1053` scalar; got: {s}"
+        s.contains(&format!("dns_port = {default_port}\n")),
+        "expected `dns_port = {default_port}` scalar; got: {s}"
     );
     let dns_at = s.find("dns_port = ").expect("dns_port present");
     let first_table = s.find("\n[").expect("at least one table");
     assert!(dns_at < first_table, "dns_port must precede tables in: {s}");
     let back = Config::from_toml(&s).unwrap();
-    assert_eq!(back.dns_port, 1053);
+    assert_eq!(back.dns_port, default_port);
 }
 
 #[test]

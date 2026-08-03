@@ -39,8 +39,9 @@ pub(crate) mod active {
 
     #[cfg(target_os = "windows")]
     pub use super::windows::{
-        current_user_sid, daemon_pipe_name, WindowsPaths as ActivePaths,
-        WindowsPortBinder as ActivePortBinder, WindowsPortRedirector as ActivePortRedirector,
+        current_user_sid, daemon_pipe_name, is_token_elevated, nrpt_guids_for_tld,
+        WindowsPaths as ActivePaths, WindowsPortBinder as ActivePortBinder,
+        WindowsPortRedirector as ActivePortRedirector,
         WindowsResolverInstaller as ActiveResolverInstaller,
         WindowsSystemMetrics as ActiveSystemMetrics,
         WindowsTerminalLauncher as ActiveTerminalLauncher, WindowsTrustStore as ActiveTrustStore,

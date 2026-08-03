@@ -1,21 +1,40 @@
-//! Effective-UID check.
+//! Privilege check.
 //!
 //! Linux reads `/proc/self/status`; macOS shells out to `/usr/bin/id`
 //! by absolute path so a poisoned `PATH` from the elevation mechanism
 //! cannot redirect the lookup. If `/proc` is missing (chroot, minimal
 //! container), Linux conservatively reports `false` - better to fail
-//! with `NotPrivileged` than to assume we're root.
+//! with `NotPrivileged` than to assume we're root. Windows checks its
+//! token's mandatory-integrity level (High/System) via
+//! `yerd_platform::is_token_elevated` - the same table-tested `whoami`
+//! parser the CLI-side preflight uses.
 //!
-//! Neither path uses `unsafe` FFI to `geteuid`, which is forbidden by
-//! the workspace `unsafe_code = "forbid"` lint.
+//! No path uses `unsafe` FFI (`geteuid` / `GetTokenInformation`), which is
+//! forbidden by the workspace `unsafe_code = "forbid"` lint.
 
 #[cfg(target_os = "linux")]
 use std::fs;
 
-/// True iff the helper's effective UID is 0.
+/// True iff the helper holds privilege: effective UID 0 on Unix, an elevated
+/// token on Windows.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[must_use]
 pub fn is_privileged() -> bool {
     effective_uid() == Some(0)
+}
+
+/// True iff the helper's process token is elevated (High/System integrity).
+#[cfg(windows)]
+#[must_use]
+pub fn is_privileged() -> bool {
+    yerd_platform::is_token_elevated()
+}
+
+/// Fallback for OSes with no privilege model wired up: never privileged.
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
+#[must_use]
+pub fn is_privileged() -> bool {
+    false
 }
 
 #[cfg(target_os = "linux")]
@@ -45,11 +64,6 @@ fn effective_uid() -> Option<u32> {
     }
     let s = String::from_utf8(out.stdout).ok()?;
     s.trim().parse().ok()
-}
-
-#[cfg(not(any(target_os = "linux", target_os = "macos")))]
-fn effective_uid() -> Option<u32> {
-    None
 }
 
 #[cfg(test)]

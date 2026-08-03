@@ -6,10 +6,11 @@ use crate::PlatformError;
 
 /// OS resolver redirection abstraction.
 ///
-/// `install` and `uninstall` always return `NeedsHelper` in Phase 1; the
-/// daemon materialises a `HelperInvocation::InstallResolver` /
+/// `install` and `uninstall` always return `NeedsHelper` (on every OS, Windows
+/// included); the daemon materialises a `HelperInvocation::InstallResolver` /
 /// `UninstallResolver` from the same `tld` and `addr` it passed here.
-/// `is_installed` reads public files and is unprivileged.
+/// `is_installed` is unprivileged: it reads public resolver files on Unix and
+/// the read-only HKLM NRPT registry on Windows.
 ///
 /// Both `uninstall(tld)` for an absent TLD and `is_installed(tld)` for an
 /// absent TLD return `Ok(())` / `Ok(false)` - idempotent.
