@@ -65,10 +65,14 @@ impl Paths for UnsupportedPaths {
     }
 }
 
-/// Stub `TrustStore` for unsupported OSes.
+/// Stub `TrustStore` for unsupported OSes. Windows now has a real
+/// [`super::windows::WindowsTrustStore`], so this stub is unused there (but the
+/// module stays compiled on Windows for the other still-stubbed traits).
+#[cfg_attr(windows, allow(dead_code))]
 #[derive(Debug, Default, Clone, Copy)]
 pub struct UnsupportedTrustStore;
 
+#[cfg_attr(windows, allow(dead_code))]
 impl UnsupportedTrustStore {
     /// Construct.
     #[must_use]
@@ -201,10 +205,15 @@ impl SystemMetrics for UnsupportedSystemMetrics {
     }
 }
 
-/// Unsupported-OS `PortRedirector`: always `None` (not applicable).
+/// Unsupported-OS `PortRedirector`: always `None` (not applicable). Windows now
+/// has a real [`super::windows::WindowsPortRedirector`], so this stub is unused
+/// there (but the module stays compiled on Windows for the other still-stubbed
+/// traits).
+#[cfg_attr(windows, allow(dead_code))]
 #[derive(Debug, Default, Clone, Copy)]
 pub struct UnsupportedPortRedirector;
 
+#[cfg_attr(windows, allow(dead_code))]
 impl UnsupportedPortRedirector {
     /// Construct.
     #[must_use]

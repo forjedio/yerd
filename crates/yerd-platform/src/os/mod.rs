@@ -1,9 +1,10 @@
 //! Per-OS implementations selected by `#[cfg(target_os = ...)]`.
 //!
 //! Exactly one of `linux`, `macos`, `windows`, or `unsupported` is active per
-//! build. Windows has a real `Paths` impl (`os::windows`) and delegates every
-//! other trait to the `unsupported` stub, so `unsupported` stays compiled on
-//! Windows too. The `active` re-export below is the entry point used by
+//! build. Windows implements a growing subset with real `Windows*` types
+//! (`Paths`, `PortBinder`, `PortRedirector`, `TrustStore`) and delegates the
+//! remaining traits to the `unsupported` stub, so `unsupported` stays compiled
+//! on Windows too. The `active` re-export below is the entry point used by
 //! `lib.rs`.
 
 #[cfg(target_os = "linux")]

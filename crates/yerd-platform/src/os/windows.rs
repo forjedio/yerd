@@ -1,28 +1,33 @@
 //! Windows OS implementation.
 //!
-//! Only [`WindowsPaths`] is a real implementation in Phase 1. Every other trait
-//! is a type alias to the `os::unsupported` stub, so the trait impls come for
-//! free and stay total. Later phases replace one alias at a time with a real
-//! `Windows*` type in the same change that adds its full trait impl (the
-//! "never half-flip" rule).
+//! Windows implements a growing subset of the traits with real `Windows*`
+//! types (`Paths`, `PortBinder`, `PortRedirector`); the remainder are type
+//! aliases to the `os::unsupported` stub, so those impls come for free and stay
+//! total. Later phases replace one alias at a time with a real `Windows*` type
+//! in the same change that adds its full trait impl (the "never half-flip"
+//! rule).
 
 #![allow(clippy::similar_names)]
 
 use std::net::{Ipv4Addr, SocketAddr, TcpListener};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
+use schannel::cert_context::CertContext;
+use schannel::cert_store::{CertAdd, CertStore};
+
+use crate::error::{ops, TrustStoreErrorReason};
 use crate::paths::{Paths, PlatformDirs};
 use crate::port_binder::{BoundPort, PortBinder, PortPair};
-use crate::pure::{port_plan, win_pipe};
+use crate::port_redirect::PortRedirector;
+use crate::pure::{pem_match, port_plan, win_pipe};
+use crate::trust_store::{CaFingerprint, NssOutcome, TrustStore};
 use crate::{BindPairErrorReason, PlatformError};
 
 pub use super::unsupported::{
-    UnsupportedPortRedirector as WindowsPortRedirector,
     UnsupportedResolverInstaller as WindowsResolverInstaller,
     UnsupportedSystemMetrics as WindowsSystemMetrics,
     UnsupportedTerminalLauncher as WindowsTerminalLauncher,
-    UnsupportedTrustStore as WindowsTrustStore,
 };
 
 /// Read `%VAR%` as a non-empty directory path, or `MissingHomeDir` when unset or
@@ -216,6 +221,183 @@ fn bind_pair_impl(
     }
 }
 
+/// Windows `PortRedirector` implementation.
+///
+/// Not applicable on Windows: sub-1024 binds are unprivileged, so
+/// [`WindowsPortBinder`] direct-binds 80/443 and there is no pf-style redirect
+/// to be "active". [`Self::is_active`] therefore returns `None` ("N/A"), the
+/// same shape the Linux impl uses. The point of the real type is to inherit the
+/// trait-default [`PortRedirector::foreign_web_listener`] loopback probe, which
+/// is correct on any OS where Yerd serves over loopback, so the doctor can
+/// detect a foreign process squatting 80/443.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct WindowsPortRedirector;
+
+impl WindowsPortRedirector {
+    /// Construct.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self
+    }
+}
+
+impl PortRedirector for WindowsPortRedirector {
+    fn is_active(&self) -> Option<bool> {
+        None
+    }
+}
+
+/// Map a schannel/`std::io` cert-store failure to the shared typed reason. Every
+/// Win32 cert-store call surfaces failures as [`std::io::Error`]; there is no
+/// finer structure to preserve, so they collapse to
+/// [`TrustStoreErrorReason::SystemApi`] like the macOS `security-framework`
+/// errors do.
+fn sys_api(e: std::io::Error) -> PlatformError {
+    PlatformError::TrustStore {
+        reason: TrustStoreErrorReason::SystemApi(e.to_string()),
+    }
+}
+
+/// Add a DER certificate to `store`, replacing any existing copy of the same
+/// cert. Takes `&mut CertStore` because schannel's `add_cert` mutates the store.
+/// Adding to a real "Root" store raises the Windows confirmation dialog.
+fn add_der(store: &mut CertStore, der: &[u8]) -> Result<(), PlatformError> {
+    let cx = CertContext::new(der).map_err(sys_api)?;
+    store
+        .add_cert(&cx, CertAdd::ReplaceExisting)
+        .map(|_| ())
+        .map_err(sys_api)
+}
+
+/// Every certificate in `store` whose DER SHA-256 equals `fp`. The `certs()`
+/// iterator hands out cloned contexts, so the returned owned contexts stay valid
+/// after the borrow of `store` ends (and can be deleted without mid-iteration
+/// invalidation).
+fn find_by_fp(store: &CertStore, fp: &CaFingerprint) -> Vec<CertContext> {
+    store
+        .certs()
+        .filter(|cx| pem_match::sha256(cx.to_der()) == *fp.as_bytes())
+        .collect()
+}
+
+/// Concatenated PEM of every certificate in `store`, newline-separated. Used to
+/// render a Root store's public roots for the PHP CA bundle.
+fn store_root_pem(store: &CertStore) -> String {
+    let mut pem = String::new();
+    for cx in store.certs() {
+        pem.push_str(&pem_match::der_to_pem(cx.to_der()));
+        if !pem.ends_with('\n') {
+            pem.push('\n');
+        }
+    }
+    pem
+}
+
+/// Real `TrustStore` for Windows, backed by the `CurrentUser` "Root" store.
+///
+/// Unlike macOS/Linux, install/uninstall are performed **directly and without
+/// elevation** here rather than returning `NeedsHelper`: adding a CA to the
+/// `CurrentUser` Root store needs no admin rights, only a one-time OS confirmation
+/// dialog. That dialog requires an **interactive desktop**, so these mutations
+/// must run in the CLI or GUI process and NEVER in `yerdd` (Phase 5 turns the
+/// daemon into a session-0 service with no desktop).
+#[derive(Debug, Default, Clone, Copy)]
+pub struct WindowsTrustStore;
+
+impl WindowsTrustStore {
+    /// Construct.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self
+    }
+}
+
+impl TrustStore for WindowsTrustStore {
+    /// Install `ca_pem` into the `CurrentUser` Root store.
+    ///
+    /// The fingerprint is verified against the exact DER bytes about to be
+    /// imported (the integrity gate the macOS helper flow uses) before any store
+    /// is opened, so a mismatch fails without side effects. Pops the Windows
+    /// root-store confirmation dialog; a user decline surfaces as an error.
+    /// Must run in an interactive session, never from the daemon.
+    fn install_system(&self, ca_pem: &str, fp: &CaFingerprint) -> Result<(), PlatformError> {
+        let der = pem_match::first_cert_der(ca_pem.as_bytes()).ok_or_else(|| {
+            PlatformError::TrustStore {
+                reason: TrustStoreErrorReason::SystemApi("CA PEM has no certificate".to_owned()),
+            }
+        })?;
+        if pem_match::sha256(&der) != *fp.as_bytes() {
+            return Err(PlatformError::TrustStore {
+                reason: TrustStoreErrorReason::SystemApi(
+                    "CA PEM does not match the expected fingerprint".to_owned(),
+                ),
+            });
+        }
+        let mut store = CertStore::open_current_user("Root").map_err(sys_api)?;
+        add_der(&mut store, &der)
+    }
+
+    /// Remove every `CurrentUser`-Root certificate matching `fp`. Idempotent: zero
+    /// matches is `Ok(())`. Each deletion pops its own confirmation dialog.
+    fn uninstall_system(&self, fp: &CaFingerprint) -> Result<(), PlatformError> {
+        let store = CertStore::open_current_user("Root").map_err(sys_api)?;
+        for cx in find_by_fp(&store, fp) {
+            cx.delete().map_err(sys_api)?;
+        }
+        Ok(())
+    }
+
+    /// Whether a certificate matching `fp` is present in the `CurrentUser` Root
+    /// store. Read-only, no dialog.
+    fn is_present_system(&self, fp: &CaFingerprint) -> Result<bool, PlatformError> {
+        let store = CertStore::open_current_user("Root").map_err(sys_api)?;
+        Ok(!find_by_fp(&store, fp).is_empty())
+    }
+
+    fn is_trusted(&self, _ca_path: &Path, fp: &CaFingerprint) -> Result<bool, PlatformError> {
+        // On Windows, presence in the Root store *is* trust (there is no separate
+        // trust-settings layer like macOS), so the effective-trust probe is the
+        // same as the presence probe. `ca_path` is unused here.
+        self.is_present_system(fp)
+    }
+
+    /// Firefox/NSS trust on Windows is a Phase 6 TODO (locked out of scope);
+    /// Chromium-family browsers follow the system Root store this impl manages.
+    fn install_firefox_nss(&self, _: &Path) -> Result<NssOutcome, PlatformError> {
+        Err(PlatformError::Unsupported {
+            operation: ops::INSTALL_FIREFOX_NSS,
+        })
+    }
+
+    fn uninstall_firefox_nss(&self) -> Result<NssOutcome, PlatformError> {
+        Err(PlatformError::Unsupported {
+            operation: ops::UNINSTALL_FIREFOX_NSS,
+        })
+    }
+
+    /// Public roots from `LocalMachine` Root + `CurrentUser` Root as a single PEM,
+    /// for the PHP CA bundle. Each store open is best-effort (a failed open is
+    /// skipped, not fatal); read-only, so no admin is needed even for the
+    /// `LocalMachine` reads. `Ok(None)` when neither store yields a certificate.
+    fn system_root_bundle(&self) -> Result<Option<String>, PlatformError> {
+        let mut pem = String::new();
+        for store in [
+            CertStore::open_local_machine("Root"),
+            CertStore::open_current_user("Root"),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            pem.push_str(&store_root_pem(&store));
+        }
+        if pem.trim().is_empty() {
+            Ok(None)
+        } else {
+            Ok(Some(pem))
+        }
+    }
+}
+
 /// Process-lifetime cache of the resolved SID, so [`current_user_sid`] spawns
 /// `whoami` at most once per process.
 static USER_SID: OnceLock<String> = OnceLock::new();
@@ -266,4 +448,79 @@ fn spawn_whoami_sid() -> Result<String, PlatformError> {
 /// shared derivation used by the daemon listener and every client.
 pub fn daemon_pipe_name(dirs: &PlatformDirs) -> Result<String, PlatformError> {
     Ok(win_pipe::pipe_name(&current_user_sid()?, &dirs.runtime))
+}
+
+#[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::indexing_slicing
+)]
+mod tests {
+    use schannel::cert_store::Memory;
+
+    use super::*;
+
+    /// Mint a throwaway CA via `yerd-tls`; the returned PEM, DER, and
+    /// fingerprint all describe the same certificate. Fingerprint identity is
+    /// over the DER body, matching [`CaFingerprint::from_der`].
+    fn mint_ca(cn: &str) -> (String, Vec<u8>, CaFingerprint) {
+        let now = time::OffsetDateTime::now_utc();
+        let v =
+            yerd_tls::Validity::new(now - time::Duration::days(1), now + time::Duration::days(1))
+                .unwrap();
+        let ca = yerd_tls::CertAuthority::generate(cn, v).unwrap();
+        let der = ca.cert_der().to_vec();
+        let fp = CaFingerprint::from_der(&der);
+        (ca.cert_pem().to_owned(), der, fp)
+    }
+
+    #[test]
+    fn memory_store_add_find_delete_round_trip() {
+        let (_pem, der, fp) = mint_ca("Yerd Memory Round-Trip CA");
+        let mut store = Memory::new().unwrap().into_store();
+        assert!(find_by_fp(&store, &fp).is_empty(), "absent before add");
+        add_der(&mut store, &der).unwrap();
+        let found = find_by_fp(&store, &fp);
+        assert_eq!(found.len(), 1, "present after add");
+        for cx in found {
+            cx.delete().unwrap();
+        }
+        assert!(find_by_fp(&store, &fp).is_empty(), "absent after delete");
+    }
+
+    #[test]
+    fn store_root_pem_renders_added_cert() {
+        let (_pem, der, _fp) = mint_ca("Yerd Render CA");
+        let mut store = Memory::new().unwrap().into_store();
+        add_der(&mut store, &der).unwrap();
+        let pem = store_root_pem(&store);
+        assert!(pem.contains("BEGIN CERTIFICATE"), "{pem}");
+    }
+
+    /// The fingerprint integrity gate rejects a PEM whose DER does not match the
+    /// expected fingerprint, and does so *before* any real store is opened (no
+    /// dialog risk, CI-safe by construction).
+    #[test]
+    fn install_rejects_fingerprint_mismatch() {
+        let (pem_a, _der_a, _fp_a) = mint_ca("Yerd CA A");
+        let (_pem_b, _der_b, fp_b) = mint_ca("Yerd CA B");
+        let err = WindowsTrustStore::new()
+            .install_system(&pem_a, &fp_b)
+            .unwrap_err();
+        assert!(
+            matches!(err, PlatformError::TrustStore { .. }),
+            "expected a TrustStore error, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn install_rejects_pem_without_certificate() {
+        let fp = CaFingerprint::from_der(b"anything");
+        let err = WindowsTrustStore::new()
+            .install_system("not a pem", &fp)
+            .unwrap_err();
+        assert!(matches!(err, PlatformError::TrustStore { .. }), "{err:?}");
+    }
 }

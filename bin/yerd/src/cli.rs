@@ -216,13 +216,17 @@ pub enum Command {
         #[command(subcommand)]
         action: ProxyAction,
     },
-    /// Grant yerd OS-level privileges (run via `sudo`). No subcommand = all.
+    /// Grant yerd OS-level privileges (run via `sudo` on macOS/Linux). No
+    /// subcommand = all. On Windows no `sudo`/admin is needed and only `trust`
+    /// is active until Phase 4 (a one-time confirmation dialog appears instead).
     Elevate {
         /// Which privilege to grant; omit to grant all.
         #[command(subcommand)]
         target: Option<ElevateTarget>,
     },
-    /// Revert what `elevate` configured (run via `sudo`). No subcommand = all.
+    /// Revert what `elevate` configured (run via `sudo` on macOS/Linux). No
+    /// subcommand = all. On Windows no `sudo`/admin is needed and only `trust`
+    /// is active until Phase 4.
     Unelevate {
         /// Which privilege to revert; omit to revert all.
         #[command(subcommand)]

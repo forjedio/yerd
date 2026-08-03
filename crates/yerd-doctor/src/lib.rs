@@ -94,7 +94,7 @@ fn trust_findings(report: &StatusReport) -> Vec<Diagnosis> {
             DiagnosisCode::CaNotTrusted,
             "Local CA not trusted",
             "HTTPS sites will show certificate warnings until the CA is trusted.".to_owned(),
-            "sudo yerd elevate trust",
+            elevate_trust_remedy(),
         ));
     }
     match report.ca.browser_trust {
@@ -323,7 +323,7 @@ fn port_findings(report: &StatusReport) -> Vec<Diagnosis> {
             "A program other than Yerd is listening on a privileged web port (80/443). \
              Yerd can't serve your .test sites there until it's stopped."
                 .to_owned(),
-            "Stop the other web server (e.g. Apache, nginx, Valet), then `sudo yerd elevate ports`",
+            foreign_web_listener_remedy(),
         ));
     }
     if let Some(unbound) = report.web_unbound {
@@ -359,13 +359,7 @@ fn port_findings(report: &StatusReport) -> Vec<Diagnosis> {
         out.push(warn(
             DiagnosisCode::PortFallback,
             "Privileged ports not bound",
-            format!(
-                "HTTP {}→{}, HTTPS {}→{}: 80/443 need elevation, serving on the rootless ports.",
-                report.http.requested,
-                report.http.bound,
-                report.https.requested,
-                report.https.bound
-            ),
+            port_fallback_detail(report),
             port_fallback_remedy(report.lan_enabled),
         ));
     }
@@ -428,10 +422,51 @@ fn lan_redirect_stale_finding(report: &StatusReport) -> Option<Diagnosis> {
 /// so `elevate ports` alone already covers LAN and mentioning both would be
 /// redundant.
 fn port_fallback_remedy(lan_enabled: bool) -> &'static str {
+    if cfg!(windows) {
+        return "Free port 80/443 (stop the other web server), then restart the daemon";
+    }
     if cfg!(target_os = "macos") && lan_enabled {
         "sudo yerd elevate ports  (then, for LAN devices: sudo yerd elevate lan)"
     } else {
         "sudo yerd elevate ports"
+    }
+}
+
+/// Detail line for the privileged-ports-not-bound warning. On Windows sub-1024
+/// binds are unprivileged, so a fallback means the ports were busy, not that
+/// elevation is missing; elsewhere it is the classic "need elevation" case.
+fn port_fallback_detail(report: &StatusReport) -> String {
+    let ports = format!(
+        "HTTP {}→{}, HTTPS {}→{}",
+        report.http.requested, report.http.bound, report.https.requested, report.https.bound
+    );
+    if cfg!(windows) {
+        format!("{ports}: 80/443 were busy when Yerd started, serving on the rootless ports.")
+    } else {
+        format!("{ports}: 80/443 need elevation, serving on the rootless ports.")
+    }
+}
+
+/// Remedy for [`DiagnosisCode::CaNotTrusted`]. Windows CurrentUser-Root trust
+/// needs no elevation, so it drops the `sudo` the Unix helper flow requires.
+fn elevate_trust_remedy() -> &'static str {
+    if cfg!(windows) {
+        "yerd elevate trust"
+    } else {
+        "sudo yerd elevate trust"
+    }
+}
+
+/// Remedy for [`DiagnosisCode::ForeignWebListener`]. Windows has no
+/// `yerd elevate ports` (it direct-binds), and the usual squatters are
+/// IIS/W3SVC, an `http.sys` listener, or legacy Skype.
+fn foreign_web_listener_remedy() -> &'static str {
+    if cfg!(windows) {
+        "Stop the other web server: IIS/W3SVC (net stop w3svc), an http.sys app \
+         (netsh http show servicestate), or legacy Skype's port-80 fallback, then \
+         restart the Yerd daemon"
+    } else {
+        "Stop the other web server (e.g. Apache, nginx, Valet), then `sudo yerd elevate ports`"
     }
 }
 
@@ -665,24 +700,63 @@ mod tests {
             .find(|d| d.code == DiagnosisCode::PortFallback)
             .and_then(|d| d.remedy)
             .expect("port fallback warning with remedy");
-        assert!(remedy.contains("sudo yerd elevate ports"));
+        #[cfg(windows)]
+        assert!(remedy.contains("restart the daemon"), "{remedy}");
+        #[cfg(not(windows))]
+        assert!(remedy.contains("sudo yerd elevate ports"), "{remedy}");
     }
 
     #[test]
     fn port_fallback_remedy_is_platform_aware_in_lan_mode() {
-        assert_eq!(port_fallback_remedy(false), "sudo yerd elevate ports");
-        let lan = port_fallback_remedy(true);
-        assert!(lan.contains("sudo yerd elevate ports"));
-        #[cfg(target_os = "macos")]
-        assert!(
-            lan.contains("elevate lan"),
-            "macOS LAN needs the separate pf rule"
-        );
-        #[cfg(not(target_os = "macos"))]
-        assert!(
-            !lan.contains("elevate lan"),
-            "on Linux `elevate lan` == `elevate ports`; don't tell users to run both"
-        );
+        #[cfg(windows)]
+        {
+            assert!(port_fallback_remedy(false).contains("restart the daemon"));
+            assert!(!port_fallback_remedy(true).contains("elevate"));
+        }
+        #[cfg(not(windows))]
+        {
+            assert_eq!(port_fallback_remedy(false), "sudo yerd elevate ports");
+            let lan = port_fallback_remedy(true);
+            assert!(lan.contains("sudo yerd elevate ports"));
+            #[cfg(target_os = "macos")]
+            assert!(
+                lan.contains("elevate lan"),
+                "macOS LAN needs the separate pf rule"
+            );
+            #[cfg(not(target_os = "macos"))]
+            assert!(
+                !lan.contains("elevate lan"),
+                "on Linux `elevate lan` == `elevate ports`; don't tell users to run both"
+            );
+        }
+    }
+
+    #[test]
+    fn foreign_web_listener_remedy_is_platform_aware() {
+        let remedy = foreign_web_listener_remedy();
+        #[cfg(windows)]
+        {
+            assert!(remedy.contains("W3SVC"), "{remedy}");
+            assert!(!remedy.contains("elevate"), "{remedy}");
+        }
+        #[cfg(not(windows))]
+        assert!(remedy.contains("sudo yerd elevate ports"), "{remedy}");
+    }
+
+    #[test]
+    fn ca_not_trusted_remedy_drops_sudo_on_windows() {
+        let mut r = healthy();
+        r.ca.trusted_system = Some(false);
+        let remedy = diagnose(&r, None)
+            .into_iter()
+            .find(|d| d.code == DiagnosisCode::CaNotTrusted)
+            .and_then(|d| d.remedy)
+            .expect("CaNotTrusted warning with remedy");
+        assert!(remedy.contains("yerd elevate trust"), "{remedy}");
+        #[cfg(windows)]
+        assert!(!remedy.contains("sudo"), "{remedy}");
+        #[cfg(not(windows))]
+        assert!(remedy.contains("sudo"), "{remedy}");
     }
 
     #[test]

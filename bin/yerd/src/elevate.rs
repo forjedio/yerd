@@ -8,21 +8,23 @@
 //! `current_exe` sibling - never from the daemon - and (b) owner-checks the CA
 //! path before trusting it. The daemon itself is never restarted as root.
 
-/// Non-Unix stub: privileged setup is Unix-only until the Phase 4 Windows
-/// elevation model lands. Kept `async` to match the Unix entry point the CLI
-/// dispatch awaits.
-#[cfg(not(unix))]
+/// Non-Unix, non-Windows stub: privileged setup is unavailable on other OSes.
+/// Kept `async` to match the Unix entry point the CLI dispatch awaits.
+#[cfg(not(any(unix, windows)))]
 #[allow(clippy::unused_async)]
 pub async fn run_elevate(
     _target: Option<crate::cli::ElevateTarget>,
     _undo: bool,
 ) -> std::process::ExitCode {
-    eprintln!("yerd: elevate is only supported on Unix (macOS/Linux)");
+    eprintln!("yerd: elevate is only supported on Unix (macOS/Linux) and Windows");
     std::process::ExitCode::from(78)
 }
 
 #[cfg(unix)]
 pub use unix_impl::run_elevate;
+
+#[cfg(windows)]
+pub use windows_impl::run_elevate;
 
 // Small Unix helpers reused by `crate::uninstall` (root detection, the invoking
 // user's uid under sudo, sibling-binary resolution, and the audited helper
@@ -752,6 +754,184 @@ mod unix_impl {
                 targets(Some(ElevateTarget::Resolver)),
                 vec![ElevateTarget::Resolver]
             );
+        }
+    }
+}
+
+/// Windows `yerd elevate` / `yerd unelevate`: the CA trust flow only.
+///
+/// `CurrentUser`-Root trust needs no admin/UAC, so there is no root check and no
+/// `yerd-helper` involvement - the CLI (an interactive process) performs the
+/// store mutation directly. The daemon must never do this: adding to (or
+/// deleting from) the Root store pops an OS confirmation dialog that needs an
+/// interactive desktop, and Phase 5 makes `yerdd` a session-0 service with none.
+/// `Resolver` is Phase 4 (Windows DNS) and `Ports`/`Lan` are not applicable
+/// (Windows direct-binds 80/443), so those targets print a note and skip.
+#[cfg(windows)]
+mod windows_impl {
+    use std::path::PathBuf;
+    use std::process::ExitCode;
+
+    use yerd_ipc::{Request, Response};
+    use yerd_platform::{ActiveTrustStore, CaFingerprint, TrustStore};
+
+    use crate::cli::ElevateTarget;
+    use crate::transport;
+
+    /// Expand an optional target into the concrete list (None = all, in
+    /// trust → resolver → ports order, mirroring the Unix shape). `Resolver`,
+    /// `Ports`, and `Lan` are skips on Windows (see [`run_one`]).
+    fn targets(target: Option<ElevateTarget>) -> Vec<ElevateTarget> {
+        match target {
+            Some(t) => vec![t],
+            None => vec![
+                ElevateTarget::Trust,
+                ElevateTarget::Resolver,
+                ElevateTarget::Ports,
+            ],
+        }
+    }
+
+    /// Entry point. No admin/UAC is needed for the `CurrentUser` Root store.
+    pub async fn run_elevate(target: Option<ElevateTarget>, undo: bool) -> ExitCode {
+        let mut any_failed = false;
+        for t in targets(target) {
+            if !run_one(t, undo).await {
+                any_failed = true;
+            }
+        }
+        if any_failed {
+            ExitCode::from(1)
+        } else {
+            ExitCode::SUCCESS
+        }
+    }
+
+    /// Handle one target; returns whether it succeeded (a deliberate skip counts
+    /// as success). Only `Trust` does real work on Windows.
+    async fn run_one(target: ElevateTarget, undo: bool) -> bool {
+        match target {
+            ElevateTarget::Trust => run_trust(undo).await,
+            ElevateTarget::Resolver => {
+                println!(
+                    "==> resolver: DNS setup arrives with the Windows elevation work (Phase 4); skipping."
+                );
+                true
+            }
+            ElevateTarget::Ports | ElevateTarget::Lan => {
+                println!(
+                    "==> {target:?}: not needed on Windows (Yerd binds 80/443 directly); skipping."
+                );
+                true
+            }
+        }
+    }
+
+    /// Trust (or untrust) the local CA in the `CurrentUser` Root store. Fetches the
+    /// CA facts from the running daemon, re-verifies the fingerprint against the
+    /// PEM on disk (inside `install_system`), then adds/removes the cert. The add
+    /// and delete both block on a Windows confirmation dialog, so the store call
+    /// runs on a blocking thread.
+    async fn run_trust(undo: bool) -> bool {
+        let (ca_path, ca_fingerprint) = match fetch_ca_facts().await {
+            Ok(facts) => facts,
+            Err(msg) => {
+                eprintln!("yerd: {msg}");
+                return false;
+            }
+        };
+        let fp = match CaFingerprint::from_hex(&ca_fingerprint) {
+            Ok(fp) => fp,
+            Err(e) => {
+                eprintln!("yerd: the daemon reported a malformed CA fingerprint: {e}");
+                return false;
+            }
+        };
+        let pem = match std::fs::read_to_string(&ca_path) {
+            Ok(p) => p,
+            Err(e) => {
+                eprintln!("yerd: cannot read the CA at {}: {e}", ca_path.display());
+                return false;
+            }
+        };
+
+        if undo {
+            println!("==> trust: removing the local CA from the Windows user Root store");
+        } else {
+            println!("==> trust: trusting the local CA in the Windows user Root store");
+        }
+        println!("    Windows will show a security-confirmation dialog; approve it to continue.");
+
+        let outcome = tokio::task::spawn_blocking(move || {
+            let ts = ActiveTrustStore::new();
+            if undo {
+                ts.uninstall_system(&fp)
+            } else {
+                ts.install_system(&pem, &fp)
+            }
+        })
+        .await;
+
+        match outcome {
+            Ok(Ok(())) => {
+                if undo {
+                    println!("    ok - the local CA is no longer trusted.");
+                } else {
+                    println!(
+                        "    ok - the local CA is now trusted; .test HTTPS sites will validate."
+                    );
+                }
+                true
+            }
+            Ok(Err(e)) => {
+                eprintln!("    failed: {e}");
+                false
+            }
+            Err(e) => {
+                eprintln!("    failed: the trust task did not complete: {e}");
+                false
+            }
+        }
+    }
+
+    /// Fetch `(ca_path, ca_fingerprint)` from the running daemon over the Windows
+    /// named-pipe transport.
+    async fn fetch_ca_facts() -> Result<(PathBuf, String), String> {
+        match transport::exchange(&Request::DaemonInfo).await {
+            Ok(Response::Info {
+                ca_path,
+                ca_fingerprint,
+                ..
+            }) => Ok((ca_path, ca_fingerprint)),
+            Ok(other) => Err(format!("unexpected response to DaemonInfo: {other:?}")),
+            Err(e) => Err(e.to_string()),
+        }
+    }
+
+    #[cfg(test)]
+    #[allow(clippy::unwrap_used, clippy::panic, clippy::indexing_slicing)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn targets_none_expands_to_trust_resolver_ports_in_order() {
+            assert_eq!(
+                targets(None),
+                vec![
+                    ElevateTarget::Trust,
+                    ElevateTarget::Resolver,
+                    ElevateTarget::Ports
+                ]
+            );
+        }
+
+        #[test]
+        fn targets_some_is_a_singleton() {
+            assert_eq!(
+                targets(Some(ElevateTarget::Trust)),
+                vec![ElevateTarget::Trust]
+            );
+            assert_eq!(targets(Some(ElevateTarget::Lan)), vec![ElevateTarget::Lan]);
         }
     }
 }

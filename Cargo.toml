@@ -45,6 +45,12 @@ nix                = { version = "0.29", default-features = false, features = ["
 # yerd-supervise on Windows to kill a whole process tree on drop/kill. Transitive
 # deps (`windows 0.61`, `thiserror 1`) already resolve in Cargo.lock.
 win32job            = "2"
+# Safe CurrentUser/LocalMachine cert-store access for the Windows `TrustStore`
+# (install/probe/uninstall the Yerd CA, enumerate host roots for the PHP CA
+# bundle). Cert-store modules only, NEVER its TLS stack, so the rustls-only rule
+# and yerd-platform's no_runtime_deps guard stay intact. Sole transitive dep
+# (`windows-sys 0.61`) already resolves in Cargo.lock. No `unsafe` in our code.
+schannel            = "0.1"
 reqwest            = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 hyper              = { version = "1", default-features = false, features = ["http1", "server", "client"] }
 hyper-util         = { version = "0.1", default-features = false, features = ["http1", "server", "client", "tokio"] }

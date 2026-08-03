@@ -197,7 +197,7 @@ fn split_path_query(path_and_query: &str) -> (&str, &str) {
 mod tests {
     use super::*;
     use http::HeaderMap;
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     use std::path::PathBuf;
 
     fn lookup<'a>(pairs: &'a [(Vec<u8>, Vec<u8>)], key: &[u8]) -> Option<&'a [u8]> {
@@ -254,6 +254,65 @@ mod tests {
             Some(b"/srv/www/app".as_slice())
         );
         assert!(lookup(&pairs, b"HTTPS").is_none());
+    }
+
+    /// On Windows `document_root.join(script_rel)` yields native `\`
+    /// separators, which PHP accepts for SCRIPT_FILENAME/DOCUMENT_ROOT; but
+    /// SCRIPT_NAME is a URL path and must be normalized to `/` (the `:83`
+    /// normalization - the classic separator bug). Pins the native filename
+    /// form and the slashed script name together.
+    #[cfg(windows)]
+    #[test]
+    fn windows_script_filename_is_native_but_script_name_is_slashed() {
+        let root = PathBuf::from(r"C:\sites\shop");
+        let rel = Path::new("wp-admin").join("index.php");
+        let pairs = build_params(
+            "GET",
+            "/wp-admin/?page=1",
+            &make_headers("shop.test"),
+            &root,
+            Some(rel.as_path()),
+            false,
+            "127.0.0.1:1".parse().unwrap(),
+            "127.0.0.1:80".parse().unwrap(),
+            None,
+        );
+        assert_eq!(
+            lookup(&pairs, b"SCRIPT_FILENAME"),
+            Some(r"C:\sites\shop\wp-admin\index.php".as_bytes())
+        );
+        assert_eq!(
+            lookup(&pairs, b"DOCUMENT_ROOT"),
+            Some(r"C:\sites\shop".as_bytes())
+        );
+        let script_name = lookup(&pairs, b"SCRIPT_NAME").unwrap();
+        assert_eq!(script_name, b"/wp-admin/index.php".as_slice());
+        assert!(
+            !script_name.contains(&b'\\'),
+            "SCRIPT_NAME must not contain backslashes"
+        );
+    }
+
+    /// SCRIPT_NAME is always a URL path: on every OS a multi-segment
+    /// `script_rel` built with the native separator must render with `/` only
+    /// and never a `\`.
+    #[test]
+    fn script_name_uses_forward_slashes_on_every_os() {
+        let rel = Path::new("wp-admin").join("index.php");
+        let pairs = build_params(
+            "GET",
+            "/wp-admin/",
+            &make_headers("blog.test"),
+            Path::new("/srv/www/blog"),
+            Some(rel.as_path()),
+            false,
+            "127.0.0.1:1".parse().unwrap(),
+            "127.0.0.1:80".parse().unwrap(),
+            None,
+        );
+        let script_name = lookup(&pairs, b"SCRIPT_NAME").unwrap();
+        assert_eq!(script_name, b"/wp-admin/index.php".as_slice());
+        assert!(!script_name.contains(&b'\\'));
     }
 
     #[test]

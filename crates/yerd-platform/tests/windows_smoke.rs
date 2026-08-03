@@ -1,6 +1,10 @@
-//! Windows smoke test: the real impls (`WindowsPaths`, `WindowsPortBinder`)
-//! resolve/bind, and every trait still aliased to the `unsupported` stub returns
-//! `Unsupported`.
+//! Windows smoke test: the real impls (`WindowsPaths`, `WindowsPortBinder`,
+//! `WindowsPortRedirector`, `WindowsTrustStore`) resolve/bind/probe over their
+//! public API, while the traits still aliased to the `unsupported` stub
+//! (resolver, terminal) return `Unsupported`. The trust probes here are
+//! read-only against the real `CurrentUser` Root store (no confirmation dialog);
+//! the hermetic `Memory`-store add/find/delete round-trip lives as a unit test
+//! in `os::windows`.
 
 #![cfg(target_os = "windows")]
 #![allow(
@@ -15,9 +19,9 @@ use std::net::{Ipv4Addr, SocketAddr};
 mod common;
 
 use yerd_platform::{
-    ActivePaths, ActivePortBinder, ActiveResolverInstaller, ActiveTerminalLauncher,
-    ActiveTrustStore, Paths, PlatformError, PortBinder, ResolverInstaller, TerminalLauncher,
-    TrustStore,
+    ActivePaths, ActivePortBinder, ActivePortRedirector, ActiveResolverInstaller,
+    ActiveTerminalLauncher, ActiveTrustStore, Paths, PlatformError, PortBinder, PortRedirector,
+    ResolverInstaller, TerminalLauncher, TrustStore,
 };
 
 use common::random_fingerprint;
@@ -46,21 +50,64 @@ fn paths_resolve_returns_yerd_layout() {
 }
 
 #[test]
-fn trust_store_unsupported() {
-    let ts = ActiveTrustStore;
+fn trust_probe_reports_absent_for_random_fp() {
+    let ts = ActiveTrustStore::new();
     let fp = random_fingerprint(0xCC);
+    assert!(
+        !ts.is_present_system(&fp)
+            .expect("read-only `CurrentUser` Root probe"),
+        "a random fingerprint is not in the user Root store"
+    );
+    assert!(
+        !ts.is_trusted(std::path::Path::new("unused"), &fp)
+            .expect("is_trusted delegates to the presence probe"),
+        "presence is trust on Windows; a random fingerprint is not trusted"
+    );
+}
+
+#[test]
+fn trust_nss_methods_unsupported_on_windows() {
+    let ts = ActiveTrustStore::new();
     assert!(matches!(
-        ts.install_system("p", &fp).unwrap_err(),
+        ts.install_firefox_nss(std::path::Path::new("x"))
+            .unwrap_err(),
         PlatformError::Unsupported { .. }
     ));
     assert!(matches!(
-        ts.uninstall_system(&fp).unwrap_err(),
+        ts.uninstall_firefox_nss().unwrap_err(),
         PlatformError::Unsupported { .. }
     ));
-    assert!(matches!(
-        ts.is_present_system(&fp).unwrap_err(),
-        PlatformError::Unsupported { .. }
-    ));
+}
+
+#[test]
+fn system_root_bundle_returns_public_roots() {
+    let bundle = ActiveTrustStore::new()
+        .system_root_bundle()
+        .expect("enumerate host Root stores");
+    let pem = bundle.expect("a real Windows host has populated Root stores");
+    assert!(
+        pem.contains("BEGIN CERTIFICATE"),
+        "bundle must contain at least one root"
+    );
+}
+
+#[test]
+fn port_redirector_is_na_but_probes_foreign_listener() {
+    let r = ActivePortRedirector::new();
+    assert_eq!(
+        r.is_active(),
+        None,
+        "Windows direct-binds 80/443; there is no redirect to be active"
+    );
+    assert!(
+        r.foreign_web_listener().is_some(),
+        "the trait-default loopback probe applies on Windows"
+    );
+    assert_eq!(
+        r.redirect_targets(),
+        None,
+        "pf anchors are macOS-only; Windows has no redirect targets"
+    );
 }
 
 #[test]

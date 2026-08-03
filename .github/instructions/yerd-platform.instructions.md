@@ -16,10 +16,11 @@ the edge. This crate is itself **unprivileged** — it never elevates.
   `PortRedirector`, and system metrics.
 - One impl per OS in `os/`: `linux`, `macos`, `windows`, and `unsupported`.
   Exactly one of `linux`/`macos`/`windows`/`unsupported` is active per build;
-  `os/mod.rs` re-exports the active set as `Active*` aliases. **Windows has a
-  real `Paths` impl (`os::windows`) and aliases every other trait to the
-  `unsupported` stub** (so `unsupported` stays compiled on Windows too), which
-  returns `PlatformError::Unsupported` for every method — keep that stub total.
+  `os/mod.rs` re-exports the active set as `Active*` aliases. **Windows
+  implements a growing subset with real `Windows*` types (`Paths`, `PortBinder`,
+  `PortRedirector`, `TrustStore`); the remainder alias the `unsupported` stub**
+  (so `unsupported` stays compiled on Windows too), which returns
+  `PlatformError::Unsupported` for every method — keep that stub total.
 - Pure decision helpers in `pure/`: `firefox` profile discovery, `pem_match`,
   `pf_anchor`, `port_plan`, `resolv_conf`, `resolved_drop_in`, `resolver_file`,
   process/system metrics parsing.

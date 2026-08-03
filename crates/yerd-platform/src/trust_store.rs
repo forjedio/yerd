@@ -1,8 +1,10 @@
 //! `TrustStore` trait and associated data types.
 //!
-//! The system store install/uninstall always returns `NeedsHelper` in
-//! Phase 1; the per-user NSS install is a separately-callable method
-//! whose partial-success story is captured by [`NssOutcome`].
+//! On macOS/Linux the system store install/uninstall returns `NeedsHelper`
+//! (the daemon drives `yerd-helper` under elevation); on Windows they perform
+//! the `CurrentUser`-Root operation directly, since no elevation is required
+//! there. The per-user NSS install is a separately-callable method whose
+//! partial-success story is captured by [`NssOutcome`].
 
 use std::path::{Path, PathBuf};
 
@@ -122,24 +124,27 @@ pub enum BrowserCaTrust {
 
 /// Trust-store abstraction.
 ///
-/// `install_system` / `uninstall_system` always return `NeedsHelper` in
-/// Phase 1; daemon orchestrates the `yerd-helper` invocation. The probe
-/// `is_present_system` runs unprivileged and is a *presence* check, not a
-/// trust-policy check - a true result means the certificate is in the
-/// store, not necessarily trusted for SSL by every consumer.
+/// On macOS/Linux `install_system` / `uninstall_system` return `NeedsHelper`
+/// and the daemon orchestrates the `yerd-helper` invocation; on Windows they
+/// perform the `CurrentUser`-Root operation directly (no elevation is required
+/// there). The probe `is_present_system` runs unprivileged and is a *presence*
+/// check, not a trust-policy check - a true result means the certificate is in
+/// the store, not necessarily trusted for SSL by every consumer.
 pub trait TrustStore {
     /// Request system-store install of `ca_pem`.
     ///
-    /// Phase 1: always returns
-    /// `Err(PlatformError::NeedsHelper { operation: "install-ca" })`.
-    /// The daemon materialises an [`crate::HelperInvocation::InstallCa`]
-    /// from `ca_pem` and `fp` and runs `yerd-helper`.
+    /// macOS/Linux: returns
+    /// `Err(PlatformError::NeedsHelper { operation: "install-ca" })`, and the
+    /// daemon materialises an [`crate::HelperInvocation::InstallCa`] from
+    /// `ca_pem` and `fp` and runs `yerd-helper`. Windows: installs into the
+    /// `CurrentUser` Root store directly (no elevation) and returns `Ok`.
     fn install_system(&self, ca_pem: &str, fp: &CaFingerprint) -> Result<(), PlatformError>;
 
     /// Request system-store uninstall by fingerprint.
     ///
-    /// Phase 1: always returns
-    /// `Err(PlatformError::NeedsHelper { operation: "uninstall-ca" })`.
+    /// macOS/Linux: returns
+    /// `Err(PlatformError::NeedsHelper { operation: "uninstall-ca" })`. Windows:
+    /// removes the CA from the `CurrentUser` Root store directly and returns `Ok`.
     fn uninstall_system(&self, fp: &CaFingerprint) -> Result<(), PlatformError>;
 
     /// Report whether a CA matching `fp` is **present** in the system
