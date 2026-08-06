@@ -45,6 +45,19 @@ The table loads **leniently**, like `[php.directives]`: an out-of-range value or
 
 **To downgrade to v19:** change `version = 20` to `version = 19` and delete any `[php.pool.*]` tables (an older daemon rejects the unknown tables under `deny_unknown_fields`, it doesn't just ignore them). Every version falls back to the built-in ceiling of 16.
 
+### v19
+
+**Added:** the top-level `lan_enabled` and `lan_setup_port` scalars, gating LAN exposure (serving your `.test` sites to other devices on the network) and setting the port the one-time remote-device setup page listens on. Both default when absent - `lan_enabled = false`, so LAN exposure stays opt-in, and `lan_setup_port = 7073`.
+
+```toml
+lan_enabled = false
+lan_setup_port = 7073
+```
+
+**Migration from v18:** bare version bump - both scalars default when absent, so a v18 file needs no other change.
+
+**To downgrade to v18:** change `version = 19` to `version = 18` and delete the `lan_enabled` and `lan_setup_port` lines (a v18 daemon rejects the unknown keys under `deny_unknown_fields`, it doesn't just ignore them). LAN exposure is off on a v18 daemon regardless.
+
 ### v18
 
 **Added:** the optional `[php.directives]` table - free-form (shape-validated) per-version ini directives such as `xdebug.mode`. `[php.directives."<version>"]` holds the directives for one installed version. It defaults to empty when absent, so an uncustomised file omits it entirely.

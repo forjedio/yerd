@@ -517,6 +517,7 @@ A file written by a *newer* Yerd than you are running is refused rather than mis
 - **`v15 → v16`** is a bare version bump: v16 only **added** the optional `[php.version_settings]` table (per-version overrides of the global PHP settings), which defaults to empty when absent.
 - **`v16 → v17`** is a bare version bump: v17 only **added** the top-level `mcp_enabled` scalar (defaults to `false` when absent).
 - **`v17 → v18`** is a bare version bump: v18 only **added** the optional `[php.directives]` table (free-form per-version ini directives), which defaults to empty when absent.
+- **`v18 → v19`** is a bare version bump: v19 only **added** the top-level `lan_enabled` and `lan_setup_port` scalars (LAN exposure and its remote-setup port), which default to `false` / `7073` when absent.
 - **`v19 → v20`** is a bare version bump: v20 only **added** the optional `[php.pool]` table (per-version FPM pool settings), which defaults to empty when absent.
 
 The on-disk schema version is deliberately decoupled from the IPC protocol version; the two evolve independently.
