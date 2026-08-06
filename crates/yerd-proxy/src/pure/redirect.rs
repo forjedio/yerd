@@ -1,4 +1,6 @@
-//! Build HTTP → HTTPS redirect URIs.
+//! Build the `Location` values Yerd's own redirects use: the HTTP → HTTPS
+//! upgrade (absolute URI) and the trailing-slash directory redirect
+//! (path-relative).
 
 /// Build an HTTPS redirect URI from an inbound HTTP request.
 ///
@@ -21,6 +23,32 @@ pub fn build_redirect_uri(host: &str, path_and_query: &str, https_port: u16) -> 
     } else {
         format!("https://{host_lower}:{https_port}{pq}")
     }
+}
+
+/// The trailing-slash `Location` for a directory request that arrived without
+/// one: `/sub?x=1` -> `/sub/?x=1`. Path-relative, so it is scheme- and
+/// host-agnostic and works behind either listener.
+///
+/// An empty `path_and_query` degrades to `/`, and a path that already ends in
+/// `/` is returned unchanged, so the caller can never build a redirect loop.
+#[must_use]
+pub fn directory_redirect_location(path_and_query: &str) -> String {
+    let (path, query) = match path_and_query.split_once('?') {
+        Some((path, query)) => (path, Some(query)),
+        None => (path_and_query, None),
+    };
+    let mut out = if path.is_empty() {
+        String::from("/")
+    } else if path.ends_with('/') {
+        path.to_owned()
+    } else {
+        format!("{path}/")
+    };
+    if let Some(query) = query {
+        out.push('?');
+        out.push_str(query);
+    }
+    out
 }
 
 /// Strip the trailing `:port` from `host`, handling IPv6 literals `[...]`.
@@ -68,6 +96,22 @@ mod tests {
                 *want,
                 "case: host={host:?} pq={pq:?} port={port}"
             );
+        }
+    }
+
+    #[test]
+    fn directory_redirect_table() {
+        let cases: &[(&str, &str)] = &[
+            ("/sub", "/sub/"),
+            ("/sub?x=1", "/sub/?x=1"),
+            ("/a/b", "/a/b/"),
+            ("/sub/", "/sub/"),
+            ("/sub/?x=1", "/sub/?x=1"),
+            ("/sub?", "/sub/?"),
+            ("", "/"),
+        ];
+        for (pq, want) in cases {
+            assert_eq!(directory_redirect_location(pq), *want, "case: pq={pq:?}");
         }
     }
 

@@ -3,7 +3,10 @@
 //! controller policy, extending `pure::cgi_params`'s "everything to
 //! `index.php`" fallback to first check for a real, more specific script
 //! (`wp-admin/index.php`, `wp-login.php`, ...) before falling back to the
-//! site root's `index.php`.
+//! site root's `index.php`. It also decides the third outcome web servers
+//! have always had here: a path that names a real directory but arrived
+//! without its trailing slash earns a `301` to the slashed form rather than
+//! silently running the root front controller.
 //!
 //! Unlike [`crate::forward::static_file`], this applies to every HTTP method,
 //! not just GET/HEAD - a real script like `wp-login.php` handles POST too.
@@ -21,30 +24,63 @@ use std::path::{Path, PathBuf};
 use crate::forward::static_file::{canonical_within, Containment};
 use crate::pure::try_files::{directory_candidate, is_php_source, static_candidate};
 
-/// The real, on-disk PHP script - relative to `served_root` - that `uri_path`
-/// should execute, or `None` when there is no such real script and the
-/// caller should fall back to the site's root `index.php` (today's
-/// unconditional behavior, unchanged for every framework that has only one
-/// front controller).
+/// Outcome of resolving a direct-mode request against the on-disk tree.
+#[derive(Debug, PartialEq, Eq)]
+pub enum ScriptResolution {
+    /// A real, on-disk PHP script to execute, relative to `served_root`.
+    Script(PathBuf),
+    /// The path names a real directory without a trailing slash; answer
+    /// `301` to the trailing-slash form.
+    DirectoryRedirect,
+    /// Nothing matched - fall back to the site root's `index.php`.
+    Fallback,
+}
+
+/// How `uri_path` resolves against the site's real, on-disk tree: a specific
+/// script to execute, a trailing-slash redirect, or a fallback to the site
+/// root's `index.php` (today's unconditional behavior, unchanged for every
+/// framework that has only one front controller).
 ///
 /// Checks, in order: an exact non-directory match (`/wp-login.php` ->
-/// `wp-login.php`), then - for a directory-style request - that directory's
-/// own index (`/wp-admin/` -> `wp-admin/index.php`).
+/// `wp-login.php`), then that same path as a directory missing its trailing
+/// slash (`/sub` -> redirect to `/sub/`), then - for a directory-style request
+/// - that directory's own index (`/wp-admin/` -> `wp-admin/index.php`).
+///
+/// The redirect fires whether or not the directory holds an `index.php`, which
+/// is what Apache's `DirectorySlash` and nginx's `try_files $uri $uri/` do: a
+/// static-only `/assets` redirects to `/assets/`, where
+/// [`crate::forward::static_file::try_serve_index`] can serve its
+/// `index.html`.
 pub async fn resolve_script(
     uri_path: &str,
     served_root: &Path,
     allowed_root: &Path,
     symlink_protection: bool,
-) -> Option<PathBuf> {
-    let real_root = tokio::fs::canonicalize(allowed_root).await.ok()?;
+) -> ScriptResolution {
+    let Ok(real_root) = tokio::fs::canonicalize(allowed_root).await else {
+        return ScriptResolution::Fallback;
+    };
 
     if let Some(rel) = static_candidate(uri_path) {
-        return existing_php_file(served_root, &real_root, &rel, symlink_protection).await;
+        if let Some(script) =
+            existing_php_file(served_root, &real_root, &rel, symlink_protection).await
+        {
+            return ScriptResolution::Script(script);
+        }
+        if is_existing_directory(served_root, &real_root, &rel, symlink_protection).await {
+            return ScriptResolution::DirectoryRedirect;
+        }
+        return ScriptResolution::Fallback;
     }
 
-    let dir_rel = directory_candidate(uri_path)?;
+    let Some(dir_rel) = directory_candidate(uri_path) else {
+        return ScriptResolution::Fallback;
+    };
     let script_rel = dir_rel.join("index.php");
-    existing_php_file(served_root, &real_root, &script_rel, symlink_protection).await
+    match existing_php_file(served_root, &real_root, &script_rel, symlink_protection).await {
+        Some(script) => ScriptResolution::Script(script),
+        None => ScriptResolution::Fallback,
+    }
 }
 
 /// `rel` (relative to `served_root`) if it's a real, on-disk `.php` file that
@@ -77,6 +113,28 @@ async fn existing_php_file(
     Some(rel.to_path_buf())
 }
 
+/// Whether `rel` (relative to `served_root`) is a real, on-disk directory that
+/// canonicalises within `real_root`. Deliberately mirrors
+/// [`existing_php_file`]'s containment `match` so the two probes can't drift
+/// apart on symlink semantics: with protection on, a directory symlink
+/// escaping `real_root` is refused (no redirect - the request falls back to
+/// the root `index.php`); with it off, the symlink target is accepted.
+async fn is_existing_directory(
+    served_root: &Path,
+    real_root: &Path,
+    rel: &Path,
+    symlink_protection: bool,
+) -> bool {
+    let real_dir = match canonical_within(&served_root.join(rel), real_root).await {
+        Some(Containment::Ok(path)) => path,
+        Some(Containment::Escaped(path)) if !symlink_protection => path,
+        Some(Containment::Escaped(_)) | None => return false,
+    };
+    tokio::fs::metadata(&real_dir)
+        .await
+        .is_ok_and(|meta| meta.is_dir())
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::panic)]
 mod tests {
@@ -88,7 +146,7 @@ mod tests {
         std::fs::write(root.path().join("wp-login.php"), b"<?php").unwrap();
 
         let rel = resolve_script("/wp-login.php", root.path(), root.path(), true).await;
-        assert_eq!(rel, Some(PathBuf::from("wp-login.php")));
+        assert_eq!(rel, ScriptResolution::Script(PathBuf::from("wp-login.php")));
     }
 
     #[tokio::test]
@@ -98,7 +156,10 @@ mod tests {
         std::fs::write(root.path().join("wp-admin/index.php"), b"<?php").unwrap();
 
         let rel = resolve_script("/wp-admin/", root.path(), root.path(), true).await;
-        assert_eq!(rel, Some(PathBuf::from("wp-admin/index.php")));
+        assert_eq!(
+            rel,
+            ScriptResolution::Script(PathBuf::from("wp-admin/index.php"))
+        );
     }
 
     #[tokio::test]
@@ -108,7 +169,64 @@ mod tests {
 
         assert_eq!(
             resolve_script("/empty/", root.path(), root.path(), true).await,
-            None
+            ScriptResolution::Fallback
+        );
+    }
+
+    #[tokio::test]
+    async fn directory_without_trailing_slash_redirects() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir(root.path().join("sub")).unwrap();
+        std::fs::write(root.path().join("sub/index.php"), b"<?php").unwrap();
+
+        assert_eq!(
+            resolve_script("/sub", root.path(), root.path(), true).await,
+            ScriptResolution::DirectoryRedirect
+        );
+    }
+
+    #[tokio::test]
+    async fn directory_without_index_php_still_redirects() {
+        // Matches nginx/Apache: the 301 depends only on the path naming a real
+        // directory, not on what lives inside it.
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir(root.path().join("assets")).unwrap();
+        std::fs::write(root.path().join("assets/index.html"), b"<h1>").unwrap();
+
+        assert_eq!(
+            resolve_script("/assets", root.path(), root.path(), true).await,
+            ScriptResolution::DirectoryRedirect
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn symlinked_directory_escaping_document_root_falls_back() {
+        let docroot = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::create_dir(outside.path().join("secrets")).unwrap();
+        std::os::unix::fs::symlink(outside.path().join("secrets"), docroot.path().join("sub"))
+            .unwrap();
+
+        assert_eq!(
+            resolve_script("/sub", docroot.path(), docroot.path(), true).await,
+            ScriptResolution::Fallback
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn symlinked_directory_escaping_document_root_redirects_when_protection_off() {
+        let docroot = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::create_dir(outside.path().join("shared")).unwrap();
+        std::os::unix::fs::symlink(outside.path().join("shared"), docroot.path().join("sub"))
+            .unwrap();
+
+        assert_eq!(
+            resolve_script("/sub", docroot.path(), docroot.path(), false).await,
+            ScriptResolution::DirectoryRedirect,
+            "protection off treats the escaping symlink as the real directory it points at"
         );
     }
 
@@ -117,7 +235,7 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         assert_eq!(
             resolve_script("/wp-login.php", root.path(), root.path(), true).await,
-            None
+            ScriptResolution::Fallback
         );
     }
 
@@ -131,7 +249,7 @@ mod tests {
 
         assert_eq!(
             resolve_script("/app.css", root.path(), root.path(), true).await,
-            None
+            ScriptResolution::Fallback
         );
     }
 
@@ -141,7 +259,7 @@ mod tests {
         std::fs::write(root.path().join("index.php"), b"<?php").unwrap();
 
         let rel = resolve_script("/", root.path(), root.path(), true).await;
-        assert_eq!(rel, Some(PathBuf::from("index.php")));
+        assert_eq!(rel, ScriptResolution::Script(PathBuf::from("index.php")));
     }
 
     #[cfg(unix)]
@@ -158,7 +276,7 @@ mod tests {
 
         assert_eq!(
             resolve_script("/wp-login.php", docroot.path(), docroot.path(), true).await,
-            None
+            ScriptResolution::Fallback
         );
     }
 
@@ -176,7 +294,7 @@ mod tests {
 
         assert_eq!(
             resolve_script("/wp-login.php", docroot.path(), docroot.path(), false).await,
-            Some(PathBuf::from("wp-login.php")),
+            ScriptResolution::Script(PathBuf::from("wp-login.php")),
             "protection off resolves the escaping script by its served-root-relative path"
         );
     }
@@ -186,7 +304,7 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         assert_eq!(
             resolve_script("/../../etc/passwd", root.path(), root.path(), true).await,
-            None
+            ScriptResolution::Fallback
         );
     }
 }

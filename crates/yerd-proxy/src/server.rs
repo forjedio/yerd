@@ -27,7 +27,7 @@ use crate::forward::{
 };
 use crate::pure::cgi_params;
 use crate::pure::query;
-use crate::pure::redirect::build_redirect_uri;
+use crate::pure::redirect::{build_redirect_uri, directory_redirect_location};
 use crate::pure::unbound::{self, PickerSite};
 use crate::tls::build_server_config;
 use crate::traits::{BackendResolver, CertStore, LoginTokenConsumer};
@@ -528,7 +528,7 @@ async fn serve_php_fpm<R: BackendResolver, L: LoginTokenConsumer>(
     if let Some(resp) = resolve_static_outcome(outcome) {
         return Ok(resp);
     }
-    let script_rel = resolve_script_if_allowed(
+    let resolution = resolve_script_if_allowed(
         resolver,
         site,
         req.uri().path(),
@@ -537,6 +537,16 @@ async fn serve_php_fpm<R: BackendResolver, L: LoginTokenConsumer>(
         symlink_protection,
     )
     .await;
+    let script_rel = match resolution {
+        script_file::ScriptResolution::Script(rel) => Some(rel),
+        script_file::ScriptResolution::DirectoryRedirect
+            if *req.method() == Method::GET || *req.method() == Method::HEAD =>
+        {
+            return trailing_slash_redirect(&req);
+        }
+        script_file::ScriptResolution::DirectoryRedirect
+        | script_file::ScriptResolution::Fallback => None,
+    };
     fcgi::forward(
         req,
         backend,
@@ -556,9 +566,12 @@ fn path_and_query_or_root(uri: &http::Uri) -> &str {
 }
 
 /// [`script_file::resolve_script`], gated by
-/// [`BackendResolver::allows_direct_script_execution`] - `None` (fall back to
-/// the site root's `index.php`) for any site the resolver hasn't opted in,
-/// without touching the filesystem to find out.
+/// [`BackendResolver::allows_direct_script_execution`] -
+/// [`script_file::ScriptResolution::Fallback`] (send the request to the site
+/// root's `index.php`) for any site the resolver hasn't opted in, without
+/// touching the filesystem to find out. Front-controller sites route `/foo`
+/// themselves, so they must get neither direct execution nor the
+/// trailing-slash redirect.
 async fn resolve_script_if_allowed<R: BackendResolver>(
     resolver: &R,
     site: &yerd_core::Site,
@@ -566,9 +579,9 @@ async fn resolve_script_if_allowed<R: BackendResolver>(
     served_root: &std::path::Path,
     allowed_root: &std::path::Path,
     symlink_protection: bool,
-) -> Option<std::path::PathBuf> {
+) -> script_file::ScriptResolution {
     if !resolver.allows_direct_script_execution(site).await {
-        return None;
+        return script_file::ScriptResolution::Fallback;
     }
     script_file::resolve_script(uri_path, served_root, allowed_root, symlink_protection).await
 }
@@ -628,12 +641,29 @@ fn https_redirect(
         .uri()
         .path_and_query()
         .map_or("/", http::uri::PathAndQuery::as_str);
-    let loc = build_redirect_uri(host, pq, port);
+    moved_permanently(&build_redirect_uri(host, pq, port))
+}
+
+/// `301` to the trailing-slash form of this request's path, for a path that
+/// names a real directory on disk (`/sub` -> `/sub/`). What Apache's
+/// `DirectorySlash` and nginx's `try_files $uri $uri/` do, and what legacy
+/// multi-directory PHP apps rely on: without it a subdirectory request
+/// silently executes the *root* `index.php`, so an app whose front page
+/// redirects into a subdirectory loops forever.
+fn trailing_slash_redirect(req: &Request<Incoming>) -> Result<Response<BoxBody>, ProxyError> {
+    moved_permanently(&directory_redirect_location(path_and_query_or_root(
+        req.uri(),
+    )))
+}
+
+/// A bodyless `301` to `location`. Shared by both redirect kinds so they can't
+/// drift in status or header handling.
+fn moved_permanently(location: &str) -> Result<Response<BoxBody>, ProxyError> {
     Response::builder()
         .status(StatusCode::MOVED_PERMANENTLY)
         .header(
             LOCATION,
-            HeaderValue::from_str(&loc).map_err(|_| ProxyError::BackendProtocol {
+            HeaderValue::from_str(location).map_err(|_| ProxyError::BackendProtocol {
                 source: std::io::Error::other("invalid redirect URI"),
             })?,
         )

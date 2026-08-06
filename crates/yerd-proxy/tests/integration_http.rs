@@ -854,6 +854,168 @@ async fn subdirectory_index_php_wins_over_root_index_php() {
     let _ = fake_task.await;
 }
 
+/// Issue #198: in direct mode a request for a real directory *without* a
+/// trailing slash must earn a `301` to the slashed form, the way Apache's
+/// `DirectorySlash` and nginx's `try_files $uri $uri/` answer it. Without the
+/// redirect the root `index.php` runs instead, and a legacy app whose front
+/// page redirects into a subdirectory loops until the browser gives up
+/// (`ERR_TOO_MANY_REDIRECTS`).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn directory_request_without_trailing_slash_redirects() {
+    let docroot = tempfile::tempdir().unwrap();
+    std::fs::write(docroot.path().join("index.php"), b"<?php /* root */").unwrap();
+    std::fs::create_dir(docroot.path().join("sub")).unwrap();
+    std::fs::write(docroot.path().join("sub/index.php"), b"<?php /* sub */").unwrap();
+    std::fs::create_dir(docroot.path().join("static-only")).unwrap();
+
+    let fcgi_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let fcgi_addr = fcgi_listener.local_addr().unwrap();
+    let captured = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+    let captured_for_fake = captured.clone();
+    let stdout_payload = b"Status: 200 OK\r\nContent-Type: text/plain\r\n\r\nfrom fpm".to_vec();
+    let fake_task = tokio::spawn(run_fake_fcgi(
+        fcgi_listener,
+        stdout_payload,
+        captured_for_fake,
+    ));
+
+    let proxy_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let proxy_addr = proxy_listener.local_addr().unwrap();
+
+    let tld = Tld::new("test").unwrap();
+    let cfg = RouterConfig::with_tld(tld);
+    let mut router = SiteRouter::new(cfg);
+    let site = Site::linked(
+        "legacy",
+        docroot.path().to_path_buf(),
+        PhpVersion::new(8, 3),
+    )
+    .unwrap();
+    router.insert(site).unwrap();
+    let router = Arc::new(tokio::sync::RwLock::new(router));
+
+    let resolver = Arc::new(StaticResolver {
+        backend: Backend::PhpFpmTcp { addr: fcgi_addr },
+    });
+
+    let (tx_shutdown, rx_shutdown) = oneshot::channel::<()>();
+    let proxy_task = tokio::spawn(async move {
+        let _ = ProxyServer::serve::<_, StubCertStore, _, _>(
+            proxy_listener,
+            None,
+            router,
+            resolver,
+            Arc::new(NoLoginTokens),
+            None,
+            Arc::new(AtomicBool::new(true)),
+            test_client_tls(),
+            false,
+            async move {
+                let _ = rx_shutdown.await;
+            },
+        )
+        .await;
+    });
+
+    assert_eq!(
+        client_get_status_and_location(proxy_addr, "legacy.test", "/sub").await,
+        (301, Some("/sub/".to_owned()))
+    );
+    assert_eq!(
+        client_get_status_and_location(proxy_addr, "legacy.test", "/sub?x=1").await,
+        (301, Some("/sub/?x=1".to_owned())),
+        "the query string must survive the redirect"
+    );
+    assert_eq!(
+        client_get_status_and_location(proxy_addr, "legacy.test", "/static-only").await,
+        (301, Some("/static-only/".to_owned())),
+        "the 301 depends on the directory existing, not on it holding an index.php"
+    );
+
+    // The slashed form still executes the subdirectory's own script - the
+    // redirect target must actually resolve, or the loop just moves.
+    let body = client_get(proxy_addr, "legacy.test", "/sub/").await;
+    assert_eq!(body, b"from fpm");
+    let params = captured.lock().await.clone();
+    assert_eq!(
+        params.get("SCRIPT_NAME").map(String::as_str),
+        Some("/sub/index.php")
+    );
+
+    let _ = tx_shutdown.send(());
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(5), proxy_task).await;
+    let _ = fake_task.await;
+}
+
+/// The trailing-slash redirect is direct-mode only. A front-controller site
+/// (Laravel, Symfony, ...) owns `/sub` as a framework route, so redirecting it
+/// would break the app - `/sub` must keep reaching the root `index.php`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn front_controller_mode_does_not_redirect_directories() {
+    let docroot = tempfile::tempdir().unwrap();
+    std::fs::write(docroot.path().join("index.php"), b"<?php /* root */").unwrap();
+    std::fs::create_dir(docroot.path().join("sub")).unwrap();
+    std::fs::write(docroot.path().join("sub/index.php"), b"<?php /* sub */").unwrap();
+
+    let fcgi_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let fcgi_addr = fcgi_listener.local_addr().unwrap();
+    let captured = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+    let captured_for_fake = captured.clone();
+    let stdout_payload = b"Status: 200 OK\r\nContent-Type: text/plain\r\n\r\nfrom fpm".to_vec();
+    let fake_task = tokio::spawn(run_fake_fcgi(
+        fcgi_listener,
+        stdout_payload,
+        captured_for_fake,
+    ));
+
+    let proxy_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let proxy_addr = proxy_listener.local_addr().unwrap();
+
+    let tld = Tld::new("test").unwrap();
+    let cfg = RouterConfig::with_tld(tld);
+    let mut router = SiteRouter::new(cfg);
+    let site = Site::linked("app", docroot.path().to_path_buf(), PhpVersion::new(8, 3)).unwrap();
+    router.insert(site).unwrap();
+    let router = Arc::new(tokio::sync::RwLock::new(router));
+
+    let resolver = Arc::new(NonWordPressResolver {
+        backend: Backend::PhpFpmTcp { addr: fcgi_addr },
+    });
+
+    let (tx_shutdown, rx_shutdown) = oneshot::channel::<()>();
+    let proxy_task = tokio::spawn(async move {
+        let _ = ProxyServer::serve::<_, StubCertStore, _, _>(
+            proxy_listener,
+            None,
+            router,
+            resolver,
+            Arc::new(NoLoginTokens),
+            None,
+            Arc::new(AtomicBool::new(true)),
+            test_client_tls(),
+            false,
+            async move {
+                let _ = rx_shutdown.await;
+            },
+        )
+        .await;
+    });
+
+    let (status, _, body) = client_get_response(proxy_addr, "app.test", "/sub").await;
+    assert_eq!(status, 200, "a framework route must not be redirected");
+    assert_eq!(body, b"from fpm");
+
+    let params = captured.lock().await.clone();
+    assert_eq!(
+        params.get("SCRIPT_NAME").map(String::as_str),
+        Some("/index.php")
+    );
+
+    let _ = tx_shutdown.send(());
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(5), proxy_task).await;
+    let _ = fake_task.await;
+}
+
 /// A non-`WordPress` site must never get `resolve_script`'s direct-real-
 /// file-execution treatment: a stray real script under the document root
 /// (a debug `phpinfo.php`, an old admin tool) stays unreachable directly and
