@@ -93,6 +93,9 @@ pub fn to_request(cmd: &Command) -> Result<Request, ClientError> {
         Command::Php {
             action: crate::cli::PhpAction::Ini { action },
         } => php_ini_to_request(action)?,
+        Command::Php {
+            action: crate::cli::PhpAction::Pool { action },
+        } => php_pool_to_request(action)?,
         Command::Install {
             target: crate::cli::InstallTarget::Php { version, legacy },
         } => {
@@ -649,6 +652,40 @@ fn php_ini_to_request(action: &crate::cli::PhpIniAction) -> Result<Request, Clie
     })
 }
 
+/// Map `yerd php pool` onto its request, validating the version, setting name,
+/// and value client-side so a bad argument fails before connect. The daemon
+/// re-validates (it is the authority).
+fn php_pool_to_request(action: &crate::cli::PhpPoolAction) -> Result<Request, ClientError> {
+    use crate::cli::PhpPoolAction;
+    Ok(match action {
+        PhpPoolAction::Set {
+            version,
+            name,
+            value,
+        } => {
+            let v = parse_php(version)?;
+            yerd_core::php_pool::validate_name(name)
+                .map_err(|e| ClientError::Usage(e.to_string()))?;
+            yerd_core::php_pool::validate_value(value)
+                .map_err(|e| ClientError::Usage(e.to_string()))?;
+            Request::SetPhpPoolSettings {
+                version: v,
+                settings: std::collections::BTreeMap::from([(name.clone(), value.clone())]),
+            }
+        }
+        PhpPoolAction::Unset { version, name } => {
+            let v = parse_php(version)?;
+            yerd_core::php_pool::validate_name(name)
+                .map_err(|e| ClientError::Usage(e.to_string()))?;
+            Request::SetPhpPoolSettings {
+                version: v,
+                settings: std::collections::BTreeMap::from([(name.clone(), String::new())]),
+            }
+        }
+        PhpPoolAction::List => Request::ListPhp,
+    })
+}
+
 /// The channel override for a self-update check, from the `--edge`/`--stable`
 /// flags (mutually exclusive at the clap layer). `None` = use the saved default.
 #[must_use]
@@ -873,6 +910,7 @@ pub fn render(resp: &Response, json: bool) -> Rendered {
             settings,
             version_settings,
             directives,
+            pool,
         } => Rendered::ok(format_php_versions(
             installed,
             *default,
@@ -880,6 +918,7 @@ pub fn render(resp: &Response, json: bool) -> Rendered {
             settings,
             version_settings,
             directives,
+            pool,
         )),
         Response::AvailablePhp {
             available,
@@ -1354,6 +1393,7 @@ fn format_php_versions(
         std::collections::BTreeMap<String, String>,
     >,
     directives: &std::collections::BTreeMap<PhpVersion, std::collections::BTreeMap<String, String>>,
+    pool: &std::collections::BTreeMap<PhpVersion, std::collections::BTreeMap<String, String>>,
 ) -> String {
     let versions = if installed.is_empty() {
         format!("no PHP versions installed (default: {default}) - `yerd install php {default}`")
@@ -1384,9 +1424,6 @@ fn format_php_versions(
     for v in installed {
         let overrides = version_settings.get(v);
         let dirs = directives.get(v);
-        if overrides.is_none() && dirs.is_none() {
-            continue;
-        }
         let _ = write!(out, "\n\nPHP {v}:");
         if let Some(map) = overrides {
             for (k, val) in map {
@@ -1400,6 +1437,18 @@ fn format_php_versions(
         if let Some(map) = dirs {
             for (k, val) in map {
                 let _ = write!(out, "\n  {k} = {val}");
+            }
+        }
+        let default = yerd_core::php_pool::DEFAULT_MAX_CHILDREN;
+        match yerd_core::php_pool::override_max_children(pool.get(v)) {
+            Some(n) => {
+                let _ = write!(
+                    out,
+                    "\n  pm.max_children = {n}  (overrides default {default})"
+                );
+            }
+            None => {
+                let _ = write!(out, "\n  pm.max_children = {default}  (default)");
             }
         }
     }
@@ -2295,6 +2344,90 @@ mod tests {
     }
 
     #[test]
+    fn php_pool_actions_map_and_validate() {
+        assert_eq!(
+            to_request(&Command::Php {
+                action: crate::cli::PhpAction::Pool {
+                    action: crate::cli::PhpPoolAction::Set {
+                        version: "8.3".into(),
+                        name: "max_children".into(),
+                        value: "32".into(),
+                    }
+                }
+            })
+            .unwrap(),
+            Request::SetPhpPoolSettings {
+                version: PhpVersion::new(8, 3),
+                settings: std::collections::BTreeMap::from([(
+                    "max_children".to_string(),
+                    "32".to_string()
+                )])
+            }
+        );
+        assert_eq!(
+            to_request(&Command::Php {
+                action: crate::cli::PhpAction::Pool {
+                    action: crate::cli::PhpPoolAction::Unset {
+                        version: "8.3".into(),
+                        name: "max_children".into(),
+                    }
+                }
+            })
+            .unwrap(),
+            Request::SetPhpPoolSettings {
+                version: PhpVersion::new(8, 3),
+                settings: std::collections::BTreeMap::from([(
+                    "max_children".to_string(),
+                    String::new()
+                )])
+            }
+        );
+        assert_eq!(
+            to_request(&Command::Php {
+                action: crate::cli::PhpAction::Pool {
+                    action: crate::cli::PhpPoolAction::List
+                }
+            })
+            .unwrap(),
+            Request::ListPhp
+        );
+
+        for (name, value) in [
+            ("max_children", "0"),
+            ("max_children", "1025"),
+            ("max_children", "abc"),
+            ("max_children", ""),
+            ("start_servers", "4"),
+            ("pm.max_children", "32"),
+        ] {
+            match to_request(&Command::Php {
+                action: crate::cli::PhpAction::Pool {
+                    action: crate::cli::PhpPoolAction::Set {
+                        version: "8.3".into(),
+                        name: name.into(),
+                        value: value.into(),
+                    },
+                },
+            }) {
+                Err(ClientError::Usage(_)) => {}
+                other => panic!("expected Usage error for {name}={value}, got {other:?}"),
+            }
+        }
+
+        match to_request(&Command::Php {
+            action: crate::cli::PhpAction::Pool {
+                action: crate::cli::PhpPoolAction::Unset {
+                    version: "8.3".into(),
+                    name: "start_servers".into(),
+                },
+            },
+        }) {
+            Err(ClientError::Usage(_)) => {}
+            other => panic!("expected Usage error for an unknown unset name, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn renders_update_status_with_all_rows() {
         let resp = Response::UpdateStatus {
             current: "2.0.0".into(),
@@ -2477,6 +2610,7 @@ mod tests {
                 settings: std::collections::BTreeMap::new(),
                 version_settings: Box::new(std::collections::BTreeMap::new()),
                 directives: Box::new(std::collections::BTreeMap::new()),
+                pool: Box::new(std::collections::BTreeMap::new()),
             },
             false,
         );
@@ -2495,6 +2629,7 @@ mod tests {
                 settings: std::collections::BTreeMap::new(),
                 version_settings: Box::new(std::collections::BTreeMap::new()),
                 directives: Box::new(std::collections::BTreeMap::new()),
+                pool: Box::new(std::collections::BTreeMap::new()),
             },
             false,
         );
@@ -2527,6 +2662,13 @@ mod tests {
                         "debug".to_string(),
                     )]),
                 )])),
+                pool: Box::new(std::collections::BTreeMap::from([(
+                    v83,
+                    std::collections::BTreeMap::from([(
+                        "max_children".to_string(),
+                        "32".to_string(),
+                    )]),
+                )])),
             },
             false,
         );
@@ -2549,7 +2691,18 @@ mod tests {
             "got: {}",
             r.stdout
         );
-        assert!(!r.stdout.contains("PHP 8.5:"), "got: {}", r.stdout);
+        assert!(
+            r.stdout
+                .contains("pm.max_children = 32  (overrides default 16)"),
+            "got: {}",
+            r.stdout
+        );
+        assert!(r.stdout.contains("PHP 8.5:"), "got: {}", r.stdout);
+        assert!(
+            r.stdout.contains("pm.max_children = 16  (default)"),
+            "8.5 has no override, so it reports the default; got: {}",
+            r.stdout
+        );
     }
 
     #[test]
@@ -2675,6 +2828,7 @@ mod tests {
                 ]),
                 version_settings: Box::new(std::collections::BTreeMap::new()),
                 directives: Box::new(std::collections::BTreeMap::new()),
+                pool: Box::new(std::collections::BTreeMap::new()),
             },
             false,
         );

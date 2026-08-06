@@ -13,7 +13,7 @@ The fastest way to manage PHP is the **PHP** page (under the **Environment** gro
 - **Refresh** re-checks for updates and **Update all** updates every version with one pending - [updates are notify-only](#updates-are-notify-only).
 - Each row's `⋯` menu offers **Restart**, **Set default** (marks it with a star; disabled for legacy rows, which are tagged with a `legacy` badge), **Update** (when available), and **Uninstall**; **Restart all** restarts every running pool.
 - A **Default settings** card edits the [global ini defaults](#tuning-php-settings) applied to every version; leave a field blank to use PHP's built-in default, and saving restarts running pools to apply.
-- A **Per-version configuration** card lists your versions down the side, newest first; picking one shows everything scoped to it: the settings form (empty fields inherit the defaults; see [Per-version configuration](#per-version-configuration)), its [custom extensions](#custom-extensions), and a free-form ini-directive editor (e.g. `xdebug.mode = debug`). Each row badges how much that version has configured and marks unsaved edits, so switching versions never loses work. Saving restarts only that version's pool.
+- A **Per-version configuration** card lists your versions down the side, newest first; picking one shows everything scoped to it: the settings form (empty fields inherit the defaults; see [Per-version configuration](#per-version-configuration)), its [custom extensions](#custom-extensions), an **FPM pool size** field (how many PHP workers that version may run at once), and a free-form ini-directive editor (e.g. `xdebug.mode = debug`). Each row badges how much that version has configured and marks unsaved edits, so switching versions never loses work. Saving restarts only that version's pool.
 
 ## From the command line
 
@@ -425,10 +425,29 @@ Directive names and values are shape-checked so they can never corrupt the
 generated config, but Yerd doesn't second-guess their meaning - a directive PHP
 doesn't recognise is simply ignored by PHP. A per-version change restarts only
 that version's pool, and per-version configuration survives uninstalling and
-reinstalling the version. In the desktop app the same lives in the
+reinstalling the version.
+
+#### Pool size
+
+`yerd php pool` sets how many PHP workers a version may run at once - FPM's
+`pm.max_children`, applied to that version's web pool only:
+
+```sh
+yerd php pool set 8.4 max_children 32   # raise the ceiling for PHP 8.4
+yerd php pool unset 8.4 max_children    # back to the default of 16
+```
+
+The default is 16 and the range is 1 to 1024. Yerd runs pools on demand, so
+workers start as requests arrive rather than being held open: a higher ceiling
+costs nothing while the pool is idle. Raise it when requests start queueing
+behind long-running work - queue workers, parallel test runs, or a lot of open
+tabs hitting the same site. Note that `pm.*` names are pool settings rather than
+ini directives, so `yerd php ini` refuses them and points here.
+
+In the desktop app the same lives in the
 **Per-version configuration** card on the PHP page: pick a version from the list
-to get the settings form (empty fields inherit the defaults), that version's
-extensions, and a directive editor. A version that still has extensions
+to get the settings form (empty fields inherit the defaults), an **FPM pool
+size** field, that version's extensions, and a directive editor. A version that still has extensions
 registered after being uninstalled stays in the list, so those registrations can
 be removed. See the
 [PHP CLI reference](../reference/cli/php#custom-ini-directives) for the rules
@@ -450,7 +469,10 @@ and the denylist of directives Yerd manages elsewhere.
 | `yerd unset php <setting> [--only <version>]` | Reset a global setting to PHP's built-in value. With `--only`, remove one version's override so the global value applies again. |
 | `yerd php ini set <version> <name> <value>` | Set a free-form ini directive (e.g. `xdebug.mode`) for one version. |
 | `yerd php ini unset <version> <name>` | Remove a free-form ini directive. |
-| `yerd php ini list` | Show per-version overrides and directives. |
+| `yerd php ini list` | Show per-version overrides, directives, and pool sizes. |
+| `yerd php pool set <version> max_children <n>` | Set how many PHP workers that version may run at once (1-1024, default 16). |
+| `yerd php pool unset <version> max_children` | Reset the worker ceiling to the default. |
+| `yerd php pool list` | Show per-version overrides, directives, and pool sizes. |
 | `yerd php ext add <version> <path> [--zend] [--name <name>]` | Register a custom extension (load-probed) for a version. |
 | `yerd php ext remove <version> <name>` | Remove a registered extension. |
 | `yerd php ext list` | List registered custom extensions, grouped by version. |

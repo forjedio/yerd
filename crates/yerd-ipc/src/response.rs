@@ -149,6 +149,14 @@ pub enum Response {
         /// `version_settings`.
         #[serde(default, skip_serializing_if = "boxed_version_map_is_empty")]
         directives: Box<BTreeMap<PhpVersion, BTreeMap<String, String>>>,
+        /// Configured per-version FPM pool overrides (`"max_children" ->
+        /// "32"`), keyed by version. Only versions with an override appear; a
+        /// version that is absent runs the built-in default
+        /// ([`yerd_core::php_pool::DEFAULT_MAX_CHILDREN`]). Empty when none
+        /// are set; `#[serde(default)]` keeps older daemons (which omit it)
+        /// decodable. Boxed like `version_settings`.
+        #[serde(default, skip_serializing_if = "boxed_version_map_is_empty")]
+        pool: Box<BTreeMap<PhpVersion, BTreeMap<String, String>>>,
     },
     /// Reply to [`crate::Request::AvailablePhp`].
     AvailablePhp {
@@ -718,6 +726,7 @@ mod variant_name_pinning {
             settings: BTreeMap::new(),
             version_settings: Box::new(BTreeMap::new()),
             directives: Box::new(BTreeMap::new()),
+            pool: Box::new(BTreeMap::new()),
         });
         pin_response(Response::AvailablePhp {
             available: vec![PhpVersion::new(8, 4), PhpVersion::new(8, 5)],

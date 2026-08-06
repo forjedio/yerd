@@ -28,7 +28,7 @@ Each entry below states what changed, whether the daemon's own migration is a ba
 
 ## Version-by-version
 
-### v20 (current)
+### v21 (current)
 
 **Added:** the optional `[route_rules]` table - per-site path-prefix **routing** rules, keyed by site class exactly like `[proxy_rules]` and `[domains]`: `[route_rules.linked.<name>]` by site name, `[route_rules.parked."<docroot>"]` by document-root string. Each rule pairs a URI path `prefix` with a `target` path relative to the site's served root. It defaults to empty when absent, so an uncustomised file omits it entirely.
 
@@ -46,22 +46,39 @@ A rule applies only when the request matched no real file, i.e. nginx's `try_fil
 
 Note this is **not** `[proxy_rules]`: a proxy rule forwards to an HTTP upstream, a routing rule resolves to a file inside the site's own tree.
 
+**Migration from v20:** bare version bump - the table defaults to empty when absent, so a v20 file needs no other change.
+
+**To downgrade to v20:** change `version = 21` to `version = 20` and delete any `[route_rules.*]` tables (a v20 daemon rejects the unknown tables under `deny_unknown_fields`, it doesn't just ignore them). Sites revert to funnelling unmatched requests to the served root's `index.php`.
+
+### v20
+
+**Added:** the optional `[php.pool]` table - per-version FPM pool settings. `[php.pool."<version>"]` holds the pool settings for one installed version; the only key is `max_children`, the ceiling on concurrent PHP workers, accepted between `1` and `1024` and defaulting to `16`. It defaults to empty when absent, so an uncustomised file omits it entirely.
+
+```toml
+[php.pool."8.4"]
+max_children = "32"
+```
+
+These are FPM pool-block settings rather than ini directives, so they reach the generated pool config only, never a CLI `php.ini`. The `pm.` prefix is reserved out of `[php.directives]` for the same reason: rendered there it would become `php_value[pm.max_children]`, which FPM refuses on every worker spawn.
+
+The table loads **leniently**, like `[php.directives]`: an out-of-range value or an unknown setting name is dropped during parsing rather than failing the load. A malformed version key is still a hard error, and strict validation lives at set time (CLI/GUI/IPC).
+
 **Migration from v19:** bare version bump - the table defaults to empty when absent, so a v19 file needs no other change.
 
-**To downgrade to v19:** change `version = 20` to `version = 19` and delete any `[route_rules.*]` tables (a v19 daemon rejects the unknown tables under `deny_unknown_fields`, it doesn't just ignore them). Sites revert to funnelling unmatched requests to the served root's `index.php`.
+**To downgrade to v19:** change `version = 20` to `version = 19` and delete any `[php.pool.*]` tables (an older daemon rejects the unknown tables under `deny_unknown_fields`, it doesn't just ignore them). Every version falls back to the built-in ceiling of 16.
 
 ### v19
 
-**Added:** the top-level `lan_enabled` (bool) and `lan_setup_port` (integer) scalars - whether sites are exposed to other devices on the local network, and the port the one-time remote-device bootstrap listens on. Both default when absent and are always emitted.
+**Added:** the top-level `lan_enabled` and `lan_setup_port` scalars, gating LAN exposure (serving your `.test` sites to other devices on the network) and setting the port the one-time remote-device setup page listens on. Both default when absent - `lan_enabled = false`, so LAN exposure stays opt-in, and `lan_setup_port = 7073`.
 
 ```toml
 lan_enabled = false
-lan_setup_port = 7878
+lan_setup_port = 7073
 ```
 
 **Migration from v18:** bare version bump - both scalars default when absent, so a v18 file needs no other change.
 
-**To downgrade to v18:** change `version = 19` to `version = 18` and delete the `lan_enabled` and `lan_setup_port` lines (a v18 daemon rejects the unknown keys under `deny_unknown_fields`). LAN exposure reverts to off.
+**To downgrade to v18:** change `version = 19` to `version = 18` and delete the `lan_enabled` and `lan_setup_port` lines (a v18 daemon rejects the unknown keys under `deny_unknown_fields`, it doesn't just ignore them). LAN exposure is off on a v18 daemon regardless.
 
 ### v18
 

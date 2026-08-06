@@ -18,11 +18,13 @@ function stubIpc(opts: {
   available?: PhpVersion[];
   legacy?: PhpVersion[];
   extensions?: Record<string, unknown[]>;
+  pool?: Record<string, Record<string, string>>;
 }) {
   const installed = opts.installed ?? ["8.1", "8.4"];
   const available = opts.available ?? ["8.5"];
   const legacy = opts.legacy ?? ["7.4", "8.0"];
   const extensions = opts.extensions ?? {};
+  const pool = opts.pool ?? {};
   invokeMock.mockImplementation((cmd: string) => {
     switch (cmd) {
       case "list_php":
@@ -33,6 +35,7 @@ function stubIpc(opts: {
           updates: [],
           settings: {},
           version_settings: {},
+          pool,
         });
       case "list_php_extensions":
         return Promise.resolve({ type: "php_extensions", by_version: extensions });
@@ -202,6 +205,24 @@ describe("PhpView per-version configuration", () => {
       .findAll('[role="tab"]')
       .find((t) => t.attributes("aria-selected") === "true");
     expect(selected!.text()).toContain("8.4");
+  });
+
+  it("counts a pool override in the version's tab badge and passes it to the panel", async () => {
+    stubIpc({ installed: ["8.1", "8.4"], pool: { "8.4": { max_children: "32" } } });
+    const wrapper = await mountView();
+
+    const tab = wrapper
+      .findAll('[role="tab"]')
+      .find((t) => t.text().includes("8.4"));
+    expect(tab!.text()).toContain("1");
+    expect(
+      (wrapper.find('input[id="pool-8.4-max-children"]').element as HTMLInputElement)
+        .value,
+    ).toBe("32");
+    expect(
+      (wrapper.find('input[id="pool-8.1-max-children"]').element as HTMLInputElement)
+        .value,
+    ).toBe("");
   });
 
   it("keeps hidden panels mounted so unsaved edits survive a tab switch", async () => {

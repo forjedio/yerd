@@ -61,8 +61,8 @@ fn populated() -> Config {
 fn default_config_starts_with_version_line() {
     let s = Config::default().to_toml().unwrap();
     assert!(
-        s.starts_with("version = 20\n"),
-        "expected first line `version = 20`; got: {s}"
+        s.starts_with("version = 21\n"),
+        "expected first line `version = 21`; got: {s}"
     );
 }
 
@@ -419,6 +419,10 @@ fn default_config_emits_no_version_settings_or_directives_tables() {
         !s.contains("[php.directives"),
         "default config must omit directives; got: {s}"
     );
+    assert!(
+        !s.contains("[php.pool"),
+        "default config must omit pool; got: {s}"
+    );
 }
 
 #[test]
@@ -463,6 +467,46 @@ fn populated_version_settings_and_directives_emit_between_settings_and_extension
     assert!(
         settings_at < vs_at && vs_at < dir_at && dir_at < ext_at,
         "expected settings < version_settings < directives < extensions; got: {s}"
+    );
+
+    let back = Config::from_toml(&s).unwrap();
+    assert_eq!(back, c);
+}
+
+#[test]
+fn populated_pool_emits_between_directives_and_extensions() {
+    let mut c = Config::default();
+    let v84 = PhpVersion::new(8, 4);
+    c.php.directives.insert(
+        v84,
+        std::collections::BTreeMap::from([("xdebug.mode".to_string(), "debug".to_string())]),
+    );
+    c.php.pool.insert(
+        v84,
+        std::collections::BTreeMap::from([("max_children".to_string(), "32".to_string())]),
+    );
+    c.php.extensions.insert(
+        v84,
+        vec![yerd_config::ExtEntry {
+            name: "xdebug".to_string(),
+            path: "/a/xdebug.so".to_string(),
+            zend: true,
+        }],
+    );
+    let s = c.to_toml().unwrap();
+
+    assert!(
+        s.contains("[php.pool.\"8.4\"]"),
+        "missing pool table; got: {s}"
+    );
+    assert!(s.contains("max_children = \"32\""), "got: {s}");
+
+    let dir_at = s.find("[php.directives.").expect("directives present");
+    let pool_at = s.find("[php.pool.").expect("pool present");
+    let ext_at = s.find("[[php.extensions.").expect("extensions present");
+    assert!(
+        dir_at < pool_at && pool_at < ext_at,
+        "expected directives < pool < extensions; got: {s}"
     );
 
     let back = Config::from_toml(&s).unwrap();

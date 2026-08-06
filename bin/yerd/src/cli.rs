@@ -656,6 +656,41 @@ pub enum PhpAction {
         #[command(subcommand)]
         action: PhpIniAction,
     },
+    /// Manage per-version FPM pool settings (worker ceiling), applied to that
+    /// version's web (FPM) pool only.
+    Pool {
+        /// The pool setting action.
+        #[command(subcommand)]
+        action: PhpPoolAction,
+    },
+}
+
+/// Action of `yerd php pool`.
+#[derive(clap::Subcommand, Debug, Clone)]
+pub enum PhpPoolAction {
+    /// Set an FPM pool setting for one installed PHP version. The only
+    /// setting is `max_children`, the ceiling on concurrent PHP workers,
+    /// accepted between 1 and 1024 (default 16). The pool is on-demand, so a
+    /// higher ceiling costs nothing while idle.
+    Set {
+        /// PHP version, e.g. `8.3`.
+        version: String,
+        /// Setting name: `max_children`.
+        name: String,
+        /// Setting value, e.g. `32`.
+        value: String,
+    },
+    /// Reset an FPM pool setting for one installed PHP version to its
+    /// built-in default.
+    Unset {
+        /// PHP version, e.g. `8.3`.
+        version: String,
+        /// Setting name: `max_children`.
+        name: String,
+    },
+    /// List per-version settings overrides, custom ini directives, and pool
+    /// settings.
+    List,
 }
 
 /// Action of `yerd php ini`.

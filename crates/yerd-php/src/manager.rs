@@ -135,6 +135,7 @@ where
     ini_settings: BTreeMap<String, String>,
     ini_overrides: BTreeMap<PhpVersion, BTreeMap<String, String>>,
     directives: BTreeMap<PhpVersion, BTreeMap<String, String>>,
+    pool_overrides: BTreeMap<PhpVersion, BTreeMap<String, String>>,
     dump_ext: Option<DumpExtSettings>,
     extensions: BTreeMap<PhpVersion, Vec<ExtLoad>>,
     ca_bundle: Option<PathBuf>,
@@ -176,6 +177,7 @@ where
             ini_settings: BTreeMap::new(),
             ini_overrides: BTreeMap::new(),
             directives: BTreeMap::new(),
+            pool_overrides: BTreeMap::new(),
             dump_ext: None,
             extensions: BTreeMap::new(),
             ca_bundle: None,
@@ -219,6 +221,18 @@ where
     /// like `set_extensions`.
     pub fn set_directives(&mut self, directives: BTreeMap<PhpVersion, BTreeMap<String, String>>) {
         self.directives = directives;
+    }
+
+    /// Replace the per-version FPM pool settings, keyed by PHP version. These
+    /// are pool-block values rather than ini directives, so they never reach a
+    /// CLI `php.ini`; a version with no valid override keeps
+    /// [`PoolConfig::dev_defaults`]'s value. Takes effect on the next `ensure`
+    /// / restart of a pool, like `set_directives`.
+    pub fn set_pool_overrides(
+        &mut self,
+        overrides: BTreeMap<PhpVersion, BTreeMap<String, String>>,
+    ) {
+        self.pool_overrides = overrides;
     }
 
     /// Configure daemon-managed dump-extension loading. When set, each pool that
@@ -304,6 +318,9 @@ where
             .get(&v)
             .map(|m| m.iter().map(|(k, val)| (k.clone(), val.clone())).collect())
             .unwrap_or_default();
+        if let Some(n) = yerd_core::php_pool::override_max_children(self.pool_overrides.get(&v)) {
+            cfg.max_children = n;
+        }
         cfg.ca_bundle = self.ca_bundle.clone();
 
         if let Some(ext) = &self.dump_ext {

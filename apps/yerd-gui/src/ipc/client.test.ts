@@ -24,6 +24,7 @@ import {
   setMailEnabled,
   setMailPort,
   setPhpDirectives,
+  setPhpPoolSettings,
   setPhpVersionSettings,
   setPrimaryDomain,
   setSymlinkProtection,
@@ -246,6 +247,21 @@ describe("client → command mapping", () => {
       directives: { "xdebug.mode": "debug" },
     });
     expect(r.directives?.["8.3"]?.["xdebug.mode"]).toBe("debug");
+  });
+
+  it("setPhpPoolSettings sends the version and settings map", async () => {
+    invokeMock.mockResolvedValue({
+      type: "php_versions",
+      installed: ["8.4"],
+      default: "8.4",
+      pool: { "8.4": { max_children: "32" } },
+    });
+    const r = await setPhpPoolSettings("8.4", { max_children: "32" });
+    expect(invokeMock).toHaveBeenCalledWith("set_php_pool_settings", {
+      version: "8.4",
+      settings: { max_children: "32" },
+    });
+    expect(r.pool?.["8.4"]?.["max_children"]).toBe("32");
   });
 
   it("resetDomains sends just the name", async () => {

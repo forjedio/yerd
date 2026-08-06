@@ -753,6 +753,7 @@ fn response_php_versions_byte_shape() {
         settings: BTreeMap::new(),
         version_settings: Box::new(BTreeMap::new()),
         directives: Box::new(BTreeMap::new()),
+        pool: Box::new(BTreeMap::new()),
     };
     let s = serde_json::to_string(&r).unwrap();
     assert_eq!(
@@ -796,6 +797,7 @@ fn response_php_versions_with_updates_byte_shape() {
         settings: BTreeMap::new(),
         version_settings: Box::new(BTreeMap::new()),
         directives: Box::new(BTreeMap::new()),
+        pool: Box::new(BTreeMap::new()),
     };
     let s = serde_json::to_string(&r).unwrap();
     assert_eq!(
@@ -817,6 +819,7 @@ fn response_php_versions_with_settings_byte_shape() {
         ]),
         version_settings: Box::new(BTreeMap::new()),
         directives: Box::new(BTreeMap::new()),
+        pool: Box::new(BTreeMap::new()),
     };
     let s = serde_json::to_string(&r).unwrap();
     assert_eq!(
@@ -841,6 +844,7 @@ fn response_php_versions_with_version_settings_and_directives_byte_shape() {
             PhpVersion::new(8, 3),
             BTreeMap::from([("xdebug.mode".to_string(), "debug".to_string())]),
         )])),
+        pool: Box::new(BTreeMap::new()),
     };
     let s = serde_json::to_string(&r).unwrap();
     assert_eq!(
@@ -856,9 +860,57 @@ fn response_php_versions_with_version_settings_and_directives_byte_shape() {
         Response::PhpVersions {
             ref version_settings,
             ref directives,
+            ref pool,
             ..
-        } if version_settings.is_empty() && directives.is_empty()
+        } if version_settings.is_empty() && directives.is_empty() && pool.is_empty()
     ));
+}
+
+#[test]
+fn response_php_versions_with_pool_byte_shape() {
+    let r = Response::PhpVersions {
+        installed: vec![PhpVersion::new(8, 4)],
+        default: PhpVersion::new(8, 4),
+        updates: vec![],
+        settings: BTreeMap::new(),
+        version_settings: Box::new(BTreeMap::new()),
+        directives: Box::new(BTreeMap::new()),
+        pool: Box::new(BTreeMap::from([(
+            PhpVersion::new(8, 4),
+            BTreeMap::from([("max_children".to_string(), "32".to_string())]),
+        )])),
+    };
+    let s = serde_json::to_string(&r).unwrap();
+    assert_eq!(
+        s,
+        r#"{"type":"php_versions","installed":["8.4"],"default":"8.4","pool":{"8.4":{"max_children":"32"}}}"#
+    );
+    assert_eq!(serde_json::from_str::<Response>(&s).unwrap(), r);
+}
+
+#[test]
+fn request_set_php_pool_settings_byte_shape() {
+    let r = Request::SetPhpPoolSettings {
+        version: PhpVersion::new(8, 4),
+        settings: BTreeMap::from([("max_children".to_string(), "32".to_string())]),
+    };
+    let s = serde_json::to_string(&r).unwrap();
+    assert_eq!(
+        s,
+        r#"{"type":"set_php_pool_settings","version":"8.4","settings":{"max_children":"32"}}"#
+    );
+    assert_eq!(serde_json::from_str::<Request>(&s).unwrap(), r);
+
+    let reset = Request::SetPhpPoolSettings {
+        version: PhpVersion::new(8, 4),
+        settings: BTreeMap::from([("max_children".to_string(), String::new())]),
+    };
+    let s = serde_json::to_string(&reset).unwrap();
+    assert_eq!(
+        s,
+        r#"{"type":"set_php_pool_settings","version":"8.4","settings":{"max_children":""}}"#
+    );
+    assert_eq!(serde_json::from_str::<Request>(&s).unwrap(), reset);
 }
 
 #[test]

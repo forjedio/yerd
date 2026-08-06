@@ -218,6 +218,17 @@ pub enum Request {
         /// Directive name → value; `""` removes the directive.
         directives: BTreeMap<String, String>,
     },
+    /// Merge per-version FPM pool settings into the config and apply them to
+    /// that version's pool. These are pool-block values, not ini directives,
+    /// so they never reach the CLI ini. An empty-string value resets the
+    /// setting to its built-in default.
+    SetPhpPoolSettings {
+        /// The installed PHP version the pool settings apply to.
+        version: PhpVersion,
+        /// Setting name → value; currently only `"max_children"` (`1..=1024`).
+        /// `""` resets to the default.
+        settings: BTreeMap<String, String>,
+    },
     /// Register a custom PHP extension for a version: the daemon validates and
     /// load-probes the `.so`, persists it, and loads it into that version's FPM
     /// pool and CLI ini.
@@ -837,6 +848,7 @@ mod variant_name_pinning {
             Request::SetPhpSettings { .. } => {}
             Request::SetPhpVersionSettings { .. } => {}
             Request::SetPhpDirectives { .. } => {}
+            Request::SetPhpPoolSettings { .. } => {}
             Request::AddPhpExtension { .. } => {}
             Request::RemovePhpExtension { .. } => {}
             Request::ListPhpExtensions => {}

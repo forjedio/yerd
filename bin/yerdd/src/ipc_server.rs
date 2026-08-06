@@ -218,6 +218,9 @@ async fn dispatch(req: Request, state: &DaemonState) -> Response {
             version,
             directives,
         } => set_php_directives(version, directives, state).await,
+        Request::SetPhpPoolSettings { version, settings } => {
+            set_php_pool_settings(version, settings, state).await
+        }
         Request::AddPhpExtension {
             version,
             path,
@@ -476,13 +479,14 @@ fn installed_versions(state: &DaemonState) -> Vec<yerd_core::PhpVersion> {
 /// Build the `PhpVersions` reply: installed versions, the live global default,
 /// cached update annotations, and the global ini settings. Read-only; no network.
 async fn php_versions_response(state: &DaemonState) -> Response {
-    let (default, settings, version_settings, directives) = {
+    let (default, settings, version_settings, directives, pool) = {
         let cfg = state.config.lock().await;
         (
             cfg.php.default,
             cfg.php.settings.clone(),
             cfg.php.version_settings.clone(),
             cfg.php.directives.clone(),
+            cfg.php.pool.clone(),
         )
     };
     Response::PhpVersions {
@@ -492,6 +496,7 @@ async fn php_versions_response(state: &DaemonState) -> Response {
         settings,
         version_settings: Box::new(version_settings),
         directives: Box::new(directives),
+        pool: Box::new(pool),
     }
 }
 
@@ -2224,6 +2229,79 @@ async fn set_php_directives(
     php_versions_response(state).await
 }
 
+/// `yerd php pool set/unset` - merge per-version FPM pool settings into the
+/// config and apply them to that version's pool. An empty-string value resets
+/// the setting to its built-in default. Mirrors [`set_php_directives`]'s lock
+/// order and `php_settings_mutate` discipline; only the affected version's
+/// pool restarts. Values are stored canonically (`"032"` persists as `"32"`),
+/// matching [`set_php_version_settings`].
+async fn set_php_pool_settings(
+    version: yerd_core::PhpVersion,
+    settings: std::collections::BTreeMap<String, String>,
+    state: &DaemonState,
+) -> Response {
+    if let Some(resp) = require_installed(version, state) {
+        return resp;
+    }
+    let _mutate_guard = state.php_settings_mutate.lock().await;
+    let mut cfg_guard = state.config.lock().await;
+    let mut new = cfg_guard.clone();
+    for (key, value) in settings {
+        if let Err(e) = yerd_core::php_pool::validate_name(&key) {
+            return Response::Error {
+                code: ErrorCode::InvalidPath,
+                message: e.to_string(),
+            };
+        }
+        if value.is_empty() {
+            if let Some(map) = new.php.pool.get_mut(&version) {
+                map.remove(&key);
+            }
+            continue;
+        }
+        let parsed = match yerd_core::php_pool::validate_value(&value) {
+            Ok(n) => n,
+            Err(e) => {
+                return Response::Error {
+                    code: ErrorCode::InvalidPath,
+                    message: e.to_string(),
+                }
+            }
+        };
+        new.php
+            .pool
+            .entry(version)
+            .or_default()
+            .insert(key, parsed.to_string());
+    }
+    if new
+        .php
+        .pool
+        .get(&version)
+        .is_some_and(std::collections::BTreeMap::is_empty)
+    {
+        new.php.pool.remove(&version);
+    }
+
+    if new.php.pool == cfg_guard.php.pool {
+        drop(cfg_guard);
+        return php_versions_response(state).await;
+    }
+
+    if let Err(e) = new.validate() {
+        return internal(format!("config validation failed: {e}"));
+    }
+    if let Err(e) = new.save(&state.config_path) {
+        return internal(format!("config save failed: {e}"));
+    }
+    *cfg_guard = new;
+    drop(cfg_guard);
+
+    apply_version_php_config(state, version).await;
+    tracing::info!(version = %version, "applied per-version FPM pool settings");
+    php_versions_response(state).await
+}
+
 /// `NotFound` error when `version` has no installed CLI binary, else `None`.
 /// Per-version config only makes sense for an installed version (mirrors
 /// `add_php_extension`).
@@ -2238,21 +2316,28 @@ fn require_installed(version: yerd_core::PhpVersion, state: &DaemonState) -> Opt
     })
 }
 
-/// Push the config's per-version settings overrides and directives into the
-/// live `PhpManager`, restart the affected version's pool if it is currently
-/// running, and rewrite the per-version CLI inis. Follows `set_php_settings`'s
-/// lock discipline: the config lock is released before the manager lock is
-/// taken. Runs under the caller's `php_settings_mutate` guard, which is what
-/// keeps the config re-read here from racing a concurrent settings mutation.
+/// Push the config's per-version settings overrides, directives, and FPM pool
+/// settings into the live `PhpManager`, restart the affected version's pool if
+/// it is currently running, and rewrite the per-version CLI inis. Follows
+/// `set_php_settings`'s lock discipline: the config lock is released before the
+/// manager lock is taken. Runs under the caller's `php_settings_mutate` guard,
+/// which is what keeps the config re-read here from racing a concurrent
+/// settings mutation. The pool map never reaches `write_cli_ini`, so pool
+/// settings cannot leak into a CLI `php.ini`.
 async fn apply_version_php_config(state: &DaemonState, affected: yerd_core::PhpVersion) {
-    let (version_settings, directives) = {
+    let (version_settings, directives, pool) = {
         let cfg = state.config.lock().await;
-        (cfg.php.version_settings.clone(), cfg.php.directives.clone())
+        (
+            cfg.php.version_settings.clone(),
+            cfg.php.directives.clone(),
+            cfg.php.pool.clone(),
+        )
     };
     {
         let mut mgr = state.php_manager.lock().await;
         mgr.set_ini_overrides(version_settings);
         mgr.set_directives(directives);
+        mgr.set_pool_overrides(pool);
         if mgr.snapshots().iter().any(|s| s.version == affected) {
             if let Err(e) = mgr.restart(affected).await {
                 tracing::warn!(version = %affected, error = %e, "failed to restart FPM pool after per-version PHP config change");
@@ -4224,6 +4309,125 @@ Subject: Captured\r\n\r\nhi\r\n";
             }
             other => panic!("expected PhpVersions, got {other:?}"),
         }
+    }
+
+    async fn set_pool(
+        state: &DaemonState,
+        version: PhpVersion,
+        name: &str,
+        value: &str,
+    ) -> Response {
+        dispatch(
+            Request::SetPhpPoolSettings {
+                version,
+                settings: std::collections::BTreeMap::from([(name.to_string(), value.to_string())]),
+            },
+            state,
+        )
+        .await
+    }
+
+    #[tokio::test]
+    async fn set_php_pool_settings_persists_validates_and_removes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_in(tmp.path());
+        let v83 = PhpVersion::new(8, 3);
+        fake_install(&state.dirs, v83);
+
+        assert!(matches!(
+            set_pool(&state, PhpVersion::new(8, 5), "max_children", "32").await,
+            Response::Error {
+                code: ErrorCode::NotFound,
+                ..
+            }
+        ));
+
+        match set_pool(&state, v83, "max_children", "32").await {
+            Response::PhpVersions { pool, .. } => {
+                assert_eq!(
+                    pool.get(&v83)
+                        .and_then(|m| m.get("max_children"))
+                        .map(String::as_str),
+                    Some("32")
+                );
+            }
+            other => panic!("expected PhpVersions, got {other:?}"),
+        }
+
+        for (name, value) in [
+            ("max_children", "0"),
+            ("max_children", "1025"),
+            ("max_children", "abc"),
+            ("max_children", "-1"),
+            ("start_servers", "4"),
+            ("pm.max_children", "32"),
+        ] {
+            assert!(
+                matches!(
+                    set_pool(&state, v83, name, value).await,
+                    Response::Error {
+                        code: ErrorCode::InvalidPath,
+                        ..
+                    }
+                ),
+                "{name}={value} should be rejected"
+            );
+        }
+        assert_eq!(
+            state
+                .config
+                .lock()
+                .await
+                .php
+                .pool
+                .get(&v83)
+                .and_then(|m| m.get("max_children"))
+                .map(String::as_str),
+            Some("32")
+        );
+
+        match set_pool(&state, v83, "max_children", "064").await {
+            Response::PhpVersions { pool, .. } => {
+                assert_eq!(
+                    pool.get(&v83)
+                        .and_then(|m| m.get("max_children"))
+                        .map(String::as_str),
+                    Some("64"),
+                    "value must persist canonically"
+                );
+            }
+            other => panic!("expected PhpVersions, got {other:?}"),
+        }
+
+        match set_pool(&state, v83, "max_children", "").await {
+            Response::PhpVersions { pool, .. } => {
+                assert!(
+                    !pool.contains_key(&v83),
+                    "emptied pool map must drop the version key"
+                );
+            }
+            other => panic!("expected PhpVersions, got {other:?}"),
+        }
+    }
+
+    /// The `pm.` prefix is now reserved out of the free-form directives path,
+    /// so the workaround from issue #200 is refused at set time with a pointer
+    /// at the pool command instead of rendering a broken `php_value` line.
+    #[tokio::test]
+    async fn pool_settings_are_refused_through_the_directives_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_in(tmp.path());
+        let v83 = PhpVersion::new(8, 3);
+        fake_install(&state.dirs, v83);
+
+        match set_directive(&state, v83, "pm.max_children", "32").await {
+            Response::Error {
+                code: ErrorCode::InvalidPath,
+                message,
+            } => assert!(message.contains("yerd php pool"), "got: {message}"),
+            other => panic!("expected InvalidPath, got {other:?}"),
+        }
+        assert!(state.config.lock().await.php.directives.is_empty());
     }
 
     #[tokio::test]

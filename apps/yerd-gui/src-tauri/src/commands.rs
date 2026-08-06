@@ -421,6 +421,15 @@ pub async fn set_php_directives(
     )
 }
 
+/// Update one PHP version's FPM pool settings (`""` resets to the default).
+#[tauri::command]
+pub async fn set_php_pool_settings(
+    version: PhpVersion,
+    settings: std::collections::BTreeMap<String, String>,
+) -> Result<Response, GuiError> {
+    finish(exchange(&Request::SetPhpPoolSettings { version, settings }).await?)
+}
+
 #[tauri::command]
 pub async fn list_php_extensions() -> Result<Response, GuiError> {
     finish(exchange(&Request::ListPhpExtensions).await?)
