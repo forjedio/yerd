@@ -187,8 +187,6 @@ mod tests {
 
     #[tokio::test]
     async fn directory_without_index_php_still_redirects() {
-        // Matches nginx/Apache: the 301 depends only on the path naming a real
-        // directory, not on what lives inside it.
         let root = tempfile::tempdir().unwrap();
         std::fs::create_dir(root.path().join("assets")).unwrap();
         std::fs::write(root.path().join("assets/index.html"), b"<h1>").unwrap();

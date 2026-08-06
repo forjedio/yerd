@@ -932,14 +932,13 @@ async fn directory_request_without_trailing_slash_redirects() {
         "the 301 depends on the directory existing, not on it holding an index.php"
     );
 
-    // The slashed form still executes the subdirectory's own script - the
-    // redirect target must actually resolve, or the loop just moves.
     let body = client_get(proxy_addr, "legacy.test", "/sub/").await;
     assert_eq!(body, b"from fpm");
     let params = captured.lock().await.clone();
     assert_eq!(
         params.get("SCRIPT_NAME").map(String::as_str),
-        Some("/sub/index.php")
+        Some("/sub/index.php"),
+        "the redirect target must itself resolve, or the loop just moves"
     );
 
     let _ = tx_shutdown.send(());
