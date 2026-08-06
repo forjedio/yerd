@@ -17,7 +17,9 @@
 //! `index.php` policy) rather than handed to FastCGI, the same way a
 //! symlinked static asset is refused - otherwise a symlink inside a site's
 //! own tree could point FastCGI at an arbitrary `.php` file elsewhere on the
-//! host's filesystem.
+//! host's filesystem. (For GET/HEAD, `static_file::try_serve` will already
+//! have answered `403` for the escaping path before resolution runs; the
+//! fallback here is what the other methods observe.)
 
 use std::path::{Path, PathBuf};
 
@@ -117,8 +119,13 @@ async fn existing_php_file(
 /// canonicalises within `real_root`. Deliberately mirrors
 /// [`existing_php_file`]'s containment `match` so the two probes can't drift
 /// apart on symlink semantics: with protection on, a directory symlink
-/// escaping `real_root` is refused (no redirect - the request falls back to
-/// the root `index.php`); with it off, the symlink target is accepted.
+/// escaping `real_root` is never a redirect candidate; with it off, the
+/// symlink target is accepted. Note that a GET/HEAD request for such an
+/// escaping path never actually reaches this refusal:
+/// [`crate::forward::static_file::try_serve`] has already answered `403` for
+/// it before script resolution runs. Only non-GET/HEAD methods, which the
+/// caller never redirects anyway, get here and fall back to the root
+/// `index.php`.
 async fn is_existing_directory(
     served_root: &Path,
     real_root: &Path,
@@ -197,9 +204,14 @@ mod tests {
         );
     }
 
+    /// Unit-level contract only: `resolve_script` refuses to treat the
+    /// escaping symlink as a directory, so it is not a redirect candidate.
+    /// In the server, a GET/HEAD for this path never reaches
+    /// `resolve_script` at all - `static_file::try_serve` answers `403`
+    /// first (see `is_existing_directory`'s doc).
     #[cfg(unix)]
     #[tokio::test]
-    async fn symlinked_directory_escaping_document_root_falls_back() {
+    async fn symlinked_directory_escaping_document_root_is_not_a_redirect_candidate() {
         let docroot = tempfile::tempdir().unwrap();
         let outside = tempfile::tempdir().unwrap();
         std::fs::create_dir(outside.path().join("secrets")).unwrap();

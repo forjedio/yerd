@@ -477,11 +477,14 @@ async fn dispatch<R: BackendResolver, L: LoginTokenConsumer>(
 ///
 /// The one-click `WordPress` login token is consumed here via
 /// [`consume_login_token_if_present`] - only ever on `/wp-admin`, only when a
-/// token is both present and valid for *this* site. This runs strictly after
-/// [`dispatch`]'s HTTP->HTTPS redirect check, so a secure site's token is
-/// never burned by the 301 itself. On success the token is stripped from the
-/// forwarded URI (never reaching PHP or logging) and `auto_prepend_file` plus
-/// the resolved target user are added for this one request only.
+/// token is both present and valid for *this* site, and only once every
+/// earlier answer (HTTP->HTTPS `301` in [`dispatch`], static file, symlink
+/// `403`, trailing-slash `301`) has been ruled out. A redirect must never
+/// burn the token: its `Location` keeps the query intact, so the token
+/// survives to the followed request and is consumed there. On success the
+/// token is stripped from the forwarded URI (never reaching PHP or logging)
+/// and `auto_prepend_file` plus the resolved target user are added for this
+/// one request only.
 #[allow(clippy::too_many_arguments)]
 async fn serve_php_fpm<R: BackendResolver, L: LoginTokenConsumer>(
     mut req: Request<Incoming>,
@@ -497,15 +500,6 @@ async fn serve_php_fpm<R: BackendResolver, L: LoginTokenConsumer>(
     https: bool,
     symlink_protection: bool,
 ) -> Result<Response<BoxBody>, ProxyError> {
-    let login_target_user = consume_login_token_if_present(&mut req, site.name(), login_tokens);
-    let auto_login = match (&login_target_user, login_prepend_script) {
-        (Some(target_user), Some(prepend_script)) => Some(cgi_params::AutoLoginParams {
-            prepend_script,
-            target_user: target_user.as_str(),
-        }),
-        _ => None,
-    };
-
     let outcome = static_file::try_serve(
         req.method(),
         req.uri().path(),
@@ -546,6 +540,14 @@ async fn serve_php_fpm<R: BackendResolver, L: LoginTokenConsumer>(
         }
         script_file::ScriptResolution::DirectoryRedirect
         | script_file::ScriptResolution::Fallback => None,
+    };
+    let login_target_user = consume_login_token_if_present(&mut req, site.name(), login_tokens);
+    let auto_login = match (&login_target_user, login_prepend_script) {
+        (Some(target_user), Some(prepend_script)) => Some(cgi_params::AutoLoginParams {
+            prepend_script,
+            target_user: target_user.as_str(),
+        }),
+        _ => None,
     };
     fcgi::forward(
         req,
@@ -588,9 +590,11 @@ async fn resolve_script_if_allowed<R: BackendResolver>(
 
 /// One-click `WordPress` login: only ever considered on `/wp-admin`, only
 /// ever acted on when a token is both present and valid for `site_name`.
-/// Consuming happens here - the caller must only call this strictly after the
-/// HTTP->HTTPS redirect check, so a secure site's token is never burned by
-/// the 301 itself. On success, strips the token from `req`'s URI (so it never
+/// Consuming happens here - the caller must only call this once the request
+/// is definitely being forwarded to FastCGI, strictly after the HTTP->HTTPS
+/// redirect check and every other early answer (static file, symlink `403`,
+/// trailing-slash `301`), so no redirect or non-PHP response ever burns the
+/// token. On success, strips the token from `req`'s URI (so it never
 /// reaches PHP or request logging) and returns `Some(target_user)` (`""` = no
 /// preference); the caller decides what "success" means for its own request
 /// (adding `auto_prepend_file`/`YERD_LOGIN_USER`).
@@ -650,14 +654,24 @@ fn https_redirect(
 /// multi-directory PHP apps rely on: without it a subdirectory request
 /// silently executes the *root* `index.php`, so an app whose front page
 /// redirects into a subdirectory loops forever.
+///
+/// Sent with `Cache-Control: no-store`, deliberately diverging from
+/// Apache/nginx: a bare `301` is cached by browsers indefinitely, and on a
+/// dev box the answer stops being true the moment the directory is deleted
+/// or the site is switched to front-controller mode - Yerd has no way to
+/// evict it afterwards. The `Location` may also carry a one-shot login
+/// token, which has no business in a disk cache.
 fn trailing_slash_redirect(req: &Request<Incoming>) -> Result<Response<BoxBody>, ProxyError> {
-    moved_permanently(&directory_redirect_location(path_and_query_or_root(
+    let mut resp = moved_permanently(&directory_redirect_location(path_and_query_or_root(
         req.uri(),
-    )))
+    )))?;
+    resp.headers_mut()
+        .insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    Ok(resp)
 }
 
 /// A bodyless `301` to `location`. Shared by both redirect kinds so they can't
-/// drift in status or header handling.
+/// drift in status or `Location` handling.
 fn moved_permanently(location: &str) -> Result<Response<BoxBody>, ProxyError> {
     Response::builder()
         .status(StatusCode::MOVED_PERMANENTLY)

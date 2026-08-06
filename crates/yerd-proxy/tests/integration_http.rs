@@ -917,9 +917,20 @@ async fn directory_request_without_trailing_slash_redirects() {
         .await;
     });
 
+    let (status, headers) = client_get_headers(proxy_addr, "legacy.test", "/sub").await;
+    assert_eq!(status, 301);
     assert_eq!(
-        client_get_status_and_location(proxy_addr, "legacy.test", "/sub").await,
-        (301, Some("/sub/".to_owned()))
+        headers
+            .get(hyper::header::LOCATION)
+            .and_then(|v| v.to_str().ok()),
+        Some("/sub/")
+    );
+    assert_eq!(
+        headers
+            .get(hyper::header::CACHE_CONTROL)
+            .and_then(|v| v.to_str().ok()),
+        Some("no-store"),
+        "a cached 301 would outlive the directory and the site's routing mode"
     );
     assert_eq!(
         client_get_status_and_location(proxy_addr, "legacy.test", "/sub?x=1").await,
@@ -1008,6 +1019,201 @@ async fn front_controller_mode_does_not_redirect_directories() {
     assert_eq!(
         params.get("SCRIPT_NAME").map(String::as_str),
         Some("/index.php")
+    );
+
+    let _ = tx_shutdown.send(());
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(5), proxy_task).await;
+    let _ = fake_task.await;
+}
+
+/// The trailing-slash redirect is GET/HEAD-only: a `301` would make the
+/// client drop the body and retry as GET, so a POST to a directory path must
+/// instead keep reaching the root front controller exactly as it did before
+/// the redirect existed. `sub/index.php` is real here, proving it is the
+/// method gate deciding, not a missing directory.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn post_to_directory_is_not_redirected() {
+    let docroot = tempfile::tempdir().unwrap();
+    std::fs::write(docroot.path().join("index.php"), b"<?php /* root */").unwrap();
+    std::fs::create_dir(docroot.path().join("sub")).unwrap();
+    std::fs::write(docroot.path().join("sub/index.php"), b"<?php /* sub */").unwrap();
+
+    let fcgi_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let fcgi_addr = fcgi_listener.local_addr().unwrap();
+    let captured = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+    let captured_for_fake = captured.clone();
+    let stdout_payload = b"Status: 200 OK\r\nContent-Type: text/plain\r\n\r\nfrom fpm".to_vec();
+    let fake_task = tokio::spawn(run_fake_fcgi(
+        fcgi_listener,
+        stdout_payload,
+        captured_for_fake,
+    ));
+
+    let proxy_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let proxy_addr = proxy_listener.local_addr().unwrap();
+
+    let tld = Tld::new("test").unwrap();
+    let cfg = RouterConfig::with_tld(tld);
+    let mut router = SiteRouter::new(cfg);
+    let site = Site::linked(
+        "legacy",
+        docroot.path().to_path_buf(),
+        PhpVersion::new(8, 3),
+    )
+    .unwrap();
+    router.insert(site).unwrap();
+    let router = Arc::new(tokio::sync::RwLock::new(router));
+
+    let resolver = Arc::new(StaticResolver {
+        backend: Backend::PhpFpmTcp { addr: fcgi_addr },
+    });
+
+    let (tx_shutdown, rx_shutdown) = oneshot::channel::<()>();
+    let proxy_task = tokio::spawn(async move {
+        let _ = ProxyServer::serve::<_, StubCertStore, _, _>(
+            proxy_listener,
+            None,
+            router,
+            resolver,
+            Arc::new(NoLoginTokens),
+            None,
+            Arc::new(AtomicBool::new(true)),
+            test_client_tls(),
+            false,
+            async move {
+                let _ = rx_shutdown.await;
+            },
+        )
+        .await;
+    });
+
+    let (status, body) = client_post(proxy_addr, "legacy.test", "/sub").await;
+    assert_eq!(status, 200, "a POST must never be answered with the 301");
+    assert_eq!(body, b"from fpm");
+
+    let params = captured.lock().await.clone();
+    assert_eq!(
+        params.get("REQUEST_METHOD").map(String::as_str),
+        Some("POST")
+    );
+    assert_eq!(
+        params.get("SCRIPT_NAME").map(String::as_str),
+        Some("/index.php"),
+        "the directory outcome must degrade to the root front controller for POST"
+    );
+
+    let _ = tx_shutdown.send(());
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(5), proxy_task).await;
+    let _ = fake_task.await;
+}
+
+/// A one-click login token on the slashless `/wp-admin` form must survive the
+/// trailing-slash `301` unconsumed and untouched in `Location`, then actually
+/// work on the slashed follow-up request. Companion to
+/// `secure_site_redirect_does_not_consume_login_token`, which pins the same
+/// no-redirect-burns-the-token invariant for the HTTP->HTTPS `301`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn directory_redirect_preserves_login_token_unconsumed() {
+    let docroot = tempfile::tempdir().unwrap();
+    std::fs::write(docroot.path().join("index.php"), b"<?php /* root */").unwrap();
+    std::fs::create_dir(docroot.path().join("wp-admin")).unwrap();
+    std::fs::write(docroot.path().join("wp-admin/index.php"), b"<?php").unwrap();
+
+    let fcgi_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let fcgi_addr = fcgi_listener.local_addr().unwrap();
+    let captured = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+    let captured_for_fake = captured.clone();
+    let stdout_payload = b"Status: 200 OK\r\nContent-Type: text/plain\r\n\r\nadmin".to_vec();
+    let fake_task = tokio::spawn(run_fake_fcgi(
+        fcgi_listener,
+        stdout_payload,
+        captured_for_fake,
+    ));
+
+    let proxy_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let proxy_addr = proxy_listener.local_addr().unwrap();
+
+    let tld = Tld::new("test").unwrap();
+    let cfg = RouterConfig::with_tld(tld);
+    let mut router = SiteRouter::new(cfg);
+    let site = Site::linked("blog", docroot.path().to_path_buf(), PhpVersion::new(8, 3)).unwrap();
+    router.insert(site).unwrap();
+    let router = Arc::new(tokio::sync::RwLock::new(router));
+
+    let resolver = Arc::new(StaticResolver {
+        backend: Backend::PhpFpmTcp { addr: fcgi_addr },
+    });
+    let login_tokens = Arc::new(OneShotLoginToken {
+        site: "blog",
+        token: "sekrit",
+        target_user: "editor",
+        consumed: std::sync::atomic::AtomicBool::new(false),
+    });
+    let login_tokens_for_assert = login_tokens.clone();
+    let prepend_path = PathBuf::from("/opt/yerd/wordpress-autologin-prepend.php");
+
+    let (tx_shutdown, rx_shutdown) = oneshot::channel::<()>();
+    let proxy_task = tokio::spawn(async move {
+        let _ = ProxyServer::serve::<_, StubCertStore, _, _>(
+            proxy_listener,
+            None,
+            router,
+            resolver,
+            login_tokens,
+            Some(prepend_path),
+            Arc::new(AtomicBool::new(true)),
+            test_client_tls(),
+            false,
+            async move {
+                let _ = rx_shutdown.await;
+            },
+        )
+        .await;
+    });
+
+    let (status, location) = client_get_status_and_location(
+        proxy_addr,
+        "blog.test",
+        "/wp-admin?yerd_login_token=sekrit",
+    )
+    .await;
+    assert_eq!(status, 301);
+    assert_eq!(
+        location.as_deref(),
+        Some("/wp-admin/?yerd_login_token=sekrit"),
+        "the token must still be in the redirect Location, untouched"
+    );
+    assert!(
+        !login_tokens_for_assert
+            .consumed
+            .load(std::sync::atomic::Ordering::SeqCst),
+        "the trailing-slash 301 must never consume the token"
+    );
+
+    let body = client_get(
+        proxy_addr,
+        "blog.test",
+        "/wp-admin/?yerd_login_token=sekrit",
+    )
+    .await;
+    assert_eq!(body, b"admin");
+    assert!(
+        login_tokens_for_assert
+            .consumed
+            .load(std::sync::atomic::Ordering::SeqCst),
+        "the followed redirect is where the token gets spent"
+    );
+
+    let params = captured.lock().await.clone();
+    assert_eq!(
+        params.get("PHP_VALUE").map(String::as_str),
+        Some("auto_prepend_file=/opt/yerd/wordpress-autologin-prepend.php"),
+        "autologin must actually engage on the slashed request"
+    );
+    assert_eq!(
+        params.get("REQUEST_URI").map(String::as_str),
+        Some("/wp-admin/"),
+        "the consumed token must be stripped before reaching PHP"
     );
 
     let _ = tx_shutdown.send(());
@@ -1640,4 +1846,50 @@ async fn client_get_status(addr: SocketAddr, host: &str, path: &str) -> u16 {
         .unwrap();
     let resp = sender.send_request(req).await.unwrap();
     resp.status().as_u16()
+}
+
+async fn client_get_headers(addr: SocketAddr, host: &str, path: &str) -> (u16, hyper::HeaderMap) {
+    let stream = TcpStream::connect(addr).await.unwrap();
+    let io = TokioIo::new(stream);
+    let (mut sender, conn) = hyper::client::conn::http1::handshake::<_, Empty<Bytes>>(io)
+        .await
+        .unwrap();
+    tokio::spawn(async move {
+        let _ = conn.await;
+    });
+    let req = Request::builder()
+        .method("GET")
+        .uri(path)
+        .header("Host", host)
+        .body(Empty::<Bytes>::new())
+        .unwrap();
+    let resp = sender.send_request(req).await.unwrap();
+    (resp.status().as_u16(), resp.headers().clone())
+}
+
+async fn client_post(addr: SocketAddr, host: &str, path: &str) -> (u16, Vec<u8>) {
+    let stream = TcpStream::connect(addr).await.unwrap();
+    let io = TokioIo::new(stream);
+    let (mut sender, conn) = hyper::client::conn::http1::handshake::<_, Empty<Bytes>>(io)
+        .await
+        .unwrap();
+    tokio::spawn(async move {
+        let _ = conn.await;
+    });
+    let req = Request::builder()
+        .method("POST")
+        .uri(path)
+        .header("Host", host)
+        .body(Empty::<Bytes>::new())
+        .unwrap();
+    let resp = sender.send_request(req).await.unwrap();
+    let status = resp.status().as_u16();
+    let body = resp
+        .into_body()
+        .collect()
+        .await
+        .unwrap()
+        .to_bytes()
+        .to_vec();
+    (status, body)
 }
