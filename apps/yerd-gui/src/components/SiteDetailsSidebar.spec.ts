@@ -12,6 +12,9 @@ const addDomain = vi.fn();
 const removeDomain = vi.fn();
 const setPrimaryDomain = vi.fn();
 const resetDomains = vi.fn();
+const listRoutes = vi.fn();
+const addRouteRule = vi.fn();
+const removeRouteRule = vi.fn();
 const clipboardWriteText = vi.fn();
 vi.mock("@/ipc/client", () => ({
   openInBrowser: (...args: unknown[]) => openInBrowser(...args),
@@ -25,6 +28,9 @@ vi.mock("@/ipc/client", () => ({
   removeDomain: (...args: unknown[]) => removeDomain(...args),
   setPrimaryDomain: (...args: unknown[]) => setPrimaryDomain(...args),
   resetDomains: (...args: unknown[]) => resetDomains(...args),
+  listRoutes: (...args: unknown[]) => listRoutes(...args),
+  addRouteRule: (...args: unknown[]) => addRouteRule(...args),
+  removeRouteRule: (...args: unknown[]) => removeRouteRule(...args),
   IpcError: class IpcError extends Error {},
 }));
 
@@ -97,6 +103,9 @@ describe("SiteDetailsSidebar", () => {
     removeDomain.mockReset().mockResolvedValue(undefined);
     setPrimaryDomain.mockReset().mockResolvedValue(undefined);
     resetDomains.mockReset().mockResolvedValue(undefined);
+    listRoutes.mockReset().mockResolvedValue([]);
+    addRouteRule.mockReset().mockResolvedValue(undefined);
+    removeRouteRule.mockReset().mockResolvedValue(undefined);
     clipboardWriteText.mockReset();
     Object.defineProperty(navigator, "clipboard", {
       configurable: true,
@@ -265,6 +274,20 @@ describe("SiteDetailsSidebar", () => {
 
     expect(addDomain).toHaveBeenCalledWith("blog", "shop.blog.test");
     expect(wrapper.emitted("domainsChanged")).toHaveLength(1);
+  });
+
+  it("manages routing rules from the Routing tab", async () => {
+    listRoutes.mockResolvedValue([{ site: "blog", prefix: "/api", target: "api/index.php" }]);
+    const wrapper = mountSidebar();
+
+    await openTab(wrapper, "Routing");
+    await flushPromises();
+    expect(wrapper.text()).toContain("/api");
+    expect(wrapper.text()).toContain("api/index.php");
+
+    await wrapper.get('[aria-label="Remove route /api"]').trigger("click");
+    await flushPromises();
+    expect(removeRouteRule).toHaveBeenCalledWith("blog", "/api");
   });
 
   it("returns to the General tab when reopened", async () => {

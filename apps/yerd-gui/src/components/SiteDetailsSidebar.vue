@@ -14,6 +14,7 @@ import {
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 
 import SiteDomainsPanel from "@/components/SiteDomainsPanel.vue";
+import SiteRoutesPanel from "@/components/SiteRoutesPanel.vue";
 import Button from "@/components/ui/Button.vue";
 import Input from "@/components/ui/Input.vue";
 import Select from "@/components/ui/Select.vue";
@@ -63,7 +64,7 @@ const emit = defineEmits<{
 }>();
 
 const toast = useToast();
-const activeTab = ref<"general" | "domains" | "information">("general");
+const activeTab = ref<"general" | "domains" | "routing" | "information">("general");
 const webRoot = ref("");
 
 const phpOptions = computed(() => {
@@ -310,6 +311,18 @@ onUnmounted(() => {
             Domains
           </button>
           <button
+            id="site-details-tab-routing"
+            type="button"
+            class="border-b-2 px-3 py-2.5 text-xs font-medium transition-colors"
+            :class="activeTab === 'routing' ? 'border-primary text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground'"
+            :aria-selected="activeTab === 'routing'"
+            aria-controls="site-details-panel-routing"
+            role="tab"
+            @click="activeTab = 'routing'"
+          >
+            Routing
+          </button>
+          <button
             id="site-details-tab-information"
             type="button"
             class="border-b-2 px-3 py-2.5 text-xs font-medium transition-colors"
@@ -552,6 +565,10 @@ onUnmounted(() => {
 
           <template v-else-if="activeTab === 'domains'">
             <SiteDomainsPanel :site="site" :tld="tld" @changed="emit('domainsChanged')" />
+          </template>
+
+          <template v-else-if="activeTab === 'routing'">
+            <SiteRoutesPanel :site="site" />
           </template>
 
           <template v-else>

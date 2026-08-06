@@ -398,6 +398,12 @@ pub enum Response {
         /// changed - the client should tell the user to install it.
         certutil_missing: bool,
     },
+    /// Reply to [`crate::Request::ListRoutes`] - every site's path-prefix
+    /// routing rules.
+    Routes {
+        /// Per-site routing rules.
+        rules: Vec<RouteRuleEntry>,
+    },
 }
 
 /// One registered custom PHP extension (see [`Response::PhpExtensions`]).
@@ -493,6 +499,24 @@ pub struct ProxyRuleEntry {
     /// The path prefix (e.g. `/app`).
     pub prefix: String,
     /// The upstream URL (`http[s]://host:port`).
+    pub target: String,
+}
+
+/// One per-site path-prefix routing rule (reply element of
+/// [`Response::Routes`]).
+///
+/// Deliberately separate from [`ProxyRuleEntry`] despite the identical field
+/// shape: `yerd-ipc` is a byte-pinned contract, and coupling two features'
+/// wire evolution to one struct would make either one hard to change.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RouteRuleEntry {
+    /// The site the rule attaches to (a linked site name or a parked
+    /// document-root display label).
+    pub site: String,
+    /// The path prefix (e.g. `/api`).
+    pub prefix: String,
+    /// The target path, relative to the site's served root (e.g.
+    /// `api/index.php`).
     pub target: String,
 }
 
@@ -633,6 +657,7 @@ mod variant_name_pinning {
             Response::Groups { .. } => {}
             Response::BrowserTrust { .. } => {}
             Response::Proxies { .. } => {}
+            Response::Routes { .. } => {}
         }
     }
 
@@ -920,6 +945,13 @@ mod variant_name_pinning {
                 site: "app".into(),
                 prefix: "/app".into(),
                 target: "http://127.0.0.1:8080".into(),
+            }],
+        });
+        pin_response(Response::Routes {
+            rules: vec![RouteRuleEntry {
+                site: "portal".into(),
+                prefix: "/api".into(),
+                target: "api/index.php".into(),
             }],
         });
         for c in [

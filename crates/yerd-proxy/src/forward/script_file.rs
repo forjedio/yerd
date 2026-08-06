@@ -94,7 +94,7 @@ pub async fn resolve_script(
 /// returned value stays the `served_root`-relative `rel` so FastCGI's
 /// `DOCUMENT_ROOT`/`SCRIPT_FILENAME` are unaffected and FPM follows the symlink
 /// itself).
-async fn existing_php_file(
+pub(crate) async fn existing_php_file(
     served_root: &Path,
     real_root: &Path,
     rel: &Path,
@@ -113,6 +113,25 @@ async fn existing_php_file(
         .ok()
         .filter(std::fs::Metadata::is_file)?;
     Some(rel.to_path_buf())
+}
+
+/// Resolve a routing rule's PHP target (relative to `served_root`) to the
+/// `script_rel` FastCGI should execute, or `None` when it is missing, is not
+/// PHP source, or escapes `allowed_root`.
+///
+/// The caller has already established that the target *looks* like PHP source;
+/// this re-checks that against the resolved path and applies the same
+/// containment discipline as [`resolve_script`], so an operator-configured rule
+/// can never point FastCGI outside the site's tree. Canonicalises
+/// `allowed_root` itself, so callers pass the raw site paths.
+pub(crate) async fn resolve_rule_target(
+    served_root: &Path,
+    allowed_root: &Path,
+    target_rel: &Path,
+    symlink_protection: bool,
+) -> Option<PathBuf> {
+    let real_root = tokio::fs::canonicalize(allowed_root).await.ok()?;
+    existing_php_file(served_root, &real_root, target_rel, symlink_protection).await
 }
 
 /// Whether `rel` (relative to `served_root`) is a real, on-disk directory that
@@ -315,6 +334,59 @@ mod tests {
         assert_eq!(
             resolve_script("/../../etc/passwd", root.path(), root.path(), true).await,
             ScriptResolution::Fallback
+        );
+    }
+
+    #[tokio::test]
+    async fn rule_target_resolves_to_a_nested_front_controller() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir(root.path().join("api")).unwrap();
+        std::fs::write(root.path().join("api/index.php"), b"<?php").unwrap();
+
+        assert_eq!(
+            resolve_rule_target(root.path(), root.path(), Path::new("api/index.php"), true).await,
+            Some(PathBuf::from("api/index.php"))
+        );
+    }
+
+    #[tokio::test]
+    async fn rule_target_missing_or_not_php_is_none() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("index.html"), b"spa").unwrap();
+
+        assert_eq!(
+            resolve_rule_target(root.path(), root.path(), Path::new("api/index.php"), true).await,
+            None,
+            "missing target"
+        );
+        assert_eq!(
+            resolve_rule_target(root.path(), root.path(), Path::new("index.html"), true).await,
+            None,
+            "target is not PHP source"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn rule_target_escaping_document_root_is_refused_unless_protection_is_off() {
+        let docroot = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(outside.path().join("shared.php"), b"<?php").unwrap();
+        std::os::unix::fs::symlink(
+            outside.path().join("shared.php"),
+            docroot.path().join("api.php"),
+        )
+        .unwrap();
+
+        assert_eq!(
+            resolve_rule_target(docroot.path(), docroot.path(), Path::new("api.php"), true).await,
+            None,
+            "protection on refuses the escaping target"
+        );
+        assert_eq!(
+            resolve_rule_target(docroot.path(), docroot.path(), Path::new("api.php"), false).await,
+            Some(PathBuf::from("api.php")),
+            "protection off resolves it by its served-root-relative path"
         );
     }
 }

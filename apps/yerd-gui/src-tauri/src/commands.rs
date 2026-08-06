@@ -169,6 +169,38 @@ pub async fn remove_proxy_rule(site: String, prefix: String) -> Result<Response,
     finish(exchange(&Request::RemoveProxyRule { site, prefix }).await?)
 }
 
+// ── routing rules ──────────────────────────────────────────────────────────
+
+/// List every site's path-prefix routing rules.
+#[tauri::command]
+pub async fn list_routes() -> Result<Response, GuiError> {
+    finish(exchange(&Request::ListRoutes).await?)
+}
+
+/// Add a routing rule to `site`: URIs under `prefix` that match no real file are
+/// handled by `target`, a path relative to the site's served root.
+#[tauri::command]
+pub async fn add_route_rule(
+    site: String,
+    prefix: String,
+    target: String,
+) -> Result<Response, GuiError> {
+    finish(
+        exchange(&Request::AddRouteRule {
+            site,
+            prefix,
+            target,
+        })
+        .await?,
+    )
+}
+
+/// Remove the routing rule `prefix` from `site`.
+#[tauri::command]
+pub async fn remove_route_rule(site: String, prefix: String) -> Result<Response, GuiError> {
+    finish(exchange(&Request::RemoveRouteRule { site, prefix }).await?)
+}
+
 // ── site groups ────────────────────────────────────────────────────────────
 
 #[tauri::command]

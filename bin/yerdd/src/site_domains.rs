@@ -71,6 +71,16 @@ pub(crate) fn build(cfg: &Config, sites: Vec<Site>) -> SiteRouter {
         if let Some(rules) = rules {
             router.set_proxy_rules(plan.site.name(), rules.clone());
         }
+        let route_rules = match plan.site.kind() {
+            yerd_core::SiteKind::Linked => cfg.route_rules.linked.get(plan.site.name()),
+            yerd_core::SiteKind::Parked => cfg
+                .route_rules
+                .parked
+                .get(&plan.site.document_root().to_string_lossy().into_owned()),
+        };
+        if let Some(route_rules) = route_rules {
+            router.set_route_rules(plan.site.name(), route_rules.clone());
+        }
     }
     router
 }
@@ -270,6 +280,34 @@ mod tests {
         assert_eq!(r.resolve("foo.test").map(Site::name), Some("foo"));
         assert_eq!(r.rules_for("foo").len(), 1);
         assert!(yerd_core::match_rule(r.rules_for("foo"), "/ws/x").is_some());
+    }
+
+    #[test]
+    fn route_rules_fold_into_router_for_both_site_kinds() {
+        let mut cfg = cfg_with_tld("test");
+        cfg.route_rules.linked.insert(
+            "foo".into(),
+            vec![yerd_core::RouteRule::new("/api", "api/index.php").unwrap()],
+        );
+        cfg.route_rules.parked.insert(
+            "/srv/blog".into(),
+            vec![yerd_core::RouteRule::new("/", "index.html").unwrap()],
+        );
+        let r = build(
+            &cfg,
+            vec![
+                linked("foo", "/srv/foo"),
+                Site::parked("blog", "/srv/blog", v()).unwrap(),
+            ],
+        );
+        assert_eq!(r.route_rules_for("foo").len(), 1);
+        assert_eq!(r.route_rules_for("foo")[0].target(), "api/index.php");
+        assert_eq!(
+            r.route_rules_for("blog").len(),
+            1,
+            "a parked site's rules key by document root but land under its name"
+        );
+        assert!(r.route_rules_for("absent").is_empty());
     }
 
     #[test]

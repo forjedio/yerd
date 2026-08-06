@@ -216,6 +216,14 @@ pub enum Command {
         #[command(subcommand)]
         action: ProxyAction,
     },
+    /// Manage a site's routing rules: URIs under a path prefix that match no
+    /// real file are handled by a target inside the site (`/api` →
+    /// `api/index.php`, or `/` → `index.html` for a JavaScript SPA).
+    Route {
+        /// What to do.
+        #[command(subcommand)]
+        action: RouteAction,
+    },
     /// Grant yerd OS-level privileges (run via `sudo`). No subcommand = all.
     Elevate {
         /// Which privilege to grant; omit to grant all.
@@ -332,6 +340,39 @@ pub enum ProxyAction {
     },
     /// List whole-host proxies and per-site path rules.
     List,
+}
+
+/// Action of `yerd route`.
+///
+/// Distinct from [`ProxyAction`]: a proxy rule forwards to a running HTTP
+/// service, a routing rule resolves to a file inside the site's own web root.
+#[derive(clap::Subcommand, Debug, Clone)]
+pub enum RouteAction {
+    /// Add a routing rule. Requests under `prefix` that match no real file are
+    /// handled by `target`, a path relative to the site's web root. A `.php`
+    /// target runs as a nested front controller; anything else is served as a
+    /// static file.
+    Add {
+        /// Site name.
+        site: String,
+        /// Path prefix, e.g. `/api` (or `/` to catch everything).
+        prefix: String,
+        /// Target relative to the site's web root, e.g. `api/index.php`.
+        target: String,
+    },
+    /// Remove a routing rule from a site by its path prefix.
+    Remove {
+        /// Site name.
+        site: String,
+        /// Path prefix to remove.
+        prefix: String,
+    },
+    /// List routing rules. A site whose web root holds an `index.html` and no
+    /// `index.php` already gets SPA routing automatically, with no rule.
+    List {
+        /// Site name; omit to list every site's rules.
+        site: Option<String>,
+    },
 }
 
 /// Action of `yerd domain`.

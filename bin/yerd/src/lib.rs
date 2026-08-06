@@ -62,6 +62,9 @@ pub async fn run(cli: Cli) -> ExitCode {
         Command::Domain {
             action: crate::cli::DomainAction::List { site },
         } => return run_domain_list(site.as_deref(), cli.json).await,
+        Command::Route {
+            action: crate::cli::RouteAction::List { site: Some(site) },
+        } => return run_route_list(site, cli.json).await,
         Command::Uninstall { target: None, yes } => return uninstall::run(*yes),
         Command::Install {
             target: crate::cli::InstallTarget::Tool { id },
@@ -370,6 +373,42 @@ async fn restart_and_await_boot_change(before: Option<u64>) -> Result<(), Client
             return Err(ClientError::Usage(
                 "timed out waiting for the daemon to come back up".to_owned(),
             ));
+        }
+    }
+}
+
+/// `yerd route list <site>`: one `ListRoutes` round-trip, narrowed to `site`
+/// client-side. The unfiltered form goes through the normal `render` path.
+async fn run_route_list(site: &str, json: bool) -> ExitCode {
+    use yerd_ipc::{Request, Response};
+    match transport::exchange(&Request::ListRoutes).await {
+        Ok(Response::Routes { rules }) => {
+            let r = map::render_routes(&rules, Some(site), json);
+            if !r.stdout.is_empty() {
+                println!("{}", r.stdout);
+            }
+            if !r.stderr.is_empty() {
+                eprintln!("{}", r.stderr);
+            }
+            ExitCode::from(r.code)
+        }
+        Ok(other) => {
+            let r = map::render(&other, json);
+            if !r.stdout.is_empty() {
+                println!("{}", r.stdout);
+            }
+            if !r.stderr.is_empty() {
+                eprintln!("{}", r.stderr);
+            }
+            ExitCode::from(r.code)
+        }
+        Err(e) if e.is_daemon_down() => {
+            eprintln!("yerd: {e}");
+            ExitCode::from(69)
+        }
+        Err(e) => {
+            eprintln!("yerd: {e}");
+            ExitCode::from(74)
         }
     }
 }

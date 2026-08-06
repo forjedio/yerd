@@ -770,6 +770,29 @@ pub enum Request {
         /// `true` removes the CA from the NSS stores; `false` installs it.
         uninstall: bool,
     },
+    /// Add a path-prefix **routing** rule to a site: URIs under `prefix` that
+    /// match no real file are handled by `target`, a path relative to the site's
+    /// served root. Unlike [`Self::AddProxyRule`], which forwards to an HTTP
+    /// upstream, this resolves to a file inside the site's own tree - a nested
+    /// front controller (`api/index.php`) or an SPA document (`index.html`).
+    AddRouteRule {
+        /// The site the rule attaches to.
+        site: String,
+        /// The path prefix, e.g. `/api` (must begin with `/`).
+        prefix: String,
+        /// The target path relative to the served root (validated by the
+        /// daemon; never absolute and never containing `..`).
+        target: String,
+    },
+    /// Remove a path-prefix routing rule from a site.
+    RemoveRouteRule {
+        /// The site the rule is on.
+        site: String,
+        /// The path prefix to remove.
+        prefix: String,
+    },
+    /// Enumerate every site's path-prefix routing rules.
+    ListRoutes,
 }
 
 #[cfg(test)]
@@ -905,6 +928,9 @@ mod variant_name_pinning {
             Request::SetLanEnabled { .. } => {}
             Request::MintRemoteSetupCode => {}
             Request::TrustBrowsers { .. } => {}
+            Request::AddRouteRule { .. } => {}
+            Request::RemoveRouteRule { .. } => {}
+            Request::ListRoutes => {}
         }
     }
 
@@ -1178,6 +1204,16 @@ mod variant_name_pinning {
             prefix: "/app".to_owned(),
         });
         pin(Request::ListProxies);
+        pin(Request::AddRouteRule {
+            site: "portal".to_owned(),
+            prefix: "/api".to_owned(),
+            target: "api/index.php".to_owned(),
+        });
+        pin(Request::RemoveRouteRule {
+            site: "portal".to_owned(),
+            prefix: "/api".to_owned(),
+        });
+        pin(Request::ListRoutes);
         pin(Request::SetMcpEnabled { enabled: true });
         pin(Request::SetLanEnabled { enabled: true });
         pin(Request::MintRemoteSetupCode);

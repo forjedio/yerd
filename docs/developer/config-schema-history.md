@@ -28,7 +28,42 @@ Each entry below states what changed, whether the daemon's own migration is a ba
 
 ## Version-by-version
 
-### v18 (current)
+### v20 (current)
+
+**Added:** the optional `[route_rules]` table - per-site path-prefix **routing** rules, keyed by site class exactly like `[proxy_rules]` and `[domains]`: `[route_rules.linked.<name>]` by site name, `[route_rules.parked."<docroot>"]` by document-root string. Each rule pairs a URI path `prefix` with a `target` path relative to the site's served root. It defaults to empty when absent, so an uncustomised file omits it entirely.
+
+```toml
+[[route_rules.linked.portal]]
+prefix = "/api"
+target = "api/index.php"
+
+[[route_rules.linked.dashboard]]
+prefix = "/"
+target = "index.html"
+```
+
+A rule applies only when the request matched no real file, i.e. nginx's `try_files $uri $uri/ <target>`. A `.php` target is a nested front controller (issue #196: a Yii or CodeIgniter app mounted inside a legacy portal); any other target is served as a static document, which is how SPA history-API routing works. The `target` is validated as a safe relative path at load, so a hand-edited absolute path or one containing `..` is a hard parse error rather than a silent security hole.
+
+Note this is **not** `[proxy_rules]`: a proxy rule forwards to an HTTP upstream, a routing rule resolves to a file inside the site's own tree.
+
+**Migration from v19:** bare version bump - the table defaults to empty when absent, so a v19 file needs no other change.
+
+**To downgrade to v19:** change `version = 20` to `version = 19` and delete any `[route_rules.*]` tables (a v19 daemon rejects the unknown tables under `deny_unknown_fields`, it doesn't just ignore them). Sites revert to funnelling unmatched requests to the served root's `index.php`.
+
+### v19
+
+**Added:** the top-level `lan_enabled` (bool) and `lan_setup_port` (integer) scalars - whether sites are exposed to other devices on the local network, and the port the one-time remote-device bootstrap listens on. Both default when absent and are always emitted.
+
+```toml
+lan_enabled = false
+lan_setup_port = 7878
+```
+
+**Migration from v18:** bare version bump - both scalars default when absent, so a v18 file needs no other change.
+
+**To downgrade to v18:** change `version = 19` to `version = 18` and delete the `lan_enabled` and `lan_setup_port` lines (a v18 daemon rejects the unknown keys under `deny_unknown_fields`). LAN exposure reverts to off.
+
+### v18
 
 **Added:** the optional `[php.directives]` table - free-form (shape-validated) per-version ini directives such as `xdebug.mode`. `[php.directives."<version>"]` holds the directives for one installed version. It defaults to empty when absent, so an uncustomised file omits it entirely.
 

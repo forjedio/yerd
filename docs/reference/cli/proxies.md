@@ -14,6 +14,13 @@ without Yerd running the service itself. Two shapes:
 `yerd proxy add`'s two forms are distinguished by argument count: two arguments
 create a whole-host proxy, three attach a path rule to a site.
 
+::: tip Looking for a path that maps to a *file* instead?
+A proxy path rule forwards to a separate running service. To send unmatched URIs
+under a prefix to a file **inside the site** - a nested `api/index.php`, or
+`index.html` for a JavaScript SPA - use [`yerd route`](./routes) instead. When a
+site has both on the same prefix, the proxy rule wins.
+:::
+
 | Command | Description | Example |
 | --- | --- | --- |
 | `yerd proxy add <NAME> <URL>` | Create a whole-host proxy (`<NAME>.test` → `<URL>`). | `yerd proxy add reverb http://localhost:8080` |

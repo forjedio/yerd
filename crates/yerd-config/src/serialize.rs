@@ -84,6 +84,11 @@ struct WireSer<'a> {
     // `[proxy_rules]` region.
     #[serde(skip_serializing_if = "Option::is_none")]
     proxy_rules: Option<ProxyRulesSectionSer<'a>>,
+    // v20: optional `[route_rules]` table, emitted after `[proxy_rules]` so an
+    // existing config's byte shape is untouched. `None` (skipped) when both maps
+    // are empty, so a default config emits no `[route_rules]` region.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    route_rules: Option<RouteRulesSectionSer<'a>>,
 }
 
 #[derive(Serialize)]
@@ -107,6 +112,20 @@ struct ProxyRulesSectionSer<'a> {
 struct ProxyRuleSer<'a> {
     prefix: &'a str,
     target: String,
+}
+
+#[derive(Serialize)]
+struct RouteRulesSectionSer<'a> {
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    linked: BTreeMap<&'a str, Vec<RouteRuleSer<'a>>>,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    parked: BTreeMap<&'a str, Vec<RouteRuleSer<'a>>>,
+}
+
+#[derive(Serialize)]
+struct RouteRuleSer<'a> {
+    prefix: &'a str,
+    target: &'a str,
 }
 
 #[derive(Serialize)]
@@ -408,8 +427,39 @@ pub(crate) fn to_toml(c: &Config) -> Result<String, ConfigError> {
                 Some(ProxyRulesSectionSer { linked, parked })
             }
         },
+        route_rules: {
+            let linked = route_rule_map(&c.route_rules.linked);
+            let parked = route_rule_map(&c.route_rules.parked);
+            if linked.is_empty() && parked.is_empty() {
+                None
+            } else {
+                Some(RouteRulesSectionSer { linked, parked })
+            }
+        },
     };
     toml::to_string_pretty(&w).map_err(Into::into)
+}
+
+/// Build a borrowed `[route_rules.*]` map, pruning any site whose rule list is
+/// empty, for the same round-trip reason as [`proxy_rule_map`].
+fn route_rule_map(
+    src: &BTreeMap<String, Vec<yerd_core::RouteRule>>,
+) -> BTreeMap<&str, Vec<RouteRuleSer<'_>>> {
+    src.iter()
+        .filter(|(_, rules)| !rules.is_empty())
+        .map(|(k, rules)| {
+            (
+                k.as_str(),
+                rules
+                    .iter()
+                    .map(|r| RouteRuleSer {
+                        prefix: r.prefix(),
+                        target: r.target(),
+                    })
+                    .collect(),
+            )
+        })
+        .collect()
 }
 
 /// Build a borrowed `[proxy_rules.*]` map, pruning any site whose rule list is
@@ -469,8 +519,8 @@ mod tests {
     fn default_to_toml_starts_with_version_line() {
         let s = to_toml(&Config::default()).unwrap();
         assert!(
-            s.starts_with("version = 19\n"),
-            "expected `version = 19` first line; got: {s}"
+            s.starts_with("version = 20\n"),
+            "expected `version = 20` first line; got: {s}"
         );
     }
 

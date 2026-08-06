@@ -21,6 +21,7 @@ use crate::domain::Domain;
 use crate::error::CoreError;
 use crate::host::{self, HostKind};
 use crate::proxy::{ProxyRule, ProxySite};
+use crate::route_rule::RouteRule;
 use crate::site::Site;
 use crate::tld::Tld;
 
@@ -133,6 +134,12 @@ pub struct SiteRouter {
     /// Per-site path-prefix proxy rules, keyed by PHP-site name (like
     /// [`Self::domains`]). Populated by the daemon at build time from config.
     proxy_rules: BTreeMap<String, Vec<ProxyRule>>,
+    /// Per-site path-prefix routing rules (prefix → local target), keyed by
+    /// PHP-site name like [`Self::proxy_rules`]. Populated by the daemon at
+    /// build time from config. Distinct from [`Self::proxy_rules`]: those
+    /// forward to an HTTP upstream, these resolve to a file under the served
+    /// root.
+    route_rules: BTreeMap<String, Vec<RouteRule>>,
 }
 
 impl SiteRouter {
@@ -148,6 +155,7 @@ impl SiteRouter {
             wildcards: HashMap::new(),
             proxy_sites: BTreeMap::new(),
             proxy_rules: BTreeMap::new(),
+            route_rules: BTreeMap::new(),
         }
     }
 
@@ -241,6 +249,7 @@ impl SiteRouter {
         }
         self.primaries.remove(name);
         self.proxy_rules.remove(name);
+        self.route_rules.remove(name);
         Ok(site)
     }
 
@@ -451,6 +460,22 @@ impl SiteRouter {
             self.proxy_rules.insert(site.to_owned(), rules);
         }
     }
+
+    /// The path-prefix routing rules attached to `site` (empty slice if none).
+    #[must_use]
+    pub fn route_rules_for(&self, site: &str) -> &[RouteRule] {
+        self.route_rules.get(site).map_or(&[], Vec::as_slice)
+    }
+
+    /// Sets (or clears, when `rules` is empty) the path-prefix routing rules for
+    /// a PHP site. Called by the daemon while building the router from config.
+    pub fn set_route_rules(&mut self, site: &str, rules: Vec<RouteRule>) {
+        if rules.is_empty() {
+            self.route_rules.remove(site);
+        } else {
+            self.route_rules.insert(site.to_owned(), rules);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -555,6 +580,27 @@ mod tests {
         assert_eq!(r.rules_for("app")[0].prefix(), "/ws");
         r.set_proxy_rules("app", vec![]);
         assert!(r.rules_for("app").is_empty());
+    }
+
+    #[test]
+    fn route_rules_set_get_and_clear() {
+        let mut r = router_with("test", &["app"]);
+        assert!(r.route_rules_for("app").is_empty());
+        let rule = crate::route_rule::RouteRule::new("/api", "api/index.php").unwrap();
+        r.set_route_rules("app", vec![rule]);
+        assert_eq!(r.route_rules_for("app").len(), 1);
+        assert_eq!(r.route_rules_for("app")[0].target(), "api/index.php");
+        r.set_route_rules("app", vec![]);
+        assert!(r.route_rules_for("app").is_empty());
+    }
+
+    #[test]
+    fn removing_a_site_clears_its_route_rules() {
+        let mut r = router_with("test", &["app"]);
+        let rule = crate::route_rule::RouteRule::new("/api", "api/index.php").unwrap();
+        r.set_route_rules("app", vec![rule]);
+        r.remove("app").unwrap();
+        assert!(r.route_rules_for("app").is_empty());
     }
 
     /// Default (apex-only) resolution: exact apex resolves, subdomains do not.

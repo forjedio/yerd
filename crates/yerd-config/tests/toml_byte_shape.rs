@@ -12,7 +12,7 @@
 use std::collections::BTreeSet;
 
 use yerd_config::{Config, ServiceInstance, SiteOverride};
-use yerd_core::{PhpVersion, Site, Tld};
+use yerd_core::{PhpVersion, RouteRule, Site, Tld};
 
 fn populated() -> Config {
     let mut c = Config::default();
@@ -61,8 +61,8 @@ fn populated() -> Config {
 fn default_config_starts_with_version_line() {
     let s = Config::default().to_toml().unwrap();
     assert!(
-        s.starts_with("version = 19\n"),
-        "expected first line `version = 19`; got: {s}"
+        s.starts_with("version = 20\n"),
+        "expected first line `version = 20`; got: {s}"
     );
 }
 
@@ -501,6 +501,48 @@ fn populated_groups_section_emits_after_defaults_and_round_trips() {
 
     let back = Config::from_toml(&s).unwrap();
     assert_eq!(back, c);
+}
+
+#[test]
+fn default_config_emits_no_route_rules_table() {
+    let s = Config::default().to_toml().unwrap();
+    assert!(
+        !s.contains("[route_rules"),
+        "default config must omit the route_rules table; got: {s}"
+    );
+}
+
+#[test]
+fn populated_route_rules_section_emits_after_defaults_and_round_trips() {
+    let mut c = Config::default();
+    c.linked
+        .push(Site::linked("api", "docroot", PhpVersion::new(8, 3)).unwrap());
+    c.route_rules.linked.insert(
+        "api".to_string(),
+        vec![RouteRule::new("/api", "api/index.php").unwrap()],
+    );
+    c.route_rules.parked.insert(
+        "docroot-a".to_string(),
+        vec![RouteRule::new("/", "index.html").unwrap()],
+    );
+    let s = c.to_toml().unwrap();
+
+    let php_at = s.find("\n[php]\n").expect("[php] table present");
+    let routes_at = s
+        .find("[route_rules")
+        .expect("[route_rules] region present");
+    assert!(
+        php_at < routes_at,
+        "existing tables must precede the trailing [route_rules] region; got: {s}"
+    );
+    assert!(
+        s.contains("target = \"api/index.php\""),
+        "the target must emit as a plain relative path; got: {s}"
+    );
+
+    let back = Config::from_toml(&s).unwrap();
+    assert_eq!(back, c);
+    c.validate().unwrap();
 }
 
 #[test]

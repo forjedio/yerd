@@ -1416,6 +1416,60 @@ fn request_set_front_controller_byte_shape() {
 }
 
 #[test]
+fn request_add_route_rule_byte_shape() {
+    let r = Request::AddRouteRule {
+        site: "portal".into(),
+        prefix: "/api".into(),
+        target: "api/index.php".into(),
+    };
+    let s = serde_json::to_string(&r).unwrap();
+    assert_eq!(
+        s,
+        r#"{"type":"add_route_rule","site":"portal","prefix":"/api","target":"api/index.php"}"#
+    );
+    assert_eq!(serde_json::from_str::<Request>(&s).unwrap(), r);
+}
+
+#[test]
+fn request_remove_route_rule_byte_shape() {
+    let r = Request::RemoveRouteRule {
+        site: "portal".into(),
+        prefix: "/api".into(),
+    };
+    let s = serde_json::to_string(&r).unwrap();
+    assert_eq!(
+        s,
+        r#"{"type":"remove_route_rule","site":"portal","prefix":"/api"}"#
+    );
+    assert_eq!(serde_json::from_str::<Request>(&s).unwrap(), r);
+}
+
+#[test]
+fn request_list_routes_byte_shape() {
+    let r = Request::ListRoutes;
+    let s = serde_json::to_string(&r).unwrap();
+    assert_eq!(s, r#"{"type":"list_routes"}"#);
+    assert_eq!(serde_json::from_str::<Request>(&s).unwrap(), r);
+}
+
+#[test]
+fn response_routes_byte_shape() {
+    let r = Response::Routes {
+        rules: vec![yerd_ipc::RouteRuleEntry {
+            site: "portal".into(),
+            prefix: "/api".into(),
+            target: "api/index.php".into(),
+        }],
+    };
+    let s = serde_json::to_string(&r).unwrap();
+    assert_eq!(
+        s,
+        r#"{"type":"routes","rules":[{"site":"portal","prefix":"/api","target":"api/index.php"}]}"#
+    );
+    assert_eq!(serde_json::from_str::<Response>(&s).unwrap(), r);
+}
+
+#[test]
 fn request_wordpress_admin_users_byte_shape() {
     let r = Request::WordpressAdminUsers {
         site: "blog".into(),

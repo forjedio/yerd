@@ -515,6 +515,16 @@ export interface ProxyRuleEntry {
   target: string;
 }
 
+/** One per-site path-prefix routing rule (`{site}{prefix}` → a file at `target`,
+ *  relative to the site's web root). Reply element of a `"routes"` response.
+ *  Unlike {@link ProxyRuleEntry}, whose target is an upstream URL, this resolves
+ *  inside the site itself. */
+export interface RouteRuleEntry {
+  site: string;
+  prefix: string;
+  target: string;
+}
+
 /**
  * Response is internally tagged on `type`. The bridge returns the decoded
  * Response directly; helpers below narrow it. A `Response::Error` is converted
@@ -527,6 +537,7 @@ export type Response =
   | { type: "error"; code: ErrorCode; message: string }
   | { type: "parked"; paths: string[] }
   | { type: "proxies"; proxies: ProxyEntry[]; rules: ProxyRuleEntry[] }
+  | { type: "routes"; rules: RouteRuleEntry[] }
   | {
       type: "info";
       dns_addr: string;
@@ -745,6 +756,7 @@ export type InfoResponse = Extract<Response, { type: "info" }>;
 export type SitesResponse = Extract<Response, { type: "sites" }>;
 export type ParkedResponse = Extract<Response, { type: "parked" }>;
 export type ProxiesResponse = Extract<Response, { type: "proxies" }>;
+export type RoutesResponse = Extract<Response, { type: "routes" }>;
 export type PhpVersionsResponse = Extract<Response, { type: "php_versions" }>;
 export type UpdateStatusResponse = Extract<Response, { type: "update_status" }>;
 export type AvailablePhpResponse = Extract<Response, { type: "available_php" }>;

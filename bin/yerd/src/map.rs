@@ -184,6 +184,7 @@ pub fn to_request(cmd: &Command) -> Result<Request, ClientError> {
         Command::Service { action } => service_request(action),
         Command::Domain { action } => domain_request(action)?,
         Command::Proxy { action } => proxy_request(action)?,
+        Command::Route { action } => route_request(action)?,
         Command::Tunnel { action } => tunnel_request(action),
         Command::Db { action } => db_request(action),
         Command::Mail { action } => match action {
@@ -413,6 +414,39 @@ fn proxy_request(action: &crate::cli::ProxyAction) -> Result<Request, ClientErro
                 Request::RemoveProxy {
                     name: target.clone(),
                 }
+            }
+        }
+    })
+}
+
+/// Map a `yerd route <action>` to its wire request. The target is validated by
+/// the daemon (authoritative, via `yerd_core::RouteRule`); the client only
+/// checks the site name and that the prefix is absolute. `List` carries no
+/// filter on the wire - the same full response is filtered client-side, so
+/// there is only one IPC surface.
+fn route_request(action: &crate::cli::RouteAction) -> Result<Request, ClientError> {
+    use crate::cli::RouteAction;
+    Ok(match action {
+        RouteAction::List { .. } => Request::ListRoutes,
+        RouteAction::Add {
+            site,
+            prefix,
+            target,
+        } => {
+            validate_name(site)?;
+            validate_prefix(prefix)?;
+            Request::AddRouteRule {
+                site: site.clone(),
+                prefix: prefix.clone(),
+                target: target.clone(),
+            }
+        }
+        RouteAction::Remove { site, prefix } => {
+            validate_name(site)?;
+            validate_prefix(prefix)?;
+            Request::RemoveRouteRule {
+                site: site.clone(),
+                prefix: prefix.clone(),
             }
         }
     })
@@ -941,7 +975,39 @@ pub fn render(resp: &Response, json: bool) -> Rendered {
             *source,
         )),
         Response::Proxies { proxies, rules } => Rendered::ok(format_proxies(proxies, rules)),
+        Response::Routes { rules } => Rendered::ok(format_routes(rules, None)),
         _ => Rendered::err("unexpected response from daemon".to_owned()),
+    }
+}
+
+/// Render `yerd route list [site]`. With `filter`, shows only that site's rules.
+/// The filter is applied here rather than on the wire: `ListRoutes` returns
+/// every site's rules and the CLI narrows them, so there is one IPC surface.
+#[must_use]
+pub fn render_routes(
+    rules: &[yerd_ipc::RouteRuleEntry],
+    filter: Option<&str>,
+    json: bool,
+) -> Rendered {
+    if json {
+        let selected: Vec<&yerd_ipc::RouteRuleEntry> = select_routes(rules, filter);
+        let body = serde_json::to_string_pretty(&selected)
+            .unwrap_or_else(|e| format!("{{\"error\":\"serialize failed: {e}\"}}"));
+        return Rendered::ok(body);
+    }
+    Rendered::ok(format_routes(rules, filter))
+}
+
+fn select_routes<'a>(
+    rules: &'a [yerd_ipc::RouteRuleEntry],
+    filter: Option<&str>,
+) -> Vec<&'a yerd_ipc::RouteRuleEntry> {
+    match filter {
+        Some(f) => {
+            let f = f.to_ascii_lowercase();
+            rules.iter().filter(|r| r.site == f).collect()
+        }
+        None => rules.iter().collect(),
     }
 }
 
@@ -967,6 +1033,23 @@ fn format_proxies(proxies: &[yerd_ipc::ProxyEntry], rules: &[yerd_ipc::ProxyRule
         for r in rules {
             let _ = writeln!(out, "  {} {} -> {}", r.site, r.prefix, r.target);
         }
+    }
+    out.trim_end().to_owned()
+}
+
+/// Render `yerd route list`: one row per rule, `site prefix -> target`.
+fn format_routes(rules: &[yerd_ipc::RouteRuleEntry], filter: Option<&str>) -> String {
+    use std::fmt::Write as _;
+    let selected = select_routes(rules, filter);
+    if selected.is_empty() {
+        return match filter {
+            Some(site) => format!("no routing rules configured for {site}"),
+            None => "no routing rules configured".to_owned(),
+        };
+    }
+    let mut out = String::from("Routing rules:\n");
+    for r in selected {
+        let _ = writeln!(out, "  {} {} -> {}", r.site, r.prefix, r.target);
     }
     out.trim_end().to_owned()
 }
@@ -3061,6 +3144,103 @@ mod tests {
         let v: serde_json::Value = serde_json::from_str(&err.stdout).unwrap();
         assert_eq!(v["type"], "error");
         assert_eq!(err.code, 1);
+    }
+
+    #[test]
+    fn maps_route_command() {
+        use crate::cli::RouteAction;
+        assert_eq!(
+            to_request(&Command::Route {
+                action: RouteAction::Add {
+                    site: "portal".into(),
+                    prefix: "/api".into(),
+                    target: "api/index.php".into(),
+                },
+            })
+            .unwrap(),
+            Request::AddRouteRule {
+                site: "portal".into(),
+                prefix: "/api".into(),
+                target: "api/index.php".into(),
+            }
+        );
+        assert_eq!(
+            to_request(&Command::Route {
+                action: RouteAction::Remove {
+                    site: "portal".into(),
+                    prefix: "/api".into(),
+                },
+            })
+            .unwrap(),
+            Request::RemoveRouteRule {
+                site: "portal".into(),
+                prefix: "/api".into(),
+            }
+        );
+        assert_eq!(
+            to_request(&Command::Route {
+                action: RouteAction::List { site: None },
+            })
+            .unwrap(),
+            Request::ListRoutes
+        );
+        assert_eq!(
+            to_request(&Command::Route {
+                action: RouteAction::List {
+                    site: Some("portal".into())
+                },
+            })
+            .unwrap(),
+            Request::ListRoutes,
+            "the site filter is applied client-side, not on the wire"
+        );
+    }
+
+    #[test]
+    fn route_command_rejects_a_relative_prefix() {
+        use crate::cli::RouteAction;
+        assert!(to_request(&Command::Route {
+            action: RouteAction::Add {
+                site: "portal".into(),
+                prefix: "api".into(),
+                target: "api/index.php".into(),
+            },
+        })
+        .is_err());
+    }
+
+    #[test]
+    fn renders_route_list_with_and_without_a_filter() {
+        let rules = vec![
+            yerd_ipc::RouteRuleEntry {
+                site: "portal".into(),
+                prefix: "/api".into(),
+                target: "api/index.php".into(),
+            },
+            yerd_ipc::RouteRuleEntry {
+                site: "spa".into(),
+                prefix: "/".into(),
+                target: "index.html".into(),
+            },
+        ];
+
+        let all = render_routes(&rules, None, false);
+        assert_eq!(all.code, 0);
+        assert!(all.stdout.contains("portal /api -> api/index.php"));
+        assert!(all.stdout.contains("spa / -> index.html"));
+
+        let one = render_routes(&rules, Some("Portal"), false);
+        assert!(one.stdout.contains("portal /api -> api/index.php"));
+        assert!(
+            !one.stdout.contains("spa"),
+            "the filter must be case-insensitive and exclusive"
+        );
+
+        let none = render_routes(&rules, Some("ghost"), false);
+        assert_eq!(none.stdout, "no routing rules configured for ghost");
+
+        let empty = render_routes(&[], None, false);
+        assert_eq!(empty.stdout, "no routing rules configured");
     }
 
     #[test]

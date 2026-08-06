@@ -20,7 +20,7 @@ use std::path::PathBuf;
 
 use yerd_config::{Config, DomainDelta};
 use yerd_core::{
-    Domain, PhpVersion, ProxyRule, ProxySite, Site, SiteKind, SiteRouter, UpstreamTarget,
+    Domain, PhpVersion, ProxyRule, ProxySite, RouteRule, Site, SiteKind, SiteRouter, UpstreamTarget,
 };
 use yerd_ipc::{ErrorCode, Request};
 
@@ -105,6 +105,14 @@ pub fn apply(
         Request::RemoveProxyRule { site, prefix } => {
             apply_remove_proxy_rule(cfg, router, site, prefix)
         }
+        Request::AddRouteRule {
+            site,
+            prefix,
+            target,
+        } => apply_add_route_rule(cfg, router, site, prefix, target),
+        Request::RemoveRouteRule { site, prefix } => {
+            apply_remove_route_rule(cfg, router, site, prefix)
+        }
         Request::CreateGroup { name } => apply_create_group(cfg, name),
         Request::DeleteGroup { name } => Ok(apply_delete_group(cfg, name)),
         Request::SetGroupOrder { order } => apply_set_group_order(cfg, order),
@@ -152,6 +160,9 @@ fn apply_link(
     if let Some(rules) = cfg.proxy_rules.parked.remove(&docroot_key) {
         cfg.proxy_rules.linked.insert(name_lc.clone(), rules);
     }
+    if let Some(rules) = cfg.route_rules.parked.remove(&docroot_key) {
+        cfg.route_rules.linked.insert(name_lc.clone(), rules);
+    }
     cfg.linked.push(site);
     Ok(Applied {
         summary: format!("linked {name_lc}"),
@@ -170,6 +181,9 @@ fn apply_unpark(cfg: &mut Config, path: &str) -> Applied {
         .parked
         .retain(|docroot, _| !is_under_root(docroot, path));
     cfg.proxy_rules
+        .parked
+        .retain(|docroot, _| !is_under_root(docroot, path));
+    cfg.route_rules
         .parked
         .retain(|docroot, _| !is_under_root(docroot, path));
     Applied {
@@ -220,7 +234,12 @@ fn apply_unlink(cfg: &mut Config, router: &SiteRouter, name: &str) -> Result<App
     }
     if let Some(rules) = cfg.proxy_rules.linked.remove(&name_lc) {
         if reparks {
-            cfg.proxy_rules.parked.insert(docroot_key, rules);
+            cfg.proxy_rules.parked.insert(docroot_key.clone(), rules);
+        }
+    }
+    if let Some(rules) = cfg.route_rules.linked.remove(&name_lc) {
+        if reparks {
+            cfg.route_rules.parked.insert(docroot_key, rules);
         }
     }
     Ok(Applied {
@@ -356,10 +375,11 @@ fn apply_remove_proxy(cfg: &mut Config, name: &str) -> Result<Applied, MutateErr
     })
 }
 
-/// The `proxy_rules` storage key for a site: linked sites key by name, parked
-/// sites by document-root (matching `[[overrides]]`). Returns `None` if the site
-/// is unknown to the pre-mutation router.
-fn proxy_rule_key(router: &SiteRouter, name_lc: &str) -> Option<(bool, String)> {
+/// The per-site rule storage key, shared by `proxy_rules` and `route_rules`:
+/// linked sites key by name, parked sites by document-root (matching
+/// `[[overrides]]`). Returns `None` if the site is unknown to the pre-mutation
+/// router.
+fn site_rule_key(router: &SiteRouter, name_lc: &str) -> Option<(bool, String)> {
     let site = router.get(name_lc)?;
     match site.kind() {
         SiteKind::Linked => Some((true, name_lc.to_owned())),
@@ -381,7 +401,7 @@ fn apply_add_proxy_rule(
     reject_loop_target(cfg, &target)?;
     let rule = ProxyRule::new(prefix, target)
         .map_err(|e| MutateError::Invalid(format!("invalid rule prefix: {e}")))?;
-    let (linked, key) = proxy_rule_key(router, &name_lc)
+    let (linked, key) = site_rule_key(router, &name_lc)
         .ok_or_else(|| MutateError::NotFound(format!("no site named {name_lc}")))?;
     let map = if linked {
         &mut cfg.proxy_rules.linked
@@ -410,7 +430,7 @@ fn apply_remove_proxy_rule(
 ) -> Result<Applied, MutateError> {
     let name_lc = site.to_ascii_lowercase();
     let wanted = normalize_prefix(prefix);
-    let (linked, key) = proxy_rule_key(router, &name_lc)
+    let (linked, key) = site_rule_key(router, &name_lc)
         .ok_or_else(|| MutateError::NotFound(format!("no site named {name_lc}")))?;
     let map = if linked {
         &mut cfg.proxy_rules.linked
@@ -434,6 +454,77 @@ fn apply_remove_proxy_rule(
     }
     Ok(Applied {
         summary: format!("removed proxy rule {name_lc}{wanted}"),
+    })
+}
+
+/// Add a path-prefix routing rule to an existing site.
+///
+/// The target's existence is deliberately **not** checked here: this module is
+/// pure, the file may legitimately appear later, and request-time containment
+/// is the real security boundary anyway.
+fn apply_add_route_rule(
+    cfg: &mut Config,
+    router: &SiteRouter,
+    site: &str,
+    prefix: &str,
+    target: &str,
+) -> Result<Applied, MutateError> {
+    let name_lc = site.to_ascii_lowercase();
+    let rule = RouteRule::new(prefix, target)
+        .map_err(|e| MutateError::Invalid(format!("invalid routing rule: {e}")))?;
+    let (linked, key) = site_rule_key(router, &name_lc)
+        .ok_or_else(|| MutateError::NotFound(format!("no site named {name_lc}")))?;
+    let map = if linked {
+        &mut cfg.route_rules.linked
+    } else {
+        &mut cfg.route_rules.parked
+    };
+    let rules = map.entry(key).or_default();
+    if rules.iter().any(|r| r.prefix() == rule.prefix()) {
+        return Err(MutateError::AlreadyExists(format!(
+            "site {name_lc} already has a routing rule for {}",
+            rule.prefix()
+        )));
+    }
+    let summary = format!("added route {name_lc}{} -> {target}", rule.prefix());
+    rules.push(rule);
+    Ok(Applied { summary })
+}
+
+/// Remove a path-prefix routing rule from a site, pruning the site's entry when
+/// its last rule goes so the config round-trips to a byte-identical state.
+fn apply_remove_route_rule(
+    cfg: &mut Config,
+    router: &SiteRouter,
+    site: &str,
+    prefix: &str,
+) -> Result<Applied, MutateError> {
+    let name_lc = site.to_ascii_lowercase();
+    let wanted = normalize_prefix(prefix);
+    let (linked, key) = site_rule_key(router, &name_lc)
+        .ok_or_else(|| MutateError::NotFound(format!("no site named {name_lc}")))?;
+    let map = if linked {
+        &mut cfg.route_rules.linked
+    } else {
+        &mut cfg.route_rules.parked
+    };
+    let Some(rules) = map.get_mut(&key) else {
+        return Err(MutateError::NotFound(format!(
+            "site {name_lc} has no routing rule for {wanted}"
+        )));
+    };
+    let before = rules.len();
+    rules.retain(|r| r.prefix() != wanted);
+    if rules.len() == before {
+        return Err(MutateError::NotFound(format!(
+            "site {name_lc} has no routing rule for {wanted}"
+        )));
+    }
+    if rules.is_empty() {
+        map.remove(&key);
+    }
+    Ok(Applied {
+        summary: format!("removed route {name_lc}{wanted}"),
     })
 }
 
@@ -1110,6 +1201,206 @@ mod tests {
         )
         .unwrap();
         assert!(cfg.proxy_rules.parked.is_empty());
+    }
+
+    #[test]
+    fn route_rule_add_and_remove_on_a_linked_site() {
+        let mut cfg = Config::default();
+        let mut router = empty_router();
+        router
+            .insert(Site::linked("portal", "/srv/portal", v(8, 3)).unwrap())
+            .unwrap();
+
+        apply(
+            &mut cfg,
+            &router,
+            &Request::AddRouteRule {
+                site: "Portal".into(),
+                prefix: "/api/".into(),
+                target: "api/index.php".into(),
+            },
+            None,
+            v(8, 3),
+        )
+        .unwrap();
+        let rules = cfg.route_rules.linked.get("portal").unwrap();
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].prefix(), "/api");
+        assert_eq!(rules[0].target(), "api/index.php");
+
+        apply(
+            &mut cfg,
+            &router,
+            &Request::RemoveRouteRule {
+                site: "portal".into(),
+                prefix: "/api/".into(),
+            },
+            None,
+            v(8, 3),
+        )
+        .unwrap();
+        assert!(
+            cfg.route_rules.linked.is_empty(),
+            "removing the last rule must prune the site's entry"
+        );
+    }
+
+    #[test]
+    fn route_rule_add_and_remove_on_a_parked_site() {
+        let mut cfg = Config::default();
+        let mut router = empty_router();
+        router
+            .insert(Site::parked("blog", "/srv/blog", v(8, 3)).unwrap())
+            .unwrap();
+
+        apply(
+            &mut cfg,
+            &router,
+            &Request::AddRouteRule {
+                site: "blog".into(),
+                prefix: "/".into(),
+                target: "index.html".into(),
+            },
+            None,
+            v(8, 3),
+        )
+        .unwrap();
+        assert_eq!(cfg.route_rules.parked.get("/srv/blog").unwrap().len(), 1);
+
+        apply(
+            &mut cfg,
+            &router,
+            &Request::RemoveRouteRule {
+                site: "blog".into(),
+                prefix: "/".into(),
+            },
+            None,
+            v(8, 3),
+        )
+        .unwrap();
+        assert!(cfg.route_rules.parked.is_empty());
+    }
+
+    #[test]
+    fn route_rule_rejects_duplicate_unknown_site_and_bad_input() {
+        let mut cfg = Config::default();
+        let mut router = empty_router();
+        router
+            .insert(Site::linked("portal", "/srv/portal", v(8, 3)).unwrap())
+            .unwrap();
+        let add = |cfg: &mut Config, prefix: &str, target: &str, site: &str| {
+            apply(
+                cfg,
+                &router,
+                &Request::AddRouteRule {
+                    site: site.into(),
+                    prefix: prefix.into(),
+                    target: target.into(),
+                },
+                None,
+                v(8, 3),
+            )
+        };
+
+        add(&mut cfg, "/api", "api/index.php", "portal").unwrap();
+        assert!(matches!(
+            add(&mut cfg, "/api/", "other/index.php", "portal"),
+            Err(MutateError::AlreadyExists(_))
+        ));
+        assert!(matches!(
+            add(&mut cfg, "/api", "api/index.php", "ghost"),
+            Err(MutateError::NotFound(_))
+        ));
+        assert!(matches!(
+            add(&mut cfg, "api", "api/index.php", "portal"),
+            Err(MutateError::Invalid(_))
+        ));
+        assert!(matches!(
+            add(&mut cfg, "/x", "../escape.php", "portal"),
+            Err(MutateError::Invalid(_))
+        ));
+    }
+
+    #[test]
+    fn removing_an_absent_route_rule_is_not_found() {
+        let mut cfg = Config::default();
+        let mut router = empty_router();
+        router
+            .insert(Site::linked("portal", "/srv/portal", v(8, 3)).unwrap())
+            .unwrap();
+        assert!(matches!(
+            apply(
+                &mut cfg,
+                &router,
+                &Request::RemoveRouteRule {
+                    site: "portal".into(),
+                    prefix: "/api".into(),
+                },
+                None,
+                v(8, 3),
+            ),
+            Err(MutateError::NotFound(_))
+        ));
+    }
+
+    #[test]
+    fn link_and_unlink_migrate_route_rules() {
+        let mut cfg = Config::default();
+        cfg.parked.paths.insert("/srv".to_string());
+        let rule = yerd_core::RouteRule::new("/api", "api/index.php").unwrap();
+        cfg.route_rules
+            .parked
+            .insert("/srv/app".to_string(), vec![rule]);
+
+        apply(
+            &mut cfg,
+            &empty_router(),
+            &Request::Link {
+                name: "app".into(),
+                path: PathBuf::from("/ignored"),
+            },
+            Some(PathBuf::from("/srv/app")),
+            v(8, 3),
+        )
+        .unwrap();
+        assert!(cfg.route_rules.parked.is_empty());
+        assert_eq!(cfg.route_rules.linked.get("app").unwrap().len(), 1);
+
+        let mut router = empty_router();
+        router
+            .insert(Site::linked("app", "/srv/app", v(8, 3)).unwrap())
+            .unwrap();
+        apply(
+            &mut cfg,
+            &router,
+            &Request::Unlink { name: "app".into() },
+            None,
+            v(8, 3),
+        )
+        .unwrap();
+        assert!(cfg.route_rules.linked.is_empty());
+        assert_eq!(cfg.route_rules.parked.get("/srv/app").unwrap().len(), 1);
+    }
+
+    #[test]
+    fn unpark_drops_route_rules_under_root() {
+        let mut cfg = Config::default();
+        let rule = yerd_core::RouteRule::new("/api", "api/index.php").unwrap();
+        cfg.parked.paths.insert("/srv".to_string());
+        cfg.route_rules
+            .parked
+            .insert("/srv/app".to_string(), vec![rule]);
+        apply(
+            &mut cfg,
+            &empty_router(),
+            &Request::Unpark {
+                path: "/srv".into(),
+            },
+            None,
+            v(8, 3),
+        )
+        .unwrap();
+        assert!(cfg.route_rules.parked.is_empty());
     }
 
     #[test]

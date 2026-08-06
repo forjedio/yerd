@@ -34,6 +34,7 @@ import type {
   ProxyEntry,
   ProxyRuleEntry,
   Response,
+  RouteRuleEntry,
   ServiceAvailability,
   ServiceStatus,
   SetupState,
@@ -265,6 +266,26 @@ export async function addProxyRule(site: string, prefix: string, url: string): P
 
 export async function removeProxyRule(site: string, prefix: string): Promise<void> {
   ensureOk(await call<Response>("remove_proxy_rule", { site, prefix }));
+}
+
+// ── routing rules ────────────────────────────────────────────────────────────
+
+/** Every site's path-prefix routing rules. Unlike a proxy rule, a routing rule's
+ *  target is a file inside the site's own web root. */
+export async function listRoutes(): Promise<RouteRuleEntry[]> {
+  const r = ensureOk(await call<Response>("list_routes"));
+  return r.type === "routes" ? r.rules : [];
+}
+
+/** Add a routing rule: URIs under `prefix` that match no real file are handled
+ *  by `target`, a path relative to the site's web root. The daemon validates
+ *  both and rejects an absolute target or one containing `..`. */
+export async function addRouteRule(site: string, prefix: string, target: string): Promise<void> {
+  ensureOk(await call<Response>("add_route_rule", { site, prefix, target }));
+}
+
+export async function removeRouteRule(site: string, prefix: string): Promise<void> {
+  ensureOk(await call<Response>("remove_route_rule", { site, prefix }));
 }
 
 // ── php versions ───────────────────────────────────────────────────────────

@@ -8,14 +8,17 @@ vi.mock("@tauri-apps/api/core", () => ({
 
 import {
   addDomain,
+  addRouteRule,
   clearMails,
   deleteMails,
   getMail,
   IpcError,
   listMails,
   listPhp,
+  listRoutes,
   listSites,
   removeDomain,
+  removeRouteRule,
   resetDomains,
   setFrontController,
   setMailEnabled,
@@ -146,6 +149,47 @@ describe("client → command mapping", () => {
       name: "blog",
       enabled: true,
     });
+  });
+
+  it("addRouteRule sends the site, prefix and target", async () => {
+    invokeMock.mockResolvedValue({ type: "ok" });
+    await addRouteRule("portal", "/api", "api/index.php");
+    expect(invokeMock).toHaveBeenCalledWith("add_route_rule", {
+      site: "portal",
+      prefix: "/api",
+      target: "api/index.php",
+    });
+  });
+
+  it("removeRouteRule sends the site and prefix", async () => {
+    invokeMock.mockResolvedValue({ type: "ok" });
+    await removeRouteRule("portal", "/api");
+    expect(invokeMock).toHaveBeenCalledWith("remove_route_rule", {
+      site: "portal",
+      prefix: "/api",
+    });
+  });
+
+  it("listRoutes returns the rules, and an empty list for an unexpected reply", async () => {
+    invokeMock.mockResolvedValue({
+      type: "routes",
+      rules: [{ site: "portal", prefix: "/api", target: "api/index.php" }],
+    });
+    expect(await listRoutes()).toEqual([
+      { site: "portal", prefix: "/api", target: "api/index.php" },
+    ]);
+
+    invokeMock.mockResolvedValue({ type: "ok" });
+    expect(await listRoutes()).toEqual([]);
+  });
+
+  it("addRouteRule propagates a daemon rejection as an IpcError", async () => {
+    invokeMock.mockResolvedValue({
+      type: "error",
+      code: "invalid_path",
+      message: "target must be a relative path",
+    });
+    await expect(addRouteRule("portal", "/api", "../escape.php")).rejects.toBeInstanceOf(IpcError);
   });
 
   it("setFrontController rejects on a non-ok response", async () => {

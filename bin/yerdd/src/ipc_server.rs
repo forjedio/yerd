@@ -168,7 +168,9 @@ async fn dispatch(req: Request, state: &DaemonState) -> Response {
         | Request::SetPrimaryDomain { .. }
         | Request::ResetDomains { .. }
         | Request::RemoveProxy { .. }
-        | Request::RemoveProxyRule { .. } => handle_mutation(req, state).await,
+        | Request::RemoveProxyRule { .. }
+        | Request::AddRouteRule { .. }
+        | Request::RemoveRouteRule { .. } => handle_mutation(req, state).await,
         Request::AddProxy { ref url, .. } | Request::AddProxyRule { ref url, .. } => {
             if is_self_forward(url, &[state.http.bound, state.https.bound]) {
                 Response::Error {
@@ -181,6 +183,7 @@ async fn dispatch(req: Request, state: &DaemonState) -> Response {
             }
         }
         Request::ListProxies => list_proxies(state).await,
+        Request::ListRoutes => list_routes(state).await,
         Request::ListGroups => {
             let cfg = state.config.lock().await;
             Response::Groups {
@@ -2633,6 +2636,40 @@ async fn list_proxies(state: &DaemonState) -> Response {
         }
     }
     Response::Proxies { proxies, rules }
+}
+
+/// Reply to [`Request::ListRoutes`]: every per-site path-prefix routing rule.
+/// Parked rules key by document-root, resolved through the live router to the
+/// current site name exactly as [`list_proxies`] does, so the output round-trips
+/// through `yerd route remove <site> <prefix>`. A parked docroot with no current
+/// site falls back to the raw key.
+async fn list_routes(state: &DaemonState) -> Response {
+    let cfg = state.config.lock().await;
+    let router = state.router.read().await;
+    let mut rules = Vec::new();
+    for (site, site_rules) in &cfg.route_rules.linked {
+        for r in site_rules {
+            rules.push(yerd_ipc::RouteRuleEntry {
+                site: site.clone(),
+                prefix: r.prefix().to_owned(),
+                target: r.target().to_owned(),
+            });
+        }
+    }
+    for (docroot, site_rules) in &cfg.route_rules.parked {
+        let site_name = router
+            .iter()
+            .find(|s| s.document_root().to_string_lossy().as_ref() == docroot.as_str())
+            .map_or_else(|| docroot.clone(), |s| s.name().to_owned());
+        for r in site_rules {
+            rules.push(yerd_ipc::RouteRuleEntry {
+                site: site_name.clone(),
+                prefix: r.prefix().to_owned(),
+                target: r.target().to_owned(),
+            });
+        }
+    }
+    Response::Routes { rules }
 }
 
 /// Apply a group mutation (create/delete/reorder/assign). Groups are a

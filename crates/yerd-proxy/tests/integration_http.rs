@@ -1742,6 +1742,536 @@ async fn symlinked_index_html_escaping_root_is_not_served() {
     let _ = tokio::time::timeout(std::time::Duration::from_secs(5), proxy_task).await;
 }
 
+// ─── Routing rules (`yerd route`) ───────────────────────────────────
+
+/// Spawn the proxy over `router` with `resolver`, returning the shutdown sender
+/// and the server task. Extracted for the routing-rule tests below, which would
+/// otherwise repeat this block a dozen times over.
+fn spawn_route_proxy<R: BackendResolver>(
+    proxy_listener: TcpListener,
+    router: SiteRouter,
+    resolver: Arc<R>,
+) -> (oneshot::Sender<()>, tokio::task::JoinHandle<()>) {
+    let router = Arc::new(tokio::sync::RwLock::new(router));
+    let (tx_shutdown, rx_shutdown) = oneshot::channel::<()>();
+    let task = tokio::spawn(async move {
+        let _ = ProxyServer::serve::<_, StubCertStore, _, _>(
+            proxy_listener,
+            None,
+            router,
+            resolver,
+            Arc::new(NoLoginTokens),
+            None,
+            Arc::new(AtomicBool::new(true)),
+            test_client_tls(),
+            false,
+            async move {
+                let _ = rx_shutdown.await;
+            },
+        )
+        .await;
+    });
+    (tx_shutdown, task)
+}
+
+/// A router holding one linked site rooted at `docroot` with `rules` attached.
+fn router_with_route_rules(
+    docroot: &std::path::Path,
+    rules: Vec<yerd_core::RouteRule>,
+) -> SiteRouter {
+    let cfg = RouterConfig::with_tld(Tld::new("test").unwrap());
+    let mut router = SiteRouter::new(cfg);
+    let site = Site::linked("portal", docroot.to_path_buf(), PhpVersion::new(8, 3)).unwrap();
+    router.insert(site).unwrap();
+    router.set_route_rules("portal", rules);
+    router
+}
+
+fn rule(prefix: &str, target: &str) -> yerd_core::RouteRule {
+    yerd_core::RouteRule::new(prefix, target).unwrap()
+}
+
+/// A backend address nothing listens on: any request that reaches FastCGI
+/// hard-fails, so a success here proves the rule answered before FPM.
+fn unreachable_backend() -> Backend {
+    Backend::PhpFpmTcp {
+        addr: "127.0.0.1:1".parse().unwrap(),
+    }
+}
+
+/// Issue #196's literal repro: a legacy portal with a Yii/CodeIgniter app
+/// mounted at `/api`. `POST /api/user/login` must execute `api/index.php` with
+/// the original `REQUEST_URI` intact, or the nested app cannot route it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn post_under_rule_prefix_reaches_nested_front_controller() {
+    let docroot = tempfile::tempdir().unwrap();
+    std::fs::write(docroot.path().join("index.php"), b"<?php /* portal */").unwrap();
+    std::fs::create_dir(docroot.path().join("api")).unwrap();
+    std::fs::write(docroot.path().join("api/index.php"), b"<?php /* yii */").unwrap();
+
+    let fcgi_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let fcgi_addr = fcgi_listener.local_addr().unwrap();
+    let captured = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+    let fake_task = tokio::spawn(run_fake_fcgi(
+        fcgi_listener,
+        b"Status: 200 OK\r\nContent-Type: text/plain\r\n\r\nfrom api".to_vec(),
+        captured.clone(),
+    ));
+
+    let proxy_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let proxy_addr = proxy_listener.local_addr().unwrap();
+    let router = router_with_route_rules(docroot.path(), vec![rule("/api", "api/index.php")]);
+    let (tx_shutdown, proxy_task) = spawn_route_proxy(
+        proxy_listener,
+        router,
+        Arc::new(StaticResolver {
+            backend: Backend::PhpFpmTcp { addr: fcgi_addr },
+        }),
+    );
+
+    let (status, body) = client_post(proxy_addr, "portal.test", "/api/user/login").await;
+    assert_eq!(status, 200);
+    assert_eq!(body, b"from api");
+
+    let params = captured.lock().await.clone();
+    assert_eq!(
+        params.get("SCRIPT_NAME").map(String::as_str),
+        Some("/api/index.php"),
+        "the nested front controller must be the executed script"
+    );
+    assert!(params
+        .get("SCRIPT_FILENAME")
+        .unwrap()
+        .ends_with("api/index.php"));
+    assert_eq!(
+        params.get("REQUEST_URI").map(String::as_str),
+        Some("/api/user/login"),
+        "Yii2 and CodeIgniter route from REQUEST_URI minus SCRIPT_NAME"
+    );
+    assert_eq!(
+        params.get("PATH_INFO").map(String::as_str),
+        Some("/api/user/login")
+    );
+    assert_eq!(
+        params.get("REQUEST_METHOD").map(String::as_str),
+        Some("POST")
+    );
+
+    let _ = tx_shutdown.send(());
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(5), proxy_task).await;
+    let _ = fake_task.await;
+}
+
+/// `try_files` semantics: a real file under the rule prefix beats the rule.
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn real_file_under_rule_prefix_wins() {
+    let docroot = tempfile::tempdir().unwrap();
+    std::fs::write(docroot.path().join("index.php"), b"<?php /* portal */").unwrap();
+    std::fs::create_dir(docroot.path().join("api")).unwrap();
+    std::fs::write(docroot.path().join("api/index.php"), b"<?php /* yii */").unwrap();
+    std::fs::write(docroot.path().join("api/openapi.json"), b"{\"openapi\":1}").unwrap();
+
+    let proxy_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let proxy_addr = proxy_listener.local_addr().unwrap();
+    let router = router_with_route_rules(docroot.path(), vec![rule("/api", "api/index.php")]);
+    let (tx_shutdown, proxy_task) = spawn_route_proxy(
+        proxy_listener,
+        router,
+        Arc::new(StaticResolver {
+            backend: unreachable_backend(),
+        }),
+    );
+
+    let (status, content_type, body) =
+        client_get_response(proxy_addr, "portal.test", "/api/openapi.json").await;
+    assert_eq!(status, 200);
+    assert_eq!(content_type.as_deref(), Some("application/json"));
+    assert_eq!(body, b"{\"openapi\":1}");
+
+    let _ = tx_shutdown.send(());
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(5), proxy_task).await;
+}
+
+/// The GET/HEAD caveat on "real file wins": yerd has never served static
+/// content for other methods, so `try_serve` returns `NotFound` for a POST and
+/// the rule target handles it. A deliberate change from the old behaviour of
+/// funnelling such a request to the *root* `index.php`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn post_to_real_static_file_under_rule_prefix_goes_to_target() {
+    let docroot = tempfile::tempdir().unwrap();
+    std::fs::write(docroot.path().join("index.php"), b"<?php /* portal */").unwrap();
+    std::fs::create_dir(docroot.path().join("api")).unwrap();
+    std::fs::write(docroot.path().join("api/index.php"), b"<?php /* yii */").unwrap();
+    std::fs::write(docroot.path().join("api/openapi.json"), b"{}").unwrap();
+
+    let fcgi_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let fcgi_addr = fcgi_listener.local_addr().unwrap();
+    let captured = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+    let fake_task = tokio::spawn(run_fake_fcgi(
+        fcgi_listener,
+        b"Status: 200 OK\r\nContent-Type: text/plain\r\n\r\nfrom api".to_vec(),
+        captured.clone(),
+    ));
+
+    let proxy_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let proxy_addr = proxy_listener.local_addr().unwrap();
+    let router = router_with_route_rules(docroot.path(), vec![rule("/api", "api/index.php")]);
+    let (tx_shutdown, proxy_task) = spawn_route_proxy(
+        proxy_listener,
+        router,
+        Arc::new(StaticResolver {
+            backend: Backend::PhpFpmTcp { addr: fcgi_addr },
+        }),
+    );
+
+    let (status, _) = client_post(proxy_addr, "portal.test", "/api/openapi.json").await;
+    assert_eq!(status, 200);
+    assert_eq!(
+        captured.lock().await.get("SCRIPT_NAME").map(String::as_str),
+        Some("/api/index.php")
+    );
+
+    let _ = tx_shutdown.send(());
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(5), proxy_task).await;
+    let _ = fake_task.await;
+}
+
+/// Rules apply in front-controller mode too, where the gate returns `Fallback`
+/// without touching the filesystem at all. This is also the path a rule prefix
+/// naming a real directory takes in that mode, since no directory probe runs.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn rule_applies_in_front_controller_mode() {
+    let docroot = tempfile::tempdir().unwrap();
+    std::fs::write(docroot.path().join("index.php"), b"<?php /* portal */").unwrap();
+    std::fs::create_dir(docroot.path().join("api")).unwrap();
+    std::fs::write(docroot.path().join("api/index.php"), b"<?php /* yii */").unwrap();
+
+    let fcgi_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let fcgi_addr = fcgi_listener.local_addr().unwrap();
+    let captured = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+    let fake_task = tokio::spawn(run_fake_fcgi(
+        fcgi_listener,
+        b"Status: 200 OK\r\nContent-Type: text/plain\r\n\r\nfrom api".to_vec(),
+        captured.clone(),
+    ));
+
+    let proxy_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let proxy_addr = proxy_listener.local_addr().unwrap();
+    let router = router_with_route_rules(docroot.path(), vec![rule("/api", "api/index.php")]);
+    let (tx_shutdown, proxy_task) = spawn_route_proxy(
+        proxy_listener,
+        router,
+        Arc::new(NonWordPressResolver {
+            backend: Backend::PhpFpmTcp { addr: fcgi_addr },
+        }),
+    );
+
+    let body = client_get(proxy_addr, "portal.test", "/api/user").await;
+    assert_eq!(body, b"from api");
+    assert_eq!(
+        captured.lock().await.get("SCRIPT_NAME").map(String::as_str),
+        Some("/api/index.php"),
+        "the gate blocks URL-chosen scripts, not the operator-configured target"
+    );
+
+    let _ = tx_shutdown.send(());
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(5), proxy_task).await;
+    let _ = fake_task.await;
+}
+
+/// Composition with the PR #199 trailing-slash `301`: in direct mode `$uri/`
+/// beats the `try_files` fallback, so a real directory under a rule prefix
+/// still redirects rather than being swallowed by the rule.
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn directory_301_wins_over_rule_in_direct_mode() {
+    let docroot = tempfile::tempdir().unwrap();
+    std::fs::write(docroot.path().join("index.php"), b"<?php /* portal */").unwrap();
+    std::fs::create_dir(docroot.path().join("api")).unwrap();
+    std::fs::write(docroot.path().join("api/index.php"), b"<?php /* yii */").unwrap();
+
+    let proxy_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let proxy_addr = proxy_listener.local_addr().unwrap();
+    let router = router_with_route_rules(docroot.path(), vec![rule("/api", "api/index.php")]);
+    let (tx_shutdown, proxy_task) = spawn_route_proxy(
+        proxy_listener,
+        router,
+        Arc::new(StaticResolver {
+            backend: unreachable_backend(),
+        }),
+    );
+
+    assert_eq!(
+        client_get_status_and_location(proxy_addr, "portal.test", "/api").await,
+        (301, Some("/api/".to_owned()))
+    );
+
+    let _ = tx_shutdown.send(());
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(5), proxy_task).await;
+}
+
+/// The other half of that composition: a non-GET/HEAD request never redirects,
+/// so it falls into rule evaluation and reaches the nested front controller
+/// instead of the root `index.php` it used to hit.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn post_to_rule_prefixed_directory_reaches_target() {
+    let docroot = tempfile::tempdir().unwrap();
+    std::fs::write(docroot.path().join("index.php"), b"<?php /* portal */").unwrap();
+    std::fs::create_dir(docroot.path().join("api")).unwrap();
+    std::fs::write(docroot.path().join("api/index.php"), b"<?php /* yii */").unwrap();
+
+    let fcgi_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let fcgi_addr = fcgi_listener.local_addr().unwrap();
+    let captured = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+    let fake_task = tokio::spawn(run_fake_fcgi(
+        fcgi_listener,
+        b"Status: 200 OK\r\nContent-Type: text/plain\r\n\r\nfrom api".to_vec(),
+        captured.clone(),
+    ));
+
+    let proxy_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let proxy_addr = proxy_listener.local_addr().unwrap();
+    let router = router_with_route_rules(docroot.path(), vec![rule("/api", "api/index.php")]);
+    let (tx_shutdown, proxy_task) = spawn_route_proxy(
+        proxy_listener,
+        router,
+        Arc::new(StaticResolver {
+            backend: Backend::PhpFpmTcp { addr: fcgi_addr },
+        }),
+    );
+
+    let (status, _) = client_post(proxy_addr, "portal.test", "/api").await;
+    assert_eq!(status, 200);
+    assert_eq!(
+        captured.lock().await.get("SCRIPT_NAME").map(String::as_str),
+        Some("/api/index.php")
+    );
+
+    let _ = tx_shutdown.send(());
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(5), proxy_task).await;
+    let _ = fake_task.await;
+}
+
+/// SPA history-API routing via an explicit `/` rule, plus the accepted
+/// trade-off it carries: because a real file wins and nothing else does, a
+/// genuinely missing asset returns `index.html` with 200 rather than a 404.
+/// That is what `try_files` and Vite's preview server do; it is pinned here so
+/// nobody "fixes" it into an extension heuristic by accident.
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn spa_rule_serves_index_html_for_deep_links_and_missing_assets() {
+    let docroot = tempfile::tempdir().unwrap();
+    std::fs::write(docroot.path().join("index.html"), b"<!doctype html>spa").unwrap();
+    std::fs::create_dir(docroot.path().join("assets")).unwrap();
+    std::fs::write(docroot.path().join("assets/app.js"), b"console.log(1)").unwrap();
+
+    let proxy_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let proxy_addr = proxy_listener.local_addr().unwrap();
+    let router = router_with_route_rules(docroot.path(), vec![rule("/", "index.html")]);
+    let (tx_shutdown, proxy_task) = spawn_route_proxy(
+        proxy_listener,
+        router,
+        Arc::new(StaticResolver {
+            backend: unreachable_backend(),
+        }),
+    );
+
+    let (status, content_type, body) =
+        client_get_response(proxy_addr, "portal.test", "/dashboard/settings").await;
+    assert_eq!(status, 200);
+    assert_eq!(content_type.as_deref(), Some("text/html; charset=utf-8"));
+    assert_eq!(body, b"<!doctype html>spa");
+
+    let (status, _, body) = client_get_response(proxy_addr, "portal.test", "/assets/app.js").await;
+    assert_eq!(status, 200);
+    assert_eq!(body, b"console.log(1)", "a real asset still wins");
+
+    let (status, _, body) =
+        client_get_response(proxy_addr, "portal.test", "/assets/missing.js").await;
+    assert_eq!(
+        status, 200,
+        "accepted trade-off: a missing asset yields index.html, not a 404"
+    );
+    assert_eq!(body, b"<!doctype html>spa");
+
+    let _ = tx_shutdown.send(());
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(5), proxy_task).await;
+}
+
+/// The automatic SPA default: a served root with an `index.html` and no
+/// `index.php` gets history-API routing with no rule configured at all.
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn automatic_spa_fallback_without_rule() {
+    let docroot = tempfile::tempdir().unwrap();
+    std::fs::write(docroot.path().join("index.html"), b"<!doctype html>auto").unwrap();
+
+    let proxy_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let proxy_addr = proxy_listener.local_addr().unwrap();
+    let router = router_with_route_rules(docroot.path(), vec![]);
+    let (tx_shutdown, proxy_task) = spawn_route_proxy(
+        proxy_listener,
+        router,
+        Arc::new(StaticResolver {
+            backend: unreachable_backend(),
+        }),
+    );
+
+    let (status, content_type, body) =
+        client_get_response(proxy_addr, "portal.test", "/dashboard/settings").await;
+    assert_eq!(status, 200);
+    assert_eq!(content_type.as_deref(), Some("text/html; charset=utf-8"));
+    assert_eq!(body, b"<!doctype html>auto");
+
+    let _ = tx_shutdown.send(());
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(5), proxy_task).await;
+}
+
+/// The automatic default must never shadow a PHP app: an `index.php` in the
+/// served root short-circuits it, so the request still reaches FastCGI.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn automatic_spa_fallback_yields_to_index_php() {
+    let docroot = tempfile::tempdir().unwrap();
+    std::fs::write(docroot.path().join("index.php"), b"<?php /* app */").unwrap();
+    std::fs::write(docroot.path().join("index.html"), b"<!doctype html>auto").unwrap();
+
+    let fcgi_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let fcgi_addr = fcgi_listener.local_addr().unwrap();
+    let captured = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+    let fake_task = tokio::spawn(run_fake_fcgi(
+        fcgi_listener,
+        b"Status: 200 OK\r\nContent-Type: text/plain\r\n\r\nfrom fpm".to_vec(),
+        captured.clone(),
+    ));
+
+    let proxy_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let proxy_addr = proxy_listener.local_addr().unwrap();
+    let router = router_with_route_rules(docroot.path(), vec![]);
+    let (tx_shutdown, proxy_task) = spawn_route_proxy(
+        proxy_listener,
+        router,
+        Arc::new(StaticResolver {
+            backend: Backend::PhpFpmTcp { addr: fcgi_addr },
+        }),
+    );
+
+    let body = client_get(proxy_addr, "portal.test", "/dashboard/settings").await;
+    assert_eq!(body, b"from fpm");
+    assert_eq!(
+        captured.lock().await.get("SCRIPT_NAME").map(String::as_str),
+        Some("/index.php")
+    );
+
+    let _ = tx_shutdown.send(());
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(5), proxy_task).await;
+    let _ = fake_task.await;
+}
+
+/// A static rule target answers only GET/HEAD, the same as nginx serving a
+/// static file. A PHP target takes every method, which is the whole point of a
+/// nested front controller.
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn post_to_static_rule_target_is_405() {
+    let docroot = tempfile::tempdir().unwrap();
+    std::fs::write(docroot.path().join("index.html"), b"<!doctype html>spa").unwrap();
+
+    let proxy_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let proxy_addr = proxy_listener.local_addr().unwrap();
+    let router = router_with_route_rules(docroot.path(), vec![rule("/", "index.html")]);
+    let (tx_shutdown, proxy_task) = spawn_route_proxy(
+        proxy_listener,
+        router,
+        Arc::new(StaticResolver {
+            backend: unreachable_backend(),
+        }),
+    );
+
+    let (status, _) = client_post(proxy_addr, "portal.test", "/dashboard").await;
+    assert_eq!(status, 405);
+
+    let _ = tx_shutdown.send(());
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(5), proxy_task).await;
+}
+
+/// A rule can never become an arbitrary-file-execution primitive: a PHP target
+/// symlinked outside the document root is refused and the site degrades to the
+/// behaviour it had before the rule existed.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn escaping_php_rule_target_falls_back_to_root_index_php() {
+    let docroot = tempfile::tempdir().unwrap();
+    let outside = tempfile::tempdir().unwrap();
+    std::fs::write(docroot.path().join("index.php"), b"<?php /* portal */").unwrap();
+    std::fs::write(outside.path().join("evil.php"), b"<?php /* elsewhere */").unwrap();
+    std::os::unix::fs::symlink(
+        outside.path().join("evil.php"),
+        docroot.path().join("api.php"),
+    )
+    .unwrap();
+
+    let fcgi_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let fcgi_addr = fcgi_listener.local_addr().unwrap();
+    let captured = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+    let fake_task = tokio::spawn(run_fake_fcgi(
+        fcgi_listener,
+        b"Status: 200 OK\r\nContent-Type: text/plain\r\n\r\nfrom root".to_vec(),
+        captured.clone(),
+    ));
+
+    let proxy_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let proxy_addr = proxy_listener.local_addr().unwrap();
+    let router = router_with_route_rules(docroot.path(), vec![rule("/api", "api.php")]);
+    let (tx_shutdown, proxy_task) = spawn_route_proxy(
+        proxy_listener,
+        router,
+        Arc::new(StaticResolver {
+            backend: Backend::PhpFpmTcp { addr: fcgi_addr },
+        }),
+    );
+
+    let (status, _) = client_post(proxy_addr, "portal.test", "/api/thing").await;
+    assert_eq!(status, 200);
+    assert_eq!(
+        captured.lock().await.get("SCRIPT_NAME").map(String::as_str),
+        Some("/index.php"),
+        "the escaping target must never be executed"
+    );
+
+    let _ = tx_shutdown.send(());
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(5), proxy_task).await;
+    let _ = fake_task.await;
+}
+
+/// The static half of the same guarantee: an escaping static target is a `403`,
+/// matching what `try_serve` already answers for an escaping request path.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn escaping_static_rule_target_is_403() {
+    let docroot = tempfile::tempdir().unwrap();
+    let outside = tempfile::tempdir().unwrap();
+    std::fs::write(outside.path().join("secret.html"), b"leaked").unwrap();
+    std::os::unix::fs::symlink(
+        outside.path().join("secret.html"),
+        docroot.path().join("index.html"),
+    )
+    .unwrap();
+
+    let proxy_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let proxy_addr = proxy_listener.local_addr().unwrap();
+    let router = router_with_route_rules(docroot.path(), vec![rule("/app", "index.html")]);
+    let (tx_shutdown, proxy_task) = spawn_route_proxy(
+        proxy_listener,
+        router,
+        Arc::new(StaticResolver {
+            backend: unreachable_backend(),
+        }),
+    );
+
+    let (status, _, body) = client_get_response(proxy_addr, "portal.test", "/app/x").await;
+    assert_eq!(status, 403);
+    assert!(!body.windows(6).any(|w| w == b"leaked"));
+
+    let _ = tx_shutdown.send(());
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(5), proxy_task).await;
+}
+
 // ─── Hyper client helpers ───────────────────────────────────────────
 
 async fn client_get(addr: SocketAddr, host: &str, path: &str) -> Vec<u8> {

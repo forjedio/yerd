@@ -181,6 +181,7 @@ export default withMermaid({
             { text: 'Sites', link: '/reference/cli/sites' },
             { text: 'Domains', link: '/reference/cli/domains' },
             { text: 'Proxies', link: '/reference/cli/proxies' },
+            { text: 'Routing rules', link: '/reference/cli/routes' },
             { text: 'HTTPS', link: '/reference/cli/https' },
             { text: 'PHP', link: '/reference/cli/php' },
             { text: 'Coverage', link: '/reference/cli/coverage' },

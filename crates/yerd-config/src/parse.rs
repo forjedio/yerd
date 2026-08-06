@@ -136,6 +136,9 @@ struct Wire {
     // v14: optional `[proxy_rules]` table; absent in v13 and earlier → empty.
     #[serde(default)]
     proxy_rules: ProxyRulesSectionWire,
+    // v20: optional `[route_rules]` table; absent in v19 and earlier → empty.
+    #[serde(default)]
+    route_rules: RouteRulesSectionWire,
 }
 
 /// One `[[proxies]]` table: a whole-host proxy's name, upstream, and HTTPS flag.
@@ -165,6 +168,27 @@ struct ProxyRulesSectionWire {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ProxyRuleWire {
+    prefix: String,
+    target: String,
+}
+
+/// The `[route_rules]` table. Both maps default to empty, so an absent table
+/// parses to [`crate::schema::RouteRulesSection::default`].
+#[derive(Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RouteRulesSectionWire {
+    #[serde(default)]
+    linked: BTreeMap<String, Vec<RouteRuleWire>>,
+    #[serde(default)]
+    parked: BTreeMap<String, Vec<RouteRuleWire>>,
+}
+
+/// One `[[route_rules.linked.<name>]]` / `[[route_rules.parked."<docroot>"]]`
+/// rule: a path prefix plus a target path relative to the site's served root
+/// (validated into `yerd_core::RouteRule` in `TryFrom`).
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RouteRuleWire {
     prefix: String,
     target: String,
 }
@@ -565,6 +589,10 @@ impl TryFrom<Wire> for Config {
             linked: convert_proxy_rules(w.proxy_rules.linked)?,
             parked: convert_proxy_rules(w.proxy_rules.parked)?,
         };
+        let route_rules = crate::schema::RouteRulesSection {
+            linked: convert_route_rules(w.route_rules.linked)?,
+            parked: convert_route_rules(w.route_rules.parked)?,
+        };
         Ok(Config {
             version: crate::CURRENT_VERSION,
             tld,
@@ -587,6 +615,7 @@ impl TryFrom<Wire> for Config {
             domains,
             proxies,
             proxy_rules,
+            route_rules,
         })
     }
 }
@@ -617,6 +646,22 @@ fn convert_proxy_rules(
                     let target = yerd_core::UpstreamTarget::from_url_str(&r.target)?;
                     Ok(yerd_core::ProxyRule::new(&r.prefix, target)?)
                 })
+                .collect::<Result<Vec<_>, ConfigError>>()?;
+            Ok((key, rules))
+        })
+        .collect()
+}
+
+/// Convert a `[route_rules.*]` wire map into validated [`yerd_core::RouteRule`]
+/// lists. A bad prefix or target surfaces as [`ConfigError::Core`].
+fn convert_route_rules(
+    wire: BTreeMap<String, Vec<RouteRuleWire>>,
+) -> Result<BTreeMap<String, Vec<yerd_core::RouteRule>>, ConfigError> {
+    wire.into_iter()
+        .map(|(key, rules)| {
+            let rules = rules
+                .into_iter()
+                .map(|r| Ok(yerd_core::RouteRule::new(&r.prefix, &r.target)?))
                 .collect::<Result<Vec<_>, ConfigError>>()?;
             Ok((key, rules))
         })
@@ -770,6 +815,7 @@ pub(crate) fn validate(c: &Config) -> Result<(), ConfigError> {
     validate_groups(c)?;
     validate_domains(c)?;
     validate_proxies(c)?;
+    validate_route_rules(c)?;
     Ok(())
 }
 
@@ -813,6 +859,40 @@ fn validate_proxies(c: &Config) -> Result<(), ConfigError> {
     }
     for rules in c.proxy_rules.parked.values() {
         validate_rule_set(rules, &targets_loop)?;
+    }
+    Ok(())
+}
+
+/// Linked `[route_rules]` keys must name a `[[linked]]` site, and each site's
+/// prefixes must be unique. Parked rules key by document-root and can't be
+/// checked here, exactly as for `[proxy_rules]` and `[domains]`.
+///
+/// There is no target-loop guard: a routing rule's target is a path under the
+/// site's own served root, not a URL, so it cannot forward anywhere. Containment
+/// is enforced at construction and re-checked against the real filesystem on
+/// every request.
+fn validate_route_rules(c: &Config) -> Result<(), ConfigError> {
+    let linked_names: BTreeSet<&str> = c.linked.iter().map(yerd_core::Site::name).collect();
+    for (site, rules) in &c.route_rules.linked {
+        if !linked_names.contains(site.as_str()) {
+            return Err(ve(ValidateErrorReason::RouteRuleUnknownSite));
+        }
+        validate_route_rule_set(rules)?;
+    }
+    for rules in c.route_rules.parked.values() {
+        validate_route_rule_set(rules)?;
+    }
+    Ok(())
+}
+
+/// Prefix uniqueness within one site's routing rules, so the longest-prefix
+/// match can never face a tie.
+fn validate_route_rule_set(rules: &[yerd_core::RouteRule]) -> Result<(), ConfigError> {
+    let mut seen_prefix: BTreeSet<&str> = BTreeSet::new();
+    for r in rules {
+        if !seen_prefix.insert(r.prefix()) {
+            return Err(ve(ValidateErrorReason::RouteRuleDuplicatePrefix));
+        }
     }
     Ok(())
 }
@@ -1193,7 +1273,7 @@ mod tests {
         match Config::from_toml("version = 99\n") {
             Err(ConfigError::UnsupportedVersion {
                 found: 99,
-                current: 19,
+                current: 20,
             }) => {}
             other => panic!("expected UnsupportedVersion, got {other:?}"),
         }
@@ -1834,6 +1914,80 @@ php = "not-a-version"
         let s = Config::default().to_toml().unwrap();
         assert!(!s.contains("[[proxies]]"), "got: {s}");
         assert!(!s.contains("[proxy_rules"), "got: {s}");
+    }
+
+    #[test]
+    fn route_rules_round_trip() {
+        let mut c = Config::default();
+        c.linked.push(linked_site("app", "/srv/app"));
+        c.route_rules.linked.insert(
+            "app".to_owned(),
+            vec![
+                yerd_core::RouteRule::new("/api", "api/index.php").unwrap(),
+                yerd_core::RouteRule::new("/", "index.html").unwrap(),
+            ],
+        );
+        c.route_rules.parked.insert(
+            "/srv/blog".to_owned(),
+            vec![yerd_core::RouteRule::new("/admin", "admin/index.php").unwrap()],
+        );
+        let toml = c.to_toml().unwrap();
+        let back = Config::from_toml(&toml).unwrap();
+        assert_eq!(c, back);
+        assert_eq!(back.to_toml().unwrap(), toml);
+    }
+
+    #[test]
+    fn removing_last_route_rule_returns_to_byte_identical_default() {
+        let mut c = Config::default();
+        c.route_rules.linked.insert("app".to_owned(), Vec::new());
+        assert_eq!(c.to_toml().unwrap(), Config::default().to_toml().unwrap());
+    }
+
+    #[test]
+    fn validate_rejects_unknown_route_rule_site() {
+        let mut c = Config::default();
+        c.route_rules.linked.insert(
+            "ghost".to_owned(),
+            vec![yerd_core::RouteRule::new("/api", "api/index.php").unwrap()],
+        );
+        match c.validate() {
+            Err(ConfigError::Validate {
+                reason: ValidateErrorReason::RouteRuleUnknownSite,
+            }) => {}
+            other => panic!("expected RouteRuleUnknownSite, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn validate_rejects_duplicate_route_rule_prefix() {
+        let mut c = Config::default();
+        c.linked.push(linked_site("app", "/srv/app"));
+        c.route_rules.linked.insert(
+            "app".to_owned(),
+            vec![
+                yerd_core::RouteRule::new("/api", "api/index.php").unwrap(),
+                yerd_core::RouteRule::new("/api/", "other/index.php").unwrap(),
+            ],
+        );
+        match c.validate() {
+            Err(ConfigError::Validate {
+                reason: ValidateErrorReason::RouteRuleDuplicatePrefix,
+            }) => {}
+            other => panic!("expected RouteRuleDuplicatePrefix, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_rejects_bad_route_rule_target() {
+        let s = "version = 20\n\
+[[route_rules.linked.app]]\n\
+prefix = \"/api\"\n\
+target = \"../../etc/passwd\"\n";
+        assert!(
+            matches!(Config::from_toml(s), Err(ConfigError::Core(_))),
+            "a hand-edited escaping target must fail at load"
+        );
     }
 
     #[test]

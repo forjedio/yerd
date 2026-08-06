@@ -8,7 +8,7 @@
 )]
 
 use yerd_config::{Config, PhpSection, Ports, ServiceInstance, SiteOverride};
-use yerd_core::{PhpVersion, Site, Tld};
+use yerd_core::{PhpVersion, RouteRule, Site, Tld};
 
 const POPULATED: &str = r#"
 version = 1
@@ -40,6 +40,14 @@ front_controller = true
 
 [services]
 enabled = ["mysql", "redis"]
+
+[[route_rules.linked.api]]
+prefix = "/api"
+target = "api/index.php"
+
+[[route_rules.parked."docroot-a"]]
+prefix = "/"
+target = "index.html"
 "#;
 
 fn populated_expected() -> Config {
@@ -81,6 +89,14 @@ fn populated_expected() -> Config {
     c.services
         .instances
         .insert("redis".to_string(), ServiceInstance::default());
+    c.route_rules.linked.insert(
+        "api".to_string(),
+        vec![RouteRule::new("/api", "api/index.php").unwrap()],
+    );
+    c.route_rules.parked.insert(
+        "docroot-a".to_string(),
+        vec![RouteRule::new("/", "index.html").unwrap()],
+    );
     c
 }
 

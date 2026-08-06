@@ -376,9 +376,33 @@ yerd root my-app --auto      # forget the override; go back to auto-detection
 The [Sites view](./desktop-app#sites) shows the served web root as a badge per site, and its **Edit…** dialog sets it directly - leave the field blank to go back to auto-detection.
 :::
 
+## Routing rules
+
+Detection and the web root cover the common layouts, but two shapes need a rule.
+
+A **legacy portal with a nested app** - an older PHP site that grew a Yii or CodeIgniter API in a subdirectory - has *two* front controllers, and only the root one is found automatically. A rule points the rest at the nested one:
+
+```sh
+yerd route add portal /api api/index.php
+# portal.test/api/user/login  → api/index.php (POST included)
+# portal.test/anything-else   → the root index.php
+```
+
+A **JavaScript SPA** needs history-API deep links to serve the app shell:
+
+```sh
+yerd route add dashboard / index.html
+# dashboard.test/settings/profile → index.html
+```
+
+A rule only applies when the request matched no real file, so assets and real directories keep winning. A site whose web root holds an `index.html` and no `index.php` gets the SPA behaviour automatically, with no rule at all.
+
+See [Routing rules](../reference/cli/routes) for the full semantics, and note this is different from a [reverse proxy path rule](./proxies), which forwards to a separate running service rather than to a file inside the site.
+
 ## Related
 
 - [PHP Versions](./php-versions) - set the global default and pin a site to a version.
+- [Routing rules](../reference/cli/routes) - nested front controllers and SPA deep links.
 - [HTTPS &amp; Certificates](./https) - the local CA and the `secure` flag.
 - [DNS &amp; .test Domains](./dns) - how `*.test` requests reach the daemon.
 - [Configuration Reference](../reference/configuration) - where sites and the TLD are stored.

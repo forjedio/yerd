@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
 use std::sync::Arc;
 
 use http::header::{
-    ACCEPT, CACHE_CONTROL, CONTENT_TYPE, COOKIE, HOST, LOCATION, SERVER, SET_COOKIE,
+    ACCEPT, ALLOW, CACHE_CONTROL, CONTENT_TYPE, COOKIE, HOST, LOCATION, SERVER, SET_COOKIE,
 };
 use http::{HeaderValue, Method, StatusCode};
 use hyper::body::Incoming;
@@ -16,7 +16,7 @@ use hyper_util::rt::TokioIo;
 use tokio::net::TcpListener;
 use tokio::sync::Notify;
 use tokio_rustls::TlsAcceptor;
-use yerd_core::{match_rule, Route, Site, SiteKind, SiteRouter, UpstreamTarget};
+use yerd_core::{match_rule, Route, RouteRule, Site, SiteKind, SiteRouter, UpstreamTarget};
 
 use crate::backend::Backend;
 use crate::client_tls::ProxyClientTls;
@@ -28,6 +28,8 @@ use crate::forward::{
 use crate::pure::cgi_params;
 use crate::pure::query;
 use crate::pure::redirect::{build_redirect_uri, directory_redirect_location};
+use crate::pure::route_rules::match_route;
+use crate::pure::try_files::is_php_source;
 use crate::pure::unbound::{self, PickerSite};
 use crate::tls::build_server_config;
 use crate::traits::{BackendResolver, CertStore, LoginTokenConsumer};
@@ -379,12 +381,13 @@ async fn dispatch<R: BackendResolver, L: LoginTokenConsumer>(
 
     let https = matches!(listener, Listener::Https);
 
-    let (site, unbound, matched) = match resolve_request(&router, &req, &host).await? {
+    let (site, unbound, matched, route) = match resolve_request(&router, &req, &host).await? {
         Routed::Site {
             site,
             unbound,
             matched,
-        } => (site, unbound, matched),
+            route,
+        } => (site, unbound, matched, route),
         Routed::Proxy {
             forward,
             secure,
@@ -460,6 +463,7 @@ async fn dispatch<R: BackendResolver, L: LoginTokenConsumer>(
                 login_prepend_script.as_deref(),
                 &served_root,
                 &allowed_root,
+                route.as_ref(),
                 server_addr,
                 peer_addr,
                 https,
@@ -495,6 +499,7 @@ async fn serve_php_fpm<R: BackendResolver, L: LoginTokenConsumer>(
     login_prepend_script: Option<&std::path::Path>,
     served_root: &std::path::Path,
     allowed_root: &std::path::Path,
+    route: Option<&RouteRule>,
     server_addr: SocketAddr,
     peer_addr: SocketAddr,
     https: bool,
@@ -539,7 +544,13 @@ async fn serve_php_fpm<R: BackendResolver, L: LoginTokenConsumer>(
             return trailing_slash_redirect(&req);
         }
         script_file::ScriptResolution::DirectoryRedirect
-        | script_file::ScriptResolution::Fallback => None,
+        | script_file::ScriptResolution::Fallback => {
+            match apply_route(&req, route, served_root, allowed_root, symlink_protection).await {
+                RouteOutcome::Respond(resp) => return Ok(resp),
+                RouteOutcome::Script(rel) => Some(rel),
+                RouteOutcome::Fallback => None,
+            }
+        }
     };
     let login_target_user = consume_login_token_if_present(&mut req, site.name(), login_tokens);
     let auto_login = match (&login_target_user, login_prepend_script) {
@@ -565,6 +576,119 @@ async fn serve_php_fpm<R: BackendResolver, L: LoginTokenConsumer>(
 fn path_and_query_or_root(uri: &http::Uri) -> &str {
     uri.path_and_query()
         .map_or("/", http::uri::PathAndQuery::as_str)
+}
+
+/// What applying a routing rule (or the automatic SPA default) decided.
+enum RouteOutcome {
+    /// Answer with this response and forward nothing.
+    Respond(Response<BoxBody>),
+    /// Execute this script, relative to `served_root`.
+    Script(std::path::PathBuf),
+    /// Nothing applied; fall back to the site root's `index.php`, exactly as
+    /// before the rule existed.
+    Fallback,
+}
+
+/// Apply the routing rule already matched in [`resolve_request`], or - when no
+/// rule matched - the automatic SPA default.
+///
+/// Reached only once every real-file answer has been ruled out (static file,
+/// directory index, real script in direct mode, trailing-slash `301`), which is
+/// what makes "a real file wins" true without checking for one here. Note that
+/// precedence only holds for GET/HEAD, the sole methods yerd serves static
+/// content for, so a `POST` to a real non-PHP file under a rule prefix is
+/// handled by the rule target.
+///
+/// An unusable target is logged and degraded to [`RouteOutcome::Fallback`]
+/// rather than surfaced as an error, so the site behaves exactly as it did
+/// before the rule was added. The one exception is a **static** target that
+/// escapes `allowed_root` with symlink protection on: that answers `403`, the
+/// same as any other escaping static path, rather than quietly serving the
+/// site's front controller in its place.
+async fn apply_route(
+    req: &Request<Incoming>,
+    route: Option<&RouteRule>,
+    served_root: &std::path::Path,
+    allowed_root: &std::path::Path,
+    symlink_protection: bool,
+) -> RouteOutcome {
+    let Some(rule) = route else {
+        let outcome = static_file::try_serve_index(
+            req.method(),
+            "/",
+            served_root,
+            allowed_root,
+            symlink_protection,
+        )
+        .await;
+        return match resolve_static_outcome(outcome) {
+            Some(resp) => RouteOutcome::Respond(resp),
+            None => RouteOutcome::Fallback,
+        };
+    };
+
+    let target = std::path::Path::new(rule.target());
+
+    if is_php_source(target) {
+        let resolved =
+            script_file::resolve_rule_target(served_root, allowed_root, target, symlink_protection)
+                .await;
+        let Some(rel) = resolved else {
+            warn_unusable_target(rule, req.uri().path());
+            return RouteOutcome::Fallback;
+        };
+        return RouteOutcome::Script(rel);
+    }
+
+    if *req.method() != Method::GET && *req.method() != Method::HEAD {
+        return RouteOutcome::Respond(method_not_allowed_response());
+    }
+
+    let outcome = static_file::serve_target_file(
+        req.method(),
+        req.uri().path(),
+        served_root,
+        allowed_root,
+        target,
+        symlink_protection,
+    )
+    .await;
+    let Some(resp) = resolve_static_outcome(outcome) else {
+        warn_unusable_target(rule, req.uri().path());
+        return RouteOutcome::Fallback;
+    };
+    RouteOutcome::Respond(resp)
+}
+
+/// Log a configured routing rule whose target could not be used, so a typo or a
+/// since-deleted file is visible in the daemon log rather than silently
+/// behaving as if the rule were absent.
+fn warn_unusable_target(rule: &RouteRule, requested_path: &str) {
+    tracing::warn!(
+        target: "yerd_proxy::route_rule",
+        prefix = %rule.prefix(),
+        rule_target = %rule.target(),
+        requested_path = %requested_path,
+        "routing rule target is missing, is not a regular file, or escapes the site root; \
+    falling back to the site root's index.php",
+    );
+}
+
+/// `405` for a non-GET/HEAD request matching a **static** routing target, the
+/// same answer nginx gives for a static file. A PHP target takes every method,
+/// which is the point of a nested front controller.
+fn method_not_allowed_response() -> Response<BoxBody> {
+    Response::builder()
+        .status(StatusCode::METHOD_NOT_ALLOWED)
+        .header(SERVER, server_header())
+        .header(ALLOW, "GET, HEAD")
+        .header(CACHE_CONTROL, "no-store")
+        .header(CONTENT_TYPE, "text/plain; charset=utf-8")
+        .body(bytes_body(
+            b"405 Method Not Allowed\n\nThis path is served by a static routing rule target, \
+which only answers GET and HEAD.\n",
+        ))
+        .unwrap_or_else(|_| Response::new(empty_body()))
 }
 
 /// [`script_file::resolve_script`], gated by
@@ -701,11 +825,15 @@ struct ProxyTarget {
 /// (404 / 303 switch / picker) to return as-is.
 enum Routed {
     /// A PHP site to forward to. `unbound` skips the HTTP→HTTPS redirect;
-    /// `matched` is `Some` when a path-prefix rule intercepts this request.
+    /// `matched` is `Some` when a path-prefix *proxy* rule intercepts this
+    /// request (forwarding to an upstream, bypassing PHP entirely); `route` is
+    /// `Some` when a path-prefix *routing* rule matched, which is applied far
+    /// later, in `serve_php_fpm`, only once no real file has answered.
     Site {
         site: Site,
         unbound: bool,
         matched: Option<ProxyTarget>,
+        route: Option<RouteRule>,
     },
     /// A whole-host reverse proxy to forward to.
     Proxy {
@@ -737,10 +865,12 @@ async fn resolve_request(
                     tld: guard.config().tld().to_owned(),
                 }
             });
+            let route = match_route(guard.route_rules_for(site.name()), req.uri().path()).cloned();
             return Ok(Routed::Site {
                 site,
                 unbound: false,
                 matched,
+                route,
             });
         }
         Some(Route::Proxy(proxy)) => {
@@ -779,10 +909,12 @@ async fn resolve_request(
                     tld: guard.config().tld().to_owned(),
                 }
             });
+            let route = match_route(guard.route_rules_for(site.name()), req.uri().path()).cloned();
             Ok(Routed::Site {
                 site,
                 unbound: true,
                 matched,
+                route,
             })
         }
         UnboundDecision::Switch { name, location } => {
