@@ -28,7 +28,24 @@ Each entry below states what changed, whether the daemon's own migration is a ba
 
 ## Version-by-version
 
-### v18 (current)
+### v20 (current)
+
+**Added:** the optional `[php.pool]` table - per-version FPM pool settings. `[php.pool."<version>"]` holds the pool settings for one installed version; the only key is `max_children`, the ceiling on concurrent PHP workers, accepted between `1` and `1024` and defaulting to `16`. It defaults to empty when absent, so an uncustomised file omits it entirely.
+
+```toml
+[php.pool."8.4"]
+max_children = "32"
+```
+
+These are FPM pool-block settings rather than ini directives, so they reach the generated pool config only, never a CLI `php.ini`. The `pm.` prefix is reserved out of `[php.directives]` for the same reason: rendered there it would become `php_value[pm.max_children]`, which FPM refuses on every worker spawn.
+
+The table loads **leniently**, like `[php.directives]`: an out-of-range value or an unknown setting name is dropped during parsing rather than failing the load. A malformed version key is still a hard error, and strict validation lives at set time (CLI/GUI/IPC).
+
+**Migration from v19:** bare version bump - the table defaults to empty when absent, so a v19 file needs no other change.
+
+**To downgrade to v19:** change `version = 20` to `version = 19` and delete any `[php.pool.*]` tables (an older daemon rejects the unknown tables under `deny_unknown_fields`, it doesn't just ignore them). Every version falls back to the built-in ceiling of 16.
+
+### v18
 
 **Added:** the optional `[php.directives]` table - free-form (shape-validated) per-version ini directives such as `xdebug.mode`. `[php.directives."<version>"]` holds the directives for one installed version. It defaults to empty when absent, so an uncustomised file omits it entirely.
 

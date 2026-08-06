@@ -117,6 +117,7 @@ PHP defaults applied across sites.
 | `settings`         | table     | Global PHP ini directives applied to every installed version's FPM pool. | empty   |
 | `version_settings` | table     | Sparse per-version overrides of `settings`, keyed by PHP version. | empty   |
 | `directives`       | table     | Free-form per-version ini directives, keyed by PHP version.  | empty   |
+| `pool`             | table     | Per-version FPM pool settings, keyed by PHP version.         | empty   |
 | `extensions`       | table     | Custom `.so` extensions to load, keyed by PHP version.       | empty   |
 
 `default` is a `MAJOR.MINOR` version string validated by `yerd-core`'s `PhpVersion`; an out-of-range minor or a non-numeric value is rejected. See [PHP Versions](../guide/php-versions).
@@ -159,23 +160,35 @@ only letters, digits, `.`, `_`, `-`; values follow the same injection rules as
 Directives Yerd manages through typed paths are reserved: the eight allowlisted
 settings, `extension` / `zend_extension`, and `openssl.cafile` / `curl.cainfo`.
 
+`[php.pool."<version>"]` (schema v20) holds **FPM pool settings** for that
+version's worker pool. The only key is `max_children`, the ceiling on
+concurrent PHP workers, accepted between `1` and `1024` and defaulting to `16`
+when absent. These are pool-block settings rather than ini directives, so they
+apply to the FPM pool only and never reach the version's CLI `php.ini`. The
+pool runs `ondemand`, so a higher ceiling costs nothing while idle. Because
+`pm.*` names are reserved out of `[php.directives]`, this is the only place a
+pool setting can be set.
+
 ```toml
 [php.version_settings."8.3"]
 memory_limit = "1G"
 
 [php.directives."8.3"]
 "xdebug.mode" = "debug"
+
+[php.pool."8.3"]
+max_children = "32"
 ```
 
-::: tip These two tables load leniently
+::: tip These three tables load leniently
 Unlike `[php.settings]`, a hand-edited invalid or reserved entry in
-`version_settings` / `directives` never fails the load - it is silently
+`version_settings` / `directives` / `pool` never fails the load - it is silently
 dropped while valid siblings survive, so a bad edit can't stop the daemon.
 Setting values through the CLI/GUI still validates strictly. A malformed
 *version key* (e.g. `"eight"`) is still a hard error.
 :::
 
-Manage these with [`yerd set php --only <version>` and `yerd php ini`](cli/php#custom-ini-directives) or the desktop app's **Per-version configuration** card.
+Manage these with [`yerd set php --only <version>`, `yerd php ini`, and `yerd php pool`](cli/php#custom-ini-directives) or the desktop app's **Per-version configuration** card.
 
 `[php.extensions]` maps a **PHP version string** to an array of custom extensions to load into both that version's FPM pool and its CLI. It is written as an array-of-tables per version and omitted entirely when empty. Because a native `.so` is ABI-bound to a PHP minor, an entry only applies to the version it is keyed under.
 
@@ -504,6 +517,7 @@ A file written by a *newer* Yerd than you are running is refused rather than mis
 - **`v15 → v16`** is a bare version bump: v16 only **added** the optional `[php.version_settings]` table (per-version overrides of the global PHP settings), which defaults to empty when absent.
 - **`v16 → v17`** is a bare version bump: v17 only **added** the top-level `mcp_enabled` scalar (defaults to `false` when absent).
 - **`v17 → v18`** is a bare version bump: v18 only **added** the optional `[php.directives]` table (free-form per-version ini directives), which defaults to empty when absent.
+- **`v19 → v20`** is a bare version bump: v20 only **added** the optional `[php.pool]` table (per-version FPM pool settings), which defaults to empty when absent.
 
 The on-disk schema version is deliberately decoupled from the IPC protocol version; the two evolve independently.
 

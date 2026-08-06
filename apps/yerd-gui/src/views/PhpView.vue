@@ -241,6 +241,7 @@ function tabCount(v: PhpVersion): number {
   return (
     overrideCount(data.value?.version_settings?.[v] ?? {}) +
     Object.keys(data.value?.directives?.[v] ?? {}).length +
+    Object.keys(data.value?.pool?.[v] ?? {}).length +
     exts
   );
 }
@@ -768,6 +769,7 @@ onUnmounted(
                     :global-settings="data?.settings ?? {}"
                     :overrides="data?.version_settings?.[v] ?? {}"
                     :directives="data?.directives?.[v] ?? {}"
+                    :pool="data?.pool?.[v] ?? {}"
                     :extensions="extensionsFor(v)"
                     :installed-version="installed.includes(v)"
                     :extensions-loading="extLoading"

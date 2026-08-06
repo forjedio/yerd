@@ -453,6 +453,15 @@ pub struct PhpSection {
     /// dropped leniently at load time. Empty by default, so
     /// `[php.directives.*]` tables are omitted from a default config.
     pub directives: BTreeMap<PhpVersion, BTreeMap<String, String>>,
+    /// Per-version FPM pool settings (currently only `"max_children"`),
+    /// applied to that version's FPM pool but never to its CLI ini, since
+    /// these are pool-block settings rather than ini directives. Validated by
+    /// [`yerd_core::php_pool`]; the `pm.` prefix is reserved out of
+    /// [`Self::directives`] so the two paths cannot collide. Entries are
+    /// validated leniently at load time: an invalid or unknown entry is
+    /// dropped rather than failing the load. Empty by default, so
+    /// `[php.pool.*]` tables are omitted from a default config.
+    pub pool: BTreeMap<PhpVersion, BTreeMap<String, String>>,
 }
 
 /// One registered custom PHP extension (see [`PhpSection::extensions`]).
@@ -479,6 +488,7 @@ impl Default for PhpSection {
             extensions: BTreeMap::new(),
             version_settings: BTreeMap::new(),
             directives: BTreeMap::new(),
+            pool: BTreeMap::new(),
         }
     }
 }

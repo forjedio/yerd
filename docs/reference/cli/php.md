@@ -68,7 +68,7 @@ yerd list php --check         # installed versions, freshly checking for updates
 yerd list php --available     # everything installable, tagging what you have
 ```
 
-Installed versions are printed one per line; the current default is marked `(default)`, and any version with a newer release shows `update available: <installed> -> <latest>`. If nothing is installed, `yerd list php` suggests `yerd install php <default>`.
+Installed versions are printed one per line; the current default is marked `(default)`, and any version with a newer release shows `update available: <installed> -> <latest>`. Each installed version then gets a `PHP <version>:` section listing its per-version overrides, custom ini directives, and its [FPM pool size](#fpm-pool-size) - the pool line always prints, showing `(default)` for a version you have not changed. If nothing is installed, `yerd list php` suggests `yerd install php <default>`.
 
 `yerd list php --available` also prints a trailing **Legacy (out of support - no
 coverage, no dumps, cannot be default)** section listing the installable
@@ -111,7 +111,7 @@ The setting name (and, for `set`, the value) is validated client-side before con
 | `error_reporting` | an `error_reporting` expression |
 
 ::: tip
-The configured settings are echoed back by `yerd list php` under a `settings:` block, so you can confirm what's currently applied. See the [Configuration Reference](../configuration) for how these are stored and rendered into FPM config.
+The configured settings are echoed back by `yerd list php` under a `settings:` block, and each version's overrides, directives, and pool size follow in a `PHP <version>:` section, so you can confirm what's currently applied. See the [Configuration Reference](../configuration) for how these are stored and rendered into FPM config.
 :::
 
 ## Custom extensions
@@ -161,7 +161,7 @@ FPM (web) pool and its CLI.
 | --- | --- | --- |
 | `yerd php ini set <VERSION> <NAME> <VALUE>` | Set a directive for one installed version. | `yerd php ini set 8.3 xdebug.mode debug` |
 | `yerd php ini unset <VERSION> <NAME>` | Remove a directive. | `yerd php ini unset 8.3 xdebug.mode` |
-| `yerd php ini list` | List per-version overrides and directives (same output as `yerd list php`). | `yerd php ini list` |
+| `yerd php ini list` | List per-version overrides, directives, and pool sizes (same output as `yerd list php`). | `yerd php ini list` |
 
 ```sh
 yerd php ext add 8.3 /opt/php/xdebug.so --zend   # 1. load the extension
@@ -183,3 +183,37 @@ In the FPM pool config a directive renders as `php_value[name] = value`
 a plain `name = value` line. Setting or removing a directive restarts only that
 version's pool, and directives survive uninstalling and reinstalling the
 version.
+
+FPM's own pool-block settings (anything starting with `pm.`) are **not** ini
+directives and are refused here with a pointer at
+[`yerd php pool`](#fpm-pool-size).
+
+## FPM pool size
+
+`yerd php pool` sets how many PHP workers one installed version may run at
+once. This is FPM's `pm.max_children`, and it applies to that version's web
+(FPM) pool only - never its CLI.
+
+| Command | Description | Example |
+| --- | --- | --- |
+| `yerd php pool set <VERSION> max_children <N>` | Set the worker ceiling for one installed version. | `yerd php pool set 8.4 max_children 32` |
+| `yerd php pool unset <VERSION> max_children` | Reset the ceiling to the default of 16. | `yerd php pool unset 8.4 max_children` |
+| `yerd php pool list` | List per-version overrides, directives, and pool sizes (same output as `yerd list php`). | `yerd php pool list` |
+
+```sh
+yerd php pool set 8.4 max_children 32
+yerd php pool list
+#   pm.max_children = 32  (overrides default 16)
+yerd php pool unset 8.4 max_children
+```
+
+The default is **16** and the accepted range is **1 to 1024**. Yerd runs each
+pool in FPM's `ondemand` mode, so workers are spawned as requests arrive rather
+than preallocated: raising the ceiling costs nothing while the pool is idle.
+Raise it when requests start queueing behind long-running work - queue workers,
+parallel test runs, or many open browser tabs against the same site.
+
+Setting or resetting the ceiling restarts only that version's pool, and the
+value survives uninstalling and reinstalling the version. In the desktop app
+the same control lives in the **Per-version configuration** card, under **FPM
+pool size**.

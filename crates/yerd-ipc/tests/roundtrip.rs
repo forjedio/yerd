@@ -129,6 +129,7 @@ fn encode_then_decode_response_roundtrip() {
         settings: BTreeMap::new(),
         version_settings: Box::new(BTreeMap::new()),
         directives: Box::new(BTreeMap::new()),
+        pool: Box::new(BTreeMap::new()),
     });
     assert_response_roundtrips(Response::PhpVersions {
         installed: vec![PhpVersion::new(8, 5)],
@@ -146,6 +147,10 @@ fn encode_then_decode_response_roundtrip() {
         directives: Box::new(BTreeMap::from([(
             PhpVersion::new(8, 5),
             BTreeMap::from([("xdebug.mode".to_string(), "debug".to_string())]),
+        )])),
+        pool: Box::new(BTreeMap::from([(
+            PhpVersion::new(8, 5),
+            BTreeMap::from([("max_children".to_string(), "32".to_string())]),
         )])),
     });
     assert_response_roundtrips(Response::Parked { paths: vec![] });

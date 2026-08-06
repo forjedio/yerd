@@ -54,10 +54,21 @@ const RESERVED: &[(&str, &str)] = &[
 /// Covers the typed settings allowlist (use `yerd set php <name>` /
 /// `yerd unset php <name>`, optionally with `--only <version>`), extension
 /// loading, and the CA bundle paths.
+///
+/// The `pm.` prefix is denied wholesale: those are FPM pool-block settings,
+/// not ini directives, so rendering one as `php_value[pm.…]` makes FPM log
+/// `ERROR: Unable to set php_value` on every worker spawn. They belong to
+/// [`crate::php_pool`]. Matching is by prefix there and exact for every
+/// other reserved name.
 #[must_use]
 pub fn reserved(name: &str) -> Option<&'static str> {
     if php_settings::is_supported(name) {
         return Some("this setting is managed with `yerd set php` (add --only <version> for a per-version value)");
+    }
+    if name.starts_with("pm.") {
+        return Some(
+            "FPM pool settings are managed with `yerd php pool` (or the GUI pool-size control)",
+        );
     }
     RESERVED
         .iter()
@@ -293,6 +304,36 @@ mod tests {
         }
         assert!(reserved("xdebug.mode").is_none());
         assert!(reserved("opcache.enable").is_none());
+    }
+
+    #[test]
+    fn pool_prefix_is_reserved_and_points_at_the_pool_command() {
+        for name in [
+            "pm.max_children",
+            "pm.start_servers",
+            "pm.max_requests",
+            "pm.min_spare_servers",
+            "pm.",
+        ] {
+            let hint = reserved(name).unwrap_or_default();
+            assert!(hint.contains("yerd php pool"), "{name}: {hint:?}");
+        }
+    }
+
+    #[test]
+    fn pool_reservation_is_a_prefix_not_a_bare_name_or_substring() {
+        for name in ["pm", "pmx", "pm_max_children", "opcache.pm.thing"] {
+            assert!(reserved(name).is_none(), "{name}");
+        }
+    }
+
+    #[test]
+    fn render_skips_pool_settings() {
+        let directives = BTreeMap::from([
+            ("pm.max_children".to_owned(), "32".to_owned()),
+            ("xdebug.mode".to_owned(), "debug".to_owned()),
+        ]);
+        assert_eq!(render_ini_lines(&directives), "xdebug.mode = debug\n");
     }
 
     #[test]

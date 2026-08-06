@@ -559,6 +559,10 @@ export type Response =
       /** Free-form per-version ini directives keyed by version string. Absent
        *  when none are set / older daemon. */
       directives?: Record<PhpVersion, Record<string, string>>;
+      /** Per-version FPM pool overrides (currently only `max_children`) keyed
+       *  by version string. A version that is absent runs the built-in
+       *  default of 16. Absent when none are set / older daemon. */
+      pool?: Record<PhpVersion, Record<string, string>>;
     }
   | {
       type: "available_php";

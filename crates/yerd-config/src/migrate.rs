@@ -43,6 +43,7 @@ pub(crate) const STEPS: &[MigrationStep] = &[
     migrate_v16_to_v17,
     migrate_v17_to_v18,
     migrate_v18_to_v19,
+    migrate_v19_to_v20,
 ];
 
 /// `v0 → v1`: bump the version. v0 predates any shipped config, so there is no
@@ -212,6 +213,14 @@ fn migrate_v18_to_v19(value: &mut Value) -> Result<(), ConfigError> {
     set_version(value, 19)
 }
 
+/// `v19 → v20`: bump the version. v20 added the optional `[php.pool]` table
+/// of per-version FPM pool settings, which defaults (empty) when absent, so an
+/// in-place version bump is the entire migration. As with `[php.directives]`,
+/// per-version tables cannot be seeded from a pure step.
+fn migrate_v19_to_v20(value: &mut Value) -> Result<(), ConfigError> {
+    set_version(value, 20)
+}
+
 /// Set the top-level `version` key, erroring if the root is not a table.
 fn set_version(value: &mut Value, n: i64) -> Result<(), ConfigError> {
     let table = value.as_table_mut().ok_or(ConfigError::Migration {
@@ -281,7 +290,7 @@ mod tests {
 
     #[test]
     fn current_version_pinned() {
-        assert_eq!(crate::CURRENT_VERSION, 19);
+        assert_eq!(crate::CURRENT_VERSION, 20);
     }
 
     #[test]
@@ -303,6 +312,13 @@ mod tests {
         let mut v: Value = toml::from_str("version = 18\n").unwrap();
         migrate_v18_to_v19(&mut v).unwrap();
         assert_eq!(read_version(&v).unwrap(), 19);
+    }
+
+    #[test]
+    fn v19_to_v20_is_a_bare_version_bump() {
+        let mut v: Value = toml::from_str("version = 19\n").unwrap();
+        migrate_v19_to_v20(&mut v).unwrap();
+        assert_eq!(read_version(&v).unwrap(), 20);
     }
 
     #[test]

@@ -91,8 +91,10 @@ pub use schema::{
 /// directives; it defaults (empty) when absent, so v17→v18 is a bare bump.
 /// v19 added the top-level `lan_enabled` and `lan_setup_port` scalars
 /// ([`Config::lan_enabled`], [`Config::lan_setup_port`]) for LAN exposure (both
-/// default when absent), also a bare bump.
+/// default when absent), also a bare bump. v20 added the optional
+/// `[php.pool]` table ([`PhpSection::pool`]) for per-version FPM pool
+/// settings; it defaults (empty) when absent, so v19→v20 is a bare bump too.
 ///
 /// The per-version detail, including how to hand-edit a file back down for an
 /// older binary, lives in `docs/developer/config-schema-history.md`.
-pub const CURRENT_VERSION: u32 = 19;
+pub const CURRENT_VERSION: u32 = 20;

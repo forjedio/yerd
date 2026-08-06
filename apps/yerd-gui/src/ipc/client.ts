@@ -430,6 +430,21 @@ export async function setPhpDirectives(
   ) as PhpVersionsResponse;
 }
 
+/**
+ * Merge FPM pool settings (currently only `max_children`) for one installed
+ * version. These apply to the version's FPM pool only, never its CLI ini. An
+ * empty-string value resets the setting to its built-in default. Returns the
+ * refreshed version list.
+ */
+export async function setPhpPoolSettings(
+  version: PhpVersion,
+  settings: Record<string, string>,
+): Promise<PhpVersionsResponse> {
+  return ensureOk(
+    await call<Response>("set_php_pool_settings", { version, settings }),
+  ) as PhpVersionsResponse;
+}
+
 // ── php extensions ───────────────────────────────────────────────────────────
 
 /** Registered custom extensions, keyed by version string (e.g. `"8.5"`). */

@@ -25,6 +25,7 @@ fn save_then_load_round_trip() {
         extensions: std::collections::BTreeMap::new(),
         version_settings: std::collections::BTreeMap::new(),
         directives: std::collections::BTreeMap::new(),
+        pool: std::collections::BTreeMap::new(),
     };
     original.parked.paths.insert("/srv/sites".to_string());
     original
