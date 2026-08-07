@@ -335,9 +335,11 @@ fn service_request(action: &ServiceAction) -> Request {
     }
 }
 
-/// Map a `yerd domain <action>` to its wire request, validating the site name
-/// and domain shape client-side. `List` is handled locally (it needs the TLD to
-/// render default domains), so it never reaches here.
+/// Map a `yerd domain <action>` to its wire request, validating the target name
+/// and domain shape client-side. The target may be a site or a whole-host proxy
+/// (the daemon resolves both), so it is checked with [`validate_target_name`].
+/// `List` is handled locally (it needs the TLD to render default domains), so it
+/// never reaches here.
 fn domain_request(action: &crate::cli::DomainAction) -> Result<Request, ClientError> {
     use crate::cli::DomainAction;
     Ok(match action {
@@ -347,7 +349,7 @@ fn domain_request(action: &crate::cli::DomainAction) -> Result<Request, ClientEr
             ));
         }
         DomainAction::Add { site, domain } => {
-            validate_name(site)?;
+            validate_target_name(site)?;
             validate_domain(domain)?;
             Request::AddDomain {
                 name: site.clone(),
@@ -355,7 +357,7 @@ fn domain_request(action: &crate::cli::DomainAction) -> Result<Request, ClientEr
             }
         }
         DomainAction::Remove { site, domain } => {
-            validate_name(site)?;
+            validate_target_name(site)?;
             validate_domain(domain)?;
             Request::RemoveDomain {
                 name: site.clone(),
@@ -363,7 +365,7 @@ fn domain_request(action: &crate::cli::DomainAction) -> Result<Request, ClientEr
             }
         }
         DomainAction::Primary { site, domain } => {
-            validate_name(site)?;
+            validate_target_name(site)?;
             validate_domain(domain)?;
             Request::SetPrimaryDomain {
                 name: site.clone(),
@@ -371,7 +373,7 @@ fn domain_request(action: &crate::cli::DomainAction) -> Result<Request, ClientEr
             }
         }
         DomainAction::Reset { site } => {
-            validate_name(site)?;
+            validate_target_name(site)?;
             Request::ResetDomains { name: site.clone() }
         }
     })
@@ -380,7 +382,9 @@ fn domain_request(action: &crate::cli::DomainAction) -> Result<Request, ClientEr
 /// Map a `yerd proxy <action>` to its wire request. Arity distinguishes a
 /// whole-host proxy from a path rule (see [`crate::cli::ProxyAction`]). The
 /// upstream URL is validated by the daemon (authoritative); the client only
-/// checks the site/proxy name and, for a rule, that the prefix is absolute.
+/// checks the name and, for a rule, that the prefix is absolute. A whole-host
+/// proxy name may be dotted, a path rule's site name may not, so each arm
+/// validates its own name rather than sharing one up-front check.
 fn proxy_request(action: &crate::cli::ProxyAction) -> Result<Request, ClientError> {
     use crate::cli::ProxyAction;
     Ok(match action {
@@ -390,8 +394,8 @@ fn proxy_request(action: &crate::cli::ProxyAction) -> Result<Request, ClientErro
             second,
             third,
         } => {
-            validate_name(first)?;
             if let Some(url) = third {
+                validate_name(first)?;
                 validate_prefix(second)?;
                 Request::AddProxyRule {
                     site: first.clone(),
@@ -399,6 +403,7 @@ fn proxy_request(action: &crate::cli::ProxyAction) -> Result<Request, ClientErro
                     url: url.clone(),
                 }
             } else {
+                validate_target_name(first)?;
                 Request::AddProxy {
                     name: first.clone(),
                     url: second.clone(),
@@ -406,14 +411,15 @@ fn proxy_request(action: &crate::cli::ProxyAction) -> Result<Request, ClientErro
             }
         }
         ProxyAction::Remove { target, prefix } => {
-            validate_name(target)?;
             if let Some(prefix) = prefix {
+                validate_name(target)?;
                 validate_prefix(prefix)?;
                 Request::RemoveProxyRule {
                     site: target.clone(),
                     prefix: prefix.clone(),
                 }
             } else {
+                validate_target_name(target)?;
                 Request::RemoveProxy {
                     name: target.clone(),
                 }
@@ -737,7 +743,9 @@ pub fn render_domains(
 
     if let Some(f) = filter {
         if selected.is_empty() {
-            return Rendered::err(format!("no site named {f:?}"));
+            return Rendered::err(format!(
+                "no site named {f:?} (a proxy's domains are listed by `yerd proxy list`)"
+            ));
         }
     }
 
@@ -852,6 +860,18 @@ pub(crate) fn validate_name(name: &str) -> Result<(), ClientError> {
     Site::linked(name, "/", PhpVersion::new(8, 3))
         .map(|_| ())
         .map_err(|e| ClientError::Usage(format!("invalid site name {name:?}: {e}")))
+}
+
+/// Validate a name that may denote either a site or a whole-host proxy, for the
+/// commands the daemon resolves against both namespaces.
+///
+/// Delegates to `yerd_core::validate_proxy_name`, which accepts every valid site
+/// name plus the dotted names only a proxy can hold; the wrapper just rewords
+/// the failure as a usage error.
+pub(crate) fn validate_target_name(name: &str) -> Result<(), ClientError> {
+    yerd_core::validate_proxy_name(name)
+        .map(|_| ())
+        .map_err(|e| ClientError::Usage(format!("invalid site or proxy name {name:?}: {e}")))
 }
 
 /// The result of rendering a response: text to print and a process exit code.
@@ -1050,7 +1070,10 @@ fn select_routes<'a>(
     }
 }
 
-/// Render `yerd proxy list`: whole-host proxies then per-site path rules.
+/// Render `yerd proxy list`: whole-host proxies then per-site path rules. A
+/// proxy the daemon reports as customized gains an indented `domains:` line,
+/// mirroring `yerd domain list`; an effectively-default proxy carries no domain
+/// fields and renders as a single line.
 fn format_proxies(proxies: &[yerd_ipc::ProxyEntry], rules: &[yerd_ipc::ProxyRuleEntry]) -> String {
     use std::fmt::Write as _;
     if proxies.is_empty() && rules.is_empty() {
@@ -1062,6 +1085,9 @@ fn format_proxies(proxies: &[yerd_ipc::ProxyEntry], rules: &[yerd_ipc::ProxyRule
         for p in proxies {
             let scheme = if p.secure { "https" } else { "http" };
             let _ = writeln!(out, "  {} ({scheme}) -> {}", p.name, p.target);
+            if !p.domains.is_empty() {
+                let _ = writeln!(out, "    domains: {}", format_proxy_domains(p));
+            }
         }
     }
     if !rules.is_empty() {
@@ -1074,6 +1100,23 @@ fn format_proxies(proxies: &[yerd_ipc::ProxyEntry], rules: &[yerd_ipc::ProxyRule
         }
     }
     out.trim_end().to_owned()
+}
+
+/// Comma-separated effective domain list for a proxy, with the primary marked -
+/// the same shape [`render_domains`] uses for a site.
+fn format_proxy_domains(proxy: &yerd_ipc::ProxyEntry) -> String {
+    proxy
+        .domains
+        .iter()
+        .map(|d| {
+            if proxy.primary_domain.as_ref() == Some(d) {
+                format!("{d} (primary)")
+            } else {
+                d.clone()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 /// Render `yerd route list`: one row per rule, `site prefix -> target`.
@@ -3040,6 +3083,95 @@ mod tests {
     }
 
     #[test]
+    fn domain_and_proxy_commands_accept_a_dotted_proxy_name() {
+        use crate::cli::{DomainAction, ProxyAction};
+        assert_eq!(
+            to_request(&Command::Proxy {
+                action: ProxyAction::Add {
+                    first: "api.account".into(),
+                    second: "http://127.0.0.1:9011".into(),
+                    third: None,
+                },
+            })
+            .unwrap(),
+            Request::AddProxy {
+                name: "api.account".into(),
+                url: "http://127.0.0.1:9011".into(),
+            }
+        );
+        assert_eq!(
+            to_request(&Command::Proxy {
+                action: ProxyAction::Remove {
+                    target: "api.account".into(),
+                    prefix: None,
+                },
+            })
+            .unwrap(),
+            Request::RemoveProxy {
+                name: "api.account".into(),
+            }
+        );
+        assert_eq!(
+            to_request(&Command::Domain {
+                action: DomainAction::Add {
+                    site: "account-dev".into(),
+                    domain: "custom-domain.test".into(),
+                },
+            })
+            .unwrap(),
+            Request::AddDomain {
+                name: "account-dev".into(),
+                domain: "custom-domain.test".into(),
+            }
+        );
+        assert_eq!(
+            to_request(&Command::Domain {
+                action: DomainAction::Reset {
+                    site: "api.account".into(),
+                },
+            })
+            .unwrap(),
+            Request::ResetDomains {
+                name: "api.account".into(),
+            }
+        );
+    }
+
+    #[test]
+    fn malformed_names_and_dotted_rule_targets_are_usage_errors() {
+        use crate::cli::ProxyAction;
+        let err = to_request(&Command::Proxy {
+            action: ProxyAction::Add {
+                first: "api..account".into(),
+                second: "http://127.0.0.1:9011".into(),
+                third: None,
+            },
+        })
+        .unwrap_err();
+        assert!(matches!(err, ClientError::Usage(_)), "got: {err:?}");
+        assert_eq!(
+            err.to_string(),
+            "invalid site or proxy name \"api..account\": proxy name \"api..account\" is invalid: \
+             domain must not contain an empty label"
+        );
+        assert!(to_request(&Command::Proxy {
+            action: ProxyAction::Add {
+                first: "api.account".into(),
+                second: "/app".into(),
+                third: Some("http://127.0.0.1:8080".into()),
+            },
+        })
+        .is_err());
+        assert!(to_request(&Command::Proxy {
+            action: ProxyAction::Remove {
+                target: "api.account".into(),
+                prefix: Some("/app".into()),
+            },
+        })
+        .is_err());
+    }
+
+    #[test]
     fn domain_list_is_handled_locally() {
         use crate::cli::DomainAction;
         assert!(matches!(
@@ -3096,7 +3228,10 @@ mod tests {
     fn render_domains_unknown_site_filter_errors() {
         let r = render_domains(&[], "test", Some("ghost"), false);
         assert_eq!(r.code, 1);
-        assert!(r.stderr.contains("ghost"));
+        assert_eq!(
+            r.stderr,
+            "no site named \"ghost\" (a proxy's domains are listed by `yerd proxy list`)"
+        );
     }
 
     #[test]
@@ -3469,6 +3604,39 @@ mod tests {
             },
         })
         .is_err());
+    }
+
+    #[test]
+    fn format_proxies_lists_domains_only_for_a_customized_proxy() {
+        let plain = yerd_ipc::ProxyEntry {
+            name: "reverb".into(),
+            target: "http://127.0.0.1:8080".into(),
+            secure: false,
+            primary_domain: None,
+            domains: vec![],
+        };
+        assert_eq!(
+            format_proxies(std::slice::from_ref(&plain), &[]),
+            "Whole-host proxies:\n  reverb (http) -> http://127.0.0.1:8080"
+        );
+
+        let customized = yerd_ipc::ProxyEntry {
+            name: "account-dev".into(),
+            target: "http://127.0.0.1:48087".into(),
+            secure: true,
+            primary_domain: Some("custom-domain.test".into()),
+            domains: vec![
+                "account-dev.test".into(),
+                "custom-domain.test".into(),
+                "*.account-dev.test".into(),
+            ],
+        };
+        assert_eq!(
+            format_proxies(&[plain, customized], &[]),
+            "Whole-host proxies:\n  reverb (http) -> http://127.0.0.1:8080\n  \
+             account-dev (https) -> http://127.0.0.1:48087\n    domains: account-dev.test, \
+             custom-domain.test (primary), *.account-dev.test"
+        );
     }
 
     #[test]

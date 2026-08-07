@@ -495,6 +495,20 @@ pub struct ProxyEntry {
     pub target: String,
     /// Whether the proxy is served over HTTPS.
     pub secure: bool,
+    /// The proxy's primary (canonical) domain FQDN, populated **only** when it
+    /// differs from the default apex (`{name}.{tld}`). Omitted for an
+    /// effectively-default proxy so the wire shape stays byte-identical to
+    /// older clients, which synthesize `{name}.{tld}` from the TLD they already
+    /// hold.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub primary_domain: Option<String>,
+    /// The proxy's full effective routable domain set as FQDNs, in router order
+    /// (apex-first-then-added, so a non-apex primary is not necessarily first;
+    /// identify the primary via `primary_domain`, not position). Populated
+    /// **only** for an effectively-customized proxy (empty and omitted
+    /// otherwise).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub domains: Vec<String>,
 }
 
 /// One per-site path-prefix reverse-proxy rule (reply element of
@@ -949,6 +963,8 @@ mod variant_name_pinning {
                 name: "reverb".into(),
                 target: "http://127.0.0.1:8080".into(),
                 secure: false,
+                primary_domain: None,
+                domains: vec![],
             }],
             rules: vec![ProxyRuleEntry {
                 site: "app".into(),

@@ -205,7 +205,8 @@ impl RouteRulesSection {
 /// are name-stable so they key by site name (like [`Config::linked`]); **parked**
 /// sites are directory-derived so they key by document-root string (like
 /// [`Config::overrides`]), which survives a directory rename without
-/// misattributing a routing set.
+/// misattributing a routing set. Whole-host proxies are name-stable and
+/// config-resident, so they key by proxy name like linked sites.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct DomainsSection {
     /// Linked-site deltas, keyed by site name. `BTreeMap` for stable order.
@@ -213,14 +214,18 @@ pub struct DomainsSection {
     /// Parked-site deltas, keyed by document-root string (byte-exact, never
     /// canonicalised - see [`SiteOverride`]). `BTreeMap` for stable order.
     pub parked: BTreeMap<String, DomainDelta>,
+    /// Whole-host proxy deltas, keyed by proxy name (name-stable, like
+    /// [`DomainsSection::linked`]). `BTreeMap` for stable order.
+    pub proxy: BTreeMap<String, DomainDelta>,
 }
 
 impl DomainsSection {
-    /// True when there are no linked and no parked deltas, letting the serialiser
-    /// omit the `[domains]` table so a default config stays byte-stable.
+    /// True when there are no linked, parked, and proxy deltas, letting the
+    /// serialiser omit the `[domains]` table so a default config stays
+    /// byte-stable.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.linked.is_empty() && self.parked.is_empty()
+        self.linked.is_empty() && self.parked.is_empty() && self.proxy.is_empty()
     }
 }
 

@@ -202,8 +202,8 @@ pub enum Command {
         /// named `.php` directly.
         state: OnOff,
     },
-    /// Manage a site's routable domains (add/remove domains, subdomains and
-    /// wildcards, and change the primary domain).
+    /// Manage a site's or whole-host proxy's routable domains (add/remove
+    /// domains, subdomains and wildcards, and change the primary domain).
     Domain {
         /// What to do.
         #[command(subcommand)]
@@ -322,7 +322,8 @@ pub enum ProxyAction {
     /// (`yerd proxy add reverb http://localhost:8080`); three attach a path rule
     /// to an existing site (`yerd proxy add myapp /app http://127.0.0.1:8080`).
     Add {
-        /// A proxy name (whole-host) or a site name (path rule).
+        /// A proxy name, which may be dotted (`api.account`), or a site name
+        /// (path rule).
         first: String,
         /// The upstream URL (whole-host), or the path prefix (path rule).
         second: String,
@@ -333,7 +334,8 @@ pub enum ProxyAction {
     /// (`yerd proxy remove reverb`); two remove a site's path rule
     /// (`yerd proxy remove myapp /app`).
     Remove {
-        /// A whole-host proxy name, or a site name (with a path prefix).
+        /// A whole-host proxy name, possibly dotted, or a site name (with a
+        /// path prefix).
         target: String,
         /// The path prefix, when removing a site's path rule.
         prefix: Option<String>,
@@ -384,32 +386,34 @@ pub enum DomainAction {
         /// Site name; omit to list every site's domains.
         site: Option<String>,
     },
-    /// Add a domain to a site: an exact host (`api.myapp.test`) or a single-label
-    /// wildcard (`*.myapp.test`).
+    /// Add a domain to a site or whole-host proxy: an exact host
+    /// (`api.myapp.test`) or a single-label wildcard (`*.myapp.test`).
     Add {
-        /// Site name.
+        /// Site or proxy name.
         site: String,
         /// Full domain FQDN under the configured TLD.
         domain: String,
     },
-    /// Remove a domain from a site. A site must keep at least one exact domain.
+    /// Remove a domain from a site or whole-host proxy. At least one exact
+    /// domain must remain.
     Remove {
-        /// Site name.
+        /// Site or proxy name.
         site: String,
         /// Full domain FQDN to remove.
         domain: String,
     },
-    /// Set a site's primary (canonical) domain. Must be an exact domain; it is
-    /// added to the site if not already present.
+    /// Set a site's or whole-host proxy's primary (canonical) domain. Must be an
+    /// exact domain; it is added if not already present.
     Primary {
-        /// Site name.
+        /// Site or proxy name.
         site: String,
         /// Full domain FQDN to make primary.
         domain: String,
     },
-    /// Reset a site's domains to the default (its `{name}.{tld}` apex only).
+    /// Reset a site's or whole-host proxy's domains to the default (its
+    /// `{name}.{tld}` apex only).
     Reset {
-        /// Site name.
+        /// Site or proxy name.
         site: String,
     },
 }

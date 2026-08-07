@@ -640,6 +640,30 @@ mod tests {
     }
 
     #[test]
+    fn shadowed_domain_renders_proxy_labels_verbatim() {
+        let mut r = healthy();
+        r.shadows = vec![
+            yerd_ipc::DomainShadow {
+                site: "proxy:reverb".into(),
+                shadowed_by: "app".into(),
+            },
+            yerd_ipc::DomainShadow {
+                site: "app".into(),
+                shadowed_by: "proxy:reverb".into(),
+            },
+        ];
+        let ds = diagnose(&r, None);
+        let details: Vec<&str> = ds
+            .iter()
+            .filter(|d| d.code == DiagnosisCode::DomainShadowed)
+            .map(|d| d.detail.as_str())
+            .collect();
+        assert_eq!(details.len(), 2);
+        assert!(details[0].starts_with("proxy:reverb's domain is also claimed by app,"));
+        assert!(details[1].starts_with("app's domain is also claimed by proxy:reverb,"));
+    }
+
+    #[test]
     fn privileged_fallback_warns_but_high_ports_do_not() {
         let mut r = healthy();
         r.http.requested = 80;

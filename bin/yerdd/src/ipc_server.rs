@@ -2691,10 +2691,15 @@ async fn list_proxies(state: &DaemonState) -> Response {
     let proxies = cfg
         .proxies
         .iter()
-        .map(|p| yerd_ipc::ProxyEntry {
-            name: p.name().to_owned(),
-            target: p.target().to_string(),
-            secure: p.secure(),
+        .map(|p| {
+            let (primary_domain, domains) = site_entry_domains(&router, p.name(), cfg.tld.as_str());
+            yerd_ipc::ProxyEntry {
+                name: p.name().to_owned(),
+                target: p.target().to_string(),
+                secure: p.secure(),
+                primary_domain,
+                domains,
+            }
         })
         .collect();
     let mut rules = Vec::new();
@@ -2855,7 +2860,7 @@ fn resolve_web_root_mutation(
 
     Err(Response::Error {
         code: ErrorCode::NotFound,
-        message: format!("no site named {name_lc}"),
+        message: mutate::not_found_site(new, &name_lc).to_string(),
     })
 }
 
@@ -3057,6 +3062,44 @@ mod tests {
             dispatch(Request::Ping, &state).await,
             Response::Pong
         ));
+    }
+
+    #[tokio::test]
+    async fn list_proxies_reports_domains_only_for_a_customised_proxy() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_in(tmp.path());
+        let target = yerd_core::UpstreamTarget::from_url_str("http://127.0.0.1:9011").unwrap();
+        let plain = yerd_core::ProxySite::new("reverb", target.clone()).unwrap();
+        let custom = yerd_core::ProxySite::new("app", target).unwrap();
+        {
+            let mut cfg = state.config.lock().await;
+            cfg.proxies.push(plain.clone());
+            cfg.proxies.push(custom.clone());
+        }
+        {
+            let corp = yerd_core::Domain::parse_subpart("corp").unwrap();
+            let mut router = state.router.write().await;
+            router.insert_proxy(plain).unwrap();
+            router
+                .insert_proxy_with_domains(
+                    custom,
+                    vec![yerd_core::Domain::apex("app"), corp.clone()],
+                    corp,
+                )
+                .unwrap();
+        }
+
+        match dispatch(Request::ListProxies, &state).await {
+            Response::Proxies { proxies, .. } => {
+                let plain = proxies.iter().find(|p| p.name == "reverb").unwrap();
+                assert_eq!(plain.primary_domain, None);
+                assert!(plain.domains.is_empty());
+                let custom = proxies.iter().find(|p| p.name == "app").unwrap();
+                assert_eq!(custom.primary_domain.as_deref(), Some("corp.test"));
+                assert_eq!(custom.domains, ["app.test", "corp.test"]);
+            }
+            other => panic!("expected Proxies, got {other:?}"),
+        }
     }
 
     const SAMPLE_EML: &[u8] = b"From: Example <hello@example.com>\r\n\

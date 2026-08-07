@@ -413,6 +413,7 @@ The table is split by site class, mirroring `[[overrides]]`:
 | ------------------ | ------------------------- | --------------------------------------------------------------- |
 | `[domains.linked]` | table (`name → delta`)    | Deltas for **linked** sites, keyed by site name.                |
 | `[domains.parked]` | table (`docroot → delta`) | Deltas for **parked** sites, keyed by byte-exact document-root. |
+| `[domains.proxy]`  | table (`name → delta`)    | Deltas for **whole-host proxies**, keyed by proxy name.         |
 
 Keying linked by name and parked by document-root matches `[[overrides]]`, so routing survives a directory rename and a parked site keeps its domains without a config record of its own.
 

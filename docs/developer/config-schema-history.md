@@ -28,7 +28,23 @@ Each entry below states what changed, whether the daemon's own migration is a ba
 
 ## Version-by-version
 
-### v21 (current)
+### v22 (current)
+
+**Added:** the optional `[domains.proxy]` table - routable-domain deltas for **whole-host proxies**, keyed by proxy name. It sits alongside the existing `[domains.linked]` (by site name) and `[domains.parked]` (by document-root string) maps and carries the same three keys: `added`, `suppressed`, and `primary`. It defaults to empty when absent, so an uncustomised file omits it entirely.
+
+```toml
+[domains.proxy.account-dev]
+added = ["custom-domain", "*.account-dev"]
+primary = "custom-domain"
+```
+
+A proxy name may itself be dotted (`api.account`), in which case TOML quotes the key: `[domains.proxy."api.account"]`. Domains are stored as **sub-parts** below the TLD, exactly as for sites, so `custom-domain` here means `custom-domain.test`. An all-empty delta is pruned by the writer, and a key naming no current proxy is inert rather than an error - the same tolerance `[domains.linked]` already has.
+
+**Migration from v21:** bare version bump - the table defaults to empty when absent, so a v21 file needs no other change.
+
+**To downgrade to v21:** change `version = 22` to `version = 21` and delete any `[domains.proxy.*]` tables (a v21 daemon rejects the unknown table under `deny_unknown_fields`, it doesn't just ignore it). Each proxy reverts to answering on its apex only, `<name>.test`.
+
+### v21
 
 **Added:** the optional `[route_rules]` table - per-site path-prefix **routing** rules, keyed by site class exactly like `[proxy_rules]` and `[domains]`: `[route_rules.linked.<name>]` by site name, `[route_rules.parked."<docroot>"]` by document-root string. Each rule pairs a URI path `prefix` with a `target` path relative to the site's served root. It defaults to empty when absent, so an uncustomised file omits it entirely.
 

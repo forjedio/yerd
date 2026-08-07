@@ -14,6 +14,11 @@ site.
 | `yerd domain primary <SITE> <FQDN>` | Set the canonical domain (added if absent; must be exact). | `yerd domain primary blog corp.test` |
 | `yerd domain reset <SITE>` | Reset a site to its default apex-only domain. | `yerd domain reset blog` |
 
+`<SITE>` in `add`, `remove`, `primary`, and `reset` may also name a whole-host
+[proxy](./proxies): a proxy carries extra domains, subdomains, and wildcards
+exactly as a site does. `yerd domain list` stays site-only - a proxy's domains
+are shown by [`yerd proxy list`](./proxies).
+
 ```sh
 # Give one app several apex domains (multi-tenant: all served from one project)
 yerd domain add app acme.test
@@ -30,6 +35,11 @@ yerd domain add api api.blog.test
 yerd domain add blog corp.test
 yerd domain primary blog corp.test
 yerd domain remove blog blog.test
+
+# A whole-host proxy takes domains too - pass its name where a site name goes
+yerd proxy add account-dev http://127.0.0.1:48087
+yerd domain add account-dev custom-domain.test
+yerd domain add account-dev '*.account-dev.test'
 ```
 
 `domain list` marks each site's primary domain, and appends
@@ -47,8 +57,8 @@ Exact always wins.
   `x.api.blog.test`. To route a deeper level, register that wildcard too:
   `yerd domain add deep '*.api.blog.test'`.
 - `blog.test` and `*.blog.test` can belong to **different** sites.
-- A domain can only be claimed by one site; adding a domain another site already
-  holds fails with an "already routes to" error.
+- A domain can only be claimed by one site or proxy; adding a domain another one
+  already holds fails with an "already routes to" error.
 
 ::: warning Subdomains are now explicit
 Earlier versions routed **every** subdomain of a site (`anything.blog.test`) to

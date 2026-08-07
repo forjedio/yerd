@@ -21,10 +21,10 @@ use yerd_ipc::{
     AddableServiceType, CaStatus, Channel, CloudflaredSource, CloudflaredStatus, DatabaseSummary,
     Diagnosis, DiagnosisCode, DumpCategory, DumpCounts, DumpEvent, DumpExtStatus, ErrorCode,
     FixReport, FixResult, MailAttachment, MailDetail, MailHeader, MailStatus, MailSummary,
-    NamedTunnelMeta, PhpPoolStatus, PoolRunState, PortRedirectTargets, PortStatus, Request,
-    Response, ServiceAvailability, ServiceRunState, ServiceStatus, Severity, SiteCounts,
-    SiteHostname, StagedArtifact, StatusReport, ToolStatus, TunnelInfo, TunnelKind, TunnelRunState,
-    UpdateSource,
+    NamedTunnelMeta, PhpPoolStatus, PoolRunState, PortRedirectTargets, PortStatus, ProxyEntry,
+    ProxyRuleEntry, Request, Response, ServiceAvailability, ServiceRunState, ServiceStatus,
+    Severity, SiteCounts, SiteHostname, StagedArtifact, StatusReport, ToolStatus, TunnelInfo,
+    TunnelKind, TunnelRunState, UpdateSource,
 };
 
 // ---------- Request ----------
@@ -3167,5 +3167,49 @@ fn response_groups_empty_byte_shape() {
     };
     let s = serde_json::to_string(&r).unwrap();
     assert_eq!(s, r#"{"type":"groups","order":[],"members":{}}"#);
+    assert_eq!(serde_json::from_str::<Response>(&s).unwrap(), r);
+}
+
+/// An uncustomised proxy carries no domain fields, so the wire bytes stay
+/// identical to what daemons emitted before those fields existed.
+#[test]
+fn response_proxies_byte_shape() {
+    let r = Response::Proxies {
+        proxies: vec![ProxyEntry {
+            name: "reverb".into(),
+            target: "http://127.0.0.1:8080".into(),
+            secure: false,
+            primary_domain: None,
+            domains: vec![],
+        }],
+        rules: vec![ProxyRuleEntry {
+            site: "app".into(),
+            prefix: "/app".into(),
+            target: "http://127.0.0.1:9000".into(),
+        }],
+    };
+    let s = serde_json::to_string(&r).unwrap();
+    let expected = r#"{"type":"proxies","proxies":[{"name":"reverb","target":"http://127.0.0.1:8080","secure":false}],"rules":[{"site":"app","prefix":"/app","target":"http://127.0.0.1:9000"}]}"#;
+    assert_eq!(s, expected);
+    assert_eq!(serde_json::from_str::<Response>(&s).unwrap(), r);
+}
+
+/// A customized proxy appends its primary and full FQDN set after the
+/// pre-existing fields, leaving their order untouched.
+#[test]
+fn response_proxies_customized_domains_byte_shape() {
+    let r = Response::Proxies {
+        proxies: vec![ProxyEntry {
+            name: "reverb".into(),
+            target: "http://127.0.0.1:8080".into(),
+            secure: false,
+            primary_domain: Some("corp.test".into()),
+            domains: vec!["corp.test".into(), "*.reverb.test".into()],
+        }],
+        rules: vec![],
+    };
+    let s = serde_json::to_string(&r).unwrap();
+    let expected = r#"{"type":"proxies","proxies":[{"name":"reverb","target":"http://127.0.0.1:8080","secure":false,"primary_domain":"corp.test","domains":["corp.test","*.reverb.test"]}],"rules":[]}"#;
+    assert_eq!(s, expected);
     assert_eq!(serde_json::from_str::<Response>(&s).unwrap(), r);
 }

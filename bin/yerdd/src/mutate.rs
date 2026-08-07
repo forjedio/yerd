@@ -58,6 +58,22 @@ fn override_key(site: &Site) -> String {
     site.document_root().to_string_lossy().into_owned()
 }
 
+/// The `NotFound` error for a site-only command, naming a whole-host proxy of
+/// the same name when there is one so the user is not left wondering why the
+/// name they just used with `yerd proxy add` is unknown here.
+///
+/// `name_lc` must already be lowercased, as every handler lowercases the request
+/// name before looking anything up.
+pub(crate) fn not_found_site(cfg: &Config, name_lc: &str) -> MutateError {
+    if cfg.proxies.iter().any(|p| p.name() == name_lc) {
+        MutateError::NotFound(format!(
+            "no site named {name_lc} ({name_lc} is a proxy - this command applies only to sites)"
+        ))
+    } else {
+        MutateError::NotFound(format!("no site named {name_lc}"))
+    }
+}
+
 /// Apply a mutation [`Request`] to `cfg` in place.
 ///
 /// `router` is the **pre-mutation** live router - read here so a `SetPhp` on a
@@ -221,7 +237,7 @@ fn apply_unlink(cfg: &mut Config, router: &SiteRouter, name: &str) -> Result<App
                 "{name_lc} is a parked site, not linked — unpark its directory instead"
             )))
         } else {
-            Err(MutateError::NotFound(format!("no site named {name_lc}")))
+            Err(not_found_site(cfg, &name_lc))
         };
     };
     let docroot_key = override_key(site);
@@ -277,7 +293,7 @@ fn apply_set_php(
             summary: format!("{name_lc} now uses PHP {version}"),
         })
     } else {
-        Err(MutateError::NotFound(format!("no site named {name_lc}")))
+        Err(not_found_site(cfg, &name_lc))
     }
 }
 
@@ -337,8 +353,9 @@ fn normalize_prefix(prefix: &str) -> String {
 }
 
 /// Register a whole-host proxy. Rejects a name that collides with a linked site,
-/// a parked site (via the pre-mutation `router`), or an existing proxy, and a
-/// looping target.
+/// a parked site (via the pre-mutation `router`), or an existing proxy, a name
+/// whose apex is already a routed domain (a dotted proxy name would otherwise
+/// silently shadow it), and a looping target.
 fn apply_add_proxy(
     cfg: &mut Config,
     router: &SiteRouter,
@@ -348,12 +365,18 @@ fn apply_add_proxy(
     let target = UpstreamTarget::from_url_str(url)
         .map_err(|e| MutateError::Invalid(format!("invalid proxy target: {e}")))?;
     reject_loop_target(cfg, &target)?;
-    let proxy = ProxySite::new(name, target)
-        .map_err(|e| MutateError::Invalid(format!("invalid proxy name: {e}")))?;
+    let proxy = ProxySite::new(name, target).map_err(|e| MutateError::Invalid(e.to_string()))?;
     let name_lc = proxy.name().to_owned();
     if router.get(&name_lc).is_some() || cfg.proxies.iter().any(|p| p.name() == name_lc) {
         return Err(MutateError::AlreadyExists(format!(
             "a site or proxy named {name_lc} already exists"
+        )));
+    }
+    let apex = Domain::apex(&name_lc);
+    if let Some(owner) = router.domain_owner(&apex) {
+        return Err(MutateError::AlreadyExists(format!(
+            "{} already routes to {owner}",
+            apex.to_fqdn(cfg.tld.as_str())
         )));
     }
     cfg.proxies.push(proxy);
@@ -362,7 +385,8 @@ fn apply_add_proxy(
     })
 }
 
-/// Remove a whole-host proxy by name.
+/// Remove a whole-host proxy by name, pruning its domain delta so a re-added
+/// proxy of the same name starts from the defaults.
 fn apply_remove_proxy(cfg: &mut Config, name: &str) -> Result<Applied, MutateError> {
     let name_lc = name.to_ascii_lowercase();
     let before = cfg.proxies.len();
@@ -370,6 +394,7 @@ fn apply_remove_proxy(cfg: &mut Config, name: &str) -> Result<Applied, MutateErr
     if cfg.proxies.len() == before {
         return Err(MutateError::NotFound(format!("no proxy named {name_lc}")));
     }
+    cfg.domains.proxy.remove(&name_lc);
     Ok(Applied {
         summary: format!("removed proxy {name_lc}"),
     })
@@ -401,8 +426,8 @@ fn apply_add_proxy_rule(
     reject_loop_target(cfg, &target)?;
     let rule = ProxyRule::new(prefix, target)
         .map_err(|e| MutateError::Invalid(format!("invalid rule prefix: {e}")))?;
-    let (linked, key) = site_rule_key(router, &name_lc)
-        .ok_or_else(|| MutateError::NotFound(format!("no site named {name_lc}")))?;
+    let (linked, key) =
+        site_rule_key(router, &name_lc).ok_or_else(|| not_found_site(cfg, &name_lc))?;
     let map = if linked {
         &mut cfg.proxy_rules.linked
     } else {
@@ -430,8 +455,8 @@ fn apply_remove_proxy_rule(
 ) -> Result<Applied, MutateError> {
     let name_lc = site.to_ascii_lowercase();
     let wanted = normalize_prefix(prefix);
-    let (linked, key) = site_rule_key(router, &name_lc)
-        .ok_or_else(|| MutateError::NotFound(format!("no site named {name_lc}")))?;
+    let (linked, key) =
+        site_rule_key(router, &name_lc).ok_or_else(|| not_found_site(cfg, &name_lc))?;
     let map = if linked {
         &mut cfg.proxy_rules.linked
     } else {
@@ -472,8 +497,8 @@ fn apply_add_route_rule(
     let name_lc = site.to_ascii_lowercase();
     let rule = RouteRule::new(prefix, target)
         .map_err(|e| MutateError::Invalid(format!("invalid routing rule: {e}")))?;
-    let (linked, key) = site_rule_key(router, &name_lc)
-        .ok_or_else(|| MutateError::NotFound(format!("no site named {name_lc}")))?;
+    let (linked, key) =
+        site_rule_key(router, &name_lc).ok_or_else(|| not_found_site(cfg, &name_lc))?;
     let map = if linked {
         &mut cfg.route_rules.linked
     } else {
@@ -501,8 +526,8 @@ fn apply_remove_route_rule(
 ) -> Result<Applied, MutateError> {
     let name_lc = site.to_ascii_lowercase();
     let wanted = normalize_prefix(prefix);
-    let (linked, key) = site_rule_key(router, &name_lc)
-        .ok_or_else(|| MutateError::NotFound(format!("no site named {name_lc}")))?;
+    let (linked, key) =
+        site_rule_key(router, &name_lc).ok_or_else(|| not_found_site(cfg, &name_lc))?;
     let map = if linked {
         &mut cfg.route_rules.linked
     } else {
@@ -551,7 +576,7 @@ fn apply_set_wordpress_auto_login(
             summary: format!("{name_lc} wp_auto_login={enabled}"),
         })
     } else {
-        Err(MutateError::NotFound(format!("no site named {name_lc}")))
+        Err(not_found_site(cfg, &name_lc))
     }
 }
 
@@ -577,19 +602,22 @@ fn apply_set_front_controller(
             summary: format!("{name_lc} front_controller={enabled}"),
         })
     } else {
-        Err(MutateError::NotFound(format!("no site named {name_lc}")))
+        Err(not_found_site(cfg, &name_lc))
     }
 }
 
-/// Which `[domains]` map (and key) a site's delta lives in: linked sites key by
-/// name, parked sites by document-root (mirroring `overrides`).
+/// Which `[domains]` map (and key) a claimant's delta lives in: linked sites key
+/// by name, parked sites by document-root (mirroring `overrides`), whole-host
+/// proxies by proxy name (which may itself be dotted).
 enum DomainTarget {
     Linked(String),
     Parked(String),
+    Proxy(String),
 }
 
-/// Locate a site (linked first, then parked via the router) and return where its
-/// domain delta is stored. `NotFound` when no such site exists.
+/// Locate a domain claimant (linked site first, then parked site via the router,
+/// then a whole-host proxy) and return where its domain delta is stored.
+/// `NotFound` when nothing of that name exists.
 fn resolve_domain_target(
     cfg: &Config,
     router: &SiteRouter,
@@ -599,6 +627,8 @@ fn resolve_domain_target(
         Ok(DomainTarget::Linked(name_lc.to_owned()))
     } else if let Some(parked) = router.get(name_lc) {
         Ok(DomainTarget::Parked(override_key(parked)))
+    } else if cfg.proxies.iter().any(|p| p.name() == name_lc) {
+        Ok(DomainTarget::Proxy(name_lc.to_owned()))
     } else {
         Err(MutateError::NotFound(format!("no site named {name_lc}")))
     }
@@ -608,6 +638,7 @@ fn delta_mut<'a>(cfg: &'a mut Config, target: &DomainTarget) -> &'a mut DomainDe
     match target {
         DomainTarget::Linked(name) => cfg.domains.linked.entry(name.clone()).or_default(),
         DomainTarget::Parked(key) => cfg.domains.parked.entry(key.clone()).or_default(),
+        DomainTarget::Proxy(name) => cfg.domains.proxy.entry(name.clone()).or_default(),
     }
 }
 
@@ -633,6 +664,16 @@ fn prune_delta(cfg: &mut Config, target: &DomainTarget) {
                 .is_some_and(DomainDelta::is_empty)
             {
                 cfg.domains.parked.remove(key);
+            }
+        }
+        DomainTarget::Proxy(name) => {
+            if cfg
+                .domains
+                .proxy
+                .get(name)
+                .is_some_and(DomainDelta::is_empty)
+            {
+                cfg.domains.proxy.remove(name);
             }
         }
     }
@@ -793,6 +834,9 @@ fn apply_reset_domains(
         }
         DomainTarget::Parked(k) => {
             cfg.domains.parked.remove(&k);
+        }
+        DomainTarget::Proxy(n) => {
+            cfg.domains.proxy.remove(&n);
         }
     }
     Ok(Applied {
@@ -2482,6 +2526,209 @@ mod tests {
         match add_domain(&mut cfg, &r, "ghost", "corp.test") {
             Err(MutateError::NotFound(_)) => {}
             other => panic!("expected NotFound, got {other:?}"),
+        }
+    }
+
+    // ------------------ proxy domains ------------------
+
+    /// A config holding one whole-host proxy, registered through the real
+    /// `AddProxy` path so the stored name is the validated, lowercased one.
+    fn cfg_with_proxy(name: &str) -> Config {
+        let mut cfg = Config::default();
+        apply(
+            &mut cfg,
+            &empty_router(),
+            &Request::AddProxy {
+                name: name.into(),
+                url: "http://127.0.0.1:48087".into(),
+            },
+            None,
+            v(8, 3),
+        )
+        .unwrap();
+        cfg
+    }
+
+    #[test]
+    fn add_domain_to_proxy_records_a_proxy_delta() {
+        let mut cfg = cfg_with_proxy("account-dev");
+        let r = empty_router();
+        add_domain(&mut cfg, &r, "account-dev", "custom-domain.test").unwrap();
+        let delta = cfg.domains.proxy.get("account-dev").unwrap();
+        assert_eq!(
+            delta.added,
+            vec![Domain::parse_subpart("custom-domain").unwrap()]
+        );
+        assert!(cfg.domains.linked.is_empty());
+        assert!(cfg.domains.parked.is_empty());
+    }
+
+    #[test]
+    fn remove_primary_and_reset_domains_work_on_a_proxy() {
+        let mut cfg = cfg_with_proxy("reverb");
+        let r = empty_router();
+        apply(
+            &mut cfg,
+            &r,
+            &Request::SetPrimaryDomain {
+                name: "reverb".into(),
+                domain: "corp.test".into(),
+            },
+            None,
+            v(8, 3),
+        )
+        .unwrap();
+        let delta = cfg.domains.proxy.get("reverb").unwrap();
+        assert_eq!(delta.added, vec![Domain::parse_subpart("corp").unwrap()]);
+        assert_eq!(delta.primary, Some(Domain::parse_subpart("corp").unwrap()));
+
+        apply(
+            &mut cfg,
+            &r,
+            &Request::RemoveDomain {
+                name: "reverb".into(),
+                domain: "corp.test".into(),
+            },
+            None,
+            v(8, 3),
+        )
+        .unwrap();
+        assert!(cfg.domains.proxy.is_empty());
+
+        add_domain(&mut cfg, &r, "reverb", "corp.test").unwrap();
+        apply(
+            &mut cfg,
+            &r,
+            &Request::ResetDomains {
+                name: "reverb".into(),
+            },
+            None,
+            v(8, 3),
+        )
+        .unwrap();
+        assert!(cfg.domains.is_empty());
+    }
+
+    #[test]
+    fn remove_last_exact_domain_of_a_proxy_is_refused() {
+        let mut cfg = cfg_with_proxy("reverb");
+        let r = empty_router();
+        match apply(
+            &mut cfg,
+            &r,
+            &Request::RemoveDomain {
+                name: "reverb".into(),
+                domain: "reverb.test".into(),
+            },
+            None,
+            v(8, 3),
+        ) {
+            Err(MutateError::Invalid(msg)) => {
+                assert_eq!(msg, "reverb must keep at least one exact domain");
+            }
+            other => panic!("expected Invalid keeping an exact, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn add_domain_to_proxy_rejects_a_domain_owned_by_a_site() {
+        let mut cfg = cfg_with_proxy("reverb");
+        let r = router_with_domains(&[("foo", "/srv/foo", &["foo"])]);
+        match add_domain(&mut cfg, &r, "reverb", "foo.test") {
+            Err(MutateError::AlreadyExists(msg)) => {
+                assert_eq!(msg, "foo.test already routes to foo");
+            }
+            other => panic!("expected AlreadyExists, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn remove_proxy_prunes_its_domain_delta() {
+        let mut cfg = cfg_with_proxy("reverb");
+        let r = empty_router();
+        add_domain(&mut cfg, &r, "reverb", "corp.test").unwrap();
+        assert!(cfg.domains.proxy.contains_key("reverb"));
+        apply(
+            &mut cfg,
+            &r,
+            &Request::RemoveProxy {
+                name: "Reverb".into(),
+            },
+            None,
+            v(8, 3),
+        )
+        .unwrap();
+        assert!(cfg.proxies.is_empty());
+        assert!(cfg.domains.is_empty());
+    }
+
+    #[test]
+    fn set_php_on_a_proxy_name_says_it_is_a_proxy() {
+        let mut cfg = cfg_with_proxy("reverb");
+        let r = empty_router();
+        match apply(
+            &mut cfg,
+            &r,
+            &Request::SetPhp {
+                name: "Reverb".into(),
+                version: v(8, 4),
+            },
+            None,
+            v(8, 3),
+        ) {
+            Err(MutateError::NotFound(msg)) => assert_eq!(
+                msg,
+                "no site named reverb (reverb is a proxy - this command applies only to sites)"
+            ),
+            other => panic!("expected NotFound, got {other:?}"),
+        }
+        assert!(matches!(
+            not_found_site(&Config::default(), "ghost"),
+            MutateError::NotFound(ref m) if m == "no site named ghost"
+        ));
+    }
+
+    #[test]
+    fn add_proxy_rejects_an_apex_already_routed_to_a_site() {
+        let mut cfg = Config::default();
+        let r = router_with_domains(&[("foo", "/srv/foo", &["foo", "api.foo"])]);
+        match apply(
+            &mut cfg,
+            &r,
+            &Request::AddProxy {
+                name: "api.foo".into(),
+                url: "http://127.0.0.1:9011".into(),
+            },
+            None,
+            v(8, 3),
+        ) {
+            Err(MutateError::AlreadyExists(msg)) => {
+                assert_eq!(msg, "api.foo.test already routes to foo");
+            }
+            other => panic!("expected AlreadyExists, got {other:?}"),
+        }
+        assert!(cfg.proxies.is_empty());
+    }
+
+    #[test]
+    fn add_proxy_invalid_name_renders_the_core_message_once() {
+        let mut cfg = Config::default();
+        let r = empty_router();
+        match apply(
+            &mut cfg,
+            &r,
+            &Request::AddProxy {
+                name: "api..foo".into(),
+                url: "http://127.0.0.1:9011".into(),
+            },
+            None,
+            v(8, 3),
+        ) {
+            Err(MutateError::Invalid(msg)) => assert_eq!(
+                msg,
+                "proxy name \"api..foo\" is invalid: domain must not contain an empty label"
+            ),
+            other => panic!("expected Invalid, got {other:?}"),
         }
     }
 

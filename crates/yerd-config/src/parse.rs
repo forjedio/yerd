@@ -193,7 +193,7 @@ struct RouteRuleWire {
     target: String,
 }
 
-/// The `[domains]` table. Both maps default to empty, so an absent table parses
+/// The `[domains]` table. Every map defaults to empty, so an absent table parses
 /// to [`crate::schema::DomainsSection::default`].
 #[derive(Default, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -202,9 +202,12 @@ struct DomainsSectionWire {
     linked: BTreeMap<String, DomainDeltaWire>,
     #[serde(default)]
     parked: BTreeMap<String, DomainDeltaWire>,
+    #[serde(default)]
+    proxy: BTreeMap<String, DomainDeltaWire>,
 }
 
-/// One `[domains.linked.<name>]` / `[domains.parked."<docroot>"]` delta. Domain
+/// One `[domains.linked.<name>]` / `[domains.parked."<docroot>"]` /
+/// `[domains.proxy.<name>]` delta. Domain
 /// sub-parts are raw `String`s here (validated into `Domain` in `TryFrom`).
 #[derive(Default, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -589,6 +592,7 @@ impl TryFrom<Wire> for Config {
         let domains = crate::schema::DomainsSection {
             linked: convert_domain_deltas(w.domains.linked)?,
             parked: convert_domain_deltas(w.domains.parked)?,
+            proxy: convert_domain_deltas(w.domains.proxy)?,
         };
         let proxies = convert_proxies(w.proxies)?;
         let proxy_rules = crate::schema::ProxyRulesSection {
@@ -971,8 +975,18 @@ fn validate_php_extensions(c: &Config) -> Result<(), ConfigError> {
 /// cross-site uniqueness) are **not** checked here: this crate is pure and cannot
 /// see parked sites on disk to derive their names/apex, so those are the daemon's
 /// job (mirroring how docroot-keyed `[[overrides]]` are not name-validated here).
+///
+/// Keys naming no current site or proxy are tolerated rather than rejected, as
+/// `[domains.linked]` already tolerates them: a stale delta is inert, and the
+/// daemon prunes it when the site or proxy goes away.
 fn validate_domains(c: &Config) -> Result<(), ConfigError> {
-    for delta in c.domains.linked.values().chain(c.domains.parked.values()) {
+    for delta in c
+        .domains
+        .linked
+        .values()
+        .chain(c.domains.parked.values())
+        .chain(c.domains.proxy.values())
+    {
         let mut seen: BTreeSet<&str> = BTreeSet::new();
         for d in &delta.added {
             if !seen.insert(d.as_str()) {
@@ -1303,7 +1317,7 @@ mod tests {
         match Config::from_toml("version = 99\n") {
             Err(ConfigError::UnsupportedVersion {
                 found: 99,
-                current: 21,
+                current: 22,
             }) => {}
             other => panic!("expected UnsupportedVersion, got {other:?}"),
         }
@@ -1480,6 +1494,61 @@ mod tests {
         assert_eq!(delta.primary.as_ref().unwrap().as_str(), "corp");
         let back = Config::from_toml(&c.to_toml().unwrap()).unwrap();
         assert_eq!(back, c);
+    }
+
+    #[test]
+    fn domains_proxy_deltas_parse_and_round_trip_with_a_dotted_key() {
+        let s = "version = 22\n[domains.proxy.\"api.account\"]\n\
+                 added = [\"corp\", \"*.api.account\"]\nprimary = \"corp\"\n";
+        let c = Config::from_toml(s).unwrap();
+        let delta = c.domains.proxy.get("api.account").unwrap();
+        assert_eq!(delta.added.len(), 2);
+        assert_eq!(delta.primary.as_ref().unwrap().as_str(), "corp");
+        let emitted = c.to_toml().unwrap();
+        assert!(
+            emitted.contains("[domains.proxy.\"api.account\"]"),
+            "dotted proxy key must be quoted: {emitted}"
+        );
+        let back = Config::from_toml(&emitted).unwrap();
+        assert_eq!(back, c);
+    }
+
+    #[test]
+    fn domains_proxy_rejects_structural_violations() {
+        let dup = "version = 22\n[domains.proxy.reverb]\nadded = [\"corp\", \"corp\"]\n";
+        assert!(matches!(
+            Config::from_toml(dup),
+            Err(ConfigError::Validate {
+                reason: ValidateErrorReason::DomainAddedDuplicate,
+            })
+        ));
+        let wild = "version = 22\n[domains.proxy.reverb]\nadded = [\"*.reverb\"]\n\
+                    primary = \"*.reverb\"\n";
+        assert!(matches!(
+            Config::from_toml(wild),
+            Err(ConfigError::Validate {
+                reason: ValidateErrorReason::DomainPrimaryWildcard,
+            })
+        ));
+    }
+
+    #[test]
+    #[allow(clippy::field_reassign_with_default)]
+    fn v21_config_migrates_to_v22_changing_only_the_version_line() {
+        let mut c = Config::default();
+        c.domains.linked.insert(
+            "blog".to_owned(),
+            crate::DomainDelta {
+                added: vec![yerd_core::Domain::parse_subpart("corp").unwrap()],
+                suppressed: vec![],
+                primary: None,
+            },
+        );
+        let v22 = c.to_toml().unwrap();
+        let v21 = v22.replacen("version = 22\n", "version = 21\n", 1);
+        let migrated = Config::from_toml(&v21).unwrap();
+        assert_eq!(migrated, c);
+        assert_eq!(migrated.to_toml().unwrap(), v22);
     }
 
     #[test]

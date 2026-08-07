@@ -134,6 +134,10 @@ struct DomainsSectionSer<'a> {
     linked: BTreeMap<&'a str, DomainDeltaSer<'a>>,
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     parked: BTreeMap<&'a str, DomainDeltaSer<'a>>,
+    // v22: emitted after `linked`/`parked` so a config with only site deltas
+    // keeps its exact table bytes.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    proxy: BTreeMap<&'a str, DomainDeltaSer<'a>>,
 }
 
 #[derive(Serialize)]
@@ -405,6 +409,7 @@ pub(crate) fn to_toml(c: &Config) -> Result<String, ConfigError> {
             .linked
             .values()
             .chain(c.domains.parked.values())
+            .chain(c.domains.proxy.values())
             .all(crate::schema::DomainDelta::is_empty)
         {
             None
@@ -412,6 +417,7 @@ pub(crate) fn to_toml(c: &Config) -> Result<String, ConfigError> {
             Some(DomainsSectionSer {
                 linked: domain_delta_map(&c.domains.linked),
                 parked: domain_delta_map(&c.domains.parked),
+                proxy: domain_delta_map(&c.domains.proxy),
             })
         },
         proxies: c
@@ -524,8 +530,8 @@ mod tests {
     fn default_to_toml_starts_with_version_line() {
         let s = to_toml(&Config::default()).unwrap();
         assert!(
-            s.starts_with("version = 21\n"),
-            "expected `version = 21` first line; got: {s}"
+            s.starts_with("version = 22\n"),
+            "expected `version = 22` first line; got: {s}"
         );
     }
 
@@ -667,6 +673,66 @@ mod tests {
             .linked
             .insert("blog".to_owned(), crate::DomainDelta::default());
         assert_eq!(to_toml(&c).unwrap(), baseline);
+    }
+
+    #[test]
+    #[allow(clippy::field_reassign_with_default)]
+    fn populated_proxy_domain_delta_round_trips_with_a_quoted_dotted_key() {
+        use yerd_core::Domain;
+        let mut c = Config::default();
+        c.domains.proxy.insert(
+            "api.account".to_owned(),
+            crate::DomainDelta {
+                added: vec![
+                    Domain::parse_subpart("corp").unwrap(),
+                    Domain::parse_subpart("*.api.account").unwrap(),
+                ],
+                suppressed: vec![],
+                primary: Some(Domain::parse_subpart("corp").unwrap()),
+            },
+        );
+        let s = to_toml(&c).unwrap();
+        assert!(
+            s.contains("[domains.proxy.\"api.account\"]"),
+            "must emit the proxy delta keyed by a quoted dotted name: {s}"
+        );
+        let back = Config::from_toml(&s).unwrap();
+        assert_eq!(back, c);
+    }
+
+    #[test]
+    #[allow(clippy::field_reassign_with_default)]
+    fn all_empty_proxy_domain_delta_is_pruned() {
+        let baseline = to_toml(&Config::default()).unwrap();
+        let mut c = Config::default();
+        c.domains
+            .proxy
+            .insert("reverb".to_owned(), crate::DomainDelta::default());
+        assert_eq!(to_toml(&c).unwrap(), baseline);
+    }
+
+    #[test]
+    #[allow(clippy::field_reassign_with_default)]
+    fn linked_deltas_without_proxy_deltas_emit_no_proxy_sub_table() {
+        use yerd_core::Domain;
+        let mut c = Config::default();
+        c.domains.linked.insert(
+            "blog".to_owned(),
+            crate::DomainDelta {
+                added: vec![Domain::parse_subpart("corp").unwrap()],
+                suppressed: vec![],
+                primary: None,
+            },
+        );
+        let s = to_toml(&c).unwrap();
+        assert!(
+            s.contains("[domains.linked.blog]"),
+            "must emit the linked delta: {s}"
+        );
+        assert!(
+            !s.contains("[domains.proxy"),
+            "a config with no proxy deltas must emit no proxy sub-table: {s}"
+        );
     }
 
     #[test]

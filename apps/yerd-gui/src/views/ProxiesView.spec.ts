@@ -67,6 +67,10 @@ function stubIpc(opts: {
       case "add_proxy_rule":
       case "remove_proxy_rule":
       case "set_secure":
+      case "add_domain":
+      case "remove_domain":
+      case "set_primary_domain":
+      case "reset_domains":
         return Promise.resolve({ type: "ok" });
       default:
         return Promise.reject(new Error(`unexpected invoke ${cmd}`));
@@ -272,5 +276,101 @@ describe("ProxiesView", () => {
     await flushPromises();
 
     expect(lastCall("remove_proxy")).toEqual({ name: "reverb" });
+  });
+});
+
+describe("ProxiesView — proxy domains", () => {
+  const dotted = (): ProxyEntry => ({
+    name: "api.account",
+    target: "http://127.0.0.1:9011",
+    secure: false,
+    primary_domain: "custom-domain.test",
+    domains: ["api.account.test", "custom-domain.test"],
+  });
+
+  beforeEach(() => {
+    invokeMock.mockReset();
+    openUrlMock.mockReset();
+    resetResourceCache();
+    useDaemon().report.value = null;
+  });
+
+  afterEach(() => {
+    mounted.forEach((w) => w.unmount());
+    mounted.length = 0;
+  });
+
+  it("accepts a dotted proxy name", async () => {
+    stubIpc({});
+    const wrapper = await mountView();
+    await clickByText(wrapper, "New proxy");
+    await flushPromises();
+
+    await wrapper.find("#proxyname").setValue("api.account");
+    await wrapper.find("#proxyurl").setValue("http://127.0.0.1:9011");
+    await clickByText(wrapper, "Add proxy");
+    await flushPromises();
+
+    expect(lastCall("add_proxy")).toEqual({ name: "api.account", url: "http://127.0.0.1:9011" });
+  });
+
+  it("keeps Add proxy disabled for a malformed name", async () => {
+    stubIpc({});
+    const wrapper = await mountView();
+    await clickByText(wrapper, "New proxy");
+    await flushPromises();
+    await wrapper.find("#proxyurl").setValue("http://127.0.0.1:9011");
+    const addDisabled = () => {
+      const btn = wrapper.findAll("button").find((b) => b.text().includes("Add proxy"))!;
+      return (btn.element as HTMLButtonElement).disabled;
+    };
+
+    await wrapper.find("#proxyname").setValue("api..account");
+    expect(addDisabled()).toBe(true);
+
+    await wrapper.find("#proxyname").setValue("api account");
+    expect(addDisabled()).toBe(true);
+
+    await wrapper.find("#proxyname").setValue("api.account");
+    expect(addDisabled()).toBe(false);
+  });
+
+  it("hints the domain count and primary only for a customised proxy", async () => {
+    stubIpc({
+      proxies: [dotted(), { name: "reverb", target: "http://localhost:9011", secure: false }],
+    });
+    const wrapper = await mountView();
+    expect(wrapper.text()).toContain("2 domains · primary custom-domain.test");
+    expect(wrapper.text()).not.toContain("1 domain");
+  });
+
+  it("opens a customised proxy at its primary domain", async () => {
+    stubIpc({ proxies: [dotted()] });
+    useDaemon().report.value = boundReport();
+    const wrapper = await mountView();
+
+    const domain = wrapper.findAll("button").find((b) => b.text() === "api.account.test")!;
+    await domain.trigger("click");
+    await flushPromises();
+
+    expect(openUrlMock).toHaveBeenCalledWith("http://custom-domain.test");
+  });
+
+  it("manages a proxy's domains through the shared panel and reloads on change", async () => {
+    stubIpc({ proxies: [dotted()] });
+    const wrapper = await mountView();
+
+    await wrapper.find('[aria-label="Domains for api.account.test"]').trigger("click");
+    await flushPromises();
+    expect(wrapper.text()).toContain("custom-domain.test");
+
+    const before = invokeMock.mock.calls.filter((c) => c[0] === "list_proxies").length;
+    await wrapper.find("#add-domain").setValue("extra.test");
+    await clickByText(wrapper, "Add");
+    await flushPromises();
+
+    expect(lastCall("add_domain")).toEqual({ name: "api.account", domain: "extra.test" });
+    const after = invokeMock.mock.calls.filter((c) => c[0] === "list_proxies").length;
+    expect(after).toBeGreaterThan(before);
   });
 });

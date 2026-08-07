@@ -505,6 +505,13 @@ export interface ProxyEntry {
   name: string;
   target: string;
   secure: boolean;
+  /** Primary (canonical) domain FQDN, present only when it differs from the
+   *  default `{name}.{tld}` apex (omitted otherwise). */
+  primary_domain?: string;
+  /** Full effective routable domain set as FQDNs, in router order (apex-first,
+   *  so the primary is not necessarily first - match `primary_domain` by value).
+   *  Present only for a customised proxy (omitted for a default apex-only one). */
+  domains?: string[];
 }
 
 /** One per-site path-prefix reverse-proxy rule (`{site}{prefix}` → `target`).
