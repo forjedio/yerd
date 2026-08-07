@@ -3702,6 +3702,26 @@ mod tests {
         );
     }
 
+    /// A customized proxy whose primary is still its apex reports
+    /// `primary_domain: None` (the daemon omits a primary equal to the apex), and
+    /// the renderer has no TLD to rebuild that apex from, so no domain carries the
+    /// marker. Pinned so the behaviour and `docs/reference/cli/proxies.md` agree.
+    #[test]
+    fn format_proxies_marks_nothing_when_the_primary_is_the_apex() {
+        let apex_primary = yerd_ipc::ProxyEntry {
+            name: "account-dev".into(),
+            target: "http://127.0.0.1:48087".into(),
+            secure: false,
+            primary_domain: None,
+            domains: vec!["account-dev.test".into(), "custom-domain.test".into()],
+        };
+        assert_eq!(
+            format_proxies(std::slice::from_ref(&apex_primary), &[]),
+            "Whole-host proxies:\n  account-dev (http) -> http://127.0.0.1:48087\n    \
+             domains: account-dev.test, custom-domain.test"
+        );
+    }
+
     #[test]
     fn maps_services_command() {
         assert_eq!(

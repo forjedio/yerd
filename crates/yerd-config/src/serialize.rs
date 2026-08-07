@@ -134,7 +134,7 @@ struct DomainsSectionSer<'a> {
     linked: BTreeMap<&'a str, DomainDeltaSer<'a>>,
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     parked: BTreeMap<&'a str, DomainDeltaSer<'a>>,
-    // v22: emitted after `linked`/`parked` so a config with only site deltas
+    // v23: emitted after `linked`/`parked` so a config with only site deltas
     // keeps its exact table bytes.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     proxy: BTreeMap<&'a str, DomainDeltaSer<'a>>,

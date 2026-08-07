@@ -499,7 +499,7 @@ Order is preserved on round-trip.
 
 | Field    | TOML type | Meaning                                                         |
 | -------- | --------- | --------------------------------------------------------------- |
-| `name`   | string    | One or more dot-separated DNS labels (`reverb`, `api.account`). It answers on `<name>.<tld>` plus any domains added with [`yerd domain`](./cli/domains). |
+| `name`   | string    | One or more dot-separated DNS labels (`reverb`, `api.account`). `<name>.<tld>` is its **default** domain; [`[domains.proxy]`](#domains) can add more and, once another exact domain exists, replace or suppress the default. |
 | `target` | string    | The upstream URL, `http://host:port` or `https://host:port`.    |
 | `secure` | bool      | Whether the proxy is served over HTTPS (toggled by `yerd secure`). |
 

@@ -74,7 +74,8 @@ yerd domain primary account-dev custom-domain.test
 ```
 
 `yerd proxy list` shows a customized proxy's domains on an indented line beneath
-it, with the primary marked. `yerd domain list` remains site-only.
+it, marking the primary when you have set one away from the default
+`<name>.<tld>`. `yerd domain list` remains site-only.
 
 ## Upstreams
 

@@ -1569,7 +1569,7 @@ mod tests {
 
     #[test]
     #[allow(clippy::field_reassign_with_default)]
-    fn v21_config_migrates_to_v22_changing_only_the_version_line() {
+    fn v22_config_migrates_to_v23_changing_only_the_version_line() {
         let mut c = Config::default();
         c.domains.linked.insert(
             "blog".to_owned(),
@@ -1579,11 +1579,15 @@ mod tests {
                 primary: None,
             },
         );
-        let v22 = c.to_toml().unwrap();
-        let v21 = v22.replacen("version = 22\n", "version = 21\n", 1);
-        let migrated = Config::from_toml(&v21).unwrap();
+        let v23 = c.to_toml().unwrap();
+        let v22 = v23.replacen("version = 23\n", "version = 22\n", 1);
+        assert_ne!(
+            v22, v23,
+            "the replace must actually downgrade the version line"
+        );
+        let migrated = Config::from_toml(&v22).unwrap();
         assert_eq!(migrated, c);
-        assert_eq!(migrated.to_toml().unwrap(), v22);
+        assert_eq!(migrated.to_toml().unwrap(), v23);
     }
 
     #[test]
