@@ -266,8 +266,8 @@ async fn whole_host_and_path_rules_and_bad_gateway() {
 /// Proxy rules and routing rules are separate namespaces that may both carry
 /// the same prefix. The proxy rule wins: it intercepts in `resolve_request` and
 /// forwards to the upstream, so `serve_php_fpm` - where routing rules are
-/// applied - is never reached. Lives here rather than beside the other routing
-/// -rule tests because it needs a real HTTP upstream.
+/// applied - is never reached. Lives here rather than beside the other
+/// routing-rule tests because it needs a real HTTP upstream.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn proxy_rule_wins_over_route_rule_on_same_prefix() {
     yerd_proxy::tls::init_crypto_once();

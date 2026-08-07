@@ -88,7 +88,7 @@ intercepts before PHP resolution runs at all.
 
 ## Where rules are stored
 
-In `yerd.toml`'s `[route_rules]` table (schema v20+), keyed by site name for
+In `yerd.toml`'s `[route_rules]` table (schema v21+), keyed by site name for
 linked sites and by document root for parked ones - the same split
 [`[proxy_rules]`](./proxies) and `[domains]` use. Rules survive a site being
 linked or unlinked, and are dropped when its parked root is un-parked. Changes

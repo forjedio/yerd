@@ -75,23 +75,52 @@ pub async fn try_serve(
     allowed_root: &Path,
     symlink_protection: bool,
 ) -> StaticOutcome {
+    let Some(rel) = static_candidate(uri_path) else {
+        return StaticOutcome::NotFound;
+    };
+
+    serve_contained_file(
+        method,
+        uri_path,
+        served_root,
+        allowed_root,
+        &rel,
+        symlink_protection,
+    )
+    .await
+}
+
+/// Serve `rel` (relative to `served_root`) once it has been derived by a
+/// caller: gate the method, canonicalise `allowed_root`, apply the
+/// containment/`symlink_protection` escape policy, refuse PHP source on the
+/// *resolved* path, require a regular file, then stream it.
+///
+/// Shared by [`try_serve`] and [`serve_target_file`], which differ only in how
+/// they arrive at `rel` (URL parsing versus a validated routing-rule target).
+/// `requested_path` is the original request path, used only to label a
+/// [`StaticOutcome::SymlinkEscape`].
+async fn serve_contained_file(
+    method: &Method,
+    requested_path: &str,
+    served_root: &Path,
+    allowed_root: &Path,
+    rel: &Path,
+    symlink_protection: bool,
+) -> StaticOutcome {
     if *method != Method::GET && *method != Method::HEAD {
         return StaticOutcome::NotFound;
     }
 
-    let Some(rel) = static_candidate(uri_path) else {
-        return StaticOutcome::NotFound;
-    };
     let Ok(real_root) = tokio::fs::canonicalize(allowed_root).await else {
         return StaticOutcome::NotFound;
     };
 
-    let real_file = match canonical_within(&served_root.join(&rel), &real_root).await {
+    let real_file = match canonical_within(&served_root.join(rel), &real_root).await {
         Some(Containment::Ok(path)) => path,
         Some(Containment::Escaped(resolved)) if !symlink_protection => resolved,
         Some(Containment::Escaped(resolved)) => {
             return StaticOutcome::SymlinkEscape {
-                requested_path: uri_path.to_owned(),
+                requested_path: requested_path.to_owned(),
                 resolved,
                 allowed_root: real_root,
             };
@@ -240,42 +269,15 @@ pub(crate) async fn serve_target_file(
     target_rel: &Path,
     symlink_protection: bool,
 ) -> StaticOutcome {
-    if *method != Method::GET && *method != Method::HEAD {
-        return StaticOutcome::NotFound;
-    }
-
-    let Ok(real_root) = tokio::fs::canonicalize(allowed_root).await else {
-        return StaticOutcome::NotFound;
-    };
-
-    let real_file = match canonical_within(&served_root.join(target_rel), &real_root).await {
-        Some(Containment::Ok(path)) => path,
-        Some(Containment::Escaped(resolved)) if !symlink_protection => resolved,
-        Some(Containment::Escaped(resolved)) => {
-            return StaticOutcome::SymlinkEscape {
-                requested_path: requested_path.to_owned(),
-                resolved,
-                allowed_root: real_root,
-            };
-        }
-        None => return StaticOutcome::NotFound,
-    };
-
-    if is_php_source(&real_file) {
-        return StaticOutcome::NotFound;
-    }
-
-    let Ok(meta) = tokio::fs::metadata(&real_file).await else {
-        return StaticOutcome::NotFound;
-    };
-    if !meta.is_file() {
-        return StaticOutcome::NotFound;
-    }
-
-    match respond_with_file(method, &real_file).await {
-        Some(resp) => StaticOutcome::Served(resp),
-        None => StaticOutcome::NotFound,
-    }
+    serve_contained_file(
+        method,
+        requested_path,
+        served_root,
+        allowed_root,
+        target_rel,
+        symlink_protection,
+    )
+    .await
 }
 
 /// Whether canonicalising a path candidate stayed within `real_root` or

@@ -47,14 +47,23 @@ const canAdd = computed(
     busy.value === null,
 );
 
+/** Monotonic id of the most recent `reload` call. Switching sites quickly can
+ *  leave two fetches in flight; only the newest may touch `rules`, `loading` or
+ *  raise a toast, so a slow earlier response cannot overwrite a newer one. */
+let reloadId = 0;
+
 async function reload(): Promise<void> {
+  const id = ++reloadId;
   loading.value = true;
   try {
-    rules.value = await listRoutes();
+    const next = await listRoutes();
+    if (id !== reloadId) return;
+    rules.value = next;
   } catch (e) {
+    if (id !== reloadId) return;
     toast.error("Could not load routing rules", (e as IpcError).message);
   } finally {
-    loading.value = false;
+    if (id === reloadId) loading.value = false;
   }
 }
 
