@@ -180,6 +180,8 @@ The variant set is the daemon's whole RPC surface - liveness, site management, P
 | `UninstallService { service, version, purge }` | `{"type":"uninstall_service","service":"redis","version":"8","purge":false}` |
 | `StartService` / `StopService` / `RestartService` | `{"type":"start_service","service":"redis"}` (and `stop_`/`restart_`) |
 | `SetServicePort { service, port }` | `{"type":"set_service_port","service":"redis","port":6380}` |
+| `SetServiceOverrides { service, overrides }` | `{"type":"set_service_overrides","service":"mysql","overrides":{"max_connections":"500","sql_mode":""}}` (free-form engine config directives, merged into the instance; `""` removes a key; takes effect on the next start/restart, nothing is restarted implicitly) |
+| `ServiceOverrides { service }` | `{"type":"service_overrides","service":"mysql"}` (replies `ServiceOverrides { overrides }`) |
 | `ServiceLogs { service, lines }` | `{"type":"service_logs","service":"redis","lines":100}` |
 | `ListDatabases { service }` | `{"type":"list_databases","service":"mysql"}` |
 | `CreateDatabase` / `DropDatabase` | `{"type":"create_database","service":"mysql","name":"app"}` (and `drop_database`) |
@@ -255,6 +257,7 @@ pub enum Response {
     DoctorFix { report: FixReport },
     Services { services: Vec<ServiceStatus> },
     AvailableServices { services: Vec<ServiceAvailability> },
+    ServiceOverrides { overrides: BTreeMap<String, String> },  // name → value, in name order
     ServiceLogs { lines: Vec<String> },
     Databases { databases: Vec<DatabaseSummary> },
     Mails { mails: Vec<MailSummary> },
@@ -344,6 +347,8 @@ There is deliberately **no `#[serde(other)]` catch-all**. An unknown code from a
 ### Status & doctor payloads
 
 `status.rs` holds the nested payloads carried inside the status/doctor, service/database, and mail responses: `StatusReport`, `PortStatus`, `CaStatus`, `SiteCounts`, `PhpPoolStatus`, `PoolRunState`, `ServiceStatus`, `ServiceRunState`, `ServiceAvailability`, `DatabaseSummary`, `Diagnosis`, `Severity`, `DiagnosisCode`, `FixReport`, `FixResult`, and the mail-capture types `MailStatus`, `MailSummary`, `MailHeader`, and `MailDetail`. Same contract rules apply. `StatusReport` also carries an additive `services: Vec<ServiceStatus>` field alongside the PHP pools, plus an additive `mail: Option<MailStatus>`.
+
+`ServiceStatus` gained `supports_overrides: bool` (last field, `#[serde(default, skip_serializing_if = "std::ops::Not::not")]`) - whether the engine accepts the free-form [configuration overrides](../guide/services#service-configuration-overrides) that `SetServiceOverrides` writes. It gates the GUI's **Override settings** dialog the way `supports_databases` gates "Create Database", and is `true` only for the config-backed engines (`mysql`, `mariadb`, `postgres`, `redis`); Meilisearch and Reverb are argv/env driven, so both override requests are refused for them with `ErrorCode::InvalidPath`. Skipped on the wire when `false` and defaulted on decode, so the byte shape is unchanged for the services that don't and an older daemon's status reads as "no overrides" rather than failing - the same additive, no-`PROTOCOL_VERSION`-bump pattern as `web_subpath`. `DiagnosisCode` separately gained `ServiceOverrideInvalid` (`"service_override_invalid"`), the `Warn` `yerd doctor` raises per bad line of a hand-edited `50-local.<ext>` file.
 
 `StatusReport` is also how the MCP gate is read back: `mcp_enabled: bool` (additive, `#[serde(default)]`, always emitted) reports whether `SetMcpEnabled` has been turned on. The daemon runs no MCP server itself - it persists the flag and reports it here, and each `yerd mcp` session reads it to decide whether to serve tools. See [yerd-mcp](./crates/yerd-mcp).
 

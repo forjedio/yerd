@@ -179,9 +179,17 @@ const INCLUDE_HINT: &str =
 /// include directives. Directives Yerd merely happens to render a default for
 /// are deliberately absent: an override is allowed to replace those.
 ///
-/// `MyCnf` matching normalises `-` and `_`, which `mysqld` treats
-/// interchangeably, so `bind_address` cannot slip past the `bind-address`
-/// entry.
+/// Matching is **case-insensitive in every dialect**, and `MyCnf` additionally
+/// normalises `-` and `_`, so neither `Bind_Address` nor `bind_address` can slip
+/// past the `bind-address` entry. The case folding is load-bearing rather than
+/// merely tidy: `PostgreSQL` GUC names and `Valkey`/Redis config directives are
+/// both matched case-insensitively by their own parsers, so an entry spelled
+/// `LISTEN_ADDRESSES` or `BIND` reaches the same setting as the lowercase form
+/// and, because the sidecar is included after Yerd's own directives, would win.
+/// An exact-match denylist would therefore let a managed override unpin the
+/// loopback-only binding. `mysqld` matches option names case-sensitively, so
+/// there the folding only turns a would-be "unknown variable" start failure into
+/// a refusal at set time.
 #[must_use]
 pub fn reserved(dialect: OverrideDialect, name: &str) -> Option<&'static str> {
     let table = match dialect {
@@ -189,16 +197,19 @@ pub fn reserved(dialect: OverrideDialect, name: &str) -> Option<&'static str> {
         OverrideDialect::PostgresConf => RESERVED_POSTGRES_CONF,
         OverrideDialect::RedisConf => RESERVED_REDIS_CONF,
     };
-    let found = match dialect {
-        OverrideDialect::MyCnf => {
-            let needle = name.replace('-', "_");
-            table.iter().find(|(n, _)| n.replace('-', "_") == needle)
-        }
-        OverrideDialect::PostgresConf | OverrideDialect::RedisConf => {
-            table.iter().find(|(n, _)| *n == name)
-        }
+    let needle = match dialect {
+        OverrideDialect::MyCnf => name.replace('-', "_"),
+        OverrideDialect::PostgresConf | OverrideDialect::RedisConf => name.to_owned(),
     };
-    found.map(|(_, hint)| *hint)
+    table
+        .iter()
+        .find(|(n, _)| match dialect {
+            OverrideDialect::MyCnf => n.replace('-', "_").eq_ignore_ascii_case(&needle),
+            OverrideDialect::PostgresConf | OverrideDialect::RedisConf => {
+                n.eq_ignore_ascii_case(&needle)
+            }
+        })
+        .map(|(_, hint)| *hint)
 }
 
 /// Validate an override name: non-empty, bounded, first character `[A-Za-z_]`,
@@ -799,6 +810,38 @@ mod tests {
         }
         assert!(reserved(OverrideDialect::PostgresConf, "listen-addresses").is_none());
         assert!(reserved(OverrideDialect::RedisConf, "protected_mode").is_none());
+    }
+
+    /// `PostgreSQL` GUC names and Valkey config directives are matched
+    /// case-insensitively by their own parsers, so an exact-match denylist would
+    /// let `LISTEN_ADDRESSES` or `BIND` through and unpin the loopback binding.
+    /// Verified against the real engines: Valkey given `BIND 0.0.0.0` listens on
+    /// every interface, and `postgres -C listen_addresses` reports `0.0.0.0`
+    /// when the file carries `LISTEN_ADDRESSES`.
+    #[test]
+    fn reservations_ignore_letter_case_in_every_dialect() {
+        for name in ["BIND-ADDRESS", "Bind_Address", "PORT", "Init-File"] {
+            assert!(reserved(OverrideDialect::MyCnf, name).is_some(), "{name}");
+        }
+        for name in [
+            "LISTEN_ADDRESSES",
+            "Listen_Addresses",
+            "Port",
+            "Data_Directory",
+        ] {
+            assert!(
+                reserved(OverrideDialect::PostgresConf, name).is_some(),
+                "{name}"
+            );
+        }
+        for name in ["BIND", "Protected-Mode", "PORT", "Logfile"] {
+            assert!(
+                reserved(OverrideDialect::RedisConf, name).is_some(),
+                "{name}"
+            );
+        }
+        assert!(reserved(OverrideDialect::RedisConf, "SAVE").is_none());
+        assert!(reserved(OverrideDialect::MyCnf, "MAX_CONNECTIONS").is_none());
     }
 
     #[test]
