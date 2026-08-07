@@ -335,7 +335,7 @@ pub async fn change_service_version(
         .await
     };
     if let Err(e) = outcome {
-        return service_error_response(&e);
+        return start_failure_response(&def, def.id(), &e, &state.dirs);
     }
 
     if let Err(resp) = persist_instance(state, def.id(), |inst| {
@@ -824,8 +824,10 @@ pub async fn set_service_port(service_id: &str, port: u16, state: &DaemonState) 
 }
 
 /// `service set/unset <wire-id> <key> [<value>]` - merge free-form config
-/// overrides into the instance and persist them. An empty value removes a key
-/// (removing one that isn't there is a no-op). Names and values are
+/// overrides into the instance and persist them. Values are trimmed first, so a
+/// blank or whitespace-only value removes the key exactly as an empty one does
+/// (removing one that isn't there is a no-op) and can never be stored as an
+/// empty directive that would render as a valueless line. Names and values are
 /// shape-checked against the service's dialect and refused when Yerd manages
 /// the directive itself; the whole map is validated before anything is stored,
 /// so a bad entry leaves the config untouched.
@@ -854,6 +856,7 @@ pub async fn set_service_overrides(
                 &format!("{key} is managed by Yerd: {hint}"),
             );
         }
+        let value = value.trim();
         if value.is_empty() {
             continue;
         }
@@ -863,10 +866,11 @@ pub async fn set_service_overrides(
     }
     persist_instance(state, service_id, |inst| {
         for (key, value) in overrides {
+            let value = value.trim();
             if value.is_empty() {
                 inst.overrides.remove(&key);
             } else {
-                inst.overrides.insert(key, value.trim().to_owned());
+                inst.overrides.insert(key, value.to_owned());
             }
         }
     })
@@ -1778,6 +1782,39 @@ mod tests {
                 Response::Ok
             ),
             "removing an absent key is a no-op"
+        );
+    }
+
+    /// A whitespace-only value is trimmed before the empty check, so it removes
+    /// the key like `""` does instead of being stored as a valueless directive
+    /// that would render as a bare `name =` line.
+    #[tokio::test]
+    async fn set_service_overrides_treats_a_blank_value_as_a_removal() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_in(tmp.path());
+        assert!(matches!(
+            set_service_overrides("mysql", one_override("max_connections", "500"), &state).await,
+            Response::Ok
+        ));
+        assert!(matches!(
+            set_service_overrides("mysql", one_override("max_connections", "   "), &state).await,
+            Response::Ok
+        ));
+        assert!(overrides_of(service_overrides("mysql", &state).await).is_empty());
+    }
+
+    #[tokio::test]
+    async fn set_service_overrides_stores_a_trimmed_value() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_in(tmp.path());
+        assert!(matches!(
+            set_service_overrides("mysql", one_override("max_connections", "  500  "), &state)
+                .await,
+            Response::Ok
+        ));
+        assert_eq!(
+            overrides_of(service_overrides("mysql", &state).await).get("max_connections"),
+            Some(&"500".to_owned())
         );
     }
 

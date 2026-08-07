@@ -235,8 +235,9 @@ and **never rewritten** - it is yours, so what you put there survives every
 restart. It is read last, so it also wins over anything set with
 `yerd service set`. If you delete it, Yerd recreates the stub on the next start.
 
-Directives Yerd manages itself are refused wherever you put them. `yerd service
-set` rejects them immediately, with a hint naming the command that does own them:
+Directives Yerd manages itself are rejected when you set them through
+`yerd service set` or the desktop app, with a hint naming the command that does
+own them:
 
 ```sh
 yerd service set mysql port 3307
@@ -247,6 +248,21 @@ The check folds letter case in every engine, and `-` against `_` for
 MySQL/MariaDB, so `Bind_Address` is caught just as `bind-address` is - the engines
 themselves are that lenient, and an override that slipped through could unpin the
 loopback-only binding.
+
+`50-local.<ext>` is a different matter. Yerd never rewrites that file and the
+engine reads it directly, so nothing can *refuse* what you put there: a reserved
+directive in it does take effect. `yerd doctor` is the safety net, reporting each
+one with the file, the line, and the same hint:
+
+```sh
+yerd doctor
+# ⚠ Service override needs attention
+#     …/services/mysql/conf.d/50-local.cnf line 20: bind-address - this directive
+#     is managed by Yerd: Yerd pins this service to loopback
+```
+
+Run it after hand-editing. It is a warning, not a block, so a directive that
+unpins the loopback binding will stay in effect until you remove it and restart.
 
 ::: tip Some directives accumulate rather than replace
 Last-wins holds for ordinary scalar directives. A few are additive: MySQL's
