@@ -643,7 +643,7 @@ fn delta_mut<'a>(cfg: &'a mut Config, target: &DomainTarget) -> &'a mut DomainDe
 }
 
 /// Drop the delta entry entirely if it carries no customisation, so an
-/// effectively-default site leaves no `[domains]` record.
+/// effectively-default site or whole-host proxy leaves no `[domains]` record.
 fn prune_delta(cfg: &mut Config, target: &DomainTarget) {
     match target {
         DomainTarget::Linked(name) => {

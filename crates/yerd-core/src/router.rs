@@ -283,6 +283,18 @@ impl SiteRouter {
         self.sites.get_mut(name)
     }
 
+    /// Borrows a whole-host proxy by name, the [`Self::get`] counterpart.
+    ///
+    /// `None` for a proxy the daemon planned but never inserted, such as one
+    /// name-shadowed by a parked site. Callers reading the shared domain and
+    /// primary maps under a proxy name must check this first: those maps are
+    /// keyed by claimant name across both namespaces, so an absent proxy's key
+    /// may be held by the site that shadowed it.
+    #[must_use]
+    pub fn proxy(&self, name: &str) -> Option<&ProxySite> {
+        self.proxy_sites.get(name)
+    }
+
     /// The site's primary (canonical, displayed) domain, if the site exists.
     #[must_use]
     pub fn primary_domain(&self, name: &str) -> Option<&Domain> {
@@ -697,9 +709,12 @@ mod tests {
         )
         .unwrap();
         assert_eq!(r.primary_domain("account-dev"), Some(&dom("account-dev")));
+        assert!(r.proxy("account-dev").is_some());
+        assert!(r.proxy("never-inserted").is_none());
 
         let removed = r.remove_proxy("account-dev").unwrap();
         assert_eq!(removed.name(), "account-dev");
+        assert!(r.proxy("account-dev").is_none());
         for host in [
             "account-dev.test",
             "custom-domain.test",
