@@ -101,19 +101,13 @@ fn trust_findings(report: &StatusReport) -> Vec<Diagnosis> {
         Some(BrowserTrust::Untrusted) => out.push(warn(
             DiagnosisCode::CaNotTrustedByBrowsers,
             "Browsers don't trust the local CA",
-            "Brave, Chrome and Firefox keep their own certificate store, separate \
-             from the system store, so they show HTTPS warnings on .test sites \
-             until the CA is added there."
-                .to_owned(),
+            browser_untrusted_detail().to_owned(),
             "yerd elevate trust",
         )),
         Some(BrowserTrust::ToolMissing) => out.push(warn(
             DiagnosisCode::CaNotTrustedByBrowsers,
             "Can't establish browser trust (certutil missing)",
-            "Browsers won't trust the local CA until certutil is installed: \
-             libnss3-tools (Debian/Ubuntu/Zorin), nss-tools (Fedora), nss (Arch), \
-             or `brew install nss` (macOS). Install it, then run trust again."
-                .to_owned(),
+            certutil_missing_detail().to_owned(),
             "yerd elevate trust",
         )),
         _ => {}
@@ -140,6 +134,37 @@ fn trust_findings(report: &StatusReport) -> Vec<Diagnosis> {
         ));
     }
     out
+}
+
+/// Detail for the browsers-don't-trust-the-CA warning. On macOS only Firefox
+/// keeps its own NSS store; Chromium-family browsers there read the system
+/// keychain, so naming them would send users looking for a problem they do not
+/// have. Elsewhere all three keep separate stores.
+fn browser_untrusted_detail() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "Firefox keeps its own certificate store, separate from the system \
+         keychain, so it shows HTTPS warnings on .test sites until the CA is \
+         added there."
+    } else {
+        "Brave, Chrome and Firefox keep their own certificate store, separate \
+         from the system store, so they show HTTPS warnings on .test sites \
+         until the CA is added there."
+    }
+}
+
+/// Detail for the certutil-missing warning, leading with the install hint that
+/// actually applies to the host: Homebrew or `MacPorts` on macOS, the distro
+/// packages elsewhere.
+fn certutil_missing_detail() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "Browsers won't trust the local CA until certutil is installed: \
+         `brew install nss` (Homebrew) or `sudo port install nss` (MacPorts). \
+         Install it, then run trust again."
+    } else {
+        "Browsers won't trust the local CA until certutil is installed: \
+         libnss3-tools (Debian/Ubuntu/Zorin), nss-tools (Fedora), nss (Arch), \
+         or `brew install nss` (macOS). Install it, then run trust again."
+    }
 }
 
 /// PHP install-state findings: a missing install (which suppresses the
@@ -916,10 +941,38 @@ mod tests {
             .into_iter()
             .find(|d| d.code == DiagnosisCode::CaNotTrustedByBrowsers)
             .expect("tool-missing warns");
-        // The doctor is pure and cannot detect the host OS, so the hint is
-        // distro/OS-neutral: it names the tool and covers Linux and macOS.
         assert!(d.detail.contains("certutil"));
         assert!(d.detail.contains("brew install nss"));
+    }
+
+    #[test]
+    fn browser_trust_details_are_platform_aware() {
+        let untrusted = browser_untrusted_detail();
+        let missing = certutil_missing_detail();
+        assert!(untrusted.contains("Firefox"));
+        #[cfg(target_os = "macos")]
+        {
+            assert!(
+                !untrusted.contains("Chrome") && !untrusted.contains("Brave"),
+                "macOS Chromium-family browsers read the system keychain, not NSS"
+            );
+            assert!(
+                missing.starts_with(
+                    "Browsers won't trust the local CA until certutil is installed: \
+                     `brew install nss`"
+                ),
+                "macOS hint must lead with Homebrew"
+            );
+            assert!(!missing.contains("libnss3-tools"));
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            assert!(
+                untrusted.contains("Chrome") && untrusted.contains("Brave"),
+                "Linux Chromium-family browsers keep their own NSS store"
+            );
+            assert!(missing.contains("libnss3-tools"));
+        }
     }
 
     #[test]
