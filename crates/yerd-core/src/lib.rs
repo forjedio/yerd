@@ -20,6 +20,7 @@ pub mod php_settings;
 mod proxy;
 mod route_rule;
 mod router;
+pub mod service_directives;
 mod site;
 mod tld;
 

@@ -466,6 +466,31 @@ pub enum ServiceAction {
         /// Loopback port.
         port: u16,
     },
+    /// Set a service configuration override (applies on the next restart).
+    ///
+    /// Only the name and value shape are checked; whether the engine accepts
+    /// the setting is the engine's business. Not every service supports
+    /// overrides.
+    Set {
+        /// Service id.
+        service: String,
+        /// Directive name, e.g. `max_connections`.
+        key: String,
+        /// Directive value, e.g. `500`.
+        value: String,
+    },
+    /// Remove a service configuration override (applies on the next restart).
+    Unset {
+        /// Service id.
+        service: String,
+        /// Directive name to remove.
+        key: String,
+    },
+    /// Show a service's stored configuration overrides.
+    Overrides {
+        /// Service id.
+        service: String,
+    },
     /// Show the last lines of a service's log.
     Logs {
         /// Service id.

@@ -45,6 +45,7 @@ pub(crate) const STEPS: &[MigrationStep] = &[
     migrate_v18_to_v19,
     migrate_v19_to_v20,
     migrate_v20_to_v21,
+    migrate_v21_to_v22,
 ];
 
 /// `v0 → v1`: bump the version. v0 predates any shipped config, so there is no
@@ -229,6 +230,14 @@ fn migrate_v20_to_v21(value: &mut Value) -> Result<(), ConfigError> {
     set_version(value, 21)
 }
 
+/// `v21 → v22`: bump the version. v22 added the optional
+/// `[services.<id>.overrides]` table of free-form service configuration
+/// overrides, which defaults (empty) when absent, so an in-place version bump
+/// is the entire migration.
+fn migrate_v21_to_v22(value: &mut Value) -> Result<(), ConfigError> {
+    set_version(value, 22)
+}
+
 /// Set the top-level `version` key, erroring if the root is not a table.
 fn set_version(value: &mut Value, n: i64) -> Result<(), ConfigError> {
     let table = value.as_table_mut().ok_or(ConfigError::Migration {
@@ -298,7 +307,7 @@ mod tests {
 
     #[test]
     fn current_version_pinned() {
-        assert_eq!(crate::CURRENT_VERSION, 21);
+        assert_eq!(crate::CURRENT_VERSION, 22);
     }
 
     #[test]
@@ -334,6 +343,13 @@ mod tests {
         let mut v: Value = toml::from_str("version = 20\n").unwrap();
         migrate_v20_to_v21(&mut v).unwrap();
         assert_eq!(read_version(&v).unwrap(), 21);
+    }
+
+    #[test]
+    fn v21_to_v22_is_a_bare_version_bump() {
+        let mut v: Value = toml::from_str("version = 21\n").unwrap();
+        migrate_v21_to_v22(&mut v).unwrap();
+        assert_eq!(read_version(&v).unwrap(), 22);
     }
 
     #[test]

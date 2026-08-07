@@ -241,6 +241,7 @@ async fn dispatch(req: Request, state: &DaemonState) -> Response {
             items: yerd_doctor::diagnose(
                 &build_status_report(state).await,
                 path_needs_setup(state),
+                &crate::services::local_override_files(&state.dirs),
             ),
         },
         Request::DoctorFix => run_doctor_fix(state).await,
@@ -287,6 +288,12 @@ async fn dispatch(req: Request, state: &DaemonState) -> Response {
         }
         Request::SetServicePort { service, port } => {
             crate::services::set_service_port(&service, port, state).await
+        }
+        Request::SetServiceOverrides { service, overrides } => {
+            crate::services::set_service_overrides(&service, overrides, state).await
+        }
+        Request::ServiceOverrides { service } => {
+            crate::services::service_overrides(&service, state).await
         }
         Request::ServiceLogs { service, lines } => {
             crate::services::service_logs(&service, lines, state)
@@ -965,15 +972,19 @@ async fn run_doctor_fix(state: &DaemonState) -> Response {
     }
 
     let after = build_status_report(state).await;
-    let manual = yerd_doctor::diagnose(&after, path_needs_setup(state))
-        .into_iter()
-        .filter(|d| {
-            matches!(
-                d.severity,
-                yerd_ipc::Severity::Warn | yerd_ipc::Severity::Fail
-            )
-        })
-        .collect();
+    let manual = yerd_doctor::diagnose(
+        &after,
+        path_needs_setup(state),
+        &crate::services::local_override_files(&state.dirs),
+    )
+    .into_iter()
+    .filter(|d| {
+        matches!(
+            d.severity,
+            yerd_ipc::Severity::Warn | yerd_ipc::Severity::Fail
+        )
+    })
+    .collect();
 
     Response::DoctorFix {
         report: yerd_ipc::FixReport { performed, manual },
@@ -3738,6 +3749,29 @@ Subject: Captured\r\n\r\nhi\r\n";
                 assert!(items
                     .iter()
                     .any(|d| d.code == yerd_ipc::DiagnosisCode::NoPhpInstalled));
+            }
+            other => panic!("expected Diagnoses, got {other:?}"),
+        }
+    }
+
+    /// The doctor's view of the hand-edited override file is assembled by the
+    /// daemon, so the wiring - registry walk, path, read - only shows up here.
+    #[tokio::test]
+    async fn dispatch_diagnose_flags_a_reserved_key_in_the_local_override_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_in(tmp.path());
+        let path = yerd_services::version::local_override_path(&state.dirs, "mysql", "cnf");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, b"[mysqld]\nbind-address = 0.0.0.0\n").unwrap();
+
+        match dispatch(Request::Diagnose, &state).await {
+            Response::Diagnoses { items } => {
+                let finding = items
+                    .iter()
+                    .find(|d| d.code == yerd_ipc::DiagnosisCode::ServiceOverrideInvalid)
+                    .expect("override finding present");
+                assert!(finding.detail.contains("bind-address"), "{finding:?}");
+                assert!(finding.detail.contains("50-local.cnf"), "{finding:?}");
             }
             other => panic!("expected Diagnoses, got {other:?}"),
         }

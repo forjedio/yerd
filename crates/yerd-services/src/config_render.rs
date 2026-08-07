@@ -2,9 +2,13 @@
 //!
 //! No I/O - each function takes the resolved values and returns the file body as
 //! a string. The manager writes it. Covers Redis/Valkey (`redis.conf`), `MySQL` and
-//! `MariaDB` (`my.cnf`), and `PostgreSQL` (`postgresql.conf`).
+//! `MariaDB` (`my.cnf`), and `PostgreSQL` (`postgresql.conf`), plus the include
+//! line(s) that pull in the user's override sidecar files
+//! ([`render_include_lines`]).
 
 use std::path::Path;
+
+use yerd_core::service_directives::{file_ext, OverrideDialect};
 
 /// Render a Redis/Valkey config: loopback-only, no password, foreground.
 ///
@@ -58,6 +62,9 @@ fn quote_conf_path(p: &Path) -> String {
 /// - The server runs in the foreground (no `--daemonize`); see [`crate::manager`].
 /// - `pid-file` lives inside the datadir, whose parent `--initialize` creates,
 ///   so its directory always exists at start.
+/// - `log-error` names the same instance log the manager attaches the child's
+///   stderr to. Both open it in append mode, and the stderr capture is what
+///   catches an option-file error raised before this directive takes effect.
 #[must_use]
 pub fn render_my_cnf(
     port: u16,
@@ -172,6 +179,36 @@ fn render_preload_line(libraries: &[&str]) -> String {
 /// quotes by doubling them (the form Postgres' config parser expects).
 fn quote_pg_string(s: &str) -> String {
     format!("'{}'", s.replace('\'', "''"))
+}
+
+/// Render the include line(s) the manager appends to a service's Yerd-owned
+/// config so the engine reads the override sidecar files in `confd_dir` after
+/// Yerd's own settings.
+///
+/// Each dialect gets its native form:
+/// - `MyCnf`: `!includedir`, which reads every `*.cnf` in the directory in name
+///   order. The directive has **no quoting syntax** (unlike option *values*, cf.
+///   [`quote_conf_path`]), so the path is emitted raw; a real `mysqld` parses a
+///   spaced macOS state path that way, which is why this is safe.
+/// - `PostgresConf`: `include_dir`, whose value is an ordinary quoted string and
+///   which also reads its directory in name order.
+/// - `RedisConf`: no directory form exists, so both files are named explicitly.
+///   The order carries the precedence: `50-local` is read last and wins.
+#[must_use]
+pub fn render_include_lines(dialect: OverrideDialect, confd_dir: &Path) -> String {
+    match dialect {
+        OverrideDialect::MyCnf => format!("!includedir {}\n", confd_dir.display()),
+        OverrideDialect::PostgresConf => {
+            let dir = quote_pg_string(&confd_dir.display().to_string());
+            format!("include_dir {dir}\n")
+        }
+        OverrideDialect::RedisConf => {
+            let ext = file_ext(dialect);
+            let managed = quote_conf_path(&confd_dir.join(format!("10-yerd.{ext}")));
+            let local = quote_conf_path(&confd_dir.join(format!("50-local.{ext}")));
+            format!("include {managed}\ninclude {local}\n")
+        }
+    }
 }
 
 #[cfg(test)]
@@ -339,6 +376,59 @@ mod tests {
         assert!(
             conf.contains("shared_preload_libraries = 'timescaledb,pg_stat_statements'"),
             "libraries must be comma-joined in order: {conf}"
+        );
+    }
+
+    #[test]
+    fn include_lines_use_each_dialect_native_directive() {
+        let confd = PathBuf::from("/s/services/mysql/conf.d");
+        assert_eq!(
+            render_include_lines(OverrideDialect::MyCnf, &confd),
+            "!includedir /s/services/mysql/conf.d\n"
+        );
+        assert_eq!(
+            render_include_lines(OverrideDialect::PostgresConf, &confd),
+            "include_dir '/s/services/mysql/conf.d'\n"
+        );
+    }
+
+    #[test]
+    fn redis_include_lines_name_both_files_local_last() {
+        let confd = PathBuf::from("/s/services/redis/conf.d");
+        assert_eq!(
+            render_include_lines(OverrideDialect::RedisConf, &confd),
+            "include \"/s/services/redis/conf.d/10-yerd.conf\"\n\
+             include \"/s/services/redis/conf.d/50-local.conf\"\n"
+        );
+    }
+
+    /// The macOS state dir contains a space. `!includedir` has no quoting
+    /// syntax, and a real `mysqld` reads the raw spaced path, so the `MyCnf`
+    /// line must stay unquoted; the other two dialects quote as their values do.
+    #[test]
+    fn include_lines_carry_spaced_paths_intact() {
+        let confd = PathBuf::from("/Users/a b/Library/Application Support/yerd/services/x/conf.d");
+        assert_eq!(
+            render_include_lines(OverrideDialect::MyCnf, &confd),
+            "!includedir /Users/a b/Library/Application Support/yerd/services/x/conf.d\n"
+        );
+        assert_eq!(
+            render_include_lines(OverrideDialect::PostgresConf, &confd),
+            "include_dir '/Users/a b/Library/Application Support/yerd/services/x/conf.d'\n"
+        );
+        assert_eq!(
+            render_include_lines(OverrideDialect::RedisConf, &confd),
+            "include \"/Users/a b/Library/Application Support/yerd/services/x/conf.d/10-yerd.conf\"\n\
+             include \"/Users/a b/Library/Application Support/yerd/services/x/conf.d/50-local.conf\"\n"
+        );
+    }
+
+    #[test]
+    fn postgres_include_line_escapes_single_quotes_in_the_path() {
+        let confd = PathBuf::from("/data/o'brien/conf.d");
+        assert_eq!(
+            render_include_lines(OverrideDialect::PostgresConf, &confd),
+            "include_dir '/data/o''brien/conf.d'\n"
         );
     }
 }

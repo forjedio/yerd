@@ -124,6 +124,25 @@ fn populated_round_trip_passes_validate() {
 }
 
 #[test]
+fn service_overrides_round_trip() {
+    let mut c = Config::default();
+    c.services.instances.insert(
+        "mysql".to_string(),
+        ServiceInstance {
+            overrides: std::collections::BTreeMap::from([
+                ("max_connections".to_string(), "500".to_string()),
+                ("innodb_buffer_pool_size".to_string(), "1G".to_string()),
+            ]),
+            ..ServiceInstance::default()
+        },
+    );
+    c.validate().unwrap();
+    let s = c.to_toml().unwrap();
+    let back = Config::from_toml(&s).unwrap();
+    assert_eq!(back, c);
+}
+
+#[test]
 fn default_to_toml_then_from_toml_pins_php_version_default() {
     let s = Config::default().to_toml().unwrap();
     let back = Config::from_toml(&s).unwrap();

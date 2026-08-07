@@ -1239,6 +1239,7 @@ fn status_services_appear_only_when_non_empty() {
         type_id: String::new(),
         site: None,
         error: None,
+        supports_overrides: false,
     }];
     let s = serde_json::to_string(&report).unwrap();
     assert!(
@@ -1359,6 +1360,10 @@ fn diagnosis_code_each_variant_byte_shape() {
         (DiagnosisCode::DomainShadowed, r#""domain_shadowed""#),
         (DiagnosisCode::PortRedirectStale, r#""port_redirect_stale""#),
         (DiagnosisCode::LanRedirectStale, r#""lan_redirect_stale""#),
+        (
+            DiagnosisCode::ServiceOverrideInvalid,
+            r#""service_override_invalid""#,
+        ),
         (DiagnosisCode::AllGood, r#""all_good""#),
     ];
     for (code, expected) in cases {
@@ -1604,6 +1609,56 @@ fn request_set_service_port_byte_shape() {
 }
 
 #[test]
+fn request_set_service_overrides_byte_shape() {
+    let r = Request::SetServiceOverrides {
+        service: "mysql".into(),
+        overrides: BTreeMap::from([
+            ("max_connections".to_string(), "500".to_string()),
+            ("sql_mode".to_string(), String::new()),
+        ]),
+    };
+    let s = serde_json::to_string(&r).unwrap();
+    assert_eq!(
+        s,
+        r#"{"type":"set_service_overrides","service":"mysql","overrides":{"max_connections":"500","sql_mode":""}}"#
+    );
+    assert_eq!(serde_json::from_str::<Request>(&s).unwrap(), r);
+}
+
+#[test]
+fn request_service_overrides_byte_shape() {
+    let r = Request::ServiceOverrides {
+        service: "mysql".into(),
+    };
+    let s = serde_json::to_string(&r).unwrap();
+    assert_eq!(s, r#"{"type":"service_overrides","service":"mysql"}"#);
+    assert_eq!(serde_json::from_str::<Request>(&s).unwrap(), r);
+}
+
+#[test]
+fn response_service_overrides_byte_shape() {
+    let r = Response::ServiceOverrides {
+        overrides: BTreeMap::from([("max_connections".to_string(), "500".to_string())]),
+    };
+    let s = serde_json::to_string(&r).unwrap();
+    assert_eq!(
+        s,
+        r#"{"type":"service_overrides","overrides":{"max_connections":"500"}}"#
+    );
+    assert_eq!(serde_json::from_str::<Response>(&s).unwrap(), r);
+}
+
+#[test]
+fn response_service_overrides_empty_byte_shape() {
+    let r = Response::ServiceOverrides {
+        overrides: BTreeMap::new(),
+    };
+    let s = serde_json::to_string(&r).unwrap();
+    assert_eq!(s, r#"{"type":"service_overrides","overrides":{}}"#);
+    assert_eq!(serde_json::from_str::<Response>(&s).unwrap(), r);
+}
+
+#[test]
 fn request_add_service_byte_shape() {
     let r = Request::AddService {
         type_id: "reverb".into(),
@@ -1722,6 +1777,7 @@ fn response_services_per_site_instance_byte_shape() {
             type_id: "reverb".into(),
             site: Some("blog".into()),
             error: Some("artisan reverb:start exited with code 1".into()),
+            supports_overrides: false,
         }],
     };
     let s = serde_json::to_string(&r).unwrap();
@@ -1863,12 +1919,52 @@ fn response_services_byte_shape() {
             type_id: String::new(),
             site: None,
             error: None,
+            supports_overrides: false,
         }],
     };
     let s = serde_json::to_string(&r).unwrap();
     let expected = r#"{"type":"services","services":[{"service":"redis","display_name":"Redis (Valkey)","installed_versions":["8"],"selected_version":"8","state":"running","pid":42,"listen":"127.0.0.1:6379","port":6379,"enabled":true,"supports_databases":false}]}"#;
     assert_eq!(s, expected);
     assert_eq!(serde_json::from_str::<Response>(&s).unwrap(), r);
+}
+
+/// `supports_overrides` is additive: omitted from the wire when `false` (the
+/// shape older clients already parse) and emitted last when `true`.
+#[test]
+fn response_services_supports_overrides_byte_shape() {
+    let r = Response::Services {
+        services: vec![ServiceStatus {
+            service: "mysql".into(),
+            display_name: "MySQL".into(),
+            installed_versions: vec!["9.7".into()],
+            selected_version: Some("9.7".into()),
+            state: ServiceRunState::Running,
+            pid: Some(42),
+            listen: Some("127.0.0.1:3306".into()),
+            port: 3306,
+            enabled: true,
+            supports_databases: true,
+            type_id: "mysql".into(),
+            site: None,
+            error: None,
+            supports_overrides: true,
+        }],
+    };
+    let s = serde_json::to_string(&r).unwrap();
+    let expected = r#"{"type":"services","services":[{"service":"mysql","display_name":"MySQL","installed_versions":["9.7"],"selected_version":"9.7","state":"running","pid":42,"listen":"127.0.0.1:3306","port":3306,"enabled":true,"supports_databases":true,"type_id":"mysql","supports_overrides":true}]}"#;
+    assert_eq!(s, expected);
+    assert_eq!(serde_json::from_str::<Response>(&s).unwrap(), r);
+}
+
+/// An older daemon's payload, which has no `supports_overrides` key at all,
+/// still decodes and reads as "no overrides".
+#[test]
+fn service_status_without_supports_overrides_decodes_as_false() {
+    let s = r#"{"type":"services","services":[{"service":"redis","display_name":"Redis (Valkey)","installed_versions":["8"],"selected_version":"8","state":"running","pid":42,"listen":"127.0.0.1:6379","port":6379,"enabled":true,"supports_databases":false}]}"#;
+    match serde_json::from_str::<Response>(s).unwrap() {
+        Response::Services { services } => assert!(!services[0].supports_overrides),
+        other => panic!("expected Response::Services, got {other:?}"),
+    }
 }
 
 #[test]

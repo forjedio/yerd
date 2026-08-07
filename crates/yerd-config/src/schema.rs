@@ -634,6 +634,13 @@ pub struct ServiceInstance {
     /// (see `yerdd::services::auto_start_installed`): single-instance engines
     /// default `true`, per-site app servers default `false`.
     pub enabled: bool,
+    /// Free-form service configuration overrides, rendered into the engine's
+    /// sidecar `conf.d/10-yerd.<ext>` on every start. Shape-validated by
+    /// `yerd_core::service_directives`: strictly at set time in the daemon,
+    /// leniently here at load (a bad or reserved entry is dropped rather than
+    /// failing the whole config). Empty for a service that accepts no
+    /// overrides.
+    pub overrides: BTreeMap<String, String>,
 }
 
 impl Default for ServiceInstance {
@@ -643,6 +650,7 @@ impl Default for ServiceInstance {
             port: None,
             site: None,
             enabled: true,
+            overrides: BTreeMap::new(),
         }
     }
 }
@@ -719,6 +727,7 @@ mod tests {
         assert!(inst.enabled);
         assert_eq!(inst.version, None);
         assert_eq!(inst.port, None);
+        assert!(inst.overrides.is_empty());
     }
 
     #[test]

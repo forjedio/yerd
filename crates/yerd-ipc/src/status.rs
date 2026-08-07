@@ -482,6 +482,13 @@ pub struct ServiceStatus {
     /// `None` otherwise. Additive.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// Whether the engine accepts free-form configuration overrides (gates the
+    /// overrides panel in the GUI, the way `supports_databases` gates "Create
+    /// Database"). Skipped on the wire when `false` so the byte shape is
+    /// unchanged for the services that don't, and defaulted on decode so an
+    /// older daemon's status reads as "no overrides" rather than failing.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub supports_overrides: bool,
 }
 
 /// One installable service *type* for the "Add Service" dialog, returned in
@@ -681,6 +688,11 @@ pub enum DiagnosisCode {
     /// mode is on. Remedy: `sudo yerd elevate lan` (restart the daemon first if it
     /// still holds a privileged port). See [`StatusReport::lan_redirect_targets`].
     LanRedirectStale,
+    /// A hand-edited service override file (`conf.d/50-local.<ext>`, which Yerd
+    /// never rewrites) names a directive Yerd manages itself, or carries a line
+    /// the engine's option-file grammar won't parse. Remedy: edit the file, then
+    /// restart that service.
+    ServiceOverrideInvalid,
     /// Everything checks out.
     AllGood,
 }

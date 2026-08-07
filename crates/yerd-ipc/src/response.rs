@@ -234,6 +234,12 @@ pub enum Response {
         /// The site's administrator accounts, for the auto-login user picker.
         users: Vec<WordPressAdminUser>,
     },
+    /// Reply to [`crate::Request::ServiceOverrides`] - the instance's stored
+    /// configuration overrides, empty when it has none.
+    ServiceOverrides {
+        /// Override name → value, in name order.
+        overrides: BTreeMap<String, String>,
+    },
     /// Reply to [`crate::Request::ServiceLogs`] - trailing log lines, oldest first.
     ServiceLogs {
         /// The log lines.
@@ -649,6 +655,7 @@ mod variant_name_pinning {
             Response::WordpressVersions { .. } => {}
             Response::WordpressLoginToken { .. } => {}
             Response::WordpressAdminUsers { .. } => {}
+            Response::ServiceOverrides { .. } => {}
             Response::ServiceLogs { .. } => {}
             Response::Databases { .. } => {}
             Response::Dumps { .. } => {}
@@ -830,6 +837,9 @@ mod variant_name_pinning {
                 login: "admin".into(),
                 display_name: "Admin".into(),
             }],
+        });
+        pin_response(Response::ServiceOverrides {
+            overrides: BTreeMap::new(),
         });
         pin_response(Response::ServiceLogs { lines: vec![] });
         pin_response(Response::Databases {

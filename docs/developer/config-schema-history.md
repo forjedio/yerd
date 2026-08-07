@@ -28,7 +28,25 @@ Each entry below states what changed, whether the daemon's own migration is a ba
 
 ## Version-by-version
 
-### v21 (current)
+### v22 (current)
+
+**Added:** the optional `[services.<id>.overrides]` sub-table - free-form configuration overrides for a service instance, keyed by directive name. Each entry is written into that engine's generated `conf.d/10-yerd.<ext>` sidecar on every start, so the settings survive the restart that regenerates the main config (issue #195). Only the config-backed engines accept them (`mysql`, `mariadb`, `postgres`, `redis`); the table is dropped at load for any other service. It defaults to empty when absent, so an uncustomised file omits it entirely.
+
+```toml
+[services.mysql.overrides]
+max_allowed_packet = "256M"
+sql_mode = "STRICT_TRANS_TABLES,NO_ZERO_DATE"
+```
+
+Entries are shape-validated, not semantically validated: a name or value that could break out of the generated option file is refused when set, and an entry naming a directive Yerd owns (`port`, `datadir`, `bind-address`, …) is refused with a hint pointing at the typed command that manages it. At **load** time the same checks run leniently - a bad entry is dropped rather than failing the whole file - so hand-editing this table can never make the daemon refuse to start.
+
+Hand edits belong in the sibling `conf.d/50-local.<ext>` file instead, which Yerd creates once and never rewrites; it is read after `10-yerd.<ext>`, so it wins.
+
+**Migration from v21:** bare version bump - the table defaults to empty when absent, so a v21 file needs no other change.
+
+**To downgrade to v21:** change `version = 22` to `version = 21` and delete any `[services.<id>.overrides]` tables. Those overrides stop being written to `conf.d/10-yerd.<ext>`, so the affected engines fall back to Yerd's generated defaults on the next restart. Anything you put in `conf.d/50-local.<ext>` is unaffected by the downgrade, but an older build emits no include line for it, so it stops being read until you upgrade again.
+
+### v21
 
 **Added:** the optional `[route_rules]` table - per-site path-prefix **routing** rules, keyed by site class exactly like `[proxy_rules]` and `[domains]`: `[route_rules.linked.<name>]` by site name, `[route_rules.parked."<docroot>"]` by document-root string. Each rule pairs a URI path `prefix` with a `target` path relative to the site's served root. It defaults to empty when absent, so an uncustomised file omits it entirely.
 

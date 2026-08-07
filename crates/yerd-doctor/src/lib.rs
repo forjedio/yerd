@@ -15,6 +15,7 @@
 
 #![forbid(unsafe_code)]
 
+use yerd_core::service_directives;
 use yerd_core::PhpVersion;
 use yerd_ipc::{
     BrowserTrust, Diagnosis, DiagnosisCode, PoolRunState, ServiceRunState, Severity, StatusReport,
@@ -41,18 +42,28 @@ pub enum FixAction {
 /// `{data}/bin` isn't on the user's PATH, `Some(false)` when it's fine, `None`
 /// when undeterminable.
 ///
+/// `local_override_files` is the same kind of daemon-supplied input in file
+/// form: one `(service_id, path, content)` per override-capable service whose
+/// hand-edited `50-local.<ext>` exists. The daemon reads them because this crate
+/// does no I/O; see [`service_override_findings`].
+///
 /// Findings are emitted in a stable order. When no `Warn`/`Fail` finding is
 /// produced, a single [`DiagnosisCode::AllGood`] `Ok` finding is appended so the
 /// caller always has something to show. `Option<bool>` probes that are `None`
 /// ("couldn't determine") emit no finding, never a false-alarm warning.
 #[must_use]
-pub fn diagnose(report: &StatusReport, path_needs_setup: Option<bool>) -> Vec<Diagnosis> {
+pub fn diagnose(
+    report: &StatusReport,
+    path_needs_setup: Option<bool>,
+    local_override_files: &[(String, String, String)],
+) -> Vec<Diagnosis> {
     let mut out = Vec::new();
 
     out.extend(port_findings(report));
     out.extend(trust_findings(report));
     out.extend(php_state_findings(report));
     out.extend(service_findings(report));
+    out.extend(service_override_findings(local_override_files));
     out.extend(php_update_findings(report));
     out.extend(resolver_backup_finding(report));
     out.extend(symlink_protection_finding(report));
@@ -193,6 +204,40 @@ fn service_findings(report: &StatusReport) -> Vec<Diagnosis> {
                     "restart with `yerd service restart {}`",
                     svc.service
                 )),
+            ));
+        }
+    }
+    out
+}
+
+/// One `Warn` per line of a hand-edited `50-local.<ext>` file that names a
+/// directive Yerd manages itself, or that reads as no directive at all.
+///
+/// Each entry is `(service_id, path, content)`; the daemon supplies the content
+/// because this crate does no I/O. The dialect is resolved here from the service
+/// id, and an id with no dialect is skipped, so an argv-driven or unknown
+/// service is simply never scanned. Yerd never rewrites this file, which is the
+/// whole point of it - so the remedy is the user's own editor, not a command
+/// that would undo their work.
+fn service_override_findings(files: &[(String, String, String)]) -> Vec<Diagnosis> {
+    let mut out = Vec::new();
+    for (service_id, path, content) in files {
+        let Some(dialect) = service_directives::dialect_for(service_id) else {
+            continue;
+        };
+        for issue in service_directives::scan_local(dialect, content) {
+            let detail = match &issue.key {
+                Some(key) => format!("{path} line {}: {key} - {}", issue.line, issue.problem),
+                None => format!("{path} line {}: {}", issue.line, issue.problem),
+            };
+            out.push(warn(
+                DiagnosisCode::ServiceOverrideInvalid,
+                "Service override needs attention",
+                detail,
+                &format!(
+                    "edit {path} (Yerd never rewrites it), then \
+                     `yerd service restart {service_id}`"
+                ),
             ));
         }
     }
@@ -566,19 +611,95 @@ mod tests {
 
     #[test]
     fn healthy_report_is_all_good_only() {
-        let ds = diagnose(&healthy(), None);
+        let ds = diagnose(&healthy(), None, &[]);
         assert_eq!(codes(&ds), vec![DiagnosisCode::AllGood]);
         assert!(plan_auto_fixes(&healthy()).is_empty());
+    }
+
+    /// One `50-local.<ext>` entry as the daemon hands it over.
+    fn local_file(service_id: &str, content: &str) -> (String, String, String) {
+        (
+            service_id.to_owned(),
+            format!("/s/services/{service_id}/conf.d/50-local.cnf"),
+            content.to_owned(),
+        )
+    }
+
+    fn override_findings(files: &[(String, String, String)]) -> Vec<Diagnosis> {
+        diagnose(&healthy(), None, files)
+            .into_iter()
+            .filter(|d| d.code == DiagnosisCode::ServiceOverrideInvalid)
+            .collect()
+    }
+
+    #[test]
+    fn a_clean_local_override_file_produces_no_finding() {
+        assert!(override_findings(&[]).is_empty());
+        assert!(override_findings(&[local_file(
+            "mysql",
+            "# my notes\n[mysqld]\nmax_connections = 500\n\nsql_mode = STRICT_ALL_TABLES\n"
+        )])
+        .is_empty());
+    }
+
+    #[test]
+    fn a_reserved_key_warns_and_carries_its_hint() {
+        let ds = override_findings(&[local_file("mysql", "[mysqld]\nbind-address = 0.0.0.0\n")]);
+        assert_eq!(ds.len(), 1);
+        let finding = &ds[0];
+        assert_eq!(finding.severity, Severity::Warn);
+        assert!(finding.detail.contains("line 2"), "{}", finding.detail);
+        assert!(
+            finding.detail.contains("bind-address"),
+            "{}",
+            finding.detail
+        );
+        let hint = service_directives::reserved(
+            service_directives::OverrideDialect::MyCnf,
+            "bind-address",
+        )
+        .unwrap();
+        assert!(finding.detail.contains(hint), "{}", finding.detail);
+        let remedy = finding.remedy.as_deref().unwrap();
+        assert!(remedy.contains("50-local.cnf"), "{remedy}");
+        assert!(remedy.contains("yerd service restart mysql"), "{remedy}");
+        assert!(!is_auto_fixable(DiagnosisCode::ServiceOverrideInvalid));
+    }
+
+    #[test]
+    fn a_garbage_line_warns_and_names_the_line() {
+        let ds = override_findings(&[local_file("mysql", "[mysqld]\n@@@ nonsense\n")]);
+        assert_eq!(ds.len(), 1);
+        assert!(ds[0].detail.contains("line 2"), "{}", ds[0].detail);
+    }
+
+    /// An id with no dialect is never scanned, so a Meilisearch-shaped entry
+    /// (or a stale one for a service Yerd no longer knows) stays silent.
+    #[test]
+    fn a_service_without_a_dialect_is_skipped() {
+        assert!(override_findings(&[local_file("meilisearch", "@@@ nonsense")]).is_empty());
+        assert!(override_findings(&[local_file("nope", "@@@ nonsense")]).is_empty());
+    }
+
+    #[test]
+    fn an_override_finding_suppresses_the_all_good_line() {
+        let ds = diagnose(
+            &healthy(),
+            None,
+            &[local_file("mysql", "[mysqld]\nport = 3307\n")],
+        );
+        assert!(codes(&ds).contains(&DiagnosisCode::ServiceOverrideInvalid));
+        assert!(!codes(&ds).contains(&DiagnosisCode::AllGood));
     }
 
     #[test]
     fn resolver_backup_surfaces_as_ok_finding_with_no_remedy() {
         let mut r = healthy();
-        assert!(!codes(&diagnose(&r, None)).contains(&DiagnosisCode::ResolverBackupSaved));
+        assert!(!codes(&diagnose(&r, None, &[])).contains(&DiagnosisCode::ResolverBackupSaved));
 
         r.resolver_backup =
             Some("/Library/Application Support/io.yerd.Yerd/resolver-backups/test-1.conf".into());
-        let ds = diagnose(&r, None);
+        let ds = diagnose(&r, None, &[]);
         let finding = ds
             .iter()
             .find(|d| d.code == DiagnosisCode::ResolverBackupSaved)
@@ -597,12 +718,12 @@ mod tests {
     fn symlink_protection_off_surfaces_as_ok_finding_with_no_remedy() {
         let mut r = healthy();
         assert!(
-            !codes(&diagnose(&r, None)).contains(&DiagnosisCode::SymlinkProtectionDisabled),
+            !codes(&diagnose(&r, None, &[])).contains(&DiagnosisCode::SymlinkProtectionDisabled),
             "on by default surfaces nothing"
         );
 
         r.symlink_protection = false;
-        let ds = diagnose(&r, None);
+        let ds = diagnose(&r, None, &[]);
         let finding = ds
             .iter()
             .find(|d| d.code == DiagnosisCode::SymlinkProtectionDisabled)
@@ -619,13 +740,13 @@ mod tests {
     #[test]
     fn shadowed_domain_warns_once_per_losing_site() {
         let mut r = healthy();
-        assert!(!codes(&diagnose(&r, None)).contains(&DiagnosisCode::DomainShadowed));
+        assert!(!codes(&diagnose(&r, None, &[])).contains(&DiagnosisCode::DomainShadowed));
 
         r.shadows = vec![yerd_ipc::DomainShadow {
             site: "blog".into(),
             shadowed_by: "shop".into(),
         }];
-        let ds = diagnose(&r, None);
+        let ds = diagnose(&r, None, &[]);
         let finding = ds
             .iter()
             .find(|d| d.code == DiagnosisCode::DomainShadowed)
@@ -645,13 +766,13 @@ mod tests {
         r.http.requested = 80;
         r.http.bound = 8080;
         r.http.fell_back = true;
-        assert!(codes(&diagnose(&r, None)).contains(&DiagnosisCode::PortFallback));
+        assert!(codes(&diagnose(&r, None, &[])).contains(&DiagnosisCode::PortFallback));
 
         let mut r2 = healthy();
         r2.http.requested = 8080;
         r2.http.bound = 8081;
         r2.http.fell_back = true;
-        assert!(!codes(&diagnose(&r2, None)).contains(&DiagnosisCode::PortFallback));
+        assert!(!codes(&diagnose(&r2, None, &[])).contains(&DiagnosisCode::PortFallback));
     }
 
     #[test]
@@ -660,7 +781,7 @@ mod tests {
         r.http.requested = 80;
         r.http.bound = 8080;
         r.http.fell_back = true;
-        let remedy = diagnose(&r, None)
+        let remedy = diagnose(&r, None, &[])
             .into_iter()
             .find(|d| d.code == DiagnosisCode::PortFallback)
             .and_then(|d| d.remedy)
@@ -698,7 +819,7 @@ mod tests {
             http: 8080,
             https: 8443,
         });
-        let cs = codes(&diagnose(&r, None));
+        let cs = codes(&diagnose(&r, None, &[]));
         assert!(cs.contains(&DiagnosisCode::WebPortsUnbound));
         assert!(!cs.contains(&DiagnosisCode::PortFallback));
         assert!(!cs.contains(&DiagnosisCode::AllGood));
@@ -729,7 +850,7 @@ mod tests {
             http: 8080,
             https: 8443,
         });
-        let cs = codes(&diagnose(&r, None));
+        let cs = codes(&diagnose(&r, None, &[]));
         assert!(!cs.contains(&DiagnosisCode::PortRedirectStale));
         assert!(!cs.contains(&DiagnosisCode::LanRedirectStale));
     }
@@ -742,7 +863,7 @@ mod tests {
             http: 9090,
             https: 9443,
         });
-        let ds = diagnose(&r, None);
+        let ds = diagnose(&r, None, &[]);
         let cs = codes(&ds);
         assert!(cs.contains(&DiagnosisCode::PortRedirectStale));
         assert!(!cs.contains(&DiagnosisCode::PortFallback));
@@ -771,7 +892,7 @@ mod tests {
             http: 80,
             https: 443,
         });
-        let ds = diagnose(&r, None);
+        let ds = diagnose(&r, None, &[]);
         let cs = codes(&ds);
         assert!(cs.contains(&DiagnosisCode::LanRedirectStale));
         assert!(!cs.contains(&DiagnosisCode::PortRedirectStale));
@@ -796,7 +917,7 @@ mod tests {
             http: 80,
             https: 443,
         });
-        let cs = codes(&diagnose(&r, None));
+        let cs = codes(&diagnose(&r, None, &[]));
         assert!(!cs.contains(&DiagnosisCode::LanRedirectStale));
     }
 
@@ -804,7 +925,7 @@ mod tests {
     fn dns_unbound_warns_independently_of_web() {
         let mut r = healthy();
         r.dns_unbound = Some(1053);
-        let ds = diagnose(&r, None);
+        let ds = diagnose(&r, None, &[]);
         let cs = codes(&ds);
         assert!(cs.contains(&DiagnosisCode::DnsPortUnbound));
         assert!(!cs.contains(&DiagnosisCode::AllGood));
@@ -823,7 +944,7 @@ mod tests {
             http: 8080,
             https: 8443,
         });
-        let cs = codes(&diagnose(&r, None));
+        let cs = codes(&diagnose(&r, None, &[]));
         assert!(cs.contains(&DiagnosisCode::DnsPortUnbound));
         assert!(cs.contains(&DiagnosisCode::WebPortsUnbound));
     }
@@ -835,13 +956,13 @@ mod tests {
         r.http.bound = 8080;
         r.http.fell_back = true;
         r.port_redirect = Some(true);
-        assert!(!codes(&diagnose(&r, None)).contains(&DiagnosisCode::PortFallback));
+        assert!(!codes(&diagnose(&r, None, &[])).contains(&DiagnosisCode::PortFallback));
 
         r.port_redirect = Some(false);
-        assert!(codes(&diagnose(&r, None)).contains(&DiagnosisCode::PortFallback));
+        assert!(codes(&diagnose(&r, None, &[])).contains(&DiagnosisCode::PortFallback));
 
         r.port_redirect = None;
-        assert!(codes(&diagnose(&r, None)).contains(&DiagnosisCode::PortFallback));
+        assert!(codes(&diagnose(&r, None, &[])).contains(&DiagnosisCode::PortFallback));
     }
 
     #[test]
@@ -851,7 +972,7 @@ mod tests {
         r.http.bound = 8080;
         r.http.fell_back = true;
         r.foreign_web_listener = Some(true);
-        let cs = codes(&diagnose(&r, None));
+        let cs = codes(&diagnose(&r, None, &[]));
         assert!(cs.contains(&DiagnosisCode::ForeignWebListener));
         assert!(
             !cs.contains(&DiagnosisCode::PortFallback),
@@ -860,19 +981,19 @@ mod tests {
         assert!(!cs.contains(&DiagnosisCode::AllGood));
 
         r.foreign_web_listener = Some(false);
-        let cs = codes(&diagnose(&r, None));
+        let cs = codes(&diagnose(&r, None, &[]));
         assert!(!cs.contains(&DiagnosisCode::ForeignWebListener));
         assert!(cs.contains(&DiagnosisCode::PortFallback));
 
         r.foreign_web_listener = None;
-        assert!(codes(&diagnose(&r, None)).contains(&DiagnosisCode::PortFallback));
+        assert!(codes(&diagnose(&r, None, &[])).contains(&DiagnosisCode::PortFallback));
     }
 
     #[test]
     fn foreign_web_listener_warns_even_without_fallback() {
         let mut r = healthy();
         r.foreign_web_listener = Some(true);
-        let cs = codes(&diagnose(&r, None));
+        let cs = codes(&diagnose(&r, None, &[]));
         assert!(cs.contains(&DiagnosisCode::ForeignWebListener));
         assert!(!cs.contains(&DiagnosisCode::AllGood));
     }
@@ -882,7 +1003,7 @@ mod tests {
         let mut r = healthy();
         r.ca.trusted_system = None;
         r.resolver_installed = None;
-        let cs = codes(&diagnose(&r, None));
+        let cs = codes(&diagnose(&r, None, &[]));
         assert!(!cs.contains(&DiagnosisCode::CaNotTrusted));
         assert!(!cs.contains(&DiagnosisCode::ResolverNotInstalled));
     }
@@ -892,7 +1013,7 @@ mod tests {
         let mut r = healthy();
         r.ca.trusted_system = Some(false);
         r.resolver_installed = Some(false);
-        let cs = codes(&diagnose(&r, None));
+        let cs = codes(&diagnose(&r, None, &[]));
         assert!(cs.contains(&DiagnosisCode::CaNotTrusted));
         assert!(cs.contains(&DiagnosisCode::ResolverNotInstalled));
     }
@@ -901,7 +1022,7 @@ mod tests {
     fn browser_untrusted_warns() {
         let mut r = healthy();
         r.ca.browser_trust = Some(BrowserTrust::Untrusted);
-        let ds = diagnose(&r, None);
+        let ds = diagnose(&r, None, &[]);
         assert!(ds.iter().any(
             |d| d.code == DiagnosisCode::CaNotTrustedByBrowsers && d.severity == Severity::Warn
         ));
@@ -912,7 +1033,7 @@ mod tests {
     fn browser_tool_missing_warns_with_install_hint() {
         let mut r = healthy();
         r.ca.browser_trust = Some(BrowserTrust::ToolMissing);
-        let d = diagnose(&r, None)
+        let d = diagnose(&r, None, &[])
             .into_iter()
             .find(|d| d.code == DiagnosisCode::CaNotTrustedByBrowsers)
             .expect("tool-missing warns");
@@ -926,16 +1047,16 @@ mod tests {
     fn browser_trusted_or_unknown_is_silent() {
         let mut r = healthy();
         r.ca.browser_trust = Some(BrowserTrust::Trusted);
-        assert!(!codes(&diagnose(&r, None)).contains(&DiagnosisCode::CaNotTrustedByBrowsers));
+        assert!(!codes(&diagnose(&r, None, &[])).contains(&DiagnosisCode::CaNotTrustedByBrowsers));
         r.ca.browser_trust = None;
-        assert!(!codes(&diagnose(&r, None)).contains(&DiagnosisCode::CaNotTrustedByBrowsers));
+        assert!(!codes(&diagnose(&r, None, &[])).contains(&DiagnosisCode::CaNotTrustedByBrowsers));
     }
 
     #[test]
     fn no_php_suppresses_default_not_installed() {
         let mut r = healthy();
         r.php.clear();
-        let cs = codes(&diagnose(&r, None));
+        let cs = codes(&diagnose(&r, None, &[]));
         assert!(cs.contains(&DiagnosisCode::NoPhpInstalled));
         assert!(!cs.contains(&DiagnosisCode::DefaultPhpNotInstalled));
     }
@@ -944,7 +1065,7 @@ mod tests {
     fn default_not_installed_when_other_versions_present() {
         let mut r = healthy();
         r.php[0].version = PhpVersion::new(8, 4);
-        let cs = codes(&diagnose(&r, None));
+        let cs = codes(&diagnose(&r, None, &[]));
         assert!(cs.contains(&DiagnosisCode::DefaultPhpNotInstalled));
         assert!(!cs.contains(&DiagnosisCode::NoPhpInstalled));
     }
@@ -953,7 +1074,7 @@ mod tests {
     fn failed_pool_is_fail_and_auto_fixable() {
         let mut r = healthy();
         r.php[0].state = PoolRunState::Failed;
-        let ds = diagnose(&r, None);
+        let ds = diagnose(&r, None, &[]);
         assert!(codes(&ds).contains(&DiagnosisCode::FpmPoolFailed));
         assert!(ds
             .iter()
@@ -970,7 +1091,7 @@ mod tests {
     fn php_ca_untrusted_warns_and_plans_rebuild() {
         let mut r = healthy();
         r.ca.php_trusts_ca = Some(false);
-        let ds = diagnose(&r, None);
+        let ds = diagnose(&r, None, &[]);
         assert!(ds
             .iter()
             .any(|d| d.code == DiagnosisCode::PhpCaNotTrusted && d.severity == Severity::Warn));
@@ -982,9 +1103,9 @@ mod tests {
     fn php_ca_none_or_true_emits_no_finding() {
         let mut r = healthy();
         r.ca.php_trusts_ca = None;
-        assert!(!codes(&diagnose(&r, None)).contains(&DiagnosisCode::PhpCaNotTrusted));
+        assert!(!codes(&diagnose(&r, None, &[])).contains(&DiagnosisCode::PhpCaNotTrusted));
         r.ca.php_trusts_ca = Some(true);
-        assert!(!codes(&diagnose(&r, None)).contains(&DiagnosisCode::PhpCaNotTrusted));
+        assert!(!codes(&diagnose(&r, None, &[])).contains(&DiagnosisCode::PhpCaNotTrusted));
         assert!(!plan_auto_fixes(&r).contains(&FixAction::RebuildPhpCaBundle));
     }
 
@@ -992,7 +1113,7 @@ mod tests {
     fn update_available_is_informational_and_still_all_good() {
         let mut r = healthy();
         r.php[0].update_available = Some("8.5.7".into());
-        let ds = diagnose(&r, None);
+        let ds = diagnose(&r, None, &[]);
         let cs = codes(&ds);
         assert!(cs.contains(&DiagnosisCode::PhpUpdateAvailable));
         assert!(cs.contains(&DiagnosisCode::AllGood));
@@ -1002,23 +1123,23 @@ mod tests {
     fn no_sites_is_informational() {
         let mut r = healthy();
         r.sites = SiteCounts::default();
-        assert!(codes(&diagnose(&r, None)).contains(&DiagnosisCode::NoSites));
+        assert!(codes(&diagnose(&r, None, &[])).contains(&DiagnosisCode::NoSites));
     }
 
     #[test]
     fn problems_suppress_all_good() {
         let mut r = healthy();
         r.ca.trusted_system = Some(false);
-        assert!(!codes(&diagnose(&r, None)).contains(&DiagnosisCode::AllGood));
+        assert!(!codes(&diagnose(&r, None, &[])).contains(&DiagnosisCode::AllGood));
     }
 
     #[test]
     fn bin_dir_not_on_path_warns_only_on_some_true() {
         let r = healthy();
-        let on = codes(&diagnose(&r, Some(true)));
+        let on = codes(&diagnose(&r, Some(true), &[]));
         assert!(on.contains(&DiagnosisCode::BinDirNotOnPath));
         assert!(!on.contains(&DiagnosisCode::AllGood));
-        assert!(!codes(&diagnose(&r, Some(false))).contains(&DiagnosisCode::BinDirNotOnPath));
-        assert!(!codes(&diagnose(&r, None)).contains(&DiagnosisCode::BinDirNotOnPath));
+        assert!(!codes(&diagnose(&r, Some(false), &[])).contains(&DiagnosisCode::BinDirNotOnPath));
+        assert!(!codes(&diagnose(&r, None, &[])).contains(&DiagnosisCode::BinDirNotOnPath));
     }
 }

@@ -11,12 +11,13 @@
 //! **without** the config lock held, and the config lock and the
 //! service-manager lock are never held simultaneously across an `.await`.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use tokio::sync::watch;
 use yerd_config::{Config, ServiceInstance};
+use yerd_core::service_directives;
 use yerd_ipc::{
     AddableServiceType, ErrorCode, Request, Response, ServiceAvailability, ServiceRunState,
     ServiceStatus,
@@ -212,15 +213,26 @@ pub async fn install_service(
         return service_error_response(&e);
     }
 
-    let port = {
+    let (port, overrides) = {
         let cfg = state.config.lock().await;
-        cfg.services
-            .instances
-            .get(def.id())
-            .and_then(|i| i.port)
-            .unwrap_or(def.default_port())
+        let inst = cfg.services.instances.get(def.id());
+        (
+            inst.and_then(|i| i.port).unwrap_or(def.default_port()),
+            inst.map(|i| i.overrides.clone()).unwrap_or_default(),
+        )
     };
-    match ensure_and_persist(state, &def, def.id(), Some(version), port, None, None).await {
+    match ensure_and_persist(
+        state,
+        &def,
+        def.id(),
+        Some(version),
+        port,
+        None,
+        None,
+        overrides,
+    )
+    .await
+    {
         Ok(()) => Response::Ok,
         Err(resp) => resp,
     }
@@ -229,6 +241,11 @@ pub async fn install_service(
 /// Ensure the `wire_id` instance is running, then persist it. Shared by the
 /// install/start handlers and by any in-daemon caller that installs+starts a
 /// service inline (e.g. the WordPress create-site job's DB provisioning).
+///
+/// `overrides` is the instance's stored override map, which the manager renders
+/// to the service's sidecar config on every start. The persist closure never
+/// touches it: a start reports where the instance runs, it does not restate what
+/// the user configured.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn ensure_and_persist(
     state: &DaemonState,
@@ -238,6 +255,7 @@ pub(crate) async fn ensure_and_persist(
     port: u16,
     program_override: Option<PathBuf>,
     cwd: Option<PathBuf>,
+    overrides: BTreeMap<String, String>,
 ) -> Result<(), Response> {
     {
         let mut mgr = state.service_manager.lock().await;
@@ -248,9 +266,10 @@ pub(crate) async fn ensure_and_persist(
             port,
             program_override,
             cwd,
+            overrides,
         )
         .await
-        .map_err(|e| service_error_response(&e))?;
+        .map_err(|e| start_failure_response(def, wire, &e, &state.dirs))?;
     }
     let (type_id, site) = parse_wire_id(wire);
     let vstr = version.as_ref().map(ToString::to_string);
@@ -294,13 +313,13 @@ pub async fn change_service_version(
         return service_error_response(&e);
     }
 
-    let port = {
+    let (port, overrides) = {
         let cfg = state.config.lock().await;
-        cfg.services
-            .instances
-            .get(def.id())
-            .and_then(|i| i.port)
-            .unwrap_or(def.default_port())
+        let inst = cfg.services.instances.get(def.id());
+        (
+            inst.and_then(|i| i.port).unwrap_or(def.default_port()),
+            inst.map(|i| i.overrides.clone()).unwrap_or_default(),
+        )
     };
     let outcome = {
         let mut mgr = state.service_manager.lock().await;
@@ -311,6 +330,7 @@ pub async fn change_service_version(
             port,
             None,
             None,
+            overrides,
         )
         .await
     };
@@ -499,6 +519,7 @@ pub async fn add_service(
         chosen_port,
         program_override,
         cwd,
+        BTreeMap::new(),
     )
     .await;
 
@@ -630,19 +651,31 @@ pub async fn start_service(service_id: &str, state: &DaemonState) -> Response {
         return start_per_site(&def, service_id, site.as_deref(), state).await;
     }
 
-    let (configured_version, port) = {
+    let (configured_version, port, overrides) = {
         let cfg = state.config.lock().await;
         let inst = cfg.services.instances.get(service_id);
         (
             inst.and_then(|i| i.version.clone()),
             inst.and_then(|i| i.port).unwrap_or(def.default_port()),
+            inst.map(|i| i.overrides.clone()).unwrap_or_default(),
         )
     };
     let version = match resolve_version(&def, configured_version.as_deref(), &state.dirs) {
         Ok(v) => v,
         Err(resp) => return resp,
     };
-    match ensure_and_persist(state, &def, service_id, Some(version), port, None, None).await {
+    match ensure_and_persist(
+        state,
+        &def,
+        service_id,
+        Some(version),
+        port,
+        None,
+        None,
+        overrides,
+    )
+    .await
+    {
         Ok(()) => Response::Ok,
         Err(resp) => resp,
     }
@@ -682,7 +715,18 @@ async fn start_per_site(
             .unwrap_or(def.default_port())
     };
     let php_cli = crate::php_install::cli_binary_path(&state.dirs, php);
-    match ensure_and_persist(state, def, wire, None, port, Some(php_cli), Some(doc_root)).await {
+    match ensure_and_persist(
+        state,
+        def,
+        wire,
+        None,
+        port,
+        Some(php_cli),
+        Some(doc_root),
+        BTreeMap::new(),
+    )
+    .await
+    {
         Ok(()) => Response::Ok,
         Err(resp) => resp,
     }
@@ -715,12 +759,13 @@ pub async fn restart_service(service_id: &str, state: &DaemonState) -> Response 
     if def.requires_site() {
         return start_per_site(&def, service_id, site.as_deref(), state).await;
     }
-    let (configured_version, port) = {
+    let (configured_version, port, overrides) = {
         let cfg = state.config.lock().await;
         let inst = cfg.services.instances.get(service_id);
         (
             inst.and_then(|i| i.version.clone()),
             inst.and_then(|i| i.port).unwrap_or(def.default_port()),
+            inst.map(|i| i.overrides.clone()).unwrap_or_default(),
         )
     };
     let version = match resolve_version(&def, configured_version.as_deref(), &state.dirs) {
@@ -736,12 +781,13 @@ pub async fn restart_service(service_id: &str, state: &DaemonState) -> Response 
             port,
             None,
             None,
+            overrides,
         )
         .await
     };
     match outcome {
         Ok(_) => Response::Ok,
-        Err(e) => service_error_response(&e),
+        Err(e) => start_failure_response(&def, service_id, &e, &state.dirs),
     }
 }
 
@@ -777,15 +823,85 @@ pub async fn set_service_port(service_id: &str, port: u16, state: &DaemonState) 
     resp
 }
 
+/// `service set/unset <wire-id> <key> [<value>]` - merge free-form config
+/// overrides into the instance and persist them. An empty value removes a key
+/// (removing one that isn't there is a no-op). Names and values are
+/// shape-checked against the service's dialect and refused when Yerd manages
+/// the directive itself; the whole map is validated before anything is stored,
+/// so a bad entry leaves the config untouched.
+///
+/// Nothing is restarted: the overrides reach the engine the next time it starts,
+/// the same contract as [`set_service_port`].
+pub async fn set_service_overrides(
+    service_id: &str,
+    overrides: BTreeMap<String, String>,
+    state: &DaemonState,
+) -> Response {
+    let (type_id, _) = parse_wire_id(service_id);
+    let Some(def) = registry().get(&type_id) else {
+        return unknown_service(service_id);
+    };
+    let Some(dialect) = def.override_capability() else {
+        return no_override_support(&def);
+    };
+    for (key, value) in &overrides {
+        if let Err(e) = service_directives::validate_name(key) {
+            return err(ErrorCode::InvalidPath, &e.to_string());
+        }
+        if let Some(hint) = service_directives::reserved(dialect, key) {
+            return err(
+                ErrorCode::InvalidPath,
+                &format!("{key} is managed by Yerd: {hint}"),
+            );
+        }
+        if value.is_empty() {
+            continue;
+        }
+        if let Err(e) = service_directives::validate_value(dialect, value) {
+            return err(ErrorCode::InvalidPath, &e.to_string());
+        }
+    }
+    persist_instance(state, service_id, |inst| {
+        for (key, value) in overrides {
+            if value.is_empty() {
+                inst.overrides.remove(&key);
+            } else {
+                inst.overrides.insert(key, value.trim().to_owned());
+            }
+        }
+    })
+    .await
+    .unwrap_or_else(|resp| resp)
+}
+
+/// `service overrides <wire-id>` - the instance's stored config overrides.
+/// Empty for an instance that has never been configured.
+pub async fn service_overrides(service_id: &str, state: &DaemonState) -> Response {
+    let (type_id, _) = parse_wire_id(service_id);
+    let Some(def) = registry().get(&type_id) else {
+        return unknown_service(service_id);
+    };
+    if def.override_capability().is_none() {
+        return no_override_support(&def);
+    }
+    let cfg = state.config.lock().await;
+    Response::ServiceOverrides {
+        overrides: cfg
+            .services
+            .instances
+            .get(service_id)
+            .map(|i| i.overrides.clone())
+            .unwrap_or_default(),
+    }
+}
+
 /// `service logs <wire-id>` - the last `lines` lines of the instance log file.
 pub fn service_logs(service_id: &str, lines: u32, state: &DaemonState) -> Response {
     if !valid_instance_id(service_id) {
         return unknown_service(service_id);
     }
-    let path = svc_version::instance_log_path(&state.dirs, service_id);
-    let content = match std::fs::read_to_string(&path) {
-        Ok(c) => c,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+    let all = match read_log_lines(&state.dirs, service_id) {
+        Ok(l) => l,
         Err(e) => {
             return Response::Error {
                 code: ErrorCode::Internal,
@@ -793,16 +909,45 @@ pub fn service_logs(service_id: &str, lines: u32, state: &DaemonState) -> Respon
             }
         }
     };
-    let want = lines as usize;
-    let all: Vec<&str> = content.lines().collect();
-    let start = all.len().saturating_sub(want);
-    let tail = all
-        .get(start..)
-        .unwrap_or(&[])
-        .iter()
-        .map(|s| (*s).to_string())
-        .collect();
-    Response::ServiceLogs { lines: tail }
+    let start = all.len().saturating_sub(lines as usize);
+    Response::ServiceLogs {
+        lines: all.get(start..).unwrap_or(&[]).to_vec(),
+    }
+}
+
+/// Every override-capable service's hand-edited `50-local.<ext>` file, as the
+/// `(service_id, path, content)` triples `yerd_doctor::diagnose` scans.
+///
+/// The doctor is pure, so the daemon does the reads. A file that is missing (the
+/// common case: the service was never started, or the stub was deleted) or
+/// unreadable yields no entry, leaving the check silent rather than inventing a
+/// finding about a file nobody has.
+#[must_use]
+pub fn local_override_files(dirs: &PlatformDirs) -> Vec<(String, String, String)> {
+    let mut out = Vec::new();
+    for def in registry().iter() {
+        let Some(dialect) = def.override_capability() else {
+            continue;
+        };
+        let path =
+            svc_version::local_override_path(dirs, def.id(), service_directives::file_ext(dialect));
+        if let Ok(content) = std::fs::read_to_string(&path) {
+            out.push((def.id().to_owned(), path.display().to_string(), content));
+        }
+    }
+    out
+}
+
+/// Every line of an instance's log file. A log that has never been written
+/// reads as no lines; any other read error is the caller's to report.
+fn read_log_lines(dirs: &PlatformDirs, service_id: &str) -> Result<Vec<String>, std::io::Error> {
+    let path = svc_version::instance_log_path(dirs, service_id);
+    let content = match std::fs::read_to_string(&path) {
+        Ok(c) => c,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => return Err(e),
+    };
+    Ok(content.lines().map(ToOwned::to_owned).collect())
 }
 
 // ── status + auto-start ───────────────────────────────────────────────────
@@ -893,6 +1038,7 @@ fn build_status(
         type_id: def.id().to_string(),
         site,
         error,
+        supports_overrides: def.override_capability().is_some(),
     }
 }
 
@@ -976,17 +1122,26 @@ async fn start_one(wire: &str, state: &DaemonState) -> Result<(), ServiceError> 
         let php_cli = crate::php_install::cli_binary_path(&state.dirs, php);
         let mut mgr = state.service_manager.lock().await;
         return mgr
-            .ensure(def, wire, None, port, Some(php_cli), Some(doc_root))
+            .ensure(
+                def,
+                wire,
+                None,
+                port,
+                Some(php_cli),
+                Some(doc_root),
+                BTreeMap::new(),
+            )
             .await
             .map(|_| ());
     }
 
-    let (configured_version, port) = {
+    let (configured_version, port, overrides) = {
         let cfg = state.config.lock().await;
         let inst = cfg.services.instances.get(wire);
         (
             inst.and_then(|i| i.version.clone()),
             inst.and_then(|i| i.port).unwrap_or(def.default_port()),
+            inst.map(|i| i.overrides.clone()).unwrap_or_default(),
         )
     };
     let version =
@@ -1000,7 +1155,7 @@ async fn start_one(wire: &str, state: &DaemonState) -> Result<(), ServiceError> 
             )?,
         };
     let mut mgr = state.service_manager.lock().await;
-    mgr.ensure(def, wire, Some(version), port, None, None)
+    mgr.ensure(def, wire, Some(version), port, None, None, overrides)
         .await
         .map(|_| ())
 }
@@ -1175,6 +1330,18 @@ fn unknown_service_type(id: &str) -> Response {
     )
 }
 
+/// Refusal for a service that declares no override capability: Meilisearch and
+/// Reverb are argv/env driven, so there is no config file to override.
+fn no_override_support(def: &Arc<dyn ServiceDefinition>) -> Response {
+    err(
+        ErrorCode::InvalidPath,
+        &format!(
+            "{} does not support configuration overrides",
+            def.display_name()
+        ),
+    )
+}
+
 fn service_type_mismatch(id: &str, why: &str) -> Response {
     err(ErrorCode::InvalidPath, &format!("service {id:?} {why}"))
 }
@@ -1183,6 +1350,61 @@ fn service_error_response(e: &ServiceError) -> Response {
     Response::Error {
         code: service_error_code(e),
         message: e.to_string(),
+    }
+}
+
+/// How many trailing non-empty log lines a start-failure message carries.
+const START_FAILURE_LOG_LINES: usize = 5;
+
+/// [`service_error_response`] plus, for an override-capable engine that gave up
+/// starting, the tail of its instance log and a pointer at the hand-edited
+/// override file.
+///
+/// A bad directive is otherwise a mystery crash-loop: the engine names the
+/// offending option on stderr while it is still parsing its option file, which
+/// the manager captures into the instance log, and this is the only place that
+/// text reaches the caller. The lines are appended verbatim - the engine's own
+/// wording is the diagnosis, and Yerd holds no table of per-engine error
+/// phrasings to improve on it. Two writers append to that log (the captured
+/// stderr and the engine's own logging), so the tail is labelled as a tail and
+/// points at `yerd service logs` for the full picture.
+///
+/// Only the two give-up errors are enriched; the rest (port in use, version not
+/// installed) already say what went wrong.
+fn start_failure_response(
+    def: &Arc<dyn ServiceDefinition>,
+    wire: &str,
+    e: &ServiceError,
+    dirs: &PlatformDirs,
+) -> Response {
+    let gave_up = matches!(
+        e,
+        ServiceError::PermanentFailure { .. } | ServiceError::HealthCheckTimedOut { .. }
+    );
+    let Some(dialect) = def.override_capability().filter(|_| gave_up) else {
+        return service_error_response(e);
+    };
+    let mut tail: Vec<String> = read_log_lines(dirs, wire)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|l| !l.trim().is_empty())
+        .rev()
+        .take(START_FAILURE_LOG_LINES)
+        .collect();
+    tail.reverse();
+    let log_block = if tail.is_empty() {
+        String::new()
+    } else {
+        format!("\nlast lines of the service log:\n{}", tail.join("\n"))
+    };
+    let local =
+        svc_version::local_override_path(dirs, def.id(), service_directives::file_ext(dialect));
+    Response::Error {
+        code: service_error_code(e),
+        message: format!(
+            "{e}{log_block}\ncheck {} and `yerd service logs {wire}`",
+            local.display()
+        ),
     }
 }
 
@@ -1232,6 +1454,37 @@ mod tests {
         let bin = svc_version::install_dir(dirs, def.id(), &ver).join("bin");
         std::fs::create_dir_all(&bin).unwrap();
         std::fs::write(bin.join(def.server_binary().unwrap()), b"#!fake").unwrap();
+    }
+
+    /// Lay down a *runnable* server binary that fails the way an engine fails on
+    /// a bad directive: one line on stderr, then a non-zero exit. Unlike
+    /// [`install_fake`] this is really executed, so a test using it exercises
+    /// the whole spawn -> attached-log -> tail path.
+    #[cfg(unix)]
+    fn install_failing_binary(
+        dirs: &PlatformDirs,
+        type_id: &str,
+        version: &str,
+        stderr_line: &str,
+    ) {
+        use std::os::unix::fs::PermissionsExt as _;
+        let def = def_of(type_id);
+        let path =
+            svc_version::server_path(dirs, def.id(), def.server_binary().unwrap(), &ver(version));
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &path,
+            format!("#!/bin/sh\nprintf '%s\\n' '{stderr_line}' >&2\nexit 1\n"),
+        )
+        .unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    /// Grab a currently-free loopback port so `ensure`'s port pre-flight passes
+    /// on a machine that may already run the real service.
+    fn free_port() -> u16 {
+        let l = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
+        l.local_addr().unwrap().port()
     }
 
     fn ver(s: &str) -> ServiceVersion {
@@ -1445,6 +1698,135 @@ mod tests {
         );
     }
 
+    fn overrides_of(r: Response) -> BTreeMap<String, String> {
+        match r {
+            Response::ServiceOverrides { overrides } => overrides,
+            other => panic!("expected Response::ServiceOverrides, got {other:?}"),
+        }
+    }
+
+    fn one_override(key: &str, value: &str) -> BTreeMap<String, String> {
+        BTreeMap::from([(key.to_string(), value.to_string())])
+    }
+
+    #[tokio::test]
+    async fn set_service_overrides_persists_and_reads_back() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_in(tmp.path());
+        assert!(matches!(
+            set_service_overrides("mysql", one_override("max_connections", " 500 "), &state).await,
+            Response::Ok
+        ));
+        assert_eq!(
+            overrides_of(service_overrides("mysql", &state).await),
+            one_override("max_connections", "500")
+        );
+    }
+
+    #[tokio::test]
+    async fn service_overrides_is_empty_for_an_unconfigured_instance() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_in(tmp.path());
+        assert!(overrides_of(service_overrides("postgres", &state).await).is_empty());
+    }
+
+    #[tokio::test]
+    async fn set_service_overrides_refuses_a_reserved_key_with_its_hint() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_in(tmp.path());
+        let (code, message) = err_parts(
+            set_service_overrides("mysql", one_override("bind_address", "0.0.0.0"), &state).await,
+        );
+        assert_eq!(code, ErrorCode::InvalidPath);
+        assert!(
+            message.contains("bind_address is managed by Yerd: Yerd pins this service to loopback"),
+            "{message}"
+        );
+        let cfg = state.config.lock().await;
+        assert!(!cfg.services.instances.contains_key("mysql"));
+    }
+
+    #[tokio::test]
+    async fn set_service_overrides_refuses_a_bad_shape() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_in(tmp.path());
+        let (name_code, _) =
+            err_parts(set_service_overrides("redis", one_override("!bad", "1"), &state).await);
+        assert_eq!(name_code, ErrorCode::InvalidPath);
+        let (value_code, _) = err_parts(
+            set_service_overrides("redis", one_override("maxmemory", "64mb # nope"), &state).await,
+        );
+        assert_eq!(value_code, ErrorCode::InvalidPath);
+    }
+
+    #[tokio::test]
+    async fn set_service_overrides_removes_on_an_empty_value() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_in(tmp.path());
+        assert!(matches!(
+            set_service_overrides("mysql", one_override("max_connections", "500"), &state).await,
+            Response::Ok
+        ));
+        assert!(matches!(
+            set_service_overrides("mysql", one_override("max_connections", ""), &state).await,
+            Response::Ok
+        ));
+        assert!(overrides_of(service_overrides("mysql", &state).await).is_empty());
+        assert!(
+            matches!(
+                set_service_overrides("mysql", one_override("max_connections", ""), &state).await,
+                Response::Ok
+            ),
+            "removing an absent key is a no-op"
+        );
+    }
+
+    #[tokio::test]
+    async fn overrides_are_refused_for_services_without_the_capability() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_in(tmp.path());
+        for wire in ["meilisearch", "reverb:blog"] {
+            let (set_code, set_message) = err_parts(
+                set_service_overrides(wire, one_override("max_connections", "500"), &state).await,
+            );
+            assert_eq!(set_code, ErrorCode::InvalidPath, "{wire}");
+            assert!(
+                set_message.contains("does not support configuration overrides"),
+                "{set_message}"
+            );
+            let (read_code, _) = err_parts(service_overrides(wire, &state).await);
+            assert_eq!(read_code, ErrorCode::InvalidPath, "{wire}");
+        }
+    }
+
+    #[tokio::test]
+    async fn set_service_overrides_does_not_change_the_run_state() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_in(tmp.path());
+        {
+            let mut cfg = state.config.lock().await;
+            cfg.services.instances.insert(
+                "mysql".to_string(),
+                ServiceInstance {
+                    enabled: true,
+                    version: Some("9.7".to_string()),
+                    ..ServiceInstance::default()
+                },
+            );
+        }
+        let before = service_statuses(&state).await;
+        assert!(matches!(
+            set_service_overrides("mysql", one_override("max_connections", "500"), &state).await,
+            Response::Ok
+        ));
+        let after = service_statuses(&state).await;
+        assert_eq!(before, after);
+        let cfg = state.config.lock().await;
+        let inst = cfg.services.instances.get("mysql").unwrap();
+        assert!(inst.enabled);
+        assert_eq!(inst.version.as_deref(), Some("9.7"));
+    }
+
     #[tokio::test]
     async fn service_logs_tails_last_lines() {
         let tmp = tempfile::tempdir().unwrap();
@@ -1456,6 +1838,45 @@ mod tests {
             Response::ServiceLogs { lines } => assert_eq!(lines, vec!["l4", "l5"]),
             other => panic!("expected ServiceLogs, got {other:?}"),
         }
+    }
+
+    /// The R13 end-to-end: a real spawn of a program that prints one line to
+    /// stderr and exits non-zero, driven through the supervisor until it gives
+    /// up, must put that line in the caller's error message. Nothing is planted
+    /// in the log file - the line only arrives if `capture_output_to_log` and
+    /// `attach_log` really route the child's stderr there.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn start_failure_surfaces_the_engines_own_stderr_line() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = state_in(tmp.path());
+        let complaint = "FATAL CONFIG FILE ERROR (Redis 8.0): Bad directive max_clients";
+        install_failing_binary(&state.dirs, "redis", "8", complaint);
+        {
+            let mut cfg = state.config.lock().await;
+            cfg.services.instances.insert(
+                "redis".to_owned(),
+                ServiceInstance {
+                    version: Some("8".to_owned()),
+                    port: Some(free_port()),
+                    ..ServiceInstance::default()
+                },
+            );
+        }
+
+        let (_, message) = err_parts(start_service("redis", &state).await);
+        assert!(
+            message.contains(complaint),
+            "engine's own line missing from: {message}"
+        );
+        assert!(
+            message.contains("conf.d/50-local.conf"),
+            "override-file pointer missing from: {message}"
+        );
+        assert!(
+            message.contains("`yerd service logs redis`"),
+            "log-command pointer missing from: {message}"
+        );
     }
 
     #[tokio::test]

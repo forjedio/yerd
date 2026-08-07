@@ -8,6 +8,7 @@ publish.workspace      = true
 description            = "Local service supervision and version management for Yerd (Redis/Valkey, MySQL, MariaDB, Postgres, Meilisearch)."
 
 [dependencies]
+yerd-core      = { path = "../yerd-core" }
 yerd-platform  = { path = "../yerd-platform" }
 yerd-supervise = { path = "../yerd-supervise" }
 thiserror      = { workspace = true }

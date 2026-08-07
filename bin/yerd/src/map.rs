@@ -184,7 +184,7 @@ pub fn to_request(cmd: &Command) -> Result<Request, ClientError> {
             channel: channel_from_flags(*edge, *stable),
         },
         Command::Services => Request::ListServices,
-        Command::Service { action } => service_request(action),
+        Command::Service { action } => service_override_to_request(action)?,
         Command::Domain { action } => domain_request(action)?,
         Command::Proxy { action } => proxy_request(action)?,
         Command::Route { action } => route_request(action)?,
@@ -269,7 +269,10 @@ pub fn to_request(cmd: &Command) -> Result<Request, ClientError> {
 }
 
 /// Map a `yerd service <action>` to its wire request. Service ids are passed
-/// through verbatim - the daemon returns `NotFound` for an unknown id.
+/// through verbatim - the daemon returns `NotFound` for an unknown id. The
+/// `set`/`unset` arms are only ever reached through
+/// [`service_override_to_request`], which runs the client-side pre-flight
+/// first.
 fn service_request(action: &ServiceAction) -> Request {
     match action {
         ServiceAction::Available => Request::AvailableServices,
@@ -332,7 +335,58 @@ fn service_request(action: &ServiceAction) -> Request {
             service: service.clone(),
             site: site.clone(),
         },
+        ServiceAction::Set {
+            service,
+            key,
+            value,
+        } => Request::SetServiceOverrides {
+            service: service.clone(),
+            overrides: std::collections::BTreeMap::from([(key.clone(), value.clone())]),
+        },
+        ServiceAction::Unset { service, key } => Request::SetServiceOverrides {
+            service: service.clone(),
+            overrides: std::collections::BTreeMap::from([(key.clone(), String::new())]),
+        },
+        ServiceAction::Overrides { service } => Request::ServiceOverrides {
+            service: service.clone(),
+        },
     }
+}
+
+/// Validate a `yerd service set|unset` override client-side so a bad argument
+/// fails before connect, then map it like every other service action. The
+/// pre-flight lives here because [`service_request`] is infallible; the daemon
+/// re-validates (it is the authority) and refuses the same cases.
+fn service_override_to_request(action: &ServiceAction) -> Result<Request, ClientError> {
+    let (service, key, value) = match action {
+        ServiceAction::Set {
+            service,
+            key,
+            value,
+        } => (service, key, Some(value.as_str())),
+        ServiceAction::Unset { service, key } => (service, key, None),
+        other => return Ok(service_request(other)),
+    };
+    let type_id = service
+        .split_once(':')
+        .map_or(service.as_str(), |(ty, _)| ty);
+    let Some(dialect) = yerd_core::service_directives::dialect_for(type_id) else {
+        return Err(ClientError::Usage(format!(
+            "{service} does not support configuration overrides"
+        )));
+    };
+    yerd_core::service_directives::validate_name(key)
+        .map_err(|e| ClientError::Usage(e.to_string()))?;
+    if let Some(hint) = yerd_core::service_directives::reserved(dialect, key) {
+        return Err(ClientError::Usage(format!(
+            "{key} is managed by Yerd: {hint}"
+        )));
+    }
+    if let Some(v) = value {
+        yerd_core::service_directives::validate_value(dialect, v)
+            .map_err(|e| ClientError::Usage(e.to_string()))?;
+    }
+    Ok(service_request(action))
 }
 
 /// Map a `yerd domain <action>` to its wire request, validating the site name
@@ -971,6 +1025,15 @@ pub fn render(resp: &Response, json: bool) -> Rendered {
             "no log output".to_owned()
         } else {
             lines.join("\n")
+        }),
+        Response::ServiceOverrides { overrides } => Rendered::ok(if overrides.is_empty() {
+            "no overrides".to_owned()
+        } else {
+            overrides
+                .iter()
+                .map(|(k, v)| format!("{k} = {v}"))
+                .collect::<Vec<_>>()
+                .join("\n")
         }),
         Response::Databases { databases } => Rendered::ok(if databases.is_empty() {
             "no databases".to_owned()
@@ -3648,6 +3711,123 @@ mod tests {
                 site: "shop".into(),
             }
         );
+        assert_eq!(
+            to_request(&Command::Service {
+                action: ServiceAction::Overrides {
+                    service: "mysql".into()
+                }
+            })
+            .unwrap(),
+            Request::ServiceOverrides {
+                service: "mysql".into()
+            }
+        );
+    }
+
+    #[test]
+    fn maps_service_set_and_unset_to_a_single_entry_override_map() {
+        use crate::cli::ServiceAction;
+        assert_eq!(
+            to_request(&Command::Service {
+                action: ServiceAction::Set {
+                    service: "mysql".into(),
+                    key: "max_connections".into(),
+                    value: "500".into(),
+                }
+            })
+            .unwrap(),
+            Request::SetServiceOverrides {
+                service: "mysql".into(),
+                overrides: std::collections::BTreeMap::from([(
+                    "max_connections".to_string(),
+                    "500".to_string()
+                )]),
+            }
+        );
+        assert_eq!(
+            to_request(&Command::Service {
+                action: ServiceAction::Unset {
+                    service: "mysql".into(),
+                    key: "max_connections".into(),
+                }
+            })
+            .unwrap(),
+            Request::SetServiceOverrides {
+                service: "mysql".into(),
+                overrides: std::collections::BTreeMap::from([(
+                    "max_connections".to_string(),
+                    String::new()
+                )]),
+            }
+        );
+    }
+
+    #[test]
+    fn service_set_refuses_a_reserved_key_in_either_spelling() {
+        use crate::cli::ServiceAction;
+        for key in ["bind-address", "bind_address"] {
+            match to_request(&Command::Service {
+                action: ServiceAction::Set {
+                    service: "mysql".into(),
+                    key: key.into(),
+                    value: "0.0.0.0".into(),
+                },
+            }) {
+                Err(ClientError::Usage(m)) => {
+                    assert!(m.contains("managed by Yerd"), "{key}: {m}");
+                    assert!(m.contains("loopback"), "{key}: {m}");
+                }
+                other => panic!("expected Usage error for {key}, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn service_set_refuses_a_bad_shape_and_a_service_without_overrides() {
+        use crate::cli::ServiceAction;
+        match to_request(&Command::Service {
+            action: ServiceAction::Set {
+                service: "mysql".into(),
+                key: "1bad".into(),
+                value: "500".into(),
+            },
+        }) {
+            Err(ClientError::Usage(_)) => {}
+            other => panic!("expected Usage error, got {other:?}"),
+        }
+        match to_request(&Command::Service {
+            action: ServiceAction::Set {
+                service: "mysql".into(),
+                key: "max_connections".into(),
+                value: "500 # evil".into(),
+            },
+        }) {
+            Err(ClientError::Usage(_)) => {}
+            other => panic!("expected Usage error, got {other:?}"),
+        }
+        match to_request(&Command::Service {
+            action: ServiceAction::Set {
+                service: "meilisearch".into(),
+                key: "max_connections".into(),
+                value: "500".into(),
+            },
+        }) {
+            Err(ClientError::Usage(m)) => {
+                assert_eq!(m, "meilisearch does not support configuration overrides");
+            }
+            other => panic!("expected Usage error, got {other:?}"),
+        }
+        match to_request(&Command::Service {
+            action: ServiceAction::Unset {
+                service: "reverb:blog".into(),
+                key: "max_connections".into(),
+            },
+        }) {
+            Err(ClientError::Usage(m)) => {
+                assert_eq!(m, "reverb:blog does not support configuration overrides");
+            }
+            other => panic!("expected Usage error, got {other:?}"),
+        }
     }
 
     #[test]
@@ -3911,6 +4091,7 @@ mod tests {
             type_id: String::new(),
             site: None,
             error: None,
+            supports_overrides: false,
         }
     }
 
@@ -4003,6 +4184,32 @@ mod tests {
         );
         assert_eq!(lines.stdout, "line one\nline two");
         assert_eq!(lines.code, 0);
+    }
+
+    #[test]
+    fn renders_service_overrides() {
+        let empty = render(
+            &Response::ServiceOverrides {
+                overrides: std::collections::BTreeMap::new(),
+            },
+            false,
+        );
+        assert_eq!(empty.stdout, "no overrides");
+
+        let listed = render(
+            &Response::ServiceOverrides {
+                overrides: std::collections::BTreeMap::from([
+                    ("max_connections".to_string(), "500".to_string()),
+                    ("sql_mode".to_string(), "STRICT_ALL_TABLES".to_string()),
+                ]),
+            },
+            false,
+        );
+        assert_eq!(
+            listed.stdout,
+            "max_connections = 500\nsql_mode = STRICT_ALL_TABLES"
+        );
+        assert_eq!(listed.code, 0);
     }
 
     #[test]
