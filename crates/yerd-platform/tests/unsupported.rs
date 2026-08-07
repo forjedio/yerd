@@ -14,9 +14,9 @@ use std::net::{Ipv4Addr, SocketAddr};
 mod common;
 
 use yerd_platform::{
-    ActivePaths, ActivePortBinder, ActiveResolverInstaller, ActiveTerminalLauncher,
-    ActiveTrustStore, Paths, PlatformError, PortBinder, ResolverInstaller, TerminalLauncher,
-    TrustStore,
+    ActiveIdeLauncher, ActivePaths, ActivePortBinder, ActiveResolverInstaller, ActiveSystemOpener,
+    ActiveTerminalLauncher, ActiveTrustStore, IdeLauncher, Paths, PlatformError, PortBinder,
+    ResolverInstaller, SystemOpener, TerminalLauncher, TrustStore,
 };
 
 use common::random_fingerprint;
@@ -85,6 +85,31 @@ fn terminal_launcher_unsupported() {
     assert!(matches!(
         ActiveTerminalLauncher
             .open_terminal(std::path::Path::new("/srv/site"))
+            .unwrap_err(),
+        PlatformError::Unsupported { .. }
+    ));
+}
+
+#[test]
+fn ide_launcher_unsupported() {
+    let launcher = ActiveIdeLauncher;
+    assert!(launcher.installed_ides().is_empty());
+    assert!(matches!(
+        launcher
+            .open_in_ide(
+                yerd_platform::Ide::VsCode,
+                std::path::Path::new("/srv/site")
+            )
+            .unwrap_err(),
+        PlatformError::Unsupported { .. }
+    ));
+}
+
+#[test]
+fn system_opener_unsupported() {
+    assert!(matches!(
+        ActiveSystemOpener
+            .open_path(std::path::Path::new("/srv/site"))
             .unwrap_err(),
         PlatformError::Unsupported { .. }
     ));

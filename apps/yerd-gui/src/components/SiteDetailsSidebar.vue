@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import {
   ArrowUpRight,
+  Code2,
   Copy,
   FileText,
   FolderOpen,
@@ -22,14 +23,17 @@ import Spinner from "@/components/ui/Spinner.vue";
 import Switch from "@/components/ui/Switch.vue";
 import {
   IpcError,
+  getInstalledIdes,
   openInBrowser,
+  openInIde,
+  openInSystemDefault,
   openInTerminal,
   openPath,
   pickDirectory,
   showDumpsWindow,
   wordpressAdminUsers,
 } from "@/ipc/client";
-import type { SiteEntry, StatusReport } from "@/ipc/types";
+import type { IdeOption, SiteEntry, StatusReport } from "@/ipc/types";
 import { siteUrl } from "@/lib/siteUrl";
 import { openWpAdmin } from "@/lib/wpAdmin";
 import { useToast } from "@/composables/useToast";
@@ -66,6 +70,9 @@ const emit = defineEmits<{
 const toast = useToast();
 const activeTab = ref<"general" | "domains" | "routing" | "information">("general");
 const webRoot = ref("");
+const installedIdes = ref<IdeOption[]>([]);
+const selectedIde = ref("auto");
+let ideDetectionRequestId = 0;
 
 const phpOptions = computed(() => {
   const versions = props.site
@@ -74,7 +81,25 @@ const phpOptions = computed(() => {
   return versions.map((version) => ({ value: version, label: `PHP ${version}` }));
 });
 
+const ideOptions = computed(() => [
+  { value: "auto", label: "Auto-detect" },
+  ...installedIdes.value.map((ide) => ({ value: ide.id, label: ide.label })),
+]);
+
 const hasGroups = computed(() => (props.groupOptions?.length ?? 0) > 0);
+
+const effectiveIde = computed(() => {
+  if (selectedIde.value === "auto") return installedIdes.value[0]?.id ?? "system";
+  if (selectedIde.value === "system") return "system";
+  return installedIdes.value.some((ide) => ide.id === selectedIde.value)
+    ? selectedIde.value
+    : installedIdes.value[0]?.id ?? "system";
+});
+
+const editorLabel = computed(() => {
+  if (effectiveIde.value === "system") return "Open folder";
+  return installedIdes.value.find((ide) => ide.id === effectiveIde.value)?.label ?? "Editor";
+});
 
 const DEFAULT_ADMIN_OPTION = { value: "", label: "Earliest admin (default)" };
 type WpAdminUsersStatus = "idle" | "loading" | "ready" | "error";
@@ -139,6 +164,48 @@ async function openTerminal(site: SiteEntry): Promise<void> {
   }
 }
 
+async function openSite(site: SiteEntry, report: StatusReport | null): Promise<void> {
+  try {
+    await openInBrowser(siteUrl(site, report));
+  } catch (error) {
+    toast.error("Couldn't open site", (error as IpcError).message);
+  }
+}
+
+async function revealSitePath(site: SiteEntry): Promise<void> {
+  try {
+    await openPath(site.document_root);
+  } catch (error) {
+    toast.error("Couldn't reveal site folder", (error as IpcError).message);
+  }
+}
+
+async function loadInstalledIdes(): Promise<void> {
+  const requestId = ++ideDetectionRequestId;
+  try {
+    const detected = await getInstalledIdes();
+    if (requestId !== ideDetectionRequestId) return;
+    installedIdes.value = detected;
+  } catch (error) {
+    if (requestId !== ideDetectionRequestId) return;
+    installedIdes.value = [];
+    toast.error("Couldn't detect installed IDEs", (error as IpcError).message);
+  }
+}
+
+async function openEditor(site: SiteEntry): Promise<void> {
+  try {
+    const selectedIde = effectiveIde.value;
+    if (selectedIde === "system") {
+      await openInSystemDefault(site.document_root);
+    } else {
+      await openInIde(site.document_root, selectedIde);
+    }
+  } catch (error) {
+    toast.error("Couldn't open the site folder", (error as IpcError).message);
+  }
+}
+
 async function openDumps(): Promise<void> {
   try {
     await showDumpsWindow();
@@ -168,14 +235,18 @@ function changeWebRoot(site: SiteEntry | null): void {
 }
 
 async function chooseWebRoot(site: SiteEntry): Promise<void> {
-  const directory = await pickDirectory(site.document_root);
-  if (!directory) return;
-  const relative = relativeWebRoot(site.document_root, directory);
-  if (relative === null) {
-    toast.error("Invalid web root", "Choose a directory inside the site folder.");
-    return;
+  try {
+    const directory = await pickDirectory(site.document_root);
+    if (!directory) return;
+    const relative = relativeWebRoot(site.document_root, directory);
+    if (relative === null) {
+      toast.error("Invalid web root", "Choose a directory inside the site folder.");
+      return;
+    }
+    webRoot.value = relative;
+  } catch (error) {
+    toast.error("Couldn't choose web root", (error as IpcError).message);
   }
-  webRoot.value = relative;
 }
 
 function relativeWebRoot(siteRoot: string, selectedDirectory: string): string | null {
@@ -234,6 +305,12 @@ watch(
   [() => props.open, () => props.site?.name],
   () => {
     activeTab.value = "general";
+    if (!props.open || !props.site) {
+      ideDetectionRequestId += 1;
+      return;
+    }
+    selectedIde.value = "auto";
+    void loadInstalledIdes();
     if (!props.open || !props.site?.is_wordpress) return;
     wpAdminUsersStatus.value = "idle";
     wpAdminUsersOptions.value = [DEFAULT_ADMIN_OPTION];
@@ -292,7 +369,7 @@ onUnmounted(() => {
             class="border-b-2 px-3 py-2.5 text-xs font-medium transition-colors"
             :class="activeTab === 'general' ? 'border-primary text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground'"
             :aria-selected="activeTab === 'general'"
-            aria-controls="site-details-panel-general"
+            aria-controls="site-details-panel"
             role="tab"
             @click="activeTab = 'general'"
           >
@@ -304,7 +381,7 @@ onUnmounted(() => {
             class="border-b-2 px-3 py-2.5 text-xs font-medium transition-colors"
             :class="activeTab === 'domains' ? 'border-primary text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground'"
             :aria-selected="activeTab === 'domains'"
-            aria-controls="site-details-panel-domains"
+            aria-controls="site-details-panel"
             role="tab"
             @click="activeTab = 'domains'"
           >
@@ -328,7 +405,7 @@ onUnmounted(() => {
             class="border-b-2 px-3 py-2.5 text-xs font-medium transition-colors"
             :class="activeTab === 'information' ? 'border-primary text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground'"
             :aria-selected="activeTab === 'information'"
-            aria-controls="site-details-panel-information"
+            aria-controls="site-details-panel"
             role="tab"
             @click="activeTab = 'information'"
           >
@@ -337,13 +414,13 @@ onUnmounted(() => {
         </div>
 
         <div
-          :id="`site-details-panel-${activeTab}`"
+          id="site-details-panel"
           class="min-h-0 flex-1 overflow-y-auto px-5 py-5"
           role="tabpanel"
           :aria-labelledby="`site-details-tab-${activeTab}`"
         >
           <template v-if="activeTab === 'general'">
-            <Button class="w-full" @click="openInBrowser(siteUrl(site, report))">
+            <Button class="w-full" @click="openSite(site, report)">
               Open site
               <ArrowUpRight />
             </Button>
@@ -351,6 +428,15 @@ onUnmounted(() => {
             <div class="mt-4 grid grid-cols-2 gap-2">
               <Button class="min-w-0 px-2" variant="outline" size="sm" @click="openTerminal(site)">
                 <Terminal /> <span class="truncate">Terminal</span>
+              </Button>
+              <Button
+                class="min-w-0 px-2"
+                variant="outline"
+                size="sm"
+                :title="`Open the site folder in ${editorLabel}`"
+                @click="openEditor(site)"
+              >
+                <Code2 /> <span class="truncate">{{ editorLabel }}</span>
               </Button>
               <Button
                 class="min-w-0 px-2"
@@ -398,6 +484,18 @@ onUnmounted(() => {
                   />
                 </dd>
               </div>
+              <div class="flex items-center justify-between gap-4 px-3 py-3">
+                <dt class="shrink-0 text-xs text-muted-foreground">IDE switch</dt>
+                <dd class="min-w-0">
+                  <Select
+                    :model-value="selectedIde"
+                    :options="ideOptions"
+                    aria-label="Site IDE"
+                    :disabled="busy"
+                    @update:model-value="selectedIde = $event"
+                  />
+                </dd>
+              </div>
               <div class="px-3 py-3">
                 <dt class="text-xs text-muted-foreground">Path</dt>
                 <dd class="mt-1 flex items-start gap-2 text-sm">
@@ -405,7 +503,7 @@ onUnmounted(() => {
                   <button
                     class="min-w-0 break-all text-left font-mono hover:text-brand"
                     :title="`Reveal ${site.document_root}`"
-                    @click="openPath(site.document_root)"
+                    @click="revealSitePath(site)"
                   >
                     {{ site.document_root }}
                   </button>

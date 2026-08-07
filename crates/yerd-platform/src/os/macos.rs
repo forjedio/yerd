@@ -1,4 +1,4 @@
-//! macOS implementations of the four traits.
+//! macOS implementations of the host-platform traits.
 //!
 //! `Paths` uses `directories` for `config`/`data`/`cache`; `state`
 //! coincides with `data` on macOS (no XDG state distinction); `runtime`
@@ -15,8 +15,9 @@
 #![allow(clippy::similar_names)]
 
 use std::fs;
-use std::io::Write;
+use std::io::{self, Write};
 use std::net::{Ipv4Addr, SocketAddr, TcpListener};
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -24,19 +25,22 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use directories::ProjectDirs;
 
 use crate::error::ops;
+use crate::ide::IdeLauncher;
 use crate::metrics::SystemMetrics;
+use crate::opener::SystemOpener;
 use crate::paths::{Paths, PlatformDirs};
 use crate::port_binder::{BoundPort, PortBinder, PortPair};
 use crate::port_redirect::{
     loopback_port_reachable, loopback_redirect_reaches_proxy, PortRedirector,
 };
+use crate::pure::ide_spec::{mac_app_name_matches, spec_for};
 use crate::pure::{pem_match, pf_anchor, port_plan, ps_metrics, resolver_file};
 use crate::resolver::ResolverInstaller;
 use crate::terminal::TerminalLauncher;
 use crate::trust_store::{BrowserCaTrust, CaFingerprint, NssOutcome, TrustStore};
 use crate::{
-    BindPairErrorReason, PlatformError, ResolverErrorReason, TerminalErrorReason,
-    TrustStoreErrorReason,
+    BindPairErrorReason, Ide, IdeErrorReason, OpenErrorReason, PlatformError, ResolverErrorReason,
+    TerminalErrorReason, TrustStoreErrorReason,
 };
 
 /// macOS terminal launcher.
@@ -123,6 +127,205 @@ impl TerminalLauncher for MacosTerminalLauncher {
 
 fn shell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\\''"))
+}
+
+/// macOS IDE launcher using a CLI launcher when available and the standard
+/// application opener as a fallback.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct MacosIdeLauncher;
+
+impl MacosIdeLauncher {
+    /// Construct.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self
+    }
+}
+
+fn executable_in_path(name: &str) -> Option<PathBuf> {
+    std::env::var_os("PATH").and_then(|paths| {
+        std::env::split_paths(&paths)
+            .map(|directory| directory.join(name))
+            .find(|candidate| {
+                fs::metadata(candidate).is_ok_and(|metadata| {
+                    metadata.is_file() && metadata.permissions().mode() & 0o111 != 0
+                })
+            })
+    })
+}
+
+fn application_locations() -> Vec<PathBuf> {
+    let mut locations = vec![
+        PathBuf::from("/Applications"),
+        PathBuf::from("/System/Applications"),
+        PathBuf::from("/Network/Applications"),
+    ];
+    if let Some(home) = std::env::var_os("HOME") {
+        locations.push(PathBuf::from(home).join("Applications"));
+    }
+    locations
+}
+
+fn standard_application(ide: Ide, locations: &[PathBuf]) -> Option<PathBuf> {
+    spec_for(ide).and_then(|spec| {
+        spec.mac_app_names.iter().find_map(|name| {
+            locations
+                .iter()
+                .map(|directory| directory.join(format!("{name}.app")))
+                .find(|candidate| candidate.is_dir())
+        })
+    })
+}
+
+fn spotlight_applications(names: &[&str]) -> Vec<PathBuf> {
+    if names.is_empty() {
+        return Vec::new();
+    }
+    let query = names
+        .iter()
+        .map(|name| format!("kMDItemFSName == '{name}*.app'cd"))
+        .collect::<Vec<_>>()
+        .join(" || ");
+    let Ok(output) = Command::new("/usr/bin/mdfind").arg(query).output() else {
+        return Vec::new();
+    };
+    if !output.status.success() {
+        return Vec::new();
+    }
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(PathBuf::from)
+        .filter(|candidate| candidate.is_dir())
+        .collect()
+}
+
+fn ide_cli(ide: Ide) -> Option<PathBuf> {
+    spec_for(ide).and_then(|spec| {
+        spec.cli_names
+            .iter()
+            .find_map(|name| executable_in_path(name))
+    })
+}
+
+fn detected_applications() -> Vec<(Ide, PathBuf)> {
+    let locations = application_locations();
+    let mut found = Vec::new();
+    for ide in Ide::all() {
+        if let Some(application) = standard_application(*ide, &locations) {
+            found.push((*ide, application));
+        }
+    }
+
+    let mut missing_names = Vec::new();
+    for ide in Ide::all() {
+        if found.iter().any(|(found_ide, _)| *found_ide == *ide) {
+            continue;
+        }
+        if let Some(spec) = spec_for(*ide) {
+            for name in spec.mac_app_names {
+                if !missing_names.contains(name) {
+                    missing_names.push(*name);
+                }
+            }
+        }
+    }
+
+    for application in spotlight_applications(&missing_names) {
+        let Some(name) = application
+            .file_name()
+            .and_then(|value| value.to_str())
+            .and_then(|value| value.strip_suffix(".app"))
+        else {
+            continue;
+        };
+        let Some(ide) = Ide::all().iter().copied().find(|ide| {
+            !found.iter().any(|(found_ide, _)| *found_ide == *ide)
+                && mac_app_name_matches(*ide, name)
+        }) else {
+            continue;
+        };
+        found.push((ide, application));
+    }
+    found
+}
+
+/// macOS system-default opener.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct MacosSystemOpener;
+
+impl MacosSystemOpener {
+    /// Construct.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self
+    }
+}
+
+fn spawn_and_check(command: &mut Command, program: &str) -> io::Result<()> {
+    let mut child = command.spawn()?;
+    match child.try_wait()? {
+        Some(status) if !status.success() => {
+            Err(io::Error::other(format!("{program} exited with {status}")))
+        }
+        _ => Ok(()),
+    }
+}
+
+impl SystemOpener for MacosSystemOpener {
+    fn open_path(&self, path: &Path) -> Result<(), PlatformError> {
+        let mut command = Command::new("/usr/bin/open");
+        command.arg(path);
+        spawn_and_check(&mut command, "/usr/bin/open").map_err(|source| PlatformError::SystemOpen {
+            reason: OpenErrorReason::Launch {
+                program: "/usr/bin/open".to_owned(),
+                source,
+            },
+        })
+    }
+}
+
+impl IdeLauncher for MacosIdeLauncher {
+    fn installed_ides(&self) -> Vec<Ide> {
+        let applications = detected_applications();
+        Ide::all()
+            .iter()
+            .copied()
+            .filter(|ide| {
+                ide_cli(*ide).is_some() || applications.iter().any(|(found, _)| *found == *ide)
+            })
+            .collect()
+    }
+
+    fn open_in_ide(&self, ide: Ide, path: &Path) -> Result<(), PlatformError> {
+        if let Some(executable) = ide_cli(ide) {
+            let program = executable.to_string_lossy().into_owned();
+            let mut command = Command::new(&executable);
+            command.arg(path).current_dir(path);
+            return match spawn_and_check(&mut command, &program) {
+                Ok(()) => Ok(()),
+                Err(source) => Err(PlatformError::Ide {
+                    reason: IdeErrorReason::Launch { ide, source },
+                }),
+            };
+        }
+
+        let Some((_, application)) = detected_applications()
+            .into_iter()
+            .find(|(found, _)| *found == ide)
+        else {
+            return Err(PlatformError::Ide {
+                reason: IdeErrorReason::NotInstalled(ide),
+            });
+        };
+        let mut command = Command::new("/usr/bin/open");
+        command.args(["-a"]).arg(application).arg(path);
+        match spawn_and_check(&mut command, "/usr/bin/open") {
+            Ok(()) => Ok(()),
+            Err(source) => Err(PlatformError::Ide {
+                reason: IdeErrorReason::Launch { ide, source },
+            }),
+        }
+    }
 }
 
 /// macOS `Paths` implementation.

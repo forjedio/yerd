@@ -8,14 +8,16 @@ use std::net::SocketAddr;
 use std::path::Path;
 
 use crate::error::ops;
+use crate::ide::IdeLauncher;
 use crate::metrics::SystemMetrics;
+use crate::opener::SystemOpener;
 use crate::paths::{Paths, PlatformDirs};
 use crate::port_binder::{BoundPort, PortBinder, PortPair};
 use crate::port_redirect::PortRedirector;
 use crate::resolver::ResolverInstaller;
 use crate::terminal::TerminalLauncher;
 use crate::trust_store::{CaFingerprint, NssOutcome, TrustStore};
-use crate::PlatformError;
+use crate::{Ide, PlatformError};
 
 /// Stub terminal launcher for unsupported OSes.
 #[derive(Debug, Default, Clone, Copy)]
@@ -33,6 +35,50 @@ impl TerminalLauncher for UnsupportedTerminalLauncher {
     fn open_terminal(&self, _: &Path) -> Result<(), PlatformError> {
         Err(PlatformError::Unsupported {
             operation: ops::OPEN_TERMINAL,
+        })
+    }
+}
+
+/// Stub IDE launcher for unsupported OSes.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct UnsupportedIdeLauncher;
+
+impl UnsupportedIdeLauncher {
+    /// Construct.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self
+    }
+}
+
+impl IdeLauncher for UnsupportedIdeLauncher {
+    fn installed_ides(&self) -> Vec<Ide> {
+        Vec::new()
+    }
+
+    fn open_in_ide(&self, _: Ide, _: &Path) -> Result<(), PlatformError> {
+        Err(PlatformError::Unsupported {
+            operation: ops::OPEN_IDE,
+        })
+    }
+}
+
+/// Stub system opener for unsupported OSes.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct UnsupportedSystemOpener;
+
+impl UnsupportedSystemOpener {
+    /// Construct.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self
+    }
+}
+
+impl SystemOpener for UnsupportedSystemOpener {
+    fn open_path(&self, _: &Path) -> Result<(), PlatformError> {
+        Err(PlatformError::Unsupported {
+            operation: ops::OPEN_DEFAULT,
         })
     }
 }

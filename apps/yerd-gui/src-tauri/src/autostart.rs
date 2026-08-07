@@ -56,6 +56,11 @@ struct GuiSettings {
     /// before the webview/localStorage exists, hence a file not localStorage.
     #[serde(default)]
     gui_minimized: bool,
+    /// Whether the main GUI window was maximized when it was last changed.
+    /// Read by `main` before showing the window so reopening Yerd preserves the
+    /// native maximize/restore state without a visible normal-size flash.
+    #[serde(default)]
+    gui_maximized: bool,
     /// Whether the first-run welcome journey has been completed at least once.
     /// `#[serde(default)]` is mandatory: an existing `gui-settings.json` written
     /// before this field existed must still deserialize (else `load_settings`
@@ -191,6 +196,12 @@ fn save_settings(s: &GuiSettings) -> Result<(), GuiError> {
 /// Read the persisted "start minimized" preference (used by `main`'s setup).
 pub(crate) fn gui_minimized() -> bool {
     load_settings().gui_minimized
+}
+
+/// Read the persisted main-window maximize state (used by `main`'s setup and
+/// tray reveal path).
+pub(crate) fn gui_maximized() -> bool {
+    load_settings().gui_maximized
 }
 
 /// Read the persisted tray icon variant (used by `tray.rs`).
@@ -1423,6 +1434,14 @@ pub fn set_gui_minimized(on: bool) -> Result<(), GuiError> {
     save_settings(&s)
 }
 
+/// Persist the main GUI window's native maximize state.
+#[tauri::command]
+pub fn set_gui_maximized(maximized: bool) -> Result<(), GuiError> {
+    let mut s = load_settings();
+    s.gui_maximized = maximized;
+    save_settings(&s)
+}
+
 /// Current tray icon variant, for the Settings screen.
 #[tauri::command]
 pub fn get_tray_icon_variant() -> TrayIconVariant {
@@ -1484,6 +1503,7 @@ mod tests {
     fn gui_settings_without_title_bar_style_field_deserializes_to_auto() {
         let s: GuiSettings = serde_json::from_str("{}").expect("empty object deserializes");
         assert_eq!(s.title_bar_style, TitleBarStyle::Auto);
+        assert!(!s.gui_maximized);
     }
 
     #[test]

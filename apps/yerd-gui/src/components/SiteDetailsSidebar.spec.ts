@@ -4,6 +4,9 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const openInBrowser = vi.fn();
 const openPath = vi.fn();
 const openInTerminal = vi.fn();
+const openInIde = vi.fn();
+const openInSystemDefault = vi.fn();
+const getInstalledIdes = vi.fn();
 const pickDirectory = vi.fn();
 const showDumpsWindow = vi.fn();
 const mintWordPressLoginToken = vi.fn();
@@ -20,6 +23,9 @@ vi.mock("@/ipc/client", () => ({
   openInBrowser: (...args: unknown[]) => openInBrowser(...args),
   openPath: (...args: unknown[]) => openPath(...args),
   openInTerminal: (...args: unknown[]) => openInTerminal(...args),
+  openInIde: (...args: unknown[]) => openInIde(...args),
+  openInSystemDefault: (...args: unknown[]) => openInSystemDefault(...args),
+  getInstalledIdes: (...args: unknown[]) => getInstalledIdes(...args),
   pickDirectory: (...args: unknown[]) => pickDirectory(...args),
   showDumpsWindow: (...args: unknown[]) => showDumpsWindow(...args),
   mintWordPressLoginToken: (...args: unknown[]) => mintWordPressLoginToken(...args),
@@ -95,6 +101,9 @@ describe("SiteDetailsSidebar", () => {
     openInBrowser.mockReset();
     openPath.mockReset();
     openInTerminal.mockReset();
+    openInIde.mockReset();
+    openInSystemDefault.mockReset();
+    getInstalledIdes.mockReset().mockResolvedValue([]);
     pickDirectory.mockReset();
     showDumpsWindow.mockReset();
     mintWordPressLoginToken.mockReset();
@@ -120,6 +129,7 @@ describe("SiteDetailsSidebar", () => {
     expect(wrapper.text()).toContain("/srv/blog");
     expect(wrapper.text()).toContain("Laravel");
     expect(wrapper.text()).toContain("8.3");
+    expect(wrapper.text()).toContain("IDE switch");
     expect(wrapper.text()).not.toContain("Tinker");
     expect(wrapper.text()).toContain("Terminal");
     expect(wrapper.text()).toContain("Dumps");
@@ -154,6 +164,53 @@ describe("SiteDetailsSidebar", () => {
     if (!dumps) throw new Error("Dumps button not rendered");
     await dumps.trigger("click");
     expect(showDumpsWindow).toHaveBeenCalledOnce();
+  });
+
+  it("opens the site folder with the system file manager when no IDE is detected", async () => {
+    const wrapper = mountSidebar();
+    await flushPromises();
+
+    const editor = wrapper.findAll("button").find((button) => button.text() === "Open folder");
+    if (!editor) throw new Error("Editor button not rendered");
+    await editor.trigger("click");
+
+    expect(openInSystemDefault).toHaveBeenCalledWith("/srv/blog");
+    expect(openInIde).not.toHaveBeenCalled();
+    expect(
+      wrapper.get('[aria-label="Site IDE"]').findAll("option").map((option) => option.text()),
+    ).toEqual(["Auto-detect"]);
+  });
+
+  it("opens the site folder with the selected detected IDE", async () => {
+    getInstalledIdes.mockResolvedValue([
+      { id: "vscode", label: "VS Code" },
+      { id: "zed", label: "Zed" },
+    ]);
+    const wrapper = mountSidebar();
+    await flushPromises();
+
+    expect(
+      wrapper.get('[aria-label="Site IDE"]').findAll("option").map((option) => option.text()),
+    ).toEqual(["Auto-detect", "VS Code", "Zed"]);
+    await wrapper.get('[aria-label="Site IDE"]').setValue("zed");
+    const editor = wrapper.findAll("button").find((button) => button.text() === "Zed");
+    if (!editor) throw new Error("IDE button not rendered");
+    await editor.trigger("click");
+
+    expect(openInIde).toHaveBeenCalledWith("/srv/blog", "zed");
+  });
+
+  it("auto-detects the first installed IDE", async () => {
+    getInstalledIdes.mockResolvedValue([{ id: "zed", label: "Zed" }]);
+    const wrapper = mountSidebar();
+    await flushPromises();
+
+    const editor = wrapper.findAll("button").find((button) => button.text() === "Zed");
+    if (!editor) throw new Error("Zed button not rendered");
+    await editor.trigger("click");
+
+    expect(openInIde).toHaveBeenCalledWith("/srv/blog", "zed");
+    expect(openInSystemDefault).not.toHaveBeenCalled();
   });
 
   it("rejects a picked directory outside the site folder", async () => {
@@ -205,6 +262,17 @@ describe("SiteDetailsSidebar", () => {
     await wrapper.get(".site-sidebar-backdrop").trigger("click");
 
     expect(wrapper.emitted("close")).toHaveLength(1);
+  });
+
+  it("keeps every tab connected to the rendered panel", () => {
+    const wrapper = mountSidebar();
+    const panel = wrapper.get('[role="tabpanel"]');
+    const panelId = panel.attributes("id");
+
+    expect(panelId).toBe("site-details-panel");
+    for (const tab of wrapper.findAll('[role="tab"]')) {
+      expect(tab.attributes("aria-controls")).toBe(panelId);
+    }
   });
 
   it("closes on Escape", async () => {

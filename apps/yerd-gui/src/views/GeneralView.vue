@@ -34,7 +34,12 @@ import {
   setSymlinkProtection,
   setTrayIconVariant,
 } from "@/ipc/client";
-import type { AutostartState, CliPathStatus, TitleBarStyle, TrayIconVariant } from "@/ipc/types";
+import type {
+  AutostartState,
+  CliPathStatus,
+  TitleBarStyle,
+  TrayIconVariant,
+} from "@/ipc/types";
 import { useTheme, type ThemePref } from "@/lib/theme";
 import { useTitleBarStyle } from "@/lib/titleBarStyle";
 

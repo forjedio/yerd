@@ -23,6 +23,7 @@ import type {
   ElevateTarget,
   GroupsState,
   GuiLogs,
+  IdeOption,
   InfoResponse,
   JobProgressResponse,
   MailDetail,
@@ -973,6 +974,16 @@ export async function openInEditor(path: string): Promise<void> {
   await openPath(path);
 }
 
+/** Open a project directory with the host's default application. */
+export async function openInSystemDefault(path: string): Promise<void> {
+  await call<void>("open_in_default", { path });
+}
+
+/** Open a project directory in the selected host IDE. */
+export async function openInIde(path: string, ide: string): Promise<void> {
+  await call<void>("open_in_ide", { path, ide });
+}
+
 /** Open a terminal in a project directory through the host bridge. */
 export async function openInTerminal(path: string): Promise<void> {
   await call<void>("open_terminal", { path });
@@ -1118,6 +1129,15 @@ export async function setAutostartGui(on: boolean, nudge = true): Promise<void> 
 
 export async function setAutostartGuiMinimized(on: boolean): Promise<void> {
   await call<void>("set_gui_minimized", { on });
+}
+
+export async function setGuiMaximized(maximized: boolean): Promise<void> {
+  await call<void>("set_gui_maximized", { maximized });
+}
+
+/** Return supported IDEs detected on the host. */
+export async function getInstalledIdes(): Promise<IdeOption[]> {
+  return call<IdeOption[]>("get_installed_ides");
 }
 
 export async function getTrayIconVariant(): Promise<TrayIconVariant> {

@@ -812,6 +812,12 @@ export interface AutostartState {
   guiPendingApproval: boolean;
 }
 
+/** Host-detected IDE option returned by `get_installed_ides`. */
+export interface IdeOption {
+  id: string;
+  label: string;
+}
+
 /**
  * Tray icon appearance (host commands `get_tray_icon_variant` /
  * `set_tray_icon_variant`). `"auto"` (default) keeps the per-OS default: macOS

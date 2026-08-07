@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from "vue";
-import { Minus, Plus, Square, X } from "lucide-vue-next";
+import { Copy, Minus, Plus, Square, X } from "lucide-vue-next";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { hostPlatform } from "@/ipc/client";
+import logoUrl from "@/assets/logo.svg";
+import { hostPlatform, setGuiMaximized } from "@/ipc/client";
 import { useTitleBarStyle } from "@/lib/titleBarStyle";
 
 // The window is decorationless (see tauri.conf.json) so we draw our own
@@ -48,6 +49,12 @@ const resolved = computed(() =>
 // Controls always target the window this titlebar is mounted in, so the one
 // component drives both the main window and the Mails window.
 const win = getCurrentWindow();
+let disposed = false;
+let lastPersistedMaximized: boolean | null = null;
+let pendingMaximized: boolean | null = null;
+let maximizedPersistenceInFlight = false;
+let maximizedPersistenceRetry: number | null = null;
+let maximizedRefreshId = 0;
 
 // Close mirrors the native red button: main.rs intercepts CloseRequested and
 // hides to tray rather than quitting, so this is the same close-to-tray gesture.
@@ -57,8 +64,65 @@ function close() {
 function minimize() {
   win.minimize();
 }
-function toggleMaximize() {
-  win.toggleMaximize();
+const maximized = ref(false);
+
+/** Coalesce main-window maximize writes and retry transient IPC failures. */
+function queueMaximizedPersistence(value: boolean): void {
+  if (win.label !== "main" || disposed) return;
+  pendingMaximized = value;
+  if (!maximizedPersistenceInFlight) {
+    void flushMaximizedPersistence();
+  }
+}
+
+async function flushMaximizedPersistence(): Promise<void> {
+  if (maximizedPersistenceInFlight) return;
+  maximizedPersistenceInFlight = true;
+  if (maximizedPersistenceRetry !== null) {
+    window.clearTimeout(maximizedPersistenceRetry);
+    maximizedPersistenceRetry = null;
+  }
+  while (pendingMaximized !== null && !disposed) {
+    const value = pendingMaximized;
+    pendingMaximized = null;
+    if (lastPersistedMaximized === value) continue;
+    try {
+      await setGuiMaximized(value);
+      lastPersistedMaximized = value;
+    } catch {
+      if (pendingMaximized === null) pendingMaximized = value;
+      break;
+    }
+  }
+  maximizedPersistenceInFlight = false;
+  if (!disposed && pendingMaximized !== null) {
+    maximizedPersistenceRetry = window.setTimeout(() => {
+      maximizedPersistenceRetry = null;
+      void flushMaximizedPersistence();
+    }, 1000);
+  }
+}
+
+function updateMaximized(value: boolean): void {
+  maximized.value = value;
+  document.documentElement.classList.toggle("window-maximized", value);
+  queueMaximizedPersistence(value);
+}
+
+function refreshMaximized(): void {
+  const requestId = ++maximizedRefreshId;
+  win
+    .isMaximized()
+    .then((value) => {
+      if (disposed || requestId !== maximizedRefreshId) return;
+      updateMaximized(value);
+    })
+    .catch(() => {});
+}
+
+async function toggleMaximize(): Promise<void> {
+  await win.toggleMaximize();
+  refreshMaximized();
 }
 
 // macOS-only: real traffic lights drop to a flat gray while the window is
@@ -66,9 +130,10 @@ function toggleMaximize() {
 // existed before - Tauri's window API is queried directly (mirrors how
 // `lib/theme.ts` layers `onThemeChanged` on top of an initial read).
 const focused = ref(true);
-let disposed = false;
 let unlistenFocus: (() => void) | null = null;
+let unlistenResize: (() => void) | null = null;
 onMounted(() => {
+  refreshMaximized();
   win.isFocused()
     .then((f) => (focused.value = f))
     .catch(() => {});
@@ -85,10 +150,27 @@ onMounted(() => {
       }
     })
     .catch(() => {});
+  win
+    .onResized(() => refreshMaximized())
+    .then((unlisten) => {
+      if (disposed) {
+        unlisten();
+      } else {
+        unlistenResize = unlisten;
+      }
+    })
+    .catch(() => {});
 });
 onUnmounted(() => {
   disposed = true;
+  maximizedRefreshId += 1;
+  if (maximizedPersistenceRetry !== null) {
+    window.clearTimeout(maximizedPersistenceRetry);
+    maximizedPersistenceRetry = null;
+  }
   unlistenFocus?.();
+  unlistenResize?.();
+  document.documentElement.classList.remove("window-maximized");
 });
 
 // Linux/Linux-Reversed/Windows controls, data-driven so the three styles share
@@ -110,12 +192,12 @@ const rightControls = computed<ControlKind[]>(() => {
 function controlLabel(kind: ControlKind): string {
   if (kind === "close") return "Close";
   if (kind === "minimize") return "Minimize";
-  return "Maximize";
+  return maximized.value ? "Restore" : "Maximize";
 }
 function controlIcon(kind: ControlKind) {
   if (kind === "close") return X;
   if (kind === "minimize") return Minus;
-  return Square;
+  return maximized.value ? Copy : Square;
 }
 function controlIconClass(kind: ControlKind): string {
   return kind === "maximize" ? "size-3.5" : "size-4";
@@ -140,7 +222,7 @@ function controlButtonClass(kind: ControlKind): string {
 <template>
   <header
     data-tauri-drag-region
-    class="relative flex h-8 shrink-0 items-center border-b bg-muted px-3 text-foreground dark:bg-card"
+    class="relative flex h-8 w-full shrink-0 items-center border-b bg-muted px-3 text-foreground dark:bg-card"
     @dblclick="toggleMaximize"
   >
     <!-- macOS: traffic lights (close / minimize / zoom). Colored while the
@@ -190,6 +272,14 @@ function controlButtonClass(kind: ControlKind): string {
         <component :is="controlIcon(kind)" :class="controlIconClass(kind)" />
       </button>
     </div>
+
+    <img
+      v-if="resolved === 'windows'"
+      :src="logoUrl"
+      alt=""
+      aria-hidden="true"
+      class="-ml-1 size-5 shrink-0 rounded-md"
+    />
 
     <!-- Centered window title (native feel); pointer-events stay with the drag region. -->
     <span

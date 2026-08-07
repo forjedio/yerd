@@ -176,6 +176,8 @@ fn main() {
             commands::route_tunnel_dns,
             commands::set_site_tunnel,
             commands::open_terminal,
+            commands::open_in_default,
+            commands::open_in_ide,
             commands::start_named_tunnel,
             commands::stop_named_tunnel,
             commands::create_site,
@@ -195,6 +197,8 @@ fn main() {
             autostart::set_autostart_daemon,
             autostart::set_autostart_gui,
             autostart::set_gui_minimized,
+            autostart::set_gui_maximized,
+            commands::get_installed_ides,
             autostart::get_tray_icon_variant,
             autostart::set_tray_icon_variant,
             autostart::get_title_bar_style,
@@ -423,6 +427,7 @@ fn decide_initial_window(app: &tauri::AppHandle) {
     let Some(win) = app.get_webview_window("main") else {
         return;
     };
+    restore_main_window_state(&win);
     let autostarted = std::env::args().any(|a| a == AUTOSTART_ARG);
     #[cfg(target_os = "macos")]
     let autostarted = autostarted || launch_probe::is_login_launch();
@@ -431,6 +436,17 @@ fn decide_initial_window(app: &tauri::AppHandle) {
     } else {
         let _ = win.show();
         let _ = win.set_focus();
+    }
+}
+
+/// Apply the persisted native state before revealing the main window. The
+/// window starts hidden, so restoring maximized here avoids showing a normal
+/// sized frame first. A false value needs no action because a new Tauri window
+/// starts restored; an already-created window is also left unchanged when its
+/// persisted state is restored.
+fn restore_main_window_state(win: &tauri::WebviewWindow) {
+    if autostart::gui_maximized() {
+        let _ = win.maximize();
     }
 }
 
@@ -464,6 +480,7 @@ pub(crate) fn show_main(app: &tauri::AppHandle) {
         // Space rather than the one it was last shown on.
         #[cfg(target_os = "macos")]
         move_window_to_active_space(&win);
+        restore_main_window_state(&win);
         let _ = win.show();
         let _ = win.set_focus();
     }

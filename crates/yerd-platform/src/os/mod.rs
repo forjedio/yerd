@@ -15,28 +15,30 @@ pub(crate) mod active {
 
     #[cfg(target_os = "linux")]
     pub use super::linux::{
-        LinuxPaths as ActivePaths, LinuxPortBinder as ActivePortBinder,
-        LinuxPortRedirector as ActivePortRedirector,
+        LinuxIdeLauncher as ActiveIdeLauncher, LinuxPaths as ActivePaths,
+        LinuxPortBinder as ActivePortBinder, LinuxPortRedirector as ActivePortRedirector,
         LinuxResolverInstaller as ActiveResolverInstaller,
-        LinuxSystemMetrics as ActiveSystemMetrics, LinuxTerminalLauncher as ActiveTerminalLauncher,
-        LinuxTrustStore as ActiveTrustStore,
+        LinuxSystemMetrics as ActiveSystemMetrics, LinuxSystemOpener as ActiveSystemOpener,
+        LinuxTerminalLauncher as ActiveTerminalLauncher, LinuxTrustStore as ActiveTrustStore,
     };
 
     #[cfg(target_os = "macos")]
     pub use super::macos::{
-        MacosPaths as ActivePaths, MacosPortBinder as ActivePortBinder,
-        MacosPortRedirector as ActivePortRedirector,
+        MacosIdeLauncher as ActiveIdeLauncher, MacosPaths as ActivePaths,
+        MacosPortBinder as ActivePortBinder, MacosPortRedirector as ActivePortRedirector,
         MacosResolverInstaller as ActiveResolverInstaller,
-        MacosSystemMetrics as ActiveSystemMetrics, MacosTerminalLauncher as ActiveTerminalLauncher,
-        MacosTrustStore as ActiveTrustStore,
+        MacosSystemMetrics as ActiveSystemMetrics, MacosSystemOpener as ActiveSystemOpener,
+        MacosTerminalLauncher as ActiveTerminalLauncher, MacosTrustStore as ActiveTrustStore,
     };
 
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     pub use super::unsupported::{
-        UnsupportedPaths as ActivePaths, UnsupportedPortBinder as ActivePortBinder,
+        UnsupportedIdeLauncher as ActiveIdeLauncher, UnsupportedPaths as ActivePaths,
+        UnsupportedPortBinder as ActivePortBinder,
         UnsupportedPortRedirector as ActivePortRedirector,
         UnsupportedResolverInstaller as ActiveResolverInstaller,
         UnsupportedSystemMetrics as ActiveSystemMetrics,
+        UnsupportedSystemOpener as ActiveSystemOpener,
         UnsupportedTerminalLauncher as ActiveTerminalLauncher,
         UnsupportedTrustStore as ActiveTrustStore,
     };

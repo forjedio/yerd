@@ -103,6 +103,20 @@ pub enum PlatformError {
         /// Specific terminal-launch failure.
         reason: TerminalErrorReason,
     },
+
+    /// A selected IDE could not be opened.
+    #[error("IDE: {reason}")]
+    Ide {
+        /// Specific IDE-launch failure.
+        reason: IdeErrorReason,
+    },
+
+    /// The host desktop's default file or folder opener could not be launched.
+    #[error("system opener: {reason}")]
+    SystemOpen {
+        /// Specific system-opener failure.
+        reason: OpenErrorReason,
+    },
 }
 
 fn display_install_hint(hint: Option<&'static str>) -> String {
@@ -183,6 +197,44 @@ pub enum TerminalErrorReason {
     NoSupportedTerminal,
 }
 
+/// Specific failure modes for [`PlatformError::Ide`].
+#[derive(Debug, Error)]
+#[non_exhaustive]
+pub enum IdeErrorReason {
+    /// The requested IDE was not detected on this host.
+    #[error("{0} is not installed")]
+    NotInstalled(crate::Ide),
+
+    /// The detected IDE process could not be started.
+    #[error("could not open {ide}: {source}")]
+    Launch {
+        /// IDE that was selected.
+        ide: crate::Ide,
+        /// Process-spawn failure.
+        #[source]
+        source: std::io::Error,
+    },
+}
+
+/// Specific failure modes for [`PlatformError::SystemOpen`].
+#[derive(Debug, Error)]
+#[non_exhaustive]
+pub enum OpenErrorReason {
+    /// No desktop opener executable was available.
+    #[error("no supported desktop opener was found")]
+    NoSupportedOpener,
+
+    /// A desktop opener executable could not be started.
+    #[error("could not start {program}: {source}")]
+    Launch {
+        /// Opener executable that was attempted last.
+        program: String,
+        /// Underlying process-spawn failure.
+        #[source]
+        source: std::io::Error,
+    },
+}
+
 /// Specific failure modes for [`PlatformError::BindPair`].
 #[derive(Debug)]
 #[non_exhaustive]
@@ -246,6 +298,10 @@ pub mod ops {
     pub const UNINSTALL_LAN_PORT_REDIRECT: &str = "uninstall-lan-port-redirect";
     /// Open a user terminal in a project directory.
     pub const OPEN_TERMINAL: &str = "open-terminal";
+    /// Open a project directory in a selected IDE.
+    pub const OPEN_IDE: &str = "open-ide";
+    /// Open a path with the host desktop's default application.
+    pub const OPEN_DEFAULT: &str = "open-default";
 }
 
 #[cfg(test)]
@@ -441,6 +497,24 @@ mod tests {
         ] {
             let _ = PlatformError::Terminal { reason };
         }
+        let _ = PlatformError::Ide {
+            reason: IdeErrorReason::NotInstalled(crate::Ide::VsCode),
+        };
+        let _ = PlatformError::Ide {
+            reason: IdeErrorReason::Launch {
+                ide: crate::Ide::VsCode,
+                source: std::io::Error::from(std::io::ErrorKind::Other),
+            },
+        };
+        let _ = PlatformError::SystemOpen {
+            reason: OpenErrorReason::NoSupportedOpener,
+        };
+        let _ = PlatformError::SystemOpen {
+            reason: OpenErrorReason::Launch {
+                program: "xdg-open".to_owned(),
+                source: std::io::Error::from(std::io::ErrorKind::Other),
+            },
+        };
     }
 
     /// Op-tag constants must be non-empty and stable strings.
@@ -466,6 +540,8 @@ mod tests {
             ops::UNINSTALL_FIREFOX_NSS,
             ops::BROWSER_CA_TRUST,
             ops::OPEN_TERMINAL,
+            ops::OPEN_IDE,
+            ops::OPEN_DEFAULT,
         ] {
             assert!(!op.is_empty());
         }
