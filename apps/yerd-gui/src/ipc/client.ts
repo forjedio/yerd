@@ -735,6 +735,32 @@ export async function setServicePort(service: string, port: number): Promise<voi
   ensureOk(await call<Response>("set_service_port", { service, port }));
 }
 
+/** A service instance's stored configuration overrides, keyed by directive name.
+ *  Refused by the daemon for a service that accepts none. */
+export async function serviceOverrides(service: string): Promise<Record<string, string>> {
+  const r = ensureOk(await call<Response>("service_overrides", { service }));
+  return r.type === "service_overrides" ? r.overrides : {};
+}
+
+/** Persist one configuration override; takes effect on the next start/restart.
+ *  The daemon validates the name/value shape and refuses a directive it manages
+ *  itself, so its message is what the UI shows. */
+export async function setServiceOverride(
+  service: string,
+  key: string,
+  value: string,
+): Promise<void> {
+  ensureOk(
+    await call<Response>("set_service_overrides", { service, overrides: { [key]: value } }),
+  );
+}
+
+/** Drop one configuration override - an empty value is the daemon's remove
+ *  signal. Takes effect on the next start/restart. */
+export async function unsetServiceOverride(service: string, key: string): Promise<void> {
+  await setServiceOverride(service, key, "");
+}
+
 /** The last `lines` lines of a service's log file. */
 export async function serviceLogs(service: string, lines: number): Promise<string[]> {
   const r = ensureOk(await call<Response>("service_logs", { service, lines }));

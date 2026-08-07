@@ -97,10 +97,14 @@ pub use schema::{
 /// v21 added the optional `[route_rules]` table ([`Config::route_rules`])
 /// holding per-site path-prefix routing rules (prefix → a local target under
 /// the served root); it defaults (empty) when absent, so v20→v21 is a bare bump.
-/// v22 added the optional `[domains.proxy]` table ([`Config::domains`]) for
-/// whole-host proxy domain deltas; it defaults (empty) when absent, so v21→v22
+/// v22 added the optional `[services.<id>.overrides]` table
+/// ([`ServiceInstance::overrides`]) holding free-form configuration overrides
+/// for a config-backed engine; it defaults (empty) when absent, so v21→v22 is a
+/// bare bump too.
+/// v23 added the optional `[domains.proxy]` table ([`Config::domains`]) for
+/// whole-host proxy domain deltas; it defaults (empty) when absent, so v22→v23
 /// is a bare bump too.
 ///
 /// The per-version detail, including how to hand-edit a file back down for an
 /// older binary, lives in `docs/developer/config-schema-history.md`.
-pub const CURRENT_VERSION: u32 = 22;
+pub const CURRENT_VERSION: u32 = 23;

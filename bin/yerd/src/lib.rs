@@ -137,6 +137,16 @@ pub async fn run(cli: Cli) -> ExitCode {
                      The previous version's data is retained until uninstall --purge."
                 );
             }
+            if !cli.json && r.code == 0 {
+                if let Command::Service {
+                    action:
+                        crate::cli::ServiceAction::Set { service, .. }
+                        | crate::cli::ServiceAction::Unset { service, .. },
+                } = &cli.command
+                {
+                    println!("saved - restart to apply: yerd service restart {service}");
+                }
+            }
             if !cli.json && r.code == 0 && matches!(cli.command, Command::Use { version: None, .. })
             {
                 print_php_path_hint();

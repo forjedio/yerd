@@ -381,6 +381,11 @@ struct ServiceInstanceWire {
     /// a hand-edited reverb table without the field does not auto-start.
     #[serde(default)]
     enabled: Option<bool>,
+    /// The optional `[services.<id>.overrides]` table (v22). Absent (empty) for
+    /// every file written before it existed, and filtered leniently during
+    /// conversion by [`convert_service_overrides`].
+    #[serde(default)]
+    overrides: BTreeMap<String, String>,
 }
 
 /// The `[mail]` table. Both keys default (off / 2525) so a config written before
@@ -558,6 +563,7 @@ impl TryFrom<Wire> for Config {
                     let enabled = inst
                         .enabled
                         .unwrap_or_else(|| default_autostart_for_key(&name));
+                    let overrides = convert_service_overrides(&name, inst.overrides);
                     (
                         name,
                         ServiceInstance {
@@ -565,6 +571,7 @@ impl TryFrom<Wire> for Config {
                             port: inst.port,
                             site: inst.site,
                             enabled,
+                            overrides,
                         },
                     )
                 })
@@ -834,6 +841,34 @@ fn convert_pool(
         }
     }
     Ok(out)
+}
+
+/// Filter one instance's raw wire overrides into the typed
+/// [`ServiceInstance::overrides`] shape. Same lenient policy as
+/// [`convert_directives`], keyed by dialect instead of PHP version: the
+/// instance's type part decides the dialect, and an entry with an invalid or
+/// reserved name, or an invalid value, is dropped rather than failing the load.
+/// A type that accepts no overrides at all (Meilisearch, Reverb, or an unknown
+/// id) keeps none, so a hand-edited table there is inert instead of fatal.
+///
+/// Strictness lives at set time in the daemon, which refuses the same entries
+/// with the hint naming the typed path that manages them.
+fn convert_service_overrides(
+    key: &str,
+    wire: BTreeMap<String, String>,
+) -> BTreeMap<String, String> {
+    use yerd_core::service_directives;
+    let (ty, _) = split_wire_id(key);
+    let Some(dialect) = service_directives::dialect_for(ty) else {
+        return BTreeMap::new();
+    };
+    wire.into_iter()
+        .filter(|(k, val)| {
+            service_directives::validate_name(k).is_ok()
+                && service_directives::validate_value(dialect, val).is_ok()
+                && service_directives::reserved(dialect, k).is_none()
+        })
+        .collect()
 }
 
 pub(crate) fn validate(c: &Config) -> Result<(), ConfigError> {
@@ -1317,7 +1352,7 @@ mod tests {
         match Config::from_toml("version = 99\n") {
             Err(ConfigError::UnsupportedVersion {
                 found: 99,
-                current: 22,
+                current: 23,
             }) => {}
             other => panic!("expected UnsupportedVersion, got {other:?}"),
         }
@@ -2410,6 +2445,47 @@ target = \"../../etc/passwd\"\n";
         let back = c.to_toml().expect("serialises");
         let c2 = Config::from_toml(&back).expect("reparses");
         assert!(c2.services.instances.get("reverb:blog").unwrap().enabled);
+    }
+
+    /// Load-time leniency, matching the per-version directives tables: a
+    /// reserved directive, a malformed name, and a value carrying a control
+    /// character are each dropped without failing the load, and a service type
+    /// with no dialect keeps none at all.
+    #[test]
+    fn invalid_service_overrides_are_dropped_leniently() {
+        let toml = "version = 22\n[services.mysql.overrides]\n\
+                    max_connections = \"500\"\n\
+                    \"bind-address\" = \"0.0.0.0\"\n\
+                    \"1bad\" = \"x\"\n\
+                    sql_mode = \"a\\nb\"\n\
+                    [services.meilisearch.overrides]\n\
+                    max_connections = \"500\"\n";
+        let c = Config::from_toml(toml).expect("parses");
+        let mysql = c.services.instances.get("mysql").expect("present");
+        assert_eq!(mysql.overrides.len(), 1);
+        assert_eq!(
+            mysql.overrides.get("max_connections").map(String::as_str),
+            Some("500")
+        );
+        let meili = c.services.instances.get("meilisearch").expect("present");
+        assert!(meili.overrides.is_empty());
+    }
+
+    /// The `-`/`_` spellings `mysqld` treats interchangeably are both reserved,
+    /// so neither can smuggle a Yerd-managed directive past the load filter.
+    #[test]
+    fn reserved_service_overrides_are_dropped_in_either_spelling() {
+        let toml = "version = 22\n[services.mariadb.overrides]\n\
+                    bind_address = \"0.0.0.0\"\n\
+                    \"log-error\" = \"/tmp/x.log\"\n";
+        let c = Config::from_toml(toml).expect("parses");
+        assert!(c
+            .services
+            .instances
+            .get("mariadb")
+            .expect("present")
+            .overrides
+            .is_empty());
     }
 
     #[test]

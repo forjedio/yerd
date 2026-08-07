@@ -355,6 +355,25 @@ pub enum Request {
         /// The new loopback port.
         port: u16,
     },
+    /// Merge free-form configuration overrides into a service instance. An
+    /// empty-string value removes a key, exactly like
+    /// [`Self::SetPhpDirectives`]. The daemon validates each name/value shape
+    /// and refuses a directive it manages itself, with a hint naming the typed
+    /// path. Takes effect on the next start/restart (nothing is reloaded or
+    /// restarted implicitly), like [`Self::SetServicePort`]. A service that
+    /// accepts no overrides (Meilisearch, Reverb) is refused.
+    SetServiceOverrides {
+        /// Service id.
+        service: String,
+        /// Override name → value; `""` removes the override.
+        overrides: BTreeMap<String, String>,
+    },
+    /// Read back a service instance's stored configuration overrides. Refused
+    /// for a service that accepts none.
+    ServiceOverrides {
+        /// Service id.
+        service: String,
+    },
     /// Fetch the last `lines` lines of a service's log file.
     ServiceLogs {
         /// Service id.
@@ -871,6 +890,8 @@ mod variant_name_pinning {
             Request::StopService { .. } => {}
             Request::RestartService { .. } => {}
             Request::SetServicePort { .. } => {}
+            Request::SetServiceOverrides { .. } => {}
+            Request::ServiceOverrides { .. } => {}
             Request::ServiceLogs { .. } => {}
             Request::AddService { .. } => {}
             Request::RemoveService { .. } => {}
@@ -1060,6 +1081,13 @@ mod variant_name_pinning {
         pin(Request::SetServicePort {
             service: "redis".into(),
             port: 6380,
+        });
+        pin(Request::SetServiceOverrides {
+            service: "mysql".into(),
+            overrides: BTreeMap::new(),
+        });
+        pin(Request::ServiceOverrides {
+            service: "mysql".into(),
         });
         pin(Request::ServiceLogs {
             service: "redis".into(),

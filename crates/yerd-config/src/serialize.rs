@@ -232,8 +232,9 @@ struct ExtEntrySer<'a> {
     zend: bool,
 }
 
-/// `skip_serializing_if` predicate for the borrowed `settings` field. serde
-/// dictates the `&&BTreeMap` signature (the field is already `&BTreeMap`).
+/// `skip_serializing_if` predicate for the borrowed `settings` and `overrides`
+/// fields. serde dictates the `&&BTreeMap` signature (the field is already
+/// `&BTreeMap`).
 #[allow(clippy::trivially_copy_pass_by_ref)]
 fn map_is_empty(m: &&BTreeMap<String, String>) -> bool {
     m.is_empty()
@@ -256,6 +257,10 @@ struct ServiceInstanceSer<'a> {
     // Emitted unconditionally so the persisted autostart intent round-trips
     // exactly (an omitted key would re-default by type on the next load).
     enabled: bool,
+    // Sub-table, so it stays last. Skipped when empty: a config with no
+    // overrides emits no `[services.<id>.overrides]` region at all.
+    #[serde(skip_serializing_if = "map_is_empty")]
+    overrides: &'a BTreeMap<String, String>,
 }
 
 /// `[mail]` table. Owned (not borrowed) - the fields are `Copy` scalars, so
@@ -366,6 +371,7 @@ pub(crate) fn to_toml(c: &Config) -> Result<String, ConfigError> {
                         port: inst.port,
                         site: inst.site.as_deref(),
                         enabled: inst.enabled,
+                        overrides: &inst.overrides,
                     },
                 )
             })
@@ -530,8 +536,8 @@ mod tests {
     fn default_to_toml_starts_with_version_line() {
         let s = to_toml(&Config::default()).unwrap();
         assert!(
-            s.starts_with("version = 22\n"),
-            "expected `version = 22` first line; got: {s}"
+            s.starts_with("version = 23\n"),
+            "expected `version = 23` first line; got: {s}"
         );
     }
 

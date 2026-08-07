@@ -16,6 +16,7 @@
     clippy::indexing_slicing
 )]
 
+use std::collections::BTreeMap;
 use std::io;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::str::FromStr;
@@ -244,8 +245,16 @@ fn make_manager(dirs: PlatformDirs, spawner: FakeSpawner, probe: FakeProbe) -> M
 /// Ensure the Redis instance, threading the new `ensure` arguments (wire id
 /// `"redis"`, an explicit version, no program/cwd override).
 async fn ensure_redis(mgr: &mut Mgr, v: ServiceVersion, port: u16) -> Result<Listen, ServiceError> {
-    mgr.ensure(redis_def(), "redis", Some(v), port, None, None)
-        .await
+    mgr.ensure(
+        redis_def(),
+        "redis",
+        Some(v),
+        port,
+        None,
+        None,
+        BTreeMap::new(),
+    )
+    .await
 }
 
 // ─── Tests ──────────────────────────────────────────────────────────
@@ -435,7 +444,15 @@ async fn restart_stops_then_starts_a_fresh_child() {
 
     ensure_redis(&mut mgr, v.clone(), port).await.unwrap();
     let listen = mgr
-        .restart(redis_def(), "redis", Some(v), port, None, None)
+        .restart(
+            redis_def(),
+            "redis",
+            Some(v),
+            port,
+            None,
+            None,
+            BTreeMap::new(),
+        )
         .await
         .unwrap();
     assert!(matches!(listen, Listen::TcpLoopback(_)));

@@ -116,6 +116,8 @@ fn main() {
             commands::stop_service,
             commands::restart_service,
             commands::set_service_port,
+            commands::set_service_overrides,
+            commands::service_overrides,
             commands::service_logs,
             commands::addable_service_types,
             commands::add_service,

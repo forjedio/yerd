@@ -46,6 +46,8 @@ Every field below maps one-to-one to a field in `schema.rs`. The on-disk shape a
 
 ::: warning Unknown keys are rejected
 The parser uses `deny_unknown_fields` at every level. A typo'd or stray key (top-level, or inside `[ports]`, `[php]`, `[parked]`, `[mail]`, `[dumps]`, `[dumps.features]`, `[domains]`, a `[domains.linked.<name>]` / `[domains.parked."<docroot>"]` entry, `[proxy_rules]`, a `[[proxies]]` entry, a `[services.<id>]` table, a `[[linked]]` entry, an `[[overrides]]` entry, or a `[[php.extensions.<version>]]` entry) is a hard parse error - the daemon will refuse to load the file rather than silently ignore it.
+
+The free-form maps are the exception, because their keys *are* the data. `[services.<id>.overrides]` (like `[php.directives."<version>"]`) takes arbitrary directive names, so `deny_unknown_fields` does not apply *inside* it - the keys are shape-checked instead, and a bad one is dropped rather than failing the load. It still applies to the enclosing `[services.<id>]` table.
 :::
 
 ### `version`
@@ -293,11 +295,12 @@ Installed services, one table per engine, keyed by its `id`
 (`mysql`, `mariadb`, `postgres`, `redis`, or `meilisearch`). An unknown service id fails
 validation (`UnknownService`). See [Services & Databases](../guide/services).
 
-| Key       | TOML type      | Meaning                                            | Default |
-| --------- | -------------- | -------------------------------------------------- | ------- |
-| `version` | string         | Installed version this engine is pinned to.        | unset   |
-| `port`    | integer (u16)  | Loopback port the engine listens on.               | unset   |
-| `enabled` | boolean        | Record of the last start/stop intent (status only). | `true`  |
+| Key         | TOML type      | Meaning                                            | Default |
+| ----------- | -------------- | -------------------------------------------------- | ------- |
+| `version`   | string         | Installed version this engine is pinned to.        | unset   |
+| `port`      | integer (u16)  | Loopback port the engine listens on.               | unset   |
+| `enabled`   | boolean        | Record of the last start/stop intent (status only). | `true`  |
+| `overrides` | table          | Free-form engine config directives (see below).    | empty   |
 
 `version` and `port` are omitted from the wire when unset; `enabled` always carries a value.
 
@@ -318,6 +321,54 @@ enabled = true
 ```
 
 You normally manage these through the [`yerd service`](../reference/cli/services) commands rather than by hand.
+
+`[services.<id>.overrides]` (schema v22) is a string-to-string map of **free-form
+directives for the engine's own config file**. On every start Yerd renders them
+into that service's `conf.d/10-yerd.<ext>` sidecar, which the Yerd-owned config
+includes *after* its own settings - so an override wins over Yerd's default for
+the same directive. Empty by default, and omitted from the file entirely when
+empty. Setting one never restarts anything: it reaches the engine on the next
+start/restart, exactly like `port`.
+
+Only the config-backed engines accept overrides - `mysql`, `mariadb`,
+`postgres`, and `redis`. Meilisearch and Reverb are argv/env driven, so they have
+no config file to override and keep none.
+
+Names must start with a letter or `_` and use only letters, digits, `.`, `_`,
+`-`. Values are ≤ 512 bytes with no control characters, `;`, or `#` (and, outside
+PostgreSQL, no quote characters - an unbalanced quote aborts the whole config
+load). Validation is **shape only**: whether the engine accepts a directive is
+the engine's business. Directives Yerd manages through typed paths are reserved -
+the port, the data directory, the socket, the pid file, logging, the
+MySQL/MariaDB bootstrap `init-file`, the loopback binding, and the engines' own
+`include` directives. Matching is case-insensitive in every dialect, and the
+MySQL family also folds `-` and `_`, so `Bind_Address` is refused just as
+`bind-address` is.
+
+```toml
+[services.mysql.overrides]
+max_allowed_packet = "256M"
+max_connections = "500"
+sql_mode = "STRICT_TRANS_TABLES,NO_ZERO_IN_DATE,NO_ZERO_DATE"
+
+[services.redis.overrides]
+maxmemory = "256mb"
+maxmemory-policy = "allkeys-lru"
+```
+
+::: tip This table loads leniently
+Like `[php.directives]`, a hand-edited invalid or reserved entry here never fails
+the load - it is silently dropped while its valid siblings survive, so a bad edit
+can't stop the daemon. An overrides table under a service that accepts none
+(`meilisearch`, `reverb:<site>`) is inert rather than fatal. Setting a value
+through the CLI or desktop app still validates strictly, and refuses a reserved
+directive with a hint naming the command that manages it.
+:::
+
+Manage these with [`yerd service set` / `unset` / `overrides`](cli/services#configuration)
+or the desktop app's **Override settings** dialog. Hand edits that must survive
+untouched belong in the service's own `conf.d/50-local.<ext>` file rather than
+here - see [Service configuration overrides](../guide/services#service-configuration-overrides).
 
 ### `[mail]`
 

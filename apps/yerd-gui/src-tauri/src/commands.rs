@@ -575,6 +575,22 @@ pub async fn set_service_port(service: String, port: u16) -> Result<Response, Gu
     finish(exchange(&Request::SetServicePort { service, port }).await?)
 }
 
+/// Merge configuration overrides into a service instance (`""` removes a key).
+/// Takes effect on the next start/restart; nothing is restarted here.
+#[tauri::command]
+pub async fn set_service_overrides(
+    service: String,
+    overrides: std::collections::BTreeMap<String, String>,
+) -> Result<Response, GuiError> {
+    finish(exchange(&Request::SetServiceOverrides { service, overrides }).await?)
+}
+
+/// Read back a service instance's stored configuration overrides.
+#[tauri::command]
+pub async fn service_overrides(service: String) -> Result<Response, GuiError> {
+    finish(exchange(&Request::ServiceOverrides { service }).await?)
+}
+
 #[tauri::command]
 pub async fn service_logs(service: String, lines: u32) -> Result<Response, GuiError> {
     finish(exchange(&Request::ServiceLogs { service, lines }).await?)

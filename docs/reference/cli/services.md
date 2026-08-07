@@ -75,6 +75,9 @@ yerd service restart postgres
 | Command | Description | Example |
 | --- | --- | --- |
 | `yerd service set-port <SVC> <PORT>` | Set the loopback port the service listens on. Applies on the next start/restart. | `yerd service set-port redis 6380` |
+| `yerd service set <SVC> <KEY> <VALUE>` | Set a free-form config directive for the engine. Applies on the next start/restart. | `yerd service set mysql max_allowed_packet 256M` |
+| `yerd service unset <SVC> <KEY>` | Remove a directive Yerd is overriding, so the engine's own default applies again. | `yerd service unset mysql max_allowed_packet` |
+| `yerd service overrides <SVC>` | List the directives currently set for a service (`no overrides` when there are none). | `yerd service overrides mysql` |
 | `yerd service logs <SVC> [--lines <N>]` | Print the tail of the service's log. `--lines` defaults to 100. | `yerd service logs mysql --lines 200` |
 
 ```sh
@@ -85,6 +88,51 @@ yerd service logs mysql --lines 50
 
 Default ports: Redis `6379`, MySQL / MariaDB `3306` (they share the port, so only
 one can be enabled on it at a time), PostgreSQL `5432`, Meilisearch `7700`.
+
+### Configuration overrides
+
+`set` / `unset` / `overrides` manage free-form directives for the engine's *own*
+config file - the way `yerd php ini` does for a PHP version. Yerd renders them
+into a sidecar the engine reads after Yerd's own settings, so an override wins:
+
+```sh
+yerd service set mysql max_allowed_packet 256M
+yerd service set mysql sql_mode STRICT_TRANS_TABLES,NO_ZERO_DATE
+yerd service overrides mysql
+#   max_allowed_packet = 256M
+#   sql_mode = STRICT_TRANS_TABLES,NO_ZERO_DATE
+yerd service unset mysql sql_mode
+yerd service restart mysql           # overrides apply on the next start
+```
+
+Supported by the config-backed engines only: `mysql`, `mariadb`, `postgres`, and
+`redis`. Meilisearch and Reverb are argv/env driven, so they answer
+`does not support configuration overrides`.
+
+Names and values are **shape-validated** client-side before connecting (and again
+by the daemon), but not semantically: whether the engine accepts a directive is
+the engine's business, and a bad one surfaces when the service next starts.
+Directives Yerd manages through typed paths are refused with a pointer to the
+right command - the port (use `yerd service set-port`), the data directory, the
+socket, the pid file, logging (read it with `yerd service logs`), the
+MySQL/MariaDB bootstrap `init-file`, the loopback binding, and the engines' own
+`include` directives. The check folds case in every dialect, and `-`/`_` for
+MySQL/MariaDB, so `Bind_Address` is refused just as `bind-address` is.
+
+::: warning Restart to apply
+Like `set-port`, setting an override never restarts anything. Run
+`yerd service restart <SVC>` when you're ready for it to take effect. If the
+engine then refuses to start, the error carries the tail of its own log plus the
+path to the hand-edit file - see the
+[Services & Databases guide](../../guide/services#getting-a-directive-wrong).
+:::
+
+Hand edits that Yerd must never touch go in the service's `conf.d/50-local.<ext>`
+file instead, which is created once and never rewritten. `yerd doctor` scans it
+and warns about reserved or malformed lines. See
+[Service configuration overrides](../../guide/services#service-configuration-overrides)
+for the two-file model, and the [Configuration
+Reference](../configuration#services-id) for how overrides are stored.
 
 ## See also
 

@@ -36,22 +36,15 @@ fn populated() -> Config {
             front_controller: None,
         },
     );
-    c.services.instances.insert(
-        "mysql".to_string(),
-        ServiceInstance {
-            version: None,
-            port: None,
-            site: None,
-            enabled: true,
-        },
-    );
+    c.services
+        .instances
+        .insert("mysql".to_string(), ServiceInstance::default());
     c.services.instances.insert(
         "redis".to_string(),
         ServiceInstance {
             version: Some("8".to_string()),
             port: Some(6380),
-            site: None,
-            enabled: true,
+            ..ServiceInstance::default()
         },
     );
     c
@@ -61,8 +54,8 @@ fn populated() -> Config {
 fn default_config_starts_with_version_line() {
     let s = Config::default().to_toml().unwrap();
     assert!(
-        s.starts_with("version = 22\n"),
-        "expected first line `version = 22`; got: {s}"
+        s.starts_with("version = 23\n"),
+        "expected first line `version = 23`; got: {s}"
     );
 }
 
@@ -288,8 +281,7 @@ fn service_instance_wire_shape_is_per_service_table() {
         ServiceInstance {
             version: Some("8".to_string()),
             port: Some(6380),
-            site: None,
-            enabled: true,
+            ..ServiceInstance::default()
         },
     );
     let s = c.to_toml().unwrap();
@@ -322,6 +314,44 @@ fn service_instance_wire_shape_is_per_service_table() {
         "unset port must be omitted: {s2}"
     );
     assert_eq!(mysql.get("enabled"), Some(&toml::Value::Boolean(true)));
+}
+
+#[test]
+fn service_overrides_emit_a_sub_table_only_when_set() {
+    let mut c = Config::default();
+    c.services.instances.insert(
+        "mysql".to_string(),
+        ServiceInstance {
+            overrides: std::collections::BTreeMap::from([(
+                "max_connections".to_string(),
+                "500".to_string(),
+            )]),
+            ..ServiceInstance::default()
+        },
+    );
+    c.services
+        .instances
+        .insert("redis".to_string(), ServiceInstance::default());
+    let s = c.to_toml().unwrap();
+    assert!(
+        s.contains("[services.mysql.overrides]"),
+        "expected a mysql overrides sub-table; got: {s}"
+    );
+    assert!(
+        !s.contains("[services.redis.overrides]"),
+        "an empty overrides map must emit no sub-table; got: {s}"
+    );
+    let v: toml::Value = toml::from_str(&s).unwrap();
+    let overrides = v
+        .get("services")
+        .and_then(|x| x.get("mysql"))
+        .and_then(|x| x.get("overrides"))
+        .and_then(toml::Value::as_table)
+        .unwrap_or_else(|| panic!("missing [services.mysql.overrides] table in: {s}"));
+    assert_eq!(
+        overrides.get("max_connections"),
+        Some(&toml::Value::String("500".into()))
+    );
 }
 
 #[test]

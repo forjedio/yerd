@@ -46,6 +46,7 @@ pub(crate) const STEPS: &[MigrationStep] = &[
     migrate_v19_to_v20,
     migrate_v20_to_v21,
     migrate_v21_to_v22,
+    migrate_v22_to_v23,
 ];
 
 /// `v0 → v1`: bump the version. v0 predates any shipped config, so there is no
@@ -230,11 +231,19 @@ fn migrate_v20_to_v21(value: &mut Value) -> Result<(), ConfigError> {
     set_version(value, 21)
 }
 
-/// `v21 → v22`: bump the version. v22 added the optional `[domains.proxy]`
-/// table of whole-host proxy domain deltas, which defaults to empty when
-/// absent, so an in-place version bump is the entire migration.
+/// `v21 → v22`: bump the version. v22 added the optional
+/// `[services.<id>.overrides]` table of free-form service configuration
+/// overrides, which defaults (empty) when absent, so an in-place version bump
+/// is the entire migration.
 fn migrate_v21_to_v22(value: &mut Value) -> Result<(), ConfigError> {
     set_version(value, 22)
+}
+
+/// `v22 → v23`: bump the version. v23 added the optional `[domains.proxy]`
+/// table of whole-host proxy domain deltas, which defaults to empty when
+/// absent, so an in-place version bump is the entire migration.
+fn migrate_v22_to_v23(value: &mut Value) -> Result<(), ConfigError> {
+    set_version(value, 23)
 }
 
 /// Set the top-level `version` key, erroring if the root is not a table.
@@ -306,7 +315,7 @@ mod tests {
 
     #[test]
     fn current_version_pinned() {
-        assert_eq!(crate::CURRENT_VERSION, 22);
+        assert_eq!(crate::CURRENT_VERSION, 23);
     }
 
     #[test]
@@ -349,6 +358,13 @@ mod tests {
         let mut v: Value = toml::from_str("version = 21\n").unwrap();
         migrate_v21_to_v22(&mut v).unwrap();
         assert_eq!(read_version(&v).unwrap(), 22);
+    }
+
+    #[test]
+    fn v22_to_v23_is_a_bare_version_bump() {
+        let mut v: Value = toml::from_str("version = 22\n").unwrap();
+        migrate_v22_to_v23(&mut v).unwrap();
+        assert_eq!(read_version(&v).unwrap(), 23);
     }
 
     #[test]

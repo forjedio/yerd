@@ -119,6 +119,9 @@ export interface ServiceStatus {
   port: number;
   enabled: boolean;
   supports_databases: boolean;
+  /** Whether the engine accepts free-form configuration overrides. Omitted by
+   *  the daemon when false, and absent entirely from an older daemon. */
+  supports_overrides?: boolean;
   /** Service type id (`"redis"`, `"reverb"`), distinct from `service` (the
    *  instance wire id, e.g. `"reverb:blog"`). Falls back to `service` when
    *  omitted by an older daemon. */
@@ -326,6 +329,7 @@ export type DiagnosisCode =
   | "no_sites"
   | "resolver_backup_saved"
   | "service_failed"
+  | "service_override_invalid"
   | "bin_dir_not_on_path"
   | "php_ca_not_trusted"
   | "symlink_protection_disabled"
@@ -605,6 +609,7 @@ export type Response =
   | { type: "wordpress_login_token"; token: string }
   | { type: "wordpress_admin_users"; users: WordPressAdminUser[] }
   | { type: "service_logs"; lines: string[] }
+  | { type: "service_overrides"; overrides: Record<string, string> }
   | { type: "databases"; databases: DatabaseSummary[] }
   | {
       type: "dumps";
