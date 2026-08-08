@@ -19,12 +19,16 @@ pub mod cover_shim;
 pub mod elevate;
 pub mod error;
 #[cfg(unix)]
+pub mod exec_cmd;
+#[cfg(unix)]
 pub mod laravel_shim;
 pub mod map;
 pub mod mcp_cmd;
 pub mod path_cmd;
 #[cfg(unix)]
 pub mod shim;
+#[cfg(unix)]
+pub mod site_scope;
 pub mod transport;
 pub mod uninstall;
 #[cfg(unix)]
@@ -56,6 +60,30 @@ pub async fn run(cli: Cli) -> ExitCode {
             #[cfg(not(unix))]
             {
                 eprintln!("yerd: coverage is only available on macOS and Linux");
+                return ExitCode::from(2);
+            }
+        }
+        #[cfg_attr(not(unix), allow(unused_variables))]
+        Command::Exec { site, tool, args } => {
+            #[cfg(unix)]
+            {
+                return exec_cmd::run_exec(*tool, site.as_deref(), args).await;
+            }
+            #[cfg(not(unix))]
+            {
+                eprintln!("yerd: exec is only available on macOS and Linux");
+                return ExitCode::from(2);
+            }
+        }
+        #[cfg_attr(not(unix), allow(unused_variables))]
+        Command::Which { tool, site } => {
+            #[cfg(unix)]
+            {
+                return exec_cmd::run_which(*tool, site.as_deref(), cli.json).await;
+            }
+            #[cfg(not(unix))]
+            {
+                eprintln!("yerd: which is only available on macOS and Linux");
                 return ExitCode::from(2);
             }
         }

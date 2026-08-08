@@ -258,6 +258,42 @@ pub enum Command {
         )]
         args: Vec<std::ffi::OsString>,
     },
+    /// Run a tool under the PHP version pinned to a site - the one its web
+    /// requests use - instead of the global default. The site is the one
+    /// containing the current directory, or `--site <name>`; outside any site,
+    /// the global default is used. Everything after the tool is passed
+    /// straight through, so `--site`/`--json` must come *before* it (e.g.
+    /// `yerd exec --site blog php -v`). The bare `php` and `composer` shims are
+    /// unaffected and still use the global default. Local - execs PHP directly.
+    /// (Unix only.)
+    Exec {
+        /// Run under this site's pinned version instead of the current
+        /// directory's. Unlike the cwd lookup this never falls back: an
+        /// unknown name is an error.
+        #[arg(long, value_name = "NAME")]
+        site: Option<String>,
+        /// Which tool to run.
+        tool: ExecTool,
+        /// Arguments forwarded verbatim to the tool, e.g. `artisan test`.
+        #[arg(
+            trailing_var_arg = true,
+            allow_hyphen_values = true,
+            num_args = 0..,
+            value_name = "ARGS"
+        )]
+        args: Vec<std::ffi::OsString>,
+    },
+    /// Print the absolute path of the binary `yerd exec` would use, resolved
+    /// the same way (current directory's site, or `--site <name>`). With
+    /// `--json`, reports the version and which site it came from too. Local -
+    /// does not run anything. (Unix only.)
+    Which {
+        /// Which tool to report.
+        tool: WhichTool,
+        /// Report the binary for this site instead of the current directory's.
+        #[arg(long, value_name = "NAME")]
+        site: Option<String>,
+    },
     /// Serve Yerd's tools to AI agents over MCP on stdin/stdout. Not meant to be
     /// run by hand: an agent spawns it. Register it once, e.g.
     /// `claude mcp add --scope user yerd -- yerd mcp`. Tools are served only
@@ -285,6 +321,24 @@ pub enum LanAction {
     /// Show LAN exposure state: configured vs effective, the LAN IP, and the
     /// next privileged step if any.
     Status,
+}
+
+/// A tool `yerd exec` can run under a site's pinned PHP version.
+#[derive(clap::ValueEnum, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExecTool {
+    /// The PHP CLI itself.
+    Php,
+    /// The bundled Composer phar, run under that PHP.
+    Composer,
+}
+
+/// A tool `yerd which` can report the path of. Deliberately separate from
+/// [`ExecTool`] so `yerd which composer` - which would have to mean the phar,
+/// not a binary - is rejected at parse time rather than silently answered.
+#[derive(clap::ValueEnum, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WhichTool {
+    /// The PHP CLI binary.
+    Php,
 }
 
 /// A binary on/off toggle argument (e.g. `yerd front-controller <name> on`).
@@ -896,4 +950,85 @@ pub enum ElevateTarget {
     /// only; on Linux this reuses the `ports` setcap grant). Run after
     /// `yerd lan enable`.
     Lan,
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::panic)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+
+    fn parse(args: &[&str]) -> Cli {
+        Cli::try_parse_from(args).unwrap()
+    }
+
+    /// `yerd exec php -v` must work without a `--` separator: the flags after
+    /// the tool belong to the tool, not to yerd.
+    #[test]
+    fn exec_captures_hyphenated_tool_args() {
+        let cli = parse(&["yerd", "exec", "php", "-v"]);
+        let Command::Exec { site, tool, args } = cli.command else {
+            panic!("expected Exec");
+        };
+        assert_eq!(site, None);
+        assert_eq!(tool, ExecTool::Php);
+        assert_eq!(args, vec!["-v"]);
+    }
+
+    #[test]
+    fn exec_takes_site_before_the_tool() {
+        let cli = parse(&["yerd", "exec", "--site", "blog", "composer", "install"]);
+        let Command::Exec { site, tool, args } = cli.command else {
+            panic!("expected Exec");
+        };
+        assert_eq!(site.as_deref(), Some("blog"));
+        assert_eq!(tool, ExecTool::Composer);
+        assert_eq!(args, vec!["install"]);
+    }
+
+    /// A `--json` *after* the tool is the tool's own flag - it must be
+    /// forwarded, not consumed by yerd's global one.
+    #[test]
+    fn exec_forwards_a_trailing_json_flag_to_the_tool() {
+        let cli = parse(&["yerd", "exec", "composer", "show", "--json"]);
+        assert!(!cli.json, "--json after the tool belongs to the tool");
+        let Command::Exec { args, .. } = cli.command else {
+            panic!("expected Exec");
+        };
+        assert_eq!(args, vec!["show", "--json"]);
+    }
+
+    #[test]
+    fn exec_takes_yerds_json_flag_before_the_tool() {
+        let cli = parse(&["yerd", "--json", "exec", "php", "-v"]);
+        assert!(cli.json);
+    }
+
+    #[test]
+    fn which_parses_php_with_an_optional_site() {
+        let cli = parse(&["yerd", "which", "php"]);
+        let Command::Which { tool, site } = cli.command else {
+            panic!("expected Which");
+        };
+        assert_eq!(tool, WhichTool::Php);
+        assert_eq!(site, None);
+
+        let cli = parse(&["yerd", "which", "php", "--site", "blog"]);
+        let Command::Which { site, .. } = cli.command else {
+            panic!("expected Which");
+        };
+        assert_eq!(site.as_deref(), Some("blog"));
+    }
+
+    /// `which` only knows how to report a binary, and Composer is a phar - so
+    /// it must be rejected at parse time rather than answered misleadingly.
+    #[test]
+    fn which_rejects_composer() {
+        assert!(Cli::try_parse_from(["yerd", "which", "composer"]).is_err());
+    }
+
+    #[test]
+    fn exec_rejects_an_unknown_tool() {
+        assert!(Cli::try_parse_from(["yerd", "exec", "artisan"]).is_err());
+    }
 }

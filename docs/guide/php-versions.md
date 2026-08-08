@@ -342,6 +342,57 @@ Check what each site resolves to with `yerd sites`, which lists every site with 
 Pinning a site (or the default) to an uninstalled version means there's no FPM binary to start when a request arrives. Install it first (`yerd install php 8.3`), then pin. `yerd doctor` flags a pool that can't start.
 :::
 
+### Site-aware CLI: `yerd exec` and `yerd which`
+
+A pin governs how a site is **served**, but the bare `php` and `composer` shims always use the **global default**. So inside a site pinned to 8.3 while your default is 8.5, `php artisan` and `composer install` run on 8.5 - a different version than the site's own web requests.
+
+`yerd exec` closes that gap. It runs a tool under the version pinned to the site containing your current directory:
+
+```sh
+cd ~/Sites/my-app     # pinned to 8.3
+yerd exec php -v      # PHP 8.3.x
+yerd exec php artisan migrate
+yerd exec composer install
+```
+
+Everything after the tool is passed straight through, so no `--` separator is needed - which also means yerd's own flags (`--site`, `--json`) must come **before** the tool:
+
+```sh
+yerd exec --site my-app php -v      # from anywhere
+yerd exec composer show --json      # --json here belongs to Composer
+```
+
+`yerd which php` prints the absolute path of the binary `yerd exec` would use, resolved identically:
+
+```sh
+$ cd ~/Sites/my-app && yerd which php
+/Users/you/Library/Application Support/io.yerd.Yerd/php/php-8.3/bin/php
+
+$ yerd --json which php
+{"path":"…/php-8.3/bin/php","version":"8.3","site":"my-app","source":"site"}
+```
+
+`source` is `site` when a pin applied and `default` otherwise (with `site` then `null`), so scripts can tell the two apart.
+
+How resolution falls out:
+
+| Where you run it | Which PHP |
+|---|---|
+| Inside a pinned site | that site's pinned version |
+| Inside an unpinned site, or outside every site | the global default |
+| With `--site <name>` | that site's pinned version, from anywhere |
+
+Two deliberate failure rules:
+
+- **A pinned-but-uninstalled version is an error**, not a silent fallback: running under an unrelated default PHP with no indication why is worse than stopping. Install it (`yerd install php 8.3`) and retry.
+- **`--site` never falls back.** You named a site, so an unknown name - or a daemon that isn't running to resolve it - is an error rather than a quiet switch to the default. Without `--site`, an unreachable daemon just means "not inside a site", and the global default is used.
+
+`yerd exec composer` runs the same bundled phar the `composer` shim does, just under the site's PHP (and that version's CLI ini).
+
+::: tip The shims are unchanged
+`php`, `php<version>`, and `composer` behave exactly as before - `php` still means the global default everywhere. `yerd exec` is an addition, not a change in what your existing commands do.
+:::
+
 ### Listing versions
 
 ```sh
@@ -460,6 +511,8 @@ and the denylist of directives Yerd manages elsewhere.
 | `yerd install php <version>` | Download + install the latest patch of a minor. |
 | `yerd use <version>` | Set the global default version (and the `php` shim). |
 | `yerd use <site> <version>` | Pin one site to a version. |
+| `yerd exec [--site <name>] <php\|composer> [args…]` | Run a tool under the site's pinned version instead of the global default. |
+| `yerd which [--site <name>] php` | Print the PHP binary `yerd exec` would use. |
 | `yerd list php [--check]` | List installed versions; `--check` refreshes update flags. |
 | `yerd list php --available` | List versions installable from the distribution. |
 | `yerd update php [<version>]` | Update one (or all) versions to the latest patch. |

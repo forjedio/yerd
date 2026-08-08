@@ -248,6 +248,16 @@ pub fn to_request(cmd: &Command) -> Result<Request, ClientError> {
                 "coverage is handled locally, not over IPC".to_owned(),
             ));
         }
+        Command::Exec { .. } => {
+            return Err(ClientError::Usage(
+                "exec is handled locally, not over IPC".to_owned(),
+            ));
+        }
+        Command::Which { .. } => {
+            return Err(ClientError::Usage(
+                "which is handled locally, not over IPC".to_owned(),
+            ));
+        }
         Command::Mcp => {
             return Err(ClientError::Usage(
                 "mcp runs its own protocol loop, not a single IPC exchange".to_owned(),
@@ -4243,6 +4253,15 @@ mod tests {
                 action: crate::cli::PathAction::Install,
             },
             Command::Coverage { args: vec![] },
+            Command::Exec {
+                site: None,
+                tool: crate::cli::ExecTool::Php,
+                args: vec![],
+            },
+            Command::Which {
+                tool: crate::cli::WhichTool::Php,
+                site: None,
+            },
             Command::Mcp,
             Command::Link {
                 name_or_path: None,

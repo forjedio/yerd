@@ -17,7 +17,7 @@ mod tests {
 
     use tokio::sync::watch;
 
-    use yerd::wp_shim::{site_scope, ScopeResolution};
+    use yerd::site_scope::{site_scope, ScopeResolution};
     use yerd_core::PhpVersion;
     use yerd_ipc::Request;
 
