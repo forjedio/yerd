@@ -94,15 +94,25 @@ fn run() -> ExitCode {
         Some(cwd) => site_scope(&dirs, cwd),
         None => ScopeResolution::NoScope,
     };
-    let (php_bin, minor, scope) = match resolution {
-        ScopeResolution::Scoped(s) => (s.php_bin.clone(), s.php_minor.clone(), Some(s)),
+    let scoped = match resolution {
+        // A site whose served root is missing from disk can't be scoped: a
+        // `--path=` aimed at the project root would point WP-CLI somewhere
+        // WordPress isn't served from, so fall back exactly as an unmatched
+        // cwd does. (Such a site is still *matched*, unlike before, so an
+        // uninstalled pinned version now errors below rather than silently
+        // falling back - the loud failure the pin is there to produce.)
+        ScopeResolution::Scoped(s) => s.served_root.is_some().then_some(s),
         ScopeResolution::MatchedPhpMissing { php_version } => {
             return fail(format!(
                 "this site is pinned to PHP {php_version}, which is not installed — run \
                  `yerd install php {php_version}`"
             ));
         }
-        ScopeResolution::NoScope => match resolve_default_php(&dirs) {
+        ScopeResolution::NoScope => None,
+    };
+    let (php_bin, minor, scope) = match scoped {
+        Some(s) => (s.php_bin.clone(), s.php_minor.clone(), Some(s)),
+        None => match resolve_default_php(&dirs) {
             Some((php, minor)) => (php, minor, None),
             None => return fail(crate::shim::no_default_php_message(&dirs)),
         },
@@ -139,8 +149,8 @@ fn run() -> ExitCode {
     if let Some(phprc) = cli_phprc(&dirs, &minor) {
         cmd.env("PHPRC", phprc);
     }
-    if let Some(s) = &scope {
-        cmd.arg(format!("--path={}", s.served_root.display()));
+    if let Some(served_root) = scope.as_ref().and_then(|s| s.served_root.as_ref()) {
+        cmd.arg(format!("--path={}", served_root.display()));
     }
 
     let err = cmd.exec();

@@ -260,7 +260,7 @@ mod tests {
             site_name: name.to_owned(),
             php_bin: PathBuf::from(format!("/d/php/php-{minor}/bin/php")),
             php_minor: minor.to_owned(),
-            served_root: PathBuf::from("/srv/blog"),
+            served_root: Some(PathBuf::from("/srv/blog")),
         })
     }
 

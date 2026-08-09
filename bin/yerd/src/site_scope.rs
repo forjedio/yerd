@@ -54,7 +54,13 @@ pub struct SiteScope {
     /// The matched site's (canonicalized) served root - `document_root` joined
     /// with `web_subpath` - i.e. where the served files actually live, not
     /// necessarily the site's project root. Passed to `wp` as `--path=`.
-    pub served_root: PathBuf,
+    ///
+    /// `None` when that directory doesn't exist on disk (an unbuilt `public/`,
+    /// say). Matching never depends on it, so `yerd exec` still resolves the
+    /// site's pinned PHP; the `wp` shim instead declines to scope, since a
+    /// `--path=` pointing at the project root would aim WP-CLI somewhere
+    /// `WordPress` isn't served from.
+    pub served_root: Option<PathBuf>,
 }
 
 /// Outcome of resolving the current directory against the live site list.
@@ -100,12 +106,12 @@ pub enum NamedScopeError {
 /// live one level up, so matching on the served root would miss a cwd at the
 /// project root (by far the common case). `served_root` is carried through for
 /// the `wp` shim, whose `--path=` genuinely needs the directory `WordPress` is
-/// served from.
+/// served from - `None` if it doesn't exist on disk.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Candidate {
     name: String,
     document_root: PathBuf,
-    served_root: PathBuf,
+    served_root: Option<PathBuf>,
     php: PhpVersion,
 }
 
@@ -149,10 +155,16 @@ pub fn site_scope_by_name(dirs: &PlatformDirs, name: &str) -> Result<SiteScope, 
 }
 
 /// The live site list reduced to [`Candidate`]s with canonicalized roots, or
-/// `None` if the daemon didn't answer. Sites whose document root can't be
-/// canonicalized (e.g. deleted from disk) are skipped; a served root that
-/// can't be (an unbuilt `public/`, say) falls back to the document root, since
-/// it must never block matching.
+/// `None` if the daemon didn't answer.
+///
+/// Sites whose document root can't be canonicalized (e.g. deleted from disk)
+/// are skipped entirely - without a project root there is nothing to match a
+/// cwd against. A served root that can't be canonicalized (an unbuilt
+/// `public/`, say) is recorded as `None` rather than dropping the site:
+/// `yerd exec` only needs the document root, and a missing `public/` is no
+/// reason to demote a pinned site to the global default. The `wp` shim, which
+/// genuinely needs that directory for `--path=`, filters those out itself via
+/// [`SiteScope::served_root`] being `None`.
 fn candidates(dirs: &PlatformDirs) -> Option<Vec<Candidate>> {
     let sock = dirs.runtime.join("yerd.sock");
     let sites = list_sites_with_timeout(&sock)?;
@@ -161,8 +173,7 @@ fn candidates(dirs: &PlatformDirs) -> Option<Vec<Candidate>> {
             .iter()
             .filter_map(|entry| {
                 let document_root = std::fs::canonicalize(entry.site.document_root()).ok()?;
-                let served_root = std::fs::canonicalize(entry.site.served_root())
-                    .unwrap_or_else(|_| document_root.clone());
+                let served_root = std::fs::canonicalize(entry.site.served_root()).ok();
                 Some(Candidate {
                     name: entry.site.name().to_owned(),
                     document_root,
@@ -240,7 +251,7 @@ mod tests {
         Candidate {
             name: name.to_owned(),
             document_root: PathBuf::from(root),
-            served_root: PathBuf::from(root),
+            served_root: Some(PathBuf::from(root)),
             php: version,
         }
     }
@@ -255,7 +266,7 @@ mod tests {
         Candidate {
             name: name.to_owned(),
             document_root: PathBuf::from(document_root),
-            served_root: PathBuf::from(served),
+            served_root: Some(PathBuf::from(served)),
             php: version,
         }
     }
@@ -314,7 +325,7 @@ mod tests {
         assert_eq!(hit.php, php(8, 3));
         assert_eq!(
             hit.served_root,
-            PathBuf::from("/srv/my-app/public"),
+            Some(PathBuf::from("/srv/my-app/public")),
             "the served root still travels through for wp's --path="
         );
 
@@ -343,7 +354,7 @@ mod tests {
         let candidates = vec![Candidate {
             name: "real-site".to_owned(),
             document_root: canonical_root.clone(),
-            served_root: canonical_root.clone(),
+            served_root: Some(canonical_root.clone()),
             php: php(8, 4),
         }];
         let hit = match_site(&canonical_cwd, &candidates).unwrap();
