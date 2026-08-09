@@ -264,8 +264,13 @@ pub enum Command {
     /// the global default is used. Everything after the tool is passed
     /// straight through, so `--site`/`--json` must come *before* it (e.g.
     /// `yerd exec --site blog php -v`). The bare `php` and `composer` shims are
-    /// unaffected and still use the global default. Local - execs PHP directly.
-    /// (Unix only.)
+    /// unaffected and still use the global default. `-h`/`--help` go to the
+    /// tool, so use `yerd help exec` for this command's own help. Local -
+    /// execs PHP directly. (Unix only.)
+    // `disable_help_flag` because clap otherwise matches `-h`/`--help` before
+    // `trailing_var_arg` starts collecting, so `yerd exec composer --help`
+    // would print yerd's help instead of Composer's.
+    #[command(disable_help_flag = true)]
     Exec {
         /// Run under this site's pinned version instead of the current
         /// directory's. Unlike the cwd lookup this never falls back: an
