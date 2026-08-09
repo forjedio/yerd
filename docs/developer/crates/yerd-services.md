@@ -163,8 +163,14 @@ resolve their runtime data. The on-disk layout under `PlatformDirs`:
 {data}/services/<id>/data                  (or data-<major> for Postgres) # shared datadir
 {state}/services/<id>/<id>.conf            # rendered config
 {state}/services/<id>/<id>.log             # captured stdout/stderr
+{state}/services/<id>/conf.d/10-yerd.<ext> # rendered overrides (rewritten every start)
+{state}/services/<id>/conf.d/50-local.<ext> # hand edits (created once, never rewritten)
 {runtime}/services/<id>/<id>.sock          # Unix socket (MySQL/MariaDB)
 ```
+
+The `conf.d/` pair exists only for override-capable engines, and the rendered
+config ends with the engine's native include directive pointing at it, so both
+files are read after Yerd's own settings.
 
 `discover_installed(&PlatformDirs)` scans for version directories that contain a
 real server binary; the daemon calls it at startup.

@@ -8,7 +8,7 @@
 )]
 
 use yerd_config::{Config, PhpSection, Ports, ServiceInstance, SiteOverride};
-use yerd_core::{PhpVersion, Site, Tld};
+use yerd_core::{PhpVersion, RouteRule, Site, Tld};
 
 const POPULATED: &str = r#"
 version = 1
@@ -40,6 +40,14 @@ front_controller = true
 
 [services]
 enabled = ["mysql", "redis"]
+
+[[route_rules.linked.api]]
+prefix = "/api"
+target = "api/index.php"
+
+[[route_rules.parked."docroot-a"]]
+prefix = "/"
+target = "index.html"
 "#;
 
 fn populated_expected() -> Config {
@@ -57,6 +65,7 @@ fn populated_expected() -> Config {
         extensions: std::collections::BTreeMap::new(),
         version_settings: std::collections::BTreeMap::new(),
         directives: std::collections::BTreeMap::new(),
+        pool: std::collections::BTreeMap::new(),
     };
     c.parked.paths.insert("docroot-a".to_string());
     c.parked.paths.insert("docroot-b".to_string());
@@ -81,6 +90,14 @@ fn populated_expected() -> Config {
     c.services
         .instances
         .insert("redis".to_string(), ServiceInstance::default());
+    c.route_rules.linked.insert(
+        "api".to_string(),
+        vec![RouteRule::new("/api", "api/index.php").unwrap()],
+    );
+    c.route_rules.parked.insert(
+        "docroot-a".to_string(),
+        vec![RouteRule::new("/", "index.html").unwrap()],
+    );
     c
 }
 
@@ -104,6 +121,25 @@ fn populated_round_trip() {
 fn populated_round_trip_passes_validate() {
     let parsed = Config::from_toml(POPULATED).unwrap();
     parsed.validate().unwrap();
+}
+
+#[test]
+fn service_overrides_round_trip() {
+    let mut c = Config::default();
+    c.services.instances.insert(
+        "mysql".to_string(),
+        ServiceInstance {
+            overrides: std::collections::BTreeMap::from([
+                ("max_connections".to_string(), "500".to_string()),
+                ("innodb_buffer_pool_size".to_string(), "1G".to_string()),
+            ]),
+            ..ServiceInstance::default()
+        },
+    );
+    c.validate().unwrap();
+    let s = c.to_toml().unwrap();
+    let back = Config::from_toml(&s).unwrap();
+    assert_eq!(back, c);
 }
 
 #[test]

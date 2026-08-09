@@ -12,11 +12,13 @@ import {
   Plus,
   RotateCw,
   Search,
+  SlidersHorizontal,
   Square,
   Trash2,
 } from "lucide-vue-next";
 
 import PageHeader from "@/components/PageHeader.vue";
+import ServiceOverridesModal from "@/components/ServiceOverridesModal.vue";
 import StatusPill from "@/components/StatusPill.vue";
 import Badge from "@/components/ui/Badge.vue";
 import Button from "@/components/ui/Button.vue";
@@ -411,6 +413,17 @@ async function confirmPort(close: () => void): Promise<void> {
   } finally {
     busy.value = null;
   }
+}
+
+// ── config overrides modal ──
+// The modal owns the override map itself (it is not part of ServiceStatus), so
+// the view only names the target row and its open state.
+const overridesOpen = ref(false);
+const overridesTarget = ref<ServiceStatus | null>(null);
+
+function openOverrides(s: ServiceStatus): void {
+  overridesTarget.value = s;
+  overridesOpen.value = true;
 }
 
 // ── logs modal (polled only while open) ──
@@ -886,6 +899,9 @@ onUnmounted(registerViewActions({ refresh: () => void load() }));
                         >
                           <Database class="size-4" /> Manage databases
                         </DropdownMenuItem>
+                        <DropdownMenuItem v-if="s.supports_overrides" @select="openOverrides(s)">
+                          <SlidersHorizontal class="size-4" /> Override settings
+                        </DropdownMenuItem>
                         <DropdownMenuItem v-if="!isPerSite(s)" @select="openChange(s)">
                           <Download class="size-4" /> Change version
                         </DropdownMenuItem>
@@ -1101,6 +1117,9 @@ onUnmounted(registerViewActions({ refresh: () => void load() }));
         <Button @click="confirmPort(close)">Save</Button>
       </template>
     </Modal>
+
+    <!-- Config overrides -->
+    <ServiceOverridesModal v-model:open="overridesOpen" :service="overridesTarget" />
 
     <!-- Logs -->
     <Modal

@@ -112,6 +112,9 @@ export function directiveNameProblem(name: string): string | null {
   }
   const reserved = RESERVED_DIRECTIVES.get(name);
   if (reserved) return reserved;
+  if (name.startsWith("pm.")) {
+    return "FPM pool settings are set in the FPM pool field above";
+  }
   if (!/^[A-Za-z_][A-Za-z0-9._-]*$/.test(name) || name.length > 128) {
     return "names start with a letter or _ and use letters, digits, '.', '_' or '-'";
   }
@@ -130,5 +133,20 @@ export function directiveValueProblem(value: string): string | null {
   if (/[\u0000-\u001f\u007f[\]=;#]/.test(value)) {
     return "values can't contain [ ] = ; # or control characters";
   }
+  return null;
+}
+
+/**
+ * Client-side hint for an invalid FPM `max_children` value; `null` when it
+ * looks fine. An empty field is valid and means "reset to the default", so it
+ * returns `null` too. Mirrors `yerd-core`'s `1..=1024` bound - the daemon
+ * remains the authority.
+ */
+export function poolMaxChildrenProblem(value: string): string | null {
+  const trimmed = value.trim();
+  if (trimmed === "") return null;
+  if (!/^\d+$/.test(trimmed)) return "enter a whole number";
+  const n = Number(trimmed);
+  if (n < 1 || n > 1024) return "worker ceiling must be between 1 and 1024";
   return null;
 }

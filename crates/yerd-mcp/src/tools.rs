@@ -67,11 +67,13 @@ const TOOLS: &[ToolDef] = &[
     },
     ToolDef {
         name: "add_domain",
-        description: "Add an extra domain or wildcard to a site, e.g. api.foo.test.",
+        description:
+            "Add an extra domain or wildcard to a site or whole-host proxy, e.g. api.foo.test.",
     },
     ToolDef {
         name: "remove_domain",
-        description: "Remove a domain from a site (a site's last domain cannot be removed).",
+        description:
+            "Remove a domain from a site or whole-host proxy (the last domain cannot be removed).",
     },
     ToolDef {
         name: "add_proxy",
@@ -388,7 +390,7 @@ fn schema_for(name: &str) -> Value {
         ),
         "add_domain" | "remove_domain" => schema(
             &[
-                ("name", string_prop("Site name")),
+                ("name", string_prop("Site or proxy name")),
                 ("domain", string_prop("Full domain, e.g. api.foo.test or *.foo.test")),
             ],
             &["name", "domain"],

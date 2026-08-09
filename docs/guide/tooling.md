@@ -175,6 +175,12 @@ your [default PHP version](./php-versions). Install at least one PHP version
 first (`yerd install php 8.4`); otherwise `composer` reports that no PHP is
 available. Node and Bun are standalone and have no such dependency.
 
+The `composer` shim always uses the **global default**, including inside a site
+pinned to another version. To run Composer under a site's pinned version instead,
+use `yerd exec composer …` - it runs the same phar under that site's PHP. See
+[Site-aware CLI](./php-versions#site-aware-cli-yerd-exec-and-yerd-which). The
+shim itself is unchanged.
+
 ::: tip ext-intl and friends
 Yerd's PHP builds ship the **bulk** extension set, including
 `intl`, `sodium`, `mysqli`, and more - so Composer packages that require them

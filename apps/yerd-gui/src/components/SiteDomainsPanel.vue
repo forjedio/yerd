@@ -9,10 +9,21 @@ import Spinner from "@/components/ui/Spinner.vue";
 import { useToast } from "@/composables/useToast";
 import { addDomain, IpcError, removeDomain, resetDomains, setPrimaryDomain } from "@/ipc/client";
 import { isUnderTld, validateDomainShape } from "@/lib/domainValidation";
-import type { SiteEntry } from "@/ipc/types";
+
+/** The minimal shape this panel needs from whatever holds the domains - a
+ *  `SiteEntry` satisfies it as-is, and a `ProxyEntry` is mapped onto it by
+ *  `ProxiesView`. The optional fields are the ones the daemon omits for a
+ *  default target or doesn't carry for a proxy at all. */
+export interface DomainsTarget {
+  name: string;
+  primary_domain?: string;
+  domains?: string[];
+  apex_shadowed_by?: string;
+  is_wordpress?: boolean;
+}
 
 const props = defineProps<{
-  site: SiteEntry;
+  site: DomainsTarget;
   tld: string;
 }>();
 const emit = defineEmits<{ changed: [] }>();

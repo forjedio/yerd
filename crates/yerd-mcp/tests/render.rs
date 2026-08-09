@@ -117,6 +117,7 @@ fn sample_report() -> yerd_ipc::StatusReport {
             type_id: "mysql".into(),
             site: None,
             error: None,
+            supports_overrides: true,
         }],
         mail: Some(yerd_ipc::MailStatus {
             enabled: true,

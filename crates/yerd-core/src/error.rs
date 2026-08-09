@@ -85,6 +85,15 @@ pub enum CoreError {
         reason: UpstreamTargetErrorReason,
     },
 
+    /// A whole-host proxy name failed validation.
+    #[error("proxy name {name:?} is invalid: {reason}")]
+    InvalidProxyName {
+        /// The raw name that failed validation.
+        name: String,
+        /// Why it failed.
+        reason: ProxyNameErrorReason,
+    },
+
     /// A string failed to validate as a [`ProxyRule`](crate::ProxyRule) prefix.
     #[error("invalid proxy rule prefix {input:?}: {reason}")]
     InvalidProxyRule {
@@ -92,6 +101,16 @@ pub enum CoreError {
         input: String,
         /// Why it failed.
         reason: ProxyRuleErrorReason,
+    },
+
+    /// A string failed to validate as a [`RouteRule`](crate::RouteRule) prefix
+    /// or target.
+    #[error("invalid route rule {input:?}: {reason}")]
+    InvalidRouteRule {
+        /// The raw prefix or target that failed validation.
+        input: String,
+        /// Why it failed.
+        reason: RouteRuleErrorReason,
     },
 }
 
@@ -134,6 +153,29 @@ impl fmt::Display for UpstreamTargetErrorReason {
     }
 }
 
+/// Specific failure modes for whole-host proxy-name validation.
+///
+/// A proxy name is one or more dot-separated DNS labels, so its shape rules are
+/// the domain sub-part rules: [`Self::Shape`] carries the underlying
+/// [`DomainErrorReason`] verbatim rather than restating them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum ProxyNameErrorReason {
+    /// The name was a wildcard pattern (leftmost `*` label).
+    Wildcard,
+    /// The name was not a valid domain sub-part.
+    Shape(DomainErrorReason),
+}
+
+impl fmt::Display for ProxyNameErrorReason {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Wildcard => f.write_str("a proxy name must not be a wildcard"),
+            Self::Shape(reason) => reason.fmt(f),
+        }
+    }
+}
+
 /// Specific failure modes for [`ProxyRule`](crate::ProxyRule) prefix validation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
@@ -155,6 +197,42 @@ impl fmt::Display for ProxyRuleErrorReason {
             Self::NotAbsolute => "prefix must begin with '/'",
             Self::ContainsDotDot => "prefix must not contain a '..' component",
             Self::ContainsControl => "prefix must not contain control characters",
+        };
+        f.write_str(msg)
+    }
+}
+
+/// Specific failure modes for [`RouteRule`](crate::RouteRule) validation.
+///
+/// The prefix reasons mirror [`ProxyRuleErrorReason`]; the two target reasons
+/// have no proxy-rule equivalent, since a proxy rule's target is a URL.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum RouteRuleErrorReason {
+    /// Prefix was empty.
+    EmptyPrefix,
+    /// Prefix did not begin with `/`.
+    PrefixNotAbsolute,
+    /// Prefix contained an ASCII/Unicode control character.
+    PrefixContainsControl,
+    /// Prefix contained a `..` path component.
+    PrefixContainsDotDot,
+    /// Target was empty.
+    EmptyTarget,
+    /// Target was not a safe relative path: it was absolute, carried a drive or
+    /// UNC prefix, contained a `..` component, or held a control character.
+    InvalidTarget,
+}
+
+impl fmt::Display for RouteRuleErrorReason {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let msg = match self {
+            Self::EmptyPrefix => "prefix must not be empty",
+            Self::PrefixNotAbsolute => "prefix must begin with '/'",
+            Self::PrefixContainsControl => "prefix must not contain control characters",
+            Self::PrefixContainsDotDot => "prefix must not contain a '..' component",
+            Self::EmptyTarget => "target must not be empty",
+            Self::InvalidTarget => "target must be a relative path with no '..' component",
         };
         f.write_str(msg)
     }
@@ -373,6 +451,10 @@ mod tests {
             reason: DomainErrorReason::Empty,
         };
         let _ = CoreError::DuplicateDomain { domain: "x".into() };
+        let _ = CoreError::InvalidProxyName {
+            name: "x".into(),
+            reason: ProxyNameErrorReason::Wildcard,
+        };
 
         for r in [
             PhpVersionErrorReason::Empty,
@@ -422,6 +504,14 @@ mod tests {
             DomainErrorReason::LabelTooLong,
             DomainErrorReason::LeadingOrTrailingHyphen,
             DomainErrorReason::TooLong,
+        ] {
+            assert!(!r.to_string().is_empty());
+            let _debug = format!("{r:?}");
+        }
+
+        for r in [
+            ProxyNameErrorReason::Wildcard,
+            ProxyNameErrorReason::Shape(DomainErrorReason::Empty),
         ] {
             assert!(!r.to_string().is_empty());
             let _debug = format!("{r:?}");

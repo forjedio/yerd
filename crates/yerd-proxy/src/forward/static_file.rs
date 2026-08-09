@@ -75,23 +75,52 @@ pub async fn try_serve(
     allowed_root: &Path,
     symlink_protection: bool,
 ) -> StaticOutcome {
+    let Some(rel) = static_candidate(uri_path) else {
+        return StaticOutcome::NotFound;
+    };
+
+    serve_contained_file(
+        method,
+        uri_path,
+        served_root,
+        allowed_root,
+        &rel,
+        symlink_protection,
+    )
+    .await
+}
+
+/// Serve `rel` (relative to `served_root`) once it has been derived by a
+/// caller: gate the method, canonicalise `allowed_root`, apply the
+/// containment/`symlink_protection` escape policy, refuse PHP source on the
+/// *resolved* path, require a regular file, then stream it.
+///
+/// Shared by [`try_serve`] and [`serve_target_file`], which differ only in how
+/// they arrive at `rel` (URL parsing versus a validated routing-rule target).
+/// `requested_path` is the original request path, used only to label a
+/// [`StaticOutcome::SymlinkEscape`].
+async fn serve_contained_file(
+    method: &Method,
+    requested_path: &str,
+    served_root: &Path,
+    allowed_root: &Path,
+    rel: &Path,
+    symlink_protection: bool,
+) -> StaticOutcome {
     if *method != Method::GET && *method != Method::HEAD {
         return StaticOutcome::NotFound;
     }
 
-    let Some(rel) = static_candidate(uri_path) else {
-        return StaticOutcome::NotFound;
-    };
     let Ok(real_root) = tokio::fs::canonicalize(allowed_root).await else {
         return StaticOutcome::NotFound;
     };
 
-    let real_file = match canonical_within(&served_root.join(&rel), &real_root).await {
+    let real_file = match canonical_within(&served_root.join(rel), &real_root).await {
         Some(Containment::Ok(path)) => path,
         Some(Containment::Escaped(resolved)) if !symlink_protection => resolved,
         Some(Containment::Escaped(resolved)) => {
             return StaticOutcome::SymlinkEscape {
-                requested_path: uri_path.to_owned(),
+                requested_path: requested_path.to_owned(),
                 resolved,
                 allowed_root: real_root,
             };
@@ -217,6 +246,38 @@ pub async fn try_serve_index(
         },
         None => StaticOutcome::NotFound,
     }
+}
+
+/// Serve a routing rule's static target (`target_rel`, relative to
+/// `served_root`) for a GET/HEAD request.
+///
+/// Like [`try_serve`] but for an already-validated relative path rather than a
+/// URL to parse, so there is no percent-decoding or traversal guard to repeat -
+/// `yerd_core::RouteRule` rejected an unsafe target at construction. Everything
+/// after that is identical: canonicalise, check containment against
+/// `allowed_root`, refuse PHP source on the *resolved* path (so a symlinked
+/// `index.html` pointing at `secret.php` cannot leak source, mirroring
+/// [`try_serve_index`]'s guard), then stream it.
+///
+/// `requested_path` is the original request path, used only to label a
+/// [`StaticOutcome::SymlinkEscape`] for the log and 403 body.
+pub(crate) async fn serve_target_file(
+    method: &Method,
+    requested_path: &str,
+    served_root: &Path,
+    allowed_root: &Path,
+    target_rel: &Path,
+    symlink_protection: bool,
+) -> StaticOutcome {
+    serve_contained_file(
+        method,
+        requested_path,
+        served_root,
+        allowed_root,
+        target_rel,
+        symlink_protection,
+    )
+    .await
 }
 
 /// Whether canonicalising a path candidate stayed within `real_root` or
@@ -586,5 +647,185 @@ mod tests {
         assert!(body.contains("/storage/x.png"));
         assert!(!body.contains("/outside/x.png"));
         assert!(!body.contains("/project"));
+    }
+
+    #[tokio::test]
+    async fn serve_target_file_serves_the_rule_target() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("index.html"), b"<html>spa</html>").unwrap();
+
+        let outcome = serve_target_file(
+            &Method::GET,
+            "/dashboard/settings",
+            root.path(),
+            root.path(),
+            Path::new("index.html"),
+            true,
+        )
+        .await;
+        match outcome {
+            StaticOutcome::Served(resp) => {
+                assert_eq!(resp.status(), StatusCode::OK);
+                assert_eq!(body_bytes(resp).await, b"<html>spa</html>");
+            }
+            _ => panic!("expected Served"),
+        }
+    }
+
+    #[tokio::test]
+    async fn serve_target_file_head_has_no_body() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("index.html"), b"<html>spa</html>").unwrap();
+
+        let outcome = serve_target_file(
+            &Method::HEAD,
+            "/dashboard",
+            root.path(),
+            root.path(),
+            Path::new("index.html"),
+            true,
+        )
+        .await;
+        match outcome {
+            StaticOutcome::Served(resp) => {
+                assert_eq!(resp.status(), StatusCode::OK);
+                assert!(body_bytes(resp).await.is_empty());
+            }
+            _ => panic!("expected Served"),
+        }
+    }
+
+    #[tokio::test]
+    async fn serve_target_file_refuses_non_get_head() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("index.html"), b"spa").unwrap();
+
+        let outcome = serve_target_file(
+            &Method::POST,
+            "/dashboard",
+            root.path(),
+            root.path(),
+            Path::new("index.html"),
+            true,
+        )
+        .await;
+        assert!(matches!(outcome, StaticOutcome::NotFound));
+    }
+
+    #[tokio::test]
+    async fn serve_target_file_missing_target_is_not_found() {
+        let root = tempfile::tempdir().unwrap();
+        let outcome = serve_target_file(
+            &Method::GET,
+            "/dashboard",
+            root.path(),
+            root.path(),
+            Path::new("index.html"),
+            true,
+        )
+        .await;
+        assert!(matches!(outcome, StaticOutcome::NotFound));
+    }
+
+    #[tokio::test]
+    async fn serve_target_file_refuses_a_directory_target() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir(root.path().join("assets")).unwrap();
+        let outcome = serve_target_file(
+            &Method::GET,
+            "/x",
+            root.path(),
+            root.path(),
+            Path::new("assets"),
+            true,
+        )
+        .await;
+        assert!(matches!(outcome, StaticOutcome::NotFound));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn serve_target_file_refuses_php_source_reached_through_a_symlink() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("secret.php"), b"<?php $key = 1;").unwrap();
+        std::os::unix::fs::symlink(
+            root.path().join("secret.php"),
+            root.path().join("index.html"),
+        )
+        .unwrap();
+
+        let outcome = serve_target_file(
+            &Method::GET,
+            "/dashboard",
+            root.path(),
+            root.path(),
+            Path::new("index.html"),
+            true,
+        )
+        .await;
+        assert!(matches!(outcome, StaticOutcome::NotFound));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn serve_target_file_reports_escape_with_protection_on() {
+        let docroot = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(outside.path().join("secret.html"), b"leaked").unwrap();
+        std::os::unix::fs::symlink(
+            outside.path().join("secret.html"),
+            docroot.path().join("index.html"),
+        )
+        .unwrap();
+
+        let outcome = serve_target_file(
+            &Method::GET,
+            "/dashboard",
+            docroot.path(),
+            docroot.path(),
+            Path::new("index.html"),
+            true,
+        )
+        .await;
+        match outcome {
+            StaticOutcome::SymlinkEscape {
+                requested_path,
+                resolved,
+                ..
+            } => {
+                assert_eq!(requested_path, "/dashboard");
+                assert!(resolved.ends_with("secret.html"));
+            }
+            _ => panic!("expected SymlinkEscape"),
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn serve_target_file_serves_escape_with_protection_off() {
+        let docroot = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(outside.path().join("secret.html"), b"shared").unwrap();
+        std::os::unix::fs::symlink(
+            outside.path().join("secret.html"),
+            docroot.path().join("index.html"),
+        )
+        .unwrap();
+
+        let outcome = serve_target_file(
+            &Method::GET,
+            "/dashboard",
+            docroot.path(),
+            docroot.path(),
+            Path::new("index.html"),
+            false,
+        )
+        .await;
+        match outcome {
+            StaticOutcome::Served(resp) => {
+                assert_eq!(body_bytes(resp).await, b"shared");
+            }
+            _ => panic!("expected Served"),
+        }
     }
 }

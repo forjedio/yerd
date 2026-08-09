@@ -20,6 +20,7 @@ vi.mock("@/composables/useToast", () => ({
 }));
 
 import SiteDomainsPanel from "./SiteDomainsPanel.vue";
+import type { DomainsTarget } from "./SiteDomainsPanel.vue";
 import type { SiteEntry } from "@/ipc/types";
 
 function site(overrides: Partial<SiteEntry> = {}): SiteEntry {
@@ -33,7 +34,7 @@ function site(overrides: Partial<SiteEntry> = {}): SiteEntry {
   };
 }
 
-function mountPanel(s: SiteEntry) {
+function mountPanel(s: DomainsTarget) {
   return mount(SiteDomainsPanel, { props: { site: s, tld: "test" } });
 }
 
@@ -197,5 +198,39 @@ describe("SiteDomainsPanel — error surfacing", () => {
     await Promise.resolve();
     expect(toastError).toHaveBeenCalledWith("Domain change failed", "already routes to shop");
     expect(wrapper.emitted("changed")).toBeFalsy();
+  });
+});
+
+describe("SiteDomainsPanel — proxy-shaped target", () => {
+  const proxy = (): DomainsTarget => ({
+    name: "api.account",
+    primary_domain: "custom-domain.test",
+    domains: ["api.account.test", "custom-domain.test", "*.api.account.test"],
+  });
+
+  it("renders a dotted-apex proxy's domains and badges its primary", () => {
+    const wrapper = mountPanel(proxy());
+    const rs = rows(wrapper);
+    expect(rs).toHaveLength(3);
+    const custom = rs.find((r) => r.text().includes("custom-domain.test"))!;
+    expect(custom.text()).toContain("primary");
+    expect(wrapper.text()).not.toContain("WordPress");
+  });
+
+  it("mutates through the proxy name", async () => {
+    const wrapper = mountPanel(proxy());
+    await wrapper.find("#add-domain").setValue("extra.test");
+    await wrapper.findAll("button").find((b) => b.text().includes("Add"))!.trigger("click");
+    await Promise.resolve();
+    expect(addDomain).toHaveBeenCalledWith("api.account", "extra.test");
+  });
+
+  it("synthesizes the apex row for an uncustomised proxy", () => {
+    const wrapper = mountPanel({ name: "reverb" });
+    const rs = rows(wrapper);
+    expect(rs).toHaveLength(1);
+    expect(rs[0].text()).toContain("reverb.test");
+    const reset = wrapper.findAll("button").find((b) => b.text().includes("Reset to default"))!;
+    expect((reset.element as HTMLButtonElement).disabled).toBe(true);
   });
 });

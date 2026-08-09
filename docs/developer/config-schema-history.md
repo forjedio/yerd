@@ -28,7 +28,93 @@ Each entry below states what changed, whether the daemon's own migration is a ba
 
 ## Version-by-version
 
-### v18 (current)
+### v23 (current)
+
+**Added:** the optional `[domains.proxy]` table - routable-domain deltas for **whole-host proxies**, keyed by proxy name. It sits alongside the existing `[domains.linked]` (by site name) and `[domains.parked]` (by document-root string) maps and carries the same three keys: `added`, `suppressed`, and `primary`. It defaults to empty when absent, so an uncustomised file omits it entirely.
+
+```toml
+[domains.proxy.account-dev]
+added = ["custom-domain", "*.account-dev"]
+primary = "custom-domain"
+```
+
+A proxy name may itself be dotted (`api.account`), in which case TOML quotes the key: `[domains.proxy."api.account"]`. Domains are stored as **sub-parts** below the TLD, exactly as for sites, so `custom-domain` here means `custom-domain.test`. An all-empty delta is pruned by the writer, and a key naming no current proxy is inert rather than an error - the same tolerance `[domains.linked]` already has.
+
+**Migration from v22:** bare version bump - the table defaults to empty when absent, so a v22 file needs no other change.
+
+**To downgrade to v22:** change `version = 23` to `version = 22` and delete any `[domains.proxy.*]` tables (a v22 daemon rejects the unknown table under `deny_unknown_fields`, it doesn't just ignore it). Each proxy reverts to answering on its apex only, `<name>.test`.
+
+### v22
+
+**Added:** the optional `[services.<id>.overrides]` sub-table - free-form configuration overrides for a service instance, keyed by directive name. Each entry is written into that engine's generated `conf.d/10-yerd.<ext>` sidecar on every start, so the settings survive the restart that regenerates the main config (issue #195). Only the config-backed engines accept them (`mysql`, `mariadb`, `postgres`, `redis`); the table is dropped at load for any other service. It defaults to empty when absent, so an uncustomised file omits it entirely.
+
+```toml
+[services.mysql.overrides]
+max_allowed_packet = "256M"
+sql_mode = "STRICT_TRANS_TABLES,NO_ZERO_DATE"
+```
+
+Entries are shape-validated, not semantically validated: a name or value that could break out of the generated option file is refused when set, and an entry naming a directive Yerd owns (`port`, `datadir`, `bind-address`, …) is refused with a hint pointing at the typed command that manages it. At **load** time the same checks run leniently - a bad entry is dropped rather than failing the whole file - so hand-editing this table can never make the daemon refuse to start.
+
+Hand edits belong in the sibling `conf.d/50-local.<ext>` file instead, which Yerd creates once and never rewrites; it is read after `10-yerd.<ext>`, so it wins.
+
+**Migration from v21:** bare version bump - the table defaults to empty when absent, so a v21 file needs no other change.
+
+**To downgrade to v21:** change `version = 22` to `version = 21` and delete any `[services.<id>.overrides]` tables. Those overrides stop being written to `conf.d/10-yerd.<ext>`, so the affected engines fall back to Yerd's generated defaults on the next restart. Anything you put in `conf.d/50-local.<ext>` is unaffected by the downgrade, but an older build emits no include line for it, so it stops being read until you upgrade again.
+
+### v21
+
+**Added:** the optional `[route_rules]` table - per-site path-prefix **routing** rules, keyed by site class exactly like `[proxy_rules]` and `[domains]`: `[route_rules.linked.<name>]` by site name, `[route_rules.parked."<docroot>"]` by document-root string. Each rule pairs a URI path `prefix` with a `target` path relative to the site's served root. It defaults to empty when absent, so an uncustomised file omits it entirely.
+
+```toml
+[[route_rules.linked.portal]]
+prefix = "/api"
+target = "api/index.php"
+
+[[route_rules.linked.dashboard]]
+prefix = "/"
+target = "index.html"
+```
+
+A rule applies only when the request matched no real file, i.e. nginx's `try_files $uri $uri/ <target>`. A `.php` target is a nested front controller (issue #196: a Yii or CodeIgniter app mounted inside a legacy portal); any other target is served as a static document, which is how SPA history-API routing works. The `target` is validated as a safe relative path at load, so a hand-edited absolute path or one containing `..` is a hard parse error rather than a silent security hole.
+
+Note this is **not** `[proxy_rules]`: a proxy rule forwards to an HTTP upstream, a routing rule resolves to a file inside the site's own tree.
+
+**Migration from v20:** bare version bump - the table defaults to empty when absent, so a v20 file needs no other change.
+
+**To downgrade to v20:** change `version = 21` to `version = 20` and delete any `[route_rules.*]` tables (a v20 daemon rejects the unknown tables under `deny_unknown_fields`, it doesn't just ignore them). Sites revert to funnelling unmatched requests to the served root's `index.php`.
+
+### v20
+
+**Added:** the optional `[php.pool]` table - per-version FPM pool settings. `[php.pool."<version>"]` holds the pool settings for one installed version; the only key is `max_children`, the ceiling on concurrent PHP workers, accepted between `1` and `1024` and defaulting to `16`. It defaults to empty when absent, so an uncustomised file omits it entirely.
+
+```toml
+[php.pool."8.4"]
+max_children = "32"
+```
+
+These are FPM pool-block settings rather than ini directives, so they reach the generated pool config only, never a CLI `php.ini`. The `pm.` prefix is reserved out of `[php.directives]` for the same reason: rendered there it would become `php_value[pm.max_children]`, which FPM refuses on every worker spawn.
+
+The table loads **leniently**, like `[php.directives]`: an out-of-range value or an unknown setting name is dropped during parsing rather than failing the load. A malformed version key is still a hard error, and strict validation lives at set time (CLI/GUI/IPC).
+
+**Migration from v19:** bare version bump - the table defaults to empty when absent, so a v19 file needs no other change.
+
+**To downgrade to v19:** change `version = 20` to `version = 19` and delete any `[php.pool.*]` tables (an older daemon rejects the unknown tables under `deny_unknown_fields`, it doesn't just ignore them). Every version falls back to the built-in ceiling of 16.
+
+### v19
+
+**Added:** the top-level `lan_enabled` and `lan_setup_port` scalars, gating LAN exposure (serving your `.test` sites to other devices on the network) and setting the port the one-time remote-device setup page listens on. Both default when absent - `lan_enabled = false`, so LAN exposure stays opt-in, and `lan_setup_port = 7073`.
+
+```toml
+lan_enabled = false
+lan_setup_port = 7073
+```
+
+**Migration from v18:** bare version bump - both scalars default when absent, so a v18 file needs no other change.
+
+**To downgrade to v18:** change `version = 19` to `version = 18` and delete the `lan_enabled` and `lan_setup_port` lines (a v18 daemon rejects the unknown keys under `deny_unknown_fields`, it doesn't just ignore them). LAN exposure is off on a v18 daemon regardless.
+
+### v18
 
 **Added:** the optional `[php.directives]` table - free-form (shape-validated) per-version ini directives such as `xdebug.mode`. `[php.directives."<version>"]` holds the directives for one installed version. It defaults to empty when absent, so an uncustomised file omits it entirely.
 

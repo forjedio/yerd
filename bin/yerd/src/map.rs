@@ -93,6 +93,9 @@ pub fn to_request(cmd: &Command) -> Result<Request, ClientError> {
         Command::Php {
             action: crate::cli::PhpAction::Ini { action },
         } => php_ini_to_request(action)?,
+        Command::Php {
+            action: crate::cli::PhpAction::Pool { action },
+        } => php_pool_to_request(action)?,
         Command::Install {
             target: crate::cli::InstallTarget::Php { version, legacy },
         } => {
@@ -181,9 +184,10 @@ pub fn to_request(cmd: &Command) -> Result<Request, ClientError> {
             channel: channel_from_flags(*edge, *stable),
         },
         Command::Services => Request::ListServices,
-        Command::Service { action } => service_request(action),
+        Command::Service { action } => service_override_to_request(action)?,
         Command::Domain { action } => domain_request(action)?,
         Command::Proxy { action } => proxy_request(action)?,
+        Command::Route { action } => route_request(action)?,
         Command::Tunnel { action } => tunnel_request(action),
         Command::Db { action } => db_request(action),
         Command::Mail { action } => match action {
@@ -244,6 +248,16 @@ pub fn to_request(cmd: &Command) -> Result<Request, ClientError> {
                 "coverage is handled locally, not over IPC".to_owned(),
             ));
         }
+        Command::Exec { .. } => {
+            return Err(ClientError::Usage(
+                "exec is handled locally, not over IPC".to_owned(),
+            ));
+        }
+        Command::Which { .. } => {
+            return Err(ClientError::Usage(
+                "which is handled locally, not over IPC".to_owned(),
+            ));
+        }
         Command::Mcp => {
             return Err(ClientError::Usage(
                 "mcp runs its own protocol loop, not a single IPC exchange".to_owned(),
@@ -265,7 +279,10 @@ pub fn to_request(cmd: &Command) -> Result<Request, ClientError> {
 }
 
 /// Map a `yerd service <action>` to its wire request. Service ids are passed
-/// through verbatim - the daemon returns `NotFound` for an unknown id.
+/// through verbatim - the daemon returns `NotFound` for an unknown id. The
+/// `set`/`unset` arms are only ever reached through
+/// [`service_override_to_request`], which runs the client-side pre-flight
+/// first.
 fn service_request(action: &ServiceAction) -> Request {
     match action {
         ServiceAction::Available => Request::AvailableServices,
@@ -328,12 +345,65 @@ fn service_request(action: &ServiceAction) -> Request {
             service: service.clone(),
             site: site.clone(),
         },
+        ServiceAction::Set {
+            service,
+            key,
+            value,
+        } => Request::SetServiceOverrides {
+            service: service.clone(),
+            overrides: std::collections::BTreeMap::from([(key.clone(), value.clone())]),
+        },
+        ServiceAction::Unset { service, key } => Request::SetServiceOverrides {
+            service: service.clone(),
+            overrides: std::collections::BTreeMap::from([(key.clone(), String::new())]),
+        },
+        ServiceAction::Overrides { service } => Request::ServiceOverrides {
+            service: service.clone(),
+        },
     }
 }
 
-/// Map a `yerd domain <action>` to its wire request, validating the site name
-/// and domain shape client-side. `List` is handled locally (it needs the TLD to
-/// render default domains), so it never reaches here.
+/// Validate a `yerd service set|unset` override client-side so a bad argument
+/// fails before connect, then map it like every other service action. The
+/// pre-flight lives here because [`service_request`] is infallible; the daemon
+/// re-validates (it is the authority) and refuses the same cases.
+fn service_override_to_request(action: &ServiceAction) -> Result<Request, ClientError> {
+    let (service, key, value) = match action {
+        ServiceAction::Set {
+            service,
+            key,
+            value,
+        } => (service, key, Some(value.as_str())),
+        ServiceAction::Unset { service, key } => (service, key, None),
+        other => return Ok(service_request(other)),
+    };
+    let type_id = service
+        .split_once(':')
+        .map_or(service.as_str(), |(ty, _)| ty);
+    let Some(dialect) = yerd_core::service_directives::dialect_for(type_id) else {
+        return Err(ClientError::Usage(format!(
+            "{service} does not support configuration overrides"
+        )));
+    };
+    yerd_core::service_directives::validate_name(key)
+        .map_err(|e| ClientError::Usage(e.to_string()))?;
+    if let Some(hint) = yerd_core::service_directives::reserved(dialect, key) {
+        return Err(ClientError::Usage(format!(
+            "{key} is managed by Yerd: {hint}"
+        )));
+    }
+    if let Some(v) = value {
+        yerd_core::service_directives::validate_value(dialect, v)
+            .map_err(|e| ClientError::Usage(e.to_string()))?;
+    }
+    Ok(service_request(action))
+}
+
+/// Map a `yerd domain <action>` to its wire request, validating the target name
+/// and domain shape client-side. The target may be a site or a whole-host proxy
+/// (the daemon resolves both), so it is checked with [`validate_target_name`].
+/// `List` is handled locally (it needs the TLD to render default domains), so it
+/// never reaches here.
 fn domain_request(action: &crate::cli::DomainAction) -> Result<Request, ClientError> {
     use crate::cli::DomainAction;
     Ok(match action {
@@ -343,7 +413,7 @@ fn domain_request(action: &crate::cli::DomainAction) -> Result<Request, ClientEr
             ));
         }
         DomainAction::Add { site, domain } => {
-            validate_name(site)?;
+            validate_target_name(site)?;
             validate_domain(domain)?;
             Request::AddDomain {
                 name: site.clone(),
@@ -351,7 +421,7 @@ fn domain_request(action: &crate::cli::DomainAction) -> Result<Request, ClientEr
             }
         }
         DomainAction::Remove { site, domain } => {
-            validate_name(site)?;
+            validate_target_name(site)?;
             validate_domain(domain)?;
             Request::RemoveDomain {
                 name: site.clone(),
@@ -359,7 +429,7 @@ fn domain_request(action: &crate::cli::DomainAction) -> Result<Request, ClientEr
             }
         }
         DomainAction::Primary { site, domain } => {
-            validate_name(site)?;
+            validate_target_name(site)?;
             validate_domain(domain)?;
             Request::SetPrimaryDomain {
                 name: site.clone(),
@@ -367,7 +437,7 @@ fn domain_request(action: &crate::cli::DomainAction) -> Result<Request, ClientEr
             }
         }
         DomainAction::Reset { site } => {
-            validate_name(site)?;
+            validate_target_name(site)?;
             Request::ResetDomains { name: site.clone() }
         }
     })
@@ -376,7 +446,9 @@ fn domain_request(action: &crate::cli::DomainAction) -> Result<Request, ClientEr
 /// Map a `yerd proxy <action>` to its wire request. Arity distinguishes a
 /// whole-host proxy from a path rule (see [`crate::cli::ProxyAction`]). The
 /// upstream URL is validated by the daemon (authoritative); the client only
-/// checks the site/proxy name and, for a rule, that the prefix is absolute.
+/// checks the name and, for a rule, that the prefix is absolute. A whole-host
+/// proxy name may be dotted, a path rule's site name may not, so each arm
+/// validates its own name rather than sharing one up-front check.
 fn proxy_request(action: &crate::cli::ProxyAction) -> Result<Request, ClientError> {
     use crate::cli::ProxyAction;
     Ok(match action {
@@ -386,8 +458,8 @@ fn proxy_request(action: &crate::cli::ProxyAction) -> Result<Request, ClientErro
             second,
             third,
         } => {
-            validate_name(first)?;
             if let Some(url) = third {
+                validate_name(first)?;
                 validate_prefix(second)?;
                 Request::AddProxyRule {
                     site: first.clone(),
@@ -395,6 +467,7 @@ fn proxy_request(action: &crate::cli::ProxyAction) -> Result<Request, ClientErro
                     url: url.clone(),
                 }
             } else {
+                validate_target_name(first)?;
                 Request::AddProxy {
                     name: first.clone(),
                     url: second.clone(),
@@ -402,17 +475,51 @@ fn proxy_request(action: &crate::cli::ProxyAction) -> Result<Request, ClientErro
             }
         }
         ProxyAction::Remove { target, prefix } => {
-            validate_name(target)?;
             if let Some(prefix) = prefix {
+                validate_name(target)?;
                 validate_prefix(prefix)?;
                 Request::RemoveProxyRule {
                     site: target.clone(),
                     prefix: prefix.clone(),
                 }
             } else {
+                validate_target_name(target)?;
                 Request::RemoveProxy {
                     name: target.clone(),
                 }
+            }
+        }
+    })
+}
+
+/// Map a `yerd route <action>` to its wire request. The target is validated by
+/// the daemon (authoritative, via `yerd_core::RouteRule`); the client only
+/// checks the site name and that the prefix is absolute. `List` carries no
+/// filter on the wire - the same full response is filtered client-side, so
+/// there is only one IPC surface.
+fn route_request(action: &crate::cli::RouteAction) -> Result<Request, ClientError> {
+    use crate::cli::RouteAction;
+    Ok(match action {
+        RouteAction::List { .. } => Request::ListRoutes,
+        RouteAction::Add {
+            site,
+            prefix,
+            target,
+        } => {
+            validate_name(site)?;
+            validate_prefix(prefix)?;
+            Request::AddRouteRule {
+                site: site.clone(),
+                prefix: prefix.clone(),
+                target: target.clone(),
+            }
+        }
+        RouteAction::Remove { site, prefix } => {
+            validate_name(site)?;
+            validate_prefix(prefix)?;
+            Request::RemoveRouteRule {
+                site: site.clone(),
+                prefix: prefix.clone(),
             }
         }
     })
@@ -615,6 +722,40 @@ fn php_ini_to_request(action: &crate::cli::PhpIniAction) -> Result<Request, Clie
     })
 }
 
+/// Map `yerd php pool` onto its request, validating the version, setting name,
+/// and value client-side so a bad argument fails before connect. The daemon
+/// re-validates (it is the authority).
+fn php_pool_to_request(action: &crate::cli::PhpPoolAction) -> Result<Request, ClientError> {
+    use crate::cli::PhpPoolAction;
+    Ok(match action {
+        PhpPoolAction::Set {
+            version,
+            name,
+            value,
+        } => {
+            let v = parse_php(version)?;
+            yerd_core::php_pool::validate_name(name)
+                .map_err(|e| ClientError::Usage(e.to_string()))?;
+            yerd_core::php_pool::validate_value(value)
+                .map_err(|e| ClientError::Usage(e.to_string()))?;
+            Request::SetPhpPoolSettings {
+                version: v,
+                settings: std::collections::BTreeMap::from([(name.clone(), value.clone())]),
+            }
+        }
+        PhpPoolAction::Unset { version, name } => {
+            let v = parse_php(version)?;
+            yerd_core::php_pool::validate_name(name)
+                .map_err(|e| ClientError::Usage(e.to_string()))?;
+            Request::SetPhpPoolSettings {
+                version: v,
+                settings: std::collections::BTreeMap::from([(name.clone(), String::new())]),
+            }
+        }
+        PhpPoolAction::List => Request::ListPhp,
+    })
+}
+
 /// The channel override for a self-update check, from the `--edge`/`--stable`
 /// flags (mutually exclusive at the clap layer). `None` = use the saved default.
 #[must_use]
@@ -666,7 +807,9 @@ pub fn render_domains(
 
     if let Some(f) = filter {
         if selected.is_empty() {
-            return Rendered::err(format!("no site named {f:?}"));
+            return Rendered::err(format!(
+                "no site named {f:?} (a proxy's domains are listed by `yerd proxy list`)"
+            ));
         }
     }
 
@@ -783,6 +926,18 @@ pub(crate) fn validate_name(name: &str) -> Result<(), ClientError> {
         .map_err(|e| ClientError::Usage(format!("invalid site name {name:?}: {e}")))
 }
 
+/// Validate a name that may denote either a site or a whole-host proxy, for the
+/// commands the daemon resolves against both namespaces.
+///
+/// Delegates to `yerd_core::validate_proxy_name`, which accepts every valid site
+/// name plus the dotted names only a proxy can hold; the wrapper just rewords
+/// the failure as a usage error.
+pub(crate) fn validate_target_name(name: &str) -> Result<(), ClientError> {
+    yerd_core::validate_proxy_name(name)
+        .map(|_| ())
+        .map_err(|e| ClientError::Usage(format!("invalid site or proxy name {name:?}: {e}")))
+}
+
 /// The result of rendering a response: text to print and a process exit code.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Rendered {
@@ -839,6 +994,7 @@ pub fn render(resp: &Response, json: bool) -> Rendered {
             settings,
             version_settings,
             directives,
+            pool,
         } => Rendered::ok(format_php_versions(
             installed,
             *default,
@@ -846,6 +1002,7 @@ pub fn render(resp: &Response, json: bool) -> Rendered {
             settings,
             version_settings,
             directives,
+            pool,
         )),
         Response::AvailablePhp {
             available,
@@ -899,6 +1056,15 @@ pub fn render(resp: &Response, json: bool) -> Rendered {
         } else {
             lines.join("\n")
         }),
+        Response::ServiceOverrides { overrides } => Rendered::ok(if overrides.is_empty() {
+            "no overrides".to_owned()
+        } else {
+            overrides
+                .iter()
+                .map(|(k, v)| format!("{k} = {v}"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        }),
         Response::Databases { databases } => Rendered::ok(if databases.is_empty() {
             "no databases".to_owned()
         } else {
@@ -941,11 +1107,46 @@ pub fn render(resp: &Response, json: bool) -> Rendered {
             *source,
         )),
         Response::Proxies { proxies, rules } => Rendered::ok(format_proxies(proxies, rules)),
+        Response::Routes { rules } => Rendered::ok(format_routes(rules, None)),
         _ => Rendered::err("unexpected response from daemon".to_owned()),
     }
 }
 
-/// Render `yerd proxy list`: whole-host proxies then per-site path rules.
+/// Render `yerd route list [site]`. With `filter`, shows only that site's rules.
+/// The filter is applied here rather than on the wire: `ListRoutes` returns
+/// every site's rules and the CLI narrows them, so there is one IPC surface.
+#[must_use]
+pub fn render_routes(
+    rules: &[yerd_ipc::RouteRuleEntry],
+    filter: Option<&str>,
+    json: bool,
+) -> Rendered {
+    if json {
+        let selected: Vec<&yerd_ipc::RouteRuleEntry> = select_routes(rules, filter);
+        let body = serde_json::to_string_pretty(&selected)
+            .unwrap_or_else(|e| format!("{{\"error\":\"serialize failed: {e}\"}}"));
+        return Rendered::ok(body);
+    }
+    Rendered::ok(format_routes(rules, filter))
+}
+
+fn select_routes<'a>(
+    rules: &'a [yerd_ipc::RouteRuleEntry],
+    filter: Option<&str>,
+) -> Vec<&'a yerd_ipc::RouteRuleEntry> {
+    match filter {
+        Some(f) => {
+            let f = f.to_ascii_lowercase();
+            rules.iter().filter(|r| r.site == f).collect()
+        }
+        None => rules.iter().collect(),
+    }
+}
+
+/// Render `yerd proxy list`: whole-host proxies then per-site path rules. A
+/// proxy the daemon reports as customized gains an indented `domains:` line,
+/// mirroring `yerd domain list`; an effectively-default proxy carries no domain
+/// fields and renders as a single line.
 fn format_proxies(proxies: &[yerd_ipc::ProxyEntry], rules: &[yerd_ipc::ProxyRuleEntry]) -> String {
     use std::fmt::Write as _;
     if proxies.is_empty() && rules.is_empty() {
@@ -957,6 +1158,9 @@ fn format_proxies(proxies: &[yerd_ipc::ProxyEntry], rules: &[yerd_ipc::ProxyRule
         for p in proxies {
             let scheme = if p.secure { "https" } else { "http" };
             let _ = writeln!(out, "  {} ({scheme}) -> {}", p.name, p.target);
+            if !p.domains.is_empty() {
+                let _ = writeln!(out, "    domains: {}", format_proxy_domains(p));
+            }
         }
     }
     if !rules.is_empty() {
@@ -967,6 +1171,40 @@ fn format_proxies(proxies: &[yerd_ipc::ProxyEntry], rules: &[yerd_ipc::ProxyRule
         for r in rules {
             let _ = writeln!(out, "  {} {} -> {}", r.site, r.prefix, r.target);
         }
+    }
+    out.trim_end().to_owned()
+}
+
+/// Comma-separated effective domain list for a proxy, with the primary marked -
+/// the same shape [`render_domains`] uses for a site.
+fn format_proxy_domains(proxy: &yerd_ipc::ProxyEntry) -> String {
+    proxy
+        .domains
+        .iter()
+        .map(|d| {
+            if proxy.primary_domain.as_ref() == Some(d) {
+                format!("{d} (primary)")
+            } else {
+                d.clone()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// Render `yerd route list`: one row per rule, `site prefix -> target`.
+fn format_routes(rules: &[yerd_ipc::RouteRuleEntry], filter: Option<&str>) -> String {
+    use std::fmt::Write as _;
+    let selected = select_routes(rules, filter);
+    if selected.is_empty() {
+        return match filter {
+            Some(site) => format!("no routing rules configured for {site}"),
+            None => "no routing rules configured".to_owned(),
+        };
+    }
+    let mut out = String::from("Routing rules:\n");
+    for r in selected {
+        let _ = writeln!(out, "  {} {} -> {}", r.site, r.prefix, r.target);
     }
     out.trim_end().to_owned()
 }
@@ -1271,6 +1509,7 @@ fn format_php_versions(
         std::collections::BTreeMap<String, String>,
     >,
     directives: &std::collections::BTreeMap<PhpVersion, std::collections::BTreeMap<String, String>>,
+    pool: &std::collections::BTreeMap<PhpVersion, std::collections::BTreeMap<String, String>>,
 ) -> String {
     let versions = if installed.is_empty() {
         format!("no PHP versions installed (default: {default}) - `yerd install php {default}`")
@@ -1301,9 +1540,6 @@ fn format_php_versions(
     for v in installed {
         let overrides = version_settings.get(v);
         let dirs = directives.get(v);
-        if overrides.is_none() && dirs.is_none() {
-            continue;
-        }
         let _ = write!(out, "\n\nPHP {v}:");
         if let Some(map) = overrides {
             for (k, val) in map {
@@ -1317,6 +1553,18 @@ fn format_php_versions(
         if let Some(map) = dirs {
             for (k, val) in map {
                 let _ = write!(out, "\n  {k} = {val}");
+            }
+        }
+        let default = yerd_core::php_pool::DEFAULT_MAX_CHILDREN;
+        match yerd_core::php_pool::override_max_children(pool.get(v)) {
+            Some(n) => {
+                let _ = write!(
+                    out,
+                    "\n  pm.max_children = {n}  (overrides default {default})"
+                );
+            }
+            None => {
+                let _ = write!(out, "\n  pm.max_children = {default}  (default)");
             }
         }
     }
@@ -2212,6 +2460,90 @@ mod tests {
     }
 
     #[test]
+    fn php_pool_actions_map_and_validate() {
+        assert_eq!(
+            to_request(&Command::Php {
+                action: crate::cli::PhpAction::Pool {
+                    action: crate::cli::PhpPoolAction::Set {
+                        version: "8.3".into(),
+                        name: "max_children".into(),
+                        value: "32".into(),
+                    }
+                }
+            })
+            .unwrap(),
+            Request::SetPhpPoolSettings {
+                version: PhpVersion::new(8, 3),
+                settings: std::collections::BTreeMap::from([(
+                    "max_children".to_string(),
+                    "32".to_string()
+                )])
+            }
+        );
+        assert_eq!(
+            to_request(&Command::Php {
+                action: crate::cli::PhpAction::Pool {
+                    action: crate::cli::PhpPoolAction::Unset {
+                        version: "8.3".into(),
+                        name: "max_children".into(),
+                    }
+                }
+            })
+            .unwrap(),
+            Request::SetPhpPoolSettings {
+                version: PhpVersion::new(8, 3),
+                settings: std::collections::BTreeMap::from([(
+                    "max_children".to_string(),
+                    String::new()
+                )])
+            }
+        );
+        assert_eq!(
+            to_request(&Command::Php {
+                action: crate::cli::PhpAction::Pool {
+                    action: crate::cli::PhpPoolAction::List
+                }
+            })
+            .unwrap(),
+            Request::ListPhp
+        );
+
+        for (name, value) in [
+            ("max_children", "0"),
+            ("max_children", "1025"),
+            ("max_children", "abc"),
+            ("max_children", ""),
+            ("start_servers", "4"),
+            ("pm.max_children", "32"),
+        ] {
+            match to_request(&Command::Php {
+                action: crate::cli::PhpAction::Pool {
+                    action: crate::cli::PhpPoolAction::Set {
+                        version: "8.3".into(),
+                        name: name.into(),
+                        value: value.into(),
+                    },
+                },
+            }) {
+                Err(ClientError::Usage(_)) => {}
+                other => panic!("expected Usage error for {name}={value}, got {other:?}"),
+            }
+        }
+
+        match to_request(&Command::Php {
+            action: crate::cli::PhpAction::Pool {
+                action: crate::cli::PhpPoolAction::Unset {
+                    version: "8.3".into(),
+                    name: "start_servers".into(),
+                },
+            },
+        }) {
+            Err(ClientError::Usage(_)) => {}
+            other => panic!("expected Usage error for an unknown unset name, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn renders_update_status_with_all_rows() {
         let resp = Response::UpdateStatus {
             current: "2.0.0".into(),
@@ -2394,6 +2726,7 @@ mod tests {
                 settings: std::collections::BTreeMap::new(),
                 version_settings: Box::new(std::collections::BTreeMap::new()),
                 directives: Box::new(std::collections::BTreeMap::new()),
+                pool: Box::new(std::collections::BTreeMap::new()),
             },
             false,
         );
@@ -2412,6 +2745,7 @@ mod tests {
                 settings: std::collections::BTreeMap::new(),
                 version_settings: Box::new(std::collections::BTreeMap::new()),
                 directives: Box::new(std::collections::BTreeMap::new()),
+                pool: Box::new(std::collections::BTreeMap::new()),
             },
             false,
         );
@@ -2444,6 +2778,13 @@ mod tests {
                         "debug".to_string(),
                     )]),
                 )])),
+                pool: Box::new(std::collections::BTreeMap::from([(
+                    v83,
+                    std::collections::BTreeMap::from([(
+                        "max_children".to_string(),
+                        "32".to_string(),
+                    )]),
+                )])),
             },
             false,
         );
@@ -2466,7 +2807,18 @@ mod tests {
             "got: {}",
             r.stdout
         );
-        assert!(!r.stdout.contains("PHP 8.5:"), "got: {}", r.stdout);
+        assert!(
+            r.stdout
+                .contains("pm.max_children = 32  (overrides default 16)"),
+            "got: {}",
+            r.stdout
+        );
+        assert!(r.stdout.contains("PHP 8.5:"), "got: {}", r.stdout);
+        assert!(
+            r.stdout.contains("pm.max_children = 16  (default)"),
+            "8.5 has no override, so it reports the default; got: {}",
+            r.stdout
+        );
     }
 
     #[test]
@@ -2592,6 +2944,7 @@ mod tests {
                 ]),
                 version_settings: Box::new(std::collections::BTreeMap::new()),
                 directives: Box::new(std::collections::BTreeMap::new()),
+                pool: Box::new(std::collections::BTreeMap::new()),
             },
             false,
         );
@@ -2803,6 +3156,95 @@ mod tests {
     }
 
     #[test]
+    fn domain_and_proxy_commands_accept_a_dotted_proxy_name() {
+        use crate::cli::{DomainAction, ProxyAction};
+        assert_eq!(
+            to_request(&Command::Proxy {
+                action: ProxyAction::Add {
+                    first: "api.account".into(),
+                    second: "http://127.0.0.1:9011".into(),
+                    third: None,
+                },
+            })
+            .unwrap(),
+            Request::AddProxy {
+                name: "api.account".into(),
+                url: "http://127.0.0.1:9011".into(),
+            }
+        );
+        assert_eq!(
+            to_request(&Command::Proxy {
+                action: ProxyAction::Remove {
+                    target: "api.account".into(),
+                    prefix: None,
+                },
+            })
+            .unwrap(),
+            Request::RemoveProxy {
+                name: "api.account".into(),
+            }
+        );
+        assert_eq!(
+            to_request(&Command::Domain {
+                action: DomainAction::Add {
+                    site: "account-dev".into(),
+                    domain: "custom-domain.test".into(),
+                },
+            })
+            .unwrap(),
+            Request::AddDomain {
+                name: "account-dev".into(),
+                domain: "custom-domain.test".into(),
+            }
+        );
+        assert_eq!(
+            to_request(&Command::Domain {
+                action: DomainAction::Reset {
+                    site: "api.account".into(),
+                },
+            })
+            .unwrap(),
+            Request::ResetDomains {
+                name: "api.account".into(),
+            }
+        );
+    }
+
+    #[test]
+    fn malformed_names_and_dotted_rule_targets_are_usage_errors() {
+        use crate::cli::ProxyAction;
+        let err = to_request(&Command::Proxy {
+            action: ProxyAction::Add {
+                first: "api..account".into(),
+                second: "http://127.0.0.1:9011".into(),
+                third: None,
+            },
+        })
+        .unwrap_err();
+        assert!(matches!(err, ClientError::Usage(_)), "got: {err:?}");
+        assert_eq!(
+            err.to_string(),
+            "invalid site or proxy name \"api..account\": proxy name \"api..account\" is invalid: \
+             domain must not contain an empty label"
+        );
+        assert!(to_request(&Command::Proxy {
+            action: ProxyAction::Add {
+                first: "api.account".into(),
+                second: "/app".into(),
+                third: Some("http://127.0.0.1:8080".into()),
+            },
+        })
+        .is_err());
+        assert!(to_request(&Command::Proxy {
+            action: ProxyAction::Remove {
+                target: "api.account".into(),
+                prefix: Some("/app".into()),
+            },
+        })
+        .is_err());
+    }
+
+    #[test]
     fn domain_list_is_handled_locally() {
         use crate::cli::DomainAction;
         assert!(matches!(
@@ -2859,7 +3301,10 @@ mod tests {
     fn render_domains_unknown_site_filter_errors() {
         let r = render_domains(&[], "test", Some("ghost"), false);
         assert_eq!(r.code, 1);
-        assert!(r.stderr.contains("ghost"));
+        assert_eq!(
+            r.stderr,
+            "no site named \"ghost\" (a proxy's domains are listed by `yerd proxy list`)"
+        );
     }
 
     #[test]
@@ -3064,6 +3509,103 @@ mod tests {
     }
 
     #[test]
+    fn maps_route_command() {
+        use crate::cli::RouteAction;
+        assert_eq!(
+            to_request(&Command::Route {
+                action: RouteAction::Add {
+                    site: "portal".into(),
+                    prefix: "/api".into(),
+                    target: "api/index.php".into(),
+                },
+            })
+            .unwrap(),
+            Request::AddRouteRule {
+                site: "portal".into(),
+                prefix: "/api".into(),
+                target: "api/index.php".into(),
+            }
+        );
+        assert_eq!(
+            to_request(&Command::Route {
+                action: RouteAction::Remove {
+                    site: "portal".into(),
+                    prefix: "/api".into(),
+                },
+            })
+            .unwrap(),
+            Request::RemoveRouteRule {
+                site: "portal".into(),
+                prefix: "/api".into(),
+            }
+        );
+        assert_eq!(
+            to_request(&Command::Route {
+                action: RouteAction::List { site: None },
+            })
+            .unwrap(),
+            Request::ListRoutes
+        );
+        assert_eq!(
+            to_request(&Command::Route {
+                action: RouteAction::List {
+                    site: Some("portal".into())
+                },
+            })
+            .unwrap(),
+            Request::ListRoutes,
+            "the site filter is applied client-side, not on the wire"
+        );
+    }
+
+    #[test]
+    fn route_command_rejects_a_relative_prefix() {
+        use crate::cli::RouteAction;
+        assert!(to_request(&Command::Route {
+            action: RouteAction::Add {
+                site: "portal".into(),
+                prefix: "api".into(),
+                target: "api/index.php".into(),
+            },
+        })
+        .is_err());
+    }
+
+    #[test]
+    fn renders_route_list_with_and_without_a_filter() {
+        let rules = vec![
+            yerd_ipc::RouteRuleEntry {
+                site: "portal".into(),
+                prefix: "/api".into(),
+                target: "api/index.php".into(),
+            },
+            yerd_ipc::RouteRuleEntry {
+                site: "spa".into(),
+                prefix: "/".into(),
+                target: "index.html".into(),
+            },
+        ];
+
+        let all = render_routes(&rules, None, false);
+        assert_eq!(all.code, 0);
+        assert!(all.stdout.contains("portal /api -> api/index.php"));
+        assert!(all.stdout.contains("spa / -> index.html"));
+
+        let one = render_routes(&rules, Some("Portal"), false);
+        assert!(one.stdout.contains("portal /api -> api/index.php"));
+        assert!(
+            !one.stdout.contains("spa"),
+            "the filter must be case-insensitive and exclusive"
+        );
+
+        let none = render_routes(&rules, Some("ghost"), false);
+        assert_eq!(none.stdout, "no routing rules configured for ghost");
+
+        let empty = render_routes(&[], None, false);
+        assert_eq!(empty.stdout, "no routing rules configured");
+    }
+
+    #[test]
     fn maps_proxy_command() {
         use crate::cli::ProxyAction;
         assert_eq!(
@@ -3135,6 +3677,59 @@ mod tests {
             },
         })
         .is_err());
+    }
+
+    #[test]
+    fn format_proxies_lists_domains_only_for_a_customized_proxy() {
+        let plain = yerd_ipc::ProxyEntry {
+            name: "reverb".into(),
+            target: "http://127.0.0.1:8080".into(),
+            secure: false,
+            primary_domain: None,
+            domains: vec![],
+        };
+        assert_eq!(
+            format_proxies(std::slice::from_ref(&plain), &[]),
+            "Whole-host proxies:\n  reverb (http) -> http://127.0.0.1:8080"
+        );
+
+        let customized = yerd_ipc::ProxyEntry {
+            name: "account-dev".into(),
+            target: "http://127.0.0.1:48087".into(),
+            secure: true,
+            primary_domain: Some("custom-domain.test".into()),
+            domains: vec![
+                "account-dev.test".into(),
+                "custom-domain.test".into(),
+                "*.account-dev.test".into(),
+            ],
+        };
+        assert_eq!(
+            format_proxies(&[plain, customized], &[]),
+            "Whole-host proxies:\n  reverb (http) -> http://127.0.0.1:8080\n  \
+             account-dev (https) -> http://127.0.0.1:48087\n    domains: account-dev.test, \
+             custom-domain.test (primary), *.account-dev.test"
+        );
+    }
+
+    /// A customized proxy whose primary is still its apex reports
+    /// `primary_domain: None` (the daemon omits a primary equal to the apex), and
+    /// the renderer has no TLD to rebuild that apex from, so no domain carries the
+    /// marker. Pinned so the behaviour and `docs/reference/cli/proxies.md` agree.
+    #[test]
+    fn format_proxies_marks_nothing_when_the_primary_is_the_apex() {
+        let apex_primary = yerd_ipc::ProxyEntry {
+            name: "account-dev".into(),
+            target: "http://127.0.0.1:48087".into(),
+            secure: false,
+            primary_domain: None,
+            domains: vec!["account-dev.test".into(), "custom-domain.test".into()],
+        };
+        assert_eq!(
+            format_proxies(std::slice::from_ref(&apex_primary), &[]),
+            "Whole-host proxies:\n  account-dev (http) -> http://127.0.0.1:48087\n    \
+             domains: account-dev.test, custom-domain.test"
+        );
     }
 
     #[test]
@@ -3314,6 +3909,123 @@ mod tests {
                 site: "shop".into(),
             }
         );
+        assert_eq!(
+            to_request(&Command::Service {
+                action: ServiceAction::Overrides {
+                    service: "mysql".into()
+                }
+            })
+            .unwrap(),
+            Request::ServiceOverrides {
+                service: "mysql".into()
+            }
+        );
+    }
+
+    #[test]
+    fn maps_service_set_and_unset_to_a_single_entry_override_map() {
+        use crate::cli::ServiceAction;
+        assert_eq!(
+            to_request(&Command::Service {
+                action: ServiceAction::Set {
+                    service: "mysql".into(),
+                    key: "max_connections".into(),
+                    value: "500".into(),
+                }
+            })
+            .unwrap(),
+            Request::SetServiceOverrides {
+                service: "mysql".into(),
+                overrides: std::collections::BTreeMap::from([(
+                    "max_connections".to_string(),
+                    "500".to_string()
+                )]),
+            }
+        );
+        assert_eq!(
+            to_request(&Command::Service {
+                action: ServiceAction::Unset {
+                    service: "mysql".into(),
+                    key: "max_connections".into(),
+                }
+            })
+            .unwrap(),
+            Request::SetServiceOverrides {
+                service: "mysql".into(),
+                overrides: std::collections::BTreeMap::from([(
+                    "max_connections".to_string(),
+                    String::new()
+                )]),
+            }
+        );
+    }
+
+    #[test]
+    fn service_set_refuses_a_reserved_key_in_either_spelling() {
+        use crate::cli::ServiceAction;
+        for key in ["bind-address", "bind_address"] {
+            match to_request(&Command::Service {
+                action: ServiceAction::Set {
+                    service: "mysql".into(),
+                    key: key.into(),
+                    value: "0.0.0.0".into(),
+                },
+            }) {
+                Err(ClientError::Usage(m)) => {
+                    assert!(m.contains("managed by Yerd"), "{key}: {m}");
+                    assert!(m.contains("loopback"), "{key}: {m}");
+                }
+                other => panic!("expected Usage error for {key}, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn service_set_refuses_a_bad_shape_and_a_service_without_overrides() {
+        use crate::cli::ServiceAction;
+        match to_request(&Command::Service {
+            action: ServiceAction::Set {
+                service: "mysql".into(),
+                key: "1bad".into(),
+                value: "500".into(),
+            },
+        }) {
+            Err(ClientError::Usage(_)) => {}
+            other => panic!("expected Usage error, got {other:?}"),
+        }
+        match to_request(&Command::Service {
+            action: ServiceAction::Set {
+                service: "mysql".into(),
+                key: "max_connections".into(),
+                value: "500 # evil".into(),
+            },
+        }) {
+            Err(ClientError::Usage(_)) => {}
+            other => panic!("expected Usage error, got {other:?}"),
+        }
+        match to_request(&Command::Service {
+            action: ServiceAction::Set {
+                service: "meilisearch".into(),
+                key: "max_connections".into(),
+                value: "500".into(),
+            },
+        }) {
+            Err(ClientError::Usage(m)) => {
+                assert_eq!(m, "meilisearch does not support configuration overrides");
+            }
+            other => panic!("expected Usage error, got {other:?}"),
+        }
+        match to_request(&Command::Service {
+            action: ServiceAction::Unset {
+                service: "reverb:blog".into(),
+                key: "max_connections".into(),
+            },
+        }) {
+            Err(ClientError::Usage(m)) => {
+                assert_eq!(m, "reverb:blog does not support configuration overrides");
+            }
+            other => panic!("expected Usage error, got {other:?}"),
+        }
     }
 
     #[test]
@@ -3541,6 +4253,15 @@ mod tests {
                 action: crate::cli::PathAction::Install,
             },
             Command::Coverage { args: vec![] },
+            Command::Exec {
+                site: None,
+                tool: crate::cli::ExecTool::Php,
+                args: vec![],
+            },
+            Command::Which {
+                tool: crate::cli::WhichTool::Php,
+                site: None,
+            },
             Command::Mcp,
             Command::Link {
                 name_or_path: None,
@@ -3577,6 +4298,7 @@ mod tests {
             type_id: String::new(),
             site: None,
             error: None,
+            supports_overrides: false,
         }
     }
 
@@ -3669,6 +4391,32 @@ mod tests {
         );
         assert_eq!(lines.stdout, "line one\nline two");
         assert_eq!(lines.code, 0);
+    }
+
+    #[test]
+    fn renders_service_overrides() {
+        let empty = render(
+            &Response::ServiceOverrides {
+                overrides: std::collections::BTreeMap::new(),
+            },
+            false,
+        );
+        assert_eq!(empty.stdout, "no overrides");
+
+        let listed = render(
+            &Response::ServiceOverrides {
+                overrides: std::collections::BTreeMap::from([
+                    ("max_connections".to_string(), "500".to_string()),
+                    ("sql_mode".to_string(), "STRICT_ALL_TABLES".to_string()),
+                ]),
+            },
+            false,
+        );
+        assert_eq!(
+            listed.stdout,
+            "max_connections = 500\nsql_mode = STRICT_ALL_TABLES"
+        );
+        assert_eq!(listed.code, 0);
     }
 
     #[test]

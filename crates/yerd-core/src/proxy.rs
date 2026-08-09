@@ -12,8 +12,10 @@
 
 use std::net::IpAddr;
 
-use crate::error::{CoreError, ProxyRuleErrorReason, UpstreamTargetErrorReason};
-use crate::site::validate_and_lowercase_name;
+use crate::domain::Domain;
+use crate::error::{
+    CoreError, ProxyNameErrorReason, ProxyRuleErrorReason, UpstreamTargetErrorReason,
+};
 
 /// A validated reverse-proxy upstream: scheme (`http`/`https`), host, port.
 ///
@@ -265,6 +267,27 @@ pub fn match_rule<'a>(rules: &'a [ProxyRule], path: &str) -> Option<&'a ProxyRul
         .max_by_key(|r| r.prefix.len())
 }
 
+/// Validates and lowercases a whole-host proxy name: one or more dot-separated
+/// DNS labels (`reverb`, `api.account`), never a wildcard.
+///
+/// A proxy's name doubles as its apex domain sub-part, so the accepted shape is
+/// exactly what [`Domain::parse_subpart`] accepts minus wildcards. Public
+/// because clients validate the same argument before it reaches the daemon.
+pub fn validate_proxy_name(raw: &str) -> Result<String, CoreError> {
+    let name = |reason| CoreError::InvalidProxyName {
+        name: raw.to_owned(),
+        reason,
+    };
+    let parsed = Domain::parse_subpart(raw).map_err(|e| match e {
+        CoreError::InvalidDomain { reason, .. } => name(ProxyNameErrorReason::Shape(reason)),
+        other => other,
+    })?;
+    if parsed.is_wildcard() {
+        return Err(name(ProxyNameErrorReason::Wildcard));
+    }
+    Ok(parsed.as_str().to_owned())
+}
+
 /// A whole-host reverse proxy: a `{name}.{tld}` host forwarded wholesale to
 /// [`Self::target`], with no PHP/document-root. The router routes it alongside
 /// PHP sites; the daemon forwards it without ever entering PHP-FPM resolution.
@@ -276,10 +299,11 @@ pub struct ProxySite {
 }
 
 impl ProxySite {
-    /// Constructs a proxy site. Validates and lowercases `name` as a DNS label.
-    /// Initialises `secure = false` (promote via [`Self::set_secure`]).
+    /// Constructs a proxy site. Validates and lowercases `name` as one or more
+    /// dot-separated DNS labels (see [`validate_proxy_name`]). Initialises
+    /// `secure = false` (promote via [`Self::set_secure`]).
     pub fn new(name: &str, target: UpstreamTarget) -> Result<Self, CoreError> {
-        let name = validate_and_lowercase_name(name)?;
+        let name = validate_proxy_name(name)?;
         Ok(Self {
             name,
             target,
@@ -287,7 +311,7 @@ impl ProxySite {
         })
     }
 
-    /// The validated, lowercased DNS-label name.
+    /// The validated, lowercased name (one or more dot-separated DNS labels).
     #[must_use]
     pub fn name(&self) -> &str {
         &self.name
@@ -320,6 +344,7 @@ impl ProxySite {
 )]
 mod tests {
     use super::*;
+    use crate::error::DomainErrorReason;
 
     fn target(url: &str) -> UpstreamTarget {
         UpstreamTarget::from_url_str(url).unwrap()
@@ -460,7 +485,87 @@ mod tests {
         let p = ProxySite::new("Reverb", target("http://localhost:8080")).unwrap();
         assert_eq!(p.name(), "reverb");
         assert!(!p.secure());
-        assert!(ProxySite::new("bad.name", target("http://localhost:8080")).is_err());
+        let dotted = ProxySite::new("API.Account", target("http://localhost:8080")).unwrap();
+        assert_eq!(dotted.name(), "api.account");
+        assert!(ProxySite::new("bad_name", target("http://localhost:8080")).is_err());
+    }
+
+    #[test]
+    fn proxysite_name_error_says_proxy_not_site() {
+        let err = ProxySite::new("Bad_Name", target("http://localhost:8080")).unwrap_err();
+        let s = err.to_string();
+        assert!(s.contains("proxy name"), "got: {s}");
+        assert!(!s.contains("site name"), "got: {s}");
+    }
+
+    #[test]
+    fn validate_proxy_name_accepts() {
+        let cases: &[(&str, &str)] = &[
+            ("reverb", "reverb"),
+            ("Reverb", "reverb"),
+            ("api.account", "api.account"),
+            ("API.Account", "api.account"),
+            ("a-b.c-d.e", "a-b.c-d.e"),
+            ("9lives", "9lives"),
+            (&"a".repeat(63), &"a".repeat(63)),
+        ];
+        for (raw, want) in cases {
+            assert_eq!(
+                validate_proxy_name(raw).as_deref(),
+                Ok(*want),
+                "raw {raw:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn validate_proxy_name_rejects_with_reason() {
+        let too_long_label = "a".repeat(64);
+        let cases: &[(&str, ProxyNameErrorReason)] = &[
+            ("", ProxyNameErrorReason::Shape(DomainErrorReason::Empty)),
+            ("*.account", ProxyNameErrorReason::Wildcard),
+            (
+                "api.*.account",
+                ProxyNameErrorReason::Shape(DomainErrorReason::MisplacedWildcard),
+            ),
+            (
+                "*",
+                ProxyNameErrorReason::Shape(DomainErrorReason::BareWildcard),
+            ),
+            (
+                ".account",
+                ProxyNameErrorReason::Shape(DomainErrorReason::EmptyLabel),
+            ),
+            (
+                "api..account",
+                ProxyNameErrorReason::Shape(DomainErrorReason::EmptyLabel),
+            ),
+            (
+                "bad_name",
+                ProxyNameErrorReason::Shape(DomainErrorReason::InvalidCharacter),
+            ),
+            (
+                "föö",
+                ProxyNameErrorReason::Shape(DomainErrorReason::InvalidCharacter),
+            ),
+            (
+                "-lead",
+                ProxyNameErrorReason::Shape(DomainErrorReason::LeadingOrTrailingHyphen),
+            ),
+            (
+                &too_long_label,
+                ProxyNameErrorReason::Shape(DomainErrorReason::LabelTooLong),
+            ),
+        ];
+        for (raw, want) in cases {
+            match validate_proxy_name(raw) {
+                Err(CoreError::InvalidProxyName { name, reason }) => {
+                    assert_eq!(&name, raw, "raw {raw:?}");
+                    assert_eq!(reason, *want, "raw {raw:?}");
+                }
+                other => panic!("expected InvalidProxyName for {raw:?}, got {other:?}"),
+            }
+        }
     }
 
     #[test]

@@ -6,6 +6,7 @@ import PhpVersionPanel from "./PhpVersionPanel.vue";
 import type { PhpExtInfo } from "@/ipc/types";
 
 const setPhpDirectives = vi.hoisted(() => vi.fn());
+const setPhpPoolSettings = vi.hoisted(() => vi.fn());
 const removePhpExtension = vi.hoisted(() => vi.fn());
 
 // Vitest module mocks are total, so every client symbol the panel imports has
@@ -14,6 +15,7 @@ vi.mock("@/ipc/client", () => ({
   IpcError: class IpcError extends Error {},
   removePhpExtension,
   setPhpDirectives,
+  setPhpPoolSettings,
   setPhpVersionSettings: vi.fn(),
 }));
 
@@ -53,6 +55,7 @@ function mountPanel(
       globalSettings: {},
       overrides: {},
       directives: { "xdebug.mode": "debug" },
+      pool: {},
       extensions: [],
       installedVersion: true,
       extensionsLoading: false,
@@ -164,6 +167,77 @@ describe("PhpVersionPanel dirty state", () => {
       ).value,
     ).toBe("");
     expect(lastDirty(w)).toEqual([false]);
+  });
+});
+
+describe("PhpVersionPanel FPM pool size", () => {
+  const poolInput = 'input[id="pool-8.3-max-children"]';
+  const refreshedPool = {
+    installed: ["8.3"],
+    default: "8.3",
+    pool: { "8.3": { max_children: "32" } },
+  };
+
+  beforeEach(() => {
+    setPhpPoolSettings.mockReset();
+    setPhpPoolSettings.mockResolvedValue(refreshedPool);
+  });
+
+  it("shows the default as a placeholder when the version has no override", () => {
+    const w = mountPanel();
+    const input = w.find(poolInput).element as HTMLInputElement;
+    expect(input.value).toBe("");
+    expect(input.placeholder).toBe("16 (default)");
+  });
+
+  it("seeds the field from an existing override", () => {
+    const w = mountPanel({ pool: { max_children: "64" } });
+    expect((w.find(poolInput).element as HTMLInputElement).value).toBe("64");
+  });
+
+  it("sets a pool value and reports the refreshed list", async () => {
+    const w = mountPanel();
+    await w.find(poolInput).setValue("32");
+    await byText(w, "Apply")!.trigger("click");
+    await vi.waitFor(() => expect(setPhpPoolSettings).toHaveBeenCalled());
+
+    expect(setPhpPoolSettings).toHaveBeenCalledWith("8.3", { max_children: "32" });
+    expect(w.emitted("updated")?.[0]).toEqual([refreshedPool]);
+  });
+
+  it("clearing the field resets to the default", async () => {
+    setPhpPoolSettings.mockResolvedValue({ installed: ["8.3"], default: "8.3" });
+    const w = mountPanel({ pool: { max_children: "64" } });
+    await w.find(poolInput).setValue("");
+    await byText(w, "Apply")!.trigger("click");
+    await vi.waitFor(() => expect(setPhpPoolSettings).toHaveBeenCalled());
+
+    expect(setPhpPoolSettings).toHaveBeenCalledWith("8.3", { max_children: "" });
+  });
+
+  it("blocks saving an out-of-range value", async () => {
+    const w = mountPanel();
+    for (const value of ["0", "2000"]) {
+      await w.find(poolInput).setValue(value);
+      expect(byText(w, "Apply")!.attributes("disabled")).toBeDefined();
+      expect(w.text()).toContain("between 1 and 1024");
+    }
+    expect(setPhpPoolSettings).not.toHaveBeenCalled();
+  });
+
+  it("counts a pending pool edit as unsaved work and discards it with the rest", async () => {
+    const w = mountPanel();
+    await w.find(poolInput).setValue("32");
+    expect(lastDirty(w)).toEqual([true]);
+
+    await byText(w, "Discard")!.trigger("click");
+    expect((w.find(poolInput).element as HTMLInputElement).value).toBe("");
+    expect(lastDirty(w)).toEqual([false]);
+  });
+
+  it("is hidden for a version that is no longer installed", () => {
+    const w = mountPanel({ installedVersion: false, extensions: [XDEBUG] });
+    expect(w.find(poolInput).exists()).toBe(false);
   });
 });
 

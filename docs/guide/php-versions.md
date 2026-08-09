@@ -13,7 +13,7 @@ The fastest way to manage PHP is the **PHP** page (under the **Environment** gro
 - **Refresh** re-checks for updates and **Update all** updates every version with one pending - [updates are notify-only](#updates-are-notify-only).
 - Each row's `⋯` menu offers **Restart**, **Set default** (marks it with a star; disabled for legacy rows, which are tagged with a `legacy` badge), **Update** (when available), and **Uninstall**; **Restart all** restarts every running pool.
 - A **Default settings** card edits the [global ini defaults](#tuning-php-settings) applied to every version; leave a field blank to use PHP's built-in default, and saving restarts running pools to apply.
-- A **Per-version configuration** card lists your versions down the side, newest first; picking one shows everything scoped to it: the settings form (empty fields inherit the defaults; see [Per-version configuration](#per-version-configuration)), its [custom extensions](#custom-extensions), and a free-form ini-directive editor (e.g. `xdebug.mode = debug`). Each row badges how much that version has configured and marks unsaved edits, so switching versions never loses work. Saving restarts only that version's pool.
+- A **Per-version configuration** card lists your versions down the side, newest first; picking one shows everything scoped to it: the settings form (empty fields inherit the defaults; see [Per-version configuration](#per-version-configuration)), its [custom extensions](#custom-extensions), an **FPM pool size** field (how many PHP workers that version may run at once), and a free-form ini-directive editor (e.g. `xdebug.mode = debug`). Each row badges how much that version has configured and marks unsaved edits, so switching versions never loses work. Saving restarts only that version's pool.
 
 ## From the command line
 
@@ -342,6 +342,77 @@ Check what each site resolves to with `yerd sites`, which lists every site with 
 Pinning a site (or the default) to an uninstalled version means there's no FPM binary to start when a request arrives. Install it first (`yerd install php 8.3`), then pin. `yerd doctor` flags a pool that can't start.
 :::
 
+### Site-aware CLI: `yerd exec` and `yerd which`
+
+A site's version governs how it is **served**, but the bare `php` and `composer` shims always use the **global default**. So inside a site on 8.3 while your default is 8.5, `php artisan` and `composer install` run on 8.5 - a different version than the site's own web requests.
+
+`yerd exec` closes that gap. It runs a tool under the version of the site containing your current directory:
+
+```sh
+cd ~/Sites/my-app     # served on 8.3
+yerd exec php -v      # PHP 8.3.x
+yerd exec php artisan migrate
+yerd exec composer install
+```
+
+Everything after the tool is passed straight through, so no `--` separator is needed - which also means yerd's own flags (`--site`, `--json`) must come **before** the tool:
+
+```sh
+yerd exec --site my-app php -v      # from anywhere
+yerd exec composer show --json      # --json here belongs to Composer
+```
+
+`yerd which php` prints the absolute path of the binary `yerd exec` would use, resolved identically:
+
+```sh
+$ cd ~/Sites/my-app && yerd which php
+/Users/you/Library/Application Support/io.yerd.Yerd/php/php-8.3/bin/php
+
+$ yerd --json which php
+{"path":"…/php-8.3/bin/php","version":"8.3","site":"my-app","source":"site"}
+```
+
+`source` is `site` when the version came from a site and `default` otherwise (with `site` then `null`), so scripts can tell the two apart.
+
+How resolution falls out:
+
+| Where you run it | Which PHP |
+|---|---|
+| Inside a registered site | that site's stored version |
+| Outside every site | the global default |
+| With `--site <name>` | that site's stored version, from anywhere |
+
+::: warning A linked site's version doesn't follow the default
+Every registered site resolves to a concrete version, so `source` is `site` even for one you never ran `yerd use <site> <version>` against - there is no "unpinned" state to report.
+
+The two site kinds get that version differently, which matters when you change the global default:
+
+- **Linked** sites **snapshot** the default at link time. Changing the default later does not move them.
+- **Parked** sites follow the current default, unless you've pinned one explicitly.
+
+```sh
+yerd link my-app      # default is 8.4 → my-app stores 8.4
+yerd use 8.5          # global default moves to 8.5
+php -v                # 8.5 - the bare shim follows the default
+yerd exec php -v      # 8.4 - my-app is still *served* on 8.4
+```
+
+`yerd exec` is right here: it matches how the site actually runs. But it is deliberately not the same as "inherits the default". To move a linked site too, pin it explicitly with `yerd use my-app 8.5`. `yerd sites` shows what each site currently resolves to.
+:::
+
+Two deliberate failure rules:
+
+- **A stored-but-uninstalled version is an error**, not a silent fallback: running under an unrelated default PHP with no indication why is worse than stopping. Install it (`yerd install php 8.3`) and retry.
+- **`--site` never falls back.** You named a site, so an unknown name - or a daemon that isn't running to resolve it - is an error rather than a quiet switch to the default. Without `--site`, an unreachable daemon just means "not inside a site", and the global default is used - with a warning on stderr, since inside a site that would otherwise silently run the wrong version.
+
+`yerd exec composer` runs the same bundled phar the `composer` shim does, just under the site's PHP (and that version's CLI ini).
+
+::: tip The shims are unchanged
+`php`, `php<version>`, and `composer` behave exactly as before - `php` still means the global default everywhere. `yerd exec` is an addition, not a change in what your existing commands do.
+:::
+
+Because everything after the tool is forwarded, `-h`/`--help` reach the tool too: `yerd exec composer --help` prints Composer's help. Use `yerd help exec` for the command's own. See the [Exec and Which reference](../reference/cli/exec) for the full flag surface and exit codes.
+
 ### Listing versions
 
 ```sh
@@ -425,10 +496,29 @@ Directive names and values are shape-checked so they can never corrupt the
 generated config, but Yerd doesn't second-guess their meaning - a directive PHP
 doesn't recognise is simply ignored by PHP. A per-version change restarts only
 that version's pool, and per-version configuration survives uninstalling and
-reinstalling the version. In the desktop app the same lives in the
+reinstalling the version.
+
+#### Pool size
+
+`yerd php pool` sets how many PHP workers a version may run at once - FPM's
+`pm.max_children`, applied to that version's web pool only:
+
+```sh
+yerd php pool set 8.4 max_children 32   # raise the ceiling for PHP 8.4
+yerd php pool unset 8.4 max_children    # back to the default of 16
+```
+
+The default is 16 and the range is 1 to 1024. Yerd runs pools on demand, so
+workers start as requests arrive rather than being held open: a higher ceiling
+costs nothing while the pool is idle. Raise it when requests start queueing
+behind long-running work - queue workers, parallel test runs, or a lot of open
+tabs hitting the same site. Note that `pm.*` names are pool settings rather than
+ini directives, so `yerd php ini` refuses them and points here.
+
+In the desktop app the same lives in the
 **Per-version configuration** card on the PHP page: pick a version from the list
-to get the settings form (empty fields inherit the defaults), that version's
-extensions, and a directive editor. A version that still has extensions
+to get the settings form (empty fields inherit the defaults), an **FPM pool
+size** field, that version's extensions, and a directive editor. A version that still has extensions
 registered after being uninstalled stays in the list, so those registrations can
 be removed. See the
 [PHP CLI reference](../reference/cli/php#custom-ini-directives) for the rules
@@ -441,6 +531,8 @@ and the denylist of directives Yerd manages elsewhere.
 | `yerd install php <version>` | Download + install the latest patch of a minor. |
 | `yerd use <version>` | Set the global default version (and the `php` shim). |
 | `yerd use <site> <version>` | Pin one site to a version. |
+| `yerd exec [--site <name>] <php\|composer> [args…]` | Run a tool under the site's own version instead of the global default. |
+| `yerd which [--site <name>] php` | Print the PHP binary `yerd exec` would use. |
 | `yerd list php [--check]` | List installed versions; `--check` refreshes update flags. |
 | `yerd list php --available` | List versions installable from the distribution. |
 | `yerd update php [<version>]` | Update one (or all) versions to the latest patch. |
@@ -450,7 +542,10 @@ and the denylist of directives Yerd manages elsewhere.
 | `yerd unset php <setting> [--only <version>]` | Reset a global setting to PHP's built-in value. With `--only`, remove one version's override so the global value applies again. |
 | `yerd php ini set <version> <name> <value>` | Set a free-form ini directive (e.g. `xdebug.mode`) for one version. |
 | `yerd php ini unset <version> <name>` | Remove a free-form ini directive. |
-| `yerd php ini list` | Show per-version overrides and directives. |
+| `yerd php ini list` | Show per-version overrides, directives, and pool sizes. |
+| `yerd php pool set <version> max_children <n>` | Set how many PHP workers that version may run at once (1-1024, default 16). |
+| `yerd php pool unset <version> max_children` | Reset the worker ceiling to the default. |
+| `yerd php pool list` | Show per-version overrides, directives, and pool sizes. |
 | `yerd php ext add <version> <path> [--zend] [--name <name>]` | Register a custom extension (load-probed) for a version. |
 | `yerd php ext remove <version> <name>` | Remove a registered extension. |
 | `yerd php ext list` | List registered custom extensions, grouped by version. |

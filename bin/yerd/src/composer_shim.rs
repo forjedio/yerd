@@ -36,17 +36,9 @@ fn run() -> ExitCode {
         return fail(crate::shim::no_default_php_message(&dirs));
     };
 
-    let phar = dirs
-        .data
-        .join("tools")
-        .join("composer")
-        .join("composer.phar");
+    let phar = crate::shim::composer_phar(&dirs);
     if !phar.is_file() {
-        return fail(
-            "Composer is not installed — install it from the Tooling page \
-             (or run `yerd install tool composer`)"
-                .to_owned(),
-        );
+        return fail(crate::shim::composer_missing_message());
     }
 
     let err = Command::new(&php_bin)

@@ -169,6 +169,38 @@ pub async fn remove_proxy_rule(site: String, prefix: String) -> Result<Response,
     finish(exchange(&Request::RemoveProxyRule { site, prefix }).await?)
 }
 
+// ── routing rules ──────────────────────────────────────────────────────────
+
+/// List every site's path-prefix routing rules.
+#[tauri::command]
+pub async fn list_routes() -> Result<Response, GuiError> {
+    finish(exchange(&Request::ListRoutes).await?)
+}
+
+/// Add a routing rule to `site`: URIs under `prefix` that match no real file are
+/// handled by `target`, a path relative to the site's served root.
+#[tauri::command]
+pub async fn add_route_rule(
+    site: String,
+    prefix: String,
+    target: String,
+) -> Result<Response, GuiError> {
+    finish(
+        exchange(&Request::AddRouteRule {
+            site,
+            prefix,
+            target,
+        })
+        .await?,
+    )
+}
+
+/// Remove the routing rule `prefix` from `site`.
+#[tauri::command]
+pub async fn remove_route_rule(site: String, prefix: String) -> Result<Response, GuiError> {
+    finish(exchange(&Request::RemoveRouteRule { site, prefix }).await?)
+}
+
 // ── site groups ────────────────────────────────────────────────────────────
 
 #[tauri::command]
@@ -389,6 +421,15 @@ pub async fn set_php_directives(
     )
 }
 
+/// Update one PHP version's FPM pool settings (`""` resets to the default).
+#[tauri::command]
+pub async fn set_php_pool_settings(
+    version: PhpVersion,
+    settings: std::collections::BTreeMap<String, String>,
+) -> Result<Response, GuiError> {
+    finish(exchange(&Request::SetPhpPoolSettings { version, settings }).await?)
+}
+
 #[tauri::command]
 pub async fn list_php_extensions() -> Result<Response, GuiError> {
     finish(exchange(&Request::ListPhpExtensions).await?)
@@ -532,6 +573,22 @@ pub async fn restart_service(service: String) -> Result<Response, GuiError> {
 #[tauri::command]
 pub async fn set_service_port(service: String, port: u16) -> Result<Response, GuiError> {
     finish(exchange(&Request::SetServicePort { service, port }).await?)
+}
+
+/// Merge configuration overrides into a service instance (`""` removes a key).
+/// Takes effect on the next start/restart; nothing is restarted here.
+#[tauri::command]
+pub async fn set_service_overrides(
+    service: String,
+    overrides: std::collections::BTreeMap<String, String>,
+) -> Result<Response, GuiError> {
+    finish(exchange(&Request::SetServiceOverrides { service, overrides }).await?)
+}
+
+/// Read back a service instance's stored configuration overrides.
+#[tauri::command]
+pub async fn service_overrides(service: String) -> Result<Response, GuiError> {
+    finish(exchange(&Request::ServiceOverrides { service }).await?)
 }
 
 #[tauri::command]

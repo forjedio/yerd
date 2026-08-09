@@ -174,6 +174,12 @@ pub enum ValidateErrorReason {
     /// exist (a typo or a casing mismatch against the site's normalized name);
     /// the rule would silently never apply.
     ProxyRuleUnknownSite,
+    /// Two `[route_rules]` entries for the same site share a path prefix, which
+    /// would make the longest-prefix match ambiguous.
+    RouteRuleDuplicatePrefix,
+    /// A `[route_rules.linked.<name>]` key names a linked site that does not
+    /// exist; the rule would silently never apply.
+    RouteRuleUnknownSite,
 }
 
 impl fmt::Display for ValidateErrorReason {
@@ -227,6 +233,12 @@ impl fmt::Display for ValidateErrorReason {
             }
             Self::ProxyRuleUnknownSite => {
                 "a proxy rule references a linked site that does not exist"
+            }
+            Self::RouteRuleDuplicatePrefix => {
+                "two routing rules for the same site share a path prefix"
+            }
+            Self::RouteRuleUnknownSite => {
+                "a routing rule references a linked site that does not exist"
             }
         };
         f.write_str(msg)

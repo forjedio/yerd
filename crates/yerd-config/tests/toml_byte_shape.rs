@@ -12,7 +12,7 @@
 use std::collections::BTreeSet;
 
 use yerd_config::{Config, ServiceInstance, SiteOverride};
-use yerd_core::{PhpVersion, Site, Tld};
+use yerd_core::{PhpVersion, RouteRule, Site, Tld};
 
 fn populated() -> Config {
     let mut c = Config::default();
@@ -36,22 +36,15 @@ fn populated() -> Config {
             front_controller: None,
         },
     );
-    c.services.instances.insert(
-        "mysql".to_string(),
-        ServiceInstance {
-            version: None,
-            port: None,
-            site: None,
-            enabled: true,
-        },
-    );
+    c.services
+        .instances
+        .insert("mysql".to_string(), ServiceInstance::default());
     c.services.instances.insert(
         "redis".to_string(),
         ServiceInstance {
             version: Some("8".to_string()),
             port: Some(6380),
-            site: None,
-            enabled: true,
+            ..ServiceInstance::default()
         },
     );
     c
@@ -61,8 +54,8 @@ fn populated() -> Config {
 fn default_config_starts_with_version_line() {
     let s = Config::default().to_toml().unwrap();
     assert!(
-        s.starts_with("version = 19\n"),
-        "expected first line `version = 19`; got: {s}"
+        s.starts_with("version = 23\n"),
+        "expected first line `version = 23`; got: {s}"
     );
 }
 
@@ -288,8 +281,7 @@ fn service_instance_wire_shape_is_per_service_table() {
         ServiceInstance {
             version: Some("8".to_string()),
             port: Some(6380),
-            site: None,
-            enabled: true,
+            ..ServiceInstance::default()
         },
     );
     let s = c.to_toml().unwrap();
@@ -322,6 +314,44 @@ fn service_instance_wire_shape_is_per_service_table() {
         "unset port must be omitted: {s2}"
     );
     assert_eq!(mysql.get("enabled"), Some(&toml::Value::Boolean(true)));
+}
+
+#[test]
+fn service_overrides_emit_a_sub_table_only_when_set() {
+    let mut c = Config::default();
+    c.services.instances.insert(
+        "mysql".to_string(),
+        ServiceInstance {
+            overrides: std::collections::BTreeMap::from([(
+                "max_connections".to_string(),
+                "500".to_string(),
+            )]),
+            ..ServiceInstance::default()
+        },
+    );
+    c.services
+        .instances
+        .insert("redis".to_string(), ServiceInstance::default());
+    let s = c.to_toml().unwrap();
+    assert!(
+        s.contains("[services.mysql.overrides]"),
+        "expected a mysql overrides sub-table; got: {s}"
+    );
+    assert!(
+        !s.contains("[services.redis.overrides]"),
+        "an empty overrides map must emit no sub-table; got: {s}"
+    );
+    let v: toml::Value = toml::from_str(&s).unwrap();
+    let overrides = v
+        .get("services")
+        .and_then(|x| x.get("mysql"))
+        .and_then(|x| x.get("overrides"))
+        .and_then(toml::Value::as_table)
+        .unwrap_or_else(|| panic!("missing [services.mysql.overrides] table in: {s}"));
+    assert_eq!(
+        overrides.get("max_connections"),
+        Some(&toml::Value::String("500".into()))
+    );
 }
 
 #[test]
@@ -419,6 +449,10 @@ fn default_config_emits_no_version_settings_or_directives_tables() {
         !s.contains("[php.directives"),
         "default config must omit directives; got: {s}"
     );
+    assert!(
+        !s.contains("[php.pool"),
+        "default config must omit pool; got: {s}"
+    );
 }
 
 #[test]
@@ -470,6 +504,46 @@ fn populated_version_settings_and_directives_emit_between_settings_and_extension
 }
 
 #[test]
+fn populated_pool_emits_between_directives_and_extensions() {
+    let mut c = Config::default();
+    let v84 = PhpVersion::new(8, 4);
+    c.php.directives.insert(
+        v84,
+        std::collections::BTreeMap::from([("xdebug.mode".to_string(), "debug".to_string())]),
+    );
+    c.php.pool.insert(
+        v84,
+        std::collections::BTreeMap::from([("max_children".to_string(), "32".to_string())]),
+    );
+    c.php.extensions.insert(
+        v84,
+        vec![yerd_config::ExtEntry {
+            name: "xdebug".to_string(),
+            path: "/a/xdebug.so".to_string(),
+            zend: true,
+        }],
+    );
+    let s = c.to_toml().unwrap();
+
+    assert!(
+        s.contains("[php.pool.\"8.4\"]"),
+        "missing pool table; got: {s}"
+    );
+    assert!(s.contains("max_children = \"32\""), "got: {s}");
+
+    let dir_at = s.find("[php.directives.").expect("directives present");
+    let pool_at = s.find("[php.pool.").expect("pool present");
+    let ext_at = s.find("[[php.extensions.").expect("extensions present");
+    assert!(
+        dir_at < pool_at && pool_at < ext_at,
+        "expected directives < pool < extensions; got: {s}"
+    );
+
+    let back = Config::from_toml(&s).unwrap();
+    assert_eq!(back, c);
+}
+
+#[test]
 fn default_config_emits_no_groups_table() {
     let s = Config::default().to_toml().unwrap();
     assert!(
@@ -501,6 +575,48 @@ fn populated_groups_section_emits_after_defaults_and_round_trips() {
 
     let back = Config::from_toml(&s).unwrap();
     assert_eq!(back, c);
+}
+
+#[test]
+fn default_config_emits_no_route_rules_table() {
+    let s = Config::default().to_toml().unwrap();
+    assert!(
+        !s.contains("[route_rules"),
+        "default config must omit the route_rules table; got: {s}"
+    );
+}
+
+#[test]
+fn populated_route_rules_section_emits_after_defaults_and_round_trips() {
+    let mut c = Config::default();
+    c.linked
+        .push(Site::linked("api", "docroot", PhpVersion::new(8, 3)).unwrap());
+    c.route_rules.linked.insert(
+        "api".to_string(),
+        vec![RouteRule::new("/api", "api/index.php").unwrap()],
+    );
+    c.route_rules.parked.insert(
+        "docroot-a".to_string(),
+        vec![RouteRule::new("/", "index.html").unwrap()],
+    );
+    let s = c.to_toml().unwrap();
+
+    let php_at = s.find("\n[php]\n").expect("[php] table present");
+    let routes_at = s
+        .find("[route_rules")
+        .expect("[route_rules] region present");
+    assert!(
+        php_at < routes_at,
+        "existing tables must precede the trailing [route_rules] region; got: {s}"
+    );
+    assert!(
+        s.contains("target = \"api/index.php\""),
+        "the target must emit as a plain relative path; got: {s}"
+    );
+
+    let back = Config::from_toml(&s).unwrap();
+    assert_eq!(back, c);
+    c.validate().unwrap();
 }
 
 #[test]

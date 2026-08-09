@@ -174,6 +174,34 @@ pub fn macos_firefox_root(home: &Path) -> PathBuf {
     home.join("Library/Application Support/Firefox")
 }
 
+/// Absolute paths that may hold the `certutil` binary on Linux, in probe order.
+/// Every distro package that ships it (`libnss3-tools`, `nss-tools`, `nss`)
+/// installs to `/usr/bin`.
+#[must_use]
+pub fn certutil_candidates_linux() -> Vec<PathBuf> {
+    vec![PathBuf::from("/usr/bin/certutil")]
+}
+
+/// Absolute paths that may hold the `certutil` binary on macOS, in probe order.
+///
+/// The daemon runs as an `SMAppService` `LaunchAgent`, which gives it the
+/// stripped `PATH=/usr/bin:/bin:/usr/sbin:/sbin`, so the Homebrew and
+/// `MacPorts` locations have to be probed absolutely or the tool looks missing.
+/// Linked Homebrew `bin` comes first for both architectures (current Homebrew
+/// links `nss`), then the keg-only `opt/nss/bin` variants, then `MacPorts`.
+/// `/usr/bin` is deliberately absent: macOS ships `certtool` there, never
+/// `certutil`.
+#[must_use]
+pub fn certutil_candidates_macos() -> Vec<PathBuf> {
+    vec![
+        PathBuf::from("/opt/homebrew/bin/certutil"),
+        PathBuf::from("/usr/local/bin/certutil"),
+        PathBuf::from("/opt/homebrew/opt/nss/bin/certutil"),
+        PathBuf::from("/usr/local/opt/nss/bin/certutil"),
+        PathBuf::from("/opt/local/bin/certutil"),
+    ]
+}
+
 /// Resolve the per-profile directories under a Firefox `profiles_root` from the
 /// text of its `profiles.ini`. Relative `Path=` entries are joined against
 /// `profiles_root`; absolute entries are used as-is. The edge then keeps only
@@ -293,6 +321,28 @@ mod tests {
         let ini = "[Profile0]\nIsRelative=0\nPath=/custom/profile\n";
         let dirs = firefox_profile_dirs(Path::new("/home/alice/.mozilla/firefox"), ini);
         assert_eq!(dirs, vec![PathBuf::from("/custom/profile")]);
+    }
+
+    #[test]
+    fn certutil_candidates_linux_is_usr_bin_only() {
+        assert_eq!(
+            certutil_candidates_linux(),
+            vec![PathBuf::from("/usr/bin/certutil")]
+        );
+    }
+
+    #[test]
+    fn certutil_candidates_macos_cover_homebrew_kegs_and_macports_in_order() {
+        assert_eq!(
+            certutil_candidates_macos(),
+            vec![
+                PathBuf::from("/opt/homebrew/bin/certutil"),
+                PathBuf::from("/usr/local/bin/certutil"),
+                PathBuf::from("/opt/homebrew/opt/nss/bin/certutil"),
+                PathBuf::from("/usr/local/opt/nss/bin/certutil"),
+                PathBuf::from("/opt/local/bin/certutil"),
+            ]
+        );
     }
 
     #[test]

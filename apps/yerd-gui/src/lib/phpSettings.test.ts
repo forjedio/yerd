@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   directiveNameProblem,
+  poolMaxChildrenProblem,
   directiveValueProblem,
   effectiveValue,
   overrideCount,
@@ -65,6 +66,38 @@ describe("directiveNameProblem", () => {
   it("flags malformed names", () => {
     for (const name of ["", "1st", ".dot", "has space", "semi;colon"]) {
       expect(directiveNameProblem(name)).not.toBeNull();
+    }
+  });
+
+  it("flags FPM pool settings, which are not ini directives", () => {
+    for (const name of ["pm.max_children", "pm.start_servers", "pm.max_requests"]) {
+      expect(directiveNameProblem(name)).toMatch(/FPM pool/);
+    }
+  });
+
+  it("does not flag names that merely start with pm", () => {
+    for (const name of ["pm", "pmx", "pm_max_children"]) {
+      expect(directiveNameProblem(name)).toBeNull();
+    }
+  });
+});
+
+describe("poolMaxChildrenProblem", () => {
+  it("accepts the bounds and an empty field, which means the default", () => {
+    for (const value of ["", "  ", "1", "16", "32", "1024", " 64 "]) {
+      expect(poolMaxChildrenProblem(value)).toBeNull();
+    }
+  });
+
+  it("flags out-of-range values", () => {
+    for (const value of ["0", "1025", "99999"]) {
+      expect(poolMaxChildrenProblem(value)).toMatch(/between 1 and 1024/);
+    }
+  });
+
+  it("flags anything that is not a whole number", () => {
+    for (const value of ["abc", "16.5", "-1", "+8", "1e3"]) {
+      expect(poolMaxChildrenProblem(value)).toMatch(/whole number/);
     }
   });
 });

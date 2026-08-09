@@ -19,12 +19,16 @@ pub mod cover_shim;
 pub mod elevate;
 pub mod error;
 #[cfg(unix)]
+pub mod exec_cmd;
+#[cfg(unix)]
 pub mod laravel_shim;
 pub mod map;
 pub mod mcp_cmd;
 pub mod path_cmd;
 #[cfg(unix)]
 pub mod shim;
+#[cfg(unix)]
+pub mod site_scope;
 pub mod transport;
 pub mod uninstall;
 #[cfg(unix)]
@@ -59,9 +63,36 @@ pub async fn run(cli: Cli) -> ExitCode {
                 return ExitCode::from(2);
             }
         }
+        #[cfg_attr(not(unix), allow(unused_variables))]
+        Command::Exec { site, tool, args } => {
+            #[cfg(unix)]
+            {
+                return exec_cmd::run_exec(*tool, site.as_deref(), args).await;
+            }
+            #[cfg(not(unix))]
+            {
+                eprintln!("yerd: exec is only available on macOS and Linux");
+                return ExitCode::from(2);
+            }
+        }
+        #[cfg_attr(not(unix), allow(unused_variables))]
+        Command::Which { tool, site } => {
+            #[cfg(unix)]
+            {
+                return exec_cmd::run_which(*tool, site.as_deref(), cli.json).await;
+            }
+            #[cfg(not(unix))]
+            {
+                eprintln!("yerd: which is only available on macOS and Linux");
+                return ExitCode::from(2);
+            }
+        }
         Command::Domain {
             action: crate::cli::DomainAction::List { site },
         } => return run_domain_list(site.as_deref(), cli.json).await,
+        Command::Route {
+            action: crate::cli::RouteAction::List { site: Some(site) },
+        } => return run_route_list(site, cli.json).await,
         Command::Uninstall { target: None, yes } => return uninstall::run(*yes),
         Command::Install {
             target: crate::cli::InstallTarget::Tool { id },
@@ -133,6 +164,16 @@ pub async fn run(cli: Cli) -> ExitCode {
                      rebuild them with Laravel Scout (scout:sync-index-settings and scout:import). \
                      The previous version's data is retained until uninstall --purge."
                 );
+            }
+            if !cli.json && r.code == 0 {
+                if let Command::Service {
+                    action:
+                        crate::cli::ServiceAction::Set { service, .. }
+                        | crate::cli::ServiceAction::Unset { service, .. },
+                } = &cli.command
+                {
+                    println!("saved - restart to apply: yerd service restart {service}");
+                }
             }
             if !cli.json && r.code == 0 && matches!(cli.command, Command::Use { version: None, .. })
             {
@@ -370,6 +411,42 @@ async fn restart_and_await_boot_change(before: Option<u64>) -> Result<(), Client
             return Err(ClientError::Usage(
                 "timed out waiting for the daemon to come back up".to_owned(),
             ));
+        }
+    }
+}
+
+/// `yerd route list <site>`: one `ListRoutes` round-trip, narrowed to `site`
+/// client-side. The unfiltered form goes through the normal `render` path.
+async fn run_route_list(site: &str, json: bool) -> ExitCode {
+    use yerd_ipc::{Request, Response};
+    match transport::exchange(&Request::ListRoutes).await {
+        Ok(Response::Routes { rules }) => {
+            let r = map::render_routes(&rules, Some(site), json);
+            if !r.stdout.is_empty() {
+                println!("{}", r.stdout);
+            }
+            if !r.stderr.is_empty() {
+                eprintln!("{}", r.stderr);
+            }
+            ExitCode::from(r.code)
+        }
+        Ok(other) => {
+            let r = map::render(&other, json);
+            if !r.stdout.is_empty() {
+                println!("{}", r.stdout);
+            }
+            if !r.stderr.is_empty() {
+                eprintln!("{}", r.stderr);
+            }
+            ExitCode::from(r.code)
+        }
+        Err(e) if e.is_daemon_down() => {
+            eprintln!("yerd: {e}");
+            ExitCode::from(69)
+        }
+        Err(e) => {
+            eprintln!("yerd: {e}");
+            ExitCode::from(74)
         }
     }
 }

@@ -119,6 +119,9 @@ export interface ServiceStatus {
   port: number;
   enabled: boolean;
   supports_databases: boolean;
+  /** Whether the engine accepts free-form configuration overrides. Omitted by
+   *  the daemon when false, and absent entirely from an older daemon. */
+  supports_overrides?: boolean;
   /** Service type id (`"redis"`, `"reverb"`), distinct from `service` (the
    *  instance wire id, e.g. `"reverb:blog"`). Falls back to `service` when
    *  omitted by an older daemon. */
@@ -326,6 +329,7 @@ export type DiagnosisCode =
   | "no_sites"
   | "resolver_backup_saved"
   | "service_failed"
+  | "service_override_invalid"
   | "bin_dir_not_on_path"
   | "php_ca_not_trusted"
   | "symlink_protection_disabled"
@@ -505,11 +509,28 @@ export interface ProxyEntry {
   name: string;
   target: string;
   secure: boolean;
+  /** Primary (canonical) domain FQDN, present only when it differs from the
+   *  default `{name}.{tld}` apex (omitted otherwise). */
+  primary_domain?: string;
+  /** Full effective routable domain set as FQDNs, in router order (apex-first,
+   *  so the primary is not necessarily first - match `primary_domain` by value).
+   *  Present only for a customised proxy (omitted for a default apex-only one). */
+  domains?: string[];
 }
 
 /** One per-site path-prefix reverse-proxy rule (`{site}{prefix}` → `target`).
  *  Reply element of a `"proxies"` response. */
 export interface ProxyRuleEntry {
+  site: string;
+  prefix: string;
+  target: string;
+}
+
+/** One per-site path-prefix routing rule (`{site}{prefix}` → a file at `target`,
+ *  relative to the site's web root). Reply element of a `"routes"` response.
+ *  Unlike {@link ProxyRuleEntry}, whose target is an upstream URL, this resolves
+ *  inside the site itself. */
+export interface RouteRuleEntry {
   site: string;
   prefix: string;
   target: string;
@@ -527,6 +548,7 @@ export type Response =
   | { type: "error"; code: ErrorCode; message: string }
   | { type: "parked"; paths: string[] }
   | { type: "proxies"; proxies: ProxyEntry[]; rules: ProxyRuleEntry[] }
+  | { type: "routes"; rules: RouteRuleEntry[] }
   | {
       type: "info";
       dns_addr: string;
@@ -559,6 +581,10 @@ export type Response =
       /** Free-form per-version ini directives keyed by version string. Absent
        *  when none are set / older daemon. */
       directives?: Record<PhpVersion, Record<string, string>>;
+      /** Per-version FPM pool overrides (currently only `max_children`) keyed
+       *  by version string. A version that is absent runs the built-in
+       *  default of 16. Absent when none are set / older daemon. */
+      pool?: Record<PhpVersion, Record<string, string>>;
     }
   | {
       type: "available_php";
@@ -583,6 +609,7 @@ export type Response =
   | { type: "wordpress_login_token"; token: string }
   | { type: "wordpress_admin_users"; users: WordPressAdminUser[] }
   | { type: "service_logs"; lines: string[] }
+  | { type: "service_overrides"; overrides: Record<string, string> }
   | { type: "databases"; databases: DatabaseSummary[] }
   | {
       type: "dumps";
@@ -745,6 +772,7 @@ export type InfoResponse = Extract<Response, { type: "info" }>;
 export type SitesResponse = Extract<Response, { type: "sites" }>;
 export type ParkedResponse = Extract<Response, { type: "parked" }>;
 export type ProxiesResponse = Extract<Response, { type: "proxies" }>;
+export type RoutesResponse = Extract<Response, { type: "routes" }>;
 export type PhpVersionsResponse = Extract<Response, { type: "php_versions" }>;
 export type UpdateStatusResponse = Extract<Response, { type: "update_status" }>;
 export type AvailablePhpResponse = Extract<Response, { type: "available_php" }>;

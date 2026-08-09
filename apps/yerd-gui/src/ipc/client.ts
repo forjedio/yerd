@@ -35,6 +35,7 @@ import type {
   ProxyEntry,
   ProxyRuleEntry,
   Response,
+  RouteRuleEntry,
   ServiceAvailability,
   ServiceStatus,
   SetupState,
@@ -268,6 +269,26 @@ export async function removeProxyRule(site: string, prefix: string): Promise<voi
   ensureOk(await call<Response>("remove_proxy_rule", { site, prefix }));
 }
 
+// ── routing rules ────────────────────────────────────────────────────────────
+
+/** Every site's path-prefix routing rules. Unlike a proxy rule, a routing rule's
+ *  target is a file inside the site's own web root. */
+export async function listRoutes(): Promise<RouteRuleEntry[]> {
+  const r = ensureOk(await call<Response>("list_routes"));
+  return r.type === "routes" ? r.rules : [];
+}
+
+/** Add a routing rule: URIs under `prefix` that match no real file are handled
+ *  by `target`, a path relative to the site's web root. The daemon validates
+ *  both and rejects an absolute target or one containing `..`. */
+export async function addRouteRule(site: string, prefix: string, target: string): Promise<void> {
+  ensureOk(await call<Response>("add_route_rule", { site, prefix, target }));
+}
+
+export async function removeRouteRule(site: string, prefix: string): Promise<void> {
+  ensureOk(await call<Response>("remove_route_rule", { site, prefix }));
+}
+
 // ── php versions ───────────────────────────────────────────────────────────
 
 export async function listPhp(): Promise<PhpVersionsResponse> {
@@ -428,6 +449,21 @@ export async function setPhpDirectives(
 ): Promise<PhpVersionsResponse> {
   return ensureOk(
     await call<Response>("set_php_directives", { version, directives }),
+  ) as PhpVersionsResponse;
+}
+
+/**
+ * Merge FPM pool settings (currently only `max_children`) for one installed
+ * version. These apply to the version's FPM pool only, never its CLI ini. An
+ * empty-string value resets the setting to its built-in default. Returns the
+ * refreshed version list.
+ */
+export async function setPhpPoolSettings(
+  version: PhpVersion,
+  settings: Record<string, string>,
+): Promise<PhpVersionsResponse> {
+  return ensureOk(
+    await call<Response>("set_php_pool_settings", { version, settings }),
   ) as PhpVersionsResponse;
 }
 
@@ -698,6 +734,32 @@ export async function restartService(service: string): Promise<void> {
 /** Persist a new port; takes effect on the next start/restart. */
 export async function setServicePort(service: string, port: number): Promise<void> {
   ensureOk(await call<Response>("set_service_port", { service, port }));
+}
+
+/** A service instance's stored configuration overrides, keyed by directive name.
+ *  Refused by the daemon for a service that accepts none. */
+export async function serviceOverrides(service: string): Promise<Record<string, string>> {
+  const r = ensureOk(await call<Response>("service_overrides", { service }));
+  return r.type === "service_overrides" ? r.overrides : {};
+}
+
+/** Persist one configuration override; takes effect on the next start/restart.
+ *  The daemon validates the name/value shape and refuses a directive it manages
+ *  itself, so its message is what the UI shows. */
+export async function setServiceOverride(
+  service: string,
+  key: string,
+  value: string,
+): Promise<void> {
+  ensureOk(
+    await call<Response>("set_service_overrides", { service, overrides: { [key]: value } }),
+  );
+}
+
+/** Drop one configuration override - an empty value is the daemon's remove
+ *  signal. Takes effect on the next start/restart. */
+export async function unsetServiceOverride(service: string, key: string): Promise<void> {
+  await setServiceOverride(service, key, "");
 }
 
 /** The last `lines` lines of a service's log file. */

@@ -16,7 +16,8 @@ use yerd_ipc::{
     decode_message, encode_message,
     types::{PhpVersion, Site},
     CaStatus, Diagnosis, DiagnosisCode, ErrorCode, FixReport, FixResult, IpcError, PhpPoolStatus,
-    PoolRunState, PortStatus, Request, Response, Severity, SiteCounts, StatusReport,
+    PoolRunState, PortStatus, Request, Response, RouteRuleEntry, Severity, SiteCounts,
+    StatusReport,
 };
 
 fn assert_request_roundtrips(r: Request) {
@@ -103,6 +104,16 @@ fn encode_then_decode_request_roundtrip() {
         from: "Blog".into(),
         to: "Journal".into(),
     });
+    assert_request_roundtrips(Request::AddRouteRule {
+        site: "portal".into(),
+        prefix: "/api".into(),
+        target: "api/index.php".into(),
+    });
+    assert_request_roundtrips(Request::RemoveRouteRule {
+        site: "portal".into(),
+        prefix: "/api".into(),
+    });
+    assert_request_roundtrips(Request::ListRoutes);
 }
 
 #[test]
@@ -129,6 +140,7 @@ fn encode_then_decode_response_roundtrip() {
         settings: BTreeMap::new(),
         version_settings: Box::new(BTreeMap::new()),
         directives: Box::new(BTreeMap::new()),
+        pool: Box::new(BTreeMap::new()),
     });
     assert_response_roundtrips(Response::PhpVersions {
         installed: vec![PhpVersion::new(8, 5)],
@@ -146,6 +158,10 @@ fn encode_then_decode_response_roundtrip() {
         directives: Box::new(BTreeMap::from([(
             PhpVersion::new(8, 5),
             BTreeMap::from([("xdebug.mode".to_string(), "debug".to_string())]),
+        )])),
+        pool: Box::new(BTreeMap::from([(
+            PhpVersion::new(8, 5),
+            BTreeMap::from([("max_children".to_string(), "32".to_string())]),
         )])),
     });
     assert_response_roundtrips(Response::Parked { paths: vec![] });
@@ -293,6 +309,13 @@ fn encode_then_decode_response_roundtrip() {
     assert_response_roundtrips(Response::Groups {
         order: vec!["Blog".into(), "Shop".into()],
         members: std::collections::BTreeMap::from([("app".to_string(), "Blog".to_string())]),
+    });
+    assert_response_roundtrips(Response::Routes {
+        rules: vec![RouteRuleEntry {
+            site: "portal".into(),
+            prefix: "/api".into(),
+            target: "api/index.php".into(),
+        }],
     });
 }
 

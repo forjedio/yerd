@@ -84,6 +84,11 @@ struct WireSer<'a> {
     // `[proxy_rules]` region.
     #[serde(skip_serializing_if = "Option::is_none")]
     proxy_rules: Option<ProxyRulesSectionSer<'a>>,
+    // v20: optional `[route_rules]` table, emitted after `[proxy_rules]` so an
+    // existing config's byte shape is untouched. `None` (skipped) when both maps
+    // are empty, so a default config emits no `[route_rules]` region.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    route_rules: Option<RouteRulesSectionSer<'a>>,
 }
 
 #[derive(Serialize)]
@@ -110,11 +115,29 @@ struct ProxyRuleSer<'a> {
 }
 
 #[derive(Serialize)]
+struct RouteRulesSectionSer<'a> {
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    linked: BTreeMap<&'a str, Vec<RouteRuleSer<'a>>>,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    parked: BTreeMap<&'a str, Vec<RouteRuleSer<'a>>>,
+}
+
+#[derive(Serialize)]
+struct RouteRuleSer<'a> {
+    prefix: &'a str,
+    target: &'a str,
+}
+
+#[derive(Serialize)]
 struct DomainsSectionSer<'a> {
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     linked: BTreeMap<&'a str, DomainDeltaSer<'a>>,
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     parked: BTreeMap<&'a str, DomainDeltaSer<'a>>,
+    // v23: emitted after `linked`/`parked` so a config with only site deltas
+    // keeps its exact table bytes.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    proxy: BTreeMap<&'a str, DomainDeltaSer<'a>>,
 }
 
 #[derive(Serialize)]
@@ -190,6 +213,10 @@ struct PhpSectionSer<'a> {
     // when empty for the same byte-stability reason.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     directives: BTreeMap<String, &'a BTreeMap<String, String>>,
+    // Sub-tables keyed by version string (`[php.pool."8.4"]`). Skipped when
+    // empty for the same byte-stability reason.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pool: BTreeMap<String, &'a BTreeMap<String, String>>,
     // Array-of-tables keyed by version string (`[[php.extensions."8.5"]]`).
     // Skipped when empty so a default config emits no `[php.extensions]` region
     // (byte-shape goldens assume no extra tables). A trailing sub-table region,
@@ -205,8 +232,9 @@ struct ExtEntrySer<'a> {
     zend: bool,
 }
 
-/// `skip_serializing_if` predicate for the borrowed `settings` field. serde
-/// dictates the `&&BTreeMap` signature (the field is already `&BTreeMap`).
+/// `skip_serializing_if` predicate for the borrowed `settings` and `overrides`
+/// fields. serde dictates the `&&BTreeMap` signature (the field is already
+/// `&BTreeMap`).
 #[allow(clippy::trivially_copy_pass_by_ref)]
 fn map_is_empty(m: &&BTreeMap<String, String>) -> bool {
     m.is_empty()
@@ -229,6 +257,10 @@ struct ServiceInstanceSer<'a> {
     // Emitted unconditionally so the persisted autostart intent round-trips
     // exactly (an omitted key would re-default by type on the next load).
     enabled: bool,
+    // Sub-table, so it stays last. Skipped when empty: a config with no
+    // overrides emits no `[services.<id>.overrides]` region at all.
+    #[serde(skip_serializing_if = "map_is_empty")]
+    overrides: &'a BTreeMap<String, String>,
 }
 
 /// `[mail]` table. Owned (not borrowed) - the fields are `Copy` scalars, so
@@ -290,6 +322,7 @@ pub(crate) fn to_toml(c: &Config) -> Result<String, ConfigError> {
                 .iter()
                 .map(|(v, m)| (v.to_string(), m))
                 .collect(),
+            pool: c.php.pool.iter().map(|(v, m)| (v.to_string(), m)).collect(),
             extensions: c
                 .php
                 .extensions
@@ -338,6 +371,7 @@ pub(crate) fn to_toml(c: &Config) -> Result<String, ConfigError> {
                         port: inst.port,
                         site: inst.site.as_deref(),
                         enabled: inst.enabled,
+                        overrides: &inst.overrides,
                     },
                 )
             })
@@ -381,6 +415,7 @@ pub(crate) fn to_toml(c: &Config) -> Result<String, ConfigError> {
             .linked
             .values()
             .chain(c.domains.parked.values())
+            .chain(c.domains.proxy.values())
             .all(crate::schema::DomainDelta::is_empty)
         {
             None
@@ -388,6 +423,7 @@ pub(crate) fn to_toml(c: &Config) -> Result<String, ConfigError> {
             Some(DomainsSectionSer {
                 linked: domain_delta_map(&c.domains.linked),
                 parked: domain_delta_map(&c.domains.parked),
+                proxy: domain_delta_map(&c.domains.proxy),
             })
         },
         proxies: c
@@ -408,8 +444,39 @@ pub(crate) fn to_toml(c: &Config) -> Result<String, ConfigError> {
                 Some(ProxyRulesSectionSer { linked, parked })
             }
         },
+        route_rules: {
+            let linked = route_rule_map(&c.route_rules.linked);
+            let parked = route_rule_map(&c.route_rules.parked);
+            if linked.is_empty() && parked.is_empty() {
+                None
+            } else {
+                Some(RouteRulesSectionSer { linked, parked })
+            }
+        },
     };
     toml::to_string_pretty(&w).map_err(Into::into)
+}
+
+/// Build a borrowed `[route_rules.*]` map, pruning any site whose rule list is
+/// empty, for the same round-trip reason as [`proxy_rule_map`].
+fn route_rule_map(
+    src: &BTreeMap<String, Vec<yerd_core::RouteRule>>,
+) -> BTreeMap<&str, Vec<RouteRuleSer<'_>>> {
+    src.iter()
+        .filter(|(_, rules)| !rules.is_empty())
+        .map(|(k, rules)| {
+            (
+                k.as_str(),
+                rules
+                    .iter()
+                    .map(|r| RouteRuleSer {
+                        prefix: r.prefix(),
+                        target: r.target(),
+                    })
+                    .collect(),
+            )
+        })
+        .collect()
 }
 
 /// Build a borrowed `[proxy_rules.*]` map, pruning any site whose rule list is
@@ -469,8 +536,8 @@ mod tests {
     fn default_to_toml_starts_with_version_line() {
         let s = to_toml(&Config::default()).unwrap();
         assert!(
-            s.starts_with("version = 19\n"),
-            "expected `version = 19` first line; got: {s}"
+            s.starts_with("version = 23\n"),
+            "expected `version = 23` first line; got: {s}"
         );
     }
 
@@ -612,6 +679,66 @@ mod tests {
             .linked
             .insert("blog".to_owned(), crate::DomainDelta::default());
         assert_eq!(to_toml(&c).unwrap(), baseline);
+    }
+
+    #[test]
+    #[allow(clippy::field_reassign_with_default)]
+    fn populated_proxy_domain_delta_round_trips_with_a_quoted_dotted_key() {
+        use yerd_core::Domain;
+        let mut c = Config::default();
+        c.domains.proxy.insert(
+            "api.account".to_owned(),
+            crate::DomainDelta {
+                added: vec![
+                    Domain::parse_subpart("corp").unwrap(),
+                    Domain::parse_subpart("*.api.account").unwrap(),
+                ],
+                suppressed: vec![],
+                primary: Some(Domain::parse_subpart("corp").unwrap()),
+            },
+        );
+        let s = to_toml(&c).unwrap();
+        assert!(
+            s.contains("[domains.proxy.\"api.account\"]"),
+            "must emit the proxy delta keyed by a quoted dotted name: {s}"
+        );
+        let back = Config::from_toml(&s).unwrap();
+        assert_eq!(back, c);
+    }
+
+    #[test]
+    #[allow(clippy::field_reassign_with_default)]
+    fn all_empty_proxy_domain_delta_is_pruned() {
+        let baseline = to_toml(&Config::default()).unwrap();
+        let mut c = Config::default();
+        c.domains
+            .proxy
+            .insert("reverb".to_owned(), crate::DomainDelta::default());
+        assert_eq!(to_toml(&c).unwrap(), baseline);
+    }
+
+    #[test]
+    #[allow(clippy::field_reassign_with_default)]
+    fn linked_deltas_without_proxy_deltas_emit_no_proxy_sub_table() {
+        use yerd_core::Domain;
+        let mut c = Config::default();
+        c.domains.linked.insert(
+            "blog".to_owned(),
+            crate::DomainDelta {
+                added: vec![Domain::parse_subpart("corp").unwrap()],
+                suppressed: vec![],
+                primary: None,
+            },
+        );
+        let s = to_toml(&c).unwrap();
+        assert!(
+            s.contains("[domains.linked.blog]"),
+            "must emit the linked delta: {s}"
+        );
+        assert!(
+            !s.contains("[domains.proxy"),
+            "a config with no proxy deltas must emit no proxy sub-table: {s}"
+        );
     }
 
     #[test]
