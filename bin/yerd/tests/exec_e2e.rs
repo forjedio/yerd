@@ -71,7 +71,7 @@ mod tests {
         dirs: yerd_platform::PlatformDirs,
         cwd: Option<PathBuf>,
         site: Option<String>,
-    ) -> Result<PhpSelection, String> {
+    ) -> Result<PhpSelection, yerd::exec_cmd::SelectError> {
         tokio::task::spawn_blocking(move || select_php(&dirs, cwd.as_deref(), site.as_deref()))
             .await
             .unwrap()
@@ -212,21 +212,26 @@ mod tests {
         let err = scoped_select(dirs.clone(), Some(cwd), None)
             .await
             .unwrap_err();
-        assert!(err.contains("pinned to PHP 7.4"), "got: {err}");
-        assert!(err.contains("yerd install php 7.4"), "got: {err}");
+        assert!(err.message.contains("pinned to PHP 7.4"), "got: {err:?}");
+        assert!(err.message.contains("yerd install php 7.4"), "got: {err:?}");
+        assert_eq!(err.code, 2, "a pinned-but-uninstalled version is exit 2");
 
         // ...and the same via `--site`, from outside the site.
         let cwd = std::fs::canonicalize(&outside_dir).unwrap();
         let err = scoped_select(dirs.clone(), Some(cwd.clone()), Some("legacy".to_owned()))
             .await
             .unwrap_err();
-        assert!(err.contains("pinned to PHP 7.4"), "got: {err}");
+        assert!(err.message.contains("pinned to PHP 7.4"), "got: {err:?}");
+        assert_eq!(err.code, 2);
 
-        // An unknown `--site` name is an error, never a default fallback.
+        // An unknown `--site` name is an error, never a default fallback - and
+        // a *usage* error (exit 2), not the exit 1 every shim failure returns.
+        // With the daemon up, this must not be mistaken for exit 69 either.
         let err = scoped_select(dirs.clone(), Some(cwd), Some("nope".to_owned()))
             .await
             .unwrap_err();
-        assert!(err.contains("no site named 'nope'"), "got: {err}");
+        assert!(err.message.contains("no site named 'nope'"), "got: {err:?}");
+        assert_eq!(err.code, 2, "an unknown site name is a usage error");
 
         shutdown_tx.send_replace(true);
         let _ = tokio::time::timeout(Duration::from_secs(5), ipc_task).await;

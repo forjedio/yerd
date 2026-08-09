@@ -25,10 +25,44 @@ use std::process::{Command, ExitCode};
 use yerd_platform::{ActivePaths, Paths, PlatformDirs};
 
 use crate::cli::{ExecTool, WhichTool};
-use crate::shim::{cli_phprc, fail, resolve_default_php};
+use crate::shim::{cli_phprc, resolve_default_php};
 use crate::site_scope::{
     site_scope, site_scope_by_name, NamedScopeError, ScopeResolution, SiteScope,
 };
+
+/// Why `yerd exec` / `yerd which` couldn't resolve a PHP to run.
+///
+/// Carries the exit code alongside the message because these are real
+/// subcommands, not shims: `docs/reference/cli/index.md` documents `2` for a
+/// client-side usage error and `69` for an unreachable daemon, and scripts
+/// branch on those. Collapsing everything to `1` (as the shims' `fail` does)
+/// would make a typo'd `--site` indistinguishable from a daemon-side failure.
+#[derive(Debug, PartialEq, Eq)]
+pub struct SelectError {
+    /// The ready-to-print message, without the `yerd: ` prefix.
+    pub message: String,
+    /// The documented process exit code for this class of failure.
+    pub code: u8,
+}
+
+impl SelectError {
+    /// A client-side usage error - a name that doesn't resolve, a version that
+    /// isn't installed. Exit code `2`.
+    fn usage(message: String) -> Self {
+        Self { message, code: 2 }
+    }
+
+    /// The daemon was needed but unreachable. Exit code `69`.
+    fn daemon(message: String) -> Self {
+        Self { message, code: 69 }
+    }
+
+    /// Print to stderr and return the documented exit code.
+    fn report(&self) -> ExitCode {
+        eprintln!("yerd: {}", self.message);
+        ExitCode::from(self.code)
+    }
+}
 
 /// Which PHP a `yerd exec` / `yerd which` invocation resolved to.
 #[derive(Debug)]
@@ -79,29 +113,30 @@ impl PhpSelection {
 ///
 /// A daemon that can't be reached for the cwd lookup is *not* an error - it
 /// just means "not inside a site" - but it does warn on stderr, since silently
-/// demoting a site to the global default is the mismatch this command exists
-/// to prevent.
+/// demoting a pinned site to the global default is the mismatch this command
+/// exists to prevent.
 ///
 /// # Errors
 ///
-/// Returns a ready-to-print message for every unresolvable case.
+/// Returns a [`SelectError`] - message plus documented exit code - for every
+/// unresolvable case.
 pub fn select_php(
     dirs: &PlatformDirs,
     cwd: Option<&Path>,
     site: Option<&str>,
-) -> Result<PhpSelection, String> {
+) -> Result<PhpSelection, SelectError> {
     if let Some(name) = site {
         return match site_scope_by_name(dirs, name) {
             Ok(scope) => Ok(PhpSelection::Site(scope)),
-            Err(NamedScopeError::NotFound) => Err(format!(
+            Err(NamedScopeError::NotFound) => Err(SelectError::usage(format!(
                 "no site named '{name}' — run `yerd sites` to see the registered sites"
+            ))),
+            Err(NamedScopeError::PhpMissing { php_version }) => Err(SelectError::usage(
+                missing_php_message(&php_version.to_string()),
             )),
-            Err(NamedScopeError::PhpMissing { php_version }) => {
-                Err(missing_php_message(&php_version.to_string()))
-            }
-            Err(NamedScopeError::DaemonUnavailable) => {
-                Err("cannot reach the yerd daemon to look up that site — is it running?".to_owned())
-            }
+            Err(NamedScopeError::DaemonUnavailable) => Err(SelectError::daemon(
+                "cannot reach the yerd daemon to look up that site — is it running?".to_owned(),
+            )),
         };
     }
 
@@ -113,16 +148,18 @@ pub fn select_php(
     };
     match resolution {
         ScopeResolution::Scoped(scope) => Ok(PhpSelection::Site(scope)),
-        ScopeResolution::MatchedPhpMissing { php_version } => {
-            Err(missing_php_message(&php_version.to_string()))
-        }
+        ScopeResolution::MatchedPhpMissing { php_version } => Err(SelectError::usage(
+            missing_php_message(&php_version.to_string()),
+        )),
         ScopeResolution::NoScope { daemon_unavailable } => {
             if daemon_unavailable {
                 crate::site_scope::warn_daemon_unavailable();
             }
             match resolve_default_php(dirs) {
                 Some((php_bin, minor)) => Ok(PhpSelection::Default { php_bin, minor }),
-                None => Err(crate::shim::no_default_php_message(dirs)),
+                None => Err(SelectError::usage(crate::shim::no_default_php_message(
+                    dirs,
+                ))),
             }
         }
     }
@@ -144,10 +181,11 @@ fn missing_php_message(version: &str) -> String {
 /// runs on a thread already driving a runtime - which the CLI's `run()` is. So
 /// the resolution is moved to a blocking-pool thread, exactly as the self-update
 /// applier is.
-async fn resolve(site: Option<&str>) -> Result<(PlatformDirs, PhpSelection), String> {
-    let dirs = ActivePaths::new()
-        .resolve()
-        .map_err(|e| format!("cannot resolve yerd directories: {e}"))?;
+async fn resolve(site: Option<&str>) -> Result<(PlatformDirs, PhpSelection), SelectError> {
+    let dirs = ActivePaths::new().resolve().map_err(|e| SelectError {
+        message: format!("cannot resolve yerd directories: {e}"),
+        code: 74,
+    })?;
     let owned_site = site.map(ToOwned::to_owned);
     let for_lookup = dirs.clone();
     let selection = tokio::task::spawn_blocking(move || {
@@ -155,7 +193,10 @@ async fn resolve(site: Option<&str>) -> Result<(PlatformDirs, PhpSelection), Str
         select_php(&for_lookup, cwd.as_deref(), owned_site.as_deref())
     })
     .await
-    .map_err(|e| format!("php resolution task failed: {e}"))??;
+    .map_err(|e| SelectError {
+        message: format!("php resolution task failed: {e}"),
+        code: 74,
+    })??;
     Ok((dirs, selection))
 }
 
@@ -164,7 +205,7 @@ async fn resolve(site: Option<&str>) -> Result<(PlatformDirs, PhpSelection), Str
 pub async fn run_exec(tool: ExecTool, site: Option<&str>, args: &[OsString]) -> ExitCode {
     let (dirs, selection) = match resolve(site).await {
         Ok(pair) => pair,
-        Err(msg) => return fail(msg),
+        Err(e) => return e.report(),
     };
 
     let php_bin = selection.php_bin().to_path_buf();
@@ -172,7 +213,7 @@ pub async fn run_exec(tool: ExecTool, site: Option<&str>, args: &[OsString]) -> 
     if let ExecTool::Composer = tool {
         let phar = crate::shim::composer_phar(&dirs);
         if !phar.is_file() {
-            return fail(crate::shim::composer_missing_message());
+            return SelectError::usage(crate::shim::composer_missing_message()).report();
         }
         cmd.arg(&phar);
     }
@@ -183,12 +224,17 @@ pub async fn run_exec(tool: ExecTool, site: Option<&str>, args: &[OsString]) -> 
 
     let err = cmd.exec();
     if err.kind() == std::io::ErrorKind::NotFound {
-        return fail(format!(
+        return SelectError::usage(format!(
             "PHP binary not found at {} ({err}) — reinstall with `yerd install php`",
             php_bin.display()
-        ));
+        ))
+        .report();
     }
-    fail(format!("failed to exec {}: {err}", php_bin.display()))
+    SelectError {
+        message: format!("failed to exec {}: {err}", php_bin.display()),
+        code: 74,
+    }
+    .report()
 }
 
 /// `yerd which <tool>`: print the binary `yerd exec` would use. Resolution and
@@ -198,7 +244,7 @@ pub async fn run_which(tool: WhichTool, site: Option<&str>, json: bool) -> ExitC
     let WhichTool::Php = tool;
     let selection = match resolve(site).await {
         Ok((_dirs, selection)) => selection,
-        Err(msg) => return fail(msg),
+        Err(e) => return e.report(),
     };
     println!("{}", which_output(&selection, json));
     ExitCode::SUCCESS
@@ -346,7 +392,8 @@ mod tests {
     }
 
     /// An explicit `--site` never falls back: with no daemon it must fail, not
-    /// resolve to the default PHP.
+    /// resolve to the default PHP - and with `69`, the documented "daemon
+    /// unreachable" code, rather than a generic failure.
     #[test]
     fn select_php_named_site_errors_without_a_daemon() {
         let tmp = tempfile::tempdir().unwrap();
@@ -354,7 +401,12 @@ mod tests {
         std::fs::create_dir_all(&dirs.runtime).unwrap();
         fake_cli(&dirs, "8.3");
         let err = select_php(&dirs, None, Some("blog")).unwrap_err();
-        assert!(err.contains("cannot reach the yerd daemon"), "got: {err}");
+        assert!(
+            err.message.contains("cannot reach the yerd daemon"),
+            "got: {}",
+            err.message
+        );
+        assert_eq!(err.code, 69, "an unreachable daemon is exit 69");
     }
 
     #[test]
@@ -363,7 +415,21 @@ mod tests {
         let dirs = dirs_at(tmp.path());
         std::fs::create_dir_all(&dirs.runtime).unwrap();
         let err = select_php(&dirs, None, None).unwrap_err();
-        assert!(err.contains("no PHP installed"), "got: {err}");
+        assert!(
+            err.message.contains("no PHP installed"),
+            "got: {}",
+            err.message
+        );
+        assert_eq!(err.code, 2, "a client-side resolution failure is exit 2");
+    }
+
+    /// The two failure classes must not collapse onto one code: a bad `--site`
+    /// is a usage error (`2`), an unreachable daemon is `69`. Scripts branch on
+    /// the difference, and `docs/reference/cli/index.md` documents both.
+    #[test]
+    fn select_error_codes_match_the_documented_table() {
+        assert_eq!(SelectError::usage("x".to_owned()).code, 2);
+        assert_eq!(SelectError::daemon("x".to_owned()).code, 69);
     }
 
     #[test]
