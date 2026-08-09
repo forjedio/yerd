@@ -411,6 +411,8 @@ Two deliberate failure rules:
 `php`, `php<version>`, and `composer` behave exactly as before - `php` still means the global default everywhere. `yerd exec` is an addition, not a change in what your existing commands do.
 :::
 
+Because everything after the tool is forwarded, `-h`/`--help` reach the tool too: `yerd exec composer --help` prints Composer's help. Use `yerd help exec` for the command's own. See the [Exec and Which reference](../reference/cli/exec) for the full flag surface and exit codes.
+
 ### Listing versions
 
 ```sh

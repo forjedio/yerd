@@ -18,11 +18,13 @@ yerd [--json] <COMMAND> [ARGS...]
 
 | Flag | Description |
 | --- | --- |
-| `--json` | Emit machine-readable JSON instead of human-readable text. Available on every command except [`coverage`](./coverage), which forwards everything after it (including `--json`) to PHP. |
+| `--json` | Emit machine-readable JSON instead of human-readable text. Available on every command except [`coverage`](./coverage) and [`exec`](./exec), which forward everything after them (including `--json`) to the tool they run. |
 | `--help`, `-h` | Print help for the command. |
 | `--version`, `-V` | Print the `yerd` version. |
 
-`--json` is a global flag, so you can place it before or after the subcommand: `yerd --json status` and `yerd status --json` are equivalent. In JSON mode the entire daemon response is printed as pretty JSON; the process exit code still reflects success or failure (see [Exit codes](#exit-codes)). The one exception is [`coverage`](./coverage), which is a passthrough to PHP: anything after `coverage` - `--json` included - goes to PHP rather than to `yerd`.
+`--json` is a global flag, so you can place it before or after the subcommand: `yerd --json status` and `yerd status --json` are equivalent. In JSON mode the entire daemon response is printed as pretty JSON; the process exit code still reflects success or failure (see [Exit codes](#exit-codes)).
+
+The exceptions are the two passthrough commands. Anything after [`coverage`](./coverage) - `--json` included - goes to PHP, and anything after [`exec`](./exec)'s tool goes to that tool, so `yerd exec composer show --json` produces Composer's JSON rather than a daemon response. `yerd which --json` is *not* an exception: `which` runs nothing, so `--json` is `yerd`'s there.
 
 ::: info
 `yerd` is the command-line front end. The daemon (`yerdd`) does the real work: running the proxy, DNS responder, PHP-FPM pools, and certificate authority. See [The Daemon](../../guide/daemon) for how it runs, and the [IPC Protocol](../../developer/ipc-protocol) for the request/response wire format.
@@ -37,6 +39,7 @@ yerd [--json] <COMMAND> [ARGS...]
 | [Proxies](./proxies) | `proxy add`, `proxy remove`, `proxy list` |
 | [HTTPS](./https) | `secure`, `unsecure` |
 | [PHP](./php) | `use`, `install php`, `uninstall php`, `update php`, `restart php`, `list php`, `list parked`, `set php`, `unset php`, `php ext add`/`remove`/`list`, [`coverage`](./coverage) |
+| [Exec and Which](./exec) | `exec php`, `exec composer`, `which php` |
 | [Tooling](./tooling) | `tools`, `install tool`, `uninstall tool`, `path install`, `path uninstall`, `path print` |
 | [Services](./services) | `services`, `service available`, `service install`, `service change-version`, `service uninstall`, `service start`, `service stop`, `service restart`, `service set-port`, `service logs` |
 | [Databases](./db) | `db list`, `db create`, `db drop`, `db backup`, `db restore` |

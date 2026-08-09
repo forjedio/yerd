@@ -184,6 +184,7 @@ export default withMermaid({
             { text: 'Routing rules', link: '/reference/cli/routes' },
             { text: 'HTTPS', link: '/reference/cli/https' },
             { text: 'PHP', link: '/reference/cli/php' },
+            { text: 'Exec and Which', link: '/reference/cli/exec' },
             { text: 'Coverage', link: '/reference/cli/coverage' },
             { text: 'Tooling', link: '/reference/cli/tooling' },
             { text: 'Services', link: '/reference/cli/services' },
