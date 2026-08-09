@@ -5,6 +5,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import logoUrl from "@/assets/logo.svg";
 import { hostPlatform, setGuiMaximized } from "@/ipc/client";
 import { useTitleBarStyle } from "@/lib/titleBarStyle";
+import { supportsReliableMaximizedState } from "@/lib/windowState";
 
 // The window is decorationless (see tauri.conf.json) so we draw our own
 // titlebar. It's a `data-tauri-drag-region`, giving native click-drag-to-move
@@ -45,6 +46,9 @@ function platformToStyle(p: string): "macos" | "linux" | "windows" {
 const resolved = computed(() =>
   stylePref.value === "auto" ? platformToStyle(platform.value) : stylePref.value,
 );
+const maximizeStateSupported = computed(() =>
+  supportsReliableMaximizedState(platform.value),
+);
 
 // Controls always target the window this titlebar is mounted in, so the one
 // component drives both the main window and the Mails window.
@@ -68,7 +72,7 @@ const maximized = ref(false);
 
 /** Coalesce main-window maximize writes and retry transient IPC failures. */
 function queueMaximizedPersistence(value: boolean): void {
-  if (win.label !== "main" || disposed) return;
+  if (win.label !== "main" || disposed || !maximizeStateSupported.value) return;
   pendingMaximized = value;
   if (!maximizedPersistenceInFlight) {
     void flushMaximizedPersistence();
@@ -105,12 +109,21 @@ async function flushMaximizedPersistence(): Promise<void> {
 
 function updateMaximized(value: boolean): void {
   maximized.value = value;
-  document.documentElement.classList.toggle("window-maximized", value);
-  queueMaximizedPersistence(value);
+  if (maximizeStateSupported.value) {
+    document.documentElement.classList.toggle("window-maximized", value);
+    queueMaximizedPersistence(value);
+  } else {
+    document.documentElement.classList.remove("window-maximized");
+  }
 }
 
 function refreshMaximized(): void {
   const requestId = ++maximizedRefreshId;
+  if (!maximizeStateSupported.value) {
+    maximized.value = false;
+    document.documentElement.classList.remove("window-maximized");
+    return;
+  }
   win
     .isMaximized()
     .then((value) => {

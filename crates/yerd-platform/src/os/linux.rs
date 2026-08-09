@@ -12,6 +12,7 @@ use std::net::{Ipv4Addr, SocketAddr, TcpListener};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::Duration;
 
 use directories::ProjectDirs;
 
@@ -157,16 +158,23 @@ impl LinuxIdeLauncher {
     }
 }
 
-fn executable_in_path(name: &str) -> Option<PathBuf> {
-    std::env::var_os("PATH").and_then(|paths| {
-        std::env::split_paths(&paths)
-            .map(|directory| directory.join(name))
-            .find(|candidate| {
-                fs::metadata(candidate).is_ok_and(|metadata| {
-                    metadata.is_file() && metadata.permissions().mode() & 0o111 != 0
-                })
+fn executable_in_directories<I>(name: &str, directories: I) -> Option<PathBuf>
+where
+    I: IntoIterator<Item = PathBuf>,
+{
+    directories
+        .into_iter()
+        .map(|directory| directory.join(name))
+        .find(|candidate| {
+            fs::metadata(candidate).is_ok_and(|metadata| {
+                metadata.is_file() && metadata.permissions().mode() & 0o111 != 0
             })
-    })
+        })
+}
+
+fn executable_in_path(name: &str) -> Option<PathBuf> {
+    std::env::var_os("PATH")
+        .and_then(|paths| executable_in_directories(name, std::env::split_paths(&paths)))
 }
 
 fn ide_executable(ide: Ide) -> Option<PathBuf> {
@@ -178,7 +186,11 @@ fn ide_executable(ide: Ide) -> Option<PathBuf> {
 }
 
 /// Return the XDG application directories plus common package-manager exports.
-fn application_dirs() -> Vec<PathBuf> {
+fn application_dirs_from_parts(
+    data_home: Option<&Path>,
+    home: Option<&Path>,
+    data_dirs: &[PathBuf],
+) -> Vec<PathBuf> {
     let mut roots = Vec::new();
 
     let mut add_root = |root: PathBuf| {
@@ -187,18 +199,34 @@ fn application_dirs() -> Vec<PathBuf> {
         }
     };
 
-    if let Some(data_home) = std::env::var_os("XDG_DATA_HOME").filter(|p| !p.is_empty()) {
-        add_root(PathBuf::from(data_home));
+    if let Some(data_home) = data_home {
+        add_root(data_home.to_path_buf());
     }
-    if let Some(home) = std::env::var_os("HOME") {
-        let home = PathBuf::from(home);
+    if let Some(home) = home {
         add_root(home.join(".local/share"));
         add_root(home.join(".local/share/flatpak/exports/share"));
         add_root(home.join(".nix-profile/share"));
     }
 
+    for root in data_dirs {
+        add_root(root.clone());
+    }
+    add_root(PathBuf::from("/var/lib/flatpak/exports/share"));
+    add_root(PathBuf::from("/var/lib/snapd/desktop"));
+    add_root(PathBuf::from("/run/current-system/sw/share"));
+    roots
+        .into_iter()
+        .map(|root| root.join("applications"))
+        .collect()
+}
+
+fn application_dirs() -> Vec<PathBuf> {
+    let data_home = std::env::var_os("XDG_DATA_HOME")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from);
+    let home = std::env::var_os("HOME").map(PathBuf::from);
     let data_dirs = std::env::var_os("XDG_DATA_DIRS")
-        .filter(|p| !p.is_empty())
+        .filter(|value| !value.is_empty())
         .map_or_else(
             || {
                 vec![
@@ -208,16 +236,7 @@ fn application_dirs() -> Vec<PathBuf> {
             },
             |paths| std::env::split_paths(&paths).collect::<Vec<_>>(),
         );
-    for root in data_dirs {
-        add_root(root);
-    }
-    add_root(PathBuf::from("/var/lib/flatpak/exports/share"));
-    add_root(PathBuf::from("/var/lib/snapd/desktop"));
-    add_root(PathBuf::from("/run/current-system/sw/share"));
-    roots
-        .into_iter()
-        .map(|root| root.join("applications"))
-        .collect()
+    application_dirs_from_parts(data_home.as_deref(), home.as_deref(), &data_dirs)
 }
 
 fn desktop_entries_in(directory: &Path, depth: u8, matches: &mut Vec<(Ide, PathBuf)>) {
@@ -289,8 +308,8 @@ fn launch_desktop_entry(desktop_entry: &Path, path: &Path) -> std::io::Result<()
         if pass_path {
             command.arg(path);
         }
-        match command.spawn() {
-            Ok(_) => return Ok(()),
+        match wait_and_check(&mut command, program) {
+            Ok(()) => return Ok(()),
             Err(source) => last_error = Some(source),
         }
     }
@@ -307,13 +326,32 @@ fn kde_session() -> bool {
         })
 }
 
+fn wait_and_check(command: &mut Command, program: &str) -> std::io::Result<()> {
+    let output = command.output()?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(std::io::Error::other(format!(
+            "{program} exited with {}",
+            output.status
+        )))
+    }
+}
+
 fn spawn_and_check(command: &mut Command, program: &str) -> std::io::Result<()> {
     let mut child = command.spawn()?;
+    std::thread::sleep(Duration::from_millis(100));
     match child.try_wait()? {
-        Some(status) if !status.success() => Err(std::io::Error::other(format!(
+        Some(status) if status.success() => Ok(()),
+        Some(status) => Err(std::io::Error::other(format!(
             "{program} exited with {status}"
         ))),
-        _ => Ok(()),
+        None => {
+            std::thread::spawn(move || {
+                let _ = child.wait();
+            });
+            Ok(())
+        }
     }
 }
 
@@ -323,7 +361,7 @@ fn spawn_default_opener(program: &str, path: &Path) -> std::io::Result<()> {
         command.arg("open");
     }
     command.arg(path);
-    spawn_and_check(&mut command, program)
+    wait_and_check(&mut command, program)
 }
 
 /// Linux system-default opener. KDE is checked first because some Plasma
@@ -843,6 +881,49 @@ mod tests {
         if Path::new("/proc/self/status").exists() {
             assert!(read_real_uid().is_some());
         }
+    }
+
+    #[test]
+    fn short_lived_process_status_is_reported() {
+        let mut success = Command::new("/usr/bin/true");
+        assert!(wait_and_check(&mut success, "/usr/bin/true").is_ok());
+
+        let mut failure = Command::new("/usr/bin/false");
+        assert!(wait_and_check(&mut failure, "/usr/bin/false").is_err());
+    }
+
+    #[test]
+    fn direct_launcher_failure_is_reported_after_startup_check() {
+        let mut command = Command::new("/usr/bin/false");
+        assert!(spawn_and_check(&mut command, "/usr/bin/false").is_err());
+    }
+
+    #[test]
+    fn executable_lookup_accepts_only_executable_files() {
+        let directory = tempfile::tempdir().unwrap();
+        let executable = directory.path().join("zeditor");
+        fs::write(&executable, b"#!/bin/sh\n").unwrap();
+        fs::set_permissions(&executable, fs::Permissions::from_mode(0o700)).unwrap();
+        assert_eq!(
+            executable_in_directories("zeditor", vec![directory.path().to_path_buf()]),
+            Some(executable)
+        );
+    }
+
+    #[test]
+    fn application_dirs_include_injected_xdg_roots() {
+        let directory = tempfile::tempdir().unwrap();
+        let data_home = directory.path().join("data-home");
+        let home = directory.path().join("home");
+        let system_data = directory.path().join("system-data");
+        let directories = application_dirs_from_parts(
+            Some(&data_home),
+            Some(&home),
+            std::slice::from_ref(&system_data),
+        );
+        assert!(directories.contains(&data_home.join("applications")));
+        assert!(directories.contains(&home.join(".local/share/applications")));
+        assert!(directories.contains(&system_data.join("applications")));
     }
 
     #[test]

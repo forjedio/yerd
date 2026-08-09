@@ -20,7 +20,7 @@ use std::net::{Ipv4Addr, SocketAddr, TcpListener};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use directories::ProjectDirs;
 
@@ -33,7 +33,10 @@ use crate::port_binder::{BoundPort, PortBinder, PortPair};
 use crate::port_redirect::{
     loopback_port_reachable, loopback_redirect_reaches_proxy, PortRedirector,
 };
-use crate::pure::ide_spec::{mac_app_name_matches, spec_for};
+use crate::pure::ide_spec::{
+    ide_cli_candidates_macos, mac_app_name_matches, mac_application_locations,
+    mac_application_path_allowed, spec_for,
+};
 use crate::pure::{pem_match, pf_anchor, port_plan, ps_metrics, resolver_file};
 use crate::resolver::ResolverInstaller;
 use crate::terminal::TerminalLauncher;
@@ -142,28 +145,34 @@ impl MacosIdeLauncher {
     }
 }
 
-fn executable_in_path(name: &str) -> Option<PathBuf> {
-    std::env::var_os("PATH").and_then(|paths| {
-        std::env::split_paths(&paths)
-            .map(|directory| directory.join(name))
-            .find(|candidate| {
-                fs::metadata(candidate).is_ok_and(|metadata| {
-                    metadata.is_file() && metadata.permissions().mode() & 0o111 != 0
-                })
+fn executable_in_directories<I>(name: &str, directories: I) -> Option<PathBuf>
+where
+    I: IntoIterator<Item = PathBuf>,
+{
+    directories
+        .into_iter()
+        .map(|directory| directory.join(name))
+        .find(|candidate| {
+            fs::metadata(candidate).is_ok_and(|metadata| {
+                metadata.is_file() && metadata.permissions().mode() & 0o111 != 0
             })
-    })
+        })
+}
+
+fn executable_in_path(name: &str) -> Option<PathBuf> {
+    if let Some(paths) = std::env::var_os("PATH") {
+        if let Some(executable) = executable_in_directories(name, std::env::split_paths(&paths)) {
+            return Some(executable);
+        }
+    }
+
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    executable_in_directories(name, ide_cli_candidates_macos(home.as_deref()))
 }
 
 fn application_locations() -> Vec<PathBuf> {
-    let mut locations = vec![
-        PathBuf::from("/Applications"),
-        PathBuf::from("/System/Applications"),
-        PathBuf::from("/Network/Applications"),
-    ];
-    if let Some(home) = std::env::var_os("HOME") {
-        locations.push(PathBuf::from(home).join("Applications"));
-    }
-    locations
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    mac_application_locations(home.as_deref())
 }
 
 fn standard_application(ide: Ide, locations: &[PathBuf]) -> Option<PathBuf> {
@@ -177,7 +186,7 @@ fn standard_application(ide: Ide, locations: &[PathBuf]) -> Option<PathBuf> {
     })
 }
 
-fn spotlight_applications(names: &[&str]) -> Vec<PathBuf> {
+fn spotlight_applications(names: &[&str], roots: &[PathBuf]) -> Vec<PathBuf> {
     if names.is_empty() {
         return Vec::new();
     }
@@ -195,7 +204,7 @@ fn spotlight_applications(names: &[&str]) -> Vec<PathBuf> {
     String::from_utf8_lossy(&output.stdout)
         .lines()
         .map(PathBuf::from)
-        .filter(|candidate| candidate.is_dir())
+        .filter(|candidate| candidate.is_dir() && mac_application_path_allowed(candidate, roots))
         .collect()
 }
 
@@ -230,7 +239,7 @@ fn detected_applications() -> Vec<(Ide, PathBuf)> {
         }
     }
 
-    for application in spotlight_applications(&missing_names) {
+    for application in spotlight_applications(&missing_names, &locations) {
         let Some(name) = application
             .file_name()
             .and_then(|value| value.to_str())
@@ -261,13 +270,30 @@ impl MacosSystemOpener {
     }
 }
 
+fn wait_and_check(command: &mut Command, program: &str) -> io::Result<()> {
+    let output = command.output()?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(io::Error::other(format!(
+            "{program} exited with {}",
+            output.status
+        )))
+    }
+}
+
 fn spawn_and_check(command: &mut Command, program: &str) -> io::Result<()> {
     let mut child = command.spawn()?;
+    std::thread::sleep(Duration::from_millis(100));
     match child.try_wait()? {
-        Some(status) if !status.success() => {
-            Err(io::Error::other(format!("{program} exited with {status}")))
+        Some(status) if status.success() => Ok(()),
+        Some(status) => Err(io::Error::other(format!("{program} exited with {status}"))),
+        None => {
+            std::thread::spawn(move || {
+                let _ = child.wait();
+            });
+            Ok(())
         }
-        _ => Ok(()),
     }
 }
 
@@ -275,7 +301,7 @@ impl SystemOpener for MacosSystemOpener {
     fn open_path(&self, path: &Path) -> Result<(), PlatformError> {
         let mut command = Command::new("/usr/bin/open");
         command.arg(path);
-        spawn_and_check(&mut command, "/usr/bin/open").map_err(|source| PlatformError::SystemOpen {
+        wait_and_check(&mut command, "/usr/bin/open").map_err(|source| PlatformError::SystemOpen {
             reason: OpenErrorReason::Launch {
                 program: "/usr/bin/open".to_owned(),
                 source,
@@ -319,7 +345,7 @@ impl IdeLauncher for MacosIdeLauncher {
         };
         let mut command = Command::new("/usr/bin/open");
         command.args(["-a"]).arg(application).arg(path);
-        match spawn_and_check(&mut command, "/usr/bin/open") {
+        match wait_and_check(&mut command, "/usr/bin/open") {
             Ok(()) => Ok(()),
             Err(source) => Err(PlatformError::Ide {
                 reason: IdeErrorReason::Launch { ide, source },
@@ -893,6 +919,48 @@ mod tests {
         let _ = MacosPortBinder::new();
         let _ = MacosSystemMetrics::new();
         let _ = MacosPortRedirector::new();
+    }
+
+    #[test]
+    fn short_lived_process_status_is_reported() {
+        let mut success = Command::new("/usr/bin/true");
+        assert!(wait_and_check(&mut success, "/usr/bin/true").is_ok());
+
+        let mut failure = Command::new("/usr/bin/false");
+        assert!(wait_and_check(&mut failure, "/usr/bin/false").is_err());
+    }
+
+    #[test]
+    fn direct_launcher_failure_is_reported_after_startup_check() {
+        let mut command = Command::new("/usr/bin/false");
+        assert!(spawn_and_check(&mut command, "/usr/bin/false").is_err());
+    }
+
+    #[test]
+    fn executable_lookup_accepts_only_executable_files() {
+        let directory = tempfile::tempdir().unwrap();
+        let executable = directory.path().join("phpstorm");
+        fs::write(&executable, b"#!/bin/sh\n").unwrap();
+        fs::set_permissions(&executable, fs::Permissions::from_mode(0o700)).unwrap();
+        assert_eq!(
+            executable_in_directories("phpstorm", vec![directory.path().to_path_buf()]),
+            Some(executable)
+        );
+    }
+
+    #[test]
+    fn standard_application_uses_the_supplied_roots() {
+        let directory = tempfile::tempdir().unwrap();
+        let application = directory.path().join("PhpStorm.app");
+        fs::create_dir(&application).unwrap();
+        assert_eq!(
+            standard_application(Ide::PhpStorm, &[directory.path().to_path_buf()]),
+            Some(application)
+        );
+        assert_eq!(
+            standard_application(Ide::VsCode, &[directory.path().to_path_buf()]),
+            None
+        );
     }
 
     // ---- Paths::resolve / read_real_uid -------------------------------

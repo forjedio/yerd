@@ -13,7 +13,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tauri::Manager;
 use yerd_core::PhpVersion;
 use yerd_ipc::{ErrorCode, Request, Response};
-use yerd_platform::{IdeLauncher, SystemOpener, TerminalLauncher};
+use yerd_platform::{Ide, IdeLauncher, SystemOpener, TerminalLauncher};
 
 use crate::error::GuiError;
 use crate::ipc::{exchange, exchange_timeout};
@@ -989,10 +989,16 @@ pub struct IdeOption {
 
 /// List supported IDE launchers detected on this host.
 #[tauri::command]
-pub fn get_installed_ides() -> Vec<IdeOption> {
-    yerd_platform::ActiveIdeLauncher::new()
-        .installed_ides()
-        .into_iter()
+pub async fn get_installed_ides() -> Result<Vec<IdeOption>, GuiError> {
+    let ides =
+        tokio::task::spawn_blocking(|| yerd_platform::ActiveIdeLauncher::new().installed_ides())
+            .await
+            .map_err(|error| GuiError::internal(format!("detecting IDEs failed: {error}")))?;
+    Ok(ide_options(ides))
+}
+
+fn ide_options(ides: impl IntoIterator<Item = Ide>) -> Vec<IdeOption> {
+    ides.into_iter()
         .map(|ide| IdeOption {
             id: ide.wire_name().to_owned(),
             label: ide.display_name().to_owned(),
@@ -1213,6 +1219,16 @@ fn safe_attachment_filename(name: &str) -> String {
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ide_options_preserve_wire_and_display_names() {
+        let options = ide_options([Ide::VsCode, Ide::PhpStorm]);
+        assert_eq!(options.len(), 2);
+        assert_eq!(options[0].id, "vscode");
+        assert_eq!(options[0].label, "VS Code");
+        assert_eq!(options[1].id, "phpstorm");
+        assert_eq!(options[1].label, "PhpStorm");
+    }
 
     #[test]
     fn finish_passes_success_through() {

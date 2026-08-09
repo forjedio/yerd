@@ -421,6 +421,7 @@ fn decide_initial_window(app: &tauri::AppHandle) {
     let Some(win) = app.get_webview_window("main") else {
         return;
     };
+    #[cfg(not(target_os = "macos"))]
     restore_main_window_state(&win);
     let autostarted = std::env::args().any(|a| a == AUTOSTART_ARG);
     #[cfg(target_os = "macos")]
@@ -438,6 +439,7 @@ fn decide_initial_window(app: &tauri::AppHandle) {
 /// sized frame first. A false value needs no action because a new Tauri window
 /// starts restored; an already-created window is also left unchanged when its
 /// persisted state is restored.
+#[cfg(not(target_os = "macos"))]
 fn restore_main_window_state(win: &tauri::WebviewWindow) {
     if autostart::gui_maximized() {
         let _ = win.maximize();
@@ -474,6 +476,7 @@ pub(crate) fn show_main(app: &tauri::AppHandle) {
         // Space rather than the one it was last shown on.
         #[cfg(target_os = "macos")]
         move_window_to_active_space(&win);
+        #[cfg(not(target_os = "macos"))]
         restore_main_window_state(&win);
         let _ = win.show();
         let _ = win.set_focus();

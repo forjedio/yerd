@@ -1,5 +1,7 @@
 //! Pure metadata for supported IDE launchers.
 
+use std::path::{Path, PathBuf};
+
 use crate::ide::Ide;
 
 /// Executable and application names used to detect one IDE on each OS.
@@ -66,6 +68,42 @@ pub const IDE_SPECS: &[IdeSpec] = &[
 #[must_use]
 pub fn spec_for(ide: Ide) -> Option<&'static IdeSpec> {
     IDE_SPECS.iter().find(|spec| spec.ide == ide)
+}
+
+/// Return whether a macOS application result is inside an approved search root.
+#[must_use]
+pub fn mac_application_path_allowed(candidate: &Path, roots: &[PathBuf]) -> bool {
+    roots
+        .iter()
+        .any(|root| !root.as_os_str().is_empty() && candidate.starts_with(root))
+}
+
+/// Return extra macOS CLI directories used when the GUI has no shell `PATH`.
+#[must_use]
+pub fn ide_cli_candidates_macos(home: Option<&Path>) -> Vec<PathBuf> {
+    let mut candidates = vec![
+        PathBuf::from("/usr/local/bin"),
+        PathBuf::from("/opt/homebrew/bin"),
+    ];
+    if let Some(home) = home {
+        candidates.push(home.join("Library/Application Support/JetBrains/Toolbox/scripts"));
+    }
+    candidates
+}
+
+/// Return the macOS application roots used for standard and Spotlight scans.
+#[must_use]
+pub fn mac_application_locations(home: Option<&Path>) -> Vec<PathBuf> {
+    let mut locations = vec![
+        PathBuf::from("/Applications"),
+        PathBuf::from("/System/Applications"),
+        PathBuf::from("/Network/Applications"),
+    ];
+    if let Some(home) = home {
+        locations.push(home.join("Applications"));
+        locations.push(home.join("Library/Application Support/JetBrains/Toolbox/apps"));
+    }
+    locations
 }
 
 /// Return whether a desktop-entry `Name` identifies the selected IDE.
@@ -218,6 +256,8 @@ pub fn desktop_entry_matches(ide: Ide, file_name: &str, text: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+
     use super::*;
 
     #[test]
@@ -286,5 +326,76 @@ mod tests {
             Ide::VsCode,
             "Visual Studio Code - Backup"
         ));
+    }
+
+    #[test]
+    fn mac_application_paths_are_restricted_to_known_roots() {
+        let roots = vec![
+            PathBuf::from("/Applications"),
+            PathBuf::from("/Users/test/Applications"),
+            PathBuf::from("/Users/test/Library/Application Support/JetBrains/Toolbox/apps"),
+        ];
+        let cases = [
+            ("/Applications/PhpStorm.app", true),
+            ("/Users/test/Applications/Visual Studio Code.app", true),
+            (
+                "/Users/test/Library/Application Support/JetBrains/Toolbox/apps/PhpStorm/ch-0/PhpStorm.app",
+                true,
+            ),
+            ("/Users/test/Downloads/PhpStorm.app", false),
+            ("/Volumes/Backup/Visual Studio Code.app", false),
+            ("/Applications-old/PhpStorm.app", false),
+        ];
+
+        for (candidate, expected) in cases {
+            assert_eq!(
+                mac_application_path_allowed(candidate.as_ref(), &roots),
+                expected,
+                "unexpected allowlist result for {candidate}"
+            );
+        }
+    }
+
+    #[test]
+    fn macos_cli_candidates_include_common_gui_launch_paths() {
+        let home = PathBuf::from("/Users/test");
+        assert_eq!(
+            ide_cli_candidates_macos(Some(&home)),
+            vec![
+                PathBuf::from("/usr/local/bin"),
+                PathBuf::from("/opt/homebrew/bin"),
+                PathBuf::from("/Users/test/Library/Application Support/JetBrains/Toolbox/scripts"),
+            ]
+        );
+        assert_eq!(
+            ide_cli_candidates_macos(None),
+            vec![
+                PathBuf::from("/usr/local/bin"),
+                PathBuf::from("/opt/homebrew/bin")
+            ]
+        );
+    }
+
+    #[test]
+    fn macos_application_locations_include_supported_roots() {
+        let home = PathBuf::from("/Users/test");
+        assert_eq!(
+            mac_application_locations(Some(&home)),
+            vec![
+                PathBuf::from("/Applications"),
+                PathBuf::from("/System/Applications"),
+                PathBuf::from("/Network/Applications"),
+                PathBuf::from("/Users/test/Applications"),
+                PathBuf::from("/Users/test/Library/Application Support/JetBrains/Toolbox/apps"),
+            ]
+        );
+        assert_eq!(
+            mac_application_locations(None),
+            vec![
+                PathBuf::from("/Applications"),
+                PathBuf::from("/System/Applications"),
+                PathBuf::from("/Network/Applications")
+            ]
+        );
     }
 }

@@ -16,14 +16,45 @@ use std::net::{Ipv4Addr, SocketAddr};
 mod common;
 
 use yerd_platform::{
-    ActivePaths, ActivePortBinder, ActiveResolverInstaller, ActiveTrustStore, Paths, PlatformError,
-    PortBinder, ResolverInstaller, TrustStore,
+    pure::ide_spec::{ide_cli_candidates_macos, mac_application_path_allowed},
+    ActiveIdeLauncher, ActivePaths, ActivePortBinder, ActiveResolverInstaller, ActiveTrustStore,
+    Ide, IdeLauncher, Paths, PlatformError, PortBinder, ResolverInstaller, TrustStore,
 };
 
 use common::random_fingerprint;
 
 fn loopback(port: u16) -> SocketAddr {
     SocketAddr::new(std::net::IpAddr::V4(Ipv4Addr::LOCALHOST), port)
+}
+
+#[test]
+fn ide_launcher_smoke_returns_known_unique_ides() {
+    let detected = ActiveIdeLauncher.installed_ides();
+    assert!(detected.iter().all(|ide| Ide::all().contains(ide)));
+    let mut unique = Vec::new();
+    for ide in detected.iter().copied() {
+        if !unique.contains(&ide) {
+            unique.push(ide);
+        }
+    }
+    assert_eq!(unique.len(), detected.len());
+}
+
+#[test]
+fn mac_ide_path_helpers_keep_discovery_deterministic() {
+    let home = tempfile::tempdir().expect("temporary home");
+    let roots = vec![home.path().join("Applications")];
+    let installed = roots[0].join("PhpStorm.app");
+    let outside = home.path().join("Downloads/PhpStorm.app");
+    assert!(mac_application_path_allowed(&installed, &roots));
+    assert!(!mac_application_path_allowed(&outside, &roots));
+
+    let candidates = ide_cli_candidates_macos(Some(home.path()));
+    assert!(candidates.contains(
+        &home
+            .path()
+            .join("Library/Application Support/JetBrains/Toolbox/scripts",)
+    ));
 }
 
 #[test]

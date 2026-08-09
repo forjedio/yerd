@@ -17,14 +17,27 @@ use std::net::{Ipv4Addr, SocketAddr};
 mod common;
 
 use yerd_platform::{
-    ActivePaths, ActivePortBinder, ActiveResolverInstaller, ActiveTrustStore, Paths, PlatformError,
-    PortBinder, ResolverInstaller, TrustStore,
+    ActiveIdeLauncher, ActivePaths, ActivePortBinder, ActiveResolverInstaller, ActiveTrustStore,
+    Ide, IdeLauncher, Paths, PlatformError, PortBinder, ResolverInstaller, TrustStore,
 };
 
 use common::random_fingerprint;
 
 fn loopback(port: u16) -> SocketAddr {
     SocketAddr::new(std::net::IpAddr::V4(Ipv4Addr::LOCALHOST), port)
+}
+
+#[test]
+fn ide_launcher_smoke_returns_known_unique_ides() {
+    let detected = ActiveIdeLauncher.installed_ides();
+    assert!(detected.iter().all(|ide| Ide::all().contains(ide)));
+    let mut unique = Vec::new();
+    for ide in detected.iter().copied() {
+        if !unique.contains(&ide) {
+            unique.push(ide);
+        }
+    }
+    assert_eq!(unique.len(), detected.len());
 }
 
 #[test]
