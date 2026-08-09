@@ -200,6 +200,7 @@ pub(crate) fn gui_minimized() -> bool {
 
 /// Read the persisted main-window maximize state (used by `main`'s setup and
 /// tray reveal path).
+#[cfg(not(target_os = "macos"))]
 pub(crate) fn gui_maximized() -> bool {
     load_settings().gui_maximized
 }

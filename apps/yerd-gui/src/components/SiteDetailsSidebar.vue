@@ -368,7 +368,7 @@ onUnmounted(() => {
             class="border-b-2 px-3 py-2.5 text-xs font-medium transition-colors"
             :class="activeTab === 'general' ? 'border-primary text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground'"
             :aria-selected="activeTab === 'general'"
-            aria-controls="site-details-panel"
+            aria-controls="site-details-panel-general"
             role="tab"
             @click="activeTab = 'general'"
           >
@@ -380,7 +380,7 @@ onUnmounted(() => {
             class="border-b-2 px-3 py-2.5 text-xs font-medium transition-colors"
             :class="activeTab === 'domains' ? 'border-primary text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground'"
             :aria-selected="activeTab === 'domains'"
-            aria-controls="site-details-panel"
+            aria-controls="site-details-panel-domains"
             role="tab"
             @click="activeTab = 'domains'"
           >
@@ -392,7 +392,7 @@ onUnmounted(() => {
             class="border-b-2 px-3 py-2.5 text-xs font-medium transition-colors"
             :class="activeTab === 'information' ? 'border-primary text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground'"
             :aria-selected="activeTab === 'information'"
-            aria-controls="site-details-panel"
+            aria-controls="site-details-panel-information"
             role="tab"
             @click="activeTab = 'information'"
           >
@@ -401,7 +401,7 @@ onUnmounted(() => {
         </div>
 
         <div
-          id="site-details-panel"
+          :id="`site-details-panel-${activeTab}`"
           class="min-h-0 flex-1 overflow-y-auto px-5 py-5"
           role="tabpanel"
           :aria-labelledby="`site-details-tab-${activeTab}`"

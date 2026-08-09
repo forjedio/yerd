@@ -255,14 +255,18 @@ describe("SiteDetailsSidebar", () => {
     expect(wrapper.emitted("close")).toHaveLength(1);
   });
 
-  it("keeps every tab connected to the rendered panel", () => {
+  it("keeps every tab connected to the rendered panel", async () => {
     const wrapper = mountSidebar();
-    const panel = wrapper.get('[role="tabpanel"]');
-    const panelId = panel.attributes("id");
 
-    expect(panelId).toBe("site-details-panel");
     for (const tab of wrapper.findAll('[role="tab"]')) {
-      expect(tab.attributes("aria-controls")).toBe(panelId);
+      await tab.trigger("click");
+      const panel = wrapper.get('[role="tabpanel"]');
+      const tabId = tab.attributes("id");
+      const tabName = tabId?.replace("site-details-tab-", "");
+
+      expect(panel.attributes("id")).toBe(`site-details-panel-${tabName}`);
+      expect(tab.attributes("aria-controls")).toBe(panel.attributes("id"));
+      expect(panel.attributes("aria-labelledby")).toBe(tabId);
     }
   });
 
