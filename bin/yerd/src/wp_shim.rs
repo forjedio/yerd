@@ -92,7 +92,9 @@ fn run() -> ExitCode {
 
     let resolution = match &cwd {
         Some(cwd) => site_scope(&dirs, cwd),
-        None => ScopeResolution::NoScope,
+        None => ScopeResolution::NoScope {
+            daemon_unavailable: false,
+        },
     };
     let scoped = match resolution {
         // A site whose served root is missing from disk can't be scoped: a
@@ -108,7 +110,11 @@ fn run() -> ExitCode {
                  `yerd install php {php_version}`"
             ));
         }
-        ScopeResolution::NoScope => None,
+        // Deliberately silent on an unanswered lookup, unlike `yerd exec`:
+        // scoping is a convenience here (WP-CLI still runs, just unscoped),
+        // `wp` is invoked far more often, and a stray line would corrupt
+        // `wp ... --format=json` for anything parsing it.
+        ScopeResolution::NoScope { .. } => None,
     };
     let (php_bin, minor, scope) = match scoped {
         Some(s) => (s.php_bin.clone(), s.php_minor.clone(), Some(s)),

@@ -77,6 +77,11 @@ impl PhpSelection {
 /// running an unrelated one); outside any site - or with no reachable daemon -
 /// the global default.
 ///
+/// A daemon that can't be reached for the cwd lookup is *not* an error - it
+/// just means "not inside a site" - but it does warn on stderr, since silently
+/// demoting a site to the global default is the mismatch this command exists
+/// to prevent.
+///
 /// # Errors
 ///
 /// Returns a ready-to-print message for every unresolvable case.
@@ -102,17 +107,24 @@ pub fn select_php(
 
     let resolution = match cwd {
         Some(cwd) => site_scope(dirs, cwd),
-        None => ScopeResolution::NoScope,
+        None => ScopeResolution::NoScope {
+            daemon_unavailable: false,
+        },
     };
     match resolution {
         ScopeResolution::Scoped(scope) => Ok(PhpSelection::Site(scope)),
         ScopeResolution::MatchedPhpMissing { php_version } => {
             Err(missing_php_message(&php_version.to_string()))
         }
-        ScopeResolution::NoScope => match resolve_default_php(dirs) {
-            Some((php_bin, minor)) => Ok(PhpSelection::Default { php_bin, minor }),
-            None => Err(crate::shim::no_default_php_message(dirs)),
-        },
+        ScopeResolution::NoScope { daemon_unavailable } => {
+            if daemon_unavailable {
+                crate::site_scope::warn_daemon_unavailable();
+            }
+            match resolve_default_php(dirs) {
+                Some((php_bin, minor)) => Ok(PhpSelection::Default { php_bin, minor }),
+                None => Err(crate::shim::no_default_php_message(dirs)),
+            }
+        }
     }
 }
 

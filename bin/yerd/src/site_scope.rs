@@ -10,7 +10,13 @@
 //!
 //! - [`site_scope`] resolves by current directory. Outside any site - or if the
 //!   daemon is unreachable or slow - it returns [`ScopeResolution::NoScope`] so
-//!   callers fall back to the global default PHP. A cwd that *is* inside a site
+//!   callers fall back to the global default PHP. The two are not the same
+//!   thing, though, so `NoScope` carries which one happened: "couldn't ask the
+//!   daemon" still falls back (the latency budget below leaves no alternative),
+//!   but `yerd exec` / `yerd which` warn on stderr, because otherwise a busy
+//!   daemon silently demotes a site to the global default - the exact mismatch
+//!   they exist to prevent. The `wp` shim stays quiet, where scoping is a
+//!   convenience rather than the point. A cwd that *is* inside a site
 //!   whose pinned version isn't installed returns
 //!   [`ScopeResolution::MatchedPhpMissing`] instead, so callers fail loudly
 //!   rather than silently running under an unrelated default.
@@ -77,10 +83,23 @@ pub enum ScopeResolution {
         /// The site's pinned (but not installed) PHP version.
         php_version: PhpVersion,
     },
-    /// No site matched (or no daemon/timeout/no-match) - callers fall back to
-    /// the global default PHP.
-    NoScope,
+    /// No site-scoping applies - callers fall back to the global default PHP.
+    NoScope {
+        /// Whether the fallback happened because the daemon didn't answer
+        /// (rather than because the cwd genuinely isn't inside any site).
+        /// Callers fall back either way; `yerd exec` / `yerd which` also warn
+        /// on stderr when this is set, since an unanswered lookup inside a site
+        /// looks exactly like "not in a site" while quietly running the wrong
+        /// PHP. See [`warn_daemon_unavailable`].
+        daemon_unavailable: bool,
+    },
 }
+
+/// The daemon didn't answer the `ListSites` lookup within
+/// [`SITE_LOOKUP_TIMEOUT`], so the live site list is unknown. Distinct from
+/// "the list came back and nothing matched" - see [`ScopeResolution::NoScope`].
+#[derive(Debug, PartialEq, Eq)]
+struct DaemonUnavailable;
 
 /// Why [`site_scope_by_name`] could not resolve an explicitly named site.
 /// Unlike [`ScopeResolution`] there is no "fall back to the default" variant:
@@ -120,15 +139,21 @@ struct Candidate {
 /// parameter (rather than reading `std::env::current_dir()` internally) so
 /// this is fully testable with an arbitrary directory - no process-global
 /// cwd mutation needed in tests. Returns `NoScope` on any daemon error,
-/// timeout, or no match - callers treat that identically to "no site-scoping
-/// available." `pub` for the same testability reason as [`SiteScope`].
+/// timeout, or no match - callers fall back to the default PHP in every one
+/// of those cases, but `NoScope::daemon_unavailable` distinguishes an
+/// unanswered lookup from a genuine no-match so they can warn about the
+/// former. `pub` for the same testability reason as [`SiteScope`].
 #[must_use]
 pub fn site_scope(dirs: &PlatformDirs, cwd: &Path) -> ScopeResolution {
-    let Some(candidates) = candidates(dirs) else {
-        return ScopeResolution::NoScope;
+    let Ok(candidates) = candidates(dirs) else {
+        return ScopeResolution::NoScope {
+            daemon_unavailable: true,
+        };
     };
     let Some(hit) = match_site(cwd, &candidates) else {
-        return ScopeResolution::NoScope;
+        return ScopeResolution::NoScope {
+            daemon_unavailable: false,
+        };
     };
     match scope_from(dirs, &hit) {
         Ok(scope) => ScopeResolution::Scoped(scope),
@@ -145,7 +170,8 @@ pub fn site_scope(dirs: &PlatformDirs, cwd: &Path) -> ScopeResolution {
 /// Returns [`NamedScopeError`] when the daemon is unreachable, no site has
 /// that name, or the named site's pinned PHP version isn't installed.
 pub fn site_scope_by_name(dirs: &PlatformDirs, name: &str) -> Result<SiteScope, NamedScopeError> {
-    let candidates = candidates(dirs).ok_or(NamedScopeError::DaemonUnavailable)?;
+    let candidates =
+        candidates(dirs).map_err(|DaemonUnavailable| NamedScopeError::DaemonUnavailable)?;
     let wanted = name.to_lowercase();
     let hit = candidates
         .into_iter()
@@ -155,7 +181,7 @@ pub fn site_scope_by_name(dirs: &PlatformDirs, name: &str) -> Result<SiteScope, 
 }
 
 /// The live site list reduced to [`Candidate`]s with canonicalized roots, or
-/// `None` if the daemon didn't answer.
+/// [`DaemonUnavailable`] if the daemon didn't answer in time.
 ///
 /// Sites whose document root can't be canonicalized (e.g. deleted from disk)
 /// are skipped entirely - without a project root there is nothing to match a
@@ -165,24 +191,39 @@ pub fn site_scope_by_name(dirs: &PlatformDirs, name: &str) -> Result<SiteScope, 
 /// reason to demote a pinned site to the global default. The `wp` shim, which
 /// genuinely needs that directory for `--path=`, filters those out itself via
 /// [`SiteScope::served_root`] being `None`.
-fn candidates(dirs: &PlatformDirs) -> Option<Vec<Candidate>> {
+fn candidates(dirs: &PlatformDirs) -> Result<Vec<Candidate>, DaemonUnavailable> {
     let sock = dirs.runtime.join("yerd.sock");
-    let sites = list_sites_with_timeout(&sock)?;
-    Some(
-        sites
-            .iter()
-            .filter_map(|entry| {
-                let document_root = std::fs::canonicalize(entry.site.document_root()).ok()?;
-                let served_root = std::fs::canonicalize(entry.site.served_root()).ok();
-                Some(Candidate {
-                    name: entry.site.name().to_owned(),
-                    document_root,
-                    served_root,
-                    php: entry.site.php(),
-                })
+    let sites = list_sites_with_timeout(&sock).ok_or(DaemonUnavailable)?;
+    Ok(sites
+        .iter()
+        .filter_map(|entry| {
+            let document_root = std::fs::canonicalize(entry.site.document_root()).ok()?;
+            let served_root = std::fs::canonicalize(entry.site.served_root()).ok();
+            Some(Candidate {
+                name: entry.site.name().to_owned(),
+                document_root,
+                served_root,
+                php: entry.site.php(),
             })
-            .collect(),
-    )
+        })
+        .collect())
+}
+
+/// Warn that site scoping was skipped because the daemon didn't answer.
+///
+/// The fallback to the global default still happens - the lookup sits on the
+/// critical path of every invocation, so waiting longer isn't an option - but
+/// for `yerd exec` / `yerd which` it must not be silent: inside a site this is
+/// indistinguishable from "not in a site" while running a different PHP than
+/// the site is served on, which is the mismatch those commands exist to catch.
+///
+/// The `wp` shim deliberately stays quiet in the same situation - see its
+/// `NoScope` arm.
+pub fn warn_daemon_unavailable() {
+    eprintln!(
+        "yerd: warning: could not reach the yerd daemon to check for a site-pinned PHP \
+         version — using the global default"
+    );
 }
 
 /// Turn a matched candidate into a [`SiteScope`], or `Err(version)` if that
@@ -371,7 +412,12 @@ mod tests {
         let dirs = dirs_at(tmp.path());
         std::fs::create_dir_all(&dirs.runtime).unwrap();
         let cwd = std::fs::canonicalize(tmp.path()).unwrap();
-        assert!(matches!(site_scope(&dirs, &cwd), ScopeResolution::NoScope));
+        assert!(matches!(
+            site_scope(&dirs, &cwd),
+            ScopeResolution::NoScope {
+                daemon_unavailable: true
+            }
+        ));
     }
 
     /// The by-name lookup never falls back: with no daemon it must report

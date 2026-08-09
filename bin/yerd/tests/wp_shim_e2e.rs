@@ -279,11 +279,16 @@ mod tests {
             other => panic!("expected MatchedPhpMissing, got {other:?}"),
         }
 
-        // cwd outside every registered site -> NoScope.
+        // cwd outside every registered site -> NoScope, and explicitly *not*
+        // flagged as a daemon failure: the daemon answered, nothing matched.
+        // Conflating the two is what makes a timed-out lookup silently run the
+        // global default inside a pinned site.
         let cwd = std::fs::canonicalize(&unscoped_dir).unwrap();
         assert!(matches!(
             scoped_site_scope(dirs.clone(), cwd).await,
-            ScopeResolution::NoScope
+            ScopeResolution::NoScope {
+                daemon_unavailable: false
+            }
         ));
 
         shutdown_tx.send_replace(true);
