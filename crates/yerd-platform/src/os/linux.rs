@@ -347,7 +347,7 @@ fn wait_and_check(command: &mut Command, program: &str) -> std::io::Result<()> {
 
 fn spawn_and_check(command: &mut Command, program: &str) -> std::io::Result<()> {
     let mut child = command.spawn()?;
-    let deadline = Instant::now() + Duration::from_millis(250);
+    let deadline = Instant::now() + Duration::from_millis(500);
     loop {
         match child.try_wait()? {
             Some(status) if status.success() => return Ok(()),
