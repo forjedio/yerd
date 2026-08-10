@@ -16,7 +16,10 @@ use std::net::{Ipv4Addr, SocketAddr};
 mod common;
 
 use yerd_platform::{
-    pure::ide_spec::{ide_cli_candidates_macos, mac_application_path_allowed},
+    pure::ide_spec::{
+        ide_cli_candidates_macos, mac_app_name_matches, mac_application_locations,
+        mac_application_path_allowed,
+    },
     ActiveIdeLauncher, ActivePaths, ActivePortBinder, ActiveResolverInstaller, ActiveTrustStore,
     Ide, IdeLauncher, Paths, PlatformError, PortBinder, ResolverInstaller, TrustStore,
 };
@@ -55,6 +58,23 @@ fn mac_ide_path_helpers_keep_discovery_deterministic() {
             .path()
             .join("Library/Application Support/JetBrains/Toolbox/scripts",)
     ));
+}
+
+#[test]
+fn mac_ide_name_matching_rejects_backups_and_accepts_previews() {
+    assert!(mac_app_name_matches(
+        Ide::VsCode,
+        "Visual Studio Code - Insiders"
+    ));
+    assert!(!mac_app_name_matches(
+        Ide::VsCode,
+        "Visual Studio Code - Backup"
+    ));
+
+    let home = std::path::PathBuf::from("/Users/test");
+    let locations = mac_application_locations(Some(&home));
+    assert!(locations.contains(&home.join("Applications")));
+    assert!(locations.contains(&home.join("Library/Application Support/JetBrains/Toolbox/apps")));
 }
 
 #[test]

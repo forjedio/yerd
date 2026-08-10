@@ -20,7 +20,7 @@ use std::net::{Ipv4Addr, SocketAddr, TcpListener};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use directories::ProjectDirs;
 
@@ -172,7 +172,11 @@ fn executable_in_path(name: &str) -> Option<PathBuf> {
 
 fn application_locations() -> Vec<PathBuf> {
     let home = std::env::var_os("HOME").map(PathBuf::from);
-    mac_application_locations(home.as_deref())
+    application_locations_from_home(home.as_deref())
+}
+
+fn application_locations_from_home(home: Option<&Path>) -> Vec<PathBuf> {
+    mac_application_locations(home)
 }
 
 fn standard_application(ide: Ide, locations: &[PathBuf]) -> Option<PathBuf> {
@@ -284,15 +288,20 @@ fn wait_and_check(command: &mut Command, program: &str) -> io::Result<()> {
 
 fn spawn_and_check(command: &mut Command, program: &str) -> io::Result<()> {
     let mut child = command.spawn()?;
-    std::thread::sleep(Duration::from_millis(100));
-    match child.try_wait()? {
-        Some(status) if status.success() => Ok(()),
-        Some(status) => Err(io::Error::other(format!("{program} exited with {status}"))),
-        None => {
-            std::thread::spawn(move || {
-                let _ = child.wait();
-            });
-            Ok(())
+    let deadline = Instant::now() + Duration::from_millis(250);
+    loop {
+        match child.try_wait()? {
+            Some(status) if status.success() => return Ok(()),
+            Some(status) => {
+                return Err(io::Error::other(format!("{program} exited with {status}")));
+            }
+            None if Instant::now() >= deadline => {
+                std::thread::spawn(move || {
+                    let _ = child.wait();
+                });
+                return Ok(());
+            }
+            None => std::thread::sleep(Duration::from_millis(10)),
         }
     }
 }
@@ -937,6 +946,13 @@ mod tests {
     }
 
     #[test]
+    fn direct_launcher_failure_after_initial_poll_is_reported() {
+        let mut command = Command::new("/bin/sh");
+        command.args(["-c", "sleep 0.2; exit 7"]);
+        assert!(spawn_and_check(&mut command, "/bin/sh").is_err());
+    }
+
+    #[test]
     fn executable_lookup_accepts_only_executable_files() {
         let directory = tempfile::tempdir().unwrap();
         let executable = directory.path().join("phpstorm");
@@ -960,6 +976,16 @@ mod tests {
         assert_eq!(
             standard_application(Ide::VsCode, &[directory.path().to_path_buf()]),
             None
+        );
+    }
+
+    #[test]
+    fn application_locations_uses_the_supplied_home() {
+        let home = PathBuf::from("/Users/test");
+        let locations = application_locations_from_home(Some(&home));
+        assert!(locations.contains(&home.join("Applications")));
+        assert!(
+            locations.contains(&home.join("Library/Application Support/JetBrains/Toolbox/apps"))
         );
     }
 

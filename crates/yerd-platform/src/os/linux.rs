@@ -12,7 +12,7 @@ use std::net::{Ipv4Addr, SocketAddr, TcpListener};
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use directories::ProjectDirs;
 
@@ -174,7 +174,14 @@ where
 
 fn executable_in_path(name: &str) -> Option<PathBuf> {
     std::env::var_os("PATH")
-        .and_then(|paths| executable_in_directories(name, std::env::split_paths(&paths)))
+        .and_then(|paths| executable_in_path_from_paths(name, std::env::split_paths(&paths)))
+}
+
+fn executable_in_path_from_paths<I>(name: &str, paths: I) -> Option<PathBuf>
+where
+    I: IntoIterator<Item = PathBuf>,
+{
+    executable_in_directories(name, paths)
 }
 
 fn ide_executable(ide: Ide) -> Option<PathBuf> {
@@ -340,17 +347,22 @@ fn wait_and_check(command: &mut Command, program: &str) -> std::io::Result<()> {
 
 fn spawn_and_check(command: &mut Command, program: &str) -> std::io::Result<()> {
     let mut child = command.spawn()?;
-    std::thread::sleep(Duration::from_millis(100));
-    match child.try_wait()? {
-        Some(status) if status.success() => Ok(()),
-        Some(status) => Err(std::io::Error::other(format!(
-            "{program} exited with {status}"
-        ))),
-        None => {
-            std::thread::spawn(move || {
-                let _ = child.wait();
-            });
-            Ok(())
+    let deadline = Instant::now() + Duration::from_millis(250);
+    loop {
+        match child.try_wait()? {
+            Some(status) if status.success() => return Ok(()),
+            Some(status) => {
+                return Err(std::io::Error::other(format!(
+                    "{program} exited with {status}"
+                )));
+            }
+            None if Instant::now() >= deadline => {
+                std::thread::spawn(move || {
+                    let _ = child.wait();
+                });
+                return Ok(());
+            }
+            None => std::thread::sleep(Duration::from_millis(10)),
         }
     }
 }
@@ -899,6 +911,13 @@ mod tests {
     }
 
     #[test]
+    fn direct_launcher_failure_after_initial_poll_is_reported() {
+        let mut command = Command::new("/bin/sh");
+        command.args(["-c", "sleep 0.2; exit 7"]);
+        assert!(spawn_and_check(&mut command, "/bin/sh").is_err());
+    }
+
+    #[test]
     fn executable_lookup_accepts_only_executable_files() {
         let directory = tempfile::tempdir().unwrap();
         let executable = directory.path().join("zeditor");
@@ -908,6 +927,35 @@ mod tests {
             executable_in_directories("zeditor", vec![directory.path().to_path_buf()]),
             Some(executable)
         );
+    }
+
+    #[test]
+    fn executable_path_lookup_uses_injected_path_entries() {
+        let directory = tempfile::tempdir().unwrap();
+        let executable = directory.path().join("phpstorm");
+        fs::write(&executable, b"#!/bin/sh\n").unwrap();
+        fs::set_permissions(&executable, fs::Permissions::from_mode(0o700)).unwrap();
+        assert_eq!(
+            executable_in_path_from_paths("phpstorm", vec![directory.path().to_path_buf()]),
+            Some(executable)
+        );
+    }
+
+    #[test]
+    fn desktop_entry_scan_finds_nested_application_entries() {
+        let directory = tempfile::tempdir().unwrap();
+        let nested = directory.path().join("applications");
+        fs::create_dir(&nested).unwrap();
+        let entry = nested.join("dev.zed.Zed.desktop");
+        fs::write(
+            &entry,
+            "[Desktop Entry]\nType=Application\nName=Zed\nExec=zeditor %U\n",
+        )
+        .unwrap();
+
+        let mut matches = Vec::new();
+        desktop_entries_in(directory.path(), 1, &mut matches);
+        assert_eq!(matches, vec![(Ide::Zed, entry)]);
     }
 
     #[test]

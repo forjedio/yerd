@@ -17,8 +17,9 @@ use std::net::{Ipv4Addr, SocketAddr};
 mod common;
 
 use yerd_platform::{
-    ActiveIdeLauncher, ActivePaths, ActivePortBinder, ActiveResolverInstaller, ActiveTrustStore,
-    Ide, IdeLauncher, Paths, PlatformError, PortBinder, ResolverInstaller, TrustStore,
+    pure::ide_spec::desktop_entry_matches, ActiveIdeLauncher, ActivePaths, ActivePortBinder,
+    ActiveResolverInstaller, ActiveTrustStore, Ide, IdeLauncher, Paths, PlatformError, PortBinder,
+    ResolverInstaller, TrustStore,
 };
 
 use common::random_fingerprint;
@@ -38,6 +39,24 @@ fn ide_launcher_smoke_returns_known_unique_ides() {
         }
     }
     assert_eq!(unique.len(), detected.len());
+}
+
+#[test]
+fn linux_desktop_entry_matching_rejects_unrelated_applications() {
+    let zed = "[Desktop Entry]\nType=Application\nName=Zed\nExec=zeditor %U\n";
+    assert!(desktop_entry_matches(Ide::Zed, "dev.zed.Zed.desktop", zed));
+    assert!(!desktop_entry_matches(
+        Ide::VsCode,
+        "dev.zed.Zed.desktop",
+        zed
+    ));
+
+    let unrelated = "[Desktop Entry]\nType=Application\nName=Codecs\nExec=codecs\n";
+    assert!(!desktop_entry_matches(
+        Ide::VsCode,
+        "codecs.desktop",
+        unrelated
+    ));
 }
 
 #[test]
