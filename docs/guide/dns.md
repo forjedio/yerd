@@ -90,7 +90,7 @@ See [Elevation & Privileges](./elevation) for the privilege model and the [CLI R
 |---|---|---|---|
 | **macOS** | `resolver(5)` per-TLD file | `/etc/resolver/<tld>` | None (read at next query) |
 | **Linux** (systemd-resolved) | drop-in config | `/etc/systemd/resolved.conf.d/yerd-<tld>.conf` | `systemctl reload-or-restart systemd-resolved` |
-| **Linux** (NetworkManager) | dnsmasq plugin and per-domain route | `/etc/NetworkManager/conf.d/yerd-dnsmasq.conf`, `/etc/NetworkManager/dnsmasq.d/yerd-<tld>.conf` | `nmcli general reload conf dns-full` |
+| **Linux** (NetworkManager) | dnsmasq plugin and per-domain route | `/etc/NetworkManager/conf.d/yerd-dnsmasq.conf`, `/etc/NetworkManager/dnsmasq.d/yerd-<tld>.conf` | `nmcli general reload conf,dns-full` |
 | **Linux** (other resolver) | refused | - | - |
 | **Windows** | NRPT rule | - | *planned* |
 

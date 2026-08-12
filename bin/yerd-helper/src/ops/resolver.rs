@@ -16,6 +16,9 @@ use crate::ops::{atomic_write, run_command};
 use crate::validate;
 
 #[cfg(target_os = "linux")]
+const NETWORKMANAGER_RELOAD_ARGS: [&str; 3] = ["general", "reload", "conf,dns-full"];
+
+#[cfg(target_os = "linux")]
 fn drop_in_path(tld: &str) -> PathBuf {
     PathBuf::from(format!("/etc/systemd/resolved.conf.d/yerd-{tld}.conf"))
 }
@@ -164,7 +167,7 @@ fn probe_dnsmasq(tld: &str) -> bool {
 
 #[cfg(target_os = "linux")]
 fn reload_networkmanager() -> Result<(), HelperError> {
-    run_command("nmcli", "nmcli", ["general", "reload", "conf", "dns-full"]).map(|_| ())
+    run_command("nmcli", "nmcli", NETWORKMANAGER_RELOAD_ARGS).map(|_| ())
 }
 
 #[cfg(target_os = "linux")]
@@ -377,6 +380,15 @@ mod tests {
         assert_eq!(
             dnsmasq_path("test"),
             PathBuf::from("/etc/NetworkManager/dnsmasq.d/yerd-test.conf")
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn networkmanager_reload_combines_flags_in_one_argument() {
+        assert_eq!(
+            NETWORKMANAGER_RELOAD_ARGS,
+            ["general", "reload", "conf,dns-full"]
         );
     }
 
