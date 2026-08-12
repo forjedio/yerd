@@ -850,8 +850,7 @@ async fn subdirectory_index_php_wins_over_root_index_php() {
             docroot
                 .path()
                 .join("wp-admin/index.php")
-                .to_str()
-                .unwrap()
+                .to_string_lossy()
                 .replace('\\', "/")
                 .as_str()
         )
@@ -1298,8 +1297,7 @@ async fn direct_script_execution_gated_to_wordpress_sites() {
             docroot
                 .path()
                 .join("index.php")
-                .to_str()
-                .unwrap()
+                .to_string_lossy()
                 .replace('\\', "/")
                 .as_str()
         )

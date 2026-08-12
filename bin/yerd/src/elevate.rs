@@ -33,23 +33,24 @@ mod windows_impl {
 
     /// Apply or remove Windows privilege integrations through UAC.
     pub async fn run_elevate(target: Option<ElevateTarget>, undo: bool) -> ExitCode {
-        let info = match crate::transport::exchange(&Request::DaemonInfo).await {
-            Ok(Response::Info {
-                dns_addr,
-                tld,
-                ca_path,
-                ca_fingerprint,
-                ..
-            }) => (dns_addr, tld, ca_path, ca_fingerprint),
-            Ok(other) => {
-                eprintln!("yerd: unexpected daemon response: {other:?}");
-                return ExitCode::from(69);
-            }
-            Err(error) => {
-                eprintln!("yerd: {error}");
-                return ExitCode::from(69);
-            }
-        };
+        let (dns_addr, tld, ca_path, ca_fingerprint) =
+            match crate::transport::exchange(&Request::DaemonInfo).await {
+                Ok(Response::Info {
+                    dns_addr,
+                    tld,
+                    ca_path,
+                    ca_fingerprint,
+                    ..
+                }) => (dns_addr, tld, ca_path, ca_fingerprint),
+                Ok(other) => {
+                    eprintln!("yerd: unexpected daemon response: {other:?}");
+                    return ExitCode::from(69);
+                }
+                Err(error) => {
+                    eprintln!("yerd: {error}");
+                    return ExitCode::from(69);
+                }
+            };
         let Some(helper) = std::env::current_exe()
             .ok()
             .and_then(|path| path.parent().map(|parent| parent.join("yerd-helper.exe")))
@@ -65,7 +66,7 @@ mod windows_impl {
         for target in targets {
             let invocation = match (target, undo) {
                 (ElevateTarget::Trust, false) => {
-                    let fp = match CaFingerprint::from_hex(&info.3) {
+                    let fp = match CaFingerprint::from_hex(&ca_fingerprint) {
                         Ok(fp) => fp,
                         Err(error) => {
                             eprintln!("yerd: invalid daemon CA fingerprint: {error}");
@@ -73,17 +74,17 @@ mod windows_impl {
                         }
                     };
                     HelperInvocation::InstallCa {
-                        ca_pem_path: info.2.clone(),
+                        ca_pem_path: ca_path.clone(),
                         fp,
                     }
                 }
                 (ElevateTarget::Resolver, false) => HelperInvocation::InstallResolver {
-                    tld: info.1.clone(),
-                    addr: info.0,
+                    tld: tld.clone(),
+                    addr: dns_addr,
                 },
-                (ElevateTarget::Resolver, true) => HelperInvocation::UninstallResolver {
-                    tld: info.1.clone(),
-                },
+                (ElevateTarget::Resolver, true) => {
+                    HelperInvocation::UninstallResolver { tld: tld.clone() }
+                }
                 (ElevateTarget::Trust, true) => {
                     eprintln!("yerd: Windows CA removal is not available yet");
                     return ExitCode::from(78);
@@ -92,7 +93,10 @@ mod windows_impl {
             };
             match spawn_elevated(&helper, &invocation) {
                 Ok(true) => {}
-                Ok(false) => return ExitCode::from(75),
+                Ok(false) => {
+                    eprintln!("yerd: elevated helper failed or UAC elevation was cancelled");
+                    return ExitCode::from(75);
+                }
                 Err(error) => {
                     eprintln!("yerd: could not launch elevated helper: {error}");
                     return ExitCode::from(74);
@@ -103,15 +107,30 @@ mod windows_impl {
     }
 
     fn spawn_elevated(helper: &Path, invocation: &HelperInvocation) -> std::io::Result<bool> {
-        let arguments = invocation
-            .to_argv()
-            .iter()
-            .map(|arg| ps_quote(&arg.to_string_lossy()))
-            .collect::<Vec<_>>()
-            .join(",");
+        let arguments = invocation.to_argv().iter().try_fold(
+            Vec::new(),
+            |mut args, arg| -> std::io::Result<Vec<String>> {
+                let arg = arg.to_str().ok_or_else(|| {
+                    std::io::Error::new(
+                        std::io::ErrorKind::InvalidInput,
+                        "helper arguments must be valid Unicode",
+                    )
+                })?;
+                args.push(windows_quote_arg(arg));
+                Ok(args)
+            },
+        )?;
+        let helper = helper.to_str().ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "helper path must be valid Unicode",
+            )
+        })?;
+        let arguments = arguments.join(" ");
         let script = format!(
-            "$p=Start-Process -FilePath {} -Verb RunAs -ArgumentList @({arguments}) -Wait -PassThru; exit $p.ExitCode",
-            ps_quote(&helper.to_string_lossy())
+            "try {{ $p=Start-Process -FilePath {} -Verb RunAs -ArgumentList {} -Wait -PassThru -ErrorAction Stop; if ($null -eq $p) {{ exit 1 }}; exit $p.ExitCode }} catch {{ [Console]::Error.WriteLine($_.Exception.Message); exit 1 }}",
+            ps_quote(helper),
+            ps_quote(&arguments)
         );
         Command::new(r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe")
             .args(["-NoProfile", "-NonInteractive", "-Command", &script])
@@ -121,6 +140,50 @@ mod windows_impl {
 
     fn ps_quote(value: &str) -> String {
         format!("'{}'", value.replace('\'', "''"))
+    }
+
+    fn windows_quote_arg(value: &str) -> String {
+        if !value.is_empty()
+            && !value
+                .bytes()
+                .any(|byte| byte.is_ascii_whitespace() || byte == b'"')
+        {
+            return value.to_owned();
+        }
+        let mut quoted = String::from("\"");
+        let mut backslashes = 0;
+        for ch in value.chars() {
+            if ch == '\\' {
+                backslashes += 1;
+            } else if ch == '"' {
+                quoted.push_str(&"\\".repeat(backslashes * 2 + 1));
+                quoted.push('"');
+                backslashes = 0;
+            } else {
+                quoted.push_str(&"\\".repeat(backslashes));
+                backslashes = 0;
+                quoted.push(ch);
+            }
+        }
+        quoted.push_str(&"\\".repeat(backslashes * 2));
+        quoted.push('"');
+        quoted
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn quotes_windows_arguments() {
+            assert_eq!(windows_quote_arg("install-ca"), "install-ca");
+            assert_eq!(windows_quote_arg(""), "\"\"");
+            assert_eq!(
+                windows_quote_arg(r"C:\Users\Jane Doe\ca.pem"),
+                r#""C:\Users\Jane Doe\ca.pem""#
+            );
+            assert_eq!(windows_quote_arg("a\"b"), r#""a\"b""#);
+        }
     }
 }
 

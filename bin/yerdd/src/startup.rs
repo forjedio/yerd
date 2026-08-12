@@ -822,10 +822,11 @@ fn build_ipc_listener(dirs: &PlatformDirs) -> Result<IpcListener, DaemonError> {
     #[cfg(windows)]
     let name = {
         use interprocess::local_socket::{GenericNamespaced, ToNsName};
-        let pipe = "yerd-daemon";
+        let pipe = yerd_platform::paths::daemon_pipe_name(dirs);
+        let err_path = PathBuf::from(&pipe);
         pipe.to_ns_name::<GenericNamespaced>()
             .map_err(|source| DaemonError::Io {
-                path: PathBuf::from(pipe),
+                path: err_path,
                 source,
             })?
     };

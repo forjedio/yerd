@@ -126,7 +126,8 @@ mod tests {
 
     #[test]
     fn require_existing_file_rejects_missing() {
-        let missing = std::env::temp_dir().join("yerd-no-such-file-xyz");
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("missing");
         let err = require_existing_file(&missing).unwrap_err();
         assert!(matches!(
             err,
@@ -247,11 +248,10 @@ mod tests {
 
     #[test]
     fn require_pem_matches_fingerprint_io_error_on_missing() {
-        let err = require_pem_matches_fingerprint(
-            Path::new("/tmp/yerd-no-such-pem-xyz"),
-            &CaFingerprint::new([0u8; 32]),
-        )
-        .unwrap_err();
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("missing.pem");
+        let err =
+            require_pem_matches_fingerprint(&missing, &CaFingerprint::new([0u8; 32])).unwrap_err();
         assert!(matches!(err, HelperError::Io { .. }));
     }
 }

@@ -803,7 +803,10 @@ fn build_cmd(
             .arg(format!("{directive}={}", ext.path.display()));
     }
     #[cfg(unix)]
-    cmd.arg("--fpm-config").arg(config_path);
+    {
+        let _ = listen;
+        cmd.arg("--fpm-config").arg(config_path);
+    }
     #[cfg(windows)]
     {
         cmd.arg("-c").arg(config_path);

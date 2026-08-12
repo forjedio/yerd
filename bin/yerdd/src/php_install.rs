@@ -3,11 +3,14 @@
 //!
 //! The `reqwest`-backed [`Downloader`] lives here (a binary) so `yerd-php`
 //! stays dependency-light. Version resolution + tar-member safety are pure
-//! helpers from `yerd_php::release`; this module is the I/O edge: fetch +
-//! **verify** the signed `php.json` manifest → resolve → fetch tarballs →
+//! helpers from `yerd_php::release`; this module is the I/O edge. Unix fetches
+//! and verifies the signed `php.json` manifest, resolves, then fetches tarballs,
 //! **SHA-256-verify** and safe-extract the single binary → atomic install.
 //! Integrity is anchored by the manifest's minisign signature (verified here)
 //! and each tarball's published SHA-256.
+//! Windows PHP publishes no vendor PGP, GPG, or minisign signatures for its
+//! binary listing or ZIPs. That path relies on HTTPS/TLS authenticity and
+//! verifies each ZIP against the SHA-256 supplied by `releases.json`.
 
 #[cfg(any(unix, test))]
 use std::io::Read;
@@ -246,6 +249,7 @@ pub async fn install(
 }
 
 #[cfg(windows)]
+/// Install an official Windows PHP ZIP using HTTPS and its unsigned listing's SHA-256.
 async fn install_windows(
     version: PhpVersion,
     dirs: &PlatformDirs,
@@ -435,7 +439,7 @@ pub fn write_cli_ini(
             let runtime = binary.parent().unwrap_or(&binary);
             let extension_dir = runtime.join("ext").to_string_lossy().replace('\\', "/");
             let _ = writeln!(body, "extension_dir={extension_dir}");
-            for extension in yerd_php::pure::cgi_ini::windows_extensions() {
+            for extension in yerd_php::pure::cgi_ini::windows_extensions(v) {
                 let _ = writeln!(body, "extension={extension}");
             }
         }

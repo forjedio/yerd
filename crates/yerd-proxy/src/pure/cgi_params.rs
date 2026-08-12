@@ -173,11 +173,15 @@ pub fn build_params(
 fn cgi_path(path: &Path) -> String {
     let path = path.to_string_lossy();
     #[cfg(windows)]
-    return path
-        .strip_prefix(r"\\?\")
-        .unwrap_or(&path)
-        .replace('\\', "/");
-    #[cfg(unix)]
+    {
+        if let Some(path) = path.strip_prefix(r"\\?\UNC\") {
+            return format!("//{}", path.replace('\\', "/"));
+        }
+        path.strip_prefix(r"\\?\")
+            .unwrap_or(&path)
+            .replace('\\', "/")
+    }
+    #[cfg(not(windows))]
     path.into_owned()
 }
 
@@ -504,5 +508,9 @@ fn cgi_path_removes_windows_verbatim_prefix() {
     assert_eq!(
         cgi_path(Path::new(r"\\?\C:\Sites\app\index.php")),
         "C:/Sites/app/index.php"
+    );
+    assert_eq!(
+        cgi_path(Path::new(r"\\?\UNC\server\share\app\index.php")),
+        "//server/share/app/index.php"
     );
 }

@@ -74,18 +74,25 @@ pub async fn exchange_at(sock: &std::path::Path, req: &Request) -> Result<Respon
 }
 
 #[cfg(windows)]
+/// Exchange one GUI request with the per-user Windows daemon pipe.
 pub async fn exchange(req: &Request) -> Result<Response, GuiError> {
     use interprocess::local_socket::tokio::Stream as IpcStream;
     use interprocess::local_socket::traits::tokio::Stream as _;
     use interprocess::local_socket::{GenericNamespaced, ToNsName};
     use yerd_ipc::{read_message, write_message, FrameDecoder, DEFAULT_MAX_FRAME};
+    use yerd_platform::{ActivePaths, Paths};
 
-    let name = "yerd-daemon"
+    let dirs = ActivePaths::new()
+        .resolve()
+        .map_err(|e| GuiError::unreachable(e.to_string()))?;
+    let pipe = yerd_platform::paths::daemon_pipe_name(&dirs);
+    let name = pipe
+        .as_str()
         .to_ns_name::<GenericNamespaced>()
-        .map_err(|e| GuiError::unreachable(format!("yerd-daemon: {e}")))?;
+        .map_err(|e| GuiError::unreachable(format!("{pipe}: {e}")))?;
     let stream = IpcStream::connect(name)
         .await
-        .map_err(|e| GuiError::unreachable(format!("yerd-daemon: {e}")))?;
+        .map_err(|e| GuiError::unreachable(format!("{pipe}: {e}")))?;
     let (reader, writer) = stream.split();
     let mut reader = reader;
     let mut writer = writer;

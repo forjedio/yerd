@@ -7,7 +7,7 @@
 /// allowlist.
 ///
 /// Retained:
-///   - Exact: `PATH`, `HOME`, `USER`, `LANG`
+///   - Exact: common user, locale, and platform process variables
 ///   - Prefix: `LC_`, `XDEBUG_`, `PHP_`
 ///
 /// Order of returned pairs matches the order of `snapshot`.
@@ -33,6 +33,8 @@ fn keep(key: &str) -> bool {
             | "COMSPEC"
             | "APPDATA"
             | "LOCALAPPDATA"
+            | "PATHEXT"
+            | "USERNAME"
     ) || key.starts_with("LC_")
         || key.starts_with("XDEBUG_")
         || key.starts_with("PHP_")

@@ -2,6 +2,9 @@
 
 use std::path::PathBuf;
 
+#[cfg(windows)]
+use sha2::{Digest, Sha256};
+
 use crate::PlatformError;
 
 /// The five directories Yerd cares about. Returned by [`Paths::resolve`].
@@ -28,6 +31,7 @@ pub struct PlatformDirs {
     /// Linux: `XDG_RUNTIME_DIR/yerd` or, when `XDG_RUNTIME_DIR` is unset,
     /// `/tmp/yerd-$UID` (see struct-level docs for the caller contract).
     /// macOS: a deterministic `/tmp/yerd-$UID`, not `$TMPDIR`/`temp_dir()`.
+    /// Windows: `%LOCALAPPDATA%\yerd\Yerd\data\run`.
     /// `os::macos::resolve` explains why the uid-derived path is load-bearing
     /// for socket reconstruction.
     pub runtime: PathBuf,
@@ -43,14 +47,16 @@ impl PlatformDirs {
     /// reproduces exactly what `directories` produces in `resolve` (a
     /// drift-guard test asserts the two agree for the current home).
     ///
-    /// `runtime` is the deterministic uid fallback (`/tmp/yerd-$uid`); a caller
+    /// On Unix, `runtime` is the deterministic uid fallback
+    /// (`/tmp/yerd-$uid`); a caller
     /// that also wants the `XDG_RUNTIME_DIR` location (`/run/user/$uid/yerd`,
     /// which `resolve` prefers when the env var is set) must add it itself,
     /// since the real value can't be recovered from a stripped sudo environment.
     #[must_use]
-    pub fn for_user(home: &std::path::Path, _uid: u32) -> Self {
+    /// Windows ignores `uid` and derives the runtime directory from `home`.
+    pub fn for_user(home: &std::path::Path, uid: u32) -> Self {
         #[cfg(not(target_os = "windows"))]
-        let runtime = PathBuf::from(format!("/tmp/yerd-{_uid}"));
+        let runtime = PathBuf::from(format!("/tmp/yerd-{uid}"));
         #[cfg(target_os = "macos")]
         {
             let app = home
@@ -78,6 +84,7 @@ impl PlatformDirs {
         }
         #[cfg(target_os = "windows")]
         {
+            let _ = uid;
             let roaming = home
                 .join("AppData")
                 .join("Roaming")
@@ -104,6 +111,21 @@ impl PlatformDirs {
             }
         }
     }
+}
+
+/// Derive the per-user Windows daemon pipe name from the runtime directory.
+#[cfg(windows)]
+#[must_use]
+pub fn daemon_pipe_name(dirs: &PlatformDirs) -> String {
+    use std::os::windows::ffi::OsStrExt;
+
+    let mut hasher = Sha256::new();
+    for unit in dirs.runtime.as_os_str().encode_wide() {
+        hasher.update(unit.to_le_bytes());
+    }
+    let digest = hasher.finalize();
+    let scope = digest.get(..8).unwrap_or(&digest);
+    format!("yerd-daemon-{}", hex::encode(scope))
 }
 
 /// OS path-discovery abstraction.
@@ -149,5 +171,36 @@ mod for_user_tests {
         assert_eq!(f.data, r.data, "data dir");
         assert_eq!(f.cache, r.cache, "cache dir");
         assert_eq!(f.state, r.state, "state dir");
+    }
+}
+
+#[cfg(all(test, windows))]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod windows_pipe_tests {
+    use super::{daemon_pipe_name, PlatformDirs};
+    use std::path::PathBuf;
+
+    fn dirs(runtime: &str) -> PlatformDirs {
+        PlatformDirs {
+            config: PathBuf::new(),
+            data: PathBuf::new(),
+            state: PathBuf::new(),
+            cache: PathBuf::new(),
+            runtime: PathBuf::from(runtime),
+        }
+    }
+
+    #[test]
+    fn pipe_name_is_stable_and_user_scoped() {
+        let first = daemon_pipe_name(&dirs(r"C:\Users\Alice\AppData\Local\yerd\run"));
+        assert_eq!(
+            first,
+            daemon_pipe_name(&dirs(r"C:\Users\Alice\AppData\Local\yerd\run"))
+        );
+        assert_ne!(
+            first,
+            daemon_pipe_name(&dirs(r"C:\Users\Bob\AppData\Local\yerd\run"))
+        );
+        assert!(first.starts_with("yerd-daemon-"));
     }
 }

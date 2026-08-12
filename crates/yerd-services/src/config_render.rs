@@ -47,7 +47,11 @@ fn quote_conf_path(p: &Path) -> String {
 }
 
 fn config_path(path: &Path) -> String {
-    path.to_string_lossy().replace('\\', "/")
+    let path = path.to_string_lossy();
+    #[cfg(windows)]
+    return path.replace('\\', "/");
+    #[cfg(not(windows))]
+    path.into_owned()
 }
 
 /// Render a `MySQL` / `MariaDB` option file: loopback-only, no password.

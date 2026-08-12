@@ -294,7 +294,7 @@ pub fn reconcile_tool_shims(dirs: &PlatformDirs, yerd_bin: &Path) -> Result<(), 
 }
 
 #[cfg(windows)]
-/// Reconcile Windows Node shims without requiring symlink privileges.
+/// Reconcile Windows tool shims without requiring symlink privileges.
 pub fn reconcile_tool_shims(dirs: &PlatformDirs, _yerd_bin: &Path) -> Result<(), ToolError> {
     let bin = bin_dir(dirs);
     std::fs::create_dir_all(&bin).map_err(|e| ToolError::Io(format!("{}: {e}", bin.display())))?;
@@ -303,34 +303,34 @@ pub fn reconcile_tool_shims(dirs: &PlatformDirs, _yerd_bin: &Path) -> Result<(),
         for name in names {
             let _ = std::fs::remove_file(bin.join(name));
         }
-        return Ok(());
-    }
-    let root = extract_root_dir(&tool_dir(dirs, Tool::Node))?;
-    for name in names {
-        let source = root.join(name);
-        let destination = bin.join(name);
-        let _ = std::fs::remove_file(&destination);
-        if name == "node.exe" {
-            std::fs::hard_link(&source, &destination)
-                .or_else(|_| std::fs::copy(&source, &destination).map(|_| ()))
-                .map_err(|e| ToolError::Io(format!("{}: {e}", destination.display())))?;
-        } else {
-            let cli = if name == "npm.cmd" {
-                "npm-cli.js"
+    } else {
+        let root = extract_root_dir(&tool_dir(dirs, Tool::Node))?;
+        for name in names {
+            let source = root.join(name);
+            let destination = bin.join(name);
+            let _ = std::fs::remove_file(&destination);
+            if name == "node.exe" {
+                std::fs::hard_link(&source, &destination)
+                    .or_else(|_| std::fs::copy(&source, &destination).map(|_| ()))
+                    .map_err(|e| ToolError::Io(format!("{}: {e}", destination.display())))?;
             } else {
-                "npx-cli.js"
-            };
-            let script = format!(
-                "@ECHO OFF\r\n\"{}\" \"{}\" %*\r\n",
-                root.join("node.exe").display(),
-                root.join("node_modules")
-                    .join("npm")
-                    .join("bin")
-                    .join(cli)
-                    .display()
-            );
-            std::fs::write(&destination, script)
-                .map_err(|e| ToolError::Io(format!("{}: {e}", destination.display())))?;
+                let cli = if name == "npm.cmd" {
+                    "npm-cli.js"
+                } else {
+                    "npx-cli.js"
+                };
+                let script = format!(
+                    "@ECHO OFF\r\n\"{}\" \"{}\" %*\r\n",
+                    root.join("node.exe").display(),
+                    root.join("node_modules")
+                        .join("npm")
+                        .join("bin")
+                        .join(cli)
+                        .display()
+                );
+                std::fs::write(&destination, script)
+                    .map_err(|e| ToolError::Io(format!("{}: {e}", destination.display())))?;
+            }
         }
     }
     for (tool, name, script) in [

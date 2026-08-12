@@ -126,7 +126,7 @@ Login Items → Allow in the Background).
   the same `env SUDO_UID=<uid> <yerd> elevate <t>`. The macOS daemon socket lives
   at the deterministic `/tmp/yerd-$UID` so the root-elevated CLI can locate it
   from `SUDO_UID` alone.
-- **Windows** uses the fixed `yerd-daemon` named pipe and bundles the three
-  sidecars in an NSIS installer.
+- **Windows** derives a per-user `yerd-daemon-<scope>` named pipe from the
+  runtime directory and bundles the three sidecars in an NSIS installer.
 - macOS release bundles are **Developer ID signed and notarised**, so they open
   without a Gatekeeper prompt (signing/notarisation is wired up on this branch).

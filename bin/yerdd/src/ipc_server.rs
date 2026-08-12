@@ -242,7 +242,7 @@ async fn dispatch(req: Request, state: &DaemonState) -> Response {
                 &build_status_report(state).await,
                 path_needs_setup(state),
                 &crate::services::local_override_files(&state.dirs),
-                foreign_web_listener_detail().as_deref(),
+                foreign_web_listener_detail().await.as_deref(),
             ),
         },
         Request::DoctorFix => run_doctor_fix(state).await,
@@ -1000,7 +1000,7 @@ async fn run_doctor_fix(state: &DaemonState) -> Response {
         &after,
         path_needs_setup(state),
         &crate::services::local_override_files(&state.dirs),
-        foreign_web_listener_detail().as_deref(),
+        foreign_web_listener_detail().await.as_deref(),
     )
     .into_iter()
     .filter(|d| {
@@ -1017,18 +1017,21 @@ async fn run_doctor_fix(state: &DaemonState) -> Response {
 }
 
 #[cfg(windows)]
-fn foreign_web_listener_detail() -> Option<String> {
-    probe_windows_web_listeners()
+async fn foreign_web_listener_detail() -> Option<String> {
+    tokio::task::spawn_blocking(probe_windows_web_listeners)
+        .await
+        .ok()
+        .flatten()
 }
 
 #[cfg(not(windows))]
-const fn foreign_web_listener_detail() -> Option<String> {
+const async fn foreign_web_listener_detail() -> Option<String> {
     None
 }
 
 #[cfg(windows)]
 fn probe_windows_web_listeners() -> Option<String> {
-    let output = std::process::Command::new("netstat.exe")
+    let output = std::process::Command::new(r"C:\Windows\System32\netstat.exe")
         .args(["-ano", "-p", "tcp"])
         .output()
         .ok()?;
@@ -1046,7 +1049,11 @@ fn probe_windows_web_listeners() -> Option<String> {
         let Some(port) = local.rsplit(':').next().and_then(|p| p.parse::<u16>().ok()) else {
             continue;
         };
-        if !matches!(port, 80 | 443) || fields.get(3) != Some(&"LISTENING") {
+        let foreign_port = fields
+            .get(2)
+            .and_then(|foreign| foreign.rsplit(':').next())
+            .and_then(|port| port.parse::<u16>().ok());
+        if !matches!(port, 80 | 443) || foreign_port != Some(0) {
             continue;
         }
         let Some(pid) = fields.last().and_then(|p| p.parse::<u32>().ok()) else {
@@ -1064,7 +1071,7 @@ fn probe_windows_web_listeners() -> Option<String> {
 #[cfg(windows)]
 fn windows_process_name(pid: u32) -> Option<String> {
     let filter = format!("PID eq {pid}");
-    let output = std::process::Command::new("tasklist.exe")
+    let output = std::process::Command::new(r"C:\Windows\System32\tasklist.exe")
         .args(["/FI", &filter, "/FO", "CSV", "/NH"])
         .output()
         .ok()?;

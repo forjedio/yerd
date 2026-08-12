@@ -1,9 +1,9 @@
-//! Real `HealthProbe` impl: sends a single `FCGI_GET_VALUES` record and
-//! reads back any record-shaped reply.
+//! Real `HealthProbe` impl. Unix sends a single `FCGI_GET_VALUES` record and
+//! reads back any record-shaped reply. Windows uses a weaker connect-only check
+//! because `php-cgi.exe -b` does not answer `FCGI_GET_VALUES`.
 //!
-//! The probe distinguishes "TCP accept queue with no FPM behind it"
-//! (Windows edge case) from "FPM responded" by validating the FCGI header
-//! version on the reply.
+//! The Unix probe distinguishes a TCP accept queue with no FPM behind it from a
+//! responding FPM process by validating the FCGI header version on the reply.
 
 use std::io;
 

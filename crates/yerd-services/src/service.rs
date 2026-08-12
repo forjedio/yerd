@@ -754,7 +754,11 @@ impl ServiceDefinition for Meilisearch {
 }
 
 fn command_path(path: &std::path::Path) -> String {
-    path.to_string_lossy().replace('\\', "/")
+    let path = path.to_string_lossy();
+    #[cfg(windows)]
+    return path.replace('\\', "/");
+    #[cfg(not(windows))]
+    path.into_owned()
 }
 
 /// Laravel Reverb: a per-site WebSocket app server, supervised as

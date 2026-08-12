@@ -23,7 +23,7 @@ pub fn is_privileged() -> bool {
 #[must_use]
 #[cfg(windows)]
 pub fn is_privileged() -> bool {
-    std::process::Command::new("net.exe")
+    std::process::Command::new(r"C:\Windows\System32\net.exe")
         .arg("session")
         .env_clear()
         .status()

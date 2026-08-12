@@ -54,13 +54,17 @@ pub async fn exchange(req: &Request) -> Result<Response, ClientError> {
     use interprocess::local_socket::traits::tokio::Stream as _;
     use interprocess::local_socket::{GenericNamespaced, ToNsName};
     use yerd_ipc::{read_message, write_message, FrameDecoder, DEFAULT_MAX_FRAME};
+    use yerd_platform::{ActivePaths, Paths};
 
-    let name = "yerd-daemon"
+    let dirs = ActivePaths::new().resolve()?;
+    let pipe = yerd_platform::paths::daemon_pipe_name(&dirs);
+    let name = pipe
+        .as_str()
         .to_ns_name::<GenericNamespaced>()
-        .map_err(|e| ClientError::DaemonUnreachable(format!("yerd-daemon: {e}")))?;
+        .map_err(|e| ClientError::DaemonUnreachable(format!("{pipe}: {e}")))?;
     let stream = IpcStream::connect(name)
         .await
-        .map_err(|e| ClientError::DaemonUnreachable(format!("yerd-daemon: {e}")))?;
+        .map_err(|e| ClientError::DaemonUnreachable(format!("{pipe}: {e}")))?;
     let (reader, writer) = stream.split();
     let mut reader = reader;
     let mut writer = writer;

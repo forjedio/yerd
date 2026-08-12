@@ -13,7 +13,7 @@ pub fn render(cfg: &PoolConfig, runtime_dir: &Path) -> String {
     let _ = writeln!(out, "cgi.fix_pathinfo=1");
     let extension_dir = runtime_dir.join("ext").to_string_lossy().replace('\\', "/");
     let _ = writeln!(out, "extension_dir={extension_dir}");
-    for extension in windows_extensions() {
+    for extension in windows_extensions(cfg.version) {
         let _ = writeln!(out, "extension={extension}");
     }
 
@@ -43,8 +43,8 @@ pub fn render(cfg: &PoolConfig, runtime_dir: &Path) -> String {
 
 /// Extensions bundled by official Windows PHP builds that local development expects.
 #[must_use]
-pub const fn windows_extensions() -> &'static [&'static str] {
-    &[
+pub fn windows_extensions(version: yerd_core::PhpVersion) -> Vec<&'static str> {
+    let mut extensions = vec![
         "php_curl.dll",
         "php_fileinfo.dll",
         "php_mbstring.dll",
@@ -54,8 +54,11 @@ pub const fn windows_extensions() -> &'static [&'static str] {
         "php_pdo_pgsql.dll",
         "php_pdo_sqlite.dll",
         "php_sodium.dll",
-        "php_zip.dll",
-    ]
+    ];
+    if (version.major, version.minor) >= (8, 2) {
+        extensions.push("php_zip.dll");
+    }
+    extensions
 }
 
 #[cfg(test)]
@@ -91,5 +94,12 @@ mod tests {
         assert!(rendered.contains("memory_limit=512M"));
         assert!(rendered.contains(r"openssl.cafile=C:\Users\Dev\App Data\ca.pem"));
         assert!(rendered.contains("extension=php_openssl.dll"));
+        assert!(rendered.contains("extension=php_zip.dll"));
+    }
+
+    #[test]
+    fn omits_zip_before_php_82() {
+        assert!(!windows_extensions(PhpVersion::new(8, 1)).contains(&"php_zip.dll"));
+        assert!(windows_extensions(PhpVersion::new(8, 2)).contains(&"php_zip.dll"));
     }
 }

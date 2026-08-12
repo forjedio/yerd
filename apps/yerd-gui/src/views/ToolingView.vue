@@ -104,7 +104,6 @@ async function doInstall(t: ToolStatus): Promise<void> {
       const composerFinal = await pollJobToEnd(
         composerJob,
         (lines) => void appendLog(lines),
-        () => logOpen.value,
       );
       if (composerFinal.state !== "succeeded") {
         if (composerFinal.state !== "running") {

@@ -108,16 +108,23 @@ impl TrustStore for WindowsTrustStore {
         })
     }
 
-    fn is_trusted(&self, ca_path: &Path, _: &CaFingerprint) -> Result<bool, PlatformError> {
-        let status = Command::new(r"C:\Windows\System32\certutil.exe")
+    fn is_trusted(&self, ca_path: &Path, fp: &CaFingerprint) -> Result<bool, PlatformError> {
+        let pem = std::fs::read_to_string(ca_path).map_err(|source| PlatformError::Io {
+            path: ca_path.to_path_buf(),
+            source,
+        })?;
+        if CaFingerprint::from_pem(&pem).as_ref() != Some(fp) {
+            return Ok(false);
+        }
+        let output = Command::new(r"C:\Windows\System32\certutil.exe")
             .args(["-verify"])
             .arg(ca_path)
-            .status()
+            .output()
             .map_err(|source| PlatformError::Io {
                 path: ca_path.to_path_buf(),
                 source,
             })?;
-        Ok(status.success())
+        Ok(output.status.success())
     }
 
     fn install_firefox_nss(&self, _: &Path) -> Result<NssOutcome, PlatformError> {
@@ -171,8 +178,12 @@ impl ResolverInstaller for WindowsResolverInstaller {
         if addr != SocketAddr::from((Ipv4Addr::LOCALHOST, 53)) {
             return Ok(false);
         }
+        let tld = yerd_core::Tld::new(tld).map_err(|error| PlatformError::Resolver {
+            reason: crate::ResolverErrorReason::SystemApi(error.to_string()),
+        })?;
         let command = format!(
-            "if (Get-DnsClientNrptRule | Where-Object {{ $_.Namespace -contains '.{tld}' -and $_.NameServers -contains '127.0.0.1' -and $_.Comment -eq 'Yerd managed' }}) {{ exit 0 }} else {{ exit 1 }}"
+            "if (Get-DnsClientNrptRule | Where-Object {{ $_.Namespace -contains '.{}' -and $_.NameServers -contains '127.0.0.1' -and $_.Comment -eq 'Yerd managed' }}) {{ exit 0 }} else {{ exit 1 }}",
+            tld.as_str()
         );
         let status = Command::new(r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe")
             .args(["-NoProfile", "-NonInteractive", "-Command", &command])

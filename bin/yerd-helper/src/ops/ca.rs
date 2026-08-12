@@ -1,5 +1,7 @@
 //! `install-ca` and `uninstall-ca` implementations.
 
+#[cfg(windows)]
+use std::ffi::OsStr;
 use std::path::Path;
 #[cfg(target_os = "linux")]
 use std::path::PathBuf;
@@ -31,7 +33,12 @@ pub fn install_ca(pem_path: &Path, fp: &CaFingerprint) -> Result<(), HelperError
     run_command(
         "certutil",
         r"C:\Windows\System32\certutil.exe",
-        ["-addstore", "-f", "Root", &pem_path.to_string_lossy()],
+        [
+            OsStr::new("-addstore"),
+            OsStr::new("-f"),
+            OsStr::new("Root"),
+            pem_path.as_os_str(),
+        ],
     )
     .map(|_| ())
 }
