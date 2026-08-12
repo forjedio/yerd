@@ -21,10 +21,10 @@ pub fn run(action: PathAction) -> ExitCode {
 #[cfg(not(unix))]
 pub fn run(_action: PathAction) -> ExitCode {
     use yerd_platform::{ActivePaths, Paths};
-    let hint = ActivePaths::new()
-        .resolve()
-        .map(|d| d.data.join("bin").display().to_string())
-        .unwrap_or_else(|_| "yerd's bin directory".to_owned());
+    let hint = ActivePaths::new().resolve().map_or_else(
+        |_| "yerd's bin directory".to_owned(),
+        |d| d.data.join("bin").display().to_string(),
+    );
     eprintln!(
         "yerd: `yerd path` is not yet supported on this platform — add {hint} to PATH manually"
     );

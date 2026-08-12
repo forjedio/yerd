@@ -8,12 +8,15 @@
 use std::io;
 
 use async_trait::async_trait;
+#[cfg(any(unix, test))]
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use crate::listen::Listen;
 use crate::traits::HealthProbe;
 
+#[cfg(any(unix, test))]
 const FCGI_VERSION_1: u8 = 1;
+#[cfg(any(unix, test))]
 const FCGI_GET_VALUES: u8 = 9;
 
 /// Production [`HealthProbe`] impl.
@@ -35,15 +38,23 @@ impl HealthProbe for FastCgiProbe {
                 "UnixSocket listen on non-Unix",
             )),
             Listen::TcpLoopback(addr) => {
-                let mut s = tokio::net::TcpStream::connect(addr).await?;
-                send_get_values(&mut s).await?;
-                read_one_record_header(&mut s).await
+                #[cfg(windows)]
+                {
+                    tokio::net::TcpStream::connect(addr).await.map(|_| ())
+                }
+                #[cfg(unix)]
+                {
+                    let mut s = tokio::net::TcpStream::connect(addr).await?;
+                    send_get_values(&mut s).await?;
+                    read_one_record_header(&mut s).await
+                }
             }
         }
     }
 }
 
 /// Write an 8-byte `FCGI_GET_VALUES` request with an empty body.
+#[cfg(any(unix, test))]
 async fn send_get_values<S>(s: &mut S) -> io::Result<()>
 where
     S: tokio::io::AsyncWrite + Unpin,
@@ -58,6 +69,7 @@ where
 
 /// Read exactly 8 bytes and validate the version byte. Anything shorter
 /// or with `version != 1` is reported as `io::ErrorKind::Other`.
+#[cfg(any(unix, test))]
 async fn read_one_record_header<S>(s: &mut S) -> io::Result<()>
 where
     S: tokio::io::AsyncRead + Unpin,

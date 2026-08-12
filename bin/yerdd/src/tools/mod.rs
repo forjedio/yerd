@@ -227,7 +227,7 @@ pub async fn install(
     note(progress, format!("Installing {}…", tool.display_name()));
     let result = match tool {
         Tool::Composer => composer::install(dirs, dl).await,
-        Tool::Node => node::install(dirs, dl).await,
+        Tool::Node => node::install(dirs, dl, progress).await,
         Tool::Bun => bun::install(dirs, dl).await,
         Tool::Laravel => laravel::install(dirs, progress).await,
         Tool::WpCli => wp_cli::install(dirs, progress).await,
@@ -293,7 +293,78 @@ pub fn reconcile_tool_shims(dirs: &PlatformDirs, yerd_bin: &Path) -> Result<(), 
     Ok(())
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
+/// Reconcile Windows Node shims without requiring symlink privileges.
+pub fn reconcile_tool_shims(dirs: &PlatformDirs, _yerd_bin: &Path) -> Result<(), ToolError> {
+    let bin = bin_dir(dirs);
+    std::fs::create_dir_all(&bin).map_err(|e| ToolError::Io(format!("{}: {e}", bin.display())))?;
+    let names = ["node.exe", "npm.cmd", "npx.cmd"];
+    if installed_version(dirs, Tool::Node).is_none() {
+        for name in names {
+            let _ = std::fs::remove_file(bin.join(name));
+        }
+        return Ok(());
+    }
+    let root = extract_root_dir(&tool_dir(dirs, Tool::Node))?;
+    for name in names {
+        let source = root.join(name);
+        let destination = bin.join(name);
+        let _ = std::fs::remove_file(&destination);
+        if name == "node.exe" {
+            std::fs::hard_link(&source, &destination)
+                .or_else(|_| std::fs::copy(&source, &destination).map(|_| ()))
+                .map_err(|e| ToolError::Io(format!("{}: {e}", destination.display())))?;
+        } else {
+            let cli = if name == "npm.cmd" {
+                "npm-cli.js"
+            } else {
+                "npx-cli.js"
+            };
+            let script = format!(
+                "@ECHO OFF\r\n\"{}\" \"{}\" %*\r\n",
+                root.join("node.exe").display(),
+                root.join("node_modules")
+                    .join("npm")
+                    .join("bin")
+                    .join(cli)
+                    .display()
+            );
+            std::fs::write(&destination, script)
+                .map_err(|e| ToolError::Io(format!("{}: {e}", destination.display())))?;
+        }
+    }
+    for (tool, name, script) in [
+        (Tool::Composer, "composer.cmd", composer::phar_path(dirs)),
+        (Tool::Laravel, "laravel.cmd", laravel::installer_bin(dirs)),
+        (Tool::WpCli, "wp.cmd", wp_cli::boot_path(dirs)),
+    ] {
+        let destination = bin.join(name);
+        if installed_version(dirs, tool).is_none() {
+            let _ = std::fs::remove_file(destination);
+            continue;
+        }
+        let version = crate::ext_install::installed_versions(dirs)
+            .into_iter()
+            .max_by_key(|v| (v.major, v.minor))
+            .ok_or(ToolError::UnsupportedHost("PHP"))?;
+        let php = crate::php_install::cli_binary_path(dirs, version);
+        let phprc = crate::php_install::cli_phprc(dirs, version);
+        let ini = phprc.map_or_else(String::new, |path| {
+            format!("SET \"PHPRC={}\"\r\n", path.display())
+        });
+        let body = format!(
+            "@ECHO OFF\r\n{ini}\"{}\" \"{}\" %*\r\n",
+            php.display(),
+            script.display()
+        );
+        std::fs::write(&destination, body)
+            .map_err(|e| ToolError::Io(format!("{}: {e}", destination.display())))?;
+    }
+    Ok(())
+}
+
+#[cfg(not(any(unix, windows)))]
+/// Unsupported platforms have no tool shim mechanism.
 pub fn reconcile_tool_shims(_dirs: &PlatformDirs, _yerd_bin: &Path) -> Result<(), ToolError> {
     Ok(())
 }
@@ -334,6 +405,7 @@ pub(crate) fn verify_sha256(bytes: &[u8], want_sha: &str, label: &str) -> Result
 /// The single child **directory** of `dir` (Node/Bun archives wrap their payload
 /// in one top-level dir whose name encodes the version). Errors unless exactly
 /// one directory entry exists - never reconstructed from a version string.
+#[cfg(any(unix, windows, test))]
 pub(crate) fn extract_root_dir(dir: &Path) -> Result<PathBuf, ToolError> {
     let mut found: Option<PathBuf> = None;
     let entries =

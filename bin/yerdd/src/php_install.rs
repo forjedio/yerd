@@ -9,19 +9,30 @@
 //! Integrity is anchored by the manifest's minisign signature (verified here)
 //! and each tarball's published SHA-256.
 
+#[cfg(any(unix, test))]
 use std::io::Read;
 use std::path::{Path, PathBuf};
+#[cfg(unix)]
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use async_trait::async_trait;
 
 use yerd_core::PhpVersion;
-use yerd_php::{
-    current_os_arch, is_safe_member, listing_sig_url, listing_url, Artifact, BinaryKind,
-    DownloadError, Downloader, PhpError,
-};
+#[cfg(unix)]
+use yerd_php::current_os_arch;
+#[cfg(any(unix, test))]
+use yerd_php::is_safe_member;
+#[cfg(unix)]
+use yerd_php::Artifact;
+#[cfg(any(unix, test))]
+use yerd_php::BinaryKind;
+use yerd_php::{listing_sig_url, listing_url, DownloadError, Downloader, PhpError};
 use yerd_platform::PlatformDirs;
+
+#[cfg(windows)]
+pub(crate) const WINDOWS_RELEASES_URL: &str =
+    "https://windows.php.net/downloads/releases/releases.json";
 
 /// `reqwest`-backed downloader (rustls, no OpenSSL; follows redirects).
 pub struct ReqwestDownloader {
@@ -32,10 +43,12 @@ pub struct ReqwestDownloader {
 /// first call and completion), so a 40 MB+ download streams "X / Y MB" updates
 /// into the job log without flooding it. `last` tracks the last *emitted* byte
 /// count (`u64::MAX` = nothing emitted yet).
+#[cfg(unix)]
 const PROGRESS_STEP: u64 = 4 * 1024 * 1024;
 
 /// Byte counts are formatted as integer tenths-of-a-MB to avoid a float cast and
 /// its precision lint.
+#[cfg(unix)]
 fn emit_byte_progress(
     tx: &ProgressTx,
     label: &str,
@@ -187,41 +200,181 @@ pub async fn install(
     public_key: &str,
     progress: Option<&ProgressTx>,
 ) -> Result<(), PhpError> {
-    let (os, arch) = current_os_arch()?;
-    let channel = yerd_php::Channel::of(version);
-    note(progress, format!("Resolving PHP {version}…"));
-    let listing = fetch_verified_listing(dl, public_key, channel).await?;
-    let artifact = yerd_php::resolve_from_listing(&listing, version, os, arch, channel)?;
-    tracing::info!(%version, patch = %artifact.full_version, revision = artifact.revision, "resolved PHP build; downloading");
-    note(
-        progress,
-        format!("Found PHP {} — downloading…", artifact.full_version),
-    );
+    #[cfg(windows)]
+    {
+        let _ = public_key;
+        return install_windows(version, dirs, dl, progress).await;
+    }
+    #[cfg(unix)]
+    {
+        let (os, arch) = current_os_arch()?;
+        let channel = yerd_php::Channel::of(version);
+        note(progress, format!("Resolving PHP {version}…"));
+        let listing = fetch_verified_listing(dl, public_key, channel).await?;
+        let artifact = yerd_php::resolve_from_listing(&listing, version, os, arch, channel)?;
+        tracing::info!(%version, patch = %artifact.full_version, revision = artifact.revision, "resolved PHP build; downloading");
+        note(
+            progress,
+            format!("Found PHP {} — downloading…", artifact.full_version),
+        );
+
+        let php_root = dirs.data.join("php");
+        fs_ctx(std::fs::create_dir_all(&php_root), &php_root)?;
+
+        let staging = php_root.join(format!(
+            ".staging-{}-{}",
+            artifact.install_dir_name,
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&staging);
+
+        if let Err(e) = stage(&artifact, dl, &staging, progress).await {
+            let _ = std::fs::remove_dir_all(&staging);
+            return Err(e);
+        }
+
+        note(progress, "Finalising install…");
+        let final_dir = php_root.join(&artifact.install_dir_name);
+        if final_dir.exists() {
+            if let Err(e) = std::fs::remove_dir_all(&final_dir) {
+                let _ = std::fs::remove_dir_all(&staging);
+                return Err(fs_err(&final_dir, &e));
+            }
+        }
+        fs_ctx(std::fs::rename(&staging, &final_dir), &final_dir)
+    }
+}
+
+#[cfg(windows)]
+async fn install_windows(
+    version: PhpVersion,
+    dirs: &PlatformDirs,
+    dl: &dyn Downloader,
+    progress: Option<&ProgressTx>,
+) -> Result<(), PhpError> {
+    const DOWNLOAD_BASE: &str = "https://windows.php.net/downloads/releases";
+    note(progress, format!("Resolving PHP {version} for Windows..."));
+    let listing = dl.download(WINDOWS_RELEASES_URL).await?;
+    let listing: serde_json::Value =
+        serde_json::from_slice(&listing).map_err(|e| PhpError::ListingParse {
+            detail: e.to_string(),
+        })?;
+    let minor = version.to_string();
+    let release = listing
+        .get(&minor)
+        .and_then(serde_json::Value::as_object)
+        .ok_or(PhpError::VersionUnavailable { version })?;
+    let full_version = release
+        .get("version")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| PhpError::ListingParse {
+            detail: format!("Windows PHP {minor} has no version"),
+        })?;
+    let build = release
+        .iter()
+        .find(|(name, _)| name.starts_with("nts-") && name.ends_with("-x64"))
+        .and_then(|(_, value)| value.get("zip"))
+        .ok_or(PhpError::VersionUnavailable { version })?;
+    let file = build
+        .get("path")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| PhpError::ListingParse {
+            detail: format!("Windows PHP {minor} ZIP has no path"),
+        })?;
+    let sha256 = build
+        .get("sha256")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| PhpError::ListingParse {
+            detail: format!("Windows PHP {minor} ZIP has no sha256"),
+        })?;
+    let url = format!("{DOWNLOAD_BASE}/{file}");
+    note(progress, format!("Downloading PHP {full_version}..."));
+    let bytes = dl.download(&url).await?;
+    if !yerd_update::sha256_hex(&bytes).eq_ignore_ascii_case(sha256) {
+        return Err(PhpError::ShaMismatch { file: url });
+    }
 
     let php_root = dirs.data.join("php");
     fs_ctx(std::fs::create_dir_all(&php_root), &php_root)?;
-
-    let staging = php_root.join(format!(
-        ".staging-{}-{}",
-        artifact.install_dir_name,
-        std::process::id()
-    ));
+    let staging = php_root.join(format!(".staging-php-{minor}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&staging);
-
-    if let Err(e) = stage(&artifact, dl, &staging, progress).await {
+    fs_ctx(std::fs::create_dir_all(&staging), &staging)?;
+    if let Err(error) = extract_windows_runtime(&bytes, &staging, &url) {
         let _ = std::fs::remove_dir_all(&staging);
-        return Err(e);
+        return Err(error);
     }
-
-    note(progress, "Finalising install…");
-    let final_dir = php_root.join(&artifact.install_dir_name);
-    if final_dir.exists() {
-        if let Err(e) = std::fs::remove_dir_all(&final_dir) {
+    for required in ["php.exe", "php-cgi.exe"] {
+        if !staging.join(required).is_file() {
             let _ = std::fs::remove_dir_all(&staging);
-            return Err(fs_err(&final_dir, &e));
+            return Err(extract_msg(
+                &url,
+                format!("{required} missing from archive"),
+            ));
         }
     }
+    let marker = staging.join(VERSION_MARKER);
+    fs_ctx(std::fs::write(&marker, full_version), &marker)?;
+    let revision = staging.join(REVISION_MARKER);
+    fs_ctx(std::fs::write(&revision, "1"), &revision)?;
+    let final_dir = php_root.join(format!("php-{minor}"));
+    if final_dir.exists() {
+        fs_ctx(std::fs::remove_dir_all(&final_dir), &final_dir)?;
+    }
     fs_ctx(std::fs::rename(&staging, &final_dir), &final_dir)
+}
+
+#[cfg(windows)]
+pub(crate) fn available_windows_minors(listing: &[u8]) -> Result<Vec<PhpVersion>, PhpError> {
+    let listing: serde_json::Value =
+        serde_json::from_slice(listing).map_err(|e| PhpError::ListingParse {
+            detail: e.to_string(),
+        })?;
+    let releases = listing.as_object().ok_or_else(|| PhpError::ListingParse {
+        detail: "Windows PHP listing is not an object".to_owned(),
+    })?;
+    let mut versions: Vec<PhpVersion> = releases
+        .iter()
+        .filter(|(_, release)| {
+            release.as_object().is_some_and(|release| {
+                release.iter().any(|(name, build)| {
+                    name.starts_with("nts-") && name.ends_with("-x64") && build.get("zip").is_some()
+                })
+            })
+        })
+        .filter_map(|(minor, _)| {
+            let (major, minor) = minor.split_once('.')?;
+            Some(PhpVersion::new(major.parse().ok()?, minor.parse().ok()?))
+        })
+        .collect();
+    versions.sort_unstable();
+    versions.dedup();
+    Ok(versions)
+}
+
+#[cfg(windows)]
+fn extract_windows_runtime(bytes: &[u8], staging: &Path, url: &str) -> Result<(), PhpError> {
+    let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes))
+        .map_err(|e| extract_msg(url, e.to_string()))?;
+    for index in 0..archive.len() {
+        let mut entry = archive
+            .by_index(index)
+            .map_err(|e| extract_msg(url, e.to_string()))?;
+        let relative = entry
+            .enclosed_name()
+            .ok_or_else(|| extract_msg(url, format!("unsafe ZIP member {:?}", entry.name())))?
+            .clone();
+        let target = staging.join(relative);
+        if entry.is_dir() {
+            fs_ctx(std::fs::create_dir_all(&target), &target)?;
+            continue;
+        }
+        if let Some(parent) = target.parent() {
+            fs_ctx(std::fs::create_dir_all(parent), parent)?;
+        }
+        let mut output = std::fs::File::create(&target).map_err(|e| fs_err(&target, &e))?;
+        std::io::copy(&mut entry, &mut output).map_err(|e| fs_err(&target, &e))?;
+    }
+    Ok(())
 }
 
 /// Write the CLI `php.ini` files the version-aware `php`/`php<ver>` shims point
@@ -261,7 +414,7 @@ pub fn write_cli_ini(
     let no_overrides = std::collections::BTreeMap::new();
     let installed =
         yerd_php::discover_bundled(dirs).map_err(|e| std::io::Error::other(e.to_string()))?;
-    for (v, _) in installed {
+    for (v, binary) in installed {
         let refs: Vec<(&str, bool)> = extensions
             .get(&v)
             .map(|es| {
@@ -276,6 +429,16 @@ pub fn write_cli_ini(
             version_settings.get(&v).unwrap_or(&no_overrides),
         );
         let mut body = yerd_core::php_settings::render_cli_ini_with_ext(&effective, &refs);
+        #[cfg(windows)]
+        {
+            use std::fmt::Write as _;
+            let runtime = binary.parent().unwrap_or(&binary);
+            let extension_dir = runtime.join("ext").to_string_lossy().replace('\\', "/");
+            let _ = writeln!(body, "extension_dir={extension_dir}");
+            for extension in yerd_php::pure::cgi_ini::windows_extensions() {
+                let _ = writeln!(body, "extension={extension}");
+            }
+        }
         if let Some(dirs_for_v) = directives.get(&v) {
             body.push_str(&yerd_core::php_directives::render_ini_lines(dirs_for_v));
         }
@@ -310,6 +473,7 @@ const VERSION_MARKER: &str = ".yerd-version";
 /// suffix). Absent for pre-cutover installs, which read as revision 0.
 const REVISION_MARKER: &str = ".yerd-revision";
 
+#[cfg(unix)]
 async fn stage(
     artifact: &Artifact,
     dl: &dyn Downloader,
@@ -388,6 +552,7 @@ pub fn installed_revision(dirs: &PlatformDirs, minor: PhpVersion) -> u32 {
 /// silent path; a download error converts to `PhpError` via `#[from]`. The
 /// SHA-256 check happens on both paths (this is the single fetch site) - bytes
 /// that don't match `expected_sha256` are never extracted.
+#[cfg(unix)]
 async fn fetch_and_extract(
     dl: &dyn Downloader,
     url: &str,
@@ -431,6 +596,7 @@ async fn fetch_and_extract(
 /// Extract the single expected `Regular`-file member from a `.tar.gz`,
 /// rejecting traversal, non-regular entries (symlink/hardlink/dir), unexpected
 /// names, and duplicates - closes zip-slip and link-target escapes.
+#[cfg(any(unix, test))]
 fn extract_member(gz_bytes: &[u8], kind: BinaryKind, url: &str) -> Result<Vec<u8>, PhpError> {
     let want = kind.archive_member();
     let decoder = flate2::read::GzDecoder::new(gz_bytes);
@@ -478,11 +644,6 @@ fn make_executable(path: &Path) -> Result<(), PhpError> {
     )
 }
 
-#[cfg(not(unix))]
-fn make_executable(_path: &Path) -> Result<(), PhpError> {
-    Ok(())
-}
-
 fn fs_ctx<T>(r: std::io::Result<T>, path: &Path) -> Result<T, PhpError> {
     r.map_err(|e| fs_err(path, &e))
 }
@@ -494,6 +655,7 @@ fn fs_err(path: &Path, e: &std::io::Error) -> PhpError {
     }
 }
 
+#[cfg(any(unix, test))]
 fn extract_err(url: &str, e: &dyn std::fmt::Display) -> PhpError {
     extract_msg(url, e.to_string())
 }
@@ -505,17 +667,25 @@ fn extract_msg(url: &str, detail: String) -> PhpError {
     }
 }
 
-/// Absolute path to a version's CLI binary (`data/php/php-<minor>/bin/php`).
+/// Absolute path to a version's platform-specific CLI binary.
 #[must_use]
 pub fn cli_binary_path(dirs: &PlatformDirs, version: PhpVersion) -> PathBuf {
-    let mut p = dirs
+    let p = dirs
         .data
         .join("php")
         .join(format!("php-{}.{}", version.major, version.minor));
-    for seg in BinaryKind::Cli.install_segments() {
-        p.push(seg);
+    #[cfg(windows)]
+    {
+        p.join("php.exe")
     }
-    p
+    #[cfg(unix)]
+    {
+        let mut p = p;
+        for seg in BinaryKind::Cli.install_segments() {
+            p.push(seg);
+        }
+        p
+    }
 }
 
 /// The `PHPRC` target for a version's CLI: its per-version ini
@@ -580,6 +750,7 @@ pub fn set_default_shim(dirs: &PlatformDirs, yerd_bin: &Path) -> Result<PathBuf,
 }
 
 #[cfg(not(unix))]
+/// Return the default Windows PHP executable path.
 pub fn set_default_shim(dirs: &PlatformDirs, _yerd_bin: &Path) -> Result<PathBuf, PhpError> {
     Ok(shim_dir(dirs))
 }
@@ -693,6 +864,7 @@ pub fn reconcile_shims(dirs: &PlatformDirs, yerd_bin: &Path) -> Result<(), PhpEr
 }
 
 #[cfg(not(unix))]
+/// Windows does not use Unix symlink-based PHP shims.
 pub fn reconcile_shims(_dirs: &PlatformDirs, _yerd_bin: &Path) -> Result<(), PhpError> {
     Ok(())
 }
@@ -702,6 +874,22 @@ pub fn reconcile_shims(_dirs: &PlatformDirs, _yerd_bin: &Path) -> Result<(), Php
 mod tests {
     use super::*;
     use std::io::Write as _;
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_available_minors_require_nts_x64_zip() {
+        let listing = br#"{
+            "8.3": {"version":"8.3.25","nts-vs17-x64":{"zip":{"path":"php-8.3.zip","sha256":"aa"}}},
+            "8.4": {"version":"8.4.12","ts-vs17-x64":{"zip":{"path":"php-8.4.zip","sha256":"bb"}}},
+            "8.5": {"version":"8.5.0","nts-vs17-x64":{"zip":{"path":"php-8.5.zip","sha256":"cc"}}},
+            "invalid": {}
+        }"#;
+
+        assert_eq!(
+            available_windows_minors(listing).unwrap(),
+            vec![PhpVersion::new(8, 3), PhpVersion::new(8, 5)]
+        );
+    }
 
     fn gzip_tar_single(name: &str, body: &[u8], mode: u32) -> Vec<u8> {
         let mut header = tar::Header::new_gnu();
@@ -855,6 +1043,7 @@ mod tests {
     /// `php.json` or legacy `php-legacy.json`) → the single `manifest`;
     /// `-cli-`/`-fpm-` → the respective tarball. Each test drives one channel, so
     /// serving the same manifest for whichever `.json` is requested is enough.
+    #[cfg(unix)]
     struct FakeDownloader {
         manifest: String,
         minisig: String,
@@ -862,6 +1051,7 @@ mod tests {
         fpm: Vec<u8>,
     }
 
+    #[cfg(unix)]
     #[async_trait]
     impl Downloader for FakeDownloader {
         async fn download(&self, url: &str) -> Result<Vec<u8>, DownloadError> {
@@ -884,6 +1074,7 @@ mod tests {
 
     /// Build a one-build `php.json` for the host platform whose `cli`/`fpm`
     /// sha256 match the given tarball bytes, then sign it.
+    #[cfg(unix)]
     fn signed_manifest_for(
         php: &str,
         minor: &str,
@@ -908,9 +1099,11 @@ mod tests {
         crate::test_support::sign_manifest(&manifest)
     }
 
+    #[cfg(unix)]
     const KEY: &str = yerd_update::PHP_LISTING_PUBLIC_KEY;
 
     #[tokio::test]
+    #[cfg(unix)]
     async fn install_lays_down_both_binaries_executable() {
         let tmp = tempfile::tempdir().unwrap();
         let dirs = dirs_in(tmp.path());
@@ -956,6 +1149,7 @@ mod tests {
     /// The manifest is signed over the correct shas, but the fake serves
     /// different tarball bytes, so the post-download sha check must abort.
     #[tokio::test]
+    #[cfg(unix)]
     async fn install_rejects_sha_mismatch_and_writes_nothing() {
         let tmp = tempfile::tempdir().unwrap();
         let dirs = dirs_in(tmp.path());
@@ -978,6 +1172,7 @@ mod tests {
     /// A manifest signed by a throwaway key fails when verified against the
     /// production `PHP_LISTING_PUBLIC_KEY`, and nothing is installed.
     #[tokio::test]
+    #[cfg(unix)]
     async fn install_rejects_untrusted_listing() {
         let tmp = tempfile::tempdir().unwrap();
         let dirs = dirs_in(tmp.path());
@@ -1003,6 +1198,7 @@ mod tests {
     /// signing: the original signature no longer covers the served bytes, so
     /// `fetch_verified_listing` returns `ListingUntrusted` before any resolve.
     #[tokio::test]
+    #[cfg(unix)]
     async fn fetch_verified_listing_rejects_tampered_body() {
         let cli = gzip_tar_single("php", b"CLI-BYTES", 0o755);
         let fpm = gzip_tar_single("php-fpm", b"FPM-BYTES", 0o755);
@@ -1022,6 +1218,7 @@ mod tests {
     /// A legacy (7.4) build installs from the `php-legacy.json` channel into
     /// `php-7.4/bin/php`, exercising the channel-aware `install` path.
     #[tokio::test]
+    #[cfg(unix)]
     async fn install_legacy_version_lands_in_versioned_dir() {
         let tmp = tempfile::tempdir().unwrap();
         let dirs = dirs_in(tmp.path());
@@ -1047,6 +1244,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(unix)]
     async fn install_errors_when_version_not_published_and_writes_nothing() {
         let tmp = tempfile::tempdir().unwrap();
         let dirs = dirs_in(tmp.path());
@@ -1078,10 +1276,12 @@ mod tests {
             cache: "/ca".into(),
             runtime: "/r".into(),
         };
-        assert_eq!(
-            cli_binary_path(&dirs, PhpVersion::new(8, 5)),
-            PathBuf::from("/d/php/php-8.5/bin/php")
-        );
+        let base = dirs.data.join("php").join("php-8.5");
+        #[cfg(unix)]
+        let expected = base.join("bin").join("php");
+        #[cfg(windows)]
+        let expected = base.join("php.exe");
+        assert_eq!(cli_binary_path(&dirs, PhpVersion::new(8, 5)), expected);
     }
 
     #[test]

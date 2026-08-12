@@ -49,6 +49,7 @@ fn set_mode(path: &Path, mode: u32) -> io::Result<()> {
 }
 
 #[cfg(not(unix))]
+#[allow(clippy::unnecessary_wraps)]
 fn set_mode(_path: &Path, _mode: u32) -> io::Result<()> {
     Ok(())
 }

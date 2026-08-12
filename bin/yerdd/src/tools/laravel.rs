@@ -64,7 +64,8 @@ pub async fn install(dirs: &PlatformDirs, progress: Option<&ProgressTx>) -> Resu
     let build = tools_root.join(format!(".laravel-build-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&build);
 
-    let mut child = tokio::process::Command::new(&php)
+    let mut command = tokio::process::Command::new(&php);
+    command
         .arg(&phar)
         .arg("create-project")
         .arg("--prefer-dist")
@@ -76,7 +77,11 @@ pub async fn install(dirs: &PlatformDirs, progress: Option<&ProgressTx>) -> Resu
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .kill_on_drop(true)
+        .kill_on_drop(true);
+    if let Some(phprc) = crate::php_install::cli_phprc(dirs, php_version) {
+        command.env("PHPRC", phprc);
+    }
+    let mut child = command
         .spawn()
         .map_err(|e| ToolError::Io(format!("spawn composer: {e}")))?;
 

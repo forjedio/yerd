@@ -1246,6 +1246,7 @@ fn installed_versions(type_id: &str, dirs: &PlatformDirs) -> Vec<ServiceVersion>
 
 /// Resolve the version to run: the configured one if installed, else the latest
 /// installed; error if nothing is installed.
+#[allow(clippy::result_large_err)]
 pub(crate) fn resolve_version(
     def: &Arc<dyn ServiceDefinition>,
     configured: Option<&str>,
@@ -1486,6 +1487,7 @@ mod tests {
 
     /// Grab a currently-free loopback port so `ensure`'s port pre-flight passes
     /// on a machine that may already run the real service.
+    #[cfg(unix)]
     fn free_port() -> u16 {
         let l = std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).unwrap();
         l.local_addr().unwrap().port()
@@ -1624,6 +1626,7 @@ mod tests {
         assert_eq!(reverb.port, 8081);
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn available_services_excludes_versionless_types() {
         let tmp = tempfile::tempdir().unwrap();

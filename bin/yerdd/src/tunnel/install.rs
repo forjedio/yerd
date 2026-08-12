@@ -511,6 +511,7 @@ fn set_executable(path: &Path) -> Result<(), CloudflaredInstallError> {
 }
 
 #[cfg(not(unix))]
+#[allow(clippy::unnecessary_wraps)]
 fn set_executable(_path: &Path) -> Result<(), CloudflaredInstallError> {
     Ok(())
 }
@@ -688,6 +689,7 @@ mod tests {
         assert_eq!(find_in_paths(&path_var), Some(second.join("cloudflared")));
     }
 
+    #[cfg(unix)]
     #[test]
     fn find_in_paths_ignores_non_executable_file() {
         let tmp = tempfile::tempdir().unwrap();

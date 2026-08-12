@@ -15,7 +15,10 @@ use crate::error::{CommandReason, HelperError};
 
 /// Pinned `PATH` for every subprocess invocation. Matches
 /// `/usr/sbin:/usr/bin:/sbin:/bin` on both Linux and macOS.
+#[cfg(unix)]
 const PINNED_PATH: &str = "/usr/sbin:/usr/bin:/sbin:/bin";
+#[cfg(windows)]
+const PINNED_PATH: &str = r"C:\Windows\System32;C:\Windows";
 
 /// Spawn `program` with `args`, with `env_clear()` plus the pinned
 /// `PATH`. Returns the process output on success; maps every failure
@@ -31,6 +34,13 @@ where
 {
     let mut cmd = Command::new(program);
     cmd.env_clear().env("PATH", PINNED_PATH);
+    #[cfg(windows)]
+    cmd.env("SystemRoot", r"C:\Windows")
+        .env("WINDIR", r"C:\Windows")
+        .env(
+            "PSModulePath",
+            r"C:\Windows\system32\WindowsPowerShell\v1.0\Modules",
+        );
     for a in args {
         cmd.arg(a);
     }
@@ -135,6 +145,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn run_command_propagates_nonzero_exit() {
         let err = run_command("false", "/usr/bin/false", Vec::<&str>::new()).unwrap_err();
         match err {
@@ -147,6 +158,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn run_command_succeeds_for_true() {
         let out = run_command("true", "/usr/bin/true", Vec::<&str>::new()).unwrap();
         assert!(out.status.success());

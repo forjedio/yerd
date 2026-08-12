@@ -4,16 +4,20 @@
 //! Node's `.tar.gz` bundles `node` plus npm/npx (relative symlinks into
 //! `lib/node_modules/npm`). Integrity uses the per-release `SHASUMS256.txt`.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
+#[cfg(unix)]
+use std::path::PathBuf;
 
 use serde::Deserialize;
 
-use yerd_php::{current_os_arch, is_safe_member, Arch, Downloader, Os};
+use yerd_php::Downloader;
+#[cfg(unix)]
+use yerd_php::{current_os_arch, is_safe_member, Arch, Os};
 use yerd_platform::PlatformDirs;
 
-use super::{
-    extract_root_dir, sha_for_asset, stage_and_swap, tool_dir, verify_sha256, Tool, ToolError,
-};
+#[cfg(unix)]
+use super::{extract_root_dir, tool_dir};
+use super::{note, sha_for_asset, stage_and_swap, verify_sha256, ProgressTx, Tool, ToolError};
 
 const DIST_INDEX: &str = "https://nodejs.org/dist/index.json";
 const DIST_BASE: &str = "https://nodejs.org/dist";
@@ -29,13 +33,18 @@ struct Release {
 /// The platform token Node uses in artifact names for the host, e.g.
 /// `darwin-arm64`. `None` if Node publishes no build for this OS/arch.
 fn host_platform() -> Option<&'static str> {
-    let (os, arch) = current_os_arch().ok()?;
-    Some(match (os, arch) {
-        (Os::Macos, Arch::Aarch64) => "darwin-arm64",
-        (Os::Macos, Arch::X86_64) => "darwin-x64",
-        (Os::Linux, Arch::X86_64) => "linux-x64",
-        (Os::Linux, Arch::Aarch64) => "linux-arm64",
-    })
+    #[cfg(windows)]
+    return (std::env::consts::ARCH == "x86_64").then_some("win-x64");
+    #[cfg(unix)]
+    {
+        let (os, arch) = current_os_arch().ok()?;
+        Some(match (os, arch) {
+            (Os::Macos, Arch::Aarch64) => "darwin-arm64",
+            (Os::Macos, Arch::X86_64) => "darwin-x64",
+            (Os::Linux, Arch::X86_64) => "linux-x64",
+            (Os::Linux, Arch::Aarch64) => "linux-arm64",
+        })
+    }
 }
 
 /// Latest LTS version (`v24.17.0`) from a dist `index.json` body. The index is
@@ -49,8 +58,13 @@ fn latest_lts(index_json: &[u8]) -> Option<String> {
 }
 
 /// Install the latest Node LTS for the host into `{data}/tools/node/`.
-pub async fn install(dirs: &PlatformDirs, dl: &dyn Downloader) -> Result<(), ToolError> {
+pub async fn install(
+    dirs: &PlatformDirs,
+    dl: &dyn Downloader,
+    progress: Option<&ProgressTx>,
+) -> Result<(), ToolError> {
     let plat = host_platform().ok_or(ToolError::UnsupportedHost("Node.js"))?;
+    note(progress, "Checking the latest Node.js LTS release...");
     let index = dl
         .download(DIST_INDEX)
         .await
@@ -58,10 +72,14 @@ pub async fn install(dirs: &PlatformDirs, dl: &dyn Downloader) -> Result<(), Too
     let version = latest_lts(&index)
         .ok_or_else(|| ToolError::Download("node: no LTS release found".to_owned()))?;
 
+    #[cfg(windows)]
+    let asset = format!("node-{version}-{plat}.zip");
+    #[cfg(unix)]
     let asset = format!("node-{version}-{plat}.tar.gz");
     let tarball_url = format!("{DIST_BASE}/{version}/{asset}");
     let sums_url = format!("{DIST_BASE}/{version}/SHASUMS256.txt");
 
+    note(progress, format!("Verifying {asset}..."));
     let sums = dl
         .download(&sums_url)
         .await
@@ -69,13 +87,26 @@ pub async fn install(dirs: &PlatformDirs, dl: &dyn Downloader) -> Result<(), Too
     let want_sha = sha_for_asset(&String::from_utf8_lossy(&sums), &asset)
         .ok_or_else(|| ToolError::Download(format!("node: {asset} not in SHASUMS256.txt")))?;
 
+    note(progress, format!("Downloading {asset}..."));
     let bytes = dl
-        .download(&tarball_url)
+        .download_with_progress(&tarball_url, &|done, total| {
+            if done == 0 || total.is_some_and(|total| done >= total) {
+                let message = total.map_or_else(
+                    || format!("Downloaded {done} bytes"),
+                    |total| format!("Downloaded {done} / {total} bytes"),
+                );
+                note(progress, message);
+            }
+        })
         .await
         .map_err(|e| ToolError::Download(format!("{asset}: {e}")))?;
     verify_sha256(&bytes, &want_sha, &asset)?;
 
+    note(progress, "Installing Node.js...");
     stage_and_swap(dirs, Tool::Node, &version, |staging| {
+        #[cfg(windows)]
+        return unpack_zip(&bytes, staging, &asset);
+        #[cfg(unix)]
         unpack_tar_gz(&bytes, staging, &asset)
     })?;
     tracing::info!(version = %version, "installed Node.js");
@@ -99,6 +130,7 @@ pub(crate) fn shim_links(dirs: &PlatformDirs) -> Vec<(String, PathBuf)> {
 /// Safely unpack a Node `.tar.gz` full tree into `dest`, preserving permissions
 /// and the internal npm/npx symlinks. Member *names* are validated against
 /// traversal; the sha256 verification above is the integrity boundary.
+#[cfg(unix)]
 fn unpack_tar_gz(gz_bytes: &[u8], dest: &Path, label: &str) -> Result<(), ToolError> {
     let decoder = flate2::read::GzDecoder::new(gz_bytes);
     let mut archive = tar::Archive::new(decoder);
@@ -124,6 +156,36 @@ fn unpack_tar_gz(gz_bytes: &[u8], dest: &Path, label: &str) -> Result<(), ToolEr
         entry
             .unpack(&out)
             .map_err(|e| ToolError::Unpack(format!("{name}: {e}")))?;
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn unpack_zip(bytes: &[u8], dest: &Path, label: &str) -> Result<(), ToolError> {
+    let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes))
+        .map_err(|e| ToolError::Unpack(format!("{label}: {e}")))?;
+    for index in 0..archive.len() {
+        let mut entry = archive
+            .by_index(index)
+            .map_err(|e| ToolError::Unpack(format!("{label}: {e}")))?;
+        let path = entry
+            .enclosed_name()
+            .ok_or_else(|| ToolError::Unpack(format!("unsafe archive member {:?}", entry.name())))?
+            .clone();
+        let out = dest.join(path);
+        if entry.is_dir() {
+            std::fs::create_dir_all(&out)
+                .map_err(|e| ToolError::Unpack(format!("{}: {e}", out.display())))?;
+            continue;
+        }
+        if let Some(parent) = out.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| ToolError::Unpack(format!("{}: {e}", parent.display())))?;
+        }
+        let mut file = std::fs::File::create(&out)
+            .map_err(|e| ToolError::Unpack(format!("{}: {e}", out.display())))?;
+        std::io::copy(&mut entry, &mut file)
+            .map_err(|e| ToolError::Unpack(format!("{}: {e}", out.display())))?;
     }
     Ok(())
 }

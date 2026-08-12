@@ -30,6 +30,7 @@ const DAEMON_LABEL: &str = "dev.yerd.daemon";
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 const SYSTEMD_UNIT: &str = "yerd";
 /// The exact process name to match when falling back to signalling by pid.
+#[cfg(unix)]
 const DAEMON_PROCESS: &str = "yerdd";
 
 /// A daemon service-control failure.
@@ -219,6 +220,7 @@ fn running_pids() -> Vec<i32> {
 }
 
 /// Parse `pgrep` stdout (one pid per line) into pids, skipping junk.
+#[cfg(any(unix, test))]
 fn parse_pids(stdout: &str) -> Vec<i32> {
     stdout
         .lines()

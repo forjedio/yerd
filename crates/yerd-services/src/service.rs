@@ -740,9 +740,9 @@ impl ServiceDefinition for Meilisearch {
             .arg("--db-path")
             .arg(ctx.datadir)
             .arg("--dump-dir")
-            .arg(ctx.datadir.join("dumps"))
+            .arg(command_path(&ctx.datadir.join("dumps")))
             .arg("--snapshot-dir")
-            .arg(ctx.datadir.join("snapshots"))
+            .arg(command_path(&ctx.datadir.join("snapshots")))
             .arg("--env")
             .arg("development")
             .arg("--no-analytics");
@@ -751,6 +751,10 @@ impl ServiceDefinition for Meilisearch {
             capture_output_to_log: true,
         })
     }
+}
+
+fn command_path(path: &std::path::Path) -> String {
+    path.to_string_lossy().replace('\\', "/")
 }
 
 /// Laravel Reverb: a per-site WebSocket app server, supervised as

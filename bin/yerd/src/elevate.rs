@@ -8,14 +8,8 @@
 //! `current_exe` sibling - never from the daemon - and (b) owner-checks the CA
 //! path before trusting it. The daemon itself is never restarted as root.
 
-#[cfg(not(unix))]
-pub async fn run_elevate(
-    _target: Option<crate::cli::ElevateTarget>,
-    _undo: bool,
-) -> std::process::ExitCode {
-    eprintln!("yerd: elevate is only supported on Unix (macOS/Linux)");
-    std::process::ExitCode::from(78)
-}
+#[cfg(windows)]
+pub use windows_impl::run_elevate;
 
 #[cfg(unix)]
 pub use unix_impl::run_elevate;
@@ -26,6 +20,109 @@ pub use unix_impl::run_elevate;
 // without a running daemon.
 #[cfg(unix)]
 pub(crate) use unix_impl::{is_root, sibling_binaries, spawn_helper, sudo_uid};
+
+#[cfg(windows)]
+mod windows_impl {
+    use std::path::Path;
+    use std::process::{Command, ExitCode};
+
+    use yerd_ipc::{Request, Response};
+    use yerd_platform::{CaFingerprint, HelperInvocation};
+
+    use crate::cli::ElevateTarget;
+
+    /// Apply or remove Windows privilege integrations through UAC.
+    pub async fn run_elevate(target: Option<ElevateTarget>, undo: bool) -> ExitCode {
+        let info = match crate::transport::exchange(&Request::DaemonInfo).await {
+            Ok(Response::Info {
+                dns_addr,
+                tld,
+                ca_path,
+                ca_fingerprint,
+                ..
+            }) => (dns_addr, tld, ca_path, ca_fingerprint),
+            Ok(other) => {
+                eprintln!("yerd: unexpected daemon response: {other:?}");
+                return ExitCode::from(69);
+            }
+            Err(error) => {
+                eprintln!("yerd: {error}");
+                return ExitCode::from(69);
+            }
+        };
+        let Some(helper) = std::env::current_exe()
+            .ok()
+            .and_then(|path| path.parent().map(|parent| parent.join("yerd-helper.exe")))
+            .filter(|path| path.is_file())
+        else {
+            eprintln!("yerd: yerd-helper.exe must be beside yerd.exe");
+            return ExitCode::from(74);
+        };
+        let targets = target.map_or_else(
+            || vec![ElevateTarget::Trust, ElevateTarget::Resolver],
+            |target| vec![target],
+        );
+        for target in targets {
+            let invocation = match (target, undo) {
+                (ElevateTarget::Trust, false) => {
+                    let fp = match CaFingerprint::from_hex(&info.3) {
+                        Ok(fp) => fp,
+                        Err(error) => {
+                            eprintln!("yerd: invalid daemon CA fingerprint: {error}");
+                            return ExitCode::from(65);
+                        }
+                    };
+                    HelperInvocation::InstallCa {
+                        ca_pem_path: info.2.clone(),
+                        fp,
+                    }
+                }
+                (ElevateTarget::Resolver, false) => HelperInvocation::InstallResolver {
+                    tld: info.1.clone(),
+                    addr: info.0,
+                },
+                (ElevateTarget::Resolver, true) => HelperInvocation::UninstallResolver {
+                    tld: info.1.clone(),
+                },
+                (ElevateTarget::Trust, true) => {
+                    eprintln!("yerd: Windows CA removal is not available yet");
+                    return ExitCode::from(78);
+                }
+                (ElevateTarget::Ports | ElevateTarget::Lan, _) => continue,
+            };
+            match spawn_elevated(&helper, &invocation) {
+                Ok(true) => {}
+                Ok(false) => return ExitCode::from(75),
+                Err(error) => {
+                    eprintln!("yerd: could not launch elevated helper: {error}");
+                    return ExitCode::from(74);
+                }
+            }
+        }
+        ExitCode::SUCCESS
+    }
+
+    fn spawn_elevated(helper: &Path, invocation: &HelperInvocation) -> std::io::Result<bool> {
+        let arguments = invocation
+            .to_argv()
+            .iter()
+            .map(|arg| ps_quote(&arg.to_string_lossy()))
+            .collect::<Vec<_>>()
+            .join(",");
+        let script = format!(
+            "$p=Start-Process -FilePath {} -Verb RunAs -ArgumentList @({arguments}) -Wait -PassThru; exit $p.ExitCode",
+            ps_quote(&helper.to_string_lossy())
+        );
+        Command::new(r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe")
+            .args(["-NoProfile", "-NonInteractive", "-Command", &script])
+            .status()
+            .map(|status| status.success())
+    }
+
+    fn ps_quote(value: &str) -> String {
+        format!("'{}'", value.replace('\'', "''"))
+    }
+}
 
 #[cfg(unix)]
 mod unix_impl {

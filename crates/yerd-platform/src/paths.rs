@@ -48,8 +48,9 @@ impl PlatformDirs {
     /// which `resolve` prefers when the env var is set) must add it itself,
     /// since the real value can't be recovered from a stripped sudo environment.
     #[must_use]
-    pub fn for_user(home: &std::path::Path, uid: u32) -> Self {
-        let runtime = PathBuf::from(format!("/tmp/yerd-{uid}"));
+    pub fn for_user(home: &std::path::Path, _uid: u32) -> Self {
+        #[cfg(not(target_os = "windows"))]
+        let runtime = PathBuf::from(format!("/tmp/yerd-{_uid}"));
         #[cfg(target_os = "macos")]
         {
             let app = home
@@ -75,7 +76,24 @@ impl PlatformDirs {
                 runtime,
             }
         }
-        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+        #[cfg(target_os = "windows")]
+        {
+            let roaming = home
+                .join("AppData")
+                .join("Roaming")
+                .join("yerd")
+                .join("Yerd");
+            let local = home.join("AppData").join("Local").join("yerd").join("Yerd");
+            let state = local.join("data");
+            Self {
+                config: roaming.join("config"),
+                data: roaming.join("data"),
+                state: state.clone(),
+                cache: local.join("cache"),
+                runtime: state.join("run"),
+            }
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
         {
             Self {
                 config: home.join(".config").join("yerd"),

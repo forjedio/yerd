@@ -1185,6 +1185,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn canonicalize_db_paths_backup_absolute_is_unchanged() {
         let abs = PathBuf::from("/var/tmp/app.sql");
         let req = Request::BackupDatabase {
@@ -1208,6 +1209,7 @@ mod tests {
     // ─── absolutise ─────────────────────────────────────────────────
 
     #[test]
+    #[cfg(unix)]
     fn absolutise_returns_absolute_path_unchanged() {
         let abs = Path::new("/etc/hosts");
         assert_eq!(absolutise(abs).unwrap(), abs.to_path_buf());

@@ -149,6 +149,10 @@ pub enum ResolverErrorReason {
     #[error("tld empty")]
     TldEmpty,
 
+    /// System resolver API or command failed.
+    #[error("system resolver API failed: {0}")]
+    SystemApi(String),
+
     /// `systemd-resolved` was expected but is not active.
     #[error("systemd-resolved not active")]
     ResolvedNotActive,

@@ -18,11 +18,11 @@ fn minor_is_legacy(minor: &str) -> bool {
 /// `{data}/php/php-<minor>/bin/php`.
 #[must_use]
 pub(crate) fn cli_binary(dirs: &PlatformDirs, minor: &str) -> PathBuf {
-    dirs.data
-        .join("php")
-        .join(format!("php-{minor}"))
-        .join("bin")
-        .join("php")
+    let root = dirs.data.join("php").join(format!("php-{minor}"));
+    #[cfg(unix)]
+    return root.join("bin").join("php");
+    #[cfg(windows)]
+    root.join("php.exe")
 }
 
 /// The default PHP `(binary, "major.minor")` via the `php` shim's target, if the

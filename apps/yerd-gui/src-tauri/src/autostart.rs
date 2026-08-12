@@ -247,9 +247,12 @@ fn service_registered() -> bool {
     {
         unit_path().map(|p| p.exists()).unwrap_or(false)
     }
-    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    #[cfg(windows)]
     {
-        false
+        Command::new("schtasks.exe")
+            .args(["/Query", "/TN", "Yerd Daemon"])
+            .output()
+            .is_ok_and(|output| output.status.success())
     }
 }
 
@@ -442,9 +445,9 @@ pub(crate) fn manager_available() -> bool {
     {
         true
     }
-    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    #[cfg(windows)]
     {
-        false
+        true
     }
 }
 
@@ -1097,6 +1100,7 @@ pub(crate) struct StartStep {
 }
 
 /// Writing a unit/plist + service-manager start.
+#[cfg(unix)]
 const INSTALL_BUDGET: std::time::Duration = std::time::Duration::from_secs(12);
 /// The macOS SMAppService ensure/register step: unregister + register_repairing +
 /// kickstart is the slowest single action (XPC), so it gets the largest slice
@@ -1225,12 +1229,14 @@ pub(crate) fn plan_start(nudge: bool) -> Result<Vec<StartStep>, GuiError> {
             ])
         }
     }
-    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    #[cfg(windows)]
     {
         let _ = nudge;
-        Err(GuiError::internal(
-            "starting the daemon is not supported on this platform",
-        ))
+        Ok(vec![StartStep {
+            phase: StartPhase::Starting,
+            budget: START_BUDGET,
+            run: Box::new(crate::daemon::spawn_detached),
+        }])
     }
 }
 
@@ -1301,12 +1307,33 @@ fn daemon_set_login(on: bool, nudge: bool) -> Result<(), GuiError> {
             )
         }
     }
-    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    #[cfg(windows)]
     {
-        let _ = (on, nudge);
-        Err(GuiError::internal(
-            "daemon autostart is not supported on this platform",
-        ))
+        let _ = nudge;
+        if on {
+            let yerdd = crate::daemon::resolve_yerdd()
+                .ok_or_else(|| GuiError::internal("yerdd is not installed"))?;
+            let task_command = format!("\"{}\" serve", yerdd.display());
+            run_ok(
+                "schtasks.exe",
+                &[
+                    "/Create",
+                    "/TN",
+                    "Yerd Daemon",
+                    "/TR",
+                    &task_command,
+                    "/SC",
+                    "ONLOGON",
+                    "/RL",
+                    "LIMITED",
+                    "/F",
+                ],
+            )
+        } else if service_registered() {
+            run_ok("schtasks.exe", &["/Delete", "/TN", "Yerd Daemon", "/F"])
+        } else {
+            Ok(())
+        }
     }
 }
 

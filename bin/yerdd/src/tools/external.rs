@@ -144,6 +144,7 @@ async fn capture_path_string() -> Option<String> {
 }
 
 #[cfg(not(unix))]
+#[allow(clippy::unused_async)]
 async fn capture_path_string() -> Option<String> {
     None
 }

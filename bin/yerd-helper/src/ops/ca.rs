@@ -1,8 +1,12 @@
-//! `install-ca` and `uninstall-ca` for Linux + macOS.
+//! `install-ca` and `uninstall-ca` implementations.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
+#[cfg(target_os = "linux")]
+use std::path::PathBuf;
 
-use yerd_platform::pure::{cert_identity, pem_match};
+use yerd_platform::pure::cert_identity;
+#[cfg(target_os = "linux")]
+use yerd_platform::pure::pem_match;
 use yerd_platform::CaFingerprint;
 
 #[cfg(target_os = "macos")]
@@ -12,6 +16,32 @@ use crate::error::{HelperError, ValidationReason};
 use crate::ops::atomic_write;
 use crate::ops::run_command;
 use crate::validate;
+
+#[cfg(windows)]
+pub fn install_ca(pem_path: &Path, fp: &CaFingerprint) -> Result<(), HelperError> {
+    validate::require_existing_file(pem_path)?;
+    let der = validate::require_pem_matches_fingerprint(pem_path, fp)?;
+    if !cert_is_yerd_owned(&der) {
+        return Err(HelperError::Validation {
+            reason: ValidationReason::CertNotYerdOwned {
+                found_cn: cert_identity::subject_common_name(&der),
+            },
+        });
+    }
+    run_command(
+        "certutil",
+        r"C:\Windows\System32\certutil.exe",
+        ["-addstore", "-f", "Root", &pem_path.to_string_lossy()],
+    )
+    .map(|_| ())
+}
+
+#[cfg(windows)]
+pub fn uninstall_ca(_fp: &CaFingerprint) -> Result<(), HelperError> {
+    Err(HelperError::Unsupported {
+        operation: yerd_platform::error::ops::UNINSTALL_CA,
+    })
+}
 
 /// True iff `cert_der` is yerd's own CA - its Subject CN equals
 /// [`yerd_core::CA_COMMON_NAME`]. This is the ownership guard the privileged

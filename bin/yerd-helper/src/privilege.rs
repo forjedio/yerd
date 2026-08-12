@@ -12,10 +12,22 @@
 #[cfg(target_os = "linux")]
 use std::fs;
 
-/// True iff the helper's effective UID is 0.
+/// True iff the helper has OS administrator privileges.
 #[must_use]
+#[cfg(unix)]
 pub fn is_privileged() -> bool {
     effective_uid() == Some(0)
+}
+
+/// True iff the helper has OS administrator privileges.
+#[must_use]
+#[cfg(windows)]
+pub fn is_privileged() -> bool {
+    std::process::Command::new("net.exe")
+        .arg("session")
+        .env_clear()
+        .status()
+        .is_ok_and(|status| status.success())
 }
 
 #[cfg(target_os = "linux")]
@@ -47,7 +59,7 @@ fn effective_uid() -> Option<u32> {
     s.trim().parse().ok()
 }
 
-#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+#[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
 fn effective_uid() -> Option<u32> {
     None
 }

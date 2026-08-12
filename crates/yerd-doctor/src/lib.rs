@@ -57,9 +57,20 @@ pub fn diagnose(
     path_needs_setup: Option<bool>,
     local_override_files: &[(String, String, String)],
 ) -> Vec<Diagnosis> {
+    diagnose_with_port_owner(report, path_needs_setup, local_override_files, None)
+}
+
+/// Run every check with optional host-probed detail about foreign web listeners.
+#[must_use]
+pub fn diagnose_with_port_owner(
+    report: &StatusReport,
+    path_needs_setup: Option<bool>,
+    local_override_files: &[(String, String, String)],
+    foreign_web_listener_detail: Option<&str>,
+) -> Vec<Diagnosis> {
     let mut out = Vec::new();
 
-    out.extend(port_findings(report));
+    out.extend(port_findings(report, foreign_web_listener_detail));
     out.extend(trust_findings(report));
     out.extend(php_state_findings(report));
     out.extend(service_findings(report));
@@ -371,7 +382,10 @@ pub fn is_auto_fixable(code: DiagnosisCode) -> bool {
 /// another process owns). On macOS the daemon still binds the rootless ports
 /// even once elevated, so an active pf redirect (`port_redirect == Some(true)`)
 /// means 80/443 are in fact reachable - also suppressing the fallback warning.
-fn port_findings(report: &StatusReport) -> Vec<Diagnosis> {
+fn port_findings(
+    report: &StatusReport,
+    foreign_web_listener_detail: Option<&str>,
+) -> Vec<Diagnosis> {
     let mut out = Vec::new();
     if let Some(dns_port) = report.dns_unbound {
         out.push(warn(
@@ -387,13 +401,27 @@ fn port_findings(report: &StatusReport) -> Vec<Diagnosis> {
     }
     let foreign_listener = report.foreign_web_listener == Some(true);
     if foreign_listener {
+        let detail = foreign_web_listener_detail.map_or_else(
+            || {
+                "A program other than Yerd is listening on port 80 or 443. Yerd can't serve your .test sites there until it's stopped."
+                    .to_owned()
+            },
+            |owner| {
+                format!(
+                    "A program other than Yerd is listening on a required web port: {owner}"
+                )
+            },
+        );
+        let remedy = if cfg!(windows) {
+            "Stop the listed process, then restart Yerd. For wslrelay.exe, stop the affected WSL service or run `wsl --shutdown`."
+        } else {
+            "Stop the other web server (e.g. Apache, nginx, Valet), then `sudo yerd elevate ports`"
+        };
         out.push(warn(
             DiagnosisCode::ForeignWebListener,
-            "Another process is using port 80/443",
-            "A program other than Yerd is listening on a privileged web port (80/443). \
-             Yerd can't serve your .test sites there until it's stopped."
-                .to_owned(),
-            "Stop the other web server (e.g. Apache, nginx, Valet), then `sudo yerd elevate ports`",
+            "Another process is using a web port",
+            detail,
+            remedy,
         ));
     }
     if let Some(unbound) = report.web_unbound {

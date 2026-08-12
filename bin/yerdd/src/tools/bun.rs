@@ -6,16 +6,18 @@
 //! the GitHub "latest release" API (`tag_name`, e.g. `bun-v1.3.14`).
 
 use std::io::{Cursor, Read as _};
-use std::path::{Path, PathBuf};
+use std::path::Path;
+#[cfg(unix)]
+use std::path::PathBuf;
 
 use serde::Deserialize;
 
 use yerd_php::{current_os_arch, is_safe_member, Arch, Downloader, Os};
 use yerd_platform::PlatformDirs;
 
-use super::{
-    extract_root_dir, sha_for_asset, stage_and_swap, tool_dir, verify_sha256, Tool, ToolError,
-};
+#[cfg(unix)]
+use super::{extract_root_dir, tool_dir};
+use super::{sha_for_asset, stage_and_swap, verify_sha256, Tool, ToolError};
 
 const LATEST_API: &str = "https://api.github.com/repos/oven-sh/bun/releases/latest";
 const RELEASE_BASE: &str = "https://github.com/oven-sh/bun/releases/download";
@@ -158,6 +160,7 @@ mod tests {
         assert_eq!(display_version("weird"), "weird");
     }
 
+    #[cfg(unix)]
     #[test]
     fn host_platform_known() {
         assert!(host_platform().is_some());

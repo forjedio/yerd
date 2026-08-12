@@ -1548,8 +1548,9 @@ mod tests {
         let confd = version::confd_dir(&dirs, "mysql");
         let main = std::fs::read_to_string(&config_path).unwrap();
         assert!(main.starts_with("[mysqld]\nport = 3306\n"));
+        let confd = confd.to_string_lossy().replace('\\', "/");
         assert!(
-            main.ends_with(&format!("!includedir {}\n", confd.display())),
+            main.ends_with(&format!("!includedir {confd}\n")),
             "got: {main}"
         );
         assert!(std::fs::read_to_string(&managed)

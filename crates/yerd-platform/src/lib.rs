@@ -3,9 +3,8 @@
 //! The core traits live here - [`Paths`], [`TrustStore`], [`ResolverInstaller`],
 //! [`PortBinder`], [`PortRedirector`], and [`TerminalLauncher`] - each with a single thin
 //! implementation per OS selected by `#[cfg(target_os = ...)]`. macOS and Linux
-//! ship in Phase 1;
-//! Windows compiles against the [`os::unsupported`] stub that returns
-//! [`PlatformError::Unsupported`] for every method.
+//! ship the complete surface. Windows currently supports paths, terminal launch,
+//! and port binding; privileged integration remains unsupported.
 //!
 //! ## Privilege boundary
 //!

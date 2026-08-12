@@ -238,10 +238,11 @@ async fn dispatch(req: Request, state: &DaemonState) -> Response {
             report: Box::new(build_status_report(state).await),
         },
         Request::Diagnose => Response::Diagnoses {
-            items: yerd_doctor::diagnose(
+            items: yerd_doctor::diagnose_with_port_owner(
                 &build_status_report(state).await,
                 path_needs_setup(state),
                 &crate::services::local_override_files(&state.dirs),
+                foreign_web_listener_detail().as_deref(),
             ),
         },
         Request::DoctorFix => run_doctor_fix(state).await,
@@ -524,32 +525,55 @@ async fn available_php_with(
     dl: &dyn yerd_php::Downloader,
     public_key: &str,
 ) -> Response {
-    let (os, arch) = match yerd_php::current_os_arch() {
-        Ok(p) => p,
-        Err(e) => {
-            return Response::Error {
-                code: php_error_code(&e),
-                message: e.to_string(),
+    #[cfg(windows)]
+    #[allow(clippy::needless_return)]
+    {
+        let _ = public_key;
+        let listing = match dl.download(crate::php_install::WINDOWS_RELEASES_URL).await {
+            Ok(body) => body,
+            Err(e) => return internal(format!("couldn't load the PHP listing: {e}")),
+        };
+        return match crate::php_install::available_windows_minors(&listing) {
+            Ok(available) => Response::AvailablePhp {
+                available,
+                installed: installed_versions(state),
+                legacy: Vec::new(),
+            },
+            Err(e) => internal(format!("couldn't load the PHP listing: {e}")),
+        };
+    }
+    #[cfg(not(windows))]
+    {
+        let (os, arch) = match yerd_php::current_os_arch() {
+            Ok(p) => p,
+            Err(e) => {
+                return Response::Error {
+                    code: php_error_code(&e),
+                    message: e.to_string(),
+                }
             }
-        }
-    };
-    let listing =
-        match crate::php_install::fetch_verified_listing(dl, public_key, yerd_php::Channel::Stable)
-            .await
+        };
+        let listing = match crate::php_install::fetch_verified_listing(
+            dl,
+            public_key,
+            yerd_php::Channel::Stable,
+        )
+        .await
         {
             Ok(body) => body,
             Err(e) => return internal(format!("couldn't load the PHP listing: {e}")),
         };
-    let legacy =
-        crate::php_install::fetch_verified_listing(dl, public_key, yerd_php::Channel::Legacy)
-            .await
-            .ok()
-            .map(|body| yerd_php::available_minors(&body, os, arch, yerd_php::Channel::Legacy))
-            .unwrap_or_default();
-    Response::AvailablePhp {
-        available: yerd_php::available_minors(&listing, os, arch, yerd_php::Channel::Stable),
-        installed: installed_versions(state),
-        legacy,
+        let legacy =
+            crate::php_install::fetch_verified_listing(dl, public_key, yerd_php::Channel::Legacy)
+                .await
+                .ok()
+                .map(|body| yerd_php::available_minors(&body, os, arch, yerd_php::Channel::Legacy))
+                .unwrap_or_default();
+        Response::AvailablePhp {
+            available: yerd_php::available_minors(&listing, os, arch, yerd_php::Channel::Stable),
+            installed: installed_versions(state),
+            legacy,
+        }
     }
 }
 
@@ -972,10 +996,11 @@ async fn run_doctor_fix(state: &DaemonState) -> Response {
     }
 
     let after = build_status_report(state).await;
-    let manual = yerd_doctor::diagnose(
+    let manual = yerd_doctor::diagnose_with_port_owner(
         &after,
         path_needs_setup(state),
         &crate::services::local_override_files(&state.dirs),
+        foreign_web_listener_detail().as_deref(),
     )
     .into_iter()
     .filter(|d| {
@@ -989,6 +1014,68 @@ async fn run_doctor_fix(state: &DaemonState) -> Response {
     Response::DoctorFix {
         report: yerd_ipc::FixReport { performed, manual },
     }
+}
+
+#[cfg(windows)]
+fn foreign_web_listener_detail() -> Option<String> {
+    probe_windows_web_listeners()
+}
+
+#[cfg(not(windows))]
+const fn foreign_web_listener_detail() -> Option<String> {
+    None
+}
+
+#[cfg(windows)]
+fn probe_windows_web_listeners() -> Option<String> {
+    let output = std::process::Command::new("netstat.exe")
+        .args(["-ano", "-p", "tcp"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&output.stdout);
+    let mut listeners = Vec::new();
+    for line in text.lines() {
+        let fields: Vec<&str> = line.split_whitespace().collect();
+        if fields.len() < 5 || fields.first() != Some(&"TCP") {
+            continue;
+        }
+        let Some(local) = fields.get(1) else { continue };
+        let Some(port) = local.rsplit(':').next().and_then(|p| p.parse::<u16>().ok()) else {
+            continue;
+        };
+        if !matches!(port, 80 | 443) || fields.get(3) != Some(&"LISTENING") {
+            continue;
+        }
+        let Some(pid) = fields.last().and_then(|p| p.parse::<u32>().ok()) else {
+            continue;
+        };
+        let name = windows_process_name(pid).unwrap_or_else(|| "unknown process".to_owned());
+        let entry = format!("port {port}: {name} (PID {pid})");
+        if !listeners.contains(&entry) {
+            listeners.push(entry);
+        }
+    }
+    (!listeners.is_empty()).then(|| listeners.join(", "))
+}
+
+#[cfg(windows)]
+fn windows_process_name(pid: u32) -> Option<String> {
+    let filter = format!("PID eq {pid}");
+    let output = std::process::Command::new("tasklist.exe")
+        .args(["/FI", &filter, "/FO", "CSV", "/NH"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let line = String::from_utf8_lossy(&output.stdout);
+    line.trim()
+        .strip_prefix('"')?
+        .split_once('"')
+        .map(|(name, _)| name.to_owned())
 }
 
 /// `update php [<ver>]` - upgrade the given minor (or all installed) to the
@@ -1008,15 +1095,6 @@ async fn run_doctor_fix(state: &DaemonState) -> Response {
 #[allow(clippy::too_many_lines)]
 async fn update_php(version: Option<yerd_core::PhpVersion>, state: &DaemonState) -> Response {
     let dl = crate::php_install::ReqwestDownloader::new();
-    let (os, arch) = match yerd_php::current_os_arch() {
-        Ok(p) => p,
-        Err(e) => {
-            return Response::Error {
-                code: php_error_code(&e),
-                message: e.to_string(),
-            }
-        }
-    };
     let targets: Vec<yerd_core::PhpVersion> = match version {
         Some(v) => {
             if crate::php_install::installed_patch(&state.dirs, v).is_none() {
@@ -1028,6 +1106,15 @@ async fn update_php(version: Option<yerd_core::PhpVersion>, state: &DaemonState)
             vec![v]
         }
         None => crate::php_updates::installed_minors(state),
+    };
+    let (os, arch) = match yerd_php::current_os_arch() {
+        Ok(p) => p,
+        Err(e) => {
+            return Response::Error {
+                code: php_error_code(&e),
+                message: e.to_string(),
+            }
+        }
     };
     let key = yerd_update::PHP_LISTING_PUBLIC_KEY;
     let has_stable = targets.iter().any(|v| !v.is_legacy());
@@ -1608,8 +1695,12 @@ pub(crate) async fn install_tool_streamed(tool: String, state: Arc<DaemonState>)
             .await;
         let dl = crate::php_install::ReqwestDownloader::new();
         let guard = state.tool_mutate.lock().await;
+        let install = tokio::time::timeout(
+            std::time::Duration::from_secs(15 * 60),
+            crate::tools::install(t, &state.dirs, &dl, Some(&tx)),
+        );
         let result = tokio::select! {
-            r = crate::tools::install(t, &state.dirs, &dl, Some(&tx)) => Some(r),
+            r = install => Some(r),
             _ = cancel.changed() => None,
         };
         drop(guard);
@@ -1617,17 +1708,27 @@ pub(crate) async fn install_tool_streamed(tool: String, state: Arc<DaemonState>)
         let _ = drain.await;
 
         match result {
-            Some(Ok(())) => {
+            Some(Ok(Ok(()))) => {
                 reconcile_tool_shims_now(&state).await;
                 state
                     .jobs
                     .finish(&id, yerd_ipc::JobState::Succeeded, None)
                     .await;
             }
-            Some(Err(e)) => {
+            Some(Ok(Err(e))) => {
                 state
                     .jobs
                     .finish(&id, yerd_ipc::JobState::Failed, Some(e.to_string()))
+                    .await;
+            }
+            Some(Err(_)) => {
+                state
+                    .jobs
+                    .finish(
+                        &id,
+                        yerd_ipc::JobState::Failed,
+                        Some(format!("installing {} timed out", t.display_name())),
+                    )
                     .await;
             }
             None => {
@@ -2837,6 +2938,7 @@ fn detect_web_subpath(doc_root: &Path) -> String {
 /// **linked** site stores the chosen subpath on its `Site`; a **parked** site
 /// stores it in `overrides[doc_root].web_root`. `path = None` resets to
 /// auto-detect: re-detect now for linked, clear the override for parked.
+#[allow(clippy::result_large_err)]
 fn resolve_web_root_mutation(
     new: &mut yerd_config::Config,
     router: &yerd_core::SiteRouter,
@@ -2900,6 +3002,7 @@ fn web_root_summary(name: &str, rel: &str) -> String {
 /// before comparison so a `\\?\` verbatim prefix from `fs::canonicalize` on
 /// Windows doesn't spuriously fail the containment check against the
 /// non-verbatim stored `document_root`.
+#[allow(clippy::result_large_err)]
 fn resolve_web_root_within(doc_root: &Path, input: &str) -> Result<String, Response> {
     let candidate = {
         let p = Path::new(input);
@@ -2930,6 +3033,7 @@ fn resolve_web_root_within(doc_root: &Path, input: &str) -> Result<String, Respo
 
 /// Canonicalise `path` and require it to be an existing directory, or return a
 /// ready-made `InvalidPath` error response.
+#[allow(clippy::result_large_err)]
 fn canonicalize_dir(path: &Path) -> Result<PathBuf, Response> {
     match std::fs::canonicalize(path) {
         Ok(p) if p.is_dir() => Ok(p),
@@ -3913,7 +4017,7 @@ Subject: Captured\r\n\r\nhi\r\n";
         }
     }
 
-    /// Lay down a fake installed version: `data/php/php-<v>/{sbin/php-fpm,bin/php}`.
+    /// Lay down a fake installed version using the host platform's binary layout.
     fn fake_install(dirs: &PlatformDirs, v: PhpVersion) {
         fake_install_patch(dirs, v, &format!("{}.{}.0", v.major, v.minor));
     }
@@ -3924,10 +4028,19 @@ Subject: Captured\r\n\r\nhi\r\n";
             .data
             .join("php")
             .join(format!("php-{}.{}", v.major, v.minor));
-        std::fs::create_dir_all(base.join("sbin")).unwrap();
-        std::fs::create_dir_all(base.join("bin")).unwrap();
-        std::fs::write(base.join("sbin").join("php-fpm"), b"x").unwrap();
-        std::fs::write(base.join("bin").join("php"), b"x").unwrap();
+        #[cfg(unix)]
+        {
+            std::fs::create_dir_all(base.join("sbin")).unwrap();
+            std::fs::create_dir_all(base.join("bin")).unwrap();
+            std::fs::write(base.join("sbin").join("php-fpm"), b"x").unwrap();
+            std::fs::write(base.join("bin").join("php"), b"x").unwrap();
+        }
+        #[cfg(windows)]
+        {
+            std::fs::create_dir_all(&base).unwrap();
+            std::fs::write(base.join("php-cgi.exe"), b"x").unwrap();
+            std::fs::write(base.join("php.exe"), b"x").unwrap();
+        }
         std::fs::write(base.join(".yerd-version"), full).unwrap();
     }
 
@@ -3996,11 +4109,14 @@ Subject: Captured\r\n\r\nhi\r\n";
         .await;
         assert!(matches!(resp, Response::Ok), "got {resp:?}");
         assert_eq!(state.config.lock().await.php.default, PhpVersion::new(8, 4));
-        let shim = state.dirs.data.join("bin").join("php");
-        assert_eq!(
-            std::fs::read_link(shim).unwrap(),
-            yerd_sibling().expect("yerd sibling resolves in tests")
-        );
+        #[cfg(unix)]
+        {
+            let shim = state.dirs.data.join("bin").join("php");
+            assert_eq!(
+                std::fs::read_link(shim).unwrap(),
+                yerd_sibling().expect("yerd sibling resolves in tests")
+            );
+        }
     }
 
     #[tokio::test]
@@ -4777,6 +4893,7 @@ Subject: Captured\r\n\r\nhi\r\n";
     /// A `php.json` body with the given `(php, minor, revision)` builds for the
     /// host platform. Tarball shas are placeholders (`"00"`) - the poll /
     /// available paths never download tarballs.
+    #[cfg(unix)]
     fn listing_body(builds: &[(&str, &str, u32)]) -> String {
         let (os, arch) = yerd_php::current_os_arch().unwrap();
         let entries: Vec<String> = builds
@@ -4795,17 +4912,20 @@ Subject: Captured\r\n\r\nhi\r\n";
     }
 
     /// Build + sign a `php.json` for the host platform (see [`listing_body`]).
+    #[cfg(unix)]
     fn signed_listing(builds: &[(&str, &str, u32)]) -> crate::test_support::SignedManifest {
         crate::test_support::sign_manifest(&listing_body(builds))
     }
 
     /// Routes stable `php.json` to `stable` and legacy `php-legacy.json` to
     /// `legacy`, so `available_php_with` sees a distinct manifest per channel.
+    #[cfg(unix)]
     struct TwoChannelDl {
         stable: ListingDl,
         legacy: ListingDl,
     }
     #[async_trait::async_trait]
+    #[cfg(unix)]
     impl yerd_php::Downloader for TwoChannelDl {
         async fn download(&self, url: &str) -> Result<Vec<u8>, yerd_php::DownloadError> {
             if url.contains("php-legacy.json") {
@@ -4840,10 +4960,12 @@ Subject: Captured\r\n\r\nhi\r\n";
     /// Serves a valid legacy `php-legacy.json` but errors on every stable
     /// `php.json` request, modelling a reachable legacy manifest behind an
     /// unreachable stable one.
+    #[cfg(unix)]
     struct LegacyOnlyDl {
         legacy: ListingDl,
     }
     #[async_trait::async_trait]
+    #[cfg(unix)]
     impl yerd_php::Downloader for LegacyOnlyDl {
         async fn download(&self, url: &str) -> Result<Vec<u8>, yerd_php::DownloadError> {
             if url.contains("php-legacy.json") {
@@ -4857,6 +4979,7 @@ Subject: Captured\r\n\r\nhi\r\n";
         }
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn poll_and_refresh_populates_cache_from_listing() {
         let tmp = tempfile::tempdir().unwrap();
@@ -4878,6 +5001,7 @@ Subject: Captured\r\n\r\nhi\r\n";
         );
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn poll_and_refresh_is_channel_aware_for_legacy() {
         let tmp = tempfile::tempdir().unwrap();
@@ -4908,6 +5032,7 @@ Subject: Captured\r\n\r\nhi\r\n";
         );
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn poll_and_refresh_tolerates_untrusted_legacy_manifest() {
         let tmp = tempfile::tempdir().unwrap();
@@ -4938,6 +5063,7 @@ Subject: Captured\r\n\r\nhi\r\n";
         );
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn poll_and_refresh_preserves_cached_legacy_update_when_legacy_fetch_fails() {
         let tmp = tempfile::tempdir().unwrap();
@@ -4973,6 +5099,7 @@ Subject: Captured\r\n\r\nhi\r\n";
         );
     }
 
+    #[cfg(unix)]
     #[tokio::test]
     async fn poll_and_refresh_checks_legacy_when_stable_is_unreachable() {
         let tmp = tempfile::tempdir().unwrap();
@@ -5602,6 +5729,7 @@ Subject: Captured\r\n\r\nhi\r\n";
     }
 
     #[tokio::test]
+    #[cfg(not(windows))]
     async fn available_php_lists_distribution_minors_and_installed() {
         let tmp = tempfile::tempdir().unwrap();
         let state = state_in(tmp.path());
@@ -5629,6 +5757,7 @@ Subject: Captured\r\n\r\nhi\r\n";
     }
 
     #[tokio::test]
+    #[cfg(not(windows))]
     async fn available_php_lists_legacy_from_second_manifest() {
         let tmp = tempfile::tempdir().unwrap();
         let state = state_in(tmp.path());

@@ -163,6 +163,18 @@ pub enum Command {
     },
     /// Show a snapshot of daemon, proxy, DNS, ports, CA, and PHP health.
     Status,
+    /// Set rootless HTTP and HTTPS fallback ports. Takes effect after restart.
+    Ports {
+        /// Rootless HTTP port.
+        http: u16,
+        /// Rootless HTTPS port.
+        https: u16,
+    },
+    /// Set the embedded DNS responder port. Takes effect after restart.
+    DnsPort {
+        /// DNS port.
+        port: u16,
+    },
     /// Diagnose common problems; `yerd doctor fix` attempts safe repairs.
     Doctor {
         /// Optional action; omit to only report, `fix` to attempt repairs.

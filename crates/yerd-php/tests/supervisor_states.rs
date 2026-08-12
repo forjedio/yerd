@@ -195,12 +195,15 @@ impl HealthProbe for FakeProbe {
 }
 
 fn make_dirs() -> PlatformDirs {
+    static NEXT_DIR: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let id = NEXT_DIR.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let root = std::env::temp_dir().join(format!("yerd-php-test-{}-{id}", std::process::id()));
     PlatformDirs {
-        config: PathBuf::from("/tmp/yerd-test/cfg"),
-        data: PathBuf::from("/tmp/yerd-test/data"),
-        state: PathBuf::from("/tmp/yerd-test/state"),
-        cache: PathBuf::from("/tmp/yerd-test/cache"),
-        runtime: PathBuf::from("/tmp/yerd-test/run"),
+        config: root.join("cfg"),
+        data: root.join("data"),
+        state: root.join("state"),
+        cache: root.join("cache"),
+        runtime: root.join("run"),
     }
 }
 
@@ -284,22 +287,19 @@ async fn set_ca_bundle_is_rendered_into_pool_config() {
 
     let cfg_path = dirs.config.join("php-fpm-8.3-5150.conf");
     let on_disk = std::fs::read_to_string(&cfg_path).unwrap();
-    assert!(
-        on_disk.contains(&format!(
-            "php_admin_value[openssl.cafile] = {}\n",
-            bundle.display()
-        )),
-        "got: {on_disk}"
-    );
-    assert!(
-        on_disk.contains(&format!(
-            "php_admin_value[curl.cainfo] = {}\n",
-            bundle.display()
-        )),
-        "got: {on_disk}"
-    );
+    #[cfg(unix)]
+    let expected = format!("php_admin_value[openssl.cafile] = {}\n", bundle.display());
+    #[cfg(windows)]
+    let expected = format!("openssl.cafile={}\n", bundle.display());
+    assert!(on_disk.contains(&expected), "got: {on_disk}");
+    #[cfg(unix)]
+    let expected = format!("php_admin_value[curl.cainfo] = {}\n", bundle.display());
+    #[cfg(windows)]
+    let expected = format!("curl.cainfo={}\n", bundle.display());
+    assert!(on_disk.contains(&expected), "got: {on_disk}");
 }
 
+#[cfg(unix)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn set_pool_overrides_is_rendered_into_pool_config() {
     let v = PhpVersion::new(8, 3);
@@ -343,6 +343,7 @@ async fn set_pool_overrides_is_rendered_into_pool_config() {
 /// rather than breaking the pool: `override_max_children` returns `None` and
 /// `ensure` never touches `cfg.max_children`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+#[cfg(unix)]
 async fn invalid_pool_override_falls_back_to_the_default() {
     let v = PhpVersion::new(8, 3);
     let spawner = FakeSpawner::new(vec![SpawnPlan {

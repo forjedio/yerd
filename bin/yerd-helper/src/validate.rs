@@ -126,7 +126,8 @@ mod tests {
 
     #[test]
     fn require_existing_file_rejects_missing() {
-        let err = require_existing_file(Path::new("/tmp/yerd-no-such-file-xyz")).unwrap_err();
+        let missing = std::env::temp_dir().join("yerd-no-such-file-xyz");
+        let err = require_existing_file(&missing).unwrap_err();
         assert!(matches!(
             err,
             HelperError::Validation {
@@ -137,7 +138,7 @@ mod tests {
 
     #[test]
     fn require_existing_file_rejects_directory() {
-        let err = require_existing_file(Path::new("/tmp")).unwrap_err();
+        let err = require_existing_file(&std::env::temp_dir()).unwrap_err();
         assert!(matches!(
             err,
             HelperError::Validation {

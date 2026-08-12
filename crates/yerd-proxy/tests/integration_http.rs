@@ -846,7 +846,15 @@ async fn subdirectory_index_php_wins_over_root_index_php() {
     );
     assert_eq!(
         params.get("SCRIPT_FILENAME").map(String::as_str),
-        Some(docroot.path().join("wp-admin/index.php").to_str().unwrap())
+        Some(
+            docroot
+                .path()
+                .join("wp-admin/index.php")
+                .to_str()
+                .unwrap()
+                .replace('\\', "/")
+                .as_str()
+        )
     );
 
     let _ = tx_shutdown.send(());
@@ -1286,7 +1294,15 @@ async fn direct_script_execution_gated_to_wordpress_sites() {
     );
     assert_eq!(
         params.get("SCRIPT_FILENAME").map(String::as_str),
-        Some(docroot.path().join("index.php").to_str().unwrap())
+        Some(
+            docroot
+                .path()
+                .join("index.php")
+                .to_str()
+                .unwrap()
+                .replace('\\', "/")
+                .as_str()
+        )
     );
 
     let _ = tx_shutdown.send(());

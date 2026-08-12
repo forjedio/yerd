@@ -48,11 +48,7 @@ const composerInstalled = computed(() =>
   tools.value.some((t) => t.id === "composer" && t.installed),
 );
 
-const COMPOSER_REQUIRED_HINT =
-  "Yerd's own Composer is required to build this tool - install Yerd's Composer first.";
-
-/** The Laravel installer and WP-CLI are built via Composer, so they can't install without it. */
-function blockedNoComposer(t: ToolStatus): boolean {
+function needsComposer(t: ToolStatus): boolean {
   return (t.id === "laravel" || t.id === "wp-cli") && !composerInstalled.value;
 }
 
@@ -97,11 +93,30 @@ async function load(): Promise<void> {
 
 async function doInstall(t: ToolStatus): Promise<void> {
   busy.value = `install:${t.id}`;
-  const verb = t.installed ? "Updated" : "Installed";
+  const verb = t.installed ? "Reinstalled" : "Installed";
   logTool.value = t;
   installLog.value = [];
   logOpen.value = true;
   try {
+    if (needsComposer(t)) {
+      await appendLog([`Installing Composer prerequisite for ${t.display_name}...`]);
+      const composerJob = await installToolStreamed("composer");
+      const composerFinal = await pollJobToEnd(
+        composerJob,
+        (lines) => void appendLog(lines),
+        () => logOpen.value,
+      );
+      if (composerFinal.state !== "succeeded") {
+        if (composerFinal.state !== "running") {
+          toast.error(
+            "Composer prerequisite failed",
+            composerFinal.error ?? "Composer install failed",
+          );
+        }
+        return;
+      }
+      await appendLog(["Composer installed. Continuing..."]);
+    }
     const jobId = await installToolStreamed(t.id);
     const final = await pollJobToEnd(
       jobId,
@@ -223,11 +238,10 @@ onUnmounted(registerViewActions({ refresh: () => void load() }));
                       <Button
                         variant="outline"
                         size="sm"
-                        :disabled="busy !== null || blockedNoComposer(t)"
-                        :title="blockedNoComposer(t) ? COMPOSER_REQUIRED_HINT : ''"
+                        :disabled="busy !== null"
                         @click="doInstall(t)"
                       >
-                        <RefreshCw class="mr-1.5 size-3.5" /> Update
+                        <RefreshCw class="mr-1.5 size-3.5" /> Reinstall
                       </Button>
                       <Button
                         variant="ghost"
@@ -250,8 +264,7 @@ onUnmounted(registerViewActions({ refresh: () => void load() }));
                       </span>
                       <Button
                         size="sm"
-                        :disabled="busy !== null || blockedNoComposer(t)"
-                        :title="blockedNoComposer(t) ? COMPOSER_REQUIRED_HINT : ''"
+                        :disabled="busy !== null"
                         @click="doInstall(t)"
                       >
                         <Download class="mr-1.5 size-3.5" /> Install

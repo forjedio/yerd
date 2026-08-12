@@ -1,7 +1,7 @@
 //! Stub-only test: every trait method returns `Unsupported` on
-//! non-Linux, non-macOS targets (Phase 1: Windows).
+//! targets without a dedicated adapter.
 
-#![cfg(not(any(target_os = "linux", target_os = "macos")))]
+#![cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,

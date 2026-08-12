@@ -1225,21 +1225,19 @@ mod tests {
     #[test]
     fn unpark_drops_proxy_rules_under_root() {
         let mut cfg = Config::default();
+        let root = "srv";
+        let child = Path::new(root).join("app").to_string_lossy().into_owned();
         let rule = yerd_core::ProxyRule::new(
             "/ws",
             yerd_core::UpstreamTarget::from_url_str("http://127.0.0.1:3000").unwrap(),
         )
         .unwrap();
-        cfg.parked.paths.insert("/srv".to_string());
-        cfg.proxy_rules
-            .parked
-            .insert("/srv/app".to_string(), vec![rule]);
+        cfg.parked.paths.insert(root.to_string());
+        cfg.proxy_rules.parked.insert(child, vec![rule]);
         apply(
             &mut cfg,
             &empty_router(),
-            &Request::Unpark {
-                path: "/srv".into(),
-            },
+            &Request::Unpark { path: root.into() },
             None,
             v(8, 3),
         )
@@ -1429,17 +1427,15 @@ mod tests {
     #[test]
     fn unpark_drops_route_rules_under_root() {
         let mut cfg = Config::default();
+        let root = "srv";
+        let child = Path::new(root).join("app").to_string_lossy().into_owned();
         let rule = yerd_core::RouteRule::new("/api", "api/index.php").unwrap();
-        cfg.parked.paths.insert("/srv".to_string());
-        cfg.route_rules
-            .parked
-            .insert("/srv/app".to_string(), vec![rule]);
+        cfg.parked.paths.insert(root.to_string());
+        cfg.route_rules.parked.insert(child, vec![rule]);
         apply(
             &mut cfg,
             &empty_router(),
-            &Request::Unpark {
-                path: "/srv".into(),
-            },
+            &Request::Unpark { path: root.into() },
             None,
             v(8, 3),
         )

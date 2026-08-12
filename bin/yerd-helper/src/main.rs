@@ -18,19 +18,19 @@ mod validate;
 use std::process::ExitCode;
 
 fn main() -> ExitCode {
-    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
     {
         eprintln!("yerd-helper: not supported on this OS");
         return ExitCode::from(78);
     }
 
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
     {
         run()
     }
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 fn run() -> ExitCode {
     let parsed = match cli::parse(std::env::args_os()) {
         Ok(p) => p,
@@ -40,6 +40,7 @@ fn run() -> ExitCode {
         }
     };
 
+    #[cfg(unix)]
     let _ = std::env::set_current_dir("/");
 
     if !parsed.skip_priv_check && !privilege::is_privileged() {

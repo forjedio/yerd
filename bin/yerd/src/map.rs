@@ -201,6 +201,11 @@ pub fn to_request(cmd: &Command) -> Result<Request, ClientError> {
         | Command::Lan {
             action: crate::cli::LanAction::Status,
         } => Request::Status,
+        Command::Ports { http, https } => Request::SetFallbackPorts {
+            http: *http,
+            https: *https,
+        },
+        Command::DnsPort { port } => Request::SetDnsPort { port: *port },
         Command::Doctor { action: None } => Request::Diagnose,
         Command::Doctor {
             action: Some(crate::cli::DoctorAction::Fix),

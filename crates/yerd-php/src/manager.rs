@@ -41,11 +41,13 @@ use crate::error::{ExitReason, PhpError, SpawnFailureReason};
 use crate::io::atomic_write;
 use crate::listen::{AllocatedListen, Listen};
 use crate::pool::{ExtLoad, PoolConfig};
+use crate::pure::env_scrub;
+#[cfg(unix)]
+use crate::pure::fpm_conf;
 use crate::pure::supervisor::{
     transition, Action, Elapsed, ErrorTag, Event, KillSignal, PoolState, StopProtocol,
     SupervisorPolicy,
 };
-use crate::pure::{env_scrub, fpm_conf};
 use crate::traits::{ChildHandle, Clock, HealthProbe, ProcessSpawner};
 
 /// Number of `AllocatedListen::plan` attempts when the kernel-assigned
@@ -342,7 +344,7 @@ where
             }
         }
 
-        let rendered = fpm_conf::render_fpm_conf(&cfg);
+        let rendered = render_runtime_config(&cfg, &binary);
         atomic_write::write(&cfg.config_path, rendered.as_bytes()).map_err(|source| {
             PhpError::ConfigWrite {
                 path: cfg.config_path.clone(),
@@ -358,6 +360,7 @@ where
             build_cmd(
                 &binary,
                 &cfg.config_path,
+                &cfg.listen,
                 &env,
                 extension.as_deref(),
                 &ini_defines,
@@ -764,9 +767,20 @@ async fn wait_after_kill<Ch: ChildHandle>(
     }
 }
 
+#[cfg(unix)]
+fn render_runtime_config(cfg: &PoolConfig, _binary: &std::path::Path) -> String {
+    fpm_conf::render_fpm_conf(cfg)
+}
+
+#[cfg(windows)]
+fn render_runtime_config(cfg: &PoolConfig, binary: &std::path::Path) -> String {
+    crate::pure::cgi_ini::render(cfg, binary.parent().unwrap_or(std::path::Path::new(".")))
+}
+
 fn build_cmd(
     binary: &PathBuf,
     config_path: &PathBuf,
+    listen: &Listen,
     env: &[(String, String)],
     extension: Option<&std::path::Path>,
     ini_defines: &[(String, String)],
@@ -788,7 +802,15 @@ fn build_cmd(
         cmd.arg("-d")
             .arg(format!("{directive}={}", ext.path.display()));
     }
+    #[cfg(unix)]
     cmd.arg("--fpm-config").arg(config_path);
+    #[cfg(windows)]
+    {
+        cmd.arg("-c").arg(config_path);
+        if let Listen::TcpLoopback(addr) = listen {
+            cmd.arg("-b").arg(addr.to_string());
+        }
+    }
     cmd.env_clear();
     for (k, val) in env {
         cmd.env(k, val);
@@ -827,7 +849,9 @@ fn failed_reason(s: PoolState) -> (ExitReason, u32) {
 )]
 mod pure_helper_tests {
     use super::*;
+    #[cfg(unix)]
     use std::ffi::OsStr;
+    #[cfg(unix)]
     use std::path::Path;
 
     fn args_of(cmd: &StdCommand) -> Vec<String> {
@@ -837,11 +861,13 @@ mod pure_helper_tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn build_cmd_without_extension_only_passes_fpm_config() {
         let binary = PathBuf::from("/opt/php/bin/php");
         let config = PathBuf::from("/run/yerd/fpm-8.3.conf");
         let env = vec![("PATH".to_owned(), "/usr/bin".to_owned())];
-        let cmd = build_cmd(&binary, &config, &env, None, &[], &[]);
+        let listen = Listen::UnixSocket(PathBuf::from("/run/yerd/php.sock"));
+        let cmd = build_cmd(&binary, &config, &listen, &env, None, &[], &[]);
 
         assert_eq!(cmd.get_program(), OsStr::new("/opt/php/bin/php"));
         let args = args_of(&cmd);
@@ -861,13 +887,15 @@ mod pure_helper_tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn build_cmd_with_extension_emits_defines_before_fpm_config() {
         let binary = PathBuf::from("/opt/php/bin/php");
         let config = PathBuf::from("/run/yerd/fpm-8.3.conf");
         let env: Vec<(String, String)> = vec![];
         let so = Path::new("/lib/yerd-dump.so");
         let defines = vec![("yerd_dump.state_path".to_owned(), "/var/state".to_owned())];
-        let cmd = build_cmd(&binary, &config, &env, Some(so), &defines, &[]);
+        let listen = Listen::UnixSocket(PathBuf::from("/run/yerd/php.sock"));
+        let cmd = build_cmd(&binary, &config, &listen, &env, Some(so), &defines, &[]);
 
         let args = args_of(&cmd);
         assert_eq!(
@@ -890,6 +918,7 @@ mod pure_helper_tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn build_cmd_emits_user_extensions_with_and_without_dump_ext() {
         let binary = PathBuf::from("/opt/php/bin/php");
         let config = PathBuf::from("/run/yerd/fpm-8.5.conf");
@@ -904,7 +933,8 @@ mod pure_helper_tests {
                 zend: true,
             },
         ];
-        let cmd = build_cmd(&binary, &config, &env, None, &[], &user);
+        let listen = Listen::UnixSocket(PathBuf::from("/run/yerd/php.sock"));
+        let cmd = build_cmd(&binary, &config, &listen, &env, None, &[], &user);
         let args = args_of(&cmd);
         assert_eq!(
             args,
@@ -919,7 +949,7 @@ mod pure_helper_tests {
         );
 
         let so = Path::new("/lib/yerd-dump.so");
-        let cmd = build_cmd(&binary, &config, &env, Some(so), &[], &user);
+        let cmd = build_cmd(&binary, &config, &listen, &env, Some(so), &[], &user);
         let args = args_of(&cmd);
         assert_eq!(
             args,
@@ -933,6 +963,19 @@ mod pure_helper_tests {
                 "--fpm-config",
                 "/run/yerd/fpm-8.5.conf",
             ]
+        );
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn build_cmd_runs_php_cgi_on_tcp() {
+        let binary = PathBuf::from(r"C:\Yerd\php-cgi.exe");
+        let config = PathBuf::from(r"C:\Yerd\php.ini");
+        let listen = Listen::TcpLoopback("127.0.0.1:9000".parse().unwrap());
+        let cmd = build_cmd(&binary, &config, &listen, &[], None, &[], &[]);
+        assert_eq!(
+            args_of(&cmd),
+            vec!["-c", r"C:\Yerd\php.ini", "-b", "127.0.0.1:9000"]
         );
     }
 

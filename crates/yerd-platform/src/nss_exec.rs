@@ -225,6 +225,7 @@ pub fn browser_trust(
 /// service manager hands the daemon a stripped `PATH` that hides the tool. The
 /// existence probe is injected so the walk is unit-tested against the real
 /// candidate lists on any host, without touching the filesystem.
+#[cfg(any(unix, test))]
 fn resolve_certutil(
     candidates: &[PathBuf],
     path_dirs: &[PathBuf],

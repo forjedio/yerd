@@ -1,6 +1,7 @@
-//! `install-resolver` and `uninstall-resolver` for Linux + macOS.
+//! `install-resolver` and `uninstall-resolver` implementations.
 
 use std::net::SocketAddr;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 use std::path::PathBuf;
 
 #[cfg(target_os = "macos")]
@@ -14,6 +15,47 @@ use crate::ops::atomic_write;
 #[cfg(target_os = "linux")]
 use crate::ops::{atomic_write, run_command};
 use crate::validate;
+
+#[cfg(windows)]
+pub fn install_resolver(tld: &str, addr: SocketAddr) -> Result<(), HelperError> {
+    let tld = validate::require_valid_tld(tld)?;
+    if addr
+        != "127.0.0.1:53"
+            .parse()
+            .map_err(|_| HelperError::Unsupported {
+                operation: yerd_platform::error::ops::INSTALL_RESOLVER,
+            })?
+    {
+        return Err(HelperError::Unsupported {
+            operation: yerd_platform::error::ops::INSTALL_RESOLVER,
+        });
+    }
+    let command = format!(
+        "Add-DnsClientNrptRule -Namespace '.{}' -NameServers '127.0.0.1' -Comment 'Yerd managed'",
+        tld.as_str()
+    );
+    crate::ops::run_command(
+        "powershell",
+        r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe",
+        ["-NoProfile", "-NonInteractive", "-Command", &command],
+    )
+    .map(|_| ())
+}
+
+#[cfg(windows)]
+pub fn uninstall_resolver(tld: &str) -> Result<(), HelperError> {
+    let tld = validate::require_valid_tld(tld)?;
+    let command = format!(
+        "Get-DnsClientNrptRule | Where-Object {{ $_.Namespace -contains '.{}' -and $_.Comment -eq 'Yerd managed' }} | Remove-DnsClientNrptRule -Force",
+        tld.as_str()
+    );
+    crate::ops::run_command(
+        "powershell",
+        r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe",
+        ["-NoProfile", "-NonInteractive", "-Command", &command],
+    )
+    .map(|_| ())
+}
 
 #[cfg(target_os = "linux")]
 fn drop_in_path(tld: &str) -> PathBuf {
@@ -356,6 +398,7 @@ fn macos_try_restore_backup(tld: &str, dest: &std::path::Path) -> Result<bool, H
     clippy::indexing_slicing
 )]
 mod tests {
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     use super::*;
 
     #[cfg(target_os = "linux")]

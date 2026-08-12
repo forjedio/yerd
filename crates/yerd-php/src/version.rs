@@ -11,19 +11,19 @@ use yerd_platform::PlatformDirs;
 
 use crate::error::PhpError;
 
-/// Filename of the FPM binary inside each per-version install dir.
+/// Path of the web SAPI binary inside each per-version install dir.
 #[cfg(unix)]
-const FPM_BINARY_PATH: &[&str] = &["sbin", "php-fpm"];
-#[cfg(not(unix))]
-const FPM_BINARY_PATH: &[&str] = &["php-fpm.exe"];
+const WEB_BINARY_PATH: &[&str] = &["sbin", "php-fpm"];
+#[cfg(windows)]
+const WEB_BINARY_PATH: &[&str] = &["php-cgi.exe"];
 
-/// Walk `dirs.data / "php"` looking for per-version FPM binaries.
+/// Walk `dirs.data / "php"` looking for per-version web SAPI binaries.
 ///
 /// Layout the caller is expected to ship (produced by `xtask` Phase 2):
 ///
 /// ```text
 /// {dirs.data}/php/php-8.3/sbin/php-fpm        (Unix)
-/// {dirs.data}\php\php-8.3\php-fpm.exe         (Windows)
+/// {dirs.data}\php\php-8.3\php-cgi.exe         (Windows)
 /// ```
 ///
 /// Error policy:
@@ -48,7 +48,7 @@ pub fn discover_bundled(dirs: &PlatformDirs) -> Result<Vec<(PhpVersion, PathBuf)
             continue;
         };
         let mut binary = entry.path();
-        for segment in FPM_BINARY_PATH {
+        for segment in WEB_BINARY_PATH {
             binary.push(segment);
         }
         if !binary.exists() {
@@ -106,19 +106,30 @@ mod tests {
         }
     }
 
-    #[cfg(unix)]
     #[test]
     fn discover_bundled_finds_versions_and_sorts() {
         let tmp = tempfile::tempdir().unwrap();
         let dirs = make_dirs(tmp.path());
 
+        #[cfg(unix)]
         let v83 = dirs.data.join("php").join("php-8.3").join("sbin");
+        #[cfg(windows)]
+        let v83 = dirs.data.join("php").join("php-8.3");
         std::fs::create_dir_all(&v83).unwrap();
+        #[cfg(unix)]
         std::fs::write(v83.join("php-fpm"), b"#!/bin/sh\n").unwrap();
+        #[cfg(windows)]
+        std::fs::write(v83.join("php-cgi.exe"), b"fixture").unwrap();
 
+        #[cfg(unix)]
         let v74 = dirs.data.join("php").join("php-7.4").join("sbin");
+        #[cfg(windows)]
+        let v74 = dirs.data.join("php").join("php-7.4");
         std::fs::create_dir_all(&v74).unwrap();
+        #[cfg(unix)]
         std::fs::write(v74.join("php-fpm"), b"#!/bin/sh\n").unwrap();
+        #[cfg(windows)]
+        std::fs::write(v74.join("php-cgi.exe"), b"fixture").unwrap();
 
         let bogus = dirs.data.join("php").join("php-bogus");
         std::fs::create_dir_all(bogus).unwrap();

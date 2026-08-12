@@ -45,6 +45,7 @@ mod tests {
     use std::collections::HashMap;
 
     #[test]
+    #[cfg(unix)]
     fn linux_candidates_are_absolute_and_ordered() {
         let c = linux_root_candidates();
         assert_eq!(

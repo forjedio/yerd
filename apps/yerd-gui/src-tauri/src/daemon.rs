@@ -48,9 +48,13 @@ fn search_dirs() -> Vec<PathBuf> {
 /// [`lib_sidecar`]; otherwise a postinst hiccup would leave `yerdd` on disk but
 /// unfindable and the daemon "won't start".
 pub(crate) fn resolve_binary(name: &str) -> Option<PathBuf> {
+    #[cfg(windows)]
+    let name = format!("{name}.exe");
+    #[cfg(not(windows))]
+    let name = name.to_owned();
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
-            let cand = dir.join(name);
+            let cand = dir.join(&name);
             if cand.is_file() {
                 return Some(cand);
             }
@@ -58,14 +62,14 @@ pub(crate) fn resolve_binary(name: &str) -> Option<PathBuf> {
     }
     if let Some(found) = search_dirs()
         .into_iter()
-        .map(|d| d.join(name))
+        .map(|d| d.join(&name))
         .find(|c| c.is_file())
     {
         return Some(found);
     }
     #[cfg(target_os = "linux")]
     {
-        lib_sidecar(name)
+        lib_sidecar(&name)
     }
     #[cfg(not(target_os = "linux"))]
     {
@@ -303,6 +307,7 @@ async fn running_pid() -> Option<u32> {
 }
 
 /// Send SIGTERM to `pid` (best-effort; an already-dead pid is fine).
+#[cfg(unix)]
 fn sigterm(pid: u32) {
     if let Ok(pid) = i32::try_from(pid) {
         // SAFETY: `kill` is a libc syscall with no memory effects; sending
@@ -311,6 +316,13 @@ fn sigterm(pid: u32) {
             libc::kill(pid, libc::SIGTERM);
         }
     }
+}
+
+#[cfg(windows)]
+fn sigterm(pid: u32) {
+    let _ = std::process::Command::new("taskkill.exe")
+        .args(["/PID", &pid.to_string(), "/T"])
+        .status();
 }
 
 /// Build the detached daemon's stdout/stderr targets: a truncate-on-start
@@ -362,6 +374,23 @@ pub(crate) fn spawn_detached() -> Result<(), GuiError> {
         }
     }
     cmd.spawn()
+        .map(|_| ())
+        .map_err(|e| GuiError::internal(format!("could not start {}: {e}", yerdd.display())))
+}
+
+/// Spawn `yerdd serve` detached on Windows.
+#[cfg(windows)]
+pub(crate) fn spawn_detached() -> Result<(), GuiError> {
+    use std::os::windows::process::CommandExt as _;
+
+    let yerdd = resolve_yerdd().ok_or_else(|| GuiError::internal("yerdd is not installed"))?;
+    std::process::Command::new(&yerdd)
+        .arg("serve")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .creation_flags(0x0000_0200 | 0x0800_0000)
+        .spawn()
         .map(|_| ())
         .map_err(|e| GuiError::internal(format!("could not start {}: {e}", yerdd.display())))
 }

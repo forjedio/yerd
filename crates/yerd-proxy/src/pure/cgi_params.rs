@@ -84,6 +84,8 @@ pub fn build_params(
         ),
         None => (document_root.join("index.php"), "/index.php".to_owned()),
     };
+    let script_filename = cgi_path(&script_filename);
+    let document_root = cgi_path(document_root);
 
     push(&mut out, b"GATEWAY_INTERFACE", b"CGI/1.1");
     push(&mut out, b"SERVER_PROTOCOL", b"HTTP/1.1");
@@ -91,16 +93,8 @@ pub fn build_params(
     push(&mut out, b"REQUEST_URI", path_and_query.as_bytes());
     push(&mut out, b"QUERY_STRING", query.as_bytes());
     push(&mut out, b"SCRIPT_NAME", script_name.as_bytes());
-    push(
-        &mut out,
-        b"SCRIPT_FILENAME",
-        script_filename.to_string_lossy().as_bytes(),
-    );
-    push(
-        &mut out,
-        b"DOCUMENT_ROOT",
-        document_root.to_string_lossy().as_bytes(),
-    );
+    push(&mut out, b"SCRIPT_FILENAME", script_filename.as_bytes());
+    push(&mut out, b"DOCUMENT_ROOT", document_root.as_bytes());
     push(&mut out, b"PATH_INFO", path.as_bytes());
     push(
         &mut out,
@@ -174,6 +168,17 @@ pub fn build_params(
     }
 
     out
+}
+
+fn cgi_path(path: &Path) -> String {
+    let path = path.to_string_lossy();
+    #[cfg(windows)]
+    return path
+        .strip_prefix(r"\\?\")
+        .unwrap_or(&path)
+        .replace('\\', "/");
+    #[cfg(unix)]
+    path.into_owned()
 }
 
 fn push(out: &mut Vec<(Vec<u8>, Vec<u8>)>, name: &[u8], value: &[u8]) {
@@ -492,4 +497,12 @@ mod tests {
             Some("/srv/www/blog/wp-login.php".as_bytes())
         );
     }
+}
+#[cfg(windows)]
+#[test]
+fn cgi_path_removes_windows_verbatim_prefix() {
+    assert_eq!(
+        cgi_path(Path::new(r"\\?\C:\Sites\app\index.php")),
+        "C:/Sites/app/index.php"
+    );
 }

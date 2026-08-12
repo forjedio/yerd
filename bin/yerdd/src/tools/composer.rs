@@ -5,7 +5,9 @@
 //! `composer.phar.sha256sum` sidecar (the `/versions` JSON carries no digest).
 //! Installed on demand from the Tooling page - not auto-fetched.
 
-use std::path::{Path, PathBuf};
+#[cfg(unix)]
+use std::path::Path;
+use std::path::PathBuf;
 
 use serde::Deserialize;
 

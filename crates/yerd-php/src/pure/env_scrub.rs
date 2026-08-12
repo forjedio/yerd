@@ -16,6 +16,29 @@ pub fn allowlist(snapshot: &[(String, String)]) -> Vec<(String, String)> {
     snapshot.iter().filter(|(k, _)| keep(k)).cloned().collect()
 }
 
+#[cfg(windows)]
+fn keep(key: &str) -> bool {
+    let key = key.to_ascii_uppercase();
+    matches!(
+        key.as_str(),
+        "PATH"
+            | "HOME"
+            | "USER"
+            | "LANG"
+            | "SYSTEMROOT"
+            | "WINDIR"
+            | "TEMP"
+            | "TMP"
+            | "USERPROFILE"
+            | "COMSPEC"
+            | "APPDATA"
+            | "LOCALAPPDATA"
+    ) || key.starts_with("LC_")
+        || key.starts_with("XDEBUG_")
+        || key.starts_with("PHP_")
+}
+
+#[cfg(unix)]
 fn keep(key: &str) -> bool {
     matches!(key, "PATH" | "HOME" | "USER" | "LANG")
         || key.starts_with("LC_")
@@ -91,6 +114,20 @@ mod tests {
             s("xdebug_lower", "no"),
         ];
         let out = allowlist(&input);
+        #[cfg(unix)]
         assert!(out.is_empty());
+        #[cfg(windows)]
+        assert_eq!(out, vec![s("xdebug_lower", "no")]);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn keeps_windows_runtime_environment_case_insensitively() {
+        let input = vec![
+            s("SystemRoot", r"C:\Windows"),
+            s("TEMP", r"C:\Temp"),
+            s("userprofile", r"C:\Users\dev"),
+        ];
+        assert_eq!(allowlist(&input), input);
     }
 }

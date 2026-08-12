@@ -5,6 +5,8 @@
 //! helpers under `io/` are the only places that touch `tokio` / sockets
 //! / the filesystem.
 
+#[cfg(windows)]
+pub mod cgi_ini;
 pub mod env_scrub;
 pub mod ext_probe;
 pub mod fpm_conf;

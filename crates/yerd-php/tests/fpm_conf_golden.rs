@@ -1,6 +1,7 @@
 //! Byte-exact golden test for the rendered FPM config. Pins the
 //! template format - future edits flip this test deliberately.
 
+#![cfg(unix)]
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,

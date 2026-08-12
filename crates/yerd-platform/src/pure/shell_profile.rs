@@ -282,6 +282,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn body_is_guarded_and_quotes_the_space() {
         let posix = render_body(Shell::Zsh, &bin());
         assert!(posix.contains("Application Support"));
@@ -306,6 +307,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn body_escapes_shell_metacharacters_in_the_path() {
         let dir = PathBuf::from(r#"/home/b$x/a`b/c\d/e"f/bin"#);
 

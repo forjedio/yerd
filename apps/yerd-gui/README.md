@@ -85,16 +85,21 @@ for b in yerd yerdd yerd-helper; do
   cp ../../target/release/$b src-tauri/binaries/$b-aarch64-apple-darwin
 done
 # Linux: use the -x86_64-unknown-linux-gnu suffix instead.
+# Windows: use the -x86_64-pc-windows-msvc.exe suffix.
 
 # 2) Build with the platform overlay (externalBin + macOS plist / Linux postinst).
 #    `--config` is resolved relative to this dir, so the path is src-tauri/-relative.
 npm run tauri build -- --config src-tauri/tauri.bundle-macos.conf.json   # macOS
 # npm run tauri build -- --config src-tauri/tauri.bundle-linux.conf.json # Linux
+# npm run tauri build -- --config src-tauri/tauri.bundle-windows.conf.json # Windows
 
 # 3) macOS only: package the styled .dmg (headless - no Finder/AppleScript).
 #    Set APPLE_SIGNING_IDENTITY to also codesign it; omit for an unsigned test dmg.
 ./scripts/build-macos-dmg.sh
 ```
+
+On Windows, `scripts/build-windows.ps1` performs both build steps and creates
+the NSIS installer.
 
 Without step 1 a release build fails (`externalBin` not found). CI does both
 steps automatically (`.github/workflows/release.yml`, `gui` job). The macOS floor
@@ -121,6 +126,7 @@ Login Items → Allow in the Background).
   the same `env SUDO_UID=<uid> <yerd> elevate <t>`. The macOS daemon socket lives
   at the deterministic `/tmp/yerd-$UID` so the root-elevated CLI can locate it
   from `SUDO_UID` alone.
-- **Windows** is out of scope: the daemon's pipe name isn't client-derivable yet.
+- **Windows** uses the fixed `yerd-daemon` named pipe and bundles the three
+  sidecars in an NSIS installer.
 - macOS release bundles are **Developer ID signed and notarised**, so they open
   without a Gatekeeper prompt (signing/notarisation is wired up on this branch).

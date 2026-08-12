@@ -41,9 +41,13 @@ pub fn render_redis_conf(port: u16, datadir: &Path, logfile: &Path) -> String {
 /// (the only metacharacters its double-quoted-string parser honours). The same
 /// double-quoted-value form is accepted by `MySQL`/`MariaDB` option files.
 fn quote_conf_path(p: &Path) -> String {
-    let s = p.display().to_string();
-    let escaped = s.replace('\\', "\\\\").replace('"', "\\\"");
+    let s = config_path(p);
+    let escaped = s.replace('"', "\\\"");
     format!("\"{escaped}\"")
+}
+
+fn config_path(path: &Path) -> String {
+    path.to_string_lossy().replace('\\', "/")
 }
 
 /// Render a `MySQL` / `MariaDB` option file: loopback-only, no password.
@@ -148,8 +152,8 @@ pub fn render_my_bootstrap_sql() -> &'static str {
 /// so the line never duplicates or accumulates.
 #[must_use]
 pub fn render_postgresql_conf(port: u16, datadir: &Path, preload_libraries: &[&str]) -> String {
-    let hba = quote_pg_string(&datadir.join("pg_hba.conf").display().to_string());
-    let ident = quote_pg_string(&datadir.join("pg_ident.conf").display().to_string());
+    let hba = quote_pg_string(&config_path(&datadir.join("pg_hba.conf")));
+    let ident = quote_pg_string(&config_path(&datadir.join("pg_ident.conf")));
     let preload = render_preload_line(preload_libraries);
     format!(
         "# Managed by Yerd — do not edit by hand.\n\
@@ -197,9 +201,9 @@ fn quote_pg_string(s: &str) -> String {
 #[must_use]
 pub fn render_include_lines(dialect: OverrideDialect, confd_dir: &Path) -> String {
     match dialect {
-        OverrideDialect::MyCnf => format!("!includedir {}\n", confd_dir.display()),
+        OverrideDialect::MyCnf => format!("!includedir {}\n", config_path(confd_dir)),
         OverrideDialect::PostgresConf => {
-            let dir = quote_pg_string(&confd_dir.display().to_string());
+            let dir = quote_pg_string(&config_path(confd_dir));
             format!("include_dir {dir}\n")
         }
         OverrideDialect::RedisConf => {

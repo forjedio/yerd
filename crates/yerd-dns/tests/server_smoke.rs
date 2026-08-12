@@ -38,7 +38,19 @@ async fn serves_multi_label_tld() {
 }
 
 async fn serve_and_query(tld: Tld, site_fqdn: &str, apex_fqdn: &str) {
-    let bound = Bound::bind("127.0.0.1:0".parse().unwrap()).await.unwrap();
+    let addr = "127.0.0.1:0".parse().unwrap();
+    let mut attempts = 0;
+    let bound = loop {
+        match Bound::bind(addr).await {
+            Ok(bound) => break bound,
+            Err(error) if attempts < 4 => {
+                attempts += 1;
+                tokio::time::sleep(Duration::from_millis(25)).await;
+                drop(error);
+            }
+            Err(error) => panic!("could not bind DNS test sockets: {error}"),
+        }
+    };
     let addr = bound.local_addr();
     let (tx, rx) = tokio::sync::oneshot::channel::<()>();
     let handle = tokio::spawn(bound.serve(
